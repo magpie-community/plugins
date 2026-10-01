@@ -1,0 +1,759 @@
+// Cline (cline.bot) as a magpie / OpenCode provider plugin.
+//
+// The same sign-in Cline's own client runs — a WorkOS device code the browser
+// approves, traded at Cline's register endpoint for the account's token pair —
+// or a plain API key from app.cline.bot. Chat completions go to Cline's
+// gateway in OpenAI's format; the model list comes from its recommended-models
+// feed; usage reads the account's credit balance.
+import { STATUS_CODES } from "node:http"
+import { randomUUID } from "node:crypto"
+
+const PROVIDER = "cline"
+const API = "https://api.cline.bot/api/v1"
+
+// the WorkOS client Cline's own apps sign in with (their source, production)
+const WORKOS_CLIENT = "client_01K3A541FN8TA3EPPHTD2325AR"
+const WORKOS_DEVICE = "https://api.workos.com/user_management/authorize/device"
+const WORKOS_TOKEN = "https://api.workos.com/user_management/authenticate"
+const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+
+// the gateway wants the account's token told apart from a raw API key: a
+// signed-in one rides as "workos:<jwt>" (Cline's own clients send it so)
+const WORKOS_PREFIX = "workos:"
+
+const REFRESH_LEAD = 5 * 60 * 1000
+const DEVICE_CAP = 600 // seconds the browser may take, however long the code lives
+
+// CLIENT is who every request says it comes from: the same client surface
+// Cline's own CLI runs as, headers down (apps/cli registers exactly this
+// identity, and the free models' gate reads these). Pinned to Cline's current
+// release — when they ship a new one, move these along (the numbers are the
+// only thing that has to match).
+const CLIENT = { type: "cline-cli", version: "3.0.67", platform: "cli", core: "0.0.89" }
+
+// clientHeaders is the header set resolveProviderRequestHeaders builds for a
+// client with that identity; a task id rides per chat request, as the
+// official clients ride one per task
+function clientHeaders(taskId) {
+	return {
+		"HTTP-Referer": "https://cline.bot",
+		"X-Title": "Cline",
+		"User-Agent": `Cline/${CLIENT.version}`,
+		"X-IS-MULTIROOT": "false",
+		"X-CLIENT-TYPE": CLIENT.type,
+		"X-CLIENT-VERSION": CLIENT.version,
+		"X-PLATFORM": CLIENT.platform,
+		"X-PLATFORM-VERSION": CLIENT.version,
+		"X-CORE-VERSION": CLIENT.core,
+		...(taskId ? { "X-Task-ID": taskId } : {}),
+	}
+}
+
+// ---- small helpers ------------------------------------------------------------
+
+const firstOf = (...vs) => vs.find((v) => typeof v === "string" && v.trim())?.trim() ?? ""
+
+// compactNumber is a whole number bare, else two decimals with the trailing
+// zeroes off (magpie's subscription_usage.go)
+function compactNumber(n) {
+	if (!Number.isFinite(n)) return "0"
+	if (n === Math.trunc(n)) return String(Math.trunc(n))
+	return String(Number(n.toFixed(2)))
+}
+
+// toMs is an expiry Cline sends as an ISO datetime; one it didn't send (or one
+// that won't parse) is taken as an hour out rather than as "never"
+function toMs(v) {
+	const t = typeof v === "string" ? Date.parse(v) : Number(v)
+	if (Number.isFinite(t) && t > Date.now()) return t
+	return Date.now() + 60 * 60 * 1000
+}
+
+// timeOf reads a reset time: epoch seconds, epoch ms, or a date string
+function timeOf(m, keys) {
+	for (const k of keys) {
+		const v = m?.[k]
+		if (typeof v === "number" && v > 1e12) return new Date(v).toISOString()
+		if (typeof v === "number" && v > 1e9) return new Date(v * 1000).toISOString()
+		if (typeof v === "string") {
+			const t = Date.parse(v)
+			if (!Number.isNaN(t)) return new Date(t).toISOString()
+		}
+	}
+	return ""
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// ---- the sign-in as it is kept --------------------------------------------------
+
+// authOf reads a sign-in as magpie keeps it: OpenCode's type field, and what
+// this plugin needs beside it to renew it later
+const authOf = (a) => ({
+	type: a?.type === "api" ? "api" : "oauth",
+	access: typeof a?.access === "string" ? a.access : "",
+	refresh: typeof a?.refresh === "string" ? a.refresh : "",
+	expires: Number(a?.expires) || 0,
+	key: typeof a?.key === "string" ? a.key : "",
+	uid: typeof a?.uid === "string" ? a.uid : "",
+	email: typeof a?.email === "string" ? a.email : "",
+	name: typeof a?.name === "string" ? a.name : "",
+	accountId: typeof a?.accountId === "string" ? a.accountId : "",
+})
+
+// bearerOf is what an Authorization header carries: a signed-in account's
+// access token with Cline's routing prefix, or the raw API key
+function bearerOf(a) {
+	if (a?.type === "api") return a.key
+	const access = typeof a?.access === "string" ? a.access : ""
+	if (!access) return ""
+	return access.startsWith(WORKOS_PREFIX) ? access : WORKOS_PREFIX + access
+}
+
+// parseAuth reads Cline's token answer ({accessToken, refreshToken, expiresAt,
+// userInfo}) into what this plugin keeps, with a refresh to fall back on when
+// the answer didn't rotate it
+function parseAuth(data, fallbackRefresh = "") {
+	const access = typeof data?.accessToken === "string" ? data.accessToken : ""
+	if (!access) return { error: "Cline sent back no access token" }
+	const refresh = firstOf(data?.refreshToken, fallbackRefresh)
+	if (!refresh) return { error: "Cline sent back no refresh token" }
+	const ui = data?.userInfo && typeof data.userInfo === "object" ? data.userInfo : {}
+	const uid = firstOf(ui.clineUserId, ui.subject)
+	const email = firstOf(ui.email)
+	return {
+		access,
+		refresh,
+		expires: toMs(data?.expiresAt),
+		uid,
+		email,
+		name: firstOf(ui.name),
+		accountId: firstOf(email, uid),
+	}
+}
+
+// ---- talking to Cline ------------------------------------------------------------
+
+// Lapsed is the sign-in itself gone: a refused refresh, or an API that turned
+// the account's token away. magpie marks the account from e.expired.
+class Lapsed extends Error {
+	constructor(message) {
+		super(message)
+		this.expired = true
+	}
+}
+
+// clineApi is one call to Cline's own API, and the {success, data} envelope it
+// answers in. lapsed says which answers mean the sign-in itself is gone (401
+// and 403, unless the caller knows this endpoint refuses otherwise); the rest
+// is a request that failed.
+async function clineApi(url, { method = "GET", body, headers = {}, signal, lapsed } = {}) {
+	const gone = lapsed ?? ((status) => status === 401 || status === 403)
+	let res
+	try {
+		res = await fetch(url, {
+			method,
+			headers: {
+				Accept: "application/json",
+				...clientHeaders(),
+				...headers,
+				...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+			},
+			...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+			signal: signal ?? AbortSignal.timeout(15_000),
+		})
+	} catch (e) {
+		throw new Error(`Cline: ${e?.message ?? e}`)
+	}
+	const text = (await res.text().catch(() => "")).trim()
+	if (gone(res.status, text))
+		throw new Lapsed(`the sign-in lapsed — Cline refused it (HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}); sign in to Cline again`)
+	if (!res.ok) throw new Error(`Cline request failed (HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""})`)
+	const env = safeJson(text)
+	if (env && typeof env === "object" && "success" in env) {
+		if (!env.success) throw new Error(`Cline request failed${env.error ? `: ${env.error}` : ""}`)
+		return env.data
+	}
+	return env
+}
+
+// safeJson is text as JSON, or null
+const safeJson = (text) => {
+	try {
+		return JSON.parse(text)
+	} catch {
+		return null
+	}
+}
+
+// refresh trades the refresh token for a new pair; Cline rotates it, so the
+// caller saves what comes back. A dead token is refused as 400 invalid_grant
+// (WorkOS's wording rides in the body), not 401 — that refusal is the sign-in
+// gone, anything else is worth a retry later.
+async function refresh(a) {
+	if (!a.refresh) throw new Lapsed("Cline's refresh token is gone; sign in to Cline again")
+	const data = await clineApi(`${API}/auth/refresh`, {
+		method: "POST",
+		body: { refreshToken: a.refresh, grantType: "refresh_token" },
+		lapsed: (status, text) => [400, 401, 403].includes(status) && /invalid|expired|revoked|unauthorized/i.test(text),
+	})
+	const p = parseAuth(data, a.refresh)
+	if (p.error) throw new Error(`Cline token refresh: ${p.error}`)
+	return p
+}
+
+// ---- the device sign-in ----------------------------------------------------------
+
+// deviceAuthorize starts the flow: a code to approve in the browser
+async function deviceAuthorize() {
+	let res
+	try {
+		res = await fetch(WORKOS_DEVICE, {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+			body: new URLSearchParams({ client_id: WORKOS_CLIENT }).toString(),
+			signal: AbortSignal.timeout(15_000),
+		})
+	} catch (e) {
+		throw new Error(`Cline sign-in: ${e?.message ?? e}`)
+	}
+	if (!res.ok) throw new Error(`Cline sign-in: the device code request failed (HTTP ${res.status})`)
+	const d = await res.json().catch(() => null)
+	if (!d?.device_code || !d?.verification_uri) throw new Error("Cline sign-in: the device code answer was incomplete")
+	return d
+}
+
+// deviceSignIn is the browser method: the device code page opened, WorkOS
+// polled until the code is approved, and the WorkOS tokens traded at Cline's
+// register endpoint for the account's own pair
+async function deviceSignIn() {
+	const d = await deviceAuthorize()
+	const interval = Math.max(0.25, Number(d.interval) > 0 ? Number(d.interval) : 5)
+	const deadline = Date.now() + Math.min(Number(d.expires_in) > 0 ? Number(d.expires_in) : 300, DEVICE_CAP) * 1000
+	return {
+		url: firstOf(d.verification_uri_complete, d.verification_uri, "https://app.cline.bot"),
+		instructions: `Approve the sign-in in the browser${d.user_code ? ` — the code is ${d.user_code}` : ""}.`,
+		method: "auto",
+		async callback() {
+			let wait = interval
+			while (Date.now() < deadline) {
+				await sleep(wait * 1000)
+				wait = interval
+				let j
+				try {
+					const res = await fetch(WORKOS_TOKEN, {
+						method: "POST",
+						headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+						body: new URLSearchParams({ grant_type: DEVICE_GRANT, device_code: d.device_code, client_id: WORKOS_CLIENT }).toString(),
+						signal: AbortSignal.timeout(15_000),
+					})
+					j = await res.json().catch(() => null)
+				} catch (e) {
+					return { type: "failed", error: `Cline sign-in: ${e?.message ?? e}` }
+				}
+				if (j?.error === "authorization_pending") continue
+				if (j?.error === "slow_down") {
+					wait = interval + 1
+					continue
+				}
+				if (j?.error) return { type: "failed", error: `Cline sign-in: ${j.error}${j.error_description ? ` (${j.error_description})` : ""}` }
+				if (typeof j?.access_token !== "string" || !j.access_token)
+					return { type: "failed", error: "Cline sign-in: the token answer had no access token" }
+				try {
+					const data = await clineApi(`${API}/auth/register`, { method: "POST", body: { accessToken: j.access_token, refreshToken: j.refresh_token ?? "" }, signal: AbortSignal.timeout(30_000) })
+					const p = parseAuth(data, j.refresh_token ?? "")
+					if (p.error) throw new Error(`Cline sign-in: ${p.error}`)
+					return { type: "success", ...p }
+				} catch (e) {
+					return { type: "failed", error: e?.message ?? String(e) }
+				}
+			}
+			return { type: "failed", error: "the sign-in wasn't finished in time" }
+		},
+	}
+}
+
+// ---- models ----------------------------------------------------------------------
+
+// CAPS is the shorthand a model id spells in capitals, MIXED the ones with a
+// capital of their own
+const CAPS = new Set(["gpt", "glm", "ai", "api", "llm", "k3"])
+const MIXED = { mimo: "MiMo" }
+
+// prettify is a model id as a name: anthropic/claude-sonnet-5.5 becomes
+// "Claude Sonnet 5.5"
+function prettify(id) {
+	const seg = String(id).split("/").pop() ?? ""
+	return seg
+		.split(/[-_]/)
+		.filter(Boolean)
+		.map((w) => MIXED[w.toLowerCase()] ?? (CAPS.has(w.toLowerCase()) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+		.join(" ")
+}
+
+// DEFAULT_MODELS is the list before Cline's feed answered: its recommended
+// models (the bundled snapshot of Cline's own), its free ones and ClinePass's.
+// The first is also Cline's own default.
+const DEFAULT_MODELS = [
+	{ id: "anthropic/claude-sonnet-5.5" },
+	{ id: "anthropic/claude-opus-5.5" },
+	{ id: "anthropic/claude-sonnet-5" },
+	{ id: "openai/gpt-6-astra" },
+	{ id: "openai/gpt-6.1-sol" },
+	{ id: "spacexai/grok-4.7" },
+	{ id: "moonshotai/kimi-k3" },
+	{ id: "google/gemini-2.5-pro" },
+	{ id: "minimax/minimax-m2.5" },
+	{ id: "stealth/space-bunny-alpha", free: true },
+	{ id: "cline-free/mimo-v2.6-flash", free: true },
+	{ id: "cline-free/deepseek-v4.1-flash", free: true },
+	{ id: "cline-free/muse-spark-1.3-contributor", free: true },
+	{ id: "cline-pass/glm-5.3" },
+	{ id: "cline-pass/deepseek-v4-pro" },
+	{ id: "cline-pass/qwen3.8-max" },
+	{ id: "cline-pass/kimi-k3" },
+	{ id: "cline-pass/minimax-m3" },
+].map((m) => ({ name: prettify(m.id) + (m.free ? " (free)" : m.id.startsWith("cline-pass/") ? " (ClinePass)" : ""), ...m }))
+
+const GROUPS = new Set(["recommended", "free", "clinepass"])
+const MODEL_ID = /^[a-z0-9][a-z0-9_.-]*\/[a-z0-9][a-z0-9_.-]*$/i
+
+// parseFeed reads the recommended-models answer, a shape Cline hasn't fixed:
+// model ids bare or in objects, in Cline's own groups or anywhere at all
+function parseFeed(v) {
+	const seen = new Set()
+	const out = []
+	// entry is one model, named for the plan gate a picker should show: the
+	// free group costs nothing, the cline-pass group wants the subscription
+	const entry = (id, name, free) => ({ id, name: free ? `${name} (free)` : id.startsWith("cline-pass/") ? `${name} (ClinePass)` : name, free })
+	const walk = (n, group) => {
+		if (Array.isArray(n)) {
+			for (const x of n) walk(x, group)
+			return
+		}
+		if (!n || typeof n !== "object") {
+			const id = typeof n === "string" && MODEL_ID.test(n.trim()) ? n.trim() : ""
+			if (id && !seen.has(id)) {
+				seen.add(id)
+				out.push(entry(id, prettify(id), group === "free"))
+			}
+			return
+		}
+		const raw = firstOf(n.id, n.model, n.modelId, n.model_id, n.key, n.slug)
+		const g = GROUPS.has(String(n.group ?? "").toLowerCase()) ? String(n.group).toLowerCase() : group
+		const id = MODEL_ID.test(raw) ? raw : ""
+		if (id && !seen.has(id)) {
+			seen.add(id)
+			out.push(entry(id, firstOf(n.name, n.displayName, n.label) || prettify(id), n.free === true || n.free === "true" || g === "free"))
+		}
+		for (const [k, x] of Object.entries(n)) {
+			const kk = k.toLowerCase()
+			walk(x, GROUPS.has(kk) ? kk : g)
+		}
+	}
+	walk(v, "")
+	return out
+}
+
+// fetchFeed is Cline's live model list, which the feed serves without a
+// sign-in
+async function fetchFeed() {
+	let res
+	try {
+		res = await fetch(`${API}/ai/cline/recommended-models`, {
+			headers: { Accept: "application/json", ...clientHeaders() },
+			signal: AbortSignal.timeout(10_000),
+		})
+	} catch (e) {
+		throw new Error(`Cline model list: ${e?.message ?? e}`)
+	}
+	if (!res.ok) throw new Error(`Cline model list: HTTP ${res.status}`)
+	const env = await res.json().catch(() => null)
+	const ms = parseFeed(env && typeof env === "object" && "data" in env ? env.data : env)
+	if (!ms.length) throw new Error("Cline listed no models")
+	return ms
+}
+
+const configModel = (m) => ({
+	name: m.name ?? m.id,
+	limit: { context: m.context ?? 0, output: 0 },
+	tool_call: true,
+})
+
+const runtimeModel = (m) => ({
+	id: m.id,
+	providerID: PROVIDER,
+	name: m.name || m.id,
+	api: { id: m.id, url: API, npm: "@ai-sdk/openai-compatible" },
+	status: "active",
+	headers: {},
+	options: {},
+	cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+	limit: { context: m.context ?? 0, output: 0 },
+	capabilities: {
+		temperature: true,
+		reasoning: false,
+		attachment: false,
+		toolcall: true,
+		input: { text: true, image: false, audio: false, video: false, pdf: false },
+		output: { text: true, image: false, audio: false, video: false, pdf: false },
+		interleaved: false,
+	},
+	release_date: "",
+	variants: {},
+	free: !!m.free,
+})
+
+// ---- the reply as errors -----------------------------------------------------------
+
+// failure is an upstream chat refusal as OpenAI's API gives it. A refused
+// chat is the sign-in at work, not the sign-in gone: only a refused refresh
+// marks the account (errorResponse keeps it). The gates Cline puts in front
+// of a model each say what they want: a plan subscription, or money.
+function failure(status, text) {
+	if (status < 400 || status > 599) status = 502
+	let msg = String(text ?? "").trim()
+	let j = null
+	try {
+		j = JSON.parse(text)
+	} catch {}
+	if (j) {
+		if (typeof j?.error?.message === "string") msg = j.error.message
+		else if (typeof j?.message === "string") msg = j.message
+	}
+	msg ||= STATUS_CODES[status] ?? `HTTP ${status}`
+	// a model the account isn't entitled to: the sign-in is fine, the plan
+	// isn't there (the cline-pass group, mostly)
+	if (j?.error?.code === "ENTITLEMENT_ERROR" || /not subscribed/i.test(msg))
+		return {
+			status: 403,
+			message: "this model needs a subscription the account hasn't got (ClinePass) — pick a usage-billed model, or subscribe at app.cline.bot (" + msg.replace(/^Error\s*\d*[:：]?\s*/, "") + ")",
+		}
+	// an empty account: say what the gateway said and where to fill it
+	if (j?.error?.code === "insufficient_credits" || /^insufficient/i.test(msg)) {
+		const bal = Number(j?.error?.current_balance)
+		const at = typeof j?.error?.buy_credits_url === "string" && j.error.buy_credits_url ? j.error.buy_credits_url : "https://app.cline.bot/credits"
+		return { status: 429, message: `out of credits ($${Number.isFinite(bal) ? bal.toFixed(2) : "0.00"}) — top up at ${at}` }
+	}
+	if (status === 401 || (status === 403 && /sign in|unauthorized|token|credential/i.test(msg)))
+		return { status: 401, message: "the sign-in lapsed — sign in again" }
+	if (status === 429 || /quota|insufficient|credit/i.test(msg)) return { status: 429, message: "usage limit reached: " + msg }
+	return { status, message: msg.slice(0, 2000) }
+}
+
+const errorResponse = ({ status, message, signIn }) =>
+	new Response(JSON.stringify({ error: { message, type: "cline_error", code: status } }), {
+		status,
+		headers: { "Content-Type": "application/json", ...(signIn ? { "X-Magpie-Sign-In": signIn } : {}) },
+	})
+
+// signed is res saying what it means for the sign-in: a renewed token cleared
+// the lapse mark whatever came of the request
+function signed(res, renewed) {
+	const said = renewed ? "renewed" : res.ok ? "kept" : null
+	if (!said) return res
+	const headers = new Headers(res.headers)
+	headers.delete("content-length")
+	headers.delete("content-encoding")
+	headers.set("X-Magpie-Sign-In", said)
+	return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
+}
+
+async function bodyText(input, init) {
+	const b = init?.body ?? (input instanceof Request ? await input.clone().text() : undefined)
+	if (b === undefined || b === null) return ""
+	if (typeof b === "string") return b
+	if (b instanceof URLSearchParams) return b.toString()
+	if (b instanceof ArrayBuffer || ArrayBuffer.isView(b)) return new TextDecoder().decode(b)
+	try {
+		return await new Response(b).text()
+	} catch {
+		return ""
+	}
+}
+
+// unwrapped is Cline's non-streaming answer with its envelope taken off: a
+// finished chat completion rides as {"data": …}, the shape the official
+// clients take apart. Streaming answers are plain SSE and pass untouched.
+async function unwrapped(res) {
+	if (!(res.headers.get("content-type") ?? "").includes("application/json")) return res
+	const text = await res.text()
+	let j
+	try {
+		j = JSON.parse(text)
+	} catch {
+		return new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
+	}
+	if (j && typeof j === "object" && Array.isArray(j.data?.choices))
+		return new Response(JSON.stringify(j.data), { status: res.status, statusText: res.statusText, headers: { "Content-Type": "application/json" } })
+	return new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
+}
+
+// ---- usage -----------------------------------------------------------------------
+
+// usd is a dollar amount as it's usually written: cents above a cent, four
+// decimals under one (an account with half a cent isn't "$0.00" to its owner)
+const usd = (n) => (n === 0 || n >= 0.01 ? `$${n.toFixed(2)}` : `$${Number(n.toFixed(4))}`)
+
+// balanceWindow is the one balance shape Cline serves today: {balance} in
+// millionths of a dollar — the chat gateway's current_balance is the same
+// number with the decimal point moved six places
+function balanceWindow(v) {
+	const n = typeof v?.balance === "number" ? v.balance : typeof v?.balance === "string" && Number.isFinite(Number(v.balance)) ? Number(v.balance) : NaN
+	if (!Number.isFinite(n) || n < 0) return null
+	return { name: "Credits", used: 0, display: `${usd(n / 1e6)} left` }
+}
+
+// balanceOf is the account's credit balance, a shape Cline hasn't fixed: a
+// total with what is used or left of it, or just what is left
+function balanceOf(v) {
+	if (!v || typeof v !== "object") return null
+	const flat = {}
+	const collect = (n, depth) => {
+		if (!n || typeof n !== "object" || depth > 2) return
+		for (const [k, x] of Object.entries(n)) {
+			if (typeof x === "number" && Number.isFinite(x)) flat[k.toLowerCase()] = x
+			else if (typeof x === "string" && x.trim() !== "" && Number.isFinite(Number(x.trim()))) flat[k.toLowerCase()] = Number(x.trim())
+			else collect(x, depth + 1)
+		}
+	}
+	collect(v, 0)
+	const pick = (keys) => {
+		for (const k of keys) if (typeof flat[k] === "number") return flat[k]
+		return NaN
+	}
+	const total = pick(["total", "totalcredits", "totalbalance", "creditstotal", "limit", "amount", "quota"])
+	const used = pick(["used", "usedcredits", "usedamount", "spent", "consumed", "usagetotal"])
+	const remaining = pick(["remaining", "remainingcredits", "remainingbalance", "left", "available", "balance", "credits", "current"])
+	const w = { name: "Credits", used: 0 }
+	if (Number.isFinite(total) && total > 0) {
+		if (Number.isFinite(used)) {
+			w.used = (100 * used) / total
+			w.display = `${compactNumber(used)} / ${compactNumber(total)}`
+		} else if (Number.isFinite(remaining) && remaining <= total) {
+			w.used = (100 * (total - remaining)) / total
+			w.display = `${compactNumber(total - remaining)} / ${compactNumber(total)}`
+		} else return null
+	} else if (Number.isFinite(remaining) && remaining > 0) {
+		w.display = `${compactNumber(remaining)} credits left`
+	} else if (Number.isFinite(used) && used > 0) {
+		w.used = used
+		w.display = `${compactNumber(used)} credits used`
+	} else return null
+	const at = timeOf(v, ["resetAt", "resetTime", "nextResetAt", "renewsAt", "expiresAt"])
+	if (at) w.resetsAt = at
+	return w
+}
+
+function usageOf(me, balance) {
+	const out = { windows: [] }
+	const plan = firstOf(me?.plan, me?.planType, me?.planName, me?.membership, me?.tier)
+	if (plan) out.plan = plan
+	const w = balanceWindow(balance) ?? balanceOf(balance)
+	if (w) out.windows.push(w)
+	return out
+}
+
+// ---- the plugin --------------------------------------------------------------------
+
+export const ClinePlugin = async ({ client } = {}) => {
+	// the accounts fresh renewed this run: the sign-in mark comes off on the
+	// renewed token, whatever the request then met
+	const renewals = new WeakSet()
+
+	// remember saves a refreshed pair where magpie keeps it
+	const remember = async (next) => {
+		try {
+			await client?.auth?.set?.({
+				path: { id: PROVIDER },
+				body: {
+					type: "oauth",
+					access: next.access,
+					refresh: next.refresh,
+					expires: next.expires,
+					uid: next.uid ?? "",
+					email: next.email ?? "",
+					name: next.name ?? "",
+					accountId: next.accountId ?? "",
+				},
+			})
+		} catch {}
+	}
+
+	// refreshes are serialized: the refresh token is single-use, and two
+	// requests renewing at once spend one and lose the other
+	let lock = Promise.resolve()
+	const locked = (fn) => {
+		const run = lock.then(fn, fn)
+		lock = run.catch(() => {})
+		return run
+	}
+
+	// fresh is the account with a token still good: one near its end is
+	// renewed, and the rotated pair saved back
+	const fresh = (getAuth) =>
+		locked(async () => {
+			const a = authOf(await getAuth())
+			if (a.type === "api") {
+				if (!a.key) throw new Lapsed("Cline: no API key; add one to the account")
+				return { bearer: a.key, renewed: false, accountId: a.accountId }
+			}
+			if (!a.access && !a.refresh) throw new Lapsed("Cline: not signed in")
+			if (a.access && a.expires - Date.now() > REFRESH_LEAD) return { ...a, bearer: bearerOf(a), renewed: false }
+			if (!a.refresh) throw new Lapsed("Cline's access token has expired and there is no refresh token; sign in to Cline again")
+			const p = await refresh(a)
+			const next = { ...a, access: p.access, refresh: p.refresh, expires: p.expires, uid: p.uid || a.uid, email: p.email || a.email, name: p.name || a.name, accountId: a.accountId || p.accountId }
+			await remember(next)
+			renewals.add(next)
+			return { ...next, bearer: bearerOf(next), renewed: true }
+		})
+
+	const signedInError = (e) =>
+		errorResponse({
+			status: e?.expired ? 401 : 502,
+			message: String(e?.message ?? e).replace(/^Cline: /, ""),
+			signIn: e?.expired ? "expired" : undefined,
+		})
+
+	// usage is the account's credit balance, magpie's own hook. A read the
+	// account's token couldn't make is the sign-in, not the read.
+	const usage = async (getAuth) => {
+		try {
+			const cred = await fresh(getAuth)
+			const authz = { Authorization: `Bearer ${cred.bearer}` }
+			const me = await clineApi(`${API}/users/me`, { headers: authz })
+			const ids = [me?.clineUserId, me?.subject, me?.id, cred.uid].filter((v) => typeof v === "string" && v.trim())
+			let balance = null
+			let lastErr = null
+			for (const id of ids) {
+				try {
+					balance = await clineApi(`${API}/users/${encodeURIComponent(id)}/balance`, { headers: authz })
+					break
+				} catch (e) {
+					lastErr = e
+				}
+			}
+			if (!balance) throw lastErr ?? new Error("Cline usage: no user id")
+			return { ...usageOf(me, balance), user: firstOf(cred.accountId, cred.email, cred.uid, ids[0]), signIn: cred.renewed ? "renewed" : "kept" }
+		} catch (e) {
+			return { windows: [], error: e?.message ?? String(e), signIn: e?.expired ? "expired" : "kept" }
+		}
+	}
+
+	return {
+		config: async (cfg) => {
+			cfg.provider ??= {}
+			const was = cfg.provider[PROVIDER] ?? {}
+			cfg.provider[PROVIDER] = {
+				name: "Cline",
+				npm: "@ai-sdk/openai-compatible",
+				api: API,
+				...was,
+				models: { ...Object.fromEntries(DEFAULT_MODELS.map((m) => [m.id, configModel(m)])), ...(was.models ?? {}) },
+			}
+		},
+
+		auth: {
+			provider: PROVIDER,
+
+			async loader(getAuth) {
+				const a = await getAuth()
+				if (a?.type !== "oauth" && a?.type !== "api") return {}
+				return {
+					baseURL: API,
+					apiKey: "cline",
+					// every chat completion as Cline's gateway takes it: OpenAI's
+					// format, the account's token, Cline's own headers
+					async fetch(input, init = {}) {
+						const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+						if (!/\/chat\/completions$/.test(new URL(url).pathname))
+							return errorResponse({ status: 404, message: "only chat completions are served" })
+						let body
+						try {
+							body = await bodyText(input, init)
+							const chat = JSON.parse(body)
+							if (!chat || typeof chat !== "object" || Array.isArray(chat)) throw new Error("not a chat completion")
+						} catch {
+							return errorResponse({ status: 400, message: "a request that isn't a chat completion" })
+						}
+						let cred
+						try {
+							cred = await fresh(getAuth)
+						} catch (e) {
+							return signedInError(e)
+						}
+						const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+						headers.set("Authorization", `Bearer ${cred.bearer}`)
+						// the request says who it comes from, headers down, exactly as
+						// Cline's own client does — and rides its own task id
+						for (const [k, v] of Object.entries(clientHeaders(randomUUID()))) headers.set(k, v)
+						headers.delete("content-length")
+						headers.delete("host")
+						let res
+						try {
+							res = await fetch(url, { ...init, method: init?.method ?? "POST", headers, body, signal: init?.signal ?? (input instanceof Request ? input.signal : undefined) })
+						} catch (e) {
+							return errorResponse({ status: 502, message: String(e?.message ?? e) })
+						}
+						if (!res.ok) return errorResponse(failure(res.status, (await res.text()).slice(0, 1 << 20)))
+						return signed(await unwrapped(res), cred.renewed)
+					},
+				}
+			},
+
+			usage,
+
+			methods: [
+				{ type: "oauth", label: "Sign in to Cline (browser)", authorize: deviceSignIn },
+				{ type: "api", label: "Cline API key (app.cline.bot → Settings → API Keys)" },
+			],
+		},
+
+		provider: {
+			id: PROVIDER,
+			async models(provider) {
+				const have = provider?.models ?? {}
+				try {
+					const ms = await fetchFeed()
+					return Object.fromEntries(ms.map((m) => [m.id, runtimeModel(m)]))
+				} catch {
+					// a list Cline couldn't give is a failure, not the few
+					// configured: magpie keeps the list it had
+					return have
+				}
+			},
+		},
+	}
+}
+
+// for tests
+export const _internal = {
+	firstOf,
+	compactNumber,
+	toMs,
+	timeOf,
+	authOf,
+	bearerOf,
+	parseAuth,
+	parseFeed,
+	prettify,
+	fetchFeed,
+	balanceOf,
+	balanceWindow,
+	usd,
+	usageOf,
+	failure,
+	errorResponse,
+	bodyText,
+	unwrapped,
+	clientHeaders,
+	deviceAuthorize,
+	refresh,
+	constants: { PROVIDER, API, WORKOS_CLIENT, WORKOS_PREFIX, CLIENT },
+	errors: { Lapsed },
+}
+
+// The shape the plugin host looks for: default {id, server}. The host takes
+// this over the named exports, so also exporting ClinePlugin by name (as the
+// tests import it) changes nothing the host does.
+export default { id: PROVIDER, server: ClinePlugin }
