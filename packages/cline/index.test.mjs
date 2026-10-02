@@ -413,6 +413,8 @@ test("bearerOf prefixes a signed-in token, once", () => {
 	expect(bearerOf({ type: "api", key: "ck" })).toBe("ck")
 	expect(bearerOf({ type: "oauth", access: "jwt" })).toBe("workos:jwt")
 	expect(bearerOf({ type: "oauth", access: "workos:jwt" })).toBe("workos:jwt")
+	// the prefix is matched whatever case it came in, as Cline's client does
+	expect(bearerOf({ type: "oauth", access: "WorkOS:jwt" })).toBe("WorkOS:jwt")
 	expect(bearerOf({ type: "oauth", access: "" })).toBe("")
 })
 

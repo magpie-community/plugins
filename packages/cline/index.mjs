@@ -4,7 +4,7 @@
 // approves, traded at Cline's register endpoint for the account's token pair —
 // or a plain API key from app.cline.bot. Chat completions go to Cline's
 // gateway in OpenAI's format; the model list comes from its recommended-models
-// feed; usage reads the account's credit balance.
+// and cloud-models feeds; usage reads the account's credit balance.
 import { STATUS_CODES } from "node:http"
 import { randomUUID } from "node:crypto"
 
@@ -29,7 +29,7 @@ const DEVICE_CAP = 600 // seconds the browser may take, however long the code li
 // identity, and the free models' gate reads these). Pinned to Cline's current
 // release — when they ship a new one, move these along (the numbers are the
 // only thing that has to match).
-const CLIENT = { type: "cline-cli", version: "3.0.67", platform: "cli", core: "0.0.89" }
+const CLIENT = { type: "cline-cli", version: "3.0.68", platform: "cli", core: "0.0.89" }
 
 // clientHeaders is the header set resolveProviderRequestHeaders builds for a
 // client with that identity; a task id rides per chat request, as the
@@ -107,7 +107,8 @@ function bearerOf(a) {
 	if (a?.type === "api") return a.key
 	const access = typeof a?.access === "string" ? a.access : ""
 	if (!access) return ""
-	return access.startsWith(WORKOS_PREFIX) ? access : WORKOS_PREFIX + access
+	// the prefix is matched the way Cline's own client matches it, whatever case
+	return access.toLowerCase().startsWith(WORKOS_PREFIX) ? access : WORKOS_PREFIX + access
 }
 
 // parseAuth reads Cline's token answer ({accessToken, refreshToken, expiresAt,
