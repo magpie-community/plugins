@@ -22,6 +22,10 @@ const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 const WORKOS_PREFIX = "workos:"
 
 const REFRESH_LEAD = 5 * 60 * 1000
+// a refresh that failed transiently keeps a token with this much left, as
+// Cline's getValidClineCredentials does (DEFAULT_RETRYABLE_TOKEN_GRACE_MS);
+// only once it has actually expired is the sign-in the one to blame
+const RETRYABLE_GRACE = 30 * 1000
 const DEVICE_CAP = 600 // seconds the browser may take, however long the code lives
 
 // CLIENT is who every request says it comes from: the same client surface
@@ -617,6 +621,11 @@ export const ClinePlugin = async ({ client } = {}) => {
 	// the accounts fresh renewed this run: the sign-in mark comes off on the
 	// renewed token, whatever the request then met
 	const renewals = new WeakSet()
+	const renewed = (cred) => renewals.has(cred)
+	// the latest rotated pair, kept in memory beside what magpie saved: a save
+	// through client.auth.set may fail, and the next request must not spend the
+	// refresh token that was already spent (kiro's held)
+	let held = null
 
 	// remember saves a refreshed pair where magpie keeps it
 	const remember = async (next) => {
@@ -647,7 +656,9 @@ export const ClinePlugin = async ({ client } = {}) => {
 	}
 
 	// fresh is the account with a token still good: one near its end is
-	// renewed, and the rotated pair saved back
+	// renewed, and the rotated pair saved back. A transient refresh failure
+	// keeps the token that is still good, as Cline's own client does; only a
+	// token that has actually expired is the sign-in gone.
 	const fresh = (getAuth) =>
 		locked(async () => {
 			const a = authOf(await getAuth())
@@ -657,12 +668,27 @@ export const ClinePlugin = async ({ client } = {}) => {
 			}
 			if (!a.access && !a.refresh) throw new Lapsed("Cline: not signed in")
 			if (a.access && a.expires - Date.now() > REFRESH_LEAD) return { ...a, bearer: bearerOf(a), renewed: false }
-			if (!a.refresh) throw new Lapsed("Cline's access token has expired and there is no refresh token; sign in to Cline again")
-			const p = await refresh(a)
-			const next = { ...a, access: p.access, refresh: p.refresh, expires: p.expires, uid: p.uid || a.uid, email: p.email || a.email, name: p.name || a.name, accountId: a.accountId || p.accountId }
+			// a pair this run already rotated is newer than the one getAuth
+			// still hands back: use it rather than re-spending the old token
+			const r = held && a.refresh === held.from ? { ...a, access: held.access, refresh: held.refresh, expires: held.expires } : a
+			if (r.access && r.expires - Date.now() > REFRESH_LEAD) return { ...r, bearer: bearerOf(r), renewed: false }
+			if (!r.refresh) throw new Lapsed("Cline's access token has expired and there is no refresh token; sign in to Cline again")
+			let p
+			try {
+				p = await refresh(r)
+			} catch (e) {
+				// a token that is still good rides on through a refresh that
+				// failed for a while; an expired one is the sign-in gone
+				if (!e?.expired && r.access && r.expires - Date.now() > RETRYABLE_GRACE) return { ...r, bearer: bearerOf(r), renewed: false }
+				throw e
+			}
+			const next = { ...r, access: p.access, refresh: p.refresh, expires: p.expires, uid: p.uid || r.uid, email: p.email || r.email, name: p.name || r.name, accountId: r.accountId || p.accountId }
+			// the pair just rotated, held whatever the save through magpie does
+			held = { from: r.refresh, access: next.access, refresh: next.refresh, expires: next.expires }
 			await remember(next)
-			renewals.add(next)
-			return { ...next, bearer: bearerOf(next), renewed: true }
+			const cred = { ...next, bearer: bearerOf(next), renewed: true }
+			renewals.add(cred)
+			return cred
 		})
 
 	const signedInError = (e) =>
@@ -691,7 +717,7 @@ export const ClinePlugin = async ({ client } = {}) => {
 				}
 			}
 			if (!balance) throw lastErr ?? new Error("Cline usage: no user id")
-			return { ...usageOf(me, balance), user: firstOf(cred.accountId, cred.email, cred.uid, ids[0]), signIn: cred.renewed ? "renewed" : "kept" }
+			return { ...usageOf(me, balance), user: firstOf(cred.accountId, cred.email, cred.uid, ids[0]), signIn: renewed(cred) ? "renewed" : "kept" }
 		} catch (e) {
 			return { windows: [], error: e?.message ?? String(e), signIn: e?.expired ? "expired" : "kept" }
 		}

@@ -45,10 +45,14 @@ needs a sign-in); usage reads `/api/v1/users/me` and the account's `/balance`
 
 ## Models
 
-The list is Cline's recommended-models feed — its recommended picks, its free
-models and ClinePass's — refreshed from the live feed whenever it answers.
-Until then a bundled snapshot of the same list, Cline's own default
-(`anthropic/claude-sonnet-5`) among it.
+The list is Cline's own, merged from the two feeds its clients read: the
+recommended-models feed (its recommended picks, its free models and
+ClinePass's) and the whole cloud catalog (`/ai/cline/models`, where the
+usage-billed models the recommended feed doesn't name live). Refreshed from
+the live feeds whenever they answer; until then a bundled snapshot of the
+recommended list, Cline's own default (`anthropic/claude-sonnet-5`) among it.
+Cline's `clineCloud` group is left out, as Cline's own clients leave it out
+unless they opt in.
 
 - The **free** group (`cline-free/…`, `stealth/…`) costs nothing — the names
   say "(free)". They are gated on the client surface a request claims; the

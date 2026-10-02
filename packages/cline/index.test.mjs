@@ -36,14 +36,29 @@ afterEach(() => {
 
 const client = () => {
 	const saved = []
+	// store is the sign-in as magpie keeps it, and re-reads it on every call
+	// the way the host does — so a save this plugin makes is seen by the next
+	// request, and one it fails to make isn't
+	let stored = null
+	const store = async () => stored
 	return {
 		client: {
 			app: { log: async () => {} },
-			auth: { set: async (input) => saved.push(input.body) },
+			auth: {
+				set: async (input) => {
+					saved.push(input.body)
+					stored = input.body
+				},
+			},
 			tui: { showToast: async () => {} },
 			config: { get: async () => ({ data: {} }) },
 		},
 		saved,
+		store,
+		// raw is the sign-in this test's getAuth starts from
+		seed: (a) => {
+			stored = a
+		},
 	}
 }
 
@@ -186,14 +201,15 @@ test("a live access token is used as-is, without a refresh", async () => {
 })
 
 test("a near-expiry account is renewed, the rotated pair saved, the answer marked renewed", async () => {
-	const { client: c, saved } = client()
+	const { client: c, saved, store, seed } = client()
 	const hooks = await ClinePlugin({ client: c })
 	serve([
 		["/auth/refresh", () => Response.json({ success: true, data: { accessToken: "jwt2", refreshToken: "r2", expiresAt: new Date(Date.now() + 3600_000).toISOString(), userInfo: { subject: "s1", email: "a@b.c", clineUserId: "cu1" } } })],
 		[chatUrl, () => Response.json({ ok: true })],
 	])
 	const raw = { type: "oauth", access: "jwt1", refresh: "r1", expires: Date.now() + 1000, uid: "cu1", accountId: "a@b.c" }
-	const l = await hooks.auth.loader(async () => raw)
+	seed(raw)
+	const l = await hooks.auth.loader(store)
 	const res = await l.fetch(chatUrl, chatInit())
 	expect(res.status).toBe(200)
 	expect(res.headers.get("X-Magpie-Sign-In")).toBe("renewed")
@@ -221,16 +237,82 @@ test("a refused refresh is the sign-in gone, marked expired", async () => {
 	expect(body.error.message).toContain("sign in to Cline again")
 })
 
-test("a transient refresh failure is not the sign-in gone", async () => {
-	const { client: c } = client()
+test("a transient refresh failure leaves a still-good token to make its request", async () => {
+	const { client: c, store, seed } = client()
+	const hooks = await ClinePlugin({ client: c })
+	serve([
+		["/auth/refresh", () => Response.json({ boom: true }, { status: 500 })],
+		[chatUrl, () => Response.json({ ok: true })],
+	])
+	// four minutes left: inside the refresh lead, but still good — the request
+	// goes out on it rather than failing (Cline keeps the token too)
+	seed({ type: "oauth", access: "jwt1", refresh: "r1", expires: Date.now() + 4 * 60 * 1000, uid: "cu1", accountId: "a@b.c" })
+	const l = await hooks.auth.loader(store)
+	const res = await l.fetch(chatUrl, chatInit())
+	expect(res.status).toBe(200)
+	expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
+	expect(calls[0].url).toContain("/auth/refresh")
+	expect(calls[1].init.headers.get("Authorization")).toBe("Bearer workos:jwt1")
+})
+
+test("a transient refresh failure with an expired token fails the request, unmarked", async () => {
+	const { client: c, store, seed } = client()
 	const hooks = await ClinePlugin({ client: c })
 	serve([
 		["/auth/refresh", () => Response.json({ boom: true }, { status: 500 })],
 	])
-	const l = await hooks.auth.loader(async () => ({ type: "oauth", access: "jwt1", refresh: "r1", expires: Date.now() + 1000 }))
+	seed({ type: "oauth", access: "jwt1", refresh: "r1", expires: Date.now() - 1000 })
+	const l = await hooks.auth.loader(store)
 	const res = await l.fetch(chatUrl, chatInit())
 	expect(res.status).toBe(502)
 	expect(res.headers.get("X-Magpie-Sign-In")).toBe(null)
+})
+
+test("a rotated pair survives a failing auth.set: the next request doesn't re-spend the old token", async () => {
+	const { client: c, saved, store, seed } = client()
+	c.auth.set = async () => {
+		throw new Error("disk full")
+	}
+	const hooks = await ClinePlugin({ client: c })
+	serve([
+		["/auth/refresh", () => Response.json({ success: true, data: { accessToken: "jwt2", refreshToken: "r2", expiresAt: new Date(Date.now() + 3600_000).toISOString(), userInfo: { clineUserId: "cu1", email: "a@b.c" } } })],
+		[chatUrl, () => Response.json({ ok: true })],
+		[chatUrl, () => Response.json({ ok: true })],
+	])
+	seed({ type: "oauth", access: "jwt1", refresh: "r1", expires: Date.now() + 1000, uid: "cu1", accountId: "a@b.c" })
+	const l = await hooks.auth.loader(store)
+	const res = await l.fetch(chatUrl, chatInit())
+	expect(res.status).toBe(200)
+	const refreshCall = calls.find((x) => x.url.includes("/auth/refresh"))
+	expect(refreshCall.init.body).toBe(JSON.stringify({ refreshToken: "r1", grantType: "refresh_token" }))
+	expect(calls.find((x) => x.url === chatUrl).init.headers.get("Authorization")).toBe("Bearer workos:jwt2")
+	// getAuth still hands back the spent pair (the save failed), and the next
+	// request must use the pair held in memory, not refresh r1 again
+	const res2 = await l.fetch(chatUrl, chatInit())
+	expect(res2.status).toBe(200)
+	expect(calls.filter((x) => x.url.includes("/auth/refresh")).length).toBe(1)
+	expect(calls.filter((x) => x.url === chatUrl).map((x) => x.init.headers.get("Authorization"))).toEqual(["Bearer workos:jwt2", "Bearer workos:jwt2"])
+	expect(saved.length).toBe(0)
+})
+
+test("concurrent requests collapse to one refresh", async () => {
+	const { client: c, store, seed } = client()
+	const hooks = await ClinePlugin({ client: c })
+	let refreshes = 0
+	serve([
+		["/auth/refresh", () => {
+			refreshes++
+			return Response.json({ success: true, data: { accessToken: "jwt2", refreshToken: "r2", expiresAt: new Date(Date.now() + 3600_000).toISOString(), userInfo: { clineUserId: "cu1" } } })
+		}],
+		[chatUrl, () => Response.json({ ok: true })],
+		[chatUrl, () => Response.json({ ok: true })],
+		[chatUrl, () => Response.json({ ok: true })],
+	])
+	seed({ type: "oauth", access: "jwt1", refresh: "r1", expires: Date.now() + 1000, uid: "cu1", accountId: "a@b.c" })
+	const l = await hooks.auth.loader(store)
+	const [a, b, d] = await Promise.all([l.fetch(chatUrl, chatInit()), l.fetch(chatUrl, chatInit()), l.fetch(chatUrl, chatInit())])
+	expect([a.status, b.status, d.status]).toEqual([200, 200, 200])
+	expect(refreshes).toBe(1)
 })
 
 test("an upstream chat refusal comes back as OpenAI's error shape", async () => {
