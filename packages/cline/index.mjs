@@ -248,8 +248,15 @@ async function pollDevice(d, { fetchImpl = fetch, sleep: sleeper = sleep, now = 
 			})
 			j = await res.json().catch(() => null)
 		} catch {}
-		// WorkOS having a moment: not the sign-in
-		if (!res || res.status >= 500 || j === null) continue
+		// WorkOS having a moment, or the network: not the sign-in
+		if (!res || res.status >= 500) continue
+		// a reply that isn't JSON and isn't a 5xx is the poll turned away: an
+		// HTML 400 would otherwise keep polling to the deadline (ten minutes)
+		// and fail there anyway
+		if (j === null) {
+			if (res.status >= 400) throw new Error(`Cline sign-in: the token poll was refused (HTTP ${res.status})`)
+			continue
+		}
 		if (j.error === "authorization_pending") continue
 		if (j.error === "slow_down") {
 			interval += 1

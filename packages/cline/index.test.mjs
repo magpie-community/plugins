@@ -774,7 +774,7 @@ test("the poll starts at a second, whatever the code asked for", async () => {
 	expect(p.waits).toEqual([1])
 })
 
-test("a 5xx, a non-JSON body or a network error is a poll to try again", async () => {
+test("a 5xx, a non-JSON 2xx or a network error is a poll to try again", async () => {
 	const p = pollScript([
 		Response.json({ boom: true }, { status: 503 }),
 		new Response("not json", { headers: { "Content-Type": "text/plain" } }),
@@ -784,6 +784,14 @@ test("a 5xx, a non-JSON body or a network error is a poll to try again", async (
 	const j = await pollDevice({ device_code: "dc", interval: 1, expires_in: 300 }, p)
 	expect(j.access_token).toBe("wt")
 	expect(p.fetched.length).toBe(4)
+})
+
+test("a reply that isn't JSON and isn't a 5xx fails the poll straight away", async () => {
+	const p = pollScript([new Response("<html>bad request</html>", { status: 400, headers: { "Content-Type": "text/html" } })])
+	// an HTML 400 used to read as WorkOS having a moment, so the poll ran on to
+	// the deadline — ten minutes on a sign-in that was never going to finish
+	await expect(pollDevice({ device_code: "dc", interval: 1, expires_in: 300 }, p)).rejects.toThrow("refused (HTTP 400)")
+	expect(p.fetched.length).toBe(1)
 })
 
 test("a refusal the browser made still fails the poll", async () => {
