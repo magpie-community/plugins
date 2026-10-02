@@ -3,7 +3,7 @@
 // (since v0.1.630, e413dd84) opens another agent's request to /api/llm/o as
 // droid 0.231.0 opens its own: Responses' instructions, or chat
 // completions' first system message, start with droid's line, joined with
-// "\n". droid's own requests and Anthropic's Messages go on byte for byte.
+// "\n". droid's own requests go on byte for byte on each API.
 // The cases are the built-in's TestFactoryOpensAsDroid.
 import { afterEach, expect, test } from "bun:test"
 import { FactoryAuthPlugin, _internal } from "./index.mjs"
@@ -80,13 +80,13 @@ test("another agent's request to /api/llm/o opens with droid's line", async () =
   expect(b.instructions).toBe(DROID_LINE)
 })
 
-test("droid's own requests, and Anthropic's Messages, go on byte for byte", async () => {
+test("droid's own requests go on byte for byte on each API", async () => {
   const { send } = await loaded({ ...signedIn })
   for (const [url, body] of [
     [chat, `{"model":"glm-5.3-flash","messages":[{"role":"system","content":"${DROID_LINE}\\nYou work in the user's terminal."},{"role":"user","content":"hi"}],"stream":true,"n":1.0}`],
     [responses, `{"model":"gpt-5.5","input":[],"store":false,"instructions":"${DROID_LINE}\\nYou work in the user's terminal.","stream":true}`],
-    [messages, `{"model":"claude-opus-5-5","system":"You are Claude Code.","messages":[{"role":"user","content":"hi"}]}`],
-    [messages, `{"model":"minimax-m2.7","messages":[{"role":"user","content":"hi"}]}`],
+    [messages, `{"model":"claude-opus-5-5","system":[{"type":"text","text":"${DROID_LINE}"}],"messages":[{"role":"user","content":"hi"}]}`],
+    [messages, `{"model":"minimax-m2.7","system":[{"type":"text","text":"${DROID_LINE}"}],"messages":[{"role":"user","content":"hi"}]}`],
   ]) {
     const s = await send(url, body)
     expect(s.body).toBe(body)

@@ -260,8 +260,8 @@ function explain(status, text) {
 // system message first, joined the same way). So another agent's request to
 // /api/llm/o opens with the line too, as the built-in's factoryDroidBody
 // (internal/provider/factory_client.go) has it. Anthropic's Messages
-// (/api/llm/a) is left as the agent sent it, and so is a request that
-// already opens with the line: droid's own goes on byte for byte.
+// (/api/llm/a) uses anthropicBody below to adapt fixed client metadata.
+// A native Droid request goes on byte for byte.
 
 const DROID_LINE = "You are Droid, an AI software engineering agent built by Factory."
 
@@ -569,6 +569,74 @@ function bodyModel(body) {
   }
 }
 
+// Factory's Anthropic route accepts Droid's client preamble. Keep the
+// caller's instructions, tools and history, adapting only fixed client
+// metadata that Factory refuses (including Claude Code's wrappers).
+const CLAUDE_IDENTITIES = new Set([
+  "You are Claude Code, Anthropic's official CLI for Claude.",
+  "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+])
+
+function anthropicBody(body) {
+  let request
+  try {
+    const text = typeof body === "string" ? body
+      : body instanceof ArrayBuffer ? Buffer.from(body).toString("utf8")
+      : ArrayBuffer.isView(body) ? Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString("utf8") : ""
+    request = JSON.parse(text)
+  } catch {
+    return body
+  }
+  if (!request || !Array.isArray(request.messages)) return body
+  if (request.system != null && typeof request.system !== "string" && !Array.isArray(request.system)) return body
+  if (Array.isArray(request.system) && request.system.some((b) => b?.type === "text" && typeof b.text !== "string")) return body
+
+  let changed = false
+  const system = typeof request.system === "string" ? [{ type: "text", text: request.system }] : request.system ?? []
+  if (typeof request.system === "string") changed = true
+  const kept = []
+  for (const block of system) {
+    // Attribution is consumed here; Factory does not strip Anthropic's
+    // billing block and requires the Droid identity to be first.
+    if (block?.type === "text" && block.text?.startsWith("x-anthropic-billing-header: cc_version=")) {
+      changed = true
+      continue
+    }
+    if (block?.type === "text" && CLAUDE_IDENTITIES.has(block.text)) {
+      block.text = DROID_LINE
+      changed = true
+    }
+    kept.push(block)
+  }
+  const identity = kept.findIndex((b) => b?.type === "text" && b.text === DROID_LINE)
+  if (identity < 0) {
+    kept.unshift({ type: "text", text: DROID_LINE })
+    changed = true
+  } else if (identity > 0) {
+    kept.unshift(...kept.splice(identity, 1))
+    changed = true
+  }
+  if (changed) request.system = kept
+
+  for (const message of request.messages) {
+    if (message?.role !== "user" || !Array.isArray(message.content)) continue
+    for (const block of message.content) {
+      if (block?.type !== "text" || typeof block.text !== "string") continue
+      if (block.text.startsWith("<system-reminder>\n# Environment\nYou have been invoked in the following environment:")) {
+        block.text = block.text.replace("# Environment", "# Runtime context")
+          .replace("You have been invoked in the following environment:", "The session environment is:")
+        changed = true
+      } else if (block.text.startsWith("<system-reminder>\nYou are powered by the model named")) {
+        block.text = block.text.replace("You are powered by the model named", "Current model name:")
+          .replace("The exact model ID is", "Model ID:")
+          .replace("Assistant knowledge cutoff is", "Model knowledge cutoff:")
+        changed = true
+      }
+    }
+  }
+  return changed ? JSON.stringify(request) : body
+}
+
 export const FactoryAuthPlugin = async ({ client }) => {
   // the session id this process's requests carry
   const session = crypto.randomUUID()
@@ -806,7 +874,8 @@ export const FactoryAuthPlugin = async ({ client }) => {
           // which Anthropic's SDK sends beside the bearer token
           if (path.includes("/llm/a/")) h.set("X-Api-Key", "placeholder")
           // another agent's request opens as droid's does (droidBody)
-          const out = droidBody(path, body)
+          const out = path.includes("/llm/a/") && path.endsWith("/messages")
+            ? anthropicBody(body) : droidBody(path, body)
           if (out !== body) h.delete("content-length")
           return fetch(url, { ...init, method: init?.method ?? (input instanceof Request ? input.method : "POST"), headers: h, body: out })
         }

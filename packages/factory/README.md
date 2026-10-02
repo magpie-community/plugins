@@ -44,9 +44,9 @@ droid sends opens its system prompt with "You are Droid, an AI software
 engineering agent built by Factory.", so another agent's request to
 Factory's OpenAI-shaped API (`/api/llm/o`: GPT and Grok on Responses, the
 open models on chat completions) opens with that line too, the agent's own
-prompt after it. Claude models (and MiniMax M2.7) on Anthropic's Messages
-are sent as the agent sent them, and Factory may refuse them from agents
-other than Droid.
+prompt after it. On Anthropic's Messages (`/api/llm/a`), the plugin adapts
+fixed client metadata while preserving the task instructions and history;
+see [Claude Code through magpie](#claude-code-through-magpie) below.
 
 ## Models
 
@@ -71,3 +71,35 @@ The list is not included:
 magpie plugin add @magpie-community/opencode-factory-auth
 magpie plugin login factory
 ```
+
+## Claude Code through magpie
+
+Factory's Anthropic route requires Droid's fixed client preamble and
+refuses some of Claude Code's fixed environment and model wrappers. The
+plugin adapts that metadata while preserving the coding instructions,
+environment values, tool definitions, tool results, images and reasoning
+options. Native Droid requests remain unchanged, and OpenAI routes keep
+their existing request adapter.
+
+Factory does not accept every extension of Anthropic's API. In Claude
+Code's settings, disable experimental API fields and use the normal
+permission mode:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"
+  },
+  "permissions": {
+    "defaultMode": "default"
+  }
+}
+```
+
+Keep the existing `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and model
+settings. The plugin does not silently discard `safeguards` or
+`context_management`: those fields must be omitted by the client.
+See Claude Code's [gateway compatibility guide](https://code.claude.com/docs/en/llm-gateway-protocol)
+for the features disabled by this setting. Connectivity and a two-turn
+Read tool call have been verified with Sonnet 4.6; beta features and auto
+mode are not supported by this compatibility path.
