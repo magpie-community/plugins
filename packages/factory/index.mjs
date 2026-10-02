@@ -245,7 +245,7 @@ const orgRefused = (status, text) => status === 403 && text.toLowerCase().includ
 function explain(status, text) {
   if (status !== 403) return ""
   if (orgRefused(status, text)) return "the Factory account's organization changed; remove the account in magpie and sign in to it again"
-  return "Factory takes a Factory subscription's requests only from Droid itself. magpie opens other agents' requests to Factory's GPT, Grok and open models (GLM, Kimi…) as Droid's do, but Factory may still tell them apart, and Claude models (and MiniMax M2.7) are sent as the agent sent them, so Claude Code's and other agents' are refused there; use the model from Droid, and if Droid is refused it too, the organization's model policy or the plan doesn't allow this model"
+  return "Factory refused the request. magpie adapts fixed client metadata on both OpenAI and Anthropic routes. Factory may still refuse unsupported fields or wrappers; check the upstream error, the organization's model policy, plan and regional provider availability, and compare the same model in Droid"
 }
 
 // ---- opening as droid ---------------------------------------------------------
@@ -580,7 +580,7 @@ const CLAUDE_IDENTITIES = new Set([
 
 // Match a complete generated block, not a pasted reminder followed by a
 // user's question, or an incomplete fragment of one.
-const ENV_REMINDER = /^<system-reminder>\n# Environment\nYou have been invoked in the following environment:[ \t]*\n(?: - [^\n]*\n)+<\/system-reminder>$/
+const ENV_REMINDER = /^<system-reminder>\n# Environment\nYou have been invoked in the following environment:[ \t]*\n(?: {1,2}- [^\n]*\n)+<\/system-reminder>$/
 const MODEL_REMINDER = /^<system-reminder>\nYou are powered by the model (?:named )?[^\n<>]+\.\n<\/system-reminder>$/
 
 function anthropicBody(body) {

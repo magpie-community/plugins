@@ -90,6 +90,7 @@ adapter preserves them along with the other request options.
 The same metadata adaptation applies to `/messages` and
 `/messages/count_tokens`, so token counting sees the prompt used for
 inference. Serving the counting endpoint still depends on the host and
-upstream. Model and feature availability depend on the Factory account and
-the upstream API. Connectivity and a two-turn Read tool call have been
-verified with Sonnet 4.6.
+upstream. Model and feature availability depend on the Factory account,
+organization region and upstream API. Connectivity has been verified with
+Sonnet 4.6, Sonnet 5.5 and Opus 5.5, and a two-turn Read tool call with
+Sonnet 4.6.

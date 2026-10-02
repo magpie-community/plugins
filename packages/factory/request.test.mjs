@@ -109,6 +109,35 @@ test("adapts the complete model reminder without a marketing name", async () => 
   expect(JSON.parse(seen[0].body).messages[0].content[0].text).toBe("<system-reminder>\nCurrent model: custom-model.\n</system-reminder>")
 })
 
+test("adapts complete environment reminders with nested additional working directories", async () => {
+  const { l, seen } = await loaded()
+  const reminder = "<system-reminder>\n# Environment\nYou have been invoked in the following environment:\n - Primary working directory: /tmp/project\n - Additional working directories:\n  - /extra/one\n  - /extra/two\n - Platform: darwin\n</system-reminder>"
+  const pasted = reminder + "\nPlease explain these directories."
+  const body = JSON.stringify({ messages: [{ role: "user", content: [
+    { type: "text", text: reminder, cache_control: { type: "ephemeral" } },
+    { type: "text", text: pasted },
+  ] }] })
+  for (const endpoint of [url, url + "/count_tokens"]) {
+    await l.fetch(endpoint, { method: "POST", body })
+    expect(JSON.parse(seen.at(-1).body).messages[0].content).toEqual([
+      { type: "text", text: reminder.replace("# Environment", "# Runtime context").replace("You have been invoked in the following environment:", "The session environment is:"), cache_control: { type: "ephemeral" } },
+      { type: "text", text: pasted },
+    ])
+  }
+})
+
+test("explains an Anthropic 403 without claiming these clients are always refused", async () => {
+  const { l } = await loaded()
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: "Model unavailable for this organization" } }), { status: 403 })
+  const res = await l.fetch(url, { method: "POST", body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [{ role: "user", content: "OK" }] }) })
+  expect(res.status).toBe(403)
+  const message = (await res.json()).error.message
+  expect(message).toStartWith("Model unavailable for this organization — Factory refused")
+  expect(message).toContain("OpenAI and Anthropic")
+  expect(message).toContain("regional provider availability")
+  expect(message).not.toContain("are sent as the agent sent them")
+})
+
 test("drops an empty or whitespace-only string system", async () => {
   const { l, seen } = await loaded()
   for (const system of ["", " \n\t", [{ type: "text", text: "" }]]) {

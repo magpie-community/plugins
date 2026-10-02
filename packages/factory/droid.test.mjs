@@ -154,7 +154,7 @@ test("an API key account is the bearer, with no org and no renewal", async () =>
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: "nope" } }), { status: 403 })
   const res = await l.fetch(chat, { method: "POST", body: `{"model":"glm-5.3","messages":[]}` })
   expect(res.status).toBe(403)
-  expect((await res.json()).error.message).toMatch(/^nope — Factory takes/)
+  expect((await res.json()).error.message).toMatch(/^nope — Factory refused/)
 })
 
 test("a key account's usage reads the limits with the key", async () => {
