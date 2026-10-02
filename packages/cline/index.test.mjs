@@ -295,6 +295,43 @@ test("a rotated pair survives a failing auth.set: the next request doesn't re-sp
 	expect(saved.length).toBe(0)
 })
 
+test("a rotated pair survives a failing auth.set more than once", async () => {
+	const { client: c, saved, store, seed } = client()
+	c.auth.set = async () => {
+		throw new Error("disk full")
+	}
+	const hooks = await ClinePlugin({ client: c })
+	// Cline refuses a refresh token it has already spent, as WorkOS does: with
+	// the save failing every time, getAuth goes on handing back the first pair,
+	// and each rotation must move on to the newest one rather than walk back
+	const spent = new Set()
+	let n = 0
+	const rotating = (init) => {
+		const { refreshToken } = JSON.parse(init.body)
+		if (spent.has(refreshToken)) return Response.json({ error: "invalid_grant" }, { status: 400 })
+		spent.add(refreshToken)
+		n += 1
+		return Response.json({ success: true, data: { accessToken: `jwt${n}`, refreshToken: `r${n}`, expiresAt: new Date(Date.now() + 1000).toISOString(), userInfo: { clineUserId: "cu1" } } })
+	}
+	const ok = () => Response.json({ ok: true })
+	serve([
+		["/auth/refresh", rotating], [chatUrl, ok],
+		["/auth/refresh", rotating], [chatUrl, ok],
+		["/auth/refresh", rotating], [chatUrl, ok],
+	])
+	// every token expires inside the refresh lead, so each request renews
+	seed({ type: "oauth", access: "jwt0", refresh: "r0", expires: Date.now() + 1000, uid: "cu1", accountId: "a@b.c" })
+	const l = await hooks.auth.loader(store)
+	const out = [await l.fetch(chatUrl, chatInit()), await l.fetch(chatUrl, chatInit()), await l.fetch(chatUrl, chatInit())]
+	expect(out.map((r) => r.status)).toEqual([200, 200, 200])
+	// each refresh spends the pair the one before it minted — r0 is never
+	// offered a second time (against 0.1.0 the third request re-spent it, got
+	// invalid_grant and answered 401)
+	expect(calls.filter((x) => x.url.includes("/auth/refresh")).map((x) => JSON.parse(x.init.body).refreshToken)).toEqual(["r0", "r1", "r2"])
+	expect(calls.filter((x) => x.url === chatUrl).map((x) => x.init.headers.get("Authorization"))).toEqual(["Bearer workos:jwt1", "Bearer workos:jwt2", "Bearer workos:jwt3"])
+	expect(saved.length).toBe(0)
+})
+
 test("concurrent requests collapse to one refresh", async () => {
 	const { client: c, store, seed } = client()
 	const hooks = await ClinePlugin({ client: c })
