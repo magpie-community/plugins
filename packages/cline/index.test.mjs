@@ -3,7 +3,7 @@
 import { test, expect, beforeEach, afterEach } from "bun:test"
 import { ClinePlugin, _internal } from "./index.mjs"
 
-const { authOf, parseAuth, parseFeed, prettify, balanceOf, balanceWindow, usd, usageOf, failure, bearerOf, toMs, refresh, deviceAuthorize, clientHeaders, constants: { CLIENT } } = _internal
+const { authOf, parseAuth, parseFeed, prettify, balanceOf, balanceWindow, usd, usageOf, failure, bearerOf, toMs, refresh, deviceAuthorize, pollDevice, clientHeaders, constants: { CLIENT, DEFAULT_MODELS } } = _internal
 
 // ---- a fetch that answers from a script -----------------------------------------
 
@@ -444,32 +444,62 @@ test("toMs takes an ISO datetime, or an hour out", () => {
 	expect(toMs("garbage")).toBeGreaterThan(Date.now() + 59 * 60 * 1000)
 })
 
-test("parseFeed reads the feed's groups, objects and bare ids", () => {
+test("parseFeed reads the feed's four arrays, and only them", () => {
 	const ms = parseFeed({
-		recommended: [{ id: "anthropic/claude-sonnet-5.5", name: "Claude Sonnet 5.5" }, "openai/gpt-6-astra"],
-		free: [{ model: "freevendor/mimo-v2.6-flash", free: true }],
-		clinePass: [{ modelId: "cline-pass/glm-5.3" }],
-		junk: "not-a-model",
+		recommended: [{ id: "anthropic/claude-sonnet-5.5", name: "claude-sonnet-5.5", tags: ["NEW"] }, { id: "openai/gpt-6-astra", name: "GPT 6 Astra" }],
+		free: [{ id: "cline-free/mimo-v2.6-flash", name: "Mimo V2.6 Flash" }],
+		clinePass: [{ id: "cline-pass/glm-5.3", name: "cline-pass/glm-5.3" }],
+		// not a group Cline's client reads: a tag, a description, a stray id
+		tags: ["NEW"],
+		description: "some/model",
 		nested: { deeper: ["google/gemini-2.5-pro"] },
 	})
 	const by = Object.fromEntries(ms.map((m) => [m.id, m]))
-	expect(ms.length).toBe(5)
+	expect(ms.map((m) => m.id)).toEqual(["anthropic/claude-sonnet-5.5", "openai/gpt-6-astra", "cline-free/mimo-v2.6-flash", "cline-pass/glm-5.3"])
+	// a name that is just the id (or its last part) is the raw id: prettified
 	expect(by["anthropic/claude-sonnet-5.5"].name).toBe("Claude Sonnet 5.5")
+	// a real display name is kept
 	expect(by["openai/gpt-6-astra"].name).toBe("GPT 6 Astra")
-	expect(by["freevendor/mimo-v2.6-flash"].free).toBe(true)
-	expect(by["cline-pass/glm-5.3"].free).toBe(false)
-	expect(by["google/gemini-2.5-pro"].name).toBe("Gemini 2.5 Pro")
-	// a bare string with no slash, or a number, is not a model
-	expect(parseFeed(["hello", 42, "ok/one"]).map((m) => m.id)).toEqual(["ok/one"])
-	// duplicates collapse
-	expect(parseFeed(["a/b", { id: "a/b" }]).length).toBe(1)
 	// the free group says so in its name, the plan-gated group names its plan
-	const frees = parseFeed({ free: ["cline-free/mimo-v2.6-flash", "stealth/space-bunny-alpha"], recommended: ["ok/two"] })
-	expect(frees.map((m) => m.id)).toEqual(["cline-free/mimo-v2.6-flash", "stealth/space-bunny-alpha", "ok/two"])
-	expect(frees[0].name).toBe("MiMo V2.6 Flash (free)")
-	expect(frees[0].free).toBe(true)
-	expect(frees[2].free).toBe(false)
-	expect(parseFeed({ clinePass: ["cline-pass/glm-5.3"] })[0].name).toBe("GLM 5.3 (ClinePass)")
+	expect(by["cline-free/mimo-v2.6-flash"].free).toBe(true)
+	expect(by["cline-free/mimo-v2.6-flash"].name).toBe("Mimo V2.6 Flash (free)")
+	expect(by["cline-pass/glm-5.3"].free).toBe(false)
+	expect(by["cline-pass/glm-5.3"].name).toBe("GLM 5.3 (ClinePass)")
+	// clineCloud is left out, as Cline's own client leaves it out by default
+	expect(parseFeed({ clineCloud: ["cloud/one"] })).toEqual([])
+	// a model in both recommended and free keeps the free mark (and its name)
+	const both = parseFeed({ recommended: [{ id: "stealth/space-bunny-alpha", name: "space-bunny-alpha" }], free: [{ id: "stealth/space-bunny-alpha", name: "Space Bunny Alpha" }] })
+	expect(both.length).toBe(1)
+	expect(both[0].free).toBe(true)
+	expect(both[0].name).toBe("Space Bunny Alpha (free)")
+	// a bare string id is read, a number or a slashless word is not
+	expect(parseFeed({ recommended: ["ok/one", "hello", 42] }).map((m) => m.id)).toEqual(["ok/one"])
+})
+
+test("the bundled snapshot matches Cline's generated recommended list", () => {
+	const ids = DEFAULT_MODELS.map((m) => m.id)
+	expect(ids).toContain("anthropic/claude-sonnet-5.5")
+	expect(ids).not.toContain("google/gemini-2.5-pro")
+	expect(ids).not.toContain("minimax/minimax-m2.5")
+	for (const id of ["cline-pass/mimo-v2.6-pro", "cline-pass/glm-5.3-flash", "cline-pass/qwen3.7-max", "cline-pass/qwen3.7-plus", "cline-pass/mimo-v2.5-pro", "cline-pass/mimo-v2.5"])
+		expect(ids).toContain(id)
+	const by = Object.fromEntries(DEFAULT_MODELS.map((m) => [m.id, m]))
+	expect(by["cline-free/deepseek-v4.1-flash"].name).toBe("Deepseek V4.1 Flash (free)")
+	expect(by["cline-pass/mimo-v2.5-pro"].name).toBe("MiMo V2.5 Pro (ClinePass)")
+})
+
+test("the models hook merges the cloud catalog with the recommended feed", async () => {
+	const { client: c } = client()
+	const hooks = await ClinePlugin({ client: c })
+	serve([
+		["/ai/cline/recommended-models", () => Response.json({ data: { recommended: [{ id: "anthropic/claude-sonnet-5.5" }], free: [{ id: "cline-free/mimo-v2.6-flash" }] } })],
+		["/ai/cline/models", () => Response.json({ data: [{ id: "local-model", display_name: "Local Model" }, { id: "anthropic/claude-sonnet-5.5", display_name: "Claude Sonnet 5.5" }] })],
+	])
+	const out = await hooks.provider.models({ models: {} })
+	expect(Object.keys(out)).toEqual(["anthropic/claude-sonnet-5.5", "cline-free/mimo-v2.6-flash", "local-model"])
+	expect(out["local-model"].name).toBe("Local Model")
+	// the cloud catalog's raw-id name is prettified
+	expect(out["cline-free/mimo-v2.6-flash"].name).toBe("MiMo V2.6 Flash (free)")
 })
 
 test("prettify reads a model id as a name", () => {

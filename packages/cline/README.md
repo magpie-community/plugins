@@ -17,9 +17,13 @@ The sign-in is kept where OpenCode keeps auth (`auth.json` under the data
 directory); magpie keeps plugin sign-ins in its own store
 (`~/.config/magpie/plugin-auth.json`). Access tokens are renewed through
 `/api/v1/auth/refresh` when they near expiry — Cline rotates the refresh
-token, and the rotated pair is saved back the moment it arrives. Refreshes
-are serialized, so two requests renewing at once can't spend one token and
-lose the other.
+token, and the rotated pair is saved back the moment it arrives (and kept in
+memory beside the store, so a save that fails can't leave the next request
+spending the token that was already spent). Refreshes are serialized, so two
+requests renewing at once can't spend one token and lose the other. A refresh
+that fails for a while keeps the token that is still good, as Cline's own
+client does; only a token that has actually expired is treated as the sign-in
+gone.
 
 ## Requests
 
@@ -35,9 +39,9 @@ new release, move the pinned numbers in `index.mjs` along. Auth and account
 requests carry the same identity. A finished non-streaming answer rides in a
 `{"data": …}` envelope the official clients take apart; the plugin takes it
 apart too. The model list is read from
-`/api/v1/ai/cline/recommended-models` (no sign-in needed); usage reads
-`/api/v1/users/me` and the account's `/balance` (its balance is counted in
-millionths of a dollar).
+`/api/v1/ai/cline/recommended-models` and `/api/v1/ai/cline/models` (neither
+needs a sign-in); usage reads `/api/v1/users/me` and the account's `/balance`
+(its balance is counted in millionths of a dollar).
 
 ## Models
 

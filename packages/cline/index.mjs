@@ -292,9 +292,10 @@ function prettify(id) {
 		.join(" ")
 }
 
-// DEFAULT_MODELS is the list before Cline's feed answered: its recommended
-// models (the bundled snapshot of Cline's own), its free ones and ClinePass's.
-// The first is also Cline's own default.
+// DEFAULT_MODELS is the list before Cline's feed answered: the bundled
+// snapshot of Cline's own recommended-models feed — its recommended models,
+// its free ones and ClinePass's (cline-recommended.generated.ts). The first is
+// also Cline's own default.
 const DEFAULT_MODELS = [
 	{ id: "anthropic/claude-sonnet-5.5" },
 	{ id: "anthropic/claude-opus-5.5" },
@@ -303,62 +304,76 @@ const DEFAULT_MODELS = [
 	{ id: "openai/gpt-6.1-sol" },
 	{ id: "spacexai/grok-4.7" },
 	{ id: "moonshotai/kimi-k3" },
-	{ id: "google/gemini-2.5-pro" },
-	{ id: "minimax/minimax-m2.5" },
+	{ id: "cline-free/deepseek-v4.1-flash", free: true },
 	{ id: "stealth/space-bunny-alpha", free: true },
 	{ id: "cline-free/mimo-v2.6-flash", free: true },
-	{ id: "cline-free/deepseek-v4.1-flash", free: true },
 	{ id: "cline-free/muse-spark-1.3-contributor", free: true },
+	{ id: "cline-pass/deepseek-v4.1-flash" },
+	{ id: "cline-pass/mimo-v2.6-flash" },
+	{ id: "cline-pass/mimo-v2.6-pro" },
 	{ id: "cline-pass/glm-5.3" },
 	{ id: "cline-pass/deepseek-v4-pro" },
 	{ id: "cline-pass/qwen3.8-max" },
+	{ id: "cline-pass/muse-spark-1.3-contributor" },
 	{ id: "cline-pass/kimi-k3" },
+	{ id: "cline-pass/glm-5.3-flash" },
+	{ id: "cline-pass/qwen3.7-max" },
+	{ id: "cline-pass/qwen3.7-plus" },
 	{ id: "cline-pass/minimax-m3" },
+	{ id: "cline-pass/mimo-v2.5-pro" },
+	{ id: "cline-pass/mimo-v2.5" },
 ].map((m) => ({ name: prettify(m.id) + (m.free ? " (free)" : m.id.startsWith("cline-pass/") ? " (ClinePass)" : ""), ...m }))
 
-const GROUPS = new Set(["recommended", "free", "clinepass"])
 const MODEL_ID = /^[a-z0-9][a-z0-9_.-]*\/[a-z0-9][a-z0-9_.-]*$/i
 
-// parseFeed reads the recommended-models answer, a shape Cline hasn't fixed:
-// model ids bare or in objects, in Cline's own groups or anywhere at all
+// FEED_GROUPS is the recommended-models answer's shape, as Cline's own client
+// reads it (cline-recommended.generated.ts): four arrays, and nothing else.
+// clineCloud rides only under the client's includeClineCloudModels, so it is
+// left out here the way the client leaves it out by default.
+const FEED_GROUPS = ["recommended", "free", "clinePass"]
+
+// parseFeed reads the recommended-models answer: the four arrays by name, not
+// every value in the object (a description or tag is not a model). A model the
+// feed lists twice keeps the stronger gate, so one in both recommended and
+// free keeps its "(free)" mark.
 function parseFeed(v) {
-	const seen = new Set()
-	const out = []
-	// entry is one model, named for the plan gate a picker should show: the
-	// free group costs nothing, the cline-pass group wants the subscription
-	const entry = (id, name, free) => ({ id, name: free ? `${name} (free)` : id.startsWith("cline-pass/") ? `${name} (ClinePass)` : name, free })
-	const walk = (n, group) => {
-		if (Array.isArray(n)) {
-			for (const x of n) walk(x, group)
-			return
-		}
-		if (!n || typeof n !== "object") {
-			const id = typeof n === "string" && MODEL_ID.test(n.trim()) ? n.trim() : ""
-			if (id && !seen.has(id)) {
-				seen.add(id)
-				out.push(entry(id, prettify(id), group === "free"))
-			}
-			return
-		}
-		const raw = firstOf(n.id, n.model, n.modelId, n.model_id, n.key, n.slug)
-		const g = GROUPS.has(String(n.group ?? "").toLowerCase()) ? String(n.group).toLowerCase() : group
-		const id = MODEL_ID.test(raw) ? raw : ""
-		if (id && !seen.has(id)) {
-			seen.add(id)
-			out.push(entry(id, firstOf(n.name, n.displayName, n.label) || prettify(id), n.free === true || n.free === "true" || g === "free"))
-		}
-		for (const [k, x] of Object.entries(n)) {
-			const kk = k.toLowerCase()
-			walk(x, GROUPS.has(kk) ? kk : g)
-		}
+	const payload = v && typeof v === "object" && !Array.isArray(v) ? v : {}
+	const by = new Map()
+	// entry is one model: an id bare or in an object, named for the plan gate a
+	// picker should show. A feed name that is just the id (or its last part) is
+	// the raw id, not a name, so it is prettified like the bundled list's.
+	const entry = (e, group) => {
+		const o = e && typeof e === "object" && !Array.isArray(e) ? e : {}
+		const raw = typeof e === "string" ? e.trim() : firstOf(o.id, o.model, o.modelId, o.model_id, o.key, o.slug)
+		if (!MODEL_ID.test(raw)) return null
+		const free = group === "free" || o.free === true || o.free === "true"
+		const pass = group === "clinePass" || raw.startsWith("cline-pass/")
+		const given = firstOf(o.display_name, o.displayName, o.name, o.label)
+		const last = raw.split("/").pop()
+		return { id: raw, name: given && given !== raw && given !== last ? given : prettify(raw), free, pass }
 	}
-	walk(v, "")
-	return out
+	const add = (e, group) => {
+		const m = entry(e, group)
+		if (!m) return
+		const was = by.get(m.id)
+		if (!was) {
+			by.set(m.id, m)
+			return
+		}
+		// a model in both recommended and free keeps the free mark (and name)
+		if (m.free && !was.free) {
+			was.free = true
+			was.name = m.name
+		}
+		if (m.pass) was.pass = true
+	}
+	for (const group of FEED_GROUPS) for (const e of Array.isArray(payload[group]) ? payload[group] : []) add(e, group)
+	return [...by.values()].map((m) => ({ ...m, name: m.name + (m.free ? " (free)" : m.pass ? " (ClinePass)" : "") }))
 }
 
-// fetchFeed is Cline's live model list, which the feed serves without a
-// sign-in
-async function fetchFeed() {
+// fetchRecommended is Cline's recommended-models feed, which it serves without
+// a sign-in
+async function fetchRecommended() {
 	let res
 	try {
 		res = await fetch(`${API}/ai/cline/recommended-models`, {
@@ -370,7 +385,48 @@ async function fetchFeed() {
 	}
 	if (!res.ok) throw new Error(`Cline model list: HTTP ${res.status}`)
 	const env = await res.json().catch(() => null)
-	const ms = parseFeed(env && typeof env === "object" && "data" in env ? env.data : env)
+	return parseFeed(env && typeof env === "object" && "data" in env ? env.data : env)
+}
+
+// fetchCloudModels is Cline's whole cloud catalog, which its clients load
+// beside the recommended feed (loadCloudModels reads /ai/cline/models): the
+// usage-billed models the recommended feed doesn't name. Entries carry an id
+// and a display name.
+async function fetchCloudModels() {
+	let res
+	try {
+		res = await fetch(`${API}/ai/cline/models`, {
+			headers: { Accept: "application/json", ...clientHeaders() },
+			signal: AbortSignal.timeout(10_000),
+		})
+	} catch (e) {
+		throw new Error(`Cline model catalog: ${e?.message ?? e}`)
+	}
+	if (!res.ok) throw new Error(`Cline model catalog: HTTP ${res.status}`)
+	const j = await res.json().catch(() => null)
+	const list = Array.isArray(j) ? j : Array.isArray(j?.data) ? j.data : []
+	return list.flatMap((e) => {
+		// the catalog's ids are bare (no provider prefix), unlike the
+		// recommended feed's: any non-empty id is one
+		const id = typeof e?.id === "string" ? e.id.trim() : ""
+		if (!id) return []
+		const given = firstOf(e.display_name, e.displayName, e.name)
+		const last = id.split("/").pop()
+		return [{ id, name: given && given !== id && given !== last ? given : prettify(id), free: false, pass: id.startsWith("cline-pass/") }]
+	})
+}
+
+// fetchFeed is both of Cline's model lists merged, recommended first: the
+// recommended feed is required, the cloud catalog is what it adds.
+async function fetchFeed() {
+	const [rec, cloud] = await Promise.all([fetchRecommended(), fetchCloudModels().catch(() => [])])
+	const ms = [...rec]
+	const seen = new Set(ms.map((m) => m.id))
+	for (const m of cloud) {
+		if (seen.has(m.id)) continue
+		seen.add(m.id)
+		ms.push(m)
+	}
 	if (!ms.length) throw new Error("Cline listed no models")
 	return ms
 }
@@ -739,6 +795,8 @@ export const _internal = {
 	parseFeed,
 	prettify,
 	fetchFeed,
+	fetchRecommended,
+	fetchCloudModels,
 	balanceOf,
 	balanceWindow,
 	usd,
@@ -750,7 +808,7 @@ export const _internal = {
 	clientHeaders,
 	deviceAuthorize,
 	refresh,
-	constants: { PROVIDER, API, WORKOS_CLIENT, WORKOS_PREFIX, CLIENT },
+	constants: { PROVIDER, API, WORKOS_CLIENT, WORKOS_PREFIX, CLIENT, DEFAULT_MODELS },
 	errors: { Lapsed },
 }
 
