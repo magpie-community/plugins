@@ -467,6 +467,12 @@ const runtimeModel = (m) => ({
 
 // ---- the reply as errors -----------------------------------------------------------
 
+// the refusals Cline's own client keys on, as it spells them (errors.ts and
+// ClineError.ts): whole phrases and codes, never a loose substring — a 403
+// that happens to mention "tokens" is not a lapsed sign-in
+const NOT_SUBSCRIBED = "the user is not subscribed to required model plan"
+const NOT_SUBSCRIBED_FORMATTED = "no access to clinepass subscription models yet. subscribe to clinepass"
+
 // failure is an upstream chat refusal as OpenAI's API gives it. A refused
 // chat is the sign-in at work, not the sign-in gone: only a refused refresh
 // marks the account (errorResponse keeps it). The gates Cline puts in front
@@ -478,27 +484,34 @@ function failure(status, text) {
 	try {
 		j = JSON.parse(text)
 	} catch {}
+	const code = firstOf(j?.error?.code, j?.code, j?.error?.error)
 	if (j) {
 		if (typeof j?.error?.message === "string") msg = j.error.message
 		else if (typeof j?.message === "string") msg = j.message
 	}
 	msg ||= STATUS_CODES[status] ?? `HTTP ${status}`
+	const low = msg.toLowerCase()
 	// a model the account isn't entitled to: the sign-in is fine, the plan
 	// isn't there (the cline-pass group, mostly)
-	if (j?.error?.code === "ENTITLEMENT_ERROR" || /not subscribed/i.test(msg))
+	if (code === "ENTITLEMENT_ERROR" || low.includes(NOT_SUBSCRIBED) || low.includes(NOT_SUBSCRIBED_FORMATTED))
 		return {
 			status: 403,
 			message: "this model needs a subscription the account hasn't got (ClinePass) — pick a usage-billed model, or subscribe at app.cline.bot (" + msg.replace(/^Error\s*\d*[:：]?\s*/, "") + ")",
 		}
-	// an empty account: say what the gateway said and where to fill it
-	if (j?.error?.code === "insufficient_credits" || /^insufficient/i.test(msg)) {
-		const bal = Number(j?.error?.current_balance)
-		const at = typeof j?.error?.buy_credits_url === "string" && j.error.buy_credits_url ? j.error.buy_credits_url : "https://app.cline.bot/credits"
+	// an empty account: say what the gateway said and where to fill it. The
+	// code is the one Cline's client keys on; "Insufficient balance" is the
+	// gateway's older wording for the same answer
+	if (status === 402 || code === "insufficient_credits" || low.includes("insufficient_credits") || (low.includes("insufficient balance") && low.includes("cline credits balance"))) {
+		const bal = Number(j?.error?.current_balance ?? j?.current_balance)
+		const at = firstOf(j?.error?.buy_credits_url, j?.buy_credits_url) || "https://app.cline.bot/credits"
 		return { status: 429, message: `out of credits ($${Number.isFinite(bal) ? bal.toFixed(2) : "0.00"}) — top up at ${at}` }
 	}
-	if (status === 401 || (status === 403 && /sign in|unauthorized|token|credential/i.test(msg)))
+	// the account's token was refused: 401 always, and a 403 only when it
+	// says so in so many words — not when it merely mentions "token"
+	if (status === 401 || (status === 403 && /^(unauthorized|invalid[ _]token|sign[ -]?in|not signed in|token (?:expired|invalid|revoked)|(?:access |refresh )?token expired)$/i.test(msg.trim())))
 		return { status: 401, message: "the sign-in lapsed — sign in again" }
-	if (status === 429 || /quota|insufficient|credit/i.test(msg)) return { status: 429, message: "usage limit reached: " + msg }
+	// a spend cap or a rate limit, as Cline's client names them
+	if (status === 429 || code === "SPEND_LIMIT_EXCEEDED" || /\b(?:rate limit|too many requests|quota exceeded|spend limit)\b/i.test(msg)) return { status: 429, message: "usage limit reached: " + msg }
 	return { status, message: msg.slice(0, 2000) }
 }
 
@@ -778,8 +791,11 @@ export const ClinePlugin = async ({ client } = {}) => {
 						} catch (e) {
 							return errorResponse({ status: 502, message: String(e?.message ?? e) })
 						}
-						if (!res.ok) return errorResponse(failure(res.status, (await res.text()).slice(0, 1 << 20)))
-						return signed(await unwrapped(res), cred.renewed)
+						// a renewed token cleared the lapse mark whatever the
+						// request then met, a refused one included (qoder's
+						// renewed()): the failure is reported, the mark stays off
+						if (!res.ok) return signed(errorResponse(failure(res.status, (await res.text()).slice(0, 1 << 20))), renewed(cred))
+						return signed(await unwrapped(res), renewed(cred))
 					},
 				}
 			},

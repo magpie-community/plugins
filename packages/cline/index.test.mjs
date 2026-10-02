@@ -356,6 +356,22 @@ test("an upstream chat 401 keeps the sign-in mark", async () => {
 	expect(res.headers.get("X-Magpie-Sign-In")).toBe(null)
 })
 
+test("a renewal clears the mark even when the chat that follows fails", async () => {
+	const { client: c, store, seed } = client()
+	const hooks = await ClinePlugin({ client: c })
+	serve([
+		["/auth/refresh", () => Response.json({ success: true, data: { accessToken: "jwt2", refreshToken: "r2", expiresAt: new Date(Date.now() + 3600_000).toISOString(), userInfo: { clineUserId: "cu1" } } })],
+		[chatUrl, () => Response.json({ error: { message: "boom" } }, { status: 500 })],
+	])
+	seed({ type: "oauth", access: "jwt1", refresh: "r1", expires: Date.now() + 1000, uid: "cu1", accountId: "a@b.c" })
+	const l = await hooks.auth.loader(store)
+	const res = await l.fetch(chatUrl, chatInit())
+	expect(res.status).toBe(500)
+	// the token was renewed, so the sign-in mark is cleared (renewed) even
+	// though the request failed — the renewed mark survives a failed request
+	expect(res.headers.get("X-Magpie-Sign-In")).toBe("renewed")
+})
+
 // ---- the device sign-in ------------------------------------------------------------
 
 test("the device sign-in approves, registers, and keeps the pair", async () => {
@@ -629,7 +645,7 @@ test("failure maps the refusals OpenAI's way", () => {
 	expect(failure(401, "expired token")).toEqual({ status: 401, message: "the sign-in lapsed — sign in again" })
 	// an empty 403 isn't about the credentials: it passes through
 	expect(failure(403, "")).toEqual({ status: 403, message: "Forbidden" })
-	expect(failure(403, "unauthorized").status).toBe(401)
+	expect(failure(403, "Unauthorized").status).toBe(401)
 	// a 403 about something else — Cline's own-surface models — passes through
 	const gated = failure(403, JSON.stringify({ error: { message: "cline-free/mimo is only available via Cline product surfaces" } }))
 	expect(gated.status).toBe(403)
@@ -641,6 +657,27 @@ test("failure maps the refusals OpenAI's way", () => {
 	expect(failure(500, "boom").status).toBe(500)
 	expect(failure(90, "weird").status).toBe(502)
 	expect(failure(503, "").message).toBeTruthy()
+})
+
+test("failure keys on Cline's codes and whole phrases, not loose substrings", () => {
+	// a 403 that merely mentions "tokens" is not a lapsed sign-in: the message
+	// is kept as the gateway wrote it
+	const tooMany = failure(403, JSON.stringify({ error: { message: "max_tokens exceeds the model's limit" } }))
+	expect(tooMany.status).toBe(403)
+	expect(tooMany.message).toContain("max_tokens exceeds")
+	// "credit" somewhere in the text is not a rate limit either
+	const note = failure(400, JSON.stringify({ error: { message: "this credit card was declined by the issuer" } }))
+	expect(note.status).toBe(400)
+	expect(note.message).toContain("credit card")
+	// the codes Cline's client actually raises
+	expect(failure(403, JSON.stringify({ error: { code: "ENTITLEMENT_ERROR", message: "no plan" } })).status).toBe(403)
+	expect(failure(429, JSON.stringify({ error: { code: "SPEND_LIMIT_EXCEEDED", message: "org budget spent" } })).status).toBe(429)
+	// the gateway's own wording for a plan the account hasn't got
+	const notSubscribed = failure(403, JSON.stringify({ error: { message: "Error 403: the user is not subscribed to required model plan" } }))
+	expect(notSubscribed.status).toBe(403)
+	expect(notSubscribed.message).toContain("ClinePass")
+	expect(failure(403, "Unauthorized").status).toBe(401)
+	expect(failure(401, "anything at all").status).toBe(401)
 })
 
 test("deviceAuthorize wants a device code back", async () => {
