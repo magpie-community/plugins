@@ -658,8 +658,11 @@ export const ClinePlugin = async ({ client } = {}) => {
 	// client.auth.set may fail, and the next request must not spend a refresh
 	// token that was already spent (kiro's held). Every token this run has spent
 	// is kept, not only the last one — a store that failed once usually goes on
-	// failing, so getAuth keeps handing back the first of them
-	let held = null
+	// failing, so getAuth keeps handing back the first of them — and each token
+	// is kept against the pair its own rotation chain reached, since one plugin
+	// instance serves every account of the provider at once: one newest pair
+	// shared by all of them would send an account on another account's token
+	const held = new Map() // a spent refresh token → its chain's newest pair
 
 	// remember saves a refreshed pair where magpie keeps it
 	const remember = async (next) => {
@@ -704,7 +707,8 @@ export const ClinePlugin = async ({ client } = {}) => {
 			if (a.access && a.expires - Date.now() > REFRESH_LEAD) return { ...a, bearer: bearerOf(a), renewed: false }
 			// a pair this run already rotated is newer than the one getAuth
 			// still hands back: use it rather than re-spending a spent token
-			const r = held && held.spent.has(a.refresh) ? { ...a, access: held.access, refresh: held.refresh, expires: held.expires } : a
+			const h = held.get(a.refresh)
+			const r = h ? { ...a, access: h.access, refresh: h.refresh, expires: h.expires } : a
 			if (r.access && r.expires - Date.now() > REFRESH_LEAD) return { ...r, bearer: bearerOf(r), renewed: false }
 			if (!r.refresh) throw new Lapsed("Cline's access token has expired and there is no refresh token; sign in to Cline again")
 			let p
@@ -718,12 +722,12 @@ export const ClinePlugin = async ({ client } = {}) => {
 			}
 			const next = { ...r, access: p.access, refresh: p.refresh, expires: p.expires, uid: p.uid || r.uid, email: p.email || r.email, name: p.name || r.name, accountId: r.accountId || p.accountId }
 			// the pair just rotated, held whatever the save through magpie does,
-			// and the token it spent remembered beside it
-			if (!held) held = { spent: new Set(), access: "", refresh: "", expires: 0 }
-			held.spent.add(r.refresh)
-			held.access = next.access
-			held.refresh = next.refresh
-			held.expires = next.expires
+			// against the token it spent and the one getAuth handed back: the
+			// next request offering either of them finds this chain's newest
+			const chain = held.get(a.refresh) ?? {}
+			Object.assign(chain, { access: next.access, refresh: next.refresh, expires: next.expires })
+			held.set(a.refresh, chain)
+			held.set(r.refresh, chain)
 			await remember(next)
 			const cred = { ...next, bearer: bearerOf(next), renewed: true }
 			renewals.add(cred)

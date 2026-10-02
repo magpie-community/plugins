@@ -336,6 +336,45 @@ test("a rotated pair survives a failing auth.set more than once", async () => {
 	expect(saved.length).toBe(0)
 })
 
+test("the held pair is kept per rotation chain, so no account is sent on another's token", async () => {
+	const { client: c, saved } = client()
+	c.auth.set = async () => {
+		throw new Error("disk full")
+	}
+	const hooks = await ClinePlugin({ client: c })
+	// magpie calls ClinePlugin once for the provider and hands every account its
+	// own getAuth, so two accounts are two chains on one plugin instance
+	const accounts = ["A", "B"].map((who) => {
+		const stored = { type: "oauth", access: `${who}-jwt0`, refresh: `${who}-r0`, expires: Date.now() + 1000, uid: `cu-${who}`, accountId: `${who}@b.c` }
+		return async () => stored
+	})
+	// Cline refuses a refresh token it has already spent and every token wants
+	// renewing again, so a request riding the wrong account's pair shows up
+	const spent = new Set()
+	const rotating = (init) => {
+		const { refreshToken } = JSON.parse(init.body)
+		if (spent.has(refreshToken)) return Response.json({ error: "invalid_grant" }, { status: 400 })
+		spent.add(refreshToken)
+		const [who, n] = refreshToken.split("-r")
+		return Response.json({ success: true, data: { accessToken: `${who}-jwt${Number(n) + 1}`, refreshToken: `${who}-r${Number(n) + 1}`, expiresAt: new Date(Date.now() + 1000).toISOString(), userInfo: { clineUserId: `cu-${who}` } } })
+	}
+	const ok = () => Response.json({ ok: true })
+	serve([
+		["/auth/refresh", rotating], [chatUrl, ok],
+		["/auth/refresh", rotating], [chatUrl, ok],
+		["/auth/refresh", rotating], [chatUrl, ok],
+	])
+	const [a, b] = await Promise.all([hooks.auth.loader(accounts[0]), hooks.auth.loader(accounts[1])])
+	const out = [await a.fetch(chatUrl, chatInit()), await b.fetch(chatUrl, chatInit()), await a.fetch(chatUrl, chatInit())]
+	expect(out.map((r) => r.status)).toEqual([200, 200, 200])
+	// A, B, A: each goes out on its own account's token, and each refresh spends
+	// one of that same account's — the third request must ride A's second pair,
+	// not the newest pair any account reached (a shared `held` sent B's there)
+	expect(calls.filter((x) => x.url === chatUrl).map((x) => x.init.headers.get("Authorization"))).toEqual(["Bearer workos:A-jwt1", "Bearer workos:B-jwt1", "Bearer workos:A-jwt2"])
+	expect(calls.filter((x) => x.url.includes("/auth/refresh")).map((x) => JSON.parse(x.init.body).refreshToken)).toEqual(["A-r0", "B-r0", "A-r1"])
+	expect(saved.length).toBe(0)
+})
+
 test("concurrent requests collapse to one refresh", async () => {
 	const { client: c, store, seed } = client()
 	const hooks = await ClinePlugin({ client: c })
