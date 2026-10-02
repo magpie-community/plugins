@@ -228,52 +228,64 @@ async function deviceAuthorize() {
 	return d
 }
 
+// pollDevice waits the device code out, as Cline's pollWorkOSTokens does: the
+// interval only grows (slow_down raises it for every later poll, RFC 8628), it
+// starts at a second, and a 5xx, a non-JSON reply or a network error is a poll
+// to try again, not the sign-in failing.
+async function pollDevice(d, { fetchImpl = fetch, sleep: sleeper = sleep, now = Date.now } = {}) {
+	const deadline = now() + Math.min(Number(d?.expires_in) > 0 ? Number(d.expires_in) : 300, DEVICE_CAP) * 1000
+	let interval = Math.max(1, Number(d?.interval) > 0 ? Math.floor(Number(d.interval)) : 5)
+	while (now() < deadline) {
+		await sleeper(interval * 1000)
+		let res = null
+		let j = null
+		try {
+			res = await fetchImpl(WORKOS_TOKEN, {
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+				body: new URLSearchParams({ grant_type: DEVICE_GRANT, device_code: d.device_code, client_id: WORKOS_CLIENT }).toString(),
+				signal: AbortSignal.timeout(15_000),
+			})
+			j = await res.json().catch(() => null)
+		} catch {}
+		// WorkOS having a moment: not the sign-in
+		if (!res || res.status >= 500 || j === null) continue
+		if (j.error === "authorization_pending") continue
+		if (j.error === "slow_down") {
+			interval += 1
+			continue
+		}
+		if (j.error) throw new Error(`Cline sign-in: ${j.error}${j.error_description ? ` (${j.error_description})` : ""}`)
+		if (typeof j.access_token !== "string" || !j.access_token) throw new Error("Cline sign-in: the token answer had no access token")
+		return j
+	}
+	throw new Error("the sign-in wasn't finished in time")
+}
+
 // deviceSignIn is the browser method: the device code page opened, WorkOS
 // polled until the code is approved, and the WorkOS tokens traded at Cline's
 // register endpoint for the account's own pair
 async function deviceSignIn() {
 	const d = await deviceAuthorize()
-	const interval = Math.max(0.25, Number(d.interval) > 0 ? Number(d.interval) : 5)
-	const deadline = Date.now() + Math.min(Number(d.expires_in) > 0 ? Number(d.expires_in) : 300, DEVICE_CAP) * 1000
 	return {
 		url: firstOf(d.verification_uri_complete, d.verification_uri, "https://app.cline.bot"),
 		instructions: `Approve the sign-in in the browser${d.user_code ? ` — the code is ${d.user_code}` : ""}.`,
 		method: "auto",
 		async callback() {
-			let wait = interval
-			while (Date.now() < deadline) {
-				await sleep(wait * 1000)
-				wait = interval
-				let j
-				try {
-					const res = await fetch(WORKOS_TOKEN, {
-						method: "POST",
-						headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-						body: new URLSearchParams({ grant_type: DEVICE_GRANT, device_code: d.device_code, client_id: WORKOS_CLIENT }).toString(),
-						signal: AbortSignal.timeout(15_000),
-					})
-					j = await res.json().catch(() => null)
-				} catch (e) {
-					return { type: "failed", error: `Cline sign-in: ${e?.message ?? e}` }
-				}
-				if (j?.error === "authorization_pending") continue
-				if (j?.error === "slow_down") {
-					wait = interval + 1
-					continue
-				}
-				if (j?.error) return { type: "failed", error: `Cline sign-in: ${j.error}${j.error_description ? ` (${j.error_description})` : ""}` }
-				if (typeof j?.access_token !== "string" || !j.access_token)
-					return { type: "failed", error: "Cline sign-in: the token answer had no access token" }
-				try {
-					const data = await clineApi(`${API}/auth/register`, { method: "POST", body: { accessToken: j.access_token, refreshToken: j.refresh_token ?? "" }, signal: AbortSignal.timeout(30_000) })
-					const p = parseAuth(data, j.refresh_token ?? "")
-					if (p.error) throw new Error(`Cline sign-in: ${p.error}`)
-					return { type: "success", ...p }
-				} catch (e) {
-					return { type: "failed", error: e?.message ?? String(e) }
-				}
+			let j
+			try {
+				j = await pollDevice(d)
+			} catch (e) {
+				return { type: "failed", error: e?.message ?? String(e) }
 			}
-			return { type: "failed", error: "the sign-in wasn't finished in time" }
+			try {
+				const data = await clineApi(`${API}/auth/register`, { method: "POST", body: { accessToken: j.access_token, refreshToken: j.refresh_token ?? "" }, signal: AbortSignal.timeout(30_000) })
+				const p = parseAuth(data, j.refresh_token ?? "")
+				if (p.error) throw new Error(`Cline sign-in: ${p.error}`)
+				return { type: "success", ...p }
+			} catch (e) {
+				return { type: "failed", error: e?.message ?? String(e) }
+			}
 		},
 	}
 }
@@ -849,6 +861,7 @@ export const _internal = {
 	unwrapped,
 	clientHeaders,
 	deviceAuthorize,
+	pollDevice,
 	refresh,
 	constants: { PROVIDER, API, WORKOS_CLIENT, WORKOS_PREFIX, CLIENT, DEFAULT_MODELS },
 	errors: { Lapsed },

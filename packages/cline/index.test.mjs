@@ -692,6 +692,64 @@ test("deviceAuthorize wants a device code back", async () => {
 	await expect(deviceAuthorize()).rejects.toThrow("incomplete")
 })
 
+// ---- the device poll --------------------------------------------------------------
+
+// a poller whose clock and fetch answer from a script, so no real waiting
+function pollScript(replies) {
+	const waits = []
+	const fetched = []
+	let i = 0
+	let clock = 0
+	return {
+		waits,
+		fetched,
+		fetchImpl: async (url) => {
+			fetched.push(url)
+			const r = replies[i++]
+			clock += (waits.at(-1) ?? 0) * 1000
+			if (r instanceof Error) throw r
+			return r
+		},
+		sleep: async (ms) => waits.push(ms / 1000),
+		now: () => clock,
+	}
+}
+
+test("slow_down raises the interval for every later poll", async () => {
+	const p = pollScript([
+		Response.json({ error: "slow_down" }, { status: 400 }),
+		Response.json({ error: "authorization_pending" }, { status: 400 }),
+		Response.json({ access_token: "wt", refresh_token: "wr" }),
+	])
+	const j = await pollDevice({ device_code: "dc", interval: 1, expires_in: 300 }, p)
+	expect(j.access_token).toBe("wt")
+	// 1s, then 2s (raised), then 2s again (kept) — not back to 1
+	expect(p.waits).toEqual([1, 2, 2])
+})
+
+test("the poll starts at a second, whatever the code asked for", async () => {
+	const p = pollScript([Response.json({ access_token: "wt" })])
+	await pollDevice({ device_code: "dc", interval: 0.25, expires_in: 300 }, p)
+	expect(p.waits).toEqual([1])
+})
+
+test("a 5xx, a non-JSON body or a network error is a poll to try again", async () => {
+	const p = pollScript([
+		Response.json({ boom: true }, { status: 503 }),
+		new Response("not json", { headers: { "Content-Type": "text/plain" } }),
+		new Error("network down"),
+		Response.json({ access_token: "wt", refresh_token: "wr" }),
+	])
+	const j = await pollDevice({ device_code: "dc", interval: 1, expires_in: 300 }, p)
+	expect(j.access_token).toBe("wt")
+	expect(p.fetched.length).toBe(4)
+})
+
+test("a refusal the browser made still fails the poll", async () => {
+	const p = pollScript([Response.json({ error: "access_denied", error_description: "user said no" }, { status: 400 })])
+	await expect(pollDevice({ device_code: "dc", interval: 1, expires_in: 300 }, p)).rejects.toThrow("access_denied")
+})
+
 test("an auth entry is read the same however it was stored", () => {
 	const a = authOf({ type: "oauth", access: "a", refresh: "r", expires: 5, uid: "u", accountId: "x" })
 	expect(a).toEqual({ type: "oauth", access: "a", refresh: "r", expires: 5, key: "", uid: "u", email: "", name: "", accountId: "x" })
