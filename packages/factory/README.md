@@ -81,25 +81,15 @@ environment values, tool definitions, tool results, images and reasoning
 options. Native Droid requests remain unchanged, and OpenAI routes keep
 their existing request adapter.
 
-Factory does not accept every extension of Anthropic's API. In Claude
-Code's settings, disable experimental API fields and use the normal
-permission mode:
+Use magpie's Claude Code integration to select the Factory provider.
+magpie manages the provider-specific client settings, including capability
+and permission configuration. Fields such as `safeguards` and
+`context_management` are forwarded for Factory to validate; the request
+adapter preserves them along with the other request options.
 
-```json
-{
-  "env": {
-    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"
-  },
-  "permissions": {
-    "defaultMode": "default"
-  }
-}
-```
-
-Keep the existing `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and model
-settings. The plugin does not silently discard `safeguards` or
-`context_management`: those fields must be omitted by the client.
-See Claude Code's [gateway compatibility guide](https://code.claude.com/docs/en/llm-gateway-protocol)
-for the features disabled by this setting. Connectivity and a two-turn
-Read tool call have been verified with Sonnet 4.6; beta features and auto
-mode are not supported by this compatibility path.
+The same metadata adaptation applies to `/messages` and
+`/messages/count_tokens`, so token counting sees the prompt used for
+inference. Serving the counting endpoint still depends on the host and
+upstream. Model and feature availability depend on the Factory account and
+the upstream API. Connectivity and a two-turn Read tool call have been
+verified with Sonnet 4.6.

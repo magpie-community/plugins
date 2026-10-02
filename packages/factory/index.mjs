@@ -574,8 +574,14 @@ function bodyModel(body) {
 // metadata that Factory refuses (including Claude Code's wrappers).
 const CLAUDE_IDENTITIES = new Set([
   "You are Claude Code, Anthropic's official CLI for Claude.",
+  "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
   "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
 ])
+
+// Match a complete generated block, not a pasted reminder followed by a
+// user's question, or an incomplete fragment of one.
+const ENV_REMINDER = /^<system-reminder>\n# Environment\nYou have been invoked in the following environment:[ \t]*\n(?: - [^\n]*\n)+<\/system-reminder>$/
+const MODEL_REMINDER = /^<system-reminder>\nYou are powered by the model (?:named )?[^\n<>]+\.\n<\/system-reminder>$/
 
 function anthropicBody(body) {
   let request
@@ -587,15 +593,22 @@ function anthropicBody(body) {
   } catch {
     return body
   }
+  // As in droidBody, JSON round-tripping uses JavaScript Numbers: integer
+  // tokens above 2^53 can lose precision when a body needs adapting. A
+  // body that needs no changes is returned byte-for-byte instead.
   if (!request || !Array.isArray(request.messages)) return body
   if (request.system != null && typeof request.system !== "string" && !Array.isArray(request.system)) return body
   if (Array.isArray(request.system) && request.system.some((b) => b?.type === "text" && typeof b.text !== "string")) return body
 
   let changed = false
   const system = typeof request.system === "string" ? [{ type: "text", text: request.system }] : request.system ?? []
-  if (typeof request.system === "string") changed = true
+  if (typeof request.system === "string" && !request.system.startsWith(DROID_LINE)) changed = true
   const kept = []
   for (const block of system) {
+    if (block?.type === "text" && block.text.trim() === "") {
+      changed = true
+      continue
+    }
     // Attribution is consumed here; Factory does not strip Anthropic's
     // billing block and requires the Droid identity to be first.
     if (block?.type === "text" && block.text?.startsWith("x-anthropic-billing-header: cc_version=")) {
@@ -608,7 +621,7 @@ function anthropicBody(body) {
     }
     kept.push(block)
   }
-  const identity = kept.findIndex((b) => b?.type === "text" && b.text === DROID_LINE)
+  const identity = kept.findIndex((b) => b?.type === "text" && b.text.startsWith(DROID_LINE))
   if (identity < 0) {
     kept.unshift({ type: "text", text: DROID_LINE })
     changed = true
@@ -616,18 +629,27 @@ function anthropicBody(body) {
     kept.unshift(...kept.splice(identity, 1))
     changed = true
   }
+  // Drop only duplicate identity-only blocks. A block that also contains
+  // task instructions stays intact.
+  for (let i = kept.length - 1; i > 0; i--) {
+    if (kept[i]?.type === "text" && kept[i].text === DROID_LINE) {
+      kept.splice(i, 1)
+      changed = true
+    }
+  }
   if (changed) request.system = kept
 
   for (const message of request.messages) {
     if (message?.role !== "user" || !Array.isArray(message.content)) continue
     for (const block of message.content) {
       if (block?.type !== "text" || typeof block.text !== "string") continue
-      if (block.text.startsWith("<system-reminder>\n# Environment\nYou have been invoked in the following environment:")) {
+      if (ENV_REMINDER.test(block.text)) {
         block.text = block.text.replace("# Environment", "# Runtime context")
           .replace("You have been invoked in the following environment:", "The session environment is:")
         changed = true
-      } else if (block.text.startsWith("<system-reminder>\nYou are powered by the model named")) {
+      } else if (MODEL_REMINDER.test(block.text)) {
         block.text = block.text.replace("You are powered by the model named", "Current model name:")
+          .replace("You are powered by the model", "Current model:")
           .replace("The exact model ID is", "Model ID:")
           .replace("Assistant knowledge cutoff is", "Model knowledge cutoff:")
         changed = true
@@ -874,7 +896,7 @@ export const FactoryAuthPlugin = async ({ client }) => {
           // which Anthropic's SDK sends beside the bearer token
           if (path.includes("/llm/a/")) h.set("X-Api-Key", "placeholder")
           // another agent's request opens as droid's does (droidBody)
-          const out = path.includes("/llm/a/") && path.endsWith("/messages")
+          const out = path.includes("/llm/a/") && (path.endsWith("/messages") || path.endsWith("/messages/count_tokens"))
             ? anthropicBody(body) : droidBody(path, body)
           if (out !== body) h.delete("content-length")
           return fetch(url, { ...init, method: init?.method ?? (input instanceof Request ? input.method : "POST"), headers: h, body: out })

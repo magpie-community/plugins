@@ -91,3 +91,88 @@ test("does not change OpenAI requests, malformed JSON or invalid system schemas"
     expect(seen.at(-1).body).toBe(body)
   }
 })
+
+test("recognizes Claude Code running within the Agent SDK", async () => {
+  const { l, seen } = await loaded()
+  await l.fetch(url, { method: "POST", body: JSON.stringify({
+    system: [{ type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.", cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: "OK" }],
+  }) })
+  expect(JSON.parse(seen[0].body).system).toEqual([{ type: "text", text: droid, cache_control: { type: "ephemeral" } }])
+})
+
+test("adapts the complete model reminder without a marketing name", async () => {
+  const { l, seen } = await loaded()
+  await l.fetch(url, { method: "POST", body: JSON.stringify({
+    messages: [{ role: "user", content: [{ type: "text", text: "<system-reminder>\nYou are powered by the model custom-model.\n</system-reminder>" }] }],
+  }) })
+  expect(JSON.parse(seen[0].body).messages[0].content[0].text).toBe("<system-reminder>\nCurrent model: custom-model.\n</system-reminder>")
+})
+
+test("drops an empty or whitespace-only string system", async () => {
+  const { l, seen } = await loaded()
+  for (const system of ["", " \n\t", [{ type: "text", text: "" }]]) {
+    await l.fetch(url, { method: "POST", body: JSON.stringify({ system, messages: [{ role: "user", content: "OK" }] }) })
+    expect(JSON.parse(seen.at(-1).body).system).toEqual([{ type: "text", text: droid }])
+  }
+})
+
+test("preserves a native Droid string system without duplicating the preamble", async () => {
+  const { l, seen } = await loaded()
+  for (const system of [droid, droid + "\nKeep the user's instructions."]) {
+    const body = JSON.stringify({ system, messages: [{ role: "user", content: "OK" }] })
+    await l.fetch(url, { method: "POST", body })
+    expect(seen.at(-1).body).toBe(body)
+  }
+})
+
+test("preserves pasted reminders with user text outside the complete block", async () => {
+  const { l, seen } = await loaded()
+  const reminders = [
+    "<system-reminder>\n# Environment\nYou have been invoked in the following environment:\n - Platform: linux\n</system-reminder>",
+    "<system-reminder>\nYou are powered by the model named Sonnet 4.6.\n</system-reminder>",
+    "<system-reminder>\nYou are powered by the model custom-model.\n</system-reminder>",
+  ]
+  const texts = reminders.flatMap((r) => [r + "\nPlease explain this pasted reminder.", r.replace("</system-reminder>", ""), "Please explain:\n" + r])
+  await l.fetch(url, { method: "POST", body: JSON.stringify({
+    messages: [{ role: "user", content: texts.map((text) => ({ type: "text", text })) }],
+  }) })
+  expect(JSON.parse(seen[0].body).messages[0].content).toEqual(texts.map((text) => ({ type: "text", text })))
+})
+
+test("removes duplicate exact Droid identities while retaining the first block's metadata", async () => {
+  const { l, seen } = await loaded()
+  const identity = { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude.", cache_control: { type: "ephemeral" } }
+  const native = { type: "text", text: droid }
+  const instructions = { type: "text", text: "Keep all task instructions." }
+  for (const system of [[identity, native, instructions], [native, identity, instructions], [native, native, instructions]]) {
+    await l.fetch(url, { method: "POST", body: JSON.stringify({ system, messages: [{ role: "user", content: "OK" }] }) })
+    expect(JSON.parse(seen.at(-1).body).system).toEqual([{ ...system[0], text: droid }, instructions])
+  }
+})
+
+test("adapts token-counting requests consistently with Messages and leaves other paths alone", async () => {
+  const { l, seen } = await loaded()
+  const body = JSON.stringify({ system: "Count these instructions.", messages: [{ role: "user", content: "OK" }] })
+  await l.fetch(url, { method: "POST", body })
+  await l.fetch(url + "/count_tokens", { method: "POST", body })
+  expect(seen[1].body).toBe(seen[0].body)
+  expect(seen[1].headers.get("content-length")).toBeNull()
+  await l.fetch("https://api.factory.ai/api/llm/a/v1/models", { method: "POST", body })
+  expect(seen[2].body).toBe(body)
+})
+
+test("adapts MiniMax M2.7 on the Anthropic route while keeping its provider and options", async () => {
+  const { l, seen } = await loaded()
+  const options = { model: "minimax-m2.7", messages: [{ role: "user", content: "OK" }], max_tokens: 32, stream: true }
+  await l.fetch(url, { method: "POST", body: JSON.stringify({ ...options, system: "You are OpenCode." }) })
+  expect(JSON.parse(seen[0].body)).toEqual({ ...options, system: [{ type: "text", text: droid }, { type: "text", text: "You are OpenCode." }] })
+  expect(seen[0].headers.get("x-api-provider")).toBe("fireworks")
+})
+
+test("retains large integer tokens byte-for-byte in an unmodified native Droid request", async () => {
+  const { l, seen } = await loaded()
+  const body = '{"system":[{"type":"text","text":' + JSON.stringify(droid) + '}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"Read","input":{"id":12345678901234567890}}]}]}'
+  await l.fetch(url, { method: "POST", body })
+  expect(seen[0].body).toBe(body)
+})
