@@ -2,7 +2,7 @@
   "version": 1,
   "plugins": [
     { "package": "@magpie-community/opencode-zcode-auth", "name": "ZCode", "icon": "zcode", "providers": ["zcode"], "community": true, "replaces": "zcode",
-      "summary": { "en": "Z.ai and BigModel GLM Coding Plan, with team seats.", "zh": "Z.ai 与智谱 GLM Coding Plan，支持团队席位。" } },
+      "summary": { "en": "Z.ai and BigModel GLM Coding Plan, team seats and ZCode's free Start Plan.", "zh": "Z.ai 与智谱 GLM Coding Plan，支持团队席位和 ZCode 免费 Start Plan。" } },
     { "package": "@magpie-community/opencode-qoder-auth", "name": "Qoder", "icon": "qoder", "providers": ["qoder", "qoder-cn"], "community": true, "replaces": "qoder",
       "summary": { "en": "Your Qoder subscription, international (qoder.com) or Qoder CN (qoder.cn), with Qoder's own device sign-in.", "zh": "用 Qoder 自己的设备登录使用 Qoder 订阅：国际版（qoder.com）或 Qoder CN（qoder.cn）。" } },
     { "package": "@magpie-community/opencode-devin-auth", "name": "Devin", "icon": "devin", "providers": ["devin"], "community": true, "replaces": "devin",
