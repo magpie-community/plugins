@@ -815,7 +815,7 @@ export const ClinePlugin = async ({ client } = {}) => {
 						try {
 							res = await fetch(url, { ...init, method: init?.method ?? "POST", headers, body, signal: init?.signal ?? (input instanceof Request ? input.signal : undefined) })
 						} catch (e) {
-							return errorResponse({ status: 502, message: String(e?.message ?? e) })
+							return signed(errorResponse({ status: 502, message: String(e?.message ?? e) }), renewed(cred))
 						}
 						// a renewed token cleared the lapse mark whatever the
 						// request then met, a refused one included (qoder's

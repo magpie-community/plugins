@@ -413,6 +413,25 @@ test("a renewal clears the mark even when the chat that follows fails", async ()
 	expect(res.headers.get("X-Magpie-Sign-In")).toBe("renewed")
 })
 
+test("a renewal's mark survives a network error on the chat itself", async () => {
+	const { client: c, store, seed } = client()
+	const hooks = await ClinePlugin({ client: c })
+	serve([
+		["/auth/refresh", () => Response.json({ success: true, data: { accessToken: "jwt2", refreshToken: "r2", expiresAt: new Date(Date.now() + 3600_000).toISOString(), userInfo: { clineUserId: "cu1" } } })],
+		[chatUrl, () => {
+			throw new Error("socket hang up")
+		}],
+	])
+	seed({ type: "oauth", access: "jwt1", refresh: "r1", expires: Date.now() + 1000, uid: "cu1", accountId: "a@b.c" })
+	const l = await hooks.auth.loader(store)
+	const res = await l.fetch(chatUrl, chatInit())
+	// the token was renewed and a request that never left the machine is an
+	// ordinary failure: the mark comes off here too, not only on an answer
+	expect(res.status).toBe(502)
+	expect(res.headers.get("X-Magpie-Sign-In")).toBe("renewed")
+	expect((await res.json()).error.message).toContain("socket hang up")
+})
+
 // ---- the device sign-in ------------------------------------------------------------
 
 test("the device sign-in approves, registers, and keeps the pair", async () => {
