@@ -33,7 +33,7 @@ const DEVICE_CAP = 600 // seconds the browser may take, however long the code li
 // identity, and the free models' gate reads these). Pinned to Cline's current
 // release — when they ship a new one, move these along (the numbers are the
 // only thing that has to match).
-const CLIENT = { type: "cline-cli", version: "3.0.68", platform: "cli", core: "0.0.89" }
+const CLIENT = { type: "cline-cli", version: "3.0.68", platform: "cli", core: "0.0.90" }
 
 // clientHeaders is the header set resolveProviderRequestHeaders builds for a
 // client with that identity; a task id rides per chat request, as the
