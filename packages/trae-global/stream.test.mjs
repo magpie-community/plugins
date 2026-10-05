@@ -175,3 +175,31 @@ test("a model with a Max context is listed a second time, as its Max, which asks
   b = f.seen.at(-1).json
   expect([b.model_name, b.user_message_context]).toEqual(["gpt-5.4__dev", undefined])
 })
+
+test("an answer the agent walks away from lets Trae's connection go", async () => {
+  // the agent reads a tool call's name and leaves the rest of the stream
+  // (pi/magpie cancels it to make the call): the read to Trae must close,
+  // not hang on and leave the reused host one Trae has dropped. The fake
+  // sends nothing more, so only aborting Trae's own fetch can release it —
+  // a generator's return can't break a read already waiting.
+  let cancelled = false
+  f = fakeTrae()
+  f.route("POST /api/agent/v3/llm_utils_chat", () => {
+    let n = 0
+    const body = new ReadableStream({
+      async pull(ctl) {
+        if (n++ === 0) return ctl.enqueue(new TextEncoder().encode('event: output\ndata: {"response":"working on it"}\n\n'))
+        await new Promise((r) => setTimeout(r, 10_000)) // nothing more comes
+      },
+      cancel() { cancelled = true },
+    })
+    return new Response(body, { headers: { "content-type": "text/event-stream" } })
+  })
+  const res = await ask({ model: "gpt-5.4", stream: true, messages: [{ role: "user", content: "hi" }] })
+  const reader = res.body.getReader()
+  await reader.read() // the opening role chunk
+  await reader.read() // "working on it"
+  await reader.cancel() // the agent goes away, as making a tool call does
+  await new Promise((r) => setTimeout(r, 100))
+  expect(cancelled).toBe(true)
+})

@@ -512,28 +512,36 @@ async function* sse(stream) {
     yield { event: event || (v && typeof v === "object" ? String(v.event ?? v.type ?? "") : ""), data: v }
     event = ""
   }
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buf += dec.decode(value, { stream: true })
-    let i
-    while ((i = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, i).replace(/\r$/, "")
-      buf = buf.slice(i + 1)
-      if (!line) {
-        yield* flush()
-        continue
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      let i
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).replace(/\r$/, "")
+        buf = buf.slice(i + 1)
+        if (!line) {
+          yield* flush()
+          continue
+        }
+        if (line.startsWith(":")) continue
+        if (line.startsWith("event:")) {
+          yield* flush()
+          event = line.slice(6).trim()
+        } else if (line.startsWith("data:")) data.push(line.slice(5).trimStart())
       }
-      if (line.startsWith(":")) continue
-      if (line.startsWith("event:")) {
-        yield* flush()
-        event = line.slice(6).trim()
-      } else if (line.startsWith("data:")) data.push(line.slice(5).trimStart())
     }
+    buf += dec.decode()
+    if (buf.startsWith("data:")) data.push(buf.slice(5).trimStart())
+    yield* flush()
+  } finally {
+    // the answer the agent goes away from (a tool call made, a request
+    // aborted) closes this generator mid-read: let Trae's connection go,
+    // or the read hangs on and the host the next ask reuses is one Trae
+    // has dropped — a stream that runs, then dies (#: cancelling)
+    reader.cancel().catch(() => {})
   }
-  buf += dec.decode()
-  if (buf.startsWith("data:")) data.push(buf.slice(5).trimStart())
-  yield* flush()
 }
 
 // normalised event names: "TokenUsage", "token-usage" → token_usage
@@ -1045,7 +1053,11 @@ function failure(status, code, message) {
 }
 
 // openai is the answer as an OpenAI chat completion: a stream, or one body
-async function openai(req, it) {
+// abort, when given, lets the answer's reader close Trae's connection the
+// moment the agent goes away (a tool call made, a request cancelled): a
+// generator's return can't break a read that is already waiting, so the
+// fetch itself is what has to be stopped
+async function openai(req, it, abort) {
   const id = "chatcmpl-" + randomBytes(12).toString("hex")
   const created = Math.floor(Date.now() / 1000)
   const model = req.model
@@ -1118,6 +1130,7 @@ async function openai(req, it) {
     },
     cancel() {
       gone = true
+      abort?.()
       it.return?.()
     },
   })
@@ -1497,12 +1510,22 @@ export const TraeGlobalAuthPlugin = async ({ client }) => {
               if (named) fns.unshift(named.fn)
             }
             const max = named?.max ?? null
+            // the answer's own signal: the caller's abort (a cancelled
+            // request) and the stream's cancel both stop Trae's fetch, so
+            // no read is left hanging on a connection the agent walked
+            // away from
+            const ac = new AbortController()
+            const outer = init.signal ?? r0?.signal ?? null
+            if (outer) {
+              if (outer.aborted) ac.abort()
+              else outer.addEventListener("abort", () => ac.abort(), { once: true })
+            }
             for (const fn of [...new Set(fns)]) {
               const res = await fetch(apiOf(a) + "/api/agent/v3/llm_utils_chat", {
                 method: "POST",
                 headers: ideHeaders(a, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
                 body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max)),
-                signal: init.signal ?? r0?.signal,
+                signal: ac.signal,
               })
               if (!res.ok) {
                 const text = await res.text()
@@ -1528,7 +1551,7 @@ export const TraeGlobalAuthPlugin = async ({ client }) => {
                 break
               }
               fnOf.set(who, fn)
-              const out = await openai(req, done ? held : chain(held, it))
+              const out = await openai(req, done ? held : chain(held, it), () => ac.abort())
               out.headers.set("X-Magpie-Sign-In", signIn)
               return out
             }
