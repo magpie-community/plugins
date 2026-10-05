@@ -8,10 +8,11 @@
 // streamed only, with WorkBuddy's headers: a request whose User-Agent isn't
 // WorkBuddy/<version> is refused (error 10085).
 
-import { randomBytes } from "node:crypto"
-import { readFileSync } from "node:fs"
+import { createDecipheriv, createHash, randomBytes } from "node:crypto"
+import { execFile } from "node:child_process"
+import { readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
 const APP_VERSION = "2.0.0" // the version WorkBuddy's sign-in page is opened with
 const UA_VERSION = "5.5.6" // WorkBuddy/<this> is the User-Agent the API takes
@@ -67,6 +68,9 @@ const SITES = {
     authID: "workbuddy-desktop",
     platform: "workbuddy",
     ai: false,
+    // where its desktop app installs the runtime that opens a sealed sign-in
+    installDir: "WorkBuddy",
+    exeName: "WorkBuddy.exe",
     models: CN_MODELS,
   },
   "workbuddy-ai": {
@@ -76,6 +80,8 @@ const SITES = {
     authID: "workbuddy-desktop-ai",
     platform: "workbuddy-ai",
     ai: true,
+    installDir: "WorkBuddyAI",
+    exeName: "WorkBuddyAI.exe",
     models: AI_MODELS,
   },
 }
@@ -352,24 +358,322 @@ function desktopFile(site) {
   return join(base, "Data", "Public", "auth", site.authID + ".info")
 }
 
-// readDesktop is WorkBuddy desktop's sign-in as the app keeps it now, null
-// for none (or tokens the app keeps encrypted, which can't be read).
-function readDesktop(site) {
+// ---- a sign-in the app seals at rest (WorkBuddy 5.6 and later) --------------
+//
+// From 5.6 the desktop app writes auth.accessToken and auth.refreshToken as
+// {$wbEncrypted: 1, envelope} wrappers (`buildPolicy: "fields"`), each sealed
+// with AES-256-GCM under a per-install at-rest key. Nothing in this process
+// can open them: the key is handed out by the app's modified Electron runtime
+// through its own private binding, which stock Node and Bun don't have. So the
+// app's own binary is run once as Node (ELECTRON_RUN_AS_NODE, never its GUI)
+// to read that key, and the envelopes are opened here, in memory. The app's
+// files are only ever read; the key and the tokens are never written anywhere.
+
+// isEncryptedWorkBuddyValue tells a sealed value from a plain one: an ordinary
+// object must never be mistaken for a token, and a sealed value is never
+// mistaken for a string.
+function isEncryptedWorkBuddyValue(v) {
+  return !!v && typeof v === "object" && !Array.isArray(v) && v.$wbEncrypted === 1 && typeof v.envelope === "string" && v.envelope !== ""
+}
+
+// base64Of decodes a base64 field and checks its exact byte length, so a
+// tampered envelope is refused before any key material is involved.
+function base64Of(value, length) {
+  if (typeof value !== "string" || value === "") return undefined
+  let decoded
   try {
-    const f = JSON.parse(readFileSync(desktopFile(site), "utf8"))
+    decoded = Buffer.from(value, "base64")
+  } catch {
+    return undefined
+  }
+  if (decoded.length === 0) return undefined
+  if (decoded.toString("base64").replace(/=+$/u, "") !== value.replace(/=+$/u, "")) return undefined
+  return length === undefined || decoded.length === length ? decoded : undefined
+}
+
+// parseWrappedField: the decoded parts of one sealed value, undefined for
+// anything that isn't exactly what 5.6 writes (suite 1 under the field framing).
+function parseWrappedField(value) {
+  if (!isEncryptedWorkBuddyValue(value)) return undefined
+  let inner
+  try {
+    inner = JSON.parse(Buffer.from(value.envelope, "base64").toString("utf8"))
+  } catch {
+    return undefined
+  }
+  if (!inner || typeof inner !== "object" || Array.isArray(inner)) return undefined
+  const nonce = base64Of(inner.nonce, 12)
+  const authTag = base64Of(inner.authTag, 16)
+  const ciphertext = base64Of(inner.ciphertext)
+  if (nonce === undefined || authTag === undefined || ciphertext === undefined) return undefined
+  if (!Number.isInteger(inner.suite) || typeof inner.keyId !== "string" || !/^[0-9a-f]{16}$/u.test(inner.keyId)) return undefined
+  return { suite: inner.suite, keyId: inner.keyId, nonce, authTag, ciphertext }
+}
+
+// buildAuthenticatedContextAad is the app's own buildAuthenticatedContextAad,
+// as this format's readers transcribe it. Credential fields are always suite 1
+// under the field framing (WBEV1); the neighbouring framings belong to other
+// document kinds and are deliberately not guessed at.
+function buildAuthenticatedContextAad(keyId, suite) {
+  const prefix = Buffer.from("WB-AAD\0", "ascii")
+  const lengthPrefixed = (value) => {
+    const bytes = Buffer.from(value, "utf8")
+    const header = Buffer.allocUnsafe(4)
+    header.writeUInt32BE(bytes.length)
+    return Buffer.concat([header, bytes])
+  }
+  const suiteBytes = Buffer.allocUnsafe(4)
+  suiteBytes.writeUInt32BE(suite)
+  return Buffer.concat([
+    prefix, Buffer.from([1]),
+    lengthPrefixed("WBEV1"),
+    lengthPrefixed("sym-v1"),
+    suiteBytes,
+    lengthPrefixed(keyId),
+    Buffer.from([2]),
+    Buffer.from([0]),
+    Buffer.from([0]),
+  ])
+}
+
+// openAuthField opens one envelope with the protector key; undefined when it
+// will not open (not this format, or a key from another install).
+function openAuthField(key, envelope) {
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", key, envelope.nonce, { authTagLength: 16 })
+    decipher.setAAD(buildAuthenticatedContextAad(envelope.keyId, envelope.suite))
+    decipher.setAuthTag(envelope.authTag)
+    return Buffer.concat([decipher.update(envelope.ciphertext), decipher.final()]).toString("utf8")
+  } catch {
+    return undefined
+  }
+}
+
+// The app's own Electron binary is run with -e and ELECTRON_RUN_AS_NODE: Node
+// mode only, so no window, no app code path and no temp file. Only stdout comes
+// back, and only its payload is kept.
+const HELPER_SCRIPT =
+  'process.stdout.write(String(process._linkedBinding("electron_browser_workbuddy_storage").loggerGet()))'
+const AT_REST_MS = 10 * 1000
+
+function atRestPayload(electronPath) {
+  return new Promise((resolve) => {
+    execFile(electronPath, ["-e", HELPER_SCRIPT], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      timeout: AT_REST_MS,
+      maxBuffer: 1 << 20,
+      windowsHide: true,
+    }, (err, stdout) => resolve(err ? undefined : String(stdout ?? "")))
+  })
+}
+
+// parseAtRestPayload: {version: 1, atRestSecretKey} as the app's own rules
+// require (a canonical-base64, 32-byte, non-all-zero secret).
+function parseAtRestPayload(raw) {
+  let held
+  try {
+    held = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!held || held.version !== 1 || typeof held.atRestSecretKey !== "string") return undefined
+  const secret = base64Of(held.atRestSecretKey, 32)
+  if (secret === undefined || secret.every((b) => b === 0)) return undefined
+  return held.atRestSecretKey
+}
+
+// findWorkBuddyElectron: the app's own binary, or undefined. A path the user
+// named wins when it is there; otherwise the installer's own record, the
+// standard install roots, and the same two directories on any other drive (so
+// an install on D: is found too). A bad WORKBUDDY_ELECTRON_BIN is not fatal:
+// it falls through to the search rather than failing the sign-in. Nothing is
+// ever searched for by content, and a path is only used when it names exactly
+// this product's executable.
+const ELECTRON_BIN_ENV = "WORKBUDDY_ELECTRON_BIN"
+const UNINSTALL_ROOTS = [
+  "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+  "HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+  "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+]
+
+function isFile(path) {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+function sameProduct(path, site) {
+  try {
+    return basename(path).toLowerCase() === site.exeName.toLowerCase()
+  } catch {
+    return false
+  }
+}
+
+function regQuery(root, needle) {
+  return new Promise((resolve) => {
+    execFile("reg.exe", ["query", root, "/s", "/f", needle, "/d"], { timeout: AT_REST_MS, maxBuffer: 4 << 20, windowsHide: true },
+      (err, stdout) => resolve(err ? "" : String(stdout ?? "")))
+  })
+}
+
+// registryPaths: the paths the installer itself recorded. Only a value that is
+// exactly this product's executable is taken (DisplayIcon, for instance, reads
+// "D:\Program Files\WorkBuddy\WorkBuddy.exe,0").
+async function registryPaths(site) {
+  const out = []
+  for (const root of UNINSTALL_ROOTS) {
+    const text = await regQuery(root, site.exeName)
+    if (!text) continue
+    for (const m of text.matchAll(/[A-Za-z]:\\[^\r\n"]*?\.exe/gu)) {
+      const path = m[0].trim()
+      if (sameProduct(path, site) && !out.includes(path)) out.push(path)
+    }
+  }
+  return out
+}
+
+function rootPaths(site) {
+  const roots = [process.env.ProgramFiles, process.env.ProgramW6432, process.env["ProgramFiles(x86)"], "C:\\Program Files", "C:\\Program Files (x86)"]
+  const out = []
+  for (const root of roots) {
+    if (typeof root !== "string" || root.trim() === "") continue
+    const path = join(root, site.installDir, site.exeName)
+    if (!out.includes(path)) out.push(path)
+  }
+  return out
+}
+
+function drivePaths(site) {
+  const out = []
+  for (let c = 0; c < 26; c++) {
+    const drive = String.fromCharCode(65 + c) + ":\\"
+    for (const dir of ["Program Files", "Program Files (x86)"]) out.push(join(drive, dir, site.installDir, site.exeName))
+  }
+  return out
+}
+
+const electronFound = new Map() // site id -> path, "" for none
+
+async function findWorkBuddyElectron(site) {
+  if (process.platform !== "win32" && process.platform !== "darwin") return undefined
+  const held = electronFound.get(site.id)
+  if (held !== undefined) return held || undefined
+  const found = await discoverElectron(site)
+  electronFound.set(site.id, found ?? "")
+  return found
+}
+
+async function discoverElectron(site) {
+  // A path the user named, when it is really there. One that is empty, stale
+  // or wrong is not an error: the search below carries on, so a bad env var
+  // can never be the reason a sign-in fails.
+  const explicit = (process.env[ELECTRON_BIN_ENV] ?? "").trim()
+  if (explicit !== "" && isFile(explicit)) return explicit
+  if (process.platform === "darwin") {
+    const path = join("/Applications", `${site.installDir}.app`, "Contents", "MacOS", "Electron")
+    return isFile(path) ? path : undefined
+  }
+  for (const path of await registryPaths(site)) if (isFile(path)) return path
+  for (const path of rootPaths(site)) if (isFile(path)) return path
+  for (const path of drivePaths(site)) if (isFile(path)) return path
+  return undefined
+}
+
+// The protector key is kept in memory only, single-flight, and named by its own
+// id: an envelope naming a different id means another install sealed it, and
+// no key reachable here opens it.
+const atRestKeys = new Map() // site id -> { keyId, key }
+const atRestPending = new Map() // site id -> promise
+
+async function atRestKey(site, keyId) {
+  const held = atRestKeys.get(site.id)
+  if (held) return held.keyId === keyId ? held.key : undefined
+  let pending = atRestPending.get(site.id)
+  if (!pending) {
+    pending = (async () => {
+      const electron = await findWorkBuddyElectron(site)
+      if (!electron) return undefined
+      const secret = parseAtRestPayload(await atRestPayload(electron))
+      if (!secret) return undefined
+      const key = createHash("sha256").update(secret, "utf8").digest()
+      return { keyId: createHash("sha256").update(key).digest("hex").slice(0, 16), key }
+    })().finally(() => atRestPending.delete(site.id))
+    atRestPending.set(site.id, pending)
+  }
+  const found = await pending
+  if (!found) return undefined
+  atRestKeys.set(site.id, found)
+  return found.keyId === keyId ? found.key : undefined
+}
+
+// openSealed opens one sealed value for this site; undefined when it cannot be
+// opened, so a sign-in that can't be read is never taken as a plain one.
+async function openSealed(site, value) {
+  const envelope = parseWrappedField(value)
+  if (!envelope) return undefined
+  const key = await atRestKey(site, envelope.keyId)
+  if (!key) return undefined
+  return openAuthField(key, envelope)
+}
+
+// plainOrOpened: a field as it sits in the file (a plain string) or as the
+// sealed value says (opened here). "" for a field that is neither, or that
+// will not open.
+async function plainOrOpened(site, field) {
+  if (typeof field === "string") return field
+  if (!isEncryptedWorkBuddyValue(field)) return ""
+  return (await openSealed(site, field)) ?? ""
+}
+
+// desktopName names the account. A nickname may itself be sealed, and a sealed
+// value is an object: it must never be taken as a name, so what a name may be
+// is settled here, and only a string ever comes back.
+async function desktopName(site, acct) {
+  for (const field of ["nickname", "phoneNumber"]) {
+    const value = acct[field]
+    if (typeof value === "string" && value.trim() !== "") return value.trim()
+    if (isEncryptedWorkBuddyValue(value)) {
+      const opened = await openSealed(site, value)
+      if (typeof opened === "string" && opened.trim() !== "") return opened.trim()
+    }
+  }
+  for (const field of ["email", "emailAddress", "uid"]) {
+    const value = acct[field]
+    if (typeof value === "string" && value.trim() !== "") return value.trim()
+  }
+  return ""
+}
+
+// readDesktop is WorkBuddy desktop's sign-in as the app keeps it now, null for
+// none that can be read. A plain sign-in (credential protection off, the
+// default) is taken as it always was; one the app sealed is opened through the
+// app's own runtime.
+async function readDesktop(site) {
+  let f
+  try {
+    f = JSON.parse(readFileSync(desktopFile(site), "utf8"))
+  } catch {
+    return null
+  }
+  try {
     const t = f?.auth ?? {}
-    if (typeof t.accessToken !== "string" || !t.accessToken || !f?.account?.uid) return null
+    const acct = f?.account
+    if (!acct?.uid) return null
+    const access = await plainOrOpened(site, t.accessToken)
+    if (!access) return null
     const now = Date.now()
-    const acct = f.account
     return {
-      access: t.accessToken,
-      refresh: typeof t.refreshToken === "string" ? t.refreshToken : "",
+      access,
+      refresh: await plainOrOpened(site, t.refreshToken),
       expires: t.expiresAt > 0 ? t.expiresAt : t.expiresIn > 0 ? now + t.expiresIn * 1000 : 0,
       refreshExpiresAt: t.refreshExpiresAt > 0 ? t.refreshExpiresAt : t.refreshExpiresIn > 0 ? now + t.refreshExpiresIn * 1000 : 0,
       domain: typeof t.domain === "string" ? t.domain : "",
       tokenType: typeof t.tokenType === "string" ? t.tokenType : "",
       uid: acct.uid,
-      name: acct.nickname || acct.phoneNumber || acct.uid,
+      name: (await desktopName(site, acct)) || acct.uid,
     }
   } catch {
     return null
@@ -386,7 +690,7 @@ function desktopSignIn(site) {
     instructions: `Uses the account ${site.name} desktop is signed in to.`,
     method: "auto",
     async callback() {
-      const d = readDesktop(site)
+      const d = await readDesktop(site)
       if (!d) return { type: "failed", error: `${site.name} desktop isn't signed in` }
       return { type: "success", refresh: "", access: "", expires: 0, source: "desktop", accountId: d.name || site.name, uid: d.uid }
     },
@@ -401,7 +705,7 @@ const desktopHeld = new Map()
 // read where it keeps it, or one kept here.
 async function current(site, client, auth) {
   if (auth?.source !== "desktop") return fresh(site, client, auth)
-  const d = readDesktop(site)
+  const d = await readDesktop(site)
   if (!d) throw new Error(`${site.name} desktop isn't signed in`)
   const k = site.id + "|" + d.uid
   const h = desktopHeld.get(k)
@@ -746,4 +1050,10 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { withSystem, usageOf, desktopHeld, explained, REFUSED_HINT, freeCredits, creditsOf, fresh, SITES, renewing, renewed }
+export const _internal = {
+  withSystem, usageOf, desktopHeld, explained, REFUSED_HINT, freeCredits, creditsOf, fresh, SITES, renewing, renewed,
+  // the sealed-sign-in path (WorkBuddy 5.6 and later)
+  isEncryptedWorkBuddyValue, parseWrappedField, buildAuthenticatedContextAad, openAuthField,
+  parseAtRestPayload, base64Of, readDesktop, desktopFile, findWorkBuddyElectron, registryPaths, rootPaths, drivePaths,
+  ELECTRON_BIN_ENV, electronFound, atRestKeys, HELPER_SCRIPT, AT_REST_MS,
+}

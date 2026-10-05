@@ -24,7 +24,22 @@ The package exports `WorkBuddyAuthPlugin` (`workbuddy`) and
   - Windows: `~/AppData/Local/CodeBuddyExtension/…`
   - Linux: `~/.local/share/CodeBuddyExtension/…`
 
-  A sign-in the app keeps encrypted can't be read, and this way fails.
+  Since WorkBuddy 5.6 the app may keep that sign-in sealed at rest:
+  `auth.accessToken` and `auth.refreshToken` arrive as
+  `{"$wbEncrypted": 1, "envelope": "…"}` wrappers, each sealed with
+  AES-256-GCM under a per-install key. The plugin opens them by running the
+  app's *own* binary once as Node (`ELECTRON_RUN_AS_NODE=1`, never its GUI)
+  to read that key from the app's private binding, and opens the envelopes
+  in memory. Nothing is copied, decrypted to disk, or written back: the key
+  and the tokens stay in memory, and the app's file is only ever read. A
+  plain sign-in (credential protection off, the app's default) is read as it
+  always was, and a sign-in that is sealed and cannot be opened reports
+  itself as signed out rather than being taken as a plain one.
+
+  The app's binary is found at `WORKBUDDY_ELECTRON_BIN` when that is set,
+  else from the installer's own record, the standard `Program Files` roots,
+  and those same two directories on any other drive — so an install on `D:`
+  is found as well.
 
 A browser sign-in is kept as an OpenCode `oauth` auth: the access and
 refresh tokens, their expiry, the user id and the domain; desktop's as a
