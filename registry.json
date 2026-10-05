@@ -28,6 +28,8 @@
     { "package": "@magpie-community/opencode-cline-auth", "name": "Cline", "icon": "cline", "providers": ["cline"], "community": true,
       "summary": { "en": "Cline's models on your own Cline account — usage billing, ClinePass and Cline's free models — with Cline's device sign-in or an API key.", "zh": "用自己的 Cline 账号使用 Cline 的模型——用量计费、ClinePass 与免费模型——支持 Cline 设备登录或 API key。" } },
     { "package": "@magpie-community/opencode-trae-auth", "name": "Trae CN", "icon": "trae", "providers": ["trae-cn"], "community": true,
-      "summary": { "en": "Trae CN (trae.cn) models with your Trae CN account, free tier included — Trae's own browser sign-in. Experimental.", "zh": "用 Trae CN（trae.cn）账号使用其模型，含免费版，使用 Trae 自己的浏览器登录。实验性。" } }
+      "summary": { "en": "Trae CN (trae.cn) models with your Trae CN account, free tier included — Trae's own browser sign-in. Experimental.", "zh": "用 Trae CN（trae.cn）账号使用其模型，含免费版，使用 Trae 自己的浏览器登录。实验性。" } },
+    { "package": "@magpie-community/opencode-trae-global-auth", "name": "Trae Global", "icon": "trae", "providers": ["trae-global"], "community": true,
+      "summary": { "en": "Trae international (trae.ai) models with your Trae international account, free tier included — Trae's own browser sign-in.", "zh": "用 Trae 国际版（trae.ai）账号使用其模型，含免费版，使用 Trae 自己的浏览器登录。" } }
   ]
 }
