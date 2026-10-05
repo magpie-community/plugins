@@ -1,10 +1,14 @@
-// A fake of Trae CN for the tests: one local server standing in for
-// trae.cn's authorization page host, api.trae.cn and the model host, which
-// the plugin's HOSTS are pointed at. route(method, path) answers a
-// request; seen lists what came.
+// A fake of Trae for the tests: one local server standing in for the
+// realm's authorization page host and its other hosts, which the plugin's
+// HOSTS are pointed at. route(method, path) answers a request; seen lists
+// what came. The CN realm is the default, so a test written before the two
+// realms shared a package is unchanged; pass "trae-global" for the
+// international one, whose hosts and usage page differ.
 import { _internal } from "./index.mjs"
 
-export function fakeTrae() {
+const HOST_KEYS = ["web", "auth", "api", "us", "pay", "usPay"]
+
+export function fakeTrae(siteId = "trae-cn") {
   const routes = new Map()
   const seen = []
   const server = Bun.serve({
@@ -22,15 +26,18 @@ export function fakeTrae() {
     },
   })
   const origin = `http://127.0.0.1:${server.port}`
-  const was = { ..._internal.HOSTS }
-  Object.assign(_internal.HOSTS, { web: origin, auth: origin, api: origin })
+  const hosts = _internal.SITES[siteId].hosts
+  const was = { ...hosts }
+  Object.assign(hosts, { web: origin, auth: origin, api: origin, us: origin, pay: origin, usPay: origin })
   return {
     origin,
+    site: _internal.SITES[siteId],
     seen,
     route: (key, h) => routes.set(key, h),
     close() {
       server.stop(true)
-      Object.assign(_internal.HOSTS, was)
+      for (const k of HOST_KEYS) if (was[k] === undefined) delete hosts[k]
+      Object.assign(hosts, was)
     },
   }
 }

@@ -1,28 +1,59 @@
 # @magpie-community/opencode-trae-auth
 
-Signs in to **Trae CN** (trae.cn, ByteDance's AI IDE) with your Trae CN
-account, the way the IDE does, and makes its model requests. The free tier
-works as well. Provider id: `trae-cn`.
+Two providers, one package: **Trae CN** (trae.cn, ByteDance's AI IDE, provider
+id `trae-cn`) and **Trae Global** (trae.ai, the international deployment,
+provider id `trae-global`). Each signs in with its own Trae account, the way
+the IDE does, and makes its model requests. The free tier works as well.
 
-> **Experimental.** The protocol was worked out from two open-source relays,
-> [wangqi233/trae2api](https://github.com/wangqi233/trae2api) and
-> [autumnsentiment/Trae2api-cn](https://github.com/autumnsentiment/Trae2api-cn).
-> The plugin hasn't been run against a real Trae CN account yet. If something
-> fails, open an issue and include the error magpie shows.
+The two are separate services — different domains, a different client's
+catalog, barely overlapping model lists — so they are two providers rather
+than a setting. They share one implementation: the request, stream and
+tool-call machinery is the same code, and each realm is a table (hosts,
+client, versions, usage page, fallback models, error codes) in `index.mjs`.
+A fix to that machinery reaches both.
+
+| Provider id | Signs in to | Endpoints |
+|---|---|---|
+| `trae-cn` | Trae CN (trae.cn) | `api.trae.cn`, `trae-api-cn.mchost.guru` |
+| `trae-global` | Trae international (trae.ai) | `growsg-normal.trae.ai`, `coresg-normal.trae.ai` (SG) / `coreva-normal.trae.ai` (US) |
+
+> **Experimental (both).** The CN protocol was worked out from two
+> open-source relays, [wangqi233/trae2api](https://github.com/wangqi233/trae2api)
+> and [autumnsentiment/Trae2api-cn](https://github.com/autumnsentiment/Trae2api-cn),
+> and the international one from the same relays' realm table. Neither has
+> been run against a real account here: Trae CN has not been tried at all, and
+> Trae Global has been tried on one Free account in the SG region only — no
+> Pro and no US account. Paid-account behaviour (which models a plan lists,
+> what its allowance shows) is implemented from the interface's shape, not
+> confirmed on a live one. If something fails, open an issue and include the
+> error magpie shows.
 
 ## Sign-in
 
-One way, **Trae CN account (browser)**. The plugin opens trae.cn's
-authorization page (`www.trae.cn/authorization`, the IDE's client
-`ono9krqynydwx5`). Sign in there and allow the sign-in. trae.cn then sends the
-browser back to a callback on `http://127.0.0.1:<port>/authorize`; it accepts
+One way per provider, **Trae CN account (browser)** or **Trae Global account
+(browser)**. The plugin opens that realm's authorization page
+(`www.trae.cn/authorization` or `www.trae.ai/authorization`, the IDE's client
+`ono9krqynydwx5`). Sign in there and allow the sign-in; the page then sends the
+browser back to a callback on `http://127.0.0.1:<port>/authorize` — it accepts
 no other kind of callback. The callback carries the account's Cloud-IDE-JWT,
 refresh token and account. Nothing needs pasting back.
+
+An account of one realm does not sign in to the other: trae.cn's accounts are
+not trae.ai's.
 
 At sign-in the plugin creates the account's device and names it to the
 authorization page: `device_id` (19 digits) and `machine_id` (32 hex). Every
 request then sends that same device. The relays saw requests dropped when the
 device was new each time.
+
+### The international realm's region
+
+Trae Global has two deployments. The sign-in's `AIRegion` (or a US auth host
+such as `api-us-east.trae.ai`) selects the US one; anything else uses the SG
+one. The US account's model requests go to `coreva-normal.trae.ai` and its
+usage page to `api-us-east.trae.ai`; the SG account uses
+`coresg-normal.trae.ai` and `api-sg-central.trae.ai`. Nothing has to be
+configured: the region rides in the saved sign-in.
 
 ## Requests
 
@@ -94,16 +125,18 @@ thinking level, so the plugin lists no variants and a level an agent
 picks does nothing.
 
 When no
-list can be read, the plugin uses the models Trae CN's `chat_v3` is
-known to serve: GLM-5.2, GLM-5, Kimi K2.6, Qwen 3.7 Plus, DeepSeek V4 Pro
-and DeepSeek V4 Flash.
+list can be read, the plugin uses the realm's own fallback list. Trae CN's
+`chat_v3` is known to serve GLM-5.2, GLM-5, Kimi K2.6, Qwen 3.7 Plus,
+DeepSeek V4 Pro and DeepSeek V4 Flash; Trae Global's serves GPT-5.4,
+Gemini 3 Flash, Kimi K2.5, MiniMax M2 and DeepSeek V3.2. The live list
+replaces either.
 
 ## Renewal
 
-The JWT is renewed with the refresh token at
-`api.trae.cn/cloudide/api/v3/trae/oauth/ExchangeToken`. Trae issues a new
-refresh token each time and spends the old one, so only one renewal runs at
-a time.
+The JWT is renewed with the refresh token at the realm's auth host,
+`/cloudide/api/v3/trae/oauth/ExchangeToken` (`api.trae.cn` for Trae CN,
+`growsg-normal.trae.ai` for Trae Global). Trae issues a new refresh token
+each time and spends the old one, so only one renewal runs at a time.
 
 magpie renews the JWT ten minutes before it ends (`refreshLead`) through
 `auth.refresh`. Each request also checks it, two minutes before the end, for
@@ -112,7 +145,8 @@ OpenCode.
 The account is marked for a new sign-in in these cases:
 
 - the refresh token is turned away;
-- a request is answered 401, or with code 1001.
+- a request is answered 401, or with a code that means the sign-in lapsed:
+  1001 for both realms, and 20101 for Trae Global.
 
 Trae signs other clients out of an account when its token is renewed. The
 IDE may therefore ask you to sign in again after magpie renews.
@@ -121,13 +155,16 @@ IDE may therefore ask you to sign in again after magpie renews.
 
 | Trae's answer | What the agent gets |
 | --- | --- |
-| 401 / code 1001 | 401, and the account is marked for a new sign-in |
-| code 4008 / 1005 (quota, plan) | 429 |
+| 401 / code 1001 (both), 20101 (Global) | 401, and the account is marked for a new sign-in |
+| code 4008 / 1005 (quota, plan; both), 4011 (Global) | 429 |
 | Anything else | Trae's message and code, as a 502 or Trae's own status |
 
 ## Usage
 
-magpie's usage card shows the account's credits:
+magpie's usage card shows the account's plan and allowance, from whichever
+page the realm bills on:
+
+**Trae CN** — the credits page:
 
 - **Source:** `api.trae.cn/trae/api/v2/pay/ide_user_ent_usage`.
 - **What it adds up:** each entitlement pack's `credits_limit` (-1 means
@@ -136,9 +173,23 @@ magpie's usage card shows the account's credits:
   total, with the share, which magpie shows as used or left like
   WorkBuddy's.
 
+**Trae Global** — the dollar billing's entitlements:
+
+- **Source:** `POST api-sg-central.trae.ai/trae/api/v1/pay/user_current_entitlement_list`
+  (a US account asks `api-us-east.trae.ai`).
+- **What it adds up:** the pack's allowance in dollars
+  (`basic_usage_limit` plus `bonus_usage_limit`) and what was used of each
+  (`basic_usage_amount`, `bonus_usage_amount`).
+- **What it shows:** one Dollar Usage window, the dollars used of the
+  allowance, resetting when the pack ends.
+
+A 200 carrying an error code is shown as Trae's own message rather than as
+an empty answer.
+
 ## Daily check-in
 
-Trae CN gives credits for a daily check-in (每日签到). magpie can press it
+Trae CN gives credits for a daily check-in (每日签到); Trae Global has no
+such page, so this is CN only. magpie can press it
 once a day for each account (Settings, or the switch on the usage card).
 It asks Trae CN's own pages through
 this plugin's fetch, which sends them as the account: its Cloud-IDE-JWT

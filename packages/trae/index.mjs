@@ -12,45 +12,200 @@
 import { randomBytes, randomUUID, randomInt } from "node:crypto"
 import { createServer, STATUS_CODES } from "node:http"
 
-const ID = "trae-cn"
-// where each part of Trae CN is served; tests point them at a fake
-const HOSTS = {
-  web: "https://www.trae.cn", // the authorization page
-  auth: "https://api.trae.cn", // tokens, the account, credits
-  api: "https://trae-api-cn.mchost.guru", // the models
+const SITES = {
+  // Trae CN (trae.cn): the authorization page sends the browser back to a
+  // callback on 127.0.0.1 with the account's Cloud-IDE-JWT and refresh
+  // token; the refresh token is exchanged for a new JWT at
+  // /cloudide/api/v3/trae/oauth/ExchangeToken; model requests go to the IDE
+  // agent's /api/agent/v3/llm_utils_chat, which answers in its own SSE
+  // events. Worked out from two open-source relays (wangqi233/trae2api and
+  // autumnsentiment/Trae2api-cn); not run against a real account here.
+  // The account's fetch also sends Trae CN's own pages on api.trae.cn
+  // (/trae/api/…) as the account, for magpie's daily check-in (每日签到:
+  // /trae/api/v2/ug/checkin_credits/status, then /claim).
+  "trae-cn": {
+    id: "trae-cn",
+    name: "Trae CN",
+    realm: "Trae CN", // the name the errors and messages carry
+    webHost: "trae.cn", // the bare host the sign-in copy names
+    // where each part of Trae CN is served; tests point them at a fake
+    hosts: {
+      web: "https://www.trae.cn", // the authorization page
+      auth: "https://api.trae.cn", // tokens, the account, credits
+      api: "https://trae-api-cn.mchost.guru", // the models
+    },
+    clientId: "ono9krqynydwx5", // Trae CN's IDE
+    appId: "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
+    ideVersion: "3.3.65", // named to the authorization page
+    ideVersionCode: "20260401",
+    // the client the model host is told it serves: TRAE SOLO CN 0.1.69, as
+    // its ai-agent names itself (same app id). Trae offers a model only to
+    // clients new enough for it, and an April IDE was offered no
+    // deepseek-v4.1-flash.
+    clientVersion: "0.1.69",
+    clientVersionCode: "20260917",
+    pluginVersion: "2.3.24254",
+    brand: "ASUS TUF Gaming A15 FA507RM_FA507RM",
+    // the IDE's chat functions: the classic IDE's agent, then SOLO's Work
+    // mode, then the TRAE agent (solo_agent, which has deepseek-v4.1-flash),
+    // then SOLO Lite's agent
+    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite"],
+    // what Trae CN's chat_v3 is known to serve; the live list replaces it
+    // (the MODEL defaults are spread in at the end of the module, once MODEL
+    // is defined, so a site's entry only names what differs)
+    models: {
+      "glm-5.2": { name: "GLM-5.2", limit: { context: 200_000, output: 32_000 } },
+      "glm-5": { name: "GLM-5" },
+      "kimi-k2.6": { name: "Kimi K2.6", limit: { context: 256_000, output: 0 } },
+      "qwen-3.7-plus": { name: "Qwen 3.7 Plus" },
+      "DeepSeek-V4-Pro": { name: "DeepSeek V4 Pro" },
+      "DeepSeek-V4-Flash": { name: "DeepSeek V4 Flash" },
+    },
+    // the model host for an account: Trae CN's own hosts serve no models,
+    // so only a host that is one is taken, else the one gateway
+    apiOf: (a) => {
+      const h = String(a?.api ?? "").replace(/\/+$/, "")
+      return /mchost\.guru|trae-api-/i.test(h) ? h : SITES["trae-cn"].hosts.api
+    },
+    // whether a host named by a sign-in is one of the model hosts
+    modelHost: (h) => /mchost\.guru|trae-api-/i.test(String(h ?? "")),
+    // ownPage: url is one of Trae CN's own JSON pages on api.trae.cn
+    // (/trae/api/…: the daily check-in, credits), which the account's fetch
+    // sends as the account rather than as a chat
+    ownPage: (url) => {
+      try {
+        const u = new URL(url)
+        return u.origin === new URL(SITES["trae-cn"].hosts.auth).origin && u.pathname.startsWith("/trae/api/")
+      } catch {
+        return false
+      }
+    },
+    // Trae CN's account info carries no region: its one deployment is the
+    // one it is asked through
+    regionOf: () => "",    // where usage is asked, and which page it is (CN: credits)
+    usage: {
+      kind: "credits",
+      path: "/trae/api/v2/pay/ide_user_ent_usage",
+      label: "credits",
+      host: (site) => site.hosts.auth,
+      body: { require_usage: true, req_source: 0 },
+      read: (v, a, signIn, { credits, round }) => {
+        const c = credits(v)
+        const out = { plan: v.is_credits_billing ? "Credits" : "Free", user: a.name || a.uid, signIn }
+        if (c.unlimited) out.balance = "unlimited"
+        else if (c.limit > 0) {
+          // the count rides on the window (amount of limit, in credits), as
+          // WorkBuddy's does, so magpie says it in the window's row, used or
+          // left, in its own words and number format, rather than as an
+          // English balance line beside it (yetone/magpie#694)
+          const w = { name: "Credits", used: Math.max(0, Math.min(100, (c.used / c.limit) * 100)), amount: round(c.used), limit: round(c.limit), unit: "credits" }
+          if (c.until) w.resetsAt = new Date(c.until).toISOString()
+          out.windows = [w]
+        }
+        return out
+      },
+    },
+  },
+  // Trae international (trae.ai): the same IDE sign-in flow against the
+  // international deployment. Its own authorization page, its own auth and
+  // chat hosts, a second (US) deployment the account's region selects, and
+  // the dollar billing's entitlements rather than the CN credits page.
+  // Worked out from the realm table of wangqi233/trae2api (cn/sg dual-region)
+  // and the login URL of wefew/trae2api; run against one Free SG account.
+  "trae-global": {
+    id: "trae-global",
+    name: "Trae Global",
+    realm: "Trae Global",
+    webHost: "trae.ai",
+    hosts: {
+      web: "https://www.trae.ai", // the authorization page
+      auth: "https://growsg-normal.trae.ai", // tokens, the account
+      api: "https://coresg-normal.trae.ai", // the models, SG
+      us: "https://coreva-normal.trae.ai", // the models, US
+      pay: "https://api-sg-central.trae.ai", // usage
+      usPay: "https://api-us-east.trae.ai", // usage, the US deployment
+    },
+    clientId: "ono9krqynydwx5",
+    appId: "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
+    ideVersion: "3.5.51", // named to the international IDE's current build
+    ideVersionCode: "20260401",
+    clientVersion: "0.1.69",
+    clientVersionCode: "20260917",
+    pluginVersion: "2.3.62834",
+    brand: "ASUS TUF Gaming A15 FA507RM_FA507RM",
+    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite"],
+    // what Trae Global's chat is known to serve (its catalog barely overlaps
+    // the CN one's); the live list replaces it
+    models: {
+      "gpt-5.4": { name: "GPT-5.4" },
+      "gemini-3-flash": { name: "Gemini 3 Flash", limit: { context: 1_000_000, output: 0 } },
+      "kimi-k2.5": { name: "Kimi K2.5", limit: { context: 256_000, output: 0 } },
+      "minimax-m2": { name: "MiniMax M2" },
+      "deepseek-v3.2": { name: "DeepSeek V3.2" },
+    },
+    // the model host: the account's region (or a US host the sign-in named)
+    // selects the US deployment, else the SG one
+    apiOf: (a) => {
+      const h = String(a?.api ?? "").replace(/\/+$/, "")
+      const region = String(a?.region ?? "").toUpperCase()
+      if (/coreva/i.test(h) || /api-us(?:[-.]|$)/i.test(h) || /^US(?:[-_ ]|$)/.test(region)) return SITES["trae-global"].hosts.us
+      if (/coresg/i.test(h)) return h
+      return SITES["trae-global"].hosts.api
+    },
+    // a sign-in names a host of Trae's, which can be an auth host
+    // (api-us-east), not the chat host
+    modelHost: (h) => /trae\.ai/i.test(String(h ?? "")),
+    // Trae Global serves no own JSON pages through the account's fetch
+    ownPage: () => false,
+    // the account's region, from the sign-in's user info
+    regionOf: (s) => String(s?.region ?? s?.aiRegion ?? s?.Region ?? s?.AIRegion ?? "").trim(),
+    // the international deployment also answers these
+    lapsed: [1001, "1001", 20101, "20101", 401, "401"],
+    quota: [4008, "4008", 1005, "1005", 4011, "4011"],
+    // where usage is asked, and which page it is (Global: the dollar
+    // billing's entitlements)
+    usage: {
+      kind: "dollar",
+      path: "/trae/api/v1/pay/user_current_entitlement_list",
+      label: "usage",
+      // the US account pays on its own host, the rest on the central one —
+      // the auth host's own /cloudide/api/v2/pay pages answer 403 Api Scope
+      // Forbidden here
+      host: (site, a) => (/^US(?:[-_ ]|$)/i.test(String(a?.region ?? "")) || /api-us/i.test(String(a?.api ?? "")) ? site.hosts.usPay : site.hosts.pay),
+      body: {},
+      read: (v, a, signIn, { round }) => {
+        const d = dollarUsageOf(v)
+        if (!d) return { error: "Trae Global usage: no entitlement pack in the answer", signIn, user: a.name }
+        const total = d.basic + d.bonus
+        const used = d.used + d.usedBonus
+        const out = { plan: d.plan || "Free", user: a.name || a.uid, signIn }
+        if (total > 0) {
+          // the allowance rides the window (amount of limit, in dollars), as
+          // WorkBuddy's does, so magpie says it in the window's row, used or
+          // left, in its own words and number format (yetone/magpie#694)
+          const w = { name: "Dollar Usage", used: Math.round(Math.max(0, Math.min(100, (used / total) * 100)) * 100) / 100, amount: round(used), limit: round(total), unit: "usd" }
+          if (d.end) w.resetsAt = new Date(d.end).toISOString()
+          out.windows = [w]
+        }
+        return out
+      },
+    },
+  },
 }
-const CLIENT_ID = "ono9krqynydwx5" // Trae CN's IDE
-const APP_ID = "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8"
-const IDE_VERSION = "3.3.65" // named to the authorization page
-const IDE_VERSION_CODE = "20260401"
-// the client the model host is told it serves: TRAE SOLO CN 0.1.69, as its
-// ai-agent names itself (same app id). Trae offers a model only to clients
-// new enough for it, and an April IDE was offered no deepseek-v4.1-flash.
-const CLIENT_VERSION = "0.1.69"
-const CLIENT_VERSION_CODE = "20260917"
-const PLUGIN_VERSION = "2.3.24254"
-const BRAND = "ASUS TUF Gaming A15 FA507RM_FA507RM"
+
 const SIGN_IN_TIMEOUT = 10 * 60 * 1000
 const EARLY_MS = 2 * 60 * 1000 // a token this close to its end is renewed before a request
 const LEAD_MS = 10 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
 const DAY = 24 * 3600 * 1000
-// the IDE's chat functions: the classic IDE's agent, then SOLO's Work
-// mode, then the TRAE agent (solo_agent, which has deepseek-v4.1-flash),
-// then SOLO Lite's agent
-const FUNCTIONS = ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite"]
 
 // a reply limit of 0 is one Trae doesn't say: magpie then takes models.dev's
 // for the model (magpie's catalog), where a made-up 32K told agents a far
 // smaller one than DeepSeek V4.1 Flash's (ARNO on magpie's Discord)
 const MODEL = { attachment: false, tool_call: true, reasoning: true, temperature: true, limit: { context: 128_000, output: 0 }, modalities: { input: ["text"], output: ["text"] } }
-// what Trae CN's chat_v3 is known to serve; the live list replaces it
-const MODELS = {
-  "glm-5.2": { name: "GLM-5.2", ...MODEL, limit: { context: 200_000, output: 32_000 } },
-  "glm-5": { name: "GLM-5", ...MODEL },
-  "kimi-k2.6": { name: "Kimi K2.6", ...MODEL, limit: { context: 256_000, output: 0 } },
-  "qwen-3.7-plus": { name: "Qwen 3.7 Plus", ...MODEL },
-  "DeepSeek-V4-Pro": { name: "DeepSeek V4 Pro", ...MODEL },
-  "DeepSeek-V4-Flash": { name: "DeepSeek V4 Flash", ...MODEL },
+// a site's fallback list names only what differs from MODEL: the defaults go
+// in here, where MODEL is defined (a site table above can't spread it)
+for (const site of Object.values(SITES)) {
+  for (const [id, m] of Object.entries(site.models)) site.models[id] = { ...MODEL, ...m }
 }
 
 const digits = (n) => Array.from({ length: n }, (_, i) => (i === 0 ? randomInt(1, 10) : randomInt(0, 10))).join("")
@@ -99,7 +254,7 @@ const parseJSON = (s) => {
 // The sign-in is kept as OpenCode keeps an OAuth one: access the
 // Cloud-IDE-JWT, refresh the refresh token, expires the JWT's end; beside
 // them the account, the client it was issued to and its device.
-function toAuth(s) {
+function toAuth(s, site) {
   return {
     type: "oauth",
     access: s.token,
@@ -107,15 +262,16 @@ function toAuth(s) {
     expires: s.expires || jwtExp(s.token) || Date.now() + DAY,
     accountId: s.name || s.uid,
     uid: s.uid,
-    clientId: s.clientId || CLIENT_ID,
+    clientId: s.clientId || site.clientId,
     deviceId: s.deviceId,
     machineId: s.machineId,
     // the model host the sign-in named, if it named one
-    ...(/mchost\.guru|trae-api-/i.test(s.api ?? "") ? { api: s.api } : {}),
+    ...(site.modelHost(s.api) ? { api: s.api } : {}),
+    ...(s.region ? { region: s.region } : {}),
   }
 }
 
-function fromAuth(auth) {
+function fromAuth(auth, site) {
   if (auth?.type !== "oauth" || !auth.access) return null
   return {
     token: auth.access,
@@ -123,31 +279,24 @@ function fromAuth(auth) {
     expires: Number(auth.expires) || 0,
     uid: String(auth.uid ?? ""),
     name: String(auth.accountId ?? ""),
-    clientId: auth.clientId || CLIENT_ID,
+    clientId: auth.clientId || site.clientId,
     deviceId: auth.deviceId || "",
     machineId: auth.machineId || "",
     api: auth.api || "",
+    region: site.regionOf(auth),
   }
 }
 
-// apiOf is the model host for an account: the one its sign-in named when
-// that is a model host (trae.cn's own hosts serve no models), else Trae
-// CN's
-function apiOf(a) {
-  const h = String(a?.api ?? "").replace(/\/+$/, "")
-  return /mchost\.guru|trae-api-/i.test(h) ? h : HOSTS.api
+// apiOf is the model host for an account
+function apiOf(a, site) {
+  return site.apiOf(a)
 }
 
-// ownPage: url is one of Trae CN's own JSON pages on api.trae.cn
-// (/trae/api/…: the daily check-in, credits), which the account's fetch
-// sends as the account rather than as a chat
-function ownPage(url) {
-  try {
-    const u = new URL(url)
-    return u.origin === new URL(HOSTS.auth).origin && u.pathname.startsWith("/trae/api/")
-  } catch {
-    return false
-  }
+// ownPage: url is one of Trae's own JSON pages (the daily check-in,
+// credits), which the account's fetch sends as the account rather than as
+// a chat
+function ownPage(url, site) {
+  return site.ownPage(url)
 }
 
 // ---- errors --------------------------------------------------------------------
@@ -173,9 +322,14 @@ function errorOf(v) {
 }
 
 // lapsed: Trae turned the token away. 1001 is its "not signed in".
-const lapsedCode = (code) => [1001, "1001", 401, "401"].includes(code)
+// lapsed: Trae turned the token away. 1001 is its "not signed in".
+// The realms differ in which codes they send: the international deployment
+// also answers 20101 for a token it no longer takes.
+const CN_LAPSED = [1001, "1001", 401, "401"]
+const lapsedCode = (code, site) => (site?.lapsed ?? CN_LAPSED).includes(code)
 const lapsedWords = /not ?log(ged)? ?in|unauthori[sz]ed|token (is )?(expired|invalid)|jwt|未登录|登录(已)?(过期|失效)/i
-const quotaCode = (code) => [4008, "4008", 1005, "1005"].includes(code)
+const CN_QUOTA = [4008, "4008", 1005, "1005"]
+const quotaCode = (code, site) => (site?.quota ?? CN_QUOTA).includes(code)
 const quotaWords = /quota|credit|insufficient|exceed|limit|额度|积分|次数|上限|用完/i
 
 // errorResponse is an OpenAI-style error, as the agent reads one
@@ -190,17 +344,17 @@ const errorResponse = (status, message, signIn) => {
 // exchange trades a refresh token for a new Cloud-IDE-JWT, as the IDE
 // does: the answer's Result holds the new token pair and the account.
 // Trae issues a new refresh token each time and spends the old one.
-async function exchange(refresh, clientId, host = HOSTS.auth) {
+async function exchange(refresh, clientId, site, host = site.hosts.auth) {
   let res
   try {
     res = await fetch(host.replace(/\/+$/, "") + "/cloudide/api/v3/trae/oauth/ExchangeToken", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ClientID: clientId || CLIENT_ID, RefreshToken: refresh, ClientSecret: "-", UserID: "" }),
+      body: JSON.stringify({ ClientID: clientId || site.clientId, RefreshToken: refresh, ClientSecret: "-", UserID: "" }),
       signal: AbortSignal.timeout(20_000),
     })
   } catch (e) {
-    throw new Error("Trae CN: renewing the sign-in: " + (e?.message ?? e))
+    throw new Error(`${site.realm}: renewing the sign-in: ` + (e?.message ?? e))
   }
   const text = await res.text()
   const v = parseJSON(text)
@@ -216,6 +370,7 @@ async function exchange(refresh, clientId, host = HOSTS.auth) {
       uid: String(info.UserID ?? info.userId ?? r.UserID ?? ""),
       name: String(info.ScreenName ?? info.screenName ?? ""),
       api: info.Host ?? "",
+      region: site.regionOf(info),
     }
   }
   const e = errorOf(text)
@@ -223,9 +378,9 @@ async function exchange(refresh, clientId, host = HOSTS.auth) {
   // a refresh token Trae no longer takes (spent, revoked, past its end, or
   // of another client) is a sign-in to make again
   if ([400, 401, 403].includes(res.status) || /refresh|expired|invalid|not matched|revoked|unauthori/i.test(msg) || String(e.code) === "10101") {
-    throw new Expired(`Trae CN's sign-in has expired (${msg}); sign in again`)
+    throw new Expired(`${site.realm}'s sign-in has expired (${msg}); sign in again`)
   }
-  throw new Error(`Trae CN: renewing the sign-in: ${statusLine(res.status)} ${msg}`.trim())
+  throw new Error(`${site.realm}: renewing the sign-in: ${statusLine(res.status)} ${msg}`.trim())
 }
 
 // ---- the browser sign-in --------------------------------------------------------
@@ -239,7 +394,7 @@ const page = (ok, title, text) => `<!doctype html><meta charset="utf-8"><meta na
 // signedIn reads trae.cn's callback: userJwt (the token pair) and userInfo
 // (the account), or, from its older page, a refresh token alone, which is
 // exchanged for the pair
-async function signedIn(q, device) {
+async function signedIn(q, device, site) {
   const jwt = parseJSON(q.get("userJwt"))
   const info = parseJSON(q.get("userInfo"))
   const host = q.get("host") || info.Host || ""
@@ -247,23 +402,24 @@ async function signedIn(q, device) {
     token: jwt.Token ?? jwt.token ?? "",
     refresh: jwt.RefreshToken ?? jwt.refreshToken ?? q.get("refreshToken") ?? "",
     expires: whenOf(jwt.TokenExpireAt ?? jwt.tokenExpireAt),
-    clientId: jwt.ClientID ?? jwt.clientId ?? q.get("clientId") ?? CLIENT_ID,
+    clientId: jwt.ClientID ?? jwt.clientId ?? q.get("clientId") ?? site.clientId,
     uid: String(info.UserID ?? info.userId ?? q.get("userId") ?? ""),
     name: String(info.ScreenName ?? info.screenName ?? ""),
     api: host,
+    region: site.regionOf(info),
   }
   if (!s.token && s.refresh) {
-    const x = await exchange(s.refresh, s.clientId)
-    s = { ...s, ...x, uid: x.uid || s.uid, name: x.name || s.name, api: x.api || s.api }
+    const x = await exchange(s.refresh, s.clientId, site)
+    s = { ...s, ...x, uid: x.uid || s.uid, name: x.name || s.name, api: x.api || s.api, region: x.region || s.region }
   }
-  if (!s.token) throw new Error("trae.cn sent back no token")
-  if (!s.refresh) throw new Error("trae.cn sent back no refresh token")
+  if (!s.token) throw new Error(`${site.webHost} sent back no token`)
+  if (!s.refresh) throw new Error(`${site.webHost} sent back no refresh token`)
   return { ...s, ...device }
 }
 
 // browserSignIn is the IDE's sign-in: trae.cn's authorization page, back
 // to a callback on 127.0.0.1 (the page takes no other kind)
-async function browserSignIn() {
+async function browserSignIn(site) {
   const device = newDevice()
   const trace = randomUUID()
   let over = false
@@ -275,7 +431,7 @@ async function browserSignIn() {
     settle(result)
   }
   const server = createServer(async (req, res) => {
-    // trae.cn's page may call the callback from script as well as open it
+    // the site's page may call the callback from script as well as open it
     const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" }
     if (req.method === "OPTIONS") return res.writeHead(204, cors).end()
     const url = new URL(req.url ?? "/", "http://127.0.0.1")
@@ -291,11 +447,11 @@ async function browserSignIn() {
       finish({ type: "failed", error: msg })
       return html(page(false, "Sign-in didn't finish", msg))
     }
-    if (!q.get("userJwt") && !q.get("refreshToken")) return html(page(false, "Nothing to sign in with", "trae.cn sent no token; start the sign-in again."))
+    if (!q.get("userJwt") && !q.get("refreshToken")) return html(page(false, "Nothing to sign in with", `${site.webHost} sent no token; start the sign-in again.`))
     try {
-      const s = await signedIn(q, device)
-      finish({ ...toAuth(s), type: "success" })
-      html(page(true, "You're signed in", `${s.name || s.uid || "Your Trae CN account"} is signed in. You can close this tab.`))
+      const s = await signedIn(q, device, site)
+      finish({ ...toAuth(s, site), type: "success" })
+      html(page(true, "You're signed in", `${s.name || s.uid || `Your ${site.name} account`} is signed in. You can close this tab.`))
     } catch (e) {
       finish({ type: "failed", error: e.message })
       html(page(false, "Sign-in didn't finish", e.message))
@@ -315,9 +471,9 @@ async function browserSignIn() {
     login_version: "1",
     auth_from: "solo",
     login_channel: "native_ide",
-    plugin_version: PLUGIN_VERSION,
+    plugin_version: site.pluginVersion,
     auth_type: "local",
-    client_id: CLIENT_ID,
+    client_id: site.clientId,
     redirect: "0",
     login_trace_id: trace,
     auth_callback_url: callback,
@@ -325,17 +481,17 @@ async function browserSignIn() {
     device_id: device.deviceId,
     x_device_id: device.deviceId,
     x_machine_id: device.machineId,
-    x_device_brand: BRAND,
+    x_device_brand: site.brand,
     x_device_type: "windows",
     x_os_version: "Windows 10 Pro",
     x_env: "",
-    x_app_version: IDE_VERSION,
+    x_app_version: site.ideVersion,
     x_app_type: "stable",
     hide_saas_login: "true",
   })
   return {
-    url: `${HOSTS.web}/authorization?${q}`,
-    instructions: "Sign in to Trae CN (trae.cn) in the browser and allow the sign-in. It finishes here by itself.",
+    url: `${site.hosts.web}/authorization?${q}`,
+    instructions: `Sign in to ${site.name} (${site.webHost}) in the browser and allow the sign-in. It finishes here by itself.`,
     method: "auto",
     callback: () => done,
   }
@@ -344,24 +500,24 @@ async function browserSignIn() {
 // ---- requests ---------------------------------------------------------------------
 
 // headers are the IDE's, for the account and its device
-function ideHeaders(a, extra = {}) {
+function ideHeaders(a, site, extra = {}) {
   return {
     "Content-Type": "application/json",
     Authorization: `Cloud-IDE-JWT ${a.token}`,
     "X-Cloudide-Token": a.token,
     "x-ide-token": a.token,
     "x-uid": a.uid,
-    "x-app-id": APP_ID,
+    "x-app-id": site.appId,
     "x-device-id": a.deviceId,
     "x-machine-id": a.machineId,
     "x-request-id": randomUUID(),
-    "x-app-version": CLIENT_VERSION,
-    "x-app-version-code": CLIENT_VERSION_CODE,
-    "x-ide-version": CLIENT_VERSION,
-    "x-ide-version-code": CLIENT_VERSION_CODE,
+    "x-app-version": site.clientVersion,
+    "x-app-version-code": site.clientVersionCode,
+    "x-ide-version": site.clientVersion,
+    "x-ide-version-code": site.clientVersionCode,
     "x-ide-version-type": "stable",
     "x-device-cpu": "AMD",
-    "x-device-brand": BRAND,
+    "x-device-brand": site.brand,
     "x-device-type": "windows",
     "x-os-version": "Windows 10",
     "x-system-type": "Windows",
@@ -500,28 +656,36 @@ async function* sse(stream) {
     yield { event: event || (v && typeof v === "object" ? String(v.event ?? v.type ?? "") : ""), data: v }
     event = ""
   }
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buf += dec.decode(value, { stream: true })
-    let i
-    while ((i = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, i).replace(/\r$/, "")
-      buf = buf.slice(i + 1)
-      if (!line) {
-        yield* flush()
-        continue
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      let i
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).replace(/\r$/, "")
+        buf = buf.slice(i + 1)
+        if (!line) {
+          yield* flush()
+          continue
+        }
+        if (line.startsWith(":")) continue
+        if (line.startsWith("event:")) {
+          yield* flush()
+          event = line.slice(6).trim()
+        } else if (line.startsWith("data:")) data.push(line.slice(5).trimStart())
       }
-      if (line.startsWith(":")) continue
-      if (line.startsWith("event:")) {
-        yield* flush()
-        event = line.slice(6).trim()
-      } else if (line.startsWith("data:")) data.push(line.slice(5).trimStart())
     }
+    buf += dec.decode()
+    if (buf.startsWith("data:")) data.push(buf.slice(5).trimStart())
+    yield* flush()
+  } finally {
+    // the answer the agent goes away from (a tool call made, a request
+    // aborted) closes this generator mid-read: let Trae's connection go,
+    // or the read hangs on and the host the next ask reuses is one Trae
+    // has dropped — a stream that runs, then dies
+    reader.cancel().catch(() => {})
   }
-  buf += dec.decode()
-  if (buf.startsWith("data:")) data.push(buf.slice(5).trimStart())
-  yield* flush()
 }
 
 // normalised event names: "TokenUsage", "token-usage" → token_usage
@@ -1023,17 +1187,21 @@ async function* chain(held, it) {
 }
 
 // failure is the response for an error Trae answered with
-function failure(status, code, message) {
+function failure(site, status, code, message) {
   message = message || statusLine(status)
-  if (status === 401 || lapsedCode(code) || (status === 403 && lapsedWords.test(message))) {
-    return errorResponse(401, `Trae CN's sign-in has expired (${message}); sign in again`, "expired")
+  if (status === 401 || lapsedCode(code, site) || (status === 403 && lapsedWords.test(message))) {
+    return errorResponse(401, `${site.realm}'s sign-in has expired (${message}); sign in again`, "expired")
   }
-  if (status === 429 || quotaCode(code) || (status === 403 && quotaWords.test(message))) return errorResponse(429, `Trae CN: ${message}`)
-  return errorResponse(status >= 400 ? status : 502, `Trae CN: ${message}${code ? ` (code ${code})` : ""}`)
+  if (status === 429 || quotaCode(code, site) || (status === 403 && quotaWords.test(message))) return errorResponse(429, `${site.realm}: ${message}`)
+  return errorResponse(status >= 400 ? status : 502, `${site.realm}: ${message}${code ? ` (code ${code})` : ""}`)
 }
 
 // openai is the answer as an OpenAI chat completion: a stream, or one body
-async function openai(req, it) {
+// abort, when given, lets the answer's reader close Trae's connection the
+// moment the agent goes away (a tool call made, a request cancelled): a
+// generator's return can't break a read that is already waiting, so the
+// fetch itself is what has to be stopped
+async function openai(req, it, abort, site) {
   const id = "chatcmpl-" + randomBytes(12).toString("hex")
   const created = Math.floor(Date.now() / 1000)
   const model = req.model
@@ -1044,7 +1212,7 @@ async function openai(req, it) {
     let usage = null
     let finish = ""
     for await (const p of it) {
-      if (p.error) return failure(502, p.code, p.error)
+      if (p.error) return failure(site, 502, p.code, p.error)
       if (p.text) text += p.text
       if (p.reasoning) reasoning += p.reasoning
       if (p.call) calls.push(p.call)
@@ -1106,6 +1274,7 @@ async function openai(req, it) {
     },
     cancel() {
       gone = true
+      abort?.()
       it.return?.()
     },
   })
@@ -1127,6 +1296,10 @@ function chatModel(m) {
   if (m.usage && m.usage !== "chat_completion") return false
   if (m.config_switch === false) return false
   if (m.is_custom_model === true || m.display_config?.is_custom_model === true) return false
+  // the IDE's own picker hides these: Auto-mode routing channels and
+  // pay-as-you-go twins of another entry (gemini-3.1-pro vs -paygo/-auto,
+  // the search_agent family), not entries to pick by hand
+  if (m.is_invisible_to_user === true) return false
   return true
 }
 
@@ -1179,9 +1352,26 @@ function credits(v) {
 
 const round = (n) => Math.round(n * 100) / 100
 
+// dollarUsageOf reads an account's entitlement pack as the dollar billing
+// has it (the international deployment): the period's allowance in dollars
+// (basic_usage_limit plus bonus_usage_limit) and what was used of each
+// (basic_usage_amount, bonus_usage_amount). null when the answer carries no
+// pack.
+function dollarUsageOf(v) {
+  const pack = (v?.user_entitlement_pack_list ?? []).find((p) => p?.usage || p?.entitlement_base_info?.quota)
+  const quota = pack?.entitlement_base_info?.quota
+  if (!pack || !quota) return null
+  const basic = Number(quota.basic_usage_limit) || 0
+  const bonus = Number(quota.bonus_usage_limit) || 0
+  const used = Number(pack.usage?.basic_usage_amount) || 0
+  const usedBonus = Number(pack.usage?.bonus_usage_amount) || 0
+  const end = whenOf(pack.entitlement_base_info.end_time)
+  return { plan: String(pack.display_desc ?? ""), basic, bonus, used, usedBonus, end }
+}
+
 // ---- the plugin ---------------------------------------------------------------------
 
-export const TraeCNAuthPlugin = async ({ client }) => {
+const makePlugin = (site) => async ({ client }) => {
   // renewals under way, one to a refresh token (Trae spends it once), and
   // the last each account got here, so a sign-in from before it is given
   // that one rather than spending the token again
@@ -1198,7 +1388,7 @@ export const TraeCNAuthPlugin = async ({ client }) => {
 
   const save = async (auth) => {
     try {
-      await client?.auth?.set?.({ path: { id: ID }, body: auth })
+      await client?.auth?.set?.({ path: { id: site.id }, body: auth })
     } catch {}
   }
 
@@ -1207,10 +1397,10 @@ export const TraeCNAuthPlugin = async ({ client }) => {
     let r = renewing.get(key)
     if (!r) {
       r = (async () => {
-        const x = await exchange(a.refresh, a.clientId)
+        const x = await exchange(a.refresh, a.clientId, site)
         const got = { ...a, token: x.token, refresh: x.refresh, expires: x.expires || jwtExp(x.token) || Date.now() + DAY, clientId: x.clientId || a.clientId, renewed: true }
         renewed.set(a.uid || a.name, { was: a.refresh, got })
-        if (keep) await save(toAuth(got))
+        if (keep) await save(toAuth(got, site))
         return got
       })().finally(() => renewing.delete(key))
       renewing.set(key, r)
@@ -1221,8 +1411,8 @@ export const TraeCNAuthPlugin = async ({ client }) => {
   // fresh is the account with a token that has a while to go, renewed
   // when it hasn't
   const fresh = async (getAuth) => {
-    const a = fromAuth(await getAuth())
-    if (!a) throw new Expired("Trae CN: not signed in")
+    const a = fromAuth(await getAuth(), site)
+    if (!a) throw new Expired(`${site.realm}: not signed in`)
     const last = renewed.get(a.uid || a.name)
     if (last && last.was === a.refresh) return { ...last.got, renewed: false }
     if (!a.expires || a.expires - Date.now() > EARLY_MS || !a.refresh) return a
@@ -1238,7 +1428,7 @@ export const TraeCNAuthPlugin = async ({ client }) => {
   // refresh is magpie's auth.refresh: the token renewed LEAD_MS before its
   // end, as the fields that changed
   const refresh = async (auth) => {
-    const a = fromAuth(auth)
+    const a = fromAuth(auth, site)
     if (!a || !a.refresh) return undefined
     const last = renewed.get(a.uid || a.name)
     if (last && last.was === a.refresh) return { access: last.got.token, refresh: last.got.refresh, expires: last.got.expires }
@@ -1248,7 +1438,7 @@ export const TraeCNAuthPlugin = async ({ client }) => {
 
   // post asks one of Trae's JSON pages with the account
   const post = async (a, url, body) => {
-    const res = await fetch(url, { method: "POST", headers: ideHeaders(a, { Accept: "application/json" }), body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) })
+    const res = await fetch(url, { method: "POST", headers: ideHeaders(a, site, { Accept: "application/json" }), body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) })
     const text = await res.text()
     return { status: res.status, text, v: parseJSON(text) }
   }
@@ -1273,12 +1463,12 @@ export const TraeCNAuthPlugin = async ({ client }) => {
     // 0.1.6 failed from then on (yetone/magpie#808)
     const res = await fetch(url, {
       method,
-      headers: ideHeaders(a, { Accept: "application/json" }),
+      headers: ideHeaders(a, site, { Accept: "application/json" }),
       body: method === "GET" || method === "HEAD" ? undefined : typeof body === "string" ? body : "{}",
       signal: signal ?? AbortSignal.timeout(20_000),
     })
     const text = await res.text()
-    const lapsed = res.status === 401 || lapsedCode(errorOf(text).code)
+    const lapsed = res.status === 401 || lapsedCode(errorOf(text).code, site)
     const headers = { "content-type": res.headers.get("content-type") ?? "application/json", "X-Magpie-Sign-In": lapsed ? "expired" : a.renewed ? "renewed" : "kept" }
     return new Response(text, { status: res.status, headers })
   }
@@ -1293,44 +1483,32 @@ export const TraeCNAuthPlugin = async ({ client }) => {
     const signIn = a.renewed ? "renewed" : "kept"
     let r
     try {
-      r = await post(a, HOSTS.auth + "/trae/api/v2/pay/ide_user_ent_usage", { require_usage: true, req_source: 0 })
+      r = await post(a, site.usage.host(site, a) + site.usage.path, site.usage.body)
     } catch (e) {
-      return { error: "Trae CN credits: " + (e?.message ?? e), signIn }
+      return { error: `${site.realm} ${site.usage.label}: ` + (e?.message ?? e), signIn }
     }
     const e = errorOf(r.v)
-    if (r.status === 401 || lapsedCode(e.code)) return { error: `${a.name || a.uid}: Trae CN's sign-in has expired — sign in again`, signIn: "expired" }
-    if (r.status !== 200 || (e.code && String(e.code) !== "0")) return { error: `Trae CN credits: ${e.message || statusLine(r.status)}`, signIn, user: a.name }
-    const c = credits(r.v)
-    const out = { plan: r.v.is_credits_billing ? "Credits" : "Free", user: a.name || a.uid, signIn }
-    if (c.unlimited) out.balance = "unlimited"
-    else if (c.limit > 0) {
-      // the count rides on the window (amount of limit, in credits), as
-      // WorkBuddy's does, so magpie says it in the window's row, used or
-      // left, in its own words and number format, rather than as an
-      // English balance line beside it (yetone/magpie#694)
-      const w = { name: "Credits", used: Math.max(0, Math.min(100, (c.used / c.limit) * 100)), amount: round(c.used), limit: round(c.limit), unit: "credits" }
-      if (c.until) w.resetsAt = new Date(c.until).toISOString()
-      out.windows = [w]
-    }
-    return out
+    if (r.status === 401 || lapsedCode(e.code, site)) return { error: `${a.name || a.uid}: ${site.realm}'s sign-in has expired — sign in again`, signIn: "expired" }
+    if (r.status !== 200 || (e.code && String(e.code) !== "0")) return { error: `${site.realm} ${site.usage.label}: ${e.message || statusLine(r.status)}`, signIn, user: a.name }
+    return site.usage.read(r.v, a, signIn, { credits, round, statusLine })
   }
 
   // batchLists is every chat function's model list in one ask, as TRAE
   // SOLO CN's ai-agent asks (batch_get_detail_param): {function: entries}.
   // null when Trae answers it with no lists.
   const batchLists = async (a) => {
-    const r = await post(a, apiOf(a) + "/api/ide/v1/batch_get_detail_param", {
-      functions: FUNCTIONS, agent_type: "", current_config_info: { config_name: "", is_custom_model: false },
+    const r = await post(a, apiOf(a, site) + "/api/ide/v1/batch_get_detail_param", {
+      functions: site.functions, agent_type: "", current_config_info: { config_name: "", is_custom_model: false },
       mode_type: 0, access_type: 0, ab_force_vids: "", ab_autotest_advanced_mode: 0, show_custom_model: true,
     })
-    if (r.status === 401 || lapsedCode(errorOf(r.v).code)) throw new Expired("Trae CN's sign-in has expired; sign in again")
-    if (r.status !== 200) throw new Error(`Trae CN models: ${statusLine(r.status)}`)
+    if (r.status === 401 || lapsedCode(errorOf(r.v).code, site)) throw new Expired(`${site.realm}'s sign-in has expired; sign in again`)
+    if (r.status !== 200) throw new Error(`${site.realm} models: ${statusLine(r.status)}`)
     const groups = r.v.function_configs ?? r.v.data?.function_configs
     if (!Array.isArray(groups)) return null
     const out = {}
     for (const g of groups) {
       const fn = String(g?.function ?? "")
-      if (!FUNCTIONS.includes(fn) || !Array.isArray(g.config_info_list)) continue
+      if (!site.functions.includes(fn) || !Array.isArray(g.config_info_list)) continue
       out[fn] = [...(out[fn] ?? []), ...g.config_info_list.filter((m) => m?.config_name)]
     }
     return Object.keys(out).length ? out : null
@@ -1338,11 +1516,11 @@ export const TraeCNAuthPlugin = async ({ client }) => {
 
   // listOf is one function's model list, as the IDE asks for it
   const listOf = async (a, fn) => {
-    const r = await post(a, apiOf(a) + "/api/ide/v1/get_detail_param", {
+    const r = await post(a, apiOf(a, site) + "/api/ide/v1/get_detail_param", {
       function: fn, config_names: null, need_prompt: false, current_config_info: null, poly_prompt: true, mode_type: null, agent_type: null,
     })
-    if (r.status === 401 || lapsedCode(errorOf(r.v).code)) throw new Expired("Trae CN's sign-in has expired; sign in again")
-    if (r.status !== 200) throw new Error(`Trae CN models: ${statusLine(r.status)}`)
+    if (r.status === 401 || lapsedCode(errorOf(r.v).code, site)) throw new Expired(`${site.realm}'s sign-in has expired; sign in again`)
+    if (r.status !== 200) throw new Error(`${site.realm} models: ${statusLine(r.status)}`)
     const list = r.v.config_info_list ?? r.v.data?.config_info_list ?? []
     return list.filter((m) => m?.config_name)
   }
@@ -1366,13 +1544,13 @@ export const TraeCNAuthPlugin = async ({ client }) => {
       if (e instanceof Expired) throw e
     }
     if (!lists) {
-      const got = await Promise.allSettled(FUNCTIONS.map((fn) => listOf(a, fn)))
+      const got = await Promise.allSettled(site.functions.map((fn) => listOf(a, fn)))
       const expired = got.find((g) => g.status === "rejected" && g.reason instanceof Expired)
       if (expired) throw expired.reason
       if (got.every((g) => g.status === "rejected")) throw got[0].reason
       lists = {}
       got.forEach((g, i) => {
-        if (g.status === "fulfilled") lists[FUNCTIONS[i]] = g.value
+        if (g.status === "fulfilled") lists[site.functions[i]] = g.value
       })
     }
     // a function can give a model another's name: chat_v3 calls
@@ -1383,7 +1561,7 @@ export const TraeCNAuthPlugin = async ({ client }) => {
     // model's in the same list, and other lists name it otherwise.
     const nameOf = (m) => String(m.display_config?.display_name || m.display_name || m.display_model_name || m.config_name)
     const names = new Map() // id → the names its lists give it
-    for (const fn of FUNCTIONS) {
+    for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
         if (!chatModel(m)) continue
         const id = String(m.config_name)
@@ -1398,7 +1576,7 @@ export const TraeCNAuthPlugin = async ({ client }) => {
     // when it isn't misnamed; the first of the best is taken
     const worth = (fn, m) => (devModel(m) ? 2 : 0) + (misnamed(fn, m) ? 0 : 1)
     const out = new Map()
-    for (const fn of FUNCTIONS) {
+    for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
         if (!chatModel(m)) continue
         const id = String(m.config_name)
@@ -1413,7 +1591,7 @@ export const TraeCNAuthPlugin = async ({ client }) => {
       else modelNames.delete(id)
       if (out.has(id + MAX)) continue
       // its Max is asked through the function whose entry names the __max model
-      const entries = [{ m, fn }, ...FUNCTIONS.flatMap((f) => (lists[f] ?? []).filter((o) => o !== m && chatModel(o) && String(o.config_name) === id).map((o) => ({ m: o, fn: f })))]
+      const entries = [{ m, fn }, ...site.functions.flatMap((f) => (lists[f] ?? []).filter((o) => o !== m && chatModel(o) && String(o.config_name) === id).map((o) => ({ m: o, fn: f })))]
       const max = maxModel(...entries.map((e) => e.m))
       maxes.set(id, max)
       if (max) {
@@ -1435,23 +1613,23 @@ export const TraeCNAuthPlugin = async ({ client }) => {
     const ctx = Number(m.context_window_tokens?.dev ?? m.context_window_size?.max?.[0] ?? m.context_window_size?.max ?? m.context_window_tokens?.max ?? m.prompt_max_tokens) || was.limit?.context || MODEL.limit.context
     const out = Number(devModel(m)?.max_tokens) || was.limit?.output || 0
     const name = m.display_config?.display_name || m.display_name || m.display_model_name || was.name || id
-    return { ...MODEL, ...was, id, providerID: ID, name: String(name), limit: { context: ctx, output: out }, api: was.api ?? { id, url: HOSTS.api, npm: "@ai-sdk/openai-compatible" } }
+    return { ...MODEL, ...was, id, providerID: site.id, name: String(name), limit: { context: ctx, output: out }, api: was.api ?? { id, url: site.hosts.api, npm: "@ai-sdk/openai-compatible" } }
   }
 
   return {
     config: async (config) => {
       config.provider ??= {}
-      const was = config.provider[ID] ?? {}
-      config.provider[ID] = {
-        name: "Trae CN",
+      const was = config.provider[site.id] ?? {}
+      config.provider[site.id] = {
+        name: site.name,
         npm: "@ai-sdk/openai-compatible",
-        api: HOSTS.api + "/v1",
+        api: site.hosts.api + "/v1",
         ...was,
-        models: { ...MODELS, ...(was.models ?? {}) },
+        models: { ...site.models, ...(was.models ?? {}) },
       }
     },
     provider: {
-      id: ID,
+      id: site.id,
       // the account's own list, when Trae answers; else the list above
       async models(provider, { auth }) {
         if (auth?.type !== "oauth" || !auth.access) return provider.models
@@ -1475,7 +1653,7 @@ export const TraeCNAuthPlugin = async ({ client }) => {
       },
     },
     auth: {
-      provider: ID,
+      provider: site.id,
       usage,
       // magpie renews the token LEAD_MS before its end, once, before its
       // requests, models and usage ask; the check before each request
@@ -1483,10 +1661,10 @@ export const TraeCNAuthPlugin = async ({ client }) => {
       refreshLead: LEAD_MS,
       refresh,
       loader: async (getAuth) => {
-        const a0 = fromAuth(await getAuth())
+        const a0 = fromAuth(await getAuth(), site)
         if (!a0) return {}
         return {
-          baseURL: apiOf(a0) + "/v1",
+          baseURL: apiOf(a0, site) + "/v1",
           apiKey: "trae", // the engine's placeholder; the request carries the JWT
           async fetch(input, init = {}) {
             const r0 = input instanceof Request ? input : null
@@ -1494,7 +1672,7 @@ export const TraeCNAuthPlugin = async ({ client }) => {
             if (body instanceof ArrayBuffer) body = new TextDecoder().decode(body)
             else if (ArrayBuffer.isView(body)) body = new TextDecoder().decode(new Uint8Array(body.buffer, body.byteOffset, body.byteLength))
             const url = r0 ? r0.url : input instanceof URL ? input.href : String(input)
-            if (ownPage(url)) return ownRequest(getAuth, a0, url, init.method ?? r0?.method ?? "POST", body, init.signal ?? r0?.signal)
+            if (ownPage(url, site)) return ownRequest(getAuth, a0, url, init.method ?? r0?.method ?? "POST", body, init.signal ?? r0?.signal)
             const req = parseJSON(body)
             if (!Array.isArray(req.messages)) return errorResponse(400, "Trae CN: only chat completions are served")
             let a
@@ -1508,7 +1686,7 @@ export const TraeCNAuthPlugin = async ({ client }) => {
             const who = a.uid || a.name
             // the function that lists the model first, then the one that
             // served this account last, then the rest
-            const fns = [...new Set([listedBy.get(String(req.model)), fnOf.get(who), ...FUNCTIONS].filter(Boolean))]
+            const fns = [...new Set([listedBy.get(String(req.model)), fnOf.get(who), ...site.functions].filter(Boolean))]
             let last
             let named = modelNames.get(String(req.model))
             if (!named && String(req.model).endsWith(MAX)) {
@@ -1518,17 +1696,27 @@ export const TraeCNAuthPlugin = async ({ client }) => {
               if (named) fns.unshift(named.fn)
             }
             const max = named?.max ?? null
+            // the answer's own signal: the caller's abort (a cancelled
+            // request) and the stream's cancel both stop Trae's fetch, so
+            // no read is left hanging on a connection the agent walked
+            // away from
+            const ac = new AbortController()
+            const outer = init.signal ?? r0?.signal ?? null
+            if (outer) {
+              if (outer.aborted) ac.abort()
+              else outer.addEventListener("abort", () => ac.abort(), { once: true })
+            }
             for (const fn of [...new Set(fns)]) {
-              const res = await fetch(apiOf(a) + "/api/agent/v3/llm_utils_chat", {
+              const res = await fetch(apiOf(a, site) + "/api/agent/v3/llm_utils_chat", {
                 method: "POST",
-                headers: ideHeaders(a, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
+                headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
                 body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max)),
-                signal: init.signal ?? r0?.signal,
+                signal: ac.signal,
               })
               if (!res.ok) {
                 const text = await res.text()
                 const e = errorOf(text)
-                last = failure(res.status, e.code, e.message || text.trim().slice(0, 300))
+                last = failure(site, res.status, e.code, e.message || text.trim().slice(0, 300))
                 if (res.status === 400 && wrongFunction(e.code)) continue
                 break
               }
@@ -1536,7 +1724,7 @@ export const TraeCNAuthPlugin = async ({ client }) => {
               if (!ct.includes("event-stream") && ct.includes("json")) {
                 // an answer that isn't a stream is an error in a 200
                 const e = errorOf(await res.text())
-                last = failure(502, e.code, e.message)
+                last = failure(site, 502, e.code, e.message)
                 if (wrongFunction(e.code)) continue
                 break
               }
@@ -1544,12 +1732,18 @@ export const TraeCNAuthPlugin = async ({ client }) => {
               const { held, done } = await first(it)
               const err = held.find((p) => p.error)
               if (err) {
-                last = failure(502, err.code, err.error)
-                if (wrongFunction(err.code)) continue
+                last = failure(site, 502, err.code, err.error)
+                if (wrongFunction(err.code)) {
+                  // another function may take it: this answer's read goes
+                  // with the function it came from, not left hanging
+                  it.return?.()
+                  res.body.cancel?.().catch(() => {})
+                  continue
+                }
                 break
               }
               fnOf.set(who, fn)
-              const out = await openai(req, done ? held : chain(held, it))
+              const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site)
               out.headers.set("X-Magpie-Sign-In", signIn)
               return out
             }
@@ -1558,10 +1752,13 @@ export const TraeCNAuthPlugin = async ({ client }) => {
           },
         }
       },
-      methods: [{ type: "oauth", label: "Trae CN account (browser)", authorize: browserSignIn }],
+      methods: [{ type: "oauth", label: `${site.name} account (browser)`, authorize: () => browserSignIn(site) }],
     },
   }
 }
 
-// for tests
-export const _internal = { HOSTS, MODELS, TextTools, NativeCalls, looseJSON, glmCall, toolNamed, traeMessages, chatBody, credits, whenOf, newDevice }
+// for tests: the CN realm's table as before, plus both realms' factories
+export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
+export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
+
+export const _internal = { HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, toolNamed, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, SITES }

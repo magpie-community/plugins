@@ -1,12 +1,12 @@
 {
   "name": "@magpie-community/opencode-trae-auth",
-  "version": "0.1.15",
-  "description": "OpenCode provider plugin for Trae CN (trae.cn): your Trae CN account's models, free tier included, with Trae's own browser sign-in",
+  "version": "0.2.0",
+  "description": "OpenCode provider plugins for Trae: Trae CN (trae.cn) and Trae Global (trae.ai), free tier included, with Trae's own browser sign-in",
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",
   "files": ["index.mjs", "README.md"],
-  "keywords": ["opencode", "opencode-plugin", "trae", "trae-cn", "bytedance"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "trae", "trae-cn", "trae-global", "bytedance"],
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/trae" }
 }
