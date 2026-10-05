@@ -7,7 +7,19 @@ Trae 国际版（trae.ai，ByteDance 的 AI IDE 国际部署）作为 OpenCode p
 与 `@magpie-community/opencode-trae-auth`（Trae CN）的关系：**同一套插件契约与
 同一套请求/应答机制，另一套部署**。国际版与国内版是完全独立的服务（不同域名、
 不同 client 生态、模型目录几乎不重叠），所以是一个独立插件，不是配置项。机制
-部分（工具调用解析、流收尾、max 档位、reply limit）跟随 CN 0.1.14。
+部分（工具调用解析、流收尾、max 档位、reply limit）跟随 CN 0.1.15。
+
+## 验证范围
+
+本插件目前只在**一个 Free 账号**上实测过（SG realm）。未在 Pro / 付费账号上
+验证，也未验证 US realm 的账号。付费账号相关的行为（模型列表里付费模型的可用性、
+付费额度的显示）依据 Trae 接口的结构实现，未经真机确认。故 registry 标
+**实验性**，与 Trae CN 一致。
+
+计划：把国际版并入 `packages/trae`，一个包用两个 provider id
+（`trae-cn` + `trae-global`），按 realm 分表（hosts、client、版本号、usage 页面、
+兜底模型、错误码）。那样每个请求 / 流 / 工具调用的修复会同时作用于两个版本，
+也消除两份代码的漂移。
 
 ## 端点（与 CN 版的差异）
 

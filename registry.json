@@ -30,6 +30,6 @@
     { "package": "@magpie-community/opencode-trae-auth", "name": "Trae CN", "icon": "trae", "providers": ["trae-cn"], "community": true,
       "summary": { "en": "Trae CN (trae.cn) models with your Trae CN account, free tier included — Trae's own browser sign-in. Experimental.", "zh": "用 Trae CN（trae.cn）账号使用其模型，含免费版，使用 Trae 自己的浏览器登录。实验性。" } },
     { "package": "@magpie-community/opencode-trae-global-auth", "name": "Trae Global", "icon": "trae", "providers": ["trae-global"], "community": true,
-      "summary": { "en": "Trae international (trae.ai) models with your Trae international account, free tier included — Trae's own browser sign-in.", "zh": "用 Trae 国际版（trae.ai）账号使用其模型，含免费版，使用 Trae 自己的浏览器登录。" } }
+      "summary": { "en": "Trae international (trae.ai) models with your Trae international account, free tier included — Trae's own browser sign-in. Experimental.", "zh": "用 Trae 国际版（trae.ai）账号使用其模型，含免费版，使用 Trae 自己的浏览器登录。实验性。" } }
   ]
 }

@@ -155,6 +155,32 @@ test("a model chat_v3 doesn't know is asked of SOLO's function, which is kept fo
   expect(f.seen.at(-1).json.function).toBe("solo_work_lite")
 })
 
+test("a function that doesn't take the model leaves its read behind with it", async () => {
+  // chat_v3 answers "unknown model" and would keep the stream open:
+  // the plugin moves to solo_work_lite, and chat_v3's read must close
+  // with it, or the connection it left is one Trae has to drop
+  let cancelled = false
+  f = fakeTrae()
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => {
+    if (r.json.function !== "chat_v3") return sse([["output", { response: "solo" }], ["done", {}]])
+    let n = 0
+    const body = new ReadableStream({
+      async pull(ctl) {
+        if (n++ === 0) return ctl.enqueue(new TextEncoder().encode('event: error\ndata: {"code":4023,"message":"model is unknown"}\n\n'))
+        await new Promise((r) => setTimeout(r, 10_000)) // the stream would stay open
+      },
+      cancel() { cancelled = true },
+    })
+    return new Response(body, { headers: { "content-type": "text/event-stream" } })
+  })
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "gemini-3.1-pro", messages: [{ role: "user", content: "hi" }] }) })
+  expect((await res.json()).choices[0].message.content).toBe("solo")
+  await new Promise((r) => setTimeout(r, 50))
+  expect(cancelled).toBe(true)
+})
+
 test("signed out (1001, or a 401) is a 401 that marks the account", async () => {
   f = fakeTrae()
   f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["error", { code: 1001, message: "not login" }]]))

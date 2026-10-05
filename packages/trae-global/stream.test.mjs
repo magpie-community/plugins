@@ -143,6 +143,39 @@ test("a stream that breaks off ends with an error and [DONE]", async () => {
   expect(c.at(-1)).toBe("[DONE]")
 })
 
+// The lists needn't agree (trae 0.1.15, ARNO on magpie's Discord): chat_v3's
+// entry names the __max model, while the SOLO entry the model is asked
+// through names only __dev and gives the windows. Its Max is found across
+// them, and asked through the function that names the __max model.
+const SPLIT = { function_configs: [
+  { function: "chat_v3", config_info_list: [
+    { config_name: "gpt-5.4", usage: "chat_completion", display_config: { display_name: "GPT-5.4 Official" }, model_detail_list: [{ model_name: "gpt-5.4__dev" }, { model_name: "gpt-5.4__max", max_tokens: 128000 }] },
+    { config_name: "GPT-5.4-Official", usage: "chat_completion", display_config: { display_name: "GPT-5.4 Official" }, model_detail_list: [{ model_name: "GPT-5.4-Official__dev" }] },
+  ] },
+  { function: "solo_work_lite", config_info_list: [
+    { config_name: "gpt-5.4", usage: "chat_completion", display_config: { display_name: "GPT-5.4" }, context_window_tokens: { dev: 200000, max: 1000000 }, model_detail_list: [{ model_name: "gpt-5.4__dev", max_tokens: 64000 }] },
+  ] },
+] }
+
+test("a Max the lists split between them is listed, and asked where its __max model is named", async () => {
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json(SPLIT))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["done", {}]]))
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  const p = { models: { ..._internal.MODELS } }
+  const live = await hooks.provider.models(p, { auth: signedIn() })
+  expect(Object.keys(live)).toEqual(["gpt-5.4", "gpt-5.4-max", "GPT-5.4-Official"])
+  expect(live["gpt-5.4"].limit).toEqual({ context: 200000, output: 64000 })
+  expect(live["gpt-5.4"].name).toBe("GPT-5.4")
+  expect(live["gpt-5.4-max"].limit).toEqual({ context: 1000000, output: 128000 })
+  expect(live["gpt-5.4-max"].name).toBe("GPT-5.4 (Max)")
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const send = (body) => opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ messages: [{ role: "user", content: "hi" }], ...body }) })
+  await send({ model: "gpt-5.4-max" })
+  const b = f.seen.at(-1).json
+  expect([b.function, b.config_name, b.model_name, b.max_tokens, b.user_message_context.model_info.prompt_max_tokens]).toEqual(["chat_v3", "gpt-5.4", "gpt-5.4__max", 128000, 872000])
+})
+
 const BATCH = { function_configs: [
   { function: "solo_agent", config_info_list: [
     { config_name: "gpt-5.4", usage: "chat_completion", display_config: { display_name: "GPT-5.4" }, context_window_tokens: { dev: 272000, max: 400000 }, model_detail_list: [{ model_name: "gpt-5.4__dev", max_tokens: 32000 }, { model_name: "gpt-5.4__max", max_tokens: 128000 }] },

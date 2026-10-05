@@ -143,16 +143,47 @@ const PLAN = { function_configs: [
   ] },
 ] }
 
-test("a model the plan locks is not listed, an invisible one either; one with no access data stands", async () => {
+test("the plan's locked models are listed too — the account keeps what it pays for — while the picker's invisible ones are not", async () => {
   f = fakeTrae()
   f.route("POST /api/ide/v1/batch_get_detail_param", () => json(PLAN))
   f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["done", {}]]))
   const hooks = await TraeGlobalAuthPlugin({ client: {} })
   const p = await given(hooks)
   const live = await hooks.provider.models(p, { auth: signedIn() })
-  // gpt-5.4's identities hold the 0; gpt-5.5's don't (a locked one); glm-5.2
-  // says nothing (nothing guessed); the invisible twins are the picker's
-  expect(Object.keys(live)).toEqual(["gpt-5.4", "glm-5.2"])
+  // gpt-5.4's identities hold the 0 (Free); gpt-5.5's don't, so the IDE
+  // greys it out on Free — but the plugin can't read the account's own
+  // identity, so it lists it: a paying account (identity 1–5) keeps the
+  // models it pays for, and a locked one answers Trae's own 1005 when
+  // asked. glm-5.2 says nothing (nothing guessed); the invisible twins
+  // (paygo/auto routing, search agents) are the picker's, not the list's
+  expect(Object.keys(live)).toEqual(["gpt-5.4", "gpt-5.5", "glm-5.2"])
+})
+
+test("a paying account keeps every model its plan has, the locked ones included", async () => {
+  // a Pro / paid account (identity 1–5): the models Free can't pick are the
+  // ones it pays for — gpt-5.5, the gpt-5.6 family, gpt-6, glm-5.2 — and
+  // they must survive the listing, whichever identity the account is
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json(PLAN))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["done", {}]]))
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  const p = await given(hooks)
+  const paid = await hooks.provider.models(p, { auth: signedIn({ accountId: "Pro", uid: "u-pro" }) })
+  expect(Object.keys(paid)).toEqual(["gpt-5.4", "gpt-5.5", "glm-5.2"])
+  // and the paid model is asked as itself, not refused before it goes out
+  const opts = await hooks.auth.loader(async () => signedIn({ accountId: "Pro", uid: "u-pro" }))
+  await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "gpt-5.5", stream: true, messages: [{ role: "user", content: "hi" }] }) })
+  expect(f.seen.at(-1).json.config_name).toBe("gpt-5.5")
+})
+
+test("a 200 carrying an error code says Trae's own message, not \"no entitlement pack\"", async () => {
+  f = fakeTrae()
+  f.route("POST /trae/api/v1/pay/user_current_entitlement_list", () => json({ code: 4008, message: "quota exceeded" }))
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => signedIn())
+  expect(u.error).toBe("Trae Global usage: quota exceeded")
+  expect(u.signIn).toBe("kept")
+  expect(u.user).toBe("Ann")
 })
 
 test("a batch answered with no lists falls back to one function at a time", async () => {

@@ -1145,6 +1145,13 @@ const wrongFunction = (code) => ["4001", "4023", "1005"].includes(String(code))
 // The lists also hold the IDE's own helpers (summary, fast_apply, title
 // generation: usage other than chat_completion), configs switched off, and
 // the slots of custom models, which need a provider bound in the IDE.
+// The list is the account's own: a plan's locked models are greyed out in
+// the IDE but still listed here, and which identities a model is for
+// (display_contact_config's identity_list) isn't something the plugin can
+// read the account's own identity against — it is not told one at sign-in
+// or in the entitlement answer — so nothing is filtered on it: a paying
+// account keeps the models it pays for, and a locked model answers Trae's
+// own 1005 when asked (yetone/magpie#22).
 function chatModel(m) {
   const id = String(m?.config_name ?? "")
   if (!id || /^custom_model/i.test(id)) return false
@@ -1158,32 +1165,24 @@ function chatModel(m) {
   return true
 }
 
-// planLocked says whether the account's plan can't use the model: the
-// display's access data names the identities that may, 0 the Free one, and
-// a list without 0 is the lock the IDE greys out with a lock (gpt-6, the
-// gpt-5.6 family, gpt-5.5, glm-5.2 on Free; a call would answer 1005).
-// undefined when the display carries no access data — nothing is guessed.
-function planLocked(m) {
-  try {
-    const identities = JSON.parse(m?.display_contact_config ?? "{}")?.access?.data?.identity_list
-    if (!Array.isArray(identities) || !identities.length) return undefined
-    return !identities.includes(0)
-  } catch {
-    return undefined
-  }
-}
-
 // devModel is the model an entry serves requests with: its __dev one
 const devModel = (m) => (Array.isArray(m?.model_detail_list) ? m.model_detail_list : []).find((d) => /__dev$/.test(String(d?.model_name ?? "")))
 
-// maxModel is a config's Max mode: its __max model and the window
-// context_window_tokens.max gives it, when that is bigger than dev's; a
-// config without one has no Max
-const maxModel = (m) => {
-  const d = (Array.isArray(m?.model_detail_list) ? m.model_detail_list : []).find((d) => /__max$/.test(String(d?.model_name ?? "")))
-  const window = Number(m?.context_window_tokens?.max) || 0
-  const dev = Number(m?.context_window_tokens?.dev) || 0
-  return d && window > dev ? { name: String(d.model_name), most: Number(d.max_tokens) || 0, window } : null
+// maxModel is a model's Max mode, from the entries its lists give it (the
+// one it is asked through first): the first __max model one names, and the
+// window context_window_tokens.max gives it, when that is bigger than dev's.
+// The lists needn't agree: chat_v3 can name the __max model while the SOLO
+// list the model is asked through names only __dev, and the window can be
+// another entry's again. A model with no __max, or no bigger window, has no
+// Max.
+const maxModel = (...ms) => {
+  const details = (m) => (Array.isArray(m?.model_detail_list) ? m.model_detail_list : [])
+  const at = ms.find((m) => details(m).some((d) => /__max$/.test(String(d?.model_name ?? ""))))
+  if (!at) return null
+  const d = details(at).find((d) => /__max$/.test(String(d?.model_name ?? "")))
+  const first = (k) => [at, ...ms].map((m) => Number(m?.context_window_tokens?.[k]) || 0).find((n) => n > 0) || 0
+  const window = first("max")
+  return window > first("dev") ? { name: String(d.model_name), most: Number(d.max_tokens) || 0, window, entry: at } : null
 }
 
 // MAX is the suffix of a model's Max: deepseek-v4.1-flash-max is
@@ -1206,6 +1205,8 @@ export const TraeGlobalAuthPlugin = async ({ client }) => {
   // model it names there
   const listedBy = new Map()
   const modelNames = new Map()
+  // the Max each model the list last read has (null: none)
+  const maxes = new Map()
 
   const save = async (auth) => {
     try {
@@ -1299,7 +1300,7 @@ export const TraeGlobalAuthPlugin = async ({ client }) => {
     }
     const e = errorOf(r.v)
     if (r.status === 401 || lapsedCode(e.code)) return { error: `${a.name || a.uid}: Trae Global's sign-in has expired — sign in again`, signIn: "expired" }
-    if (r.status !== 200) return { error: `Trae Global usage: ${e.message || statusLine(r.status)}`, signIn, user: a.name }
+    if (r.status !== 200 || (e.code && String(e.code) !== "0")) return { error: `Trae Global usage: ${e.message || statusLine(r.status)}`, signIn, user: a.name }
     const d = dollarUsageOf(r.v)
     if (!d) return { error: "Trae Global usage: no entitlement pack in the answer", signIn, user: a.name }
     const total = d.basic + d.bonus
@@ -1386,7 +1387,7 @@ export const TraeGlobalAuthPlugin = async ({ client }) => {
     const names = new Map() // id → the names its lists give it
     for (const fn of FUNCTIONS) {
       for (const m of lists[fn] ?? []) {
-        if (!chatModel(m) || planLocked(m) === true) continue
+        if (!chatModel(m)) continue
         const id = String(m.config_name)
         names.set(id, (names.get(id) ?? new Set()).add(nameOf(m)))
       }
@@ -1401,7 +1402,7 @@ export const TraeGlobalAuthPlugin = async ({ client }) => {
     const out = new Map()
     for (const fn of FUNCTIONS) {
       for (const m of lists[fn] ?? []) {
-        if (!chatModel(m) || planLocked(m) === true) continue
+        if (!chatModel(m)) continue
         const id = String(m.config_name)
         const was = out.get(id)
         if (!was || worth(fn, m) > was.worth) out.set(id, { m, fn, worth: worth(fn, m) })
@@ -1412,10 +1413,20 @@ export const TraeGlobalAuthPlugin = async ({ client }) => {
       const dev = devModel(m)
       if (dev) modelNames.set(id, { fn, name: dev.model_name, most: Number(dev.max_tokens) || 0 })
       else modelNames.delete(id)
-      const max = maxModel(m)
-      if (max && !out.has(id + MAX)) {
-        listedBy.set(id + MAX, fn)
-        modelNames.set(id + MAX, { fn, name: max.name, most: max.most, max: { base: id, window: max.window } })
+      if (out.has(id + MAX)) continue
+      // its Max is asked through the function whose entry names the __max
+      // model: the lists needn't agree — chat_v3 can name the __max model
+      // while the SOLO list the model is asked through names only __dev
+      const entries = [{ m, fn }, ...FUNCTIONS.flatMap((f) => (lists[f] ?? []).filter((o) => o !== m && chatModel(o) && String(o.config_name) === id).map((o) => ({ m: o, fn: f })))]
+      const max = maxModel(...entries.map((e) => e.m))
+      maxes.set(id, max)
+      if (max) {
+        const by = entries.find((e) => e.m === max.entry).fn
+        listedBy.set(id + MAX, by)
+        modelNames.set(id + MAX, { fn: by, name: max.name, most: max.most, max: { base: id, window: max.window } })
+      } else {
+        listedBy.delete(id + MAX)
+        modelNames.delete(id + MAX)
       }
     }
     return [...out.values()].map((x) => x.m)
@@ -1455,7 +1466,7 @@ export const TraeGlobalAuthPlugin = async ({ client }) => {
           return Object.fromEntries(ms.flatMap((m) => {
             const id = String(m.config_name)
             const own = modelOf(provider, m)
-            const max = maxModel(m)
+            const max = maxes.get(id)
             if (!max || ids.has(id + MAX)) return [[id, own]]
             // its Max, a model of its own: the window and output Max mode gives
             const was = provider.models?.[id + MAX] ?? {}
@@ -1547,7 +1558,13 @@ export const TraeGlobalAuthPlugin = async ({ client }) => {
               const err = held.find((p) => p.error)
               if (err) {
                 last = failure(502, err.code, err.error)
-                if (wrongFunction(err.code)) continue
+                if (wrongFunction(err.code)) {
+                  // another function may take it: this answer's read goes
+                  // with the function it came from, not left hanging
+                  it.return?.()
+                  res.body.cancel?.().catch(() => {})
+                  continue
+                }
                 break
               }
               fnOf.set(who, fn)
