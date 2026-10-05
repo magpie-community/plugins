@@ -1804,6 +1804,13 @@ const makePlugin = (site) => async ({ client }) => {
     return [...out.values()].map((x) => x.m)
   }
 
+  // modelOf is a model of the account's list as OpenCode's provider
+  // carries one. A model of the site's fallback list has capabilities
+  // already (magpie's host spreads the config's into them); one the list
+  // doesn't have gets them from MODEL's flat fields, so that magpie reads
+  // it as a model that reasons rather than one that doesn't (its host
+  // reads capabilities.reasoning alone, host.js). The fallback list stays
+  // the authority where it has an entry.
   const modelOf = (provider, m) => {
     const id = String(m.config_name)
     const was = provider.models?.[id] ?? {}
@@ -1811,7 +1818,23 @@ const makePlugin = (site) => async ({ client }) => {
     const ctx = Number(m.context_window_tokens?.dev ?? m.context_window_size?.max?.[0] ?? m.context_window_size?.max ?? m.context_window_tokens?.max ?? m.prompt_max_tokens) || was.limit?.context || MODEL.limit.context
     const out = Number(devModel(m)?.max_tokens) || was.limit?.output || 0
     const name = m.display_config?.display_name || m.display_name || m.display_model_name || was.name || id
-    return { ...MODEL, ...was, id, providerID: site.id, name: String(name), limit: { context: ctx, output: out }, api: was.api ?? { id, url: site.hosts.api, npm: "@ai-sdk/openai-compatible" } }
+    const input = (k) => (MODEL.modalities?.input ?? []).includes(k)
+    return {
+      ...MODEL, ...was, id, providerID: site.id, name: String(name), limit: { context: ctx, output: out },
+      api: was.api ?? { id, url: site.hosts.api, npm: "@ai-sdk/openai-compatible" },
+      capabilities: {
+        ...(was.capabilities ?? {}),
+        reasoning: was.capabilities?.reasoning ?? MODEL.reasoning,
+        temperature: was.capabilities?.temperature ?? MODEL.temperature,
+        attachment: was.capabilities?.attachment ?? MODEL.attachment,
+        toolcall: was.capabilities?.toolcall ?? MODEL.tool_call,
+        input: was.capabilities?.input ?? { text: true, image: input("image"), audio: input("audio"), video: input("video"), pdf: input("pdf") },
+        output: was.capabilities?.output ?? { text: true, image: false, audio: false, video: false, pdf: false },
+      },
+      // Trae's request takes no effort or thinking level, so a model has
+      // none to pick from (see the README's Reasoning)
+      variants: was.variants ?? {},
+    }
   }
 
   return {

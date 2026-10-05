@@ -122,7 +122,12 @@ it, as Max mode does.
 
 Reasoning: the models reason, but Trae's request takes no effort or
 thinking level, so the plugin lists no variants and a level an agent
-picks does nothing.
+picks does nothing. Every model it lists says so in its `capabilities`
+(`reasoning: true`, with `toolcall`, `temperature`, `attachment`, the
+input and output modalities and an empty `variants`), the fallback
+list's own capabilities kept where it has an entry: magpie reads
+`capabilities.reasoning` alone for a model a plugin lists, and a model
+without it is shown as one that doesn't reason (0.2.4).
 
 When no
 list can be read, the plugin uses the realm's own fallback list. Trae CN's
