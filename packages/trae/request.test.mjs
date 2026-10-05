@@ -113,6 +113,34 @@ test("a native call streamed over several events goes on whole (#799)", async ()
   ])
 })
 
+test("arg_key/arg_value tool blocks are normalized", () => {
+  const t = new _internal.TextTools(new Set(["bash"]))
+  const r = t.push('<tool_call><arg_key>name</arg_key><arg_value>bash</arg_value><arg_key>arguments</arg_key><arg_value>{"command":"pwd"}</arg_value></tool_call>')
+  expect(r.text).toBe("")
+  expect(r.calls).toEqual([{ id: "", name: "bash", arguments: '{"command":"pwd"}' }])
+})
+
+test("tool blocks tolerate trailing protocol residue but reject unknown calls", () => {
+  const t = new _internal.TextTools(new Set(["bash"]))
+  const recovered = t.push('<tool_call>{"name":"bash","arguments":{}}</arg_value></tool_call>')
+  expect(recovered.calls).toEqual([{ id: "", name: "bash", arguments: "{}" }])
+
+  const unknown = t.push('<tool_call>{"name":"codemode","arguments":{"code":"1"}}</tool_call>')
+  expect(unknown.calls).toEqual([])
+  expect(unknown.text).toContain("codemode")
+})
+
+test("a native call leaked into the name field is recovered as its embedded object", async () => {
+  f = fakeTrae()
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([
+    ["output", { tool_calls: [{ id: "n1", function: { name: '{"name":"bash","arguments":{"command":"pwd"}}', arguments: "" } }] }],
+    ["done", {}],
+  ]))
+  const res = await ask({ model: "glm-5", stream: false, messages: [{ role: "user", content: "hi" }] })
+  const body = await res.json()
+  expect(body.choices[0].message.tool_calls[0].function).toEqual({ name: "bash", arguments: '{"command":"pwd"}' })
+})
+
 test("no stream asked: one chat completion", async () => {
   f = fakeTrae()
   f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { content: "Hel" }], ["output", { content: "lo" }], ["done", {}]]))
@@ -121,6 +149,28 @@ test("no stream asked: one chat completion", async () => {
   expect(b.object).toBe("chat.completion")
   expect(b.choices[0].message).toEqual({ role: "assistant", content: "Hello" })
   expect(b.choices[0].finish_reason).toBe("stop")
+})
+
+test("a response payload in an unlabelled SSE event is not dropped", async () => {
+  f = fakeTrae()
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["delta", { response: "complete" }]]))
+  const res = await ask({ model: "glm-5", stream: true, messages: [{ role: "user", content: "hi" }] })
+  const c = await chunks(res)
+  const text = c.filter((x) => x !== "[DONE]" && x.choices?.length).map((x) => x.choices[0].delta.content ?? "").join("")
+  expect(text).toBe("complete")
+  expect(c.at(-1)).toBe("[DONE]")
+})
+
+test("trailing embedded reasoning JSON is separated from visible response text", async () => {
+  expect(_internal.splitEmbeddedReasoning('Done. {"reasoning_content":"internal notes"}')).toEqual({ text: "Done.", reasoning: "internal notes" })
+  expect(_internal.splitEmbeddedReasoning('{"ok":true}')).toEqual({ text: "{\"ok\":true}", reasoning: "" })
+
+  f = fakeTrae()
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: 'Done. {"reasoning_content":"internal notes"}' }]]))
+  const res = await ask({ model: "glm-5", stream: false, messages: [{ role: "user", content: "hi" }] })
+  const body = await res.json()
+  expect(body.choices[0].message.content).toBe("Done.")
+  expect(body.choices[0].message.reasoning_content).toBe("internal notes")
 })
 
 test("a text like a tag that isn't one goes through whole", () => {

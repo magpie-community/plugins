@@ -39,7 +39,7 @@ const DAY = 24 * 3600 * 1000
 // then SOLO Lite's agent
 const FUNCTIONS = ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite"]
 
-const MODEL = { attachment: false, tool_call: true, reasoning: true, temperature: true, limit: { context: 128_000, output: 32_000 }, modalities: { input: ["text"], output: ["text"] } }
+const MODEL = { attachment: false, tool_call: true, reasoning: false, temperature: true, limit: { context: 128_000, output: 32_000 }, modalities: { input: ["text"], output: ["text"] } }
 // what Trae CN's chat_v3 is known to serve; the live list replaces it
 const MODELS = {
   "glm-5.2": { name: "GLM-5.2", ...MODEL, limit: { context: 200_000, output: 32_000 } },
@@ -479,16 +479,55 @@ const nativeTools = (tools) =>
     return { type: "function", function: { name: f.name, description: f.description ?? "", parameters: typeof f.parameters === "string" ? f.parameters : JSON.stringify(f.parameters ?? {}) } }
   })
 
-// chatBody is the request for llm_utils_chat; modelName is the model the
-// function's list names for the config (its __dev one), when it named one
-function chatBody(req, fn, modelName) {
+const effortOf = (req) => String(req.reasoning_effort ?? req.reasoningEffort ?? req.output_config?.effort ?? req.outputConfig?.effort ?? "").toLowerCase()
+const wantsMax = (req) => effortOf(req) === "max" || req.trae_context_mode === "max"
+const withoutMax = (req) => ({
+  ...req,
+  reasoning_effort: "",
+  reasoningEffort: "",
+  trae_context_mode: "",
+  ...(req.output_config ? { output_config: { ...req.output_config, effort: "" } } : {}),
+  ...(req.outputConfig ? { outputConfig: { ...req.outputConfig, effort: "" } } : {}),
+})
+const maxContextOf = (m) => Number(m?.context_window_tokens?.max ?? m?.context_window_size?.max?.[0] ?? m?.context_window_size?.max ?? 0) || 0
+const maxModel = (m) => (Array.isArray(m?.model_detail_list) ? m.model_detail_list : []).find((d) => /__max$/.test(String(d?.model_name ?? "")))
+
+function maxContextBody(req, fn, modelName, detail, context) {
+  if (fn !== "solo_work_lite" || !modelName || !detail || !context) return {}
+  const output = Number(detail.max_tokens) || 0
+  return {
+    user_message_context: {
+      ppe_env_name: "",
+      model_info: {
+        provider: "",
+        is_preset: true,
+        config_name: req.model,
+        config_source: 1,
+        model_name: modelName,
+        display_model_name: req.model,
+        multimodal: false,
+        prompt_max_tokens: Math.max(1, context - output),
+        toolcall_history_max_tokens: null,
+        extra_config: null,
+        persist_meta: { smart_selection: { strategy: "max", fallback_to_advance_model: null, entitlement_id: null } },
+      },
+    },
+  }
+}
+
+// chatBody defaults to __dev. An explicit max variant uses the account's
+// advertised __max model and max-context request metadata.
+function chatBody(req, fn, modelName, maxName = "", maxDetail = null, maxContext = 0) {
   const session = randomUUID()
+  const useMax = wantsMax(req) && Boolean(maxName && maxDetail)
+  const selectedName = useMax ? maxName : modelName
   const body = {
     messages: traeMessages(req),
     function: fn,
     config_name: req.model,
     model: req.model,
-    ...(modelName ? { model_name: modelName } : {}),
+    ...(selectedName ? { model_name: selectedName } : {}),
+    ...(useMax ? maxContextBody(req, fn, selectedName, maxDetail, maxContext) : {}),
     stream: true, // Trae answers in SSE either way
     request_id: session,
     session_id: session,
@@ -556,6 +595,17 @@ const eventName = (s) =>
     .toLowerCase()
     .replace(/^_|_$/g, "")
 
+function splitEmbeddedReasoning(text) {
+  if (typeof text !== "string") return { text: text ?? "", reasoning: "" }
+  const marker = /\{\s*"reasoning_content"\s*:/g
+  let at = -1
+  for (const match of text.matchAll(marker)) at = match.index
+  if (at < 0) return { text, reasoning: "" }
+  const value = parseJSON(text.slice(at).trim())
+  if (typeof value.reasoning_content !== "string" || Object.keys(value).some((key) => key !== "reasoning_content")) return { text, reasoning: "" }
+  return { text: text.slice(0, at).replace(/\s+$/, ""), reasoning: value.reasoning_content }
+}
+
 // usageOf maps Trae's token counts to OpenAI's
 function tokensOf(u) {
   if (!u || typeof u !== "object") return null
@@ -568,12 +618,88 @@ function tokensOf(u) {
 let callSeq = 0
 const callId = () => "call_" + randomBytes(12).toString("hex") + (callSeq++).toString(36)
 
+const toolNamePattern = /^[A-Za-z0-9_.-]{1,128}$/
+
+const allowedToolNames = (tools) => {
+  if (!Array.isArray(tools)) return null
+  return new Set(tools.map((t) => t?.function?.name ?? t?.name).filter((name) => typeof name === "string"))
+}
+
+// A model can return either JSON or the XML-like arg_key/arg_value form.
+// Normalize both forms before they reach the OpenAI-compatible response.
+function normalizeToolCall(name, args, allowedNames = null, id = "") {
+  if (typeof name !== "string" || !toolNamePattern.test(name)) return null
+  if (allowedNames && !allowedNames.has(name)) return null
+  if (typeof args === "string") {
+    args = args.trim()
+    if (!args) args = "{}"
+    try {
+      args = JSON.parse(args)
+    } catch {
+      return null
+    }
+  }
+  if (!args || typeof args !== "object" || Array.isArray(args)) return null
+  return { id, name, arguments: JSON.stringify(args) }
+}
+
+function jsonObjectIn(text) {
+  for (let start = 0; start < text.length; start++) {
+    if (text[start] !== "{") continue
+    let depth = 0
+    let quoted = false
+    let escaped = false
+    for (let i = start; i < text.length; i++) {
+      const c = text[i]
+      if (quoted) {
+        if (escaped) escaped = false
+        else if (c === "\\") escaped = true
+        else if (c === '"') quoted = false
+        continue
+      }
+      if (c === '"') quoted = true
+      else if (c === "{") depth++
+      else if (c === "}" && --depth === 0) {
+        try { return JSON.parse(text.slice(start, i + 1)) } catch { break }
+      }
+    }
+  }
+  return null
+}
+
+function parseToolCall(raw, allowedNames = null, id = "") {
+  const text = String(raw ?? "").trim()
+  const values = [parseJSON(text), jsonObjectIn(text)].filter((v) => v && typeof v === "object")
+  for (const value of values) {
+    const f = value.function ?? value
+    const call = normalizeToolCall(
+      f.name ?? value.tool_name,
+      f.arguments ?? value.input ?? value.parameters,
+      allowedNames,
+      id,
+    )
+    if (call) return call
+  }
+
+  const fields = {}
+  const fieldPattern = /<arg_key>\s*([^<]+?)\s*<\/arg_key>\s*<arg_value>([\s\S]*?)<\/arg_value>/gi
+  for (const match of text.matchAll(fieldPattern)) fields[match[1].trim()] = match[2].trim()
+  const name = fields.name ?? fields.tool_name ?? text.match(/<function(?:=|>)([^>\\s<]+)/i)?.[1]
+  let args = fields.arguments ?? fields.input ?? fields.parameters
+  if (args === undefined && name) {
+    args = Object.fromEntries(Object.entries(fields).filter(([key]) => !["name", "tool_name"].includes(key)))
+  }
+  return normalizeToolCall(name, args, allowedNames, id)
+}
+
 // TextTools splits the model's text into what the agent sees and the tool
 // calls it wrote as blocks, holding back the start of a block until it
 // is whole
+
 class TextTools {
-  constructor() {
+  constructor(allowedNames = null) {
     this.buf = ""
+    this.allowedNames = allowedNames
   }
   push(s, end = false) {
     this.buf += s
@@ -587,8 +713,8 @@ class TextTools {
       text += this.buf.slice(0, i)
       const raw = this.buf.slice(i + OPEN.length, j).trim()
       this.buf = this.buf.slice(j + CLOSE.length)
-      const v = parseJSON(raw)
-      if (v.name) calls.push({ name: String(v.name), arguments: typeof v.arguments === "string" ? v.arguments : JSON.stringify(v.arguments ?? v.input ?? v.parameters ?? {}) })
+      const call = parseToolCall(raw, this.allowedNames)
+      if (call) calls.push(call)
       else text += OPEN + raw + CLOSE
     }
     if (end) {
@@ -621,8 +747,9 @@ function nativeCall(tc) {
 // or only the new piece, so a call is sent on once the answer is whole,
 // not from its first event (#799: bash's command cut to `echo "T`)
 class NativeCalls {
-  constructor() {
+  constructor(allowedNames = null) {
     this.calls = []
+    this.allowedNames = allowedNames
   }
   push(tc) {
     const c = nativeCall(tc)
@@ -644,7 +771,18 @@ class NativeCalls {
     else o.arguments = prev + next // a piece
   }
   take() {
-    return this.calls.filter((c) => c.name).map(({ id, name, arguments: a }) => ({ id: id || callId(), name, arguments: a || "{}" }))
+    const whole = []
+    for (const c of this.calls.filter((c) => c.name)) {
+      // a name that isn't a tool name at all is a serialized call leaked
+      // into the name field: recover the embedded object where there is one
+      if (!toolNamePattern.test(c.name)) {
+        const recovered = parseToolCall(`${c.name}${c.arguments}`)
+        if (recovered) whole.push(recovered)
+        continue
+      }
+      whole.push({ id: c.id || callId(), name: c.name, arguments: c.arguments || "{}" })
+    }
+    return whole
   }
 }
 
@@ -661,9 +799,18 @@ function done(a) {
 
 // parts turns Trae's events into what the answer is made of: text,
 // reasoning, tool calls, the token counts, the finish, or an error.
-async function* parts(events) {
-  const tt = new TextTools()
-  const nc = new NativeCalls()
+async function* parts(events, allowedNames = null) {
+  const tt = new TextTools(allowedNames)
+  const nc = new NativeCalls(allowedNames)
+  const seen = new Set()
+  const seenReasoning = new Set()
+  const uniqueCall = (call) => {
+    if (!call) return null
+    const key = call.id || call.name + call.arguments
+    if (seen.has(key)) return null
+    seen.add(key)
+    return { ...call, id: call.id || callId() }
+  }
   for await (const { event, data } of events) {
     const name = eventName(event)
     const d = data && typeof data === "object" ? data : {}
@@ -683,16 +830,26 @@ async function* parts(events) {
       if (u) yield { usage: u }
       break
     }
-    if (name && name !== "output" && name !== "message") continue // queueing, metadata, timing
+    const hasAnswerPayload = typeof d.response === "string" || typeof d.content === "string" || typeof d.reasoning_content === "string" || typeof d.reasoning === "string" || Array.isArray(d.tool_calls)
+    if (name && name !== "output" && name !== "message" && !hasAnswerPayload) continue // queueing, metadata, timing
     const reasoning = d.reasoning_content ?? d.reasoning ?? ""
-    if (typeof reasoning === "string" && reasoning) yield { reasoning }
+    if (typeof reasoning === "string" && reasoning && !seenReasoning.has(reasoning)) {
+      seenReasoning.add(reasoning)
+      yield { reasoning }
+    }
     let text = typeof d.response === "string" ? d.response : typeof d.content === "string" ? d.content : ""
+    const embedded = splitEmbeddedReasoning(text)
+    if (embedded.reasoning && !seenReasoning.has(embedded.reasoning)) {
+      seenReasoning.add(embedded.reasoning)
+      yield { reasoning: embedded.reasoning }
+    }
+    text = embedded.text
     // the IDE's own progress notes, not the model's
     if (/^(Building prompt:|Completed building prompt)/.test(text)) text = ""
     if (text) {
       const r = tt.push(text)
       if (r.text) yield { text: r.text }
-      for (const c of r.calls) yield { call: { ...c, id: callId() } }
+      for (const c of r.calls) { const unique = uniqueCall(c); if (unique) yield { call: unique } }
     }
     for (const tc of Array.isArray(d.tool_calls) ? d.tool_calls : []) nc.push(tc)
     const u = tokensOf(d.usage)
@@ -700,8 +857,8 @@ async function* parts(events) {
   }
   const r = tt.push("", true)
   if (r.text) yield { text: r.text }
-  for (const c of r.calls) yield { call: { ...c, id: callId() } }
-  for (const c of nc.take()) yield { call: c }
+  for (const c of r.calls) { const unique = uniqueCall(c); if (unique) yield { call: unique } }
+  for (const c of nc.take()) { const unique = uniqueCall(c); if (unique) yield { call: unique } }
 }
 
 // first reads events up to the first that is the answer's, so an answer
@@ -766,25 +923,32 @@ async function openai(req, it) {
     async start(ctl) {
       let calls = 0
       let usage = null
+      let finish = "stop"
       ctl.enqueue(chunk({ role: "assistant", content: "" }))
       try {
         for await (const p of it) {
           if (p.error) {
             ctl.enqueue(enc.encode(`data: ${JSON.stringify({ error: { message: `Trae CN: ${p.error}`, type: "api_error", code: p.code ?? null } })}\n\n`))
+            finish = "error"
             break
           }
           if (p.text) ctl.enqueue(chunk({ content: p.text }))
           if (p.reasoning) ctl.enqueue(chunk({ reasoning_content: p.reasoning }))
-          if (p.call) ctl.enqueue(chunk({ tool_calls: [{ index: calls++, id: p.call.id, type: "function", function: { name: p.call.name, arguments: p.call.arguments } }] }))
+          if (p.call) {
+            finish = "tool_calls"
+            ctl.enqueue(chunk({ tool_calls: [{ index: calls++, id: p.call.id, type: "function", function: { name: p.call.name, arguments: p.call.arguments } }] }))
+          }
           if (p.usage) usage = p.usage
         }
-        ctl.enqueue(chunk({}, calls ? "tool_calls" : "stop"))
-        if (usage) ctl.enqueue(enc.encode(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [], usage })}\n\n`))
-        ctl.enqueue(enc.encode("data: [DONE]\n\n"))
       } catch (e) {
         ctl.enqueue(enc.encode(`data: ${JSON.stringify({ error: { message: `Trae CN: ${e?.message ?? e}`, type: "api_error", code: null } })}\n\n`))
+        finish = "error"
+      } finally {
+        ctl.enqueue(chunk({}, finish))
+        if (usage) ctl.enqueue(enc.encode(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [], usage })}\n\n`))
+        ctl.enqueue(enc.encode("data: [DONE]\n\n"))
+        ctl.close()
       }
-      ctl.close()
     },
   })
   return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
@@ -792,6 +956,7 @@ async function openai(req, it) {
 
 // a model or function this account's chat_v3 doesn't take: another may
 const wrongFunction = (code) => ["4001", "4023", "1005"].includes(String(code))
+const maxParameterError = (code, message) => String(code) === "4001" && /invalid|param|prompt|max|entitlement/i.test(String(message ?? ""))
 
 // ---- the model lists ------------------------------------------------------------
 
@@ -1063,7 +1228,8 @@ export const TraeCNAuthPlugin = async ({ client }) => {
     for (const [id, { m, fn }] of out) {
       listedBy.set(id, fn)
       const dev = devModel(m)
-      if (dev) modelNames.set(id, { fn, name: dev.model_name })
+      const max = maxModel(m)
+      if (dev) modelNames.set(id, { fn, name: dev.model_name, maxName: max?.model_name ?? "", maxDetail: max ?? null, maxContext: maxContextOf(m) })
       else modelNames.delete(id)
     }
     return [...out.values()].map((x) => x.m)
@@ -1076,7 +1242,16 @@ export const TraeCNAuthPlugin = async ({ client }) => {
     const ctx = Number(m.context_window_tokens?.dev ?? m.context_window_size?.max?.[0] ?? m.context_window_size?.max ?? m.context_window_tokens?.max ?? m.prompt_max_tokens) || was.limit?.context || MODEL.limit.context
     const out = Number(devModel(m)?.max_tokens) || was.limit?.output || MODEL.limit.output
     const name = m.display_config?.display_name || m.display_name || m.display_model_name || was.name || id
-    return { ...MODEL, ...was, id, providerID: ID, name: String(name), limit: { context: ctx, output: out }, api: was.api ?? { id, url: HOSTS.api, npm: "@ai-sdk/openai-compatible" } }
+    const capabilities = {
+      temperature: true,
+      reasoning: false,
+      attachment: false,
+      toolcall: true,
+      input: { text: true, image: false, audio: false, video: false, pdf: false },
+      output: { text: true, image: false, audio: false, video: false, pdf: false },
+      interleaved: false,
+    }
+    return { ...MODEL, ...was, id, providerID: ID, name: String(name), reasoning: false, capabilities, variants: {}, limit: { context: ctx, output: out }, api: was.api ?? { id, url: HOSTS.api, npm: "@ai-sdk/openai-compatible" } }
   }
 
   return {
@@ -1143,40 +1318,47 @@ export const TraeCNAuthPlugin = async ({ client }) => {
             const fns = [...new Set([listedBy.get(String(req.model)), fnOf.get(who), ...FUNCTIONS].filter(Boolean))]
             let last
             const named = modelNames.get(String(req.model))
-            for (const fn of fns) {
-              const res = await fetch(apiOf(a) + "/api/agent/v3/llm_utils_chat", {
-                method: "POST",
-                headers: ideHeaders(a, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
-                body: JSON.stringify(chatBody(req, fn, named?.fn === fn ? named.name : "")),
-                signal: init.signal ?? r0?.signal,
-              })
-              if (!res.ok) {
-                const text = await res.text()
-                const e = errorOf(text)
-                last = failure(res.status, e.code, e.message || text.trim().slice(0, 300))
-                if (res.status === 400 && wrongFunction(e.code)) continue
-                break
+            fnLoop: for (const fn of fns) {
+              const attempts = wantsMax(req) ? [true, false] : [false]
+              for (const useMax of attempts) {
+                const request = useMax ? req : withoutMax(req)
+                const res = await fetch(apiOf(a) + "/api/agent/v3/llm_utils_chat", {
+                  method: "POST",
+                  headers: ideHeaders(a, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
+                  body: JSON.stringify(chatBody(request, fn, named?.fn === fn ? named.name : "", named?.fn === fn ? named.maxName : "", named?.fn === fn ? named.maxDetail : null, named?.fn === fn ? named.maxContext : 0)),
+                  signal: init.signal ?? r0?.signal,
+                })
+                if (!res.ok) {
+                  const text = await res.text()
+                  const e = errorOf(text)
+                  last = failure(res.status, e.code, e.message || text.trim().slice(0, 300))
+                  if (useMax && maxParameterError(e.code, e.message)) continue
+                  if (res.status === 400 && wrongFunction(e.code)) continue fnLoop
+                  break fnLoop
+                }
+                const ct = res.headers.get("content-type") ?? ""
+                if (!ct.includes("event-stream") && ct.includes("json")) {
+                  // an answer that isn't a stream is an error in a 200
+                  const e = errorOf(await res.text())
+                  last = failure(502, e.code, e.message)
+                  if (useMax && maxParameterError(e.code, e.message)) continue
+                  if (wrongFunction(e.code)) continue fnLoop
+                  break fnLoop
+                }
+                const it = parts(sse(res.body), allowedToolNames(req.tools))[Symbol.asyncIterator]()
+                const { held, done } = await first(it)
+                const err = held.find((p) => p.error)
+                if (err) {
+                  last = failure(502, err.code, err.error)
+                  if (useMax && maxParameterError(err.code, err.error)) continue
+                  if (wrongFunction(err.code)) continue fnLoop
+                  break fnLoop
+                }
+                fnOf.set(who, fn)
+                const out = await openai(request, done ? held : chain(held, it))
+                out.headers.set("X-Magpie-Sign-In", signIn)
+                return out
               }
-              const ct = res.headers.get("content-type") ?? ""
-              if (!ct.includes("event-stream") && ct.includes("json")) {
-                // an answer that isn't a stream is an error in a 200
-                const e = errorOf(await res.text())
-                last = failure(502, e.code, e.message)
-                if (wrongFunction(e.code)) continue
-                break
-              }
-              const it = parts(sse(res.body))[Symbol.asyncIterator]()
-              const { held, done } = await first(it)
-              const err = held.find((p) => p.error)
-              if (err) {
-                last = failure(502, err.code, err.error)
-                if (wrongFunction(err.code)) continue
-                break
-              }
-              fnOf.set(who, fn)
-              const out = await openai(req, done ? held : chain(held, it))
-              out.headers.set("X-Magpie-Sign-In", signIn)
-              return out
             }
             if (!last.headers.has("X-Magpie-Sign-In")) last.headers.set("X-Magpie-Sign-In", signIn)
             return last
@@ -1189,4 +1371,4 @@ export const TraeCNAuthPlugin = async ({ client }) => {
 }
 
 // for tests
-export const _internal = { HOSTS, MODELS, TextTools, traeMessages, chatBody, credits, whenOf, newDevice }
+export const _internal = { HOSTS, MODELS, TextTools, NativeCalls, parseToolCall, normalizeToolCall, splitEmbeddedReasoning, traeMessages, chatBody, credits, whenOf, newDevice }

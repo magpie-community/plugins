@@ -114,6 +114,57 @@ test("the lists are asked in one batch, as TRAE SOLO CN asks them, and DeepSeek 
   expect(await ask("glm-5.2")).toBe("chat_v3 glm-5.2__dev")
 })
 
+test("max context request selects the advertised __max model and budget", async () => {
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "solo_work_lite", config_info_list: [
+      { config_name: "glm-5.3", usage: "chat_completion", context_window_tokens: { dev: 116000, max: 1000000 }, model_detail_list: [
+        { model_name: "glm-5.3__dev", max_tokens: 16000 },
+        { model_name: "glm-5.3__max", max_tokens: 64000 },
+      ] },
+    ] },
+  ] }))
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => sse([["output", { response: r.json.model_name }], ["done", {}]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const p = await given(hooks)
+  const live = await hooks.provider.models(p, { auth: signedIn() })
+  expect(live["glm-5.3"].reasoning).toBe(false)
+  expect(live["glm-5.3"].capabilities.reasoning).toBe(false)
+  expect(live["glm-5.3"].variants).toEqual({})
+  expect(live["glm-5.3"].limit.context).toBe(116000)
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "glm-5.3", reasoning_effort: "max", messages: [{ role: "user", content: "hi" }] }) })
+  expect((await res.json()).choices[0].message.content).toBe("glm-5.3__max")
+  const request = f.seen.find((r) => r.path === "/api/agent/v3/llm_utils_chat")
+  expect(request.json.user_message_context.model_info.prompt_max_tokens).toBe(936000)
+})
+
+test("a max request falls back to __dev when the account rejects max metadata", async () => {
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "solo_work_lite", config_info_list: [
+      { config_name: "glm-5.3", usage: "chat_completion", context_window_tokens: { dev: 116000, max: 1000000 }, model_detail_list: [
+        { model_name: "glm-5.3__dev", max_tokens: 16000 },
+        { model_name: "glm-5.3__max", max_tokens: 64000 },
+      ] },
+    ] },
+  ] }))
+  let asks = 0
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => {
+    asks++
+    return r.json.model_name.endsWith("__max")
+      ? json({ code: 4001, message: "max context param is invalid" }, 400)
+      : sse([["output", { response: r.json.model_name }], ["done", {}]])
+  })
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const p = await given(hooks)
+  await hooks.provider.models(p, { auth: signedIn() })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "glm-5.3", trae_context_mode: "max", messages: [{ role: "user", content: "hi" }] }) })
+  expect((await res.json()).choices[0].message.content).toBe("glm-5.3__dev")
+  expect(asks).toBe(2)
+})
+
 test("a batch answered with no lists falls back to one function at a time", async () => {
   f = fakeTrae()
   f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ code: 0 }))
