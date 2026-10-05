@@ -160,6 +160,20 @@ test("a model the plan locks is still listed: the account keeps what it pays for
   expect(f.seen.at(-1).json.config_name).toBe("gpt-5.5")
 })
 
+test("Trae CN's lists are served whole: only Global hides is_invisible_to_user", async () => {
+  f = fakeTrae("trae-cn")
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [
+      { config_name: "gpt-5.4", usage: "chat_completion", display_config: { display_name: "GPT-5.4" }, model_detail_list: [{ model_name: "gpt-5.4__dev", max_tokens: 32000 }] },
+      { config_name: "gemini-3.1-pro-paygo", usage: "chat_completion", display_config: { display_name: "Gemini 3.1 Pro" }, is_invisible_to_user: true, model_detail_list: [{ model_name: "gemini-3.1-pro-paygo__dev" }] },
+    ] },
+  ] }))
+  const { TraeCNAuthPlugin } = await import("./index.mjs")
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const live = await hooks.provider.models({ models: { ..._internal.SITES["trae-cn"].models } }, { auth: signedIn() })
+  expect(Object.keys(live)).toContain("gemini-3.1-pro-paygo")
+})
+
 test("a US account's request goes to the US chat host, and its sign-in keeps the region", async () => {
   f = fakeTrae("trae-global")
   f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "us" }], ["done", {}]]))

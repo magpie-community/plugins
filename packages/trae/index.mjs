@@ -82,7 +82,8 @@ const SITES = {
     },
     // Trae CN's account info carries no region: its one deployment is the
     // one it is asked through
-    regionOf: () => "",    // where usage is asked, and which page it is (CN: credits)
+    regionOf: () => "",
+    // where usage is asked, and which page it is (CN: credits)
     usage: {
       kind: "credits",
       path: "/trae/api/v2/pay/ide_user_ent_usage",
@@ -116,6 +117,10 @@ const SITES = {
     id: "trae-global",
     name: "Trae Global",
     realm: "Trae Global",
+    // its lists mark Auto-mode channels and pay-as-you-go twins
+    // is_invisible_to_user, which its picker hides; Trae CN's lists are
+    // served whole, as they were before Global joined this package
+    hidesInvisible: true,
     webHost: "trae.ai",
     hosts: {
       web: "https://www.trae.ai", // the authorization page
@@ -321,7 +326,6 @@ function errorOf(v) {
   return { code, message: String(message || "") }
 }
 
-// lapsed: Trae turned the token away. 1001 is its "not signed in".
 // lapsed: Trae turned the token away. 1001 is its "not signed in".
 // The realms differ in which codes they send: the international deployment
 // also answers 20101 for a token it no longer takes.
@@ -1290,7 +1294,7 @@ const wrongFunction = (code) => ["4001", "4023", "1005"].includes(String(code))
 // The lists also hold the IDE's own helpers (summary, fast_apply, title
 // generation: usage other than chat_completion), configs switched off, and
 // the slots of custom models, which need a provider bound in the IDE.
-function chatModel(m) {
+function chatModel(m, site) {
   const id = String(m?.config_name ?? "")
   if (!id || /^custom_model/i.test(id)) return false
   if (m.usage && m.usage !== "chat_completion") return false
@@ -1299,7 +1303,7 @@ function chatModel(m) {
   // the IDE's own picker hides these: Auto-mode routing channels and
   // pay-as-you-go twins of another entry (gemini-3.1-pro vs -paygo/-auto,
   // the search_agent family), not entries to pick by hand
-  if (m.is_invisible_to_user === true) return false
+  if (site?.hidesInvisible && m.is_invisible_to_user === true) return false
   return true
 }
 
@@ -1563,14 +1567,14 @@ const makePlugin = (site) => async ({ client }) => {
     const names = new Map() // id → the names its lists give it
     for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
-        if (!chatModel(m)) continue
+        if (!chatModel(m, site)) continue
         const id = String(m.config_name)
         names.set(id, (names.get(id) ?? new Set()).add(nameOf(m)))
       }
     }
     const misnamed = (fn, m) => {
       const id = String(m.config_name), name = nameOf(m)
-      return names.get(id).size > 1 && (lists[fn] ?? []).some((o) => chatModel(o) && String(o.config_name) !== id && nameOf(o) === name)
+      return names.get(id).size > 1 && (lists[fn] ?? []).some((o) => chatModel(o, site) && String(o.config_name) !== id && nameOf(o) === name)
     }
     // a function's entry is worth more when it names a __dev model, then
     // when it isn't misnamed; the first of the best is taken
@@ -1578,7 +1582,7 @@ const makePlugin = (site) => async ({ client }) => {
     const out = new Map()
     for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
-        if (!chatModel(m)) continue
+        if (!chatModel(m, site)) continue
         const id = String(m.config_name)
         const was = out.get(id)
         if (!was || worth(fn, m) > was.worth) out.set(id, { m, fn, worth: worth(fn, m) })
@@ -1591,7 +1595,7 @@ const makePlugin = (site) => async ({ client }) => {
       else modelNames.delete(id)
       if (out.has(id + MAX)) continue
       // its Max is asked through the function whose entry names the __max model
-      const entries = [{ m, fn }, ...site.functions.flatMap((f) => (lists[f] ?? []).filter((o) => o !== m && chatModel(o) && String(o.config_name) === id).map((o) => ({ m: o, fn: f })))]
+      const entries = [{ m, fn }, ...site.functions.flatMap((f) => (lists[f] ?? []).filter((o) => o !== m && chatModel(o, site) && String(o.config_name) === id).map((o) => ({ m: o, fn: f })))]
       const max = maxModel(...entries.map((e) => e.m))
       maxes.set(id, max)
       if (max) {
@@ -1674,7 +1678,7 @@ const makePlugin = (site) => async ({ client }) => {
             const url = r0 ? r0.url : input instanceof URL ? input.href : String(input)
             if (ownPage(url, site)) return ownRequest(getAuth, a0, url, init.method ?? r0?.method ?? "POST", body, init.signal ?? r0?.signal)
             const req = parseJSON(body)
-            if (!Array.isArray(req.messages)) return errorResponse(400, "Trae CN: only chat completions are served")
+            if (!Array.isArray(req.messages)) return errorResponse(400, `${site.realm}: only chat completions are served`)
             let a
             try {
               a = await fresh(getAuth)
