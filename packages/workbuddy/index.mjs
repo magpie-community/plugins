@@ -761,6 +761,13 @@ const REFUSED_HINT =
   "WorkBuddy refuses chats from Codex and Claude Code (their system prompt); use it from Hermes, OpenCode or Pi, or add another provider to this group"
 const REFUSED = /unapproved channel|illegal api invocation/i
 
+// EXHAUSTED_HINT explains WorkBuddy's requirement of an active package
+// even for 0-rate / free models. When an account has no packages or 0 credits,
+// WorkBuddy returns code 14018 ("Credits exhausted...").
+const EXHAUSTED_HINT =
+  "WorkBuddy requires an active credit package even for 0-rate free models; check your account package balance"
+const EXHAUSTED_TEXT = /credits exhausted|额度已用尽|["']code["']\s*:\s*14018/i
+
 // kept is an answer that went through, saying the sign-in is kept: the
 // built-in never cleared a WorkBuddy account's mark, as it never set one.
 function kept(res) {
@@ -769,7 +776,7 @@ function kept(res) {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
 }
 
-// explained is res with REFUSED_HINT added to that refusal's message.
+// explained is res with REFUSED_HINT or EXHAUSTED_HINT added to that refusal's message.
 // Each refusal says the sign-in is kept: the built-in passed WorkBuddy's
 // 401 on and never marked a WorkBuddy account lapsed.
 async function explained(res) {
@@ -781,27 +788,37 @@ async function explained(res) {
     headers.set("X-Magpie-Sign-In", "kept")
     return new Response(b, { status: res.status, statusText: res.statusText, headers })
   }
-  if (!REFUSED.test(text)) return again(text)
-  let msg = text.trim()
   let v
   try {
     v = JSON.parse(text)
   } catch {}
   const at = v?.error && typeof v.error === "object" ? v.error : v && typeof v === "object" ? v : null
+  const code = at?.data?.code ?? at?.code ?? v?.code ?? v?.data?.code
+  const isRefused = REFUSED.test(text)
+  const isExhausted = code === 14018 || Number(code) === 14018 || EXHAUSTED_TEXT.test(text)
+  if (!isRefused && !isExhausted) return again(text)
+
+  let msg = text.trim()
   if (at && typeof at.message === "string") msg = at.message
+  else if (typeof at?.data?.msg === "string") msg = at.data.msg
   else if (typeof v?.error === "string") msg = v.error
   else if (typeof v?.msg === "string" && v.msg) msg = v.msg // WorkBuddy's own {"code", "msg"}
-  msg = `${msg} — ${REFUSED_HINT}`
+  else if (typeof v?.data?.msg === "string") msg = v.data.msg
+
+  const hint = isRefused ? REFUSED_HINT : EXHAUSTED_HINT
+  const type = isRefused ? "permission_error" : "insufficient_quota"
+  const errCode = isRefused ? null : 14018
+  msg = `${msg} — ${hint}`
   const headers = new Headers(res.headers)
   headers.set("content-type", "application/json")
   headers.delete("content-length")
   headers.delete("content-encoding")
   headers.set("X-Magpie-Sign-In", "kept")
-  return new Response(JSON.stringify({ error: { message: msg, type: "permission_error", code: null } }), { status: res.status, statusText: res.statusText, headers })
+  return new Response(JSON.stringify({ error: { message: msg, type, code: errCode } }), { status: res.status, statusText: res.statusText, headers })
 }
 
 export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { withSystem, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, freeCredits, creditsOf, fresh, SITES, renewing, renewed }
+export const _internal = { withSystem, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, fresh, SITES, renewing, renewed }

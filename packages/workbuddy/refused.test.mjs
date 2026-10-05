@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test"
 import { _internal } from "./index.mjs"
 
-const { explained, REFUSED_HINT } = _internal
+const { explained, REFUSED_HINT, EXHAUSTED_HINT } = _internal
 
 test("the refusal ends in the hint", async () => {
   const res = await explained(new Response(JSON.stringify({ error: { message: "Illegal API invocation from an unapproved channel", code: 11004 } }), { status: 403 }))
@@ -12,10 +12,68 @@ test("the refusal ends in the hint", async () => {
   expect((await res.json()).error.message).toBe("Illegal API invocation from an unapproved channel — " + REFUSED_HINT)
 })
 
+test("credits exhausted error ends in the exhausted hint", async () => {
+  const res = await explained(
+    new Response(
+      JSON.stringify({
+        error: {
+          data: {
+            code: 14018,
+            msg: "Credits exhausted. Please visit the link below to purchase add-on packs and get more credits: https://www.codebuddy.ai/profile/usage ",
+            requestId: "test-req",
+          },
+        },
+      }),
+      { status: 429 }
+    )
+  )
+  expect(res.status).toBe(429)
+  const body = await res.json()
+  expect(body.error.type).toBe("insufficient_quota")
+  expect(body.error.code).toBe(14018)
+  expect(body.error.message).toBe(
+    "Credits exhausted. Please visit the link below to purchase add-on packs and get more credits: https://www.codebuddy.ai/profile/usage  — " +
+      EXHAUSTED_HINT
+  )
+})
+
+test("credits exhausted as {code, msg} says its msg, then the exhausted hint", async () => {
+  const res = await explained(
+    new Response(JSON.stringify({ code: 14018, msg: "Credits exhausted" }), { status: 429 })
+  )
+  expect(res.status).toBe(429)
+  const body = await res.json()
+  expect(body.error.type).toBe("insufficient_quota")
+  expect(body.error.code).toBe(14018)
+  expect(body.error.message).toBe("Credits exhausted — " + EXHAUSTED_HINT)
+})
+
 test("other errors pass as they came", async () => {
   const res = await explained(new Response('{"error":{"message":"rate limited"}}', { status: 429 }))
   expect(res.status).toBe(429)
   expect(await res.text()).toBe('{"error":{"message":"rate limited"}}')
+})
+
+test("unrelated errors containing 14018 in requestId pass through untouched", async () => {
+  const timeout = '{"error":{"message":"upstream timeout","requestId":"req-1759614018"}}'
+  const res1 = await explained(new Response(timeout, { status: 504 }))
+  expect(res1.status).toBe(504)
+  expect(await res1.text()).toBe(timeout)
+
+  const notfound = '{"error":{"message":"model not found","requestId":"a1b2-14018-ff"}}'
+  const res2 = await explained(new Response(notfound, { status: 404 }))
+  expect(res2.status).toBe(404)
+  expect(await res2.text()).toBe(notfound)
+})
+
+test("truncated body with code 14018 is explained", async () => {
+  const trunc = '{"error":{"data":{"code":14018,"msg":"Credits exh'
+  const res = await explained(new Response(trunc, { status: 429 }))
+  expect(res.status).toBe(429)
+  const body = await res.json()
+  expect(body.error.type).toBe("insufficient_quota")
+  expect(body.error.code).toBe(14018)
+  expect(body.error.message).toBe(trunc + " — " + EXHAUSTED_HINT)
 })
 
 test("a model of no credits is free, as magpie's built-in read them", () => {
