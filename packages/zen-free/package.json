@@ -1,5 +1,5 @@
 {
-  "name": "@magpie-community/opencode-zen-free",
+  "name": "@magpie-community/opencode-zen-free-auth",
   "version": "0.1.0",
   "description": "OpenCode Zen free models through the public credential, with native streaming protocols",
   "type": "module",

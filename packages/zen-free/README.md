@@ -1,4 +1,4 @@
-# @magpie-community/opencode-zen-free
+# OpenCode Zen Free
 
 OpenCode Zen's free models in magpie and OpenCode. Provider id:
 `opencode-zen-free`.
@@ -6,7 +6,7 @@ OpenCode Zen's free models in magpie and OpenCode. Provider id:
 ## Install
 
 ```sh
-magpie plugin add @magpie-community/opencode-zen-free
+magpie plugin add @magpie-community/opencode-zen-free-auth
 magpie plugin login opencode-zen-free
 ```
 
