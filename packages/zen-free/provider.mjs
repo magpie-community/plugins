@@ -8,6 +8,7 @@ import {
   parseProtocolDocs,
 } from "./models.mjs";
 import { collapseResponse } from "./stream.mjs";
+import { guardToolResponse } from "./tool-response.mjs";
 
 const DEFAULT_BASE = "https://opencode.ai/zen/v1";
 const CATALOG = "https://models.opencode.ai/api.json";
@@ -15,6 +16,7 @@ const DOCS =
   "https://raw.githubusercontent.com/anomalyco/opencode/dev/packages/web/src/content/docs/zen.mdx";
 const PATHS = { chat: "/chat/completions", responses: "/responses", anthropic: "/messages" };
 const CORE_TOOLS = ["bash", "edit", "glob", "grep", "read"];
+const OPENCODE_VERSION = "1.18.34";
 
 function httpURL(value) {
   const url = new URL(value);
@@ -57,10 +59,16 @@ function normalizeTools(body, protocol) {
   const present = new Set(
     body.tools.map((tool) => (protocol === "chat" ? tool?.function?.name : tool?.name)),
   );
+  const declared = new Set([...present].filter((name) => typeof name === "string"));
+  if (protocol === "chat" && Array.isArray(body.functions)) {
+    for (const tool of body.functions) if (typeof tool?.name === "string") declared.add(tool.name);
+  }
+  const injected = new Set();
   for (const name of CORE_TOOLS) {
     if (present.has(name)) continue;
-    const parameters = { type: "object", properties: {} };
-    const definition = { name, description: `Agent tool ${name}` };
+    injected.add(name);
+    const parameters = { type: "object", properties: {}, additionalProperties: false };
+    const definition = { name, description: "Not available. Never call this tool." };
     body.tools.push(
       protocol === "chat"
         ? { type: "function", function: { ...definition, parameters } }
@@ -69,6 +77,7 @@ function normalizeTools(body, protocol) {
           : { type: "function", ...definition, parameters },
     );
   }
+  return { declared, injected };
 }
 
 function sessionID(headers, body) {
@@ -208,7 +217,7 @@ async function server(_input, options = {}) {
             }
             const streaming = body.stream === true;
             body.stream = true;
-            normalizeTools(body, protocol);
+            const toolPolicy = normalizeTools(body, protocol);
             if (protocol === "chat")
               body.stream_options = { ...body.stream_options, include_usage: true };
             const headers = new Headers(request.headers);
@@ -225,11 +234,16 @@ async function server(_input, options = {}) {
             }
             headers.set("content-type", "application/json");
             headers.set("accept", "text/event-stream");
-            headers.set("user-agent", "opencode/1.18.31");
+            headers.set("user-agent", `opencode/${OPENCODE_VERSION}`);
             headers.set("x-opencode-client", "cli");
             headers.set("x-opencode-request", `req_${randomUUID().replaceAll("-", "")}`);
-            if (!headers.has("x-opencode-project"))
-              headers.set("x-opencode-project", "magpie-zen-free");
+            if (!headers.has("x-opencode-project")) {
+              const project = _input?.project;
+              headers.set(
+                "x-opencode-project",
+                project?.vcs === "git" && project.id ? project.id : "global",
+              );
+            }
             const session = sessionID(headers, body);
             for (const name of ["x-session-id", "x-opencode-session", "x-session-affinity"])
               headers.set(name, session);
@@ -246,7 +260,8 @@ async function server(_input, options = {}) {
               signal: request.signal,
               redirect: "error",
             });
-            return streaming ? response : collapseResponse(response, protocol);
+            const guarded = await guardToolResponse(response, protocol, toolPolicy);
+            return streaming ? guarded : collapseResponse(guarded, protocol);
           },
         };
       },

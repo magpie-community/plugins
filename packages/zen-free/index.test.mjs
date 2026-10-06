@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import test from "node:test";
+import { protocols, declaredTools, toolReply } from "./tool-fixtures.mjs";
 
-const subject = import("./index.mjs").then((module) => ({ default: { server: module.ZenFreePlugin } }));
+const subject = import("./index.mjs").then((module) => ({
+  default: { server: module.ZenFreePlugin },
+}));
 
-async function fixture(t) {
+async function fixture(t, input = {}) {
   const state = { calls: [], status: 200, modelsStatus: 200, docsStatus: 200, catalogStatus: 200 };
   const server = createServer(async (req, res) => {
     let text = "";
@@ -49,6 +52,9 @@ async function fixture(t) {
       res.end(
         `| Model | chat-free | \`https://opencode.ai/zen/v1/${state.chatProtocol ?? "chat/completions"}\` | sdk |`,
       );
+    } else if (state.reply) {
+      res.writeHead(200, { "content-type": state.contentType ?? "text/event-stream" });
+      res.end(state.reply);
     } else if (state.hang) {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(": heartbeat\n\n");
@@ -71,18 +77,97 @@ async function fixture(t) {
   const origin = `http://127.0.0.1:${server.address().port}`;
   const module = await subject;
   assert.equal(typeof module.default?.server, "function", "plugin hooks must be implemented");
-  const plugin = await module.default.server(
-    {},
-    {
-      baseURL: `${origin}/v1`,
-      catalogURL: `${origin}/catalog`,
-      docsURL: `${origin}/docs`,
-    },
-  );
+  const plugin = await module.default.server(input, {
+    baseURL: `${origin}/v1`,
+    catalogURL: `${origin}/catalog`,
+    docsURL: `${origin}/docs`,
+  });
   return { plugin, state, origin };
 }
 
 const publicAuth = async () => ({ type: "api", key: "public" });
+
+for (const { protocol, path, model } of protocols) {
+  for (const stream of [true, false]) {
+    for (const upstreamSSE of [true, false]) {
+      test(`${protocol}: guards tool names with client stream=${stream}, upstream SSE=${upstreamSSE}`, async (t) => {
+        const { plugin, state, origin } = await fixture(t);
+        await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+        const loader = await plugin.auth.loader(publicAuth);
+        const tools = declaredTools(protocol);
+        state.contentType = upstreamSSE ? "text/event-stream" : "application/json";
+        const send = () =>
+          loader.fetch(`${origin}/v1/${path}`, {
+            method: "POST",
+            body: JSON.stringify({ model, stream, tools }),
+          });
+        for (const [upstream, expected] of [
+          ["bash", "Bash"],
+          ["read", "Read"],
+          ["Bash", "Bash"],
+        ]) {
+          state.reply = toolReply(protocol, upstream, upstreamSSE);
+          const response = await send();
+          assert.equal(response.status, 200);
+          const text = await response.text();
+          assert.match(text, new RegExp(`"name"\\s*:\\s*"${expected}"`));
+          assert.doesNotMatch(text, /"name"\s*:\s*"(?:bash|read)"/);
+        }
+        const outbound = state.calls.at(-1).body.tools;
+        assert.deepEqual(outbound.slice(0, tools.length), tools);
+        for (const raw of outbound.slice(tools.length)) {
+          const tool = protocol === "chat" ? raw.function : raw;
+          assert.match(tool.description, /Not available\. Never call this tool\./);
+          assert.equal((tool.parameters ?? tool.input_schema).additionalProperties, false);
+          assert.deepEqual((tool.parameters ?? tool.input_schema).properties, {});
+        }
+        state.reply = toolReply(protocol, "edit", upstreamSSE);
+        const error = await send();
+        if (!stream || !upstreamSSE) assert.equal(error.status, 502);
+        const rejected = await error.text();
+        assert.match(rejected, /error/);
+        assert.doesNotMatch(rejected, /"name"\s*:\s*"edit"/);
+      });
+    }
+  }
+}
+
+test("keeps declared tools isolated between requests using the same loader", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  state.reply = toolReply("chat", "bash");
+  const send = (tools) =>
+    loader.fetch(`${origin}/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "chat-free", stream: false, tools }),
+    });
+  assert.equal((await send(declaredTools("chat"))).status, 200);
+  const blocked = await send([]);
+  assert.equal(blocked.status, 502);
+  assert.doesNotMatch(await blocked.text(), /"name"\s*:\s*"Bash"/);
+});
+
+for (const [input, supplied, expected] of [
+  [{}, undefined, "global"],
+  [{ project: { id: "magpie" } }, undefined, "global"],
+  [{ project: { id: "abc123", vcs: "git" } }, undefined, "abc123"],
+  [{}, "client-project", "client-project"],
+]) {
+  test(`uses OpenCode project identity ${expected}`, async (t) => {
+    const { plugin, state, origin } = await fixture(t, input);
+    await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+    const loader = await plugin.auth.loader(publicAuth);
+    const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+      method: "POST",
+      headers: supplied ? { "x-opencode-project": supplied } : {},
+      body: JSON.stringify({ model: "chat-free", stream: true }),
+    });
+    await response.text();
+    assert.equal(state.calls.at(-1).headers["x-opencode-project"], expected);
+    assert.equal(state.calls.at(-1).headers["user-agent"], "opencode/1.18.34");
+  });
+}
 
 test("aborts discovery immediately when the inference caller cancels", async (t) => {
   const { plugin, state, origin } = await fixture(t);
