@@ -271,6 +271,7 @@ async function* framesFrom(reader) {
   let lineBytes = 0;
   let eventBytes = 0;
   let lines = [];
+  let rawLines = [];
   let skipLF = false;
   let pendingFrame;
   let firstLine = true;
@@ -299,7 +300,9 @@ async function* framesFrom(reader) {
     let start = 0;
     if (skipLF && value.length) {
       if (value[0] === 10) {
-        if (eventBytes) eventBytes++;
+        eventBytes++;
+        if (pendingFrame) pendingFrame.raw += "\n";
+        else rawLines[rawLines.length - 1] += "\n";
         start = 1;
       }
       if (eventBytes > MAX_BYTES)
@@ -331,18 +334,21 @@ async function* framesFrom(reader) {
       }
       parts = [];
       lineBytes = 0;
+      let rawLine = line + String.fromCharCode(value[offset]);
       if (firstLine) {
         line = line.replace(/^\uFEFF/, "");
         firstLine = false;
       }
       if (value[offset] === 13) {
         if (value[offset + 1] === 10) {
+          rawLine += "\n";
           offset++;
           if (++eventBytes > MAX_BYTES)
             throw new GuardError("Upstream SSE event exceeds the 32 MiB buffer limit");
         } else if (offset + 1 === value.length) skipLF = true;
       }
       start = offset + 1;
+      rawLines.push(rawLine);
       if (line) {
         lines.push(line);
       } else {
@@ -362,10 +368,11 @@ async function* framesFrom(reader) {
           lines: frameLines,
           name,
           text: data.join("\n"),
-          raw: `${frameLines.join("\n")}\n\n`,
+          raw: rawLines.join(""),
         };
-        if (skipLF && eventBytes === MAX_BYTES) {
-          // A split CRLF can still put an exactly-full event over the limit.
+        rawLines = [];
+        if (skipLF) {
+          // Preserve a trailing CRLF even when its LF arrives in the next chunk.
           pendingFrame = frame;
         } else {
           eventBytes = 0;
@@ -419,11 +426,11 @@ function guardedStream(response, protocol, checkName) {
               return;
             }
             const frame = next.value;
-            if (!frame.text.trim()) {
+            if (frame.name !== "error" && !frame.text.trim()) {
               controller.enqueue(encoder.encode(frame.raw));
               return;
             }
-            if (frame.text.trim() === "[DONE]") {
+            if (frame.name !== "error" && frame.text.trim() === "[DONE]") {
               if (protocol !== "chat")
                 throw new GuardError("Unexpected upstream completion marker");
               const final = chat.finish();
@@ -431,21 +438,25 @@ function guardedStream(response, protocol, checkName) {
               controller.enqueue(encoder.encode((final ? encodeEvent(final) : "") + frame.raw));
               return;
             }
-            const data = parseJSON(frame.text);
-            const type = data.type ?? frame.name;
+            const data = frame.name === "error" ? null : parseJSON(frame.text);
+            const type = data?.type ?? frame.name;
             if (
               frame.name === "error" ||
               type === "error" ||
-              data.error ||
+              data?.error ||
               type === "response.failed" ||
-              data.response?.status === "failed"
+              data?.response?.status === "failed"
             ) {
-              throw new GuardError(
-                data.message ??
-                  data.error?.message ??
-                  data.response?.error?.message ??
-                  "Upstream stream failed",
-              );
+              stopped = true;
+              try {
+                await cancel();
+              } catch (cause) {
+                controller.error(cause);
+                return;
+              }
+              controller.enqueue(encoder.encode(frame.raw));
+              controller.close();
+              return;
             }
             let changed;
             let result = data;

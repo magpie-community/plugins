@@ -263,6 +263,112 @@ for (const protocol of protocols) {
     }
   });
 
+  test(`${protocol}: upstream SSE errors pass through byte-for-byte and cancel open streams`, async () => {
+    const errors =
+      protocol === "responses"
+        ? [
+            {
+              type: "response.failed",
+              response: {
+                status: "failed",
+                error: { code: "rate_limit_exceeded", message: "slow down 中文🙂" },
+              },
+            },
+            { type: "error", code: "rate_limit_exceeded", message: "slow down 中文🙂" },
+            { response: { status: "failed", error: { code: "server_error", message: "failed" } } },
+          ]
+        : protocol === "anthropic"
+          ? [{ type: "error", error: { type: "overloaded_error", message: "busy 中文🙂" } }]
+          : [
+              {
+                error: {
+                  code: "rate_limit_exceeded",
+                  type: "rate_limit_error",
+                  message: "slow down 中文🙂",
+                  param: null,
+                },
+              },
+            ];
+    const rawFrames = errors.map(
+      (data) =>
+        `\uFEFF: upstream\r\nid: err-7\r\nretry: 200\r\ndata: {\r\ndata: ${JSON.stringify(data).slice(1)}\r\n\r\n`,
+    );
+    if (protocol === "responses") {
+      rawFrames.push(
+        event({ response: { error: { code: "rate_limit_exceeded" } } }, "response.failed"),
+      );
+    }
+    rawFrames.push(
+      '\uFEFFevent:error\r\ndata: not JSON 中文🙂\r\ndata: second line\r\n\r\n',
+      'event: error\ndata: {broken\n\n',
+      'event: error\ndata: [DONE]\n\n',
+      'event: error\n\n',
+    );
+    for (const raw of rawFrames) {
+      for (const newline of ["\r\n", "\n", "\r"]) {
+        const text = raw.replace(/\r\n|\n/g, newline);
+        const bytes = encoder.encode(text);
+        for (const chunkSize of [1, 2, 7, bytes.length - 1, bytes.length + 1024]) {
+          let offset = 0;
+          let pulls = 0;
+          let cancellations = 0;
+          const trailing = encoder.encode(event(streamSnapshot(protocol, ["unknown"])));
+          const all = new Uint8Array(bytes.length + trailing.length);
+          all.set(bytes);
+          all.set(trailing, bytes.length);
+          const source = new Response(
+            new ReadableStream(
+              {
+                pull(controller) {
+                  pulls++;
+                  if (offset === all.length) return;
+                  const end = Math.min(offset + chunkSize, all.length);
+                  controller.enqueue(all.slice(offset, end));
+                  offset = end;
+                },
+                cancel() {
+                  cancellations++;
+                },
+              },
+              { highWaterMark: 0 },
+            ),
+            { headers: { "content-type": "text/event-stream" } },
+          );
+          const result = await guardToolResponse(source, protocol, policy);
+          const actual = new Uint8Array(await withTimeout(result.arrayBuffer()));
+          assert.deepEqual(actual, bytes);
+          assert.equal(cancellations, 1);
+          assert.equal(source.body.locked, false);
+          const lookahead = newline === "\r" && bytes.length % chunkSize === 0 ? 1 : 0;
+          assert.equal(pulls, Math.ceil(bytes.length / chunkSize) + lookahead);
+        }
+        if (newline === "\r") continue;
+        let cancelled = false;
+        const source = openSource(text, () => {
+          cancelled = true;
+        });
+        const result = await guardToolResponse(source.response, protocol, policy);
+        assert.deepEqual(new Uint8Array(await withTimeout(result.arrayBuffer())), bytes);
+        assert.equal(cancelled, true);
+        assert.equal(source.pulls(), 1);
+      }
+    }
+  });
+
+  test(`${protocol}: upstream SSE errors preserve cancellation failures`, async () => {
+    for (const asynchronous of [false, true]) {
+      const cause = new DOMException("cancel failed", "AbortError");
+      const source = openSource(event("not JSON", "error"), () => {
+        if (asynchronous) return Promise.reject(cause);
+        throw cause;
+      });
+      const result = await guardToolResponse(source.response, protocol, policy);
+      await assert.rejects(withTimeout(result.arrayBuffer()), (error) => error === cause);
+      assert.equal(source.response.body.locked, false);
+      assert.equal(source.pulls(), 1);
+    }
+  });
+
   test(`${protocol}: HTTP failures return the original unread response`, async () => {
     const source = sse(event(streamSnapshot(protocol, ["unknown"])), { status: 429 });
     assert.equal(await guardToolResponse(source, protocol, policy), source);
