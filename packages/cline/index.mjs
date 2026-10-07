@@ -614,19 +614,25 @@ async function unwrapped(res) {
 // decimals under one (an account with half a cent isn't "$0.00" to its owner)
 const usd = (n) => (n === 0 || n >= 0.01 ? `$${n.toFixed(2)}` : `$${Number(n.toFixed(4))}`)
 
-// balanceWindow is the one balance shape Cline serves today: {balance} in
+// balanceUSD is the one balance shape Cline serves today: {balance} in
 // millionths of a dollar — the chat gateway's current_balance is the same
 // number with the decimal point moved six places
-function balanceWindow(v) {
+function balanceUSD(v) {
 	const n = typeof v?.balance === "number" ? v.balance : typeof v?.balance === "string" && Number.isFinite(Number(v.balance)) ? Number(v.balance) : NaN
 	if (!Number.isFinite(n) || n < 0) return null
-	return { name: "Credits", used: 0, display: `${usd(n / 1e6)} left` }
+	return usd(n / 1e6)
 }
 
-// balanceOf is the account's credit balance, a shape Cline hasn't fixed: a
-// total with what is used or left of it, or just what is left
-function balanceOf(v) {
-	if (!v || typeof v !== "object") return null
+// creditsOf is the account's credit balance, a shape Cline hasn't fixed: a
+// total with what is used or left of it, or a count alone. A whole is what
+// magpie says as used or as left, so it is { window } — carrying the count
+// itself (amount of limit) for a card that says either. A count alone is no
+// share of anything: what is left is { balance }, the card's balance, as
+// magpie's built-in Cline says it; what is used alone is { window } set
+// aside, a line that holds nothing up. (A window made of a count alone read
+// as 0% used — its bar full, "100% left", whatever the balance.)
+function creditsOf(v) {
+	if (!v || typeof v !== "object") return {}
 	const flat = {}
 	const collect = (n, depth) => {
 		if (!n || typeof n !== "object" || depth > 2) return
@@ -644,24 +650,24 @@ function balanceOf(v) {
 	const total = pick(["total", "totalcredits", "totalbalance", "creditstotal", "limit", "amount", "quota"])
 	const used = pick(["used", "usedcredits", "usedamount", "spent", "consumed", "usagetotal"])
 	const remaining = pick(["remaining", "remainingcredits", "remainingbalance", "left", "available", "balance", "credits", "current"])
-	const w = { name: "Credits", used: 0 }
 	if (Number.isFinite(total) && total > 0) {
+		const w = { name: "Credits", used: 0, limit: total }
 		if (Number.isFinite(used)) {
 			w.used = (100 * used) / total
+			w.amount = used
 			w.display = `${compactNumber(used)} / ${compactNumber(total)}`
 		} else if (Number.isFinite(remaining) && remaining <= total) {
 			w.used = (100 * (total - remaining)) / total
+			w.amount = total - remaining
 			w.display = `${compactNumber(total - remaining)} / ${compactNumber(total)}`
-		} else return null
-	} else if (Number.isFinite(remaining) && remaining > 0) {
-		w.display = `${compactNumber(remaining)} credits left`
-	} else if (Number.isFinite(used) && used > 0) {
-		w.used = used
-		w.display = `${compactNumber(used)} credits used`
-	} else return null
-	const at = timeOf(v, ["resetAt", "resetTime", "nextResetAt", "renewsAt", "expiresAt"])
-	if (at) w.resetsAt = at
-	return w
+		} else return {}
+		const at = timeOf(v, ["resetAt", "resetTime", "nextResetAt", "renewsAt", "expiresAt"])
+		if (at) w.resetsAt = at
+		return { window: w }
+	}
+	if (Number.isFinite(remaining) && remaining > 0) return { balance: `${compactNumber(remaining)} credits` }
+	if (Number.isFinite(used) && used > 0) return { window: { name: "Credits", used: 0, aside: true, display: `${compactNumber(used)} credits used` } }
+	return {}
 }
 
 // LIMITS are ClinePass's three limits as /users/me/plan/usage-limits names
@@ -694,8 +700,14 @@ function usageOf(me, balance, limits) {
 	const out = { windows: limitWindows(limits) }
 	const plan = firstOf(me?.plan, me?.planType, me?.planName, me?.membership, me?.tier)
 	if (plan) out.plan = plan
-	const w = balanceWindow(balance) ?? balanceOf(balance)
-	if (w) out.windows.push(w)
+	// the credits as magpie says them: a window when Cline tells a whole to
+	// be a share of, else the card's balance (magpie's built-in Cline, which
+	// reads the same reply, says the same)
+	const dollars = balanceUSD(balance)
+	const credits = dollars ? {} : creditsOf(balance)
+	if (credits.window) out.windows.push(credits.window)
+	const left = dollars ?? credits.balance
+	if (left) out.balance = left
 	return out
 }
 
@@ -993,8 +1005,8 @@ export const _internal = {
 	fetchFeed,
 	fetchRecommended,
 	fetchCloudModels,
-	balanceOf,
-	balanceWindow,
+	creditsOf,
+	balanceUSD,
 	usd,
 	usageOf,
 	limitWindows,

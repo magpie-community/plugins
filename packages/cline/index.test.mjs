@@ -3,7 +3,7 @@
 import { test, expect, beforeEach, afterEach } from "bun:test"
 import { ClinePlugin, _internal } from "./index.mjs"
 
-const { authOf, parseAuth, parseFeed, prettify, balanceOf, balanceWindow, usd, usageOf, limitWindows, failure, bearerOf, toMs, refresh, deviceAuthorize, pollDevice, clientHeaders, constants: { CLIENT, DEFAULT_MODELS } } = _internal
+const { authOf, parseAuth, parseFeed, prettify, creditsOf, balanceUSD, usd, usageOf, limitWindows, failure, bearerOf, toMs, refresh, deviceAuthorize, pollDevice, clientHeaders, constants: { CLIENT, DEFAULT_MODELS } } = _internal
 
 // ---- a fetch that answers from a script -----------------------------------------
 
@@ -556,6 +556,25 @@ test("usage reads the account's balance", async () => {
 	expect(out.windows[0].name).toBe("Credits")
 	expect(out.windows[0].used).toBeCloseTo(25)
 	expect(out.windows[0].display).toBe("250 / 1000")
+	// what is used of the whole, so a card that says left says 750 / 1000
+	expect(out.windows[0].amount).toBe(250)
+	expect(out.windows[0].limit).toBe(1000)
+})
+
+// magpie says a window's share from what is used of it, so a window made of a
+// count alone reads as 0% used: its bar full and "100% left", whatever the
+// balance. Cline's accounts are served {balance} in millionths of a dollar,
+// and the card said "$0.48 left" beside 100% left.
+test("a balance with no whole is the card's balance, not a meter", async () => {
+	const { client: c } = client()
+	const hooks = await ClinePlugin({ client: c })
+	serve([
+		["/users/me", () => Response.json({ success: true, data: { clineUserId: "cu1", email: "a@b.c" } })],
+		["/users/cu1/balance", () => Response.json({ success: true, data: { balance: 480000 } })],
+	])
+	const out = await hooks.auth.usage(async () => ({ type: "api", key: "ck", accountId: "a@b.c" }))
+	expect(out.balance).toBe("$0.48")
+	expect(out.windows).toEqual([])
 })
 
 test("usage reads ClinePass's 5-hour, weekly and monthly limits", async () => {
@@ -575,8 +594,9 @@ test("usage reads ClinePass's 5-hour, weekly and monthly limits", async () => {
 		{ name: "5 hours", used: 40, span: 18000, resetsAt: "2026-10-05T15:00:00.000Z" },
 		{ name: "Weekly", used: 100, span: 604800 },
 		{ name: "Month", used: 12.5, span: 2592000, resetsAt: "2026-11-01T00:00:00.000Z" },
-		{ name: "Credits", used: 0, display: "$25.00 left" },
 	])
+	// the credits are a balance, not a fourth meter
+	expect(out.balance).toBe("$25.00")
 	const limits = calls.find((x) => x.url.endsWith("/users/me/plan/usage-limits"))
 	expect(limits.init.headers.Authorization).toBe("Bearer ck")
 })
@@ -592,7 +612,8 @@ test("an account whose limits can't be read keeps its balance and its sign-in", 
 	const out = await hooks.auth.usage(async () => ({ type: "api", key: "ck" }))
 	expect(out.signIn).toBe("kept")
 	expect(out.error).toBeUndefined()
-	expect(out.windows).toEqual([{ name: "Credits", used: 0, display: "$1.00 left" }])
+	expect(out.windows).toEqual([])
+	expect(out.balance).toBe("$1.00")
 })
 
 test("limitWindows leaves out what it doesn't know", () => {
@@ -608,7 +629,8 @@ test("usage tries the ids users/me names, in order", async () => {
 		["/users/sub1/balance", () => Response.json({ success: true, data: { credits: "42" } })],
 	])
 	const out = await hooks.auth.usage(async () => ({ type: "api", key: "ck" }))
-	expect(out.windows[0].display).toBe("42 credits left")
+	expect(out.windows).toEqual([])
+	expect(out.balance).toBe("42 credits")
 })
 
 test("usage reports a lapsed account as expired", async () => {
@@ -769,13 +791,13 @@ test("prettify reads a model id as a name", () => {
 	expect(prettify("moonshotai/kimi-k3")).toBe("Kimi K3")
 })
 
-test("balanceWindow reads Cline's balance shape, in dollars", () => {
-	expect(balanceWindow({ balance: 4507 })).toEqual({ name: "Credits", used: 0, display: "$0.0045 left" })
-	expect(balanceWindow({ balance: 25000000 }).display).toBe("$25.00 left")
-	expect(balanceWindow({ balance: 0 }).display).toBe("$0.00 left")
-	expect(balanceWindow({ balance: "900000" }).display).toBe("$0.90 left")
-	expect(balanceWindow({ totalCredits: 100 })).toBe(null)
-	expect(balanceWindow(null)).toBe(null)
+test("balanceUSD reads Cline's balance shape, in dollars", () => {
+	expect(balanceUSD({ balance: 4507 })).toBe("$0.0045")
+	expect(balanceUSD({ balance: 25000000 })).toBe("$25.00")
+	expect(balanceUSD({ balance: 0 })).toBe("$0.00")
+	expect(balanceUSD({ balance: "900000" })).toBe("$0.90")
+	expect(balanceUSD({ totalCredits: 100 })).toBe(null)
+	expect(balanceUSD(null)).toBe(null)
 })
 
 test("usd writes cents above a cent and four decimals under one", () => {
@@ -785,16 +807,18 @@ test("usd writes cents above a cent and four decimals under one", () => {
 	expect(usd(0.9)).toBe("$0.90")
 })
 
-test("balanceOf reads a total with its used or remaining, or just what's left", () => {
-	expect(balanceOf({ totalCredits: 1000, usedCredits: 250 })).toEqual({ name: "Credits", used: 25, display: "250 / 1000" })
-	expect(balanceOf({ total: 100, remaining: 75 }).used).toBeCloseTo(25)
-	expect(balanceOf({ credits: 42 }).display).toBe("42 credits left")
-	expect(balanceOf({ used: 30 }).display).toBe("30 credits used")
-	const withReset = balanceOf({ totalCredits: 10, usedCredits: 1, resetAt: 1893456000000 })
-	expect(withReset.resetsAt).toBeTruthy()
-	expect(balanceOf({})).toBe(null)
-	expect(balanceOf(null)).toBe(null)
-	expect(balanceOf({ hello: "world" })).toBe(null)
+test("creditsOf reads a whole as a window, a count alone as the balance", () => {
+	expect(creditsOf({ totalCredits: 1000, usedCredits: 250 })).toEqual({ window: { name: "Credits", used: 25, amount: 250, limit: 1000, display: "250 / 1000" } })
+	expect(creditsOf({ total: 100, remaining: 75 }).window.used).toBeCloseTo(25)
+	expect(creditsOf({ total: 100, remaining: 75 }).window.amount).toBe(25)
+	expect(creditsOf({ credits: 42 })).toEqual({ balance: "42 credits" })
+	// what is used alone is no share of anything: a line, set aside
+	expect(creditsOf({ used: 30 })).toEqual({ window: { name: "Credits", used: 0, aside: true, display: "30 credits used" } })
+	const withReset = creditsOf({ totalCredits: 10, usedCredits: 1, resetAt: 1893456000000 })
+	expect(withReset.window.resetsAt).toBeTruthy()
+	expect(creditsOf({})).toEqual({})
+	expect(creditsOf(null)).toEqual({})
+	expect(creditsOf({ hello: "world" })).toEqual({})
 })
 
 test("usageOf reads a plan when the profile names one", () => {
