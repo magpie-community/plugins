@@ -57,8 +57,8 @@ test("a Coding Plan's five hours and week", async () => {
     signIn: "kept",
     plan: "GLM Coding Pro",
     windows: [
-      { name: "5 hours", used: 25, display: "500 / 2000", resetsAt: new Date(reset).toISOString(), span: 5 * 3600 },
-      { name: "Weekly", used: 10, display: "1000 / 10000", resetsAt: new Date(reset).toISOString(), span: 7 * 86400 },
+      { name: "5 hours", used: 25, display: "500 / 2000", amount: 500, limit: 2000, resetsAt: new Date(reset).toISOString(), span: 5 * 3600 },
+      { name: "Weekly", used: 10, display: "1000 / 10000", amount: 1000, limit: 10000, resetsAt: new Date(reset).toISOString(), span: 7 * 86400 },
     ],
   })
   expect(calls.every((c) => c.url.origin === "https://api.z.ai")).toBe(true)
@@ -78,8 +78,8 @@ test("windows, names and terms as Go reads them", () => {
     { unit: 0 },
   ] })
   expect(ws).toEqual([
-    { name: "5 hours", used: 42, display: "420 / 1000", span: 18000 },
-    { name: "Weekly", used: 25, display: "200 / 800", span: 604800 },
+    { name: "5 hours", used: 42, display: "420 / 1000", amount: 420, limit: 1000, span: 18000 },
+    { name: "Weekly", used: 25, display: "200 / 800", amount: 200, limit: 800, span: 604800 },
     { name: "0 hours", used: 7.5, span: 1800 },
     { name: "3 days", used: 0, span: 3 * 86400 },
     { name: "Monthly", used: 0, aside: true, span: 30 * 86400 }, // a whole of 0: no cap
@@ -93,6 +93,24 @@ test("windows, names and terms as Go reads them", () => {
     .toEqual({ until: "2026-10-18T04:00:00.000Z", renew: "off" })
   expect(_internal.termOf([{ status: "VALID", autoRenew: true, valid: "2026-09-18-2026-10-18" }])).toEqual({})
   expect(_internal.termOf([{ status: "VALID", valid: "2026-09-18 - 2026-10-18" }])).toEqual({ until: "2026-10-17T16:00:00.000Z", renew: "off" })
+})
+
+// #659: a window counted in amounts says the count as used or as left, as
+// its share is said (magpie's QuotaWindow.Count, quotaCount in the GUI);
+// amount is what is used of limit. A window that told only the vendor's
+// used-first text froze that count beside a "% left" figure — ZCode's gift
+// card read "28395087 / 100000000 · 71.6% left".
+test("a counted window carries what is used of the whole", async () => {
+  serve(({ url }) => {
+    if (url.pathname === "/api/biz/subscription/list") return ok([{ productName: "GLM Coding Pro", status: "VALID" }])
+    if (url.pathname === "/api/monitor/usage/quota/limit")
+      return ok({ level: "pro", limits: [
+        { type: "TOKENS_LIMIT", unit: 3, number: 5, usage: 2000, remaining: 1500, percentage: 25, nextResetTime: Date.now() + 3600_000 },
+      ] })
+  })
+  const w = (await usage(oauth({ site: "zai", key: "two.secret2" }))).windows[0]
+  // 500 of 2000 used: magpie says "500 / 2,000" used, "1,500 / 2,000" left
+  expect([w.used, w.amount, w.limit]).toEqual([25, 500, 2000])
 })
 
 // Go's TestZCodeNoMonthlyCap (#366): the month's MCP tool calls are named
@@ -143,7 +161,7 @@ test("ZCode's Start Plan: its buckets, each for its models", async () => {
   expect(await usage(auth)).toEqual({
     signIn: "kept",
     plan: "Start Plan", until: new Date((now + 7 * 86400) * 1000).toISOString(), renew: "off",
-    windows: [{ name: "GLM-5.1", used: 25, display: "250000 / 1000000", resetsAt: new Date((now + 3600) * 1000).toISOString(), span: 86400,
+    windows: [{ name: "GLM-5.1", used: 25, display: "250000 / 1000000", amount: 250000, limit: 1000000, resetsAt: new Date((now + 3600) * 1000).toISOString(), span: 86400,
       models: ["GLM-5.1", "GLM-5.1-Trial"] }],
   })
   expect(calls[0].url.origin).toBe("https://zcode.z.ai")
@@ -159,7 +177,7 @@ test("ZCode's Start Plan: its buckets, each for its models", async () => {
   balance = startBalance(now, "active")
   balance.balances = [{ plan_id: "zai-start-plan", capabilities: [" model: GLM-5-Turbo ", "model:"], total_units: 200, remaining_units: "150",
     period_start: now, period_end: now + 7 * 86400 }]
-  expect((await usage(auth)).windows).toEqual([{ name: "GLM-5-Turbo", used: 25, display: "50 / 200", span: 7 * 86400, models: ["GLM-5-Turbo", "GLM-5-Turbo-Trial"] }])
+  expect((await usage(auth)).windows).toEqual([{ name: "GLM-5-Turbo", used: 25, display: "50 / 200", amount: 50, limit: 200, span: 7 * 86400, models: ["GLM-5-Turbo", "GLM-5-Turbo-Trial"] }])
 
   // its token run out
   expect(await usage(oauth({ site: "zai", jwt: jwt(now - 60) }))).toEqual({ signIn: "kept", error: "ZCode's sign-in has expired; sign in to ZCode again (or add the account again in magpie)" })
@@ -203,8 +221,8 @@ test("a team seat: the team plan's windows, name, end and resets, its key found 
     plan: "GLM Coding Team Pro", until: "2026-12-31T15:59:59.000Z", renew: "off",
     resets: { count: 3, byWindow: true, fiveHour: 2, weekly: 1, until: new Date(1790000000 * 1000).toISOString() },
     windows: [
-      { name: "5 hours", used: 42, display: "420 / 1000", resetsAt: new Date(reset).toISOString(), span: 5 * 3600 },
-      { name: "Weekly", used: 10, display: "1000 / 10000", resetsAt: new Date(reset + 86400000).toISOString(), span: 7 * 86400 },
+      { name: "5 hours", used: 42, display: "420 / 1000", amount: 420, limit: 1000, resetsAt: new Date(reset).toISOString(), span: 5 * 3600 },
+      { name: "Weekly", used: 10, display: "1000 / 10000", amount: 1000, limit: 10000, resetsAt: new Date(reset + 86400000).toISOString(), span: 7 * 86400 },
     ],
   })
   expect(made).toEqual({ name: "zcode-team-api-key", keyType: 2 })
@@ -286,7 +304,7 @@ test("a gift plan ZCode holds but has not granted is named on the card, to claim
   const token = jwt(now + 86400)
   const { u, calls } = await startCard(now, token, () => ok(PREVIEW_CLAIMABLE))
   expect(u.windows).toEqual([
-    { name: "GLM-5.1", used: 25, display: "250000 / 1000000", resetsAt: new Date((now + 3600) * 1000).toISOString(), span: 86400,
+    { name: "GLM-5.1", used: 25, display: "250000 / 1000000", amount: 250000, limit: 1000000, resetsAt: new Date((now + 3600) * 1000).toISOString(), span: 86400,
       models: ["GLM-5.1", "GLM-5.1-Trial"] },
     TRUST_BUILD,
   ])

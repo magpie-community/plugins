@@ -366,7 +366,9 @@ const isNum = (v) => typeof v === "number" && Number.isFinite(v)
 // the current value), else the percentage given. TIME_LIMIT is the month's
 // MCP tool calls, which ZCode shows but never stops the models on, so it is
 // set aside, as is a limit whose whole is told as 0: no cap (an older
-// plan's), which the vendor may still give as 100% used.
+// plan's), which the vendor may still give as 100% used. A window whose
+// count is told carries it as amount of limit, so magpie's card says the
+// count as used or as left, as it says the share beside it (#659).
 function limitWindows(d) {
   const out = []
   for (const x of d?.limits ?? []) {
@@ -380,9 +382,13 @@ function limitWindows(d) {
       if (isNum(x.remaining)) {
         const used = total - x.remaining
         w.used = (100 * used) / total
+        w.amount = used
+        w.limit = total
         w.display = `${compact(used)} / ${compact(total)}`
       } else if (isNum(x.currentValue)) {
         if (!isNum(x.percentage)) w.used = (100 * x.currentValue) / total
+        w.amount = x.currentValue
+        w.limit = total
         w.display = `${compact(x.currentValue)} / ${compact(total)}`
       }
     }
@@ -508,7 +514,11 @@ async function giftOf(s) {
     const w = { name: base, used: 0, _plan: str(owner.name), _spent: giftSpent(x) }
     if (used === undefined) used = total !== undefined && left !== undefined ? total - left : 0
     if (total > 0) {
+      // the bucket's count as amount of limit, as the Coding windows' is
+      // (#659): magpie says it as used or as left, as it says the share
       w.used = (100 * used) / total
+      w.amount = used
+      w.limit = total
       w.display = `${compact(used)} / ${compact(total)}`
     }
     if (w._spent) w.used = Math.max(100, w.used)
