@@ -766,7 +766,9 @@ const REFUSED = /unapproved channel|illegal api invocation/i
 // WorkBuddy returns code 14018 ("Credits exhausted...").
 const EXHAUSTED_HINT =
   "WorkBuddy requires an active credit package even for 0-rate free models; check your account package balance"
-const EXHAUSTED_TEXT = /credits exhausted|额度已用尽|["']code["']\s*:\s*14018/i
+// The code is matched whole: a code that only begins with 14018 (140185) is
+// another error, and insufficient_quota would rest the account as out of credit.
+const EXHAUSTED_TEXT = /credits exhausted|额度已用尽|["']code["']\s*:\s*["']?14018(?![\d.])/i
 
 // kept is an answer that went through, saying the sign-in is kept: the
 // built-in never cleared a WorkBuddy account's mark, as it never set one.

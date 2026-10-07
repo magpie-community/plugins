@@ -66,6 +66,14 @@ test("unrelated errors containing 14018 in requestId pass through untouched", as
   expect(await res2.text()).toBe(notfound)
 })
 
+test("a code that only begins with 14018 passes through untouched", async () => {
+  for (const body of ['{"error":{"code":140185,"message":"slow down"}}', '{"error":{"code":140185,"message":"slow do']) {
+    const res = await explained(new Response(body, { status: 429 }))
+    expect(res.status).toBe(429)
+    expect(await res.text()).toBe(body)
+  }
+})
+
 test("truncated body with code 14018 is explained", async () => {
   const trunc = '{"error":{"data":{"code":14018,"msg":"Credits exh'
   const res = await explained(new Response(trunc, { status: 429 }))
