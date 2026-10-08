@@ -156,3 +156,10 @@ it can't. To list a plugin, add an entry with its npm `package`, a
 `name`, `providers` (the provider ids it signs in to), an `icon` and a
 `summary` in English and Chinese (`{"en": …, "zh": …}`), and open a pull
 request.
+
+A new package's first version is published by hand before its pull request
+is merged: npm's trusted publishing, which publishes every later version
+from `main`, can't create a package. A magpie-community npm owner runs
+`scripts/publish.sh <otp>` on the pull request's branch and sets
+`.github/workflows/publish.yml` as the package's Trusted Publisher on
+npmjs.com. The pull request's `on-npm` check fails until then.

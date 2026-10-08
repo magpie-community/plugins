@@ -1,0 +1,35 @@
+# Checks a pull request before it is merged: the tests publish.yml runs, and
+# that every package is on npm already (scripts/new-to-npm.sh). A new
+# package merged first turned every publish run red (#39's block-patterns).
+name: pr
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: test
+        # the tests refuse a real home: no real sign-in is ever read
+        run: HOME=$(mktemp -d) bun test
+      - name: check
+        run: bun scripts/check.mjs
+
+  on-npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: every package is on npm
+        run: scripts/new-to-npm.sh
