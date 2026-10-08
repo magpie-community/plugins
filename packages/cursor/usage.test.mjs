@@ -16,9 +16,9 @@ const auth = { type: "oauth", access: tok, refresh: "", expires: 0, accountId: "
 let n = 0
 const fresh = () => ({ ...auth, access: jwt(Math.floor(Date.now() / 1000) + 7200 + ++n) })
 
-const firstParty = ["grok-4.7-xhigh-fast", "cursor-grok-4.7-high-fast", "cursor-grok-4.6-high-fast", "grok-4.5-fast-high", "auto", "default", "composer-2.5", "COMPOSER-2.5-FAST", "composer"]
+const firstParty = ["grok-4.7@256k", "grok-4.7@500k", "grok-4.6", "grok-4.7-xhigh-fast", "cursor-grok-4.7-high-fast", "cursor-grok-4.6-high-fast", "grok-4.5-fast-high", "auto", "default", "composer-2.5", "COMPOSER-2.5-FAST", "composer"]
 const bucketed = ["future-first-party", "grok-4.8-high", "cursor-grok-4.8-xhigh-fast"]
-const others = ["claude-opus-5-5", "gpt-5.6-sol", "gemini-3.1-pro", "grok-3", "grok-4.70", "grok-4.80-high", "unknown-model"]
+const others = ["claude-opus-5-5@300k", "claude-opus-5-5@1m", "claude-opus-5-5", "gpt-5.6-sol", "gemini-3.1-pro", "grok-3", "grok-4.70", "grok-4.80-high", "unknown-model"]
 const provider = { models: Object.fromEntries([...firstParty, ...bucketed, ...others].map((id) => [id, { id }])) }
 
 async function run(a, reply) {

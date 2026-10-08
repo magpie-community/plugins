@@ -73,25 +73,27 @@ plugin's `fetch` answers them on Cursor's agent API:
 ## Models
 
 The `config` hook declares `auto` (Cursor's pick). Once signed in, the
-`provider.models` hook lists the account's models
-(`AgentService/GetUsableModels`, cached 10 minutes), by the ids
-`cursor-agent models` shows:
+`provider.models` hook lists the account's models from Cursor's model
+picker (`AiService/AvailableModels`, as the CLI asks for it, cached 10
+minutes), the way pi-cursor-sdk lists Cursor's catalog:
 
-- Cursor lists a model once per effort (`gpt-5.6-low`, `gpt-5.6-high`, …).
-  Each family is one model here, with the efforts as variants; the
-  request's `reasoning_effort` picks the id, fitted to the nearest one there
-  is. `-fast` and `-thinking` models stay models of their own; a
-  `service_tier` of `priority` picks the fast one.
-- The context window is 1M for a model whose name says 1M, else 200K.
-- Cursor's model picker (`AiService/AvailableModels`, as the CLI asks for
-  it) adds the models it offers that the usable list leaves out (GLM-5.3,
-  GLM-5.3 Flash), run with the picker variant's parameters; hidden and
-  Tab-only models stay out.
-- A model Cursor serves only in Max Mode (the usable list's `maxMode`, a
-  picker model with no other mode, or a Max Mode variant) is asked for in
-  Max Mode, as the CLI turns it on for one. A model neither says it of is
-  asked again in Max Mode when Cursor answers "Max Mode Required", and so
-  from then on.
+- A model with a `context` parameter is listed once per size, as
+  `<model>@<size>` named `<name> @ <size>` (`claude-opus-5-5@300k`,
+  "Claude Opus 5.5 @ 300k"), its window that many tokens. A model with none
+  is listed once, its window Cursor's `contextTokenLimit` (Max Mode's for a
+  model served only in Max Mode); 200K when Cursor gives none.
+- Effort is not a model of its own: the model's efforts are its variants,
+  and the request's `reasoning_effort` (fitted to the nearest there is) is
+  sent as the model's effort parameter. `none` turns a Claude's thinking off.
+- Fast is not a model of its own either: a `service_tier` of `priority`
+  or `fast` sends `fast=true`, anything else `fast=false` (it costs more,
+  so only when asked).
+- A request goes as the picker's variant those parameters pick, in Max Mode
+  when that variant is Max Mode's (a 1M size, say), as the CLI turns it on.
+  A size with no variant goes in Max Mode when it is over Cursor's limit
+  outside it. A model Cursor still answers "Max Mode Required" for is asked
+  again in Max Mode, and so from then on.
+- Hidden, Tab-only and chat-only models stay out, as in the CLI's picker.
 
 ## Not included
 
