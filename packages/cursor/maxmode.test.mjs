@@ -124,6 +124,13 @@ test("a request goes as the picker's model, with the size's parameters, in Max M
   expect(r.status).toBe(200)
   expect(runs).toEqual([{ model: "claude-opus-5-5-medium", detailsMax: 1, requested: "claude-opus-5-5-medium", requestedMax: 1, params: [["context", "1m"], ["effort", "medium"]] }])
 
+  // an id 0.1.11 listed: the variant it stood for, not the picker's bare
+  // name, which Cursor answers 502 "AI Model Not Found"
+  runs.length = 0
+  r = await ask(auth, "claude-opus-5-5")
+  expect(r.status).toBe(200)
+  expect(runs).toEqual([{ model: "claude-opus-5-5-medium", detailsMax: 0, requested: "claude-opus-5-5-medium", requestedMax: 0, params: [["context", "300k"], ["effort", "medium"]] }])
+
   runs.length = 0
   r = await ask(auth, "composer-2.5")
   expect(r.status).toBe(200)

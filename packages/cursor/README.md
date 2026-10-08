@@ -94,6 +94,21 @@ minutes), the way pi-cursor-sdk lists Cursor's catalog:
   outside it. A model Cursor still answers "Max Mode Required" for is asked
   again in Max Mode, and so from then on.
 - Hidden, Tab-only and chat-only models stay out, as in the CLI's picker.
+- The usable list (`AgentService/GetUsableModels`, what `cursor-agent
+  models` shows) says which variants the account has: a variant whose own
+  id isn't in it is neither offered nor asked for (Sonnet 4.6 at any effort
+  but medium, say), and a request for one goes as the nearest the account
+  has. A model the usable list has nothing of is the picker's alone
+  (GLM-5.3) and is kept whole; so is every model when Cursor can't give
+  the usable list.
+- An id from before 0.2.0 still runs. A variant's own id
+  (`claude-opus-5-5-high`) is that variant; a family 0.1.x listed
+  (`claude-opus-5-5`, `claude-opus-5-5-fast`, `claude-haiku-5-5-thinking`,
+  `cursor-grok-4.6`) is its variant nearest the default, fast for a `-fast`
+  one; the picker's name for a model or a legacy slug of it is its default.
+  Each is at the default context size, the request's `reasoning_effort`
+  and `service_tier` counting as for a listed model. The list doesn't show
+  these ids: pick the `@<size>` model for a window that is the model's.
 
 ## Not included
 

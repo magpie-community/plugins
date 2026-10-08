@@ -427,6 +427,37 @@ async function usage(tok, ids) {
 const LEVEL_RANK = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 const EFFORT_PARAMS = ["effort", "reasoning_effort", "reasoning"]
 
+// the effort words of Cursor's own ids and the levels they are; extra-high
+// before high
+const ID_EFFORTS = [["extra-high", "xhigh"], ["xhigh", "xhigh"], ["minimal", "minimal"], ["none", "none"], ["low", "low"], ["medium", "medium"], ["high", "high"], ["max", "max"]]
+
+const cut = (s, suffix) => (s.endsWith(suffix) && s.length > suffix.length ? s.slice(0, -suffix.length) : null)
+
+// splitID is one of Cursor's own ids (a variant's legacySlug, as
+// cursor-agent models lists it) taken apart: its family, and the effort
+// ("" for none named) it is at. Thinking comes before the effort or after
+// it; in the family it goes after, as does fast. The family is the id 0.1.x
+// listed a model by.
+function splitID(id) {
+  let s = id
+  let fast = false
+  let thinking = false
+  let effort = ""
+  let b
+  if ((b = cut(s, "-fast")) !== null) [s, fast] = [b, true]
+  if ((b = cut(s, "-thinking")) !== null) [s, thinking] = [b, true]
+  for (const [word, level] of ID_EFFORTS) {
+    if ((b = cut(s, "-" + word)) !== null) {
+      ;[s, effort] = [b, level]
+      break
+    }
+  }
+  if (!thinking && (b = cut(s, "-thinking")) !== null) [s, thinking] = [b, true]
+  if (thinking) s += "-thinking"
+  if (fast) s += "-fast"
+  return [s, effort]
+}
+
 // left out of the CLI's picker as it leaves them out (model-service.ts)
 const PICKER_SKIP = new Set(["claude-4.5-haiku", "claude-4.5-haiku-thinking", "gemini-2.5-pro", "gemini-2.5-flash", "claude-haiku-4-5"])
 
@@ -477,17 +508,35 @@ function effortsOf(defs) {
   return { pid, levels }
 }
 
+// served is a picker model's variants the account is served. With the
+// usable list at hand (the ids cursor-agent models shows), a variant whose
+// own id isn't in it is one the account hasn't got (Sonnet 4.6 at any effort
+// but medium, say). A model the usable list has nothing of is the picker's
+// alone (GLM-5.3), and is kept whole.
+function served(m, ids) {
+  const vs = m.variants ?? []
+  if (!ids) return vs
+  const got = vs.filter((v) => !v.legacySlug || ids.has(v.legacySlug))
+  return got.some((v) => v.legacySlug) ? got : vs
+}
+
 // modelsOf is the picker's models as offered: one entry for each context
-// size a model has, or one with Cursor's limit when it has none.
-function modelsOf(picker) {
+// size a model has, or one with Cursor's limit when it has none. A model
+// served in part is offered at the sizes and efforts it is served at.
+function modelsOf(picker, ids) {
   const out = []
   const used = new Set()
   for (const m of picker) {
     if (!m?.name || m.isHidden || m.isChatOnly || m.onlySupportsCmdK || m.supportsAgent === false || PICKER_SKIP.has(m.name)) continue
     const defs = paramDefs(m)
-    const { pid, levels } = effortsOf(defs)
-    const base = { run: m.name, title: clean(m.clientDisplayName || m.name), pid, levels, fast: !!defs.fast?.length, variants: m.variants ?? [], model: m }
-    const contexts = defs.context ?? []
+    const variants = served(m, ids)
+    const partial = variants.length < (m.variants ?? []).length
+    const has = (pid, value) => !partial || !variants.some((v) => pid in valuesOf(v)) || variants.some((v) => valuesOf(v)[pid] === value)
+    const def = defaultVariant({ variants })
+    const { pid, levels: all } = effortsOf(defs)
+    const levels = Object.fromEntries(Object.entries(all).filter(([, value]) => has(pid, value)))
+    const base = { run: m.name, title: clean(m.clientDisplayName || m.name), pid, levels, fast: !!defs.fast?.length, variants, def, partial, model: m }
+    const contexts = (defs.context ?? []).filter((c) => has("context", c))
     if (contexts.length) {
       for (const c of contexts) {
         const id = m.name + "@" + c
@@ -497,20 +546,35 @@ function modelsOf(picker) {
       }
     } else if (!used.has(m.name)) {
       used.add(m.name)
-      const limit = needsMax(m, defaultVariant(m)) ? m.contextTokenLimitForMaxMode || m.contextTokenLimit : m.contextTokenLimit
+      const limit = needsMax(m, def) ? m.contextTokenLimitForMaxMode || m.contextTokenLimit : m.contextTokenLimit
       out.push({ ...base, id: m.name === "default" ? "auto" : m.name, name: base.title, context: limit > 0 ? limit : DEFAULT_CONTEXT, size: "" })
     }
   }
   return out
 }
 
+// nearest is the variant of vs most like the parameters wanted, one at
+// their context size before any other.
+function nearest(vs, want) {
+  let best
+  let most = -1
+  for (const v of vs) {
+    const have = valuesOf(v)
+    const n = Object.keys(want).filter((k) => have[k] === want[k]).length + (have.context === want.context ? 100 : 0)
+    if (n > most) [best, most] = [v, n]
+  }
+  return best
+}
+
 // pick is the variant a request runs as: the model's context size, the
-// effort asked for (else the default's) and fast as asked (else the
-// default's), matched against Cursor's variants. With no variant that
-// matches, the parameters go as they are, from the default's.
-function pick(entry, effort, fast) {
-  const def = defaultVariant(entry.model)
-  const want = { ...valuesOf(def) }
+// effort asked for (else the default's) and fast as asked, matched against
+// Cursor's variants. With no variant that matches, the parameters go as
+// they are, from the default's; of a model served in part, as the nearest
+// variant the account has. seed is the variant an id of Cursor's own named
+// (request), in the default's place.
+function pick(entry, effort, fast, seed) {
+  const def = entry.def
+  const want = { ...valuesOf(seed ?? def) }
   if (entry.size) want.context = entry.size
   if (effort === "off") effort = "none"
   if (entry.pid && entry.pid !== "thinking" && effort === "none" && !("none" in entry.levels) && "thinking" in want) {
@@ -519,7 +583,8 @@ function pick(entry, effort, fast) {
   } else if (entry.pid) {
     const at = effort ? fitEffort(effort, Object.keys(entry.levels)) : ""
     if (at && entry.levels[at]) want[entry.pid] = entry.levels[at]
-    if (entry.pid !== "thinking" && "thinking" in want && at) want.thinking = "true"
+    // a variant named says for itself whether it thinks
+    if (!seed && entry.pid !== "thinking" && "thinking" in want && at) want.thinking = "true"
   }
   // fast only when asked: it costs more
   if (entry.fast) want.fast = fast ? "true" : "false"
@@ -527,12 +592,12 @@ function pick(entry, effort, fast) {
     const have = valuesOf(v)
     return Object.keys({ ...have, ...want }).every((k) => have[k] === undefined || want[k] === undefined || have[k] === want[k])
   }
-  const v = entry.variants.find(same)
+  const v = entry.variants.find(same) ?? (entry.partial ? nearest(entry.variants, want) : undefined)
   const params = Object.entries(v ? { ...want, ...valuesOf(v) } : want).map(([id, value]) => ({ id, value }))
   // no variant: Max Mode when the size is more than Cursor allows outside it
   const maxMode = v ? needsMax(entry.model, v) : needsMax(entry.model, def) || tokensOf(entry.size) > (entry.model.contextTokenLimit || Infinity)
   // the agent API takes the variant's own id (its legacySlug, as
-  // `cursor-agent models` lists it: claude-opus-5-5-high), not the picker's
+  // cursor-agent models lists it: claude-opus-5-5-high), not the picker's
   // model name; the default's when no variant matched
   const id = v?.legacySlug || def?.legacySlug || entry.run
   return { id, params, maxMode }
@@ -556,27 +621,74 @@ function fitEffort(want, levels) {
   return best
 }
 
-// usable is the account's list, kept a while, by token. A picker Cursor
-// can't give is a failure: magpie keeps the list it had.
+// usable is the account's list, kept a while, by token: Cursor's picker,
+// less the variants the usable list (AgentService/GetUsableModels, what
+// cursor-agent models shows) says the account hasn't got. A picker Cursor
+// can't give is a failure: magpie keeps the list it had. A usable list it
+// can't give leaves the picker as it is.
 const lists = new Map()
 async function usable(tok) {
   const h = createHash("sha256").update(tok).digest("hex")
   const had = lists.get(h)
   if (had && Date.now() - had.at < MODELS_KEEP) return had.raw
-  const j = await unary(API, "aiserver.v1.AiService/AvailableModels", tok, { useModelParameters: true, doNotUseMarkdown: true }, 30_000)
-  const raw = modelsOf(Array.isArray(j?.models) ? j.models : [])
+  const [j, ids] = await Promise.all([
+    unary(API, "aiserver.v1.AiService/AvailableModels", tok, { useModelParameters: true, doNotUseMarkdown: true }, 30_000),
+    unary(API, "agent.v1.AgentService/GetUsableModels", tok, {}, 8_000).then(
+      (u) => {
+        const ids = new Set((u?.models ?? []).flatMap((m) => [m.modelId, m.displayModelId]).filter(Boolean))
+        return ids.size ? ids : null
+      },
+      () => null,
+    ),
+  ])
+  const raw = modelsOf(Array.isArray(j?.models) ? j.models : [], ids)
   if (!raw.length) throw new Error("Cursor listed no models")
   lists.set(h, { at: Date.now(), raw })
   return raw
 }
 
-// request is how a chat's model is asked of Cursor: the picker's model
-// name, the variant's parameters and its mode. A model the list doesn't
-// have goes as it is named (one of Cursor's own ids, say).
+// named is the model and variant an id the list doesn't have stands for,
+// when it is one of Cursor's own, as the CLI reads one and as 0.1.x listed
+// them, so a model picked before the list changed still runs: a variant's
+// own id (claude-opus-5-5-high) is that variant; a family of them, the id
+// 0.1.x listed (claude-opus-5-5, claude-opus-5-5-fast, cursor-grok-4.6,
+// or with an effort the account lacks), is the family's variant nearest
+// the default, fast when the family is and at the id's effort; the picker's
+// name for a model, or a legacy slug of it, is its default. Each at the
+// variant's context size, the default's when the id doesn't say.
+function named(raw, id) {
+  const models = raw.filter((e, i) => raw.findIndex((x) => x.model === e.model) === i)
+  const at = (e, v) => raw.find((x) => x.model === e.model && x.size === (valuesOf(v).context ?? "")) ?? e
+  const as = (e, vs, effort) => {
+    const seed = nearest(vs, valuesOf(e.def))
+    return { entry: at(e, seed), seed, effort, fast: valuesOf(seed).fast === "true" }
+  }
+  for (const e of models) {
+    const vs = e.variants.filter((v) => v.legacySlug === id)
+    if (vs.length) return as(e, vs, "")
+  }
+  const [family, effort] = splitID(id)
+  for (const e of models) {
+    const vs = e.variants.filter((v) => v.legacySlug && splitID(v.legacySlug)[0] === family)
+    if (vs.length) return as(e, vs, effort)
+  }
+  for (const e of models) {
+    const m = e.model
+    if ([m.name, ...(m.legacySlugs ?? []), ...(m.idAliases ?? [])].includes(id)) return { entry: at(e, e.def), seed: undefined, effort: "", fast: false }
+  }
+  return null
+}
+
+// request is how a chat's model is asked of Cursor: the variant's own id,
+// its parameters and its mode. An id the list doesn't have that is one of
+// Cursor's own goes as the variant it names, at the effort asked for, fast
+// when it says so or the request does; any other goes as it is named.
 function request(raw, model, effort, fast) {
   const entry = raw.find((m) => m.id === model)
-  if (!entry) return { id: model === "auto" ? "default" : model, params: [], maxMode: false }
-  return pick(entry, effort, fast)
+  if (entry) return pick(entry, effort, fast)
+  const old = named(raw, model)
+  if (old) return pick(old.entry, effort || old.effort, fast || old.fast, old.seed)
+  return { id: model === "auto" ? "default" : model, params: [], maxMode: false }
 }
 
 function runtimeModel(m) {
@@ -1723,8 +1835,8 @@ async function answerOf(auth, chat, signal, session = "") {
   try {
     raw = await usable(tok)
   } catch {}
-  // fast as asked: a service_tier of priority or fast is on, any other
-  // tier off, none the model's default
+  // fast only when asked: a service_tier of priority or fast is on; any
+  // other tier, or none, is off, unless the id is a fast one of Cursor's own
   const tier = chat.service_tier
   const fast = tier === "priority" || tier === "fast" ? true : tier ? false : undefined
   const req = request(raw, model, chat.reasoning_effort ?? "", fast)
