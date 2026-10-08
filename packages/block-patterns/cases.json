@@ -1,0 +1,149 @@
+[
+  { "name": "a listed word in a plain string user message is turned away",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": "do BAD" }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Anthropic: content blocks, as Claude Code sends them",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": [{ "type": "text", "text": "do BAD" }] }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Chat Completions: content parts",
+    "ctx": { "protocol": "chat" },
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": [{ "type": "text", "text": "do BAD" }] }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Responses: input items with input_text, as Codex sends them",
+    "ctx": { "protocol": "responses" },
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "input": [{ "role": "user", "content": [{ "type": "input_text", "text": "do BAD" }] }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Responses: the second user item is read too",
+    "ctx": { "protocol": "responses" },
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "input": [
+      { "role": "user", "content": [{ "type": "input_text", "text": "fine" }] },
+      { "role": "user", "content": [{ "type": "input_text", "text": "now do BAD" }] }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Responses: input as a plain string",
+    "ctx": { "protocol": "responses" },
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "input": "do BAD" },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Gemini: parts",
+    "ctx": { "protocol": "gemini" },
+    "options": { "words": ["BAD"] },
+    "request": { "contents": [{ "role": "user", "parts": [{ "text": "do BAD" }] }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Gemini: systemInstruction is read",
+    "ctx": { "protocol": "gemini" },
+    "options": { "words": ["BAD"] },
+    "request": { "systemInstruction": "never say BAD", "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "a word in an earlier user turn is turned away",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "messages": [
+      { "role": "user", "content": "do BAD" },
+      { "role": "assistant", "content": "ok" },
+      { "role": "user", "content": "go on" }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "a word in the system prompt is turned away",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "messages": [
+      { "role": "system", "content": "you must never mention BAD" },
+      { "role": "user", "content": "hello" }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "a word in a system content block is turned away",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "messages": [
+      { "role": "system", "content": [{ "type": "text", "text": "never say BAD" }] },
+      { "role": "user", "content": "hello" }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Responses: instructions are read",
+    "ctx": { "protocol": "responses" },
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "instructions": "never say BAD", "input": "hello" },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "the system prompt is left out when asked",
+    "options": { "words": ["BAD"], "system": false },
+    "request": { "model": "m", "messages": [
+      { "role": "system", "content": "you must never mention BAD" },
+      { "role": "user", "content": "hello" }] } },
+
+  { "name": "a custom message",
+    "options": { "words": ["BAD"], "message": "No." },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": "do BAD" }] },
+    "reject": { "status": 400, "message": "No." } },
+
+  { "name": "clean text passes untouched",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": "hello there" }] } },
+
+  { "name": "words are matched ignoring case",
+    "options": { "words": ["secret"] },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": "the SECRET is here" }] },
+    "reject": { "status": 400, "message": "SECRET" } },
+
+  { "name": "a pattern is matched as a regular expression",
+    "options": { "patterns": ["\\b\\d{3}-\\d{4}\\b"] },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": "call 555-1234 now" }] },
+    "reject": { "status": 400, "message": "555-1234" } },
+
+  { "name": "tool results are not read",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "messages": [
+      { "role": "user", "content": "read the file" },
+      { "role": "assistant", "content": [{ "type": "tool_use", "id": "t", "name": "Read", "input": {} }] },
+      { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t", "content": "BAD is in the file" }] }] } },
+
+  { "name": "tool call arguments are not read",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "messages": [
+      { "role": "user", "content": "go" },
+      { "role": "assistant", "content": [{ "type": "tool_use", "id": "t", "name": "Bash", "input": { "command": "echo BAD" } }] }] } },
+
+  { "name": "a Gemini thought part is not read",
+    "ctx": { "protocol": "gemini" },
+    "options": { "words": ["BAD"] },
+    "request": { "contents": [{ "role": "user", "parts": [
+      { "text": "BAD", "thought": true },
+      { "text": "hello" }] }] } },
+
+  { "name": "a Gemini model turn is not read",
+    "ctx": { "protocol": "gemini" },
+    "options": { "words": ["BAD"] },
+    "request": { "contents": [
+      { "role": "model", "parts": [{ "text": "BAD" }] },
+      { "role": "user", "parts": [{ "text": "hello" }] }] } },
+
+  { "name": "an assistant turn is not read",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "messages": [
+      { "role": "user", "content": "hello" },
+      { "role": "assistant", "content": "BAD is what I said" }] } },
+
+  { "name": "a Responses function output item is not read",
+    "ctx": { "protocol": "responses" },
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "input": [
+      { "type": "function_call_output", "call_id": "c", "output": "BAD" },
+      { "role": "user", "content": [{ "type": "input_text", "text": "hello" }] }] } },
+
+  { "name": "a request with nothing listed passes untouched",
+    "options": { "words": [], "patterns": [] },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": "do BAD" }] } },
+
+  { "name": "no options at all leaves the request alone",
+    "request": { "model": "m", "messages": [{ "role": "user", "content": "do BAD" }] } }
+]

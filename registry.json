@@ -40,6 +40,8 @@
     { "package": "@magpie-community/middleware-word-guard", "name": "Word Guard", "kind": "middleware", "community": true,
       "summary": { "en": "New API's sensitive-word filter: turn away or mask words and patterns in what you send, and in replies.", "zh": "New API 的敏感词过滤：拒绝或替换你发出的内容和回复里的词与正则。" } },
     { "package": "@magpie-community/middleware-think-tags", "name": "Think Tags", "kind": "middleware", "community": true,
-      "summary": { "en": "Take a model's <think>…</think> out of its reply's text, or put a Chat reply's reasoning into it.", "zh": "去掉回复正文开头的 <think>…</think>，或把 Chat 回复的思考内容放进正文。" } }
+      "summary": { "en": "Take a model's <think>…</think> out of its reply's text, or put a Chat reply's reasoning into it.", "zh": "去掉回复正文开头的 <think>…</think>，或把 Chat 回复的思考内容放进正文。" } },
+    { "package": "@magpie-community/middleware-block-patterns", "name": "Block Patterns", "kind": "middleware", "community": true,
+      "summary": { "en": "Turn away requests carrying text you list: plain words and regular expressions, in every API magpie serves.", "zh": "按你列出的词与正则拒绝请求，覆盖 magpie 支持的所有 API。" } }
   ]
 }

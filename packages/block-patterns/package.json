@@ -1,0 +1,14 @@
+{
+  "name": "@magpie-community/middleware-block-patterns",
+  "version": "0.1.0",
+  "description": "Rejects requests carrying text you list — plain substring and regular-expression matching, in every API magpie serves",
+  "type": "module",
+  "files": ["block-patterns.middleware.js", "README.md"],
+  "keywords": ["magpie", "magpie-middleware", "blocklist", "patterns", "guardrails", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/block-patterns" },
+  "magpie": {
+    "middleware": "./block-patterns.middleware.js",
+    "options": { "words": ["project-codename"], "patterns": [], "system": true, "message": "" }
+  }
+}
