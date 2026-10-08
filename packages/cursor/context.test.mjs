@@ -197,3 +197,44 @@ test("a variant the usable list says the account hasn't got is neither offered n
   expect(q("cursor-grok-4.6", "low")).toEqual(["cursor-grok-4.6-high", false, { effort: "high" }])
   expect(q("composer-2.5", "", true)).toEqual(["composer-2.5-fast", false, { fast: "true" }])
 })
+
+// Opus 5 as Cursor has it: without thinking, low to high; with it, up to
+// max, the default. An id of the branch without thinking asked at xhigh
+// fitted nothing and went as the default's id with thinking=false, a name
+// and parameters at odds (review of #51).
+const OPUS5 = {
+  name: "claude-opus-5", clientDisplayName: "Claude Opus 5", contextTokenLimit: 300000, contextTokenLimitForMaxMode: 1000000, supportsNonMaxMode: true,
+  parameterDefinitions: [{ id: "thinking", parameterType: bool }, { id: "context", parameterType: en("300k") }, { id: "effort", parameterType: en("low", "medium", "high", "xhigh", "max") }, { id: "fast", parameterType: bool }],
+  variants: [
+    ...["low", "medium", "high"].flatMap((e) => [v({ thinking: "false", context: "300k", effort: e, fast: "false" }, { legacySlug: "claude-opus-5-" + e }), v({ thinking: "false", context: "300k", effort: e, fast: "true" }, { isMaxMode: true, legacySlug: "claude-opus-5-" + e + "-fast" })]),
+    ...["low", "medium", "high", "xhigh", "max"].flatMap((e) => [v({ thinking: "true", context: "300k", effort: e, fast: "false" }, { legacySlug: "claude-opus-5-thinking-" + e, ...(e === "high" ? { isDefaultNonMaxConfig: true } : {}) }), v({ thinking: "true", context: "300k", effort: e, fast: "true" }, { isMaxMode: true, legacySlug: "claude-opus-5-thinking-" + e + "-fast" })]),
+  ],
+}
+
+test("an id of Cursor's own at an effort its branch hasn't goes as that branch's nearest, not the default's id", async () => {
+  fakeAPI([OPUS5])
+  const raw = await usable(tok())
+  const q = (id, effort = "", fast) => {
+    const r = request(raw, id, effort, fast)
+    return [r.id, r.maxMode, Object.fromEntries(r.params.map((x) => [x.id, x.value]))]
+  }
+  // without thinking it stops at high
+  expect(q("claude-opus-5-low", "xhigh")).toEqual(["claude-opus-5-high", false, { thinking: "false", context: "300k", effort: "high", fast: "false" }])
+  expect(q("claude-opus-5-medium-fast", "max")).toEqual(["claude-opus-5-high-fast", true, { thinking: "false", context: "300k", effort: "high", fast: "true" }])
+  // the 0.1.x family without thinking
+  expect(q("claude-opus-5", "max")).toEqual(["claude-opus-5-high", false, { thinking: "false", context: "300k", effort: "high", fast: "false" }])
+  expect(q("claude-opus-5-fast", "xhigh")).toEqual(["claude-opus-5-high-fast", true, { thinking: "false", context: "300k", effort: "high", fast: "true" }])
+  // with thinking at xhigh, asked not to think: no thinking, at its nearest effort
+  expect(q("claude-opus-5-thinking-xhigh", "none")).toEqual(["claude-opus-5-high", false, { thinking: "false", context: "300k", effort: "high", fast: "false" }])
+  // what the branch has still goes as asked, and the other branch is untouched
+  expect(q("claude-opus-5-low", "high")[0]).toBe("claude-opus-5-high")
+  expect(q("claude-opus-5-thinking-low", "max")[0]).toBe("claude-opus-5-thinking-max")
+  // every id sent agrees with its parameters
+  const slug = new Map(OPUS5.variants.map((x) => [x.legacySlug, Object.fromEntries(x.parameterValues.map((p) => [p.id, p.value]))]))
+  for (const id of [...slug.keys(), "claude-opus-5", "claude-opus-5-fast", "claude-opus-5-thinking", "claude-opus-5-thinking-fast"])
+    for (const effort of ["", "none", "low", "medium", "high", "xhigh", "max"])
+      for (const fast of [undefined, true]) {
+        const [sent, , params] = q(id, effort, fast)
+        expect([id, effort, fast, params]).toEqual([id, effort, fast, { ...params, ...slug.get(sent) }])
+      }
+})

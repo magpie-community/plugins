@@ -592,7 +592,7 @@ function pick(entry, effort, fast, seed) {
     const have = valuesOf(v)
     return Object.keys({ ...have, ...want }).every((k) => have[k] === undefined || want[k] === undefined || have[k] === want[k])
   }
-  const v = entry.variants.find(same) ?? (entry.partial ? nearest(entry.variants, want) : undefined)
+  const v = entry.variants.find(same) ?? (seed ? branch(entry, want) : undefined) ?? (entry.partial ? nearest(entry.variants, want) : undefined)
   const params = Object.entries(v ? { ...want, ...valuesOf(v) } : want).map(([id, value]) => ({ id, value }))
   // no variant: Max Mode when the size is more than Cursor allows outside it
   const maxMode = v ? needsMax(entry.model, v) : needsMax(entry.model, def) || tokensOf(entry.size) > (entry.model.contextTokenLimit || Infinity)
@@ -601,6 +601,26 @@ function pick(entry, effort, fast, seed) {
   // model name; the default's when no variant matched
   const id = v?.legacySlug || def?.legacySlug || entry.run
   return { id, params, maxMode }
+}
+
+// branch is, for an id of Cursor's own asked at an effort no variant has
+// with the rest of its parameters (claude-opus-5-low at xhigh: Opus 5
+// without thinking stops at high), the variant with those parameters at the
+// nearest effort it has, not the default's id with parameters that
+// contradict it (claude-opus-5-thinking-high with thinking=false). Where
+// the default differs from what is asked in the effort alone, the effort
+// goes as asked, as for a listed model.
+function branch(entry, want) {
+  if (!entry.pid || entry.pid === "thinking") return undefined
+  const def = valuesOf(entry.def)
+  if (Object.keys(want).every((k) => k === entry.pid || k === "context" || def[k] === undefined || def[k] === want[k])) return undefined
+  const vs = entry.variants.filter((v) => {
+    const have = valuesOf(v)
+    return entry.pid in have && Object.keys(want).every((k) => k === entry.pid || have[k] === undefined || have[k] === want[k])
+  })
+  const level = (x) => (x === "extra-high" ? "xhigh" : x)
+  const at = fitEffort(level(want[entry.pid]), vs.map((v) => level(valuesOf(v)[entry.pid])))
+  return at ? vs.find((v) => level(valuesOf(v)[entry.pid]) === at) : undefined
 }
 
 // fitEffort is the nearest effort a model has to the one asked for; max
