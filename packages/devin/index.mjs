@@ -1179,8 +1179,12 @@ function build(chat, uid, key) {
   for (const m of msgs) out.bytes(3, encodeMsg(m))
   out.varint(7, 5)
   const max = chat.max_completion_tokens || chat.max_tokens || 128000 // the server holds it to the model's own
-  const temp = typeof chat.temperature === "number" ? chat.temperature : 1
-  const topP = typeof chat.top_p === "number" ? chat.top_p : 0.95
+  // Devin answers "an internal error occurred" to a temperature or top_p of
+  // exactly 0 (on every model: its Claude ones and swe-2), where 1e-6 goes
+  // through; a 0 is sent as the smallest step above it, as near greedy
+  const above0 = (v) => (v === 0 ? 1e-6 : v)
+  const temp = above0(typeof chat.temperature === "number" ? chat.temperature : 1)
+  const topP = above0(typeof chat.top_p === "number" ? chat.top_p : 0.95)
   out.bytes(8, new PB().varint(1, 1).varint(2, max).varint(3, 400).double(5, temp).varint(7, 40).double(8, topP))
 
   // the caller's tools, and any the conversation used that it no longer
