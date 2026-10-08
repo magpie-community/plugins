@@ -142,3 +142,5 @@ These tests do **not** certify the actual magpie GUI/login/reconfiguration
 flow, the real model's cold-start time or generation, actual tray behavior,
 forced PID reuse/access-denied fault injection, or independent review.
 Those remain the main session's integration and acceptance work.
+
+Managed startup uses `pythonw.exe` beside the configured Windows Python to avoid terminal windows. An already running Strata instance does not need this entry point.

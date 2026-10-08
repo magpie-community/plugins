@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test"
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { createServer } from "node:net"
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { StrataPlugin } from "./index.mjs"
 
 const python = process.env.STRATA_TEST_PYTHON
@@ -19,6 +19,11 @@ async function until(check, budget = 8000) {
   throw new Error("fixture condition timed out")
 }
 const alive = (pid) => { try { process.kill(pid, 0); return true } catch { return false } }
+function cleanupManager(record) {
+  return spawnSync(join(dirname(python), "pythonw.exe"), ["-B", join(import.meta.dir, "cleanup-fixture.py")], {
+    windowsHide: true, input: JSON.stringify(record), encoding: "utf8", timeout: 7000,
+  })
+}
 async function port() {
   const s = createServer()
   await new Promise((r) => s.listen(0, "127.0.0.1", r))
@@ -71,11 +76,20 @@ async function setup(options = {}) {
 }
 afterEach(async () => {
   for (const c of cases.splice(0)) {
-    await c.plugin.auth.methods[0].authorize({ ...c.inputs, autoStop: "yes" })
-    c.gateway.kill()
-    await until(() => !c.state()?.manager || !alive(c.state().manager.pid), 10000)
-    expect(c.directory.startsWith(process.env.TEMP + "\\strata-life-")).toBe(true)
-    rmSync(c.directory, { recursive: true, force: true })
+    try {
+      await c.plugin.auth.methods[0].authorize({ ...c.inputs, autoStop: "yes" })
+      c.gateway.kill()
+      await until(() => !c.state()?.manager || !alive(c.state().manager.pid), 10000)
+    } finally {
+      c.gateway.kill()
+      const manager = c.state()?.manager
+      if (manager) {
+        const result = cleanupManager(manager)
+        if (result.error || result.status !== 0) throw result.error ?? new Error(result.stderr || "Fixture cleanup failed")
+      }
+      expect(c.directory.startsWith(process.env.TEMP + "\\strata-life-")).toBe(true)
+      rmSync(c.directory, { recursive: true, force: true })
+    }
   }
 }, 15000)
 lifecycleTest("A02/A03/A07/A17/A19: concurrent first requests share one silent startup, then the gateway exit cleans the tree", async () => {
@@ -84,6 +98,7 @@ lifecycleTest("A02/A03/A07/A17/A19: concurrent first requests share one silent s
   expect(replies.map((r) => r.answer)).toEqual(Array(4).fill("fixture answer"))
   const events = await c.events()
   expect(events.console).toBe(false)
+  expect(c.state().console).toBe(false)
   expect(events.requests.length).toBe(4)
   expect(new Set(replies.map((r) => r.pid)).size).toBe(1)
   expect(readFileSync(join(c.root, "starts.jsonl"), "utf8").trim().split("\n").length).toBe(1)
@@ -251,4 +266,17 @@ lifecycleTest("A05: a failed configuration save does not change the running inst
   await expect(failedHost.auth.methods[0].authorize({ ...c.inputs, autoStop: "no" })).rejects.toThrow("save denied")
   c.gateway.kill()
   await until(() => !alive(events.pid) && !alive(events.child) && !alive(c.state().manager.pid))
+}, 15000)
+
+lifecycleTest("A17: forced fixture cleanup rejects a stale identity and stops only its owned manager", async () => {
+  const c = await setup()
+  await c.request()
+  const record = c.state().manager
+  const events = await c.events()
+  const rejected = cleanupManager({ ...record, created: "0" })
+  expect(rejected.status).not.toBe(0)
+  expect(rejected.stderr).toContain("identity changed")
+  expect(alive(record.pid)).toBe(true)
+  expect(cleanupManager(record).status).toBe(0)
+  await until(() => !alive(events.pid) && !alive(events.child))
 }, 15000)

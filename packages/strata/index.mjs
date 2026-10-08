@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, copyFileSync, openSync, closeSync, unlinkSync } from "node:fs"
-import { isAbsolute, join } from "node:path"
+import { dirname, isAbsolute, join } from "node:path"
 import { randomUUID } from "node:crypto"
 
 const ID = "strata"
@@ -93,6 +93,8 @@ async function health(cfg) {
 async function start(directory, cfg) {
   if (await health(cfg)) return
   if (process.platform !== "win32") throw new Error("Managed Strata startup currently requires Windows")
+  const pythonw = join(dirname(cfg.python), "pythonw.exe")
+  if (!existsSync(pythonw)) throw new Error(`Managed Strata startup requires the windowless Python at ${pythonw}`)
   const dir = runtime(directory, cfg)
   mkdirSync(dir, { recursive: true })
   const script = join(dir, "manager.py")
@@ -102,7 +104,8 @@ async function start(directory, cfg) {
   replace(temporary, script)
   const log = openSync(join(dir, "manager.log"), "a", 0o600)
   const attempt = Date.now()
-  const child = spawn(cfg.python, ["-B", script, dir], {
+  // A detached console Python can open a terminal despite windowsHide.
+  const child = spawn(pythonw, ["-B", script, dir], {
     detached: true, windowsHide: true, stdio: ["pipe", "ignore", log],
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
   })

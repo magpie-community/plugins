@@ -34,6 +34,7 @@ mutex = api(k32, "CreateMutexW", [W.LPVOID, W.BOOL, W.LPCWSTR], W.HANDLE)
 tcp_table = api(iphlp, "GetExtendedTcpTable", [W.LPVOID, ctypes.POINTER(W.DWORD), W.BOOL, W.ULONG, ctypes.c_int, W.ULONG], W.DWORD)
 query_job = api(k32, "QueryInformationJobObject", [W.HANDLE, ctypes.c_int, W.LPVOID, W.DWORD, W.LPVOID], W.BOOL)
 end_job = api(k32, "TerminateJobObject", [W.HANDLE, W.UINT], W.BOOL)
+console_window = api(k32, "GetConsoleWindow", [], W.HWND)
 
 class Entry(ctypes.Structure):
     _fields_ = [("size", W.DWORD), ("usage", W.DWORD), ("pid", W.DWORD),
@@ -184,7 +185,7 @@ def manage(directory, cfg, port):
     state_file, policy_file = directory / "state.json", directory / "policy.json"
     previous = read(state_file)
     owner = identity(os.getpid())
-    state = {"manager": owner, "status": "starting", "updated": time.time()}
+    state = {"manager": owner, "console": bool(console_window()), "status": "starting", "updated": time.time()}
     module, proc, handle, gateway_handle = None, None, None, None
     root_record, listening, gateway_port = None, None, None
 
