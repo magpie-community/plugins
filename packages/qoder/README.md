@@ -186,11 +186,29 @@ The hosts and reply shapes come from a real VPC account's report
 
 Qoder gives credits for a daily claim (the Qoder client's campaign
 `CLAIM_BENEFIT`, 100 Credits a day as reported), on both sites. magpie can
-press it once a day for each account when its Qoder check-in switch is on
+claim it for each account when its Qoder check-in switch is on
 (Settings). It asks these pages through this plugin's fetch (since 0.2.7),
 which sends them as the account, on the device token (`Bearer`,
 `Cosy-ClientType: 10`) as usage is read; a refused device token is
 rotated once and the page asked again.
+
+International campaigns also need Qoder's native device identity:
+`Cosy-MachineToken` and `Cosy-MachineType`. Without them, the server can
+return HTTP 200 but omit the daily claim. The plugin reads them from
+Qoder's own `runtime-info` helper for the signed-in uid, sharing an
+in-flight read and caching it in memory for an hour. The same identity
+goes on the list, the claim and a device-token retry; it is not saved in
+the account's credentials.
+
+- Install Qoder desktop or run Qoder CLI to make its native runtime
+  available. The plugin finds the desktop's standard Windows/macOS
+  location or the CLI's matching `~/.qoder/.bin/umid-*` cache.
+- For another installation location, set `QODER_RUNTIME_INFO` to the
+  absolute path of Qoder's installed `runtime-info` executable
+  (`runtime-info.exe` on Windows), with its accompanying SDK files.
+- A missing helper or invalid identity is an error, rather than a false
+  "no activity" result. Qoder CN keeps its existing requests and does
+  not need this local helper.
 
 - **List:** `GET <openapi>/sash/api/v1/me/campaigns`: `campaigns[]` with
   `campaignId`, `actionType`, `claimStatus` (`CLAIMABLE`, `CLAIMED`),
@@ -201,7 +219,11 @@ rotated once and the page asked again.
   (Qoder CN). Other pages on those hosts are still refused.
 
 Taken from [wallechfox/qoder-checkin](https://github.com/wallechfox/qoder-checkin),
-which a user reports works. Not yet tried here with a real Qoder account.
+which a user reports works, and Qoder desktop 0.4.3's campaign requests.
+International campaign discovery was checked with a real account on
+2026-10-08: the native identity exposed the claimable 100 credits, and
+omitting either header hid them. This verification only queried the
+activity; a live claim was not performed.
 
 ## Not here
 

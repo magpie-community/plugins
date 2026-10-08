@@ -35,7 +35,11 @@
 // <instance>-gateway.vpc.qoder.com.cn. The instance is kept on the account,
 // and an account with none is served as before.
 import { createCipheriv, createHash, publicEncrypt, randomBytes, randomUUID, constants } from "node:crypto"
+import { execFile } from "node:child_process"
+import { readdir, stat } from "node:fs/promises"
 import { STATUS_CODES } from "node:http"
+import { homedir } from "node:os"
+import { join, resolve } from "node:path"
 
 const CHAT_PATH = "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
 const MODELS_PATH = "/algo/api/v2/model/list?Encode=1"
@@ -1028,6 +1032,59 @@ async function fetchUsage(site, deviceToken) {
 // credits among them (actionType CLAIM_BENEFIT) — and claims one
 // (POST …/{id}/claim), as Qoder's client does, on the device token.
 const CAMPAIGNS = "/sash/api/v1/me/campaigns"
+const CAMPAIGN_MACHINE_TTL = 60 * 60 * 1000 // Qoder's desktop client renews its native identity hourly
+
+// campaignRuntime uses Qoder's own native device identity helper, installed
+// by its desktop client or cached by its CLI. A made-up token (including the
+// chat envelope's machine id and type 5) doesn't reveal international claims.
+async function campaignRuntime({ home = homedir(), platform = process.platform, arch = process.arch, env = process.env } = {}) {
+  if (env.QODER_RUNTIME_INFO) return resolve(env.QODER_RUNTIME_INFO)
+  const name = platform === "win32" ? "runtime-info.exe" : "runtime-info"
+  const paths = []
+  if (platform === "win32") {
+    const local = env.LOCALAPPDATA || join(home, "AppData", "Local")
+    paths.push(join(local, "Programs", "Qoder", "resources", "umid", name))
+  } else if (platform === "darwin") {
+    for (const dir of ["/Applications", join(home, "Applications")]) paths.push(join(dir, "Qoder.app", "Contents", "Resources", "umid", name))
+  }
+  for (const path of paths) if ((await stat(path).catch(() => null))?.isFile()) return path
+  const cache = join(home, ".qoder", ".bin")
+  const dirs = (await readdir(cache, { withFileTypes: true }).catch(() => []))
+    .filter((d) => d.isDirectory() && d.name.startsWith(`umid-${platform}-${arch}-`))
+  const cached = await Promise.all(dirs.map(async (d) => ({ path: join(cache, d.name, name), time: (await stat(join(cache, d.name))).mtimeMs })))
+  for (const { path } of cached.sort((a, b) => b.time - a.time)) if ((await stat(path).catch(() => null))?.isFile()) return path
+  throw new Error("Qoder check-in: device identity runtime not found; install Qoder desktop or run Qoder CLI, or set QODER_RUNTIME_INFO to its runtime-info executable")
+}
+
+// Read the SDK identity as Qoder does: environment 3 is international; on
+// Windows and macOS the uid goes over stdin, never into the command line.
+async function campaignMachine(uid) {
+  if (!uid) throw new Error("Qoder check-in: device identity needs the account uid; sign in again")
+  const file = await campaignRuntime()
+  const args = process.platform === "linux" ? ["3"] : ["3", "--account-stdin"]
+  const text = await new Promise((resolve, reject) => {
+    const child = execFile(file, args, { timeout: 20_000, windowsHide: true, maxBuffer: 1 << 20 }, (err, out) => {
+      if (err) reject(err)
+      else resolve(out)
+    })
+    child.stdin?.on("error", () => {})
+    child.stdin?.end(process.platform === "linux" ? undefined : JSON.stringify({ account: uid }) + "\n")
+  }).catch(() => {
+    throw new Error("Qoder check-in: could not read device identity; restart or update Qoder, or check QODER_RUNTIME_INFO")
+  })
+  try {
+    const identity = JSON.parse(text.trim().split(/\r?\n/, 1)[0])
+    const headers = {}
+    for (const [key, field] of [["Cosy-MachineToken", "machineToken"], ["Cosy-MachineType", "machineType"]]) {
+      const value = identity?.[field]?.trim()
+      if (!value || value.length > 4096 || !/^[\x20-\x7e]+$/.test(value)) throw new Error("invalid identity")
+      headers[key] = value
+    }
+    return headers
+  } catch {
+    throw new Error("Qoder check-in: invalid device identity from Qoder; restart or update Qoder")
+  }
+}
 
 // campaignPage: url is the site's campaigns page or a claim under it, which
 // the account's fetch sends as the account rather than as a chat.
@@ -1057,10 +1114,10 @@ function campaignTarget(base, s, url) {
 
 // campaignCall is url asked with the device token; Qoder's answer comes back
 // as it is.
-async function campaignCall(url, method, body, deviceToken, signal) {
+async function campaignCall(url, method, body, deviceToken, machine, signal) {
   return fetch(url, {
     method,
-    headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${deviceToken}`, "Cosy-ClientType": "10", "User-Agent": "Qoder" },
+    headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${deviceToken}`, "Cosy-ClientType": "10", "User-Agent": "Qoder", ...machine },
     body: method === "GET" ? undefined : body || "{}",
     signal: signal ?? AbortSignal.timeout(20_000),
   })
@@ -1175,6 +1232,23 @@ const SITES = {
 
 const makePlugin = (site) => async ({ client }) => {
   const ID = site.id
+  // The SDK identity is account-specific. Share an in-flight read, refresh
+  // after an hour, and leave a failed read available for the next attempt.
+  const campaignMachines = new Map()
+  const machineForCampaign = async (uid) => {
+    const now = Date.now()
+    let entry = campaignMachines.get(uid)
+    if (!entry || now - entry.at >= CAMPAIGN_MACHINE_TTL) {
+      entry = { at: now, promise: campaignMachine(uid) }
+      campaignMachines.set(uid, entry)
+    }
+    try {
+      return await entry.promise
+    } catch (e) {
+      if (campaignMachines.get(uid) === entry) campaignMachines.delete(uid)
+      throw e
+    }
+  }
   // serializes checking, rotating and saving tokens: a refresh token is
   // spent once, so two refreshes would spend it twice
   let lock = Promise.resolve()
@@ -1305,8 +1379,9 @@ const makePlugin = (site) => async ({ client }) => {
     if (!url) return errorResponse({ status: 404, message: "only chat completions are served" })
     const method = String(init.method ?? input?.method ?? "GET").toUpperCase()
     try {
-      let res = await campaignCall(url, method, body, cred.deviceToken, init.signal)
-      if (res.status === 401 || res.status === 403) res = await campaignCall(url, method, body, await deviceToken(getAuth, cred.deviceToken), init.signal)
+      const machine = site.id === "qoder" ? await machineForCampaign(cred.uid) : {}
+      let res = await campaignCall(url, method, body, cred.deviceToken, machine, init.signal)
+      if (res.status === 401 || res.status === 403) res = await campaignCall(url, method, body, await deviceToken(getAuth, cred.deviceToken), machine, init.signal)
       return signed(res, renewed(cred))
     } catch (e) {
       if (e?.expired) return signedInError(e)
@@ -1482,4 +1557,4 @@ export const QoderAuthPlugin = makePlugin(SITES.qoder)
 export const QoderCNAuthPlugin = makePlugin(SITES["qoder-cn"])
 
 // for tests
-export const _internal = { campaignPage, campaignTarget, vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, SITES, decodeBody, events }
+export const _internal = { campaignRuntime, campaignPage, campaignTarget, vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, SITES, decodeBody, events }
