@@ -38,6 +38,7 @@ These packages aren't OpenCode plugins. magpie runs them in its gateway, on the 
 | [system-prompt](packages/system-prompt) | Your own system prompt on every request, or on some agents' or models', in each API's own place |
 | [word-guard](packages/word-guard) | New API's 敏感词过滤: turn away or mask words and patterns in what users send, and in replies |
 | [think-tags](packages/think-tags) | Take `<think>…</think>` out of a reply's text, or put a Chat reply's `reasoning_content` into it (`thinking_to_content`) |
+| [gemini-turn-sanitizer](packages/gemini-turn-sanitizer) | Fix Google Gemini / Antigravity HTTP 400 error by sanitizing turn alternation and tool-call sequence |
 
 ```sh
 magpie plugin add @magpie-community/middleware-<name>

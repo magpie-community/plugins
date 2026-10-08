@@ -1,0 +1,81 @@
+[
+  {
+    "name": "chat: prepends user message when first non-system message is assistant",
+    "request": {
+      "model": "antigravity/gemini-3.8-flash",
+      "messages": [
+        { "role": "system", "content": "You are helpful." },
+        { "role": "assistant", "content": "I can help." }
+      ]
+    },
+    "expect_request": {
+      "model": "antigravity/gemini-3.8-flash",
+      "messages": [
+        { "role": "system", "content": "You are helpful." },
+        { "role": "user", "content": "Continue." },
+        { "role": "assistant", "content": "I can help." }
+      ]
+    }
+  },
+  {
+    "name": "chat: inserts user turn before assistant tool call if previous turn was not user or tool",
+    "request": {
+      "model": "gemini-2.5-flash",
+      "messages": [
+        { "role": "user", "content": "Hello" },
+        { "role": "assistant", "content": "Let me think" },
+        { "role": "assistant", "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "test", "arguments": "{}" } }] }
+      ]
+    },
+    "expect_request": {
+      "model": "gemini-2.5-flash",
+      "messages": [
+        { "role": "user", "content": "Hello" },
+        { "role": "assistant", "content": "Let me think" },
+        { "role": "user", "content": "Continue." },
+        { "role": "assistant", "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "test", "arguments": "{}" } }] }
+      ]
+    }
+  },
+  {
+    "name": "chat: normal alternating turn with tool_calls is untouched",
+    "request": {
+      "model": "gemini-2.5-flash",
+      "messages": [
+        { "role": "user", "content": "Run test" },
+        { "role": "assistant", "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "test", "arguments": "{}" } }] },
+        { "role": "tool", "tool_call_id": "call_1", "content": "ok" },
+        { "role": "assistant", "tool_calls": [{ "id": "call_2", "type": "function", "function": { "name": "next", "arguments": "{}" } }] }
+      ]
+    }
+  },
+  {
+    "name": "gemini: prepends user part when first contents entry is model",
+    "ctx": { "protocol": "gemini" },
+    "request": {
+      "model": "google/gemini-3-flash",
+      "contents": [
+        { "role": "model", "parts": [{ "text": "Hi" }] }
+      ]
+    },
+    "expect_request": {
+      "model": "google/gemini-3-flash",
+      "contents": [
+        { "role": "user", "parts": [{ "text": "Continue." }] },
+        { "role": "model", "parts": [{ "text": "Hi" }] }
+      ]
+    }
+  },
+  {
+    "name": "model filter: request for other model without matching filter passes untouched",
+    "options": {
+      "models": ["gemini", "antigravity"]
+    },
+    "request": {
+      "model": "openai/gpt-4o",
+      "messages": [
+        { "role": "assistant", "content": "Hello" }
+      ]
+    }
+  }
+]

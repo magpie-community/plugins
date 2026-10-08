@@ -1,0 +1,17 @@
+{
+  "name": "@magpie-community/middleware-gemini-turn-sanitizer",
+  "version": "0.1.0",
+  "description": "Sanitize turn alternation and tool-call sequence for Google Gemini / Antigravity as magpie gateway middleware",
+  "type": "module",
+  "files": ["gemini-turn-sanitizer.middleware.js", "README.md"],
+  "keywords": ["magpie", "magpie-middleware", "gemini", "antigravity", "turn-sequence", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/gemini-turn-sanitizer" },
+  "magpie": {
+    "middleware": "./gemini-turn-sanitizer.middleware.js",
+    "options": {
+      "models": ["gemini", "antigravity"],
+      "user_content": "Continue."
+    }
+  }
+}
