@@ -8,7 +8,7 @@
 // streamed only, with WorkBuddy's headers: a request whose User-Agent isn't
 // WorkBuddy/<version> is refused (error 10085).
 
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -235,7 +235,18 @@ async function refreshed(site, auth) {
   return Object.keys(out).length ? out : undefined
 }
 
-// sign sets on headers what WorkBuddy's desktop app sends with a chat.
+// sign sets on headers what WorkBuddy's desktop app sends with a chat: the
+// account's own, the client's, and the attribution WorkBuddy's usage list
+// shows as the client that asked (使用端). The chat's ids — the
+// conversation's, the turn's, the message's — are attend's below.
+//
+// WorkBuddy's own client sends the whole of this on both builds
+// (application-manifest.js: X-Agent-Purpose "conversation", X-IDE-Name/Type
+// "WorkBuddy", X-IDE-Version, X-Product "SaaS"); a chat without them is
+// counted under no client at all, which is the empty 使用端 a request shows
+// when only some of the group is there. The gate below used to give the China
+// build none of the client's headers, so every China-build request was
+// attribution-less.
 function sign(site, a, headers) {
   headers.set("Authorization", "Bearer " + a.access)
   headers.set("X-User-Id", a.uid ?? "")
@@ -243,18 +254,144 @@ function sign(site, a, headers) {
   headers.set("X-Product", "SaaS")
   headers.set("X-IDE-Type", "WorkBuddy")
   headers.set("User-Agent", "WorkBuddy/" + UA_VERSION)
-  if (!site.ai) return
   headers.set("X-Requested-With", "XMLHttpRequest")
   headers.set("X-Agent-Intent", "craft")
-  headers.set("X-Agent-Type", "main")
+  headers.set("X-Agent-Purpose", "conversation")
   headers.set("X-IDE-Name", "WorkBuddy")
   headers.set("X-IDE-Version", UA_VERSION)
-  const conv = hex()
-  if (!headers.has("X-Conversation-ID")) headers.set("X-Conversation-ID", conv)
-  if (!headers.has("X-Conversation-Request-ID")) headers.set("X-Conversation-Request-ID", conv)
+  if (!site.ai) return
+  headers.set("X-Agent-Type", "main")
+}
+
+// WorkBuddy's own client names each chat to its gateway four ways: the
+// conversation it belongs to, the user send (turn) it answers, the message
+// itself, and the request that carried it. Its backend counts a user send as
+// one request by X-Conversation-Request-ID: a chat carrying a new one every
+// time is counted on its own, so one send that takes several steps — a tool
+// call answered and sent again, a retry, another account answering — shows up
+// in the usage detail as many requests. The ids below are made from what
+// names the conversation and the turn, so every step of one send carries the
+// same turn id and the user's next message carries another, as WorkBuddy's
+// own client does.
+
+// SESSION carries the conversation magpie (or OpenCode) names a request by,
+// from the chat.headers hook to the loader's fetch. It goes no further.
+const SESSION = "x-magpie-workbuddy-session"
+
+// SALT is what the ids are derived with, so an id says nothing of the words
+// it was made from. New in each process, as WorkBuddy's own ids are one
+// conversation's own within a run.
+const SALT = randomBytes(16).toString("hex")
+
+// idFor is the 32 hex digits WorkBuddy's own ids are made of, made of a
+// name of the thing the id is for (a turn, a conversation) and what names it.
+function idFor(kind, key) {
+  return createHash("sha256").update(`${SALT}|${kind}|${key}`).digest("hex").slice(0, 32)
+}
+
+// signatureOf is a message content's signature: its text, and a digest of
+// every part that isn't text (an image, a file), so a turn of images alone is
+// a turn of its own too. A tool result's part — carried in a user message by
+// clients of Anthropic's shape — is left out: it is not what the user said,
+// and it changes with every step of the send.
+function signatureOf(content) {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  let out = ""
+  for (const part of content) {
+    const type = part?.type ?? ""
+    if (type === "" || type === "text") out += typeof part?.text === "string" ? part.text : ""
+    else if (type !== "tool_result" && type !== "tool-result") {
+      out += `[${type}:${createHash("sha256").update(JSON.stringify(part)).digest("hex").slice(0, 8)}]`
+    }
+  }
+  return out
+}
+
+// answeredBefore is whether msgs[i] answers the message before it — a tool's
+// result, or an assistant's calls — rather than carrying the user's own
+// words. A client that sends a tool result's images in a user message (pi's
+// "Attached image(s) from tool result:") puts that message right after the
+// result, and a turn keyed on it would be a turn of its own on every step.
+function answeredBefore(msgs, i) {
+  const prev = msgs[i - 1]
+  if (prev === null || typeof prev !== "object") return false
+  if (prev.role === "tool") return true
+  return prev.role === "assistant" && Array.isArray(prev.tool_calls) && prev.tool_calls.length > 0
+}
+
+// turnKey names the user send a chat answers: the body's last user message
+// that is the user's own, by its place and its signature. Every step of one
+// send repeats it; the user's next message changes it. "" for a chat whose
+// last such message has nothing signable in it (an empty message) or which
+// has none at all: the caller then makes a fresh id for that request, as
+// before these were derived at all.
+function turnKey(chat) {
+  const msgs = Array.isArray(chat?.messages) ? chat.messages : []
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]?.role !== "user" || answeredBefore(msgs, i)) continue
+    const sig = signatureOf(msgs[i].content)
+    return sig ? `u${i}:${sig}` : ""
+  }
+  return ""
+}
+
+// conversationKey names the conversation a chat belongs to: the session
+// magpie or OpenCode names (its chat.headers hook), else the chat's first
+// user message, which every later turn of it repeats. "" when neither names
+// one — a body that isn't a chat, or one with no user message in it — and no
+// conversation id is sent then: a made-up one would be a conversation of the
+// request's own, which is what fragments the usage detail in the first place.
+function conversationKey(chat, session) {
+  if (session) return `session:${session}`
+  const msgs = Array.isArray(chat?.messages) ? chat.messages : []
+  for (const m of msgs) {
+    if (m?.role !== "user") continue
+    const sig = signatureOf(m.content)
+    if (sig) return `first:${sig}`
+  }
+  return ""
+}
+
+// chatOf is a chat's body as the object it is, null for one that isn't: a
+// body that isn't text (bytes), or isn't JSON at all.
+function chatOf(body) {
+  if (typeof body !== "string") return null
+  try {
+    const b = JSON.parse(body)
+    return b !== null && typeof b === "object" ? b : null
+  } catch {
+    return null
+  }
+}
+
+// sessionOf takes the session a chat.headers hook named off the headers,
+// with the header: it goes no further than here. Its length is capped as
+// magpie's own session ids are, the id below being derived from it anyway.
+function sessionOf(headers) {
+  const s = String(headers.get(SESSION) ?? "").trim()
+  headers.delete(SESSION)
+  return s.slice(0, 128)
+}
+
+// attend sets a chat's ids on the headers its request goes to WorkBuddy
+// with: the message's (each request its own, as the client makes them), the
+// turn's (one user send, whatever it takes), and the conversation's. A header
+// already there — the caller's own, or another plugin's — is kept, and the
+// message and request ids are the same one, as WorkBuddy's client has them.
+function attend(headers, body, session) {
+  const chat = chatOf(body)
+  const conv = conversationKey(chat, session)
   const msg = hex()
   headers.set("X-Conversation-Message-ID", msg)
   headers.set("X-Request-ID", msg)
+  if (!headers.has("X-Conversation-Request-ID")) {
+    const turn = turnKey(chat)
+    // a turn is a conversation's own: two conversations whose user message
+    // reads the same are still two sends, not one
+    headers.set("X-Conversation-Request-ID", turn ? idFor("turn", `${conv}|${turn}`) : hex())
+  }
+  if (conv && !headers.has("X-Conversation-ID")) headers.set("X-Conversation-ID", idFor("conversation", conv))
 }
 
 // FLAGGED are the words WorkBuddy refuses a chat for, "Illegal API
@@ -674,6 +811,13 @@ function makePlugin(site) {
       p.api ??= api(site)
       p.models = { ...configModels(site), ...(p.models ?? {}) }
     },
+    // the conversation's id, which the chats below carry to WorkBuddy:
+    // magpie's (or OpenCode's) session for this request, when it names one
+    "chat.headers": async (input, output) => {
+      const id = input?.model?.providerID ?? input?.provider?.info?.id
+      if (id !== site.id || !input?.sessionID) return
+      output.headers[SESSION] = String(input.sessionID).slice(0, 128)
+    },
     provider: {
       id: site.id,
       // the account's own list, when it's signed in and WorkBuddy answers;
@@ -714,10 +858,13 @@ function makePlugin(site) {
             headers.delete("authorization")
             headers.delete("x-api-key")
             headers.delete("content-length")
+            const session = sessionOf(headers)
             sign(site, a, headers)
             let body = init?.body
             if (body === undefined && req) body = await req.clone().text()
-            const res = await fetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body: withSystem(body) })
+            body = withSystem(body)
+            attend(headers, body, session)
+            const res = await fetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body })
             return res.status >= 400 ? explained(res) : kept(res)
           },
         }
@@ -823,4 +970,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { withSystem, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, fresh, SITES, renewing, renewed }
+export const _internal = { withSystem, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf }

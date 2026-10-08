@@ -55,7 +55,21 @@ They are streamed only; WorkBuddy refuses a chat that isn't.
 Each chat carries WorkBuddy's headers:
 - `Authorization`, `X-User-Id`, `X-Domain`, `X-Product: SaaS`, `X-IDE-Type: WorkBuddy`;
 - `User-Agent: WorkBuddy/5.5.6`. Without it, WorkBuddy answers error 10085;
-- WorkBuddy AI also takes its client and conversation headers.
+- the client's, which WorkBuddy's usage list shows as the client that asked
+  (使用端): `X-Agent-Purpose: conversation`, `X-IDE-Name: WorkBuddy`,
+  `X-IDE-Version`, `X-Agent-Intent: craft`, `X-Requested-With`. Both builds
+  send them, as WorkBuddy's own client does; a chat without them is counted
+  under no client at all;
+- the conversation's ids: `X-Conversation-ID`, `X-Conversation-Request-ID`,
+  `X-Conversation-Message-ID`, `X-Request-ID`. WorkBuddy's backend counts a
+  user send as one request by `X-Conversation-Request-ID`, so every step of
+  one send — a tool result sent back, a retry, another account answering —
+  carries the same one, and the user's next message carries another. The
+  conversation's is the session magpie (or OpenCode) names the request by,
+  else the chat's first user message; nothing is made up when neither names
+  one, a made-up conversation of the request's own being what splits one
+  conversation into many in the usage detail;
+- WorkBuddy AI also takes `X-Agent-Type: main`.
 
 A chat that doesn't open with a system message is given WorkBuddy's
 default one, as the app does.
