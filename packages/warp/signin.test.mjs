@@ -1,29 +1,17 @@
-// The two ways in: the Warp app's own sign-in (a DPAPI-encrypted file only
-// a Windows Warp makes — the test home has none) and a pasted refresh
-// token, exchanged with Google as magpie's refresh hook does.
-import { afterAll, afterEach, expect, mock, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import * as os from "node:os"
-
-// the plugin reads the Warp app's file under the real home; point that
-// somewhere empty before it loads
-const emptyHome = mkdtempSync(join(tmpdir(), "warp-signin-"))
-mock.module("node:os", () => ({ ...os, homedir: () => emptyHome }))
-const { WarpAuthPlugin } = await import("./index.mjs")
+// The two ways in, with the app reader and Google's token endpoint mocked.
+import { afterEach, expect, test } from "bun:test"
+import { _internal } from "./index.mjs"
 
 const real = globalThis.fetch
 afterEach(() => (globalThis.fetch = real))
-afterAll(() => rmSync(emptyHome, { recursive: true, force: true }))
 
 const client = { auth: { set: async () => {} } }
-const plugin = await WarpAuthPlugin({ client })
+const plugin = await _internal.createPlugin({ client }, { readUser: async () => null })
 
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url")
 const fakeJwt = (claims) => `${b64({ alg: "RS256" })}.${b64(claims)}.sig`
 
-test("the app's sign-in needs the file a Windows Warp makes", async () => {
+test("the app's sign-in needs a stored Warp account", async () => {
   const method = plugin.auth.methods.find((m) => m.label.includes("Warp app"))
   await expect(method.authorize()).rejects.toThrow(/isn't signed in/)
 })

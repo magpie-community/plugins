@@ -53,8 +53,9 @@ test("the request carries the transcript, the tools and the settings", () => {
   const userQuery = byNum(userInput, 1)[0].data
   const query = str(byNum(userQuery, 1)[0])
   expect(query).toContain("The following is the transcript")
-  expect(query).toContain("[system instructions]\nbe brief")
-  expect(query).toContain("[tool result for t1]\na.txt\nb.txt")
+  expect(query).toContain(JSON.stringify({ role: "system", content: "be brief" }))
+  expect(query).toContain('"tool_call_id":"t1"')
+  expect(query).toContain('"content":"a.txt\\nb.txt"')
   expect(query).toContain("taking the tool results into account")
 })
 
@@ -121,12 +122,12 @@ test("text streams by append, a tool call arrives whole, the end carries usage",
   const end = out.at(-1).end
   expect(end.reason).toBe("done")
   expect(end.tools).toEqual([tool])
-  expect(end.usage).toMatchObject({ input: 100 }) // 71 + 20 + 9
+  expect(end.usage).toMatchObject({ input: 71 }) // latest input, not overlapping cumulative totals
 })
 
 test("a quota end is named, and so is an internal error", async () => {
   const quota = await collect([event(3, new PB().m(4, new PB()))])
   expect(quota.at(-1).end.reason).toBe("quota")
   const err = await collect([event(3, new PB().m(7, new PB().s(1, "boom")))])
-  expect(err.at(-1).end).toMatchObject({ reason: "other", message: "boom" })
+  expect(err.at(-1).end).toMatchObject({ reason: "internal", message: "boom" })
 })
