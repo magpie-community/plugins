@@ -22,6 +22,8 @@ Install it from magpie's **Plugins › Discover**, or with `magpie plugin add @m
 
 The middleware reads only the user's own text. It doesn't read tool results, tool calls or the system prompt, so a file an agent reads that contains the word doesn't stop it.
 
+If you want a listed word to be a 400 rather than something masked, and you also want every earlier user turn and the system prompt read, that is [block-patterns](../block-patterns). It never masks and never reads replies, so the two can be installed together.
+
 magpie already redacts secrets (API keys and tokens) before a request leaves your computer, and puts them back in the reply. You don't need this middleware for secrets.
 
 中文：New API 的「敏感词过滤」，作为 magpie 网关中间件。只检查用户自己写的文字，可拒绝请求或替换成 `***`，也可以替换回复里的词。

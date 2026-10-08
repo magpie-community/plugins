@@ -10,10 +10,16 @@
 // APIs magpie serves. Every user turn is scanned, not just the last one, so
 // a pattern earlier in the conversation is caught too.
 //
-// "system": true (the default) also reads the system prompt and the
-// Responses `instructions`, so a pattern in either is caught. Set it to
-// false to leave them out. Tool calls, tool results and tool descriptions
-// are never read, in any setting.
+// "system": true (the default) also reads the system prompt wherever the API
+// keeps it — an Anthropic top-level `system` (string or text blocks), a
+// system or developer message, the Responses `instructions`, and a Gemini
+// `systemInstruction` (its object or string form, either spelling). Set it to
+// false to leave them all out. Tool calls, tool results and tool
+// descriptions are never read, in any setting.
+//
+// A pattern that is not a valid regular expression is ignored rather than
+// thrown, so one bad entry in the options cannot turn away every request.
+// See the README's "If a pattern does not compile".
 //
 // Words are matched anywhere in the text, ignoring case, as plain
 // substrings. This is literal matching, not a safety classifier: it does
@@ -45,6 +51,8 @@ export function onRequest(body, ctx) {
 
 // matcher is one expression for every word and pattern; null for none.
 // A runtime is kept for a request's hooks, so it is built once a request.
+// A pattern that will not compile is left out rather than thrown, so one bad
+// entry in the options cannot turn away every request the gateway sees.
 let cached = null
 function matcher(o) {
   if (!o || typeof o !== "object") return null
@@ -54,11 +62,33 @@ function matcher(o) {
   for (const w of Array.isArray(o.words) ? o.words : [])
     if (typeof w === "string" && w.trim())
       parts.push(w.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-  for (const p of Array.isArray(o.patterns) ? o.patterns : [])
-    if (typeof p === "string" && p) parts.push("(?:" + p + ")")
-  const re = parts.length ? new RegExp(parts.join("|"), "gi") : null
-  cached = { key, re }
-  return re
+  for (const p of Array.isArray(o.patterns) ? o.patterns : []) {
+    if (typeof p !== "string" || !p) continue
+    try {
+      // Compiled on its own first, so a pattern is either wholly in the
+      // matcher or wholly left out, never half-matched.
+      new RegExp(p)
+      parts.push("(?:" + p + ")")
+    } catch {
+      // An invalid pattern is ignored. See the README's "If a pattern does
+      // not compile".
+    }
+  }
+  if (!parts.length) {
+    cached = { key, re: null }
+    return null
+  }
+  try {
+    const re = new RegExp(parts.join("|"), "gi")
+    cached = { key, re }
+    return re
+  } catch {
+    // Not reachable in practice: every part compiled on its own above, and an
+    // alternation of valid patterns is valid. Kept so that a gateway-wide
+    // setting can never be the reason a request is turned away.
+    cached = { key, re: null }
+    return null
+  }
 }
 
 // scan calls fn on each piece of text an agent sent: every user turn, in
@@ -80,8 +110,12 @@ function scan(body, protocol, withSystem, fn) {
         if (p && typeof p.text === "string" && !p.thought) fn(p.text)
       }
     }
-    if (withSystem && typeof body.systemInstruction === "string") {
-      fn(body.systemInstruction)
+    if (withSystem) {
+      // systemInstruction is documented as a Content: either the bare
+      // { parts } object or a plain string, and clients have been seen
+      // sending it as system_instruction. All three are read.
+      if (body.systemInstruction) systemTexts(body.systemInstruction, fn)
+      if (body.system_instruction) systemTexts(body.system_instruction, fn)
     }
     return
   }
@@ -90,7 +124,7 @@ function scan(body, protocol, withSystem, fn) {
     if (withSystem) {
       if (typeof body.instructions === "string") fn(body.instructions)
       for (const m of Array.isArray(body.messages) ? body.messages : [])
-        if (m && m.role === "system") texts(m.content, fn)
+        if (m && (m.role === "system" || m.role === "developer")) texts(m.content, fn)
     }
     if (typeof body.input === "string") {
       fn(body.input)
@@ -98,7 +132,10 @@ function scan(body, protocol, withSystem, fn) {
     }
     for (const m of Array.isArray(body.input) ? body.input : []) {
       if (!m || typeof m !== "object") continue
-      if (m.role === "system") {
+      // developer is the Responses spelling of a system turn, and is read on
+      // the same terms as one. (Chat Completions has its own developer role;
+      // the two are read alike.)
+      if (m.role === "system" || m.role === "developer") {
         if (withSystem) texts(m.content, fn)
         continue
       }
@@ -110,6 +147,13 @@ function scan(body, protocol, withSystem, fn) {
   }
 
   // Anthropic and Chat Completions both carry messages[].
+  //
+  // Anthropic keeps the system prompt out of messages: it is a top-level
+  // `system` field, a string or — for Claude Code and the current API — an
+  // array of text blocks. Only the Chat branch below sees it as a message.
+  if (withSystem && protocol === "anthropic" && body.system) {
+    texts(body.system, fn)
+  }
   for (const m of Array.isArray(body.messages) ? body.messages : []) {
     if (!m || typeof m !== "object") continue
     if (m.role === "system" || m.role === "developer") {
@@ -118,6 +162,19 @@ function scan(body, protocol, withSystem, fn) {
     }
     if (m.role !== "user") continue
     texts(m.content, fn)
+  }
+}
+
+// systemTexts reads a Gemini system instruction, which is a Content: a bare
+// { parts } object, or a plain string.
+function systemTexts(si, fn) {
+  if (typeof si === "string") {
+    fn(si)
+    return
+  }
+  if (!si || typeof si !== "object" || !Array.isArray(si.parts)) return
+  for (const p of si.parts) {
+    if (p && typeof p.text === "string" && !p.thought) fn(p.text)
   }
 }
 

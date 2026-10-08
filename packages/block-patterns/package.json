@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/middleware-block-patterns",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Rejects requests carrying text you list — plain substring and regular-expression matching, in every API magpie serves",
   "type": "module",
   "files": ["block-patterns.middleware.js", "README.md"],

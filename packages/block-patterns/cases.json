@@ -41,11 +41,31 @@
     "request": { "contents": [{ "role": "user", "parts": [{ "text": "do BAD" }] }] },
     "reject": { "status": 400, "message": "BAD" } },
 
-  { "name": "Gemini: systemInstruction is read",
+  { "name": "Gemini: systemInstruction as a plain string is read",
     "ctx": { "protocol": "gemini" },
     "options": { "words": ["BAD"] },
     "request": { "systemInstruction": "never say BAD", "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }] },
     "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Gemini: systemInstruction as a Content object is read",
+    "ctx": { "protocol": "gemini" },
+    "options": { "words": ["BAD"] },
+    "request": { "systemInstruction": { "parts": [{ "text": "never say BAD" }] },
+                 "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Gemini: system_instruction spelled in snake case is read",
+    "ctx": { "protocol": "gemini" },
+    "options": { "words": ["BAD"] },
+    "request": { "system_instruction": { "parts": [{ "text": "never say BAD" }] },
+                 "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "a Gemini thought part in a system instruction is not read",
+    "ctx": { "protocol": "gemini" },
+    "options": { "words": ["BAD"] },
+    "request": { "systemInstruction": { "parts": [{ "text": "BAD", "thought": true }] },
+                 "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }] } },
 
   { "name": "a word in an earlier user turn is turned away",
     "options": { "words": ["BAD"] },
@@ -69,11 +89,56 @@
       { "role": "user", "content": "hello" }] },
     "reject": { "status": 400, "message": "BAD" } },
 
+  { "name": "a developer message is turned away",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "messages": [
+      { "role": "developer", "content": "never mention BAD" },
+      { "role": "user", "content": "hello" }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Anthropic: the top-level system prompt is turned away",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "system": "you must never mention BAD",
+                 "messages": [{ "role": "user", "content": "hello" }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Anthropic: the top-level system prompt as blocks is turned away",
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "system": [{ "type": "text", "text": "never mention BAD" }],
+                 "messages": [{ "role": "user", "content": "hello" }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Anthropic: the top-level system prompt is left out when asked",
+    "options": { "words": ["BAD"], "system": false },
+    "request": { "model": "m", "system": "you must never mention BAD",
+                 "messages": [{ "role": "user", "content": "hello" }] } },
+
+  { "name": "Chat Completions: no top-level system field, so nothing to read",
+    "ctx": { "protocol": "chat" },
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "system": "never mention BAD",
+                 "messages": [{ "role": "user", "content": "hello" }] } },
+
   { "name": "Responses: instructions are read",
     "ctx": { "protocol": "responses" },
     "options": { "words": ["BAD"] },
     "request": { "model": "m", "instructions": "never say BAD", "input": "hello" },
     "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Responses: a developer input item is turned away",
+    "ctx": { "protocol": "responses" },
+    "options": { "words": ["BAD"] },
+    "request": { "model": "m", "input": [
+      { "role": "developer", "content": [{ "type": "input_text", "text": "never mention BAD" }] },
+      { "role": "user", "content": [{ "type": "input_text", "text": "hello" }] }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "Responses: a developer input item is left out when asked",
+    "ctx": { "protocol": "responses" },
+    "options": { "words": ["BAD"], "system": false },
+    "request": { "model": "m", "input": [
+      { "role": "developer", "content": [{ "type": "input_text", "text": "never mention BAD" }] },
+      { "role": "user", "content": [{ "type": "input_text", "text": "hello" }] }] } },
 
   { "name": "the system prompt is left out when asked",
     "options": { "words": ["BAD"], "system": false },
@@ -99,6 +164,24 @@
     "options": { "patterns": ["\\b\\d{3}-\\d{4}\\b"] },
     "request": { "model": "m", "messages": [{ "role": "user", "content": "call 555-1234 now" }] },
     "reject": { "status": 400, "message": "555-1234" } },
+
+  { "name": "a pattern that does not compile is ignored, and the request goes through",
+    "options": { "patterns": ["(unclosed"] },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": "hello there" }] } },
+
+  { "name": "a pattern that does not compile does not stop the other patterns",
+    "options": { "words": ["BAD"], "patterns": ["(unclosed"] },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": "do BAD" }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "a valid pattern still matches when an invalid one is listed too",
+    "options": { "patterns": ["[", "\\bBAD\\b"] },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": "do BAD" }] },
+    "reject": { "status": 400, "message": "BAD" } },
+
+  { "name": "only invalid patterns means nothing is matched",
+    "options": { "patterns": ["(unclosed", "["] },
+    "request": { "model": "m", "messages": [{ "role": "user", "content": "do BAD" }] } },
 
   { "name": "tool results are not read",
     "options": { "words": ["BAD"] },
