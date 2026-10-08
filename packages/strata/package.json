@@ -1,0 +1,12 @@
+{
+  "name": "@magpie-community/opencode-strata-auth",
+  "version": "0.1.0",
+  "description": "Local Strata models in Magpie, with on-demand Windows process management",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "manager.py", "README.md"],
+  "keywords": ["opencode-plugin", "magpie", "strata", "local"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/magpie-community/plugins", "directory": "packages/strata" },
+  "scripts": { "test": "bun test" }
+}

@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-strata-auth", "name": "Strata", "icon": "server", "providers": ["strata"], "community": true,
+      "summary": { "en": "Existing local Strata models on Windows, with on-demand startup and managed-instance cleanup when Magpie exits.", "zh": "接入 Windows 上已有的本地 Strata，按需启动，并按配置在 Magpie 真正退出时清理托管实例。" } },
     { "package": "@magpie-community/opencode-zen-free-auth", "name": "OpenCode Zen Free", "icon": "opencode", "providers": ["opencode-zen-free"], "community": true,
       "summary": { "en": "OpenCode Zen's free models with the public credential, automatic discovery and native streaming protocols.", "zh": "使用 public 凭证接入 OpenCode Zen 免费模型，自动发现模型并支持原生流式协议。" } },
     { "package": "@magpie-community/opencode-zcode-auth", "name": "ZCode", "icon": "zcode", "providers": ["zcode"], "community": true, "replaces": "zcode",
