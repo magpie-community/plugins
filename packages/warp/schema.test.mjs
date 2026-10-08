@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test"
 import { _internal } from "./index.mjs"
 
-const { PB, buildRequest, turnEvents, byNum, str, structOf } = _internal
+const { PB, buildRequest, turnEvents, byNum, str, structOf, fields } = _internal
 
 const chat = (over = {}) => ({
   model: "auto",
@@ -58,6 +58,22 @@ test("the request carries the transcript, the tools and the settings", () => {
   expect(query).toContain("taking the tool results into account")
 })
 
+test("a data-URL image in the last user message rides as context", () => {
+  const { body } = buildRequest({
+    model: "auto",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "what is this" }, { type: "image_url", image_url: { url: "data:image/png;base64,aGk=" } }] },
+    ],
+  })
+  const input = byNum(body, 2)[0].data
+  const context = byNum(input, 1)[0].data
+  const images = byNum(context, 7)
+  expect(images).toHaveLength(1)
+  const img = fields(images[0].data)
+  expect(str(img.find((f) => f.num === 1))).toBe("aGk=") // the base64 text, as Warp's client sends it
+  expect(str(img.find((f) => f.num === 2))).toBe("image/png")
+})
+
 test("a lone user message rides as itself, not as a transcript", () => {
   const { body } = buildRequest({ model: "auto", messages: [{ role: "user", content: "hi" }] })
   const input = byNum(body, 2)[0].data
@@ -96,7 +112,7 @@ test("text streams by append, a tool call arrives whole, the end carries usage",
     addToTask(textMsg("he"), reasoningMsg("think")),
     appendTo(textMsg("llo"), "agent_output.text"),
     addToTask(toolMsg),
-    event(3, new PB().m(2, new PB()).m(11, new PB().v(10, 71))),
+    event(3, new PB().m(2, new PB()).m(11, new PB().v(10, 71).m(4, new PB().s(1, "a model").v(2, 20)).m(6, new PB().s(1, "another").m(2, new PB().v(2, 9).m(3, new PB().m(1, new PB().s(1, "cat").v(2, 9))))))),
   ])
   expect(out.filter((e) => e.text).map((e) => e.text).join("")).toBe("hello")
   expect(out.filter((e) => e.reasoning).map((e) => e.reasoning).join("")).toBe("think")
@@ -105,7 +121,7 @@ test("text streams by append, a tool call arrives whole, the end carries usage",
   const end = out.at(-1).end
   expect(end.reason).toBe("done")
   expect(end.tools).toEqual([tool])
-  expect(end.usage).toMatchObject({ input: 71 })
+  expect(end.usage).toMatchObject({ input: 100 }) // 71 + 20 + 9
 })
 
 test("a quota end is named, and so is an internal error", async () => {

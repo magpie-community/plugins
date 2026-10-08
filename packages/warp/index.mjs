@@ -306,19 +306,31 @@ async function live(client, auth) {
 // ---- HTTP/2: Warp's /ai endpoint answers nothing but h2 -------------------------
 
 // h2post posts and hands back the status with the body's chunks as they
-// arrive, so the answer's events are read while Warp is still sending it. A
-// connection is made per call: Warp's front turns HTTP/1.1 away with a
-// bare 403.
-function h2post(url, headers, body, signal) {
+// arrive, so the answer's events are read while Warp is still sending it.
+// A connection is made per call: Warp's front turns HTTP/1.1 away with a
+// bare 403. Aborting either signal tears the connection down, so a stream
+// the caller cancels never leaves one hanging.
+function h2post(url, headers, body, ...signals) {
   return new Promise((resolve, reject) => {
     const u = new URL(url)
-    let done = false
+    let settled = false
+    let ended = false
+    let error = null
+    const chunks = []
+    const waiters = []
     let c
+    const handOff = () => {
+      while (waiters.length) waiters.shift()()
+    }
     const fail = (e) => {
-      if (done) return
-      done = true
+      ended = true
+      error ??= e
       try { c?.destroy() } catch {}
-      reject(e)
+      handOff()
+      if (!settled) {
+        settled = true
+        reject(e)
+      }
     }
     try {
       c = http2.connect(u.origin)
@@ -336,19 +348,13 @@ function h2post(url, headers, body, signal) {
       try { req.close(http2.constants.NGHTTP2_CANCEL) } catch {}
       fail(Object.assign(new Error("the request was aborted"), { status: 499 }))
     }
-    signal?.addEventListener("abort", abort, { once: true })
-    const chunks = []
-    const waiters = []
-    let ended = false
-    let error = null
-    const handOff = () => {
-      while (waiters.length) waiters.shift()()
-    }
+    for (const s of signals) s?.addEventListener("abort", abort, { once: true })
     req.on("response", (h) => {
       const status = h[":status"] ?? 0
       if (status === 0) return fail(new Error("app.warp.dev gave no status"))
       // from here the promise has what it needs: the status, and a body the
       // caller reads as it comes
+      settled = true
       resolve({
         status,
         async *body() {
@@ -367,16 +373,7 @@ function h2post(url, headers, body, signal) {
       chunks.push(d)
       handOff()
     })
-    req.on("error", (e) => {
-      error = e
-      ended = true
-      if (!done) {
-        // after the status came, errors surface through the body; before it,
-        // they fail the request
-        fail(e)
-      }
-      handOff()
-    })
+    req.on("error", fail)
     req.on("end", () => {
       ended = true
       try { c.close() } catch {}
@@ -443,10 +440,26 @@ async function* warpEvents(body) {
           else if (g.num === 6) out.reason = "unavailable"
           else if (g.num === 7 && g.data) out.message = str(byNum(g.data, 1)[0])
           else if (g.num === 11 && g.data) {
-            const meta = {}
+            // the totals: total_input_tokens when it is there, else the
+            // per-model maps (warp_token_usage and the deprecated
+            // token_usage), which is where the server has been putting them
+            const meta = { input: 0 }
             for (const h of fields(g.data)) {
               if (h.num === 10) meta.input = h.v
               else if (h.num === 3) meta.credits = f32(h)
+              else if (h.num === 4 && h.data) {
+                // token_usage, a plain list of per-model totals
+                const total = byNum(h.data, 2)[0]
+                if (total) meta.input += total.v ?? 0
+              } else if (h.num === 6 && h.data) {
+                // warp_token_usage: each entry comes as its own field 6,
+                // {1: the model id, 2: the ModelTokenUsage}
+                const val = byNum(h.data, 2)[0]
+                if (val?.data) {
+                  const total = byNum(val.data, 2)[0]
+                  if (total) meta.input += total.v ?? 0
+                }
+              }
             }
             out.usage = meta
           }
@@ -584,6 +597,17 @@ function buildRequest(chat) {
   const context = new PB()
     .m(2, new PB().s(1, "Windows"))
     .m(3, new PB().s(1, "powershell"))
+
+  // images the last user message carries, as Warp's own client sends them:
+  // the base64 text itself in the bytes field, the mime type beside it.
+  // Only that message's images ride; earlier turns' are gone with the text.
+  const lastUser = messages.at(-1)?.role === "user" ? messages.at(-1) : [...messages].reverse().find((m) => m.role === "user")
+  if (Array.isArray(lastUser?.content)) {
+    for (const p of lastUser.content) {
+      const m = /^data:((?:image\/)[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(p?.type === "image_url" ? p.image_url?.url ?? "" : "")
+      if (m) context.m(7, new PB().s(1, m[2].replace(/\s+/g, "")).s(2, m[1]))
+    }
+  }
 
   const parts = []
   for (const m of messages) {
@@ -793,15 +817,18 @@ export const WarpAuthPlugin = async ({ client }) => {
 
             const { body } = buildRequest({ ...chat, model })
 
+            // torn down when the caller cancels the stream, so no answer is
+            // left hanging open on Warp's side of the connection
+            const stop = new AbortController()
             let res
             try {
-              res = await h2post(CHAT_URL, baseHeaders(token), body, init.signal)
+              res = await h2post(CHAT_URL, baseHeaders(token), body, init.signal, stop.signal)
             } catch (e) {
               return Response.json(errorBody(e.status ?? 502, e.message), { status: e.status ?? 502 })
             }
-            if (res.status === 401 || res.status === 403) {
-              return Response.json(errorBody(res.status, `Warp turned the request away (${res.status}); sign in again if it persists`), {
-                status: res.status,
+            if (res.status === 401) {
+              return Response.json(errorBody(401, "Warp turned the token away; sign in again"), {
+                status: 401,
                 headers: { "X-Magpie-Sign-In": "expired" },
               })
             }
@@ -898,6 +925,7 @@ export const WarpAuthPlugin = async ({ client }) => {
                 }
               },
               cancel() {
+                stop.abort()
                 it.return?.()
               },
             })

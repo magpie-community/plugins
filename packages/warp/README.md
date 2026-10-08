@@ -43,10 +43,15 @@ refreshed last wins on the next read.
   with mask `agent_output.text` becomes content deltas,
   `AgentReasoning` becomes `reasoning_content`, tool calls arrive whole
   (`CallMCPTool` args as a Struct → JSON).
+- A data-URL image in the last user message rides as one of
+  `InputContext.images` (the base64 text itself in the bytes field, as
+  Warp's own client sends it); images of earlier turns are gone with the
+  text.
 - The turn's end maps by reason: `done` → `stop` (or `tool_calls`),
   `max_token_limit` → `length`, `quota_limit` → an error with status 429,
   `context_window_exceeded` → 400, `llm_unavailable` → 503. Usage carries
-  the conversation's input tokens as far as Warp reports them.
+  the conversation's input tokens, from the per-model totals Warp puts
+  them in.
 
 ## Models
 
@@ -69,7 +74,8 @@ monthly on the free plan), and any bonus credits left beside it.
 - Server-side conversation continuation (`Task.messages` round-trip): the
   transcript carries the history instead.
 - Warp's own tools (shell, file edits, computer use): never exposed.
-- Web search, images in tool results.
+- Web search; images in tool results (only the last user message's
+  images ride).
 - Several accounts. OpenCode keeps one sign-in per provider.
 
 ## Local install
