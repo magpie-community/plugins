@@ -138,7 +138,15 @@ a bigger `context_window_tokens.max` is listed again as its Max,
 can name the `__max` model, a SOLO list the windows). It asks the
 `__max` model through the function that names it, with `max_tokens` set
 and `user_message_context.model_info.prompt_max_tokens` the window less
-it, as Max mode does.
+it, as Max mode does. The lists needn't agree on a model's *name*: chat_v3
+calls deepseek-v4.1-flash "DeepSeek-V4-Flash 正式版", as it once called
+DeepSeek-V4-Flash-Official, where the SOLO lists call it
+"DeepSeek-V4.1-Flash" (yetone/magpie#681). Trae's usage page books a
+request under the name of the list it was served through, so the plugin
+takes the name most of a model's lists give — the one Trae's own client is
+served under — and asks that model, and its Max, through a list carrying
+it. Trae renamed its official entries on 2026-10-09, leaving the name its
+lists mostly agree on the only thing that tells a misnamed entry apart.
 
 Reasoning: the models reason, but Trae's request takes no effort or
 thinking level, so the plugin lists no variants and a level an agent

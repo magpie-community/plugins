@@ -214,6 +214,46 @@ test("a model chat_v3 gives another's name is named and asked as SOLO lists it (
   expect(await ask("DeepSeek-V4-Flash-Official")).toBe("chat_v3 DeepSeek-V4-Flash-Official__dev")
 })
 
+// what Trae CN answered on 2026-10-09, after it renamed its official entries
+// (DeepSeek-V4-Flash-Official is "DeepSeek-V4-Flash" there now): chat_v3 is
+// the only list still calling deepseek-v4.1-flash by another's name, and
+// nothing in it carries that name any more, so the collision the case above
+// leans on is gone. The name the lists mostly give is the one Trae's own
+// client is served under, and the one its usage page books: the model is
+// named, limited and asked as the three SOLO lists have it.
+const RENAMED = { function_configs: [
+  { function: "chat_v3", config_info_list: [
+    { config_name: "deepseek-v4.1-flash", usage: "chat_completion", display_config: { display_name: "DeepSeek-V4-Flash 正式版" }, context_window_tokens: { dev: 116000, max: 1000000 }, model_detail_list: [{ model_name: "deepseek-v4.1-flash__dev", max_tokens: 16000 }, { model_name: "deepseek-v4.1-flash__max", max_tokens: 64000 }] },
+    { config_name: "DeepSeek-V4-Flash-Official", usage: "chat_completion", display_config: { display_name: "DeepSeek-V4-Flash" }, model_detail_list: [{ model_name: "DeepSeek-V4-Flash-Official__dev", max_tokens: 16000 }] },
+  ] },
+  { function: "solo_work_lite", config_info_list: [
+    { config_name: "deepseek-v4.1-flash", usage: "chat_completion", display_config: { display_name: "DeepSeek-V4.1-Flash" }, context_window_tokens: { dev: 200000 }, model_detail_list: [{ model_name: "deepseek-v4.1-flash__dev", max_tokens: 32000 }] },
+  ] },
+  { function: "solo_agent", config_info_list: [
+    { config_name: "deepseek-v4.1-flash", usage: "chat_completion", display_config: { display_name: "DeepSeek-V4.1-Flash" }, context_window_tokens: { dev: 200000, max: 1000000 }, model_detail_list: [{ model_name: "deepseek-v4.1-flash__dev", max_tokens: 32000 }, { model_name: "deepseek-v4.1-flash__max", max_tokens: 64000 }] },
+  ] },
+] }
+
+test("a model whose lists mostly name it alike keeps that name, its limit and its function after Trae renames another", async () => {
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json(RENAMED))
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => sse([["output", { response: r.json.function + " " + (r.json.model_name ?? "-") }], ["done", {}]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const p = await given(hooks)
+  const live = await hooks.provider.models(p, { auth: signedIn() })
+  expect(live["deepseek-v4.1-flash"].name).toBe("DeepSeek-V4.1-Flash")
+  expect(live["deepseek-v4.1-flash"].limit).toEqual({ context: 200000, output: 32000 })
+  expect(live["deepseek-v4.1-flash-max"].name).toBe("DeepSeek-V4.1-Flash (Max)")
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const ask = async (model) => {
+    const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model, max_tokens: 64000, messages: [{ role: "user", content: "hi" }] }) })
+    return (await res.json()).choices[0].message.content
+  }
+  // both asked through the SOLO lists, with the __dev/__max models they name
+  expect(await ask("deepseek-v4.1-flash")).toBe("solo_work_lite deepseek-v4.1-flash__dev")
+  expect(await ask("deepseek-v4.1-flash-max")).toBe("solo_agent deepseek-v4.1-flash__max")
+})
+
 // ARNO on magpie's Discord: Trae CN's DeepSeek V4.1 Flash said a 32K reply
 // limit, one Trae never gave: a model whose list names no max_tokens says
 // none (0), and magpie tells agents models.dev's. One Trae gives is kept,

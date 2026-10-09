@@ -2042,24 +2042,40 @@ const makePlugin = (site) => async ({ client }) => {
     // deepseek-v4.1-flash "DeepSeek-V4-Flash 正式版", as it does
     // DeepSeek-V4-Flash-Official, where SOLO's lists call it
     // DeepSeek-V4.1-Flash (yetone/magpie#681) — Trae's usage page then books
-    // it under that name too. Such an entry is misnamed: its name is another
-    // model's in the same list, and other lists name it otherwise.
+    // a request under the name of the list it was served through. Such an
+    // entry is misnamed: its name is another model's in the same list, and
+    // other lists name it otherwise.
     const nameOf = (m) => String(m.display_config?.display_name || m.display_name || m.display_model_name || m.config_name)
-    const names = new Map() // id → the names its lists give it
+    const names = new Map() // id → the names its lists give it, and how many give each
     for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
         if (!chatModel(m, site)) continue
-        const id = String(m.config_name)
-        names.set(id, (names.get(id) ?? new Set()).add(nameOf(m)))
+        const id = String(m.config_name), name = nameOf(m)
+        const by = names.get(id) ?? new Map()
+        by.set(name, (by.get(name) ?? 0) + 1)
+        names.set(id, by)
       }
+    }
+    // the name most of a model's lists give it: the one Trae's own client is
+    // served under, and so the one its usage page books it as. Trae renames
+    // entries when it likes, and its 2026-10-09 rename of
+    // DeepSeek-V4-Flash-Official left chat_v3 the only list still calling
+    // deepseek-v4.1-flash by another's name — which neither signal above
+    // catches. A tie leaves the name to its entry.
+    const agreed = new Map() // id → that name, "" when the lists tie
+    for (const [id, by] of names) {
+      const top = Math.max(...by.values())
+      const most = [...by].filter(([, n]) => n === top)
+      agreed.set(id, most.length === 1 ? most[0][0] : "")
     }
     const misnamed = (fn, m) => {
       const id = String(m.config_name), name = nameOf(m)
       return names.get(id).size > 1 && (lists[fn] ?? []).some((o) => chatModel(o, site) && String(o.config_name) !== id && nameOf(o) === name)
     }
     // a function's entry is worth more when it names a __dev model, then
-    // when it isn't misnamed; the first of the best is taken
-    const worth = (fn, m) => (devModel(m) ? 2 : 0) + (misnamed(fn, m) ? 0 : 1)
+    // when it isn't misnamed, then when it carries the name its lists agree
+    // on; the first of the best is taken
+    const worth = (fn, m) => (devModel(m) ? 2 : 0) + (misnamed(fn, m) ? 0 : 1) + (nameOf(m) === agreed.get(String(m.config_name)) ? 1 : 0)
     const out = new Map()
     for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
@@ -2075,8 +2091,11 @@ const makePlugin = (site) => async ({ client }) => {
       if (dev) modelNames.set(id, { fn, name: dev.model_name, most: Number(dev.max_tokens) || 0 })
       else modelNames.delete(id)
       if (out.has(id + MAX)) continue
-      // its Max is asked through the function whose entry names the __max model
-      const entries = [{ m, fn }, ...site.functions.flatMap((f) => (lists[f] ?? []).filter((o) => o !== m && chatModel(o, site) && String(o.config_name) === id).map((o) => ({ m: o, fn: f })))]
+      // its Max is asked through the function whose entry names the __max
+      // model, the entries carrying the agreed name first: Trae books the
+      // Max under that name too
+      const plain = (e) => (nameOf(e.m) === agreed.get(id) ? 0 : 1)
+      const entries = [{ m, fn }, ...site.functions.flatMap((f) => (lists[f] ?? []).filter((o) => o !== m && chatModel(o, site) && String(o.config_name) === id).map((o) => ({ m: o, fn: f })))].sort((a, b) => plain(a) - plain(b))
       const max = maxModel(...entries.map((e) => e.m))
       maxes.set(id, max)
       if (max) {
