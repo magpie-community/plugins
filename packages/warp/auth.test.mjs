@@ -18,7 +18,7 @@ test("app and manual sign-in record separate sources and identities", async () =
   expect(saved.metadata).toMatchObject({ source: "app", uid: "a@test.invalid", email: "a@test.invalid" })
   expect(saved.metadata.session).toBeTruthy()
   globalThis.fetch = async () => Response.json({ id_token: token("b@test.invalid"), refresh_token: "rotated", expires_in: "3600" })
-  const manual = await p.auth.methods[1].authorize("manual-refresh")
+  const manual = await (await p.auth.methods[1].authorize("manual-refresh")).callback()
   expect(manual).toMatchObject({ accountId: "b@test.invalid", metadata: { source: "manual", uid: "b@test.invalid" } })
 })
 

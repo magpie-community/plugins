@@ -27,8 +27,11 @@ test("a refresh token is exchanged for an account", async () => {
       expires_in: "3600",
     })
   }
-  const method = plugin.auth.methods.find((m) => m.type === "api")
-  const saved = await method.authorize({ key: "the-refresh-token" })
+  const method = plugin.auth.methods[1]
+  expect(method.type).toBe("oauth")
+  const authorization = await method.authorize({ key: "the-refresh-token" })
+  expect(authorization).toMatchObject({ method: "auto", url: "" })
+  const saved = await authorization.callback()
   expect(saved.type).toBe("success")
   expect(saved.accountId).toBe("w@warp.dev")
   expect(saved.refresh).toBe("rotated")
@@ -36,7 +39,7 @@ test("a refresh token is exchanged for an account", async () => {
 })
 
 test("manual sign-in accepts its prompt's inputs and rejects absent values without a request", async () => {
-  const method = plugin.auth.methods.find((m) => m.type === "api")
+  const method = plugin.auth.methods[1]
   let calls = 0
   globalThis.fetch = async (_url, init) => {
     calls++
@@ -44,7 +47,10 @@ test("manual sign-in accepts its prompt's inputs and rejects absent values witho
     return Response.json({ id_token: fakeJwt({ email: "w@test.invalid" }) })
   }
   const key = method.prompts[0].key
-  expect((await method.authorize({ [key]: " prompt-token " })).refresh).toBe("prompt-token")
+  const authorization = await method.authorize({ [key]: " prompt-token " })
+  expect(calls).toBe(0)
+  expect(method.prompts).toHaveLength(1)
+  expect((await authorization.callback()).refresh).toBe("prompt-token")
   for (const inputs of [undefined, {}, { key: {} }, { refresh_token: " " }]) {
     await expect(method.authorize(inputs)).rejects.toThrow(/required/)
   }

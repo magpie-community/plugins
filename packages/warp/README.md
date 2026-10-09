@@ -34,6 +34,8 @@ OpenAI-style chat completions on it, in OpenCode and in magpie.
   without the app or an accessible system credential store. The field in
   Warp's stored account is `id_token.refresh_token`. This method works on
   Windows, macOS and Linux and never follows the local app's account.
+  It uses one prompt and an automatic OAuth callback, so magpie does not
+  ask for an additional API key.
 
 The sign-in is Firebase Auth: the id token lasts an hour, and the plugin
 refreshes it itself at `securetoken.googleapis.com` (magpie's `auth.refresh`
@@ -103,8 +105,11 @@ create a new anonymous account.
   Outside Warp, without an override, it falls back to the last tested
   version `v0.2026.09.02.08.27.stable_01`; set the override to your installed
   version if the service retires that fallback.
-- Buffered HTTP/2 responses and individual SSE lines are limited to 8 MiB;
-  malformed or oversized responses fail and release the connection.
+- HTTP/2 pauses reading at 4 MiB or 512 queued chunks and resumes below
+  2 MiB and 256 chunks, so slow callers can receive long answers without
+  buffering the entire response. An 8 MiB / 1024 chunk safety cap remains
+  for oversized chunks or a source ignoring pause. Individual SSE lines
+  are limited to 8 MiB; malformed responses release the connection.
 
 ## Models
 

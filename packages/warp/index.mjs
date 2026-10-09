@@ -483,7 +483,7 @@ function h2post(url, headers, body, ...signals) {
   return new Promise((resolve, reject) => {
     const u = new URL(url)
     let settled = false, ended = false, claimed = false, error = null
-    let c, req, timer, buffered = 0
+    let c, req, timer, buffered = 0, paused = false
     const chunks = [], waiters = []
     signals = signals.filter(Boolean)
     const handOff = () => { while (waiters.length) waiters.shift()() }
@@ -531,6 +531,11 @@ function h2post(url, headers, body, ...signals) {
                 while (chunks.length) {
                   const chunk = chunks.shift()
                   buffered -= chunk.length
+                  if (paused && !ended && buffered < MAX_H2_BUFFER / 4 && chunks.length < 256) {
+                    paused = false
+                    touch()
+                    req.resume()
+                  }
                   yield chunk
                 }
                 if (ended) {
@@ -546,11 +551,18 @@ function h2post(url, headers, body, ...signals) {
         })
       })
       req.on("data", (d) => {
-        if (ended) return
+        if (ended || !d.length) return
         if (buffered + d.length > MAX_H2_BUFFER || chunks.length >= 1024) return fail(new Error("Warp's HTTP/2 response buffer exceeded its limit"))
         buffered += d.length
         chunks.push(d)
         touch()
+        // Stop the readable side before the hard safety cap. A slow caller
+        // should exert flow control, not lose a valid long response.
+        if (!paused && (buffered >= MAX_H2_BUFFER / 2 || chunks.length >= 512)) {
+          paused = true
+          clearTimeout(timer) // waiting for our caller is not upstream idle
+          req.pause()
+        }
         handOff()
       })
       req.on("error", () => fail(new Error("Warp's HTTP/2 stream failed")))
@@ -1250,21 +1262,28 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
           },
         },
         {
-          type: "api",
+          type: "oauth",
           label: "Warp refresh token",
           prompts: [{ type: "text", key: "refresh_token", message: "Warp refresh token", validate: (value) => typeof value === "string" && value.trim() ? undefined : "A refresh token is required" }],
           async authorize(inputs) {
             const key = typeof inputs === "string" ? inputs : inputs?.refresh_token ?? inputs?.key
             if (typeof key !== "string" || !key.trim()) throw new Error("A Warp refresh token is required")
-            const fresh = await exchange(key.trim())
-            const claims = jwt(fresh.access)
             return {
-              type: "success",
-              access: fresh.access,
-              refresh: fresh.refresh,
-              expires: fresh.expires,
-              accountId: claims.email || claims.sub || "warp",
-              metadata: { source: "manual", session: randomBytes(12).toString("hex"), email: claims.email, uid: claims.sub, ...(anonymousUser(null, fresh.access) ? { anonymous: true } : {}) },
+              url: "",
+              instructions: "",
+              method: "auto",
+              callback: async () => {
+                const fresh = await exchange(key.trim())
+                const claims = jwt(fresh.access)
+                return {
+                  type: "success",
+                  access: fresh.access,
+                  refresh: fresh.refresh,
+                  expires: fresh.expires,
+                  accountId: claims.email || claims.sub || "warp",
+                  metadata: { source: "manual", session: randomBytes(12).toString("hex"), email: claims.email, uid: claims.sub, ...(anonymousUser(null, fresh.access) ? { anonymous: true } : {}) },
+                }
+              },
             }
           },
         },
