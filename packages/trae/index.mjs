@@ -9,7 +9,7 @@
 // The account's fetch also sends Trae CN's own pages on api.trae.cn
 // (/trae/api/…) as the account, for magpie's daily check-in (每日签到:
 // /trae/api/v2/ug/checkin_credits/status, then /claim).
-import { generateKeyPairSync, randomBytes, randomUUID, randomInt, sign } from "node:crypto"
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, randomInt, sign } from "node:crypto"
 import { createServer, STATUS_CODES } from "node:http"
 
 const SITES = {
@@ -767,14 +767,63 @@ const nativeTools = (tools) =>
     return { type: "function", function: { name: f.name, description: f.description ?? "", parameters: typeof f.parameters === "string" ? f.parameters : JSON.stringify(f.parameters ?? {}) } }
   })
 
+// SESSION carries the conversation magpie (or OpenCode) names a request by,
+// from the chat.headers hook to the loader's fetch. It goes no further.
+const SESSION = "x-magpie-trae-session"
+
+// SALT is what the id is derived with, so it says nothing of the words it was
+// made from. New in each process, as Trae's own session ids are one session's
+// own within a run.
+const SALT = randomBytes(16).toString("hex")
+
+// conversationID is the conversation a chat belongs to, as the UUID the
+// request's session_id wants: the session magpie or OpenCode names (its
+// chat.headers hook), else the chat's first user message, which every later
+// turn of the conversation repeats. "" when neither names one — a body that
+// isn't a chat, or one with no user message in it — and the caller then makes
+// a fresh id per request, as before: a made-up conversation of the request's
+// own is the very splitting this is here to end.
+function conversationID(chat, session) {
+  if (session) return uuidOf("magpie-trae-session|" + session)
+  const first = (Array.isArray(chat?.messages) ? chat.messages : []).find((m) => m?.role === "user")
+  const text = partText(first?.content ?? "")
+  return text.trim() ? uuidOf("magpie-trae-first|" + text) : ""
+}
+
+// uuidOf is a version 4 UUID made of a hash's first 16 bytes: the shape
+// randomUUID() returns, since that is what session_id carried before.
+function uuidOf(s) {
+  const b = Buffer.from(createHash("sha256").update(SALT + "|" + s).digest().subarray(0, 16))
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = b.toString("hex")
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
+// sessionOf takes the session a chat.headers hook named off the headers, with
+// the header: it goes no further than here. Its length is capped as magpie's
+// own session ids are, the id being derived from it anyway.
+function sessionOf(headers) {
+  const s = String(headers.get(SESSION) ?? "").trim()
+  headers.delete(SESSION)
+  return s.slice(0, 128)
+}
+
 // chatBody is the request for llm_utils_chat; modelName is the model the
 // function's list names for the config (its __dev one), when it named one,
 // and most the max_tokens it gives that model (0: none given), which a
 // request asking more is held to. A Max model (max: {base, window}) asks
 // the config base by its __max model, max_tokens always set, and gives
 // the prompt the room the window has beside it, as the IDE's Max mode does.
-function chatBody(req, fn, modelName, most = 0, max = null) {
-  const session = randomUUID()
+//
+// session is the conversation's id, made by conversationID, so every request
+// of one conversation carries one: Trae counts a conversation by the session
+// the requests name, and a request naming a new session each time is counted
+// as a conversation of its own — one user send that takes several steps (a
+// tool result sent back, a retry, another function answering) shows up in the
+// usage detail as several, each under no title at all. request_id stays a
+// fresh id per request, being that request's own.
+function chatBody(req, fn, modelName, most = 0, max = null, session = "") {
   const config = max?.base ?? req.model
   const body = {
     messages: traeMessages(req),
@@ -783,8 +832,8 @@ function chatBody(req, fn, modelName, most = 0, max = null) {
     model: config,
     ...(modelName ? { model_name: modelName } : {}),
     stream: true, // Trae answers in SSE either way
-    request_id: session,
-    session_id: session,
+    request_id: randomUUID(),
+    session_id: session || randomUUID(),
   }
   const asked = req.max_completion_tokens ?? req.max_tokens
   if (Number.isFinite(asked) && asked > 0) body.max_tokens = most > 0 ? Math.min(Math.floor(asked), most) : Math.floor(asked)
@@ -2078,6 +2127,14 @@ const makePlugin = (site) => async ({ client }) => {
         models: { ...site.models, ...(was.models ?? {}) },
       }
     },
+    // the conversation's id, which the requests below carry as their
+    // session_id: magpie's (or OpenCode's) session for this request, when it
+    // names one
+    "chat.headers": async (input, output) => {
+      const id = input?.model?.providerID ?? input?.provider?.info?.id
+      if (id !== site.id || !input?.sessionID) return
+      output.headers[SESSION] = String(input.sessionID).slice(0, 128)
+    },
     provider: {
       id: site.id,
       // the account's own list, when Trae answers; else the list above
@@ -2156,11 +2213,14 @@ const makePlugin = (site) => async ({ client }) => {
               if (outer.aborted) ac.abort()
               else outer.addEventListener("abort", () => ac.abort(), { once: true })
             }
+            // the conversation this request belongs to, from the chat.headers
+            // hook (magpie's session) or the chat's own first user message
+            const session = conversationID(req, sessionOf(new Headers(init.headers ?? r0?.headers ?? {})))
             for (const fn of [...new Set(fns)]) {
               const res = await fetch(apiOf(a, site) + "/api/agent/v3/llm_utils_chat", {
                 method: "POST",
                 headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
-                body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max)),
+                body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session)),
                 signal: ac.signal,
               })
               if (!res.ok) {
@@ -2211,4 +2271,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, toolNamed, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, proofOf, SITES }
+export const _internal = { HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, toolNamed, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, proofOf, SITES, SESSION, conversationID }

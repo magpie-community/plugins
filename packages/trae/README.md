@@ -69,6 +69,14 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     `solo_work_lite`, SOLO's Work mode; `solo_agent`, the TRAE agent's;
     `solo_agent_lite`). If Trae answers 4001, 4023 or 1005, the plugin tries
     the others once and remembers which one worked.
+  - `session_id` is the conversation's, as the IDE keeps one per conversation:
+    the session magpie (or OpenCode) names the request by, else the chat's
+    first user message, which every later turn repeats. Trae counts a
+    conversation by it, so a fresh one per request made one user send that
+    takes several steps (a tool result sent back, a retry, another function
+    answering) count as a conversation of its own — several rows in the usage
+    detail, each under no title. `request_id` is the request's own, fresh on
+    every one.
 - **Headers:** TRAE SOLO CN 0.1.69's (`x-ide-version`/`x-app-version`
   0.1.69, version code 20260917; Trae offers a model only to clients new
   enough for it): `Authorization: Cloud-IDE-JWT …`, `X-Cloudide-Token`,
