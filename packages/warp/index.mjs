@@ -12,7 +12,7 @@
 import { spawn } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { homedir, release } from "node:os"
-import { join } from "node:path"
+import { join, win32 } from "node:path"
 import { createDecipheriv, createHash, randomBytes } from "node:crypto"
 import http2 from "node:http2"
 
@@ -20,12 +20,21 @@ const PROVIDER = "warp"
 const SERVER = "https://app.warp.dev"
 const CHAT_URL = SERVER + "/ai/multi-agent"
 const GRAPHQL = SERVER + "/graphql/v2"
-const TOKEN_URL = "https://securetoken.googleapis.com/v1/token?key=AIzaSyBdy3O3S9hrdayLJxJ7mriBR4qgUaUygAs"
-// what the installed Warp sent when this was written; the server takes it as
-// the client's identity on /ai and /graphql
-const CLIENT_VERSION = "v0.2026.09.02.08.27.stable_01"
+const FIREBASE_KEY = "AIzaSyBdy3O3S9hrdayLJxJ7mriBR4qgUaUygAs"
+const TOKEN_URL = `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_KEY}`
+// Warp exports WARP_CLIENT_VERSION in its shells. Outside Warp, an explicit
+// override avoids needing a package update when the service retires a client.
+const FALLBACK_CLIENT_VERSION = "v0.2026.09.02.08.27.stable_01"
+function clientVersion(env = process.env) {
+  const version = env.MAGPIE_WARP_CLIENT_VERSION || env.WARP_CLIENT_VERSION
+  return typeof version === "string" && /^v?0\.\d{4}\.\d{2}\.\d{2}\.\d{2}\.\d{2}\.[\w.-]{1,64}$/.test(version)
+    ? version : FALLBACK_CLIENT_VERSION
+}
 const REFRESH_MARGIN = 5 * 60 * 1000
 const MODELS_MS = 10 * 60 * 1000
+const MAX_H2_BUFFER = 8 * 1024 * 1024
+const MAX_SSE_LINE = 8 * 1024 * 1024
+const MAX_ERROR_BODY = 64 * 1024
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -128,6 +137,7 @@ function rdUvar(buf, i) {
 }
 
 function fields(buf) {
+  if (!(buf instanceof Uint8Array)) throw new Error("invalid protobuf message bytes")
   const out = []
   let i = 0
   while (i < buf.length) {
@@ -161,28 +171,32 @@ const str = (f) => (f?.data ? dec.decode(f.data) : "")
 const f64 = (f) => (f?.f64 ? new DataView(f.f64.buffer, f.f64.byteOffset, 8).getFloat64(0, true) : 0)
 const f32 = (f) => (f?.f32 ? new DataView(f.f32.buffer, f.f32.byteOffset, 4).getFloat32(0, true) : 0)
 
-function valueOf(buf) {
+function valueOf(buf, depth = 0) {
+  if (depth > 64) throw new Error("protobuf Struct nesting is too deep")
   let out = null
   for (const f of fields(buf)) {
-    if (f.num === 2) out = f64(f)
-    else if (f.num === 3) out = str(f)
-    else if (f.num === 4) out = f.v === 1
-    else if (f.num === 5) out = structOf(f.data)
-    else if (f.num === 6) {
+    if (f.num === 1 && f.v !== undefined) out = null
+    else if (f.num === 2 && f.f64) out = f64(f)
+    else if (f.num === 3 && f.data) out = str(f)
+    else if (f.num === 4 && f.v !== undefined) out = f.v === 1
+    else if (f.num === 5 && f.data) out = structOf(f.data, depth + 1)
+    else if (f.num === 6 && f.data) {
       out = []
-      for (const e of byNum(f.data, 1)) out.push(valueOf(e.data))
+      for (const e of byNum(f.data, 1)) if (e.data) out.push(valueOf(e.data, depth + 1))
     }
   }
   return out
 }
 
-function structOf(buf) {
+function structOf(buf, depth = 0) {
+  if (depth > 64) throw new Error("protobuf Struct nesting is too deep")
   const out = {}
   for (const e of byNum(buf, 1)) {
+    if (!e.data) continue
     let k = "", v = null
     for (const g of fields(e.data)) {
-      if (g.num === 1) k = str(g)
-      else if (g.num === 2) v = valueOf(g.data)
+      if (g.num === 1 && g.data) k = str(g)
+      else if (g.num === 2 && g.data) v = valueOf(g.data, depth + 1)
     }
     Object.defineProperty(out, k, { value: v, enumerable: true, configurable: true, writable: true })
   }
@@ -286,7 +300,8 @@ function createUserReader({ platform = process.platform, env = process.env, home
         `[Console]::OpenStandardOutput().Write($d,0,$d.Length)`
       // stdin avoids shell quoting and argv length limits; only encrypted data
       // is passed in, and stdout is written as raw bytes without a BOM.
-      const out = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-"], script)
+      const powershell = win32.join(env.SystemRoot || env.WINDIR || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+      const out = await run(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-"], script)
       if (out.code !== 0) throw new Error("Unable to decrypt Warp's Windows sign-in file")
       bytes = out.stdout
     }
@@ -312,31 +327,57 @@ const jwtExpires = (token) => {
   return Number.isFinite(exp) ? exp * 1000 : 0
 }
 
-// exchange refreshes a Firebase refresh token: Google gives a fresh id token
-// and rotates the refresh token; both are returned. Nothing is written back
-// to Warp's own file.
+const customToken = (token) => {
+  const claims = jwt(token)
+  return typeof claims.uid === "string" && claims.aud === "https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit"
+}
+const anonymousUser = (user, access) => !!((user?.anonymous_user_type && !user.linked_at) || jwt(access).firebase?.sign_in_provider === "anonymous")
+function redact(message, ...secrets) {
+  let text = String(message)
+  for (const secret of secrets) if (typeof secret === "string" && secret) text = text.split(secret).join("[redacted]")
+  return text
+}
+
+// Firebase can return the same refresh token or a rotated one. Custom tokens
+// are exchanged through Warp's official proxy, then use the returned refresh
+// token on subsequent renewals. Nothing is written to Warp's own store.
 async function exchange(refreshToken) {
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken }).toString(),
-    signal: AbortSignal.timeout(20_000),
-  })
-  const text = await res.text()
-  let data = {}
-  try {
-    data = JSON.parse(text)
-  } catch {}
-  if (!res.ok || !data.id_token) {
-    const why = data?.error?.message || `Google's token endpoint answered ${res.status}`
-    const dead = /invalid_grant|token_expired|invalid[ _]refresh|user_disabled|user_not_found/i.test(String(data?.error?.message ?? ""))
-    throw Object.assign(new Error(why), { status: dead ? 401 : (res.status >= 400 ? res.status : 502), signIn: dead ? "expired" : undefined })
+  const custom = customToken(refreshToken)
+  const proxy = `${SERVER}/proxy/${custom ? "customToken" : "token"}?key=${FIREBASE_KEY}`
+  const body = new URLSearchParams(custom ? { returnSecureToken: "true", token: refreshToken }
+    : { grant_type: "refresh_token", refresh_token: refreshToken }).toString()
+  const urls = custom ? [proxy] : [TOKEN_URL, proxy]
+  let failure
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+        signal: AbortSignal.timeout(20_000),
+        redirect: "error",
+      })
+      const data = await res.json().catch(() => ({}))
+      const access = data.id_token || data.idToken
+      if (res.ok && access && (!custom || data.refresh_token || data.refreshToken)) {
+        return {
+          access,
+          refresh: data.refresh_token || data.refreshToken || refreshToken,
+          expires: Date.now() + Number(data.expires_in || data.expiresIn || 3600) * 1000,
+        }
+      }
+      const code = typeof data.error === "string" ? data.error : data.error?.message || ""
+      const dead = /invalid_grant|token_expired|invalid[ _]refresh|invalid_custom_token|custom_token_mismatch|user_disabled|user_not_found/i.test(code)
+      failure = Object.assign(new Error(redact(code || `Warp's token endpoint answered ${res.status}`, refreshToken)), {
+        status: dead ? 401 : (res.status >= 400 ? res.status : 502), signIn: dead ? "expired" : undefined,
+      })
+      if (dead) throw failure // never retry a definitive credential rejection
+    } catch (e) {
+      if (e.signIn === "expired") throw e
+      failure = e.status ? e : Object.assign(new Error("Warp's token service is unreachable"), { status: 503 })
+    }
   }
-  return {
-    access: data.id_token,
-    refresh: data.refresh_token || refreshToken,
-    expires: Date.now() + Number(data.expires_in || 3600) * 1000,
-  }
+  throw failure
 }
 
 // One refresh operation per credential lineage, shared by chat, usage, model
@@ -441,7 +482,7 @@ function h2post(url, headers, body, ...signals) {
   return new Promise((resolve, reject) => {
     const u = new URL(url)
     let settled = false, ended = false, claimed = false, error = null
-    let c, req, timer
+    let c, req, timer, buffered = 0
     const chunks = [], waiters = []
     signals = signals.filter(Boolean)
     const handOff = () => { while (waiters.length) waiters.shift()() }
@@ -454,6 +495,8 @@ function h2post(url, headers, body, ...signals) {
       if (ended) return
       ended = true
       error = Object.assign(e, { status: e.status || 502 })
+      chunks.length = 0
+      buffered = 0
       cleanup()
       handOff()
       if (!settled) { settled = true; reject(error) }
@@ -484,7 +527,11 @@ function h2post(url, headers, body, ...signals) {
             claimed = true
             try {
               for (;;) {
-                while (chunks.length) yield chunks.shift()
+                while (chunks.length) {
+                  const chunk = chunks.shift()
+                  buffered -= chunk.length
+                  yield chunk
+                }
                 if (ended) {
                   if (error) throw error
                   return
@@ -497,7 +544,14 @@ function h2post(url, headers, body, ...signals) {
           },
         })
       })
-      req.on("data", (d) => { if (!ended) { chunks.push(d); touch(); handOff() } })
+      req.on("data", (d) => {
+        if (ended) return
+        if (buffered + d.length > MAX_H2_BUFFER || chunks.length >= 1024) return fail(new Error("Warp's HTTP/2 response buffer exceeded its limit"))
+        buffered += d.length
+        chunks.push(d)
+        touch()
+        handOff()
+      })
       req.on("error", () => fail(new Error("Warp's HTTP/2 stream failed")))
       req.on("aborted", () => fail(new Error("Warp's HTTP/2 stream was aborted")))
       req.on("close", () => { if (!ended) fail(new Error("Warp's HTTP/2 stream closed early")) })
@@ -517,7 +571,7 @@ const baseHeaders = (token) => ({
   authorization: `Bearer ${token}`,
   "content-type": "application/x-protobuf",
   accept: "text/event-stream",
-  "x-warp-client-version": CLIENT_VERSION,
+  "x-warp-client-version": clientVersion(),
   "x-warp-os-category": platformInfo().category,
 })
 
@@ -527,12 +581,16 @@ async function* sseEvents(body) {
   let buf = ""
   const lines = async function* () {
     for await (const chunk of body) {
-      buf += chunk.toString("utf8")
-      let at
-      while ((at = buf.indexOf("\n")) >= 0) {
-        yield buf.slice(0, at)
-        buf = buf.slice(at + 1)
+      const text = Buffer.from(chunk).toString("utf8")
+      let start = 0, at
+      while ((at = text.indexOf("\n", start)) >= 0) {
+        if (buf.length + at - start > MAX_SSE_LINE) throw new Error("Warp's SSE line exceeded its limit")
+        yield buf + text.slice(start, at)
+        buf = ""
+        start = at + 1
       }
+      if (buf.length + text.length - start > MAX_SSE_LINE) throw new Error("Warp's SSE line exceeded its limit")
+      buf += text.slice(start)
     }
     if (buf) yield buf
   }()
@@ -562,6 +620,7 @@ async function* warpEvents(body) {
         }
       } else if (f.num === 3 && f.data) {
         const out = { reason: "invalid", message: "", usage: null }
+        let latestInput, input = 0, output = 0, hasUsage = false
         for (const g of fields(f.data)) {
           if (g.num === 1) out.reason = "other"
           else if (g.num === 2) out.reason = "done"
@@ -576,13 +635,20 @@ async function* warpEvents(body) {
           else if (g.num === 14 && g.data) {
             out.reason = "subscription"
             out.message = str(byNum(g.data, 3)[0])
+          } else if (g.num === 8 && g.data) {
+            // Per-request TokenUsage, not the overlapping conversation totals.
+            const usage = fields(g.data)
+            input += Number(usage.find((f) => f.num === 2)?.v ?? 0)
+            output += Number(usage.find((f) => f.num === 3)?.v ?? 0)
+            hasUsage = true
           } else if (g.num === 11 && g.data) {
             // Deprecated per-model totals include output and can overlap.
             // Never add them to the latest call's input count (field 10).
             const total = byNum(g.data, 10)[0]
-            if (total) out.usage = { input: Number(total.v) }
+            if (total?.v !== undefined) latestInput = Number(total.v)
           }
         }
+        if (latestInput !== undefined || hasUsage) out.usage = { input: latestInput ?? input, output }
         yield { finished: out }
       }
     }
@@ -597,7 +663,7 @@ async function gql(token, op, query, variables) {
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
-      "X-Warp-Client-Version": CLIENT_VERSION,
+      "X-Warp-Client-Version": clientVersion(),
       "X-Warp-OS-Category": platformInfo().category,
     },
     body: JSON.stringify({ query, variables, operationName: op }),
@@ -611,10 +677,10 @@ async function gql(token, op, query, variables) {
   return user?.user ?? null
 }
 
-const REQUEST_CONTEXT = {
-  clientContext: { version: CLIENT_VERSION },
+const requestContext = () => ({
+  clientContext: { version: clientVersion() },
   osContext: { category: platformInfo().category, name: platformInfo().category, version: release() },
-}
+})
 
 const MODELS_QUERY = `query GetWorkspacesMetadataForUser($requestContext: RequestContext!) {
   user(requestContext: $requestContext) { ... on UserOutput { user { workspaces {
@@ -628,7 +694,7 @@ let modelsCache = { at: 0, token: "", list: null }
 
 async function accountModels(token) {
   if (modelsCache.token === token && Date.now() - modelsCache.at < MODELS_MS) return modelsCache.list
-  const user = await gql(token, "GetWorkspacesMetadataForUser", MODELS_QUERY, { requestContext: REQUEST_CONTEXT })
+  const user = await gql(token, "GetWorkspacesMetadataForUser", MODELS_QUERY, { requestContext: requestContext() })
   const out = {}
   for (const w of user?.workspaces ?? []) {
     for (const c of w?.featureModelChoice?.agentMode?.choices ?? []) {
@@ -657,22 +723,27 @@ const LIMIT_QUERY = `query GetRequestLimitInfo($requestContext: RequestContext!)
   } } } }`
 
 async function requestWindows(token) {
-  const user = await gql(token, "GetRequestLimitInfo", LIMIT_QUERY, { requestContext: REQUEST_CONTEXT })
+  const user = await gql(token, "GetRequestLimitInfo", LIMIT_QUERY, { requestContext: requestContext() })
   const info = user?.requestLimitInfo
   const windows = []
   if (info && !info.isUnlimited && Number(info.requestLimit) > 0) {
     windows.push({
       name: "Requests",
       used: (100 * Number(info.requestsUsedSinceLastRefresh ?? 0)) / Number(info.requestLimit),
-      aside: `${info.requestsUsedSinceLastRefresh}/${info.requestLimit}`,
+      display: `${Number(info.requestsUsedSinceLastRefresh ?? 0)}/${Number(info.requestLimit)} requests`,
       ...(info.nextRefreshTime ? { resetsAt: info.nextRefreshTime } : {}),
     })
   } else if (info?.isUnlimited) {
     windows.push({ name: "Requests", used: 0 })
   }
-  let bonus = 0
-  for (const g of user?.bonusGrants ?? []) bonus += Number(g.requestCreditsRemaining ?? 0)
-  if (bonus > 0) windows.push({ name: "Bonus credits", used: 0, aside: `${bonus} left` })
+  let bonus = 0, granted = 0
+  for (const g of user?.bonusGrants ?? []) {
+    if (g.expiration && Date.parse(g.expiration) <= Date.now()) continue
+    const remaining = Math.max(0, Number(g.requestCreditsRemaining) || 0)
+    bonus += remaining
+    granted += Math.max(remaining, Number(g.requestCreditsGranted) || 0)
+  }
+  if (granted > 0) windows.push({ name: "Bonus credits", used: 100 * (granted - bonus) / granted, display: `${bonus}/${granted} credits left`, aside: true })
   return { windows }
 }
 
@@ -854,10 +925,45 @@ const END_STATUS = { quota: 429, context: 400, unavailable: 503, internal: 502, 
 const usageOf = (u) => {
   if (!u) return undefined
   const input = Number(u.input ?? 0)
-  return { prompt_tokens: input, completion_tokens: 0, total_tokens: input }
+  const output = Number(u.output ?? 0)
+  return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output }
 }
 
-const errorBody = (status, message) => ({ error: { message, code: status } })
+const errorBody = (status, message) => ({ error: {
+  message: status === 400 && /context[_ ]window[_ ]exceeded/i.test(message) ? `context_length_exceeded: ${message}` : message,
+  code: status,
+} })
+const endMessage = (end) => end?.reason === "context"
+  ? `context_length_exceeded: ${end.message || "maximum context length exceeded"}`
+  : end?.message || `Warp's agent ended with ${end?.reason || "no finished event"}`
+
+// Preserve upstream diagnostics, but never buffer an unbounded error response
+// or keep an idle connection open while waiting for its body.
+async function upstreamError(res, ...secrets) {
+  const chunks = []
+  let size = 0, truncated = false, timer
+  const read = async () => {
+    for await (const chunk of res.body()) {
+      const data = Buffer.from(chunk), take = Math.min(data.length, MAX_ERROR_BODY - size)
+      if (take) chunks.push(data.subarray(0, take))
+      size += take
+      if (size === MAX_ERROR_BODY) { truncated = true; break }
+    }
+  }
+  try {
+    await Promise.race([read(), new Promise((resolve) => {
+      timer = setTimeout(() => { truncated = true; resolve() }, 5000)
+    })])
+  } catch {} // keep any diagnostic bytes received before a stream failure
+  finally { clearTimeout(timer); res.cancel?.() }
+  let text = Buffer.concat(chunks).toString("utf8").trim()
+  try {
+    const body = JSON.parse(text)
+    const message = body?.error?.message || body?.message || body?.error
+    if (typeof message === "string") text = message
+  } catch {}
+  return `Warp's agent answered ${res.status}${text ? ": " + redact(text, ...secrets) : ""}${truncated ? " (truncated)" : ""}`
+}
 
 // ---- the plugin ------------------------------------------------------------------
 
@@ -947,15 +1053,13 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
             } catch (e) {
               return Response.json(errorBody(e.status ?? 502, e.message), { status: e.status ?? 502 })
             }
-            if (res.status !== 200) res.cancel?.()
-            if (res.status === 401) {
-              return Response.json(errorBody(401, "Warp turned the token away; sign in again"), {
-                status: 401,
-                headers: { "X-Magpie-Sign-In": "expired" },
-              })
-            }
             if (res.status !== 200) {
-              return Response.json(errorBody(res.status, `Warp's agent answered ${res.status}`), { status: res.status })
+              const message = await upstreamError(res, token, now.access, now.refresh, now.key)
+              stop.abort()
+              return Response.json(errorBody(res.status, message), {
+                status: res.status,
+                headers: res.status === 401 ? { "X-Magpie-Sign-In": "expired" } : {},
+              })
             }
             const it = turnEvents(res.body())[Symbol.asyncIterator]()
             const id = "chatcmpl-" + randomBytes(12).toString("hex")
@@ -991,7 +1095,7 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
               finally { await cleanup() }
               const finish = end ? endFinish(end) : null
               if (finish === null) {
-                return Response.json(errorBody(END_STATUS[end?.reason] ?? 502, end?.message || `Warp's agent ended with ${end?.reason || "no finished event"}`), {
+                return Response.json(errorBody(END_STATUS[end?.reason] ?? 502, endMessage(end)), {
                   status: END_STATUS[end?.reason] ?? 502,
                 })
               }
@@ -1021,7 +1125,7 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
             if (first.value?.end && endFinish(first.value.end) === null) {
               const end = first.value.end
               await cleanup()
-              return failure(END_STATUS[end.reason] || 502, end.message || `Warp's agent ended with ${end.reason}`)
+              return failure(END_STATUS[end.reason] || 502, endMessage(end))
             }
             let cancelled = false
             const stream = new ReadableStream({
@@ -1067,7 +1171,7 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
                       const usage = usageOf(e.end.usage)
                       return void ctl.enqueue(chunk({}, finish, usage ? { usage } : {}))
                     }
-                    ctl.enqueue(enc.encode(`data: ${JSON.stringify(errorBody(END_STATUS[e.end.reason] ?? 502, e.end.message || `Warp's agent ended with ${e.end.reason}`))}\n\n`))
+                    ctl.enqueue(enc.encode(`data: ${JSON.stringify(errorBody(END_STATUS[e.end.reason] ?? 502, endMessage(e.end)))}\n\n`))
                     return ctl.close()
                   }
                   // e.model: the model Warp ran — noted, nothing to send
@@ -1105,9 +1209,10 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
               refresh = fresh.refresh
               expires = fresh.expires
             }
+            const anonymous = anonymousUser(user, access)
             return {
               url: "",
-              instructions: `Warp is signed in as ${user.email || "its account"}.`,
+              instructions: `Warp is signed in as ${anonymous ? "an anonymous account" : user.email || "its account"}.`,
               method: "auto",
               callback: async () => ({
                 type: "success",
@@ -1115,7 +1220,7 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
                 refresh,
                 expires,
                 accountId: user.email || user.local_id || "warp",
-                metadata: { source: "app", session: randomBytes(12).toString("hex"), email: user.email, uid: user.local_id || jwt(access).sub },
+                metadata: { source: "app", session: randomBytes(12).toString("hex"), email: user.email, uid: user.local_id || jwt(access).sub, ...(anonymous ? { anonymous: true } : {}) },
               }),
             }
           },
@@ -1123,8 +1228,11 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
         {
           type: "api",
           label: "Warp refresh token",
-          async authorize(key) {
-            const fresh = await exchange(String(key ?? "").trim())
+          prompts: [{ type: "text", key: "refresh_token", message: "Warp refresh token", validate: (value) => typeof value === "string" && value.trim() ? undefined : "A refresh token is required" }],
+          async authorize(inputs) {
+            const key = typeof inputs === "string" ? inputs : inputs?.refresh_token ?? inputs?.key
+            if (typeof key !== "string" || !key.trim()) throw new Error("A Warp refresh token is required")
+            const fresh = await exchange(key.trim())
             const claims = jwt(fresh.access)
             return {
               type: "success",
@@ -1132,7 +1240,7 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
               refresh: fresh.refresh,
               expires: fresh.expires,
               accountId: claims.email || claims.sub || "warp",
-              metadata: { source: "manual", session: randomBytes(12).toString("hex"), email: claims.email, uid: claims.sub },
+              metadata: { source: "manual", session: randomBytes(12).toString("hex"), email: claims.email, uid: claims.sub, ...(anonymousUser(null, fresh.access) ? { anonymous: true } : {}) },
             }
           },
         },
@@ -1175,4 +1283,5 @@ export const _internal = {
   PB, structPB, valueMsg, fields, byNum, str, f32, structOf, valueOf, buildRequest, turnEvents,
   warpUser, jwt, jwtExpires, exchange, endFinish,
   sseEvents, baseHeaders, h2post, createPlugin, createTokenSession, createUserReader, linuxUser, platformInfo,
+  clientVersion, requestWindows, MAX_H2_BUFFER, MAX_SSE_LINE, MAX_ERROR_BODY,
 }

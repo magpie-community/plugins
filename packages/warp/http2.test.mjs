@@ -87,3 +87,37 @@ test("only one iterator may consume a response", async () => {
   res.cancel()
   await expect(next).rejects.toMatchObject({ status: 499 })
 })
+
+test("an unread HTTP/2 response is bounded and overflow destroys the session", async () => {
+  const f = setup(), pending = post()
+  f.req.emit("response", { ":status": 200 })
+  const res = await pending
+  f.req.emit("data", Buffer.alloc(_internal.MAX_H2_BUFFER))
+  f.req.emit("data", Buffer.from("overflow"))
+  await expect(res.body().next()).rejects.toThrow(/buffer exceeded/)
+  expect(f.destroyed()).toBe(1)
+})
+
+test("the HTTP/2 limit counts queued bytes rather than the whole response", async () => {
+  const f = setup(), pending = post()
+  f.req.emit("response", { ":status": 200 })
+  const res = await pending, it = res.body()
+  const data = Buffer.alloc(_internal.MAX_H2_BUFFER)
+  for (let i = 0; i < 2; i++) {
+    const next = it.next()
+    f.req.emit("data", data)
+    expect((await next).value.length).toBe(data.length)
+  }
+  f.req.emit("end")
+  expect((await it.next()).done).toBe(true)
+  expect(f.destroyed()).toBe(1)
+})
+
+test("many tiny unread chunks cannot grow the HTTP/2 queue indefinitely", async () => {
+  const f = setup(), pending = post()
+  f.req.emit("response", { ":status": 200 })
+  const res = await pending
+  for (let i = 0; i < 1025; i++) f.req.emit("data", Buffer.alloc(0))
+  await expect(res.body().next()).rejects.toThrow(/buffer exceeded/)
+  expect(f.destroyed()).toBe(1)
+})

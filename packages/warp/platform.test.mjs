@@ -73,7 +73,7 @@ test("Windows honors LOCALAPPDATA and passes encrypted bytes on stdin", async ()
     return blob
   }, run: async (cmd, args, script) => {
     decrypts++
-    expect(cmd).toBe("powershell.exe")
+    expect(cmd).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
     expect(args.slice(-2)).toEqual(["-Command", "-"])
     expect(script).toContain(blob.toString("base64"))
     expect(script).not.toContain("it's-local")
@@ -88,6 +88,13 @@ test("Windows honors LOCALAPPDATA and passes encrypted bytes on stdin", async ()
   expect(decrypts).toBe(2)
   await readUser(true)
   expect(decrypts).toBe(3)
+})
+
+test("client version follows Warp's environment, with a validated explicit override", () => {
+  const native = "v0.2026.10.09.08.27.stable_01", override = "v0.2026.10.10.08.27.stable_01"
+  expect(_internal.clientVersion({ WARP_CLIENT_VERSION: native })).toBe(native)
+  expect(_internal.clientVersion({ WARP_CLIENT_VERSION: native, MAGPIE_WARP_CLIENT_VERSION: override })).toBe(override)
+  expect(_internal.clientVersion({ WARP_CLIENT_VERSION: native + "\r\ninjected: value" })).toBe(_internal.clientVersion({}))
 })
 
 test("Windows absent file never spawns PowerShell", async () => {

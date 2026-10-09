@@ -15,7 +15,8 @@ OpenAI-style chat completions on it, in OpenCode and in magpie.
   - **Windows:** DPAPI CurrentUser, from
     `%LOCALAPPDATA%\warp\Warp\data\dev.warp.Warp-User` (with the standard
     home-directory fallback when `LOCALAPPDATA` is unset). PowerShell
-    decrypts encrypted bytes supplied on stdin; file contents are hashed
+    runs from its System32 absolute path and decrypts encrypted bytes
+    supplied on stdin; file contents are hashed
     to cache decryption safely across file replacements and clock changes.
   - **macOS:** the default Keychain's generic password with service
     `dev.warp.Warp-Stable` and account `User`, read using `/usr/bin/security`.
@@ -33,9 +34,10 @@ OpenAI-style chat completions on it, in OpenCode and in magpie.
 
 The sign-in is Firebase Auth: the id token lasts an hour, and the plugin
 refreshes it itself at `securetoken.googleapis.com` (magpie's `auth.refresh`
-renews it ahead of expiry too). Google rotates the refresh token on every
-exchange; the plugin keeps the rotated one in magpie's store and never
-writes back to Warp's store. Chat, usage, models and the refresh hook share
+renews it ahead of expiry too). Refresh tokens may rotate; the plugin saves
+the returned refresh token, or keeps the existing one when none is
+returned, and never writes back to Warp's store. Chat, usage, models and
+the refresh hook share
 one refresh operation. App sign-in only adopts newer credentials belonging
 to the original account, and re-reads the app once after a refused refresh
 to recover a concurrent rotation. Switching the app to another account
@@ -43,6 +45,14 @@ does not switch this plugin's account. Sign-ins created by older plugin
 versions keep using their saved refresh token; sign in again to opt into
 following the app. Preview, development and TUI credential namespaces are
 not auto-selected.
+
+When Google's refresh endpoint is unreachable or temporarily fails, the
+plugin retries through Warp's official `app.warp.dev/proxy/token` proxy.
+Definitive invalid-token/account-disabled responses are not retried. An
+anonymous app account is identified as anonymous; a stored Firebase custom
+token is exchanged at Warp's `/proxy/customToken` endpoint, then the
+returned refresh token is used for later renewals. These exchanges do not
+create a new anonymous account.
 
 ## Requests
 
@@ -75,8 +85,15 @@ not auto-selected.
   status codes; errors after streamed output use an SSE error. Non-streamed
   partial output never hides an error. Usage reports `total_input_tokens`
   when present; overlapping deprecated per-model totals are not added or
-  misreported as input tokens.
+  misreported as input tokens. Output comes from per-request `TokenUsage.output`.
 - OS headers and request context follow the current platform and shell.
+  Client version uses `MAGPIE_WARP_CLIENT_VERSION` when set, then Warp's
+  own `WARP_CLIENT_VERSION` environment variable (exported in Warp shells).
+  Outside Warp, without an override, it falls back to the last tested
+  version `v0.2026.09.02.08.27.stable_01`; set the override to your installed
+  version if the service retires that fallback.
+- Buffered HTTP/2 responses and individual SSE lines are limited to 8 MiB;
+  malformed or oversized responses fail and release the connection.
 
 ## Models
 

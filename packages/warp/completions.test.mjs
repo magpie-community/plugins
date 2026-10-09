@@ -69,7 +69,7 @@ test("updates do not duplicate tool calls and indexes remain contiguous", async 
 test("usage is independent of protobuf field order and excludes overlapping totals", async () => {
   for (const meta of [new P().v(10, 71).m(4, new P().v(2, 20)), new P().m(4, new P().v(2, 20)).v(10, 71)]) {
     const out = await collect([event(3, new P().m(2, new P()).m(11, meta))])
-    expect(out.at(-1).end.usage).toEqual({ input: 71 })
+    expect(out.at(-1).end.usage).toEqual({ input: 71, output: 0 })
   }
   const oldTotals = await collect([event(3, new P().m(2, new P()).m(11, new P().m(4, new P().v(2, 20))))])
   expect(oldTotals.at(-1).end.usage).toBeNull()
@@ -124,11 +124,52 @@ test("missing finished events and malformed proto return 502 and clean up", asyn
   }
 })
 
-test("non-200 upstream responses are cancelled without consuming their body", async () => {
-  const r = await ask([], false, { status: 503 })
-  expect(r.status).toBe(503)
+test("non-200 upstream responses preserve their body and then cancel", async () => {
+  const r = await ask(['{"error":{"message":"monthly AI request limit"}}'], false, { status: 429 })
+  expect(r.status).toBe(429)
+  expect(r.response).toContain("monthly AI request limit")
   expect(r.cancelled).toBe(1)
-  expect(r.returned).toBe(0)
+  expect(r.returned).toBe(1)
+  const empty = await ask([], false, { status: 503 })
+  expect(empty.status).toBe(503)
+  expect(empty.returned).toBe(1)
+})
+
+test("upstream error bodies are bounded and credentials are redacted", async () => {
+  const r = await ask(["synthetic: " + "x".repeat(w.MAX_ERROR_BODY + 10)], false, { status: 503 })
+  expect(r.status).toBe(503)
+  expect(r.response).toContain("truncated")
+  expect(r.response).not.toContain("synthetic")
+  expect(r.response.length).toBeLessThan(w.MAX_ERROR_BODY + 200)
+  expect(r.cancelled).toBe(1)
+  expect(r.returned).toBe(1)
+})
+
+test("context errors are recognizable by the host before and after output", async () => {
+  for (const stream of [false, true]) for (const partial of [false, true]) {
+    const r = await ask([...(partial ? [text] : []), finish(5)], stream)
+    expect(r.status).toBe(stream && partial ? 200 : 400)
+    expect(r.response).toContain("context_length_exceeded")
+  }
+  const upstream = await ask(['{"message":"context_window_exceeded"}'], false, { status: 400 })
+  expect(upstream.status).toBe(400)
+  expect(upstream.response).toContain("context_length_exceeded")
+})
+
+test("per-request output tokens reach both completion formats without double counting", async () => {
+  const usage = new P().s(1, "auto").v(2, 100).v(3, 23)
+  const other = new P().s(1, "helper").v(2, 8).v(3, 2)
+  const meta = new P().m(4, new P().v(2, 999)).v(10, 91)
+  for (const finished of [new P().m(2, new P()).m(8, usage).m(11, meta).m(8, other), new P().m(11, meta).m(8, other).m(8, usage).m(2, new P())]) {
+    for (const stream of [false, true]) {
+      const r = await ask([event(3, finished)], stream)
+      expect(r.response).toContain('"prompt_tokens":91')
+      expect(r.response).toContain('"completion_tokens":25')
+      expect(r.response).toContain('"total_tokens":116')
+    }
+  }
+  const r = await ask([event(3, new P().m(2, new P()).m(8, usage))])
+  expect(JSON.parse(r.response).usage).toEqual({ prompt_tokens: 100, completion_tokens: 23, total_tokens: 123 })
 })
 
 test("Request.signal is forwarded, and pre-aborted Request returns 499", async () => {

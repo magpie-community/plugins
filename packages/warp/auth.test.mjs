@@ -39,7 +39,7 @@ test("transient token failures do not mark a login expired", async () => {
   globalThis.fetch = async () => Response.json({ error: { message: "temporary failure" } }, { status: 503 })
   try { await _internal.exchange("old") } catch (e) { expect(e.status).toBe(503); expect(e.signIn).toBeUndefined() }
   globalThis.fetch = async () => { throw new Error("offline") }
-  await expect(_internal.exchange("old")).rejects.toThrow("offline")
+  await expect(_internal.exchange("old")).rejects.toMatchObject({ status: 503 })
 })
 
 test("valid manual and legacy credentials never read the app", async () => {
