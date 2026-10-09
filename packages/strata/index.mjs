@@ -186,7 +186,14 @@ export async function StrataPlugin({ client, directory = process.cwd() }) {
           if (!valid.length) throw new Error("Model list contains no usable ids")
           return Object.fromEntries(valid.map((m) => [m.id, model(m.id, cfg.baseURL, provider, m)]))
         } catch {
-          fallback[Symbol.for("magpie.fellBack")] = true
+          try {
+            const cached = read(join(directory, "plugin-providers.json"))
+            // A placeholder or an old target must not replace this valid offline declaration.
+            if (Array.isArray(cached) && cached.some((p) => p?.id === ID && p.api === cfg.baseURL && !p.fellBack &&
+                Array.isArray(p.models) && p.models.some((m) => m?.id === cfg.model) &&
+                !p.models.some((m) => m?.id === "configure-strata")))
+              fallback[Symbol.for("magpie.fellBack")] = true
+          } catch {}
           return fallback
         }
       },

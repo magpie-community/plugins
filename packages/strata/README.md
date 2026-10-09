@@ -52,7 +52,12 @@ Use `strata/<model id>`. Before configuration, `configure-strata` is only a
 label telling you to configure the provider; requesting it does not start
 Strata. After saving, the target model is declared even with no cache and
 no running service. Model discovery reads Strata's `GET /v1/models` and
-otherwise keeps the supplied declarations and magpie's cache. The minimal
+otherwise keeps the supplied declarations and magpie's cache. The existing
+`plugin-providers.json` is only read to check whether a successful cache for
+this address includes the configured target without the unconfigured placeholder;
+only then is magpie asked to retain that cache. Missing, unreadable, placeholder
+or stale-target caches cannot override the valid offline target declaration.
+The plugin never writes this cache or maintains another model directory. The minimal
 declaration does not assume image, reasoning or tool capabilities.
 
 ## Requests

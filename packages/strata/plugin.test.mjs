@@ -196,3 +196,48 @@ test("A04: stopped/error ownership records cannot block or take over a later hea
     expect(requests).toBe(2)
   } finally { server.stop(true) }
 })
+
+
+test("A01: a successful native placeholder cache cannot override the configured offline target", async () => {
+  const h = host()
+  const hooks = await StrataPlugin(h)
+  const cfg = {}
+  await hooks.config(cfg)
+  const file = join(h.directory, "plugin-providers.json")
+  const cached = JSON.stringify([{ id: "strata", api: "http://127.0.0.1:49196/v1",
+    models: [{ id: "configure-strata" }], accounts: [], fellBack: false }])
+  writeFileSync(file, cached)
+  await h.login(hooks, { root: process.cwd(), python: process.execPath, config: import.meta.filename,
+    model: "chosen", baseURL: "http://127.0.0.1:49196/v1" })
+  await hooks.config(cfg)
+  const models = await hooks.provider.models({ id: "strata", models: {} }, { auth: await h.getAuth() })
+  expect(Object.keys(models)).toEqual(["chosen"])
+  expect(models[Symbol.for("magpie.fellBack")]).toBeUndefined()
+  expect(readFileSync(file, "utf8")).toBe(cached)
+  expect(existsSync(join(h.directory, "strata"))).toBe(false)
+})
+
+test("A01: only a successful native cache for the same address containing the target can replace the offline declaration", async () => {
+  const h = host()
+  const hooks = await StrataPlugin(h)
+  const baseURL = "http://127.0.0.1:49195/v1"
+  await h.login(hooks, { root: process.cwd(), python: process.execPath, config: import.meta.filename,
+    model: "chosen", baseURL })
+  const file = join(h.directory, "plugin-providers.json")
+  const valid = { id: "strata", api: baseURL, models: [{ id: "chosen", context: 32768 }, { id: "other" }] }
+  for (const [entry, expected] of [[valid, true], [{ ...valid, api: "http://127.0.0.1:1/v1" }, undefined],
+      [{ ...valid, models: [{ id: "previous-target" }] }, undefined], [{ ...valid, fellBack: true }, undefined],
+      [{ ...valid, models: [...valid.models, { id: "configure-strata" }] }, undefined]]) {
+    const saved = JSON.stringify([entry])
+    writeFileSync(file, saved)
+    const models = await hooks.provider.models({ id: "strata", models: {} }, { auth: await h.getAuth() })
+    expect(models[Symbol.for("magpie.fellBack")]).toBe(expected)
+    expect(models.chosen.id).toBe("chosen")
+    expect(readFileSync(file, "utf8")).toBe(saved)
+  }
+  writeFileSync(file, "{")
+  const models = await hooks.provider.models({ id: "strata", models: {} }, { auth: await h.getAuth() })
+  expect(models[Symbol.for("magpie.fellBack")]).toBeUndefined()
+  expect(models.chosen.id).toBe("chosen")
+  expect(readFileSync(file, "utf8")).toBe("{")
+})
