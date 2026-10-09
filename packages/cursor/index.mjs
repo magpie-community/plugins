@@ -1514,23 +1514,43 @@ async function agentURL(tok, fresh) {
 }
 
 // open starts a Run at base: the session, the stream, and the response's
-// status, or an error the request never got past. Once HTTP/2 has failed
-// to open one here, Runs go over HTTP/1.1 (openH1) until the plugin is
-// loaded again.
+// status, or an error the request never got past. A Run HTTP/2 can't open
+// goes over HTTP/1.1 (openH1). When the failure says HTTP/2 itself can't be
+// had here (h2Blocked), the Runs after it go straight to HTTP/1.1 until the
+// plugin is loaded again, or a region error sends one back (answerOf); a
+// connection that failed (refused, no network) leaves the next Run to try
+// HTTP/2 again.
 let h1 = false
 async function open(base, headers, signal) {
   if (!h1) {
     const o = await openH2(base, headers, signal)
     if (!o.h2Failed) return o
-    h1 = true
+    if (o.blocked) h1 = true
   }
   return openH1(headers, signal)
 }
 
-const H2_WAIT = 15_000 // ms an HTTP/2 Run waits for its response's head
+const H2 = { wait: 15_000 } // ms an HTTP/2 Run waits for its response's head
+
+// NET are the failures of a connection itself, which say nothing of HTTP/2
+const NET = ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "ECONNRESET", "ETIMEDOUT", "ECONNABORTED", "EPIPE"]
+
+// h2Blocked is whether a failure to open an HTTP/2 Run says HTTP/2 itself
+// can't be had: no head in H2.wait, the "h2 is not supported" magpie's
+// host gives a tunnel that can't carry it, a server or proxy that won't
+// negotiate it (ALPN), an HTTP/2 protocol error. Anything else, a failed
+// connection above all, is not.
+function h2Blocked(e) {
+  if (e?.h2Timeout) return true
+  const code = String(e?.code ?? "")
+  const text = `${code} ${e?.message ?? ""}`
+  if (NET.some((c) => text.includes(c))) return false
+  return code.startsWith("ERR_HTTP2") || /h2 is not supported|alpn|nghttp2|protocol error/i.test(text)
+}
 
 // openH2 is open over HTTP/2. A Run that fails before its response, other
-// than by being cancelled, says h2Failed.
+// than by being cancelled, says h2Failed, and blocked when h2Blocked says
+// so of the failure.
 function openH2(base, headers, signal) {
   return new Promise((resolve) => {
     const u = new URL(base)
@@ -1541,9 +1561,9 @@ function openH2(base, headers, signal) {
       done = true
       clearTimeout(timer)
       session.destroy()
-      resolve({ error: { status: 502, message: e?.message ?? String(e) }, h2Failed })
+      resolve({ error: { status: 502, message: e?.message ?? String(e) }, h2Failed, blocked: h2Failed && h2Blocked(e) })
     }
-    const timer = setTimeout(() => fail(new Error(`no answer over HTTP/2 in ${H2_WAIT / 1000}s`)), H2_WAIT)
+    const timer = setTimeout(() => fail(Object.assign(new Error(`no answer over HTTP/2 in ${H2.wait / 1000}s`), { h2Timeout: true })), H2.wait)
     session.on("error", fail)
     const req = session.request({
       ":method": "POST",
@@ -1998,9 +2018,12 @@ async function answerOf(auth, chat, signal, session = "") {
   let r = await once()
   if (r.error && regional(r.error.message)) {
     // the team moved, or the config was kept from before: once more with
-    // what the config says now
+    // what the config says now. A Run that went over HTTP/1.1 went to api2,
+    // not the region's agent host: once more over HTTP/2 there.
+    const viaH1 = h1
+    h1 = false
     const fresh = await agentURL(tok, true)
-    if (fresh !== base) {
+    if (fresh !== base || viaH1) {
       base = fresh
       r = await once()
     }
@@ -2156,4 +2179,4 @@ export async function CursorAuthPlugin() {
 }
 
 // for tests
-export const _internal = { resetH1: () => (h1 = false), STEP_WAIT, stepUsage, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
+export const _internal = { resetH1: () => (h1 = false), H2, h2Blocked, STEP_WAIT, stepUsage, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }

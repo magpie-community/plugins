@@ -43,7 +43,12 @@ plugin's `fetch` answers them on Cursor's agent API:
   run it without HTTP/2: `agent.v1.AgentService/RunSSE` down and a
   `aiserver.v1.BidiService/BidiAppend` for each client message up, over
   HTTP/1.1 on `api2.cursor.sh`, through the proxy magpie gives the request.
-  Runs stay on HTTP/1.1 until the plugin is loaded again.
+  When the failure says HTTP/2 itself can't be had (no head in 15 s,
+  "h2 is not supported", no HTTP/2 in ALPN, a protocol error), the Runs
+  after it go straight to HTTP/1.1 until the plugin is loaded again; a
+  failed connection (refused, no network) leaves the next Run to try
+  HTTP/2 again. A region error over HTTP/1.1 sends the Run back to HTTP/2
+  at the region's agent host.
 - The whole conversation goes each time, as AI SDK messages kept as blobs
   the server asks for. The caller's tools are MCP tools, listed in the
   system prompt; the model calls them through Cursor's `CallDynamicTool`,
