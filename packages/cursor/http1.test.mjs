@@ -60,16 +60,16 @@ const update = (num, body) => frame(pb().bytes(1, pb().bytes(num, body)).done())
 
 // the agent API over HTTP/2 on port: "answer" answers a Run "hi" and the
 // turn's end; "stall" takes the stream and never sends its head; "refuse"
-// resets the stream (REFUSED_STREAM) before its head. resets refuses that
-// many streams first, whatever the mode.
-async function agent(port, mode, { resets = 0 } = {}) {
-  const a = { mode, runs: 0, resets }
+// closes the stream with code (REFUSED_STREAM unless told) before its head.
+// resets refuses that many streams first, whatever the mode.
+async function agent(port, mode, { resets = 0, code = http2.constants.NGHTTP2_REFUSED_STREAM } = {}) {
+  const a = { mode, runs: 0, resets, code }
   a.server = http2.createServer()
   a.server.on("stream", (stream) => {
     stream.on("error", () => {})
     if (a.resets > 0 || a.mode === "refuse") {
       a.resets--
-      return stream.close(http2.constants.NGHTTP2_REFUSED_STREAM)
+      return stream.close(a.code)
     }
     if (a.mode === "stall") return
     a.runs++
@@ -94,7 +94,11 @@ async function agent(port, mode, { resets = 0 } = {}) {
 // given in its end frame (refuse) or as an HTTP error (sseHttp). A
 // BidiAppend answers, answers an HTTP error (appendHttp), or never answers
 // (hangAppend). What each call carried is noted.
-const httpError = (e) => new Response(JSON.stringify(e.body), { status: e.status, headers: { "content-type": "application/json" } })
+// an HTTP error: Connect's JSON, or a plain body as a proxy or load balancer sends
+const httpError = (e) =>
+  typeof e.body === "string"
+    ? new Response(e.body, { status: e.status, headers: { "content-type": "text/plain" } })
+    : new Response(JSON.stringify(e.body), { status: e.status, headers: { "content-type": "application/json" } })
 function fakeAPI(base, { refuse, sseHttp, appendHttp, hangAppend } = {}) {
   const seen = { sse: [], appends: [] }
   const streams = new Map() // request id → RunSSE's controller
@@ -254,31 +258,38 @@ test("an error Cursor ends RunSSE with keeps its status", async () => {
 
 const SIGNED_OUT = { code: "unauthenticated", message: "Error", details: [{ debug: { error: "ERROR_NOT_LOGGED_IN", details: { title: "Authentication error", detail: "If you are logged in, try logging out and back in." } } }] }
 
-test("a stream reset before its head falls back at once, and the next Run tries HTTP/2 again", async () => {
-  H2.wait = 10_000
-  const port = await freePort()
-  const base = `http://127.0.0.1:${port}`
-  const ag = await agent(port, "refuse")
-  try {
-    const seen = fakeAPI(base)
-    const auth = fresh()
-    h2Tries = 0
-    const t = Date.now()
-    const a = await ask(auth, base)
-    expect(a.body.choices[0].message.content).toBe("hi")
-    expect(Date.now() - t).toBeLessThan(3000) // not the head timer's 10 s
-    expect(seen.sse).toHaveLength(1)
-    expect(_internal.onH1()).toBe(false)
-    ag.mode = "answer"
-    const b = await ask(auth, base)
-    expect(b.body.choices[0].message.content).toBe("hi")
-    expect(h2Tries).toBe(2)
-    expect(ag.runs).toBe(1)
-    expect(seen.sse).toHaveLength(1)
-  } finally {
-    ag.server.close()
-  }
-})
+// REFUSED_STREAM comes as an error on the stream; CANCEL (and NO_ERROR)
+// closes it with none, which only its close says
+for (const [name, code] of [
+  ["REFUSED_STREAM", http2.constants.NGHTTP2_REFUSED_STREAM],
+  ["CANCEL", http2.constants.NGHTTP2_CANCEL],
+]) {
+  test(`a stream closed before its head (${name}) falls back at once, and the next Run tries HTTP/2 again`, async () => {
+    H2.wait = 2000
+    const port = await freePort()
+    const base = `http://127.0.0.1:${port}`
+    const ag = await agent(port, "refuse", { code })
+    try {
+      const seen = fakeAPI(base)
+      const auth = fresh()
+      h2Tries = 0
+      const t = Date.now()
+      const a = await ask(auth, base)
+      expect(a.body.choices[0].message.content).toBe("hi")
+      expect(Date.now() - t).toBeLessThan(1000) // not the head timer's 2 s
+      expect(seen.sse).toHaveLength(1)
+      expect(_internal.onH1()).toBe(false)
+      ag.mode = "answer"
+      const b = await ask(auth, base)
+      expect(b.body.choices[0].message.content).toBe("hi")
+      expect(h2Tries).toBe(2)
+      expect(ag.runs).toBe(1)
+      expect(seen.sse).toHaveLength(1)
+    } finally {
+      ag.server.close()
+    }
+  })
+}
 
 test("a BidiAppend that never answers ends the Run with deadline_exceeded", async () => {
   H1.appendWait = 200
@@ -305,6 +316,14 @@ test("an HTTP error from BidiAppend keeps its status", async () => {
   const r = await ask(fresh(), base)
   expect(r.status).toBe(401)
   expect(r.body.error.message).toContain("Authentication error")
+})
+
+test("an HTTP error with no Connect error of its own keeps its status: 401 from RunSSE, 429 from BidiAppend", async () => {
+  const base = `http://127.0.0.1:${await freePort()}`
+  fakeAPI(base, { sseHttp: { status: 401, body: "Unauthorized" } })
+  expect((await ask(fresh(), base)).status).toBe(401)
+  fakeAPI(base, { appendHttp: { status: 429, body: "<html>Too Many Requests</html>" } })
+  expect((await ask(fresh(), base)).status).toBe(429)
 })
 
 test("appends go up one at a time, numbered in order, a slow one holding the rest", async () => {
