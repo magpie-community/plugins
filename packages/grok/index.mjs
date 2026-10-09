@@ -288,7 +288,7 @@ const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v)
 // which Grok turns away otherwise: "tool parameter root must be an object
 // type" (magpie#1271).
 function rewrite(body) {
-  if (typeof body !== "string" || (!body.includes('"tools"') && !body.includes('"reasoning"'))) return body
+  if (typeof body !== "string" || (!body.includes('"tools"') && !body.includes('"reasoning"') && !body.includes('"agent_message"'))) return body
   let m
   try {
     m = JSON.parse(body)
@@ -322,6 +322,23 @@ function rewrite(body) {
       delete m.tool_choice
       dirty = true
     }
+  }
+  if (Array.isArray(m.input)) {
+    m.input = m.input.map((it) => {
+      if (!isObj(it) || it.type !== "agent_message" || Object.hasOwn(it, "encrypted_content") ||
+          !Array.isArray(it.content) || !it.content.length ||
+          !it.content.every((part) => isObj(part) && !Object.hasOwn(part, "encrypted_content") &&
+            (part.type === "input_text" && typeof part.text === "string" ||
+             part.type === "input_image" && typeof part.image_url === "string"))) return it
+      // Grok takes ordinary messages, not Codex's collaboration item.
+      // Sealed tasks remain untouched for the gateway's existing guard.
+      const from = typeof it.author === "string" ? it.author : ""
+      const to = typeof it.recipient === "string" ? it.recipient : ""
+      const header = from && to ? `From ${from} to ${to}` : from ? `From ${from}` : to ? `To ${to}` : ""
+      dirty = true
+      return { type: "message", role: "user", content: header
+        ? [{ type: "input_text", text: `${header}\n\n` }, ...it.content] : it.content }
+    })
   }
   for (const it of Array.isArray(m.input) ? m.input : []) {
     if (it && it.type === "reasoning" && "content" in it && it.content === null) {

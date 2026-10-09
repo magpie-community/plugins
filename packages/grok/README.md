@@ -66,6 +66,10 @@ leaves these out:
 - a `tool_choice` naming a dropped type
 - a reasoning item's `"content": null`
 
+Plain Codex collaboration items (`agent_message`) reach Grok as user
+messages, with their sender, recipient and content preserved. Sealed or
+unrecognized content stays unchanged; the plugin does not decrypt tasks.
+
 ## Models
 
 Grok 4.7 until signed in. Signed in, the models are the ones the account
