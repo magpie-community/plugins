@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { spawn, spawnSync } from "node:child_process"
 import { createServer } from "node:net"
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { StrataPlugin } from "./index.mjs"
 import { authHost } from "./auth-fixture.mjs"
@@ -75,22 +75,17 @@ async function setup(options = {}) {
 }
 afterEach(async () => {
   for (const c of cases.splice(0)) {
-    try {
-      await c.login({ ...c.inputs, autoStop: "yes" })
-      c.gateway.kill()
-      await until(() => !c.state()?.manager || !alive(c.state().manager.pid), 10000)
-    } finally {
-      c.gateway.kill()
-      const manager = c.state()?.manager
-      if (manager) {
-        const result = cleanupManager(manager)
-        if (result.error || result.status !== 0) throw result.error ?? new Error(result.stderr || "Fixture cleanup failed")
-      }
-      expect(c.directory.startsWith(process.env.TEMP + "\\strata-life-")).toBe(true)
-      rmSync(c.directory, { recursive: true, force: true })
+    c.gateway.kill()
+    const manager = c.state()?.manager
+    if (manager) {
+      const result = cleanupManager(manager)
+      if (result.error || result.status !== 0) throw result.error ?? new Error(result.stderr || "Fixture cleanup failed")
     }
+    expect(c.directory.startsWith(process.env.TEMP + "\\strata-life-")).toBe(true)
+    rmSync(c.directory, { recursive: true, force: true })
   }
 }, 15000)
+
 lifecycleTest("A02/A03/A07/A17/A19: concurrent first requests share one silent startup, then the gateway exit cleans the tree", async () => {
   const c = await setup({ delay: 0.5 })
   const replies = await Promise.all(Array.from({ length: 4 }, () => c.request().then((r) => r.json())))
@@ -115,7 +110,7 @@ lifecycleTest("A15: startup failure is reported, and a later request retries aft
 }, 15000)
 
 
-lifecycleTest("A05/A09/A13: a saved keep option applies without another inference, then a new gateway adopts the same managed instance", async () => {
+lifecycleTest("A05/A09/A13: reopening and saving stop reconnects the retained instance without any new inference", async () => {
   const c = await setup()
   await c.request()
   const before = await c.events()
@@ -132,10 +127,16 @@ lifecycleTest("A05/A09/A13: a saved keep option applies without another inferenc
   await until(async () => { try { await fetch("http://127.0.0.1:" + newPort); return true } catch { return false } })
   const newHost = await c.hooks()
   await newHost.auth.loader(c.getAuth)
-  await c.request()
+  await expect(c.login({ ...c.inputs, autoStop: "yes" }, newHost, true)).rejects.toThrow("save denied")
+  await sleep(350)
+  expect(c.state().autoStop).toBe(false)
+  expect(c.state().gateway.pid).not.toBe(c.gatewayPid())
+  expect((await c.events()).pid).toBe(before.pid)
   await c.login({ ...c.inputs, autoStop: "yes" }, newHost)
   await until(() => c.state()?.gateway?.pid === c.gatewayPid() && c.state()?.autoStop === true)
-  expect((await c.events()).requests.length).toBe(2)
+  expect((await c.events()).requests.length).toBe(1)
+  expect((await c.events()).pid).toBe(before.pid)
+  expect(alive(c.state().manager.pid)).toBe(true)
   c.gateway.kill()
   await until(() => !alive(before.pid) && !alive(before.child) && !alive(c.state().manager.pid))
 }, 15000)
@@ -329,4 +330,72 @@ lifecycleTest("A18: a stopped state with its mutex still held is waited out befo
     expect((await (await c.request()).json()).answer).toBe("fixture answer")
     expect(c.state().manager.pid).not.toBe(holder.pid)
   } finally { holder.kill() }
+}, 15000)
+
+
+lifecycleTest("A05/A09: runtime state write failures retain the service and manager, then recover the saved keep option", async () => {
+  const c = await setup()
+  await c.request()
+  const before = await c.events()
+  const dir = join(c.directory, "strata", "127.0.0.1-" + new URL(c.base).port)
+  const file = join(dir, "state.json")
+  const manager = c.state().manager
+  chmodSync(file, 0o444)
+  try {
+    await c.login({ ...c.inputs, autoStop: "no" })
+    await until(() => readFileSync(join(dir, "manager.log"), "utf8").includes("state write failed"))
+    expect((await c.events()).pid).toBe(before.pid)
+    expect(alive(manager.pid)).toBe(true)
+    expect(alive(c.gateway.pid)).toBe(true)
+    expect(c.state().autoStop).toBe(true)
+  } finally { chmodSync(file, 0o666) }
+  await until(() => c.state()?.autoStop === false)
+  expect(c.state().manager).toEqual(manager)
+  c.gateway.kill()
+  await sleep(400)
+  expect((await c.events()).pid).toBe(before.pid)
+  expect(alive(manager.pid)).toBe(true)
+}, 15000)
+
+lifecycleTest("A15: a startup ownership write failure creates no service, and retry after restoring writes works", async () => {
+  const c = await setup()
+  const dir = join(c.directory, "strata", "127.0.0.1-" + new URL(c.base).port)
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, "state.json")
+  writeFileSync(file, JSON.stringify({ status: "stopped" }))
+  chmodSync(file, 0o444)
+  try {
+    await expect(c.request()).rejects.toThrow("manager exited")
+    expect(existsSync(join(c.root, "starts.jsonl"))).toBe(false)
+  } finally { chmodSync(file, 0o666) }
+  expect((await (await c.request()).json()).answer).toBe("fixture answer")
+}, 15000)
+
+
+lifecycleTest("A05/A09/A13: a saved keep option survives unconfirmed gateway association and unreadable auth until an actual request reconnects", async () => {
+  const c = await setup()
+  await c.request()
+  const before = await c.events()
+  const unavailablePort = await port()
+  writeFileSync(join(c.directory, "settings.json"), JSON.stringify({ port: unavailablePort }))
+  await c.login({ ...c.inputs, autoStop: "no" })
+  await until(() => c.state()?.autoStop === false && c.state()?.status === "uncertain")
+  const file = join(c.directory, "plugin-auth.json")
+  const saved = readFileSync(file, "utf8")
+  try {
+    rmSync(file)
+    c.gateway.kill()
+    const newPort = await port()
+    writeFileSync(join(c.directory, "settings.json"), JSON.stringify({ port: newPort }))
+    c.gateway = spawn(python, ["-B", join(import.meta.dir, "fake-gateway.py"), String(newPort), "magpie",
+      join(c.directory, "gateway.json")], { windowsHide: true, stdio: "ignore" })
+    await until(async () => { try { await fetch("http://127.0.0.1:" + newPort); return true } catch { return false } })
+    expect((await (await c.request()).json()).pid).toBe(before.pid)
+    await until(() => c.state()?.gateway?.pid === c.gatewayPid() && c.state()?.status === "ready")
+    expect(c.state().autoStop).toBe(false)
+    c.gateway.kill()
+    await sleep(400)
+    expect((await c.events()).pid).toBe(before.pid)
+    expect(alive(c.state().manager.pid)).toBe(true)
+  } finally { writeFileSync(file, saved) }
 }, 15000)

@@ -135,15 +135,24 @@ def read(file):
 
 def save(file, body):
     tmp = file.with_name(file.name + "." + uuid.uuid4().hex + ".tmp")
-    tmp.write_text(json.dumps(body), encoding="utf-8")
-    for attempt in range(50):
-        try:
-            os.replace(tmp, file)
-            return
-        except PermissionError:
-            if attempt == 49:
-                raise
-            time.sleep(0.01)
+    try:
+        tmp.write_text(json.dumps(body), encoding="utf-8")
+        for attempt in range(50):
+            try:
+                os.replace(tmp, file)
+                return
+            except PermissionError:
+                if attempt == 49:
+                    raise
+                time.sleep(0.01)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+def diagnostic(message):
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except OSError:
+        pass
 
 def local_json(port, path):
     # Local checks must not be routed through a system HTTP proxy.
@@ -158,7 +167,7 @@ def healthy(port):
     except (OSError, ValueError):
         return False
 
-def saved_auto_stop(file, target):
+def saved_policy(file, target):
     try:
         all_auth = read(file)
         if not isinstance(all_auth, dict):
@@ -177,7 +186,9 @@ def saved_auto_stop(file, target):
             if (url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost")
                     and not url.username and not url.password and not url.query and not url.fragment
                     and url.path.rstrip("/") == "/v1" and (url.port or 80) == target):
-                values.append(metadata["autoStop"])
+                gateway_port, gateway_revision = metadata.get("gatewayPort"), metadata.get("gatewayRevision")
+                values.append({"autoStop": metadata["autoStop"], "gatewayPort": gateway_port,
+                               "gatewayRevision": gateway_revision})
         # Ambiguous old records cannot replace the last confirmed policy.
         return values[0] if values and all(v == values[0] for v in values) else None
     except (OSError, ValueError, TypeError):
@@ -220,14 +231,25 @@ def manage(directory, cfg, port):
     root_record, listening, gateway_port = None, None, None
     auto_stop = previous.get("autoStop") if previous and type(previous.get("autoStop")) is bool else None
     revision, gateway_uncertain = None, False
+    policy, running, dirty = None, False, False
+    pending_saved_gateway = False
 
     def report(status, reason=None):
+        nonlocal dirty
         state.update(status=status, updated=time.time())
         if reason:
             state["error"] = reason
         else:
             state.pop("error", None)
-        save(state_file, state)
+        try:
+            save(state_file, state)
+            dirty = False
+        except OSError as exc:
+            if not running:
+                raise
+            # Diagnostics cannot revoke an already recorded, running service's ownership.
+            dirty = True
+            diagnostic("Strata manager state write failed; retaining the running service: " + str(exc))
 
     def attach_gateway(request):
         nonlocal gateway_handle, gateway_port
@@ -254,12 +276,24 @@ def manage(directory, cfg, port):
         state.update(gateway=current, gatewayPort=target)
 
     def sync_policy():
-        nonlocal auto_stop, revision, gateway_uncertain
-        saved = saved_auto_stop(directory.parent.parent / "plugin-auth.json", port)
-        if saved is not None and saved != auto_stop:
-            auto_stop = saved
-            state["autoStop"] = saved
+        nonlocal auto_stop, policy, revision, gateway_uncertain, pending_saved_gateway
+        if dirty:
             report(state["status"], state.get("error"))
+        saved = saved_policy(directory.parent.parent / "plugin-auth.json", port)
+        if saved is not None and saved != policy:
+            policy, auto_stop = saved, saved["autoStop"]
+            state["autoStop"] = auto_stop
+            gateway_uncertain, pending_saved_gateway = True, True
+        if pending_saved_gateway:
+            try:
+                # A saved option is cached even if confirming its current gateway must be retried.
+                attach_gateway({"gatewayPort": policy["gatewayPort"] if policy["gatewayPort"] is not None else gateway_port})
+                gateway_uncertain, pending_saved_gateway = False, False
+                report("starting" if state["status"] == "starting" else "ready")
+            except (OSError, ValueError, RuntimeError, KeyError) as exc:
+                gateway_uncertain = True
+                report("uncertain", str(exc))
+                diagnostic("Strata manager: " + str(exc))
         try:
             request = read(request_file)
         except (OSError, ValueError):
@@ -268,6 +302,7 @@ def manage(directory, cfg, port):
             return
         revision = request.get("revision")
         state.update(requestPort=request.get("gatewayPort"), requestRevision=revision)
+        pending_saved_gateway = False
         try:
             attach_gateway(request)
             gateway_uncertain = False
@@ -275,19 +310,19 @@ def manage(directory, cfg, port):
         except (OSError, ValueError, RuntimeError, KeyError) as exc:
             gateway_uncertain = True
             report("uncertain", str(exc))
-            print("Strata manager: " + str(exc), file=sys.stderr, flush=True)
+            diagnostic("Strata manager: " + str(exc))
 
     def gateway_exited():
         return not gateway_uncertain and gateway_handle and wait(gateway_handle, 0) == 0 and auto_stop is True
 
     try:
-        saved = saved_auto_stop(directory.parent.parent / "plugin-auth.json", port)
-        if saved is not None:
-            auto_stop = saved
+        policy = saved_policy(directory.parent.parent / "plugin-auth.json", port)
+        if policy is not None:
+            auto_stop = policy["autoStop"]
         if auto_stop is None:
             raise RuntimeError("Cannot confirm a saved Strata exit option; configure the provider first")
         state["autoStop"] = auto_stop
-        # Only an actual request supplies or changes the gateway to observe.
+        # Startup follows the actual request; later saved configurations can reconnect without inference.
         request = read(request_file) or cfg
         attach_gateway(request)
         revision = request.get("revision")
@@ -345,6 +380,7 @@ def manage(directory, cfg, port):
             else:
                 raise RuntimeError("Strata health was not ready within 120 seconds")
         state.update(service=root_record, listener=listener(port))
+        running = True
         report("uncertain" if gateway_uncertain else "ready", state.get("error") if gateway_uncertain else None)
         while True:
             sync_policy()
@@ -366,9 +402,9 @@ def manage(directory, cfg, port):
             try:
                 stop(module._job)
             except Exception as cleanup:
-                print("Strata cleanup: " + str(cleanup), file=sys.stderr, flush=True)
+                diagnostic("Strata cleanup: " + str(cleanup))
         report("error", str(exc))
-        print("Strata manager: " + str(exc), file=sys.stderr, flush=True)
+        diagnostic("Strata manager: " + str(exc))
         return 1
     finally:
         if gateway_handle:

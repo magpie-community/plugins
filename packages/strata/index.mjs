@@ -211,7 +211,8 @@ export async function StrataPlugin({ client, directory = process.cwd() }) {
           // The host preserves metadata.email when saving a key and uses it to deduplicate accounts.
           cfg.email = ID + ":" + cfg.baseURL
           return { url: "", method: "auto", callback: async () => ({
-            type: "success", key: inputs.apiKey || "strata-local", metadata: cfg,
+            type: "success", key: inputs.apiKey || "strata-local",
+            metadata: { ...cfg, gatewayPort: gateway(directory), gatewayRevision: randomUUID() },
           }) }
         },
       }],

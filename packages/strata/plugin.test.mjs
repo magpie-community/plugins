@@ -27,9 +27,13 @@ test("A01/A05: configuration saves the target and defaults to stopping, without 
   const inputs = { root: process.cwd(), python: process.execPath, config: import.meta.filename,
     model: "my-local-model", baseURL: "http://127.0.0.1:49199/v1", environment: "{}" }
   expect(hooks.auth.methods[0].type).toBe("oauth")
+  expect(hooks.auth.methods[0].prompts.length).toBe(8)
   const authorization = await hooks.auth.methods[0].authorize(inputs)
   expect(authorization).toMatchObject({ url: "", method: "auto" })
-  expect((await authorization.callback()).type).toBe("success")
+  const result = await authorization.callback()
+  expect(result.type).toBe("success")
+  expect(result.metadata.gatewayPort).toBe(3425)
+  expect(typeof result.metadata.gatewayRevision).toBe("string")
   expect(existsSync(join(h.directory, "plugin-auth.json"))).toBe(false)
   await h.login(hooks, inputs)
   expect((await h.getAuth()).metadata.autoStop).toBe(true)
