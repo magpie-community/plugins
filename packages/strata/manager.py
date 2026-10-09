@@ -427,7 +427,7 @@ def main():
         result = wait(lock, 0)
         if result == 258:
             prior = read(directory / "state.json")
-            if prior and prior.get("status") not in ("error", "stopped"):
+            if not prior or prior.get("status") not in ("error", "stopped"):
                 return 0
             # A terminal state can be published just before its owner releases the mutex.
             result = wait(lock, int((STOP_SECONDS + 2) * 1000))

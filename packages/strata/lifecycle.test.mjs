@@ -62,7 +62,11 @@ async function setup(options = {}) {
     gatewayPid: () => JSON.parse(readFileSync(join(directory, "gateway.json"), "utf8")).pid,
     login: (inputs, plugin = c.plugin, fail = false) => host.login(plugin, inputs, fail),
     hooks: async () => StrataPlugin({ directory, client }),
-    events: async () => (await fetch(base + "/events")).json(),
+    events: async () => {
+      const events = await (await fetch(base + "/events")).json()
+      c.child = events.child
+      return events
+    },
   }
   cases.push(c)
   c.plugin = await c.hooks()
@@ -76,11 +80,13 @@ async function setup(options = {}) {
 afterEach(async () => {
   for (const c of cases.splice(0)) {
     c.gateway.kill()
-    const manager = c.state()?.manager
+    const state = c.state()
+    const manager = state?.manager
     if (manager) {
       const result = cleanupManager(manager)
       if (result.error || result.status !== 0) throw result.error ?? new Error(result.stderr || "Fixture cleanup failed")
     }
+    await until(() => [state?.service?.pid, state?.listener?.pid, c.child].filter(Boolean).every((pid) => !alive(pid)), 5000)
     expect(c.directory.startsWith(process.env.TEMP + "\\strata-life-")).toBe(true)
     rmSync(c.directory, { recursive: true, force: true })
   }
@@ -398,4 +404,28 @@ lifecycleTest("A05/A09/A13: a saved keep option survives unconfirmed gateway ass
     expect((await c.events()).pid).toBe(before.pid)
     expect(alive(c.state().manager.pid)).toBe(true)
   } finally { writeFileSync(file, saved) }
+}, 15000)
+
+
+lifecycleTest("A03: a candidate exits promptly while the startup mutex is held and no state has been published", async () => {
+  const c = await setup()
+  const dir = join(c.directory, "strata", "127.0.0.1-" + new URL(c.base).port)
+  mkdirSync(dir, { recursive: true })
+  const holder = spawn(join(dirname(python), "pythonw.exe"), ["-B", join(import.meta.dir, "mutex-fixture.py"), dir,
+    new URL(c.base).port, "unpublished"], { windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
+  let owner
+  try {
+    await until(() => existsSync(join(dir, "held.json")))
+    owner = JSON.parse(readFileSync(join(dir, "held.json"), "utf8"))
+    const candidate = spawnSync(join(dirname(python), "pythonw.exe"), ["-B", join(import.meta.dir, "manager.py"), dir], {
+      windowsHide: true, input: JSON.stringify({ baseURL: c.inputs.baseURL }), encoding: "utf8", timeout: 2000,
+    })
+    expect(candidate.error).toBeUndefined()
+    expect(candidate.status).toBe(0)
+    expect(existsSync(join(dir, "state.json"))).toBe(false)
+    expect(alive(owner.pid)).toBe(true)
+  } finally {
+    holder.stdin.end()
+    await until(() => !alive(holder.pid) && (!owner || !alive(owner.pid)))
+  }
 }, 15000)
