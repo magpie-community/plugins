@@ -74,6 +74,8 @@ request:
   - Tool calls and results are paired: an unanswered call gets an error
     result, and a result longer than 250,000 characters is cut.
   - Tool ids Kiro wouldn't take are rewritten.
+  - Tool names longer than 64 characters are aliased, and the original
+    name is restored on the way back.
   - Only the latest images are sent.
   - Tools the history used but the request doesn't offer are declared.
 - It turns the AWS event stream Kiro answers with back into Messages'

@@ -571,10 +571,59 @@ const PROCEED = "Please proceed with the task." // Kiro takes no empty message
 const NO_RESULT = "Tool use was interrupted and did not produce a result."
 const RESULT_LIMIT = 250000 // a tool's output is cut at this, as Kiro's own agent cuts it
 const TOOL_ID = /^[a-zA-Z0-9_.:-]{1,64}$/
+const TOOL_NAME_MAX = 64
 
 // toolID is a tool call's id as Kiro takes one: another vendor's becomes
 // one of Kiro's own, the same each time.
 const toolID = (id) => (TOOL_ID.test(id ?? "") ? id : "t_" + createHash("sha256").update(String(id ?? "")).digest("base64url").slice(0, 32))
+
+// Kiro refuses a tool name longer than 64 characters with "Invalid tool
+// use format" (REQUEST_BODY_INVALID), and will not raise the limit
+// (kirodotdev/Kiro#7684). Claude Code's MCP names,
+// mcp__plugin_<plugin>_<server>__<tool>, go past it. kiroNames maps each
+// name this request will send to the one Kiro is given: itself when it
+// fits, otherwise 55 characters of it, "_", and 8 hex of its sha256. The
+// same original always aliases the same way, in the declaration and in
+// history, so a later tool_result still names the call Kiro saw. An alias
+// already taken by another tool shifts along the hash.
+function kiroNames(req) {
+  const originals = []
+  const seen = new Set()
+  const add = (name) => {
+    if (!name || seen.has(name)) return
+    seen.add(name)
+    originals.push(name)
+  }
+  for (const t of req.tools ?? []) {
+    if (!t?.name || (t.type && t.type !== "custom" && !t.input_schema)) continue // server tools Kiro hasn't
+    add(t.name)
+  }
+  for (const m of req.messages ?? []) {
+    const parts = Array.isArray(m.content) ? m.content : []
+    for (const p of parts) if (p?.type === "tool_use") add(p.name)
+  }
+  const taken = new Set(originals.filter((n) => n.length <= TOOL_NAME_MAX))
+  const to = new Map()
+  for (const name of originals) {
+    if (name.length <= TOOL_NAME_MAX) {
+      to.set(name, name)
+      continue
+    }
+    const h = createHash("sha256").update(name).digest("hex")
+    let alias = ""
+    for (let i = 0; i + 8 <= h.length; i++) {
+      const cand = name.slice(0, 55) + "_" + h.slice(i, i + 8)
+      if (!taken.has(cand)) {
+        alias = cand
+        break
+      }
+    }
+    alias ||= name.slice(0, 55) + "_" + h.slice(0, 8)
+    taken.add(alias)
+    to.set(name, alias)
+  }
+  return to
+}
 
 function imageFormat(mediaType) {
   const t = String(mediaType ?? "").toLowerCase()
@@ -609,6 +658,8 @@ function thinking(req, model) {
 
 // buildKiro is the body of a generateAssistantResponse call.
 function buildKiro(req, model, profile, budget) {
+  const names = kiroNames(req)
+  const asKiro = (name) => names.get(name) ?? name
   const entries = []
   const user = () => ({ content: "", modelId: model, origin: "KIRO_CLI" })
   for (const m of req.messages ?? []) {
@@ -620,7 +671,7 @@ function buildKiro(req, model, profile, budget) {
         if (p?.type === "text" && p.text) texts.push(p.text)
         else if (p?.type === "tool_use") {
           const input = p.input && typeof p.input === "object" && !Array.isArray(p.input) ? p.input : {}
-          a.toolUses.push({ name: p.name, toolUseId: toolID(p.id), input })
+          a.toolUses.push({ name: asKiro(p.name), toolUseId: toolID(p.id), input })
         }
       }
       a.content = texts.join("\n\n")
@@ -719,8 +770,9 @@ function buildKiro(req, model, profile, budget) {
   const EMPTY = { type: "object", properties: {} }
   for (const t of req.tools ?? []) {
     if (!t?.name || (t.type && t.type !== "custom" && !t.input_schema)) continue // server tools Kiro hasn't
-    offered.add(t.name)
-    tools.push({ toolSpecification: { name: t.name, description: t.description || t.name, inputSchema: { json: t.input_schema ?? EMPTY } } })
+    const name = asKiro(t.name)
+    offered.add(name)
+    tools.push({ toolSpecification: { name, description: t.description || t.name, inputSchema: { json: t.input_schema ?? EMPTY } } })
   }
   for (const e of entries)
     for (const c of e.assistantResponseMessage?.toolUses ?? [])
@@ -929,7 +981,8 @@ class ThinkParser {
 
 // events turns Kiro's reply into events: text, thinking, tool calls (the
 // arguments in pieces), then the usage and why it stopped — or an error.
-async function* events(body, model, budget) {
+async function* events(body, model, budget, names) {
+  const restore = (name) => names?.get(name) ?? name
   const think = new ThinkParser()
   let tool = ""
   let tools = 0
@@ -968,7 +1021,7 @@ async function* events(body, model, budget) {
           yield* think.end() // the text before a call is all said
           tool = m.toolUseId
           tools++
-          yield { kind: "toolStart", id: m.toolUseId, name: m.name ?? "" }
+          yield { kind: "toolStart", id: m.toolUseId, name: restore(m.name ?? "") }
         }
         if (m.input !== undefined && m.input !== null) {
           if (typeof m.input === "string") {
@@ -1157,6 +1210,8 @@ async function reply(it, model, stream) {
 async function generate(creds, auth, req, signal) {
   const model = String(req.model ?? "auto")
   const budget = thinking(req, model)
+  const back = new Map()
+  for (const [orig, alias] of kiroNames(req)) if (alias !== orig) back.set(alias, orig)
   let a
   try {
     a = await creds(auth)
@@ -1189,7 +1244,7 @@ async function generate(creds, auth, req, signal) {
     const f = failure(res.status, (await res.text()).slice(0, 1 << 20))
     return errorResponse(f.status, f.message)
   }
-  return kept(await reply(events(res.body, model, budget), model, req.stream === true))
+  return kept(await reply(events(res.body, model, budget, back), model, req.stream === true))
 }
 
 // ---- signing in ----------------------------------------------------------------------
@@ -1453,4 +1508,4 @@ export async function KiroAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { generate, refresh, usageOf, buildKiro, events, reply, failure, toolID, thinking, readCLI, readIDE, regionOf, planName, frames }
+export const _internal = { generate, refresh, usageOf, buildKiro, events, reply, failure, toolID, kiroNames, thinking, readCLI, readIDE, regionOf, planName, frames }
