@@ -27,6 +27,22 @@ test("macOS reads the stable GUI Keychain service and User account", async () =>
   expect(await readUser()).toEqual(user)
 })
 
+test("macOS decodes hex-encoded keychain output for non-ASCII accounts", async () => {
+  const named = { ...user, display_name: "程国清" }
+  const hex = Buffer.from(JSON.stringify(named)).toString("hex") + "\n"
+  const readUser = _internal.createUserReader({ platform: "darwin", run: async () => ({ code: 0, stdout: Buffer.from(hex) }) })
+  expect(await readUser()).toEqual(named)
+})
+
+test("macOS hex detection leaves plain JSON and non-hex output untouched", async () => {
+  const plain = _internal.createUserReader({ platform: "darwin", run: async () => ({ code: 0, stdout: json }) })
+  expect(await plain()).toEqual(user)
+  const odd = _internal.createUserReader({ platform: "darwin", run: async () => ({ code: 0, stdout: Buffer.from("7b2\n") }) })
+  await expect(odd()).rejects.toThrow(/did not read as an account/)
+  const garbage = _internal.createUserReader({ platform: "darwin", run: async () => ({ code: 0, stdout: Buffer.from("not-an-account") }) })
+  await expect(garbage()).rejects.toThrow(/did not read as an account/)
+})
+
 test("macOS reports missing and inaccessible keychains without exposing output", async () => {
   const missing = _internal.createUserReader({ platform: "darwin", run: async () => ({ code: 44, stdout: Buffer.alloc(0) }) })
   expect(await missing()).toBeNull()

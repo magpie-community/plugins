@@ -253,6 +253,16 @@ function linuxUser(data) {
   return Buffer.concat([cipher.update(data.subarray(12, -16)), cipher.final()])
 }
 
+// `security find-generic-password -w` prints a password that holds non-ASCII
+// bytes (Warp's serde_json keeps a Chinese display_name raw) as its hex
+// encoding. Plain JSON keeps its leading '{', which is not a hex digit, so an
+// all-hex even-length output can only be the hex form.
+function keychainBytes(bytes) {
+  const text = dec.decode(bytes).trim()
+  if (text.startsWith("{") || text.length % 2 || !/^[0-9a-f]+$/i.test(text)) return bytes
+  return Buffer.from(text, "hex")
+}
+
 // Injectable IO lets all platform branches be tested without reading a real
 // account or invoking a system credential store. Stable GUI accounts only.
 function createUserReader({ platform = process.platform, env = process.env, home = homedir(), run = runCommand, read = readFileSync } = {}) {
@@ -267,7 +277,7 @@ function createUserReader({ platform = process.platform, env = process.env, home
       const out = await run("/usr/bin/security", ["find-generic-password", "-s", "dev.warp.Warp-Stable", "-a", "User", "-w"], undefined, 120_000)
       if (out.code === 44) return null // errSecItemNotFound
       if (out.code !== 0) throw new Error("Unable to read Warp's macOS Keychain item; unlock the keychain or use a refresh token")
-      return parse(out.stdout)
+      return parse(keychainBytes(out.stdout))
     }
     if (platform !== "win32" && platform !== "linux") throw new Error("Warp app sign-in is unsupported on this platform; use a refresh token")
     if (platform === "linux") {
