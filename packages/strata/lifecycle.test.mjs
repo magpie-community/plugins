@@ -4,6 +4,7 @@ import { createServer } from "node:net"
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { StrataPlugin } from "./index.mjs"
+import { authHost } from "./auth-fixture.mjs"
 
 const python = process.env.STRATA_TEST_PYTHON
 const installed = process.env.STRATA_TEST_ROOT
@@ -42,7 +43,7 @@ async function setup(options = {}) {
   writeFileSync(config, JSON.stringify(options))
   const gatewayPort = await port()
   writeFileSync(join(directory, "settings.json"), JSON.stringify({ port: gatewayPort }))
-  const gateway = spawn(python, ["-B", join(import.meta.dir, "fake-gateway.py"), String(gatewayPort)],
+  const gateway = spawn(python, ["-B", join(import.meta.dir, "fake-gateway.py"), String(gatewayPort), options.gatewayName ?? "magpie", join(directory, "gateway.json")],
     { windowsHide: true, stdio: "ignore", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } })
   await until(async () => {
     try { await fetch("http://127.0.0.1:" + gatewayPort, { signal: AbortSignal.timeout(200) }); return true } catch { return false }
@@ -50,24 +51,22 @@ async function setup(options = {}) {
   const servicePort = await port()
   const base = "http://127.0.0.1:" + servicePort
   const inputs = { root, python, config, model: "fixture-model", baseURL: base + "/v1", environment: "{}" }
-  let auth
-  const client = { auth: { set: async ({ body }) => {
-    auth = body
-    writeFileSync(join(directory, "plugin-auth.json"), JSON.stringify({ strata: body }))
-    return { data: true }
-  } }, app: { log: async () => {} } }
+  const host = authHost(directory)
+  const client = host.client
   const c = { directory, root, config, gateway, base, inputs, client,
     state: () => {
       const f = join(directory, "strata", "127.0.0.1-" + servicePort, "state.json")
       return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : undefined
     },
-    getAuth: async () => auth,
+    getAuth: host.getAuth,
+    gatewayPid: () => JSON.parse(readFileSync(join(directory, "gateway.json"), "utf8")).pid,
+    login: (inputs, plugin = c.plugin, fail = false) => host.login(plugin, inputs, fail),
     hooks: async () => StrataPlugin({ directory, client }),
     events: async () => (await fetch(base + "/events")).json(),
   }
   cases.push(c)
   c.plugin = await c.hooks()
-  await c.plugin.auth.methods[0].authorize(inputs)
+  await c.login(inputs)
   c.loader = await c.plugin.auth.loader(c.getAuth)
   c.request = (init = {}) => c.loader.fetch(base + "/v1/chat/completions", {
     method: "POST", headers: { "X-Test": "kept" }, body: '{"model":"fixture-model","messages":[]}', ...init,
@@ -77,7 +76,7 @@ async function setup(options = {}) {
 afterEach(async () => {
   for (const c of cases.splice(0)) {
     try {
-      await c.plugin.auth.methods[0].authorize({ ...c.inputs, autoStop: "yes" })
+      await c.login({ ...c.inputs, autoStop: "yes" })
       c.gateway.kill()
       await until(() => !c.state()?.manager || !alive(c.state().manager.pid), 10000)
     } finally {
@@ -120,7 +119,7 @@ lifecycleTest("A05/A09/A13: a saved keep option applies without another inferenc
   const c = await setup()
   await c.request()
   const before = await c.events()
-  await c.plugin.auth.methods[0].authorize({ ...c.inputs, autoStop: "no" })
+  await c.login({ ...c.inputs, autoStop: "no" })
   await sleep(500)
   c.gateway.kill()
   await sleep(500)
@@ -128,15 +127,15 @@ lifecycleTest("A05/A09/A13: a saved keep option applies without another inferenc
   expect(alive(c.state().manager.pid)).toBe(true)
   const newPort = await port()
   writeFileSync(join(c.directory, "settings.json"), JSON.stringify({ port: newPort }))
-  c.gateway = spawn(python, ["-B", join(import.meta.dir, "fake-gateway.py"), String(newPort)],
+  c.gateway = spawn(python, ["-B", join(import.meta.dir, "fake-gateway.py"), String(newPort), "magpie", join(c.directory, "gateway.json")],
     { windowsHide: true, stdio: "ignore" })
   await until(async () => { try { await fetch("http://127.0.0.1:" + newPort); return true } catch { return false } })
   const newHost = await c.hooks()
   await newHost.auth.loader(c.getAuth)
-  await newHost.auth.methods[0].authorize({ ...c.inputs, autoStop: "yes" })
-  const actual = await (await fetch("http://127.0.0.1:" + newPort)).json()
-  await until(() => c.state()?.gateway?.pid === actual.pid)
-  expect((await c.events()).requests.length).toBe(1)
+  await c.request()
+  await c.login({ ...c.inputs, autoStop: "yes" }, newHost)
+  await until(() => c.state()?.gateway?.pid === c.gatewayPid() && c.state()?.autoStop === true)
+  expect((await c.events()).requests.length).toBe(2)
   c.gateway.kill()
   await until(() => !alive(before.pid) && !alive(before.child) && !alive(c.state().manager.pid))
 }, 15000)
@@ -180,10 +179,14 @@ lifecycleTest("A03/A10/A14/A17: independent plugin hosts share one startup and t
   await sleep(400)
   expect((await c.events()).pid).toBe(before.pid)
   expect(readFileSync(join(c.root, "starts.jsonl"), "utf8").trim().split("\n").length).toBe(1)
-  const actual = await (await fetch("http://127.0.0.1:" + JSON.parse(readFileSync(join(c.directory, "settings.json"), "utf8")).port)).json()
-  expect(c.state().gateway.pid).toBe(actual.pid)
-  await requestFromHost(c)
-  expect((await c.events()).requests.length).toBe(5)
+  expect(c.state().gateway.pid).toBe(c.gatewayPid())
+  const manager = c.state().manager
+  const helper = join(c.directory, "strata", "127.0.0.1-" + new URL(c.base).port, "manager.py")
+  rmSync(helper)
+  await Promise.all(Array.from({ length: 4 }, () => requestFromHost(c)))
+  expect(existsSync(helper)).toBe(false)
+  expect(c.state().manager).toEqual(manager)
+  expect((await c.events()).requests.length).toBe(8)
 }, 15000)
 lifecycleTest("A11/A12: removal of an isolated installed plugin leaves its manager responsible until actual gateway exit", async () => {
   const c = await setup()
@@ -245,7 +248,7 @@ lifecycleTest("A15/A16: Strata's inference error is returned unchanged without r
 
 lifecycleTest("A09: the keep option also preserves a service when its gateway exits during startup", async () => {
   const c = await setup({ delay: 0.8 })
-  await c.plugin.auth.methods[0].authorize({ ...c.inputs, autoStop: "no" })
+  await c.login({ ...c.inputs, autoStop: "no" })
   const pending = c.request().catch((e) => e)
   await until(() => !!c.state()?.service)
   c.gateway.kill()
@@ -260,10 +263,7 @@ lifecycleTest("A05: a failed configuration save does not change the running inst
   const c = await setup()
   await c.request()
   const events = await c.events()
-  const failedHost = await StrataPlugin({ directory: c.directory, client: {
-    auth: { set: async () => { throw new Error("save denied") } }, app: { log: async () => {} },
-  } })
-  await expect(failedHost.auth.methods[0].authorize({ ...c.inputs, autoStop: "no" })).rejects.toThrow("save denied")
+  await expect(c.login({ ...c.inputs, autoStop: "no" }, c.plugin, true)).rejects.toThrow("save denied")
   c.gateway.kill()
   await until(() => !alive(events.pid) && !alive(events.child) && !alive(c.state().manager.pid))
 }, 15000)
@@ -279,4 +279,54 @@ lifecycleTest("A17: forced fixture cleanup rejects a stale identity and stops on
   expect(alive(record.pid)).toBe(true)
   expect(cleanupManager(record).status).toBe(0)
   await until(() => !alive(events.pid) && !alive(events.child))
+}, 15000)
+
+
+lifecycleTest("A05/A09: stale loaders, missing/corrupt auth and invalid or foreign policies preserve the last confirmed keep option", async () => {
+  const c = await setup()
+  await c.request()
+  const old = await c.getAuth()
+  await c.login({ ...c.inputs, autoStop: "no" })
+  await until(() => c.state()?.autoStop === false)
+  const stale = await c.plugin.auth.loader(async () => old)
+  await stale.fetch(c.base + "/v1/chat/completions", { method: "POST", body: "{}" })
+  const file = join(c.directory, "plugin-auth.json")
+  const saved = readFileSync(file, "utf8")
+  try {
+    rmSync(file)
+    await sleep(350)
+    expect(c.state().autoStop).toBe(false)
+    writeFileSync(file, "{")
+    await sleep(350)
+    expect(c.state().autoStop).toBe(false)
+    writeFileSync(file, JSON.stringify({ strata: { ...old, metadata: { ...old.metadata, autoStop: "true" } },
+      "strata#foreign": { ...old, metadata: { ...old.metadata, baseURL: "http://127.0.0.1:1/v1", autoStop: true } },
+      "strata#invalid-url": { ...old, metadata: { ...old.metadata, baseURL: {}, autoStop: true } } }))
+    await sleep(350)
+    expect(c.state().autoStop).toBe(false)
+    c.gateway.kill()
+    await sleep(400)
+    expect((await c.events()).pid).toBe(c.state().listener.pid)
+    expect(alive(c.state().manager.pid)).toBe(true)
+  } finally { writeFileSync(file, saved) }
+}, 15000)
+
+lifecycleTest("A15: a gateway HTTP identity mismatch starts no Strata and preserves the unrelated listener", async () => {
+  const c = await setup({ gatewayName: "another-service" })
+  await expect(c.request()).rejects.toThrow("identify as Magpie")
+  expect(alive(c.gateway.pid)).toBe(true)
+  expect(existsSync(join(c.root, "starts.jsonl"))).toBe(false)
+}, 15000)
+
+lifecycleTest("A18: a stopped state with its mutex still held is waited out before a request starts a new manager", async () => {
+  const c = await setup()
+  const dir = join(c.directory, "strata", "127.0.0.1-" + new URL(c.base).port)
+  mkdirSync(dir, { recursive: true })
+  const holder = spawn(join(dirname(python), "pythonw.exe"), ["-B", join(import.meta.dir, "mutex-fixture.py"), dir,
+    new URL(c.base).port], { windowsHide: true, stdio: "ignore" })
+  try {
+    await until(() => c.state()?.status === "stopped")
+    expect((await (await c.request()).json()).answer).toBe("fixture answer")
+    expect(c.state().manager.pid).not.toBe(holder.pid)
+  } finally { holder.kill() }
 }, 15000)

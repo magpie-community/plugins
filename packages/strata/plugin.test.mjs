@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { StrataPlugin } from "./index.mjs"
+import { authHost } from "./auth-fixture.mjs"
 
 const dirs = []
 const temporaryRoot = resolve(process.env.TEMP ?? tmpdir())
@@ -15,16 +16,7 @@ afterEach(() => {
 function host() {
   const directory = mkdtempSync(join(temporaryRoot, "strata-hooks-"))
   dirs.push(directory)
-  let auth
-  const client = {
-    auth: { set: async ({ body }) => {
-      auth = body
-      writeFileSync(join(directory, "plugin-auth.json"), JSON.stringify({ strata: body }))
-      return { data: true }
-    } },
-    app: { log: async () => {} },
-  }
-  return { directory, client, getAuth: async () => auth }
+  return { directory, ...authHost(directory) }
 }
 test("A01/A05: configuration saves the target and defaults to stopping, without starting a service", async () => {
   const h = host()
@@ -34,7 +26,12 @@ test("A01/A05: configuration saves the target and defaults to stopping, without 
   expect(Object.keys(empty.provider.strata.models)).toEqual(["configure-strata"])
   const inputs = { root: process.cwd(), python: process.execPath, config: import.meta.filename,
     model: "my-local-model", baseURL: "http://127.0.0.1:49199/v1", environment: "{}" }
-  expect(await hooks.auth.methods[0].authorize(inputs)).toMatchObject({ type: "success" })
+  expect(hooks.auth.methods[0].type).toBe("oauth")
+  const authorization = await hooks.auth.methods[0].authorize(inputs)
+  expect(authorization).toMatchObject({ url: "", method: "auto" })
+  expect((await authorization.callback()).type).toBe("success")
+  expect(existsSync(join(h.directory, "plugin-auth.json"))).toBe(false)
+  await h.login(hooks, inputs)
   expect((await h.getAuth()).metadata.autoStop).toBe(true)
   const cfg = {}
   await hooks.config(cfg)
@@ -59,7 +56,7 @@ test("A04/A16/A19: a healthy unloaded service receives the original request and 
   } })
   try {
     const hooks = await StrataPlugin(h)
-    await hooks.auth.methods[0].authorize({ root: process.cwd(), python: process.execPath,
+    await h.login(hooks, { root: process.cwd(), python: process.execPath,
       config: import.meta.filename, model: "local", baseURL: s.url + "v1" })
     const loader = await hooks.auth.loader(h.getAuth)
     const response = await loader.fetch(s.url + "v1/chat/completions?test=1", {
@@ -80,7 +77,7 @@ test("A15/A16: a foreign listener and an already cancelled request cause no gene
   } })
   try {
     const hooks = await StrataPlugin(h)
-    await hooks.auth.methods[0].authorize({ root: process.cwd(), python: process.execPath,
+    await h.login(hooks, { root: process.cwd(), python: process.execPath,
       config: import.meta.filename, model: "local", baseURL: s.url + "v1" })
     const loader = await hooks.auth.loader(h.getAuth)
     await expect(loader.fetch(s.url + "v1/chat/completions", { method: "POST", body: "{}" })).rejects.toThrow("healthy Strata")
@@ -97,7 +94,7 @@ test("A01: reusing the config object after saving removes the unconfigured place
   const hooks = await StrataPlugin(h)
   const cfg = {}
   await hooks.config(cfg)
-  await hooks.auth.methods[0].authorize({ root: process.cwd(), python: process.execPath,
+  await h.login(hooks, { root: process.cwd(), python: process.execPath,
     config: import.meta.filename, model: "chosen", baseURL: "http://127.0.0.1:49198/v1" })
   await hooks.config(cfg)
   expect(Object.keys(cfg.provider.strata.models)).toEqual(["chosen"])
@@ -107,7 +104,7 @@ test("A01: unusable discovered model entries preserve the configured target and 
   const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { return Response.json({ data: [{ id: 3 }] }) } })
   try {
     const hooks = await StrataPlugin(h)
-    await hooks.auth.methods[0].authorize({ root: process.cwd(), python: process.execPath,
+    await h.login(hooks, { root: process.cwd(), python: process.execPath,
       config: import.meta.filename, model: "chosen", baseURL: s.url + "v1" })
     const cached = { id: "chosen", name: "known", limit: { context: 32768, output: 1024 } }
     const models = await hooks.provider.models({ id: "strata", models: { chosen: cached } }, { auth: await h.getAuth() })
@@ -134,7 +131,7 @@ test("A16: cancelling after response headers cancels the original stream and doe
   } })
   try {
     const hooks = await StrataPlugin(h)
-    await hooks.auth.methods[0].authorize({ root: process.cwd(), python: process.execPath,
+    await h.login(hooks, { root: process.cwd(), python: process.execPath,
       config: import.meta.filename, model: "local", baseURL: s.url + "v1" })
     const loader = await hooks.auth.loader(h.getAuth)
     const controller = new AbortController()
@@ -148,4 +145,50 @@ test("A16: cancelling after response headers cancels the original stream and doe
     await expect(pending).rejects.toThrow()
     expect(posts).toBe(1)
   } finally { clearTimeout(timer); s.stop(true) }
+})
+
+
+test("A05: host saving preserves a stable target identity across changed keys, and a failed save has no effect", async () => {
+  const h = host()
+  const hooks = await StrataPlugin(h)
+  const inputs = { root: process.cwd(), python: process.execPath, config: import.meta.filename,
+    model: "local", baseURL: "http://localhost:49197/v1" }
+  await h.login(hooks, { ...inputs, apiKey: "first-key" })
+  await h.login(hooks, { ...inputs, baseURL: "http://127.0.0.1:49197/v1", apiKey: "changed-key", autoStop: "no" })
+  const file = join(h.directory, "plugin-auth.json")
+  const saved = readFileSync(file, "utf8")
+  expect(Object.keys(JSON.parse(saved))).toEqual(["strata"])
+  expect(JSON.parse(saved).strata).toMatchObject({ type: "api", key: "changed-key",
+    metadata: { email: "strata:http://127.0.0.1:49197/v1", autoStop: false } })
+  await expect(h.login(hooks, { ...inputs, autoStop: "yes" }, true)).rejects.toThrow("save denied")
+  await hooks.auth.loader(async () => ({ ...await h.getAuth(), metadata: { ...inputs, autoStop: true } }))
+  expect(readFileSync(file, "utf8")).toBe(saved)
+  expect(existsSync(join(h.directory, "strata"))).toBe(false)
+})
+
+
+test("A04: stopped/error ownership records cannot block or take over a later healthy manual service, even without pythonw", async () => {
+  const h = host()
+  let requests = 0
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    if (new URL(request.url).pathname === "/health") return Response.json({ service: "strata", status: "ok" })
+    requests++
+    return Response.json({ answer: "manual" })
+  } })
+  try {
+    const hooks = await StrataPlugin(h)
+    await h.login(hooks, { root: process.cwd(), python: process.execPath, config: import.meta.filename,
+      model: "local", baseURL: server.url + "v1" })
+    const loader = await hooks.auth.loader(h.getAuth)
+    const dir = join(h.directory, "strata", "127.0.0.1-" + server.port)
+    mkdirSync(dir, { recursive: true })
+    for (const status of ["stopped", "error"]) {
+      const saved = JSON.stringify({ status, service: { pid: 1, created: "stale", image: "stale" } })
+      writeFileSync(join(dir, "state.json"), saved)
+      expect((await (await loader.fetch(server.url + "v1/chat/completions", { method: "POST", body: "{}" })).json()).answer).toBe("manual")
+      expect(readFileSync(join(dir, "state.json"), "utf8")).toBe(saved)
+      expect(existsSync(join(dir, "request.json"))).toBe(false)
+    }
+    expect(requests).toBe(2)
+  } finally { server.stop(true) }
 })

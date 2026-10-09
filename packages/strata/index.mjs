@@ -76,9 +76,6 @@ function gateway(directory) {
   }
   return read(join(directory, "settings.json"))?.port || 3425
 }
-function policy(directory, cfg) {
-  atomic(join(runtime(directory, cfg), "policy.json"), { autoStop: cfg.autoStop, gatewayPort: gateway(directory), revision: randomUUID() })
-}
 async function health(cfg) {
   let response
   try { response = await fetch(new URL("/health", cfg.baseURL), { signal: AbortSignal.timeout(2000) }) }
@@ -91,31 +88,43 @@ async function health(cfg) {
   return true
 }
 async function start(directory, cfg) {
-  if (await health(cfg)) return
-  if (process.platform !== "win32") throw new Error("Managed Strata startup currently requires Windows")
-  const pythonw = join(dirname(cfg.python), "pythonw.exe")
-  if (!existsSync(pythonw)) throw new Error(`Managed Strata startup requires the windowless Python at ${pythonw}`)
   const dir = runtime(directory, cfg)
+  const ready = await health(cfg)
+  const prior = read(join(dir, "state.json"))
+  // Terminal records confer no ownership over a later user-started healthy service.
+  if (ready && (!prior?.service || ["stopped", "error"].includes(prior.status))) return
+  if (process.platform !== "win32") throw new Error("Managed Strata startup currently requires Windows")
   mkdirSync(dir, { recursive: true })
-  const script = join(dir, "manager.py")
-  // Running resources live outside the installed package so uninstall cannot remove them.
-  const temporary = script + "." + randomUUID() + ".tmp"
-  copyFileSync(join(import.meta.dir, "manager.py"), temporary)
-  replace(temporary, script)
-  const log = openSync(join(dir, "manager.log"), "a", 0o600)
+  const gatewayPort = gateway(directory)
+  const launch = { root: cfg.root, python: cfg.python, config: cfg.config, baseURL: cfg.baseURL,
+    environment: cfg.environment, gatewayPort, revision: randomUUID() }
+  // This request boundary carries launch/connection data, never the exit policy.
   const attempt = Date.now()
-  // A detached console Python can open a terminal despite windowsHide.
-  const child = spawn(pythonw, ["-B", script, dir], {
-    detached: true, windowsHide: true, stdio: ["pipe", "ignore", log],
-    env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
-  })
-  closeSync(log)
+  atomic(join(dir, "request.json"), launch)
   let failed, exitCode
-  child.on("exit", (code) => { exitCode = code })
-  child.on("error", (e) => { failed = e })
-  child.stdin.on("error", () => {})
-  child.stdin.end(JSON.stringify({ ...cfg, gatewayPort: gateway(directory) }))
-  child.unref()
+  let managerAlive = false
+  if (prior?.manager) { try { process.kill(prior.manager.pid, 0); managerAlive = true } catch {} }
+  if (!ready || !managerAlive) {
+    const pythonw = join(dirname(cfg.python), "pythonw.exe")
+    if (!existsSync(pythonw)) throw new Error(`Managed Strata startup requires the windowless Python at ${pythonw}`)
+    const script = join(dir, "manager.py")
+    // Running resources live outside the installed package so uninstall cannot remove them.
+    const temporary = script + "." + randomUUID() + ".tmp"
+    copyFileSync(join(import.meta.dir, "manager.py"), temporary)
+    replace(temporary, script)
+    const log = openSync(join(dir, "manager.log"), "a", 0o600)
+    // A detached console Python can open a terminal despite windowsHide.
+    const child = spawn(pythonw, ["-B", script, dir], {
+      detached: true, windowsHide: true, stdio: ["pipe", "ignore", log],
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+    })
+    closeSync(log)
+    child.on("exit", (code) => { exitCode = code })
+    child.on("error", (e) => { failed = e })
+    child.stdin.on("error", () => {})
+    child.stdin.end(JSON.stringify(launch))
+    child.unref()
+  }
   const end = Date.now() + START_MS
   while (Date.now() < end) {
     if (failed) throw new Error("Cannot launch Strata manager: " + failed.message)
@@ -124,7 +133,10 @@ async function start(directory, cfg) {
       throw new Error("Strata startup: " + state.error)
     if (exitCode && exitCode !== 0)
       throw new Error("Strata manager exited: " + (state?.error ?? "check " + join(dir, "manager.log")))
-    if (await health(cfg)) return
+    const accepted = state?.requestRevision === read(join(dir, "request.json"))?.revision
+    if (accepted && state?.status === "uncertain" && state.requestPort === gatewayPort)
+      throw new Error("Strata gateway: " + state.error)
+    if (accepted && state?.status === "ready" && state.gatewayPort === gatewayPort && await health(cfg)) return
     await sleep(100)
   }
   throw new Error(`Strata did not become ready within ${START_MS / 1000}s; see ${join(dir, "manager.log")}`)
@@ -182,7 +194,7 @@ export async function StrataPlugin({ client, directory = process.cwd() }) {
     auth: {
       provider: ID,
       methods: [{
-        type: "api", label: "Configure local Strata",
+        type: "oauth", label: "Configure local Strata",
         prompts: [
           { type: "text", key: "root", message: "Existing Strata installation directory" },
           { type: "text", key: "python", message: "Existing Strata Python executable (absolute path)" },
@@ -196,17 +208,17 @@ export async function StrataPlugin({ client, directory = process.cwd() }) {
         ],
         async authorize(inputs = {}) {
           const cfg = settings(inputs)
-          const auth = { type: "api", key: inputs.apiKey || "strata-local", metadata: cfg }
-          await client.auth.set({ path: { id: ID }, body: auth })
-          policy(directory, cfg)
-          return { type: "success", key: auth.key, metadata: cfg }
+          // The host preserves metadata.email when saving a key and uses it to deduplicate accounts.
+          cfg.email = ID + ":" + cfg.baseURL
+          return { url: "", method: "auto", callback: async () => ({
+            type: "success", key: inputs.apiKey || "strata-local", metadata: cfg,
+          }) }
         },
       }],
       async loader(getAuth) {
         const auth = await getAuth()
         if (!auth?.metadata) return {}
         const cfg = settings(auth.metadata)
-        policy(directory, cfg)
         return {
           baseURL: cfg.baseURL, apiKey: auth.key,
           async fetch(input, init) {

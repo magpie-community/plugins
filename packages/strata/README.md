@@ -29,10 +29,17 @@ Choose **Configure local Strata**. Its normal provider prompts ask for:
 | API key | The existing Strata API key, or blank when none is required |
 | Stop on exit | **Yes** by default; **No** preserves the managed instance and its manager |
 
-The configuration and key are kept by magpie's `client.auth.set` in
-`plugin-auth.json`. There is no separate editable settings file. Run the
+The configuration uses magpie's existing automatic OAuth callback flow
+without a browser URL. The host saves its successful key/metadata result
+in `plugin-auth.json`. There is no separate editable settings file. Run the
 same configuration flow on the existing account to change the exit option;
 a successful save updates its running manager without another generation.
+The manager reads only saved records matching its local target, requires a
+boolean exit option, and keeps its last confirmed value through missing or
+unreadable auth, disable and uninstall. Loaders never write an exit policy.
+A stable target identity in metadata keeps same-version reconfiguration and
+key changes on one account. Unreleased WIP accounts without that identity
+should be backed up and reconfigured in the isolated test profile.
 Environment values are passed directly to the process, never through a shell.
 Copy the needed environment values from your existing launch setup, including
 its cache locations. No machine-specific launch path is shipped.
@@ -69,7 +76,9 @@ another request; cancelling after forwarding keeps native fetch behavior.
 
 The Python standard-library helper only manages lifecycle. An OS named
 mutex coordinates startup across plugin hosts. The manager identifies the
-actual IPv4 gateway listener using
+actual gateway via `GET /` reporting `name: "magpie"`, with the same
+full Windows listener identity before and after that HTTP check. It finds
+the IPv4 gateway listener using
 [GetExtendedTcpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable)
 and records process creation time and executable identity using
 [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes).
@@ -77,8 +86,8 @@ It does not match `magpie.exe` names or treat a Bun host exit as a gateway exit.
 The gateway endpoint follows `MAGPIE_ADDR`, or magpie's existing
 `settings.json` port (default 3425).
 
-The manager, minimal ownership record, last successfully saved exit-option
-snapshot and error log live under
+The manager, minimal ownership record (including the last confirmed exit
+option), request-boundary launch data and error log live under
 `<magpie data directory>/strata/127.0.0.1-<port>/`.
 The running helper is copied there before launch, so removing the installed
 plugin cannot remove the resources needed to manage an existing instance.
@@ -94,7 +103,9 @@ Closing a window to the tray, plugin-host reload, disable and uninstall
 preserve the service. With **Yes**, actual gateway-process exit stops the
 managed tree immediately, even during generation, then the manager exits.
 With **No**, the instance and manager stay; a later host/session uses the
-same instance and synchronizes the newest saved option. Process identity
+same instance, reconnects the manager to its actual gateway on the next
+request and synchronizes the newest saved option. Gateway handles change
+only after the new listener is confirmed. Process identity
 uncertainty preserves the unconfirmed process and is recorded in the
 manager state/log. Removing the plugin is not a manual stop operation.
 
@@ -117,14 +128,11 @@ hidden, local substitute gateways and servers on ephemeral ports. They use
 the existing Python and a temporary copy of the installed `winjob.py`;
 they never start or stop the real Strata service.
 
-In PowerShell, set paths to an existing test environment and a temporary
-directory on your intended disk, then run:
+On Windows, run the lifecycle suite through an external off-screen desktop
+and Job cleanup wrapper. Its environment uses an existing test installation
+and a temporary directory on your intended disk. The wrapper runs:
 
 ```powershell
-$env:TEMP = '<existing temporary directory>'
-$env:TMP = $env:TEMP
-$env:STRATA_TEST_PYTHON = '<existing Strata Python executable>'
-$env:STRATA_TEST_ROOT = '<existing Strata installation directory>'
 bun test packages/strata
 bun scripts/check.mjs strata
 ```
@@ -135,7 +143,10 @@ Coverage includes A01-A05 and A07-A19 at these substitute boundaries:
 cold and concurrent startup across independent hosts, no console/browser
 launch, untouched SSE and errors, cancellation, saved options, retained
 ownership across sessions, host/package removal, owned child cleanup,
-startup retry and request-triggered recovery. A06's tray behavior is
+startup retry, request-triggered recovery, stopped/mutex races, authentic
+host callback saving, changed-key identity, stale loaders and unreadable or
+invalid saved policies. The fake gateway has the real name/version shape
+and does not invent a PID field. A06's tray behavior is
 represented by keeping the gateway alive while hosts come and go.
 
 These tests do **not** certify the actual magpie GUI/login/reconfiguration

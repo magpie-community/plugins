@@ -13,6 +13,7 @@ import sys
 import time
 from types import SimpleNamespace
 import urllib.request
+from urllib.parse import urlsplit
 import uuid
 
 START_SECONDS = 120
@@ -31,6 +32,7 @@ wait = api(k32, "WaitForSingleObject", [W.HANDLE, W.DWORD], W.DWORD)
 times = api(k32, "GetProcessTimes", [W.HANDLE] + [ctypes.POINTER(W.FILETIME)] * 4, W.BOOL)
 image = api(k32, "QueryFullProcessImageNameW", [W.HANDLE, W.DWORD, W.LPWSTR, ctypes.POINTER(W.DWORD)], W.BOOL)
 mutex = api(k32, "CreateMutexW", [W.LPVOID, W.BOOL, W.LPCWSTR], W.HANDLE)
+release_mutex = api(k32, "ReleaseMutex", [W.HANDLE], W.BOOL)
 tcp_table = api(iphlp, "GetExtendedTcpTable", [W.LPVOID, ctypes.POINTER(W.DWORD), W.BOOL, W.ULONG, ctypes.c_int, W.ULONG], W.DWORD)
 query_job = api(k32, "QueryInformationJobObject", [W.HANDLE, ctypes.c_int, W.LPVOID, W.DWORD, W.LPVOID], W.BOOL)
 end_job = api(k32, "TerminateJobObject", [W.HANDLE, W.UINT], W.BOOL)
@@ -143,15 +145,43 @@ def save(file, body):
                 raise
             time.sleep(0.01)
 
+def local_json(port, path):
+    # Local checks must not be routed through a system HTTP proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open("http://127.0.0.1:" + str(port) + path, timeout=1) as response:
+        return json.load(response)
+
 def healthy(port):
     try:
-        # Local readiness must not be routed through a system HTTP proxy.
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open("http://127.0.0.1:" + str(port) + "/health", timeout=1) as response:
-            body = json.load(response)
-        return body.get("service") == "strata" and body.get("status") == "ok"
+        body = local_json(port, "/health")
+        return isinstance(body, dict) and body.get("service") == "strata" and body.get("status") == "ok"
     except (OSError, ValueError):
         return False
+
+def saved_auto_stop(file, target):
+    try:
+        all_auth = read(file)
+        if not isinstance(all_auth, dict):
+            return None
+        values = []
+        for key, auth in all_auth.items():
+            if key != "strata" and not key.startswith("strata#"):
+                continue
+            if not isinstance(auth, dict) or auth.get("type") != "api" or not isinstance(auth.get("key"), str):
+                continue
+            metadata = auth.get("metadata")
+            if (not isinstance(metadata, dict) or type(metadata.get("autoStop")) is not bool
+                    or not isinstance(metadata.get("baseURL"), str)):
+                continue
+            url = urlsplit(metadata.get("baseURL", ""))
+            if (url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost")
+                    and not url.username and not url.password and not url.query and not url.fragment
+                    and url.path.rstrip("/") == "/v1" and (url.port or 80) == target):
+                values.append(metadata["autoStop"])
+        # Ambiguous old records cannot replace the last confirmed policy.
+        return values[0] if values and all(v == values[0] for v in values) else None
+    except (OSError, ValueError, TypeError):
+        return None
 
 def winjob(root):
     spec = importlib.util.spec_from_file_location("strata_winjob", str(Path(root) / "serve" / "winjob.py"))
@@ -182,12 +212,14 @@ def service():
     runpy.run_path(sys.argv[0], run_name="__main__")
 
 def manage(directory, cfg, port):
-    state_file, policy_file = directory / "state.json", directory / "policy.json"
+    state_file, request_file = directory / "state.json", directory / "request.json"
     previous = read(state_file)
     owner = identity(os.getpid())
     state = {"manager": owner, "console": bool(console_window()), "status": "starting", "updated": time.time()}
     module, proc, handle, gateway_handle = None, None, None, None
     root_record, listening, gateway_port = None, None, None
+    auto_stop = previous.get("autoStop") if previous and type(previous.get("autoStop")) is bool else None
+    revision, gateway_uncertain = None, False
 
     def report(status, reason=None):
         state.update(status=status, updated=time.time())
@@ -197,48 +229,69 @@ def manage(directory, cfg, port):
             state.pop("error", None)
         save(state_file, state)
 
-    def attach_gateway():
+    def attach_gateway(request):
         nonlocal gateway_handle, gateway_port
-        if gateway_handle and gateway_port == policy["gatewayPort"] and wait(gateway_handle, 0) == 258:
-            return
-        current = listener(policy["gatewayPort"])
-        if current is None and gateway_handle and gateway_port == policy["gatewayPort"]:
-            return
+        target = request["gatewayPort"]
+        if type(target) is not int or not 1 <= target <= 65535:
+            raise RuntimeError("Invalid local Magpie gateway port")
+        current = listener(target)
         if current is None:
             raise RuntimeError("Cannot confirm the actual Magpie gateway listener; preserving Strata")
-        handle = open_process(0x1000 | 0x100000, False, current["pid"])
-        if not handle:
+        body = local_json(target, "/")
+        if not isinstance(body, dict) or body.get("name") != "magpie":
+            raise RuntimeError("The gateway listener does not identify as Magpie; preserving Strata")
+        if listener(target) != current:
+            raise RuntimeError("Magpie gateway listener changed during HTTP confirmation")
+        held = open_process(0x1000 | 0x100000, False, current["pid"])
+        if not held:
             raise error()
-        if identity(current["pid"], handle) != current:
-            close(handle)
+        if identity(current["pid"], held) != current:
+            close(held)
             raise RuntimeError("Magpie gateway identity changed during confirmation")
         if gateway_handle:
             close(gateway_handle)
-        gateway_handle = handle
-        gateway_port = policy["gatewayPort"]
-        state["gateway"] = current
-
-    policy = read(policy_file) or {"autoStop": True, "gatewayPort": cfg["gatewayPort"], "revision": ""}
-    revision = policy["revision"]
+        gateway_handle, gateway_port = held, target
+        state.update(gateway=current, gatewayPort=target)
 
     def sync_policy():
-        nonlocal policy, revision, gateway_handle
-        latest = read(policy_file)
-        if not latest or latest["revision"] == revision:
-            return
-        policy, revision = latest, latest["revision"]
+        nonlocal auto_stop, revision, gateway_uncertain
+        saved = saved_auto_stop(directory.parent.parent / "plugin-auth.json", port)
+        if saved is not None and saved != auto_stop:
+            auto_stop = saved
+            state["autoStop"] = saved
+            report(state["status"], state.get("error"))
         try:
-            attach_gateway()
+            request = read(request_file)
+        except (OSError, ValueError):
+            return
+        if not isinstance(request, dict) or request.get("revision") == revision:
+            return
+        revision = request.get("revision")
+        state.update(requestPort=request.get("gatewayPort"), requestRevision=revision)
+        try:
+            attach_gateway(request)
+            gateway_uncertain = False
             report("starting" if state["status"] == "starting" else "ready")
-        except (OSError, RuntimeError) as exc:
-            if gateway_handle:
-                close(gateway_handle)
-                gateway_handle = None
+        except (OSError, ValueError, RuntimeError, KeyError) as exc:
+            gateway_uncertain = True
             report("uncertain", str(exc))
             print("Strata manager: " + str(exc), file=sys.stderr, flush=True)
 
+    def gateway_exited():
+        return not gateway_uncertain and gateway_handle and wait(gateway_handle, 0) == 0 and auto_stop is True
+
     try:
-        attach_gateway()
+        saved = saved_auto_stop(directory.parent.parent / "plugin-auth.json", port)
+        if saved is not None:
+            auto_stop = saved
+        if auto_stop is None:
+            raise RuntimeError("Cannot confirm a saved Strata exit option; configure the provider first")
+        state["autoStop"] = auto_stop
+        # Only an actual request supplies or changes the gateway to observe.
+        request = read(request_file) or cfg
+        attach_gateway(request)
+        revision = request.get("revision")
+        state.update(requestPort=request["gatewayPort"], requestRevision=revision)
         existing = listener(port)
         if previous and previous.get("service") and confirmed(previous["service"]):
             root_record = previous["service"]
@@ -279,7 +332,7 @@ def manage(directory, cfg, port):
             end = time.monotonic() + START_SECONDS
             while time.monotonic() < end:
                 sync_policy()
-                if gateway_handle and wait(gateway_handle, 0) == 0 and policy["autoStop"]:
+                if gateway_exited():
                     raise RuntimeError("The Magpie gateway exited during Strata startup")
                 if not confirmed(root_record):
                     raise RuntimeError("Strata exited before readiness; check the manager log and existing configuration")
@@ -292,14 +345,14 @@ def manage(directory, cfg, port):
             else:
                 raise RuntimeError("Strata health was not ready within 120 seconds")
         state.update(service=root_record, listener=listener(port))
-        report("ready" if gateway_handle else "uncertain", state.get("error") if not gateway_handle else None)
+        report("uncertain" if gateway_uncertain else "ready", state.get("error") if gateway_uncertain else None)
         while True:
             sync_policy()
             if not confirmed(root_record):
                 stop(module._job)
                 report("stopped")
                 return
-            if gateway_handle and wait(gateway_handle, 0) == 0 and policy["autoStop"]:
+            if gateway_exited():
                 if state.get("listener") and not confirmed(state["listener"]):
                     # An already-ended listener cannot be confused with a new PID.
                     state["listener"] = None
@@ -330,19 +383,25 @@ def main():
     directory = Path(sys.argv[1])
     cfg = json.loads(sys.stdin.read())
     port = int(__import__("urllib.parse", fromlist=["urlparse"]).urlparse(cfg["baseURL"]).port or 80)
-    lock = mutex(None, True, "Local\\MagpieStrata-127.0.0.1-" + str(port))
+    lock = mutex(None, False, "Local\\MagpieStrata-127.0.0.1-" + str(port))
     if not lock:
         raise error()
-    already = ctypes.get_last_error() == 183
+    owned = False
     try:
-        if already:
+        result = wait(lock, 0)
+        if result == 258:
             prior = read(directory / "state.json")
-            if not prior or prior.get("status") != "error":
+            if prior and prior.get("status") not in ("error", "stopped"):
                 return 0
-            if wait(lock, int(STOP_SECONDS * 1000)) not in (0, 0x80):
-                return 1
+            # A terminal state can be published just before its owner releases the mutex.
+            result = wait(lock, int((STOP_SECONDS + 2) * 1000))
+        if result not in (0, 0x80):
+            return 1
+        owned = True
         return manage(directory, cfg, port) or 0
     finally:
+        if owned:
+            release_mutex(lock)
         close(lock)
 
 if __name__ == "__main__":
