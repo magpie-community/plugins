@@ -20,7 +20,10 @@ OpenAI-style chat completions on it, in OpenCode and in magpie.
     to cache decryption safely across file replacements and clock changes.
   - **macOS:** the default Keychain's generic password with service
     `dev.warp.Warp-Stable` and account `User`, read using `/usr/bin/security`.
-    macOS may ask you to allow access to this item or unlock the keychain.
+    macOS may ask you to allow access to this item or unlock the keychain;
+    the reader waits up to two minutes for confirmation. Sign in from the
+    Mac desktop session: SSH sessions can be denied access even when the
+    desktop can read the item. Headless sessions can use a refresh token.
   - **Linux:** Secret Service attributes `service=dev.warp.Warp`, `key=User`,
     read using `secret-tool` (usually provided by `libsecret-tools`). When
     unavailable, the plugin reads Warp's AES-256-GCM disk fallback at
@@ -86,6 +89,14 @@ create a new anonymous account.
   partial output never hides an error. Usage reports `total_input_tokens`
   when present; overlapping deprecated per-model totals are not added or
   misreported as input tokens. Output comes from per-request `TokenUsage.output`.
+  Public accounts may receive only `context_window_usage`, without exact token
+  counts. In that case the plugin derives an approximate input count from that
+  fraction and the model's advertised context window, for client context meters.
+  The response preserves the upstream fraction in `usage.context_window_usage`
+  and marks the derived count in `usage.prompt_tokens_details` with
+  `estimated: true` and `source: "warp_context_window_usage"`. Exact input counts
+  always take precedence. Derived counts are not billing measurements; output
+  remains zero when Warp omits it. A short conversation can still round to 0%.
 - OS headers and request context follow the current platform and shell.
   Client version uses `MAGPIE_WARP_CLIENT_VERSION` when set, then Warp's
   own `WARP_CLIENT_VERSION` environment variable (exported in Warp shells).

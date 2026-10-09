@@ -213,7 +213,7 @@ function platformInfo(platform = process.platform, env = process.env) {
 
 // Only fixed executables and argument arrays are used; stderr may contain
 // credentials, so errors deliberately never include subprocess output.
-function runCommand(command, args, input) {
+function runCommand(command, args, input, timeoutMs = 20_000) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { windowsHide: true, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] })
     const chunks = []
@@ -228,7 +228,7 @@ function runCommand(command, args, input) {
     const timer = setTimeout(() => {
       child.kill()
       finish(new Error("Warp's credential reader timed out"))
-    }, 20_000)
+    }, timeoutMs)
     child.stdout.on("data", (d) => {
       bytes += d.length
       if (bytes > 1024 * 1024) {
@@ -263,7 +263,8 @@ function createUserReader({ platform = process.platform, env = process.env, home
   }
   return async function readUser(force = false) {
     if (platform === "darwin") {
-      const out = await run("/usr/bin/security", ["find-generic-password", "-s", "dev.warp.Warp-Stable", "-a", "User", "-w"])
+      // The first read can require a password and a native access prompt.
+      const out = await run("/usr/bin/security", ["find-generic-password", "-s", "dev.warp.Warp-Stable", "-a", "User", "-w"], undefined, 120_000)
       if (out.code === 44) return null // errSecItemNotFound
       if (out.code !== 0) throw new Error("Unable to read Warp's macOS Keychain item; unlock the keychain or use a refresh token")
       return parse(out.stdout)
@@ -620,7 +621,7 @@ async function* warpEvents(body) {
         }
       } else if (f.num === 3 && f.data) {
         const out = { reason: "invalid", message: "", usage: null }
-        let latestInput, input = 0, output = 0, hasUsage = false
+        let latestInput, contextWindowUsage, input = 0, output = 0, hasUsage = false
         for (const g of fields(f.data)) {
           if (g.num === 1) out.reason = "other"
           else if (g.num === 2) out.reason = "done"
@@ -644,11 +645,15 @@ async function* warpEvents(body) {
           } else if (g.num === 11 && g.data) {
             // Deprecated per-model totals include output and can overlap.
             // Never add them to the latest call's input count (field 10).
-            const total = byNum(g.data, 10)[0]
+            const metadata = fields(g.data)
+            const fraction = metadata.find((f) => f.num === 1 && f.f32)
+            if (fraction && Number.isFinite(f32(fraction)) && f32(fraction) >= 0) contextWindowUsage = f32(fraction)
+            const total = metadata.find((f) => f.num === 10)
             if (total?.v !== undefined) latestInput = Number(total.v)
           }
         }
         if (latestInput !== undefined || hasUsage) out.usage = { input: latestInput ?? input, output }
+        if (contextWindowUsage !== undefined) out.usage = { ...out.usage, contextWindowUsage }
         yield { finished: out }
       }
     }
@@ -922,11 +927,28 @@ function endFinish(end) {
 }
 const END_STATUS = { quota: 429, context: 400, unavailable: 503, internal: 502, invalid_key: 401, subscription: 429 }
 
-const usageOf = (u) => {
+const usageOf = (u, contextLimit) => {
   if (!u) return undefined
-  const input = Number(u.input ?? 0)
   const output = Number(u.output ?? 0)
-  return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output }
+  let input = u.input
+  let estimated = false
+  // Public Warp clients can receive a context fraction without token counts.
+  // Convert it using the advertised model window so clients can track context;
+  // this is an estimate of input, never a billing or exact tokenizer count.
+  if (input === undefined && u.contextWindowUsage !== undefined && contextLimit > 0) {
+    const context = Math.round(u.contextWindowUsage * contextLimit)
+    if (Number.isSafeInteger(context)) {
+      input = Math.max(0, context - output)
+      estimated = true
+    }
+  }
+  if (input === undefined) return undefined
+  input = Number(input)
+  return {
+    prompt_tokens: input, completion_tokens: output, total_tokens: input + output,
+    ...(u.contextWindowUsage !== undefined ? { context_window_usage: u.contextWindowUsage } : {}),
+    ...(estimated ? { prompt_tokens_details: { estimated: true, source: "warp_context_window_usage", context_window: contextLimit } } : {}),
+  }
 }
 
 const errorBody = (status, message) => ({ error: {
@@ -1033,11 +1055,13 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
             // a model asked of a family Warp splits by effort, when the
             // account has that split, is asked of its variant
             let model = typeof chat.model === "string" && chat.model ? chat.model : "auto"
+            let contextLimit = SNAPSHOT[model]?.limit?.context
             try {
               const list = await accountModels(token)
               if (!list[model] && chat.reasoning_effort && list[`${model}-${chat.reasoning_effort}`]) {
                 model = `${model}-${chat.reasoning_effort}`
               }
+              contextLimit = list[model]?.limit?.context ?? contextLimit
             } catch {}
 
             let body
@@ -1088,7 +1112,7 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
                     msg.tool_calls.push({ id: e.tool.id, type: "function", function: { name: e.tool.name, arguments: JSON.stringify(e.tool.args ?? {}) } })
                   } else if (e.end) {
                     end = e.end
-                    usage = usageOf(e.end.usage)
+                    usage = usageOf(e.end.usage, contextLimit)
                   }
                 }
               } catch (e) { return failure(e.status || 502, e.message) }
@@ -1168,7 +1192,7 @@ async function createPlugin({ client }, { readUser = warpUser, post = h2post } =
                     await cleanup()
                     const finish = endFinish(e.end)
                     if (finish !== null) {
-                      const usage = usageOf(e.end.usage)
+                      const usage = usageOf(e.end.usage, contextLimit)
                       return void ctl.enqueue(chunk({}, finish, usage ? { usage } : {}))
                     }
                     ctl.enqueue(enc.encode(`data: ${JSON.stringify(errorBody(END_STATUS[e.end.reason] ?? 502, endMessage(e.end)))}\n\n`))
