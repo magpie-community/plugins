@@ -11,6 +11,10 @@
 //   CURSOR_API_KEY.
 //
 // Requests go to AgentService/Run, a Connect stream both ways over HTTP/2.
+// Where HTTP/2 can't open one (a proxy or network that blocks it), the Run
+// goes as Cursor's clients run it without HTTP/2: its replies down one
+// server stream, AgentService/RunSSE, and each client message up as a call
+// of its own, BidiService/BidiAppend, both over HTTP/1.1 on api2.
 // Cursor keeps a conversation on its client: each message of the prompt is
 // an AI SDK message in JSON, a blob named by its sha256, which the server
 // asks the client for as it reads them. So each request goes whole, as such
@@ -27,6 +31,7 @@
 import http2 from "node:http2"
 import { STATUS_CODES } from "node:http"
 import { gunzipSync } from "node:zlib"
+import { Duplex } from "node:stream"
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { execFile } from "node:child_process"
 import { readFile, stat, readdir, realpath } from "node:fs/promises"
@@ -1509,18 +1514,36 @@ async function agentURL(tok, fresh) {
 }
 
 // open starts a Run at base: the session, the stream, and the response's
-// status, or an error the request never got past.
-function open(base, headers, signal) {
+// status, or an error the request never got past. Once HTTP/2 has failed
+// to open one here, Runs go over HTTP/1.1 (openH1) until the plugin is
+// loaded again.
+let h1 = false
+async function open(base, headers, signal) {
+  if (!h1) {
+    const o = await openH2(base, headers, signal)
+    if (!o.h2Failed) return o
+    h1 = true
+  }
+  return openH1(headers, signal)
+}
+
+const H2_WAIT = 15_000 // ms an HTTP/2 Run waits for its response's head
+
+// openH2 is open over HTTP/2. A Run that fails before its response, other
+// than by being cancelled, says h2Failed.
+function openH2(base, headers, signal) {
   return new Promise((resolve) => {
     const u = new URL(base)
     const session = http2.connect(u.origin)
     let done = false
-    const fail = (e) => {
+    const fail = (e, h2Failed = true) => {
       if (done) return
       done = true
+      clearTimeout(timer)
       session.destroy()
-      resolve({ error: { status: 502, message: e?.message ?? String(e) } })
+      resolve({ error: { status: 502, message: e?.message ?? String(e) }, h2Failed })
     }
+    const timer = setTimeout(() => fail(new Error(`no answer over HTTP/2 in ${H2_WAIT / 1000}s`)), H2_WAIT)
     session.on("error", fail)
     const req = session.request({
       ":method": "POST",
@@ -1531,10 +1554,102 @@ function open(base, headers, signal) {
     req.once("response", (h) => {
       if (done) return
       done = true
+      clearTimeout(timer)
       resolve({ session, req, status: Number(h[":status"]) })
     })
-    signal?.addEventListener("abort", () => fail(new Error("the request was cancelled")), { once: true })
+    signal?.addEventListener("abort", () => fail(new Error("the request was cancelled"), false), { once: true })
   })
+}
+
+// connectCode is Connect's code for an HTTP status that came with no
+// Connect error of its own
+function connectCode(status) {
+  return { 400: "invalid_argument", 401: "unauthenticated", 403: "permission_denied", 429: "resource_exhausted" }[status] ?? "unavailable"
+}
+
+// openH1 is open over HTTP/1.1, as Cursor's clients run a Run without
+// HTTP/2: what runOnce writes (a Connect frame each time) goes up as
+// BidiAppend calls in turn, numbered from 0, and what RunSSE sends down is
+// the stream it reads, Connect's frames as the HTTP/2 Run's. Its response
+// is a 200 at once; an error Cursor says later, or a call that fails,
+// ends the stream with Connect's end frame, which runOnce reads as the
+// Run's own.
+function openH1(headers, signal) {
+  const ac = new AbortController()
+  signal?.addEventListener("abort", () => ac.abort(), { once: true })
+  const id = headers["x-request-id"]
+  const h = { ...headers, "accept-encoding": "identity", "x-cursor-streaming": "true" }
+  let ended = false
+  let seq = 0
+  let chain = Promise.resolve()
+  const req = new Duplex({
+    read() {},
+    write(chunk, _enc, cb) {
+      // runOnce writes one whole frame each time
+      const msg = Buffer.from(chunk).subarray(5)
+      const n = seq++
+      chain = chain.then(() => (ended ? undefined : append(msg, n)))
+      cb()
+    },
+  })
+  const end = (body) => {
+    if (ended || req.destroyed) return
+    ended = true
+    const f = frame(Buffer.from(body))
+    f[0] = 2
+    req.push(f)
+    req.push(null)
+    ac.abort()
+  }
+  const failed = async (res) => {
+    const text = await res.text().catch(() => "")
+    let e
+    try {
+      e = JSON.parse(text)
+    } catch {}
+    end(JSON.stringify({ error: typeof e?.code === "string" ? e : { code: connectCode(res.status), message: text.trim() || `HTTP ${res.status}` } }))
+  }
+  const append = async (msg, n) => {
+    try {
+      const res = await fetch(API + "/aiserver.v1.BidiService/BidiAppend", {
+        method: "POST",
+        headers: { ...h, "content-type": "application/proto", "connect-protocol-version": "1" },
+        body: pb().str(1, msg.toString("hex")).bytes(2, pb().str(1, id).done()).varint(3, n).done(),
+        signal: ac.signal,
+      })
+      if (!res.ok) return failed(res)
+      await res.arrayBuffer()
+    } catch (e) {
+      if (!ac.signal.aborted) end(JSON.stringify({ error: { code: "unavailable", message: `BidiAppend: ${e?.message ?? e}` } }))
+    }
+  }
+  ;(async () => {
+    try {
+      const res = await fetch(API + "/agent.v1.AgentService/RunSSE", {
+        method: "POST",
+        headers: { ...h, "content-type": "application/connect+proto", "connect-protocol-version": "1" },
+        body: frame(pb().str(1, id).done()),
+        signal: ac.signal,
+      })
+      if (!res.ok) return failed(res)
+      for await (const c of res.body) {
+        if (ended || req.destroyed) return
+        req.push(Buffer.from(c))
+      }
+      if (!ended && !req.destroyed) {
+        ended = true
+        req.push(null)
+      }
+    } catch (e) {
+      if (!ac.signal.aborted) end(JSON.stringify({ error: { code: "unavailable", message: `RunSSE: ${e?.message ?? e}` } }))
+    }
+  })()
+  const close = () => {
+    ended = true
+    ac.abort()
+    req.destroy()
+  }
+  return Promise.resolve({ session: { close, destroy: close }, req: Object.assign(req, { close }), status: 200 })
 }
 
 // runOnce is one Run of the chat on the agent API at base: an async
@@ -2041,4 +2156,4 @@ export async function CursorAuthPlugin() {
 }
 
 // for tests
-export const _internal = { STEP_WAIT, stepUsage, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
+export const _internal = { resetH1: () => (h1 = false), STEP_WAIT, stepUsage, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
