@@ -11,14 +11,17 @@ import http from "node:http"
 import http2 from "node:http2"
 import { CursorAuthPlugin, _internal } from "./index.mjs"
 
-const { fields, pb, frame, h2Blocked } = _internal
+const { fields, pb, frame, h2Blocked, open, openH1 } = _internal
 const H2 = _internal.H2 ?? {}
+const H1 = _internal.H1 ?? {}
 
 const real = globalThis.fetch
-const wait = H2.wait
+const saved = { ...H2 }
+const savedH1 = { ...H1 }
 afterEach(() => {
   globalThis.fetch = real
-  H2.wait = wait
+  Object.assign(H2, saved)
+  Object.assign(H1, savedH1)
 })
 beforeEach(() => _internal.resetH1())
 
@@ -56,12 +59,18 @@ const end = (body) => {
 const update = (num, body) => frame(pb().bytes(1, pb().bytes(num, body)).done())
 
 // the agent API over HTTP/2 on port: "answer" answers a Run "hi" and the
-// turn's end; "stall" takes the stream and never sends its head
-async function agent(port, mode) {
-  const a = { mode, runs: 0 }
+// turn's end; "stall" takes the stream and never sends its head; "refuse"
+// resets the stream (REFUSED_STREAM) before its head. resets refuses that
+// many streams first, whatever the mode.
+async function agent(port, mode, { resets = 0 } = {}) {
+  const a = { mode, runs: 0, resets }
   a.server = http2.createServer()
   a.server.on("stream", (stream) => {
     stream.on("error", () => {})
+    if (a.resets > 0 || a.mode === "refuse") {
+      a.resets--
+      return stream.close(http2.constants.NGHTTP2_REFUSED_STREAM)
+    }
     if (a.mode === "stall") return
     a.runs++
     stream.respond({ ":status": 200, "content-type": "application/connect+proto" })
@@ -82,8 +91,11 @@ async function agent(port, mode) {
 
 // Cursor's API over HTTP/1.1. RunSSE's stream answers once BidiAppend has
 // brought the Run's first message: "hi" and the turn's end, or the error
-// given. What each call carried is noted.
-function fakeAPI(base, { refuse } = {}) {
+// given in its end frame (refuse) or as an HTTP error (sseHttp). A
+// BidiAppend answers, answers an HTTP error (appendHttp), or never answers
+// (hangAppend). What each call carried is noted.
+const httpError = (e) => new Response(JSON.stringify(e.body), { status: e.status, headers: { "content-type": "application/json" } })
+function fakeAPI(base, { refuse, sseHttp, appendHttp, hangAppend } = {}) {
   const seen = { sse: [], appends: [] }
   const streams = new Map() // request id → RunSSE's controller
   globalThis.fetch = async (url, init = {}) => {
@@ -94,6 +106,7 @@ function fakeAPI(base, { refuse } = {}) {
     if (u === "https://api2.cursor.sh/agent.v1.AgentService/RunSSE") {
       const id = fields(Buffer.from(init.body).subarray(5))[0].data.toString()
       seen.sse.push({ id, type: h.get("content-type"), auth: h.get("authorization"), encoding: h.get("accept-encoding") })
+      if (sseHttp) return httpError(sseHttp)
       if (refuse) return new Response(end(JSON.stringify({ error: refuse })), { headers: { "content-type": "application/connect+proto" } })
       return new Response(new ReadableStream({ start: (c) => streams.set(id, c) }), { headers: { "content-type": "application/connect+proto" } })
     }
@@ -103,6 +116,8 @@ function fakeAPI(base, { refuse } = {}) {
       const seqno = f.find((x) => x.num === 3)?.n ?? 0
       const msg = Buffer.from(f.find((x) => x.num === 1).data.toString(), "hex")
       seen.appends.push({ id, seqno, type: h.get("content-type") })
+      if (appendHttp) return httpError(appendHttp)
+      if (hangAppend) return new Promise((_, no) => init.signal?.addEventListener("abort", () => no(init.signal.reason), { once: true }))
       const c = streams.get(id)
       if (c && seqno === 0 && fields(msg).some((x) => x.num === 1)) {
         c.enqueue(update(1, pb().str(1, "hi").done()))
@@ -221,6 +236,10 @@ test("only a failure that says HTTP/2 itself can't be had counts as blocked", ()
   expect(h2Blocked(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }))).toBe(false)
   expect(h2Blocked(Object.assign(new Error("connect ENETUNREACH"), { code: "ENETUNREACH" }))).toBe(false)
   expect(h2Blocked(new Error("something else"))).toBe(false)
+  // a connection reset that also says "protocol error" is still a connection's failure
+  expect(h2Blocked(Object.assign(new Error("Protocol error: read ECONNRESET"), { code: "ECONNRESET" }))).toBe(false)
+  // a stream the server refused: HTTP/2 itself got through
+  expect(h2Blocked(Object.assign(new Error("Stream closed with error code NGHTTP2_REFUSED_STREAM"), { code: "ERR_HTTP2_STREAM_ERROR" }))).toBe(false)
 })
 
 test("an error Cursor ends RunSSE with keeps its status", async () => {
@@ -231,4 +250,148 @@ test("an error Cursor ends RunSSE with keeps its status", async () => {
   const r = await ask(fresh(), base)
   expect(r.status).toBe(401)
   expect(r.body.error.message).toContain("Authentication error")
+})
+
+const SIGNED_OUT = { code: "unauthenticated", message: "Error", details: [{ debug: { error: "ERROR_NOT_LOGGED_IN", details: { title: "Authentication error", detail: "If you are logged in, try logging out and back in." } } }] }
+
+test("a stream reset before its head falls back at once, and the next Run tries HTTP/2 again", async () => {
+  H2.wait = 10_000
+  const port = await freePort()
+  const base = `http://127.0.0.1:${port}`
+  const ag = await agent(port, "refuse")
+  try {
+    const seen = fakeAPI(base)
+    const auth = fresh()
+    h2Tries = 0
+    const t = Date.now()
+    const a = await ask(auth, base)
+    expect(a.body.choices[0].message.content).toBe("hi")
+    expect(Date.now() - t).toBeLessThan(3000) // not the head timer's 10 s
+    expect(seen.sse).toHaveLength(1)
+    expect(_internal.onH1()).toBe(false)
+    ag.mode = "answer"
+    const b = await ask(auth, base)
+    expect(b.body.choices[0].message.content).toBe("hi")
+    expect(h2Tries).toBe(2)
+    expect(ag.runs).toBe(1)
+    expect(seen.sse).toHaveLength(1)
+  } finally {
+    ag.server.close()
+  }
+})
+
+test("a BidiAppend that never answers ends the Run with deadline_exceeded", async () => {
+  H1.appendWait = 200
+  const base = `http://127.0.0.1:${await freePort()}`
+  fakeAPI(base, { hangAppend: true })
+  const t = Date.now()
+  const r = await ask(fresh(), base)
+  expect(r.status).toBe(502)
+  expect(r.body.error.message).toContain("BidiAppend got no answer")
+  expect(Date.now() - t).toBeLessThan(5000)
+})
+
+test("an HTTP error from RunSSE keeps its status", async () => {
+  const base = `http://127.0.0.1:${await freePort()}`
+  fakeAPI(base, { sseHttp: { status: 401, body: SIGNED_OUT } })
+  const r = await ask(fresh(), base)
+  expect(r.status).toBe(401)
+  expect(r.body.error.message).toContain("Authentication error")
+})
+
+test("an HTTP error from BidiAppend keeps its status", async () => {
+  const base = `http://127.0.0.1:${await freePort()}`
+  fakeAPI(base, { appendHttp: { status: 401, body: SIGNED_OUT } })
+  const r = await ask(fresh(), base)
+  expect(r.status).toBe(401)
+  expect(r.body.error.message).toContain("Authentication error")
+})
+
+test("appends go up one at a time, numbered in order, a slow one holding the rest", async () => {
+  const got = []
+  let inFlight = 0
+  let most = 0
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url)
+    if (u.endsWith("/agent.v1.AgentService/RunSSE")) return new Response(new ReadableStream({}), { headers: { "content-type": "application/connect+proto" } })
+    if (u.endsWith("/aiserver.v1.BidiService/BidiAppend")) {
+      const f = fields(Buffer.from(init.body))
+      const seqno = f.find((x) => x.num === 3)?.n ?? 0
+      inFlight++
+      most = Math.max(most, inFlight)
+      if (seqno === 0) await new Promise((r) => setTimeout(r, 150)) // the first one slow
+      got.push({ seqno, data: Buffer.from(f.find((x) => x.num === 1).data.toString(), "hex").toString() })
+      inFlight--
+      return new Response(new Uint8Array(0), { headers: { "content-type": "application/proto" } })
+    }
+    throw new Error("the test asked " + u)
+  }
+  const o = await openH1({ "x-request-id": "r-1", authorization: "Bearer t" })
+  for (const m of ["first", "blob 1", "blob 2", "blob 3"]) o.req.write(frame(Buffer.from(m)))
+  for (let i = 0; i < 100 && got.length < 4; i++) await new Promise((r) => setTimeout(r, 10))
+  o.session.close()
+  expect(got).toEqual([
+    { seqno: 0, data: "first" },
+    { seqno: 1, data: "blob 1" },
+    { seqno: 2, data: "blob 2" },
+    { seqno: 3, data: "blob 3" },
+  ])
+  expect(most).toBe(1)
+})
+
+test("a Run cancelled while HTTP/2 opens is not counted as HTTP/2 failing", async () => {
+  H2.wait = 10_000
+  const port = await freePort()
+  const ag = await agent(port, "stall")
+  try {
+    const ac = new AbortController()
+    setTimeout(() => ac.abort(), 50)
+    const t = Date.now()
+    const o = await open(`http://127.0.0.1:${port}`, { "x-request-id": "r-2" }, ac.signal)
+    expect(o.error?.message).toContain("cancelled")
+    expect(Date.now() - t).toBeLessThan(2000)
+    expect(_internal.onH1()).toBe(false)
+  } finally {
+    ag.server.close()
+  }
+})
+
+test("Runs kept on HTTP/1.1 try HTTP/2 again once H2.retryAfter has passed", async () => {
+  H2.wait = 200
+  H2.retryAfter = 300
+  const port = await freePort()
+  const base = `http://127.0.0.1:${port}`
+  const ag = await agent(port, "stall")
+  try {
+    fakeAPI(base)
+    const auth = fresh()
+    h2Tries = 0
+    await ask(auth, base)
+    expect(_internal.onH1()).toBe(true)
+    await new Promise((r) => setTimeout(r, 400))
+    expect(_internal.onH1()).toBe(false)
+    ag.mode = "answer"
+    const b = await ask(auth, base)
+    expect(b.body.choices[0].message.content).toBe("hi")
+    expect(h2Tries).toBe(2)
+    expect(ag.runs).toBe(1)
+  } finally {
+    ag.server.close()
+  }
+})
+
+test("a region error on a Run that fell back for itself alone tries HTTP/2 again too", async () => {
+  const port = await freePort()
+  const base = `http://127.0.0.1:${port}`
+  const ag = await agent(port, "answer", { resets: 1 }) // the first stream refused: that Run alone falls back
+  try {
+    const seen = fakeAPI(base, { refuse: { code: "permission_denied", message: "This team is served in its region only" } })
+    const r = await ask(fresh(), base)
+    expect(r.status).toBe(200)
+    expect(r.body.choices[0].message.content).toBe("hi")
+    expect(seen.sse).toHaveLength(1)
+    expect(ag.runs).toBe(1)
+  } finally {
+    ag.server.close()
+  }
 })
