@@ -783,11 +783,20 @@ const SALT = randomBytes(16).toString("hex")
 // isn't a chat, or one with no user message in it — and the caller then makes
 // a fresh id per request, as before: a made-up conversation of the request's
 // own is the very splitting this is here to end.
-function conversationID(chat, session) {
-  if (session) return uuidOf("magpie-trae-session|" + session)
+//
+// who is the account the request is made as (its uid, else its name), and it
+// is part of what the id is made of, so one conversation answered by two
+// accounts (magpie failing over, or rotating, inside it) is two conversations
+// as Trae is concerned — an id a fresh random one never linked, and one that
+// would let Trae read one conversation as another's. The cost is that such a
+// conversation's two halves are counted apart again, which is what it did
+// before this named one at all.
+function conversationID(chat, session, who = "") {
+  const account = String(who ?? "").trim()
+  if (session) return uuidOf("magpie-trae-session|" + account + "|" + session)
   const first = (Array.isArray(chat?.messages) ? chat.messages : []).find((m) => m?.role === "user")
   const text = partText(first?.content ?? "")
-  return text.trim() ? uuidOf("magpie-trae-first|" + text) : ""
+  return text.trim() ? uuidOf("magpie-trae-first|" + account + "|" + text) : ""
 }
 
 // uuidOf is a version 4 UUID made of a hash's first 16 bytes: the shape
@@ -2214,8 +2223,10 @@ const makePlugin = (site) => async ({ client }) => {
               else outer.addEventListener("abort", () => ac.abort(), { once: true })
             }
             // the conversation this request belongs to, from the chat.headers
-            // hook (magpie's session) or the chat's own first user message
-            const session = conversationID(req, sessionOf(new Headers(init.headers ?? r0?.headers ?? {})))
+            // hook (magpie's session) or the chat's own first user message, as
+            // the account answering it, so a failover inside one conversation
+            // is not one Trae reads as another's
+            const session = conversationID(req, sessionOf(new Headers(init.headers ?? r0?.headers ?? {})), who)
             for (const fn of [...new Set(fns)]) {
               const res = await fetch(apiOf(a, site) + "/api/agent/v3/llm_utils_chat", {
                 method: "POST",

@@ -16,12 +16,13 @@ const { SESSION } = _internal
 
 // ask sends a chat as magpie's host does: the chat.headers hook is told the
 // session, then the loader's fetch with what it added, and the request Trae
-// was sent is read back.
-async function ask(chat, { session = "", provider = "trae-cn" } = {}) {
+// was sent is read back. auth is the sign-in the loader asks for, which is
+// what a group of accounts answers with, one of them per request.
+async function ask(chat, { session = "", provider = "trae-cn", auth = signedIn() } = {}) {
   const hooks = await TraeCNAuthPlugin({ client: {} })
   const out = { headers: {} }
   await hooks["chat.headers"]({ sessionID: session, model: { providerID: provider, id: "glm-5" }, provider: { info: { id: provider } } }, out)
-  const opts = await hooks.auth.loader(async () => signedIn())
+  const opts = await hooks.auth.loader(async () => auth)
   const res = await opts.fetch(opts.baseURL + "/chat/completions", {
     method: "POST",
     headers: new Headers(out.headers),
@@ -84,6 +85,31 @@ test("nothing names a conversation: a fresh session per request, as before", asy
   const one = await ask(chat({ role: "system", content: "be brief" }))
   const two = await ask(chat({ role: "system", content: "be brief" }))
   expect(one.sent.json.session_id).not.toBe(two.sent.json.session_id)
+})
+
+test("two accounts of one conversation are two conversations to Trae", async () => {
+  serve()
+  const named = await ask(chat(user("hi")), { session: "ses_1", auth: signedIn() })
+  const other = await ask(chat(user("hi")), { session: "ses_1", auth: signedIn({ uid: "u-2", accountId: "Bob" }) })
+  expect(other.sent.json.session_id).not.toBe(named.sent.json.session_id)
+  // each account's own conversation keeps its own id, so failing over
+  // back mid-conversation doesn't split it
+  const again = await ask(chat(user("hi"), assistant("ok"), user("more")), { session: "ses_1", auth: signedIn() })
+  expect(again.sent.json.session_id).toBe(named.sent.json.session_id)
+  // and the same holds when the conversation is named by the chat itself
+  const first = await ask(chat(user("fix the bug")), { auth: signedIn() })
+  const onOther = await ask(chat(user("fix the bug")), { auth: signedIn({ uid: "u-2", accountId: "Bob" }) })
+  expect(onOther.sent.json.session_id).not.toBe(first.sent.json.session_id)
+  // an account named by its name alone (no uid) is one of its own too
+  const namedOnly = await ask(chat(user("hi")), { session: "ses_1", auth: signedIn({ uid: "", accountId: "Bob" }) })
+  expect(namedOnly.sent.json.session_id).not.toBe(named.sent.json.session_id)
+})
+
+test("one account's two conversations stay two", async () => {
+  serve()
+  const one = await ask(chat(user("fix the bug")), { session: "ses_1" })
+  const two = await ask(chat(user("fix the bug")), { session: "ses_2" })
+  expect(two.sent.json.session_id).not.toBe(one.sent.json.session_id)
 })
 
 test("the hook leaves other providers' requests alone", async () => {
