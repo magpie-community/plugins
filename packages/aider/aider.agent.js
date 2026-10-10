@@ -5,6 +5,8 @@
 export const agent = {
   id: "aider",
   name: "Aider",
+  // aider.chat's own icon, on the Agents page and the plugin's row
+  icon: "https://aider.chat/assets/icons/apple-touch-icon.png",
   bin: "aider",
   config: "~/.aider.conf.yml",
   model: "model",
