@@ -20,32 +20,7 @@ const PORT_FALLBACK = 8741
 const LIST_TIMEOUT_MS = 15_000
 const CANCEL_TIMEOUT_MS = 1_500
 
-// These ids and display names are a last-resort menu for clients that load
-// config before Comate can answer /list-model. Live account data replaces it.
-const MODEL_SEEDS = [
-  ["deepseek-v4-flash_660919a9053745059c9c023d86567c0d", "Deepseek V4 Flash", "deepseek-v4-flash", true],
-  ["deepseek-v4-pro_9b720c11782248878a51edcf6a91b9e6", "Deepseek V4 Pro", "deepseek-v4-pro", true],
-  ["deepseek-v4.1-flash_1ff104f179214cf2a5ccd5addc7751a8", "Deepseek V4.1 Flash", "deepseek-v4.1-flash", true],
-  ["glm-4.7-fc_0932b6afb498412fb4a02966066ab62c", "GLM-4.7", "glm-4.7-fc", true],
-  ["glm-5.0-fc_2690eecf312347009dd0d5f076be1d28", "GLM-5", "glm-5.0-fc", true],
-  ["glm-5-turbo-fc_1f06c29b8cab4a99aacde4a818eadadf", "GLM-5-Turbo", "glm-5-turbo-fc", true],
-  ["glm-5.1_d18e90e56319488fa14892a22d333652", "GLM-5.1", "glm-5.1", true],
-  ["glm-5.2_eb3516c57e204b618f15324fff45bfc2", "GLM-5.2", "glm-5.2", true],
-  ["glm-5.3_53f6498d9c0c4152af79c5912e7c533d", "GLM-5.3", "glm-5.3", true],
-  ["glm-5.3-flash_c67a4da6ccd3406ca3b4faa2fc4b5dae", "GLM-5.3-Flash", "glm-5.3-flash", true],
-  ["glm-5v-turbo_53f84ce17fec43dbbe1f3d9b574f0a85", "GLM-5v-Turbo", "glm-5v-turbo", true],
-  ["kimi-k3_3d357a70771545b8a7621793974a2539", "Kimi K3", "kimi-k3", true],
-  ["kimi-k2.6-oneapi_f78874608f044707b36807a9c8e5d2b1", "Kimi-K2.6", "kimi-k2.6-oneapi", true],
-  ["minimax-m3_2db94a2ac2ff4288be6cb4b03e18eba5", "MiniMax M3", "minimax-m3", true],
-  ["minimax-m2.7-fc_6d8af9f11e9541d6b381d1cf9ce70538", "MiniMax-M2.7", "minimax-m2.7-fc", true],
-].map(([modelId, displayName, modelType, thinking]) => ({ modelId, displayName, modelType, thinking }))
-
 const string = (value) => (typeof value === "string" ? value : "")
-const modelAliases = new Map(MODEL_SEEDS.flatMap((model) => [
-  [model.modelId, model.modelId],
-  [model.modelType, model.modelId],
-  [model.displayName.toLowerCase(), model.modelId],
-]))
 const httpStatus = (status) => `HTTP ${status}`
 
 function safeMessage(message, secret) {
@@ -110,21 +85,41 @@ function hasTextContent(messages) {
   return Array.isArray(messages) && messages.some((message) => textContent(message?.content).trim() !== "")
 }
 
-function modelIdOf(chat) {
+function modelIdOf(chat, modelAliases = new Map()) {
   const original = string(chat?.model).trim()
   const unprefixed = original.startsWith(`${SITE.id}/`) ? original.slice(SITE.id.length + 1) : original
   return modelAliases.get(unprefixed) ?? modelAliases.get(unprefixed.toLowerCase()) ?? unprefixed
 }
 
-function configModels() {
-  return Object.fromEntries(MODEL_SEEDS.map((model) => [model.modelId, {
-    name: model.displayName,
-    limit: { context: 0, output: 0 },
-    // This is the adapter's prompt-emulated function-call output, not a
-    // native capability reported by Comate's model list.
-    tool_call: true,
-    ...(model.thinking ? { reasoning: true } : {}),
-  }]))
+// Use only explicit numeric limits. Zero is the host's unknown sentinel, not
+// a measured context size; never infer a window from an account's model name.
+function modelLimits(model) {
+  const positive = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0
+  const input = positive(model?.limit?.input)
+  return {
+    context: positive(model?.limit?.context),
+    output: positive(model?.limit?.output),
+    ...(input ? { input } : {}),
+  }
+}
+
+function aliasesOf(list) {
+  const aliases = new Map()
+  for (const model of list) {
+    for (const alias of [model.modelType, model.displayName]) {
+      if (typeof alias === "string" && alias) {
+        aliases.set(alias, model.modelId)
+        aliases.set(alias.toLowerCase(), model.modelId)
+      }
+    }
+  }
+  // An exact live model ID takes precedence over any display-name alias.
+  for (const model of list) aliases.set(model.modelId, model.modelId)
+  return aliases
+}
+
+function credentialKey(credential, base) {
+  return JSON.stringify([base, credential.license])
 }
 
 function modelOf(provider, model, base) {
@@ -138,7 +133,7 @@ function modelOf(provider, model, base) {
     headers: {},
     options: {},
     cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-    limit: { context: 0, output: 0 },
+    limit: modelLimits(model),
     capabilities: {
       temperature: false,
       reasoning: thinking,
@@ -521,136 +516,143 @@ function makePlugin(options = {}) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch
   const uuid = options.randomUUID ?? nodeRandomUUID
 
-  return async ({ client } = {}) => ({
-    config: async (config) => {
-      config.provider ??= {}
-      config.provider[SITE.id] ??= {}
-      const provider = config.provider[SITE.id]
-      provider.name ??= SITE.name
-      provider.npm ??= NPM
-      provider.api ??= `${discovery.zulu(null, discoveryOptions)}/v1`
-      provider.models = { ...configModels(), ...(provider.models ?? {}) }
-    },
-    provider: {
-      id: SITE.id,
-      async models(provider, { auth } = {}) {
-        if (!discovery.isComate(auth)) return provider.models
-        try {
-          const credential = await discovery.credential(async () => auth, discoveryOptions)
-          if (!credential) return provider.models
-          const { base, list } = await liveModels(credential, { fetchImpl, discoveryOptions })
-          for (const model of list) {
-            for (const alias of [model.modelId, model.modelType, string(model.displayName).toLowerCase()]) {
-              if (alias) modelAliases.set(alias, model.modelId)
-            }
+  return async () => {
+    // Magpie lists several accounts through the same plugin instance. Keep
+    // each credential/endpoint's aliases separate, including after a switch
+    // in the desktop app or a refresh through an existing loader.
+    const aliasesByCredential = new Map()
+    return {
+      config: async (config) => {
+        config.provider ??= {}
+        config.provider[SITE.id] ??= {}
+        const provider = config.provider[SITE.id]
+        provider.name ??= SITE.name
+        provider.npm ??= NPM
+        provider.api ??= `${discovery.zulu(null, discoveryOptions)}/v1`
+        // Model IDs come only from this account's live list or user config.
+        provider.models ??= {}
+      },
+      provider: {
+        id: SITE.id,
+        async models(provider, { auth } = {}) {
+          if (!discovery.isComate(auth)) return provider.models
+          let key
+          try {
+            const credential = await discovery.credential(async () => auth, discoveryOptions)
+            if (!credential) return provider.models
+            key = credentialKey(credential, discovery.zulu(credential, discoveryOptions))
+            const { base, list } = await liveModels(credential, { fetchImpl, discoveryOptions })
+            // Replace the map, so removed/renamed aliases cannot stay alive.
+            aliasesByCredential.set(key, aliasesOf(list))
+            return Object.fromEntries(list.map((model) => [model.modelId, modelOf(provider, model, base)]))
+          } catch {
+            if (key) aliasesByCredential.delete(key)
+            return provider.models
           }
-          return Object.fromEntries(list.map((model) => [model.modelId, modelOf(provider, model, base)]))
-        } catch {
-          return provider.models
-        }
+        },
       },
-    },
-    auth: {
-      provider: SITE.id,
-      async loader(getAuth) {
-        const auth = await getAuth()
-        if (!discovery.isComate(auth)) return {}
-        return {
-          baseURL: `${discovery.zulu(auth, discoveryOptions)}/v1`,
-          apiKey: "",
-          async fetch(input, init = {}) {
-            const text = await bodyText(input, init)
-            let chat
-            try { chat = JSON.parse(text) } catch { chat = null }
-            if (!chat || typeof chat !== "object" || !Array.isArray(chat.messages)) {
-              return errorResponse(400, "Only OpenAI-compatible chat completions are supported.", "kept")
-            }
-            if (!isTextOnly(chat.messages)) {
-              return errorResponse(400, "Comate bridge accepts text parts only; remove non-text content parts.", "kept")
-            }
-            if (!hasTextContent(chat.messages)) {
-              return errorResponse(400, "Messages must contain at least one non-empty text value.", "kept")
-            }
+      auth: {
+        provider: SITE.id,
+        async loader(getAuth) {
+          const auth = await getAuth()
+          if (!discovery.isComate(auth)) return {}
+          return {
+            baseURL: `${discovery.zulu(auth, discoveryOptions)}/v1`,
+            apiKey: "",
+            async fetch(input, init = {}) {
+              const text = await bodyText(input, init)
+              let chat
+              try { chat = JSON.parse(text) } catch { chat = null }
+              if (!chat || typeof chat !== "object" || !Array.isArray(chat.messages)) {
+                return errorResponse(400, "Only OpenAI-compatible chat completions are supported.", "kept")
+              }
+              if (!isTextOnly(chat.messages)) {
+                return errorResponse(400, "Comate bridge accepts text parts only; remove non-text content parts.", "kept")
+              }
+              if (!hasTextContent(chat.messages)) {
+                return errorResponse(400, "Messages must contain at least one non-empty text value.", "kept")
+              }
 
-            let queryRequest
-            try {
-              queryRequest = buildQuery(chat, uuid().replaceAll("-", ""))
-            } catch (error) {
-              if (error instanceof ProtocolRequestError) return errorResponse(error.status, error.message, "kept")
-              return errorResponse(400, "The request contains an unsupported tool definition.", "kept")
-            }
+              let queryRequest
+              try {
+                queryRequest = buildQuery(chat, uuid().replaceAll("-", ""))
+              } catch (error) {
+                if (error instanceof ProtocolRequestError) return errorResponse(error.status, error.message, "kept")
+                return errorResponse(400, "The request contains an unsupported tool definition.", "kept")
+              }
 
-            let credential
-            try {
-              credential = await discovery.credential(getAuth, discoveryOptions)
-            } catch (error) {
-              return errorResponse(error.signIn === "expired" ? 401 : 503, error.message, error.signIn || "kept")
-            }
-            if (!credential) return errorResponse(401, "Comate isn't signed in here.", "expired")
+              let credential
+              try {
+                credential = await discovery.credential(getAuth, discoveryOptions)
+              } catch (error) {
+                return errorResponse(error.signIn === "expired" ? 401 : 503, error.message, error.signIn || "kept")
+              }
+              if (!credential) return errorResponse(401, "Comate isn't signed in here.", "expired")
 
-            const model = modelIdOf(chat)
-            if (!model) return errorResponse(400, "The request names no model.", "kept")
-            const base = discovery.zulu(credential, discoveryOptions)
-            const url = `${base}/api/v1/conversations/init`
-            assertLoopback(url)
-            const traceId = uuid()
-            const payload = {
-              query: queryRequest.query,
-              license: credential.license,
-              model,
-              modelId: model,
-              traceId,
-              mode: "Ask",
-              enableCodebaseSearch: false,
-            }
+              const base = discovery.zulu(credential, discoveryOptions)
+              const model = modelIdOf(chat, aliasesByCredential.get(credentialKey(credential, base)))
+              if (!model) return errorResponse(400, "The request names no model.", "kept")
+              const url = `${base}/api/v1/conversations/init`
+              assertLoopback(url)
+              const traceId = uuid()
+              const payload = {
+                query: queryRequest.query,
+                license: credential.license,
+                model,
+                modelId: model,
+                traceId,
+                mode: "Ask",
+                enableCodebaseSearch: false,
+              }
 
-            const outerSignal = init.signal ?? (typeof Request !== "undefined" && input instanceof Request ? input.signal : null)
-            if (outerSignal?.aborted) throw abortError()
-            const task = requestTask({ fetchImpl, base, traceId, license: credential.license, outerSignal })
-            let response
-            try {
-              response = await fetchImpl(url, {
-                method: "POST",
-                headers: { "content-type": "application/json", accept: "text/event-stream" },
-                body: JSON.stringify(payload),
-                signal: task.controller.signal,
-                redirect: "error",
-              })
-            } catch (error) {
-              task.finish()
-              if (task.cancelled || isAbortError(error)) throw error
-              const message = safeMessage(error?.message ?? "Comate local service could not be reached", credential.license)
-              return errorResponse(502, message, "kept", credential.license)
-            }
+              const outerSignal = init.signal ?? (typeof Request !== "undefined" && input instanceof Request ? input.signal : null)
+              if (outerSignal?.aborted) throw abortError()
+              const task = requestTask({ fetchImpl, base, traceId, license: credential.license, outerSignal })
+              let response
+              try {
+                response = await fetchImpl(url, {
+                  method: "POST",
+                  headers: { "content-type": "application/json", accept: "text/event-stream" },
+                  body: JSON.stringify(payload),
+                  signal: task.controller.signal,
+                  redirect: "error",
+                })
+              } catch (error) {
+                task.finish()
+                if (task.cancelled || isAbortError(error)) throw error
+                const message = safeMessage(error?.message ?? "Comate local service could not be reached", credential.license)
+                return errorResponse(502, message, "kept", credential.license)
+              }
 
-            if (response.status === 403) {
-              const why = await said(response, credential.license)
-              task.finish()
-              return errorResponse(401, `Comate refused the license (${why}). Sign in to Comate again.`, "expired", credential.license)
-            }
-            if (!response.ok) {
-              const why = await said(response, credential.license)
-              task.finish()
-              return errorResponse(response.status >= 400 ? response.status : 502, why, "kept", credential.license)
-            }
-            if (!(response.headers.get("content-type") ?? "").toLowerCase().includes("text/event-stream")) {
-              const why = await said(response, credential.license)
-              task.finish()
-              return errorResponse(502, `Comate returned a non-SSE response (${why}).`, "kept", credential.license)
-            }
+              if (response.status === 403) {
+                const why = await said(response, credential.license)
+                task.finish()
+                return errorResponse(401, `Comate refused the license (${why}). Sign in to Comate again.`, "expired", credential.license)
+              }
+              if (!response.ok) {
+                const why = await said(response, credential.license)
+                task.finish()
+                return errorResponse(response.status >= 400 ? response.status : 502, why, "kept", credential.license)
+              }
+              if (!(response.headers.get("content-type") ?? "").toLowerCase().includes("text/event-stream")) {
+                const why = await said(response, credential.license)
+                task.finish()
+                return errorResponse(502, `Comate returned a non-SSE response (${why}).`, "kept", credential.license)
+              }
 
-            return chat.stream === true
-              ? streamed(chat, response, task, queryRequest.toolSpec, uuid, credential.license)
-              : finished(chat, response, task, queryRequest.toolSpec, uuid, credential.license)
-          },
-        }
+              return chat.stream === true
+                ? streamed(chat, response, task, queryRequest.toolSpec, uuid, credential.license)
+                : finished(chat, response, task, queryRequest.toolSpec, uuid, credential.license)
+            },
+          }
+        },
+        methods: [
+          { type: "oauth", label: "Comate account (this computer)", authorize: async () => desktopSignIn(discoveryOptions) },
+          licenseSignIn(),
+        ],
       },
-      methods: [
-        { type: "oauth", label: "Comate account (this computer)", authorize: async () => desktopSignIn(discoveryOptions) },
-        licenseSignIn(),
-      ],
-    },
-  })
+    }
+  }
 }
 
 export async function ComateAuthPlugin(input = {}, options = {}) {
@@ -663,7 +665,6 @@ export const _internal = {
   SITE,
   NPM,
   PORT_FALLBACK,
-  MODEL_SEEDS,
   MAX_TOOL_CALLS,
   buildQuery,
   queryOf,
@@ -673,8 +674,8 @@ export const _internal = {
   piecesOf,
   newState,
   consumeComateSSE,
-  configModels,
   modelOf,
+  modelLimits,
   modelIdOf,
   liveModels,
   errorResponse,

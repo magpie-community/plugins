@@ -1,8 +1,6 @@
 {
   "version": 1,
   "plugins": [
-    { "package": "@magpie-community/opencode-comate-auth", "name": "Comate", "icon": "wenxin-color", "providers": ["comate"], "community": true,
-      "summary": { "en": "Comate desktop models on this computer, with local sign-in discovery, text streaming and prompt-emulated function calls. Experimental.", "zh": "通过本机 Comate 登录使用桌面端模型，支持文本流式输出与提示词模拟的函数调用。实验性。" } },
     { "package": "@magpie-community/opencode-zen-free-auth", "name": "OpenCode Zen Free", "icon": "opencode", "providers": ["opencode-zen-free"], "community": true,
       "summary": { "en": "OpenCode Zen's free models with the public credential, automatic discovery and native streaming protocols.", "zh": "使用 public 凭证接入 OpenCode Zen 免费模型，自动发现模型并支持原生流式协议。" } },
     { "package": "@magpie-community/opencode-zcode-auth", "name": "ZCode", "icon": "zcode", "providers": ["zcode"], "community": true, "replaces": "zcode",

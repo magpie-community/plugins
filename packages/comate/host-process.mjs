@@ -1,19 +1,12 @@
 import { spawn } from "node:child_process"
 import { accessSync, constants, existsSync } from "node:fs"
-import { delimiter, dirname, resolve } from "node:path"
+import { delimiter, resolve } from "node:path"
 import { createInterface } from "node:readline"
-import { fileURLToPath } from "node:url"
-
-const packageDir = dirname(fileURLToPath(import.meta.url))
 
 export function findMagpieHost(env = process.env) {
   const candidates = [
     env.MAGPIE_HOST ? resolve(env.MAGPIE_HOST) : "",
     env.MAGPIE_CHECKOUT ? resolve(env.MAGPIE_CHECKOUT, "internal/plugin/host.js") : "",
-    // The community checkout is commonly adjacent to the Magpie source tree.
-    resolve(packageDir, "../../../magpie/internal/plugin/host.js"),
-    // Also support running the test from a monorepo that contains both trees.
-    resolve(packageDir, "../../internal/plugin/host.js"),
   ].filter(Boolean)
   return candidates.find((path) => existsSync(path)) ?? ""
 }

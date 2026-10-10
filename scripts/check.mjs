@@ -37,7 +37,10 @@ for (const name of readdirSync(root)) {
         const cfg = { provider: {} }
         await hooks.config(cfg)
         const p = cfg.provider[auth.provider]
-        if (p && (!p.npm || !p.models || !Object.keys(p.models).length)) problems.push(`${fn.name}: config gives ${auth.provider} no npm or models`)
+        // Account-specific catalogs may be empty before sign-in. Require a
+        // matching live-list hook instead of forcing a fabricated seed model.
+        const listsModels = hooks.provider?.id === auth.provider && typeof hooks.provider?.models === "function"
+        if (p && (!p.npm || !p.models || (!Object.keys(p.models).length && !listsModels))) problems.push(`${fn.name}: config gives ${auth.provider} no npm or models`)
       }
     }
   } catch (e) {

@@ -11,10 +11,10 @@ import { findBun, findMagpieHost, MagpieHost } from "./host-process.mjs"
 
 const bun = findBun()
 const magpieHost = findMagpieHost()
-const skipReason = !bun
-  ? "Bun is not installed or MAGPIE_BUN does not point to an executable"
-  : !magpieHost
-    ? "Magpie production host is missing; set MAGPIE_CHECKOUT or MAGPIE_HOST"
+const skipReason = !magpieHost
+  ? "Opt-in only: set MAGPIE_CHECKOUT or MAGPIE_HOST to an existing production host"
+  : !bun
+    ? "Bun is not installed or MAGPIE_BUN does not point to an executable"
     : false
 const modelID = "fixture-chat-model_0123456789abcdef"
 
