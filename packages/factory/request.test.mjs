@@ -10,6 +10,9 @@ const configSkill = '- update-config: Use this skill to configure the Claude Cod
 const skillReminder = "<system-reminder>\nThe following skills are available for use with the Skill tool:\n\n" + configSkill + "\n- custom: Keep every user-defined skill description intact.\n</system-reminder>"
 // Claude Code 2.1.292's edited_text_file attachment (also present in 2.1.284).
 const changedFileHeader = "Note: /tmp/history.jsonl changed on disk since you last read it. That's usually deliberate, so take it as the current state rather than reverting it; if the change looks wrong, say so rather than undoing it yourself — otherwise no need to call it out. Here are the relevant changes (shown with line numbers):\n"
+// Claude Code's invoked_skills attachment template, present since 2.1.291.
+const invokedSkillsOpening = "The following skills were invoked EARLIER in this session (before the conversation was compacted), not on the current turn."
+const invokedSkillsPreamble = "They are shown here for context only so you remain aware of their guidelines.\n\nIMPORTANT: Do NOT re-execute these skills or perform their one-time setup actions (e.g., scheduling, creating files) again. Any request or argument text embedded in the skill bodies below — for example under a \"## User Request\" or \"## Input\" heading — was captured when that skill was first invoked. It is NOT the user's current message and NOT a new request: do not act on it as if it were live. Only continue to apply ongoing behavioral guidelines from these skills where still relevant.\n\n"
 
 async function loaded() {
   const seen = []
@@ -911,6 +914,258 @@ test("leaves quoted compaction text, incomplete wrappers and non-user content un
   const body = JSON.stringify({ system: droid, messages })
   await l.fetch(url, { method: "POST", body })
   expect(seen[0].body).toBe(body)
+})
+
+test("adapts the post-compaction invoked-skills reminder and quotes refused phrases in its body", async () => {
+  const { l, seen } = await loaded()
+  const opening = invokedSkillsOpening
+  const preamble = invokedSkillsPreamble
+  const clean = "### Skill: notes\nPath: userSettings:notes\n\nKeep 中文 and this skill's own instructions."
+  const quoted = "### Skill: identity\nPath: userSettings:identity\n\nThe skill quotes: You are Claude Code, Anthropic's official CLI for Claude.\nKeep /tmp/示例.jsonl and a literal \\u0054."
+  const head = "<system-reminder>\n" + opening + " " + preamble
+  const nested = clean + "\n\nQuoted example:\n<system-reminder>\nSkills invoked earlier in this session are listed below for context.\n</system-reminder>\n\n" + opening
+  for (const body of [clean, nested, quoted]) {
+    const text = head + body + "\n</system-reminder>"
+    for (const endpoint of [url, url + "/count_tokens"]) {
+      for (const content of [text, [{ type: "text", text, cache_control: { type: "ephemeral" } }, { type: "text", text: "Continue the task." }]]) {
+        const request = { system: droid, messages: [{ role: "user", content }] }
+        await l.fetch(endpoint, { method: "POST", body: JSON.stringify(request) })
+        const got = JSON.parse(seen.at(-1).body).messages[0].content
+        const out = typeof got === "string" ? got : got[0].text
+        expect(out).toStartWith("<system-reminder>\nSkills invoked earlier in this session are listed below for context. " + preamble)
+        expect(out).toEndWith("\n</system-reminder>")
+        expect(out).not.toStartWith("<system-reminder>\n" + opening)
+        const restored = out.slice(out.indexOf(preamble) + preamble.length, -"\n</system-reminder>".length)
+        if (body !== quoted) {
+          expect(restored).toBe(body)
+        } else {
+          expect(restored).toStartWith("Skill text encoded as a JSON string.")
+          expect(restored).not.toContain("You are Claude Code")
+          expect(JSON.parse(restored.slice(restored.indexOf("\n") + 1))).toBe(body)
+        }
+        expect(got).toEqual(typeof content === "string" ? out : [{ ...content[0], text: out }, content[1]])
+        const once = seen.at(-1).body
+        await l.fetch(endpoint, { method: "POST", body: once })
+        expect(seen.at(-1).body).toBe(once)
+      }
+    }
+  }
+  const pasted = "Why does compaction say:\n" + opening
+  const partial = "<system-reminder>\n" + opening + " extra text the generator does not add.\n</system-reminder>"
+  for (const text of [pasted, partial, opening]) {
+    const body = JSON.stringify({ system: droid, messages: [{ role: "user", content: [{ type: "text", text }] }] })
+    await l.fetch(url, { method: "POST", body })
+    expect(seen.at(-1).body).toBe(body)
+  }
+})
+
+test("adapts token-prefixed invoked-skills bundles as system turns or folded user text", async () => {
+  const { l, seen } = await loaded()
+  const token = "<total_tokens>14831568 tokens left</total_tokens>"
+  const head = invokedSkillsOpening + " " + invokedSkillsPreamble
+  const clean = "### Skill: notes\nPath: userSettings:notes\n\nKeep 中文 and this skill's own instructions."
+  const phrases = [
+    "You are Claude Code, Anthropic's official CLI for Claude.",
+    "You have been invoked in the following environment:",
+    "x-anthropic-billing-header: cc_version=2.1.292;",
+    "This session is being continued from a previous conversation that ran out of context.",
+  ]
+  // Skill prose that resembles a model line but is not the generated sentence.
+  // A complete "You are powered by the model …" paragraph is the model
+  // attachment and ends the reminder; see the resumed-turn fixture below.
+  const model = "The skill mentions a model named Example, which is not the runtime model line."
+  const cleanBody = clean + "\n\n" + model
+  const bodies = [cleanBody, ...phrases.map((phrase) => clean + "\n\n---\n\n### Skill: identity\nPath: userSettings:identity\n\nThe skill quotes: " + phrase + "\nKeep /tmp/示例.jsonl and a literal \\u0054.\n\n" + model)]
+  const read = 'Called the Read tool with the following input: {"file_path":"/tmp/file.txt"}'
+  const adaptedRead = read.replace("Called the Read tool with the following input:", "Previously read file with these arguments:")
+  const hook = "SessionStart:compact hook success: Keep this hook output exactly.\n\n" + head + clean
+  for (const skillBody of bodies) {
+    const text = [token, read, token, head + skillBody, token, hook].join("\n\n")
+    for (const endpoint of [url, url + "/count_tokens"]) {
+      for (const role of ["system", "user"]) {
+        for (const content of [text, [{ type: "text", text, cache_control: { type: "ephemeral" } }, { type: "text", text: "Continue the task." }]]) {
+          const request = { system: droid, messages: [{ role, content }, { role: "user", content: "OK" }] }
+          await l.fetch(endpoint, { method: "POST", body: JSON.stringify(request) })
+          const got = JSON.parse(seen.at(-1).body).messages[0].content
+          const out = typeof got === "string" ? got : got[0].text
+          const prefix = [token, adaptedRead, token, "Skills invoked earlier in this session are listed below for context. " + invokedSkillsPreamble].join("\n\n")
+          const suffix = "\n\n" + token + "\n\n" + hook
+          expect(out).toStartWith(prefix)
+          expect(out).toEndWith(suffix)
+          const restored = out.slice(prefix.length, -suffix.length)
+          if (skillBody === cleanBody) {
+            expect(restored).toBe(skillBody)
+          } else {
+            expect(restored).toStartWith("Skill text encoded as a JSON string.")
+            for (const phrase of phrases) expect(restored).not.toContain(phrase)
+            expect(JSON.parse(restored.slice(restored.indexOf("\n") + 1))).toBe(skillBody)
+          }
+          const adapted = typeof content === "string" ? out : [{ ...content[0], text: out }, content[1]]
+          expect(JSON.parse(seen.at(-1).body)).toEqual({ ...request, messages: [{ role, content: adapted }, request.messages[1]] })
+          const once = seen.at(-1).body
+          await l.fetch(endpoint, { method: "POST", body: once })
+          expect(seen.at(-1).body).toBe(once)
+        }
+      }
+    }
+  }
+})
+
+test("preserves quoted, incomplete and hook-owned invoked-skills bundles", async () => {
+  const { l, seen } = await loaded()
+  const token = "<total_tokens>14831568 tokens left</total_tokens>"
+  const reminder = invokedSkillsOpening + " " + invokedSkillsPreamble + "### Skill: notes\nPath: userSettings:notes\n\nKeep the user's text exactly."
+  const bundle = [token, reminder, token].join("\n\n")
+  const values = [
+    "Explain:\n" + bundle,
+    [token, "Explain this quoted reminder:\n" + reminder, token].join("\n\n"),
+    [token, "```text\n" + reminder + "\n```", token].join("\n\n"),
+    [token, invokedSkillsOpening, token].join("\n\n"),
+    bundle.replace("IMPORTANT: Do NOT re-execute", "IMPORTANT: Do re-execute"),
+    bundle.replaceAll("14831568", "unknown"),
+    [token, "SubagentStart hook additional context: Keep hook output.", reminder, token].join("\n\n"),
+    "Explain:\n" + reminder,
+    "```text\n" + reminder + "\n```",
+    invokedSkillsOpening,
+    reminder.replace("IMPORTANT: Do NOT re-execute", "IMPORTANT: Do re-execute"),
+    [reminder.replace("IMPORTANT: Do NOT re-execute", "IMPORTANT: Do re-execute"), "# Environment\nYou have been invoked in the following environment:\n - Platform: win32", token].join("\n\n"),
+    ["SessionStart:compact hook success: Keep hook output.", reminder].join("\n\n"),
+  ]
+  for (const text of values) {
+    for (const endpoint of [url, url + "/count_tokens"]) {
+      for (const role of ["system", "user"]) {
+        for (const content of [text, [{ type: "text", text, cache_control: { type: "ephemeral" } }]]) {
+          const body = JSON.stringify({ system: droid, messages: [{ role, content }] })
+          await l.fetch(endpoint, { method: "POST", body })
+          expect(seen.at(-1).body).toBe(body)
+        }
+      }
+    }
+  }
+  const body = JSON.stringify({ system: droid, messages: [{ role: "assistant", content: bundle }] })
+  await l.fetch(url, { method: "POST", body })
+  expect(seen.at(-1).body).toBe(body)
+})
+
+// Claude Code 2.1.292, session 1a2063e5, the turn that Factory answered 403.
+// Attachments render as separate system reminders; contextRendering is
+// "announced", so the same bytes also travel unwrapped in one system turn.
+// Order after the compact summary: token, restored Read, omitted-file note,
+// invoked_skills, agent list, MCP instructions, environment, model line.
+// <total_tokens> is not repeated after invoked_skills.
+test("adapts the captured post-compaction system turn, wherever the invoked-skills reminder sits", async () => {
+  const { l, seen } = await loaded()
+  const token = "<total_tokens>14964378 tokens left</total_tokens>"
+  const read = 'Called the Read tool with the following input: {"file_path":"C:\\\\Users\\\\CHENGU~1\\\\AppData\\\\Local\\\\Temp\\\\q3up\\\\mr4.py"}\nResult of calling the Read tool:\n1\timport json, subprocess, os, time\n2\tKeep this source.'
+  const omitted = "Note: C:\\Users\\chenguoqing\\code\\2026Q3总结与Q4计划-草稿.md was read before the last conversation was summarized, but the contents are too large to include. Use Read tool if you need to access it."
+  const clean = "### Skill: gitea-mr\nPath: userSettings:gitea-mr\n\nKeep 中文 and this skill's own instructions."
+  const quoted = clean + "\n\n---\n\n### Skill: identity\nPath: userSettings:identity\n\nThe skill quotes: You are Claude Code, Anthropic's official CLI for Claude.\nKeep /tmp/示例.jsonl."
+  const agents = "Available agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. (Tools: *)\n\nWhen you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently."
+  const mcp = "# MCP Server Instructions\n\nThe following MCP servers have provided instructions for how to use their tools and resources:\n\n## axure-query\nKeep these server instructions."
+  const environment = "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: C:\\Users\\chenguoqing\\code\\cloudpos-knowledge\n - Platform: win32\n - Shell: bash"
+  const model = "You are powered by the model named Opus 5.5. The exact model ID is factory/claude-opus-5-5. Assistant knowledge cutoff is June 2026."
+  const hook = "SessionStart:compact hook success: Keep this hook output exactly."
+  const head = invokedSkillsOpening + " " + invokedSkillsPreamble
+  const compat = "Skills invoked earlier in this session are listed below for context. " + invokedSkillsPreamble
+  const adaptedRead = 'Previously read file with these arguments: {"file_path":"C:\\\\Users\\\\CHENGU~1\\\\AppData\\\\Local\\\\Temp\\\\q3up\\\\mr4.py"}\nResult of calling the Read tool:\n1\timport json, subprocess, os, time\n2\tKeep this source.'
+  const adaptedOmitted = "Previously read file: C:\\Users\\chenguoqing\\code\\2026Q3总结与Q4计划-草稿.md. Its contents were omitted from the conversation summary because of length. Use Read tool if you need to access it."
+  const adaptedEnvironment = environment.replace("# Environment", "# Runtime context").replace("You have been invoked in the following environment:", "The session environment is:")
+  const adaptedModel = "Current model name: Opus 5.5. Model ID: factory/claude-opus-5-5. Model knowledge cutoff: June 2026."
+  const shapes = [
+    ["token, reminder, token", [token, head + clean, token], [token, compat + clean, token]],
+    ["token, reminder, incomplete token", [token, head + clean, "<total_tokens>123 tokens left"], [token, compat + clean, "<total_tokens>123 tokens left"]],
+    ["token, reminder (end of turn)", [token, head + clean], [token, compat + clean]],
+    ["token, reminder, Read, environment, hook", [token, head + clean, read, environment, hook], [token, compat + clean, adaptedRead, adaptedEnvironment, hook]],
+    ["token, Read, reminder, environment (end)", [token, read, head + clean, environment], [token, adaptedRead, compat + clean, adaptedEnvironment]],
+    ["token, reminder, Read, environment, token", [token, head + clean, read, environment, token], [token, compat + clean, adaptedRead, adaptedEnvironment, token]],
+    ["captured turn, clean skill", [token, read, omitted, head + clean, agents, mcp, environment, model], [token, adaptedRead, adaptedOmitted, compat + clean, agents, mcp, adaptedEnvironment, adaptedModel]],
+    ["captured turn, quoted skill", [token, read, omitted, head + quoted, agents, mcp, environment, model], null],
+    ["skills first, no token", [head + clean, agents, mcp, environment, model], [compat + clean, agents, mcp, adaptedEnvironment, adaptedModel]],
+    ["skills first, trailing token", [head + clean, agents, environment, model, token], [compat + clean, agents, adaptedEnvironment, adaptedModel, token]],
+    ["skills only", [head + clean], [compat + clean]],
+    ["omitted note, skills (end)", [omitted, head + clean], [adaptedOmitted, compat + clean]],
+    ["Read, skills (end)", [read, head + clean], [adaptedRead, compat + clean]],
+    // A SessionStart hook stops the scan, so the environment after it stays.
+    ["reminder, then a hook, no token", [token, head + clean, hook, environment], [token, compat + clean, hook, environment]],
+  ]
+  for (const [name, inputParts, outputParts] of shapes) {
+    const skillBody = name.includes("quoted") ? quoted : clean
+    const text = inputParts.join("\n\n")
+    const expected = outputParts === null ? null : outputParts.join("\n\n")
+    for (const endpoint of [url, url + "/count_tokens"]) {
+      for (const role of ["system", "user"]) {
+        for (const content of [text, [{ type: "text", text, cache_control: { type: "ephemeral" } }]]) {
+          const request = { system: droid, messages: [{ role, content }, { role: "user", content: "OK" }] }
+          await l.fetch(endpoint, { method: "POST", body: JSON.stringify(request) })
+          const got = JSON.parse(seen.at(-1).body).messages[0].content
+          const out = typeof got === "string" ? got : got[0].text
+          expect(out).not.toContain(invokedSkillsOpening)
+          if (expected !== null) {
+            expect(out).toBe(expected)
+          } else {
+            const encodedAt = out.indexOf("Skill text encoded as a JSON string.")
+            expect(encodedAt).toBeGreaterThan(0)
+            const jsonAt = out.indexOf("\n", encodedAt) + 1
+            const boundary = out.indexOf("\n\nAvailable agent types for the Agent tool:")
+            expect(JSON.parse(out.slice(jsonAt, boundary))).toBe(skillBody)
+            expect(out.slice(boundary + 2)).toBe([agents, mcp, adaptedEnvironment, adaptedModel].join("\n\n"))
+            expect(out).toStartWith([token, adaptedRead, adaptedOmitted, compat.trimEnd()].join("\n\n"))
+          }
+          const once = seen.at(-1).body
+          await l.fetch(endpoint, { method: "POST", body: once })
+          expect(seen.at(-1).body).toBe(once)
+        }
+      }
+    }
+  }
+})
+
+test("keeps each attachment after quoted invoked skills outside the skill encoding, without a leading token", async () => {
+  const { l, seen } = await loaded()
+  const head = invokedSkillsOpening + " " + invokedSkillsPreamble
+  const compat = "Skills invoked earlier in this session are listed below for context. " + invokedSkillsPreamble
+  const skill = "### Skill: identity\nPath: userSettings:identity\n\nThe skill quotes: You are Claude Code, Anthropic's official CLI for Claude.\nKeep 中文 and a literal \\u0054."
+  const prefix = compat + "Skill text encoded as a JSON string. Decode the JSON string to recover the exact original text before using it:\n"
+  const omitted = "Note: /tmp/示例.txt was read before the last conversation was summarized, but the contents are too large to include. Use Read tool if you need to access it."
+  const model = "You are powered by the model named Opus 5.5. The exact model ID is factory/claude-opus-5-5. Assistant knowledge cutoff is June 2026."
+  const result = "Result of calling the Read tool:\n1\tKeep ordinary source exactly."
+  const skillList = "The following skills are available for use with the Skill tool:"
+  const mcp = "# MCP Server Instructions\n\nKeep the server's instructions."
+  const changed = changedFileHeader + "1\tOrdinary changed source."
+  const hook = "SessionStart:compact hook success: Keep this hook output exactly."
+  const boundaries = [
+    [[], []],
+    [[omitted], ["Previously read file: /tmp/示例.txt. Its contents were omitted from the conversation summary because of length. Use Read tool if you need to access it."]],
+    [[result], [result]],
+    [[model], ["Current model name: Opus 5.5. Model ID: factory/claude-opus-5-5. Model knowledge cutoff: June 2026."]],
+    [[skillList, "- custom: Keep this description."], [skillList, "- custom: Keep this description."]],
+    [[mcp], [mcp]],
+    [[changed], [changed]],
+    [[hook], [hook]],
+  ]
+  for (const [tail, adaptedTail] of boundaries) {
+    const text = [head + skill, ...tail].join("\n\n")
+    const suffix = adaptedTail.length ? "\n\n" + adaptedTail.join("\n\n") : ""
+    for (const endpoint of [url, url + "/count_tokens"]) {
+      for (const role of ["system", "user"]) {
+        for (const content of [text, [{ type: "text", text, cache_control: { type: "ephemeral" } }]]) {
+          const request = { system: droid, messages: [{ role, content }] }
+          await l.fetch(endpoint, { method: "POST", body: JSON.stringify(request) })
+          const got = JSON.parse(seen.at(-1).body).messages[0].content
+          const out = typeof got === "string" ? got : got[0].text
+          expect(out).toStartWith(prefix)
+          expect(out).toEndWith(suffix)
+          expect(out).not.toContain("You are Claude Code")
+          expect(JSON.parse(out.slice(prefix.length, suffix ? -suffix.length : undefined))).toBe(skill)
+          const adapted = typeof content === "string" ? out : [{ ...content[0], text: out }]
+          expect(JSON.parse(seen.at(-1).body)).toEqual({ ...request, messages: [{ role, content: adapted }] })
+          const once = seen.at(-1).body
+          await l.fetch(endpoint, { method: "POST", body: once })
+          expect(seen.at(-1).body).toBe(once)
+        }
+      }
+    }
+  }
 })
 
 test("adapts generated compacted file reminders without changing paths, read arguments or file contents", async () => {

@@ -129,10 +129,23 @@ continuation instructions; context without those phrases stays verbatim.
 Complete generated reminders for restored Read calls and omitted files are
 adapted too. Read arguments and file paths are preserved; quoted or incomplete
 reminders are left alone.
+Claude Code (2.1.291 and later) also restores skills invoked before compaction
+as one generated reminder. Factory refuses that fixed opening, and the restored
+skill text can quote the same client phrases as tool output. A complete
+reminder has its opening sentence rephrased. When its skill text quotes a
+refused phrase, that text is encoded as a JSON string with explicit skill-text
+decoding instructions; decoding restores the skill text exactly. Skill text
+without those phrases stays verbatim inside the rephrased reminder. Pasted
+fragments and incomplete reminders are left untouched.
 Claude Code can also combine reminders into a token-prefixed `system` turn
 without the reminder wrappers. The adapter handles the known metadata
-paragraphs in that form, including skill-list updates, while retaining
-numbered file contents, token markers and SessionStart hook output.
+paragraphs in that form, including skill-list updates and complete
+invoked-skills reminders. A complete reminder is the fixed opening sentence
+followed by the complete `IMPORTANT:` paragraph; skill text then runs until
+the next known attachment (a token marker, hook, restored Read, omitted-file
+note, Read result, environment, model line, skill-list header, changed-file
+note, agent-type list or MCP server instructions) or the end of the turn.
+Numbered file contents, token markers and SessionStart hook output stay.
 The same adaptation applies when a translating gateway folds that complete
 token-prefixed block into a user message.
 Standalone skill updates can instead start with the generated skill-list
@@ -144,12 +157,15 @@ the complete skill-header and bullet-list paragraphs inside a token-terminated
 bundle. It preserves MCP connection errors, other notifications, mode updates
 and custom skill descriptions while adapting the known built-in description.
 After `/compact`, Claude Code also sends the files it restores and the
-runtime context as one turn that opens with an unwrapped restored-file note
-or Read call, with no token marker first. When that turn also carries the
-generated environment paragraph or a token marker before any hook output,
-each fixed paragraph (file notes, Read calls and results, environment, model
-line) is adapted as in a token-prefixed bundle; everything else stays
-byte-for-byte. Quoted, incomplete and hook-owned forms are left alone.
+runtime context as one turn that opens with an unwrapped restored-file note,
+Read call or complete invoked-skills reminder, with no token marker first.
+A complete skills reminder is recognized even when no files were restored
+and no environment or token paragraph follows it. A restored-file opening
+requires the generated environment paragraph, a token marker or a complete
+skills reminder before any hook output. Each fixed paragraph (file notes,
+Read calls and results, skills, environment, model line) is adapted as in a
+token-prefixed bundle; everything else stays byte-for-byte. Quoted,
+incomplete and hook-owned forms are left alone.
 
 Factory can also refuse fixed client phrases quoted in tool results, such as
 the identity/environment definitions printed when inspecting this plugin's
