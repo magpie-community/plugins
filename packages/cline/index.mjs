@@ -7,7 +7,7 @@
 // and cloud-models feeds; usage reads the account's credit balance and, on
 // ClinePass, the plan's 5-hour, weekly and monthly limits.
 import { STATUS_CODES } from "node:http"
-import { randomUUID } from "node:crypto"
+import { createHash } from "node:crypto"
 
 const PROVIDER = "cline"
 const API = "https://api.cline.bot/api/v1"
@@ -37,14 +37,26 @@ const DEVICE_CAP = 600 // seconds the browser may take, however long the code li
 // only thing that has to match).
 const CLIENT = { type: "cline-cli", version: "3.0.68", platform: "cli", core: "0.0.90" }
 
-// A fresh task ID prevents prompt cache reuse on these ClinePass routes.
-const CACHE_SENSITIVE_PASS_MODELS = new Set([
-	"cline-pass/deepseek-v4.1-flash",
-	"cline-pass/glm-5.3-flash",
-	"cline-pass/glm-5.3",
-	"cline-pass/kimi-k3",
-	"cline-pass/qwen3.8-max",
-])
+// Pass the host's session through the chat.headers hook to the loader's
+// fetch. This private header never leaves the plugin.
+const SESSION = "x-magpie-cline-session"
+
+// magpie's synthetic session from the first user message doesn't identify a
+// task: unrelated conversations can start with that same message.
+function sessionOf(input) {
+	const s = String(input?.sessionID ?? "").trim()
+	if (!s || /^magpie-[0-9a-f]{24}$/.test(s)) return ""
+	return s.slice(0, 128)
+}
+
+function taskIdOf(session) {
+	const bytes = createHash("sha256").update("cline task\0").update(session).digest().subarray(0, 16)
+	const b = Buffer.from(bytes)
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	const h = b.toString("hex")
+	return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
 
 // clientHeaders is the header set resolveProviderRequestHeaders builds for a
 // client with that identity; official clients supply a task id per task.
@@ -875,6 +887,11 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 	}
 
 	return {
+		async "chat.headers"(input, output) {
+			if (input?.model?.providerID !== PROVIDER && input?.provider?.info?.id !== PROVIDER) return
+			const session = sessionOf(input)
+			if (session) output.headers[SESSION] = session
+		},
 		config: async (cfg) => {
 			cfg.provider ??= {}
 			const was = cfg.provider[PROVIDER] ?? {}
@@ -937,10 +954,10 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 						const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
 						if (!/\/chat\/completions$/.test(new URL(url).pathname))
 							return errorResponse({ status: 404, message: "only chat completions are served" })
-						let body, chat
+						let body
 						try {
 							body = await bodyText(input, init)
-							chat = JSON.parse(body)
+							const chat = JSON.parse(body)
 							if (!chat || typeof chat !== "object" || Array.isArray(chat)) throw new Error("not a chat completion")
 							body = pinBody(body, chat, pin)
 						} catch {
@@ -953,13 +970,11 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 							return signedInError(e)
 						}
 						const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+						const session = headers.get(SESSION)
+						headers.delete(SESSION)
+						headers.delete("X-Task-ID")
 						headers.set("Authorization", `Bearer ${cred.bearer}`)
-						// A fresh task id defeats the prompt cache for these models;
-						// keep the client identity headers without a task id for them.
-						const cacheSensitive = CACHE_SENSITIVE_PASS_MODELS.has(chat.model)
-						const taskId = cacheSensitive ? undefined : randomUUID()
-						for (const [k, v] of Object.entries(clientHeaders(taskId))) headers.set(k, v)
-						if (cacheSensitive) headers.delete("X-Task-ID")
+						for (const [k, v] of Object.entries(clientHeaders(session ? taskIdOf(session) : undefined))) headers.set(k, v)
 						headers.delete("content-length")
 						headers.delete("host")
 						let res
