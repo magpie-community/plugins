@@ -31,6 +31,9 @@ Requests go to `https://opencode.ai/zen/v1` using each model's native
 Chat Completions, Responses or Anthropic Messages API. Streaming and
 ordinary JSON replies are supported.
 
-The agent's tools are preserved. If Zen calls an added tool, its name is
-mapped to the agent's unique case-insensitive match (`bash` to `Bash`).
-A call with no matching tool returns an error. Tools run in the agent.
+The agent's tools are preserved. Zen's models often call OpenCode's own
+tool names; such a call is given the agent's tool whose name differs only
+in case (`bash` to `Bash`), or else only in case and `_`/`-` (`todowrite`
+to `todo_write`, `webfetch` to `web_fetch`), when exactly one does. A
+call with no such tool returns an error that names it. Tools run in the
+agent.

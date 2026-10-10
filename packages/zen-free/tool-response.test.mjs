@@ -195,8 +195,8 @@ for (const protocol of protocols) {
     for (const [name, rules] of [
       ["unknown", policy],
       ["shell", policy],
-      ["BASH", policy],
       ["bash", { declared: new Set(["Bash", "BASH"]), injected: new Set(["bash"]) }],
+      ["todowrite", { declared: new Set(["todo_write", "todo-write"]), injected: new Set() }],
       ["bash", { declared: new Set(), injected: new Set(["bash"]) }],
     ]) {
       const response = await guardToolResponse(
@@ -209,6 +209,55 @@ for (const protocol of protocols) {
       assertError(protocol, body, false);
       assert.equal(body.choices ?? body.output ?? body.content, undefined);
     }
+  });
+
+  // #76: DSH declares all five core tools (so nothing is injected) and
+  // todo_write; step-5-preview-free opens with OpenCode's todowrite.
+  test(`${protocol}: an OpenCode tool name is given the agent's own spelling of it (#76)`, async () => {
+    const rules = {
+      declared: new Set(["bash", "read", "edit", "glob", "grep", "write", "todo_write", "web_fetch", "TodoRead"]),
+      injected: new Set(),
+    };
+    for (const [asked, given] of [
+      ["todowrite", "todo_write"],
+      ["webfetch", "web_fetch"],
+      ["todoread", "TodoRead"],
+      ["BASH", "bash"],
+    ]) {
+      const json = await guardToolResponse(
+        Response.json(snapshot(protocol, [asked])),
+        protocol,
+        rules,
+      );
+      assert.equal(json.status, 200);
+      assert.deepEqual(namesIn(protocol, await json.json()), [given]);
+      const streamed = await guardToolResponse(
+        sse(event(streamSnapshot(protocol, [asked])) + terminal(protocol)),
+        protocol,
+        rules,
+      );
+      const frames = parse(await streamed.text()).filter(
+        (frame) => frame.data && frame.data !== "[DONE]",
+      );
+      assert.deepEqual(namesIn(protocol, frames[0].data), [given]);
+    }
+  });
+
+  test(`${protocol}: a refused call names the tool (#76)`, async () => {
+    const json = await guardToolResponse(
+      Response.json(snapshot(protocol, ["subagent"])),
+      protocol,
+      policy,
+    );
+    const body = await json.json();
+    assert.match(body.message ?? body.error?.message, /: "subagent"$/);
+    const streamed = await guardToolResponse(
+      sse(event(streamSnapshot(protocol, ["subagent"])) + terminal(protocol)),
+      protocol,
+      policy,
+    );
+    const frame = parse(await streamed.text())[0].data;
+    assert.match(frame.message ?? frame.error?.message, /: "subagent"$/);
   });
 
   test(`${protocol}: exact matches win over ambiguous casing`, async () => {
@@ -245,7 +294,7 @@ for (const protocol of protocols) {
   });
 
   test(`${protocol}: bad mixed SSE snapshot never leaks a tool and cancels immediately`, async () => {
-    for (const name of ["unknown", "shell", "BASH"]) {
+    for (const name of ["unknown", "shell", "todowrite"]) {
       let cancelled = false;
       const source = openSource(
         event(streamSnapshot(protocol, ["Read", name])) + event({ sentinel: "must not escape" }),
