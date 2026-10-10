@@ -56,8 +56,24 @@ test("a Teams plan: its end, its day and week, the extra usage balance", async (
   expect(seen[0].body.metadata).toMatchObject({ ideName: "devin-cli", extensionName: "devin-cli", apiKey: "devin-key", locale: "en" })
 })
 
-test("a quota Devin says nothing left of isn't taken for used up; a hidden one isn't shown; ACUs with a limit are", async () => {
-  const s = status({ dailyQuotaRemainingPercent: undefined, overageBalanceMicros: undefined, acuConsumed: 12.5, acuLimit: 50 })
+// 面条 on magpie's Discord: Devin has a daily and a weekly quota; with the
+// week used up only the day showed, at 0%, and routing kept sending to the
+// account. JSON leaves a 0 out, so the week came as no
+// weeklyQuotaRemainingPercent beside the day's 100.
+test("a week used up, its share left out, shows at 100% and holds until its reset", async () => {
+  const s = status({ weeklyQuotaRemainingPercent: undefined })
+  const { u } = await run(auth, () => new Response(JSON.stringify(s)))
+  expect(u.windows).toEqual([
+    { name: "1 day", used: 0, span: 86400, resetsAt: 1790841600 },
+    { name: "7 days", used: 100, span: 604800, resetsAt: 1791100800 },
+  ])
+  // both used up: both are left out
+  const both = status({ dailyQuotaRemainingPercent: undefined, weeklyQuotaRemainingPercent: undefined })
+  expect((await run(auth, () => Response.json(both))).u.windows.map((w) => w.used)).toEqual([100, 100])
+})
+
+test("a hidden quota isn't shown, nor one with no reset; ACUs with a limit are", async () => {
+  const s = status({ dailyQuotaResetAtUnix: undefined, dailyQuotaRemainingPercent: undefined, weeklyQuotaRemainingPercent: undefined, overageBalanceMicros: undefined, acuConsumed: 12.5, acuLimit: 50 })
   s.userStatus.planStatus.planInfo.hideWeeklyQuota = true
   const { u } = await run({ ...auth, metadata: { ...auth.metadata, server: "https://eu.example" } }, () => Response.json(s))
   expect(u).toEqual({

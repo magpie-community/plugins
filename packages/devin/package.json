@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-devin-auth",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Devin subscriptions (the devin CLI's account) in OpenCode and magpie",
   "type": "module",
   "main": "./index.mjs",

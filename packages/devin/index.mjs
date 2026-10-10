@@ -1457,7 +1457,8 @@ function userStatus(key, server) {
 // and end, the daily and weekly quotas a quota-billed plan has (the share
 // left of each, and when it comes back), the ACUs a plan with a limit has
 // used this cycle, and the extra usage balance. JSON leaves out what is
-// zero, so a quota with a reset and no share left is used up. magpie's
+// zero, so a quota-billed plan's quota with a reset and no share is used
+// up. magpie's
 // built-in Devin account showed none of this.
 async function usage(key, server) {
   const res = await userStatus(key, server)
@@ -1472,14 +1473,18 @@ async function usage(key, server) {
   // ("Devin Pro"), as magpie's built-in row said it, not planName's "Pro"
   const out = { windows: [] }
   if (st.planEnd) out.until = st.planEnd
-  // a quota's window is shown when Devin says what is left of it; one it
-  // leaves out is not taken for used up
+  // a quota's window is shown when Devin says what is left of it. JSON
+  // leaves a 0 out, so on a quota-billed plan a window with a reset and no
+  // share left is used up: a week at 0% left came as no weeklyQuota-
+  // RemainingPercent beside the day's 100, and the day alone was shown
+  // (面条 on magpie's Discord). Billed otherwise, a missing share is no quota.
+  const quota = info.billingStrategy === "BILLING_STRATEGY_QUOTA"
   for (const [name, span, left, reset, hide] of [
     ["1 day", 24 * 3600, st.dailyQuotaRemainingPercent, st.dailyQuotaResetAtUnix, info.hideDailyQuota],
     ["7 days", 7 * 24 * 3600, st.weeklyQuotaRemainingPercent, st.weeklyQuotaResetAtUnix, info.hideWeeklyQuota],
   ]) {
-    if (hide || left === undefined || left === null) continue
     const at = num(reset)
+    if (hide || ((left === undefined || left === null) && !(quota && at > 0))) continue
     out.windows.push({ name, used: Math.min(100, Math.max(0, 100 - num(left))), span, ...(at > 0 ? { resetsAt: at } : {}) })
   }
   const limit = num(st.acuLimit)
