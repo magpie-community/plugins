@@ -23,8 +23,9 @@ the local service port. The plugin reads but does not modify Comate's settings
 or service-discovery files. Magpie stores a pasted license with its plugin
 sign-in.
 
-This candidate package is installed from a local checkout or an offline ZIP;
-it is not currently published to npm or listed in Magpie's Plugins registry.
+The supplied candidate is installed from a local checkout or an offline ZIP.
+Installation by npm package name requires the maintainer's first npm publication;
+the market entry becomes available after the community pull request is merged.
 
 The plugin discovers Comate's settings in the platform's normal location:
 
