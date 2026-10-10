@@ -1258,3 +1258,41 @@ test("preserves quoted, incomplete and hook-owned restored-context turns", async
   await l.fetch(url, { method: "POST", body })
   expect(seen.at(-1).body).toBe(body)
 })
+
+// #72 (Vigilans): Claude Code 2.1.x sends the skill list alone as a system
+// message, entries only, as text blocks and later as a string. The
+// reporter's reduced body, byte for byte; Factory answered it 403 and gave
+// 200 with "not Claude" as "not the assistant".
+const bareConfigSkill = '- update-config: Use this skill to configure the Claude Code harness via settings.json. Automated behaviors ("from now on when X", "each time X", "whenever X", "before/after X") require hooks configured in settings.json - the harness executes these, not Claude, so memory/preferences cannot fulfill them. Also use for: permissions ("allow X", "add permission", "move permission to"), env vars ("set X=Y"), hook troubleshooting, or any changes to settings.json/settings.local.json files. Examples: "allow npm commands", "add bq permission to global", "move permission to user settings", "set DEBUG=true", "when claude stops show X". For simple settings like theme/model, suggest the /config command.'
+
+test("a skill list sent alone as a system message has the update-config line adapted (#72)", async () => {
+  const { l, seen } = await loaded()
+  const fixed = bareConfigSkill.replace("not Claude", "not the assistant")
+  const list = "- custom: Keep not Claude in this user's description.\n" + bareConfigSkill + "\n- other: Another skill."
+  for (const [text, want] of [[bareConfigSkill, fixed], [list, list.replace(bareConfigSkill, fixed)]]) {
+    for (const content of [[{ type: "text", text }], text]) {
+      const request = { model: "factory/claude-opus-5-5", max_tokens: 32, stream: true, messages: [
+        { role: "user", content: [{ type: "text", text: "hi" }] },
+        { role: "system", content },
+      ] }
+      await l.fetch(url, { method: "POST", body: JSON.stringify(request) })
+      const sent = JSON.parse(seen.at(-1).body)
+      expect(sent.messages[1].content).toEqual(typeof content === "string" ? want : [{ type: "text", text: want }])
+      expect(sent.messages[0]).toEqual(request.messages[0])
+      expect(JSON.stringify(sent)).not.toContain("not Claude, so")
+    }
+  }
+})
+
+test("only a system message that is a skill list is adapted (#72)", async () => {
+  const { l, seen } = await loaded()
+  for (const [role, text] of [
+    ["user", bareConfigSkill],
+    ["system", "Explain this:\n" + bareConfigSkill],
+    ["system", bareConfigSkill.replace("- update-config:", "- custom-config:")],
+  ]) {
+    const request = { model: "factory/claude-opus-5-5", max_tokens: 32, messages: [{ role: "user", content: "hi" }, { role, content: text }] }
+    await l.fetch(url, { method: "POST", body: JSON.stringify(request) })
+    expect(JSON.parse(seen.at(-1).body).messages[1].content).toBe(text)
+  }
+})

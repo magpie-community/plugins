@@ -658,6 +658,15 @@ const SKILL_REMINDER = /^<system-reminder>\nThe following skills are available f
 const CONFIG_SKILL_METADATA = '- update-config: Use this skill to configure the Claude Code harness via settings.json. Automated behaviors ("from now on when X", "each time X", "whenever X", "before/after X") require hooks configured in settings.json - the harness executes these, not Claude, so memory/preferences cannot fulfill them.'
 const CONFIG_SKILL_COMPAT = CONFIG_SKILL_METADATA.replace("not Claude", "not the assistant")
 
+// Claude Code also sends the skill list alone as a system message: the
+// entries only, no header, no <system-reminder> wrapper and no token tail,
+// as text blocks or a string (#72). Only a system message that is such a
+// list (it opens with an entry) changes, and in it only the known line.
+function bareSkills(text) {
+  if (!text.startsWith("- ")) return text
+  return ("\n" + text).replace("\n" + CONFIG_SKILL_METADATA, "\n" + CONFIG_SKILL_COMPAT).slice(1)
+}
+
 // Claude 5 also sends its runtime metadata as a string-content system
 // message, instead of user-message reminders. Preserve that role and all
 // instructions. A model switch sends a separate update without the
@@ -975,7 +984,7 @@ function anthropicBody(body) {
 
   for (const message of request.messages) {
     if (message?.role === "system" && typeof message.content === "string") {
-      const adapted = clientOpening(systemContext(message.content))
+      const adapted = bareSkills(clientOpening(systemContext(message.content)))
       if (adapted !== message.content) {
         message.content = adapted
         changed = true
@@ -988,7 +997,7 @@ function anthropicBody(body) {
     if (message?.role === "system" && Array.isArray(message.content)) {
       for (const block of message.content) {
         if (block?.type !== "text" || typeof block.text !== "string") continue
-        const adapted = clientOpening(systemContext(block.text))
+        const adapted = bareSkills(clientOpening(systemContext(block.text)))
         if (adapted !== block.text) {
           block.text = adapted
           changed = true

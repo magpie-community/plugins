@@ -139,6 +139,10 @@ Standalone skill updates can instead start with the generated skill-list
 header and end with a token marker, for example when leaving auto mode.
 That complete form receives the same adaptation while retaining the skill
 descriptions and mode-change instructions.
+The skill list can also come alone as a `system` message, with only its
+entries: no header, no reminder wrapper and no token marker, as text blocks
+or a string. A `system` message that opens with an entry gets the same
+change to the known `update-config` line; everything else in it stays.
 When runtime notifications precede the skill update, the adapter recognizes
 the complete skill-header and bullet-list paragraphs inside a token-terminated
 bundle. It preserves MCP connection errors, other notifications, mode updates
