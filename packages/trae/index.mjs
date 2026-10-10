@@ -1338,6 +1338,31 @@ function toolNamed(name, tools) {
   return names.find((n) => norm(n) === norm(name)) ?? name
 }
 
+// unwrapped is a call's arguments with the layer a model put around them
+// taken off: asked for {"name":…,"arguments":{…}}, some write the
+// arguments as {"arguments":{…}} again, natively or in the block, and the
+// agent got {"arguments":{"content":…,"path":…}} for its write (bee2an on
+// X). A lone arguments, input, parameters or args key holding an object is
+// that layer when the tool has no parameter of that name.
+const WRAPS = ["arguments", "input", "parameters", "args"]
+function unwrapped(args, name, tools) {
+  const t = tools.map((x) => x.function ?? x).find((f) => f?.name === name)
+  if (!t) return args
+  const props = t.parameters?.properties ?? {}
+  let v = looseJSON(args)
+  let changed = false
+  for (let k = 0; k < 3 && v && typeof v === "object" && !Array.isArray(v); k++) {
+    const keys = Object.keys(v)
+    if (keys.length !== 1 || !WRAPS.includes(keys[0]) || keys[0] in props) break
+    let inner = v[keys[0]]
+    if (typeof inner === "string") inner = looseJSON(inner)
+    if (!inner || typeof inner !== "object" || Array.isArray(inner)) break
+    v = inner
+    changed = true
+  }
+  return changed ? JSON.stringify(v) : args
+}
+
 // DeepSeek's tags, with its full-width bar or a plain one
 const DSML = String.raw`<\s*\/?\s*[|｜][\s|｜]*DSML[\s|｜]*`
 const DSML_AT = new RegExp(DSML)
@@ -1569,7 +1594,10 @@ async function* parts(events, tools = []) {
   const tt = new TextTools(tools)
   const nc = new NativeCalls()
   const th = new Thoughts()
-  const call = (c) => ({ call: { ...c, name: toolNamed(c.name, tools) } })
+  const call = (c) => {
+    const name = toolNamed(c.name, tools)
+    return { call: { ...c, name, arguments: unwrapped(c.arguments, name, tools) } }
+  }
   let finish = ""
   for await (const { event, data } of events) {
     const name = eventName(event)
@@ -2301,4 +2329,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, toolNamed, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, proofOf, SITES, SESSION, conversationID }
+export const _internal = { HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, toolNamed, unwrapped, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, proofOf, SITES, SESSION, conversationID }
