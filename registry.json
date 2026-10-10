@@ -40,6 +40,8 @@
     { "package": "@magpie-community/middleware-word-guard", "name": "Word Guard", "kind": "middleware", "community": true,
       "summary": { "en": "New API's sensitive-word filter: turn away or mask words and patterns in what you send, and in replies.", "zh": "New API 的敏感词过滤：拒绝或替换你发出的内容和回复里的词与正则。" } },
     { "package": "@magpie-community/middleware-think-tags", "name": "Think Tags", "kind": "middleware", "community": true,
-      "summary": { "en": "Take a model's <think>…</think> out of its reply's text, or put a Chat reply's reasoning into it.", "zh": "去掉回复正文开头的 <think>…</think>，或把 Chat 回复的思考内容放进正文。" } }
+      "summary": { "en": "Take a model's <think>…</think> out of its reply's text, or put a Chat reply's reasoning into it.", "zh": "去掉回复正文开头的 <think>…</think>，或把 Chat 回复的思考内容放进正文。" } },
+    { "package": "@magpie-community/agent-aider", "name": "Aider", "kind": "agent", "community": true,
+      "summary": { "en": "Aider (aider.chat) on magpie's Agents page: pick one of magpie's models for it, and switch it off to put its config back.", "zh": "把 Aider（aider.chat）加到 magpie 的 Agent 页：给它选 magpie 的模型，关掉即恢复它原来的配置。" } }
   ]
 }
