@@ -38,8 +38,7 @@ const DEVICE_CAP = 600 // seconds the browser may take, however long the code li
 const CLIENT = { type: "cline-cli", version: "3.0.68", platform: "cli", core: "0.0.90" }
 
 // clientHeaders is the header set resolveProviderRequestHeaders builds for a
-// client with that identity; a task id rides per chat request, as the
-// official clients ride one per task
+// client with that identity; official clients supply a task id per task.
 function clientHeaders(taskId) {
 	return {
 		"HTTP-Referer": "https://cline.bot",
@@ -929,10 +928,10 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 						const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
 						if (!/\/chat\/completions$/.test(new URL(url).pathname))
 							return errorResponse({ status: 404, message: "only chat completions are served" })
-						let body
+						let body, chat
 						try {
 							body = await bodyText(input, init)
-							const chat = JSON.parse(body)
+							chat = JSON.parse(body)
 							if (!chat || typeof chat !== "object" || Array.isArray(chat)) throw new Error("not a chat completion")
 							body = pinBody(body, chat, pin)
 						} catch {
@@ -946,9 +945,11 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 						}
 						const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
 						headers.set("Authorization", `Bearer ${cred.bearer}`)
-						// the request says who it comes from, headers down, exactly as
-						// Cline's own client does — and rides its own task id
-						for (const [k, v] of Object.entries(clientHeaders(randomUUID()))) headers.set(k, v)
+						// ClinePass treats a new task id as a new cache key; keep the
+						// client identity headers, but send no task id for those models.
+						const taskId = typeof chat.model === "string" && chat.model.startsWith("cline-pass/") ? undefined : randomUUID()
+						for (const [k, v] of Object.entries(clientHeaders(taskId))) headers.set(k, v)
+						if (!taskId) headers.delete("X-Task-ID")
 						headers.delete("content-length")
 						headers.delete("host")
 						let res
