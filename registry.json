@@ -1,6 +1,7 @@
 {
   "version": 1,
   "plugins": [
+    {"package": "@tokener-ai/magpie-plugin-tokener", "name": "Tokener.ai", "icon": "generic", "providers": ["tokener"], "community": false, "summary": {"en": "Official Tokener.ai API-key plugin, maintained by Tokener.ai, with account model discovery and native Chat and Messages protocols.", "zh": "Tokener.ai 官方维护的 API key 插件，发现账号可用模型，支持原生 Chat 与 Messages 协议。"}},
     { "package": "@magpie-community/opencode-zen-free-auth", "name": "OpenCode Zen Free", "icon": "opencode", "providers": ["opencode-zen-free"], "community": true,
       "summary": { "en": "OpenCode Zen's free models with the public credential, automatic discovery and native streaming protocols.", "zh": "使用 public 凭证接入 OpenCode Zen 免费模型，自动发现模型并支持原生流式协议。" } },
     { "package": "@magpie-community/opencode-zcode-auth", "name": "ZCode", "icon": "zcode", "providers": ["zcode"], "community": true, "replaces": "zcode",
