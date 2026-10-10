@@ -22,12 +22,9 @@ async function fixture(t, input = {}) {
       res.writeHead(state.modelsStatus, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
-          data: [
-            { id: "chat-free" },
-            { id: "responses-free" },
-            { id: "messages-free" },
-            { id: "paid" },
-          ],
+          data: (state.ids ?? ["chat-free", "responses-free", "messages-free", "paid"]).map((id) => ({
+            id,
+          })),
         }),
       );
     } else if (req.url === "/catalog") {
@@ -43,6 +40,7 @@ async function fixture(t, input = {}) {
               "responses-free": { provider: { npm: "@ai-sdk/openai" } },
               "messages-free": { provider: { npm: "@ai-sdk/anthropic" } },
               paid: { cost: { input: 3, output: 10 } },
+              "late-free": {},
             },
           },
         }),
@@ -340,8 +338,12 @@ test("rejects paid models, wrong protocol and foreign URLs before sending infere
   await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
   const loader = await plugin.auth.loader(publicAuth);
   const before = state.calls.length;
+  const paid = await loader.fetch(`${origin}/v1/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "paid", stream: true }),
+  });
+  assert.equal(paid.status, 404);
   for (const [url, model] of [
-    [`${origin}/v1/chat/completions`, "paid"],
     [`${origin}/v1/responses`, "chat-free"],
     ["https://other.example/v1/chat/completions", "chat-free"],
   ]) {
@@ -379,4 +381,55 @@ test("chat headers are scoped to this provider and retain the conversation sessi
     out,
   );
   assert.equal(out.headers["x-session-id"], "s1");
+});
+
+test("a refresh drops a model Zen no longer lists and adds one it lists now", async (t) => {
+  const { plugin, state } = await fixture(t);
+  const before = await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  assert.deepEqual(Object.keys(before).sort(), ["chat-free", "messages-free", "responses-free"]);
+  state.ids = ["chat-free", "messages-free", "late-free"];
+  const after = await plugin.provider.models({ models: before }, { auth: await publicAuth() });
+  assert.deepEqual(Object.keys(after).sort(), ["chat-free", "late-free", "messages-free"]);
+  assert.equal(after[Symbol.for("magpie.fellBack")], undefined);
+  // a failed list keeps the last one, said as fallen back
+  state.modelsStatus = 503;
+  const kept = await plugin.provider.models({ models: after }, { auth: await publicAuth() });
+  assert.deepEqual(Object.keys(kept).sort(), ["chat-free", "late-free", "messages-free"]);
+  assert.equal(kept[Symbol.for("magpie.fellBack")], true);
+});
+
+test("a model no longer free is answered 404 naming the free ones, so only it is set aside", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  const before = state.calls.length;
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "gone-free", stream: true }),
+  });
+  assert.equal(response.status, 404);
+  const body = await response.json();
+  assert.match(body.error.message, /Model gone-free is not available/);
+  assert.match(body.error.message, /chat-free, messages-free, responses-free/);
+  // listed a moment ago: the list isn't asked again for it
+  assert.equal(state.calls.length, before);
+});
+
+test("a model made free since the list was read is served after the list is asked again", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  state.ids = ["chat-free", "late-free"];
+  state.chatProtocol = "chat/completions";
+  const realNow = Date.now;
+  Date.now = () => realNow() + 61_000;
+  t.after(() => {
+    Date.now = realNow;
+  });
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "late-free", stream: true }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(state.calls.at(-1).body.model, "late-free");
 });

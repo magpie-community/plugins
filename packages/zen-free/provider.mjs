@@ -17,6 +17,10 @@ const DOCS =
 const PATHS = { chat: "/chat/completions", responses: "/responses", anthropic: "/messages" };
 const CORE_TOOLS = ["bash", "edit", "glob", "grep", "read"];
 const OPENCODE_VERSION = "1.18.34";
+// How long a request for a model the last list didn't have waits before it
+// asks Zen's list again: a model Zen made free since is served at once,
+// and a model typed in by hand doesn't ask the list on every request.
+const RELIST_AFTER = 60_000;
 
 function httpURL(value) {
   const url = new URL(value);
@@ -122,6 +126,7 @@ async function server(_input, options = {}) {
   let metadata = bootstrapProvider;
   let protocols = {};
   let listed = false;
+  let listedAt = 0;
 
   async function discover(signal) {
     const headers = { authorization: "Bearer public", "x-opencode-client": "cli" };
@@ -160,6 +165,7 @@ async function server(_input, options = {}) {
     }
     known = discovered;
     listed = true;
+    listedAt = Date.now();
     return discovered;
   }
 
@@ -206,11 +212,31 @@ async function server(_input, options = {}) {
             const body = await request.json();
             if (!body || typeof body !== "object" || Array.isArray(body))
               throw new Error("Expected a JSON request object");
-            if (!listed && !Object.hasOwn(known, body.model)) {
+            if (
+              !Object.hasOwn(known, body.model) &&
+              (!listed || Date.now() - listedAt >= RELIST_AFTER)
+            ) {
               await discover(request.signal);
             }
-            const model = known[body.model];
-            if (!model || model.api.npm !== SDK[protocol]) {
+            const model = Object.hasOwn(known, body.model) ? known[body.model] : undefined;
+            if (!model) {
+              // Zen no longer gives it free, or never did: said as a model
+              // not served, so the caller sets this model aside and not the
+              // account, whose other free models are still served.
+              const free = Object.keys(known).sort().join(", ");
+              const name = typeof body.model === "string" ? body.model : "";
+              return new Response(
+                JSON.stringify({
+                  type: "error",
+                  error: {
+                    type: "not_found_error",
+                    message: `Model ${name} is not available as an OpenCode Zen free model now. Free models: ${free || "none"}.`,
+                  },
+                }),
+                { status: 404, headers: { "content-type": "application/json" } },
+              );
+            }
+            if (model.api.npm !== SDK[protocol]) {
               throw new Error(
                 "Model is not an available free model for this protocol. Refresh the model list.",
               );

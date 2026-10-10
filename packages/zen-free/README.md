@@ -22,8 +22,14 @@ The plugin discovers Zen's current free models, including their context
 windows and reasoning levels. Use `opencode-zen-free/<model>`, for example
 `opencode-zen-free/big-pickle`.
 
-Retired models and SystemOne models are excluded. Availability and rate
-limits are set by Zen; the plugin has no remaining-quota data.
+Retired models and SystemOne models are excluded. The list is asked
+again each time the host lists models (magpie does this on start and every
+hour): a model Zen no longer gives free leaves it, and a new free one joins
+it. When Zen's list can't be read, the last list is kept. A request for a
+model that isn't free now gets a 404 naming the free ones; one made free
+since the last list is served after the list is asked again (at most once a
+minute). Availability and rate limits are set by Zen; the plugin has no
+remaining-quota data.
 
 ## Requests
 
