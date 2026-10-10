@@ -1069,6 +1069,14 @@ function anthropicBody(body) {
       }
     }
   }
+  // Factory's streaming route refuses context_management ("Extra inputs
+  // are not permitted", #71) while its non-streaming route takes it. A
+  // streamed request goes without it: the server then edits nothing out of
+  // the context, and the client's own compaction still runs.
+  if (request.stream === true && "context_management" in request) {
+    delete request.context_management
+    changed = true
+  }
   return changed ? JSON.stringify(request) : body
 }
 

@@ -55,7 +55,9 @@ test("adapts Claude Code metadata, preserving instructions, tool turns, images a
   expect(sent.messages[0].content[1].text).toContain("Model knowledge cutoff: January 2025.")
   expect(sent.messages[0].content.slice(2)).toEqual(request.messages[0].content.slice(2))
   expect(sent.messages.slice(1)).toEqual(request.messages.slice(1))
-  for (const field of ["model", "tools", "metadata", "max_tokens", "thinking", "output_config", "stream", "context_management", "safeguards"]) expect(sent[field]).toEqual(request[field])
+  for (const field of ["model", "tools", "metadata", "max_tokens", "thinking", "output_config", "stream", "safeguards"]) expect(sent[field]).toEqual(request[field])
+  // streamed: Factory's streaming route refuses context_management (#71)
+  expect("context_management" in sent).toBe(false)
   expect(seen[0].headers.get("content-length")).toBeNull()
   expect(seen[0].headers.get("Authorization")).toBe("Bearer factory-token")
   expect(seen[0].headers.get("x-api-key")).toBe("placeholder")
@@ -1295,4 +1297,23 @@ test("only a system message that is a skill list is adapted (#72)", async () => 
     await l.fetch(url, { method: "POST", body: JSON.stringify(request) })
     expect(JSON.parse(seen.at(-1).body).messages[1].content).toBe(text)
   }
+})
+
+// #71 (Vigilans): Factory's streaming route answers context_management with
+// 400 "Extra inputs are not permitted"; the same body unstreamed, or
+// without it, gets 200. The reporter's body, byte for byte.
+test("a streamed request goes without context_management, an unstreamed one keeps it (#71)", async () => {
+  const { l, seen } = await loaded()
+  const request = {
+    model: "factory/claude-opus-5-5",
+    max_tokens: 32,
+    stream: true,
+    messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    context_management: { edits: [{ keep: "all", type: "clear_thinking_20251015" }] },
+  }
+  await l.fetch(url, { method: "POST", headers: { "anthropic-beta": "context-management-2025-06-27" }, body: JSON.stringify(request) })
+  const { context_management, ...rest } = request
+  expect(JSON.parse(seen.at(-1).body)).toEqual({ ...rest, system: [{ type: "text", text: droid }] })
+  await l.fetch(url, { method: "POST", body: JSON.stringify({ ...request, stream: false }) })
+  expect(JSON.parse(seen.at(-1).body).context_management).toEqual(request.context_management)
 })
