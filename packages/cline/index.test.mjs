@@ -65,6 +65,11 @@ const client = () => {
 const chatUrl = "https://api.cline.bot/api/v1/chat/completions"
 const chatInit = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? { model: "anthropic/claude-sonnet-5" }) })
 
+// noPass is usage-limits as Cline answers an account without ClinePass: a 404
+// (AxonHub's Cline checker reads it the same way). It is listed first, since
+// "/users/me" is a part of its URL too.
+const noPass = ["/users/me/plan/usage-limits", () => Response.json({ success: false, error: "no active plan" }, { status: 404 })]
+
 // ---- the hook shapes the plugin market checks ------------------------------------
 
 test("the plugin exports the auth/config/provider hooks", async () => {
@@ -573,6 +578,7 @@ test("usage reads the account's balance", async () => {
 	const { client: c } = client()
 	const hooks = await ClinePlugin({ client: c })
 	serve([
+		noPass,
 		["/users/me", () => Response.json({ success: true, data: { subject: "sub1", clineUserId: "cu1", email: "a@b.c", plan: "Usage-Billing" } })],
 		["/users/cu1/balance", () => Response.json({ success: true, data: { totalCredits: 1000, usedCredits: 250 } })],
 	])
@@ -597,6 +603,7 @@ test("a balance with no whole is the card's balance, not a meter", async () => {
 	const { client: c } = client()
 	const hooks = await ClinePlugin({ client: c })
 	serve([
+		noPass,
 		["/users/me", () => Response.json({ success: true, data: { clineUserId: "cu1", email: "a@b.c" } })],
 		["/users/cu1/balance", () => Response.json({ success: true, data: { balance: 480000 } })],
 	])
@@ -629,11 +636,11 @@ test("usage reads ClinePass's 5-hour, weekly and monthly limits", async () => {
 	expect(limits.init.headers.Authorization).toBe("Bearer ck")
 })
 
-test("an account whose limits can't be read keeps its balance and its sign-in", async () => {
+test("an account without ClinePass (usage-limits 404) has its balance alone, and no error", async () => {
 	const { client: c } = client()
 	const hooks = await ClinePlugin({ client: c })
 	serve([
-		["/users/me/plan/usage-limits", () => Response.json({ success: false, error: "no active plan" }, { status: 403 })],
+		noPass,
 		["/users/me", () => Response.json({ success: true, data: { clineUserId: "cu1" } })],
 		["/users/cu1/balance", () => Response.json({ success: true, data: { balance: 1000000 } })],
 	])
@@ -642,6 +649,104 @@ test("an account whose limits can't be read keeps its balance and its sign-in", 
 	expect(out.error).toBeUndefined()
 	expect(out.windows).toEqual([])
 	expect(out.balance).toBe("$1.00")
+})
+
+// #79: a ClinePass account whose limits failed to read for any other reason
+// showed its balance alone, as if it had no ClinePass. The card now says the
+// limits couldn't be read, and why, beside the balance; the sign-in stays.
+for (const [why, reply, says] of [
+	["a 403", () => Response.json({ success: false, error: "forbidden" }, { status: 403 }), "ClinePass limits couldn't be read (HTTP 403: "],
+	["a 401", () => Response.json({ success: false, error: "unauthorized" }, { status: 401 }), "ClinePass limits couldn't be read (HTTP 401: "],
+	["a 500", () => new Response("upstream error", { status: 500 }), "ClinePass limits couldn't be read (HTTP 500: upstream error)"],
+	["a 429", () => Response.json({ success: false, error: "rate limited" }, { status: 429 }), "ClinePass limits couldn't be read (HTTP 429: "],
+	["a refused envelope", () => Response.json({ success: false, error: "plan lookup failed" }), "ClinePass limits couldn't be read: plan lookup failed"],
+	["a network error", () => { throw new TypeError("fetch failed") }, "ClinePass limits couldn't be read: fetch failed"],
+]) {
+	test(`limits that fail with ${why} say so beside the balance`, async () => {
+		const { client: c } = client()
+		const hooks = await ClinePlugin({ client: c })
+		serve([
+			["/users/me/plan/usage-limits", reply],
+			["/users/me", () => Response.json({ success: true, data: { clineUserId: "cu1" } })],
+			["/users/cu1/balance", () => Response.json({ success: true, data: { balance: 1000000 } })],
+		])
+		const out = await hooks.auth.usage(async () => ({ type: "api", key: "ck", accountId: "a@b.c" }))
+		expect(out.signIn).toBe("kept")
+		expect(out.error).toStartWith(says)
+		expect(out.windows).toEqual([])
+		expect(out.balance).toBe("$1.00")
+		expect(out.user).toBe("a@b.c")
+	})
+}
+
+// #79: when the balance couldn't be read, the limits already read were
+// dropped with it, and the card showed the balance's error alone.
+const passLimits = ["/users/me/plan/usage-limits", () => Response.json({ success: true, data: { limits: [
+	{ type: "five_hour", percentUsed: 40, resetsAt: "2026-10-05T15:00:00.000Z" },
+	{ type: "weekly", percentUsed: 10, resetsAt: "2026-10-12T00:00:00.000Z" },
+	{ type: "monthly", percentUsed: 12.5, resetsAt: "2026-11-01T00:00:00.000Z" },
+] } })]
+const passWindows = [
+	{ name: "5 hours", used: 40, span: 18000, resetsAt: "2026-10-05T15:00:00.000Z" },
+	{ name: "Weekly", used: 10, span: 604800, resetsAt: "2026-10-12T00:00:00.000Z" },
+	{ name: "Month", used: 12.5, span: 2592000, resetsAt: "2026-11-01T00:00:00.000Z" },
+]
+
+test("a balance that can't be read keeps the ClinePass limits read", async () => {
+	const { client: c } = client()
+	const hooks = await ClinePlugin({ client: c })
+	serve([
+		passLimits,
+		["/users/me", () => Response.json({ success: true, data: { clineUserId: "cu1", plan: "ClinePass" } })],
+		["/users/cu1/balance", () => new Response("bad gateway", { status: 502 })],
+	])
+	const out = await hooks.auth.usage(async () => ({ type: "api", key: "ck", accountId: "a@b.c" }))
+	expect(out.windows).toEqual(passWindows)
+	expect(out.error).toBeUndefined()
+	expect(out.balance).toBeUndefined()
+	expect(out.plan).toBe("ClinePass")
+	expect(out.user).toBe("a@b.c")
+	expect(out.signIn).toBe("kept")
+})
+
+test("a users/me that fails keeps the ClinePass limits read, and still tries the signed-in account's id for the balance", async () => {
+	const { client: c } = client()
+	const hooks = await ClinePlugin({ client: c })
+	serve([
+		passLimits,
+		["/users/me", () => new Response("unavailable", { status: 503 })],
+		["/users/uid1/balance", () => Response.json({ success: true, data: { balance: 3000000 } })],
+	])
+	const out = await hooks.auth.usage(async () => ({ type: "oauth", access: "jwt", refresh: "r", expires: Date.now() + 3600_000, uid: "uid1" }))
+	expect(out.windows).toEqual(passWindows)
+	expect(out.balance).toBe("$3.00")
+	expect(out.error).toBeUndefined()
+})
+
+test("a users/me that fails with nothing else read is the card's error", async () => {
+	const { client: c } = client()
+	const hooks = await ClinePlugin({ client: c })
+	serve([
+		noPass,
+		["/users/me", () => new Response("unavailable", { status: 503 })],
+	])
+	const out = await hooks.auth.usage(async () => ({ type: "api", key: "ck" }))
+	expect(out.windows).toEqual([])
+	expect(out.error).toContain("HTTP 503")
+	expect(out.signIn).toBe("kept")
+})
+
+test("neither read: the balance's failure is the card's error", async () => {
+	const { client: c } = client()
+	const hooks = await ClinePlugin({ client: c })
+	serve([
+		["/users/me/plan/usage-limits", () => new Response("down", { status: 500 })],
+		["/users/me", () => Response.json({ success: true, data: { clineUserId: "cu1" } })],
+		["/users/cu1/balance", () => new Response("bad gateway", { status: 502 })],
+	])
+	const out = await hooks.auth.usage(async () => ({ type: "api", key: "ck" }))
+	expect(out.windows).toEqual([])
+	expect(out.error).toContain("HTTP 502")
 })
 
 test("limitWindows leaves out what it doesn't know", () => {
@@ -653,6 +758,7 @@ test("usage tries the ids users/me names, in order", async () => {
 	const { client: c } = client()
 	const hooks = await ClinePlugin({ client: c })
 	serve([
+		noPass,
 		["/users/me", () => Response.json({ success: true, data: { subject: "sub1" } })],
 		["/users/sub1/balance", () => Response.json({ success: true, data: { credits: "42" } })],
 	])
@@ -665,6 +771,7 @@ test("usage reports a lapsed account as expired", async () => {
 	const { client: c } = client()
 	const hooks = await ClinePlugin({ client: c })
 	serve([
+		noPass,
 		["/users/me", () => Response.json({ message: "expired" }, { status: 401 })],
 	])
 	const out = await hooks.auth.usage(async () => ({ type: "oauth", access: "jwt", refresh: "r", expires: Date.now() + 3600_000 }))

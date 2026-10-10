@@ -195,7 +195,7 @@ async function clineApi(url, { method = "GET", body, headers = {}, signal, lapse
 	const text = (await res.text().catch(() => "")).trim()
 	if (gone(res.status, text))
 		throw new Lapsed(`the sign-in lapsed — Cline refused it (HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}); sign in to Cline again`)
-	if (!res.ok) throw new Error(`Cline request failed (HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""})`)
+	if (!res.ok) throw Object.assign(new Error(`Cline request failed (HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""})`), { status: res.status })
 	const env = safeJson(text)
 	if (env && typeof env === "object" && "success" in env) {
 		if (!env.success) throw new Error(`Cline request failed${env.error ? `: ${env.error}` : ""}`)
@@ -860,17 +860,31 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 
 	// usage is the account's credit balance and its ClinePass limits,
 	// magpie's own hook. A read the account's token couldn't make is the
-	// sign-in, not the read; the limits are asked alongside and an account
-	// without ClinePass (or one they can't be read for) just has none.
+	// sign-in, not the read. The limits are asked alongside: a 404 there is
+	// an account without ClinePass, which has its credits alone (AxonHub's
+	// Cline checker reads it the same way); any other failure says so on the
+	// card rather than leaving the limits off unsaid (#79). Whichever of the
+	// two reads succeeds is shown when the other fails: windows read are
+	// kept when the balance can't be, as magpie's built-in key card keeps
+	// them.
 	const usage = async (getAuth) => {
 		try {
 			const cred = await fresh(getAuth)
 			const authz = { Authorization: `Bearer ${cred.bearer}` }
-			const me = await clineApi(`${API}/users/me`, { headers: authz })
-			const limits = clineApi(`${API}/users/me/plan/usage-limits`, { headers: authz, lapsed: () => false }).catch(() => null)
+			const limits = clineApi(`${API}/users/me/plan/usage-limits`, { headers: authz, lapsed: () => false }).then(
+				(v) => ({ v }),
+				(e) => (e?.status === 404 ? { v: null } : { e }),
+			)
+			let me = null
+			let lastErr = null
+			try {
+				me = await clineApi(`${API}/users/me`, { headers: authz })
+			} catch (e) {
+				if (e?.expired) throw e
+				lastErr = e
+			}
 			const ids = [me?.clineUserId, me?.subject, me?.id, cred.uid].filter((v) => typeof v === "string" && v.trim())
 			let balance = null
-			let lastErr = null
 			for (const id of ids) {
 				try {
 					balance = await clineApi(`${API}/users/${encodeURIComponent(id)}/balance`, { headers: authz })
@@ -879,8 +893,15 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 					lastErr = e
 				}
 			}
-			if (!balance) throw lastErr ?? new Error("Cline usage: no user id")
-			return { ...usageOf(me, balance, await limits), user: firstOf(cred.accountId, cred.email, cred.uid, ids[0]), signIn: renewed(cred) ? "renewed" : "kept" }
+			const lim = await limits
+			const out = usageOf(me, balance, lim.v)
+			if (!balance && !out.windows.length) throw lastErr ?? lim.e ?? new Error("Cline usage: no user id")
+			if (lim.e) {
+				// the words magpie's card knows (quotaError), the reason after
+				const why = String(lim.e?.message ?? lim.e).replace(/^Cline(?: request failed)?:?\s*/, "")
+				out.error = "ClinePass limits couldn't be read" + (why.startsWith("(") ? " " : ": ") + why
+			}
+			return { ...out, user: firstOf(cred.accountId, cred.email, cred.uid, ids[0]), signIn: renewed(cred) ? "renewed" : "kept" }
 		} catch (e) {
 			return { windows: [], error: e?.message ?? String(e), signIn: e?.expired ? "expired" : "kept" }
 		}

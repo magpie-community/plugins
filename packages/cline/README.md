@@ -58,7 +58,9 @@ needs a sign-in); usage reads `/api/v1/users/me` and the account's `/balance`
 (its balance is counted in millionths of a dollar), and ClinePass's 5-hour,
 weekly and monthly limits from `/api/v1/users/me/plan/usage-limits`
 (`{limits: [{type, percentUsed, resetsAt}]}`, what app.cline.bot's
-subscription page shows); an account without ClinePass has none.
+subscription page shows). An account without ClinePass (a 404 there) has
+none; limits that fail to read for any other reason say so on the card beside
+the balance, and limits read are kept when the balance can't be.
 
 ### DeepSeek models only through DeepSeek's own API
 

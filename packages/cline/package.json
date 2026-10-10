@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-cline-auth",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Cline (cline.bot) on your own account — usage billing, ClinePass and the free models — in OpenCode and magpie",
   "type": "module",
   "main": "./index.mjs",
