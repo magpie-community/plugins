@@ -50,8 +50,10 @@ repositories were installed/checked out into separate directories.
 The opt-in integration ran against [yetone/magpie at
 `61c40b80bb17f8a451a25037b8561760715fb13d`](https://github.com/yetone/magpie/commit/61c40b80bb17f8a451a25037b8561760715fb13d),
 with a clean working tree. It uses the production Bun plugin host and a
-**synthetic loopback Comate service**, including tool history and failed-task
-checks. It does not execute the Go gateway or either real agent client.
+**synthetic loopback Comate service**, checking initial tool-call output,
+failed streamed-task error events and redirect rejection. It does not submit
+tool results or test a continued turn, and does not execute the Go gateway
+or either real agent client.
 
 The general hook checker now permits an empty catalog only when the plugin
 has a matching `provider.models` hook. This allows an account-dependent live
