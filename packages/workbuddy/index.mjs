@@ -172,6 +172,7 @@ function renew(site, a, save) {
         "X-Refresh-Token": a.refresh,
         "X-Auth-Refresh-Source": "plugin",
         "X-Domain": domainOf(site, a),
+        ...enterpriseHeaders(a),
       }, {})
       if (!got?.accessToken) throw Object.assign(new Error("WorkBuddy gave no refreshed token"), { bare: true })
       const next = merge(a, got)
@@ -259,8 +260,46 @@ function sign(site, a, headers) {
   headers.set("X-Agent-Purpose", "conversation")
   headers.set("X-IDE-Name", "WorkBuddy")
   headers.set("X-IDE-Version", UA_VERSION)
+  for (const [k, v] of Object.entries(enterpriseHeaders(a))) headers.set(k, v)
   if (!site.ai) return
   headers.set("X-Agent-Type", "main")
+}
+
+// enterpriseHeaders names the enterprise (team) an account signed in as, as
+// WorkBuddy's own client does on every request it makes for that account
+// (its auth interceptor: X-Enterprise-Id and X-Tenant-Id, both the
+// account's enterpriseId). Without them WorkBuddy answers as the personal
+// account: /v3/config lists the personal plan's models and not the
+// enterprise's (#75). A personal account has none and sends none.
+function enterpriseHeaders(a) {
+  const id = typeof a?.enterpriseId === "string" ? a.enterpriseId.trim() : ""
+  return id ? { "X-Enterprise-Id": id, "X-Tenant-Id": id } : {}
+}
+
+// enterpriseOf is the enterprise the account a sign-in gave belongs to:
+// the one /login/account names, else, for an account that isn't personal,
+// the one WorkBuddy's account list has for it — the same choice WorkBuddy's
+// own client makes (mergeCurrentAccountDetails): the uid's only entry of that
+// type, or the only one it last signed in to. None found is personal.
+async function enterpriseOf(site, a, who) {
+  const own = typeof who?.enterpriseId === "string" ? who.enterpriseId.trim() : ""
+  if (own) return own
+  const type = String(who?.type ?? "").trim().toLowerCase()
+  if (!type || type === "personal") return ""
+  let list
+  try {
+    list = await call(site, "GET", "/v2/plugin/accounts", {
+      Authorization: "Bearer " + a.access,
+      "X-Domain": domainOf(site, a),
+    })
+  } catch {
+    return ""
+  }
+  const mine = (list?.accounts ?? []).filter((x) => x?.uid === who.uid && typeof x.enterpriseId === "string" && x.enterpriseId.trim())
+  const same = mine.filter((x) => String(x.type ?? "").trim().toLowerCase() === type)
+  const last = mine.filter((x) => x.lastLogin)
+  const pick = same.length === 1 ? same[0] : last.length === 1 ? last[0] : mine.length === 1 ? mine[0] : undefined
+  return pick ? pick.enterpriseId.trim() : ""
 }
 
 // WorkBuddy's own client names each chat to its gateway four ways: the
@@ -759,6 +798,7 @@ async function browserSignIn(site) {
           "X-No-Enterprise-Id": "true",
         }, [12151], deadline)
         a.uid = who.uid ?? ""
+        a.enterpriseId = await enterpriseOf(site, a, who)
         return success(site, a, who.nickname || who.phoneNumber || who.uid)
       } catch (e) {
         return { type: "failed", error: e.message }
@@ -776,6 +816,7 @@ function success(site, a, name) {
     accountId: name || site.name,
     uid: a.uid ?? "",
     domain: a.domain ?? "",
+    ...(a.enterpriseId ? { enterpriseId: a.enterpriseId } : {}),
     ...(a.refreshExpiresAt ? { refreshExpiresAt: a.refreshExpiresAt } : {}),
     ...(a.tokenType ? { tokenType: a.tokenType } : {}),
   }
@@ -808,6 +849,7 @@ function readDesktop(site) {
       domain: typeof t.domain === "string" ? t.domain : "",
       tokenType: typeof t.tokenType === "string" ? t.tokenType : "",
       uid: acct.uid,
+      ...(typeof acct.enterpriseId === "string" && acct.enterpriseId.trim() ? { enterpriseId: acct.enterpriseId.trim() } : {}),
       name: acct.nickname || acct.phoneNumber || acct.uid,
     }
   } catch {
@@ -880,7 +922,7 @@ async function meter(site, a, path) {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", "User-Agent": "WorkBuddy/" + UA_VERSION,
       Authorization: "Bearer " + a.access, "X-User-Id": a.uid ?? "", "X-Domain": domainOf(site, a), "X-Product": "SaaS",
-      "X-IDE-Type": "WorkBuddy" },
+      "X-IDE-Type": "WorkBuddy", ...enterpriseHeaders(a) },
     body: "{}",
     signal: AbortSignal.timeout(20000),
   })
@@ -1216,4 +1258,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { withSystem, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf }
+export const _internal = { enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf }

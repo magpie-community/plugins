@@ -43,6 +43,14 @@ included, doesn't mark the account, as the built-in never did; magpie
 tries again later, and the old token is used meanwhile.
 OpenCode doesn't call `auth.refresh`; the check before each request stays.
 
+An enterprise (team) account is asked for as the enterprise. A browser
+sign-in keeps the enterprise id WorkBuddy names for the account (from
+`/login/account`, else its account list), and desktop's is read from the
+app's file. Every request then carries `X-Enterprise-Id` and `X-Tenant-Id`,
+as WorkBuddy's own client sends them; without them WorkBuddy answers as the
+personal account, with the personal plan's models. A browser sign-in made
+before 0.1.13 has no enterprise id kept: sign in again.
+
 Desktop's sign-in is refreshed only when the app hasn't refreshed it
 itself, and the new token is kept in memory, never written back, as magpie's
 built-in WorkBuddy does.
