@@ -1,0 +1,16 @@
+{
+  "name": "@magpie-community/opencode-comate-auth",
+  "version": "0.2.0",
+  "description": "OpenCode provider plugin for Baidu Comate (文心快码), with standard chat API and prompt-emulated function tools",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "protocol.mjs", "discovery.mjs", "README.md"],
+  "scripts": {
+    "test": "node --test",
+    "test:integration": "node --test integration.test.mjs"
+  },
+  "keywords": ["opencode", "opencode-plugin", "magpie", "comate", "baidu", "文心快码"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/comate" }
+}
