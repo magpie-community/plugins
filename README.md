@@ -1,7 +1,7 @@
 # magpie-community plugins
 
 [OpenCode](https://opencode.ai) provider plugins for coding-plan
-subscriptions, and [gateway middleware](#gateway-middleware) for magpie,
+subscriptions, and [gateway middleware](#gateway-middleware) and [agents](#agents) for magpie,
 maintained by the community. Each package signs in to one
 subscription and makes its requests. The packages work in OpenCode and in
 [magpie](https://usemagpie.ai), which runs OpenCode's provider plugins.
@@ -51,6 +51,27 @@ A middleware package is a folder under `packages/<name>/` with:
 - **`package.json`**: name `@magpie-community/middleware-<name>`, `"magpie": {"middleware": "./<name>.middleware.js", "options": {…}}`, no `main`. `options` is the example magpie offers when none are set.
 - **`<name>.middleware.js`**: exports `onRequest`, `onEvent` and/or `onResponse` ([the hooks](https://usemagpie.ai/docs/plugins#middleware)). It runs in magpie's gateway on moejs, so it is one file and imports nothing.
 - **`cases.json`** and a test that runs them with `check()` from `scripts/middleware.mjs`, which calls the hooks the way the gateway does.
+
+## Agents
+
+These add an agent magpie has no setup of its own for. Once added, the agent is
+on magpie's Agents page like the ones magpie ships with: pick one of magpie's
+models in its row and magpie writes it into the agent's config, and switching
+it off puts the config back.
+
+| Package | Agent |
+|---|---|
+| [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
+
+```sh
+magpie plugin add @magpie-community/agent-<name>
+```
+
+An agent package is a folder under `packages/<name>/` with:
+
+- **`package.json`**: name `@magpie-community/agent-<name>`, `"magpie": {"agent": "./<name>.agent.js"}`, no `main`.
+- **`<name>.agent.js`**: exports `agent` (where the agent keeps its model) and, if it needs more than the model, `connect` (the other keys to write) ([the reference](https://usemagpie.ai/docs/plugins#agents)). It runs in magpie on moejs, so it is one file and imports nothing.
+- a test of what `connect` returns.
 
 ## Skills
 
