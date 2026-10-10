@@ -31,6 +31,9 @@
       "summary": { "en": "Cline's models on your own Cline account — usage billing, ClinePass and Cline's free models — with Cline's device sign-in or an API key.", "zh": "用自己的 Cline 账号使用 Cline 的模型——用量计费、ClinePass 与免费模型——支持 Cline 设备登录或 API key。" } },
     { "package": "@magpie-community/opencode-trae-auth", "name": "Trae", "icon": "trae", "providers": ["trae-cn", "trae-global"], "community": true,
       "summary": { "en": "Trae CN (trae.cn) and Trae international (trae.ai) models with your own account, free tier included — Trae's own browser sign-in. Experimental.", "zh": "用 Trae CN（trae.cn）与 Trae 国际版（trae.ai）账号使用各自的模型，含免费版，使用 Trae 自己的浏览器登录。实验性。" } },
+
+    { "package": "@magpie-community/opencode-index-translate-auth", "name": "Index Translate", "icon": "https://www.bilibili.com/favicon.ico", "providers": ["index-translate"], "community": true,
+      "summary": { "en": "Bilibili's free Index-Translate-35B-A3B translation model, sent with thinking off and greedy decoding, as the official bridge does.", "zh": "Bilibili 免费 Index-Translate-35B-A3B 翻译模型，按官方桥接的方式关闭思考并贪心解码。" } },
     { "package": "@magpie-community/middleware-param-override", "name": "Param Override", "kind": "middleware", "community": true,
       "summary": { "en": "New API's parameter override: set, delete, move or rewrite fields of every request, by model or by condition.", "zh": "New API 的参数覆盖：按模型或条件设置、删除、移动或改写每个请求的字段。" } },
     { "package": "@magpie-community/middleware-model-map", "name": "Model Map", "kind": "middleware", "community": true,
