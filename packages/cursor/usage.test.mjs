@@ -80,7 +80,7 @@ test("the card names the plan as cursor-agent about does (GetPlanInfo's planName
   expect(plan.headers.Authorization).toBe(`Bearer ${a.access}`)
   const again = await run(a, reply)
   expect(again.u.plan).toBe("Pro+")
-  expect(again.seen.map((r) => r.url)).toEqual([PERIOD])
+  expect(again.seen.map((r) => r.url)).not.toContain(PLAN)
 })
 
 test("a plan Cursor doesn't say leaves the card's plan out", async () => {
@@ -213,4 +213,80 @@ test("Bot login redirects are refused", async () => {
   const { u, seen } = await botRun(new Response(null, { status: 307, headers: { Location: "https://cursor.com/login?returnTo=dashboard" } }))
   expect(u).toEqual(normal)
   expect(seen.find((r) => r.url === BOT)).toMatchObject({ redirect: "error" })
+})
+
+// fottencity on Discord: a team that pays for on-demand usage once the
+// included usage is gone. Cursor goes on serving it, so the spent pools must
+// not read as the account used up; its on-demand spend is what runs out.
+// The replies are GetCurrentPeriodUsage's and GetHardLimit's as
+// cursor-agent 2026.10.01 decodes them (Connect JSON of
+// GetCurrentPeriodUsageResponse.SpendLimitUsage: cents, pooled_limit an
+// int64 string; GetHardLimitResponse: dollars), and its usage view's
+// On-demand line is what is read from them.
+const HARD = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetHardLimit"
+const spent = { billingCycleEnd: "1792833042000", planUsage: { autoPercentUsed: 100, apiPercentUsed: 100, totalPercentUsed: 100 } }
+const at = new Date(1792833042000).toISOString()
+const onDemand = (period, hard) =>
+  run(fresh(), (url) => {
+    if (url === PLAN) return Response.json({})
+    if (url === HARD) return hard instanceof Response ? hard : Response.json(hard)
+    return Response.json(period)
+  })
+const shape = (u) => u.windows.map(({ models, notModels, ...w }) => w)
+
+test("a team member's own on-demand limit: the spent pools are aside, the on-demand spend is the allowance", async () => {
+  const { u, seen } = await onDemand({ ...spent, spendLimitUsage: { totalSpend: 52000, individualLimit: 50000, individualUsed: 12345, individualRemaining: 37655, limitType: "team", pooledLimit: "0" } }, {})
+  expect(shape(u)).toEqual([
+    { name: "Cursor Models", used: 100, resetsAt: at, aside: true },
+    { name: "Other Models", used: 100, resetsAt: at, aside: true },
+    { name: "On-demand", used: 24.69, display: "$123.45 / $500.00", resetsAt: at },
+    { name: "Total", used: 100, resetsAt: at, aside: true },
+  ])
+  const period = seen.find((r) => r.url === PERIOD)
+  expect(seen.find((r) => r.url === HARD)).toEqual({ ...period, url: HARD })
+})
+
+test("a team with no limit of the member's but a team hard limit: on-demand without end, every window aside", async () => {
+  for (const period of [
+    { ...spent, spendLimitUsage: { individualUsed: 900, limitType: "team" } },
+    { ...spent, spendLimitUsage: { individualUsed: 900, limitType: "team", pooledLimit: "100000" } },
+  ]) {
+    const { u } = await onDemand(period, { hardLimit: 2000, perUserMonthlyLimitDollars: 0 })
+    expect(u.windows.every((w) => w.aside)).toBe(true)
+    expect(shape(u)[2]).toEqual({ name: "On-demand", used: 0, display: "$9.00", resetsAt: at, aside: true })
+  }
+  // GetHardLimit unread: the team's pooled limit says it is allowed
+  const { u } = await onDemand({ ...spent, spendLimitUsage: { individualUsed: 900, limitType: "team", pooledLimit: "100000" } }, new Response("no", { status: 500 }))
+  expect(u.windows.every((w) => w.aside)).toBe(true)
+})
+
+test("a personal plan's hard limit is its on-demand limit; the top int32 is none", async () => {
+  const { u } = await onDemand({ ...spent, spendLimitUsage: { individualUsed: 500, limitType: "user" } }, { hardLimit: 20 })
+  expect(shape(u).slice(0, 3)).toEqual([
+    { name: "Cursor Models", used: 100, resetsAt: at, aside: true },
+    { name: "Other Models", used: 100, resetsAt: at, aside: true },
+    { name: "On-demand", used: 25, display: "$5.00 / $20.00", resetsAt: at },
+  ])
+  const none = (await onDemand({ ...spent, spendLimitUsage: { individualUsed: 500, limitType: "user" } }, { hardLimit: 2147483647 })).u
+  expect(none.windows.every((w) => w.aside)).toBe(true)
+  // spent to its limit: the account is used up again
+  const out = (await onDemand({ ...spent, spendLimitUsage: { individualUsed: 2500, limitType: "user" } }, { hardLimit: 20 })).u
+  expect(shape(out)[2]).toEqual({ name: "On-demand", used: 100, display: "$25.00 / $20.00", resetsAt: at })
+})
+
+test("no on-demand allowed, none set or not known: the pools are the allowance, as before", async () => {
+  const before = [
+    { name: "Cursor Models", used: 100, resetsAt: at },
+    { name: "Other Models", used: 100, resetsAt: at },
+    { name: "Total", used: 100, resetsAt: at, aside: true },
+  ]
+  const cases = [
+    [{ ...spent, spendLimitUsage: { individualUsed: 0, limitType: "user" } }, {}],
+    [{ ...spent, spendLimitUsage: { individualUsed: 0, limitType: "user" } }, { hardLimit: 50, noUsageBasedAllowed: true }],
+    [{ ...spent, spendLimitUsage: { individualLimit: 0, individualUsed: 0, limitType: "team" } }, { hardLimit: 2000 }],
+    [{ ...spent, spendLimitUsage: { individualUsed: 0, limitType: "team" } }, { hardLimit: 2000, noUsageBasedAllowed: true }],
+    [{ ...spent, spendLimitUsage: { individualUsed: 0, limitType: "team" } }, new Response("no", { status: 403 })],
+    [spent, new Response("no", { status: 500 })],
+  ]
+  for (const [i, [period, hard]] of cases.entries()) expect([i, shape((await onDemand(period, hard)).u)]).toEqual([i, before])
 })

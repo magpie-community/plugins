@@ -131,6 +131,13 @@ Accounts with a Grok Bot allowance also show its usage and reset time;
 active trials are labelled separately. A spent Bot allowance doesn't stop
 Cursor requests.
 
+An account that may spend on-demand once its included usage is gone (a
+team or personal spend limit, as `cursor-agent`'s usage view shows it) also
+shows On-demand: its spend, and its limit when it has one. Cursor keeps
+serving such an account past the included usage, so magpie doesn't count
+it used up when Cursor Models or Other Models reach 100%; it does when the
+on-demand spend reaches its limit.
+
 Sign in to the Cursor account linked in Grok Bot. A linked SuperGrok
 subscription grants Bot access without a paid Cursor plan; see
 [Grok Bot plans and billing](https://cursor.com/help/grok-bot/plans).
