@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-zed-auth",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Sign in to a Zed subscription (Zed Pro, trial, student, business) from OpenCode or magpie",
   "type": "module",
   "main": "./index.mjs",
