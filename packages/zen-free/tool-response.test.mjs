@@ -864,7 +864,9 @@ test("chat: completed tool buffers release their cumulative budget", async () =>
   assert.equal(tools, 34);
 });
 
-test("SSE event byte limit includes both bytes of CRLF even across chunks", async () => {
+// 64 MiB through the guard: seconds of work, more under load, so it isn't
+// held to bun's 5 s default (it timed out on a machine at load 110)
+test("SSE event byte limit includes both bytes of CRLF even across chunks", { timeout: 60_000 }, async () => {
   const prefix = 'data: {"text":"';
   const suffix = '"}\r\n\r\n';
   const text = prefix + "x".repeat(32 * 1024 * 1024 + 1 - prefix.length - suffix.length) + suffix;
