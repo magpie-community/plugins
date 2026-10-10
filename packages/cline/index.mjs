@@ -37,6 +37,15 @@ const DEVICE_CAP = 600 // seconds the browser may take, however long the code li
 // only thing that has to match).
 const CLIENT = { type: "cline-cli", version: "3.0.68", platform: "cli", core: "0.0.90" }
 
+// A fresh task ID prevents prompt cache reuse on these ClinePass routes.
+const CACHE_SENSITIVE_PASS_MODELS = new Set([
+	"cline-pass/deepseek-v4.1-flash",
+	"cline-pass/glm-5.3-flash",
+	"cline-pass/glm-5.3",
+	"cline-pass/kimi-k3",
+	"cline-pass/qwen3.8-max",
+])
+
 // clientHeaders is the header set resolveProviderRequestHeaders builds for a
 // client with that identity; official clients supply a task id per task.
 function clientHeaders(taskId) {
@@ -945,11 +954,12 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 						}
 						const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
 						headers.set("Authorization", `Bearer ${cred.bearer}`)
-						// ClinePass treats a new task id as a new cache key; keep the
-						// client identity headers, but send no task id for those models.
-						const taskId = typeof chat.model === "string" && chat.model.startsWith("cline-pass/") ? undefined : randomUUID()
+						// A fresh task id defeats the prompt cache for these models;
+						// keep the client identity headers without a task id for them.
+						const cacheSensitive = CACHE_SENSITIVE_PASS_MODELS.has(chat.model)
+						const taskId = cacheSensitive ? undefined : randomUUID()
 						for (const [k, v] of Object.entries(clientHeaders(taskId))) headers.set(k, v)
-						if (!taskId) headers.delete("X-Task-ID")
+						if (cacheSensitive) headers.delete("X-Task-ID")
 						headers.delete("content-length")
 						headers.delete("host")
 						let res

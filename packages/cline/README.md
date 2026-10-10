@@ -43,12 +43,14 @@ workos:<access token>` for a signed-in account or the raw API key, and the
 full client-identity header set Cline's own clients send (`HTTP-Referer`,
 `X-Title`, `User-Agent: Cline/<version>`, `X-CLIENT-TYPE: cline-cli`,
 `X-CLIENT-VERSION`, `X-PLATFORM`, `X-PLATFORM-VERSION`, `X-CORE-VERSION`,
-`X-IS-MULTIROOT`, and a per-request `X-Task-ID` for models outside ClinePass)
-— pinned to Cline's current CLI release, which is also what the free models'
-gate reads; when Cline ships a new release, move the pinned numbers in
-`index.mjs` along. ClinePass requests omit `X-Task-ID`: a new value on every
-request prevents its prompt cache from being reused. Auth and account
-requests carry the same identity. A finished non-streaming answer rides in a
+`X-IS-MULTIROOT`, and a per-request `X-Task-ID` for most models) — pinned
+to Cline's current CLI release, which is also what the free models' gate
+reads; when Cline ships a new release, move the pinned numbers in
+`index.mjs` along. ClinePass DeepSeek V4.1 Flash, GLM 5.3 and 5.3 Flash,
+Kimi K3, and Qwen 3.8 Max omit `X-Task-ID`: a new value on every request
+prevents their prompt caches from being reused. Other models keep their
+generated task IDs. Auth and account requests carry the same identity.
+A finished non-streaming answer rides in a
 `{"data": …}` envelope the official clients take apart; the plugin takes it
 apart too. The model list is read from
 `/api/v1/ai/cline/recommended-models` and `/api/v1/ai/cline/models` (neither
