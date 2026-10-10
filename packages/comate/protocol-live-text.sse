@@ -1,0 +1,5 @@
+data: {"kind":"delta-batch","cid":"fixture-cid-001","chunks":[{"kind":"element-add","element":{"id":"fixture-text-001","type":"TEXT","content":"Sanitized fixture answer."}}]}
+
+data: {"type":"task_done","status":"completed","conversationId":"fixture-conversation-001","errorMessage":""}
+
+: end of sanitized fixture
