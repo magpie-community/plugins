@@ -151,8 +151,36 @@ test("an API-key account signs requests with the raw key", async () => {
 	expect(calls[0].init.headers.get("User-Agent")).toBe(`Cline/${CLIENT.version}`)
 	expect(calls[0].init.headers.get("HTTP-Referer")).toBe("https://cline.bot")
 	expect(calls[0].init.headers.get("X-Title")).toBe("Cline")
-	expect(calls[0].init.headers.get("X-Task-ID")).toBeTruthy()
+	expect(calls[0].init.headers.get("X-Task-ID")).toBeNull()
 	expect(await res.json()).toEqual({ ok: true })
+})
+
+test("one task id per named session, no task id without one, and no private header upstream", async () => {
+	const { client: c } = client()
+	const hooks = await ClinePlugin({ client: c })
+	serve(Array.from({ length: 6 }, () => [chatUrl, () => Response.json({ ok: true })]))
+	const l = await hooks.auth.loader(async () => ({ type: "api", key: "ck" }))
+	const send = async (sessionID, model = "cline-pass/deepseek-v4.1-flash") => {
+		const out = { headers: {} }
+		await hooks["chat.headers"]({ sessionID, model: { providerID: "cline" }, provider: { info: { id: "cline" } } }, out)
+		const headers = new Headers(out.headers)
+		headers.set("X-Task-ID", "stale-id")
+		const res = await l.fetch(chatUrl, { ...chatInit({ model }), headers })
+		expect(res.status).toBe(200)
+		const upstream = calls.at(-1).init.headers
+		expect(upstream.get("x-magpie-cline-session")).toBeNull()
+		return upstream.get("X-Task-ID")
+	}
+	const first = await send("session-one")
+	expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+	expect(await send("session-one")).toBe(first)
+	expect(await send("session-one", "moonshotai/kimi-k3")).toBe(first)
+	expect(await send("session-two")).not.toBe(first)
+	expect(await send("")).toBeNull()
+	expect(await send("magpie-0123456789abcdef01234567")).toBeNull()
+	const out = { headers: {} }
+	await hooks["chat.headers"]({ sessionID: "session-one", model: { providerID: "other" }, provider: { info: { id: "other" } } }, out)
+	expect(out.headers).toEqual({})
 })
 
 test("clientHeaders is the official client's set, task id only when asked", () => {
