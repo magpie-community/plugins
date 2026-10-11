@@ -485,7 +485,7 @@ async function queryUsage(token) {
   const [points, entitlement, bills] = await Promise.all([
     apiGetJson("/api/web/points/v1/balance", token),
     apiGetJson("/api/web/auth/v1/entitlement_info", token).catch(() => null),
-    apiGetJson("/api/web/points/v1/bills?paging.limit=25&paging.offset=0", token).catch(() => null),
+    apiGetJson("/api/web/points/v1/bills?paging.limit=200&paging.offset=0", token).catch(() => null),
   ])
   const avail = Math.floor(Number(points?.available_points) || 0)
   const daily = Math.floor(Number(points?.daily_points) || 0)
@@ -499,7 +499,7 @@ async function queryUsage(token) {
   const plan = proEnable ? (planType && planType !== "none" ? planType : "Pro") : "Free"
   const expireAt = office?.pro_expired_time || office?.active_plan?.subscription_expired_at || null
 
-  // Calculate exact granted pool from bills so used / total is accurate
+  // Calculate exact granted pool from unexpired grants in bills (and 300/3000 grant multiples)
   let dailyGranted = 0
   let rewardGranted = 0
   let runsOutAt = null
@@ -521,8 +521,8 @@ async function queryUsage(token) {
       rewardGranted += pts
     }
   }
-  const effectiveDailyTotal = daily > 0 ? Math.max(daily, dailyGranted, 300) : 0
-  const effectiveRewardTotal = reward > 0 ? Math.max(reward, rewardGranted, 9000) : 0
+  const effectiveDailyTotal = daily > 0 ? Math.max(daily, dailyGranted, Math.ceil(daily / 300) * 300) : dailyGranted
+  const effectiveRewardTotal = reward > 0 ? Math.max(reward, rewardGranted, Math.ceil(reward / 3000) * 3000) : rewardGranted
   let totalGranted = Math.max(avail, effectiveDailyTotal + effectiveRewardTotal + monthly + topup)
   if (totalGranted <= 0) totalGranted = 300
   const used = Math.max(0, totalGranted - avail)
@@ -541,7 +541,6 @@ async function queryUsage(token) {
   return {
     plan,
     ...(proEnable && expireAt ? { until: new Date(expireAt).toISOString() } : {}),
-    balance: `${avail} credits`,
     windows,
   }
 }
