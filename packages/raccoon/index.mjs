@@ -1,17 +1,13 @@
-// OpenCode / Magpie provider plugin for SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com).
-// Ported from aimod-cc/agent2api's raccoon provider implementation:
-//   - Auth: JWT access_token + refresh_token, proactive refresh 5m before expiry
-//           via POST https://xiaohuanxiong.com/api/web/auth/v1/refresh
-//   - Sign-in methods:
-//       1) Browser authorization callback URL (office-raccoon://auth/callback?code=...&state=...) or raw token
-//       2) Raccoon desktop live sign-in (~/.box-agent/config/auth.json)
-//   - Models: live catalog from GET /api/web/llm/v2/model_catalog with credit rates & free flags
-//   - Chat: POST /api/web/llm/v2/chat/completions with SSE model name rewrite
-//   - Usage: GET /api/web/points/v1/balance + /api/web/auth/v1/entitlement_info + /api/web/points/v1/bills
-//   - Daily check-in & onboarding grants: GET /api/web/office/v3/setting_info + desktop/mobile 3000pt grants
+// OpenCode & Magpie provider plugin for SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com).
+//
+// Raccoon signs in through xiaohuanxiong.com's desktop authorization page
+// (/code/authorize -> office-raccoon://auth/callback?code=...&state=...), or
+// reads the live session Raccoon's desktop app keeps in
+// ~/.box-agent/config/auth.json (read-only). Chats are OpenAI-compatible chat
+// completions at /api/web/llm/v2/chat/completions.
 
 import { randomUUID } from "node:crypto"
-import { readFileSync, statSync, writeFileSync } from "node:fs"
+import { readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -19,9 +15,9 @@ const PROVIDER_ID = "raccoon"
 const PROVIDER_NAME = "商汤小浣熊"
 const NPM = "@ai-sdk/openai-compatible"
 
-const MAIN_ORIGIN = (process.env.RACCOON_MAIN_SITE_URL || "https://xiaohuanxiong.com").replace(/\/+$/, "")
-const AUTH_BASE = (process.env.RACCOON_AUTH_API_BASE || `${MAIN_ORIGIN}/api/web/auth/v1`).replace(/\/+$/, "")
-const LLM_BASE = (process.env.RACCOON_LLM_BASE_URL || `${MAIN_ORIGIN}/api/web/llm/v2`).replace(/\/+$/, "")
+const mainOrigin = () => (process.env.RACCOON_MAIN_SITE_URL || "https://xiaohuanxiong.com").replace(/\/+$/, "")
+const authBase = () => (process.env.RACCOON_AUTH_API_BASE || `${mainOrigin()}/api/web/auth/v1`).replace(/\/+$/, "")
+const llmBase = () => (process.env.RACCOON_LLM_BASE_URL || `${mainOrigin()}/api/web/llm/v2`).replace(/\/+$/, "")
 
 const EARLY_MS = 60 * 1000
 const LEAD_MS = 5 * 60 * 1000
@@ -32,12 +28,7 @@ const DESKTOP_HEADERS = {
   "X-Client-Platform": "desktop-windows",
   "X-Client-Version": "v1.0.0",
 }
-const MOBILE_HEADERS = {
-  "X-Client-Platform": "app-android",
-  "X-Client-Version": "v1.0.3",
-}
 
-// Fallback model list (matches agent2api's fallback_models + live catalog)
 const FALLBACK_MODELS = [
   { id: "raccoon-8c4485", name: "Raccoon-Work", context: 1_000_000, output: 100_000, images: true, reasoning: true, rate: 1, free: false },
   { id: "raccoon-19b265", name: "Raccoon-Work-260817-A", context: 1_000_000, output: 100_000, images: false, reasoning: true, rate: 1, free: false },
@@ -103,7 +94,17 @@ function extractDisplayName(claims) {
   return String(claims?.name ?? "").trim()
 }
 
-// ---- Desktop auth.json (~/.box-agent/config/auth.json) ----------------------
+function vendorErrorText(payload, fallback) {
+  for (const k of ["details", "message", "msg"]) {
+    if (typeof payload?.[k] === "string" && payload[k].trim()) return payload[k].trim()
+  }
+  if (typeof payload?.error?.message === "string" && payload.error.message.trim()) {
+    return payload.error.message.trim()
+  }
+  return fallback
+}
+
+// ---- Desktop auth.json (~/.box-agent/config/auth.json, read-only) -----------
 
 function desktopAuthPath() {
   for (const envKey of ["RACCOON_BOX_AGENT_CONFIG_DIR", "BOX_AGENT_CONFIG_DIR"]) {
@@ -120,7 +121,6 @@ function readDesktopAuth() {
     if (!st.isFile() || st.size <= 0 || st.size > 256 * 1024) return null
     const raw = JSON.parse(readFileSync(p, "utf8"))
     const access = stripBearer(raw?.access_token)
-    const refresh = stripBearer(raw?.refresh_token)
     if (!access) return null
     const claims = decodeJwtClaims(access)
     const uid = extractUserId(claims)
@@ -128,29 +128,14 @@ function readDesktopAuth() {
     const expires = jwtExpiryMs(access)
     return {
       access,
-      refresh,
+      refresh: "",
       expires,
       uid,
       name: name || (uid ? `Raccoon-${uid}` : PROVIDER_NAME),
-      raw,
-      path: p,
+      source: "desktop",
     }
   } catch {
     return null
-  }
-}
-
-function writeDesktopAuthIfCurrent(prevAccess, nextAccess, nextRefresh) {
-  const p = desktopAuthPath()
-  try {
-    const cur = JSON.parse(readFileSync(p, "utf8"))
-    if (stripBearer(cur?.access_token) !== stripBearer(prevAccess)) return false
-    cur.access_token = nextAccess
-    if (nextRefresh) cur.refresh_token = nextRefresh
-    writeFileSync(p, JSON.stringify(cur, null, 2) + "\n", { mode: 0o600 })
-    return true
-  } catch {
-    return false
   }
 }
 
@@ -160,7 +145,7 @@ const renewing = new Map()
 const renewed = new Map()
 
 async function callRefreshApi(refreshToken) {
-  const res = await fetch(`${AUTH_BASE}/refresh`, {
+  const res = await fetch(`${authBase()}/refresh`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ refresh_token: refreshToken }),
@@ -172,15 +157,16 @@ async function callRefreshApi(refreshToken) {
     payload = JSON.parse(text) ?? {}
   } catch {}
   if (!res.ok) {
-    const msg = payload?.message || payload?.msg || payload?.error?.message || `HTTP ${res.status}`
+    const msg = vendorErrorText(payload, `HTTP ${res.status}`)
     const err = new Error(`商汤小浣熊刷新 Token 失败: ${msg}`)
-    if (res.status === 401) err.signIn = "expired"
+    if (res.status >= 400 && res.status < 500) err.signIn = "expired"
     throw err
   }
   const data = payload?.data ?? {}
   const access = stripBearer(data?.access_token)
   if (!access) {
-    const err = new Error(`商汤小浣熊刷新 Token 失败: ${payload?.message || payload?.msg || "未返回新 Token"}`)
+    const msg = vendorErrorText(payload, "未返回新 Token")
+    const err = new Error(`商汤小浣熊刷新 Token 失败: ${msg}`)
     err.signIn = "expired"
     throw err
   }
@@ -192,21 +178,29 @@ async function callRefreshApi(refreshToken) {
   return { access, refresh, expires, ...(uid ? { uid } : {}), ...(name ? { name } : {}) }
 }
 
-function renewToken(a, save) {
+async function renewToken(a, save) {
   const key = a.refresh
   const done = renewed.get(key)
-  if (done && Date.now() - done.at < KEEP_RENEWED_MS) return Promise.resolve({ ...a, ...done.next })
+  if (done && Date.now() - done.at < KEEP_RENEWED_MS) {
+    const merged = { ...a, ...done.next }
+    if (merged.access !== a.access || merged.refresh !== a.refresh) {
+      await save?.(merged)
+    }
+    return merged
+  }
   let r = renewing.get(key)
   if (!r) {
     r = (async () => {
       const next = await callRefreshApi(a.refresh)
       renewed.set(key, { next, at: Date.now() })
-      await save?.({ ...a, ...next })
       return next
     })().finally(() => renewing.delete(key))
     renewing.set(key, r)
   }
-  return r.then((next) => ({ ...a, ...next }))
+  const next = await r
+  const merged = { ...a, ...next }
+  await save?.(merged)
+  return merged
 }
 
 function isStale(a, marginMs = EARLY_MS) {
@@ -214,22 +208,22 @@ function isStale(a, marginMs = EARLY_MS) {
   return exp > 0 && Date.now() >= exp - marginMs
 }
 
-const desktopHeld = new Map()
-
+// Desktop sign-in is strictly read-only: never write ~/.box-agent/config/auth.json
+// and never spend the desktop app's refresh token.
 async function currentAuth(client, auth, force = false) {
   if (auth?.source === "desktop") {
     const d = readDesktopAuth()
-    if (!d) throw new Error("商汤小浣熊桌面端未登录（未找到 ~/.box-agent/config/auth.json）")
-    const k = d.uid || "desktop"
-    const held = desktopHeld.get(k)
-    const base = held && held.expires >= d.expires ? held : d
-    if (!force && !isStale(base, LEAD_MS)) return { a: base, didRenew: false }
-    if (!base.refresh) return { a: base, didRenew: false }
-    const next = await renewToken(base, async (updated) => {
-      writeDesktopAuthIfCurrent(base.access, updated.access, updated.refresh)
-    })
-    desktopHeld.set(k, next)
-    return { a: next, didRenew: true }
+    if (!d) {
+      const err = new Error("商汤小浣熊桌面端未登录，请打开商汤小浣熊客户端登录")
+      err.signIn = "expired"
+      throw err
+    }
+    if (force || isStale(d, EARLY_MS)) {
+      const err = new Error("商汤小浣熊桌面端登录态已过期，请打开商汤小浣熊客户端重新登录")
+      err.signIn = "expired"
+      throw err
+    }
+    return { a: { ...auth, ...d }, didRenew: false }
   }
 
   let a = { ...auth }
@@ -240,9 +234,16 @@ async function currentAuth(client, auth, force = false) {
   }
   if (!a.expires && a.access) a.expires = jwtExpiryMs(a.access)
   const alreadyRenewed = a.access !== auth.access
-  if (!force && !isStale(a, EARLY_MS)) return { a, didRenew: alreadyRenewed }
+  if (!force && !isStale(a, EARLY_MS)) {
+    if (alreadyRenewed) {
+      try {
+        await client?.auth?.set?.({ path: { id: PROVIDER_ID }, body: a })
+      } catch {}
+    }
+    return { a, didRenew: alreadyRenewed }
+  }
   if (!a.refresh) {
-    if (a.access && (!a.expires || Date.now() < a.expires)) return { a, didRenew: alreadyRenewed }
+    if (!force && a.access && (!a.expires || Date.now() < a.expires)) return { a, didRenew: alreadyRenewed }
     const err = new Error("商汤小浣熊登录态已过期且无 refresh_token，请重新登录")
     err.signIn = "expired"
     throw err
@@ -257,7 +258,7 @@ async function currentAuth(client, auth, force = false) {
 
 // ---- Models catalog ---------------------------------------------------------
 
-let catalogCache = { models: null, at: 0 }
+let catalogCache = { origin: "", models: null, at: 0 }
 
 function numOf(v) {
   const n = typeof v === "number" ? v : typeof v === "string" && v.trim() ? Number(v.trim()) : NaN
@@ -305,12 +306,13 @@ function parseCatalog(payload) {
 }
 
 async function fetchLiveModels(token) {
-  if (catalogCache.models && Date.now() - catalogCache.at < CATALOG_TTL_MS) {
+  const base = llmBase()
+  if (catalogCache.models && catalogCache.origin === base && Date.now() - catalogCache.at < CATALOG_TTL_MS) {
     return catalogCache.models
   }
   const headers = { Accept: "application/json" }
   if (token) headers.Authorization = "Bearer " + stripBearer(token)
-  const res = await fetch(`${LLM_BASE}/model_catalog`, {
+  const res = await fetch(`${base}/model_catalog`, {
     headers,
     signal: AbortSignal.timeout(10_000),
   })
@@ -318,7 +320,7 @@ async function fetchLiveModels(token) {
   const payload = await res.json()
   const models = parseCatalog(payload)
   if (!models.length) throw new Error("empty catalog")
-  catalogCache = { models, at: Date.now() }
+  catalogCache = { origin: base, models, at: Date.now() }
   return models
 }
 
@@ -346,7 +348,7 @@ function runtimeModel(provider, m) {
     id: m.id,
     providerID: provider.id,
     name: m.name,
-    api: { id: m.id, url: LLM_BASE, npm: NPM },
+    api: { id: m.id, url: llmBase(), npm: NPM },
     status: "active",
     headers: {},
     options: {},
@@ -415,7 +417,7 @@ function rewriteSseModel(res, requestedModel, signInHeader) {
     new TransformStream({
       transform(chunk, controller) {
         buf += dec.decode(chunk, { stream: true })
-        const lines = buf.split("\n")
+        const lines = buf.split(/\r?\n/)
         buf = lines.pop() ?? ""
         if (lines.length) {
           controller.enqueue(enc.encode(lines.map(rewriteLine).join("\n") + "\n"))
@@ -423,7 +425,7 @@ function rewriteSseModel(res, requestedModel, signInHeader) {
       },
       flush(controller) {
         buf += dec.decode()
-        if (buf) controller.enqueue(enc.encode(rewriteLine(buf)))
+        if (buf) controller.enqueue(enc.encode(rewriteLine(buf.replace(/\r$/, ""))))
       },
     }),
   )
@@ -434,7 +436,7 @@ function rewriteSseModel(res, requestedModel, signInHeader) {
 // ---- Usage, Check-in & Onboarding -------------------------------------------
 
 async function apiGetJson(path, token, extraHeaders = {}, method = "GET") {
-  const res = await fetch(`${MAIN_ORIGIN}${path}`, {
+  const res = await fetch(`${mainOrigin()}${path}`, {
     method,
     headers: {
       Accept: "application/json",
@@ -449,13 +451,19 @@ async function apiGetJson(path, token, extraHeaders = {}, method = "GET") {
     payload = JSON.parse(text) ?? {}
   } catch {}
   if (res.status === 401) {
-    const err = new Error("登录态已过期")
+    const err = new Error(vendorErrorText(payload, "登录态已过期"))
     err.status = 401
+    err.signIn = "expired"
     throw err
   }
-  if (!res.ok) throw new Error(payload?.message || payload?.msg || `HTTP ${res.status}`)
+  if (!res.ok) throw new Error(vendorErrorText(payload, `HTTP ${res.status}`))
   if (typeof payload?.code === "number" && payload.code !== 0) {
-    throw new Error(payload?.message || payload?.msg || `code=${payload.code}`)
+    const err = new Error(vendorErrorText(payload, `code=${payload.code}`))
+    if (payload.code === 200001 || payload.code === 200003) {
+      err.status = 401
+      err.signIn = "expired"
+    }
+    throw err
   }
   return payload?.data ?? payload
 }
@@ -464,21 +472,15 @@ function beijingTodayKey(nowMs = Date.now()) {
   return new Date(nowMs + 8 * 3600_000).toISOString().slice(0, 10)
 }
 
-async function claimOnboardingGrants(token) {
-  let claimedPoints = 0
-  for (const [path, headers] of [
-    ["/api/web/desktop/v1/login/points/grant", DESKTOP_HEADERS],
-    ["/api/web/mobile/v1/login/points/grant", MOBILE_HEADERS],
-  ]) {
-    try {
-      const d = await apiGetJson(path, token, headers, "POST")
-      if (d?.granted === true) {
-        const pts = Number(d?.popup?.points)
-        claimedPoints += Number.isFinite(pts) && pts > 0 ? pts : 3000
-      }
-    } catch {}
-  }
-  return claimedPoints
+async function claimDesktopOnboardingGrant(token) {
+  try {
+    const d = await apiGetJson("/api/web/desktop/v1/login/points/grant", token, DESKTOP_HEADERS, "POST")
+    if (d?.granted === true) {
+      const pts = Number(d?.popup?.points)
+      return Number.isFinite(pts) && pts > 0 ? pts : 3000
+    }
+  } catch {}
+  return 0
 }
 
 async function queryUsage(token) {
@@ -489,9 +491,6 @@ async function queryUsage(token) {
   ])
   const avail = Math.floor(Number(points?.available_points) || 0)
   const daily = Math.floor(Number(points?.daily_points) || 0)
-  const reward = Math.floor(Number(points?.reward_points) || 0)
-  const monthly = Math.floor(Number(points?.monthly_points) || 0)
-  const topup = Math.floor(Number(points?.topup_points) || 0)
 
   const office = entitlement?.office ?? entitlement?.code ?? {}
   const proEnable = office?.pro_enable === true || entitlement?.code?.pro_enable === true
@@ -499,9 +498,9 @@ async function queryUsage(token) {
   const plan = proEnable ? (planType && planType !== "none" ? planType : "Pro") : "Free"
   const expireAt = office?.pro_expired_time || office?.active_plan?.subscription_expired_at || null
 
-  // Calculate exact granted pool from unexpired grants in bills (and 300/3000 grant multiples)
-  let dailyGranted = 0
-  let rewardGranted = 0
+  // Sum only what the vendor actually reports as granted in unexpired bills.
+  // If bills don't account for the current balance, report the balance with no window.
+  let grantedFromBills = 0
   let runsOutAt = null
   let runsOut = 0
   const now = Date.now()
@@ -511,71 +510,96 @@ async function queryUsage(token) {
     const expStr = typeof item?.expire_at === "string" ? item.expire_at : ""
     const expMs = expStr ? Date.parse(expStr) : 0
     if (expMs > 0 && expMs <= now) continue
-    if (item?.biz_type === "daily_grant" || expMs > 0) {
-      dailyGranted += pts
-      if (expMs > now && (!runsOutAt || expMs < Date.parse(runsOutAt))) {
-        runsOutAt = new Date(expMs).toISOString()
-        runsOut = daily > 0 ? daily : avail
-      }
-    } else {
-      rewardGranted += pts
+    grantedFromBills += pts
+    if (expMs > now && (!runsOutAt || expMs < Date.parse(runsOutAt))) {
+      runsOutAt = new Date(expMs).toISOString()
+      runsOut = daily > 0 ? daily : avail
     }
   }
-  const effectiveDailyTotal = daily > 0 ? Math.max(daily, dailyGranted, Math.ceil(daily / 300) * 300) : dailyGranted
-  const effectiveRewardTotal = reward > 0 ? Math.max(reward, rewardGranted, Math.ceil(reward / 3000) * 3000) : rewardGranted
-  let totalGranted = Math.max(avail, effectiveDailyTotal + effectiveRewardTotal + monthly + topup)
-  if (totalGranted <= 0) totalGranted = 300
-  const used = Math.max(0, totalGranted - avail)
-  const windows = [
-    {
-      name: "Credits",
-      used: (100 * used) / totalGranted,
-      display: `${used} / ${totalGranted}`,
-      amount: used,
-      limit: totalGranted,
-      unit: "credits",
-      ...(runsOutAt ? { runsOutAt, runsOut } : {}),
-    },
-  ]
+
+  if (grantedFromBills > 0 && grantedFromBills >= avail) {
+    const used = grantedFromBills - avail
+    return {
+      plan,
+      ...(proEnable && expireAt ? { until: new Date(expireAt).toISOString() } : {}),
+      windows: [
+        {
+          name: "Credits",
+          used: (100 * used) / grantedFromBills,
+          display: `${used} / ${grantedFromBills}`,
+          amount: used,
+          limit: grantedFromBills,
+          unit: "credits",
+          ...(runsOutAt ? { runsOutAt, runsOut } : {}),
+        },
+      ],
+    }
+  }
 
   return {
     plan,
     ...(proEnable && expireAt ? { until: new Date(expireAt).toISOString() } : {}),
-    windows,
+    balance: `${avail} credits`,
+    windows: [],
   }
 }
 
-async function performCheckIn(token, auth, save) {
-  // 1. Trigger daily desktop login points grant
-  await apiGetJson("/api/web/office/v3/setting_info", token, {
+function billKey(item, idx) {
+  return String(item?.bill_id || item?.biz_id || `${item?.created_at ?? ""}:${item?.points ?? 0}:${idx}`)
+}
+
+function isCheckinGrantBill(item, today) {
+  const pts = Math.floor(Number(item?.points) || 0)
+  if (pts <= 0) return false
+  const createdAt = String(item?.created_at ?? "")
+  if (createdAt.slice(0, 10) !== today) return false
+  const biz = String(item?.biz_type ?? "")
+  return !biz || biz === "daily_grant" || biz === "reward_grant"
+}
+
+async function performCheckIn(a, save) {
+  const token = a.access
+  const today = beijingTodayKey()
+
+  // Snapshot today's grant bills before triggering setting_info so a second
+  // check-in on the same day reports "done" rather than "claimed" again.
+  let beforeKeys = null
+  try {
+    const before = await apiGetJson("/api/web/points/v1/bills?paging.limit=20&paging.offset=0", token)
+    const items = Array.isArray(before?.items) ? before.items : []
+    beforeKeys = new Set(items.filter((x) => isCheckinGrantBill(x, today)).map(billKey))
+  } catch {}
+
+  const settingRes = await apiGetJson("/api/web/office/v3/setting_info", token, {
     ...DESKTOP_HEADERS,
     "X-Raccoon-Language": "zh",
-  }).catch(() => null)
+  })
 
-  // 2. One-time onboarding grants (desktop +3000, mobile +3000) if not yet settled
   let onboardingPts = 0
-  if (!auth?.onboardingSettled) {
-    onboardingPts = await claimOnboardingGrants(token)
-    if (save) {
-      await save({ ...auth, onboardingSettled: true }).catch(() => {})
+  if (!a?.onboardingSettled) {
+    onboardingPts = await claimDesktopOnboardingGrant(token)
+    if (save && a?.source !== "desktop") {
+      await save({ ...a, onboardingSettled: true }).catch(() => {})
     }
   }
 
-  // 3. Verify today's grants via bills (Beijing time UTC+8)
-  const today = beijingTodayKey()
+  const popupGrant = Number(settingRes?.point_grant_popups?.points ?? settingRes?.point_grant_toast?.points)
+  const popupPts = Number.isFinite(popupGrant) && popupGrant > 0 ? Math.floor(popupGrant) : 0
+
   const bills = await apiGetJson("/api/web/points/v1/bills?paging.limit=20&paging.offset=0", token)
-  let grantedToday = 0
+  let newlyGranted = 0
   const names = []
-  for (const item of Array.isArray(bills?.items) ? bills.items : []) {
+  const items = Array.isArray(bills?.items) ? bills.items : []
+  items.forEach((item, idx) => {
+    if (!isCheckinGrantBill(item, today)) return
+    if (beforeKeys && beforeKeys.has(billKey(item, idx))) return
     const pts = Math.floor(Number(item?.points) || 0)
-    const createdAt = String(item?.created_at ?? "")
-    if (pts > 0 && createdAt.slice(0, 10) === today) {
-      grantedToday += pts
-      const ev = String(item?.event_name || "积分发放")
-      if (!names.includes(ev)) names.push(ev)
-    }
-  }
-  const totalCredit = grantedToday || onboardingPts
+    newlyGranted += pts
+    const ev = String(item?.event_name || "积分发放")
+    if (!names.includes(ev)) names.push(ev)
+  })
+
+  const totalCredit = newlyGranted || popupPts || onboardingPts
   if (totalCredit > 0) {
     return {
       outcome: "claimed",
@@ -592,7 +616,7 @@ async function performCheckIn(token, auth, save) {
 // ---- Sign-in flows ----------------------------------------------------------
 
 function buildAuthorizeUrl(state) {
-  const u = new URL("/code/authorize", MAIN_ORIGIN)
+  const u = new URL("/code/authorize", mainOrigin())
   u.searchParams.set("login_source", "desktop")
   u.searchParams.set("appname", "办公小浣熊客户端")
   u.searchParams.set("state", state)
@@ -602,7 +626,6 @@ function buildAuthorizeUrl(state) {
 function parseCallbackInput(raw, expectedState) {
   const text = String(raw ?? "").trim()
   if (!text) throw new Error("请输入回调链接或 Token")
-  // Support pasting JSON {"access_token":"...","refresh_token":"..."}
   if (text.startsWith("{")) {
     const obj = JSON.parse(text)
     const access = stripBearer(obj?.access_token ?? obj?.accessToken)
@@ -610,11 +633,9 @@ function parseCallbackInput(raw, expectedState) {
     if (!access) throw new Error("JSON 中缺少 access_token")
     return { direct: { access, refresh } }
   }
-  // Support pasting raw JWT access_token directly
   if (text.split(".").length === 3 && !text.includes("://")) {
     return { direct: { access: stripBearer(text), refresh: "" } }
   }
-  // Parse office-raccoon://auth/callback?code=...&state=...
   let u
   try {
     u = new URL(text)
@@ -631,7 +652,7 @@ function parseCallbackInput(raw, expectedState) {
 }
 
 async function exchangeAuthCode(code) {
-  const res = await fetch(`${AUTH_BASE}/login_with_authorization_code`, {
+  const res = await fetch(`${authBase()}/login_with_authorization_code`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ authorization_code: code }),
@@ -645,7 +666,7 @@ async function exchangeAuthCode(code) {
   const access = stripBearer(data?.access_token)
   const refresh = stripBearer(data?.refresh_token)
   if (!res.ok || !access || !refresh) {
-    throw new Error(payload?.message || payload?.msg || `换取凭证失败 (HTTP ${res.status})`)
+    throw new Error(vendorErrorText(payload, `换取凭证失败 (HTTP ${res.status})`))
   }
   return { access, refresh }
 }
@@ -679,8 +700,6 @@ function browserSignIn() {
       try {
         const parsed = parseCallbackInput(input, state)
         const tokens = parsed.direct ? parsed.direct : await exchangeAuthCode(parsed.code)
-        // Auto-claim daily + onboarding grants on new sign-in
-        await performCheckIn(tokens.access, {}, null).catch(() => {})
         return toSuccessAuth(tokens.access, tokens.refresh)
       } catch (e) {
         return { type: "failed", error: e?.message ?? String(e) }
@@ -697,12 +716,14 @@ function desktopSignIn() {
     async callback() {
       const d = readDesktopAuth()
       if (!d) return { type: "failed", error: "未检测到本机商汤小浣熊登录态 (~/.box-agent/config/auth.json)" }
-      await performCheckIn(d.access, {}, null).catch(() => {})
+      if (isStale(d, EARLY_MS)) {
+        return { type: "failed", error: "商汤小浣熊桌面端登录态已过期，请先打开商汤小浣熊客户端重新登录" }
+      }
       return {
         type: "success",
-        access: d.access,
-        refresh: d.refresh,
-        expires: d.expires,
+        access: "",
+        refresh: "",
+        expires: 0,
         source: "desktop",
         accountId: d.name || PROVIDER_NAME,
         uid: d.uid || "",
@@ -727,7 +748,7 @@ export const RaccoonAuthPlugin = async ({ client }) => {
       config.provider[PROVIDER_ID] = {
         name: PROVIDER_NAME,
         npm: NPM,
-        api: LLM_BASE,
+        api: llmBase(),
         ...was,
         models: { ...configModels(), ...(was.models ?? {}) },
       }
@@ -768,7 +789,7 @@ export const RaccoonAuthPlugin = async ({ client }) => {
         const auth = await getAuth()
         if (auth?.type !== "oauth") return {}
         return {
-          baseURL: LLM_BASE,
+          baseURL: llmBase(),
           apiKey: "raccoon",
           async fetch(input, init = {}) {
             const req = input instanceof Request ? input : null
@@ -797,7 +818,7 @@ export const RaccoonAuthPlugin = async ({ client }) => {
             }
 
             let res = await sendOnce(a)
-            if (res.status === 401 && a.refresh) {
+            if (res.status === 401 && a.refresh && a.source !== "desktop") {
               try {
                 const retryAuth = await currentAuth(client, a, true)
                 a = retryAuth.a
@@ -821,7 +842,7 @@ export const RaccoonAuthPlugin = async ({ client }) => {
           try {
             result = await queryUsage(a.access)
           } catch (e) {
-            if (e?.status === 401 && a.refresh) {
+            if (e?.status === 401 && a.refresh && a.source !== "desktop") {
               const retryAuth = await currentAuth(client, a, true)
               a = retryAuth.a
               didRenew = true
@@ -847,8 +868,20 @@ export const RaccoonAuthPlugin = async ({ client }) => {
         if (auth?.type !== "oauth" || !(auth.access || auth.source === "desktop")) {
           return { outcome: "failed", message: "not signed in" }
         }
-        const { a } = await currentAuth(client, auth)
-        return performCheckIn(a.access, auth, saveAuth)
+        try {
+          let { a } = await currentAuth(client, auth)
+          try {
+            return await performCheckIn(a, saveAuth)
+          } catch (e) {
+            if (e?.status === 401 && a.refresh && a.source !== "desktop") {
+              ;({ a } = await currentAuth(client, a, true))
+              return await performCheckIn(a, saveAuth)
+            }
+            throw e
+          }
+        } catch (e) {
+          return { outcome: "failed", message: e?.message ?? String(e) }
+        }
       },
       methods: [
         {
@@ -877,4 +910,6 @@ export const _internal = {
   parseCallbackInput,
   rewriteSseModel,
   beijingTodayKey,
+  renewed,
+  renewing,
 }
