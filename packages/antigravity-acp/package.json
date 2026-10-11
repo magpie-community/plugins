@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-antigravity-acp-auth",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "OpenCode provider plugin: Google Antigravity through its official ACP server (agy_acp_server)",
   "type": "module",
   "main": "./index.mjs",

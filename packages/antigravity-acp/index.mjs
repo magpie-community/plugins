@@ -522,7 +522,7 @@ class AcpConnection {
     this.init ??= this.request("initialize", {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-      clientInfo: { name: "opencode-antigravity-acp-auth", title: "Antigravity (ACP) for magpie", version: "0.1.1" },
+      clientInfo: { name: "opencode-antigravity-acp-auth", title: "Antigravity (ACP) for magpie", version: "0.1.2" },
     }, timeoutMs).then(
       (r) => { this.initResult = r; return r },
       (e) => { this.init = null; this.initResult = null; throw e },
