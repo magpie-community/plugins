@@ -1081,6 +1081,10 @@ function statusOf(status, code, msg) {
 const textOf = (c) =>
   typeof c === "string" ? c : Array.isArray(c) ? c.filter((p) => p?.type === "text").map((p) => p.text ?? "").join("") : ""
 
+// Chat clients replay thinking beside content. Cursor's transcript blobs
+// use AI SDK reasoning parts; putting it in text would change its role.
+const reasoningOf = (m) => [m.reasoning_content, m.reasoning].find((s) => typeof s === "string" && s.trim()) ?? ""
+
 // joinSplitCalls joins an assistant message onto the assistant message
 // before it when that one made tool calls: Anthropic takes consecutive
 // assistant messages as one turn, and an agent can send a turn's parallel
@@ -1093,7 +1097,8 @@ function joinSplitCalls(msgs) {
     const prev = out.at(-1)
     if (m?.role === "assistant" && prev?.role === "assistant" && prev.tool_calls?.length) {
       const content = [textOf(prev.content), textOf(m.content)].filter(Boolean).join("\n\n")
-      out[out.length - 1] = { ...prev, content, tool_calls: [...prev.tool_calls, ...(m.tool_calls ?? [])] }
+      const reasoning_content = [reasoningOf(prev), reasoningOf(m)].filter(Boolean).join("\n\n")
+      out[out.length - 1] = { ...prev, content, reasoning_content, tool_calls: [...prev.tool_calls, ...(m.tool_calls ?? [])] }
       continue
     }
     out.push(m)
@@ -1198,9 +1203,11 @@ function conversation(chat, tools) {
     if (m.role === "assistant") {
       answer()
       const content = []
+      const reasoning = reasoningOf(m)
+      if (reasoning) content.push({ type: "reasoning", text: reasoning })
       const text = textOf(m.content)
       if (text) content.push({ type: "text", text })
-      size += text.length
+      size += reasoning.length + text.length
       for (const c of m.tool_calls ?? []) {
         if (c?.type && c.type !== "function") continue
         const args = parseArgs(c.function?.arguments)

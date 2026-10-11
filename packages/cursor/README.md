@@ -63,7 +63,11 @@ plugin's `fetch` answers them on Cursor's agent API:
   so subagents under one session are conversations of their own. With
   nothing naming the session, each Run has a new one.
 - Text, thinking (`reasoning_content`) and token usage come back streamed
-  or not. Cursor's `input_tokens` counts the cached prompt too: the cache
+  or not. Replayed assistant `reasoning_content` (or `reasoning`) is kept as
+  AI SDK reasoning parts in the next Run's transcript, including when a
+  caller splits parallel tool calls across assistant messages. It stays
+  separate from reply text; no thinking signature is invented.
+  Cursor's `input_tokens` counts the cached prompt too: the cache
   read and written is taken out of it, and given as `cached_tokens` and
   `cache_write_tokens`, so it is counted once; its reasoning tokens are
   `reasoning_tokens`. A step that calls tools gets no usage in its Run
