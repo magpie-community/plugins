@@ -2,15 +2,17 @@
 // A fake Antigravity ACP server, enough of one for the plugin's tests:
 // initialize, authenticate, session/new with a model select,
 // session/set_config_option, session/prompt (text, thought, and one client
-// tool call through the MCP bridge the session was given), session/cancel.
+// tool call through the MCP bridge the session was given), session/cancel,
+// session/close.
 //
 // Prompt words the tests drive the failure paths with:
 //   AUTHFAIL — the prompt is refused with -32000 (a lost sign-in)
 //   FAILMID  — one chunk is streamed first, then the prompt is refused
 //   DIEONCE  — the server exits on its first DIEONCE prompt, answers the
 //              next one (the retry) normally, via a marker file
-// The cwd of each session/new is written to $AGY_ACP_HOME/last-cwd, so a
-// test can assert where the plugin lets the server work.
+//   HANG     — the prompt never answers (for the soft-timeout test)
+// The cwd of each session/new is written to $AGY_ACP_HOME/last-cwd, and each
+// closed session id to $AGY_ACP_HOME/closed-sessions, for the tests to assert.
 import { createInterface } from "node:readline"
 import fs from "node:fs"
 import os from "node:os"
@@ -64,7 +66,7 @@ const handlers = {
       protocolVersion: 1,
       agentInfo: { name: "antigravity-acp", version: "1.2.1" },
       authMethods: [{ id: "oauth-personal", name: "Log in with Google" }],
-      agentCapabilities: { promptCapabilities: { image: true, embeddedContext: true } },
+      agentCapabilities: { promptCapabilities: { image: true, embeddedContext: true }, sessionCapabilities: { close: true } },
     }
   },
   async authenticate() {
@@ -93,6 +95,7 @@ const handlers = {
     // the error (-32000), not with a refusal result — inside the try below
     // they would be swallowed into one
     if (/AUTHFAIL/.test(text)) throw new Error("authentication required")
+    if (/HANG/.test(text)) return new Promise(() => {})
     if (/FAILMID/.test(text)) {
       update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "partial " } })
       throw new Error("authentication required")
@@ -129,6 +132,11 @@ const handlers = {
     // the in-flight prompt sees the cleared pending and answers cancelled
     if (session) session.pending = null
     return undefined
+  },
+  "session/close"(params) {
+    sessions.delete(params?.sessionId)
+    try { fs.appendFileSync(path.join(process.env.AGY_ACP_HOME ?? os.tmpdir(), "closed-sessions"), `${params?.sessionId}\n`) } catch {}
+    return {}
   },
 }
 

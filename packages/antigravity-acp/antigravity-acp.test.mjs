@@ -6,7 +6,7 @@
 // failure paths: a refused prompt (a lost sign-in), a refusal after the reply
 // started, a server that dies under the request, and where the plugin lets
 // the server work.
-import { test, expect } from "bun:test"
+import { test, expect, afterAll } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -177,6 +177,37 @@ onPosix("pid files live in the plugin's runtime root, not ~/.gemini", async () =
   expect(listed.filter((f) => f.startsWith("magpie-acp-pids"))).toEqual([])
 })
 
+onPosix("the session is closed over the wire when its request ends", async () => {
+  await chat({ stream: false })
+  // the fake advertises sessionCapabilities.close, so the plugin sends
+  // session/close as a real request; the fake records what it got. The
+  // request rides the stdin pipe, so the record may lag the reply a little
+  let closed = ""
+  for (let i = 0; i < 40 && !closed; i++) {
+    await new Promise((r) => setTimeout(r, 50))
+    try { closed = fs.readFileSync(path.join(home, "closed-sessions"), "utf8") } catch {}
+  }
+  expect(closed.trim()).not.toBe("")
+})
+
+onPosix("a timed-out call is cancelled alone; the server lives on", async () => {
+  const conn = new _internal.AcpConnection({ command: wrapper, args: [], cwd: home })
+  conn.start()
+  try {
+    await conn.initialize()
+    const session = await conn.newSession(home, [], 5_000)
+    // HANG never answers; the 300ms wait runs out with killOnTimeout false
+    const hang = conn.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "HANG" }] }, 300, false)
+    await expect(hang.promise).rejects.toThrow(/didn't answer session\/prompt/)
+    // the server is still with us and answers the next request
+    expect(conn.live).toBe(true)
+    const next = await conn.newSession(home, [], 5_000)
+    expect(next.sessionId).toBeTruthy()
+  } finally {
+    conn.kill()
+  }
+})
+
 onPosix("usage reads the quota the prompt answered with", async () => {
   await chat({ stream: false })
   const u = await plugin.auth.usage(async () => ({ type: "oauth", refresh: "x" }))
@@ -200,4 +231,12 @@ test("projectModels folds families, keeps one-offs", () => {
   const ids = projected.map((m) => m.id)
   expect(ids).toContain("gemini-3.7-flash")
   expect(ids).toContain("gemini-3.7-flash-tiered")
+})
+
+afterAll(async () => {
+  // the pooled servers hold the workspace open; let them go, wait for the
+  // kills to land, then take the temporary home with us
+  _internal.shutdown()
+  await new Promise((r) => setTimeout(r, 500))
+  try { fs.rmSync(home, { recursive: true, force: true }) } catch {}
 })

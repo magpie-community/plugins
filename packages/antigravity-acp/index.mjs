@@ -155,7 +155,10 @@ function pointCurrentAt(destination) {
 let installLock = null
 async function withInstallLock(fn) {
   const dir = path.join(runtimeRoot(), ".install-lock")
-  const end = Date.now() + 15 * 60_000
+  // a second installer waits for as long as the first may hold the lock —
+  // a slow download isn't a stuck one
+  const wait = INSTALL_TIMEOUT + 5 * 60_000
+  const end = Date.now() + wait
   fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 })
   for (;;) {
     try { fs.mkdirSync(dir); break } catch (e) {
@@ -165,8 +168,8 @@ async function withInstallLock(fn) {
       // a lock left by a dead process is taken back, but only after longer
       // than the download it guards can run: a slow first install never has
       // its lock taken while it is still working
-      if (Date.now() - born > INSTALL_TIMEOUT + 5 * 60_000) { try { fs.rmdirSync(dir) } catch {} }
-      if (Date.now() > end) throw new Error("another Antigravity ACP install has been running for over 15 minutes")
+      if (Date.now() - born > wait) { try { fs.rmdirSync(dir) } catch {} }
+      if (Date.now() > end) throw new Error(`another Antigravity ACP install has been running for over ${Math.round(wait / 60_000)} minutes`)
       await sleep(1000)
     }
   }
@@ -378,6 +381,7 @@ class AcpConnection {
     this.updaters = new Set()
     this.server = null
     this.init = null
+    this.initResult = null
     this.stderrTail = ""
     this.#child = null
   }
@@ -519,7 +523,10 @@ class AcpConnection {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       clientInfo: { name: "opencode-antigravity-acp-auth", title: "Antigravity (ACP) for magpie", version: "0.1.1" },
-    }, timeoutMs).catch((e) => { this.init = null; throw e })
+    }, timeoutMs).then(
+      (r) => { this.initResult = r; return r },
+      (e) => { this.init = null; this.initResult = null; throw e },
+    )
     return this.init
   }
 
@@ -557,12 +564,26 @@ class AcpConnection {
 
   cancel(sessionId) { this.notify("session/cancel", { sessionId }) }
 
-  // endSession asks the server to close a session once its request is over;
-  // a server that doesn't offer the method answers an error no one waits for
-  endSession(sessionId) { this.notify("session/close", { sessionId }) }
+  // canClose is whether the server advertised the session/close capability:
+  // ACP's session/close is a request, and still unstable — an agent offers it
+  // with agentCapabilities.sessionCapabilities.close, and a server without it
+  // would never answer a request for it
+  get canClose() {
+    return this.initResult?.agentCapabilities?.sessionCapabilities?.close === true
+  }
+
+  // closeSession asks the server to close a session once its request is over,
+  // as a request (it is one in ACP), with a short wait and no failure anyone
+  // waits on: a server that doesn't take the method or answer in time just
+  // leaves the session to its own accounting
+  closeSession(sessionId) {
+    if (!this.canClose) return
+    this.call("session/close", { sessionId }, 5_000, false).promise.catch(() => {})
+  }
 
   kill() {
     this.init = null
+    this.initResult = null
     const child = this.#child
     if (!child) return
     try { child.stdin?.end() } catch {}
@@ -824,9 +845,13 @@ const saved = () => ({
 // one it drives the browser itself.
 async function signedIn(conn) {
   const session = await conn.newSession(workDir(), [], 60_000)
-  const r = await conn.request("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "Reply with exactly: OK" }] }, 90_000)
-  conn.cancel(session.sessionId)
-  if (r?.stopReason !== "end_turn" && r?.stopReason !== "cancelled") throw new Error("the server did not answer the probe")
+  try {
+    const r = await conn.request("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "Reply with exactly: OK" }] }, 90_000)
+    if (r?.stopReason !== "end_turn" && r?.stopReason !== "cancelled") throw new Error("the server did not answer the probe")
+  } finally {
+    conn.cancel(session.sessionId)
+    conn.closeSession(session.sessionId)
+  }
 }
 
 // done checks the sign-in took and saves the marker.
@@ -982,7 +1007,7 @@ for (const [id, m] of Object.entries(FALLBACK_MODELS)) {
 async function discoverModels(auth) {
   const conn = await connectionFor(auth)
   const session = await conn.newSession(workDir(), [])
-  return sessionModels(session)
+  try { return sessionModels(session) } finally { conn.closeSession(session.sessionId) }
 }
 
 function magpieModel(provider, m) {
@@ -1447,7 +1472,7 @@ async function handleChat(getAuth, input, init, retried = false) {
       stopUpdates()
       // the session is this request's own; the server is asked to close it
       // (whether a closed session lingers in the IDE's history is its call)
-      try { conn.endSession(session.sessionId) } catch {}
+      try { conn.closeSession(session.sessionId) } catch {}
       bridge.close()
     }
 
@@ -1623,8 +1648,15 @@ export const AntigravityAcpPlugin = async (input = {}) => {
 }
 
 // for tests
+// shutdown is for tests: a suite lets its pooled servers go before it takes
+// its temporary home away
+const shutdown = () => {
+  for (const [, p] of pools) { try { p.conn.kill() } catch {} }
+  pools.clear()
+}
+
 export const _internal = {
   projectModels, resolveServerId, buildPrompt, parseChat, localAuth, configureDefaultAuth,
   Bridge, Turn, noteQuota, sessionModels, resolveLaunch, platformKey, setIndex: (m) => (familyIndex = m),
-  AcpConnection, authDir, runtimeRoot, workDir,
+  AcpConnection, authDir, runtimeRoot, workDir, shutdown,
 }
