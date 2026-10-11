@@ -1,9 +1,20 @@
 #!/usr/bin/env -S node
-// A fake Antigravity ACP server, enough of one for the plugin's smoke test:
+// A fake Antigravity ACP server, enough of one for the plugin's tests:
 // initialize, authenticate, session/new with a model select,
 // session/set_config_option, session/prompt (text, thought, and one client
 // tool call through the MCP bridge the session was given), session/cancel.
+//
+// Prompt words the tests drive the failure paths with:
+//   AUTHFAIL — the prompt is refused with -32000 (a lost sign-in)
+//   FAILMID  — one chunk is streamed first, then the prompt is refused
+//   DIEONCE  — the server exits on its first DIEONCE prompt, answers the
+//              next one (the retry) normally, via a marker file
+// The cwd of each session/new is written to $AGY_ACP_HOME/last-cwd, so a
+// test can assert where the plugin lets the server work.
 import { createInterface } from "node:readline"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 
 const MODELS = [
   { value: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)" },
@@ -63,6 +74,8 @@ const handlers = {
   "session/new"(params) {
     const id = `s-${nextSession++}`
     sessions.set(id, { model: "gemini-3.8-flash-low", mcp: params?.mcpServers?.[0] ?? null })
+    // where the plugin lets the server work, for the test to assert
+    try { fs.writeFileSync(path.join(process.env.AGY_ACP_HOME ?? os.tmpdir(), "last-cwd"), String(params?.cwd ?? "")) } catch {}
     return { sessionId: id, configOptions: configOptions(sessions.get(id).model) }
   },
   "session/set_config_option"(params) {
@@ -76,7 +89,22 @@ const handlers = {
     const id = nextId++
     session.pending = id
     const text = (params?.prompt ?? []).filter((b) => b?.type === "text").map((b) => b.text).join("\n")
+    // the failure paths throw out of the handler, so the wire answers with
+    // the error (-32000), not with a refusal result — inside the try below
+    // they would be swallowed into one
+    if (/AUTHFAIL/.test(text)) throw new Error("authentication required")
+    if (/FAILMID/.test(text)) {
+      update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "partial " } })
+      throw new Error("authentication required")
+    }
     try {
+      if (/DIEONCE/.test(text)) {
+        const marker = path.join(process.env.AGY_ACP_HOME ?? os.tmpdir(), "died-once")
+        if (!fs.existsSync(marker)) {
+          fs.writeFileSync(marker, "1")
+          process.exit(3)
+        }
+      }
       if (session.mcp && /USE_TOOL/.test(text)) {
         const call = await mcpCallTool(session.mcp)
         update(params.sessionId, { sessionUpdate: "tool_call", toolCallId: "t1", title: `fake tool ${call.name}`, kind: "other", status: "completed" })

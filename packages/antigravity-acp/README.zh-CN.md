@@ -22,7 +22,8 @@
   - *Use Antigravity's current Google sign-in* —— 复用 Antigravity IDE 在本机已完成的登录。
   - *Gemini API key* —— 以 `_meta.api-key` 向服务器认证。
 - **运行时**：按 `AGY_ACP_BIN`、`~/.local/opt/agy-acp/current`、`~/.local/bin/agy_acp_server.par`、`PATH` 的顺序查找。都没有时，下载 `runtime-manifest.json` 固定的版本（校验 SHA-256 与精确字节数，解压出的服务器先经 ACP 验明身份再启用）到 `~/.local/opt/agy-acp/versions/`，并链接为 `current`。Linux 解压需要机器上有 `unzip`。
-- **请求**：每个请求都是模型的 OpenAI Chat body（模型声明在 `@ai-sdk/openai-compatible` 上）。插件把它翻译成一次 ACP 会话：历史作为一块嵌入式 markdown 上下文，最后一条用户消息的文本与图片作为 prompt 块，回复以 OpenAI 分块流回 —— `agent_message_chunk` 对应 content，`agent_thought_chunk` 对应 `reasoning_content`，prompt 的 usage 与配额在末块。
+- **请求**：每个请求都是模型的 OpenAI Chat body（模型声明在 `@ai-sdk/openai-compatible` 上）。插件把它翻译成一次 ACP 会话：历史作为一块嵌入式 markdown 上下文，最后一条用户消息的文本与图片作为 prompt 块，回复以 OpenAI 分块流回 —— `agent_message_chunk` 对应 content，`agent_thought_chunk` 对应 `reasoning_content`，prompt 的 usage 与配额在末块。会话为单个请求所有；请求结束时插件会请服务器关闭它。
+- **失败路径**：在回复尚未流出任何内容之前的 prompt 失败会作为失败请求抛出 —— 登录失效会把账户标记为 expired，服务器中途退出会在新服务器上重试一次。回复一旦开始，错误只作为回复末尾附注。超出时限的 prompt 会在服务器上被取消，而不是连服务器一起杀掉。
 - **模型**：服务器带 effort 后缀的 id 折叠为每家族一条（`gemini-3.8-flash-low/-medium/-high` 变成 `gemini-3.8-flash`，带 low/medium/high variants）；请求的 `reasoning_effort` 在会话上选中对应的确切 id。
 - **工具**：请求携带的工具经回环 MCP bridge 提供给 agent。agent 在那里发起调用，即成为回复的 `tool_calls` 并结束回合，与聊天客户端的预期一致。Antigravity 自己的工具被拒之门外（`session/request_permission` 一律回答 *cancelled*），因此本机上只有客户端 agent 要求执行的东西会运行。
 - **用量**：上一次 prompt 应答携带的配额（`_meta.quota`）显示在账户的 Usage 卡片上。
@@ -31,7 +32,7 @@
 
 - 一台机器一个 Google 登录，本供应商所有账户共享；"换账号"意味着把整台机器登成另一个人。
 - Antigravity 自己的文件与命令工具永远不会执行；模型坚持要用时会说明它做不到。真正被提供的是客户端 agent 的工具。
-- 会话不跨请求保温：每个请求把整段对话作为上下文携带，如同无状态的模型 API。
+- 会话不跨请求保温：每个请求把整段对话作为上下文携带，如同无状态的模型 API。每个请求在自己的 ACP 会话里运行，请求结束后插件会请服务器关闭它；关闭后的会话是否仍留在 IDE 的会话历史里由服务器决定（未对真实服务器验证）。
 
 ## 封号风险，以及 magpie 内置的 Antigravity
 
@@ -60,7 +61,7 @@
 ## 测试
 
 ```sh
-node test/smoke.mjs   # 全插件对着一个假 ACP 服务器跑；不下载、不登录 Google
+bun test   # 全插件对着一个假 ACP 服务器跑；不下载、不登录 Google
 ```
 
 ## 许可

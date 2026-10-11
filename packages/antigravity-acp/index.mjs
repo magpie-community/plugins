@@ -60,7 +60,7 @@ const authDir = () => process.env.AGY_ACP_AUTH_DIR || path.join(homeDir(), ".gem
 const runtimeRoot = () => process.env.AGY_ACP_RUNTIME_ROOT || path.join(homeDir(), ".local", "opt", "agy-acp")
 
 // what the plugin runs with, set when magpie loads it
-const ctx = { client: null, directory: "" }
+const ctx = { client: null }
 
 const note = (message) => { try { ctx.client?.app?.log?.({ service: "antigravity-acp", level: "info", message }) } catch {} }
 const toast = (message, variant = "info") => { try { ctx.client?.tui?.showToast?.({ title: "Antigravity (ACP)", message, variant }) } catch {} }
@@ -132,7 +132,11 @@ function track(child) {
   children.add(child)
   child.once("close", () => children.delete(child))
 }
-process.on("exit", () => { for (const c of children) { try { c.kill("SIGKILL") } catch {} } })
+process.on("exit", () => {
+  for (const c of children) { try { c.kill("SIGKILL") } catch {} }
+  // this host's own pid file goes with it; other hosts' stay for their next start
+  try { fs.rmSync(pidFile(), { force: true }) } catch {}
+})
 
 // ---- installing the managed runtime --------------------------------------------
 
@@ -158,9 +162,10 @@ async function withInstallLock(fn) {
       if (e?.code !== "EEXIST") throw e
       let born = 0
       try { born = fs.statSync(dir).mtimeMs } catch {}
-      // a lock left by a dead process is taken back before the wait itself
-      // runs out, so the stale branch is reachable
-      if (Date.now() - born > 10 * 60_000) { try { fs.rmdirSync(dir) } catch {} }
+      // a lock left by a dead process is taken back, but only after longer
+      // than the download it guards can run: a slow first install never has
+      // its lock taken while it is still working
+      if (Date.now() - born > INSTALL_TIMEOUT + 5 * 60_000) { try { fs.rmdirSync(dir) } catch {} }
       if (Date.now() > end) throw new Error("another Antigravity ACP install has been running for over 15 minutes")
       await sleep(1000)
     }
@@ -296,22 +301,20 @@ async function validateInstall(runtime, asset, version) {
 // to the process that spawned it, and only a host that has died has its
 // servers reaped. One shared file would have every magpie process killing
 // every other's live server (a CLI command would take down the app's).
-const pidFile = (owner = process.pid) => path.join(authDir(), `magpie-acp-pids-${owner}.json`)
+// the pid files live in the plugin's own runtime root, not the server's
+// sign-in folder (~/.gemini), which is the server's to keep
+const runDir = () => path.join(runtimeRoot(), "run")
+const pidFile = (owner = process.pid) => path.join(runDir(), `magpie-acp-pids-${owner}.json`)
 let reaped = false
 async function reapStale() {
   if (reaped) return
   reaped = true
   try {
-    fs.mkdirSync(authDir(), { recursive: true, mode: 0o700 })
-    for (const f of fs.readdirSync(authDir())) {
+    fs.mkdirSync(runDir(), { recursive: true, mode: 0o700 })
+    for (const f of fs.readdirSync(runDir())) {
       const owner = f.match(/^magpie-acp-pids-(\d+)\.json$/)?.[1]
-      if (owner !== undefined) {
-        if (Number(owner) === process.pid || alive(Number(owner))) continue
-        await reapFile(path.join(authDir(), f))
-      } else if (f === "magpie-acp-pids.json") {
-        // the pre-ownership shared file: its servers have no living owner of
-        // their own on record, so the identity check decides
-        await reapFile(path.join(authDir(), f))
+      if (owner !== undefined && Number(owner) !== process.pid && !alive(Number(owner))) {
+        await reapFile(path.join(runDir(), f))
       }
     }
   } catch {}
@@ -478,16 +481,18 @@ class AcpConnection {
   }
 
   // call is request with a handle to give the wait up: a prompt cancelled
-  // early leaves the pending table, so its timeout can't fire later and kill
-  // a server other requests are still using
-  call(method, params, timeoutMs = OP_TIMEOUT) {
+  // early leaves the pending table, so its timeout can't fire later. A
+  // timed-out call takes the server down only when killOnTimeout says so
+  // (the default): one stuck prompt is cancelled on the server instead, so
+  // it can't take down every other request riding the same process
+  call(method, params, timeoutMs = OP_TIMEOUT, killOnTimeout = true) {
     if (!this.#child) throw new Error("the Antigravity ACP server was never started")
     const id = this.nextId++
     let timer
     const promise = new Promise((resolve, reject) => {
       timer = setTimeout(() => {
         this.pending.delete(id)
-        this.kill()
+        if (killOnTimeout) this.kill()
         reject(new Error(`the Antigravity ACP server didn't answer ${method} within ${Math.round(timeoutMs / 1000)}s`))
       }, timeoutMs)
       timer.unref?.()
@@ -513,7 +518,7 @@ class AcpConnection {
     this.init ??= this.request("initialize", {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-      clientInfo: { name: "opencode-antigravity-acp-auth", title: "Antigravity (ACP) for magpie", version: "0.1.0" },
+      clientInfo: { name: "opencode-antigravity-acp-auth", title: "Antigravity (ACP) for magpie", version: "0.1.1" },
     }, timeoutMs).catch((e) => { this.init = null; throw e })
     return this.init
   }
@@ -551,6 +556,10 @@ class AcpConnection {
   }
 
   cancel(sessionId) { this.notify("session/cancel", { sessionId }) }
+
+  // endSession asks the server to close a session once its request is over;
+  // a server that doesn't offer the method answers an error no one waits for
+  endSession(sessionId) { this.notify("session/close", { sessionId }) }
 
   kill() {
     this.init = null
@@ -607,9 +616,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 const pools = new Map() // auth kind → {conn, key}
 
+// workDir is the folder the server process runs in and every session is
+// given as its cwd — a folder of the plugin's own under the managed runtime,
+// never magpie's config folder (the one that holds auth.json with every
+// plugin account's tokens): an agent's read tools list and read their cwd
+// without asking, and the server writes its workspace files here too.
 const workDir = () => {
-  const dir = ctx.directory || homeDir()
-  try { fs.mkdirSync(dir, { recursive: true }) } catch {}
+  const dir = path.join(runtimeRoot(), "workspace")
+  try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }) } catch {}
   return dir
 }
 
@@ -1192,11 +1206,26 @@ class Turn {
     this.error = null
     this.ending = false
     this.#settle = null
+    this.#say = null
     this.ended = new Promise((r) => (this.#settle = r))
+    // firstSaid resolves once the turn has said anything (or ended), so the
+    // reply can decide between starting to stream and failing the request
+    this.firstSaid = new Promise((r) => (this.#say = r))
     this.onEvent = null
   }
 
   #settle
+  #say
+
+  #saidSomething() {
+    if (this.#say && this.said) { const s = this.#say; this.#say = null; s() }
+  }
+
+  // said is whether any of the reply exists yet — text, thought or a client
+  // tool call. Until something was said, a failed turn is a failed request
+  // (it rejects, and magpie may mark the sign-in or retry on a fresh
+  // server), never a reply whose text is the error.
+  get said() { return !!(this.text || this.thought || this.calls.length) }
 
   update(params) {
     const u = params?.update ?? {}
@@ -1209,11 +1238,13 @@ class Turn {
     }
     // a tool_call note of the agent's own tools is left out: they are turned
     // down, and a chat reply has no good place for them
+    this.#saidSomething()
   }
 
   addCall(name, args) {
     if (this.stop || this.calls.length >= 16) return false
     this.calls.push({ id: `call_${randomUUID().replaceAll("-", "").slice(0, 16)}`, name, args: JSON.stringify(args ?? {}) })
+    this.#saidSomething()
     if (!this.ending) {
       this.ending = true
       // a moment for parallel calls of the same turn to arrive too
@@ -1225,14 +1256,20 @@ class Turn {
   finish(reason) {
     if (this.stop) return
     this.stop = reason
-    this.#settle()
+    this.#settle?.()
+    this.#say?.()
+    this.#settle = null
+    this.#say = null
   }
 
   fail(error) {
     if (this.stop) return
     this.error = error
     this.stop = "error"
-    this.#settle()
+    this.#settle?.()
+    this.#say?.()
+    this.#settle = null
+    this.#say = null
   }
 }
 
@@ -1343,9 +1380,11 @@ function wholeReply(req, turn, finish, signal) {
   })
 }
 
-// handleChat is the loader's fetch: the whole upstream. A pooled server that
-// died under the request (killed from outside) retries once on a fresh one —
-// but only while nothing has been streamed, so a reply is never doubled.
+// handleChat is the loader's fetch: the whole upstream. A prompt that fails
+// before anything of the reply exists rejects: a lost sign-in marks the
+// account expired, and a server that died under the request (or spoke a line
+// that wasn't ACP) is retried once on a fresh one. Once the reply has
+// started, an error rides as its tail — a reply is never doubled.
 async function handleChat(getAuth, input, init, retried = false) {
   const auth = await getAuth()
   if (!auth || (auth.type !== "oauth" && auth.type !== "api")) throw expired("Antigravity is not signed in; sign in from the provider's page")
@@ -1406,17 +1445,25 @@ async function handleChat(getAuth, input, init, retried = false) {
     cleanup = () => {
       signal?.removeEventListener("abort", onAbort)
       stopUpdates()
+      // the session is this request's own; the server is asked to close it
+      // (whether a closed session lingers in the IDE's history is its call)
+      try { conn.endSession(session.sessionId) } catch {}
       bridge.close()
     }
 
+    // a prompt whose wait runs out is cancelled on the server, not killed
+    // with it: one long turn must not take down every other request the
+    // pooled server is carrying
     const promptDone = conn
-      .call("session/prompt", { sessionId: session.sessionId, prompt }, PROMPT_TIMEOUT)
+      .call("session/prompt", { sessionId: session.sessionId, prompt }, PROMPT_TIMEOUT, false)
     const promptReply = promptDone.promise.then((r) => {
       if (!r) return r
       turn.quota = noteQuota(r)
       return r
     })
-    promptReply.catch(() => {})
+    promptReply.catch((e) => {
+      if (/didn't answer session\/prompt/.test(String(e?.message ?? ""))) { try { conn.cancel(session.sessionId) } catch {} }
+    })
 
     // settleTurn ends the turn the first time the chat protocol must: the
     // prompt answered, a client tool was called, or the request was aborted.
@@ -1441,13 +1488,29 @@ async function handleChat(getAuth, input, init, retried = false) {
     const finishOf = () => (turn.calls.length ? "tool_calls" : turn.stop === "length" ? "length" : "stop")
 
     if (wantStream) {
-      // the reply is streamed as the agent speaks; the setup above has
-      // already thrown what had to throw
+      // nothing goes out until the turn settles or the agent says something:
+      // a prompt that fails before anything was said rejects below, so the
+      // catch can mark the sign-in or retry on a fresh server — a reply is
+      // never a 200 whose text is the error. Once the stream has started, an
+      // error is only the reply's tail, so a half answer is never doubled.
+      const settled = settleTurn()
+      await Promise.race([settled, turn.firstSaid])
+      if (turn.error && !turn.said && !signal?.aborted) throw turn.error
       return streamReply(req, async (sink) => {
         try {
           sink.open()
-          turn.onEvent = (e) => (e.kind === "text" ? sink.text(e.text) : sink.thought(e.text))
-          await settleTurn()
+          // what the turn said while the reply was being decided goes first,
+          // then the rest live as it arrives
+          let pushedText = ""
+          let pushedThought = ""
+          const pump = () => {
+            if (turn.thought.length > pushedThought.length) { sink.thought(turn.thought.slice(pushedThought.length)); pushedThought = turn.thought }
+            if (turn.text.length > pushedText.length) { sink.text(turn.text.slice(pushedText.length)); pushedText = turn.text }
+          }
+          pump()
+          turn.onEvent = pump
+          await settled
+          pump()
           if (turn.calls.length) sink.toolCalls(turn.calls)
           if (turn.error && !signal?.aborted) sink.note(`\n[Antigravity: ${String(turn.error.message ?? turn.error)}]`)
           sink.done(finishOf())
@@ -1461,14 +1524,22 @@ async function handleChat(getAuth, input, init, retried = false) {
     } finally {
       cleanup()
     }
+    // a turn that failed before it said anything is a failed request
+    if (turn.error && !turn.said && !signal?.aborted) throw turn.error
     return wholeReply(req, turn, finishOf(), signal)
   } catch (e) {
     cleanup()
-    const transport = /isn't running|exited \(|could not be started/i.test(String(e?.message ?? e))
-    if (transport && !retried && (!turn || (!turn.text && !turn.thought && !turn.calls.length))) {
+    // a server that died, spoke a line that wasn't ACP, or never started is
+    // a broken transport: the request is tried once on a fresh one, but only
+    // while nothing of the reply exists, so a reply is never doubled
+    const transport = /isn't running|exited \(|could not be started|isn't ACP|doesn't read|one frame can hold/i.test(String(e?.message ?? e))
+    if (transport && !retried && (!turn || !turn.said)) {
       pools.delete(auth.type === "api" ? "api" : "oauth")
       return handleChat(getAuth, input, init, true)
     }
+    // a prompt the server refused as unauthenticated marks the account, so
+    // magpie's routing can fail over: a lost sign-in arrives as the prompt's
+    // answer error, not as a throw before it
     if (isAuthError(e)) throw expired("Antigravity asks to be signed in again")
     throw e
   }
@@ -1484,7 +1555,6 @@ const stopOf = (response) => {
 
 export const AntigravityAcpPlugin = async (input = {}) => {
   ctx.client = input.client ?? null
-  ctx.directory = input.directory ?? input.worktree ?? ""
   return {
     config: async (cfg) => {
       cfg.provider ??= {}
@@ -1556,5 +1626,5 @@ export const AntigravityAcpPlugin = async (input = {}) => {
 export const _internal = {
   projectModels, resolveServerId, buildPrompt, parseChat, localAuth, configureDefaultAuth,
   Bridge, Turn, noteQuota, sessionModels, resolveLaunch, platformKey, setIndex: (m) => (familyIndex = m),
-  AcpConnection, authDir,
+  AcpConnection, authDir, runtimeRoot, workDir,
 }
