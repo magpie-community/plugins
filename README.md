@@ -131,7 +131,7 @@ Each package is a folder under `packages/<name>/`:
   - A provider that models.dev doesn't list is declared in a `config` hook
     that sets `config.provider[<id>] = { name, npm, api, models }`. The npm
     field names the AI SDK package the models speak:
-      `@ai-sdk/openai-compatible` (chat completions), `@ai-sdk/openai`
+    `@ai-sdk/openai-compatible` (chat completions), `@ai-sdk/openai`
     (Responses) or `@ai-sdk/anthropic` (Messages).
   - A list the account decides goes in the `provider: { id, models(provider, { auth }) }`
     hook.
