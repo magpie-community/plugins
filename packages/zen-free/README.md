@@ -41,5 +41,6 @@ The agent's tools are preserved. Zen's models often call OpenCode's own
 tool names; such a call is given the agent's tool whose name differs only
 in case (`bash` to `Bash`), or else only in case and `_`/`-` (`todowrite`
 to `todo_write`, `webfetch` to `web_fetch`), when exactly one does. A
-call with no such tool returns an error that names it. Tools run in the
-agent.
+call with no such tool (or with no name) is left out of the reply, and
+the reply's text says which name was left out; a turn whose every call
+was left out ends as an ordinary answer. Tools run in the agent.

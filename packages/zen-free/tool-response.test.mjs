@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { guardToolResponse } from "./tool-response.mjs";
+import { droppedNote, guardToolResponse } from "./tool-response.mjs";
 
 const encoder = new TextEncoder();
 
@@ -82,6 +82,167 @@ function namesIn(protocol, data) {
   return (
     protocol === "responses" ? (data.response ?? data).output : (data.message ?? data).content
   ).map((value) => value.name);
+}
+// The calls a reply (JSON, or every SSE frame's data) hands the agent, and
+// the text it says.
+function callsIn(protocol, values) {
+  return values.flatMap((data) => {
+    if (protocol === "chat")
+      return (data.choices ?? [])
+        .flatMap((choice) => (choice.message ?? choice.delta)?.tool_calls ?? [])
+        .map((value) => value.function.name);
+    const items =
+      protocol === "responses"
+        ? [...((data.response ?? data).output ?? []), ...(data.item ? [data.item] : [])]
+        : [
+            ...((data.message ?? data).content ?? []),
+            ...(data.content_block ? [data.content_block] : []),
+          ];
+    return items
+      .filter((item) => ["function_call", "tool_use", "server_tool_use"].includes(item.type))
+      .map((item) => item.name);
+  });
+}
+function textIn(protocol, values) {
+  if (protocol === "chat")
+    return values
+      .flatMap((data) => data.choices ?? [])
+      .map((choice) => (choice.message ?? choice.delta)?.content ?? "")
+      .join("");
+  // A stream's text is its deltas; a reply or snapshot's is its text parts.
+  const deltas = values.filter((data) =>
+    protocol === "responses"
+      ? data.type === "response.output_text.delta"
+      : data.type === "content_block_delta" && data.delta?.type === "text_delta",
+  );
+  if (deltas.length)
+    return deltas.map((data) => (protocol === "responses" ? data.delta : data.delta.text)).join("");
+  const snapshot = values
+    .map((data) =>
+      protocol === "responses" ? (data.response ?? data).output : (data.message ?? data).content,
+    )
+    .filter(Array.isArray)
+    .at(-1);
+  return (snapshot ?? [])
+    .flatMap((item) =>
+      protocol === "responses"
+        ? item.type === "message"
+          ? item.content.map((part) => part.text)
+          : []
+        : item.type === "text"
+          ? [item.text]
+          : [],
+    )
+    .join("");
+}
+const frameData = (text) =>
+  parse(text)
+    .map((frame) => frame.data)
+    .filter((data) => data && data !== "[DONE]");
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// One call streamed the way Zen streams it. Chat's is step-5-preview-free's
+// own shape (2026-10-11): the name whole in the first delta with empty
+// arguments, the arguments in pieces, and two tool_calls finishes.
+function toolStream(protocol, name) {
+  if (protocol === "chat") {
+    const id = { id: "chatcmpl-1", model: "step-5-preview-free" };
+    return (
+      event({ ...id, choices: [{ index: 0, delta: { role: "assistant", content: "" } }] }) +
+      event({
+        ...id,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_773767abbc494d2a82872502",
+                  type: "function",
+                  function: { name, arguments: "" },
+                },
+              ],
+            },
+          },
+        ],
+      }) +
+      ["", "{", '"command": "ls"', "}"]
+        .map((part) =>
+          event({
+            ...id,
+            choices: [
+              { index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: part } }] } },
+            ],
+          }),
+        )
+        .join("") +
+      event({ ...id, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }) +
+      event({
+        ...id,
+        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      }) +
+      "data: [DONE]\n\n"
+    );
+  }
+  if (protocol === "responses") {
+    const item = { id: "fc_1", type: "function_call", call_id: "call_1", name, arguments: "" };
+    const done = { ...item, arguments: '{"command":"ls"}', status: "completed" };
+    const where = { item_id: "fc_1", output_index: 0 };
+    return [
+      { type: "response.created", response: { id: "r1", status: "in_progress", output: [] } },
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { ...item, status: "in_progress" },
+      },
+      { type: "response.function_call_arguments.delta", ...where, delta: '{"command":' },
+      { type: "response.function_call_arguments.delta", ...where, delta: '"ls"}' },
+      { type: "response.function_call_arguments.done", ...where, arguments: '{"command":"ls"}' },
+      { type: "response.output_item.done", output_index: 0, item: done },
+      { type: "response.completed", response: { id: "r1", status: "completed", output: [done] } },
+    ]
+      .map((value) => event(value, value.type))
+      .join("");
+  }
+  return [
+    {
+      type: "message_start",
+      message: { id: "m1", type: "message", role: "assistant", content: [] },
+    },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "t1", name, input: {} },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "input_json_delta", partial_json: '{"command":' },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "input_json_delta", partial_json: '"ls"}' },
+    },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } },
+    { type: "message_stop" },
+  ]
+    .map((value) => event(value, value.type))
+    .join("");
+}
+// An event no undeclared name can explain: a call of a kind the agent
+// can't be handed, beside a declared one.
+function badMixed(protocol) {
+  if (protocol === "chat")
+    return chat({ tool_calls: [call("Read"), { ...call("x", 1), type: "custom" }] }, "tool_calls");
+  if (protocol === "responses")
+    return {
+      type: "response.completed",
+      response: { output: [tool(protocol, "Read"), { type: "custom_tool_call", name: "x" }] },
+    };
+  return { type: "message_start", message: { content: [tool(protocol, "Read"), 5] } };
 }
 function sse(text, { chunkSize = 31, headers = {}, status = 200 } = {}) {
   const bytes = encoder.encode(text);
@@ -191,23 +352,72 @@ for (const protocol of protocols) {
     }
   });
 
-  test(`${protocol}: JSON refuses unknown, non-injected, ambiguous and semantic aliases atomically`, async () => {
+  test(`${protocol}: JSON leaves out unknown, non-injected, ambiguous and semantic aliases, and says so (#76)`, async () => {
     for (const [name, rules] of [
       ["unknown", policy],
       ["shell", policy],
-      ["bash", { declared: new Set(["Bash", "BASH"]), injected: new Set(["bash"]) }],
-      ["todowrite", { declared: new Set(["todo_write", "todo-write"]), injected: new Set() }],
-      ["bash", { declared: new Set(), injected: new Set(["bash"]) }],
+      ["bash", { declared: new Set(["Read", "Bash", "BASH"]), injected: new Set(["bash"]) }],
+      [
+        "todowrite",
+        { declared: new Set(["Read", "todo_write", "todo-write"]), injected: new Set() },
+      ],
+      ["bash", { declared: new Set(["Read"]), injected: new Set(["bash"]) }],
     ]) {
       const response = await guardToolResponse(
         Response.json(snapshot(protocol, ["Read", name])),
         protocol,
         rules,
       );
-      assert.equal(response.status, 502);
+      assert.equal(response.status, 200);
       const body = await response.json();
-      assertError(protocol, body, false);
-      assert.equal(body.choices ?? body.output ?? body.content, undefined);
+      assert.deepEqual(callsIn(protocol, [body]), ["Read"]);
+      assert.equal(textIn(protocol, [body]), droppedNote(name));
+    }
+  });
+
+  // #76, tkhs101's table of 2026-10-10: the names step-5-preview-free
+  // called that DSH has no tool for, and no spelling of one either. Each
+  // failed the whole turn; each is now left out with the turn going on.
+  test(`${protocol}: the names from #76's table are left out, not failed on`, async () => {
+    const rules = {
+      declared: new Set([
+        "bash",
+        "read",
+        "edit",
+        "glob",
+        "grep",
+        "write",
+        "todo_write",
+        "mcp__netcatty-external__list_hosts",
+      ]),
+      injected: new Set(),
+    };
+    for (const name of ["bedit", "bcp", "ash", "mcp__netcatcatty__unused"]) {
+      const json = await guardToolResponse(
+        Response.json(snapshot(protocol, ["bash", name])),
+        protocol,
+        rules,
+      );
+      assert.equal(json.status, 200);
+      const body = await json.json();
+      assert.deepEqual(callsIn(protocol, [body]), ["bash"]);
+      assert.equal(textIn(protocol, [body]), droppedNote(name));
+      for (const upstream of [
+        event(streamSnapshot(protocol, [name])) + terminal(protocol),
+        toolStream(protocol, name),
+      ]) {
+        const streamed = await guardToolResponse(sse(upstream), protocol, rules);
+        assert.equal(streamed.status, 200);
+        const values = frameData(await streamed.text());
+        assert.ok(!values.some((data) => data.type === "error" || data.error));
+        assert.deepEqual(callsIn(protocol, values), []);
+        assert.match(
+          textIn(protocol, values),
+          new RegExp(`^(\\n\\n)?${escape(droppedNote(name))}`),
+        );
+        assert.ok(!JSON.stringify(values).includes(`"${name}"`));
+        assert.doesNotMatch(JSON.stringify(values), /"(?:tool_calls|tool_use|function_call)"/);
+      }
     }
   });
 
@@ -215,7 +425,17 @@ for (const protocol of protocols) {
   // todo_write; step-5-preview-free opens with OpenCode's todowrite.
   test(`${protocol}: an OpenCode tool name is given the agent's own spelling of it (#76)`, async () => {
     const rules = {
-      declared: new Set(["bash", "read", "edit", "glob", "grep", "write", "todo_write", "web_fetch", "TodoRead"]),
+      declared: new Set([
+        "bash",
+        "read",
+        "edit",
+        "glob",
+        "grep",
+        "write",
+        "todo_write",
+        "web_fetch",
+        "TodoRead",
+      ]),
       injected: new Set(),
     };
     for (const [asked, given] of [
@@ -243,21 +463,27 @@ for (const protocol of protocols) {
     }
   });
 
-  test(`${protocol}: a refused call names the tool (#76)`, async () => {
+  test(`${protocol}: a call left out is named in the reply's text (#76)`, async () => {
     const json = await guardToolResponse(
       Response.json(snapshot(protocol, ["subagent"])),
       protocol,
       policy,
     );
-    const body = await json.json();
-    assert.match(body.message ?? body.error?.message, /: "subagent"$/);
+    assert.equal(textIn(protocol, [await json.json()]), droppedNote("subagent"));
     const streamed = await guardToolResponse(
       sse(event(streamSnapshot(protocol, ["subagent"])) + terminal(protocol)),
       protocol,
       policy,
     );
-    const frame = parse(await streamed.text())[0].data;
-    assert.match(frame.message ?? frame.error?.message, /: "subagent"$/);
+    assert.equal(textIn(protocol, frameData(await streamed.text())), droppedNote("subagent"));
+    assert.equal(
+      droppedNote("x".repeat(300)),
+      `(The model called a tool this agent doesn't have: "${"x".repeat(128)}". The call was left out.)`,
+    );
+    assert.equal(
+      droppedNote(""),
+      "(The model called a tool without a name. The call was left out.)",
+    );
   });
 
   test(`${protocol}: exact matches win over ambiguous casing`, async () => {
@@ -294,21 +520,33 @@ for (const protocol of protocols) {
   });
 
   test(`${protocol}: bad mixed SSE snapshot never leaks a tool and cancels immediately`, async () => {
+    let cancelled = false;
+    const source = openSource(
+      event(badMixed(protocol)) + event({ sentinel: "must not escape" }),
+      () => {
+        cancelled = true;
+      },
+    );
+    const result = await guardToolResponse(source.response, protocol, policy);
+    const frames = parse(await withTimeout(result.text()));
+    assert.equal(frames.length, 1);
+    assertError(protocol, frames[0].data);
+    if (protocol !== "chat") assert.equal(frames[0].name, "error");
+    assert.equal(cancelled, true);
+    assert.equal(source.response.body.locked, false);
+  });
+
+  test(`${protocol}: a mixed SSE snapshot hands on the declared call and leaves out the rest (#76)`, async () => {
     for (const name of ["unknown", "shell", "todowrite"]) {
-      let cancelled = false;
-      const source = openSource(
-        event(streamSnapshot(protocol, ["Read", name])) + event({ sentinel: "must not escape" }),
-        () => {
-          cancelled = true;
-        },
+      const result = await guardToolResponse(
+        sse(event(streamSnapshot(protocol, ["Read", name])) + terminal(protocol)),
+        protocol,
+        policy,
       );
-      const result = await guardToolResponse(source.response, protocol, policy);
-      const frames = parse(await withTimeout(result.text()));
-      assert.equal(frames.length, 1);
-      assertError(protocol, frames[0].data);
-      if (protocol !== "chat") assert.equal(frames[0].name, "error");
-      assert.equal(cancelled, true);
-      assert.equal(source.response.body.locked, false);
+      const values = frameData(await result.text());
+      assert.ok(!values.some((data) => data.type === "error" || data.error));
+      assert.deepEqual(callsIn(protocol, values), ["Read"]);
+      assert.equal(textIn(protocol, values), droppedNote(name));
     }
   });
 
@@ -348,10 +586,10 @@ for (const protocol of protocols) {
       );
     }
     rawFrames.push(
-      '\uFEFFevent:error\r\ndata: not JSON 中文🙂\r\ndata: second line\r\n\r\n',
-      'event: error\ndata: {broken\n\n',
-      'event: error\ndata: [DONE]\n\n',
-      'event: error\n\n',
+      "\uFEFFevent:error\r\ndata: not JSON 中文🙂\r\ndata: second line\r\n\r\n",
+      "event: error\ndata: {broken\n\n",
+      "event: error\ndata: [DONE]\n\n",
+      "event: error\n\n",
     );
     for (const raw of rawFrames) {
       for (const newline of ["\r\n", "\n", "\r"]) {
@@ -477,7 +715,7 @@ for (const protocol of protocols) {
   test(`${protocol}: cancel failures propagate rather than being swallowed`, async () => {
     const cause = new Error("cancel failed");
     for (const badTool of [false, true]) {
-      const source = openSource(event(streamSnapshot(protocol, ["unknown"])), () => {
+      const source = openSource(event(badMixed(protocol)), () => {
         throw cause;
       });
       const result = await guardToolResponse(source.response, protocol, policy);
@@ -507,14 +745,31 @@ test("chat: JSON checks every choice, legacy function_call and missing tool name
     policy,
   );
   assert.equal((await result.json()).choices[0].message.function_call.name, "Read");
-  for (const message of [
-    { function_call: { name: "unknown" } },
-    { tool_calls: [{ type: "function", function: {} }] },
-    { tool_calls: [{ type: "custom", custom: { name: "unknown" } }] },
+  for (const [message, name] of [
+    [{ function_call: { name: "unknown" } }, "unknown"],
+    [{ tool_calls: [{ type: "function", function: {} }] }, undefined],
   ]) {
-    const source = Response.json({ choices: [{ message: { content: "ok" } }, { message }] });
-    assert.equal((await guardToolResponse(source, "chat", policy)).status, 502);
+    const source = Response.json({
+      choices: [
+        { message: { content: "ok" } },
+        {
+          index: 1,
+          message,
+          finish_reason: message.function_call ? "function_call" : "tool_calls",
+        },
+      ],
+    });
+    const result = await guardToolResponse(source, "chat", policy);
+    assert.equal(result.status, 200);
+    const [first, second] = (await result.json()).choices;
+    assert.deepEqual(first.message, { content: "ok" });
+    assert.deepEqual(second.message, { content: droppedNote(name) });
+    assert.equal(second.finish_reason, "stop");
   }
+  const custom = Response.json({
+    choices: [{ message: { tool_calls: [{ type: "custom", custom: { name: "unknown" } }] } }],
+  });
+  assert.equal((await guardToolResponse(custom, "chat", policy)).status, 502);
 });
 
 test("Responses: nested JSON responses and all streaming snapshots are checked", async () => {
@@ -544,8 +799,17 @@ test("Responses: nested JSON responses and all streaming snapshots are checked",
       );
       const frames = parse(await result.text());
       if (name === "unknown") {
-        assert.equal(frames.length, 1);
-        assertError("responses", frames[0].data);
+        const raw = frames.map((frame) => frame.data);
+        assert.ok(!raw.some((data) => data.type === "error" || data.error));
+        assert.deepEqual(callsIn("responses", raw), []);
+        const message = raw[0].item ?? raw[0].response.output[0];
+        assert.equal(message.type, "message");
+        assert.equal(message.id, "msg_call");
+        const said =
+          type === "response.output_item.added"
+            ? textIn("responses", raw)
+            : message.content[0].text;
+        assert.equal(said, droppedNote("unknown"));
       } else
         assert.equal(frames[0].data.item?.name ?? frames[0].data.response.output[0].name, "Read");
     }
@@ -561,7 +825,9 @@ test("Anthropic: content_block_start, message_start and server_tool_use are guar
         "anthropic",
         policy,
       );
-      assert.equal(json.status, name === "bash" ? 200 : 502);
+      assert.equal(json.status, 200);
+      if (name === "unknown")
+        assert.deepEqual((await json.json()).content, [{ type: "text", text: droppedNote(name) }]);
       for (const data of [
         { type: "content_block_start", index: 0, content_block: block },
         { type: "message_start", message: { content: [block] } },
@@ -573,8 +839,10 @@ test("Anthropic: content_block_start, message_start and server_tool_use are guar
         );
         const frames = parse(await response.text());
         if (name === "unknown") {
-          assert.equal(frames.length, 1);
-          assertError("anthropic", frames[0].data);
+          const values = frames.map((frame) => frame.data);
+          assert.ok(!values.some((value) => value.type === "error"));
+          assert.deepEqual(callsIn("anthropic", values), []);
+          assert.equal(textIn("anthropic", values), droppedNote(name));
         } else
           assert.equal(
             frames[0].data.content_block?.name ?? frames[0].data.message.content[0].name,
@@ -674,7 +942,7 @@ test("chat: one chunk containing many text events still obeys downstream backpre
   const source = openSource(
     event(chat({ content: "one" })) +
       event(chat({ content: "two" })) +
-      event(chat({ tool_calls: [call("unknown")] }, "tool_calls")),
+      event(chat({ tool_calls: [{ ...call("unknown"), type: "custom" }] }, "tool_calls")),
     () => {
       cancelled = true;
     },
@@ -777,7 +1045,7 @@ test("cumulative pending chat tools are limited across choices and calls", async
   assert.ok(pulls <= 33);
 });
 
-test("chat: DONE validates all pending choices atomically and rejects missing final names", async () => {
+test("chat: each pending choice is settled on its own, an unknown or missing final name left out", async () => {
   for (const ending of [
     terminal("chat"),
     event({
@@ -785,7 +1053,7 @@ test("chat: DONE validates all pending choices atomically and rejects missing fi
         { index: 0, delta: {}, finish_reason: "tool_calls" },
         { index: 1, delta: {}, finish_reason: "tool_calls" },
       ],
-    }),
+    }) + terminal("chat"),
   ]) {
     for (const name of ["unknown", ""]) {
       const text =
@@ -793,14 +1061,73 @@ test("chat: DONE validates all pending choices atomically and rejects missing fi
         event(chat({ tool_calls: [call(name)] }, null, 1)) +
         ending;
       const response = await guardToolResponse(sse(text), "chat", policy);
-      const frames = parse(await response.text());
-      assert.equal(frames.length, 1);
-      assertError("chat", frames[0].data);
+      const values = frameData(await response.text());
+      assert.ok(!values.some((data) => data.error));
+      const choices = values.flatMap((data) => data.choices ?? []);
+      const of = (index) => choices.filter((choice) => choice.index === index);
+      assert.deepEqual(callsIn("chat", [{ choices: of(0) }]), ["Bash"]);
+      assert.deepEqual(callsIn("chat", [{ choices: of(1) }]), []);
+      assert.equal(textIn("chat", [{ choices: of(1) }]), droppedNote(name));
+      const finishes = (index) =>
+        of(index)
+          .map((choice) => choice.finish_reason)
+          .filter(Boolean);
+      if (ending !== terminal("chat")) {
+        assert.deepEqual(finishes(0), ["tool_calls"]);
+        assert.deepEqual(finishes(1), ["stop"]);
+      }
     }
   }
 });
 
-test("SSE: ambiguous injected names fail in every protocol", async () => {
+test("chat: a choice whose every call was left out finishes as a stop, again and again (#76)", async () => {
+  // step-5-preview-free sends its tool_calls finish twice, the second with
+  // usage (seen 2026-10-11); neither may tell the agent to run a tool.
+  const response = await guardToolResponse(sse(toolStream("chat", "bedit")), "chat", policy);
+  const values = frameData(await response.text());
+  const finishes = values
+    .flatMap((data) => data.choices ?? [])
+    .map((choice) => choice.finish_reason)
+    .filter(Boolean);
+  assert.deepEqual(finishes, ["stop", "stop"]);
+  assert.equal(textIn("chat", values), droppedNote("bedit"));
+  assert.ok(values.some((data) => data.usage?.completion_tokens === 5));
+});
+
+test("chat: the note follows the text the model wrote before its call", async () => {
+  const text =
+    event(chat({ content: "Fixing the stray heredoc marker." })) +
+    event(chat({ tool_calls: [call("bedit")] }, "tool_calls")) +
+    terminal("chat");
+  const response = await guardToolResponse(sse(text), "chat", policy);
+  assert.equal(
+    textIn("chat", frameData(await response.text())),
+    `Fixing the stray heredoc marker.\n\n${droppedNote("bedit")}`,
+  );
+});
+
+test("chat: a call kept beside one left out is numbered from 0", async () => {
+  const text =
+    event(chat({ tool_calls: [call("bedit", 0), call("read", 1, '{"path":"a"}')] }, "tool_calls")) +
+    terminal("chat");
+  const response = await guardToolResponse(sse(text), "chat", policy);
+  const values = frameData(await response.text());
+  const calls = values
+    .flatMap((data) => data.choices ?? [])
+    .flatMap((c) => c.delta?.tool_calls ?? []);
+  assert.deepEqual(calls, [
+    {
+      index: 0,
+      id: "call-1",
+      type: "function",
+      function: { name: "Read", arguments: '{"path":"a"}' },
+    },
+  ]);
+  const finishes = values.flatMap((data) => data.choices ?? []).map((c) => c.finish_reason);
+  assert.ok(finishes.includes("tool_calls"));
+});
+
+test("SSE: ambiguous injected names are left out in every protocol", async () => {
   const rules = { declared: new Set(["Bash", "BASH"]), injected: new Set(["bash"]) };
   for (const protocol of protocols) {
     const response = await guardToolResponse(
@@ -808,10 +1135,90 @@ test("SSE: ambiguous injected names fail in every protocol", async () => {
       protocol,
       rules,
     );
-    const frames = parse(await response.text());
-    assert.equal(frames.length, 1);
-    assertError(protocol, frames[0].data);
+    const values = frameData(await response.text());
+    assert.ok(!values.some((data) => data.type === "error" || data.error));
+    assert.deepEqual(callsIn(protocol, values), []);
+    assert.equal(textIn(protocol, values), droppedNote("bash"));
   }
+});
+
+test("Responses and Messages: a streamed call left out comes as text in its place", async () => {
+  const responses = frameData(
+    await (
+      await guardToolResponse(sse(toolStream("responses", "bcp")), "responses", policy)
+    ).text(),
+  );
+  assert.deepEqual(
+    responses.map((data) => data.type),
+    [
+      "response.created",
+      "response.output_item.added",
+      "response.content_part.added",
+      "response.output_text.delta",
+      "response.output_text.done",
+      "response.content_part.done",
+      "response.output_item.done",
+      "response.completed",
+    ],
+  );
+  const note = droppedNote("bcp");
+  const message = { type: "message", id: "fc_1", role: "assistant", status: "completed" };
+  assert.deepEqual(responses[6].item, {
+    ...message,
+    content: [{ type: "output_text", text: note, annotations: [] }],
+  });
+  assert.deepEqual(responses[7].response.output, [responses[6].item]);
+  for (const data of responses.slice(2, 6)) {
+    assert.equal(data.item_id, "fc_1");
+    assert.equal(data.output_index, 0);
+  }
+  const messages = frameData(
+    await (
+      await guardToolResponse(sse(toolStream("anthropic", "ash")), "anthropic", policy)
+    ).text(),
+  );
+  assert.deepEqual(
+    messages.map((data) => data.type),
+    [
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+    ],
+  );
+  assert.deepEqual(messages[1].content_block, { type: "text", text: "" });
+  assert.deepEqual(messages[2].delta, { type: "text_delta", text: droppedNote("ash") });
+  assert.equal(messages[4].delta.stop_reason, "end_turn");
+});
+
+test("Messages: a kept call keeps the tool_use stop beside one left out", async () => {
+  const text = [
+    {
+      type: "message_start",
+      message: { id: "m1", type: "message", role: "assistant", content: [] },
+    },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "a", name: "ash", input: {} },
+    },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "content_block_start",
+      index: 1,
+      content_block: { type: "tool_use", id: "b", name: "bash", input: {} },
+    },
+    { type: "content_block_stop", index: 1 },
+    { type: "message_delta", delta: { stop_reason: "tool_use" } },
+    { type: "message_stop" },
+  ]
+    .map((value) => event(value, value.type))
+    .join("");
+  const values = frameData(await (await guardToolResponse(sse(text), "anthropic", policy)).text());
+  assert.deepEqual(callsIn("anthropic", values), ["Bash"]);
+  assert.equal(values.find((data) => data.type === "message_delta").delta.stop_reason, "tool_use");
 });
 
 test("downstream cancellation interrupts a pending upstream read", async () => {
@@ -866,18 +1273,22 @@ test("chat: completed tool buffers release their cumulative budget", async () =>
 
 // 64 MiB through the guard: seconds of work, more under load, so it isn't
 // held to bun's 5 s default (it timed out on a machine at load 110)
-test("SSE event byte limit includes both bytes of CRLF even across chunks", { timeout: 60_000 }, async () => {
-  const prefix = 'data: {"text":"';
-  const suffix = '"}\r\n\r\n';
-  const text = prefix + "x".repeat(32 * 1024 * 1024 + 1 - prefix.length - suffix.length) + suffix;
-  for (const chunkSize of [1024 * 1024, text.length - 1]) {
-    const result = await guardToolResponse(sse(text, { chunkSize }), "chat", policy);
-    const frames = parse(await result.text());
-    assert.equal(frames.length, 1);
-    assertError("chat", frames[0].data);
-    assert.match(frames[0].data.error.message, /32 MiB|limit/i);
-  }
-});
+test(
+  "SSE event byte limit includes both bytes of CRLF even across chunks",
+  { timeout: 60_000 },
+  async () => {
+    const prefix = 'data: {"text":"';
+    const suffix = '"}\r\n\r\n';
+    const text = prefix + "x".repeat(32 * 1024 * 1024 + 1 - prefix.length - suffix.length) + suffix;
+    for (const chunkSize of [1024 * 1024, text.length - 1]) {
+      const result = await guardToolResponse(sse(text, { chunkSize }), "chat", policy);
+      const frames = parse(await result.text());
+      assert.equal(frames.length, 1);
+      assertError("chat", frames[0].data);
+      assert.match(frames[0].data.error.message, /32 MiB|limit/i);
+    }
+  },
+);
 
 test("text streams larger than 32 MiB are not subject to the pending-tool limit", async () => {
   let count = 0;

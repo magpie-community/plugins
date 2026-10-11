@@ -22,9 +22,11 @@ async function fixture(t, input = {}) {
       res.writeHead(state.modelsStatus, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
-          data: (state.ids ?? ["chat-free", "responses-free", "messages-free", "paid"]).map((id) => ({
-            id,
-          })),
+          data: (state.ids ?? ["chat-free", "responses-free", "messages-free", "paid"]).map(
+            (id) => ({
+              id,
+            }),
+          ),
         }),
       );
     } else if (req.url === "/catalog") {
@@ -119,12 +121,16 @@ for (const { protocol, path, model } of protocols) {
           assert.equal((tool.parameters ?? tool.input_schema).additionalProperties, false);
           assert.deepEqual((tool.parameters ?? tool.input_schema).properties, {});
         }
+        // A call of a tool the agent doesn't have is left out, said in
+        // the reply's text, and the turn ends as a stop rather than
+        // failing (#76).
         state.reply = toolReply(protocol, "edit", upstreamSSE);
-        const error = await send();
-        if (!stream || !upstreamSSE) assert.equal(error.status, 502);
-        const rejected = await error.text();
-        assert.match(rejected, /error/);
-        assert.doesNotMatch(rejected, /"name"\s*:\s*"edit"/);
+        const left = await send();
+        assert.equal(left.status, 200);
+        const text = await left.text();
+        assert.doesNotMatch(text, /"name"\s*:\s*"edit"/);
+        assert.doesNotMatch(text, /"error"|"tool_calls"|"tool_use"|"function_call"/);
+        assert.match(text, /a tool this agent doesn't have: \\"edit\\"/);
       });
     }
   }
@@ -142,8 +148,10 @@ test("keeps declared tools isolated between requests using the same loader", asy
     });
   assert.equal((await send(declaredTools("chat"))).status, 200);
   const blocked = await send([]);
-  assert.equal(blocked.status, 502);
-  assert.doesNotMatch(await blocked.text(), /"name"\s*:\s*"Bash"/);
+  assert.equal(blocked.status, 200);
+  const text = await blocked.text();
+  assert.doesNotMatch(text, /"name"\s*:\s*"Bash"/);
+  assert.match(text, /a tool this agent doesn't have: \\"bash\\"/);
 });
 
 for (const [input, supplied, expected] of [

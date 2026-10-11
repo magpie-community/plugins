@@ -45,6 +45,8 @@ function foldsTo(declared, key) {
   return folded;
 }
 
+// nameGuard answers the agent's name for a call, or null for a call of no
+// tool the agent has (a missing name included).
 function nameGuard(policy) {
   const declared = new Set(policy.declared);
   const lower = (name) => name.toLowerCase();
@@ -52,49 +54,135 @@ function nameGuard(policy) {
   const byCase = foldsTo(declared, lower);
   const byShape = foldsTo(declared, bare);
   return (name) => {
-    if (typeof name !== "string" || !name) throw new GuardError("Missing upstream tool name");
+    if (typeof name !== "string" || !name) return null;
     if (declared.has(name)) return name;
-    const match = byCase.get(lower(name)) ?? (byCase.has(lower(name)) ? null : byShape.get(bare(name)));
-    if (match) return match;
-    throw new GuardError(
-      `Upstream called a tool not declared by the client: ${JSON.stringify(name.slice(0, 128))}`,
-    );
+    const match =
+      byCase.get(lower(name)) ?? (byCase.has(lower(name)) ? null : byShape.get(bare(name)));
+    return match || null;
   };
 }
 
-function checkFunction(value, checkName) {
-  if (!object(value)) throw new GuardError("Invalid upstream function call");
-  const name = checkName(value.name);
-  const changed = name !== value.name;
-  value.name = name;
-  return changed;
+// The models also call tools no agent has: bedit, bcp, ash, a mangled
+// mcp__netcatcatty__unused (#76). Such a call can't be run or named onto
+// one the agent has, and failing the reply for it threw away the whole
+// turn. It is left out instead, and the reply says so in its text, where
+// the agent's user and the model's next turn both read it. A reply left
+// with no call ends as a plain stop.
+export function droppedNote(name) {
+  return typeof name === "string" && name
+    ? `(The model called a tool this agent doesn't have: ${JSON.stringify(name.slice(0, 128))}. The call was left out.)`
+    : "(The model called a tool without a name. The call was left out.)";
 }
 
-function checkChatMessage(message, checkName) {
-  if (!object(message)) return false;
-  let changed = false;
-  if (message.function_call != null) changed = checkFunction(message.function_call, checkName);
-  for (const call of list(message.tool_calls)) {
-    if (!object(call) || (call.type != null && call.type !== "function")) {
-      throw new GuardError("Unsupported upstream tool call");
-    }
-    changed = checkFunction(call.function, checkName) || changed;
+function appendNotes(message, notes) {
+  const text = notes.join("\n\n");
+  if (typeof message.content === "string" && message.content) {
+    message.content = `${message.content}\n\n${text}`;
+  } else if (Array.isArray(message.content)) {
+    message.content.push({ type: "text", text });
+  } else {
+    message.content = text;
   }
-  return changed;
 }
 
+// checkChatMessage renames message's calls to the agent's tools and leaves
+// out the rest, answering the notes for those left out.
+function checkChatMessage(message, checkName) {
+  const result = { changed: false, notes: [] };
+  if (!object(message)) return result;
+  if (message.function_call != null) {
+    const value = message.function_call;
+    if (!object(value)) throw new GuardError("Invalid upstream function call");
+    const name = checkName(value.name);
+    if (name == null) {
+      result.notes.push(droppedNote(value.name));
+      delete message.function_call;
+      result.changed = true;
+    } else if (name !== value.name) {
+      value.name = name;
+      result.changed = true;
+    }
+  }
+  if (message.tool_calls != null) {
+    const calls = list(message.tool_calls);
+    const kept = [];
+    for (const call of calls) {
+      if (!object(call) || (call.type != null && call.type !== "function")) {
+        throw new GuardError("Unsupported upstream tool call");
+      }
+      if (!object(call.function)) throw new GuardError("Invalid upstream function call");
+      const name = checkName(call.function.name);
+      if (name == null) {
+        result.notes.push(droppedNote(call.function.name));
+        result.changed = true;
+        continue;
+      }
+      if (name !== call.function.name) {
+        call.function.name = name;
+        result.changed = true;
+      }
+      kept.push(call);
+    }
+    if (kept.length !== calls.length) {
+      if (kept.length) message.tool_calls = kept;
+      else delete message.tool_calls;
+    }
+  }
+  return result;
+}
+
+const callFinish = new Set(["tool_calls", "function_call"]);
+function hasCalls(message) {
+  return message.function_call != null || (message.tool_calls?.length ?? 0) > 0;
+}
+
+function isCall(protocol, value) {
+  return (
+    (protocol === "responses" && value.type === "function_call") ||
+    (protocol === "anthropic" && ["tool_use", "server_tool_use"].includes(value.type))
+  );
+}
+
+// What a call left out of a Responses or Messages reply becomes: text
+// saying so, in the call's place, so no later index moves.
+function inPlaceOf(protocol, call, note) {
+  if (protocol === "anthropic") return { type: "text", text: note };
+  return {
+    type: "message",
+    id: typeof call.id === "string" && call.id ? call.id : `msg_${call.call_id ?? "dropped"}`,
+    role: "assistant",
+    status: call.status ?? "completed",
+    content: [{ type: "output_text", text: note, annotations: [] }],
+  };
+}
+
+// checkSnapshots checks every call in a reply or event: renamed to the
+// agent's tool, or (Responses, Messages) put in place of by a note. It
+// answers whether data changed, how many calls it kept and how many it
+// left out.
 function checkSnapshots(data, protocol, checkName) {
   let changed = false;
   if (protocol === "chat") {
     for (const choice of list(data.choices)) {
       if (!object(choice)) throw new GuardError("Invalid upstream choice");
-      changed = checkChatMessage(choice.message, checkName) || changed;
+      const message = choice.message;
+      const checked = checkChatMessage(message, checkName);
+      changed = checked.changed || changed;
+      if (checked.notes.length) {
+        appendNotes(message, checked.notes);
+        if (!hasCalls(message) && callFinish.has(choice.finish_reason))
+          choice.finish_reason = "stop";
+      }
     }
-    return changed;
+    return { changed, kept: 0, left: 0 };
   }
-  const stack = [data];
+  let kept = 0;
+  let left = 0;
+  if (!object(data)) throw new GuardError("Invalid upstream tool snapshot");
+  // Each entry is a value and where it sits, so a call can be replaced.
+  const stack = [[data, null, null]];
   while (stack.length) {
-    const value = stack.pop();
+    const [value, holder, key] = stack.pop();
     if (!object(value)) throw new GuardError("Invalid upstream tool snapshot");
     if (
       protocol === "responses" &&
@@ -104,25 +192,44 @@ function checkSnapshots(data, protocol, checkName) {
     ) {
       throw new GuardError("Unsupported upstream tool call type");
     }
-    if (
-      (protocol === "responses" && value.type === "function_call") ||
-      (protocol === "anthropic" && ["tool_use", "server_tool_use"].includes(value.type))
-    ) {
-      changed = checkFunction(value, checkName) || changed;
+    if (isCall(protocol, value)) {
+      const name = checkName(value.name);
+      if (name == null) {
+        if (!holder) throw new GuardError(droppedNote(value.name));
+        holder[key] = inPlaceOf(protocol, value, droppedNote(value.name));
+        changed = true;
+        left++;
+        continue;
+      }
+      if (name !== value.name) {
+        value.name = name;
+        changed = true;
+      }
+      kept++;
     }
     const arrays = protocol === "responses" ? ["output", "content"] : ["content"];
     const objects =
       protocol === "responses" ? ["response", "item", "part"] : ["message", "content_block"];
-    for (const key of arrays) {
+    for (const name of arrays) {
       // Text content is not a snapshot container.
-      if (typeof value[key] === "string") continue;
-      for (const item of list(value[key])) stack.push(item);
+      if (typeof value[name] === "string") continue;
+      const items = list(value[name]);
+      for (let i = 0; i < items.length; i++) stack.push([items[i], items, i]);
     }
-    for (const key of objects) {
-      if (value[key] != null) stack.push(value[key]);
+    for (const name of objects) {
+      if (value[name] != null) stack.push([value[name], value, name]);
     }
   }
-  return changed;
+  if (
+    protocol === "anthropic" &&
+    left &&
+    !kept &&
+    data.type === "message" &&
+    data.stop_reason === "tool_use"
+  ) {
+    data.stop_reason = "end_turn";
+  }
+  return { changed, kept, left };
 }
 
 function position(value) {
@@ -178,13 +285,24 @@ function chatBuffer(checkName) {
     }
     return pending.get(index);
   }
-  function complete(state) {
+  // Choices that streamed text, and those whose every call was left out
+  // (whose later "tool_calls" finish is a stop).
+  const wrote = new Set();
+  const ended = new Set();
+  function complete(state, index) {
     const delta = {};
     if (state.calls.size) {
       delta.tool_calls = [...state.calls].sort(([a], [b]) => a - b).map(([, value]) => value);
     }
     if (state.legacy) delta.function_call = state.legacy;
-    checkChatMessage(delta, checkName);
+    const { notes } = checkChatMessage(delta, checkName);
+    if (notes.length) {
+      delta.tool_calls?.forEach((call, i) => {
+        call.index = i;
+      });
+      delta.content = (wrote.has(index) ? "\n\n" : "") + notes.join("\n\n");
+      if (!hasCalls(delta)) ended.add(index);
+    }
     return delta;
   }
   function remove(index) {
@@ -201,11 +319,12 @@ function chatBuffer(checkName) {
       bytes = 0;
     },
     apply(data) {
-      let changed = checkSnapshots(data, "chat", checkName);
+      let { changed } = checkSnapshots(data, "chat", checkName);
       const choices = list(data.choices);
       for (const choice of choices) {
         const delta = choice.delta;
         if (!object(delta)) continue;
+        if (typeof delta.content === "string" && delta.content) wrote.add(position(choice.index));
         if (delta.tool_calls == null && delta.function_call == null) continue;
         changed = true;
         const state = stateFor(position(choice.index), data);
@@ -234,9 +353,19 @@ function chatBuffer(checkName) {
         const index = position(choice.index);
         const state = pending.get(index);
         if (!state) continue;
-        choice.delta = { ...choice.delta, ...complete(state) };
+        const own = object(choice.delta) ? choice.delta : {};
+        const delta = complete(state, index);
+        if (typeof own.content === "string" && delta.content)
+          delta.content = own.content + delta.content;
+        choice.delta = { ...own, ...delta };
         remove(index);
         changed = true;
+      }
+      for (const choice of choices) {
+        if (callFinish.has(choice.finish_reason) && ended.has(position(choice.index))) {
+          choice.finish_reason = "stop";
+          changed = true;
+        }
       }
       if (!changed) return { data, changed: false };
       data.choices = choices.filter(
@@ -251,11 +380,104 @@ function chatBuffer(checkName) {
       if (!pending.size) return null;
       const choices = [...pending]
         .sort(([a], [b]) => a - b)
-        .map(([index, state]) => ({ index, delta: complete(state), finish_reason: null }));
+        .map(([index, state]) => ({ index, delta: complete(state, index), finish_reason: null }));
       const metadata = pending.values().next().value.metadata;
       pending.clear();
       bytes = 0;
       return { ...metadata, choices };
+    },
+  };
+}
+
+// snapshotStream checks a Responses or Messages stream event by event. A
+// call left out is streamed as text in its place: its item or block starts
+// as text carrying the note, and its arguments are never sent. A message
+// whose every call was left out stops as a turn's end, not as tool use.
+function snapshotStream(protocol, checkName) {
+  const left = new Map(); // output_index or content block index → true
+  const leftIDs = new Set(); // Responses item ids left out
+  let kept = 0;
+  let dropped = 0;
+  return {
+    apply(data, type) {
+      if (protocol === "responses") {
+        const item = data.item;
+        if (
+          type === "response.output_item.added" &&
+          object(item) &&
+          item.type === "function_call" &&
+          checkName(item.name) == null
+        ) {
+          const note = droppedNote(item.name);
+          const message = inPlaceOf(protocol, item, note);
+          left.set(data.output_index, true);
+          leftIDs.add(message.id);
+          if (typeof item.id === "string") leftIDs.add(item.id);
+          dropped++;
+          const where = { item_id: message.id, output_index: data.output_index, content_index: 0 };
+          const part = { type: "output_text", text: "", annotations: [] };
+          return {
+            changed: true,
+            data: { ...data, item: { ...message, status: "in_progress", content: [] } },
+            extra: [
+              { type: "response.content_part.added", ...where, part },
+              { type: "response.output_text.delta", ...where, delta: note },
+              { type: "response.output_text.done", ...where, text: note },
+              { type: "response.content_part.done", ...where, part: { ...part, text: note } },
+            ],
+          };
+        }
+        if (
+          typeof type === "string" &&
+          type.startsWith("response.function_call_arguments.") &&
+          ((data.output_index != null && left.has(data.output_index)) || leftIDs.has(data.item_id))
+        ) {
+          return { changed: true, data: null };
+        }
+      } else {
+        if (type === "message_start") {
+          left.clear();
+          kept = 0;
+          dropped = 0;
+        }
+        const block = data.content_block;
+        if (
+          type === "content_block_start" &&
+          object(block) &&
+          isCall(protocol, block) &&
+          checkName(block.name) == null
+        ) {
+          left.set(data.index, true);
+          dropped++;
+          return {
+            changed: true,
+            data: { ...data, content_block: { type: "text", text: "" } },
+            extra: [
+              {
+                type: "content_block_delta",
+                index: data.index,
+                delta: { type: "text_delta", text: droppedNote(block.name) },
+              },
+            ],
+          };
+        }
+        if (type === "content_block_delta" && left.has(data.index))
+          return { changed: true, data: null };
+        if (
+          type === "message_delta" &&
+          object(data.delta) &&
+          data.delta.stop_reason === "tool_use" &&
+          dropped &&
+          !kept
+        ) {
+          data.delta.stop_reason = "end_turn";
+          return { changed: true, data };
+        }
+      }
+      const checked = checkSnapshots(data, protocol, checkName);
+      kept += checked.kept;
+      dropped += checked.left;
+      return { changed: checked.changed, data };
     },
   };
 }
@@ -402,6 +624,7 @@ async function* framesFrom(reader) {
 function guardedStream(response, protocol, checkName) {
   const reader = response.body?.getReader();
   const chat = protocol === "chat" ? chatBuffer(checkName) : null;
+  const snapshots = chat ? null : snapshotStream(protocol, checkName);
   let frames = reader ? framesFrom(reader) : null;
   let completed = false;
   let stopped = false;
@@ -473,23 +696,18 @@ function guardedStream(response, protocol, checkName) {
               controller.close();
               return;
             }
-            let changed;
-            let result = data;
-            if (chat) {
-              const checked = chat.apply(data);
-              changed = checked.changed;
-              result = checked.data;
-            } else {
-              changed = checkSnapshots(data, protocol, checkName);
-            }
+            const checked = chat ? chat.apply(data) : snapshots.apply(data, type);
+            const { changed, data: result, extra = [] } = checked;
             if (
               (protocol === "responses" &&
                 ["response.completed", "response.incomplete"].includes(type)) ||
               (protocol === "anthropic" && type === "message_stop")
             )
               completed = true;
-            if (result) {
-              controller.enqueue(encoder.encode(changed ? rewrite(frame, result) : frame.raw));
+            if (result || extra.length) {
+              const own = !result ? "" : changed ? rewrite(frame, result) : frame.raw;
+              const added = extra.map((value) => encodeEvent(value, value.type)).join("");
+              controller.enqueue(encoder.encode(own + added));
               return;
             }
           }
