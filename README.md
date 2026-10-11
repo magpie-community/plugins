@@ -20,6 +20,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [mimo](packages/mimo) | Xiaomi MiMo, with a Xiaomi account | `mimo-app` |
 | [qoder](packages/qoder) | Qoder subscription (qoder.com), with Qoder's device sign-in | `qoder` |
 | [qoder](packages/qoder) | Qoder CN subscription (qoder.cn), with Qoder CN's device sign-in | `qoder-cn` |
+| [raccoon](packages/raccoon) | SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com): account credits, daily check-in and onboarding grants, with browser sign-in or Raccoon desktop's sign-in | `raccoon` |
 | [trae](packages/trae) | Trae CN (trae.cn) and Trae international (trae.ai), free tier included, with Trae's browser sign-in (experimental) | `trae-cn`, `trae-global` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (China build, CodeBuddy plan) | `workbuddy` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (international build) | `workbuddy-ai` |
@@ -29,7 +30,9 @@ subscription and makes its requests. The packages work in OpenCode and in
 
 ## Gateway middleware
 
-These packages aren't OpenCode plugins. magpie runs them in its gateway, on the requests every agent sends and the replies it gets back, whichever provider serves them. Each one is a port of something [New API](https://github.com/QuantumNous/new-api) does for its channels, or something agents commonly need.
+These packages aren't OpenCode plugins. magpie runs them in its gateway,
+on the requests every agent sends and the replies it gets back, whichever
+provider serves them. Each one is a port of something [New API](https://github.com/QuantumNous/new-api) does for its channels, or something agents commonly need.
 
 | Package | What it does |
 |---|---|
@@ -44,7 +47,8 @@ magpie plugin add @magpie-community/middleware-<name>
 magpie plugin options <name> '<json>'
 ```
 
-In the app, they're under Plugins › Discover › Gateway middleware, and each one's **Options** button edits its options in its row.
+In the app, they're under Plugins ∶ Discover ∶ Gateway middleware, and each
+one's **Options** button edits its options in its row.
 
 A middleware package is a folder under `packages/<name>/` with:
 
@@ -81,7 +85,7 @@ Agent skills for magpie users, in `skills/<name>/SKILL.md`.
 |---|---|
 | [magpie-quota](skills/magpie-quota) | Lets an agent check what is left of every subscription, coding plan and key balance magpie has (`magpie quota --json`), and wait for allowance to come back |
 
-In magpie, it is first under Library › Market › Skills. Elsewhere:
+In magpie, it is first under Library ∶ Market ∶ Skills. Elsewhere:
 
 ```sh
 npx skills add magpie-community/plugins --skill magpie-quota
