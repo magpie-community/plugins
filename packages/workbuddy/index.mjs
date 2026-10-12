@@ -487,8 +487,11 @@ function unflag(messages) {
 }
 
 // withSystem gives a chat that doesn't open with a system message
-// WorkBuddy's default one, as its app does, and takes FLAGGED's words out
-// of it.
+// WorkBuddy's default one, as its app does, takes FLAGGED's words out of it,
+// and applies the request spellings WorkBuddy's chat endpoint accepts. The
+// OpenAI-compatible client normally uses max_completion_tokens and may call a
+// reasoning prompt developer; WorkBuddy's endpoint takes max_tokens and
+// system instead.
 function withSystem(body) {
   // a body magpie or OpenCode hands over as bytes is read as the text it is
   if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) body = new TextDecoder().decode(body)
@@ -497,11 +500,64 @@ function withSystem(body) {
     const b = JSON.parse(body)
     if (!Array.isArray(b?.messages) || !b.messages.length) return body
     let changed = unflag(b.messages)
+    if (b.max_completion_tokens !== undefined) {
+      if (b.max_tokens === undefined) b.max_tokens = b.max_completion_tokens
+      delete b.max_completion_tokens
+      changed = true
+    }
+    for (const m of b.messages) {
+      if (m?.role !== "developer") continue
+      m.role = "system"
+      changed = true
+    }
     if (b.messages[0]?.role !== "system") {
       b.messages.unshift({ role: "system", content: "You are a helpful assistant." })
       changed = true
     }
     return changed ? JSON.stringify(b) : body
+  } catch {
+    return body
+  }
+}
+
+// normalizeToolChoice converts the object form emitted by OpenAI clients to
+// WorkBuddy's string form. It runs after fitted(), so a named choice follows a
+// tool name that was made safe for WorkBuddy.
+function normalizeToolChoice(body) {
+  if (typeof body !== "string") return body
+  try {
+    const b = JSON.parse(body)
+    if (!b || typeof b !== "object" || Array.isArray(b) || !("tool_choice" in b)) return body
+    const choice = b.tool_choice
+    if (typeof choice === "string") {
+      if (choice.trim().toLowerCase() === "none") {
+        delete b.tool_choice
+        delete b.tools
+        delete b.functions
+      }
+      return JSON.stringify(b)
+    }
+    if (!choice || typeof choice !== "object" || Array.isArray(choice)) {
+      delete b.tool_choice
+      return JSON.stringify(b)
+    }
+    const type = typeof choice.type === "string" ? choice.type.trim().toLowerCase() : ""
+    if (type === "none") {
+      delete b.tool_choice
+      delete b.tools
+      delete b.functions
+    } else if (type === "auto" || type === "required") {
+      b.tool_choice = type
+    } else if (type === "function") {
+      const fn = choice.function && typeof choice.function === "object" && !Array.isArray(choice.function)
+        ? choice.function
+        : undefined
+      const name = typeof fn?.name === "string" ? fn.name.trim() : ""
+      b.tool_choice = name || "auto"
+    } else {
+      delete b.tool_choice
+    }
+    return JSON.stringify(b)
   } catch {
     return body
   }
@@ -1220,7 +1276,7 @@ function makePlugin(site) {
             if (body === undefined && req) body = await req.clone().text()
             body = withSystem(body)
             const fit = fitted(body)
-            body = fit.body
+            body = normalizeToolChoice(fit.body)
             attend(headers, body, session)
             const res = await fetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body })
             return res.status >= 400 ? explained(res) : kept(await renamed(res, fit.names))
@@ -1338,4 +1394,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf }
+export const _internal = { runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf }

@@ -82,6 +82,11 @@ Each chat carries WorkBuddy's headers:
 A chat that doesn't open with a system message is given WorkBuddy's
 default one, as the app does.
 
+The loader also translates OpenAI-compatible request spellings WorkBuddy
+doesn't take: `max_completion_tokens` becomes `max_tokens`, `developer`
+messages become `system`, and an object `tool_choice` becomes WorkBuddy's
+string form.
+
 A chat's tools are given shapes WorkBuddy's models take. Without them
 WorkBuddy AI answers 400 "Invalid request parameters" (11133), DeepSeek's
 models to each shape below and Kimi's, GPT's, Gemini's and GLM's to some:
