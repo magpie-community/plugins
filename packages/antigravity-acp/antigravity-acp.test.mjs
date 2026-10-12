@@ -190,6 +190,23 @@ onPosix("the session is closed over the wire when its request ends", async () =>
   expect(closed.trim()).not.toBe("")
 })
 
+onPosix("no session/close is sent when the server doesn't advertise it", async () => {
+  const conn = new _internal.AcpConnection({ command: wrapper, args: [], cwd: home, env: { ...process.env, FAKE_NO_CLOSE: "1" } })
+  conn.start()
+  try {
+    await conn.initialize()
+    expect(conn.canClose).toBe(false)
+    const session = await conn.newSession(home, [], 5_000)
+    const file = path.join(home, "closed-sessions")
+    fs.rmSync(file, { force: true })
+    conn.closeSession(session.sessionId)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(fs.existsSync(file)).toBe(false)
+  } finally {
+    conn.kill()
+  }
+})
+
 onPosix("a timed-out call is cancelled alone; the server lives on", async () => {
   const conn = new _internal.AcpConnection({ command: wrapper, args: [], cwd: home })
   conn.start()

@@ -41,6 +41,7 @@ const INIT_TIMEOUT = 30_000
 const AUTH_TIMEOUT = 3 * 60_000
 const AUTH_RELAY_TIMEOUT = 10 * 60_000
 const OP_TIMEOUT = 120_000
+// the install lock goes stale after INSTALL_TIMEOUT + 5 min (see withInstallLock); the waiter waits as long
 const INSTALL_TIMEOUT = 30 * 60_000
 const PROMPT_TIMEOUT = 10 * 60_000
 const MAX_FRAME = 32 << 20

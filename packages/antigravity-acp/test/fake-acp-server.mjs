@@ -66,7 +66,7 @@ const handlers = {
       protocolVersion: 1,
       agentInfo: { name: "antigravity-acp", version: "1.2.1" },
       authMethods: [{ id: "oauth-personal", name: "Log in with Google" }],
-      agentCapabilities: { promptCapabilities: { image: true, embeddedContext: true }, sessionCapabilities: { close: true } },
+      agentCapabilities: { promptCapabilities: { image: true, embeddedContext: true }, ...(process.env.FAKE_NO_CLOSE ? {} : { sessionCapabilities: { close: true } }) },
     }
   },
   async authenticate() {
@@ -133,9 +133,10 @@ const handlers = {
     if (session) session.pending = null
     return undefined
   },
-  "session/close"(params) {
+  "session/close"(params, id) {
     sessions.delete(params?.sessionId)
-    try { fs.appendFileSync(path.join(process.env.AGY_ACP_HOME ?? os.tmpdir(), "closed-sessions"), `${params?.sessionId}\n`) } catch {}
+    // only a request (a frame with an id) counts; a notification is not recorded
+    if (id !== undefined) try { fs.appendFileSync(path.join(process.env.AGY_ACP_HOME ?? os.tmpdir(), "closed-sessions"), `${params?.sessionId}\n`) } catch {}
     return {}
   },
 }
@@ -148,13 +149,13 @@ rl.on("line", async (line) => {
   if (msg.method === undefined) return
   if (msg.id === undefined) {
     // a notification (session/cancel); still let it settle a pending prompt
-    await handlers[msg.method]?.(msg.params)
+    await handlers[msg.method]?.(msg.params, undefined)
     return
   }
   const fn = handlers[msg.method]
   if (!fn) return fail(msg.id, -32601, `${msg.method} is not supported`)
   try {
-    const result = await fn(msg.params)
+    const result = await fn(msg.params, msg.id)
     if (result !== undefined) reply(msg.id, result)
     else reply(msg.id, {})
   } catch (e) {
