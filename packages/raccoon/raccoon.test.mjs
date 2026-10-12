@@ -428,3 +428,107 @@ test("desktop sign-in marks expired when desktop app switches to another account
   expect(u.signIn).toBe("expired")
   expect(u.error).toContain("切换为其他账号")
 })
+
+test("renewToken cache hit inside 60s invokes save with merged tokens", async () => {
+  const staleTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) - 5 })
+  const freshTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  let refreshCalls = 0
+
+  startServer({
+    "POST /api/web/auth/v1/refresh": () => {
+      refreshCalls += 1
+      return Response.json({ code: 0, data: { access_token: freshTok, refresh_token: "RT-NEW" } })
+    },
+  })
+
+  const saves1 = []
+  const a1 = { access: staleTok, refresh: "RT-COMMON", expires: Date.now() - 5000 }
+  const r1 = await _internal.renewToken(a1, async (s) => saves1.push(s))
+  expect(refreshCalls).toBe(1)
+  expect(saves1.length).toBe(1)
+  expect(r1.refresh).toBe("RT-NEW")
+
+  const saves2 = []
+  const a2 = { access: staleTok, refresh: "RT-COMMON", expires: Date.now() - 5000, extra: "preserved" }
+  const r2 = await _internal.renewToken(a2, async (s) => saves2.push(s))
+  expect(refreshCalls).toBe(1)
+  expect(saves2.length).toBe(1)
+  expect(saves2[0]).toMatchObject({ access: freshTok, refresh: "RT-NEW", extra: "preserved" })
+  expect(r2).toMatchObject({ access: freshTok, refresh: "RT-NEW", extra: "preserved" })
+})
+
+test("checkin returns done instead of claimed when before-snapshot bills fail", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const today = _internal.beijingTodayKey()
+  let billCalls = 0
+
+  startServer({
+    "GET /api/web/office/v3/setting_info": () =>
+      Response.json({
+        code: 0,
+        data: { point_grant_popups: { points: 300 } },
+      }),
+    "GET /api/web/points/v1/bills": () => {
+      billCalls += 1
+      if (billCalls === 1) {
+        // First snapshot fails
+        return new Response("gateway timeout", { status: 504 })
+      }
+      return Response.json({
+        code: 0,
+        data: {
+          items: [
+            { bill_id: "b1", biz_type: "daily_grant", points: 300, created_at: `${today}T08:00:00+08:00` },
+          ],
+        },
+      })
+    },
+  })
+
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const res = await hooks.auth.checkin(async () => ({
+    type: "oauth",
+    access: validTok,
+    refresh: "",
+    expires: Date.now() + 3600_000,
+    onboardingSettled: true,
+  }))
+  expect(res.outcome).toBe("done")
+})
+
+test("billKey does not depend on list index when new bills are prepended", () => {
+  const itemOld = { created_at: "2026-10-12T08:00:00+08:00", points: 300, event_name: "每日积分发放" }
+  const key1 = _internal.billKey(itemOld)
+  const itemNew = { created_at: "2026-10-12T09:00:00+08:00", points: 100, event_name: "补充积分" }
+  const key2 = _internal.billKey(itemOld)
+  expect(key1).toBe(key2)
+  expect(_internal.billKey(itemNew)).not.toBe(key1)
+})
+
+test("desktop checkin requests onboarding grant only once across runs", async () => {
+  tempDir = mkdtempSync(join(tmpdir(), "raccoon-test-"))
+  process.env.RACCOON_BOX_AGENT_CONFIG_DIR = tempDir
+  const authFile = join(tempDir, "auth.json")
+  const deskTok = fakeJwt({ iss: "74350b", name: "DeskUser", exp: Math.floor(Date.now() / 1000) + 3600 })
+  writeFileSync(authFile, JSON.stringify({ access_token: deskTok, refresh_token: "D1" }))
+  _internal.desktopOnboardingSettled.clear()
+
+  let grantCalls = 0
+  startServer({
+    "POST /api/web/desktop/v1/login/points/grant": () => {
+      grantCalls += 1
+      return Response.json({ code: 0, data: { granted: false } })
+    },
+    "GET /api/web/office/v3/setting_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () => Response.json({ code: 0, data: { items: [] } }),
+  })
+
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const authInput = { type: "oauth", source: "desktop", uid: "7615755" }
+
+  await hooks.auth.checkin(async () => authInput)
+  expect(grantCalls).toBe(1)
+
+  await hooks.auth.checkin(async () => authInput)
+  expect(grantCalls).toBe(1) // Second call must NOT POST onboarding grant again
+})

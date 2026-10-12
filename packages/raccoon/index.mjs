@@ -24,10 +24,11 @@ const LEAD_MS = 5 * 60 * 1000
 const KEEP_RENEWED_MS = 60 * 1000
 const CATALOG_TTL_MS = 10 * 60 * 1000
 
-const DESKTOP_HEADERS = {
-  "X-Client-Platform": "desktop-windows",
+const desktopPlatform = () => (process.platform === "darwin" ? "desktop-mac" : "desktop-windows")
+const desktopHeaders = () => ({
+  "X-Client-Platform": desktopPlatform(),
   "X-Client-Version": "v1.0.0",
-}
+})
 
 const FALLBACK_MODELS = [
   { id: "raccoon-8c4485", name: "Raccoon-Work", context: 1_000_000, output: 100_000, images: true, reasoning: true, rate: 1, free: false },
@@ -480,7 +481,7 @@ function beijingTodayKey(nowMs = Date.now()) {
 
 async function claimDesktopOnboardingGrant(token) {
   try {
-    const d = await apiGetJson("/api/web/desktop/v1/login/points/grant", token, DESKTOP_HEADERS, "POST")
+    const d = await apiGetJson("/api/web/desktop/v1/login/points/grant", token, desktopHeaders(), "POST")
     if (d?.granted === true) {
       const pts = Number(d?.popup?.points)
       return Number.isFinite(pts) && pts > 0 ? pts : 3000
@@ -527,7 +528,7 @@ async function queryUsage(token) {
     }
   }
   const runsOutAt = soonestExpMs ? new Date(soonestExpMs).toISOString() : null
-  const runsOut = soonestExpMs ? (daily > 0 ? daily : Math.min(avail, expiringPts)) : 0
+  const runsOut = soonestExpMs ? Math.min(avail, expiringPts) : 0
 
   if (grantedFromBills > 0 && grantedFromBills >= avail) {
     const used = grantedFromBills - avail
@@ -556,8 +557,8 @@ async function queryUsage(token) {
   }
 }
 
-function billKey(item, idx) {
-  return String(item?.bill_id || item?.biz_id || `${item?.created_at ?? ""}:${item?.points ?? 0}:${idx}`)
+function billKey(item) {
+  return String(item?.bill_id || item?.biz_id || `${item?.created_at ?? ""}:${item?.points ?? 0}:${item?.event_name ?? ""}`)
 }
 
 function isCheckinGrantBill(item, today) {
@@ -568,6 +569,8 @@ function isCheckinGrantBill(item, today) {
   const biz = String(item?.biz_type ?? "")
   return !biz || biz === "daily_grant" || biz === "reward_grant"
 }
+
+const desktopOnboardingSettled = new Set()
 
 async function performCheckIn(a, save) {
   const token = a.access
@@ -583,35 +586,45 @@ async function performCheckIn(a, save) {
   } catch {}
 
   const settingRes = await apiGetJson("/api/web/office/v3/setting_info", token, {
-    ...DESKTOP_HEADERS,
+    ...desktopHeaders(),
     "X-Raccoon-Language": "zh",
   })
 
   let onboardingPts = 0
-  if (!a?.onboardingSettled) {
+  const accountKey = a?.uid || a?.accountId || a?.access
+  const alreadySettled = a?.onboardingSettled || (a?.source === "desktop" && desktopOnboardingSettled.has(accountKey))
+  if (!alreadySettled) {
     onboardingPts = await claimDesktopOnboardingGrant(token)
-    if (save && a?.source !== "desktop") {
+    if (a?.source === "desktop") {
+      desktopOnboardingSettled.add(accountKey)
+    } else if (save) {
       await save({ ...a, onboardingSettled: true }).catch(() => {})
     }
   }
 
-  const popupGrant = Number(settingRes?.point_grant_popups?.points ?? settingRes?.point_grant_toast?.points)
-  const popupPts = Number.isFinite(popupGrant) && popupGrant > 0 ? Math.floor(popupGrant) : 0
+  // If the before-snapshot of bills could not be read, avoid false positives
+  // from historical bills or repeating popup grants.
+  if (!beforeKeys) {
+    return {
+      outcome: "done",
+      message: "今日已签到",
+    }
+  }
 
   const bills = await apiGetJson("/api/web/points/v1/bills?paging.limit=20&paging.offset=0", token)
   let newlyGranted = 0
   const names = []
   const items = Array.isArray(bills?.items) ? bills.items : []
-  items.forEach((item, idx) => {
+  items.forEach((item) => {
     if (!isCheckinGrantBill(item, today)) return
-    if (beforeKeys && beforeKeys.has(billKey(item, idx))) return
+    if (beforeKeys.has(billKey(item))) return
     const pts = Math.floor(Number(item?.points) || 0)
     newlyGranted += pts
     const ev = String(item?.event_name || "积分发放")
     if (!names.includes(ev)) names.push(ev)
   })
 
-  const totalCredit = newlyGranted || popupPts || onboardingPts
+  const totalCredit = newlyGranted || onboardingPts
   if (totalCredit > 0) {
     return {
       outcome: "claimed",
@@ -943,6 +956,10 @@ export const _internal = {
   parseCallbackInput,
   rewriteSseModel,
   beijingTodayKey,
+  billKey,
+  renewToken,
+  desktopPlatform,
+  desktopOnboardingSettled,
   renewed,
   renewing,
 }

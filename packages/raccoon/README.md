@@ -1,8 +1,23 @@
 # @magpie-community/opencode-raccoon-auth
 
+OpenCode & Magpie provider plugin for **SenseTime Raccoon (商汤小浣熊, `xiaohuanxiong.com`)**.
+
+## Features
+
+- **Sign-in methods**:
+  1. Browser OAuth callback URL / token (paste `office-raccoon://auth/callback?code=...`, or raw JWT `access_token` / JSON token pair).
+  2. Raccoon desktop live session reuse (strictly read-only, reading `~/.box-agent/config/auth.json` without writing or spending desktop refresh tokens).
+- **Token renewal**: single-flight proactive refresh 5 minutes before expiration for browser logins.
+- **Dynamic model catalog & credit rates**: real-time synchronization from `/api/web/llm/v2/model_catalog` with context window, output limit, vision/reasoning tags, credit multipliers, and limited-free markers.
+- **Usage & allowances**: reports available credits, unexpired grant bills, daily expiration timestamps, and Pro/Free subscription plans.
+- **Daily check-in & desktop onboarding grant**: supports Magpie automatic daily check-in (`+300` credits/day) and one-time desktop onboarding grant (`+3000` credits).
+- **SSE model rewrite**: transparently rewrites internal upstream model names back to requested downstream models for client compatibility.
+
+## 中文
+
 商汤小浣熊（SenseTime Raccoon / `xiaohuanxiong.com`）OpenCode & Magpie 提供商插件。
 
-## 功能特性
+### 功能特性
 
 - **多种登录方式**：
   1. 浏览器 OAuth 授权登录（粘贴 `office-raccoon://auth/callback?code=...` 回调链接，或直接粘贴 `access_token` / JSON）
