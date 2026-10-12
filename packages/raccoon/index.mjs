@@ -183,9 +183,7 @@ async function renewToken(a, save) {
   const done = renewed.get(key)
   if (done && Date.now() - done.at < KEEP_RENEWED_MS) {
     const merged = { ...a, ...done.next }
-    if (merged.access !== a.access || merged.refresh !== a.refresh) {
-      await save?.(merged)
-    }
+    await save?.(merged)
     return merged
   }
   let r = renewing.get(key)
@@ -218,6 +216,14 @@ async function currentAuth(client, auth, force = false) {
       err.signIn = "expired"
       throw err
     }
+    if (
+      (auth.uid && d.uid && String(auth.uid) !== String(d.uid)) ||
+      (!auth.uid && auth.accountId && d.name && String(auth.accountId) !== String(d.name))
+    ) {
+      const err = new Error("商汤小浣熊桌面端已切换为其他账号，请重新登录")
+      err.signIn = "expired"
+      throw err
+    }
     if (force || isStale(d, EARLY_MS)) {
       const err = new Error("商汤小浣熊桌面端登录态已过期，请打开商汤小浣熊客户端重新登录")
       err.signIn = "expired"
@@ -233,8 +239,8 @@ async function currentAuth(client, auth, force = false) {
     a = { ...a, ...d.next }
   }
   if (!a.expires && a.access) a.expires = jwtExpiryMs(a.access)
-  const alreadyRenewed = a.access !== auth.access
-  if (!force && !isStale(a, EARLY_MS)) {
+  const alreadyRenewed = a.access !== auth.access || a.refresh !== auth.refresh
+  if ((alreadyRenewed || !force) && !isStale(a, EARLY_MS)) {
     if (alreadyRenewed) {
       try {
         await client?.auth?.set?.({ path: { id: PROVIDER_ID }, body: a })
@@ -501,8 +507,8 @@ async function queryUsage(token) {
   // Sum only what the vendor actually reports as granted in unexpired bills.
   // If bills don't account for the current balance, report the balance with no window.
   let grantedFromBills = 0
-  let runsOutAt = null
-  let runsOut = 0
+  let soonestExpMs = 0
+  let expiringPts = 0
   const now = Date.now()
   for (const item of Array.isArray(bills?.items) ? bills.items : []) {
     const pts = Math.floor(Number(item?.points) || 0)
@@ -511,11 +517,17 @@ async function queryUsage(token) {
     const expMs = expStr ? Date.parse(expStr) : 0
     if (expMs > 0 && expMs <= now) continue
     grantedFromBills += pts
-    if (expMs > now && (!runsOutAt || expMs < Date.parse(runsOutAt))) {
-      runsOutAt = new Date(expMs).toISOString()
-      runsOut = daily > 0 ? daily : avail
+    if (expMs > now) {
+      if (!soonestExpMs || expMs < soonestExpMs) {
+        soonestExpMs = expMs
+        expiringPts = pts
+      } else if (expMs === soonestExpMs) {
+        expiringPts += pts
+      }
     }
   }
+  const runsOutAt = soonestExpMs ? new Date(soonestExpMs).toISOString() : null
+  const runsOut = soonestExpMs ? (daily > 0 ? daily : Math.min(avail, expiringPts)) : 0
 
   if (grantedFromBills > 0 && grantedFromBills >= avail) {
     const used = grantedFromBills - avail
@@ -801,7 +813,28 @@ export const RaccoonAuthPlugin = async ({ client }) => {
               if (typeof parsed?.model === "string") requestedModel = parsed.model
             } catch {}
 
-            let { a, didRenew } = await currentAuth(client, await getAuth())
+            let a
+            let didRenew = false
+            try {
+              ;({ a, didRenew } = await currentAuth(client, await getAuth()))
+            } catch (e) {
+              const expired = e?.signIn === "expired"
+              return new Response(
+                JSON.stringify({
+                  error: {
+                    message: e?.message ?? String(e),
+                    type: expired ? "authentication_error" : "api_error",
+                  },
+                }),
+                {
+                  status: expired ? 401 : 502,
+                  headers: {
+                    "Content-Type": "application/json",
+                    "X-Magpie-Sign-In": expired ? "expired" : "kept",
+                  },
+                },
+              )
+            }
             const sendOnce = (cred) => {
               const headers = new Headers(init?.headers ?? req?.headers)
               headers.delete("x-api-key")

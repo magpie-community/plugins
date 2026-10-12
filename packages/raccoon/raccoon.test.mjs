@@ -301,3 +301,130 @@ test("checkin returns failed instead of throwing when upstream errors", async ()
   }))
   expect(r.outcome).toBe("failed")
 })
+
+test("60s renewed cache persists tokens via save without calling /refresh twice", async () => {
+  const staleTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) - 5 })
+  const freshTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  let refreshCount = 0
+
+  startServer({
+    "POST /api/web/auth/v1/refresh": () => {
+      refreshCount += 1
+      return Response.json({ code: 0, data: { access_token: freshTok, refresh_token: `RT-${refreshCount}` } })
+    },
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: 300 } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () => Response.json({ code: 0, data: { items: [] } }),
+  })
+
+  const savesA = []
+  const hooksA = await RaccoonAuthPlugin({
+    client: { auth: { set: async ({ body }) => savesA.push(body) } },
+  })
+  const initialAuth = { type: "oauth", access: staleTok, refresh: "RT-0", expires: Date.now() - 5000 }
+
+  // First path renews RT-0 -> RT-1
+  const u1 = await hooksA.auth.usage(async () => initialAuth)
+  expect(u1.signIn).toBe("renewed")
+  expect(refreshCount).toBe(1)
+  expect(savesA.at(-1)?.refresh).toBe("RT-1")
+
+  // Second path (e.g. auth.refresh or another caller still holding RT-0 within 60s)
+  // must reuse the cached renewal, persist it, and NOT call /refresh a second time.
+  const savesB = []
+  const hooksB = await RaccoonAuthPlugin({
+    client: { auth: { set: async ({ body }) => savesB.push(body) } },
+  })
+  const refreshed = await hooksB.auth.refresh(initialAuth)
+  expect(refreshCount).toBe(1)
+  expect(refreshed?.access).toBe(freshTok)
+  expect(refreshed?.refresh).toBe("RT-1")
+  expect(savesB.at(-1)?.refresh).toBe("RT-1")
+})
+
+test("loader refreshes on 401, strips x-api-key, rewrites split SSE stream, and passes 402 through", async () => {
+  const tok1 = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const tok2 = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 7200 })
+  const seenHeaders = []
+  let chatCalls = 0
+
+  startServer({
+    "POST /api/web/auth/v1/refresh": () =>
+      Response.json({ code: 0, data: { access_token: tok2, refresh_token: "R2" } }),
+    "POST /api/web/llm/v2/chat/completions": async (req) => {
+      chatCalls += 1
+      seenHeaders.push({
+        auth: req.headers.get("authorization"),
+        apiKey: req.headers.get("x-api-key"),
+      })
+      if (chatCalls === 1) {
+        return Response.json({ code: 200003, message: "authorization_verify_error" }, { status: 401 })
+      }
+      if (chatCalls === 2) {
+        const enc = new TextEncoder()
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(enc.encode('data: {"id":"1","model":"internal-m"'))
+            controller.enqueue(enc.encode(',"choices":[{"delta":{"content":"ok"}}]}\r\n\r\ndata: [DONE]\r\n\r\n'))
+            controller.close()
+          },
+        })
+        return new Response(stream, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        })
+      }
+      return Response.json({ error: { message: "insufficient quota" } }, { status: 402 })
+    },
+  })
+
+  let stored = { type: "oauth", access: tok1, refresh: "R1", expires: Date.now() + 3600_000 }
+  const hooks = await RaccoonAuthPlugin({
+    client: {
+      auth: {
+        set: async ({ body }) => {
+          stored = body
+        },
+      },
+    },
+  })
+  const loaded = await hooks.auth.loader(async () => stored)
+
+  const res = await loaded.fetch(`${ loaded.baseURL }/chat/completions`, {
+    method: "POST",
+    headers: { "x-api-key": "should-be-dropped", "content-type": "application/json" },
+    body: JSON.stringify({ model: "sn-kimi-k3", messages: [{ role: "user", content: "hi" }], stream: true }),
+  })
+  expect(res.status).toBe(200)
+  expect(res.headers.get("x-magpie-sign-in")).toBe("renewed")
+  expect(seenHeaders[0]).toEqual({ auth: `Bearer ${tok1}`, apiKey: null })
+  expect(seenHeaders[1]).toEqual({ auth: `Bearer ${tok2}`, apiKey: null })
+  const text = await res.text()
+  expect(text).toContain('"model":"sn-kimi-k3"')
+  expect(text).toContain("data: [DONE]")
+
+  const res402 = await loaded.fetch(`${ loaded.baseURL }/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "sn-kimi-k3", messages: [] }),
+  })
+  expect(res402.status).toBe(402)
+  expect(res402.headers.get("x-magpie-sign-in")).toBe("kept")
+})
+
+test("desktop sign-in marks expired when desktop app switches to another account", async () => {
+  tempDir = mkdtempSync(join(tmpdir(), "raccoon-test-"))
+  process.env.RACCOON_BOX_AGENT_CONFIG_DIR = tempDir
+  const authFile = join(tempDir, "auth.json")
+  const otherUserTok = fakeJwt({ iss: "888888", name: "OtherUser", exp: Math.floor(Date.now() / 1000) + 3600 })
+  writeFileSync(authFile, JSON.stringify({ access_token: otherUserTok, refresh_token: "D1" }))
+
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({
+    type: "oauth",
+    source: "desktop",
+    uid: "7615755",
+    accountId: "RaccoonMason",
+  }))
+  expect(u.signIn).toBe("expired")
+  expect(u.error).toContain("切换为其他账号")
+})
