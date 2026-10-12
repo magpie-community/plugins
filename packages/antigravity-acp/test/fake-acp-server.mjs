@@ -66,7 +66,7 @@ const handlers = {
       protocolVersion: 1,
       agentInfo: { name: "antigravity-acp", version: "1.2.1" },
       authMethods: [{ id: "oauth-personal", name: "Log in with Google" }],
-      agentCapabilities: { promptCapabilities: { image: true, embeddedContext: true }, ...(process.env.FAKE_NO_CLOSE ? {} : { sessionCapabilities: { close: true } }) },
+      agentCapabilities: { promptCapabilities: { image: true, embeddedContext: true }, ...(process.env.FAKE_NO_CLOSE ? {} : { sessionCapabilities: { close: process.env.FAKE_CLOSE_NULL ? null : {} } }) },
     }
   },
   async authenticate() {

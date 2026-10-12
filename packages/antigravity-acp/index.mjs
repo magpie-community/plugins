@@ -567,10 +567,12 @@ class AcpConnection {
 
   // canClose is whether the server advertised the session/close capability:
   // ACP's session/close is a request, and still unstable — an agent offers it
-  // with agentCapabilities.sessionCapabilities.close, and a server without it
-  // would never answer a request for it
+  // with agentCapabilities.sessionCapabilities.close, an object ({} means
+  // supported; omitted or null means not), and a server without it would
+  // never answer a request for it
   get canClose() {
-    return this.initResult?.agentCapabilities?.sessionCapabilities?.close === true
+    const close = this.initResult?.agentCapabilities?.sessionCapabilities?.close
+    return close != null && typeof close === "object"
   }
 
   // closeSession asks the server to close a session once its request is over,
