@@ -852,7 +852,7 @@ export const GrokAuthPlugin = async ({ client }) => {
               type: "text",
               key: "path",
               message: "Path to the CPA xAI account JSON. Stop using this account in CPA after import; its refresh token rotates.",
-              placeholder: "~/.cli-proxy-api/cpa_...json",
+              placeholder: "~/.cli-proxy-api/xai-<email>.json",
               validate: (v) => (String(v ?? "").trim() ? undefined : "Enter the path to a CPA xAI account JSON file"),
             },
           ],

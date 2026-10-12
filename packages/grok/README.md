@@ -23,7 +23,8 @@ irm https://x.ai/cli/install.ps1 | iex                 # Windows
 - **Use Grok Build's current sign-in** takes the account the CLI is
   signed in to, with nothing to approve.
 - **Import CPA Grok account JSON** copies one enabled xAI OAuth account from
-  a CLIProxyAPI (CPA) account JSON file into a private home for this plugin.
+  a CLIProxyAPI (CPA) account JSON file (CPA keeps it as
+  `~/.cli-proxy-api/xai-<email>.json`) into a private home for this plugin.
   CPA and Grok Build rotate the same refresh token, so stop using that
   account in CPA before importing it. The file is read, never rewritten.
 
