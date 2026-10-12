@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-grok-auth",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "OpenCode provider plugin: Grok (SuperGrok / X Premium+) through the Grok Build CLI's sign-in",
   "type": "module",
   "main": "./index.mjs",

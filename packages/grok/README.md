@@ -22,13 +22,19 @@ irm https://x.ai/cli/install.ps1 | iex                 # Windows
     `~/.config`). Grok Build's own sign-in stays as it is.
 - **Use Grok Build's current sign-in** takes the account the CLI is
   signed in to, with nothing to approve.
+- **Import CPA Grok account JSON** copies one enabled xAI OAuth account from
+  a CLIProxyAPI (CPA) account JSON file into a private home for this plugin.
+  CPA and Grok Build rotate the same refresh token, so stop using that
+  account in CPA before importing it. The file is read, never rewritten.
 
 ## Where the sign-in is kept
 
 The CLI keeps the sign-in in its home, as `auth.json`. OpenCode (or
-magpie) keeps where that home is, the token and its expiry.
+magpie) keeps where that home is, the token and its expiry. Importing a CPA
+account writes only its translated xAI OAuth fields to a private home owned
+by this plugin; the selected CPA file is left unchanged.
 
-The plugin only reads `auth.json`: the CLI's refresh gives a new token
+The plugin reads `auth.json`; Grok Build refreshes the token, which changes
 each time. The plugin runs `grok models` in that home, so the CLI renews
 it, then reads it again:
 
