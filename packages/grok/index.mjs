@@ -538,6 +538,9 @@ function cpaAuthFromFile(file) {
   if (typeof source.access_token !== "string" || !source.access_token || typeof source.refresh_token !== "string" || !source.refresh_token || typeof source.sub !== "string" || !source.sub || typeof source.email !== "string" || !source.email) {
     throw new Error("CPA xAI account is missing its tokens or identity")
   }
+  if (typeof source.last_refresh !== "string" || typeof source.expired !== "string") {
+    throw new Error("CPA xAI account has invalid token timestamps")
+  }
   const createTime = Date.parse(source.last_refresh)
   const expiresAt = Date.parse(source.expired)
   if (!Number.isFinite(createTime) || !Number.isFinite(expiresAt)) {

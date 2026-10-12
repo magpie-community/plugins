@@ -4,7 +4,7 @@
 import { afterAll, afterEach, expect, test } from "bun:test"
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, delimiter, dirname, join } from "node:path"
 import { GrokAuthPlugin } from "./index.mjs"
 
 const CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -52,17 +52,19 @@ function cpaFile(over = {}) {
 
 // sandbox gives the plugin a Grok Build to find and a home of its own, so
 // no real home, PATH or sign-in is ever read. With exe false there is no
-// Grok Build to find anywhere.
+// Grok Build to find anywhere. The fake CLI is never run: import only
+// checks that it is there.
 function sandbox({ exe = true } = {}) {
   const bin = mkdtempSync(join(dir, "bin-"))
   if (exe) {
-    writeFileSync(join(bin, "grok"), "#!/bin/sh\nexit 0\n")
-    chmodSync(join(bin, "grok"), 0o755)
+    const cli = join(bin, process.platform === "win32" ? "grok.exe" : "grok")
+    writeFileSync(cli, "#!/bin/sh\nexit 0\n")
+    chmodSync(cli, 0o755)
   }
   process.env.GROK_BIN_DIR = bin
   process.env.GROK_HOME = mkdtempSync(join(dir, "home-"))
   process.env.HOME = mkdtempSync(join(dir, "user-"))
-  process.env.PATH = exe ? `${bin}:/usr/bin:/bin` : "/nonexistent"
+  process.env.PATH = exe ? [bin, "/usr/bin", "/bin"].join(delimiter) : "/nonexistent"
   const config = mkdtempSync(join(dir, "config-"))
   process.env.XDG_CONFIG_HOME = config
   return config
@@ -95,7 +97,8 @@ test("an enabled CPA xAI account becomes the sign-in of a home of the plugin's o
   expect(r.type).toBe("success")
   expect(r.access).toBe(goodToken)
   expect(r.accountId).toBe("someone@example.com")
-  expect(r.refresh).toBe(join(config, "opencode-grok-auth", r.refresh.split("/").at(-1)))
+  expect(dirname(r.refresh)).toBe(join(config, "opencode-grok-auth"))
+  expect(basename(r.refresh)).not.toBe("")
 
   // Grok Build's own shape, under the scope key its auth.json uses
   const all = JSON.parse(readFileSync(join(r.refresh, "auth.json"), "utf8"))
@@ -107,7 +110,8 @@ test("an enabled CPA xAI account becomes the sign-in of a home of the plugin's o
   expect(all[SCOPE].oidc_client_id).toBe(CLIENT_ID)
   expect(all[SCOPE].user_id).toBe("user-1")
   expect(all[SCOPE].email).toBe("someone@example.com")
-  expect(statSync(join(r.refresh, "auth.json")).mode & 0o777).toBe(0o600)
+  // Windows has no 0600, so only the mode a POSIX home gives is checked
+  if (process.platform !== "win32") expect(statSync(join(r.refresh, "auth.json")).mode & 0o777).toBe(0o600)
 
   // the CPA file is read, never rewritten
   expect(readFileSync(file, "utf8")).toBe(before)
@@ -128,6 +132,8 @@ test("what isn't an enabled CPA xAI OAuth account is refused, with no home made"
     ["no user", () => cpaFile({ sub: "" }), "missing its tokens or identity"],
     ["no email", () => cpaFile({ email: "" }), "missing its tokens or identity"],
     ["timestamps that don't parse", () => cpaFile({ expired: "yesterday" }), "invalid token timestamps"],
+    ["a timestamp that is a list", () => cpaFile({ expired: ["2026-10-09T15:16:26Z"] }), "invalid token timestamps"],
+    ["a timestamp that isn't a string", () => cpaFile({ last_refresh: 1759936586 }), "invalid token timestamps"],
     ["another issuer's token", () => cpaFile({ access_token: jwt({ iss: "https://accounts.example.com", aud: [CLIENT_ID] }) }), "not for the Grok Build xAI account"],
     ["another client's token", () => cpaFile({ access_token: jwt({ iss: "https://auth.x.ai", aud: ["someone-else"] }) }), "not for the Grok Build xAI account"],
     ["a token that isn't a token", () => cpaFile({ access_token: "opaque" }), "not for the Grok Build xAI account"],
@@ -144,9 +150,20 @@ test("no Grok Build to refresh the sign-in with is refused first", async () => {
   await expect(importFrom(cpaFile())).rejects.toThrow("install Grok Build first")
 })
 
-test("a home that can't be made leaves no credential behind", async () => {
+test("a token that has already ended is still taken, its renewal left to the CLI", async () => {
   const config = sandbox()
-  // a file where the plugin's folder goes: mkdirSync fails, so nothing is written
+  const expired = new Date(Date.now() - 3600_000).toISOString()
+  const { done } = await importFrom(cpaFile({ expired }))
+  const r = await done()
+  expect(r.type).toBe("success")
+  expect(r.expires).toBe(Date.parse(expired))
+  expect(homes(config)).toHaveLength(1)
+})
+
+test("a home that can't be made is refused before anything is written", async () => {
+  const config = sandbox()
+  // a file where the plugin's folder goes: mkdirSync fails. This is the
+  // mkdir step; the cleanup after a write that fails is not exercised here.
   writeFileSync(join(config, "opencode-grok-auth"), "")
   const { done } = await importFrom(cpaFile())
   await expect(done()).rejects.toThrow()
