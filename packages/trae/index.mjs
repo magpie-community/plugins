@@ -1471,6 +1471,149 @@ function glmCall(s, tools = []) {
   return { name, arguments: args }
 }
 
+// Trae reads a model's call for it and hands a call it could not read on as
+// the native call: the wrapper the client's prompt asked for, with GLM's own
+// template tags where the model wrote them and a field's close left behind
+// (``{"name":"bash","arguments":{"command</arg_key><arg_value>ls</arg_value>``).
+// The name then holds the call the model meant, and the call's own arguments
+// — where the model wrote them — hold the rest of it.
+const NAMECALL = /^\s*\{\s*"name"\s*:\s*"([^"\\]*)"\s*,\s*"(?:arguments|input|parameters)"\s*:\s*\{/
+const NAMETAG = /<\/?arg_(?:key|value)\s*>/
+
+// nameCall is the call a name holds when it is one the model wrote there
+// ({name, arguments}), null when it isn't: a name without the wrapper, one
+// whose tool the request doesn't have, or one no field could be read from.
+// The wrapper and the tags are the service's own handoff, so what stands
+// between them is the model's text as it wrote it — a quote it left
+// unescaped is read as the quote it is, the way repairedJSON reads a file's
+// content. A value is JSON where the tool's schema says the field is no
+// string and the text is one; else the text, cut where the value was cut.
+function nameCall(s, tools = []) {
+  const text = String(s ?? "")
+  // a wrapper the service put text in front of (`bash_abstract_command_0>{…}`)
+  // is the call it holds, that text being no name the request has
+  const at = text.indexOf("{")
+  if (at < 0) return null
+  const m = NAMECALL.exec(text.slice(at))
+  if (!m) return null
+  const name = m[1]
+  const tool = tools.map((t) => t.function ?? t).find((t) => t?.name === name)
+  if (!tool) return null
+  const fields = nameFields(text.slice(at + m[0].length))
+  const args = {}
+  for (const [key, value] of fields) {
+    // a field the schema says is no string is its JSON where it is one (a
+    // number the model wrote, an object), else the text it is
+    if (tool.parameters?.properties?.[key]?.type !== "string") {
+      try {
+        args[key] = JSON.parse(value.trim())
+        continue
+      } catch {}
+    }
+    args[key] = value
+  }
+  return Object.keys(args).length ? { name, arguments: args } : null
+}
+
+// nameFields reads a wrapper's body as its fields: a key, then its value,
+// with a tag standing where a colon or a quote would. A value runs to the
+// tag that ends it, or to the next key: what neither reached is no field's
+// text and is left out, so a call cut in the middle keeps what it has.
+function nameFields(body) {
+  const out = []
+  let i = 0
+  for (let n = 0; n < 64 && i < body.length; n++) {
+    const skipped = body.slice(i).match(/^[\s,]+|^<\/?arg_(?:key|value)\s*>/)
+    if (skipped) {
+      i += skipped[0].length
+      continue
+    }
+    if (body[i] !== '"') break
+    const key = nameString(body, i, () => true)
+    i = key.i
+    if (!key.text) break
+    const colon = body.slice(i).match(/^\s*:\s*/)
+    if (colon) i += colon[0].length
+    else {
+      const tag = body.slice(i).match(/^(?:<\/?arg_(?:key|value)\s*>)+/)
+      if (tag) i += tag[0].length
+    }
+    let value
+    if (body[i] === "<") {
+      // a value whose own quote the service cut at its tag: the text after
+      // the tag's close is what the model wrote (limit</arg_key><arg_value>55)
+      const m = body.slice(i).match(/^(?:<\/?arg_(?:key|value)\s*>)+/)
+      i += m[0].length
+    }
+    if (body[i] === '"') {
+      const v = nameString(body, i, (rest) => /^\s*(?:[,}]|$|(?:<\/?arg_(?:key|value)\s*>)+)/.test(rest) || /^\s*"(?:[^"\\]|\\.)*"\s*(?::|<\/?arg_(?:key|value))/.test(rest))
+      value = v.text
+      i = v.i
+    } else {
+      const rest = body.slice(i)
+      // a value that isn't quoted runs to the tag that ends it, or to the
+      // next field: a key whose own quote the service cut has none to look
+      // for, so one closed by a tag counts too
+      const stops = [
+        rest.search(NAMETAG),
+        rest.search(/"(?:(?:[^"\\<>]*)"\s*(?::|\s*<\/?arg_(?:key|value)\s*>)|[^"\\<>]*<\/?arg_(?:key|value)\s*>)/),
+      ].filter((x) => x >= 0)
+      const stop = stops.length ? Math.min(...stops) : rest.length
+      value = rest.slice(0, stop).replace(/^[\s,:]+/, "")
+      // the field's own close: blanks and braces, then a quotation mark the
+      // service cut it at where an escape isn't what stands before it
+      value = value.replace(/[\s,}\]]+$/, "").replace(/(?<!\\)"$/, "").replace(/[\s,}\]]+$/, "")
+      i += stop
+    }
+    const close = body.slice(i).match(/^\s*(?:<\/?arg_(?:key|value)\s*>)+\s*/)
+    if (close) i += close[0].length
+    out.push([key.text, value])
+  }
+  return out
+}
+
+// nameString reads the string at s[i] === '"', its escapes kept as written.
+// ends says, for what follows a quote, whether that quote ended the string:
+// a quote the model left unescaped inside a value is escaped as read on.
+function nameString(s, i, ends) {
+  i++ // the opening quote
+  let src = ""
+  while (i < s.length) {
+    const ch = s[i]
+    if (ch === "\\") {
+      src += s[i] + (s[i + 1] ?? "")
+      i += 2
+      continue
+    }
+    if (ch === "<") {
+      const m = NAMETAG.exec(s.slice(i))
+      if (m && m.index === 0) break // a tag ends the run: the service cut it
+    }
+    if (ch === '"') {
+      if (ends(s.slice(i + 1))) {
+        i++
+        return { text: decode(src), i }
+      }
+      src += '\\"'
+      i++
+      continue
+    }
+    src += ch
+    i++
+  }
+  return { text: decode(src), i }
+}
+
+// decode is a string's own source as the string: the escapes the model wrote
+// are the characters they stand for, a newline among them
+function decode(src) {
+  try {
+    return JSON.parse('"' + escapeRaw(src) + '"')
+  } catch {
+    return src
+  }
+}
+
 // toolNamed is the request's own name for a tool a model named otherwise
 // (Read for read, list-files for list_files); name itself when the request
 // has none like it. A tool it has none of goes on as named: the agent tells
@@ -1662,17 +1805,36 @@ class NativeCalls {
   }
   take(tools = []) {
     return this.calls.filter((c) => c.name).map(({ id, name, arguments: a }) => {
-      // a name that holds the whole call, as JSON or in GLM's template:
-      // that call, its arguments the name's when it gave none of its own
-      const w = name.trimStart().startsWith("{") ? looseJSON(name) : name.includes("<arg_key>") ? glmCall(name, tools) : null
+      // a name that holds the whole call, as the client's wrapper or in
+      // GLM's template: that call, its arguments the name's when it gave
+      // none of its own. The wrapper is read as JSON where it is whole —
+      // its nesting is its own — and as the service's handoff where it was
+      // left mid-call
+      const w = name.includes('{"name"') ? looseJSON(name) ?? nameCall(name, tools) : name.includes("<arg_key>") ? glmCall(name, tools) : null
       if (w?.name) {
         name = String(w.name)
-        if (!a || a.trim() === "{}") a = callArgs(w)
+        // the name's own arguments are the model's; what the name read fills
+        // the fields they left (the wrapper's text is the whole call where
+        // Trae moved the arguments with it, and the rest where it did not)
+        a = nameArgs(a, w)
       }
       const v = a && !done(a) ? looseJSON(a) : null
       return { id: id || callId(), name, arguments: v ? JSON.stringify(v) : a || "{}" }
     })
   }
+}
+
+// nameArgs is the arguments of a call a name held: the native call's own
+// where it carried them, else the name's, and the two together where each
+// has a field the other hasn't — the service moves the arguments it read
+// into the native call and leaves the rest in the name.
+function nameArgs(native, fromName) {
+  const a = typeof native === "string" ? native.trim() : ""
+  const named = JSON.stringify(fromName.arguments ?? {})
+  if (!a || a === "{}") return named
+  const own = looseJSON(a)
+  if (!own) return named // a call's arguments as they stand, which are the model's
+  return JSON.stringify({ ...fromName.arguments, ...own })
 }
 
 // resent says next is the call's whole arguments sent again after a
@@ -2474,4 +2636,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, toolNamed, unwrapped, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, proofOf, SITES, SESSION, conversationID }
+export const _internal = { traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, proofOf, SITES, SESSION, conversationID }
