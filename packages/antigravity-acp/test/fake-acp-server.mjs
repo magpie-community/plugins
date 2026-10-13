@@ -12,7 +12,8 @@
 //              next one (the retry) normally, via a marker file
 //   HANG     — the prompt never answers (for the soft-timeout test)
 // The cwd of each session/new is written to $AGY_ACP_HOME/last-cwd, and each
-// closed session id to $AGY_ACP_HOME/closed-sessions, for the tests to assert.
+// closed session id to $AGY_ACP_HOME/closed-sessions, and each process
+// started to $AGY_ACP_HOME/spawns, for the tests to assert.
 import { createInterface } from "node:readline"
 import fs from "node:fs"
 import os from "node:os"
@@ -30,6 +31,9 @@ const write = (msg) => process.stdout.write(JSON.stringify(msg) + "\n")
 const reply = (id, result) => write({ jsonrpc: "2.0", id, result })
 const fail = (id, code, message) => write({ jsonrpc: "2.0", id, error: { code, message } })
 const update = (sessionId, up) => write({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: up } })
+
+// one line per server process started, for the tests to count
+try { fs.appendFileSync(path.join(process.env.AGY_ACP_HOME ?? os.tmpdir(), "spawns"), `${process.pid}\n`) } catch {}
 
 const sessions = new Map()
 let nextId = 1

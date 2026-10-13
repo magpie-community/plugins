@@ -210,6 +210,28 @@ for (const [label, flag] of [["omitted", "FAKE_NO_CLOSE"], ["null", "FAKE_CLOSE_
   })
 }
 
+onPosix("requests that arrive together share one server", async () => {
+  _internal.shutdown()
+  const spawns = path.join(home, "spawns")
+  fs.rmSync(spawns, { force: true })
+  const replies = await Promise.all([chat({ stream: false }), chat({ stream: false }), chat({ stream: false })])
+  for (const r of replies) expect(r.status).toBe(200)
+  expect(fs.readFileSync(spawns, "utf8").trim().split("\n")).toHaveLength(1)
+})
+
+onPosix("a long history is cut from its oldest end; the instructions stay", () => {
+  const filler = "x".repeat(1000)
+  const messages = [{ role: "system", content: "KEEP-ME" }]
+  for (let i = 0; i < 600; i++) messages.push({ role: i % 2 ? "assistant" : "user", content: `m${i} ${filler}` })
+  messages.push({ role: "user", content: "last" })
+  const { markdown } = _internal.buildPrompt({ messages })
+  expect(markdown.length).toBeLessThanOrEqual(400_000)
+  expect(markdown).toContain("KEEP-ME")
+  expect(markdown).toContain("[older context truncated]")
+  expect(markdown).toContain("m599 ")
+  expect(markdown).not.toContain("m0 ")
+})
+
 onPosix("a timed-out call is cancelled alone; the server lives on", async () => {
   const conn = new _internal.AcpConnection({ command: wrapper, args: [], cwd: home })
   conn.start()
