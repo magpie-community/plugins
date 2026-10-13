@@ -89,8 +89,8 @@ test("the public sign-in is unchanged: it is still the first method and asks not
   expect(hooks.auth.methods[0].prompts).toBeUndefined()
   const u = new URL((await hooks.auth.methods[0].authorize()).url)
   expect(u.origin + u.pathname).toBe("https://qoder.cn/device/selectAccounts")
-  // qoder.com gains no VPC method
-  expect((await QoderAuthPlugin({ client: store().client })).auth.methods.length).toBe(1)
+  // qoder.com gains no VPC method, but has the PAT method
+  expect((await QoderAuthPlugin({ client: store().client })).auth.methods.length).toBe(2)
 })
 
 test("the VPC method asks for the instance and checks it", async () => {

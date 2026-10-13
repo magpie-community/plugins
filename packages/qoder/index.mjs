@@ -311,6 +311,52 @@ async function deviceSignIn(site) {
   }
 }
 
+// patSignIn exchanges a Personal Access Token for a job token, bypassing
+// the OAuth device flow. PATs are long-lived (up to 1 year), so this
+// avoids the ~3-day re-authentication cycle of OAuth refresh tokens.
+async function patSignIn(site, pat) {
+  const machineId = randomUUID()
+  // Exchange PAT for job token
+  const exchangeUrl = site.openapi + "/api/v1/jobToken/exchange"
+  const exchangeRes = await fetch(exchangeUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": "magpie-qoder-pat" },
+    body: JSON.stringify({ personal_token: pat }),
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (exchangeRes.status !== 200) {
+    const text = await exchangeRes.text()
+    throw new Error(`${site.name} PAT exchange: status ${exchangeRes.status}: ${text.trim().slice(0, 300)}`)
+  }
+  const jt = await exchangeRes.json()
+  if (!String(jt?.token ?? "").trim()) throw new Error(`${site.name} PAT exchange: empty token in response`)
+  const chat = { access: jt.token, refresh: jt.refresh_token ?? "", expires: expiresAt(jt) }
+  // Get user info using the job token
+  let email = ""
+  let name = ""
+  let uid = ""
+  try {
+    const ui = await openapi(site, "/api/v1/userinfo", { token: jt.token })
+    if (ui.status >= 200 && ui.status < 300) {
+      ;[email, name] = [ui.json?.email ?? "", ui.json?.name ?? ""]
+      uid = String(ui.json?.id ?? ui.json?.user_id ?? ui.json?.uid ?? "")
+    }
+  } catch {}
+  if (!uid) throw new Error(`${site.name} PAT sign-in: could not determine user id`)
+  return {
+    type: "success",
+    ...chat,
+    accountId: email || uid,
+    uid,
+    email,
+    name: name || "",
+    machineId,
+    deviceToken: "",
+    deviceRefresh: "",
+    patAuth: true,
+  }
+}
+
 // SignInGone is a sign-in that can't sign a request: a 401. Only Qoder
 // refusing the refresh token marks the account lapsed (expired), as the
 // built-in's qoderRefreshFailed did; no refresh token, or no account,
@@ -1450,6 +1496,10 @@ const makePlugin = (site) => async ({ client }) => {
     try {
       const cred = await fresh(getAuth)
       if (renewed(cred)) signIn = "renewed"
+      // PAT accounts have no device token; usage requires it
+      if (cred.patAuth && !cred.deviceToken) {
+        return { plan: cred.plan || "PAT", signIn }
+      }
       let env
       try {
         env = await fetchUsage(siteOf(site, cred), cred.deviceToken)
@@ -1583,6 +1633,33 @@ const makePlugin = (site) => async ({ client }) => {
       },
       methods: [
         { type: "oauth", label: `Sign in with ${site.name}`, authorize: () => deviceSignIn(site) },
+        // PAT sign-in: exchange a Personal Access Token for a job token,
+        // bypassing the OAuth device flow. PATs last up to 1 year.
+        {
+          type: "oauth",
+          label: `Sign in with ${site.name} PAT`,
+          prompts: [
+            {
+              type: "password",
+              key: "pat",
+              message: "Your Qoder Personal Access Token (from qoder.com/account/integrations)",
+              placeholder: "pt-...",
+              validate: (v) => (String(v ?? "").trim().startsWith("pt-") ? undefined : "PAT must start with pt-"),
+            },
+          ],
+          authorize: (inputs) => {
+            const pat = String(inputs?.pat ?? "").trim()
+            if (!pat) throw new Error("enter your Personal Access Token")
+            return {
+              url: `${site.web}/account/integrations`,
+              instructions: `Create a PAT at ${site.web}/account/integrations if you don't have one`,
+              method: "auto",
+              async callback() {
+                return patSignIn(site, pat)
+              },
+            }
+          },
+        },
         // an enterprise VPC instance (Qoder CN), a method of its own so
         // that the sign-in above asks nothing new
         ...(site.vpcDomain
