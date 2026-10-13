@@ -1640,7 +1640,7 @@ const makePlugin = (site) => async ({ client }) => {
           label: `Sign in with ${site.name} PAT`,
           prompts: [
             {
-              type: "password",
+              type: "text",
               key: "pat",
               message: "Your Qoder Personal Access Token (from qoder.com/account/integrations)",
               placeholder: "pt-...",
