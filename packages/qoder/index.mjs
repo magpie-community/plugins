@@ -313,13 +313,13 @@ async function deviceSignIn(site) {
 
 // exchangeExpiry is when a job token from /api/v1/jobToken/exchange runs
 // out, as Qoder's own client reads it: expire_time or expires_at (a date)
-// first, then expires_in (seconds, not milliseconds), then a day.
+// first, then expires_in (milliseconds), then a day.
 function exchangeExpiry(jt) {
   for (const k of ["expire_time", "expires_at"]) {
     const at = Date.parse(String(jt?.[k] ?? "").trim())
     if (!isNaN(at)) return at
   }
-  if (jt?.expires_in > 0) return Date.now() + jt.expires_in * 1000
+  if (jt?.expires_in > 0) return Date.now() + jt.expires_in
   return Date.now() + DAY
 }
 

@@ -50,7 +50,7 @@ test("qoder: PAT sign-in exchanges token and returns credentials", async () => {
     if (u.host === "openapi.qoder.sh" && u.pathname === "/api/v1/jobToken/exchange") {
       const body = JSON.parse(init.body)
       expect(body.personal_token).toBe("pt-test123")
-      return json({ token: "jt-pat", refresh_token: "jrt-pat", expires_in: 86400 })
+      return json({ token: "jt-pat", refresh_token: "jrt-pat", expires_in: 86400000, expires_at: new Date(Date.now() + 86400000).toISOString(), refresh_token_expires_at: new Date(Date.now() + 172800000).toISOString(), refresh_token_expires_in: 172800000 })
     }
     if (u.host === "openapi.qoder.sh" && u.pathname === "/api/v1/userinfo") {
       return json({ id: "user-123", email: "test@example.com", name: "Test User" })
@@ -109,7 +109,7 @@ test("qoder: PAT sign-in fails when Qoder refuses the PAT", async () => {
 test("qoder: PAT sign-in fails when no user id", async () => {
   globalThis.fetch = async (url) => {
     const u = new URL(String(url))
-    if (u.pathname === "/api/v1/jobToken/exchange") return json({ token: "jt-x", refresh_token: "jrt-x", expires_in: 86400 })
+    if (u.pathname === "/api/v1/jobToken/exchange") return json({ token: "jt-x", refresh_token: "jrt-x", expires_in: 86400000 })
     if (u.pathname === "/api/v1/userinfo") return json({ email: "no-id@example.com" })
     return new Response("", { status: 500 })
   }
@@ -127,7 +127,7 @@ test("qoder: PAT re-exchanged when job refresh lapses", async () => {
     const u = new URL(String(url))
     if (u.pathname === "/api/v1/jobToken/exchange") {
       exchangeCount++
-      return json({ token: `jt-exchange-${exchangeCount}`, refresh_token: `jrt-exchange-${exchangeCount}`, expires_in: 86400 })
+      return json({ token: `jt-exchange-${exchangeCount}`, refresh_token: `jrt-exchange-${exchangeCount}`, expires_in: 86400000 })
     }
     if (u.pathname === "/api/v1/userinfo") {
       return json({ id: "user-re", email: "re@example.com" })
