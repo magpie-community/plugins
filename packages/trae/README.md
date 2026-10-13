@@ -124,7 +124,16 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
   - GLM also writes its own template, `<tool_call>name<arg_key>k</arg_key>
     <arg_value>v</arg_value></tool_call>` (a string kept as written, other
     types read as JSON), and sometimes a whole call into a native call's
-    name; both are read as the call.
+    name; both are read as the call. A name that holds the wrapper with
+    GLM's tags where its service stopped mid-call — `{"name":"bash",
+    "arguments":{"command</arg_key><arg_value>ls</arg_value>` — is read too:
+    the tags are the service's own handoff, so what stands between them is
+    the model's text (a quote left unescaped read as the quote it is, a
+    comma inside a value kept, a field's closing tag ending the value before
+    it), and the fields the native call did carry are kept beside the ones
+    the name's own text fills in. A name whose tool the request doesn't
+    have, or one no field can be read from, goes on as written, as any other
+    unknown tool does.
   - A block is read as models get it wrong too: every quote escaped
     (`{\"name\":…}`), quotes or backslashes in a string left unescaped, an
     opener with the name as an attribute (`<tool_call name="bash">` with
