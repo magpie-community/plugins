@@ -28,7 +28,7 @@ for (const site of SITES) {
     expect(patMethod.type).toBe("oauth")
     expect(patMethod.prompts).toHaveLength(1)
     expect(patMethod.prompts[0].key).toBe("pat")
-    expect(patMethod.prompts[0].type).toBe("text")
+    expect(patMethod.prompts[0].type).toBe("password")
   })
 
   test(`${site.name}: PAT auth method validates PAT format`, async () => {
