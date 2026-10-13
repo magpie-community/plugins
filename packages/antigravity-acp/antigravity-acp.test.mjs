@@ -23,8 +23,9 @@ fs.writeFileSync(path.join(process.env.AGY_ACP_AUTH_DIR, "settings.json"), JSON.
 fs.writeFileSync(path.join(process.env.AGY_ACP_AUTH_DIR, "acp_token.json"), JSON.stringify({ refresh_token: "x", email: "me@example.com" }))
 
 // the fake server as an executable the launcher accepts (a shebang wrapper;
-// it needs a POSIX shell, so on Windows every test is skipped)
-const onPosix = process.platform === "win32" ? test.skip : test
+// it needs a POSIX shell, so on Windows every test is skipped). Each test
+// starts a bun child cold, so a busy CI box gets 30 s instead of bun's 5 s
+const onPosix = process.platform === "win32" ? test.skip : (name, fn, timeout = 30_000) => test(name, fn, timeout)
 const bin = path.join(home, "bin")
 fs.mkdirSync(bin, { recursive: true })
 const wrapper = path.join(bin, "agy_acp_server.par")
