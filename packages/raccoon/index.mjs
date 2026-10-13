@@ -486,10 +486,11 @@ async function claimDesktopOnboardingGrant(token) {
       const pts = Number(d?.popup?.points)
       return { points: Number.isFinite(pts) && pts > 0 ? Math.floor(pts) : 3000, settled: true }
     }
-    return { points: 0, settled: true }
-  } catch {
-    return { points: 0, settled: false }
-  }
+    if (d?.granted === false) {
+      return { points: 0, settled: true }
+    }
+  } catch {}
+  return { points: 0, settled: false }
 }
 
 async function queryUsage(token) {

@@ -543,8 +543,11 @@ test("failed onboarding grant (500) is not marked settled and retries on next ch
   startServer({
     "POST /api/web/desktop/v1/login/points/grant": () => {
       grantCalls += 1
-      if (grantCalls <= 2) {
+      if (grantCalls === 1) {
         return new Response("internal server error", { status: 500 })
+      }
+      if (grantCalls === 2) {
+        return Response.json({ code: 0, data: {} })
       }
       return Response.json({ code: 0, data: { granted: true, popup: { points: 3000 } } })
     },
