@@ -24,7 +24,7 @@ const LEAD_MS = 5 * 60 * 1000
 const KEEP_RENEWED_MS = 60 * 1000
 const CATALOG_TTL_MS = 10 * 60 * 1000
 
-const desktopPlatform = () => (process.platform === "darwin" ? "desktop-mac" : "desktop-windows")
+const desktopPlatform = (plat = process.platform) => (plat === "darwin" ? "desktop-mac" : "desktop-windows")
 const desktopHeaders = () => ({
   "X-Client-Platform": desktopPlatform(),
   "X-Client-Version": "v1.0.0",
@@ -484,10 +484,12 @@ async function claimDesktopOnboardingGrant(token) {
     const d = await apiGetJson("/api/web/desktop/v1/login/points/grant", token, desktopHeaders(), "POST")
     if (d?.granted === true) {
       const pts = Number(d?.popup?.points)
-      return Number.isFinite(pts) && pts > 0 ? pts : 3000
+      return { points: Number.isFinite(pts) && pts > 0 ? Math.floor(pts) : 3000, settled: true }
     }
-  } catch {}
-  return 0
+    return { points: 0, settled: true }
+  } catch {
+    return { points: 0, settled: false }
+  }
 }
 
 async function queryUsage(token) {
@@ -497,7 +499,6 @@ async function queryUsage(token) {
     apiGetJson("/api/web/points/v1/bills?paging.limit=200&paging.offset=0", token).catch(() => null),
   ])
   const avail = Math.floor(Number(points?.available_points) || 0)
-  const daily = Math.floor(Number(points?.daily_points) || 0)
 
   const office = entitlement?.office ?? entitlement?.code ?? {}
   const proEnable = office?.pro_enable === true || entitlement?.code?.pro_enable === true
@@ -585,7 +586,7 @@ async function performCheckIn(a, save) {
     beforeKeys = new Set(items.filter((x) => isCheckinGrantBill(x, today)).map(billKey))
   } catch {}
 
-  const settingRes = await apiGetJson("/api/web/office/v3/setting_info", token, {
+  await apiGetJson("/api/web/office/v3/setting_info", token, {
     ...desktopHeaders(),
     "X-Raccoon-Language": "zh",
   })
@@ -594,17 +595,28 @@ async function performCheckIn(a, save) {
   const accountKey = a?.uid || a?.accountId || a?.access
   const alreadySettled = a?.onboardingSettled || (a?.source === "desktop" && desktopOnboardingSettled.has(accountKey))
   if (!alreadySettled) {
-    onboardingPts = await claimDesktopOnboardingGrant(token)
-    if (a?.source === "desktop") {
-      desktopOnboardingSettled.add(accountKey)
-    } else if (save) {
-      await save({ ...a, onboardingSettled: true }).catch(() => {})
+    const grant = await claimDesktopOnboardingGrant(token)
+    onboardingPts = grant.points
+    if (grant.settled) {
+      if (a?.source === "desktop") {
+        desktopOnboardingSettled.add(accountKey)
+      } else if (save) {
+        await save({ ...a, onboardingSettled: true }).catch(() => {})
+      }
     }
   }
 
   // If the before-snapshot of bills could not be read, avoid false positives
-  // from historical bills or repeating popup grants.
+  // from historical bills or repeating popup grants, while still reporting an
+  // onboarding grant that this call just claimed.
   if (!beforeKeys) {
+    if (onboardingPts > 0) {
+      return {
+        outcome: "claimed",
+        credit: onboardingPts,
+        message: `桌面端首次登录奖励 +${onboardingPts}`,
+      }
+    }
     return {
       outcome: "done",
       message: "今日已签到",
@@ -613,6 +625,7 @@ async function performCheckIn(a, save) {
 
   const bills = await apiGetJson("/api/web/points/v1/bills?paging.limit=20&paging.offset=0", token)
   let newlyGranted = 0
+  let hasNewRewardBill = false
   const names = []
   const items = Array.isArray(bills?.items) ? bills.items : []
   items.forEach((item) => {
@@ -620,11 +633,20 @@ async function performCheckIn(a, save) {
     if (beforeKeys.has(billKey(item))) return
     const pts = Math.floor(Number(item?.points) || 0)
     newlyGranted += pts
+    if (String(item?.biz_type ?? "") === "reward_grant") hasNewRewardBill = true
     const ev = String(item?.event_name || "积分发放")
     if (!names.includes(ev)) names.push(ev)
   })
 
-  const totalCredit = newlyGranted || onboardingPts
+  // Sum daily check-in bills and the one-time onboarding grant when both land
+  // in one call, unless the onboarding grant is already present as a new
+  // reward_grant bill in /points/v1/bills (which would double-count it).
+  if (onboardingPts > 0 && !hasNewRewardBill) {
+    newlyGranted += onboardingPts
+    if (!names.includes("桌面端首次登录奖励")) names.push("桌面端首次登录奖励")
+  }
+
+  const totalCredit = newlyGranted
   if (totalCredit > 0) {
     return {
       outcome: "claimed",

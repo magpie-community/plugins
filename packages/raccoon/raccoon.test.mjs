@@ -228,6 +228,8 @@ test("usage reports Credits window when unexpired bills account for total grante
     limit: 9600,
     display: "81 / 9600",
     unit: "credits",
+    runsOutAt: "2029-10-17T15:59:59.000Z",
+    runsOut: 300,
   })
 })
 
@@ -531,4 +533,196 @@ test("desktop checkin requests onboarding grant only once across runs", async ()
 
   await hooks.auth.checkin(async () => authInput)
   expect(grantCalls).toBe(1) // Second call must NOT POST onboarding grant again
+})
+
+test("failed onboarding grant (500) is not marked settled and retries on next checkin", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  _internal.desktopOnboardingSettled.clear()
+  let grantCalls = 0
+
+  startServer({
+    "POST /api/web/desktop/v1/login/points/grant": () => {
+      grantCalls += 1
+      if (grantCalls <= 2) {
+        return new Response("internal server error", { status: 500 })
+      }
+      return Response.json({ code: 0, data: { granted: true, popup: { points: 3000 } } })
+    },
+    "GET /api/web/office/v3/setting_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () => Response.json({ code: 0, data: { items: [] } }),
+  })
+
+  // 1. Browser sign-in: 500 on first try must NOT save onboardingSettled: true
+  const saves = []
+  let browserStored = { type: "oauth", access: validTok, refresh: "R1", expires: Date.now() + 3600_000 }
+  const hooks = await RaccoonAuthPlugin({
+    client: {
+      auth: {
+        set: async ({ body }) => {
+          saves.push(body)
+          browserStored = body
+        },
+      },
+    },
+  })
+
+  const r1 = await hooks.auth.checkin(async () => browserStored)
+  expect(r1.outcome).toBe("done")
+  expect(grantCalls).toBe(1)
+  expect(saves.length).toBe(0)
+  expect(browserStored.onboardingSettled).toBeUndefined()
+
+  // 2. Desktop sign-in: 500 on try #2 must NOT add to desktopOnboardingSettled
+  tempDir = mkdtempSync(join(tmpdir(), "raccoon-test-"))
+  process.env.RACCOON_BOX_AGENT_CONFIG_DIR = tempDir
+  writeFileSync(join(tempDir, "auth.json"), JSON.stringify({ access_token: validTok, refresh_token: "D1" }))
+  const deskAuth = { type: "oauth", source: "desktop", uid: "7615755" }
+
+  const r2 = await hooks.auth.checkin(async () => deskAuth)
+  expect(r2.outcome).toBe("done")
+  expect(grantCalls).toBe(2)
+  expect(_internal.desktopOnboardingSettled.has("7615755")).toBe(false)
+
+  // 3. Next browser checkin succeeds (200 granted: true) -> claims +3000 and saves onboardingSettled: true
+  const r3 = await hooks.auth.checkin(async () => browserStored)
+  expect(r3).toMatchObject({ outcome: "claimed", credit: 3000 })
+  expect(grantCalls).toBe(3)
+  expect(browserStored.onboardingSettled).toBe(true)
+
+  // 4. Next desktop checkin succeeds -> claims +3000 and marks desktopOnboardingSettled
+  const r4 = await hooks.auth.checkin(async () => deskAuth)
+  expect(r4).toMatchObject({ outcome: "claimed", credit: 3000 })
+  expect(grantCalls).toBe(4)
+  expect(_internal.desktopOnboardingSettled.has("7615755")).toBe(true)
+})
+
+test("checkin reports claimed onboarding grant when before-snapshot fails, and sums daily + onboarding without double-counting", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const today = _internal.beijingTodayKey()
+  let scenario = "snapshot-fails"
+  let billCallInScenario = 0
+
+  startServer({
+    "GET /api/web/office/v3/setting_info": () => Response.json({ code: 0, data: {} }),
+    "POST /api/web/desktop/v1/login/points/grant": () =>
+      Response.json({ code: 0, data: { granted: true, popup: { points: 3000 } } }),
+    "GET /api/web/points/v1/bills": () => {
+      billCallInScenario += 1
+      if (scenario === "snapshot-fails") {
+        return new Response("bad gateway", { status: 502 })
+      }
+      if (billCallInScenario === 1) {
+        return Response.json({ code: 0, data: { items: [] } })
+      }
+      if (scenario === "both-land-no-reward-bill") {
+        return Response.json({
+          code: 0,
+          data: {
+            items: [
+              { bill_id: "d1", biz_type: "daily_grant", event_name: "每日积分发放", points: 300, created_at: `${today}T08:00:00+08:00` },
+            ],
+          },
+        })
+      }
+      return Response.json({
+        code: 0,
+        data: {
+          items: [
+            { bill_id: "d1", biz_type: "daily_grant", event_name: "每日积分发放", points: 300, created_at: `${today}T08:00:00+08:00` },
+            { bill_id: "r1", biz_type: "reward_grant", event_name: "新人礼", points: 3000, created_at: `${today}T08:00:01+08:00` },
+          ],
+        },
+      })
+    },
+  })
+
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+
+  // Sub-case 1: before-snapshot fails, but onboarding grant succeeded (+3000)
+  const res1 = await hooks.auth.checkin(async () => ({
+    type: "oauth",
+    access: validTok,
+    refresh: "R1",
+    expires: Date.now() + 3600_000,
+  }))
+  expect(res1).toMatchObject({ outcome: "claimed", credit: 3000 })
+
+  // Sub-case 2: both daily (+300) and onboarding (+3000) land, and bills only has daily_grant -> sum is 3300
+  scenario = "both-land-no-reward-bill"
+  billCallInScenario = 0
+  const res2 = await hooks.auth.checkin(async () => ({
+    type: "oauth",
+    access: validTok,
+    refresh: "R1",
+    expires: Date.now() + 3600_000,
+  }))
+  expect(res2).toMatchObject({ outcome: "claimed", credit: 3300 })
+
+  // Sub-case 3: bills already includes the new reward_grant (+3000) -> no double count (still 3300)
+  scenario = "both-land-with-reward-bill"
+  billCallInScenario = 0
+  const res3 = await hooks.auth.checkin(async () => ({
+    type: "oauth",
+    access: validTok,
+    refresh: "R1",
+    expires: Date.now() + 3600_000,
+  }))
+  expect(res3).toMatchObject({ outcome: "claimed", credit: 3300 })
+})
+
+test("setting_info popup without new bill reports done when before-snapshot succeeds", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  startServer({
+    "GET /api/web/office/v3/setting_info": () =>
+      Response.json({
+        code: 0,
+        data: {
+          point_grant_popups: { points: 300 },
+          point_grant_toast: { points: 300 },
+        },
+      }),
+    "GET /api/web/points/v1/bills": () => Response.json({ code: 0, data: { items: [] } }),
+  })
+
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const res = await hooks.auth.checkin(async () => ({
+    type: "oauth",
+    access: validTok,
+    refresh: "R1",
+    expires: Date.now() + 3600_000,
+    onboardingSettled: true,
+  }))
+  expect(res.outcome).toBe("done")
+})
+
+test("X-Client-Platform header derives desktop-mac on darwin and desktop-windows otherwise", async () => {
+  expect(_internal.desktopPlatform("darwin")).toBe("desktop-mac")
+  expect(_internal.desktopPlatform("win32")).toBe("desktop-windows")
+  expect(_internal.desktopPlatform("linux")).toBe("desktop-windows")
+
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const seenPlatforms = []
+  startServer({
+    "GET /api/web/office/v3/setting_info": (req) => {
+      seenPlatforms.push(req.headers.get("x-client-platform"))
+      return Response.json({ code: 0, data: {} })
+    },
+    "GET /api/web/points/v1/bills": () => Response.json({ code: 0, data: { items: [] } }),
+  })
+
+  const origDesc = Object.getOwnPropertyDescriptor(process, "platform")
+  try {
+    const hooks = await RaccoonAuthPlugin({ client: {} })
+    const authObj = { type: "oauth", access: validTok, refresh: "R1", expires: Date.now() + 3600_000, onboardingSettled: true }
+
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true })
+    await hooks.auth.checkin(async () => authObj)
+
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true })
+    await hooks.auth.checkin(async () => authObj)
+
+    expect(seenPlatforms).toEqual(["desktop-mac", "desktop-windows"])
+  } finally {
+    if (origDesc) Object.defineProperty(process, "platform", origDesc)
+  }
 })
