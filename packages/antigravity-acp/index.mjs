@@ -193,6 +193,18 @@ async function ensureRuntime() {
   return made
 }
 
+// sweepStaging takes the staging dirs a killed installer left in versions/:
+// each held a partial download, and only its dead owner ever names them
+function sweepStaging() {
+  const versions = path.join(runtimeRoot(), "versions")
+  let entries
+  try { entries = fs.readdirSync(versions) } catch { return }
+  for (const name of entries) {
+    if (!name.startsWith(".install-")) continue
+    try { fs.rmSync(path.join(versions, name), { recursive: true, force: true }) } catch {}
+  }
+}
+
 async function installLatest() {
   const key = platformKey()
   const release = MANIFEST.releases[MANIFEST.releases.length - 1]
@@ -201,6 +213,9 @@ async function installLatest() {
   const root = runtimeRoot()
   const versions = path.join(root, "versions")
   fs.mkdirSync(versions, { recursive: true, mode: 0o700 })
+  // installLatest runs only under the install lock, so any .install-* still
+  // in versions/ belongs to a dead installer and is safe to take away
+  sweepStaging()
   const destination = path.join(versions, asset.archiveSha256.slice(0, 16))
   if (isInstalled(destination, asset)) return pointCurrentAt(destination)
 
@@ -1688,5 +1703,5 @@ const shutdown = () => {
 export const _internal = {
   projectModels, resolveServerId, buildPrompt, parseChat, localAuth, configureDefaultAuth,
   Bridge, Turn, noteQuota, sessionModels, resolveLaunch, platformKey, setIndex: (m) => (familyIndex = m),
-  AcpConnection, authDir, runtimeRoot, workDir, shutdown,
+  AcpConnection, authDir, runtimeRoot, workDir, shutdown, sweepStaging,
 }

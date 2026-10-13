@@ -264,6 +264,20 @@ onPosix("refresh leaves the sign-in to the server", async () => {
   expect(nothing).toBeUndefined()
 })
 
+onPosix("sweepStaging removes a dead installer's staging dir, and only that", () => {
+  const versions = path.join(_internal.runtimeRoot(), "versions")
+  fs.mkdirSync(path.join(versions, ".install-dead"), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(path.join(versions, ".install-dead", "download.zip"), "partial archive")
+  fs.mkdirSync(path.join(versions, "keepme", "x"), { recursive: true, mode: 0o700 })
+  try {
+    _internal.sweepStaging()
+    expect(fs.existsSync(path.join(versions, ".install-dead"))).toBe(false)
+    expect(fs.existsSync(path.join(versions, "keepme", "x"))).toBe(true)
+  } finally {
+    fs.rmSync(path.join(versions, "keepme"), { recursive: true, force: true })
+  }
+})
+
 test("projectModels folds families, keeps one-offs", () => {
   const projected = _internal.projectModels([
     { modelId: "gemini-3.7-flash-low", name: "Gemini 3.7 Flash (Low)" },
