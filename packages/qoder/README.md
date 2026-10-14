@@ -77,7 +77,12 @@ itself.
 - Qoder's SSE comes back as a chat completion, streamed or not, with
   reasoning and usage.
 - Tool calls Qoder writes as XML or JSON in its text become tool calls.
-  Tool calls it sends the OpenAI way keep Qoder's id.
+  Tool calls it sends the OpenAI way keep Qoder's id. A block whose JSON is
+  whole when the stream ends without its close is still the call. A block
+  that was on its way to being a call and can't be read, or is cut short at
+  the end of the stream, is never sent on as the answer: the reply ends
+  with an error (a 502 without a stream), so the gateway can try again
+  (plugins#132). Text that only looks like a tag stays text.
 
 **Errors**
 

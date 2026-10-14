@@ -860,6 +860,18 @@ const CALL_CLOSE = "\x3c/tool_call\x3e"
 const FUNC = /\x3cfunction=([^>]+)\x3e([\s\S]*?)\x3c\/function\x3e/
 const PARAM = /\x3cparameter=([^>]+)\x3e([\s\S]*?)\x3c\/parameter\x3e/g
 
+// A call written as text that can't be read, or one the stream ends inside,
+// is not the answer: the turn ends as an error, so the gateway can retry or
+// fail over instead of losing the call to a 200 that stopped. trae's copy of
+// this splitter was fixed the same way in 0.2.5/0.2.9 (plugins#38); this is
+// plugins#132.
+const UNREADABLE = "the model's tool call, written as text, can't be read; it is not sent on as the answer"
+const CUT_SHORT = "the model's tool call, written as text, was cut short; it is not sent on as the answer"
+
+// callAttempt says a block is on its way to being a call: JSON, or the
+// <function=…> XML Qoder writes. Anything else is the model's own text.
+const callAttempt = (v) => /^\s*\{/.test(v) || v.includes("\x3cfunction=")
+
 // parseCall reads one tool-call block: JSON {name, arguments}, or the XML
 // function/parameter form.
 function parseCall(v) {
@@ -921,11 +933,17 @@ class Splitter {
         this.callBuf = comb
         break
       }
-      const c = parseCall(comb.slice(0, j))
+      const body = comb.slice(0, j)
+      const c = parseCall(body)
       if (c) {
         this.sawTool = true
         out.push({ call: c })
-      } else out.push({ text: CALL_OPEN + comb.slice(0, j) + CALL_CLOSE })
+      } else if (callAttempt(body)) {
+        // not the answer (plugins#132): the turn ends as an error
+        this.inCall = false
+        out.push({ error: failure(502, UNREADABLE) })
+        break
+      } else out.push({ text: CALL_OPEN + body + CALL_CLOSE })
       input = comb.slice(j + CALL_CLOSE.length)
       this.inCall = false
     }
@@ -933,10 +951,18 @@ class Splitter {
   }
   flush() {
     if (this.inCall) {
-      const t = CALL_OPEN + this.callBuf
+      const b = this.callBuf
       this.inCall = false
       this.callBuf = ""
-      return [{ text: t }]
+      // a call whose JSON is whole when the stream ended without its close is
+      // still the call (plugins#38); one that can't be read is an error
+      const c = parseCall(b)
+      if (c) {
+        this.sawTool = true
+        return [{ call: c }]
+      }
+      if (callAttempt(b)) return [{ error: failure(502, CUT_SHORT) }]
+      return [{ text: CALL_OPEN + b }]
     }
     if (this.textBuf) {
       const t = this.textBuf
@@ -969,7 +995,11 @@ async function* events(body) {
   let index = -1 // the tool call being given
   let native = -1 // the native tool call being assembled
   const flushed = function* () {
-    for (const f of a.flush()) if (f.text) yield { text: f.text }
+    for (const f of a.flush()) {
+      if (f.call) yield { tool: { index: ++index, id: "call_" + hexID(), name: f.call.name, args: f.call.args } }
+      else if (f.error) yield { error: f.error }
+      else if (f.text) yield { text: f.text }
+    }
   }
   let usage
   let fr = ""
@@ -999,14 +1029,21 @@ async function* events(body) {
     if (typeof delta.content === "string")
       for (const f of a.feed(delta.content)) {
         if (f.call) yield { tool: { index: ++index, id: "call_" + hexID(), name: f.call.name, args: f.call.args } }
-        else if (f.text) yield { text: f.text }
+        else if (f.error) {
+          // the turn ends as an error: no finish follows
+          yield { error: f.error }
+          return
+        } else if (f.text) yield { text: f.text }
       }
     // tool calls served the OpenAI way keep Qoder's id: a result answers it
     for (const tc of delta.tool_calls ?? []) {
       const i = Number(tc.index ?? 0)
       if (i !== native) {
         native = i
-        yield* flushed()
+        for (const f of flushed()) {
+          yield f
+          if (f.error) return
+        }
         a.sawTool = true
         yield { tool: { index: ++index, id: tc.id || "call_" + hexID(), name: tc.function?.name ?? "", args: tc.function?.arguments ?? "" } }
       } else if (tc.function?.arguments) yield { args: { index, text: tc.function.arguments } }
@@ -1025,7 +1062,10 @@ async function* events(body) {
         ...(u.completion_tokens_details?.reasoning_tokens ? { completion_tokens_details: { reasoning_tokens: u.completion_tokens_details.reasoning_tokens } } : {}),
       }
   }
-  yield* flushed()
+  for (const f of flushed()) {
+    yield f
+    if (f.error) return
+  }
   yield { stop: a.sawTool ? "tool_calls" : fr === "length" ? "length" : "stop", usage }
 }
 
