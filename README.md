@@ -18,6 +18,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [minimax](packages/minimax) | MiniMax Code (China): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code` |
 | [minimax](packages/minimax) | MiniMax Code (international): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code-global` |
 | [mimo](packages/mimo) | Xiaomi MiMo, with a Xiaomi account | `mimo-app` |
+| [opendesign](packages/opendesign) | Open Design (open-design.ai): credits and Coding Plan, with Open Design's device sign-in, the vela CLI's / desktop app's, or its keys (experimental) | `opendesign` |
 | [qoder](packages/qoder) | Qoder subscription (qoder.com), with Qoder's device sign-in | `qoder` |
 | [qoder](packages/qoder) | Qoder CN subscription (qoder.cn), with Qoder CN's device sign-in | `qoder-cn` |
 | [trae](packages/trae) | Trae CN (trae.cn) and Trae international (trae.ai), free tier included, with Trae's browser sign-in (experimental) | `trae-cn`, `trae-global` |

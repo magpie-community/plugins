@@ -1,0 +1,12 @@
+{
+  "name": "@magpie-community/opencode-opendesign-auth",
+  "version": "0.1.0",
+  "description": "Open Design (open-design.ai) on your own account — its credits and Coding Plan — in OpenCode and magpie",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "README.md"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "open-design", "amr", "vela"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/opendesign" }
+}
