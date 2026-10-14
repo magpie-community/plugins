@@ -1671,12 +1671,21 @@ async function agentURL(tok, fresh) {
 // connection that failed (refused, no network) or a stream the server
 // refused leaves the next Run to try HTTP/2 again.
 let h1Until = 0
+const cancelledOpen = () => ({ error: { status: 410, message: "the request was cancelled" }, h2Failed: false })
 async function open(base, headers, signal) {
+  if (signal?.aborted) return cancelledOpen()
   if (Date.now() >= h1Until) {
     const o = await openH2(base, headers, signal)
+    // The head can arrive just before abort, before this continuation owns it.
+    if (signal?.aborted) {
+      o.req?.close(http2.constants.NGHTTP2_CANCEL)
+      o.session?.destroy()
+      return cancelledOpen()
+    }
     if (!o.h2Failed) return o
     if (o.blocked) h1Until = Date.now() + H2.retryAfter
   }
+  if (signal?.aborted) return cancelledOpen()
   return openH1(headers, signal)
 }
 
@@ -1707,6 +1716,7 @@ function h2Blocked(e) {
 // than by being cancelled, says h2Failed, and blocked when h2Blocked says
 // so of the failure.
 function openH2(base, headers, signal) {
+  if (signal?.aborted) return Promise.resolve(cancelledOpen())
   return new Promise((resolve) => {
     const u = new URL(base)
     const session = http2.connect(u.origin)
@@ -1715,9 +1725,11 @@ function openH2(base, headers, signal) {
       if (done) return
       done = true
       clearTimeout(timer)
+      signal?.removeEventListener("abort", abort)
       session.destroy()
-      resolve({ error: { status: 502, message: e?.message ?? String(e) }, h2Failed, blocked: h2Failed && h2Blocked(e) })
+      resolve({ error: { status: h2Failed ? 502 : 410, message: e?.message ?? String(e) }, h2Failed, blocked: h2Failed && h2Blocked(e) })
     }
+    const abort = () => fail(new Error("the request was cancelled"), false)
     const timer = setTimeout(() => fail(Object.assign(new Error(`no answer over HTTP/2 in ${H2.wait / 1000}s`), { h2Timeout: true })), H2.wait)
     session.on("error", fail)
     const req = session.request({
@@ -1733,9 +1745,11 @@ function openH2(base, headers, signal) {
       if (done) return
       done = true
       clearTimeout(timer)
+      signal?.removeEventListener("abort", abort)
       resolve({ session, req, status: Number(h[":status"]) })
     })
-    signal?.addEventListener("abort", () => fail(new Error("the request was cancelled"), false), { once: true })
+    signal?.addEventListener("abort", abort, { once: true })
+    if (signal?.aborted) abort()
   })
 }
 
@@ -1755,23 +1769,29 @@ function connectCode(status) {
 // ends the stream with Connect's end frame, which runOnce reads as the
 // Run's own.
 function openH1(headers, signal) {
+  if (signal?.aborted) return Promise.resolve(cancelledOpen())
   const ac = new AbortController()
-  signal?.addEventListener("abort", () => ac.abort(), { once: true })
   const id = headers["x-request-id"]
   const h = { ...headers, "accept-encoding": "identity", "x-cursor-streaming": "true" }
   let ended = false
   let seq = 0
-  let chain = Promise.resolve()
+  let reader
   const req = new Duplex({
     read() {},
     write(chunk, _enc, cb) {
       // runOnce writes one whole frame each time
       const msg = Buffer.from(chunk).subarray(5)
       const n = seq++
-      chain = chain.then(() => (ended ? undefined : append(msg, n)))
-      cb()
+      // Keep the write buffered until its append finishes, so callbacks and
+      // drain reflect the pending upload rather than an unbounded promise chain.
+      append(msg, n).then(() => cb(), (e) => cb(e))
     },
   })
+  const cleanup = () => {
+    signal?.removeEventListener("abort", close)
+    ac.abort()
+    reader?.cancel().catch(() => {})
+  }
   const end = (body) => {
     if (ended || req.destroyed) return
     ended = true
@@ -1779,7 +1799,7 @@ function openH1(headers, signal) {
     f[0] = 2
     req.push(f)
     req.push(null)
-    ac.abort()
+    cleanup()
   }
   const failed = async (res) => {
     const text = await res.text().catch(() => "")
@@ -1793,6 +1813,7 @@ function openH1(headers, signal) {
   // (more time for a large one) ends the Run, as cursor-agent's
   // bidi_append_deadline_exceeded does: the messages after it wait on it.
   const append = async (msg, n) => {
+    if (ended || ac.signal.aborted) return
     const body = pb().str(1, msg.toString("hex")).bytes(2, pb().str(1, id).done()).varint(3, n).done()
     const ms = H1.appendWait + Math.ceil(body.length / 65536) * 1000
     const deadline = AbortSignal.timeout(ms)
@@ -1803,6 +1824,7 @@ function openH1(headers, signal) {
         body,
         signal: AbortSignal.any([ac.signal, deadline]),
       })
+      if (ended || ac.signal.aborted) { await res.body?.cancel().catch(() => {}); return }
       if (!res.ok) return failed(res)
       await res.arrayBuffer()
     } catch (e) {
@@ -1810,6 +1832,16 @@ function openH1(headers, signal) {
       if (deadline.aborted) return end(JSON.stringify({ error: { code: "deadline_exceeded", message: `BidiAppend got no answer in ${Math.round(ms / 1000)}s` } }))
       end(JSON.stringify({ error: { code: "unavailable", message: `BidiAppend: ${e?.message ?? e}` } }))
     }
+  }
+  const close = () => {
+    ended = true
+    cleanup()
+    req.destroy()
+  }
+  signal?.addEventListener("abort", close, { once: true })
+  if (signal?.aborted) {
+    close()
+    return Promise.resolve(cancelledOpen())
   }
   ;(async () => {
     try {
@@ -1819,25 +1851,29 @@ function openH1(headers, signal) {
         body: frame(pb().str(1, id).done()),
         signal: ac.signal,
       })
+      if (ended || ac.signal.aborted) { await res.body?.cancel().catch(() => {}); return }
       if (!res.ok) return failed(res)
-      for await (const c of res.body) {
-        if (ended || req.destroyed) return
-        req.push(Buffer.from(c))
+      reader = res.body.getReader()
+      try {
+        while (!ended && !req.destroyed) {
+          const { value, done } = await reader.read()
+          if (done) break
+          if (!ended && !req.destroyed) req.push(Buffer.from(value))
+        }
+      } finally {
+        reader.releaseLock()
+        reader = undefined
       }
       if (!ended && !req.destroyed) {
         ended = true
         req.push(null)
+        cleanup()
       }
     } catch (e) {
       if (!ac.signal.aborted) end(JSON.stringify({ error: { code: "unavailable", message: `RunSSE: ${e?.message ?? e}` } }))
     }
   })()
-  const close = () => {
-    ended = true
-    ac.abort()
-    req.destroy()
-  }
-  return Promise.resolve({ session: { close, destroy: close }, req: Object.assign(req, { close }), status: 200, h1: true })
+  return Promise.resolve(signal?.aborted ? cancelledOpen() : { session: { close, destroy: close }, req: Object.assign(req, { close }), status: 200, h1: true })
 }
 
 // runOnce is one Run of the chat on the agent API at base: an async
@@ -1870,14 +1906,15 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
   if (o.error) return book.done(), o
   const { session, req } = o
   let closed = false
+  let heartbeat
   const send = (msg) => {
     if (!closed && !req.destroyed && req.writable) req.write(frame(msg))
   }
-  const heartbeat = setInterval(() => send(pb().bytes(7, EMPTY).done()), 5000) // the client is still there, as the CLI says
   const close = () => {
     if (closed) return
     closed = true
     clearInterval(heartbeat)
+    signal?.removeEventListener("abort", close)
     try {
       req.close(http2.constants.NGHTTP2_CANCEL)
     } catch {}
@@ -1885,6 +1922,13 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
     setTimeout(() => session.destroy(), 1000).unref?.()
   }
   signal?.addEventListener("abort", close, { once: true })
+  // Abort can win after open's head check but before this Run takes ownership.
+  if (signal?.aborted) {
+    close()
+    book.done()
+    return cancelledOpen()
+  }
+  heartbeat = setInterval(() => send(pb().bytes(7, EMPTY).done()), 5000) // the client is still there, as the CLI says
   send(first)
   if (o.status < 200 || o.status > 299) {
     const chunks = []
@@ -2402,4 +2446,4 @@ export async function CursorAuthPlugin() {
 }
 
 // for tests
-export const _internal = { onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, H2, H1, h2Blocked, open, openH1, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
+export const _internal = { onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
