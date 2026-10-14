@@ -1,0 +1,14 @@
+{
+  "name": "@magpie-community/opencode-amp-auth",
+  "version": "0.1.0",
+  "description": "Amp (ampcode.com) credits in OpenCode and magpie, through Amp's plugin API and the amp CLI's sign-in",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "bridge.ts", "README.md"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "amp", "ampcode"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/amp" },
+  "scripts": { "test": "bun test" },
+  "magpie": { "icon": "https://ampcode.com/favicon.ico" }
+}
