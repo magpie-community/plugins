@@ -73,6 +73,14 @@ Flash, Kimi K3 and GLM-5.2 have `none`, droid's "off": they stop thinking.
 Reasoning is mandatory on GLM-5.3 and GLM-5.3-Flash (Fireworks turns `none`
 away), so `low` is their least.
 
+A model's price is its token multiplier in droid's registry
+(`cost.tokenMultiplier`), which magpie shows beside the model as its rate
+(`0.8×`), so a cheap one is picked without opening droid. A promotion running
+comes off it, with the multiplier before the discount struck through beside
+the price (`rateWas`): Mistral Large 4's launch discount, Gemini 4 Argon's,
+Gemini 3.8/3.7 Flash's and GPT-5.6 Sol's, each while droid's own dates for it
+hold. A promotion that has ended is no discount at all.
+
 Gemini's requests go to Factory's generate route with the model in the
 body, droid's line opening the system instruction. Gemini 4 Argon is behind
 a Factory feature flag in droid 0.241.1, so an account it isn't on for may
