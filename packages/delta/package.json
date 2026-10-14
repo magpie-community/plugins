@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/agent-delta",
+  "version": "0.1.0",
+  "description": "Delta (delta.dev by Zed Industries) as a magpie agent: pick one of magpie's models for it on the Agents page",
+  "type": "module",
+  "files": ["delta.agent.js", "README.md", "LICENSE"],
+  "keywords": ["magpie", "magpie-agent", "delta", "zed", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/delta" },
+  "magpie": { "agent": "./delta.agent.js", "icon": "https://delta.dev/favicon.svg" }
+}

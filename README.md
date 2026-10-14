@@ -62,6 +62,7 @@ it off puts the config back.
 | Package | Agent |
 |---|---|
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
+| [delta](packages/delta) | [Delta](https://delta.dev): `%APPDATA%\delta\settings.json` (Windows) or `~/.config/delta/settings.json` (macOS/Linux) |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
