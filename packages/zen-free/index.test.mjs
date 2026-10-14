@@ -175,6 +175,8 @@ for (const [input, supplied, expected] of [
       state.calls.at(-1).headers["user-agent"],
       "opencode/1.19.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
     );
+    // Not "desktop": the free tier only serves what the OpenCode CLI sends.
+    assert.equal(state.calls.at(-1).headers["x-opencode-client"], "cli");
   });
 }
 
@@ -393,6 +395,8 @@ test("chat headers are scoped to this provider and retain the conversation sessi
     out,
   );
   assert.equal(out.headers["x-session-id"], "s1");
+  assert.equal(out.headers["x-opencode-session"], "s1");
+  assert.equal(out.headers["x-opencode-session-id"], "s1");
 });
 
 test("a refresh drops a model Zen no longer lists and adds one it lists now", async (t) => {

@@ -349,8 +349,12 @@ async function server(_input, options = {}) {
     async "chat.headers"(input, output) {
       if (![PROVIDER, `${PROVIDER}-plugin`].includes(input.model?.providerID) || !input.sessionID)
         return;
+      // Zen's free tier wants x-opencode-session and x-opencode-session-id
+      // both present and equal, so every layer that names a session names
+      // it twice (see fetch).
       output.headers["x-session-id"] = input.sessionID;
       output.headers["x-opencode-session"] = input.sessionID;
+      output.headers["x-opencode-session-id"] = input.sessionID;
       output.headers["x-session-affinity"] = input.sessionID;
     },
   };
