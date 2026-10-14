@@ -1358,17 +1358,18 @@ function usageOf(uf) {
 // event: its step looks for it as before, and is guessed without it.
 const STEP_WAIT = { first: 1500, every: 500, until: 6000, ask: 5000, skipAfter: 3, retryEvery: 10, owedAt: 5000, owedFor: 600_000 }
 
-// claimed are the usage events already counted, by conversation and time,
-// so that two steps of one conversation never count the same one.
+// claimed are the usage events already counted, by account, conversation
+// and time, so that two steps of one conversation never count the same one.
 const claimed = new Map()
 
-// owed are what each conversation still owes, by conversation_id: n Runs
-// whose events are to be counted, the earliest started at since, looked
-// for from ready on; and carry, a count collected that no step gave out.
+// owed are what each account's conversation still owes, by credential
+// fingerprint and conversation_id: n Runs whose events are to be counted,
+// the earliest started at since, looked for from ready on; and carry, a
+// count collected that no step gave out.
 const owed = new Map()
 
-// flights are each conversation's collections still going, which a step
-// that ends the turn waits for.
+// flights are each account's conversation collections still going, which
+// a step that ends the turn waits for.
 const flights = new Map()
 
 // unreadable are the accounts (by token) whose usage events Cursor won't
@@ -1378,6 +1379,7 @@ const flights = new Map()
 const unreadable = new Map()
 const misses = new Map()
 const tokKey = (tok) => createHash("sha256").update(tok).digest("hex")
+const usageKey = (tok, conv) => tokKey(tok) + "\0" + conv
 function canRead(tok) {
   const at = unreadable.get(tokKey(tok))
   if (at === undefined) return true
@@ -1394,12 +1396,12 @@ function addUsage(a, b) {
   return a
 }
 
-// owe adds to conversation conv's debt.
-function owe(conv, { since = Date.now(), n = 0, ready = Date.now(), carry = null }) {
+// owe adds to the account/conversation's debt.
+function owe(key, { since = Date.now(), n = 0, ready = Date.now(), carry = null }) {
   for (const [k, d] of owed) if (Date.now() - d.since > STEP_WAIT.owedFor) owed.delete(k)
   if (n <= 0 && !carry) return
-  const d = owed.get(conv)
-  if (!d) return void owed.set(conv, { since, n, ready, carry: carry && { ...carry } })
+  const d = owed.get(key)
+  if (!d) return void owed.set(key, { since, n, ready, carry: carry && { ...carry } })
   d.since = Math.min(d.since, since)
   d.n += n
   d.ready = Math.min(d.ready, ready)
@@ -1413,6 +1415,7 @@ function owe(conv, { since = Date.now(), n = 0, ready = Date.now(), carry = null
 // Polling, they are looked for as STEP_WAIT says, from `first` on, until
 // all show; else asked for once.
 async function usageEvents(tok, conv, since, want, { poll = false, first = STEP_WAIT.first, signal } = {}) {
+  const key = usageKey(tok, conv)
   const end = Date.now() + STEP_WAIT.until
   const wait = (ms) => new Promise((r) => {
     const t = setTimeout(r, ms)
@@ -1439,11 +1442,11 @@ async function usageEvents(tok, conv, since, want, { poll = false, first = STEP_
       }
       const evs = res.ok ? ((await res.json())?.usageEventsDisplay ?? []) : []
       const found = evs
-        .filter((e) => e?.conversationId === conv && e.tokenUsage && num(e.timestamp) >= since - 1000 && !claimed.has(conv + "\0" + e.timestamp))
+        .filter((e) => e?.conversationId === conv && e.tokenUsage && num(e.timestamp) >= since - 1000 && !claimed.has(key + "\0" + e.timestamp))
         .sort((a, b) => num(a.timestamp) - num(b.timestamp))
         .slice(0, want - got)
       for (const ev of found) {
-        claimed.set(conv + "\0" + ev.timestamp, Date.now())
+        claimed.set(key + "\0" + ev.timestamp, Date.now())
         const t = ev.tokenUsage
         const u = { input: num(t.inputTokens), output: num(t.outputTokens), cacheRead: num(t.cacheReadTokens), cacheWrite: num(t.cacheWriteTokens), reasoning: 0 }
         usage = addUsage(usage ?? ZERO(), u)
@@ -1464,31 +1467,32 @@ async function stepUsage(tok, conv, since, signal) {
   return (await usageEvents(tok, conv, since, 1, { poll: true, signal })).usage
 }
 
-// collect takes conversation conv's debt and asks for its events (polling
-// when poll): what was carried and what was found (usage), what was
-// carried alone (carry) and the events found (events), and whether any is
+// collect takes the account's debt for conversation conv and asks for its
+// events (polling when poll): what was carried and what was found (usage),
+// what was carried alone (carry) and the events found (events), and whether any is
 // still owed (short), which is owed on. What comes back once the Run that
 // asked is over (over() true) is carried to the next instead.
 function collect(tok, conv, { poll = false, first, signal, over = () => false } = {}) {
-  const d = owed.get(conv)
+  const key = usageKey(tok, conv)
+  const d = owed.get(key)
   if (!d) return Promise.resolve({ usage: null, carry: null, events: [], short: false })
-  owed.delete(conv)
+  owed.delete(key)
   const p = (async () => {
     let r = { usage: null, events: [], got: 0 }
     if (d.n > 0 && canRead(tok)) r = await usageEvents(tok, conv, d.since, d.n, { poll, first, signal }).catch(() => r)
     const short = d.n > r.got && canRead(tok)
-    if (short) owe(conv, { since: d.since, n: d.n - r.got, ready: d.ready })
+    if (short) owe(key, { since: d.since, n: d.n - r.got, ready: d.ready })
     const carry = d.carry && { ...d.carry }
     const usage = addUsage(d.carry, r.usage)
     if (!over()) return { usage, carry, events: r.events ?? [], short }
-    owe(conv, { carry: usage })
+    owe(key, { carry: usage })
     return { usage: null, carry: null, events: [], short }
   })()
-  const set = flights.get(conv) ?? new Set()
-  flights.set(conv, set.add(p))
+  const set = flights.get(key) ?? new Set()
+  flights.set(key, set.add(p))
   p.finally(() => {
     set.delete(p)
-    if (!set.size && flights.get(conv) === set) flights.delete(conv)
+    if (!set.size && flights.get(key) === set) flights.delete(key)
   })
   return p
 }
@@ -1515,6 +1519,7 @@ function collect(tok, conv, { poll = false, first, signal, over = () => false } 
 // count would be told in the wrong field, never twice nor lost.
 function ledger(tok, conv, since, signal, kept) {
   const key = tokKey(tok)
+  const debtKey = usageKey(tok, conv)
   let mine = null // this Run's own, collected, not given out yet
   let theirs = null // earlier Runs', collected, not given out yet
   let over = false
@@ -1528,7 +1533,7 @@ function ledger(tok, conv, since, signal, kept) {
       return r
     })
   let collecting = null
-  const debt = kept ? owed.get(conv) : undefined
+  const debt = kept ? owed.get(debtKey) : undefined
   const timer = debt ? setTimeout(() => (collecting = gather()), Math.max(0, debt.ready - Date.now())) : null
   timer?.unref?.()
   const takeMine = () => {
@@ -1552,7 +1557,7 @@ function ledger(tok, conv, since, signal, kept) {
         else if (!r.refused) misses.set(key, m + 1)
         return r.usage ?? null
       }
-      owe(conv, { since, n: 1, ready: Date.now() + STEP_WAIT.owedAt })
+      owe(debtKey, { since, n: 1, ready: Date.now() + STEP_WAIT.owedAt })
       if (waits) {
         const r = await gather({ poll: true, signal })
         if (!canRead(tok)) return null
@@ -1565,8 +1570,8 @@ function ledger(tok, conv, since, signal, kept) {
       if (!kept) return null
       if (final) {
         await collecting
-        await Promise.all([...(flights.get(conv) ?? [])])
-        if (owed.has(conv)) await gather({ poll: owed.get(conv).n > 0, first: 0, signal })
+        await Promise.all([...(flights.get(debtKey) ?? [])])
+        if (owed.has(debtKey)) await gather({ poll: owed.get(debtKey).n > 0, first: 0, signal })
       }
       return take()
     },
@@ -1574,7 +1579,7 @@ function ledger(tok, conv, since, signal, kept) {
       over = true
       clearTimeout(timer)
       const u = take()
-      if (u) owe(conv, { carry: u })
+      if (u) owe(debtKey, { carry: u })
     },
   }
 }
@@ -2397,4 +2402,4 @@ export async function CursorAuthPlugin() {
 }
 
 // for tests
-export const _internal = { onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, H2, H1, h2Blocked, open, openH1, STEP_WAIT, stepUsage, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
+export const _internal = { onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, H2, H1, h2Blocked, open, openH1, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
