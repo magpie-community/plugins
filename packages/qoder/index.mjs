@@ -337,7 +337,7 @@ async function patSignIn(site, pat) {
   const machineId = randomUUID()
   const r = await openapi(site, "/api/v1/jobToken/exchange", { method: "POST", body: { personal_token: pat } })
   if (r.status === 400 || r.status === 401 || r.status === 403)
-    throw new Error(`${site.name} refused the PAT — check it is still valid`)
+    throw Object.assign(new Error(`${site.name} refused the PAT — check it is still valid`), { status: r.status })
   if (r.status !== 200) throw new Error(`${site.name} PAT exchange: status ${r.status}`)
   const token = exchangeToken(r.json)
   if (!token) throw new Error(`${site.name} PAT exchange: empty token in response`)
@@ -1445,7 +1445,15 @@ const makePlugin = (site) => async ({ client }) => {
       jt = await refreshJob(s, a.refresh, a.accountId || a.email || a.uid)
     } catch (e) {
       if (!(e instanceof SignInGone) || !a.patAuth || !a.pat) throw e
-      const ex = await patSignIn(s, a.pat)
+      let ex
+      try {
+        ex = await patSignIn(s, a.pat)
+      } catch (p) {
+        // a PAT lapses too — out of date, or revoked: Qoder's refusal ends
+        // the sign-in as a lapsed device one does, not as a server fault
+        if (!p?.status) throw p
+        throw new SignInGone(`${site.name} refused the PAT — sign in again with a new one`, true)
+      }
       return spend(a.refresh, { access: ex.access, refresh: ex.refresh, expires: ex.expires })
     }
     return spend(a.refresh, { access: jt.token, refresh: jt.refresh_token, expires: expiresAt(jt) })

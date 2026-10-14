@@ -230,3 +230,20 @@ test("qoder: PAT account usage surfaces a refused job token", async () => {
   expect(out.signIn).toBe("kept")
   expect(out.plan).toBeUndefined()
 })
+
+test("qoder: a refused PAT re-exchange ends the sign-in", async () => {
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url))
+    if (u.pathname === "/api/v1/jobToken/refresh") return json({ message: "refresh token expired" }, 401)
+    if (u.pathname === "/api/v1/jobToken/exchange") return json({ message: "PAT expired" }, 401)
+    return new Response("", { status: 500 })
+  }
+  const { hooks, get } = await plugin(patCredential())
+  const out = await hooks.auth.usage(get)
+  expect(out.signIn).toBe("expired")
+  expect(out.error).toContain("sign in again")
+  const l = await hooks.auth.loader(get)
+  const res = await l.fetch(l.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "efficient" }) })
+  expect(res.status).toBe(401)
+  expect(res.headers.get("X-Magpie-Sign-In")).toBe("expired")
+})
