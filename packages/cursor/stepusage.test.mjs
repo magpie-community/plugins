@@ -1,11 +1,11 @@
-// A step that calls the caller's tools has no TurnEndedUpdate before the
-// Run is closed, so its usage is the dashboard's usage event of the Run's
-// conversation (yetone/magpie#676): read, not guessed with no cache.
+// Legacy stateless-decoder regressions. Production uses native-session.mjs
+// and counts TurnEnded once; the dashboard fallback below remains a testing
+// seam and must isolate claims/debt/collections by account.
 import "./nonet.mjs" // first: no request leaves this machine
 import { afterEach, expect, test } from "bun:test"
 import { _internal } from "./index.mjs"
 
-const { pb, decode, stepUsage, STEP_WAIT } = _internal
+const { pb, decode, stepUsage, usageKey, STEP_WAIT } = _internal
 
 const real = globalThis.fetch
 const wait = { ...STEP_WAIT }
@@ -98,8 +98,8 @@ test("stepUsage finds the Run's event by its conversation and time, once", async
   expect(asks.length).toBe(1)
 })
 
-// yetone/magpie#1053: a step's count can be owed to a later step of its
-// conversation (ledger); latency.test.mjs runs whole conversations
+// Legacy debt can be collected by a later stateless step; latency.test.mjs
+// exercises production same-Run handoffs with no dashboard collectors.
 test("an account that can't read its events is guessed as before, and owes nothing", async () => {
   const { ledger, owed, unreadable, misses } = _internal
   Object.assign(STEP_WAIT, { first: 0, every: 10, until: 60 })
@@ -108,7 +108,7 @@ test("an account that can't read its events is guessed as before, and owes nothi
   globalThis.fetch = async () => (asks++, new Response("{}", { status: 403 }))
   const out = await run([listed, call], { stepUsage: ledger("tok-403", conv, Date.now(), undefined, true).own })
   expect(out.at(-1).usage.prompt_tokens).toBe(2395)
-  expect(owed.has(conv)).toBe(false)
+  expect(owed.has(usageKey("tok-403", conv))).toBe(false)
   // nor asked again for a while
   expect(await ledger("tok-403", conv, Date.now(), undefined, true).own()).toBe(null)
   expect(asks).toBe(1)
@@ -123,15 +123,56 @@ test("what a Run collected and never gave out goes to the conversation's next st
   const since = Date.now()
   globalThis.fetch = async () =>
     Response.json({ usageEventsDisplay: [{ timestamp: String(since + 4000), conversationId: conv, tokenUsage: { inputTokens: 2, outputTokens: 621, cacheReadTokens: 63457, cacheWriteTokens: 3081 } }] })
-  owed.set(conv, { since, n: 1, ready: since, carry: null })
+  owed.set(usageKey("tok", conv), { since, n: 1, ready: since, carry: null })
   // the Run collects the debt, then fails before its step is counted
   const failed = ledger("tok", conv, Date.now(), undefined, true)
   await new Promise((r) => setTimeout(r, 30))
   failed.done()
-  expect(owed.get(conv).carry).toEqual({ input: 2, output: 621, cacheRead: 63457, cacheWrite: 3081, reasoning: 0 })
+  expect(owed.get(usageKey("tok", conv)).carry).toEqual({ input: 2, output: 621, cacheRead: 63457, cacheWrite: 3081, reasoning: 0 })
   // the next step that ends the turn has it, once
   const next = ledger("tok", conv, Date.now(), undefined, true)
   expect(await next.owed(true)).toEqual({ input: 2, output: 621, cacheRead: 63457, cacheWrite: 3081, reasoning: 0 })
-  expect(owed.has(conv)).toBe(false)
+  expect(owed.has(usageKey("tok", conv))).toBe(false)
   expect(await ledger("tok", conv, Date.now(), undefined, true).owed(true)).toBe(null)
+})
+
+test("legacy stepUsage claims the same conversation/time separately for each account", async () => {
+  Object.assign(STEP_WAIT, { first: 0, every: 5, until: 20 })
+  const since = Date.now()
+  const conv = "synthetic-account-isolation-" + since
+  globalThis.fetch = async (_url, init) => Response.json({ usageEventsDisplay: [{ timestamp: String(since + 2000), conversationId: conv,
+    tokenUsage: { inputTokens: init.headers.Authorization === "Bearer synthetic-a" ? 11 : 22, outputTokens: 3, cacheReadTokens: 100 } }] })
+  expect((await stepUsage("synthetic-a", conv, since)).input).toBe(11)
+  expect((await stepUsage("synthetic-b", conv, since)).input).toBe(22)
+  expect(await stepUsage("synthetic-a", conv, since)).toBe(null)
+  expect(await stepUsage("synthetic-b", conv, since)).toBe(null)
+})
+
+test("legacy ledger leaves another account's carry and in-flight collection untouched", async () => {
+  const { ledger, owed, flights } = _internal
+  const conv = "synthetic-debt-isolation-" + Date.now()
+  const key = usageKey("synthetic-a", conv)
+  const carry = { input: 11, output: 3, cacheRead: 100, cacheWrite: 7, reasoning: 0 }
+  owed.set(key, { since: Date.now(), n: 0, ready: Date.now(), carry })
+  let release
+  const collecting = new Promise((resolve) => { release = resolve })
+  flights.set(key, new Set([collecting]))
+  let timeout
+  try {
+    const other = ledger("synthetic-b", conv, Date.now(), undefined, true)
+    expect(await Promise.race([other.owed(true), new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("waited for another account's collection")), 1000) })])).toBe(null)
+    expect(owed.get(key).carry).toEqual(carry)
+    expect(flights.get(key).has(collecting)).toBe(true)
+    release()
+    flights.delete(key)
+    const own = ledger("synthetic-a", conv, Date.now(), undefined, true)
+    expect(await own.owed(true)).toEqual(carry)
+    expect(await own.owed(true)).toBe(null)
+    own.done()
+  } finally {
+    clearTimeout(timeout)
+    release()
+    flights.delete(key)
+    owed.delete(key)
+  }
 })

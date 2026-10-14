@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",
-  "files": ["index.mjs", "README.md"],
+  "files": ["index.mjs", "chat-contract.mjs", "native-session.mjs", "README.md", "DIFFERENCES.md"],
   "keywords": ["opencode", "opencode-plugin", "magpie", "cursor"],
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/cursor" }

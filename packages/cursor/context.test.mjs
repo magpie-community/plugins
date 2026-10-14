@@ -86,7 +86,9 @@ test("the provider's list, efforts as variants, no model of its own for fast or 
   const list = await hooks.provider.models({ models: {} }, { auth: { type: "oauth", access: jwt, refresh: "", expires: 0 } })
   expect(list["claude-opus-5-5@300k"].limit.context).toBe(300000)
   expect(Object.keys(list["claude-opus-5-5@300k"].variants)).toEqual(["low", "medium", "high", "xhigh", "max"])
-  expect(Object.keys(list["claude-haiku-5-5@300k"].variants)).toEqual(["low", "medium", "high"])
+  expect(Object.keys(list["claude-haiku-5-5@300k"].variants)).toEqual(["none", "low", "medium", "high"])
+  expect(list["claude-haiku-5-5@300k"].variants.none).toEqual({ reasoningEffort: "none" })
+  expect(list["claude-haiku-5-5@1m"].variants.none).toBeUndefined()
   expect(list["composer-2.5"].capabilities.reasoning).toBe(false)
   expect(Object.keys(list).some((id) => /-fast$|-(low|medium|high)$/.test(id))).toBe(false)
 })
@@ -167,6 +169,8 @@ test("an id 0.1.11 listed still runs, as the variant it stood for, at the effort
   // a -fast family: fast, though the request doesn't ask
   expect(q("claude-opus-5-5-fast")).toEqual(["claude-opus-5-5-medium-fast", true, { context: "300k", effort: "medium", fast: "true" }])
   expect(q("claude-opus-5-5-fast", "high")).toEqual(["claude-opus-5-5-high-fast", true, { context: "300k", effort: "high", fast: "true" }])
+  // Explicit standard service overrides a legacy fast id; an absent tier keeps it.
+  expect(q("claude-opus-5-5-fast", "high", false)).toEqual(["claude-opus-5-5-high", false, { context: "300k", effort: "high", fast: "false" }])
   expect(q("grok-4.7-fast", "low")).toEqual(["grok-4.7-low-fast", false, { context: "256k", reasoning_effort: "low", fast: "true" }])
   expect(q("composer-2.5-fast")).toEqual(["composer-2.5-fast", false, { fast: "true" }])
   // a Claude with thinking apart from one without
@@ -204,7 +208,7 @@ test("a variant the usable list says the account hasn't got is neither offered n
   expect(levels["claude-opus-5-5@300k"]).toEqual(["medium"])
   expect(levels["claude-opus-5-5@1m"]).toEqual(["medium"])
   expect(levels["grok-4.6"]).toEqual(["high"])
-  expect(levels["claude-haiku-5-5@300k"]).toEqual(["low", "medium", "high"])
+  expect(levels["claude-haiku-5-5@300k"]).toEqual(["low", "medium", "high", "none"])
   expect(levels["grok-4.7@256k"]).toEqual(["low", "high"])
   const q = (id, effort = "", fast) => {
     const r = request(raw, id, effort, fast)
@@ -283,4 +287,59 @@ test("when the default's own branch stops short, an id of it asked past that goe
         const [sent, , params] = q(id, effort, fast)
         expect([id, effort, fast, params]).toEqual([id, effort, fast, { ...params, ...slug.get(sent) }])
       }
+})
+
+// The observed 5.5 picker has no Opus/Sonnet off parameter. Haiku has
+// thinking=false variants; advertise none from those, never from brand names.
+test("explicit none/off is unsupported for Opus/Sonnet without a served off variant", async () => {
+  const sonnet = { name: "claude-sonnet-5-5", supportsNonMaxMode: true,
+    parameterDefinitions: [{ id: "context", parameterType: en("300k", "1m") }, { id: "reasoning_effort", parameterType: en("low", "medium", "high", "xhigh", "max") }],
+    variants: [v({ context: "300k", reasoning_effort: "high" }, { isDefaultNonMaxConfig: true, legacySlug: "claude-sonnet-5-5-high" })] }
+  fakeAPI([PICKER[0], sonnet])
+  const raw = await usable(tok())
+  for (const id of ["claude-opus-5-5@300k", "claude-sonnet-5-5@300k", "claude-opus-5-5-high", "claude-sonnet-5-5-high"])
+    for (const effort of ["none", "off"]) {
+      let error
+      try { request(raw, id, effort) } catch (e) { error = e }
+      expect(error).toMatchObject({ status: 400, code: "unsupported_reasoning_effort", param: "reasoning_effort" })
+    }
+  expect(raw.every((m) => !("none" in m.levels))).toBe(true)
+  expect(() => request([], "unknown-model", "none")).toThrow("served off variant")
+})
+
+test("Haiku off is a served variant at the selected context and tier, including account filtering", async () => {
+  fakeAPI()
+  const raw = await usable(tok())
+  for (const effort of ["none", "off"]) {
+    const r = request(raw, "claude-haiku-5-5@300k", effort)
+    expect(r).toMatchObject({ id: "claude-haiku-5-5-high", maxMode: false })
+    expect(Object.fromEntries(r.params.map((p) => [p.id, p.value]))).toEqual({ thinking: "false", context: "300k", reasoning_effort: "high" })
+    expect(() => request(raw, "claude-haiku-5-5@1m", effort)).toThrow("served off variant")
+  }
+  fakeAPI(PICKER, ["claude-haiku-5-5-thinking-high", "claude-haiku-5-5-thinking-low"])
+  const limited = await usable(tok())
+  expect(limited.find((m) => m.id === "claude-haiku-5-5@300k").levels.none).toBeUndefined()
+  expect(() => request(limited, "claude-haiku-5-5@300k", "none")).toThrow("served off variant")
+
+  const fast = { ...PICKER[1], parameterDefinitions: [...PICKER[1].parameterDefinitions, { id: "fast", parameterType: bool }],
+    variants: PICKER[1].variants.map((variant) => ({ ...variant, parameterValues: [...variant.parameterValues, { id: "fast", value: "false" }] })) }
+  fakeAPI([fast])
+  const standardOnly = await usable(tok())
+  expect(request(standardOnly, "claude-haiku-5-5@300k", "none", false).id).toBe("claude-haiku-5-5-high")
+  expect(() => request(standardOnly, "claude-haiku-5-5@300k", "none", true)).toThrow("served off variant")
+})
+
+test("off advertising requires an actual variant for both thinking and native none parameters", async () => {
+  const models = [
+    { name: "synthetic-toggle", supportsNonMaxMode: true, parameterDefinitions: [{ id: "thinking", parameterType: bool }],
+      variants: [v({ thinking: "true" }, { isDefaultNonMaxConfig: true, legacySlug: "synthetic-toggle-on" })] },
+    { name: "synthetic-native-none", supportsNonMaxMode: true, parameterDefinitions: [{ id: "effort", parameterType: en("none", "high") }],
+      variants: [v({ effort: "high" }, { isDefaultNonMaxConfig: true, legacySlug: "synthetic-native-high" }), v({ effort: "none" }, { legacySlug: "synthetic-native-off" })] },
+  ]
+  fakeAPI(models)
+  const raw = await usable(tok())
+  expect(raw.find((m) => m.id === "synthetic-toggle").levels.none).toBeUndefined()
+  expect(() => request(raw, "synthetic-toggle", "none")).toThrow("served off variant")
+  expect(raw.find((m) => m.id === "synthetic-native-none").levels.none).toBe("none")
+  expect(request(raw, "synthetic-native-none", "none")).toEqual({ id: "synthetic-native-off", params: [{ id: "effort", value: "none" }], maxMode: false })
 })

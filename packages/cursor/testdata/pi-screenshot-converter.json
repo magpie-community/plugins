@@ -1,0 +1,58 @@
+{
+  "source": "/Users/mac/.pi/agent/npm/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js",
+  "sha256": "5a79cc5aa41dee180692695e65771720d1ea556e9a978649dc2040278be51753",
+  "fixture": "Actual Pi convertMessages invoked offline with synthetic user/assistant thinking+toolCall/toolResult text+image. No config, token, auth or network.",
+  "compat": {
+    "supportsDeveloperRole": true,
+    "requiresToolResultName": false,
+    "requiresAssistantAfterToolResult": false,
+    "supportsMidConvoSystemMessages": true,
+    "supportsMidConvoToolAdditions": true
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Inspect the synthetic screenshot."
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "reasoning_content": "Synthetic screenshot planning.",
+      "tool_calls": [
+        {
+          "id": "call_cursor_abcdef0123456789abcdef01_0_0",
+          "type": "function",
+          "function": {
+            "name": "screenshot",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "Synthetic screenshot captured.",
+      "tool_call_id": "call_cursor_abcdef0123456789abcdef01_0_0"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Attached image(s) from tool result:"
+        },
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aV1cAAAAASUVORK5CYII="
+          }
+        }
+      ]
+    }
+  ]
+}

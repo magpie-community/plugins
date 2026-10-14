@@ -53,7 +53,16 @@ test("every answer, failed or not, says the account is kept", async () => {
 test("a sign-in that can't give a token is a 401, the account kept", async () => {
   const hooks = await CursorAuthPlugin()
   const l = await hooks.auth.loader(async () => ({ type: "oauth", access: "", refresh: "", expires: 0, accountId: "a@b.c" }))
-  const res = await l.fetch("https://cursor.invalid/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "auto", messages: [] }) })
+  const res = await l.fetch("https://cursor.invalid/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "synthetic request" }] }) })
   expect(res.status).toBe(401)
   expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
+})
+
+test("an invalid Chat request is a field-specific 400 before authentication", async () => {
+  const hooks = await CursorAuthPlugin()
+  const l = await hooks.auth.loader(async () => ({ type: "oauth", access: "", refresh: "", expires: 0 }))
+  const res = await l.fetch("https://cursor.invalid/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "auto", messages: [] }) })
+  expect(res.status).toBe(400)
+  expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
+  expect((await res.json()).error).toMatchObject({ code: "invalid_chat_request", param: "messages" })
 })

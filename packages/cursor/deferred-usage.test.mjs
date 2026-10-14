@@ -1,10 +1,6 @@
-// A tool step whose usage event shows only after its wait says 0 used,
-// and the conversation's next step collects it. That step's own count is
-// its usage; what it collected of the earlier step goes apart, as
-// magpie_deferred: a client that reads prompt_tokens as how full the
-// context is (pi, OpenCode) once saw an earlier step's prompt added to
-// its own, the context twice its size (366940 = 181270 + 185670 on a
-// 300k window, where 185670 was used).
+// Legacy stateless-decoder regressions for reporting earlier Runs' usage as
+// magpie_deferred. Production native owners instead retain one Run and count
+// its final native totals once, with zero pending usage at each handoff.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
 import { _internal } from "./index.mjs"

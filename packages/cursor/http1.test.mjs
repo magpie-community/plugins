@@ -358,6 +358,22 @@ test("appends go up one at a time, numbered in order, a slow one holding the res
   expect(most).toBe(1)
 })
 
+test("already-aborted transport openers create no HTTP/2 session or RunSSE fetch", async () => {
+  const ac = new AbortController()
+  ac.abort()
+  let requests = 0
+  globalThis.fetch = async () => { requests++; throw new Error("cancelled opener fetched") }
+  const tries = h2Tries
+  for (const opener of [() => open("http://127.0.0.1:1", {}, ac.signal), () => openH1({}, ac.signal)]) {
+    const result = await opener()
+    result.session?.close()
+    expect(result.error?.status).toBe(410)
+    expect(result.h2Failed).not.toBe(true)
+  }
+  expect(h2Tries).toBe(tries)
+  expect(requests).toBe(0)
+})
+
 test("a Run cancelled while HTTP/2 opens is not counted as HTTP/2 failing", async () => {
   H2.wait = 10_000
   const port = await freePort()
