@@ -1516,21 +1516,13 @@ const makePlugin = (site) => async ({ client }) => {
     try {
       const cred = await fresh(getAuth)
       if (renewed(cred)) signIn = "renewed"
-      // PAT accounts have no device token: try the usage endpoint with the
-      // job token; if it won't accept it, say so rather than showing nothing
+      // A PAT account has no device token: the usage endpoint takes the job
+      // token the exchange gave — a live PAT account answered 200 with a
+      // qoder envelope. Its errors surface as the device path's do; there is
+      // no second token here to rotate and retry with.
       if (cred.patAuth && !cred.deviceToken) {
-        try {
-          const s = siteOf(site, cred)
-          const res = await fetch(s.openapi + "/sash/api/v2/me/usage", {
-            headers: { Accept: "application/json", Authorization: `Bearer ${cred.access}`, "Cosy-ClientType": "10", "User-Agent": "Qoder" },
-            signal: AbortSignal.timeout(20_000),
-          })
-          if (res.status === 200) {
-            const env = JSON.parse(await res.text())
-            if (env?.displayMode === "qoder" || env?.displayMode === "enterprise") return { ...parseUsage(env), signIn }
-          }
-        } catch {}
-        return { plan: cred.plan || "PAT", signIn }
+        const env = await fetchUsage(siteOf(site, cred), cred.access)
+        return { ...parseUsage(env), signIn }
       }
       let env
       try {

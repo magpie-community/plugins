@@ -121,10 +121,34 @@ test("qoder: PAT sign-in fails when no user id", async () => {
   expect(err.message).toContain("user id")
 })
 
-test("qoder: PAT re-exchanged when job refresh lapses", async () => {
+const patCredential = (over = {}) => ({
+  type: "oauth",
+  access: "jt-old",
+  refresh: "jrt-old",
+  expires: Date.now() - 1000,
+  uid: "user-re",
+  email: "re@example.com",
+  accountId: "re@example.com",
+  name: "",
+  machineId: "machine-1",
+  deviceToken: "",
+  deviceRefresh: "",
+  patAuth: true,
+  pat: "pt-reexchange",
+  ...over,
+})
+
+// the exchange and refresh endpoints a renew through the real path meets,
+// shared by the tests below
+function mockRenew() {
+  const calls = []
   let exchangeCount = 0
   globalThis.fetch = async (url, init = {}) => {
     const u = new URL(String(url))
+    calls.push(u.host + u.pathname + (init.body ? " " + init.body : ""))
+    if (u.host === "openapi.qoder.sh" && u.pathname === "/api/v1/jobToken/refresh") {
+      return json({ message: "refresh token expired" }, 401)
+    }
     if (u.pathname === "/api/v1/jobToken/exchange") {
       exchangeCount++
       return json({ token: `jt-exchange-${exchangeCount}`, refresh_token: `jrt-exchange-${exchangeCount}`, expires_in: 86400000 })
@@ -132,31 +156,77 @@ test("qoder: PAT re-exchanged when job refresh lapses", async () => {
     if (u.pathname === "/api/v1/userinfo") {
       return json({ id: "user-re", email: "re@example.com" })
     }
-    if (u.pathname === "/api/v1/jobToken/refresh") {
-      return json({ message: "refresh token expired" }, 401)
+    if (u.pathname === "/sash/api/v2/me/usage") {
+      return json({ displayMode: "qoder", qoderUsage: { userType: "pro", userQuota: { name: "Credits", total: 100, used: 10, unit: "credits" } } })
     }
     return new Response("", { status: 500 })
   }
-  const initial = {
-    type: "oauth",
-    access: "jt-old",
-    refresh: "jrt-old",
-    expires: Date.now() - 1000,
-    uid: "user-re",
-    email: "re@example.com",
-    accountId: "re@example.com",
-    name: "",
-    machineId: "machine-1",
-    deviceToken: "",
-    deviceRefresh: "",
-    patAuth: true,
-    pat: "pt-reexchange",
+  return { calls, exchanged: () => exchangeCount }
+}
+
+test("qoder: lapsed job refresh re-exchanges the stored PAT on the real path", async () => {
+  const mock = mockRenew()
+  const { hooks, get } = await plugin(patCredential())
+  const out = await hooks.auth.usage(get)
+  // the exchange was asked with the stored PAT, not a prompt's
+  expect(mock.calls.some((c) => c.startsWith("openapi.qoder.sh/api/v1/jobToken/exchange ") && c.endsWith('"personal_token":"pt-reexchange"}'))).toBe(true)
+  expect(mock.exchanged()).toBe(1)
+  // the usage request went on with the new job token
+  const usage = mock.calls.find((c) => c.startsWith("openapi.qoder.sh/sash/api/v2/me/usage"))
+  expect(usage).toBe("openapi.qoder.sh/sash/api/v2/me/usage")
+  expect(out).toEqual({
+    plan: "pro",
+    windows: [{ name: "Credits", used: 10, display: "10 / 100 credits" }],
+    signIn: "renewed",
+  })
+  // the saved credential is the renewed one, still carrying the PAT
+  const saved = await get()
+  expect(saved.access).toBe("jt-exchange-1")
+  expect(saved.refresh).toBe("jrt-exchange-1")
+  expect(saved.patAuth).toBe(true)
+  expect(saved.pat).toBe("pt-reexchange")
+})
+
+test("qoder: lapsed job refresh without a stored PAT surfaces sign-in gone", async () => {
+  const mock = mockRenew()
+  const { pat, ...noPat } = patCredential()
+  const { hooks, get } = await plugin(noPat)
+  const out = await hooks.auth.usage(get)
+  // no re-exchange without a PAT to re-exchange
+  expect(mock.exchanged()).toBe(0)
+  expect(out.error).toContain("sign-in has expired")
+  expect(out.signIn).toBe("expired")
+  // the store was left as it was
+  expect((await get()).access).toBe("jt-old")
+})
+
+test("qoder: PAT account usage reads the usage endpoint with the job token", async () => {
+  let auth = ""
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(String(url))
+    if (u.pathname === "/sash/api/v2/me/usage") {
+      auth = init.headers.Authorization
+      return json({ displayMode: "qoder", qoderUsage: { userType: "pro", userQuota: { name: "Credits", total: 200, used: 50, unit: "credits" } } })
+    }
+    return new Response("", { status: 500 })
   }
-  const { hooks, get } = await plugin(initial)
-  const patMethod = hooks.auth.methods.find((m) => m.label?.includes("PAT"))
-  const flow = patMethod.authorize({ pat: "pt-reexchange" })
-  const result = await flow.callback()
-  expect(result.access).toBe("jt-exchange-1")
-  expect(result.pat).toBe("pt-reexchange")
-  expect(exchangeCount).toBe(1)
+  const live = patCredential({ access: "jt-live", expires: Date.now() + 86400000 })
+  const { hooks } = await plugin(live)
+  const out = await hooks.auth.usage(async () => live)
+  expect(auth).toBe("Bearer jt-live")
+  expect(out).toEqual({
+    plan: "pro",
+    windows: [{ name: "Credits", used: 25, display: "50 / 200 credits" }],
+    signIn: "kept",
+  })
+})
+
+test("qoder: PAT account usage surfaces a refused job token", async () => {
+  globalThis.fetch = async () => json({ message: "unauthorized" }, 401)
+  const live = patCredential({ access: "jt-live", expires: Date.now() + 86400000 })
+  const { hooks } = await plugin(live)
+  const out = await hooks.auth.usage(async () => live)
+  expect(out.error).toBe("qoder usage: upstream HTTP 401")
+  expect(out.signIn).toBe("kept")
+  expect(out.plan).toBeUndefined()
 })
