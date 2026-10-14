@@ -62,6 +62,7 @@ it off puts the config back.
 | Package | Agent |
 |---|---|
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
+| [kilo](packages/kilo) | [Kilo Code](https://kilo.ai): `~/.config/kilo/kilo.jsonc`, through an OpenAI-compatible provider |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
