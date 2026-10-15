@@ -3,7 +3,8 @@
 // (amr-api.open-design.ai), which answers with two keys — a control key
 // (vela_ctrl_…) for the account's plan and its Design Plan allowance, and a
 // runtime key (sk-amr-…) that the model plane (amr-link.open-design.ai)
-// takes. Model requests are the OpenAI Responses API at the runtime key;
+// takes. Model requests go to whichever of the vendor's three APIs each model
+// answers thinking on (WIRE below), at the runtime key;
 // the model list, the plan and the 5-hour and 7-day allowance windows all
 // come from the control plane.
 //
@@ -21,7 +22,31 @@ import { MODELS } from "./models.mjs"
 const ID = "opendesign"
 const CONTROL = "https://amr-api.open-design.ai"
 const LINK = "https://amr-link.open-design.ai/v1"
-const NPM = "@ai-sdk/openai" // the Responses API, at LINK
+// WHICH API each model is asked on: magpie reads the protocol off the AI SDK
+// package a model declares (OpenCode's model.api.npm) — "@ai-sdk/openai" is the
+// Responses API, "@ai-sdk/anthropic" Anthropic's messages, anything else (the
+// compatible package included) chat completions. amr-link answers thinking on a
+// different one per model, measured with a streaming request to each model on
+// each of the three: chat completions carries the thinking of ten of the
+// eleven, and two of those give longer thinking on Responses, one on
+// Anthropic's messages — those are asked where their thinking comes from, and
+// that is what declares magpie's second and third endpoint for the provider.
+// gpt-6-luna writes no thinking out on any of the three.
+const WIRE = {
+  chat: "@ai-sdk/openai-compatible",
+  responses: "@ai-sdk/openai",
+  anthropic: "@ai-sdk/anthropic",
+}
+// By model, the ones asked somewhere other than chat completions.
+const MODEL_WIRE = {
+  "claude-haiku-5.5": "responses",
+  "deepseek-v4-pro": "responses",
+  "glm-5.3-flash": "anthropic",
+}
+const wireOf = (id) => WIRE[MODEL_WIRE[id]] ?? WIRE.chat
+// the provider's own default: a model this plugin's list does not name is
+// asked on chat completions, the API vela configures for its OpenCode
+const NPM = WIRE.chat
 const SOURCE = "opencode-opendesign-auth/" + pkg.version // as the manifest has it
 const CLI_VERSION = "0.1.4" // what the sign-in says it is, as the CLI does
 const TIMEOUT = 20_000
@@ -247,6 +272,12 @@ function modelOf(id, m) {
     attachment: true,
     tool_call: true,
     reasoning: thinking ?? !!m?.reasoning,
+    // the API magpie asks this model on (see WIRE above): per model, not per
+    // provider, so all three endpoints are declared and each model goes to the
+    // one its thinking comes back on. OpenCode carries it on the model's api
+    // (which magpie reads), the config hook's list on its provider: both.
+    api: { npm: wireOf(id) },
+    provider: { npm: wireOf(id) },
     ...(rate && { rate }),
     limit: {
       context: Number.isFinite(context) && context > 0 ? context : 200_000,
@@ -350,12 +381,25 @@ export const OpenDesignAuthPlugin = async () => {
     config: async (cfg) => {
       cfg.provider ??= {}
       const was = cfg.provider[ID] ?? {}
+      // the wire is this plugin's to declare, never a stored copy's: magpie
+      // keeps what the hook last wrote and hands it back, and a model kept from
+      // an earlier version would otherwise be asked on the API that version
+      // chose (the seed is merged first and the wires set after it, so every
+      // model, seed or kept, is asked where its thinking comes from)
+      const models = { ...seed(), ...(was.models ?? {}) }
+      for (const [id, m] of Object.entries(models)) {
+        models[id] = {
+          ...m,
+          api: { ...(m.api ?? {}), npm: wireOf(id) },
+          provider: { ...(m.provider ?? {}), npm: wireOf(id) },
+        }
+      }
       cfg.provider[ID] = {
         name: "Open Design",
         npm: NPM,
         api: LINK,
         ...was,
-        models: { ...seed(), ...(was.models ?? {}) },
+        models,
       }
     },
     // the plan decides which models an account gets, so the list is read

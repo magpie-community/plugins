@@ -74,9 +74,30 @@ bun refresh-models.mjs                    # or OPENDESIGN_KEY=sk-amr-… bun …
 The script keeps the names already chosen — the catalog carries ids only —
 and reads nothing else: no secret is written to the file or printed.
 
-Requests go to the **Responses** API (`@ai-sdk/openai` at
-`https://amr-link.open-design.ai/v1`), which is what an Open Design API key
-page recommends for Codex-style clients and what keeps thinking intact.
+Requests go to `https://amr-link.open-design.ai/v1`, on whichever of the
+vendor's three APIs each model answers thinking on — measured with a
+streaming request to every model on each of the three:
+
+| API | Models | Declared as |
+|---|---|---|
+| chat completions | the other eight: `deepseek-v4.1-flash`, `deepseek-v4-flash`, `deepseek-v4-flash-vision-exp`, `glm-5.3-flashx`, `kimi-k2.7-code`, `mimo-v2.6-flash`, `mimo-v2.6-pro`, `gpt-6-luna` (which writes no thinking out on any of the three) | `@ai-sdk/openai-compatible` |
+| Responses | `claude-haiku-5.5`, `deepseek-v4-pro` | `@ai-sdk/openai` |
+| Anthropic's messages | `glm-5.3-flash` | `@ai-sdk/anthropic` |
+
+Chat completions is what vela configures for the OpenCode it ships, and what
+eight of the vendor's models stream thinking on as `reasoning` deltas. The
+others carry their thinking on another API — Responses' summary deltas, or
+Anthropic's `thinking` blocks — and are asked there.
+
+Declaring all three is also what gives magpie a **second and third endpoint**
+for the provider, so a model can be asked on another one (Providers → the
+model's API) without the plugin changing.
+
+The API matters when a client speaks another one: magpie translates, and a
+model whose upstream writes its thinking out only at the end of a stream
+loses it in the translation — `deepseek-v4.1-flash` writes it that way on
+Responses (the closing item alone, no deltas), which is why it is asked on
+chat completions.
 
 ## Where the sign-in is kept
 

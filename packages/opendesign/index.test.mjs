@@ -145,6 +145,8 @@ test("the account's list is the vendor's own, live", () => {
     rate: "x0.5",
     tool_call: true,
     attachment: true,
+    api: { npm: "@ai-sdk/openai-compatible" },
+    provider: { npm: "@ai-sdk/openai-compatible" },
     limit: { context: 1050000, output: 304000 },
     modalities: { input: ["text", "image", "file"], output: ["text"] },
   })
@@ -158,6 +160,8 @@ test("the account's list is the vendor's own, live", () => {
     tool_call: true,
     reasoning: true,
     rate: "x1",
+    api: { npm: "@ai-sdk/openai-compatible" },
+    provider: { npm: "@ai-sdk/openai-compatible" },
     limit: { context: 200000, output: 32000 },
     modalities: { input: ["text", "image"], output: ["text"] },
   })
@@ -176,7 +180,7 @@ test("the plugin declares the provider and answers its methods", async () => {
   await hooks.config(cfg)
   expect(cfg.provider.opendesign).toMatchObject({
     name: "Open Design",
-    npm: "@ai-sdk/openai",
+    npm: "@ai-sdk/openai-compatible",
     api: "https://amr-link.open-design.ai/v1",
   })
   // the seed models.mjs carries, which a signed-in account's list replaces
@@ -188,12 +192,48 @@ test("the plugin declares the provider and answers its methods", async () => {
     tool_call: true,
     reasoning: true,
     rate: "x0.5",
+    api: { npm: "@ai-sdk/openai-compatible" },
+    provider: { npm: "@ai-sdk/openai-compatible" },
     limit: { context: 1048000, output: 232000 },
     modalities: { input: ["text", "image"], output: ["text"] },
   })
   expect(hooks.auth.provider).toBe("opendesign")
   expect(hooks.auth.methods.map((m) => m.type)).toEqual(["oauth", "api"])
   expect(hooks.provider.id).toBe("opendesign")
+})
+
+test("every model is asked on the API its thinking comes back on", async () => {
+  const hooks = await OpenDesignAuthPlugin({})
+  const cfg = {}
+  await hooks.config(cfg)
+  const models = cfg.provider.opendesign.models
+  // most of the vendor's models answer thinking on chat completions, and the
+  // compatible package is what tells magpie so
+  expect(models["deepseek-v4.1-flash"].api.npm).toBe("@ai-sdk/openai-compatible")
+  expect(models["deepseek-v4.1-flash"].provider.npm).toBe("@ai-sdk/openai-compatible")
+  // the three asked elsewhere: two on Responses, one on Anthropic's messages
+  expect(models["claude-haiku-5.5"].api.npm).toBe("@ai-sdk/openai")
+  expect(models["deepseek-v4-pro"].api.npm).toBe("@ai-sdk/openai")
+  expect(models["glm-5.3-flash"].api.npm).toBe("@ai-sdk/anthropic")
+  // all three APIs are declared, which is what gives the provider its three
+  // endpoints in magpie
+  expect(new Set(Object.values(models).map((m) => m.api.npm)))
+    .toEqual(new Set(["@ai-sdk/openai-compatible", "@ai-sdk/openai", "@ai-sdk/anthropic"]))
+})
+
+test("an API magpie kept from an earlier version is not kept", async () => {
+  const hooks = await OpenDesignAuthPlugin({})
+  // magpie hands back what the hook last wrote; a model kept from a version
+  // that asked this one on the Responses API is asked where it is asked now
+  const cfg = { provider: { opendesign: { models: { "glm-5.3-flash": {
+    id: "glm-5.3-flash", name: "GLM 5.3 Flash", api: { npm: "@ai-sdk/openai" },
+  } } } } }
+  await hooks.config(cfg)
+  const kept = cfg.provider.opendesign.models["glm-5.3-flash"]
+  expect(kept.api.npm).toBe("@ai-sdk/anthropic")
+  expect(kept.provider.npm).toBe("@ai-sdk/anthropic")
+  // what magpie kept of it that is not the API stays
+  expect(kept.name).toBe("GLM 5.3 Flash")
 })
 
 test("the loader hands the runtime key to the model plane", async () => {
