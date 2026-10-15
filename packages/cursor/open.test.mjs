@@ -6,6 +6,7 @@ import { EventEmitter, getEventListeners } from "node:events"
 import http2 from "node:http2"
 import { Duplex } from "node:stream"
 import { CursorAuthPlugin, _internal } from "./index.mjs"
+import { NATIVE_LIMITS, nativeSessions } from "./native-session.mjs"
 
 const { open, openH1, openH2, H1, H2, fields, pb, frame, frames } = _internal
 const savedFetch = globalThis.fetch
@@ -261,8 +262,9 @@ test("openH1: write callbacks and drain wait for serialized append response bodi
   expect(callbacks).toEqual([0, 1])
 })
 
-for (const outcome of ["head abort", "completion", "HTTP error"]) {
-  test(`the plugin: ${outcome} releases transport ownership and its Run abort listener`, async () => {
+// The same plugin ownership assertions cover retained Runs and capacity fallback.
+for (const retained of [0, 32]) for (const outcome of ["head abort", "completion", "HTTP error"]) {
+  test(`the plugin (${retained ? "retained" : "stateless fallback"}): ${outcome} releases transport ownership and its Run abort listener`, async () => {
     const ac = new AbortController()
     const writes = []
     const closed = { req: 0, session: 0, destroyed: 0 }
@@ -307,10 +309,16 @@ for (const outcome of ["head abort", "completion", "HTTP error"]) {
     const auth = { type: "oauth", access: "synthetic-open-" + outcome, refresh: "", expires: 0 }
     const plugin = await CursorAuthPlugin()
     const loader = await plugin.auth.loader(async () => auth)
-    const response = await loader.fetch("http://127.0.0.1:1/v1/chat/completions", {
-      method: "POST", signal: ac.signal,
-      body: JSON.stringify({ model: "synthetic-open-model", messages: [{ role: "user", content: "synthetic request" }] }),
-    })
+    const capacity = NATIVE_LIMITS.perProcess
+    let response
+    try {
+      await nativeSessions.clear()
+      NATIVE_LIMITS.perProcess = retained
+      response = await loader.fetch("http://127.0.0.1:1/v1/chat/completions", {
+        method: "POST", signal: ac.signal,
+        body: JSON.stringify({ model: "synthetic-open-model", messages: [{ role: "user", content: "synthetic request" }] }),
+      })
+    } finally { NATIVE_LIMITS.perProcess = capacity }
     const result = await response.json()
     expect(response.status).toBe(outcome === "head abort" ? 410 : outcome === "HTTP error" ? 401 : 200)
     if (outcome === "head abort") {

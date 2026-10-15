@@ -11,6 +11,7 @@ import "./nonet.mjs" // first: no request leaves this machine
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test"
 import http2 from "node:http2"
 import { CursorAuthPlugin, _internal } from "./index.mjs"
+import { NATIVE_LIMITS, nativeSessions } from "./native-session.mjs"
 
 const { fields, pb, frame, STEP_WAIT } = _internal
 
@@ -22,7 +23,13 @@ const SHOWS = 4500 / SCALE
 
 const real = globalThis.fetch
 const wait = { ...STEP_WAIT }
-beforeEach(() => {
+const retained = NATIVE_LIMITS.perProcess
+beforeEach(async () => {
+  await nativeSessions.clear()
+  // This server closes each tool Run to publish dashboard usage. Exercise the
+  // production stateless fallback explicitly; native same-Run totals have
+  // separate roundtrip coverage in native-e2e/native-http1.
+  NATIVE_LIMITS.perProcess = 0
   // the times, not the counts; a debt is let go as before
   for (const k of ["first", "every", "until", "ask", "owedAt"]) if (k in wait) STEP_WAIT[k] = wait[k] / SCALE
   _internal.owed?.clear()
@@ -30,6 +37,7 @@ beforeEach(() => {
   _internal.unreadable?.clear()
 })
 afterEach(() => {
+  NATIVE_LIMITS.perProcess = retained
   globalThis.fetch = real
   Object.assign(STEP_WAIT, wait)
 })

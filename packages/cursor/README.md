@@ -35,7 +35,7 @@ plugin's `fetch` answers them on Cursor's agent API:
   the account (a team may be served in one region only), else
   `agentn.global.api5.cursor.sh`. A refusal that names a region is tried
   once more with the config asked again.
-- Each request is one `agent.v1.AgentService/Run`, a Connect stream both
+- A fresh request opens `agent.v1.AgentService/Run`, a Connect stream both
   ways over HTTP/2, with the CLI's headers (`x-cursor-client-type: cli`,
   its version, privacy mode on).
 - Where HTTP/2 can't open a Run (an error before its response, or none in
@@ -50,7 +50,7 @@ plugin's `fetch` answers them on Cursor's agent API:
   to try HTTP/2 again. A region error over HTTP/1.1 sends the Run back to
   HTTP/2 at the region's agent host. A BidiAppend with no answer in 60 s
   (more for a large one) ends the Run, as cursor-agent does.
-- The whole conversation goes each time, as AI SDK messages kept as blobs
+- A new Run imports the whole conversation as AI SDK messages kept as blobs
   the server asks for. The caller's tools are MCP tools, listed in the
   system prompt; the model calls them through Cursor's `CallDynamicTool`,
   and the calls come back as chat completion tool calls. Cursor's own tools
@@ -89,6 +89,49 @@ plugin's `fetch` answers them on Cursor's agent API:
   before.
   Failures keep their statuses: 401 to sign in again, 429 at the
   usage limit, 400 for a prompt too long, 403 for a region refusal.
+
+Tool results can continue a retained Run in the same plugin process. The owner
+uses the same session/cache key and first user message as `conversation_id`, so
+Task subagents sharing their parent's session can run independently. Retention
+waits at most 120 seconds for a result batch and 15 minutes for a Run's total
+lifetime. The pool holds at most 8 owners per account and 32 per process, with
+bounded history, blobs, arguments, and pending writes.
+
+These are retention limits. A missing, expired, restarted, busy, incompatible,
+or full owner uses the original history reconstruction and stateless decoder
+on a new Run. Pending parent calls and new input can take that path without
+cancelling the parent's owner. Already supplied client tool results become
+history; the plugin never executes those external tools. A failed native result
+write is reported to that request because its outcome may be uncertain. A later
+request can rebuild from its supplied history without submitting the result to
+the old native exec again.
+
+A native tool handoff reports zero usage with `magpie_native.accounting=pending`;
+the final native answer reports the turn's totals. An identical completed retry
+replays the saved response with zero usage. A native final also collects earlier
+stateless debt as `usage.magpie_deferred`, separately from its own prompt total.
+If a started native Run is abandoned after a pending handoff, its dashboard
+count is owed once to the same account and conversation. Successful final
+snapshots, including explicit zero, and cached replays do not enroll that debt.
+
+Dashboard attribution uses event timestamps, rather than when events arrive.
+Older debt is bounded strictly before the native Run's start, and keeps that
+bound across later stateless Runs so an authoritative native event is not
+billed again. An earlier event stamped on or after that boundary cannot be
+identified reliably and stays unknown. Missing or ambiguous debt expires after
+10 minutes; at most 64 distinct bounded debt groups are kept per account and
+conversation, dropping the oldest on overflow. These counts are never guessed
+as prior usage. Stateless Runs otherwise keep the dashboard accounting above.
+`X-Magpie-Cursor-Continuity` identifies `same-run` or `stateless`, with the fallback
+reason where available. A missing native batch count can retry stateless once
+before any output is exposed or native result submitted; progressive output is
+kept and its later errors are surfaced.
+
+The existing request builder and model selection remain in use, including the
+legacy `thinking=false` mapping for explicit `none`/`off`. Retention adds no
+request-field whitelist or strict generation-option validation. Native tool
+results preserve ordered text and data-URL images and explicit error flags;
+unsupported native result shapes use the legacy history path.
 
 ## Models
 
