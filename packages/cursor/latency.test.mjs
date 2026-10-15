@@ -58,10 +58,7 @@ const CURSOR = [
 
 // the agent API: a Run answers a tool call (listed first, as Cursor does)
 // and waits for the client to close it, or ends the turn with its usage.
-// A closed Run's event shows SHOWS later, but Cursor stamps it as the Run
-// begins (see ledger). Stamping several queued timers at publication instead
-// can give distinct Runs the same identity and make the fixture lose usage.
-let eventStamp = 0
+// A closed Run's event shows on the dashboard SHOWS later, stamped then.
 let server, base
 let script = [] // per Run: "tool" or "end", with its CURSOR usage
 const shown = [] // the dashboard's events
@@ -75,8 +72,7 @@ beforeAll(async () => {
       buf = Buffer.concat([buf, c])
       if (step || buf.length < 5 || buf.length < 5 + buf.readUInt32BE(1)) return
       const rr = fields(fields(buf.subarray(5, 5 + buf.readUInt32BE(1))).find((f) => f.num === 1).data)
-      eventStamp = Math.max(Date.now(), eventStamp + 1)
-      step = { conv: rr.find((f) => f.num === 5)?.data.toString(), timestamp: String(eventStamp), ...script.shift() }
+      step = { conv: rr.find((f) => f.num === 5)?.data.toString(), ...script.shift() }
       const update = (num, body) => frame(pb().bytes(1, pb().bytes(num, body)).done())
       if (step.kind === "tool") {
         stream.write(update(1, pb().str(1, "probing").done()))
@@ -98,7 +94,7 @@ beforeAll(async () => {
     })
     stream.on("close", () => {
       if (!step?.usage) return
-      setTimeout(() => shown.push({ timestamp: step.timestamp, model: "claude-fable-5-thinking-max", conversationId: step.conv, tokenUsage: step.usage }), SHOWS)
+      setTimeout(() => shown.push({ timestamp: String(Date.now()), model: "claude-fable-5-thinking-max", conversationId: step.conv, tokenUsage: step.usage }), SHOWS)
     })
     stream.on("error", () => {})
   })

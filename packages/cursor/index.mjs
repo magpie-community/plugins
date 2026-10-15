@@ -1479,7 +1479,9 @@ async function usageEvents(tok, conv, since, want, { poll = false, first = STEP_
       for (const ev of found) {
         if (got >= want) break
         const at = num(ev.timestamp)
-        if (claimed.has(key + "\0" + ev.timestamp) || at >= before()) continue
+        // found already excludes timestamps claimed by earlier fetches. Two
+        // distinct events in this response may share a millisecond; count both.
+        if (at >= before()) continue
         const group = groups?.findIndex((g, i) => counts[i] < g.n && at >= g.since - 1000 && at < (g.before ?? Infinity))
         if (groups && group === -1) continue
         if (groups) counts[group]++

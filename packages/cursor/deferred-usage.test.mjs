@@ -73,6 +73,34 @@ test("a step's prompt_tokens is its own Run's; what it collected of an earlier s
   expect(u1.prompt_tokens + u2.prompt_tokens + u2.magpie_deferred.prompt_tokens).toBe(prompt(E1) + prompt(E2))
 })
 
+test("distinct same-millisecond events in one response are billed together, not again on later fetches", async () => {
+  Object.assign(STEP_WAIT, { first: 0, every: 1, until: 5, owedAt: 60_000 })
+  const tok = "same-millisecond-account", conv = "same-millisecond-conversation"
+  const since = Date.now() - 30_000
+  let shown = []
+  globalThis.fetch = async () => Response.json({ usageEventsDisplay: shown })
+  const first = await step(ledger(tok, conv, since, undefined, true))
+  const second = await step(ledger(tok, conv, since + 1, undefined, true))
+  expect([first.prompt_tokens, second.prompt_tokens]).toEqual([0, 0])
+  const timestamp = String(since + 2000)
+  shown = [E1, E2].map((tokenUsage) => ({ timestamp, conversationId: conv, tokenUsage }))
+  const final = ledger(tok, conv, Date.now(), undefined, true)
+  const billed = await final.owed(true)
+  final.done()
+  expect(billed).toMatchObject({
+    input: E1.inputTokens + E2.inputTokens,
+    output: E1.outputTokens + E2.outputTokens,
+    cacheRead: E1.cacheReadTokens + E2.cacheReadTokens,
+    cacheWrite: E1.cacheWriteTokens + E2.cacheWriteTokens,
+  })
+  expect(owed.has(_internal.usageKey(tok, conv))).toBe(false)
+  // The response was counted once. Another Run seeing that same response
+  // must not bill either event again, even though both share a timestamp.
+  const next = await step(ledger(tok, conv, since + 2, undefined, true))
+  expect(next.prompt_tokens).toBe(0)
+  expect(next.magpie_deferred).toBeUndefined()
+})
+
 test("a step that owed nothing has no magpie_deferred", async () => {
   Object.assign(STEP_WAIT, { first: 0, every: 10, until: 200, owedAt: 0 })
   const conv = "8a462df8-0000-4000-8000-000000000002"
