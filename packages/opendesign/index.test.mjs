@@ -138,6 +138,8 @@ const CATALOG = {
 test("the account's list is the vendor's own, live", () => {
   const models = I.modelsOf(CATALOG)
   expect(Object.keys(models)).toEqual(["gpt-6-luna", "deepseek-v4-pro", "brand-new-9"])
+  // gpt-6-luna is the one model that answered no thinking on all three APIs:
+  // no levels are offered on it, and the picker stays hidden
   expect(models["gpt-6-luna"]).toEqual({
     id: "gpt-6-luna",
     name: "GPT-6 Luna",
@@ -145,6 +147,15 @@ test("the account's list is the vendor's own, live", () => {
     rate: "x0.5",
     tool_call: true,
     attachment: true,
+    capabilities: {
+      temperature: true,
+      reasoning: false,
+      attachment: true,
+      toolcall: true,
+      input: { text: true, image: true, file: true },
+      output: { text: true },
+      interleaved: false,
+    },
     api: { npm: "@ai-sdk/openai-compatible" },
     provider: { npm: "@ai-sdk/openai-compatible" },
     limit: { context: 1050000, output: 304000 },
@@ -153,12 +164,28 @@ test("the account's list is the vendor's own, live", () => {
   expect(models["deepseek-v4-pro"]).toMatchObject({ reasoning: true, rate: "x2", limit: { context: 1048000, output: 232000 } })
   // a model the seed doesn't know is named by its id, and a catalog entry
   // without limits still gets a workable entry
+  // a model amr-link adds later declares the same levels, with no change here
+  const LEVELS = {
+    low: { reasoningEffort: "low" },
+    high: { reasoningEffort: "high" },
+    max: { reasoningEffort: "max" },
+  }
   expect(models["brand-new-9"]).toEqual({
     id: "brand-new-9",
     name: "brand-new-9",
     attachment: true,
     tool_call: true,
     reasoning: true,
+    capabilities: {
+      temperature: true,
+      reasoning: true,
+      attachment: true,
+      toolcall: true,
+      input: { text: true, image: true },
+      output: { text: true },
+      interleaved: false,
+    },
+    variants: LEVELS,
     rate: "x1",
     api: { npm: "@ai-sdk/openai-compatible" },
     provider: { npm: "@ai-sdk/openai-compatible" },
@@ -191,6 +218,20 @@ test("the plugin declares the provider and answers its methods", async () => {
     attachment: true,
     tool_call: true,
     reasoning: true,
+    capabilities: {
+      temperature: true,
+      reasoning: true,
+      attachment: true,
+      toolcall: true,
+      input: { text: true, image: true },
+      output: { text: true },
+      interleaved: false,
+    },
+    variants: {
+      low: { reasoningEffort: "low" },
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    },
     rate: "x0.5",
     api: { npm: "@ai-sdk/openai-compatible" },
     provider: { npm: "@ai-sdk/openai-compatible" },

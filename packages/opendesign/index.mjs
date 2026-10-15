@@ -53,10 +53,24 @@ const TIMEOUT = 20_000
 const HOUR = 3600
 const WEEK = 7 * 24 * HOUR
 
-// The vendor's spending words as magpie's rate, and its quality words as
-// whether the model thinks before it answers.
+// The vendor's spending words as magpie's rate. Its quality word is not read
+// as whether a model thinks: it calls claude-haiku-5.5, deepseek-v4-flash,
+// deepseek-v4-flash-vision-exp and mimo-v2.6-flash standard, and all four
+// streamed thinking in tests — a standard word would leave the levels of a
+// model that takes them unoffered.
 const COST = { low: "x0.5", medium: "x1", high: "x2", very_high: "x4" }
-const THINKING = { advanced: true, standard: false }
+
+// The one model that answered no thinking on any of the three APIs; every
+// other model thinks, seed, kept or one amr-link adds later.
+const NO_THINKING = new Set(["gpt-6-luna"])
+
+// The levels an account takes, as tests answered them: low, high and max came
+// back on every model, and the vendor names the same three when asked for one
+// it does not take ("reasoning effort is unsupported for glm-5.3-flashx; use
+// one of low, high, max"). magpie offers what the models declare and fits a
+// request's effort to it, so a model amr-link adds later offers these too.
+const EFFORTS = ["low", "high", "max"]
+const variantsOf = () => Object.fromEntries(EFFORTS.map((e) => [e, { reasoningEffort: e }]))
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const text = (v) => (typeof v === "string" && v.trim() ? v.trim() : "")
@@ -262,7 +276,7 @@ function thePlan(summary, tier) {
 // read again — into the model magpie shows.
 function modelOf(id, m) {
   const rate = COST[text(m?.cost)]
-  const thinking = THINKING[text(m?.capability)]
+  const reasons = !NO_THINKING.has(id)
   const context = Number(m?.context)
   const output = Number(m?.output)
   const input = Array.isArray(m?.input) ? m.input.filter((x) => typeof x === "string" && x !== "text") : []
@@ -271,7 +285,20 @@ function modelOf(id, m) {
     name: text(m?.name) || id,
     attachment: true,
     tool_call: true,
-    reasoning: thinking ?? !!m?.reasoning,
+    reasoning: reasons,
+    // magpie builds the app's reasoning effort picker and its fitting from the
+    // model's own capabilities and variants as the provider hook hands it
+    // over (OpenCode's shape), and hides the picker when reasoning is false.
+    capabilities: {
+      temperature: true,
+      reasoning: reasons,
+      attachment: true,
+      toolcall: true,
+      input: { ...Object.fromEntries(input.map((k) => [k, true])), text: true },
+      output: { text: true },
+      interleaved: false,
+    },
+    ...(reasons && { variants: variantsOf() }),
     // the API magpie asks this model on (see WIRE above): per model, not per
     // provider, so all three endpoints are declared and each model goes to the
     // one its thinking comes back on. OpenCode carries it on the model's api
