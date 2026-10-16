@@ -381,6 +381,14 @@ export class NativeSessionPool {
           return { owner, batch, replay: true, segment: batch.next }
         }
         if (owner.state !== "awaiting-results" || owner.segment !== batch || !batch.clean) return fallback("owner busy")
+        // A retained Run's absolute timer spans all tool roundtrips. Rebuild
+        // near its deadline before writing this batch: otherwise a new Chat
+        // segment can lose its transport after already exposing output.
+        const reserve = Math.min(60_000, owner.limits.lifetime / 10)
+        if (owner.expiresAt - Date.now() <= reserve) {
+          owner.fail({ status: 410, message: "native Run retired before lifetime deadline" }, "expired")
+          return fallback("owner near lifetime deadline")
+        }
         return { owner, batch, results, encoded, digest, chat }
       } catch (e) {
         if (!(e instanceof NativeSessionError)) throw e
@@ -463,6 +471,7 @@ class NativeSession {
     this.terminal = false
     this.segment = new Segment(this, prepared.chat)
     this.retain(bytes(prepared.chat))
+    this.expiresAt = Date.now() + this.limits.lifetime
     this.lifetimeTimer = later(() => this.fail({ status: 410, message: "native Run lifetime expired" }, "expired"), this.limits.lifetime)
   }
   retain(n) {

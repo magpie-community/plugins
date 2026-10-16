@@ -1,5 +1,5 @@
 import "./nonet.mjs"
-import { afterEach, beforeEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 import http2 from "node:http2"
 import { randomUUID } from "node:crypto"
 import { getEventListeners } from "node:events"
@@ -318,6 +318,24 @@ test("native retention: Task parent awaiting results permits a child sharing ses
   expect(continued.status).toBe(200)
   expect(a.results).toHaveLength(1)
   expect(a.runs).toHaveLength(2)
+})
+
+test("native retention: a near-expiry Run rebuilds before submitting results or exposing output", async () => {
+  const a = await agent(), account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  expect(first.status).toBe(200)
+  const owner = [...nativeSessions.entries][0]
+  const now = Date.now.bind(Date)
+  const clock = spyOn(Date, "now").mockImplementation(() => now() + NATIVE_LIMITS.lifetime - 1000)
+  try {
+    const marker = "result-before-lifetime-boundary"
+    rebuilt(await a.ask(account, continueWith(chat, first.body, [marker])), marker)
+    expect(a.runs).toHaveLength(2)
+    expect(a.results).toEqual([])
+    expect(owner.state).toBe("expired")
+    expect(nativeSessions.entries.has(owner)).toBe(false)
+    expect(a.errors).toEqual([])
+  } finally { clock.mockRestore() }
 })
 
 for (const limit of ["resultWait", "lifetime"]) test(`native retention: ${limit} expiry rebuilds supplied results on a fresh stateless Run`, async () => {
