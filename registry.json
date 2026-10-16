@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-antigravity-acp-auth", "name": "Antigravity (ACP)", "icon": "antigravity-color", "providers": ["antigravity-acp"], "community": true,
+      "summary": { "en": "Google Antigravity through its official ACP server, riding the Antigravity IDE's Google sign-in: the server's live model catalog, streaming replies and tool calls.", "zh": "通过官方 ACP 服务器（agy_acp_server）使用 Google Antigravity：沿用 Antigravity IDE 的 Google 登录、服务器实时模型目录，支持流式回复与工具调用。" } },
     { "package": "@magpie-community/opencode-zen-free-auth", "name": "OpenCode Zen Free", "icon": "opencode", "providers": ["opencode-zen-free"], "community": true,
       "summary": { "en": "OpenCode Zen's free models with the public credential, automatic discovery and native streaming protocols.", "zh": "使用 public 凭证接入 OpenCode Zen 免费模型，自动发现模型并支持原生流式协议。" } },
     { "package": "@magpie-community/opencode-zcode-auth", "name": "ZCode", "icon": "zcode", "providers": ["zcode"], "community": true, "replaces": "zcode",
