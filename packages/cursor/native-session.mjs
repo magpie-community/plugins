@@ -471,8 +471,14 @@ class NativeSession {
     this.terminal = false
     this.segment = new Segment(this, prepared.chat)
     this.retain(bytes(prepared.chat))
-    this.expiresAt = Date.now() + this.limits.lifetime
-    this.lifetimeTimer = later(() => this.fail({ status: 410, message: "native Run lifetime expired" }, "expired"), this.limits.lifetime)
+    this.expireIn(this.limits.lifetime)
+  }
+  // expireIn sets the Run's absolute deadline ms from now: from its start,
+  // the whole lifetime; a test brings it in after the first answer
+  expireIn(ms) {
+    clearTimeout(this.lifetimeTimer)
+    this.expiresAt = Date.now() + ms
+    this.lifetimeTimer = later(() => this.fail({ status: 410, message: "native Run lifetime expired" }, "expired"), ms)
   }
   retain(n) {
     if (this.retainedBytes + n > this.limits.outputBytes) invalid("native output/history retention limit reached", 503)

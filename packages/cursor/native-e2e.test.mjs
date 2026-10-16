@@ -339,11 +339,16 @@ test("native retention: a near-expiry Run rebuilds before submitting results or 
 })
 
 for (const limit of ["resultWait", "lifetime"]) test(`native retention: ${limit} expiry rebuilds supplied results on a fresh stateless Run`, async () => {
-  NATIVE_LIMITS[limit] = 65
+  // #143: the lifetime counts from the Run's start, so a short one set before
+  // the first ask expired a first Run slower than it on a loaded machine.
+  // The result wait counts from the answer; the lifetime is brought in after
+  // it, the first Run having all of it.
+  if (limit === "resultWait") NATIVE_LIMITS[limit] = 65
   const a = await agent(), account = auth(), chat = initial()
   const first = await a.ask(account, chat)
   expect(first.status).toBe(200)
   const owner = [...nativeSessions.entries][0]
+  if (limit === "lifetime") owner.expireIn(65)
   await until(() => owner.state === "expired")
   const marker = "late-result-" + limit
   rebuilt(await a.ask(account, continueWith(chat, first.body, [marker])), marker)
