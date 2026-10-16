@@ -1,14 +1,25 @@
 {
   "name": "@magpie-community/middleware-codex-history",
-  "version": "0.1.0",
-  "description": "Opt-in, per-provider Codex Responses history compatibility for Magpie",
+  "version": "0.2.0",
+  "description": "Unified Magpie Codex workbench: history compatibility, optional model checks and protection",
   "type": "module",
   "license": "MIT",
+  "main": "./plugin/index.mjs",
   "files": [
-    "codex-history.middleware.js",
+    "plugin",
+    "server",
+    "web",
+    "history",
+    "vendor",
+    "workbench.middleware.js",
+    "Open.bat",
+    "tools",
+    "docs/images",
     "README.md",
     "LICENSE",
-    "PROVENANCE.json"
+    "PROVENANCE.json",
+    "codex-history.middleware.js",
+    "Diagnose.bat"
   ],
   "keywords": [
     "magpie",
@@ -22,8 +33,25 @@
     "url": "git+https://github.com/magpie-community/plugins.git",
     "directory": "packages/codex-history"
   },
+  "bugs": {
+    "url": "https://github.com/unisong/magpie-codex-history-filter/issues"
+  },
+  "scripts": {
+    "build": "node tools/build-middleware.mjs",
+    "prepack": "npm run build",
+    "test": "node --test test/*.test.mjs",
+    "start": "node tools/open.mjs"
+  },
   "magpie": {
-    "middleware": "./codex-history.middleware.js",
+    "middleware": "./workbench.middleware.js",
+    "page": {
+      "title": "Codex Workbench · 历史过滤",
+      "file": "history/page/index.html",
+      "icon": "history/page/icon.svg"
+    },
+    "permissions": [
+      "providers:list"
+    ],
     "options": {
       "providers": {},
       "aliases": {}

@@ -1,0 +1,2 @@
+* text=auto eol=lf
+vendor/modeltrace/* -text whitespace=cr-at-eol

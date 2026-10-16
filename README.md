@@ -43,7 +43,7 @@ These packages aren't OpenCode plugins. magpie runs them in its gateway, on the 
 | [system-prompt](packages/system-prompt) | Your own system prompt on every request, or on some agents' or models', in each API's own place |
 | [word-guard](packages/word-guard) | New API's 敏感词过滤: turn away or mask words and patterns in what users send, and in replies |
 | [think-tags](packages/think-tags) | Take `<think>…</think>` out of a reply's text, or put a Chat reply's `reasoning_content` into it (`thinking_to_content`) |
-| [codex-history](packages/codex-history) | Opt-in Responses history compatibility after switching providers: remove historical ciphertext and optional item IDs while preserving readable content and tool-call pairing |
+| [codex-history](packages/codex-history) | Codex Workbench: per-provider Responses history compatibility with native settings, plus optional local ModelTrace monitoring and per-model pause protection; off by default |
 
 ```sh
 magpie plugin add @magpie-community/middleware-<name>
@@ -57,6 +57,8 @@ A middleware package is a folder under `packages/<name>/` with:
 - **`package.json`**: name `@magpie-community/middleware-<name>`, `"magpie": {"middleware": "./<name>.middleware.js", "options": {…}}`, no `main`. `options` is the example magpie offers when none are set.
 - **`<name>.middleware.js`**: exports `onRequest`, `onEvent` and/or `onResponse` ([the hooks](https://usemagpie.ai/docs/plugins#middleware)). It runs in magpie's gateway on moejs, so it is one file and imports nothing.
 - **`cases.json`** and a test that runs them with `check()` from `scripts/middleware.mjs`, which calls the hooks the way the gateway does.
+
+`codex-history` also declares a server `main` for its optional local monitoring console and `magpie.page` for native filter settings. Its import-free middleware remains independent: filtering works without opening the console or signing in, and a console startup failure does not prevent history filtering. This combined package uses Magpie's Bun host; it is not a model provider.
 
 ### Routing strategies
 
