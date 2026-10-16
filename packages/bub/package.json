@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/agent-bub",
+  "version": "0.1.0",
+  "description": "Bub (bub.build) as a magpie agent: pick one of magpie's models for it on the Agents page / Bub（bub.build）作为 magpie 的 Agent：在 Agent 页给它选 magpie 的模型",
+  "type": "module",
+  "files": ["bub.agent.js", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "bub", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/bub" },
+  "magpie": { "agent": "./bub.agent.js" }
+}
