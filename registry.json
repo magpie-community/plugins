@@ -25,6 +25,8 @@
       "summary": { "en": "Kiro Free, Pro, Pro+ and Power — Kiro's sign-in, kiro-cli's, or an API key.", "zh": "Kiro Free、Pro、Pro+ 与 Power：Kiro 登录、沿用 kiro-cli 的登录，或 API key。" } },
     { "package": "@magpie-community/opencode-minimax-auth", "name": "MiniMax Code", "icon": "minimax-color", "providers": ["minimax-code", "minimax-code-global"], "community": true,
       "summary": { "en": "MiniMax Code account credits (daily check-in) and M Plan, with MiniMax Code's own device sign-in.", "zh": "用 MiniMax Code 账号的积分（每日签到）与 M Plan，使用 MiniMax Code 自己的设备登录。" } },
+    { "package": "@magpie-community/opencode-warp-auth", "name": "Warp", "icon": "warp", "providers": ["warp"], "community": true,
+      "summary": { "en": "Warp (the terminal) AI request credits through the Warp app's sign-in: the auto routers and every model family the account lists.", "zh": "用 Warp 终端应用的登录使用 Warp AI 请求额度：auto 路由与账户可用的全部模型家族。" } },
     { "package": "@magpie-community/opencode-workbuddy-auth", "name": "WorkBuddy", "icon": "workbuddy-color", "providers": ["workbuddy", "workbuddy-ai"], "community": true, "replaces": "workbuddy",
       "summary": { "en": "WorkBuddy's China build (CodeBuddy plan) and its international build.", "zh": "WorkBuddy 国内版（CodeBuddy 套餐）与国际版。" } },
     { "package": "@magpie-community/opencode-cline-auth", "name": "Cline", "icon": "cline", "providers": ["cline"], "community": true,
