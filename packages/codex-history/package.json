@@ -1,0 +1,32 @@
+{
+  "name": "@magpie-community/middleware-codex-history",
+  "version": "0.1.0",
+  "description": "Opt-in, per-provider Codex Responses history compatibility for Magpie",
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "codex-history.middleware.js",
+    "README.md",
+    "LICENSE",
+    "PROVENANCE.json"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-middleware",
+    "codex",
+    "responses",
+    "history"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/codex-history"
+  },
+  "magpie": {
+    "middleware": "./codex-history.middleware.js",
+    "options": {
+      "providers": {},
+      "aliases": {}
+    }
+  }
+}
