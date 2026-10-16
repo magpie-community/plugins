@@ -55,7 +55,11 @@ GitHub login.
   - A caller that didn't ask for a stream gets one whole reply.
   - A failure Zed reports mid-stream keeps its status (429, 402, 529 …).
     So does a reply without Zed's `stream_ended`, which comes back as an
-    error rather than a shorter answer.
+    error rather than a shorter answer, except one case. A streamed xAI
+    (chat) reply that has already said something, and has no tool call
+    half written, ends cut short instead, with a note saying so, a `stop`
+    and `[DONE]` (#91). magpie's gateway can go on with an Anthropic or
+    Responses reply cut short, but not with a chat one.
   - A 402 means the plan doesn't include Zed's hosted models, or its
     allowance is used up.
 

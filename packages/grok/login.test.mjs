@@ -1,19 +1,34 @@
 // A `grok login` that prints no link says why (𝕏 on Discord): the sign-in
 // said only "grok login gave no link to open", where the CLI had said it
 // couldn't reach x.ai.
-import { afterAll, expect, test } from "bun:test"
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+//
+// The fake CLI is /bin/sh under grok's name, not a script written here: on
+// macOS the first run of a file just written waits for the system's scan
+// of it, which took 4-15s on a busy machine and timed these tests out
+// (#65). `grok login --device-auth` is then `sh login --device-auth`, and
+// sh reads the script `login` in the folder the plugin runs it in, the
+// home folder: a plain file, read and never scanned.
+import { afterAll, beforeAll, expect, test } from "bun:test"
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { GrokAuthPlugin } from "./index.mjs"
 
 const dir = mkdtempSync(join(tmpdir(), "grok-login-"))
-afterAll(() => rmSync(dir, { recursive: true, force: true }))
+const script = join(homedir(), "login")
+beforeAll(() => {
+  // the script goes in the home folder, so only a home made for the test
+  if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
+})
+afterAll(() => {
+  rmSync(dir, { recursive: true, force: true })
+  rmSync(script, { force: true })
+})
 
-async function signIn(script) {
+async function signIn(body) {
   const bin = mkdtempSync(join(dir, "bin-"))
-  writeFileSync(join(bin, "grok"), `#!/bin/sh\n${script}\n`)
-  chmodSync(join(bin, "grok"), 0o755)
+  symlinkSync("/bin/sh", join(bin, "grok"))
+  writeFileSync(script, `${body}\n`)
   const env = { GROK_BIN_DIR: process.env.GROK_BIN_DIR, GROK_HOME: process.env.GROK_HOME }
   process.env.GROK_BIN_DIR = bin
   process.env.GROK_HOME = mkdtempSync(join(dir, "home-"))

@@ -1,7 +1,7 @@
 // auth.usage tells what magpie's built-in WorkBuddy usage told for the same
 // answers (internal/provider/workbuddy_test.go, workbuddy_ai_test.go).
 import { test, expect, afterAll, beforeAll, afterEach } from "bun:test"
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs"
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { realpathSync } from "node:fs"
 import { join } from "node:path"
@@ -149,6 +149,29 @@ test("a desktop sign-in with the app signed out says why it failed", async () =>
   expect(r).toEqual({ type: "failed", error: "WorkBuddy AI desktop isn't signed in" })
 })
 
+// plugins#18 (seavenlin, WorkBuddy desktop 5.8.1): a sign-in the app seals
+// at rest read as "isn't signed in", while the app was signed in
+test("a desktop sign-in the app keeps encrypted says so, and that the browser sign-in is the way", async () => {
+  const dir = process.platform === "darwin" ? join(home, "Library", "Application Support", "CodeBuddyExtension")
+    : process.platform === "win32" ? join(home, "AppData", "Local", "CodeBuddyExtension") : join(home, ".local", "share", "CodeBuddyExtension")
+  mkdirSync(join(dir, "Data", "Public", "auth"), { recursive: true })
+  const file = join(dir, "Data", "Public", "auth", "workbuddy-desktop-ai.info")
+  const sealed = { $wbEncrypted: 1, envelope: "AAAA" }
+  const info = JSON.stringify({ auth: { accessToken: sealed, refreshToken: sealed, expiresAt: Date.now() + 3600_000 }, account: { uid: "u9", nickname: "x" } })
+  writeFileSync(file, info)
+  const want = 'WorkBuddy AI desktop keeps its sign-in encrypted (WorkBuddy 5.6 and later), which magpie can\'t read; sign in with "WorkBuddy AI account (browser)" instead'
+  const p = await WorkBuddyAIAuthPlugin({ client: {} })
+  const m = p.auth.methods.find((x) => x.label.endsWith("desktop's sign-in"))
+  expect(await (await m.authorize()).callback()).toEqual({ type: "failed", error: want })
+  // one signed in before the app sealed it: its usage and chats say the same
+  const auth = { type: "oauth", access: "", refresh: "", expires: 0, source: "desktop", uid: "u9" }
+  expect((await usageOf(WorkBuddyAIAuthPlugin, auth, { auth: { set: async () => {} } })).error).toBe(want)
+  const opts = await p.auth.loader(async () => auth)
+  await expect(opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: "{}" })).rejects.toThrow(want)
+  expect(readFileSync(file, "utf8")).toBe(info)
+  rmSync(file)
+})
+
 // Each model carries the credits WorkBuddy's picker shows by it, as
 // magpie's built-in reads them (internal/provider/workbuddy_free_test.go,
 // TestWBCreditsRate): x0.03 is 0.03, X1.00 is 1; x0.00 is free and no
@@ -184,6 +207,41 @@ test("each model's rate is its credits", async () => {
   const { creditsOf } = _internal
   expect(["x0.03", " X1.00 ", 1.5, "0"].map(creditsOf)).toEqual([0.03, 1, 1.5, 0])
   for (const c of ["", null, undefined, "free", "x-1", "Infinity"]) expect(creditsOf(c)).toBeUndefined()
+})
+
+// WorkBuddy AI's GLM models take no images, though its config says every
+// model does: on 2026-10-13 a real account's image sent to glm-5.3-flash,
+// glm-5.3 and glm-5.2 came back as "[System reminder: the current model
+// does not support images. Content filtered. ...]" (Yirasumi on Discord).
+// Its other models read them, and WorkBuddy (China)'s GLM does too, so
+// only WorkBuddy AI's GLM models lose images.
+test("WorkBuddy AI's GLM models are text-only, its others and China's GLM keep images (Yirasumi on Discord)", async () => {
+  const ids = ["glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-6", "deepseek-v4.1-flash", "kimi-k3", "gemini-3.5-flash", "gpt-5.5", "hy3"]
+  const cfg = () => ok({
+    agents: [{ name: "cli", models: [...ids, "said-nothing"] }],
+    models: [...ids.map((id) => ({ id, name: id, supportsImages: id !== "hy3" })), { id: "said-nothing" }],
+  })
+  const auth = { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u", domain: "" }
+  const images = async (plugin) => {
+    serve({ "/v3/config": cfg })
+    const hooks = await plugin({ client: {} })
+    const ms = await hooks.provider.models({ id: hooks.auth.provider, models: {} }, { auth })
+    return Object.fromEntries(Object.entries(ms).map(([k, m]) => [k, [m.capabilities.input.image, m.capabilities.attachment]]))
+  }
+  expect(await images(WorkBuddyAIAuthPlugin)).toEqual({
+    "glm-5.3-flash": [false, false], "glm-5.3": [false, false], "glm-5.2": [false, false], "glm-6": [false, false],
+    "deepseek-v4.1-flash": [true, true], "kimi-k3": [true, true], "gemini-3.5-flash": [true, true], "gpt-5.5": [true, true],
+    hy3: [false, false], "said-nothing": [false, false],
+  })
+  expect(await images(WorkBuddyAuthPlugin)).toEqual({
+    "glm-5.3-flash": [true, true], "glm-5.3": [true, true], "glm-5.2": [true, true], "glm-6": [true, true],
+    "deepseek-v4.1-flash": [true, true], "kimi-k3": [true, true], "gemini-3.5-flash": [true, true], "gpt-5.5": [true, true],
+    hy3: [false, false], "said-nothing": [false, false],
+  })
+  const { textOnly, SITES } = _internal
+  // the family, by its id's start: not a model whose id only has glm in it
+  expect(textOnly(SITES["workbuddy-ai"], "my-glm-5")).toBe(false)
+  expect(textOnly(SITES.workbuddy, "glm-5.3-flash")).toBe(false)
 })
 
 // the detail lists as www.workbuddy.ai sent them for a Pro account on
@@ -250,4 +308,117 @@ test("a detail list that can't be read leaves the card as it was", async () => {
   const u = await usageOf(WorkBuddyAIAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
   expect(u.error).toBeUndefined()
   expect(u.windows[0]).toEqual({ name: "Credits", used: 100 * 17.6 / 2250, display: "17.6 / 2250", amount: 17.6, limit: 2250, unit: "credits" })
+})
+
+// magpie #1904 (CnsMaple): an enterprise account's resource summary has no
+// packages, and its credits are the enterprise meter's, which WorkBuddy's
+// own usage page reads. The two answers below are the reporter's, byte for
+// byte, from one token at one moment.
+const ENT_SUMMARY = `{
+  "code": 0,
+  "msg": "OK",
+  "data": {
+    "Packages": [],
+    "SubscriptionPackageCode": "",
+    "SubscriptionPackageName": "",
+    "IsPaidUser": false,
+    "IsProtectedPriceUser": false
+  }
+}`
+const ENT_USAGE = `{
+  "code": 0,
+  "msg": "OK",
+  "data": {
+    "credit": 196.13,
+    "cycleStartTime": "2026-10-08 00:00:00",
+    "cycleEndTime": "2026-11-08 23:59:59",
+    "limitNum": 2000,
+    "cycleResetTime": "2026-11-09 00:00:00"
+  }
+}`
+// and a personal account's answer to the enterprise meter, from a real
+// WorkBuddy AI Pro account on 2026-10-13
+const PERSONAL_ENT = `{"code":10001,"msg":"uid or enterpriseID is empty","requestId":"36dd0f64-cb93-41e1-a964-9e3c87fea235"}`
+
+test("an enterprise account's credits are the enterprise meter's, as WorkBuddy's usage page reads them (magpie #1904)", async () => {
+  const calls = serve({
+    "/billing/meter/get-user-resource-summary": () => new Response(ENT_SUMMARY),
+    "/billing/meter/get-enterprise-user-usage": () => new Response(ENT_USAGE),
+  })
+  const auth = { type: "oauth", access: "ent-access", refresh: "r", expires: later(), uid: "u9", domain: "www.workbuddy.cn", enterpriseId: "ent-1" }
+  expect(await usageOf(WorkBuddyAuthPlugin, auth)).toEqual({ signIn: "kept", plan: "Enterprise", windows: [{
+    name: "Credits", used: (100 * 196.13) / 2000, display: "196.13 / 2000", amount: 196.13, limit: 2000, unit: "credits",
+    resetsAt: "2026-11-08T16:00:00.000Z", span: 32 * 86400 }] })
+  const ent = calls.find((c) => c.url.pathname === "/billing/meter/get-enterprise-user-usage")
+  expect(ent.init.method).toBe("POST")
+  expect(ent.init.body).toBe("{}")
+  expect(Object.fromEntries(["authorization", "x-user-id", "x-domain", "x-enterprise-id"].map((h) => [h, ent.headers.get(h)])))
+    .toEqual({ authorization: "Bearer ent-access", "x-user-id": "u9", "x-domain": "www.workbuddy.cn", "x-enterprise-id": "ent-1" })
+})
+
+test("a personal account with no credits isn't given the enterprise's, and its refusal isn't the card's error", async () => {
+  serve({
+    "/billing/meter/get-user-resource-summary": () => new Response(ENT_SUMMARY),
+    "/billing/meter/get-enterprise-user-usage": () => new Response(PERSONAL_ENT, { status: 400 }),
+  })
+  const auth = { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" }
+  expect(await usageOf(WorkBuddyAuthPlugin, auth)).toEqual({ signIn: "kept", plan: "Free", windows: [] })
+})
+
+test("a personal account with credits never asks the enterprise meter", async () => {
+  const calls = serve({ "/billing/meter/get-user-resource-summary": () => ok(PAID) })
+  const auth = { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" }
+  expect((await usageOf(WorkBuddyAuthPlugin, auth)).windows[0].display).toBe("2500 / 10000")
+  expect(calls.some((c) => c.url.pathname === "/billing/meter/get-enterprise-user-usage")).toBe(false)
+})
+
+test("enterpriseUsageOf: no limit, no window; times it can't read are left out", () => {
+  expect(_internal.enterpriseUsageOf({ credit: 3, limitNum: 0 })).toBe(null)
+  expect(_internal.enterpriseUsageOf(null)).toBe(null)
+  expect(_internal.enterpriseUsageOf({ credit: "12.5", limitNum: "100", cycleResetTime: "soon" }))
+    .toEqual({ name: "Credits", used: 12.5, display: "12.5 / 100", amount: 12.5, limit: 100, unit: "credits" })
+})
+
+// A model at x0.00 draws no credits, and with the credits used up
+// WorkBuddy still serves it: hheei's account at 560 / 560 was served
+// deepseek-v4.1-flash (magpie-community/plugins#138). The credits window
+// leaves those models out (notModels), so magpie doesn't put the account
+// last for them. One free only at night (a daily promotion) still counts.
+const FREE_CFG = () => ok({
+  agents: [{ name: "cli", models: ["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg", "gpt-5.5", "hy4"] }],
+  models: [
+    { id: "deepseek-v4.1-flash", name: "Deepseek-V4.1-Flash", credits: "x0.00" },
+    { id: "deepseek-v4.1-flash-sg", name: "Deepseek-V4.1-Flash", credits: "x0.03" },
+    { id: "gpt-5.5", credits: "x1.00" },
+    { id: "hy4", credits: "x0.50" },
+  ],
+  modelPromotions: [{ kind: "discount", modelIds: ["hy4"], discount: { discountedCredits: "0.00x" }, schedule: { daily: [{ start: "23:00", end: "08:00" }] } }],
+})
+const SPENT = { IsPaidUser: false, Packages: [{ CycleTotalCapacity: "560", CycleUsedCapacity: "560" }] }
+
+test("credits used up don't count the free models (plugins#138, hheei)", async () => {
+  for (const plugin of [WorkBuddyAuthPlugin, WorkBuddyAIAuthPlugin]) {
+    serve({ "/billing/meter/get-user-resource-summary": () => ok(SPENT), "/v3/config": FREE_CFG })
+    const auth = { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u", domain: "" }
+    expect(await usageOf(plugin, auth)).toEqual({ signIn: "kept", plan: "Free", windows: [{
+      name: "Credits", used: 100, display: "560 / 560", amount: 560, limit: 560, unit: "credits", notModels: ["deepseek-v4.1-flash"] }] })
+  }
+})
+
+test("an enterprise account's credits don't count the free models either", async () => {
+  serve({
+    "/billing/meter/get-user-resource-summary": () => new Response(ENT_SUMMARY),
+    "/billing/meter/get-enterprise-user-usage": () => new Response(ENT_USAGE),
+    "/v3/config": FREE_CFG,
+  })
+  const auth = { type: "oauth", access: "ent-access", refresh: "r", expires: later(), uid: "u9", domain: "www.workbuddy.cn", enterpriseId: "ent-1" }
+  expect((await usageOf(WorkBuddyAuthPlugin, auth)).windows[0].notModels).toEqual(["deepseek-v4.1-flash"])
+})
+
+test("a model list that can't be read leaves the credits counting every model", async () => {
+  serve({ "/billing/meter/get-user-resource-summary": () => ok(SPENT), "/v3/config": () => new Response("busy", { status: 503 }) })
+  const auth = { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u", domain: "" }
+  const w = (await usageOf(WorkBuddyAuthPlugin, auth)).windows[0]
+  expect(w.used).toBe(100)
+  expect(w.notModels).toBeUndefined()
 })

@@ -78,30 +78,44 @@ itself.
   reasoning and usage.
 - Tool calls Qoder writes as XML or JSON in its text become tool calls.
   Tool calls it sends the OpenAI way keep Qoder's id.
+- A call written in the text that can't be read, or that the stream ends
+  inside, is never sent on as the answer (since 0.2.16, #132): the turn
+  ends as an error, a 502 or the stream's error frame with no finish, so
+  the agent or magpie can try again. A call whose JSON is whole when the
+  stream ends without its close is still the call; a tag in code or prose
+  stays text.
 
 **Errors**
 
 | What Qoder says | What the request returns |
 |---|---|
-| A refused sign-in | 401 |
-| A quota | 429 |
+| A refused sign-in (no code, or code 105) | 401 |
+| A quota (codes 110, 112–119, 122) | 429 |
+| Busy or queued for the model (code 10605) | 503, with `Retry-After` from Qoder's `retryAfterSeconds` (30s when it gives none); the sign-in is untouched |
+| A refusal of the request itself (codes 406, 416, 430, 80411, 80412, 100400–100403) | 400, with Qoder's words |
 | A failure before the answer starts | Qoder's status |
 | A failure after the answer has started | The stream ends with an error |
 
 ## Models
 
 The `provider.models` hook reads the account's own list, as Qoder's client
-asks for it (`/algo/api/v2/model/list`). It keeps the enabled chat models
-and leaves out "auto" and "default", which route inside Qoder. It takes
+asks for it (`/algo/api/v2/model/list`). It keeps the enabled models of the
+listing's `app` scene, the list Qoder's app shows and the one a request
+names (`session_type: "app"`), and adds any model only the `chat` scene
+still lists after the model it follows there, so a model picked before
+stays served (since 0.2.13, #97: the app listed Fast, 0.8×, where chat
+lists Performance, 1.1×). It leaves out "auto" and "default", which route
+inside Qoder. It takes
 each model's reasoning levels from its `thinking_config`, and its context
 from its `context_config`: the largest window it offers (Qoder's docs
 give Qwen3.8-Flash 200K, 400K and 1M), not `max_input_tokens` (180K
 there), which is only what a request naming no window gets. A model listed
 with no windows keeps `max_input_tokens`.
 
-The `config` hook declares the list as it was on 2026-09-30:
+The `config` hook declares the list as it was on 2026-09-30, with the
+app's Fast from 2026-10-12:
 
-- Ultimate, Performance, Efficient
+- Ultimate, Fast, Performance, Efficient
 - Sonus, Cantus
 - Qwen3.8-Max, Qwen3.8-Flash, Qwen3.7-Max, Qwen3.7-Plus
 - Kimi-K3, Kimi-K2.8-Preview

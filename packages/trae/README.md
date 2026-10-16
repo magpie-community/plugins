@@ -46,6 +46,23 @@ authorization page: `device_id` (19 digits) and `machine_id` (32 hex). Every
 request then sends that same device. The relays saw requests dropped when the
 device was new each time.
 
+### Enterprise (SaaS) accounts
+
+Since 0.2.10 the authorization page also offers Trae's enterprise (SaaS / SSO)
+sign-in; before, the plugin asked the page to hide it (`hide_saas_login`), so
+an enterprise subscription could only sign in as a personal account. A host
+the sign-in names for the account is kept when it is an https host on Trae's
+own domains (`trae.cn`, `trae.ai`, `mchost.guru`): a model host other than the
+consumer site's own (`www`, `api`, `grow…`) takes the account's model
+requests, and a token host the callback names (`authHost`) takes its
+renewals. Any other host is ignored and the consumer hosts are used, as for a
+personal account, which is unchanged. The account's tenant and login-type
+fields are kept with the sign-in; nothing sends them.
+
+**Not tried with a real enterprise account.** Which hosts and fields an
+enterprise sign-in sends back is not known yet; if yours doesn't work, open an
+issue with what the sign-in page showed.
+
 ### The international realm's region
 
 Trae Global has two deployments. The sign-in's `AIRegion` (or a US auth host
@@ -90,6 +107,10 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     Text under `message`, `delta` or an event with no name is the answer's
     too.
   - `token_usage`, `done` and `error` mark usage, the end and failures.
+    What `token_usage` says the prompt cache read and wrote
+    (`cache_read_input_tokens`, `cache_creation_input_tokens`) goes on under
+    those names, and `reasoning_tokens` as
+    `completion_tokens_details.reasoning_tokens`.
     `done`'s `finish_reason` `length`/`max_tokens` is OpenAI's `length`.
   - Queue events are ignored.
   - A `{"reasoning_content": …}` object written into the text is reasoning,
@@ -107,7 +128,16 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
   - GLM also writes its own template, `<tool_call>name<arg_key>k</arg_key>
     <arg_value>v</arg_value></tool_call>` (a string kept as written, other
     types read as JSON), and sometimes a whole call into a native call's
-    name; both are read as the call.
+    name; both are read as the call. A name that holds the wrapper with
+    GLM's tags where its service stopped mid-call — `{"name":"bash",
+    "arguments":{"command</arg_key><arg_value>ls</arg_value>` — is read too:
+    the tags are the service's own handoff, so what stands between them is
+    the model's text (a quote left unescaped read as the quote it is, a
+    comma inside a value kept, a field's closing tag ending the value before
+    it), and the fields the native call did carry are kept beside the ones
+    the name's own text fills in. A name whose tool the request doesn't
+    have, or one no field can be read from, goes on as written, as any other
+    unknown tool does.
   - A block is read as models get it wrong too: every quote escaped
     (`{\"name\":…}`), quotes or backslashes in a string left unescaped, an
     opener with the name as an attribute (`<tool_call name="bash">` with
@@ -258,10 +288,29 @@ answered it 9074 even with the client's headers.
   `checked_in`, `credits`.
 - **Claim:** `POST api.trae.cn/trae/api/v2/ug/checkin_credits/claim`,
   the same, only while it is on and today's isn't in.
+- **The device, when Trae CN's own client is here (0.2.14):** the
+  account this machine's Trae CN desktop client is signed in as checks in
+  on the client's own device, the one Trae's device service registered:
+  `x-device-id` is the id in the client's
+  `globalStorage/storage.json` key `iCubeAuthInfo://icube-dc:<id>`,
+  `x-device-type` and `x-os-version` are this machine's, and no
+  `x-device-brand` is sent. The account is matched by the `userId` in the
+  client's sign-in (`iCubeAuthInfo://icube.cloudide`, plain JSON or the
+  client's fixed codec, as dingminhua/dsh-connect-trae reads it). The file
+  is only read: nothing in it is written, and the client's token is never
+  used. On one account the client's claim went through while the
+  plugin's, on its own device, got 9074 (yetone/magpie#808, #1920); that
+  this header is what changes it hasn't been tried on a real account
+  yet. Every other account keeps its own device, and a file that can't be
+  read or made out, or holds no single device, changes nothing. Files:
+  macOS `~/Library/Application Support/Trae CN/…`, Windows
+  `%APPDATA%\Trae CN\…` (or `trae-cn`), Linux `~/.config/trae-cn/…`
+  (or `Trae CN`; not seen on a real Linux install).
 - **What comes back:** Trae's answer as it is. A 401 or code 1001 marks
   the account for a new sign-in. Code 9095 means this device has checked
-  in today; nothing sends another device id to get round it, nor to get
-  round a 9074.
+  in today. No device id is ever made up, changed or rotated to get round
+  a 9095 or a 9074, and no account is given a device that isn't its
+  own client's.
 
 Only `api.trae.cn`'s `/trae/api/` pages are sent this way; any other URL
 that isn't a chat request is still refused (400). Needs 0.1.4 or later.

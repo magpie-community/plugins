@@ -19,7 +19,7 @@
 import { createDecipheriv, createHash } from "node:crypto"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { arch, homedir, release, userInfo } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import PROMPT from "./prompt.mjs"
 
 const PROVIDER = "zcode"
@@ -933,8 +933,28 @@ async function authorize(site, log) {
 // team's plan. An account signed in "as ZCode" reads them for every
 // request, so it follows ZCode's own sign-in, its renewed session and its
 // switches between plans, as magpie's built-in did (zcode.go zcodeOwn).
+//
+// ZCode 3.14 can move its data (数据存储路径, "data storage path"): it copies
+// ~/.zcode/v2 to <folder>/.zcode/v2, all but setting.json, and from its next
+// start reads credentials.json and runtime/provider from there. The choice
+// stays in the home folder's setting.json as dataBaseDir, which ZCode's main
+// process reads before anything else (readBootstrapDataBaseDirFromDisk);
+// setting.json itself, and the team plan it names, stay in the home folder.
 
-const zcodeDir = () => join(homedir(), ".zcode", "v2")
+// settingDir is where ZCode keeps setting.json, moved or not.
+const settingDir = () => join(homedir(), ".zcode", "v2")
+
+// dataIn is the folder ZCode keeps its .zcode data in: the home folder,
+// unless dataBaseDir moved it. A value that isn't an absolute path is
+// ignored, as magpie's built-in does (internal/appdir ZCodeDataIn).
+function dataIn() {
+  const d = readJSON(join(settingDir(), "setting.json"))?.dataBaseDir
+  const t = typeof d === "string" ? d.trim() : ""
+  return t && isAbsolute(t) ? t : homedir()
+}
+
+// zcodeDir is where ZCode keeps credentials.json and runtime/provider.
+const zcodeDir = () => join(dataIn(), ".zcode", "v2")
 
 // secret is the key ZCode encrypts its credentials with.
 function secret() {
@@ -974,7 +994,7 @@ function readJSON(path) {
 
 // ownTeam is the team plan ZCode switched to, when it did.
 function ownTeam(store, key) {
-  const set = readJSON(join(zcodeDir(), "setting.json"))
+  const set = readJSON(join(settingDir(), "setting.json"))
   if (!set) return null
   const families = set.providerFamilyDomain === "zai" || set.providerFamilyDomain === "bigmodel" ? [set.providerFamilyDomain] : ["zai", "bigmodel"]
   for (const fam of families) {
@@ -1006,6 +1026,27 @@ function ownTeam(store, key) {
   return null
 }
 
+// configKey is the coding plan key ZCode's config.json gives its built-in
+// coding plan provider, Z.ai's first, as ZCode lists them; ZCode reads it
+// as it is, and one written encrypted is read too.
+function configKey(key) {
+  const providers = readJSON(join(zcodeDir(), "config.json"))?.provider
+  if (!providers || typeof providers !== "object") return null
+  for (const [ids, base] of [
+    [["builtin:zai-coding-plan", "account:zai-individual-coding-plan"], ZAI_BASE],
+    [["builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"], BIGMODEL_BASE],
+  ]) {
+    for (const id of ids) {
+      let k = providers[id]?.options?.apiKey
+      if (typeof k !== "string") continue
+      k = k.trim()
+      if (k.startsWith("enc:")) k = first(decrypt(key, k))
+      if (k.includes(".") && !/[\s{$]/.test(k)) return { key: k, base }
+    }
+  }
+  return null
+}
+
 // ownSignIn is what ZCode is signed in to now: the account, its coding
 // plan key, ZCode's session token (the Start Plan's key) and the team plan
 // it is switched to; null when it has none of them.
@@ -1023,6 +1064,9 @@ function ownSignIn() {
     // Z.ai's first, as ZCode lists it
     if (!s.key || (base === ZAI_BASE && s.base !== ZAI_BASE)) s = { key: k, base }
   }
+  // ZCode 3.15 keeps no plan key in its credentials; the one it uses sits
+  // in config.json, the provider's options.apiKey (yetone/magpie#2130)
+  if (!s.key) s = configKey(key) || s
   const jwt = first(first(decrypt(key, store.zcodejwttoken)).replace(/^Bearer /, ""))
   const team = ownTeam(store, key)
   if (team) s = { ...team, jwt }
@@ -1044,7 +1088,7 @@ function ownSignIn() {
 function asZCode() {
   return {
     url: "",
-    instructions: "Uses the account the ZCode app is signed in to, and follows it.",
+    instructions: "Uses the account the ZCode app is signed in to, and follows it while ZCode stays signed in to that account.",
     method: "auto",
     async callback() {
       const own = ownSignIn()
@@ -1064,10 +1108,13 @@ function stateOf(auth) {
       s = JSON.parse(auth.refresh)
     } catch {}
     if (s.source === "zcode") {
-      // ZCode's own, read now: what it was when this was signed in, if
-      // ZCode has since signed out
+      // ZCode's own, read now, while ZCode is signed in to this same
+      // account. Signed out, or signed in to another account since, it is
+      // what it was when this was signed in: another account's key would
+      // send this account's requests as that one, and an expired session
+      // says sign in again (EXPIRED) rather than borrowing another's.
       const own = ownSignIn()
-      if (own) {
+      if (own && own.user === String(auth.accountId ?? "")) {
         const { user, ...now } = own
         s = { source: "zcode", device: s.device, plan: s.plan, ...now }
       }
@@ -1136,7 +1183,7 @@ function modelsOf(cfg, plan) {
 // localConfig is the latest provider config an installed ZCode has.
 function localConfig() {
   const files = []
-  const rt = join(homedir(), ".zcode", "v2", "runtime", "provider")
+  const rt = join(zcodeDir(), "runtime", "provider")
   const walk = (dir, depth) => {
     let es = []
     try {

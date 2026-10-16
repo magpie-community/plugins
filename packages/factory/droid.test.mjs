@@ -62,8 +62,8 @@ test("another agent's request to /api/llm/o opens with droid's line", async () =
   // the length was the old body's: it isn't sent on
   expect(s.headers.get("content-length")).toBe(null)
   expect(s.headers.get("x-api-provider")).toBe("fireworks")
-  expect(s.headers.get("x-client-version")).toBe("0.233.0")
-  expect(s.headers.get("user-agent")).toBe("factory-cli/0.233.0")
+  expect(s.headers.get("x-client-version")).toBe("0.242.0")
+  expect(s.headers.get("user-agent")).toBe("factory-cli/0.242.0")
   expect(s.headers.get("x-factory-org-id")).toBe("fac_D")
   // Claude Code's system blocks, made chat completions as parts: joined
   b = JSON.parse((await send(chat, `{"model":"kimi-k3","messages":[{"role":"system","content":[{"type":"text","text":"You are Claude Code."},{"type":"text","text":"Be brief."}]},{"role":"user","content":"hi"}]}`)).body)

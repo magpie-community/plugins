@@ -1,7 +1,14 @@
-# Publishes every package whose version isn't on npm yet, from GitHub
-# Actions with npm's trusted publishing (OIDC): no token and no one-time
-# password. Each package names this workflow as its trusted publisher on
-# npmjs.com (package → Settings → Trusted Publisher).
+# Ships every package's version two ways, from GitHub Actions:
+# - dist: packs it onto the `dist` branch (scripts/dist.mjs), where magpie
+#   installs it from when npm doesn't have it. This needs nobody: merging a
+#   new plugin is all it takes to reach magpie.
+# - npm: publishes every version npm doesn't have yet (scripts/publish.sh).
+#   npm tries trusted publishing (OIDC) first: a package that names this
+#   workflow as its Trusted Publisher on npmjs.com, with npm publish allowed,
+#   needs nothing else. A package's first version can't go that way
+#   (trusted publishing can't create a package): the NPM_TOKEN secret
+#   publishes it when set, else it waits for an owner (README, Publishing)
+#   and magpie installs it from dist meanwhile.
 name: publish
 
 on:
@@ -11,14 +18,60 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write # npm's OIDC exchange
   contents: read
 
 concurrency: publish
 
 jobs:
-  publish:
+  test:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: test
+        # the tests refuse a real home: no real sign-in is ever read
+        run: HOME=$(mktemp -d) bun test
+      - name: check
+        run: bun scripts/check.mjs
+
+  dist:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # pushes the dist branch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: pack
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch --depth=1 origin dist; then
+            git worktree add -B dist "$RUNNER_TEMP/dist" FETCH_HEAD
+          else
+            git worktree add --orphan -b dist "$RUNNER_TEMP/dist"
+          fi
+          node scripts/dist.mjs "$RUNNER_TEMP/dist"
+          cd "$RUNNER_TEMP/dist"
+          git add -A .
+          if git diff --cached --quiet; then
+            echo "dist is current"
+          else
+            git commit -q -m "dist: ${GITHUB_SHA::7}"
+            git push origin dist
+          fi
+
+  npm:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # npm's OIDC exchange
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -26,8 +79,7 @@ jobs:
         with:
           node-version: 24 # npm 11.5+, which speaks trusted publishing
           registry-url: https://registry.npmjs.org
-      - name: test
-        # the tests refuse a real home: no real sign-in is ever read
-        run: HOME=$(mktemp -d) bun test
       - name: publish
         run: scripts/publish.sh
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -3,7 +3,7 @@
 import { test, expect, beforeEach, afterEach } from "bun:test"
 import { ClinePlugin, _internal } from "./index.mjs"
 
-const { authOf, parseAuth, parseFeed, prettify, creditsOf, balanceUSD, usd, usageOf, limitWindows, failure, bearerOf, toMs, refresh, deviceAuthorize, pollDevice, clientHeaders, constants: { CLIENT, DEFAULT_MODELS } } = _internal
+const { authOf, parseAuth, parseFeed, prettify, inputsFor, creditsOf, balanceUSD, usd, usageOf, limitWindows, failure, bearerOf, toMs, refresh, deviceAuthorize, pollDevice, clientHeaders, constants: { CLIENT, DEFAULT_MODELS } } = _internal
 
 // ---- a fetch that answers from a script -----------------------------------------
 
@@ -918,6 +918,41 @@ test("the models hook gives each model the window Cline's catalog has for it, an
 	// gives it models.dev's for the model after its prefix
 	expect(out["cline-free/mimo-v2.6-flash"].limit).toEqual({ context: 0, output: 0 })
 	expect(out["no/size"].limit).toEqual({ context: 0, output: 0 })
+})
+
+test("the models hook says a model takes images where Cline's catalog says so, and leaves it unsaid where it doesn't", async () => {
+	const { client: c } = client()
+	const hooks = await ClinePlugin({ client: c })
+	serve([
+		["/ai/cline/recommended-models", () => Response.json({ recommended: [{ id: "anthropic/claude-sonnet-5.5" }], free: [{ id: "cline-pass/deepseek-v4.1-flash" }, { id: "cline-pass/glm-5.3-flash" }, { id: "cline-free/mystery-1" }] })],
+		["/ai/cline/models", () => Response.json({ data: [
+			{ id: "anthropic/claude-sonnet-5.5", architecture: { input_modalities: ["text", "image", "file"] } },
+			{ id: "deepseek/deepseek-v4.1-flash", architecture: { input_modalities: ["text", "image"] } },
+			{ id: "deepseek/deepseek-v4.1-flash:batch", architecture: { input_modalities: ["text", "image"] } },
+			{ id: "z-ai/glm-5.3-flash", architecture: { input_modalities: ["text", "image"] } },
+			{ id: "inclusionai/ling-3.1-flash", architecture: { input_modalities: ["text"] } },
+			{ id: "no/modalities" },
+		] })],
+	])
+	const out = await hooks.provider.models({ models: {} })
+	// silent on Discord: DeepSeek V4.1 Flash and GLM 5.3 Flash through ClinePass
+	// were taken for text-only
+	expect(out["cline-pass/deepseek-v4.1-flash"].capabilities.input.image).toBe(true)
+	expect(out["cline-pass/glm-5.3-flash"].capabilities.input.image).toBe(true)
+	expect(out["anthropic/claude-sonnet-5.5"].capabilities.input.image).toBe(true)
+	expect(out["inclusionai/ling-3.1-flash"].capabilities.input.image).toBe(false)
+	// where the catalog says nothing, nothing is said: magpie asks models.dev
+	expect("image" in out["cline-free/mystery-1"].capabilities.input).toBe(false)
+	expect("image" in out["no/modalities"].capabilities.input).toBe(false)
+	expect(out["no/modalities"].capabilities.input.text).toBe(true)
+})
+
+test("inputsFor doesn't guess when the catalog's entries of one model disagree", () => {
+	const yes = { text: true, image: true, audio: false, video: false, pdf: false }
+	const no = { ...yes, image: false }
+	expect(inputsFor("cline-pass/m-1", [{ id: "a/m-1", input: yes }, { id: "b/m-1", input: no }])).toBe(undefined)
+	expect(inputsFor("cline-pass/m-1", [{ id: "a/m-1", input: yes }, { id: "b/m-1" }])).toEqual(yes)
+	expect(inputsFor("a/m-1", [{ id: "a/m-1" }, { id: "b/m-1", input: yes }])).toBe(undefined)
 })
 
 test("prettify reads a model id as a name", () => {

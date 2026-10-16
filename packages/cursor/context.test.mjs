@@ -257,3 +257,30 @@ test("an id of Cursor's own at an effort its branch hasn't goes as that branch's
         expect([id, effort, fast, params]).toEqual([id, effort, fast, { ...params, ...slug.get(sent) }])
       }
 })
+
+// #55: the same picker with the default on the branch without thinking
+// (claude-opus-5-high). An id of that branch asked at an effort only the
+// other has went as the default's id with the effort asked.
+test("when the default's own branch stops short, an id of it asked past that goes as its nearest, not the default's id at the effort asked", async () => {
+  const OFF = { ...OPUS5, variants: OPUS5.variants.map((x) => {
+    const { isDefaultNonMaxConfig, ...rest } = x
+    return rest.legacySlug === "claude-opus-5-high" ? { ...rest, isDefaultNonMaxConfig: true } : rest
+  }) }
+  fakeAPI([OFF])
+  const raw = await usable(tok())
+  const q = (id, effort = "", fast) => {
+    const r = request(raw, id, effort, fast)
+    return [r.id, r.maxMode, Object.fromEntries(r.params.map((x) => [x.id, x.value]))]
+  }
+  expect(q("claude-opus-5-low", "xhigh")).toEqual(["claude-opus-5-high", false, { thinking: "false", context: "300k", effort: "high", fast: "false" }])
+  expect(q("claude-opus-5-medium", "max")).toEqual(["claude-opus-5-high", false, { thinking: "false", context: "300k", effort: "high", fast: "false" }])
+  expect(q("claude-opus-5-low", "medium")[0]).toBe("claude-opus-5-medium")
+  expect(q("claude-opus-5-thinking-low", "max")[0]).toBe("claude-opus-5-thinking-max")
+  const slug = new Map(OFF.variants.map((x) => [x.legacySlug, Object.fromEntries(x.parameterValues.map((p) => [p.id, p.value]))]))
+  for (const id of [...slug.keys(), "claude-opus-5", "claude-opus-5-fast", "claude-opus-5-thinking", "claude-opus-5-thinking-fast"])
+    for (const effort of ["", "none", "low", "medium", "high", "xhigh", "max"])
+      for (const fast of [undefined, true]) {
+        const [sent, , params] = q(id, effort, fast)
+        expect([id, effort, fast, params]).toEqual([id, effort, fast, { ...params, ...slug.get(sent) }])
+      }
+})

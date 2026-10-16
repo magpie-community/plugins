@@ -8,19 +8,26 @@
 // backend, which speaks OpenAI's Responses API, signed as the CLI signs
 // them.
 import { spawn, execFile } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { delimiter, dirname, isAbsolute, join } from "node:path"
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path"
 import { randomBytes } from "node:crypto"
 import { STATUS_CODES } from "node:http"
 
 const PROVIDER = "grok"
 const BASE = "https://cli-chat-proxy.grok.com/v1"
 const CLIENT_VERSION = "1.0.41"
+const CPA_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
+const CPA_SCOPE = `https://auth.x.ai::${CPA_CLIENT_ID}`
 const REFRESH_MARGIN = 5 * 60 * 1000 // a token this close to its end is renewed before a request
 const LEAD_MS = REFRESH_MARGIN // and this close, magpie renews it ahead of time (auth.refresh)
 const LINK_WAIT = 30 * 1000
 const INSTALL = process.platform === "win32" ? "irm https://x.ai/cli/install.ps1 | iex" : "curl -fsSL https://x.ai/cli/install.sh | bash"
+// NO_CLI is what a sign-in without Grok Build says: how to install it, and
+// that one put somewhere else by hand (a container with no shell to run the
+// installer) is taken from GROK_BIN_DIR, as the installer's own folder is,
+// while one found on PATH has to be under a .grok folder (yetone/magpie#2223)
+const NO_CLI = `install Grok Build first: ${INSTALL}; or set GROK_BIN_DIR to the folder holding its grok binary`
 
 // the tool types Grok's backend takes; it turns the whole request away over another
 const TOOLS = new Set(["function", "web_search", "x_search", "image_generation", "collections_search", "file_search",
@@ -419,11 +426,12 @@ function windowsOf(d, efforts) {
 // grok-4.7@500k is grok-4.7 at 500000 tokens. The header is what the CLI
 // sends as x-grok-context-window. The proxy serves up to its largest
 // window either way and refuses past it; the header names the window the
-// caller asked to compact against.
+// caller asked to compact against. A window no multiple of 1000 is named
+// by its digits alone (grok-4.7@131072), as labelOf writes it.
 function modelOf(id) {
-  const at = typeof id === "string" ? id.match(/^(.*)@(\d+)k$/) : null
-  if (!at) return { model: id, window: 0 }
-  return { model: at[1], window: Number(at[2]) * 1000 }
+  const at = typeof id === "string" ? id.match(/^(.+)@(\d+)(k?)$/) : null
+  if (!at || !(Number(at[2]) > 0)) return { model: id, window: 0 }
+  return { model: at[1], window: Number(at[2]) * (at[3] ? 1000 : 1) }
 }
 
 // ---- sign-in ------------------------------------------------------------------
@@ -484,7 +492,7 @@ function newHome() {
 // sign-in stays as it is.
 async function signIn() {
   const exe = executable()
-  if (!exe) throw new Error(`install Grok Build first: ${INSTALL}`)
+  if (!exe) throw new Error(NO_CLI)
   const own = !!credential(cliHome())
   const home = own ? newHome() : cliHome()
   const { child, link, done, tail } = login(exe, home, own)
@@ -513,6 +521,78 @@ async function signIn() {
   }
 }
 
+function cpaClaims(token) {
+  try {
+    const part = token.split(".")[1]
+    if (!part) return null
+    return JSON.parse(Buffer.from(part, "base64url").toString("utf8"))
+  } catch {
+    return null
+  }
+}
+
+function cpaAuthFromFile(file) {
+  let source
+  try {
+    source = JSON.parse(readFileSync(file, "utf8"))
+  } catch {
+    throw new Error("CPA Grok account file is not valid JSON")
+  }
+  if (!source || typeof source !== "object" || Array.isArray(source) || source.type !== "xai" || source.auth_kind !== "oauth" || source.disabled !== false) {
+    throw new Error("CPA file is not an enabled xAI OAuth account")
+  }
+  if (typeof source.access_token !== "string" || !source.access_token || typeof source.refresh_token !== "string" || !source.refresh_token || typeof source.sub !== "string" || !source.sub || typeof source.email !== "string" || !source.email) {
+    throw new Error("CPA xAI account is missing its tokens or identity")
+  }
+  if (typeof source.last_refresh !== "string" || typeof source.expired !== "string") {
+    throw new Error("CPA xAI account has invalid token timestamps")
+  }
+  const createTime = Date.parse(source.last_refresh)
+  const expiresAt = Date.parse(source.expired)
+  if (!Number.isFinite(createTime) || !Number.isFinite(expiresAt)) {
+    throw new Error("CPA xAI account has invalid token timestamps")
+  }
+  const claims = cpaClaims(source.access_token)
+  const audience = Array.isArray(claims?.aud) ? claims.aud : [claims?.aud]
+  if (claims?.iss !== "https://auth.x.ai" || !audience.includes(CPA_CLIENT_ID)) {
+    throw new Error("CPA token is not for the Grok Build xAI account")
+  }
+  return {
+    key: source.access_token,
+    auth_mode: "oidc",
+    create_time: new Date(createTime).toISOString(),
+    user_id: source.sub,
+    email: source.email,
+    refresh_token: source.refresh_token,
+    expires_at: new Date(expiresAt).toISOString(),
+    oidc_issuer: "https://auth.x.ai",
+    oidc_client_id: CPA_CLIENT_ID,
+  }
+}
+
+async function importCPA(inputs) {
+  if (!executable()) throw new Error(NO_CLI)
+  const rawPath = String(inputs?.path ?? "").trim()
+  const file = resolve(rawPath === "~" ? homedir() : rawPath.startsWith("~/") ? join(homedir(), rawPath.slice(2)) : rawPath)
+  if (!isFile(file)) throw new Error("choose a CPA Grok account JSON file")
+  const auth = cpaAuthFromFile(file)
+  return {
+    url: "",
+    instructions: "The account is ready to import. Stop using it in CPA before continuing; both clients rotate the same refresh token.",
+    method: "auto",
+    callback: async () => {
+      const home = newHome()
+      try {
+        writeFileSync(join(home, "auth.json"), JSON.stringify({ [CPA_SCOPE]: auth }, null, 2), { mode: 0o600 })
+      } catch (error) {
+        rmSync(home, { recursive: true, force: true })
+        throw error
+      }
+      return saved(home, credential(home))
+    },
+  }
+}
+
 // saved is the sign-in as OpenCode keeps it: refresh is the home the CLI
 // keeps it in, access the token it had then.
 function saved(home, c) {
@@ -521,7 +601,7 @@ function saved(home, c) {
 
 // current takes the sign-in the CLI already has, as it is.
 async function current() {
-  if (!executable()) throw new Error(`install Grok Build first: ${INSTALL}`)
+  if (!executable()) throw new Error(NO_CLI)
   const home = cliHome()
   if (!credential(home)) throw new Error("Grok Build is not signed in; run `grok login`, or sign in with the device code")
   const c = await token(home, false)
@@ -769,6 +849,20 @@ export const GrokAuthPlugin = async ({ client }) => {
           type: "oauth",
           label: "Use Grok Build's current sign-in",
           authorize: current,
+        },
+        {
+          type: "oauth",
+          label: "Import CPA Grok account JSON",
+          prompts: [
+            {
+              type: "text",
+              key: "path",
+              message: "Path to the CPA xAI account JSON. Stop using this account in CPA after import; its refresh token rotates.",
+              placeholder: "~/.cli-proxy-api/xai-<email>.json",
+              validate: (v) => (String(v ?? "").trim() ? undefined : "Enter the path to a CPA xAI account JSON file"),
+            },
+          ],
+          authorize: importCPA,
         },
       ],
       // magpie's: how much of the subscription's allowance is gone; each

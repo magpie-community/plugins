@@ -1,0 +1,14 @@
+{
+  "name": "@magpie-community/page-usage",
+  "version": "0.1.0",
+  "description": "A page in magpie's window with your usage at a glance: calls, errors, tokens and cost for today, 7 or 30 days, and the models that took them",
+  "files": ["page", "README.md"],
+  "keywords": ["magpie", "magpie-page", "usage", "tokens", "cost"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/usage" },
+  "magpie": {
+    "page": { "title": "Usage glance", "file": "page/index.html", "icon": "page/icon.svg" },
+    "permissions": ["usage:summary"],
+    "options": { "period": "today", "sort": "tokens" }
+  }
+}

@@ -37,6 +37,9 @@ Keys don't expire, so there is nothing to refresh.
     or not.
   - Failures keep their statuses: a model the plan lacks is a 403, running
     out of credits is a 402, and a usage-window limit is a 429.
+  - A reply that stops before its finish line is a 502, unless it was
+    streamed and had already said something. Then it ends cut short, with
+    a note saying so, and `[DONE]` (#91).
 
 The plan is read from `/alpha/billing/subscriptions`. It is cached for 10
 minutes; after a failed read, the plugin tries again after 1 minute.
@@ -63,14 +66,27 @@ The `config` hook declares the default list:
 Once signed in, the `provider.models` hook replaces the default list with
 the account's own:
 
+Command Code's `/models` list is the same for every plan. A plan's list is
+that list less the models the plan may not use, as the CLI's own table
+(command-code 1.79.2) has it:
+
+- **Go** and **GOAT** may not use the premium models (Claude Sonnet 5 and
+  Opus, GPT-6 Sol, GPT-5.6 Terra, …). Go is also blocked from GOAT's own
+  (Claude Sonnet 5.5 and Haiku 5.5, GPT-5.6 Sol, Grok 4.6 and 4.7, …).
+- **Pro** may not use Claude Opus and Fable, GPT-6 Astra, GPT-6.1 Sol and
+  Fugu Ultra; **Provider** may not use GPT-6.1 Sol.
+- **Max**, **Ultra** and **Teams Pro** may use every model.
+
+An account with bought or free credits may use every model, and so may one
+whose plan can't be read: then the whole list is shown. A model the plan
+doesn't have is still refused by Command Code (403 `MODEL_NOT_IN_PLAN`), and
+that refusal reaches the agent.
+
 - **Every plan but Go**: the Provider API's `/models` list. Each model's
   `supported_endpoints` picks the API it speaks.
 - **Go**: the same `/models` list, asked without the key (it answers
-  without one, and Go's key has no Provider API), less the models the
-  CLI's table (command-code 1.73.0) refuses Go: the premium ones (Claude,
-  GPT-6 Sol, GPT-5.6 Terra, …) and those it blocks for Go (GPT-5.6 Sol,
-  Claude Sonnet 5.5, Grok 4.6 and 4.7, …). That is 56 models as of
-  2026-10-01. When the list can't be had, the CLI's own Go table (57
+  without one, and Go's key has no Provider API). That is 56 models as of
+  2026-10-13. When the list can't be had, the CLI's own Go table (57
   models) stands in.
 
   The Go models carry their reasoning levels, and a requested level is

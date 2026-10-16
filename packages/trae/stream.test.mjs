@@ -123,19 +123,39 @@ test("a reply cut at its limit says length", async () => {
 })
 
 test("a stream that breaks off ends with an error and [DONE]", async () => {
+  // the connection breaks only once the caller has the first event, so the
+  // plugin has read it: a reset timed by the clock alone can beat that read
+  // on a busy machine, and Bun then drops the event it had (#124)
+  let reset
+  const caught = new Promise((r) => (reset = r))
   f = fakeTrae()
   f.route("POST /api/agent/v3/llm_utils_chat", () => {
     let n = 0
     const body = new ReadableStream({
       async pull(ctl) {
         if (n++ === 0) return ctl.enqueue(new TextEncoder().encode('event: output\ndata: {"response":"half"}\n\n'))
-        await new Promise((r) => setTimeout(r, 30)) // the headers and the first event are out
+        await caught
         ctl.error(new Error("connection reset"))
       },
     })
     return new Response(body, { headers: { "content-type": "text/event-stream" } })
   })
-  const c = await chunks(await ask({ model: "glm-5", stream: true, messages: [{ role: "user", content: "hi" }] }))
+  const res = await ask({ model: "glm-5", stream: true, messages: [{ role: "user", content: "hi" }] })
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let text = ""
+  while (!text.includes('"half"')) {
+    const { value, done } = await reader.read()
+    if (done) break
+    text += dec.decode(value, { stream: true })
+  }
+  reset()
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    text += dec.decode(value, { stream: true })
+  }
+  const c = await chunks(new Response(text))
   expect(textOf(c)).toBe("half")
   expect(finishOf(c)).toEqual([])
   expect(c.at(-2).error.message).toContain("Trae CN")

@@ -31,7 +31,11 @@ over Anthropic's Messages API. Provider id: `zcode`.
   - Uses the account the ZCode app on this computer is signed in to. For
     every request it reads ZCode's own credentials (`~/.zcode/v2`), so it
     follows ZCode as it signs in again, renews its session or switches to a
-    team's plan.
+    team's plan, but only while ZCode is signed in to that same account.
+    Once ZCode signs out, or signs in to another account, the sign-in uses
+    what it saved when it was added; when that session has run out, it
+    asks to be signed in again. It never sends one account's requests with
+    another's credentials: to use both, add the app's sign-in once for each.
 - **GLM Coding Plan API key**
   - Paste a key (`<id>.<secret>`) and say which site it is from.
 

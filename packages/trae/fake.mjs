@@ -8,6 +8,10 @@ import { _internal } from "./index.mjs"
 
 const HOST_KEYS = ["web", "auth", "api", "us", "pay", "usPay"]
 
+// no test reads this machine's own Trae CN client: one that wants a
+// client points ownClient.paths at a file of its own
+_internal.ownClient.paths = () => []
+
 export function fakeTrae(siteId = "trae-cn") {
   const routes = new Map()
   const seen = []

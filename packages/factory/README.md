@@ -63,19 +63,42 @@ Each model is served on the one API droid uses for it:
 
 | API | Models |
 |---|---|
-| Anthropic Messages (`/api/llm/a`) | Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8, Sonnet 5.5, Sonnet 5, Sonnet 4.6, Haiku 4.5, MiniMax M2.7 |
-| OpenAI Responses (`/api/llm/o/v1`) | GPT-6.1 Sol, GPT-6 Sol/Astra/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.3-Codex, Grok 4.7, Grok 4.6 |
-| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, Kimi K3, DeepSeek V4.1 Flash, Qwen3.8 Max, MiniMax M3, Mistral Medium 3.5, Nemotron 3 Ultra |
+| Anthropic Messages (`/api/llm/a`) | Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8 (each also in Fast Mode), Sonnet 5.5, Sonnet 5, Sonnet 4.6, Haiku 5.5, Haiku 4.5, MiniMax M2.7 |
+| OpenAI Responses (`/api/llm/o/v1`) | GPT-6.1 Sol, GPT-6 Sol/Astra/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.3-Codex (each also in Fast Mode), Grok 4.7, Grok 4.6 |
+| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, Kimi K3, DeepSeek V4.1 Flash, Qwen3.8 Max, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3 Ultra |
+| Gemini generate (`/api/llm/g/v1/generate`) | Gemini 4 Argon, Gemini 3.1 Pro, Gemini 3.8/3.7/3.6/3.5 Flash, Gemini 3 Flash |
 
 Reasoning efforts are the variants droid offers for each model. DeepSeek V4.1
 Flash, Kimi K3 and GLM-5.2 have `none`, droid's "off": they stop thinking.
 Reasoning is mandatory on GLM-5.3 and GLM-5.3-Flash (Fireworks turns `none`
 away), so `low` is their least.
 
-The list is not included:
+Gemini's requests go to Factory's generate route with the model in the
+body, droid's line opening the system instruction. Gemini 4 Argon is behind
+a Factory feature flag in droid 0.241.1, so an account it isn't on for may
+be refused it.
 
-- Gemini, which Factory sends on a route of its own.
-- auto, which droid picks on the client side.
+A Fast Mode model (`claude-opus-5-5-fast`, `gpt-5.5-fast`, …) is its base
+model served faster, for more of the plan's credits. It goes out as droid
+sends it: its own id, with `speed: "fast"` and the `fast-mode-2026-02-01`
+beta on Anthropic's API, at `service_tier: "priority"` on OpenAI's. A request
+that asks the base model for fast (Claude Code's `speed: "fast"`, a
+Responses request's `service_tier: "priority"`) is sent to its Fast Mode
+model, as droid's own fast toggle does: asked of the base model, Factory
+answered at standard speed (#119). Opus 4.6/4.7 Fast, GPT-5.4 Mini Fast, GPT-5.6 Sol Fast (unreleased)
+and GLM-5.2 Fast (behind a feature flag) are not included.
+
+auto is not included: droid picks it on the client side.
+
+## Requests too large
+
+Factory refuses a request body over its size limit with 413 "Request
+Entity Too Large". The limit is on bytes, not on the model's context, and
+images reach it first. On a 413 the plugin sends the request once more with
+every image and file but the newest replaced by a line saying it was left
+out, each tool result kept beside its call, as droid does. If that is still
+too large, or there was nothing to leave out, the error says it is
+Factory's byte limit: compact the conversation or start a new one.
 
 ## Use
 
@@ -129,10 +152,23 @@ continuation instructions; context without those phrases stays verbatim.
 Complete generated reminders for restored Read calls and omitted files are
 adapted too. Read arguments and file paths are preserved; quoted or incomplete
 reminders are left alone.
+Claude Code (2.1.291 and later) also restores skills invoked before compaction
+as one generated reminder. Factory refuses that fixed opening, and the restored
+skill text can quote the same client phrases as tool output. A complete
+reminder has its opening sentence rephrased. When its skill text quotes a
+refused phrase, that text is encoded as a JSON string with explicit skill-text
+decoding instructions; decoding restores the skill text exactly. Skill text
+without those phrases stays verbatim inside the rephrased reminder. Pasted
+fragments and incomplete reminders are left untouched.
 Claude Code can also combine reminders into a token-prefixed `system` turn
 without the reminder wrappers. The adapter handles the known metadata
-paragraphs in that form, including skill-list updates, while retaining
-numbered file contents, token markers and SessionStart hook output.
+paragraphs in that form, including skill-list updates and complete
+invoked-skills reminders. A complete reminder is the fixed opening sentence
+followed by the complete `IMPORTANT:` paragraph; skill text then runs until
+the next known attachment (a token marker, hook, restored Read, omitted-file
+note, Read result, environment, model line, skill-list header, changed-file
+note, agent-type list or MCP server instructions) or the end of the turn.
+Numbered file contents, token markers and SessionStart hook output stay.
 The same adaptation applies when a translating gateway folds that complete
 token-prefixed block into a user message.
 Standalone skill updates can instead start with the generated skill-list
@@ -148,12 +184,15 @@ the complete skill-header and bullet-list paragraphs inside a token-terminated
 bundle. It preserves MCP connection errors, other notifications, mode updates
 and custom skill descriptions while adapting the known built-in description.
 After `/compact`, Claude Code also sends the files it restores and the
-runtime context as one turn that opens with an unwrapped restored-file note
-or Read call, with no token marker first. When that turn also carries the
-generated environment paragraph or a token marker before any hook output,
-each fixed paragraph (file notes, Read calls and results, environment, model
-line) is adapted as in a token-prefixed bundle; everything else stays
-byte-for-byte. Quoted, incomplete and hook-owned forms are left alone.
+runtime context as one turn that opens with an unwrapped restored-file note,
+Read call or complete invoked-skills reminder, with no token marker first.
+A complete skills reminder is recognized even when no files were restored
+and no environment or token paragraph follows it. A restored-file opening
+requires the generated environment paragraph, a token marker or a complete
+skills reminder before any hook output. Each fixed paragraph (file notes,
+Read calls and results, skills, environment, model line) is adapted as in a
+token-prefixed bundle; everything else stays byte-for-byte. Quoted,
+incomplete and hook-owned forms are left alone.
 
 Factory can also refuse fixed client phrases quoted in tool results, such as
 the identity/environment definitions printed when inspecting this plugin's

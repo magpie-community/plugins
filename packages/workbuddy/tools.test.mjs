@@ -117,3 +117,55 @@ test("the model's calls come back under the client's names, streamed or not", as
   expect(text).toContain("data: [DONE]")
   expect(text.split("data:").length).toBe(sse.split("data:").length)
 })
+
+// clearmann (#122): Kimi (kimi-k3-1) answers 11133 to an MCP server's
+// tools. Each shape below was refused on the owner's account (2026-10-14)
+// and passed once mended as here, on Kimi, DeepSeek (11129 before) and
+// GLM; MiniMax and Hunyuan took both.
+const params = (ps) => JSON.parse(fitted(chat([tool("t", ps)])).body).tools[0].function.parameters
+const prop = (p) => params({ type: "object", properties: { a: p } }).properties.a
+
+test("an enum with no type takes its values' type, or that and null", () => {
+  expect(prop({ enum: ["x", "y"], description: "d" })).toEqual({ enum: ["x", "y"], description: "d", type: "string" })
+  expect(prop({ enum: [1, 2] })).toEqual({ enum: [1, 2], type: "integer" })
+  expect(prop({ enum: [1, 2.5] })).toEqual({ enum: [1, 2.5], type: "number" })
+  expect(prop({ enum: [true, null] })).toEqual({ enum: [true, null], type: ["boolean", "null"] })
+  expect(prop({ enum: [null] })).toEqual({ enum: [null], type: "null" })
+  // under items, anyOf and an unused $defs alike
+  expect(prop({ type: "array", items: { enum: ["a"] } }).items.type).toBe("string")
+  expect(prop({ anyOf: [{ enum: ["a"] }, { type: "integer" }] }).anyOf[0].type).toBe("string")
+  expect(params({ type: "object", properties: {}, $defs: { x: { enum: ["a"] } } }).$defs.x.type).toBe("string")
+})
+
+test("an enum of several types is an anyOf of an enum for each, typed or not", () => {
+  const split = [{ type: "string", enum: ["x"] }, { type: "integer", enum: [1] }, { type: "null" }]
+  expect(prop({ enum: ["x", 1, null], description: "d" })).toEqual({ description: "d", anyOf: split })
+  expect(prop({ type: ["string", "integer", "null"], enum: ["x", 1, null] })).toEqual({ anyOf: split })
+  expect(prop({ anyOf: [{ minLength: 1 }], enum: ["x", 1] })).toEqual({ anyOf: [{ minLength: 1 }], allOf: [{ anyOf: split.slice(0, 2) }] })
+})
+
+test("an enum Kimi takes is left: typed T, or T and null", () => {
+  for (const p of [{ type: "string", enum: ["a"] }, { type: ["integer", "null"], enum: [1, null] }, { type: ["null", "string"], enum: [null, "a"] }, { type: "null", enum: [null] }, { type: "string", enum: [1] }]) {
+    expect(prop(structuredClone(p))).toEqual(p)
+  }
+})
+
+test("an empty enum, a required that isn't a list, and a type Kimi doesn't know are left out", () => {
+  expect(prop({ type: "string", enum: [] })).toEqual({ type: "string" })
+  expect(prop({ type: "object", properties: { x: { type: "string" } }, required: "x" })).toEqual({ type: "object", properties: { x: { type: "string" } } })
+  expect(prop({ type: "String" })).toEqual({ type: "string" })
+  expect(prop({ type: "any" })).toEqual({})
+  expect(prop({ type: ["Integer", "foo", "null"] })).toEqual({ type: ["integer", "null"] })
+})
+
+test("true and false where a schema goes are {} and {not: {}}; additionalProperties is left", () => {
+  const ps = params({ type: "object", additionalProperties: false, properties: { a: true, b: false, c: { type: "array", items: true }, d: { type: "object", additionalProperties: true } } })
+  expect(ps.properties).toEqual({ a: {}, b: { not: {} }, c: { type: "array", items: {} }, d: { type: "object", additionalProperties: true } })
+  expect(ps.additionalProperties).toBe(false)
+})
+
+test("a property named enum, type or required is a name, not a keyword", () => {
+  const p = { type: "object", properties: { enum: { type: "string" }, type: { type: "string", enum: ["a"] }, required: { type: "boolean" } }, required: ["enum"] }
+  const body = chat([tool("t", structuredClone(p))])
+  expect(fitted(body).body).toBe(body)
+})

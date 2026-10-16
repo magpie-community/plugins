@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test"
 import { _internal } from "./index.mjs"
 
-const { explained, REFUSED_HINT, EXHAUSTED_HINT } = _internal
+const { explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT } = _internal
 
 test("the refusal ends in the hint", async () => {
   const res = await explained(new Response(JSON.stringify({ error: { message: "Illegal API invocation from an unapproved channel", code: 11004 } }), { status: 403 }))
@@ -105,4 +105,48 @@ test("a chat body in bytes is read, and given the system message", () => {
   for (const b of [Buffer.from(JSON.stringify(chat)), new TextEncoder().encode(JSON.stringify(chat)), new TextEncoder().encode(JSON.stringify(chat)).buffer])
     expect(JSON.parse(withSystem(b))).toEqual(want)
   expect(JSON.parse(withSystem(JSON.stringify(chat)))).toEqual(want)
+})
+
+// magpie #1849: the body WorkBuddy AI answered for an account it restricted,
+// byte for byte as the reporter posted it.
+const RESTRICTED_BODY = `{"code":11140,"msg":"request illegal",
+ "displayMsg":{"en":"Your account has been restricted due to unusual activity",
+               "zh":"账号存在异常行为，已被限制使用","zh-hant":"帳號存在異常行為，已被限制使用"},
+ "displayTips":{"en":"We detected unusual activity on this account. Submit feedback to appeal this restriction",
+                "zh":"系统检测到该账号存在异常使用行为，如需申诉请提交反馈"},
+ "actions":["EDIT_INPUT","SUBMIT_FEEDBACK"]}`
+
+test("a restricted account's 11140 says its msg, then the restricted hint, word for word magpie's", async () => {
+  const res = await explained(new Response(RESTRICTED_BODY, { status: 403 }))
+  expect(res.status).toBe(403)
+  expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
+  const body = await res.json()
+  expect(body.error).toEqual({ message: "request illegal — " + RESTRICTED_HINT, type: "permission_error", code: 11140 })
+  // magpie's routing.go looks for provider.WBRestrictedHint itself
+  expect(RESTRICTED_HINT).toBe(
+    "WorkBuddy restricted this account for unusual activity; it stays out until WorkBuddy lifts that, which an appeal (Submit feedback in WorkBuddy) asks for",
+  )
+})
+
+test("the restriction is known by a string code, under error, or by its words alone", async () => {
+  for (const b of [
+    '{"code":"11140","msg":"request illegal"}',
+    '{"error":{"code":11140,"message":"request illegal"}}',
+    '{"error":{"data":{"code":11140,"msg":"request illegal"}}}',
+    '{"msg":"账号存在异常行为，已被限制使用"}',
+    '{"code":11140,"msg":"request ill',
+  ]) {
+    const body = await (await explained(new Response(b, { status: 403 }))).json()
+    expect(body.error.code).toBe(11140)
+    expect(body.error.message.endsWith(" — " + RESTRICTED_HINT)).toBe(true)
+  }
+})
+
+test("a code that only begins with 11140, and 11128, are not a restriction", async () => {
+  for (const b of ['{"code":111400,"msg":"request illegal"}', '{"error":{"code":111400,"message":"x"}}']) {
+    const res = await explained(new Response(b, { status: 403 }))
+    expect(await res.text()).toBe(b)
+  }
+  const body = await (await explained(new Response('{"error":{"message":"Illegal API invocation from an unapproved channel","code":11128}}', { status: 403 }))).json()
+  expect(body.error.message.endsWith(REFUSED_HINT)).toBe(true)
 })

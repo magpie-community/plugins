@@ -70,14 +70,16 @@ default. Variants at no effort (`glm-5-2-1m`) are listed as they are.
 Adaptive and Fusion aren't listed; they route between models inside
 Devin's own agent.
 
-The `config` hook declares Devin's list as of 2026-09-30 (87 models).
-Once signed in, and with the CLI installed, the `provider.models` hook
-replaces it with the account's own, from `devin models list`, when the CLI
-answers for the account: it reads the plugin's data folder for it, and
-names the account Devin names the token's. When it doesn't (on Windows),
-the account keeps the declared list. The list is
-cached for 5 minutes; after a failed read, the plugin tries again after 1
-minute.
+The `config` hook declares Devin's list as of 2026-10-14 (89 models).
+Once signed in, the `provider.models` hook replaces it with the account's
+own: what Devin tells the CLI's model picker for the account's token
+(`GetCliModelConfigs`, the list `devin models list` prints), with or
+without the CLI and on every system. When Devin can't be asked, the list
+is the CLI's `devin models list`, if the CLI names the account Devin names
+the token's (on Windows it reads its own sign-in whatever folder it is
+given, so it answers only for that account); else the declared list. The
+list is cached for 5 minutes; after a failed read, the plugin tries again
+after 1 minute.
 
 Which models take images is what Devin tells its CLI's model picker
 (`GetCliModelConfigs`, each model's `supports_images`), asked once signed

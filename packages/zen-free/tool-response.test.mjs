@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { droppedNote, guardToolResponse } from "./tool-response.mjs";
+import { cutShortNote, droppedNote, guardToolResponse } from "./tool-response.mjs";
 
 const encoder = new TextEncoder();
 
@@ -987,7 +987,8 @@ test("ordinary events retain SSE metadata without buffering", async () => {
   }
 });
 
-test("single SSE event limit is 32 MiB and cancels an unterminated upstream", async () => {
+// 32+ MiB through the guard, like the CRLF test below: not held to bun's 5 s default
+test("single SSE event limit is 32 MiB and cancels an unterminated upstream", { timeout: 60_000 }, async () => {
   let cancelled = false;
   let pulls = 0;
   const bytes = encoder.encode("x".repeat(1024 * 1024));
@@ -1014,7 +1015,8 @@ test("single SSE event limit is 32 MiB and cancels an unterminated upstream", as
   assert.ok(pulls <= 33);
 });
 
-test("cumulative pending chat tools are limited across choices and calls", async () => {
+// 32+ MiB through the guard, like the CRLF test below: not held to bun's 5 s default
+test("cumulative pending chat tools are limited across choices and calls", { timeout: 60_000 }, async () => {
   let cancelled = false;
   let pulls = 0;
   const argumentsChunk = "x".repeat(1024 * 1024);
@@ -1239,7 +1241,8 @@ test("downstream cancellation interrupts a pending upstream read", async () => {
   }
 });
 
-test("chat: completed tool buffers release their cumulative budget", async () => {
+// 32+ MiB through the guard, like the CRLF test below: not held to bun's 5 s default
+test("chat: completed tool buffers release their cumulative budget", { timeout: 60_000 }, async () => {
   let count = 0;
   const bytes = encoder.encode(
     event(chat({ tool_calls: [call("bash", 0, "x".repeat(1024 * 1024))] }, "tool_calls")),
@@ -1290,7 +1293,8 @@ test(
   },
 );
 
-test("text streams larger than 32 MiB are not subject to the pending-tool limit", async () => {
+// 32+ MiB through the guard, like the CRLF test below: not held to bun's 5 s default
+test("text streams larger than 32 MiB are not subject to the pending-tool limit", { timeout: 60_000 }, async () => {
   let count = 0;
   const bytes = encoder.encode(event(chat({ content: "x".repeat(1024 * 1024) })));
   const source = new Response(
@@ -1316,4 +1320,100 @@ test("text streams larger than 32 MiB are not subject to the pending-tool limit"
     assert.ok(!new TextDecoder().decode(value).includes('"error"'));
   }
   assert.ok(total > 32 * 1024 * 1024);
+});
+
+// #91: Zen closed space-bunny-free's Chat stream after these three frames,
+// with no finish_reason, usage or [DONE] (the reporter's bytes).
+const cutFrames =
+  `data: {"id":"x2","object":"chat.completion.chunk","created":1,"model":"space-bunny-free","choices":[{"index":0,"delta":{"role":"assistant"}}],"usage":null}\n\n` +
+  `data: {"id":"x2","object":"chat.completion.chunk","created":1,"model":"space-bunny-free","choices":[{"index":0,"delta":{"content":"Installed successfully and all"}}],"usage":null}\n\n` +
+  `data: {"id":"x2","object":"chat.completion.chunk","created":1,"model":"space-bunny-free","choices":[{"index":0,"delta":{"content":" other plugins are intact."}}],"usage":null}\n\n`;
+const streaming = { endCutShort: true };
+
+test("chat: a stream cut short after its text ends as one, with a note and [DONE] (#91)", async () => {
+  for (const chunkSize of [7, 31, 4096]) {
+    const result = await guardToolResponse(sse(cutFrames, { chunkSize }), "chat", policy, streaming);
+    const text = await result.text();
+    assert.equal(result.status, 200);
+    assert.ok(text.startsWith(cutFrames), "what was said goes on unchanged");
+    assert.doesNotMatch(text, /"error"/);
+    const frames = parse(text);
+    assert.equal(frames.at(-1).data, "[DONE]");
+    const end = frames.at(-2).data;
+    assert.equal(end.id, "x2");
+    assert.equal(end.model, "space-bunny-free");
+    assert.deepEqual(end.choices, [
+      { index: 0, delta: { content: `\n\n${cutShortNote}` }, finish_reason: "stop" },
+    ]);
+  }
+});
+
+test("chat: a stream cut short in its reasoning ends as one too, the note its text (#91)", async () => {
+  const text = event(chat({ role: "assistant" })) + event(chat({ reasoning_content: "Let me think" }));
+  const result = await guardToolResponse(sse(text), "chat", policy, streaming);
+  const frames = parse(await result.text());
+  assert.equal(frames.at(-1).data, "[DONE]");
+  assert.deepEqual(frames.at(-2).data.choices, [
+    { index: 0, delta: { content: cutShortNote }, finish_reason: "stop" },
+  ]);
+});
+
+test("chat: a stream whose every choice finished is only missing its [DONE] (#91)", async () => {
+  const text = cutFrames + event(chat({}, "stop"));
+  const result = await guardToolResponse(sse(text), "chat", policy, streaming);
+  const out = await result.text();
+  assert.equal(out, text + "data: [DONE]\n\n");
+});
+
+test("chat: a stream cut short still fails with a call pending, saying nothing, or not streamed (#91)", async () => {
+  const cases = [
+    [cutFrames + event(chat({ tool_calls: [call("bash", 0, '{"comm')] })), streaming, /tool call unfinished/],
+    [event(chat({ role: "assistant" })), streaming, /1 event,/],
+    ["", streaming, /0 events, 0 bytes/],
+    [cutFrames, {}, /reply x2, 3 events, \d+ bytes/],
+  ];
+  for (const [text, options, detail] of cases) {
+    const result = await guardToolResponse(sse(text), "chat", policy, options);
+    const frames = parse(await result.text());
+    assert.doesNotMatch(JSON.stringify(frames), /comm/);
+    const data = frames.at(-1).data;
+    assertError("chat", data);
+    assert.match(data.error.message, /^Upstream SSE ended without a completion marker \(/);
+    assert.match(data.error.message, detail);
+  }
+});
+
+test("anthropic and responses: a stream cut short still fails, naming the reply (#91)", async () => {
+  const cut = {
+    anthropic:
+      event({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", content: [] } }, "message_start") +
+      event({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, "content_block_start") +
+      event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Installed" } }, "content_block_delta"),
+    responses:
+      event({ type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } }, "response.created") +
+      event({ type: "response.output_text.delta", item_id: "m", output_index: 0, content_index: 0, delta: "Installed" }, "response.output_text.delta"),
+  };
+  for (const [protocol, text] of Object.entries(cut)) {
+    const result = await guardToolResponse(sse(text), protocol, policy, streaming);
+    const data = parse(await result.text()).at(-1).data;
+    assertError(protocol, data);
+    const message = protocol === "anthropic" ? data.error.message : data.message;
+    assert.match(message, protocol === "anthropic" ? /reply msg_1/ : /reply resp_1/);
+  }
+});
+
+test("a declared name of separators only is never handed another call (#76 follow-up)", async () => {
+  const rules = { declared: new Set(["todo_write", "_"]) };
+  for (const name of ["--", "-", "__"]) {
+    const result = await guardToolResponse(
+      Response.json(snapshot("chat", [name])),
+      "chat",
+      rules,
+    );
+    const data = await result.json();
+    assert.deepEqual(callsIn("chat", [data]), []);
+    assert.match(textIn("chat", [data]), /a tool this agent doesn't have/);
+  }
+  const exact = await guardToolResponse(Response.json(snapshot("chat", ["_"])), "chat", rules);
+  assert.deepEqual(callsIn("chat", [await exact.json()]), ["_"]);
 });

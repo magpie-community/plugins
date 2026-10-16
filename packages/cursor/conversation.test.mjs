@@ -197,13 +197,55 @@ test("a turn that ends with thinking only is an empty reply", async () => {
     for await (const p of _internal.decode(frames, { send() {}, blobs: new Map(), tools: [], estimate: 1 })) out.push(p)
     return out
   }
-  const empty = { error: { status: 502, message: "an empty reply" } }
+  const empty = (why) => ({ error: { status: 502, message: `an empty reply (${why}; try again)` } })
   const thinking = update(4, pb().str(1, "hmm").done())
   const ended = update(14, pb().varint(2, 3).done())
-  expect(await run(thinking, ended)).toEqual([{ reasoning: "hmm" }, empty])
+  expect(await run(thinking, ended)).toEqual([
+    { reasoning: "hmm" },
+    empty("Cursor ended the turn; after 3 chars of thinking, no text and no tool call; Cursor counted 3 output tokens"),
+  ])
   // and so at the stream's end
-  expect(await run(thinking, { end: true, data: Buffer.from("{}") })).toEqual([{ reasoning: "hmm" }, empty])
+  expect(await run(thinking, { end: true, data: Buffer.from("{}") })).toEqual([
+    { reasoning: "hmm" },
+    empty("the Run's stream ended (an empty end frame); after 3 chars of thinking, no text and no tool call"),
+  ])
   // with text it finishes
   const out = await run(thinking, update(1, pb().str(1, "hi").done()), ended)
   expect(out.at(-1).stop).toBe("stop")
+})
+
+// an empty reply names what the Run sent before it (#60): Cursor's own
+// tools it asked for and was refused, updates and messages not read, and
+// an end frame that said no error, so a report can tell the causes apart
+test("an empty reply says what the Run sent before it", async () => {
+  const sent = []
+  const run = async (...frames) => {
+    const out = []
+    for await (const p of _internal.decode(frames, { send: (m) => sent.push(m), blobs: new Map(), tools: [], estimate: 1 })) out.push(p)
+    return out
+  }
+  const update = (num, body) => ({ data: pb().bytes(1, pb().bytes(num, body)).done() })
+  // exec_server_message asking for a tool of Cursor's own (field 14), twice
+  const own = (id) => ({ data: pb().bytes(2, pb().varint(1, id).bytes(14, pb().str(1, "ls").done()).str(15, "e" + id).done()).done() })
+  const unknownUpdate = update(7, pb().str(1, "x").done())
+  const unknownMessage = { data: pb().bytes(9, pb().str(1, "y").done()).done() }
+  const out = await run(own(1), own(2), unknownUpdate, unknownMessage, update(14, pb().done()))
+  expect(out).toEqual([
+    {
+      error: {
+        status: 502,
+        message:
+          "an empty reply (Cursor ended the turn; with no thinking, no text and no tool call; Cursor counted 0 output tokens; Cursor's own tools asked for and refused: #14 ×2; updates not read: #7; messages not read: #9; try again)",
+      },
+    },
+  ])
+  // each refused call was answered, as before
+  expect(sent.length).toBe(4)
+  // an end frame with an error that has no code: its words are kept
+  const [e] = await run({ end: true, data: Buffer.from('{"error":{"message":"stream reset by upstream"}}') })
+  expect(e.error.status).toBe(502)
+  expect(e.error.message).toContain('end frame: {"error":{"message":"stream reset by upstream"}}')
+  // a long end frame is cut short
+  const [l] = await run({ end: true, data: Buffer.from(JSON.stringify({ metadata: "z".repeat(1000) })) })
+  expect(l.error.message.length).toBeLessThan(420)
 })

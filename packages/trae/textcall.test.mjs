@@ -122,6 +122,25 @@ test("#38's shapes: escaped quotes and an attribute-framed opener are calls; a b
   expect(bad.text).toBe("")
 })
 
+test("XcodeFish's two on 0.2.6 (#38): <toolcall> without the underscore is read as <tool_call> is, and a stream that ends inside an opener is cut short", () => {
+  for (const size of [0, 1, 4]) {
+    // glm-5.3-flash's empty block beside a real call: no call, and not text
+    expect(read("<toolcall></toolcall>", size)).toEqual({ text: "", calls: [], error: null })
+    expect(read('<toolcall>{"name":"bash","arguments":{"command":"ls"}}</toolcall>', size)).toEqual({ text: "", calls: [["bash", { command: "ls" }]], error: null })
+    expect(read('<toolcall name="bash">\n<parameter name="command">ls</parameter>\n</toolcall>', size)).toEqual({ text: "", calls: [["bash", { command: "ls" }]], error: null })
+    expect(read('<toolcall>{"name":"bash","arguments":{"command":}}</toolcall>', size).error).toContain("can't be read")
+    for (const cut of ["<tool_call name", "<tool_call", '<tool_call name="ba', "<toolcall name"]) {
+      const r = read("Running it.\n" + cut, size)
+      expect(r).toEqual({ text: "Running it.\n", calls: [], error: r.error })
+      expect(r.error).toContain("cut short")
+    }
+  }
+  // in backticks it is prose, as <tool_call> is
+  for (const s of ["Each call goes in a `<toolcall>` block.", "The tag is `<tool_call name", "Write `<toolcall>{\"name\":\"x\"}</toolcall>` to call."]) {
+    for (const size of [0, 1, 6]) expect(read(s, size)).toEqual({ text: s, calls: [], error: null })
+  }
+})
+
 test("prose that mentions <tool_call> stays text: in backticks, in a code fence, or a tag named in passing", () => {
   for (const s of [
     'Write `<tool_call>{"name":"bash","arguments":{}}</tool_call>` to call a tool.',

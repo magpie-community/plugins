@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { protocols, declaredTools, toolReply } from "./tool-fixtures.mjs";
 
@@ -18,7 +19,10 @@ async function fixture(t, input = {}) {
       state.onDiscovery?.();
       return;
     }
-    if (req.url === "/v1/models") {
+    if (req.url === "/v1/models" && state.listing) {
+      res.writeHead(state.modelsStatus, { "content-type": "application/json" });
+      res.end(state.listing);
+    } else if (req.url === "/v1/models") {
       res.writeHead(state.modelsStatus, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
@@ -119,7 +123,8 @@ for (const { protocol, path, model } of protocols) {
           const tool = protocol === "chat" ? raw.function : raw;
           assert.match(tool.description, /Not available\. Never call this tool\./);
           assert.equal((tool.parameters ?? tool.input_schema).additionalProperties, false);
-          assert.deepEqual((tool.parameters ?? tool.input_schema).properties, {});
+          // Zen's free tier refuses a bash or read that takes nothing
+          assert.equal(Object.keys((tool.parameters ?? tool.input_schema).properties).length, 1);
         }
         // A call of a tool the agent doesn't have is left out, said in
         // the reply's text, and the turn ends as a stop rather than
@@ -171,7 +176,57 @@ for (const [input, supplied, expected] of [
     });
     await response.text();
     assert.equal(state.calls.at(-1).headers["x-opencode-project"], expected);
-    assert.equal(state.calls.at(-1).headers["user-agent"], "opencode/1.18.34");
+    assert.equal(
+      state.calls.at(-1).headers["user-agent"],
+      "opencode/1.19.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
+    );
+  });
+}
+
+// The headers OpenCode 1.19.0's release binary sends to opencode.ai/zen/v1,
+// captured on each protocol: these and no others, whatever the caller sent.
+for (const [path, model, utils, key] of [
+  ["chat/completions", "chat-free", "4.0.23", ["authorization"]],
+  ["responses", "responses-free", "4.0.40", ["authorization"]],
+  ["messages", "messages-free", "4.0.46", ["anthropic-version", "x-api-key"]],
+]) {
+  test(`${path}: sends OpenCode's own headers and none of the caller's`, async (t) => {
+    const { plugin, state, origin } = await fixture(t);
+    await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+    const loader = await plugin.auth.loader(publicAuth);
+    const response = await loader.fetch(`${origin}/v1/${path}`, {
+      method: "POST",
+      headers: {
+        "user-agent": "claude-cli/2.1.0",
+        "x-stainless-lang": "js",
+        "x-session-affinity": "header-parity-conversation",
+        "x-magpie-work-dir": "/tmp/x",
+        accept: "text/event-stream",
+      },
+      body: JSON.stringify({ model, stream: true }),
+    });
+    await response.text();
+    const sent = state.calls.at(-1).headers;
+    assert.equal(sent["user-agent"], `opencode/1.19.0 ai-sdk/provider-utils/${utils} runtime/bun/1.3.14`);
+    assert.equal(sent.accept, "*/*");
+    const own = Object.keys(sent).filter(
+      (name) => !["host", "connection", "content-length", "accept-encoding"].includes(name),
+    );
+    assert.deepEqual(
+      own.sort(),
+      [
+        "accept",
+        "content-type",
+        "user-agent",
+        "x-opencode-client",
+        "x-opencode-project",
+        "x-opencode-request",
+        "x-opencode-session",
+        "x-opencode-session-id",
+        ...key,
+      ].sort(),
+    );
+    assert.equal(sent["x-opencode-session-id"], sent["x-opencode-session"]);
   });
 }
 
@@ -253,7 +308,81 @@ test("partial catalog failure retains previously verified models rather than dro
   state.docsStatus = 503;
   const fallback = await plugin.provider.models({ models }, { auth: await publicAuth() });
   assert.deepEqual(Object.keys(fallback).sort(), ["chat-free", "messages-free", "responses-free"]);
-  assert.equal(fallback[Symbol.for("magpie.fellBack")], true);
+  // Zen's own list was read: not fallen back, so magpie takes this list
+  // and not the last one read in full (yetone/magpie#2385)
+  assert.equal(fallback[Symbol.for("magpie.fellBack")], undefined);
+});
+
+// The reporter of #2305 (yetone/magpie) saw only the three models the
+// plugin knew offline: the catalog and the docs out of reach dropped every
+// listed free model they didn't name. A listed free model now takes its
+// endpoint from the snapshot of OpenCode's console docs; Jev (SystemOne)
+// and a paid model stay out, and a model not listed isn't offered.
+test("listed free models are offered when the catalog and the docs can't be read", async (t) => {
+  const { plugin, state } = await fixture(t);
+  state.catalogStatus = 503;
+  state.docsStatus = 404;
+  state.ids = ["big-pickle", "step-5-preview-free", "cat-jam-free", "jev-1.13-free", "paid"];
+  const models = await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  assert.deepEqual(Object.keys(models).sort(), ["big-pickle", "cat-jam-free", "step-5-preview-free"]);
+  assert.equal(models["step-5-preview-free"].api.npm, "@ai-sdk/openai-compatible");
+  assert.equal(models["step-5-preview-free"].name, "Step 5 Preview Free");
+  assert.equal(models["step-5-preview-free"].limit.context, 1000000);
+  assert.equal(models[Symbol.for("magpie.fellBack")], undefined);
+});
+
+// yetone/magpie#2385: Zen made deepseek-v4.1-flash-free free, and it was
+// never offered. Zen's /models as the public key read it on 2026-10-15,
+// byte for byte. Neither the plugin's snapshot nor an unreachable catalog
+// or docs describe it, and the list it was in was said as fallen back,
+// which magpie answers by keeping the last list read in full.
+const zenListing = readFileSync(
+  new URL("./fixtures/zen-models-2026-10-15.json", import.meta.url),
+  "utf8",
+);
+const zenFree = [
+  "big-pickle",
+  "cat-jam-free",
+  "deepseek-v4.1-flash-free",
+  "longcat-2.5-preview-free",
+  "mimo-v2.6-flash-free",
+  "muse-spark-1.2-contributor-free",
+  "muse-spark-1.3-contributor-free",
+  "nemotron-3.5-lightning-free",
+  "space-bunny-free",
+  "step-5-preview-free",
+];
+
+test("a free model Zen lists that the catalog and the docs don't describe is offered, on chat (#2385)", async (t) => {
+  const { plugin, state } = await fixture(t);
+  state.listing = zenListing;
+  state.catalogStatus = 503;
+  state.docsStatus = 404;
+  const models = await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  assert.deepEqual(Object.keys(models).sort(), zenFree);
+  assert.equal(models["deepseek-v4.1-flash-free"].api.npm, "@ai-sdk/openai-compatible");
+  assert.equal(models["deepseek-v4.1-flash-free"].free, true);
+  assert.equal(models["muse-spark-1.3-contributor-free"].api.npm, "@ai-sdk/openai");
+  assert.equal(models[Symbol.for("magpie.fellBack")], undefined);
+  // a request for it goes to Zen, at chat completions
+  const options = await plugin.auth.loader(publicAuth);
+  const response = await options.fetch(`${options.baseURL}/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "deepseek-v4.1-flash-free", messages: [], stream: true }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(state.calls.at(-1).url, "/v1/chat/completions");
+  assert.equal(state.calls.at(-1).body.model, "deepseek-v4.1-flash-free");
+});
+
+test("a free model Zen lists before the catalog has it is offered with the catalog read (#2385)", async (t) => {
+  const { plugin, state } = await fixture(t);
+  state.listing = zenListing;
+  const models = await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  assert.equal(models["deepseek-v4.1-flash-free"].api.npm, "@ai-sdk/openai-compatible");
+  // the fixture's catalog prices "paid" and names nothing of Zen's: no
+  // paid model Zen lists is offered for being unknown
+  for (const id of Object.keys(models)) assert.ok(zenFree.includes(id), id);
 });
 
 test("forces upstream streaming, preserves existing tools and returns the SSE body unbuffered", async (t) => {
@@ -286,10 +415,12 @@ test("forces upstream streaming, preserves existing tools and returns the SSE bo
   assert.match(await response.text(), /\[DONE\]/);
   const sent = state.calls.at(-1);
   assert.equal(sent.headers.authorization, "Bearer public");
-  assert.match(sent.headers["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
-  assert.equal(sent.headers["x-session-affinity"], sent.headers["x-opencode-session"]);
-  assert.equal(sent.headers["x-session-id"], sent.headers["x-opencode-session"]);
-  assert.ok(sent.headers["x-opencode-request"]);
+  assert.match(sent.headers["x-opencode-session"], /^ses_[0-9a-f]{9}ff[0-9a-f][0-9A-Za-z]{14}$/);
+  // OpenCode sends neither to its own gateway; a caller's never goes on.
+  assert.equal(sent.headers["x-session-affinity"], undefined);
+  assert.equal(sent.headers["x-session-id"], undefined);
+  assert.equal(sent.headers["x-opencode-session-id"], sent.headers["x-opencode-session"]);
+  assert.match(sent.headers["x-opencode-request"], /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
   assert.equal(sent.body.stream, true);
   assert.equal(sent.body.stream_options.include_usage, true);
   assert.deepEqual(sent.body.tools[0], bash);
@@ -440,4 +571,68 @@ test("a model made free since the list was read is served after the list is aske
   });
   assert.equal(response.status, 200);
   assert.equal(state.calls.at(-1).body.model, "late-free");
+});
+
+test("a Chat stream Zen closes before its [DONE] ends cut short for a streaming client and fails for one that doesn't (#91)", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  state.reply =
+    'data: {"id":"x2","object":"chat.completion.chunk","created":1,"model":"chat-free","choices":[{"index":0,"delta":{"role":"assistant"}}],"usage":null}\n\n' +
+    'data: {"id":"x2","object":"chat.completion.chunk","created":1,"model":"chat-free","choices":[{"index":0,"delta":{"content":"Installed successfully and all"}}],"usage":null}\n\n' +
+    'data: {"id":"x2","object":"chat.completion.chunk","created":1,"model":"chat-free","choices":[{"index":0,"delta":{"content":" other plugins are intact."}}],"usage":null}\n\n';
+  const send = (stream) =>
+    loader.fetch(`${origin}/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "chat-free", stream, messages: [{ role: "user", content: "hi" }] }),
+    });
+  const streamed = await send(true);
+  assert.equal(streamed.status, 200);
+  const text = await streamed.text();
+  assert.match(text, /other plugins are intact\./);
+  assert.match(text, /The reply was cut short.*"finish_reason":"stop"/);
+  assert.match(text, /data: \[DONE\]\n\n$/);
+  assert.doesNotMatch(text, /"error"/);
+  const whole = await send(false);
+  assert.notEqual(whole.status, 200);
+  assert.match(await whole.text(), /without a completion marker \(reply x2, 3 events/);
+});
+
+// Zen's free tier answers only at the inference API since mid-October 2026
+// (403 FreeTierError at /zen/v1 to OpenCode's own request); a model listed
+// before then, whose URL is /zen/v1, is asked there too.
+test("asks the inference API, also for a model listed at /zen/v1", async (t) => {
+  const { default: plugin } = await subject;
+  const realFetch = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    asked.push(url);
+    if (url.endsWith("/models"))
+      return Response.json({ data: [{ id: "big-pickle" }] });
+    if (url.endsWith("/chat/completions"))
+      return new Response('data: {"choices":[{"index":0,"delta":{"content":"pong"}}]}\n\ndata: [DONE]\n\n', {
+        headers: { "content-type": "text/event-stream" },
+      });
+    return new Response("", { status: 500 });
+  };
+  t.after(() => {
+    globalThis.fetch = realFetch;
+  });
+  const hooks = await plugin.server({ project: { id: "x" } });
+  const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+  assert.equal(loader.baseURL, "https://opencode.ai/inference/v1");
+  for (const url of [
+    "https://opencode.ai/zen/v1/chat/completions",
+    "https://opencode.ai/inference/v1/chat/completions",
+  ]) {
+    const response = await loader.fetch(url, {
+      method: "POST",
+      body: JSON.stringify({ model: "big-pickle", stream: true, messages: [] }),
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.equal(asked.at(-1), "https://opencode.ai/inference/v1/chat/completions");
+  }
+  assert.ok(!asked.some((url) => url.startsWith("https://opencode.ai/zen/")), asked.join("\n"));
 });
