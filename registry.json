@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "magpie-gemini-web", "name": "Gemini Web", "icon": "gemini", "providers": ["gemini-web"], "community": true,
+      "summary": { "en": "Gemini Web through a separately installed local backend. Experimental tool calling; Argon requires a patched backend.", "zh": "通过单独安装的本地后端接入 Gemini 网页版。工具调用为实验性功能，Argon 需要补丁版后端。" } },
     { "package": "@magpie-community/opencode-zen-free-auth", "name": "OpenCode Zen Free", "icon": "opencode", "providers": ["opencode-zen-free"], "community": true,
       "summary": { "en": "OpenCode Zen's free models with the public credential, automatic discovery and native streaming protocols.", "zh": "使用 public 凭证接入 OpenCode Zen 免费模型，自动发现模型并支持原生流式协议。" } },
     { "package": "@magpie-community/opencode-zcode-auth", "name": "ZCode", "icon": "zcode", "providers": ["zcode"], "community": true, "replaces": "zcode",
