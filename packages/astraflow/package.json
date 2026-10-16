@@ -1,0 +1,18 @@
+{
+  "name": "@magpie-community/opencode-astraflow-auth",
+  "version": "0.1.0",
+  "description": "AstraFlow (UCloud ModelVerse) provider with API keys, UCloud OAuth2, regional endpoints and dynamic models",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "oauth.mjs", "oauth-page.mjs", "cli.mjs", "models.mjs", "limits.mjs", "README.md"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "astraflow", "ucloud", "modelverse"],
+  "license": "MIT",
+  "scripts": { "test": "bun test" },
+  "magpie": { "icon": "https://astraflow.ucloud.cn/favicon.ico" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/astraflow"
+  }
+}

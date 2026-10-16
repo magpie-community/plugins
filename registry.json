@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-astraflow-auth", "name": "AstraFlow", "icon": "https://astraflow.ucloud.cn/favicon.ico", "providers": ["astraflow"], "community": true,
+      "summary": { "en": "UCloud ModelVerse with API keys or OAuth2, project/key selection, regional endpoints, dynamic models and native Chat, Responses, Messages and Gemini.", "zh": "接入 UCloud ModelVerse，支持 API Key、OAuth2、项目和密钥选择、区域选择、动态模型及原生 Chat／Responses／Messages／Gemini。" } },
     { "package": "@magpie-community/opencode-zen-free-auth", "name": "OpenCode Zen Free", "icon": "opencode", "providers": ["opencode-zen-free"], "community": true,
       "summary": { "en": "OpenCode Zen's free models with the public credential, automatic discovery and native streaming protocols.", "zh": "使用 public 凭证接入 OpenCode Zen 免费模型，自动发现模型并支持原生流式协议。" } },
     { "package": "@magpie-community/opencode-zcode-auth", "name": "ZCode", "icon": "zcode", "providers": ["zcode"], "community": true, "replaces": "zcode",
