@@ -56,62 +56,62 @@ const E4 = ["low", "medium", "high", "xhigh"]
 // base models aren't offered), GPT-5.6 Sol Fast (unreleased:!0) and
 // GLM-5.2 Fast (behind a feature flag, on a Baseten model id of its own).
 const MODELS = [
-  ["claude-fable-5.1", "Fable 5.1", ANTHROPIC, "anthropic", 867000, 128000, E5, true],
-  ["claude-fable-5", "Fable 5", ANTHROPIC, "anthropic", 867000, 128000, E5, true],
-  ["claude-opus-5-5", "Opus 5.5", ANTHROPIC, "anthropic", 872000, 128000, E5, true],
-  ["claude-opus-5", "Opus 5", ANTHROPIC, "anthropic", 867000, 128000, E5, true],
-  ["claude-opus-4-8", "Opus 4.8", ANTHROPIC, "anthropic", 867000, 128000, E5, true],
-  ["claude-sonnet-5-5", "Sonnet 5.5", ANTHROPIC, "anthropic", 872000, 128000, E5, true],
-  ["claude-sonnet-5", "Sonnet 5", ANTHROPIC, "anthropic", 872000, 128000, E5, true],
-  ["claude-sonnet-4-6", "Sonnet 4.6", ANTHROPIC, "anthropic", 931000, 64000, ["low", "medium", "high", "max"], true],
-  ["claude-haiku-5-5", "Haiku 5.5", ANTHROPIC, "anthropic", 872000, 128000, E5, true],
-  ["claude-haiku-4-5-20251001", "Haiku 4.5", ANTHROPIC, "anthropic", 0, 0, ["low", "medium", "high"], true],
-  ["gpt-6.1-sol", "GPT-6.1 Sol", RESPONSES, "openai", 1050000, 128000, E5, true],
-  ["gpt-6-sol", "GPT-6 Sol", RESPONSES, "openai", 1050000, 128000, E6, true],
-  ["gpt-6-astra", "GPT-6 Astra", RESPONSES, "openai", 1050000, 128000, E5, true],
-  ["gpt-6-luna", "GPT-6 Luna", RESPONSES, "openai", 1050000, 128000, E6, true],
-  ["gpt-5.6-sol", "GPT-5.6 Sol", RESPONSES, "openai", 1050000, 128000, E6, true],
-  ["gpt-5.6-terra", "GPT-5.6 Terra", RESPONSES, "openai", 1050000, 128000, E6, true],
-  ["gpt-5.6-luna", "GPT-5.6 Luna", RESPONSES, "openai", 1050000, 128000, E6, true],
-  ["gpt-5.5", "GPT-5.5", RESPONSES, "openai", 1050000, 128000, E4, true],
-  ["gpt-5.4", "GPT-5.4", RESPONSES, "openai", 1050000, 128000, E4, true],
-  ["gpt-5.3-codex", "GPT-5.3-Codex", RESPONSES, "openai", 400000, 128000, E4, true],
-  ["grok-4.7", "Grok 4.7", RESPONSES, "xai", 500000, 63356, E4, true],
-  ["grok-4.6", "Grok 4.6", RESPONSES, "xai", 200000, 63356, E4, true],
+  ["claude-fable-5.1", "Fable 5.1", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
+  ["claude-fable-5", "Fable 5", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
+  ["claude-opus-5-5", "Opus 5.5", ANTHROPIC, "anthropic", 872000, 128000, E5, true, 1.6],
+  ["claude-opus-5", "Opus 5", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 2],
+  ["claude-opus-4-8", "Opus 4.8", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 2],
+  ["claude-sonnet-5-5", "Sonnet 5.5", ANTHROPIC, "anthropic", 872000, 128000, E5, true, 0.8],
+  ["claude-sonnet-5", "Sonnet 5", ANTHROPIC, "anthropic", 872000, 128000, E5, true, 0.8],
+  ["claude-sonnet-4-6", "Sonnet 4.6", ANTHROPIC, "anthropic", 931000, 64000, ["low", "medium", "high", "max"], true, 1.2],
+  ["claude-haiku-5-5", "Haiku 5.5", ANTHROPIC, "anthropic", 872000, 128000, E5, true, 0.04],
+  ["claude-haiku-4-5-20251001", "Haiku 4.5", ANTHROPIC, "anthropic", 0, 0, ["low", "medium", "high"], true, 0.4],
+  ["gpt-6.1-sol", "GPT-6.1 Sol", RESPONSES, "openai", 1050000, 128000, E5, true, 0.8],
+  ["gpt-6-sol", "GPT-6 Sol", RESPONSES, "openai", 1050000, 128000, E6, true, 0.8],
+  ["gpt-6-astra", "GPT-6 Astra", RESPONSES, "openai", 1050000, 128000, E5, true, 4],
+  ["gpt-6-luna", "GPT-6 Luna", RESPONSES, "openai", 1050000, 128000, E6, true, 0.04],
+  ["gpt-5.6-sol", "GPT-5.6 Sol", RESPONSES, "openai", 1050000, 128000, E6, true, 2],
+  ["gpt-5.6-terra", "GPT-5.6 Terra", RESPONSES, "openai", 1050000, 128000, E6, true, 0.8],
+  ["gpt-5.6-luna", "GPT-5.6 Luna", RESPONSES, "openai", 1050000, 128000, E6, true, 0.08],
+  ["gpt-5.5", "GPT-5.5", RESPONSES, "openai", 1050000, 128000, E4, true, 2],
+  ["gpt-5.4", "GPT-5.4", RESPONSES, "openai", 1050000, 128000, E4, true, 1],
+  ["gpt-5.3-codex", "GPT-5.3-Codex", RESPONSES, "openai", 400000, 128000, E4, true, 0.7],
+  ["grok-4.7", "Grok 4.7", RESPONSES, "xai", 500000, 63356, E4, true, 0.8],
+  ["grok-4.6", "Grok 4.6", RESPONSES, "xai", 200000, 63356, E4, true, 0.8],
   // reasoning is mandatory on GLM-5.3 and GLM-5.3-Flash (Fireworks turns
   // none away): low is their least. GLM-5.2, Kimi K3 and DeepSeek V4.1
   // Flash stop thinking at none, droid's "off" (yetone/magpie#899).
-  ["glm-5.3", "GLM-5.3", CHAT, "fireworks", 1040000, 131072, ["low", "high", "max"], false],
-  ["glm-5.3-flash", "GLM-5.3-Flash", CHAT, "fireworks", 1048576, 131072, ["low", "high", "max"], true],
-  ["glm-5.2", "GLM-5.2", CHAT, "baseten", 1040000, 131072, ["none", "high", "max"], false],
-  ["kimi-k3", "Kimi K3", CHAT, "fireworks", 262144, 65536, ["none", "low", "high", "max"], true],
-  ["deepseek-v4.1-flash", "DeepSeek V4.1 Flash", CHAT, "fireworks", 1040000, 131072, ["none", "low", "high", "max"], true],
-  ["qwen3.8-max", "Qwen3.8 Max", CHAT, "fireworks", 262144, 131072, ["low", "medium", "xhigh"], false],
-  ["minimax-m3", "MiniMax M3", CHAT, "fireworks", 512000, 64000, ["high"], true],
-  ["minimax-m2.7", "MiniMax M2.7", ANTHROPIC, "fireworks", 196600, 64000, ["high"], false],
-  ["mistral-large-4", "Mistral Large 4", CHAT, "mistral", 524288, 64000, ["high"], true],
-  ["mistral-medium-3.5", "Mistral Medium 3.5", CHAT, "mistral", 256000, 64000, ["high"], true],
-  ["nemotron-3-ultra", "Nemotron 3 Ultra", CHAT, "baseten", 202000, 65536, ["high"], false],
-  ["gemini-4-argon", "Gemini 4 Argon", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true],
-  ["gemini-3.1-pro-preview", "Gemini 3.1 Pro", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true],
-  ["gemini-3.8-flash", "Gemini 3.8 Flash", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true],
-  ["gemini-3.7-flash", "Gemini 3.7 Flash", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true],
-  ["gemini-3.6-flash", "Gemini 3.6 Flash", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true],
-  ["gemini-3.5-flash", "Gemini 3.5 Flash", GEMINI, "google", 1000000, 65536, ["minimal", "low", "medium", "high"], true],
-  ["gemini-3-flash-preview", "Gemini 3 Flash", GEMINI, "google", 1000000, 65536, ["minimal", "low", "medium", "high"], true],
+  ["glm-5.3", "GLM-5.3", CHAT, "fireworks", 1040000, 131072, ["low", "high", "max"], false, 0.56],
+  ["glm-5.3-flash", "GLM-5.3-Flash", CHAT, "fireworks", 1048576, 131072, ["low", "high", "max"], true, 0.06],
+  ["glm-5.2", "GLM-5.2", CHAT, "baseten", 1040000, 131072, ["none", "high", "max"], false, 0.56],
+  ["kimi-k3", "Kimi K3", CHAT, "fireworks", 262144, 65536, ["none", "low", "high", "max"], true, 1.2],
+  ["deepseek-v4.1-flash", "DeepSeek V4.1 Flash", CHAT, "fireworks", 1040000, 131072, ["none", "low", "high", "max"], true, 0.12],
+  ["qwen3.8-max", "Qwen3.8 Max", CHAT, "fireworks", 262144, 131072, ["low", "medium", "xhigh"], false, 0.8],
+  ["minimax-m3", "MiniMax M3", CHAT, "fireworks", 512000, 64000, ["high"], true, 0.12],
+  ["minimax-m2.7", "MiniMax M2.7", ANTHROPIC, "fireworks", 196600, 64000, ["high"], false, 0.12],
+  ["mistral-large-4", "Mistral Large 4", CHAT, "mistral", 524288, 64000, ["high"], true, 0.544],
+  ["mistral-medium-3.5", "Mistral Medium 3.5", CHAT, "mistral", 256000, 64000, ["high"], true, 0.6],
+  ["nemotron-3-ultra", "Nemotron 3 Ultra", CHAT, "baseten", 202000, 65536, ["high"], false, 0.24],
+  ["gemini-4-argon", "Gemini 4 Argon", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 1.6],
+  ["gemini-3.1-pro-preview", "Gemini 3.1 Pro", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.8],
+  ["gemini-3.8-flash", "Gemini 3.8 Flash", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.6],
+  ["gemini-3.7-flash", "Gemini 3.7 Flash", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.6],
+  ["gemini-3.6-flash", "Gemini 3.6 Flash", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.6],
+  ["gemini-3.5-flash", "Gemini 3.5 Flash", GEMINI, "google", 1000000, 65536, ["minimal", "low", "medium", "high"], true, 0.6],
+  ["gemini-3-flash-preview", "Gemini 3 Flash", GEMINI, "google", 1000000, 65536, ["minimal", "low", "medium", "high"], true, 0.2],
   // The Fast Mode models come last: magpie shows a provider with no models
   // picked only the first 24 of its list, and placed beside their base
   // models in 0.1.27 they pushed GPT-5.3-Codex, Grok 4.7, Grok 4.6, GLM-5.3
   // and GLM-5.3-Flash out of it (#119, psylch). A Fast Mode model costs more credits, so it is the one
   // to pick; asking its base model for fast reaches it all the same
   // (fastBody).
-  ["claude-opus-5-5-fast", "Opus 5.5 Fast Mode", ANTHROPIC, "anthropic", 872000, 128000, E5, true],
-  ["claude-opus-5-fast", "Opus 5 Fast Mode", ANTHROPIC, "anthropic", 867000, 128000, E5, true],
-  ["claude-opus-4-8-fast", "Opus 4.8 Fast Mode", ANTHROPIC, "anthropic", 867000, 128000, E5, true],
-  ["gpt-5.5-fast", "GPT-5.5 Fast Mode", RESPONSES, "openai", 1050000, 128000, E4, true],
-  ["gpt-5.4-fast", "GPT-5.4 Fast Mode", RESPONSES, "openai", 1050000, 128000, E4, true],
-  ["gpt-5.3-codex-fast", "GPT-5.3-Codex Fast Mode", RESPONSES, "openai", 400000, 128000, E4, true],
-].map(([id, name, wire, upstream, context, output, efforts, images]) => ({ id, name, wire, upstream, context, output, efforts, images }))
+  ["claude-opus-5-5-fast", "Opus 5.5 Fast Mode", ANTHROPIC, "anthropic", 872000, 128000, E5, true, 3.2],
+  ["claude-opus-5-fast", "Opus 5 Fast Mode", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
+  ["claude-opus-4-8-fast", "Opus 4.8 Fast Mode", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
+  ["gpt-5.5-fast", "GPT-5.5 Fast Mode", RESPONSES, "openai", 1050000, 128000, E4, true, 5],
+  ["gpt-5.4-fast", "GPT-5.4 Fast Mode", RESPONSES, "openai", 1050000, 128000, E4, true, 2],
+  ["gpt-5.3-codex-fast", "GPT-5.3-Codex Fast Mode", RESPONSES, "openai", 400000, 128000, E4, true, 1.4],
+].map(([id, name, wire, upstream, context, output, efforts, images, rate]) => ({ id, name, wire, upstream, context, output, efforts, images, rate }))
 
 const byId = new Map(MODELS.map((m) => [m.id, m]))
 
@@ -162,9 +162,35 @@ function variant(npm, effort) {
   return { reasoningEffort: effort }
 }
 
-function configModels() {
+// Factory's running promotions, as droid's registry keeps them
+// (cost.promotions): while one runs, a model's price is its token multiplier
+// less the promotion's discount. magpie shows the price now with the price
+// before it struck through (rateWas), as it does for WorkBuddy's credits and
+// Qoder's price factors, so a cheap model is picked without opening droid. A
+// promotion that has ended is no discount at all.
+const PROMOTIONS = [
+  { id: "gpt-5.6-sol", discount: 0.2, from: "2026-08-22T00:00:00Z", to: "2026-11-22T00:00:00Z" },
+  { id: "mistral-large-4", discount: 0.5, from: "2026-10-06T00:00:00Z", to: "2026-10-20T00:00:00Z" },
+  { id: "gemini-4-argon", discount: 0.5, from: "2026-10-13T16:00:00Z", to: "2026-12-01T08:00:00Z" },
+  { id: "gemini-3.8-flash", discount: 0.5, from: "2026-08-17T21:10:19Z", to: "2027-01-01T08:00:00Z" },
+  { id: "gemini-3.7-flash", discount: 0.5, from: "2026-08-17T21:10:19Z", to: "2027-01-01T08:00:00Z" },
+]
+
+// rateOf is a model's price as magpie keeps it: rate, the token multiplier a
+// request costs now, and rateWas, the multiplier before a promotion running
+// now (0: none). droid reads it the same way (ib(cost, now)): the first
+// promotion that has started and not ended takes its discount off the
+// multiplier.
+function rateOf(m, now = Date.now()) {
+  const p = PROMOTIONS.find((p) => p.id === m.id && now >= Date.parse(p.from) && now < Date.parse(p.to))
+  if (!p) return { rate: m.rate, rateWas: 0 }
+  return { rate: Number((m.rate * (1 - p.discount)).toFixed(4)), rateWas: m.rate }
+}
+
+function configModels(now = Date.now()) {
   const out = {}
   for (const m of MODELS) {
+    const { rate, rateWas } = rateOf(m, now)
     out[m.id] = {
       id: m.id,
       name: m.name,
@@ -177,10 +203,55 @@ function configModels() {
       modalities: { input: m.images ? ["text", "image"] : ["text"], output: ["text"] },
       cost: { input: 0, output: 0 },
       limit: { context: m.context, output: m.output },
+      // magpie's own: the token multiplier a request costs now, and the
+      // multiplier before a promotion running now (0: none)
+      rate,
+      rateWas,
       variants: Object.fromEntries(m.efforts.map((e) => [e, variant(m.wire.npm, e)])),
     }
   }
   return out
+}
+
+// providerModel is a model as magpie's provider hook keeps it: the same model
+// configModels gives OpenCode, in magpie's shape. magpie reads a provider's
+// models from this hook, and a config hook's models without the price beside
+// them, so the token multiplier droid shows a model by (rateOf) is carried
+// here.
+function providerModel(provider, m, now = Date.now()) {
+  const { rate, rateWas } = rateOf(m, now)
+  return {
+    id: m.id,
+    providerID: provider.id,
+    name: m.name,
+    api: { id: m.id, url: m.wire.api, npm: m.wire.npm },
+    status: "active",
+    headers: {},
+    options: {},
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    limit: { context: m.context, output: m.output },
+    capabilities: {
+      temperature: true,
+      reasoning: m.efforts.length > 0,
+      attachment: m.images,
+      toolcall: true,
+      input: { text: true, image: m.images, audio: false, video: false, pdf: false },
+      output: { text: true, image: false, audio: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    release_date: "",
+    variants: Object.fromEntries(m.efforts.map((e) => [e, variant(m.wire.npm, e)])),
+    free: false,
+    // magpie's own: the token multiplier a request costs now, and the
+    // multiplier before a promotion running now (0: none)
+    rate,
+    rateWas,
+  }
+}
+
+// providerModels is the list the provider hook answers with, at now.
+function providerModels(provider, now = Date.now()) {
+  return Object.fromEntries(MODELS.map((m) => [m.id, providerModel(provider, m, now)]))
 }
 
 // ---- tokens -----------------------------------------------------------------
@@ -1621,6 +1692,15 @@ export const FactoryAuthPlugin = async ({ client }) => {
   }
 
   return {
+    // magpie's list for this provider: the same models configModels gives
+    // OpenCode, each with the token multiplier droid shows it by, which
+    // magpie shows beside the model as its rate
+    provider: {
+      id: PROVIDER,
+      async models(provider) {
+        return providerModels(provider)
+      },
+    },
     config: async (config) => {
       config.provider ??= {}
       const was = config.provider[PROVIDER] ?? {}
@@ -1786,4 +1866,4 @@ export const FactoryAuthPlugin = async ({ client }) => {
 }
 
 // for tests
-export const _internal = { fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT }
+export const _internal = { fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
