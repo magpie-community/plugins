@@ -1135,10 +1135,16 @@ test("native retention: conflicting counts after visible thinking never replay o
 test("native retention: conflicting counts after submitted result never retry automatically", async () => {
   const a = await agent({ secondConflictingCount: true }), account = auth(), chat = initial()
   const first = await a.ask(account, chat)
+  const owner = [...nativeSessions.entries][0]
   const next = continueWith(chat, first.body, ["already submitted exactly once"])
   const failed = await a.ask(account, next)
   expect(failed.status).toBe(502)
   expect(failed.body.error.message).toContain("inconsistent native tool count")
+  // A result was actually written to this owner before its next step listed
+  // conflicting counts. Its error must forbid transparent replay even if
+  // the caller has not received any output from the resumed step.
+  expect(owner.resultSubmitted).toBe(true)
+  expect(owner.error).toMatchObject({ status: 502, retentionIneligible: false, continuityReason: "inconsistent-batch-count" })
   expect(a.runs).toHaveLength(1)
   expect(a.results).toHaveLength(1)
   expect(a.closes).toEqual([7])
