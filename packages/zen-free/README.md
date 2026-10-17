@@ -20,6 +20,11 @@ magpie plugin login opencode-zen-free
 
 Enter `public` in the key field. No personal API key is needed.
 
+Hosts supporting magpie's `keyless` and `single` auth metadata can enable
+this public identity without a key field and offer Sign in again instead
+of another account. Older hosts and OpenCode keep the public-key flow.
+Personal keys still belong to the built-in OpenCode Zen provider.
+
 Whatever is typed in the key field, the plugin signs in with the one
 shared `public` credential: a key made under your own OpenCode account
 does nothing here, and several of them don't make several accounts. Your

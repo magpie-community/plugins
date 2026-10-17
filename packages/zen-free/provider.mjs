@@ -252,11 +252,13 @@ async function server(_input, options = {}) {
     },
     auth: {
       provider: PROVIDER,
+      single: true,
       icon: "https://opencode.ai/favicon-v3.ico",
       maxConcurrency: 2,
       methods: [
         {
           type: "api",
+          keyless: true,
           label: "Zen 免费访问（密钥填 public；自己的 OpenCode Key 请加到内置的 OpenCode Zen）",
           placeholder: "public",
           async authorize() {
