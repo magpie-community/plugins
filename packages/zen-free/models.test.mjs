@@ -113,3 +113,32 @@ test("reads the console docs' endpoint table, and Jev stays out as SystemOne", a
   const models = buildModels(["jev-1.13-free", "step-5-preview-free"], {}, protocols, baseURL);
   assert.deepEqual(Object.keys(models), ["step-5-preview-free"]);
 });
+
+test("bootstrap entries for newly added free models match catalog specifications", async () => {
+  const { bootstrapProvider } = await subject;
+  const models = bootstrapProvider.models;
+
+  assert.deepEqual(models["deepseek-v4.1-flash-free"].limit, { context: 200000, output: 32000 });
+  assert.equal(models["deepseek-v4.1-flash-free"].reasoning, true);
+  assert.deepEqual(models["deepseek-v4.1-flash-free"].modalities.input, ["text", "image"]);
+  assert.deepEqual(models["deepseek-v4.1-flash-free"].reasoning_options, [{ type: "effort", values: ["low", "high", "max"] }]);
+
+  assert.deepEqual(models["nemotron-3.5-super-vl-free"].limit, { context: 1048576, input: 1048576, output: 131072 });
+  assert.equal(models["nemotron-3.5-super-vl-free"].reasoning, true);
+  assert.deepEqual(models["nemotron-3.5-super-vl-free"].modalities.input, ["text", "image"]);
+  assert.deepEqual(models["nemotron-3.5-super-vl-free"].reasoning_options, [{ type: "effort", values: ["none", "minimal", "low", "medium", "high", "xhigh"] }]);
+
+  assert.deepEqual(models["nemotron-3-ultra-free"].limit, { context: 1000000, output: 128000 });
+  assert.equal(models["nemotron-3-ultra-free"].reasoning, true);
+  assert.deepEqual(models["nemotron-3-ultra-free"].modalities.input, ["text"]);
+
+  assert.deepEqual(models["beam-free"].limit, { context: 1048576, output: 131072 });
+  assert.equal(models["beam-free"].reasoning, true);
+  assert.deepEqual(models["beam-free"].modalities.input, ["text"]);
+  assert.deepEqual(models["beam-free"].reasoning_options, [{ type: "effort", values: ["low", "medium", "high", "xhigh", "max"] }]);
+
+  assert.deepEqual(models["glm-5.3-flash-free"].limit, { context: 200000, output: 32000 });
+  assert.equal(models["glm-5.3-flash-free"].reasoning, true);
+  assert.deepEqual(models["glm-5.3-flash-free"].modalities.input, ["text", "image", "video", "pdf"]);
+  assert.deepEqual(models["glm-5.3-flash-free"].reasoning_options, [{ type: "effort", values: ["low", "high", "max"] }]);
+});
