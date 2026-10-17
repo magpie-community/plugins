@@ -164,6 +164,22 @@ credits are read from the enterprise meter
 page reads: the cycle's credits used of its limit, and when the cycle
 resets (magpie #1904).
 
+## Daily check-in and the growth center
+
+magpie's daily check-in (签到) for a China account is the plugin's now: it
+asks the event's status and claims when today's isn't in, then runs the
+growth center's daily pass — one activity report (which lights the streak),
+the one-shot gift and compensation, enrolling in pending tasks and claiming
+every completed one, the streak tiers, lottery chances, the buddy's travel
+and a makeup card when yesterday was missed. The Usage card holds the
+check-in row and its Auto check-in switch, whose default follows the
+built-in WorkBuddy switch (`workbuddyCheckin`).
+
+The pass claims tasks the account has actually completed. It does not fake
+the desktop/web/mini-program event traces or chat at models, as
+workbuddy2api-style tools do: tasks that need those remain for the user's
+own WorkBuddy use.
+
 ## When free models work but a credit model does not
 
 Check the failing account and model separately before concluding that the
@@ -200,8 +216,6 @@ entry. An already signed-in browser can simply renew another saved account.
 ## Not here
 
 magpie's built-in WorkBuddy does more than this package:
-- the daily check-in;
-- the credits meter (`/billing/meter/get-user-resource-summary`);
 - several accounts under one provider.
 
 OpenCode's plugin API has no place for these.

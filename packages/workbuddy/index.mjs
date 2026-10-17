@@ -8,7 +8,7 @@
 // streamed only, with WorkBuddy's headers: a request whose User-Agent isn't
 // WorkBuddy/<version> is refused (error 10085).
 
-import { createHash, randomBytes } from "node:crypto"
+import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -1507,6 +1507,399 @@ async function liveModels(site, a) {
   return out
 }
 
+// ---- the growth center (China build) -------------------------------------------
+//
+// WorkBuddy's growth center (成长中心) pays credits for a daily check-in and
+// for tasks completed in its own clients. This is the daily pass magpie's
+// check-in button runs: the check-in itself, one activity report (which
+// lights the streak), the one-shot gift/compensation, enrolling in pending
+// tasks and claiming every completed one, the streak tiers, lottery chances,
+// the buddy's travel and a makeup card when yesterday was missed.
+//
+// The reference plugin also fakes the desktop/web/mini-program traces some
+// tasks score on and chats at models to complete the real-conversation
+// tasks. That is deliberately not ported: this pass claims what the account
+// has actually completed, and leaves client-trace tasks to the user's own
+// WorkBuddy use.
+
+const GROWTH_WEB = "https://www.workbuddy.cn"
+const GROWTH_BILLING = "https://www.codebuddy.cn"
+const GROWTH_TIMEOUT = 10_000
+const GROWTH_BATCH = 20
+const GROWTH_TRAVEL_LOCATION = 4
+const GROWTH_BUDGET_MS = 25_000
+
+// growthHeaders is what the reference plugin's billing calls send: the
+// account's bearer, its uid/domain and WorkBuddy's own client name.
+function growthHeaders(site, a, extra = {}) {
+  return {
+    Authorization: "Bearer " + a.access,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    "X-User-Id": a.uid ?? "",
+    "X-Domain": domainOf(site, a),
+    "User-Agent": "CodeBuddy",
+    ...enterpriseHeaders(a),
+    ...extra,
+  }
+}
+
+// growthEnvelope asks url and unwraps WorkBuddy's {code, msg, data}.
+async function growthEnvelope(url, init) {
+  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(GROWTH_TIMEOUT) })
+  const text = await res.text()
+  let env = null
+  try {
+    env = JSON.parse(text)
+  } catch {}
+  const code = Number.parseInt(env?.code, 10) || 0
+  if (!res.ok) {
+    const why = env?.msg || env?.message || text.slice(0, 200) || statusText(res.status)
+    throw new WBError(`WorkBuddy: ${why} (HTTP ${res.status}${code ? ", code " + code : ""})`, code, res.status, why)
+  }
+  if (code) throw new WBError(`WorkBuddy: ${env?.msg || "error"} (${code})`, code, res.status, env?.msg)
+  return env?.data ?? null
+}
+
+function growthCall(site, a, method, path, body) {
+  return growthEnvelope(site.endpoint + path, {
+    method,
+    headers: growthHeaders(site, a),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+}
+
+function growthBillingPost(site, a, path, body) {
+  return growthEnvelope(GROWTH_BILLING + path, {
+    method: "POST",
+    headers: growthHeaders(site, a),
+    body: JSON.stringify(body ?? {}),
+  })
+}
+
+// growthClaimReward claims one task on the web host: the same path on the
+// CLI host answers 400 "task not completed" even when it is.
+function growthClaimReward(site, a, code) {
+  return growthEnvelope(
+    GROWTH_WEB + "/activity/growth/tasks/" + encodeURIComponent(code) + "/claim",
+    {
+      method: "POST",
+      headers: growthHeaders(site, a, {
+        Origin: GROWTH_WEB,
+        Referer: GROWTH_WEB + "/profile/growth-center",
+        "x-client-platform": "web",
+      }),
+    },
+  )
+}
+
+const short = (e) => String(e?.said || e?.message || e).slice(0, 120)
+
+// growthTaskList is the task list with the progress shapes flattened and
+// the claim signal derived: accept_status "completed" is authoritative,
+// progress reaching its target is the fallback.
+function growthTaskList(data) {
+  const tasks = Array.isArray(data?.tasks) ? data.tasks : []
+  return tasks.map((t) => {
+    const p = t?.progress && typeof t.progress === "object" ? t.progress : null
+    const current = Number(p?.current ?? t?.current) || 0
+    const target = Number(p?.target ?? t?.target) || 0
+    const claimed = String(t?.accept_status || "") === "claimed"
+    return {
+      ...t,
+      current,
+      target,
+      claimed,
+      claimable: !claimed && !t?.locked && (t?.accept_status === "completed" || (target > 0 && current >= target)),
+    }
+  })
+}
+
+// growthAcceptCandidates are the tasks still to enroll in: absent and
+// "not_accepted" statuses only; accepted/in_progress/completed/claimed
+// already count.
+function growthAcceptCandidates(tasks) {
+  const out = []
+  for (const t of tasks) {
+    if (t.claimed || t.locked) continue
+    if (t.accept_status && t.accept_status !== "not_accepted") continue
+    const code = String(t.task_code || "").trim()
+    if (code) out.push(code)
+  }
+  return out
+}
+
+// growthReportEvent is one chat_request_send event, as the reference
+// sends it: the report itself is day-idempotent and needs no conversation.
+function growthReportEvent(a) {
+  const id = "wb-" + randomUUID()
+  const now = Date.now()
+  return [
+    {
+      eventCode: "chat_request_send",
+      timestamp: now,
+      reportDelay: 0,
+      mode: "craft",
+      conversationId: id,
+      requestId: id,
+      inputLength: 12,
+      requestModelId: "deepseek-v4-flash",
+      requestModelName: "DeepSeek V4 Flash",
+      isPlan: false,
+      isAutoExecuteTerminal: false,
+      isAutoModify: false,
+      codebaseEnable: false,
+      maxToken: 0,
+      maxSteps: 0,
+      temperature: 0,
+      maxRetries: 0,
+      mentionContexts: [],
+      knowledgeId: [],
+      knowledgeName: [],
+      codebaseId: "",
+      mentionContextCount: 0,
+      command: "",
+      expertId: "",
+      recommendId: "",
+      skillId: "",
+      skillCount: 0,
+      totalCount: 0,
+      fileUri: "",
+      presentAt: now,
+      traceId: "",
+      rootRequestId: id,
+      parentConversationId: id,
+      agentName: "default",
+      agentType: "conversation",
+      userId: a.uid || "",
+    },
+  ]
+}
+
+function growthReport(site, a) {
+  return growthEnvelope(GROWTH_BILLING + "/v2/report", {
+    method: "POST",
+    headers: growthHeaders(site, a),
+    body: JSON.stringify(growthReportEvent(a)),
+  })
+}
+
+// growthTasks enrolls pending tasks and claims every completed one.
+async function growthTasks(site, a) {
+  const lines = []
+  let credit = 0
+  let tasks = growthTaskList(await growthCall(site, a, "GET", "/v2/activity/growth/tasks"))
+  const codes = growthAcceptCandidates(tasks)
+  let accepted = 0
+  for (let i = 0; i < codes.length; i += GROWTH_BATCH) {
+    try {
+      const d = await growthCall(site, a, "POST", "/v2/activity/growth/tasks/accept", {
+        task_codes: codes.slice(i, i + GROWTH_BATCH),
+      })
+      const results = Array.isArray(d?.results) ? d.results : []
+      accepted += results.length ? results.filter((r) => r?.status !== "error").length : Math.min(GROWTH_BATCH, codes.length - i)
+    } catch (e) {
+      lines.push(`接受任务失败: ${short(e)}`)
+      break
+    }
+  }
+  if (accepted) {
+    lines.push(`接受任务 ${accepted} 个`)
+    tasks = growthTaskList(await growthCall(site, a, "GET", "/v2/activity/growth/tasks"))
+  }
+  let claimed = 0
+  for (const t of tasks.filter((x) => x.claimable)) {
+    try {
+      const d = await growthClaimReward(site, a, t.task_code)
+      const c = Number(d?.credit) || 0
+      credit += c
+      claimed++
+      if (c) lines.push(`${t.title || t.task_code} +${c}`)
+    } catch (e) {
+      lines.push(`领取 ${t.task_code} 失败: ${short(e)}`)
+    }
+  }
+  if (claimed) lines.push(`领取任务 ${claimed} 个`)
+  return { credit, lines }
+}
+
+// growthStreak redeems the streak tiers not yet claimed; a locked tier is
+// an expected 403, not a failure.
+async function growthStreak(site, a) {
+  const st = await growthCall(site, a, "GET", "/activity/growth/streak")
+  const status = st?.redemption_status || {}
+  const before = { "7d": status.tier_7d_status, "14d": status.tier_14d_status, "28d": status.tier_28d_status }
+  const tiers = Array.isArray(status.tiers) ? status.tiers.map((x) => String(x?.tier || "")) : []
+  const lines = []
+  let credit = 0
+  for (const tier of [...new Set(tiers.filter(Boolean))]) {
+    if (before[tier] === "locked" || before[tier] === "claimed") continue
+    try {
+      const d = await growthCall(site, a, "POST", "/activity/growth/redeem", { tier, client_token: randomUUID() })
+      const c = Number(d?.credit_granted ?? d?.credit) || 0
+      credit += c
+      if (c) lines.push(`连登 ${tier} +${c}`)
+    } catch (e) {
+      if (e?.status !== 403) lines.push(`连登 ${tier} 失败: ${short(e)}`)
+    }
+  }
+  if (!lines.length && Number(st?.streak?.days) > 0) lines.push(`连登 ${st.streak.days} 天`)
+  return { credit, lines }
+}
+
+// growthLottery spends the chances on hand, a handful at most per pass.
+async function growthLottery(site, a) {
+  let chances = 0
+  try {
+    const d = await growthCall(site, a, "GET", "/activity/growth/lottery/chances")
+    chances = Number(d?.balance ?? d?.chances) || 0
+  } catch {
+    return { credit: 0, lines: [] }
+  }
+  let credit = 0
+  let drawn = 0
+  for (let i = 0; i < Math.min(chances, 10); i++) {
+    try {
+      const prize = await growthCall(site, a, "POST", "/activity/growth/lottery/draw", { client_token: randomUUID() })
+      drawn++
+      credit += Number(prize?.credit ?? prize?.reward_credit ?? prize?.prize_credit) || 0
+    } catch {
+      break
+    }
+  }
+  return { credit, lines: drawn ? [`抽奖 ${drawn} 次${credit ? ` +${credit}` : ""}`] : [] }
+}
+
+// growthTravel advances the buddy's travel one step: depart when idle,
+// claim when arrived.
+async function growthTravel(site, a) {
+  const st = await growthCall(site, a, "GET", "/activity/growth/buddy/travel/status")
+  if (st?.state === "idle" && !st?.daily_limit_reached) {
+    await growthCall(site, a, "POST", "/activity/growth/buddy/travel/depart", { location_id: GROWTH_TRAVEL_LOCATION })
+    return { credit: 0, lines: ["Buddy 出发旅行"] }
+  }
+  if (st?.state === "arrived" && st?.record_id) {
+    const d = await growthCall(site, a, "POST", "/activity/growth/buddy/travel/claim", { record_id: st.record_id })
+    const credit = Number(d?.credit ?? d?.reward_credit) || 0
+    return { credit, lines: [`旅行领奖${credit ? ` +${credit}` : ""}`] }
+  }
+  return { credit: 0, lines: [] }
+}
+
+// growthMakeup spends a makeup card when yesterday's heatmap cell is empty.
+async function growthMakeup(site, a) {
+  const st = await growthCall(site, a, "GET", "/activity/growth/streak")
+  if (!(Number(st?.makeup_cards?.balance) > 0)) return { lines: [] }
+  const heat = await growthCall(site, a, "GET", "/activity/growth/heatmap")
+  const yesterday = beijing(Date.now() - 86_400_000).slice(0, 10)
+  const cell = (Array.isArray(heat?.cells) ? heat.cells : []).find((c) => String(c?.date || "").slice(0, 10) === yesterday)
+  if (!cell || Number(cell.score) > 0) return { lines: [] }
+  await growthCall(site, a, "POST", "/activity/growth/makeup-cards/use", { target_date: yesterday })
+  return { lines: [`补签 ${yesterday}`] }
+}
+
+// growthDaily runs the growth-center pass, bounded so a slow upstream never
+// holds the check-in past a sensible wait. 401 ends the pass: every further
+// call would be refused the same way.
+async function growthDaily(site, a) {
+  const lines = []
+  let credit = 0
+  let dead = false
+  const deadline = Date.now() + GROWTH_BUDGET_MS
+  const open = () => !dead && Date.now() < deadline
+  const fail = (step, e) => {
+    if (e?.status === 401) dead = true
+    lines.push(`${step}失败: ${short(e)}`)
+  }
+  if (open()) {
+    try {
+      await growthReport(site, a)
+      lines.push("活跃上报 ok")
+    } catch (e) {
+      fail("活跃上报", e)
+    }
+  }
+  if (open()) {
+    for (const [label, path] of [["新手礼包", "/billing/meter/claim-gift"], ["活动补偿", "/billing/meter/claim-compensation"]]) {
+      try {
+        const d = await growthBillingPost(site, a, path, {})
+        const c = Number(d?.credit) || 0
+        if (c > 0) {
+          credit += c
+          lines.push(`${label} +${c}`)
+        }
+      } catch {
+        // already claimed answers a business error: nothing to do
+      }
+    }
+  }
+  for (const [step, run] of [
+    ["任务", growthTasks],
+    ["连登", growthStreak],
+    ["抽奖", growthLottery],
+    ["旅行", growthTravel],
+    ["补签", growthMakeup],
+  ]) {
+    if (!open()) break
+    try {
+      const r = await run(site, a)
+      credit += r.credit || 0
+      for (const line of r.lines || []) lines.push(line)
+    } catch (e) {
+      fail(step, e)
+    }
+  }
+  return { credit, lines }
+}
+
+// workbuddyCheckin is magpie's daily check-in for a CN account: the app's
+// 签到 first, then the growth-center pass. The message says what came of
+// each step; the credit is what the pass added (the check-in included).
+async function workbuddyCheckin(site, a) {
+  const lines = []
+  let credit = 0
+  let streak = 0
+  let outcome = "done"
+  try {
+    const st = await meter(site, a, "/v2/billing/meter/checkin-activity-status", {})
+    if (!st?.active) {
+      outcome = "inactive"
+      lines.push("签到活动未开启")
+    } else if (st.today_checked_in) {
+      outcome = "done"
+      credit += Number(st.today_credit) || 0
+      streak = Number(st.streak_days) || 0
+      lines.push("今日已签到")
+    } else {
+      const got = await meter(site, a, "/v2/billing/meter/daily-checkin", {})
+      outcome = "claimed"
+      credit += Number(got?.credit) || 0
+      streak = Number(got?.streak_days) || 0
+      lines.push(got?.message || "签到成功")
+    }
+  } catch (e) {
+    outcome = "failed"
+    const said = short(e)
+    if (/unauthorized|401/i.test(said)) {
+      // WorkBuddy's own app sends a device token its security SDK makes,
+      // which no plugin can: credits reading fine means that is the case.
+      try {
+        await meter(site, a, "/billing/meter/get-user-resource-summary", {})
+        lines.push("签到接口 401；WorkBuddy 只让自己的客户端签到")
+      } catch {
+        lines.push(`签到失败: ${said}`)
+      }
+    } else {
+      lines.push(`签到失败: ${said}`)
+    }
+  }
+  const g = await growthDaily(site, a)
+  credit += g.credit
+  lines.push(...g.lines)
+  const final = outcome === "claimed" || g.credit > 0 || credit > 0 ? "claimed" : outcome
+  return { outcome: final, credit, streak, message: lines.filter(Boolean).join("；").slice(0, 500) }
+}
+
 // ---- the plugins --------------------------------------------------------------
 
 // AFTER_TOOLS_REFUSED is WorkBuddy's 400 code 11153, "the conversation must
@@ -1662,6 +2055,24 @@ function makePlugin(site) {
           return { error: e?.message ?? String(e), signIn: "kept" }
         }
       },
+      // magpie's daily check-in: WorkBuddy's 签到 plus the growth center's
+      // tasks, streak, lottery and buddy travel in one daily pass. Only the
+      // China build has either; WorkBuddy AI gets no check-in hook at all,
+      // so its card keeps no row.
+      ...(site.id !== "workbuddy"
+        ? {}
+        : {
+            async checkin(getAuth) {
+              const auth = await getAuth()
+              if (auth?.type !== "oauth") return { outcome: "failed", message: "not signed in" }
+              try {
+                const a = await current(site, client, auth)
+                return await workbuddyCheckin(site, a)
+              } catch (e) {
+                return { outcome: "failed", message: e?.message ?? String(e) }
+              }
+            },
+          }),
       methods: [
         {
           type: "oauth",
@@ -1762,4 +2173,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf }
+export const _internal = { EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf, workbuddyCheckin, growthDaily, growthTaskList, growthAcceptCandidates, growthReportEvent, growthTasks, growthStreak, growthTravel, growthMakeup }
