@@ -4,6 +4,8 @@
     {"package": "@magpie-community/opencode-kimi-work-auth", "name": "Kimi Work", "icon": "kimi", "providers": ["kimi-work"], "community": true, "summary": {"en": "Kimi desktop Work subscription through its local sign-in, with live Work models and shared membership usage. Separate from Kimi Code.", "zh": "使用本机普通 Kimi 桌面版的 Work 登录，自动读取 Work 模型和会员共享用量；独立于 Kimi Code。"}},
     { "package": "@magpie-community/opencode-zen-free-auth", "name": "OpenCode Zen Free", "icon": "opencode", "providers": ["opencode-zen-free"], "community": true,
       "summary": { "en": "OpenCode Zen's free models with the public credential, automatic discovery and native streaming protocols.", "zh": "使用 public 凭证接入 OpenCode Zen 免费模型，自动发现模型并支持原生流式协议。" } },
+    { "package": "@magpie-community/opencode-2-free-auth", "name": "OpenCode 2 Free", "icon": "opencode", "providers": ["opencode-2-free"], "community": true,
+      "summary": { "en": "OpenCode 2 free models with public credential, automatic discovery and native streaming protocols.", "zh": "使用 public 凭证免登录接入 OpenCode 2 全量免费模型，支持 GLM-5.3-Flash 等最新模型。" } },
     { "package": "@magpie-community/opencode-zcode-auth", "name": "ZCode", "icon": "zcode", "providers": ["zcode"], "community": true, "replaces": "zcode",
       "summary": { "en": "Z.ai and BigModel GLM Coding Plan, team seats and ZCode's free Start Plan.", "zh": "Z.ai 与智谱 GLM Coding Plan，支持团队席位和 ZCode 免费 Start Plan。" } },
     { "package": "@magpie-community/opencode-qoder-auth", "name": "Qoder", "icon": "qoder", "providers": ["qoder", "qoder-cn"], "community": true, "replaces": "qoder",
