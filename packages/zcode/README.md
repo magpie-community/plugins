@@ -68,6 +68,17 @@ asks again every 10 minutes:
   `<model>-Trial`; asking that entry spends the gift (see below).
 - Otherwise they go to the gift plans.
 
+Set the plugin option `"signed": true` and a BigModel Coding Plan lists each
+model as `<model>-Signed`. That opt-in entry strips the suffix, sends the
+normal Coding Plan key, and adds BigModel's zhipu-client-sign headers as
+ZCode 3.15.3 does: the handshake accepts either an ordinary API key
+(`apiKey`) or a project access token (`accessToken`), and the model request
+carries only `X-Client-Ts`, `X-Client-Version`, `X-Client-Sig`,
+`X-Session-Id`, `X-Client-Nonce`, `X-App-Id`, and `X-Client-Pow`. A failed
+handshake is an error and no unsigned model request is sent. The catalog and
+plain entries keep their existing unsigned behavior while the option is off
+(the default).
+
 Every request carries the key as both `x-api-key` and
 `Authorization: Bearer`.
 

@@ -6,23 +6,34 @@
 // Plan or team request goes as the agent sent it. The requests go to a
 // local Bun.serve that records them; nothing reaches z.ai or bigmodel.
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
-import { createHash } from "node:crypto"
+import { createCipheriv, createHash, createHmac } from "node:crypto"
 import { arch, homedir, release, tmpdir } from "node:os"
 import { basename } from "node:path"
 import { realpathSync } from "node:fs"
 
-let ZCodeAuthPlugin, PROMPT
+let ZCodeAuthPlugin, _internal, PROMPT
 let server
 const got = []
 let answer = null // what the fake answers instead, when set
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, _internal } = await import("./index.mjs"))
   PROMPT = (await import("./prompt.mjs")).default
   server = Bun.serve({
     port: 0,
     async fetch(req) {
       got.push({ method: req.method, path: new URL(req.url).pathname, headers: Object.fromEntries(req.headers), body: await req.text() })
+      if (new URL(req.url).pathname === "/open.bigmodel.cn/api/paas/c1f3a7e2/v2/client") {
+        const secret = "secret"
+        const prk = createHmac("sha256", "WD_CLIENT_SIGN_KDF_SALT").update(secret).digest()
+        const key = createHmac("sha256", prk).update(Buffer.concat([Buffer.from("ed25519_priv"), Buffer.from([1])])).digest().subarray(0, 32)
+        const nonce = Buffer.alloc(12)
+        const cipher = createCipheriv("aes-256-gcm", key, nonce)
+        cipher.setAAD(Buffer.from("two"))
+        const der = Buffer.from("MC4CAQAwBQYDK2VwBCIEINaofm94EHDBFTX6XkGlMUU8F41qb2mXKe/DMwUJbxCh", "base64")
+        const sealed = Buffer.concat([nonce, cipher.update(Buffer.from(der.toString("base64"))), cipher.final(), cipher.getAuthTag()]).toString("base64")
+        return Response.json({ code: 200, data: { privateCipher: sealed } })
+      }
       if (answer) return answer()
       return Response.json({ type: "message", content: [] })
     },
@@ -45,6 +56,7 @@ afterEach(() => {
   globalThis.fetch = real
   got.length = 0
   answer = null
+  _internal.signedSigners.clear()
 })
 
 const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 16)
@@ -69,7 +81,7 @@ async function send(auth, body, { url = "https://api.z.ai/api/anthropic/v1/messa
     ? await opts.fetch(new Request(url, { method: "POST", headers, body }))
     : await opts.fetch(url, { method: "POST", headers, body })
   expect(res.status).toBe(200)
-  expect(got.length).toBe(1)
+  expect(got).toHaveLength(1)
   return got[0]
 }
 
@@ -164,8 +176,8 @@ test("a Start Plan request carries ZCode's headers, and only those", async () =>
     "anthropic-version": "2023-06-01",
     "content-type": "application/json",
     "http-referer": "https://zcode.z.ai",
-    "user-agent": "ZCode/3.14.3 ai-sdk/anthropic/3.0.81",
-    "x-zcode-app-version": "3.14.3",
+    "user-agent": "ZCode/3.15.3 ai-sdk/anthropic/3.0.81",
+    "x-zcode-app-version": "3.15.3",
     "x-title": "Z Code@cli",
     "x-release-channel": "production",
     "x-client-language": o.locale,
