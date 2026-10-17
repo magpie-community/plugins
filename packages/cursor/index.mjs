@@ -2656,12 +2656,12 @@ async function answerOf(auth, chat, signal, session = "") {
       let response = native ? await runNative({ ...args, native }) : await runOnce(args)
       const rebuild = async () => {
         const fallback = await runOnce(args)
-        fallback.diagnostic = "stateless; bootstrap=imported-history; reason=missing-batch-count"
+        fallback.diagnostic = "stateless; bootstrap=imported-history; reason=" + (response.error?.continuityReason || "missing-batch-count")
         return fallback
       }
-      // A missing native batch count may be retried once, only before Chat
-      // output is exposed or any native result was submitted. Never repeat an
-      // uncertain tool result write or duplicate a progressive stream's output.
+      // A missing or conflicting native batch count may be retried once,
+      // only before Chat output is exposed or any native result was submitted.
+      // Never repeat an uncertain tool write or progressive stream output.
       if (response.error?.retentionIneligible && !signal?.aborted) response = await rebuild()
       else if (native) response.rebuild = rebuild
       response.diagnostic ??= "stateless; bootstrap=imported-history; reason=" + (prepared.fallback || "retention capacity or reservation unavailable")
@@ -2719,8 +2719,10 @@ async function answerOf(auth, chat, signal, session = "") {
       for await (const e of events) {
         if (e.error) {
           if (!e.error.retentionIneligible || !r.rebuild || signal?.aborted) return errorResponse(e.error)
+          const reason = e.error.continuityReason
           r = await r.rebuild()
           if (r.error) return errorResponse(r.error)
+          if (reason) r.diagnostic = "stateless; bootstrap=imported-history; reason=" + reason
           events = r.events
           responseHeaders["X-Magpie-Cursor-Continuity"] = r.diagnostic
           retry = true

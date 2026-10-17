@@ -103,6 +103,12 @@ async function agent(options = {}) {
       }
       if (options.unsupportedExec) { send(envelope(bin(2, message(uint(1, 77), bin(12, text(1, "synthetic shell request")))))); return }
       if (options.thinkingOnly) return
+      if (options.conflictingCount) {
+        const conflict = () => { send(update(27, uint(1, 2))); send(update(27, uint(1, 1))) }
+        if (options.initialReasoning === "") conflict()
+        else delay(conflict)
+        return
+      }
       if (options.progressiveFinal || options.finalOnly) {
         send(update(1, text(1, "progressive answer")))
         a.finish = () => {
@@ -138,6 +144,11 @@ async function agent(options = {}) {
         marker = received.get(firstID).content[0].text
         phase = 1
         send(update(4, text(1, "native planning two")))
+        if (options.secondConflictingCount) {
+          send(update(27, uint(1, 2)))
+          send(update(27, uint(1, 1)))
+          return
+        }
         send(tool(8, "call_a__fc_b", marker, { name: options.name })) // call-before-count in phase two
         if (!options.secondNoCount) send(update(27, uint(1, 1)))
         state(true)
@@ -1085,6 +1096,55 @@ for (const options of [{ noCount: true }, { cleanNoCount: true }]) test(`native 
   expect(a.histories[1]).toEqual(a.histories[0])
   expect(a.results).toEqual([])
   expect(a.closes).toEqual([])
+})
+
+for (const stream of [false, true]) test(`native retention: conflicting counts before visible ${stream ? "stream" : "JSON"} output rebuild exactly once`, async () => {
+  const a = await agent({ conflictingCount: true, ...(stream ? { initialReasoning: "" } : {}) })
+  const chat = initial({ stream })
+  const result = await a.ask(auth(), chat)
+  expect(result.status).toBe(200)
+  if (stream) {
+    expect(result.headers.get("X-Magpie-Cursor-Continuity")).toContain("reason=inconsistent-batch-count")
+    const sse = await result.text()
+    expect(sse).toContain("rebuilt:new-input")
+    expect(sse).toContain("[DONE]")
+    expect(sse).not.toContain("inconsistent native tool count")
+  } else {
+    rebuilt(result, "new-input")
+    expect(result.diagnostic).toContain("reason=inconsistent-batch-count")
+    expect(choice(result).message.reasoning_content).toBeUndefined()
+  }
+  expect(a.runs).toHaveLength(2)
+  expect(a.histories[1]).toEqual(a.histories[0])
+  expect(a.results).toEqual([])
+  expect(a.closes).toEqual([])
+  expect(a.errors).toEqual([])
+})
+
+test("native retention: conflicting counts after visible thinking never replay output", async () => {
+  const a = await agent({ conflictingCount: true })
+  const result = await a.ask(auth(), initial({ stream: true }))
+  const sse = await result.text()
+  expect(sse).toContain("native planning one")
+  expect(sse).toContain("inconsistent native tool count")
+  expect(sse).not.toContain("rebuilt:")
+  expect(a.runs).toHaveLength(1)
+  expect(a.results).toEqual([])
+})
+
+test("native retention: conflicting counts after submitted result never retry automatically", async () => {
+  const a = await agent({ secondConflictingCount: true }), account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  const next = continueWith(chat, first.body, ["already submitted exactly once"])
+  const failed = await a.ask(account, next)
+  expect(failed.status).toBe(502)
+  expect(failed.body.error.message).toContain("inconsistent native tool count")
+  expect(a.runs).toHaveLength(1)
+  expect(a.results).toHaveLength(1)
+  expect(a.closes).toEqual([7])
+  rebuilt(await a.ask(account, next), "already submitted exactly once")
+  expect(a.runs).toHaveLength(2)
+  expect(a.results).toHaveLength(1)
 })
 
 test("native retention: progressive thinking before missing count is not transparently replayed", async () => {

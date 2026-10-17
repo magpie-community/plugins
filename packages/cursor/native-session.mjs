@@ -675,7 +675,13 @@ class NativeSession {
   }
   listed(count) {
     if (!Number.isSafeInteger(count) || count < 1) invalid("invalid native tool count", 502)
-    if (this.segment.expected != null && this.segment.expected !== count) invalid("inconsistent native tool count", 502)
+    if (this.segment.expected != null && this.segment.expected !== count) {
+      // Conflicting counts leave the native step boundary ambiguous. Retire
+      // this owner; Chat may rebuild from history only if no native result
+      // was submitted to this Run.
+      this.fail({ status: 502, message: "inconsistent native tool count", retentionIneligible: !this.resultSubmitted, continuityReason: "inconsistent-batch-count" })
+      return
+    }
     this.segment.expected = count
     if (this.state === "awaiting-results") return // an identical retransmission
     this.waitForBatch()
@@ -876,7 +882,10 @@ class NativeSession {
                 } else if (u.num === 14) {
                   if (!this.segment.content && !this.segment.calls.length) invalid("an empty reply (Cursor ended the turn without text or a tool call)", 502)
                   this.terminalSeen(uf)
-                } else if (u.num === 27) this.listed(num(uf, 1))
+                } else if (u.num === 27) {
+                  this.listed(num(uf, 1))
+                  if (this.error) return
+                }
               }
               break
             case 2: {
