@@ -205,3 +205,5 @@ magpie's built-in WorkBuddy does more than this package:
 - several accounts under one provider.
 
 OpenCode's plugin API has no place for these.
+
+Credit multipliers accept the international catalog's `x0.34 credits` text as well as `x0.34`. An empty credits value (for example Auto) stays unknown, never free.

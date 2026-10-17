@@ -1403,7 +1403,7 @@ function modelOf(site, provider, m) {
 // rated. The same rule as magpie's built-in (wbCredits).
 function creditsOf(c) {
   if (c == null || c === "") return undefined
-  const s = String(c).trim().toLowerCase().replace(/^x/, "")
+  const s = String(c).trim().toLowerCase().replace(/\s+credits?$/, "").replace(/^x/, "")
   const n = Number(s)
   return s !== "" && Number.isFinite(n) && n >= 0 ? n : undefined
 }
