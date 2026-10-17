@@ -14,7 +14,7 @@
 magpie plugin add @magpie-community/middleware-codex-history
 ```
 
-也可从 [独立 GitHub 仓库](https://github.com/unisong/magpie-codex-history-filter) 安装同一份过滤代码。无需启动 Codex Filter Manager，不要同时安装两份。需要支持 gateway middleware 的 Magpie；本包已在 0.1.1265 的隔离实例中验证，其他版本需核对插件加载状态。
+社区版本只发布历史过滤中间件；模型工作台单独本地维护，不包含在本包中。无需启动 Codex Filter Manager，不要同时启用两份过滤插件。需要支持 gateway middleware 的 Magpie；本包已在 0.1.1265 的隔离实例中验证，其他版本需核对插件加载状态。
 
 ## 设置
 
@@ -48,6 +48,8 @@ magpie plugin add @magpie-community/middleware-codex-history
 
 开启后，插件移除旧 reasoning 条目、明确标记的加密内容，以及可独立携带内容的消息和工具条目中的可选服务器 ID；设置 `store: false`。保留正文、工具参数、结果、`call_id` 配对、文件引用及普通业务 ID，不改变请求模型或推理强度。
 
+**v0.1.1：历史搜索兼容修复。** 原生 `web_search_call` 可能依赖已删除的 reasoning，导致上游提示 `was provided without its required reasoning item`。开启过滤后，历史搜索条目转为带标记的助手文字，保留已记录的动作、查询、状态和来源数据，去除服务器条目 ID 与内部回合元数据；后续结论、引用及普通工具调用配对保持原样。不重新搜索、不补造未记录的结果。该处理适用于携带明文历史的普通对话和文字总结，不解密压缩历史。
+
 `previous_response_id`、`conversation`、`item_reference`、加密压缩历史和 `/responses/compact` 无法安全跨资源迁移时，会明确拒绝，提示整理文字摘要后新建会话，不会静默丢弃这些上下文。
 
 - 不能解密旧密文、迁移所有服务器资源引用，或保证消除全部 Azure 历史错误。移除内部推理状态也可能影响长任务连续性。
@@ -62,7 +64,7 @@ magpie plugin add @magpie-community/middleware-codex-history
 
 若此前使用 Codex Filter Manager v1.0.5 自动安装的本地 `magpie-plugin`，先在旧管理页关闭该供应商的自动保护（若有旧设置），停止旧管理服务，再在 Magpie 中停用或卸载旧的本地历史插件，最后安装本插件并复制所需历史规则。原有规则的 `stripResponsesLiteHeader` 会被忽略，可删除。不要同时启用两份历史过滤插件。
 
-升级固定 GitHub 标签时，在 Magpie 中用新标签地址更新；现有配置存于 Magpie 的 `plugins.json`，更新前可备份自己的 Options。不要上传该文件，它可能包含其他插件的私有设置。
+社区版本合并并完成 dist 发布后，可在 Magpie 插件页更新；现有 Options 无需改写，更新前可自行备份。不要上传 Magpie 的 `plugins.json`，它可能包含其他插件的私有设置。本插件不直接读写该文件，规则由宿主通过 Options 传入。
 
 ## English
 
@@ -71,6 +73,8 @@ Opt-in Magpie gateway middleware for Codex Responses history after switching pro
 Install from **Plugins → Discover → Gateway middleware**, or run `magpie plugin add @magpie-community/middleware-codex-history`. In the plugin's **Options**, configure `providers["magpie:<provider-id>"]` as shown above. Every provider defaults to passthrough. The request's `provider/model` prefix selects its rule; requests from different sessions remain independent. `aliases` maps an old prefix to a rule ID only. `preserveEncryptedInclude: true` keeps requests for new encrypted response content while still removing historical ciphertext.
 
 Unsafe server-only references and encrypted compaction are rejected explicitly. Magpie may fail open on plugin errors/timeouts, and downstream route changes are outside the plugin's control. Disable or remove it in Magpie; it never edits Codex configuration.
+
+Version 0.1.1 converts historical native `web_search_call` items to labeled assistant text after removing old reasoning. Recorded actions, queries, status and sources remain available; native item IDs and internal turn metadata are removed. Subsequent answers and ordinary tool-call pairs remain intact. No searches are rerun, absent results are not reconstructed, and encrypted compaction is not decrypted. The community package contains only the middleware; the optional model workbench is maintained separately for local use.
 
 ## 开发与来源
 

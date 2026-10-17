@@ -50,6 +50,10 @@ function filterResponsesRequest(body, {preserveEncryptedInclude = false} = {}) {
       const isMessage = item && item.type === undefined && typeof item.role === 'string' && item.content !== undefined;
       if (item && typeof item === 'object') {
         const portable = removeEncryptedContent(item, () => { removedEncryptedContentItems++; });
+        if (item.type === 'web_search_call') {
+          if (Object.hasOwn(portable, 'id')) removedItemIds++;
+          return portableWebSearch(portable);
+        }
         if (PORTABLE_ITEMS.has(item.type) || isMessage) {
           if (Object.hasOwn(portable, 'id')) {
             delete portable.id;
@@ -65,6 +69,17 @@ function filterResponsesRequest(body, {preserveEncryptedInclude = false} = {}) {
   // call_id pairs calls/results and is not the server-side item id.
   // Preserve it, this turn's effort, all message contents, and nested resource IDs.
   return {body: clean, removed, removedItemIds, removedEncryptedContentItems};
+}
+
+// Inlined from history/portable-web-search.mjs for the import-free gateway hook.
+function portableWebSearch(item) {
+  const record = {...item};
+  delete record.type;
+  delete record.id;
+  delete record.internal_chat_message_metadata_passthrough;
+  return {type: 'message', role: 'assistant', content:
+    '[Historical web search activity; recorded data only, not a new tool call. '
+    + 'Search results are not reconstructed.]\n' + JSON.stringify(record)};
 }
 
 // Historical agent/tool messages can carry account-bound ciphertext inside their

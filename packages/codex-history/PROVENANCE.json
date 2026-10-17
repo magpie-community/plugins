@@ -14,6 +14,7 @@
   "changes": [
     "Inlined the shared history algorithm and request hook into one import-free middleware file.",
     "Removed helper exports; only onRequest is exported.",
-    "No model detection, guard, dashboard, proxy service or provider configuration is included."
+    "No model detection, guard, dashboard, proxy service or provider configuration is included.",
+    "Version 0.1.1 adds history/portable-web-search.mjs, inlined into the middleware to convert historical native web_search_call items to labeled text after reasoning is removed. Original source hashes above identify the v1.0.5 baseline, not the modified middleware."
   ]
 }

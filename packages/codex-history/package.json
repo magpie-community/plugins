@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/middleware-codex-history",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Opt-in, per-provider Codex Responses history compatibility for Magpie",
   "type": "module",
   "license": "MIT",
