@@ -1,0 +1,42 @@
+{
+  "note": "Captured 2026-10-09 from the official desktop client talking to its own gateway. Cookies, host and message text redacted; header keys, values and body protocol fields verbatim. See packages/catpaw/index.mjs gatewayHeaders and runConversation.",
+  "path": "/api/agent/conversation/round",
+  "headers": {
+    "accept": "application/json, text/plain, */*",
+    "accept-encoding": "gzip, compress, deflate, br",
+    "content-type": "application/json",
+    "user-agent": "axios/1.19.0",
+    "m-appkey": "com.sankuai.mcopilot.cli",
+    "m-debug": "true",
+    "m-host": "<client machine LAN IP — redacted>",
+    "m-spanid": "0.2",
+    "m-spanname": "conversation.round",
+    "m-traceid": "e66f2791065a78b22f6975d7726f30b7",
+    "x-request-id": "0e51db8a-9eae-44d0-b580-cec10f9a2154",
+    "x-trace-id": "e66f2791065a78b22f6975d7726f30b7",
+    "content-length": "1897"
+  },
+  "bodyProtocol": {
+    "agentType": "main",
+    "conversationId": "<redacted>",
+    "dxNoticeEnable": false,
+    "enableTodos": true,
+    "mcpServers": [],
+    "mode": "CLI",
+    "modelType": 30,
+    "permissionMode": "unsafeBypassPermissions",
+    "repositories": [],
+    "rulesMessage": "",
+    "source": "CatPawCLI",
+    "toolVersion": "2.0.2",
+    "goal": null,
+    "userPromptContext": {}
+  },
+  "headerless_message_shape": {
+    "type": "user",
+    "content_types": [
+      "text"
+    ],
+    "finished": true
+  }
+}
