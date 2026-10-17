@@ -178,17 +178,17 @@ for (const [input, supplied, expected] of [
     assert.equal(state.calls.at(-1).headers["x-opencode-project"], expected);
     assert.equal(
       state.calls.at(-1).headers["user-agent"],
-      "opencode/1.19.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
+      "opencode/latest/2.0.31/cli",
     );
   });
 }
 
-// The headers OpenCode 1.19.0's release binary sends to opencode.ai/zen/v1,
+// The headers OpenCode 2.0.31's release binary sends to opencode.ai/zen/v1,
 // captured on each protocol: these and no others, whatever the caller sent.
-for (const [path, model, utils, key] of [
-  ["chat/completions", "chat-free", "4.0.23", ["authorization"]],
-  ["responses", "responses-free", "4.0.40", ["authorization"]],
-  ["messages", "messages-free", "4.0.46", ["anthropic-version", "x-api-key"]],
+for (const [path, model, key] of [
+  ["chat/completions", "chat-free", ["authorization"]],
+  ["responses", "responses-free", ["authorization"]],
+  ["messages", "messages-free", ["anthropic-version", "x-api-key"]],
 ]) {
   test(`${path}: sends OpenCode's own headers and none of the caller's`, async (t) => {
     const { plugin, state, origin } = await fixture(t);
@@ -207,7 +207,7 @@ for (const [path, model, utils, key] of [
     });
     await response.text();
     const sent = state.calls.at(-1).headers;
-    assert.equal(sent["user-agent"], `opencode/1.19.0 ai-sdk/provider-utils/${utils} runtime/bun/1.3.14`);
+    assert.equal(sent["user-agent"], "opencode/latest/2.0.31/cli");
     assert.equal(sent.accept, "*/*");
     const own = Object.keys(sent).filter(
       (name) => !["host", "connection", "content-length", "accept-encoding"].includes(name),
@@ -220,13 +220,17 @@ for (const [path, model, utils, key] of [
         "user-agent",
         "x-opencode-client",
         "x-opencode-project",
-        "x-opencode-request",
         "x-opencode-session",
         "x-opencode-session-id",
+        "x-session-affinity",
+        "x-session-id",
         ...key,
       ].sort(),
     );
     assert.equal(sent["x-opencode-session-id"], sent["x-opencode-session"]);
+    assert.equal(sent["x-session-affinity"], sent["x-opencode-session"]);
+    assert.equal(sent["x-session-id"], sent["x-opencode-session"]);
+    assert.equal(sent["x-opencode-request"], undefined);
   });
 }
 
@@ -385,6 +389,30 @@ test("a free model Zen lists before the catalog has it is offered with the catal
   for (const id of Object.keys(models)) assert.ok(zenFree.includes(id), id);
 });
 
+test("fills in a missing tool description so upstream accepts the request", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  const schema = { type: "object", properties: { command: { type: "string" } } };
+  for (const [path, model, tool] of [
+    [
+      "chat/completions",
+      "chat-free",
+      { type: "function", function: { name: "bash", parameters: schema } },
+    ],
+    ["responses", "responses-free", { type: "function", name: "bash", parameters: schema }],
+    ["messages", "messages-free", { name: "bash", input_schema: schema }],
+  ]) {
+    const response = await loader.fetch(`${origin}/v1/${path}`, {
+      method: "POST",
+      body: JSON.stringify({ model, stream: true, tools: [tool] }),
+    });
+    await response.text();
+    const sent = state.calls.at(-1).body.tools[0];
+    assert.equal(sent.function?.description ?? sent.description, "Tool function");
+  }
+});
+
 test("forces upstream streaming, preserves existing tools and returns the SSE body unbuffered", async (t) => {
   const { plugin, state, origin } = await fixture(t);
   await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
@@ -416,11 +444,12 @@ test("forces upstream streaming, preserves existing tools and returns the SSE bo
   const sent = state.calls.at(-1);
   assert.equal(sent.headers.authorization, "Bearer public");
   assert.match(sent.headers["x-opencode-session"], /^ses_[0-9a-f]{9}ff[0-9a-f][0-9A-Za-z]{14}$/);
-  // OpenCode sends neither to its own gateway; a caller's never goes on.
-  assert.equal(sent.headers["x-session-affinity"], undefined);
-  assert.equal(sent.headers["x-session-id"], undefined);
+  // OpenCode 2.0.31 sends the session under all three names; a caller's
+  // x-session-id never goes on, and x-opencode-request is not sent.
+  assert.equal(sent.headers["x-session-affinity"], sent.headers["x-opencode-session"]);
+  assert.equal(sent.headers["x-session-id"], sent.headers["x-opencode-session"]);
   assert.equal(sent.headers["x-opencode-session-id"], sent.headers["x-opencode-session"]);
-  assert.match(sent.headers["x-opencode-request"], /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+  assert.equal(sent.headers["x-opencode-request"], undefined);
   assert.equal(sent.body.stream, true);
   assert.equal(sent.body.stream_options.include_usage, true);
   assert.deepEqual(sent.body.tools[0], bash);

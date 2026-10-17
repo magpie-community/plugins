@@ -6,7 +6,7 @@ OpenCode Zen's free models in magpie and OpenCode. Provider id:
 Since 2026-10-13 Zen's free tier answers 403 FreeTierError ("can only be
 used from within OpenCode") to a request that isn't OpenCode's. From
 0.1.6 the plugin sends a free-model request with exactly the headers
-OpenCode 1.19.0 sends to Zen, and a session id of OpenCode's own form.
+OpenCode 2.0.31 sends to Zen, and a session id of OpenCode's own form.
 Older versions (0.1.1 on npm before it) get the 403: update the plugin.
 
 ## Install
@@ -32,7 +32,11 @@ The credential is kept in OpenCode's `auth.json` or magpie's
 
 The plugin discovers Zen's current free models, including their context
 windows and reasoning levels. Use `opencode-zen-free/<model>`, for example
-`opencode-zen-free/big-pickle`.
+`opencode-zen-free/big-pickle`. The latest free models include
+`glm-5.3-flash-free`, `deepseek-v4.1-flash-free`,
+`nemotron-3.5-super-vl-free`, `nemotron-3-ultra-free` and `beam-free`;
+they are also known offline, so they are offered even when Zen's list or
+OpenCode's catalog can't be read.
 
 Retired models and SystemOne models are excluded. The list is asked
 again each time the host lists models (magpie does this on start and every

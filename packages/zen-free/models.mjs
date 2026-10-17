@@ -118,6 +118,11 @@ export const bootstrapProtocols = {
   "nemotron-3.5-lightning-free": "chat",
   "muse-spark-1.3-contributor-free": "responses",
   "jev-1.13-free": "systemone",
+  "glm-5.3-flash-free": "chat",
+  "deepseek-v4.1-flash-free": "chat",
+  "nemotron-3.5-super-vl-free": "chat",
+  "nemotron-3-ultra-free": "chat",
+  "beam-free": "chat",
 };
 
 // Offline bootstrap metadata from the OpenCode catalog, 2026-10-06; the
@@ -169,6 +174,43 @@ export const bootstrapProvider = {
       reasoning: true,
       tool_call: true,
       interleaved: { field: "reasoning_content" },
+    },
+    "glm-5.3-flash-free": {
+      name: "GLM-5.3-Flash Free",
+      cost: { input: 0, output: 0 },
+      limit: { context: 200000, output: 32000 },
+      reasoning: true,
+      tool_call: true,
+      interleaved: { field: "reasoning_content" },
+      modalities: { input: ["text", "image", "video", "pdf"], output: ["text"] },
+      reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+    },
+    "deepseek-v4.1-flash-free": {
+      name: "DeepSeek V4.1 Flash Free",
+      cost: { input: 0, output: 0 },
+      limit: { context: 131072, output: 8192 },
+      reasoning: true,
+      tool_call: true,
+      interleaved: { field: "reasoning_content" },
+    },
+    "nemotron-3.5-super-vl-free": {
+      name: "Nemotron 3.5 Super VL Free",
+      cost: { input: 0, output: 0 },
+      limit: { context: 131072, output: 8192 },
+      tool_call: true,
+      modalities: { input: ["text", "image"], output: ["text"] },
+    },
+    "nemotron-3-ultra-free": {
+      name: "Nemotron 3 Ultra Free",
+      cost: { input: 0, output: 0 },
+      limit: { context: 131072, output: 8192 },
+      tool_call: true,
+    },
+    "beam-free": {
+      name: "Beam Free",
+      cost: { input: 0, output: 0 },
+      limit: { context: 131072, output: 8192 },
+      tool_call: true,
     },
     "big-pickle": {
       name: "Big Pickle",
