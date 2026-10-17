@@ -48,7 +48,7 @@ export async function diagnose({directory = path.join(os.homedir(), '.config', '
   config = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml'),
   model, now = new Date(), probe = ping} = {}) {
   const report = {schemaVersion: 1, product: 'magpie-codex-history-filter', generatedAt: now.toISOString(),
-    toolVersion: '0.2.0', platform: process.platform, checks: [], plugins: [],
+    toolVersion: '0.2.1', platform: process.platform, checks: [], plugins: [],
     observation: {source: 'read-only configuration inspection', runtimeCalls: null, filteredRequests: null, removedItems: null, lastRuntimeError: null},
     privacy: 'No prompts, keys, provider names, model names, URLs or file paths. No upload.',
     feedbackUrl: 'https://github.com/unisong/magpie-codex-history-filter/issues/new?template=bug_report.yml'};

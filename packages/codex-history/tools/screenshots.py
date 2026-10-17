@@ -17,7 +17,7 @@ target = {'id': 'demo-target', 'model': 'demo/gpt-6-astra', 'expected': 'gpt-6-a
 record = {'id': 'demo-record', 'targetId': target['id'], 'model': target['model'], 'expected': target['expected'],
     'effort': 'high', 'status': 'matched', 'reason': '演示数据：三份样本与目标指纹相符；不代表模型身份认证。',
     'startedAt': when, 'finishedAt': when + 10000, 'rounds': [{'samples': []}]}
-state = {'version': '0.2.0', 'health': '', 'targets': [target],
+state = {'version': '0.2.1', 'health': '', 'targets': [target],
     'history': [{**record, 'id': 'demo-record-' + str(i), 'startedAt': when - i * 1800000} for i in range(16)],
     'currentModel': {'model': target['model'], 'requestedModel': 'group/coding', 'reportedModel': 'gpt-6-astra',
         'effort': 'high', 'source': 'request', 'observedAt': '2026-10-16T12:00:00Z'},

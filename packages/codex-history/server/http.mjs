@@ -49,7 +49,7 @@ export async function createService({directory, gateFile, magpieDirectory, packa
     try {
       if (req.headers.host !== new URL(origin).host) throw fail('Host 不受信任。', 403);
       const url = new URL(req.url, origin), pathname = url.pathname;
-      if (req.method === 'GET' && pathname === '/health') return reply(res, 200, {service: 'magpie-model-workbench', version: '0.2.0'});
+      if (req.method === 'GET' && pathname === '/health') return reply(res, 200, {service: 'magpie-model-workbench', version: '0.2.1'});
       if (pathname === '/api/open' && req.method === 'POST') {
         if (!same(req.headers.authorization || '', 'Bearer ' + control)) throw fail('未授权。', 401);
         if (req.headers.origin && req.headers.origin !== origin) throw fail('来源不受信任。', 403);

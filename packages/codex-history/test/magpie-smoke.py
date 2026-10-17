@@ -52,6 +52,7 @@ bank = json.loads((root / 'vendor/modeltrace/unified_bank.json').read_text(encod
 luna = next(m for m in bank['models'] if m['id'] == 'gpt-6-luna')
 seen = []
 probe_index = 0
+summary_instructions = 'Summarize the recorded conversation; local compaction fixture only.'
 
 
 def numbers(index):
@@ -76,6 +77,19 @@ class Mock(BaseHTTPRequestHandler):
         global probe_index
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         seen.append(body)
+        if body.get('instructions') == summary_instructions:
+            items = body.get('input', [])
+            native = any(item.get('type') == 'web_search_call' for item in items)
+            foreign = any(item.get('id') or item.get('encrypted_content') for item in items)
+            if native or foreign:
+                reply = json.dumps({'error': 'web_search_call is missing required reasoning' if native
+                    else 'The requested item was created under a different Azure OpenAI resource.'}).encode()
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(reply)))
+                self.end_headers()
+                self.wfile.write(reply)
+                return
         content = json.dumps(body.get('input', []), ensure_ascii=False)
         is_probe = '整数' in content
         answer = numbers(probe_index) if is_probe else 'local mock only'
@@ -129,11 +143,8 @@ def get(url):
         return json.load(response)
 
 
-def business(pid='demo'):
-    body = {'model': pid + '/gpt-6-astra', 'stream': False, 'include': ['reasoning.encrypted_content'],
-            'input': [{'type': 'reasoning', 'encrypted_content': 'old-cipher'},
-                      {'type': 'message', 'id': 'msg_old', 'role': 'user', 'content': 'Mock only'}]}
-    req = urllib.request.Request(origin + '/v1/responses', data=json.dumps(body).encode(),
+def send(url, body):
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                  headers={'Content-Type': 'application/json', 'User-Agent': 'codex_cli_rs/0.100.0'})
     try:
         response = opener.open(req, timeout=15)
@@ -141,6 +152,45 @@ def business(pid='demo'):
         response = e
     with response:
         return response.status, response.read().decode()
+
+
+def business(pid='demo'):
+    body = {'model': pid + '/gpt-6-astra', 'stream': False, 'include': ['reasoning.encrypted_content'],
+            'input': [{'type': 'reasoning', 'encrypted_content': 'old-cipher'},
+                      {'type': 'message', 'id': 'msg_old', 'role': 'user', 'content': 'Mock only'}]}
+    return send(origin + '/v1/responses', body)
+
+
+def text_compaction():
+    return {'model': 'demo/gpt-6-astra', 'stream': False, 'instructions': summary_instructions,
+        'reasoning': {'effort': 'xhigh'}, 'include': ['reasoning.encrypted_content'], 'input': [
+            {'type': 'reasoning', 'id': 'rs_foreign', 'encrypted_content': 'old-cipher'},
+            {'type': 'web_search_call', 'id': 'ws_foreign', 'status': 'completed',
+             'action': {'type': 'search', 'query': 'saved query', 'queries': ['saved query', 'second query']},
+             'internal_chat_message_metadata_passthrough': {'turn_id': 'private-turn'}},
+            {'type': 'message', 'role': 'assistant', 'content': 'Saved finding: https://example.invalid/rules'},
+            {'type': 'function_call', 'id': 'fc_foreign', 'call_id': 'paired', 'name': 'read_file', 'arguments': '{}'},
+            {'type': 'function_call_output', 'id': 'out_foreign', 'call_id': 'paired', 'output': 'saved file'},
+            {'role': 'user', 'content': 'Produce a text summary, without new searches.'}]}
+
+
+def expect_portable_summary():
+    request = text_compaction()
+    status, body = send(origin + '/v1/responses', request)
+    assert status == 200, (status, body)
+    forwarded = seen[-1]
+    assert forwarded['instructions'] == summary_instructions
+    assert forwarded['reasoning'] == request['reasoning']
+    assert forwarded['include'] == request['include']
+    record = forwarded['input'][0]
+    assert record['type'] == 'message' and record['role'] == 'assistant'
+    assert json.loads(record['content'].split('\n', 1)[1]) == {
+        'status': 'completed', 'action': request['input'][1]['action']}
+    assert forwarded['input'][1] == request['input'][2]
+    assert forwarded['input'][2]['call_id'] == forwarded['input'][3]['call_id'] == 'paired'
+    assert forwarded['input'][3]['output'] == 'saved file'
+    assert all(item.get('type') not in ('reasoning', 'web_search_call') for item in forwarded['input'])
+    assert 'private-turn' not in json.dumps(forwarded)
 
 
 def expect_reloaded_filter(items):
@@ -186,6 +236,18 @@ try:
     assert len(seen[-1]['input']) == 1 and 'id' not in seen[-1]['input'][0]
     assert seen[-1]['include'] == ['reasoning.encrypted_content']
     print('PASS real host loads one unified plugin; existing filtering works; startup sends no probes', flush=True)
+    # Reproduce both failures directly against the loopback upstream. Neither
+    # a native call nor its foreign resource IDs should reach it after filtering.
+    bad = text_compaction()
+    assert send(f'http://127.0.0.1:{mock.server_port}/v1/responses', bad)[0] == 400
+    without_reasoning = {**bad, 'input': [i for i in bad['input'] if i.get('type') != 'reasoning']}
+    assert send(f'http://127.0.0.1:{mock.server_port}/v1/responses', without_reasoning)[0] == 400
+    foreign = {**bad, 'input': [bad['input'][0]]}
+    status, response = send(f'http://127.0.0.1:{mock.server_port}/v1/responses', foreign)
+    assert status == 400 and 'different Azure' in response
+    expect_portable_summary()
+    probe_start = len(seen)
+    print('PASS text summarization removes native-search reasoning dependencies and Azure resource IDs', flush=True)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, **({'executable_path': os.environ['CHROME_PATH']} if os.environ.get('CHROME_PATH') else {}))
         page = browser.new_page(viewport={'width': 1440, 'height': 1000})
@@ -213,7 +275,7 @@ try:
         expect(page.locator('#targetList')).to_contain_text('重复检测支持偏离', timeout=30000)
         expect(page.locator('#targetList')).to_contain_text('后续请求已暂停')
         assert probe_index == 6, probe_index
-        for request_body in seen[1:]:
+        for request_body in seen[probe_start:]:
             assert not request_body['model'].startswith('workbench-probe/'), 'internal alias leaked upstream'
             assert len(request_body['input']) == 1
             assert request_body['reasoning']['effort'] == 'low'
@@ -306,6 +368,7 @@ try:
         saved_options = json.loads((data / 'plugins.json').read_text())['plugins'][0]['options']
         assert saved_options['keepExtra'] == 'unchanged'
         assert saved_options['providers'] == history_options['providers']
+        expect_portable_summary()
         if args.screenshot_dir:
             page.screenshot(path=str(dest / 'workbench-filters.png'), full_page=True)
         print('PASS console/native settings share rules; host reload retains console URL/session and history', flush=True)
@@ -316,6 +379,27 @@ try:
             page.screenshot(path=str(dest / 'workbench-mobile.png'), full_page=True)
         assert not errors, errors
         browser.close()
+    # A local source hotfix can refresh the Bun generator without editing any
+    # saved options: Magpie notices the plugin list's timestamp independently.
+    plugin_list = data / 'plugins.json'
+    list_before = plugin_list.read_bytes()
+    runtime_before = json.loads(runtime_path.read_text())
+    os.utime(plugin_list, None)
+    get(origin + '/v1/models')
+    for _ in range(120):
+        try:
+            fresh = json.loads(runtime_path.read_text())
+            if fresh['pid'] != runtime_before['pid'] and get(fresh['origin'] + '/health'):
+                break
+        except Exception:
+            pass
+        time.sleep(.2)
+    else:
+        raise RuntimeError('Host did not refresh after timestamp change: ' + str(scratch))
+    assert plugin_list.read_bytes() == list_before
+    expect_portable_summary()
+    assert probe_index == 6
+    print('PASS timestamp-only refresh loads the generator without changing options or starting probes', flush=True)
     # Simulate a broken optional console/detector import in a NEW host. The
     # already-built import-free request middleware must keep filtering.
     (workbench / 'server/http.mjs').write_text('throw new Error("mock detector startup failure");\n')
@@ -324,6 +408,7 @@ try:
     (data / 'plugins.json').write_text(json.dumps(reload_config))
     get(origin + '/v1/models')
     assert business()[0] == 200 and len(seen[-1]['input']) == 1
+    expect_portable_summary()
     assert probe_index == 6
     print('PASS detector/console startup failure leaves history middleware operational', flush=True)
     assert config_hash == hashlib.sha256(config.read_bytes()).hexdigest()

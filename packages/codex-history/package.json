@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/middleware-codex-history",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Unified Magpie Codex workbench: history compatibility, optional model checks and protection",
   "type": "module",
   "license": "MIT",
@@ -19,7 +19,10 @@
     "LICENSE",
     "PROVENANCE.json",
     "codex-history.middleware.js",
-    "Diagnose.bat"
+    "Diagnose.bat",
+    "docs/USAGE.md",
+    "docs/RELEASE-v0.2.1.md",
+    "MAINTAINING.md"
   ],
   "keywords": [
     "magpie",

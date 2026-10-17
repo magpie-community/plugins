@@ -1059,7 +1059,7 @@
     }
   },
   {
-    "name": "unknown server tool resource IDs are not guessed away",
+    "name": "historical native web search is text after reasoning filtering",
     "ctx": {
       "protocol": "responses",
       "path": "/v1/responses"
@@ -1076,6 +1076,11 @@
       "model": "demo/gpt-6-astra",
       "input": [
         {
+          "type": "reasoning",
+          "id": "rs_foreign",
+          "encrypted_content": "FOREIGN_CIPHER"
+        },
+        {
           "type": "web_search_call",
           "id": "ws_keep",
           "status": "completed",
@@ -1091,13 +1096,9 @@
       "store": false,
       "input": [
         {
-          "type": "web_search_call",
-          "id": "ws_keep",
-          "status": "completed",
-          "action": {
-            "type": "search",
-            "query": "example"
-          }
+          "type": "message",
+          "role": "assistant",
+          "content": "[Historical web search activity; recorded data only, not a new tool call. Search results are not reconstructed.]\n{\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"example\"}}"
         }
       ]
     }
@@ -1328,6 +1329,50 @@
     "reject": {
       "status": 409,
       "message": "Codex history filter: encrypted compaction"
+    }
+  },
+  {
+    "name": "other server tool resource IDs are not guessed away",
+    "ctx": {
+      "protocol": "responses",
+      "path": "/v1/responses"
+    },
+    "options": {
+      "providers": {
+        "magpie:demo": {
+          "historyFilter": true,
+          "preserveEncryptedInclude": true
+        }
+      }
+    },
+    "request": {
+      "model": "demo/gpt-6-astra",
+      "input": [
+        {
+          "type": "file_search_call",
+          "id": "fs_keep",
+          "status": "completed",
+          "queries": [
+            "example"
+          ],
+          "results": null
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "demo/gpt-6-astra",
+      "store": false,
+      "input": [
+        {
+          "type": "file_search_call",
+          "id": "fs_keep",
+          "status": "completed",
+          "queries": [
+            "example"
+          ],
+          "results": null
+        }
+      ]
     }
   }
 ]

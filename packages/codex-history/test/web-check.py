@@ -5,7 +5,7 @@ import os
 from playwright.sync_api import sync_playwright, expect
 
 root = Path(__file__).resolve().parent.parent
-state = {"version": "0.2.0", "health": "", "targets": [], "history": [], "currentModel": None,
+state = {"version": "0.2.1", "health": "", "targets": [], "history": [], "currentModel": None,
     "candidates": ["gpt-6-astra", "gpt-6-luna"], "bankVersion": "fixture",
     "daily": {"used": 0, "limit": 60, "day": "2026-10-16"}, "connection": {"url": "http://127.0.0.1:3425", "hasKey": False}}
 writes = []

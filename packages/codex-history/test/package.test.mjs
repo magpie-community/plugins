@@ -16,6 +16,10 @@ test('community distribution preserves its package identity and ships a public p
   for (const name of [pkg.main, pkg.magpie.middleware, pkg.magpie.page.file, pkg.magpie.page.icon]) {
     assert.ok(fs.existsSync(new URL(name, root)), name);
   }
+  for (const name of ['docs/USAGE.md', 'docs/RELEASE-v0.2.1.md', 'MAINTAINING.md']) {
+    assert.ok(pkg.files.includes(name), name + ': missing from package allowlist');
+    assert.ok(fs.existsSync(new URL(name, root)), name);
+  }
 });
 test('upstream history and ModelTrace bytes match the pinned provenance', () => {
   const history = JSON.parse(read('history/PROVENANCE.json'));

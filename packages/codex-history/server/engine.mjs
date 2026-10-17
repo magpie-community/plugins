@@ -89,7 +89,7 @@ export function createEngine({directory, gateFile, gateway, routeVersion = () =>
   const target = id => state.targets.find(t => t.id === id);
   const healthy = () => { if (closed || health) throw fail(health || '后台已关闭。', 503); };
   function snapshot() {
-    return {version: '0.2.0', health, revision: state.revision, bankVersion: manifest.commit,
+    return {version: '0.2.1', health, revision: state.revision, bankVersion: manifest.commit,
       candidates: models, daily: {used: used(), limit: state.dailyLimit, day: day()},
       targets: state.targets.map(t => ({...t, running: jobs.has(t.id),
         stale: !t.lastChecked || now() - t.lastChecked > t.intervalMinutes * 60000,

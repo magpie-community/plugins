@@ -110,6 +110,18 @@ function historyRequest(body, ctx) {
   }
 }
 
+// Native server tools can depend on encrypted reasoning and account-bound IDs.
+// Keep their recorded data as text instead of replaying an incomplete tool item.
+function portableWebSearch(item) {
+  const record = {...item};
+  delete record.type;
+  delete record.id;
+  delete record.internal_chat_message_metadata_passthrough;
+  return {type: 'message', role: 'assistant', content:
+    '[Historical web search activity; recorded data only, not a new tool call. '
+    + 'Search results are not reconstructed.]\n' + JSON.stringify(record)};
+}
+
 function protectionRequest() {}
 export function onRequest(body,ctx){
  let rejected=false;
@@ -119,5 +131,9 @@ export function onRequest(body,ctx){
  if(rejected)return;
  const filtered=historyRequest(routed||body,scoped);
  if(rejected)return;
+ if(filtered&&Array.isArray(filtered.input)){
+  try{return {...filtered,input:filtered.input.map(item=>item?.type==='web_search_call'?portableWebSearch(item):item)}}
+  catch{scoped.reject(409,'Codex history filter: web search history could not be safely converted to text.');return}
+ }
  return filtered||routed;
 }
