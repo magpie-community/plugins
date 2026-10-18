@@ -598,7 +598,9 @@ function geminiBody(model, body) {
   if (typeof si === "string") si = { parts: [{ text: si }] }
   if (!si || typeof si !== "object") si = { parts: [] }
   delete si.role
-  const parts = Array.isArray(si.parts) ? si.parts : []
+  const parts = Array.isArray(si.parts) ? si.parts.map((part) =>
+    part && typeof part.text === "string" ? { ...part, text: zcodeRuntimeContext(part.text) } : part) : []
+  si.parts = parts
   if (!(typeof parts[0]?.text === "string" && parts[0].text.startsWith(DROID_LINE))) {
     const texts = []
     const rest = []
@@ -1318,14 +1320,35 @@ function claudeIdentity(text) {
   return identity ? DROID_LINE + text.slice(identity.length) : text
 }
 
+// ZCode embeds its generated environment paragraph, with unindented bullets,
+// in a larger system prompt. Factory refuses the fixed opening. Change only a
+// complete standalone generated paragraph, keeping every value and leaving
+// fenced, quoted or incomplete copies alone. Shell is optional: ZCode's own
+// prompt builder omits it, while the desktop prompt includes it.
+const ZCODE_ENV_CONTEXT = /(^|\n\n)(# Environment\nYou have been invoked in the following environment:\n(?:- Primary working directory: [^\n]+\n(?:- Is a git repository: (?:yes|no)\n)?)?- Platform: [^\n]+\n(?:- Shell: [^\n]+\n)?- OS Version: [^\n]+\n- You are powered by the model named [^\n]+\.)(?=\n(?:\n|$)|$)/g
+function insideFence(text, end) {
+  let fenced = false
+  for (const line of text.slice(0, end).split("\n")) if (/^ {0,3}(?:```|~~~)/.test(line)) fenced = !fenced
+  return fenced
+}
+function zcodeRuntimeContext(text) {
+  return text.replace(ZCODE_ENV_CONTEXT, (block, lead, paragraph, offset) => {
+    if (insideFence(text, offset + lead.length)) return block
+    return lead + paragraph
+      .replace("# Environment", "# Runtime context")
+      .replace("You have been invoked in the following environment:", "The session environment is:")
+      .replace("- You are powered by the model named", "- Current model name:")
+  })
+}
+
 // promptText adapts a system prompt's text.
 function promptText(text) {
-  return configSkillText(clientOpening(systemModelLine(claudeIdentity(text))))
+  return configSkillText(clientOpening(systemModelLine(claudeIdentity(zcodeRuntimeContext(text)))))
 }
 
 // systemMessageText adapts a system message's text after the prompt.
 function systemMessageText(text) {
-  return bareSkills(clientOpening(systemContext(text)))
+  return bareSkills(clientOpening(systemContext(zcodeRuntimeContext(text))))
 }
 
 // userBlockText adapts one text block of a user turn.
