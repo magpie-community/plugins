@@ -249,18 +249,38 @@ async function explained(res, sentBody, providerId, options) {
   const headers = new Headers(res.headers);
   headers.delete("content-length");
   headers.delete("content-encoding");
-  headers.set("X-Magpie-Sign-In", "kept");
+  headers.set("X-Magpie-Sign-In", signIn);
   const text = await res.text().catch(() => "");
-  if (res.status !== 406) return new Response(text, { status: res.status, statusText: res.statusText, headers });
-  let said = "";
+  if (res.status === 406) {
+    let said = "";
+    try {
+      said = JSON.parse(text)?.error?.message ?? "";
+    } catch {}
+    headers.set("content-type", "application/json");
+    return new Response(
+      JSON.stringify({ error: { message: `${said || "406 Not Acceptable"} — ${REFUSED_HINT}`, type: "permission_error", code: null } }),
+      { status: res.status, statusText: res.statusText, headers },
+    );
+  }
+  let parsed = null;
   try {
-    said = JSON.parse(text)?.error?.message ?? "";
+    parsed = JSON.parse(text);
   } catch {}
-  headers.set("content-type", "application/json");
-  return new Response(
-    JSON.stringify({ error: { message: `${said || "406 Not Acceptable"} — ${REFUSED_HINT}`, type: "permission_error", code: null } }),
-    { status: res.status, statusText: res.statusText, headers },
-  );
+  const code = parsed?.code ?? parsed?.error?.code;
+  const msg = parsed?.message ?? parsed?.error?.message ?? text;
+  if (res.status === 403 && (code === 810000 || /quota used up|额度已用完/i.test(String(msg)))) {
+    headers.set("content-type", "application/json");
+    headers.set("X-Magpie-Sign-In", "kept");
+    const body = JSON.stringify({
+      error: {
+        message: `AutoClaw: ${msg}`,
+        type: "insufficient_quota",
+        code: code ?? 810000,
+      },
+    });
+    return new Response(body, { status: 403, statusText: "Forbidden", headers });
+  }
+  return new Response(text, { status: res.status, statusText: res.statusText, headers });
 }
 
 // A 403 is not always the sign-in: the CN managed gateway answers an
@@ -268,6 +288,18 @@ async function explained(res, sentBody, providerId, options) {
 // while the same token's next request with an unknown model gets as far as
 // "非法模型" (plugins#274). Such a refusal is the account's quota: it goes on
 // as a 429 with the gateway's own words, and the sign-in is kept.
+
+// withSignIn 等一个 explained() 的结果，把 X-Magpie-Sign-In 覆写成 sign（401/403
+// 已由 explained 设过 kept/expired；只有刷新后的成功响应需要补 renewed）。
+async function withSignIn(p, sign) {
+  const res = await p;
+  try {
+    const headers = new Headers(res.headers);
+    headers.set("X-Magpie-Sign-In", sign);
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+  } catch { return res; }
+}
+
 const QUOTA_CODES = new Set(["810000"]);
 const QUOTA_WORDS = /额度|余额不足|用完|用尽|quota|insufficient[_ ]?(balance|credit)|exhausted/i;
 
@@ -1378,10 +1410,47 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
       },
 
       async loader(getAuth) {
-        const auth = await getAuth();
+        let auth = await getAuth();
         if (auth?.type !== "oauth" || !auth.access) return {};
-        const accessToken = bareToken(auth.access);
+        let accessToken = bareToken(auth.access);
         const hosts = providerId === "autoclaw-cn" ? [CN_HOST, GLOBAL_HOST] : [GLOBAL_HOST, CN_HOST];
+
+        // #217：并发 401 只允许一个刷新在飞（refresh token 是轮换的，第二个
+        // 并发 refresh 会花掉第一个已轮换的 token，且其中一个保存会丢）。
+        // 单飞的 promise 由本 loader 闭包持有；失败时 reject 原错误（带 signIn
+        // 语义：banned→"kept"、死授权→"expired"），等待方按它决定回复头。
+        let renewInFlight = null;
+        let renewFailSignIn = "expired";
+        let renewFailMessage = "AutoClaw 登录已失效";
+        function refreshFailSignIn() { return renewFailSignIn; }
+        function refreshFailMessage() { return renewFailMessage; }
+        async function tryRenew() {
+          if (!auth?.refresh) return false;
+          if (renewInFlight) return renewInFlight;
+          renewInFlight = (async () => {
+            try {
+              const t = await refreshTokens(bareToken(auth.refresh), [homeHost]);
+              if (!t?.access) return false;
+              // 先落盘再换内存：refresh token 轮换后，旧 refresh 已作废，
+              // 保存失败却继续用新 token = 下次启动没有可用凭据（账号永久掉线）。
+              // 保存失败 → 不用新 token，报 expired 并说明原因。
+              const saved = client?.auth?.set?.({ path: { id: providerId }, body: { ...auth, ...t } });
+              if (saved && typeof saved.then === "function") await saved;
+              auth = { ...auth, ...t };
+              accessToken = bareToken(auth.access);
+              return true;
+            } catch (e) {
+              renewFailSignIn = e?.signIn === "kept" ? "kept" : "expired";
+              renewFailMessage = e?.signIn === "kept"
+                ? `AutoClaw: ${e?.message ?? "账号被封禁"}（登录状态保留，不重试）`
+                : `AutoClaw 登录已失效（token 刷新失败：${String(e?.message ?? e).slice(0, 120)}）`;
+              return false;
+            } finally {
+              renewInFlight = null;
+            }
+          })();
+          return renewInFlight;
+        }
 
         return {
           baseURL: homeHost,
@@ -1412,8 +1481,11 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               // "linux"; with the old AutoClaw4/1.18.1 one it refuses it (#367)
               setOfficialChatHeaders(headers, { accessToken, model: routeModel, sessionId: conversationSessionId(sent) });
 
-              const tryFetch = (host) =>
-                fetch(`${host}${CHAT_PATH}`, { ...init, headers, body: nextBody, signal: init?.signal });
+              const tryFetch = (host, token = accessToken) => {
+                const h = new Headers(headers);
+                h.set("X-Authorization", `Bearer ${token}`);
+                return fetch(`${host}${CHAT_PATH}`, { ...init, headers: h, body: nextBody, signal: init?.signal });
+              };
 
               const sentBytes = bodyBytes(nextBody);
               const res1 = await tryFetch(hosts[0]);
@@ -1428,17 +1500,41 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               const res2 = await tryFetch(hosts[1]);
               const spent2 = await refusedNotSignIn(res2);
               if (spent2) return spent2;
-              if (res2.status === 401 || res2.status === 403) {
-                try { res2.body?.cancel?.(); } catch {}
-                const tooBig = await sizeRefusal(providerId, sentBytes, res2.status, accessToken, hosts);
+              if (res2.status === 401) {
+                // 两个 host 都是 401：token 真死了——按 #217 单飞刷新一次再试
+                if (await tryRenew()) {
+                  const r1 = await tryFetch(hosts[0], accessToken);
+                  if (r1.status !== 401 && r1.status !== 403) {
+                    if (r1.ok) noteServed(providerId, sentBytes);
+                    return withSignIn(explained(r1, nextBody, providerId, options), "renewed");
+                  }
+                  const spentR1 = await refusedNotSignIn(r1);
+                  if (spentR1) return spentR1;
+                  try { r1.body?.cancel?.(); } catch {}
+                  const r2 = await tryFetch(hosts[1], accessToken);
+                  const spentR2 = await refusedNotSignIn(r2);
+                  if (spentR2) return spentR2;
+                  if (r2.status !== 401) {
+                    if (r2.ok) noteServed(providerId, sentBytes);
+                    return withSignIn(explained(r2, nextBody, providerId, options), "renewed");
+                  }
+                  try { r2.body?.cancel?.(); } catch {}
+                }
+                const tooBig = await sizeRefusal(providerId, sentBytes, 401, accessToken, hosts);
                 if (tooBig) return tooBig;
-                return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效（两个 host 均拒绝该 token）", type: "invalid_request_error" } }), {
+                return new Response(JSON.stringify({ error: { message: refreshFailMessage(), type: "invalid_request_error" } }), {
                   status: 401,
-                  headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
+                  headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": refreshFailSignIn() },
                 });
               }
-              if (res2.ok) noteServed(providerId, sentBytes);
-              return explained(res2, nextBody, providerId, options);
+              // res2 是 403 且不是配额/封禁：保持 main 的原语义
+              try { res2.body?.cancel?.(); } catch {}
+              const tooBig = await sizeRefusal(providerId, sentBytes, res2.status, accessToken, hosts);
+              if (tooBig) return tooBig;
+              return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效（两个 host 均拒绝该 token）", type: "invalid_request_error" } }), {
+                status: 401,
+                headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
+              });
             }
 
             // The CN managed gateway is the AutoClaw 2.1.0 account-points
@@ -1459,6 +1555,31 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
             }
             const spent = await refusedNotSignIn(res);
             if (spent) return spent;
+            if (res.status === 401) {
+              // 单飞刷新（#217）后重试一次；仍 401 → expired，banned/kept 由 tryRenew 透传
+              if (await tryRenew()) {
+                const retry = await fetch(MANAGED_HOST + CN_CHAT_PATH, {
+                  ...init,
+                  method: "POST",
+                  headers: managedHeaders(accessToken, model),
+                  body: sentBody,
+                });
+                if (retry.status !== 401 && retry.status !== 403) {
+                  if (retry.ok) noteServed(providerId, sentBytes);
+                  return withSignIn(explained(retry, sentBody, providerId, options), "renewed");
+                }
+                const spentRetry = await refusedNotSignIn(retry);
+                if (spentRetry) return spentRetry;
+                try { retry.body?.cancel?.(); } catch {}
+              }
+              try { res.body?.cancel?.(); } catch {}
+              const tooBig = await sizeRefusal(providerId, sentBytes, res.status, accessToken, hosts);
+              if (tooBig) return tooBig;
+              return new Response(JSON.stringify({ error: { message: refreshFailMessage(), type: "invalid_request_error" } }), {
+                status: 401,
+                headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": refreshFailSignIn() },
+              });
+            }
             try { res.body?.cancel?.(); } catch {}
             const tooBig = await sizeRefusal(providerId, sentBytes, res.status, accessToken, hosts);
             if (tooBig) return tooBig;
