@@ -139,31 +139,31 @@ function tokenSub(tok) {
   }
 }
 
-const teamOf = (v) => {
-  const n = typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v) : v
-  return Number.isSafeInteger(n) && n > 0 ? n : undefined
-}
+const teamOf = (v) => (Number.isSafeInteger(v) && v > 0 ? v : undefined)
 
 // activeTeamId is the team a request is billed to, as cursor-agent sends it
-// (x-cursor-team-id): CURSOR_TEAM_ID, else cli-config.json's
-// authInfo.activeTeamId, else its authInfo.teamId. Without it Cursor takes
-// the token's default team, which in an organization may be one with
-// on-demand spend turned off ("Team budget limit reached"). The config's
+// (x-cursor-team-id): cli-config.json's authInfo.activeTeamId. Without it
+// Cursor takes the token's default team, which in an organization may be one
+// with on-demand spend turned off ("Team budget limit reached"). The config's
 // team is only taken for the account cursor-agent signed in to: a token
-// whose subject isn't its authInfo.authId gets none. Read again after 10 s.
+// whose subject isn't its authInfo.authId, or a config with none, gets none.
+// Read again after 10 s; cursor-agent rewrites the file in place, so a read
+// that fails to parse keeps the last one, and only a missing file clears it.
 const TEAM_TTL = 10_000
 const teamRead = { at: 0, info: null }
 async function activeTeamId(tok) {
-  const env = teamOf(process.env.CURSOR_TEAM_ID)
-  if (env) return env
   if (Date.now() - teamRead.at >= TEAM_TTL) {
-    teamRead.info = await readFile(cliConfigFile(), "utf8").then((s) => JSON.parse(s)?.authInfo ?? null, () => null)
+    try {
+      teamRead.info = JSON.parse(await readFile(cliConfigFile(), "utf8"))?.authInfo ?? null
+    } catch (e) {
+      if (e?.code === "ENOENT") teamRead.info = null
+    }
     teamRead.at = Date.now()
   }
   const info = teamRead.info
   if (!info) return undefined
-  if (info.authId && info.authId !== tokenSub(tok)) return undefined
-  return teamOf(info.activeTeamId) ?? teamOf(info.teamId)
+  if (!info.authId || info.authId !== tokenSub(tok)) return undefined
+  return teamOf(info.activeTeamId)
 }
 
 // teamHeader and teamBody name that team in a request's headers and in a
