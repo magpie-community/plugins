@@ -197,11 +197,20 @@ returned identity with the intended desktop account before replacing its
 entry. An already signed-in browser can simply renew another saved account.
 
 
-## Not here
+## Daily activity rewards (international build)
 
-magpie's built-in WorkBuddy does more than this package:
-- the daily check-in;
-- the credits meter (`/billing/meter/get-user-resource-summary`);
-- several accounts under one provider.
+WorkBuddy AI's activity promotion is separate from the China build's
+daily check-in. The [official reward terms](https://www.codebuddy.ai/docs/workbuddy/Subscription)
+describe 30 credits/day for Free and 50 for Pro, subject to eligibility and
+the promotion remaining available. A valid conversation or task must be
+started in the official WorkBuddy or CodeBuddy client. Web activity does
+not count; script- or plugin-generated activity generally does not qualify.
+The service calculates rewards automatically; no manual claim is required.
+The [pricing FAQ](https://www.workbuddy.ai/pricing) says they are added the
+following day.
 
-OpenCode's plugin API has no place for these.
+This package exposes credit reads through `auth.usage`, not an
+`auth.checkin` hook. Reading a balance or completing a chat through magpie
+does not establish reward eligibility or a particular reward's arrival.
+If valid official-client activity is not rewarded, check the official
+account's activity and reward records with WorkBuddy support.
