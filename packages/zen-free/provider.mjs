@@ -12,7 +12,7 @@ import { collapseResponse } from "./stream.mjs";
 import { guardToolResponse } from "./tool-response.mjs";
 
 // Zen's free models answer only at the inference API since mid-October
-// 2026: the same request OpenCode 1.19.0 sends answers 403 FreeTierError
+// 2026: the same request OpenCode 2.0.31 sends answers 403 FreeTierError
 // at /zen/v1 and 200 here, and models.dev gives OpenCode this URL. A model
 // listed before then still names /zen/v1 (LEGACY_BASE), which is asked here.
 const DEFAULT_BASE = "https://opencode.ai/inference/v1";
@@ -33,13 +33,11 @@ const CORE_PARAMETER = {
   grep: "pattern",
   read: "filePath",
 };
-const OPENCODE_VERSION = "1.19.0";
-// What OpenCode 1.19.0 sends as its User-Agent, ai-sdk and Bun included.
-// Each protocol's ai-sdk package bundles its own provider-utils, so the
-// version differs by protocol (captured from the release binary's requests).
-const PROVIDER_UTILS = { chat: "4.0.23", responses: "4.0.40", anthropic: "4.0.46" };
-export function userAgent(protocol) {
-  return `opencode/${OPENCODE_VERSION} ai-sdk/provider-utils/${PROVIDER_UTILS[protocol]} runtime/bun/1.3.14`;
+const OPENCODE_VERSION = "2.0.31";
+// What OpenCode 2.0.31 sends as its User-Agent: its release channel, version
+// and interface (captured from the release binary's requests).
+export function userAgent(_protocol) {
+  return `opencode/latest/${OPENCODE_VERSION}/cli`;
 }
 // How long a request for a model the last list didn't have waits before it
 // asks Zen's list again: a model Zen made free since is served at once,
@@ -106,6 +104,16 @@ function normalizeTools(body, protocol) {
           ? { ...definition, input_schema: parameters }
           : { type: "function", ...definition, parameters },
     );
+  }
+  // Upstream answers 400 to a tool with no description: "tools[0]:
+  // function.description is required".
+  for (const tool of body.tools) {
+    if (protocol === "chat") {
+      if (tool?.type === "function" && tool.function && !tool.function.description)
+        tool.function.description = "Tool function";
+    } else if (tool?.name && !tool.description) {
+      tool.description = "Tool function";
+    }
   }
   return { declared };
 }
@@ -319,10 +327,10 @@ async function server(_input, options = {}) {
             const toolPolicy = normalizeTools(body, protocol);
             if (protocol === "chat")
               body.stream_options = { ...body.stream_options, include_usage: true };
-            // Only what OpenCode 1.19.0 itself sends to its gateway, so a
+            // Only what OpenCode 2.0.31 itself sends to its gateway, so a
             // caller's own headers (an agent's User-Agent, x-stainless-*,
-            // x-session-affinity, ...) never mark the request as not
-            // OpenCode's (packages/opencode/src/session/llm/request.ts).
+            // ...) never mark the request as not OpenCode's
+            // (packages/opencode/src/session/llm/request.ts).
             const given = request.headers;
             const session = sessionID(given, body);
             const project = _input?.project;
@@ -334,9 +342,10 @@ async function server(_input, options = {}) {
                 given.get("x-opencode-project") ||
                 (project?.vcs === "git" && project.id ? project.id : "global"),
               "x-opencode-session": session,
-              "x-opencode-request": opencodeID("msg", false),
               "x-opencode-client": "cli",
               "x-opencode-session-id": session,
+              "x-session-affinity": session,
+              "X-Session-Id": session,
             });
             if (protocol === "anthropic") {
               headers.set("x-api-key", "public");
