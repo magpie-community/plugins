@@ -42,6 +42,10 @@ const OFFICIAL_SYSTEM_PROMPT = 'You are AutoClaw. Answer the user directly and c
 const WALLETS_PATH = `/agent-assetmgr/api/v2/wallets?biz_app_id=${PRODUCT}`;
 
 const FLAGGED = [
+  // Claude Code 2.1.30x opens with an SDK identity line, not the CLI one;
+  // the CN gateway refuses "Claude Agent SDK" in any case with 406.
+  [/You are a Claude agent, built on Anthropic's Claude Agent SDK/gi, "You are a coding assistant."],
+  [/Claude Agent SDK/gi, "the agent framework"],
   [/You are an AI agent powered by DeepSeek Harness/gi, "You are an AI agent powered by DeepSeek-Harness"],
   [/You are Claude Code/gi, "You are the Claude Code CLI"],
   [/You are Codex/gi, "You are the Codex agent"],
@@ -628,7 +632,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               headers,
               body: JSON.stringify(payload),
             });
-            if (res.status !== 401 && res.status !== 403) return res;
+            if (res.status !== 401 && res.status !== 403) return explained(res);
             try { res.body?.cancel?.(); } catch {}
             return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效", type: "invalid_request_error" } }), {
               status: 401,

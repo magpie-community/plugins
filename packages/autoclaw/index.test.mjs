@@ -188,6 +188,23 @@ test("ZCode's and pi's identity lines are rewritten", () => {
   expect(unflagged("You are Claude Code, Anthropic's official CLI for Claude.")).toBe("You are the Claude Code CLI, Anthropic's official CLI for Claude.")
 })
 
+// Claude Code 2.1.30x opens its system prompt with the SDK identity line,
+// not the CLI one. The CN gateway refuses "Claude Agent SDK" in any case,
+// wherever it sits; the bare phrase is matched so "running on" variants and
+// later mentions are covered too.
+test("Claude Agent SDK's identity line is rewritten", () => {
+  const sdk = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+  for (const t of [
+    sdk,
+    "You are a Claude agent, running on Anthropic's Claude Agent SDK.",
+    "Using the Claude Agent SDK is fine.",
+  ]) {
+    expect(unflagged(t)).not.toMatch(/Claude Agent SDK/i)
+  }
+  // the same text in, the same text out: a cached prompt prefix stays put
+  expect(unflagged(unflagged(sdk))).toBe(unflagged(sdk))
+})
+
 // The gateway reads the system prompt, not the chat: the caller's own words
 // in a user or assistant message stay as they are.
 test("unflag rewrites system and developer messages only", () => {
@@ -266,6 +283,39 @@ test("overseas loader().fetch drops X-Harness-Type and explains 406", async () =
   }
 })
 
+
+test("CN loader rewrites the Claude Agent SDK identity and explains its 406", async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body ?? "{}")) })
+    return new Response(JSON.stringify({ error: { code: null, message: "406 Not Acceptable", type: "api_error" } }), { status: 406 })
+  }
+  try {
+    const hooks = await AutoclawCnAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({
+      model: "zaicoding_glm-5.3",
+      messages: [
+        { role: "system", content: "You are a Claude agent, built on Anthropic's Claude Agent SDK." },
+        { role: "user", content: "hi" },
+      ],
+    })
+
+    const refused = await loader.fetch("x", { method: "POST", body })
+    expect(refused.status).toBe(406)
+    expect(refused.headers.get("X-Magpie-Sign-In")).toBe("kept")
+    expect((await refused.json()).error.message).toContain(REFUSED_HINT)
+
+    const sent = calls.at(-1)
+    expect(sent.url).toBe("https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw/chat/completions")
+    expect(sent.body.messages[0].content.startsWith(OFFICIAL_SYSTEM_PROMPT)).toBe(true)
+    expect(sent.body.messages[0].content).not.toMatch(/Claude Agent SDK/i)
+    expect(sent.headers.get("X-Authorization")).toBe("Bearer a1")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
 
 test("refreshTokens orders hosts by the token's source_id and falls back on 400002", async () => {
   const realFetch = globalThis.fetch
