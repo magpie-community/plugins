@@ -194,13 +194,9 @@ test("ZCode's and pi's identity lines are rewritten", () => {
 // later mentions are covered too.
 test("Claude Agent SDK's identity line is rewritten", () => {
   const sdk = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
-  for (const t of [
-    sdk,
-    "You are a Claude agent, running on Anthropic's Claude Agent SDK.",
-    "Using the Claude Agent SDK is fine.",
-  ]) {
-    expect(unflagged(t)).not.toMatch(/Claude Agent SDK/i)
-  }
+  expect(unflagged(sdk)).toBe("You are a coding assistant.")
+  expect(unflagged("You are a Claude agent, running on Anthropic's Claude Agent SDK.")).toBe("You are a Claude agent, running on the agent framework.")
+  expect(unflagged("We build on the Claude Agent SDK; see docs.")).toBe("We build on the agent framework; see docs.")
   // the same text in, the same text out: a cached prompt prefix stays put
   expect(unflagged(unflagged(sdk))).toBe(unflagged(sdk))
 })
