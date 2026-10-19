@@ -86,23 +86,50 @@ function unflag(messages) {
 const REFUSED_HINT =
   "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Codex, opencode, Cursor, Cline, Qwen Code, ZCode, pi, DeepSeek Harness); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
 
-async function explained(res) {
-  if (res.status < 400) return res;
+async function explained(res, signIn = "kept") {
+  if (res.status < 400) {
+    if (signIn === "renewed") {
+      const headers = new Headers(res.headers);
+      headers.set("X-Magpie-Sign-In", "renewed");
+      return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+    }
+    return res;
+  }
   const headers = new Headers(res.headers);
   headers.delete("content-length");
   headers.delete("content-encoding");
-  headers.set("X-Magpie-Sign-In", "kept");
+  headers.set("X-Magpie-Sign-In", signIn);
   const text = await res.text().catch(() => "");
-  if (res.status !== 406) return new Response(text, { status: res.status, statusText: res.statusText, headers });
-  let said = "";
+  if (res.status === 406) {
+    let said = "";
+    try {
+      said = JSON.parse(text)?.error?.message ?? "";
+    } catch {}
+    headers.set("content-type", "application/json");
+    return new Response(
+      JSON.stringify({ error: { message: `${said || "406 Not Acceptable"} — ${REFUSED_HINT}`, type: "permission_error", code: null } }),
+      { status: res.status, statusText: res.statusText, headers },
+    );
+  }
+  let parsed = null;
   try {
-    said = JSON.parse(text)?.error?.message ?? "";
+    parsed = JSON.parse(text);
   } catch {}
-  headers.set("content-type", "application/json");
-  return new Response(
-    JSON.stringify({ error: { message: `${said || "406 Not Acceptable"} — ${REFUSED_HINT}`, type: "permission_error", code: null } }),
-    { status: res.status, statusText: res.statusText, headers },
-  );
+  const code = parsed?.code ?? parsed?.error?.code;
+  const msg = parsed?.message ?? parsed?.error?.message ?? text;
+  if (res.status === 403 && (code === 810000 || /quota used up|额度已用完/i.test(String(msg)))) {
+    headers.set("content-type", "application/json");
+    headers.set("X-Magpie-Sign-In", "kept");
+    const body = JSON.stringify({
+      error: {
+        message: `AutoClaw: ${msg}`,
+        type: "insufficient_quota",
+        code: code ?? 810000,
+      },
+    });
+    return new Response(body, { status: 403, statusText: "Forbidden", headers });
+  }
+  return new Response(text, { status: res.status, statusText: res.statusText, headers });
 }
 
 function autoclawRewriteBody(rawBody) {
@@ -565,10 +592,24 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
       },
 
       async loader(getAuth) {
-        const auth = await getAuth();
+        let auth = await getAuth();
         if (auth?.type !== "oauth" || !auth.access) return {};
-        const accessToken = bareToken(auth.access);
+        let accessToken = bareToken(auth.access);
         const hosts = providerId === "autoclaw-cn" ? [CN_HOST, GLOBAL_HOST] : [GLOBAL_HOST, CN_HOST];
+
+        async function tryRenew() {
+          if (!auth?.refresh) return false;
+          try {
+            const t = await refreshTokens(bareToken(auth.refresh), [homeHost]);
+            if (!t?.access) return false;
+            auth = { ...auth, ...t };
+            accessToken = bareToken(auth.access);
+            await client?.auth?.set?.({ path: { id: providerId }, body: auth }).catch?.(() => {});
+            return true;
+          } catch {
+            return false;
+          }
+        }
 
         return {
           baseURL: homeHost,
@@ -602,33 +643,57 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               if (routeModel) headers.set("X-Request-Model", routeModel);
               headers.set("X-Request-Id", randomHex(16));
 
-              const tryFetch = (host) =>
-                fetch(`${host}${CHAT_PATH}`, { ...init, headers, body: nextBody, signal: init?.signal });
+              const tryFetch = (host, token = accessToken) => {
+                const h = new Headers(headers);
+                h.set("X-Authorization", `Bearer ${token}`);
+                return fetch(`${host}${CHAT_PATH}`, { ...init, headers: h, body: nextBody, signal: init?.signal });
+              };
 
-              const res1 = await tryFetch(hosts[0]);
-              if (res1.status !== 401 && res1.status !== 403) return explained(res1);
-              const res2 = await tryFetch(hosts[1]);
-              if (res2.status === 401 || res2.status === 403) {
-                try { res2.body?.cancel?.(); } catch {}
-                return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效（两个 host 均拒绝该 token）", type: "invalid_request_error" } }), {
-                  status: 401,
-                  headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
-                });
+              let res1 = await tryFetch(hosts[0]);
+              if (res1.status !== 401) return explained(res1);
+              let res2 = await tryFetch(hosts[1]);
+              if (res2.status !== 401) return explained(res2);
+
+              if (await tryRenew()) {
+                res1 = await tryFetch(hosts[0], accessToken);
+                if (res1.status !== 401) return explained(res1, "renewed");
+                res2 = await tryFetch(hosts[1], accessToken);
+                if (res2.status !== 401) return explained(res2, "renewed");
               }
-              return explained(res2);
+
+              try { res2.body?.cancel?.(); } catch {}
+              return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效（两个 host 均拒绝该 token）", type: "invalid_request_error" } }), {
+                status: 401,
+                headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
+              });
             }
 
             // The CN managed gateway is the AutoClaw 2.1.0 account-points
             // channel. It requires the system prefix and rejects max_tokens.
             const { payload, model } = rewriteManagedBody(init?.body);
-            const headers = managedHeaders(accessToken, model);
-            const res = await fetch(MANAGED_HOST + CN_CHAT_PATH, {
+            let headers = managedHeaders(accessToken, model);
+            let res = await fetch(MANAGED_HOST + CN_CHAT_PATH, {
               ...init,
               method: "POST",
               headers,
               body: JSON.stringify(payload),
             });
-            if (res.status !== 401 && res.status !== 403) return res;
+            if (res.status === 401) {
+              if (await tryRenew()) {
+                headers = managedHeaders(accessToken, model);
+                const retry = await fetch(MANAGED_HOST + CN_CHAT_PATH, {
+                  ...init,
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify(payload),
+                });
+                if (retry.status !== 401) {
+                  return explained(retry, "renewed");
+                }
+                res = retry;
+              }
+            }
+            if (res.status !== 401) return explained(res);
             try { res.body?.cancel?.(); } catch {}
             return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效", type: "invalid_request_error" } }), {
               status: 401,

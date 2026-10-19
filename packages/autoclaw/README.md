@@ -83,9 +83,23 @@ AutoClaw 对话网关对请求形状有硬性要求，缺任一条都回 `406 No
 
 国内版 `autoclaw-cn` 走 AutoClaw 2.1.0 managed gateway（`autoglm-acceleration-api.zhipuai.cn`）；国际版 `autoclaw` 走海外直连网关（`autoglm-api.autoglm.ai`）。两者均已通过真实调用与推理验证。
 
+## 模型额度与使用注意事项（5.3 与 5.3 Flash 差异）
+
+根据实测与官方资产接口（`/agent-assetmgr/api/v2/wallets`）逆向分析，AutoClaw 官方对模型采用**钱包隔离与会员准入分级**机制，使用时需特别注意：
+
+- **`zai_glm-5.3-flash`（GLM-5.3 Flash）**：
+  - **支持消耗签到奖励积分**：完全支持消耗账号通过每日签到、活动赠送获得的 `reward`（奖励积分）。只要账号有积分余额即可正常无障碍调用。
+  - **适用场景**：响应极快、极稳，推荐作为日常开发、测试迭代与自动化高频任务的首选模型。
+- **`zaicoding_glm-5.3`（GLM-5.3 编程旗舰版）**：
+  - **会员订阅限制（403 业务限制）**：官方对免费/普通用户仅提供少量试用额度；试用额度耗尽后，**不允许使用普通奖励积分抵扣**，上游直接返回 `HTTP 403`（`{"code":810000,"message":"GLM-5.3 免费额度已用完,开通连续包月会员继续使用"}` / `{"code":810000,"message":"GLM-5.3 free quota used up. Subscribe to a membership to continue."}`）。必须账号持有官方 `subscription`（包月会员订阅）才可继续调用。
+  - **插件的处理策略**：本插件已正确区分真正的 401 Token 失效与 403 单模型配额耗尽。当触发 403 `810000` 时，插件规范返回 `type: "insufficient_quota"` 并保持 `X-Magpie-Sign-In: kept`，确保不会将正常账号误判为登录失效，便于 magpie 网关自动轮转至备用候选。
+- **自动路由模型 `zai_auto` / `zai_auto-fast`**：
+  - 支持消耗奖励积分，上游会根据任务特征在智谱模型与 DeepSeek-V4 Flash 之间动态路由，适合绝大部分常规编码会话。
+
 ## 已知行为
 
-- 手机号账号只认国内 host（走 managed gateway，401/403 标记登录失效）；z.ai/Google 账号只认国际 host（401/403 自动换侧重试，均拒绝时标记失效）。
+- 遇到真正的 401 Unauthorized（Token 自然失效）时，插件会自动使用 refresh token 换票恢复；刷新失败或均无 refresh token 时标记登录失效。
+- 手机号账号只认国内 host（走 managed gateway，401 标记登录失效）；z.ai/Google 账号只认国际 host（401 自动换侧重试，均拒绝时标记失效）。
 - 上游模型白名单随版本变化，模型下线时上游返回 `400 非法模型`（原样透传错误消息）。
 - refresh token 与 AutoClaw 桌面端**共用会互踢**（双方都轮换），插件账号请勿同时在桌面端登录。
 - 上游偶发改协议时，`CLIENT_VERSION` / 端点路径可能需要随官方客户端更新。

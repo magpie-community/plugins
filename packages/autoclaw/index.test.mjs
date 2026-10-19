@@ -524,3 +524,147 @@ test("CN passes SSE through and marks 401 expired", async () => {
     expect(expired.headers.get("X-Magpie-Sign-In")).toBe("expired")
   } finally { globalThis.fetch = realFetch }
 })
+
+test("overseas loader().fetch proactively refreshes token on 401 when refresh token is available", async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  let authSetCalled = null
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    calls.push({ url, headers: new Headers(init?.headers) })
+    if (url.includes("/userapi/v1/refresh") || url.includes("/userapi/v1/agent-refresh")) {
+      return Response.json({ code: 0, msg: "ok", data: { access_token: "new-access-token", refresh_token: "new-refresh-token", expires_in: 3600 } })
+    }
+    const authHeader = new Headers(init?.headers).get("X-Authorization")
+    if (authHeader === "Bearer new-access-token") {
+      return Response.json({ choices: [{ message: { content: "ok" } }] })
+    }
+    return new Response("{}", { status: 401 })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({
+      client: {
+        auth: {
+          set: async ({ body }) => {
+            authSetCalled = body
+          },
+        },
+      },
+    })
+    const loader = await hooks.auth.loader(async () => ({
+      type: "oauth",
+      access: "stale-access-token",
+      refresh: jwt({ source_id: "overseas", device_id: "dev-1" }),
+    }))
+
+    const res = await loader.fetch("x", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get("X-Magpie-Sign-In")).toBe("renewed")
+    expect(authSetCalled).not.toBeNull()
+    expect(authSetCalled.access).toBe("new-access-token")
+    expect(authSetCalled.refresh).toBe("new-refresh-token")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("CN managed loader().fetch proactively refreshes token on 401 when refresh token is available", async () => {
+  const realFetch = globalThis.fetch
+  let authSetCalled = null
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/refresh") || url.includes("/userapi/v1/agent-refresh")) {
+      return Response.json({ code: 0, msg: "ok", data: { access_token: "new-cn-token", refresh_token: "new-cn-refresh", expires_in: 3600 } })
+    }
+    const authHeader = new Headers(init?.headers).get("X-Authorization")
+    if (authHeader === "Bearer new-cn-token") {
+      return Response.json({ choices: [{ message: { content: "ok" } }] })
+    }
+    return new Response("{}", { status: 401 })
+  }
+  try {
+    const hooks = await AutoclawCnAuthPlugin({
+      client: {
+        auth: {
+          set: async ({ body }) => {
+            authSetCalled = body
+          },
+        },
+      },
+    })
+    const loader = await hooks.auth.loader(async () => ({
+      type: "oauth",
+      access: "stale-cn-token",
+      refresh: jwt({ source_id: "agent", device_id: "dev-1" }),
+    }))
+
+    const res = await loader.fetch("x", {
+      method: "POST",
+      body: JSON.stringify({ model: "zai_auto", messages: [{ role: "user", content: "hi" }] }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get("X-Magpie-Sign-In")).toBe("renewed")
+    expect(authSetCalled).not.toBeNull()
+    expect(authSetCalled.access).toBe("new-cn-token")
+    expect(authSetCalled.refresh).toBe("new-cn-refresh")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("overseas loader().fetch returns 403 insufficient_quota and keeps sign-in when quota is exhausted", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    return new Response(JSON.stringify({ code: 810000, message: "GLM-5.3 free quota used up. Subscribe to a membership to continue." }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "valid-token", refresh: "r" }))
+    const res = await loader.fetch("x", {
+      method: "POST",
+      body: JSON.stringify({ model: "zaicoding_glm-5.3", messages: [{ role: "user", content: "hi" }] }),
+    })
+    expect(res.status).toBe(403)
+    expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
+    const body = await res.json()
+    expect(body.error.type).toBe("insufficient_quota")
+    expect(body.error.code).toBe(810000)
+    expect(body.error.message).toContain("GLM-5.3 free quota used up")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("CN managed loader().fetch returns 403 insufficient_quota and keeps sign-in when quota is exhausted", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    return new Response(JSON.stringify({ code: 810000, message: "GLM-5.3 免费额度已用完,开通连续包月会员继续使用" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    })
+  }
+  try {
+    const hooks = await AutoclawCnAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "valid-token", refresh: "r" }))
+    const res = await loader.fetch("x", {
+      method: "POST",
+      body: JSON.stringify({ model: "zaicoding_glm-5.3", messages: [{ role: "user", content: "hi" }] }),
+    })
+    expect(res.status).toBe(403)
+    expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
+    const body = await res.json()
+    expect(body.error.type).toBe("insufficient_quota")
+    expect(body.error.code).toBe(810000)
+    expect(body.error.message).toContain("GLM-5.3 免费额度已用完")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
