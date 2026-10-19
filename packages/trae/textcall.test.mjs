@@ -105,7 +105,6 @@ test("#38's shapes: escaped quotes and an attribute-framed opener are calls; a b
   expect(read('<tool_call>{\\"name\\":\\"bash\\",\\"arguments\\":{\\"command\\":\\"echo \\\\\\"hi\\\\\\"\\"}}</tool_call>').calls).toEqual([["bash", { command: 'echo "hi"' }]])
   for (const cut of [
     '<tool_call>{"name":"bash","arguments":{"command":"cd "C:/x"',
-    '<tool_call>{"name":"bash","arguments":{"command":"ls"}',
     '<tool_call>{"name":"write","arguments":{"content":"## 结论\\n1. 先',
     '<tool_call name="bash">\n<parameter name="command">ls -',
   ]) {
@@ -120,6 +119,54 @@ test("#38's shapes: escaped quotes and an attribute-framed opener are calls; a b
   const bad = read('<tool_call>{"name":"bash","arguments":{"command":}}</tool_call>')
   expect(bad.error).toContain("can't be read")
   expect(bad.text).toBe("")
+})
+
+test("a call cut short with only its closing braces missing is still the call (#38)", () => {
+  // the stream's last characters are lost, and what is lost is only the
+  // containers' ends: every string is closed, so the call's fields are
+  // whole. Most of the issue's cut-off calls were this shape.
+  for (const size of [0, 1, 4]) {
+    expect(read('Running it.\n<tool_call>{"name":"bash","arguments":{"command":"ls -la"', size)).toEqual({
+      text: "Running it.\n",
+      calls: [["bash", { command: "ls -la" }]],
+      error: null,
+    })
+    expect(read('<tool_call>{"name":"bash","arguments":{"command":"ls -la"}', size)).toEqual({
+      text: "",
+      calls: [["bash", { command: "ls -la" }]],
+      error: null,
+    })
+    expect(read('<tool_call>{"name":"write","arguments":{"content":"a\\nb","filePath":"x"}', size)).toEqual({
+      text: "",
+      calls: [["write", { content: "a\nb", filePath: "x" }]],
+      error: null,
+    })
+    expect(read('<tool_call>{"name":"bash","arguments":{"argv":["ls","-la"]', size)).toEqual({
+      text: "",
+      calls: [["bash", { argv: ["ls", "-la"] }]],
+      error: null,
+    })
+    // the close tag itself cut short is the stream's, not the call's
+    expect(read('<tool_call>{"name":"bash","arguments":{"command":"ls -la"}</tool_call', size)).toEqual({
+      text: "",
+      calls: [["bash", { command: "ls -la" }]],
+      error: null,
+    })
+  }
+  // a value still being written is not repaired: its string is open, or
+  // its key has no value yet
+  for (const cut of [
+    '<tool_call>{"name":"bash","arguments":{"command":"rm -rf /tmp/fo',
+    '<tool_call>{"name":"bash","arguments":{"command":"ls","x":',
+    // a number may have been cut (12 from 123), so it isn't closed here
+    '<tool_call>{"name":"bash","arguments":{"command":"ls","timeout":12',
+  ]) {
+    for (const size of [0, 4]) {
+      const r = read(cut, size)
+      expect(r.error).toContain("cut short")
+      expect(r.calls).toEqual([])
+    }
+  }
 })
 
 test("XcodeFish's two on 0.2.6 (#38): <toolcall> without the underscore is read as <tool_call> is, and a stream that ends inside an opener is cut short", () => {

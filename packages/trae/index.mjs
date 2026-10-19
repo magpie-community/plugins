@@ -1570,6 +1570,8 @@ function repairedJSON(s) {
     tries.push(s.replace(/\\"/g, '"'))
   }
   tries.push(fixEscapes(t), quoteFix(fixEscapes(t)))
+  const closed = closeMissing(s)
+  if (closed) tries.push(closed)
   for (const x of tries) {
     try {
       const v = JSON.parse(x)
@@ -1577,6 +1579,53 @@ function repairedJSON(s) {
     } catch {}
   }
   return null
+}
+
+// closeMissing closes the braces and brackets a reply cut short left open,
+// when no string is left open: the call's fields are whole and only the
+// containers' ends are missing, which is what plugins#38 saw of most
+// cut-off calls (only } or }} due). null when a string is open — the last
+// value itself was cut — or what closing leaves isn't JSON.
+function closeMissing(s) {
+  // a partial close tag after an unclosed object is the stream's, not the
+  // call's: try without it too
+  for (const t of [s, String(s).replace(/<\/tool_?calls?\s*$/, "")]) {
+    const closed = closeOne(t)
+    if (closed) return closed
+  }
+  return null
+}
+
+function closeOne(s) {
+  const stack = []
+  let str = false
+  let esc = false
+  for (const ch of s) {
+    if (str) {
+      if (esc) esc = false
+      else if (ch === "\\") esc = true
+      else if (ch === '"') str = false
+      continue
+    }
+    if (ch === '"') str = true
+    else if (ch === "{" || ch === "[") stack.push(ch)
+    else if (ch === "}" || ch === "]") {
+      const open = stack.pop()
+      if (!open || (ch === "}" ? open !== "{" : open !== "[")) return null
+    }
+  }
+  if (str || !stack.length) return null
+  // a number at the end may have been cut (12 from 123): only a value
+  // whose end is visible — a closed string, container or keyword — is whole
+  const last = String(s).trimEnd().at(-1) ?? ""
+  if (last >= "0" && last <= "9") return null
+  const out = s + stack.reverse().map((c) => (c === "{" ? "}" : "]")).join("")
+  try {
+    JSON.parse(out)
+    return out
+  } catch {
+    return null
+  }
 }
 
 // fixEscapes makes a backslash that escapes nothing JSON knows a backslash
