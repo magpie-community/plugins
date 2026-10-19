@@ -50,6 +50,7 @@ const FLAGGED = [
   [/You are Cursor/gi, "You are the Cursor agent"],
   [/You are Cline/gi, "You are the Cline agent"],
   [/You are Qwen Code/gi, "You are the Qwen Code agent"],
+  [/operating inside pi/gi, "operating within pi"],
 ];
 
 function unflagged(text) {

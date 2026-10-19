@@ -161,6 +161,15 @@ test("every flagged line's replacement is one the gateway still takes", () => {
   }
   expect(unflagged("You are Claude Code, Anthropic's official CLI for Claude.")).not.toMatch(/You are Claude Code/)
   expect(unflagged("Codex CLI is an open source project.")).not.toMatch(/Codex CLI/)
+  expect(unflagged("You are an expert coding assistant operating inside pi, a coding agent harness.")).not.toMatch(/operating inside pi/)
+})
+
+// pi's identity line is one AutoClaw 406s a chat for (checked live against the
+// gateway: the left side below is refused, the right side answers). "inside pi"
+// alone is not flagged — the run that matters starts at "operating inside pi".
+test("pi's identity line is rewritten", () => {
+  const pi = "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files."
+  expect(unflagged(pi)).toBe("You are an expert coding assistant operating within pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.")
 })
 
 // The gateway reads the system prompt, not the chat: the caller's own words
