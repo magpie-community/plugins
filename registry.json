@@ -54,6 +54,8 @@
       "summary": { "en": "Opt-in, per-provider Codex Responses history filtering after switching providers. Preserves readable content and tool-call pairing; no model probes.", "zh": "按供应商开关 Codex Responses 历史过滤，缓解切换上游后的密文和历史 ID 兼容问题；保留正文与工具配对，不运行模型检测。" } },
     { "package": "@magpie-community/agent-aider", "name": "Aider", "kind": "agent", "community": true,
       "summary": { "en": "Aider (aider.chat) on magpie's Agents page: pick one of magpie's models for it, and switch it off to put its config back.", "zh": "把 Aider（aider.chat）加到 magpie 的 Agent 页：给它选 magpie 的模型，关掉即恢复它原来的配置。" } },
+    { "package": "@magpie-community/agent-pig", "name": "PiG", "kind": "agent", "community": true,
+      "summary": { "en": "PiG (Pi in Go): add Magpie's endpoint and model catalog, choose models in PiG, and keep startup settings unchanged.", "zh": "为 PiG（Pi in Go）注入 Magpie 端点与模型列表，在 PiG 内选择模型，保持启动设置不变。" } },
     { "package": "@magpie-community/agent-type4me", "name": "Type4Me", "kind": "agent", "community": true,
       "summary": { "en": "Type4Me (macOS voice input) on magpie's Agents page: pick one of magpie's models for its LLM post-processing, used from the next dictation.", "zh": "把 Type4Me（macOS 语音输入）加到 magpie 的 Agent 页：给它的 LLM 后处理选 magpie 的模型，下一次语音输入即生效。" } },
     { "package": "@magpie-community/middleware-reserve", "name": "Reserve", "kind": "middleware", "community": true,
