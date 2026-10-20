@@ -318,8 +318,8 @@ test("a VPC account's models come from its gateway, named on it", async () => {
   toServer()
   route = (at) => gateway(at) ?? new Response("", { status: 404 })
   const ms = await (await QoderCNAuthPlugin({ client: store().client })).provider.models({ models: {} }, { auth: signedIn() })
-  expect(Object.keys(ms)).toEqual(["performance"])
-  expect(ms.performance.api.url).toBe("https://" + GATEWAY)
+  expect(Object.keys(ms)).toEqual(["Performance"])
+  expect(ms.Performance.api.url).toBe("https://" + GATEWAY)
   noPublic()
 })
 
