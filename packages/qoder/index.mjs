@@ -706,8 +706,9 @@ function qoderMessages(msgs) {
     if (seen.length) out.push({ role: "user", content: seen })
     seen = []
   }
-  // turn is the assistant turn being answered: the calls it went out with
-  // and the ones no result has claimed yet, in the order they were made.
+  // turn is the assistant turn being answered: the calls no result has
+  // answered yet, in the order they were made, and the ones a result after
+  // it names (kept), which a result whose id was lost must not take.
   let turn = null
   const asText = (txt, ims) => {
     const said = txt.trim()
@@ -716,7 +717,7 @@ function qoderMessages(msgs) {
     if (said) seen.push({ type: "text", text: said })
     seen.push(...ims)
   }
-  for (const m of msgs) {
+  for (const [i, m] of msgs.entries()) {
     if (m.role === "system" || m.role === "developer") continue
     if (m.role === "user") turn = null
     if (m.role !== "user" && m.role !== "tool") showSeen()
@@ -726,9 +727,10 @@ function qoderMessages(msgs) {
       const named = String(m.tool_call_id ?? "").trim()
       // A result naming a call of this turn answers it; one whose id the
       // client lost — none, or one no call here has — answers the earliest
-      // call still open, which is the order the calls were made in.
+      // call still open that no other result names, which is the order the
+      // calls were made in.
       const at = named ? turn?.open.findIndex((id) => id === named) ?? -1 : -1
-      const pick = at >= 0 ? at : turn?.open.length ? 0 : -1
+      const pick = at >= 0 ? at : turn ? turn.open.findIndex((id) => !turn.kept.has(id)) : -1
       if (pick < 0) {
         asText(txt, ims)
         continue
@@ -755,7 +757,13 @@ function qoderMessages(msgs) {
         return { id, type: "function", function: { name: c.function?.name, arguments: typeof args === "string" ? args : JSON.stringify(args ?? {}) } }
       })
       out.push({ role: "assistant", content: textOf(m.content), tool_calls: calls })
-      turn = { open: calls.map((c) => c.id) }
+      const open = calls.map((c) => c.id)
+      const kept = new Set()
+      for (let j = i + 1; j < msgs.length && msgs[j].role === "tool"; j++) {
+        const id = String(msgs[j].tool_call_id ?? "").trim()
+        if (open.includes(id)) kept.add(id)
+      }
+      turn = { open, kept }
       continue
     }
     let blocks = blocksOf(m.content)
@@ -763,6 +771,8 @@ function qoderMessages(msgs) {
     if (!blocks.length) continue
     if (m.role === "user" && seen.length) [blocks, seen] = [[...seen, ...blocks], []]
     out.push({ role: m.role, content: blocks })
+    // a result after the assistant's own words answers no call before it
+    turn = null
   }
   showSeen()
   return out

@@ -101,3 +101,42 @@ test("a well-formed history is unchanged", () => {
   expect(resultIds(out)).toEqual(["c1"])
   expect(out.filter((m) => m.role === "tool")[0].content).toBe("done")
 })
+
+// #277's table, row 2: the call lost its id and the result names c1
+test("#277: a call missing its id still gets the result naming c1", () => {
+  const out = qoderMessages([{ role: "user", content: "hi" }, call(undefined), result("c1", "myhost")])
+  expect(orphaned(out)).toEqual([])
+  const tools = out.filter((m) => m.role === "tool")
+  expect(tools.map((m) => m.content)).toEqual(["myhost"])
+  expect(resultIds(out)).toEqual(callIds(out))
+})
+
+test("a result that lost its id doesn't take the call another result names", () => {
+  const two = {
+    role: "assistant",
+    content: "",
+    tool_calls: [
+      { id: "a", type: "function", function: { name: "f", arguments: "{}" } },
+      { id: "b", type: "function", function: { name: "g", arguments: "{}" } },
+    ],
+  }
+  const out = qoderMessages([{ role: "user", content: "hi" }, two, result("lost", "B"), result("a", "A")])
+  expect(orphaned(out)).toEqual([])
+  expect(out.filter((m) => m.role === "tool").map((m) => [m.tool_call_id, m.content])).toEqual([["b", "B"], ["a", "A"]])
+})
+
+test("a result after the assistant's own words is carried as text", () => {
+  const two = {
+    role: "assistant",
+    content: "",
+    tool_calls: [
+      { id: "a", type: "function", function: { name: "f", arguments: "{}" } },
+      { id: "b", type: "function", function: { name: "g", arguments: "{}" } },
+    ],
+  }
+  const out = qoderMessages([{ role: "user", content: "hi" }, two, result("a", "A"), { role: "assistant", content: "so far" }, result("b", "late")])
+  // a tool turn must follow the turn with its call, not the assistant's words
+  const at = out.findIndex((m) => m.role === "assistant" && !m.tool_calls)
+  expect(out.slice(at + 1).filter((m) => m.role === "tool")).toHaveLength(0)
+  expect(textOf(out)).toContain("late")
+})
