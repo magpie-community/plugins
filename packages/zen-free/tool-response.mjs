@@ -345,6 +345,14 @@ function chatBuffer(checkName) {
           const index = position(fragment.index);
           const previous = state.calls.get(index) ?? { index, function: {} };
           const value = { ...previous, ...fragment, index, function: previous.function };
+          // 空 ID 片段不应抹掉已缓存的有效 ID，同时允许首次 ID 后续到达。
+          if (
+            typeof previous.id === "string" &&
+            previous.id.length > 0 &&
+            (fragment.id == null || fragment.id === "")
+          ) {
+            value.id = previous.id;
+          }
           if (fragment.function != null) appendFunction(value.function, fragment.function);
           state.calls.set(index, value);
         }
