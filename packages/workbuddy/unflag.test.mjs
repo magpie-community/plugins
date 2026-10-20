@@ -15,6 +15,8 @@ test("each flagged phrase is put in other words, whatever its case", () => {
   expect(unflagged(unflagged(codex))).toBe(unflagged(codex))
   expect(unflagged("x-anthropic-billing-header: cc_version=2.1.280.31f; cc_entrypoint=sdk-cli;\nhello")).toBe("hello")
   expect(unflagged("nothing to see")).toBe("nothing to see")
+  expect(unflagged("You are an AI agent powered by DeepSeek Harness. Be brief.")).toBe("You are an AI agent that helps the user with programming tasks. Be brief.")
+  expect(unflagged("YOU ARE AN AI AGENT POWERED BY DEEPSEEK HARNESS")).toBe("You are an AI agent that helps the user with programming tasks.")
 })
 
 test("Claude Code's request through magpie passes: header block gone, the rest rewritten", () => {

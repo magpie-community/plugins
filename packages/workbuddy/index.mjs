@@ -463,6 +463,10 @@ const FLAGGED = [
   [/You are Claude Code, Anthropic['’]s official CLI for Claude/gi, "You are Claude Code, Anthropic's CLI for Claude"],
   [/Main branch \(you will usually use this for PRs\)/gi, "Main branch (usually the base for PRs)"],
   [/(?<!the )Codex CLI is an open source project led by OpenAI\./gi, "The Codex CLI is an open source project led by OpenAI."],
+  // DeepSeek Harness (DSH) opens its system prompt with this line, which
+  // WorkBuddy refuses as 11128 (magpie-community/plugins#279; the same
+  // refusal traced in smart-open/TraeWorkAssistant#125).
+  [/You are an AI agent powered by DeepSeek Harness\.?/gi, "You are an AI agent that helps the user with programming tasks."],
 ]
 
 function unflagged(text) {
