@@ -1,0 +1,102 @@
+[
+  {
+    "name": "Grok Responses 请求缺少工具时添加 X 搜索",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "grok", "model": "grok-4.7" },
+    "request": { "model": "grok-4.7", "input": "搜索 X" },
+    "expect_request": { "model": "grok-4.7", "input": "搜索 X", "tools": [{ "type": "x_search" }] }
+  },
+  {
+    "name": "按 Grok 供应商处理其他模型版本和流式请求",
+    "ctx": { "protocol": "responses", "stream": true },
+    "provider": { "id": "grok", "model": "grok-4.6" },
+    "request": { "model": "grok-4.6", "stream": true, "tools": [] },
+    "expect_request": { "model": "grok-4.6", "stream": true, "tools": [{ "type": "x_search" }] }
+  },
+  {
+    "name": "tools 为 null 时补上搜索",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "grok" },
+    "request": { "tools": null },
+    "expect_request": { "tools": [{ "type": "x_search" }] }
+  },
+  {
+    "name": "保留客户端函数、网页搜索和推理设置",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "grok" },
+    "request": { "tool_choice": "auto", "reasoning": { "effort": "high" }, "tools": [{ "type": "function", "name": "shell" }, { "type": "web_search" }] },
+    "expect_request": { "tool_choice": "auto", "reasoning": { "effort": "high" }, "tools": [{ "type": "function", "name": "shell" }, { "type": "web_search" }, { "type": "x_search" }] }
+  },
+  {
+    "name": "保留已有 X 搜索及账号和日期限制",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "grok" },
+    "request": { "tools": [{ "type": "x_search", "allowed_x_handles": ["OpenAI"], "from_date": "2026-10-01", "to_date": "2026-10-20" }] }
+  },
+  {
+    "name": "不重复添加 X 搜索",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "grok" },
+    "request": { "tools": [{ "type": "x_search" }] }
+  },
+  {
+    "name": "尊重明确禁用工具",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "grok" },
+    "request": { "tool_choice": "none", "tools": [{ "type": "function", "name": "shell" }] }
+  },
+  {
+    "name": "不改变 required 的工具选择范围",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "grok" },
+    "request": { "tool_choice": "required", "tools": [{ "type": "function", "name": "shell" }] }
+  },
+  {
+    "name": "保留指定函数",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "grok" },
+    "request": { "tool_choice": { "type": "function", "name": "shell" }, "tools": [{ "type": "function", "name": "shell" }] }
+  },
+  {
+    "name": "保留工具白名单",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "grok" },
+    "request": { "tool_choice": { "type": "allowed_tools", "mode": "auto", "tools": [{ "type": "function", "name": "shell" }] } }
+  },
+  {
+    "name": "其他供应商尝试保持原样",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "codex" },
+    "request": { "model": "grok-4.7", "tools": [] }
+  },
+  {
+    "name": "不向 Cursor 里的 Grok 注入原生工具",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "cursor", "model": "grok-4.7" },
+    "request": { "model": "grok-4.7", "tools": [] }
+  },
+  {
+    "name": "Chat Completions 保持原样",
+    "ctx": { "protocol": "chat" },
+    "provider": { "id": "grok" },
+    "request": { "tools": [] }
+  },
+  {
+    "name": "Anthropic 保持原样",
+    "ctx": { "protocol": "anthropic" },
+    "provider": { "id": "grok" },
+    "request": { "tools": [] }
+  },
+  {
+    "name": "Gemini 保持原样",
+    "ctx": { "protocol": "gemini" },
+    "provider": { "id": "grok" },
+    "request": { "tools": [] }
+  },
+  {
+    "name": "不修复格式错误的 tools",
+    "ctx": { "protocol": "responses" },
+    "provider": { "id": "grok" },
+    "request": { "tools": "invalid" }
+  }
+]
