@@ -383,3 +383,50 @@ test("a <tool_call> with only DeepSeek's closing tags after it says nothing; one
   const u = new _internal.TextTools()
   expect([u.push("<tool_call>hello</tool_call> ok"), u.push("", true)].map((o) => o.text).join("")).toBe("<tool_call>hello</tool_call> ok")
 })
+
+test("reasoning effort goes on the first system message as a per-family <<trae_effort>> prefix", async () => {
+  // no effort or off/none/minimal/disabled adds no prefix
+  for (const req of [
+    { model: "glm-5", messages: [{ role: "user", content: "hi" }] },
+    { model: "glm-5", reasoning_effort: "none", messages: [{ role: "user", content: "hi" }] },
+    { model: "glm-5", reasoning_effort: "minimal", messages: [{ role: "user", content: "hi" }] },
+    { model: "glm-5", thinking: { effort: "off" }, messages: [{ role: "user", content: "hi" }] },
+  ]) {
+    const b = _internal.chatBody(req, "chat_v3", "")
+    expect(b.messages.map((m) => m.role)).toEqual(["user"])
+  }
+
+  // prepends to existing system message
+  const withSys = _internal.chatBody({
+    model: "glm-5.3",
+    reasoning_effort: "low",
+    messages: [{ role: "system", content: "be brief" }, { role: "user", content: "hi" }],
+  }, "chat_v3", "")
+  expect(withSys.messages[0].role).toBe("system")
+  expect(withSys.messages[0].content).toEqual([
+    { type: "text", text: "<<trae_effort>>Reasoning Effort: Low. Think briefly and directly; skip extended deliberation.<</trae_effort>>" },
+    { type: "text", text: "be brief" },
+  ])
+
+  // inserts a leading system message when the conversation had none, and maps per-family prompts
+  const kimiLow = _internal.chatBody({
+    model: "kimi-k3",
+    reasoningEffort: "light",
+    messages: [{ role: "user", content: "hi" }],
+  }, "chat_v3", "")
+  expect(kimiLow.messages.map((m) => m.role)).toEqual(["system", "user"])
+  expect(kimiLow.messages[0].content[0].text).toContain("<<trae_effort>><critical_constraints>")
+
+  const dsMax = _internal.chatBody({
+    model: "deepseek-v4.1-flash-max",
+    reasoning: { effort: "xhigh" },
+    messages: [{ role: "user", content: "hi" }],
+  }, "chat_v3", "deepseek-v4.1-flash__max", 64000, { base: "deepseek-v4.1-flash", window: 1000000 })
+  expect(dsMax.messages[0].content[0].text).toContain("Reasoning Effort: Absolute maximum with no shortcuts permitted.")
+
+  // Anthropic thinking budget_tokens maps to low / high / max
+  expect(_internal.effortOf({ thinking: { budget_tokens: 2048 } })).toBe("low")
+  expect(_internal.effortOf({ thinking: { budget_tokens: 8192 } })).toBe("high")
+  expect(_internal.effortOf({ thinking: { budgetTokens: 32000 } })).toBe("max")
+  expect(_internal.familyOf("doubao-seed-2.0")).toBe("doubao")
+})

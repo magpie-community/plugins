@@ -1154,6 +1154,73 @@ function sessionOf(headers) {
   return s.slice(0, 128)
 }
 
+// Trae's chat takes no effort or level of its own (see the README's
+// Reasoning), so a level an agent picks is carried as a prefix on the system
+// message: the per-family texts the relays' own A/B runs measured.
+const EFFORT_LOW = "Reasoning Effort: Low. Think briefly and directly; skip extended deliberation."
+const EFFORT_HIGH = "Reasoning Effort: High."
+const EFFORT_MAX = "Reasoning Effort: Max."
+const EFFORT_MAX_LONG =
+  "Reasoning Effort: Absolute maximum with no shortcuts permitted. You MUST be very thorough in your thinking and comprehensively decompose the problem to resolve the root cause, rigorously stress-testing your logic against all potential paths, edge cases, and adversarial scenarios. Explicitly write out your entire deliberation process, documenting every intermediate step, considered alternative, and rejected hypothesis to ensure absolutely no assumption is left unchecked."
+const EFFORT_KIMI_LOW =
+  "<critical_constraints>\nReasoning Mode: Token-efficient and concise.\nRush through reasoning, be as concise as possible. Full send; never draft.\nDo NOT use progressive refinement or iterative self-criticism loops.\nYou are allowed a maximum of one draft before outputting the final response.\nBAN all moralizing, conjecture, and assumption about actions or motives. Stick to the facts.\n</critical_constraints>"
+
+const EFFORT_PREFIX = {
+  deepseek: { low: EFFORT_LOW, high: EFFORT_HIGH, max: EFFORT_MAX_LONG },
+  glm: { low: EFFORT_LOW, high: EFFORT_HIGH, max: EFFORT_MAX },
+  kimi: { low: EFFORT_KIMI_LOW, high: EFFORT_HIGH, max: EFFORT_MAX_LONG },
+  qwen: { low: EFFORT_LOW, high: EFFORT_HIGH, max: EFFORT_MAX },
+  doubao: { low: EFFORT_LOW, high: EFFORT_HIGH, max: EFFORT_MAX },
+  minimax: { low: EFFORT_LOW, high: EFFORT_HIGH, max: EFFORT_MAX },
+  other: { low: EFFORT_LOW, high: EFFORT_HIGH, max: EFFORT_MAX },
+}
+const EFFORT_OPEN = "<<trae_effort>>"
+const EFFORT_CLOSE = "<</trae_effort>>"
+
+// effortOf is the level an agent picked, whichever of the shapes it was sent
+// as: an OpenAI reasoning_effort, an Anthropic thinking budget or level, a
+// level named directly. "" when it asked for none — off, none and minimal ask
+// for none, as Trae always thinks and a prompt can only add to that.
+function effortOf(req) {
+  const named = [req.reasoning_effort, req.reasoningEffort, req.reasoning?.effort, req.thinking?.effort, req.thinking?.level, req.reasoning_effort_level]
+    .map((v) => String(v ?? "").trim().toLowerCase())
+    .find((v) => v && v !== "none" && v !== "minimal" && v !== "off" && v !== "disabled")
+  if (named) return named
+  const budget = Number(req.thinking?.budget_tokens ?? req.thinking?.budgetTokens)
+  if (Number.isFinite(budget) && budget > 0) return budget < 4096 ? "low" : budget < 16384 ? "high" : "max"
+  return ""
+}
+
+// tierOf is the three levels a prefix has, from any level an agent names.
+function tierOf(level) {
+  if (level === "low" || level === "light") return "low"
+  if (level === "medium" || level === "high") return "high"
+  if (level === "xhigh" || level === "extra_high" || level === "max" || level === "maximum" || level === "ultra") return "max"
+  return ""
+}
+
+function familyOf(model) {
+  const m = String(model ?? "").toLowerCase()
+  if (m.includes("seed")) return "doubao"
+  for (const family of ["deepseek", "glm", "kimi", "qwen", "doubao", "minimax"]) if (m.includes(family)) return family
+  return "other"
+}
+
+// withEffort puts the prefix on the conversation's first system message, or one
+// of its own when it had none. Each request is built from the caller's body, so
+// a retry or another function's attempt carries one prefix, never two.
+function withEffort(messages, model, req) {
+  const level = tierOf(effortOf(req))
+  const prefix = level && EFFORT_PREFIX[familyOf(model)]?.[level]
+  if (!prefix) return messages
+  const block = EFFORT_OPEN + prefix + EFFORT_CLOSE
+  const at = messages.findIndex((m) => m.role === "system")
+  if (at < 0) return [{ role: "system", content: [{ type: "text", text: block }] }, ...messages]
+  const first = messages[at]
+  const content = Array.isArray(first.content) ? [{ type: "text", text: block }, ...first.content] : block + String(first.content ?? "")
+  return messages.map((m, i) => (i === at ? { ...first, content } : m))
+}
+
 // chatBody is the request for llm_utils_chat; modelName is the model the
 // function's list names for the config (its __dev one), when it named one,
 // and most the max_tokens it gives that model (0: none given), which a
@@ -1171,7 +1238,7 @@ function sessionOf(headers) {
 function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false) {
   const config = max?.base ?? req.model
   const body = {
-    messages: traeMessages(req, sees),
+    messages: withEffort(traeMessages(req, sees), config, req),
     function: fn,
     config_name: config,
     model: config,
@@ -3029,4 +3096,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { ownClient, clientStoragePaths, clientDevice, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID }
+export const _internal = { ownClient, clientStoragePaths, clientDevice, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, effortOf, tierOf, familyOf, withEffort, chatBody, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID }

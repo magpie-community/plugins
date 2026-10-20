@@ -214,12 +214,15 @@ served under — and asks that model, and its Max, through a list carrying
 it. Trae renamed its official entries on 2026-10-09, leaving the name its
 lists mostly agree on the only thing that tells a misnamed entry apart.
 
-Reasoning: the models reason, but Trae's request takes no effort or
-thinking level, so the plugin lists no variants and a level an agent
-picks does nothing. Every model it lists says so in its `capabilities`
-(`reasoning: true`, with `toolcall`, `temperature`, `attachment`, the
-input and output modalities and an empty `variants`), the fallback
-list's own capabilities kept where it has an entry: magpie reads
+Reasoning: the models reason, and while Trae's request body has no effort or
+thinking field of its own, a level an agent picks (`reasoning_effort`,
+`thinking.effort`/`level`, or `thinking.budget_tokens`, mapped to `low`,
+`high` or `max`) is carried as a `<<trae_effort>>…<</trae_effort>>` prefix on
+the conversation's first `system` message, using per-family prompts (`deepseek`,
+`glm`, `kimi`, `qwen`, `doubao`/`seed`, `minimax`). Every model it lists says
+so in its `capabilities` (`reasoning: true`, with `toolcall`, `temperature`,
+`attachment`, the input and output modalities and an empty `variants`), the
+fallback list's own capabilities kept where it has an entry: magpie reads
 `capabilities.reasoning` alone for a model a plugin lists, and a model
 without it is shown as one that doesn't reason (0.2.4).
 
