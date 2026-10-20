@@ -821,7 +821,16 @@ function clientStoragePaths(platform, home, env) {
   const file = (root, name) => join(root, name, "User", "globalStorage", "storage.json")
   if (platform === "darwin") return [file(join(home, "Library", "Application Support"), "Trae CN")]
   if (platform === "win32") {
-    const roots = [env.APPDATA, join(home, "AppData", "Roaming")].filter((r, i, all) => r && all.indexOf(r) === i)
+    // the two roots are often the same folder: APPDATA and the home's own
+    // AppData\Roaming. They are compared as one system spells them, so a
+    // difference of separator or case alone doesn't read the same file twice
+    const spell = (r) => String(r ?? "").replace(/[\\/]+/g, "\\").replace(/\\+$/, "").toLowerCase()
+    const roots = []
+    for (const r of [env.APPDATA, join(home, "AppData", "Roaming")]) {
+      if (!r) continue
+      if (roots.some((was) => spell(was) === spell(r))) continue
+      roots.push(r)
+    }
     return roots.flatMap((r) => ["Trae CN", "trae-cn"].map((n) => file(r, n)))
   }
   if (platform === "linux") return ["trae-cn", "Trae CN"].map((n) => file(env.XDG_CONFIG_HOME || join(home, ".config"), n))
