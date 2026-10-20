@@ -1364,6 +1364,9 @@ function configModels(site) {
 }
 
 function modelOf(site, provider, m) {
+  const tags = Array.isArray(m.tags) ? m.tags : []
+  const draws = tags.includes("text-to-image") || tags.includes("image-to-image")
+  const sees = tags.includes("image-to-image") || !!m.images
   return {
     id: m.id,
     providerID: provider.id,
@@ -1377,10 +1380,13 @@ function modelOf(site, provider, m) {
     capabilities: {
       temperature: true,
       reasoning: !!m.efforts?.length,
-      attachment: !!m.images,
+      attachment: sees,
       toolcall: true,
-      input: { text: true, image: !!m.images, audio: false, video: false, pdf: false },
-      output: { text: true, image: false, audio: false, video: false, pdf: false },
+      input: { text: true, image: sees, audio: false, video: false, pdf: false },
+      // WorkBuddy AI's image models are reached through the same chat
+      // endpoint. Its video models need a generation flow this plugin
+      // doesn't implement, so they are not advertised as chat models.
+      output: { text: !draws, image: draws, audio: false, video: false, pdf: false },
       interleaved: false,
     },
     release_date: "",
@@ -1472,16 +1478,36 @@ async function liveModels(site, a) {
   if (!res.ok) throw new Error(`${site.name}'s config: HTTP ${res.status}`)
   if (env.code) throw new Error(`${site.name}'s config: ${env.msg} (${env.code})`)
   const cfg = env.data ?? {}
+  const tagsOf = (d) => (Array.isArray(d?.tags) ? d.tags : [])
+  const isImageModel = (d) =>
+    tagsOf(d).includes("text-to-image") || tagsOf(d).includes("image-to-image")
+  const promoted = Array.isArray(cfg.modelPromotions) ? cfg.modelPromotions : []
+  const listed = Array.isArray(cfg.models) ? cfg.models : []
+  // The China config keeps image models in models, while the international
+  // one moved them to modelPromotions. Merge by id so either shape, or both,
+  // yields one model.
+  const details = new Map()
+  for (const d of [...listed, ...promoted]) {
+    if (typeof d?.id !== "string" || !d.id) continue
+    const before = details.get(d.id)
+    const tags = [...new Set([...tagsOf(before), ...tagsOf(d)])]
+    details.set(d.id, { ...before, ...d, ...(tags.length ? { tags } : {}) })
+  }
   const out = []
+  const seen = new Set()
   for (const agent of cfg.agents ?? []) {
     if (agent.name !== "cli") continue
     for (const id of agent.models ?? []) {
-      const d = (cfg.models ?? []).find((x) => x.id === id)
+      if (seen.has(id)) continue
+      seen.add(id)
+      const d = details.get(id)
       const m = { id, name: d?.name || id }
       if (d) {
         m.context = d.maxInputTokens
         m.output = d.maxOutputTokens
-        m.images = d.supportsImages === true && !textOnly(site, id)
+        const tags = tagsOf(d)
+        m.images = tags.includes("image-to-image") || (d.supportsImages === true && !textOnly(site, id))
+        if (tags.length) m.tags = tags
         Object.assign(m, priceOf(d, cfg.modelPromotions))
         const es = d.reasoning?.supportedEfforts ?? []
         if (es.length) {
@@ -1491,6 +1517,25 @@ async function liveModels(site, a) {
       }
       out.push(m)
     }
+  }
+  // Image models can be outside the CLI agent's chat list. Include them from
+  // either config list, skipping promotions without a model id and video-only
+  // models until this plugin implements their generation API.
+  for (const d of [...listed, ...promoted]) {
+    if (typeof d?.id !== "string" || !d.id || !isImageModel(d)) continue
+    if (seen.has(d.id)) continue
+    seen.add(d.id)
+    const tags = tagsOf(d)
+    const m = {
+      id: d.id,
+      name: d.name || d.id,
+      images: tags.includes("image-to-image"),
+      tags,
+    }
+    m.context = d.maxInputTokens
+    m.output = d.maxOutputTokens
+    Object.assign(m, priceOf(d, cfg.modelPromotions))
+    out.push(m)
   }
   // tell apart models the config names alike: deepseek-v4.1-flash and
   // deepseek-v4.1-flash-sg are both "Deepseek-V4.1-Flash"
@@ -1762,4 +1807,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf }
+export const _internal = { EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, modelOf, browserSignIn, withSystem, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf }

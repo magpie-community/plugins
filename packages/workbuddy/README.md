@@ -123,6 +123,11 @@ gives its CLI agent (`GET /v3/config`), with their context, image input and
 reasoning levels. Until then, or if WorkBuddy doesn't answer, the list below
 is used.
 
+Image models are also read from `modelPromotions`, where the international
+build now lists them. They are deduplicated by id against `models` and the
+CLI agent's list; a model tagged `image-to-image` takes images as input and
+an image model produces images as output.
+
 `workbuddy`:
 - Auto
 - Hy4 preview, Hy3, Hy3-X
