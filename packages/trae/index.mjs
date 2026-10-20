@@ -921,23 +921,6 @@ const ugPage = (url) => {
 const OPEN = "<tool_call>"
 const CLOSE = "</tool_call>"
 
-function toolPrompt(tools, choice, parallel) {
-  const defs = tools.map((t) => {
-    const f = t.function ?? t
-    return { name: f.name, description: f.description ?? "", parameters: f.parameters ?? {} }
-  })
-  const lines = [
-    "You can call the client's tools, listed below as JSON. They run on the user's machine, not on yours: use no built-in or server tool to reach the user's files.",
-    `To call a tool, write one block per call and nothing after it: ${OPEN}{"name":"tool_name","arguments":{...}}${CLOSE}. Use an exact tool name and fill arguments from its schema. Then stop and wait: the result comes back in the next message.`,
-    "A call is not done until its result comes back; don't say it is, and don't repeat a call whose result you have.",
-  ]
-  if (parallel === false) lines.push("Call at most one tool at a time.")
-  if (choice === "required") lines.push("Call a tool before answering.")
-  else if (choice && typeof choice === "object" && (choice.function?.name || choice.name)) lines.push(`Call the tool ${choice.function?.name || choice.name} before answering.`)
-  lines.push("Tools:", JSON.stringify(defs))
-  return lines.join("\n")
-}
-
 const partText = (content) => {
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return content == null ? "" : String(content)
@@ -970,43 +953,69 @@ const partsOf = (content, sees) => {
 // the model takes images: Trae's list says so of each model (multimodal),
 // and a model it says doesn't is sent the placeholder, not the image.
 function traeMessages(req, sees = false) {
-  const tools = Array.isArray(req.tools) && req.tools.length && req.tool_choice !== "none" ? req.tools : []
   const names = new Map()
   const out = []
-  if (tools.length) out.push({ role: "system", text: toolPrompt(tools, req.tool_choice, req.parallel_tool_calls) })
   for (const m of req.messages ?? []) {
     const role = m.role === "developer" ? "system" : m.role
     let { text, images } = partsOf(m.content, sees)
-    if (role === "assistant") {
-      const calls = (m.tool_calls ?? []).map((c) => {
-        names.set(c.id, c.function?.name)
-        let args = c.function?.arguments ?? "{}"
-        try {
-          args = JSON.parse(args)
-        } catch {}
-        return OPEN + JSON.stringify({ name: c.function?.name, arguments: args }) + CLOSE
-      })
-      text = [text, ...calls].filter(Boolean).join("\n")
-      out.push({ role: "assistant", text })
+    if (role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      // a past call goes back as the turn Trae made it: an assistant
+      // tool_calls message, its result in the tool message after it. Trae
+      // answers such a history with native calls; written out as a
+      // <tool_call> block in the text it answers in blocks too, and a block
+      // the stream cuts short ends the turn as an error (plugins#38).
+      const calls = []
+      for (const c of m.tool_calls) {
+        const name = String(c.function?.name ?? c.name ?? "").trim()
+        if (!name) continue
+        names.set(c.id, name)
+        let args = c.function?.arguments ?? c.arguments ?? "{}"
+        if (typeof args !== "string") {
+          try {
+            args = JSON.stringify(args)
+          } catch {
+            args = "{}"
+          }
+        }
+        calls.push({ id: String(c.id ?? "call_" + (names.size + 1)), type: "function", function_call: { name, arguments: args } })
+      }
+      out.push({ role: "assistant", text, images, calls })
+    } else if (role === "assistant") {
+      out.push({ role: "assistant", text, images })
     } else if (role === "tool") {
-      out.push({ role: "user", text: `Result of ${names.get(m.tool_call_id) || m.name || "the tool"} (call ${m.tool_call_id ?? "?"}):\n${text}`, images })
+      // Trae's own result turn: the call it answers, its content as text
+      // parts (an empty one for a result with no text)
+      out.push({ role: "tool", tool_call_id: String(m.tool_call_id ?? ""), text, images })
     } else {
       out.push({ role: role === "system" ? "system" : "user", text, images })
     }
   }
   // Trae takes no empty message, nor two of one role in a row; a message of
-  // an image alone is not empty
+  // an image alone is not empty. An assistant turn carrying calls and a
+  // tool result are turns of their own: never merged into a neighbour
   const merged = []
   for (const m of out) {
     const images = m.images ?? []
+    if (m.calls || m.role === "tool") {
+      merged.push(m)
+      continue
+    }
     if (!m.text && !images.length) continue
     const last = merged.at(-1)
-    if (last && last.role === m.role && m.role !== "system") {
+    if (last && last.role === m.role && m.role !== "system" && !last.calls && last.role !== "tool") {
       last.text = [last.text, m.text].filter(Boolean).join("\n\n")
       last.images = [...last.images, ...images]
     } else merged.push({ role: m.role, text: m.text, images })
   }
-  return merged.map((m) => ({ role: m.role, content: [...(m.text ? [{ type: "text", text: m.text }] : []), ...m.images] }))
+  return merged.map((m) => {
+    const content = [...(m.text ? [{ type: "text", text: m.text }] : []), ...(m.images ?? [])]
+    if (m.calls) return { role: "assistant", content: content.length ? content : null, tool_calls: m.calls }
+    // Trae rejects a tool result whose text is empty: the turn's tool_calls
+    // message is then read as unanswered (code 4027). A result with no output
+    // goes as a placeholder, as Trae's own agent never sends an empty one.
+    if (m.role === "tool") return { role: "tool", tool_call_id: m.tool_call_id, content: content.length ? content : [{ type: "text", text: "(no output)" }] }
+    return { role: m.role, content }
+  })
 }
 
 // nativeTools are the tools as Trae names them: parameters a JSON string
@@ -2891,19 +2900,21 @@ const makePlugin = (site) => async ({ client }) => {
             const who = a.uid || a.name
             // the function that lists the model first, then the one that
             // served this account last, then the rest
-            const fns = [...new Set([listedBy.get(String(req.model)), fnOf.get(who), ...site.functions].filter(Boolean))]
+            const modelId = String(req.model).startsWith(site.id + "/") ? String(req.model).slice(site.id.length + 1) : String(req.model)
+            const traeReq = modelId === req.model ? req : { ...req, model: modelId }
+            const fns = [...new Set([listedBy.get(modelId), fnOf.get(who), ...site.functions].filter(Boolean))]
             let last
-            let named = modelNames.get(String(req.model))
-            if (!named && String(req.model).endsWith(MAX)) {
+            let named = modelNames.get(modelId)
+            if (!named && modelId.endsWith(MAX)) {
               // a Max asked before the list was read here: read it
               await liveModels(a).catch(() => {})
-              named = modelNames.get(String(req.model))
+              named = modelNames.get(modelId)
               if (named) fns.unshift(named.fn)
             }
             const max = named?.max ?? null
             // a model the list hasn't said of is sent its images: the agent
             // sends them only to a model it was told takes them
-            const base = max?.base ?? String(req.model)
+            const base = max?.base ?? modelId
             const sees = sight.get(base) ?? (site.models[base]?.modalities?.input?.includes("image") ?? true)
             // the answer's own signal: the caller's abort (a cancelled
             // request) and the stream's cancel both stop Trae's fetch, so
@@ -2924,7 +2935,7 @@ const makePlugin = (site) => async ({ client }) => {
               const res = await fetch(apiOf(a, site) + "/api/agent/v3/llm_utils_chat", {
                 method: "POST",
                 headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
-                body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees)),
+                body: JSON.stringify(chatBody(traeReq, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees)),
                 signal: ac.signal,
               })
               if (!res.ok) {

@@ -76,9 +76,9 @@ test("an image alone, a tool's image and two user turns in a row keep every imag
     { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "shot", arguments: "{}" } }] },
     { role: "tool", tool_call_id: "c1", content: [{ type: "text", text: "taken" }, { type: "image_url", image_url: { url: PNG } }] },
   ] }, true)
-  expect(m.map((x) => x.role)).toEqual(["user", "assistant", "user"])
+  expect(m.map((x) => x.role)).toEqual(["user", "assistant", "tool"])
   expect(m[0].content).toEqual([{ type: "text", text: "and this" }, { type: "image_url", image_url: { url: PNG } }, { type: "image_url", image_url: { url: "https://example.invalid/b.png" } }])
-  expect(m[2].content).toEqual([{ type: "text", text: "Result of shot (call c1):\ntaken" }, { type: "image_url", image_url: { url: PNG } }])
+  expect(m[2]).toEqual({ role: "tool", tool_call_id: "c1", content: [{ type: "text", text: "taken" }, { type: "image_url", image_url: { url: PNG } }] })
 })
 
 test("a fallback model that Trae marks multimodal is sent its images before the list is read", async () => {
