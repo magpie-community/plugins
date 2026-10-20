@@ -26,7 +26,7 @@ async function chunks(res) {
 
 const TOOLS = [{ type: "function", function: { name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } } } } }]
 
-test("the request is the IDE's: its headers, the device, text parts, the tools natively and in the prompt", async () => {
+test("the request is the IDE's: its headers, the device, text parts, the tools natively", async () => {
   f = fakeTrae()
   f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["done", {}]]))
   await ask({ model: "glm-5", max_tokens: 100, tools: TOOLS, messages: [{ role: "system", content: "be brief" }, { role: "user", content: [{ type: "text", text: "hi" }] }] })
@@ -43,24 +43,35 @@ test("the request is the IDE's: its headers, the device, text parts, the tools n
   expect(b.model).toBe("glm-5")
   expect(b.max_tokens).toBe(100)
   expect(b.stream).toBe(true)
-  expect(b.messages.map((m) => m.role)).toEqual(["system", "system", "user"])
-  expect(b.messages[0].content[0].text).toContain("<tool_call>")
-  expect(b.messages[2].content).toEqual([{ type: "text", text: "hi" }])
+  expect(b.messages.map((m) => m.role)).toEqual(["system", "user"])
+  expect(b.messages[0].content[0].text).toBe("be brief")
+  expect(b.messages[1].content).toEqual([{ type: "text", text: "hi" }])
   expect(b.tools[0].function.name).toBe("read")
   expect(typeof b.tools[0].function.parameters).toBe("string")
 })
 
-test("tool history goes in as text", () => {
+test("tool history goes back as the turns Trae made: a call and its result", () => {
   const m = _internal.traeMessages({ messages: [
     { role: "user", content: "read a" },
     { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{\"path\":\"a\"}" } }] },
     { role: "tool", tool_call_id: "c1", content: "AAA" },
+    { role: "user", content: "and b" },
+  ] })
+  expect(m.map((x) => x.role)).toEqual(["user", "assistant", "tool", "user"])
+  expect(m[1].tool_calls).toEqual([{ id: "c1", type: "function", function_call: { name: "read", arguments: "{\"path\":\"a\"}" } }])
+  expect(m[1].content).toBe(null)
+  expect(m[2]).toEqual({ role: "tool", tool_call_id: "c1", content: [{ type: "text", text: "AAA" }] })
+})
+
+test("a result for a call the history doesn't carry, and two in a row, keep their own turns", () => {
+  const m = _internal.traeMessages({ messages: [
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c1", content: "AAA" },
     { role: "tool", tool_call_id: "c2", content: "BBB" },
   ] })
-  expect(m.map((x) => x.role)).toEqual(["user", "assistant", "user"])
-  expect(m[1].content[0].text).toBe('<tool_call>{"name":"read","arguments":{"path":"a"}}</tool_call>')
-  expect(m[2].content[0].text).toContain("Result of read (call c1):\nAAA")
-  expect(m[2].content[0].text).toContain("BBB")
+  expect(m.map((x) => x.role)).toEqual(["assistant", "tool", "tool"])
+  expect(m[1].content[0].text).toBe("AAA")
+  expect(m[2].content[0].text).toBe("BBB")
 })
 
 test("a stream: text, reasoning, a tool block split across events, a native call, usage", async () => {
