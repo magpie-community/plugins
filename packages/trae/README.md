@@ -335,7 +335,9 @@ answered it 9074 even with the client's headers.
   in today, and that holds for the day. No device id is ever changed or
   rotated to get round a 9095 or a 9074, and no account is given another
   account's device or its own client's device unless the client is signed
-  in as that account.
+  in as that account. The credit a claim granted is its `credits` plus
+  its `extra_credits`, either alone; the status answer's is the fallback
+  when the claim says none.
 
 Only `api.trae.cn`'s `/trae/api/` pages are sent this way; any other URL
 that isn't a chat request is still refused (400). Needs 0.1.4 or later.

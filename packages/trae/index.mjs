@@ -2008,7 +2008,13 @@ class NativeCalls {
       this.calls.push({ ...c })
       return
     }
+    // a name comes as the arguments do: a snapshot that grows. A name that
+    // starts with what was read is that snapshot further along, and takes
+    // its place — a wrapper cut short at a tag, then the whole call again.
+    // A name that doesn't start with it is a piece of the name's own, or
+    // one no snapshot explains, and the first is kept as it was
     if (!o.name) o.name = c.name
+    else if (c.name && c.name.startsWith(o.name) && c.name !== o.name) o.name = c.name
     if (c.index !== null && o.index === null) o.index = c.index
     const prev = o.arguments
     const next = c.arguments
@@ -2135,7 +2141,9 @@ async function* parts(events, tools = []) {
     if (data === "[DONE]") break
     if (name === "error" || (name !== "output" && d.code && d.message && !d.response && !d.content)) {
       const e = errorOf(d)
-      yield { error: e.message || "Trae CN returned an error", code: e.code }
+      // the realm answering is named by the caller, which knows it; a bare
+      // word here reads as neither realm's
+      yield { error: e.message || "Trae returned an error", code: e.code }
       return
     }
     if (name === "token_usage") {
@@ -2151,9 +2159,12 @@ async function* parts(events, tools = []) {
     }
     if (!ANSWER.has(name)) continue
     const delta = d.delta && typeof d.delta === "object" ? d.delta : {}
-    const reasoning = d.reasoning_content ?? d.reasoning ?? delta.reasoning_content ?? ""
-    if (typeof reasoning === "string" && reasoning) {
-      const r = th.add(reasoning)
+    // the reasoning's own fields, in the order Trae has put it under: an
+    // empty one is no answer, so the next is asked (an event carrying both
+    // reasoning_content: "" and reasoning: "…" says the thought in the second)
+    const said = [d.reasoning_content, d.reasoning, delta.reasoning_content, delta.reasoning].find((v) => typeof v === "string" && v) ?? ""
+    if (said) {
+      const r = th.add(said)
       if (r) yield { reasoning: r }
     }
     let text = typeof d.response === "string" ? d.response : typeof d.content === "string" ? d.content : typeof delta.content === "string" ? delta.content : typeof d.delta === "string" ? d.delta : ""
@@ -2255,8 +2266,9 @@ async function openai(req, it, abort, site) {
   // a reply that failed (an error event, or Trae's stream breaking off)
   // ends with the error and [DONE], not a finish that says it stopped; the
   // stream is closed whatever happens, and an agent that goes away stops
-  // the reading of Trae's
-  const error = (message, code = null) => enc.encode(`data: ${JSON.stringify({ error: { message: `Trae CN: ${message}`, type: "api_error", code } })}\n\n`)
+  // the reading of Trae's. The realm answering names itself, so a Global
+  // account's failure reads as Trae Global's
+  const error = (message, code = null) => enc.encode(`data: ${JSON.stringify({ error: { message: `${site.realm}: ${message}`, type: "api_error", code } })}\n\n`)
   let gone = false
   const stream = new ReadableStream({
     async start(ctl) {
@@ -2562,8 +2574,12 @@ const makePlugin = (site) => async ({ client }) => {
     if (String(ce.code) === "9074") return { outcome: "ineligible", message: `${ce.message} — check in in the Trae CN app` }
     if (claim.status !== 200 || (ce.code && String(ce.code) !== "0")) return { outcome: "failed", message: ce.message || statusLine(claim.status) }
     if (!answer || typeof answer !== "object" || Array.isArray(answer)) return { outcome: "failed", message: `check-in claim: unreadable reply ${claimText.trim().slice(0, 120) || "(empty)"}` }
-    const credit = Number(answer.credits) + Number(answer.extra_credits || 0)
-    const fallback = Number(body.credits) + Number(body.extra_credits || 0)
+    // a claim may answer extra_credits with no credits beside it, and either
+    // may be absent: Number(undefined) is NaN, and NaN + n is NaN, which
+    // reads as no credit at all
+    const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+    const credit = n(answer.credits) + n(answer.extra_credits)
+    const fallback = n(body.credits) + n(body.extra_credits)
     return { outcome: "claimed", ...(credit > 0 ? { credit } : fallback > 0 ? { credit: fallback } : {}) }
   }
 

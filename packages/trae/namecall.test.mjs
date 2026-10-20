@@ -155,3 +155,45 @@ test("a call's own arguments that aren't a set of fields are passed on, not merg
   expect(read('{"name":"bash","arguments":{"command":"ls"}}', "[1,2]").arguments).toBe("[1,2]")
   expect(read('{"name":"bash","arguments":{"command":"ls"}}', '"ls -la"').arguments).toBe('"ls -la"')
 })
+
+// a name comes as the arguments do: a snapshot that grows. A name that
+// starts with what was read is that snapshot further along and takes its
+// place — a wrapper cut short at a tag, then the whole call again, which
+// was dropped with the wrapper before
+const stream = (...events) => {
+  const nc = new _internal.NativeCalls()
+  for (const e of events) nc.push(e)
+  return nc.take(TOOLS)
+}
+const ev = (id, name, args = "") => ({ id, function: { name, arguments: args } })
+
+test("a name that grows is the snapshot, not its first piece", () => {
+  expect(stream(ev("n1", '{"name":"bash","arguments":{"command":"ec'), ev("n1", '{"name":"bash","arguments":{"command":"echo hi"}}'))).toEqual([
+    { id: "n1", name: "bash", arguments: '{"command":"echo hi"}' },
+  ])
+})
+
+test("the whole name arriving after a part of it was read is the whole one", () => {
+  expect(stream(ev("n1", '{"name":"bash","arguments":{"command'), ev("n1", '{"name":"bash","arguments":{"command":"ls"}}'))).toEqual([
+    { id: "n1", name: "bash", arguments: '{"command":"ls"}' },
+  ])
+})
+
+test("a name that is no snapshot's next step keeps the first, as any other name does", () => {
+  // a piece of the name's own, or one nothing explains: the first is kept
+  const cut = '{"name":"bash","arguments":{"command'
+  expect(stream(ev("n1", cut), ev("n1", 'sh","arguments":{"command":"ls"}}'))).toEqual([{ id: "n1", name: cut, arguments: "{}" }])
+})
+
+test("a plain name with the arguments streamed in pieces is unchanged", () => {
+  expect(stream(ev("n1", "bash"), ev("n1", "", '{"command":"ls'), ev("n1", "", '"}'))).toEqual([
+    { id: "n1", name: "bash", arguments: '{"command":"ls"}' },
+  ])
+})
+
+test("two calls under one stream keep their own names", () => {
+  expect(stream(ev("n1", '{"name":"bash","arguments":{"command":"ls"}}'), ev("n2", '{"name":"read","arguments":{"file_path":"a.go"}}'))).toEqual([
+    { id: "n1", name: "bash", arguments: '{"command":"ls"}' },
+    { id: "n2", name: "read", arguments: '{"file_path":"a.go"}' },
+  ])
+})
