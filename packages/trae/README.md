@@ -122,11 +122,20 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
   that fails (an `error` event, or Trae's stream breaking off) ends with the
   error and `[DONE]`, with no finish.
 - **Tools:**
-  - Trae's chat has no turn for a tool call or its result, so the tools are
-    named twice:
-    - natively in `tools`, with `parameters` as a JSON string;
-    - in a system prompt that asks for each call as a
-      `<tool_call>{"name", "arguments"}</tool_call>` block.
+  - The tools go natively in `tools`, with `parameters` as a JSON string.
+    A past call goes back as the turn Trae made it: an assistant
+    `tool_calls` message carrying it (each call
+    `{id, type: "function", function_call: {name, arguments}}`) and a
+    `tool` message after it answering it. Trae answers such a history with
+    native calls; asked for its calls in text instead — a system prompt
+    describing a `<tool_call>` block, earlier calls written out as one —
+    models write them as blocks, and a block the stream cuts short is an
+    error (plugins#38). Trae takes no two messages of one role in a row,
+    so an assistant turn's text is folded into the calls turn after it
+    and consecutive calls turns join one `tool_calls` list.
+  - A call with no name is dropped, and the `tool` result answering it
+    with it: Trae requires the name, and an empty `tool_calls` list with a
+    result naming no call is not a turn it takes.
   - GLM also writes its own template, `<tool_call>name<arg_key>k</arg_key>
     <arg_value>v</arg_value></tool_call>` (a string kept as written, other
     types read as JSON), and sometimes a whole call into a native call's
@@ -152,7 +161,9 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     requested tool but for case or punctuation (`Read`) goes on as the
     request's (`read`); any other goes on as written, so the agent can say
     the tool doesn't exist.
-  - Earlier calls and their results go back in as text.
+  - Trae requires the message answering a call to follow the call: the
+    results of parallel calls go out as consecutive `tool` messages, with
+    nothing between them, or the later ones lose their answer (11148).
   - Images: Trae's lists mark each model `multimodal` true or false (the
     Doubao-Seed models, Kimi K3 and K2.6, Qwen 3.7 Plus and MiniMax M3 take
     images; GLM-5 and DeepSeek V4 don't). A model marked true is listed
@@ -162,6 +173,13 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     "[an image, which this model can't see]" in its place. A model whose
     list hasn't been read is sent its images, unless the fallback list
     says it takes none.
+    A tool result's images go in a `user` message after the whole run of
+    results, not in the `tool` turn: measured on the live endpoint, an
+    `image_url` part in a `tool` turn reaches Kimi K2.6 but not
+    Doubao-Seed (it answered "Blue"/"Black" to a red image), while the
+    user-turn placement is read by both. The results of one turn stay
+    consecutive — nothing may go between them (11148) — so the images
+    wait for the last of them.
 
 The model list is the account's own, from
 `/api/ide/v1/batch_get_detail_param`, every function's list in one ask, as

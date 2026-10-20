@@ -63,6 +63,70 @@ test("tool history goes back as the turns Trae made: a call and its result", () 
   expect(m[2]).toEqual({ role: "tool", tool_call_id: "c1", content: [{ type: "text", text: "AAA" }] })
 })
 
+test("an assistant turn folds into the calls turn after it, and parallel calls join one list", () => {
+  // what agents send: a "let me read" turn, then the call
+  const a = _internal.traeMessages({ messages: [
+    { role: "user", content: "read a" },
+    { role: "assistant", content: "let me read" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{\"path\":\"a\"}" } }] },
+    { role: "tool", tool_call_id: "c1", content: "AAA" },
+  ] })
+  expect(a.map((x) => x.role)).toEqual(["user", "assistant", "tool"])
+  expect(a[1].content[0].text).toBe("let me read")
+  expect(a[1].tool_calls.map((c) => c.id)).toEqual(["c1"])
+
+  // parallel calls split over two assistant turns (magpie#1275)
+  const b = _internal.traeMessages({ messages: [
+    { role: "user", content: "read a and b" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{\"path\":\"a\"}" } }] },
+    { role: "assistant", content: null, tool_calls: [{ id: "c2", type: "function", function: { name: "read", arguments: "{\"path\":\"b\"}" } }] },
+    { role: "tool", tool_call_id: "c1", content: "AAA" },
+    { role: "tool", tool_call_id: "c2", content: "BBB" },
+  ] })
+  expect(b.map((x) => x.role)).toEqual(["user", "assistant", "tool", "tool"])
+  expect(b[1].tool_calls.map((c) => c.id)).toEqual(["c1", "c2"])
+  expect(b[1].tool_calls[1].function_call).toEqual({ name: "read", arguments: "{\"path\":\"b\"}" })
+})
+
+test("a call with no name is dropped, and the result it would answer", () => {
+  const a = _internal.traeMessages({ messages: [
+    { role: "user", content: "do it" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "  ", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c1", content: "RESULT" },
+    { role: "user", content: "next" },
+  ] })
+  // no empty tool_calls list, and no result naming a call that isn't there;
+  // the two user turns either side of the dropped pair fold together
+  expect(a.map((x) => x.role)).toEqual(["user"])
+  expect(a[0].content[0].text).toBe("do it\n\nnext")
+  expect(a.some((x) => x.role === "tool")).toBe(false)
+
+  // a named call beside an unnamed one keeps its own
+  const b = _internal.traeMessages({ messages: [
+    { role: "user", content: "do both" },
+    { role: "assistant", content: null, tool_calls: [
+      { id: "c1", type: "function", function: { name: "", arguments: "{}" } },
+      { id: "c2", type: "function", function: { name: "read", arguments: "{\"path\":\"b\"}" } },
+    ] },
+    { role: "tool", tool_call_id: "c1", content: "DROPPED" },
+    { role: "tool", tool_call_id: "c2", content: "KEPT" },
+  ] })
+  expect(b.map((x) => x.role)).toEqual(["user", "assistant", "tool"])
+  expect(b[1].tool_calls.map((c) => c.id)).toEqual(["c2"])
+  expect(b[2].tool_call_id).toBe("c2")
+})
+
+test("an assistant turn that loses every call keeps its text", () => {
+  const m = _internal.traeMessages({ messages: [
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "thinking out loud", tool_calls: [{ id: "c1", type: "function", function: { name: "", arguments: "{}" } }] },
+    { role: "user", content: "ok" },
+  ] })
+  expect(m.map((x) => x.role)).toEqual(["user", "assistant", "user"])
+  expect(m[1].content[0].text).toBe("thinking out loud")
+  expect(m[1].tool_calls).toBeUndefined()
+})
+
 test("a result for a call the history doesn't carry, and two in a row, keep their own turns", () => {
   const m = _internal.traeMessages({ messages: [
     { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }] },

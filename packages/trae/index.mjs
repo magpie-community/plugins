@@ -914,29 +914,13 @@ const ugPage = (url) => {
   }
 }
 
-// Trae's chat takes text only and has no turn for a tool call or its
-// result. The agent's tools are named to it natively and in a system
-// prompt that asks for each call as a tagged block; earlier calls and
-// their results go in as text. A native call in its answer is taken too.
+// A model that writes a tool call as text still writes it, mostly GLM and
+// DeepSeek: the blocks are read as the calls they mean (the tools also go
+// natively in the body, and a past call is a native turn, so an answer is
+// usually native; the text form is read for when it is not).
 const OPEN = "<tool_call>"
 const CLOSE = "</tool_call>"
 
-function toolPrompt(tools, choice, parallel) {
-  const defs = tools.map((t) => {
-    const f = t.function ?? t
-    return { name: f.name, description: f.description ?? "", parameters: f.parameters ?? {} }
-  })
-  const lines = [
-    "You can call the client's tools, listed below as JSON. They run on the user's machine, not on yours: use no built-in or server tool to reach the user's files.",
-    `To call a tool, write one block per call and nothing after it: ${OPEN}{"name":"tool_name","arguments":{...}}${CLOSE}. Use an exact tool name and fill arguments from its schema. Then stop and wait: the result comes back in the next message.`,
-    "A call is not done until its result comes back; don't say it is, and don't repeat a call whose result you have.",
-  ]
-  if (parallel === false) lines.push("Call at most one tool at a time.")
-  if (choice === "required") lines.push("Call a tool before answering.")
-  else if (choice && typeof choice === "object" && (choice.function?.name || choice.name)) lines.push(`Call the tool ${choice.function?.name || choice.name} before answering.`)
-  lines.push("Tools:", JSON.stringify(defs))
-  return lines.join("\n")
-}
 
 const partText = (content) => {
   if (typeof content === "string") return content
@@ -970,9 +954,18 @@ const partsOf = (content, sees) => {
 // the model takes images: Trae's list says so of each model (multimodal),
 // and a model it says doesn't is sent the placeholder, not the image.
 function traeMessages(req, sees = false) {
-  const tools = Array.isArray(req.tools) && req.tools.length && req.tool_choice !== "none" ? req.tools : []
   const names = new Map()
   const out = []
+  // dropped is every call id a turn carried but Trae cannot be sent: an
+  // assistant turn whose calls all lost their name takes its results with it
+  const dropped = new Set()
+  // images of tool results, held until the run of results ends: Trae
+  // takes no message between a call's results, so they cannot go after
+  // each one — one user message once they are all in
+  const pending = []
+  const flushImages = () => {
+    if (pending.length) out.push({ role: "user", images: pending.splice(0) })
+  }
   for (const m of req.messages ?? []) {
     const role = m.role === "developer" ? "system" : m.role
     let { text, images } = partsOf(m.content, sees)
@@ -985,8 +978,14 @@ function traeMessages(req, sees = false) {
       const calls = []
       for (const c of m.tool_calls) {
         const name = String(c.function?.name ?? c.name ?? "").trim()
-        if (!name) continue
-        names.set(c.id, name)
+        // a call Trae cannot be sent is dropped here; its result goes too
+        // (an empty tool_calls list and a result naming no call are not a
+        // turn Trae takes)
+        if (!name) {
+          if (c.id != null) dropped.add(String(c.id))
+          continue
+        }
+        names.set(String(c.id ?? ""), name)
         let args = c.function?.arguments ?? c.arguments ?? "{}"
         if (typeof args !== "string") {
           try {
@@ -997,38 +996,67 @@ function traeMessages(req, sees = false) {
         }
         calls.push({ id: String(c.id ?? "call_" + (names.size + 1)), type: "function", function_call: { name, arguments: args } })
       }
-      out.push({ role: "assistant", text, images, calls })
-    } else if (role === "assistant") {
+      if (calls.length) out.push({ role: "assistant", text, images, calls })
+      else if (text || images.length) out.push({ role: "assistant", text, images })
+      continue
+    }
+    if (role === "assistant") {
+      flushImages()
       out.push({ role: "assistant", text, images })
     } else if (role === "tool") {
-      // Trae's own result turn: the call it answers, its content as text
-      // parts (an empty one for a result with no text)
-      out.push({ role: "tool", tool_call_id: String(m.tool_call_id ?? ""), text, images })
+      const id = String(m.tool_call_id ?? "")
+      if (dropped.has(id)) continue
+      // Trae's own result turn: the call it answers, its text as parts
+      // (an empty one for a result with no text). Its images wait: a
+      // tool turn's image_url reaches some models (Kimi) and not others
+      // (Doubao-Seed), so they go in a user message after the whole run
+      // of results, which every multimodal model reads
+      if (images.length) pending.push(...images)
+      out.push({ role: "tool", tool_call_id: id, text })
     } else {
+      flushImages()
       out.push({ role: role === "system" ? "system" : "user", text, images })
     }
   }
-  // Trae takes no empty message, nor two of one role in a row; a message of
-  // an image alone is not empty. An assistant turn carrying calls and a
-  // tool result are turns of their own: never merged into a neighbour
+  flushImages()
+  // Trae takes no two messages of one role in a row, so an assistant turn is
+  // folded into the turn after it: text into the calls turn it introduces
+  // (agents send "let me read" and then the call, and parallel calls split
+  // over two assistant turns), calls joined into one list. A message of an
+  // image alone is not empty; tool results are turns of their own, each
+  // answering its own call.
   const merged = []
   for (const m of out) {
     const images = m.images ?? []
-    if (m.calls || m.role === "tool") {
+    if (m.role === "tool") {
       merged.push(m)
+      continue
+    }
+    if (m.role === "assistant") {
+      const last = merged.at(-1)
+      if (last && last.role === "assistant") {
+        // fold: text and images join, calls append to the same list
+        last.text = [last.text, m.text].filter(Boolean).join("\n\n")
+        last.images = [...(last.images ?? []), ...images]
+        if (m.calls) last.calls = [...(last.calls ?? []), ...m.calls]
+        if (!last.text && !last.images.length && !last.calls) merged.pop()
+        continue
+      }
+      if (!m.text && !images.length && !m.calls) continue
+      merged.push({ role: "assistant", text: m.text, images, ...(m.calls ? { calls: m.calls } : {}) })
       continue
     }
     if (!m.text && !images.length) continue
     const last = merged.at(-1)
-    if (last && last.role === m.role && m.role !== "system" && !last.calls && last.role !== "tool") {
+    if (last && last.role === m.role && m.role !== "system") {
       last.text = [last.text, m.text].filter(Boolean).join("\n\n")
-      last.images = [...last.images, ...images]
+      last.images = [...(last.images ?? []), ...images]
     } else merged.push({ role: m.role, text: m.text, images })
   }
   return merged.map((m) => {
     const content = [...(m.text ? [{ type: "text", text: m.text }] : []), ...(m.images ?? [])]
     if (m.calls) return { role: "assistant", content: content.length ? content : null, tool_calls: m.calls }
-    if (m.role === "tool") return { role: "tool", tool_call_id: m.tool_call_id, content: content.length ? content : [{ type: "text", text: "" }] }
+    if (m.role === "tool") return { role: "tool", tool_call_id: m.tool_call_id, content: content.length ? content : [{ type: "text", text: "" }] } // results of one turn stay consecutive: nothing may go between them (11148)
     return { role: m.role, content }
   })
 }

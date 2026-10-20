@@ -76,9 +76,28 @@ test("an image alone, a tool's image and two user turns in a row keep every imag
     { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "shot", arguments: "{}" } }] },
     { role: "tool", tool_call_id: "c1", content: [{ type: "text", text: "taken" }, { type: "image_url", image_url: { url: PNG } }] },
   ] }, true)
-  expect(m.map((x) => x.role)).toEqual(["user", "assistant", "tool"])
+  // a tool result's image rides a user message after the run of results:
+  // a tool turn's image reaches Kimi but not Doubao, and nothing may go
+  // between the results of one turn (11148)
+  expect(m.map((x) => x.role)).toEqual(["user", "assistant", "tool", "user"])
   expect(m[0].content).toEqual([{ type: "text", text: "and this" }, { type: "image_url", image_url: { url: PNG } }, { type: "image_url", image_url: { url: "https://example.invalid/b.png" } }])
-  expect(m[2]).toEqual({ role: "tool", tool_call_id: "c1", content: [{ type: "text", text: "taken" }, { type: "image_url", image_url: { url: PNG } }] })
+  expect(m[2].content).toEqual([{ type: "text", text: "taken" }])
+  expect(m[3].content).toEqual([{ type: "image_url", image_url: { url: PNG } }])
+
+  // the images of parallel results come out after every result, in order
+  const p = _internal.traeMessages({ messages: [
+    { role: "user", content: [{ type: "text", text: "two shots" }] },
+    { role: "assistant", content: null, tool_calls: [
+      { id: "c1", type: "function", function: { name: "shot", arguments: "{}" } },
+      { id: "c2", type: "function", function: { name: "shot", arguments: "{}" } },
+    ] },
+    { role: "tool", tool_call_id: "c1", content: [{ type: "image_url", image_url: { url: PNG } }] },
+    { role: "tool", tool_call_id: "c2", content: [{ type: "text", text: "second" }, { type: "image_url", image_url: { url: "https://example.invalid/b.png" } }] },
+  ] }, true)
+  expect(p.map((x) => x.role)).toEqual(["user", "assistant", "tool", "tool", "user"])
+  expect(p[2].content).toEqual([{ type: "text", text: "" }])
+  expect(p[3].content).toEqual([{ type: "text", text: "second" }])
+  expect(p[4].content).toEqual([{ type: "image_url", image_url: { url: PNG } }, { type: "image_url", image_url: { url: "https://example.invalid/b.png" } }])
 })
 
 test("a fallback model that Trae marks multimodal is sent its images before the list is read", async () => {
