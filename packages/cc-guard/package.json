@@ -1,0 +1,21 @@
+{
+  "name": "@magpie-community/opencode-cc-guard-auth",
+  "version": "0.1.0",
+  "description": "Claude Code auto mode classifier backed by magpie's jev model, answering Anthropic Messages",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "provider.mjs", "classify.mjs", "classify.test.mjs", "fixtures", "README.md", "LICENSE"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "claude-code", "auto-mode", "jev"],
+  "repository": { "type": "git", "url": "https://github.com/magpie-community/plugins", "directory": "packages/cc-guard" },
+  "scripts": { "test": "bun test" },
+  "magpie": {
+    "icon": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232b2f36'/%3E%3Cpath d='M32 12l16 6v12c0 10-6.8 17.6-16 22-9.2-4.4-16-12-16-22V18z' fill='none' stroke='%237ee787' stroke-width='3'/%3E%3Cpath d='M24 33l5 5 11-12' fill='none' stroke='%237ee787' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E",
+    "maxConcurrency": 4,
+    "options": {
+      "gateway": "http://127.0.0.1:3425",
+      "model": "group/jev",
+      "token": "magpie"
+    }
+  }
+}
