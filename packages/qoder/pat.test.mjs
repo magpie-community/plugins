@@ -77,6 +77,39 @@ test("qoder-cn: PAT sign-in exchanges at the CN openapi host", async () => {
   expect(calls.some((c) => c.startsWith("openapi.qoder.sh"))).toBe(false)
 })
 
+test("qoder-cn: a PAT account keeps the name its browser sign-in takes", async () => {
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url))
+    if (u.pathname === "/api/v1/jobToken/exchange") return json({ token: "jt-1", refresh_token: "jrt-1", expires_in: 86400000 })
+    if (u.pathname === "/api/v1/userinfo") return json({ id: "same-user", name: "Someone" })
+    return new Response("", { status: 500 })
+  }
+  const client = { auth: { set: async () => {} } }
+  const hooks = await QoderCNAuthPlugin({ client })
+  const patMethod = hooks.auth.methods.find((m) => m.label?.includes("PAT"))
+  const res = await patMethod.authorize({ pat: "pt-x" }).callback()
+
+  // no suffix: magpie's host replaces an account on a new sign-in when both
+  // the accountId and the uid match, so a re-signed PAT must name the same
+  // account the browser sign-in does, not a row of its own beside it
+  expect(res.accountId).toBe("same-user")
+  expect(res.uid).toBe("same-user")
+  expect(res.email).toBe("")
+})
+
+test("qoder: a PAT account is named by its email, as the browser sign-in is", async () => {
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url))
+    if (u.pathname === "/api/v1/jobToken/exchange") return json({ token: "jt-g", refresh_token: "jrt-g", expires_in: 86400000 })
+    if (u.pathname === "/api/v1/userinfo") return json({ id: "g-1", email: "g@example.com", name: "G" })
+    return new Response("", { status: 500 })
+  }
+  const { hooks } = await plugin(null)
+  const patMethod = hooks.auth.methods.find((m) => m.label?.includes("PAT"))
+  const res = await patMethod.authorize({ pat: "pt-g" }).callback()
+  expect(res.accountId).toBe("g@example.com")
+})
+
 test("qoder: PAT auth method validates PAT format", async () => {
   const { hooks } = await plugin(null)
   const patMethod = hooks.auth.methods.find((m) => m.label?.includes("PAT"))
