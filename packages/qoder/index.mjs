@@ -1809,38 +1809,35 @@ const makePlugin = (site) => async ({ client }) => {
         { type: "oauth", label: `Sign in with ${site.name}`, authorize: () => deviceSignIn(site) },
         // PAT sign-in: exchange a Personal Access Token for a job token,
         // bypassing the OAuth device flow. PATs last up to 1 year.
-        // Not offered on Qoder CN: its CLI uses device chat directly and
-        // never makes a job token, so a PAT exchange may not produce one
-        // the chat endpoint accepts.
-        ...(site.id !== "qoder-cn"
-          ? [
-              {
-                type: "oauth",
-                label: `Sign in with ${site.name} PAT`,
-                prompts: [
-                  {
-                    type: "password",
-                    key: "pat",
-                    message: "Your Qoder Personal Access Token (from qoder.com/account/integrations)",
-                    placeholder: "pt-...",
-                    validate: (v) => (String(v ?? "").trim().startsWith("pt-") ? undefined : "PAT must start with pt-"),
-                  },
-                ],
-                authorize: (inputs) => {
-                  const pat = String(inputs?.pat ?? "").trim()
-                  if (!pat) throw new Error("enter your Personal Access Token")
-                  return {
-                    url: `${site.web}/account/integrations`,
-                    instructions: `Create a PAT at ${site.web}/account/integrations if you don't have one`,
-                    method: "auto",
-                    async callback() {
-                      return patSignIn(site, pat)
-                    },
-                  }
-                },
+        // Offered on both sites: Qoder CN's /api/v1/jobToken/exchange takes
+        // a PAT too (verified: HTTP 200 and a jt- token), and that job token
+        // signs the model list and chat calls with the COSY envelope as on
+        // qoder.com, so the exchange gives a token the chat endpoint accepts.
+        {
+          type: "oauth",
+          label: `Sign in with ${site.name} PAT`,
+          prompts: [
+            {
+              type: "password",
+              key: "pat",
+              message: `Your ${site.name} Personal Access Token (from ${site.web}/account/integrations)`,
+              placeholder: "pt-...",
+              validate: (v) => (String(v ?? "").trim().startsWith("pt-") ? undefined : "PAT must start with pt-"),
+            },
+          ],
+          authorize: (inputs) => {
+            const pat = String(inputs?.pat ?? "").trim()
+            if (!pat) throw new Error("enter your Personal Access Token")
+            return {
+              url: `${site.web}/account/integrations`,
+              instructions: `Create a PAT at ${site.web}/account/integrations if you don't have one`,
+              method: "auto",
+              async callback() {
+                return patSignIn(site, pat)
               },
-            ]
-          : []),
+            }
+          },
+        },
         // an enterprise VPC instance (Qoder CN), a method of its own so
         // that the sign-in above asks nothing new
         ...(site.vpcDomain
