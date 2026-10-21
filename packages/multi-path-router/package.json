@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/middleware-multi-path-router",
   "version": "0.1.0",
-  "description": "Adaptive scenario-based & time-aware token router for multi-agent workloads: CST DeepSeek off-peak price arbitrage, modality gating, and scale routing",
+  "description": "3D orthogonal token router for multi-agent workloads: discriminator-driven intent classification, physical constraint gating (vision/context), and dynamic cost/schedule arbitrage",
   "type": "module",
   "files": [
     "multi-path-router.middleware.js",
@@ -12,9 +12,10 @@
     "magpie",
     "magpie-middleware",
     "router",
-    "time-aware",
-    "deepseek",
+    "multi-path",
+    "system-one",
     "cost-optimization",
+    "load-balancing",
     "llm-gateway"
   ],
   "license": "MIT",
@@ -29,19 +30,18 @@
       "schedule": {
         "cst_deepseek_offpeak": true,
         "offpeak_mapping": {
-          "smart-router": "deepseek/deepseek-reasoner",
-          "tier-dynamic-value": "deepseek/deepseek-chat"
+          "smart-router": "group/tier-dynamic-value"
         }
       },
       "constraints": {
-        "vision": "local-qwen/Qwen3.8-27B",
+        "vision": "group/tier-multimodal-runtime",
         "tokens_gte": {
           "threshold": 64000,
-          "target": "grok/grok-4.7"
+          "target": "group/tier-extended-context"
         }
       },
       "mapping": {
-        "smart-router": "deepseek/deepseek-chat"
+        "smart-router": "group/tier-fast-reflex"
       }
     }
   }
