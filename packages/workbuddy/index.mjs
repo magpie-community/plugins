@@ -467,6 +467,12 @@ const FLAGGED = [
   // WorkBuddy refuses as 11128 (magpie-community/plugins#279; the same
   // refusal traced in smart-open/TraeWorkAssistant#125).
   [/You are an AI agent powered by DeepSeek Harness\.?/gi, "You are an AI agent that helps the user with programming tasks."],
+  // DSH 0.2.1 also says it talks through its Web GUI. Since 2026-10-21 (about
+  // 09:23 UTC) WorkBuddy refuses that paragraph when it runs on into the next
+  // sentence ("When the user refers to \"this page\" ... they mean this GUI.").
+  // Naming the GUI without DeepSeek Harness passes. The line above stays: DSH
+  // still opens with it, and older builds send nothing else.
+  [/\bthe DeepSeek Harness Web GUI\b/gi, "the Web GUI"],
 ]
 
 function unflagged(text) {

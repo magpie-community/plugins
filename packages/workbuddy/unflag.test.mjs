@@ -17,6 +17,11 @@ test("each flagged phrase is put in other words, whatever its case", () => {
   expect(unflagged("nothing to see")).toBe("nothing to see")
   expect(unflagged("You are an AI agent powered by DeepSeek Harness. Be brief.")).toBe("You are an AI agent that helps the user with programming tasks. Be brief.")
   expect(unflagged("YOU ARE AN AI AGENT POWERED BY DEEPSEEK HARNESS")).toBe("You are an AI agent that helps the user with programming tasks.")
+  const gui = 'You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this GUI.'
+  expect(unflagged(gui)).toBe('You are interacting with the user through the Web GUI whose URL the runtime context names. When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this GUI.')
+  expect(unflagged("through THE DEEPSEEK HARNESS WEB GUI whose")).toBe("through the Web GUI whose")
+  expect(unflagged("You are an AI agent powered by DeepSeek Harness.\n\n" + gui)).toBe("You are an AI agent that helps the user with programming tasks.\n\n" + unflagged(gui))
+  expect(unflagged(unflagged(gui))).toBe(unflagged(gui))
 })
 
 test("Claude Code's request through magpie passes: header block gone, the rest rewritten", () => {
