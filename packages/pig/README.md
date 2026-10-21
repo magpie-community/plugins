@@ -4,12 +4,12 @@
 
 The Agents row identifies PiG with the project's pixel-pig icon from its official site. The image is not bundled: Magpie references it by URL and keeps its own cache. This is an unofficial integration; PiG is a project by Michael Kinsy and is not affiliated with, or endorsing, Magpie.
 
-## Use this checkout
+## Installation
 
-This package is not published yet. With a Magpie release that supports connect-only Agent plugins:
+With a Magpie release that supports connect-only Agent plugins:
 
 ```sh
-magpie plugin add /absolute/path/to/agent-pig
+magpie plugin add @magpie-community/agent-pig
 ```
 
 1. Open Magpie's Agents page and turn on **PiG**. Its row is a provider switch, with no model picker. CLI equivalent: `magpie pig provider magpie`.
@@ -58,27 +58,17 @@ Magpie owns native home expansion, path separators, command detection, file edit
 
 The runtime module is a single file, without imports, runtime dependencies or install hooks. `package.json` declares `magpie.agent` and no `main`, following the [community Agent convention](https://github.com/magpie-community/plugins#agents) and [public contract](https://usemagpie.ai/docs/plugins#agents).
 
+From `packages/pig` in a checkout of the community plugins repository, run the included unit tests with Bun:
+
 ```sh
 bun test pig.test.mjs
-# Requires real binaries; use only disposable synthetic configuration:
-MAGPIE_BIN=/absolute/path/to/magpie PIG_BIN=/absolute/path/to/pig npm run test:e2e
 ```
 
-`test:e2e` runs both `scripts/e2e.mjs` and `scripts/manual-lifecycle.mjs`.
-
-On Windows PowerShell, set explicit native binary paths before the same test command:
-
-```powershell
-$env:MAGPIE_BIN = 'C:\path\to\magpie.exe'
-$env:PIG_BIN = 'C:\path\to\pig.exe'
-node --test scripts/e2e.mjs
-```
-
-The community's `scripts/check.mjs` skips Agent packages; unit and end-to-end tests provide the behavioral evidence. No supplier account is needed for a local fake-upstream test. The runtime package's `files` list excludes test and research artifacts.
+The repository's `scripts/check.mjs` skips Agent packages; `pig.test.mjs` checks this plugin's descriptor and `connect()` output. The published npm package excludes tests and research artifacts.
 
 ## 中文
 
-这是仅注入模型目录的 PiG 适配插件。安装本地目录后，在 Magpie 的 Agent 页打开 **PiG**，再到 PiG 中运行 `/model` 选择 Magpie 模型。
+这是仅注入模型目录的 PiG 适配插件。通过 `magpie plugin add @magpie-community/agent-pig` 安装后，在 Magpie 的 Agent 页打开 **PiG**，再到 PiG 中运行 `/model` 选择 Magpie 模型。
 
 插件只通过 Magpie 托管 `~/.pig/agent/models.json` 中完整的 `providers.magpie` 对象，不修改 `settings.json` 或 `auth.json`，也不替用户设置启动默认模型、思考等级或模型范围。断开时，原先有同名 provider 就恢复原对象，原先没有就移除整个 provider，避免空 provider 导致 PiG 解析失败。
 
