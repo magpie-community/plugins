@@ -28,6 +28,8 @@
       "summary": { "en": "MiniMax Code account credits (daily check-in) and M Plan, with MiniMax Code's own device sign-in.", "zh": "用 MiniMax Code 账号的积分（每日签到）与 M Plan，使用 MiniMax Code 自己的设备登录。" } },
     { "package": "@magpie-community/opencode-workbuddy-auth", "name": "WorkBuddy", "icon": "workbuddy-color", "providers": ["workbuddy", "workbuddy-ai"], "community": true, "replaces": "workbuddy",
       "summary": { "en": "WorkBuddy's China build (CodeBuddy plan) and its international build.", "zh": "WorkBuddy 国内版（CodeBuddy 套餐）与国际版。" } },
+    { "package": "@magpie-community/opencode-dongleya-auth", "name": "Dongleya", "providers": ["dongleya"], "community": true,
+      "summary": { "en": "Unofficial: Dongleya (懂了鸭) chat models with browser sign-in or eureka_token, multi-turn sessions, cloud-task resume and local artifact downloads.", "zh": "非官方：懂了鸭（dongleya.qq.com）聊天模型，支持浏览器自动登录或 eureka_token、多轮会话、云端任务续订与产物下载到本地。" } },
     { "package": "@magpie-community/opencode-cline-auth", "name": "Cline", "icon": "cline", "providers": ["cline"], "community": true,
       "summary": { "en": "Cline's models on your own Cline account — usage billing, ClinePass and Cline's free models — with Cline's device sign-in or an API key.", "zh": "用自己的 Cline 账号使用 Cline 的模型——用量计费、ClinePass 与免费模型——支持 Cline 设备登录或 API key。" } },
     { "package": "@magpie-community/opencode-trae-auth", "name": "Trae", "icon": "trae", "providers": ["trae-cn", "trae-global"], "community": true,

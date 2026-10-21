@@ -1,0 +1,29 @@
+{
+  "name": "@magpie-community/opencode-dongleya-auth",
+  "version": "0.1.0",
+  "description": "Unofficial: Dongleya (懂了鸭) chat models in OpenCode and magpie, with browser sign-in or a eureka_token",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "README.md"],
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "dongleya",
+    "懂了鸭",
+    "tencent"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/dongleya"
+  },
+  "magpie": {
+    "icon": "https://dongleya.qq.com/favicon.png"
+  }
+}
