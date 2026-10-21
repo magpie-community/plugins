@@ -18,12 +18,42 @@ function baseURL(value) {
   return url.href.replace(/\/+$/, "")
 }
 
+// The CLI's models_cache.json reports only the context window of its default
+// `__dev` backend (200000 in the reference deployment), while the raw-chat
+// endpoint accepts far more: a 933342-token request succeeded there and
+// 1048566 was the first rejected as too long. Copying the cache value makes
+// every agent compact early, so a cache model gets the window of its `__max`
+// backend when the deployment names one, else the limits option's window.
+const DEFAULT_CONTEXT = 1000000
+const DEFAULT_OUTPUT = 32000
+// auth.options 的键，magpie 供应商编辑器里那个 Off/On 开关。
+const MAX_WINDOW_KEY = "max-context-window"
+
+function contextOf(m, fallback) {
+  const max = Number(m.business_metadata?.variants?.max_context_window)
+  if (Number.isSafeInteger(max) && max > 0) return max
+  const dev = Number(m.context_window)
+  if (Number.isSafeInteger(dev) && dev > 0) return Math.max(dev, fallback)
+  return fallback
+}
+
+// declaredOf is the window the CLI catalog itself claims, kept so the switch
+// can fall back to it: 0 when the cache names none.
+function declaredOf(m) {
+  const max = Number(m.business_metadata?.variants?.max_context_window)
+  if (Number.isSafeInteger(max) && max > 0) return max
+  const dev = Number(m.context_window)
+  if (Number.isSafeInteger(dev) && dev > 0) return dev
+  return 0
+}
+
 function settingsOf(options) {
   const client = options.client ?? {}
   const settings = {
     traeHome: options.traeHome || process.env.TRAE_HOME || join(homedir(), ".trae"),
     baseURL: baseURL(options.baseURL),
     appId: String(options.appId || "").trim(),
+    limits: limitsOf(options.limits),
     client: {
       "x-ide-version-code": client.ideVersionCode ?? "20260206",
       "x-ide-version": client.ideVersion ?? "99.99.99",
@@ -40,11 +70,26 @@ function settingsOf(options) {
           throw new Error(`TRAE model ${key} must be a positive integer`)
         }
       }
-      return { id: m.id, name: m.name || m.id, wire: m.wire || m.id, context: m.context ?? 200000,
-        output: m.output ?? 32000, image: m.image === true, reasoning: m.reasoning === true, raw: true }
+      return { id: m.id, name: m.name || m.id, wire: m.wire || m.id, context: m.context ?? settings.limits.context,
+        declared: m.context ?? settings.limits.context,
+        output: m.output ?? settings.limits.output, image: m.image === true, reasoning: m.reasoning === true, raw: true }
     })
   }
   return settings
+}
+
+// limitsOf is what a cache model is told it takes: the deployment's own
+// numbers, since only it knows how much its raw-chat endpoint accepts.
+function limitsOf(limits) {
+  const out = { context: DEFAULT_CONTEXT, output: DEFAULT_OUTPUT }
+  if (limits === undefined) return out
+  if (!limits || typeof limits !== "object" || Array.isArray(limits)) throw new Error("TRAE limits must be an object")
+  for (const key of ["context", "output"]) {
+    if (limits[key] === undefined) continue
+    if (!Number.isSafeInteger(limits[key]) || limits[key] <= 0) throw new Error(`TRAE limits.${key} must be a positive integer`)
+    out[key] = limits[key]
+  }
+  return out
 }
 
 function readJson(path) {
@@ -82,7 +127,6 @@ function catalog(settings) {
     const id = String(m.config_name || "")
     if (!id) continue
     if (m.visibility === "hidden" || m.supported_in_api === false) continue
-    const ctx = Number(m.context_window) || 200000
     const surface = m.business_metadata?.uses_tob_raw_chat_surface !== false
     const wire = String(m.business_metadata?.variants?.standard_key || id)
     const modalities = Array.isArray(m.input_modalities) ? m.input_modalities : ["text"]
@@ -90,8 +134,9 @@ function catalog(settings) {
     out.push({
       id,
       name: String(m.slug || id),
-      context: ctx,
-      output: Number(m.max_output_tokens) || 32000,
+      context: contextOf(m, settings.limits.context),
+      declared: declaredOf(m),
+      output: Number(m.max_output_tokens) || settings.limits.output,
       raw: surface,
       wire,
       image: modalities.includes("image"),
@@ -530,17 +575,35 @@ async function collect(first, rest) {
   return { text, reasoning, error, finish, usage, calls }
 }
 
-export default async function TraePrivateAuthPlugin(_input, options = {}) {
-  return createPlugin(options)
+export default async function TraePrivateAuthPlugin(input, options = {}) {
+  return createPlugin(options, undefined, input)
 }
 
-function createPlugin(options = {}, upstreamFetch = (...args) => globalThis.fetch(...args)) {
+// maxWindowOn is the "advertise the deployment's full window" switch as the
+// user set it in magpie's provider editor. magpie hands it over through
+// input.magpie.option and rereads it whenever it is changed, so a plugin that
+// reads it per call follows the switch without a restart. Off, and the cache's
+// own context_window is reported as it stands.
+function maxWindowOn(input) {
+  try {
+    const value = input?.magpie?.option?.(ID, MAX_WINDOW_KEY)
+    // magpie 答了就以它为准；没答（测试或宿主不支持）时按声明的 default。
+    return typeof value === "boolean" ? value : true
+  } catch {
+    return true
+  }
+}
+
+function createPlugin(options = {}, upstreamFetch, input = undefined) {
+  const fetchUpstream = upstreamFetch ?? ((...args) => globalThis.fetch(...args))
   const settings = settingsOf(options)
+  // 开关关掉时只保留部署自己声明的窗口；打开时按 limits 抬到完整窗口。
+  const effective = (m) => (maxWindowOn(input) ? m : { ...m, context: m.declared ?? m.context })
   return {
     config: async (config) => {
       if (!settings.appId) return
       const base = settings.baseURL || readLocal(settings)?.base
-      const available = catalog(settings).filter((m) => m.raw)
+      const available = catalog(settings).filter((m) => m.raw).map(effective)
       if (!base || !available.length) return
       config.provider ??= {}
       const was = config.provider[ID] ?? {}
@@ -575,7 +638,7 @@ function createPlugin(options = {}, upstreamFetch = (...args) => globalThis.fetc
       async models(provider, { auth } = {}) {
         if (auth) connectedLocal(settings, auth)
         const models = {}
-        for (const m of catalog(settings).filter((m) => m.raw)) {
+        for (const m of catalog(settings).filter((m) => m.raw).map(effective)) {
           const was = provider.models?.[m.id] ?? {}
           models[m.id] = { ...modelEntry(m), ...was, id: m.id, name: was.name || m.name }
         }
@@ -585,6 +648,15 @@ function createPlugin(options = {}, upstreamFetch = (...args) => globalThis.fetc
     auth: {
       provider: ID,
       refreshLead: 5 * 60 * 1000,
+      options: [
+        {
+          key: MAX_WINDOW_KEY,
+          label: "Advertise the deployment's full context window",
+          description:
+            "The CLI's models_cache.json reports only its default __dev backend (200000 in the reference deployment), which makes agents compact far too early; the raw-chat endpoint accepts about one million. On, models are reported with the limits option's window (1000000 by default). Off, the cache's own value is kept.",
+          default: true,
+        },
+      ],
       async refresh(auth) {
         const local = connectedLocal(settings, auth)
         if (auth?.access === local.token && auth?.expires === local.expires) return
@@ -647,7 +719,7 @@ function createPlugin(options = {}, upstreamFetch = (...args) => globalThis.fetc
             }
             try {
               ac.signal.throwIfAborted()
-              res = await upstreamFetch(`${base}/api/ide/v2/llm_raw_chat`, {
+              res = await fetchUpstream(`${base}/api/ide/v2/llm_raw_chat`, {
                 method: "POST",
                 redirect: "error",
                 headers: {

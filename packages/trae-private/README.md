@@ -77,11 +77,50 @@ an explicit `models` array in options, replacing discovery:
 ```
 
 Only `id` is required for each explicit model. `name` and `wire` default to `id`;
-`context` and `output` default to 200000 and 32000 tokens. Set the limits for your
-deployment. Image input and reasoning default to false for explicit models.
-Cached models use `context_window` and `input_modalities` with the same default
-limits. Only configured/discovered models are accepted for requests. Reasoning
-text is forwarded; selectable reasoning levels are not advertised.
+`context` and `output` default to the plugin's `limits` (below). Image input and
+reasoning default to false for explicit models. Only configured/discovered models
+are accepted for requests. Reasoning text is forwarded; selectable reasoning levels
+are not advertised.
+
+A cached model's window is **not** copied straight from `models_cache.json`.
+`context_window` there describes the CLI's default `__dev` backend only, which is
+much smaller than what the raw-chat endpoint accepts (200000 against roughly one
+million in the reference deployment), so copying it makes every agent compact far
+too early. A cached model gets, in order of preference:
+
+1. `business_metadata.variants.max_context_window`, when the deployment names a
+   `__max` backend;
+2. its own `context_window`, when that is larger than the limit below;
+3. the `limits.context` below.
+
+Set `limits` when your deployment accepts more or less than the defaults:
+
+```json
+{ "appId": "YOUR_DEPLOYMENT_APP_ID", "limits": { "context": 1000000, "output": 64000 } }
+```
+
+`context` defaults to 1000000 and `output` to 32000. Both are positive integers;
+explicit `models` entries that omit `context` or `output` use them too. The
+plugin's own limits win over magpie's per-provider "Context window" and "Max
+output" fields in the provider editor, so set the window here, not there.
+
+## The context window switch
+
+The provider editor shows one switch this plugin declares:
+
+**Advertise the deployment's full context window** — on by default. On, models are
+reported at the `limits` window (1000000 unless set). Off, each model keeps the
+window its own CLI cache declares, and the reference deployment reports 200000 /
+184000 again — what agents compacted at before. A deployment that names a `__max`
+backend keeps that window either way.
+
+The switch is `auth.options`' `max-context-window`, read through
+`input.magpie.option`. magpie rereads it whenever it changes, so turning it takes
+effect without restarting magpie.
+
+This is the only setting that fits magpie's provider editor: `auth.options`
+carries Off/On switches alone, so the numeric window and output limits stay in
+the `limits` plugin option (JSON) rather than in a field.
 
 The tested CLI headers default to `x-ide-version-code: 20260206`,
 `x-ide-version: 99.99.99`, `version: 0.201.1-tob-alpha.1`, `originator: codex_exec`

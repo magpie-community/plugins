@@ -719,6 +719,72 @@ describe("deployment configuration and account binding", () => {
     expect(() => plugin({ models: [{}] })).toThrow("id")
     expect(() => plugin({ models: [{ id: "m", context: -1 }] })).toThrow("positive integer")
   })
+
+  // 缓存里的 context_window 只是 CLI 默认 dev 后端声明的窗口，raw chat 实际收得更多。
+  test("缓存模型取 max 档或 limits 声明的窗口，而不是照抄 dev 档", async () => {
+    writeModels([
+      { config_name: "dev-only", context_window: 200000, business_metadata: { variants: { standard_key: "dev-only__dev" } } },
+      { config_name: "with-max", context_window: 200000,
+        business_metadata: { variants: { standard_key: "with-max__dev", max_key: "with-max__max", max_context_window: 1048566 } } },
+      { config_name: "bigger-dev", context_window: 2000000 },
+    ])
+    const hooks = plugin()
+    const config = {}
+    await hooks.config(config)
+    const models = config.provider["trae-private"].models
+    expect(models["dev-only"].limit).toEqual({ context: 1000000, output: 32000 })
+    expect(models["with-max"].limit).toEqual({ context: 1048566, output: 32000 })
+    expect(models["bigger-dev"].limit.context).toBe(2000000)
+    // dev 档比 limits 小时不缩水：仍以 limits 为准
+    expect(models["dev-only"].limit.context).toBe(1000000)
+  })
+
+  test("limits 覆盖缓存模型的上限，显式模型未给时沿用 limits", async () => {
+    const hooks = plugin({ limits: { context: 900000, output: 64000 } })
+    const config = {}
+    await hooks.config(config)
+    expect(config.provider["trae-private"].models["raw-model"].limit).toEqual({ context: 900000, output: 64000 })
+    const models = await hooks.provider.models({ models: {} })
+    expect(models["raw-model"].limit).toEqual({ context: 900000, output: 64000 })
+
+    rmSync(join(fixture, "cli/models_cache.json"))
+    const explicit = plugin({ limits: { context: 500000 }, models: [{ id: "only-id" }] })
+    const cfg = {}
+    await explicit.config(cfg)
+    expect(cfg.provider["trae-private"].models["only-id"].limit).toEqual({ context: 500000, output: 32000 })
+    expect(() => plugin({ limits: { context: 0 } })).toThrow("positive integer")
+    expect(() => plugin({ limits: { output: 1.5 } })).toThrow("positive integer")
+    expect(() => plugin({ limits: [] })).toThrow("object")
+  })
+
+  // 供应商编辑器里的 Off/On 开关（auth.options），magpie 用 input.magpie.option 交过来。
+  test("max-context-window 开关决定上报完整窗口还是缓存自己声明的窗口", async () => {
+    writeModels([
+      { config_name: "dev-only", context_window: 200000, business_metadata: { variants: { standard_key: "dev-only__dev" } } },
+      // 声明了 __max 档的模型即使关掉开关也用 max 档
+      { config_name: "with-max", context_window: 200000,
+        business_metadata: { variants: { standard_key: "with-max__dev", max_context_window: 1048566 } } },
+      // 缓存里没有窗口时，关掉开关也不可能凭空造一个
+      { config_name: "no-window" },
+    ])
+    const declared = (flag) => _internal.createPlugin({ ...options },
+      () => { throw new Error("no upstream in this test") },
+      { magpie: { option: (provider, key) => (provider === "trae-private" && key === "max-context-window" ? flag : undefined) } })
+
+    const on = await declared(true).provider.models({ models: {} })
+    expect(on["dev-only"].limit.context).toBe(1000000)
+    expect(on["with-max"].limit.context).toBe(1048566)
+
+    const off = await declared(false).provider.models({ models: {} })
+    expect(off["dev-only"].limit.context).toBe(200000)
+    expect(off["with-max"].limit.context).toBe(1048566)
+    expect(off["no-window"].limit.context).toBe(0)
+
+    // 没有 input（OpenCode 直接调用）时按声明的 default 打开
+    const bare = await _internal.createPlugin({ ...options }, () => { throw new Error("no upstream") })
+      .provider.models({ models: {} })
+    expect(bare["dev-only"].limit.context).toBe(1000000)
+  })
 })
 
 describe("shortError", () => {
