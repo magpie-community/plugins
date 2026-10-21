@@ -1611,6 +1611,10 @@ async function* events(it) {
       }
     }
   }
+  if (!said && tools < 0) {
+    yield { error: { status: 502, message: "an empty reply (Devin returned no text, reasoning or tool call)" } }
+    return
+  }
   if (!usage.output) usage.output = Math.floor((said + 3) / 4)
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite
   yield {
@@ -1633,6 +1637,11 @@ const errorResponse = ({ status, message }) =>
     status,
     headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept" },
   })
+
+async function* prepend(first, rest) {
+  yield first
+  yield* rest
+}
 
 // complete answers a chat completion through GetChatMessage.
 async function complete({ key, server, families }, chat, signal) {
@@ -1667,17 +1676,15 @@ async function complete({ key, server, families }, chat, signal) {
     const e = failure(200, dec.decode(first.value.data))
     return errorResponse(e.status < 300 ? { status: 502, message: "an empty reply" } : e)
   }
-  let replay = first
-  const it = events({
-    next: () => {
-      if (replay) {
-        const r = replay
-        replay = null
-        return Promise.resolve(r)
-      }
-      return fr.next()
-    },
-  })
+  // 先等到实际内容或错误，才能让网关在空回复时切换渠道。
+  const source = events(prepend(first.value, fr))
+  const head = await source.next()
+  if (head.done) return errorResponse({ status: 502, message: "an empty reply" })
+  if (head.value.error) {
+    await fr.return?.()
+    return errorResponse(head.value.error)
+  }
+  const it = prepend(head.value, source)
   const id = "chatcmpl-" + randomBytes(12).toString("hex")
   const created = Math.floor(Date.now() / 1000)
 

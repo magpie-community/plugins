@@ -60,6 +60,9 @@ The plugin's `fetch` handles this:
   not: text, reasoning, tool calls and usage.
 - Failures keep their statuses: a refused token is a 401, a usage limit a
   429, a prompt too long for the model a 400.
+- A reply with only metadata and usage is a 502, even when output tokens
+  were counted. The plugin waits for actual content before opening a
+  successful stream, so the gateway can try another channel.
 
 ## Models
 
