@@ -92,6 +92,43 @@ test.if(unix)("a second account is named as Devin names its key, not as the CLI'
   expect((await _internal.success("key-a", "https://server.codeium.com")).metadata.email).toBe("a@x.dev")
 }, SLOW)
 
+test("two organizations under the same email are named and keyed apart", async () => {
+  const orgStatus = (orgName, orgId, teamId) =>
+    Response.json({
+      userStatus: {
+        name: "sky",
+        email: "m@x.dev",
+        teamId,
+        teamsTier: "TEAMS_TIER_DEVIN_MAX",
+        planStatus: {
+          planInfo: {
+            planName: "Max",
+            devinInfo: { orgId, accountDisplayName: orgName },
+          },
+        },
+      },
+    })
+  devin((key) =>
+    key === "key-org-1"
+      ? orgStatus("opt", "org_1", "devin-team$account-1")
+      : orgStatus("lab", "org_2", "devin-team$account-2"),
+  )
+  const r1 = await _internal.success("key-org-1", "https://server.codeium.com")
+  const r2 = await _internal.success("key-org-2", "https://server.codeium.com")
+  expect(r1).toEqual({
+    type: "success",
+    provider: "devin",
+    key: "key-org-1",
+    metadata: { email: "m@x.dev · opt", plan: "Devin Max", orgId: "org_1", teamId: "devin-team$account-1" },
+  })
+  expect(r2).toEqual({
+    type: "success",
+    provider: "devin",
+    key: "key-org-2",
+    metadata: { email: "m@x.dev · lab", plan: "Devin Max", orgId: "org_2", teamId: "devin-team$account-2" },
+  })
+})
+
 test.if(unix)("a key Devin refuses fails the sign-in, whatever the CLI says", async () => {
   devin(() => Response.json({ code: "unauthenticated", message: "invalid api key" }, { status: 401 }))
   await expect(_internal.success("key-refused", "https://server.codeium.com")).rejects.toThrow("Devin didn't take the sign-in")

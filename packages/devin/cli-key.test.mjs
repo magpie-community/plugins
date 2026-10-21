@@ -8,9 +8,14 @@ import { join } from "node:path"
 import { _internal } from "./index.mjs"
 
 const was = process.env.XDG_DATA_HOME
+const wasAppData = process.env.APPDATA
 const data = mkdtempSync(join(tmpdir(), "devin-data-"))
 process.env.XDG_DATA_HOME = data
-afterAll(() => (was === undefined ? delete process.env.XDG_DATA_HOME : (process.env.XDG_DATA_HOME = was)))
+process.env.APPDATA = data
+afterAll(() => {
+  was === undefined ? delete process.env.XDG_DATA_HOME : (process.env.XDG_DATA_HOME = was)
+  wasAppData === undefined ? delete process.env.APPDATA : (process.env.APPDATA = wasAppData)
+})
 
 test("the CLI's account follows credentials.toml; a browser sign-in stays", async () => {
   const cli = { type: "api", key: "saved", metadata: { cli: true, server: "https://s.example" } }

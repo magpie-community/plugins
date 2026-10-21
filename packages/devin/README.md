@@ -19,7 +19,7 @@ two ways to get one:
   read, never changed.
 
 The plugin names the account as Devin does when asked with the token
-(`GetUserStatus`: its email and tier). When Devin can't tell, and the CLI
+(`GetUserStatus`: its email, organization when named, and tier). When Devin can't tell, and the CLI
 is installed, it asks `devin auth status`, run with a data folder of the
 plugin's own, `~/.cache/opencode-devin-auth/<hash of the token>/`, so the
 CLI's own sign-in is never touched. A CLI that reads another
@@ -28,7 +28,7 @@ CLI's own sign-in is never touched. A CLI that reads another
 its own account. Otherwise the account is named "Devin".
 
 The token is kept where OpenCode keeps sign-ins (`auth.json`; in magpie,
-`plugin-auth.json`) as `{ "type": "api", "key", "metadata": { "email", "plan" } }`.
+`plugin-auth.json`) as `{ "type": "api", "key", "metadata": { "email", "plan", "orgId", "teamId" } }`.
 Devin doesn't expire it on a schedule, so there is nothing to refresh;
 when it is refused, requests fail with a 401 saying to sign in again.
 
