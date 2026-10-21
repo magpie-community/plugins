@@ -1,0 +1,139 @@
+[
+  {
+    "name": "weekday peak hours (10:00 CST) does not trigger offpeak, uses standard mapping",
+    "options": {
+      "now": "2026-10-19T02:00:00Z",
+      "schedule": {
+        "offpeak_mapping": {
+          "smart-router": "deepseek/deepseek-reasoner"
+        }
+      },
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat"
+      }
+    },
+    "request": { "model": "smart-router", "messages": [{ "role": "user", "content": "hello" }] },
+    "expect_request": { "model": "deepseek/deepseek-chat", "messages": [{ "role": "user", "content": "hello" }] }
+  },
+  {
+    "name": "weekday lunch offpeak (12:30 CST) routes to deepseek-reasoner (夯+快+便宜)",
+    "options": {
+      "now": "2026-10-19T04:30:00Z",
+      "schedule": {
+        "offpeak_mapping": {
+          "smart-router": "deepseek/deepseek-reasoner"
+        }
+      },
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat"
+      }
+    },
+    "request": { "model": "smart-router", "messages": [{ "role": "user", "content": "refactor code" }] },
+    "expect_request": { "model": "deepseek/deepseek-reasoner", "messages": [{ "role": "user", "content": "refactor code" }] }
+  },
+  {
+    "name": "weekday night offpeak (21:00 CST) routes to deepseek-reasoner",
+    "options": {
+      "now": "2026-10-19T13:00:00Z",
+      "schedule": {
+        "offpeak_mapping": {
+          "smart-router": "deepseek/deepseek-reasoner"
+        }
+      }
+    },
+    "request": { "model": "smart-router", "messages": [{ "role": "user", "content": "analyze paper" }] },
+    "expect_request": { "model": "deepseek/deepseek-reasoner", "messages": [{ "role": "user", "content": "analyze paper" }] }
+  },
+  {
+    "name": "weekend all-day offpeak (Saturday 15:00 CST) routes to deepseek-reasoner",
+    "options": {
+      "now": "2026-10-24T07:00:00Z",
+      "schedule": {
+        "offpeak_mapping": {
+          "smart-router": "deepseek/deepseek-reasoner"
+        }
+      }
+    },
+    "request": { "model": "smart-router", "messages": [{ "role": "user", "content": "long horizon planning" }] },
+    "expect_request": { "model": "deepseek/deepseek-reasoner", "messages": [{ "role": "user", "content": "long horizon planning" }] }
+  },
+  {
+    "name": "image in request triggers vision constraint gate",
+    "options": {
+      "constraints": {
+        "vision": "local-qwen/Qwen3.8-27B"
+      },
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat"
+      }
+    },
+    "request": {
+      "model": "smart-router",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            { "type": "text", "text": "inspect this screenshot" },
+            { "type": "image", "source": { "type": "base64", "data": "abc" } }
+          ]
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "local-qwen/Qwen3.8-27B",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            { "type": "text", "text": "inspect this screenshot" },
+            { "type": "image", "source": { "type": "base64", "data": "abc" } }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "large token count triggers long context constraint gate",
+    "options": {
+      "constraints": {
+        "tokens_gte": {
+          "threshold": 100,
+          "target": "grok/grok-4.7@500k"
+        }
+      },
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat"
+      }
+    },
+    "request": {
+      "model": "smart-router",
+      "messages": [
+        {
+          "role": "user",
+          "content": "A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters."
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "grok/grok-4.7@500k",
+      "messages": [
+        {
+          "role": "user",
+          "content": "A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters. A very long document context text with lots of characters."
+        }
+      ]
+    }
+  },
+  {
+    "name": "replies restore the asked model name",
+    "options": {
+      "mapping": {
+        "smart-router": "deepseek/deepseek-reasoner"
+      }
+    },
+    "request": { "model": "smart-router", "messages": [] },
+    "expect_request": { "model": "deepseek/deepseek-reasoner", "messages": [] },
+    "response": { "model": "deepseek/deepseek-reasoner", "choices": [{ "message": { "content": "done" } }] },
+    "expect_response": { "model": "smart-router", "choices": [{ "message": { "content": "done" } }] }
+  }
+]
