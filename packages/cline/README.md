@@ -69,8 +69,12 @@ Cline's gateway picks among the providers that serve a model. With the
 not the `cline-free/` ones) carries `"providerOptions": {"gateway": {"only":
 ["deepseek"]}}`, so it is answered by DeepSeek's own API only, and one for a
 GLM model (`cline-pass/glm-…`) carries `["zai"]`, so it is answered by Z.ai's
-own API only — the same as magpie's built-in ClinePass tick. Other models, and a request with
-`providerOptions` of its own, go as sent. It is off by default. Turn it on:
+own API only — the same as magpie's built-in ClinePass tick. Cline sends
+`glm-5.3-flash` through OpenRouter rather than Vercel's gateway, and OpenRouter
+ignores `providerOptions`, so that model's request carries OpenRouter's own
+`"provider": {"only": ["z-ai"]}` instead (since 0.1.10). Other models, and a
+request with `provider` or `providerOptions` of its own, go as sent. It is off
+by default. Turn it on:
 
 - in magpie: the provider's editor › Upstream › tick "DeepSeek and GLM
   models only from their makers' own APIs";

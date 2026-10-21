@@ -122,11 +122,28 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
   that fails (an `error` event, or Trae's stream breaking off) ends with the
   error and `[DONE]`, with no finish.
 - **Tools:**
-  - Trae's chat has no turn for a tool call or its result, so the tools are
-    named twice:
-    - natively in `tools`, with `parameters` as a JSON string;
-    - in a system prompt that asks for each call as a
-      `<tool_call>{"name", "arguments"}</tool_call>` block.
+  - The tools go natively in `tools`, with `parameters` as a JSON string.
+    A past call goes back as the turn Trae made it: an assistant
+    `tool_calls` message carrying it (each call
+    `{id, type: "function", function_call: {name, arguments}}`) and a
+    `tool` message after it answering it. Trae answers such a history with
+    native calls; asked for its calls in text instead — a system prompt
+    describing a `<tool_call>` block, earlier calls written out as one —
+    models write them as blocks, and a block the stream cuts short is an
+    error (plugins#38). Trae takes no two messages of one role in a row,
+    so an assistant turn's text is folded into the calls turn after it
+    and consecutive calls turns join one `tool_calls` list.
+  - A call with no name is dropped, and the `tool` result answering it
+    with it: Trae requires the name, and an empty `tool_calls` list with a
+    result naming no call is not a turn it takes.
+  - A result with no text goes as `(no output)` (`(the result's image
+    follows)` when it had only an image): Trae refuses the whole request
+    with 4027 when a result's text is empty, reading the calls turn as
+    unanswered (measured on Trae CN in #251). A result answering no call
+    the history sends goes back as text in a `user` turn.
+  - A request that names no tools to Trae (none sent, or `tool_choice:
+    "none"`, such as a summary) sends its past calls and results as text,
+    as before: every live run of the native turns carried the tools.
   - GLM also writes its own template, `<tool_call>name<arg_key>k</arg_key>
     <arg_value>v</arg_value></tool_call>` (a string kept as written, other
     types read as JSON), and sometimes a whole call into a native call's
@@ -152,7 +169,9 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     requested tool but for case or punctuation (`Read`) goes on as the
     request's (`read`); any other goes on as written, so the agent can say
     the tool doesn't exist.
-  - Earlier calls and their results go back in as text.
+  - Trae requires the message answering a call to follow the call: the
+    results of parallel calls go out as consecutive `tool` messages, with
+    nothing between them, or the later ones lose their answer (11148).
   - Images: Trae's lists mark each model `multimodal` true or false (the
     Doubao-Seed models, Kimi K3 and K2.6, Qwen 3.7 Plus and MiniMax M3 take
     images; GLM-5 and DeepSeek V4 don't). A model marked true is listed
@@ -162,6 +181,13 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     "[an image, which this model can't see]" in its place. A model whose
     list hasn't been read is sent its images, unless the fallback list
     says it takes none.
+    A tool result's images go in a `user` message after the whole run of
+    results, not in the `tool` turn: measured on the live endpoint, an
+    `image_url` part in a `tool` turn reaches Kimi K2.6 but not
+    Doubao-Seed (it answered "Blue"/"Black" to a red image), while the
+    user-turn placement is read by both. The results of one turn stay
+    consecutive — nothing may go between them (11148) — so the images
+    wait for the last of them.
 
 The model list is the account's own, from
 `/api/ide/v1/batch_get_detail_param`, every function's list in one ask, as
@@ -335,7 +361,9 @@ answered it 9074 even with the client's headers.
   in today, and that holds for the day. No device id is ever changed or
   rotated to get round a 9095 or a 9074, and no account is given another
   account's device or its own client's device unless the client is signed
-  in as that account.
+  in as that account. The credit a claim granted is its `credits` plus
+  its `extra_credits`, either alone; the status answer's is the fallback
+  when the claim says none.
 
 Only `api.trae.cn`'s `/trae/api/` pages are sent this way; any other URL
 that isn't a chat request is still refused (400). Needs 0.1.4 or later.

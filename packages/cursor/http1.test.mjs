@@ -59,8 +59,11 @@ const end = (body) => {
 const update = (num, body) => frame(pb().bytes(1, pb().bytes(num, body)).done())
 
 // the agent API over HTTP/2 on port: "answer" answers a Run "hi" and the
-// turn's end; "stall" takes the stream and never sends its head; "refuse"
-// closes the stream with code (REFUSED_STREAM unless told) before its head.
+// turn's end, and counts it in runs once the Run's first message has come:
+// a loaded machine can read a stalled Run's stream only after the test set
+// "answer", and that stream, its client gone, never brings a message;
+// "stall" takes the stream and never sends its head; "refuse" closes the
+// stream with code (REFUSED_STREAM unless told) before its head.
 // resets refuses that many streams first, whatever the mode.
 async function agent(port, mode, { resets = 0, code = http2.constants.NGHTTP2_REFUSED_STREAM } = {}) {
   const a = { mode, runs: 0, resets, code }
@@ -71,8 +74,8 @@ async function agent(port, mode, { resets = 0, code = http2.constants.NGHTTP2_RE
       a.resets--
       return stream.close(a.code)
     }
-    if (a.mode === "stall") return
-    a.runs++
+    // a stream read so late that its client is gone isn't answered
+    if (a.mode === "stall" || stream.destroyed) return
     stream.respond({ ":status": 200, "content-type": "application/connect+proto" })
     let buf = Buffer.alloc(0)
     let answered = false
@@ -80,6 +83,7 @@ async function agent(port, mode, { resets = 0, code = http2.constants.NGHTTP2_RE
       buf = Buffer.concat([buf, c])
       if (answered || buf.length < 5 || buf.length < 5 + buf.readUInt32BE(1)) return
       answered = true
+      a.runs++
       stream.write(update(1, pb().str(1, "hi").done()))
       stream.write(update(14, pb().varint(1, 0).done()))
       stream.end(end("{}"))

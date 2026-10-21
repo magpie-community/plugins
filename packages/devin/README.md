@@ -54,6 +54,8 @@ The plugin's `fetch` handles this:
     with its result, as magpie's built-in sends them: a tool message's own
     `image_url` parts, and the ones magpie's gateway puts in the user
     message after the results ("[From the result of …]").
+- A request past 8 KiB goes gzipped, as the CLI sends it (since 0.1.21,
+  #275): Devin turns a body past 10 MiB away with 413.
 - It turns the streamed reply back into a chat completion, streamed or
   not: text, reasoning, tool calls and usage.
 - Failures keep their statuses: a refused token is a 401, a usage limit a

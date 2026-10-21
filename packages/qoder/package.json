@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-qoder-auth",
-  "version": "0.2.19",
+  "version": "0.2.25",
   "description": "Qoder subscriptions in OpenCode and magpie: Qoder (qoder.com) and Qoder CN (qoder.cn)",
   "type": "module",
   "main": "./index.mjs",

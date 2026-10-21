@@ -1,6 +1,7 @@
 // PAT sign-in: exchange a Personal Access Token for a job token, bypassing
-// the OAuth device flow. PAT is only offered on the global site (qoder.com),
-// not on Qoder CN (which uses device chat directly).
+// the OAuth device flow. Offered on both sites: Qoder CN's exchange takes a
+// PAT too, and the job token it returns signs the model list and chat calls
+// with the COSY envelope as it does on qoder.com.
 import { afterEach, expect, test } from "bun:test"
 import { QoderAuthPlugin, QoderCNAuthPlugin } from "./index.mjs"
 
@@ -26,11 +27,87 @@ test("qoder: PAT auth method is listed", async () => {
   expect(patMethod.prompts[0].type).toBe("password")
 })
 
-test("qoder-cn: PAT auth method is NOT listed", async () => {
+test("qoder-cn: PAT auth method is listed", async () => {
   const client = { auth: { set: async () => {} } }
   const hooks = await QoderCNAuthPlugin({ client })
   const patMethod = hooks.auth.methods.find((m) => m.label?.includes("PAT"))
-  expect(patMethod).toBeUndefined()
+  expect(patMethod).toBeDefined()
+  expect(patMethod.type).toBe("oauth")
+  expect(patMethod.label).toBe("Sign in with Qoder CN PAT")
+  expect(patMethod.prompts).toHaveLength(1)
+  expect(patMethod.prompts[0].key).toBe("pat")
+  expect(patMethod.prompts[0].type).toBe("password")
+  // the prompt names the CN console, not qoder.com's
+  expect(patMethod.prompts[0].message).toContain("https://qoder.cn/account/integrations")
+})
+
+test("qoder-cn: PAT sign-in exchanges at the CN openapi host", async () => {
+  const calls = []
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(String(url))
+    calls.push(u.host + u.pathname)
+    if (u.host === "openapi.qoder.com.cn" && u.pathname === "/api/v1/jobToken/exchange") {
+      const body = JSON.parse(init.body)
+      expect(body.personal_token).toBe("pt-cn123")
+      return json({ token: "jt-cn", refresh_token: "jrt-cn", expires_in: 86400000 })
+    }
+    if (u.host === "openapi.qoder.com.cn" && u.pathname === "/api/v1/userinfo") {
+      return json({ id: "cn-user-1", name: "CN User" })
+    }
+    return new Response("", { status: 500 })
+  }
+  const client = { auth: { set: async () => {} } }
+  const hooks = await QoderCNAuthPlugin({ client })
+  const patMethod = hooks.auth.methods.find((m) => m.label?.includes("PAT"))
+  const flow = patMethod.authorize({ pat: "pt-cn123" })
+  expect(flow.url).toBe("https://qoder.cn/account/integrations")
+
+  const res = await flow.callback()
+  expect(res.type).toBe("success")
+  expect(res.access).toBe("jt-cn")
+  expect(res.uid).toBe("cn-user-1")
+  expect(res.patAuth).toBe(true)
+  expect(res.pat).toBe("pt-cn123")
+  // a PAT account keeps no device token: it is not a device-chat account
+  expect(res.deviceToken).toBe("")
+  expect(res.deviceChat).toBeUndefined()
+  expect(calls).toContain("openapi.qoder.com.cn/api/v1/jobToken/exchange")
+  expect(calls).toContain("openapi.qoder.com.cn/api/v1/userinfo")
+  // nothing is asked of the global host
+  expect(calls.some((c) => c.startsWith("openapi.qoder.sh"))).toBe(false)
+})
+
+test("qoder-cn: a PAT account keeps the name its browser sign-in takes", async () => {
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url))
+    if (u.pathname === "/api/v1/jobToken/exchange") return json({ token: "jt-1", refresh_token: "jrt-1", expires_in: 86400000 })
+    if (u.pathname === "/api/v1/userinfo") return json({ id: "same-user", name: "Someone" })
+    return new Response("", { status: 500 })
+  }
+  const client = { auth: { set: async () => {} } }
+  const hooks = await QoderCNAuthPlugin({ client })
+  const patMethod = hooks.auth.methods.find((m) => m.label?.includes("PAT"))
+  const res = await patMethod.authorize({ pat: "pt-x" }).callback()
+
+  // no suffix: magpie's host replaces an account on a new sign-in when both
+  // the accountId and the uid match, so a re-signed PAT must name the same
+  // account the browser sign-in does, not a row of its own beside it
+  expect(res.accountId).toBe("same-user")
+  expect(res.uid).toBe("same-user")
+  expect(res.email).toBe("")
+})
+
+test("qoder: a PAT account is named by its email, as the browser sign-in is", async () => {
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url))
+    if (u.pathname === "/api/v1/jobToken/exchange") return json({ token: "jt-g", refresh_token: "jrt-g", expires_in: 86400000 })
+    if (u.pathname === "/api/v1/userinfo") return json({ id: "g-1", email: "g@example.com", name: "G" })
+    return new Response("", { status: 500 })
+  }
+  const { hooks } = await plugin(null)
+  const patMethod = hooks.auth.methods.find((m) => m.label?.includes("PAT"))
+  const res = await patMethod.authorize({ pat: "pt-g" }).callback()
+  expect(res.accountId).toBe("g@example.com")
 })
 
 test("qoder: PAT auth method validates PAT format", async () => {

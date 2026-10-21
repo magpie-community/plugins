@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createCipheriv, createHash, randomBytes } from "node:crypto"
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, sep } from "node:path"
 import { TraeCNAuthPlugin, _internal } from "./index.mjs"
 import { fakeTrae, json, signedIn } from "./fake.mjs"
 
@@ -142,16 +142,38 @@ test("the client's codec decodes what it encodes, and refuses another header", (
 
 test("where each OS keeps the client's storage.json", () => {
   const p = _internal.clientStoragePaths
-  expect(p("darwin", "/Users/a", {})).toEqual(["/Users/a/Library/Application Support/Trae CN/User/globalStorage/storage.json"])
-  const w = p("win32", "/h", { APPDATA: "/h/Roam" })
-  expect(w).toEqual([
+  // the paths are joined with this system's separator: the composition is
+  // what is checked, so they are read as one system spells them
+  const same = (ps) => ps.map((x) => x.replaceAll(sep, "/"))
+  expect(same(p("darwin", "/Users/a", {}))).toEqual(["/Users/a/Library/Application Support/Trae CN/User/globalStorage/storage.json"])
+  expect(same(p("win32", "/h", { APPDATA: "/h/Roam" }))).toEqual([
     "/h/Roam/Trae CN/User/globalStorage/storage.json",
     "/h/Roam/trae-cn/User/globalStorage/storage.json",
     "/h/AppData/Roaming/Trae CN/User/globalStorage/storage.json",
     "/h/AppData/Roaming/trae-cn/User/globalStorage/storage.json",
   ])
-  expect(p("linux", "/home/a", {})[0]).toBe("/home/a/.config/trae-cn/User/globalStorage/storage.json")
-  expect(p("linux", "/home/a", { XDG_CONFIG_HOME: "/x" })[0]).toBe("/x/trae-cn/User/globalStorage/storage.json")
+  expect(same(p("linux", "/home/a", {}))[0]).toBe("/home/a/.config/trae-cn/User/globalStorage/storage.json")
+  expect(same(p("linux", "/home/a", { XDG_CONFIG_HOME: "/x" }))[0]).toBe("/x/trae-cn/User/globalStorage/storage.json")
+  // a root named twice is asked once: APPDATA the same as the home's own
+  expect(same(p("win32", "/h", { APPDATA: "/h/AppData/Roaming" }))).toEqual([
+    "/h/AppData/Roaming/Trae CN/User/globalStorage/storage.json",
+    "/h/AppData/Roaming/trae-cn/User/globalStorage/storage.json",
+  ])
+  // the same folder spelled with another case, separator or a trailing one
+  // is still that folder (the fix: string equality read it twice)
+  expect(same(p("win32", "/h", { APPDATA: "\\H\\APPDATA\\roaming\\" })).length).toBe(2)
+  // and a different APPDATA is a root of its own, beside the home's
+  expect(same(p("win32", "/h", { APPDATA: "/other/Roam" }))).toEqual([
+    "/other/Roam/Trae CN/User/globalStorage/storage.json",
+    "/other/Roam/trae-cn/User/globalStorage/storage.json",
+    "/h/AppData/Roaming/Trae CN/User/globalStorage/storage.json",
+    "/h/AppData/Roaming/trae-cn/User/globalStorage/storage.json",
+  ])
+  // no APPDATA at all: the home's own alone
+  expect(same(p("win32", "/h", {}))).toEqual([
+    "/h/AppData/Roaming/Trae CN/User/globalStorage/storage.json",
+    "/h/AppData/Roaming/trae-cn/User/globalStorage/storage.json",
+  ])
 })
 
 test("this machine's OS as the client names it", () => {

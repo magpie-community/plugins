@@ -1,6 +1,6 @@
-// WorkBuddy's refusal of Codex's and Claude Code's system prompt carries
-// the hint magpie's built-in added (provider.WBRefusedHint), at the end of
-// the message, where magpie's routing page looks for it.
+// WorkBuddy's refusal of words in a client's prompt carries the hint
+// magpie's Routing page knows (WB_REFUSED), at the end of the message,
+// where the page looks for it.
 import { expect, test } from "bun:test"
 import { _internal } from "./index.mjs"
 
@@ -10,6 +10,16 @@ test("the refusal ends in the hint", async () => {
   const res = await explained(new Response(JSON.stringify({ error: { message: "Illegal API invocation from an unapproved channel", code: 11004 } }), { status: 403 }))
   expect(res.status).toBe(403)
   expect((await res.json()).error.message).toBe("Illegal API invocation from an unapproved channel — " + REFUSED_HINT)
+})
+
+test("the hint is magpie's word for word, and blames no one client", () => {
+  // magpie's Routing page splits it from WorkBuddy's words only when it
+  // matches exactly; DeepSeek Harness's and Claude Desktop's chats are
+  // refused too (#279, #170), so naming Codex and Claude Code misled them
+  expect(REFUSED_HINT).toBe(
+    "WorkBuddy refused words in this client's prompt (most often its system prompt); use it from Hermes, OpenCode or Pi, or add another provider to this group",
+  )
+  expect(REFUSED_HINT).not.toMatch(/Codex|Claude/)
 })
 
 test("credits exhausted error ends in the exhausted hint", async () => {

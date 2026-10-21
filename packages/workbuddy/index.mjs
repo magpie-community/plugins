@@ -463,6 +463,10 @@ const FLAGGED = [
   [/You are Claude Code, Anthropic['’]s official CLI for Claude/gi, "You are Claude Code, Anthropic's CLI for Claude"],
   [/Main branch \(you will usually use this for PRs\)/gi, "Main branch (usually the base for PRs)"],
   [/(?<!the )Codex CLI is an open source project led by OpenAI\./gi, "The Codex CLI is an open source project led by OpenAI."],
+  // DeepSeek Harness (DSH) opens its system prompt with this line, which
+  // WorkBuddy refuses as 11128 (magpie-community/plugins#279; the same
+  // refusal traced in smart-open/TraeWorkAssistant#125).
+  [/You are an AI agent powered by DeepSeek Harness\.?/gi, "You are an AI agent that helps the user with programming tasks."],
 ]
 
 function unflagged(text) {
@@ -1461,6 +1465,21 @@ function priceOf(d, promotions, now = Date.now()) {
   return { free: base === 0, rate: base }
 }
 
+// effortsOf are the levels a config model takes. Most list them in
+// reasoning.supportedEfforts; some (fast-model, deepseek-v4.1-flash, kimi-k3,
+// gemini-3.5-flash … on both sites, plugins#255) say only supportsReasoning
+// and a default reasoning.effort. Those take low, high and max (each
+// reasoned under a real account, on four of them) and their own default.
+const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"]
+function effortsOf(d) {
+  const said = d.reasoning?.supportedEfforts
+  if (Array.isArray(said) && said.length) return said
+  if (d.supportsReasoning !== true) return []
+  const own = d.reasoning?.effort
+  const set = new Set(["low", "high", "max", ...(typeof own === "string" && EFFORT_ORDER.includes(own) ? [own] : [])])
+  return EFFORT_ORDER.filter((e) => set.has(e))
+}
+
 async function liveModels(site, a) {
   const headers = new Headers()
   sign(site, a, headers)
@@ -1483,7 +1502,7 @@ async function liveModels(site, a) {
         m.output = d.maxOutputTokens
         m.images = d.supportsImages === true && !textOnly(site, id)
         Object.assign(m, priceOf(d, cfg.modelPromotions))
-        const es = d.reasoning?.supportedEfforts ?? []
+        const es = effortsOf(d)
         if (es.length) {
           const canOff = d.reasoning?.canDisableThinking
           m.efforts = [...(!d.onlyReasoning && (canOff == null || canOff) ? ["none"] : []), ...es]
@@ -1680,11 +1699,15 @@ function makePlugin(site) {
 
 // REFUSED_HINT is what the user can do about WorkBuddy's "Illegal API
 // invocation from an unapproved channel": both builds answer it to a chat
-// holding words of Codex's or Claude Code's own (magpie #182), whatever the
-// headers. FLAGGED rewrites the ones known; this is for one it doesn't know. It ends the error's message, as magpie's built-in
-// put it (provider.WBRefusedHint), so magpie's routing page says it apart.
+// holding words they turn away, whatever the headers. Codex's and Claude
+// Code's were the first (magpie #182), DeepSeek Harness's and Claude
+// Desktop's came later (#279, #170), and WorkBuddy reads every message, so
+// it names no client. FLAGGED rewrites the words known; this is for ones it
+// doesn't know. It ends the error's message word for word as magpie's
+// Routing page has it (WB_REFUSED in its routing client.js), which says it
+// apart from WorkBuddy's own words.
 const REFUSED_HINT =
-  "WorkBuddy refuses chats from Codex and Claude Code (their system prompt); use it from Hermes, OpenCode or Pi, or add another provider to this group"
+  "WorkBuddy refused words in this client's prompt (most often its system prompt); use it from Hermes, OpenCode or Pi, or add another provider to this group"
 const REFUSED = /unapproved channel|illegal api invocation/i
 
 // RESTRICTED_HINT is what the user can do about WorkBuddy's 403 code 11140

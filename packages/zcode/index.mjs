@@ -847,13 +847,29 @@ async function teamSignIn(site, root, auth, info) {
 
 // signedIn is what a sign-in gives: the account's coding plan key and plan;
 // or, with none of its own, a seat on a team's plan; or else ZCode's token
-// for its Start Plan while the account has one.
-async function signedIn(site, token, jwt, device) {
+// for its Start Plan while the account has one. Asked for the team's plan
+// (onTeam), it is the team seat alone, as ZCode's plan picker gives a team
+// plan beside the account's own (a "team-coding-plan" selection): an
+// account with both is signed in to each as an account of its own (#285).
+async function signedIn(site, token, jwt, device, onTeam = false) {
   const name = SITES[site].name
   const root = SITES[site].api
   let s = null
   let err = null
   let team = ""
+  if (onTeam) {
+    const auth = await bizAuth(site, token)
+    let info
+    try {
+      info = await call("GET", root + "/api/biz/customer/getCustomerInfo", { auth })
+    } catch (e) {
+      throw new Error(`${name} account: ${e.message}`)
+    }
+    const t = await teamSignIn(site, root, auth, info)
+    if (t.s) return { ...t.s, jwt, plan: t.plan }
+    if (t.none) throw new Error(`this ${name} account has no seat on a team's GLM Coding Plan — sign in with "ZCode: ${name} GLM Coding Plan" for its own plan`)
+    throw new Error(t.why ?? t.err)
+  }
   try {
     const auth = await bizAuth(site, token)
     let info
@@ -891,11 +907,15 @@ async function signedIn(site, token, jwt, device) {
   )
 }
 
+// TEAM marks a team seat's account name beside the account's own.
+const TEAM = "team"
 const who = (u) => first(String(u?.email ?? "").replace(/@phone\.local$/, ""), u?.name, u?.user_id, "ZCode")
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // authorize opens ZCode's sign-in flow on site; its callback polls it.
-async function authorize(site, log) {
+// onTeam signs in to the account's seat on a team's plan, named apart from
+// the account's own plan (the host keeps one entry per account name).
+async function authorize(site, log, onTeam = false) {
   const poll = "Bearer " + Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex")
   const device = uuid()
   let flow
@@ -936,7 +956,7 @@ async function authorize(site, log) {
         if (got.status !== "ready" || !token) return fail("ZCode sign-in: unexpected answer " + got.status)
         let s
         try {
-          s = await signedIn(site, token, first(got.token), device)
+          s = await signedIn(site, token, first(got.token), device, onTeam)
         } catch (e) {
           return fail(e.message)
         }
@@ -947,7 +967,7 @@ async function authorize(site, log) {
           access: s.key || s.jwt || "",
           // the key doesn't run out; ZCode's token, when it is all there is, does
           expires: s.key || isTeam(s) ? 0 : jwtExpiry(s.jwt),
-          accountId: who(got.user),
+          accountId: onTeam ? `${who(got.user)} (${TEAM})` : who(got.user),
         }
       }
     },
@@ -1733,6 +1753,24 @@ export async function ZCodeAuthPlugin({ client }) {
       methods: [
         oauth("zai"),
         oauth("bigmodel"),
+        // a team's plan beside the account's own (#285): the sign-ins above
+        // take the account's own plan when it has one
+        {
+          type: "oauth",
+          label: "ZCode: a team's GLM Coding Plan",
+          prompts: [
+            {
+              type: "select",
+              key: "site",
+              message: "Where is the team's plan?",
+              options: [
+                { label: "Z.ai", value: "zai", hint: "z.ai" },
+                { label: "BigModel (智谱)", value: "bigmodel", hint: "bigmodel.cn" },
+              ],
+            },
+          ],
+          authorize: (inputs) => authorize(inputs?.site === "bigmodel" ? "bigmodel" : "zai", log, true),
+        },
         { type: "oauth", label: "ZCode app's sign-in", authorize: async () => asZCode() },
         {
           type: "api",

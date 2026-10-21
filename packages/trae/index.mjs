@@ -821,7 +821,16 @@ function clientStoragePaths(platform, home, env) {
   const file = (root, name) => join(root, name, "User", "globalStorage", "storage.json")
   if (platform === "darwin") return [file(join(home, "Library", "Application Support"), "Trae CN")]
   if (platform === "win32") {
-    const roots = [env.APPDATA, join(home, "AppData", "Roaming")].filter((r, i, all) => r && all.indexOf(r) === i)
+    // the two roots are often the same folder: APPDATA and the home's own
+    // AppData\Roaming. They are compared as one system spells them, so a
+    // difference of separator or case alone doesn't read the same file twice
+    const spell = (r) => String(r ?? "").replace(/[\\/]+/g, "\\").replace(/\\+$/, "").toLowerCase()
+    const roots = []
+    for (const r of [env.APPDATA, join(home, "AppData", "Roaming")]) {
+      if (!r) continue
+      if (roots.some((was) => spell(was) === spell(r))) continue
+      roots.push(r)
+    }
     return roots.flatMap((r) => ["Trae CN", "trae-cn"].map((n) => file(r, n)))
   }
   if (platform === "linux") return ["trae-cn", "Trae CN"].map((n) => file(env.XDG_CONFIG_HOME || join(home, ".config"), n))
@@ -914,29 +923,13 @@ const ugPage = (url) => {
   }
 }
 
-// Trae's chat takes text only and has no turn for a tool call or its
-// result. The agent's tools are named to it natively and in a system
-// prompt that asks for each call as a tagged block; earlier calls and
-// their results go in as text. A native call in its answer is taken too.
+// A model that writes a tool call as text still writes it, mostly GLM and
+// DeepSeek: the blocks are read as the calls they mean (the tools also go
+// natively in the body, and a past call is a native turn, so an answer is
+// usually native; the text form is read for when it is not).
 const OPEN = "<tool_call>"
 const CLOSE = "</tool_call>"
 
-function toolPrompt(tools, choice, parallel) {
-  const defs = tools.map((t) => {
-    const f = t.function ?? t
-    return { name: f.name, description: f.description ?? "", parameters: f.parameters ?? {} }
-  })
-  const lines = [
-    "You can call the client's tools, listed below as JSON. They run on the user's machine, not on yours: use no built-in or server tool to reach the user's files.",
-    `To call a tool, write one block per call and nothing after it: ${OPEN}{"name":"tool_name","arguments":{...}}${CLOSE}. Use an exact tool name and fill arguments from its schema. Then stop and wait: the result comes back in the next message.`,
-    "A call is not done until its result comes back; don't say it is, and don't repeat a call whose result you have.",
-  ]
-  if (parallel === false) lines.push("Call at most one tool at a time.")
-  if (choice === "required") lines.push("Call a tool before answering.")
-  else if (choice && typeof choice === "object" && (choice.function?.name || choice.name)) lines.push(`Call the tool ${choice.function?.name || choice.name} before answering.`)
-  lines.push("Tools:", JSON.stringify(defs))
-  return lines.join("\n")
-}
 
 const partText = (content) => {
   if (typeof content === "string") return content
@@ -970,43 +963,137 @@ const partsOf = (content, sees) => {
 // the model takes images: Trae's list says so of each model (multimodal),
 // and a model it says doesn't is sent the placeholder, not the image.
 function traeMessages(req, sees = false) {
-  const tools = Array.isArray(req.tools) && req.tools.length && req.tool_choice !== "none" ? req.tools : []
+  // native is whether the body names the tools to Trae (chatBody's own
+  // test). Past calls go back as Trae's own turns only then: every live
+  // run of that shape carried the tools, and a request without them (a
+  // summary, tool_choice "none") keeps the text form it always had
+  const native = Array.isArray(req.tools) && req.tools.length > 0 && req.tool_choice !== "none"
   const names = new Map()
   const out = []
-  if (tools.length) out.push({ role: "system", text: toolPrompt(tools, req.tool_choice, req.parallel_tool_calls) })
+  // dropped is every call id a turn carried but Trae cannot be sent: an
+  // assistant turn whose calls all lost their name takes its results with it
+  const dropped = new Set()
+  // images of tool results, held until the run of results ends: Trae
+  // takes no message between a call's results, so they cannot go after
+  // each one — one user message once they are all in
+  const pending = []
+  const flushImages = () => {
+    if (pending.length) out.push({ role: "user", images: pending.splice(0) })
+  }
   for (const m of req.messages ?? []) {
     const role = m.role === "developer" ? "system" : m.role
     let { text, images } = partsOf(m.content, sees)
-    if (role === "assistant") {
-      const calls = (m.tool_calls ?? []).map((c) => {
-        names.set(c.id, c.function?.name)
+    if (!native && role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      const calls = m.tool_calls.map((c) => {
+        names.set(String(c.id ?? ""), c.function?.name)
         let args = c.function?.arguments ?? "{}"
         try {
           args = JSON.parse(args)
         } catch {}
         return OPEN + JSON.stringify({ name: c.function?.name, arguments: args }) + CLOSE
       })
-      text = [text, ...calls].filter(Boolean).join("\n")
-      out.push({ role: "assistant", text })
+      out.push({ role: "assistant", text: [text, ...calls].filter(Boolean).join("\n") })
+      continue
+    }
+    if (role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      // a past call goes back as the turn Trae made it: an assistant
+      // tool_calls message, its result in the tool message after it. Trae
+      // answers such a history with native calls; written out as a
+      // <tool_call> block in the text it answers in blocks too, and a block
+      // the stream cuts short ends the turn as an error (plugins#38).
+      const calls = []
+      for (const c of m.tool_calls) {
+        const name = String(c.function?.name ?? c.name ?? "").trim()
+        // a call Trae cannot be sent is dropped here; its result goes too
+        // (an empty tool_calls list and a result naming no call are not a
+        // turn Trae takes)
+        if (!name) {
+          if (c.id != null) dropped.add(String(c.id))
+          continue
+        }
+        names.set(String(c.id ?? ""), name)
+        let args = c.function?.arguments ?? c.arguments ?? "{}"
+        if (typeof args !== "string") {
+          try {
+            args = JSON.stringify(args)
+          } catch {
+            args = "{}"
+          }
+        }
+        calls.push({ id: String(c.id ?? "call_" + (names.size + 1)), type: "function", function_call: { name, arguments: args } })
+      }
+      if (calls.length) out.push({ role: "assistant", text, images, calls })
+      else if (text || images.length) out.push({ role: "assistant", text, images })
+      continue
+    }
+    if (role === "assistant") {
+      flushImages()
+      out.push({ role: "assistant", text, images })
     } else if (role === "tool") {
-      out.push({ role: "user", text: `Result of ${names.get(m.tool_call_id) || m.name || "the tool"} (call ${m.tool_call_id ?? "?"}):\n${text}`, images })
+      const id = String(m.tool_call_id ?? "")
+      if (dropped.has(id)) continue
+      // a result answering no call this history sends (the text form, or
+      // a call cut away before it) is no turn Trae takes: it goes as text
+      if (!native || !names.has(id)) {
+        flushImages()
+        out.push({ role: "user", text: `Result of ${names.get(id) || m.name || "the tool"} (call ${m.tool_call_id ?? "?"}):\n${text}`, images })
+        continue
+      }
+      // Trae's own result turn: the call it answers, its text as parts
+      // (an empty one for a result with no text). Its images wait: a
+      // tool turn's image_url reaches some models (Kimi) and not others
+      // (Doubao-Seed), so they go in a user message after the whole run
+      // of results, which every multimodal model reads
+      if (images.length) pending.push(...images)
+      // Trae refuses a result with no text (4027: the calls turn reads as
+      // unanswered), so one that printed nothing says so (plugins#251)
+      out.push({ role: "tool", tool_call_id: id, text: text || (images.length ? "(the result's image follows)" : "(no output)") })
     } else {
+      flushImages()
       out.push({ role: role === "system" ? "system" : "user", text, images })
     }
   }
-  // Trae takes no empty message, nor two of one role in a row; a message of
-  // an image alone is not empty
+  flushImages()
+  // Trae takes no two messages of one role in a row, so an assistant turn is
+  // folded into the turn after it: text into the calls turn it introduces
+  // (agents send "let me read" and then the call, and parallel calls split
+  // over two assistant turns), calls joined into one list. A message of an
+  // image alone is not empty; tool results are turns of their own, each
+  // answering its own call.
   const merged = []
   for (const m of out) {
     const images = m.images ?? []
+    if (m.role === "tool") {
+      merged.push(m)
+      continue
+    }
+    if (m.role === "assistant") {
+      const last = merged.at(-1)
+      if (last && last.role === "assistant") {
+        // fold: text and images join, calls append to the same list
+        last.text = [last.text, m.text].filter(Boolean).join("\n\n")
+        last.images = [...(last.images ?? []), ...images]
+        if (m.calls) last.calls = [...(last.calls ?? []), ...m.calls]
+        if (!last.text && !last.images.length && !last.calls) merged.pop()
+        continue
+      }
+      if (!m.text && !images.length && !m.calls) continue
+      merged.push({ role: "assistant", text: m.text, images, ...(m.calls ? { calls: m.calls } : {}) })
+      continue
+    }
     if (!m.text && !images.length) continue
     const last = merged.at(-1)
     if (last && last.role === m.role && m.role !== "system") {
       last.text = [last.text, m.text].filter(Boolean).join("\n\n")
-      last.images = [...last.images, ...images]
+      last.images = [...(last.images ?? []), ...images]
     } else merged.push({ role: m.role, text: m.text, images })
   }
-  return merged.map((m) => ({ role: m.role, content: [...(m.text ? [{ type: "text", text: m.text }] : []), ...m.images] }))
+  return merged.map((m) => {
+    const content = [...(m.text ? [{ type: "text", text: m.text }] : []), ...(m.images ?? [])]
+    if (m.calls) return { role: "assistant", content: content.length ? content : null, tool_calls: m.calls }
+    if (m.role === "tool") return { role: "tool", tool_call_id: m.tool_call_id, content } // results of one turn stay consecutive: nothing may go between them (11148)
+    return { role: m.role, content }
+  })
 }
 
 // nativeTools are the tools as Trae names them: parameters a JSON string
@@ -2008,7 +2095,13 @@ class NativeCalls {
       this.calls.push({ ...c })
       return
     }
+    // a name comes as the arguments do: a snapshot that grows. A name that
+    // starts with what was read is that snapshot further along, and takes
+    // its place — a wrapper cut short at a tag, then the whole call again.
+    // A name that doesn't start with it is a piece of the name's own, or
+    // one no snapshot explains, and the first is kept as it was
     if (!o.name) o.name = c.name
+    else if (c.name && c.name.startsWith(o.name) && c.name !== o.name) o.name = c.name
     if (c.index !== null && o.index === null) o.index = c.index
     const prev = o.arguments
     const next = c.arguments
@@ -2135,7 +2228,9 @@ async function* parts(events, tools = []) {
     if (data === "[DONE]") break
     if (name === "error" || (name !== "output" && d.code && d.message && !d.response && !d.content)) {
       const e = errorOf(d)
-      yield { error: e.message || "Trae CN returned an error", code: e.code }
+      // the realm answering is named by the caller, which knows it; a bare
+      // word here reads as neither realm's
+      yield { error: e.message || "Trae returned an error", code: e.code }
       return
     }
     if (name === "token_usage") {
@@ -2151,9 +2246,12 @@ async function* parts(events, tools = []) {
     }
     if (!ANSWER.has(name)) continue
     const delta = d.delta && typeof d.delta === "object" ? d.delta : {}
-    const reasoning = d.reasoning_content ?? d.reasoning ?? delta.reasoning_content ?? ""
-    if (typeof reasoning === "string" && reasoning) {
-      const r = th.add(reasoning)
+    // the reasoning's own fields, in the order Trae has put it under: an
+    // empty one is no answer, so the next is asked (an event carrying both
+    // reasoning_content: "" and reasoning: "…" says the thought in the second)
+    const said = [d.reasoning_content, d.reasoning, delta.reasoning_content, delta.reasoning].find((v) => typeof v === "string" && v) ?? ""
+    if (said) {
+      const r = th.add(said)
       if (r) yield { reasoning: r }
     }
     let text = typeof d.response === "string" ? d.response : typeof d.content === "string" ? d.content : typeof delta.content === "string" ? delta.content : typeof d.delta === "string" ? d.delta : ""
@@ -2255,8 +2353,9 @@ async function openai(req, it, abort, site) {
   // a reply that failed (an error event, or Trae's stream breaking off)
   // ends with the error and [DONE], not a finish that says it stopped; the
   // stream is closed whatever happens, and an agent that goes away stops
-  // the reading of Trae's
-  const error = (message, code = null) => enc.encode(`data: ${JSON.stringify({ error: { message: `Trae CN: ${message}`, type: "api_error", code } })}\n\n`)
+  // the reading of Trae's. The realm answering names itself, so a Global
+  // account's failure reads as Trae Global's
+  const error = (message, code = null) => enc.encode(`data: ${JSON.stringify({ error: { message: `${site.realm}: ${message}`, type: "api_error", code } })}\n\n`)
   let gone = false
   const stream = new ReadableStream({
     async start(ctl) {
@@ -2562,8 +2661,12 @@ const makePlugin = (site) => async ({ client }) => {
     if (String(ce.code) === "9074") return { outcome: "ineligible", message: `${ce.message} — check in in the Trae CN app` }
     if (claim.status !== 200 || (ce.code && String(ce.code) !== "0")) return { outcome: "failed", message: ce.message || statusLine(claim.status) }
     if (!answer || typeof answer !== "object" || Array.isArray(answer)) return { outcome: "failed", message: `check-in claim: unreadable reply ${claimText.trim().slice(0, 120) || "(empty)"}` }
-    const credit = Number(answer.credits) + Number(answer.extra_credits || 0)
-    const fallback = Number(body.credits) + Number(body.extra_credits || 0)
+    // a claim may answer extra_credits with no credits beside it, and either
+    // may be absent: Number(undefined) is NaN, and NaN + n is NaN, which
+    // reads as no credit at all
+    const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+    const credit = n(answer.credits) + n(answer.extra_credits)
+    const fallback = n(body.credits) + n(body.extra_credits)
     return { outcome: "claimed", ...(credit > 0 ? { credit } : fallback > 0 ? { credit: fallback } : {}) }
   }
 

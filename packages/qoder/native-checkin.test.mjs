@@ -128,3 +128,31 @@ test("a refused device token is rotated and the claim asked again", async () => 
   expect(p.out).toEqual({ outcome: "claimed", credit: 100 })
   expect(p.auth().deviceToken).toBe("dt-new")
 })
+
+test("a PAT account's daily check-in claims on its job token, with no device token to rotate", async () => {
+  for (const [make, origin] of [[QoderAuthPlugin, "https://openapi.qoder.sh"], [QoderCNAuthPlugin, "https://openapi.qoder.com.cn"]]) {
+    let auth = { ...account(), patAuth: true, pat: "pt-x", deviceToken: "", deviceRefresh: "" }
+    const seen = []
+    globalThis.fetch = async (url, init = {}) => {
+      const u = new URL(String(url))
+      seen.push({ origin: u.origin, path: u.pathname, auth: init.headers.Authorization })
+      if (init.headers.Authorization !== "Bearer jt") return new Response("", { status: 401 })
+      return u.pathname.endsWith("/claim") ? json({ status: "CLAIMED" }) : json(LIST)
+    }
+    const hooks = await make({ client: { auth: { set: async ({ body }) => (auth = body) } } })
+    const out = await hooks.auth.checkin(async () => auth)
+    expect(out).toEqual({ outcome: "claimed", credit: 100 })
+    expect(seen.map((s) => s.origin + s.path)).toEqual([origin + "/sash/api/v1/me/campaigns", origin + "/sash/api/v1/me/campaigns/c1/claim"])
+    expect(auth.deviceToken).toBe("")
+  }
+})
+
+test("a PAT account's refused check-in is failed, not rotated", async () => {
+  let auth = { ...account(), patAuth: true, pat: "pt-x", deviceToken: "", deviceRefresh: "" }
+  const seen = []
+  globalThis.fetch = async (url) => (seen.push(new URL(String(url)).pathname), json({}, 403))
+  const hooks = await QoderCNAuthPlugin({ client: { auth: { set: async ({ body }) => (auth = body) } } })
+  const out = await hooks.auth.checkin(async () => auth)
+  expect(out).toEqual({ outcome: "failed", message: "campaigns: HTTP 403" })
+  expect(seen).toEqual(["/sash/api/v1/me/campaigns"])
+})

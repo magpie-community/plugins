@@ -209,8 +209,9 @@ incomplete and hook-owned forms are left alone.
 
 Factory can also refuse fixed client phrases quoted in tool results, such as
 the identity/environment definitions printed when inspecting this plugin's
-source, or the compaction opening embedded in a historical session JSONL
-record. Those text results are represented as JSON strings with explicit
+source, the compaction opening embedded in a historical session JSONL
+record, or pi's opening sentence in a model snapshot of its own system
+prompt. Those text results are represented as JSON strings with explicit
 decoding instructions and Unicode escapes for the fixed phrases. Decoding
 the string recovers the exact original output, including quotes, backslashes
 and Unicode; the plugin does not delete the output or replace its identities

@@ -314,14 +314,17 @@ const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v)
 
 // rewrite leaves out what Grok's backend doesn't take: tools of other
 // types (a freeform apply_patch, a namespace of sub-agent tools), a web
-// search's external_web_access, a tool_choice naming a dropped type, and a
+// search's external_web_access, a tool_choice naming a dropped type or
+// with no tools beside it (magpie sends "none" so when a client turned
+// tools off, yetone/magpie#3110; Grok refuses it: "A tool_choice was set on
+// the request but no tools were specified"), and a
 // reasoning item's "content": null, beside which it can't read the
 // encrypted reasoning. A function's parameters with a union at the root
 // (Codex desktop's codex_app automation_update) are folded to an object,
 // which Grok turns away otherwise: "tool parameter root must be an object
 // type" (magpie#1271).
-function rewrite(body) {
-  if (typeof body !== "string" || (!body.includes('"tools"') && !body.includes('"reasoning"') && !body.includes('"agent_message"'))) return body
+function rewrite(body, xSearch = false) {
+  if (typeof body !== "string" || (!xSearch && !body.includes('"tools"') && !body.includes('"tool_choice"') && !body.includes('"reasoning"') && !body.includes('"agent_message"'))) return body
   let m
   try {
     m = JSON.parse(body)
@@ -329,6 +332,10 @@ function rewrite(body) {
     return body
   }
   if (!m || typeof m !== "object" || Array.isArray(m)) return body
+  // Read the client's choice before dropping unsupported tools or choices.
+  const search = xSearch && (m.tool_choice == null || m.tool_choice === "auto") &&
+    (m.tools == null || Array.isArray(m.tools)) &&
+    (m.tool_choice === "auto" || Array.isArray(m.tools) && m.tools.length > 0)
   let dirty = false
   if (Array.isArray(m.tools)) {
     m.tools = m.tools.filter((t) => {
@@ -355,6 +362,16 @@ function rewrite(body) {
       delete m.tool_choice
       dirty = true
     }
+  }
+  // No choice and no tools can mean a translated "none" on older gateways.
+  if (search && (m.tool_choice === "auto" || m.tools?.length) && !m.tools?.some((t) => t?.type === "x_search")) {
+    m.tools ??= []
+    m.tools.push({ type: "x_search" })
+    dirty = true
+  }
+  if (Object.hasOwn(m, "tool_choice") && !(Array.isArray(m.tools) && m.tools.length)) {
+    delete m.tool_choice
+    dirty = true
   }
   if (Array.isArray(m.input)) {
     m.input = m.input.map((it) => {
@@ -796,7 +813,7 @@ function kept(res) {
 
 // ---- the plugin ---------------------------------------------------------------
 
-export const GrokAuthPlugin = async ({ client }) => {
+export const GrokAuthPlugin = async ({ client, magpie }) => {
   const remember = async (auth, c) => {
     if (auth.access === c.key && auth.expires === c.expires) return
     try {
@@ -817,6 +834,13 @@ export const GrokAuthPlugin = async ({ client }) => {
 
     auth: {
       provider: PROVIDER,
+      options: [
+        {
+          key: "x_search",
+          label: "Native X search",
+          description: "Offers X search to Grok when tools are automatic. Keeps existing search filters and explicit tool choices. Grok decides whether to search.",
+        },
+      ],
       // magpie renews the sign-in LEAD_MS before its end, once for the
       // account, before its requests, models and usage ask for it: the CLI
       // renews it in its home, as before a request, and what it gives is
@@ -857,7 +881,8 @@ export const GrokAuthPlugin = async ({ client }) => {
             const home = auth?.refresh
             if (!home) throw new Error("Grok is not signed in; run `grok login`")
             const req = new Request(input, init)
-            let body = rewrite(bodyText(init?.body))
+            const search = new URL(req.url).pathname.endsWith("/responses") && magpie?.option?.(PROVIDER, "x_search") === true
+            let body = rewrite(bodyText(init?.body), search)
             let parsed = {}
             if (typeof body === "string") {
               try {

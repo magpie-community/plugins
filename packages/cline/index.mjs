@@ -774,39 +774,56 @@ function usageOf(me, balance, limits) {
 
 // ---- the plugin --------------------------------------------------------------------
 
-// MAKERS maps a model name's start to its maker's own upstream on Cline's
-// gateway (Vercel's AI Gateway, whose provider slugs these are:
-// ai-gateway.vercel.sh/v1/models/<model>/endpoints lists "deepseek" for
-// deepseek/deepseek-v4-pro and "zai" for zai/glm-5.3)
+// MAKERS maps a model name to its maker's own upstream on the router Cline
+// sends it through. Most go through Vercel's AI Gateway, pinned by
+// providerOptions.gateway.only with Vercel's provider slug
+// (ai-gateway.vercel.sh/v1/models/<model>/endpoints lists "deepseek" for
+// deepseek/deepseek-v4-pro and "zai" for zai/glm-5.3). Some go through
+// OpenRouter directly, which ignores providerOptions and reads only a
+// top-level provider.only with OpenRouter's own slug
+// (openrouter.ai/api/v1/providers: Z.AI is "z-ai"): sdytman (#feedback,
+// 10-20) found glm-5.3-flash among them, while deepseek-v4.1-flash and
+// deepseek-v4.1-flash-1017 go through Vercel. An exact entry is a model
+// name; the others match a name's start, the first match winning. magpie's
+// built-in ClinePass has the same table (internal/provider/cline.go).
 const MAKERS = [
-	["deepseek", "deepseek"],
-	["glm", "zai"],
+	{ name: "glm-5.3-flash", exact: true, upstream: "z-ai", openRouter: true },
+	{ name: "deepseek", upstream: "deepseek" },
+	{ name: "glm", upstream: "zai" },
 ]
 
-// pinned is the upstream a DeepSeek or GLM model of Cline's is pinned to when
-// the pinUpstream option is on (magpie's built-in ClinePass has the same
-// tick): DeepSeek's own API for DeepSeek's, Z.ai's for GLM. Cline's gateway
-// otherwise picks among the providers serving the model, and some answer
-// worse than the maker's own API, which also keeps the prompt cache. A
-// cline-free/ model is left to Cline, as is every other maker's model.
+// pinned is where a DeepSeek or GLM model of Cline's is pinned when the
+// pinUpstream option is on (magpie's built-in ClinePass has the same tick):
+// { upstream, openRouter }, DeepSeek's own API for DeepSeek's, Z.ai's for
+// GLM, openRouter true for a model Cline sends through OpenRouter. Cline's
+// routers otherwise pick among the providers serving the model, and some
+// answer worse than the maker's own API, which also keeps the prompt cache.
+// A cline-free/ model is left to Cline, as is every other maker's model:
+// null.
 function pinned(on, model) {
-	if (!on || typeof model !== "string" || model.startsWith("cline-free/")) return ""
+	if (!on || typeof model !== "string" || model.startsWith("cline-free/")) return null
 	const name = model.slice(model.lastIndexOf("/") + 1).toLowerCase()
-	return MAKERS.find(([prefix]) => name.startsWith(prefix))?.[1] ?? ""
+	const m = MAKERS.find((m) => (m.exact ? name === m.name : name.startsWith(m.name)))
+	return m ? { upstream: m.upstream, openRouter: !!m.openRouter } : null
 }
 
-// pinBody is the request's body with providerOptions.gateway.only set to the
-// pinned upstream, written in at the end so the rest of the body — the
-// prefix a cache matches — is the client's byte for byte. A body that has
-// providerOptions of its own is the client's to keep.
+// pinBody is the request's body with the pinned upstream written in at the
+// end, so the rest of the body — the prefix a cache matches — is the
+// client's byte for byte: providerOptions.gateway.only for a model Cline
+// sends through Vercel's gateway, provider.only for one it sends through
+// OpenRouter. A body that has provider or providerOptions of its own is the
+// client's to keep.
 function pinBody(body, chat, on) {
-	const up = pinned(on, chat?.model)
-	if (!up || chat.providerOptions !== undefined) return body
+	const pin = pinned(on, chat?.model)
+	if (!pin || chat.providerOptions !== undefined || chat.provider !== undefined) return body
 	const end = body.lastIndexOf("}")
 	if (end < 0) return body
 	const head = body.slice(0, end)
 	const sep = /[{,]\s*$/.test(head) ? "" : ","
-	return head + sep + `"providerOptions":${JSON.stringify({ gateway: { only: [up] } })}` + body.slice(end)
+	const field = pin.openRouter
+		? `"provider":${JSON.stringify({ only: [pin.upstream] })}`
+		: `"providerOptions":${JSON.stringify({ gateway: { only: [pin.upstream] } })}`
+	return head + sep + field + body.slice(end)
 }
 
 // isOn is whether an option is set: true, or "true" in a config written by hand

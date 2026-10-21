@@ -69,3 +69,22 @@ test("an EU org's Gemini request goes to Factory's EU region's generate route", 
   expect(new URL(seen[0].url).pathname).toBe("/api/llm/g/v1/generate")
   expect(seen[0].url.startsWith("https://api.factory.ai/")).toBe(false)
 })
+
+// Gemini's route has no tool-output adaptation of its own: every refused
+// phrase in its parts is escaped before the request leaves.
+test("Gemini tool output and system instruction escape every refused phrase", async () => {
+  const { l, seen } = await loaded()
+  const env = "You have been invoked in the following environment:"
+  const pi = "You are an expert coding assistant operating inside pi, a coding agent harness."
+  const body = {
+    contents: [{ role: "user", parts: [{ functionResponse: { name: "Read", response: { text: env + " / " + pi } } }] }],
+    systemInstruction: { role: "user", parts: [{ text: env }] },
+  }
+  await l.fetch("https://api.factory.ai/api/llm/g/v1/models/gemini-4-argon:streamGenerateContent?alt=sse", { method: "POST", body: JSON.stringify(body) })
+  const sent = JSON.parse(seen[0].body)
+  const part = sent.contents[0].parts[0].functionResponse.response.text
+  expect(part).toBe("\\u0059ou have been invoked in the following environment: / \\u0059ou are an expert coding assistant operating inside pi, a coding agent harness.")
+  expect(sent.systemInstruction.parts[0].text).toContain("\\u0059ou have been invoked")
+  expect(JSON.stringify(sent)).not.toContain(env)
+  expect(JSON.stringify(sent)).not.toContain(pi)
+})

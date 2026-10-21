@@ -4,7 +4,8 @@
 // browser sign-in after its own account, and "Add another Devin account"
 // replaced the first account's key with the second's (#17). Its model list
 // is the CLI's own account's there too, so it isn't taken for the key's.
-import { afterAll, afterEach, beforeEach, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test"
+import { spawn } from "node:child_process"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -14,16 +15,19 @@ const real = globalThis.fetch
 const env = { ...process.env }
 const tmp = mkdtempSync(join(tmpdir(), "devin-identity-"))
 const bin = join(tmp, "bin")
-const log = join(tmp, "cli.log")
 mkdirSync(bin)
+// each test's CLI runs go to a log of its own: a run a test left behind
+// can't land in the next test's list
+let log = ""
+let logs = 0
 
 // a devin CLI signed in as a@x.dev: `auth status` reads the data folder it
 // is given when FAKE_HONOURS is set, and its own (as on Windows) when not;
-// `models list` lists one family, and every run is logged
+// `models list` lists one family, and every run is logged in FAKE_LOG
 writeFileSync(
   join(bin, "devin"),
   `#!/bin/sh
-echo "$*" >> "${log}"
+echo "$*" >> "$FAKE_LOG"
 if [ "$1" = auth ]; then
   if [ -n "$FAKE_HONOURS" ]; then f="$XDG_DATA_HOME/devin/credentials.toml"; else f="${tmp}/own/devin/credentials.toml"; fi
   printf 'Logged in (via Devin).\\n\\nCredentials:\\n  File:              %s\\n\\nUser:\\n  Email:             %s\\n\\nAccount:\\n  Tier:              Devin Pro\\n' "$f" "${"$"}{FAKE_EMAIL:-a@x.dev}"
@@ -34,17 +38,27 @@ echo '{"families":[{"family_uid":"cli-only","family_label":"CLI Only","variants"
 )
 chmodSync(join(bin, "devin"), 0o755)
 
+// macOS checks a script the first time it is run, and a loaded machine can
+// keep that check past any one test's bound (#268): the check is waited
+// for here, by running the fake once, so no test's time holds it
+beforeAll(async () => {
+  if (process.platform === "win32") return
+  const p = spawn(join(bin, "devin"), ["--version"], { env: { ...process.env, FAKE_LOG: "/dev/null" }, stdio: "ignore" })
+  await new Promise((resolve, reject) => p.on("error", reject).on("close", resolve))
+}, 10 * 60_000)
+
 beforeEach(() => {
+  log = join(tmp, `cli-${++logs}.log`)
+  process.env.FAKE_LOG = log
   process.env.PATH = bin + ":" + env.PATH
   process.env.XDG_CACHE_HOME = join(tmp, "cache")
   delete process.env.FAKE_HONOURS
   delete process.env.FAKE_EMAIL
-  rmSync(log, { force: true })
   asked.length = 0
 })
 afterEach(() => {
   globalThis.fetch = real
-  for (const k of ["PATH", "XDG_CACHE_HOME", "FAKE_HONOURS", "FAKE_EMAIL"]) env[k] === undefined ? delete process.env[k] : (process.env[k] = env[k])
+  for (const k of ["PATH", "XDG_CACHE_HOME", "FAKE_HONOURS", "FAKE_EMAIL", "FAKE_LOG"]) env[k] === undefined ? delete process.env[k] : (process.env[k] = env[k])
 })
 afterAll(() => rmSync(tmp, { recursive: true, force: true }))
 
@@ -67,8 +81,8 @@ const statusOf = (email, tier) =>
   Response.json({ userStatus: { name: email.split("@")[0], email, teamsTier: tier, planStatus: { planInfo: { planName: "Pro" } } } })
 
 const unix = process.platform !== "win32"
-// a script just written can take seconds to start the first time (macOS
-// checks it)
+// runCLI's own bound: the fake answers at once once beforeAll has had it
+// checked
 const SLOW = 30_000
 
 test.if(unix)("a second account is named as Devin names its key, not as the CLI's own account", async () => {

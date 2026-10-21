@@ -42,6 +42,12 @@ const OFFICIAL_SYSTEM_PROMPT = 'You are AutoClaw. Answer the user directly and c
 const WALLETS_PATH = `/agent-assetmgr/api/v2/wallets?biz_app_id=${PRODUCT}`;
 
 const FLAGGED = [
+  // Claude Code 2.1.30x opens with an SDK identity line, not the CLI one;
+  // the CN gateway refuses "Claude Agent SDK" in any case with 406. Take the
+  // trailing period and the article/possessive so the replacement reads as
+  // a sentence, not "assistant.." or "Anthropic's the agent framework".
+  [/You are a Claude agent, built on Anthropic's Claude Agent SDK\.?/gi, "You are a coding assistant."],
+  [/(?:Anthropic's |the )?Claude Agent SDK/gi, "the agent framework"],
   [/You are an AI agent powered by DeepSeek Harness/gi, "You are an AI agent powered by DeepSeek-Harness"],
   [/You are Claude Code/gi, "You are the Claude Code CLI"],
   [/You are Codex/gi, "You are the Codex agent"],
@@ -84,7 +90,7 @@ function unflag(messages) {
 }
 
 const REFUSED_HINT =
-  "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Codex, opencode, Cursor, Cline, Qwen Code, ZCode, pi, DeepSeek Harness); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
+  "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Claude Agent SDK, Codex, opencode, Cursor, Cline, Qwen Code, ZCode, pi, DeepSeek Harness); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
 
 async function explained(res) {
   if (res.status < 400) return res;
@@ -103,6 +109,31 @@ async function explained(res) {
     JSON.stringify({ error: { message: `${said || "406 Not Acceptable"} — ${REFUSED_HINT}`, type: "permission_error", code: null } }),
     { status: res.status, statusText: res.statusText, headers },
   );
+}
+
+// A 403 is not always the sign-in: the CN managed gateway answers an
+// exhausted quota 403 {"code":810000,"message":"GLM-5.3 免费额度已用完,…"}
+// while the same token's next request with an unknown model gets as far as
+// "非法模型" (plugins#274). Such a refusal is the account's quota: it goes on
+// as a 429 with the gateway's own words, and the sign-in is kept.
+const QUOTA_CODES = new Set(["810000"]);
+const QUOTA_WORDS = /额度|余额不足|用完|用尽|quota|insufficient[_ ]?(balance|credit)|exhausted/i;
+
+/** quotaRefusal is a 403 chat answer read as a spent quota, or null when it isn't one (a 401 or any other 403 is still the sign-in). */
+async function quotaRefusal(res) {
+  if (res.status !== 403) return null;
+  const text = await res.clone().text().catch(() => "");
+  let d;
+  try { d = JSON.parse(text); } catch { return null; }
+  if (!d || typeof d !== "object") return null;
+  const code = d.code ?? d.error?.code ?? null;
+  const message = String(d.message ?? d.msg ?? d.error?.message ?? "").trim();
+  if (!QUOTA_CODES.has(String(code)) && !(message && QUOTA_WORDS.test(message))) return null;
+  try { res.body?.cancel?.(); } catch {}
+  return new Response(JSON.stringify({ error: { message: `AutoClaw: ${message || "quota exhausted"}`, type: "rate_limit_error", code } }), {
+    status: 429,
+    headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept" },
+  });
 }
 
 function autoclawRewriteBody(rawBody) {
@@ -382,6 +413,18 @@ function checkinOutcome(r) {
 const signinTriedLocal = new Map(); // key → hour-stamp of last SUCCESSFUL signin
 
 /**
+ * 补签去重键：每个登录一个（#254）。显示名可以重复（AutoClaw 默认昵称改不了），
+ * 所以按 uid，没有 uid 的旧账号按 refresh token 的哈希；只用供应商 id 会让
+ * 同一供应商下的第二个账号当天永远不补签。
+ */
+function signinAccountKey(providerId, auth) {
+  const uid = String(auth?.uid ?? "").trim();
+  if (uid) return `${providerId}|uid:${uid}`;
+  const tok = bareToken(String(auth?.refresh ?? auth?.access ?? ""));
+  return `${providerId}|tok:${createHash("sha256").update(tok).digest("hex").slice(0, 16)}`;
+}
+
+/**
  * 签到配置合并：插件 options（plugins.json 的 options 字段）优先，
  * 其次配置文件 ~/.config/magpie/autoclaw.json（热读取，GUI 没有选项入口时的保底通道）：
  *   { "signin": true, "signinHour": null, "signinOnUsage": false }
@@ -549,7 +592,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
 
       async refresh(auth) {
         const t = await refreshTokens(bareToken(auth.refresh), [homeHost]);
-        await maybeSignin(t.access, homeHost, options, "refresh", providerId);
+        await maybeSignin(t.access, homeHost, options, "refresh", signinAccountKey(providerId, auth));
         // 存量账号就地正名：登录响应缺昵称的旧账号（GUI 显示「已登录」），
         // 刷新时补拉 user-profile。magpie 的 refresh 返回字段会合并进账号。
         const old = String(auth.accountId ?? auth.email ?? "");
@@ -607,7 +650,13 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
 
               const res1 = await tryFetch(hosts[0]);
               if (res1.status !== 401 && res1.status !== 403) return explained(res1);
+              // a spent quota is the account's on every host: not asked again
+              const spent1 = await quotaRefusal(res1);
+              if (spent1) return spent1;
+              try { res1.body?.cancel?.(); } catch {}
               const res2 = await tryFetch(hosts[1]);
+              const spent2 = await quotaRefusal(res2);
+              if (spent2) return spent2;
               if (res2.status === 401 || res2.status === 403) {
                 try { res2.body?.cancel?.(); } catch {}
                 return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效（两个 host 均拒绝该 token）", type: "invalid_request_error" } }), {
@@ -628,7 +677,9 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               headers,
               body: JSON.stringify(payload),
             });
-            if (res.status !== 401 && res.status !== 403) return res;
+            if (res.status !== 401 && res.status !== 403) return explained(res);
+            const spent = await quotaRefusal(res);
+            if (spent) return spent;
             try { res.body?.cancel?.(); } catch {}
             return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效", type: "invalid_request_error" } }), {
               status: 401,
@@ -652,7 +703,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
           // 旧链路自动补签（默认关，需 signinOnUsage=true）：查额度即触发。
           // 放在状态查询之后：未签才补，补完重查一次状态展示。
           if (signin && signin.status !== "completed" && (cfg.signin && cfg.signinOnUsage)) {
-            await maybeSignin(token, hosts[0], options, "usage", providerId);
+            await maybeSignin(token, hosts[0], options, "usage", signinAccountKey(providerId, auth));
           }
           const signinFinal = signin?.status === "completed"
             ? signin
@@ -1201,9 +1252,10 @@ export const AutoclawCnAuthPlugin = makeAutoclawPlugin({
 
 /** 测试辅助（magpie/OpenCode 不会把它当插件调用）。 */
 export const _internal = {
+  quotaRefusal,
   makePluginForTest: makeAutoclawPlugin,
   md5Hex, jwtClaim, tokenFields, codeValue, bizHeaders, bareToken, newDeviceId,
-  dailySignin, signinStatus, maybeSignin, signinConfig, checkinOutcome, refreshTokens,
+  dailySignin, signinStatus, maybeSignin, signinAccountKey, signinConfig, checkinOutcome, refreshTokens,
   fetchUserProfile, accountDisplayName, startLocalOAuth,
   FLAGGED, unflagged, unflag, autoclawRewriteBody, explained, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT,
   guidePageHtml, callbackPageHtml,

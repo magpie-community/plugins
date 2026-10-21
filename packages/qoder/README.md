@@ -22,6 +22,36 @@ hosts; [its section](#qoder-cn) says what differs.
 3. The device token is traded for a job token, and the account's email and
    name are read.
 
+The page is asked for no `redirect_uri`, as Qoder's CLI asks for none, so
+the sign-in ends in the browser tab even when Qoder.app is installed
+(before 0.2.25 it sent the desktop app's `qoder-app://`, which handed the
+page to Qoder.app).
+
+**Sign in with Qoder PAT** (and **Sign in with Qoder CN PAT**) skips the
+device flow: a Personal Access Token from `<site>/account/integrations` is
+posted to `/api/v1/jobToken/exchange` (`personal_token`), which answers a
+job token, its refresh token and its expiry. The PAT is kept on the
+credential, so a lapsed job refresh is exchanged again instead of asking
+for the sign-in; PATs last up to a year. The job token signs the model list
+and chat calls with the same COSY envelope either sign-in's does.
+
+On Qoder CN this is the plugin's own reading of the protocol rather than
+the CLI's path: qoder.cn's CLI signs requests with its device token and
+never asks for a job token. Verified against a live qoder.cn account — the
+exchange answers 200 with a `jt-` token, the signed model list answers 200
+with that account's own models, and a chat completion returns its text.
+
+A PAT account keeps the name its browser sign-in takes (`email || uid`): magpie
+replaces an account on a new sign-in when both the accountId and the uid
+match, so a renewed PAT sign-in names the same account rather than adding a
+row beside the lapsed one.
+
+A PAT account has no device token, so its usage read, campaigns pages and
+daily check-in go out on the job token instead. The check-in works on it: a
+live PAT account answered 200 to the campaigns list and `CLAIMED` to a claim,
+so it earns the daily credits the browser sign-in does. That path has no
+second token to rotate, so a refused call is the answer rather than a retry.
+
 What is kept: the job token, its refresh token and expiry, the uid, the
 device token and a machine id made for this sign-in. OpenCode keeps them in
 `auth.json`; magpie keeps them in `plugin-auth.json`.
@@ -56,6 +86,10 @@ itself.
   - Messages become text and image blocks.
   - Tool calls and results become OpenAI tool turns. Images a tool returned
     follow in a user turn.
+  - A result whose id the client lost answers its turn's call in order
+    (since 0.2.22, #277): Qoder refuses a whole request with a result that
+    answers no call before it. A result with no call left to answer goes
+    as text in the user's turn.
   - Your tools become Qoder's native function tools.
   - The model's own configuration from Qoder's list goes with it.
 - It picks the reasoning effort from the model's own levels:
@@ -71,6 +105,9 @@ itself.
   - the account, AES-encrypted, with the key wrapped by Qoder's RSA key;
   - an MD5 signature;
   - the machine id and the client's headers.
+  - `Cosy-Version`: the worker runtime version that Qoder's desktop app
+    ships (1.1.69 in app 0.4.8, since 0.2.23, #281), because
+    `Cosy-ClientType` says the desktop app.
 
 **Reading the reply**
 
@@ -93,6 +130,7 @@ itself.
 | A quota (codes 110, 112–119, 122) | 429 |
 | Busy or queued for the model (code 10605) | 503, with `Retry-After` from Qoder's `retryAfterSeconds` (30s when it gives none); the sign-in is untouched |
 | A refusal of the request itself (codes 406, 416, 430, 80411, 80412, 100400–100403) | 400, with Qoder's words |
+| "Error in upstream response", the model's own vendor behind Qoder failing, which Qoder sends as a 400 (since 0.2.24) | 502, so magpie asks again or another account; the sign-in is untouched |
 | A failure before the answer starts | Qoder's status |
 | A failure after the answer has started | The stream ends with an error |
 
@@ -145,7 +183,7 @@ Qoder CN's own CLI builds in for its `cn` build (`@qodercn-ai/qoderclicn`
 | Accounts: poll, tokens, user info, usage | openapi.qoder.sh | openapi.qoder.com.cn |
 | Models and chat | api3.qoder.sh | gateway.qoder.com.cn |
 | Device-flow client id | Qoder's desktop client's | Qoder CN's CLI's (production) |
-| `redirect_uri` on the sign-in page | `qoder-app://` | none, as the CLI sends |
+| `redirect_uri` on the sign-in page | none, as Qoder's CLI sends (since 0.2.25) | none, as the CLI sends |
 
 Qoder CN's CLI chats with the device token itself and never makes a job
 token. The plugin asks qoder.cn for a job token first, as it does on

@@ -5,7 +5,7 @@
 // limit, and Trae's Max context.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
-import { TraeCNAuthPlugin, _internal } from "./index.mjs"
+import { TraeCNAuthPlugin, TraeGlobalAuthPlugin, _internal } from "./index.mjs"
 import { fakeTrae, json, signedIn, sse } from "./fake.mjs"
 
 let f
@@ -113,6 +113,29 @@ test("a reply that fails mid-way ends with the error and [DONE], not a stop", as
   expect(c.at(-1)).toBe("[DONE]")
 })
 
+// the realm answering names itself in its errors, so a Global account's
+// failure doesn't read as Trae CN's
+test("a Global reply that fails names Trae Global, not Trae CN", async () => {
+  f = fakeTrae("trae-global")
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "partial" }], ["error", { code: 500, message: "server broke" }]]))
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const c = await chunks(await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "gpt-5.4", stream: true, messages: [{ role: "user", content: "hi" }] }) }))
+  expect(c.at(-2).error.message).toBe("Trae Global: server broke")
+  expect(c.at(-1)).toBe("[DONE]")
+})
+
+test("an empty reasoning_content leaves the reasoning the event carries", async () => {
+  stream([
+    ["output", { reasoning_content: "", reasoning: "the real thought" }],
+    ["output", { response: "hi" }],
+    ["done", {}],
+  ])
+  const c = await chunks(await ask({ model: "glm-5", stream: true, messages: [{ role: "user", content: "hi" }] }))
+  expect(textOf(c)).toBe("hi")
+  expect(reasoningOf(c)).toBe("the real thought")
+})
+
 test("a reply cut at its limit says length", async () => {
   stream([["output", { response: "a lot" }], ["done", { finish_reason: "length" }]])
   const c = await chunks(await ask({ model: "glm-5", stream: true, messages: [{ role: "user", content: "hi" }] }))
@@ -125,7 +148,9 @@ test("a reply cut at its limit says length", async () => {
 test("a stream that breaks off ends with an error and [DONE]", async () => {
   // the connection breaks only once the caller has the first event, so the
   // plugin has read it: a reset timed by the clock alone can beat that read
-  // on a busy machine, and Bun then drops the event it had (#124)
+  // on a busy machine, and Bun then drops the event it had (#124). The fake
+  // breaks it by stopping its server mid-body, not by erroring the body:
+  // Bun prints a body's error on every run, and that read as a red (#268)
   let reset
   const caught = new Promise((r) => (reset = r))
   f = fakeTrae()
@@ -135,7 +160,7 @@ test("a stream that breaks off ends with an error and [DONE]", async () => {
       async pull(ctl) {
         if (n++ === 0) return ctl.enqueue(new TextEncoder().encode('event: output\ndata: {"response":"half"}\n\n'))
         await caught
-        ctl.error(new Error("connection reset"))
+        f.close()
       },
     })
     return new Response(body, { headers: { "content-type": "text/event-stream" } })

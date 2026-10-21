@@ -87,11 +87,44 @@ leaves these out:
 - tools of types it doesn't take (a freeform `apply_patch`, namespaces)
 - `external_web_access` on web search
 - a `tool_choice` naming a dropped type
+- a `tool_choice` with no tools beside it (magpie sends `"none"` so when a
+  client turned tools off)
 - a reasoning item's `"content": null`
 
 Plain Codex collaboration items (`agent_message`) reach Grok as user
 messages, with their sender, recipient and content preserved. Sealed or
 unrecognized content stays unchanged; the plugin does not decrypt tasks.
+
+### Native X search (optional)
+
+In magpie, open the Grok provider, turn on **Native X search** under
+**Plugin options**, and save. It is off by default; changes apply to the
+next request without restarting or signing in again.
+
+When enabled, the plugin offers Grok its native `x_search` tool. Grok
+decides whether to search; enabling it does not force a search on every
+request. Existing function tools and X search filters are preserved, and
+an existing `x_search` is not duplicated. Explicit choices such as `none`,
+`required`, a named tool, or `allowed_tools` never gain another tool.
+
+The option applies to Responses requests, including Chat Completions,
+Anthropic Messages and Gemini requests that magpie converts to Responses,
+in streaming and non-streaming mode. Use magpie with the fix for
+[yetone/magpie#3110](https://github.com/yetone/magpie/issues/3110) so that
+those clients' tool-disable choices reach the plugin.
+
+For compatibility with older gateways, a request that reaches the plugin
+with neither tools nor a `tool_choice` is left unchanged. This can happen
+when magpie translates a client's automatic choice on an empty tool list.
+To use X search through a translated API, send at least one function tool;
+the plugin adds X search alongside it. An explicit tool-disable choice
+always takes precedence.
+
+This uses the existing `grok` provider's login, models and quota reporting;
+no extra plugin is needed. It applies to that provider's models when the
+upstream supports X search, not to Grok models served through Cursor or
+another provider. Report problems in
+[this repository](https://github.com/magpie-community/plugins/issues).
 
 ## Models
 

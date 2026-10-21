@@ -13,6 +13,26 @@ async function checkin(plugin = TraeCNAuthPlugin, auth = signedIn(), client = {}
   return hooks.auth.checkin(async () => auth)
 }
 
+test("a claim answering extra_credits alone is claimed with that credit", async () => {
+  f = fakeTrae()
+  f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false, credits: 0 }))
+  f.route("POST " + CLAIM, () => json({ code: 0, extra_credits: 20 }))
+  // credits absent: Number(undefined) is NaN, and NaN + 20 read as no credit
+  expect(await checkin()).toEqual({ outcome: "claimed", credit: 20 })
+})
+
+test("a claim answering neither credit says so, and the status's is the fallback", async () => {
+  f = fakeTrae()
+  f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false, credits: 30 }))
+  f.route("POST " + CLAIM, () => json({ code: 0 }))
+  expect(await checkin()).toEqual({ outcome: "claimed", credit: 30 })
+  f.close()
+  f = fakeTrae()
+  f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))
+  f.route("POST " + CLAIM, () => json({ code: 0 }))
+  expect(await checkin()).toEqual({ outcome: "claimed" })
+})
+
 test("a claimable day is claimed through Trae's own pages", async () => {
   f = fakeTrae()
   f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))

@@ -32,6 +32,15 @@ over Anthropic's Messages API. Provider id: `zcode`.
     group".
   - The Start Plan's token can't be refreshed. When it runs out, sign in
     again.
+- **ZCode: a team's GLM Coding Plan**
+  - For an account with a plan of its own and a seat on a team's plan
+    (#285). The sign-ins above take the account's own plan, as ZCode does
+    by default; this one asks which site, signs in the same way, and
+    takes the team seat's `zcode-team-api-key`, as ZCode does when its
+    plan picker is switched to the team's plan.
+  - It is kept as an account of its own, named `<email> (team)`, beside
+    the account's own plan, so both can be used.
+  - With no seat on a team's plan, it says so and signs in to nothing.
 - **ZCode app's sign-in**
   - Uses the account the ZCode app on this computer is signed in to. For
     every request it reads ZCode's own credentials (`~/.zcode/v2`), so it

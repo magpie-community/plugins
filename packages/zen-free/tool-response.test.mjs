@@ -994,6 +994,67 @@ test("chat: buffers names and arguments by choice/index, including arguments bef
   );
 });
 
+test("chat: later null or empty tool IDs do not replace buffered IDs", async () => {
+  const text = [
+    event(
+      chat(
+        {
+          tool_calls: [
+            { index: 0, id: "call_0", type: "function", function: { name: "read", arguments: "{}" } },
+            { index: 1, id: "call_1", type: "function", function: { name: "read", arguments: "{}" } },
+          ],
+        },
+        null,
+        0,
+      ),
+    ),
+    event(
+      chat(
+        { tool_calls: [{ index: 0, id: null }, { index: 1, id: "" }] },
+        null,
+        0,
+      ),
+    ),
+    event(chat({ tool_calls: [{ index: 2, function: { name: "read", arguments: "{}" } }] }, null, 0)),
+    event(chat({ tool_calls: [{ index: 2, id: "call_late" }] }, null, 0)),
+    event(
+      chat(
+        {
+          tool_calls: [
+            {
+              index: 0,
+              id: "choice_1_call",
+              type: "function",
+              function: { name: "read", arguments: "{}" },
+            },
+          ],
+        },
+        null,
+        1,
+      ),
+    ),
+    event(chat({ tool_calls: [{ index: 0, id: null }] }, null, 1)),
+    event(chat({}, "tool_calls", 0)),
+    event(chat({}, "tool_calls", 1)),
+    terminal("chat"),
+  ].join("");
+  const response = await guardToolResponse(sse(text, { chunkSize: 1 }), "chat", policy);
+  const values = frameData(await response.text());
+  assert.ok(!values.some((value) => value.error));
+
+  const choices = values.flatMap((value) => value.choices ?? []);
+  const callsFor = (index) =>
+    choices
+      .filter((choice) => choice.index === index)
+      .flatMap((choice) => choice.delta?.tool_calls ?? []);
+  assert.deepEqual(
+    callsFor(0).map((value) => value.id),
+    ["call_0", "call_1", "call_late"],
+  );
+  assert.deepEqual(callsFor(1).map((value) => value.id), ["choice_1_call"]);
+  assert.deepEqual(callsFor(0).map((value) => value.function.name), ["Read", "Read", "Read"]);
+});
+
 for (const legacy of [false, true]) {
   const kind = legacy ? "function_call" : "tool_calls";
   const delta = (fragment) => legacy
