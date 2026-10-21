@@ -7,10 +7,10 @@ Three-dimensional orthogonal multi-path token router for [magpie](https://usemag
 ## 1. The Core Problem: Why 1D Model Ladders Fail
 
 In modern multi-agent systems (e.g. Claude Code, Codex, OpenClaw, DSH, Hermes), agents invoke models with vastly differing operational characteristics:
-- An ultra-fast flash model has millisecond latency for simple syntax checks, but fails on architectural trade-offs.
-- A frontier reasoning model achieves high pass rates on complex proofs, but exhausts quotas and induces multi-second latency when assigned routine tool loops.
-- A local vision-capable model incurs zero marginal cost for inspection, but lacks deep analytical context.
-- A high-context model digests 500k tokens cleanly, but carries significant per-call overhead for short prompts.
+- An ultra-fast flash model has millisecond latency for simple syntax checks, but fails on architectural trade-offs or corrupts tool arguments.
+- A frontier reasoning model achieves high pass rates on complex proofs, but exhausts scarce quotas and induces multi-second latency when assigned routine inner-loop tool turns.
+- A local vision-capable model incurs zero marginal cost for visual inspection, but lacks deep analytical context.
+- A high-context model digests 500k tokens cleanly, but carries significant per-call overhead for short prompts, while models with nominal $128\text{k}/1\text{M}$ windows suffer catastrophic attention decay ("Lost-in-the-Middle") beyond $32\text{k}$.
 
 These properties cannot be sorted into a simple 1D priority ladder. **They exist in an orthogonal three-dimensional space.**
 
@@ -19,89 +19,95 @@ These properties cannot be sorted into a simple 1D priority ladder. **They exist
 ## 2. The 3D Orthogonal Capability Space
 
 ```
-                 ▲ Y: Cognitive Depth & Benchmark Profile
-                 │    (AIME, SWE-bench Verified, LiveCodeBench)
+                 ▲ Y: Cognitive Depth & 2026 Benchmark Profile
+                 │    (SWE-bench Verified >65%, Multi-SWE-bench, GPQA Diamond, LCB Rolling)
                  │
                  │   [Tier: Frontier Reasoning]
-                 │   (Complex architecture, formal proofs, tricky root-causing)
+                 │   (Complex architecture, formal proofs, tricky multi-file root-causing)
                  │
                  │              [Tier: Balanced Synthesis]
-                 │              (Feature code, technical reviews, doc drafting)
+                 │              (Feature code, technical reviews, doc drafting, IFEval >85%)
                  │
-                 │                         [Tier: Fast Reflex]
-                 │                         (Tool loops, syntax checks, linting)
+                 │                         [Tier: Fast Reflex & Tool Loops]
+                 │                         (TTFT <300ms, TPS >120, BFCL Tool-Call Accuracy >85%)
                  └──────────────────────────────────────────────────────────► X: Modality & Physical Scale
-                /                                                             (Images, 100k+ tokens)
-               /
+                /                                                             (Images via MMMU-Pro,
+               /                                                               Effective Context via RULER)
               /   [Tier: Zero-Cost / Off-Peak Arbitrage]
              /    (Local clusters, discounted time-windows)
             ▼ Z: Economic Scarcity & Quota Watermark
 ```
 
-### Dimension X: Payload Modalities & Physical Constraints
-- **Vision & Multimodal Gate**: Pre-flight inspection detects image blocks (`image`, `image_url`, `inline_data`) across Anthropic, OpenAI Chat, Responses, and Gemini protocols. Short-circuits directly to multimodal-capable engines before hitting semantic discriminators, saving decision tokens.
-- **Context Length Gate**: Payload character/token estimation intercepts requests exceeding scale thresholds (e.g. $\ge 64\text{k}$ or $100\text{k}$ tokens), routing them to large-window clusters.
+---
 
-### Dimension Y: Cognitive Reasoning Depth & Benchmark Profiles
-Workloads are assigned to capability tiers characterized by objective, peer-reviewed public benchmarks:
-- **Frontier Reasoning Tier (`tier-frontier-reasoning`)**: Characterized by leading scores on AIME 2024/2025, SWE-bench Verified ($>50\%$), LiveCodeBench, and GPQA Diamond. Reserved for high-leverage architectural designs, formal proofs, and multi-file causal debugging.
-- **Balanced Synthesis Tier (`tier-balanced-synthesis`)**: Strong scores on Arena-Hard, Chatbot Arena, and MT-Bench. Standard driver for feature implementation, test creation, and pull request synthesis.
-- **Fast Reflex & Tool-Loop Tier (`tier-fast-reflex`)**: Optimized for sub-second TTFT (Time to First Token) and high TPS ($>100\text{ tok/s}$). Handles AST transformations, git commit summaries, and interactive agent inner-loop tool executions.
+## 3. Objective 2026 Benchmark Coordinates: Overcoming Metric Saturation
 
-### Dimension Z: Economic Scarcity & Quota Watermark
-- **Metered Commercial Quotas**: Rate-limited or seat-restricted frontier models.
-- **Dynamic Time-Window Arbitrage**: Automatically shifts eligible workloads to discounted provider windows (e.g., DeepSeek official peak vs. off-peak hours in CST) or off-peak spot compute.
-- **Zero-Cost / High-Concurrency Clusters**: Local vLLM/llama.cpp engines or free-tier community pools.
+To prevent benchmark saturation (e.g., MT-Bench distillation inflation, AIME 2024 post-training contamination, nominal context illusions), the router classifies capability tiers strictly by **contamination-resistant, peer-reviewed benchmarks**:
+
+| Capability Tier | Architectural Purpose | Objective Admission Benchmark (2026 Standards) | Core Evaluation & Anti-Saturation Mechanism |
+| :--- | :--- | :--- | :--- |
+| **`tier-frontier-reasoning`** | Strategic planning, system architecture, formal verification, multi-file causal debugging | • **SWE-bench Verified ($>65\%$)**<br>• **Multi-SWE-bench** (Polyglot: C++/Rust/Go)<br>• **GPQA Diamond ($>65\%$)** / **HLE (Humanity's Last Exam)**<br>• **LiveCodeBench (Rolling Window)** / **ARC-AGI** | Rigorous evaluation of multi-file causal tracking, PhD-level scientific reasoning, and dynamic algorithm synthesis against data contamination. |
+| **`tier-balanced-synthesis`** | Standard feature implementation, PR synthesis, technical survey drafting | • **Arena-Hard-Auto v2.0**<br>• **IFEval (Instruction Following, $>85\%$)**<br>• **Aider Polyglot Benchmark** | Replaces saturated MT-Bench. Guarantees strict negative constraint following, clean AST diff generation, and high ROI for daily engineering. |
+| **`tier-extended-context`** | Multi-file whole-repo comprehension, literature synthesis, full trace analysis | • **RULER** (Effective context $\ge 128\text{k}$, $\ge 80\%$ baseline retention)<br>• **LongBench v2** / **NoCha**<br>• **Michelangelo** (Repo-level multi-hop NIAH) | Punctures vendor "nominal context window" illusions. Mandates genuine cross-file multi-hop retrieval and reasoning without attention collapse. |
+| **`tier-multimodal-runtime`** | Architecture diagram reverse engineering, UI verification, screenshot debugging | • **MMMU-Pro** (Vision-dependent, no text-guessing)<br>• **ChartQA / DocVQA** (High-res topology & chart parsing)<br>• **ScreenSpot / OSWorld** (GUI grounding) | Enforces precise visual coordinate localization, complex schematic comprehension, and multimodal tool-use reliability. |
+| **`tier-fast-reflex`** | Sub-second test cycles, git commit summaries, interactive agent inner-loop tool calls | • **Physical Gates**: TTFT $<300\text{ms}$, TPS $>120\text{ tok/s}$<br>• **Quality Floor**: **BFCL (Berkeley Function Calling Leaderboard)** AST accuracy $>85\%$ | **Dual-Gate constraint**: Speed alone is insufficient. Strictly enforces zero-hallucination JSON schema following and tool argument parsing during rapid loops. |
 
 ---
 
-## 3. Architecture & Topology (Sankey Flow)
+## 4. Architectural Rules & Cognitive Escalation
+
+### A. The 2D Escalation Policy (`effort=auto` $\times$ Tier Escalation)
+When Magpie pairs with a System One decision discriminator (e.g. StartLux-Decision 27B-AutoThink, Jev, or local classifiers), it queries both scenario intent and cognitive difficulty (`low`, `medium`, `high`, `xhigh`).
+
+To resolve the trade-off between reasoning token budgets and model tiers, this router enforces the **Tier Escalation Policy**:
+- **Within-Tier Modulation (`low`, `medium`, `high`)**: When a task lands in `tier-balanced-synthesis`, the discriminator modulates the downstream reasoning budget dynamically (e.g. adjusting `reasoning_effort` or thinking token caps).
+- **Cross-Tier Escalation (`xhigh`)**: If the discriminator grades a problem as `xhigh` (delicate race condition, distributed consensus design, non-trivial formal proof), the request **automatically escalates to `tier-frontier-reasoning`**, overriding default scenario boundaries.
+
+### B. Effective Context Gating (Rejecting Nominal Limits)
+When evaluating the context scale gate (`tokens >= 64k` or `100k`):
+- The router intercepts payload sizes before execution.
+- Only models that pass **RULER $\ge 128\text{k}$ with $\ge 80\%$ baseline performance** are eligible for admission into `tier-extended-context`. Models with nominal $128\text{k}$ windows that decay past $32\text{k}$ are relegated to the balanced tier.
+
+### C. Zero-Cost Physical Short-Circuit
+Before invoking semantic discriminators:
+1. **Modality Gate**: Inbound payloads are scanned for visual blocks (`image`, `image_url`, `inlineData`). Image-bearing turns short-circuit directly to `tier-multimodal-runtime`, saving discriminator tokens and preventing text-only models from throwing parsing errors.
+2. **Time-Window Arbitrage (Z-Axis)**: During off-peak windows (e.g. DeepSeek CST off-peak: weekdays 12-14, 18-09, and full weekends), eligible heavy workloads dynamically route to discounted high-performance models (Reasoner / V3) for massive cost savings.
+
+---
+
+## 5. Architecture & Topology (Sankey Flow)
 
 ```
 [ Inbound Workload (Agent / IDE / CLI) ]
          │
          ├── [Physical Gate] Has Image Payload? ──────────→ group/tier-multimodal-runtime
-         ├── [Physical Gate] Tokens >= 64k?     ──────────→ group/tier-extended-context
+         ├── [Physical Gate] Tokens >= 64k (Effective)? ──→ group/tier-extended-context
          ├── [Schedule Gate] Off-Peak Window Active? ─────→ group/tier-dynamic-value
          │
          └── [Semantic Gate via System One Discriminator]
                  │
-                 ├── Intent: Architecture / Deep Reasoning ─→ group/tier-frontier-reasoning
-                 ├── Intent: Long Synthesis / Literature  ──→ group/tier-balanced-synthesis
-                 └── Intent: None of these (Default)     ──→ group/tier-fast-reflex
+                 ├── Effort == 'xhigh' OR Intent: Architecture ─→ group/tier-frontier-reasoning
+                 ├── Intent: Long Synthesis / Literature ───────→ group/tier-balanced-synthesis
+                 └── Intent: None of these (Default) ──────────→ group/tier-fast-reflex
 ```
 
 > **Interactive Visualization**: Open `sankey.html` in any browser for a dark-mode interactive view of the 4-stage pipeline.
 
 ---
 
-## 4. The Decision Protocol: StartLux-Decision / Jev System One
+## 6. Zero Configuration Drift: Onboarding New Foundation Models
 
-Magpie natively interfaces with System One decision discriminators (`/v1/systemone` or OpenRouter `/v1/decisions`), such as **StartLux-Decision 27B-AutoThink**, **Jev**, or custom classifiers:
-
-1. **Natural Language Criteria (`criteria`)**: Rules are declared in natural language, eliminating brittle regexes:
-   ```bash
-   magpie group rule add smart-router use=group/tier-frontier-reasoning \
-     intent="high-level architecture planning, system design, or deep algorithmic reasoning"
-   ```
-2. **Confidence Thresholding**: The discriminator evaluates the full prompt state and outputs probabilistic confidence scores. If confidence meets threshold ($\ge 0.4$), the route triggers.
-3. **Adaptive Reasoning Depth (`effort=auto`)**: The discriminator simultaneously grades cognitive difficulty (`low`, `medium`, `high`, `xhigh`), instructing downstream models to adjust reasoning token budgets dynamically.
-
----
-
-## 5. Objective Model Onboarding: Zero Rule Drift
-
-When a new foundation model is released, **no routing rules or plugin code need to be modified**:
-1. **Benchmark Assessment**: Evaluate the model's published benchmark profile (e.g. SWE-bench Verified, MMMU, TTFT, pricing).
-2. **Assign to Capability Tier**: Add the model into its corresponding abstract Magpie group:
+When a new foundation model is released, **no routing rules or middleware code need to be modified**:
+1. **Inspect Benchmark Profile**: Look up its scores on SWE-bench Verified, Multi-SWE-bench, RULER, MMMU-Pro, or BFCL.
+2. **Assign to Capability Group**: Add the model to the matching Magpie group:
    ```bash
    magpie group set tier-frontier-reasoning models+=provider/new-frontier-model
    ```
-3. **Instant Generalization**: Inbound workloads are automatically routed to the new model based on objective criteria, with zero downtime and zero configuration drift.
+3. **Instant Production Generalization**: The router immediately routes matching workloads to the new model based on objective criteria, with zero downtime.
 
 ---
 
-## 6. Installation & Configuration
+## 7. Installation & Configuration
 
 ### Installation
 Install via Magpie's **Plugins › Discover**, or via CLI:
@@ -145,7 +151,7 @@ magpie plugin options multi-path-router '{
 
 ---
 
-## 7. Universal Deployment Recipe with Native Magpie Groups
+## 8. Universal Deployment Recipe with Native Magpie Groups
 
 Follow these steps to instantiate the complete 3D routing cluster on any Magpie instance:
 
@@ -153,20 +159,20 @@ Follow these steps to instantiate the complete 3D routing cluster on any Magpie 
 # 1. Register Decision Discriminator (StartLux-Decision / Jev System One)
 magpie provider add typesafe-jev decide=https://api.bamboonode.dev/v1 key=<YOUR_KEY>
 
-# 2. Construct Abstract Capability Tiers
-# Frontier Reasoning: Top AIME / SWE-bench models (Order strategy for failover)
+# 2. Construct Abstract Capability Tiers (Aligned with 2026 Benchmarks)
+# Frontier Reasoning: Top SWE-bench Verified (>65%) & Multi-SWE-bench models (Order strategy for failover)
 magpie group add tier-frontier-reasoning models=<YOUR_FRONTIER_MODELS> routing=order
 
-# Dynamic Value: Off-peak discounted or high-efficiency models
+# Dynamic Value: Off-peak discounted or high-efficiency models (DeepSeek Reasoner / V3)
 magpie group add tier-dynamic-value models=<YOUR_VALUE_MODELS> routing=order
 
-# Multimodal Runtime: Local GPU or vision-specialized models
+# Multimodal Runtime: MMMU-Pro / ScreenSpot capable vision models
 magpie group add tier-multimodal-runtime models=<YOUR_VISION_MODELS> routing=order
 
-# Extended Context: 100k+ token window models
+# Extended Context: RULER >= 128k effective context models
 magpie group add tier-extended-context models=<YOUR_LONG_CTX_MODELS> routing=smart
 
-# Fast Reflex: Ultra-fast flash / free-pool models for rapid tool turns
+# Fast Reflex: TTFT <300ms, TPS >120, BFCL >85% models for rapid tool turns
 magpie group add tier-fast-reflex models=<YOUR_FLASH_MODELS> routing=smart
 
 # 3. Create Root Router Group with Adaptive Semantic Rules
@@ -180,13 +186,13 @@ magpie group rule add smart-router use=group/tier-frontier-reasoning \
 magpie group rule add smart-router use=group/tier-extended-context \
   intent="writing survey, in-depth literature review, or long report synthesis"
 
-# Enable dynamic cognitive reasoning effort
+# Enable dynamic cognitive reasoning effort & escalation
 magpie group set smart-router effort=auto
 ```
 
 ---
 
-## 8. Testing & Verification
+## 9. Testing & Verification
 
 Run the test suite and contract validation:
 ```bash
@@ -195,22 +201,24 @@ bun test packages/multi-path-router
 
 ---
 
-## 中文设计准则与说明 (Design Guide in Chinese)
+## 中文设计准则与说明 (2026 修订版)
 
-### 核心设计哲学：摆脱硬编码与一维阶梯
-在传统网关中，模型往往被简单排成“价格”或“厂商”的一维阶梯，但这在现代多 Agent 复杂编排中必然失效。本插件采用 **三维正交坐标系 $(X, Y, Z)$**：
-1. **$X$ 轴（物理模态与载荷门闸）**：通过零延迟 AST 解析检测图片与 Token 规模，在请求触达语义判别器前实现物理级硬门闸分流，杜绝不必要的决策 Token 消耗与不可解析异常。
-2. **$Y$ 轴（认知深度与公认基准画像）**：摒弃“厂商偏好”或“主观印象”，依照社区公认基准测试对模型分档：
-   - **战略推演层 (`tier-frontier-reasoning`)**：基准标杆为 AIME、SWE-bench Verified（$>50\%$）、LiveCodeBench。专供高置信度的系统架构设计与深层次因果排障。
-   - **均衡交付层 (`tier-balanced-synthesis`)**：基准标杆为 MT-Bench、Arena-Hard。负责标准特性编码与技术综述撰写。
-   - **敏捷反射层 (`tier-fast-reflex`)**：基准标杆为毫秒级 TTFT 与高并发吞吐。专供单步语法纠错、单测循环与 Agent 工具调用心跳，严防昂贵的顶配模型配额被机械短任务刷爆。
+### 核心设计哲学：摆脱硬编码与指标通胀
+在传统网关中，模型选型容易陷入“厂商宣传”、“价格一维阶梯”或“已饱和刷榜基准”的误区。本插件采用 **三维正交坐标系 $(X, Y, Z)$** 并全面对齐抗污染（Contamination-resistant）评测标尺：
+
+1. **$X$ 轴（物理模态与有效载荷门闸）**：
+   - **多模态准入标尺**：以 **MMMU-Pro**（过滤文本可盲猜题目）、**ChartQA / DocVQA** 与 **ScreenSpot** 为准，确保具备真实的架构拓扑逆向与 GUI 视觉诊断能力；
+   - **长上下文准入标尺**：坚决戳穿厂商“标称上下文”泡沫，以 **RULER**（$\ge 128\text{k}$ 深度下准确率保留 $\ge 80\%$）、**LongBench v2** 与 **Michelangelo** 为准，杜绝“中间迷失（Lost-in-the-Middle）”。
+2. **$Y$ 轴（认知深度与抗过拟合基准画像）**：
+   - **战略推演层 (`tier-frontier-reasoning`)**：以 **SWE-bench Verified（$>65\%$）**、**Multi-SWE-bench**（多语言大型工程）、**GPQA Diamond（$>65\%$）**、**HLE (Humanity's Last Exam)** 及动态滚动的 **LiveCodeBench** 为硬门槛。专供高置信度的系统协议架构、形式化验证与跨模块深层因果排障；
+   - **均衡交付层 (`tier-balanced-synthesis`)**：彻底剔除已严重饱和失效的 MT-Bench，升级至 **Arena-Hard-Auto v2.0**、**IFEval（严格指令遵循率 $>85\%$）** 与 **Aider Polyglot**，保障日常功能代码与 PR 产出的高质量与格式严谨性；
+   - **敏捷反射层 (`tier-fast-reflex`)**：实行“物理延迟 + 结构化精度”双门控——以 **TTFT（$<300\text{ms}$）**、**TPS（$>120\text{ tok/s}$）** 结合 **BFCL（Berkeley Function Calling Leaderboard 工具调用准确率 $>85\%$）** 为硬指标，杜绝 Agent 在高频工具循环中发生 JSON 格式损坏或参数幻觉。
 3. **$Z$ 轴（成本稀缺度与时段套利）**：
    - 商业限量配额严格受控；
    - 结合北京时间（CST）DeepSeek 官方等商业时段峰谷差异（工作日 12:00-14:00、18:00-09:00 及周末全天），将合规中重度任务动态引向高价值模型，达成几何级 ROI 提升；
    - 本地与免费算力池全天候兜底。
 
-### 新模型无缝接入法则（Zero Configuration Drift）
-当未来有新的开源或闭源模型发布时：
-- **无需修改插件代码，亦无需重写任何路由规则**；
-- 仅需根据新模型的公开 Benchmark 分数与成本属性，将其挂入对应的抽象能力子组（`tier-*`）；
-- StartLux-Decision / Jev 判别器将依据任务的自然语言特征，自动将请求分发至包含新模型的子组中，实现配置与逻辑的彻底解耦。
+### 跨层升舱法则（Tier Escalation Policy）
+针对 StartLux-Decision / Jev 判别器输出的 `effort=auto`（`low/medium/high/xhigh`）：
+- **同层调节**：`low/medium/high` 仅在当前分层内部动态增减下游模型的思考 Token 预算；
+- **跨层升舱**：当判别器判定任务难度为 `xhigh`（微妙竞态条件、分布式共识设计、高难度证明）时，**无条件触发跨层升舱，直通 `tier-frontier-reasoning`**，实现认知深度与算力消耗的最严密闭环。
