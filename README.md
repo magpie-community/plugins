@@ -11,6 +11,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 
 | Package | Signs in to | Provider id |
 |---|---|---|
+| [catpaw](packages/catpaw) | Meituan's 妙手 CatPaw (ai.catpaw.meituan.com), with a browser web sign-in or the desktop client's saved credentials | `catpaw` |
 | [cline](packages/cline) | Cline (cline.bot): usage-billed models, ClinePass's and Cline's free ones, with Cline's device sign-in or an API key | `cline` |
 | [codearts](packages/codearts) | Huawei Cloud CodeArts (码道) coding plans (Trial, personal and enterprise credits), with Huawei Cloud OAuth sign-in (unofficial) | `codearts` |
 | [commandcode](packages/commandcode) | Command Code plans (Pro, GOAT, Max, Ultra, Go, Teams Pro) | `commandcode-plan` |

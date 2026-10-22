@@ -1,0 +1,135 @@
+{
+  "note": "Captured 2026-10-09 from the official desktop client talking to its own gateway. Cookies, host and message text redacted; header keys, values and body protocol fields verbatim. See packages/catpaw/index.mjs gatewayHeaders and runConversation.",
+  "path": "/api/agent/conversation/turn",
+  "headers": {
+    "accept": "application/json, text/plain, */*",
+    "accept-encoding": "gzip, compress, deflate, br",
+    "content-type": "application/json",
+    "user-agent": "axios/1.19.0",
+    "enableheartbeat": "true",
+    "m-appkey": "com.sankuai.mcopilot.cli",
+    "m-debug": "true",
+    "m-host": "<client machine LAN IP — redacted>",
+    "m-spanid": "0.4.1",
+    "m-spanname": "conversation.turn",
+    "m-traceid": "e66f2791065a78b22f6975d7726f30b7",
+    "x-agent-version": "1.2.0-beta.6",
+    "x-request-id": "2bee144e-8e91-4531-8e63-4c98747802fa",
+    "x-trace-id": "e66f2791065a78b22f6975d7726f30b7",
+    "content-length": "3140"
+  },
+  "bodyProtocol": {
+    "conversationId": "<redacted>",
+    "mode": "CLI",
+    "modelType": 30,
+    "permissionMode": "unsafeBypassPermissions",
+    "rulesMessage": "",
+    "source": "CatPawCLI",
+    "toolVersion": "2.0.2",
+    "toolConfigs": [
+      {
+        "name": "delete_file",
+        "enable": true
+      },
+      {
+        "name": "glob_file_search",
+        "enable": true
+      },
+      {
+        "name": "list_dir",
+        "enable": true
+      },
+      {
+        "name": "read_file",
+        "enable": true
+      },
+      {
+        "name": "read_lints",
+        "enable": true
+      },
+      {
+        "name": "write",
+        "enable": true
+      },
+      {
+        "name": "fetch_rules",
+        "enable": true
+      },
+      {
+        "name": "bash",
+        "enable": true
+      },
+      {
+        "name": "task_stop",
+        "enable": true
+      },
+      {
+        "name": "string_replace",
+        "enable": true
+      },
+      {
+        "name": "multi_edit",
+        "enable": true
+      },
+      {
+        "name": "grep",
+        "enable": true
+      },
+      {
+        "name": "docs_search",
+        "enable": true
+      },
+      {
+        "name": "fetch_docs",
+        "enable": true
+      },
+      {
+        "name": "km_search",
+        "enable": true
+      },
+      {
+        "name": "web_fetch",
+        "enable": true
+      },
+      {
+        "name": "web_search",
+        "enable": true
+      },
+      {
+        "name": "todo_write",
+        "enable": true
+      },
+      {
+        "name": "get_goal",
+        "enable": true,
+        "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining turn budget."
+      },
+      {
+        "name": "create_goal",
+        "enable": true,
+        "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet turn_budget only when an explicit turn budget is requested. Fails if an unfinished goal exists; use update_goal only for status."
+      },
+      {
+        "name": "update_goal",
+        "enable": true,
+        "description": "Update the existing goal.\nUse this tool only to mark the goal achieved or genuinely blocked.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to pause, resume, turn-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a turn-budgeted goal achieved with status `complete`, report the final turn usage from the tool result to the user."
+      },
+      {
+        "name": "powershell",
+        "enable": true
+      }
+    ],
+    "turnRequestId": "dacd35b1-6c36-4ea6-93fc-3fcd496633b5",
+    "goal": null,
+    "userPromptContext": {
+      "userTextInput": "say hi"
+    }
+  },
+  "headerless_message_shape": {
+    "type": "user",
+    "content_types": [
+      "text"
+    ],
+    "finished": true
+  }
+}
