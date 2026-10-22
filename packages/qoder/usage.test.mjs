@@ -274,7 +274,7 @@ test("errors don't name Qoder, which magpie adds", async () => {
 test("a model at a price_factor of 0 is marked free; is_free only counts with no price", async () => {
   const { hooks, auth } = await chat(LISTING, () => new Response(""))
   const ms = await hooks.provider.models({ models: {} }, { auth })
-  expect(Object.fromEntries(Object.entries(ms).map(([k, m]) => [k, m.free]))).toEqual({ qmodel: false, fmodel: true, pmodel: true, cmodel: false })
+  expect(Object.fromEntries(Object.entries(ms).map(([k, m]) => [k, m.free]))).toEqual({ Q: false, F: true, P: true, C: false })
   expect(_internal.modelInfo({ key: "x", isFree: true }).free).toBe(true)
 })
 
@@ -313,15 +313,15 @@ test("a discount is not free: Qwen3.8-Max (0.5×, is_free true) is priced, Qwen3
   const { hooks, auth } = await chat(PRICED, () => new Response(""))
   const ms = await hooks.provider.models({ models: {} }, { auth })
   expect(Object.fromEntries(Object.entries(ms).map(([k, m]) => [k, m.free]))).toEqual({
-    qmodel_38max: false,
-    qfmodel: true,
-    qmodel_latest: false,
-    kmodel_latest: false,
-    window: false,
-    over: true,
-    nothing: true,
-    unpriced: true,
-    unpriced2: false,
+    "Qwen3.8-Max": false,
+    "Qwen3.8-Flash": true,
+    "Qwen3.7-Max": false,
+    "Kimi-K3": false,
+    W: false,
+    O: true,
+    N: true,
+    U: true,
+    U2: false,
   })
   expect(_internal.modelInfo({ key: "x", priceFactor: 0.5, isFree: true }).free).toBe(false)
   expect(_internal.modelInfo({ key: "x", priceFactor: 0, promotion: { active: true, beforePromotionPriceFactor: 1 } }).free).toBe(false)
@@ -462,7 +462,7 @@ test("a listing whose refresh fails otherwise, or has no refresh token, marks no
 test("a job token the models hook renewed is said renewed by the next usage read, once", async () => {
   const m = await dueModels(RENEWED)
   const ms = await m.list()
-  expect(Object.keys(ms)).toEqual(["qmodel", "fmodel", "pmodel", "cmodel"])
+  expect(Object.keys(ms)).toEqual(["Q", "F", "P", "C"])
   expect((await m.usage()).signIn).toBe("renewed")
   expect((await m.usage()).signIn).toBe("kept")
 })

@@ -429,14 +429,14 @@ const MODELS = [
   { id: "dmodel", name: "DeepSeek-V4-Pro", context: 1_000_000, efforts: ["high", "max"] },
   { id: "dfmodel", name: "DeepSeek-Flash", context: 1_000_000, efforts: ["low", "high", "max"] },
   { id: "mmodel", name: "MiniMax-M3", context: 180_000 },
-].map((m) => ({ images: true, ...m }))
+].map((m) => ({ images: true, ...m, key: m.id, id: m.name }))
 
 // Qoder CN's list when the account's can't be asked: the tiers Qoder CN's
 // CLI names (auto routes inside Qoder and isn't one model). The account's
 // own list, read once signed in, takes over from it.
 const CN_MODELS = [
-  ...MODELS.filter((m) => ["ultimate", "performance", "efficient"].includes(m.id)),
-  { id: "lite", name: "Lite" },
+  ...MODELS.filter((m) => ["ultimate", "performance", "efficient"].includes(m.key)),
+  { id: "Lite", key: "lite", name: "Lite" },
 ]
 
 // freeOf reads whether a model costs the plan no credits: a price_factor
@@ -523,10 +523,12 @@ function windowsOf(raw) {
 // that needs more than the default is sent a larger one (windowFor).
 function modelInfo(raw) {
   const { windows, defaultWindow } = windowsOf(raw)
+  const name = String(raw.display_name || raw.key || "").trim()
   const m = {
+    id: name || raw.key,
     key: raw.key,
     source: raw.source ?? "",
-    name: raw.display_name || raw.key,
+    name: name || raw.key,
     images: !!raw.is_vl,
     context: windows.length ? windows[windows.length - 1] : raw.max_input_tokens || 0,
     windows,
@@ -1862,11 +1864,16 @@ const makePlugin = (site) => async ({ client }) => {
       signIn: e?.expired ? "expired" : undefined,
     })
 
+  const matchModel = (x, want) => {
+    const w = String(want ?? "").trim().toLowerCase()
+    return x.id === want || x.key === want || x.name === want || String(x.id ?? "").toLowerCase() === w || String(x.key ?? "").toLowerCase() === w
+  }
+
   // ask is the answer to a chat completion on the live account cred.
   const ask = async (chat, cred, init) => {
     let m
     try {
-      m = (await models(cred)).find((x) => x.key === chat.model) ?? (await models(cred, true)).find((x) => x.key === chat.model)
+      m = (await models(cred)).find((x) => matchModel(x, chat.model)) ?? (await models(cred, true)).find((x) => matchModel(x, chat.model))
     } catch (e) {
       if (e instanceof SignInGone || e?.expired) return signedInError(e)
       return errorResponse({ status: 502, message: e?.message ?? String(e) })
@@ -2040,7 +2047,7 @@ const makePlugin = (site) => async ({ client }) => {
           if (!ms.length) return provider.models
           const s = siteOf(site, cred)
           return Object.fromEntries(
-            ms.map((m) => [m.key, runtimeModel(s, { id: m.key, name: m.name, context: m.context, images: m.images, efforts: m.thinks ? m.efforts : [], free: m.free, rate: m.rate, rateWas: m.rateWas })]),
+            ms.map((m) => [m.id, runtimeModel(s, { id: m.id, name: m.name, context: m.context, images: m.images, efforts: m.thinks ? m.efforts : [], free: m.free, rate: m.rate, rateWas: m.rateWas })]),
           )
         } catch {
           return provider.models
