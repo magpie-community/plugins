@@ -1,3 +1,4 @@
+import { restoreEffort } from "./effort-bridge.mjs"
 // OpenCode provider plugins for MiniMax Code (mcode) accounts: the credits
 // a MiniMax Code account gets (the daily check-in's among them) and its
 // M Plan, on MiniMax Code's own models.
@@ -763,6 +764,7 @@ function makePlugin(site) {
               const req = input instanceof Request ? input : null
               let body = init?.body
               if (body === undefined && req) body = await req.clone().text()
+              body = restoreEffort(body)
               const send = (a) => {
                 const headers = new Headers(init?.headers ?? req?.headers)
                 headers.delete("content-length")

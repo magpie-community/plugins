@@ -98,10 +98,37 @@ every one of them, so those are the limits given here. An agent that
 believed the advertised ones would compact its history about half way too
 early.
 
-Variants map to what MiniMax Code sends:
-- a level is adaptive thinking at that effort, which becomes
+Variants declare SDK options:
+- a level requests adaptive thinking at that effort, which should become
   `output_config.effort`;
 - `none` turns thinking off.
+
+## Magpie effort bridge (M3.1-Flash)
+
+Magpie 0.1.1318/0.1.1319 converts OpenAI effort into an Anthropic token
+budget and drops the original level. With an 8192 output cap, medium,
+high, xhigh and max all become 7168. This package's Magpie `onRequest`
+hook retains the selected level before conversion; the authenticated
+fetch restores `output_config.effort` immediately before sending.
+For M3.1-Flash and M3.1-Flash-Preview it omits `thinking`, matching MiniMax
+Code 3.1.4's managed-login forced-on path. Existing output format is kept.
+
+This workaround covers explicit `minimax-code/` and
+`minimax-code-global/` M3.1-Flash model IDs, with Responses
+`reasoning.effort`, Chat Completions `reasoning_effort`, or native Messages
+`output_config.effort`. Other models and requests without a supported
+explicit level are unchanged. OpenCode does not run Magpie's gateway hook.
+
+The bridge carries an opaque UUID in system text through conversion and
+removes it before MiniMax fetch; the level stays in a bounded in-memory
+map for up to 15 minutes, including retries. Unknown/expired contexts at
+fetch fail rather than guessing a level from the collapsed budget.
+**Use direct model IDs without cross-provider fallback.** Group aliases
+are not covered; another provider's fetch cannot remove this marker.
+Local gateway logs may contain it. A host restart loses in-flight contexts.
+This is a scoped workaround pending a host API carrying original effort
+outside prompt text. See [verification](EFFORT-VERIFICATION.md) for the
+reproduction, boundary findings and sanitized real subscription results.
 
 ## Usage
 

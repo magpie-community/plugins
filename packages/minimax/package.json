@@ -5,7 +5,8 @@
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",
-  "files": ["index.mjs", "README.md"],
+  "files": ["index.mjs", "effort-bridge.mjs", "README.md"],
+  "magpie": { "hooks": "./effort-bridge.mjs" },
   "keywords": ["opencode", "opencode-plugin", "minimax", "mcode", "minimax-code"],
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/minimax" }

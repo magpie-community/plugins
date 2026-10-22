@@ -82,3 +82,25 @@ test("other refusals go on as they came, the account kept", async () => {
   expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
   expect((await res.json()).error.message).toBe("bad model")
 })
+
+// Exercise the actual auth-loader fetch, including Go's HTML-escaped JSON.
+test("all five efforts reach the subscription fetch without markers or thinking", async () => {
+  const { onRequest } = await import("./effort-bridge.mjs")
+  f = fakeMiniMax()
+  f.route("POST /mavis/api/v1/llm/v1/messages", () => json({ type: "message", content: [] }))
+  const opts = await (await MiniMaxCodeAuthPlugin({ client: {} })).auth.loader(async () => auth)
+  for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+    const marked = onRequest({ model: "minimax-code/MiniMax-M3.1-Flash", reasoning: { effort } }, { protocol: "responses" })
+    const converted = JSON.stringify({ model: "MiniMax-M3.1-Flash", system: marked.instructions,
+      thinking: { type: "enabled", budget_tokens: 7168 }, messages: [{ role: "user", content: "hi" }] })
+      .replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")
+    const res = await opts.fetch(new Request(opts.baseURL + "/messages", { method: "POST", body: converted }))
+    expect(res.status).toBe(200)
+    const r = f.seen.at(-1)
+    expect(r.json.output_config).toEqual({ effort })
+    expect(r.json.thinking).toBeUndefined()
+    expect(r.json.system).toBeUndefined()
+    expect(r.text).not.toContain("magpie-minimax-effort:")
+    expect(JSON.stringify([...r.headers])).not.toContain("magpie-minimax-effort:")
+  }
+})
