@@ -122,6 +122,71 @@ This is the only setting that fits magpie's provider editor: `auth.options`
 carries Off/On switches alone, so the numeric window and output limits stay in
 the `limits` plugin option (JSON) rather than in a field.
 
+## Request-body budget
+
+The endpoint's front proxy refuses large request bodies with `413` — a byte
+limit, not the model's context. The reference deployment accepted 9.5MB and
+refused 10MB. Base64 images inside tool results are resent every turn, so a long
+session reaches that wall well before its window is used: a 172k-token session
+(a fifth of a 1M window) carried 26.7MB of tool results, 29.8MB of them base64.
+
+Before sending, a body over budget is trimmed in three steps, each only when the
+previous one was not enough:
+
+1. older images are dropped, keeping the newest one (usually the one this turn
+   is about);
+2. the remaining images are dropped too;
+3. oversized tool results keep their first `toolResultKeep` characters, with a
+   note saying how many were cut.
+
+```json
+{ "limits": { "bodyBytes": 9437184, "toolResultKeep": 20000 } }
+```
+
+`bodyBytes` defaults to 9MB and `toolResultKeep` to 20000 characters. A
+deployment whose proxy allows more can raise them; both are positive integers.
+
+## Usage on the provider card
+
+magpie shows a provider's quota on its card through `auth.usage`, which OpenCode
+ignores. A private deployment's quota API is its own, and it is usually **not**
+the CLI's credential that can read it: in the reference deployment the quota
+APIs answer `{"code":30011,"message":"请先登录"}` to the CLI's `Cloud-IDE-JWT`
+and only accept a browser session cookie. So the deployment names its endpoints
+and where that cookie lives:
+
+```json
+{
+  "usage": {
+    "cookieFile": "/absolute/path/to/trae-web-cookie",
+    "cookieName": "X-Cloudide-Tob-Session",
+    "quotaPath": "/trae/gtm/tob/api/v1/config/get_personal_quota",
+    "usagePath": "/trae/gtm/tob/api/v1/config/get_user_model_usage"
+  }
+}
+```
+
+`cookieFile` holds the session value, one line. Without `usage`, the card says it
+is not configured instead of inventing numbers. An unreadable or expired cookie
+says so too, and never marks the account as signed out.
+
+Figures are **currency**, from each model's `total_cost_currency`: the reference
+deployment bills in yuan and splits usage into a seat allowance and a
+pay-as-you-go one (`user_usage_list[0]` and `[1]`).
+
+Both allowances can be raised or lowered by an administrator at any moment, so
+every figure is recomputed from each reply rather than assumed to grow:
+
+- a limit lowered under what is already spent caps at 100% and states how much
+  is over, rather than hiding an overdraft behind a bare 100%;
+- an allowance set to 0 or removed drops its window, leaving the other alone;
+- both removed says so, rather than drawing an empty card that reads as a
+  failed read;
+- a difference under one cent counts as billing rounding, not an overdraft.
+
+`balance` is what can still be spent: the seat allowance is drawn first, so the
+pay-as-you-go remainder counts only once the seat one is gone.
+
 The tested CLI headers default to `x-ide-version-code: 20260206`,
 `x-ide-version: 99.99.99`, `version: 0.201.1-tob-alpha.1`, `originator: codex_exec`
 and a `codex_exec` user agent. If your deployment requires other versions, add:

@@ -26,6 +26,13 @@ function baseURL(value) {
 // backend when the deployment names one, else the limits option's window.
 const DEFAULT_CONTEXT = 1000000
 const DEFAULT_OUTPUT = 32000
+// The raw-chat endpoint's front proxy rejects large request bodies with 413:
+// the reference deployment accepted 9.5MB and refused 10MB, which has nothing
+// to do with the model's context. Base64 images inside tool results are resent
+// every turn, so one long session reaches that wall even at 18% of its window
+// (a 172k-token session held 26.7MB of tool results, 29.8MB of it base64).
+const DEFAULT_BODY_BYTES = 9 * 1024 * 1024
+const DEFAULT_TOOL_KEEP = 20000
 // auth.options 的键，magpie 供应商编辑器里那个 Off/On 开关。
 const MAX_WINDOW_KEY = "max-context-window"
 
@@ -47,6 +54,51 @@ function declaredOf(m) {
   return 0
 }
 
+// A deployment's quota API is its own: the reference one answers POST with a
+// session cookie, not the CLI's Cloud-IDE-JWT, so the CLI token cannot read it
+// (that API replies "请先登录"). A deployment names its own endpoints and where
+// the cookie comes from; without `usage`, the card shows no numbers at all
+// rather than made-up ones.
+//
+//   "usage": {
+//     "cookieFile": "/absolute/path/to/cookie",   // one line: the session value
+//     "cookieName": "X-Cloudide-Tob-Session",
+//     "quotaPath": "/trae/gtm/tob/api/v1/config/get_personal_quota",
+//     "usagePath": "/trae/gtm/tob/api/v1/config/get_user_model_usage"
+//   }
+function usageSourceOf(usage) {
+  if (usage === undefined) return null
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) throw new Error("TRAE usage must be an object")
+  const need = ["cookieFile", "quotaPath", "usagePath"]
+  for (const key of need) {
+    if (typeof usage[key] !== "string" || !usage[key].trim()) throw new Error(`TRAE usage.${key} must be a path or name`)
+  }
+  return {
+    cookieFile: usage.cookieFile,
+    cookieName: String(usage.cookieName || "X-Cloudide-Tob-Session"),
+    quotaPath: usage.quotaPath,
+    usagePath: usage.usagePath,
+    quotaField: String(usage.quotaField || "user_model_quota"),
+    seatLimitKey: String(usage.seatLimitKey || "seat_pool_currency_quota"),
+    paygoLimitKey: String(usage.paygoLimitKey || "paygo_currency_quota"),
+  }
+}
+
+// readCookie reads the session value a quota API expects. A cookie value may
+// itself contain "=" (base64 padding does), so a file holding just the value is
+// taken whole. A file that names it — "Name=value" where Name is this
+// deployment's cookieName — has that one prefix removed.
+function readCookie(file, cookieName) {
+  try {
+    const raw = readFileSync(file, "utf8").trim()
+    if (!raw) return ""
+    if (cookieName && raw.startsWith(`${cookieName}=`)) return raw.slice(cookieName.length + 1).trim()
+    return raw
+  } catch {
+    return ""
+  }
+}
+
 function settingsOf(options) {
   const client = options.client ?? {}
   const settings = {
@@ -54,6 +106,7 @@ function settingsOf(options) {
     baseURL: baseURL(options.baseURL),
     appId: String(options.appId || "").trim(),
     limits: limitsOf(options.limits),
+    usage: usageSourceOf(options.usage),
     client: {
       "x-ide-version-code": client.ideVersionCode ?? "20260206",
       "x-ide-version": client.ideVersion ?? "99.99.99",
@@ -81,10 +134,10 @@ function settingsOf(options) {
 // limitsOf is what a cache model is told it takes: the deployment's own
 // numbers, since only it knows how much its raw-chat endpoint accepts.
 function limitsOf(limits) {
-  const out = { context: DEFAULT_CONTEXT, output: DEFAULT_OUTPUT }
+  const out = { context: DEFAULT_CONTEXT, output: DEFAULT_OUTPUT, bodyBytes: DEFAULT_BODY_BYTES, toolResultKeep: DEFAULT_TOOL_KEEP }
   if (limits === undefined) return out
   if (!limits || typeof limits !== "object" || Array.isArray(limits)) throw new Error("TRAE limits must be an object")
-  for (const key of ["context", "output"]) {
+  for (const key of ["context", "output", "bodyBytes", "toolResultKeep"]) {
     if (limits[key] === undefined) continue
     if (!Number.isSafeInteger(limits[key]) || limits[key] <= 0) throw new Error(`TRAE limits.${key} must be a positive integer`)
     out[key] = limits[key]
@@ -162,6 +215,103 @@ function connectedLocal(settings, auth) {
     throw new Error("本机 traecli 登录已过期，请先在 traecli 中刷新登录")
   }
   return local
+}
+
+function sumCost(list) {
+  let total = 0
+  for (const x of list || []) total += Number(x?.total_cost_currency) || 0
+  return total
+}
+
+function monthResetAt() {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0).toISOString()
+}
+
+function yuan(n) {
+  return Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function pct(used, limit) {
+  if (!(limit > 0)) return 0
+  return Math.min(100, Math.max(0, (used / limit) * 100))
+}
+
+// An administrator may raise or lower either allowance at any moment, so every
+// figure is recomputed from the reply rather than assumed to grow:
+//   - a limit lowered under what is already spent caps at 100% and says how
+//     much is over, instead of hiding an overdraft behind a bare 100%;
+//   - an allowance set to 0 or removed drops its window, rather than showing 0%;
+//   - both removed says so, instead of drawing an empty card that reads as a
+//     failed read.
+// Amounts are currency: the reference deployment bills in yuan, and the usage
+// list carries total_cost_currency per model.
+function quotaOf(source, quota, usage) {
+  const q = quota?.[source.quotaField] || {}
+  const lists = Array.isArray(usage?.user_usage_list) ? usage.user_usage_list : []
+  const seatLimit = Number(q[source.seatLimitKey]) || 0
+  const paygoLimit = Number(q[source.paygoLimitKey]) || 0
+  const seatModels = lists[0]?.in_seat_detail?.chat_usage_details || []
+  const overModels = lists[1]?.model_usage_detail_list || lists[1]?.in_seat_detail?.chat_usage_details || []
+  const seatUsed = sumCost(seatModels)
+  const overUsed = sumCost(overModels)
+
+  const out = { windows: [], resets: { until: monthResetAt() } }
+  const push = (name, used, limit) => {
+    const w = {
+      name,
+      used: Math.round(pct(used, limit) * 100) / 100,
+      span: "month",
+      amount: Math.round(used * 1000) / 1000,
+      limit,
+      unit: "元",
+      display: `￥${yuan(used)} / ￥${yuan(limit)}`,
+      resetsAt: monthResetAt(),
+    }
+    // Under a cent is billing rounding (200.212 against 200), not an overdraft.
+    const over = Math.round((used - limit) * 100) / 100
+    if (over > 0.01) {
+      w.over = over
+      w.display = `￥${yuan(used)} / ￥${yuan(limit)} (￥${yuan(over)} over)`
+    }
+    out.windows.push(w)
+  }
+  if (seatLimit > 0) push("Seat usage", seatUsed, seatLimit)
+  if (paygoLimit > 0) push("Pay-as-you-go", overUsed, paygoLimit)
+
+  // What can still be spent: the seat allowance is drawn first, so the paygo
+  // remainder only counts once the seat one is gone. Adding both would overstate
+  // what is left the moment the paygo allowance is full.
+  const seatLeft = Math.max(0, seatLimit - seatUsed)
+  const overLeft = Math.max(0, paygoLimit - overUsed)
+  if (seatLimit > 0 || paygoLimit > 0) out.balance = Math.round((seatLeft > 0 ? seatLeft : overLeft) * 1000) / 1000
+  else out.error = "Both allowances are set to 0"
+
+  const models = []
+  for (const x of seatModels) {
+    const cost = Number(x?.total_cost_currency) || 0
+    if (!cost) continue
+    models.push({ name: x.display_name || x.config_name, cost: Math.round(cost * 1000) / 1000,
+      tokens: Number(x.total_token_usage) || 0 })
+  }
+  models.sort((a, b) => b.cost - a.cost)
+  if (models.length) {
+    out.metadata = { models, currency: "CNY", seatUsed: Math.round(seatUsed * 1000) / 1000,
+      paygoUsed: Math.round(overUsed * 1000) / 1000, asOf: new Date().toISOString() }
+  }
+  return out
+}
+
+async function sessionPost(url, cookieName, cookie) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json", Cookie: `${cookieName}=${cookie}` },
+    body: "{}",
+  })
+  if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`)
+  const data = await res.json()
+  if (data?.code !== undefined && data.code !== 0) throw new Error(`${url} -> ${data.code} ${data.message || ""}`.trim())
+  return data
 }
 
 function modelEntry(m) {
@@ -276,7 +426,90 @@ function toolChoiceOf(value) {
   return undefined
 }
 
-function chatBody(req, session, models = []) {
+function roughBytes(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8")
+  } catch {
+    return 0
+  }
+}
+
+function isImage(part) {
+  return part?.type === "image_url" || Boolean(part?.image_url)
+}
+
+function imageCount(messages) {
+  let n = 0
+  for (const m of messages) for (const p of m.content || []) if (isImage(p)) n++
+  return n
+}
+
+// dropImages keeps the newest `keep` images and drops older ones: the last
+// image is usually the one this turn is about.
+function dropImages(messages, keep) {
+  let seen = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!Array.isArray(m.content)) continue
+    const kept = []
+    for (let j = m.content.length - 1; j >= 0; j--) {
+      const p = m.content[j]
+      if (!isImage(p)) {
+        kept.unshift(p)
+        continue
+      }
+      seen++
+      if (seen <= keep) kept.unshift(p)
+    }
+    m.content = kept
+  }
+  return seen > keep ? seen - keep : 0
+}
+
+// truncateTools keeps the head of an oversized tool result and says how much
+// went, so a model still sees what the tool said before the cut.
+function truncateTools(messages, keep) {
+  let n = 0
+  for (const m of messages) {
+    if (m.role !== "tool" || !Array.isArray(m.content)) continue
+    for (const p of m.content) {
+      if (p?.type !== "text" || typeof p.text !== "string" || p.text.length <= keep) continue
+      const total = p.text.length
+      p.text = `${p.text.slice(0, keep)}\n\n[trae-private: this tool result was ${total} characters; the last ${total - keep} were cut to stay under the endpoint's request-body limit]`
+      n++
+    }
+  }
+  return n
+}
+
+// fitBody trims a body to the endpoint's byte budget before it is sent.
+function fitBody(body, limits) {
+  const budget = limits?.bodyBytes ?? DEFAULT_BODY_BYTES
+  const keep = limits?.toolResultKeep ?? DEFAULT_TOOL_KEEP
+  const notes = { droppedImages: 0, truncatedTools: 0, bytes: roughBytes(body) }
+  if (notes.bytes <= budget) return notes
+  if (imageCount(body.messages) > 1) {
+    notes.droppedImages += dropImages(body.messages, 1)
+    notes.bytes = roughBytes(body)
+  }
+  if (notes.bytes > budget) {
+    notes.droppedImages += dropImages(body.messages, 0)
+    notes.bytes = roughBytes(body)
+  }
+  if (notes.bytes > budget) {
+    notes.truncatedTools += truncateTools(body.messages, keep)
+    notes.bytes = roughBytes(body)
+  }
+  return notes
+}
+
+// sendable drops the plugin's own bookkeeping before the body goes out.
+function sendable(body) {
+  const { fitted, ...wire } = body
+  return JSON.stringify(wire)
+}
+
+function chatBody(req, session, models = [], limits = undefined) {
   const id = String(req.model || "")
   const known = models.find((m) => m.id === id)
   const body = {
@@ -296,6 +529,9 @@ function chatBody(req, session, models = []) {
   }
   const max = req.max_completion_tokens ?? req.max_tokens
   if (Number.isFinite(max) && max > 0) body.max_tokens = Math.floor(max)
+  // The endpoint refuses by request-body bytes, not by tokens: trim oversized
+  // history here instead of passing a 413 on for the agent to compact.
+  body.fitted = fitBody(body, limits)
   return body
 }
 
@@ -657,6 +893,29 @@ function createPlugin(options = {}, upstreamFetch, input = undefined) {
           default: true,
         },
       ],
+      // magpie's provider card reads this; OpenCode ignores it. The deployment
+      // names where the numbers come from, and an unreadable source says why
+      // rather than filling the card with invented figures.
+      usage: async () => {
+        if (!settings.usage) {
+          return { windows: [], error: "Set the usage option to show this deployment's quota", signIn: "kept" }
+        }
+        const cookie = readCookie(settings.usage.cookieFile, settings.usage.cookieName)
+        if (!cookie) {
+          return { windows: [], error: `No session cookie in ${settings.usage.cookieFile}`, signIn: "kept" }
+        }
+        const base = settings.baseURL || readLocal(settings)?.base
+        if (!base) return { windows: [], error: "Set baseURL or sign in with a CLI that saves it", signIn: "kept" }
+        try {
+          const [quota, usage] = await Promise.all([
+            sessionPost(`${base}${settings.usage.quotaPath}`, settings.usage.cookieName, cookie),
+            sessionPost(`${base}${settings.usage.usagePath}`, settings.usage.cookieName, cookie),
+          ])
+          return quotaOf(settings.usage, quota, usage)
+        } catch (e) {
+          return { windows: [], error: String(e?.message || e), signIn: "kept" }
+        }
+      },
       async refresh(auth) {
         const local = connectedLocal(settings, auth)
         if (auth?.access === local.token && auth?.expires === local.expires) return
@@ -731,7 +990,7 @@ function createPlugin(options = {}, upstreamFetch, input = undefined) {
                   originator: "codex_exec",
                   ...settings.client,
                 },
-                body: JSON.stringify(chatBody(req, session, models)),
+                body: sendable(chatBody(req, session, models, settings.limits)),
                 signal: ac.signal,
               })
               if (!res.ok) {
@@ -827,6 +1086,12 @@ function createPlugin(options = {}, upstreamFetch, input = undefined) {
 export const _internal = {
   createPlugin,
   catalog,
+  quotaOf,
+  usageSourceOf,
+  fitBody,
+  dropImages,
+  truncateTools,
+  sendable,
   messagesOf,
   partsOf,
   toolsOf,

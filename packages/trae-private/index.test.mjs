@@ -43,6 +43,12 @@ afterAll(() => {
 })
 
 const {
+  quotaOf,
+  usageSourceOf,
+  fitBody,
+  dropImages,
+  truncateTools,
+  sendable,
   messagesOf,
   partsOf,
   toolsOf,
@@ -794,5 +800,105 @@ describe("shortError", () => {
     )
     expect(shortError("plain message\nsecond")).toBe("plain message")
     expect(shortError("")).toBe("私有化 TRAE 没有返回可读错误")
+  })
+})
+
+// The endpoint refuses by request-body bytes; base64 images ride along in tool
+// results every turn, so a long session hits the wall long before its window.
+describe("request-body budget", () => {
+  const img = (n) => ({ type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(n)}` } })
+  const limits = { bodyBytes: 9 * 1024 * 1024, toolResultKeep: 20000 }
+
+  test("over budget drops older images, keeping the newest", () => {
+    const body = { messages: [
+      { role: "user", content: [img(4_000_000)] },
+      { role: "user", content: [img(4_000_000)] },
+      { role: "user", content: [img(4_000_000)] },
+    ] }
+    const notes = fitBody(body, limits)
+    expect(notes.droppedImages).toBe(2)
+    expect(body.messages[2].content.filter((p) => p.type === "image_url").length).toBe(1)
+  })
+
+  test("still over budget truncates oversized tool results", () => {
+    const body = { messages: [{ role: "tool", content: [{ type: "text", text: "x".repeat(12_000_000) }] }] }
+    const notes = fitBody(body, limits)
+    expect(notes.truncatedTools).toBe(1)
+    expect(body.messages[0].content[0].text.length).toBeLessThan(30_000)
+  })
+
+  test("within budget nothing is touched", () => {
+    const body = { messages: [{ role: "user", content: [{ type: "text", text: "hi" }, img(1000)] }] }
+    const notes = fitBody(body, limits)
+    expect(notes.droppedImages).toBe(0)
+    expect(notes.truncatedTools).toBe(0)
+    expect(body.messages[0].content.length).toBe(2)
+  })
+
+  test("a lone image inside the budget is kept", () => {
+    const body = { messages: [{ role: "user", content: [img(1000)] }] }
+    expect(dropImages(body.messages, 1)).toBe(0)
+    expect(body.messages[0].content.length).toBe(1)
+  })
+
+  test("sendable leaves the bookkeeping behind", () => {
+    const out = sendable({ config_name: "m", fitted: { droppedImages: 1 } })
+    expect(out).not.toContain("fitted")
+    expect(JSON.parse(out).config_name).toBe("m")
+  })
+
+  test("limits accept bodyBytes and toolResultKeep", () => {
+    expect(() => plugin({ limits: { bodyBytes: 0 } })).toThrow("positive integer")
+    expect(() => plugin({ limits: { toolResultKeep: -1 } })).toThrow("positive integer")
+  })
+})
+
+// An administrator may raise or lower either allowance at any time.
+describe("allowances an administrator changes", () => {
+  const source = usageSourceOf({ cookieFile: "/tmp/c", quotaPath: "/q", usagePath: "/u" })
+  const quota = (seat, paygo) => ({ user_model_quota: { seat_pool_currency_quota: seat, paygo_currency_quota: paygo } })
+  const usage = (seatCost, overCost) => ({ user_usage_list: [
+    { in_seat_detail: { chat_usage_details: seatCost ? [{ total_cost_currency: seatCost, display_name: "M" }] : [] } },
+    { model_usage_detail_list: overCost ? [{ total_cost_currency: overCost }] : [] },
+  ] })
+
+  test("raised: the share falls and more is left", () => {
+    const r = quotaOf(source, quota(2000, 200), usage(717.322, 0))
+    expect(r.windows[0].used).toBeCloseTo(35.87, 1)
+    expect(r.balance).toBeCloseTo(1282.678, 2)
+  })
+
+  test("lowered under what is spent: caps at 100 and says how much is over", () => {
+    const r = quotaOf(source, quota(500, 200), usage(717.322, 0))
+    expect(r.windows[0].used).toBe(100)
+    expect(r.windows[0].over).toBeCloseTo(217.322, 2)
+    expect(r.windows[0].display).toContain("over")
+  })
+
+  test("one allowance set to 0 drops that window only", () => {
+    const r = quotaOf(source, quota(1000, 0), usage(717.322, 0))
+    expect(r.windows.length).toBe(1)
+    expect(r.windows[0].name).toBe("Seat usage")
+  })
+
+  test("both removed says so rather than drawing an empty card", () => {
+    const r = quotaOf(source, quota(0, 0), usage(717.322, 0))
+    expect(r.windows).toEqual([])
+    expect(r.error).toBeTruthy()
+  })
+
+  test("a missing quota block does not throw", () => {
+    expect(() => quotaOf(source, {}, { user_usage_list: [] })).not.toThrow()
+  })
+
+  test("under a cent is rounding, not an overdraft", () => {
+    const r = quotaOf(source, quota(1000, 200), usage(717.322, 200.004))
+    expect(r.windows[1].over).toBeUndefined()
+    expect(r.windows[1].display).not.toContain("over")
+  })
+
+  test("usage without config declares none instead of guessing endpoints", () => {
+    expect(usageSourceOf(undefined)).toBe(null)
+    expect(() => usageSourceOf({ cookiePath: "x" })).toThrow("cookieFile")
   })
 })
