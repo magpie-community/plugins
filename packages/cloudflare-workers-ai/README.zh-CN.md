@@ -2,10 +2,10 @@
 
 [English](README.md) | 简体中文 | [日本語](README.ja.md)
 
-[![CI](https://img.shields.io/badge/CI-passing-34A853.svg)](https://github.com/Guislabert/magpie-cloudflare-workers-ai/actions/workflows/ci.yml)
-[![版本](https://img.shields.io/badge/版本-0.0.1-4285F4.svg)](CHANGELOG.md)
+[![CI](https://img.shields.io/badge/CI-passing-34A853.svg)](https://github.com/Guislabert/magpie-cloudflare-workers-ai/actions)
+[![版本](https://img.shields.io/badge/版本-0.0.1--4285F4.svg)](CHANGELOG.md)
 [![npm version](https://img.shields.io/badge/npm%20version-0.0.1-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
-[![License: MIT](https://img.shields.io/badge/license-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
 面向 [OpenCode](https://opencode.ai) 1.x 和 [magpie](https://usemagpie.ai) 的供应商插件：
 用你的 API Token 登录 **Cloudflare Workers AI**，让它成为所有 Agent 都能选的供应商。
