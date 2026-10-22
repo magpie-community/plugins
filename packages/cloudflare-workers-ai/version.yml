@@ -1,0 +1,28 @@
+name: Version
+
+# Checks that package.json's version matches the newest section in
+# CHANGELOG.md, and the Version badge in every README. A mismatch means
+# the release train forgot to bump (or to write the changelog).
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "package.json"
+      - "CHANGELOG.md"
+      - "README*.md"
+      - ".github/workflows/version.yml"
+  pull_request:
+    paths:
+      - "package.json"
+      - "CHANGELOG.md"
+      - "README*.md"
+      - ".github/workflows/version.yml"
+
+jobs:
+  consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: package.json ↔ CHANGELOG ↔ badges
+        run: node .github/scripts/version-check.mjs
