@@ -43,7 +43,7 @@ test("a Max account: its 5 hours, its week and its credits, and its period", asy
     windows: [
       { name: "5 hours", used: 25, span: 18000, resetsAt: new Date(reset).toISOString() },
       { name: "Weekly", used: 10, span: 604800, resetsAt: new Date(week).toISOString() },
-      { name: "Credits", used: 30.9375, display: "$49.50 / $160.00", resetsAt: "2026-10-28T00:00:00.000Z" },
+      { name: "Credits", used: 30.9375, display: "$49.50 / $160.00", amount: 49.5, limit: 160, resetsAt: "2026-10-28T00:00:00.000Z" },
     ],
   })
   expect(seen.every((x) => x.auth === "Bearer own-key")).toBe(true)
@@ -62,7 +62,7 @@ test("Go: the month's $10 is the pool", async () => {
     "/alpha/billing/subscriptions": { data: { planId: "individual-go", status: "active" } },
     "/alpha/billing/credits": { credits: { monthlyCredits: 4 } },
   })
-  expect(u).toEqual({ signIn: "kept", plan: "Go", windows: [{ name: "Credits", used: 60, display: "$6.00 / $10.00" }] })
+  expect(u).toEqual({ signIn: "kept", plan: "Go", windows: [{ name: "Credits", used: 60, display: "$6.00 / $10.00", amount: 6, limit: 10 }] })
 })
 
 test("credits that can't be read keep the plan and say why", async () => {
@@ -90,7 +90,7 @@ test("seconds and string amounts read as magpie reads them; a half cent goes to 
     signIn: "kept",
     plan: "Pro",
     until: new Date(1790000000 * 1000).toISOString(),
-    windows: [{ name: "Weekly", used: 100, span: 604800 }, { name: "Credits", used: 0.4166666666666667, display: "$0.12 / $30.00", resetsAt: new Date(1790000000 * 1000).toISOString() }],
+    windows: [{ name: "Weekly", used: 100, span: 604800 }, { name: "Credits", used: 0.4166666666666667, display: "$0.12 / $30.00", amount: 0.125, limit: 30, resetsAt: new Date(1790000000 * 1000).toISOString() }],
   })
 })
 
@@ -117,7 +117,7 @@ test("a slow subscription: the windows go without it, and the next card has it",
   answer()
   await new Promise((r) => setTimeout(r, 20))
   const next = await hooks.auth.usage(async () => api)
-  expect(next).toEqual({ signIn: "kept", plan: "GOAT", renew: "off", windows: [{ name: "5 hours", used: 1, span: 18000 }, { name: "Credits", used: 50, display: "$35.00 / $70.00" }] })
+  expect(next).toEqual({ signIn: "kept", plan: "GOAT", renew: "off", windows: [{ name: "5 hours", used: 1, span: 18000 }, { name: "Credits", used: 50, display: "$35.00 / $70.00", amount: 35, limit: 70 }] })
 })
 
 test("a plan read is saved with the key, once", async () => {
@@ -150,7 +150,7 @@ test("a plan saved stands in for a subscription slow to read: waited for a momen
   const t = Date.now()
   const u = await hooks.auth.usage(async () => ({ ...api, metadata: { plan: "GOAT", planId: "individual-goat" } }))
   expect(Date.now() - t).toBeLessThan(3_000)
-  expect(u).toEqual({ signIn: "kept", plan: "GOAT", windows: [{ name: "Credits", used: 50, display: "$35.00 / $70.00" }] })
+  expect(u).toEqual({ signIn: "kept", plan: "GOAT", windows: [{ name: "Credits", used: 50, display: "$35.00 / $70.00", amount: 35, limit: 70 }] })
   answer()
 })
 

@@ -35,7 +35,7 @@ test("the Credits window renews when the plan's period ends", async () => {
   }
   const hooks = await CommandCodePlugin()
   const u = await hooks.auth.usage(async () => ({ type: "api", key: "k" }))
-  expect(u.windows).toEqual([{ name: "Credits", used: 60, display: "$18.00 / $30.00", resetsAt: "2026-11-02T08:00:00.000Z" }])
+  expect(u.windows).toEqual([{ name: "Credits", used: 60, display: "$18.00 / $30.00", amount: 18, limit: 30, resetsAt: "2026-11-02T08:00:00.000Z" }])
   expect(u.until).toBe("2026-11-02T08:00:00.000Z")
 })
 
@@ -48,7 +48,7 @@ test("no period end, no reset on the Credits window", async () => {
   }
   const hooks = await CommandCodePlugin()
   const u = await hooks.auth.usage(async () => ({ type: "api", key: "k" }))
-  expect(u.windows).toEqual([{ name: "Credits", used: 60, display: "$6.00 / $10.00" }])
+  expect(u.windows).toEqual([{ name: "Credits", used: 60, display: "$6.00 / $10.00", amount: 6, limit: 10 }])
 })
 
 // a list of every free id and two paid ones, as the Provider API gives it
