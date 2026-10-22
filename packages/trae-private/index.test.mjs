@@ -1,4 +1,5 @@
 // bun test；登录、模型缓存和上游请求均使用本地测试数据。
+import "./nonet.mjs"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -45,6 +46,9 @@ afterAll(() => {
 const {
   quotaOf,
   usageSourceOf,
+  readCookie,
+  sessionPost,
+  sameOriginPath,
   fitBody,
   dropImages,
   truncateTools,
@@ -188,9 +192,17 @@ describe("callsOf", () => {
     ])
   })
 
-  test("partial_arguments 兜底、缺 id 时留空（由 collect 合并后补）", () => {
-    const out = callsOf({ tool_calls: [{ function_call: { name: "f", partial_arguments: '{"a":' } }] })
-    expect(out).toEqual([{ index: 0, id: "", type: "function", function: { name: "f", arguments: '{"a":' } }])
+  test("partial_arguments 兜底；首帧缺 id 时补 call_<index>，续帧不再带 id 与 name", () => {
+    const seen = new Set()
+    const first = callsOf({ tool_calls: [{ function_call: { name: "f", partial_arguments: '{"a":' } }] }, seen)
+    // 空 id 会让 ai-sdk 配不上工具结果，所以首帧就补一个。
+    expect(first).toEqual([{ index: 0, id: "call_0", type: "function", function: { name: "f", arguments: '{"a":' } }])
+
+    const next = callsOf({ tool_calls: [{ function_call: { partial_arguments: '1}' } }] }, seen)
+    expect(next).toEqual([{ index: 0, type: "function", function: { arguments: '1}' } }])
+
+    // upstream 自己带 id 时用它，不覆盖。
+    expect(callsOf({ tool_calls: [{ id: "real-id", function_call: { name: "f" } }] }, new Set())[0].id).toBe("real-id")
     expect(callsOf({})).toEqual([])
     expect(callsOf(null)).toEqual([])
   })
@@ -683,6 +695,9 @@ describe("deployment configuration and account binding", () => {
 
   test("explicit models and client headers support another deployment without a cache", async () => {
     rmSync(join(fixture, "cli/models_cache.json"))
+    // The CLI has to have logged in to the same deployment: a token is only
+    // meant for the origin that issued it.
+    writeAuth({ endpoints: { api_base_url: "https://private.example.test" } })
     const hooks = plugin({ baseURL: "https://private.example.test/prefix/", models: [{
       id: "raw-model", name: "Custom", wire: "custom-wire", context: 64000, output: 8000, image: true,
     }], client: { ideVersionCode: "123", ideVersion: "1.2.3", version: "custom-cli", userAgent: "fixture-cli" } })
@@ -726,26 +741,42 @@ describe("deployment configuration and account binding", () => {
     expect(() => plugin({ models: [{ id: "m", context: -1 }] })).toThrow("positive integer")
   })
 
-  // 缓存里的 context_window 只是 CLI 默认 dev 后端声明的窗口，raw chat 实际收得更多。
-  test("缓存模型取 max 档或 limits 声明的窗口，而不是照抄 dev 档", async () => {
+  // 缓存里声明的窗口才是默认值：不替所有部署假定更大的数。
+  test("缓存模型默认按 CLI 缓存声明的窗口，__max 档优先", async () => {
     writeModels([
       { config_name: "dev-only", context_window: 200000, business_metadata: { variants: { standard_key: "dev-only__dev" } } },
       { config_name: "with-max", context_window: 200000,
         business_metadata: { variants: { standard_key: "with-max__dev", max_key: "with-max__max", max_context_window: 1048566 } } },
-      { config_name: "bigger-dev", context_window: 2000000 },
+      { config_name: "small", context_window: 184000 },
     ])
     const hooks = plugin()
     const config = {}
     await hooks.config(config)
     const models = config.provider["trae-private"].models
-    expect(models["dev-only"].limit).toEqual({ context: 1000000, output: 32000 })
+    expect(models["dev-only"].limit).toEqual({ context: 200000, output: 32000 })
     expect(models["with-max"].limit).toEqual({ context: 1048566, output: 32000 })
-    expect(models["bigger-dev"].limit.context).toBe(2000000)
-    // dev 档比 limits 小时不缩水：仍以 limits 为准
-    expect(models["dev-only"].limit.context).toBe(1000000)
+    expect(models["small"].limit.context).toBe(184000)
+  })
+
+  // 部署量过自己的端点能收更多时，打开开关按 limits.context 上报。
+  test("开关打开后按 limits.context 上报，__max 声明仍优先", async () => {
+    writeModels([
+      { config_name: "dev-only", context_window: 200000 },
+      { config_name: "with-max", context_window: 200000,
+        business_metadata: { variants: { max_context_window: 1048566 } } },
+    ])
+    const on = _internal.createPlugin({ ...options, limits: { context: 900000 } },
+      () => { throw new Error("no upstream") },
+      { magpie: { option: (p, k) => (p === "trae-private" && k === "max-context-window" ? true : undefined) } })
+    const cfg = {}
+    await on.config(cfg)
+    const models = cfg.provider["trae-private"].models
+    expect(models["dev-only"].limit.context).toBe(900000)
+    expect(models["with-max"].limit.context).toBe(1048566)
   })
 
   test("limits 覆盖缓存模型的上限，显式模型未给时沿用 limits", async () => {
+    // 缓存没声明窗口时，limits.context 是回落值。
     const hooks = plugin({ limits: { context: 900000, output: 64000 } })
     const config = {}
     await hooks.config(config)
@@ -764,42 +795,33 @@ describe("deployment configuration and account binding", () => {
   })
 
   // 供应商编辑器里的 Off/On 开关（auth.options），magpie 用 input.magpie.option 交过来。
-  test("max-context-window 开关决定上报完整窗口还是缓存自己声明的窗口", async () => {
+  test("max-context-window 开关：关闭用缓存值，打开用 limits.context，__max 声明始终优先", async () => {
     writeModels([
-      { config_name: "dev-only", context_window: 200000, business_metadata: { variants: { standard_key: "dev-only__dev" } } },
-      // 声明了 __max 档的模型即使关掉开关也用 max 档
+      { config_name: "dev-only", context_window: 200000 },
+      // 部署声明了 __max 档：那是它自己的权威值，开关不覆盖。
       { config_name: "with-max", context_window: 200000,
-        business_metadata: { variants: { standard_key: "with-max__dev", max_context_window: 1048566 } } },
-      // 缓存里没有窗口时，关掉开关也不可能凭空造一个
+        business_metadata: { variants: { max_context_window: 1048566 } } },
+      // 缓存里没有窗口时，关掉开关也不可能凭空造一个。
       { config_name: "no-window" },
     ])
-    const declared = (flag) => _internal.createPlugin({ ...options },
+    const build = (flag) => _internal.createPlugin({ ...options, limits: { context: 900000 } },
       () => { throw new Error("no upstream in this test") },
-      { magpie: { option: (provider, key) => (provider === "trae-private" && key === "max-context-window" ? flag : undefined) } })
+      flag === undefined
+        ? undefined
+        : { magpie: { option: (provider, key) => (provider === "trae-private" && key === "max-context-window" ? flag : undefined) } })
 
-    const on = await declared(true).provider.models({ models: {} })
-    expect(on["dev-only"].limit.context).toBe(1000000)
-    expect(on["with-max"].limit.context).toBe(1048566)
-
-    const off = await declared(false).provider.models({ models: {} })
+    const off = await build(false).provider.models({ models: {} })
     expect(off["dev-only"].limit.context).toBe(200000)
     expect(off["with-max"].limit.context).toBe(1048566)
-    expect(off["no-window"].limit.context).toBe(0)
+    expect(off["no-window"].limit.context).toBe(900000)
 
-    // 没有 input（OpenCode 直接调用）时按声明的 default 打开
-    const bare = await _internal.createPlugin({ ...options }, () => { throw new Error("no upstream") })
-      .provider.models({ models: {} })
-    expect(bare["dev-only"].limit.context).toBe(1000000)
-  })
-})
+    const on = await build(true).provider.models({ models: {} })
+    expect(on["dev-only"].limit.context).toBe(900000)
+    expect(on["with-max"].limit.context).toBe(1048566)
 
-describe("shortError", () => {
-  test("截取 origin err 之后的第一行", () => {
-    expect(shortError("biz error: rpc error: code = X desc = Y., origin err = app is not found\nstack line")).toBe(
-      "app is not found",
-    )
-    expect(shortError("plain message\nsecond")).toBe("plain message")
-    expect(shortError("")).toBe("私有化 TRAE 没有返回可读错误")
+    // 没有 input（OpenCode 直接调用）时按声明的 default：关闭。
+    const bare = await build(undefined).provider.models({ models: {} })
+    expect(bare["dev-only"].limit.context).toBe(200000)
   })
 })
 
@@ -865,13 +887,13 @@ describe("allowances an administrator changes", () => {
   test("raised: the share falls and more is left", () => {
     const r = quotaOf(source, quota(2000, 200), usage(717.322, 0))
     expect(r.windows[0].used).toBeCloseTo(35.87, 1)
-    expect(r.balance).toBeCloseTo(1282.678, 2)
+    expect(r.balance).toBe("1,282.68")
   })
 
   test("lowered under what is spent: caps at 100 and says how much is over", () => {
     const r = quotaOf(source, quota(500, 200), usage(717.322, 0))
-    expect(r.windows[0].used).toBe(100)
-    expect(r.windows[0].over).toBeCloseTo(217.322, 2)
+    // magpie 允许 used 超过 100 表示超支，所以报真实比例而不是封顶。
+    expect(r.windows[0].used).toBeCloseTo(143.46, 1)
     expect(r.windows[0].display).toContain("over")
   })
 
@@ -892,13 +914,95 @@ describe("allowances an administrator changes", () => {
   })
 
   test("under a cent is rounding, not an overdraft", () => {
-    const r = quotaOf(source, quota(1000, 200), usage(717.322, 200.004))
-    expect(r.windows[1].over).toBeUndefined()
-    expect(r.windows[1].display).not.toContain("over")
+    // 200.009 对 200：差 0.009，是账单舍入。
+    const quiet = quotaOf(source, quota(1000, 200), usage(717.322, 200.009))
+    expect(quiet.windows[1].display).not.toContain("over")
+    // 200.011 对 200：差 0.011，真的超了。
+    const over = quotaOf(source, quota(1000, 200), usage(717.322, 200.011))
+    expect(over.windows[1].display).toContain("over")
   })
 
   test("usage without config declares none instead of guessing endpoints", () => {
     expect(usageSourceOf(undefined)).toBe(null)
     expect(() => usageSourceOf({ cookiePath: "x" })).toThrow("cookieFile")
+  })
+})
+
+// The cookie must never leave the deployment, and a value may contain "=".
+describe("usage source and its cookie", () => {
+  test('readCookie 把裸值整行当值，含 "=" 也算', () => {
+    const dir = mkdtempSync(join(import.meta.dir, "../../.sandbox/trae-private/ck-"))
+    const bare = join(dir, "bare")
+    writeFileSync(bare, "abc=def==\n")
+    // 裸值整行都是值：base64 填充自带 "="。
+    expect(readCookie(bare, "S")).toBe("abc=def==")
+    const named = join(dir, "named")
+    writeFileSync(named, "S=abc=def==")
+    // 只有显式的 "名字=" 前缀才被剥掉。
+    expect(readCookie(named, "S")).toBe("abc=def==")
+    expect(readCookie(join(dir, "missing"), "S")).toBe("")
+  })
+
+  test("a usage path must stay on the deployment origin", () => {
+    const base = "https://corp.example"
+    expect(sameOriginPath(base, "/a/b")).toBe("https://corp.example/a/b")
+    // 这些都会把 cookie 送出去，必须拒。
+    for (const bad of ["@evil.example/q", ".evil.example/u", "//evil.example/q", "http://evil.example/q", "a/b"]) {
+      expect(() => sameOriginPath(base, bad)).toThrow()
+    }
+  })
+
+  test("sessionPost refuses a redirect instead of following it", async () => {
+    let seen
+    const real = globalThis.fetch
+    globalThis.fetch = async (url, init) => {
+      seen = { url, init }
+      return new Response(JSON.stringify({ code: 0 }), { headers: { "content-type": "application/json" } })
+    }
+    try {
+      await sessionPost("https://corp.example/q", "S", "v")
+    } finally {
+      globalThis.fetch = real
+    }
+    // 跳转会被跟到别的 host，所以必须显式拒绝。
+    expect(seen.init.redirect).toBe("error")
+    expect(seen.init.headers.Cookie).toBe("S=v")
+  })
+
+  test("usage without config says so; a missing cookie file says so too", async () => {
+    const none = await plugin().auth.usage(async () => null)
+    expect(none.windows).toEqual([])
+    expect(none.error).toContain("usage option")
+
+    const configured = plugin({ usage: { cookieFile: "/nonexistent/ck", quotaPath: "/q", usagePath: "/u" } })
+    const missing = await configured.auth.usage(async () => null)
+    expect(missing.windows).toEqual([])
+    expect(missing.error).toContain("cookie")
+    // 读不到时账号不该被判失效。
+    expect(missing.signIn).toBe("kept")
+  })
+
+  test("usage requires its paths and cookieFile", () => {
+    expect(() => plugin({ usage: { quotaPath: "/q", usagePath: "/u" } })).toThrow("cookieFile")
+    expect(() => plugin({ usage: [] })).toThrow("object")
+  })
+})
+
+// 排队事件的 data 里偶尔带 error 字段（上游的排队提示），在 error 判断之前
+// 就要挡住，否则一次正常排队会被报成请求失败。
+describe("queue events are not content and not failures", () => {
+  test("a queue event carrying error is ignored", () => {
+    const p = piece({ event: "queue_position", data: { error: "waiting in queue", position: 3 } })
+    expect(p.error).toBeUndefined()
+    expect(p.text).toBeUndefined()
+    expect(p.done).toBeUndefined()
+  })
+
+  test("progress_notice is a heartbeat, not text", () => {
+    expect(piece({ event: "progress_notice", data: ";Processing_…" })).toEqual({})
+  })
+
+  test("a real error event still fails", () => {
+    expect(piece({ event: "error", data: { code: 4023, error: "unknown model" } }).error).toBeTruthy()
   })
 })

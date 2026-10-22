@@ -99,7 +99,7 @@ Set `limits` when your deployment accepts more or less than the defaults:
 { "appId": "YOUR_DEPLOYMENT_APP_ID", "limits": { "context": 1000000, "output": 64000 } }
 ```
 
-`context` defaults to 1000000 and `output` to 32000. Both are positive integers;
+`context` defaults to 200000 and `output` to 32000. Both are positive integers;
 explicit `models` entries that omit `context` or `output` use them too. The
 plugin's own limits win over magpie's per-provider "Context window" and "Max
 output" fields in the provider editor, so set the window here, not there.
@@ -108,8 +108,8 @@ output" fields in the provider editor, so set the window here, not there.
 
 The provider editor shows one switch this plugin declares:
 
-**Advertise the deployment's full context window** — on by default. On, models are
-reported at the `limits` window (1000000 unless set). Off, each model keeps the
+**Advertise the deployment's full context window** — off by default. On, models are
+reported at the `limits` window (200000 unless set). Off, each model keeps the
 window its own CLI cache declares, and the reference deployment reports 200000 /
 184000 again — what agents compacted at before. A deployment that names a `__max`
 backend keeps that window either way.
@@ -185,7 +185,10 @@ every figure is recomputed from each reply rather than assumed to grow:
 - a difference under one cent counts as billing rounding, not an overdraft.
 
 `balance` is what can still be spent: the seat allowance is drawn first, so the
-pay-as-you-go remainder counts only once the seat one is gone.
+pay-as-you-go remainder counts only once the seat one is gone. It is a formatted
+string, which is what magpie keeps. `span` is a number of seconds. `used` is
+allowed to pass 100 when a window is overspent, since magpie reports the real
+share; the "over" note lives in `display`.
 
 The tested CLI headers default to `x-ide-version-code: 20260206`,
 `x-ide-version: 99.99.99`, `version: 0.201.1-tob-alpha.1`, `originator: codex_exec`
@@ -223,8 +226,9 @@ choice sends only that function with `required`. Queue/heartbeat events are
 ignored. Upstream errors, content-policy blocks and streams that end without a
 completion event are reported as failures. Cancellation closes the upstream.
 
-This plugin does not discover a deployment's application ID, run SSO, renew the
-CLI session, or report quota. Those details vary across private deployments.
+This plugin does not discover a deployment's application ID, run SSO, or renew the
+CLI session. Quota is reported only where the deployment configures `usage`
+(below); the rest varies across private deployments.
 
 ## Checks
 

@@ -18,13 +18,14 @@ function baseURL(value) {
   return url.href.replace(/\/+$/, "")
 }
 
-// The CLI's models_cache.json reports only the context window of its default
-// `__dev` backend (200000 in the reference deployment), while the raw-chat
-// endpoint accepts far more: a 933342-token request succeeded there and
-// 1048566 was the first rejected as too long. Copying the cache value makes
-// every agent compact early, so a cache model gets the window of its `__max`
-// backend when the deployment names one, else the limits option's window.
-const DEFAULT_CONTEXT = 1000000
+// A cached model is advertised at the window its own CLI catalog declares:
+// `max_context_window` when the deployment names a `__max` backend, else
+// `context_window`. The window a deployment's endpoint really accepts is the
+// deployment's own measurement — one reference deployment took 933342 tokens
+// and refused 1048566 — so raising it is the `max-context-window` switch or
+// `limits.context`, never an assumption made here for every deployment.
+// A deployment that has not measured its endpoint gets the cache's own figure.
+const DEFAULT_CONTEXT = 200000
 const DEFAULT_OUTPUT = 32000
 // The raw-chat endpoint's front proxy rejects large request bodies with 413:
 // the reference deployment accepted 9.5MB and refused 10MB, which has nothing
@@ -36,12 +37,11 @@ const DEFAULT_TOOL_KEEP = 20000
 // auth.options 的键，magpie 供应商编辑器里那个 Off/On 开关。
 const MAX_WINDOW_KEY = "max-context-window"
 
+// contextOf is the window the CLI catalog declares for this model, or the
+// deployment's own default when it declares none.
 function contextOf(m, fallback) {
-  const max = Number(m.business_metadata?.variants?.max_context_window)
-  if (Number.isSafeInteger(max) && max > 0) return max
-  const dev = Number(m.context_window)
-  if (Number.isSafeInteger(dev) && dev > 0) return Math.max(dev, fallback)
-  return fallback
+  const declared = declaredOf(m)
+  return declared > 0 ? declared : fallback
 }
 
 // declaredOf is the window the CLI catalog itself claims, kept so the switch
@@ -125,6 +125,7 @@ function settingsOf(options) {
       }
       return { id: m.id, name: m.name || m.id, wire: m.wire || m.id, context: m.context ?? settings.limits.context,
         declared: m.context ?? settings.limits.context,
+        declaredMax: 0,
         output: m.output ?? settings.limits.output, image: m.image === true, reasoning: m.reasoning === true, raw: true }
     })
   }
@@ -145,13 +146,44 @@ function limitsOf(limits) {
   return out
 }
 
-function readJson(path) {
+// A CLI renewal writes auth.json in place, so a read can land on a half-written
+// file. A missing file is "no login"; a file that will not parse is "unknown",
+// which must not be reported as a logout — that would mark the account expired
+// and drop the provider. `unknown` is set only when the bytes are there and the
+// parse fails.
+class Unreadable extends Error {}
+
+function readJsonOnce(path) {
+  let raw
   try {
-    return JSON.parse(readFileSync(path, "utf8"))
+    raw = readFileSync(path, "utf8")
+  } catch (e) {
+    if (e?.code === "ENOENT" || e?.code === "ENOTDIR") return null
+    throw new Unreadable(`${path} could not be read: ${e?.code || e?.message || e}`)
+  }
+  try {
+    return JSON.parse(raw)
   } catch {
-    return null
+    throw new Unreadable(`${path} is not valid JSON (a CLI write may be in progress)`)
   }
 }
+
+// readJson retries once after a short pause before giving up, so a single
+// unlucky read during a renewal is not treated as a broken file.
+function readJson(path, wait = true) {
+  try {
+    return readJsonOnce(path)
+  } catch (e) {
+    if (!(e instanceof Unreadable) || !wait) throw e
+    const until = Date.now() + 120
+    while (Date.now() < until) { /* a CLI write in flight resolves in a few ms */ }
+    return readJsonOnce(path)
+  }
+}
+
+// The last catalog that parsed: a reread that lands on a half-written cache
+// serves this instead of losing every model.
+let lastCatalog = null
 
 // 本机 traecli 的登录。不把令牌写进错误信息。
 function readLocal(settings) {
@@ -164,9 +196,34 @@ function readLocal(settings) {
     token,
     expires: Number.isFinite(expiresAt) ? expiresAt : 0,
     base: settings.baseURL || baseURL(trae.endpoints?.api_base_url),
+    // What the CLI itself logged in to: a token is only meant for this one, so
+    // an option naming another origin is refused rather than obeyed.
+    loginOrigin: originOf(trae.endpoints?.api_base_url),
     // 账号名优先用邮箱，magpie 拿它区分多个账号。
     name: String(trae.user_email || trae.user_name || trae.user_id || "traecli"),
     uid: String(trae.user_id || trae.user_email || trae.user_name || ""),
+  }
+}
+
+function originOf(value) {
+  try {
+    return new URL(value).origin
+  } catch {
+    return ""
+  }
+}
+
+// A CLI login names the deployment its token was issued for. Sending that token
+// to another origin would hand it to whoever the option points at, so the
+// option only applies when the CLI file names no endpoint at all.
+function checkOrigin(settings, local) {
+  if (!local?.loginOrigin || !settings.baseURL) return
+  if (originOf(settings.baseURL) !== local.loginOrigin) {
+    throw Object.assign(
+      new Error(`baseURL ${settings.baseURL} is not what the CLI logged in to (${local.loginOrigin}); ` +
+        "remove the option or log the CLI in to that deployment"),
+      { signIn: "kept" },
+    )
   }
 }
 
@@ -189,6 +246,8 @@ function catalog(settings) {
       name: String(m.slug || id),
       context: contextOf(m, settings.limits.context),
       declared: declaredOf(m),
+      // 部署自己声明的 __max 窗口（没有就是 0）：开关不覆盖它。
+      declaredMax: Number(m.business_metadata?.variants?.max_context_window) || 0,
       output: Number(m.max_output_tokens) || settings.limits.output,
       raw: surface,
       wire,
@@ -196,6 +255,7 @@ function catalog(settings) {
       reasoning: Boolean(m.default_reasoning_level) || levels.length > 0,
     })
   }
+  if (out.length) lastCatalog = out
   return out
 }
 
@@ -206,6 +266,7 @@ function connectedLocal(settings, auth) {
     throw Object.assign(new Error("本机没有 traecli 登录，先在终端执行 traecli login"), { signIn: "expired" })
   }
   if (!local.base) throw new Error("Set baseURL in plugin options or log in with a CLI that saves endpoints.api_base_url")
+  checkOrigin(settings, local)
   if (!local.uid) throw new Error("The CLI login has no user identity; sign in again with traecli")
   if (auth && (auth.source !== "trae-private-cli" || auth.uid !== local.uid ||
     auth.baseURL !== local.base || auth.appId !== settings.appId)) {
@@ -232,9 +293,11 @@ function yuan(n) {
   return Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+// magpie lets `used` pass 100 when a window is overspent, so the real share is
+// reported rather than capped.
 function pct(used, limit) {
   if (!(limit > 0)) return 0
-  return Math.min(100, Math.max(0, (used / limit) * 100))
+  return Math.max(0, (used / limit) * 100)
 }
 
 // An administrator may raise or lower either allowance at any moment, so every
@@ -261,7 +324,8 @@ function quotaOf(source, quota, usage) {
     const w = {
       name,
       used: Math.round(pct(used, limit) * 100) / 100,
-      span: "month",
+      // magpie reads span as a number of seconds; "month" reads as 0.
+      span: 2592000,
       amount: Math.round(used * 1000) / 1000,
       limit,
       unit: "元",
@@ -269,10 +333,12 @@ function quotaOf(source, quota, usage) {
       resetsAt: monthResetAt(),
     }
     // Under a cent is billing rounding (200.212 against 200), not an overdraft.
-    const over = Math.round((used - limit) * 100) / 100
-    if (over > 0.01) {
-      w.over = over
-      w.display = `￥${yuan(used)} / ￥${yuan(limit)} (￥${yuan(over)} over)`
+    // Compare the raw gap: rounding to cents first would turn 0.011 into 0.01
+    // and hide a real overdraft.
+    const gap = used - limit
+    if (gap > 0.01) {
+      w.over = Math.round(gap * 1000) / 1000
+      w.display = `￥${yuan(used)} / ￥${yuan(limit)} (￥${yuan(gap)} over)`
     }
     out.windows.push(w)
   }
@@ -284,7 +350,10 @@ function quotaOf(source, quota, usage) {
   // what is left the moment the paygo allowance is full.
   const seatLeft = Math.max(0, seatLimit - seatUsed)
   const overLeft = Math.max(0, paygoLimit - overUsed)
-  if (seatLimit > 0 || paygoLimit > 0) out.balance = Math.round((seatLeft > 0 ? seatLeft : overLeft) * 1000) / 1000
+  // magpie keeps balance only when it is a string.
+  if (seatLimit > 0 || paygoLimit > 0) {
+    out.balance = yuan(seatLeft > 0 ? seatLeft : overLeft)
+  }
   else out.error = "Both allowances are set to 0"
 
   const models = []
@@ -302,9 +371,23 @@ function quotaOf(source, quota, usage) {
   return out
 }
 
+// A cookie must never leave the deployment it belongs to: the path has to be a
+// plain absolute path on the same origin, and a redirect is refused rather than
+// followed to another host.
+function sameOriginPath(base, path) {
+  if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//")) {
+    throw new Error(`TRAE usage path must be a single "/"-prefixed path: ${path}`)
+  }
+  const root = new URL(base)
+  const url = new URL(path, `${root.origin}/`)
+  if (url.origin !== root.origin) throw new Error(`TRAE usage path leaves the deployment origin: ${path}`)
+  return url.href
+}
+
 async function sessionPost(url, cookieName, cookie) {
   const res = await fetch(url, {
     method: "POST",
+    redirect: "error",
     headers: { "Content-Type": "application/json", Accept: "application/json", Cookie: `${cookieName}=${cookie}` },
     body: "{}",
   })
@@ -446,6 +529,10 @@ function imageCount(messages) {
 
 // dropImages keeps the newest `keep` images and drops older ones: the last
 // image is usually the one this turn is about.
+// dropImages keeps the newest `keep` images and drops older ones: the last
+// image is usually the one this turn is about. A dropped image leaves a text
+// placeholder, so the model is told an image was there and a turn never ends up
+// with an empty content array.
 function dropImages(messages, keep) {
   let seen = 0
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -460,6 +547,7 @@ function dropImages(messages, keep) {
       }
       seen++
       if (seen <= keep) kept.unshift(p)
+      else kept.unshift({ type: "text", text: "[image omitted: request-body limit]" })
     }
     m.content = kept
   }
@@ -529,6 +617,11 @@ function chatBody(req, session, models = [], limits = undefined) {
   }
   const max = req.max_completion_tokens ?? req.max_tokens
   if (Number.isFinite(max) && max > 0) body.max_tokens = Math.floor(max)
+  // The model entries advertise temperature: true, so a client-set temperature
+  // is forwarded rather than silently dropped.
+  for (const key of ["temperature", "top_p", "stop"]) {
+    if (req[key] !== undefined) body[key] = req[key]
+  }
   // The endpoint refuses by request-body bytes, not by tokens: trim oversized
   // history here instead of passing a 413 on for the agent to compact.
   body.fitted = fitBody(body, limits)
@@ -605,23 +698,31 @@ async function* sse(stream, signal) {
 
 // 上游的工具调用在 event: output 的 tool_calls 里，function_call 包着 name/arguments；
 // 转成 chat completions 的 function，不然 agent 收不到工具调用。
-function callsOf(data) {
+// callsOf turns upstream tool calls into chat-completion deltas. Upstream sends
+// the id only on a call's first frame, so that frame gets `call_<index>` when
+// the id is missing (collect() already did this) — an empty id would leave
+// ai-sdk unable to pair the tool result. Later frames leave id and name off.
+function callsOf(data, seen) {
   if (!Array.isArray(data?.tool_calls)) return []
   const out = []
   for (const [i, c] of data.tool_calls.entries()) {
     const fn = c?.function_call || c?.function
     if (!fn) continue
+    const index = Number.isFinite(c?.index) ? c.index : i
+    const first = !seen || !seen.has(index)
     const args = fn.arguments ?? fn.partial_arguments
-    out.push({
-      index: Number.isFinite(c?.index) ? c.index : i,
-      // id 只在分片的第一帧带；缺省留空而不是造一个假的，合并时才分得清谁是真的。
-      id: c?.id != null ? String(c.id) : "",
+    const call = {
+      index,
       type: "function",
-      function: {
-        name: typeof fn.name === "string" ? fn.name : "",
-        arguments: args == null ? "" : typeof args === "string" ? args : JSON.stringify(args),
-      },
-    })
+      function: { arguments: args == null ? "" : typeof args === "string" ? args : JSON.stringify(args) },
+    }
+    const id = c?.id != null ? String(c.id) : ""
+    if (id) call.id = id
+    else if (first) call.id = `call_${index}`
+    const name = typeof fn.name === "string" ? fn.name : ""
+    if (name) call.function.name = name
+    if (seen) seen.add(index)
+    out.push(call)
   }
   return out
 }
@@ -651,7 +752,7 @@ const QUEUE_EVENTS = new Set(["queue_begin", "request_wait_in_queue", "queue_end
 // 上游认为不正常的结束原因（内容安全拦截等），正常的只有 stop/tool_calls/length。
 const BAD_FINISH = /risk|filter|security|intercept|safety|block|moderation/i
 
-function piece(ev) {
+function piece(ev, seenCalls) {
   const data = ev?.data
   const event = ev?.event || ""
   // progress_notice 是占位心跳（";Processing_…"），不是回答内容。
@@ -676,9 +777,15 @@ function piece(ev) {
   return {
     text: typeof obj.response === "string" ? obj.response : "",
     reasoning: typeof obj.reasoning_content === "string" ? obj.reasoning_content : "",
-    calls: callsOf(obj),
+    calls: callsOf(obj, seenCalls),
     finish,
-    done: event === "done" || Boolean(finish),
+    // A finish_reason on an output frame is not the end of the stream: upstream
+    // sends token_usage, and a usage inside the done event, after it. Ending
+    // there loses them, so only the done event ends the stream and the caller
+    // treats EOF after a finish as complete.
+    done: event === "done",
+    // The done event can carry usage as well as a separate token_usage frame.
+    usage: event === "done" ? usageOf(obj) : undefined,
   }
 }
 
@@ -706,10 +813,11 @@ function streamResponse(model, first, rest, close = async () => {}) {
       let finish = ""
       let usage = null
       const calls = new Map()
+      const seenCalls = new Set()
       let done = false
       let ev = first
       for (;;) {
-        const p = piece(ev)
+        const p = piece(ev, seenCalls)
         if (p.usage) usage = p.usage
         if (p.error) {
           yield { error: { message: p.error, type: "server_error" } }
@@ -732,7 +840,8 @@ function streamResponse(model, first, rest, close = async () => {}) {
         if (n.done) break
         ev = n.value
       }
-      if (!done) yield { error: { message: INCOMPLETE, type: "server_error" } }
+      // Same rule as collect(): a finish_reason then EOF is a complete reply.
+      if (!done && !finish) yield { error: { message: INCOMPLETE, type: "server_error" } }
       else {
         const empty = [...calls].filter(([, hasArgs]) => !hasArgs).map(([index]) => ({ index, function: { arguments: "{}" } }))
         if (empty.length) yield chunk(id, model, created, { tool_calls: empty }, null)
@@ -774,8 +883,9 @@ async function collect(first, rest) {
   let usage = null
   let done = false
   const calls = []
+  const seenCalls = new Set()
   const take = (ev) => {
-    const p = piece(ev)
+    const p = piece(ev, seenCalls)
     if (p.done) done = true
     if (p.usage) usage = p.usage
     if (p.error) error = p.error
@@ -802,7 +912,9 @@ async function collect(first, rest) {
       if (done || error) break
     }
   }
-  if (!done && !error) error = INCOMPLETE
+  // EOF after a finish_reason is a complete reply: upstream may close without a
+  // done event. Only a stream that ends with neither is incomplete.
+  if (!done && !error && !finish) error = INCOMPLETE
   // 上游始终会带 id；万一没带，按 index 造一个，agent 配对工具结果时要用。
   for (const c of calls) {
     if (!c.id) c.id = `call_${c.index}`
@@ -820,13 +932,14 @@ export default async function TraePrivateAuthPlugin(input, options = {}) {
 // input.magpie.option and rereads it whenever it is changed, so a plugin that
 // reads it per call follows the switch without a restart. Off, and the cache's
 // own context_window is reported as it stands.
+// The switch is off by default: the window a deployment's endpoint really takes
+// is that deployment's own measurement, never assumed here.
 function maxWindowOn(input) {
   try {
     const value = input?.magpie?.option?.(ID, MAX_WINDOW_KEY)
-    // magpie 答了就以它为准；没答（测试或宿主不支持）时按声明的 default。
-    return typeof value === "boolean" ? value : true
+    return typeof value === "boolean" ? value : false
   } catch {
-    return true
+    return false
   }
 }
 
@@ -834,12 +947,36 @@ function createPlugin(options = {}, upstreamFetch, input = undefined) {
   const fetchUpstream = upstreamFetch ?? ((...args) => globalThis.fetch(...args))
   const settings = settingsOf(options)
   // 开关关掉时只保留部署自己声明的窗口；打开时按 limits 抬到完整窗口。
-  const effective = (m) => (maxWindowOn(input) ? m : { ...m, context: m.declared ?? m.context })
+  // 开关打开：按 limits.context 上报（部署自己量过）。关闭：用 CLI 缓存声明的窗口。
+  // 部署若在缓存里声明了 __max 档，那是它自己的权威值，开关不覆盖。
+  // 缓存没有声明窗口时（declared 为 0）回落到 limits.context，绝不报 0。
+  // 注意 0 不是 undefined，?? 不会跳过它，必须显式判断。
+  const pick = (...values) => {
+    for (const v of values) {
+      const n = Number(v)
+      if (Number.isSafeInteger(n) && n > 0) return n
+    }
+    return DEFAULT_CONTEXT
+  }
+  const effective = (m) => maxWindowOn(input)
+    // 开关打开：部署量过的 limits.context，但部署自己声明的 __max 档优先。
+    ? { ...m, context: pick(m.declaredMax, settings.limits.context) }
+    // 关闭：CLI 缓存声明的窗口，缓存没说才用 limits.context。
+    : { ...m, context: pick(m.declared, settings.limits.context) }
   return {
     config: async (config) => {
       if (!settings.appId) return
-      const base = settings.baseURL || readLocal(settings)?.base
-      const available = catalog(settings).filter((m) => m.raw).map(effective)
+      // A config hook that throws takes the whole plugin load down, so a bad
+      // CLI file or an http:// endpoint skips the provider instead. Requests
+      // then explain it; nothing else in magpie is affected.
+      let base
+      let available
+      try {
+        base = settings.baseURL || readLocal(settings)?.base
+        available = catalog(settings).filter((m) => m.raw).map(effective)
+      } catch {
+        return
+      }
       if (!base || !available.length) return
       config.provider ??= {}
       const was = config.provider[ID] ?? {}
@@ -890,7 +1027,7 @@ function createPlugin(options = {}, upstreamFetch, input = undefined) {
           label: "Advertise the deployment's full context window",
           description:
             "The CLI's models_cache.json reports only its default __dev backend (200000 in the reference deployment), which makes agents compact far too early; the raw-chat endpoint accepts about one million. On, models are reported with the limits option's window (1000000 by default). Off, the cache's own value is kept.",
-          default: true,
+          default: false,
         },
       ],
       // magpie's provider card reads this; OpenCode ignores it. The deployment
@@ -908,8 +1045,8 @@ function createPlugin(options = {}, upstreamFetch, input = undefined) {
         if (!base) return { windows: [], error: "Set baseURL or sign in with a CLI that saves it", signIn: "kept" }
         try {
           const [quota, usage] = await Promise.all([
-            sessionPost(`${base}${settings.usage.quotaPath}`, settings.usage.cookieName, cookie),
-            sessionPost(`${base}${settings.usage.usagePath}`, settings.usage.cookieName, cookie),
+            sessionPost(sameOriginPath(base, settings.usage.quotaPath), settings.usage.cookieName, cookie),
+            sessionPost(sameOriginPath(base, settings.usage.usagePath), settings.usage.cookieName, cookie),
           ])
           return quotaOf(settings.usage, quota, usage)
         } catch (e) {
@@ -917,7 +1054,14 @@ function createPlugin(options = {}, upstreamFetch, input = undefined) {
         }
       },
       async refresh(auth) {
-        const local = connectedLocal(settings, auth)
+        let local
+        try {
+          local = connectedLocal(settings, auth)
+        } catch (e) {
+          // A half-written auth.json is not a logout: keep the account.
+          if (e instanceof Unreadable) throw Object.assign(e, { signIn: "kept" })
+          throw e
+        }
         if (auth?.access === local.token && auth?.expires === local.expires) return
         return { access: local.token, refresh: "", expires: local.expires }
       },
@@ -934,6 +1078,10 @@ function createPlugin(options = {}, upstreamFetch, input = undefined) {
               if (!auth) return errorResponse(401, "Connect the private TRAE CLI account first", "expired")
               local = connectedLocal(settings, auth)
             } catch (e) {
+              // A file that is mid-write is a temporary condition: answer 503
+              // with signIn "kept" so magpie keeps the account and retries,
+              // instead of marking it signed out over a CLI write.
+              if (e instanceof Unreadable) return errorResponse(503, e.message, "kept")
               return errorResponse(401, e.message, e.signIn || "kept")
             }
             const { token, base } = local
@@ -1008,18 +1156,21 @@ function createPlugin(options = {}, upstreamFetch, input = undefined) {
               }
               it = sse(res.body, ac.signal)[Symbol.asyncIterator]()
               // 首帧可能只有排队或心跳；等到内容或错误再确定 HTTP 状态。
+              const seenCalls = new Set()
               let first = null
               for (;;) {
                 const n = await it.next()
                 if (n.done) return errorResponse(502, "私有化 TRAE 没有返回内容")
-                const p = piece(n.value)
+                const p = piece(n.value, seenCalls)
                 if (p.error) return errorResponse(502, p.error)
                 if (p.text || p.reasoning || p.calls?.length || p.usage || p.finish || p.done) {
                   first = n.value
                   break
                 }
               }
-              if (req.stream === false) {
+              // OpenAI treats a missing `stream` as false, and the
+              // openai-compatible provider's doGenerate leaves it out.
+              if (req.stream !== true) {
                 const all = await collect(first, it)
                 if (all.error) return errorResponse(502, all.error)
                 const message = { role: "assistant", content: all.text || (all.calls.length ? "" : all.reasoning) }
@@ -1055,6 +1206,7 @@ function createPlugin(options = {}, upstreamFetch, input = undefined) {
           authorize: async () => {
             let local
             try {
+              // connectedLocal 已含 origin 校验，这里不必重复。
               local = connectedLocal(settings)
               if (!catalog(settings).some((m) => m.raw)) {
                 throw new Error("No raw-chat models: populate cli/models_cache.json with your CLI or set models in plugin options")
@@ -1088,6 +1240,9 @@ export const _internal = {
   catalog,
   quotaOf,
   usageSourceOf,
+  readCookie,
+  sessionPost,
+  sameOriginPath,
   fitBody,
   dropImages,
   truncateTools,
