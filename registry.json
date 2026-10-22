@@ -66,6 +66,8 @@
       "summary": { "en": "Exact arithmetic, unit conversion and calendar date math as tools for every agent: no network, no key.", "zh": "给每个 agent 的精确计算、单位换算和日历日期计算工具：不联网，不需要 key。" } },
     { "package": "@magpie-community/page-usage", "name": "Usage Glance", "kind": "page", "community": true,
       "summary": { "en": "A page in magpie's window with calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them. Reads only your usage summary.", "zh": "在 magpie 窗口里一眼看到今天、7 天或 30 天的调用、错误、token、费用和对应模型。只读取用量汇总。" } },
-    {"package": "@magpie-community/agent-kimi-desktop", "name": "Kimi", "kind": "agent", "community": true, "summary": {"en": "Kimi desktop Work on Magpie's Agents page: select a model from Magpie, then disconnect to restore the original service. Not Kimi Code CLI.", "zh": "把普通 Kimi 桌面版 Work 接入 Magpie Agent 页，使用已配置的模型；断开恢复原连接。不是 Kimi Code CLI。"}}
+    {"package": "@magpie-community/agent-kimi-desktop", "name": "Kimi", "kind": "agent", "community": true, "summary": {"en": "Kimi desktop Work on Magpie's Agents page: select a model from Magpie, then disconnect to restore the original service. Not Kimi Code CLI.", "zh": "把普通 Kimi 桌面版 Work 接入 Magpie Agent 页，使用已配置的模型；断开恢复原连接。不是 Kimi Code CLI。"}},
+    { "package": "@magpie-community/agent-octop", "name": "Octop", "kind": "agent", "community": true,
+      "summary": { "en": "Octop (local, self-hosted coding agent) on Magpie's Agents page: pick a model and Magpie registers a \"magpie\" provider in Octop and switches its active model; disconnecting restores it.", "zh": "把本地自托管的 Octop 接入 Magpie Agent 页：选模型后在 Octop 里注册 magpie 供应商并切换当前模型，断开即还原。" } }
   ]
 }
