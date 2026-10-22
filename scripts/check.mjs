@@ -27,6 +27,8 @@ for (const name of readdirSync(root)) {
     const client = { app: { log: async () => {} }, auth: { set: async () => {} }, tui: { showToast: async () => {} }, config: { get: async () => ({ data: {} }) } }
     for (const fn of fns) {
       const hooks = await fn({ client, directory: process.cwd(), worktree: process.cwd(), $: undefined, project: {} })
+      // A page may have a background collector without registering provider hooks.
+      if (pkg.magpie?.page?.file && hooks && typeof hooks === "object" && !Array.isArray(hooks) && Object.keys(hooks).length === 0) continue
       // a plugin of tools alone: each one a name an MCP client takes, a
       // description, arguments and an execute
       if (!hooks?.auth && hooks?.tool) {

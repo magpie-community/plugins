@@ -1,0 +1,56 @@
+{
+  "name": "@magpie-community/page-quota-estimator",
+  "version": "0.1.0",
+  "description": "Read-only quota capacity estimates for local Codex, verified Claude Code native logs, and Remote magpie",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/quota-estimator"
+  },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/quota-estimator",
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "magpie-page",
+    "quota",
+    "codex",
+    "claude-code",
+    "tokens",
+    "cost"
+  ],
+  "files": [
+    "index.mjs",
+    "collector.mjs",
+    "claude-native.mjs",
+    "estimate.mjs",
+    "page/index.html",
+    "page/app.js",
+    "page/style.css",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "collect": "node collector.mjs"
+  },
+  "magpie": {
+    "page": {
+      "title": "Quota estimates",
+      "titles": {
+        "zh": "\u989d\u5ea6\u9884\u4f30",
+        "zh-TW": "\u984d\u5ea6\u9810\u4f30"
+      },
+      "file": "page/index.html"
+    },
+    "permissions": []
+  }
+}

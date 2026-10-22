@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>额度预估</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="_magpie/bridge.js"></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div><h1>额度用满预估</h1><p class="intro">根据当前窗口用量与官方已用比例估算</p></div>
+    <div class="actions"><span id="updated" role="status" aria-live="polite">正在读取…</span>
+      <button id="refresh" type="button" aria-label="刷新额度预估" title="重新读取最新预估">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M19.2 12a7.5 7.5 0 1 0-1.9 5.2M20 12l-2.7-3.8"/></svg>
+      </button>
+    </div>
+  </header>
+  <div id="errors" role="status" aria-live="polite"></div>
+  <main id="cards" aria-busy="true"><p class="empty">等待首次采集…</p></main>
+  <footer>
+    <p>Token 含输入、输出及缓存用量 · 美元按 API 标价折算 · 记录不完整时可能低估</p>
+    <span>只读 · 每分钟更新</span>
+  </footer>
+</body>
+</html>
