@@ -383,3 +383,45 @@ test("a <tool_call> with only DeepSeek's closing tags after it says nothing; one
   const u = new _internal.TextTools()
   expect([u.push("<tool_call>hello</tool_call> ok"), u.push("", true)].map((o) => o.text).join("")).toBe("<tool_call>hello</tool_call> ok")
 })
+
+test("the level an agent picks reaches Trae as a prefix on the system message", async () => {
+  const body = (extra) => ({ model: "deepseek-v4.1-flash-max", max_tokens: 100, messages: [{ role: "user", content: "hi" }], ...extra })
+  const sent = async (extra) => {
+    f = fakeTrae()
+    f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["done", {}]]))
+    await ask(body(extra))
+    return f.seen.find((r) => r.path === "/api/agent/v3/llm_utils_chat").json
+  }
+  // no level, or one that asks for none: the conversation is left alone
+  expect((await sent({})).messages.map((m) => m.role)).toEqual(["user"])
+  expect((await sent({ reasoning_effort: "none" })).messages.map((m) => m.role)).toEqual(["user"])
+  // a level: one system message in front, tagged, with the model family's text
+  const low = await sent({ reasoning_effort: "low" })
+  expect(low.messages.map((m) => m.role)).toEqual(["system", "user"])
+  expect(low.messages[0].content[0].text).toContain("<<trae_effort>>")
+  expect(low.messages[0].content[0].text).toContain("Reasoning Effort: Low")
+  const max = await sent({ reasoning_effort: "max" })
+  expect(max.messages[0].content[0].text).toContain("Absolute maximum")
+  // the same level as an Anthropic thinking budget
+  expect((await sent({ thinking: { type: "enabled", budget_tokens: 2000 } })).messages[0].content[0].text).toContain("Reasoning Effort: Low")
+  expect((await sent({ thinking: { type: "enabled", budget_tokens: 30000 } })).messages[0].content[0].text).toContain("Absolute maximum")
+  // a conversation with a system message keeps it, the prefix in front of it
+  const kept = await sent({ reasoning_effort: "high", messages: [{ role: "system", content: "be brief" }, { role: "user", content: "hi" }] })
+  expect(kept.messages.map((m) => m.role)).toEqual(["system", "user"])
+  expect(kept.messages[0].content[0].text).toContain("<<trae_effort>>")
+  expect(kept.messages[0].content.at(-1).text).toBe("be brief")
+})
+
+test("a retry carries one prefix, not two", async () => {
+  f = fakeTrae()
+  // the first function refuses the param, so the plugin tries the next one
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => (r.json.function === "chat_v3"
+    ? sse([["error", { code: 4001, message: "bad param" }]])
+    : sse([["output", { response: "ok" }], ["done", {}]])))
+  await ask({ model: "deepseek-v4.1-flash-max", max_tokens: 100, reasoning_effort: "max", messages: [{ role: "user", content: "hi" }] })
+  const chats = f.seen.filter((r) => r.path === "/api/agent/v3/llm_utils_chat")
+  expect(chats.length).toBeGreaterThan(1)
+  for (const r of chats) {
+    expect(JSON.stringify(r.json.messages).match(/<<trae_effort>>/g)).toHaveLength(1)
+  }
+})
