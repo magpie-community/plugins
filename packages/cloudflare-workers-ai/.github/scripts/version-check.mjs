@@ -33,7 +33,7 @@ else if (clVersion !== version) fail.push(`CHANGELOG newest section is [${clVers
 for (const f of ["README.md", "README.zh-CN.md", "README.ja.md"]) {
   const s = read(f);
   if (!s) continue;
-  const b = s.match(/badge\/(?:version|\u7248\u672c|\u30d0\u30fc\u30b8\u30e7\u30f3)-([0-9.]+)-/);
+  const b = s.match(/shields\.io\/badge\/(?:Version|\u7248\u672c|\u30d0\u30fc\u30b8\u30e7\u30f3)-([0-9.]+)-/);
   const got = b && (b[1] || b[2]);
   if (!got) fail.push(`${f}: no Version badge found`);
   else if (got !== version) fail.push(`${f}: Version badge is ${got}, package.json is ${version}`);
