@@ -222,14 +222,22 @@ served under — and asks that model, and its Max, through a list carrying
 it. Trae renamed its official entries on 2026-10-09, leaving the name its
 lists mostly agree on the only thing that tells a misnamed entry apart.
 
-Reasoning: the models reason, but Trae's request takes no effort or
-thinking level, so the plugin lists no variants and a level an agent
-picks does nothing. Every model it lists says so in its `capabilities`
-(`reasoning: true`, with `toolcall`, `temperature`, `attachment`, the
-input and output modalities and an empty `variants`), the fallback
-list's own capabilities kept where it has an entry: magpie reads
-`capabilities.reasoning` alone for a model a plugin lists, and a model
-without it is shown as one that doesn't reason (0.2.4).
+Reasoning: the models reason, and each entry of the account's list says
+which levels it takes — its `reasoning_effort_config`, with the options
+(`light`, `high`, `extra_high`) and the default. The request takes the same
+names as `reasoning_effort`, so a level an agent picks is sent as Trae
+spells it: the plugin offers each model's own levels as `variants`
+(`low`/`high`/`xhigh` for `light`/`high`/`extra_high`), and sends nothing
+for a level the model doesn't name, or for a model whose entry names none —
+Trae then serves it at its own default. An entry naming levels this map
+can't spell offers none, rather than being sent one Trae would reject.
+
+Every model it lists also says it reasons in its `capabilities`
+(`reasoning: true`, with `toolcall`, `temperature`, `attachment` and the
+input and output modalities), the fallback list's own capabilities kept
+where it has an entry: magpie reads `capabilities.reasoning` alone for a
+model a plugin lists, and a model without it is shown as one that doesn't
+reason (0.2.4).
 
 When no
 list can be read, the plugin uses the realm's own fallback list. Trae CN's

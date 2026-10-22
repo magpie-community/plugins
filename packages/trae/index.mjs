@@ -1168,7 +1168,12 @@ function sessionOf(headers) {
 // tool result sent back, a retry, another function answering) shows up in the
 // usage detail as several, each under no title at all. request_id stays a
 // fresh id per request, being that request's own.
-function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false) {
+//
+// levels is the model's own levels (levelsOf of its entry): the effort the
+// request asks for is sent as the Trae name that model takes, and left out
+// when it takes none of that name — Trae rejects a level a model has no entry
+// for, and serves its default when none is asked.
+function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null) {
   const config = max?.base ?? req.model
   const body = {
     messages: traeMessages(req, sees),
@@ -1180,6 +1185,8 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
     request_id: randomUUID(),
     session_id: session || randomUUID(),
   }
+  const effort = effortOf(levels, req.reasoning_effort ?? req.reasoningEffort)
+  if (effort) body.reasoning_effort = effort
   const asked = req.max_completion_tokens ?? req.max_tokens
   if (Number.isFinite(asked) && asked > 0) body.max_tokens = most > 0 ? Math.min(Math.floor(asked), most) : Math.floor(asked)
   if (max?.window) {
@@ -2550,6 +2557,40 @@ const maxModel = (...ms) => {
 // deepseek-v4.1-flash in Max mode
 const MAX = "-max"
 
+// ---- reasoning levels --------------------------------------------------------------
+//
+// A list entry carries a reasoning_effort_config: the levels its model takes
+// (light, high, extra_high) and the one it defaults to. The request takes the
+// same names, as reasoning_effort, so a level an agent picks is sent as Trae
+// spells it. OpenCode knows the three as low/high/xhigh, so the map goes both
+// ways.
+//
+// An entry without the config takes no level: Trae serves it at its own
+// default and nothing is sent. The plugin used to send none for every model,
+// which read as "Trae takes no level" — it takes them, per model, and an
+// entry that names none is the exception rather than the rule.
+const LEVELS = { light: "low", high: "high", extra_high: "xhigh" }
+
+// levelsOf is an entry's levels in OpenCode's names, in Trae's order: [] when
+// the entry names none, null when it names ones this map can't spell (so a
+// caller can tell "takes no level" from "takes a level we can't name").
+const levelsOf = (m) => {
+  const cfg = m?.reasoning_effort_config
+  if (!cfg || typeof cfg !== "object") return []
+  const options = Array.isArray(cfg.options) ? cfg.options : []
+  const known = options.filter((o) => typeof o === "string" && LEVELS[o])
+  return known.length ? known.map((o) => LEVELS[o]) : options.length ? null : []
+}
+
+// variantsOf is a model's levels as OpenCode's variants: each names the effort
+// the request is asked for, spelled as Trae spells it. {} when it takes none.
+const variantsOf = (levels) => Object.fromEntries((levels ?? []).map((level) => [level, { reasoningEffort: Object.keys(LEVELS).find((k) => LEVELS[k] === level) ?? level }]))
+
+// effortOf is the name to send Trae for an OpenCode effort, or undefined when
+// the model doesn't take that one: a level Trae has no entry for is rejected,
+// so nothing is sent instead.
+const effortOf = (levels, effort) => (typeof effort !== "string" || !(levels ?? []).includes(effort) ? undefined : Object.keys(LEVELS).find((k) => LEVELS[k] === effort))
+
 // ---- usage ------------------------------------------------------------------------
 
 // credits adds up the account's entitlement packs as the IDE shows them:
@@ -2610,6 +2651,10 @@ const makePlugin = (site) => async ({ client }) => {
   const maxes = new Map()
   // whether each model the list last read takes images (its multimodal)
   const sight = new Map()
+  // the entry the lists last gave each model, for what only the entry says:
+  // the reasoning levels it takes (reasoning_effort_config)
+  const liveEntry = new Map()
+  const liveEntryOf = (id) => liveEntry.get(String(id)) ?? site.models?.[String(id)]?.entry ?? null
 
   const save = async (auth) => {
     try {
@@ -2893,6 +2938,7 @@ const makePlugin = (site) => async ({ client }) => {
     }
     for (const [id, { m, fn }] of out) {
       listedBy.set(id, fn)
+      liveEntry.set(id, m)
       const sees = seesOf(m)
       if (sees === null) sight.delete(id)
       else sight.set(id, sees)
@@ -2954,9 +3000,10 @@ const makePlugin = (site) => async ({ client }) => {
         input: sees === null ? inputs : { ...inputs, image: sees },
         output: was.capabilities?.output ?? { text: true, image: false, audio: false, video: false, pdf: false },
       },
-      // Trae's request takes no effort or thinking level, so a model has
-      // none to pick from (see the README's Reasoning)
-      variants: was.variants ?? {},
+      // the levels this entry takes, as OpenCode's variants: Trae's own
+      // reasoning_effort_config, which a model without one doesn't carry (it
+      // is then served at Trae's default, with no level to pick)
+      variants: was.variants ?? variantsOf(levelsOf(m)),
     }
   }
 
@@ -3053,6 +3100,16 @@ const makePlugin = (site) => async ({ client }) => {
             // sends them only to a model it was told takes them
             const base = max?.base ?? String(req.model)
             const sees = sight.get(base) ?? (site.models[base]?.modalities?.input?.includes("image") ?? true)
+            // the levels the base model takes, from the entry its lists gave
+            // it: what the request's effort is sent as, and left out when the
+            // model has no entry for it. An effort asked before the list was
+            // read here (a request that comes first) reads it, as the Max
+            // case above does: no list, no levels, and the effort is dropped.
+            let levels = levelsOf(liveEntryOf(base))
+            if (!levels.length && (req.reasoning_effort ?? req.reasoningEffort)) {
+              await liveModels(a).catch(() => {})
+              levels = levelsOf(liveEntryOf(base))
+            }
             // the answer's own signal: the caller's abort (a cancelled
             // request) and the stream's cancel both stop Trae's fetch, so
             // no read is left hanging on a connection the agent walked
@@ -3072,7 +3129,7 @@ const makePlugin = (site) => async ({ client }) => {
               const res = await fetch(apiOf(a, site) + "/api/agent/v3/llm_utils_chat", {
                 method: "POST",
                 headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
-                body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees)),
+                body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels)),
                 signal: ac.signal,
               })
               if (!res.ok) {
@@ -3123,4 +3180,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { ownClient, clientStoragePaths, clientDevice, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID }
+export const _internal = { ownClient, clientStoragePaths, clientDevice, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf }
