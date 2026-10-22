@@ -209,29 +209,52 @@ function isStale(a, marginMs = EARLY_MS) {
 }
 
 // Desktop sign-in is strictly read-only: never write ~/.box-agent/config/auth.json
-// and never spend the desktop app's refresh token.
+// and never spend the desktop app's refresh token. The app holds one account
+// at a time, so a seat keeps the token it was signed in with, saved on its own
+// record through the client (as kiro does), and reads the app only to take a
+// newer token for that same account. The app's current account never stands in
+// for a seat it does not name: a seat answered with another account's token
+// was billed to the wrong account and reported that account's credits, with
+// nothing anywhere saying so (plugins #166).
+//
+// sameAccount says whether a seat names the account the app holds now. A uid
+// the read token does not carry never agrees: the seat's own token is used, or
+// the seat asks to be signed in again, rather than being answered with
+// credentials it cannot be shown to own. A seat that names no account at all
+// has nothing to protect and means the app's own account.
+function sameAccount(seat, read) {
+  if (!read) return false
+  if (seat?.uid) return !!read.uid && String(seat.uid) === String(read.uid)
+  if (seat?.accountId) return !!read.name && String(seat.accountId) === String(read.name)
+  return true
+}
+
 async function currentAuth(client, auth, force = false) {
   if (auth?.source === "desktop") {
     const d = readDesktopAuth()
-    if (!d) {
-      const err = new Error("商汤小浣熊桌面端未登录，请打开商汤小浣熊客户端登录")
-      err.signIn = "expired"
-      throw err
+    // the app holds this seat's account: its token is the newest there is,
+    // and a seat asked again after a refusal takes it
+    if (sameAccount(auth, d) && !isStale(d, EARLY_MS)) {
+      if (d.access && d.access !== auth.access) {
+        try {
+          await client?.auth?.set?.({ path: { id: PROVIDER_ID }, body: { ...auth, ...d } })
+        } catch {}
+      }
+      return { a: { ...auth, ...d }, didRenew: false }
     }
-    if (
-      (auth.uid && d.uid && String(auth.uid) !== String(d.uid)) ||
-      (!auth.uid && auth.accountId && d.name && String(auth.accountId) !== String(d.name))
-    ) {
-      const err = new Error("商汤小浣熊桌面端已切换为其他账号，请重新登录")
-      err.signIn = "expired"
-      throw err
-    }
-    if (force || isStale(d, EARLY_MS)) {
+    // the app holds another account, or none: this seat goes on with the
+    // token it was signed in with until that token ends
+    if (!force && auth.access && !isStale(auth, EARLY_MS)) return { a: { ...auth }, didRenew: false }
+    if (sameAccount(auth, d)) {
       const err = new Error("商汤小浣熊桌面端登录态已过期，请打开商汤小浣熊客户端重新登录")
       err.signIn = "expired"
       throw err
     }
-    return { a: { ...auth, ...d }, didRenew: false }
+    const err = new Error(
+      d ? "商汤小浣熊桌面端已切换为其他账号，请重新登录" : "商汤小浣熊桌面端未登录，请打开商汤小浣熊客户端登录",
+    )
+    err.signIn = "expired"
+    throw err
   }
 
   let a = { ...auth }
@@ -842,6 +865,11 @@ function desktopSignIn() {
     instructions: "直接复用本机商汤小浣熊客户端的实时登录态 (~/.box-agent/config/auth.json)。",
     method: "auto",
     async callback() {
+      // A new seat takes the account the app holds now, and its token, and
+      // keeps them on its own record: the app is signed in to one account at
+      // a time and drops the previous one's token as soon as it rotates off
+      // disk. Only the app's own account is offered here, so a seat is never
+      // quietly handed some other account's credentials.
       const d = readDesktopAuth()
       if (!d) return { type: "failed", error: "未检测到本机商汤小浣熊登录态 (~/.box-agent/config/auth.json)" }
       if (isStale(d, EARLY_MS)) {
@@ -849,9 +877,9 @@ function desktopSignIn() {
       }
       return {
         type: "success",
-        access: "",
+        access: d.access,
         refresh: "",
-        expires: 0,
+        expires: d.expires,
         source: "desktop",
         accountId: d.name || PROVIDER_NAME,
         uid: d.uid || "",
@@ -1055,6 +1083,7 @@ export const RaccoonAuthPlugin = async ({ client }) => {
 
 export const _internal = {
   browserSignIn,
+  sameAccount,
   stripBearer,
   decodeJwtClaims,
   jwtExpiryMs,
