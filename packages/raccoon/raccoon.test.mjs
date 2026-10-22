@@ -502,6 +502,51 @@ test("a desktop seat keeps its own account after the app switches to another", a
   expect(seen).toEqual([`Bearer ${aTok}`])
 })
 
+// The desktop app signs in to one account at a time, and signing in to the
+// second revokes the first account's session on the vendor's side (#166,
+// measured on a real pair of accounts): the first seat's token is answered
+// 401 / 200003 by the credits and check-in endpoints, and 404 by refresh, its
+// exp notwithstanding. The seat must then ask to be signed in again, and must
+// never fall back to the account the app holds now.
+test("a desktop seat asks to sign in again once the vendor revokes its token", async () => {
+  tempDir = mkdtempSync(join(tmpdir(), "raccoon-test-"))
+  process.env.RACCOON_BOX_AGENT_CONFIG_DIR = tempDir
+  const authFile = join(tempDir, "auth.json")
+  const aTok = fakeJwt({ iss: "74350b", name: "AccountA", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const bTok = fakeJwt({ iss: "888888", name: "AccountB", exp: Math.floor(Date.now() / 1000) + 3600 })
+  writeFileSync(authFile, JSON.stringify({ access_token: aTok, refresh_token: "D1" }))
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const seatA = await (await hooks.auth.methods[1].authorize()).callback()
+
+  // the app signs in to the second account, and the vendor revokes the first
+  writeFileSync(authFile, JSON.stringify({ access_token: bTok, refresh_token: "D2" }))
+  const seen = []
+  startServer({
+    // what the vendor answers a revoked token with, on every endpoint
+    "GET /api/web/points/v1/balance": () =>
+      Response.json({ code: 200003, message: "authorization_verify_error" }, { status: 401 }),
+    "GET /api/web/auth/v1/entitlement_info": () =>
+      Response.json({ code: 200003, message: "authorization_verify_error" }, { status: 401 }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({ code: 200003, message: "authorization_verify_error" }, { status: 401 }),
+    "POST /api/web/llm/v2/chat/completions": (req) => {
+      seen.push(req.headers.get("authorization"))
+      return Response.json({ code: 200003, message: "authorization_verify_error" }, { status: 401 })
+    },
+  })
+
+  const u = await hooks.auth.usage(async () => ({ ...seatA, type: "oauth" }))
+  expect(u.signIn).toBe("expired")
+  expect(u.error).toContain("authorization_verify_error")
+
+  const loaded = await hooks.auth.loader(async () => ({ ...seatA, type: "oauth" }))
+  const res = await loaded.fetch(`${loaded.baseURL}/chat/completions`, { method: "POST", body: "{}" })
+  expect(res.status).toBe(401)
+  expect(res.headers.get("x-magpie-sign-in")).toBe("expired")
+  // the app's account is never spent for this seat
+  expect(seen).toEqual([`Bearer ${aTok}`])
+})
+
 test("a desktop seat asks to sign in again once its own token expires", async () => {
   tempDir = mkdtempSync(join(tmpdir(), "raccoon-test-"))
   process.env.RACCOON_BOX_AGENT_CONFIG_DIR = tempDir
