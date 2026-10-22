@@ -12,11 +12,27 @@
         "smart-router": "deepseek/deepseek-chat"
       }
     },
-    "request": { "model": "smart-router", "messages": [{ "role": "user", "content": "hello" }] },
-    "expect_request": { "model": "deepseek/deepseek-chat", "messages": [{ "role": "user", "content": "hello" }] }
+    "request": {
+      "model": "smart-router",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "deepseek/deepseek-chat",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ]
+    }
   },
   {
-    "name": "weekday lunch offpeak (12:30 CST) routes to deepseek-reasoner (夯+快+便宜)",
+    "name": "weekday lunch preset window (12:30 CST) routes to deepseek-reasoner",
     "options": {
       "now": "2026-10-19T04:30:00Z",
       "schedule": {
@@ -28,11 +44,27 @@
         "smart-router": "deepseek/deepseek-chat"
       }
     },
-    "request": { "model": "smart-router", "messages": [{ "role": "user", "content": "refactor code" }] },
-    "expect_request": { "model": "deepseek/deepseek-reasoner", "messages": [{ "role": "user", "content": "refactor code" }] }
+    "request": {
+      "model": "smart-router",
+      "messages": [
+        {
+          "role": "user",
+          "content": "refactor code"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "deepseek/deepseek-reasoner",
+      "messages": [
+        {
+          "role": "user",
+          "content": "refactor code"
+        }
+      ]
+    }
   },
   {
-    "name": "weekday night offpeak (21:00 CST) routes to deepseek-reasoner",
+    "name": "weekday night preset window (21:00 CST) routes to deepseek-reasoner",
     "options": {
       "now": "2026-10-19T13:00:00Z",
       "schedule": {
@@ -41,11 +73,27 @@
         }
       }
     },
-    "request": { "model": "smart-router", "messages": [{ "role": "user", "content": "analyze paper" }] },
-    "expect_request": { "model": "deepseek/deepseek-reasoner", "messages": [{ "role": "user", "content": "analyze paper" }] }
+    "request": {
+      "model": "smart-router",
+      "messages": [
+        {
+          "role": "user",
+          "content": "analyze paper"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "deepseek/deepseek-reasoner",
+      "messages": [
+        {
+          "role": "user",
+          "content": "analyze paper"
+        }
+      ]
+    }
   },
   {
-    "name": "weekend all-day offpeak (Saturday 15:00 CST) routes to deepseek-reasoner",
+    "name": "weekend all-day preset window (Saturday 15:00 CST) routes to deepseek-reasoner",
     "options": {
       "now": "2026-10-24T07:00:00Z",
       "schedule": {
@@ -54,8 +102,161 @@
         }
       }
     },
-    "request": { "model": "smart-router", "messages": [{ "role": "user", "content": "long horizon planning" }] },
-    "expect_request": { "model": "deepseek/deepseek-reasoner", "messages": [{ "role": "user", "content": "long horizon planning" }] }
+    "request": {
+      "model": "smart-router",
+      "messages": [
+        {
+          "role": "user",
+          "content": "long horizon planning"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "deepseek/deepseek-reasoner",
+      "messages": [
+        {
+          "role": "user",
+          "content": "long horizon planning"
+        }
+      ]
+    }
+  },
+  {
+    "name": "cst_deepseek_offpeak false on Saturday does not use offpeak_mapping",
+    "options": {
+      "now": "2026-10-24T07:00:00Z",
+      "schedule": {
+        "cst_deepseek_offpeak": false,
+        "offpeak_mapping": {
+          "smart-router": "deepseek/deepseek-reasoner"
+        }
+      },
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat"
+      }
+    },
+    "request": {
+      "model": "smart-router",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "deepseek/deepseek-chat",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ]
+    }
+  },
+  {
+    "name": "cst_deepseek_offpeak false with no mapping leaves the model alone",
+    "options": {
+      "now": "2026-10-24T07:00:00Z",
+      "schedule": {
+        "cst_deepseek_offpeak": false,
+        "offpeak_mapping": {
+          "smart-router": "deepseek/deepseek-reasoner"
+        }
+      }
+    },
+    "request": {
+      "model": "smart-router",
+      "messages": []
+    },
+    "expect_request": {
+      "model": "smart-router",
+      "messages": []
+    }
+  },
+  {
+    "name": "a user offpeak window routes a Monday morning that the preset calls peak",
+    "options": {
+      "now": "2026-10-19T01:30:00Z",
+      "schedule": {
+        "offpeak": {
+          "days": [
+            1
+          ],
+          "start": "09:00",
+          "end": "11:00",
+          "tz": 8
+        },
+        "offpeak_mapping": {
+          "smart-router": "deepseek/deepseek-chat"
+        }
+      }
+    },
+    "request": {
+      "model": "smart-router",
+      "messages": []
+    },
+    "expect_request": {
+      "model": "deepseek/deepseek-chat",
+      "messages": []
+    }
+  },
+  {
+    "name": "a user offpeak window crossing midnight covers the early hours of the next day",
+    "options": {
+      "now": "2026-10-18T21:00:00Z",
+      "schedule": {
+        "offpeak": {
+          "days": [
+            0
+          ],
+          "start": "22:00",
+          "end": "06:00",
+          "tz": 8
+        },
+        "offpeak_mapping": {
+          "smart-router": "deepseek/deepseek-chat"
+        }
+      }
+    },
+    "request": {
+      "model": "smart-router",
+      "messages": []
+    },
+    "expect_request": {
+      "model": "deepseek/deepseek-chat",
+      "messages": []
+    }
+  },
+  {
+    "name": "a user offpeak window outside its hours leaves the mapping to apply",
+    "options": {
+      "now": "2026-10-19T04:30:00Z",
+      "schedule": {
+        "offpeak": {
+          "days": [
+            1
+          ],
+          "start": "00:30",
+          "end": "08:30",
+          "tz": 8
+        },
+        "offpeak_mapping": {
+          "smart-router": "deepseek/deepseek-reasoner"
+        }
+      },
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat"
+      }
+    },
+    "request": {
+      "model": "smart-router",
+      "messages": []
+    },
+    "expect_request": {
+      "model": "deepseek/deepseek-chat",
+      "messages": []
+    }
   },
   {
     "name": "image in request triggers vision constraint gate",
@@ -73,8 +274,17 @@
         {
           "role": "user",
           "content": [
-            { "type": "text", "text": "inspect this screenshot" },
-            { "type": "image", "source": { "type": "base64", "data": "abc" } }
+            {
+              "type": "text",
+              "text": "inspect this screenshot"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "data": "abc"
+              }
+            }
           ]
         }
       ]
@@ -85,8 +295,175 @@
         {
           "role": "user",
           "content": [
-            { "type": "text", "text": "inspect this screenshot" },
-            { "type": "image", "source": { "type": "base64", "data": "abc" } }
+            {
+              "type": "text",
+              "text": "inspect this screenshot"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "data": "abc"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "image inside an Anthropic tool_result triggers vision constraint gate",
+    "options": {
+      "constraints": {
+        "vision": "local-qwen/Qwen3.8-27B"
+      },
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat"
+      }
+    },
+    "request": {
+      "model": "smart-router",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read this file"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "t1",
+              "name": "read",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "t1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "here is the screenshot"
+                },
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "abc"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "local-qwen/Qwen3.8-27B",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read this file"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "t1",
+              "name": "read",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "t1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "here is the screenshot"
+                },
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "abc"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "image inside a Responses function_call_output triggers vision constraint gate",
+    "options": {
+      "constraints": {
+        "vision": "local-qwen/Qwen3.8-27B"
+      },
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat"
+      }
+    },
+    "request": {
+      "model": "smart-router",
+      "input": [
+        {
+          "type": "function_call",
+          "call_id": "c1",
+          "name": "screenshot",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "c1",
+          "output": [
+            {
+              "type": "input_text",
+              "text": "captured"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,abc"
+            }
+          ]
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "local-qwen/Qwen3.8-27B",
+      "input": [
+        {
+          "type": "function_call",
+          "call_id": "c1",
+          "name": "screenshot",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "c1",
+          "output": [
+            {
+              "type": "input_text",
+              "text": "captured"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,abc"
+            }
           ]
         }
       ]
@@ -125,15 +502,207 @@
     }
   },
   {
+    "name": "Anthropic tool_result text counts toward the long context gate",
+    "options": {
+      "constraints": {
+        "tokens_gte": {
+          "threshold": 50,
+          "target": "grok/grok-4.7@500k"
+        }
+      },
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat"
+      }
+    },
+    "request": {
+      "model": "smart-router",
+      "messages": [
+        {
+          "role": "user",
+          "content": "list the directory"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "t1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "grok/grok-4.7@500k",
+      "messages": [
+        {
+          "role": "user",
+          "content": "list the directory"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "t1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "Responses function_call_output string counts toward the long context gate",
+    "options": {
+      "constraints": {
+        "tokens_gte": {
+          "threshold": 50,
+          "target": "grok/grok-4.7@500k"
+        }
+      },
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat"
+      }
+    },
+    "request": {
+      "model": "smart-router",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run the tests"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "c1",
+          "output": "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "grok/grok-4.7@500k",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run the tests"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "c1",
+          "output": "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+        }
+      ]
+    }
+  },
+  {
+    "name": "models named constructor, toString and __proto__ are not resolved from Object.prototype",
+    "options": {
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat",
+        "__proto__": "deepseek/deepseek-reasoner"
+      }
+    },
+    "request": {
+      "model": "toString",
+      "messages": []
+    },
+    "expect_request": {
+      "model": "toString",
+      "messages": []
+    }
+  },
+  {
+    "name": "a model named __proto__ is not resolved from Object.prototype",
+    "options": {
+      "mapping": {
+        "smart-router": "deepseek/deepseek-chat"
+      }
+    },
+    "request": {
+      "model": "__proto__",
+      "messages": []
+    },
+    "expect_request": {
+      "model": "__proto__",
+      "messages": []
+    }
+  },
+  {
+    "name": "a wildcard and a /regex/ key still map, but a non-string target does not",
+    "options": {
+      "mapping": {
+        "*": "deepseek/deepseek-chat",
+        "/^claude-(.*)$/": {
+          "nested": "not-a-model"
+        }
+      }
+    },
+    "request": {
+      "model": "claude-sonnet-4",
+      "messages": []
+    },
+    "expect_request": {
+      "model": "deepseek/deepseek-chat",
+      "messages": []
+    }
+  },
+  {
     "name": "replies restore the asked model name",
     "options": {
       "mapping": {
         "smart-router": "deepseek/deepseek-reasoner"
       }
     },
-    "request": { "model": "smart-router", "messages": [] },
-    "expect_request": { "model": "deepseek/deepseek-reasoner", "messages": [] },
-    "response": { "model": "deepseek/deepseek-reasoner", "choices": [{ "message": { "content": "done" } }] },
-    "expect_response": { "model": "smart-router", "choices": [{ "message": { "content": "done" } }] }
+    "request": {
+      "model": "smart-router",
+      "messages": []
+    },
+    "expect_request": {
+      "model": "deepseek/deepseek-reasoner",
+      "messages": []
+    },
+    "response": {
+      "model": "deepseek/deepseek-reasoner",
+      "choices": [
+        {
+          "message": {
+            "content": "done"
+          }
+        }
+      ]
+    },
+    "expect_response": {
+      "model": "smart-router",
+      "choices": [
+        {
+          "message": {
+            "content": "done"
+          }
+        }
+      ]
+    }
   }
 ]

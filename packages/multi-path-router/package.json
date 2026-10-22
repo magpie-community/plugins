@@ -1,21 +1,18 @@
 {
   "name": "@magpie-community/middleware-multi-path-router",
-  "version": "0.1.0",
-  "description": "3D orthogonal token router for multi-agent workloads: discriminator-driven intent classification, physical constraint gating (vision/context), and dynamic cost/schedule arbitrage",
+  "version": "0.1.1",
+  "description": "A model map with gates: images to a vision model, large contexts to a long-context model, and an off-peak window you set to another model, with replies naming the model asked for",
   "type": "module",
   "files": [
     "multi-path-router.middleware.js",
-    "README.md",
-    "sankey.html"
+    "README.md"
   ],
   "keywords": [
     "magpie",
     "magpie-middleware",
     "router",
-    "multi-path",
-    "system-one",
+    "model-routing",
     "cost-optimization",
-    "load-balancing",
     "llm-gateway"
   ],
   "license": "MIT",
@@ -27,17 +24,17 @@
   "magpie": {
     "middleware": "./multi-path-router.middleware.js",
     "options": {
-      "schedule": {
-        "cst_deepseek_offpeak": true,
-        "offpeak_mapping": {
-          "smart-router": "group/tier-dynamic-value"
-        }
-      },
       "constraints": {
         "vision": "group/tier-multimodal-runtime",
         "tokens_gte": {
           "threshold": 64000,
           "target": "group/tier-extended-context"
+        }
+      },
+      "schedule": {
+        "offpeak": { "days": [0, 6], "start": "00:30", "end": "08:30", "tz": 8 },
+        "offpeak_mapping": {
+          "smart-router": "group/tier-dynamic-value"
         }
       },
       "mapping": {
