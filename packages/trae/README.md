@@ -86,8 +86,9 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
   - The function is the one whose model list has the model, the first that
     names a `__dev` model for it (in the order `chat_v3`, the classic IDE's;
     `solo_work_lite`, SOLO's Work mode; `solo_agent`, the TRAE agent's;
-    `solo_agent_lite`). If Trae answers 4001, 4023 or 1005, the plugin tries
-    the others once and remembers which one worked.
+    `solo_agent_lite`; `solo_coder`, SOLO's coder roster). If Trae answers
+    4001, 4023 or 1005, the plugin tries the others once and remembers which
+    one worked.
   - `session_id` is the conversation's, as the IDE keeps one per conversation:
     the session magpie (or OpenCode) names the request by, else the chat's
     first user message, which every later turn repeats, together with the
@@ -202,7 +203,10 @@ The model list is the account's own, from
 TRAE SOLO CN asks it (`/api/ide/v1/get_detail_param`, one function at a
 time, when the batch gives none). The lists are put together: SOLO and the
 TRAE agent list models `chat_v3` doesn't (deepseek-v4.1-flash is the TRAE
-agent's, `solo_agent`). Left out are the IDE's helpers (`usage` other than
+agent's, `solo_agent`), and SOLO's coder roster lists models no other chat
+function does (`glm-5v-turbo`, `kimi-k2.5`, `minimax-m2.7`,
+`qwen-3.6-plus`, each answering through `solo_coder`). Left out are the
+IDE's helpers (`usage` other than
 `chat_completion`: summary, fast_apply…), configs switched off and the
 custom-model slots. Context is the list's `context_window_tokens.dev`,
 output the `__dev` model's `max_tokens`. A model with a `__max` model and
@@ -230,7 +234,19 @@ spells it: the plugin offers each model's own levels as `variants`
 (`low`/`high`/`xhigh` for `light`/`high`/`extra_high`), and sends nothing
 for a level the model doesn't name, or for a model whose entry names none —
 Trae then serves it at its own default. An entry naming levels this map
-can't spell offers none, rather than being sent one Trae would reject.
+can't spell offers none, rather than being sent one Trae would reject. The
+list is read once, when a request comes for a model it hasn't listed yet;
+after that the entry's own answer stands, level or none.
+
+The entry kept for a model is the one the request is asked through, and so
+the one whose levels the request is held to, so the lists' disagreement
+about a model's levels matters: `computer_use_subagent`, for one, is named
+with `light`/`high` by `solo_agent` and `solo_agent_lite` and with none by
+`solo_work_lite`. The three signals that pick the entry — its `__dev`
+model, its not carrying another model's name, its carrying the name the
+lists agree on — decide first; of entries that tie on all three, one that
+names levels is kept, so a model Trae serves with levels is not left
+without them by a sibling entry that names none.
 
 Every model it lists also says it reasons in its `capabilities`
 (`reasoning: true`, with `toolcall`, `temperature`, `attachment` and the

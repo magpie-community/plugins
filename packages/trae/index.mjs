@@ -70,8 +70,10 @@ const SITES = {
     brand: "ASUS TUF Gaming A15 FA507RM_FA507RM",
     // the IDE's chat functions: the classic IDE's agent, then SOLO's Work
     // mode, then the TRAE agent (solo_agent, which has deepseek-v4.1-flash),
-    // then SOLO Lite's agent
-    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite"],
+    // then SOLO Lite's agent, then SOLO's coder roster, which lists models no
+    // other chat function does (glm-5v-turbo, kimi-k2.5, minimax-m2.7,
+    // qwen-3.6-plus — each answers through it)
+    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite", "solo_coder"],
     // what Trae CN's chat_v3 is known to serve; the live list replaces it
     // (the MODEL defaults are spread in at the end of the module, once MODEL
     // is defined, so a site's entry only names what differs)
@@ -172,7 +174,7 @@ const SITES = {
     clientVersionCode: "20260917",
     pluginVersion: "2.3.62834",
     brand: "ASUS TUF Gaming A15 FA507RM_FA507RM",
-    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite"],
+    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite", "solo_coder"],
     // what Trae Global's chat is known to serve (its catalog barely overlaps
     // the CN one's); the live list replaces it
     models: {
@@ -2925,8 +2927,16 @@ const makePlugin = (site) => async ({ client }) => {
     }
     // a function's entry is worth more when it names a __dev model, then
     // when it isn't misnamed, then when it carries the name its lists agree
-    // on; the first of the best is taken
-    const worth = (fn, m) => (devModel(m) ? 2 : 0) + (misnamed(fn, m) ? 0 : 1) + (nameOf(m) === agreed.get(String(m.config_name)) ? 1 : 0)
+    // on; the first of the best is taken. Those three decide first, so the
+    // entry kept is the one Trae's own client asks through.
+    //
+    // Last among equals comes whether the entry names reasoning levels: the
+    // entry kept is the one the request is asked through, and so the one
+    // whose reasoning_effort_config the request is held to (liveEntryOf). An
+    // entry that names none while a sibling names some would leave the model
+    // with no level to pick although Trae serves it with levels — doubling
+    // the three keeps them decisive and lets this only break a tie.
+    const worth = (fn, m) => ((devModel(m) ? 2 : 0) + (misnamed(fn, m) ? 0 : 1) + (nameOf(m) === agreed.get(String(m.config_name)) ? 1 : 0)) * 2 + (levelsOf(m)?.length ? 1 : 0)
     const out = new Map()
     for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
@@ -3102,13 +3112,20 @@ const makePlugin = (site) => async ({ client }) => {
             const sees = sight.get(base) ?? (site.models[base]?.modalities?.input?.includes("image") ?? true)
             // the levels the base model takes, from the entry its lists gave
             // it: what the request's effort is sent as, and left out when the
-            // model has no entry for it. An effort asked before the list was
-            // read here (a request that comes first) reads it, as the Max
-            // case above does: no list, no levels, and the effort is dropped.
-            let levels = levelsOf(liveEntryOf(base))
-            if (!levels.length && (req.reasoning_effort ?? req.reasoningEffort)) {
+            // model has no entry for it. An entry naming levels this build
+            // can't spell counts as no level here — levelsOf says null for it
+            // so a caller can tell the two apart, and this one sends nothing
+            // either way.
+            //
+            // The list is read once, when this model has no entry yet: a
+            // request that comes before the list was read (as the Max case
+            // above reads it) pays for that read, and a model whose entry
+            // names no level keeps that answer instead of asking again on
+            // every request.
+            let levels = levelsOf(liveEntryOf(base)) ?? []
+            if (!liveEntry.has(base) && (req.reasoning_effort ?? req.reasoningEffort)) {
               await liveModels(a).catch(() => {})
-              levels = levelsOf(liveEntryOf(base))
+              levels = levelsOf(liveEntryOf(base)) ?? []
             }
             // the answer's own signal: the caller's abort (a cancelled
             // request) and the stream's cancel both stop Trae's fetch, so

@@ -110,6 +110,51 @@ test("a request for a model with no levels carries no reasoning_effort", async (
   expect(sent.json.reasoning_effort).toBeUndefined()
 })
 
+test("a request for a model whose levels this build can't spell goes out with no level", async () => {
+  // levelsOf says null for such an entry, and the fetch path reads that as
+  // "no level" rather than crashing on it: Trae is asked for the model and
+  // serves its default, as it does for one that names none
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [entry("glm-5.3", ["ultra"])] },
+  ] }))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { content: "ok" }], ["finish", { finish_reason: "stop" }]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  // the list read first, as a host reads it before it chats: the entry is
+  // then known, and its levels are the unspellable null
+  await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const r = await opts.fetch(opts.baseURL + "/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "glm-5.3", stream: true, messages: [{ role: "user", content: "hi" }], reasoning_effort: "high" }),
+  })
+  expect(r.status).toBe(200)
+  const sent = f.seen.find((x) => x.path === "/api/agent/v3/llm_utils_chat")
+  expect(sent.json.reasoning_effort).toBeUndefined()
+})
+
+test("the model list is read once for a level-less model, not on every request", async () => {
+  // the effort asks for levels the entry doesn't name: the first request
+  // reads the list to find that out, the second is answered from it
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [entry("glm-5.3", undefined)] },
+  ] }))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { content: "ok" }], ["finish", { finish_reason: "stop" }]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const ask = () => opts.fetch(opts.baseURL + "/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "glm-5.3", stream: true, messages: [{ role: "user", content: "hi" }], reasoning_effort: "high" }),
+  })
+  await ask()
+  await ask()
+  const lists = f.seen.filter((x) => x.path === "/api/ide/v1/batch_get_detail_param")
+  expect(lists.length).toBe(1)
+})
+
 test("the level of a model's Max is its base model's", async () => {
   const max = { config_name: "deepseek-v4.1-flash", usage: "chat_completion",
     display_config: { display_name: "DeepSeek V4.1 Flash" },
@@ -120,4 +165,41 @@ test("the level of a model's Max is its base model's", async () => {
   const ms = await live([max])
   expect(Object.keys(ms["deepseek-v4.1-flash-max"].variants)).toEqual(["low", "high"])
   expect(effortOf(LEVELS && ["low", "high"], "low")).toBe("light")
+})
+
+test("of two entries a model has, the one naming levels is kept, so its levels are offered", async () => {
+  // Trae answers one model under several functions' lists, and they needn't
+  // agree about its levels: the entry the plugin keeps is the one the request
+  // is asked through, and so the one whose reasoning_effort_config the request
+  // is held to. Keeping the level-less entry left the model with none to pick.
+  f = fakeTrae()
+  const shared = { config_name: "glm-5.3", usage: "chat_completion",
+    display_config: { display_name: "GLM-5.3" }, context_window_tokens: { dev: 200000 },
+    model_detail_list: [{ model_name: "glm-5.3__dev", max_tokens: 32000 }] }
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [shared] },
+    { function: "solo_work_lite", config_info_list: [{ ...shared, reasoning_effort_config: { options: ["light", "high", "extra_high"], default_level: "high" } }] },
+  ] }))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const ms = await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  expect(Object.keys(ms["glm-5.3"].variants)).toEqual(["low", "high", "xhigh"])
+})
+
+test("a name the lists agree on still outranks an entry's levels", async () => {
+  // the levels only break a tie: the entry Trae's own client asks through —
+  // the name its lists agree on, with a __dev model — is kept even when
+  // another entry names levels
+  f = fakeTrae()
+  const named = { config_name: "glm-5.3", usage: "chat_completion",
+    display_config: { display_name: "GLM-5.3" }, model_detail_list: [{ model_name: "glm-5.3__dev", max_tokens: 32000 }] }
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [named] },
+    { function: "solo_work_lite", config_info_list: [named] },
+    // a third entry, misnamed and without a __dev model, that does name levels
+    { function: "solo_agent", config_info_list: [{ ...named, display_config: { display_name: "GLM-5.3 正式版" }, model_detail_list: [], reasoning_effort_config: { options: ["light", "high"] } }] },
+  ] }))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const ms = await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  expect(Object.keys(ms["glm-5.3"].variants)).toEqual([])
+  expect(ms["glm-5.3"].name).toBe("GLM-5.3")
 })
