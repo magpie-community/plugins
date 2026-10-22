@@ -20,8 +20,6 @@
     "url": "git+https://github.com/magpie-community/plugins.git",
     "directory": "packages/cloudflare-workers-ai"
   },
-  "homepage": "https://github.com/Guislabert/magpie-cloudflare-workers-ai#readme",
-  "bugs": "https://github.com/Guislabert/magpie-cloudflare-workers-ai/issues",
   "files": [
     "index.mjs",
     "src/",

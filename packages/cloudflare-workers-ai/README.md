@@ -2,8 +2,6 @@
 
 English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-[![CI](https://img.shields.io/badge/CI-passing-34A853.svg)](https://github.com/Guislabert/magpie-cloudflare-workers-ai/actions)
-[![Version](https://img.shields.io/badge/Version-0.0.1--4285F4.svg)](CHANGELOG.md)
 [![npm version](https://img.shields.io/badge/npm%20version-0.0.1-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
@@ -11,7 +9,7 @@ A provider plugin for [OpenCode](https://opencode.ai) 1.x and
 [magpie](https://usemagpie.ai) that signs in to **Cloudflare Workers AI** with your
 API token and serves it as a provider every agent can use: 28+ models discovered
 live from [models.dev](https://models.dev), paid-only models flagged,
-models flagged, and a daily Neurons allowance row in `magpie quota`.
+and a daily Neurons allowance row in `magpie quota`.
 
 > Not affiliated with or endorsed by Cloudflare.
 
@@ -82,7 +80,7 @@ then `opencode auth login` → Cloudflare Workers AI (same two fields).
 ## Paid-only models
 
 Eight models are gated by Cloudflare behind Workers Paid or prepaid AI Gateway
-credits and are flagged **（Paid）** in the name — that is exactly how the
+credits and are flagged ** (Paid)** in the name — that is exactly how the
 model picker renders it:
 
 `@cf/moonshotai/kimi-k2.6`,
@@ -117,7 +115,7 @@ magpie plugin options opencode-cloudflare-workers-ai-auth '{"accountId": "…", 
 | 403 from `provider test`  | token and Account ID don't match |
 | 400 `No route for that URI` | if this survives a re-`plugin add`, it's a stale plugin version — the current proxy normalizes template URLs; file an issue |
 | `Model … absent from the current catalog` | the model id isn't in models.dev's cloudflare-workers-ai section; pick a listed model |
-| 400 on a （Paid） model | your plan is Free and the model needs Workers Paid or AI Gateway credits |
+| 400 on a (Paid) model | your plan is Free and the model needs Workers Paid or AI Gateway credits |
 | Quota row shows the fallback plan text | the token lacks `Account Settings → Read`; the escalation is purely cosmetic — the Neurons window is still shown |
 
 ## Development

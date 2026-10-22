@@ -2,8 +2,6 @@
 
 [English](README.md) | 简体中文 | [日本語](README.ja.md)
 
-[![CI](https://img.shields.io/badge/CI-passing-34A853.svg)](https://github.com/Guislabert/magpie-cloudflare-workers-ai/actions)
-[![版本](https://img.shields.io/badge/版本-0.0.1--4285F4.svg)](CHANGELOG.md)
 [![npm version](https://img.shields.io/badge/npm%20version-0.0.1-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
@@ -76,7 +74,7 @@ magpie plugin logout cloudflare-workers-ai                                # 删�
 
 ## 付费专属模型
 
-8 个模型被 Cloudflare 限制在 Workers Paid 或 AI Gateway 预充值之后，名字中标注 **（Paid）**：
+8 个模型被 Cloudflare 限制在 Workers Paid 或 AI Gateway 预充值之后，名字中标注 **(Paid)**：
 
 `@cf/moonshotai/kimi-k2.6`、
 `@cf/moonshotai/kimi-k2.7-code`、`@cf/zai-org/glm-5.2`、`@cf/zai-org/glm-5.3`、
@@ -110,7 +108,7 @@ magpie plugin options opencode-cloudflare-workers-ai-auth '{"accountId": "…", 
 | `provider test` 返回 403 | token 与 Account ID 不匹配 |
 | 400 `No route for that URI` | 重新 `plugin add` 后仍出现，说明插件是旧版本——现版本代理已做 URL 归一化，可提 issue |
 | `Model … absent from the current catalog` | 模型 ID 不在 models.dev 的 cloudflare-workers-ai 分节里，请从列表中选择 |
-| （Paid）模型返回 400 | 你的计划是 Free，该模型需要 Workers Paid 或 AI Gateway 预充值 |
+| (Paid) 模型返回 400 | 你的计划是 Free，该模型需要 Workers Paid 或 AI Gateway 预充值 |
 | quota 行显示套餐兜底文案 | token 缺 `Account Settings → Read`；仅影响显示，Neurons 窗口照常展示 |
 
 ## 开发

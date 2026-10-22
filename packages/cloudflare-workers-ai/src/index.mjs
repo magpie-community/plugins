@@ -181,7 +181,7 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
         api: baseURL,
         models: Object.fromEntries(
           Object.entries(models).map(([id, m]) => [id, {
-            name: PAID_ONLY_MODELS.has(id) ? `${m.name} （Paid）` : m.name,
+            name: PAID_ONLY_MODELS.has(id) ? `${m.name} (Paid)` : m.name,
             limit: m.limit,
             reasoning: m.capabilities.reasoning,
             tool_call: m.capabilities.toolcall,
@@ -381,7 +381,7 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
         return Object.fromEntries(
           Object.entries(models).map(([id, m]) => [
             id,
-            PAID_ONLY_MODELS.has(id) ? { ...m, name: `${m.name} （Paid）` } : m,
+            PAID_ONLY_MODELS.has(id) ? { ...m, name: `${m.name} (Paid)` } : m,
           ]),
         );
       },

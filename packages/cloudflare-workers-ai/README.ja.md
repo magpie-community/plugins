@@ -2,8 +2,6 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | 日本語
 
-[![CI](https://img.shields.io/badge/CI-passing-34A853.svg)](https://github.com/Guislabert/magpie-cloudflare-workers-ai/actions)
-[![バージョン](https://img.shields.io/badge/バージョン-0.0.1--4285F4.svg)](CHANGELOG.md)
 [![npm version](https://img.shields.io/badge/npm%20version-0.0.1-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
@@ -77,7 +75,7 @@ magpie plugin logout cloudflare-workers-ai                           # サイン
 
 ## 有料専用モデル
 
-Workers Paid または AI Gateway クレジットが必要な 8 モデルは名前に **（Paid）** を付けます：
+Workers Paid または AI Gateway クレジットが必要な 8 モデルは名前に半角括号の **(Paid)** を付けます：
 
 `@cf/moonshotai/kimi-k2.6`、
 `@cf/moonshotai/kimi-k2.7-code`、`@cf/zai-org/glm-5.2`、`@cf/zai-org/glm-5.3`、
@@ -110,7 +108,7 @@ magpie plugin options opencode-cloudflare-workers-ai-auth '{"accountId": "…", 
 | `provider test` で 403 | トークンと Account ID の不一致 |
 | 400 `No route for that URI` | `plugin add` 再実行後も出るなら、古いプラグインが残っている可能性 — 最新版 URL 正規化で解決済み、要 issue |
 | `Model … absent from the current catalog` | models.dev の cloudflare-workers-ai セクションにない ID — 一覧から選ぶ |
-| （Paid）モデルで 400 | プランが Free：Workers Paid か AI Gateway クレジットが必要 |
+| (Paid) モデルで 400 | プランが Free：Workers Paid か AI Gateway クレジットが必要 |
 | quota 行がプラン名の代償テキスト | トークンに `Account Settings → Read` がない — 表示だけの問題で Neurons 枠は出る |
 
 ## 開発
