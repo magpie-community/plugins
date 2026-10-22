@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-cloudflare-workers-ai-auth",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": false,
   "type": "module",
   "main": "./index.mjs",

@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | 日本語
 
-[![npm version](https://img.shields.io/badge/npm%20version-0.0.1-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
+[![npm version](https://img.shields.io/badge/npm%20version-0.0.2-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
 [OpenCode](https://opencode.ai) 1.x と [magpie](https://usemagpie.ai) 向けのプロバイダー
@@ -143,11 +143,9 @@ sh scripts/sandbox.sh json       # サンドボックス内で plugin --json
 
 ## バージョン / ライセンス
 
-変更履歴：[CHANGELOG.md](https://github.com/Guislabert/magpie-cloudflare-workers-ai/blob/master/CHANGELOG.md)
-
 | | |
 |---|---|
-| **バージョン** | [`0.0.1`](https://github.com/Guislabert/magpie-cloudflare-workers-ai/blob/master/CHANGELOG.md) |
+| **バージョン** | 0.0.2 |
 | **ライセンス** | [MIT](LICENSE) — Copyright (c) 2026 Guislabert |
 | **ランタイム** | Node.js >= 20、ESM のみ |
 | **作者** | [@Guislabert](https://github.com/Guislabert) |
