@@ -285,6 +285,13 @@ const SIGN_IN_TIMEOUT = 10 * 60 * 1000
 const EARLY_MS = 2 * 60 * 1000 // a token this close to its end is renewed before a request
 const LEAD_MS = 10 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
 const DAY = 24 * 3600 * 1000
+// REREAD_MS is how long a list read keeps its answer before a request that
+// wants levels may read the list again: it holds whether the read produced an
+// entry for the model or not, so a list answering badly (or one that doesn't
+// name the model) costs one read, not one per request. A request path that
+// reads on every attempt would otherwise pay two 20s timeouts on each turn —
+// the branch costs the chat itself nothing to answer from.
+const REREAD_MS = 5 * 60 * 1000
 
 // a reply limit of 0 is one Trae doesn't say: magpie then takes models.dev's
 // for the model (magpie's catalog), where a made-up 32K told agents a far
@@ -2657,6 +2664,28 @@ const makePlugin = (site) => async ({ client }) => {
   // the reasoning levels it takes (reasoning_effort_config)
   const liveEntry = new Map()
   const liveEntryOf = (id) => liveEntry.get(String(id)) ?? site.models?.[String(id)]?.entry ?? null
+  // when each account's list was last read, whether that read answered or not:
+  // a model the answer doesn't name is not read for again until REREAD_MS has
+  // passed, so a list that fails or leaves the model out costs one read rather
+  // than one per request. One account per key — a read is that account's.
+  const readAt = new Map()
+  // readList reads an account's list at most once per REREAD_MS, answering
+  // false when it skipped, so a caller acts on what its own read taught.
+  const readList = async (a) => {
+    const who = a.uid || a.name || String(site.id)
+    const at = readAt.get(who)
+    if (at !== undefined && Date.now() - at < REREAD_MS) return false
+    // stamped before the read: a read that hangs or throws has still been
+    // tried, and must not be retried on the very next request
+    readAt.set(who, Date.now())
+    try {
+      await liveModels(a)
+    } catch {
+      // best effort, as before: a list that can't be read leaves the levels
+      // unknown and the chat is still asked, which needs no list to answer
+    }
+    return true
+  }
 
   const save = async (auth) => {
     try {
@@ -2972,6 +3001,10 @@ const makePlugin = (site) => async ({ client }) => {
         modelNames.delete(id + MAX)
       }
     }
+    // this account's list has just answered: stamped, so a request that wants
+    // levels for a model the list doesn't name waits REREAD_MS before reading
+    // again — the catalog read a host makes counts as that read too
+    readAt.set(a.uid || a.name || String(site.id), Date.now())
     return [...out.values()].map((x) => x.m)
   }
 
@@ -3100,10 +3133,13 @@ const makePlugin = (site) => async ({ client }) => {
             let last
             let named = modelNames.get(String(req.model))
             if (!named && String(req.model).endsWith(MAX)) {
-              // a Max asked before the list was read here: read it
-              await liveModels(a).catch(() => {})
-              named = modelNames.get(String(req.model))
-              if (named) fns.unshift(named.fn)
+              // a Max asked before the list was read here: read it, once per
+              // REREAD_MS — a list that doesn't name this Max is not read for
+              // again on every request (the chat can answer without it)
+              if (await readList(a)) {
+                named = modelNames.get(String(req.model))
+                if (named) fns.unshift(named.fn)
+              }
             }
             const max = named?.max ?? null
             // a model the list hasn't said of is sent its images: the agent
@@ -3117,15 +3153,15 @@ const makePlugin = (site) => async ({ client }) => {
             // so a caller can tell the two apart, and this one sends nothing
             // either way.
             //
-            // The list is read once, when this model has no entry yet: a
-            // request that comes before the list was read (as the Max case
-            // above reads it) pays for that read, and a model whose entry
-            // names no level keeps that answer instead of asking again on
-            // every request.
+            // The list is read once per REREAD_MS for a model it hasn't named:
+            // a request that comes before the list was read pays for that
+            // read, and an answer that leaves the model out — a list that
+            // failed, or one that simply doesn't name it — is remembered too,
+            // instead of being asked for again on every request that carries
+            // an effort.
             let levels = levelsOf(liveEntryOf(base)) ?? []
             if (!liveEntry.has(base) && (req.reasoning_effort ?? req.reasoningEffort)) {
-              await liveModels(a).catch(() => {})
-              levels = levelsOf(liveEntryOf(base)) ?? []
+              if (await readList(a)) levels = levelsOf(liveEntryOf(base)) ?? []
             }
             // the answer's own signal: the caller's abort (a cancelled
             // request) and the stream's cancel both stop Trae's fetch, so

@@ -155,6 +155,51 @@ test("the model list is read once for a level-less model, not on every request",
   expect(lists.length).toBe(1)
 })
 
+test("a list that fails is read once across requests, not on every request", async () => {
+  // both list endpoints answer 500: the effort's read learns nothing, but that
+  // attempt is remembered, so the next requests don't each wait out the batch
+  // and per-function timeouts before the chat — which needs no list to answer
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => new Response("down", { status: 500 }))
+  f.route("POST /api/ide/v1/get_detail_param", () => new Response("down", { status: 500 }))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { content: "ok" }], ["finish", { finish_reason: "stop" }]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const ask = () => opts.fetch(opts.baseURL + "/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "glm-5.3", stream: true, messages: [{ role: "user", content: "hi" }], reasoning_effort: "high" }),
+  })
+  for (let i = 0; i < 3; i++) await ask()
+  const lists = f.seen.filter((x) => x.path === "/api/ide/v1/batch_get_detail_param")
+  expect(lists.length).toBe(1)
+  expect(f.seen.filter((x) => x.path === "/api/agent/v3/llm_utils_chat").length).toBe(3)
+})
+
+test("a model the list doesn't name is read for once, not on every request", async () => {
+  // the account still has kimi-k2.5's id after Trae dropped it from the list:
+  // the first effort reads the list, finds no entry, and that answer stands
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [entry("glm-5.3", ["light", "high"])] },
+  ] }))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { content: "ok" }], ["finish", { finish_reason: "stop" }]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const ask = () => opts.fetch(opts.baseURL + "/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "kimi-k2.5", stream: true, messages: [{ role: "user", content: "hi" }], reasoning_effort: "high" }),
+  })
+  for (let i = 0; i < 3; i++) await ask()
+  const lists = f.seen.filter((x) => x.path === "/api/ide/v1/batch_get_detail_param")
+  expect(lists.length).toBe(1)
+  const sent = f.seen.filter((x) => x.path === "/api/agent/v3/llm_utils_chat")
+  expect(sent.length).toBe(3)
+  // the model takes no level the list names, so none is sent
+  expect(sent[0].json.reasoning_effort).toBeUndefined()
+})
+
 test("the level of a model's Max is its base model's", async () => {
   const max = { config_name: "deepseek-v4.1-flash", usage: "chat_completion",
     display_config: { display_name: "DeepSeek V4.1 Flash" },

@@ -234,9 +234,12 @@ spells it: the plugin offers each model's own levels as `variants`
 (`low`/`high`/`xhigh` for `light`/`high`/`extra_high`), and sends nothing
 for a level the model doesn't name, or for a model whose entry names none —
 Trae then serves it at its own default. An entry naming levels this map
-can't spell offers none, rather than being sent one Trae would reject. The
-list is read once, when a request comes for a model it hasn't listed yet;
-after that the entry's own answer stands, level or none.
+can't spell offers none, rather than being sent one Trae would reject. A
+request that wants levels for a model the list hasn't named reads the list,
+and that read is remembered for five minutes whether it produced an entry or
+not: a list that fails, or one that doesn't name the model, costs one read
+rather than one per request. (A read costs up to two 20s timeouts when Trae's
+list endpoint is slow, while the chat itself needs no list to answer.)
 
 The entry kept for a model is the one the request is asked through, and so
 the one whose levels the request is held to, so the lists' disagreement
