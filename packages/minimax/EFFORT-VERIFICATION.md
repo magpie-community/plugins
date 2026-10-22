@@ -3,8 +3,9 @@
 ## Environment and cause
 
 Verified on 2026-10-22 with Magpie 0.1.1318 and 0.1.1319.
-The live five-level retest used 0.1.1319 and a local plugin based on
-0.1.3 (effortfix.3). This PR ports that bridge to upstream 0.1.4.
+The initial live retest used 0.1.1319 and a local plugin based on
+0.1.3 (effortfix.3). A fresh real retest of this PR on upstream 0.1.4
+also passed; see the final section.
 
 The plugin selects `@ai-sdk/anthropic` for the MiniMax Code subscription
 route. Magpie's OpenAI-to-Anthropic conversion replaces the selected
@@ -88,7 +89,7 @@ returned HTTP 503, errorCode 50115 (`direct_route_not_configured`), so
 switching the plugin to an OpenAI SDK did not resolve this route.
 This says nothing about separate API-key products or other hosts.
 
-## Real subscription retest (sanitized)
+## Earlier 0.1.3-based subscription retest (sanitized)
 
 Target: `https://agent.minimax.cn/mavis/api/v1/llm/v1/messages`.
 Input: Responses, `minimax-code/MiniMax-M3.1-Flash`, cap 8192, non-streaming.
@@ -126,6 +127,30 @@ Temporary live instrumentation was removed after verification.
 - `bun scripts/check.mjs minimax`: pass.
 - `git diff --check`: pass.
 
-Tests use fake credentials and block external network. The live retest
-predates the port and ran the same bridge with 0.1.3; it must not be confused
-with a fresh real-account test of upstream 0.1.4.
+Tests use fake credentials and block external network. The earlier live retest
+ran the same bridge with 0.1.3. The additional 0.1.4 live retest is recorded
+separately below.
+
+## Fresh real subscription retest of the 0.1.4 port
+
+**2026-10-22, 19:24 Asia/Shanghai (11:24 UTC): PASS.** This supersedes the earlier limitation that the 0.1.4 port had only offline validation.
+
+- Host: Magpie **0.1.1319**.
+- Plugin: upstream **0.1.4** plus the exact bridge/fetch changes from PR commit `e88cc7d05ba806f77d8ad6620055ab0fc5e9cf41`.
+- Confirmed the active provider selected the local patched plugin, rather than merely finding 0.1.4 in the package cache.
+- Actual target: `https://agent.minimax.cn/mavis/api/v1/llm/v1/messages`, using the existing signed-in subscription through Magpie.
+- Input: `/v1/responses`, `minimax-code/MiniMax-M3.1-Flash`, `max_output_tokens: 8192`, `stream: false`.
+
+| Requested effort | Sent output_config.effort | thinking | Marker in sent body / headers / response | HTTP | Status / text | Output tokens |
+|---|---|---|---|---:|---|---:|
+| low | low | absent | no / no / no | 200 | completed / OK | 3 |
+| medium | medium | absent | no / no / no | 200 | completed / OK | 3 |
+| high | high | absent | no / no / no | 200 | completed / OK | 10 |
+| xhigh | xhigh | absent | no / no / no | 200 | completed / OK | 9 |
+| max | max | absent | no / no / no | 200 | completed / OK | 13 |
+
+All five had a carrier before restoration and none in the serialized body or headers immediately before real network fetch. The client responses were also checked. Total output: **38 tokens**. Assertions required exactly five matching sends, upstream responses and completed client results.
+
+Temporary instrumentation was limited to these test requests and recorded only selected diagnostic fields. It has been removed and the clean plugin reloaded. Deployed `index.mjs`, `effort-bridge.mjs` and `package.json` were byte-compared with the PR versions. No credentials, account identifiers or raw payloads are included here.
+
+This verifies parameter transmission and successful acceptance on the real CN subscription route; it does not establish reasoning quality or server-internal effort. Global, streaming, aliases and cross-provider fallback remain outside the live test scope. The PR's draft/fallback review constraints are unchanged.
