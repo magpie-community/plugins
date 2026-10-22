@@ -133,6 +133,58 @@ test("signed out asking the batch marks the account", async () => {
   await expect(hooks.provider.models(p, { auth: signedIn() })).rejects.toThrow("sign in again")
 })
 
+test("a refresh that joins a request's failing read still hears the expiry", async () => {
+  // the request starts the read; the refresh arrives while it is in flight and
+  // rides it. The read's outcome is the record, not the bare null a failed read
+  // answers, so the refresh still marks the account lapsed instead of quietly
+  // returning the config's fallback models.
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", async () => {
+    await new Promise((r) => setTimeout(r, 50))
+    return json({ code: 1001, message: "not login" }, 401)
+  })
+  f.route("POST /api/ide/v1/get_detail_param", () => json({ code: 1001, message: "not login" }, 401))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["done", { finish_reason: "stop" }]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const p = await given(hooks)
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const chat = opts.fetch(opts.baseURL + "/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "not-listed", stream: true, messages: [{ role: "user", content: "hi" }], reasoning_effort: "high" }),
+  })
+  await new Promise((r) => setTimeout(r, 5))
+  const refresh = hooks.provider.models(p, { auth: signedIn() })
+  // attached now, not at the assertion: bun reports an expectation's rejection
+  // as an error between tests if it goes unclaimed for a tick
+  const refreshOutcome = refresh.then((m) => ({ ok: true, models: m }), (e) => ({ ok: false, error: e }))
+  // the request answers through its own path, and the refresh marks the lapse
+  await expect(chat).resolves.toBeDefined()
+  const outcome = await refreshOutcome
+  expect(outcome.ok).toBe(false)
+  expect(outcome.error.message).toContain("sign in again")
+  expect(f.seen.filter((x) => x.path === "/api/ide/v1/batch_get_detail_param").length).toBe(1)
+})
+
+test("a re-sign-in is not held to the previous token's cached expiry", async () => {
+  // the record is the token's: after the user signs in again the list is asked
+  // once more, instead of the old lapse being replayed for the whole window
+  f = fakeTrae()
+  let lapsed = true
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => lapsed
+    ? json({ code: 1001, message: "not login" }, 401)
+    : json({ function_configs: [{ function: "chat_v3", config_info_list: [
+        { config_name: "glm-5.3", usage: "chat_completion", display_config: { display_name: "GLM-5.3" },
+          model_detail_list: [{ model_name: "glm-5.3__dev", max_tokens: 32000 }] }] }] }))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const p = await given(hooks)
+  await expect(hooks.provider.models(p, { auth: signedIn() })).rejects.toThrow("sign in again")
+  lapsed = false
+  const ms = await hooks.provider.models(p, { auth: signedIn({ access: "jwt-2", refresh: "r-2" }) })
+  expect(Object.keys(ms)).toContain("glm-5.3")
+  expect(f.seen.filter((x) => x.path === "/api/ide/v1/batch_get_detail_param").length).toBe(2)
+})
+
 test("SOLO's and the TRAE agent's models are listed too, and asked through the function that lists them (yetone/magpie#681)", async () => {
   f = fakeTrae()
   const lists = {

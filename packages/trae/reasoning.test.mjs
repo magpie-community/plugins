@@ -200,6 +200,71 @@ test("a model the list doesn't name is read for once, not on every request", asy
   expect(sent[0].json.reasoning_effort).toBeUndefined()
 })
 
+test("two parallel requests for a Max ride one list read and are both sent under its base name", async () => {
+  // agents send parallel requests at a session's start (a title request beside
+  // the first turn, subagents). The second used to skip the first one's read —
+  // the stamp said "tried" — so `named` stayed empty and the request went out
+  // under the agent's own `-max` id, which Trae's list does not name.
+  const max = { config_name: "deepseek-v4.1-flash", usage: "chat_completion",
+    display_config: { display_name: "DeepSeek V4.1 Flash" },
+    context_window_tokens: { dev: 200000, max: 1_000_000 },
+    reasoning_effort_config: { options: ["light", "high"], default_level: "high" },
+    model_detail_list: [{ model_name: "deepseek-v4.1-flash__dev", max_tokens: 32000 },
+      { model_name: "deepseek-v4.1-flash__max", max_tokens: 64000 }] }
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", async () => {
+    await new Promise((r) => setTimeout(r, 100))
+    return json({ function_configs: [{ function: "chat_v3", config_info_list: [max] }] })
+  })
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { content: "ok" }], ["finish", { finish_reason: "stop" }]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const ask = () => opts.fetch(opts.baseURL + "/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "deepseek-v4.1-flash-max", stream: true, messages: [{ role: "user", content: "hi" }], reasoning_effort: "low" }),
+  })
+  await Promise.all([ask(), ask()])
+  // one read served both, and neither went out under the unlisted -max id
+  expect(f.seen.filter((x) => x.path === "/api/ide/v1/batch_get_detail_param").length).toBe(1)
+  const sent = f.seen.filter((x) => x.path === "/api/agent/v3/llm_utils_chat")
+  expect(sent.length).toBe(2)
+  for (const s of sent) {
+    expect(s.json.config_name).toBe("deepseek-v4.1-flash")
+    expect(s.json.reasoning_effort).toBe("light")
+  }
+})
+
+test("a host refresh and a request that wants levels share one list read", async () => {
+  // the host refreshing the catalog and a request asking for levels both want
+  // the list. They must ride one read: two reads would race, and the request
+  // could read the maps before the refresh's own read filled them.
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", async () => {
+    await new Promise((r) => setTimeout(r, 100))
+    return json({ function_configs: [
+      { function: "chat_v3", config_info_list: [entry("glm-5.3", ["light", "high"])] },
+    ] })
+  })
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { content: "ok" }], ["finish", { finish_reason: "stop" }]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const cfg = { provider: {} }
+  await hooks.config(cfg)
+  const provider = cfg.provider["trae-cn"]
+  const opts = await hooks.auth.loader(async () => signedIn())
+  // a model the list doesn't name, so the request goes through the effort read
+  const chat = opts.fetch(opts.baseURL + "/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "not-listed-xyz", stream: true, messages: [{ role: "user", content: "hi" }], reasoning_effort: "high" }),
+  })
+  const listing = hooks.provider.models(provider, { auth: signedIn() })
+  const [, ms] = await Promise.all([chat, listing])
+  expect(f.seen.filter((x) => x.path === "/api/ide/v1/batch_get_detail_param").length).toBe(1)
+  // and the refresh still got the list it was asking for
+  expect(Object.keys(ms).sort()).toEqual(["glm-5.3"])
+})
+
 test("the level of a model's Max is its base model's", async () => {
   const max = { config_name: "deepseek-v4.1-flash", usage: "chat_completion",
     display_config: { display_name: "DeepSeek V4.1 Flash" },

@@ -239,7 +239,18 @@ request that wants levels for a model the list hasn't named reads the list,
 and that read is remembered for five minutes whether it produced an entry or
 not: a list that fails, or one that doesn't name the model, costs one read
 rather than one per request. (A read costs up to two 20s timeouts when Trae's
-list endpoint is slow, while the chat itself needs no list to answer.)
+list endpoint is slow, while the chat itself needs no list to answer.) A read
+in flight is shared, not skipped: requests that arrive together — a title
+request beside a session's first turn, subagents — ride the one read and all
+see what it named, so a Max asked that way is still sent under its base
+model's name rather than the agent's own `-max` id. The host's own catalog
+refresh rides the same read, so a refresh and a request never ask twice.
+A request's read swallows an expiry (the chat can still answer); the
+catalog's refresh raises it, so a lapsed account is still marked — including
+when the refresh merely rides a read a request started, which is why the lapse
+travels on the read's record instead of being thrown from it. The record
+belongs to the token that read it, so a re-sign-in is asked afresh rather than
+being told again that the previous token lapsed.
 
 The entry kept for a model is the one the request is asked through, and so
 the one whose levels the request is held to, so the lists' disagreement

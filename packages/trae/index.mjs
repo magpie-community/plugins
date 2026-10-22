@@ -2664,27 +2664,82 @@ const makePlugin = (site) => async ({ client }) => {
   // the reasoning levels it takes (reasoning_effort_config)
   const liveEntry = new Map()
   const liveEntryOf = (id) => liveEntry.get(String(id)) ?? site.models?.[String(id)]?.entry ?? null
-  // when each account's list was last read, whether that read answered or not:
-  // a model the answer doesn't name is not read for again until REREAD_MS has
-  // passed, so a list that fails or leaves the model out costs one read rather
-  // than one per request. One account per key — a read is that account's.
+  // when each account's list was last read, and what that read returned:
+  // {at, p, done, expired}. A read that answered, failed or hung all leave
+  // their stamp, so a list that fails or leaves the model out costs one read
+  // per REREAD_MS rather than one per request. The promise is kept beside the
+  // stamp because a caller that arrives while a read is in flight must ride
+  // THAT read, not start a second and not skip the answer it was about to
+  // learn: agents send parallel requests at a session's start (a title request
+  // beside the first turn, subagents), and a caller that skipped the entry a
+  // read just produced would send a Max out under the agent's own id, which
+  // Trae's list doesn't name.
+  //
+  // The record is the thing the promise resolves to, so a joiner sees the same
+  // outcome the read settled on — including an expiry it hit — rather than the
+  // bare `null` a failed read answers. One account per key; a read is that
+  // account's.
   const readAt = new Map()
-  // readList reads an account's list at most once per REREAD_MS, answering
-  // false when it skipped, so a caller acts on what its own read taught.
-  const readList = async (a) => {
+  // runRead starts the one read behind readList and answers its record. `p`
+  // resolves to that record — not to the models — so a caller that joins a
+  // read in flight sees the same outcome the read settled on, an expiry
+  // included, rather than the bare null a failed read answers.
+  const runRead = (a, who) => {
+    const rec = { at: Date.now(), p: null, done: undefined, expired: null, access: a.access }
+    // the record goes in BEFORE the read starts, so a caller arriving during it
+    // finds `rec.p` and joins; `p` resolves to this same record
+    readAt.set(who, rec)
+    const body = (async () => {
+      try {
+        return await liveModels(a)
+      } catch (e) {
+        // a request's read swallows this (the chat can still answer); a caller
+        // that must hear it reads `expired` off the record. Recorded on the
+        // record, so a joiner hears it too.
+        if (e instanceof Expired) rec.expired = e
+        return null
+      }
+    })()
+    // every rejection is claimed here, at creation: a read nobody awaits (the
+    // host's refresh ending early, a caller that walked away) must not surface
+    // as an unhandled rejection. `p` itself never rejects — the expiry rides on
+    // the record instead.
+    body.catch(() => {})
+    rec.p = body.then((models) => {
+      // only this read settles its own record: a later read may have replaced it
+      if (readAt.get(who) === rec) {
+        rec.at = Date.now()
+        rec.done = models ?? []
+        rec.p = null
+      }
+      return rec
+    })
+    rec.p.catch(() => {})
+    return rec.p
+  }
+  // readList answers the models of the read this caller rode on (its own, or
+  // the one in flight, whose record it waits for and then reads), and whether
+  // that read found the account lapsed. A record belongs to the token that read
+  // it: a re-sign-in names a new access token, and the old answer says nothing
+  // about the new one, so it is read again rather than replayed.
+  //
+  // The lapse is answered, not thrown: several callers can ride one read, and a
+  // throw out of a shared promise surfaces once as an unhandled rejection for
+  // the callers that did not expect it. Each caller decides — provider.models
+  // raises it, a request path keeps going. `strict` only says whether a cached
+  // lapse is worth reading again for (the host wants the truth; a request does
+  // not pay a round trip to learn it).
+  const readList = async (a, { strict = false } = {}) => {
     const who = a.uid || a.name || String(site.id)
-    const at = readAt.get(who)
-    if (at !== undefined && Date.now() - at < REREAD_MS) return false
-    // stamped before the read: a read that hangs or throws has still been
-    // tried, and must not be retried on the very next request
-    readAt.set(who, Date.now())
-    try {
-      await liveModels(a)
-    } catch {
-      // best effort, as before: a list that can't be read leaves the levels
-      // unknown and the chat is still asked, which needs no list to answer
-    }
-    return true
+    const was = readAt.get(who)
+    const stale = was !== undefined && was.access !== a.access
+    let rec
+    if (was === undefined || stale) rec = await runRead(a, who)
+    else if (was.p) rec = await was.p
+    else if (was.done === undefined || Date.now() - was.at >= REREAD_MS) rec = await runRead(a, who)
+    else if (strict && was.expired) rec = await runRead(a, who)
+    else rec = was
+    return { models: rec.done, expired: rec.expired }
   }
 
   const save = async (auth) => {
@@ -3001,11 +3056,17 @@ const makePlugin = (site) => async ({ client }) => {
         modelNames.delete(id + MAX)
       }
     }
-    // this account's list has just answered: stamped, so a request that wants
+    // this account's list has just answered: recorded, so a request that wants
     // levels for a model the list doesn't name waits REREAD_MS before reading
-    // again — the catalog read a host makes counts as that read too
-    readAt.set(a.uid || a.name || String(site.id), Date.now())
-    return [...out.values()].map((x) => x.m)
+    // again, and a request arriving meanwhile joins this read instead of
+    // asking — the catalog read a host makes counts as that read too
+    const models = [...out.values()].map((x) => x.m)
+    const who = a.uid || a.name || String(site.id)
+    const at = readAt.get(who)
+    // a readList run records itself; a read nobody recorded (a caller reaching
+    // liveModels directly) is recorded here, unless a read is in flight
+    if (at === undefined || !at.p) readAt.set(who, { at: Date.now(), p: null, done: models, expired: null, access: a.access })
+    return models
   }
 
   // modelOf is a model of the account's list as OpenCode's provider
@@ -3072,11 +3133,19 @@ const makePlugin = (site) => async ({ client }) => {
     },
     provider: {
       id: site.id,
-      // the account's own list, when Trae answers; else the list above
+      // the account's own list, when Trae answers; else the list above.
+      // A refresh rides readList's one read per REREAD_MS, so a request that
+      // wants levels while the host is refreshing joins that read instead of
+      // asking for the list a second time (and vice versa).
       async models(provider, { auth }) {
         if (auth?.type !== "oauth" || !auth.access) return provider.models
         try {
-          const ms = await liveModels(await fresh(async () => auth))
+          const { models: ms, expired } = await readList(await fresh(async () => auth), { strict: true })
+          // a lapse must reach the host here, so the account is marked: a
+          // request path deliberately lets it pass instead. A fresh instance:
+          // the recorded one already served as a rejection inside the read, and
+          // re-throwing that same object carries its unhandled state with it
+          if (expired) throw new Expired(expired.message)
           if (!ms.length) return provider.models
           const ids = new Set(ms.map((m) => String(m.config_name)))
           return Object.fromEntries(ms.flatMap((m) => {
@@ -3133,13 +3202,14 @@ const makePlugin = (site) => async ({ client }) => {
             let last
             let named = modelNames.get(String(req.model))
             if (!named && String(req.model).endsWith(MAX)) {
-              // a Max asked before the list was read here: read it, once per
-              // REREAD_MS — a list that doesn't name this Max is not read for
-              // again on every request (the chat can answer without it)
-              if (await readList(a)) {
-                named = modelNames.get(String(req.model))
-                if (named) fns.unshift(named.fn)
-              }
+              // a Max asked before the list was read here: read it (or ride
+              // the read already in flight), once per REREAD_MS — a list that
+              // doesn't name this Max is not read for again on every request
+              // (the chat can answer without it), and a Max the read does name
+              // is asked through its base, not under this unlisted id
+              await readList(a)
+              named = modelNames.get(String(req.model))
+              if (named) fns.unshift(named.fn)
             }
             const max = named?.max ?? null
             // a model the list hasn't said of is sent its images: the agent
@@ -3153,15 +3223,16 @@ const makePlugin = (site) => async ({ client }) => {
             // so a caller can tell the two apart, and this one sends nothing
             // either way.
             //
-            // The list is read once per REREAD_MS for a model it hasn't named:
-            // a request that comes before the list was read pays for that
-            // read, and an answer that leaves the model out — a list that
-            // failed, or one that simply doesn't name it — is remembered too,
-            // instead of being asked for again on every request that carries
-            // an effort.
+            // The list is read once per REREAD_MS for a model it hasn't named,
+            // and a read already in flight is shared rather than skipped: a
+            // parallel request that skipped it would drop its level for that
+            // turn. An answer that leaves the model out — a list that failed,
+            // or one that simply doesn't name it — is remembered too, instead
+            // of being asked for again on every request that carries an effort.
             let levels = levelsOf(liveEntryOf(base)) ?? []
             if (!liveEntry.has(base) && (req.reasoning_effort ?? req.reasoningEffort)) {
-              if (await readList(a)) levels = levelsOf(liveEntryOf(base)) ?? []
+              await readList(a)
+              levels = levelsOf(liveEntryOf(base)) ?? []
             }
             // the answer's own signal: the caller's abort (a cancelled
             // request) and the stream's cancel both stop Trae's fetch, so
