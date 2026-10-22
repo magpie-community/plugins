@@ -150,9 +150,11 @@ magpie, agents and sign-ins are never touched.
 
 ## Version / license
 
+Full change history: [CHANGELOG.md](https://github.com/Guislabert/magpie-cloudflare-workers-ai/blob/master/CHANGELOG.md)
+
 | | |
 |---|---|
-| **Version** | [`0.0.1`](CHANGELOG.md) |
+| **Version** | [`0.0.1`](https://github.com/Guislabert/magpie-cloudflare-workers-ai/blob/master/CHANGELOG.md) |
 | **License** | [MIT](LICENSE) — Copyright (c) 2026 Guislabert |
 | **Runtime** | Node.js >= 20, ESM only |
 | **Author** | [@Guislabert](https://github.com/Guislabert) |

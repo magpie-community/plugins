@@ -143,9 +143,11 @@ sh scripts/sandbox.sh json       # 沙盒内 plugin --json
 
 ## 版本 / 许可证
 
+完整变更历史：[CHANGELOG.md](https://github.com/Guislabert/magpie-cloudflare-workers-ai/blob/master/CHANGELOG.md)
+
 | | |
 |---|---|
-| **版本** | [`0.0.1`](CHANGELOG.md) |
+| **版本** | [`0.0.1`](https://github.com/Guislabert/magpie-cloudflare-workers-ai/blob/master/CHANGELOG.md) |
 | **许可证** | [MIT](LICENSE) — Copyright (c) 2026 Guislabert |
 | **运行时** | Node.js >= 20，仅 ESM |
 | **作者** | [@Guislabert](https://github.com/Guislabert) |

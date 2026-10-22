@@ -143,9 +143,11 @@ sh scripts/sandbox.sh json       # サンドボックス内で plugin --json
 
 ## バージョン / ライセンス
 
+変更履歴：[CHANGELOG.md](https://github.com/Guislabert/magpie-cloudflare-workers-ai/blob/master/CHANGELOG.md)
+
 | | |
 |---|---|
-| **バージョン** | [`0.0.1`](CHANGELOG.md) |
+| **バージョン** | [`0.0.1`](https://github.com/Guislabert/magpie-cloudflare-workers-ai/blob/master/CHANGELOG.md) |
 | **ライセンス** | [MIT](LICENSE) — Copyright (c) 2026 Guislabert |
 | **ランタイム** | Node.js >= 20、ESM のみ |
 | **作者** | [@Guislabert](https://github.com/Guislabert) |
