@@ -280,3 +280,48 @@ test("fetch normalizes template-account URLs onto the effective account base", a
   await r.fetch(`${r.baseURL}/embeddings`, { method: "POST", body: "{}" });
   assert.match(forwarded, /\/embeddings$/);
 });
+
+test("checkedURL rejects non-HTTP(S) baseTemplate at init", async () => {
+  await assert.rejects(
+    async () =>
+      CloudflareWorkersAIPlugin({}, {
+        accountId: ACCOUNT_ID,
+        baseTemplate: "javascript:alert(1)",
+        fetchImpl: async () => new Response(JSON.stringify(fakeCatalog())),
+      }),
+    /plain HTTP\(S\) base URL/
+  );
+});
+
+test("interpolateTemplate keeps unknown placeholders intact", async () => {
+  const plugin = await CloudflareWorkersAIPlugin({}, {
+    baseTemplate: "https://example.com/${UNKNOWN_KEY}/ai/v1",
+    fetchImpl: async () => new Response("{}"),
+  });
+  const cfg = {};
+  await plugin.config(cfg);
+  assert.equal(
+    cfg.provider["cloudflare-workers-ai"].api,
+    "https://example.com/${UNKNOWN_KEY}/ai/v1",
+    "an unknown placeholder must survive interpolation untouched"
+  );
+});
+
+test("usage returns the fallback plan for an invalid accountId (no API call)", async () => {
+  let apiCalled = "";
+  const o = opts();
+  o.fetchImpl = async (url) => {
+    if (String(url).includes("models.dev")) {
+      return new Response(JSON.stringify(fakeCatalog()));
+    }
+    apiCalled = url;
+    return new Response("{}", { status: 200 });
+  };
+  const plugin = await CloudflareWorkersAIPlugin({}, o);
+  const u = await plugin.auth.usage(async () => ({
+    key: "tok",
+    metadata: { accountId: "..%2Fnot-hex" },
+  }));
+  assert.equal(u.windows.length, 0, "invalid Account ID must not reach the API path");
+  assert.equal(apiCalled, "", "no /accounts/ request was made");
+});

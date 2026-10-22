@@ -138,6 +138,13 @@ function createDiscovery({ load, initial = {}, ttlMs = DEFAULT_DISCOVERY_TTL_MS,
   };
 }
 
+function paidName(id, name) {
+  // Name-flag the models Cloudflare serves only behind Workers Paid / AI
+  // Gateway credits. No `free` flag: the shared 10,000/day Neurons allowance
+  // is not the same thing as a free model.
+  return PAID_ONLY_MODELS.has(id) ? `${name} (Paid)` : name;
+}
+
 export async function CloudflareWorkersAIPlugin(_input, options = {}) {
   const accountId = options.accountId ?? "";
   const apiKey = options.apiKey ?? "";
@@ -181,7 +188,7 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
         api: baseURL,
         models: Object.fromEntries(
           Object.entries(models).map(([id, m]) => [id, {
-            name: PAID_ONLY_MODELS.has(id) ? `${m.name} (Paid)` : m.name,
+            name: paidName(id, m.name),
             limit: m.limit,
             reasoning: m.capabilities.reasoning,
             tool_call: m.capabilities.toolcall,
@@ -336,7 +343,10 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
         // resets daily 00:00 UTC) and best-effort plan detection.
         const auth = await getAuth?.();
         const acct = auth?.metadata?.accountId || accountId;
-        if (!acct) return { plan: "Workers Free / Paid (confirm in the dashboard)", windows: [] };
+        if (!acct || !/^[0-9a-f]{32}$/i.test(acct)) {
+          // same rule loader() applies; an invalid ID must not reach the API path
+          return { plan: "Workers Free / Paid (confirm in the dashboard)", windows: [] };
+        }
         let plan = "Workers Free / Paid (confirm in the dashboard)";
         try {
           const res = await fetchImpl(`https://api.cloudflare.com/client/v4/accounts/${acct}`, {
@@ -381,7 +391,7 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
         return Object.fromEntries(
           Object.entries(models).map(([id, m]) => [
             id,
-            PAID_ONLY_MODELS.has(id) ? { ...m, name: `${m.name} (Paid)` } : m,
+            PAID_ONLY_MODELS.has(id) ? { ...m, name: paidName(id, m.name) } : m,
           ]),
         );
       },
