@@ -95,8 +95,14 @@ magpie plugin options opencode-cloudflare-workers-ai-auth '{"accountId": "…", 
 |---|---|---|
 | `accountId` | — | サインインで空欄のときの既定 Account ID |
 | `apiKey` | — | 既定トークン（サインインのキーが優先） |
-| `baseTemplate` | `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1` | 差し込み対象のテンプレート |
+| `baseTemplate` | 下記参照 | 差し込み先の URL テンプレート |
 | `discoveryTTLMs` | `3600000` | カタログ再取得間隔 |
+
+**`baseTemplate` のデフォルト**（差し込み先、Account ID はアカウント毎に注入）:
+
+```
+https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
+```
 
 ## トラブルシューティング
 

@@ -102,8 +102,14 @@ magpie plugin options opencode-cloudflare-workers-ai-auth '{"accountId": "…", 
 |---|---|---|
 | `accountId` | — | default Account ID used when a sign-in leaves it empty |
 | `apiKey` | — | default token (the sign-in's key wins) |
-| `baseTemplate` | `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1` | interpolate target |
+| `baseTemplate` | see below | template target that the Account ID is interpolated into |
 | `discoveryTTLMs` | `3600000` | catalog refresh interval |
+
+**`baseTemplate` default** (insertion target, Account ID interpolated per account):
+
+```
+https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
+```
 
 ## Troubleshooting
 

@@ -95,8 +95,14 @@ magpie plugin options opencode-cloudflare-workers-ai-auth '{"accountId": "…", 
 |---|---|---|
 | `accountId` | — | 登录时留空所用的默认 Account ID |
 | `apiKey` | — | 默认 token（登录时的 key 优先） |
-| `baseTemplate` | `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1` | 插值模板 |
+| `baseTemplate` | 见下方 | 插值目标，Account ID 会注入其中 |
 | `discoveryTTLMs` | `3600000` | 目录刷新间隔 |
+
+**`baseTemplate` 默认值**（插值目标，Account ID 按账号注入）：
+
+```
+https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
+```
 
 ## 排障
 
