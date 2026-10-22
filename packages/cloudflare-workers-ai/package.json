@@ -17,7 +17,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Guislabert/magpie-cloudflare-workers-ai.git"
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/cloudflare-workers-ai"
   },
   "homepage": "https://github.com/Guislabert/magpie-cloudflare-workers-ai#readme",
   "bugs": "https://github.com/Guislabert/magpie-cloudflare-workers-ai/issues",
@@ -26,6 +27,7 @@
     "src/",
     "README.md",
     "README.zh-CN.md",
+    "README.ja.md",
     "LICENSE"
   ],
   "scripts": {

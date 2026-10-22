@@ -152,17 +152,11 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
     : baseTemplate; // placeholder left intact until sign-in provides the id
   checkedURL(baseURL);
 
-  // Initial static snapshot (from models.dev at plugin build time, or empty)
-  let initialModels = {};
-  try {
-    const catalog = await fetchModelsDev({ fetchImpl });
-    initialModels = buildModels(catalog, baseURL);
-  } catch (e) {
-    console.warn("[magpie-cloudflare-workers-ai] Initial model fetch failed, will retry on demand:", e.message);
-  }
-
+  // No models.dev fetch at plugin load: config()/provider.models() discover
+  // lazily via discovery.forDisplay(), so host startup never waits on a
+  // third-party site.
   const discovery = createDiscovery({
-    initial: initialModels,
+    initial: {},
     ttlMs: discoveryTTL,
     load: async () => {
       const catalog = await fetchModelsDev({ fetchImpl });
@@ -188,7 +182,6 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
         models: Object.fromEntries(
           Object.entries(models).map(([id, m]) => [id, {
             name: PAID_ONLY_MODELS.has(id) ? `${m.name} （Paid）` : m.name,
-            meta: PAID_ONLY_MODELS.has(id) ? "需要 Workers Paid 或 AI Gateway 预充值" : undefined,
             limit: m.limit,
             reasoning: m.capabilities.reasoning,
             tool_call: m.capabilities.toolcall,
@@ -198,11 +191,8 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
               output: Object.keys(m.capabilities.output).filter((k) => m.capabilities.output[k]),
             },
             cost: { input: m.cost.input, output: m.cost.output },
-            // magpie-only field: green "free" badge on the model card.
-            // Workers served the 8 paid-only models behind Workers Paid / AI
-            // Gateway credits; everything else counts only against the daily
-            // Neurons allowance.
-            free: !PAID_ONLY_MODELS.has(id),
+            // No `free` badge by design: every Workers AI model spends Neurons
+            // against the shared 10,000/day allowance (billed on Paid past it).
             variants: m.variants,
             interleaved: m.capabilities.interleaved,
             }])
@@ -215,21 +205,21 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
       methods: [
         {
           type: "api",
-          label: "Cloudflare API Token (Workers AI:Edit 权限)",
+          label: "Cloudflare API Token (requires Workers AI:Edit permission)",
           prompts: [
             {
               type: "password",
               key: "token",
               message: "API Token",
-              placeholder: "Workers AI:Edit 权限的 API Token",
-              validate: (v) => (v && v.trim() ? undefined : "需要 API Token"),
+              placeholder: "Cloudflare API token with Workers AI:Edit permission",
+              validate: (v) => (v && v.trim() ? undefined : "API Token required"),
             },
             {
-              type: "password",
+              type: "text",
               key: "accountId",
-              message: "Account ID (可选，默认使用插件配置的)",
-              placeholder: "32位十六进制 Account ID",
-              validate: (v) => (!v || /^[0-9a-f]{32}$/i.test(v.trim()) ? undefined : "Account ID 必须是 32 位十六进制"),
+              message: "Account ID (optional; falls back to the plugin's accountId option)",
+              placeholder: "32 hex characters",
+              validate: (v) => (!v || /^[0-9a-f]{32}$/i.test(v.trim()) ? undefined : "Account ID must be 32 hex characters"),
             },
           ],
           async authorize(input, inputs) {
@@ -245,7 +235,7 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
               (typeof input === "string" && input.trim()) ||
               obj.token || obj.key || obj.apiKey || ""
             ).trim();
-            if (!token) return { type: "failed", error: "需要 API Token" };
+            if (!token) return { type: "failed", error: "API Token required" };
             const accountIdInput = (obj.accountId ?? "").trim();
             return {
               type: "success",
@@ -307,7 +297,9 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
               }
             }
 
-            // Verify the model exists in the current catalog when a chat request names one
+            // Cloudflare is the authority on whether a model exists: check only
+            // against the LAST GOOD list, never refresh on the request path (a
+            // models.dev outage must not take chat requests down).
             if (body && typeof body === "string") {
               let parsedBody = null;
               try {
@@ -315,8 +307,16 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
               } catch {
                 /* non-JSON body: forward as-is */
               }
-              if (parsedBody && typeof parsedBody === "object" && parsedBody.model) {
-                await discovery.requireModel(parsedBody.model);
+              const known = discovery.current;
+              const catalogPrimed = known && Object.keys(known).length;
+              if (
+                parsedBody &&
+                typeof parsedBody === "object" &&
+                parsedBody.model &&
+                catalogPrimed &&
+                !Object.hasOwn(known, parsedBody.model)
+              ) {
+                throw new Error(`Model ${JSON.stringify(parsedBody.model)} is absent from the last known Workers AI catalog`);
               }
             }
 
@@ -336,7 +336,8 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
         // resets daily 00:00 UTC) and best-effort plan detection.
         const auth = await getAuth?.();
         const acct = auth?.metadata?.accountId || accountId;
-        let plan = "Workers Free / Paid（需 Dashboard 确认）";
+        if (!acct) return { plan: "Workers Free / Paid (confirm in the dashboard)", windows: [] };
+        let plan = "Workers Free / Paid (confirm in the dashboard)";
         try {
           const res = await fetchImpl(`https://api.cloudflare.com/client/v4/accounts/${acct}`, {
             headers: { authorization: `Bearer ${auth?.key ?? apiKey}` },
@@ -357,13 +358,13 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
           plan,
           windows: [
             {
-              name: "Neurons/天（免费额度）",
+              name: "Neurons/day (free allowance)",
               span: DAY_MS,
               resetsAt: nextUtcMidnight.toISOString(),
               amount: null,
               limit: FREE_ALLOCATION_NEURONS,
               unit: "neurons",
-              display: "≤10,000 Neurons/天：精确用量仅在 Cloudflare Dashboard（API 无公开端点）",
+              display: "≤10,000 Neurons/day; exact usage is on the Cloudflare dashboard (no public API)",
             },
           ],
         };
@@ -374,14 +375,13 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
       async models(provider, { auth } = {}) {
         if (!auth) return provider.models;
         const models = await discovery.forDisplay();
-        // Flag the models Cloudflare serves only behind Workers Paid / AI
-        // Gateway credits, and mark the rest as free for the green badge.
+        // Name-flag the models Cloudflare serves only behind Workers Paid / AI
+        // Gateway credits. No `free` flag: shared daily Neurons allowance is not
+        // the same thing as a free model.
         return Object.fromEntries(
           Object.entries(models).map(([id, m]) => [
             id,
-            PAID_ONLY_MODELS.has(id)
-              ? { ...m, name: `${m.name} （Paid）` }
-              : { ...m, free: true },
+            PAID_ONLY_MODELS.has(id) ? { ...m, name: `${m.name} （Paid）` } : m,
           ]),
         );
       },

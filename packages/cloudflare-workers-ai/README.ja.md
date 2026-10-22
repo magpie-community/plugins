@@ -9,7 +9,7 @@
 [OpenCode](https://opencode.ai) 1.x と [magpie](https://usemagpie.ai) 向けのプロバイダー
 プラグイン。API トークンで **Cloudflare Workers AI** にサインインし、どのエージェントでも
 使えるプロバイダーとして提供します。[models.dev](https://models.dev) から 28+ モデルを
-リアルタイム取得、無料枠モデルには緑の Free バッジ、有料専用モデルには目印、
+リアルタイム取得、有料専用モデルには目印、
 `magpie quota` には 1 日あたりの Neurons 余裕枠が表示されます。
 
 > Cloudflare とは提携・承認関係にありません。
@@ -74,17 +74,17 @@ magpie plugin logout cloudflare-workers-ai                           # サイン
 
 その後 `opencode auth login` → Cloudflare Workers AI（同じ 2 項目）。
 
-## Free バッジと有料専用モデル
+## 有料専用モデル
 
-有料リスト以外の全モデルに magpie のネイティブ `free: true` が付き、モデルピッカーに緑の
-**Free** バッジが出ます。Workers Paid または AI Gateway クレジットが必要な次の 8 つは
-**（Paid）** と表示されます：
+Workers Paid または AI Gateway クレジットが必要な 8 モデルは名前に **（Paid）** を付けます：
 
-`@cf/moonshotai/kimi-k2.6` · `@cf/moonshotai/kimi-k2.7-code` ·
-`@cf/zai-org/glm-5.2` · `@cf/zai-org/glm-5.3` · `@cf/zai-org/glm-5.3-flash` ·
-`@cf/deepseek-ai/deepseek-v4-flash-0731` ·
-`@cf/deepseek-ai/deepseek-v4.1-flash-1017` ·
+`@cf/moonshotai/kimi-k2.6` と `@cf/moonshotai/kimi-k2.7-code` と
+`@cf/zai-org/glm-5.2` と `@cf/zai-org/glm-5.3` と `@cf/zai-org/glm-5.3-flash` と
+`@cf/deepseek-ai/deepseek-v4-flash-0731` と
+`@cf/deepseek-ai/deepseek-v4.1-flash-1017` と
 `@cf/deepseek-ai/deepseek-v4-pro-0813`
+
+それ以外のモデルは 1 日 10,000 Neurons の共有枠に含まれ、free バッジは付けません。
 
 ## オプション
 

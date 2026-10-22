@@ -8,7 +8,7 @@
 
 面向 [OpenCode](https://opencode.ai) 1.x 和 [magpie](https://usemagpie.ai) 的供应商插件：
 用你的 API Token 登录 **Cloudflare Workers AI**，让它成为所有 Agent 都能选的供应商。
-从 [models.dev](https://models.dev) 实时发现 28+ 个模型，免费模型带绿色 Free 徽章，
+从 [models.dev](https://models.dev) 实时发现 28+ 个模型，付费专属模型自动标注，
 付费专属模型自动打标，`magpie quota` 显示每日 Neurons 额度窗口。
 
 > 与 Cloudflare 无隶属或背书关系。
@@ -73,17 +73,18 @@ magpie plugin logout cloudflare-workers-ai                                # 删�
 
 然后 `opencode auth login` → Cloudflare Workers AI（同样的两个字段）。
 
-## Free 徽章与付费专属模型
+## 付费专属模型
 
-付费清单之外的每个模型都带 magpie 原生的 `free: true`，模型选择器会显示绿色
-**Free** 徽章。以下 8 个被 Cloudflare 限制在 Workers Paid 或 AI Gateway 预充值
-之后，名字里标注 **（Paid）**：
+8 个模型被 Cloudflare 限制在 Workers Paid 或 AI Gateway 预充值之后，名字中标注 **（Paid）**：
 
-`@cf/moonshotai/kimi-k2.6` · `@cf/moonshotai/kimi-k2.7-code` ·
-`@cf/zai-org/glm-5.2` · `@cf/zai-org/glm-5.3` · `@cf/zai-org/glm-5.3-flash` ·
-`@cf/deepseek-ai/deepseek-v4-flash-0731` ·
-`@cf/deepseek-ai/deepseek-v4.1-flash-1017` ·
+`@cf/moonshotai/kimi-k2.6` 与 `@cf/moonshotai/kimi-k2.7-code` 与
+`@cf/zai-org/glm-5.2` 与 `@cf/zai-org/glm-5.3` 与 `@cf/zai-org/glm-5.3-flash` 与
+`@cf/deepseek-ai/deepseek-v4-flash-0731` 与
+`@cf/deepseek-ai/deepseek-v4.1-flash-1017` 与
 `@cf/deepseek-ai/deepseek-v4-pro-0813`
+
+其余模型只消耗共享的每日 10,000 Neurons 额度（Paid 计划超出部分会计费），
+因此设计上不给任何模型打 free 徽章。
 
 ## 插件选项
 

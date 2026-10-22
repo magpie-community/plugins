@@ -124,6 +124,7 @@ test("auth loader forwards chat/completions with bearer token", async () => {
 
 test("auth loader rejects unknown models but passes other endpoints through", async () => {
   const plugin = await CloudflareWorkersAIPlugin({}, opts());
+  const cfg = {}; await plugin.config(cfg); // prime the model catalog
   const result = await plugin.auth.loader(async () => ({ key: "tok", metadata: { accountId: "" } }));
   await assert.rejects(
     async () =>
@@ -134,7 +135,7 @@ test("auth loader rejects unknown models but passes other endpoints through", as
         }),
         {}
       ),
-    /absent from the current catalog/
+    /last known Workers AI catalog/
   );
   // Non-chat paths are forwarded untouched to the same base URL
   let forwarded = "";
@@ -154,6 +155,42 @@ test("auth loader rejects unknown models but passes other endpoints through", as
   });
   assert.equal(resp2.status, 200);
   assert.match(forwarded, /\/embeddings$/);
+});
+
+test("a models.dev outage must not take chat requests down (request path never refreshes)", async () => {
+  let down = false;
+  const o = {
+    accountId: ACCOUNT_ID,
+    discoveryTTLMs: 1, // every refresh is stale immediately
+    fetchImpl: async (url) => {
+      if (typeof url === "string" && url.includes("models.dev")) {
+        if (down) return new Response("down", { status: 503 });
+        return new Response(JSON.stringify(fakeCatalog()));
+      }
+      return new Response("{}", { status: 200 });
+    },
+  };
+  const plugin = await CloudflareWorkersAIPlugin({}, o);
+  const cfg = {};
+  await plugin.config(cfg); // prime once while models.dev is up
+  const loader = await plugin.auth.loader(async () => ({ key: "tok", metadata: { accountId: "" } }));
+
+  down = true; // TTL passed AND models.dev unreachable
+  const resp = await loader.fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/ai/v1/chat/completions`,
+    { method: "POST", body: JSON.stringify({ model: "@cf/meta/llama-3-8b-instruct", messages: [] }) }
+  );
+  assert.equal(resp.status, 200, "known model must still be sent using the last good catalog");
+
+  // an unknown model is rejected locally at once, without touching models.dev
+  await assert.rejects(
+    async () =>
+      loader.fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/ai/v1/chat/completions`,
+        { method: "POST", body: JSON.stringify({ model: "@cf/nope", messages: [] }) }
+      ),
+    /last known Workers AI catalog/
+  );
 });
 
 test("authorize accepts bare-string and fields-object token shapes", async () => {

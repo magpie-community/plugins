@@ -9,7 +9,7 @@ English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 A provider plugin for [OpenCode](https://opencode.ai) 1.x and
 [magpie](https://usemagpie.ai) that signs in to **Cloudflare Workers AI** with your
 API token and serves it as a provider every agent can use: 28+ models discovered
-live from [models.dev](https://models.dev), free-tier models badged green, paid-only
+live from [models.dev](https://models.dev), paid-only models flagged,
 models flagged, and a daily Neurons allowance row in `magpie quota`.
 
 > Not affiliated with or endorsed by Cloudflare.
@@ -78,18 +78,19 @@ Models are named `cloudflare-workers-ai/@cf/<org>/<model>` — the same IDs
 
 then `opencode auth login` → Cloudflare Workers AI (same two fields).
 
-## Free badge and paid-only models
+## Paid-only models
 
-Every model outside the paid list carries magpie's native `free: true`, so the
-model picker shows it with the green **Free** badge. These eight are gated by
-Cloudflare behind Workers Paid or prepaid AI Gateway credits and are flagged
-**（Paid）** in the name:
+Eight models are gated by Cloudflare behind Workers Paid or prepaid AI Gateway
+credits and are flagged **(Paid)** in the name:
 
-`@cf/moonshotai/kimi-k2.6` · `@cf/moonshotai/kimi-k2.7-code` ·
-`@cf/zai-org/glm-5.2` · `@cf/zai-org/glm-5.3` · `@cf/zai-org/glm-5.3-flash` ·
-`@cf/deepseek-ai/deepseek-v4-flash-0731` ·
-`@cf/deepseek-ai/deepseek-v4.1-flash-1017` ·
+`@cf/moonshotai/kimi-k2.6` and `@cf/moonshotai/kimi-k2.7-code` and
+`@cf/zai-org/glm-5.2` and `@cf/zai-org/glm-5.3` and `@cf/zai-org/glm-5.3-flash` and
+`@cf/deepseek-ai/deepseek-v4-flash-0731` and
+`@cf/deepseek-ai/deepseek-v4.1-flash-1017` and
 `@cf/deepseek-ai/deepseek-v4-pro-0813`
+
+Everything else counts only against the shared 10,000 Neurons/day allowance
+(billed on a Paid account past it), so no model carries a free badge by design.
 
 ## Options
 
