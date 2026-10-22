@@ -78,13 +78,13 @@ magpie plugin logout cloudflare-workers-ai                           # サイン
 
 Workers Paid または AI Gateway クレジットが必要な 8 モデルは名前に **（Paid）** を付けます：
 
-`@cf/moonshotai/kimi-k2.6` と `@cf/moonshotai/kimi-k2.7-code` と
-`@cf/zai-org/glm-5.2` と `@cf/zai-org/glm-5.3` と `@cf/zai-org/glm-5.3-flash` と
-`@cf/deepseek-ai/deepseek-v4-flash-0731` と
-`@cf/deepseek-ai/deepseek-v4.1-flash-1017` と
-`@cf/deepseek-ai/deepseek-v4-pro-0813`
+`@cf/moonshotai/kimi-k2.6`、
+`@cf/moonshotai/kimi-k2.7-code`、`@cf/zai-org/glm-5.2`、`@cf/zai-org/glm-5.3`、
+`@cf/zai-org/glm-5.3-flash`、`@cf/deepseek-ai/deepseek-v4-flash-0731`、
+`@cf/deepseek-ai/deepseek-v4.1-flash-1017`、
+`@cf/deepseek-ai/deepseek-v4-pro-0813` です。
 
-それ以外のモデルは 1 日 10,000 Neurons の共有枠に含まれ、free バッジは付けません。
+それ以外のモデルは 1 日 10,000 Neurons の共有枠に含まれ（Paid では超過分に課金）、free バッジは付けません。
 
 ## オプション
 

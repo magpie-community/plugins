@@ -81,12 +81,13 @@ then `opencode auth login` → Cloudflare Workers AI (same two fields).
 ## Paid-only models
 
 Eight models are gated by Cloudflare behind Workers Paid or prepaid AI Gateway
-credits and are flagged **(Paid)** in the name:
+credits and are flagged **（Paid）** in the name — that is exactly how the
+model picker renders it:
 
-`@cf/moonshotai/kimi-k2.6` and `@cf/moonshotai/kimi-k2.7-code` and
-`@cf/zai-org/glm-5.2` and `@cf/zai-org/glm-5.3` and `@cf/zai-org/glm-5.3-flash` and
-`@cf/deepseek-ai/deepseek-v4-flash-0731` and
-`@cf/deepseek-ai/deepseek-v4.1-flash-1017` and
+`@cf/moonshotai/kimi-k2.6`,
+`@cf/moonshotai/kimi-k2.7-code`, `@cf/zai-org/glm-5.2`, `@cf/zai-org/glm-5.3`,
+`@cf/zai-org/glm-5.3-flash`, `@cf/deepseek-ai/deepseek-v4-flash-0731`,
+`@cf/deepseek-ai/deepseek-v4.1-flash-1017`,
 `@cf/deepseek-ai/deepseek-v4-pro-0813`
 
 Everything else counts only against the shared 10,000 Neurons/day allowance

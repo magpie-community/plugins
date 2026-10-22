@@ -77,10 +77,10 @@ magpie plugin logout cloudflare-workers-ai                                # 删�
 
 8 个模型被 Cloudflare 限制在 Workers Paid 或 AI Gateway 预充值之后，名字中标注 **（Paid）**：
 
-`@cf/moonshotai/kimi-k2.6` 与 `@cf/moonshotai/kimi-k2.7-code` 与
-`@cf/zai-org/glm-5.2` 与 `@cf/zai-org/glm-5.3` 与 `@cf/zai-org/glm-5.3-flash` 与
-`@cf/deepseek-ai/deepseek-v4-flash-0731` 与
-`@cf/deepseek-ai/deepseek-v4.1-flash-1017` 与
+`@cf/moonshotai/kimi-k2.6`、
+`@cf/moonshotai/kimi-k2.7-code`、`@cf/zai-org/glm-5.2`、`@cf/zai-org/glm-5.3`、
+`@cf/zai-org/glm-5.3-flash`、`@cf/deepseek-ai/deepseek-v4-flash-0731`、
+`@cf/deepseek-ai/deepseek-v4.1-flash-1017`、
 `@cf/deepseek-ai/deepseek-v4-pro-0813`
 
 其余模型只消耗共享的每日 10,000 Neurons 额度（Paid 计划超出部分会计费），
