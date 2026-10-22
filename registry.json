@@ -66,6 +66,8 @@
       "summary": { "en": "Exact arithmetic, unit conversion and calendar date math as tools for every agent: no network, no key.", "zh": "给每个 agent 的精确计算、单位换算和日历日期计算工具：不联网，不需要 key。" } },
     { "package": "@magpie-community/page-usage", "name": "Usage Glance", "kind": "page", "community": true,
       "summary": { "en": "A page in magpie's window with calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them. Reads only your usage summary.", "zh": "在 magpie 窗口里一眼看到今天、7 天或 30 天的调用、错误、token、费用和对应模型。只读取用量汇总。" } },
-    {"package": "@magpie-community/agent-kimi-desktop", "name": "Kimi", "kind": "agent", "community": true, "summary": {"en": "Kimi desktop Work on Magpie's Agents page: select a model from Magpie, then disconnect to restore the original service. Not Kimi Code CLI.", "zh": "把普通 Kimi 桌面版 Work 接入 Magpie Agent 页，使用已配置的模型；断开恢复原连接。不是 Kimi Code CLI。"}}
+    {"package": "@magpie-community/agent-kimi-desktop", "name": "Kimi", "kind": "agent", "community": true, "summary": {"en": "Kimi desktop Work on Magpie's Agents page: select a model from Magpie, then disconnect to restore the original service. Not Kimi Code CLI.", "zh": "把普通 Kimi 桌面版 Work 接入 Magpie Agent 页，使用已配置的模型；断开恢复原连接。不是 Kimi Code CLI。"}},
+    { "package": "@magpie-community/middleware-multi-path-router", "name": "Multi-Path Token Router", "kind": "middleware", "community": true,
+      "summary": { "en": "A model map with gates: images to a vision model, large contexts to a long-context model, and an off-peak window you set to another model.", "zh": "带门闸的模型映射：图片走视觉模型，长上下文走长上下文模型，自设错峰时段走另一个模型。" } }
   ]
 }

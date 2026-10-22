@@ -1,0 +1,45 @@
+{
+  "name": "@magpie-community/middleware-multi-path-router",
+  "version": "0.1.1",
+  "description": "A model map with gates: images to a vision model, large contexts to a long-context model, and an off-peak window you set to another model, with replies naming the model asked for",
+  "type": "module",
+  "files": [
+    "multi-path-router.middleware.js",
+    "README.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-middleware",
+    "router",
+    "model-routing",
+    "cost-optimization",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/multi-path-router"
+  },
+  "magpie": {
+    "middleware": "./multi-path-router.middleware.js",
+    "options": {
+      "constraints": {
+        "vision": "group/tier-multimodal-runtime",
+        "tokens_gte": {
+          "threshold": 64000,
+          "target": "group/tier-extended-context"
+        }
+      },
+      "schedule": {
+        "offpeak": { "days": [0, 6], "start": "00:30", "end": "08:30", "tz": 8 },
+        "offpeak_mapping": {
+          "smart-router": "group/tier-dynamic-value"
+        }
+      },
+      "mapping": {
+        "smart-router": "group/tier-fast-reflex"
+      }
+    }
+  }
+}
