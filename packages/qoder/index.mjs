@@ -841,12 +841,16 @@ function cacheMarked(msgs) {
 // sessionOf is the session_id a request goes out under: one for every turn
 // of a conversation and another for each conversation, as Qoder's client
 // sends its own session's (#290). Qoder can keep a conversation where its
-// prompt is cached only when its turns say they are one. It is the
-// client's prompt_cache_key (Codex's thread), else its user, else the
+// prompt is cached only when its turns say they are one. It is the session
+// the agent named (named: DSH's x-deepseek-harness-session-id, OpenCode's
+// session, as the chat.headers hook is told it, #330), else the client's
+// prompt_cache_key (Codex's thread), else its user, else the
 // conversation's opening (its system prompt and first user turn), hashed,
-// so no key of the client's goes to Qoder as it is.
-function sessionOf(chat) {
-  let seed = String(chat.prompt_cache_key ?? "").trim() ? "key\0" + chat.prompt_cache_key : String(chat.user ?? "").trim() ? "user\0" + chat.user : ""
+// so no key of the client's goes to Qoder as it is. DSH changes its system
+// prompt mid-task (yetone/magpie#3298), so its own session is the one that
+// holds for the whole task.
+function sessionOf(chat, named = "") {
+  let seed = named ? "session\0" + named : String(chat.prompt_cache_key ?? "").trim() ? "key\0" + chat.prompt_cache_key : String(chat.user ?? "").trim() ? "user\0" + chat.user : ""
   if (!seed) {
     const msgs = chat.messages ?? []
     const sys = msgs.filter((x) => x.role === "system" || x.role === "developer").map((x) => textOf(x.content))
@@ -857,9 +861,62 @@ function sessionOf(chat) {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`
 }
 
+// SESSION carries the session magpie (or OpenCode) names a request's
+// conversation by, from the chat.headers hook to the loader's fetch. It
+// goes no further: nothing of the request's headers is sent to Qoder.
+const SESSION = "x-magpie-qoder-session"
+
+// namedSession is the session a chat.headers hook is told, "" when it
+// names none. magpie, with no session header from the agent, makes one of
+// the conversation's first user message ("magpie-" and 24 hex digits):
+// that names no session, and sessionOf's own hash is taken instead.
+function namedSession(input) {
+  const s = String(input?.sessionID ?? "").trim()
+  if (!s || /^magpie-[0-9a-f]{24}$/.test(s)) return ""
+  return s.slice(0, 128)
+}
+
+// A task is what Qoder's client sends under one request_set_id and one
+// business record (#330): every model call that answers one user prompt,
+// the tool loop's turns included. qoder-agent-sdk (Qoder.app's
+// qoder-worker-runtime, AgentLifecycle) makes the record once per prompt
+// (business.id the prompt's requestSetId, begin_at when the prompt
+// started, stage "start"), keeps it for each call of the loop, and moves
+// stage to "processing" once a call is answered; only request_id and
+// chat_record_id are new on every call. The plugin made a new record for
+// every call, so a 265-call DSH task was 265 tasks to Qoder. A task here is
+// a session's last user turn: the tool loop repeats it, and a new prompt
+// is a new one. TASKS holds at most TASK_MAX of them, each for TASK_IDLE
+// after its last call, so a long-running magpie doesn't grow with them.
+const TASKS = new Map()
+const TASK_MAX = 512
+const TASK_IDLE = 2 * 60 * 60 * 1000
+
+// taskOf is the task chat's call belongs to, in session sid: made on its
+// first call, the same one on every call after.
+function taskOf(sid, chat, now = Date.now()) {
+  const msgs = chat.messages ?? []
+  const at = msgs.findLastIndex((x) => x?.role === "user")
+  const key = createHash("sha256").update(JSON.stringify([sid, at, at < 0 ? null : msgs[at].content ?? null])).digest("hex")
+  for (const [k, t] of TASKS) {
+    if (now - t.used <= TASK_IDLE) break
+    TASKS.delete(k)
+  }
+  let t = TASKS.get(key)
+  if (t && now - t.used > TASK_IDLE) t = undefined
+  TASKS.delete(key)
+  t ??= { id: randomUUID(), begin: now, answered: false }
+  t.used = now
+  TASKS.set(key, t)
+  while (TASKS.size > TASK_MAX) TASKS.delete(TASKS.keys().next().value)
+  return t
+}
+
 // qoderBody is the plaintext agent_chat_generation takes for a chat
-// completion request, for model m.
-function qoderBody(chat, m) {
+// completion request, for model m, in the session the agent named (named,
+// "" when none) and the task it is a call of (taskOf's, a new one when
+// none is given).
+function qoderBody(chat, m, named = "", task) {
   const system = (chat.messages ?? []).filter((x) => x.role === "system" || x.role === "developer").map((x) => textOf(x.content)).filter(Boolean).join("\n\n")
   const tools = chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function" && t.function?.name) : []
   let sysText = system ? QODER_SYS + "\n\n" + system : QODER_SYS
@@ -871,13 +928,15 @@ function qoderBody(chat, m) {
   const window = windowFor(chat, m, params.max_tokens)
   if (window > 0) params.context_length = window
   const request = randomUUID()
+  const session = sessionOf(chat, named)
+  task ??= taskOf(session, chat)
   const body = {
     request_id: request,
-    request_set_id: request,
+    request_set_id: task.id,
     chat_record_id: request,
-    session_id: sessionOf(chat),
+    session_id: session,
     parameters: params,
-    business: { product: "app", version: COSY_VERSION, type: "agent", id: hexID(), name: "magpie session", begin_at: Date.now(), stage: "start" },
+    business: { product: "app", version: COSY_VERSION, type: "agent", id: task.id, name: "magpie session", begin_at: task.begin, stage: task.answered ? "processing" : "start" },
     agent_id: "agent_common",
     task_id: "common",
     session_type: "app",
@@ -2069,7 +2128,7 @@ const makePlugin = (site) => async ({ client }) => {
     })
 
   // ask is the answer to a chat completion on the live account cred.
-  const ask = async (chat, cred, init) => {
+  const ask = async (chat, cred, init, named = "") => {
     let m
     try {
       m = (await models(cred)).find((x) => x.key === chat.model) ?? (await models(cred, true)).find((x) => x.key === chat.model)
@@ -2080,7 +2139,8 @@ const makePlugin = (site) => async ({ client }) => {
     if (!m) return errorResponse({ status: 400, message: `unknown or disabled model "${chat.model}"` })
     const api = siteOf(site, cred).api
     const CHAT_URL = api + CHAT_PATH
-    const body = qoderBody(chat, m)
+    const task = taskOf(sessionOf(chat, named), chat)
+    const body = qoderBody(chat, m, named, task)
     const wire = encodeBody(JSON.stringify(body))
     // Qoder's queue is waited out (queueWait) and the same request, its
     // request_set_id the one the queue knows, sent again
@@ -2102,6 +2162,8 @@ const makePlugin = (site) => async ({ client }) => {
         return errorResponse({ status: 502, message: e.message })
       }
       const f = !res.ok ? failure(res.status, (await res.text()).slice(0, 1 << 20)) : open.first.value?.error
+      // an answered call moves its task on, as Qoder's client moves it
+      if (!f) task.answered = true
       if (!f?.queue || waited >= QUEUE.recoveries) return f && !res.ok ? errorResponse(f) : answer(open, chat)
       try {
         if (!(await queueWait(api, cred, ask, f.queue, init.signal, deadline))) return errorResponse(f)
@@ -2112,6 +2174,16 @@ const makePlugin = (site) => async ({ client }) => {
   }
 
   return {
+    // the session the request is part of, for session_id and its task
+    // (#330): magpie names it here (DSH's x-deepseek-harness-session-id
+    // among the agents' own), as OpenCode does, and the loader's fetch
+    // reads it back. Every plugin's hook sees every provider's requests,
+    // so it is put on this site's alone.
+    async "chat.headers"(input, output) {
+      if (input?.model?.providerID !== ID && input?.provider?.info?.id !== ID) return
+      const s = namedSession(input)
+      if (s) output.headers[SESSION] = s
+    },
     auth: {
       provider: ID,
       // magpie renews the chat token RENEW_LEAD before its end, once for
@@ -2164,7 +2236,9 @@ const makePlugin = (site) => async ({ client }) => {
             } catch (e) {
               return signedInError(e)
             }
-            return signed(await ask(chat, cred, init), renewed(cred))
+            const h = new Headers(input instanceof Request ? input.headers : undefined)
+            new Headers(init.headers ?? {}).forEach((v, k) => h.set(k, v))
+            return signed(await ask(chat, cred, init, h.get(SESSION)?.trim().slice(0, 128) ?? ""), renewed(cred))
           },
         }
       },
@@ -2274,4 +2348,4 @@ export const QoderAuthPlugin = makePlugin(SITES.qoder)
 export const QoderCNAuthPlugin = makePlugin(SITES["qoder-cn"])
 
 // for tests
-export const _internal = { campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }

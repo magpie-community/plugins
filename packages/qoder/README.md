@@ -98,10 +98,20 @@ itself.
   `cache_control: ephemeral` (nothing is marked when the last turn is a
   tool's result), user turns carry their blocks as `contents` too, and each
   request names its conversation in `session_id`. That id is a hash of
-  Codex's thread (`prompt_cache_key`) when magpie sends one, else of the
-  conversation's start, so every turn of one conversation names the same
-  session; the key itself never goes out. Each request has its own
-  `request_id`.
+  the session the agent names (since 0.2.31, #330: DSH's
+  `x-deepseek-harness-session-id` and the other agents' own session
+  headers, which magpie hands the plugin's `chat.headers` hook, and
+  OpenCode's session), else of Codex's thread (`prompt_cache_key`) when
+  magpie sends one, else of the conversation's start, so every turn of one
+  conversation names the same session; the key itself never goes out.
+  Each request has its own `request_id` and `chat_record_id`.
+- Every call that answers one user prompt goes out as one task, as Qoder's
+  own client sends it (since 0.2.31, #330): one `request_set_id`, which is
+  also `business.id`, and one `business.begin_at` for every call of the
+  tool loop, `business.stage` "start" until a call is answered and
+  "processing" after. A new user prompt in the session is a new task. The
+  plugin keeps at most 512 tasks, each for 2 hours after its last call.
+  Before 0.2.31 each call was a task of its own.
   - The model's own configuration from Qoder's list goes with it.
 - It picks the reasoning effort from the model's own levels:
   - The nearest level to the one asked, the higher one on a tie.
