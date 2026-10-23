@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-cloudflare-workers-ai-auth",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": false,
   "type": "module",
   "main": "./index.mjs",
@@ -36,6 +36,7 @@
     "node": ">=20"
   },
   "magpie": {
-    "maxConcurrency": 3
+    "maxConcurrency": 3,
+    "icon": "https://www.cloudflare.com/favicon.ico"
   }
 }
