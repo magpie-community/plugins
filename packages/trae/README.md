@@ -423,10 +423,12 @@ answered it 9074 even with the client's headers.
   headers were taken on a 16-digit id where a 19-digit one got 9074
   (plugins#194), and on 2026-10-23 the same account and headers were taken
   on a device id Trae had never seen while this account's own id answered
-  9074. The message says so, and names the one thing seen to change it: a
-  Trae CN client on this machine signed in to that account, whose
-  registered device the check-in then rides (see above) — not "check in in
-  Trae CN's app", which is not where the problem is. No device id is ever
+  9074. The message says so, and does not send people to Trae CN's app,
+  which is not where the problem is. Signing the account in to a Trae CN
+  client on this machine is the one thing seen to change a 9074, but it
+  hasn't been tried on a real account, so it isn't named in the message;
+  nor is it named when the claim already rode a client's device, where it
+  would only tell the user to do what they did. No device id is ever
   changed or rotated to get round a 9095 or a 9074, and no account is
   given another account's device or its own client's device unless a
   client is signed in as that account.

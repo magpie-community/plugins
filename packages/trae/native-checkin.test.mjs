@@ -102,10 +102,13 @@ test("the device's already-checked answer is ineligible", async () => {
 // taken on a 16-digit id where a 19-digit one got 9074 (plugins#194), and
 // on 2026-10-23 the same account and headers were taken on a device id Trae
 // had never seen while this account's own id answered 9074. The account is
-// told what Trae said, that the device is what it refused, and the one thing
-// seen to change it — not sent to check in in Trae CN's app, which is not
-// where the problem is.
-test("Trae's 9074 on the claim says the device is what Trae refused, and what changes it", async () => {
+// told what Trae said and that the device is what it refused — not sent to
+// check in in Trae CN's app, which is not where the problem is. Signing the
+// account in to a client here is the one thing seen to change it, but it
+// hasn't been tried on a real account, so the message doesn't promise it;
+// and on a claim that already rode a client's device there is nothing to
+// advise, so it says nothing.
+test("Trae's 9074 on the claim says the device is what Trae refused, and promises no fix", async () => {
   f = fakeTrae()
   f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))
   f.route("POST " + CLAIM, () => json({ code: 9074, message: "当前参与用户太多" }))
@@ -114,7 +117,7 @@ test("Trae's 9074 on the claim says the device is what Trae refused, and what ch
   expect(out.message).toContain("当前参与用户太多")
   expect(out.message).toContain("9074")
   expect(out.message).toContain("device")
-  expect(out.message).toContain("Trae CN client")
+  expect(out.message).not.toContain("Trae CN client")
   expect(out.message).not.toContain("check in in the Trae CN app")
   // the check-in rides ugDevice like every other ug page: the 19-digit
   // sign-in device becomes the account's own 16-digit shape (#194)

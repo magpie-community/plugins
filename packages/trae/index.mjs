@@ -2932,14 +2932,16 @@ const makePlugin = (site) => async ({ client }) => {
     // same account, token and headers were taken on a 16-digit id where a
     // 19-digit one got 9074 (plugins#194), and on 2026-10-23 the same
     // account and headers were taken on a device id Trae had never seen
-    // while this account's own id answered 9074. What does work is a device
-    // Trae's own client registered, so the message says what Trae said, that
-    // the device is what it refused, and the one thing that has been seen to
-    // change it — rather than sending people to check in in Trae CN's app,
-    // which is not where the problem is. No device id is made up or rotated
-    // to get round this: the account keeps its own until a client of its own
-    // is here to sign it in.
-    if (String(ce.code) === "9074") return { outcome: "ineligible", message: `${ce.message} (9074) — Trae CN did not take this check-in for this account's device; signing this account in to a Trae CN client on this machine lets it check in on that client's device` }
+    // while this account's own id answered 9074. So the message says what
+    // Trae said and that the device is what it refused, rather than
+    // sending people to check in in Trae CN's app, which is not where the
+    // problem is. No device id is made up or rotated to get round this:
+    // the account keeps its own until a client of its own is here to sign
+    // it in. Nothing is said of signing one in: it is the one thing seen
+    // to change a 9074, but it hasn't been tried on a real account, and
+    // on a claim that already rode a client's device it is what the user
+    // did — the advice would only send them back to do it again.
+    if (String(ce.code) === "9074") return { outcome: "ineligible", message: `${ce.message} (9074) — Trae CN did not take this check-in for this account's device` }
     if (claim.status !== 200 || (ce.code && String(ce.code) !== "0")) return { outcome: "failed", message: ce.message || statusLine(claim.status) }
     if (!answer || typeof answer !== "object" || Array.isArray(answer)) return { outcome: "failed", message: `check-in claim: unreadable reply ${claimText.trim().slice(0, 120) || "(empty)"}` }
     // a claim's own code 0 is not proof the day is in: Trae answers it for
