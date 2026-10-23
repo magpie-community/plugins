@@ -56,6 +56,22 @@ Desktop's sign-in is refreshed only when the app hasn't refreshed it
 itself, and the new token is kept in memory, never written back, as magpie's
 built-in WorkBuddy does.
 
+A chat or usage read WorkBuddy answers 401 (since 0.1.31) is renewed once,
+whatever the token's time, and sent once more. A token another process
+saved since is taken first instead of spending the refresh token again. A
+desktop sign-in is never renewed for it: the app's file is read again, and
+its token is used if the app signed in again. A 401 again, or no new
+token, ends in a 401 that says to sign in again (Providers → WorkBuddy →
+this account's Sign in again in magpie; WorkBuddy desktop for a desktop
+sign-in). The plugin marks the account expired in magpie
+(`X-Magpie-Sign-In: expired`, usage's `signIn`) only on WorkBuddy's word
+that the sign-in is gone: the refresh token refused (401, `invalid_grant`),
+or the access token refused (`WWW-Authenticate: … error="invalid_token"`)
+with no refresh token left to renew it with or just after renewing. A
+failed renewal for another reason, or a bare 401 without `invalid_token`,
+leaves the account as it is; a desktop sign-in is never marked. A 401
+after a renewal takes a mark off (`renewed`).
+
 ## Requests
 
 Chats are chat completions (`@ai-sdk/openai-compatible`) at `<API>/chat/completions`.

@@ -80,8 +80,10 @@ test("counts and plans as Go says them", () => {
 
 test("WorkBuddy's refusals are the card's error", async () => {
   const auth = { type: "oauth", access: "a", expires: later(), uid: "u" }
+  // a bare 401 (no invalid_token) with nothing to renew with: said, not marked
   serve({ "/billing/meter/get-user-resource-summary": () => new Response("", { status: 401 }) })
-  expect(await usageOf(WorkBuddyAuthPlugin, auth)).toEqual({ signIn: "kept", error: "Unauthorized" })
+  expect(await usageOf(WorkBuddyAuthPlugin, auth)).toEqual({ signIn: "kept",
+    error: "WorkBuddy refused this account's sign-in (401); there is no refresh token to renew it with. Sign in to it again in magpie: Providers → WorkBuddy → this account's Sign in again." })
   serve({ "/billing/meter/get-user-resource-summary": () => new Response(JSON.stringify({ code: 10085, msg: "" }), { status: 403 }) })
   expect(await usageOf(WorkBuddyAuthPlugin, auth)).toEqual({ signIn: "kept", error: "error 10085" })
   serve({ "/billing/meter/get-user-resource-summary": () => new Response(JSON.stringify({ code: 11001, msg: "token expired" })) })

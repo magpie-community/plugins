@@ -112,6 +112,14 @@ that refusal reaches the agent.
   The Go models carry their reasoning levels, and a requested level is
   fitted to the nearest one the model has.
 
+Thinking can be turned off on the Provider API for DeepSeek V4 Pro, V4
+Flash, V4 Flash Vision (exp), V4.1 Flash and V4.1 Flash Fast. These models
+offer an off level (`none`), and the plugin sends it as Command Code's
+`reasoning_effort: "off"`. A client's own `"off"` is sent the same way. The
+other models, DeepSeek V4 Flash Fast and Kimi K3 among them, refuse `"off"`,
+so turning thinking off sends them no level. Go's `/alpha/generate` hasn't
+been tried with `"off"`, so it is sent no level there either.
+
 The `/models` list doesn't say which models take images. A model is marked
 as taking them when it is a Claude model, or when the default list or the
 CLI's table says so. For any other model the plugin says nothing either

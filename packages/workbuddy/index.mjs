@@ -1123,6 +1123,8 @@ function readDesktop(site) {
       uid: acct.uid,
       ...(typeof acct.enterpriseId === "string" && acct.enterpriseId.trim() ? { enterpriseId: acct.enterpriseId.trim() } : {}),
       name: acct.nickname || acct.phoneNumber || acct.uid,
+      // what the errors below say to do goes by it: sign in to the app again
+      source: "desktop",
     }
   } catch {
     return null
@@ -1237,23 +1239,143 @@ async function unanswered(site, a, body, err, signal) {
   const size = byteLength(body)
   if (size <= EDGE_READS) throw err
   let status = 0
+  let challenge = ""
   try {
     const res = await meterAsked(site, a, "/billing/meter/get-user-resource-summary", {}, AbortSignal.timeout(20000))
     status = res.status
+    challenge = res.headers.get("www-authenticate") ?? ""
     await res.body?.cancel()
   } catch {
     throw err
   }
   if (status !== 401) throw err
   const mb = (size / (1024 * 1024)).toFixed(1)
+  const note = `It closes the connection on a refused request over 2 MiB (this one was ${mb} MiB) instead of answering, which is why it read as ECONNRESET.`
   const message =
-    `${site.name} refused this account's sign-in (401). It closes the connection on a refused request over 2 MiB ` +
-    `(this one was ${mb} MiB) instead of answering, which is why it read as ECONNRESET. ` +
+    `${site.name} refused this account's sign-in (401). ${note} ` +
     (a.source === "desktop" ? `Sign in to ${site.name} desktop again.` : `Sign in to ${site.name} again in magpie.`)
+  // the billing API's challenge goes with it: it says whether the token
+  // itself was refused (invalidToken), as the chat's own 401 would have
+  const headers = { "content-type": "application/json", ...(challenge ? { "www-authenticate": challenge } : {}) }
+  const res = new Response(JSON.stringify({ error: { message, type: "authentication_error", code: 401 } }), {
+    status: 401,
+    statusText: "Unauthorized",
+    headers,
+  })
+  edgeNotes.set(res, note)
+  return res
+}
+
+// edgeNotes is what unanswered's 401s say of the reset, for signedOut to
+// say again when the sign-in can't be renewed.
+const edgeNotes = new WeakMap()
+
+// ---- a refused sign-in ----------------------------------------------------------
+
+// invalidToken says res is WorkBuddy refusing the access token itself. Its
+// front door (APISIX, on both sites) answers a token it doesn't take with
+// 401 and WWW-Authenticate: Bearer realm="copilot", error="invalid_token",
+// on a chat (streamed or not) and on the billing API alike; measured on
+// www.workbuddy.ai on 2026-10-23 with a real account's token cut short,
+// and with "garbage". (Its /v3/config answers 200 to any token, so the
+// models list never meets a 401.) A 401 without it is not taken as the
+// sign-in's: WorkBuddy answers some paths with a bare 401 to an accepted
+// sign-in (magpie's check-in, モモコ on Discord).
+const invalidToken = (res) => res?.status === 401 && /invalid_token/i.test(res.headers.get("www-authenticate") ?? "")
+
+// refreshRefused says e is WorkBuddy turning the refresh token itself
+// away: HTTP 401 with code 12153, "refresh token failed:400 Bad Request:
+// invalid_grant: Invalid refresh token" for a spent or unknown one, or
+// "10000:token format error" (measured 2026-10-23). Anything else (a 5xx,
+// a timeout) says nothing of the sign-in.
+const refreshRefused = (e) => e instanceof WBError && (e.status === 401 || /invalid_grant/i.test(e.message))
+
+// reissued is the sign-in to send a request WorkBuddy refused a's access
+// token for (401) once more with, before that token's time: WorkBuddy can
+// refuse one long before it ends (a browser sign-in's lasts as long as
+// its refresh token, about 340 days), and renewing only by time left such
+// an account refused on every request for months. It is
+//   { a }: a sign-in with another access token, to send the request with
+//     once more;
+//   { why, kind }: none to be had, why, and of what kind: "refresh
+//     refused" (WorkBuddy turned the refresh token away too), "nothing to
+//     renew with" (no refresh token, or one past its end), or "unknown"
+//     (the refresh failed for another reason, the desktop's token is the
+//     one refused).
+// began is the access token the request read at its start: a stored one
+// that isn't it was saved since by someone else (magpie's renewal,
+// another of its processes), and is taken rather than renewing again.
+//
+// A desktop sign-in is the app's: its file is read again, and what was
+// renewed here (desktopHeld) is let go, but its refresh token is never
+// spent for a refusal, which would sign the app itself out (see
+// desktopSignIn).
+async function reissued(site, client, getAuth, a, began) {
+  if (a.source === "desktop") {
+    desktopHeld.delete(site.id + "|" + a.uid)
+    const d = readDesktop(site)
+    if (!d) return { why: notDesktop(site), kind: "unknown" }
+    if (d.access !== a.access) {
+      desktopHeld.set(site.id + "|" + d.uid, d)
+      return { a: d }
+    }
+    return { why: `${site.name} desktop's own sign-in is the one refused`, kind: "unknown" }
+  }
+  const newer = async () => {
+    const now = await getAuth().catch(() => null)
+    return now?.type === "oauth" && now.source !== "desktop" && now.access && now.access !== began && now.access !== a.access ? now : null
+  }
+  const saved = await newer()
+  if (saved) return { a: saved }
+  if (!refreshable(a)) return { why: a.refresh ? "its refresh token has ended" : "there is no refresh token to renew it with", kind: "nothing to renew with" }
+  try {
+    const next = await renew(site, a, async (n) => {
+      try {
+        await client?.auth?.set?.({ path: { id: site.id }, body: n })
+      } catch {}
+    })
+    return next.access !== a.access ? { a: next } : { why: "renewing it gave the same token", kind: "unknown" }
+  } catch (e) {
+    if (refreshRefused(e)) {
+      // spent by someone else, who saved what it gave
+      const saved = await newer()
+      if (saved) return { a: saved }
+      return { why: `it refused the refresh token too (${e.said ?? e.message})`, kind: "refresh refused" }
+    }
+    return { why: `renewing it failed: ${e?.said ?? e?.message ?? e}`, kind: "unknown" }
+  }
+}
+
+// gone says whether a sign-in reissued (r) couldn't renew is gone, on
+// WorkBuddy's word: it turned the refresh token away, or refused the access
+// token itself (tokenRefused, invalidToken) with none to renew it with. A
+// desktop sign-in never is: the app's file is read on each request, and
+// signing in to the app again is all it takes.
+const gone = (a, r, tokenRefused) =>
+  a.source !== "desktop" && (r.kind === "refresh refused" || (r.kind === "nothing to renew with" && !!tokenRefused))
+
+// refusedText says WorkBuddy refused a's sign-in, why it wasn't renewed,
+// and what to do.
+function refusedText(site, a, why, note) {
+  return (
+    `${site.name} refused this account's sign-in (401)${why ? "; " + why : ""}. ${note ? note + " " : ""}` +
+    (a.source === "desktop"
+      ? `Sign in to ${site.name} desktop again; magpie reads its sign-in on the next request.`
+      : `Sign in to it again in magpie: Providers → ${site.name} → this account's Sign in again.`)
+  )
+}
+
+// signedOut is the answer to a request WorkBuddy refused this account's
+// sign-in for, renewed or not: a 401 that says so and what to do, which
+// WorkBuddy's own (an HTML page, its {code, msg}) doesn't. expired marks
+// the account in magpie (X-Magpie-Sign-In), out of routing and "sign in
+// again" on its row, till it is signed in again; else it is kept.
+function signedOut(site, a, why, expired, note) {
+  const message = refusedText(site, a, why, note)
   return new Response(JSON.stringify({ error: { message, type: "authentication_error", code: 401 } }), {
     status: 401,
     statusText: "Unauthorized",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "X-Magpie-Sign-In": expired ? "expired" : "kept" },
   })
 }
 
@@ -1267,9 +1389,12 @@ async function meter(site, a, path, body = {}) {
   } catch {}
   const code = Number.parseInt(env.code, 10) || 0
   if (!res.ok) {
-    if (code) throw new Error(env.msg || `error ${code}`)
-    if (env.msg) throw new Error(env.msg)
-    throw new Error(statusText(res.status))
+    // the status and whether the token itself was refused go with it, for
+    // usage's one renewal on a 401 (reissued)
+    const said = { status: res.status, invalidToken: invalidToken(res) }
+    if (code) throw Object.assign(new Error(env.msg || `error ${code}`), said)
+    if (env.msg) throw Object.assign(new Error(env.msg), said)
+    throw Object.assign(new Error(statusText(res.status)), said)
   }
   if (code) throw new Error(env.msg || `error ${code}`)
   return env.data ?? null
@@ -1671,9 +1796,9 @@ function makePlugin(site) {
           baseURL: api(site),
           apiKey: "",
           async fetch(input, init) {
-            let a = await getAuth()
-            if (a?.type !== "oauth") throw new Error(`${site.name} isn't signed in`)
-            a = await current(site, client, a)
+            const stored = await getAuth()
+            if (stored?.type !== "oauth") throw new Error(`${site.name} isn't signed in`)
+            let a = await current(site, client, stored)
             const req = input instanceof Request ? input : null
             const headers = new Headers(init?.headers ?? req?.headers)
             headers.delete("authorization")
@@ -1687,8 +1812,44 @@ function makePlugin(site) {
             const fit = fitted(body)
             body = normalizeToolChoice(fit.body)
             attend(headers, body, session)
-            const send = (b) =>
+            const post = (b) =>
               fetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body: b }).catch((e) => unanswered(site, a, b, e, init?.signal))
+            // a 401 is answered once, on whichever try meets it: by a
+            // sign-in with another access token (reissued), the request
+            // sent once more with it, never again after that; else, or
+            // when that is refused too, by signedOut. The body is a
+            // string here (or bytes), which goes again as it is; one that
+            // can't be read twice isn't sent again.
+            //
+            // The account is marked (expired) only on WorkBuddy's word
+            // that the sign-in is gone: it turned the refresh token away,
+            // or refused the access token itself (invalidToken) with none
+            // to renew it with, or refused even the token just renewed. A
+            // desktop sign-in is never marked: the app's file is read on
+            // each request, so signing in to the app again is enough.
+            let renewed = false
+            const ours = new WeakSet() // the answers signedOut gave, passed on as they are
+            const out = (why, expired, res) => {
+              const r = signedOut(site, a, why, expired && a.source !== "desktop", edgeNotes.get(res))
+              ours.add(r)
+              return r
+            }
+            const resendable = (b) => b == null || typeof b === "string" || b instanceof ArrayBuffer || ArrayBuffer.isView(b)
+            const send = async (b) => {
+              const res = await post(b)
+              if (res.status !== 401) return res
+              if (renewed) return out("it refused the token renewed for it too", invalidToken(res), res)
+              if (!resendable(b)) return res
+              await res.body?.cancel().catch(() => {})
+              const r = await reissued(site, client, getAuth, a, stored.access)
+              if (!r.a) return out(r.why, gone(a, r, invalidToken(res)), res)
+              renewed = true
+              a = r.a
+              sign(site, a, headers)
+              const again = await post(b)
+              if (again.status !== 401) return again
+              return out("it refused the token renewed for it too", invalidToken(again), again)
+            }
             // a model known to turn tool results then the user's message away
             // gets the empty reply between them up front (see endsAfterTools)
             const model = chatOf(body)?.model
@@ -1716,20 +1877,43 @@ function makePlugin(site) {
                 res = new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
               }
             }
-            return res.status >= 400 ? explained(res) : kept(await renamed(res, fit.names))
+            if (ours.has(res)) return res
+            // renewed here: a mark the account had comes off
+            return res.status >= 400 ? explained(res) : kept(await renamed(res, fit.names), renewed ? "renewed" : "kept")
           },
         }
       },
       // the account's credits, as magpie's built-in showed them; each
       // read keeps the sign-in (signIn), as the built-in's neither marked
-      // an account lapsed nor cleared it
+      // an account lapsed nor cleared it, but for a 401 (gone, below)
       async usage(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "oauth" || !(auth.access || auth.source)) return { error: "not signed in", signIn: "kept" }
         try {
-          const a = await current(site, client, auth)
+          let a = await current(site, client, auth)
           // the meter has no /v2 prefix, on either site
-          const sum = await meter(site, a, "/billing/meter/get-user-resource-summary")
+          const SUMMARY = "/billing/meter/get-user-resource-summary"
+          // a 401 is answered as a chat's is: once, by a sign-in with
+          // another access token, else the card says WorkBuddy refused
+          // the sign-in and what to do; renewed, a mark comes off
+          let said = "kept"
+          let sum
+          try {
+            sum = await meter(site, a, SUMMARY)
+          } catch (e) {
+            if (e?.status !== 401) throw e
+            const r = await reissued(site, client, getAuth, a, auth.access)
+            if (!r.a) return { error: refusedText(site, a, r.why), signIn: gone(a, r, e.invalidToken) ? "expired" : "kept" }
+            a = r.a
+            try {
+              sum = await meter(site, a, SUMMARY)
+            } catch (e) {
+              if (e?.status !== 401) throw e
+              const why = "it refused the token renewed for it too"
+              return { error: refusedText(site, a, why), signIn: a.source !== "desktop" && e.invalidToken ? "expired" : "kept" }
+            }
+            said = "renewed"
+          }
           const out = usageOf(sum, auth.plan)
           // an enterprise account's summary has no packages: its credits
           // are the enterprise meter's (#1904). A personal account's
@@ -1740,7 +1924,7 @@ function makePlugin(site) {
             try {
               ent = enterpriseUsageOf(await meter(site, a, "/billing/meter/get-enterprise-user-usage"))
             } catch {}
-            if (ent) return { plan: auth.plan || "Enterprise", windows: await spareFree(site, a, [ent]), signIn: "kept" }
+            if (ent) return { plan: auth.plan || "Enterprise", windows: await spareFree(site, a, [ent]), signIn: said }
           }
           // when the credits left run out, for routing to spend them first;
           // a list that can't be read leaves it unknown, the card stands
@@ -1751,7 +1935,7 @@ function makePlugin(site) {
             } catch {}
           }
           await spareFree(site, a, out.windows)
-          return { ...out, signIn: "kept" }
+          return { ...out, signIn: said }
         } catch (e) {
           return { error: e?.message ?? String(e), signIn: "kept" }
         }
@@ -1806,17 +1990,19 @@ const EXHAUSTED_HINT =
 // another error, and insufficient_quota would rest the account as out of credit.
 const EXHAUSTED_TEXT = /credits exhausted|额度已用尽|["']code["']\s*:\s*["']?14018(?![\d.])/i
 
-// kept is an answer that went through, saying the sign-in is kept: the
-// built-in never cleared a WorkBuddy account's mark, as it never set one.
-function kept(res) {
+// kept is an answer that went through, saying the sign-in is kept (the
+// built-in never cleared a WorkBuddy account's mark, as it never set one),
+// or "renewed" when it went through on a sign-in renewed for a 401, which
+// takes a mark off (see signedOut).
+function kept(res, said = "kept") {
   const headers = new Headers(res.headers)
-  headers.set("X-Magpie-Sign-In", "kept")
+  headers.set("X-Magpie-Sign-In", said)
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
 }
 
 // explained is res with REFUSED_HINT, RESTRICTED_HINT or EXHAUSTED_HINT added to that refusal's message.
-// Each refusal says the sign-in is kept: the built-in passed WorkBuddy's
-// 401 on and never marked a WorkBuddy account lapsed.
+// Each refusal says the sign-in is kept: a 401 never comes here, it is
+// signedOut's.
 async function explained(res) {
   const text = await res.text()
   const again = (b) => {

@@ -45,6 +45,21 @@ const RESPONSES = "@ai-sdk/openai" // the Responses API, which magpie speaks to 
 
 // ---- models -------------------------------------------------------------------
 
+// THINK_OFF are the models the Provider API turns thinking off for at
+// reasoning_effort "off" (CHENJIAMIAN, magpie-community/plugins#334, on a
+// GOAT key: 0 reasoning tokens on each, where "none" is refused as no
+// option and thinking {"type":"disabled"} is ignored). Others, DeepSeek V4
+// Flash Fast and Kimi K3 among them, refuse "off" ("does not support
+// reasoning_effort \"off\""). Each is offered magpie's off level, none,
+// beside the levels magpie gave it before (DeepSeek's: low, high, max),
+// and none or "off" asked of it is sent as "off" (providerBody). Go's
+// /alpha/generate is not known to take "off": its levels stay the CLI's.
+const THINK_OFF = new Set([
+  "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash-vision-exp",
+  "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash-fast",
+])
+const OFF_EFFORTS = ["none", "low", "high", "max"]
+
 // The plan's models when its list can't be asked: Claude on Messages, the
 // rest on chat completions. Pictures as models.dev has them (DeepSeek V4
 // and GLM-5.3 read text alone, so say nothing).
@@ -52,8 +67,8 @@ const MODELS = [
   { id: "claude-sonnet-5", name: "Claude Sonnet 5", context: 1_000_000, images: true },
   { id: "claude-opus-5-5", name: "Claude Opus 5.5", context: 1_000_000, images: true },
   { id: "gpt-6-sol", name: "GPT-6 Sol", context: 1_050_000, images: true },
-  { id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", context: 1_000_000 },
-  { id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", context: 1_000_000 },
+  { id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", context: 1_000_000, efforts: OFF_EFFORTS },
+  { id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", context: 1_000_000, efforts: OFF_EFFORTS },
   { id: "moonshotai/Kimi-K3", name: "Kimi K3", context: 1_000_000, images: true },
   { id: "zai-org/GLM-5.3", name: "GLM-5.3", context: 1_000_000 },
   { id: "MiniMaxAI/MiniMax-M3", name: "MiniMax M3", context: 1_000_000, images: true },
@@ -253,8 +268,10 @@ function runtimeModel(m) {
 // liveModels is the Provider API's list, with the APIs each model is
 // served on (its Claude models on /messages alone, the open ones on
 // /chat/completions and /responses, some on /responses alone); the default list's names and
-// windows fill in what it leaves out. The list says nothing of pictures:
-// a model takes them as the default list or the CLI's table (GO_MODELS)
+// windows fill in what it leaves out. A model that turns thinking off
+// (THINK_OFF) has its levels, off among them; the list names no levels,
+// and magpie gives every other model its maker's. The list says nothing
+// of pictures: a model takes them as the default list or the CLI's table (GO_MODELS)
 // says, and every Claude model does; of any other nothing is said, and
 // magpie answers from models.dev.
 async function liveModels(key) {
@@ -281,6 +298,7 @@ async function liveModels(key) {
       context: Number.isFinite(ctx) && ctx > 0 ? ctx : k?.context ?? 0,
       images,
       npm,
+      ...(THINK_OFF.has(m.id) ? { efforts: OFF_EFFORTS } : {}),
     })
   }
   if (!out.length) throw new Error("models: an empty list")
@@ -918,8 +936,10 @@ function generateBody(chat, place = {}) {
     stream: true,
   }
   if (typeof chat.temperature === "number") params.temperature = chat.temperature
+  // off ("none", or a client's "off") is not known to be taken here: it
+  // is sent as nothing, the model's own default
   const effort = chat.reasoning_effort
-  if (effort && effort !== "none") params.reasoning_effort = fitEffort(effort, GO_EFFORTS[chat.model] ?? [])
+  if (effort && effort !== "none" && effort !== "off") params.reasoning_effort = fitEffort(effort, GO_EFFORTS[chat.model] ?? [])
   const d = new Date()
   const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
   return {
@@ -1218,6 +1238,19 @@ async function generate(key, chat, signal, place, zdr = false) {
   return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } })
 }
 
+// providerBody is the chat completion chat as the Provider API is sent it,
+// or undefined when it goes as it came: off, magpie's none or a client's
+// "off", is "off" for a model that turns thinking off (THINK_OFF), and
+// left out for any other, which refuses both "none" and "off" (#334).
+function providerBody(chat) {
+  const e = chat?.reasoning_effort
+  if (e !== "none" && e !== "off") return undefined
+  const out = { ...chat }
+  if (THINK_OFF.has(chat.model)) out.reasoning_effort = "off"
+  else delete out.reasoning_effort
+  return e === out.reasoning_effort ? undefined : JSON.stringify(out)
+}
+
 // ---- the plugin ---------------------------------------------------------------
 
 export const _internal = { subsSeen, extraSeen, waits, liveKey, failure, goModels, refuses, GO_MODELS, GO_REFUSED, zdrOn }
@@ -1273,7 +1306,10 @@ export async function CommandCodePlugin({ client, magpie } = {}) {
             }
             // the Provider API's answer goes on as it came, the account
             // kept: the built-in neither marked one lapsed nor cleared it
-            const res = await fetch(input, { ...init, headers })
+            const body = chatting ? providerBody(chat) : undefined
+            const res = await (body === undefined
+              ? fetch(input, { ...init, headers })
+              : fetch(url, { ...init, method: init.method ?? (input instanceof Request ? input.method : "POST"), headers, body }))
             if (res.ok) return kept(res)
             // a Go key the plan wasn't known for (billing/subscriptions slow
             // or failing, nothing saved yet) is refused by the Provider API
