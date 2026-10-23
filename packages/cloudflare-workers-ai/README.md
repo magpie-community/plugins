@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-[![npm version](https://img.shields.io/badge/npm%20version-0.0.2-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
+[![npm version](https://img.shields.io/badge/npm%20version-0.0.3-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
 A provider plugin for [OpenCode](https://opencode.ai) 1.x and
@@ -152,7 +152,7 @@ magpie, agents and sign-ins are never touched.
 
 | | |
 |---|---|
-| **Version** | 0.0.2 |
+| **Version** | 0.0.3 |
 | **License** | [MIT](LICENSE) — Copyright (c) 2026 Guislabert |
 | **Runtime** | Node.js >= 20, ESM only |
 | **Author** | [@Guislabert](https://github.com/Guislabert) |

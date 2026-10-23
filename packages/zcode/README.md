@@ -21,8 +21,9 @@ over Anthropic's Messages API. Provider id: `zcode`.
   - zcode.z.ai serves the Start Plan only to requests that look like the
     ZCode client's own, and refuses others with HTTP 405 "request has been
     blocked due to unusual activity". So a Start Plan request goes as
-    ZCode's does: ZCode's headers, ZCode's system prompt ahead of the
-    agent's, the day in a `<system-reminder>` turn before the agent's
+    ZCode's does: ZCode's headers, ZCode's three system blocks with the
+    agent's system prompt at the end of the third (a fourth block is
+    refused, #343), the day in a `<system-reminder>` turn before the agent's
     turns, and the sign-in's device id in `metadata.user_id`. GLM Coding
     Plan and team requests go as the agent sent them. One it still turns
     away (a 405, the block page or code 3012) comes back with what to do

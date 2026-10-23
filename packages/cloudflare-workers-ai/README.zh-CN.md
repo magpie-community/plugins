@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文 | [日本語](README.ja.md)
 
-[![npm version](https://img.shields.io/badge/npm%20version-0.0.2-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
+[![npm version](https://img.shields.io/badge/npm%20version-0.0.3-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
 面向 [OpenCode](https://opencode.ai) 1.x 和 [magpie](https://usemagpie.ai) 的供应商插件：
@@ -145,7 +145,7 @@ sh scripts/sandbox.sh json       # 沙盒内 plugin --json
 
 | | |
 |---|---|
-| **版本** | 0.0.2 |
+| **版本** | 0.0.3 |
 | **许可证** | [MIT](LICENSE) — Copyright (c) 2026 Guislabert |
 | **运行时** | Node.js >= 20，仅 ESM |
 | **作者** | [@Guislabert](https://github.com/Guislabert) |

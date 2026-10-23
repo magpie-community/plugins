@@ -1484,7 +1484,8 @@ function contextPrefix() {
 }
 
 // dress is a Messages request body as ZCode sends it: ZCode's three cached
-// system blocks, then the agent's own system text uncached; the context
+// system blocks and no more, the agent's own system text at the end of the
+// third (#343); the context
 // prefix as the first turn; no cache mark in the turns but on the last
 // block of the last; none on the tools; metadata.user_id naming the
 // sign-in's device. site names the powered-by line's provider, place where
@@ -1502,18 +1503,20 @@ function dress(text, site, device, place) {
   const cached = (t) => ({ type: "text", text: t, cache_control: { type: "ephemeral" } })
   const provider = site === "bigmodel" ? "bigmodel-api" : "zai-api"
   const model = typeof b.model === "string" ? b.model : ""
+  // The agent's own system text joins the third block, as ZCode's
+  // ContextBuilder (3.14.3, glm/zcode.cjs assembleSystemMessages) joins
+  // every dynamic system section, an added one too, with "\n\n" into
+  // that one block: ZCode never sends more than three. zcode.z.ai turns a
+  // fourth block away with 405/3012 (#343), and the first two must stay
+  // byte for byte ZCode's.
   const own = []
   if (typeof b.system === "string") {
-    if (b.system.trim()) own.push({ type: "text", text: b.system })
+    if (b.system.trim()) own.push(b.system)
   } else if (Array.isArray(b.system)) {
-    for (const x of b.system) if (x?.type === "text" && typeof x.text === "string" && x.text) own.push({ type: "text", text: x.text })
+    for (const x of b.system) if (x?.type === "text" && typeof x.text === "string" && x.text.trim()) own.push(x.text)
   }
-  b.system = [
-    cached(PROMPT.cliPrefix),
-    cached(PROMPT.stableSections.join("\n\n")),
-    cached("\n\n" + [PROMPT.beforeEnvironment, environment(provider, model, place), PROMPT.afterEnvironment].join("\n\n")),
-    ...own,
-  ]
+  const dynamic = [PROMPT.beforeEnvironment, environment(provider, model, place), PROMPT.afterEnvironment, ...own]
+  b.system = [cached(PROMPT.cliPrefix), cached(PROMPT.stableSections.join("\n\n")), cached("\n\n" + dynamic.join("\n\n"))]
   b.messages = [contextPrefix(), ...b.messages]
   let last = null
   for (const m of b.messages) {
