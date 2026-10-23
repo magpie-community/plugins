@@ -533,7 +533,14 @@ function allowanceOf(c, until) {
   }
   if (known && planMonthly > 0) {
     const pool = Math.max(planMonthly, monthly) + left - monthly
-    out.windows.push({ name: "Credits", used: Math.min(100, (100 * (pool - left)) / pool), display: money(pool - left) + " / " + money(pool), ...(until ? { resetsAt: until } : {}) })
+    out.windows.push({
+      name: "Credits",
+      used: Math.min(100, (100 * (pool - left)) / pool),
+      display: money(pool - left) + " / " + money(pool),
+      amount: pool - left,
+      limit: pool,
+      ...(until ? { resetsAt: until } : {})
+    })
   } else if (known && !out.windows.length) out.balance = money(left)
   return out
 }
