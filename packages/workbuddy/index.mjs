@@ -103,6 +103,29 @@ const hex = () => randomBytes(16).toString("hex")
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const api = (site) => site.endpoint + "/v2"
 
+// MESSAGES is the API SDK package for Anthropic's Messages shape, which
+// WorkBuddy serves the Claude models on, beside its chat completions:
+// <endpoint>/v1/messages. Those models are Anthropic's own, and their
+// thinking is asked for the way Anthropic asks it (thinking.type adaptive
+// with output_config.effort), which the chat endpoint has no field for: a
+// chat carries reasoning_effort alone, and WorkBuddy's chat endpoint gives
+// the same answer at every level, so an agent that picked max got no more
+// than one that picked low. See nativeOf.
+const NPM_MESSAGES = "@ai-sdk/anthropic"
+const apiMessages = (site) => site.endpoint + "/v1"
+
+// nativeOf is whether site serves model on Messages rather than chat: the
+// Claude models alone. Measured 2026-10-24 with a real account on
+// WorkBuddy's China build, each model of /v3/config's cli agent asked on
+// /v1/messages: claude-opus-5.5, claude-sonnet-5.5, claude-opus-5 and
+// claude-opus-4.8-1m answered in Anthropic's stream; glm-5.3 and
+// deepseek-v4.1-flash answered 500, gpt-5.5 and kimi-k3-1 400. An account
+// may still be refused a Claude model it has no entitlement for (11158),
+// which is the account's, not the endpoint's.
+function nativeOf(site, model) {
+  return /^claude-/i.test(String(model ?? ""))
+}
+
 // ---- WorkBuddy's API ------------------------------------------------------
 
 class WBError extends Error {
@@ -408,6 +431,28 @@ function conversationKey(chat, session) {
     if (sig) return `first:${sig}`
   }
   return ""
+}
+
+// isMessages says whether a request is an Anthropic Messages one, which
+// site serves the Claude models natively: its URL ends at /messages, or (a
+// body is all there is to go on) its system is Anthropic's blocks rather
+// than a chat's string, and its tools carry input_schema where a chat's
+// carry a function's parameters. A chat's own tools can look either way, so
+// the URL decides when there is one.
+function isMessages(url, body) {
+  const path = (() => {
+    try {
+      return new URL(String(url ?? "")).pathname
+    } catch {
+      return ""
+    }
+  })()
+  if (path) return /\/messages$/.test(path)
+  const b = chatOf(body)
+  if (!b) return false
+  if (Array.isArray(b.system)) return true
+  const tools = Array.isArray(b.tools) ? b.tools : []
+  return tools.some((t) => t && typeof t === "object" && "input_schema" in t && !t.function)
 }
 
 // chatOf is a chat's body as the object it is, null for one that isn't: a
@@ -1543,11 +1588,14 @@ function variants(efforts) {
   return Object.fromEntries((efforts ?? []).map((e) => [e, { reasoningEffort: e }]))
 }
 
+// configModels is the site's own list as a provider's models, each on the
+// API it is served on: a Claude model on Messages, the rest on chat.
 function configModels(site) {
   return Object.fromEntries(site.models.map(([id, name, context, efforts]) => [id, {
     name,
     limit: { context, output: 0 },
     tool_call: true,
+    ...(nativeOf(site, id) ? { api: { url: apiMessages(site), npm: NPM_MESSAGES } } : {}),
     ...(efforts ? { reasoning: true, variants: variants(efforts) } : {}),
   }]))
 }
@@ -1557,7 +1605,7 @@ function modelOf(site, provider, m) {
     id: m.id,
     providerID: provider.id,
     name: m.name,
-    api: { id: m.id, url: api(site), npm: NPM },
+    api: { id: m.id, url: nativeOf(site, m.id) ? apiMessages(site) : api(site), npm: nativeOf(site, m.id) ? NPM_MESSAGES : NPM },
     status: "active",
     headers: {},
     options: {},
@@ -1656,9 +1704,18 @@ function priceOf(d, promotions, now = Date.now()) {
 // and a default reasoning.effort. Those take low, high and max (each
 // reasoned under a real account, on four of them) and their own default.
 const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"]
-function effortsOf(d) {
+function effortsOf(d, id) {
   const said = d.reasoning?.supportedEfforts
-  if (Array.isArray(said) && said.length) return said
+  if (Array.isArray(said) && said.length) {
+    // A Claude model on Messages takes max though the config's list stops
+    // at xhigh: measured 2026-10-24, output_config.effort "max" answered
+    // 200 on each Claude model, and on claude-opus-5.5 with more thinking
+    // than xhigh (11248 thinking tokens against 1999, one run each). How
+    // much more a level gives varies by model and run; what matters here
+    // is that a client picking max reaches the server as max, not xhigh.
+    if (/^claude-/i.test(String(id ?? "")) && !said.includes("max")) return [...said, "max"]
+    return said
+  }
   if (d.supportsReasoning !== true) return []
   const own = d.reasoning?.effort
   const set = new Set(["low", "high", "max", ...(typeof own === "string" && EFFORT_ORDER.includes(own) ? [own] : [])])
@@ -1687,7 +1744,7 @@ async function liveModels(site, a) {
         m.output = d.maxOutputTokens
         m.images = d.supportsImages === true && !textOnly(site, id)
         Object.assign(m, priceOf(d, cfg.modelPromotions))
-        const es = effortsOf(d)
+        const es = effortsOf(d, id)
         if (es.length) {
           const canOff = d.reasoning?.canDisableThinking
           m.efforts = [...(!d.onlyReasoning && (canOff == null || canOff) ? ["none"] : []), ...es]
@@ -1793,7 +1850,10 @@ function makePlugin(site) {
         const auth = await getAuth()
         if (auth?.type !== "oauth") return {}
         return {
-          baseURL: api(site),
+          // no baseURL: a model's own api.url says where it is served —
+          // <endpoint>/v2 for a chat, <endpoint>/v1 for a Claude model on
+          // Messages. A provider-wide base would put /messages under /v2.
+          baseURL: "",
           apiKey: "",
           async fetch(input, init) {
             const stored = await getAuth()
@@ -1808,9 +1868,23 @@ function makePlugin(site) {
             sign(site, a, headers)
             let body = init?.body
             if (body === undefined && req) body = await req.clone().text()
-            body = withSystem(body)
-            const fit = fitted(body)
-            body = normalizeToolChoice(fit.body)
+            // An Anthropic request goes as the agent sent it: WorkBuddy
+            // serves these models on Messages itself, and the rewrites
+            // below (a default system message, the chat endpoint's
+            // max_tokens spelling, tool shapes, the move of a refused
+            // system prompt) exist for the chat endpoint alone. Claude
+            // Code's own system prompt is taken there as it is — measured
+            // 2026-10-24: the billing line, the "official CLI" line,
+            // Codex's and DeepSeek Harness's openings all answer on
+            // /v1/messages, where a chat is refused 11128.
+            const native = isMessages(req ? req.url : String(input), body)
+            let names = {}
+            if (!native) {
+              body = withSystem(body)
+              const fit = fitted(body)
+              body = normalizeToolChoice(fit.body)
+              names = fit.names
+            }
             attend(headers, body, session)
             const post = (b) =>
               fetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body: b }).catch((e) => unanswered(site, a, b, e, init?.signal))
@@ -1855,11 +1929,11 @@ function makePlugin(site) {
             const model = chatOf(body)?.model
             // a system prompt WorkBuddy refused before goes as the user's
             // words at once (see systemAsUser)
-            const sysKey = systemKey(body)
+            const sysKey = native ? "" : systemKey(body)
             if (sysKey && refusedSystems.has(sysKey)) body = systemAsUser(body) ?? body
-            const shaped = (b) => (endsAfterTools.has(model) ? replyAfterTools(b) ?? b : b)
+            const shaped = (b) => (!native && endsAfterTools.has(model) ? replyAfterTools(b) ?? b : b)
             let res = await send(shaped(body))
-            if (res.status === 400) {
+            if (res.status === 400 && !native) {
               let text = await res.text()
               const moved = REFUSED.test(text) && sysKey && !refusedSystems.has(sysKey) ? systemAsUser(body) : null
               if (moved) {
@@ -1879,7 +1953,7 @@ function makePlugin(site) {
             }
             if (ours.has(res)) return res
             // renewed here: a mark the account had comes off
-            return res.status >= 400 ? explained(res) : kept(await renamed(res, fit.names), renewed ? "renewed" : "kept")
+            return res.status >= 400 ? explained(res) : kept(native ? res : await renamed(res, names), renewed ? "renewed" : "kept")
           },
         }
       },
@@ -2046,4 +2120,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf }
+export const _internal = { systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf, isMessages, nativeOf, modelOf, configModels, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
