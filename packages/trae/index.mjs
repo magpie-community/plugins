@@ -2874,34 +2874,58 @@ const makePlugin = (site) => async ({ client }) => {
     return new Response(text, { status: res.status, headers })
   }
 
-  // checkin asks Trae CN's own pages as magpie's check-in host does, with
-  // the same account, device and renewal as any own page. Trae Global has
-  // no such page.
+  // checkinStatus reads the check-in's status page: its body, or an outcome
+  // to give back as it is (a turned-away sign-in, Trae's own error, a reply
+  // that isn't one). checkin reads it before the claim, and again after it.
+  const checkinStatus = async (getAuth, a0) => {
+    const res = await ownRequest(getAuth, a0, site.hosts.auth + site.checkin.status.path, "POST", "{}")
+    const text = await res.text()
+    let body
+    try { body = JSON.parse(text) } catch {}
+    if (!body || typeof body !== "object" || Array.isArray(body)) return { outcome: { outcome: "failed", message: `check-in status: unreadable reply ${text.trim().slice(0, 120) || "(empty)"}` } }
+    const e = errorOf(body)
+    if (res.status === 401 || lapsedCode(e.code, site)) return { outcome: { outcome: "failed", message: e.message || `${a0.name || a0.uid}: Trae's sign-in has expired` } }
+    if (res.status !== 200 || (e.code && String(e.code) !== "0")) return { outcome: { outcome: "failed", message: e.message || statusLine(res.status) } }
+    return { body }
+  }
+
   const checkin = async (getAuth) => {
     if (!site.checkin) return { outcome: "inactive", message: `${site.realm} has no daily check-in` }
     const a0 = fromAuth(await getAuth(), site)
     if (!a0) return { outcome: "failed", message: "not signed in" }
-    const base = site.hosts.auth + site.checkin.status.path
-    const status = await ownRequest(getAuth, a0, base, "POST", "{}")
-    const statusText = await status.text()
-    let body
-    try { body = JSON.parse(statusText) } catch {}
-    if (!body || typeof body !== "object" || Array.isArray(body)) return { outcome: "failed", message: `check-in status: unreadable reply ${statusText.trim().slice(0, 120) || "(empty)"}` }
-    const e = errorOf(body)
-    if (status.status === 401 || lapsedCode(e.code, site)) return { outcome: "failed", message: e.message || `${a0.name || a0.uid}: Trae's sign-in has expired` }
-    if (status.status !== 200 || (e.code && String(e.code) !== "0")) return { outcome: "failed", message: e.message || statusLine(status.status) }
-    if (body?.checked_in) return { outcome: "done", ...(Number(body.credits) > 0 ? { credit: Number(body.credits) } : {}) }
-    if (!body?.enable) return { outcome: "inactive" }
+    const first = await checkinStatus(getAuth, a0)
+    if (first.outcome) return first.outcome
+    const body = first.body
+    if (body.checked_in) return { outcome: "done", ...(Number(body.credits) > 0 ? { credit: Number(body.credits) } : {}) }
+    if (!body.enable) return { outcome: "inactive" }
     const claim = await ownRequest(getAuth, a0, site.hosts.auth + site.checkin.claim.path, "POST", "{}")
     const claimText = await claim.text()
     let answer
     try { answer = JSON.parse(claimText) } catch {}
     const ce = errorOf(answer)
     if (claim.status === 401 || lapsedCode(ce.code, site)) return { outcome: "failed", message: ce.message || `${a0.name || a0.uid}: Trae's sign-in has expired` }
+    // 9095: this device is in for today, whoever took it — the day's answer
     if (String(ce.code) === "9095") return { outcome: "ineligible", message: ce.message || "this device has checked in today" }
-    if (String(ce.code) === "9074") return { outcome: "ineligible", message: `${ce.message} — check in in the Trae CN app` }
+    // 9074: Trae did not take this claim for this account's device. Its own
+    // words say the pool is busy, which two measurements do not bear out:
+    // the same account, token and headers were taken on a 16-digit id where
+    // a 19-digit one got 9074 (plugins#194), and on 2026-10-23 the same
+    // account and headers were taken on a device id Trae had never seen
+    // while this account's own id answered 9074. So the account is told what
+    // Trae said and that the device is what it refused — not sent to check
+    // in in Trae CN's app, which is what this said before and is not where
+    // the problem is.
+    if (String(ce.code) === "9074") return { outcome: "ineligible", message: `${ce.message} (9074) — Trae CN did not take this check-in for this account's device` }
     if (claim.status !== 200 || (ce.code && String(ce.code) !== "0")) return { outcome: "failed", message: ce.message || statusLine(claim.status) }
     if (!answer || typeof answer !== "object" || Array.isArray(answer)) return { outcome: "failed", message: `check-in claim: unreadable reply ${claimText.trim().slice(0, 120) || "(empty)"}` }
+    // a claim's own code 0 is not proof the day is in: Trae answers it for
+    // a claim that registered nothing, which cli2api works around by asking
+    // the status again (internal/providers/trae/checkin.go). So success is
+    // what the status page says after the claim, and one that didn't land is
+    // a failure, tried again later, never a success to report.
+    const back = await checkinStatus(getAuth, a0)
+    if (back.outcome) return back.outcome
+    if (!back.body.checked_in) return { outcome: "failed", message: `${site.realm}: the claim answered success, but the day's check-in is not in` }
     // The credit is the day's credits, never credits plus extra_credits.
     // Trae CN's real claim answers {"code":0,"message":"success"}, with no
     // credit at all (plugins#194), so the status's credits stand in. Its
@@ -2912,7 +2936,7 @@ const makePlugin = (site) => async ({ client }) => {
     // taken first; one naming extra_credits alone is that (#260). Either
     // may be absent, and Number(undefined) is NaN, which reads as none.
     const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
-    const credit = n(answer.credits) || n(answer.extra_credits) || n(body.credits)
+    const credit = n(answer.credits) || n(answer.extra_credits) || n(back.body.credits)
     return { outcome: "claimed", ...(credit > 0 ? { credit } : {}) }
   }
 
