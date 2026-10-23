@@ -88,6 +88,7 @@ These give tools to every agent magpie connects. magpie serves them on its MCP s
 | Package | Tools |
 |---|---|
 | [calc](packages/calc) | `eval` exact arithmetic in fractions, `convert` units (data, time, length, mass, angle, temperature), `date` calendar date math across time zones and DST. No network, no key |
+| [ccx](packages/ccx) | `usage` Claude Code's and Codex's 5-hour or weekly window, `sessions` and `read` their sessions, so another agent can pick up a task where they left it. Read only, no key; needs [ccx](https://github.com/aaronwong1999/ccx) on macOS |
 
 ```sh
 magpie plugin add @magpie-community/tools-<name>

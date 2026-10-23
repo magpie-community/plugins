@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/tools-ccx",
+  "version": "0.1.0",
+  "description": "Claude Code and Codex for every agent in magpie: both apps' usage windows, and their sessions to list and read, through the local ccx command",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "ccx.mjs", "README.md"],
+  "keywords": ["magpie", "magpie-tools", "mcp", "opencode", "opencode-plugin", "claude-code", "codex", "sessions", "usage"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/ccx" }
+}
