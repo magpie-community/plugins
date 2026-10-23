@@ -371,7 +371,7 @@ test("a gift plan ZCode holds but has not granted is named on the card, to claim
   // the preview went out as ZCode's own client asks it
   const p = calls.find((c) => c.url.pathname.endsWith("/preview"))
   expect(p.method).toBe("GET")
-  expect(p.url.searchParams.get("app_version")).toBe("3.14.3")
+  expect(p.url.searchParams.get("app_version")).toBe("3.15.3")
   expect(p.url.searchParams.get("platform")).toBe(`${process.platform}-${process.arch}`)
   expect(p.headers.Authorization).toBe("Bearer " + token)
   expect(p.headers["X-Device-Mid"]).toBe("11111111-2222-4333-8444-555555555555")

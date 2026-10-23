@@ -16,11 +16,12 @@
 // `refresh` the rest of it as JSON (site, base, key, jwt, team project,
 // plan, device id), `accountId` the account's email.
 
-import { createDecipheriv, createHash } from "node:crypto"
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { createDecipheriv, createHash, randomBytes } from "node:crypto"
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs"
 import { arch, homedir, release, userInfo } from "node:os"
 import { isAbsolute, join } from "node:path"
 import PROMPT from "./prompt.mjs"
+import { createSigner } from "./sign.mjs"
 
 const PROVIDER = "zcode"
 const ZCODE = "https://zcode.z.ai"
@@ -29,7 +30,7 @@ const BIGMODEL_API = "https://bigmodel.cn" // BigModel's business API, where ZCo
 const ZAI_BASE = "https://api.z.ai/api/anthropic"
 const BIGMODEL_BASE = "https://open.bigmodel.cn/api/anthropic"
 const START_BASE = ZCODE + "/api/v1/zcode-plan/anthropic"
-const APP_VERSION = "3.14.3" // the ZCode whose sign-in this makes
+const APP_VERSION = "3.15.3" // the installed ZCode whose sign-in this makes
 const UA = "ZCode/" + APP_VERSION
 
 // ZCode's models before its config is read; the Start Plan has all but GLM-5.3.
@@ -233,6 +234,20 @@ async function plansOf(s) {
 // blocked remembers the models a gift said it has none left for: a key+jwt+
 // model for a minute, so one turn that is refused does not ask again.
 const blocked = new Map()
+
+const signedSigners = new Map()
+const signedChannel = (key) => {
+  let s = signedSigners.get(key)
+  if (!s) {
+    const cacheDir = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "magpie")
+    try { mkdirSync(cacheDir, { recursive: true }) } catch {}
+    const cachePath = join(cacheDir, "zcode-sign-key.json")
+    s = createSigner({ apiKey: key, cachePath })
+    signedSigners.set(key, s)
+  }
+  return s
+}
+const SIGNED_SUFFIX = "-Signed"
 
 // giftServes: the gift's buckets name their models lowercased ("glm-5.3-
 // flash"); what is asked for arrives as the plan lists it ("GLM-5.3-Flash").
@@ -1534,7 +1549,7 @@ function dress(text, site, device, place) {
 
 // ---- the plugin ------------------------------------------------------------------
 
-export async function ZCodeAuthPlugin({ client }) {
+export async function ZCodeAuthPlugin({ client }, options) {
   const log = (message) => {
     try {
       client?.app?.log?.({ body: { service: "zcode-auth", level: "error", message } })
@@ -1591,6 +1606,12 @@ export async function ZCodeAuthPlugin({ client }) {
           if (out[id]) continue
           out[id] = model({ ...about(raw), id }, url)
         }
+        if (!start && options?.signed === true && siteOf(s.site) === "bigmodel") {
+          for (const m of ms) {
+            const id = m.id + SIGNED_SUFFIX
+            if (!out[id]) out[id] = model({ ...m, id }, url)
+          }
+        }
         if (fell) out[Symbol.for("magpie.fellBack")] = true
         return out
       },
@@ -1623,11 +1644,16 @@ export async function ZCodeAuthPlugin({ client }) {
             // a dual account's body is read ahead of sending, so a gift that
             // says it is spent can spend nothing and replay what was asked for
             let start = alone
-            let orig, forcedGift = false
+            let orig, forcedGift = false, signed = false
             if (opts.body != null) {
               orig = opts.body = typeof opts.body === "string" ? opts.body : await new Response(opts.body).text()
               delete opts.duplex
               let m = modelOf(orig)
+              signed = m.toLowerCase().endsWith(SIGNED_SUFFIX.toLowerCase())
+              if (signed) {
+                orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: m.slice(0, -SIGNED_SUFFIX.length) })
+                m = modelOf(orig)
+              }
               if (m.toLowerCase().endsWith("-trial")) {
                 gift ??= await startPlan(s.jwt, s.device).catch(() => null)
                 const raw = giftModel(gift, m)
@@ -1652,7 +1678,21 @@ export async function ZCodeAuthPlugin({ client }) {
             }
             let h = new Headers(opts.headers)
             const place = workPlace(h)
-            if (start) {
+            if (signed) {
+              if (siteOf(s.site) !== "bigmodel") {
+                const error = { type: "invalid_request_error", message: "The signed channel is for BigModel Coding Plan keys" }
+                return kept(new Response(JSON.stringify({ type: "error", error }), { status: 400, headers: { "content-type": "application/json" } }))
+              }
+              if (!key) throw new Error("ZCode's sign-in has no key; sign in again")
+              swap(BIGMODEL_BASE)
+              h.delete("authorization")
+              h.set("x-api-key", key)
+              h.set("Authorization", "Bearer " + key)
+              const signer = signedChannel(key)
+              const sessionID = randomBytes(16).toString("hex")
+              const hdr = await signer.headers(sessionID)
+              for (const [k, v] of Object.entries(hdr)) h.set(k, v)
+            } else if (start) {
               if (jwtExpired(s.jwt)) throw new Error(EXPIRED)
               if (!s.jwt) throw new Error("ZCode's sign-in has no key; sign in again")
               swap(START_BASE)
@@ -1672,6 +1712,18 @@ export async function ZCodeAuthPlugin({ client }) {
               h.set("Authorization", "Bearer " + key)
             }
             let res = await fetch(url, { ...opts, headers: h })
+            if (signed && res.status === 401) {
+              const text = await res.text()
+              if (text.includes("VERIFY_SIGNATURE_INVALID") || text.includes("VERIFY_APIKEY_EXPIRED")) {
+                signedChannel(key).reset()
+                const sessionID = randomBytes(16).toString("hex")
+                try {
+                  const hdr = await signedChannel(key).headers(sessionID)
+                  for (const [k, v] of Object.entries(hdr)) h.set(k, v)
+                  res = await fetch(url, { ...opts, headers: h })
+                } catch { res = new Response(text, { status: 401, statusText: res.statusText, headers: res.headers }) }
+              } else res = new Response(text, { status: 401, statusText: res.statusText, headers: res.headers })
+            }
             // the Start Plan turning the request away says what to do about
             // it, as the built-in's zcodeStartExplain did
             if (start && res.status >= 400) {
@@ -1793,4 +1845,4 @@ export async function ZCodeAuthPlugin({ client }) {
 }
 
 // for tests
-export const _internal = { entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, dress, PROMPT }
+export const _internal = { entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, dress, PROMPT, signedSigners }
