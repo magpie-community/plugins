@@ -199,8 +199,17 @@ test("where each OS keeps the client's storage.json", () => {
     "/h/AppData/Roaming/TRAE SOLO CN/User/globalStorage/storage.json",
     "/h/AppData/Roaming/trae-cn/User/globalStorage/storage.json",
   ])
-  expect(same(p("linux", "/home/a", {}))[0]).toBe("/home/a/.config/trae-cn/User/globalStorage/storage.json")
-  expect(same(p("linux", "/home/a", { XDG_CONFIG_HOME: "/x" }))[0]).toBe("/x/trae-cn/User/globalStorage/storage.json")
+  // linux lists the same three profiles under .config, in the same order
+  expect(same(p("linux", "/home/a", {}))).toEqual([
+    "/home/a/.config/Trae CN/User/globalStorage/storage.json",
+    "/home/a/.config/TRAE SOLO CN/User/globalStorage/storage.json",
+    "/home/a/.config/trae-cn/User/globalStorage/storage.json",
+  ])
+  expect(same(p("linux", "/home/a", { XDG_CONFIG_HOME: "/x" }))).toEqual([
+    "/x/Trae CN/User/globalStorage/storage.json",
+    "/x/TRAE SOLO CN/User/globalStorage/storage.json",
+    "/x/trae-cn/User/globalStorage/storage.json",
+  ])
   // a root named twice is asked once: APPDATA the same as the home's own
   expect(same(p("win32", "/h", { APPDATA: "/h/AppData/Roaming" }))).toEqual([
     "/h/AppData/Roaming/Trae CN/User/globalStorage/storage.json",

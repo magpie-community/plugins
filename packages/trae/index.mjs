@@ -849,7 +849,7 @@ function clientStoragePaths(platform, home, env) {
     }
     return roots.flatMap((r) => CLIENT_PROFILES.map((n) => file(r, n)))
   }
-  if (platform === "linux") return ["trae-cn", "Trae CN", "TRAE SOLO CN"].map((n) => file(env.XDG_CONFIG_HOME || join(home, ".config"), n))
+  if (platform === "linux") return CLIENT_PROFILES.map((n) => file(env.XDG_CONFIG_HOME || join(home, ".config"), n))
   return []
 }
 
@@ -2947,11 +2947,26 @@ const makePlugin = (site) => async ({ client }) => {
     // a claim's own code 0 is not proof the day is in: Trae answers it for
     // a claim that registered nothing, which cli2api works around by asking
     // the status again (internal/providers/trae/checkin.go). So success is
-    // what the status page says after the claim, and one that didn't land is
-    // a failure, tried again later, never a success to report.
+    // what the status page says after the claim, and one that didn't land
+    // is never reported as claimed.
+    //
+    // Nor is it a `failed`. magpie retries a failed check-in with backoff
+    // for the rest of the day, up to every 30 minutes, and each retry is
+    // another claim: a claim answered code 0 while the status still says
+    // the day is out is the very case that would multiply, since code 0
+    // for a claim that registered nothing is this plugin's own premise —
+    // an account that claimed once a day would claim many times. A status
+    // that lags a claim that did land reads as not in once, which is a
+    // false failure and a second claim. So once a claim has been sent,
+    // what the read-back says is the day's answer and nothing is claimed
+    // again: `ineligible`, as a 9095 is. A read-back that itself comes to
+    // nothing — the network, an answer that isn't one — is the same: the
+    // claim was made, and whether the day is in is not known, so it is
+    // read again on the next press rather than claimed again.
+    const noMore = (o) => (o.outcome === "failed" ? { outcome: "ineligible", message: `${o.message} — nothing is claimed again today` } : o)
     const back = await checkinStatus(getAuth, a0)
-    if (back.outcome) return back.outcome
-    if (!back.body.checked_in) return { outcome: "failed", message: `${site.realm}: the claim answered success, but the day's check-in is not in` }
+    if (back.outcome) return noMore(back.outcome)
+    if (!back.body.checked_in) return { outcome: "ineligible", message: `${site.realm}: the claim answered success, but the day's check-in is not in — nothing is claimed again today` }
     // a claim may answer extra_credits with no credits beside it, and either
     // may be absent: Number(undefined) is NaN, and NaN + n is NaN, which
     // reads as no credit at all

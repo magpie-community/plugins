@@ -358,8 +358,11 @@ through `auth.checkin`: `claimed` when the status says today's is in after
 the claim, `done` when it said so before it, `inactive` when the page is
 disabled, `ineligible` when the claim answers 9095 (this device has
 checked in today) or 9074 (Trae did not take it for this account's
-device), and `failed` for a turned-away sign-in or any other answer,
-which is tried again later that day.
+device) or answers code 0 while the read-back still says the day is out,
+and `failed` for a turned-away sign-in or any answer that got nowhere,
+which is tried again later that day. An `ineligible` is the day's answer:
+magpie asks that account no more until tomorrow, and only reads its
+status.
 It asks Trae CN's own pages through
 this plugin's fetch, which sends them as the account, as Trae CN's IDE
 (3.3.104) sends them: its Cloud-IDE-JWT (renewed first when near its
@@ -404,8 +407,12 @@ answered it 9074 even with the client's headers.
   device, is passed over rather than ending the search. Files: macOS
   `~/Library/Application Support/Trae CN/…` and `…/TRAE SOLO CN/…`, Windows
   `%APPDATA%\Trae CN\…`, `…\TRAE SOLO CN\…` (or `trae-cn`), Linux
-  `~/.config/trae-cn/…`, `…/Trae CN/…`, `…/TRAE SOLO CN/…` (the last two not
-  seen on a real Linux install). A client started with its own
+  `~/.config/trae-cn/…`, `…/Trae CN/…`, `…/TRAE SOLO CN/…`. The IDE's
+  folder has been seen in a real install (macOS and Windows); TRAE SOLO
+  CN's name and its `iCubeAuthInfo://` keys are read as the same client
+  of the same realm writes them, which hasn't been checked against real
+  files — harmless if they differ, since a folder that isn't there, or a
+  key that isn't named, is simply not read. A client started with its own
   `--user-data-dir` is not found: there is no list of those to read.
 - **Every other account's device (0.2.16):** its own device id, in the
   client's shape. Trae CN answered a claim on the plugin's 19-digit id
@@ -432,12 +439,18 @@ answered it 9074 even with the client's headers.
   changed or rotated to get round a 9095 or a 9074, and no account is
   given another account's device or its own client's device unless a
   client is signed in as that account.
-- **A claim's code 0 is not the answer (0.2.21):** Trae answers a claim
-  code 0 for one that registered nothing, so the status is read back after
-  every claim and only a day that is in is reported as `claimed`; one that
-  isn't is a `failed`, tried again later. The credit a claim granted is its
-  `credits` plus its `extra_credits`, either alone; the read-back's is the
-  fallback when the claim says none.
+- **A claim's code 0 is not the answer (0.2.21, 0.2.22):** Trae answers a
+  claim code 0 for one that registered nothing, so the status is read back
+  after every claim and only a day that is in is reported as `claimed`.
+  Since 0.2.22 one that isn't is an `ineligible` — the day's answer, not a
+  `failed` to be tried again: a `failed` is retried with backoff for the
+  rest of the day and each retry is another claim, which for an account
+  Trae keeps answering code 0 would turn one claim a day into many, and a
+  status that lags a claim that did land would read as not in once and
+  claim again. Nothing is claimed again that day; the status alone is
+  read, so a lag that catches up is still reported as `done`. The credit a
+  claim granted is its `credits` plus its `extra_credits`, either alone;
+  the read-back's is the fallback when the claim says none.
 
 Only `api.trae.cn`'s `/trae/api/` pages are sent this way; any other URL
 that isn't a chat request is still refused (400). Needs 0.1.4 or later.
