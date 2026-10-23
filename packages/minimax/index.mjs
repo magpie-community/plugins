@@ -508,15 +508,98 @@ async function planQuota(site, access, group) {
   return planWindows(await res.json())
 }
 
+// compact is a count as magpie says one: whole, else to two places.
+const compact = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""))
+
 // credits says a balance as a count of credits: "1234.50" is "1234.5 credits".
 function credits(b) {
   const n = Number(b)
   if (!Number.isFinite(n)) return String(b)
-  return (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")) + " credits"
+  return compact(n) + " credits"
+}
+
+// ---- the credit ledger --------------------------------------------------------
+
+// The membership says what is left; what was granted — the total the card's
+// window wants beside it — is the credit ledger's, /minimax-cloud/api/v1/
+// credit/details, the same list MiniMax Code's settings page (Settings →
+// Usage → Credit Details) reads. Credits come as lots: each grant (a
+// check-in's, a purchase's) with what it gave, what is left of it and when
+// it ends — a lot's credits die at their expire_at_ms, granted thirty
+// calendar days after the grant.
+
+// CREDIT_TYPES are the lots that count, as MiniMax Code's own reader takes
+// them: purchased (1) and free (2) grants. Anything else is not the
+// account's op credit.
+const CREDIT_TYPES = new Set([1, 2])
+
+// amount is a lot's count as MiniMax Code reads one: a number that may come
+// as a string with thousands separators, never negative.
+function amount(v) {
+  const n = num(typeof v === "string" ? v.replace(/,/g, "") : v)
+  return n !== undefined && n >= 0 ? n : undefined
+}
+
+// lotOf reads one grant of the ledger as MiniMax Code's reader does: a
+// purchased or free lot with its amounts and both its moments — a negative
+// remaining is one MiniMax reads as spent, so zero. A grant that says less
+// is dropped.
+function lotOf(e) {
+  const d = obj(e)
+  if (!d || !CREDIT_TYPES.has(num(d.credit_type))) return undefined
+  const granted = amount(d.granted_amount)
+  const used = amount(d.consumed_amount)
+  const at = num(d.granted_at_ms), end = num(d.expire_at_ms)
+  const said = typeof d.remaining_amount === "string" ? d.remaining_amount.replace(/,/g, "").trim() : d.remaining_amount
+  const left = typeof said === "string" && said.startsWith("-") ? (amount(said.slice(1)) === undefined ? undefined : 0) : amount(said)
+  if (granted === undefined || left === undefined || used === undefined || at === undefined || end === undefined) return undefined
+  return { granted, left, used, at, end }
+}
+
+// lotsOf reads one page of the ledger: its lots and how many there are in
+// all. The reply that MiniMax Code throws on ("Credit details response
+// payload is invalid") is the one without both.
+function lotsOf(env) {
+  const d = Array.isArray(env?.details) ? env : Array.isArray(env?.data?.details) ? env.data : undefined
+  if (!d || typeof d.total_count !== "number") throw new Error("credits: no ledger in the reply")
+  return { lots: d.details.map(lotOf).filter(Boolean), total: d.total_count }
+}
+
+// creditLots reads the account's whole ledger, as MiniMax Code's settings
+// page asks it: page_number and page_size (a hundred at most a page), the
+// expired lots included and left out here by their own expire_at_ms.
+async function creditLots(site, access, userID) {
+  const out = []
+  for (let page = 1; page <= 50; page++) {
+    const { lots, total } = lotsOf(await accountCall(site, "/minimax-cloud/api/v1/credit/details", {
+      access, userID,
+      query: { page_number: String(page), page_size: "100", include_expired: "true" },
+    }, "credits"))
+    out.push(...lots)
+    if (lots.length < 100 || out.length >= total) break
+  }
+  return out
+}
+
+// creditsWindow is the account's credits as the card's window, the granted
+// total against what is left of it — used of total, as WorkBuddy's card
+// says it. Only the lots that haven't ended count: a dead lot's credits are
+// gone, not spent. Nothing when no live lot granted any.
+function creditsWindow(lots, now = Date.now()) {
+  let total = 0, left = 0
+  for (const l of lots ?? []) {
+    if (l.end <= now) continue
+    total += l.granted
+    left += l.left
+  }
+  if (!(total > 0)) return undefined
+  const used = Math.max(0, total - left)
+  return { name: "Credits", used: (100 * used) / total, display: compact(used) + " / " + compact(total), amount: used, limit: total, unit: "credits" }
 }
 
 // usageOf is the card: the plan (the M Plan's tier, else Free), the credits
-// left, and the M Plan's windows when there are any.
+// left, the granted total (the ledger's window) and the M Plan's windows
+// when there are any.
 function usageOf(m, windows = []) {
   const plan = m.hasTokenPlan ? (m.tier ? "M Plan " + m.tier : "M Plan") : "Free"
   return {
@@ -822,6 +905,13 @@ function makePlugin(site) {
                 error = e?.message ?? String(e)
               }
             }
+            // the granted total, from the ledger; a ledger that can't be
+            // read leaves the card as it was — the balance still says the
+            // credits left
+            try {
+              const w = creditsWindow(await creditLots(site, a.access, who.realUserID))
+              if (w) windows = [w, ...windows]
+            } catch {}
             return {
               ...usageOf(m, windows),
               ...(error ? { error } : {}),
@@ -908,4 +998,4 @@ export const MiniMaxCodeAuthPlugin = makePlugin(SITES["minimax-code"])
 export const MiniMaxCodeGlobalAuthPlugin = makePlugin(SITES["minimax-code-global"])
 
 // for tests
-export const _internal = { SITES, MODELS, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, variants, renewing, renewed, startDevice, pollDevice, checkinOf }
+export const _internal = { SITES, MODELS, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, variants, renewing, renewed, startDevice, pollDevice, checkinOf, lotOf, lotsOf, creditLots, creditsWindow }
