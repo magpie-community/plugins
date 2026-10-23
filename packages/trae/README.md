@@ -390,10 +390,23 @@ answered it 9074 even with the client's headers.
   plugin's, on its own device, got 9074 (yetone/magpie#808, #1920); that
   this header is what changes it hasn't been tried on a real account
   yet. Every other account keeps its own device, and a file that can't be
-  read or made out, or holds no single device, changes nothing. Files:
-  macOS `~/Library/Application Support/Trae CN/…`, Windows
-  `%APPDATA%\Trae CN\…` (or `trae-cn`), Linux `~/.config/trae-cn/…`
-  (or `Trae CN`; not seen on a real Linux install).
+  read or made out, or holds no single device, changes nothing.
+- **Every profile is read (0.2.21):** a machine can hold more than one
+  Trae CN client profile — the IDE's and TRAE SOLO CN's each write their
+  own `storage.json`, and each names the account that profile is signed in
+  as, with that account's device. So every profile is read and the one
+  signed in as the account answers with its device, which is how two
+  accounts can each check in on a real client's device. Before, only the
+  first profile was read and it decided for all of them: a second
+  account's own profile was never seen, and one profile signed in as
+  someone else (or one file that didn't parse) hid every profile after it.
+  A profile that isn't signed in as the account, or that names no single
+  device, is passed over rather than ending the search. Files: macOS
+  `~/Library/Application Support/Trae CN/…` and `…/TRAE SOLO CN/…`, Windows
+  `%APPDATA%\Trae CN\…`, `…\TRAE SOLO CN\…` (or `trae-cn`), Linux
+  `~/.config/trae-cn/…`, `…/Trae CN/…`, `…/TRAE SOLO CN/…` (the last two not
+  seen on a real Linux install). A client started with its own
+  `--user-data-dir` is not found: there is no list of those to read.
 - **Every other account's device (0.2.16):** its own device id, in the
   client's shape. Trae CN answered a claim on the plugin's 19-digit id
   9074, while the same account and token on a 16-digit id were taken
@@ -410,10 +423,13 @@ answered it 9074 even with the client's headers.
   headers were taken on a 16-digit id where a 19-digit one got 9074
   (plugins#194), and on 2026-10-23 the same account and headers were taken
   on a device id Trae had never seen while this account's own id answered
-  9074. The message says so rather than sending people to Trae CN's app.
-  No device id is ever changed or rotated to get round a 9095 or a 9074,
-  and no account is given another account's device or its own client's
-  device unless the client is signed in as that account.
+  9074. The message says so, and names the one thing seen to change it: a
+  Trae CN client on this machine signed in to that account, whose
+  registered device the check-in then rides (see above) — not "check in in
+  Trae CN's app", which is not where the problem is. No device id is ever
+  changed or rotated to get round a 9095 or a 9074, and no account is
+  given another account's device or its own client's device unless a
+  client is signed in as that account.
 - **A claim's code 0 is not the answer (0.2.21):** Trae answers a claim
   code 0 for one that registered nothing, so the status is read back after
   every claim and only a day that is in is reported as `claimed`; one that
