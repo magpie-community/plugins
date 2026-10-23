@@ -46,15 +46,13 @@ test("a claim answering neither credit says so, and the status's is the fallback
 // so the status's stands in, and its extra_credits is not added on top.
 test("a claim with no credit of its own is the status's credits, not credits plus extra_credits", async () => {
   f = fakeTrae()
-  f.route("POST " + STATUS, () => json({ checked_in: false, code: 0, credits: 100, did_checked_in: false, enable: true, extra_credits: 100 }))
-  f.route("POST " + CLAIM, () => json({ code: 0, message: "success" }))
+  claimable({ credits: 100, did_checked_in: false, extra_credits: 100 }, () => json({ code: 0, message: "success" }))
   expect(await checkin()).toEqual({ outcome: "claimed", credit: 100 })
 })
 
 test("a claim naming both credits and extra_credits is its credits, once", async () => {
   f = fakeTrae()
-  f.route("POST " + STATUS, () => json({ checked_in: false, code: 0, credits: 100, enable: true, extra_credits: 100 }))
-  f.route("POST " + CLAIM, () => json({ code: 0, credits: 100, extra_credits: 100 }))
+  claimable({ credits: 100, extra_credits: 100 }, () => json({ code: 0, credits: 100, extra_credits: 100 }))
   expect(await checkin()).toEqual({ outcome: "claimed", credit: 100 })
 })
 
@@ -126,16 +124,56 @@ test("Trae's 9074 on the claim says the device is what Trae refused, and promise
 
 // a claim's code 0 is not the answer: Trae answers it for a claim that
 // registered nothing, so the status is read back after it
-test("a claim answered success that didn't land is failed, not claimed", async () => {
+test("a claim answered success that didn't land is the day's answer, not a retry", async () => {
   f = fakeTrae()
   f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))
   f.route("POST " + CLAIM, () => json({ code: 0, credits: 100 }))
   const out = await checkin()
-  expect(out).toMatchObject({ outcome: "failed" })
+  expect(out).toMatchObject({ outcome: "ineligible" })
   expect(out.message).toContain("not in")
   // the status before the claim, the claim, and the read-back that found
   // the day still out
   expect(f.seen.map((r) => r.path)).toEqual([STATUS, CLAIM, STATUS])
+})
+
+// ineligible, not failed: magpie retries a failed check-in with backoff for
+// the rest of the day and each retry is another claim, so a claim answered
+// code 0 while the status still says the day is out — this plugin's own
+// premise for an account Trae keeps refusing — would claim many times a day,
+// and a status that lags a claim that did land would read as not in once and
+// claim again. An ineligible is the day's answer in magpie's eyes: it asks
+// that account no more until tomorrow, and only reads its status, so a lag
+// that catches up within the day still reads as done.
+test("a claim that didn't land is ineligible, which magpie reads rather than asks again", async () => {
+  f = fakeTrae()
+  f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))
+  f.route("POST " + CLAIM, () => json({ code: 0, credits: 100 }))
+  const out = await checkin()
+  expect(out).toMatchObject({ outcome: "ineligible" })
+  // the status before the claim, the claim, and the read-back that found the
+  // day still out — no second claim on the day
+  expect(f.seen.map((r) => r.path)).toEqual([STATUS, CLAIM, STATUS])
+  // magpie's next pass reads the status alone, which is what a day already
+  // answered with an ineligible asks of the plugin: the claim is not sent
+  f.seen.length = 0
+  f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: true, credits: 100 }))
+  const later = await checkin()
+  expect(later).toEqual({ outcome: "done", credit: 100 })
+  expect(f.seen.map((r) => r.path)).toEqual([STATUS])
+})
+
+// a read-back that can't be read after a claim is the day's answer too: the
+// claim was made and whether the day is in isn't known, so it is read again
+// rather than claimed again
+test("a read-back that can't be read is not claimed again that day", async () => {
+  f = fakeTrae()
+  let n = 0
+  f.route("POST " + STATUS, () => (n++ === 0 ? json({ code: 0, enable: true, checked_in: false }) : new Response("<html>gateway</html>")))
+  f.route("POST " + CLAIM, () => json({ code: 0 }))
+  const out = await checkin()
+  expect(out).toMatchObject({ outcome: "ineligible" })
+  expect(out.message).toContain("unreadable")
+  expect(out.message).toContain("nothing is claimed again today")
 })
 
 test("a claim that lands is claimed on the status's word, its credit the read-back's", async () => {
@@ -144,16 +182,6 @@ test("a claim that lands is claimed on the status's word, its credit the read-ba
   f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: claimed, credits: claimed ? 120 : 0 }))
   f.route("POST " + CLAIM, () => { claimed = true; return json({ code: 0 }) })
   expect(await checkin()).toEqual({ outcome: "claimed", credit: 120 })
-})
-
-test("a read-back that can't be read is failed, never claimed", async () => {
-  f = fakeTrae()
-  let n = 0
-  f.route("POST " + STATUS, () => (n++ === 0 ? json({ code: 0, enable: true, checked_in: false }) : new Response("<html>gateway</html>")))
-  f.route("POST " + CLAIM, () => json({ code: 0 }))
-  const out = await checkin()
-  expect(out).toMatchObject({ outcome: "failed" })
-  expect(out.message).toContain("unreadable")
 })
 
 test("an unreadable status reply is failed", async () => {
