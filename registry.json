@@ -62,6 +62,8 @@
       "summary": { "en": "PiG (Pi in Go): add Magpie's endpoint and model catalog, choose models in PiG, and keep startup settings unchanged.", "zh": "为 PiG（Pi in Go）注入 Magpie 端点与模型列表，在 PiG 内选择模型，保持启动设置不变。" } },
     { "package": "@magpie-community/agent-type4me", "name": "Type4Me", "kind": "agent", "community": true,
       "summary": { "en": "Type4Me (macOS voice input) on magpie's Agents page: pick one of magpie's models for its LLM post-processing, used from the next dictation.", "zh": "把 Type4Me（macOS 语音输入）加到 magpie 的 Agent 页：给它的 LLM 后处理选 magpie 的模型，下一次语音输入即生效。" } },
+    { "package": "@magpie-community/agent-cowork", "name": "Tuanjie Cowork", "kind": "agent", "community": true,
+      "summary": { "en": "Tuanjie Cowork (codely) on magpie's Agents page: pick one of magpie's models and Cowork chats with it, on the subscriptions magpie already holds.", "zh": "把团结 Cowork（codely）加到 magpie 的 Agent 页：给它选一个 magpie 的模型，它聊天就走那个模型，用的是 magpie 里已登录的那些订阅的额度。" } },
     { "package": "@magpie-community/middleware-reserve", "name": "Reserve", "kind": "middleware", "community": true,
       "summary": { "en": "Two routings that keep something in reserve: fill accounts up to a ceiling of their allowance, or use subscriptions before API keys.", "zh": "两种留余量的路由：账号用到额度上限就换下一个，或订阅账号优先于 API key。" } },
     { "package": "@magpie-community/tools-calc", "name": "Calc", "kind": "tools", "community": true,
