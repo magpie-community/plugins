@@ -2591,14 +2591,29 @@ const levelsOf = (m) => {
   return known.length ? known.map((o) => LEVELS[o]) : options.length ? null : []
 }
 
-// variantsOf is a model's levels as OpenCode's variants: each names the effort
-// the request is asked for, spelled as Trae spells it. {} when it takes none.
-const variantsOf = (levels) => Object.fromEntries((levels ?? []).map((level) => [level, { reasoningEffort: Object.keys(LEVELS).find((k) => LEVELS[k] === level) ?? level }]))
+// variantsOf is a model's levels as OpenCode's variants. The value is the
+// effort OpenCode puts in the request body, so it names the level the way this
+// plugin's levels do: an agent in OpenCode writes `reasoning_effort` straight
+// from it, and effortOf below turns that name into Trae's. Naming Trae's
+// spelling here would make the body say "light", which is not one of the
+// levels this plugin offers, and the field would then be dropped. {} when the
+// model takes none.
+const variantsOf = (levels) => Object.fromEntries((levels ?? []).map((level) => [level, { reasoningEffort: level }]))
 
-// effortOf is the name to send Trae for an OpenCode effort, or undefined when
-// the model doesn't take that one: a level Trae has no entry for is rejected,
-// so nothing is sent instead.
-const effortOf = (levels, effort) => (typeof effort !== "string" || !(levels ?? []).includes(effort) ? undefined : Object.keys(LEVELS).find((k) => LEVELS[k] === effort))
+// effortOf is the name to send Trae for an effort the request carries, or
+// undefined when the model doesn't take that one: a level Trae has no entry for
+// is rejected, so nothing is sent instead. The effort arrives in either
+// spelling — this plugin's own (low/high/xhigh) from its variants, or Trae's
+// (light/extra_high) from a client that read them off the list — and both name
+// the same level.
+const effortOf = (levels, effort) => {
+  if (typeof effort !== "string" || !levels) return undefined
+  const mine = Object.values(LEVELS).includes(effort) ? effort
+    : Object.prototype.hasOwnProperty.call(LEVELS, effort) ? LEVELS[effort]
+    : undefined
+  if (mine === undefined || !levels.includes(mine)) return undefined
+  return Object.keys(LEVELS).find((k) => LEVELS[k] === mine)
+}
 
 // ---- usage ------------------------------------------------------------------------
 
@@ -2685,7 +2700,7 @@ const makePlugin = (site) => async ({ client }) => {
   // read in flight sees the same outcome the read settled on, an expiry
   // included, rather than the bare null a failed read answers.
   const runRead = (a, who) => {
-    const rec = { at: Date.now(), p: null, done: undefined, expired: null, access: a.access }
+    const rec = { at: Date.now(), p: null, done: undefined, expired: null }
     // the record goes in BEFORE the read starts, so a caller arriving during it
     // finds `rec.p` and joins; `p` resolves to this same record
     readAt.set(who, rec)
@@ -2719,9 +2734,11 @@ const makePlugin = (site) => async ({ client }) => {
   }
   // readList answers the models of the read this caller rode on (its own, or
   // the one in flight, whose record it waits for and then reads), and whether
-  // that read found the account lapsed. A record belongs to the token that read
-  // it: a re-sign-in names a new access token, and the old answer says nothing
-  // about the new one, so it is read again rather than replayed.
+  // that read found the account lapsed. The record is the account's, not the
+  // token's: a re-sign-in is the same account's list, and the host's refresh is
+  // strict, so it reads again rather than serving a cached lapse. A request
+  // path only reaches here for a model it has no entry for, and that read is
+  // the one that fills the entry in.
   //
   // The lapse is answered, not thrown: several callers can ride one read, and a
   // throw out of a shared promise surfaces once as an unhandled rejection for
@@ -2732,9 +2749,8 @@ const makePlugin = (site) => async ({ client }) => {
   const readList = async (a, { strict = false } = {}) => {
     const who = a.uid || a.name || String(site.id)
     const was = readAt.get(who)
-    const stale = was !== undefined && was.access !== a.access
     let rec
-    if (was === undefined || stale) rec = await runRead(a, who)
+    if (was === undefined) rec = await runRead(a, who)
     else if (was.p) rec = await was.p
     else if (was.done === undefined || Date.now() - was.at >= REREAD_MS) rec = await runRead(a, who)
     else if (strict && was.expired) rec = await runRead(a, who)
@@ -3065,7 +3081,7 @@ const makePlugin = (site) => async ({ client }) => {
     const at = readAt.get(who)
     // a readList run records itself; a read nobody recorded (a caller reaching
     // liveModels directly) is recorded here, unless a read is in flight
-    if (at === undefined || !at.p) readAt.set(who, { at: Date.now(), p: null, done: models, expired: null, access: a.access })
+    if (at === undefined || !at.p) readAt.set(who, { at: Date.now(), p: null, done: models, expired: null })
     return models
   }
 
@@ -3106,8 +3122,11 @@ const makePlugin = (site) => async ({ client }) => {
       },
       // the levels this entry takes, as OpenCode's variants: Trae's own
       // reasoning_effort_config, which a model without one doesn't carry (it
-      // is then served at Trae's default, with no level to pick)
-      variants: was.variants ?? variantsOf(levelsOf(m)),
+      // is then served at Trae's default, with no level to pick). A config
+      // model with an empty variants says nothing — magpie's host fills one in
+      // for every model it hands over — so only a non-empty one is kept, or a
+      // model in the fallback table would lose the levels its entry names.
+      variants: Object.keys(was.variants ?? {}).length ? was.variants : variantsOf(levelsOf(m)),
     }
   }
 

@@ -248,9 +248,9 @@ refresh rides the same read, so a refresh and a request never ask twice.
 A request's read swallows an expiry (the chat can still answer); the
 catalog's refresh raises it, so a lapsed account is still marked — including
 when the refresh merely rides a read a request started, which is why the lapse
-travels on the read's record instead of being thrown from it. The record
-belongs to the token that read it, so a re-sign-in is asked afresh rather than
-being told again that the previous token lapsed.
+travels on the read's record instead of being thrown from it. The host's
+refresh is strict, so it reads again rather than serving a cached lapse: a
+re-sign-in is asked afresh instead of being told again that the account lapsed.
 
 The entry kept for a model is the one the request is asked through, and so
 the one whose levels the request is held to, so the lists' disagreement

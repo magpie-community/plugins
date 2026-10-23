@@ -37,13 +37,15 @@ async function live(configs) {
   return hooks.provider.models({ models: {} }, { auth: signedIn() })
 }
 
-test("an entry's levels are offered as the variants agents pick, spelled as Trae spells them", async () => {
+test("an entry's levels are offered as the variants agents pick, named as OpenCode names them", async () => {
   const ms = await live([entry("deepseek-v4.1-flash", ["light", "high", "extra_high"], { default_level: "high" })])
   const m = ms["deepseek-v4.1-flash"]
   expect(Object.keys(m.variants)).toEqual(["low", "high", "xhigh"])
-  expect(m.variants.low).toEqual({ reasoningEffort: "light" })
+  // the value is what OpenCode writes into the body, so it is this plugin's
+  // name for the level; effortOf turns it into Trae's on the way out
+  expect(m.variants.low).toEqual({ reasoningEffort: "low" })
   expect(m.variants.high).toEqual({ reasoningEffort: "high" })
-  expect(m.variants.xhigh).toEqual({ reasoningEffort: "extra_high" })
+  expect(m.variants.xhigh).toEqual({ reasoningEffort: "xhigh" })
   // the model reasons, as it did before the levels came
   expect(m.capabilities.reasoning).toBe(true)
 })
@@ -91,6 +93,60 @@ test("the effort an agent picks reaches Trae's request, spelled as Trae names it
   })
   const sent = f.seen.find((r) => r.path === "/api/agent/v3/llm_utils_chat")
   expect(sent.json.reasoning_effort).toBe("extra_high")
+})
+
+// In OpenCode the variant's value is what reaches the body: @ai-sdk/openai-
+// compatible writes it as reasoning_effort, and the plugin's fetch reads it
+// back. So every variant the plugin offers has to survive that round trip, not
+// just the one whose OpenCode name happens to equal Trae's.
+test("every variant's own value survives the round trip to Trae's request", async () => {
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [entry("deepseek-v4.1-flash", ["light", "high", "extra_high"], { default_level: "high" })] },
+  ] }))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { content: "ok" }], ["finish", { finish_reason: "stop" }]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const ms = await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  const variants = ms["deepseek-v4.1-flash"].variants
+  const opts = await hooks.auth.loader(async () => signedIn())
+
+  const expectSent = { low: "light", high: "high", xhigh: "extra_high" }
+  for (const [name, v] of Object.entries(variants)) {
+    await opts.fetch(opts.baseURL + "/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "deepseek-v4.1-flash", stream: true, messages: [{ role: "user", content: "hi" }], reasoning_effort: v.reasoningEffort }),
+    })
+    const sent = f.seen.filter((r) => r.path === "/api/agent/v3/llm_utils_chat").at(-1)
+    // the level reaches Trae spelled as Trae spells it, whichever variant it was
+    expect(sent.json.reasoning_effort).toBe(expectSent[name])
+  }
+})
+
+// magpie's host fills in `variants: m.variants ?? was?.variants ?? {}` for
+// every model of the config, so provider.models is handed `{}` for models in
+// the fallback table as well as ones the list named. An empty variants says
+// nothing about the model, and must not overwrite the levels its entry names.
+test("a model in the fallback table keeps the levels its entry names", async () => {
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [
+      entry("glm-5.2", ["high", "extra_high"]),
+      entry("glm-5.3", ["light", "high", "extra_high"]),
+    ] },
+  ] }))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const cfg = { provider: {} }
+  await hooks.config(cfg)
+  const p = cfg.provider["trae-cn"]
+  // the shape the host hands over: every model carries a variants, empty where
+  // the config had none
+  const provider = { ...p, models: Object.fromEntries(Object.entries(p.models).map(([k, m]) => [k, { ...m, variants: m.variants ?? {} }])) }
+
+  const ms = await hooks.provider.models(provider, { auth: signedIn() })
+  // glm-5.2 is in the fallback table, so its config entry is the empty one
+  expect(Object.keys(ms["glm-5.2"].variants)).toEqual(["high", "xhigh"])
+  expect(Object.keys(ms["glm-5.3"].variants)).toEqual(["low", "high", "xhigh"])
 })
 
 test("a request for a model with no levels carries no reasoning_effort", async () => {

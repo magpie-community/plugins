@@ -166,9 +166,10 @@ test("a refresh that joins a request's failing read still hears the expiry", asy
   expect(f.seen.filter((x) => x.path === "/api/ide/v1/batch_get_detail_param").length).toBe(1)
 })
 
-test("a re-sign-in is not held to the previous token's cached expiry", async () => {
-  // the record is the token's: after the user signs in again the list is asked
-  // once more, instead of the old lapse being replayed for the whole window
+test("a re-sign-in is not held to the cached expiry: the host's refresh reads again", async () => {
+  // the host's refresh is strict, so a cached lapse is read again for rather
+  // than replayed for the rest of the window: signing in again is exactly the
+  // case that must not be stuck with the old lapse
   f = fakeTrae()
   let lapsed = true
   f.route("POST /api/ide/v1/batch_get_detail_param", () => lapsed
