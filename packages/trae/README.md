@@ -354,12 +354,12 @@ an empty answer.
 Trae CN gives credits for a daily check-in (每日签到); Trae Global has no
 such page, so this is CN only. magpie can press it
 once a day for each account (Settings, or the switch on the usage card),
-through `auth.checkin`: `claimed` when Trae grants the credits, `done`
-when the status says today's is in already, `inactive` when the page is
+through `auth.checkin`: `claimed` when the status says today's is in after
+the claim, `done` when it said so before it, `inactive` when the page is
 disabled, `ineligible` when the claim answers 9095 (this device has
-checked in today) or 9074 (to be done in Trae CN's own app; not asked
-again that day), and `failed` for a turned-away sign-in or any other
-answer, which is tried again later that day.
+checked in today) or 9074 (Trae did not take it for this account's
+device), and `failed` for a turned-away sign-in or any other answer,
+which is tried again later that day.
 It asks Trae CN's own pages through
 this plugin's fetch, which sends them as the account, as Trae CN's IDE
 (3.3.104) sends them: its Cloud-IDE-JWT (renewed first when near its
@@ -404,12 +404,22 @@ answered it 9074 even with the client's headers.
   keep the 19-digit device it signed in with.
 - **What comes back:** Trae's answer as it is. A 401 or code 1001 marks
   the account for a new sign-in. Code 9095 means this device has checked
-  in today, and that holds for the day. No device id is ever changed or
-  rotated to get round a 9095 or a 9074, and no account is given another
-  account's device or its own client's device unless the client is signed
-  in as that account. The credit a claim granted is its `credits` plus
-  its `extra_credits`, either alone; the status answer's is the fallback
-  when the claim says none.
+  in today, and that holds for the day. Code 9074 means Trae did not take
+  the claim for this account's device: its own words say the pool is busy,
+  which two measurements do not bear out — the same account, token and
+  headers were taken on a 16-digit id where a 19-digit one got 9074
+  (plugins#194), and on 2026-10-23 the same account and headers were taken
+  on a device id Trae had never seen while this account's own id answered
+  9074. The message says so rather than sending people to Trae CN's app.
+  No device id is ever changed or rotated to get round a 9095 or a 9074,
+  and no account is given another account's device or its own client's
+  device unless the client is signed in as that account.
+- **A claim's code 0 is not the answer (0.2.21):** Trae answers a claim
+  code 0 for one that registered nothing, so the status is read back after
+  every claim and only a day that is in is reported as `claimed`; one that
+  isn't is a `failed`, tried again later. The credit a claim granted is its
+  `credits` plus its `extra_credits`, either alone; the read-back's is the
+  fallback when the claim says none.
 
 Only `api.trae.cn`'s `/trae/api/` pages are sent this way; any other URL
 that isn't a chat request is still refused (400). Needs 0.1.4 or later.
