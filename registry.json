@@ -44,6 +44,8 @@
       "summary": { "en": "AutoClaw (Zhipu OpenClaw) cloud accounts: oversea web sign-in (Google/z.ai) or CN phone SMS, credit balance and daily check-in.", "zh": "AutoClaw（智谱澳龙/OpenClaw）云端账号：国际版网页登录（Google/z.ai）或国内手机验证码，积分余额与每日签到。" } },
     { "package": "@magpie-community/opencode-codearts-auth", "name": "CodeArts", "providers": ["codearts"], "community": true,
       "summary": { "en": "Unofficial: Huawei Cloud CodeArts (码道) coding plans with Huawei Cloud OAuth sign-in — GLM, DeepSeek, openPangu, live models and credit rates, credit usage and daily check-in.", "zh": "非官方：华为云码道（CodeArts）编码套餐，华为云 OAuth 登录；GLM、DeepSeek、openPangu 等模型，实时模型与积分倍率、积分用量和每日签到。" } },
+    { "package": "opencode-gmi-auth", "name": "GMI Cloud", "providers": ["gmicloud"],
+      "summary": { "en": "GMI Cloud's inference API with an API key: live model catalog and OpenAI-compatible chat.", "zh": "用 API Key 接入 GMI Cloud 推理 API：自动读取模型目录，OpenAI 兼容 Chat。" } },
     { "package": "@magpie-community/middleware-param-override", "name": "Param Override", "kind": "middleware", "community": true,
       "summary": { "en": "New API's parameter override: set, delete, move or rewrite fields of every request, by model or by condition.", "zh": "New API 的参数覆盖：按模型或条件设置、删除、移动或改写每个请求的字段。" } },
     { "package": "@magpie-community/middleware-model-map", "name": "Model Map", "kind": "middleware", "community": true,
