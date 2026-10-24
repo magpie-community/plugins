@@ -35,6 +35,8 @@ The internal Work credential is named `credentials.kimiCode`, but its origin mus
 
 Kimi desktop remains responsible for refreshing its sign-in. If it expires, sign in there and reconnect this provider. Changing the desktop account requires reconnecting, so requests do not silently switch accounts. Each synced device must have its own Kimi desktop sign-in.
 
+During connection, missing local credentials still ask for a desktop sign-in, and a Work `/models` HTTP 401 explicitly says that the login expired. HTTP 429/5xx and network/timeout failures instead report the actual HTTP status or network cause; they do not tell the user that local credentials are missing. A failed connection check saves no new account reference or tokens. Existing sign-ins, configuration and model IDs use the same format as 0.1.4.
+
 ## Origin and provider-id conflict
 
 This submission packages the local desktop-sign-in implementation from [`kupakupar/kimi-work-provider`](https://github.com/kupakupar/kimi-work-provider), whose Git-installed package was version 0.1.2. The community package now starts at 0.1.3. The previously stated preservation of model IDs/account references referred only to that implementation: both use `source: "kimi-work-desktop"` and a hashed account reference.

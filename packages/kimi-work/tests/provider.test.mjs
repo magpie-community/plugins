@@ -32,6 +32,41 @@ test('sign-in persists an account reference without either actual token',async()
   expect(JSON.stringify(auth)).not.toContain(session.webToken);
 });
 
+for (const status of [429, 503]) test('sign-in preserves an upstream HTTP '+status+' instead of reporting missing credentials',async()=>{
+  const p=I.createPlugin({readSession:()=>session,fetchImpl:async()=>new Response('{}',{status})});
+  const result=await (await p.auth.methods[0].authorize()).callback();
+  expect(result.type).toBe('failed');
+  expect(result.error).toContain('HTTP '+status);
+  expect(result.error).not.toContain('没有可用的本机');
+  expect(result.error).not.toContain('登录已失效');
+  expect(result).not.toHaveProperty('access');
+  expect(result).not.toHaveProperty('refresh');
+});
+
+test('sign-in preserves network and timeout diagnostics without requesting a new desktop login',async()=>{
+  for (const error of [Error('fetch failed',{cause:{code:'ECONNRESET'}}),new DOMException('Synthetic timeout','TimeoutError')]) {
+    const p=I.createPlugin({readSession:()=>session,fetchImpl:async()=>{throw error;}});
+    const result=await (await p.auth.methods[0].authorize()).callback();
+    expect(result.type).toBe('failed');
+    expect(result.error).toContain(error.cause?.code||error.message);
+    expect(result.error).not.toContain('没有可用的本机');
+    expect(result.error).not.toContain('登录已失效');
+  }
+});
+
+test('sign-in still distinguishes missing desktop credentials and a rejected token',async()=>{
+  let calls=0;
+  const missing=I.createPlugin({readSession:()=>{throw Error('synthetic missing config');},fetchImpl:async()=>{calls++;return json({});}});
+  const absent=await (await missing.auth.methods[0].authorize()).callback();
+  expect(absent).toMatchObject({type:'failed'});
+  expect(absent.error).toContain('没有可用的本机');
+  expect(calls).toBe(0);
+  const rejected=I.createPlugin({readSession:()=>session,fetchImpl:async()=>new Response('{}',{status:401})});
+  const expired=await (await rejected.auth.methods[0].authorize()).callback();
+  expect(expired.type).toBe('failed');
+  expect(expired.error).toContain('登录已失效');
+});
+
 test('inference always uses the Work gateway and live Work credential, preserving stream, tools and cancellation',async()=>{
   const calls=[];let live={...session};
   const sse='data: {"choices":[{"delta":{"tool_calls":[{"id":"fixture","function":{"name":"Read","arguments":"{}"}}]}}]}\n\ndata: [DONE]\n\n';

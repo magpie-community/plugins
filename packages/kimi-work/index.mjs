@@ -251,13 +251,19 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch}={}) {
       methods:[{type:'oauth',label:'使用本机 Kimi Work 登录',authorize:async()=>({
         url:'',method:'auto',instructions:'读取本机 Kimi 桌面版的 Work 登录；不会使用 Kimi Code API Key。',
         callback:async()=>{
-          try{
-            const s=readSession();await jsonRequest(BASE+'/models',s.workToken);
-            // Only an account reference is saved in Magpie. Actual credentials
-            // stay in Kimi's own file and are reread for every operation.
-            return {type:'success',access:'',refresh:'',expires:0,source:'kimi-work-desktop',
-              accountId:'Kimi Work (local)',uid:s.uid};
-          }catch{return {type:'failed',error:'没有可用的本机 Kimi Work 登录，请先打开 Kimi 并登录 Work。'};}
+          let s;
+          try{s=readSession();}
+          catch{return {type:'failed',error:'没有可用的本机 Kimi Work 登录，请先打开 Kimi 并登录 Work。'};}
+          try{await jsonRequest(BASE+'/models',s.workToken);}
+          catch(error){
+            return {type:'failed',error:error?.signIn==='expired'
+              ? '本机 Kimi Work 登录已失效，请在 Kimi 登录 Work 后重新连接。'
+              : 'Kimi Work 登录验证失败：'+(error?.cause?.code||error?.message||'未知网络错误')};
+          }
+          // Only an account reference is saved in Magpie. Actual credentials
+          // stay in Kimi's own file and are reread for every operation.
+          return {type:'success',access:'',refresh:'',expires:0,source:'kimi-work-desktop',
+            accountId:'Kimi Work (local)',uid:s.uid};
         },
       })}],
       loader:async getAuth=>({
