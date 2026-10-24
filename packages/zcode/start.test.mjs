@@ -59,7 +59,7 @@ const start = (site) => {
 // send makes a request as @ai-sdk/anthropic does, to the URL it was made for
 // place is what magpie tells the fetch of where the agent works, as its
 // headers: {dir, git}
-async function send(auth, body, { url = "https://api.z.ai/api/anthropic/v1/messages", asRequest = false, place = {}, extra = {} } = {}) {
+async function send(auth, body, { url = "https://api.z.ai/api/anthropic/v1/messages", asRequest = false, place = {}, extra = {}, requests = 1 } = {}) {
   routeToFake()
   const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
   const opts = await hooks.auth.loader(async () => auth, { id: "zcode" })
@@ -70,8 +70,10 @@ async function send(auth, body, { url = "https://api.z.ai/api/anthropic/v1/messa
     ? await opts.fetch(new Request(url, { method: "POST", headers, body }))
     : await opts.fetch(url, { method: "POST", headers, body })
   expect(res.status).toBe(200)
-  expect(got.length).toBe(1)
-  return got[0]
+  expect(got.length).toBe(requests)
+  const messages = got.filter((r) => r.path.endsWith("/messages"))
+  expect(messages.length).toBe(1)
+  return messages[0]
 }
 
 // what the HTTP client adds on its own, whatever the plugin sets
@@ -383,7 +385,12 @@ test("a GLM Coding Plan key's request goes as the agent sent it", async () => {
 test("a team seat's request goes as the agent sent it, ZCode's token or not", async () => {
   const s = { site: "zai", base: "https://api.z.ai/api/anthropic", key: "team.secret", token: "tok", org: "o1", project: "p1", jwt, device: DEVICE }
   const auth = { type: "oauth", access: s.key, refresh: JSON.stringify(s), expires: 0 }
-  sentAsIs(await send(auth, agentText), "team.secret", "/api.z.ai/api/anthropic/v1/messages")
+  sentAsIs(await send(auth, agentText, { requests: 2 }), "team.secret", "/api.z.ai/api/anthropic/v1/messages")
+  expect(got.filter((r) => r.path.endsWith("/billing/balance"))).toHaveLength(1)
+  expect(got.filter((r) => r.path.endsWith("/subscription/list"))).toHaveLength(0)
+  got.length = 0
+  sentAsIs(await send({ ...auth, refresh: JSON.stringify({ ...s, jwt: "" }) }, agentText), "team.secret", "/api.z.ai/api/anthropic/v1/messages")
+  expect(got).toHaveLength(1)
 })
 
 // magpie's provider.ZCodeRestrictedHint and provider.BlockedHint, word for word

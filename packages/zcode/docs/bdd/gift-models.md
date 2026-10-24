@@ -17,6 +17,15 @@ Magpie plugin contract. No new UI page or test framework is introduced.
 
 ## Scenarios
 
+### Show a team member's personal gift plans (#359)
+
+- Given a team seat's ZCode session also holds personal gift plans.
+- When the plugin lists models and reads usage, even before resolving the team's key.
+- Then the trial entries and personal gift buckets appear beside the team plan.
+- And plain models spend the team plan while trial entries spend the personal gift.
+- And a missing or expired ZCode session explains why trial entries are absent.
+- And a failed gift read leaves the team's allowance available and retries within a minute.
+
 ### Add a real limited-quota model
 
 - Given a coding-plan account has an active grant for a model absent from its plan catalog.
