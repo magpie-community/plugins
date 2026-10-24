@@ -28,6 +28,8 @@ The import-free `kimi-desktop.agent.js` registers the agent using Magpie's agent
 
 Inference goes to Magpie using Magpie's agent credential. Kimi's web search/fetch tools continue through Kimi's original `agent-gw.kimi.com` service with Kimi's own credential. Kimi login credentials are never forwarded to Magpie or a third-party model provider. Requests to unknown paths and requests without Kimi authentication are rejected; no system proxy, certificate or firewall settings are changed.
 
+Rate-limit and temporary-service responses retain the upstream status, body and `Retry-After` header, including both delay-seconds and HTTP-date values. Other upstream headers are not copied wholesale.
+
 The adapter does not reload a busy Work runtime. If Kimi independently changes its service configuration while connected, adaptation pauses instead of repeatedly overwriting it; disconnect and reconnect in Magpie to retry.
 
 ## Local files and compatibility
@@ -53,6 +55,8 @@ The model catalog is fetched from Magpie's `/v1/models` with this agent's creden
 ## Shutdown and manual recovery
 
 The shared plugin host owns process shutdown. This plugin installs no SIGTERM/SIGINT handler and never calls `process.exit`. On the host's normal exit event it synchronously restores the original address if the current address is still its own; restart Kimi to reload its runtime. An explicit disconnect while both apps are running additionally restores model selection/list through the control API.
+
+Owner records are fully written to a temporary file and published with an exclusive hard link, so interruption during the write cannot publish an empty/partial `adapter-owner.json`. An existing live owner is left alone. A malformed legacy owner record reports `adapter_lock_invalid` in `status.json` and the plugin log; a file access/publication failure reports `adapter_lock_unavailable`. The plugin does not guess who owns a malformed record or automatically remove it. To recover from `adapter_lock_invalid`, close all Magpie instances first, remove only `~/.config/magpie-kimi/adapter-owner.json`, then reopen Magpie. Leave `connection.json`, the other state files and Kimi's credentials intact.
 
 A forced kill, power loss or a broken private API can leave Kimi pointing at an inactive loopback bridge. To recover without starting Magpie:
 

@@ -169,6 +169,141 @@ test('Kimi menu aliases route independently and removed models fail closed', asy
   } finally {await f.cleanup();}
 });
 
+test('rate-limit responses retain Retry-After, status and body without forwarding credentials', async () => {
+  const f = await fixture();
+  try {
+    await f.controller.tick();
+    const original = f.controller.fetchImpl;
+    for (const [status, retry] of [[429, '17'], [503, 'Wed, 21 Oct 2037 07:28:00 GMT']]) {
+      const body = JSON.stringify({error: {type: 'rate_limit_error', message: 'Synthetic upstream failure'}});
+      f.controller.fetchImpl = async (url, options) => String(url).endsWith('/models')
+        ? original(url, options) : new Response(body, {status, headers: {
+          'Content-Type': 'application/json', 'Retry-After': retry,
+          'Set-Cookie': 'synthetic-cookie', Authorization: 'Bearer synthetic-secret',
+        }});
+      const response = await fetch(f.controller.bridgeURL + '/chat/completions', {method: 'POST',
+        headers: {Authorization: 'Bearer synthetic-kimi-key'}, body: JSON.stringify({model: 'k2d8-preview', messages: []})});
+      expect(response.status).toBe(status);
+      expect(response.headers.get('retry-after')).toBe(retry);
+      expect(await response.text()).toBe(body);
+      expect(response.headers.get('authorization')).toBeNull();
+      expect(response.headers.get('set-cookie')).toBeNull();
+    }
+  } finally { await f.cleanup(); }
+});
+
+test('malformed owner records report a fixed error without taking an unknown lock', async () => {
+  for (const contents of ['', '{"pid":', '{}', '{"pid":0,"ownerID":"synthetic"}', '{"pid":1}']) {
+    const f = await fixture();
+    try {
+      fs.writeFileSync(f.controller.lockFile, contents);
+      const logs = [];
+      f.controller.log = code => logs.push(code);
+      await f.controller.tick();
+      await f.controller.tick();
+      expect(f.controller.status.code).toBe('adapter_lock_invalid');
+      expect(read(f.controller.statusFile).code).toBe('adapter_lock_invalid');
+      expect(logs).toEqual(['adapter_lock_invalid']);
+      expect(fs.readFileSync(f.controller.lockFile, 'utf8')).toBe(contents);
+      expect(read(f.controller.configFile)).toEqual(f.doc);
+      expect(f.controller.live).toBeNull();
+    } finally { await f.cleanup(); }
+  }
+});
+
+test('owner records are fully written before exclusive atomic publication', async () => {
+  const f = await fixture();
+  const link = fs.linkSync;
+  let published = false;
+  try {
+    fs.linkSync = (source, target) => {
+      if (target === f.controller.lockFile) {
+        expect(read(source)).toEqual({pid: process.pid, ownerID: f.controller.ownerID});
+        expect(fs.existsSync(target)).toBe(false);
+        published = true;
+      }
+      return link(source, target);
+    };
+    await f.controller.tick();
+    expect(published).toBe(true);
+    expect(f.controller.status.code).toBe('connected');
+    expect(fs.readdirSync(f.controller.stateDir).filter(x => x.endsWith('.tmp'))).toEqual([]);
+  } finally { fs.linkSync = link; await f.cleanup(); }
+});
+
+test('failed owner publication leaves no partial lock or staged file', async () => {
+  for (const phase of ['write', 'link']) {
+    const f = await fixture();
+    const link = fs.linkSync, writeFile = fs.writeFileSync;
+    try {
+      fs.writeFileSync = (file, data, options) => {
+        if (phase === 'write' && String(file).startsWith(f.controller.lockFile + '.') && String(file).endsWith('.tmp')) {
+          writeFile(file, '{"pid":', options);
+          throw Object.assign(Error('synthetic interrupted staging write'), {code: 'EIO'});
+        }
+        return writeFile(file, data, options);
+      };
+      fs.linkSync = (source, target) => {
+        if (phase === 'link' && target === f.controller.lockFile) throw Object.assign(Error('synthetic publication failure'), {code: 'EIO'});
+        return link(source, target);
+      };
+      await f.controller.tick();
+      expect(f.controller.status.code).toBe('adapter_lock_unavailable');
+      expect(fs.existsSync(f.controller.lockFile)).toBe(false);
+      expect(fs.readdirSync(f.controller.stateDir).filter(x => x.endsWith('.tmp'))).toEqual([]);
+      expect(read(f.controller.configFile)).toEqual(f.doc);
+    } finally { fs.linkSync = link; fs.writeFileSync = writeFile; await f.cleanup(); }
+  }
+});
+
+test('a competing exclusive publication keeps its complete owner record', async () => {
+  const f = await fixture();
+  const link = fs.linkSync;
+  const other = {pid: process.pid, ownerID: 'synthetic-other-owner'};
+  try {
+    fs.linkSync = (source, target) => {
+      if (target === f.controller.lockFile) write(target, other);
+      return link(source, target);
+    };
+    await f.controller.tick();
+    expect(read(f.controller.lockFile)).toEqual(other);
+    expect(f.controller.locked).not.toBe(true);
+    expect(f.controller.live).toBeNull();
+    expect(fs.readdirSync(f.controller.stateDir).filter(x => x.endsWith('.tmp'))).toEqual([]);
+    expect(read(f.controller.configFile)).toEqual(f.doc);
+  } finally { fs.linkSync = link; await f.cleanup(); }
+});
+
+test('a complete record belonging to an exited owner can still be reclaimed', async () => {
+  const f = await fixture();
+  const kill = process.kill;
+  try {
+    write(f.controller.lockFile, {pid: 2147483647, ownerID: 'synthetic-exited-owner'});
+    process.kill = (pid, signal) => {
+      if (pid === 2147483647 && signal === 0) throw Object.assign(Error('synthetic exited process'), {code: 'ESRCH'});
+      return kill(pid, signal);
+    };
+    await f.controller.tick();
+    expect(read(f.controller.lockFile)).toEqual({pid: process.pid, ownerID: f.controller.ownerID});
+    expect(f.controller.status.code).toBe('connected');
+  } finally { process.kill = kill; await f.cleanup(); }
+});
+
+test('another adapter never replaces a valid live owner record', async () => {
+  const f = await fixture();
+  let second;
+  try {
+    await f.controller.tick();
+    const before = fs.readFileSync(f.controller.lockFile);
+    second = new KimiAdapter({stateDir: f.controller.stateDir, kimiDir: f.controller.kimiDir, stabilityMs: 0});
+    await second.tick();
+    expect(fs.readFileSync(f.controller.lockFile)).toEqual(before);
+    expect(second.locked).not.toBe(true);
+    expect(second.live).toBeNull();
+    expect(f.controller.live).not.toBeNull();
+  } finally { await second?.stop(); await f.cleanup(); }
+});
+
 test('disconnect restores one address while retaining refreshed credentials and unrelated changes', async () => {
   const f = await fixture();
   try {

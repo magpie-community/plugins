@@ -99,20 +99,35 @@ export class KimiAdapter {
     if (this.locked) {
       try { return readJSON(this.lockFile).ownerID === this.ownerID; } catch { this.locked = false; }
     }
-    try {
-      const before = fs.readFileSync(this.lockFile, 'utf8'), owner = JSON.parse(before);
+    let before;
+    try { before = fs.readFileSync(this.lockFile, 'utf8'); }
+    catch (error) { if (error.code !== 'ENOENT') throw Error('adapter_lock_unavailable'); }
+    if (before !== undefined) {
+      let owner;
+      try { owner = JSON.parse(before); } catch { throw Error('adapter_lock_invalid'); }
+      if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0 || owner.pid > 2147483647
+          || typeof owner.ownerID !== 'string' || !owner.ownerID) throw Error('adapter_lock_invalid');
       let alive = true;
       try { process.kill(owner.pid, 0); } catch (error) { alive = error.code !== 'ESRCH'; }
       if (alive) return false;
-      if (fs.readFileSync(this.lockFile, 'utf8') !== before) return false;
-      fs.unlinkSync(this.lockFile);
-    } catch (error) { if (error.code !== 'ENOENT') return false; }
+      try {
+        if (fs.readFileSync(this.lockFile, 'utf8') !== before) return false;
+        fs.unlinkSync(this.lockFile);
+      } catch (error) { if (error.code !== 'ENOENT') throw Error('adapter_lock_unavailable'); }
+    }
+    // Publish a complete record exclusively. A crash during the staging write
+    // cannot leave a truncated owner record that blocks every future host.
+    const staged = this.lockFile + '.' + process.pid + '.' + crypto.randomBytes(6).toString('hex') + '.tmp';
     try {
-      fs.writeFileSync(this.lockFile, JSON.stringify({ pid: process.pid, ownerID: this.ownerID }), { flag: 'wx', mode: 0o600 });
+      fs.writeFileSync(staged, JSON.stringify({ pid: process.pid, ownerID: this.ownerID }), { flag: 'wx', mode: 0o600 });
+      fs.linkSync(staged, this.lockFile);
       this.locked = true;
       try { this.state = readJSON(this.stateFile); } catch { this.state = { active: false }; }
       return true;
-    } catch { return false; }
+    } catch (error) {
+      if (error.code === 'EEXIST') return false;
+      throw Error('adapter_lock_unavailable');
+    } finally { try { fs.unlinkSync(staged); } catch { /* Never published, or already unlinked. */ } }
   }
 
   releaseLock() {
@@ -125,7 +140,7 @@ export class KimiAdapter {
     if (JSON.stringify(next) === JSON.stringify(this.status)) return;
     this.status = next;
     if (fs.existsSync(this.stateDir)) atomicJSON(this.statusFile, { ...next, at: new Date().toISOString() });
-    if (code.endsWith('_failed') || code === 'kimi_config_changed') this.log(code);
+    if (code.endsWith('_failed') || code.startsWith('adapter_lock_') || code === 'kimi_config_changed') this.log(code);
   }
 
   saveState() { atomicJSON(this.stateFile, this.state); }
@@ -225,8 +240,11 @@ export class KimiAdapter {
         : officialURL(active.originalBase) + req.url.slice('/v1'.length);
       const upstream = await this.fetchImpl(url, { method: 'POST', headers,
         body: JSON.stringify(payload), signal: controller.signal, redirect: 'error' });
-      res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json',
-        'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+      const responseHeaders = { 'Content-Type': upstream.headers.get('content-type') || 'application/json',
+        'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' };
+      const retryAfter = upstream.headers.get('retry-after');
+      if (retryAfter !== null) responseHeaders['Retry-After'] = retryAfter;
+      res.writeHead(upstream.status, responseHeaders);
       res.flushHeaders();
       if (upstream.body) for await (const chunk of upstream.body) {
         if (!res.write(chunk)) await once(res, 'drain', { signal: controller.signal });
@@ -396,7 +414,7 @@ export class KimiAdapter {
       this.report('connected', { model: desired.model });
     } catch (error) {
       const codes = new Set(['invalid_gateway', 'invalid_connection', 'unsupported_kimi_config',
-        'library_path_conflict',
+        'library_path_conflict', 'adapter_lock_invalid', 'adapter_lock_unavailable',
         'kimi_config_changed', 'kimi_control_unavailable', 'kimi_control_timeout', 'kimi_control_closed', 'kimi_control_rejected']);
       const code = codes.has(error.message) ? error.message : 'adapter_failed';
       this.report(code);
