@@ -231,7 +231,7 @@ test("usage reports free-allocation window with next UTC midnight reset", async 
   assert.equal(w.unit, "neurons");
   assert.equal(new Date(w.resetsAt).getUTCHours(), 0);
   assert.equal(new Date(w.resetsAt).getUTCMinutes(), 0);
-  assert.equal(w.span, 86400_000);
+  assert.equal(w.span, 86400, "span is in seconds per the magpie plugin contract");
 });
 
 test("paid-only models are flagged (Paid) in config and provider.models", async () => {
@@ -324,4 +324,91 @@ test("usage returns the fallback plan for an invalid accountId (no API call)", a
   }));
   assert.equal(u.windows.length, 0, "invalid Account ID must not reach the API path");
   assert.equal(apiCalled, "", "no /accounts/ request was made");
+});
+
+function usageOpts(graphqlResponder) {
+  const seen = [];
+  const o = opts();
+  o.fetchImpl = async (url, init) => {
+    if (typeof url === "string" && url.includes("models.dev")) {
+      return new Response(JSON.stringify(fakeCatalog()));
+    }
+    if (typeof url === "string" && url.endsWith("/graphql")) {
+      seen.push({ url, init, body: JSON.parse(init?.body ?? "{}") });
+      return graphqlResponder();
+    }
+    return new Response(JSON.stringify({ result: { plan: { name: "Workers Free" } } }), { status: 200 });
+  };
+  return { o, seen };
+}
+
+test("usage sums today's totalNeurons from GraphQL Analytics into amount", async () => {
+  const { o, seen } = usageOpts(() =>
+    new Response(JSON.stringify({
+      result: {
+        viewer: {
+          accounts: [{
+            aiInferenceAdaptiveGroups: [
+              { sum: { totalNeurons: 6659.43 } },
+              { sum: { totalNeurons: 3802.57 } },
+            ],
+          }],
+        },
+      },
+    }), { status: 200 })
+  );
+  const plugin = await CloudflareWorkersAIPlugin({}, o);
+  const u = await plugin.auth.usage(async () => ({
+    key: "tok",
+    metadata: { accountId: ACCOUNT_ID },
+  }));
+  assert.equal(u.plan, "Workers Free");
+  assert.equal(u.windows.length, 1);
+  const w = u.windows[0];
+  assert.equal(w.amount, 10462, "bucket sums must land in amount");
+  assert.equal(w.limit, 10000);
+  assert.equal(w.used, 100, "over the limit clamps to 100% used, which the router benches on");
+  assert.match(w.display, /10,462 Neurons used today/);
+  const call = seen[0];
+  assert.ok(call, "GraphQL Analytics endpoint was queried");
+  assert.equal(new URL(call.url).pathname, "/client/v4/graphql");
+  assert.equal(call.init.method, "POST");
+  assert.equal(call.init.headers.authorization, "Bearer tok");
+  const midnight = new Date(Math.floor(Date.now() / 86400_000) * 86400_000);
+  assert.ok(
+    call.body.query.includes(`datetimeHour_geq: "${midnight.toISOString()}"`),
+    "window starts at today's UTC midnight"
+  );
+  assert.ok(call.body.query.includes(`accountTag: "${ACCOUNT_ID}"`));
+});
+
+test("usage keeps amount null when the token lacks Analytics scope", async () => {
+  const { o } = usageOpts(() => new Response("authentication error", { status: 403 }));
+  const plugin = await CloudflareWorkersAIPlugin({}, o);
+  const u = await plugin.auth.usage(async () => ({
+    key: "tok",
+    metadata: { accountId: ACCOUNT_ID },
+  }));
+  assert.equal(u.windows.length, 1, "window still shown");
+  assert.equal(u.windows[0].amount, null, "unknown usage must stay null, not zero");
+  assert.match(u.windows[0].display, /Account Analytics/);
+});
+
+test("usage treats a GraphQL error payload as unknown, and an empty day as zero", async () => {
+  const errPayload = usageOpts(() =>
+    new Response(JSON.stringify({ errors: [{ code: 10000, message: "no access" }] }), { status: 200 })
+  );
+  const plugin = await CloudflareWorkersAIPlugin({}, errPayload.o);
+  const u = await plugin.auth.usage(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+  assert.equal(u.windows[0].amount, null, "errors payload must not read as zero");
+
+  const emptyDay = usageOpts(() =>
+    new Response(JSON.stringify({
+      result: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [] }] } },
+    }), { status: 200 })
+  );
+  const p2 = await CloudflareWorkersAIPlugin({}, emptyDay.o);
+  const u2 = await p2.auth.usage(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+  assert.equal(u2.windows[0].amount, 0, "an empty bucket list is a real zero");
+  assert.match(u2.windows[0].display, /0 Neurons used today/);
 });

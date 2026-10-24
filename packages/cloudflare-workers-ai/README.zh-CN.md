@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文 | [日本語](README.ja.md)
 
-[![npm version](https://img.shields.io/badge/npm%20version-0.0.3-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
+[![npm version](https://img.shields.io/badge/npm%20version-0.0.4-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
 面向 [OpenCode](https://opencode.ai) 1.x 和 [magpie](https://usemagpie.ai) 的供应商插件：
@@ -17,7 +17,7 @@
 | 项目 | 在哪里找 |
 |---|---|
 | Cloudflare Account ID | 控制台首页（Account home）右侧栏，32 位十六进制 |
-| Cloudflare API Token | 控制台 → 头像 → **My Profile** → API Tokens → 创建 **Custom Token**，授权 `Account → Workers AI → Edit`（想让 `magpie quota` 显示套餐名，再加 `Account Settings → Read`） |
+| Cloudflare API Token | 控制台 → 头像 → **My Profile** → API Tokens → 创建 **Custom Token**，授权 `Account → Workers AI → Edit`（想让 `magpie quota` 显示套餐名，加 `Account Settings → Read`；想显示当天实际已用 Neurons，再加 `Account Analytics → Read`） |
 | magpie | 0.1.1110 及以上，或 OpenCode 1.x |
 
 Token 不需要选择任何 Zone。Free 与 Paid 两个计划均含 **每日 10,000 Neurons** 免费额度；
@@ -116,6 +116,7 @@ https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
 | `Model … absent from the current catalog` | 模型 ID 不在 models.dev 的 cloudflare-workers-ai 分节里，请从列表中选择 |
 | (Paid) 模型返回 400 | 你的计划是 Free，该模型需要 Workers Paid 或 AI Gateway 预充值 |
 | quota 行显示套餐兜底文案 | token 缺 `Account Settings → Read`；仅影响显示，Neurons 窗口照常展示 |
+| quota 行显示 10,000 / 10,000 全部剩余，但请求报 used up your daily free allocation | token 缺 `Account Analytics → Read`，已用量未知，magpie 把额度当成没用过 —— 授权后刷新即可 |
 
 ## 开发
 
@@ -145,7 +146,7 @@ sh scripts/sandbox.sh json       # 沙盒内 plugin --json
 
 | | |
 |---|---|
-| **版本** | 0.0.3 |
+| **版本** | 0.0.4 |
 | **许可证** | [MIT](LICENSE) — Copyright (c) 2026 Guislabert |
 | **运行时** | Node.js >= 20，仅 ESM |
 | **作者** | [@Guislabert](https://github.com/Guislabert) |

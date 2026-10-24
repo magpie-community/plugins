@@ -21,6 +21,7 @@ const PAID_ONLY_MODELS = new Set([
 ]);
 const FREE_ALLOCATION_NEURONS = 10000; // per day, both plans
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DAY_S = 86400; // magpie's UsageWindow.span unit is seconds, not ms
 
 function checkedURL(value) {
   const url = new URL(value);
@@ -338,9 +339,12 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
         };
       },
       async usage(getAuth, _provider) {
-        // Cloudflare publishes no REST for per-account Neurons (dashboard only);
-        // show the repeatable free-allocation window (10,000 Neurons/day,
-        // resets daily 00:00 UTC) and best-effort plan detection.
+        // Workers AI has no REST for per-account Neurons (dashboard only), but
+        // the GraphQL Analytics API does: sum today's totalNeurons so the quota
+        // row shows the real used amount instead of a fake full allowance.
+        // Falls back to the repeatable free-allocation window (10,000
+        // Neurons/day, resets daily 00:00 UTC) when the token lacks the
+        // Analytics scope or the query fails. Plan detection stays best-effort.
         const auth = await getAuth?.();
         const acct = auth?.metadata?.accountId || accountId;
         if (!acct || !/^[0-9a-f]{32}$/i.test(acct)) {
@@ -363,18 +367,57 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
         } catch {
           /* token scope not enough or network issue — keep unknown */
         }
-        const nextUtcMidnight = new Date(Math.floor(Date.now() / DAY_MS) * DAY_MS + DAY_MS);
+        const utcMidnight = new Date(Math.floor(Date.now() / DAY_MS) * DAY_MS);
+        const nextUtcMidnight = new Date(utcMidnight.getTime() + DAY_MS);
+        let used = null;
+        try {
+          const res = await fetchImpl("https://api.cloudflare.com/client/v4/graphql", {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${auth?.key ?? apiKey}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              query:
+                'query { viewer { accounts(filter: {accountTag: "' + acct +
+                '"}) { aiInferenceAdaptiveGroups(limit: 100, filter: {datetimeHour_geq: "' +
+                utcMidnight.toISOString() + '", datetimeHour_lt: "' + nextUtcMidnight.toISOString() +
+                '"}, orderBy: [datetimeHour_ASC]) { sum { totalNeurons } } } } }',
+            }),
+            redirect: "error",
+            signal: AbortSignal.timeout(15_000),
+          });
+          if (res.ok) {
+            const info = await res.json();
+            const rows = info?.result?.viewer?.accounts?.[0]?.aiInferenceAdaptiveGroups;
+            // An empty bucket list is a real zero (nothing ran today); a
+            // missing list or an error payload means we could not read usage.
+            if (Array.isArray(rows) && !info.errors?.length) {
+              used = rows.reduce((s, r) => s + (Number(r?.sum?.totalNeurons) || 0), 0);
+            }
+          }
+        } catch {
+          /* no Analytics scope, rate limit or network issue — keep unknown */
+        }
         return {
           plan,
           windows: [
             {
               name: "Neurons/day (free allowance)",
-              span: DAY_MS,
+              span: DAY_S,
               resetsAt: nextUtcMidnight.toISOString(),
-              amount: null,
+              amount: used,
+              // magpie's router benches a channel on the window's `used`
+              // percent (Amount is display-only there): report it so an
+              // exhausted account rests until resetsAt instead of cycling
+              // the 15-minute no-reset quota backoff.
+              used: used === null ? 0 : Math.min(100, (100 * used) / FREE_ALLOCATION_NEURONS),
               limit: FREE_ALLOCATION_NEURONS,
               unit: "neurons",
-              display: "≤10,000 Neurons/day; exact usage is on the Cloudflare dashboard (no public API)",
+              display:
+                used === null
+                  ? "≤10,000 Neurons/day; exact usage is on the Cloudflare dashboard (grant Account Analytics → Read to see it here)"
+                  : `≤10,000 Neurons/day free; ${Math.round(used).toLocaleString("en-US")} Neurons used today per Cloudflare Analytics`,
             },
           ],
         };
