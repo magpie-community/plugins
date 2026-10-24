@@ -407,6 +407,11 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
               span: DAY_S,
               resetsAt: nextUtcMidnight.toISOString(),
               amount: used,
+              // magpie's router benches a channel on the window's `used`
+              // percent (Amount is display-only there): report it so an
+              // exhausted account rests until resetsAt instead of cycling
+              // the 15-minute no-reset quota backoff.
+              used: used === null ? 0 : Math.min(100, (100 * used) / FREE_ALLOCATION_NEURONS),
               limit: FREE_ALLOCATION_NEURONS,
               unit: "neurons",
               display:

@@ -367,6 +367,7 @@ test("usage sums today's totalNeurons from GraphQL Analytics into amount", async
   const w = u.windows[0];
   assert.equal(w.amount, 10462, "bucket sums must land in amount");
   assert.equal(w.limit, 10000);
+  assert.equal(w.used, 100, "over the limit clamps to 100% used, which the router benches on");
   assert.match(w.display, /10,462 Neurons used today/);
   const call = seen[0];
   assert.ok(call, "GraphQL Analytics endpoint was queried");
