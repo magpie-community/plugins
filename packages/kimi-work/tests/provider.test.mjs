@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {_internal as I} from '../index.mjs';
 
-const session={uid:'fixture-account',workToken:'synthetic-work-token',webToken:'synthetic-web-token'};
-const account={source:'kimi-work-desktop',uid:session.uid};
+const session={uid:'fixture-account',workToken:'synthetic-work-token',webToken:'synthetic-web-token',webRefresh:'synthetic-refresh-token',deviceId:'fixture-device-id'};
+const account={source:'kimi-work-desktop',uid:session.uid,access:session.webToken,refresh:session.webRefresh,expires:0};
 const json=x=>Response.json(x);
 const modelPayload={data:[{id:'k3-agent',display_name:'K3',context_length:1000000,supports_image_in:true,
   supports_reasoning:true,reasoningEffortOptions:[{effort:'REASONING_EFFORT_HIGH'}]}]};
@@ -13,23 +13,31 @@ const modelPayload={data:[{id:'k3-agent',display_name:'K3',context_length:100000
 test('desktop import reads only the Work credential origin and supports a redirected agent configuration',()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'kimi-work-fixture-'));
   const file=path.join(dir,'config.json');
-  const doc={credentials:{kimiCode:{apiKey:'synthetic-work',baseUrl:I.BASE},kimiWeb:{accessToken:'synthetic-web',userId:'fixture-user'}},
+  const doc={credentials:{kimiCode:{apiKey:'synthetic-work',baseUrl:I.BASE},kimiWeb:{accessToken:'synthetic-web',refreshToken:'synthetic-refresh',userId:'fixture-user'}},
     model:{providers:{'daimon-kimi-code':{baseUrl:'http://127.0.0.1:1234/v1'}}}};
   try{
     fs.writeFileSync(file,JSON.stringify(doc));const raw=fs.readFileSync(file);
-    expect(I.readDesktop(file).workToken).toBe('synthetic-work');
+    fs.mkdirSync(path.join(dir,'runtime','kimi-code','home'),{recursive:true});
+    const deviceFile=path.join(dir,'runtime','kimi-code','home','device_id');
+    fs.writeFileSync(deviceFile,'fixture-device-id\n');
+    expect(I.readDesktop(file)).toMatchObject({workToken:'synthetic-work',webRefresh:'synthetic-refresh',deviceId:'fixture-device-id'});
     expect(fs.readFileSync(file)).toEqual(raw);
+    expect(fs.readFileSync(deviceFile,'utf8')).toBe('fixture-device-id\n');
     doc.credentials.kimiCode.baseUrl='https://api.kimi.com/coding/v1';fs.writeFileSync(file,JSON.stringify(doc));
     expect(()=>I.readDesktop(file)).toThrow();
   }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
 
-test('sign-in persists an account reference without either actual token',async()=>{
-  const p=I.createPlugin({readSession:()=>session,fetchImpl:async()=>json(modelPayload)});
+test('sign-in imports web credentials without copying the Work API key',async()=>{
+  const p=I.createPlugin({readSession:()=>session,fetchImpl:async(url,init)=>{
+    expect(url).toBe(I.BASE+'/models');
+    expect(init.headers['X-Msh-Device-Id']).toBe(session.deviceId);
+    return json(modelPayload);
+  }});
   const flow=await p.auth.methods[0].authorize(),auth=await flow.callback();
   expect(auth).toMatchObject({type:'success',source:'kimi-work-desktop',uid:session.uid});
   expect(JSON.stringify(auth)).not.toContain(session.workToken);
-  expect(JSON.stringify(auth)).not.toContain(session.webToken);
+  expect(auth).toMatchObject({access:session.webToken,refresh:session.webRefresh});
 });
 
 test('inference always uses the Work gateway and live Work credential, preserving stream, tools and cancellation',async()=>{
@@ -67,7 +75,7 @@ test('models come from Work; usage reports only the shared membership allowance'
   expect(models['k3-agent'].capabilities.input.image).toBe(true);
   const usage=await p.auth.usage(async()=>account);expect(usage.windows).toHaveLength(1);expect(usage.windows[0].used).toBe(42);
   expect(usage.windows[0]).not.toHaveProperty('resetsAt');
-  expect(usage.windows[0].name).toBe('会员共享额度');
+  expect(usage.windows[0].name).toBe('本月');
   expect(calls.find(x=>x.url.endsWith('GetSubscriptionStats')).init.headers.Authorization).toBe('Bearer '+session.webToken);
   expect(calls.every(x=>!x.url.includes('api.kimi.com'))).toBe(true);
 });

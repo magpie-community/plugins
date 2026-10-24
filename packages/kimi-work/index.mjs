@@ -6,6 +6,8 @@ import {createHash} from 'node:crypto';
 const ID = 'kimi-work';
 const BASE = 'https://agent-gw.kimi.com/coding/v1';
 const MEMBER = 'https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/';
+const REFRESH = 'https://auth.kimi.com/api/account.gateway.v1.AuthService/RefreshToken';
+const REFRESH_LEAD = 60000;
 // Kimi's desktop builds its Work model menu from this call, not from
 // agent-gw's /models: models plus moreModels, each with the id Work's
 // gateway takes (requestParams.modelId). An account's tier models, K3.1 Pro
@@ -30,6 +32,18 @@ function webHeaders(platform=process.platform) {
   return {'User-Agent':UA,'x-msh-platform':platform==='darwin'?'mac':platform==='win32'?'windows':'web',
     'x-msh-version':DESKTOP_VERSION,'R-Timezone':Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC'};
 }
+// AuthService is a desktop Connect client, not the Work/Code gateway. These
+// public client fields come from an observed Kimi 3.2.17 RefreshToken call.
+// Connect's JSON representation is also used by that SDK (KIMI_CAPTURE mode).
+// Browser-owned device/session IDs and ShieldData are deliberately not copied.
+const AUTH_VERSION='3.2.17';
+function refreshHeaders(platform=process.platform) {
+  const system=platform==='darwin'?'Macintosh; Intel Mac OS X 10_15_7'
+    :platform==='win32'?'Windows NT 10.0; Win64; x64':'X11; Linux x86_64';
+  return {...webHeaders(platform),'x-msh-version':AUTH_VERSION,
+    'User-Agent':`Mozilla/5.0 (${system}) AppleWebKit/537.36 (KHTML, like Gecko) kimi-desktop/${AUTH_VERSION} Chrome/150.0.7871.250 Electron/43.7.3 Safari/537.36`,
+    'X-Language':Intl.DateTimeFormat().resolvedOptions().locale||'en-US'};
+}
 const ascii = (v, fallback = 'unknown') => String(v ?? '').replace(/[^\x20-\x7e]/g, '').trim() || fallback;
 function deviceModel() {
   const t = os.type(), r = os.release(), a = os.arch();
@@ -42,9 +56,18 @@ function workHeaders(deviceId) {
     'X-Msh-Device-Model':ascii(deviceModel()),'X-Msh-Device-Name':ascii(os.hostname()),'X-Msh-Os-Version':ascii(os.release()),
     'X-Msh-Platform':'kimi-code-cli','X-Msh-Version':KIMI_CODE_VERSION,'X-Msh-Daimon-Version':DAIMON_VERSION};
 }
-const expired = () => Object.assign(Error('请先在本机 Kimi 桌面版登录 Work，再重新连接 Kimi Work 供应商。'), {signIn:'expired',code:'kimi_work_login_expired'});
+// The host's quota RPC preserves message alone; this marker selects its
+// localized signed-out card and the account's reconnect action.
+const expired = () => Object.assign(Error('Kimi Work sign-in has expired. Sign in to Kimi desktop Work if needed, then reconnect Kimi Work (magpie plugin login kimi-work).'), {signIn:'expired',code:'kimi_work_login_expired'});
 const unavailable = error => Object.assign(Error('Kimi Work 连接失败：' + (error?.cause?.code || error?.message || '未知网络错误'), {cause:error}), {code:'kimi_work_connection_failed'});
 const percent = x => typeof x === 'number' && Number.isFinite(x) ? Math.max(0,Math.min(100,x*100)) : undefined;
+function tokenClaims(token) {
+  try {
+    const claims=JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+    return claims && typeof claims==='object' ? claims : {};
+  } catch {return {};}
+}
+const expiry = token => Number(tokenClaims(token).exp) * 1000 || 0;
 
 // Kimi Work validates tools against Moonshot's "moonshot flavored json
 // schema" and refuses the whole request, 400 "tools.function.parameters is
@@ -208,6 +231,28 @@ function moonshotTools(body) {
   return changed?JSON.stringify(doc):body;
 }
 
+// Schema conversion reads the body before fetch; cancellation must cover that
+// read too, including a producer that never sends another chunk.
+async function bodyText(body,signal) {
+  const reader=new Response(body).body.getReader(),decoder=new TextDecoder();
+  const abort=()=>{void reader.cancel(signal.reason).catch(()=>{});};
+  signal?.addEventListener('abort',abort,{once:true});
+  try {
+    if(signal?.aborted)abort();
+    let text='';
+    for(;;) {
+      signal?.throwIfAborted();
+      const {done,value}=await reader.read();
+      signal?.throwIfAborted();
+      if(done)return text+decoder.decode();
+      text+=decoder.decode(value,{stream:true});
+    }
+  } finally {
+    signal?.removeEventListener('abort',abort);
+    reader.releaseLock();
+  }
+}
+
 function desktopFile({home=os.homedir(), platform=process.platform, appdata=process.env.APPDATA}={}) {
   const parent=platform==='win32' ? appdata || path.join(home,'AppData','Roaming')
     : platform==='darwin' ? path.join(home,'Library','Application Support') : path.join(home,'.config');
@@ -225,9 +270,9 @@ function readDeviceId(file) {
   } catch {return undefined;}
 }
 
-// Read the live Work sign-in, including after rotation. Never consume its
-// refresh token or write the desktop app's configuration. The internal field
-// is called kimiCode, but this credential is issued for agent-gw (Work).
+// Work credentials still follow the desktop file. Web credentials are imported
+// into the host's private auth store and renewed there, never written here.
+
 function readDesktop(file=desktopFile()) {
   try {
     const st=fs.statSync(file);
@@ -237,6 +282,7 @@ function readDesktop(file=desktopFile()) {
     if(typeof work?.apiKey!=='string'||!work.apiKey || typeof web?.accessToken!=='string'||!web.accessToken
       || typeof web.userId!=='string'||!web.userId || work.baseUrl?.replace(/\/$/,'')!==BASE) throw expired();
     return {workToken:work.apiKey,webToken:web.accessToken,deviceId:readDeviceId(file),
+      webRefresh:typeof web.refreshToken==='string' ? web.refreshToken : '',
       uid:createHash('sha256').update('kimi-work-account\0'+web.userId).digest('hex')};
   } catch {throw expired();}
 }
@@ -312,7 +358,7 @@ function workConfigRows(payload) {
   return out;
 }
 
-function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platform=process.platform}={}) {
+function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platform=process.platform,now=Date.now}={}) {
   const current=auth=>{
     const session=readSession();
     if(auth?.source!=='kimi-work-desktop'||auth.uid!==session.uid)throw expired();
@@ -320,7 +366,7 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
   };
   async function jsonRequest(url,token,body,signal,deviceId) {
     const response=await fetchImpl(url,{method:body===undefined?'GET':'POST',
-      headers:{...(token?{Authorization:'Bearer '+token}:{}),...(url.startsWith(BASE)?workHeaders(deviceId):webHeaders(platform)),'Accept':'application/json',
+      headers:{...(token?{Authorization:'Bearer '+token}:{}),...(url===REFRESH?refreshHeaders(platform):url.startsWith(BASE)?workHeaders(deviceId):webHeaders(platform)),'Accept':'application/json',
         ...(body===undefined?{}:{'Content-Type':'application/json','Connect-Protocol-Version':'1'})},
       ...(body===undefined?{}:{body:JSON.stringify(body)}),signal:signal||AbortSignal.timeout(15000),redirect:'error'});
     if(response.status===401)throw Object.assign(expired(),{status:401});
@@ -329,6 +375,62 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
     const text=await response.text();
     if(Buffer.byteLength(text)>2*1024*1024)throw Error('Kimi Work 响应过大。');
     try{return JSON.parse(text);}catch{throw Error('Kimi Work 响应格式无效。');}
+  }
+  // Only auth.refresh rotates. Magpie commits its return value under the auth
+  // store lock, checking that the original access/refresh pair still stands.
+  // A plugin-side getAuth + auth.set cannot make that check atomic.
+  // Remember rotations after a failed host save, by exact input pair rather
+  // than uid: a reconnect can have the same uid and independent credentials.
+  const renewing=new Map(), renewed=new Map();
+  const valid=auth=>auth?.source==='kimi-work-desktop' && typeof auth.uid==='string' && !!auth.uid;
+  const hasPair=auth=>valid(auth) && typeof auth.access==='string' && !!auth.access
+    && typeof auth.refresh==='string' && !!auth.refresh;
+  const credentialKey=auth=>JSON.stringify([auth.uid,auth.access,auth.refresh]);
+  const latest=auth=>{
+    const seen=new Set();let a=auth;
+    for(let key=credentialKey(a);renewed.has(key)&&!seen.has(key);key=credentialKey(a)) {
+      seen.add(key);a={...a,...renewed.get(key)};
+    }
+    return a;
+  };
+  const remember=(key,pair)=>{
+    // A server-expired replacement refresh token cannot recover that entry.
+    for(const [k,v] of renewed) {
+      const until=expiry(v.refresh);
+      if(until>0 && until<=now())renewed.delete(k);
+    }
+    renewed.set(key,pair);
+  };
+  const due=auth=>auth.expires>0 && auth.expires<=now()+REFRESH_LEAD;
+  async function renew(auth) {
+    const a=latest(auth);
+    if(!due(a))return a;
+    // A reconnect is a new token lineage even when it has the same user id.
+    // It must not wait for (or inherit an error from) the previous login.
+    const key=credentialKey(a);
+    let run=renewing.get(key);
+    if(!run)run=(async()=>{
+      let j;
+      try {j=await jsonRequest(REFRESH,undefined,{refresh_token:a.refresh});}
+      catch(error) {
+        if(error?.signIn==='expired')throw error;
+        throw Error('Kimi Work 登录续期暂不可用，请稍后重试。');
+      }
+      const access=j?.access_token??j?.accessToken,refresh=j?.refresh_token??j?.refreshToken;
+      const expires=expiry(access),oldSub=tokenClaims(a.access).sub,newSub=tokenClaims(access).sub;
+      if(typeof access!=='string'||!access||typeof refresh!=='string'||!refresh||expires<=now()||!Number.isFinite(expires)
+        || (oldSub && newSub && oldSub!==newSub))throw Error('Kimi Work 续期响应格式无效。');
+      return {access,refresh,expires};
+    })();
+    renewing.set(key,run);
+    try {
+      const pair=await run;
+      // Also advance an older stored input when its cached access token has
+      // expired during a continuing save failure. Its refresh must stay live.
+      remember(key,pair);
+      renewed.set(credentialKey(auth),pair);
+      return {...auth,...pair};
+    } finally {if(renewing.get(key)===run)renewing.delete(key);}
   }
   // Work's menu, as the desktop asks it with its web sign-in. When that
   // ask fails (the web sign-in in Kimi's file has gone stale, which
@@ -368,17 +470,24 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
       provider:ID,
       maxConcurrency:1,
       methods:[{type:'oauth',label:'使用本机 Kimi Work 登录',authorize:async()=>({
-        url:'',method:'auto',instructions:'读取本机 Kimi 桌面版的 Work 登录；不会使用 Kimi Code API Key。',
+        url:'',method:'auto',instructions:'导入本机 Work 会员登录，保存并自动续期；不会使用 Kimi Code API Key或修改桌面配置。',
         callback:async()=>{
           try{
-            const s=readSession();await jsonRequest(BASE+'/models',s.workToken,undefined,undefined,s.deviceId);
-            // Only an account reference is saved in Magpie. Actual credentials
-            // stay in Kimi's own file and are reread for every operation.
-            return {type:'success',access:'',refresh:'',expires:0,source:'kimi-work-desktop',
+            const s=readSession();
+            if(!s.webRefresh)throw expired();
+            await jsonRequest(BASE+'/models',s.workToken,undefined,undefined,s.deviceId);
+            return {type:'success',access:s.webToken,refresh:s.webRefresh,expires:expiry(s.webToken),source:'kimi-work-desktop',
               accountId:'Kimi Work (local)',uid:s.uid};
           }catch{return {type:'failed',error:'没有可用的本机 Kimi Work 登录，请先打开 Kimi 并登录 Work。'};}
         },
       })}],
+      refreshLead:REFRESH_LEAD,
+      async refresh(auth) {
+        if(!hasPair(auth))return;
+        const next=await renew(auth);
+        if(next.access!==auth.access || next.refresh!==auth.refresh)
+          return {access:next.access,refresh:next.refresh,expires:next.expires};
+      },
       loader:async getAuth=>({
         baseURL:BASE,apiKey:'local-desktop-session',
         async fetch(input,init={}) {
@@ -399,11 +508,13 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
           // Preserve messages, stream and abort signal, and tools but for
           // the schema shapes Kimi refuses (moonshotTools). There is no
           // fallback to api.kimi.com, a Code API key, or another provider.
+          const signal=request?request.signal:init.signal;
           const raw=request?request.body:init.body;
           let body=raw;
-          if(raw!=null&&typeof raw!=='string')body=await new Response(raw).text();
+          if(raw!=null&&typeof raw!=='string')body=await bodyText(raw,signal);
+          signal?.throwIfAborted();
           if(body!=null)body=moonshotTools(body);
-          const options={...init,body,signal:request?request.signal:init.signal};
+          const options={...init,body,signal};
           if(body==null)delete options.body;
           let response;
           try { response=await fetchImpl(BASE+'/chat/completions',{...options,method:'POST',headers,redirect:'error'}); }
@@ -415,12 +526,19 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
         },
       }),
       usage:async getAuth=>{
-        const s=current(await getAuth());
-        const j=await jsonRequest(MEMBER+'GetSubscriptionStats',s.webToken,{});
+        const auth=await getAuth();
+        if(!hasPair(auth))throw expired();
+        // The host refreshes before calling usage. A 401 is reported, never
+        // handled with a blind auth.set that could undo logout/reconnection.
+        const j=await jsonRequest(MEMBER+'GetSubscriptionStats',auth.access,{});
         const b=j.subscriptionBalance,used=percent(b?.amountUsedRatio);
-        return {plan:'Kimi Work · 会员共享额度',windows:used===undefined?[]:[{
-          name:'会员共享额度',used,
-        }]};
+        const windows=used===undefined?[]:[{name:'本月',used}];
+        const code=percent(b?.kimiCodeUsedRatio);
+        // Magpie draws every window as an independent allowance, even aside
+        // ones. Code is part of this pool: keep it in the count/tooltip text,
+        // never turn its used share into another "remaining" quota ring.
+        if(windows.length && code!==undefined)windows[0].display='Code 已用 '+Number(code.toFixed(2))+'%（占总额）';
+        return {plan:'月度共享额度',windows};
       },
     },
     provider:{id:ID,models:async(provider,{auth}={})=>{
@@ -443,4 +561,4 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
 }
 
 export default async function KimiWorkProvider(){return createPlugin();}
-export const _internal={createPlugin,moonshotTools,moonshotSchema,readDesktop,desktopFile,modelRows,workConfigRows,BASE,MEMBER,CONFIG,UA,workHeaders,webHeaders,readDeviceId};
+export const _internal={createPlugin,moonshotTools,moonshotSchema,readDesktop,desktopFile,modelRows,workConfigRows,BASE,MEMBER,CONFIG,UA,workHeaders,webHeaders,refreshHeaders,readDeviceId,REFRESH,REFRESH_LEAD,expiry};

@@ -4,12 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import {_internal as I} from './index.mjs';
 
-const session = {uid: 'synthetic-account', workToken: 'synthetic-work-token', webToken: 'synthetic-web-token'};
-const auth = {source: 'kimi-work-desktop', uid: session.uid};
+const session = {uid: 'synthetic-account', workToken: 'synthetic-work-token', webToken: 'synthetic-web-token', webRefresh:'synthetic-refresh-token'};
+const auth = {source: 'kimi-work-desktop', uid: session.uid,access:session.webToken,refresh:session.webRefresh,expires:0};
 const models = {data: [{id: 'k3-agent', display_name: 'K3', context_length: 1000000,
   supports_image_in: true, supports_reasoning: true, reasoningEffortOptions: [{effort: 'REASONING_EFFORT_LOW'}, {effort: 'REASONING_EFFORT_MAX'}]}]};
 
-test('sign-in saves an account reference and dynamic models/usage retain Work accounting', async () => {
+test('sign-in imports web renewal credentials and dynamic models/usage retain Work accounting', async () => {
   const calls = [];
   const p = I.createPlugin({readSession: () => session, fetchImpl: async (url, init) => {
     calls.push({url, init});
@@ -18,10 +18,11 @@ test('sign-in saves an account reference and dynamic models/usage retain Work ac
   const result = await (await p.auth.methods[0].authorize()).callback();
   expect(result).toMatchObject({type: 'success', source: auth.source, uid: auth.uid});
   expect(JSON.stringify(result)).not.toContain(session.workToken);
+  expect(result).toMatchObject({access:session.webToken,refresh:session.webRefresh});
   const catalog = await p.provider.models({models: {}}, {auth});
   expect(catalog['k3-agent'].limit.context).toBe(262144);
   expect(Object.keys(catalog['k3-agent'].variants)).toEqual(['low', 'max']);
-  expect((await p.auth.usage(async () => auth)).windows).toEqual([{name: '会员共享额度', used: 42}]);
+  expect((await p.auth.usage(async () => auth)).windows).toEqual([{name: '本月', used: 42}]);
   expect(calls.at(-1).init.headers.Authorization).toBe('Bearer ' + session.webToken);
 });
 

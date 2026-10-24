@@ -8,8 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {_internal as I} from './index.mjs';
 
-const account={type:'oauth',source:'kimi-work-desktop',uid:'fixture-account'};
-const session={uid:'fixture-account',workToken:'synthetic-work-token',webToken:'synthetic-web-token',deviceId:'0f8fad5b-d9cb-469f-a165-70867728950e'};
+const account={type:'oauth',source:'kimi-work-desktop',uid:'fixture-account',access:'synthetic-web-token',refresh:'synthetic-web-refresh',expires:0};
+const session={uid:'fixture-account',workToken:'synthetic-work-token',webToken:account.access,webRefresh:account.refresh,deviceId:'0f8fad5b-d9cb-469f-a165-70867728950e'};
 
 function record() {
   const sent=[];

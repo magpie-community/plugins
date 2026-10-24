@@ -7,7 +7,11 @@ magpie plugin add @magpie-community/opencode-kimi-work-auth
 magpie plugin login kimi-work
 ```
 
-Open Kimi desktop and sign in to Work on the same computer first. Choose **使用本机 Kimi Work 登录** in the provider's sign-in menu. There is no browser sign-in or API-key fallback in this package. It cannot sign in on a headless machine without an existing desktop session file.
+Open Kimi desktop and sign in to Work on the same computer first. Choose **使用本机 Kimi Work 登录** in the provider's sign-in menu. This imports the membership access/refresh pair into the host's auth store. Magpie renews it directly with Kimi near expiry, including while the browser and desktop app are closed. Initial sign-in still requires a local desktop session file; this package does not capture browser cookies or offer an API-key fallback.
+
+Version **0.1.11** adds membership renewal and a single shared monthly meter to upstream 0.1.10. It preserves the model-effort parsing fix, desktop Work model menu, Work device headers, desktop platform headers and unauthenticated menu retry. **Every account imported by the official reference-only versions through 0.1.10 needs one explicit reconnect after upgrading** to import its membership pair. The card displays the host's localized signed-out/re-add-account message; the error detail also gives `magpie plugin login kimi-work`. A pair already saved by an earlier PR build uses the same format; it needs no migration, but a revoked or missing refresh still requires reconnecting.
+
+Request-body buffering for schema conversion also follows the caller's abort signal: cancelling while a stream is still being read cancels that read and returns the original cancellation reason before any upstream request is sent.
 
 ## Models and requests
 
@@ -19,21 +23,31 @@ An inference HTTP 401 marks the provider sign-in as expired (`kimi_work_login_ex
 
 Models use standard context, capped at 262,144 tokens, rather than silently enabling the higher-priced XL context. The reply limit is the menu's `maxTokens` (32,768 for every model it lists today). Until the signed-in account's live catalog is read, and when it can't be, the models offered are `kimi-work/k3-agent` and `kimi-work/k2d8-preview`, the two ids Work's `/models` has listed; the live catalog replaces them, so a model Kimi adds to the account (such as K3.1 Pro) shows under the id the menu gives it. Since 0.1.6 a model whose reasoning levels come in a shape not seen before keeps the levels that can be read, rather than the whole catalog failing over to the fallback.
 
-Usage comes from Kimi's membership `GetSubscriptionStats` endpoint and is labelled **shared membership allowance**, not a separate free Work allowance. No reset time is reported: `subscriptionBalance.expireTime` and `upcomingExpiration.timestamp` are expiration fields, and have not been verified to describe allowance resets. An observed Windows request was classified by Kimi as `FEATURE_WORK` while the Code five-hour and weekly ratios stayed unchanged. This is an observation, not a promise about future quota accounting: Kimi controls billing, shared allowances, access and rate limits.
+Usage comes from Kimi's membership `GetSubscriptionStats` endpoint. The card's **月度共享额度** heading and single **本月** meter report `subscriptionBalance.amountUsedRatio`, the fraction used of the shared monthly membership pool. If returned, `subscriptionBalance.kimiCodeUsedRatio` appears only as **Code 已用 …%（占总额）** in the meter's text and tooltip: Code's share of the entire monthly pool, not another allowance or the fraction of the used portion. It is never another window/ring, because Magpie renders even informational `aside` windows as separate remaining allowances. Code's share does not constrain Work routing. Missing monthly data stays unknown; Code's five-hour/weekly limits are never substituted. No reset time is reported: `subscriptionBalance.expireTime` and `upcomingExpiration.timestamp` are expiration fields, and have not been verified to describe allowance resets. Magpie's compact card currently labels a window with no reset time as "Not used yet" even when usage is nonzero; that host wording does not mean the monthly pool is unused. An observed Windows request was classified by Kimi as `FEATURE_WORK` while the Code five-hour and weekly ratios stayed unchanged. Kimi controls billing, shared allowances, access and rate limits.
 
 Every reasoning-effort value returned by `/models` is retained, including `STANDARD` if listed. The checked Windows catalog in `tests/fixtures/work-models.redacted.json` lists `LOW` (displayed by Kimi as **Standard**), `HIGH` and `MAX`; the plugin sends the advertised effort value instead of guessing from the display label.
 
 ## Sign-in and local files
 
-The plugin reads only the desktop app's `daimon-share/daimon/config.json` under:
+The plugin reads the desktop app's `daimon-share/daimon/config.json` and, if present, its Work device ID at `daimon-share/daimon/runtime/kimi-code/home/device_id` under:
 
 - Windows: `%APPDATA%/kimi-desktop/`
 - macOS: `~/Library/Application Support/kimi-desktop/`
 - Linux: `~/.config/kimi-desktop/`
 
-The internal Work credential is named `credentials.kimiCode`, but its origin must be exactly `https://agent-gw.kimi.com/coding/v1`. `credentials.kimiWeb` supplies the membership sign-in. The plugin rejects missing credentials and other origins. It saves only a hashed account reference in Magpie/OpenCode's auth store; the actual tokens remain in Kimi's own file and are reread on each operation. It never reads Magpie's credential files, writes Kimi configuration, consumes refresh tokens, or stores copies of desktop credentials.
+The internal Work credential is named `credentials.kimiCode`, but its origin must be exactly `https://agent-gw.kimi.com/coding/v1`. That Work API key is reread for inference/model discovery and is not copied into the host's auth store. `credentials.kimiWeb.accessToken`, `refreshToken` and `userId` supply the membership sign-in. The plugin rejects missing credentials and other origins. It never writes Kimi configuration or reads Chrome's profile/cookies.
 
-Kimi desktop remains responsible for refreshing its sign-in. If it expires, sign in there and reconnect this provider. Changing the desktop account requires reconnecting, so requests do not silently switch accounts. Each synced device must have its own Kimi desktop sign-in.
+**Storage change in 0.1.11:** the explicit sign-in callback now returns membership access and refresh tokens alongside the hashed account reference for the host to save. Magpie keeps these in its account-scoped `plugin-auth.json`, using flushed atomic writes and mode `0600`; OpenCode uses its own auth store. These are private credential files, not an extra encrypted vault. Keep the host's profile/backups private. The plugin creates no separate token file and never logs tokens or upstream authentication error bodies. Existing reference-only sign-ins must explicitly reconnect with `magpie plugin login kimi-work` to import the pair; usage reads do not silently migrate or write login state. If a refresh token is missing, sign in to desktop and reconnect the provider.
+
+Magpie calls `auth.refresh` before models, usage and requests when the access token is within one minute of its JWT expiry. The hook calls `https://auth.kimi.com/api/account.gateway.v1.AuthService/RefreshToken` and returns the new access/refresh pair. **Magpie owns the commit:** under its auth-store lock it checks that the original credentials still stand before saving, so a late renewal cannot undo logout or overwrite a replacement login. The plugin never calls `client.auth.set` from usage or renewal. Concurrent renewal calls for the same input pair share an exchange; different reconnect credentials have independent pending work and caches even with the same account id.
+
+RefreshToken has its own desktop User-Agent/platform/version/timezone/language headers, based on a captured official Kimi 3.2.17 exchange. It sends Connect JSON with the refresh token in the body and no Authorization or Cookie. It does not copy browser device/session identifiers or ShieldData. Work requests retain upstream's Kimi Code 0.36.0/daimon 0.6.10 headers; www.kimi.com requests retain upstream's desktop-menu headers. The [compatibility record](COMPATIBILITY.md) compares the official and plugin requests and bounds the live renewal evidence.
+
+A fresh isolated login on 2026-10-24 verified both directions: after the plugin rotated, the desktop renewed from its retained refresh token following natural access expiry; after that desktop renewal, the plugin renewed from its own retained branch following natural access expiry and read monthly usage with HTTP 200. The desktop's membership and Work model reads also stayed at 200. This is evidence for that session/build and interval, not a guarantee that Kimi will accept old refresh tokens indefinitely. If a saved branch is rejected later, reconnect explicitly; usage never silently imports whichever desktop account is currently signed in.
+
+If the host cannot save, the rotated pair stays in this plugin process for a persistence retry; restarting before it is saved may require signing in again. Network/429/5xx errors retain the stored login. A rejected refresh requires reconnecting. Usage itself is read-only: an unexpected membership 401 is reported as expired, without a forced rotation or blind write. No background heartbeat, browser process or desktop IPC is required. `auth.refresh` and `auth.usage` are Magpie-specific hooks that OpenCode ignores; automatic membership renewal and the monthly quota display are Magpie features, while the Work inference hooks remain available to OpenCode.
+
+Inference still needs the account's local desktop file and valid Work key. Changing that desktop account requires reconnecting for inference, so requests do not silently switch accounts. Web-token renewal does not recreate a revoked Work key. Each device must have its own desktop sign-in. Server revocation/expiry can still require human sign-in; automatic renewal does not promise a permanent session.
 
 ## Origin and provider-id conflict
 
@@ -43,11 +57,11 @@ The separate MIT-licensed [`kimi-work-opencode`](https://www.npmjs.com/package/k
 
 ## Compatibility and validation
 
-These are undocumented desktop interfaces, not a supported public Kimi API. Windows and Apple-silicon macOS have been tested with real Work inference, including streaming. The [macOS record](COMPATIBILITY.md) includes the Kimi build, observed file/fields, real Magpie route and test limits. Linux and Intel macOS remain unverified. Changed desktop layouts stop with a sign-in error; changed upstream schemas stop model discovery or usage with an error. Inference failures are returned without retrying against Code or another service. Users remain responsible for their subscription's terms.
+These are undocumented desktop interfaces, not a supported public Kimi API. Windows and Apple-silicon macOS have historical real Work inference coverage, including streaming. The [compatibility record](COMPATIBILITY.md) includes the tested Kimi build, renewal request comparison, observed coexistence interval and test limits; current renewal checks and historical inference coverage are distinguished there. Linux and Intel macOS remain unverified. Changed desktop layouts stop with a sign-in error; changed upstream schemas stop model discovery or usage with an error. Inference failures are returned without retrying against Code or another service. Users remain responsible for their subscription's terms.
 
 ```sh
 bun test packages/kimi-work
 bun scripts/check.mjs kimi-work
 ```
 
-Tests use synthetic sessions and fake HTTP responses: credential separation/rotation, read-only local import, account changes, endpoint restrictions, streaming/tool preservation, model discovery and shared-usage accounting. No account, token, prompt, conversation or vendor binary is distributed. No runtime dependencies.
+Tests use synthetic sessions and fake HTTP responses: credential separation/rotation, explicit reconnect for reference-only accounts, concurrent renewal by credential lineage, host-save retry recovery, process restart, rejected/transient refreshes, read-only local import/usage, account changes, endpoint restrictions, streaming/tool preservation, model discovery and monthly shared-usage accounting. No account, token, prompt, conversation or vendor binary is distributed. No runtime dependencies.
