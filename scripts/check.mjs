@@ -15,9 +15,9 @@ for (const name of readdirSync(root)) {
   const pj = join(dir, "package.json")
   if (!existsSync(pj)) continue
   const pkg = JSON.parse(readFileSync(pj, "utf8"))
-  // gateway middleware and routings, agents and pages have no OpenCode
+  // gateway middleware, routings and hooks, agents and pages have no OpenCode
   // plugin; their own tests check them
-  if (pkg.magpie?.middleware || pkg.magpie?.gateway || pkg.magpie?.agent) continue
+  if (pkg.magpie?.middleware || pkg.magpie?.gateway || pkg.magpie?.hooks || pkg.magpie?.agent) continue
   if (pkg.magpie?.page && !pkg.main && !pkg.exports) continue
   const problems = []
   try {
