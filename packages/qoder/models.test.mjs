@@ -24,28 +24,28 @@ async function listed(listing) {
 
 test("the app's Fast is listed at its price, and chat's Performance stays", async () => {
   const ms = await listed(LISTING)
-  expect(ms.fast).toMatchObject({ name: "Fast", rate: 0.8 })
-  expect(ms.performance).toMatchObject({ name: "Performance", rate: 1.1 })
+  expect(ms.Fast).toMatchObject({ name: "Fast", rate: 0.8 })
+  expect(ms.Performance).toMatchObject({ name: "Performance", rate: 1.1 })
   expect(Object.keys(ms)).toEqual([
-    "ultimate", "performance", "fast", "efficient", "smodel", "cmodel", "qmodel_38max", "qfmodel", "qmodel_latest", "qmodel",
-    "gmodel", "gfmodel", "kmodel_latest", "kmodel", "dmodel", "dfmodel", "mmodel",
+    "Ultimate", "Performance", "Fast", "Efficient", "Sonus", "Cantus", "Qwen3.8-Max", "Qwen3.8-Flash", "Qwen3.7-Max", "Qwen3.7-Plus",
+    "GLM-5.3", "GLM-5.3-Flash", "Kimi-K3", "Kimi-K2.8-Preview", "DeepSeek-V4-Pro", "DeepSeek-Flash", "MiniMax-M3",
   ])
 })
 
 test("a model both scenes list is listed once, as the app gives it", async () => {
   const chat = LISTING.chat.map((m) => (m.key === "ultimate" ? { ...m, display_name: "Ultimate (chat)" } : m))
   const ms = await listed({ chat, app: LISTING.app })
-  expect(ms.ultimate.name).toBe("Ultimate")
+  expect(ms.Ultimate.name).toBe("Ultimate")
 })
 
 test("a listing with only one scene lists that scene", async () => {
-  expect(Object.keys(await listed({ chat: LISTING.chat }))).toContain("performance")
-  expect(Object.keys(await listed({ chat: LISTING.chat }))).not.toContain("fast")
-  expect(Object.keys(await listed({ app: LISTING.app }))).toContain("fast")
-  expect(Object.keys(await listed({ app: LISTING.app }))).not.toContain("performance")
+  expect(Object.keys(await listed({ chat: LISTING.chat }))).toContain("Performance")
+  expect(Object.keys(await listed({ chat: LISTING.chat }))).not.toContain("Fast")
+  expect(Object.keys(await listed({ app: LISTING.app }))).toContain("Fast")
+  expect(Object.keys(await listed({ app: LISTING.app }))).not.toContain("Performance")
 })
 
 test("a model the app turns off isn't listed though chat has it on", async () => {
   const app = LISTING.app.map((m) => (m.key === "efficient" ? { ...m, enable: false } : m))
-  expect(Object.keys(await listed({ chat: LISTING.chat, app }))).not.toContain("efficient")
+  expect(Object.keys(await listed({ chat: LISTING.chat, app }))).not.toContain("Efficient")
 })
