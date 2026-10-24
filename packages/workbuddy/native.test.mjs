@@ -400,3 +400,104 @@ test("an entitlement refusal or a refused signature on Messages passes as it cam
   expect(JSON.parse(r2.body)).toEqual(sig)
   expect(r2.status).toBe(500)
 })
+
+// ---- the reviewer's open question: the emptied assistant turn ----------------
+
+test("a history whose assistant turn was emptied of unsigned thinking answers, as an empty text block", () => {
+  // Replayed against WorkBuddy on 2026-10-24, with a real account, three
+  // runs each: the unsigned block itself + a signed turn after it -> 11159;
+  // the same with [{type:"text",text:""}] in its place -> 200, twice over.
+  // So the empty text block is what WorkBuddy takes, where Anthropic's own
+  // API refuses one. The test pins the shape withoutUnsigned leaves.
+  const body = JSON.stringify({
+    model: "claude-opus-5.5",
+    messages: [
+      { role: "user", content: "Earlier question." },
+      { role: "assistant", content: [{ type: "thinking", thinking: "unsigned" }] },
+      { role: "user", content: "Carry on." },
+      { role: "assistant", content: [{ type: "thinking", thinking: "signed", signature: "CAQSz" }, { type: "text", text: "ok" }] },
+      { role: "user", content: "Say OK." },
+    ],
+  })
+  const out = JSON.parse(_internal.withoutUnsigned(body))
+  // not an empty content list: a message must keep a block, and the empty
+  // text block is the one WorkBuddy takes
+  expect(out.messages[1].content).toEqual([{ type: "text", text: "" }])
+  expect(_internal.withoutSignedThinking(body) && JSON.parse(_internal.withoutSignedThinking(body)).messages[1].content)
+    .toEqual([{ type: "text", text: "" }])
+  // and the signed one is untouched
+  expect(out.messages[3].content).toEqual([{ type: "thinking", thinking: "signed", signature: "CAQSz" }, { type: "text", text: "ok" }])
+})
+
+// ---- a signature WorkBuddy didn't make -----------------------------------------
+
+test("a signature WorkBuddy didn't make is refused once, then the request goes without thinking", async () => {
+  // Measured 2026-10-24: another vendor's signature (valid base64, right
+  // length) answers 11159, drop_block notwithstanding; the same history
+  // without the block answers 200. A session moved here from another
+  // provider keeps such blocks, and a truncated one reads the same way.
+  const REFUSAL = JSON.stringify({
+    error: { code: "400001", internal_code: "11159", message: "content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation." },
+    type: "error",
+  })
+  let n = 0
+  const seen = []
+  globalThis.fetch = async (url, init) => {
+    const u = new URL(String(url))
+    if (u.pathname.endsWith("/token/refresh")) return ok(RENEWED)
+    n++
+    seen.push(JSON.parse(init.body))
+    // the first try is refused, the retry (without thinking) answers
+    return n === 1 ? new Response(REFUSAL, { status: 500 }) : new Response(SSE, { headers: { "content-type": "text/event-stream" } })
+  }
+  const body = JSON.stringify({
+    model: "claude-opus-5.5", stream: true,
+    thinking: { type: "adaptive" },
+    messages: [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: [{ type: "thinking", thinking: "foreign", signature: "Zm9yZWlnbg==" }, { type: "text", text: "hello" }] },
+      { role: "user", content: "again" },
+    ],
+  })
+  const { res } = await send(body)
+  expect(res.status).toBe(200)
+  expect(n).toBe(2)
+  // the retry dropped the thinking block, and only that
+  expect(seen[1].messages[1].content).toEqual([{ type: "text", text: "hello" }])
+  expect(seen[1].messages[0]).toEqual(seen[0].messages[0])
+  expect(seen[1].thinking).toEqual({ type: "adaptive" })
+})
+
+test("a body with no thinking block isn't sent twice for a 400", async () => {
+  let n = 0
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url))
+    if (u.pathname.endsWith("/token/refresh")) return ok(RENEWED)
+    n++
+    return new Response(JSON.stringify({ error: { internal_code: "11159", message: "Invalid `signature` in `thinking` block" } }), { status: 500 })
+  }
+  const { res } = await send(JSON.stringify({ model: "claude-opus-5.5", stream: true, messages: [{ role: "user", content: "hi" }] }))
+  expect(res.status).toBe(500)
+  expect(n).toBe(1)
+})
+
+test("a refusal that isn't about a signature isn't retried", async () => {
+  let n = 0
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url))
+    if (u.pathname.endsWith("/token/refresh")) return ok(RENEWED)
+    n++
+    return new Response(JSON.stringify({ code: 11102, error: "11158:model [claude-opus-4.7-1m] is not allowed for user type [internal_enterprise_user]", type: "invalid_request_error" }), { status: 400 })
+  }
+  const { res } = await send(JSON.stringify({
+    model: "claude-opus-5.5", stream: true,
+    messages: [{ role: "user", content: "hi" }, { role: "assistant", content: [{ type: "thinking", thinking: "t", signature: "s" }] }, { role: "user", content: "go" }],
+  }))
+  expect(res.status).toBe(400)
+  expect(n).toBe(1)
+})
+
+test("count_tokens is a Messages request, not a chat", () => {
+  expect(_internal.isMessages("https://copilot.tencent.com/v1/messages/count_tokens", "")).toBe(true)
+  expect(_internal.isMessages("https://copilot.tencent.com/v2/chat/completions", "")).toBe(false)
+})

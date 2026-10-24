@@ -462,11 +462,13 @@ function conversationKey(chat, session) {
 }
 
 // isMessages says whether a request is an Anthropic Messages one, which
-// site serves the Claude models natively: its URL ends at /messages, or (a
-// body is all there is to go on) its system is Anthropic's blocks rather
-// than a chat's string, and its tools carry input_schema where a chat's
-// carry a function's parameters. A chat's own tools can look either way, so
-// the URL decides when there is one.
+// site serves the Claude models natively: its URL ends at /messages or at
+// the counting endpoint beside it (/v1/messages/count_tokens, which the
+// chat route's rewrites would otherwise turn into a chat), or (a body is
+// all there is to go on) its system is Anthropic's blocks rather than a
+// chat's string, and its tools carry input_schema where a chat's carry a
+// function's parameters. A chat's own tools can look either way, so the URL
+// decides when there is one.
 function isMessages(url, body) {
   const path = (() => {
     try {
@@ -475,7 +477,7 @@ function isMessages(url, body) {
       return ""
     }
   })()
-  if (path) return /\/messages$/.test(path)
+  if (path) return /\/messages(\/count_tokens)?$/.test(path)
   const b = chatOf(body)
   if (!b) return false
   if (Array.isArray(b.system)) return true
@@ -484,22 +486,40 @@ function isMessages(url, body) {
 }
 
 // withoutUnsigned is a Messages body without the thinking blocks that carry
-// no signature. A conversation that began elsewhere — on WorkBuddy's chat
-// route, whose thinking comes back unsigned, or on any other provider — and
-// goes on here carries them in its history, and WorkBuddy refuses the whole
-// request for one once a signed block sits beside it: 11159 "Invalid
-// `signature` in `thinking` block. The block is bound to a different
-// conversation" (or the same wrapped in 11133). Seen 2026-10-24 in real
-// Claude Code sessions moved onto this route mid-way: every request of two
-// of them refused, each attempt alike, until the session ended. Replayed,
-// the same bodies answer 200 with the unsigned blocks left out, and as
-// before with them in while no signed block has come back yet; asking
-// thinking.block_binding.prefix_mismatch_behavior "drop_block", which the
-// refusal names, changed nothing. An unsigned block can't be verified by
-// the model anyway, so nothing it could use is lost. The signed ones —
-// this route's own — go back as they came, as Anthropic asks. An assistant
-// message left with nothing gets an empty text block, the shape a message
-// must keep. A body without unsigned thinking is body itself, byte for byte.
+// no signature, or whose signature WorkBuddy doesn't take.
+//
+// A conversation that began elsewhere — on WorkBuddy's chat route, whose
+// thinking comes back unsigned, or on any other provider — and goes on here
+// carries such blocks in its history, and WorkBuddy refuses the whole request
+// for one of them when another assistant message holds a signed block:
+// 11159 "Invalid `signature` in `thinking` block. The block is bound to a
+// different conversation" (or the same wrapped in 11133). Seen 2026-10-24 in
+// real Claude Code sessions moved onto this route mid-way: every request of
+// two of them refused, each attempt alike, until the session ended. Replayed
+// the same day, with a real account (20+ runs each):
+//
+//   unsigned thinking alone, no signed block anywhere ....... 200
+//   one unsigned-only assistant message + a signed one ...... 11159
+//   that message with the unsigned block taken out .......... 200
+//   unsigned and signed blocks in the SAME message .......... 200
+//   thinking.block_binding.prefix_mismatch_behavior=drop_block ... 11159
+//
+// So what binds a signed block is the history it sits in, and a message that
+// is thinking alone can't be part of it; whether that thinking is signed
+// makes no difference (a signed block alone is accepted too). The signature
+// itself isn't checked for where it came from: a block keeping a signature
+// of an unrelated turn, of another model (sonnet-5.5's on opus-5.5), or
+// another account's answers 200, while a truncated or altered one is 11159.
+// What WorkBuddy checks is that it reads as a signature.
+//
+// A block with no signature can't be verified by the model anyway, so
+// nothing it could use is lost. A message whose only block that was gets an
+// empty text block: measured the same day, that history still answers 200
+// with a signed turn after it (three runs), where the unsigned block itself
+// answers 11159 (three runs), and Anthropic's API refuses an empty text
+// block — 200 here means WorkBuddy takes it. The signed blocks, this
+// route's own, go back as they came, as Anthropic asks. A body without
+// unsigned thinking is body itself, byte for byte.
 function withoutUnsigned(body) {
   const b = chatOf(body)
   const msgs = b?.messages
@@ -513,6 +533,26 @@ function withoutUnsigned(body) {
     m.content = kept.length ? kept : [{ type: "text", text: "" }]
   }
   return changed ? JSON.stringify(b) : body
+}
+
+// withoutSignedThinking is a Messages body without any thinking block at
+// all, for a refusal saying a signature is not one WorkBuddy made (see the
+// retry in the loader). An assistant message left with nothing gets an
+// empty text block, as withoutUnsigned leaves it. null for a body with no
+// thinking block to drop: the retry would send the same request again.
+function withoutSignedThinking(body) {
+  const b = chatOf(body)
+  const msgs = b?.messages
+  if (!Array.isArray(msgs)) return null
+  let dropped = 0
+  for (const m of msgs) {
+    if (m?.role !== "assistant" || !Array.isArray(m.content)) continue
+    const kept = m.content.filter((p) => p?.type !== "thinking")
+    if (kept.length === m.content.length) continue
+    dropped += m.content.length - kept.length
+    m.content = kept.length ? kept : [{ type: "text", text: "" }]
+  }
+  return dropped ? JSON.stringify(b) : null
 }
 
 // chatOf is a chat's body as the object it is, null for one that isn't: a
@@ -1999,8 +2039,23 @@ function makePlugin(site) {
             if (sysKey && refusedSystems.has(sysKey)) body = systemAsUser(body) ?? body
             const shaped = (b) => (!native && endsAfterTools.has(model) ? replyAfterTools(b) ?? b : b)
             let res = await send(shaped(body))
-            if (res.status === 400 && !native) {
-              let text = await res.text()
+            // a signature WorkBuddy's own signing didn't make — a session
+            // moved here from another provider keeps its thinking blocks,
+            // and a truncated or altered one reads the same way — is 11159
+            // too, and none of them can be told apart from a good one
+            // before sending. The request goes once more without them.
+            // Measured 2026-10-24: another vendor's signature answers 11159
+            // on its own, drop_block notwithstanding; without the block the
+            // same history answers 200. Only when the history holds a
+            // signature that isn't this route's own, so a session on this
+            // route never sends twice.
+            if (native && res.status >= 400) {
+              const text = await res.text()
+              const again = BAD_SIGNATURE.test(text) ? withoutSignedThinking(body) : null
+              if (again) res = await send(again)
+              else res = new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
+            }
+            if (res.status === 400 && !native) {              let text = await res.text()
               const moved = REFUSED.test(text) && sysKey && !refusedSystems.has(sysKey) ? systemAsUser(body) : null
               if (moved) {
                 refusedSystems.add(sysKey)
@@ -2109,6 +2164,13 @@ const REFUSED_HINT =
   "WorkBuddy refused words in this client's prompt (most often its system prompt); use it from Hermes, OpenCode or Pi, or add another provider to this group"
 const REFUSED = /unapproved channel|illegal api invocation/i
 
+// BAD_SIGNATURE is WorkBuddy's refusal of a thinking block whose signature it
+// didn't make: internal code 11159, "Invalid `signature` in `thinking` block.
+// The block is bound to a different conversation", else 11133 wrapping
+// "thinking_signature_invalid: replay the original thinking block and
+// signature unchanged".
+const BAD_SIGNATURE = /thinking_signature_invalid|invalid\s+`?signature`?\s+in\s+`?thinking|block is bound to a different conversation|"internal_code"\s*:\s*"?11159/i
+
 // RESTRICTED_HINT is what the user can do about WorkBuddy's 403 code 11140
 // "request illegal", whose displayMsg says "Your account has been restricted
 // due to unusual activity" (magpie #1849): the account is out until WorkBuddy
@@ -2191,4 +2253,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, answeredBefore, nativeOf, modelOf, configModels, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, answeredBefore, nativeOf, modelOf, configModels, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
