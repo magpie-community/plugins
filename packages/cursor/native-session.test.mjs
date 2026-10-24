@@ -358,3 +358,31 @@ test("native protocol: a step silent after its first call fails at idle, before 
   expect(run.error).toMatchObject({ status: 502, message: "Cursor went quiet: no message for 0 s, its last message tool call (try again)" })
   expect(Date.now() - started).toBeLessThan(1000)
 })
+
+// Quiet.frames must not hold the frames it passed on while the stream stays
+// open: a long turn streams many MB through one Run.
+test("native protocol: frames already passed on are not kept while the Run streams on (#2672)", async () => {
+  const { Quiet } = await import("./native-session.mjs")
+  const refs = []
+  let release
+  const held = new Promise((r) => { release = r })
+  async function* src() {
+    for (let i = 0; i < 200; i++) {
+      const f = { data: Buffer.alloc(64 * 1024, i & 255) }
+      refs.push(new WeakRef(f))
+      yield f
+    }
+    await held // the stream stays open
+  }
+  const it = new Quiet(NATIVE_LIMITS, () => {}).frames(src())
+  for (let i = 0; i < 200; i++) await it.next()
+  const pending = it.next()
+  for (let i = 0; i < 5 && refs.some((r) => r.deref()); i++) {
+    Bun.gc(true)
+    await new Promise((r) => setTimeout(r, 0))
+  }
+  // the last frame may still be held by the generator's own state
+  expect(refs.filter((r) => r.deref()).length).toBeLessThanOrEqual(2)
+  release()
+  await pending
+})

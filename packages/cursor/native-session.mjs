@@ -122,7 +122,6 @@ export class Quiet {
   // that was waiting ends in its error, whether or not the stream does
   async *frames(stream) {
     const it = (stream[Symbol.asyncIterator] ?? stream[Symbol.iterator]).call(stream)
-    const gone = new Promise((r) => { this.gone = r })
     try {
       for (;;) {
         this.waiting = true
@@ -131,10 +130,13 @@ export class Quiet {
         try {
           const next = Promise.resolve(it.next())
           next.catch(() => {}) // a read left behind by gone fails unheard
-          r = await Promise.race([next, gone])
+          // a wake of this read's own: one that lived as long as the stream
+          // would hold every race's result, each frame, until it ended
+          r = await Promise.race([next, new Promise((wake) => { this.gone = wake })])
         } catch (e) {
           if (!this.why) throw e
         } finally {
+          this.gone = null
           this.waiting = false
           this.waited()
         }
