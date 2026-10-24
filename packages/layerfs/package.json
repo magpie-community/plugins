@@ -6,6 +6,7 @@
   "files": [
     "index.mjs",
     "layerfs.mjs",
+    "native-worker.mjs",
     "page",
     "README.md"
   ],
@@ -24,7 +25,8 @@
   "license": "MIT",
   "magpie": {
     "options": {
-      "exec": false
+      "exec": false,
+      "native": false
     },
     "page": {
       "file": "page/index.html",
@@ -45,5 +47,5 @@
     "directory": "packages/layerfs"
   },
   "type": "module",
-  "version": "0.7.2"
+  "version": "0.9.0"
 }

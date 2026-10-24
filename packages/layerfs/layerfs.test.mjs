@@ -8,10 +8,11 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { LayerfsTools } from "./index.mjs"
 import {
-  IMPORT_MAX_FILES, SimBackend, checkSourceDir, createBackend, scanImportTree,
+  IMPORT_MAX_FILES, NativeBackend, SimBackend, checkSourceDir, createBackend, scanImportTree,
 } from "./layerfs.mjs"
 
 const sha = (s) => createHash("sha256").update(s).digest("hex")
+const FAKE_SDK = join(import.meta.dir, "fake-sdk.mjs")
 
 // Hygiene: every temp dir a test makes is registered and removed, and
 // the process env the suite mutates is restored whole at the end —
@@ -41,8 +42,10 @@ function fixture() {
 
 async function simTools(opts = { exec: true }) {
   const home = mkTmp("layerfs-home-")
+  const page = mkTmp("layerfs-page-")
   process.env.MAGPIE_LAYERFS_HOME = home
   process.env.MAGPIE_LAYERFS_BACKEND = "sim"
+  process.env.MAGPIE_LAYERFS_PAGE_DIR = page
   delete process.env.LAYERFS_SDK_PATH
   delete process.env.LAYERFS_STORE_PATH
   delete process.env.MAGPIE_LAYERFS_EXEC
@@ -56,7 +59,24 @@ async function simTools(opts = { exec: true }) {
   const call = (name, args) => tool[name].execute(
     name === "provision" && args.source === undefined ? { ...args, source: src } : args,
     { agent: "test", abort: AbortSignal.timeout(5000) })
-  return { call, home, src, tool }
+  return { call, home, src, tool, page }
+}
+
+// The live file is written by a debounced writer: poll for CONTENT, not
+// existence — an early write holds only the calls that landed before it.
+async function liveData(page, want, ms = 8000) {
+  const live = join(page, "trajectory-live.js")
+  const deadline = Date.now() + ms
+  for (;;) {
+    if (existsSync(live)) {
+      try {
+        const data = JSON.parse(readFileSync(live, "utf8").replace(/^globalThis\.LayerfsTrajectory = |;\n$/g, ""))
+        if (want(data)) return data
+      } catch { /* a mid-rename read, or an earlier state */ }
+    }
+    if (Date.now() > deadline) throw new Error("live trajectory never held the expected state")
+    await new Promise((r) => setTimeout(r, 50))
+  }
 }
 
 test("gives eight tools, each with a JSON Schema and an execute", async () => {
@@ -339,42 +359,94 @@ test("item 4: the store is private, and a file's mode survives the store", async
   expect(mode(join(home, "accounting.json"))).toBe(0o600) // record files stay private
 })
 
-test("r2 item 4: this package is sim-only — asking for the native backend is a clear error", async () => {
+test("item 5: the native backend needs an explicit opt-in, not just an SDK path", async () => {
+  delete process.env.LAYERFS_SDK_PATH
   const sim1 = await createBackend({ MAGPIE_LAYERFS_HOME: mkTmp("layerfs-auto-") })
   expect(sim1).toBeInstanceOf(SimBackend)
-  // an SDK path changes nothing here: auto still means sim
+  // an SDK path alone no longer turns native on (pre-0.7 it did)
   const sim2 = await createBackend({ MAGPIE_LAYERFS_HOME: mkTmp("layerfs-auto-"), LAYERFS_SDK_PATH: "/x/index.js" })
   expect(sim2).toBeInstanceOf(SimBackend)
-  // every way of asking for native is refused, and says why
-  await expect(createBackend({ MAGPIE_LAYERFS_BACKEND: "native" })).rejects.toThrow("sim-only")
-  await expect(createBackend({ MAGPIE_LAYERFS_HOME: mkTmp("layerfs-auto-"), MAGPIE_LAYERFS_NATIVE: "1" }))
-    .rejects.toThrow("follow-up PR once @layerfs/sdk is published")
-  await expect(createBackend({ MAGPIE_LAYERFS_HOME: mkTmp("layerfs-auto-") }, { native: true }))
-    .rejects.toThrow("sim-only")
-  await expect(createBackend({ MAGPIE_LAYERFS_BACKEND: "bogus" })).rejects.toThrow("auto or sim")
+  const byEnv = await createBackend({
+    MAGPIE_LAYERFS_HOME: mkTmp("layerfs-auto-"), LAYERFS_SDK_PATH: "/x/index.js", MAGPIE_LAYERFS_NATIVE: "1",
+  })
+  expect(byEnv).toBeInstanceOf(NativeBackend)
+  await byEnv.close()
+  const byOption = await createBackend(
+    { MAGPIE_LAYERFS_HOME: mkTmp("layerfs-auto-"), LAYERFS_SDK_PATH: "/x/index.js" }, { native: true })
+  expect(byOption).toBeInstanceOf(NativeBackend)
+  await byOption.close()
+  // asking for native outright without the opt-in is refused, loudly
+  await expect(createBackend({ MAGPIE_LAYERFS_BACKEND: "native" })).rejects.toThrow("off by default")
+  const native = await createBackend({
+    MAGPIE_LAYERFS_BACKEND: "native", MAGPIE_LAYERFS_NATIVE: "1", MAGPIE_LAYERFS_HOME: mkTmp("layerfs-auto-"),
+  })
+  expect(native).toBeInstanceOf(NativeBackend)
+  await expect(native.status()).rejects.toThrow("LAYERFS_SDK_PATH")
+  await native.close()
+  await expect(createBackend({ MAGPIE_LAYERFS_BACKEND: "bogus" })).rejects.toThrow("auto, native or sim")
 })
 
-test("item 8 + r2 item 3: no trajectory file is maintained per call; the trajectory builds on demand", async () => {
+test("item 8 + r2 item 3: no trajectory file in the store; the page's live file carries the real trajectory", async () => {
   const pageFile = join(import.meta.dir, "page", "trajectory.js")
   const before = readFileSync(pageFile, "utf8")
-  const { call, home } = await simTools()
+  const { call, home, page } = await simTools()
   await call("provision", { project: "website" })
   await call("fork", { project: "website", branch: "feat" })
   const feat = await call("provision", { project: "website", branch: "feat" })
   writeFileSync(join(feat.path, "f.txt"), "f\n")
   await call("checkpoint", { project: "website", branch: "feat", message: "work" })
-  expect(readFileSync(pageFile, "utf8")).toBe(before) // the shipped file is a sample, untouched (item 8)
+  expect(readFileSync(pageFile, "utf8")).toBe(before) // the shipped sample is untouched (item 8)
   // 0.7.0 refreshed <root>/trajectory.json after every call; 0.7.1
   // dropped that — the refresh re-walked branch chains per call for a
-  // file nothing reads (r2 item 3)
+  // file nothing read (r2 item 3). 0.8.0's live file is the page's data
+  // channel instead: built by trajectory(), written to the PAGE folder
+  // (MAGPIE_LAYERFS_PAGE_DIR here, never the store), debounced off the
+  // tool calls' path.
   expect(existsSync(join(home, "trajectory.json"))).toBe(false)
-  // the trajectory itself is still there, built when asked
-  const traj = await new SimBackend(home).trajectory()
-  const proj = traj.projects.find((p) => p.name === "website")
+  // the live file lands in the page dir and carries the real trajectory
+  const data = await liveData(page, (d) =>
+    d.projects.find((p) => p.name === "website")?.branches.find((x) => x.name === "feat")?.commits.at(-1)?.message === "work")
+  const proj = data.projects.find((p) => p.name === "website")
   expect(proj.branches.map((x) => x.name).sort()).toEqual(["feat", "main"])
   const featSlice = proj.branches.find((x) => x.name === "feat")
   expect(featSlice.commits.at(-1).message).toBe("work")
+  expect(data.totals.logicalBytes).toBeGreaterThan(0)
+  // the trajectory itself is still there, built when asked
+  const traj = await new SimBackend(home).trajectory()
+  const proj2 = traj.projects.find((p) => p.name === "website")
+  expect(proj2.branches.map((x) => x.name).sort()).toEqual(["feat", "main"])
+  const featSlice2 = proj2.branches.find((x) => x.name === "feat")
+  expect(featSlice2.commits.at(-1).message).toBe("work")
   expect(traj.totals.logicalBytes).toBeGreaterThan(0)
+})
+
+test("calls record the real calling agent on commits and events; the live trajectory carries it to the page", async () => {
+  const { call, tool, home, page } = await simTools()
+  await call("provision", { project: "website" }) // agent "test" imports main
+  await call("fork", { project: "website", branch: "claude", from: "main" })
+  const ws = await call("provision", { project: "website", branch: "claude" })
+  writeFileSync(join(ws.path, "claude-work.txt"), "claude was here\n")
+  // a second agent checkpoints on the branch: the commit names the agent that made it
+  await tool.checkpoint.execute(
+    { project: "website", branch: "claude", message: "claude: first edit" },
+    { agent: "claude", abort: AbortSignal.timeout(5000) })
+  const b = new SimBackend(home)
+  const traj = await b.trajectory()
+  const proj = traj.projects.find((p) => p.name === "website")
+  const mainImport = proj.branches.find((x) => x.name === "main").commits[0]
+  expect(mainImport.agent).toBe("test") // the importing agent, not a guess from the branch name
+  const claudeCommit = proj.branches.find((x) => x.name === "claude").commits.at(-1)
+  expect(claudeCommit.agent).toBe("claude")
+  // events carry it too
+  const events = b.readEvents()
+  expect(events.find((e) => e.kind === "provision" && e.branch === "main").agent).toBe("test")
+  expect(events.find((e) => e.kind === "checkpoint" && e.branch === "claude").agent).toBe("claude")
+  // and the debounced live file, once it holds the checkpoint, carries the same picture
+  const data = await liveData(page, (d) =>
+    d.projects.find((p) => p.name === "website")?.branches.find((x) => x.name === "claude")?.commits.at(-1)?.agent === "claude")
+  const projLive = data.projects.find((p) => p.name === "website")
+  const claudeLive = projLive.branches.find((m) => m.name === "claude").commits.at(-1)
+  expect(claudeLive.agent).toBe("claude")
 })
 
 test("items 9+10: slash branches are distinct, flat, and listed everywhere", async () => {
@@ -524,3 +596,219 @@ test("r2 item 7: storedBytes grows by the commit record's size, not just the cha
   // pre-fix the growth was 1 (the blob alone); the manifest record is counted now
   expect(after.storedBytes - before.storedBytes).toBe(recordBytes + 1)
 })
+
+// ---- the native backend against a fake SDK ------------------------------------
+// The fake implements the SDK surface the worker calls, so the
+// backend's own logic — including the review's binary-deletion repro —
+// runs in the plain suite, no binding build needed.
+function fakeNative() {
+  const root = mkTmp("layerfs-native-")
+  const prev = process.env.LAYERFS_SDK_PATH
+  process.env.LAYERFS_SDK_PATH = FAKE_SDK
+  const b = new NativeBackend(root)
+  const restore = () => {
+    if (prev === undefined) delete process.env.LAYERFS_SDK_PATH
+    else process.env.LAYERFS_SDK_PATH = prev
+  }
+  return { b, root, restore }
+}
+
+test("item 5: the SDK loads in the worker process, never in this one, and the shared env is untouched", async () => {
+  const { b, restore } = fakeNative()
+  const homeBefore = process.env.LAYERFS_HOME
+  const storeBefore = process.env.LAYERFS_STORE_PATH
+  try {
+    const p = await b.provision("demo", "main", fixture())
+    expect(p.backend).toBe("native")
+    expect(p.mode).toBe("checkout")
+    // the fake SDK's module marker: set in whichever process imported it
+    expect(globalThis.__FAKE_SDK_LOADED__).toBeUndefined()
+    // the pre-0.7 backend wrote both of these into the shared env
+    expect(process.env.LAYERFS_HOME).toBe(homeBefore)
+    expect(process.env.LAYERFS_STORE_PATH).toBe(storeBefore)
+    const info = await b.workerInfo()
+    expect(info.loaded).toBe(true)
+  } finally {
+    await b.close()
+    restore()
+  }
+})
+
+test("item 3: the native backend refuses a source holding secret-shaped files", async () => {
+  const { b, restore } = fakeNative()
+  try {
+    const src = fixture()
+    writeFileSync(join(src, ".env"), "TOKEN=x\n")
+    await expect(b.provision("demo", "main", src)).rejects.toThrow("refusing to import")
+  } finally {
+    await b.close()
+    restore()
+  }
+})
+
+test("item 6: a native checkpoint never deletes the binaries materialize skipped", async () => {
+  const { b, restore } = fakeNative()
+  try {
+    const src = mkTmp("layerfs-src-")
+    mkdirSync(join(src, "img"), { recursive: true })
+    writeFileSync(join(src, "README.md"), "# demo\n")
+    writeFileSync(join(src, "img", "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]))
+    const p = await b.provision("demo", "main", src)
+    expect(p.skippedBinary).toContain("img/logo.png")
+    const f = await b.fork("demo", "feat")
+    expect(f.skippedBinary).toContain("img/logo.png")
+    writeFileSync(join(f.path, "feat.txt"), "feat\n")
+    const c = await b.checkpoint("demo", "feat", "add feat.txt")
+    expect(c.added).toBe(1)
+    expect(c.deleted).toBe(0) // pre-0.7 this checkpoint deleted img/logo.png from the store
+    // and the binary is still there: a fresh fork's checkout skips it by name again
+    const f2 = await b.fork("demo", "feat2")
+    expect(f2.skippedBinary).toContain("img/logo.png")
+  } finally {
+    await b.close()
+    restore()
+  }
+})
+
+test("item 7: re-provisioning a moved native branch keeps the workspace and reports stale", async () => {
+  const { b, restore } = fakeNative()
+  try {
+    const src = fixture()
+    const p = await b.provision("demo", "main", src)
+    expect(p.stale).toBe(false)
+    writeFileSync(join(p.path, "draft.txt"), "uncommitted work\n")
+    const f = await b.fork("demo", "feat")
+    writeFileSync(join(f.path, "feat.txt"), "shipped\n")
+    await b.checkpoint("demo", "feat", "feat work")
+    await b.publish("demo", "feat") // moves main's head past the checkout's binding
+    const again = await b.provision("demo", "main", src)
+    expect(again.reused).toBe(true)
+    expect(again.stale).toBe(true) // the sim backend's shape
+    // pre-0.7 this re-provision wiped the directory with rmSync
+    expect(readFileSync(join(p.path, "draft.txt"), "utf8")).toBe("uncommitted work\n")
+  } finally {
+    await b.close()
+    restore()
+  }
+})
+
+test("item 11: native publish refuses when the fork point is unknown, unless forced", async () => {
+  process.env.FAKE_SDK_NULL_FORK = "1"
+  const { b, restore } = fakeNative()
+  try {
+    const src = fixture()
+    await b.provision("demo", "main", src)
+    const f = await b.fork("demo", "feat")
+    writeFileSync(join(f.path, "feat.txt"), "x\n")
+    await b.checkpoint("demo", "feat", "work")
+    // pre-0.7 a null fork point counted as fresh and the publish went ahead
+    await expect(b.publish("demo", "feat")).rejects.toThrow("cannot tell whether")
+    const forced = await b.publish("demo", "feat", { force: true })
+    expect(forced.overwrote).toBe(true)
+  } finally {
+    delete process.env.FAKE_SDK_NULL_FORK
+    await b.close()
+    restore()
+  }
+})
+
+// ---- native backend against the real SDK -------------------------------------
+// Opt-in: these run only when MAGPIE_LAYERFS_NATIVE_TEST=1 and
+// LAYERFS_SDK_PATH points at a layerfs checkout whose native binding is
+// built. The backend root sits on the working disk (its store volume must
+// carry SQLite locks), while the imported source is a tmpdir fixture —
+// the engine refuses to import a source tree from overlayfs (upstream,
+// Project(InvalidInput)), and tmpfs imports fine.
+const NATIVE_SDK = process.env.LAYERFS_SDK_PATH // captured before the sim tests scrub the env
+const nativeIt = process.env.MAGPIE_LAYERFS_NATIVE_TEST === "1" && NATIVE_SDK
+  ? test : test.skip
+
+nativeIt("native: provision imports, fork and checkpoint commit through the real store", async () => {
+  process.env.LAYERFS_SDK_PATH = NATIVE_SDK
+  const root = mkTmp(".tmp-native-test-", join(process.env.HOME, "workspace"))
+  const b = new NativeBackend(root)
+  try {
+    const src = fixture()
+    writeFileSync(join(src, "bin.dat"), Buffer.from([0, 1, 2, 3, 255, 254]))
+    const p = await b.provision("demo", "main", src)
+    expect(p.backend).toBe("native")
+    expect(p.mode).toBe("checkout")
+    expect(p.projectCreated).toBe(true)
+    // the import captured bin.dat, but the fs surface cannot read binary
+    // files back, so the checkout names it instead of dropping it silently
+    expect(p.skippedBinary).toContain("bin.dat")
+    expect(readFileSync(join(p.path, "README.md"), "utf8")).toBe("hello layerfs\n")
+
+    const f = await b.fork("demo", "feat")
+    expect(f.copiedBytes).toBe(0)
+    writeFileSync(join(f.path, "feat.txt"), "from the fork\n")
+    const c = await b.checkpoint("demo", "feat", "add feat.txt")
+    expect(c.changed).toBe(true)
+    expect(c.added).toBe(1)
+    expect(c.deleted).toBe(0) // the skipped bin.dat is not a deletion (item 6)
+    const h = await b.history("demo", "feat")
+    expect(h.commits[0].message).toBe("add feat.txt")
+    const again = await b.checkpoint("demo", "feat", "nothing changed")
+    expect(again.changed).toBe(false)
+  } finally {
+    await b.close()
+  }
+}, 60000)
+
+nativeIt("native: publish appends a Layer, and the trajectory replays it", async () => {
+  process.env.LAYERFS_SDK_PATH = NATIVE_SDK
+  const root = mkTmp(".tmp-native-test-", join(process.env.HOME, "workspace"))
+  const b = new NativeBackend(root)
+  try {
+    await b.provision("site", "main", fixture())
+    const f = await b.fork("site", "feat")
+    writeFileSync(join(f.path, "feat.txt"), "shipped\n")
+    await b.checkpoint("site", "feat", "feat work")
+    const pub = await b.publish("site", "feat")
+    expect(pub.layer).toBe(1)
+    expect(pub.overwrote).toBe(false)
+    const repub = await b.publish("site", "feat")
+    expect(repub.alreadyPublished).toBe(true)
+    const t = await b.trajectory()
+    const proj = t.projects.find((x) => x.name === "site")
+    expect(proj.branches.map((x) => x.name).sort()).toEqual(["feat", "main"])
+    const main = proj.branches.find((x) => x.name === "main")
+    expect(main.commits[0].message).toBe("Import") // the import Layer, synthesized
+    expect(t.events.filter((e) => e.kind === "publish")).toHaveLength(1)
+    const e = await b.exec("site", "feat", "echo via-exec > exec.txt")
+    expect(e.exitCode).toBe(0)
+    expect(e.changed).toBe(true)
+    const st = await b.status()
+    expect(st.projects[0].layers).toBe(2) // import + one publish
+  } finally {
+    await b.close()
+  }
+}, 60000)
+
+nativeIt("native: exec scratch stays inside the workspace and out of checkpoints", async () => {
+  process.env.LAYERFS_SDK_PATH = NATIVE_SDK
+  const root = mkTmp(".tmp-native-test-", join(process.env.HOME, "workspace"))
+  const b = new NativeBackend(root)
+  try {
+    const p = await b.provision("scratchy", "main", fixture())
+    // provision (through materialize) pre-creates both scratch directories
+    expect(existsSync(join(p.path, ".tmp"))).toBe(true)
+    expect(existsSync(join(p.path, ".cache"))).toBe(true)
+    const e = await b.exec("scratchy", "main",
+      'echo "$TMPDIR" && echo probe > "$TMPDIR/probe.txt" && echo probe > "$XDG_CACHE_HOME/probe.txt"')
+    expect(e.exitCode).toBe(0)
+    expect(e.stdout).toContain(join(p.path, ".tmp"))
+    expect(readFileSync(join(p.path, ".tmp", "probe.txt"), "utf8")).toBe("probe\n")
+    expect(readFileSync(join(p.path, ".cache", "probe.txt"), "utf8")).toBe("probe\n")
+    // a checkpoint after scratch-only writes is still UpToDate
+    expect(e.changed).toBe(false)
+    expect(e.commit).toBeNull()
+    const c = await b.checkpoint("scratchy", "main", "scratch only")
+    expect(c.changed).toBe(false)
+    expect(c.added).toBe(0)
+    expect(c.modified).toBe(0)
+    expect(c.deleted).toBe(0)
+  } finally {
+    await b.close()
+  }
+}, 60000)

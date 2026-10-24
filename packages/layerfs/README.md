@@ -42,26 +42,50 @@ and they live and die with the workspace directory itself. Files a
 command writes to the host's real `/tmp` are likewise outside LayerFS
 management — if it matters, it belongs in the workspace.
 
-## Backend
+## Backends
 
-- **sim** — a local content-addressed store implementing the LayerFS
-  model: immutable blobs named by SHA-256, branches as manifest
-  pointers, checkpoints as deduplicated manifests, under
+- **native** — the real LayerFS through its JavaScript SDK
+  (`@layerfs/agent` from a [layerfs](https://github.com/Ephemeral-AI-Lab/layerfs)
+  checkout; the SDK is not on npm, and its native binding must be built —
+  `npm --prefix api run build:native`, producing `api/binding/layerfs.node`).
+  **Off by default**: it runs only
+  when the user opts in — the plugin's `"native"` option, or
+  `MAGPIE_LAYERFS_NATIVE=1` — with `LAYERFS_SDK_PATH` set (the SDK
+  entry, `api/agent/sdk/src/index.js`); `LAYERFS_STORE_PATH` is optional and
+  only anchors the store volume elsewhere. When it runs, **every SDK
+  call happens in a child process** (`native-worker.mjs`, shipped in
+  this package): the plugin host process never imports the SDK and
+  never has `LAYERFS_*` variables written into its shared environment —
+  the worker gets its own. A pinned npm dependency would be tidier,
+  but the SDK is not published to npm, so a version pin does not exist
+  to pin; the opt-in plus the subprocess is the mitigation. Adapted
+  and verified against a locally built binding (LayerFS 1.1.0): the
+  SDK's store calls (project / branch / fs) run in the worker, so
+  provision materializes a *checkout* of the branch through
+  `fs.list` / `fs.read`, and a checkpoint diffs that checkout and
+  lands as one `fs.apply` commit in the engine's own store, with the
+  engine's chunk-level dedup. Real workspace mounts (`workspace.*`)
+  need a LayerFS deployment (Docker, `LAYERFS_IMAGE`, a daemon) that
+  a magpie host does not provide; where one exists, that is the
+  natural next step. Two engine limits shape this backend, both
+  reported upstream: binary files cannot round-trip through the fs
+  surface (writes accept bytes — `fs.write`, and `fs.apply` since
+  upstream PR #416 — but `fs.read` refuses binary content with code
+  Binary, upstream issue #417, so checkouts and checkpoints name the
+  binary files they cannot move instead of dropping them), and
+  `LayerFS.init` refuses a source tree on overlayfs with an opaque
+  `Project(InvalidInput)`. Project init runs through that factory,
+  whose timeout the SDK makes configurable (300 s by default; 1.0.0's
+  fixed 60 s is gone) — this backend keeps the SDK default.
+- **sim** (the default) — a local content-addressed store implementing
+  the same model: immutable blobs named by SHA-256, branches as
+  manifest pointers, checkpoints as deduplicated manifests, under
   `MAGPIE_LAYERFS_HOME` (default `~/.magpie-layerfs`). It runs
   anywhere, which is what the tests and the benchmark below use.
 
-**This package is sim-only.** The native backend — the real LayerFS
-through its JavaScript SDK — is developed in the standalone repo,
-[Mola-maker/magpie-layerfs](https://github.com/Mola-maker/magpie-layerfs),
-and is not part of this package: shipping it here needs a pinned,
-integrity-checked npm dependency, and `@layerfs/sdk` is not
-published to npm, so there is no version to pin. It returns in a
-follow-up PR once the SDK is published. Asking for it
-(`MAGPIE_LAYERFS_BACKEND=native`, `MAGPIE_LAYERFS_NATIVE=1`, or the
-old `"native"` plugin option) is an explicit error that says so.
-
-`MAGPIE_LAYERFS_BACKEND=auto|sim` selects explicitly; both mean sim
-here.
+`MAGPIE_LAYERFS_BACKEND=auto|native|sim` selects explicitly; `auto`
+picks native only when the user has opted in *and* `LAYERFS_SDK_PATH`
+is set.
 
 ## Safety defaults
 
@@ -82,22 +106,31 @@ defaults here are set for that room, not for a private library:
   past it.
 - **Secret-shaped files never enter the store from an import**:
   `.git`, `.env*`, private keys (`id_rsa`, `id_ed25519`, `*.pem`,
-  `*.key`, …), `.ssh`, `.aws`. The import skips them and reports how
-  many. Imports are also bounded (20,000 files / 512 MiB) and fail
-  loudly past the limit instead of sweeping a disk.
+  `*.key`, …), `.ssh`, `.aws`. The sim backend skips them and reports
+  how many; the native backend's engine imports a tree whole and
+  cannot skip, so it refuses an import that holds them. Imports are
+  also bounded (20,000 files / 512 MiB) and fail loudly past the limit
+  instead of sweeping a disk.
 - **The store is private.** Its root and directories are created
   `0700`, its record files `0600`, whatever the umask says; a file's
-  own mode is preserved through the store (a `0600` file is stored
+  own mode is preserved through the sim store (a `0600` file is stored
   and materialized as `0600`).
 - **`exec` is disabled by default.** It runs a shell with the plugin
   host's privileges; a model key should not silently become host
   shell access. The user enables it with the plugin's `"exec"`
   option (set to `true` in magpie's plugin options) or
   `MAGPIE_LAYERFS_EXEC=1` in the host's environment.
-- **Re-provisioning never wipes a workspace.** When a branch has
-  moved since its workspace was materialized, provision keeps the
-  workspace's files and reports `stale: true` instead of deleting
-  uncheckpointed work.
+- **The native backend is opt-in and subprocess-isolated**, as above.
+- **A checkpoint never deletes what it could not move.** On the
+  native backend, binaries skipped at checkout are absent locally by
+  construction; checkpoints exclude them from the delete set (an
+  earlier version's first checkpoint on such a branch deleted every
+  one of them). The cost: a skipped binary cannot be deleted from a
+  native branch by checkpointing — the fs surface cannot tell
+  "deleted here" from "never materialized here". Likewise, when a
+  native branch has moved since its checkout, re-provisioning keeps
+  the workspace's files and reports `stale: true`, as the sim backend
+  does, instead of wiping the directory.
 
 ## Benchmark
 
@@ -122,9 +155,15 @@ per-agent copy, the per-snapshot copy, and the bytes they waste — the
 engine's own benchmarks are at
 [layerfs.ai/benchmarks](https://layerfs.ai/benchmarks/).
 
-The same scenario against the real engine (the native backend, in
-the standalone repo): the engine's store file held **5.6 MB for
-513 MB of logical checkpoints** on a compressible text fixture —
+Against the real engine
+([`bench/bench-native.mjs`](https://github.com/Mola-maker/magpie-layerfs/blob/main/bench/bench-native.mjs),
+native backend, same scenario, generated-text fixture of 184 files /
+27.0 MB): import
+3.6 s once; a fork plus its checkout 1.8 s (the branch itself is
+metadata; the checkout pays the file reads); a checkpoint 1.9 s (the
+checkout diff reads the branch back through the fs surface, then one
+`fs.apply` lands it); the engine's store file held **5.6 MB for
+513 MB of logical checkpoints** on this compressible text fixture —
 the sim fixture above is random bytes, the incompressible extreme, so
 read the two ratios as the ends of a range, not a single number.
 
@@ -174,35 +213,88 @@ and its test asserts it asks for none.
 
 ## Develop
 
-From a checkout of
-[magpie-community/plugins](https://github.com/magpie-community/plugins),
-in `packages/layerfs`:
+From a checkout of [this repo](https://github.com/Mola-maker/magpie-layerfs)
+(the registry package ships only the runtime files):
 
 ```sh
 bun test                 # the suite (bun:test): tools end to end, plus the page's layout math
+bun bench/bench.mjs      # the benchmark above; writes bench/results.json
+node tools/gen-trajectory.mjs   # regenerate the page's bundled sample trajectory
+MAGPIE_LAYERFS_NATIVE_TEST=1 LAYERFS_SDK_PATH=<layerfs checkout>/api/agent/sdk/src/index.js bun test
+                         # the same suite against the real SDK (the native
+                         # backend's logic also runs against a fake SDK —
+                         # fake-sdk.mjs — in the plain suite)
 ```
-
-The benchmark above and the sample-trajectory generator live in the
-standalone repo,
-[Mola-maker/magpie-layerfs](https://github.com/Mola-maker/magpie-layerfs),
-which is also where the native backend is developed.
 
 Zero runtime dependencies; the arguments are JSON Schema, like the other
 tools packages. MIT.
+
+## Changes in 0.9.0
+
+The native backend speaks LayerFS 1.1.0. That release split the SDK
+(`@layerfs/sdk`, from `sdk/js`) into `@layerfs/agent`, `@layerfs/backend`
+and `@layerfs/runtime` (sources under `api/`), and replaced the client
+constructor with factories: `LayerFS.open(name)` for an existing
+project (a missing one is refused `NoSuchProject` at once) and
+`LayerFS.init(name, folder, timeout?)` for a new one, with every
+setting read from the environment at creation — the constructor's
+options argument is refused, and `close()` is now final. The worker
+(the only file that imports the SDK) follows: it sets the project's
+`LAYERFS_STORE_PATH` immediately before each factory call, caches the
+creation so concurrent calls share one open attempt, drops a refused
+attempt instead of caching it, and never closes a client. Init is the
+factory call, with the SDK's configurable timeout (300 s by default;
+this backend keeps the default) and its answer's Layer read from the
+client's `created`. The surfaces this backend uses — `project`,
+`branch` and `fs` — kept their calls and answer shapes, so nothing
+else moved: the sim backend, the tools and the page are unchanged,
+and the fake SDK the plain suite drives was ported to the same
+factory shape (`open` refusing `NoSuchProject`, `init` refusing
+`Exists`, `fs.read`/`fs.stat` refusing a missing path as
+`NoSuchPath`). Verified against a locally built 1.1.0 binding: the
+plain suite and the real-SDK suite both pass. `LAYERFS_SDK_PATH` now
+points at `api/agent/sdk/src/index.js` in a layerfs checkout, and the
+binding builds with `npm --prefix api run build:native`. One upstream
+limit is unchanged: `fs.read` still refuses binary content (issue
+#417), so the native backend still names the binary files it cannot
+move. A store written by LayerFS 1.0.0 opens as it did — the store
+format did not change.
+
+## Changes in 0.8.0
+
+The page shows the real trajectory now. The 0.7.x page could only
+animate the bundled sample — a magpie page cannot fetch, and the
+bridge's reads are a fixed host list — so the live picture the tools
+held never reached it. The channel was there all along, though:
+magpie serves a page's files from the plugin's folder as they sit on
+disk, per request. So:
+
+- **The page's live file.** After any provision, fork, checkpoint,
+  publish or exec lands, the tools rebuild the trajectory on demand
+  (`backend.trajectory()`) and write it, tmp-then-renamed, to
+  `page/trajectory-live.js` in the plugin's own folder — debounced,
+  off the tool calls' path, errors swallowed (the page keeps its
+  last file; the calls are untouched). The page loads it after the
+  bundled sample and prefers it. An empty store writes an empty
+  live file, and the page shows its honest empty state instead of
+  the demo; the sample remains what a store the tools have never
+  written shows. `MAGPIE_LAYERFS_PAGE_DIR` moves the folder (the
+  tests point it at a scratch dir, so the suite writes nothing into
+  the package).
+- **The real agent on every commit.** The tools record the calling
+  agent — the tool host's `ctx.agent`, the gateway's name for the
+  agent that made the call — on the events and commits each call
+  creates. The page prefers it over the branch-name token guess: a
+  claude badge lands where claude actually checkpointed, even on
+  `main`, and the detail card names the agent. On the native
+  backend the publish log carries it; the engine's own commit
+  records read no agent (the engine owns its records).
 
 ## Changes in 0.7.1
 
 The second round of the PR #318 review — the holes it found in
 0.7.0's own new code, plus its smaller items:
 
-- **This package is sim-only.** The native backend was removed from
-  the magpie-community package (the review's condition for keeping
-  it — a pinned, integrity-checked npm dependency — cannot exist
-  while `@layerfs/sdk` is not on npm). It lives in the standalone
-  repo and returns in a follow-up PR once the SDK is published with
-  a version to pin; asking for it here is an explicit error.
-  `package.json`'s `repository` now names this repo, with
-  `"directory": "packages/layerfs"`, like every other package here.
 - **The source guard compares real paths now.** 0.7.0 compared
   `resolve()`d strings, which a symlink to a refused directory — or
   a case-variant spelling of one on a case-insensitive volume —
