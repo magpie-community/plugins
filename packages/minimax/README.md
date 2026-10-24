@@ -106,7 +106,14 @@ Variants map to what MiniMax Code sends:
 ## Usage
 
 The usage card shows:
-- the credits left;
+- the credits: what is left, and — the way WorkBuddy's card says it — used
+  of what was granted. The granted total is the credit ledger's
+  (`/minimax-cloud/api/v1/credit/details`), the list MiniMax Code's own
+  settings page (Settings → Usage → Credit Details) reads: credits come as
+  lots, each with what it gave, what is left of it and when it ends, and a
+  lot that has ended no longer counts. The membership's balance stays the
+  card's credits left; a ledger that can't be read leaves the card as it
+  was;
 - the plan: Free, or the M Plan's tier and when it ends;
 - for an M Plan, its windows (5 hours, 7 days, and any model's own) from
   `coding_plan/remains`.
