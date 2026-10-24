@@ -81,21 +81,24 @@ function machineOS() {
 
 // userBlob is the account as the envelope carries it: AES-128-CBC under a
 // fresh key that is its own IV, the key wrapped with Qoder's RSA key.
-function userBlob(u) {
+// userBlob and cosyHeaders take the site's own key and version when it has
+// them (another QwenWork-like service on the same protocol), else Qoder's.
+function userBlob(u, rsaKey = RSA_KEY) {
   const raw = JSON.stringify({ uid: u.uid, aid: "", name: u.name ?? "", email: u.email ?? "", security_oauth_token: u.access })
   const key = Buffer.from(hexID().slice(0, 16))
   const c = createCipheriv("aes-128-cbc", key, key)
   const info = Buffer.concat([c.update(raw, "utf8"), c.final()]).toString("base64")
-  const wrapped = publicEncrypt({ key: RSA_KEY, padding: constants.RSA_PKCS1_PADDING }, key).toString("base64")
+  const wrapped = publicEncrypt({ key: rsaKey, padding: constants.RSA_PKCS1_PADDING }, key).toString("base64")
   return { info, key: wrapped }
 }
 
 // cosyHeaders signs a call to url whose body, in its wire form, is body.
-function cosyHeaders(url, u, body, ts = Math.floor(Date.now() / 1000)) {
-  if (!u?.machineId) throw new Error("Qoder: the account has no machine id; sign in again")
-  const blob = userBlob(u)
+function cosyHeaders(url, u, body, site, ts = Math.floor(Date.now() / 1000)) {
+  if (!u?.machineId) throw new Error(`${site?.name ?? "Qoder"}: the account has no machine id; sign in again`)
+  const cosyVersion = site?.cosyVersion ?? COSY_VERSION
+  const blob = userBlob(u, site?.rsaKey)
   const payload = Buffer.from(
-    JSON.stringify({ version: "v1", requestId: hexID(), info: blob.info, cosyVersion: COSY_VERSION, ideVersion: "" }),
+    JSON.stringify({ version: "v1", requestId: hexID(), info: blob.info, cosyVersion, ideVersion: "" }),
   ).toString("base64")
   let path = new URL(url).pathname
   if (path.startsWith("/algo")) path = path.slice(5)
@@ -106,10 +109,10 @@ function cosyHeaders(url, u, body, ts = Math.floor(Date.now() / 1000)) {
     "Accept-Encoding": "identity",
     "Content-Type": "application/json",
     Authorization: `Bearer COSY.${payload}.${sig}`,
-    "Cosy-Business-Product": "app",
+    "Cosy-Business-Product": site?.businessProduct ?? "app",
     "Cosy-Business-Type": "agent",
     "Cosy-ClientIp": m,
-    "Cosy-ClientType": "10",
+    "Cosy-ClientType": site?.clientType ?? "10",
     "Cosy-Data-Policy": "disagree",
     "Cosy-Date": String(ts),
     "Cosy-Key": blob.key,
@@ -117,9 +120,9 @@ function cosyHeaders(url, u, body, ts = Math.floor(Date.now() / 1000)) {
     "Cosy-MachineToken": m,
     "Cosy-MachineType": "5",
     "Cosy-MachineOS": machineOS(),
-    "Cosy-Scene": "app",
+    "Cosy-Scene": site?.modelScene ?? "app",
     "Cosy-User": u.uid,
-    "Cosy-Version": COSY_VERSION,
+    "Cosy-Version": cosyVersion,
     "Login-Version": "v2",
   }
 }
@@ -247,6 +250,13 @@ function vpcSite(site, instance) {
 // is not read as "no VPC", which would send the enterprise's tokens to the
 // public hosts: the account has to be signed in to again.
 function siteOf(site, a) {
+  // an account that names an enterprise host outright (QwenWork's enterprise
+  // flagship, which serves web/openapi/api on that one host) routes there;
+  // enterpriseHost, not the site's vpcDomain (Qoder CN's VPC suffix rule)
+  if (a?.enterpriseHost) {
+    const base = `https://${a.enterpriseHost}`
+    return { ...site, web: base, openapi: base, api: base, vpc: a.enterpriseHost }
+  }
   if (a?.vpc === undefined || a?.vpc === null || a?.vpc === "") return site
   const s = vpcSite(site, a.vpc)
   if (!s) throw new SignInGone(`${site.name}: the account's VPC instance "${a.vpc}" isn't one; sign in again`)
@@ -278,9 +288,13 @@ async function deviceSignIn(site) {
         } catch {} // a hiccup: ask again
         await new Promise((r) => setTimeout(r, 2000))
       }
-      const jr = await openapi(site, "/api/v1/me/jobToken", { method: "POST", token: dt.token, body: { clientId: site.clientId } })
+      const jr = site.deviceOnly ? null : await openapi(site, "/api/v1/me/jobToken", { method: "POST", token: dt.token, body: { clientId: site.clientId } })
       let chat
-      if (jr.status === 200) {
+      if (site.deviceOnly) {
+        // the service's device token is itself the chat token, renewed as
+        // one (QwenWork never makes a job token)
+        chat = { access: dt.token, refresh: dt.refresh_token ?? "", expires: deviceExpiry(dt), deviceChat: true }
+      } else if (jr.status === 200) {
         if (!String(jr.json?.token ?? "").trim()) throw new Error(`${site.name} job token: empty token in response`)
         chat = { access: jr.json.token, refresh: jr.json.refresh_token ?? "", expires: expiresAt(jr.json) }
       } else if (site.deviceChat && jr.status >= 400 && jr.status < 500) {
@@ -292,20 +306,24 @@ async function deviceSignIn(site) {
       let name = ""
       let uid = dt.user_id
       try {
-        const ui = await openapi(site, "/api/v1/userinfo", { token: dt.token })
+        const ui = await openapi(site, site.userInfoPath ?? "/api/v1/userinfo", { token: dt.token })
         if (ui.status >= 200 && ui.status < 300) {
-          ;[email, name] = [ui.json?.email ?? "", ui.json?.name ?? ""]
+          const user = site.normalizeUser ? site.normalizeUser(ui.json) : ui.json
+          ;[email, name] = [user?.email ?? "", user?.name ?? ""]
+          if (site.deviceOnly) uid = String(user?.id ?? user?.user_id ?? user?.uid ?? uid ?? "") || undefined
           // a VPC poll may give the token alone: the user is then the one
           // user info names (id, or its user_id / uid aliases)
           if (site.vpc && !String(uid ?? "").trim()) uid = String(ui.json?.id ?? ui.json?.user_id ?? ui.json?.uid ?? "") || undefined
         }
       } catch {}
+      if (site.deviceOnly && !String(uid ?? "").trim()) throw new Error(`${site.name}: the sign-in named no user`)
       if (site.vpc && !String(uid ?? "").trim()) throw new Error(`${site.name} (${site.vpc}): the sign-in named no user`)
       return {
         type: "success",
         ...chat,
-        // a VPC account is told apart from the same person's public one
-        accountId: site.vpc ? `${email || uid} (${site.vpc})` : email || dt.user_id,
+        // a VPC account is told apart from the same person's public one; a
+        // device-only one is shown by name, falling back to its id
+        accountId: site.vpc ? `${email || uid} (${site.vpc})` : site.deviceOnly ? email || uid || name || dt.user_id : email || dt.user_id,
         uid,
         email,
         name: name || dt.user_name || "",
@@ -313,6 +331,7 @@ async function deviceSignIn(site) {
         deviceToken: dt.token,
         deviceRefresh: dt.refresh_token ?? "",
         ...(site.vpc ? { vpc: site.vpc } : {}),
+        ...(site.enterpriseDomain ? { vpc: site.enterpriseDomain, enterpriseHost: site.enterpriseDomain } : {}),
       }
     },
   }
@@ -581,8 +600,15 @@ function sceneModels(listing) {
 }
 
 // modelInfos is the listing's enabled models an agent can pick: "auto"
-// and "default" route inside Qoder and aren't one model.
-function modelInfos(listing) {
+// and "default" route inside Qoder and aren't one model. A site with its
+// own scene reads that scene's list; one that lists all models keeps the
+// disabled ones too (QwenWork's qwork scene carries its whole catalog).
+function modelInfos(listing, site) {
+  if (site?.modelScene) {
+    return (Array.isArray(listing?.[site.modelScene]) ? listing[site.modelScene] : [])
+      .filter((m) => (site.listAllModels || m?.enable) && !["", "auto", "default"].includes(String(m.key ?? "").trim()))
+      .map(modelInfo)
+  }
   return sceneModels(listing)
     .filter((m) => m?.enable && !["", "auto", "default"].includes(String(m.key ?? "").trim()))
     .map(modelInfo)
@@ -590,9 +616,15 @@ function modelInfos(listing) {
 
 async function fetchListing(site, cred) {
   const url = site.api + MODELS_PATH
-  const res = await fetch(url, { headers: cosyHeaders(url, cred, ""), signal: AbortSignal.timeout(15_000) })
+  const res = await fetch(url, { headers: cosyHeaders(url, cred, "", site), signal: AbortSignal.timeout(15_000) })
   const text = await res.text()
-  if (!res.ok) throw new Error(`${site.name} models: HTTP ${res.status}: ${text.trim().slice(0, 512)}`)
+  if (!res.ok) {
+    // a service that deploys no catalog at all (QwenWork's enterprise
+    // flagship answers 503 "Model catalog is unavailable") falls back to
+    // the list its site ships
+    if (res.status === 503 && site.fallbackModels) return site.fallbackModels
+    throw new Error(`${site.name} models: HTTP ${res.status}: ${text.trim().slice(0, 512)}`)
+  }
   return JSON.parse(text)
 }
 
@@ -922,11 +954,13 @@ function taskOf(sid, chat, now = Date.now()) {
 // qoderBody is the plaintext agent_chat_generation takes for a chat
 // completion request, for model m, in the session the agent named (named,
 // "" when none) and the task it is a call of (taskOf's, a new one when
-// none is given).
-function qoderBody(chat, m, named = "", task) {
+// none is given). A site on this protocol with its own values (QwenWork)
+// passes itself last.
+function qoderBody(chat, m, named = "", task, site) {
   const system = (chat.messages ?? []).filter((x) => x.role === "system" || x.role === "developer").map((x) => textOf(x.content)).filter(Boolean).join("\n\n")
   const tools = chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function" && t.function?.name) : []
-  let sysText = system ? QODER_SYS + "\n\n" + system : QODER_SYS
+  const baseSystem = site?.systemPrompt ?? QODER_SYS
+  let sysText = system ? baseSystem + "\n\n" + system : baseSystem
   if (chat.tool_choice === "required" && tools.length) sysText += "\nYou must call an available function in this response."
   const sys = { type: "text", text: sysText }
   const [thinking, effort] = effortFor(chat.reasoning_effort, m)
@@ -943,10 +977,10 @@ function qoderBody(chat, m, named = "", task) {
     chat_record_id: request,
     session_id: session,
     parameters: params,
-    business: { product: "app", version: COSY_VERSION, type: "agent", id: task.id, name: task.name ?? "", begin_at: task.begin, stage: task.answered ? "processing" : "start" },
+    business: { product: site?.businessProduct ?? "app", version: site?.cosyVersion ?? COSY_VERSION, type: "agent", id: task.id, name: task.name ?? "", begin_at: task.begin, stage: task.answered ? "processing" : "start" },
     agent_id: "agent_common",
     task_id: "common",
-    session_type: "app",
+    session_type: site?.sessionType ?? "app",
     model_config: m.config,
     system: [sys],
     messages: [{ role: "system", content: [sys] }, ...cacheMarked(qoderMessages(chat.messages ?? []))],
@@ -1144,11 +1178,11 @@ function queueState(text) {
 }
 
 // queueStatus asks Qoder's queue where the request stands.
-async function queueStatus(api, cred, { requestSetId, modelKey, queueType, requestId, sessionId }, signal, deadline) {
+async function queueStatus(api, cred, { requestSetId, modelKey, queueType, requestId, sessionId }, signal, deadline, site) {
   const q = new URLSearchParams({ requestSetId, modelKey })
   if (queueType) q.set("queueType", queueType)
   const url = `${api}${QUEUE_STATUS_PATH}?${q}`
-  const headers = { ...cosyHeaders(url, cred, ""), "X-Request-ID": requestId, "X-Session-ID": sessionId }
+  const headers = { ...cosyHeaders(url, cred, "", site), "X-Request-ID": requestId, "X-Session-ID": sessionId }
   delete headers["Content-Type"]
   const left = Math.min(QUEUE.ask, deadline - QUEUE.now())
   if (left <= 0) throw new QueueEnd("the queue's wait ran out")
@@ -1164,7 +1198,7 @@ async function queueStatus(api, cred, { requestSetId, modelKey, queueType, reque
 // queueWait waits in Qoder's queue for the request, from the state its
 // refusal gave, until the queue lets it through (true) or the wait ends
 // (false). A cancelled request throws.
-async function queueWait(api, cred, ask, first, signal, deadline) {
+async function queueWait(api, cred, ask, first, signal, deadline, site) {
   let q = first ?? {}
   let asked = false
   let failed = 0
@@ -1176,7 +1210,7 @@ async function queueWait(api, cred, ask, first, signal, deadline) {
     if (QUEUE.now() >= deadline) return false
     let st
     try {
-      st = await queueStatus(api, cred, { ...ask, modelKey: q.modelKey ?? ask.modelKey, queueType: q.queueType ?? ask.queueType }, signal, deadline)
+      st = await queueStatus(api, cred, { ...ask, modelKey: q.modelKey ?? ask.modelKey, queueType: q.queueType ?? ask.queueType }, signal, deadline, site)
     } catch (e) {
       if (signal?.aborted) throw signal.reason ?? e
       if (e instanceof QueueEnd) return false
@@ -1548,7 +1582,9 @@ class UsageStatus extends Error {
   }
 }
 
-// fetchUsage is the usage envelope, {displayMode, qoderUsage}.
+// fetchUsage is the usage envelope, {displayMode, qoderUsage}; a site with
+// its own usage path (QwenWork's account-context) is read by
+// fetchSiteUsage below instead.
 async function fetchUsage(site, deviceToken) {
   if (!String(deviceToken ?? "").trim()) throw new Error("qoder usage: missing device token")
   let res
@@ -1745,7 +1781,7 @@ async function refreshDevice(site, refresh, chat = false) {
   }
   let r
   try {
-    r = await openapi(site, "/api/v1/deviceToken/refresh", { method: "POST", body: { refresh_token: refresh } })
+    r = await openapi(site, "/api/v1/deviceToken/refresh", { method: "POST", body: { refresh_token: refresh, ...(site.deviceRefreshTarget ? { target: site.deviceRefreshTarget } : {}) } })
   } catch (e) {
     throw new Error(`qoder device token refresh: request failed: ${e?.message ?? e}`)
   }
@@ -1815,6 +1851,79 @@ function parseUsage(env) {
 }
 
 // SITES are Qoder's two sites, each a subscription of its own.
+// QwenWork (千问办公, qwenwork.cn) speaks this protocol on Alibaba's own
+// service, with its own scene, client id and RSA key (the same key), as its
+// desktop client sends. The models below are the public cloud's qwork list
+// at the time of writing — QWENWORK_MODELS is what magpie's config lists
+// before a sign-in, and QWORK_FALLBACK_LISTING is what the enterprise
+// flagship falls back to: it serves the same scene but deploys no catalog
+// service (/algo/api/v2/model/list answers 503 there, signed and verified).
+const QWENWORK_MODELS = [
+  { id: "flash", name: "标准" },
+  { id: "pro", name: "高级" },
+  { id: "qwen3.8-max-preview", name: "Qwen3.8-Max" },
+]
+const QWORK_FALLBACK_LISTING = {
+  // is_vl / is_reasoning / max_input_tokens are copied from the public
+  // cloud's list, not checked against a flagship's own models
+  qwork: [
+    { key: "flash", display_name: "标准", is_vl: false, is_reasoning: false, max_input_tokens: 131072 },
+    { key: "pro", display_name: "高级", is_vl: false, is_reasoning: false, max_input_tokens: 131072 },
+    { key: "qwen3.8-max-preview", display_name: "Qwen3.8-Max", is_vl: false, is_reasoning: false, max_input_tokens: 131072 },
+  ],
+}
+const QWENWORK_RSA_KEY = `-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDA8iMH5c02LilrsERw9t6Pv5Nc
+4k6Pz1EaDicBMpdpxKduSZu5OANqUq8er4GM95omAGIOPOh+Nx0spthYA2BqGz+l
+6HRkPJ7S236FZz73In/KVuLnwI8JJ2CbuJap8kvheCCZpmAWpb/cPx/3Vr/J6I17
+XcW+ML9FoCI6AOvOzwIDAQAB
+-----END PUBLIC KEY-----`
+// parseAccountContext reads the account-context QwenWork's sign-in already
+// reads: plan {name, next_refresh / next_due} and quota {total, used,
+// remaining} in the plan's credit unit. One window is one pool of credits.
+const num = (v) => {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return "0"
+  return String(Math.round(n * 100) / 100)
+}
+const parseAccountContext = (ctx) => {
+  const data = ctx?.data ?? {}
+  const q = data.quota
+  const out = {}
+  if (data.plan?.name) out.plan = String(data.plan.name)
+  const refresh = data.plan?.next_refresh_date ?? data.plan?.next_due_date
+  if (refresh) out.until = new Date(refresh).toISOString()
+  if (q && typeof q === "object") {
+    const total = Number(q.total)
+    const remaining = Number(q.remaining)
+    const used = Number.isFinite(Number(q.used)) ? Number(q.used) : total - remaining
+    if (Number.isFinite(total) && total > 0 && Number.isFinite(used) && used >= 0) {
+      out.windows = [{ name: "Credits", used: Math.min(100, (100 * used) / total), display: `${num(used)} / ${num(total)} credits` }]
+    }
+  }
+  if (!out.windows) out.error = "QwenWork: the account reports no credits"
+  return out
+}
+
+const QWENWORK_COMMON = {
+  clientId: "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb", // the desktop client's
+  rsaKey: QWENWORK_RSA_KEY,
+  usagePath: "/api/v1/adapter/user/account-context?include=user,plan,quota",
+  parseUsage: parseAccountContext,
+  cosyVersion: "1.1.59",
+  redirect: "qwenwork-cn://",
+  deviceOnly: true, // the device token is itself the chat token
+  deviceRefreshTarget: "c",
+  modelScene: "qwork", listAllModels: true,
+  clientType: "6", businessProduct: "qoder_work", sessionType: "qoder_work",
+  userInfoPath: "/api/v1/adapter/user/account-context?include=user,plan,quota,page,data_sharing",
+  normalizeUser: v => (v?.data ?? v)?.user ?? (v?.data ?? v),
+  pat: false,      // no /api/v1/jobToken/exchange on gateway.qwenwork.cn
+  checkin: false,  // no campaigns endpoint, and no Qoder desktop identity to send
+  models: QWENWORK_MODELS,
+  systemPrompt: "You are QwenWork (qw), a helpful assistant. Use the instructions below and the tools available to you to assist the user.",
+}
+
 const SITES = {
   qoder: {
     id: "qoder",
@@ -1843,6 +1952,29 @@ const SITES = {
     // -openapi and -gateway hosts, as Qoder CN's CLI builds it in
     vpcDomain: "vpc.qoder.com.cn",
     models: CN_MODELS,
+  },
+  // QwenWork's public cloud. QWENWORK_ENT_DOMAIN (the enterprise preset)
+  // is the only variable read; the sites are these constants.
+  qwenwork: {
+    ...QWENWORK_COMMON,
+    id: "qwenwork",
+    name: "QwenWork",
+    web: "https://gateway.qwenwork.cn",
+    openapi: "https://gateway.qwenwork.cn",
+    api: "https://gateway.qwenwork.cn",
+  },
+  // QwenWork's enterprise flagship (企业旗舰版): the enterprise's own
+  // domain, asked at sign-in — web/openapi/api all live on that one host,
+  // and its device flow sends no redirect_uri. QWENWORK_ENT_DOMAIN presets
+  // the domain so the sign-in asks nothing.
+  "qwenwork-enterprise": {
+    ...QWENWORK_COMMON,
+    id: "qwenwork-enterprise",
+    name: "QwenWork 企业版",
+    web: "https://gateway.qwenwork.cn",
+    openapi: "https://gateway.qwenwork.cn",
+    api: "https://gateway.qwenwork.cn",
+    fallbackModels: QWORK_FALLBACK_LISTING,
   },
 }
 
@@ -1970,7 +2102,7 @@ const makePlugin = (site) => async ({ client }) => {
     const key = listingKey(cred)
     let l = listings.get(key)
     if (!l || again) {
-      l = modelInfos(await fetchListing(siteOf(site, cred), cred))
+      l = modelInfos(await fetchListing(siteOf(site, cred), cred), siteOf(site, cred))
       listings.set(key, l)
     }
     return l
@@ -1999,6 +2131,29 @@ const makePlugin = (site) => async ({ client }) => {
     try {
       const cred = await fresh(getAuth)
       if (renewed(cred)) signIn = "renewed"
+      // a site with its own usage path (QwenWork's account-context, signed
+      // like any other call and answered with its own envelope) is read
+      // there; a 401 rotates the device token once, as the qoder path does
+      if (site.usagePath) {
+        const read = async (token) => {
+          const s = siteOf(site, cred)
+          const res = await fetch(`${s.openapi}${site.usagePath}`, {
+            headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(20_000),
+          })
+          if (res.status !== 200) throw new UsageStatus(res.status)
+          return res.json()
+        }
+        let env
+        try {
+          env = await read(cred.deviceToken ?? cred.access)
+        } catch (e) {
+          if (!(e instanceof UsageStatus) || (e.status !== 401 && e.status !== 403)) throw e
+          if (!cred.deviceToken) throw e
+          env = await read(await deviceToken(getAuth, cred.deviceToken))
+        }
+        return { ...(site.parseUsage ? site.parseUsage(env) : { windows: [] }), signIn }
+      }
       // A PAT account has no device token: the usage endpoint takes the job
       // token the exchange gave — a live PAT account answered 200 with a
       // qoder envelope. Its errors surface as the device path's do; there is
@@ -2157,7 +2312,7 @@ const makePlugin = (site) => async ({ client }) => {
     const api = siteOf(site, cred).api
     const CHAT_URL = api + CHAT_PATH
     const task = taskOf(sessionOf(chat, named), chat)
-    const body = qoderBody(chat, m, named, task)
+    const body = qoderBody(chat, m, named, task, siteOf(site, cred))
     const wire = encodeBody(JSON.stringify(body))
     // Qoder's queue is waited out (queueWait) and the same request, its
     // request_set_id the one the queue knows, sent again
@@ -2165,7 +2320,7 @@ const makePlugin = (site) => async ({ client }) => {
     const ask = { requestSetId: body.request_set_id, requestId: body.request_id, sessionId: body.session_id, modelKey: m.key }
     for (let waited = 0; ; waited++) {
       const headers = {
-        ...cosyHeaders(CHAT_URL, cred, wire),
+        ...cosyHeaders(CHAT_URL, cred, wire, siteOf(site, cred)),
         Accept: "text/event-stream",
         "Cache-Control": "no-cache",
         "X-Model-Key": m.key,
@@ -2183,7 +2338,7 @@ const makePlugin = (site) => async ({ client }) => {
       if (!f) task.answered = true
       if (!f?.queue || waited >= QUEUE.recoveries) return f && !res.ok ? errorResponse(f) : answer(open, chat)
       try {
-        if (!(await queueWait(api, cred, ask, f.queue, init.signal, deadline))) return errorResponse(f)
+        if (!(await queueWait(api, cred, ask, f.queue, init.signal, deadline, siteOf(site, cred)))) return errorResponse(f)
       } catch (e) {
         return errorResponse({ status: 502, message: e?.message ?? String(e) })
       }
@@ -2267,7 +2422,10 @@ const makePlugin = (site) => async ({ client }) => {
         // a PAT too (verified: HTTP 200 and a jt- token), and that job token
         // signs the model list and chat calls with the COSY envelope as on
         // qoder.com, so the exchange gives a token the chat endpoint accepts.
-        {
+        // A site that serves no exchange path (QwenWork) sets pat: false.
+        ...(site.pat === false
+          ? []
+          : [{
           type: "oauth",
           label: `Sign in with ${site.name} PAT`,
           prompts: [
@@ -2291,7 +2449,7 @@ const makePlugin = (site) => async ({ client }) => {
               },
             }
           },
-        },
+          }]),
         // an enterprise VPC instance (Qoder CN), a method of its own so
         // that the sign-in above asks nothing new
         ...(site.vpcDomain
@@ -2318,7 +2476,10 @@ const makePlugin = (site) => async ({ client }) => {
           : []),
       ],
       usage,
-      checkin,
+      // the daily check-in reads the vendor's desktop device identity and
+      // posts it to the campaign endpoint: a site without one (QwenWork)
+      // sets checkin: false and gets none
+      ...(site.checkin === false ? {} : { checkin }),
     },
     async config(config) {
       config.provider ??= {}
@@ -2363,6 +2524,65 @@ const makePlugin = (site) => async ({ client }) => {
 
 export const QoderAuthPlugin = makePlugin(SITES.qoder)
 export const QoderCNAuthPlugin = makePlugin(SITES["qoder-cn"])
+export const QwenWorkAuthPlugin = makePlugin(SITES.qwenwork)
+
+// enterpriseDomain reads what the user entered as their enterprise's
+// address, as the desktop client's enterprise mode reads its endpoint
+// override: a bare host, or an https:// address with no path. Loopback- and
+// intranet-looking names are refused too. Anything else names none.
+function enterpriseDomain(input) {
+  let e = String(input ?? "").trim().toLowerCase()
+  if (!e) return undefined
+  if (/^[a-z][a-z\d+.-]*:\/\//.test(e)) {
+    let u
+    try { u = new URL(e) } catch { return undefined }
+    if (u.protocol !== "https:" || u.username || u.password || u.port || u.search || u.hash || (u.pathname !== "" && u.pathname !== "/")) return undefined
+    if (e.endsWith("/")) e = e.slice(0, -1)
+    if (u.hostname + "" !== e.slice("https://".length)) return undefined
+    e = u.hostname
+  }
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(e)) return undefined // a bare IP is not a domain
+  if (/^(localhost|.*\.localhost|.*\.local|.*\.internal)$/.test(e)) return undefined // loopback / intranet suffixes
+  if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(e)) return undefined
+  return e
+}
+
+// The enterprise flagship's sign-in: the same device flow against the
+// enterprise's own host, which it asks for (QWENWORK_ENT_DOMAIN presets it),
+// with no redirect_uri — the flagship's /device/selectAccounts refuses one.
+export async function QwenWorkEnterpriseAuthPlugin({ client }) {
+  const base = SITES["qwenwork-enterprise"]
+  const preset = enterpriseDomain(process.env.QWENWORK_ENT_DOMAIN ?? "")
+  const siteFor = (domain) => ({ ...base, web: `https://${domain}`, openapi: `https://${domain}`, api: `https://${domain}`, redirect: "", enterpriseDomain: domain, vpc: domain })
+  const plugin = await makePlugin(base)({ client })
+  plugin.auth.methods.splice(0, plugin.auth.methods.length, {
+    type: "oauth",
+    label: preset ? `Sign in with ${base.name} (${preset})` : `Sign in with ${base.name}（输入企业域名）`,
+    prompts: preset ? [] : [
+      {
+        type: "text",
+        key: "domain",
+        message: "你企业的千问办公旗舰版域名（企业管理后台地址栏的域名，如 your-company.vpc.qwenwork.cn）",
+        placeholder: "your-company.vpc.qwenwork.cn 或 https://your-company.vpc.qwenwork.cn",
+        validate: (v) => (enterpriseDomain(v) ? undefined : "请输入企业域名（或 https:// 开头的完整地址），不要带路径"),
+      },
+    ],
+    authorize: (inputs) => {
+      const domain = preset || enterpriseDomain(inputs?.domain)
+      if (!domain) throw new Error("请输入企业域名（或设置 QWENWORK_ENT_DOMAIN 环境变量）")
+      return deviceSignIn(siteFor(domain))
+    },
+  })
+  return plugin
+}
+
+// for another service on this same protocol (QwenWork ships one): the
+// plugin factory and its pieces, a site built as SITES' entries are (see
+// the site fields those hooks read — modelScene, listAllModels, clientType,
+// businessProduct, sessionType, systemPrompt, userInfoPath, normalizeUser,
+// deviceOnly, deviceRefreshTarget, rsaKey, cosyVersion, fallbackModels and
+// the vpcDomain branch of siteOf), and the openapi fetch.
+export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
 export const _internal = { campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
