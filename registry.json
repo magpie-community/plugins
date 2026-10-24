@@ -60,6 +60,8 @@
       "summary": { "en": "Opt-in, per-provider Codex Responses history filtering after switching providers. Preserves readable content and tool-call pairing; no model probes.", "zh": "按供应商开关 Codex Responses 历史过滤，缓解切换上游后的密文和历史 ID 兼容问题；保留正文与工具配对，不运行模型检测。" } },
     { "package": "@magpie-community/agent-aider", "name": "Aider", "kind": "agent", "community": true,
       "summary": { "en": "Aider (aider.chat) on magpie's Agents page: pick one of magpie's models for it, and switch it off to put its config back.", "zh": "把 Aider（aider.chat）加到 magpie 的 Agent 页：给它选 magpie 的模型，关掉即恢复它原来的配置。" } },
+    { "package": "@magpie-community/agent-craft-agents", "name": "Craft Agents", "kind": "agent", "community": true,
+      "summary": { "en": "Craft Agents on Magpie's Agents page: select a Magpie model and disconnect to restore its original connections.", "zh": "把 Craft Agents 加到 Magpie 的 Agent 页：选择 Magpie 模型，断开后恢复原连接。" } },
     { "package": "@magpie-community/agent-pig", "name": "PiG", "kind": "agent", "community": true,
       "summary": { "en": "PiG (Pi in Go): add Magpie's endpoint and model catalog, choose models in PiG, and keep startup settings unchanged.", "zh": "为 PiG（Pi in Go）注入 Magpie 端点与模型列表，在 PiG 内选择模型，保持启动设置不变。" } },
     { "package": "@magpie-community/agent-type4me", "name": "Type4Me", "kind": "agent", "community": true,
