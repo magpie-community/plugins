@@ -1,0 +1,31 @@
+{
+  "name": "@magpie-community/opencode-trae-private-auth",
+  "version": "0.1.0",
+  "description": "Experimental provider for private TRAE CLI deployments, with deployment-bound accounts and browser SSO",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "README.md",
+    "LICENSE",
+    "scripts/setup-machine.mjs",
+    "scripts/setup-machine.sh"
+  ],
+  "scripts": {
+    "test": "bun test ./isolated.test.mjs"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "trae",
+    "private-deployment"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/trae-private"
+  }
+}
