@@ -66,6 +66,8 @@
       "summary": { "en": "Type4Me (macOS voice input) on magpie's Agents page: pick one of magpie's models for its LLM post-processing, used from the next dictation.", "zh": "把 Type4Me（macOS 语音输入）加到 magpie 的 Agent 页：给它的 LLM 后处理选 magpie 的模型，下一次语音输入即生效。" } },
     { "package": "@magpie-community/middleware-reserve", "name": "Reserve", "kind": "middleware", "community": true,
       "summary": { "en": "Two routings that keep something in reserve: fill accounts up to a ceiling of their allowance, or use subscriptions before API keys.", "zh": "两种留余量的路由：账号用到额度上限就换下一个，或订阅账号优先于 API key。" } },
+    { "package": "magpie-search1api", "name": "Search1API", "icon": "https://s1.dev/icon.png", "kind": "tools",
+      "summary": { "en": "Search1API web search, news, agentic search, page retrieval, sitemaps and trends through Magpie's tools MCP server. Sign in with OAuth or an API key.", "zh": "通过 Magpie 的工具 MCP 服务使用 Search1API 网页搜索、新闻、智能搜索、页面读取、站点链接和趋势；支持 OAuth 或 API key 登录。" } },
     { "package": "@magpie-community/tools-calc", "name": "Calc", "kind": "tools", "community": true,
       "summary": { "en": "Exact arithmetic, unit conversion and calendar date math as tools for every agent: no network, no key.", "zh": "给每个 agent 的精确计算、单位换算和日历日期计算工具：不联网，不需要 key。" } },
     {"package": "@magpie-community/tools-layerfs", "name": "LayerFS", "kind": "tools", "community": true, "summary": {"en": "LayerFS workspaces for every agent: deduplicated checkpoints and branches behind stable filesystem paths, instead of a fresh copy of the tree for every agent.", "zh": "给每个 agent 的 LayerFS 工作区：稳定的文件系统路径背后是可去重的检查点与分支，而不是每个 agent 各复制一棵项目树。"}},
