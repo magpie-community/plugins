@@ -44,6 +44,10 @@ over Anthropic's Messages API. Provider id: `zcode`.
   - It is kept as an account of its own, named `<email> (team)`, beside
     the account's own plan, so both can be used.
   - With no seat on a team's plan, it says so and signs in to nothing.
+  - The same ZCode session also reads the person's gift plans. Their
+    `<model>-Trial` entries and gift buckets appear beside the team's
+    models and allowance. Plain models spend the team plan; trial entries
+    spend the personal gift, with no fallback to the team on refusal.
 - **ZCode app's sign-in**
   - Uses the account the ZCode app on this computer is signed in to. For
     every request it reads ZCode's own credentials (`~/.zcode/v2`), so it

@@ -194,8 +194,8 @@ async function startPlan(jwt, device) {
 
 // plansOf says where an account's requests go and what more it can spend:
 // {start, gift}. start is what onStart said: an account with no coding plan
-// sends every request to the gift and reads no balance to do it; a team's
-// seat, a sign-in with no ZCode token and a key whose plan-list read found
+// sends every request to the gift and reads no balance to do it; a
+// sign-in with no ZCode token and a key whose plan-list read found
 // no gift stay on the coding plan. gift is what a coding account also holds:
 // the gift plans ({models}), and its requests spend the gift for a model it
 // serves, until it says it is spent (see blocked). Asked again after 10
@@ -204,8 +204,8 @@ async function startPlan(jwt, device) {
 // ask).
 const routes = new Map()
 async function plansOf(s) {
-  if (isTeam(s) || !s.jwt) return { start: false, gift: null }
-  if (!s.key) return { start: true, gift: null }
+  if (!s.jwt) return { start: false, gift: null }
+  if (!s.key && !isTeam(s)) return { start: true, gift: null }
   const id = s.key + "\0" + s.jwt
   const r = routes.get(id)
   if (r && Date.now() - r.at < r.ttl) return r
@@ -213,7 +213,9 @@ async function plansOf(s) {
   let gift = null
   let sure = false
   try {
-    if (!(await plan(s))) start = true
+    // A team seat stays on its team even when its personal plan list is
+    // empty. Its ZCode session still holds the person's gift plans.
+    if (!isTeam(s) && !(await plan(s))) start = true
     else {
       // a gift read that failed is unknown, not "no gift": asked again in
       // a minute, so its trial entries come back with the next list (an
@@ -632,7 +634,6 @@ async function claimHint(s) {
 // translate it; why goes in the display. Set aside: it stops nothing.
 const GIFT_SIGN_IN = "ZCode gift plans (-Trial models) need ZCode's sign-in"
 function giftSignIn(s, key) {
-  if (isTeam(s)) return null
   if (!s.jwt) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: key ? "not read with an API key: add the account with a ZCode sign-in" : "this sign-in has no ZCode session: sign in again" }
   if (jwtExpired(s.jwt)) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "ZCode's sign-in has expired: sign in again" }
   return null
@@ -704,8 +705,8 @@ function bestBuckets(windows) {
 // Fresh usage also updates the request cache, so a replenished or spent
 // gift takes effect before its ten-minute route cache expires. A failed
 // gift read leaves the working Coding Plan's card and route alone.
-async function dualUsage(s) {
-  const out = await codingUsage(s)
+async function dualUsage(s, out) {
+  out ??= await codingUsage(s)
   const cached = routes.get(s.key + "\0" + s.jwt)
   try {
     const g = await giftOf(s)
@@ -1971,6 +1972,8 @@ export async function ZCodeAuthPlugin({ client }) {
           return out
         }
         try {
+          const { start, gift } = await plansOf(s)
+          let card
           if (isTeam(s)) {
             let key = s.key
             if (!key) {
@@ -1980,10 +1983,9 @@ export async function ZCodeAuthPlugin({ client }) {
                 await client?.auth?.set?.({ path: { id: provider?.id ?? PROVIDER }, body: next }).catch?.(() => {})
               }
             }
-            return saved(await teamUsage(s, key))
-          }
-          const { start, gift } = await plansOf(s)
-          const card = saved(start ? await startUsage(s) : gift ? await dualUsage(s) : await codingUsage(s))
+            const team = await teamUsage(s, key)
+            card = saved(gift ? await dualUsage(s, team) : team)
+          } else card = saved(start ? await startUsage(s) : gift ? await dualUsage(s) : await codingUsage(s))
           // a gift plan ZCode holds for the account but has not put on it:
           // named on the card, claimed in the ZCode app (its claim needs
           // the app's captcha attestation, see claimHint). A card that is

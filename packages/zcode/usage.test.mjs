@@ -308,6 +308,7 @@ test("a team seat: the team plan's windows, name, end and resets, its key found 
     windows: [
       { name: "5 hours", used: 42, display: "420 / 1000", amount: 420, limit: 1000, resetsAt: new Date(reset).toISOString(), span: 5 * 3600 },
       { name: "Weekly", used: 10, display: "1000 / 10000", amount: 1000, limit: 10000, resetsAt: new Date(reset + 86400000).toISOString(), span: 7 * 86400 },
+      { name: "ZCode gift plans (-Trial models) need ZCode's sign-in", used: 0, aside: true, display: "this sign-in has no ZCode session: sign in again" },
     ],
   })
   expect(made).toEqual({ name: "zcode-team-api-key", keyType: 2 })
