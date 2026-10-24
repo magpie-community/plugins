@@ -844,6 +844,9 @@ async function resetsOf(url, auth, headers) {
   const end = (c) => (c.until ? Date.parse(c.until) : Infinity)
   each.sort((a, b) => (end(a) === end(b) ? 0 : end(a) < end(b) ? -1 : 1))
   const r = { count: fiveHour + weekly, byWindow: true, fiveHour, weekly }
+  const soon = each.filter((x) => x.window === "fiveHour" && x.until)
+    .filter((x) => Date.parse(x.until) - Date.now() < 2 * 3600_000).length
+  if (soon > 0) r.fiveHourExpiringSoon = soon
   if (until) r.until = new Date(until).toISOString()
   r.each = each
   return r
