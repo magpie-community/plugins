@@ -231,7 +231,7 @@ test("usage reports free-allocation window with next UTC midnight reset", async 
   assert.equal(w.unit, "neurons");
   assert.equal(new Date(w.resetsAt).getUTCHours(), 0);
   assert.equal(new Date(w.resetsAt).getUTCMinutes(), 0);
-  assert.equal(w.span, 86400_000);
+  assert.equal(w.span, 86400, "span is in seconds per the magpie plugin contract");
 });
 
 test("paid-only models are flagged (Paid) in config and provider.models", async () => {

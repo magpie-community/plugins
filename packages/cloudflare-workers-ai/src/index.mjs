@@ -21,6 +21,7 @@ const PAID_ONLY_MODELS = new Set([
 ]);
 const FREE_ALLOCATION_NEURONS = 10000; // per day, both plans
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DAY_S = 86400; // magpie's UsageWindow.span unit is seconds, not ms
 
 function checkedURL(value) {
   const url = new URL(value);
@@ -403,7 +404,7 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
           windows: [
             {
               name: "Neurons/day (free allowance)",
-              span: DAY_MS,
+              span: DAY_S,
               resetsAt: nextUtcMidnight.toISOString(),
               amount: used,
               limit: FREE_ALLOCATION_NEURONS,
