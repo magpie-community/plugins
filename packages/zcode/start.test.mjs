@@ -405,6 +405,13 @@ test("the Start Plan turning a request away says what to do about it, as the bui
   expect(JSON.parse(r.text)).toEqual({ type: "error", error: { type: "permission_error", message: "405 Method Not Allowed — " + START_BLOCKED } })
   expect(r.text).not.toMatch(/request has been blocked/)
   expect(r.signIn).toBe("kept")
+  // the refusal as zcode.z.ai words it in JSON: its own "request has been
+  // blocked" would be read as a firewall's, so its code is what is said
+  answer = () => Response.json({ code: 3012, msg: "request has been blocked due to unusual activity." }, { status: 405 })
+  r = await ask(start("zai"))
+  expect(r.status).toBe(405)
+  expect(JSON.parse(r.text).error.message).toBe("405 Method Not Allowed (code 3012) — " + START_BLOCKED)
+  expect(r.text).not.toMatch(/request has been blocked/)
   // code 3012 in JSON: the vendor's own words, then the hint
   answer = () => Response.json({ code: 3012, msg: "method not allowed" }, { status: 403 })
   r = await ask(start("zai"))

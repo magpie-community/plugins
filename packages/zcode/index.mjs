@@ -1458,16 +1458,21 @@ const START_REFUSED = /unusual activity|"code"\s*:\s*"?3012\b/i
 const startRefused = (status, text) => status >= 400 && (status === 405 || EDGE_BLOCKED.test(text) || START_REFUSED.test(text))
 
 // startBlocked is the refusal's answer as the built-in passed it on: what
-// the vendor said (its status for a block page), then START_BLOCKED.
+// the vendor said, then START_BLOCKED. A block page's words are left out,
+// and so are the vendor's own: both say "request has been blocked", which
+// magpie reads as a network firewall's (provider.BlockedHint) and would say
+// in place of this hint (#425). Its status and code say what it was instead,
+// and 3012 is the one every report of it cites.
 function startBlocked(res, text) {
-  let said = ""
-  if (!EDGE_BLOCKED.test(text)) {
-    try {
-      const v = JSON.parse(text)
-      said = first(v?.error?.message, typeof v?.error === "string" ? v.error : "", v?.message, v?.msg)
-    } catch {}
-  }
-  said ||= `${res.status} ${STATUS_TEXT[res.status] ?? res.statusText}`.trim()
+  const status = `${res.status} ${STATUS_TEXT[res.status] ?? res.statusText}`.trim()
+  let said = "", code = ""
+  try {
+    const v = JSON.parse(text)
+    said = first(v?.error?.message, typeof v?.error === "string" ? v.error : "", v?.message, v?.msg)
+    code = String(v?.error?.code ?? v?.code ?? "")
+  } catch {}
+  if (EDGE_BLOCKED.test(said)) said = ""
+  said ||= status + (code ? ` (code ${code})` : "")
   const h = new Headers(res.headers)
   h.set("content-type", "application/json")
   const error = { type: "permission_error", message: `${said} — ${START_BLOCKED}` }
