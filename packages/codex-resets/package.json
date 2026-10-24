@@ -1,0 +1,21 @@
+{
+  "name": "@magpie-community/page-codex-resets",
+  "version": "0.1.0",
+  "description": "Codex reset announcements, community forecasts and credit grants in a separate Magpie page, with an explicit local sync command",
+  "files": ["page", "sync.mjs", "sync-core.mjs", "README.md"],
+  "bin": { "magpie-codex-resets": "./sync.mjs" },
+  "engines": { "node": ">=22" },
+  "keywords": ["magpie", "magpie-page", "codex", "reset"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/codex-resets" },
+  "magpie": {
+    "page": {
+      "title": "Codex reset news",
+      "titles": { "zh": "Codex 重置动态", "zh-TW": "Codex 重設動態", "ja": "Codex リセット情報", "de": "Codex-Resetmeldungen" },
+      "file": "page/index.html",
+      "icon": "page/icon.svg"
+    },
+    "permissions": [],
+    "options": { "codexResets": null }
+  }
+}

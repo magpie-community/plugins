@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex reset news</title>
+<link rel="stylesheet" href="style.css">
+<script src="_magpie/bridge.js"></script>
+<script src="model.js"></script>
+<script src="words.js"></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1 data-t="title">Codex reset news</h1><p class="intro" data-t="intro">Check public announcements before using a reset credit.</p></div>
+    <button id="reload" type="button"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6a5 5 0 1 0 0 4M13 2v4H9"/></svg><span data-t="refresh">Refresh page</span></button>
+  </header>
+  <p id="status" role="status" aria-live="polite" data-t="loading">Reading saved status…</p>
+  <section class="overview" aria-label="Reset news" id="overview" hidden>
+    <div class="metrics">
+      <section class="metric"><h2 data-t="reset">Global reset</h2><p class="value" id="resetValue"></p><p class="note" id="resetNote"></p></section>
+      <section class="metric"><h2 data-t="forecast">Community forecast</h2><p class="value" id="forecastValue"></p><p class="note" data-t="forecastNote">Community estimate · not official</p></section>
+      <section class="metric"><h2 data-t="credits">Reset credits</h2><p class="value" id="grantValue"></p><p class="note" id="grantNote"></p></section>
+    </div>
+    <p class="advisory" id="advisory" hidden data-t="advisory">A reset is announced. Check the original post and your account before using a credit; timing is not guaranteed.</p>
+  </section>
+  <section class="empty" id="empty" hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h12v15H6zM9 3v4m6-4v4M6 10h12m-9 4h6m-6 3h4"/></svg>
+    <h2 id="emptyTitle"></h2><p id="emptyText"></p>
+  </section>
+  <div class="source-line"><a id="attribution" href="https://codex-resets.com" data-t="attribution">Data from Codex Resets</a><span data-t="localTime">Times shown in your local time zone</span></div>
+  <details id="details"><summary data-t="details">Sources & details</summary><div id="facts"></div><p class="note" data-t="creditNote">Credit grants add resets to use later; they do not refill your current allowance.</p><p class="note" data-t="caution">Community tracking is not an OpenAI guarantee. Check eligibility in your account.</p><div id="sourceFields"></div><p id="selectHint" class="note" data-t="selectHint">Select an address, copy it, then open it in your browser.</p></details>
+  <details id="setup"><summary data-t="syncHelp">Sync instructions</summary><p data-t="syncText">Start the included sync command from your community-plugins checkout. Keep it running to check every five minutes; Ctrl-C stops it.</p><pre><code>node packages/codex-resets/sync.mjs --watch --bell</code></pre><p class="note" data-t="syncLimits">The optional bell is a terminal alert. This page does not send desktop notifications or change the reset-card dialog. Turning off the page does not stop the separate sync command.</p><p class="note" data-t="refreshHelp">Refresh page rereads saved data; it does not contact the public service.</p></details>
+</main>
+</body>
+</html>

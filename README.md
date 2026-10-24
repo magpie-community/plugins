@@ -107,6 +107,7 @@ These add a page to magpie's window, in the app and in `magpie web`, under Plugi
 
 | Package | Page | Reads |
 |---|---|---|
+| [codex-resets](packages/codex-resets) | Public Codex reset news, community forecasts and credit grants; requires the included, explicitly started sync command | Own options only; no private reads |
 | [usage](packages/usage) | Usage glance: calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them | `usage:summary` |
 
 ```sh
