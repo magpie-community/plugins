@@ -1,0 +1,34 @@
+{
+  "name": "@magpie-community/opencode-loomy-auth",
+  "version": "0.1.0",
+  "description": "Loomy (讯飞) models, points, pasted session sign-in and daily first-login check-in for magpie and OpenCode",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "core.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "loomy",
+    "xfyun",
+    "iflytek"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/loomy"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "icon": "https://loomy.xunfei.cn/favicon.ico"
+  }
+}
