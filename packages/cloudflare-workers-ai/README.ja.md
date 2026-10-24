@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | 日本語
 
-[![npm version](https://img.shields.io/badge/npm%20version-0.0.3-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
+[![npm version](https://img.shields.io/badge/npm%20version-0.0.4-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
 [OpenCode](https://opencode.ai) 1.x と [magpie](https://usemagpie.ai) 向けのプロバイダー
@@ -18,7 +18,7 @@
 | 項目 | 在処 |
 |---|---|
 | Cloudflare Account ID | ダッシュボードの **Account home** → 右sidebar の 32 桁 hex |
-| Cloudflare API トークン | ダッシュボード → アバター → **My Profile** → API Tokens → カスタムトークンを `Account → Workers AI → Edit` で作成（`magpie quota` でプラン名まで表示したい場合は `Account Settings → Read` も追加） |
+| Cloudflare API トークン | ダッシュボード → アバター → **My Profile** → API Tokens → カスタムトークンを `Account → Workers AI → Edit` で作成（プラン名表示には `Account Settings → Read`、当日の使用済み Neurons 表示には `Account Analytics → Read` も追加） |
 | magpie | 0.1.1110 以降、または OpenCode 1.x |
 
 トークンに Zone の選択は不要。Free/Paid 両プランに **1 日 10,000 Neurons** の無料枠が
@@ -116,6 +116,7 @@ https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
 | `Model … absent from the current catalog` | models.dev の cloudflare-workers-ai セクションにない ID — 一覧から選ぶ |
 | (Paid) モデルで 400 | プランが Free：Workers Paid か AI Gateway クレジットが必要 |
 | quota 行がプラン名の代償テキスト | トークンに `Account Settings → Read` がない — 表示だけの問題で Neurons 枠は出る |
+| quota 行が 10,000 / 10,000 残りと表示するのにリクエストが used up your daily free allocation で失敗する | トークンに `Account Analytics → Read` がなく使用量を取得できないため magpie が枠を未使用として描画する — スコープを追加して更新 |
 
 ## 開発
 
@@ -145,7 +146,7 @@ sh scripts/sandbox.sh json       # サンドボックス内で plugin --json
 
 | | |
 |---|---|
-| **バージョン** | 0.0.3 |
+| **バージョン** | 0.0.4 |
 | **ライセンス** | [MIT](LICENSE) — Copyright (c) 2026 Guislabert |
 | **ランタイム** | Node.js >= 20、ESM のみ |
 | **作者** | [@Guislabert](https://github.com/Guislabert) |
