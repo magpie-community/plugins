@@ -28,7 +28,7 @@
 //
 // OpenCode speaks chat completions to it (@ai-sdk/openai-compatible); the
 // fetch here answers them.
-import { NATIVE_LIMITS, nativeSessions, NativeSessionError, nativeFields, nativeMcpArgs } from "./native-session.mjs"
+import { NATIVE_LIMITS, nativeSessions, NativeSessionError, nativeFields, nativeMcpArgs, Quiet } from "./native-session.mjs"
 import { isDeepStrictEqual } from "node:util"
 import http2 from "node:http2"
 import { STATUS_CODES } from "node:http"
@@ -2278,7 +2278,8 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
     book.done()
     return { error: failure(o.status, Buffer.concat(chunks).toString("utf8").slice(0, 1 << 20)) }
   }
-  const it = decode(frames(req), {
+  // a Run Cursor stops answering ends, as a retained one does (#2672)
+  const it = decode(new Quiet(NATIVE_LIMITS, close).frames(frames(req)), {
     send,
     blobs,
     tools,
@@ -2492,6 +2493,11 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
     }
     yield { error: { status: 502, message: "the reply broke off: EOF" } }
   } catch (e) {
+    // gone quiet is no answer, calls or not: the step's count never came
+    if (e?.quiet) {
+      yield { error: { status: e.status, message: e.message } }
+      return
+    }
     if (calls > 0 && /EOF/.test(e?.message ?? "")) {
       yield await settled()
       return

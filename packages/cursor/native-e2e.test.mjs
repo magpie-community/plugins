@@ -96,6 +96,11 @@ async function agent(options = {}) {
     const first = () => {
       if (options.stallInitial) return
       send(update(4, text(1, options.initialReasoning ?? "native planning one")))
+      // Cursor's own heartbeats, InteractionUpdate.heartbeat, and nothing else
+      if (options.serverHeartbeat) {
+        const beat = () => delay(() => { send(update(13, Buffer.alloc(0))); beat() }, options.serverHeartbeat)
+        beat()
+      }
       if (options.toolDisplay) {
         const at = Math.floor(options.toolDisplay.length / 2)
         send(update(1, text(1, options.toolDisplay.slice(0, at))))
@@ -1500,4 +1505,70 @@ test("native accounting: cancellation interrupts final debt collection and prese
   expect(later.body.usage.magpie_deferred).toEqual(EARLIER_DEFERRED)
   expect(_internal.owed.has(key)).toBe(false)
   expect(a.results).toEqual([])
+})
+
+// yetone/magpie#2672: a Run that sent some thinking and then nothing (no
+// text, call, count or TurnEnded) kept the reply open until the agent gave
+// up after 305 s, retained (native) or not (stateless, the path it was on).
+const sseOf = async (response) => {
+  const reader = response.body.getReader()
+  let sse = ""
+  for (;;) {
+    const part = await reader.read()
+    if (part.done) return sse
+    sse += new TextDecoder().decode(part.value)
+  }
+}
+for (const path of ["native", "stateless"]) {
+  test(`${path}: a Run silent after its thinking ends in an error within idle (#2672)`, async () => {
+    NATIVE_LIMITS.idle = 150
+    if (path === "stateless") NATIVE_LIMITS.perProcess = 0
+    const a = await agent({ thinkingOnly: true })
+    const response = await a.ask(auth(), initial({ stream: true }))
+    expect(response.headers.get("X-Magpie-Cursor-Continuity")).toMatch(path === "native" ? /^same-run/ : /^stateless/)
+    const started = Date.now()
+    const sse = await sseOf(response)
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(sse).toContain("native planning one")
+    expect(sse).toContain("Cursor went quiet: no message for 0 s, its last message thinking (try again)")
+    expect(sse).not.toContain("[DONE]")
+    await until(() => a.closedStreams === 1)
+  })
+
+  test(`${path}: Cursor's heartbeats alone don't keep a silent Run open past quiet (#2672)`, async () => {
+    Object.assign(NATIVE_LIMITS, { idle: 150, quiet: 400 })
+    if (path === "stateless") NATIVE_LIMITS.perProcess = 0
+    const a = await agent({ thinkingOnly: true, serverHeartbeat: 40 })
+    const response = await a.ask(auth(), initial({ stream: true }))
+    const started = Date.now()
+    const sse = await sseOf(response)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(350)
+    expect(Date.now() - started).toBeLessThan(1500)
+    expect(sse).toMatch(/Cursor went quiet: \d+ heartbeats and nothing else for 0 s, its last message thinking/)
+    await until(() => a.closedStreams === 1)
+  })
+}
+
+test("stateless: a call with no count, then silence, is an error, not a step of tool calls (#2672)", async () => {
+  Object.assign(NATIVE_LIMITS, { idle: 150, perProcess: 0 })
+  const a = await agent({ noCount: true, stateDelay: 10_000 })
+  const r = await a.ask(auth(), initial())
+  expect(r.status).toBe(502)
+  expect(r.body.error.message).toContain("Cursor went quiet")
+  expect(r.body.choices).toBeUndefined()
+})
+
+test("native: a Run parked for the caller's results longer than idle still continues (#2672)", async () => {
+  NATIVE_LIMITS.idle = 120
+  const a = await agent(), account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  expect(first.status).toBe(200)
+  await new Promise((r) => setTimeout(r, 400))
+  const owner = [...nativeSessions.entries][0]
+  expect(owner.error).toBeUndefined()
+  const next = continueWith(chat, first.body, ["after a long tool"])
+  const second = await a.ask(account, next)
+  expect(second.status).toBe(200)
+  expect(second.diagnostic).toMatch(/^same-run/)
+  expect(a.runs).toHaveLength(1)
 })

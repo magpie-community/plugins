@@ -325,3 +325,36 @@ test("native protocol: a step that stops sending fails batchWait after its lates
   expect(run.error).toMatchObject({ status: 502, message: "Cursor did not complete its declared native tool batch" })
   expect(Date.now() - started).toBeGreaterThanOrEqual(440)
 })
+
+// #2672 bounds each wait on Cursor, not the step: calls that keep coming,
+// each sooner than idle, seal however long the step takes in all.
+test("native protocol: a step whose calls each come within idle outlasts idle in all (#2672)", async () => {
+  const { run } = owner({}, { batchWait: 1000, idle: 200 })
+  async function* spread() {
+    for (const id of [7, 8, 9]) {
+      yield* frames([tool(id, "call-" + id, "long arguments " + id)])
+      await new Promise((r) => setTimeout(r, 150))
+    }
+    yield* frames([update(27, uint(1, 3))])
+    await new Promise(() => {})
+  }
+  run.pump(spread())
+  await until(() => run.error || run.state === "awaiting-results")
+  expect(run.error).toBeUndefined()
+  // parked for the caller: idle no longer counts
+  await new Promise((r) => setTimeout(r, 400))
+  expect(run.error).toBeUndefined()
+  expect(run.state).toBe("awaiting-results")
+})
+
+test("native protocol: a step silent after its first call fails at idle, before batchWait (#2672)", async () => {
+  const { run } = owner({}, { batchWait: 5000, idle: 150 })
+  const started = Date.now()
+  run.pump((async function* () {
+    yield* frames([update(4, text(1, "thinking")), tool(7, "call-7", "one")])
+    await new Promise(() => {})
+  })())
+  await until(() => run.error)
+  expect(run.error).toMatchObject({ status: 502, message: "Cursor went quiet: no message for 0 s, its last message tool call (try again)" })
+  expect(Date.now() - started).toBeLessThan(1000)
+})

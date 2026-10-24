@@ -19,6 +19,14 @@ export const NATIVE_LIMITS = {
   // How long a KV reply waits for room in the outbound queue (Cursor's own
   // flow control taking the writes before it) before the Run fails.
   writeWait: 30_000,
+  // How long a Run waits on Cursor before it ends as gone quiet
+  // (yetone/magpie#2672): idle, with no message at all, as @cursor/sdk's
+  // stall detector ends one (30 s there; Cursor's client retries, this one
+  // can't once output went out); quiet, with heartbeats and nothing else,
+  // under the 5 minutes magpie keeps a silent reply alive. Only time spent
+  // waiting on Cursor counts, never a Run parked for the caller's results.
+  idle: 60_000,
+  quiet: 240_000,
   perAccount: 8,
   perProcess: 32,
 }
@@ -42,6 +50,111 @@ export class NativeSessionError extends Error {
 }
 const invalid = (message, status = 409) => { throw new NativeSessionError(status, message) }
 const failureOf = (e) => ({ status: e?.status ?? 502, message: e?.message ?? String(e) })
+
+// kindOf is what a frame of AgentServerMessage is, for Quiet: a heartbeat
+// alone, or what an error names as the last thing Cursor sent
+const UPDATES = { 1: "text", 4: "thinking", 14: "turn end", 27: "tool count" }
+const MESSAGES = { 2: "tool call", 3: "checkpoint", 4: "blob request" }
+function kindOf(f) {
+  if (f.end) return "stream end"
+  try {
+    const fs = nativeFields(f.data)
+    const updates = fs.filter((m) => m.num === 1).flatMap((m) => nativeFields(m.data))
+    if (fs.length && fs.every((m) => m.num === 1) && updates.length && updates.every((u) => u.num === 13)) return null
+    const u = updates.find((u) => u.num !== 13)
+    if (u) return UPDATES[u.num] ?? `update #${u.num}`
+    return MESSAGES[fs[0]?.num] ?? `message #${fs[0]?.num}`
+  } catch {
+    return "malformed message"
+  }
+}
+
+// Quiet ends a Run Cursor has stopped answering. Cursor can leave a Run's
+// stream open after some thinking with nothing more to come, no text, call,
+// count or TurnEnded, while the plugin's heartbeats keep it alive: the
+// reply then waited until the agent gave up (305 s, yetone/magpie#2672).
+// Only time spent waiting on Cursor's next frame counts: not this side
+// handling one, not a slow reader of the reply, not a paused Run.
+export class Quiet {
+  constructor(limits, stop) {
+    this.limits = limits
+    this.stop = stop
+    this.heard = 0 // ms waited since Cursor's last frame that wasn't a heartbeat
+    this.heartbeats = 0
+    this.last = ""
+    this.since = null
+    this.paused = false
+    this.waiting = false
+    this.why = ""
+  }
+  arm() {
+    clearTimeout(this.timer)
+    if (this.paused || !this.waiting || this.why || this.done) return
+    this.since = Date.now()
+    this.timer = later(() => this.fire(), Math.max(0, Math.min(this.limits.idle, this.limits.quiet - this.heard)))
+  }
+  // waited stops the clock: Cursor answered, or the Run paused
+  waited() {
+    clearTimeout(this.timer)
+    if (this.since != null) this.heard += Date.now() - this.since
+    this.since = null
+  }
+  fire() {
+    const gap = Date.now() - this.since
+    const what = this.heard + gap >= this.limits.quiet ? `${this.heartbeats} heartbeats and nothing else for ${Math.round((this.heard + gap) / 1000)} s` : `no message for ${Math.round(gap / 1000)} s`
+    this.why = `Cursor went quiet: ${what}${this.last ? ", its last message " + this.last : ""} (try again)`
+    this.gone?.()
+    this.stop({ status: 502, message: this.why })
+  }
+  // pause stops the clock while the Run waits on the caller's tool results;
+  // resume starts it again from nothing, for Cursor's next model call
+  pause() {
+    this.waited()
+    this.paused = true
+  }
+  resume() {
+    this.paused = false
+    this.heard = 0
+    this.heartbeats = 0
+    this.arm()
+  }
+  // frames passes on a Run's frames; once Cursor has gone quiet, the read
+  // that was waiting ends in its error, whether or not the stream does
+  async *frames(stream) {
+    const it = (stream[Symbol.asyncIterator] ?? stream[Symbol.iterator]).call(stream)
+    const gone = new Promise((r) => { this.gone = r })
+    try {
+      for (;;) {
+        this.waiting = true
+        this.arm()
+        let r
+        try {
+          const next = Promise.resolve(it.next())
+          next.catch(() => {}) // a read left behind by gone fails unheard
+          r = await Promise.race([next, gone])
+        } catch (e) {
+          if (!this.why) throw e
+        } finally {
+          this.waiting = false
+          this.waited()
+        }
+        if (this.why) throw Object.assign(new NativeSessionError(502, this.why), { quiet: true })
+        if (r.done) return
+        const kind = kindOf(r.value)
+        if (kind == null) this.heartbeats++
+        else [this.heard, this.heartbeats, this.last] = [0, 0, kind]
+        yield r.value
+      }
+    } finally {
+      this.done = true
+      clearTimeout(this.timer)
+      // not waited for: a read may still be pending on a stream that didn't
+      // end, and the reader's error handling (a failed protocol check failing
+      // the Run before a sealed batch is read) must not wait behind it
+      Promise.resolve(it.return?.()).catch(() => {})
+    }
+  }
+}
 
 // Unlike the compatibility codec, malformed protobuf tails must fail a live
 // continuation. Dropping one could turn a truncated batch into a valid handoff.
@@ -472,6 +585,7 @@ class NativeSession {
     this.segment = new Segment(this, prepared.chat)
     this.retain(bytes(prepared.chat))
     this.expireIn(this.limits.lifetime)
+    this.quiet = new Quiet(this.limits, (e) => this.fail(e))
   }
   // expireIn sets the Run's absolute deadline ms from now: from its start,
   // the whole lifetime; a test brings it in after the first answer
@@ -508,6 +622,7 @@ class NativeSession {
     clearTimeout(this.resultTimer)
     clearTimeout(this.drainTimer)
     clearTimeout(this.lifetimeTimer)
+    this.quiet.pause()
     this.ac.abort()
     this.transport?.close()
   }
@@ -605,6 +720,7 @@ class NativeSession {
         this.execClose(call.requestID)
       }
       this.state = "running"
+      this.quiet.resume()
     } catch (e) {
       const error = failureOf(e)
       this.fail({ status: error.status, message: `${error.message}; native result submission failed; its outcome is uncertain and cannot be replayed` })
@@ -706,6 +822,8 @@ class NativeSession {
     clearTimeout(this.batchTimer)
     this.batchTimer = null
     this.state = "awaiting-results"
+    // Cursor waits on the caller now: resultWait bounds the wait
+    this.quiet.pause()
     this.batches ??= []
     this.batches.push(segment)
     for (const c of segment.calls) this.pool.handles.set(c.id, { owner: this, batch: segment })
@@ -855,7 +973,7 @@ class NativeSession {
   async pump(stream) {
     const { pb, exec, failure } = this.wire
     try {
-      for await (const f of stream) {
+      for await (const f of this.quiet.frames(stream)) {
         if (this.error || this.state === "complete") return
         if (f.end) {
           const e = failure(200, f.data)
