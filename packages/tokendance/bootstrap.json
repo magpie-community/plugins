@@ -1,0 +1,37 @@
+{
+  "data": [
+    {
+      "id": "glm-4.7",
+      "name": "Z.ai: GLM 4.7",
+      "created": 1774276587,
+      "description": "GLM-4.7 是 Z.ai 最新一代旗舰模型，在两个关键方向上做了强化：更强的编程能力，以及更稳定的多步推理 / 执行表现。它在处理复杂 Agent 任务时有显著提升，同时对话体验更加自然流畅，前端呈现的观感也更加出色精致。",
+      "context_length": 200000,
+      "supported_protocols": [
+        "openai:chat-completions"
+      ]
+    },
+    {
+      "id": "glm-5",
+      "name": "Z.ai: GLM 5",
+      "created": 1774275743,
+      "description": "GLM-5 是 Z.ai 打造的一款旗舰级开源基础模型，专为复杂系统设计与长链路 Agent 工作流而生。它面向资深开发者，在大规模编程任务上具备生产可用的稳定表现，已能正面比肩一线闭源模型。凭借更强的 Agent 级任务规划能力、深度后端推理，以及自我迭代纠错机制，GLM-5 不再只是“写代码”，而是完成从整体系统构建到自主执行的一整套工程闭环。",
+      "context_length": 200000,
+      "supported_protocols": [
+        "openai:chat-completions",
+        "anthropic:messages"
+      ]
+    },
+    {
+      "id": "deepseek-v4.1-flash-1017",
+      "name": "DeepSeek: DeepSeek V4.1 Flash 1017",
+      "created": 1792226641,
+      "description": " DeepSeek-V4.1-Flash-1017 在提升性能的同时，还缩短了模型的任务运行时间与输出长度，让用户能够以更低成本、更快速度完成任务，在多个 Harness 下达到新的性能-费用帕累托最优。DeepSeek 官方特别针对 DeepSeek Harness、腾讯 CodeBuddy、WorkBuddy 等平台框架进行了优化。",
+      "context_length": 1000000,
+      "supported_protocols": [
+        "openai:chat-completions",
+        "openai:responses",
+        "anthropic:messages"
+      ]
+    }
+  ]
+}

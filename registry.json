@@ -1,6 +1,10 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-zenmux-api-auth", "name": "ZenMux API Key", "icon": "zenmux", "providers": ["zenmux-api"], "community": true,
+      "summary": { "en": "ZenMux API keys with automatic model discovery and native Chat, Responses and Anthropic protocols. Separate from ZenMux OAuth.", "zh": "用 ZenMux API Key 接入，自动发现模型并使用 Chat、Responses、Anthropic 原生协议；独立于 ZenMux OAuth。" } },
+    { "package": "@magpie-community/opencode-tokendance-auth", "name": "TokenDance", "providers": ["tokendance"], "community": true,
+      "summary": { "en": "TokenDance API keys with live model protocol capabilities and optional X-App-URL attribution.", "zh": "用 TokenDance API Key 接入，按实时目录选择模型协议，支持可选 X-App-URL 应用归因。" } },
     { "package": "@magpie-community/opencode-joycode-auth", "name": "JoyCode", "providers": ["joycode"], "community": true,
       "summary": { "en": "Unofficial JoyCode provider: JD account browser sign-in, live models and credit multipliers, plan credits and streaming tool calls.", "zh": "非官方 JoyCode 插件：京东账号浏览器登录，动态模型与积分倍率、套餐额度及流式工具调用。" } },
     {"package": "@magpie-community/opencode-kimi-work-auth", "name": "Kimi Work", "icon": "kimi", "providers": ["kimi-work"], "community": true, "summary": {"en": "Kimi desktop Work subscription through its local sign-in, with live Work models and shared membership usage. Separate from Kimi Code.", "zh": "使用本机普通 Kimi 桌面版的 Work 登录，自动读取 Work 模型和会员共享用量；独立于 Kimi Code。"}},

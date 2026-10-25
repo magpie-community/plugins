@@ -1,0 +1,33 @@
+{
+  "name": "@magpie-community/opencode-tokendance-auth",
+  "version": "0.1.0",
+  "description": "TokenDance API-key provider for magpie and OpenCode",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "models.mjs",
+    "bootstrap.json",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "tokendance"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/tokendance"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDgwIiBoZWlnaHQ9IjQ4MCIgdmlld0JveD0iMCAwIDQ4MCA0ODAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxnIGNsaXAtcGF0aD0idXJsKCNjbGlwMF8xMTZfNTcpIj4KPHJlY3Qgd2lkdGg9IjQ4MCIgaGVpZ2h0PSI0ODAiIGZpbGw9ImJsYWNrIi8+CjxwYXRoIGQ9Ik0xNTkgMTYySDUyLjc4OUM1MS40MTk4IDE2MiA1MC40NTU1IDE2MC42NTUgNTAuODk0NyAxNTkuMzU4TDY2Ljg1OTEgMTEyLjIyNUM2OS4zMzQ0IDEwNC45MTggNzYuMTkyIDEwMCA4My45MDc3IDEwMEgzMjEuMzg4QzMyNC40NTkgMTAwIDMyNy41MjQgMTAwLjIxIDMzMC41NTEgMTAwLjcyNkMzMzYuNTQ1IDEwMS43NDcgMzQ3LjE3OSAxMDMuNzkxIDM1NC41IDEwNi41QzM5NS4wNCAxMjEuNTA0IDQxOC41IDE2MCA0MjYgMTkxQzQzMy41IDIyMiA0MzIgMjc0LjUgMzkwLjUgMzI3QzM0OSAzNzkuNSAyODQgMzgwLjUgMjgyIDM4MC41SDE3NS43NjdDMTc0LjM5OSAzODAuNSAxNzMuNDUxIDM3OS4xNTkgMTczLjg4NiAzNzcuODYzTDE5Mi41NjcgMzIyLjI3NUMxOTMuMTIzIDMyMC42MjMgMTk0LjY3NyAzMTkuNTIgMTk2LjQyIDMxOS41NDVDMjA3LjcyOSAzMTkuNzAzIDIzMC41NTggMzE5Ljg2NSAyNTEgMzE5LjVDMjc5IDMxOSAyODYgMzE4LjUgMzEwIDMwNS41QzMzNCAyOTIuNSAzNjAuNSAyNTIuNSAzNTIgMjA5LjVDMzQ1LjIgMTc1LjEgMzE1LjUgMTYzLjUgMzAxLjUgMTYySDIyOC45OTJDMjIxLjIzNiAxNjIgMjE0LjM1MSAxNjYuOTY5IDIxMS45MDggMTc0LjMzMUwxNDcuNTkyIDM2OC4xNjlDMTQ1LjE0OSAzNzUuNTMxIDEzOC4yNjQgMzgwLjUgMTMwLjUwOCAzODAuNUg3My43NTMyQzcyLjM5NDMgMzgwLjUgNzEuNDE3OSAzNzkuMjE0IDcxLjgzNzkgMzc3LjkyMkM4OS42MjU5IDMyMy4xOSAxMjQuNjY5IDIxNC45NjEgMTI5IDIwMEMxMzMuNCAxODQuOCAxNTAuODMzIDE2OC4zMzMgMTU5IDE2MloiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik0yMzMgMjY0TDI0OCAyMTYiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8cGF0aCBkPSJNMjgwIDI2NEwyOTUgMjE2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjI1IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPC9nPgo8ZGVmcz4KPGNsaXBQYXRoIGlkPSJjbGlwMF8xMTZfNTciPgo8cmVjdCB3aWR0aD0iNDgwIiBoZWlnaHQ9IjQ4MCIgcng9IjgwIiBmaWxsPSJ3aGl0ZSIvPgo8L2NsaXBQYXRoPgo8L2RlZnM+Cjwvc3ZnPg=="
+  }
+}

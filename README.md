@@ -35,6 +35,8 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [zcode](packages/zcode) | ZCode: Z.ai / BigModel (智谱) GLM Coding Plan, team seats, Start Plan | `zcode` |
 | [zed](packages/zed) | Zed (Pro, Pro Trial, Student, Business): Anthropic, OpenAI, Google and xAI models hosted by Zed | `zed` |
 | [zen-free](packages/zen-free) | OpenCode Zen free models with the public credential | `opencode-zen-free` |
+| [zenmux-api](packages/zenmux-api) | ZenMux API keys, with models.dev's native model protocols; separate from ZenMux OAuth | `zenmux-api` |
+| [tokendance](packages/tokendance) | TokenDance API keys, with its live per-model protocol capabilities | `tokendance` |
 
 ## Gateway middleware
 
