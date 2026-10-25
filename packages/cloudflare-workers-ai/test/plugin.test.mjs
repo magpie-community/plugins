@@ -412,3 +412,74 @@ test("usage treats a GraphQL error payload as unknown, and an empty day as zero"
   assert.equal(u2.windows[0].amount, 0, "an empty bucket list is a real zero");
   assert.match(u2.windows[0].display, /0 Neurons used today/);
 });
+
+test("a full window does not bench an account whose plan is unknown", async () => {
+  // GET /accounts/{id} names no plan for this token, and the day is spent:
+  // the card gets the amount, but the router must not hear a `used`
+  // percent — past the allowance a Paid account is billed, not refused.
+  const o = opts();
+  o.fetchImpl = async (url, init) => {
+    if (typeof url === "string" && url.includes("models.dev")) {
+      return new Response(JSON.stringify(fakeCatalog()));
+    }
+    if (typeof url === "string" && url.endsWith("/graphql")) {
+      return new Response(JSON.stringify({
+        result: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 10462 } }] }] } },
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ result: {} }), { status: 200 }); // no plan in the answer
+  };
+  const plugin = await CloudflareWorkersAIPlugin({}, o);
+  const u = await plugin.auth.usage(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+  assert.equal(u.plan, "Workers Free / Paid (confirm in the dashboard)");
+  const w = u.windows[0];
+  assert.equal(w.amount, 10462, "the card still sees the real usage");
+  assert.equal("used" in w, false, "an unknown plan must not report a router-benching used percent");
+});
+
+function loaderOpts(statusResponder) {
+  const o = opts();
+  o.fetchImpl = async (url) => {
+    if (typeof url === "string" && url.includes("models.dev")) {
+      return new Response(JSON.stringify(fakeCatalog()));
+    }
+    return statusResponder(url);
+  };
+  return o;
+}
+
+test("a 429 code 3036 comes back with Retry-After until next UTC midnight", async () => {
+  const spentBody = JSON.stringify({
+    errors: [{ code: 3036, message: "you have used up your daily free allocation of 10,000 neurons" }],
+  });
+  const plugin = await CloudflareWorkersAIPlugin({}, loaderOpts(() => new Response(spentBody, { status: 429 })));
+  const r = await plugin.auth.loader(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+  const resp = await r.fetch(`${r.baseURL}/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "@cf/meta/llama-3-8b-instruct", messages: [] }),
+  });
+  assert.equal(resp.status, 429);
+  assert.deepEqual(JSON.parse(await resp.text()), JSON.parse(spentBody), "body preserved verbatim");
+  const retryAfter = Number(resp.headers.get("retry-after"));
+  const untilMidnight = Math.ceil(((Math.floor(Date.now() / 86400_000) + 1) * 86400_000 - Date.now()) / 1000);
+  assert.ok(
+    retryAfter >= untilMidnight - 5 && retryAfter <= untilMidnight,
+    `Retry-After ${retryAfter} must be the seconds to next UTC midnight (~${untilMidnight})`,
+  );
+});
+
+test("any other 429 keeps its own words: no Retry-After is added", async () => {
+  // a plain rate limit is transient — a day-long rest until UTC midnight
+  // would bench a working account for hours
+  const plugin = await CloudflareWorkersAIPlugin({}, loaderOpts(() =>
+    new Response(JSON.stringify({ errors: [{ code: 700003, message: "rate limited" }] }), { status: 429 })
+  ));
+  const r = await plugin.auth.loader(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+  const resp = await r.fetch(`${r.baseURL}/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "@cf/meta/llama-3-8b-instruct", messages: [] }),
+  });
+  assert.equal(resp.status, 429);
+  assert.equal(resp.headers.get("retry-after"), null, "only a 3036 may name the midnight rest");
+  assert.equal(JSON.parse(await resp.text()).errors[0].code, 700003, "body preserved");
+});

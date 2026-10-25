@@ -22,6 +22,11 @@ const PAID_ONLY_MODELS = new Set([
 const FREE_ALLOCATION_NEURONS = 10000; // per day, both plans
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DAY_S = 86400; // magpie's UsageWindow.span unit is seconds, not ms
+const SPENT_ALLOCATION_CODE = 3036; // "you have used up your daily free allocation"
+
+function nextUtcMidnight(now = Date.now()) {
+  return new Date((Math.floor(now / DAY_MS) + 1) * DAY_MS);
+}
 
 function checkedURL(value) {
   const url = new URL(value);
@@ -328,13 +333,36 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
               }
             }
 
-            return fetchImpl(targetURL, {
+            const resp = await fetchImpl(targetURL, {
               method: req.method,
               headers,
               body,
               signal: init?.signal ?? req.signal,
               redirect: "error",
             });
+            if (resp.status !== 429) return resp;
+            // A spent daily free allocation is refused until 00:00 UTC, but
+            // Cloudflare's 429 says nothing of when (no Retry-After, no
+            // timestamp), so magpie would retry every 15 minutes until
+            // midnight. A 3036 is exactly that refusal — answer it with the
+            // real rest. Any other 429 is transient and keeps its own words:
+            // a day-long Retry-After on a plain rate limit would bench a
+            // working account for hours.
+            const text = await resp.text().catch(() => "");
+            let spentAllocation = false;
+            try {
+              spentAllocation = (JSON.parse(text)?.errors ?? []).some(
+                (e) => e?.code === SPENT_ALLOCATION_CODE,
+              );
+            } catch {
+              /* non-JSON body: pass through */
+            }
+            if (!spentAllocation) {
+              return new Response(text, { status: resp.status, statusText: resp.statusText, headers: resp.headers });
+            }
+            const headersOut = new Headers(resp.headers);
+            headersOut.set("Retry-After", String(Math.max(1, Math.ceil((nextUtcMidnight() - Date.now()) / 1000))));
+            return new Response(text, { status: resp.status, statusText: resp.statusText, headers: headersOut });
           },
         };
       },
@@ -352,6 +380,11 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
           return { plan: "Workers Free / Paid (confirm in the dashboard)", windows: [] };
         }
         let plan = "Workers Free / Paid (confirm in the dashboard)";
+        // Only an account the plan call really named Free may tell the
+        // router it is spent: past the 10,000 included Neurons a Paid
+        // account is billed, not refused, and GET /accounts/{id} carries
+        // no plan for most tokens, so "Free / Paid" here means unknown.
+        let planIsFree = false;
         try {
           const res = await fetchImpl(`https://api.cloudflare.com/client/v4/accounts/${acct}`, {
             headers: { authorization: `Bearer ${auth?.key ?? apiKey}` },
@@ -361,14 +394,15 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
           if (res.ok) {
             const info = await res.json();
             const planName = info?.result?.plan?.name ?? info?.result?.plan ?? "";
-            if (/free/i.test(String(planName))) plan = "Workers Free";
-            else if (String(planName)) plan = String(planName);
+            if (/free/i.test(String(planName))) {
+              plan = "Workers Free";
+              planIsFree = true;
+            } else if (String(planName)) plan = String(planName);
           }
         } catch {
           /* token scope not enough or network issue — keep unknown */
         }
-        const utcMidnight = new Date(Math.floor(Date.now() / DAY_MS) * DAY_MS);
-        const nextUtcMidnight = new Date(utcMidnight.getTime() + DAY_MS);
+        const nextMidnight = nextUtcMidnight();
         let used = null;
         try {
           const res = await fetchImpl("https://api.cloudflare.com/client/v4/graphql", {
@@ -381,7 +415,7 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
               query:
                 'query { viewer { accounts(filter: {accountTag: "' + acct +
                 '"}) { aiInferenceAdaptiveGroups(limit: 100, filter: {datetimeHour_geq: "' +
-                utcMidnight.toISOString() + '", datetimeHour_lt: "' + nextUtcMidnight.toISOString() +
+                new Date(nextMidnight.getTime() - DAY_MS).toISOString() + '", datetimeHour_lt: "' + nextMidnight.toISOString() +
                 '"}, orderBy: [datetimeHour_ASC]) { sum { totalNeurons } } } } }',
             }),
             redirect: "error",
@@ -405,13 +439,18 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
             {
               name: "Neurons/day (free allowance)",
               span: DAY_S,
-              resetsAt: nextUtcMidnight.toISOString(),
+              resetsAt: nextMidnight.toISOString(),
               amount: used,
               // magpie's router benches a channel on the window's `used`
-              // percent (Amount is display-only there): report it so an
-              // exhausted account rests until resetsAt instead of cycling
-              // the 15-minute no-reset quota backoff.
-              used: used === null ? 0 : Math.min(100, (100 * used) / FREE_ALLOCATION_NEURONS),
+              // percent (amount is display-only there), so an exhausted
+              // Free account rests until resetsAt. Only a really-detected
+              // Free account may say it: a Paid one is billed past the
+              // allowance and keeps working, and its rest comes from the
+              // 429's Retry-After the loader sets, which Cloudflare only
+              // sends to accounts it actually refuses.
+              ...(planIsFree && used !== null
+                ? { used: Math.min(100, (100 * used) / FREE_ALLOCATION_NEURONS) }
+                : {}),
               limit: FREE_ALLOCATION_NEURONS,
               unit: "neurons",
               display:
