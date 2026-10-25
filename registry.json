@@ -60,6 +60,8 @@
       "summary": { "en": "Claude Code and Claude Desktop on an Antigravity account: the words Antigravity refuses their system prompt for are broken up, in what Antigravity alone is sent.", "zh": "让 Claude Code 和 Claude Desktop 能用 Antigravity 账号：只在发给 Antigravity 的请求里拆开它据以拒绝系统提示词的那几个词。" } },
     { "package": "@magpie-community/middleware-codex-history", "name": "Codex History Filter", "kind": "middleware", "community": true,
       "summary": { "en": "Opt-in, per-provider Codex Responses history filtering after switching providers. Preserves readable content and tool-call pairing; no model probes.", "zh": "按供应商开关 Codex Responses 历史过滤，缓解切换上游后的密文和历史 ID 兼容问题；保留正文与工具配对，不运行模型检测。" } },
+    { "package": "claude-science-local-for-magpie", "name": "Claude Science Local for Magpie", "kind": "agent",
+      "summary": { "en": "Use Magpie's configured models in the original Claude Science app without signing in to Claude, and switch models inside Science. macOS; requires a separate local setup step.", "zh": "无需 Claude 登录，让原版 Claude Science 使用 Magpie 中配置的模型，并在 Science 内切换。支持 macOS，需额外初始化本地服务。" } },
     { "package": "@magpie-community/agent-aider", "name": "Aider", "kind": "agent", "community": true,
       "summary": { "en": "Aider (aider.chat) on magpie's Agents page: pick one of magpie's models for it, and switch it off to put its config back.", "zh": "把 Aider（aider.chat）加到 magpie 的 Agent 页：给它选 magpie 的模型，关掉即恢复它原来的配置。" } },
     { "package": "@magpie-community/agent-pig", "name": "PiG", "kind": "agent", "community": true,
