@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-minimax-auth",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "OpenCode provider plugins for MiniMax Code accounts: their credits and M Plan, China (minimax-code) and international (minimax-code-global), with MiniMax Code's own device sign-in",
   "type": "module",
   "main": "./index.mjs",
