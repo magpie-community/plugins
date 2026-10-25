@@ -383,13 +383,13 @@ test("a GLM Coding Plan key's request goes as the agent sent it", async () => {
 })
 
 test("a team seat's request goes as the agent sent it, ZCode's token or not", async () => {
-  const s = { site: "zai", base: "https://api.z.ai/api/anthropic", key: "team.secret", token: "tok", org: "o1", project: "p1", jwt, device: DEVICE }
+  const s = { site: "zai", base: "https://api.z.ai/api/anthropic", key: "seat.secret", token: "tok", org: "o1", project: "p1", jwt, device: DEVICE }
   const auth = { type: "oauth", access: s.key, refresh: JSON.stringify(s), expires: 0 }
-  sentAsIs(await send(auth, agentText, { requests: 2 }), "team.secret", "/api.z.ai/api/anthropic/v1/messages")
+  sentAsIs(await send(auth, agentText, { requests: 2 }), "seat.secret", "/api.z.ai/api/anthropic/v1/messages")
   expect(got.filter((r) => r.path.endsWith("/billing/balance"))).toHaveLength(1)
   expect(got.filter((r) => r.path.endsWith("/subscription/list"))).toHaveLength(0)
   got.length = 0
-  sentAsIs(await send({ ...auth, refresh: JSON.stringify({ ...s, jwt: "" }) }, agentText), "team.secret", "/api.z.ai/api/anthropic/v1/messages")
+  sentAsIs(await send({ ...auth, refresh: JSON.stringify({ ...s, jwt: "" }) }, agentText), "seat.secret", "/api.z.ai/api/anthropic/v1/messages")
   expect(got).toHaveLength(1)
 })
 
