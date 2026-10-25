@@ -66,7 +66,6 @@ function row(id, name, cost, limit, variants) {
       output: { text: true },
     },
     ...(variants ? { variants } : {}),
-    status: "active",
     ...(cost ? { cost } : {}),
   }
 }
@@ -74,22 +73,16 @@ function row(id, name, cost, limit, variants) {
 // pretty turns an API id into a display name: the part after the org slash,
 // with separators spaced ("deepseek-ai/DeepSeek-V4.1-Flash" → "DeepSeek V4.1 Flash").
 function pretty(id) {
-  const short = String(id).split("/").pop() || String(id)
-  return short.replace(/[-_]+/g, " ").trim()
+  return id.split("/").pop().replace(/[-_]+/g, " ").trim()
 }
 
 // costOf reads one entry of River's pricing list. Entries carry the rates
 // per million tokens as numbers; anything else leaves the cost off.
 function costOf(price) {
   if (!price || typeof price !== "object") return undefined
-  const input = typeof price.input === "number" ? price.input : undefined
-  const output = typeof price.output === "number" ? price.output : undefined
+  const [input, output, cache_read] = [price.input, price.output, price.cached_input].map((v) => (typeof v === "number" ? v : undefined))
   if (input === undefined && output === undefined) return undefined
-  return {
-    ...(input !== undefined ? { input } : {}),
-    ...(output !== undefined ? { output } : {}),
-    ...(typeof price.cached_input === "number" ? { cache_read: price.cached_input } : {}),
-  }
+  return { ...(input !== undefined && { input }), ...(output !== undefined && { output }), ...(cache_read !== undefined && { cache_read }) }
 }
 
 // accountModels lists the model ids a key can use. River answers
@@ -210,4 +203,4 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
 // The plugin is the only exported function; magpie calls every exported
 // function as a plugin, so tests reach the internals through this object.
 export const RiverPlugin = async () => createPlugin()
-export const _internal = { createPlugin, row, pretty, costOf, rowsFor, LIMITS, VARIANTS, BOOT_PRICES, BASE, PRICING }
+export const _internal = { createPlugin, row, pretty, costOf, rowsFor, LIMITS, VARIANTS, BOOT_PRICES, BASE }
