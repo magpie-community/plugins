@@ -44,6 +44,42 @@ const ID = "cursor"
 const API = "https://api2.cursor.sh"
 const WEBSITE = "https://cursor.com"
 const AGENT = "https://agentn.global.api5.cursor.sh" // when the server config can't say
+
+// ---- the team a request is billed to ----------------------------------------------
+
+// An account can be in more than one team (an enterprise's own, and a
+// smaller one it was invited to), each with a budget of its own. Cursor
+// bills a request to the team the client names and turns it away when that
+// team's budget is spent ("Team budget limit reached"), so a member of a
+// team that still has budget has to name it: cursor-agent names the team
+// `cursor-agent team switch` chose, in x-cursor-team-id. Here it is the
+// sign-in's teamId (magpie's Providers page keeps it on the account), or
+// CURSOR_TEAM_ID for a run of magpie or OpenCode. With neither, nothing is
+// named and Cursor bills the account's default team, as before.
+const teamIDs = new Map() // token hash -> the team id its sign-in asked for
+const teamEnv = () => {
+  const v = String(process.env.CURSOR_TEAM_ID ?? "").trim()
+  return /^\d+$/.test(v) ? v : ""
+}
+const teamKey = (tok) => createHash("sha256").update(String(tok)).digest("hex")
+
+// teamOf is the team to bill this token's requests to, "" when none is chosen.
+const teamOf = (tok) => teamEnv() || (tok ? (teamIDs.get(teamKey(tok)) ?? "") : "")
+
+// keepTeam takes the team a sign-in asks for; a sign-in with none leaves
+// the account on Cursor's default again.
+function keepTeam(tok, auth) {
+  if (!tok) return
+  const id = String(auth?.teamId ?? "").trim()
+  if (/^\d+$/.test(id)) teamIDs.set(teamKey(tok), id)
+  else teamIDs.delete(teamKey(tok))
+}
+
+// teamHeader names the team the way cursor-agent does, nothing when none is chosen.
+function teamHeader(tok) {
+  const id = teamOf(tok)
+  return id ? { "x-cursor-team-id": id } : {}
+}
 const CHAT = "@ai-sdk/openai-compatible"
 const VERSION_FALLBACK = "2026.09.23-86fc751" // the CLI version said when no install names one
 const DEFAULT_CONTEXT = 200_000 // a model Cursor gives no limit for
@@ -218,6 +254,7 @@ async function headersFor(tok) {
     "x-cursor-client-version": await clientVersion(),
     "x-cursor-client-type": "cli",
     "x-ghost-mode": "true",
+    ...teamHeader(tok),
   }
 }
 
@@ -292,8 +329,16 @@ async function keyToken(key) {
   return j.accessToken
 }
 
-// tokenOf is the token to call Cursor's API with, for a sign-in.
+// tokenOf is the token to call Cursor's API with, for a sign-in, and takes
+// the team that sign-in asks its requests be billed to.
 async function tokenOf(auth) {
+  const tok = await tokenFor(auth)
+  keepTeam(tok, auth)
+  return tok
+}
+
+// tokenFor is the token itself.
+async function tokenFor(auth) {
   if (auth?.type === "api" && auth.key) return keyToken(auth.key)
   if (auth?.type !== "oauth") throw new AuthError("Cursor isn't signed in")
   if (auth.refresh === CLI_MARK) return cliTokenNow()
@@ -456,7 +501,7 @@ async function hardLimit(tok) {
   try {
     const res = await fetch(API + "/aiserver.v1.DashboardService/GetHardLimit", {
       method: "POST",
-      headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json", "Connect-Protocol-Version": "1" },
+      headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json", "Connect-Protocol-Version": "1", ...teamHeader(tok) },
       body: "{}",
       signal: AbortSignal.timeout(15_000),
     })
@@ -481,7 +526,7 @@ async function usage(tok, ids) {
   const [res, hard] = await Promise.all([
     fetch(API + "/aiserver.v1.DashboardService/GetCurrentPeriodUsage", {
       method: "POST",
-      headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json", "Connect-Protocol-Version": "1" },
+      headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json", "Connect-Protocol-Version": "1", ...teamHeader(tok) },
       body: "{}",
       signal: AbortSignal.timeout(15_000),
     }),
@@ -1115,6 +1160,10 @@ function statusOf(status, code, msg) {
   if (code === "permission_denied") return out(403, msg)
   if (code === "unauthenticated" || status === 401 || low.includes("expired"))
     return out(401, msg + " — sign in to Cursor again in magpie")
+  // A team's budget is not the account's usage: another team the account is
+  // in may still have budget, and only the client can name it.
+  if (low.includes("team") && low.includes("budget"))
+    return out(429, "usage limit reached: " + msg + " — or bill another team you are in: set its id as the account's teamId, or CURSOR_TEAM_ID (`cursor-agent team list` names them)")
   if (code === "resource_exhausted" || low.includes("quota") || low.includes("rate limit") || low.includes("usage limit"))
     return out(429, "usage limit reached: " + msg)
   if (low.includes("too long") || low.includes("context length") || low.includes("too many tokens"))
@@ -2149,6 +2198,7 @@ async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, 
       "x-cursor-client-type": "cli", // else Cursor adds a prompt of its own
       "x-ghost-mode": "true", // privacy mode: nothing kept for training
       "x-request-id": randomUUID(),
+      ...teamHeader(tok),
       // none of Cursor's own tools, only the caller's
       "x-cursor-agent-allowed-tools": "mcp_tool_call,get_mcp_tools_tool_call",
     },
@@ -2237,6 +2287,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
       "x-cursor-client-type": "cli", // else Cursor adds a prompt of its own
       "x-ghost-mode": "true", // privacy mode: nothing kept for training
       "x-request-id": randomUUID(),
+      ...teamHeader(tok),
       // none of Cursor's own tools, only the caller's
       "x-cursor-agent-allowed-tools": "mcp_tool_call,get_mcp_tools_tool_call",
     },
@@ -2887,4 +2938,4 @@ export async function CursorAuthPlugin() {
 }
 
 // for tests
-export const _internal = { keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
+export const _internal = { keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry, teamOf, teamHeader, keepTeam }

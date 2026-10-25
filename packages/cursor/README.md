@@ -203,6 +203,21 @@ minutes), the way pi-cursor-sdk lists Cursor's catalog:
   and `service_tier` counting as for a listed model. The list doesn't show
   these ids: pick the `@<size>` model for a window that is the model's.
 
+## Team selection (enterprise accounts)
+
+An enterprise account can belong to several teams, each with its own budget.
+By default Cursor bills requests to the account's default team. When that
+team's budget is spent but another team still has budget, name the team to
+bill:
+
+- Set `teamId` on the account (magpie's Providers page, or OpenCode's
+  auth.json)
+- Or set the `CURSOR_TEAM_ID` environment variable (applies to every account)
+
+A "Team budget limit reached" error names the exhausted team and says how to
+bill another one; `cursor-agent team list` lists the account's teams and
+their ids.
+
 ## Usage
 
 magpie shows Cursor Models, Other Models and Total for the billing period.
