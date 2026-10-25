@@ -69,7 +69,9 @@ const userIdOf = (b) => JSON.parse(JSON.parse(b).metadata.user_id)
 test("a coding plan's Messages request names the sign-in's device, as ZCode's does", async () => {
   const { body, path } = await send(signedIn, pi())
   expect(path).toBe("/open.bigmodel.cn/api/anthropic/v1/messages")
-  expect(userIdOf(body)).toEqual({ device_id: DEVICE, account_uuid: "", session_id: "" })
+  const { sessionOf } = require("./index.mjs")._internal
+  // and the conversation, as x-session-id names it; Pi named none (#387)
+  expect(userIdOf(body)).toEqual({ device_id: DEVICE, account_uuid: "", session_id: sessionOf("", DEVICE) })
   // the rest of the request is the agent's, as it sent it
   const b = JSON.parse(body)
   delete b.metadata

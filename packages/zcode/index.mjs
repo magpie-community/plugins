@@ -50,12 +50,15 @@ const siteOf = (s) => (s === "bigmodel" ? "bigmodel" : "zai")
 const platform = () => `${process.platform}-${process.arch}` // darwin-arm64, win32-x64, linux-x64, as ZCode names them
 const uuid = () => crypto.randomUUID()
 const anyDevice = uuid() // X-Device-Mid for calls made signed out (the model list)
-// keyDevice is a device id for an account known only by its key: the same
-// key gives the same id on every start, as a sign-in's saved device does
-const keyDevice = (key) => {
-  const h = createHash("sha256").update("zcode-device\0" + key).digest("hex")
+// uuidOf is a version 4 shaped UUID made from a seed: the same seed gives
+// the same UUID every time
+const uuidOf = (seed) => {
+  const h = createHash("sha256").update(seed).digest("hex")
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${((parseInt(h[16], 16) & 3) | 8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`
 }
+// keyDevice is a device id for an account known only by its key: the same
+// key gives the same id on every start, as a sign-in's saved device does
+const keyDevice = (key) => uuidOf("zcode-device\0" + key)
 const first = (...ss) => ss.map((s) => (typeof s === "string" ? s.trim() : "")).find((s) => s) ?? ""
 
 // STATUS_TEXT is Go's http.StatusText, which magpie's built-in said a
@@ -1732,7 +1735,7 @@ function contextPrefix() {
 // sign-in's device. site names the powered-by line's provider, place where
 // the agent works (workPlace). A body that isn't a Messages request goes as
 // it is.
-function dress(text, site, device, place) {
+function dress(text, site, device, place, session) {
   if (typeof text !== "string" || !text.includes("messages")) return text
   let b
   try {
@@ -1772,7 +1775,7 @@ function dress(text, site, device, place) {
   }
   if (Array.isArray(b.tools)) for (const t of b.tools) if (t && typeof t === "object") delete t.cache_control
   const meta = b.metadata && typeof b.metadata === "object" ? b.metadata : {}
-  b.metadata = { ...meta, user_id: userIdOf(device) }
+  b.metadata = { ...meta, user_id: userIdOf(device, session) }
   return JSON.stringify(b)
 }
 
@@ -1780,13 +1783,14 @@ function dress(text, site, device, place) {
 // MLs and vWr) puts it on every Anthropic-format request, a coding plan's
 // too: the machine's device id, no account uuid. The plan's endpoint keeps
 // a prompt cache on the machine it picks by it, so a request without it
-// lands anywhere and its cache is mostly missed (#387).
-const userIdOf = (device) => JSON.stringify({ device_id: device, account_uuid: "", session_id: "" })
+// lands anywhere and its cache is mostly missed (#387). Its session_id is
+// the request's x-session-id (sessionOf), as ZCode's is.
+const userIdOf = (device, session = "") => JSON.stringify({ device_id: device, account_uuid: "", session_id: session })
 
 // marked is a coding plan's Messages request body with metadata.user_id
 // as ZCode sends it, when the agent sent none of its own. Anything else,
 // a body that isn't a Messages request among them, goes as it is.
-function marked(text, device) {
+function marked(text, device, session) {
   if (typeof text !== "string" || !device || !text.includes("messages")) return text
   let b
   try {
@@ -1797,8 +1801,23 @@ function marked(text, device) {
   if (!b || typeof b !== "object" || Array.isArray(b) || !Array.isArray(b.messages)) return text
   const meta = b.metadata && typeof b.metadata === "object" && !Array.isArray(b.metadata) ? b.metadata : {}
   if (typeof meta.user_id === "string" && meta.user_id.trim()) return text
-  b.metadata = { ...meta, user_id: userIdOf(device) }
+  b.metadata = { ...meta, user_id: userIdOf(device, session) }
   return JSON.stringify(b)
+}
+
+// sessionOf is the x-session-id a request goes with, as ZCode's client
+// (3.14.3, glm/zcode.cjs xst and Tst) sends it: a bare UUID, the same on
+// every turn of a conversation. BigModel keeps a prompt's cache for the
+// requests that name the same session and seldom for those that name none
+// (#387). The agent's session (chat.headers below) goes as it is when it is
+// a UUID, else as a UUID made from it, so the vendor sees only ZCode's
+// format, never magpie's or another agent's; with none, a UUID made from
+// the device.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function sessionOf(id, device) {
+  const own = typeof id === "string" ? id.trim() : ""
+  if (UUID.test(own)) return own.toLowerCase()
+  return uuidOf(own ? "zcode-session\0" + own : "zcode-session-device\0" + (device ?? ""))
 }
 
 // ---- the plugin ------------------------------------------------------------------
@@ -1815,6 +1834,14 @@ export async function ZCodeAuthPlugin({ client }) {
     authorize: () => authorize(site, log),
   })
   return {
+    // the agent's session, which magpie tells the plugins here and not
+    // in the request, goes on as x-session-id (sessionOf)
+    "chat.headers": async (input, output) => {
+      const provider = input?.model?.providerID ?? input?.provider?.info?.id
+      if (provider !== PROVIDER) return
+      const id = input?.sessionID
+      if (typeof id === "string" && id.trim()) output.headers["x-session-id"] = sessionOf(id)
+    },
     config: async (cfg) => {
       cfg.provider ??= {}
       const was = cfg.provider[PROVIDER] ?? {}
@@ -1934,6 +1961,7 @@ export async function ZCodeAuthPlugin({ client }) {
             }
             let h = new Headers(opts.headers)
             const place = workPlace(h)
+            const sid = sessionOf(h.get("x-session-id"), s.device)
             if (start) {
               if (jwtExpired(s.jwt)) throw new Error(EXPIRED)
               if (!s.jwt) throw new Error("ZCode's sign-in has no key; sign in again")
@@ -1941,9 +1969,10 @@ export async function ZCodeAuthPlugin({ client }) {
               // the Start Plan is served only to what looks like ZCode's own request
               url = startURL(url)
               h = startHeaders(h, s.jwt)
+              h.set("x-session-id", sid)
               if (opts.body != null) {
                 const text = orig ?? (typeof opts.body === "string" ? opts.body : await new Response(opts.body).text())
-                opts.body = dress(text, s.site, s.device, place)
+                opts.body = dress(text, s.site, s.device, place, sid)
                 delete opts.duplex
                 h.delete("content-length")
               }
@@ -1954,12 +1983,13 @@ export async function ZCodeAuthPlugin({ client }) {
               // count_tokens and other paths ZCode never sends go as they are
               if (opts.body != null && /\/v1\/messages$/.test(new URL(url).pathname)) {
                 const text = typeof opts.body === "string" ? opts.body : await new Response(opts.body).text()
-                const next = marked(text, s.device)
+                const next = marked(text, s.device, sid)
                 if (next !== text) h.delete("content-length")
                 opts.body = next
                 delete opts.duplex
               }
               if (renamed) h.delete("content-length")
+              h.set("x-session-id", sid)
               h.delete("authorization")
               h.set("x-api-key", key)
               h.set("Authorization", "Bearer " + key)
@@ -2112,4 +2142,4 @@ export async function ZCodeAuthPlugin({ client }) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, dress, PROMPT, marked, keyDevice }
+export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, dress, PROMPT, marked, keyDevice, sessionOf }

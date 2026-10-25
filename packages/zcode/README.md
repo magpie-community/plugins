@@ -30,7 +30,8 @@ over Anthropic's Messages API. Provider id: `zcode`.
     request, and the plan's endpoint keeps a prompt cache on the machine it
     picks by it, so without it the cache is mostly missed (#387). An
     account known only by its key gets a device id made from the key, the
-    same on every start. zcode.z.ai also
+    same on every start. Every request also carries the `x-session-id`
+    header below. zcode.z.ai also
     answers 405 code 3012 to every request of an account its risk control
     blocked, ZCode's own app's included (plugins#348). That answer comes
     back as ZCode's words, then "ZCode's risk control blocked this account
@@ -40,6 +41,14 @@ over Anthropic's Messages API. Provider id: `zcode`.
     firewall says this network's address was blocked instead.
   - The Start Plan's token can't be refreshed. When it runs out, sign in
     again.
+  - Every request, on any plan, names its conversation in `x-session-id`,
+    as ZCode does: a bare UUID, the same on each turn. BigModel's prompt
+    cache follows it: without it a long conversation's turns hit the cache
+    about one time in twenty, with it nearly every turn (#387). The
+    agent's own session id (magpie tells it to the plugin) goes as it is
+    when it is a UUID, else as a UUID made from it, so the vendor sees
+    only ZCode's format; with none, a UUID made from the device. The same
+    id is `metadata.user_id`'s `session_id`, as in ZCode's requests.
 - **ZCode: a team's GLM Coding Plan**
   - For an account with a plan of its own and a seat on a team's plan
     (#285). The sign-ins above take the account's own plan, as ZCode does
