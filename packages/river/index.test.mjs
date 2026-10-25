@@ -161,10 +161,25 @@ describe("helpers", () => {
       ["deepseek-ai/DeepSeek-V4.1-Flash", "zai-org/GLM-5.3-Flash", "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"],
       null,
     )
-    expect(rows["deepseek-ai/DeepSeek-V4.1-Flash"].variants).toEqual({ none: {}, high: {}, max: {} })
-    expect(rows["zai-org/GLM-5.3-Flash"].variants).toEqual({ low: {}, high: {}, max: {} })
+    expect(rows["deepseek-ai/DeepSeek-V4.1-Flash"].variants).toEqual({
+      none: { reasoningEffort: "none" },
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    })
+    expect(rows["zai-org/GLM-5.3-Flash"].variants).toEqual({
+      low: { reasoningEffort: "low" },
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    })
     expect(rows["nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"].variants).toBeUndefined()
     expect(Object.keys(VARIANTS)).toHaveLength(3)
+  })
+  test("each variant's options carry its reasoningEffort — what OpenCode merges into the request", () => {
+    for (const variants of Object.values(VARIANTS)) {
+      for (const [effort, options] of Object.entries(variants)) {
+        expect(options).toEqual({ reasoningEffort: effort })
+      }
+    }
   })
 })
 

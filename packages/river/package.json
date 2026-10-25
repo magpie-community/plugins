@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-river-auth",
-  "version": "0.1.3",
+  "version": "0.1.0",
   "description": "River (api.river.ai) with your API key in OpenCode and magpie: chat completions, streaming, tools and images",
   "type": "module",
   "main": "./index.mjs",

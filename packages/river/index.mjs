@@ -24,14 +24,17 @@ const LIMITS = {
 }
 
 // Reasoning effort levels per model, from docs.river.ai/guides/inference-controls.
-// The keys are the exact `reasoning_effort` strings River's chat API takes.
-// DeepSeek also takes "none" (off); GLM requires reasoning, so it has none.
-// The 1017 release is the same model re-served, so it takes the same efforts.
-// Nemotron, Qwen3.8 and Kimi-K3 have no documented effort control.
+// The keys are the levels agents pick; each variant's object is the options
+// OpenCode merges into the request ({ reasoningEffort: e }), which magpie's
+// gateway sends as `reasoning_effort`. DeepSeek also takes "none" (off); GLM
+// requires reasoning, so it has none. The 1017 release is the same model
+// re-served, so it takes the same efforts. Nemotron, Qwen3.8 and Kimi-K3 have
+// no documented effort control.
+const efforts = (...names) => Object.fromEntries(names.map((e) => [e, { reasoningEffort: e }]))
 const VARIANTS = {
-  "deepseek-ai/DeepSeek-V4.1-Flash": { none: {}, high: {}, max: {} },
-  "deepseek-ai/DeepSeek-V4.1-Flash-1017": { none: {}, high: {}, max: {} },
-  "zai-org/GLM-5.3-Flash": { low: {}, high: {}, max: {} },
+  "deepseek-ai/DeepSeek-V4.1-Flash": efforts("none", "high", "max"),
+  "deepseek-ai/DeepSeek-V4.1-Flash-1017": efforts("none", "high", "max"),
+  "zai-org/GLM-5.3-Flash": efforts("low", "high", "max"),
 }
 
 // Costs at the time of writing, per million tokens in USD, from River's
