@@ -1,8 +1,9 @@
 import { execFile, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
+import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat } from "node:fs/promises"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { delimiter, dirname, join } from "node:path"
 import { promisify } from "node:util"
 import { configRoot, expandPath, home, openSignInWindow, validateProject } from "./browser.mjs"
 
@@ -50,12 +51,49 @@ function gcloudEnvironment(options = {}) {
 // argument that could not be carried is refused rather than handed over.
 const WINDOWS = process.platform === "win32"
 
-function command(name, args) {
+// The command line for cmd.exe. The program and every argument are quoted,
+// and the whole line is quoted once more: cmd's /s takes the outer pair off,
+// and what is left is the program and its arguments as separate tokens.
+export function windowsCommand(program, args) {
+  const quoted = [program, ...args].map((value) => `"${value}"`).join(" ")
+  return ["/d", "/s", "/c", `"${quoted}"`]
+}
+
+// Where gcloud.cmd is, as the command line has to name it.
+//
+// The program is named by its own path, not by the name it happens to have on
+// PATH. A batch file takes the Cloud SDK root from the directory it was
+// started in (%~dp0); started by name, it has no directory of its own there,
+// and that is the caller's, so gcloud looks for its own library under the
+// caller's directory and fails to start, with nothing in its output to say
+// why.
+//
+// CLOUDSDK_ROOT_DIR is the variable the Cloud SDK itself sets, so it names the
+// same installation the SDK reports. A PATH entry may be quoted
+// ("C:\Program Files\..."), and the quotes are not part of the directory. The
+// environment is an argument so that this can be read on any platform.
+export function gcloudProgram(env = process.env) {
+  const root = env.CLOUDSDK_ROOT_DIR
+  if (root) {
+    const candidate = join(root, "bin", "gcloud.cmd")
+    if (existsSync(candidate)) return candidate
+  }
+  for (const entry of (env.PATH || "").split(delimiter)) {
+    const dir = entry.trim().replace(/^"(.*)"$/, "$1")
+    if (!dir) continue
+    const candidate = join(dir, "gcloud.cmd")
+    if (existsSync(candidate)) return candidate
+  }
+  return "gcloud"
+}
+
+export function command(name, args) {
   if (!WINDOWS) return { file: name, args, options: {} }
   for (const value of [name, ...args]) {
     if (/["\r\n]/.test(value)) throw new Error(`Cannot run ${name} on Windows: an argument contains a quote or a line break`)
   }
-  return { file: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", `"${[name, ...args].map((value) => `"${value}"`).join(" ")}"`], options: { windowsVerbatimArguments: true } }
+  const program = name.toLowerCase() === "gcloud" ? gcloudProgram() : name
+  return { file: process.env.ComSpec || "cmd.exe", args: windowsCommand(program, args), options: { windowsVerbatimArguments: true } }
 }
 
 export async function runGcloud(args, options = {}) {

@@ -30,6 +30,16 @@ const isoDate = (value) => {
 export function parseCreditTables(tables, { now = Date.now() } = {}) {
   const credits = new Map()
   let recognized = false
+  // A credit's status is a small vocabulary that Google grows over time: a
+  // credit that reads "Active" a month before its end date reads "Expiring in
+  // 24 days" in the month of it. That wording is a fact about time rather
+  // than about the money, so it is recognized as the state it means (still
+  // spendable, with the end date deciding eligibility) instead of being
+  // refused as a status this parser has never seen. "Expired" stays a
+  // different state.
+  const spent = ["exhausted", "used up", "used"]
+  const usable = ["available", "active", ...spent]
+  const known = [...usable, "expired", "pending"]
   for (const table of tables) {
     const headers = table.headers.map(normalize)
     const indices = Object.fromEntries(["credit name", "status", "remaining value", "original value", "credit id", "start date", "end date", "usage scope"].map((name) => [name, column(headers, name)]))
@@ -38,16 +48,17 @@ export function parseCreditTables(tables, { now = Date.now() } = {}) {
     for (const row of table.rows) {
       const cell = (name) => normalize(row[indices[name]])
       const status = cell("status").toLowerCase()
-      if (!["available", "active", "exhausted", "used up", "used", "expired", "pending"].includes(status)) throw new Error(`Unknown Google Cloud credit status: ${cell("status")}`)
+      const expiring = /^(?:expiring|expires)\b/.test(status)
+      if (!known.includes(status) && !expiring) throw new Error(`Unknown Google Cloud credit status: ${cell("status")}`)
       const id = cell("credit id")
       if (!id || credits.has(id)) continue
       const reported = money(cell("remaining value"))
       const original = money(cell("original value"))
       if (!Number.isSafeInteger(reported) || !Number.isSafeInteger(original) || reported < 0 || reported > original) throw new Error("Invalid Google Cloud credit amounts")
-      const remaining = ["exhausted", "used up", "used"].includes(status) ? 0 : reported
+      const remaining = spent.includes(status) ? 0 : reported
       const start = isoDate(cell("start date"))
       const end = isoDate(cell("end date"))
-      const eligible = ["available", "active", "exhausted", "used up", "used"].includes(status) && !(start && Date.parse(start) > now) && !(end && Date.parse(end) <= now)
+      const eligible = (usable.includes(status) || expiring) && !(start && Date.parse(start) > now) && !(end && Date.parse(end) <= now)
       credits.set(id, { id, name: cell("credit name"), status: cell("status"), remaining: remaining / 100, original: original / 100, start, end, scope: cell("usage scope"), eligible })
     }
   }

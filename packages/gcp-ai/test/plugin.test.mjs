@@ -3,11 +3,13 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import plugin from "../index.mjs"
 import { createHash } from "node:crypto"
+import { execFile } from "node:child_process"
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { delimiter, dirname, join } from "node:path"
 import { EventEmitter } from "node:events"
-import { accountOf, adcDirectoryFor, adcDirectoryOwnedBy, adcDirectoryToCreate, adcFile, adcSlug, beginAdcLogin, effectiveAuthMode, hasAdc, resolveAccount, resolveIdentity, resolveProject, runGcloud, startLogin, tokenProvider } from "../lib/credentials.mjs"
+import { promisify } from "node:util"
+import { accountOf, adcDirectoryFor, adcDirectoryOwnedBy, adcDirectoryToCreate, adcFile, adcSlug, beginAdcLogin, command, effectiveAuthMode, gcloudProgram, hasAdc, resolveAccount, resolveIdentity, resolveProject, runGcloud, startLogin, tokenProvider, windowsCommand } from "../lib/credentials.mjs"
 import { fakeGcloud } from "./gcloud.mjs"
 import { parseCreditTables, usageOf } from "../lib/credits.mjs"
 import { availableModels, toProviderModels } from "../lib/models.mjs"
@@ -50,6 +52,90 @@ test("credits fail closed on missing layout, unknown statuses, unsupported curre
   assert.throws(() => parseCreditTables([{ headers, rows: [row("a", "€1.00")] }]), /currency/)
   assert.throws(() => parseCreditTables([{ headers, rows: [row("a", "$11.00")] }]), /Invalid/)
   assert.equal(parseCreditTables([{ headers, rows: [row("a", "$10.00", "$10.00", "Expired")] }], { now }).remaining, 0)
+})
+
+test("a credit near its end date reads as expiring, and is still spendable", () => {
+  const result = parseCreditTables([{ headers, rows: [row("expiring", "$229.42", "$300.00", "Expiring in 24 days", "August 20, 2026", "November 20, 2026")] }], { now })
+  assert.equal(result.remaining, 229.42)
+  assert.equal(result.original, 300)
+  assert.equal(result.runsOutAt, "2026-11-20T00:00:00.000Z")
+  assert.equal(result.credits[0].eligible, true)
+  assert.equal(result.credits[0].status, "Expiring in 24 days")
+})
+
+test("a credit whose end date has passed is not spendable whatever its status says", () => {
+  const result = parseCreditTables([{ headers, rows: [row("gone", "$10.00", "$10.00", "Expiring in 1 day", "August 20, 2025", "November 20, 2025")] }], { now })
+  assert.equal(result.credits[0].eligible, false)
+  assert.equal(result.remaining, 0)
+})
+
+test("the Windows command line quotes the program and every argument", () => {
+  const program = "C:\\Program Files\\Google\\Cloud SDK\\google-cloud-sdk\\bin\\gcloud.cmd"
+  assert.deepEqual(windowsCommand(program, ["auth", "application-default", "login"]), ["/d", "/s", "/c", `""${program}" "auth" "application-default" "login""`])
+})
+
+test("gcloud is found on PATH and named by its own path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "magpie-gcloud-path-"))
+  const bin = join(root, "Cloud SDK")
+  const sdk = join(root, "sdk")
+  try {
+    await mkdir(bin, { recursive: true })
+    await writeFile(join(bin, "gcloud.cmd"), "@echo off\r\n")
+    await mkdir(join(sdk, "bin"), { recursive: true })
+    await writeFile(join(sdk, "bin", "gcloud.cmd"), "@echo off\r\n")
+    // A PATH entry may be quoted, and the quotes are not part of the directory.
+    assert.equal(gcloudProgram({ PATH: `"${bin}"` }), join(bin, "gcloud.cmd"))
+    assert.equal(gcloudProgram({ PATH: [bin, root].join(delimiter) }), join(bin, "gcloud.cmd"))
+    // The SDK's own root variable names the same installation the SDK reports.
+    assert.equal(gcloudProgram({ CLOUDSDK_ROOT_DIR: sdk }), join(sdk, "bin", "gcloud.cmd"))
+    // Nothing to find: the name is left to the shell.
+    assert.equal(gcloudProgram({ PATH: root }), "gcloud")
+    assert.equal(gcloudProgram({}), "gcloud")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("a Windows sign-in names gcloud by its own path, so the batch file finds its Cloud SDK root", { skip: process.platform !== "win32" }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "magpie-gcloud-cwd-"))
+  const bin = join(root, "Cloud SDK")
+  const elsewhere = join(root, "somewhere else")
+  await mkdir(bin, { recursive: true })
+  await mkdir(elsewhere, { recursive: true })
+  // A batch file prints the directory it was started in, and gcloud takes its
+  // Cloud SDK root from there.
+  await writeFile(join(bin, "gcloud.cmd"), "@echo off\r\necho dp0=%~dp0\r\n")
+  const path = process.env.PATH
+  const sdkRoot = process.env.CLOUDSDK_ROOT_DIR
+  process.env.PATH = bin
+  delete process.env.CLOUDSDK_ROOT_DIR
+  try {
+    // The batch file sees its own directory. Started by name it would see the
+    // caller's, which is where gcloud looks for its library and finds nothing.
+    const stdout = await runGcloud(["version"])
+    assert.ok(stdout.includes(bin), `expected the script's own directory, got ${stdout}`)
+    assert.ok(!stdout.includes(elsewhere), `expected not the caller's directory, got ${stdout}`)
+    // And the command line that got there names the file, not the name it has
+    // on PATH.
+    const started = command("gcloud", ["version"])
+    assert.ok(started.args[3].includes(bin), `the command line names ${started.args[3]}`)
+  } finally {
+    if (path === undefined) delete process.env.PATH
+    else process.env.PATH = path
+    if (sdkRoot !== undefined) process.env.CLOUDSDK_ROOT_DIR = sdkRoot
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("a Windows command line built this way starts the program it names", { skip: process.platform !== "win32" }, async () => {
+  const script = join(tmpdir(), `magpie-windows-command-${process.pid}.cmd`)
+  await writeFile(script, "@echo off\r\necho started\r\n")
+  try {
+    const { stdout } = await promisify(execFile)(process.env.ComSpec || "cmd.exe", windowsCommand(script, []), { windowsVerbatimArguments: true })
+    assert.match(stdout, /started/)
+  } finally {
+    await rm(script, { force: true })
+  }
 })
 
 test("session checking recovers from navigation context loss within the same deadline", async () => {

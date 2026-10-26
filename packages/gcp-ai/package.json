@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-gcp-ai-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Vertex AI models and Google Cloud promotional credits, signed with your own gcloud / ADC login",
   "type": "module",
   "main": "./index.mjs",
