@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/agent-paseo-models",
+  "version": "0.1.0",
+  "description": "Paseo's Claude provider lists magpie's models: switch it on and they follow what magpie offers",
+  "type": "module",
+  "files": ["paseo-models.agent.js", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "paseo", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/paseo-models" },
+  "magpie": { "agent": "./paseo-models.agent.js", "icon": "https://raw.githubusercontent.com/getpaseo/paseo/main/packages/website/public/logo.svg" }
+}
