@@ -331,6 +331,21 @@ async function planOf(tok) {
   }
 }
 
+// cycleEnds caches GetPlanInfo's billingCycleEnd for the same hour planOf
+// caches the plan name; usage() reads it only when the usage ledger is empty.
+const cycleEnds = new Map()
+async function cycleEndOf(tok) {
+  const had = cycleEnds.get(tok)
+  if (had && Date.now() - had.at < PLAN_TTL) return had.ms
+  try {
+    const ms = Number((await unary(API, "aiserver.v1.DashboardService/GetPlanInfo", tok))?.planInfo?.billingCycleEnd ?? 0)
+    if (ms > 0) cycleEnds.set(tok, { ms, at: Date.now() })
+    return ms > 0 ? ms : (had?.ms ?? 0)
+  } catch {
+    return had?.ms ?? 0
+  }
+}
+
 // exchanged are API keys' tokens, by the key's hash.
 const exchanged = new Map()
 
@@ -553,7 +568,24 @@ async function usage(tok, ids) {
   if (!res.ok) return { error: statusText(res.status), windows: [] }
   const data = await res.json()
   const u = data?.planUsage
-  if (!u) return { windows: [] }
+  if (!u) {
+    // Cursor can answer 200 with a zero-length period and no planUsage
+    // (seen 2026-10: the account's usage ledger reads empty while every
+    // other DashboardService call works). GetPlanInfo still knows the real
+    // cycle, so the card keeps its reset date; the percentages are unknown,
+    // not zero.
+    const endMs = await cycleEndOf(tok)
+    if (endMs > 0) {
+      const resets = { resetsAt: new Date(endMs).toISOString() }
+      return {
+        windows: [
+          { name: "Cursor Models", used: 0, display: "% unknown", ...resets },
+          { name: "Other Models", used: 0, display: "% unknown", ...resets },
+        ],
+      }
+    }
+    return { windows: [] }
+  }
   const ms = /^[+-]?\d+$/.test(data.billingCycleEnd ?? "") ? Number(data.billingCycleEnd) : 0
   const resets = ms > 0 ? { resetsAt: new Date(ms).toISOString() } : {}
   const bucket = new Set((data.autoBucketModels ?? []).map(poolBase))

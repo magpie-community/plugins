@@ -69,6 +69,26 @@ test("the period's three windows, reset at the cycle's end", async () => {
   expect(u.error).toBeUndefined()
 })
 
+test("an account the usage ledger answers empty keeps its reset date, its percents unknown", async () => {
+  const a = fresh()
+  const { u } = await run(a, (url) =>
+    url === PLAN
+      ? Response.json({ planInfo: { planName: "Pro", billingCycleEnd: "1793755328000" } })
+      : Response.json({ billingCycleStart: "1792856329582", billingCycleEnd: "1792856329582", displayThreshold: 100 }),
+  )
+  const at = new Date(1793755328000).toISOString()
+  expect(u.windows).toEqual([
+    { name: "Cursor Models", used: 0, display: "% unknown", resetsAt: at },
+    { name: "Other Models", used: 0, display: "% unknown", resetsAt: at },
+  ])
+})
+
+test("a ledger answered empty with no cycle to fall back to stays empty", async () => {
+  const a = fresh()
+  const { u } = await run(a, (url) => (url === PLAN ? Response.json({ planInfo: { planName: "Pro" } }) : Response.json({ displayThreshold: 100 })))
+  expect(u.windows).toEqual([])
+})
+
 test("the card names the plan as cursor-agent about does (GetPlanInfo's planName), asked once an hour", async () => {
   const a = fresh()
   const reply = (url) =>
