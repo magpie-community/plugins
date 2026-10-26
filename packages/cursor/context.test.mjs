@@ -144,6 +144,78 @@ test("a picker Cursor can't give is a failure, not an empty list", async () => {
   await expect(usable(tok())).rejects.toThrow()
 })
 
+test("merge the expanded picker without losing Auto Intelligence or replacing ordinary models", async () => {
+  const normal = [...PICKER.filter((m) => !m.name.startsWith("claude-")), { name: "auto-smart", clientDisplayName: "Auto Intelligence", contextTokenLimit: 200000 }]
+  const expanded = PICKER.map((m) => m.name === "composer-2.5" ? { ...m, contextTokenLimit: 1000000 } : m)
+  const calls = []
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/agent.v1.AgentService/GetUsableModels")) return new Response("down", { status: 503 })
+    if (String(url).endsWith("/aiserver.v1.AiService/AvailableModels")) {
+      const body = JSON.parse(init.body)
+      calls.push(body)
+      return Response.json({ models: body.scope === 3 ? expanded : normal })
+    }
+    throw new Error("the test asked " + url)
+  }
+  const token = tok()
+  const ordinary = await usable(token)
+  expect(ordinary.some((m) => m.id.startsWith("claude-"))).toBe(false)
+  expect(calls).toEqual([{ useModelParameters: true, doNotUseMarkdown: true }])
+  const raw = await usable(token, true)
+  expect(raw.some((m) => m.id === "claude-opus-5-5@300k")).toBe(true)
+  expect(raw.some((m) => m.id === "auto-smart")).toBe(true)
+  expect(raw.filter((m) => m.id === "composer-2.5").map((m) => m.context)).toEqual([200000])
+  expect(Object.fromEntries(request(raw, "claude-opus-5-5-xhigh", "medium", false).params.map((p) => [p.id, p.value])).effort).toBe("medium")
+  expect(calls).toContainEqual({ useModelParameters: true, doNotUseMarkdown: true, includeHiddenModels: true, scope: 3 })
+  expect(await usable(token, true)).toBe(raw)
+  expect(await usable(token, false)).toBe(ordinary)
+  expect(calls).toHaveLength(3)
+})
+
+test("an unavailable expanded picker keeps the ordinary catalog", async () => {
+  fakeAPI()
+  const normal = globalThis.fetch
+  globalThis.fetch = (url, init) => String(url).endsWith("/aiserver.v1.AiService/AvailableModels") && JSON.parse(init.body).scope === 3
+    ? Promise.resolve(new Response("down", { status: 503 }))
+    : normal(url, init)
+  const raw = await usable(tok(), true)
+  expect(raw.some((m) => m.id === "claude-opus-5-5@300k")).toBe(true)
+  expect(raw.some((m) => m.id === "composer-2.5")).toBe(true)
+})
+
+test("the expanded picker does not hide an ordinary picker failure", async () => {
+  globalThis.fetch = async (url, init) => String(url).endsWith("/aiserver.v1.AiService/AvailableModels") && JSON.parse(init.body).scope === 3
+    ? Response.json({ models: PICKER })
+    : new Response("down", { status: 503 })
+  await expect(usable(tok(), true)).rejects.toThrow()
+})
+
+test("expanded variants with ids only in legacySlugs keep effort, fast, size and account filtering", async () => {
+  const efforts = ["low", "medium", "high", "xhigh", "max"]
+  const model = {
+    ...PICKER[0],
+    legacySlugs: efforts.flatMap((e) => ["claude-opus-5-5-" + e, "claude-opus-5-5-" + e + "-fast"]),
+    variants: ["300k", "1m"].flatMap((context) => efforts.flatMap((effort) => ["false", "true"].map((fast) => v(
+      { context, effort, fast }, { isDefaultNonMaxConfig: context === "300k" && effort === "medium" && fast === "false", isMaxMode: context === "1m" || fast === "true" },
+    )))),
+  }
+  fakeAPI([model], model.legacySlugs)
+  let raw = await usable(tok())
+  for (const effort of efforts) {
+    expect(request(raw, "claude-opus-5-5-xhigh", effort, false).id).toBe("claude-opus-5-5-" + effort)
+    const large = request(raw, "claude-opus-5-5@1m", effort, true)
+    expect(large.id).toBe("claude-opus-5-5-" + effort + "-fast")
+    expect(large.maxMode).toBe(true)
+    expect(Object.fromEntries(large.params.map((p) => [p.id, p.value]))).toEqual({ context: "1m", effort, fast: "true" })
+  }
+  fakeAPI([model], ["claude-opus-5-5-high"])
+  raw = await usable(tok())
+  expect(raw[0].levels).toEqual({ high: "high" })
+  expect(request(raw, "claude-opus-5-5@300k", "low", false).id).toBe("claude-opus-5-5-high")
+  fakeAPI([{ ...model, legacySlugs: ["some-unrelated-high"] }])
+  expect(request(await usable(tok()), "claude-opus-5-5@300k", "high", false).id).toBe("claude-opus-5-5")
+})
+
 // what 0.1.11 listed for this picker, each family of the variants' ids one
 // model (offered() there, given the legacySlugs above as the usable list):
 // claude-opus-5-5, claude-opus-5-5-fast, claude-haiku-5-5-thinking,

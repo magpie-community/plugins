@@ -188,7 +188,9 @@ minutes), the way pi-cursor-sdk lists Cursor's catalog:
   when that variant is Max Mode's (a 1M size, say), as the CLI turns it on.
   A size with no variant goes in Max Mode when it is over Cursor's limit
   outside it. A model Cursor still answers "Max Mode Required" for is asked
-  again in Max Mode, and so from then on.
+  again in Max Mode, and so from then on. Expanded variants without their
+  own `legacySlug` are matched to the model's supplied `legacySlugs` by
+  effort, thinking and fast; ids absent from that list are never invented.
 - Hidden, Tab-only and chat-only models stay out, as in the CLI's picker.
 - The usable list (`AgentService/GetUsableModels`, what `cursor-agent
   models` shows) says which variants the account has: a variant whose own
@@ -205,6 +207,30 @@ minutes), the way pi-cursor-sdk lists Cursor's catalog:
   Each is at the default context size, the request's `reasoning_effort`
   and `service_tier` counting as for a listed model. The list doesn't show
   these ids: pick the `@<size>` model for a window that is the model's.
+
+### Expanded model catalog (optional)
+
+In magpie, open the Cursor provider, enable **Include hidden models** under
+**Plugin options**, save, and refresh the model list. It is off by default.
+The equivalent in magpie's `settings.json` is:
+
+```json
+{"pluginOptions": {"cursor": {"include_hidden_models": true}}}
+```
+
+When enabled, the ordinary picker is merged with an additional
+`AvailableModels` request using `includeHiddenModels: true, scope: 3`.
+This can recover Claude and other families omitted from the ordinary
+response. Ordinary entries take precedence, preserving Auto Intelligence
+(`auto-smart`); an unavailable expanded scope leaves the ordinary catalog
+intact. Models explicitly marked hidden, Tab-only or chat-only remain
+filtered, and the account's usable-variant checks still apply. Listing a
+model does not grant access to it.
+
+The option is read for each discovery and inference request. Each mode
+has its own 10-minute cache, so toggling it does not reuse the other
+mode's list. No restart or new sign-in is needed. In OpenCode, which does
+not supply magpie's plugin options, discovery uses the ordinary picker.
 
 ## Usage
 

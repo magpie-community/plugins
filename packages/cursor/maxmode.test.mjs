@@ -137,6 +137,50 @@ test("a request goes as the picker's model, with the size's parameters, in Max M
   expect(runs).toEqual([{ model: "composer-2.5", detailsMax: 0, requested: "composer-2.5", requestedMax: 0, params: [] }])
 })
 
+test("the hidden-model option applies to discovery and an already loaded fetch without mixing caches", async () => {
+  fakeAPI()
+  const ordinary = globalThis.fetch
+  const expanded = {
+    ...PICKER[0],
+    legacySlugs: ["claude-opus-5-5-medium", "claude-opus-5-5-high"],
+    variants: [
+      ...PICKER[0].variants.map(({ legacySlug, ...variant }) => variant),
+      v({ context: "300k", effort: "high" }),
+    ],
+  }
+  const calls = []
+  globalThis.fetch = (url, init) => {
+    if (!String(url).endsWith("/aiserver.v1.AiService/AvailableModels")) return ordinary(url, init)
+    const body = JSON.parse(init.body)
+    calls.push(body)
+    return Promise.resolve(Response.json({ models: body.scope === 3 ? [expanded] : PICKER.slice(1) }))
+  }
+  let enabled = false
+  const hooks = await CursorAuthPlugin({ magpie: { option: (provider, key) => {
+    expect([provider, key]).toEqual(["cursor", "include_hidden_models"])
+    return enabled
+  } } })
+  expect(hooks.auth.options.map((o) => o.key)).toContain("include_hidden_models")
+  const auth = fresh()
+  const loader = await hooks.auth.loader(async () => auth)
+  const list = () => hooks.provider.models({ models: {} }, { auth })
+  expect((await list())["claude-opus-5-5@300k"]).toBeUndefined()
+  enabled = true
+  runs.length = 0
+  const res = await loader.fetch(base + "/v1/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ model: "claude-opus-5-5-medium", reasoning_effort: "high", messages: [{ role: "user", content: "hello" }] }),
+  })
+  expect(res.status).toBe(200)
+  expect((await res.json()).choices[0].message.content).toBe("hi")
+  expect(runs).toEqual([{ model: "claude-opus-5-5-high", detailsMax: 0, requested: "claude-opus-5-5-high", requestedMax: 0, params: [["context", "300k"], ["effort", "high"]] }])
+  expect((await list())["claude-opus-5-5@300k"]).toBeDefined()
+  enabled = false
+  expect((await list())["claude-opus-5-5@300k"]).toBeUndefined()
+  expect(calls).toHaveLength(3)
+  expect(calls.filter((c) => c.includeHiddenModels && c.scope === 3)).toHaveLength(1)
+})
+
 test("a model Cursor says needs Max Mode is asked again in Max Mode, and so from then on", async () => {
   fakeAPI()
   const auth = fresh()

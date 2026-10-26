@@ -729,7 +729,19 @@ function effortsOf(defs) {
 // but medium, say). A model the usable list has nothing of is the picker's
 // alone (GLM-5.3), and is kept whole.
 function served(m, ids) {
-  const vs = m.variants ?? []
+  // Expanded rows can name a variant only in the model's legacySlugs.
+  const vs = (m.variants ?? []).map((v) => {
+    if (v.legacySlug || !m.legacySlugs?.length) return v
+    const p = valuesOf(v)
+    const level = EFFORT_PARAMS.map((k) => p[k]).find(Boolean) ?? ""
+    const effort = level === "extra-high" ? "xhigh" : level
+    const family = m.name + (p.thinking === "true" ? "-thinking" : "") + (p.fast === "true" ? "-fast" : "")
+    const legacySlug = m.legacySlugs.find((id) => {
+      const [base, at] = splitID(id)
+      return base === family && at === effort
+    })
+    return legacySlug ? { ...v, legacySlug } : v
+  })
   if (!ids) return vs
   const got = vs.filter((v) => !v.legacySlug || ids.has(v.legacySlug))
   return got.some((v) => v.legacySlug) ? got : vs
@@ -868,18 +880,22 @@ function fitEffort(want, levels) {
   return best
 }
 
-// usable is the account's list, kept a while, by token: Cursor's picker,
+// usable is the account's list, kept a while, by token and mode: Cursor's picker,
 // less the variants the usable list (AgentService/GetUsableModels, what
-// cursor-agent models shows) says the account hasn't got. A picker Cursor
+// cursor-agent models shows) says the account hasn't got. The opt-in expanded
+// scope restores omitted families; the ordinary picker keeps auto-smart.
+// An unavailable expanded scope leaves the ordinary list alone. A picker Cursor
 // can't give is a failure: magpie keeps the list it had. A usable list it
 // can't give leaves the picker as it is.
 const lists = new Map()
-async function usable(tok) {
-  const h = createHash("sha256").update(tok).digest("hex")
+async function usable(tok, includeHidden = false) {
+  const h = createHash("sha256").update(tok).digest("hex") + ":" + includeHidden
   const had = lists.get(h)
   if (had && Date.now() - had.at < MODELS_KEEP) return had.raw
-  const [j, ids] = await Promise.all([
-    unary(API, "aiserver.v1.AiService/AvailableModels", tok, { useModelParameters: true, doNotUseMarkdown: true }, 30_000),
+  const body = { useModelParameters: true, doNotUseMarkdown: true }
+  const [j, all, ids] = await Promise.all([
+    unary(API, "aiserver.v1.AiService/AvailableModels", tok, body, 30_000),
+    includeHidden ? unary(API, "aiserver.v1.AiService/AvailableModels", tok, { ...body, includeHiddenModels: true, scope: 3 }, 30_000).catch(() => null) : null,
     unary(API, "agent.v1.AgentService/GetUsableModels", tok, {}, 8_000).then(
       (u) => {
         const ids = new Set((u?.models ?? []).flatMap((m) => [m.modelId, m.displayModelId]).filter(Boolean))
@@ -888,7 +904,9 @@ async function usable(tok) {
       () => null,
     ),
   ])
-  const raw = modelsOf(Array.isArray(j?.models) ? j.models : [], ids)
+  const picker = new Map((Array.isArray(j?.models) ? j.models : []).filter((m) => m?.name).map((m) => [m.name, m]))
+  for (const m of Array.isArray(all?.models) ? all.models : []) if (m?.name && !picker.has(m.name)) picker.set(m.name, m)
+  const raw = modelsOf([...picker.values()], ids)
   if (!raw.length) throw new Error("Cursor listed no models")
   lists.set(h, { at: Date.now(), raw })
   return raw
@@ -2690,7 +2708,7 @@ function kept(res) {
 }
 
 // answer runs a chat completion on Cursor, the account kept (errorResponse).
-const answer = async (auth, chat, signal, session) => kept(await answerOf(auth, chat, signal, session))
+const answer = async (auth, chat, signal, session, includeHidden) => kept(await answerOf(auth, chat, signal, session, includeHidden))
 
 // maxOnly are the ids Cursor said it serves in Max Mode only.
 const maxOnly = new Set()
@@ -2702,7 +2720,7 @@ const maxRequired = (msg) => /max[ _]mode[ _]required|requires max mode/i.test(S
 
 // answerOf runs a chat completion on Cursor and answers it as one, streamed
 // or not.
-async function answerOf(auth, chat, signal, session = "") {
+async function answerOf(auth, chat, signal, session = "", includeHidden = false) {
   let tok
   try {
     tok = await tokenOf(auth)
@@ -2720,7 +2738,7 @@ async function answerOf(auth, chat, signal, session = "") {
   if (!r) {
     let raw = []
     try {
-      raw = await usable(tok)
+      raw = await usable(tok, includeHidden)
     } catch {}
     // fast only when asked: a service_tier of priority or fast is on; any
     // other tier, or none, is off, unless the id is a fast one of Cursor's own
@@ -2860,10 +2878,18 @@ async function answerOf(auth, chat, signal, session = "") {
 
 // ---- the plugin ---------------------------------------------------------------------------
 
-export async function CursorAuthPlugin() {
+export async function CursorAuthPlugin({ magpie } = {}) {
+  const includeHidden = () => magpie?.option?.(ID, "include_hidden_models") === true
   return {
     auth: {
       provider: ID,
+      options: [
+        {
+          key: "include_hidden_models",
+          label: "Include hidden models",
+          description: "Adds models from Cursor's expanded catalog when the ordinary picker omits them. Refresh models after changing this option. Account access and model filters still apply.",
+        },
+      ],
       async loader(getAuth) {
         const auth = await getAuth()
         if (!auth || (auth.type !== "oauth" && auth.type !== "api")) return {}
@@ -2884,7 +2910,7 @@ export async function CursorAuthPlugin() {
               return errorResponse({ status: 400, message: "a request that isn't JSON" })
             }
             const session = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined)).get(SESSION) ?? ""
-            return answer((await getAuth()) ?? auth, chat, init.signal ?? (input instanceof Request ? input.signal : undefined), session)
+            return answer((await getAuth()) ?? auth, chat, init.signal ?? (input instanceof Request ? input.signal : undefined), session, includeHidden())
           },
         }
       },
@@ -2945,7 +2971,7 @@ export async function CursorAuthPlugin() {
         // a list Cursor couldn't give is a failure, not the few models
         // configured: magpie keeps the list it had
         const tok = await tokenOf(auth)
-        return Object.fromEntries((await usable(tok)).map((m) => [m.id, runtimeModel(m)]))
+        return Object.fromEntries((await usable(tok, includeHidden())).map((m) => [m.id, runtimeModel(m)]))
       },
     },
   }
