@@ -326,7 +326,7 @@ test("usage returns the fallback plan for an invalid accountId (no API call)", a
   assert.equal(apiCalled, "", "no /accounts/ request was made");
 });
 
-function usageOpts(graphqlResponder) {
+function usageOpts(graphqlResponder, plan = "Workers Free") {
   const seen = [];
   const o = opts();
   o.fetchImpl = async (url, init) => {
@@ -337,7 +337,7 @@ function usageOpts(graphqlResponder) {
       seen.push({ url, init, body: JSON.parse(init?.body ?? "{}") });
       return graphqlResponder();
     }
-    return new Response(JSON.stringify({ result: { plan: { name: "Workers Free" } } }), { status: 200 });
+    return new Response(JSON.stringify({ result: { plan: { name: plan } } }), { status: 200 });
   };
   return { o, seen };
 }
@@ -345,7 +345,7 @@ function usageOpts(graphqlResponder) {
 test("usage sums today's totalNeurons from GraphQL Analytics into amount", async () => {
   const { o, seen } = usageOpts(() =>
     new Response(JSON.stringify({
-      result: {
+      data: {
         viewer: {
           accounts: [{
             aiInferenceAdaptiveGroups: [
@@ -368,7 +368,8 @@ test("usage sums today's totalNeurons from GraphQL Analytics into amount", async
   assert.equal(w.amount, 10462, "bucket sums must land in amount");
   assert.equal(w.limit, 10000);
   assert.equal(w.used, 100, "over the limit clamps to 100% used, which the router benches on");
-  assert.match(w.display, /10,462 Neurons used today/);
+  assert.equal(w.aside, false, "a confirmed Free plan stops routing at its daily limit");
+  assert.equal(w.display, "", "known usage uses magpie's count and Used / Left toggle");
   const call = seen[0];
   assert.ok(call, "GraphQL Analytics endpoint was queried");
   assert.equal(new URL(call.url).pathname, "/client/v4/graphql");
@@ -380,6 +381,14 @@ test("usage sums today's totalNeurons from GraphQL Analytics into amount", async
     "window starts at today's UTC midnight"
   );
   assert.ok(call.body.query.includes(`accountTag: "${ACCOUNT_ID}"`));
+});
+
+test("usage does not order an aggregate by an unselected dimension", async () => {
+  const { o, seen } = usageOpts(() => new Response(JSON.stringify({ data: null, errors: [] })));
+  const plugin = await CloudflareWorkersAIPlugin({}, o);
+  await plugin.auth.usage(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+  assert.doesNotMatch(seen[0].body.query, /orderBy:/,
+    "Cloudflare rejects datetimeHour ordering when the query selects only sum.totalNeurons");
 });
 
 test("usage keeps amount null when the token lacks Analytics scope", async () => {
@@ -404,19 +413,20 @@ test("usage treats a GraphQL error payload as unknown, and an empty day as zero"
 
   const emptyDay = usageOpts(() =>
     new Response(JSON.stringify({
-      result: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [] }] } },
+      data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [] }] } },
     }), { status: 200 })
   );
   const p2 = await CloudflareWorkersAIPlugin({}, emptyDay.o);
   const u2 = await p2.auth.usage(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
   assert.equal(u2.windows[0].amount, 0, "an empty bucket list is a real zero");
-  assert.match(u2.windows[0].display, /0 Neurons used today/);
+  assert.equal(u2.windows[0].used, 0, "an unused day is a numeric reading, not a text-only row");
+  assert.equal(u2.windows[0].display, "");
 });
 
 test("a full window does not bench an account whose plan is unknown", async () => {
   // GET /accounts/{id} names no plan for this token, and the day is spent:
-  // the card gets the amount, but the router must not hear a `used`
-  // percent — past the allowance a Paid account is billed, not refused.
+  // the card gets a percentage, but the window is set aside from routing:
+  // past the allowance a Paid account is billed, not refused.
   const o = opts();
   o.fetchImpl = async (url, init) => {
     if (typeof url === "string" && url.includes("models.dev")) {
@@ -424,7 +434,7 @@ test("a full window does not bench an account whose plan is unknown", async () =
     }
     if (typeof url === "string" && url.endsWith("/graphql")) {
       return new Response(JSON.stringify({
-        result: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 10462 } }] }] } },
+        data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 10462 } }] }] } },
       }), { status: 200 });
     }
     return new Response(JSON.stringify({ result: {} }), { status: 200 }); // no plan in the answer
@@ -434,7 +444,22 @@ test("a full window does not bench an account whose plan is unknown", async () =
   assert.equal(u.plan, "Workers Free / Paid (confirm in the dashboard)");
   const w = u.windows[0];
   assert.equal(w.amount, 10462, "the card still sees the real usage");
-  assert.equal("used" in w, false, "an unknown plan must not report a router-benching used percent");
+  assert.equal(w.used, 100, "the card can switch between Used and Left");
+  assert.equal(w.aside, true, "an unknown plan must not be benched on its free allowance");
+  assert.equal(w.display, "");
+});
+
+test("Paid plan shows the free allowance percentage without stopping paid usage", async () => {
+  const { o } = usageOpts(() => new Response(JSON.stringify({
+    data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 23821.83 } }] }] } },
+  })), "Workers Paid");
+  const plugin = await CloudflareWorkersAIPlugin({}, o);
+  const { windows: [w] } = await plugin.auth.usage(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+  assert.equal(w.amount, 23821.83, "the count includes usage above the free allocation");
+  assert.equal(w.limit, 10000);
+  assert.equal(w.used, 100);
+  assert.equal(w.aside, true, "the included allowance is not a Paid plan's hard cap");
+  assert.equal(w.display, "");
 });
 
 function loaderOpts(statusResponder) {

@@ -380,10 +380,7 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
           return { plan: "Workers Free / Paid (confirm in the dashboard)", windows: [] };
         }
         let plan = "Workers Free / Paid (confirm in the dashboard)";
-        // Only an account the plan call really named Free may tell the
-        // router it is spent: past the 10,000 included Neurons a Paid
-        // account is billed, not refused, and GET /accounts/{id} carries
-        // no plan for most tokens, so "Free / Paid" here means unknown.
+        // Only a confirmed Free plan treats the included allowance as a hard cap.
         let planIsFree = false;
         try {
           const res = await fetchImpl(`https://api.cloudflare.com/client/v4/accounts/${acct}`, {
@@ -416,14 +413,14 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
                 'query { viewer { accounts(filter: {accountTag: "' + acct +
                 '"}) { aiInferenceAdaptiveGroups(limit: 100, filter: {datetimeHour_geq: "' +
                 new Date(nextMidnight.getTime() - DAY_MS).toISOString() + '", datetimeHour_lt: "' + nextMidnight.toISOString() +
-                '"}, orderBy: [datetimeHour_ASC]) { sum { totalNeurons } } } } }',
+                '"}) { sum { totalNeurons } } } } }',
             }),
             redirect: "error",
             signal: AbortSignal.timeout(15_000),
           });
           if (res.ok) {
             const info = await res.json();
-            const rows = info?.result?.viewer?.accounts?.[0]?.aiInferenceAdaptiveGroups;
+            const rows = info?.data?.viewer?.accounts?.[0]?.aiInferenceAdaptiveGroups;
             // An empty bucket list is a real zero (nothing ran today); a
             // missing list or an error payload means we could not read usage.
             if (Array.isArray(rows) && !info.errors?.length) {
@@ -441,22 +438,16 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
               span: DAY_S,
               resetsAt: nextMidnight.toISOString(),
               amount: used,
-              // magpie's router benches a channel on the window's `used`
-              // percent (amount is display-only there), so an exhausted
-              // Free account rests until resetsAt. Only a really-detected
-              // Free account may say it: a Paid one is billed past the
-              // allowance and keeps working, and its rest comes from the
-              // 429's Retry-After the loader sets, which Cloudflare only
-              // sends to accounts it actually refuses.
-              ...(planIsFree && used !== null
-                ? { used: Math.min(100, (100 * used) / FREE_ALLOCATION_NEURONS) }
+              // Aside keeps Paid/unknown plans routable while showing the free allowance.
+              ...(used !== null
+                ? { used: Math.min(100, (100 * used) / FREE_ALLOCATION_NEURONS), aside: !planIsFree }
                 : {}),
               limit: FREE_ALLOCATION_NEURONS,
               unit: "neurons",
               display:
                 used === null
                   ? "≤10,000 Neurons/day; exact usage is on the Cloudflare dashboard (grant Account Analytics → Read to see it here)"
-                  : `≤10,000 Neurons/day free; ${Math.round(used).toLocaleString("en-US")} Neurons used today per Cloudflare Analytics`,
+                  : "",
             },
           ],
         };

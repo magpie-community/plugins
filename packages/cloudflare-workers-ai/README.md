@@ -25,6 +25,10 @@ No zones need to be selected on the token. Free and Paid plans both get
 **10,000 Neurons/day** free; eight frontier models need Workers Paid or prepaid
 AI Gateway credits (flagged below).
 
+The quota card shows the daily free allowance as a count and a Used / Left
+percentage, resetting at 00:00 UTC. Paid or unconfirmed plans keep this window
+informational; only a confirmed Free plan stops routing when it is spent.
+
 ## Install in magpie
 
 ```sh
@@ -129,7 +133,7 @@ https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
 
 ```sh
 node --check src/index.mjs       # parse guard (the upstream bug that started this fork)
-node --test                     # 18 tests, no network needed
+node --test                     # 23 tests, no network needed
 sh scripts/sandbox.sh login      # magpie 0.1.1326 in a throwaway HOME
 sh scripts/sandbox.sh test       # provider test inside that sandbox
 sh scripts/sandbox.sh json       # plugin --json inside that sandbox

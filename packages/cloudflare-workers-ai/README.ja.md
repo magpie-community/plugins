@@ -24,6 +24,9 @@
 トークンに Zone の選択は不要。Free/Paid 両プランに **1 日 10,000 Neurons** の無料枠が
 つき、8 つのフロンティアモデルだけ Workers Paid または AI Gateway クレジットが必要です（下記の目印）。
 
+クォータカードは毎日の無料枠を数値と使用済み／残りの切り替え可能な割合で表示し、UTC 00:00 にリセットします。
+Paid または未確認のプランでは表示のみで、Free と確認できたプランだけ無料枠を使い切るとルーティングを停止します。
+
 ## magpie へのインストール
 
 ```sh
@@ -122,7 +125,7 @@ https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
 
 ```sh
 node --check src/index.mjs       # パース検査（元リポジトリのバグ）
-node --test                     # 11 テスト、ネットワーク不要
+node --test                     # 23 テスト、ネットワーク不要
 sh scripts/sandbox.sh login      # magpie 0.1.1326 を使い捨て HOME で
 sh scripts/sandbox.sh test       # サンドボックス内で provider test
 sh scripts/sandbox.sh json       # サンドボックス内で plugin --json

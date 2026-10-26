@@ -23,6 +23,9 @@
 Token 不需要选择任何 Zone。Free 与 Paid 两个计划均含 **每日 10,000 Neurons** 免费额度；
 有 8 个前沿模型需要 Workers Paid 或 AI Gateway 预充值（下文有标注）。
 
+额度卡片以数值和可切换的已用／剩余百分比显示每日免费额度，每天 UTC 00:00 重置。
+付费或尚未确认的套餐仅展示这个窗口；只有确认是 Free 的套餐才会在免费额度耗尽后停止路由。
+
 ## 在 magpie 中安装
 
 ```sh
@@ -122,7 +125,7 @@ https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
 
 ```sh
 node --check src/index.mjs       # 语法防线（本 fork 起初修的核心 bug）
-node --test                      # 11 项测试，无需联网
+node --test                      # 23 项测试，无需联网
 sh scripts/sandbox.sh login      # 在一个用完即弃的 HOME 里跑 magpie
 sh scripts/sandbox.sh test       # 沙盒内 provider test
 sh scripts/sandbox.sh json       # 沙盒内 plugin --json
