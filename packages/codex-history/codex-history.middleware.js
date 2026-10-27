@@ -123,3 +123,126 @@ export function onRequest(body, ctx) {
       'Codex history filter: ' + (error instanceof FilterError ? error.message : 'history could not be safely filtered.'));
   }
 }
+
+// Some strict OpenAI-compatible upstreams require a tool schema whose root is
+// an object. Codex's automation_update uses a root union, so providers can opt
+// into folding that declaration. The hook runs per provider try, which is
+// important for groups and fallbacks: only one candidate's attempt changes.
+function schemaMap(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+function hasRootUnion(schema) {
+  return Object.hasOwn(schema, 'anyOf') || Object.hasOwn(schema, 'oneOf') || Object.hasOwn(schema, 'allOf');
+}
+function resolveSchemaRef(root, branch) {
+  if (!schemaMap(branch) || typeof branch.$ref !== 'string') return branch;
+  for (const section of ['$defs', 'definitions']) {
+    const prefix = '#/' + section + '/';
+    if (!branch.$ref.startsWith(prefix)) continue;
+    const found = root?.[section]?.[branch.$ref.slice(prefix.length)];
+    return schemaMap(found) ? found : null;
+  }
+  return null;
+}
+function appendDistinct(values, value) {
+  const key = JSON.stringify(value);
+  if (!values.some(existing => JSON.stringify(existing) === key)) values.push(value);
+}
+function objectRootIn(root, schema, depth) {
+  if (!schemaMap(schema)) return false;
+  if (schema.type === 'object' && !hasRootUnion(schema)) return false;
+  const props = schemaMap(schema.properties) ? {...schema.properties} : {};
+  const required = Array.isArray(schema.required) ? [...schema.required] : [];
+  if (Array.isArray(schema.allOf)) {
+    for (const raw of schema.allOf) {
+      const branch = resolveSchemaRef(root, raw);
+      if (!schemaMap(branch)) continue;
+      if (schemaMap(branch.properties)) {
+        for (const key of Object.keys(branch.properties)) {
+          if (!Object.hasOwn(props, key)) props[key] = branch.properties[key];
+        }
+      }
+      if (Array.isArray(branch.required)) required.push(...branch.required);
+    }
+  }
+  delete schema.allOf;
+  const branches = [];
+  for (const key of ['anyOf', 'oneOf']) {
+    if (!Array.isArray(schema[key])) continue;
+    for (const raw of schema[key]) {
+      let branch = resolveSchemaRef(root, raw);
+      if (!schemaMap(branch)) continue;
+      if (hasRootUnion(branch) && depth < 8) {
+        branch = JSON.parse(JSON.stringify(branch));
+        objectRootIn(root, branch, depth + 1);
+      }
+      if (branch.type !== 'object' && !Object.hasOwn(branch, 'properties')) continue;
+      branches.push(branch);
+    }
+    delete schema[key];
+  }
+  const from = new Map();
+  let common = null;
+  for (const branch of branches) {
+    if (schemaMap(branch.properties)) {
+      for (const [key, value] of Object.entries(branch.properties)) {
+        if (Object.hasOwn(props, key)) continue;
+        if (!from.has(key)) from.set(key, []);
+        appendDistinct(from.get(key), value);
+      }
+    }
+    const branchRequired = Array.isArray(branch.required) ? branch.required : [];
+    common = common === null ? [...branchRequired] : common.filter(name => branchRequired.includes(name));
+  }
+  for (const [key, variants] of from) props[key] = variants.length === 1 ? variants[0] : {anyOf: variants};
+  const merged = [];
+  for (const name of [...required, ...(common || [])]) {
+    if (!merged.some(existing => JSON.stringify(existing) === JSON.stringify(name))) merged.push(name);
+  }
+  schema.type = 'object';
+  schema.properties = props;
+  if (merged.length) schema.required = merged;
+  else delete schema.required;
+  return true;
+}
+function collectCompatibility(tools, found) {
+  if (!Array.isArray(tools)) return;
+  for (const tool of tools) {
+    if (!schemaMap(tool)) continue;
+    const target = schemaMap(tool.function) ? tool.function : tool;
+    const name = target.name || tool.name;
+    if (typeof name === 'string' && /automation_update$/i.test(name)) {
+      for (const key of ['parameters', 'input_schema', 'inputSchema']) {
+        if (schemaMap(target[key])) found.push(target[key]);
+      }
+    }
+    collectCompatibility(tool.tools, found);
+  }
+}
+
+// Magpie chooses this rule by the provider actually being tried. It is kept
+// independent of historyFilter so users can disable history cleanup while
+// retaining the strict DeepSeek wire compatibility.
+export function onProvider(body, ctx) {
+  const provider = ctx?.provider;
+  if (!body || typeof provider?.id !== 'string') return;
+  const model = (typeof provider.model === 'string' ? provider.model : body.model) || '';
+  if (!/^deepseek(?:[-/]|$)/i.test(model)) return;
+  const options = ctx.options || {};
+  const aliases = options.aliases || {};
+  const id = Object.prototype.hasOwnProperty.call(aliases, provider.id) ? aliases[provider.id] : provider.id;
+  const rule = (options.providers || {})['magpie:' + id];
+  if (rule?.deepSeekObjectRoot !== true) return;
+  const compatibility = [];
+  collectCompatibility(body.tools, compatibility);
+  if (Array.isArray(body.input)) {
+    for (const item of body.input) {
+      if (item?.type === 'tool_search_output' || item?.type === 'additional_tools') {
+        collectCompatibility(item.tools, compatibility);
+      }
+    }
+  }
+  let changed = false;
+  for (const schema of compatibility) if (objectRootIn(schema, schema, 0)) changed = true;
+  return changed ? body : undefined;
+}

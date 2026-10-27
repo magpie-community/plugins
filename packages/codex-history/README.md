@@ -25,11 +25,13 @@ magpie plugin add @magpie-community/middleware-codex-history
   "providers": {
     "magpie:demo": {
       "historyFilter": true,
-      "preserveEncryptedInclude": true
+      "preserveEncryptedInclude": true,
+      "deepSeekObjectRoot": false
     },
-    "magpie:backup": {
-      "historyFilter": false,
-      "preserveEncryptedInclude": true
+    "magpie:deepseek": {
+      "historyFilter": true,
+      "preserveEncryptedInclude": true,
+      "deepSeekObjectRoot": true
     }
   },
   "aliases": {}
@@ -39,6 +41,7 @@ magpie plugin add @magpie-community/middleware-codex-history
 - 请求模型为 `demo/gpt-6-astra` 时，使用 `magpie:demo` 的规则；ID 是模型前缀，不是供应商显示名称。
 - `historyFilter: true` 开启过滤；`false`、删除该规则或空配置均为直通。不同会话按各自请求独立处理，可同时过滤多个供应商。
 - `preserveEncryptedInclude: true` 保留客户端对**新响应**中 `reasoning.encrypted_content` 的请求，推荐开启。它不会保留**旧历史**中的密文。省略或设置为 `false` 会移除这一 include 值，不影响其他 include 项。
+- `deepSeekObjectRoot: true` 仅用于对应上游实际为 DeepSeek 的供应商：当供应商严格拒绝 `automation_update` 的根联合类型时，将 Schema 折叠为对象。它独立于历史过滤，默认关闭；只修改该候选供应商本次尝试，不会影响路由组其他成员。顶层、`tool_search_output` 和 `additional_tools` 中的当前及续聊定义都会检查，工具调用结果正文保持不变。
 - 供应商改名后，旧会话可能仍发送旧前缀；可设置 `"aliases": {"old-demo": "demo"}`。别名只用于选择过滤规则，不改写请求模型，也不替代 Magpie 自己的路由别名。
 - 无 `供应商/模型` 前缀或非 Responses 协议的请求保持原样。未配置的供应商不会被自动过滤。
 
@@ -49,6 +52,8 @@ magpie plugin add @magpie-community/middleware-codex-history
 开启后，插件移除旧 reasoning 条目、明确标记的加密内容，以及可独立携带内容的消息和工具条目中的可选服务器 ID；设置 `store: false`。保留正文、工具参数、结果、`call_id` 配对、文件引用及普通业务 ID，不改变请求模型或推理强度。
 
 **v0.1.1：历史搜索兼容修复。** 原生 `web_search_call` 可能依赖已删除的 reasoning，导致上游提示 `was provided without its required reasoning item`。开启过滤后，历史搜索条目转为带标记的助手文字，保留已记录的动作、查询、状态和来源数据，去除服务器条目 ID 与内部回合元数据；后续结论、引用及普通工具调用配对保持原样。不重新搜索、不补造未记录的结果。该处理适用于携带明文历史的普通对话和文字总结，不解密压缩历史。
+
+**v0.1.2：DeepSeek 工具 Schema 兼容。** 部分严格上游要求工具 Schema 根节点为对象，而 Codex 的 `automation_update` 使用根联合类型。按供应商开启 `deepSeekObjectRoot` 后，插件在 Magpie 的每次候选供应商尝试中折叠该 Schema，同步修复续聊历史里的 `tool_search_output` 与 `additional_tools`，保留 `call_id`、工具结果和其他业务数据。该选项默认关闭，其他供应商和未开启规则保持原样。
 
 `previous_response_id`、`conversation`、`item_reference`、加密压缩历史和 `/responses/compact` 无法安全跨资源迁移时，会明确拒绝，提示整理文字摘要后新建会话，不会静默丢弃这些上下文。
 
@@ -75,6 +80,8 @@ Install from **Plugins → Discover → Gateway middleware**, or run `magpie plu
 Unsafe server-only references and encrypted compaction are rejected explicitly. Magpie may fail open on plugin errors/timeouts, and downstream route changes are outside the plugin's control. Disable or remove it in Magpie; it never edits Codex configuration.
 
 Version 0.1.1 converts historical native `web_search_call` items to labeled assistant text after removing old reasoning. Recorded actions, queries, status and sources remain available; native item IDs and internal turn metadata are removed. Subsequent answers and ordinary tool-call pairs remain intact. No searches are rerun, absent results are not reconstructed, and encrypted compaction is not decrypted. The community package contains only the middleware; the optional model workbench is maintained separately for local use.
+
+Version 0.1.2 adds an independent, opt-in `deepSeekObjectRoot` provider rule. It folds `automation_update`'s root union into an object for a strict DeepSeek upstream, including declarations restored by resumed and Lite sessions from `tool_search_output` and `additional_tools`. It runs per candidate provider attempt, keeps `call_id` and ordinary tool results, and stays off for every provider by default.
 
 ## 开发与来源
 
