@@ -22,8 +22,19 @@ output limits come from [River's docs](https://docs.river.ai/guides/inference-mo
 prices from [River's public pricing endpoint](https://console.river.ai/api/public/pricing)
 (the same rates billing uses), and the documented reasoning efforts
 (`reasoning_effort`) from [API controls](https://docs.river.ai/guides/inference-controls/):
-DeepSeek-V4.1-Flash takes `none`/`high`/`max`, GLM-5.3-Flash `low`/`high`/`max`.
-Every inference model takes text and image input and streams, reasons and calls tools.
+
+| Model | Efforts |
+| --- | --- |
+| DeepSeek-V4.1-Flash(-1017) | `none` / `low` / `high` / `max` |
+| Kimi-K3 | `none` / `max` |
+| Nemotron-3.5-Super-VL | `none` / `high` |
+| GLM-5.3-Flash | `low` / `high` / `max` (reasoning required) |
+| Qwen3.8-27B-FP8 | `none` / `low` / `medium` / `xhigh` |
+
+Every inference model streams, reasons and calls tools. Image input is limited to
+the models the docs list for it (Kimi-K3, DeepSeek ×2, Nemotron, GLM-5.3-Flash,
+Qwen3.8-27B-FP8); GLM-5.3 is text-only, and a model the docs don't list yet
+defaults to text-only rather than being assumed to see images.
 
 ## Usage
 

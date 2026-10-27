@@ -15,7 +15,9 @@ const PRICING_TTL = 6 * 60 * 60 * 1000
 // Documented per-model limits, from docs.river.ai/guides/inference-models.
 // Models River serves beyond this table keep unknown limits (0) until the
 // docs list them; costs still come from River's public pricing endpoint.
+// GLM-5.3 (text only) has no id here yet: docs list it, no key we saw does.
 const LIMITS = {
+  "moonshotai/Kimi-K3": { context: 1048576, output: 32768 },
   "deepseek-ai/DeepSeek-V4.1-Flash": { context: 1048576, output: 384000 },
   "deepseek-ai/DeepSeek-V4.1-Flash-1017": { context: 1048576, output: 384000 },
   "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4": { context: 1048576, output: 131072 },
@@ -23,18 +25,35 @@ const LIMITS = {
   "Qwen/Qwen3.8-27B-FP8": { context: 262144, output: 262143 },
 }
 
+// Models River documents as taking image input (docs.river.ai/guides/
+// inference-models). Everything else is text-only — GLM-5.3 (text only) is
+// documented as such — and an id the docs don't list yet defaults to
+// text-only too, so a new model is never sent what it can't read.
+const IMAGES = new Set([
+  "moonshotai/Kimi-K3",
+  "deepseek-ai/DeepSeek-V4.1-Flash",
+  "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+  "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+  "zai-org/GLM-5.3-Flash",
+  "Qwen/Qwen3.8-27B-FP8",
+])
+
 // Reasoning effort levels per model, from docs.river.ai/guides/inference-controls.
 // The keys are the levels agents pick; each variant's object is the options
 // OpenCode merges into the request ({ reasoningEffort: e }), which magpie's
-// gateway sends as `reasoning_effort`. DeepSeek also takes "none" (off); GLM
-// requires reasoning, so it has none. The 1017 release is the same model
-// re-served, so it takes the same efforts. Nemotron, Qwen3.8 and Kimi-K3 have
-// no documented effort control.
+// gateway sends as `reasoning_effort`. Only levels the standard field takes
+// are listed: Kimi-K3's low/high/max tiers and Nemotron's medium_effort go
+// through chat_template_kwargs instead. GLM requires reasoning (no "none");
+// Qwen3.8's top level is "xhigh". The 1017 release is the same model
+// re-served, so it takes the same efforts.
 const efforts = (...names) => Object.fromEntries(names.map((e) => [e, { reasoningEffort: e }]))
 const VARIANTS = {
-  "deepseek-ai/DeepSeek-V4.1-Flash": efforts("none", "high", "max"),
-  "deepseek-ai/DeepSeek-V4.1-Flash-1017": efforts("none", "high", "max"),
+  "moonshotai/Kimi-K3": efforts("none", "max"),
+  "deepseek-ai/DeepSeek-V4.1-Flash": efforts("none", "low", "high", "max"),
+  "deepseek-ai/DeepSeek-V4.1-Flash-1017": efforts("none", "low", "high", "max"),
+  "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4": efforts("none", "high"),
   "zai-org/GLM-5.3-Flash": efforts("low", "high", "max"),
+  "Qwen/Qwen3.8-27B-FP8": efforts("none", "low", "medium", "xhigh"),
 }
 
 // Costs at the time of writing, per million tokens in USD, from River's
@@ -49,23 +68,25 @@ const BOOT_PRICES = {
   "zai-org/GLM-5.3-Flash": { input: 0.12, cached_input: 0.024, output: 0.4 },
 }
 
-// Every model in River's inference list takes text and image input and
-// streams, reasons and calls tools (docs.river.ai/guides/inference-models).
-// The row carries the fields both readers use: the config hook reads the
-// top-level ones, the models hook reads the `capabilities` object.
+// Every model in River's inference list streams, reasons and calls tools;
+// image input is the IMAGES set's, everything else is text-only (docs.river.ai/
+// guides/inference-models). The row carries the fields both readers use: the
+// config hook reads the top-level ones, the models hook reads the
+// `capabilities` object.
 function row(id, name, cost, limit, variants) {
+  const image = IMAGES.has(id)
   return {
     id,
     name,
     limit: limit ?? { context: 0, output: 0 },
     reasoning: true,
     tool_call: true,
-    modalities: { input: ["text", "image"], output: ["text"] },
+    modalities: { input: image ? ["text", "image"] : ["text"], output: ["text"] },
     capabilities: {
       reasoning: true,
       toolcall: true,
-      attachment: true,
-      input: { text: true, image: true },
+      attachment: image,
+      input: { text: true, image },
       output: { text: true },
     },
     ...(variants ? { variants } : {}),
@@ -182,7 +203,13 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
       id: ID,
       async models(provider, { auth } = {}) {
         if (auth?.type !== "api" || !auth.key) return provider.models
-        const [res, prices] = await Promise.all([accountModels(fetchImpl, auth.key), livePricing(fetchImpl)])
+        let res, prices
+        try {
+          ;[res, prices] = await Promise.all([accountModels(fetchImpl, auth.key), livePricing(fetchImpl)])
+        } catch {
+          // A network failure keeps the previous list, like a non-2xx answer.
+          return provider.models
+        }
         if (res.status === 401 || res.status === 403) {
           throw Object.assign(new Error(`River refused this key (HTTP ${res.status}); sign in again`), { signIn: "expired" })
         }
@@ -191,13 +218,15 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
         try {
           body = await res.json()
         } catch {
-          return provider.models
+          throw new Error("River sent no model list")
         }
-        const ids = (Array.isArray(body?.data) ? body.data : [])
-          .map((m) => (typeof m?.id === "string" ? m.id : ""))
-          .filter(Boolean)
-        if (!ids.length) return provider.models
-        return rowsFor(ids, prices)
+        // A malformed answer keeps the previous list (the host marks it a
+        // fallback); an empty one is the account's list, as its key has no
+        // models, and replaces the bootstrap rows the way a live catalog does.
+        if (!Array.isArray(body?.data) || body.data.some((m) => typeof m?.id !== "string" || !m.id)) {
+          throw new Error("River sent no model list")
+        }
+        return rowsFor(body.data.map((m) => m.id), prices)
       },
     },
   }
