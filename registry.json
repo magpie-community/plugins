@@ -64,7 +64,7 @@
       "summary": { "en": "Claude Code and Claude Desktop on an Antigravity account: the words Antigravity refuses their system prompt for are broken up, in what Antigravity alone is sent.", "zh": "让 Claude Code 和 Claude Desktop 能用 Antigravity 账号：只在发给 Antigravity 的请求里拆开它据以拒绝系统提示词的那几个词。" } },
     { "package": "@magpie-community/middleware-codex-history", "name": "Codex History Filter", "kind": "middleware", "community": true,
       "summary": { "en": "Opt-in, per-provider Codex Responses history filtering after switching providers. Preserves readable content and tool-call pairing; no model probes.", "zh": "按供应商开关 Codex Responses 历史过滤，缓解切换上游后的密文和历史 ID 兼容问题；保留正文与工具配对，不运行模型检测。" } },
-    { "package": "@magpie-community/middleware-compress-core", "name": "compress-core", "kind": "middleware", "community": true,
+    { "package": "@magpie-community/middleware-compress-core", "name": "Compress Core", "kind": "middleware", "community": true,
       "summary": { "en": "Compress what every request sends: fifteen strategies over four presets, a page that puts the original next to the compressed body, and a snapshot of the last request so you can see what a rule actually changed.", "zh": "把每次请求要发的东西压小：15 个策略、四档预设，页面里并排给出原文与压缩后的请求体，并保存最近一次请求的快照，能看清是哪条规则动了什么。" } },
     { "package": "@magpie-community/agent-aider", "name": "Aider", "kind": "agent", "community": true,
       "summary": { "en": "Aider (aider.chat) on magpie's Agents page: pick one of magpie's models for it, and switch it off to put its config back.", "zh": "把 Aider（aider.chat）加到 magpie 的 Agent 页：给它选 magpie 的模型，关掉即恢复它原来的配置。" } },

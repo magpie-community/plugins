@@ -1,0 +1,23 @@
+{
+  "source": "https://github.com/cheaper-inference/OmniRoute",
+  "commit": "1ac00b05e2d507d416a3e9c4c278ab625ce1dbf2",
+  "version": "v3.8.53",
+  "license": "MIT",
+  "files": {
+    "open-sse/services/compression/lite.ts": {
+      "sha256": "0e857ed68a700e8000fa20cb7e3adddaf40c126149fe119024b4e4a2a8c317fd"
+    }
+  },
+  "changes": [
+    "Inlined the engine into one import-free middleware file that exports only onRequest.",
+    "Reads body.messages only. The protocol adapter that walks Chat, Anthropic, Responses and Gemini bodies is not ported, so a request without a messages array goes on unchanged instead of being rewritten segment by segment.",
+    "Dropped replaceImageUrls: which models take images is provider configuration, and its placeholders would only fire for some of them.",
+    "Dropped createCompressionStats and the telemetry that goes with it.",
+    "The four steps, their order, the word-boundary lookback of 80 characters and the [truncated] suffix are the engine's own. Four places differ on purpose, each because the engine's version drops or rewrites something the request needed:",
+    "A repeated system prompt is dropped only when its whole trimmed text is equal. The engine compares the first 200 trimmed characters, so a second system prompt that shares an opening — two rule sets, two agents — is dropped and the model never reads it.",
+    "A repeated message is dropped only when every field is equal, tool_calls and name included. The engine compares the content alone, so a second assistant message carrying different tool calls is dropped and the tool result answering it is left with no call, which an OpenAI-compatible upstream refuses with a 400.",
+    "All four steps leave the turn being sent alone — every message after the last assistant one. The engine skips that turn in the tool-result cut only, so its whitespace step rewrites a patch line, a Markdown hard line break or a trailing tab in the message about to go out. A history with no assistant message in it has no past the model has read: there this package touches nothing, while the engine treats every message as history to fold, dedupe and cut.",
+    "A cut steps back one unit when it lands between a high and a low surrogate. The engine's word-boundary back-off finds no space in emoji or CJK text, so it cuts a surrogate pair in half.",
+    "Options are read from ctx.options instead of a module-level configuration: maxToolLength, compressToolResults and preserveSystemPrompt."
+  ]
+}
