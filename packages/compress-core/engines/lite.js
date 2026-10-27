@@ -127,7 +127,7 @@ export function collapseWhitespace(body, options) {
 }
 
 // ---------------------------------------------------------------------------
-// 步骤2 dedupSystemPrompt（§5.6）— 键 = trim 后前 200 字符，全局去重
+// 步骤2 dedupSystemPrompt（§5.6）— 键 = 整段 trim 文本，历史内去重
 // ---------------------------------------------------------------------------
 
 export function dedupSystemPrompt(body, options) {
@@ -229,18 +229,12 @@ export function compressToolResults(body, options) {
   options = options || {}
   if (!body.messages) return { body, applied: false }
   const MAX_TOOL_LENGTH = resolveLiteMaxToolLength(options.maxToolLength)
-  // findLastIndex 的手写替代（ES2023 → 兼容旧沙箱）
-  let lastAssistant = -1
-  for (let i = body.messages.length - 1; i >= 0; i--) {
-    if (body.messages[i] && body.messages[i].role === "assistant") {
-      lastAssistant = i
-      break
-    }
-  }
-  const currentTurnStart = lastAssistant === -1 ? body.messages.length : lastAssistant + 1
+  // 传进来的 body 已经是「历史」——正在发送的那一轮由 applyLiteCompression 切走，
+  // 所以这里整段都可截。核算一次 turnStart 会把历史末尾那截（最后一个 assistant
+  // 之后）误判成当前轮而放过，试压台的 treatAllAsHistory 就因此少截一段。
   let applied = false
-  const messages = body.messages.map((msg, index) => {
-    if (index >= currentTurnStart) return msg
+  const messages = body.messages.map((msg) => {
+    if (!msg || typeof msg !== "object") return msg
     if (msg.role === "tool" && typeof msg.content === "string") {
       if (msg.content.length <= MAX_TOOL_LENGTH) return msg
       applied = true
@@ -270,12 +264,12 @@ export function removeRedundantContent(body, options) {
     }
     const prev = i > 0 ? body.messages[i - 1] : undefined
     // 整条消息每个字段都相等才算重复：只比 content 会误删「只有 tool_calls 不同」的两条。
+    // 与维护者合并版一致：不比 content 的类型，canonical 比的是全部字段，
+    // 两条数组 content 完全相同就是真的重复。
     if (
       i > 0 &&
       msg.role !== "tool" &&
       prev && prev.role === msg.role &&
-      typeof prev.content === "string" &&
-      typeof msg.content === "string" &&
       JSON.stringify(canonical(prev)) === JSON.stringify(canonical(msg))
     ) {
       applied = true
@@ -351,12 +345,22 @@ export function createCompressionStats(originalBody, compressedBody, mode, techn
 export function applyLiteCompression(body, options) {
   options = options || {}
   const originalBody = body
-  // 正在发送的这一轮原样不动（turnStart 语义）。没有 assistant 时整段都算当前轮，
-  // 所以「首轮请求」不会被改写。试压台的输入天生只有一条 user 消息，它属于当前轮，
-  // 因此 lab 用 treatAllAsHistory 明确声明「把这段输入当作历史」。
+  // 模型已经读过的那部分才改写：一条消息的字节一旦发出去，这次变换的结果就是它
+  // 永久的样子（折叠空白是幂等的），前缀因此只在它从「正在发送」变成「历史」的那
+  // 一轮变过一次，之后不再动。正在发送的这一轮原样送出——用户刚打的字不该被改。
+  //
+  // preserveCurrentTurn: false 关掉这道守卫，让每条消息从第一轮起就走同一套确定性
+  // 变换，做到严格的前缀稳定：缓存一次都不 miss。代价是正在发送的那一轮也会被改。
+  // 两种模式的取舍写在 README「缓存与前缀」。
   const messages = Array.isArray(body.messages) ? body.messages : null
   let historyLength = 0
-  if (messages) historyLength = options.treatAllAsHistory === true ? messages.length : turnStart(messages)
+  if (messages) {
+    if (options.preserveCurrentTurn !== false && options.treatAllAsHistory !== true) {
+      historyLength = turnStart(messages)
+    } else {
+      historyLength = messages.length
+    }
+  }
   const sending = messages ? messages.slice(historyLength) : null
   let current = messages ? { ...body, messages: messages.slice(0, historyLength) } : body
   const techniquesApplied = []
@@ -415,7 +419,10 @@ export function apply(body, ctx, cfg) {
     preserveSystemPrompt: cfg && cfg.preserveSystemPrompt === true,
     compressToolResults: !(cfg && cfg.compressToolResults === false),
     maxToolLength: cfg ? cfg.maxToolLength : undefined,
-    // 试压台专用：把输入整段当作历史（生产路径不设，正在发送的那一轮不动）。
+    // 模型已经读过的段才动，正在发送的这一轮原样送出（默认）。显式
+    // preserveCurrentTurn: false 时全量改写，追求严格前缀稳定。
+    preserveCurrentTurn: !(cfg && cfg.preserveCurrentTurn === false),
+    // 试压台专用：语义上等价于默认行为，保留是为了让旧的 lab 配置继续工作。
     treatAllAsHistory: !!(cfg && cfg.treatAllAsHistory === true),
     // supportsVision 默认按目标模型自动判定；配置可显式覆盖（true/false）
     supportsVision:
@@ -432,9 +439,21 @@ export function apply(body, ctx, cfg) {
   }
   const view = conversationView(body, ctx && ctx.protocol)
   if (!view) return false
+  // 没有 messages 数组的协议（responses / gemini）：规则与 messages 路径同一条——
+  // 模型已经读过的段才动，正在发送的这一轮原样送出。system 段（Responses 的
+  // `instructions`、Gemini 的 `systemInstruction`）永远跳过：折叠它等于每个请求
+  // 都重写一次声明，缓存前缀当场作废（PR #423 review 第 3 条点名过）。
+  const segments = view.segments
+  const lastAssistant = (() => {
+    let n = -1
+    for (const seg of segments) if (seg.role === "assistant" && seg.index > n) n = seg.index
+    return n
+  })()
   let changed = false
-  for (const seg of view.segments) {
-    if (opts.preserveSystemPrompt === true && seg.role === "system") continue
+  for (const seg of segments) {
+    // index < 0 是 system 级；index > lastAssistant 是当前轮。两头都不碰。
+    if (seg.index < 0) continue
+    if (opts.preserveCurrentTurn !== false && seg.index > lastAssistant) continue
     const next = normalizeMessageWhitespace(seg.text)
     if (next !== seg.text) {
       seg.set(next)

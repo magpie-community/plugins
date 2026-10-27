@@ -112,10 +112,22 @@ export async function run() {
     { role: "assistant", content: "a" },
     toolMsg(3000),
   ] }, { maxToolLength: 2000 })
-  check("18 最后assistant之后免疫", !r.applied && r.body.messages[1].content.length === 3000)
+  // 默认只动历史：最后一条 assistant 之后的消息（正在发送的这一轮）原样送出，
+  // 与 PR #423 合并进去的实现同一语义。preserveCurrentTurn: false 才整段都动。
+  check("18 纯函数整段可截", r.applied && r.body.messages[1].content.length < 3000)
+  const fullTurn = {
+    messages: [
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a" },
+      { role: "tool", content: big(3000) },
+    ],
+  }
+  check("18b 默认把正在发送的那一轮留下来", applyLiteCompression(fullTurn, { maxToolLength: 2000 }).compressed === false)
+  check(
+    "18c preserveCurrentTurn: false 时整段都可截",
+    applyLiteCompression(fullTurn, { maxToolLength: 2000, preserveCurrentTurn: false }).compressed === true,
+  )
   r = compressToolResults({ messages: [toolMsg(3000)] }, { maxToolLength: 2000 })
-  // 源码 lite.ts:202 — 无 assistant 时 currentTurnStart=messages.length，
-  // 即没有「当前轮保护区」，所有消息都可截（规格书 §8-19 注释写反，以源码公式为准）
   check("19 无assistant仍可截", r.applied && r.body.messages[0].content.includes("\n...[truncated]"))
   r = compressToolResults({ messages: [toolMsg(2000), { role: "assistant", content: "a" }] }, { maxToolLength: 2000 })
   check("20 恰等上限放行", !r.applied)
@@ -180,7 +192,7 @@ export async function run() {
     { role: "user", content: [{ type: "text", text: "same" }] },
     { role: "user", content: [{ type: "text", text: "same" }] },
   ] })
-  check("30 数组content不删", r.body.messages.length === 2 && !r.applied)
+  check("30 数组content相同也删（canonical 比全字段）", r.body.messages.length === 1 && r.applied)
   r = removeRedundantContent({ messages: [{ role: "user", content: "x" }] })
   check("31 i=0不删", r.body.messages.length === 1 && !r.applied)
   r = removeRedundantContent({ messages: [
@@ -317,5 +329,48 @@ export async function run() {
     ] }
     const changed2 = apply(body2, ctxFor("chat"), {})
     check("engine.apply 视觉模型保图", !changed2 && body2.messages[0].content[0].type === "image_url")
+  }
+
+  // ---- segments 路径：当前轮守卫与 system 段 ----
+  {
+    // 首轮（没有 assistant）：模型还没读过任何东西，整段原样
+    const first = {
+      model: "gpt-5",
+      instructions: "Be  terse.\n\n\n\nAlways.",
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hello\n\n\n\nworld" }] }],
+    }
+    check(
+      "53 segments 首轮原样",
+      apply(first, ctxFor("responses"), {}) === false && first.input[0].content[0].text === "hello\n\n\n\nworld",
+    )
+
+    // 有 assistant 之后：历史段折叠，instructions 与正在发送的这一轮不动
+    const body = {
+      model: "gpt-5",
+      instructions: "Be  terse.\n\n\n\nAlways.",
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "old\n\n\n\nturn" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "now\n\n\n\nthen" }] },
+      ],
+    }
+    const changed = apply(body, ctxFor("responses"), {})
+    check("54 segments 历史段折叠", changed && body.input[0].content[0].text === "old\n\nturn")
+    check("55 segments instructions 不动", body.instructions === "Be  terse.\n\n\n\nAlways.")
+    check("56 segments 当前轮不动", body.input[2].content[0].text === "now\n\n\n\nthen")
+
+    const gem = {
+      model: "gemini-2.5-pro",
+      systemInstruction: { parts: [{ text: "a\n\n\n\nb" }] },
+      contents: [
+        { role: "user", parts: [{ text: "old\n\n\n\nturn" }] },
+        { role: "model", parts: [{ text: "ok" }] },
+        { role: "user", parts: [{ text: "now\n\n\n\nthen" }] },
+      ],
+    }
+    const gemChanged = apply(gem, ctxFor("gemini"), {})
+    check("57 gemini 历史段折叠", gemChanged && gem.contents[0].parts[0].text === "old\n\nturn")
+    check("58 gemini system 段不动", gem.systemInstruction.parts[0].text === "a\n\n\n\nb")
+    check("59 gemini 当前轮不动", gem.contents[2].parts[0].text === "now\n\n\n\nthen")
   }
 }
