@@ -7,22 +7,25 @@
 //   {"compressToolResults": false}   leave every tool result whole
 //   {"preserveSystemPrompt": true}   keep system messages out of all four steps
 //
-// Only body.messages is read, so a Chat or Anthropic request; a request
+// Only body.messages is read, so a Chat or an Anthropic request; a request
 // without one (Responses, Gemini) goes on unchanged.
 //
-// The tool-result cut is the one step that loses words. It works on the
-// history only: messages after the last assistant turn, the turn being sent
-// now, are never cut. The other three steps drop only what is there twice.
+// The turn being sent now — every message after the last assistant one — is
+// left alone by all four steps. It is the history the model has not read yet,
+// and a patch, a Markdown hard break or a trailing tab in it means something.
+// The tool-result cut is the one step that loses words, and it works on the
+// history only. The other three drop only what is there twice: a system
+// message with the same trimmed text, and a message equal to the one before it
+// in every field, tool_calls and name included.
 //
 // 移植自 OmniRoute 的 lite 引擎（open-sse/services/compression/lite.ts），
-// 四步的顺序、阈值与边界回退逐条对应；未移植的两步见 PROVENANCE.json。
+// 四步的顺序、阈值与边界回退逐条对应；四处与它不同，见 PROVENANCE.json。
 
 const DEFAULT_MAX_TOOL_LENGTH = 2000
 const MIN_MAX_TOOL_LENGTH = 256
 const MAX_MAX_TOOL_LENGTH = 1000000
 const TOOL_TRUNCATION_LOOKBACK = 80
 const TRUNCATION_SUFFIX = "\n...[truncated]"
-const SYSTEM_DEDUP_KEY_CHARS = 200
 
 export function onRequest(body, ctx) {
   if (!body || typeof body !== "object") return
@@ -40,6 +43,16 @@ export function onRequest(body, ctx) {
   return { ...body, messages: next }
 }
 
+// The turn being sent starts after the last assistant message: findLastIndex,
+// written out. A history with no assistant message has no past at all — every
+// message in it is the turn being sent, and none of the four steps touch it.
+function turnStart(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i] && messages[i].role === "assistant") return i + 1
+  }
+  return 0
+}
+
 // ---------------------------------------------------------------------------
 // 1. whitespace: a run of three or more newlines becomes one blank line, and
 //    trailing spaces and tabs on a line go. Words are untouched.
@@ -50,8 +63,10 @@ function foldText(text) {
 }
 
 function foldWhitespace(messages, preserveSystemPrompt) {
+  const start = turnStart(messages)
   let changed = false
-  const out = messages.map((msg) => {
+  const out = messages.map((msg, index) => {
+    if (index >= start) return msg
     if (!msg || typeof msg !== "object") return msg
     if (preserveSystemPrompt && msg.role === "system") return msg
     if (typeof msg.content !== "string") return msg
@@ -64,22 +79,24 @@ function foldWhitespace(messages, preserveSystemPrompt) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. system: a second system message whose first 200 trimmed characters are
-//    the one already sent is the same prompt again, and goes.
+// 2. system: a second system message with the same trimmed text is the same
+//    prompt again, and goes. Two prompts that share an opening are two prompts.
 // ---------------------------------------------------------------------------
 
 function dropRepeatedSystemPrompts(messages, preserveSystemPrompt) {
   if (preserveSystemPrompt) return messages
+  const start = turnStart(messages)
   const seen = new Set()
   let changed = false
-  const out = messages.filter((msg) => {
+  const out = messages.filter((msg, index) => {
+    if (index >= start) return true
     if (!msg || msg.role !== "system" || typeof msg.content !== "string") return true
-    const key = msg.content.trim().slice(0, SYSTEM_DEDUP_KEY_CHARS)
-    if (seen.has(key)) {
+    const text = msg.content.trim()
+    if (seen.has(text)) {
       changed = true
       return false
     }
-    seen.add(key)
+    seen.add(text)
     return true
   })
   return changed ? out : messages
@@ -120,8 +137,26 @@ function backOffToWordBoundary(content, cutIndex) {
   return cutIndex
 }
 
+// A cut between a high and a low surrogate pair leaves half a character, which
+// is neither a word boundary nor valid text: emoji and CJK never offer a space
+// to back off to. Step back one unit instead.
+function isHighSurrogate(code) {
+  return code >= 0xd800 && code <= 0xdbff
+}
+
+function isLowSurrogate(code) {
+  return code >= 0xdc00 && code <= 0xdfff
+}
+
+function avoidSplitSurrogate(text, cutIndex) {
+  if (cutIndex <= 0 || cutIndex >= text.length) return cutIndex
+  return isHighSurrogate(text.charCodeAt(cutIndex - 1)) && isLowSurrogate(text.charCodeAt(cutIndex))
+    ? cutIndex - 1
+    : cutIndex
+}
+
 function cutText(text, maxLength) {
-  const cutIndex = backOffToWordBoundary(text, maxLength)
+  const cutIndex = avoidSplitSurrogate(text, backOffToWordBoundary(text, maxLength))
   return text.slice(0, cutIndex) + TRUNCATION_SUFFIX
 }
 
@@ -166,15 +201,7 @@ function resolveMaxToolLength(value) {
 }
 
 function cutToolResults(messages, maxLength) {
-  // findLastIndex, written out: the turn being sent starts after it.
-  let lastAssistant = -1
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i] && messages[i].role === "assistant") {
-      lastAssistant = i
-      break
-    }
-  }
-  const currentTurnStart = lastAssistant === -1 ? messages.length : lastAssistant + 1
+  const currentTurnStart = turnStart(messages)
   let changed = false
   const out = messages.map((msg, index) => {
     if (index >= currentTurnStart) return msg
@@ -192,11 +219,24 @@ function cutToolResults(messages, maxLength) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. a message whose content is character for character the one before it, in
-//    the same role, says nothing new and goes. Tool results are left alone.
+// 4. a message equal to the one before it — same role, and every other field
+//    the same too — says nothing new and goes. Comparing the content alone
+//    would merge two different tool calls, or two speakers with one line.
+//    Tool results are left alone.
 // ---------------------------------------------------------------------------
 
+// Every field counts, and key order does not: JSON.stringify alone would call
+// the same message different because a body wrote its keys in another order.
+function canonical(value) {
+  if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]"
+  if (value && typeof value === "object") {
+    return "{" + Object.keys(value).sort().map((k) => JSON.stringify(k) + ":" + canonical(value[k])).join(",") + "}"
+  }
+  return JSON.stringify(value) ?? "null"
+}
+
 function dropRepeatedMessages(messages, preserveSystemPrompt) {
+  const start = turnStart(messages)
   let changed = false
   const out = []
   for (let i = 0; i < messages.length; i++) {
@@ -205,20 +245,18 @@ function dropRepeatedMessages(messages, preserveSystemPrompt) {
       out.push(msg)
       continue
     }
-    if (preserveSystemPrompt && msg.role === "system") {
+    if (i >= start || (preserveSystemPrompt && msg.role === "system")) {
       out.push(msg)
       continue
     }
     const previous = i > 0 ? messages[i - 1] : undefined
-    const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content)
     if (
       i > 0 &&
       msg.role !== "tool" &&
       previous &&
       typeof previous === "object" &&
       previous.role === msg.role &&
-      typeof previous.content === "string" &&
-      previous.content === text
+      canonical(previous) === canonical(msg)
     ) {
       changed = true
       continue
