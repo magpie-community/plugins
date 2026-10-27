@@ -208,6 +208,51 @@
     }
   },
   {
+    "name": "the turn being sent keeps a system prompt the history already has",
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a coding agent."
+        },
+        {
+          "role": "user",
+          "content": "next"
+        },
+        {
+          "role": "assistant",
+          "content": "ok"
+        },
+        {
+          "role": "system",
+          "content": "You are a coding agent."
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a coding agent."
+        },
+        {
+          "role": "user",
+          "content": "next"
+        },
+        {
+          "role": "assistant",
+          "content": "ok"
+        },
+        {
+          "role": "system",
+          "content": "You are a coding agent."
+        }
+      ]
+    }
+  },
+  {
     "name": "preserveSystemPrompt keeps every system message, folded or repeated",
     "options": {
       "preserveSystemPrompt": true
@@ -562,6 +607,51 @@
         {
           "role": "assistant",
           "content": "ok"
+        }
+      ]
+    }
+  },
+  {
+    "name": "two identical messages in the turn being sent are both kept",
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        },
+        {
+          "role": "assistant",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "continue"
+        },
+        {
+          "role": "user",
+          "content": "continue"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        },
+        {
+          "role": "assistant",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "continue"
+        },
+        {
+          "role": "user",
+          "content": "continue"
         }
       ]
     }
