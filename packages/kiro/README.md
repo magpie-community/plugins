@@ -111,6 +111,13 @@ request:
   - usage limit → 429
   - throttling → "rate limited"
 
+## Image size proposal
+
+Request-layer image-size protection is described in the
+[inline-image preparation proposal](IMAGE_SIZE_PROPOSAL.md). It documents
+a reported repeated-failure case and suggested behavior; it is not yet
+implemented by that proposal.
+
 ## Models
 
 The `config` hook declares `auto` (Kiro picks the model). Once signed in,
