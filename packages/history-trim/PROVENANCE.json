@@ -1,0 +1,19 @@
+{
+  "source": "https://github.com/cheaper-inference/OmniRoute",
+  "commit": "1ac00b05e2d507d416a3e9c4c278ab625ce1dbf2",
+  "version": "v3.8.53",
+  "license": "MIT",
+  "files": {
+    "open-sse/services/compression/lite.ts": {
+      "sha256": "0e857ed68a700e8000fa20cb7e3adddaf40c126149fe119024b4e4a2a8c317fd"
+    }
+  },
+  "changes": [
+    "Inlined the engine into one import-free middleware file that exports only onRequest.",
+    "Reads body.messages only. The protocol adapter that walks Chat, Anthropic, Responses and Gemini bodies is not ported, so a request without a messages array goes on unchanged instead of being rewritten segment by segment.",
+    "Dropped replaceImageUrls: which models take images is provider configuration, and its placeholders would only fire for some of them.",
+    "Dropped createCompressionStats and the telemetry that goes with it.",
+    "The four steps, their order, the 200-character system-prompt key, the word-boundary lookback of 80 characters and the [truncated] suffix are the engine's own.",
+    "Options are read from ctx.options instead of a module-level configuration: maxToolLength, compressToolResults and preserveSystemPrompt."
+  ]
+}
