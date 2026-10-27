@@ -1,0 +1,100 @@
+{
+  "name": "@magpie-community/middleware-compress-core",
+  "version": "0.4.0",
+  "description": "Context compression for everything magpie sends: fifteen strategies and four presets, a lab page to try them on a real request, a per-session audit, and an opt-in capture of before and after",
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "page",
+    "engines",
+    "adapter.js",
+    "catalog.js",
+    "capture-store.js",
+    "options-commands.js",
+    "lab.js",
+    "hash.js",
+    "pipeline.js",
+    "stats-writer.js",
+    "telemetry-store.js",
+    "observability.hooks.js",
+    "compress-core.middleware.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-middleware",
+    "magpie-hooks",
+    "magpie-page",
+    "compression",
+    "context",
+    "tokens"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/compress-core"
+  },
+  "magpie": {
+    "middleware": "./compress-core.middleware.js",
+    "hooks": "./observability.hooks.js",
+    "page": {
+      "title": "Compression",
+      "titles": {
+        "zh": "压缩",
+        "zh-TW": "壓縮",
+        "ja": "圧縮"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg"
+    },
+    "panels": [
+      {
+        "slot": "settings",
+        "title": "Compression",
+        "titles": {
+          "zh": "压缩",
+          "zh-TW": "壓縮",
+          "ja": "圧縮"
+        },
+        "file": "page/settings.html"
+      },
+      {
+        "slot": "usage",
+        "title": "Compression",
+        "titles": {
+          "zh": "压缩",
+          "zh-TW": "壓縮",
+          "ja": "圧縮"
+        },
+        "file": "page/usage.html"
+      }
+    ],
+    "options": {
+      "strategies": {
+        "session-dedup": true,
+        "ccr": true,
+        "lite": true,
+        "rtk": false,
+        "codex-responses": false,
+        "headroom": true,
+        "relevance": false,
+        "caveman": false,
+        "read-lifecycle": false,
+        "aggressive": false,
+        "llmlingua": false,
+        "ultra": false,
+        "ionizer": false,
+        "llm": false,
+        "omniglyph": false
+      },
+      "budgetMs": 600,
+      "preserve": {
+        "system": true,
+        "lastTurns": 2
+      },
+      "gatewayTimeoutMs": 4000,
+      "capture": false
+    }
+  }
+}

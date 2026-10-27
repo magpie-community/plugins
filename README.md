@@ -51,6 +51,7 @@ These packages aren't OpenCode plugins. magpie runs them in its gateway, on the 
 | [think-tags](packages/think-tags) | Take `<think>…</think>` out of a reply's text, or put a Chat reply's `reasoning_content` into it (`thinking_to_content`) |
 | [antigravity-cloak](packages/antigravity-cloak) | Claude Code and Claude Desktop on Antigravity: break the words Antigravity turns their system prompt away for, in what Antigravity alone is sent |
 | [codex-history](packages/codex-history) | Opt-in Responses history compatibility after switching providers: remove historical ciphertext and optional item IDs while preserving readable content and tool-call pairing |
+| [compress-core](packages/compress-core) | Shrink what every request sends: fifteen strategies and four presets, a lab page to try them on a real request, and an audit of what each request saved. The only package here that ships `hooks` and a page beside its middleware |
 
 ```sh
 magpie plugin add @magpie-community/middleware-<name>
