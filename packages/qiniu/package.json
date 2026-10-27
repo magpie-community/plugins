@@ -1,0 +1,37 @@
+{
+  "name": "@magpie-community/opencode-qiniu-auth",
+  "version": "0.5.0",
+  "description": "Magpie / OpenCode provider plugin: Qiniu MaaS (Modelink) — every model Qiniu serves, including the activity's free tier",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "lib/", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "bun test",
+    "test:node": "node --test \"test/*.test.mjs\"",
+    "check": "node scripts/check.mjs",
+    "gen:catalog": "node scripts/gen-catalog.mjs"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "opencode-auth",
+    "magpie",
+    "magpie-plugin",
+    "qiniu",
+    "conatus",
+    "modelink"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/qiniu"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "magpie": {
+    "maxConcurrency": 4,
+    "icon": "https://www.qiniu.com/favicon.ico"
+  }
+}
