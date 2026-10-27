@@ -26,4 +26,14 @@ Only `body.messages` is read, so it acts on a Chat or an Anthropic request. A Re
 
 Ported from OmniRoute's lite engine (`open-sse/services/compression/lite.ts`, MIT); what was left out is listed in `PROVENANCE.json`.
 
-中文：把请求的历史发得更小——连续空行折叠成一行空行、逐字重复的 system 提示与紧挨着重复的消息去掉、历史中超过 `maxToolLength` 的工具结果在词边界处截断并标上 `[truncated]`（正在发送的这一轮不动）。只读 `body.messages`，Chat 与 Anthropic 请求生效；`compressToolResults: false` 不截断工具结果，`preserveSystemPrompt: true` 让 system 消息不被任何一步改动。
+## The full plugin
+
+This is one engine of a larger plugin: [magpie-compress-core](https://github.com/manjughosa/magpie-compress-core) — fifteen engines, four presets, a settings panel, and a lab that runs a prompt through every engine and shows what each one saved. It carries a page of its own, so the one-file rule this repository keeps does not bind it. Install it from its repository:
+
+```sh
+magpie plugin add github:manjughosa/magpie-compress-core
+```
+
+It stays out of Discover. The full plugin is maintained in its own repository, and this package is the part of it that fits here.
+
+中文：把请求的历史发得更小——连续空行折叠成一行空行、逐字重复的 system 提示与紧挨着重复的消息去掉、历史中超过 `maxToolLength` 的工具结果在词边界处截断并标上 `[truncated]`（正在发送的这一轮不动）。只读 `body.messages`，Chat 与 Anthropic 请求生效；`compressToolResults: false` 不截断工具结果，`preserveSystemPrompt: true` 让 system 消息不被任何一步改动。本包是完整插件 [magpie-compress-core](https://github.com/manjughosa/magpie-compress-core) 的一个引擎切片，完整版含 15 个策略、四档预设、设置面板与实验室，用 `magpie plugin add github:manjughosa/magpie-compress-core` 安装。
