@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/middleware-think-tags",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Take a model's <think>…</think> out of its reply's text, or put a Chat reply's reasoning_content into it (New API's thinking_to_content), as magpie gateway middleware",
   "type": "module",
   "files": ["think-tags.middleware.js", "README.md"],

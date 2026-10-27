@@ -181,16 +181,55 @@ test("other refusals keep their status and say nothing of the sign-in", async ()
   expect(_internal.failure(400, JSON.stringify({ message: "bad", details: { error: { message: "effort" } } }))).toEqual({ status: 400, message: "bad: effort" })
 })
 
-test("a model list Qoder won't give is a 400, as the built-in's QoderModelOf answered, the account unmarked", async () => {
+// SlouchyQuill507 (Discord, qoder-cn): Qoder answers a failure of the model's
+// own vendor behind it with a 400 "Error in upstream response". It is no
+// fault of the request or the account, so it reaches magpie as a 502, which
+// it asks again or of another account. A 400 that is the request's fault
+// stays a 400.
+test("Qoder's 400 \"Error in upstream response\" is a 502, the account unmarked", async () => {
+  const UPSTREAM = "Error in upstream response"
+  const sse = (v) => new Response(`data: ${JSON.stringify(v)}\n\n`, { headers: { "Content-Type": "text/event-stream" } })
+  for (const [how, reply] of [
+    ["an HTTP 400 with Qoder's JSON", () => new Response(JSON.stringify({ message: UPSTREAM }), { status: 400 })],
+    ["an HTTP 400 in plain text", () => new Response(UPSTREAM, { status: 400 })],
+    ["a 400 in the stream's envelope", () => sse({ headers: {}, body: JSON.stringify({ message: UPSTREAM }), statusCodeValue: 400, statusCode: "BAD_REQUEST" })],
+    ["a 400 in the envelope as plain text", () => sse({ headers: {}, body: UPSTREAM, statusCodeValue: 400, statusCode: "BAD_REQUEST" })],
+  ]) {
+    const { fetch } = await chat(LISTING, reply)
+    const res = await fetch(API_CHAT, ASK)
+    expect([how, res.status, res.headers.get("X-Magpie-Sign-In")]).toEqual([how, 502, null])
+    expect((await res.json()).error.message).toBe(UPSTREAM)
+  }
+  expect(_internal.failure(400, JSON.stringify({ code: "500", message: UPSTREAM }))).toEqual({ status: 502, message: UPSTREAM, signIn: "" })
+  // a request Qoder refuses as the request's fault stays a 400
+  expect(_internal.failure(400, JSON.stringify({ message: "invalid request: messages is empty" }))).toEqual({ status: 400, message: "invalid request: messages is empty" })
+  expect(_internal.failure(400, JSON.stringify({ code: "416", message: "input too long" })).status).toBe(400)
+  const { fetch } = await chat(LISTING, () => new Response(JSON.stringify({ message: "invalid request" }), { status: 400 }))
+  expect((await fetch(API_CHAT, ASK)).status).toBe(400)
+})
+
+test("a model list Qoder won't give is a 502, the account unmarked", async () => {
   for (const status of [401, 403, 500]) {
     const auth = { ...account(), machineId: "m1" }
     globalThis.fetch = async () => new Response("no", { status })
     const hooks = await QoderAuthPlugin({ client: { auth: { set: async () => {} } } })
     const l = await hooks.auth.loader(async () => auth)
     const res = await l.fetch(API_CHAT, ASK)
-    expect([res.status, res.headers.get("X-Magpie-Sign-In")]).toEqual([400, null])
+    expect([res.status, res.headers.get("X-Magpie-Sign-In")]).toEqual([502, null])
     expect((await res.json()).error.message).toBe(`Qoder models: HTTP ${status}: no`)
   }
+})
+
+test("a network failure fetching the model list is a 502 so magpie can fall back", async () => {
+  const auth = { ...account(), machineId: "m1" }
+  globalThis.fetch = async () => {
+    throw new Error("getaddrinfo ENOTFOUND api3.qoder.sh")
+  }
+  const hooks = await QoderAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const l = await hooks.auth.loader(async () => auth)
+  const res = await l.fetch(API_CHAT, ASK)
+  expect([res.status, res.headers.get("X-Magpie-Sign-In")]).toEqual([502, null])
+  expect((await res.json()).error.message).toBe("getaddrinfo ENOTFOUND api3.qoder.sh")
 })
 
 // the loader's fetch for an account whose job token is due, the refresh answered by refresh()

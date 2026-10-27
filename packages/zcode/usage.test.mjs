@@ -41,6 +41,11 @@ async function usage(auth, sets = []) {
   return hooks.auth.usage(async () => auth, { id: "zcode" })
 }
 const jwt = (exp) => ["{}", JSON.stringify({ exp })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".sig"
+// a card read with no ZCode session says the gift plans need one: a key
+// (or a sign-in with no ZCode token) reads no gift and lists no -Trial
+const GIFT = "ZCode gift plans (-Trial models) need ZCode's sign-in"
+const KEY_LINE = { name: GIFT, used: 0, aside: true, display: "not read with an API key: add the account with a ZCode sign-in" }
+const NO_SESSION = { name: GIFT, used: 0, aside: true, display: "this sign-in has no ZCode session: sign in again" }
 
 test("a Coding Plan's five hours and week", async () => {
   const reset = Date.now() + 3600_000
@@ -59,13 +64,36 @@ test("a Coding Plan's five hours and week", async () => {
     windows: [
       { name: "5 hours", used: 25, display: "500 / 2000", amount: 500, limit: 2000, resetsAt: new Date(reset).toISOString(), span: 5 * 3600 },
       { name: "Weekly", used: 10, display: "1000 / 10000", amount: 1000, limit: 10000, resetsAt: new Date(reset).toISOString(), span: 7 * 86400 },
+      NO_SESSION,
     ],
   })
   expect(calls.every((c) => c.url.origin === "https://api.z.ai")).toBe(true)
   // an API key, BigModel's, is asked on its own site
-  const bm = serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ limits: [] }) : ok([])))
-  expect(await usage({ type: "api", key: "k", metadata: { site: "bigmodel" } })).toEqual({ signIn: "kept", windows: [] })
+  const bm = serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ level: "lite", limits: [] }) : ok([{ productName: "GLM Coding Lite", status: "VALID" }])))
+  expect(await usage({ type: "api", key: "k", metadata: { site: "bigmodel" } })).toEqual({ signIn: "kept", plan: "GLM Coding Lite", windows: [KEY_LINE] })
   expect(bm[0].url.origin).toBe("https://open.bigmodel.cn")
+})
+
+// rtbeilin (X, 10-24): ZCode 1024 Dev Day, no GLM Coding Plan, "API Key
+// doesn't work". The gift is ZCode's session's alone; a key's card says
+// so instead of showing nothing
+test("a key with no GLM Coding Plan says a ZCode gift plan needs ZCode's sign-in", async () => {
+  const none = /no GLM Coding Plan; ZCode's gift plans .* are spent only with ZCode's sign-in, never with a key/
+  for (const site of ["zai", "bigmodel"]) {
+    serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ limits: [] }) : ok([])))
+    expect((await usage({ type: "api", key: "k", metadata: { site } })).error).toMatch(none)
+    // a subscription that ran out is no plan in force either
+    serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ limits: [] }) : ok([{ productName: "GLM Coding Lite", status: "EXPIRED" }])))
+    expect((await usage({ type: "api", key: "k", metadata: { site } })).error).toMatch(none)
+  }
+  // a list that couldn't be read is not "no plan"
+  serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ limits: [] }) : new Response("", { status: 500 })))
+  expect(await usage({ type: "api", key: "k", metadata: { site: "zai" } })).toEqual({ signIn: "kept", windows: [KEY_LINE] })
+  // a counted window or a level is a plan, whatever the list says
+  serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ limits: [{ unit: 3, number: 5, percentage: 3 }] }) : ok([])))
+  expect((await usage({ type: "api", key: "k", metadata: { site: "zai" } })).error).toBeUndefined()
+  serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ level: "pro", limits: [] }) : ok([])))
+  expect((await usage({ type: "api", key: "k", metadata: { site: "zai" } })).error).toBeUndefined()
 })
 
 test("windows, names and terms as Go reads them", () => {
@@ -183,6 +211,57 @@ test("ZCode's Start Plan: its buckets, each for its models", async () => {
   expect(await usage(oauth({ site: "zai", jwt: jwt(now - 60) }))).toEqual({ signIn: "kept", error: "ZCode's sign-in has expired; sign in to ZCode again (or add the account again in magpie)" })
 })
 
+// customer-package-reset/list?targetType=PERSONAL as the reporter of
+// yetone/magpie#1191 captured it on bigmodel.cn (the built-in's
+// zhipu_resets_test.go zhipuResetList): one run out stays listed.
+const PERSONAL_RESETS = {
+  code: 200, msg: "操作成功", success: true,
+  data: {
+    customerId: 0, targetType: "PERSONAL", organizationId: null, projectId: null,
+    lastFiveHourResetTime: "2026-10-06 21:14:03", lastWeekResetTime: null,
+    fiveHourResets: [{ recordId: 0, grantType: "DIRECT", expireTime: "2026-11-02 23:59:59", available: true }],
+    weekResets: [
+      { recordId: 0, grantType: "DIRECT", expireTime: "2026-10-30 23:59:59", available: true },
+      { recordId: 0, grantType: "DIRECT", expireTime: "2026-10-04 23:59:59", available: false },
+    ],
+  },
+}
+
+test("a Coding Plan of a person's own shows its resets, each with its end, as the built-in's zhipuPersonalResets did", async () => {
+  let list = PERSONAL_RESETS
+  const calls = serve(({ url, headers }) => {
+    if (headers.Authorization !== "glm-key") return new Response("", { status: 401 })
+    if (url.pathname === "/api/biz/subscription/list") return ok([])
+    if (url.pathname === "/api/monitor/usage/quota/limit") return ok({ level: "pro", limits: [] })
+    if (url.pathname === "/api/biz/customer-package-reset/list" && url.searchParams.get("targetType") === "PERSONAL")
+      return typeof list === "number" ? new Response("", { status: list }) : new Response(JSON.stringify(list))
+  })
+  const auth = oauth({ site: "bigmodel", base: "https://open.bigmodel.cn/api/anthropic", key: "glm-key" })
+  expect(await usage(auth)).toEqual({
+    signIn: "kept",
+    plan: "GLM Coding Pro",
+    windows: [NO_SESSION],
+    resets: { count: 2, byWindow: true, fiveHour: 1, weekly: 1, until: "2026-10-30T15:59:59.000Z", each: [
+      { until: "2026-10-30T15:59:59.000Z", window: "weekly" },
+      { until: "2026-11-02T15:59:59.000Z", window: "fiveHour" },
+    ] },
+  })
+  const asked = calls.find((c) => c.url.pathname === "/api/biz/customer-package-reset/list")
+  expect(asked.url.origin).toBe("https://open.bigmodel.cn")
+  expect(asked.method).toBe("GET")
+  // a list that can't be read shows no count, never 0; nor does one with none left
+  list = 500
+  expect((await usage(auth)).resets).toBeUndefined()
+  list = { code: 200, data: { fiveHourResets: [], weekResets: [{ available: false, expireTime: "2026-10-04 23:59:59" }] } }
+  expect((await usage(auth)).resets).toBeUndefined()
+  // one with no end is listed last, with none
+  list = { code: 200, data: { fiveHourResets: [{ available: true }], weekResets: [{ available: true, expireTime: "2026-10-30 23:59:59" }] } }
+  expect((await usage(auth)).resets).toEqual({ count: 2, byWindow: true, fiveHour: 1, weekly: 1, until: "2026-10-30T15:59:59.000Z", each: [
+    { until: "2026-10-30T15:59:59.000Z", window: "weekly" },
+    { window: "fiveHour" },
+  ] })
+})
+
 test("a team seat: the team plan's windows, name, end and resets, its key found and saved", async () => {
   const reset = Date.now() + 2 * 3600_000
   let made = null
@@ -219,10 +298,17 @@ test("a team seat: the team plan's windows, name, end and resets, its key found 
   expect(await usage(oauth(state), sets)).toEqual({
     signIn: "kept",
     plan: "GLM Coding Team Pro", until: "2026-12-31T15:59:59.000Z", renew: "off",
-    resets: { count: 3, byWindow: true, fiveHour: 2, weekly: 1, until: new Date(1790000000 * 1000).toISOString() },
+    // a team's resets say so, and each its own end, soonest first, as the
+    // built-in's zhipuTeamResets did
+    resets: { count: 3, byWindow: true, fiveHour: 2, weekly: 1, until: new Date(1790000000 * 1000).toISOString(), team: true, each: [
+      { until: new Date(1790000000 * 1000).toISOString(), window: "fiveHour" },
+      { until: "2026-11-30T15:59:59.000Z", window: "fiveHour" },
+      { until: "2026-12-31T15:59:59.000Z", window: "weekly" },
+    ] },
     windows: [
       { name: "5 hours", used: 42, display: "420 / 1000", amount: 420, limit: 1000, resetsAt: new Date(reset).toISOString(), span: 5 * 3600 },
       { name: "Weekly", used: 10, display: "1000 / 10000", amount: 1000, limit: 10000, resetsAt: new Date(reset + 86400000).toISOString(), span: 7 * 86400 },
+      { name: "ZCode gift plans (-Trial models) need ZCode's sign-in", used: 0, aside: true, display: "this sign-in has no ZCode session: sign in again" },
     ],
   })
   expect(made).toEqual({ name: "zcode-team-api-key", keyType: 2 })
@@ -314,7 +400,7 @@ test("a gift plan ZCode holds but has not granted is named on the card, to claim
   // the preview went out as ZCode's own client asks it
   const p = calls.find((c) => c.url.pathname.endsWith("/preview"))
   expect(p.method).toBe("GET")
-  expect(p.url.searchParams.get("app_version")).toBe("3.14.3")
+  expect(p.url.searchParams.get("app_version")).toBe("3.16.3")
   expect(p.url.searchParams.get("platform")).toBe(`${process.platform}-${process.arch}`)
   expect(p.headers.Authorization).toBe("Bearer " + token)
   expect(p.headers["X-Device-Mid"]).toBe("11111111-2222-4333-8444-555555555555")

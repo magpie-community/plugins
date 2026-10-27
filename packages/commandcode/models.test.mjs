@@ -90,10 +90,10 @@ test("the list's failures read as the built-in's", async () => {
 // so; of one it doesn't know, nothing is said, and magpie answers from
 // models.dev as the built-in does.
 test("a model says it takes pictures when known, and nothing when not", async () => {
-  const pro = { type: "api", key: "pro-key", metadata: { plan: "Pro" } }
+  const pro = { type: "api", key: "max-key", metadata: { plan: "Max" } }
   globalThis.fetch = async (url) => {
     const path = new URL(String(url)).pathname
-    if (path === "/alpha/billing/subscriptions") return Response.json({ success: true, data: { planId: "individual-pro-monthly", status: "active" } })
+    if (path === "/alpha/billing/subscriptions") return Response.json({ success: true, data: { planId: "individual-max-monthly", status: "active" } })
     if (path === "/provider/v1/models") return new Response(list, { status: 200 })
     return new Response("", { status: 404 })
   }
@@ -116,11 +116,11 @@ test("a model says it takes pictures when known, and nothing when not", async ()
   // a list that says, is taken at its word
   globalThis.fetch = async (url) => {
     const path = new URL(String(url)).pathname
-    if (path === "/alpha/billing/subscriptions") return Response.json({ success: true, data: { planId: "individual-pro-monthly", status: "active" } })
+    if (path === "/alpha/billing/subscriptions") return Response.json({ success: true, data: { planId: "individual-max-monthly", status: "active" } })
     return Response.json({ data: [{ id: "claude-opus-5-5", modalities: { input: ["text"] } }, { id: "x/seer", modalities: { input: ["text", "image"] } }] })
   }
   _internal.subsSeen.clear()
-  const said2 = await (await CommandCodePlugin()).provider.models({ models: {} }, { auth: { ...pro, key: "pro-key-2" } })
+  const said2 = await (await CommandCodePlugin()).provider.models({ models: {} }, { auth: { ...pro, key: "max-key-2" } })
   expect(said2["claude-opus-5-5"].capabilities.input.image).toBe(false)
   expect(said2["x/seer"].capabilities.input.image).toBe(true)
 

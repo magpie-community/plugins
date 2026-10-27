@@ -1,0 +1,100 @@
+[
+  {
+    "name": "ceiling: the first account takes requests until it reaches the ceiling",
+    "strategy": "ceiling",
+    "seats": [
+      { "key": "work", "account": true, "known": true, "used": 42 },
+      { "key": "home", "account": true, "known": true, "used": 5 }
+    ],
+    "expect": ["work", "home"]
+  },
+  {
+    "name": "ceiling: an account past the ceiling waits for the next",
+    "strategy": "ceiling",
+    "seats": [
+      { "key": "work", "account": true, "known": true, "used": 83 },
+      { "key": "home", "account": true, "known": true, "used": 5 },
+      { "key": "spare", "account": true, "known": true, "used": 60 }
+    ],
+    "expect": ["home", "spare", "work"]
+  },
+  {
+    "name": "ceiling: the options set the ceiling",
+    "strategy": "ceiling",
+    "options": { "ceiling": 50 },
+    "seats": [
+      { "key": "work", "account": true, "known": true, "used": 55 },
+      { "key": "home", "account": true, "known": true, "used": 49.5 }
+    ],
+    "expect": ["home", "work"]
+  },
+  {
+    "name": "ceiling: with every account past it, the least used goes first",
+    "strategy": "ceiling",
+    "seats": [
+      { "key": "a", "account": true, "known": true, "used": 97 },
+      { "key": "b", "account": true, "known": true, "used": 81 },
+      { "key": "c", "account": true, "known": true, "used": 90 }
+    ],
+    "expect": ["b", "c", "a"]
+  },
+  {
+    "name": "ceiling: one resting goes last, even below the ceiling",
+    "strategy": "ceiling",
+    "seats": [
+      { "key": "a", "account": true, "known": true, "used": 10, "resting": true },
+      { "key": "b", "account": true, "known": true, "used": 95 },
+      { "key": "c", "account": true, "known": true, "used": 20 }
+    ],
+    "expect": ["c", "b", "a"]
+  },
+  {
+    "name": "ceiling: an allowance not known counts as below it, in its place",
+    "strategy": "ceiling",
+    "seats": [
+      { "key": "a", "account": true, "known": true, "used": 99 },
+      { "key": "new", "account": true, "known": false },
+      { "key": "key", "account": false }
+    ],
+    "expect": ["new", "key", "a"]
+  },
+  {
+    "name": "ceiling: an option that isn't a share is 80",
+    "strategy": "ceiling",
+    "options": { "ceiling": "lots" },
+    "seats": [
+      { "key": "a", "account": true, "known": true, "used": 79 },
+      { "key": "b", "account": true, "known": true, "used": 0 }
+    ],
+    "expect": ["a", "b"]
+  },
+  {
+    "name": "accounts-first: subscriptions before keys, least used first",
+    "strategy": "accounts-first",
+    "seats": [
+      { "key": "paid-key", "account": false, "tokens": 0 },
+      { "key": "pro", "account": true, "known": true, "used": 70 },
+      { "key": "max", "account": true, "known": true, "used": 20 }
+    ],
+    "expect": ["max", "pro", "paid-key"]
+  },
+  {
+    "name": "accounts-first: keys by weight, then fewest tokens lately",
+    "strategy": "accounts-first",
+    "seats": [
+      { "key": "k1", "weight": 1, "tokens": 10 },
+      { "key": "k2", "weight": 3, "tokens": 900000 },
+      { "key": "k3", "weight": 1, "tokens": 2 }
+    ],
+    "expect": ["k2", "k3", "k1"]
+  },
+  {
+    "name": "accounts-first: a resting account goes after the keys",
+    "strategy": "accounts-first",
+    "seats": [
+      { "key": "pro", "account": true, "known": true, "used": 1, "resting": true },
+      { "key": "key", "account": false }
+    ],
+    "expect": ["key", "pro"]
+  }
+]

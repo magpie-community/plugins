@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { droppedNote, guardToolResponse } from "./tool-response.mjs";
+import { cutShortNote, droppedNote, guardToolResponse } from "./tool-response.mjs";
 
 const encoder = new TextEncoder();
 
@@ -352,7 +352,7 @@ for (const protocol of protocols) {
     }
   });
 
-  test(`${protocol}: JSON leaves out unknown, non-injected, ambiguous and semantic aliases, and says so (#76)`, async () => {
+  test(`${protocol}: JSON hands on unknown, non-injected, ambiguous and semantic aliases as called (#209)`, async () => {
     for (const [name, rules] of [
       ["unknown", policy],
       ["shell", policy],
@@ -370,15 +370,19 @@ for (const protocol of protocols) {
       );
       assert.equal(response.status, 200);
       const body = await response.json();
-      assert.deepEqual(callsIn(protocol, [body]), ["Read"]);
-      assert.equal(textIn(protocol, [body]), droppedNote(name));
+      assert.deepEqual(callsIn(protocol, [body]), ["Read", name]);
+      assert.equal(textIn(protocol, [body]), "");
     }
   });
 
-  // #76, tkhs101's table of 2026-10-10: the names step-5-preview-free
-  // called that DSH has no tool for, and no spelling of one either. Each
-  // failed the whole turn; each is now left out with the turn going on.
-  test(`${protocol}: the names from #76's table are left out, not failed on`, async () => {
+  // #76, tkhs101's table of 2026-10-10, and #209, xiotbox's DSH sessions
+  // of 2026-10-16/17 (pwsh declared): the names Zen's free models called
+  // that the agent has no tool for, and no spelling of one either. Left
+  // out, a reply of only such a call ended DSH's turn as a plain answer.
+  // Each now reaches the agent as called, with its id and a tool-call
+  // finish, so the agent answers it with its own unknown-tool error and
+  // the model corrects it.
+  test(`${protocol}: a call of a tool the agent doesn't have reaches it as called, with its id and a tool-call finish (#76, #209)`, async () => {
     const rules = {
       declared: new Set([
         "bash",
@@ -387,21 +391,76 @@ for (const protocol of protocols) {
         "glob",
         "grep",
         "write",
+        "pwsh",
         "todo_write",
         "mcp__netcatty-external__list_hosts",
       ]),
       injected: new Set(),
     };
-    for (const name of ["bedit", "bcp", "ash", "mcp__netcatcatty__unused"]) {
-      const json = await guardToolResponse(
+    const ids = (values) =>
+      values.flatMap((data) => {
+        if (protocol === "chat")
+          return (data.choices ?? [])
+            .flatMap((choice) => (choice.message ?? choice.delta)?.tool_calls ?? [])
+            .map((value) => value.id)
+            .filter(Boolean);
+        const items =
+          protocol === "responses"
+            ? [...((data.response ?? data).output ?? []), ...(data.item ? [data.item] : [])]
+            : [
+                ...((data.message ?? data).content ?? []),
+                ...(data.content_block ? [data.content_block] : []),
+              ];
+        return items
+          .filter((item) => ["function_call", "tool_use"].includes(item.type))
+          .map((item) => item.call_id ?? item.id);
+      });
+    const finishes = (values) =>
+      values.flatMap((data) =>
+        protocol === "chat"
+          ? (data.choices ?? []).map((choice) => choice.finish_reason).filter(Boolean)
+          : protocol === "anthropic"
+            ? [data.delta?.stop_reason, data.stop_reason].filter(Boolean)
+            : [],
+      );
+    for (const name of [
+      "bedit",
+      "bcp",
+      "ash",
+      "mcp__netcatcatty__unused",
+      "psh",
+      "pash",
+      "ppwsh",
+      "pshh",
+      "shell_command",
+    ]) {
+      // Beside a call the agent has (#209's case B), and alone (case A).
+      const mixed = await guardToolResponse(
         Response.json(snapshot(protocol, ["bash", name])),
         protocol,
         rules,
       );
-      assert.equal(json.status, 200);
-      const body = await json.json();
-      assert.deepEqual(callsIn(protocol, [body]), ["bash"]);
-      assert.equal(textIn(protocol, [body]), droppedNote(name));
+      assert.equal(mixed.status, 200);
+      const body = await mixed.json();
+      assert.deepEqual(callsIn(protocol, [body]), ["bash", name]);
+      assert.equal(textIn(protocol, [body]), "");
+      const alone = {
+        chat: {
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: null, tool_calls: [call(name)] },
+              finish_reason: "tool_calls",
+            },
+          ],
+        },
+        responses: { output: [tool(protocol, name)] },
+        anthropic: { type: "message", content: [tool(protocol, name)], stop_reason: "tool_use" },
+      }[protocol];
+      const json = await (
+        await guardToolResponse(Response.json(alone), protocol, rules)
+      ).json();
+      assert.deepEqual(json, alone);
       for (const upstream of [
         event(streamSnapshot(protocol, [name])) + terminal(protocol),
         toolStream(protocol, name),
@@ -410,14 +469,30 @@ for (const protocol of protocols) {
         assert.equal(streamed.status, 200);
         const values = frameData(await streamed.text());
         assert.ok(!values.some((data) => data.type === "error" || data.error));
-        assert.deepEqual(callsIn(protocol, values), []);
-        assert.match(
-          textIn(protocol, values),
-          new RegExp(`^(\\n\\n)?${escape(droppedNote(name))}`),
-        );
-        assert.ok(!JSON.stringify(values).includes(`"${name}"`));
-        assert.doesNotMatch(JSON.stringify(values), /"(?:tool_calls|tool_use|function_call)"/);
+        assert.ok(callsIn(protocol, values).length > 0);
+        assert.ok(callsIn(protocol, values).every((called) => called === name));
+        assert.ok(ids(values).length > 0);
+        assert.equal(textIn(protocol, values), "");
+        assert.ok(!JSON.stringify(values).includes("The call was left out"));
+        assert.ok(finishes(values).every((f) => f === "tool_calls" || f === "tool_use"));
       }
+      // Zen's own stream comes through as it was sent (Chat's call whole,
+      // as its buffer hands every call on).
+      const raw = toolStream(protocol, name);
+      const passed = frameData(await (await guardToolResponse(sse(raw), protocol, rules)).text());
+      if (protocol !== "chat") assert.deepEqual(passed, frameData(raw));
+      else
+        assert.deepEqual(
+          passed.flatMap((data) => data.choices.flatMap((choice) => choice.delta.tool_calls ?? [])),
+          [
+            {
+              index: 0,
+              id: "call_773767abbc494d2a82872502",
+              type: "function",
+              function: { name, arguments: '{"command": "ls"}' },
+            },
+          ],
+        );
     }
   });
 
@@ -463,19 +538,19 @@ for (const protocol of protocols) {
     }
   });
 
-  test(`${protocol}: a call left out is named in the reply's text (#76)`, async () => {
+  test(`${protocol}: a call with no name is left out, and the reply's text says so (#76)`, async () => {
     const json = await guardToolResponse(
-      Response.json(snapshot(protocol, ["subagent"])),
+      Response.json(snapshot(protocol, [""])),
       protocol,
       policy,
     );
-    assert.equal(textIn(protocol, [await json.json()]), droppedNote("subagent"));
+    assert.equal(textIn(protocol, [await json.json()]), droppedNote(""));
     const streamed = await guardToolResponse(
-      sse(event(streamSnapshot(protocol, ["subagent"])) + terminal(protocol)),
+      sse(event(streamSnapshot(protocol, [""])) + terminal(protocol)),
       protocol,
       policy,
     );
-    assert.equal(textIn(protocol, frameData(await streamed.text())), droppedNote("subagent"));
+    assert.equal(textIn(protocol, frameData(await streamed.text())), droppedNote(""));
     assert.equal(
       droppedNote("x".repeat(300)),
       `(The model called a tool this agent doesn't have: "${"x".repeat(128)}". The call was left out.)`,
@@ -536,7 +611,7 @@ for (const protocol of protocols) {
     assert.equal(source.response.body.locked, false);
   });
 
-  test(`${protocol}: a mixed SSE snapshot hands on the declared call and leaves out the rest (#76)`, async () => {
+  test(`${protocol}: a mixed SSE snapshot hands on every named call and leaves out a nameless one (#76, #209)`, async () => {
     for (const name of ["unknown", "shell", "todowrite"]) {
       const result = await guardToolResponse(
         sse(event(streamSnapshot(protocol, ["Read", name])) + terminal(protocol)),
@@ -545,9 +620,18 @@ for (const protocol of protocols) {
       );
       const values = frameData(await result.text());
       assert.ok(!values.some((data) => data.type === "error" || data.error));
-      assert.deepEqual(callsIn(protocol, values), ["Read"]);
-      assert.equal(textIn(protocol, values), droppedNote(name));
+      assert.deepEqual(callsIn(protocol, values), ["Read", name]);
+      assert.equal(textIn(protocol, values), "");
     }
+    const result = await guardToolResponse(
+      sse(event(streamSnapshot(protocol, ["Read", ""])) + terminal(protocol)),
+      protocol,
+      policy,
+    );
+    const values = frameData(await result.text());
+    assert.ok(!values.some((data) => data.type === "error" || data.error));
+    assert.deepEqual(callsIn(protocol, values), ["Read"]);
+    assert.equal(textIn(protocol, values), droppedNote(""));
   });
 
   test(`${protocol}: upstream SSE errors pass through byte-for-byte and cancel open streams`, async () => {
@@ -745,8 +829,17 @@ test("chat: JSON checks every choice, legacy function_call and missing tool name
     policy,
   );
   assert.equal((await result.json()).choices[0].message.function_call.name, "Read");
+  const unknown = await guardToolResponse(
+    Response.json({ choices: [{ message: { function_call: { name: "unknown", arguments: "{}" } }, finish_reason: "function_call" }] }),
+    "chat",
+    policy,
+  );
+  assert.deepEqual((await unknown.json()).choices[0], {
+    message: { function_call: { name: "unknown", arguments: "{}" } },
+    finish_reason: "function_call",
+  });
   for (const [message, name] of [
-    [{ function_call: { name: "unknown" } }, "unknown"],
+    [{ function_call: { name: "" } }, ""],
     [{ tool_calls: [{ type: "function", function: {} }] }, undefined],
   ]) {
     const source = Response.json({
@@ -788,7 +881,7 @@ test("Responses: nested JSON responses and all streaming snapshots are checked",
     "response.incomplete",
     "vendor.snapshot",
   ]) {
-    for (const name of ["read", "unknown"]) {
+    for (const name of ["read", "unknown", ""]) {
       const data = type.includes("output_item")
         ? { type, item: tool("responses", name) }
         : { type, response: snapshot("responses", [name]) };
@@ -798,7 +891,7 @@ test("Responses: nested JSON responses and all streaming snapshots are checked",
         policy,
       );
       const frames = parse(await result.text());
-      if (name === "unknown") {
+      if (name === "") {
         const raw = frames.map((frame) => frame.data);
         assert.ok(!raw.some((data) => data.type === "error" || data.error));
         assert.deepEqual(callsIn("responses", raw), []);
@@ -809,16 +902,19 @@ test("Responses: nested JSON responses and all streaming snapshots are checked",
           type === "response.output_item.added"
             ? textIn("responses", raw)
             : message.content[0].text;
-        assert.equal(said, droppedNote("unknown"));
+        assert.equal(said, droppedNote(""));
       } else
-        assert.equal(frames[0].data.item?.name ?? frames[0].data.response.output[0].name, "Read");
+        assert.equal(
+          frames[0].data.item?.name ?? frames[0].data.response.output[0].name,
+          name === "read" ? "Read" : name,
+        );
     }
   }
 });
 
 test("Anthropic: content_block_start, message_start and server_tool_use are guarded", async () => {
   for (const type of ["tool_use", "server_tool_use"]) {
-    for (const name of ["bash", "unknown"]) {
+    for (const name of ["bash", "unknown", ""]) {
       const block = { type, name, id: "t", input: {} };
       const json = await guardToolResponse(
         Response.json({ content: [block] }),
@@ -826,8 +922,9 @@ test("Anthropic: content_block_start, message_start and server_tool_use are guar
         policy,
       );
       assert.equal(json.status, 200);
-      if (name === "unknown")
+      if (name === "")
         assert.deepEqual((await json.json()).content, [{ type: "text", text: droppedNote(name) }]);
+      else if (name === "unknown") assert.deepEqual((await json.json()).content, [block]);
       for (const data of [
         { type: "content_block_start", index: 0, content_block: block },
         { type: "message_start", message: { content: [block] } },
@@ -838,7 +935,7 @@ test("Anthropic: content_block_start, message_start and server_tool_use are guar
           policy,
         );
         const frames = parse(await response.text());
-        if (name === "unknown") {
+        if (name === "") {
           const values = frames.map((frame) => frame.data);
           assert.ok(!values.some((value) => value.type === "error"));
           assert.deepEqual(callsIn("anthropic", values), []);
@@ -846,7 +943,7 @@ test("Anthropic: content_block_start, message_start and server_tool_use are guar
         } else
           assert.equal(
             frames[0].data.content_block?.name ?? frames[0].data.message.content[0].name,
-            "Bash",
+            name === "bash" ? "Bash" : name,
           );
       }
     }
@@ -896,6 +993,128 @@ test("chat: buffers names and arguments by choice/index, including arguments bef
     "你好",
   );
 });
+
+test("chat: later null or empty tool IDs do not replace buffered IDs", async () => {
+  const text = [
+    event(
+      chat(
+        {
+          tool_calls: [
+            { index: 0, id: "call_0", type: "function", function: { name: "read", arguments: "{}" } },
+            { index: 1, id: "call_1", type: "function", function: { name: "read", arguments: "{}" } },
+          ],
+        },
+        null,
+        0,
+      ),
+    ),
+    event(
+      chat(
+        { tool_calls: [{ index: 0, id: null }, { index: 1, id: "" }] },
+        null,
+        0,
+      ),
+    ),
+    event(chat({ tool_calls: [{ index: 2, function: { name: "read", arguments: "{}" } }] }, null, 0)),
+    event(chat({ tool_calls: [{ index: 2, id: "call_late" }] }, null, 0)),
+    event(
+      chat(
+        {
+          tool_calls: [
+            {
+              index: 0,
+              id: "choice_1_call",
+              type: "function",
+              function: { name: "read", arguments: "{}" },
+            },
+          ],
+        },
+        null,
+        1,
+      ),
+    ),
+    event(chat({ tool_calls: [{ index: 0, id: null }] }, null, 1)),
+    event(chat({}, "tool_calls", 0)),
+    event(chat({}, "tool_calls", 1)),
+    terminal("chat"),
+  ].join("");
+  const response = await guardToolResponse(sse(text, { chunkSize: 1 }), "chat", policy);
+  const values = frameData(await response.text());
+  assert.ok(!values.some((value) => value.error));
+
+  const choices = values.flatMap((value) => value.choices ?? []);
+  const callsFor = (index) =>
+    choices
+      .filter((choice) => choice.index === index)
+      .flatMap((choice) => choice.delta?.tool_calls ?? []);
+  assert.deepEqual(
+    callsFor(0).map((value) => value.id),
+    ["call_0", "call_1", "call_late"],
+  );
+  assert.deepEqual(callsFor(1).map((value) => value.id), ["choice_1_call"]);
+  assert.deepEqual(callsFor(0).map((value) => value.function.name), ["Read", "Read", "Read"]);
+});
+
+for (const legacy of [false, true]) {
+  const kind = legacy ? "function_call" : "tool_calls";
+  const delta = (fragment) => legacy
+    ? { function_call: fragment }
+    : { tool_calls: [{ index: 0, id: "call-0", type: "function", function: fragment }] };
+  const functions = (values) => values
+    .flatMap((value) => value.choices ?? [])
+    .flatMap((choice) => legacy
+      ? (choice.delta?.function_call ? [choice.delta.function_call] : [])
+      : (choice.delta?.tool_calls ?? []).map((value) => value.function));
+
+  test(`chat: ${kind} ignores null fields while preserving name and argument fragments`, async () => {
+    const fragments = [
+      { name: null, arguments: null },
+      { name: "Re", arguments: null },
+      { name: null, arguments: '{"path":' },
+      { name: "ad", arguments: null },
+      { name: null, arguments: '"example.txt"}' },
+      { name: null, arguments: null },
+    ];
+    const result = await guardToolResponse(
+      sse(fragments.map((fragment) => event(chat(delta(fragment)))).join("") +
+        event(chat({}, kind)) + terminal("chat"), { chunkSize: 1 }),
+      "chat",
+      policy,
+    );
+    const values = parse(await result.text()).map((frame) => frame.data);
+    assert.ok(!values.some((value) => value.error));
+    assert.deepEqual(functions(values), [{ name: "Read", arguments: '{"path":"example.txt"}' }]);
+  });
+
+  test(`chat: ${kind} still drops calls whose name remains null`, async () => {
+    const result = await guardToolResponse(
+      sse(event(chat(delta({ name: null, arguments: "{}" }), kind)) + terminal("chat")),
+      "chat",
+      policy,
+    );
+    const values = parse(await result.text()).map((frame) => frame.data);
+    assert.ok(!values.some((value) => value.error));
+    assert.deepEqual(functions(values), []);
+    assert.equal(textIn("chat", values), droppedNote(""));
+  });
+
+  for (const field of ["name", "arguments"]) {
+    for (const invalid of [42, false, [], {}]) {
+      test(`chat: ${kind} rejects ${field} delta ${JSON.stringify(invalid)}`, async () => {
+        const result = await guardToolResponse(
+          sse(event(chat(delta({ name: "Read", arguments: "" }))) +
+            event(chat(delta({ [field]: invalid }), kind)) + terminal("chat")),
+          "chat",
+          policy,
+        );
+        const values = parse(await result.text()).map((frame) => frame.data);
+        assert.deepEqual(functions(values), []);
+        assertError("chat", values[0]);
+        assert.equal(values[0].error.message, "Invalid upstream function delta");
+      });
+    }
+  }
+}
 
 test("chat: legacy fragments flush at DONE, but truncated pending calls never escape", async () => {
   const prefix =
@@ -987,7 +1206,8 @@ test("ordinary events retain SSE metadata without buffering", async () => {
   }
 });
 
-test("single SSE event limit is 32 MiB and cancels an unterminated upstream", async () => {
+// 32+ MiB through the guard, like the CRLF test below: not held to bun's 5 s default
+test("single SSE event limit is 32 MiB and cancels an unterminated upstream", { timeout: 60_000 }, async () => {
   let cancelled = false;
   let pulls = 0;
   const bytes = encoder.encode("x".repeat(1024 * 1024));
@@ -1014,7 +1234,8 @@ test("single SSE event limit is 32 MiB and cancels an unterminated upstream", as
   assert.ok(pulls <= 33);
 });
 
-test("cumulative pending chat tools are limited across choices and calls", async () => {
+// 32+ MiB through the guard, like the CRLF test below: not held to bun's 5 s default
+test("cumulative pending chat tools are limited across choices and calls", { timeout: 60_000 }, async () => {
   let cancelled = false;
   let pulls = 0;
   const argumentsChunk = "x".repeat(1024 * 1024);
@@ -1045,7 +1266,7 @@ test("cumulative pending chat tools are limited across choices and calls", async
   assert.ok(pulls <= 33);
 });
 
-test("chat: each pending choice is settled on its own, an unknown or missing final name left out", async () => {
+test("chat: each pending choice is settled on its own, an unknown final name handed on and a missing one left out", async () => {
   for (const ending of [
     terminal("chat"),
     event({
@@ -1066,15 +1287,15 @@ test("chat: each pending choice is settled on its own, an unknown or missing fin
       const choices = values.flatMap((data) => data.choices ?? []);
       const of = (index) => choices.filter((choice) => choice.index === index);
       assert.deepEqual(callsIn("chat", [{ choices: of(0) }]), ["Bash"]);
-      assert.deepEqual(callsIn("chat", [{ choices: of(1) }]), []);
-      assert.equal(textIn("chat", [{ choices: of(1) }]), droppedNote(name));
+      assert.deepEqual(callsIn("chat", [{ choices: of(1) }]), name ? [name] : []);
+      assert.equal(textIn("chat", [{ choices: of(1) }]), name ? "" : droppedNote(name));
       const finishes = (index) =>
         of(index)
           .map((choice) => choice.finish_reason)
           .filter(Boolean);
       if (ending !== terminal("chat")) {
         assert.deepEqual(finishes(0), ["tool_calls"]);
-        assert.deepEqual(finishes(1), ["stop"]);
+        assert.deepEqual(finishes(1), [name ? "tool_calls" : "stop"]);
       }
     }
   }
@@ -1083,32 +1304,32 @@ test("chat: each pending choice is settled on its own, an unknown or missing fin
 test("chat: a choice whose every call was left out finishes as a stop, again and again (#76)", async () => {
   // step-5-preview-free sends its tool_calls finish twice, the second with
   // usage (seen 2026-10-11); neither may tell the agent to run a tool.
-  const response = await guardToolResponse(sse(toolStream("chat", "bedit")), "chat", policy);
+  const response = await guardToolResponse(sse(toolStream("chat", "")), "chat", policy);
   const values = frameData(await response.text());
   const finishes = values
     .flatMap((data) => data.choices ?? [])
     .map((choice) => choice.finish_reason)
     .filter(Boolean);
   assert.deepEqual(finishes, ["stop", "stop"]);
-  assert.equal(textIn("chat", values), droppedNote("bedit"));
+  assert.equal(textIn("chat", values), droppedNote(""));
   assert.ok(values.some((data) => data.usage?.completion_tokens === 5));
 });
 
 test("chat: the note follows the text the model wrote before its call", async () => {
   const text =
     event(chat({ content: "Fixing the stray heredoc marker." })) +
-    event(chat({ tool_calls: [call("bedit")] }, "tool_calls")) +
+    event(chat({ tool_calls: [call("")] }, "tool_calls")) +
     terminal("chat");
   const response = await guardToolResponse(sse(text), "chat", policy);
   assert.equal(
     textIn("chat", frameData(await response.text())),
-    `Fixing the stray heredoc marker.\n\n${droppedNote("bedit")}`,
+    `Fixing the stray heredoc marker.\n\n${droppedNote("")}`,
   );
 });
 
 test("chat: a call kept beside one left out is numbered from 0", async () => {
   const text =
-    event(chat({ tool_calls: [call("bedit", 0), call("read", 1, '{"path":"a"}')] }, "tool_calls")) +
+    event(chat({ tool_calls: [call("", 0), call("read", 1, '{"path":"a"}')] }, "tool_calls")) +
     terminal("chat");
   const response = await guardToolResponse(sse(text), "chat", policy);
   const values = frameData(await response.text());
@@ -1127,7 +1348,7 @@ test("chat: a call kept beside one left out is numbered from 0", async () => {
   assert.ok(finishes.includes("tool_calls"));
 });
 
-test("SSE: ambiguous injected names are left out in every protocol", async () => {
+test("SSE: an ambiguous injected name is handed on as called, never guessed, in every protocol", async () => {
   const rules = { declared: new Set(["Bash", "BASH"]), injected: new Set(["bash"]) };
   for (const protocol of protocols) {
     const response = await guardToolResponse(
@@ -1137,15 +1358,15 @@ test("SSE: ambiguous injected names are left out in every protocol", async () =>
     );
     const values = frameData(await response.text());
     assert.ok(!values.some((data) => data.type === "error" || data.error));
-    assert.deepEqual(callsIn(protocol, values), []);
-    assert.equal(textIn(protocol, values), droppedNote("bash"));
+    assert.deepEqual(callsIn(protocol, values), ["bash"]);
+    assert.equal(textIn(protocol, values), "");
   }
 });
 
 test("Responses and Messages: a streamed call left out comes as text in its place", async () => {
   const responses = frameData(
     await (
-      await guardToolResponse(sse(toolStream("responses", "bcp")), "responses", policy)
+      await guardToolResponse(sse(toolStream("responses", "")), "responses", policy)
     ).text(),
   );
   assert.deepEqual(
@@ -1161,7 +1382,7 @@ test("Responses and Messages: a streamed call left out comes as text in its plac
       "response.completed",
     ],
   );
-  const note = droppedNote("bcp");
+  const note = droppedNote("");
   const message = { type: "message", id: "fc_1", role: "assistant", status: "completed" };
   assert.deepEqual(responses[6].item, {
     ...message,
@@ -1174,7 +1395,7 @@ test("Responses and Messages: a streamed call left out comes as text in its plac
   }
   const messages = frameData(
     await (
-      await guardToolResponse(sse(toolStream("anthropic", "ash")), "anthropic", policy)
+      await guardToolResponse(sse(toolStream("anthropic", "")), "anthropic", policy)
     ).text(),
   );
   assert.deepEqual(
@@ -1189,7 +1410,7 @@ test("Responses and Messages: a streamed call left out comes as text in its plac
     ],
   );
   assert.deepEqual(messages[1].content_block, { type: "text", text: "" });
-  assert.deepEqual(messages[2].delta, { type: "text_delta", text: droppedNote("ash") });
+  assert.deepEqual(messages[2].delta, { type: "text_delta", text: droppedNote("") });
   assert.equal(messages[4].delta.stop_reason, "end_turn");
 });
 
@@ -1202,7 +1423,7 @@ test("Messages: a kept call keeps the tool_use stop beside one left out", async 
     {
       type: "content_block_start",
       index: 0,
-      content_block: { type: "tool_use", id: "a", name: "ash", input: {} },
+      content_block: { type: "tool_use", id: "a", name: "", input: {} },
     },
     { type: "content_block_stop", index: 0 },
     {
@@ -1239,7 +1460,8 @@ test("downstream cancellation interrupts a pending upstream read", async () => {
   }
 });
 
-test("chat: completed tool buffers release their cumulative budget", async () => {
+// 32+ MiB through the guard, like the CRLF test below: not held to bun's 5 s default
+test("chat: completed tool buffers release their cumulative budget", { timeout: 60_000 }, async () => {
   let count = 0;
   const bytes = encoder.encode(
     event(chat({ tool_calls: [call("bash", 0, "x".repeat(1024 * 1024))] }, "tool_calls")),
@@ -1290,7 +1512,8 @@ test(
   },
 );
 
-test("text streams larger than 32 MiB are not subject to the pending-tool limit", async () => {
+// 32+ MiB through the guard, like the CRLF test below: not held to bun's 5 s default
+test("text streams larger than 32 MiB are not subject to the pending-tool limit", { timeout: 60_000 }, async () => {
   let count = 0;
   const bytes = encoder.encode(event(chat({ content: "x".repeat(1024 * 1024) })));
   const source = new Response(
@@ -1316,4 +1539,100 @@ test("text streams larger than 32 MiB are not subject to the pending-tool limit"
     assert.ok(!new TextDecoder().decode(value).includes('"error"'));
   }
   assert.ok(total > 32 * 1024 * 1024);
+});
+
+// #91: Zen closed space-bunny-free's Chat stream after these three frames,
+// with no finish_reason, usage or [DONE] (the reporter's bytes).
+const cutFrames =
+  `data: {"id":"x2","object":"chat.completion.chunk","created":1,"model":"space-bunny-free","choices":[{"index":0,"delta":{"role":"assistant"}}],"usage":null}\n\n` +
+  `data: {"id":"x2","object":"chat.completion.chunk","created":1,"model":"space-bunny-free","choices":[{"index":0,"delta":{"content":"Installed successfully and all"}}],"usage":null}\n\n` +
+  `data: {"id":"x2","object":"chat.completion.chunk","created":1,"model":"space-bunny-free","choices":[{"index":0,"delta":{"content":" other plugins are intact."}}],"usage":null}\n\n`;
+const streaming = { endCutShort: true };
+
+test("chat: a stream cut short after its text ends as one, with a note and [DONE] (#91)", async () => {
+  for (const chunkSize of [7, 31, 4096]) {
+    const result = await guardToolResponse(sse(cutFrames, { chunkSize }), "chat", policy, streaming);
+    const text = await result.text();
+    assert.equal(result.status, 200);
+    assert.ok(text.startsWith(cutFrames), "what was said goes on unchanged");
+    assert.doesNotMatch(text, /"error"/);
+    const frames = parse(text);
+    assert.equal(frames.at(-1).data, "[DONE]");
+    const end = frames.at(-2).data;
+    assert.equal(end.id, "x2");
+    assert.equal(end.model, "space-bunny-free");
+    assert.deepEqual(end.choices, [
+      { index: 0, delta: { content: `\n\n${cutShortNote}` }, finish_reason: "stop" },
+    ]);
+  }
+});
+
+test("chat: a stream cut short in its reasoning ends as one too, the note its text (#91)", async () => {
+  const text = event(chat({ role: "assistant" })) + event(chat({ reasoning_content: "Let me think" }));
+  const result = await guardToolResponse(sse(text), "chat", policy, streaming);
+  const frames = parse(await result.text());
+  assert.equal(frames.at(-1).data, "[DONE]");
+  assert.deepEqual(frames.at(-2).data.choices, [
+    { index: 0, delta: { content: cutShortNote }, finish_reason: "stop" },
+  ]);
+});
+
+test("chat: a stream whose every choice finished is only missing its [DONE] (#91)", async () => {
+  const text = cutFrames + event(chat({}, "stop"));
+  const result = await guardToolResponse(sse(text), "chat", policy, streaming);
+  const out = await result.text();
+  assert.equal(out, text + "data: [DONE]\n\n");
+});
+
+test("chat: a stream cut short still fails with a call pending, saying nothing, or not streamed (#91)", async () => {
+  const cases = [
+    [cutFrames + event(chat({ tool_calls: [call("bash", 0, '{"comm')] })), streaming, /tool call unfinished/],
+    [event(chat({ role: "assistant" })), streaming, /1 event,/],
+    ["", streaming, /0 events, 0 bytes/],
+    [cutFrames, {}, /reply x2, 3 events, \d+ bytes/],
+  ];
+  for (const [text, options, detail] of cases) {
+    const result = await guardToolResponse(sse(text), "chat", policy, options);
+    const frames = parse(await result.text());
+    assert.doesNotMatch(JSON.stringify(frames), /comm/);
+    const data = frames.at(-1).data;
+    assertError("chat", data);
+    assert.match(data.error.message, /^Upstream SSE ended without a completion marker \(/);
+    assert.match(data.error.message, detail);
+  }
+});
+
+test("anthropic and responses: a stream cut short still fails, naming the reply (#91)", async () => {
+  const cut = {
+    anthropic:
+      event({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", content: [] } }, "message_start") +
+      event({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, "content_block_start") +
+      event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Installed" } }, "content_block_delta"),
+    responses:
+      event({ type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } }, "response.created") +
+      event({ type: "response.output_text.delta", item_id: "m", output_index: 0, content_index: 0, delta: "Installed" }, "response.output_text.delta"),
+  };
+  for (const [protocol, text] of Object.entries(cut)) {
+    const result = await guardToolResponse(sse(text), protocol, policy, streaming);
+    const data = parse(await result.text()).at(-1).data;
+    assertError(protocol, data);
+    const message = protocol === "anthropic" ? data.error.message : data.message;
+    assert.match(message, protocol === "anthropic" ? /reply msg_1/ : /reply resp_1/);
+  }
+});
+
+test("a declared name of separators only is never handed another call (#76 follow-up)", async () => {
+  const rules = { declared: new Set(["todo_write", "_"]) };
+  for (const name of ["--", "-", "__"]) {
+    const result = await guardToolResponse(
+      Response.json(snapshot("chat", [name])),
+      "chat",
+      rules,
+    );
+    const data = await result.json();
+    assert.deepEqual(callsIn("chat", [data]), [name]);
+    assert.equal(textIn("chat", [data]), "");
+  }
+  const exact = await guardToolResponse(Response.json(snapshot("chat", ["_"])), "chat", rules);
+  assert.deepEqual(callsIn("chat", [await exact.json()]), ["_"]);
 });

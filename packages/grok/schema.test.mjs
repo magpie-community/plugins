@@ -3,9 +3,12 @@
 // themselves (testdata: what ChatGPT.app 26.930's zod builds). Grok turned
 // the request away: "tool parameter root must be an object type (root
 // schema is an anyOf/oneOf union with a non-object branch)" (magpie#1271).
+import { noRealGrok } from "./nocli.mjs"
 import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { _internal } from "./index.mjs"
+
+noRealGrok()
 
 const SCHEMA = readFileSync(new URL("./testdata/codex_automation_update_schema.json", import.meta.url), "utf8")
 

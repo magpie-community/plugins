@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage glance</title>
+<link rel="stylesheet" href="style.css">
+<script src="_magpie/bridge.js"></script>
+<script src="view.js"></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header>
+  <h1 data-t="title">Usage</h1>
+  <div class="seg" role="tablist" id="periods">
+    <button type="button" role="tab" data-period="today" data-t="today">Today</button>
+    <button type="button" role="tab" data-period="7d" data-t="7d">7 days</button>
+    <button type="button" role="tab" data-period="30d" data-t="30d">30 days</button>
+  </div>
+</header>
+<p class="since" id="since"></p>
+<section class="tiles" id="tiles"></section>
+<section class="models">
+  <div class="models-head">
+    <h2 data-t="models">Models</h2>
+    <div class="seg small" role="tablist" id="sorts">
+      <button type="button" role="tab" data-sort="tokens" data-t="tokens">Tokens</button>
+      <button type="button" role="tab" data-sort="calls" data-t="calls">Calls</button>
+      <button type="button" role="tab" data-sort="cost" data-t="cost">Cost</button>
+    </div>
+  </div>
+  <ol id="models"></ol>
+  <p class="empty" id="empty" hidden></p>
+</section>
+<p class="error" id="error" hidden></p>
+</body>
+</html>

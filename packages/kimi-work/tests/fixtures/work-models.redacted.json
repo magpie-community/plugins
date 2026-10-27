@@ -1,0 +1,48 @@
+{
+  "data": [
+    {
+      "id": "k3-agent",
+      "display_name": "K3",
+      "context_length": 1000000,
+      "supports_image_in": true,
+      "supports_reasoning": true,
+      "reasoningEffortOptions": [
+        {
+          "effort": "REASONING_EFFORT_LOW",
+          "displayName": "Standard"
+        },
+        {
+          "effort": "REASONING_EFFORT_HIGH",
+          "displayName": "High"
+        },
+        {
+          "effort": "REASONING_EFFORT_MAX",
+          "displayName": "Max",
+          "description": "Consumes more credits"
+        }
+      ]
+    },
+    {
+      "id": "k2d8-preview",
+      "display_name": "K2.8 Preview",
+      "context_length": 1000000,
+      "supports_image_in": true,
+      "supports_reasoning": true,
+      "reasoningEffortOptions": [
+        {
+          "effort": "REASONING_EFFORT_LOW",
+          "displayName": "Standard"
+        },
+        {
+          "effort": "REASONING_EFFORT_HIGH",
+          "displayName": "High"
+        },
+        {
+          "effort": "REASONING_EFFORT_MAX",
+          "displayName": "Max",
+          "description": "Consumes more credits"
+        }
+      ]
+    }
+  ]
+}

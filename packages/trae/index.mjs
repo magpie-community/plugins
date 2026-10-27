@@ -9,8 +9,15 @@
 // The account's fetch also sends Trae CN's own pages on api.trae.cn
 // (/trae/api/…) as the account, for magpie's daily check-in (每日签到:
 // /trae/api/v2/ug/checkin_credits/status, then /claim).
-import { createHash, generateKeyPairSync, randomBytes, randomUUID, randomInt, sign } from "node:crypto"
+import { createDecipheriv, createHash, generateKeyPairSync, randomBytes, randomUUID, randomInt, sign } from "node:crypto"
+import { readFile } from "node:fs/promises"
 import { createServer, STATUS_CODES } from "node:http"
+import { homedir, release, version as osVersion } from "node:os"
+import { join } from "node:path"
+
+// SEES is a fallback model that takes images, as Trae's lists mark it
+// (multimodal: true)
+const SEES = { attachment: true, modalities: { input: ["text", "image"], output: ["text"] } }
 
 const SITES = {
   // Trae CN (trae.cn): the authorization page sends the browser back to a
@@ -63,27 +70,37 @@ const SITES = {
     brand: "ASUS TUF Gaming A15 FA507RM_FA507RM",
     // the IDE's chat functions: the classic IDE's agent, then SOLO's Work
     // mode, then the TRAE agent (solo_agent, which has deepseek-v4.1-flash),
-    // then SOLO Lite's agent
-    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite"],
+    // then SOLO Lite's agent, then SOLO's coder roster, which lists models no
+    // other chat function does (glm-5v-turbo, kimi-k2.5, minimax-m2.7,
+    // qwen-3.6-plus — each answers through it)
+    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite", "solo_coder"],
     // what Trae CN's chat_v3 is known to serve; the live list replaces it
     // (the MODEL defaults are spread in at the end of the module, once MODEL
     // is defined, so a site's entry only names what differs)
     models: {
       "glm-5.2": { name: "GLM-5.2", limit: { context: 200_000, output: 32_000 } },
       "glm-5": { name: "GLM-5" },
-      "kimi-k2.6": { name: "Kimi K2.6", limit: { context: 256_000, output: 0 } },
-      "qwen-3.7-plus": { name: "Qwen 3.7 Plus" },
+      "kimi-k2.6": { name: "Kimi K2.6", limit: { context: 256_000, output: 0 }, ...SEES },
+      "qwen-3.7-plus": { name: "Qwen 3.7 Plus", ...SEES },
       "DeepSeek-V4-Pro": { name: "DeepSeek V4 Pro" },
       "DeepSeek-V4-Flash": { name: "DeepSeek V4 Flash" },
     },
     // the model host for an account: Trae CN's own hosts serve no models,
     // so only a host that is one is taken, else the one gateway
     apiOf: (a) => {
-      const h = String(a?.api ?? "").replace(/\/+$/, "")
-      return /mchost\.guru|trae-api-/i.test(h) ? h : SITES["trae-cn"].hosts.api
+      const h = traeHost(a?.api)
+      return h && SITES["trae-cn"].modelHost(h) ? h : SITES["trae-cn"].hosts.api
     },
-    // whether a host named by a sign-in is one of the model hosts
-    modelHost: (h) => /mchost\.guru|trae-api-/i.test(String(h ?? "")),
+    // whether a host named by a sign-in is one of the model hosts: an https
+    // host on mchost.guru or named trae-api-…, as the consumer gateway is,
+    // or another trae.cn host than the consumer site's own (www, api,
+    // grow…), which an enterprise (SaaS) sign-in may name for its tenant
+    modelHost: (h) => {
+      const t = traeHost(h)
+      if (!t) return false
+      const n = new URL(t).hostname
+      return /(^|\.)mchost\.guru$|^trae-api-/i.test(n) || (/\.trae\.cn$/i.test(n) && !/^(www|api|grow[^.]*)\./i.test(n))
+    },
     // ownPage: url is one of Trae CN's own JSON pages on api.trae.cn
     // (/trae/api/…: the daily check-in, credits), which the account's fetch
     // sends as the account rather than as a chat
@@ -98,6 +115,10 @@ const SITES = {
     // Trae CN's account info carries no region: its one deployment is the
     // one it is asked through
     regionOf: () => "",
+    checkin: {
+      status: { path: "/trae/api/v2/ug/checkin_credits/status" },
+      claim: { path: "/trae/api/v2/ug/checkin_credits/claim" },
+    },
     // where usage is asked, and which page it is (CN: credits)
     usage: {
       kind: "credits",
@@ -153,7 +174,7 @@ const SITES = {
     clientVersionCode: "20260917",
     pluginVersion: "2.3.62834",
     brand: "ASUS TUF Gaming A15 FA507RM_FA507RM",
-    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite"],
+    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite", "solo_coder"],
     // what Trae Global's chat is known to serve (its catalog barely overlaps
     // the CN one's); the live list replaces it
     models: {
@@ -166,15 +187,22 @@ const SITES = {
     // the model host: the account's region (or a US host the sign-in named)
     // selects the US deployment, else the SG one
     apiOf: (a) => {
-      const h = String(a?.api ?? "").replace(/\/+$/, "")
+      const h = traeHost(a?.api)
+      const n = h ? new URL(h).hostname : ""
       const region = String(a?.region ?? "").toUpperCase()
-      if (/coreva/i.test(h) || /api-us(?:[-.]|$)/i.test(h) || /^US(?:[-_ ]|$)/.test(region)) return SITES["trae-global"].hosts.us
-      if (/coresg/i.test(h)) return h
+      if (/coreva/i.test(n) || /api-us(?:[-.]|$)/i.test(n) || /^US(?:[-_ ]|$)/.test(region)) return SITES["trae-global"].hosts.us
+      if (/coresg/i.test(n)) return h
+      // another trae.ai host than the site's own (www, api-…, grow…): one an
+      // enterprise (SaaS) sign-in named for its tenant
+      if (/\.trae\.ai$/i.test(n) && !/^(www\.|api[-.]|grow)/i.test(n)) return h
       return SITES["trae-global"].hosts.api
     },
     // a sign-in names a host of Trae's, which can be an auth host
     // (api-us-east), not the chat host
-    modelHost: (h) => /trae\.ai/i.test(String(h ?? "")),
+    modelHost: (h) => {
+      const t = traeHost(h)
+      return !!t && /(^|\.)trae\.ai$/i.test(new URL(t).hostname)
+    },
     // Trae Global serves no own JSON pages through the account's fetch
     ownPage: () => false,
     // the account's region, from the sign-in's user info
@@ -213,10 +241,57 @@ const SITES = {
   },
 }
 
+// traeHost is a host a sign-in named, when it is a well-formed https one
+// on Trae's own domains (no port, no credentials), as origin plus any path;
+// "" for anything else, which is then not taken
+const TRAE_DOMAINS = ["trae.cn", "trae.ai", "mchost.guru"]
+function traeHost(h) {
+  try {
+    const u = new URL(String(h ?? "").trim())
+    if (u.protocol !== "https:" || u.username || u.password || u.port || u.search || u.hash) return ""
+    const n = u.hostname.toLowerCase()
+    if (!TRAE_DOMAINS.some((d) => n === d || n.endsWith("." + d))) return ""
+    return (u.origin + u.pathname).replace(/\/+$/, "")
+  } catch {
+    return ""
+  }
+}
+
+// authHostOf is the host a sign-in named for its tokens, when it named one
+// on the site's own domain (an enterprise's may differ from the consumer
+// one); "" when it named none, and the site's own is used
+function authHostOf(h, site) {
+  const t = traeHost(h)
+  if (!t) return ""
+  const n = new URL(t).hostname
+  return n === site.webHost || n.endsWith("." + site.webHost) ? t : ""
+}
+
+// accountOf keeps the account fields of the sign-in's user info that say
+// what kind of account it is (tenant, enterprise, login type), plain values
+// only and never anything that looks like a secret, for later use; nothing
+// sends them
+function accountOf(info) {
+  const out = {}
+  for (const [k, v] of Object.entries(info ?? {})) {
+    if (!/tenant|enterprise|saas|login|org|team|sso|^ent|usertype|accounttype/i.test(k)) continue
+    if (/token|secret|key|password|cookie|session|jwt/i.test(k)) continue
+    if (v === null || ["string", "number", "boolean"].includes(typeof v)) out[k] = v
+  }
+  return out
+}
+
 const SIGN_IN_TIMEOUT = 10 * 60 * 1000
 const EARLY_MS = 2 * 60 * 1000 // a token this close to its end is renewed before a request
 const LEAD_MS = 10 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
 const DAY = 24 * 3600 * 1000
+// REREAD_MS is how long a list read keeps its answer before a request that
+// wants levels may read the list again: it holds whether the read produced an
+// entry for the model or not, so a list answering badly (or one that doesn't
+// name the model) costs one read, not one per request. A request path that
+// reads on every attempt would otherwise pay two 20s timeouts on each turn —
+// the branch costs the chat itself nothing to answer from.
+const REREAD_MS = 5 * 60 * 1000
 
 // a reply limit of 0 is one Trae doesn't say: magpie then takes models.dev's
 // for the model (magpie's catalog), where a made-up 32K told agents a far
@@ -234,8 +309,32 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // device is the machine an account signs in from, made once at sign-in and
 // named to trae.cn's authorization page, then sent with every request: a
-// fresh one each time is what the relays saw requests dropped for.
-const newDevice = () => ({ deviceId: digits(19), machineId: randomBytes(16).toString("hex"), ...newDeviceKey() })
+// fresh one each time is what the relays saw requests dropped for. Trae
+// CN's id has the shape its clients' have, 16 digits: the device service
+// gives the IDE a 15- or 16-digit one (iCubeAuthInfo://icube-dc:<id>, see
+// clientDevice), and Trae CN answers a check-in claim on a 19-digit id
+// 9074 where the same account and token on a 16-digit one are taken
+// (magpie-community/plugins#194). Trae's global site keeps the 19 digits
+// it was signed in with: nothing says its ids are shaped otherwise.
+const newDevice = (site) => ({ deviceId: digits(site?.id === "trae-cn" ? 16 : 19), machineId: randomBytes(16).toString("hex"), ...newDeviceKey() })
+
+// ugDevice is the device id a Trae CN account's check-in goes on when this
+// machine's client isn't signed in as it: its own when that already has a
+// client's shape (15 or 16 digits), else, for an account signed in before
+// 0.2.16 with 19 digits, a 16-digit id made from its own device id and
+// uid. That one is the same on every check-in of the account, never
+// rotated and never another account's: it is the account's own device in
+// the shape Trae CN takes (#194), not a new device to get past a refusal,
+// and a 9095 (this device is in for today) on it stays the day's answer.
+// The chat's pages and the renewal keep the device the account signed in
+// with.
+function ugDevice(a) {
+  const id = String(a.deviceId ?? "")
+  if (/^\d{15,16}$/.test(id)) return id
+  if (!id && !a.uid) return id
+  const n = BigInt("0x" + createHash("sha256").update(`trae-cn-device\0${id}\0${a.uid ?? ""}`).digest("hex").slice(0, 30))
+  return String(1_000_000_000_000_000n + (n % 9_000_000_000_000_000n))
+}
 
 // newDeviceKey is the device's key pair, an ECDSA P-256 one as the clients
 // keep (iCubeAuthInfo://icube-dc:<device>), whose public half goes with a
@@ -301,6 +400,11 @@ function toAuth(s, site) {
     // the model host the sign-in named, if it named one
     ...(site.modelHost(s.api) ? { api: s.api } : {}),
     ...(s.region ? { region: s.region } : {}),
+    // the host the sign-in named, its own token host if it named one, and
+    // what kind of account it is (an enterprise one's tenant), kept as given
+    ...(traeHost(s.host) ? { host: traeHost(s.host) } : {}),
+    ...(authHostOf(s.authHost, site) ? { authHost: authHostOf(s.authHost, site) } : {}),
+    ...(s.account && Object.keys(s.account).length ? { account: s.account } : {}),
   }
 }
 
@@ -319,6 +423,9 @@ function fromAuth(auth, site) {
     devicePrivateKey: auth.devicePrivateKey || "",
     api: auth.api || "",
     region: site.regionOf(auth),
+    host: auth.host || "",
+    authHost: authHostOf(auth.authHost, site),
+    account: auth.account && typeof auth.account === "object" ? auth.account : {},
   }
 }
 
@@ -405,6 +512,7 @@ async function exchange(refresh, clientId, site, host = site.hosts.auth) {
       name: String(info.ScreenName ?? info.screenName ?? ""),
       api: info.Host ?? "",
       region: site.regionOf(info),
+      account: accountOf(info),
     }
   }
   const e = errorOf(text)
@@ -495,12 +603,14 @@ async function boundExchange(a, site, host = site.hosts.auth) {
 // before 0.2.3 (exchange). A device key made for the account goes with
 // either, so the next renewal signs with the same one.
 async function renewal(a, site) {
-  if (!site.deviceExchange) return exchange(a.refresh, a.clientId, site)
+  // the token host the sign-in named, else the site's
+  const host = authHostOf(a.authHost, site) || site.hosts.auth
+  if (!site.deviceExchange) return exchange(a.refresh, a.clientId, site, host)
   const keys = a.devicePrivateKey && a.devicePublicKey ? {} : newDeviceKey()
   try {
-    return await boundExchange({ ...a, ...keys }, site)
+    return await boundExchange({ ...a, ...keys }, site, host)
   } catch {}
-  return { ...(await exchange(a.refresh, a.clientId, site)), ...keys }
+  return { ...(await exchange(a.refresh, a.clientId, site, host)), ...keys }
 }
 
 // ---- the browser sign-in --------------------------------------------------------
@@ -527,10 +637,15 @@ async function signedIn(q, device, site) {
     name: String(info.ScreenName ?? info.screenName ?? ""),
     api: host,
     region: site.regionOf(info),
+    host,
+    // a token host the callback named, if it named one
+    authHost: authHostOf(q.get("authHost") || q.get("auth_host") || info.AuthHost || info.authHost, site),
+    account: accountOf(info),
   }
+  const authHost = s.authHost || site.hosts.auth
   if (!s.token && s.refresh) {
-    const x = await exchange(s.refresh, s.clientId, site)
-    s = { ...s, ...x, uid: x.uid || s.uid, name: x.name || s.name, api: x.api || s.api, region: x.region || s.region }
+    const x = await exchange(s.refresh, s.clientId, site, authHost)
+    s = { ...s, ...x, uid: x.uid || s.uid, name: x.name || s.name, api: x.api || s.api, region: x.region || s.region, host: s.host || x.api, account: { ...x.account, ...s.account } }
   }
   if (!s.token) throw new Error(`${site.webHost} sent back no token`)
   if (!s.refresh) throw new Error(`${site.webHost} sent back no refresh token`)
@@ -539,7 +654,7 @@ async function signedIn(q, device, site) {
   // one at once, so a check-in takes it; when Trae won't, it does as is
   if (site.deviceExchange) {
     try {
-      const x = await boundExchange(s, site)
+      const x = await boundExchange(s, site, authHost)
       s = { ...s, token: x.token, refresh: x.refresh, expires: x.expires || s.expires }
     } catch {}
   }
@@ -549,7 +664,7 @@ async function signedIn(q, device, site) {
 // browserSignIn is the IDE's sign-in: trae.cn's authorization page, back
 // to a callback on 127.0.0.1 (the page takes no other kind)
 async function browserSignIn(site) {
-  const device = newDevice()
+  const device = newDevice(site)
   const trace = randomUUID()
   let over = false
   let settle
@@ -616,7 +731,9 @@ async function browserSignIn(site) {
     x_env: "",
     x_app_version: site.ideVersion,
     x_app_type: "stable",
-    hide_saas_login: "true",
+    // the enterprise (SaaS) sign-in is offered beside the personal one: an
+    // enterprise subscription signs in there (@shad70w0 on X)
+    hide_saas_login: "false",
   })
   return {
     url: `${site.hosts.web}/authorization?${q}`,
@@ -666,9 +783,12 @@ const ugUA = (site) =>
 // ugHeaders are the headers Trae CN's IDE (3.3.104) sends a growth page
 // with, and only those: its JWT, then its device (fb: x-device-id,
 // x-device-brand, x-device-type, x-os-version, x-app-version), not the
-// chat's tokens and versions.
-function ugHeaders(a, site, extra = {}) {
-  return {
+// chat's tokens and versions. own is this machine's Trae CN client, when
+// it is signed in as this very account (ownClient): its device id and
+// this machine's OS go instead of the account's, and no brand is named
+// (fb leaves it out when it has no model to name).
+function ugHeaders(a, site, extra = {}, own) {
+  const h = {
     "Content-Type": "application/json",
     Authorization: `Cloud-IDE-JWT ${a.token}`,
     "User-Agent": ugUA(site),
@@ -677,8 +797,151 @@ function ugHeaders(a, site, extra = {}) {
     "x-device-type": "Windows",
     "x-os-version": "10.0.22631",
     "x-app-version": site.clientVersion,
-    ...extra,
   }
+  if (own) {
+    h["x-device-id"] = own.deviceId
+    h["x-device-type"] = own.type
+    h["x-os-version"] = own.os
+    delete h["x-device-brand"]
+  }
+  return { ...h, ...extra }
+}
+
+// ---- this machine's own Trae CN client ----------------------------------------------
+
+// Trae CN's desktop client keeps its state in a VS Code-style
+// globalStorage/storage.json. The device id Trae's device service gave
+// it is in a key's name, iCubeAuthInfo://icube-dc:<digits> (15 or 16
+// digits seen); its sign-in is the value of iCubeAuthInfo://icube.cloudide,
+// a JSON envelope (userId, token, …) stored as is or obfuscated with the
+// client's fixed AES-128-CBC codec. Seen in real clients' files
+// (yetone/magpie#808: the same id in the client's own did= query;
+// yetone/magpie#1705) and read the same way by dingminhua/dsh-connect-trae
+// (MIT), whose codec this is.
+const DC_KEY = "iCubeAuthInfo://icube-dc:"
+const AUTH_KEY = "iCubeAuthInfo://icube.cloudide"
+
+// ownClient.paths are where storage.json may be, in order; tests replace it
+const ownClient = {
+  paths: () => clientStoragePaths(process.platform, homedir(), process.env),
+}
+
+// CLIENT_PROFILES are the folder names a Trae CN client profile is kept
+// under: the IDE's own, and TRAE SOLO CN's, which is a client of the same
+// realm and signs in its own account. A profile started with its own
+// --user-data-dir is found only if it is one of these; there is no list of
+// them to read, and nothing is guessed from a folder's contents.
+const CLIENT_PROFILES = ["Trae CN", "TRAE SOLO CN", "trae-cn"]
+
+function clientStoragePaths(platform, home, env) {
+  const file = (root, name) => join(root, name, "User", "globalStorage", "storage.json")
+  if (platform === "darwin") return CLIENT_PROFILES.filter((n) => n !== "trae-cn").map((n) => file(join(home, "Library", "Application Support"), n))
+  if (platform === "win32") {
+    // the two roots are often the same folder: APPDATA and the home's own
+    // AppData\Roaming. They are compared as one system spells them, so a
+    // difference of separator or case alone doesn't read the same file twice
+    const spell = (r) => String(r ?? "").replace(/[\\/]+/g, "\\").replace(/\\+$/, "").toLowerCase()
+    const roots = []
+    for (const r of [env.APPDATA, join(home, "AppData", "Roaming")]) {
+      if (!r) continue
+      if (roots.some((was) => spell(was) === spell(r))) continue
+      roots.push(r)
+    }
+    return roots.flatMap((r) => CLIENT_PROFILES.map((n) => file(r, n)))
+  }
+  if (platform === "linux") return CLIENT_PROFILES.map((n) => file(env.XDG_CONFIG_HOME || join(home, ".config"), n))
+  return []
+}
+
+// clientDevice is the device id of a Trae CN client profile on this machine
+// that is signed in as uid, else undefined. It only reads: nothing of the
+// client's is written, kept or sent but that id, and the client's own token
+// is read past, never used. Never an id made up or changed: an account no
+// profile is signed in as never gets a client's id.
+//
+// A machine can hold more than one profile — Trae CN and TRAE SOLO CN each
+// write one, and a client started with its own --user-data-dir writes
+// another — and each profile's storage.json names the account it is signed
+// in as, with that account's device. So every profile is read and the one
+// signed in as uid answers with its device, which is what lets two accounts
+// each check in on a real client's device. A profile that isn't signed in
+// as uid, that can't be read or made out, or that names no single device
+// is passed over rather than ending the search: before, the first profile
+// read decided for all of them, so a second account's own profile was never
+// seen (and one unreadable file hid every profile after it).
+async function clientDevice(uid) {
+  if (!uid) return undefined
+  for (const p of ownClient.paths()) {
+    let text
+    try {
+      text = await readFile(p, "utf8")
+    } catch {
+      continue // not installed here
+    }
+    let doc
+    try {
+      doc = JSON.parse(text)
+    } catch {
+      continue // not a file we can make out: the next profile may be
+    }
+    try {
+      const ids = Object.keys(doc ?? {}).filter((k) => k.startsWith(DC_KEY)).map((k) => k.slice(DC_KEY.length))
+      if (ids.length !== 1 || !/^\d{8,20}$/.test(ids[0])) continue
+      const who = clientAuth(doc[AUTH_KEY])?.userId
+      if (who != null && String(who) === String(uid)) return ids[0]
+    } catch {
+      continue // a sign-in that doesn't decode: the next profile may be
+    }
+  }
+  return undefined
+}
+
+// clientAuth is the client's sign-in envelope, as stored or decoded
+function clientAuth(v) {
+  if (typeof v !== "string" || !v.trim()) return undefined
+  const t = v.trim()
+  return JSON.parse(t.startsWith("{") ? t : clientDecode(t))
+}
+
+const xorOf = (a, b) => Buffer.from(a.map((x, i) => x ^ b[i]))
+const CODEC = {
+  "746305100000": xorOf(
+    [82, 9, 106, 213, 48, 54, 165, 56, 191, 64, 163, 158, 129, 243, 215, 251, 124, 227, 57, 130, 155, 47, 255, 135, 52, 142, 67, 68, 196, 222, 233, 203, 84, 123, 148, 50, 166, 194, 35, 61, 238, 76, 149, 11, 66, 250, 195, 78, 8, 46, 161, 102, 40, 217, 36, 178, 118, 91, 162, 73, 109, 139, 209, 37],
+    [31, 221, 168, 51, 136, 7, 199, 49, 177, 18, 16, 89, 39, 128, 236, 95, 96, 81, 127, 169, 25, 181, 74, 13, 45, 229, 122, 159, 147, 201, 156, 239, 160, 224, 59, 77, 174, 42, 245, 176, 200, 235, 187, 60, 131, 83, 153, 97, 23, 43, 4, 126, 186, 119, 214, 38, 225, 105, 20, 99, 85, 33, 12, 125],
+  ),
+  "123920200203": xorOf(
+    [191, 192, 216, 250, 122, 246, 220, 97, 31, 254, 98, 27, 8, 72, 71, 176, 135, 99, 96, 18, 127, 101, 203, 104, 211, 102, 191, 125, 37, 72, 150, 156, 51, 229, 121, 35, 17, 153, 141, 177, 110, 131, 150, 128, 172, 255, 254, 6, 18, 140, 55, 62, 236, 249, 135, 64, 135, 12, 117, 4, 89, 149, 168, 209],
+    [246, 204, 26, 232, 232, 70, 129, 109, 223, 146, 169, 242, 23, 241, 105, 145, 50, 196, 165, 42, 254, 120, 3, 54, 244, 207, 209, 85, 53, 6, 138, 106, 175, 148, 31, 204, 186, 186, 165, 182, 87, 142, 49, 10, 39, 110, 26, 154, 86, 56, 173, 125, 18, 64, 198, 225, 99, 99, 83, 82, 191, 134, 76, 170],
+  ),
+}
+
+// clientDecode undoes the client's codec: a 6-byte header naming the salt,
+// 32 random bytes, then AES-128-CBC under sha512(sha512(random) + salt);
+// the plaintext is led by its own sha512, which is checked
+function clientDecode(b64) {
+  const buf = Buffer.from(b64, "base64")
+  const salt = CODEC[buf.subarray(0, 6).toString("hex")]
+  if (!salt || buf.length <= 102) throw new Error("not the client's codec")
+  const key = createHash("sha512").update(Buffer.concat([createHash("sha512").update(buf.subarray(6, 38)).digest(), salt])).digest()
+  const d = createDecipheriv("aes-128-cbc", key.subarray(0, 16), key.subarray(16, 32))
+  const out = Buffer.concat([d.update(buf.subarray(38)), d.final()])
+  const body = out.subarray(64)
+  if (out.length < 64 || !createHash("sha512").update(body).digest().equals(out.subarray(0, 64))) throw new Error("the client's value doesn't check")
+  return body.toString("utf8")
+}
+
+// thisMachine is how the client names this machine's OS: its type, and
+// the OS's own version (Windows' product name, as "Windows 11 Home China"
+// was seen, else its build; elsewhere the kernel's release)
+function thisMachine(platform = process.platform) {
+  if (platform === "win32") {
+    let v = ""
+    try {
+      v = osVersion()
+    } catch {}
+    return { type: "windows", os: /^Windows \d/.test(v) ? v : `Windows ${release()}` }
+  }
+  return { type: platform === "darwin" ? "mac" : platform, os: `${platform === "darwin" ? "macOS" : platform} ${release()}` }
 }
 
 // ugPage: url is one of Trae's growth pages (the check-in)
@@ -690,29 +953,13 @@ const ugPage = (url) => {
   }
 }
 
-// Trae's chat takes text only and has no turn for a tool call or its
-// result. The agent's tools are named to it natively and in a system
-// prompt that asks for each call as a tagged block; earlier calls and
-// their results go in as text. A native call in its answer is taken too.
+// A model that writes a tool call as text still writes it, mostly GLM and
+// DeepSeek: the blocks are read as the calls they mean (the tools also go
+// natively in the body, and a past call is a native turn, so an answer is
+// usually native; the text form is read for when it is not).
 const OPEN = "<tool_call>"
 const CLOSE = "</tool_call>"
 
-function toolPrompt(tools, choice, parallel) {
-  const defs = tools.map((t) => {
-    const f = t.function ?? t
-    return { name: f.name, description: f.description ?? "", parameters: f.parameters ?? {} }
-  })
-  const lines = [
-    "You can call the client's tools, listed below as JSON. They run on the user's machine, not on yours: use no built-in or server tool to reach the user's files.",
-    `To call a tool, write one block per call and nothing after it: ${OPEN}{"name":"tool_name","arguments":{...}}${CLOSE}. Use an exact tool name and fill arguments from its schema. Then stop and wait: the result comes back in the next message.`,
-    "A call is not done until its result comes back; don't say it is, and don't repeat a call whose result you have.",
-  ]
-  if (parallel === false) lines.push("Call at most one tool at a time.")
-  if (choice === "required") lines.push("Call a tool before answering.")
-  else if (choice && typeof choice === "object" && (choice.function?.name || choice.name)) lines.push(`Call the tool ${choice.function?.name || choice.name} before answering.`)
-  lines.push("Tools:", JSON.stringify(defs))
-  return lines.join("\n")
-}
 
 const partText = (content) => {
   if (typeof content === "string") return content
@@ -723,41 +970,160 @@ const partText = (content) => {
     .join("\n")
 }
 
-// traeMessages is the conversation as Trae's chat takes it
-function traeMessages(req) {
-  const tools = Array.isArray(req.tools) && req.tools.length && req.tool_choice !== "none" ? req.tools : []
+// imageOf is an image part of a message as Trae's chat takes one: OpenAI's
+// image_url part, {url} in it, which is what TRAE's ai-agent sends
+// (LLMRawMultiContent's image_url, LLMRawChatImageURL) and what the
+// open-source relays pass llm_utils_chat unchanged. null for a part that
+// isn't an image, or one with no url.
+function imageOf(p) {
+  if (p?.type !== "image_url" && p?.type !== "input_image") return null
+  const url = typeof p.image_url === "string" ? p.image_url : p.image_url?.url ?? p.url
+  return typeof url === "string" && url ? { type: "image_url", image_url: { url } } : null
+}
+
+// partsOf is a message's text and, for a model that sees, its images apart
+// from it; a model that doesn't is told in the text that one was there
+const partsOf = (content, sees) => {
+  if (!sees || !Array.isArray(content)) return { text: partText(content), images: [] }
+  const images = content.map(imageOf).filter(Boolean)
+  return { text: partText(content.filter((p) => !imageOf(p))), images }
+}
+
+// traeMessages is the conversation as Trae's chat takes it. sees is whether
+// the model takes images: Trae's list says so of each model (multimodal),
+// and a model it says doesn't is sent the placeholder, not the image.
+function traeMessages(req, sees = false) {
+  // native is whether the body names the tools to Trae (chatBody's own
+  // test). Past calls go back as Trae's own turns only then: every live
+  // run of that shape carried the tools, and a request without them (a
+  // summary, tool_choice "none") keeps the text form it always had
+  const native = Array.isArray(req.tools) && req.tools.length > 0 && req.tool_choice !== "none"
   const names = new Map()
   const out = []
-  if (tools.length) out.push({ role: "system", text: toolPrompt(tools, req.tool_choice, req.parallel_tool_calls) })
+  // dropped is every call id a turn carried but Trae cannot be sent: an
+  // assistant turn whose calls all lost their name takes its results with it
+  const dropped = new Set()
+  // images of tool results, held until the run of results ends: Trae
+  // takes no message between a call's results, so they cannot go after
+  // each one — one user message once they are all in
+  const pending = []
+  const flushImages = () => {
+    if (pending.length) out.push({ role: "user", images: pending.splice(0) })
+  }
   for (const m of req.messages ?? []) {
     const role = m.role === "developer" ? "system" : m.role
-    let text = partText(m.content)
-    if (role === "assistant") {
-      const calls = (m.tool_calls ?? []).map((c) => {
-        names.set(c.id, c.function?.name)
+    let { text, images } = partsOf(m.content, sees)
+    if (!native && role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      const calls = m.tool_calls.map((c) => {
+        names.set(String(c.id ?? ""), c.function?.name)
         let args = c.function?.arguments ?? "{}"
         try {
           args = JSON.parse(args)
         } catch {}
         return OPEN + JSON.stringify({ name: c.function?.name, arguments: args }) + CLOSE
       })
-      text = [text, ...calls].filter(Boolean).join("\n")
-      out.push({ role: "assistant", text })
+      out.push({ role: "assistant", text: [text, ...calls].filter(Boolean).join("\n") })
+      continue
+    }
+    if (role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      // a past call goes back as the turn Trae made it: an assistant
+      // tool_calls message, its result in the tool message after it. Trae
+      // answers such a history with native calls; written out as a
+      // <tool_call> block in the text it answers in blocks too, and a block
+      // the stream cuts short ends the turn as an error (plugins#38).
+      const calls = []
+      for (const c of m.tool_calls) {
+        const name = String(c.function?.name ?? c.name ?? "").trim()
+        // a call Trae cannot be sent is dropped here; its result goes too
+        // (an empty tool_calls list and a result naming no call are not a
+        // turn Trae takes)
+        if (!name) {
+          if (c.id != null) dropped.add(String(c.id))
+          continue
+        }
+        names.set(String(c.id ?? ""), name)
+        let args = c.function?.arguments ?? c.arguments ?? "{}"
+        if (typeof args !== "string") {
+          try {
+            args = JSON.stringify(args)
+          } catch {
+            args = "{}"
+          }
+        }
+        calls.push({ id: String(c.id ?? "call_" + (names.size + 1)), type: "function", function_call: { name, arguments: args } })
+      }
+      if (calls.length) out.push({ role: "assistant", text, images, calls })
+      else if (text || images.length) out.push({ role: "assistant", text, images })
+      continue
+    }
+    if (role === "assistant") {
+      flushImages()
+      out.push({ role: "assistant", text, images })
     } else if (role === "tool") {
-      out.push({ role: "user", text: `Result of ${names.get(m.tool_call_id) || m.name || "the tool"} (call ${m.tool_call_id ?? "?"}):\n${text}` })
+      const id = String(m.tool_call_id ?? "")
+      if (dropped.has(id)) continue
+      // a result answering no call this history sends (the text form, or
+      // a call cut away before it) is no turn Trae takes: it goes as text
+      if (!native || !names.has(id)) {
+        flushImages()
+        out.push({ role: "user", text: `Result of ${names.get(id) || m.name || "the tool"} (call ${m.tool_call_id ?? "?"}):\n${text}`, images })
+        continue
+      }
+      // Trae's own result turn: the call it answers, its text as parts
+      // (an empty one for a result with no text). Its images wait: a
+      // tool turn's image_url reaches some models (Kimi) and not others
+      // (Doubao-Seed), so they go in a user message after the whole run
+      // of results, which every multimodal model reads
+      if (images.length) pending.push(...images)
+      // Trae refuses a result with no text (4027: the calls turn reads as
+      // unanswered), so one that printed nothing says so (plugins#251)
+      out.push({ role: "tool", tool_call_id: id, text: text || (images.length ? "(the result's image follows)" : "(no output)") })
     } else {
-      out.push({ role: role === "system" ? "system" : "user", text })
+      flushImages()
+      out.push({ role: role === "system" ? "system" : "user", text, images })
     }
   }
-  // Trae takes no empty message, nor two of one role in a row
+  flushImages()
+  // Trae takes no two messages of one role in a row, so an assistant turn is
+  // folded into the turn after it: text into the calls turn it introduces
+  // (agents send "let me read" and then the call, and parallel calls split
+  // over two assistant turns), calls joined into one list. A message of an
+  // image alone is not empty; tool results are turns of their own, each
+  // answering its own call.
   const merged = []
   for (const m of out) {
-    if (!m.text) continue
+    const images = m.images ?? []
+    if (m.role === "tool") {
+      merged.push(m)
+      continue
+    }
+    if (m.role === "assistant") {
+      const last = merged.at(-1)
+      if (last && last.role === "assistant") {
+        // fold: text and images join, calls append to the same list
+        last.text = [last.text, m.text].filter(Boolean).join("\n\n")
+        last.images = [...(last.images ?? []), ...images]
+        if (m.calls) last.calls = [...(last.calls ?? []), ...m.calls]
+        if (!last.text && !last.images.length && !last.calls) merged.pop()
+        continue
+      }
+      if (!m.text && !images.length && !m.calls) continue
+      merged.push({ role: "assistant", text: m.text, images, ...(m.calls ? { calls: m.calls } : {}) })
+      continue
+    }
+    if (!m.text && !images.length) continue
     const last = merged.at(-1)
-    if (last && last.role === m.role && m.role !== "system") last.text += "\n\n" + m.text
-    else merged.push({ ...m })
+    if (last && last.role === m.role && m.role !== "system") {
+      last.text = [last.text, m.text].filter(Boolean).join("\n\n")
+      last.images = [...(last.images ?? []), ...images]
+    } else merged.push({ role: m.role, text: m.text, images })
   }
-  return merged.map((m) => ({ role: m.role, content: [{ type: "text", text: m.text }] }))
+  return merged.map((m) => {
+    const content = [...(m.text ? [{ type: "text", text: m.text }] : []), ...(m.images ?? [])]
+    if (m.calls) return { role: "assistant", content: content.length ? content : null, tool_calls: m.calls }
+    if (m.role === "tool") return { role: "tool", tool_call_id: m.tool_call_id, content } // results of one turn stay consecutive: nothing may go between them (11148)
+    return { role: m.role, content }
+  })
 }
 
 // nativeTools are the tools as Trae names them: parameters a JSON string
@@ -832,10 +1198,15 @@ function sessionOf(headers) {
 // tool result sent back, a retry, another function answering) shows up in the
 // usage detail as several, each under no title at all. request_id stays a
 // fresh id per request, being that request's own.
-function chatBody(req, fn, modelName, most = 0, max = null, session = "") {
+//
+// levels is the model's own levels (levelsOf of its entry): the effort the
+// request asks for is sent as the Trae name that model takes, and left out
+// when it takes none of that name — Trae rejects a level a model has no entry
+// for, and serves its default when none is asked.
+function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null) {
   const config = max?.base ?? req.model
   const body = {
-    messages: traeMessages(req),
+    messages: traeMessages(req, sees),
     function: fn,
     config_name: config,
     model: config,
@@ -844,6 +1215,8 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "") {
     request_id: randomUUID(),
     session_id: session || randomUUID(),
   }
+  const effort = effortOf(levels, req.reasoning_effort ?? req.reasoningEffort)
+  if (effort) body.reasoning_effort = effort
   const asked = req.max_completion_tokens ?? req.max_tokens
   if (Number.isFinite(asked) && asked > 0) body.max_tokens = most > 0 ? Math.min(Math.floor(asked), most) : Math.floor(asked)
   if (max?.window) {
@@ -919,13 +1292,35 @@ const eventName = (s) =>
     .toLowerCase()
     .replace(/^_|_$/g, "")
 
-// usageOf maps Trae's token counts to OpenAI's
+// tokensOf maps Trae's token counts to OpenAI's. Trae's token_usage event
+// (TRAE SOLO CN's ai-agent, TokenUsageEvent: name, prompt_tokens,
+// completion_tokens, total_tokens, reasoning_tokens,
+// cache_creation_input_tokens, cache_read_input_tokens,
+// prompt_tokens_total, completion_tokens_total) says what the prompt cache
+// read and wrote under Anthropic's names. They go on under those names,
+// which magpie reads beside prompt_tokens as it reads a relay's in front of
+// Claude (whether prompt_tokens counts them too is judged there, by
+// whether it is at least as big); without them every request read as no
+// cache hit (01huadalang on magpie's Discord: K3, 53 calls, all 0)
 function tokensOf(u) {
   if (!u || typeof u !== "object") return null
-  const p = Number(u.prompt_tokens ?? u.input_tokens ?? u.promptTokens ?? u.inputTokens ?? 0) || 0
-  const c = Number(u.completion_tokens ?? u.output_tokens ?? u.completionTokens ?? u.outputTokens ?? 0) || 0
+  const n = (...v) => Number(v.find((x) => x != null) ?? 0) || 0
+  const p = n(u.prompt_tokens, u.input_tokens, u.promptTokens, u.inputTokens)
+  const c = n(u.completion_tokens, u.output_tokens, u.completionTokens, u.outputTokens)
   if (!p && !c) return null
-  return { prompt_tokens: p, completion_tokens: c, total_tokens: Number(u.total_tokens ?? u.totalTokens) || p + c }
+  const out = { prompt_tokens: p, completion_tokens: c, total_tokens: n(u.total_tokens, u.totalTokens) || p + c }
+  const read = n(u.prompt_tokens_details?.cached_tokens)
+  const write = n(u.prompt_tokens_details?.cache_write_tokens)
+  if (read || write) out.prompt_tokens_details = { cached_tokens: read, ...(write ? { cache_write_tokens: write } : {}) }
+  else {
+    const r = n(u.cache_read_input_tokens, u.cacheReadInputTokens)
+    const w = n(u.cache_creation_input_tokens, u.cacheCreationInputTokens)
+    if (r) out.cache_read_input_tokens = r
+    if (w) out.cache_creation_input_tokens = w
+  }
+  const thought = n(u.reasoning_tokens, u.completion_tokens_details?.reasoning_tokens)
+  if (thought) out.completion_tokens_details = { reasoning_tokens: thought }
+  return out
 }
 
 let callSeq = 0
@@ -949,6 +1344,7 @@ class TextTools {
     this.tools = tools
     this.sent = "" // the text given out so far, to tell a block in code from a call
     this.bad = new Set() // where the waiting block's JSON was tried and not read, not tried again
+    this.mark = 0 // where in sent the text after the last call starts
   }
   push(s, end = false) {
     this.buf += s
@@ -971,7 +1367,29 @@ class TextTools {
       const i = om ? om.index : -1
       const d = this.buf.search(DSML_AT)
       const r = this.buf.search(REASON_AT)
-      if (r >= 0 && (i < 0 || r < i) && (d < 0 || r < d)) {
+      const sm = this.buf.match(STRAY_AT)
+      const s = sm ? sm.index : -1
+      const x = this.buf.search(XML_AT)
+      if (s >= 0 && [i, d, r, x].every((y) => y < 0 || s < y)) {
+        // a close with no call open, with what GLM left before it
+        // (}}</tool_call>, magpie#1945): not the answer, dropped; in code,
+        // shown
+        const head = this.buf.slice(0, s)
+        // only a tail: a close with nothing before it since the last call
+        // (or the start), or with GLM's braces, quotes or > right before
+        // it; a close a sentence names in passing stays
+        const tail = /^[}\]"'>]/.test(sm[0]) || !(this.sent + text + head).slice(this.mark).trim()
+        if (!tail || quoted(this.sent + text + head)) {
+          text += this.buf.slice(0, s + sm[0].length)
+          this.buf = this.buf.slice(s + sm[0].length)
+          continue
+        }
+        text += head
+        this.buf = this.buf.slice(s + sm[0].length)
+        this.after = true
+        continue
+      }
+      if (r >= 0 && (i < 0 || r < i) && (d < 0 || r < d) && (x < 0 || r < x)) {
         const o = objectEnd(this.buf, r)
         if (o === -1 && !end) {
           // not whole yet: held, the text before it sent
@@ -991,7 +1409,39 @@ class TextTools {
         this.buf = this.buf.slice(r + 1)
         continue
       }
-      if (i < 0 && d < 0) break
+      if (i < 0 && d < 0 && x < 0) break
+      if (x >= 0 && (i < 0 || x < i) && (d < 0 || x < d)) {
+        // Anthropic's <function_calls><invoke name="…"> or Qwen's
+        // <function=…>, as Kimi and MiMo write a call (01huadalang on
+        // magpie's Discord, dsh): a call only for a tool the request
+        // declared, and never in a code fence or backticks
+        const head = this.buf.slice(0, x)
+        const at = this.buf.slice(x)
+        const opener = at.match(/^<[^<>]*>?/)[0]
+        if (quoted(this.sent + text + head)) {
+          text += head + opener
+          this.buf = at.slice(opener.length)
+          continue
+        }
+        const b = this.xmlCall(at, end)
+        if (b.wait) break
+        if (b.text) {
+          text += head + opener
+          this.buf = at.slice(opener.length)
+          continue
+        }
+        text += head
+        if (b.error) {
+          this.buf = ""
+          this.sent += text
+          return { text, calls, reasoning, error: b.error }
+        }
+        calls.push(b.call)
+        this.mark = this.sent.length + text.length
+        this.buf = b.rest
+        this.after = true
+        continue
+      }
       if (d >= 0 && (i < 0 || d < i)) {
         text += this.buf.slice(0, d)
         this.buf = this.buf.slice(d)
@@ -1022,6 +1472,7 @@ class TextTools {
           stop = body.length
         }
         calls.push({ name: inv[1], arguments: dsmlArgs(body.slice(0, stop)) })
+        this.mark = this.sent.length + text.length
         this.buf = body.slice(c && c.index === stop ? stop + c[0].length : stop)
         this.after = true
         continue
@@ -1063,22 +1514,89 @@ class TextTools {
         return { text, calls, reasoning, error: b.error }
       }
       calls.push(b.call)
+      this.mark = this.sent.length + text.length
       this.buf = b.rest
       this.after = true
     }
     if (end) {
+      // an opener the stream ended inside (<tool_call name): a call cut
+      // short, not the answer (plugins#38)
+      const h = this.buf.search(OPEN_HOLD)
+      if (h >= 0 && !quoted(this.sent + text + this.buf.slice(0, h))) {
+        text += this.buf.slice(0, h)
+        this.buf = ""
+        this.sent += text
+        return { text, calls, reasoning, error: CUT_SHORT }
+      }
       text += this.buf
       this.buf = ""
     } else {
       // keep back an opened block, or what may be the start of one
-      const at = [this.buf.search(OPEN_AT), this.buf.search(OPEN_HOLD), this.buf.search(DSML_AT), this.buf.search(REASON_AT)].filter((x) => x >= 0)
+      const at = [this.buf.search(OPEN_AT), this.buf.search(OPEN_HOLD), this.buf.search(DSML_AT), this.buf.search(REASON_AT), this.buf.search(XML_AT), this.buf.search(XML_HOLD)].filter((x) => x >= 0)
       let keep = at.length ? this.buf.length - Math.min(...at) : 0
       if (!keep) for (let k = Math.min(MARK_MAX - 1, this.buf.length); k > 0; k--) if (MARKS.some((m) => m.startsWith(this.buf.slice(-k)))) { keep = k; break }
+      // and braces, brackets, quotes or a > a close may still come after
+      const sh = this.buf.slice(0, this.buf.length - keep).match(STRAY_HOLD)
+      if (sh) keep = this.buf.length - sh.index
       text += this.buf.slice(0, this.buf.length - keep)
       this.buf = this.buf.slice(this.buf.length - keep)
     }
     this.sent += text
     return { text, calls, reasoning }
+  }
+
+  // xmlCall reads a call written in Anthropic's tags (<function_calls>
+  // around one or more <invoke name="…"><parameter name="k">v</parameter>
+  // </invoke>) or Qwen's (<function=…><parameter=k>v</parameter>
+  // </function>), s starting at its first tag: {call, rest}, {wait}
+  // while it may still become one, {text} when it is no call (a tool the
+  // request didn't declare, a tag named in prose), {error} for one cut
+  // short. Each invoke is a call of its own; the tags between them are
+  // dropped as the leftovers of one.
+  xmlCall(s, end) {
+    const w = s.match(/^<(?:antml:)?function_calls>/)
+    if (w) {
+      const rest = s.slice(w[0].length).replace(/^\s+/, "")
+      if (!end && (!rest || XML_STARTS.some((k) => k.startsWith(rest)))) return { wait: true }
+      return this.xmlInvoke(rest, end)
+    }
+    return this.xmlInvoke(s, end)
+  }
+
+  xmlInvoke(s, end) {
+    let m = s.match(/^<(?:antml:)?invoke\s+name\s*=\s*"([^"<>]+)"\s*>/)
+    let closeRe = /<\/(?:antml:)?invoke\s*>/
+    if (!m) {
+      m = s.match(/^<function=([^\s<>]+?)\s*>/)
+      closeRe = /<\/function\s*>/
+    }
+    if (!m) {
+      // an opener still being written
+      if (!end && (XML_STARTS.some((k) => k.startsWith(s)) || /^<(?:antml:)?(?:invoke\s|function=)[^<>]{0,300}$/.test(s))) return { wait: true }
+      return { text: true }
+    }
+    const declared = this.tools.map((t) => (t.function ?? t)?.name).filter(Boolean)
+    const name = toolNamed(m[1].trim(), this.tools)
+    if (!declared.includes(name)) return { text: true }
+    const body = s.slice(m[0].length)
+    const c = body.match(closeRe)
+    const n = body.search(XML_NEXT)
+    let stop = c ? c.index : -1
+    if (n >= 0 && (stop < 0 || n < stop)) stop = n
+    if (stop < 0) {
+      if (!end) return { wait: true }
+      stop = body.length
+    }
+    const whole = !!c && c.index === stop
+    const region = body.slice(0, stop).replace(/<(\/?)antml:parameter\b/g, "<$1parameter")
+    const p = paramArgs(region, name, this.tools)
+    if (!whole && !p.closed) {
+      // no parameter and no close: a tag named in passing; a parameter
+      // left open: the call cut short (plugins#38)
+      if (!/<parameter\b/.test(region)) return { text: true }
+      return { error: CUT_SHORT }
+    }
+    return { call: { name, arguments: JSON.stringify(p.args) }, rest: whole ? body.slice(stop + c[0].length) : body.slice(stop) }
   }
 
   // block reads what follows a <tool_call> opener: {call, rest} for a
@@ -1088,11 +1606,11 @@ class TextTools {
   // gave as <tool_call name="…">.
   block(body, named, end) {
     if (!end && !body.trim()) return { wait: true }
-    const close = body.indexOf(CLOSE)
+    const [close, closeLen] = closeAt(body)
     if (named) {
       if (close < 0 && !end) return { wait: true }
       const region = close >= 0 ? body.slice(0, close) : body
-      const rest = close >= 0 ? body.slice(close + CLOSE.length) : ""
+      const rest = close >= 0 ? body.slice(close + closeLen) : ""
       if (region.trimStart().startsWith("{")) {
         const v = repairedJSON(region.trim())
         if (!v) return { error: close >= 0 ? UNREADABLE : CUT_SHORT }
@@ -1116,22 +1634,41 @@ class TextTools {
         const region = body.slice(ph[0].length, close >= 0 ? close : body.length)
         const p = paramArgs(region, ph[1], this.tools)
         if (close < 0 && !p.closed) return { error: CUT_SHORT }
-        return { call: { name: ph[1], arguments: JSON.stringify(p.args) }, rest: close >= 0 ? body.slice(close + CLOSE.length) : "" }
+        return { call: { name: ph[1], arguments: JSON.stringify(p.args) }, rest: close >= 0 ? body.slice(close + closeLen) : "" }
       }
       const o = objectEnd(body, 0)
       if (o > 0 && !this.bad.has(":" + o)) {
         const v = callJSON(body.slice(0, o))
         // a name alone may have its parameters still to come
         if (v && !end && Object.keys(v).length === 1 && "<parameter".startsWith(body.slice(o).replace(/^\s*>?\s*/, ""))) return { wait: true }
-        if (v) return { call: { name: String(v.name), arguments: callArgs(v) }, rest: body.slice(o) }
-        this.bad.add(":" + o)
+        if (v) {
+          // what follows the object up to the close: GLM leaves braces,
+          // brackets, quotes or a > of its own there (}}</tool_call>,
+          // "></tool_call>, magpie#1945), dropped with the close; held
+          // while only those have come
+          const tail = body.slice(o)
+          const junk = tail.match(TAIL_JUNK)[0]
+          const next = tail.slice(junk.length)
+          const call = { name: String(v.name), arguments: callArgs(v) }
+          if (!end && (!next || ["</tool_call>", "</toolcall>"].some((k) => k.startsWith(next)))) return { wait: true }
+          const [c, n] = closeAt(next)
+          if (c === 0) return { call, rest: next.slice(n) }
+          // after blanks alone, or with no close to come: the call, and
+          // what follows read on as before. Other text before the close
+          // right after the object means the object ended early, at a
+          // quote inside a string left unescaped: that cut is wrong (a
+          // heredoc's command cut short, magpie#1945), so it is read up to
+          // the close below, or not at all
+          if (!/\S/.test(junk) && !/^[^\s<]/.test(next)) return { call, rest: tail }
+          if (close < 0 && end) return { call, rest: tail }
+        } else this.bad.add(":" + o)
       }
       // not whole, or not JSON as it stands: read up to a close (a file's
       // content may hold one), or at the end all of it
-      for (let j = close; j >= 0; j = body.indexOf(CLOSE, j + 1)) {
+      for (let [j, n] = [close, closeLen]; j >= 0; [j, n] = closeAt(body, j + 1)) {
         if (this.bad.has("<" + j)) continue
         const v = callJSON(body.slice(0, j))
-        if (v) return { call: { name: String(v.name), arguments: callArgs(v) }, rest: body.slice(j + CLOSE.length) }
+        if (v) return { call: { name: String(v.name), arguments: callArgs(v) }, rest: body.slice(j + n) }
         this.bad.add("<" + j)
       }
       if (!end) return { wait: true }
@@ -1145,7 +1682,7 @@ class TextTools {
     const region = close >= 0 ? body.slice(0, close) : body
     const w = glmCall(region, this.tools)
     // GLM's call, cut short at the end, is still the call
-    if (w) return { call: { name: w.name, arguments: callArgs(w) }, rest: close >= 0 ? body.slice(close + CLOSE.length) : "" }
+    if (w) return { call: { name: w.name, arguments: callArgs(w) }, rest: close >= 0 ? body.slice(close + closeLen) : "" }
     if (/^\s*[\w.:-]{1,128}\s*<arg_key>/.test(body)) return { error: close >= 0 ? UNREADABLE : CUT_SHORT }
     return { text: true }
   }
@@ -1155,9 +1692,26 @@ const CUT_SHORT = "the model's tool call, written as text, was cut short; it is 
 const UNREADABLE = "the model's tool call, written as text, can't be read; it is not sent on as the answer"
 
 // an opener: <tool_call>, one with attributes (<tool_call name="bash">),
-// or <tool_call right before its JSON; and one still being written
-const OPEN_AT = /<tool_call(?:(\s[^<>{}]*)?>|(?=\s*\{))/
-const OPEN_HOLD = /<tool_call(?:\s[^<>{}\n]{0,200})?$/
+// or <tool_call right before its JSON; and one still being written. GLM
+// also writes it without the underscore, <toolcall> (plugins#38)
+const OPEN_AT = /<tool_?call(?:(\s[^<>{}]*)?>|(?=\s*\{))/
+const OPEN_HOLD = /<tool_?call(?:\s[^<>{}\n]{0,200})?$/
+// what GLM leaves between a call's JSON and its close: blanks, closing
+// braces and brackets, quotes, a > (magpie#1945)
+const TAIL_JUNK = /^[\s}\]"'>]*/
+// a close with no call open, and that leftover before it: the tail of a
+// call Trae's service read itself, or of one already read (magpie#1945)
+const STRAY_AT = /[}\]"'>]*\s*<\/tool_?calls?>/
+// the end of text that may be such a tail still being written
+const STRAY_HOLD = /[}\]"'>][\s}\]"'>]*$/
+// closeAt is where the next close is from i, </tool_call> or </toolcall>,
+// and its length: [-1, 0] when there is none
+function closeAt(s, i = 0) {
+  const re = /<\/tool_?call>/g
+  re.lastIndex = i
+  const m = re.exec(s)
+  return m ? [m.index, m[0].length] : [-1, 0]
+}
 // DeepSeek's half-and-half call: {"name":"x"} (or its brace or > left
 // out), then <parameter name="k">v</parameter> or Qwen's <parameter=k>
 const PARAM_HEAD = /^\s*\{\s*"name"\s*:\s*"([^"]+)"\s*\}?\s*>?\s*(?=<parameter\b)/
@@ -1303,7 +1857,7 @@ const GLM_ARG = /<arg_key>\s*([\s\S]*?)\s*<\/arg_key>\s*<arg_value>([\s\S]*?)<\/
 // a value that isn't a string. A name alone is a call only to a tool the
 // request has.
 function glmCall(s, tools = []) {
-  s = String(s ?? "").replace(/<\/tool_call>\s*$/, "")
+  s = String(s ?? "").replace(/<\/tool_?call>\s*$/, "")
   const k = s.indexOf("<arg_key>")
   const name = (k < 0 ? s : s.slice(0, k)).trim()
   if (!/^[\w.:-]{1,128}$/.test(name)) return null
@@ -1324,6 +1878,165 @@ function glmCall(s, tools = []) {
   }
   if (k >= 0 && !Object.keys(args).length) return null
   return { name, arguments: args }
+}
+
+// Trae reads a model's call for it and hands a call it could not read on as
+// the native call: the wrapper the client's prompt asked for, with GLM's own
+// template tags where the model wrote them and a field's close left behind
+// (``{"name":"bash","arguments":{"command</arg_key><arg_value>ls</arg_value>``).
+// The name then holds the call the model meant, and the call's own arguments
+// — where the model wrote them — hold the rest of it.
+const NAMECALL = /^\s*\{\s*"name"\s*:\s*"([^"\\]*)"\s*,\s*"(?:arguments|input|parameters)"\s*:\s*\{/
+// a wrapper the service put text in front of (`bash_abstract_command_0>{…}`):
+// the same shape, wherever it starts
+const NAMEHEAD = /\{\s*"name"\s*:\s*"([^"\\]*)"\s*,\s*"(?:arguments|input|parameters)"\s*:\s*\{/
+const NAMETAG = /<\/?arg_(?:key|value)\s*>/
+
+// nameCall is the call a name holds when it is one the model wrote there
+// ({name, arguments}), null when it isn't: a name without the wrapper, one
+// whose tool the request doesn't have, or one no field could be read from.
+// The wrapper and the tags are the service's own handoff, so what stands
+// between them is the model's text as it wrote it — a quote it left
+// unescaped is read as the quote it is, the way repairedJSON reads a file's
+// content. A value is JSON where the tool's schema says the field is no
+// string and the text is one; else the text, cut where the value was cut.
+function nameCall(s, tools = []) {
+  const text = String(s ?? "")
+  // a wrapper the service put text in front of (`bash_abstract_command_0>{…}`)
+  // is the call it holds, that text being no name the request has
+  const at = text.indexOf("{")
+  if (at < 0) return null
+  const m = NAMECALL.exec(text.slice(at))
+  if (!m) return null
+  const name = m[1]
+  const tool = tools.map((t) => t.function ?? t).find((t) => t?.name === name)
+  if (!tool) return null
+  const fields = nameFields(text.slice(at + m[0].length))
+  const args = {}
+  for (const [key, value] of fields) {
+    // a field the schema says is no string is its JSON where it is one (a
+    // number the model wrote, an object), else the text it is
+    if (tool.parameters?.properties?.[key]?.type !== "string") {
+      try {
+        args[key] = JSON.parse(value.trim())
+        continue
+      } catch {}
+    }
+    args[key] = value
+  }
+  return Object.keys(args).length ? { name, arguments: args } : null
+}
+
+// nameFields reads a wrapper's body as its fields: a key, then its value.
+// A tag stands where the service cut a colon or a quote, so a value ends at
+// the tag that ends it, at the next key, or at the structure that closes it
+// — and at a closing tag (`</description>`) whose name is a field's, because
+// what follows such a tag is the service's own text, not the model's.
+// What none of those reached is no field's text and is left out, so a call
+// cut in the middle keeps what it has.
+function nameFields(body) {
+  const out = []
+  let i = 0
+  for (let n = 0; n < 64 && i < body.length; n++) {
+    // between fields: blanks, a comma, or the tags that stand for either
+    i += (body.slice(i).match(/^[\s,]+|^<\/?[a-z_]+\s*>/) || [""])[0].length
+    if (body[i] !== '"') break
+    const key = nameString(body, i, () => true)
+    i = key.i
+    if (!key.text) break
+    const colon = body.slice(i).match(/^\s*:\s*/)
+    if (colon) i += colon[0].length
+    // a value the service cut at its tag: what stands after the tag is the
+    // model's text (limit</arg_key><arg_value>55)
+    i += (body.slice(i).match(/^(?:<\/?[a-z_]+\s*>)+/) || [""])[0].length
+    let value
+    if (body[i] === '"') {
+      const v = nameString(body, i, (rest) => endsValue(rest))
+      value = v.text
+      i = v.i
+      if (!value && !v.closed) break // an open quote with nothing in it
+    } else {
+      const rest = body.slice(i)
+      const stop = valueEnd(rest)
+      value = rest.slice(0, stop).replace(/^[\s,:]+/, "")
+      // the field's own close: the structure that follows it, and a quote
+      // the service cut it at where an escape isn't what stands before it
+      value = value.replace(/[\s,}\]]+$/, "").replace(/(?<!\\)"$/, "").replace(/[\s,}\]]+$/, "")
+      i += stop
+      // nothing introduced a value (no colon, no quote, no tag) and none
+      // stands: the wrapper is cut at the key, and an empty call read out
+      // of it would be a call the model never wrote
+      if (!value) break
+    }
+    out.push([key.text, value])
+  }
+  return out
+}
+
+// endsValue is what may stand after a string's closing quote: the structure
+// that closes the field (`,`, `}`, `]`, the end), a tag that stands for one,
+// or the next field's key.
+function endsValue(rest) {
+  if (/^\s*(?:[,}\]$]|<\/?[a-z_]+\s*>)/.test(rest)) return true
+  return /^\s*"(?:[^"\\]|\\.)*"\s*(?::|<\/?[a-z_]+\s*>)/.test(rest)
+}
+
+// valueEnd is where an unquoted value runs out: the next key, a tag that
+// ends it, or the structure that closes the field. A comma inside it is the
+// model's own (sed -n 1,9p), so only a brace or a bracket closes a field.
+function valueEnd(rest) {
+  const stops = [
+    rest.search(/"(?:(?:[^"\\<>]*)"\s*(?::|,|\s*<\/?[a-z_]+\s*>)|[^"\\<>]*<\/?[a-z_]+\s*>)/),
+    rest.search(/<\/?[a-z_]+\s*>/),
+    rest.search(/[}\]]/),
+  ].filter((x) => x >= 0)
+  return stops.length ? Math.min(...stops) : rest.length
+}
+
+// nameString reads the string at s[i] === '"', its escapes kept as written.
+// ends says, for what follows a quote, whether that quote ended the string:
+// a quote the model left unescaped inside a value is escaped as read on.
+// `closed` is whether the model's own quote ended it, where the read ran
+// into a tag or the end of the text.
+function nameString(s, i, ends) {
+  i++ // the opening quote
+  let src = ""
+  while (i < s.length) {
+    const ch = s[i]
+    if (ch === "\\") {
+      src += s[i] + (s[i + 1] ?? "")
+      i += 2
+      continue
+    }
+    if (ch === "<") {
+      // a tag ends the run: the service cut the value at it, whether it is
+      // one of its own (`</arg_value>`) or a field's (`</description>`),
+      // for neither is text the model wrote
+      if (/^<\/?[a-z_][\w-]*\s*>/.test(s.slice(i))) break
+    }
+    if (ch === '"') {
+      if (ends(s.slice(i + 1))) {
+        i++
+        return { text: decode(src), i, closed: true }
+      }
+      src += '\\"'
+      i++
+      continue
+    }
+    src += ch
+    i++
+  }
+  return { text: decode(src), i, closed: false }
+}
+
+// decode is a string's own source as the string: the escapes the model wrote
+// are the characters they stand for, a newline among them
+function decode(src) {
+  try {
+    return JSON.parse('"' + escapeRaw(src) + '"')
+  } catch {
+    return src
+  }
 }
 
 // toolNamed is the request's own name for a tool a model named otherwise
@@ -1371,11 +2084,18 @@ const DSML_INVOKE = new RegExp(String.raw`^<\s*[|｜][\s|｜]*DSML[\s|｜]*invok
 const DSML_INVOKE_AT = new RegExp(String.raw`<\s*[|｜][\s|｜]*DSML[\s|｜]*invoke\s+name\s*=`)
 const DSML_CLOSE = new RegExp(String.raw`<\s*\/\s*[|｜][\s|｜]*DSML[\s|｜]*invoke\s*>`)
 const DSML_PARAM = new RegExp(String.raw`<\s*[|｜][\s|｜]*DSML[\s|｜]*parameter\s+name\s*=\s*"([^"]+)"((?:\s+\w+\s*=\s*"[^"]*")*)\s*>([\s\S]*?)` + DSML + String.raw`parameter\s*>`, "g")
+// Anthropic's and Qwen's call tags (xmlCall): where one starts, an
+// opener still being written, the openers a wrapper is followed by, and
+// the next call's opener
+const XML_AT = /<(?:antml:)?(?:function_calls>|invoke\s+name\s*=|function=)/
+const XML_HOLD = /<(?:antml:)?(?:invoke\s[^<>]{0,300}|function=[^<>]{0,300})$/
+const XML_STARTS = ["<invoke ", "<antml:invoke ", "<function="]
+const XML_NEXT = /<(?:antml:)?invoke\s+name\s*=|<function=/
 // what is left after a call: blanks, our close, DeepSeek's tags but the
-// next call's
-const LEFTOVER = new RegExp(String.raw`^(?:\s+|<\/tool_calls?>|<tool_calls>|` + DSML + String.raw`(?![\s|｜]*invoke\b)[^<>]*>)+`)
+// next call's, the closes of Anthropic's and Qwen's
+const LEFTOVER = new RegExp(String.raw`^(?:\s+|<\/tool_?calls?>|<tool_?calls>|<\/(?:antml:)?(?:function_calls|invoke|function)>|` + DSML + String.raw`(?![\s|｜]*invoke\b)[^<>]*>)+`)
 // what text may be the start of, so held back
-const MARKS = [OPEN, CLOSE, "<｜DSML｜", "<|DSML|", "</｜DSML｜", "</|DSML|", '{"reasoning_content"']
+const MARKS = [OPEN, CLOSE, "<toolcall>", "</toolcall>", "<｜DSML｜", "<|DSML|", "</｜DSML｜", "</|DSML|", '{"reasoning_content"', "<function_calls>", "</function_calls>", "<antml:function_calls>", "</antml:function_calls>", "<invoke ", "<antml:invoke ", "</invoke>", "</antml:invoke>", "<function=", "</function>"]
 // reasoning a model wrote into its text as JSON
 const REASON_AT = /\{\s*"reasoning_content"\s*:/
 const MARK_MAX = Math.max(...MARKS.map((m) => m.length))
@@ -1506,7 +2226,13 @@ class NativeCalls {
       this.calls.push({ ...c })
       return
     }
+    // a name comes as the arguments do: a snapshot that grows. A name that
+    // starts with what was read is that snapshot further along, and takes
+    // its place — a wrapper cut short at a tag, then the whole call again.
+    // A name that doesn't start with it is a piece of the name's own, or
+    // one no snapshot explains, and the first is kept as it was
     if (!o.name) o.name = c.name
+    else if (c.name && c.name.startsWith(o.name) && c.name !== o.name) o.name = c.name
     if (c.index !== null && o.index === null) o.index = c.index
     const prev = o.arguments
     const next = c.arguments
@@ -1517,17 +2243,45 @@ class NativeCalls {
   }
   take(tools = []) {
     return this.calls.filter((c) => c.name).map(({ id, name, arguments: a }) => {
-      // a name that holds the whole call, as JSON or in GLM's template:
-      // that call, its arguments the name's when it gave none of its own
-      const w = name.trimStart().startsWith("{") ? looseJSON(name) : name.includes("<arg_key>") ? glmCall(name, tools) : null
+      // a name that holds the whole call, as the client's wrapper or in
+      // GLM's template: that call, its arguments the name's when it gave
+      // none of its own. The wrapper is read as JSON where it is whole —
+      // its nesting is its own — and as the service's handoff where it was
+      // left mid-call, a wrapper written with a space (`{ "name"`) whole
+      // like any other
+      const w = name.trimStart().startsWith("{") ? looseJSON(name) ?? nameCall(name, tools)
+        : NAMEHEAD.test(name) ? nameCall(name, tools)
+        : name.includes("<arg_key>") ? glmCall(name, tools) : null
       if (w?.name) {
         name = String(w.name)
-        if (!a || a.trim() === "{}") a = callArgs(w)
+        // the name's own arguments are the model's; what the name read fills
+        // the fields they left (the wrapper's text is the whole call where
+        // Trae moved the arguments with it, and the rest where it did not)
+        a = nameArgs(a, w)
       }
       const v = a && !done(a) ? looseJSON(a) : null
       return { id: id || callId(), name, arguments: v ? JSON.stringify(v) : a || "{}" }
     })
   }
+}
+
+// nameArgs is the arguments of a call a name held: the native call's own
+// where it carried them, else the name's, and the two together where each
+// has a field the other hasn't — the service moves the arguments it read
+// into the native call and leaves the rest in the name. The name's side is
+// read the way main reads a whole name (`callArgs`: `arguments`, `input`,
+// `parameters`, arguments given as a string, or the flat fields), so what
+// main already read keeps reading the same. The two stand together only as
+// two sets of fields; a call's own arguments that are not that — text the
+// service cut, or a value that isn't a call's fields — go on as they stand,
+// which is what main passed on and what the agent can answer.
+function nameArgs(native, fromName) {
+  const a = typeof native === "string" ? native.trim() : ""
+  const named = callArgs(fromName)
+  if (!a || a === "{}") return named
+  const own = looseJSON(a), side = looseJSON(named)
+  if (!own || !side || typeof own !== "object" || typeof side !== "object" || Array.isArray(own) || Array.isArray(side)) return a
+  return JSON.stringify({ ...side, ...own })
 }
 
 // resent says next is the call's whole arguments sent again after a
@@ -1605,7 +2359,9 @@ async function* parts(events, tools = []) {
     if (data === "[DONE]") break
     if (name === "error" || (name !== "output" && d.code && d.message && !d.response && !d.content)) {
       const e = errorOf(d)
-      yield { error: e.message || "Trae CN returned an error", code: e.code }
+      // the realm answering is named by the caller, which knows it; a bare
+      // word here reads as neither realm's
+      yield { error: e.message || "Trae returned an error", code: e.code }
       return
     }
     if (name === "token_usage") {
@@ -1621,9 +2377,12 @@ async function* parts(events, tools = []) {
     }
     if (!ANSWER.has(name)) continue
     const delta = d.delta && typeof d.delta === "object" ? d.delta : {}
-    const reasoning = d.reasoning_content ?? d.reasoning ?? delta.reasoning_content ?? ""
-    if (typeof reasoning === "string" && reasoning) {
-      const r = th.add(reasoning)
+    // the reasoning's own fields, in the order Trae has put it under: an
+    // empty one is no answer, so the next is asked (an event carrying both
+    // reasoning_content: "" and reasoning: "…" says the thought in the second)
+    const said = [d.reasoning_content, d.reasoning, delta.reasoning_content, delta.reasoning].find((v) => typeof v === "string" && v) ?? ""
+    if (said) {
+      const r = th.add(said)
       if (r) yield { reasoning: r }
     }
     let text = typeof d.response === "string" ? d.response : typeof d.content === "string" ? d.content : typeof delta.content === "string" ? delta.content : typeof d.delta === "string" ? d.delta : ""
@@ -1725,8 +2484,9 @@ async function openai(req, it, abort, site) {
   // a reply that failed (an error event, or Trae's stream breaking off)
   // ends with the error and [DONE], not a finish that says it stopped; the
   // stream is closed whatever happens, and an agent that goes away stops
-  // the reading of Trae's
-  const error = (message, code = null) => enc.encode(`data: ${JSON.stringify({ error: { message: `Trae CN: ${message}`, type: "api_error", code } })}\n\n`)
+  // the reading of Trae's. The realm answering names itself, so a Global
+  // account's failure reads as Trae Global's
+  const error = (message, code = null) => enc.encode(`data: ${JSON.stringify({ error: { message: `${site.realm}: ${message}`, type: "api_error", code } })}\n\n`)
   let gone = false
   const stream = new ReadableStream({
     async start(ctl) {
@@ -1797,6 +2557,12 @@ function chatModel(m, site) {
   return true
 }
 
+// seesOf is whether a list's entry says its model takes images: Trae's
+// lists mark each one multimodal true or false (Doubao-Seed, Kimi K3,
+// Qwen 3.7 Plus take them; GLM-5 and DeepSeek V4 don't). null when the
+// entry doesn't say.
+const seesOf = (m) => (typeof m?.multimodal === "boolean" ? m.multimodal : typeof m?.display_config?.multimodal === "boolean" ? m.display_config.multimodal : null)
+
 // devModel is the model an entry serves requests with: its __dev one
 const devModel = (m) => (Array.isArray(m?.model_detail_list) ? m.model_detail_list : []).find((d) => /__dev$/.test(String(d?.model_name ?? "")))
 
@@ -1820,6 +2586,55 @@ const maxModel = (...ms) => {
 // MAX is the suffix of a model's Max: deepseek-v4.1-flash-max is
 // deepseek-v4.1-flash in Max mode
 const MAX = "-max"
+
+// ---- reasoning levels --------------------------------------------------------------
+//
+// A list entry carries a reasoning_effort_config: the levels its model takes
+// (light, high, extra_high) and the one it defaults to. The request takes the
+// same names, as reasoning_effort, so a level an agent picks is sent as Trae
+// spells it. OpenCode knows the three as low/high/xhigh, so the map goes both
+// ways.
+//
+// An entry without the config takes no level: Trae serves it at its own
+// default and nothing is sent. The plugin used to send none for every model,
+// which read as "Trae takes no level" — it takes them, per model, and an
+// entry that names none is the exception rather than the rule.
+const LEVELS = { light: "low", high: "high", extra_high: "xhigh" }
+
+// levelsOf is an entry's levels in OpenCode's names, in Trae's order: [] when
+// the entry names none, null when it names ones this map can't spell (so a
+// caller can tell "takes no level" from "takes a level we can't name").
+const levelsOf = (m) => {
+  const cfg = m?.reasoning_effort_config
+  if (!cfg || typeof cfg !== "object") return []
+  const options = Array.isArray(cfg.options) ? cfg.options : []
+  const known = options.filter((o) => typeof o === "string" && LEVELS[o])
+  return known.length ? known.map((o) => LEVELS[o]) : options.length ? null : []
+}
+
+// variantsOf is a model's levels as OpenCode's variants. The value is the
+// effort OpenCode puts in the request body, so it names the level the way this
+// plugin's levels do: an agent in OpenCode writes `reasoning_effort` straight
+// from it, and effortOf below turns that name into Trae's. Naming Trae's
+// spelling here would make the body say "light", which is not one of the
+// levels this plugin offers, and the field would then be dropped. {} when the
+// model takes none.
+const variantsOf = (levels) => Object.fromEntries((levels ?? []).map((level) => [level, { reasoningEffort: level }]))
+
+// effortOf is the name to send Trae for an effort the request carries, or
+// undefined when the model doesn't take that one: a level Trae has no entry for
+// is rejected, so nothing is sent instead. The effort arrives in either
+// spelling — this plugin's own (low/high/xhigh) from its variants, or Trae's
+// (light/extra_high) from a client that read them off the list — and both name
+// the same level.
+const effortOf = (levels, effort) => {
+  if (typeof effort !== "string" || !levels) return undefined
+  const mine = Object.values(LEVELS).includes(effort) ? effort
+    : Object.prototype.hasOwnProperty.call(LEVELS, effort) ? LEVELS[effort]
+    : undefined
+  if (mine === undefined || !levels.includes(mine)) return undefined
+  return Object.keys(LEVELS).find((k) => LEVELS[k] === mine)
+}
 
 // ---- usage ------------------------------------------------------------------------
 
@@ -1879,6 +2694,90 @@ const makePlugin = (site) => async ({ client }) => {
   const modelNames = new Map()
   // the Max each model the list last read has (null: none)
   const maxes = new Map()
+  // whether each model the list last read takes images (its multimodal)
+  const sight = new Map()
+  // the entry the lists last gave each model, for what only the entry says:
+  // the reasoning levels it takes (reasoning_effort_config)
+  const liveEntry = new Map()
+  const liveEntryOf = (id) => liveEntry.get(String(id)) ?? site.models?.[String(id)]?.entry ?? null
+  // when each account's list was last read, and what that read returned:
+  // {at, p, done, expired}. A read that answered, failed or hung all leave
+  // their stamp, so a list that fails or leaves the model out costs one read
+  // per REREAD_MS rather than one per request. The promise is kept beside the
+  // stamp because a caller that arrives while a read is in flight must ride
+  // THAT read, not start a second and not skip the answer it was about to
+  // learn: agents send parallel requests at a session's start (a title request
+  // beside the first turn, subagents), and a caller that skipped the entry a
+  // read just produced would send a Max out under the agent's own id, which
+  // Trae's list doesn't name.
+  //
+  // The record is the thing the promise resolves to, so a joiner sees the same
+  // outcome the read settled on — including an expiry it hit — rather than the
+  // bare `null` a failed read answers. One account per key; a read is that
+  // account's.
+  const readAt = new Map()
+  // runRead starts the one read behind readList and answers its record. `p`
+  // resolves to that record — not to the models — so a caller that joins a
+  // read in flight sees the same outcome the read settled on, an expiry
+  // included, rather than the bare null a failed read answers.
+  const runRead = (a, who) => {
+    const rec = { at: Date.now(), p: null, done: undefined, expired: null }
+    // the record goes in BEFORE the read starts, so a caller arriving during it
+    // finds `rec.p` and joins; `p` resolves to this same record
+    readAt.set(who, rec)
+    const body = (async () => {
+      try {
+        return await liveModels(a)
+      } catch (e) {
+        // a request's read swallows this (the chat can still answer); a caller
+        // that must hear it reads `expired` off the record. Recorded on the
+        // record, so a joiner hears it too.
+        if (e instanceof Expired) rec.expired = e
+        return null
+      }
+    })()
+    // every rejection is claimed here, at creation: a read nobody awaits (the
+    // host's refresh ending early, a caller that walked away) must not surface
+    // as an unhandled rejection. `p` itself never rejects — the expiry rides on
+    // the record instead.
+    body.catch(() => {})
+    rec.p = body.then((models) => {
+      // only this read settles its own record: a later read may have replaced it
+      if (readAt.get(who) === rec) {
+        rec.at = Date.now()
+        rec.done = models ?? []
+        rec.p = null
+      }
+      return rec
+    })
+    rec.p.catch(() => {})
+    return rec.p
+  }
+  // readList answers the models of the read this caller rode on (its own, or
+  // the one in flight, whose record it waits for and then reads), and whether
+  // that read found the account lapsed. The record is the account's, not the
+  // token's: a re-sign-in is the same account's list, and the host's refresh is
+  // strict, so it reads again rather than serving a cached lapse. A request
+  // path only reaches here for a model it has no entry for, and that read is
+  // the one that fills the entry in.
+  //
+  // The lapse is answered, not thrown: several callers can ride one read, and a
+  // throw out of a shared promise surfaces once as an unhandled rejection for
+  // the callers that did not expect it. Each caller decides — provider.models
+  // raises it, a request path keeps going. `strict` only says whether a cached
+  // lapse is worth reading again for (the host wants the truth; a request does
+  // not pay a round trip to learn it).
+  const readList = async (a, { strict = false } = {}) => {
+    const who = a.uid || a.name || String(site.id)
+    const was = readAt.get(who)
+    let rec
+    if (was === undefined) rec = await runRead(a, who)
+    else if (was.p) rec = await was.p
+    else if (was.done === undefined || Date.now() - was.at >= REREAD_MS) rec = await runRead(a, who)
+    else if (strict && was.expired) rec = await runRead(a, who)
+    else rec = was
+    return { models: rec.done, expired: rec.expired }
+  }
 
   const save = async (auth) => {
     try {
@@ -1974,9 +2873,19 @@ const makePlugin = (site) => async ({ client }) => {
     const ug = ugPage(url)
     let sent = method === "GET" || method === "HEAD" ? undefined : typeof body === "string" ? body : "{}"
     if (ug && sent !== undefined && /^\s*(\{\s*\})?\s*$/.test(sent)) sent = JSON.stringify({ req_source: 1 })
+    // the account this machine's own Trae CN client is signed in as checks
+    // in on the client's device, the one Trae registered: on one account
+    // the client's own claim went through while the plugin's, on a device
+    // it had made up, came back 9074 (yetone/magpie#808, #1920). Every
+    // other account keeps its own device; none is given the client's.
+    const deviceId = ug && site.id === "trae-cn" ? await clientDevice(a.uid) : undefined
+    const own = deviceId ? { deviceId, ...thisMachine() } : undefined
+    // every other Trae CN account checks in on its own device, in the
+    // client's shape (ugDevice, #194)
+    if (ug && site.id === "trae-cn" && !own) a = { ...a, deviceId: ugDevice(a) }
     const res = await fetch(url, {
       method,
-      headers: ug ? ugHeaders(a, site, { Accept: "application/json" }) : ideHeaders(a, site, { Accept: "application/json" }),
+      headers: ug ? ugHeaders(a, site, { Accept: "application/json" }, own) : ideHeaders(a, site, { Accept: "application/json" }),
       body: sent,
       signal: signal ?? AbortSignal.timeout(20_000),
     })
@@ -1984,6 +2893,92 @@ const makePlugin = (site) => async ({ client }) => {
     const lapsed = res.status === 401 || lapsedCode(errorOf(text).code, site)
     const headers = { "content-type": res.headers.get("content-type") ?? "application/json", "X-Magpie-Sign-In": lapsed ? "expired" : a.renewed ? "renewed" : "kept" }
     return new Response(text, { status: res.status, headers })
+  }
+
+  // checkinStatus reads the check-in's status page: its body, or an outcome
+  // to give back as it is (a turned-away sign-in, Trae's own error, a reply
+  // that isn't one). checkin reads it before the claim, and again after it.
+  const checkinStatus = async (getAuth, a0) => {
+    const res = await ownRequest(getAuth, a0, site.hosts.auth + site.checkin.status.path, "POST", "{}")
+    const text = await res.text()
+    let body
+    try { body = JSON.parse(text) } catch {}
+    if (!body || typeof body !== "object" || Array.isArray(body)) return { outcome: { outcome: "failed", message: `check-in status: unreadable reply ${text.trim().slice(0, 120) || "(empty)"}` } }
+    const e = errorOf(body)
+    if (res.status === 401 || lapsedCode(e.code, site)) return { outcome: { outcome: "failed", message: e.message || `${a0.name || a0.uid}: Trae's sign-in has expired` } }
+    if (res.status !== 200 || (e.code && String(e.code) !== "0")) return { outcome: { outcome: "failed", message: e.message || statusLine(res.status) } }
+    return { body }
+  }
+
+  const checkin = async (getAuth) => {
+    if (!site.checkin) return { outcome: "inactive", message: `${site.realm} has no daily check-in` }
+    const a0 = fromAuth(await getAuth(), site)
+    if (!a0) return { outcome: "failed", message: "not signed in" }
+    const first = await checkinStatus(getAuth, a0)
+    if (first.outcome) return first.outcome
+    const body = first.body
+    if (body.checked_in) return { outcome: "done", ...(Number(body.credits) > 0 ? { credit: Number(body.credits) } : {}) }
+    if (!body.enable) return { outcome: "inactive" }
+    const claim = await ownRequest(getAuth, a0, site.hosts.auth + site.checkin.claim.path, "POST", "{}")
+    const claimText = await claim.text()
+    let answer
+    try { answer = JSON.parse(claimText) } catch {}
+    const ce = errorOf(answer)
+    if (claim.status === 401 || lapsedCode(ce.code, site)) return { outcome: "failed", message: ce.message || `${a0.name || a0.uid}: Trae's sign-in has expired` }
+    // 9095: this device is in for today, whoever took it — the day's answer
+    if (String(ce.code) === "9095") return { outcome: "ineligible", message: ce.message || "this device has checked in today" }
+    // 9074: Trae did not take this claim for this account's device. Its own
+    // words say the pool is busy, which measurements do not bear out: the
+    // same account, token and headers were taken on a 16-digit id where a
+    // 19-digit one got 9074 (plugins#194), and on 2026-10-23 the same
+    // account and headers were taken on a device id Trae had never seen
+    // while this account's own id answered 9074. So the message says what
+    // Trae said and that the device is what it refused, rather than
+    // sending people to check in in Trae CN's app, which is not where the
+    // problem is. No device id is made up or rotated to get round this:
+    // the account keeps its own until a client of its own is here to sign
+    // it in. Nothing is said of signing one in: it is the one thing seen
+    // to change a 9074, but it hasn't been tried on a real account, and
+    // on a claim that already rode a client's device it is what the user
+    // did — the advice would only send them back to do it again.
+    if (String(ce.code) === "9074") return { outcome: "ineligible", message: `${ce.message} (9074) — Trae CN did not take this check-in for this account's device` }
+    if (claim.status !== 200 || (ce.code && String(ce.code) !== "0")) return { outcome: "failed", message: ce.message || statusLine(claim.status) }
+    if (!answer || typeof answer !== "object" || Array.isArray(answer)) return { outcome: "failed", message: `check-in claim: unreadable reply ${claimText.trim().slice(0, 120) || "(empty)"}` }
+    // a claim's own code 0 is not proof the day is in: Trae answers it for
+    // a claim that registered nothing, which cli2api works around by asking
+    // the status again (internal/providers/trae/checkin.go). So success is
+    // what the status page says after the claim, and one that didn't land
+    // is never reported as claimed.
+    //
+    // Nor is it a `failed`. magpie retries a failed check-in with backoff
+    // for the rest of the day, up to every 30 minutes, and each retry is
+    // another claim: a claim answered code 0 while the status still says
+    // the day is out is the very case that would multiply, since code 0
+    // for a claim that registered nothing is this plugin's own premise —
+    // an account that claimed once a day would claim many times. A status
+    // that lags a claim that did land reads as not in once, which is a
+    // false failure and a second claim. So once a claim has been sent,
+    // what the read-back says is the day's answer and nothing is claimed
+    // again: `ineligible`, as a 9095 is. A read-back that itself comes to
+    // nothing — the network, an answer that isn't one — is the same: the
+    // claim was made, and whether the day is in is not known, so it is
+    // read again on the next press rather than claimed again.
+    const noMore = (o) => (o.outcome === "failed" ? { outcome: "ineligible", message: `${o.message} — nothing is claimed again today` } : o)
+    const back = await checkinStatus(getAuth, a0)
+    if (back.outcome) return noMore(back.outcome)
+    if (!back.body.checked_in) return { outcome: "ineligible", message: `${site.realm}: the claim answered success, but the day's check-in is not in — nothing is claimed again today` }
+    // The credit is the day's credits, never credits plus extra_credits.
+    // Trae CN's real claim answers {"code":0,"message":"success"}, with no
+    // credit at all (plugins#194), so the status's credits stand in. Its
+    // status carries extra_credits beside credits, at the same 100 on a
+    // real account (yetone/magpie#808: credits 100, extra_credits 100),
+    // while the account gets 100: adding the two showed 200 (zhujiu on
+    // magpie's Discord, 10-25). A claim that names its own credit is
+    // taken first; one naming extra_credits alone is that (#260). Either
+    // may be absent, and Number(undefined) is NaN, which reads as none.
+    const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+    const credit = n(answer.credits) || n(answer.extra_credits) || n(back.body.credits)
+    return { outcome: "claimed", ...(credit > 0 ? { credit } : {}) }
   }
 
   const usage = async (getAuth) => {
@@ -2102,8 +3097,16 @@ const makePlugin = (site) => async ({ client }) => {
     }
     // a function's entry is worth more when it names a __dev model, then
     // when it isn't misnamed, then when it carries the name its lists agree
-    // on; the first of the best is taken
-    const worth = (fn, m) => (devModel(m) ? 2 : 0) + (misnamed(fn, m) ? 0 : 1) + (nameOf(m) === agreed.get(String(m.config_name)) ? 1 : 0)
+    // on; the first of the best is taken. Those three decide first, so the
+    // entry kept is the one Trae's own client asks through.
+    //
+    // Last among equals comes whether the entry names reasoning levels: the
+    // entry kept is the one the request is asked through, and so the one
+    // whose reasoning_effort_config the request is held to (liveEntryOf). An
+    // entry that names none while a sibling names some would leave the model
+    // with no level to pick although Trae serves it with levels — doubling
+    // the three keeps them decisive and lets this only break a tie.
+    const worth = (fn, m) => ((devModel(m) ? 2 : 0) + (misnamed(fn, m) ? 0 : 1) + (nameOf(m) === agreed.get(String(m.config_name)) ? 1 : 0)) * 2 + (levelsOf(m)?.length ? 1 : 0)
     const out = new Map()
     for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
@@ -2115,6 +3118,10 @@ const makePlugin = (site) => async ({ client }) => {
     }
     for (const [id, { m, fn }] of out) {
       listedBy.set(id, fn)
+      liveEntry.set(id, m)
+      const sees = seesOf(m)
+      if (sees === null) sight.delete(id)
+      else sight.set(id, sees)
       const dev = devModel(m)
       if (dev) modelNames.set(id, { fn, name: dev.model_name, most: Number(dev.max_tokens) || 0 })
       else modelNames.delete(id)
@@ -2135,7 +3142,17 @@ const makePlugin = (site) => async ({ client }) => {
         modelNames.delete(id + MAX)
       }
     }
-    return [...out.values()].map((x) => x.m)
+    // this account's list has just answered: recorded, so a request that wants
+    // levels for a model the list doesn't name waits REREAD_MS before reading
+    // again, and a request arriving meanwhile joins this read instead of
+    // asking — the catalog read a host makes counts as that read too
+    const models = [...out.values()].map((x) => x.m)
+    const who = a.uid || a.name || String(site.id)
+    const at = readAt.get(who)
+    // a readList run records itself; a read nobody recorded (a caller reaching
+    // liveModels directly) is recorded here, unless a read is in flight
+    if (at === undefined || !at.p) readAt.set(who, { at: Date.now(), p: null, done: models, expired: null })
+    return models
   }
 
   // modelOf is a model of the account's list as OpenCode's provider
@@ -2153,21 +3170,33 @@ const makePlugin = (site) => async ({ client }) => {
     const out = Number(devModel(m)?.max_tokens) || was.limit?.output || 0
     const name = m.display_config?.display_name || m.display_name || m.display_model_name || was.name || id
     const input = (k) => (MODEL.modalities?.input ?? []).includes(k)
+    // the list's multimodal says whether the model takes images, over the
+    // fallback list's word and MODEL's
+    const sees = seesOf(m)
+    const inputs = was.capabilities?.input ?? { text: true, image: input("image"), audio: input("audio"), video: input("video"), pdf: input("pdf") }
+    const sight = sees === null ? {} : {
+      modalities: { input: [...new Set([...((was.modalities ?? MODEL.modalities).input ?? ["text"]).filter((k) => k !== "image"), ...(sees ? ["image"] : [])])], output: (was.modalities ?? MODEL.modalities).output ?? ["text"] },
+      attachment: sees,
+    }
     return {
-      ...MODEL, ...was, id, providerID: site.id, name: String(name), limit: { context: ctx, output: out },
+      ...MODEL, ...was, ...sight, id, providerID: site.id, name: String(name), limit: { context: ctx, output: out },
       api: was.api ?? { id, url: site.hosts.api, npm: "@ai-sdk/openai-compatible" },
       capabilities: {
         ...(was.capabilities ?? {}),
         reasoning: was.capabilities?.reasoning ?? MODEL.reasoning,
         temperature: was.capabilities?.temperature ?? MODEL.temperature,
-        attachment: was.capabilities?.attachment ?? MODEL.attachment,
+        attachment: sees ?? was.capabilities?.attachment ?? MODEL.attachment,
         toolcall: was.capabilities?.toolcall ?? MODEL.tool_call,
-        input: was.capabilities?.input ?? { text: true, image: input("image"), audio: input("audio"), video: input("video"), pdf: input("pdf") },
+        input: sees === null ? inputs : { ...inputs, image: sees },
         output: was.capabilities?.output ?? { text: true, image: false, audio: false, video: false, pdf: false },
       },
-      // Trae's request takes no effort or thinking level, so a model has
-      // none to pick from (see the README's Reasoning)
-      variants: was.variants ?? {},
+      // the levels this entry takes, as OpenCode's variants: Trae's own
+      // reasoning_effort_config, which a model without one doesn't carry (it
+      // is then served at Trae's default, with no level to pick). A config
+      // model with an empty variants says nothing — magpie's host fills one in
+      // for every model it hands over — so only a non-empty one is kept, or a
+      // model in the fallback table would lose the levels its entry names.
+      variants: Object.keys(was.variants ?? {}).length ? was.variants : variantsOf(levelsOf(m)),
     }
   }
 
@@ -2193,11 +3222,19 @@ const makePlugin = (site) => async ({ client }) => {
     },
     provider: {
       id: site.id,
-      // the account's own list, when Trae answers; else the list above
+      // the account's own list, when Trae answers; else the list above.
+      // A refresh rides readList's one read per REREAD_MS, so a request that
+      // wants levels while the host is refreshing joins that read instead of
+      // asking for the list a second time (and vice versa).
       async models(provider, { auth }) {
         if (auth?.type !== "oauth" || !auth.access) return provider.models
         try {
-          const ms = await liveModels(await fresh(async () => auth))
+          const { models: ms, expired } = await readList(await fresh(async () => auth), { strict: true })
+          // a lapse must reach the host here, so the account is marked: a
+          // request path deliberately lets it pass instead. A fresh instance:
+          // the recorded one already served as a rejection inside the read, and
+          // re-throwing that same object carries its unhandled state with it
+          if (expired) throw new Expired(expired.message)
           if (!ms.length) return provider.models
           const ids = new Set(ms.map((m) => String(m.config_name)))
           return Object.fromEntries(ms.flatMap((m) => {
@@ -2218,6 +3255,7 @@ const makePlugin = (site) => async ({ client }) => {
     auth: {
       provider: site.id,
       usage,
+      checkin,
       // magpie renews the token LEAD_MS before its end, once, before its
       // requests, models and usage ask; the check before each request
       // stays for OpenCode, which doesn't call this
@@ -2253,12 +3291,38 @@ const makePlugin = (site) => async ({ client }) => {
             let last
             let named = modelNames.get(String(req.model))
             if (!named && String(req.model).endsWith(MAX)) {
-              // a Max asked before the list was read here: read it
-              await liveModels(a).catch(() => {})
+              // a Max asked before the list was read here: read it (or ride
+              // the read already in flight), once per REREAD_MS — a list that
+              // doesn't name this Max is not read for again on every request
+              // (the chat can answer without it), and a Max the read does name
+              // is asked through its base, not under this unlisted id
+              await readList(a)
               named = modelNames.get(String(req.model))
               if (named) fns.unshift(named.fn)
             }
             const max = named?.max ?? null
+            // a model the list hasn't said of is sent its images: the agent
+            // sends them only to a model it was told takes them
+            const base = max?.base ?? String(req.model)
+            const sees = sight.get(base) ?? (site.models[base]?.modalities?.input?.includes("image") ?? true)
+            // the levels the base model takes, from the entry its lists gave
+            // it: what the request's effort is sent as, and left out when the
+            // model has no entry for it. An entry naming levels this build
+            // can't spell counts as no level here — levelsOf says null for it
+            // so a caller can tell the two apart, and this one sends nothing
+            // either way.
+            //
+            // The list is read once per REREAD_MS for a model it hasn't named,
+            // and a read already in flight is shared rather than skipped: a
+            // parallel request that skipped it would drop its level for that
+            // turn. An answer that leaves the model out — a list that failed,
+            // or one that simply doesn't name it — is remembered too, instead
+            // of being asked for again on every request that carries an effort.
+            let levels = levelsOf(liveEntryOf(base)) ?? []
+            if (!liveEntry.has(base) && (req.reasoning_effort ?? req.reasoningEffort)) {
+              await readList(a)
+              levels = levelsOf(liveEntryOf(base)) ?? []
+            }
             // the answer's own signal: the caller's abort (a cancelled
             // request) and the stream's cancel both stop Trae's fetch, so
             // no read is left hanging on a connection the agent walked
@@ -2278,7 +3342,7 @@ const makePlugin = (site) => async ({ client }) => {
               const res = await fetch(apiOf(a, site) + "/api/agent/v3/llm_utils_chat", {
                 method: "POST",
                 headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
-                body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session)),
+                body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels)),
                 signal: ac.signal,
               })
               if (!res.ok) {
@@ -2329,4 +3393,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, toolNamed, unwrapped, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, proofOf, SITES, SESSION, conversationID }
+export const _internal = { ownClient, clientStoragePaths, clientDevice, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf }

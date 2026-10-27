@@ -10,6 +10,13 @@ curl -fsSL https://x.ai/cli/install.sh | bash          # macOS, Linux
 irm https://x.ai/cli/install.ps1 | iex                 # Windows
 ```
 
+It is found in the installer's folder (`GROK_BIN_DIR`, `GROK_HOME/bin`,
+`~/.grok/bin`), or on `PATH` when it lives under a `.grok` folder, so that
+another program named `grok` isn't taken for it. Where the installer can't
+run, such as a container without curl, put the binary in a folder of your
+own and set `GROK_BIN_DIR` to it. magpie installs Grok Build itself, as
+the installer does, before a sign-in that needs it.
+
 ## Sign in
 
 - **Sign in with Grok Build (device code)** runs `grok login --device-auth`
@@ -20,15 +27,27 @@ irm https://x.ai/cli/install.ps1 | iex                 # Windows
   - If it is signed in, the sign-in goes to a home of this plugin's,
     `$XDG_CONFIG_HOME/opencode-grok-auth/<random>` (else under
     `~/.config`). Grok Build's own sign-in stays as it is.
+  - The account is told apart by its email, else its xAI user id (an
+    account signed in through X can have no email). `GROK_AUTH_PATH` is
+    left out of the CLI's run, so the sign-in lands in that home.
+  - When the CLI finishes but leaves no sign-in there, the failure says
+    which file it read and what it found.
 - **Use Grok Build's current sign-in** takes the account the CLI is
   signed in to, with nothing to approve.
+- **Import CPA Grok account JSON** copies one enabled xAI OAuth account from
+  a CLIProxyAPI (CPA) account JSON file (CPA keeps it as
+  `~/.cli-proxy-api/xai-<email>.json`) into a private home for this plugin.
+  CPA and Grok Build rotate the same refresh token, so stop using that
+  account in CPA before importing it. The file is read, never rewritten.
 
 ## Where the sign-in is kept
 
 The CLI keeps the sign-in in its home, as `auth.json`. OpenCode (or
-magpie) keeps where that home is, the token and its expiry.
+magpie) keeps where that home is, the token and its expiry. Importing a CPA
+account writes only its translated xAI OAuth fields to a private home owned
+by this plugin; the selected CPA file is left unchanged.
 
-The plugin only reads `auth.json`: the CLI's refresh gives a new token
+The plugin reads `auth.json`; Grok Build refreshes the token, which changes
 each time. The plugin runs `grok models` in that home, so the CLI renews
 it, then reads it again:
 
@@ -40,9 +59,22 @@ it, then reads it again:
 - The CLI runs once for a home at a time: a request or renewal that
   comes while it runs waits for it and reads what it gave. A token the
   CLI already renewed is taken as it is.
+- Grok can turn a token away before its `expires_at`. A request, model
+  list or usage read that gets 401 has the CLI renew the token and asks
+  once more with the new one.
+- When the CLI's run leaves the token as it was, the 401 or error says
+  Grok Build couldn't renew the sign-in, with what the CLI said. For Grok
+  Build's own home ("Use Grok Build's current sign-in") opening Grok Build
+  and sending it a message renews it. For a home of the plugin's (a second
+  account, an imported one), opening Grok Build doesn't touch it: add the
+  account in magpie again.
 - When the CLI no longer holds a sign-in in that home (`grok logout`),
   the account has to be signed in again. When it couldn't renew a token
   that has ended, magpie tries again later.
+- An `auth.json` that is empty or not JSON is most likely one the CLI is
+  writing: it is read again for about half a second, then the last sign-in
+  read whole there stands, as the CLI itself keeps its previous one. It is
+  never taken as signed out. The plugin takes no `auth.json.lock`.
 
 ## Requests
 
@@ -68,11 +100,44 @@ leaves these out:
 - tools of types it doesn't take (a freeform `apply_patch`, namespaces)
 - `external_web_access` on web search
 - a `tool_choice` naming a dropped type
+- a `tool_choice` with no tools beside it (magpie sends `"none"` so when a
+  client turned tools off)
 - a reasoning item's `"content": null`
 
 Plain Codex collaboration items (`agent_message`) reach Grok as user
 messages, with their sender, recipient and content preserved. Sealed or
 unrecognized content stays unchanged; the plugin does not decrypt tasks.
+
+### Native X search (optional)
+
+In magpie, open the Grok provider, turn on **Native X search** under
+**Plugin options**, and save. It is off by default; changes apply to the
+next request without restarting or signing in again.
+
+When enabled, the plugin offers Grok its native `x_search` tool. Grok
+decides whether to search; enabling it does not force a search on every
+request. Existing function tools and X search filters are preserved, and
+an existing `x_search` is not duplicated. Explicit choices such as `none`,
+`required`, a named tool, or `allowed_tools` never gain another tool.
+
+The option applies to Responses requests, including Chat Completions,
+Anthropic Messages and Gemini requests that magpie converts to Responses,
+in streaming and non-streaming mode. Use magpie with the fix for
+[yetone/magpie#3110](https://github.com/yetone/magpie/issues/3110) so that
+those clients' tool-disable choices reach the plugin.
+
+For compatibility with older gateways, a request that reaches the plugin
+with neither tools nor a `tool_choice` is left unchanged. This can happen
+when magpie translates a client's automatic choice on an empty tool list.
+To use X search through a translated API, send at least one function tool;
+the plugin adds X search alongside it. An explicit tool-disable choice
+always takes precedence.
+
+This uses the existing `grok` provider's login, models and quota reporting;
+no extra plugin is needed. It applies to that provider's models when the
+upstream supports X search, not to Grok models served through Cursor or
+another provider. Report problems in
+[this repository](https://github.com/magpie-community/plugins/issues).
 
 ## Models
 

@@ -64,15 +64,40 @@ the balance, and limits read are kept when the balance can't be.
 
 ### DeepSeek models only through DeepSeek's own API
 
-Cline's gateway picks among the providers that serve a model. With the
-`pinUpstream` option on, a request for a DeepSeek model (`cline-pass/deepseek-…`,
-not the `cline-free/` ones) carries `"providerOptions": {"gateway": {"only":
-["deepseek"]}}`, so it is answered by DeepSeek's own API only — the same as
-magpie's built-in ClinePass tick. Other models, and a request with
-`providerOptions` of its own, go as sent. It is off by default. Turn it on:
+Cline's gateway picks among the providers that serve a model. On ClinePass
+its own routing for a model wins over `only` alone, so since 0.1.11 a request
+for a ClinePass DeepSeek model (`cline-pass/deepseek-…`) carries, by default:
 
-- in magpie: the provider's editor › Upstream › tick "DeepSeek models only
-  through DeepSeek's own upstream";
+```json
+"providerOptions": {"gateway": {"only": ["deepseek"], "has": ["vision", "implicit-caching"]}}
+```
+
+`has` is the gateway's capability filter: the upstream must cache a repeated
+prefix by itself, and take images — `vision` is asked only of a model Cline's
+catalog says takes images (or a request carrying one), never of the text-only
+`deepseek-v4-pro`. With it the request is answered by DeepSeek's own API
+(hy125245 on X: `finalProvider` `deepseek`, and a fake upstream in `only`
+refused with "no matching upstream"). A pinned request that fails with no
+upstream matching it, or with a 5xx, goes once more as sent, so the pin
+never fails a request that would have worked; a refusal of the account (401,
+402, 403, 429) is answered as it is. A request with `provider` or
+`providerOptions` of its own — magpie's extra body, say — goes as sent. Set
+`pinUpstream` to `false` to send ClinePass's DeepSeek models unpinned.
+
+With the `pinUpstream` option on, a request for any DeepSeek model (not the
+`cline-free/` ones) is pinned too, the ClinePass ones as above without the
+way back, the others with `"providerOptions": {"gateway": {"only":
+["deepseek"]}}`, so it is answered by DeepSeek's own API only, and one for a
+GLM model (`cline-pass/glm-…`) carries `["zai"]`, so it is answered by Z.ai's
+own API only — the same as magpie's built-in ClinePass tick. Cline sends
+`glm-5.3-flash` through OpenRouter rather than Vercel's gateway, and OpenRouter
+ignores `providerOptions`, so that model's request carries OpenRouter's own
+`"provider": {"only": ["z-ai"]}` instead (since 0.1.10). Other models, and a
+request with `provider` or `providerOptions` of its own, go as sent. It is off
+by default. Turn it on:
+
+- in magpie: the provider's editor › Upstream › tick "DeepSeek and GLM
+  models only from their makers' own APIs";
 - in OpenCode: `"provider": {"cline": {"options": {"pinUpstream": true}}}` in
   `opencode.json`, or the plugin's own options:
   `"plugin": [["@magpie-community/opencode-cline-auth", {"pinUpstream": true}]]`.

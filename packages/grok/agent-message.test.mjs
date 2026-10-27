@@ -1,5 +1,8 @@
+import { noRealGrok } from "./nocli.mjs"
 import { expect, test } from "bun:test"
 import { _internal } from "./index.mjs"
+
+noRealGrok()
 
 test("a plain Codex task reaches Grok as a user message without requiring tools", () => {
   const task = {

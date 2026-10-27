@@ -84,19 +84,19 @@ test("an empty reply is the built-in's 502 of a broken-off one", async () => {
   expect(errOf(r)).toBe("the reply broke off: EOF")
 })
 
-test("an error after a frame with nothing in it is streamed in the built-in's words", async () => {
+test("an error after metadata fails before the stream opens", async () => {
   const empty = new Uint8Array(5) // a message frame with no fields
   const r = await ask(() => new Response(join(empty, end({ error: { code: "resource_exhausted", message: "rate limit" } }))), true)
-  expect(r.status).toBe(200)
-  const ev = r.body.split("\n\n").map((l) => l.replace(/^data: /, "")).find((l) => l.includes('"error"'))
-  expect(JSON.parse(ev).error.message).toBe("usage limit reached: rate limit")
+  expect(r.status).toBe(429)
+  expect(errOf(r)).toBe("usage limit reached: rate limit")
 })
 
 // a success cleared no mark the built-in's account could have had
-test("an answer says the account is kept, streamed or not", async () => {
+test("a metadata-only answer fails and keeps the account signed in", async () => {
   for (const stream of [false, true]) {
     const r = await ask(() => new Response(join(new Uint8Array(5), end({}))), stream)
-    expect(r.status).toBe(200)
+    expect(r.status).toBe(502)
+    expect(errOf(r)).toContain("empty reply")
     expect(r.signIn).toBe("kept")
   }
 })

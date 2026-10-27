@@ -85,12 +85,18 @@ config (`GET /mavis/api/v1/models`). The list includes each model's context,
 image input and thinking options. If the live list doesn't answer, this
 built-in list is used instead:
 
-| Model | Context | Images | Reasoning levels (variants) |
-|---|---|---|---|
-| MiniMax-M3.1-Flash-Preview | 512K | yes | low, medium, high, xhigh, max |
-| MiniMax-M3 | 512K | yes | none, high |
-| MiniMax-M2.7 | 200K | no | — (always thinks) |
-| MiniMax-M2.7-highspeed | 200K | no | — (always thinks) |
+| Model | Context | Output | Images | Reasoning levels (variants) |
+|---|---|---|---|---|
+| MiniMax-M3.1-Flash-Preview | 1M | 512K | yes | low, medium, high, xhigh, max |
+| MiniMax-M3 | 1M | 512K | yes | none, high |
+| MiniMax-M2.7 | 200K | 128K | no | — (always thinks) |
+| MiniMax-M2.7-highspeed | 200K | 128K | no | — (always thinks) |
+
+MiniMax Code's own list reports 512K/128K for the M3 family, but the
+endpoint accepts 1,048,576 input tokens and 524,288 output tokens for
+every one of them, so those are the limits given here. An agent that
+believed the advertised ones would compact its history about half way too
+early.
 
 Variants map to what MiniMax Code sends:
 - a level is adaptive thinking at that effort, which becomes
@@ -101,14 +107,33 @@ Variants map to what MiniMax Code sends:
 
 The usage card shows:
 - the credits left;
+- a Credits window: how much of the credits not yet expired is used, and
+  when the soonest of them runs out, from the credit details MiniMax's own
+  client lists (`/minimax-cloud/api/v1/credit/details`); beside an M Plan
+  it is aside, since the plan's windows come first;
 - the plan: Free, or the M Plan's tier and when it ends;
 - for an M Plan, its windows (5 hours, 7 days, and any model's own) from
   `coding_plan/remains`.
 
 These are read the way MiniMax Code reads them, with its signed account API.
 
+## Check-in
+
+The account's daily check-in (每日签到) is claimed through the same sign-in:
+the plugin reads the panel (`/minimax-cloud/api/v1/signin/status`) and
+claims the day's credits (`/minimax-cloud/api/v1/signin/claim`) with the
+same signed account API, asked as MiniMax Code's own `/checkin` asks them:
+as the account (its MiniMax user id, looked up first when the sign-in
+didn't keep it), from the desktop client, on MiniMax Code's own hosts
+(agent.minimax.io, agent.minimaxi.com). A check-in turned away with 401 is
+renewed and asked once more, with the user id read again, as MiniMax Code
+does. magpie can run it once a day per account, when its
+MiniMax check-in switch is on; Settings → Usage → Plugins has that switch
+and a *Check in now* button, and the outcome — claimed, done, inactive,
+ineligible, with the streak — lands on the account's Usage card.
+OpenCode doesn't call this hook: there, check in from MiniMax Code or
+MiniMax's site.
+
 ## Not here
 
-- **No check-in.** The package never claims the daily check-in's credits.
-  Check in from MiniMax Code or MiniMax's site.
 - **No sign-out.** Signing out doesn't revoke the token on MiniMax's side.

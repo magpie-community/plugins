@@ -19,7 +19,7 @@ two ways to get one:
   read, never changed.
 
 The plugin names the account as Devin does when asked with the token
-(`GetUserStatus`: its email and tier). When Devin can't tell, and the CLI
+(`GetUserStatus`: its email, organization when named, and tier). When Devin can't tell, and the CLI
 is installed, it asks `devin auth status`, run with a data folder of the
 plugin's own, `~/.cache/opencode-devin-auth/<hash of the token>/`, so the
 CLI's own sign-in is never touched. A CLI that reads another
@@ -28,7 +28,7 @@ CLI's own sign-in is never touched. A CLI that reads another
 its own account. Otherwise the account is named "Devin".
 
 The token is kept where OpenCode keeps sign-ins (`auth.json`; in magpie,
-`plugin-auth.json`) as `{ "type": "api", "key", "metadata": { "email", "plan" } }`.
+`plugin-auth.json`) as `{ "type": "api", "key", "metadata": { "email", "plan", "orgId", "teamId" } }`.
 Devin doesn't expire it on a schedule, so there is nothing to refresh;
 when it is refused, requests fail with a 401 saying to sign in again.
 
@@ -50,12 +50,19 @@ The plugin's `fetch` handles this:
     are sent as the tools' own.
   - A tool call the conversation never answered is answered with "Tool use
     was interrupted and did not produce a result."
-  - Images must be inline (`data:` URLs); images in tool results are
-    dropped.
+  - Images must be inline (`data:` URLs). The images a tool returned go
+    with its result, as magpie's built-in sends them: a tool message's own
+    `image_url` parts, and the ones magpie's gateway puts in the user
+    message after the results ("[From the result of …]").
+- A request past 8 KiB goes gzipped, as the CLI sends it (since 0.1.21,
+  #275): Devin turns a body past 10 MiB away with 413.
 - It turns the streamed reply back into a chat completion, streamed or
   not: text, reasoning, tool calls and usage.
 - Failures keep their statuses: a refused token is a 401, a usage limit a
   429, a prompt too long for the model a 400.
+- A reply with only metadata and usage is a 502, even when output tokens
+  were counted. The plugin waits for actual content before opening a
+  successful stream, so the gateway can try another channel.
 
 ## Models
 
@@ -70,14 +77,16 @@ default. Variants at no effort (`glm-5-2-1m`) are listed as they are.
 Adaptive and Fusion aren't listed; they route between models inside
 Devin's own agent.
 
-The `config` hook declares Devin's list as of 2026-09-30 (87 models).
-Once signed in, and with the CLI installed, the `provider.models` hook
-replaces it with the account's own, from `devin models list`, when the CLI
-answers for the account: it reads the plugin's data folder for it, and
-names the account Devin names the token's. When it doesn't (on Windows),
-the account keeps the declared list. The list is
-cached for 5 minutes; after a failed read, the plugin tries again after 1
-minute.
+The `config` hook declares Devin's list as of 2026-10-14 (89 models).
+Once signed in, the `provider.models` hook replaces it with the account's
+own: what Devin tells the CLI's model picker for the account's token
+(`GetCliModelConfigs`, the list `devin models list` prints), with or
+without the CLI and on every system. When Devin can't be asked, the list
+is the CLI's `devin models list`, if the CLI names the account Devin names
+the token's (on Windows it reads its own sign-in whatever folder it is
+given, so it answers only for that account); else the declared list. The
+list is cached for 5 minutes; after a failed read, the plugin tries again
+after 1 minute.
 
 Which models take images is what Devin tells its CLI's model picker
 (`GetCliModelConfigs`, each model's `supports_images`), asked once signed

@@ -94,6 +94,78 @@ test("a plan without quotas has no windows, and leaves the row's plan be", async
   expect((await run(auth, () => Response.json(s))).u).toEqual({ windows: [], signIn: "kept" })
 })
 
+test("usage enriches an older sign-in with its organization and keeps each org's quota pool separate", async () => {
+  const saved = []
+  const hooks = await DevinAuthPlugin({
+    client: {
+      auth: {
+        set: async (opts) => {
+          saved.push(opts)
+        },
+      },
+    },
+  })
+  globalThis.fetch = async (_, init) => {
+    const apiKey = JSON.parse(init.body).metadata.apiKey
+    if (apiKey === "key-org-1") {
+      return Response.json({
+        userStatus: {
+          name: "sky",
+          email: "m@x.dev",
+          teamId: "devin-team$account-1",
+          teamsTier: "TEAMS_TIER_DEVIN_MAX",
+          planStatus: {
+            planInfo: {
+              planName: "Max",
+              teamsTier: "TEAMS_TIER_DEVIN_MAX",
+              billingStrategy: "BILLING_STRATEGY_QUOTA",
+              devinInfo: { orgId: "org_1", accountDisplayName: "opt" },
+            },
+            dailyQuotaRemainingPercent: 80,
+            weeklyQuotaRemainingPercent: 60,
+            dailyQuotaResetAtUnix: "1790841600",
+            weeklyQuotaResetAtUnix: "1791100800",
+          },
+        },
+      })
+    }
+    return Response.json({
+      userStatus: {
+        name: "sky",
+        email: "m@x.dev",
+        teamId: "devin-team$account-2",
+        teamsTier: "TEAMS_TIER_DEVIN_MAX",
+        planStatus: {
+          planInfo: {
+            planName: "Max",
+            teamsTier: "TEAMS_TIER_DEVIN_MAX",
+            billingStrategy: "BILLING_STRATEGY_QUOTA",
+            devinInfo: { orgId: "org_2", accountDisplayName: "lab" },
+          },
+          dailyQuotaRemainingPercent: 25,
+          weeklyQuotaRemainingPercent: 10,
+          dailyQuotaResetAtUnix: "1790841600",
+          weeklyQuotaResetAtUnix: "1791100800",
+        },
+      },
+    })
+  }
+  const u1 = await hooks.auth.usage(async () => ({ type: "api", key: "key-org-1", metadata: { email: "m@x.dev", plan: "Devin Max" } }))
+  const u2 = await hooks.auth.usage(async () => ({ type: "api", key: "key-org-2", metadata: { email: "m@x.dev · lab", plan: "Devin Max", orgId: "org_2", teamId: "devin-team$account-2" } }))
+  expect(u1.windows.map((w) => w.used)).toEqual([20, 40])
+  expect(u2.windows.map((w) => w.used)).toEqual([75, 90])
+  expect(saved).toEqual([
+    {
+      path: { id: "devin" },
+      body: {
+        type: "api",
+        key: "key-org-1",
+        metadata: { email: "m@x.dev · opt", plan: "Devin Max", orgId: "org_1", teamId: "devin-team$account-1" },
+      },
+    },
+  ])
+})
+
 // the built-in read no usage, so none marked the account: a refused key
 // says to sign in again, and says the account is kept
 test("a refused key says to sign in again, the account kept", async () => {

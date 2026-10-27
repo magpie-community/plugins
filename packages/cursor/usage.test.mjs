@@ -246,18 +246,35 @@ test("a team member's own on-demand limit: the spent pools are aside, the on-dem
   expect(seen.find((r) => r.url === HARD)).toEqual({ ...period, url: HARD })
 })
 
-test("a team with no limit of the member's but a team hard limit: on-demand without end, every window aside", async () => {
-  for (const period of [
-    { ...spent, spendLimitUsage: { individualUsed: 900, limitType: "team" } },
-    { ...spent, spendLimitUsage: { individualUsed: 900, limitType: "team", pooledLimit: "100000" } },
-  ]) {
-    const { u } = await onDemand(period, { hardLimit: 2000, perUserMonthlyLimitDollars: 0 })
-    expect(u.windows.every((w) => w.aside)).toBe(true)
-    expect(shape(u)[2]).toEqual({ name: "On-demand", used: 0, display: "$9.00", resetsAt: at, aside: true })
-  }
-  // GetHardLimit unread: the team's pooled limit says it is allowed
-  const { u } = await onDemand({ ...spent, spendLimitUsage: { individualUsed: 900, limitType: "team", pooledLimit: "100000" } }, new Response("no", { status: 500 }))
+test("a team with no limit of the member's, a team hard limit and no pool: on-demand without end, every window aside", async () => {
+  const { u } = await onDemand({ ...spent, spendLimitUsage: { individualUsed: 900, limitType: "team" } }, { hardLimit: 2000, perUserMonthlyLimitDollars: 0 })
   expect(u.windows.every((w) => w.aside)).toBe(true)
+  expect(shape(u)[2]).toEqual({ name: "On-demand", used: 0, display: "$9.00", resetsAt: at, aside: true })
+})
+
+// magpie #1868 (PaSSw0rds, a real Team account whose on-demand is turned on
+// for the whole organization): spendLimitUsage has no individualLimit at
+// all, the pool's limit and remainder are int64 strings and its spend a
+// number, and GetHardLimit answers the pool's limit in dollars with or
+// without a team id. The pool is what runs out, for the whole team.
+const teamPool = { totalSpend: 6334270, pooledLimit: "45120000", pooledUsed: 6334270, pooledRemaining: "38785730", individualUsed: 19855, limitType: "team" }
+test("a team's org-wide on-demand pool is the allowance: its spend is shown, and the account is used up when it is", async () => {
+  const period = { ...spent, planUsage: { totalSpend: 16151, includedSpend: 2000, bonusSpend: 14151, limit: 2000, autoPercentUsed: 57.81428571428572, apiPercentUsed: 100, totalPercentUsed: 64.604 }, spendLimitUsage: teamPool }
+  for (const hard of [{ hardLimit: 451200 }, { hardLimit: 451200, isDynamicTeamLimit: true }, new Response("no", { status: 500 })]) {
+    const { u } = await onDemand(period, hard)
+    expect(shape(u)).toEqual([
+      { name: "Cursor Models", used: 57.81428571428572, resetsAt: at, aside: true },
+      { name: "Other Models", used: 100, resetsAt: at, aside: true },
+      { name: "On-demand", used: (100 * 6334270) / 45120000, display: "$63,342.70 / $451,200.00 (you: $198.55)", resetsAt: at },
+      { name: "Total", used: 64.604, resetsAt: at, aside: true },
+    ])
+  }
+  // the pool spent: the account is used up, though the member spent little of it
+  const out = (await onDemand({ ...spent, spendLimitUsage: { ...teamPool, pooledUsed: 45120000, pooledRemaining: "0" } }, { hardLimit: 451200 })).u
+  expect(shape(out)[2]).toEqual({ name: "On-demand", used: 100, display: "$451,200.00 / $451,200.00 (you: $198.55)", resetsAt: at })
+  // nothing spent from the pool yet: Connect JSON leaves pooledUsed out
+  const none = (await onDemand({ ...spent, spendLimitUsage: { individualUsed: 900, limitType: "team", pooledLimit: "100000" } }, new Response("no", { status: 500 }))).u
+  expect(shape(none)[2]).toEqual({ name: "On-demand", used: 0, display: "$0.00 / $1,000.00 (you: $9.00)", resetsAt: at })
 })
 
 test("a personal plan's hard limit is its on-demand limit; the top int32 is none", async () => {
@@ -289,4 +306,22 @@ test("no on-demand allowed, none set or not known: the pools are the allowance, 
     [spent, new Response("no", { status: 500 })],
   ]
   for (const [i, [period, hard]] of cases.entries()) expect([i, shape((await onDemand(period, hard)).u)]).toEqual([i, before])
+})
+
+// magpie #2213 (Morganwan90): the panel draws an account's first three
+// windows, and an On-demand with no limit (a dollar figure on a ring that
+// never fills) pushed Grok Bot to the fourth. One with a limit is what can
+// stop the account, and keeps its place ahead of Bot.
+const botOnDemand = (period, hard) =>
+  run(botAuth(), (url) => {
+    if (url === PLAN) return Response.json({})
+    if (url === BOT) return Response.json(paidBot)
+    if (url === HARD) return Response.json(hard)
+    return Response.json(period)
+  })
+test("Bot is among the first three windows ahead of an On-demand with no limit, behind one with a limit", async () => {
+  const open = (await botOnDemand({ ...spent, spendLimitUsage: { individualUsed: 900, limitType: "team" } }, { hardLimit: 2000, perUserMonthlyLimitDollars: 0 })).u
+  expect(open.windows.map((w) => w.name)).toEqual(["Cursor Models", "Other Models", "Grok Bot", "On-demand", "Total"])
+  const capped = (await botOnDemand({ ...spent, spendLimitUsage: { individualUsed: 500, limitType: "user" } }, { hardLimit: 20 })).u
+  expect(capped.windows.map((w) => w.name)).toEqual(["Cursor Models", "Other Models", "On-demand", "Grok Bot", "Total"])
 })

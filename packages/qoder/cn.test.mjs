@@ -73,12 +73,15 @@ test("the sign-in page is qoder.cn's, with Qoder CN's CLI client id and no redir
   for (const k of ["challenge", "nonce", "machine_id"]) expect(u.searchParams.get(k)).toBeTruthy()
 })
 
-test("qoder.com's sign-in is as it was", async () => {
+test("qoder.com's sign-in sends no redirect_uri, as Qoder's CLI does, so Qoder.app isn't handed the page (#276)", async () => {
   const flow = await (await QoderAuthPlugin({ client: store().client })).auth.methods[0].authorize()
   const u = new URL(flow.url)
   expect(u.origin + u.pathname).toBe("https://qoder.com/device/selectAccounts")
   expect(u.searchParams.get("client_id")).toBe("732aef47-9cf2-46a2-95fe-4cebb5d0d1fa")
-  expect(u.searchParams.get("redirect_uri")).toBe("qoder-app://")
+  expect(u.searchParams.get("challenge_method")).toBe("S256")
+  for (const k of ["challenge", "nonce", "machine_id"]) expect(u.searchParams.get(k)).toBeTruthy()
+  expect(u.searchParams.has("redirect_uri")).toBe(false)
+  expect(flow.url).not.toContain("qoder-app")
 })
 
 test("the sign-in polls openapi.qoder.com.cn until authorized, then makes a job token there", async () => {
@@ -170,7 +173,8 @@ const chatServer = (machines, refresh) => (at, { req, body, url }) => {
     const q = JSON.parse(_internal.decodeBody(body))
     expect(q.model_config.key).toBe("performance")
     expect(q.parameters.reasoning_effort).toBe("high")
-    expect(q.messages.at(-1)).toEqual({ role: "user", content: [{ type: "text", text: "你好" }] })
+    const said = [{ type: "text", text: "你好", cache_control: { type: "ephemeral" } }]
+    expect(q.messages.at(-1)).toEqual({ role: "user", content: said, contents: said })
     machines.push(req.headers.get("cosy-machineid"))
     return sse(
       { choices: [{ delta: { reasoning_content: "想想" } }] },

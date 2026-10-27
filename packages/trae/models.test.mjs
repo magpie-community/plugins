@@ -42,7 +42,8 @@ test("a model the fallback table doesn't have is served with capabilities", asyn
   expect(m.capabilities.attachment).toBe(false)
   expect(m.capabilities.input).toEqual({ text: true, image: false, audio: false, video: false, pdf: false })
   expect(m.capabilities.output).toEqual({ text: true, image: false, audio: false, video: false, pdf: false })
-  // Trae's request takes no effort or thinking level: no variants
+  // an entry that names no levels takes none: no variants (see reasoning.test.mjs
+  // for the entries that do name them)
   expect(m.variants).toEqual({})
 })
 

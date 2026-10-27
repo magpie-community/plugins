@@ -15,6 +15,8 @@ test("each flagged phrase is put in other words, whatever its case", () => {
   expect(unflagged(unflagged(codex))).toBe(unflagged(codex))
   expect(unflagged("x-anthropic-billing-header: cc_version=2.1.280.31f; cc_entrypoint=sdk-cli;\nhello")).toBe("hello")
   expect(unflagged("nothing to see")).toBe("nothing to see")
+  expect(unflagged("You are an AI agent powered by DeepSeek Harness. Be brief.")).toBe("You are an AI agent that helps the user with programming tasks. Be brief.")
+  expect(unflagged("YOU ARE AN AI AGENT POWERED BY DEEPSEEK HARNESS")).toBe("You are an AI agent that helps the user with programming tasks.")
 })
 
 test("Claude Code's request through magpie passes: header block gone, the rest rewritten", () => {
@@ -48,4 +50,22 @@ test("a system message of the header alone goes, and WorkBuddy's default takes i
 test("a chat with nothing flagged is sent as it came", () => {
   const body = JSON.stringify({ messages: [{ role: "system", content: "be brief" }, { role: "user", content: "hi" }] })
   expect(withSystem(body)).toBe(body)
+})
+
+test("a refused line quoted back into an assistant message is reworded there too (#291)", () => {
+  const line = "There is a Web GUI whose URL the runtime context names. When the user refers to it, open it."
+  const fixed = "There is a Web GUI whose URL the runtime context names. The interface, when the user refers to it, open it."
+  expect(unflagged(line)).toBe(fixed)
+  expect(unflagged(line.replace(". When", ".\nWhen"))).toBe(fixed)
+  expect(unflagged(fixed)).toBe(fixed)
+  const body = JSON.stringify({ messages: [
+    { role: "system", content: "be brief" },
+    { role: "user", content: "hi" },
+    { role: "assistant", content: line },
+    { role: "assistant", content: [{ type: "text", text: line }] },
+    { role: "user", content: "go on" },
+  ] })
+  const b = JSON.parse(withSystem(body))
+  expect(b.messages[2].content).toBe(fixed)
+  expect(b.messages[3].content[0].text).toBe(fixed)
 })

@@ -1,0 +1,14 @@
+{
+  "name": "@magpie-community/middleware-reserve",
+  "version": "0.1.0",
+  "description": "Routings for magpie's gateway that keep something in reserve: fill accounts in order up to a ceiling, or spend subscriptions before pay-per-token keys",
+  "type": "module",
+  "files": ["reserve.gateway.js", "README.md"],
+  "keywords": ["magpie", "magpie-middleware", "magpie-routing", "routing", "load-balancing", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/reserve" },
+  "magpie": {
+    "gateway": "./reserve.gateway.js",
+    "options": { "ceiling": 80 }
+  }
+}

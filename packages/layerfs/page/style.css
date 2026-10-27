@@ -1,0 +1,178 @@
+/* Magpie's own design language, the way every page in its window is
+   drawn (see the bridge's base sheet and the usage page): the host's
+   theme tokens, its UI face at 13px, hairline rules, cards with a 1px
+   edge and a 10px radius, an indigo accent, and its motion curve
+   --ease = cubic-bezier(.2,.8,.2,1). The fallbacks are magpie's own
+   light theme; its dark theme sits behind the media query for when
+   the page is previewed without the host painting the tokens in.
+   Inside the graphic, LayerFS's picture stays: a leaf-green main
+   bough, each agent's branch in that agent's own colour. */
+:root {
+  --bg: var(--magpie-bg, #f4f4f6);
+  --card: var(--magpie-card, #ffffff);
+  --fg: var(--magpie-fg, #1c1c21);
+  --fg-2: var(--magpie-fg-2, #4b4b53);
+  --muted: var(--magpie-muted, #85858d);
+  --faint: var(--magpie-faint, #b9b9c2);
+  --line: var(--magpie-line, #e3e3e8);
+  --accent: var(--magpie-accent, #4f46e5);
+  --accent-soft: var(--magpie-accent-soft, #eeedfd);
+  --accent-fg: var(--magpie-accent-fg, #ffffff);
+  --green: var(--magpie-green, #189a58);
+  --red: var(--magpie-red, #d64545);
+  --amber: var(--magpie-amber, #b45309);
+  --font: var(--magpie-font, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif);
+  --code: var(--magpie-code, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  --ease: cubic-bezier(.2, .8, .2, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: var(--magpie-bg, #1a1a1e);
+    --card: var(--magpie-card, #232327);
+    --fg: var(--magpie-fg, #ededf1);
+    --fg-2: var(--magpie-fg-2, #b9b9c1);
+    --muted: var(--magpie-muted, #8b8b94);
+    --faint: var(--magpie-faint, #56565f);
+    --line: var(--magpie-line, #333339);
+    --accent: var(--magpie-accent, #a5b4fc);
+    --accent-soft: var(--magpie-accent-soft, #2b2c47);
+    --accent-fg: var(--magpie-accent-fg, #14142a);
+    --green: var(--magpie-green, #6fd99b);
+    --red: var(--magpie-red, #f28b82);
+    --amber: var(--magpie-amber, #f2b544);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body { padding: 20px 24px 32px; font: 13px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+
+header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+.hist h1 { font-size: 15px; font-weight: 600; letter-spacing: -.01em; margin: 0; }
+.hist-meta {
+  font-size: 11px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); margin: 3px 0 0;
+}
+.stamp { color: var(--muted); font-size: 12px; margin: 0 0 0 auto; }
+/* the project picker, magpie-style: a button that opens a menu of
+   options — its own UI uses no native <select> */
+.menu { position: relative; }
+.menu > button {
+  background: var(--card); color: inherit; border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer;
+}
+.menu-list {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 5; min-width: 160px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .14);
+}
+.menu-list button {
+  display: block; width: 100%; text-align: left; background: none; border: 0;
+  border-radius: 6px; padding: 5px 9px; font: inherit; color: inherit; cursor: pointer;
+}
+.menu-list button:hover { background: var(--bg); }
+.menu-list button[aria-selected="true"] { background: var(--accent-soft); }
+
+/* the counters, as tiles in magpie's usage-page idiom */
+.stats { margin: 14px 0 2px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.tile {
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; min-width: 0; display: flex; flex-direction: column; gap: 1px;
+}
+.tile .k { color: var(--muted); font-size: 12px; text-transform: capitalize; }
+.tile .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile .s { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.tile .s.saved { color: var(--green); font-weight: 600; }
+.bar-row { display: grid; grid-template-columns: 92px 1fr; gap: 10px; align-items: center; margin: 10px 0 -4px; }
+.bar-row + .bar-row { margin-top: 6px; }
+.bar-label {
+  color: var(--muted); font-size: 11px; font-family: var(--code);
+  letter-spacing: .06em; text-transform: uppercase;
+}
+.bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--fg) 8%, transparent); overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; border-radius: 3px; }
+.bar i.copies { background: var(--amber); }
+.bar i.stored { background: var(--green); }
+.stats-line {
+  font-family: var(--code); font-size: 11.5px; letter-spacing: .05em;
+  color: var(--muted); margin: 12px 0 0;
+}
+
+.stage { overflow-x: auto; padding: 12px 0 2px; }
+#graph .band-fill { fill: var(--green); opacity: .08; }
+#graph .band-label {
+  font-family: var(--code); font-size: 10.5px; letter-spacing: .12em; fill: var(--muted);
+}
+#graph .seg { fill: none; stroke-width: 5; stroke-linecap: round; stroke-dasharray: 1; }
+#graph .lane[data-branch="main"] .seg { stroke-width: 9; }
+#graph .seg.split-seg { stroke-width: 3.2; }
+#graph .graft { fill: none; stroke-width: 3.4; stroke-linecap: round; stroke-dasharray: 1; }
+#graph .node { transform-box: fill-box; transform-origin: center; cursor: pointer; }
+#graph .badge-disc { opacity: .22; }
+#graph .badge-ring { stroke-width: 1.8; opacity: .9; }
+#graph .node.landing .badge-ring { stroke: var(--fg); stroke-width: 2.2; }
+#graph .node.sel .badge-ring { stroke: var(--fg); stroke-width: 2.6; }
+/* the badge's face: the agent's icon, its outline drawn by dashoffset
+   (pathLength is 1, so a dash of 1 is the whole outline) and its fill
+   faded in by the renderer; a monogram sits in the same badge when
+   the agent has no glyph */
+#graph .glyph { overflow: visible; }
+#graph .glyph-path { stroke-dasharray: 1; stroke-linejoin: round; stroke-linecap: round; }
+#graph .glyph-mark {
+  font-family: var(--code); font-size: 9px; font-weight: 700; text-anchor: middle;
+}
+.legend-icon { flex: none; display: inline-block; }
+#graph .ring { pointer-events: none; }
+#graph .badge-pop { transform-box: fill-box; transform-origin: center; }
+#graph .badge-fill { fill: var(--accent); }
+#graph .badge-text {
+  font-family: var(--code); font-size: 9.5px; font-weight: 700;
+  fill: var(--accent-fg); text-anchor: middle;
+}
+#graph .tag { cursor: pointer; }
+#graph .tag-label { font-family: var(--code); font-size: 12px; letter-spacing: .04em; font-weight: 600; }
+#graph .chip-mark { font-family: var(--code); font-size: 9px; font-weight: 700; text-anchor: middle; }
+/* focus: click a name tag and the rest of the thicket dims (grafts and
+   badges are dimmed by the renderer, which owns their opacity) */
+#graph[data-focus] .lane { opacity: .13; }
+#graph[data-focus] .lane.focus { opacity: 1; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; padding: 2px 2px 0; }
+.legend-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--muted);
+}
+.legend-item i { width: 9px; height: 9px; border-radius: 2.5px; display: inline-block; }
+
+.controls { display: flex; gap: 12px; align-items: center; margin-top: 12px; }
+.controls button { font: inherit; cursor: pointer; }
+#play {
+  background: var(--accent); color: var(--accent-fg); border: 1px solid transparent;
+  border-radius: 6px; padding: 4px 16px; font-weight: 600;
+  transition: filter .12s var(--ease);
+}
+#play:hover { filter: brightness(1.08); }
+.controls input[type="range"] { flex: 1; accent-color: var(--accent); }
+.seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--card); border: 1px solid var(--line); }
+.seg button {
+  color: var(--muted); background: none; border: 0; border-radius: 6px;
+  padding: 3px 10px; font-variant-numeric: tabular-nums;
+}
+.seg button[aria-selected="true"] { color: var(--fg); background: var(--bg); box-shadow: 0 1px 2px rgba(0, 0, 0, .18); }
+
+.detail {
+  margin-top: 16px; background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px 14px; min-height: 74px;
+}
+.d-head { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; font-family: var(--code); }
+.d-branch { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+/* the branch colour rides on a dot, the way magpie's own rows mark a
+   series — not a coloured edge on the card */
+.d-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: transparent; }
+.d-msg { margin: 6px 0 2px; font-weight: 600; font-size: 13.5px; }
+.d-meta { margin: 0; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.d-meta .delta { color: var(--green); font-weight: 600; }
+.empty { color: var(--muted); margin-top: 22px; }
+
+@media (prefers-reduced-motion: reduce) {
+  #play { transition: none; }
+}

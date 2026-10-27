@@ -353,7 +353,8 @@ const DEFAULT_MODELS = [
 	{ id: "stealth/space-bunny-alpha", free: true },
 	{ id: "cline-free/mimo-v2.6-flash", free: true },
 	{ id: "cline-free/muse-spark-1.3-contributor", free: true },
-	{ id: "cline-pass/deepseek-v4.1-flash" },
+	{ id: "cline-pass/deepseek-v4.1-flash-1017", input: { text: true, image: true } },
+	{ id: "cline-pass/deepseek-v4.1-flash", input: { text: true, image: true } },
 	{ id: "cline-pass/mimo-v2.6-flash" },
 	{ id: "cline-pass/mimo-v2.6-pro" },
 	{ id: "cline-pass/glm-5.3" },
@@ -472,8 +473,40 @@ async function fetchCloudModels() {
 		// be most of the window (kimi-k3: 943718 of 1048576), and an agent
 		// keeps that much of the window free for the reply, so it would
 		// compact a tenth of the way in
-		return [{ id, name: given && given !== id && given !== last ? given : prettify(id), free: false, pass: id.startsWith("cline-pass/"), ...(context && { context }) }]
+		const input = inputsOf(e)
+		return [{ id, name: given && given !== id && given !== last ? given : prettify(id), free: false, pass: id.startsWith("cline-pass/"), ...(context && { context }), ...(input && { input }) }]
 	})
+}
+
+// KINDS are the kinds of input OpenCode's capabilities name
+const KINDS = ["text", "image", "audio", "video", "pdf"]
+
+// inputsOf is what a catalog entry says the model takes (OpenRouter's
+// architecture.input_modalities: ["text", "image"]), undefined when it says
+// nothing
+function inputsOf(e) {
+	const l = e?.architecture?.input_modalities ?? e?.input_modalities
+	if (!Array.isArray(l) || !l.length) return undefined
+	const has = new Set(l.map((k) => String(k).toLowerCase()))
+	return Object.fromEntries(KINDS.map((k) => [k, has.has(k)]))
+}
+
+// bareOf is a model id without its provider and a variant after ":"
+// (deepseek/deepseek-v4.1-flash:batch is deepseek-v4.1-flash)
+const bareOf = (id) => String(id).split("/").pop().split(":")[0].toLowerCase()
+
+// inputsFor is what Cline's catalog says a model takes: by its own id, else,
+// for a model the catalog lists under its maker's id only (the feed's
+// cline-pass/deepseek-v4.1-flash is the catalog's deepseek/deepseek-v4.1-flash),
+// by the model after the prefix while every entry of that model agrees.
+// Undefined when the catalog doesn't say, so magpie asks models.dev.
+function inputsFor(id, cloud) {
+	const own = cloud.find((c) => c.id === id)
+	if (own) return own.input
+	const bare = bareOf(id)
+	const said = cloud.filter((c) => c.input && bareOf(c.id) === bare).map((c) => c.input)
+	if (!said.length || said.some((x) => KINDS.some((k) => x[k] !== said[0][k]))) return undefined
+	return said[0]
 }
 
 // fetchFeed is both of Cline's model lists merged, recommended first: the
@@ -482,10 +515,16 @@ async function fetchFeed() {
 	const [rec, cloud] = await Promise.all([fetchRecommended(), fetchCloudModels().catch(() => [])])
 	// a recommended model takes the catalog's window for it: the recommended
 	// feed gives none
+	// and what the catalog says it takes (images: Cline's own client reads
+	// it there), else a ClinePass or free model takes what the catalog says
+	// the model after its prefix takes (silent on Discord: DeepSeek V4.1
+	// Flash and GLM 5.3 Flash were taken for text-only, so magpie had their
+	// images described by another model)
 	const sizes = new Map(cloud.map((m) => [m.id, m]))
 	const ms = rec.map((m) => {
 		const c = sizes.get(m.id)
-		return c?.context ? { ...m, context: c.context } : m
+		const input = inputsFor(m.id, cloud)
+		return { ...m, ...(c?.context && { context: c.context }), ...(input && { input }) }
 	})
 	const seen = new Set(ms.map((m) => m.id))
 	for (const m of cloud) {
@@ -519,9 +558,12 @@ const runtimeModel = (m) => ({
 	capabilities: {
 		temperature: true,
 		reasoning: false,
-		attachment: false,
+		attachment: !!m.input?.image,
 		toolcall: true,
-		input: { text: true, image: false, audio: false, video: false, pdf: false },
+		// what Cline's catalog says it takes; where it says nothing, images
+		// are left unsaid rather than said no to, so magpie takes models.dev's
+		// word for the model
+		input: m.input ?? { text: true },
 		output: { text: true, image: false, audio: false, video: false, pdf: false },
 		interleaved: false,
 	},
@@ -733,32 +775,109 @@ function usageOf(me, balance, limits) {
 
 // ---- the plugin --------------------------------------------------------------------
 
-// pinned is the upstream a DeepSeek model of Cline's is pinned to when the
+// MAKERS maps a model name to its maker's own upstream on the router Cline
+// sends it through. Most go through Vercel's AI Gateway, pinned by
+// providerOptions.gateway.only with Vercel's provider slug
+// (ai-gateway.vercel.sh/v1/models/<model>/endpoints lists "deepseek" for
+// deepseek/deepseek-v4-pro and "zai" for zai/glm-5.3). Some go through
+// OpenRouter directly, which ignores providerOptions and reads only a
+// top-level provider.only with OpenRouter's own slug
+// (openrouter.ai/api/v1/providers: Z.AI is "z-ai"): sdytman (#feedback,
+// 10-20) found glm-5.3-flash among them, while deepseek-v4.1-flash and
+// deepseek-v4.1-flash-1017 go through Vercel. An exact entry is a model
+// name; the others match a name's start, the first match winning. magpie's
+// built-in ClinePass has the same table (internal/provider/cline.go).
+const MAKERS = [
+	{ name: "glm-5.3-flash", exact: true, upstream: "z-ai", openRouter: true },
+	{ name: "deepseek", upstream: "deepseek" },
+	{ name: "glm", upstream: "zai" },
+]
+
+// pinned is where a DeepSeek or GLM model of Cline's is pinned when the
 // pinUpstream option is on (magpie's built-in ClinePass has the same tick):
-// Cline's gateway otherwise picks among the providers serving the model, and
-// some answer DeepSeek's models worse than DeepSeek's own API. A cline-free/
-// model is left to Cline, as is every model that isn't DeepSeek's.
+// { upstream, openRouter }, DeepSeek's own API for DeepSeek's, Z.ai's for
+// GLM, openRouter true for a model Cline sends through OpenRouter. Cline's
+// routers otherwise pick among the providers serving the model, and some
+// answer worse than the maker's own API, which also keeps the prompt cache.
+// A cline-free/ model is left to Cline, as is every other maker's model:
+// null.
 function pinned(on, model) {
-	if (!on || typeof model !== "string" || model.startsWith("cline-free/")) return ""
-	return model.slice(model.lastIndexOf("/") + 1).toLowerCase().startsWith("deepseek") ? "deepseek" : ""
+	if (!on || typeof model !== "string" || model.startsWith("cline-free/")) return null
+	const name = model.slice(model.lastIndexOf("/") + 1).toLowerCase()
+	const m = MAKERS.find((m) => (m.exact ? name === m.name : name.startsWith(m.name)))
+	return m ? { upstream: m.upstream, openRouter: !!m.openRouter } : null
 }
 
-// pinBody is the request's body with providerOptions.gateway.only set to the
-// pinned upstream, written in at the end so the rest of the body — the
-// prefix a cache matches — is the client's byte for byte. A body that has
-// providerOptions of its own is the client's to keep.
-function pinBody(body, chat, on) {
-	const up = pinned(on, chat?.model)
-	if (!up || chat.providerOptions !== undefined) return body
+// PASS_DEEPSEEK is a ClinePass DeepSeek model: cline-pass/deepseek-…
+const PASS_DEEPSEEK = /^cline-pass\/deepseek/i
+
+// passPin is where a ClinePass DeepSeek request is pinned by default:
+// DeepSeek's own API, with the gateway's capability filter beside it
+// (hy125245 on X, 10-23). On ClinePass the server's own routing for the
+// model wins over gateway.only alone, and a fake upstream in only was
+// served all the same; with has beside it, the request went to DeepSeek
+// (finalProvider "deepseek") and a fake upstream was refused with "no
+// matching upstream". has names what the upstream must do: cache a
+// repeated prefix by itself ("implicit-caching") and, for a model that
+// takes images, take them ("vision") — never for a text-only model
+// (deepseek-v4-pro), whose upstreams it would all rule out.
+const passPin = (images) => ({ gateway: { only: ["deepseek"], has: [...(images ? ["vision"] : []), "implicit-caching"] } })
+
+// pinOf is the field a request for model is pinned by, or null: a
+// ClinePass DeepSeek model always (unless pinUpstream is set off), with
+// fallback true when it is magpie's default rather than the user's
+// pinUpstream, so a request the pin can't be served under goes again as
+// sent; and, with pinUpstream on, the makers' table above.
+function pinOf(on, model, images, off = false) {
+	if (typeof model !== "string") return null
+	if (PASS_DEEPSEEK.test(model) && !off) return { key: "providerOptions", value: passPin(images), fallback: !on }
+	const pin = pinned(on, model)
+	if (!pin) return null
+	return pin.openRouter
+		? { key: "provider", value: { only: [pin.upstream] }, fallback: false }
+		: { key: "providerOptions", value: { gateway: { only: [pin.upstream] } }, fallback: false }
+}
+
+// withField is body with "key":value written in at the end, so the rest of
+// the body — the prefix a cache matches — is the client's byte for byte
+function withField(body, key, value) {
 	const end = body.lastIndexOf("}")
 	if (end < 0) return body
 	const head = body.slice(0, end)
 	const sep = /[{,]\s*$/.test(head) ? "" : ","
-	return head + sep + `"providerOptions":${JSON.stringify({ gateway: { only: [up] } })}` + body.slice(end)
+	return head + sep + `${JSON.stringify(key)}:${JSON.stringify(value)}` + body.slice(end)
 }
+
+// ownsRouting is a body that names its own provider or providerOptions —
+// the client's, or the user's extra body in magpie: theirs to keep, and
+// nothing is added beside it (magpie's default never overrides a value
+// the user set)
+const ownsRouting = (chat) => chat?.providerOptions !== undefined || chat?.provider !== undefined
+
+// pinBody is the request's body with its pin written in (pinOf), or the
+// body as sent
+function pinBody(body, chat, on, images = false, off = false) {
+	const pin = ownsRouting(chat) ? null : pinOf(on, chat?.model, images, off)
+	return pin ? withField(body, pin.key, pin.value) : body
+}
+
+// hasImages is a chat body carrying an image part (OpenAI's image_url, or
+// a bare image part)
+const hasImages = (body) => /"type"\s*:\s*"(?:image_url|image|input_image)"/.test(body)
+
+// NO_UPSTREAM is the gateway saying no upstream meets the pin
+const NO_UPSTREAM = /no (?:matching|available|eligible) (?:upstream|provider|endpoint)s?|no upstream/i
+
+// unpinWorthy is a pinned request's failure that the same request unpinned
+// may well not meet: no upstream matching the pin, or the pinned upstream
+// failing (a 5xx). An account's refusal (401, 402, 403, 429) is the
+// account's, whatever the pin.
+const unpinWorthy = (status, text) => status >= 500 || NO_UPSTREAM.test(String(text ?? ""))
 
 // isOn is whether an option is set: true, or "true" in a config written by hand
 const isOn = (v) => v === true || v === "true"
+// isOff is an option set off in so many words: false, or "false"
+const isOff = (v) => v === false || v === "false"
 
 export const ClinePlugin = async ({ client } = {}, options = {}) => {
 	// the accounts fresh renewed this run: the sign-in mark comes off on the
@@ -774,6 +893,10 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 	// instance serves every account of the provider at once: one newest pair
 	// shared by all of them would send an account on another account's token
 	const held = new Map() // a spent refresh token → its chain's newest pair
+	// whether a model takes images, as the bundled list and then Cline's
+	// catalog say (the models hook): a ClinePass DeepSeek pin asks for a
+	// vision upstream only for a model that has one
+	const images = new Map(DEFAULT_MODELS.map((m) => [m.id, !!m.input?.image]))
 
 	// remember saves a refreshed pair where magpie keeps it
 	const remember = async (next) => {
@@ -965,6 +1088,9 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 				// pinUpstream: the plugin's own option, or the provider's in
 				// OpenCode's config (provider.cline.options.pinUpstream)
 				const pin = isOn(options?.pinUpstream) || isOn(provider?.options?.pinUpstream)
+				// set off in so many words, nothing is pinned, ClinePass's
+				// DeepSeek models included
+				const unpinned = isOff(options?.pinUpstream) || isOff(provider?.options?.pinUpstream)
 				if (a?.type !== "oauth" && a?.type !== "api") return {}
 				return {
 					baseURL: API,
@@ -976,11 +1102,19 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 						if (!/\/chat\/completions$/.test(new URL(url).pathname))
 							return errorResponse({ status: 404, message: "only chat completions are served" })
 						let body
+						// sent is the body as the client sent it; fallback is a
+						// default pin's way back to it
+						let sent
+						let fallback = false
 						try {
-							body = await bodyText(input, init)
+							body = sent = await bodyText(input, init)
 							const chat = JSON.parse(body)
 							if (!chat || typeof chat !== "object" || Array.isArray(chat)) throw new Error("not a chat completion")
-							body = pinBody(body, chat, pin)
+							const p = ownsRouting(chat) ? null : pinOf(pin, chat.model, images.get(chat.model) || hasImages(body), unpinned)
+							if (p) {
+								body = withField(body, p.key, p.value)
+								fallback = p.fallback
+							}
 						} catch {
 							return errorResponse({ status: 400, message: "a request that isn't a chat completion" })
 						}
@@ -998,11 +1132,24 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 						for (const [k, v] of Object.entries(clientHeaders(session ? taskIdOf(session) : undefined))) headers.set(k, v)
 						headers.delete("content-length")
 						headers.delete("host")
+						const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
 						let res
 						try {
-							res = await fetch(url, { ...init, method: init?.method ?? "POST", headers, body, signal: init?.signal ?? (input instanceof Request ? input.signal : undefined) })
+							res = await fetch(url, { ...init, method: init?.method ?? "POST", headers, body, signal })
 						} catch (e) {
 							return signed(errorResponse({ status: 502, message: String(e?.message ?? e) }), renewed(cred))
+						}
+						// a default pin never fails a request that would have
+						// worked: no upstream matching it, or the pinned one
+						// down, and the request goes once more as sent
+						if (!res.ok && fallback) {
+							const text = (await res.text()).slice(0, 1 << 20)
+							if (!unpinWorthy(res.status, text)) return signed(errorResponse(failure(res.status, text)), renewed(cred))
+							try {
+								res = await fetch(url, { ...init, method: init?.method ?? "POST", headers, body: sent, signal })
+							} catch (e) {
+								return signed(errorResponse({ status: 502, message: String(e?.message ?? e) }), renewed(cred))
+							}
 						}
 						// a renewed token cleared the lapse mark whatever the
 						// request then met, a refused one included (qoder's
@@ -1027,6 +1174,7 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 				const have = provider?.models ?? {}
 				try {
 					const ms = await fetchFeed()
+				for (const m of ms) if (m.input) images.set(m.id, !!m.input.image)
 					return Object.fromEntries(ms.map((m) => [m.id, runtimeModel(m)]))
 				} catch {
 					// a list Cline couldn't give is a failure, not the few
@@ -1052,6 +1200,7 @@ export const _internal = {
 	fetchFeed,
 	fetchRecommended,
 	fetchCloudModels,
+	inputsFor,
 	creditsOf,
 	balanceUSD,
 	usd,
@@ -1061,7 +1210,10 @@ export const _internal = {
 	errorResponse,
 	bodyText,
 	pinned,
+	pinOf,
 	pinBody,
+	unpinWorthy,
+	hasImages,
 	unwrapped,
 	clientHeaders,
 	deviceAuthorize,

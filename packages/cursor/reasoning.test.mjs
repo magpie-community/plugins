@@ -19,7 +19,7 @@ test("reasoning_content survives a tool continuation and the Run's transcript bl
   expect(parts(conv)[0].content).toEqual([
     { type: "reasoning", text: "The branch needs a null check." },
     { type: "text", text: "Reading the source." },
-    { type: "tool-call", toolCallId: "toolu_a", toolName: "CallDynamicTool", args: { namespace: "magpie", toolName: "read", arguments: { path: "a" } } },
+    { type: "tool-call", toolCallId: "toolu_a", toolName: "CallDynamicTool", args: { namespace: "tools", toolName: "read", arguments: { path: "a" } } },
   ])
   const run = _internal.buildRun(conv.msgs, conv.last, [], "grok-4.7-fast")
   const transcript = [...run.blobs.values()].map((b) => b.toString())

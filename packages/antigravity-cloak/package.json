@@ -1,0 +1,14 @@
+{
+  "name": "@magpie-community/middleware-antigravity-cloak",
+  "version": "0.1.2",
+  "description": "magpie gateway middleware: Antigravity stops turning Claude Code's and the Claude Agent SDK's system prompts away, and no other provider's request is changed",
+  "type": "module",
+  "files": ["antigravity-cloak.middleware.js", "README.md"],
+  "keywords": ["magpie", "magpie-middleware", "antigravity", "claude-code", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/antigravity-cloak" },
+  "magpie": {
+    "middleware": "./antigravity-cloak.middleware.js",
+    "options": { "extraWords": [] }
+  }
+}

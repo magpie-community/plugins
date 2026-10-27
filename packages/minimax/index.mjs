@@ -7,7 +7,8 @@
 // device flow with PKCE, client mcode-public): nothing is read from or
 // written to MiniMax Code's own sign-in (~/.minimax). Its chats are
 // Anthropic messages at <agent>/mavis/api/v1/llm/v1/messages, sent with
-// MiniMax Code's headers. No check-in is made for the account.
+// MiniMax Code's headers. The account's daily check-in (每日签到) is
+// claimed with the same token, on the minimax-cloud endpoints.
 
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 
@@ -64,11 +65,37 @@ const num = (v) => {
 
 // ---- the models -------------------------------------------------------------
 
+// The limits the endpoint really allows, for the models whose advertised
+// ones are MiniMax Code's conservative declaration. Its model config says
+// 512K/128K for the M3 family, but the endpoint accepts 1,048,576 input
+// tokens and 524,288 output tokens for every one of them: a request of
+// 1,048,140 input tokens is answered, one of 1,048,700 is refused with
+// "context window exceeds limit (2013)", and max_tokens of 524,288 is
+// accepted where 600,000 is refused with "does not support max tokens >
+// 524288". The advertised numbers are the same for a signed-in account and
+// for nobody, so they are not a plan's limit, and an agent that believes
+// them compacts its history about half way too early.
+const VERIFIED_LIMITS = {
+  "MiniMax-M3.1-Flash": { context: 1048576, output: 524288 },
+  "MiniMax-M3.1-Flash-Preview": { context: 1048576, output: 524288 },
+  "MiniMax-M3": { context: 1048576, output: 524288 },
+}
+
+// limits is a model's context and output: the verified ones where they are
+// known, the advertised ones otherwise.
+function limits(id, context, output) {
+  const v = VERIFIED_LIMITS[id]
+  return {
+    context: v ? v.context : context ?? 0,
+    output: v ? v.output : output ?? 0,
+  }
+}
+
 // MiniMax Code's own list, for when the live one can't be had.
 // thinking: "switchable" (on or off), "forced_on" (always on, at an effort)
 const MODELS = [
-  { id: "MiniMax-M3.1-Flash-Preview", name: "M3.1-Flash-Preview", context: 512000, output: 128000, images: true, thinking: "forced_on", efforts: ["low", "medium", "high", "xhigh", "max"] },
-  { id: "MiniMax-M3", name: "MiniMax-M3", context: 512000, output: 128000, images: true, thinking: "switchable", efforts: [] },
+  { id: "MiniMax-M3.1-Flash-Preview", name: "M3.1-Flash-Preview", context: 1048576, output: 524288, images: true, thinking: "forced_on", efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: "MiniMax-M3", name: "MiniMax-M3", context: 1048576, output: 524288, images: true, thinking: "switchable", efforts: [] },
   { id: "MiniMax-M2.7", name: "MiniMax-M2.7", context: 200000, output: 128000, images: false, thinking: "on", efforts: [] },
   { id: "MiniMax-M2.7-highspeed", name: "MiniMax-M2.7-highspeed", context: 200000, output: 128000, images: false, thinking: "on", efforts: [] },
 ]
@@ -93,7 +120,7 @@ function configModels() {
     tool_call: true,
     attachment: !!m.images,
     modalities: { input: m.images ? ["text", "image"] : ["text"], output: ["text"] },
-    limit: { context: m.context, output: m.output },
+    limit: limits(m.id, m.context, m.output),
     cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
     variants: variants(m),
   }]))
@@ -109,7 +136,7 @@ function modelOf(site, provider, m) {
     headers: {},
     options: {},
     cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-    limit: { context: m.context ?? 0, output: m.output ?? 0 },
+    limit: limits(m.id, m.context, m.output),
     capabilities: {
       temperature: true,
       reasoning: reasons(m),
@@ -184,16 +211,17 @@ class OAuthError extends Error {
 
 // postForm posts an OAuth form, as MiniMax Code's client does; ok is false
 // when the answer is an HTTP error or carries an "error".
-async function postForm(url, fields) {
+async function postForm(url, fields, timeoutMs = 30000) {
   const res = await fetch(url, {
     method: "POST",
     headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(fields).toString(),
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(timeoutMs),
   })
+  const text = await res.text() // preserve transport errors while reading the body
   let body
   try {
-    body = obj(JSON.parse(await res.text()))
+    body = obj(JSON.parse(text))
   } catch {}
   if (!body) throw new OAuthError("invalid_json_response", res.status)
   const error = str(body, "error")
@@ -256,30 +284,54 @@ async function startDevice(site) {
   }
 }
 
+// Only device-code polling is retried. Refresh tokens may be single-use.
+function transientDeviceError(e) {
+  const code = e?.code ?? e?.cause?.code
+  if (["ECONNRESET", "ETIMEDOUT", "EPIPE", "ECONNREFUSED", "EAI_AGAIN"].includes(code) || e?.name === "TimeoutError") return true
+  if (!(e instanceof OAuthError)) return false
+  const status = e.httpStatus
+  if (["invalid_grant", "access_denied", "expired_token", "invalid_client", "unauthorized_client"].includes(e.code)) return false
+  return status === 408 || status === 429 || status >= 500 && status <= 599 ||
+    e.code === "invalid_json_response" && status === 400
+}
+
 async function pollDevice(site, d) {
   let wait = d.intervalMs
+  let failures = 0
+  let delay = wait
   while (Date.now() < d.deadline) {
-    await sleep(wait)
-    const r = await postForm(site.account + "/oauth2/token", {
-      grant_type: DEVICE_GRANT,
-      ...d.poll,
-      client_id: CLIENT_ID,
-      code_verifier: d.verifier,
-    })
+    await sleep(Math.min(delay, Math.max(0, d.deadline - Date.now())))
+    if (Date.now() >= d.deadline) break
+    let r
+    try {
+      r = await postForm(site.account + "/oauth2/token", {
+        grant_type: DEVICE_GRANT,
+        ...d.poll,
+        client_id: CLIENT_ID,
+        code_verifier: d.verifier,
+      }, Math.max(1, Math.min(30000, d.deadline - Date.now())))
+      if (!r.ok && r.error !== "authorization_pending" && r.error !== "slow_down") {
+        throw new OAuthError(r.error ?? "device_authorization_failed", r.status)
+      }
+    } catch (e) {
+      if (!transientDeviceError(e) || ++failures > 3) throw e
+      delay = Math.max(wait, Math.min(30000, Math.max(wait, 1000) * 2 ** failures))
+      // Fixed text and numeric status only: never log forms, URLs or tokens.
+      console.warn(`MiniMax device authorization: temporary transport/response failure${e.httpStatus ? ` (HTTP ${e.httpStatus})` : ""}; retry ${failures}/3`)
+      continue
+    }
+    failures = 0
+    delay = wait
     const status = str(r.body, "status")
-    if (r.ok && status === "pending") continue
-    if (r.ok && status === "slow_down") {
+    if (r.ok && status === "pending" || r.error === "authorization_pending") continue
+    if (r.ok && status === "slow_down" || r.error === "slow_down") {
       wait += 5000
+      delay = wait
       continue
     }
     if (r.ok && (status === "denied" || status === "access_denied")) throw new OAuthError("access_denied", 0, "the sign-in was turned down")
     if (r.ok && (status === "expired" || status === "expired_token")) throw new OAuthError("expired_token", 0, "the sign-in code expired")
     if (r.ok) return token(r.body)
-    if (r.error === "authorization_pending") continue
-    if (r.error === "slow_down") {
-      wait += 5000
-      continue
-    }
     throw new OAuthError(r.error ?? "device_authorization_failed", r.status)
   }
   throw new OAuthError("expired_token", 0, "the sign-in code expired")
@@ -315,10 +367,11 @@ class SignInExpired extends Error {
 // signed is a request of MiniMax Code's account API, signed as mcode signs
 // one: yy over the path and query, the body ("{}" for a GET) and the time;
 // x-signature over the time (and the body of a POST).
-function signed(site, path, { access, userID, body, now = Date.now(), tz = new Date().getTimezoneOffset() * -60, platform = process.platform } = {}) {
-  const url = new URL(path, site.agent)
+function signed(site, path, { access, userID, body, origin = site.agent, query, now = Date.now(), tz = new Date().getTimezoneOffset() * -60, platform = process.platform } = {}) {
+  const url = new URL(path, origin)
   url.search = new URLSearchParams({
     device_platform: "mcode", biz_id: "3", app_id: "3001", version_code: "22201",
+    ...query,
     unix: String(now), timezone_offset: String(tz), sys_language: site.lang, lang: site.lang,
     device_id: "0", os_name: platform, browser_name: "mcode", user_id: String(userID ?? "").trim() || "0", client: "mcode",
   }).toString()
@@ -337,7 +390,12 @@ function signed(site, path, { access, userID, body, now = Date.now(), tz = new D
   return { url: url.toString(), init: { method: json === undefined ? "GET" : "POST", headers, ...(json === undefined ? {} : { body: json }) } }
 }
 
-class AccountRefused extends Error {}
+class AccountRefused extends Error {
+  constructor(message, status) {
+    super(message)
+    this.status = status
+  }
+}
 
 // checked throws on an answer MiniMax's account API says failed in its body.
 function checked(env, what) {
@@ -354,7 +412,7 @@ function checked(env, what) {
 async function accountCall(site, path, opts, what) {
   const { url, init } = signed(site, path, opts)
   const res = await fetch(url, { ...init, signal: AbortSignal.timeout(15000) })
-  if (res.status === 401 || res.status === 403) throw new AccountRefused(`${what}: the sign-in was refused (HTTP ${res.status})`)
+  if (res.status === 401 || res.status === 403) throw new AccountRefused(`${what}: the sign-in was refused (HTTP ${res.status})`, res.status)
   if (!res.ok) throw new Error(`${what}: HTTP ${res.status}`)
   let env
   try {
@@ -482,6 +540,74 @@ function credits(b) {
   return (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")) + " credits"
 }
 
+// ---- the credits ledger ----------------------------------------------------------
+
+// MiniMax's own client lists the account's credits batch by batch in
+// Settings → Usage → Credit details (积分明细): GET
+// /minimax-cloud/api/v1/credit/details, page_number, page_size 20 and
+// include_expired, answering { details, total_count }. Each batch has
+// credit_type (1 purchased, 2 check-in), granted_amount, consumed_amount
+// and remaining_amount as decimal strings ("1,200.5"; a remaining below 0
+// is 0), granted_at_ms and expire_at_ms; a batch past expire_at_ms is
+// Expired. It goes as the check-in's calls go, to the account host.
+const LEDGER_PAGE = 20
+const LEDGER_PAGES = 10
+
+// amountOf reads a ledger amount as the client does; null when it isn't one.
+function amountOf(v, clampNegative = false) {
+  if (v === null || v === undefined || v === "") return null
+  let t = String(v).replace(/,/g, "").trim()
+  if (clampNegative && t.startsWith("-")) return /^\d+(\.\d+)?$/.test(t.slice(1)) ? 0 : null
+  if (!/^\d+(\.\d+)?$/.test(t)) return null
+  const n = Number(t)
+  return Number.isFinite(n) ? n : null
+}
+
+// ledgerBatches is the batches of every page, or null when the list
+// couldn't be read whole: a part of the ledger would tell a wrong share.
+async function ledgerBatches(site, access, userID) {
+  const out = []
+  for (let page = 1; page <= LEDGER_PAGES; page++) {
+    const env = await accountCall(site, "/minimax-cloud/api/v1/credit/details", {
+      access, userID, origin: site.agent,
+      query: { ...CHECKIN_QUERY, page_number: String(page), page_size: String(LEDGER_PAGE), include_expired: "true" },
+    }, "credits")
+    const d = Array.isArray(env.details) ? env : obj(env.data)
+    if (!Array.isArray(d?.details) || typeof d.total_count !== "number") return null
+    out.push(...d.details)
+    if (out.length >= d.total_count || !d.details.length) return out.length >= d.total_count ? out : null
+  }
+  return null
+}
+
+// creditsWindow is the batches not yet expired as one window: what they
+// granted, what of it is used, and when the soonest of them runs out. None
+// when no batch is live or a batch can't be read.
+function creditsWindow(batches, now = Date.now()) {
+  let total = 0, left = 0, soonest
+  for (const b of batches) {
+    const granted = amountOf(b?.granted_amount), rest = amountOf(b?.remaining_amount, true), exp = Number(b?.expire_at_ms)
+    if (b?.credit_type !== 1 && b?.credit_type !== 2) continue
+    if (granted === null || rest === null || !Number.isFinite(exp)) return undefined
+    if (exp <= now) continue
+    total += granted
+    left += Math.min(rest, granted)
+    if (rest > 0 && (!soonest || exp < soonest.at)) soonest = { at: exp, n: rest }
+  }
+  if (!(total > 0)) return undefined
+  const used = Math.max(0, total - left)
+  const round = (n) => Math.round(n * 100) / 100
+  return {
+    name: "Credits",
+    used: (100 * used) / total,
+    display: `${round(used)} / ${round(total)}`,
+    amount: round(used),
+    limit: round(total),
+    unit: "credits",
+    ...(soonest ? { runsOutAt: new Date(soonest.at).toISOString(), runsOut: round(soonest.n) } : {}),
+  }
+}
+
 // usageOf is the card: the plan (the M Plan's tier, else Free), the credits
 // left, and the M Plan's windows when there are any.
 function usageOf(m, windows = []) {
@@ -492,6 +618,75 @@ function usageOf(m, windows = []) {
     ...(m.balance !== undefined ? { balance: credits(m.balance) } : {}),
     windows,
   }
+}
+
+// ---- check-in ----------------------------------------------------------------
+
+// MiniMax pays a few credits for the daily check-in (每日签到). The panel
+// lists the week's seven days — status 1 not started, 2 claimable, 3
+// claimed, 4 not available — and the claim answers 1 claimed now or 2
+// already today. Both calls use the same signed account client as the rest
+// of the account API: the gateway checks the signature, and a Bearer-only
+// Bun fetch is not what MiniMax Code sends.
+//
+// They go as MiniMax Code's own /checkin sends them (its daily-check-in
+// gateway, 0.6.12): as the account, user_id its realUserID — MiniMax Code
+// won't ask without one, and every minimax-cloud call it makes names the
+// user — and the desktop's device_platform web, is_desktop 1 and its
+// version. Its host is the account API's (agent.minimaxi.com on the China
+// site, agent.minimax.io on the international one), not the chat host:
+// MiniMax Code's minimax-cloud origin table has these.
+//
+// A 401 there ({"error":"invalid access token"}) is answered as MiniMax
+// Code answers it: the sign-in renewed (a newer token if one is had, else
+// refreshed), the user id read again for that token, and the check-in
+// asked once more. The chat path does the same on its 401, which is why a
+// token minimax-cloud turned away still chatted (Magic_zero on Discord).
+const CHECKIN_QUERY = { device_platform: "web", is_desktop: "1", desktop_version: "0.6.12" }
+
+async function checkinCall(site, access, userID, path, body) {
+  const opts = { access, userID, origin: site.agent, query: CHECKIN_QUERY }
+  if (body !== undefined) opts.body = body
+  return accountCall(site, path, opts, "check-in")
+}
+
+// checkinOf reads the panel and claims today: claimed (checked in now,
+// credit = the points it paid), done (already today), inactive (the day
+// hasn't started, or the panel has none), ineligible (the day isn't
+// available); a throw is failed. streak counts the claimed days up to and
+// including today.
+async function checkinOf(site, access, userID) {
+  if (!String(userID ?? "").trim()) userID = (await identity(site, access)).realUserID
+  const panel = await checkinCall(site, access, userID, "/minimax-cloud/api/v1/signin/status")
+  const days = Array.isArray(panel?.data?.days) ? panel.data.days : null
+  if (!days?.length) throw new Error("check-in: no panel in the reply")
+  const sorted = [...days].sort((a, b) => (a?.day_no ?? 0) - (b?.day_no ?? 0))
+  if (sorted.length !== 7 || sorted.some((d, i) => d?.day_no !== i + 1)) throw new Error("check-in: malformed panel")
+  const todays = sorted.filter((d) => d?.is_today)
+  const claimable = sorted.filter((d) => d?.status === 2)
+  if (todays.length > 1 || claimable.length > 1) throw new Error("check-in: malformed panel")
+  const today = todays[0]
+  if (!today) return { outcome: "inactive" }
+  const streakFrom = (i) => {
+    let n = 0
+    for (let j = i; j >= 0 && sorted[j]?.status === 3; j--) n++
+    return n
+  }
+  if (today.status === 3) {
+    const points = pos(today, "points")
+    return { outcome: "done", ...(points ? { credit: points } : {}), streak: streakFrom(sorted.indexOf(today)) }
+  }
+  if (today.status === 2) {
+    const claim = await checkinCall(site, access, userID, "/minimax-cloud/api/v1/signin/claim", {})
+    const r = pos(claim?.data, "claim_result")
+    const credit = pos(claim?.data, "points")
+    const got = { ...(credit ? { credit } : {}), streak: streakFrom(sorted.indexOf(today) - 1) + 1 }
+    if (r === 1) return { outcome: "claimed", ...got }
+    if (r === 2) return { outcome: "done", ...got }
+    throw new Error(`check-in: unknown claim_result ${JSON.stringify(claim?.data?.claim_result)}`)
+  }
+  if (today.status === 4) return { outcome: "ineligible" }
+  return { outcome: "inactive" } // 1: the day hasn't started
 }
 
 // ---- requests -----------------------------------------------------------------
@@ -698,7 +893,7 @@ function makePlugin(site) {
             },
           }
         },
-        // the account's credits and M Plan; nothing is claimed (no check-in)
+        // the account's credits and M Plan
         async usage(getAuth) {
           const auth = await getAuth()
           if (auth?.type !== "oauth" || !auth.access) return { error: "not signed in" }
@@ -720,6 +915,14 @@ function makePlugin(site) {
                 error = e?.message ?? String(e)
               }
             }
+            // the credits as a share of what the live batches granted
+            // (#393); beside an M Plan they are its fallback, aside. A
+            // ledger that can't be read leaves the balance alone.
+            try {
+              const b = await ledgerBatches(site, a.access, who.realUserID)
+              const cw = b && creditsWindow(b)
+              if (cw) windows = [...windows, m.hasTokenPlan ? { ...cw, aside: true } : cw]
+            } catch {}
             return {
               ...usageOf(m, windows),
               ...(error ? { error } : {}),
@@ -728,6 +931,36 @@ function makePlugin(site) {
             }
           } catch (e) {
             return { error: e?.message ?? String(e), signIn: "kept" }
+          }
+        },
+        // the daily check-in (每日签到): magpie runs it once a day per
+        // account, and its Check in now button asks right away; the
+        // outcome lands on the account's Usage card.
+        async checkin(getAuth) {
+          const auth = await getAuth()
+          if (auth?.type !== "oauth" || !auth.access) return { outcome: "failed", message: "not signed in" }
+          let a
+          try {
+            ;({ a } = await fresh(getAuth))
+          } catch (e) {
+            return { outcome: "failed", message: e?.message ?? String(e), ...(e?.signIn ? { signIn: e.signIn } : {}) }
+          }
+          const failed = (e) => ({ outcome: "failed", message: e?.message ?? String(e), ...(e?.signIn ? { signIn: e.signIn } : {}) })
+          try {
+            return await checkinOf(site, a.access, a.realUserID)
+          } catch (e) {
+            if (!(e instanceof AccountRefused && e.status === 401)) return failed(e)
+            // MiniMax Code's /checkin on a 401: renewed, and asked once more
+            try {
+              ;({ a } = await fresh(getAuth, a.access))
+            } catch (e2) {
+              return e2 instanceof SignInExpired ? failed(e2) : failed(e)
+            }
+            try {
+              return await checkinOf(site, a.access, undefined)
+            } catch (e2) {
+              return failed(e2)
+            }
           }
         },
         methods: [
@@ -776,4 +1009,4 @@ export const MiniMaxCodeAuthPlugin = makePlugin(SITES["minimax-code"])
 export const MiniMaxCodeGlobalAuthPlugin = makePlugin(SITES["minimax-code-global"])
 
 // for tests
-export const _internal = { SITES, MODELS, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, variants, renewing, renewed, startDevice, pollDevice }
+export const _internal = { SITES, MODELS, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, creditsWindow, ledgerBatches, variants, renewing, renewed, startDevice, pollDevice, checkinOf }

@@ -43,11 +43,16 @@ test("a Pro account: its plan and its period's end, no windows", async () => {
   expect(saved).toEqual([])
 })
 
-test("a free account reads Free, as the built-in's row names it, and the plan it moved to is kept", async () => {
+test("a free account's card says No plan, as the built-in's zedLoginQuota did; its row keeps Free, and the plan it moved to is kept", async () => {
   const { u, saved } = await run(auth(), () => new Response(me("zed_free")))
-  expect(u).toEqual({ plan: "Free", until: "2026-10-01T00:00:00Z", signIn: "kept" })
+  expect(u).toEqual({ plan: "No plan", until: "2026-10-01T00:00:00Z", signIn: "kept" })
   expect(saved.length).toBe(1)
   expect(JSON.parse(saved[0].body.refresh)).toMatchObject({ plan: "zed_free", planName: "Free" })
+  // an account that names no plan at all is free too
+  expect((await run(auth(), () => new Response(me("")))).u.plan).toBe("No plan")
+  // an overdue invoice is what a free card says, its plan named as the row names it
+  expect((await run(auth(), () => new Response(me("zed_free", true)))).u).toEqual({ plan: "Free", until: "2026-10-01T00:00:00Z",
+    error: "Zed: this account has an overdue invoice, so its models are paused (see zed.dev/account)", signIn: "kept" })
 })
 
 test("an overdue invoice is the error it is", async () => {

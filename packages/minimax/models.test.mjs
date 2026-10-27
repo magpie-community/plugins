@@ -31,7 +31,32 @@ test("the config declares MiniMax Code's four models on the Anthropic API", asyn
   expect(p.models["MiniMax-M3.1-Flash-Preview"].variants.xhigh).toEqual({ thinking: { type: "adaptive" }, effort: "xhigh" })
   expect(p.models["MiniMax-M3"].modalities.input).toEqual(["text", "image"])
   expect(p.models["MiniMax-M2.7"].modalities.input).toEqual(["text"])
-  expect(p.models["MiniMax-M3"].limit).toEqual({ context: 512000, output: 128000 })
+  expect(p.models["MiniMax-M3"].limit).toEqual({ context: 1048576, output: 524288 })
+  expect(p.models["MiniMax-M3.1-Flash-Preview"].limit).toEqual({ context: 1048576, output: 524288 })
+  expect(p.models["MiniMax-M2.7"].limit).toEqual({ context: 200000, output: 128000 })
+})
+
+test("a model whose advertised limits are under the real ones gets the real ones", async () => {
+  f = fakeMiniMax()
+  f.route("GET /mavis/api/v1/models", () => json({
+    version: "7", ttlSeconds: 300,
+    providers: [
+      { providerId: "minimax", config: {
+        model_order: ["MiniMax-M3.1-Flash", "MiniMax-M2.7"],
+        models: {
+          // what MiniMax Code's own list says today
+          "MiniMax-M3.1-Flash": { name: "M3.1-Flash", limit: { context: 512000, output: 128000 }, modalities: { input: ["text", "image"] }, reasoning: true, thinking_config: { mode: "forced_on" } },
+          "MiniMax-M2.7": { name: "MiniMax-M2.7", limit: { context: 200000, output: 128000 }, modalities: { input: ["text"] }, reasoning: true },
+        },
+      } },
+    ],
+  }))
+  const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
+  const ms = await hooks.provider.models(await given(hooks), { auth })
+  // the endpoint allows 1,048,576 input and 524,288 output tokens for it
+  expect(ms["MiniMax-M3.1-Flash"].limit).toEqual({ context: 1048576, output: 524288 })
+  // a model with no verified limits keeps the ones the list gave
+  expect(ms["MiniMax-M2.7"].limit).toEqual({ context: 200000, output: 128000 })
 })
 
 test("the live list is MiniMax Code's model config", async () => {

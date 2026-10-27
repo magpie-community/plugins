@@ -20,7 +20,7 @@ const LIMITS = {
   extraUsageAllowed: true,
 }
 
-const CORE = ["glm-5.3", "glm-5.3-flash", "glm-5.2", "kimi-k3", "deepseek-v4.1-flash", "qwen3.8-max", "minimax-m3", "minimax-m2.7", "mistral-medium-3.5", "nemotron-3-ultra"]
+const CORE = ["glm-5.3", "glm-5.3-flash", "glm-5.2", "kimi-k3", "deepseek-v4.1-flash", "qwen3.8-max", "minimax-m3", "minimax-m2.7", "mistral-large-4", "mistral-medium-3.5", "nemotron-3-ultra"]
 
 const account = (over = {}) => ({
   type: "oauth",
@@ -34,7 +34,7 @@ const account = (over = {}) => ({
   ...over,
 })
 
-async function plugin(auth, serve) {
+async function plugin(auth, serve, magpie) {
   const seen = []
   globalThis.fetch = async (url, init = {}) => {
     const u = new URL(String(url))
@@ -43,8 +43,8 @@ async function plugin(auth, serve) {
     return serve(u.pathname, h, init)
   }
   const client = { auth: { set: async ({ body }) => (auth = body) } }
-  const hooks = await FactoryAuthPlugin({ client })
-  return { usage: () => hooks.auth.usage(async () => auth), seen, auth: () => auth }
+  const hooks = await FactoryAuthPlugin({ client, magpie })
+  return { usage: () => hooks.auth.usage(async () => auth), seen, auth: () => auth, hooks }
 }
 
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "Content-Type": "application/json" } })
@@ -136,4 +136,64 @@ test("a token put in an org on the way renews it, as the built-in's factoryMendO
     return json({}, 404)
   })
   expect((await p.usage()).signIn).toBe("renewed")
+})
+
+// Standard usage only (#349): standard's windows stop the account for every
+// model, extra usage or not; Droid Core's and the extra usage are shown only
+test("standard usage only: standard's windows count every model and stop the account; Core's and extra usage are shown only", () => {
+  expect(_internal.limitWindows(LIMITS, true)).toEqual([
+    { name: "5 hours", used: 42, span: 18000, resetsAt: "2026-10-01T05:00:00.000Z" },
+    { name: "7 days", used: 10, span: 604800, resetsAt: "2026-10-12T00:00:00.000Z" },
+    { name: "30 days", used: 100, span: 2592000, resetsAt: "2026-10-26T07:33:20.000Z" },
+    { name: "Droid Core · 5 hours", used: 100, span: 18000, resetsAt: "2026-10-01T05:00:00.000Z", aside: true, models: CORE },
+    { name: "Extra usage", used: 0, display: "$12.50", aside: true },
+  ])
+  // no extra usage: the same, Core's still aside
+  const w = _internal.limitWindows({ limits: { standard: { weekly: { usedPercent: 100 } }, core: { weekly: { usedPercent: 3 } } }, extraUsageAllowed: false }, true)
+  expect(w).toEqual([
+    { name: "7 days", used: 100, span: 604800 },
+    { name: "Droid Core · 7 days", used: 3, span: 604800, aside: true, models: CORE },
+  ])
+})
+
+test("standard usage only is a switch magpie shows, off by default, read at each usage reading", async () => {
+  let on = false
+  const asked = []
+  const magpie = {
+    option: (provider, key) => {
+      asked.push(provider + "/" + key)
+      return on
+    },
+  }
+  const p = await plugin(account(), (path) => (path === "/api/billing/limits" ? json(LIMITS) : new Response("", { status: 404 })), magpie)
+  // declared as magpie's host keeps a switch: a key of [a-z0-9_-], a label, off unless said
+  const o = p.hooks.auth.options
+  expect(o).toEqual([{ key: "standard_only", label: "Standard usage only", description: expect.any(String) }])
+  expect(o[0].key).toMatch(/^[a-z0-9_-]{1,40}$/)
+  expect(o[0].label.length).toBeLessThanOrEqual(60)
+  expect(o[0].description.length).toBeLessThanOrEqual(300)
+  expect(o[0].default).toBeUndefined()
+
+  const off = await p.usage()
+  expect(off.windows[0]).toEqual({ name: "5 hours", used: 42, span: 18000, resetsAt: "2026-10-01T05:00:00.000Z", aside: true, notModels: CORE })
+  on = true
+  const now = await p.usage()
+  expect(now.windows.map((w) => [w.name, !!w.aside, w.notModels ?? null, w.models ?? null])).toEqual([
+    ["5 hours", false, null, null],
+    ["7 days", false, null, null],
+    ["30 days", false, null, null],
+    ["Droid Core · 5 hours", true, null, CORE],
+    ["Extra usage", true, null, null],
+  ])
+  expect(asked).toEqual(["factory/standard_only", "factory/standard_only"])
+
+  // outside magpie (OpenCode gives no magpie), or a host whose option throws: off
+  const q = await plugin(account(), (path) => (path === "/api/billing/limits" ? json(LIMITS) : new Response("", { status: 404 })))
+  expect((await q.usage()).windows[0].notModels).toEqual(CORE)
+  const r = await plugin(account(), (path) => (path === "/api/billing/limits" ? json(LIMITS) : new Response("", { status: 404 })), {
+    option: () => {
+      throw new Error("no host")
+    },
+  })
+  expect((await r.usage()).windows[0].aside).toBe(true)
 })

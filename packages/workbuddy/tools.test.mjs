@@ -117,3 +117,95 @@ test("the model's calls come back under the client's names, streamed or not", as
   expect(text).toContain("data: [DONE]")
   expect(text.split("data:").length).toBe(sse.split("data:").length)
 })
+
+// clearmann (#122): Kimi (kimi-k3-1) answers 11133 to an MCP server's
+// tools. Each shape below was refused on the owner's account (2026-10-14)
+// and passed once mended as here, on Kimi, DeepSeek (11129 before) and
+// GLM; MiniMax and Hunyuan took both.
+const params = (ps) => JSON.parse(fitted(chat([tool("t", ps)])).body).tools[0].function.parameters
+const prop = (p) => params({ type: "object", properties: { a: p } }).properties.a
+
+test("an enum with no type takes its values' type, or that and null", () => {
+  expect(prop({ enum: ["x", "y"], description: "d" })).toEqual({ enum: ["x", "y"], description: "d", type: "string" })
+  expect(prop({ enum: [1, 2] })).toEqual({ enum: [1, 2], type: "integer" })
+  expect(prop({ enum: [1, 2.5] })).toEqual({ enum: [1, 2.5], type: "number" })
+  expect(prop({ enum: [true, null] })).toEqual({ enum: [true, null], type: ["boolean", "null"] })
+  expect(prop({ enum: [null] })).toEqual({ enum: [null], type: "null" })
+  // under items, anyOf and an unused $defs alike
+  expect(prop({ type: "array", items: { enum: ["a"] } }).items.type).toBe("string")
+  expect(prop({ anyOf: [{ enum: ["a"] }, { type: "integer" }] }).anyOf[0].type).toBe("string")
+  expect(params({ type: "object", properties: {}, $defs: { x: { enum: ["a"] } } }).$defs.x.type).toBe("string")
+})
+
+test("an enum of several types is an anyOf of an enum for each, typed or not", () => {
+  const split = [{ type: "string", enum: ["x"] }, { type: "integer", enum: [1] }, { type: "null" }]
+  expect(prop({ enum: ["x", 1, null], description: "d" })).toEqual({ description: "d", anyOf: split })
+  expect(prop({ type: ["string", "integer", "null"], enum: ["x", 1, null] })).toEqual({ anyOf: split })
+  expect(prop({ anyOf: [{ minLength: 1 }], enum: ["x", 1] })).toEqual({ anyOf: [{ minLength: 1 }], allOf: [{ anyOf: split.slice(0, 2) }] })
+})
+
+test("an enum Kimi takes is left: typed T, or T and null", () => {
+  for (const p of [{ type: "string", enum: ["a"] }, { type: ["integer", "null"], enum: [1, null] }, { type: ["null", "string"], enum: [null, "a"] }, { type: "null", enum: [null] }, { type: "string", enum: [1] }]) {
+    expect(prop(structuredClone(p))).toEqual(p)
+  }
+})
+
+test("an empty enum, a required that isn't a list, and a type Kimi doesn't know are left out", () => {
+  expect(prop({ type: "string", enum: [] })).toEqual({ type: "string" })
+  expect(prop({ type: "object", properties: { x: { type: "string" } }, required: "x" })).toEqual({ type: "object", properties: { x: { type: "string" } } })
+  expect(prop({ type: "String" })).toEqual({ type: "string" })
+  expect(prop({ type: "any" })).toEqual({})
+  expect(prop({ type: ["Integer", "foo", "null"] })).toEqual({ type: ["integer", "null"] })
+})
+
+test("true and false where a schema goes are {} and {not: {}}; additionalProperties is left", () => {
+  const ps = params({ type: "object", additionalProperties: false, properties: { a: true, b: false, c: { type: "array", items: true }, d: { type: "object", additionalProperties: true } } })
+  expect(ps.properties).toEqual({ a: {}, b: { not: {} }, c: { type: "array", items: {} }, d: { type: "object", additionalProperties: true } })
+  expect(ps.additionalProperties).toBe(false)
+})
+
+test("a property named enum, type or required is a name, not a keyword", () => {
+  const p = { type: "object", properties: { enum: { type: "string" }, type: { type: "string", enum: ["a"] }, required: { type: "boolean" } }, required: ["enum"] }
+  const body = chat([tool("t", structuredClone(p))])
+  expect(fitted(body).body).toBe(body)
+})
+
+// Kimi K3.1 Pro answers 400 "Invalid request parameters" to a oneOf with no
+// type, even of objects only, and takes it with "type": "object" beside it
+// (congee949, #378). The parameters below are the issue's own.
+const ab = [
+  { type: "object", properties: { mode: { type: "string", const: "a" } } },
+  { type: "object", properties: { mode: { type: "string", const: "b" } } },
+]
+
+test("a $ref's target that is a oneOf of objects with no type is typed object", () => {
+  const body = JSON.stringify({ model: "kimi-k3.1-pro", messages: [{ role: "user", content: "Do not call tools. Reply exactly OK." }], tools: [{ type: "function", function: { name: "probe", description: "Diagnostic placeholder.", parameters: { type: "object", properties: { x: { $ref: "#/$defs/X" } }, $defs: { X: { oneOf: ab } } } } }] })
+  const ps = JSON.parse(fitted(body).body).tools[0].function.parameters
+  expect(ps.$defs.X).toEqual({ oneOf: ab, type: "object" })
+  expect(ps.properties.x).toEqual({ $ref: "#/$defs/X" })
+})
+
+test("a oneOf of objects inside a $ref's target, and one whose branches are $refs to objects, are typed object", () => {
+  const ps = { type: "object", properties: { x: { $ref: "#/$defs/X" } }, $defs: { X: { type: "object", properties: { y: { oneOf: ab } }, required: ["y"] } } }
+  expect(_internal.typeUnions(ps)).toBe(true)
+  expect(ps.$defs.X.properties.y.type).toBe("object")
+  const refs = { type: "object", properties: { s: { $ref: "#/$defs/__schema0" } }, $defs: { __schema0: { oneOf: [{ $ref: "#/$defs/__schema1" }, { $ref: "#/$defs/__schema3" }] }, __schema1: { type: "object", properties: { launch: { type: "boolean" } } }, __schema2: { $ref: "#/$defs/__schema1" }, __schema3: { $ref: "#/$defs/__schema4" }, __schema4: { type: "object", properties: { connect: { type: "string" } } } } }
+  expect(_internal.typeUnions(refs)).toBe(true)
+  expect(refs.$defs.__schema0.type).toBe("object")
+  expect(refs.$defs.__schema2.type).toBeUndefined()
+})
+
+test("a oneOf that is typed, mixed, an anyOf, or reaches a missing, external or circular $ref is left", () => {
+  const ps = { type: "object", properties: {
+    typed: { type: "object", oneOf: ab },
+    mixed: { oneOf: [ab[0], { type: "string" }] },
+    any: { anyOf: ab },
+    missing: { oneOf: [ab[0], { $ref: "#/$defs/Nope" }] },
+    external: { oneOf: [ab[0], { $ref: "other.json#/X" }] },
+    loop: { oneOf: [ab[0], { $ref: "#/$defs/A" }] },
+    examples: { type: "array", examples: [{ oneOf: ab }] },
+  }, $defs: { A: { $ref: "#/$defs/B" }, B: { $ref: "#/$defs/A" } } }
+  const before = structuredClone(ps)
+  expect(_internal.typeUnions(ps)).toBe(false)
+  expect(ps).toEqual(before)
+})

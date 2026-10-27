@@ -11,6 +11,7 @@ import "./nonet.mjs" // first: no request leaves this machine
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test"
 import http2 from "node:http2"
 import { CursorAuthPlugin, _internal } from "./index.mjs"
+import { NATIVE_LIMITS, nativeSessions } from "./native-session.mjs"
 
 const { fields, pb, frame, STEP_WAIT } = _internal
 
@@ -22,7 +23,13 @@ const SHOWS = 4500 / SCALE
 
 const real = globalThis.fetch
 const wait = { ...STEP_WAIT }
-beforeEach(() => {
+const retained = NATIVE_LIMITS.perProcess
+beforeEach(async () => {
+  await nativeSessions.clear()
+  // This server closes each tool Run to publish dashboard usage. Exercise the
+  // production stateless fallback explicitly; native same-Run totals have
+  // separate roundtrip coverage in native-e2e/native-http1.
+  NATIVE_LIMITS.perProcess = 0
   // the times, not the counts; a debt is let go as before
   for (const k of ["first", "every", "until", "ask", "owedAt"]) if (k in wait) STEP_WAIT[k] = wait[k] / SCALE
   _internal.owed?.clear()
@@ -30,6 +37,8 @@ beforeEach(() => {
   _internal.unreadable?.clear()
 })
 afterEach(() => {
+  far = true
+  NATIVE_LIMITS.perProcess = retained
   globalThis.fetch = real
   Object.assign(STEP_WAIT, wait)
 })
@@ -54,12 +63,15 @@ const CURSOR = [
 let server, base
 let script = [] // per Run: "tool" or "end", with its CURSOR usage
 const shown = [] // the dashboard's events
+let far = true // a Run's event shows once its step has answered
+let asking = null // the step being asked: its Runs' events held till it answers
 beforeAll(async () => {
   server = http2.createServer()
   server.on("stream", (stream) => {
     stream.respond({ ":status": 200, "content-type": "application/connect+proto" })
     let buf = Buffer.alloc(0)
     let step
+    const by = asking // the step whose Run this is
     stream.on("data", (c) => {
       buf = Buffer.concat([buf, c])
       if (step || buf.length < 5 || buf.length < 5 + buf.readUInt32BE(1)) return
@@ -86,7 +98,14 @@ beforeAll(async () => {
     })
     stream.on("close", () => {
       if (!step?.usage) return
-      setTimeout(() => shown.push({ timestamp: String(Date.now()), model: "claude-fable-5-thinking-max", conversationId: step.conv, tokenUsage: step.usage }), SHOWS)
+      const show = () => shown.push({ timestamp: String(Date.now()), model: "claude-fable-5-thinking-max", conversationId: step.conv, tokenUsage: step.usage })
+      // Far from Cursor a Run's event shows only once its step has answered,
+      // never inside that step's wait. Not SHOWS after the Run closed: that
+      // is 45 ms past the wait's last look, which a loaded machine eats
+      // (plugins#159, #162).
+      if (!far) setTimeout(show, SHOWS)
+      else if (by?.done) show()
+      else by?.held.push(show)
     })
     stream.on("error", () => {})
   })
@@ -127,10 +146,14 @@ async function ask(auth, chat, session) {
   await hooks["chat.headers"]({ sessionID: session, model: { providerID: "cursor", id: chat.model }, provider: { info: { id: "cursor" } } }, out)
   const l = await hooks.auth.loader(async () => auth)
   const t0 = Date.now()
+  const asked = asks
+  const me = (asking = { done: false, held: [] })
   const res = await l.fetch(base + "/v1/chat/completions", { method: "POST", headers: new Headers(out.headers), body: JSON.stringify(chat) })
   const j = await res.json()
+  me.done = true
+  for (const show of me.held.splice(0)) show()
   expect([res.status, j.error]).toEqual([200, undefined])
-  return { stop: j.choices[0].finish_reason, usage: j.usage, ms: Date.now() - t0 }
+  return { stop: j.choices[0].finish_reason, usage: j.usage, ms: Date.now() - t0, asks: asks - asked }
 }
 
 const chat = (steps) => {
@@ -143,12 +166,14 @@ const chat = (steps) => {
   return { model: "claude-fable-5-thinking", messages, tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }] }
 }
 
+// what magpie bills for the steps: each step's own, and what it collected
+// of earlier steps' (magpie_deferred), which its prompt_tokens leaves out
 const sum = (us) =>
   us.reduce(
     (a, u) => ({
-      prompt: a.prompt + u.prompt_tokens,
-      cached: a.cached + u.prompt_tokens_details.cached_tokens,
-      written: a.written + u.prompt_tokens_details.cache_write_tokens,
+      prompt: a.prompt + u.prompt_tokens + (u.magpie_deferred?.prompt_tokens ?? 0),
+      cached: a.cached + u.prompt_tokens_details.cached_tokens + (u.magpie_deferred?.cached_tokens ?? 0),
+      written: a.written + u.prompt_tokens_details.cache_write_tokens + (u.magpie_deferred?.cache_write_tokens ?? 0),
     }),
     { prompt: 0, cached: 0, written: 0 },
   )
@@ -177,8 +202,11 @@ test("far from Cursor, a conversation's tool steps add up to what Cursor counted
   expect(steps.map((s) => s.stop)).toEqual(["tool_calls", "tool_calls", "stop"])
   // Cursor counted 95–99% of it from the cache; so does the conversation
   expect(sum(steps.map((s) => s.usage))).toEqual(cursorSum(CURSOR))
-  // and no step waited longer than it did before
-  for (const s of steps) expect(s.ms).toBeLessThan(STEP_WAIT.until * 2.5)
+  // and no step waited longer than it did before: one wait for its own
+  // event, and at most one more for what earlier steps owe. Each wait asks
+  // once (the round trip is most of it), so count asks, not milliseconds,
+  // which a loaded machine stretches (plugins#165).
+  for (const s of steps) expect(s.asks).toBeLessThanOrEqual(2)
 })
 
 test("an account whose events never show in time stops waiting for them, and the count still adds up", async () => {
@@ -212,6 +240,7 @@ test("near Cursor a tool step still counts its own Run", async () => {
   shown.length = 0
   const auth = fresh()
   // the event shows at once, the round trip short
+  far = false
   const keep = STEP_WAIT.until
   script = [{ kind: "tool", usage: CURSOR[0] }]
   const fast = globalThis.fetch

@@ -16,9 +16,29 @@ id: `zed`. Ported from magpie's built-in Zed account.
    user id and an access token encrypted to the key. The browser is then
    sent on to zed.dev's "signed in" page.
 4. The plugin asks Zed who the account is (`/client/users/me`). That gives
-   the organization the models are called under: the default one, else the
-   first. It also gives the plan. An organization with Zed's hosted models
-   turned off is refused.
+   the organization the models are called under, and its plan. An
+   organization with Zed's hosted models turned off is refused.
+
+## Organization
+
+Zed asks for a model token per organization. The Zed editor starts in the
+account's default organization and lets you switch to another from its
+title bar. The plugin has no switcher, so it picks the organization with a
+plan that calls models (any plan but Free), in this order (#232):
+
+1. the organization it saved before, while that one still has such a plan;
+2. the default organization, if it has one;
+3. the personal organization, if it has one;
+4. any other organization that has one.
+
+When none has such a plan, it keeps what Zed picks: the saved organization,
+else the default, else the first. The plan shown is the picked
+organization's own (none when Zed lists none for it), never the account's
+plan in its place. When Zed answers 402 for the organization a sign-in was
+saved under ("Organization does not have an active subscription"), the
+plugin reads the account again, moves to an organization with a plan if
+there is one, saves it with the sign-in, and asks once more. The plan card
+re-checks the organization the same way.
 
 The sign-in is kept as an `oauth` entry: `access` is the access token and
 `refresh` is JSON holding the user id, machine id, organization and plan.
@@ -55,7 +75,11 @@ GitHub login.
   - A caller that didn't ask for a stream gets one whole reply.
   - A failure Zed reports mid-stream keeps its status (429, 402, 529 …).
     So does a reply without Zed's `stream_ended`, which comes back as an
-    error rather than a shorter answer.
+    error rather than a shorter answer, except one case. A streamed xAI
+    (chat) reply that has already said something, and has no tool call
+    half written, ends cut short instead, with a note saying so, a `stop`
+    and `[DONE]` (#91). magpie's gateway can go on with an Anthropic or
+    Responses reply cut short, but not with a chat one.
   - A 402 means the plan doesn't include Zed's hosted models, or its
     allowance is used up.
 
@@ -63,14 +87,34 @@ GitHub login.
 
 - **After sign-in:** the account's own list comes from Zed's `GET /models`,
   read when you sign in and every 10 minutes after. Disabled models are
-  left out. Each model's effort levels become its variants.
+  left out. Each model's effort levels become its variants. When a read
+  fails, the list read last is kept; when none was ever read (Zed down,
+  or a list with nothing callable, as for an organization without an
+  active subscription), the hook throws why, and magpie shows that reason
+  with the account, the declared models marked as not its list (#229).
 - **Before sign-in:** the config hook declares one model of each family
   (Claude Sonnet 5, Opus 5.5, Haiku 4.5, GPT-5.5, Gemini 3.5 Flash,
   Grok 4.7), which the account's list replaces.
 
-## Not included
+## Usage
 
-- magpie's plan display: plan name, billing period, overdue invoices. Zed
-  doesn't report how much of the allowance is spent.
-- Several Zed accounts at once. OpenCode keeps one sign-in per provider.
-- magpie's web-search stand-in.
+magpie's `auth.usage` hook shows what Zed tells its editor of the plan,
+as magpie's built-in Zed account did. Zed doesn't report how much of the
+allowance is spent, so there are no windows:
+
+- the plan's name (Pro, Pro Trial, Business, Student, VIP). A free
+  account's card says "No plan"; its account row still names it Free;
+- when the billing period ends;
+- an overdue invoice, as the card's error ("its models are paused");
+- a sign-in Zed refuses (`/users/me` or the model list answering 401)
+  marks the account as needing to sign in again. A plan that changed is
+  saved with the sign-in.
+
+## In magpie, not the plugin
+
+These come from magpie itself, as they did for the built-in:
+
+- Several Zed accounts at once. magpie keeps a sign-in per account and
+  switches between them; plain OpenCode keeps one sign-in per provider.
+- Web search. A model that can't search is given magpie's web-search
+  stand-in, when a search API is set up in magpie.

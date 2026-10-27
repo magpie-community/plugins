@@ -60,7 +60,7 @@ test("the config declares the known models; the live list replaces them", async 
   expect(live["glm-5.2"].limit.context).toBe(200000)
   // no batch list (404 here): one function at a time
   expect(f.seen[0].path).toBe("/api/ide/v1/batch_get_detail_param")
-  expect(f.seen.slice(1).map((r) => r.json.function).sort()).toEqual(["chat_v3", "solo_agent", "solo_agent_lite", "solo_work_lite"])
+  expect(f.seen.slice(1).map((r) => r.json.function).sort()).toEqual(["chat_v3", "solo_agent", "solo_agent_lite", "solo_coder", "solo_work_lite"])
 })
 
 // what batch_get_detail_param answered TRAE SOLO CN, cut down: each
@@ -92,7 +92,7 @@ test("the lists are asked in one batch, as TRAE SOLO CN asks them, and DeepSeek 
   expect(f.seen.map((r) => r.path)).toEqual(["/api/ide/v1/batch_get_detail_param"])
   const r = f.seen[0]
   expect(r.json).toEqual({
-    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite"], agent_type: "", current_config_info: { config_name: "", is_custom_model: false },
+    functions: ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite", "solo_coder"], agent_type: "", current_config_info: { config_name: "", is_custom_model: false },
     mode_type: 0, access_type: 0, ab_force_vids: "", ab_autotest_advanced_mode: 0, show_custom_model: true,
   })
   expect(r.headers.get("x-ide-version")).toBe("0.1.69")
@@ -133,6 +133,59 @@ test("signed out asking the batch marks the account", async () => {
   await expect(hooks.provider.models(p, { auth: signedIn() })).rejects.toThrow("sign in again")
 })
 
+test("a refresh that joins a request's failing read still hears the expiry", async () => {
+  // the request starts the read; the refresh arrives while it is in flight and
+  // rides it. The read's outcome is the record, not the bare null a failed read
+  // answers, so the refresh still marks the account lapsed instead of quietly
+  // returning the config's fallback models.
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", async () => {
+    await new Promise((r) => setTimeout(r, 50))
+    return json({ code: 1001, message: "not login" }, 401)
+  })
+  f.route("POST /api/ide/v1/get_detail_param", () => json({ code: 1001, message: "not login" }, 401))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["done", { finish_reason: "stop" }]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const p = await given(hooks)
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const chat = opts.fetch(opts.baseURL + "/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "not-listed", stream: true, messages: [{ role: "user", content: "hi" }], reasoning_effort: "high" }),
+  })
+  await new Promise((r) => setTimeout(r, 5))
+  const refresh = hooks.provider.models(p, { auth: signedIn() })
+  // attached now, not at the assertion: bun reports an expectation's rejection
+  // as an error between tests if it goes unclaimed for a tick
+  const refreshOutcome = refresh.then((m) => ({ ok: true, models: m }), (e) => ({ ok: false, error: e }))
+  // the request answers through its own path, and the refresh marks the lapse
+  await expect(chat).resolves.toBeDefined()
+  const outcome = await refreshOutcome
+  expect(outcome.ok).toBe(false)
+  expect(outcome.error.message).toContain("sign in again")
+  expect(f.seen.filter((x) => x.path === "/api/ide/v1/batch_get_detail_param").length).toBe(1)
+})
+
+test("a re-sign-in is not held to the cached expiry: the host's refresh reads again", async () => {
+  // the host's refresh is strict, so a cached lapse is read again for rather
+  // than replayed for the rest of the window: signing in again is exactly the
+  // case that must not be stuck with the old lapse
+  f = fakeTrae()
+  let lapsed = true
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => lapsed
+    ? json({ code: 1001, message: "not login" }, 401)
+    : json({ function_configs: [{ function: "chat_v3", config_info_list: [
+        { config_name: "glm-5.3", usage: "chat_completion", display_config: { display_name: "GLM-5.3" },
+          model_detail_list: [{ model_name: "glm-5.3__dev", max_tokens: 32000 }] }] }] }))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const p = await given(hooks)
+  await expect(hooks.provider.models(p, { auth: signedIn() })).rejects.toThrow("sign in again")
+  lapsed = false
+  const ms = await hooks.provider.models(p, { auth: signedIn({ access: "jwt-2", refresh: "r-2" }) })
+  expect(Object.keys(ms)).toContain("glm-5.3")
+  expect(f.seen.filter((x) => x.path === "/api/ide/v1/batch_get_detail_param").length).toBe(2)
+})
+
 test("SOLO's and the TRAE agent's models are listed too, and asked through the function that lists them (yetone/magpie#681)", async () => {
   f = fakeTrae()
   const lists = {
@@ -156,6 +209,32 @@ test("SOLO's and the TRAE agent's models are listed too, and asked through the f
   expect(await ask("deepseek-v4.1-flash")).toBe("solo_agent")
   expect(await ask("DeepSeek-V4-Flash-Official")).toBe("solo_work_lite")
   expect(await ask("glm-5.2")).toBe("chat_v3")
+})
+
+test("solo_coder's models are listed, and asked through solo_coder", async () => {
+  // SOLO's coder roster is the only one listing these: no other chat
+  // function the plugin reads names them, so a model left out of it was
+  // absent from the account's list altogether
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [{ config_name: "glm-5.3", usage: "chat_completion", display_config: { display_name: "GLM-5.3" } }] },
+    { function: "solo_coder", config_info_list: [
+      { config_name: "glm-5v-turbo", usage: "chat_completion", display_config: { display_name: "GLM-5V-Turbo" }, model_detail_list: [{ model_name: "glm-5v-turbo__dev", max_tokens: 32000 }] },
+      { config_name: "qwen-3.6-plus", usage: "chat_completion", display_config: { display_name: "Qwen3.6-Plus" }, model_detail_list: [{ model_name: "qwen-3.6-plus__dev", max_tokens: 32000 }] },
+    ] },
+  ] }))
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => sse([["output", { response: r.json.function }], ["done", {}]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const p = await given(hooks)
+  const live = await hooks.provider.models(p, { auth: signedIn() })
+  expect(Object.keys(live)).toEqual(["glm-5.3", "glm-5v-turbo", "qwen-3.6-plus"])
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const ask = async (model) => {
+    const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }) })
+    return (await res.json()).choices[0].message.content
+  }
+  expect(await ask("glm-5v-turbo")).toBe("solo_coder")
+  expect(await ask("qwen-3.6-plus")).toBe("solo_coder")
 })
 
 test("one function's list failing leaves the other's", async () => {

@@ -1,0 +1,49 @@
+{
+  "description": "LayerFS workspaces for every agent in magpie: deduplicated checkpoints and branches behind stable filesystem paths, instead of a fresh copy of the tree for every agent, with a page that replays the worktree trajectory",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "layerfs.mjs",
+    "page",
+    "README.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-tools",
+    "mcp",
+    "opencode",
+    "opencode-plugin",
+    "layerfs",
+    "filesystem",
+    "workspace",
+    "checkpoint",
+    "dedup"
+  ],
+  "license": "MIT",
+  "magpie": {
+    "options": {
+      "exec": false
+    },
+    "page": {
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "title": "LayerFS trajectory",
+      "titles": {
+        "ja": "LayerFS の軌跡",
+        "zh": "LayerFS 轨迹",
+        "zh-TW": "LayerFS 軌跡"
+      }
+    }
+  },
+  "main": "./index.mjs",
+  "name": "@magpie-community/tools-layerfs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/layerfs"
+  },
+  "type": "module",
+  "version": "0.9.0"
+}

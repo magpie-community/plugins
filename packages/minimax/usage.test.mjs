@@ -98,3 +98,67 @@ test("the account refused says so, the sign-in kept", async () => {
   expect(u.signIn).toBe("kept")
   expect(await hooks.auth.usage(async () => undefined)).toEqual({ error: "not signed in" })
 })
+
+// #393: the credits' share, from the ledger MiniMax's own client reads in
+// Settings → Usage → Credit details (积分明细): live batches only, amounts
+// as the client reads them (strings, commas, a remaining below 0 is 0).
+const day = 86400 * 1000
+const batch = (type, granted, consumed, remaining, expires) =>
+  ({ credit_type: type, granted_amount: granted, consumed_amount: consumed, remaining_amount: remaining, granted_at_ms: Date.now() - day, expire_at_ms: expires })
+
+test("the credits ledger is a Credits window of the live batches", () => {
+  const now = Date.now()
+  const w = _internal.creditsWindow([
+    batch(1, "1,000", "250", "750", now + 30 * day),
+    batch(2, "500", "500", "-3", now + 2 * day), // spent past its end
+    batch(2, "200", "0", "200", now + 5 * day),
+    batch(2, "9999", "0", "9999", now - day), // expired: left out
+    batch(3, "100", "0", "100", now + day), // a type the client doesn't show
+  ], now)
+  expect(w).toEqual({ name: "Credits", used: (100 * 750) / 1700, display: "750 / 1700", amount: 750, limit: 1700, unit: "credits",
+    runsOutAt: new Date(now + 5 * day).toISOString(), runsOut: 200 })
+  expect(_internal.creditsWindow([batch(2, "100", "0", "100", now - 1)], now)).toBeUndefined() // nothing live
+  expect(_internal.creditsWindow([batch(1, "abc", "0", "1", now + day)], now)).toBeUndefined() // unreadable: unknown
+})
+
+function ledger(f, pages) {
+  f.route("GET /minimax-cloud/api/v1/credit/details", (r) => {
+    const n = Number(r.query.get("page_number"))
+    return json({ statusInfo: { code: 0 }, details: pages[n - 1] ?? [], total_count: pages.flat().length })
+  })
+}
+
+test("a free account's card shows how much of its credits is used", async () => {
+  f = fakeMiniMax()
+  account(f)
+  const live = Date.now() + 30 * day
+  ledger(f, [Array.from({ length: 20 }, () => batch(2, "50", "10", "40", live)), [batch(1, "1000", "0", "1000", live)]])
+  const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => auth)
+  expect(u.balance).toBe("1200 credits")
+  expect(u.windows).toEqual([{ name: "Credits", used: 10, display: "200 / 2000", amount: 200, limit: 2000, unit: "credits",
+    runsOutAt: new Date(live).toISOString(), runsOut: 40 }])
+  const asks = f.seen.filter((r) => r.path === "/minimax-cloud/api/v1/credit/details")
+  expect(asks.map((r) => [r.method, r.query.get("page_number"), r.query.get("page_size"), r.query.get("include_expired"), r.query.get("user_id")]))
+    .toEqual([["GET", "1", "20", "true", "u-42"], ["GET", "2", "20", "true", "u-42"]])
+  expect(asks[0].headers.get("x-signature")).toMatch(/^[0-9a-f]{32}$/)
+})
+
+test("beside an M Plan the credits are aside; a ledger it can't read leaves the balance alone", async () => {
+  f = fakeMiniMax()
+  account(f, { plan: true })
+  ledger(f, [[batch(1, "100", "25", "75", Date.now() + day)]])
+  const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
+  let u = await hooks.auth.usage(async () => auth)
+  expect(u.windows.map((w) => [w.name, w.used, !!w.aside])).toEqual([["5 hours", 40, false], ["7 days", 25, false], ["Credits", 25, true]])
+  // a list cut short tells no share
+  f.route("GET /minimax-cloud/api/v1/credit/details", (r) => json({ statusInfo: { code: 0 },
+    details: r.query.get("page_number") === "1" ? [batch(1, "100", "0", "100", Date.now() + day)] : [], total_count: 5 }))
+  u = await hooks.auth.usage(async () => auth)
+  expect(u.windows.map((w) => w.name)).toEqual(["5 hours", "7 days"])
+  expect(u.error).toBeUndefined()
+  f.route("GET /minimax-cloud/api/v1/credit/details", () => new Response("no", { status: 500 }))
+  u = await hooks.auth.usage(async () => auth)
+  expect(u).toMatchObject({ plan: "M Plan Plus", balance: "88.5 credits" })
+  expect(u.error).toBeUndefined()
+})

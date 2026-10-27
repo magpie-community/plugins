@@ -62,8 +62,8 @@ test("another agent's request to /api/llm/o opens with droid's line", async () =
   // the length was the old body's: it isn't sent on
   expect(s.headers.get("content-length")).toBe(null)
   expect(s.headers.get("x-api-provider")).toBe("fireworks")
-  expect(s.headers.get("x-client-version")).toBe("0.233.0")
-  expect(s.headers.get("user-agent")).toBe("factory-cli/0.233.0")
+  expect(s.headers.get("x-client-version")).toBe("0.242.0")
+  expect(s.headers.get("user-agent")).toBe("factory-cli/0.242.0")
   expect(s.headers.get("x-factory-org-id")).toBe("fac_D")
   // Claude Code's system blocks, made chat completions as parts: joined
   b = JSON.parse((await send(chat, `{"model":"kimi-k3","messages":[{"role":"system","content":[{"type":"text","text":"You are Claude Code."},{"type":"text","text":"Be brief."}]},{"role":"user","content":"hi"}]}`)).body)
@@ -173,4 +173,28 @@ test("a key account's usage reads the limits with the key", async () => {
   expect(u.error).toBeUndefined()
   expect(u.windows[0].used).toBe(5)
   expect(asked).toEqual({ host: "api.factory.ai", auth: "Bearer fk-test-0123456789" })
+})
+
+// Nowledge Mem on factory-plugin/gpt-6.1-sol (magpie's Discord): a request
+// with temperature got 400. OpenAI's reasoning models take no temperature or
+// top_p, and droid sends neither; another vendor's model keeps them.
+test("an OpenAI model's request goes without temperature and top_p", async () => {
+  const { send, hooks } = await loaded({ ...signedIn })
+  let b = JSON.parse((await send(responses, `{"model":"gpt-6.1-sol","input":"hi","temperature":0.2,"top_p":0.9,"stream":true}`)).body)
+  expect("temperature" in b).toBe(false)
+  expect("top_p" in b).toBe(false)
+  expect(b.stream).toBe(true)
+  expect(b.instructions).toBe(DROID_LINE)
+  // already opened as droid's: still taken out
+  b = JSON.parse((await send(responses, JSON.stringify({ model: "gpt-5.5-fast", input: "hi", instructions: DROID_LINE, temperature: 0 }))).body)
+  expect("temperature" in b).toBe(false)
+  b = JSON.parse((await send(responses, `{"model":"grok-4.7","input":"hi","temperature":0.2}`)).body)
+  expect(b.temperature).toBe(0.2)
+  b = JSON.parse((await send(chat, `{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}],"temperature":0.7}`)).body)
+  expect(b.temperature).toBe(0.7)
+  const cfg = { provider: {} }
+  await hooks.config(cfg)
+  const models = cfg.provider.factory.models
+  expect(models["gpt-6.1-sol"].temperature).toBe(false)
+  expect(models["glm-5.3"].temperature).toBe(true)
 })

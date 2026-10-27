@@ -3,7 +3,7 @@
 // through the account's fetch, which sends them as the account.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
-import { TraeCNAuthPlugin } from "./index.mjs"
+import { TraeCNAuthPlugin, _internal } from "./index.mjs"
 import { fakeTrae, json, signedIn } from "./fake.mjs"
 
 let f
@@ -32,7 +32,9 @@ test("a check-in page is sent as the account, its answer back as it is", async (
     // device headers and a client's User-Agent, not Bun's
     expect(r.json).toEqual({ req_source: 1 })
     expect(r.headers.get("authorization")).toBe("Cloud-IDE-JWT jwt-1")
-    expect(r.headers.get("x-device-id")).toBe("1234567890123456789")
+    // the account's own device in the client's 16-digit shape: this
+    // account signed in before 0.2.16 with 19 digits (#194)
+    expect(r.headers.get("x-device-id")).toBe("2866487253502651")
     expect(r.headers.get("x-device-type")).toBe("Windows")
     expect(r.headers.get("x-os-version")).toBe("10.0.22631")
     expect(r.headers.get("x-app-version")).toBe("0.1.69")
@@ -88,4 +90,56 @@ test("other hosts' pages and other paths aren't sent as a page", async () => {
   const r = await o.fetch(f.origin + "/cloudide/whatever", { method: "POST", body: "{}" })
   expect(r.status).toBe(400) // not a chat: refused, nothing sent
   expect(f.seen).toEqual([])
+})
+
+// #194: Trae CN answered a claim on the plugin's 19-digit device id 9074,
+// and the same account and token on a 16-digit one were taken. The
+// check-in goes on the account's own device in that shape; it is never
+// rotated, and no two accounts share one.
+test("an account signed in before 0.2.16 checks in on one 16-digit id made from its own device, every time", () => {
+  const a = signedIn()
+  const id = _internal.ugDevice(a)
+  expect(id).toMatch(/^[1-9]\d{15}$/)
+  // the same on every check-in, and not the 19 digits cut short
+  expect(_internal.ugDevice(signedIn())).toBe(id)
+  expect(id).not.toBe("1234567890123456")
+  // another account's, or another device's, is not this one
+  expect(_internal.ugDevice(signedIn({ uid: "u-2" }))).not.toBe(id)
+  expect(_internal.ugDevice(signedIn({ deviceId: "9876543210987654321" }))).not.toBe(id)
+  // an account with no uid still has its own
+  expect(_internal.ugDevice(signedIn({ uid: "" }))).toMatch(/^[1-9]\d{15}$/)
+})
+
+test("an id already in the client's shape is the account's own, as it is", () => {
+  expect(_internal.ugDevice(signedIn({ deviceId: "1234567890123456" }))).toBe("1234567890123456")
+  expect(_internal.ugDevice(signedIn({ deviceId: "123456789012345" }))).toBe("123456789012345")
+  expect(_internal.ugDevice(signedIn({ deviceId: "", uid: "" }))).toBe("")
+})
+
+test("a new Trae CN sign-in's device is 16 digits; Trae Global's stays 19", () => {
+  expect(_internal.newDevice(_internal.SITES["trae-cn"]).deviceId).toMatch(/^[1-9]\d{15}$/)
+  expect(_internal.newDevice(_internal.SITES["trae-global"]).deviceId).toMatch(/^[1-9]\d{18}$/)
+})
+
+test("an account with a 16-digit device checks in on it; an old one's chat pages keep the 19 digits it signed in with", async () => {
+  f = fakeTrae()
+  f.route("POST /trae/api/v2/ug/checkin_credits/claim", () => json({ code: 0 }))
+  f.route("POST /trae/api/v2/pay/ide_user_ent_usage", () => json({ code: 0 }))
+  const o16 = await fetcher(signedIn({ deviceId: "1234567890123456" }))
+  await o16.fetch(f.origin + "/trae/api/v2/ug/checkin_credits/claim", { method: "POST", body: "{}" })
+  expect(f.seen.at(-1).headers.get("x-device-id")).toBe("1234567890123456")
+  const o19 = await fetcher()
+  await o19.fetch(f.origin + "/trae/api/v2/ug/checkin_credits/claim", { method: "POST", body: "{}" })
+  expect(f.seen.at(-1).headers.get("x-device-id")).toBe("2866487253502651")
+  await o19.fetch(f.origin + "/trae/api/v2/pay/ide_user_ent_usage", { method: "POST", body: "{}" })
+  expect(f.seen.at(-1).headers.get("x-device-id")).toBe("1234567890123456789")
+})
+
+test("a 9095 on the account's device is the day's answer: nothing is sent again on another id", async () => {
+  f = fakeTrae()
+  f.route("POST /trae/api/v2/ug/checkin_credits/claim", () => json({ code: 9095, message: "当前设备今日已经签到" }))
+  const o = await fetcher()
+  const r = await o.fetch(f.origin + "/trae/api/v2/ug/checkin_credits/claim", { method: "POST", body: "{}" })
+  expect((await r.json()).code).toBe(9095)
+  expect(f.seen.length).toBe(1)
 })

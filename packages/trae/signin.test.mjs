@@ -20,7 +20,8 @@ async function start() {
   const q = u.searchParams
   expect(q.get("client_id")).toBe("ono9krqynydwx5")
   expect(q.get("login_channel")).toBe("native_ide")
-  expect(q.get("device_id")).toMatch(/^\d{19}$/)
+  // a Trae CN device in its clients' 16-digit shape (#194)
+  expect(q.get("device_id")).toMatch(/^[1-9]\d{15}$/)
   expect(q.get("x_device_id")).toBe(q.get("device_id"))
   expect(q.get("machine_id")).toMatch(/^[0-9a-f]{32}$/)
   const cb = new URL(q.get("auth_callback_url"))

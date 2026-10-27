@@ -50,6 +50,21 @@ const SIGN_IN_TIMEOUT = 10 * 60 * 1000
 const BUILDER_ID_START = "https://view.awsapps.com/start"
 const BUILDER_ID_PROFILE = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
 const isBuilderID = (provider) => String(provider ?? "").toLowerCase() === "builderid"
+// uidOf is what tells two Kiro accounts of one email apart: the way it was
+// signed in to. Kiro keeps a Google and a GitHub sign-in of one email (or
+// Builder ID's, or Identity Center's) as different accounts, and magpie
+// keeps a sign-in of an email already signed in as that account unless
+// both have a uid and the two differ (#309). "" when it isn't known.
+const uidOf = (loginProvider) => String(loginProvider ?? "").trim().toLowerCase()
+// nameOf is what an account is called: its email and the way it was signed
+// in to, as Kiro's sign-in page names it, so two accounts of one email read
+// apart (#309; magpie names a plugin's account by its accountId). A way not
+// known, kiro-cli's or the Kiro IDE's sign-in among them, leaves the email
+// as it is, and magpie tells two such apart by their slot.
+const WAYS = { google: "Google", github: "GitHub", builderid: "Builder ID", enterprise: "IAM Identity Center", internal: "Internal" }
+const nameOf = (email, loginProvider) => (WAYS[uidOf(loginProvider)] ? `${email} (${WAYS[uidOf(loginProvider)]})` : email)
+// a bare email: what an account was called before nameOf
+const bareEmail = (id) => typeof id === "string" && /^[^\s()]+@[^\s()]+$/.test(id)
 
 const env = (k) => process.env[k] ?? ""
 const home = () => env("HOME") || homedir()
@@ -318,25 +333,48 @@ async function managementCall(region, a, method, query, body) {
   return JSON.parse(text)
 }
 
-// profileOf finds the profile a sign-in that doesn't name one uses: an API
-// key's own, Builder ID's, or the first Kiro lists in either of its regions.
-async function profileOf(c) {
-  if (c.method === "apikey") {
-    const res = await fetch(management("us-east-1") + "/", {
-      method: "POST",
-      headers: { ...authHeaders({ token: c.access, tokenType: "API_KEY" }), "Content-Type": "application/x-amz-json-1.0",
-        "X-Amz-Target": "AmazonCodeWhispererService.GetProfile" },
-      body: "{}",
-      signal: AbortSignal.timeout(20_000),
-    })
-    if (!res.ok) {
-      const msg = `Kiro didn't take the API key: ${res.status} ${STATUS_TEXT[res.status] ?? ""}`.trimEnd()
-      throw res.status === 401 || res.status === 403 ? gone(msg) : new Error(msg)
-    }
-    const arn = (await res.json().catch(() => null))?.profile?.arn
-    if (!arn) throw new Error("Kiro didn't say which profile the API key is for")
-    return arn
+// controlCall is one of Kiro's management operations as kiro-cli sends it
+// for an API key: AWS JSON 1.0, the operation named in X-Amz-Target, POSTed
+// to the endpoint's root (with ?origin=KIRO_CLI where kiro-cli adds it).
+async function controlCall(region, a, target, body, query) {
+  const res = await fetch(management(region) + "/" + (query ? "?" + new URLSearchParams(query) : ""), {
+    method: "POST",
+    headers: { ...authHeaders(a), "Content-Type": "application/x-amz-json-1.0", "X-Amz-Target": target,
+      "x-amzn-codewhisperer-optout": "false" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000),
+  })
+  const text = await res.text()
+  if (!res.ok) throw new KiroError(res.status, text)
+  return JSON.parse(text)
+}
+
+// KEY_REGIONS are where kiro-cli asks GetProfile for an API key's profile,
+// in its order (the GovCloud and ISO ones after them aren't Kiro's
+// subscriptions).
+const KEY_REGIONS = ["us-east-1", "eu-central-1"]
+
+// keyProfile is an API key's profile, as kiro-cli finds it: GetProfile in
+// each region until one answers with a profile. kiro-cli goes on without
+// one when every region turns it down (a key from an account with no
+// CodeWhisperer profile answers 400), and so does this: "" then, and the
+// key's calls are made in us-east-1 without a profile, as kiro-cli makes
+// them (Hollowhere, on magpie's Discord: a key kiro-cli 2.33.1 served
+// failed every request here with "Kiro didn't take the API key: 400").
+async function keyProfile(c) {
+  for (const region of KEY_REGIONS) {
+    try {
+      const arn = (await controlCall(region, { token: c.access, tokenType: "API_KEY" }, "AmazonCodeWhispererService.GetProfile", {}))
+        ?.profile?.arn
+      if (arn) return arn
+    } catch {}
   }
+  return ""
+}
+
+// profileOf finds the profile a sign-in that doesn't name one uses:
+// Builder ID's, or the first Kiro lists in either of its regions.
+async function profileOf(c) {
   if (c.builderID) return BUILDER_ID_PROFILE
   let last
   for (const region of ["us-east-1", "eu-central-1"]) {
@@ -355,6 +393,8 @@ async function profileOf(c) {
 
 // usageLimits is Get-Usage-Limits: the plan, the account's email, credits.
 function usageLimits(a, email) {
+  // an API key's, as kiro-cli asks for it: no profile, no email asked
+  if (a.tokenType === "API_KEY") return controlCall(a.region, a, "AmazonCodeWhispererService.GetUsageLimits", { origin: "KIRO_CLI" }, { origin: "KIRO_CLI" })
   return managementCall(a.region, a, "Get-Usage-Limits",
     { origin: "KIRO_CLI", profileArn: a.profile, resourceType: "CREDIT", isEmailRequired: String(email) })
 }
@@ -374,7 +414,10 @@ function goG(x) {
 
 // usageOf is the allowance Get-Usage-Limits tells, as magpie's built-in
 // said it: the account's email, the credits of each allowance, the month's and a free trial's
-// while it runs.
+// while it runs. Each window carries its count (amount, limit, unit), so
+// magpie can say what is left of it when the user shows what is left
+// (#408): display alone is the vendor's text, which magpie can't turn
+// round.
 function usageOf(l) {
   const at = (secs) => (secs > 0 ? new Date(Math.trunc(secs) * 1000).toISOString() : undefined)
   const count = (used, limit) => used.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") + " / " + goG(limit)
@@ -384,13 +427,14 @@ function usageOf(l) {
     const t = u?.freeTrialInfo
     if (t && String(t.freeTrialStatus ?? "").toUpperCase() === "ACTIVE" && num(t.usageLimitWithPrecision) > 0) {
       const used = num(t.currentUsageWithPrecision), limit = num(t.usageLimitWithPrecision)
-      windows.push({ name: "Free trial", used: (100 * used) / limit, resetsAt: at(num(t.freeTrialExpiry)), display: count(used, limit) })
+      windows.push({ name: "Free trial", used: (100 * used) / limit, resetsAt: at(num(t.freeTrialExpiry)), display: count(used, limit),
+        amount: used, limit, unit: "credits" })
     }
     const used = num(u?.currentUsageWithPrecision), limit = num(u?.usageLimitWithPrecision)
     if (limit <= 0) continue
     const reset = num(u?.nextDateReset) || num(l?.nextDateReset)
     windows.push({ name: u?.displayNamePlural || u?.displayName || "Credits", used: (100 * used) / limit, resetsAt: at(reset),
-      display: count(used, limit), span: 30 * 24 * 3600 })
+      display: count(used, limit), amount: used, limit, unit: "credits", span: 30 * 24 * 3600 })
   }
   const email = l?.userInfo?.email
   return { plan: planName(l?.subscriptionInfo?.subscriptionTitle), ...(typeof email === "string" && email ? { user: email } : {}), windows }
@@ -438,11 +482,21 @@ function account(client) {
     lock = run.catch(() => {})
     return run
   }
+  // an account signed in here before its uid was kept is given it, so a
+  // sign-in with another way to the same email no longer replaces it
+  const uidSaved = new Set()
+  const uidField = (auth) => (!auth?.uid && uidOf(auth?.loginProvider) ? { uid: uidOf(auth.loginProvider) } : {})
+  // and one called by its bare email is given its name, the way it was
+  // signed in to with it
+  const nameField = (auth) =>
+    bareEmail(auth?.accountId) && nameOf(auth.accountId, auth.loginProvider) !== auth.accountId
+      ? { accountId: nameOf(auth.accountId, auth.loginProvider) } : {}
+  const idFields = (auth) => ({ ...uidField(auth), ...nameField(auth) })
   const save = async (auth, c) => {
     if (!c.own || !client?.auth?.set) return
     const { type: _t, ...rest } = auth
     await client.auth.set({ path: { id: ID }, body: { ...rest, type: "oauth", access: c.access, refresh: c.refresh, expires: c.expires,
-      profileArn: c.profile, region: c.region } }).catch(() => {})
+      profileArn: c.profile, region: c.region, ...idFields(auth) } }).catch(() => {})
   }
   const creds = (auth, stale = false) =>
     locked(async () => {
@@ -460,6 +514,7 @@ function account(client) {
       }
       read = newest(read)
       let c = held?.id === id ? held.c : null
+      let saved = false
       if (!c || read.access !== c.access || !fresh(c) || stale) {
         if (!read.profile && c && read.access === c.access) read.profile = c.profile
         if (stale && c && read.access !== c.access && fresh(read)) stale = false // the owner refreshed it already
@@ -468,14 +523,31 @@ function account(client) {
           if (c.method === "apikey") throw gone("Kiro turned down the API key saved on the provider")
           c = renewed(c, await refresh(c))
           await save(auth, c)
+          saved = true
         }
       }
-      if (!c.profile) {
+      if (c.method === "apikey") {
+        if (!c.asked) {
+          c.profile = await keyProfile(c)
+          c.asked = true
+        }
+      } else if (!c.profile) {
         c.profile = await profileOf(c)
-        if (!auth?.profileArn) await save(auth, c)
+        if (!auth?.profileArn && !saved) {
+          await save(auth, c)
+          saved = true
+        }
+      }
+      // once per token: a save that didn't take isn't tried on every request
+      if (!saved && c.own && Object.keys(idFields(auth)).length && !uidSaved.has(c.access)) {
+        uidSaved.add(c.access)
+        await save(auth, c)
       }
       held = { id, c }
-      return { token: c.access, tokenType: tokenType(c), profile: c.profile, region: regionOf(c.profile, c.region) }
+      // kiro-cli names no profile in an API key's calls, even one GetProfile
+      // found; the profile only says the key's region
+      const profile = c.method === "apikey" ? "" : c.profile
+      return { token: c.access, tokenType: tokenType(c), profile, region: regionOf(c.profile, c.region) }
     })
   // renew is auth.refresh's: a sign-in kept here (not kiro-cli's or the
   // IDE's, which their owners keep) renewed under the same lock as the
@@ -493,7 +565,7 @@ function account(client) {
       const out = { access: c.access, expires: c.expires }
       if (c.refresh !== auth.refresh) out.refresh = c.refresh
       if (c.profile && c.profile !== auth.profileArn) out.profileArn = c.profile
-      return out
+      return { ...out, ...idFields(auth) }
     })
   return creds
 }
@@ -503,7 +575,9 @@ function account(client) {
 const windows = new Map() // a model's context, as Kiro last listed it
 
 const thinks = (id) => /claude/i.test(id) || id === "auto"
-const BUDGETS = { low: 10000, medium: 20000, high: 30000, max: 50000 }
+// the levels a thinking model offers, as the built-in thinks them (xhigh as
+// long as max: #120)
+const BUDGETS = { low: 10000, medium: 20000, high: 30000, xhigh: 50000, max: 50000 }
 
 function configModel(m) {
   return {
@@ -547,9 +621,25 @@ function runtimeModel(m) {
 // picks a model for each request.
 const MODELS = [{ id: "auto", name: "Auto" }]
 
+// keyModels is an API key's list, asked as kiro-cli asks it: Kiro's
+// control plane's ListAvailableModels, with no profile, each page.
+async function keyModels(a) {
+  const out = { models: [] }
+  let next
+  for (let i = 0; i < 20; i++) {
+    const page = await controlCall(a.region, a, "KiroControlPlaneBearerService.ListAvailableModels",
+      { origin: "KIRO_CLI", ...(next ? { nextToken: next } : {}) }, { origin: "KIRO_CLI" })
+    out.models.push(...(page?.models ?? []))
+    out.defaultModel ??= page?.defaultModel
+    next = page?.nextToken
+    if (!next) break
+  }
+  return out
+}
+
 // listModels is List-Available-Models, the default first.
 async function listModels(a) {
-  const out = await managementCall(a.region, a, "List-Available-Models", { origin: "KIRO_CLI", profileArn: a.profile })
+  const out = a.tokenType === "API_KEY" ? await keyModels(a) : await managementCall(a.region, a, "List-Available-Models", { origin: "KIRO_CLI", profileArn: a.profile })
   const list = []
   for (const m of out?.models ?? []) {
     if (!m?.modelId) continue
@@ -614,6 +704,12 @@ function imageFormat(mediaType) {
   return f
 }
 
+// addImage puts an Anthropic image block in images as Kiro takes it: the
+// bytes inline. One named only by a URL has no bytes to send and is left out.
+function addImage(images, p) {
+  if (p.source?.type === "base64" && p.source.data) images.push({ format: imageFormat(p.source.media_type), source: { bytes: p.source.data } })
+}
+
 const textOf = (c) =>
   typeof c === "string" ? c : Array.isArray(c) ? c.filter((p) => p?.type === "text").map((p) => p.text ?? "").join("\n\n") : ""
 const joinNonEmpty = (a, b) => (a && b ? a + "\n\n" + b : a + b)
@@ -637,9 +733,26 @@ function thinking(req, model) {
   return 20000
 }
 
+// formatText is the structured output a request asks for, said in words:
+// Anthropic's output_config.format (or the AI SDK's output_format) with a
+// JSON schema, "" when it asks for none. A JSON object with no schema
+// reaches the plugin already told in the system prompt, as Messages has no
+// field for it.
+function formatText(req) {
+  const f = req.output_config?.format ?? req.output_format
+  if (f?.type !== "json_schema" || !f.schema || typeof f.schema !== "object") return ""
+  return "Respond with a single JSON value and nothing else, matching this JSON schema:\n" + JSON.stringify(f.schema) + "."
+}
+
 // buildKiro is the body of a generateAssistantResponse call.
 function buildKiro(req, model, profile, budget) {
   const entries = []
+  // the messages the caller marked for its prompt cache (cache_control),
+  // which go to Kiro as a cachePoint on the message they end up in (#110)
+  const marked = new WeakSet()
+  const mark = (msg, parts) => {
+    if (parts.some((p) => p?.cache_control)) marked.add(msg)
+  }
   const user = () => ({ content: "", modelId: model, origin: "KIRO_CLI" })
   for (const m of req.messages ?? []) {
     const parts = typeof m.content === "string" ? [{ type: "text", text: m.content }] : m.content ?? []
@@ -660,6 +773,7 @@ function buildKiro(req, model, profile, budget) {
         prev.content = joinNonEmpty(prev.content, a.content)
         prev.toolUses.push(...a.toolUses)
       } else entries.push({ assistantResponseMessage: a })
+      mark(prev ?? a, parts)
       continue
     }
     const u = user()
@@ -669,12 +783,14 @@ function buildKiro(req, model, profile, budget) {
       if (p?.type === "text") {
         if (p.text) texts.push(p.text)
       } else if (p?.type === "document") texts.push(documentText(p))
-      else if (p?.type === "image") {
-        if (p.source?.type === "base64" && p.source.data) u.images.push({ format: imageFormat(p.source.media_type), source: { bytes: p.source.data } })
-      } else if (p?.type === "tool_result") {
+      else if (p?.type === "image") addImage(u.images, p)
+      else if (p?.type === "tool_result") {
         let out = textOf(p.content)
         if (out.length > RESULT_LIMIT) out = out.slice(0, RESULT_LIMIT) + "\n… (cut)"
         results.push({ toolUseId: toolID(p.tool_use_id), status: p.is_error ? "error" : "success", content: [{ text: out || "(no output)" }] })
+        // a tool's images (a screenshot, Codex's view_image) go with the
+        // message, as Kiro's tool results carry text alone (magpie #369, #1861)
+        if (Array.isArray(p.content)) for (const c of p.content) if (c?.type === "image") addImage(u.images, c)
       }
     }
     u.content = texts.join("\n\n")
@@ -685,6 +801,7 @@ function buildKiro(req, model, profile, budget) {
       prev.images.push(...u.images)
       if (results.length) (prev.userInputMessageContext ??= { toolResults: [] }).toolResults.push(...results)
     } else entries.push({ userInputMessage: u })
+    mark(prev ?? u, parts)
   }
   // the conversation opens with something the user said: tool results with
   // no call before them go, and a reply the caller began with
@@ -738,8 +855,13 @@ function buildKiro(req, model, profile, budget) {
   for (const e of entries) if (e.assistantResponseMessage && !e.assistantResponseMessage.toolUses.length) delete e.assistantResponseMessage.toolUses
   // the instructions go at the head of the first message
   let system = typeof req.system === "string" ? req.system : textOf(req.system)
+  // Kiro has no field for the answer's format: it is told in words, at the
+  // end of the instructions, as magpie's built-in tells it (inSystem)
+  const format = formatText(req)
+  if (format) system = system ? system + "\n\n" + format : format
   if (budget) system = `<thinking_mode>enabled</thinking_mode><max_thinking_length>${budget}</max_thinking_length>` + (system ? "\n" + system : "")
   if (system) entries[0].userInputMessage.content = system + "\n\n" + entries[0].userInputMessage.content
+  if (Array.isArray(req.system)) mark(entries[0].userInputMessage, req.system)
 
   // the caller's tools, and any the conversation used that it no longer
   // offers — Kiro rejects a history naming a tool it wasn't given
@@ -752,6 +874,7 @@ function buildKiro(req, model, profile, budget) {
     const name = toolName(t.name)
     offered.add(name)
     tools.push({ toolSpecification: { name, description: t.description || t.name, inputSchema: { json: t.input_schema ?? EMPTY } } })
+    if (t.cache_control) tools.push({ cachePoint: { type: "default" } })
   }
   for (const e of entries)
     for (const c of e.assistantResponseMessage?.toolUses ?? [])
@@ -760,6 +883,19 @@ function buildKiro(req, model, profile, budget) {
         tools.push({ toolSpecification: { name: c.name, description: "Tool", inputSchema: { json: EMPTY } } })
       }
   if (tools.length) (current.userInputMessageContext ??= {}).tools = tools
+  // Kiro's cachePoint is Bedrock's: it caches the prompt up to the point,
+  // and a request may hold 4 at most, as Anthropic's cache_control; past
+  // that the last ones are kept, the most of the prompt they cover
+  const points = []
+  for (const t of tools) if (t.cachePoint) points.push(() => tools.splice(tools.indexOf(t), 1))
+  for (const e of entries) {
+    const msg = e.userInputMessage ?? e.assistantResponseMessage
+    if (marked.has(msg)) {
+      msg.cachePoint = { type: "default" }
+      points.push(() => delete msg.cachePoint)
+    }
+  }
+  for (const drop of points.slice(0, Math.max(0, points.length - 4))) drop()
 
   const state = { chatTriggerType: "MANUAL", agentTaskType: "vibe", conversationId: randomUUID(), currentMessage: { userInputMessage: current } }
   if (entries.length > 1) state.history = entries.slice(0, -1)
@@ -965,7 +1101,12 @@ async function* events(body, model, budget) {
   let tool = ""
   let tools = 0
   let stop = ""
-  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  // reported: Kiro sent a tokenUsage. It doesn't today: a reply has a
+  // contextUsageEvent and a meteringEvent (credits) and nothing more, and
+  // kiro-cli 2.32's own trace log shows its MetadataEvent with every token
+  // count None, while a repeated prompt is billed about half the credits,
+  // so Kiro does cache and doesn't say how much
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reported: false }
   let pct = 0
   let said = 0
   let failed = ""
@@ -1015,6 +1156,7 @@ async function* events(body, model, budget) {
         if (m.stopReason) stop = m.stopReason
         const tu = m.tokenUsage
         if (tu && typeof tu === "object") {
+          usage.reported = true
           usage.input += tu.uncachedInputTokens || tu.inputTokens || 0
           usage.output += tu.outputTokens || 0
           usage.cacheRead += tu.cacheReadInputTokens || 0
@@ -1060,12 +1202,15 @@ function finished(content) {
   return content
 }
 
-const anthropicUsage = (u) => ({
-  input_tokens: u.input,
-  output_tokens: u.output,
-  cache_read_input_tokens: u.cacheRead,
-  cache_creation_input_tokens: u.cacheWrite,
-})
+// anthropicUsage is the usage in Messages' words. With no tokenUsage from
+// Kiro the input is reckoned from how full the context is, and what of it
+// Kiro read from its cache is unknown, not 0: the cache fields are left
+// out and magpie is told so (magpie_cache_unknown), so it shows no hit
+// rate rather than 0%.
+const anthropicUsage = (u) =>
+  u.reported
+    ? { input_tokens: u.input, output_tokens: u.output, cache_read_input_tokens: u.cacheRead, cache_creation_input_tokens: u.cacheWrite }
+    : { input_tokens: u.input, output_tokens: u.output, magpie_cache_unknown: true }
 
 // quotaWords are magpie's (internal/gateway/fallback.go): how a vendor says
 // "out of quota" or "slow down".
@@ -1355,8 +1500,9 @@ async function browserSignIn() {
       return fail(e.message)
     }
     const who = await whoIs(c)
-    const user = who.email || "Kiro account"
+    const user = who.email ? nameOf(who.email, c.loginProvider) : "Kiro account"
     finish({ type: "success", provider: ID, refresh: c.refresh, access: c.access, expires: c.expires, accountId: user,
+      ...(uidOf(c.loginProvider) ? { uid: uidOf(c.loginProvider) } : {}),
       method: c.method, loginProvider: c.loginProvider, region: c.region, profileArn: who.profile,
       ...(c.clientId ? { clientId: c.clientId, clientSecret: c.clientSecret } : {}), ...(who.plan ? { plan: who.plan } : {}) })
     html(200, page(true, "You're signed in", `${user} is signed in. You can close this tab.`))
@@ -1446,7 +1592,10 @@ export async function KiroAuthPlugin({ client } = {}) {
         const auth = await getAuth()
         if (!(auth?.type === "api" && auth.key) && auth?.type !== "oauth") return { error: "not signed in", signIn: "kept" }
         try {
-          return { ...usageOf(await usageLimits(await creds(auth), true)), signIn: "kept" }
+          const u = usageOf(await usageLimits(await creds(auth), true))
+          // named as the account is
+          if (u.user && auth.type === "oauth" && !auth.source) u.user = nameOf(u.user, auth.loginProvider)
+          return { ...u, signIn: "kept" }
         } catch (e) {
           return { error: e.message, signIn: "kept" }
         }
@@ -1485,4 +1634,4 @@ export async function KiroAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { generate, refresh, usageOf, buildKiro, events, reply, failure, toolID, toolName, toolNames, thinking, readCLI, readIDE, regionOf, planName, frames }
+export const _internal = { generate, refresh, usageOf, buildKiro, events, reply, failure, toolID, toolName, toolNames, thinking, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }

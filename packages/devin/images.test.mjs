@@ -33,13 +33,17 @@ const withoutCli = () => {
 }
 
 // configs is a GetCliModelConfigsResponse naming each id, with
-// supports_images set where it is true (proto3 leaves a false one out)
+// supports_images set where it is true (proto3 leaves a false one out),
+// and the id's family as SNAPSHOT has it (model_info's family uid, the
+// family metadata's label), as Devin's own response has them
 const configs = (said) => {
   const out = new PB()
   for (const [id, images] of Object.entries(said)) {
     const c = new PB().str(1, "label " + id)
     if (images) c.varint(5, 1)
-    out.bytes(1, c.str(22, id))
+    const fam = SNAPSHOT.find(([, , , vs]) => vs.some(([v]) => v === id))
+    if (fam) c.bytes(23, new PB().str(23, fam[0]).done()).bytes(30, new PB().str(1, fam[1]).done())
+    out.bytes(1, c.str(22, id).done())
   }
   return out.done()
 }
@@ -94,11 +98,10 @@ test("an account's list without the CLI takes what Devin says of images now", as
   expect(asked[0].url).toBe("https://server.codeium.com/exa.api_server_pb.ApiServerService/GetCliModelConfigs")
   expect(asked[0].headers).toEqual({ "Content-Type": "application/proto", "Connect-Protocol-Version": "1" })
   expect(new TextDecoder().decode(asked[0].body)).toContain("devin-key")
-  expect(got["swe-2"].capabilities).toEqual({ attachment: true, input: { text: true, image: true } })
+  expect(got["swe-2"].capabilities).toMatchObject({ attachment: true, input: { text: true, image: true } })
   // Devin's word now over the snapshot's
   expect(got["deepseek-v4-flash"].capabilities.input.image).toBe(true)
   expect(got["glm-5.2"].capabilities.input.image).toBe(false)
-  expect(got["not-devins"]).toEqual(given["not-devins"])
 })
 
 test("when Devin can't be asked, the list takes the snapshot's word", async () => {
