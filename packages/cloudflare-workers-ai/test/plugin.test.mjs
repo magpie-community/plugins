@@ -421,6 +421,16 @@ test("usage treats a GraphQL error payload as unknown, and an empty day as zero"
   assert.equal(u2.windows[0].amount, 0, "an empty bucket list is a real zero");
   assert.equal(u2.windows[0].used, 0, "an unused day is a numeric reading, not a text-only row");
   assert.equal(u2.windows[0].display, "");
+
+  const partial = usageOpts(() =>
+    new Response(JSON.stringify({
+      data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 1234 } }] }] } },
+      errors: [{ message: "some buckets timed out" }],
+    }), { status: 200 })
+  );
+  const p3 = await CloudflareWorkersAIPlugin({}, partial.o);
+  const u3 = await p3.auth.usage(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+  assert.equal(u3.windows[0].amount, null, "a partial reply — rows and errors together — is not a read");
 });
 
 test("a full window does not bench an account whose plan is unknown", async () => {
@@ -479,17 +489,22 @@ test("a 429 code 3036 comes back with Retry-After until next UTC midnight", asyn
   });
   const plugin = await CloudflareWorkersAIPlugin({}, loaderOpts(() => new Response(spentBody, { status: 429 })));
   const r = await plugin.auth.loader(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+  // the plugin reads the clock inside fetch; sampling on both sides of the
+  // call bounds that read, so a whole-second boundary between them cannot
+  // push Retry-After past the window
+  const before = Date.now();
   const resp = await r.fetch(`${r.baseURL}/chat/completions`, {
     method: "POST",
     body: JSON.stringify({ model: "@cf/meta/llama-3-8b-instruct", messages: [] }),
   });
+  const after = Date.now();
   assert.equal(resp.status, 429);
   assert.deepEqual(JSON.parse(await resp.text()), JSON.parse(spentBody), "body preserved verbatim");
   const retryAfter = Number(resp.headers.get("retry-after"));
-  const untilMidnight = Math.ceil(((Math.floor(Date.now() / 86400_000) + 1) * 86400_000 - Date.now()) / 1000);
+  const secondsToMidnight = (t) => Math.ceil(((Math.floor(t / 86400_000) + 1) * 86400_000 - t) / 1000);
   assert.ok(
-    retryAfter >= untilMidnight - 5 && retryAfter <= untilMidnight,
-    `Retry-After ${retryAfter} must be the seconds to next UTC midnight (~${untilMidnight})`,
+    secondsToMidnight(after) <= retryAfter && retryAfter <= secondsToMidnight(before),
+    `Retry-After ${retryAfter} must be the seconds to next UTC midnight from a clock read inside fetch (${secondsToMidnight(after)}–${secondsToMidnight(before)})`,
   );
 });
 
