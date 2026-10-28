@@ -106,14 +106,32 @@ function vendorErrorText(payload, fallback) {
   return fallback
 }
 
-// ---- Desktop auth.json (~/.box-agent/config/auth.json, read-only) -----------
+// ---- Desktop auth.json (read-only) ------------------------------------------
+//
+// The desktop app has moved this file between releases: the box-agent build
+// kept it at ~/.box-agent/config/auth.json, the raccoon-office build keeps it
+// at ~/.office-raccoon/agent/config/auth.json. Both layouts are read, newest
+// first, so either build is picked up without an env override.
 
-function desktopAuthPath() {
+function desktopAuthCandidates() {
   for (const envKey of ["RACCOON_BOX_AGENT_CONFIG_DIR", "BOX_AGENT_CONFIG_DIR"]) {
     const v = String(process.env[envKey] ?? "").trim()
-    if (v) return join(v, "auth.json")
+    if (v) return [join(v, "auth.json")]
   }
-  return join(homedir(), ".box-agent", "config", "auth.json")
+  return [
+    join(homedir(), ".office-raccoon", "agent", "config", "auth.json"),
+    join(homedir(), ".box-agent", "config", "auth.json"),
+  ]
+}
+
+function desktopAuthPath() {
+  const candidates = desktopAuthCandidates()
+  for (const candidate of candidates) {
+    try {
+      if (statSync(candidate).isFile()) return candidate
+    } catch {}
+  }
+  return candidates[0]
 }
 
 function readDesktopAuth() {
@@ -862,7 +880,7 @@ function manualSignIn() {
 function desktopSignIn() {
   return {
     url: "",
-    instructions: "直接复用本机商汤小浣熊客户端的实时登录态 (~/.box-agent/config/auth.json)。",
+    instructions: "直接复用本机商汤小浣熊客户端的实时登录态（只读，不写入桌面端文件）。",
     method: "auto",
     async callback() {
       // A new seat takes the account the app holds now, and its token, and
@@ -871,7 +889,12 @@ function desktopSignIn() {
       // disk. Only the app's own account is offered here, so a seat is never
       // quietly handed some other account's credentials.
       const d = readDesktopAuth()
-      if (!d) return { type: "failed", error: "未检测到本机商汤小浣熊登录态 (~/.box-agent/config/auth.json)" }
+      if (!d) {
+        return {
+          type: "failed",
+          error: `未检测到本机商汤小浣熊登录态（已查找 ${desktopAuthCandidates().join("、")}）`,
+        }
+      }
       if (isStale(d, EARLY_MS)) {
         return { type: "failed", error: "商汤小浣熊桌面端登录态已过期，请先打开商汤小浣熊客户端重新登录" }
       }
@@ -1068,7 +1091,7 @@ export const RaccoonAuthPlugin = async ({ client }) => {
         },
         {
           type: "oauth",
-          label: "商汤小浣熊桌面端登录态 (~/.box-agent/config/auth.json)",
+          label: "商汤小浣熊桌面端登录态（读取本机客户端）",
           authorize: async () => desktopSignIn(),
         },
         {
@@ -1083,6 +1106,8 @@ export const RaccoonAuthPlugin = async ({ client }) => {
 
 export const _internal = {
   browserSignIn,
+  desktopAuthPath,
+  desktopAuthCandidates,
   sameAccount,
   stripBearer,
   decodeJwtClaims,

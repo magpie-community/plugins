@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { RaccoonAuthPlugin, _internal } from "./index.mjs"
@@ -170,6 +170,47 @@ test("desktop sign-in is read-only and never writes or refreshes auth.json", asy
   expect(refreshCalled).toBe(false)
   expect(res.signIn).toBe("expired")
   expect(await Bun.file(authFile).text()).toBe(originalContent)
+})
+
+test("desktop auth.json is found at both the current and the legacy layout", async () => {
+  tempDir = mkdtempSync(join(tmpdir(), "raccoon-home-"))
+  const legacy = join(tempDir, ".box-agent", "config")
+  const current = join(tempDir, ".office-raccoon", "agent", "config")
+  const tok = fakeJwt({ iss: "74350b", name: "DeskUser", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const body = JSON.stringify({ access_token: tok, office_identity: "personal" })
+
+  const prev = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    RACCOON_BOX_AGENT_CONFIG_DIR: process.env.RACCOON_BOX_AGENT_CONFIG_DIR,
+    BOX_AGENT_CONFIG_DIR: process.env.BOX_AGENT_CONFIG_DIR,
+  }
+  process.env.HOME = tempDir
+  process.env.USERPROFILE = tempDir
+  delete process.env.RACCOON_BOX_AGENT_CONFIG_DIR
+  delete process.env.BOX_AGENT_CONFIG_DIR
+  try {
+    // the box-agent build keeps the file here
+    mkdirSync(legacy, { recursive: true })
+    writeFileSync(join(legacy, "auth.json"), body)
+    expect(_internal.desktopAuthPath()).toBe(join(legacy, "auth.json"))
+
+    // the raccoon-office build writes here instead; it wins when both exist
+    mkdirSync(current, { recursive: true })
+    writeFileSync(join(current, "auth.json"), body)
+    expect(_internal.desktopAuthPath()).toBe(join(current, "auth.json"))
+
+    const hooks = await RaccoonAuthPlugin({ client: {} })
+    const method = hooks.auth.methods.find((m) => m.label.includes("桌面端"))
+    const res = await (await method.authorize()).callback()
+    expect(res.type).toBe("success")
+    expect(res.access).toBe(tok)
+  } finally {
+    for (const k of ["HOME", "USERPROFILE", "RACCOON_BOX_AGENT_CONFIG_DIR", "BOX_AGENT_CONFIG_DIR"]) {
+      if (prev[k] === undefined) delete process.env[k]
+      else process.env[k] = prev[k]
+    }
+  }
 })
 
 test("usage does not invent 300/9000 floors when bills do not cover balance", async () => {
