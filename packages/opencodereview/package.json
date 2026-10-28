@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/agent-opencodereview",
+  "version": "0.1.0",
+  "description": "Open Code Review (Alibaba's ocr CLI) as a magpie agent: pick one of magpie's models for ocr review / ocr scan on the Agents page",
+  "type": "module",
+  "files": ["opencodereview.agent.js", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "opencodereview", "open-code-review", "ocr", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/opencodereview" },
+  "magpie": { "agent": "./opencodereview.agent.js", "icon": "https://raw.githubusercontent.com/alibaba/open-code-review/main/imgs/logo.svg" }
+}
