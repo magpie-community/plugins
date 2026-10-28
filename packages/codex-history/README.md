@@ -1,6 +1,6 @@
 # Codex History Filter
 
-**Magpie 原生过滤中间件 · 当前源码 v0.1.2 · MIT**
+**Magpie 原生过滤中间件 · MIT**
 
 缓解 Codex 切换供应商、账号或上游资源后，旧会话出现加密验证、历史条目依赖及 DeepSeek 工具 Schema 错误。规则按供应商独立配置，默认全部关闭。无 UI、工作台、模型监测、额外模型请求或独立后台；不修改 Codex `base_url` 与会话文件。
 
@@ -12,7 +12,7 @@
 magpie plugin add @magpie-community/middleware-codex-history
 ```
 
-当前社区上游是 v0.1.1，本次提交为 v0.1.2。GitHub 与社区 PR 使用同一份 v0.1.2 文件；市场需要作者合并并完成分发后才会更新。审核期间可安装：
+市场版本以 Magpie 插件页显示为准；社区包合并分发后会自动更新。GitHub 的同版本标签与社区包安装文件一致，市场尚未分发某个版本时，可以按标签安装：
 
 ```sh
 magpie plugin add github:unisong/magpie-codex-history-filter#v0.1.2
@@ -43,7 +43,7 @@ magpie plugin add github:unisong/magpie-codex-history-filter#v0.1.2
 | 选项 | 作用与建议 |
 | --- | --- |
 | `historyFilter` | 清理 Responses 请求的旧推理、协议密文及可移植条目 ID。旧会话出现密文或跨资源错误时开启。 |
-| `preserveEncryptedInclude` | 保留客户端对**新响应**的 `reasoning.encrypted_content` 请求，开启历史过滤时通常建议为 `true`；不会保留旧历史密文。省略或 `false` 会移除该 include 项。 |
+| `preserveEncryptedInclude` | 仅在 `historyFilter` 开启时生效。保留客户端对**新响应**的 `reasoning.encrypted_content` 请求，通常建议为 `true`；不会保留旧历史密文。省略或 `false` 会移除该 include 项。 |
 | `deepSeekObjectRoot` | 针对 DeepSeek 的协议转码兼容；严格 DeepSeek 上游拒绝 `automation_update` 根联合 Schema 时开启。独立于历史过滤，仅显式 `true` 生效。 |
 
 历史规则按请求的 `供应商/模型` 前缀匹配；DeepSeek 兼容按 Magpie 本次候选供应商及实际模型匹配。不同会话可同时使用不同规则。旧前缀可通过 `"aliases": {"old-demo": "demo"}` 映射到规则 ID；不会改写请求模型或替代 Magpie 路由。
@@ -94,4 +94,4 @@ npm pack --ignore-scripts --dry-run
 
 Opt-in Magpie middleware for Codex history compatibility, with independent per-provider DeepSeek tool-schema conversion. It removes protocol ciphertext and portable server IDs, turns recorded native web search history into text, and folds only `automation_update` root unions for explicitly enabled DeepSeek candidates. Top-level and resumed tool declarations are covered. No UI, probes, credentials, background server, or Codex configuration edits.
 
-`response.failed event received` is a generic client symptom: this package addresses the documented request compatibility causes, not every streaming or network failure. Defaults are off. Install via Magpie's community market, or use the v0.1.2 GitHub tag while the matching community PR awaits merge and distribution.
+`response.failed event received` is a generic client symptom: this package addresses the documented request compatibility causes, not every streaming or network failure. Defaults are off. Install it from Magpie's community market; each GitHub version tag holds the same install files, for use before the market distributes that version.

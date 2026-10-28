@@ -95,7 +95,7 @@ test('resumed and Lite history repairs only declarations, retaining calls and re
   }
 });
 
-test('ship remains a single import-free provider hook', () => {
+test('ship remains a single import-free file with request and provider hooks', () => {
   const packageJson = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
   const code = fs.readFileSync(new URL(packageJson.magpie.middleware, import.meta.url), 'utf8');
   assert.doesNotMatch(code, /\bimport\s|\bfetch\s*\(|\brequire\s*\(/);

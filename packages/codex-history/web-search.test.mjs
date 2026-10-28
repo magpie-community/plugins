@@ -98,7 +98,7 @@ test('search adaptation keeps unsafe context rejection and explicit encrypted-co
   assert.match(text, /RECORDED_TEXT/);
 });
 
-test('the shipped middleware remains a small import-free package with only the request hook', () => {
+test('the shipped middleware remains a small import-free package with only the request and provider hooks', () => {
   const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.version, '0.1.2');
   assert.deepEqual(Object.keys(middleware), ['onProvider', 'onRequest']);
