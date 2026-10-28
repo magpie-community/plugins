@@ -2,9 +2,9 @@
 //
 // Raccoon signs in through xiaohuanxiong.com's desktop authorization page
 // (/code/authorize -> office-raccoon://auth/callback?code=...&state=...), or
-// reads the live session Raccoon's desktop app keeps in
-// ~/.box-agent/config/auth.json (read-only). Chats are OpenAI-compatible chat
-// completions at /api/web/llm/v2/chat/completions.
+// reads the live session Raccoon's desktop app keeps in its auth.json
+// (read-only; desktopAuthCandidates lists where). Chats are OpenAI-compatible
+// chat completions at /api/web/llm/v2/chat/completions.
 
 import { randomUUID, randomBytes } from "node:crypto"
 import { createServer } from "node:http"
@@ -108,24 +108,39 @@ function vendorErrorText(payload, fallback) {
 
 // ---- Desktop auth.json (read-only) ------------------------------------------
 //
-// The desktop app has moved this file between releases: the box-agent build
-// kept it at ~/.box-agent/config/auth.json, the raccoon-office build keeps it
-// at ~/.office-raccoon/agent/config/auth.json. Both layouts are read, newest
+// The desktop app has moved this file between releases. Builds that keep a
+// client profile (1.1.x) put the box-agent home inside it and write
+// <profile>/agent/config/auth.json, with the profile at
+//   Windows: %USERPROFILE%\.office-raccoon (moved there from %APPDATA%)
+//   macOS:   ~/Library/Application Support/office-raccoon
+// (clientProfile.ts: openDefaultClientProfile, app.getPath("appData")).
+// Older installs, and a profile the app still treats as legacy user data,
+// keep ~/.box-agent/config/auth.json. Every layout is read, the profile ones
 // first, so either build is picked up without an env override.
 
-function desktopAuthCandidates() {
+// The arguments are for tests: Bun reads homedir() once, at start.
+function appDataDir(home, platform, env) {
+  if (platform === "win32") return String(env.APPDATA ?? "").trim() || join(home, "AppData", "Roaming")
+  if (platform === "darwin") return join(home, "Library", "Application Support")
+  return String(env.XDG_CONFIG_HOME ?? "").trim() || join(home, ".config")
+}
+
+function desktopAuthCandidates(home = homedir(), platform = process.platform, env = process.env) {
   for (const envKey of ["RACCOON_BOX_AGENT_CONFIG_DIR", "BOX_AGENT_CONFIG_DIR"]) {
-    const v = String(process.env[envKey] ?? "").trim()
+    const v = String(env[envKey] ?? "").trim()
     if (v) return [join(v, "auth.json")]
   }
+  const profiles = [join(appDataDir(home, platform, env), "office-raccoon")]
+  if (platform === "win32") profiles.unshift(join(home, ".office-raccoon"))
   return [
-    join(homedir(), ".office-raccoon", "agent", "config", "auth.json"),
-    join(homedir(), ".box-agent", "config", "auth.json"),
+    ...profiles.map((p) => join(p, "agent", "config", "auth.json")),
+    join(home, ".box-agent", "config", "auth.json"),
   ]
 }
 
-function desktopAuthPath() {
-  const candidates = desktopAuthCandidates()
+// The first candidate that is a file, else the first (which then reads as
+// not signed in).
+function desktopAuthPath(candidates = desktopAuthCandidates()) {
   for (const candidate of candidates) {
     try {
       if (statSync(candidate).isFile()) return candidate
@@ -226,7 +241,7 @@ function isStale(a, marginMs = EARLY_MS) {
   return exp > 0 && Date.now() >= exp - marginMs
 }
 
-// Desktop sign-in is strictly read-only: never write ~/.box-agent/config/auth.json
+// Desktop sign-in is strictly read-only: never write the app's auth.json
 // and never spend the desktop app's refresh token. The app holds one account
 // at a time, so a seat keeps the token it was signed in with, saved on its own
 // record through the client (as kiro does), and reads the app only to take a
