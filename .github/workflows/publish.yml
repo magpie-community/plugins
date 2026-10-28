@@ -1,7 +1,9 @@
 # Ships every package's version two ways, from GitHub Actions:
 # - dist: packs it onto the `dist` branch (scripts/dist.mjs), where magpie
 #   installs it from when npm doesn't have it. This needs nobody: merging a
-#   new plugin is all it takes to reach magpie.
+#   new plugin is all it takes to reach magpie. A package that ships files it
+#   builds gets them from the test job, which cannot push (scripts/build-pages.mjs
+#   with the exact toolchain its package.json pins); this job only copies them in.
 # - npm: publishes every version npm doesn't have yet (scripts/publish.sh).
 #   npm tries trusted publishing (OIDC) first: a package that names this
 #   workflow as its Trusted Publisher on npmjs.com, with npm publish allowed,
@@ -36,6 +38,16 @@ jobs:
         run: HOME=$(mktemp -d) bun test
       - name: check
         run: bun scripts/check.mjs
+      - name: build page files
+        # What a package ships built (page/engines.js, a page bundle) is built
+        # here, in the job that cannot push, with the toolchain its
+        # package.json pins. dist only copies the result in.
+        run: node scripts/build-pages.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: page-files
+          path: packages/*/page
+          if-no-files-found: ignore
 
   dist:
     needs: test
@@ -47,6 +59,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: page-files
+          path: ${{ runner.temp }}/page-files
       - name: pack
         run: |
           git config --global user.name "github-actions[bot]"
@@ -56,7 +72,7 @@ jobs:
           else
             git worktree add --orphan -b dist "$RUNNER_TEMP/dist"
           fi
-          node scripts/dist.mjs "$RUNNER_TEMP/dist"
+          node scripts/dist.mjs "$RUNNER_TEMP/dist" "$RUNNER_TEMP/page-files"
           cd "$RUNNER_TEMP/dist"
           git add -A .
           if git diff --cached --quiet; then

@@ -3,7 +3,7 @@
 // publishing can't create one, and its first version waits for an owner's
 // 2FA), or a version npm refused. Merging is all a plugin needs to reach
 // magpie.
-//   node scripts/dist.mjs <folder>    (the dist branch checked out there)
+//   node scripts/dist.mjs <folder> [folder holding the built page files]
 // The branch holds tgz/<npm pack's file name> and index.json:
 //   {version: 1, packages: {<name>: {latest, readme,
 //     versions: {<version>: {file, integrity, time, manifest}}}}}
@@ -13,7 +13,7 @@
 // out of the repo stays in the index for those who installed it.
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
 const out = resolve(process.argv[2] ?? "")
@@ -22,6 +22,10 @@ if (!process.argv[2] || !existsSync(out)) {
   process.exit(2)
 }
 const root = resolve(import.meta.dirname, "..")
+// A package that ships files it builds (a page bundle) gets them from the test
+// job, which has no write permission and an exact toolchain; this job only
+// copies them in and packs. Nothing here runs a package's own scripts.
+const builtRoot = process.argv[3] && existsSync(resolve(process.argv[3])) ? resolve(process.argv[3]) : ""
 const tgz = join(out, "tgz")
 mkdirSync(tgz, { recursive: true })
 
@@ -39,6 +43,14 @@ for (const dir of readdirSync(join(root, "packages")).sort()) {
   const entry = (index.packages[name] ??= { versions: {} })
   const had = entry.versions[version]
   if (!had || !existsSync(join(out, had.file))) {
+    if (builtRoot) {
+      const built = join(builtRoot, "packages", dir, "page")
+      if (existsSync(built)) {
+        const target = join(root, "packages", dir, "page")
+        rmSync(target, { recursive: true, force: true })
+        cpSync(built, target, { recursive: true })
+      }
+    }
     // a package's own scripts never run here: this job can push
     const [packed] = JSON.parse(execFileSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", tgz], { cwd: join(root, "packages", dir), encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }))
     const integrity = "sha512-" + createHash("sha512").update(readFileSync(join(tgz, packed.filename))).digest("base64")
