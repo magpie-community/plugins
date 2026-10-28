@@ -133,7 +133,8 @@ export function restoreText(text) {
 // 上游 chat-only 行为等价：system/developer 跳过、空段自然无操作。
 
 export const id = "headroom"
-export const defaultOn = true
+// 默认开还是关，不在这里说：pipeline.js 的 DEFAULT_STRATEGIES 一张表管两头
+// （round-4 review 的 B1）。这个引擎默认是开的。
 
 export function apply(body, ctx, cfg = {}) {
   if (!body || typeof body !== "object") return false

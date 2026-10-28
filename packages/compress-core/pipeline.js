@@ -52,17 +52,26 @@ const ESCAPE_RATIO = 6
 
 // Is this body over the limit? A floor above the limit answers yes on its own;
 // a floor far below answers no; anything in between pays for one exact count.
+// 返回 false（没超）、true（下界就已超，没数精确值）或那个精确值本身（数过才算出来的）。
+// 这样调用方拿到精确值时不用再数一遍：一个数了又数的字节计数，是代价付了两遍、
+// 收益一份没有（round-3 review 的 "worst combination"）。
 function overLimit(body, maxBytes) {
   const floor = roughByteLength(body)
   if (floor > maxBytes) return true
   if (floor * ESCAPE_RATIO < maxBytes) return false
-  return byteLength(body) > maxBytes
+  const exact = byteLength(body)
+  return exact > maxBytes ? exact : false
 }
+// 默认档在这里说一次。package.json 的 magpie.options.strategies、README 的「预设」段
+// 是同一张表。引擎自己声明 defaultOn 的那种写法会把默认行为拆成两处，然后两边分家：
+// README 说 session-dedup 是关的，magpie 没被改过 options、传的就是 {}，于是它开着跑，
+// 每个请求先花 250 ms 等它，再原样发出去。round-4 review 的 B1 就是这条。
+export const DEFAULT_STRATEGIES = Object.freeze({ "session-dedup": false, lite: true, headroom: true })
 export function strategyEnabled(engine, options = {}) {
   if (engine.available === false) return false
   const strategies = options.strategies
   const raw = strategies && Object.prototype.hasOwnProperty.call(strategies, engine.id) ? strategies[engine.id] : undefined
-  if (raw === undefined) return engine.defaultOn === true
+  if (raw === undefined) return DEFAULT_STRATEGIES[engine.id] === true
   // 对象形态一次说清「开着」和「怎么配」；写 true/false 只在开关这一层说话。
   if (raw && typeof raw === "object") return raw.enabled !== false
   return raw === true
@@ -288,3 +297,6 @@ export function runPipeline(body, ctx, options = {}, beforeBody = null) {
 export function removeInternalMarker(body) {
   if (body && typeof body === "object") delete body[INTERNAL_MARKER]
 }
+// INTERNAL_MARKER 不在这个包里设置：设它的是 observability.hooks.js（hooks 那一
+// 半）。这里只负责认出它、摘掉它，因为两半会同时挂在一个 magpie 上——Bun 伴随层
+// 压过一遍的请求，Node 中间件不该再压一遍。

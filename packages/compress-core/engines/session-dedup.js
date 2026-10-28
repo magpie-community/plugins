@@ -530,7 +530,8 @@ export function restoreDedup(text, map) {
 // ─── 中间件引擎包装 ──────────────────────────────────────────────────────────
 
 export const id = "session-dedup"
-export const defaultOn = true
+// 默认开还是关，不在这里说了：pipeline.js 的 DEFAULT_STRATEGIES 一张表管两头，
+// 免得 README 与运行时各说各话（round-4 review 的 B1）。这个引擎默认是关的。
 
 export function apply(body, ctx, cfg) {
   if (!body || typeof body !== "object") return false

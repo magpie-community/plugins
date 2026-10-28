@@ -79,7 +79,9 @@ bun test                          # CI 跑的就是它
 
 `test/lite-spec.md` 和 `test/session-dedup-spec.md` 是这两个策略的行为契约，改引擎之前先看。
 
-`cases.json` 是对外契约：23 条用例里，21 条与 magpie-community/plugins 里被合并的 history-trim (#423) 逐字一致，另外 2 条是这一包自己的默认档行为（正在发送的这一轮同样被改写、表格化的工具结果转成 `gcf-generic` 块）。它回答一个具体问题——同一份输入经过这个中间件之后，body 是否与那份实现留下的完全一致；不一致就是语义分叉，要么这里改，要么去那边论证。那 21 条显式写成保守模式（`preserveCurrentTurn: true`），因为 history-trim 的语义就是「正在发送的这一轮原样送出」，而这里默认是全量改写。magpie 仓库跑它用 `bun scripts/check.mjs`，这边等价的入口是 `node test/run.mjs gateway`。
+`cases.json` 是对外契约：23 条用例里，21 条与 magpie-community/plugins 里被合并的 history-trim (#423) 同源，另外 2 条是这一包自己的默认档行为（正在发送的这一轮同样被改写、表格化的工具结果转成 `gcf-generic` 块）。那 21 条里凡是要看截断行为的，都显式 pin 了 `compressToolResults: true`——默认档不再截断之后（见下），用例仍逐字复现 #423 的行为。
+
+**默认档只截断与剥图之外的东西**：lite 默认不改写工具结果的长度（`compressToolResults` 默认 `false`），也不把附件里的图换成 `[image: png]`（`supportsVision` 默认按「模型看得见图」处理）。两件事以前默认开着，代价是长工具输出被腰斩、用户截的图根本没到模型面前；要旧行为就显式打开 `compressToolResults: true` 或写 `supportsVision: false`。它回答一个具体问题——同一份输入经过这个中间件之后，body 是否与那份实现留下的完全一致；不一致就是语义分叉，要么这里改，要么去那边论证。那 21 条显式写成保守模式（`preserveCurrentTurn: true`），因为 history-trim 的语义就是「正在发送的这一轮原样送出」，而这里默认是全量改写。magpie 仓库跑它用 `bun scripts/check.mjs`，这边等价的入口是 `node test/run.mjs gateway`。
 
 ## 卸载
 

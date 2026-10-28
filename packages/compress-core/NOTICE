@@ -24,9 +24,6 @@ it reaches, and a hash of every ported copy are recorded in PROVENANCE.json.
       gcf-typescript
       Copyright 2026 Dayna Blackwell / Blackwell Systems
 
-Not in this package yet: the rest of OmniRoute's strategies (ccr, rtk,
-codex-responses, relevance, caveman, read-lifecycle, aggressive, ultra, ionizer,
-llm) are ported and tested but land in later PRs, and the Apache-2.0 upstreams
-they reach — caveman (https://github.com/JuliusBrussee/caveman) and rtk
-(https://github.com/rtk-ai/rtk) — are listed in NOTICE by the PR that adds those
-engines, together with their attribution text.
+The rest of OmniRoute's strategies (ccr, rtk, codex-responses, relevance,
+caveman, read-lifecycle, aggressive, ultra, ionizer, llm) are not part of this
+package's first release; the PR that adds them adds their notice here too.
