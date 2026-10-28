@@ -12,6 +12,52 @@ export function clone(value) {
 export function byteLength(value) {
   return new TextEncoder().encode(JSON.stringify(value) || "").length
 }
+// A body this large is left exactly as it came, every time.
+//
+// The hook has 250 ms and JSON.stringify alone costs about 70 ms on a 20 MB
+// body, before any engine has looked at it, so a body that size cannot be
+// compressed inside the budget on any machine. Skipping on size -- not on a
+// clock -- is what keeps it stable: the same body is skipped on every request,
+// so the prefix it contributes to the prompt cache never moves. A deadline
+// would decide per request, and the same body would go out raw once and
+// compressed the next.
+export const DEFAULT_MAX_BODY_BYTES = 8_000_000
+
+// O(n) over the text, with no JSON.stringify and no encoding. It only counts
+// what the text already has: JSON escaping and UTF-8 can make the wire bytes
+// larger, never smaller, so this number is a floor and never a ceiling.
+export function roughByteLength(value) {
+  let total = 0
+  const walk = (node) => {
+    if (node === null || node === undefined) { total += 4; return }
+    const kind = typeof node
+    if (kind === "string") { total += node.length + 2; return }
+    if (kind === "number") { total += 8; return }
+    if (kind === "boolean") { total += 5; return }
+    if (Array.isArray(node)) { total += 2; for (const item of node) walk(item); return }
+    if (kind === "object") {
+      total += 2
+      for (const key of Object.keys(node)) { total += key.length + 3; walk(node[key]) }
+      return
+    }
+    total += 8
+  }
+  walk(value)
+  return total
+}
+
+// Escaping a character costs at most five extra characters ("\u0001"), so a
+// floor within a factor of six of the limit still has to be measured exactly.
+const ESCAPE_RATIO = 6
+
+// Is this body over the limit? A floor above the limit answers yes on its own;
+// a floor far below answers no; anything in between pays for one exact count.
+function overLimit(body, maxBytes) {
+  const floor = roughByteLength(body)
+  if (floor > maxBytes) return true
+  if (floor * ESCAPE_RATIO < maxBytes) return false
+  return byteLength(body) > maxBytes
+}
 export function strategyEnabled(engine, options = {}) {
   if (engine.available === false) return false
   const strategies = options.strategies
@@ -154,19 +200,43 @@ function headroomRoundTrip(beforeBody, body, ctx) {
 }
 export function runPipeline(body, ctx, options = {}, beforeBody = null) {
   const started = Date.now()
+  const limit = Number(options.maxBytes)
+  const maxBytes = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : DEFAULT_MAX_BODY_BYTES
+  const budget = Number(options.budgetMs)
+  const budgetMs = Number.isFinite(budget) && budget > 0 ? Math.floor(budget) : 0
+  if (overLimit(body, maxBytes)) {
+    const bytes = byteLength(body)
+    return {
+      version: TELEMETRY_VERSION, ts: new Date().toISOString(),
+      model: String(ctx.model || body.model || "").slice(0, 160), agent: String(ctx.agent || "unknown").slice(0, 80),
+      protocol: String(ctx.protocol || "unknown"), session: String(ctx.session || "").slice(0, 100),
+      beforeBytes: bytes, afterBytes: bytes, savedBytes: 0, savedPct: 0,
+      estimatedBeforeTokens: Math.ceil(bytes / 4), estimatedAfterTokens: Math.ceil(bytes / 4),
+      totalMs: Date.now() - started, budgetMs: budgetMs || 250, budgetExceeded: 0,
+      failOpen: 0, roundTripsChecked: 0, roundTripsPassed: 0, preserved: 0,
+      tooLarge: true, maxBytes,
+      strategies: PIPELINE.map((engine) => ({
+        id: engine.id, label: engine.label || engine.id, available: engine.available !== false,
+        enabled: strategyEnabled(engine, options), status: "skipped", reason: "body_too_large",
+        beforeBytes: bytes, afterBytes: bytes, ms: 0,
+      })),
+    }
+  }
   const beforeBytes = byteLength(body)
   const records = []
   ctx.state = ctx.state || {}
   const guard = guardPreservedSegments(body, ctx, options)
-  const budget = Number(options.budgetMs)
-  const budgetMs = Number.isFinite(budget) && budget > 0 ? Math.floor(budget) : 0
   let failOpen = 0, roundTripsChecked = 0, roundTripsPassed = 0, budgetHit = 0
+  // Measured once per shape the body takes, not once per engine: byteLength is
+  // a JSON.stringify plus an encode, and on a large body that is the whole
+  // cost of the hook.
+  let currentBytes = beforeBytes
   for (const engine of PIPELINE) {
-    const record = { id: engine.id, label: engine.label || engine.id, available: engine.available !== false, enabled: strategyEnabled(engine, options), status: "skipped", reason: engine.available === false ? "unavailable" : "disabled", beforeBytes: byteLength(body), afterBytes: 0, ms: 0 }
-    if (!record.enabled) { record.afterBytes = record.beforeBytes; records.push(record); continue }
+    const record = { id: engine.id, label: engine.label || engine.id, available: engine.available !== false, enabled: strategyEnabled(engine, options), status: "skipped", reason: engine.available === false ? "unavailable" : "disabled", beforeBytes: currentBytes, afterBytes: 0, ms: 0 }
+    if (!record.enabled) { record.afterBytes = currentBytes; records.push(record); continue }
     if (budgetMs > 0 && Date.now() - started > budgetMs) {
       record.reason = "budget_exceeded"
-      record.afterBytes = record.beforeBytes
+      record.afterBytes = currentBytes
       budgetHit += 1
       records.push(record)
       continue
@@ -177,7 +247,7 @@ export function runPipeline(body, ctx, options = {}, beforeBody = null) {
     try {
       const cfg = engineConfig(engine, options)
       const changed = engine.apply(body, ctx, cfg) === true
-      record.afterBytes = byteLength(body)
+      if (changed) { record.afterBytes = byteLength(body); currentBytes = record.afterBytes } else { record.afterBytes = currentBytes }
       record.ms = Date.now() - t
       record.status = changed ? "hit" : "skipped"
       record.reason = changed ? "changed" : reasonFor(engine, ctx)
@@ -192,7 +262,7 @@ export function runPipeline(body, ctx, options = {}, beforeBody = null) {
     } catch (error) {
       restore(body, snapshot)
       ctx.state = stateSnapshot
-      record.afterBytes = byteLength(body)
+      record.afterBytes = currentBytes
       record.ms = Date.now() - t
       record.status = "fail_open"
       record.reason = String(error?.message) === "round_trip_mismatch" ? "round_trip_mismatch" : "engine_error"
@@ -202,7 +272,7 @@ export function runPipeline(body, ctx, options = {}, beforeBody = null) {
     records.push(record)
   }
   const preserved = guard.restore()
-  const afterBytes = byteLength(body)
+  const afterBytes = currentBytes
   return {
     version: TELEMETRY_VERSION, ts: new Date().toISOString(),
     model: String(ctx.model || body.model || "").slice(0, 160), agent: String(ctx.agent || "unknown").slice(0, 80),

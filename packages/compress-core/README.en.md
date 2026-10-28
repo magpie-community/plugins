@@ -57,6 +57,10 @@ A provider keys its prompt cache by **request prefix**: one changed byte early o
 
 `budgetMs` defaults to `0`: no strategy is skipped on a clock. A positive value makes the pipeline stop the remaining strategies after that many milliseconds — but then the same request can compress differently under load, and a body that changed is a body the provider's prompt cache can never reuse. The engines carry no deadline of their own (`session-dedup`'s `timeBudgetMs` is `0` too).
 
+`maxBytes` defaults to `8000000`: **a body larger than this runs no engine at all and goes out as it came**. The hook has 250 ms, and on a 20 MB body `JSON.stringify` alone costs around 70 ms before any engine has looked at it — a body that size cannot be compressed inside the budget on any machine. Skipping on size rather than on a clock is what keeps it stable: the same body gets the same answer on every request, so the prefix it contributes to the prompt cache never moves. The decision does not count exact bytes: it sums text length first (O(n), no allocation, always a floor under the real byte count), concludes immediately when that floor is already over, lets the body through when it is far below, and pays for one exact count only in the narrow band between.
+
+Measured here (this package's `lite` + `headroom`, median of 5): 2 MB 16 ms, 4 MB 25 ms, 8 MB 43 ms, 12 MB 55 ms, 20 MB 94 ms, 40 MB 122 ms — the last three are over the limit and only get the decision.
+
 ## Licence and provenance
 
 MIT (`LICENSE`, which keeps OmniRoute's copyright line). Every engine is a port of OmniRoute's `open-sse/services/compression`; the repository each one came from, the file it reaches, and a sha256 of the ported copy are in `PROVENANCE.json`.

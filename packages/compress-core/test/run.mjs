@@ -12,7 +12,7 @@ import { join as joinPath } from "node:path"
 const sandbox = mkdtempSync(joinPath(tmpdir(), "compress-core-suites-"))
 process.env.MAGPIE_CONFIG_DIR = joinPath(sandbox, "config")
 
-const suites = ["approved-lite.test.mjs", "gateway-cases.test.mjs", "engine-cases.test.mjs", "prefix-stability.test.mjs", "lite.test.mjs", "session-dedup.test.mjs", "headroom.test.mjs"] // engines + the gateway contract + prefix stability
+const suites = ["approved-lite.test.mjs", "gateway-cases.test.mjs", "engine-cases.test.mjs", "prefix-stability.test.mjs", "body-limit.test.mjs", "lite.test.mjs", "session-dedup.test.mjs", "headroom.test.mjs"] // engines + the gateway contract + the two stability contracts
 
 const only = process.argv[2]
 let any = false

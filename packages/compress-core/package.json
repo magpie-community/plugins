@@ -40,6 +40,7 @@
         "headroom": true
       },
       "budgetMs": 0,
+      "maxBytes": 8000000,
       "preserve": {
         "system": false,
         "lastTurns": 0

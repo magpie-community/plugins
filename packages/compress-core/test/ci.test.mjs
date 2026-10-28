@@ -22,6 +22,7 @@ const suites = [
   "gateway-cases.test.mjs",
   "engine-cases.test.mjs",
   "prefix-stability.test.mjs",
+  "body-limit.test.mjs",
   "lite.test.mjs",
   "session-dedup.test.mjs",
   "headroom.test.mjs",
