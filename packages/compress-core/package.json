@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/middleware-compress-core",
-  "version": "0.2.0",
-  "description": "Send a request's history smaller with the compression engines OmniRoute uses: lossless strategies over presets, prefix-stable so the provider's prompt cache survives, as magpie gateway middleware and its telemetry hook",
+  "version": "0.3.0",
+  "description": "Send a request's history smaller with the compression engines OmniRoute uses: lossless strategies over presets, prefix-stable so the provider's prompt cache survives, plus a page that puts the original next to the compressed body",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/magpie-community/plugins.git",
@@ -25,7 +25,9 @@
     "observability.hooks.js",
     "options-commands.js",
     "capture-store.js",
+    "page",
     "pipeline.js",
+    "scripts",
     "stats-writer.js",
     "telemetry-store.js"
   ],
@@ -40,6 +42,38 @@
   "magpie": {
     "middleware": "./compress-core.middleware.js",
     "hooks": "./observability.hooks.js",
+    "page": {
+      "title": "Compression",
+      "titles": {
+        "zh": "压缩",
+        "zh-TW": "壓縮",
+        "ja": "圧縮"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg"
+    },
+    "panels": [
+      {
+        "slot": "settings",
+        "title": "Compression",
+        "titles": {
+          "zh": "压缩",
+          "zh-TW": "壓縮",
+          "ja": "圧縮"
+        },
+        "file": "page/settings.html"
+      },
+      {
+        "slot": "usage",
+        "title": "Compression",
+        "titles": {
+          "zh": "压缩",
+          "zh-TW": "壓縮",
+          "ja": "圧縮"
+        },
+        "file": "page/usage.html"
+      }
+    ],
     "options": {
       "strategies": {
         "session-dedup": false,
@@ -57,6 +91,11 @@
     }
   },
   "scripts": {
+    "build:catalog": "node scripts/gen-page-catalog.mjs",
+    "build:page": "node scripts/build-lab-bundle.mjs",
     "test": "node test/run.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
   }
 }

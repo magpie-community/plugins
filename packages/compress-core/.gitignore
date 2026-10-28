@@ -4,3 +4,9 @@ node_modules/
 *.tmp
 *.log
 .DS_Store
+
+# 900 KB 的生成代码，没法 review。它由 CI 在测试 job（没有写权限）里按 pin 的
+# esbuild 构建，再交给发布 job 打包（scripts/build-pages.mjs、scripts/dist.mjs）。
+# page/engines.js 不走这里：它小、可逐字节重建，还有 test/page-catalog.test.mjs
+# 盯着，所以那份是提交进仓库的。
+page/lab-engine.bundle.js

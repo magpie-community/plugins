@@ -87,6 +87,17 @@ lite 默认**全量改写、严格前缀稳定**：每条消息从第一轮起�
 
 `capture` 这一段：清空快照会删掉 `captures/`、`stats.json` 里的记录并清索引，`requests.jsonl` 直接删文件，下一次请求会重建。
 
+## 页面
+
+页面有三个入口：主页面（`page/index.html`）、设置面板（`page/settings.html`）、用量面板（`page/usage.html`）。它跑在 magpie 的沙箱里，那个沙箱 `connect-src 'none'`、没有文件系统，而且只吃普通 `<script>`，不支持 ES module——所以页面代码是 classic script，试压台要用的引擎源模块打成一个 IIFE 才能进浏览器。
+
+两份产物来源不同，这是有意的：
+
+- `page/engines.js`：由 `scripts/gen-page-catalog.mjs` 从 `catalog.js` 与各引擎的 `configSchema` 生成。**提交进仓库**：它小、能逐字节重建，`test/page-catalog.test.mjs` 会在它和真相源不一致时让测试红。改了 `catalog.js` 或某个 `configSchema` 之后跑 `npm run build:catalog`。
+- `page/lab-engine.bundle.js`：约 480 KB，**不进仓库**。900 KB 级别的生成代码没法 review，也没法保证和源码对齐。它由 CI 在测试 job（没有写权限、按 `package.json` pin 的 esbuild 精确版本）里构建，再交给发布 job 打包。本地要构建就 `npm install --no-save esbuild@0.25.0` 然后 `npm run build:page`——没有装就直接失败，不去 `npx` 现下。
+
+页面读不到 `stats.json` 和 `captures/`（沙箱没有文件系统，`magpie.options` 是它唯一能读的东西），所以压缩尺旁边只写数字在哪个文件里，会话列表也不再自己长出来。页面每 5 秒读一次 `magpie.options`，有变化就重绘，不需要手动刷新。
+
 ## 许可与来源
 
 MIT（`LICENSE`，保留 OmniRoute 的版权行）。每个引擎都是 OmniRoute `open-sse/services/compression` 的移植；来源仓库、对应文件与移植副本的 sha256 在 `PROVENANCE.json`。

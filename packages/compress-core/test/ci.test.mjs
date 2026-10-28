@@ -30,6 +30,7 @@ const suites = [
   "capture-store.test.mjs",
   "observability.test.mjs",
   "audit.test.mjs",
+  "page-catalog.test.mjs",
 ]
 
 for (const file of suites) {
