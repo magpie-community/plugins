@@ -1,0 +1,32 @@
+compress-core
+Copyright (c) 2026 Manjughosa
+
+This product includes software developed by other projects. The full text of
+each licence is kept in LICENSES/; the repository each port came from, the files
+it reaches, and a hash of every ported copy are recorded in PROVENANCE.json.
+
+  OmniRoute — https://github.com/diegosouzapw/OmniRoute
+    MIT. Copyright (c) 2026 diegosouzapw. The strategies, the preset table and the
+    engine metadata in this package are a port of OmniRoute's
+    open-sse/services/compression, read from an installed copy of that release.
+
+  headroom — https://github.com/headroomlabs-ai/headroom
+    Apache-2.0, see LICENSES/Apache-2.0.txt. Reaches engines/headroom.js.
+    Headroom ships a NOTICE; Apache-2.0 §4(d) asks a derivative to carry its
+    attribution text, so it is repeated here:
+      Headroom
+      Copyright 2025 Headroom Contributors
+
+  gcf-typescript — https://github.com/blackwell-systems/gcf-typescript
+    Apache-2.0, see LICENSES/Apache-2.0.txt. The columnar codec under engines/gcf/
+    (encode.js, decode.js, scalar.js) is vendored from it — headroom reached it
+    through its own copy of that project. Its NOTICE is carried the same way:
+      gcf-typescript
+      Copyright 2026 Dayna Blackwell / Blackwell Systems
+
+Not in this package yet: the rest of OmniRoute's strategies (ccr, rtk,
+codex-responses, relevance, caveman, read-lifecycle, aggressive, ultra, ionizer,
+llm) are ported and tested but land in later PRs, and the Apache-2.0 upstreams
+they reach — caveman (https://github.com/JuliusBrussee/caveman) and rtk
+(https://github.com/rtk-ai/rtk) — are listed in NOTICE by the PR that adds those
+engines, together with their attribution text.

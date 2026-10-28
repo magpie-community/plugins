@@ -1,0 +1,6 @@
+node_modules/
+
+# Scratch files, never part of the package.
+*.tmp
+*.log
+.DS_Store

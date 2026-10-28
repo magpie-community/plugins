@@ -66,6 +66,8 @@
       "summary": { "en": "Opt-in, per-provider Codex Responses history filtering after switching providers. Preserves readable content and tool-call pairing; no model probes.", "zh": "按供应商开关 Codex Responses 历史过滤，缓解切换上游后的密文和历史 ID 兼容问题；保留正文与工具配对，不运行模型检测。" } },
     { "package": "@magpie-community/middleware-history-trim", "name": "History Trim", "kind": "middleware", "community": true,
       "summary": { "en": "Send a request's history smaller: fold a run of blank lines, drop a system prompt written twice and a message repeated right after itself, and cut a past tool result longer than maxToolLength at a word boundary. The turn being sent now is left whole.", "zh": "把请求的历史发得更小：折叠连续空行、去掉逐字重复的 system 提示与紧挨着重复的消息、把历史中超过 maxToolLength 的工具结果在词边界处截断；正在发送的这一轮原样不动。" } },
+    { "package": "@magpie-community/middleware-compress-core", "name": "Compress Core", "kind": "middleware", "community": true,
+      "summary": { "en": "Send a request's history smaller with three lossless strategies: whitespace and repeated lines, text already sent earlier in the session, and tabular JSON folded to a columnar summary. Strict prefix stability keeps the provider's prompt cache reusable.", "zh": "用三个无损策略把请求的历史发得更小：空白与重复行、本会话早前已发过的文本、以及折叠成列式摘要的表格 JSON。严格前缀稳定，上游的提示词缓存一直可用。" } },
     { "package": "@magpie-community/agent-aider", "name": "Aider", "kind": "agent", "community": true,
       "summary": { "en": "Aider (aider.chat) on magpie's Agents page: pick one of magpie's models for it, and switch it off to put its config back.", "zh": "把 Aider（aider.chat）加到 magpie 的 Agent 页：给它选 magpie 的模型，关掉即恢复它原来的配置。" } },
     { "package": "@magpie-community/agent-pig", "name": "PiG", "kind": "agent", "community": true,
