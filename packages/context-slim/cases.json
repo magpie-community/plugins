@@ -1,0 +1,526 @@
+[
+  {
+    "name": "under the threshold the request passes as it came",
+    "options": {},
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        },
+        {
+          "role": "assistant",
+          "content": "hello"
+        }
+      ]
+    }
+  },
+  {
+    "name": "an old Chat tool result is cut to head and tail; ids, tool_calls and the recent window stay",
+    "options": {
+      "threshold": 0,
+      "keep_recent": 1,
+      "tool_head": 10,
+      "tool_tail": 5,
+      "text_head": 20,
+      "text_tail": 5
+    },
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read the logs"
+        },
+        {
+          "role": "assistant",
+          "content": "reading",
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "type": "function",
+              "function": {
+                "name": "read",
+                "arguments": "{}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL"
+        },
+        {
+          "role": "assistant",
+          "content": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        },
+        {
+          "role": "user",
+          "content": "summarize"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read the logs"
+        },
+        {
+          "role": "assistant",
+          "content": "reading",
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "type": "function",
+              "function": {
+                "name": "read",
+                "arguments": "{}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "LLLLLLLLLL\n[context-slim: 285 chars of old tool output omitted]\nLLLLL"
+        },
+        {
+          "role": "assistant",
+          "content": "XXXXXXXXXXXXXXXXXXXX\n[context-slim: 275 chars of old text omitted]\nXXXXX"
+        },
+        {
+          "role": "user",
+          "content": "summarize"
+        }
+      ]
+    }
+  },
+  {
+    "name": "the first user message is kept whole, an old reply is cut",
+    "options": {
+      "threshold": 0,
+      "keep_recent": 1,
+      "tool_head": 10,
+      "tool_tail": 5,
+      "text_head": 20,
+      "text_tail": 5
+    },
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        },
+        {
+          "role": "assistant",
+          "content": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        },
+        {
+          "role": "user",
+          "content": "ok"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        },
+        {
+          "role": "assistant",
+          "content": "XXXXXXXXXXXXXXXXXXXX\n[context-slim: 275 chars of old text omitted]\nXXXXX"
+        },
+        {
+          "role": "user",
+          "content": "ok"
+        }
+      ]
+    }
+  },
+  {
+    "name": "an old Anthropic tool_result is cut and its image noted; tool_use and system stay whole",
+    "options": {
+      "threshold": 0,
+      "keep_recent": 1,
+      "tool_head": 10,
+      "tool_tail": 5,
+      "text_head": 20,
+      "text_tail": 5
+    },
+    "request": {
+      "model": "m",
+      "system": "be brief",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "read it"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "calling"
+            },
+            {
+              "type": "tool_use",
+              "id": "tu_1",
+              "name": "read",
+              "input": {
+                "path": "a.log"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "tu_1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL"
+                },
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "base64",
+                    "data": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "go on"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "m",
+      "system": "be brief",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "read it"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "calling"
+            },
+            {
+              "type": "tool_use",
+              "id": "tu_1",
+              "name": "read",
+              "input": {
+                "path": "a.log"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "tu_1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "LLLLLLLLLL\n[context-slim: 285 chars of old tool output omitted]\nLLLLL"
+                },
+                {
+                  "type": "text",
+                  "text": "[context-slim: old image omitted]"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "XXXXXXXXXXXXXXXXXXXX\n[context-slim: 275 chars of old text omitted]\nXXXXX"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "go on"
+        }
+      ]
+    }
+  },
+  {
+    "name": "content already carrying the marker is left alone",
+    "options": {
+      "threshold": 0,
+      "keep_recent": 1,
+      "tool_head": 10,
+      "tool_tail": 5,
+      "text_head": 20,
+      "text_tail": 5
+    },
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "task"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "c",
+          "content": "LLLLLLLLLL\n[context-slim: 285 chars of old tool output omitted]\nLLLLL"
+        },
+        {
+          "role": "user",
+          "content": "ok"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a history inside the window is untouched",
+    "options": {
+      "threshold": 0,
+      "keep_recent": 5,
+      "tool_head": 10,
+      "tool_tail": 5
+    },
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "task"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "c",
+          "content": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL"
+        },
+        {
+          "role": "user",
+          "content": "ok"
+        }
+      ]
+    }
+  },
+  {
+    "name": "null content, empty tool output and tool_calls pass unchanged",
+    "options": {
+      "threshold": 0,
+      "keep_recent": 1,
+      "tool_head": 10,
+      "tool_tail": 5,
+      "text_head": 20,
+      "text_tail": 5
+    },
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "task"
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "c",
+              "type": "function",
+              "function": {
+                "name": "f",
+                "arguments": "{}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "c",
+          "content": ""
+        },
+        {
+          "role": "user",
+          "content": "ok"
+        }
+      ]
+    }
+  },
+  {
+    "name": "system messages are never touched",
+    "options": {
+      "threshold": 0,
+      "keep_recent": 1,
+      "tool_head": 10,
+      "tool_tail": 5,
+      "text_head": 20,
+      "text_tail": 5
+    },
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "system",
+          "content": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        },
+        {
+          "role": "user",
+          "content": "task"
+        },
+        {
+          "role": "assistant",
+          "content": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        },
+        {
+          "role": "user",
+          "content": "ok"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "system",
+          "content": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        },
+        {
+          "role": "user",
+          "content": "task"
+        },
+        {
+          "role": "assistant",
+          "content": "XXXXXXXXXXXXXXXXXXXX\n[context-slim: 275 chars of old text omitted]\nXXXXX"
+        },
+        {
+          "role": "user",
+          "content": "ok"
+        }
+      ]
+    }
+  },
+  {
+    "name": "an image older than the window becomes a note; a recent image stays",
+    "options": {
+      "threshold": 0,
+      "keep_recent": 1,
+      "tool_head": 10,
+      "tool_tail": 5,
+      "text_head": 20,
+      "text_tail": 5
+    },
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "we will look at a chart later"
+        },
+        {
+          "role": "assistant",
+          "content": "ok"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "look"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/png;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": "seen"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/png;base64,BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "we will look at a chart later"
+        },
+        {
+          "role": "assistant",
+          "content": "ok"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "look"
+            },
+            {
+              "type": "text",
+              "text": "[context-slim: old image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": "seen"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/png;base64,BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+]
