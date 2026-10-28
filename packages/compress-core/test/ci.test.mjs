@@ -26,6 +26,10 @@ const suites = [
   "lite.test.mjs",
   "session-dedup.test.mjs",
   "headroom.test.mjs",
+  "redact.test.mjs",
+  "capture-store.test.mjs",
+  "observability.test.mjs",
+  "audit.test.mjs",
 ]
 
 for (const file of suites) {

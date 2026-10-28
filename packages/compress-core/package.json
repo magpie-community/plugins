@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/middleware-compress-core",
-  "version": "0.1.0",
-  "description": "Send a request's history smaller with the compression engines OmniRoute uses: lossless strategies over presets, prefix-stable so the provider's prompt cache survives, as magpie gateway middleware",
+  "version": "0.2.0",
+  "description": "Send a request's history smaller with the compression engines OmniRoute uses: lossless strategies over presets, prefix-stable so the provider's prompt cache survives, as magpie gateway middleware and its telemetry hook",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/magpie-community/plugins.git",
@@ -21,7 +21,13 @@
     "compress-core.middleware.js",
     "engines",
     "hash.js",
-    "pipeline.js"
+    "lab.js",
+    "observability.hooks.js",
+    "options-commands.js",
+    "capture-store.js",
+    "pipeline.js",
+    "stats-writer.js",
+    "telemetry-store.js"
   ],
   "keywords": [
     "magpie",
@@ -33,6 +39,7 @@
   ],
   "magpie": {
     "middleware": "./compress-core.middleware.js",
+    "hooks": "./observability.hooks.js",
     "options": {
       "strategies": {
         "session-dedup": false,
@@ -45,7 +52,8 @@
         "system": false,
         "lastTurns": 0
       },
-      "gatewayTimeoutMs": 4000
+      "gatewayTimeoutMs": 4000,
+      "capture": false
     }
   },
   "scripts": {

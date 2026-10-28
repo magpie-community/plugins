@@ -61,6 +61,32 @@ lite 默认**全量改写、严格前缀稳定**：每条消息从第一轮起�
 
 本机实测（本包的 `lite` + `headroom`，5 次取中位）：2 MB 16 ms、4 MB 25 ms、8 MB 43 ms、12 MB 55 ms、20 MB 94 ms、40 MB 122 ms——后三个都在门限以上，只做判断。
 
+## 钩子写了什么
+
+这个包装的不止 `middleware`：它还有一条 `hooks`（`observability.hooks.js`），中间件压 body，钩子记录这次压缩做了什么。钩子只认本地来源的请求，别的来源不会导出任何由请求派生的数据。
+
+累计统计写进插件配置目录的 `stats.json`，和下面那些遥测文件放在一起，**不碰 magpie 自己的 `plugins.json`**——那个文件 magpie 盯着 mtime，一改就重启钩子宿主，等于每压一次请求就重启一次，代价远超收益。
+
+写文件很保守：先写 `.tmp` 再 rename，失败静默；最快 30 秒一次（首个请求立即写）；读回来超过 4MB 就不解析，免得被坏文件拖住；`COMPRESS_CORE_NO_STATS=1` 时完全不碰磁盘（测试用）。压缩本身不依赖这些数字：文件写不进去，压缩照跑。
+
+## 隐私
+
+落盘只发生在插件自己的目录（`MAGPIE_CONFIG_DIR` 优先，其次 `XDG_CONFIG_HOME/magpie`，默认 `~/.config/magpie` 下的 `compress-core/`；`COMPRESS_CORE_DATA_DIR` 可整体改掉）：
+
+- `requests.jsonl`：每个请求一行统计（原始/压缩后字节、命中哪个策略、模型、客户端），**不含正文**。它默认开着，但是有界的：写满 8MB 就改名成 `requests.jsonl.1` 从头再来，所以最多占两代的空间，不会一声不响长到把磁盘吃掉。`telemetry.samples` 打开后才额外存最多 8 对问答，每段 1600 字符，存前先过下面这套打码。
+- `captures/`：只在 `capture` 打开时才有，是完整请求正文，单条上限 2MB（超了整条不落盘，索引里标 `too_large`），只保留最新 50 条，索引在 `captures-index.json`。
+- `options-override.json`：本地覆盖，不含正文。
+
+打码在 `telemetry-store.js` 的 `SECRET_RULES`，快照与样本共用一套：私钥块整段、`ghp_`/`github_pat_`/`AKIA`/`AIza`/`sk-`/`xox?-` 形态的令牌、`eyJ…` 的 JWT、`Bearer …`、URL 里的密码、Cookie 头（包括 JSON body 里的 `"cookie"`）、`npm_` 与 `hf_` 令牌，以及 `authorization`、`api_key`、`password`、`client_secret` 这类字段的值，全部换成 `[redacted:…]`。邮箱和 `C:\Users\…` 这类路径只在样本里替换——快照要能看清代码原文。字段名保留、值丢掉，所以仍然看得出这条请求带了什么凭据。
+
+两个开关都不碰代码本身，它们要回答的是「压缩对这段文本做了什么」。一段对话里如果有不能落盘的东西，就别打开 `capture` 和 `telemetry.samples`。
+
+## 实验室
+
+页面把一段试压请求交给钩子，钩子在 Node 侧用同一套引擎跑一遍，把逐段结果写回 options；页面只负责显示。输入是操作者自己贴的文本，落盘前往同样过一遍打码，单条上限 2MB。
+
+`capture` 这一段：清空快照会删掉 `captures/`、`stats.json` 里的记录并清索引，`requests.jsonl` 直接删文件，下一次请求会重建。
+
 ## 许可与来源
 
 MIT（`LICENSE`，保留 OmniRoute 的版权行）。每个引擎都是 OmniRoute `open-sse/services/compression` 的移植；来源仓库、对应文件与移植副本的 sha256 在 `PROVENANCE.json`。

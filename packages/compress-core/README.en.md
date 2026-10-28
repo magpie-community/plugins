@@ -61,6 +61,32 @@ A provider keys its prompt cache by **request prefix**: one changed byte early o
 
 Measured here (this package's `lite` + `headroom`, median of 5): 2 MB 16 ms, 4 MB 25 ms, 8 MB 43 ms, 12 MB 55 ms, 20 MB 94 ms, 40 MB 122 ms — the last three are over the limit and only get the decision.
 
+## What the hook writes
+
+This package carries more than a `middleware`: it also has a `hooks` entry (`observability.hooks.js`). The middleware shrinks the body, the hook records what that compression did. The hook only acts on requests whose origin is local; nothing derived from a request leaves the machine otherwise.
+
+The running totals go into `stats.json` in the plugin's config folder, beside the telemetry files below, and **never into magpie's own `plugins.json`** -- magpie watches that file's mtime and restarts the hooks host on every change, which would mean a restart per compressed request.
+
+Writing is deliberately careful: temp file then rename, silent on failure; at most once every 30 seconds (the first request writes immediately); a file over 4 MB is not parsed, so a corrupt one cannot stall a request; `COMPRESS_CORE_NO_STATS=1` keeps it off disk entirely (the tests use that). Compression never depends on these numbers -- if the file cannot be written, compression still runs.
+
+## Privacy
+
+Nothing is written outside the plugin's own folder (`MAGPIE_CONFIG_DIR` first, then `XDG_CONFIG_HOME/magpie`, else `compress-core/` under `~/.config/magpie`; `COMPRESS_CORE_DATA_DIR` moves the whole thing):
+
+- `requests.jsonl`: one line of counts per request (bytes before and after, which strategy fired, model, client), **no text**. It is on by default and bounded: at 8 MB it is renamed to `requests.jsonl.1` and started over, so it holds two generations at most and never grows unnoticed. `telemetry.samples` adds up to eight question/answer pairs of 1600 characters each, masked first.
+- `captures/`: only when `capture` is on. Whole request bodies, 2 MB per snapshot (an oversized one is not written and is marked `too_large` in the index), the newest 50 kept, indexed in `captures-index.json`.
+- `options-override.json`: local overrides, no text.
+
+Masking lives in `SECRET_RULES` in `telemetry-store.js` and is shared by snapshots and samples: a whole private-key block, `ghp_`/`github_pat_`/`AKIA`/`AIza`/`sk-`/`xox?-` shaped tokens, `eyJ…` JWTs, `Bearer …`, passwords inside URLs, `Cookie` headers (including `"cookie"` inside a JSON body), `npm_` and `hf_` tokens, and the values of fields named `authorization`, `api_key`, `password`, `client_secret`. Each becomes `[redacted:…]`. Email addresses and paths such as `C:\Users\...` are replaced in samples only -- a snapshot has to show the code as it was. The field name stays, the value goes, so a reader can still tell which credential a request carried.
+
+Neither switch touches the code itself; they answer "what did compression do to this text". If a conversation holds something that must not reach disk, leave `capture` and `telemetry.samples` off.
+
+## Lab
+
+The page hands a trial request to the hook, the hook runs the same engines over it in Node and writes the per-segment result back into options; the page only displays it. The input is text the operator pasted, masked the same way before it is written, 2 MB per trial.
+
+Clearing a capture deletes `captures/`, drops the entries in `stats.json` and clears the index; `requests.jsonl` is deleted outright and the next request recreates it.
+
 ## Licence and provenance
 
 MIT (`LICENSE`, which keeps OmniRoute's copyright line). Every engine is a port of OmniRoute's `open-sse/services/compression`; the repository each one came from, the file it reaches, and a sha256 of the ported copy are in `PROVENANCE.json`.
