@@ -1,7 +1,5 @@
 {
   "source": "https://github.com/unisong/codex-filter-manager",
-  "commit": "40f98308f364ca8533c30c11a2cede4ea00542f3",
-  "version": "v1.0.5",
   "license": "MIT",
   "files": {
     "magpie-plugin/history-filter.mjs": {
@@ -12,9 +10,10 @@
     }
   },
   "changes": [
-    "Inlined the shared history algorithm and request hook into one import-free middleware file.",
-    "Removed helper exports; only onRequest is exported.",
-    "No model detection, guard, dashboard, proxy service or provider configuration is included.",
-    "Version 0.1.1 adds history/portable-web-search.mjs, inlined into the middleware to convert historical native web_search_call items to labeled text after reasoning is removed. Original source hashes above identify the v1.0.5 baseline, not the modified middleware."
-  ]
+    "Inlined the shared history algorithm and request hook into one import-free middleware file. No UI, model probes or background service is included.",
+    "Version 0.1.1 converts historical native web_search_call items into labeled assistant text after removing old reasoning.",
+    "Version 0.1.2 adds an independent onProvider hook for explicitly opted-in DeepSeek candidates, folding automation_update root unions from top-level and resumed declarations. All defaults remain off.",
+    "Provider names and local runtime state are excluded from the rebuilt public history. Original license attribution is retained."
+  ],
+  "sourceNote": "Original file hashes below identify the pre-cleanup baseline; source history was rebuilt for privacy. Current shared implementation is maintained in the main repository."
 }

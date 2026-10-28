@@ -1,24 +1,28 @@
-# @magpie-community/middleware-codex-history
+# Codex History Filter
 
-**Magpie 原生历史过滤插件 / Native history compatibility middleware**
+**Magpie 原生过滤中间件 · 当前源码 v0.1.2 · MIT**
 
-缓解 Codex 切换供应商、账号或上游资源后，旧会话出现密文验证失败、部分历史 item ID 不属于当前资源的问题。只处理发出的 Responses 请求，不修改原会话文件或 Codex `base_url`。
-
-**插件只提供历史过滤，不包含 ModelTrace、降智检测或模型保护。** 无独立后台服务、管理端口、运行时依赖或额外模型请求。规则默认全部关闭，在 Magpie 自带的插件 Options 中按供应商设置。
+缓解 Codex 切换供应商、账号或上游资源后，旧会话出现加密验证、历史条目依赖及 DeepSeek 工具 Schema 错误。规则按供应商独立配置，默认全部关闭。无 UI、工作台、模型监测、额外模型请求或独立后台；不修改 Codex `base_url` 与会话文件。
 
 ## 安装
 
-在 Magpie 的 **Plugins → Discover → Gateway middleware** 中安装 **Codex History Filter**，或使用命令行：
+在 Magpie 官方社区插件市场 **Plugins → Discover → Gateway middleware** 搜索 **Codex History Filter**，或执行：
 
 ```sh
 magpie plugin add @magpie-community/middleware-codex-history
 ```
 
-社区版本只发布历史过滤中间件；模型工作台单独本地维护，不包含在本包中。无需启动 Codex Filter Manager，不要同时启用两份过滤插件。需要支持 gateway middleware 的 Magpie；本包已在 0.1.1265 的隔离实例中验证，其他版本需核对插件加载状态。
+当前社区上游是 v0.1.1，本次提交为 v0.1.2。GitHub 与社区 PR 使用同一份 v0.1.2 文件；市场需要作者合并并完成分发后才会更新。审核期间可安装：
+
+```sh
+magpie plugin add github:unisong/magpie-codex-history-filter#v0.1.2
+```
+
+需要 Magpie 实际支持 gateway middleware 和 `onProvider` 钩子；版本号本身不作为安装限制。完整本地工作台在[主仓库](https://github.com/unisong/codex-filter-manager)维护，请只启用一份过滤插件。
 
 ## 设置
 
-打开 **Plugins → Installed → 本插件 → Options**，保存以下示例，替换 `demo` 和 `backup` 为你实际使用的 Magpie 供应商 ID：
+打开 **Plugins → Installed → Codex History Filter → Options**。下面的 `demo`、`deepseek-demo` 是虚构 ID，请替换成自己的供应商 ID：
 
 ```json
 {
@@ -27,63 +31,67 @@ magpie plugin add @magpie-community/middleware-codex-history
       "historyFilter": true,
       "preserveEncryptedInclude": true
     },
-    "magpie:backup": {
+    "magpie:deepseek-demo": {
       "historyFilter": false,
-      "preserveEncryptedInclude": true
+      "deepSeekObjectRoot": true
     }
   },
   "aliases": {}
 }
 ```
 
-- 请求模型为 `demo/gpt-6-astra` 时，使用 `magpie:demo` 的规则；ID 是模型前缀，不是供应商显示名称。
-- `historyFilter: true` 开启过滤；`false`、删除该规则或空配置均为直通。不同会话按各自请求独立处理，可同时过滤多个供应商。
-- `preserveEncryptedInclude: true` 保留客户端对**新响应**中 `reasoning.encrypted_content` 的请求，推荐开启。它不会保留**旧历史**中的密文。省略或设置为 `false` 会移除这一 include 值，不影响其他 include 项。
-- 供应商改名后，旧会话可能仍发送旧前缀；可设置 `"aliases": {"old-demo": "demo"}`。别名只用于选择过滤规则，不改写请求模型，也不替代 Magpie 自己的路由别名。
-- 无 `供应商/模型` 前缀或非 Responses 协议的请求保持原样。未配置的供应商不会被自动过滤。
+| 选项 | 作用与建议 |
+| --- | --- |
+| `historyFilter` | 清理 Responses 请求的旧推理、协议密文及可移植条目 ID。旧会话出现密文或跨资源错误时开启。 |
+| `preserveEncryptedInclude` | 保留客户端对**新响应**的 `reasoning.encrypted_content` 请求，开启历史过滤时通常建议为 `true`；不会保留旧历史密文。省略或 `false` 会移除该 include 项。 |
+| `deepSeekObjectRoot` | 针对 DeepSeek 的协议转码兼容；严格 DeepSeek 上游拒绝 `automation_update` 根联合 Schema 时开启。独立于历史过滤，仅显式 `true` 生效。 |
 
-保存 Options 后，Magpie 在后续请求加载规则。无需另开网页或重启 Codex；是否成功加载以 Magpie 插件页的错误与调用统计为准。
+历史规则按请求的 `供应商/模型` 前缀匹配；DeepSeek 兼容按 Magpie 本次候选供应商及实际模型匹配。不同会话可同时使用不同规则。旧前缀可通过 `"aliases": {"old-demo": "demo"}` 映射到规则 ID；不会改写请求模型或替代 Magpie 路由。
 
-## 原理与边界
+保存后后续请求使用新规则，无需重启 Codex。请在 Magpie 插件页查看调用统计和加载错误；停用插件或把对应开关改为 `false` 即可关闭。
 
-开启后，插件移除旧 reasoning 条目、明确标记的加密内容，以及可独立携带内容的消息和工具条目中的可选服务器 ID；设置 `store: false`。保留正文、工具参数、结果、`call_id` 配对、文件引用及普通业务 ID，不改变请求模型或推理强度。
+## 能缓解哪些错误，如何处理
 
-**v0.1.1：历史搜索兼容修复。** 原生 `web_search_call` 可能依赖已删除的 reasoning，导致上游提示 `was provided without its required reasoning item`。开启过滤后，历史搜索条目转为带标记的助手文字，保留已记录的动作、查询、状态和来源数据，去除服务器条目 ID 与内部回合元数据；后续结论、引用及普通工具调用配对保持原样。不重新搜索、不补造未记录的结果。该处理适用于携带明文历史的普通对话和文字总结，不解密压缩历史。
+| 上游错误 | 处理原理 |
+| --- | --- |
+| `encrypted content hydration failed` / `The encrypted content ... could not be verified` | 移除历史 `reasoning` 和明确标记为 `type: "encrypted_content"` 的嵌套协议块，保留可读正文和工具配对。 |
+| `The requested item was created under a different Azure OpenAI resource` | 清除可独立重放的消息、工具历史的服务器 `id`，保留 `call_id`、业务资源引用及正文。无法恢复的服务器上下文会明确拒绝。 |
+| `web_search_call ... was provided without its required reasoning item` | 将旧搜索条目转换为带说明的助手文字，保留已记录查询、动作、状态和来源；去掉服务器 ID 和内部回合信息。不重搜、不补造结果。 |
+| 工具 Schema 根类型错误（`type: null`、`schema must be ... object`） | `onProvider` 钩子只对已开启的 DeepSeek 候选供应商，把 `automation_update` 根 `anyOf` / `oneOf` / `allOf` 折叠为对象；同时处理顶层 `tools`、`tool_search_output.tools` 和 `additional_tools.tools`。 |
 
-`previous_response_id`、`conversation`、`item_reference`、加密压缩历史和 `/responses/compact` 无法安全跨资源迁移时，会明确拒绝，提示整理文字摘要后新建会话，不会静默丢弃这些上下文。
+这些上游错误有时仅在 Codex 中显示为 `stream disconnected before completion: response.failed event received`。插件通过修正**引发失败的请求内容**缓解相关断流；它不拦截或伪造失败事件，也不是对所有网络断流的通用修复。遇到此消息，应同时查看上游具体错误，选择对应开关。
 
-- 不能解密旧密文、迁移所有服务器资源引用，或保证消除全部 Azure 历史错误。移除内部推理状态也可能影响长任务连续性。
-- Magpie 请求钩子限时 250 毫秒；加载失败、异常或超时可能按 Magpie 的机制放行原请求。插件不是强制安全边界。
-- 只覆盖进入 Magpie agent middleware 的 Responses 请求；Magpie 自身的标题、分类器等内部请求不经过此钩子。WebSocket、Chat Completions、Lite HTTP 标头修改不在本插件范围内。
-- 规则按进入钩子时的模型前缀选择。自动路由组、fallback、其他插件随后改写路由时，不保证规则对应最终上游。
-- 不采集或保存凭据、请求正文，不执行检测、重试或模型调用。上游正常请求仍按上游规则计费。
+Schema 折叠保留属性、局部 `$defs` 与共有必填字段，但会放宽根联合分支之间的互斥约束，实际执行仍由工具校验输入。只适用于已经出现兼容错误的 DeepSeek 上游，不修改其他工具的 Schema 或普通工具结果。
 
-## 停用、升级与旧版迁移
+## 边界与隐私
 
-在 Magpie 插件页关闭本插件即可停止全部过滤；删除某条供应商规则只停用该供应商。卸载也在 Magpie 中完成，不需要恢复 `base_url`。通过本地路径安装时，移动或删除目录前先卸载旧插件。
+- 历史过滤仅覆盖进入请求钩子的 Responses；DeepSeek Schema 钩子可用于 Magpie 后续向上游转发 Responses 或 Chat Completions 的候选尝试。标题、分类器等宿主内部请求不保证经过这些钩子。
+- `previous_response_id`、`conversation`、`item_reference`、加密压缩历史与 `/responses/compact` 无法安全迁移时明确拒绝；不解密、不静默删掉上下文。必要时整理明文摘要后开新会话。
+- 历史过滤在路由前按模型前缀匹配，组路由、fallback 或其他插件后续改写可能影响对应关系。DeepSeek Schema 在候选供应商阶段匹配，未开启的其他候选保持原样。
+- 插件错误或执行超时可能由宿主放行原请求；运行状态以 Magpie 插件页为准。它不能修复余额、限流、网络、认证问题或所有原生工具的推理依赖。
+- 不记录凭据和对话、不执行检测或重试，不产生额外模型请求。移除旧推理状态可能影响长任务连续性。
 
-若此前使用 Codex Filter Manager v1.0.5 自动安装的本地 `magpie-plugin`，先在旧管理页关闭该供应商的自动保护（若有旧设置），停止旧管理服务，再在 Magpie 中停用或卸载旧的本地历史插件，最后安装本插件并复制所需历史规则。原有规则的 `stripResponsesLiteHeader` 会被忽略，可删除。不要同时启用两份历史过滤插件。
+## 开发
 
-社区版本合并并完成 dist 发布后，可在 Magpie 插件页更新；现有 Options 无需改写，更新前可自行备份。不要上传 Magpie 的 `plugins.json`，它可能包含其他插件的私有设置。本插件不直接读写该文件，规则由宿主通过 Options 传入。
+```sh
+node --test test/*.test.mjs web-search.test.mjs
+npm pack --ignore-scripts --dry-run
+```
+
+社区仓库中运行 `bun test packages/codex-history`。测试只使用虚构数据。安装包只含 `package.json`、中间件、README、LICENSE 和 PROVENANCE，后续 GitHub 与社区提交均使用相同版本和文件。
+
+## 许可与致谢
+
+本项目采用 [MIT](LICENSE)，保留原项目贡献者署名。感谢以下参考项目：
+
+- [Codex Filter Manager](https://github.com/unisong/codex-filter-manager)：共享历史过滤与 DeepSeek Schema 兼容实现；本包不包含其模型检测组件。
+- [Responses 历史回放补丁](https://github.com/yunhanhai/agentrouter-responses-shim-sentry-fix)：嵌套协议密文清理场景及回归测试参考。
+- [Magpie](https://github.com/yetone/magpie) 与[社区插件仓库](https://github.com/magpie-community/plugins)：中间件接口、候选供应商钩子及分发方式参考。
+
+接口文档：[Magpie middleware](https://usemagpie.ai/docs/plugins#middleware)。来源记录见 [PROVENANCE.json](PROVENANCE.json)。
 
 ## English
 
-Opt-in Magpie gateway middleware for Codex Responses history after switching providers or accounts. It strips old reasoning/encrypted items and optional server IDs from portable history, preserving readable content and tool-call pairing. **History filtering only: no model detector, guard, background server, credentials or extra upstream calls.**
+Opt-in Magpie middleware for Codex history compatibility, with independent per-provider DeepSeek tool-schema conversion. It removes protocol ciphertext and portable server IDs, turns recorded native web search history into text, and folds only `automation_update` root unions for explicitly enabled DeepSeek candidates. Top-level and resumed tool declarations are covered. No UI, probes, credentials, background server, or Codex configuration edits.
 
-Install from **Plugins → Discover → Gateway middleware**, or run `magpie plugin add @magpie-community/middleware-codex-history`. In the plugin's **Options**, configure `providers["magpie:<provider-id>"]` as shown above. Every provider defaults to passthrough. The request's `provider/model` prefix selects its rule; requests from different sessions remain independent. `aliases` maps an old prefix to a rule ID only. `preserveEncryptedInclude: true` keeps requests for new encrypted response content while still removing historical ciphertext.
-
-Unsafe server-only references and encrypted compaction are rejected explicitly. Magpie may fail open on plugin errors/timeouts, and downstream route changes are outside the plugin's control. Disable or remove it in Magpie; it never edits Codex configuration.
-
-Version 0.1.1 converts historical native `web_search_call` items to labeled assistant text after removing old reasoning. Recorded actions, queries, status and sources remain available; native item IDs and internal turn metadata are removed. Subsequent answers and ordinary tool-call pairs remain intact. No searches are rerun, absent results are not reconstructed, and encrypted compaction is not decrypted. The community package contains only the middleware; the optional model workbench is maintained separately for local use.
-
-## 开发与来源
-
-```sh
-bun test packages/codex-history
-```
-
-测试只使用本地虚构数据，不调用模型。核心代码来自 [Codex Filter Manager v1.0.5](https://github.com/unisong/codex-filter-manager/tree/v1.0.5)，来源和 SHA-256 记录于 [PROVENANCE.json](PROVENANCE.json)。为匹配社区 middleware 包格式，将共用算法与请求钩子合并为单个无 import 文件。
-
-接口参考：[Magpie middleware 文档](https://usemagpie.ai/docs/plugins#middleware)。
-
-MIT，保留原项目贡献者署名，见 [LICENSE](LICENSE)。
+`response.failed event received` is a generic client symptom: this package addresses the documented request compatibility causes, not every streaming or network failure. Defaults are off. Install via Magpie's community market, or use the v0.1.2 GitHub tag while the matching community PR awaits merge and distribution.
