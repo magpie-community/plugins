@@ -22,8 +22,15 @@ for (const name of readdirSync(root)) {
   const problems = []
   try {
     const mod = await import(pathToFileURL(join(dir, pkg.main ?? "index.mjs")).href)
+    // as magpie's host takes them: every exported function, and the
+    // OpenCode v1 form, a default export of { id, server }
     const fns = Object.values(mod).filter((v) => typeof v === "function")
-    if (!fns.length) problems.push("exports no plugin function")
+    const v1 = typeof mod.default?.server === "function" ? mod.default.server : null
+    if (!fns.length && !v1) problems.push("exports no plugin function")
+    // a page's v1 server is its host part, a local service the page
+    // navigates to: no provider, no tools. It isn't started here (it would
+    // take a port and write config); the package's own tests start it.
+    if (v1 && !pkg.magpie?.page) fns.push(v1)
     const client = { app: { log: async () => {} }, auth: { set: async () => {} }, tui: { showToast: async () => {} }, config: { get: async () => ({ data: {} }) } }
     for (const fn of fns) {
       const hooks = await fn({ client, directory: process.cwd(), worktree: process.cwd(), $: undefined, project: {} })

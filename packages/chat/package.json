@@ -1,0 +1,64 @@
+{
+  "name": "@magpie-community/page-chat",
+  "version": "0.1.0",
+  "description": "在 magpie 窗口里加一个「对话」页面：用 magpie 自己的模型、MCP 服务器、指令和技能聊天，支持图片与 LaTeX。A chat page inside magpie's window: talk with magpie's own models, MCP servers, instructions and skills, with images and LaTeX.",
+  "author": "Magic_zero (https://github.com/Magiczerowxy)",
+  "files": [
+    "index.mjs",
+    "lib",
+    "chat",
+    "page",
+    "assets",
+    "serve.mjs",
+    "start-server.cmd",
+    "start-server.vbs",
+    "install-autostart.cmd",
+    "install-autostart.ps1",
+    "README.md",
+    "SERVE.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "chat",
+    "llm"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/chat"
+  },
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "homepage": "https://github.com/Magiczerowxy/magpie-chat#readme",
+  "engines": {
+    "magpie": ">=0.1.1340"
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4IiB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCI+CiAgPHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIHJ4PSIyOCIgZmlsbD0iIzRmNDZlNSIvPgogIDxwYXRoIGQ9Ik0zMCAzOGg2OGE4IDggMCAwIDEgOCA4djM0YTggOCAwIDAgMS04IDhINjBsLTE2IDE0di0xNGgtMTRhOCA4IDAgMCAxLTgtOFY0NmE4IDggMCAwIDEgOC04eiIgZmlsbD0iI2ZmZiIvPgogIDxnIGZpbGw9IiM0ZjQ2ZTUiPgogICAgPGNpcmNsZSBjeD0iNDYiIGN5PSI1OCIgcj0iNSIvPgogICAgPGNpcmNsZSBjeD0iNjQiIGN5PSI1OCIgcj0iNSIvPgogICAgPGNpcmNsZSBjeD0iODIiIGN5PSI1OCIgcj0iNSIvPgogIDwvZz4KPC9zdmc+Cg==",
+    "page": {
+      "title": "Chat",
+      "titles": {
+        "zh": "对话",
+        "zh-TW": "對話",
+        "ja": "チャット"
+      },
+      "file": "page/index.html",
+      "icon": "assets/icon.svg"
+    },
+    "options": {
+      "port": 3477
+    }
+  },
+  "scripts": {
+    "start": "node serve.mjs"
+  },
+  "main": "./index.mjs",
+  "type": "module"
+}

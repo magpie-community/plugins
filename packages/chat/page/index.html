@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>对话</title>
+<style>
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: grid; place-items: center;
+    font: 13px/1.5 var(--magpie-font, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+    background: var(--magpie-bg, Canvas); color: var(--magpie-fg, CanvasText);
+  }
+  .box { text-align: center; color: var(--magpie-muted, GrayText); }
+  .box b { display: block; color: var(--magpie-fg, CanvasText); font-size: 14px; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+  <div class="box"><b>对话</b><span id="said">正在连接到本地对话服务…</span></div>
+  <script src="_magpie/bridge.js"></script>
+  <script src="boot.js"></script>
+</body>
+</html>

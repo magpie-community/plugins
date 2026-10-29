@@ -113,6 +113,7 @@ These add a page to magpie's window, in the app and in `magpie web`, under Plugi
 | Package | Page | Reads |
 |---|---|---|
 | [usage](packages/usage) | Usage glance: calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them | `usage:summary` |
+| [chat](packages/chat) | Chat with magpie's models, your MCP servers, instructions and skills, by Magic_zero ([Magiczerowxy](https://github.com/Magiczerowxy)). Has a host part: a local service the page goes to | none (its service calls magpie's gateway) |
 
 ```sh
 magpie plugin add @magpie-community/page-<name>
@@ -123,6 +124,7 @@ A page package is a folder under `packages/<name>/` with:
 - **`package.json`**: name `@magpie-community/page-<name>`, no `main`, and `"magpie": {"page": {"title", "file", "icon"}, "permissions": [...], "options": {…}}` ([the reference](https://usemagpie.ai/docs/plugins#pages)). `permissions` lists the reads the page makes, and magpie refuses any other. Declare only what it reads.
 - **the page**: HTML, CSS and scripts in files. It runs in a sandboxed frame with no network (`connect-src 'none'`) and no inline scripts. It talks to magpie only through `_magpie/bridge.js`: `magpie.ready`, `magpie.read(name, params)`, `magpie.options.get/set` (at most once a second), and `magpie.theme` with `onTheme`, whose `--magpie-*` variables it styles itself by.
 - a test that the page's scripts read only what `permissions` declares and reach no network, and of what it draws from a read.
+- optionally a host part: `main` with the OpenCode v1 form `export default {id, server}`, where `server(input, options)` starts a service on 127.0.0.1 that the page navigates its frame to. Such a service guards every route with a token only its own page gets, and checks `Host` ([chat](packages/chat) is the example).
 
 ## Agents
 

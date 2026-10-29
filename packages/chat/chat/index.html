@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>magpie chat</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="vendor/katex/katex.min.css">
+<!-- 用户在 magpie 设置里选的字体，由服务端读 settings.json 生成，放在最后好覆盖上面的兜底 -->
+<link rel="stylesheet" href="/api/fonts.css">
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- 左侧：会话列表，可拖拽调宽 -->
+  <aside class="sessions" id="sessions" aria-label="对话列表">
+    <div class="sessions-head">
+      <span class="sessions-title">对话</span>
+      <button class="pill icon" id="newSession" type="button" title="新建对话" aria-label="新建对话">
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+      <button class="pill icon" id="sideToggle" type="button" title="收起侧栏" aria-label="收起侧栏">
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8.4 3v10" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.2 6.6L4.6 8l1.6 1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <div class="sessions-list" id="sessionList"></div>
+    <div class="sessions-foot"><span class="hint" id="version"></span></div>
+    <div class="resizer" id="leftResizer" role="separator" aria-label="调整侧栏宽度" tabindex="0"></div>
+  </aside>
+
+  <!-- 收起后唯一留下的东西：浮在左上角，不占布局 -->
+  <button class="pill icon dock-toggle" id="dockToggle" type="button" title="展开侧栏" aria-label="展开侧栏">
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8.4 3v10" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.6 6.6L8.2 8l-1.6 1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+
+  <main class="main">
+    <!-- 会话区：滚动容器 + 浮层滚动条（和 magpie 自己的做法一致） -->
+    <div class="stream-wrap" id="streamWrap">
+      <div class="stream" id="stream"></div>
+      <div class="scroll-bar" id="scrollBar" hidden aria-hidden="true"><i></i></div>
+    </div>
+
+    <div class="composer" id="composer">
+      <div class="field" id="dropZone">
+        <div class="drop-hint" id="dropHint" hidden>松手就把文件放进对话框</div>
+        <div class="attach-list" id="attachList" hidden></div>
+        <textarea id="input" rows="1" placeholder="给模型说点什么…（可拖入图片或文件、粘贴图片）" aria-label="输入消息"></textarea>
+        <div class="field-foot">
+          <button class="pill icon" id="attachBtn" type="button" title="添加图片或文件" aria-label="添加图片或文件">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+          <input type="file" id="fileInput" multiple hidden>
+
+          <span class="spacer"></span>
+
+          <button class="pill" id="modelBtn" type="button" aria-haspopup="true" aria-expanded="false" title="选择模型">
+            <span class="pill-k">模型</span>
+            <span class="pill-v" id="modelValue">载入中…</span>
+            <span class="chev"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4.2 6.4L8 9.8l3.8-3.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </button>
+
+          <button class="pill" id="effortBtn" type="button" aria-haspopup="true" aria-expanded="false" title="思考强度">
+            <span class="pill-k">思考</span>
+            <span class="pill-v" id="effortValue">默认</span>
+            <span class="chev"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4.2 6.4L8 9.8l3.8-3.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </button>
+
+          <button class="send" id="send" type="button" disabled aria-label="发送">
+            <span class="send-label">发送</span>
+            <span class="send-stop" aria-hidden="true">&#9632;</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="pop" id="modelPop" role="menu" aria-label="模型" hidden></div>
+      <div class="pop" id="effortPop" role="menu" aria-label="思考强度" hidden></div>
+    </div>
+  </main>
+
+  <!-- 右侧：设置边栏 -->
+  <aside class="settings-panel" id="settingsPanel" aria-label="设置" hidden>
+    <div class="resizer left" id="rightResizer" role="separator" aria-label="调整设置栏宽度" tabindex="0"></div>
+    <div class="settings-head">
+      <span class="settings-title">设置</span>
+
+    </div>
+    <div class="settings-body">
+      <div class="set-sec">
+        <div class="set-title">系统提示词</div>
+        <textarea id="systemInput" class="ta" rows="3" placeholder="拼在指令和技能之前，可留空" aria-label="系统提示词"></textarea>
+      </div>
+
+      <div class="set-sec">
+        <div class="set-title">指令</div>
+        <div class="set-list" id="instructionList"></div>
+      </div>
+
+      <div class="set-sec">
+        <div class="set-title">技能</div>
+        <div class="set-list" id="skillList"></div>
+      </div>
+
+      <div class="set-sec">
+        <div class="set-title">MCP 服务器</div>
+        <div class="set-list" id="mcpList"></div>
+        <div class="set-tools">
+          <button class="text" id="checkTools" type="button">检查连接</button>
+          <span class="set-tools-status" id="toolsStatus"></span>
+        </div>
+      </div>
+
+      <div class="set-sec">
+        <div class="set-title">布局</div>
+        <div class="set-row">
+          <span class="set-label">会话区宽度</span>
+          <input class="range" id="convWidth" type="range" min="35" max="100" step="1" value="72"
+                 aria-label="会话区宽度" title="拖动调整；最右是铺满">
+          <output class="set-val" id="convWidthValue">72%</output>
+        </div>
+        <div class="set-row">
+          <span class="set-label">输入框宽度</span>
+          <input class="range" id="composerWidth" type="range" min="40" max="100" step="1" value="70"
+                 aria-label="输入框宽度" title="拖动调整输入框相对会话区的宽度">
+          <output class="set-val" id="composerWidthValue">70%</output>
+        </div>
+      </div>
+
+      <div class="set-sec">
+        <div class="set-title">生成</div>
+        <div class="set-row">
+          <span class="set-label">温度</span>
+          <input class="range" id="temperature" type="range" min="0" max="2" step="0.05" value="0.7" aria-label="温度">
+          <output class="set-val" id="tempValue">0.70</output>
+        </div>
+        <div class="set-row">
+          <span class="set-label">最大 token</span>
+          <input class="num" id="maxTokens" type="number" min="0" step="256" value="0" aria-label="最大 token" title="0 表示不限">
+        </div>
+        <div class="set-row">
+          <span class="set-label">显示思考过程</span>
+          <button class="switch" id="showReasoning" type="button" role="switch" aria-checked="true" aria-label="显示思考过程"><span class="switch-thumb"></span></button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 右侧栏的开关：页面右上角那个矩形折叠图标，点它开、也点它关 -->
+  <button class="pill icon settings-toggle" id="settingsToggle" type="button" title="展开设置栏" aria-label="展开设置栏" aria-expanded="false">
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7.6 3v10" fill="none" stroke="currentColor" stroke-width="1.3"/><path class="ico-in" d="M10.2 6.6L8.6 8l1.6 1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path class="ico-out" d="M9.4 6.6L11 8l-1.6 1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden><span id="toastText"></span></div>
+</div>
+<script src="vendor/katex/katex.min.js" defer></script>
+<script src="app.js" defer></script>
+</body>
+</html>
