@@ -10,7 +10,7 @@ import { homedir, tmpdir } from "node:os"
 import { readFileSync, realpathSync } from "node:fs"
 import { ZCodeAuthPlugin, _internal } from "./index.mjs"
 
-const { busy, spentUp, BUSY_WAITS, DEFAULT_CONCURRENCY } = _internal
+const { busy, spentUp, BUSY_WAITS } = _internal
 const WAITS = [...BUSY_WAITS]
 
 let server
@@ -61,16 +61,18 @@ const auth = () => ({ type: "oauth", access: jwt, refresh: JSON.stringify({ site
 const BODY = JSON.stringify({ model: "GLM-5.3", max_tokens: 16, messages: [{ role: "user", content: "hi" }] })
 
 // ask sends one request through the plugin and returns its answer unread
-async function ask() {
+async function ask({ signal, pro = false } = {}) {
   const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
-  const opts = await hooks.auth.loader(async () => auth(), { id: "zcode" })
+  const opts = await hooks.auth.loader(async () => pro
+    ? { type: "api", key: "test-pro", metadata: { site: "zai" } }
+    : auth(), { id: "zcode" })
   const headers = { "content-type": "application/json", "x-api-key": "zcode", "anthropic-version": "2023-06-01", "user-agent": "ai-sdk/anthropic/3.0.81" }
-  return opts.fetch("https://api.z.ai/api/anthropic/v1/messages", { method: "POST", headers, body: BODY })
+  return opts.fetch("https://api.z.ai/api/anthropic/v1/messages", { method: "POST", headers, body: BODY, signal })
 }
 
 // one is a whole request, read out, as an agent's client does
-async function one() {
-  const res = await ask()
+async function one(options) {
+  const res = await ask(options)
   return { status: res.status, text: await res.text() }
 }
 
@@ -110,15 +112,27 @@ test("a rate limit is not asked again", async () => {
   expect(res.text).not.toContain("ZCode serves one account")
 })
 
-test("a cap that outlasts the waits is said plainly, still a 429", async () => {
+test("a Pro cap that outlasts the waits keeps its original bounded retry", async () => {
   BUSY_WAITS.splice(0, BUSY_WAITS.length, 1, 1)
   answer = () => Response.json(CAP, { status: 429 })
-  const res = await one()
+  const res = await one({ pro: true })
   expect(res.status).toBe(429)
   expect(got.length).toBe(3)
   const said = JSON.parse(res.text).msg
   expect(said).toContain("user concurrency limit exceeded (429, code 3008)")
   expect(said).toContain("ZCode serves one account a few requests at a time")
+})
+
+test("Pro 1308 and 1310 responses pass through unchanged", async () => {
+  for (const code of [1308, 1310]) {
+    const envelope = { error: { type: "rate_limit_error", code, message: "vendor limit", reset_time: "2030-01-01" } }
+    answer = () => Response.json(envelope, { status: 429 })
+    got.length = 0
+    const res = await one({ pro: true })
+    expect(res.status).toBe(429)
+    expect(JSON.parse(res.text)).toEqual(envelope)
+    expect(got.length).toBe(1)
+  }
 })
 
 // bodyThatFails is this plugin's fetch answered with a head and one chunk,
@@ -171,13 +185,10 @@ test("the cap is read by its words when the envelope carries no code", () => {
   expect(busy(429, '{"code":1302,"msg":"rate limit reached"}')).toBe(false)
 })
 
-test("the account's cap is declared, and declared as the same number twice", async () => {
-  // the field magpie reads off the auth hook, and the one its package.json
-  // declares for a host that reads nothing else: magpie's queue spaces the
-  // requests by it. It is a default, not a cap the plugin enforces — a plan's
-  // own cap follows its tier, so a user raises it on the account instead
+test("the plugin declares no account-wide cap that would throttle Pro", async () => {
   const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
   const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
-  expect(hooks.auth.maxConcurrency).toBe(DEFAULT_CONCURRENCY)
-  expect(pkg.magpie.maxConcurrency).toBe(DEFAULT_CONCURRENCY)
+  expect(hooks.auth.maxConcurrency).toBeUndefined()
+  expect(pkg.magpie?.maxConcurrency).toBeUndefined()
+  expect(_internal.trialPool.limit).toBe(2)
 })

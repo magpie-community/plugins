@@ -48,7 +48,7 @@ beforeEach(async () => {
   }
 })
 afterEach(() => (globalThis.fetch = real))
-const ok = (data) => new Response(JSON.stringify({ code: 0, data }))
+const ok = (data) => Response.json({ code: 0, data })
 
 function planAndBalance() {
   answers["/api/biz/subscription/list"] = ok([{ productName: "GLM Coding Pro", status: "VALID" }])

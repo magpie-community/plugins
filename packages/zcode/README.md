@@ -136,27 +136,54 @@ never read or buffered on the way.
 
 ## A few at once
 
-A plan serves one account a few requests at a time; past that, ZCode
-answers 429 with code 3008 "user concurrency limit exceeded", or 3009
-"model concurrency limit exceeded". magpie funnels every agent's and every
-session's requests of one computer through this one plugin process, so
-magpie's own queue spaces an account's requests by the number this plugin
-declares — `maxConcurrency` on the auth hook, and `magpie.maxConcurrency`
-in its `package.json`, both three. A request the vendor refuses anyway
-waits a moment (a quarter of a second, then longer — about ten seconds of
-waits in all) and asks again, the same request byte for byte. A cap that
-outlasts the waits goes on as a 429, ZCode's words followed by what they
-mean, so the agent reads why. magpie still reads it as a rate limit: the
-account rests a minute and the request goes to the next member of its
-routing group, as it did before.
+This private candidate limits only requests sent to the Start Plan: two
+in flight per account by default, shared by all of that account's gift models.
+In the native Provider editor, use the **Plugin options** switch
+**Start Plan 并发上限** to choose three instead; off means two, on means
+three. The switch applies only to Trial; Pro is unchanged. Changes are read
+for each Trial request. Increasing the limit can release queued calls;
+decreasing it leaves in-flight calls alone.
+Calls wait in FIFO order; each account has its own pool. Slots remain held
+until the response body finishes, fails, or is cancelled. Ordinary Coding
+Plan requests bypass the pool. The plugin declares no account-wide
+`maxConcurrency`; an explicit account or provider limit set in Magpie
+still applies across models and is not changed by this plugin. The ordinary
+Concurrency setting is account-wide, and this switch is not a native model
+numeric field.
+Pool identity uses a stable user ID, account name or key. Sign-ins with
+none of these share a conservative pool per site instead of gaining new
+slots when their session token changes.
 
-Three is a default, not a cap the plugin enforces. A plan's real cap
-follows its tier — Z.ai serves a Max plan more at once than a Pro, and a
-Lite fewer — and is higher off-peak
-([Z.ai's usage policy](https://docs.z.ai/devpack/usage-policy)), so a
-number written into the plugin would hold a Max account to a Lite one's
-with no way to raise it. A user who knows their plan's cap sets it on the
-account or the provider in magpie, and magpie's queue follows that.
+ZCode can also refuse requests with 3008 "user concurrency limit exceeded"
+or 3009 "model concurrency limit exceeded", for example while another
+client uses the account. Start Plan retries these refusals with increasing
+delays, capped at four seconds before jitter, until capacity returns or
+the caller cancels. It does not return a terminal concurrency 429 to
+Magpie or mark the gift as spent. Queueing and backoff observe the caller's
+abort signal; the gateway owns the request deadline. A caller that supplies
+no cancellation or deadline can wait indefinitely while the vendor remains
+busy. Genuine quota, authentication and account restrictions still return
+their errors. Coding Plan concurrency refusals keep their bounded retry.
+Busy detection covers 3008/3009 and the known concurrency-limit wording;
+an unrecognized vendor error remains an error and may still be rested by
+the gateway. Real vendor envelopes are part of the pending runtime check.
+
+`trial-accounts.test.mjs` exercises two synthetic sign-ins against an
+in-memory vendor with two Trial slots each. It checks six calls sharing
+those pools without a concurrency refusal, a busy account recovering past
+the old retry budget, cancellation, a Coding Plan request alongside two
+Trial calls, and spent gifts staying separate across accounts.
+`trial-pool.test.mjs` checks FIFO, stream lifetime and cancellation cleanup.
+These tests never send real vendor requests and select sign-ins explicitly:
+Magpie's automatic selection and real supplier limits still require runtime
+verification. `ZCODE_TRIAL_TEST_MODULE` can select an installed module.
+
+Keep a gift's Trial entry before the corresponding ordinary Flash model
+in the routing group to prefer the gift when available. Magpie selects the
+account; this plugin neither transfers sign-ins nor changes group order.
+When gifts are claimed, refresh usage and the model catalog and confirm
+that the Trial entries are exposed. No background workload or artificial
+token consumption is started by the plugin.
 
 ## The usage card
 
