@@ -131,6 +131,12 @@ test("any refused status is an error with words", async () => {
   }
 })
 
+test("a successful but unreadable usage reply is the card's error, not empty credits", async () => {
+  const auth = { type: "oauth", access: "a", expires: later(), uid: "u" }
+  serve({ "/billing/meter/get-user-resource-summary": () => new Response("<html>gateway</html>") })
+  expect(await usageOf(WorkBuddyAuthPlugin, auth)).toEqual({ signIn: "kept", error: "unreadable reply <html>gateway</html>" })
+})
+
 test("a token near its end is renewed and saved, as the loader does", async () => {
   const sets = []
   const calls = serve({

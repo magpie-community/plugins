@@ -397,11 +397,30 @@ entry. An already signed-in browser can simply renew another saved account.
 
 ## Not here
 
-magpie's built-in WorkBuddy does more than this package:
-- the daily check-in;
-- the credits meter (`/billing/meter/get-user-resource-summary`);
-- several accounts under one provider.
+magpie's built-in WorkBuddy does more than this package: several accounts
+under one provider.
 
 OpenCode's plugin API has no place for these.
 
 Credit multipliers accept the international catalog's `x0.34 credits` text as well as `x0.34`. An empty credits value (for example Auto) stays unknown, never free.
+
+## Daily check-in
+
+The account's daily credits are claimed through the billing meter. magpie
+can run it once a day per account when its WorkBuddy check-in switch is on;
+Settings → Usage → Plugins has that switch and a *Check in now* button.
+The activity status is read first: inactive is `inactive`, a day already
+checked in is `done`, and only an active unchecked day is claimed. A claim
+that WorkBuddy answers 1001, 1002 or 1003 is `done`, `ineligible` or
+`inactive`. A claim turned away 401 while the account's credits still read
+is `ineligible`: that check-in takes WorkBuddy's own app. A transient
+billing failure is retried twice before the card shows the failure.
+Only WorkBuddy (China) checks in: the AI build has no claim endpoint, and
+its plugin carries no check-in hook.
+A request that gets no answer at all leaves the hook as a thrown error, so
+magpie retries it on its 1-minute offline backoff rather than the 30-minute
+one it gives a failed answer (#149).
+
+An `inactive` answer is kept for the whole Beijing day: the plugin host
+gives it no recheck, and a manual refresh reads the kept one (tracked in
+[yetone/magpie#2696](https://github.com/yetone/magpie/issues/2696)).

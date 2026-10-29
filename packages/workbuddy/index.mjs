@@ -1868,21 +1868,97 @@ function signedOut(site, a, why, expired, note) {
 // the same: WorkBuddy's message, else its code, else the HTTP status.
 async function meter(site, a, path, body = {}) {
   const res = await meterAsked(site, a, path, body)
+  const raw = await res.text()
   let env = {}
+  let parsed = true
   try {
-    env = JSON.parse(await res.text()) ?? {}
-  } catch {}
-  const code = Number.parseInt(env.code, 10) || 0
-  if (!res.ok) {
-    // the status and whether the token itself was refused go with it, for
-    // usage's one renewal on a 401 (reissued)
-    const said = { status: res.status, invalidToken: invalidToken(res) }
-    if (code) throw Object.assign(new Error(env.msg || `error ${code}`), said)
-    if (env.msg) throw Object.assign(new Error(env.msg), said)
-    throw Object.assign(new Error(statusText(res.status)), said)
+    env = JSON.parse(raw) ?? {}
+  } catch {
+    parsed = false
   }
-  if (code) throw new Error(env.msg || `error ${code}`)
+  if (res.ok && !parsed) {
+    const unreadable = raw.trim().slice(0, 120) || "(empty)"
+    throw Object.assign(new Error(`unreadable reply ${unreadable}`), { status: res.status, code: 0, unreadable: true })
+  }
+  const code = Number.parseInt(env.code, 10) || 0
+  // the status, the code and whether the token itself was refused go with
+  // it, for usage's one renewal on a 401 (reissued) and check-in's outcomes
+  const said = { status: res.status, code }
+  if (!res.ok) said.invalidToken = invalidToken(res)
+  const err = (message) => Object.assign(new Error(message), said)
+  if (!res.ok) {
+    if (code) throw err(env.msg || `error ${code}`)
+    if (env.msg) throw err(env.msg)
+    throw err(statusText(res.status))
+  }
+  if (code) throw err(env.msg || `error ${code}`)
   return env.data ?? null
+}
+
+// checkinOf claims the account's daily credits. China has the /v2 meter;
+// after the activity status names an active, unchecked day. Transient
+// upstream failures are asked again twice (the bounded retry quota-hub
+// observed on the billing endpoint; callers may shorten the waits for a
+// test).
+async function checkinOf(site, a, { waits = [0, 0] } = {}) {
+  let status
+  try {
+    status = await meter(site, a, "/v2/billing/meter/checkin-activity-status")
+  } catch (e) {
+    if (e?.code === 1001) return { outcome: "done" }
+    // a reply WorkBuddy sent is the day's failed answer; only a request
+    // that got no answer leaves as a throw, for magpie's offline backoff
+    if (e?.status !== undefined || e?.code !== undefined) return { outcome: "failed", message: e.message }
+    throw e
+  }
+  if (!status?.active) return { outcome: "inactive" }
+  if (status.today_checked_in ?? status.todayCheckedIn) {
+    // today_credit is what today actually gave, the built-in's word for a
+    // day already in; daily_credit is the day's grant
+    const credit = Number(status.today_credit ?? status.daily_credit)
+    return { outcome: "done", ...(Number.isFinite(credit) && credit > 0 ? { credit } : {}) }
+  }
+  const paths = ["/v2/billing/meter/daily-checkin"]
+  for (let attempt = 0; ; attempt++) {
+    let i = 0
+    while (i < paths.length) {
+      try {
+        const got = await meter(site, a, paths[i++])
+        // the claim's own answer, as the built-in hands it on: the credit
+        // and streak it granted and what it said, for the card
+        const credit = Number(got?.credit)
+        const streak = Number(got?.streak_days)
+        return {
+          outcome: "claimed",
+          ...(Number.isFinite(credit) && credit > 0 ? { credit } : {}),
+          ...(Number.isFinite(streak) && streak > 0 ? { streak } : {}),
+          ...(got?.message ? { message: String(got.message) } : {}),
+        }
+      } catch (e) {
+        if (e?.code === 1001) return { outcome: "done" }
+        if (e?.code === 1002) return { outcome: "ineligible", message: e.message }
+        if (e?.code === 1003) return { outcome: "inactive", message: e.message }
+        if (e?.status === 401) {
+          try {
+            await meter(site, a, "/billing/meter/get-user-resource-summary")
+          } catch {
+            throw e
+          }
+          return { outcome: "ineligible", message: "WorkBuddy's check-in takes WorkBuddy's own app" }
+        }
+        if (e?.unreadable) return { outcome: "failed", message: `check-in: ${e.message}` }
+        const transient = e?.status >= 500 || e?.code === 10000
+        if (transient && attempt < waits.length) {
+          await new Promise((r) => setTimeout(r, waits[attempt]))
+          break
+        }
+        // a reply WorkBuddy sent is the day's failed answer; only a request
+        // that got no answer leaves as a throw, for magpie's offline backoff
+        if (e?.status !== undefined || e?.code !== undefined) return { outcome: "failed", message: e.message }
+        throw e
+      }
+    }
+  }
 }
 
 // capacity is a capacity the billing API sends, as a string ("438.88")
@@ -3036,6 +3112,25 @@ function makePlugin(site) {
       // and is renewed as before.
       refreshLead: LEAD_MS,
       refresh: (auth) => refreshed(site, auth),
+      // the account's daily check-in: magpie can run it once a day per
+      // account, when its WorkBuddy check-in switch is on; the button in
+      // Settings asks right away. China's meter only: the AI build has no
+      // check-in (#47), so the hook stays off its plugin. Errors leave as
+      // throws, not as failed answers: host.js answers a throwing hook to
+      // magpie as an error, whose wbCheckinFailed keeps the offline words
+      // and magpie's 1-minute backoff, where a returned failed waits the
+      // full 30 minutes (magpie-community/plugins#149). checkinOf returns
+      // an outcome only for answers it read and classified.
+      ...(site.ai ? {} : {
+        async checkin(getAuth) {
+          const auth = await getAuth()
+          // an API key reads no credits (see usage), so it has no day to claim
+          if (auth?.type === "api") return { outcome: "ineligible", message: "check-in needs a signed-in account, not an API key" }
+          if (auth?.type !== "oauth" || !(auth.access || auth.source)) return { outcome: "failed", message: "not signed in" }
+          const a = await current(site, client, auth)
+          return await checkinOf(site, a, { waits: [2000, 4000] })
+        },
+      }),
       options: [
         {
           key: FREE_ONLY,
@@ -3409,4 +3504,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { idFor, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { idFor, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
