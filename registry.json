@@ -101,10 +101,10 @@
     { "package": "@magpie-community/opencode-river-auth", "name": "River", "providers": ["river"], "community": true,
       "summary": { "en": "River (river.ai) pay-as-you-go inference with your API key: per-account models from /v1/models, documented reasoning efforts and live prices from River's public pricing endpoint.", "zh": "用你的 API key 接入 River (river.ai) 按量计费推理：按账号从 /v1/models 列出模型，带官方推理档位与实时价格。" } },
     { "package": "@hoptoper/magpie-agent-wispterm", "name": "WispTerm", "kind": "agent",
-      "summary": {"en": "WispTerm through Magpie: select models and restore settings on disconnect. Initializes its connection directory automatically; requires a compatible app build.", "zh": "通过 Magpie 为 WispTerm 选择模型，断开恢复配置；自动初始化接入目录，需要支持 magpie.json 的主程序版本。"} },
+      "summary": { "en": "WispTerm on magpie's Agents page: pick one of magpie's models for its Agent, switch reasoning effort with /effort, and switch it off to put its config back. Needs WispTerm 1.46.1 or later.", "zh": "把 WispTerm 加到 magpie 的 Agent 页：给它的 Agent 选 magpie 的模型，用 /effort 切换思考强度，关掉即恢复原来的配置。需要 WispTerm 1.46.1 或更新版本。" } },
     { "package": "@hoptoper/magpie-agent-citebox", "name": "CiteBox", "kind": "agent",
-      "summary": {"en": "CiteBox through Magpie: select models and restore settings on disconnect. Initializes its connection directory automatically; requires a compatible app build.", "zh": "通过 Magpie 为 CiteBox 选择模型，断开恢复配置；自动初始化接入目录，需要支持 magpie.json 的主程序版本。"} },
+      "summary": { "en": "CiteBox on magpie's Agents page: pick one of magpie's models for its text AI, set reasoning effort in Settings, and switch it off to put its config back. Needs CiteBox 0.38.0 or later.", "zh": "把 CiteBox 加到 magpie 的 Agent 页：给它的文本 AI 选 magpie 的模型，在设置里调整思考强度，关掉即恢复原来的配置。需要 CiteBox 0.38.0 或更新版本。" } },
     { "package": "@hoptoper/magpie-agent-wisp-science", "name": "Wisp Science", "kind": "agent",
-      "summary": {"en": "Wisp Science through Magpie: select models and restore settings on disconnect. Initializes its connection directory automatically; requires a compatible app build.", "zh": "通过 Magpie 为 Wisp Science 选择模型，断开恢复配置；自动初始化接入目录，需要支持 magpie.json 的主程序版本。"} }
+      "summary": { "en": "Wisp Science on magpie's Agents page: pick one of magpie's models, set reasoning effort in the composer, and switch it off to put its config back. Needs Wisp Science 1.23.0 or later.", "zh": "把 Wisp Science 加到 magpie 的 Agent 页：选择 magpie 的模型，在输入框里设置思考强度，关掉即恢复原来的配置。需要 Wisp Science 1.23.0 或更新版本。" } }
   ]
 }
