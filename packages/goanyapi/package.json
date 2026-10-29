@@ -1,0 +1,32 @@
+{
+  "name": "@magpie-community/tools-goanyapi",
+  "version": "0.1.0",
+  "description": "All GoAnyAPI SEO, ads and web intelligence tools, generated from its live MCP catalog, with OAuth or API key",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/goanyapi"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-tools",
+    "mcp",
+    "seo",
+    "website-traffic",
+    "ads-intelligence",
+    "goanyapi"
+  ],
+  "scripts": {
+    "test": "bun test tests",
+    "lint": "node --check index.mjs"
+  }
+}
