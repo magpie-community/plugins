@@ -1,5 +1,7 @@
 # GoAnyAPI for Magpie
 
+Official website: [goanyapi.com](https://goanyapi.com/)
+
 GoAnyAPI's complete, publicly advertised **read-only MCP API catalog** as Magpie tools. No API selection list is maintained in this plugin. It supports OAuth login through GoAnyAPI's remote MCP server and API-key login through its REST API.
 
 ## Install
