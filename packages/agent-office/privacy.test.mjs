@@ -25,7 +25,7 @@ function seedSession(home) {
   ].join("\n"))
 }
 
-function runHost(spec, options) {
+function runHost(spec, options, after = "") {
   const home = tmp()
   const cfg = tmp()
   seedSession(home)
@@ -33,7 +33,7 @@ function runHost(spec, options) {
   writeFileSync(join(cfg, "magpie", "plugins.json"), JSON.stringify({ plugins: [{ spec, options }] }))
   const out = tmp()
   const mod = pathToFileURL(join(dir, "office.hooks.mjs")).href
-  const code = `const h = await import(${JSON.stringify(mod + "?privacy=" + Math.random())}); h.start(); h.stop(); h.write();`
+  const code = `const h = await import(${JSON.stringify(mod + "?privacy=" + Math.random())}); h.start(); ${after} h.stop(); h.write();`
   const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: join(home, ".cache"), MAGPIE_AGENT_OFFICE_PAGE: out }
   // an agent's own home override must not reach the sessions of the real user
   for (const k of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "DSH_HOME", "PI_CODING_AGENT_DIR", "QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "GROK_HOME", "FACTORY_HOME_OVERRIDE", "CURSOR_CONFIG_DIR", "KIMI_CODE_HOME", "MINIMAX_DATA_DIR", "CLINE_SESSION_DATA_DIR", "CLINE_DATA_DIR", "CLINE_DIR"]) delete env[k]
@@ -61,6 +61,14 @@ for (const spec of ["@magpie-community/page-agent-office", "QingJ01/magpie-agent
     }
   })
 }
+
+test("a request without ctx.options keeps text:false", () => {
+  const call = `await h.onRequest({ model: "m", tools: [{ name: "Bash" }], messages: [{ role: "user", content: "x" }] }, { origin: "local", protocol: "anthropic", agent: "cursor", session: "g1", cwd: "/tmp", model: "m", query: "SECRET-GATEWAY-PROMPT", state: {}, report() {} });`
+  const live = runHost("@magpie-community/page-agent-office", { text: false }, call)
+  const snap = JSON.parse(live.slice("globalThis.AgentOfficeLive = ".length).replace(/;\s*$/, ""))
+  expect(snap.text).toBe(false)
+  expect(live).not.toContain("SECRET-GATEWAY-PROMPT")
+})
 
 test("text:true still shows what the session says", () => {
   const live = runHost("@magpie-community/page-agent-office", { text: true })

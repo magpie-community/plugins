@@ -128,9 +128,11 @@ export function stop() {
 }
 
 export async function onRequest(body, ctx) {
-  options = ctx.options || options
+  // keep the loaded options when a request carries none: text:false must
+  // not turn back into text:true because a field was missing
+  options = { ...options, ...(ctx.options || {}) }
   start()
-  const key = track(ctx.options).request(body, ctx, Date.now())
+  const key = track(options).request(body, ctx, Date.now())
   ctx.state.office = key
   if (key) soon()
   ctx.report?.("skipped")
@@ -139,7 +141,7 @@ export async function onRequest(body, ctx) {
 
 export async function onResponse(reply, ctx) {
   if (!ctx.state?.office) return
-  if (track(ctx.options).response(reply, ctx, Date.now(), ctx.success === true)) soon()
+  if (track(options).response(reply, ctx, Date.now(), ctx.success === true)) soon()
 }
 
 // read what the plugin's options say about text, then start: a host that
