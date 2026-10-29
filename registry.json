@@ -96,7 +96,7 @@
       "summary": { "en": "Unofficial OfficeAce (Huawei Cloud AgentArts): browser sign-in to a Huawei Cloud account, live models with their credit multipliers, credit usage by bucket, and the daily check-in.", "zh": "非官方 OfficeAce（华为云 AgentArts）：浏览器登录华为云账号，实时模型及其积分倍率、分桶积分用量，以及每日签到。" } },
     { "package": "@magpie-community/opencode-river-auth", "name": "River", "providers": ["river"], "community": true,
       "summary": { "en": "River (river.ai) pay-as-you-go inference with your API key: per-account models from /v1/models, documented reasoning efforts and live prices from River's public pricing endpoint.", "zh": "用你的 API key 接入 River (river.ai) 按量计费推理：按账号从 /v1/models 列出模型，带官方推理档位与实时价格。" } },
-    { "package": "@magpie-community/tools-goanyapi", "name": "GoAnyAPI", "kind": "tools", "community": true,
+    { "package": "@magpie-community/tools-goanyapi", "name": "GoAnyAPI", "icon": "https://goanyapi.com/logo.png", "kind": "tools", "community": true,
       "summary": { "en": "All GoAnyAPI website traffic, SEO, SERP, backlinks and ads intelligence tools from a live MCP catalog. Supports OAuth or API key sign-in.", "zh": "自动接入 GoAnyAPI 动态目录中的全部网站流量、SEO、SERP、外链和广告情报工具，支持 OAuth 或 API Key 登录。" } }
   ]
 }

@@ -16,6 +16,9 @@
     "url": "git+https://github.com/magpie-community/plugins.git",
     "directory": "packages/goanyapi"
   },
+  "magpie": {
+    "icon": "https://goanyapi.com/logo.png"
+  },
   "keywords": [
     "magpie",
     "magpie-tools",
