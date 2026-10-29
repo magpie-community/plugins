@@ -15,8 +15,8 @@
 // It writes what it knows to page/live.js, beside the page, which the page
 // loads again every second (the page has no network; its own files it may
 // load). Only what changed is written. Nothing leaves this computer.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs"
+import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createTracker } from "./lib/track.mjs"
 import { createScanner } from "./lib/scan.mjs"
@@ -33,14 +33,22 @@ const EVERY = 1500
 // written: @magpie-community/page-agent-office, QingJ01/magpie-agent-office,
 // a folder, or the short name alone
 let packageName = ""
-try { packageName = JSON.parse(readFileSync(join(here, "package.json"), "utf8")).name || "" } catch {}
+let packageOptions = {}
+try {
+  const own = JSON.parse(readFileSync(join(here, "package.json"), "utf8"))
+  packageName = own.name || ""
+  packageOptions = own.magpie?.options || {}
+} catch {}
+const ownDir = (() => { try { return realpathSync(here) } catch { return here } })()
 
 let tracker = null
 let scanner = null
 let timer = null
 let ticking = null
 let last = ""
-let options = {}
+// fail closed: until an install's options are read, or a request carries
+// them, no prompt, reply or command is written
+let options = { text: false }
 
 function track(opts) {
   const o = { text: opts?.text !== false, remote: opts?.remote === true }
@@ -144,18 +152,43 @@ export async function onResponse(reply, ctx) {
   if (track(options).response(reply, ctx, Date.now(), ctx.success === true)) soon()
 }
 
+// a spec as magpie writes it, or a package name, or a path to this folder
+function matchSpec(spec) {
+  const raw = String(spec || "").trim()
+  if (!raw) return false
+  const pathLike = raw.startsWith("/") || raw.startsWith(".") || raw.startsWith("~") || raw.startsWith("file:")
+  if (pathLike) {
+    let p = raw.replace(/^file:\/\//, "").replace(/^file:/, "")
+    if (p === "~" || p.startsWith("~/")) p = join(process.env.HOME || "", p === "~" ? "" : p.slice(2))
+    try { return realpathSync(resolve(p)) === ownDir } catch { return false }
+  }
+  // an npm spec keeps a tag or version after its last @; a scheme's @ is
+  // left alone
+  let clean = raw.split("#")[0]
+  if (!clean.includes("://")) {
+    const at = clean.lastIndexOf("@")
+    if (at > 0) clean = clean.slice(0, at)
+  }
+  const names = new Set([packageName, packageName.replace(/^@[^/]+\//, ""), "page-agent-office", "magpie-agent-office", "agent-office"].filter(Boolean))
+  if (names.has(clean)) return true
+  return names.has(clean.split(/[/:]/).filter(Boolean).pop() || "")
+}
+
+function readOptions() {
+  const cfg = process.env.XDG_CONFIG_HOME || join(process.env.HOME || "", ".config")
+  // magpie starts the host in its config folder, which covers portable and
+  // overridden installs; the XDG path stays as the fallback
+  for (const file of [join(process.cwd(), "plugins.json"), join(cfg, "magpie", "plugins.json")]) {
+    let list
+    try { list = JSON.parse(readFileSync(file, "utf8")) } catch { continue }
+    const me = (list.plugins || []).find((p) => matchSpec(p?.spec))
+    if (me) return { ...packageOptions, ...(me.options || {}) }
+  }
+  return null
+}
+
 // read what the plugin's options say about text, then start: a host that
 // loads this module starts watching at once, before any request
-try {
-  const cfg = process.env.XDG_CONFIG_HOME || join(process.env.HOME || "", ".config")
-  const list = JSON.parse(readFileSync(join(cfg, "magpie", "plugins.json"), "utf8"))
-  const short = packageName.replace(/^@[^/]+\//, "")
-  const names = new Set([packageName, short, "page-agent-office", "magpie-agent-office", "agent-office"].filter(Boolean))
-  const me = (list.plugins || []).find((p) => {
-    const spec = String(p.spec || "")
-    const base = spec.split(/[\/#]/).filter(Boolean).pop() || ""
-    return names.has(spec) || names.has(base)
-  })
-  if (me?.options) options = me.options
-} catch {}
+const loaded = readOptions()
+if (loaded) options = { text: false, ...loaded }
 if (!process.env.MAGPIE_AGENT_OFFICE_PAGE) start()

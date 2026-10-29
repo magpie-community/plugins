@@ -2,7 +2,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/QingJ01/magpie-agent-office)](https://github.com/QingJ01/magpie-agent-office/releases)
 [![magpie ≥ 0.1.1318](https://img.shields.io/badge/magpie-%E2%89%A5%200.1.1318-4f46e5)](https://usemagpie.ai)
-[![Tests](https://img.shields.io/badge/tests-36%20passing-22a35a)](#test)
+[![Tests](https://img.shields.io/badge/tests-44%20passing-22a35a)](#test)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 **一个住在 magpie 窗口里的实时 Agent 办公室。** 直接读取各 Agent 自己的会话记录，把正在思考、执行工具、等待批准或已经完成的工作，变成太空站里的小人。支持等距 3D、俯视 2D、实时列表和可拖动的悬浮小窗。

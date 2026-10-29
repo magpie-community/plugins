@@ -23,9 +23,10 @@
     demo: opts.demo === true,
     showDone: opts.showDone !== false,
     hideAfter: M.HIDE[opts.hideAfter] !== undefined ? opts.hideAfter : M.DEFAULTS.hideAfter,
+    text: opts.text !== false,
     approvalAfterSec: Number(opts.approvalAfterSec) > 0 ? Number(opts.approvalAfterSec) : M.DEFAULTS.approvalAfterSec,
   }
-  const state = { snap: null, loaded: false, list: [], open: "", hover: "" }
+  const state = { snap: null, loaded: false, list: [], open: "", hover: "", showText: true }
   let floatHome = null
   const t = () => M.text(lang)
   const el = (tag, cls, text) => {
@@ -251,7 +252,7 @@
     setText(P.stText, label(a))
     const more = a.status === "executing" && a.since > 3000 ? M.fill(w.ran, M.duration(a.since, lang)) : a.turns ? M.fill(w.turns, a.turns) : ""
     setText(P.stMore, more)
-    const q = a.query || (state.snap?.text === false && !view.demo ? w.quiet : "")
+    const q = a.query || (state.showText ? "" : w.quiet)
     setText(P.query, q); P.query.hidden = !q
     setText(P.step, a.step ? "› " + a.step : ""); P.step.hidden = !a.step
     setText(P.err, a.error); P.err.hidden = !a.error
@@ -354,7 +355,11 @@
   // ---- everything ------------------------------------------------------
   function refresh() {
     const now = Date.now()
+    // text off in the page as well as the host: a stale live.js or a host
+    // that has not restarted yet must not render what the switch hid
+    state.showText = view.text && state.snap?.text !== false
     state.list = M.agents(snapshot(now), now, view)
+    if (!state.showText) state.list = M.redact(state.list)
     const c = M.counts(state.list)
     const set = (id, v) => { const n = $(id); if (n.textContent !== String(v)) n.textContent = v }
     set("nNeed", c.needYou)
@@ -445,7 +450,7 @@
   select("optHide", "hide", view.hideAfter)
   $("optDemo").addEventListener("change", (e) => { view.demo = e.target.checked; state.demoSnap = null; refresh(); save() })
   $("optDone").addEventListener("change", (e) => { view.showDone = e.target.checked; refresh(); save() })
-  $("optText").addEventListener("change", () => save())
+  $("optText").addEventListener("change", (e) => { view.text = e.target.checked; refresh(); save() })
   $("optHide").addEventListener("click", (e) => {
     const h = e.target.closest("button")?.dataset.hide
     if (!h) return

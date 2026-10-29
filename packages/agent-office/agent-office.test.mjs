@@ -61,11 +61,22 @@ test("a page magpie serves, with a host part and no reads", () => {
   for (const f of ["page/icons", "lib", "office.hooks.mjs"]) expect(pkg.files).toContain(f)
   // screenshots are linked from GitHub: an install needs none of them
   expect(pkg.files).not.toContain("docs")
+  expect(new Set(pkg.files).size).toBe(pkg.files.length)
   for (const m of readFileSync(join(dir, "README.md"), "utf8").matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
     // badges and screenshots are remote: nothing relative ships in the install
     expect(m[1]).toMatch(/^https:\/\//)
     expect(m[1]).not.toMatch(/^docs\//)
   }
+})
+
+test("the page hides text itself when the switch is off", () => {
+  const [a, b] = M.redact([
+    { title: "SECRET-TITLE", project: "secret-project", query: "SECRET-QUERY", reply: "SECRET-REPLY", error: "SECRET-ERROR", step: "Bash · SECRET-CMD curl x", brand: { name: "Claude" }, agent: "claude" },
+    { title: "SECRET-TITLE", project: "", query: "q", reply: "r", error: "e", step: "SECRET-CMD curl x", brand: { name: "Codex" }, agent: "codex" },
+  ])
+  expect(a).toMatchObject({ title: "secret-project", query: "", reply: "", error: "", step: "Bash" })
+  expect(b).toMatchObject({ title: "Codex", query: "", reply: "", error: "", step: "" })
+  expect(read("app.js")).toContain("M.redact")
 })
 
 test("the page reaches no clipboard API it cannot have", () => {

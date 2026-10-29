@@ -193,6 +193,17 @@
     return list.slice().sort((a, b) => (RANK[a.status] - RANK[b.status]) || (b.at - a.at))
   }
 
+  // the page's own side of text off: whatever live.js holds, no prompt,
+  // reply, error or tool argument is shown. A tool step keeps its name only.
+  function redact(list) {
+    return list.map((a) => {
+      const step = String(a.step || "")
+      const name = step.includes(" · ") ? step.split(" · ")[0]
+        : /^[A-Za-z0-9_.-]{1,40}$/.test(step) ? step : ""
+      return { ...a, title: a.project || a.brand?.name || a.agent || "", query: "", reply: "", error: "", step: name }
+    })
+  }
+
   // what the page draws: what the host wrote, and, with sample agents on,
   // theirs beside it — never instead of it
   function merge(real, demo) {
@@ -225,5 +236,5 @@
     ] }
   }
 
-  globalThis.AgentOfficeModel = { TEXT, STATUSES, COLORS, DEFAULTS, HIDE, STUCK_MS, text, fill, hash, brand, state, status, ago, duration, resume, agents, counts, sorted, demo, merge }
+  globalThis.AgentOfficeModel = { TEXT, STATUSES, COLORS, DEFAULTS, HIDE, STUCK_MS, text, fill, hash, brand, state, status, ago, duration, resume, agents, counts, sorted, demo, merge, redact }
 })()
