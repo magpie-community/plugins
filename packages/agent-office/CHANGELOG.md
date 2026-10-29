@@ -15,4 +15,4 @@
 - Real agent icons for the agents magpie knows, English and Chinese UI, and local-only text privacy controls.
 - Furniture and seated-worker compositing, with no workers painted through sofas, cushions, backrests or consoles.
 - The page follows magpie's window background without an outer grey ring.
-- 30 automated tests covering session parsing, package safety, pathfinding, sofa compositing, orientation and idle gestures.
+- 36 automated tests covering session parsing, package safety, pathfinding, sofa compositing, orientation and idle gestures.
