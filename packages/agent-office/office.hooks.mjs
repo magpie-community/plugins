@@ -182,7 +182,9 @@ function readOptions() {
     let list
     try { list = JSON.parse(readFileSync(file, "utf8")) } catch { continue }
     const me = (list.plugins || []).find((p) => matchSpec(p?.spec))
-    if (me) return { ...packageOptions, ...(me.options || {}) }
+    // the config this host runs with decides; a file without our entry is
+    // not a reason to consult another magpie's
+    return me ? { ...packageOptions, ...(me.options || {}) } : null
   }
   return null
 }
