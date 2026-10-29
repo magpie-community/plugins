@@ -60,10 +60,14 @@ for (const name of readdirSync(root)) {
         const cfg = { provider: {} }
         await hooks.config(cfg)
         const p = cfg.provider[auth.provider]
-        const signInOnly = hooks.tool && p?.models && !Object.keys(p.models).length && !p.npm
+        const modelsObject = p?.models !== null && typeof p?.models === "object" && !Array.isArray(p.models)
+        if (p && !modelsObject) problems.push(`${fn.name}: config gives ${auth.provider} invalid models object`)
+        const signInOnly = hooks.tool && modelsObject && !Object.keys(p.models).length && !p.npm
+        // 账号专属模型可在登录后发现，但 SDK、模型对象和 loader 仍为必需。
+        const dynamicModels = hooks.provider?.id === auth.provider && typeof hooks.provider?.models === "function"
         if (p && !signInOnly) {
           needsLoader = true
-          if (!p.npm || !p.models || !Object.keys(p.models).length) problems.push(`${fn.name}: config gives ${auth.provider} no npm or models`)
+          if (!p.npm || (modelsObject && !Object.keys(p.models).length && !dynamicModels)) problems.push(`${fn.name}: config gives ${auth.provider} no npm or models`)
         }
       }
       if ((needsLoader || auth.loader !== undefined) && typeof auth.loader !== "function") problems.push(`${fn.name}: auth.loader`)

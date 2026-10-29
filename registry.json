@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-string-ai-auth", "name": "String AI", "providers": ["string-ai"], "community": true,
+      "summary": { "en": "Unofficial String AI community plugin: account sign-in, API key synchronization, per-model key routing, wallet balance and group quotas.", "zh": "非官方 String AI 社区插件：账号登录、同步可用 API Key、按模型选择密钥，展示钱包余额与分组额度。" } },
     { "package": "@magpie-community/opencode-copilot-auth", "name": "GitHub Copilot", "providers": ["github-copilot"], "community": true,
       "summary": { "en": "GitHub Copilot on GitHub.com or GitHub Enterprise, with premium request or credit usage, remaining allowance and quota reset dates.", "zh": "GitHub Copilot：支持 GitHub.com 与 GitHub Enterprise，显示高级请求或积分用量、剩余额度和重置时间。" } },
     { "package": "@magpie-community/opencode-joycode-auth", "name": "JoyCode", "providers": ["joycode"], "community": true,

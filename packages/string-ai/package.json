@@ -1,0 +1,51 @@
+{
+  "name": "@magpie-community/opencode-string-ai-auth",
+  "version": "1.1.0",
+  "description": "Unofficial String AI provider plugin for OpenCode and magpie: imports account API keys, routes models to their keys, and shows balance and quota.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "string-ai",
+    "stringai",
+    "sub2api",
+    "opencode",
+    "opencode-plugin",
+    "provider",
+    "ai-gateway"
+  ],
+  "author": "Jiao77",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/string-ai"
+  },
+  "magpie": {
+    "icon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAFAAAABQCAYAAACOEfKtAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAUKADAAQAAAABAAAAUAAAAAAx4ExPAAAMyElEQVR4Ae1dCViVVRo+CLKIAoIxCikC4oYaiiyKaSYZEbkApqWGTev0uI+ltlo2PmO5lE6TOVbo+ExPGuq4tNmmkNDi0jLikiLuKAgpAS7wzfsd786Fe///XpEL9/N5Oef/zznff773/856z70K4RSbGHCxqbQdChORF9R0ADoDHTXxAIQ+gDvAcgW4CJQAZ4ATwHHglIuLSyXCmyYNTqCGsN6weJAGkQiDAW9AiVQg8yngV2AXkA383NCENgiBIM0VxsUDaUAS0A1oAdhTaqDsIPAZkAXkgsxqhI4rIM4PeBTYBdQADSX8rFzgMcDP4RhEpX2B6cBh4GbLb6jATKDxE4lKugDjgf1AY5N8VGgiYO+uwz4OjopFAluBxi7bUMFe9rHaTlpQoSeAksbOnEH9LiD+pJ3MV68GleBBItOgYo4WXc02qGdACNXTGDw4HA9eC/D0xJHlO1R+PKY8R9QYoYpAkNcPD1sPhKl5aCMsU4A6jQGJu5XWTTGBII89bgPAy6+mJLxETAOJuUqMUkSgxvO24gFNjTwtZ0xiCkjco71hKbSaQJDHzfULINSSUgdP5+acCBKPWmOHVZNKkOcLZR8ATZ085oxt/AA2WzU6WyQQithLlwOxQHMRtnWZxvZ6bbZIIEo/DkysV0vTTGSb2fZ6hb2rTsEb6IFE3muzyp3rVOS4CWWo+kD0h/l1mVCnB4I83sNbAjRX8pgztn2Jhgu+riV1EoicYwHe/GzuwhwwF2bFbBMG4zzq/gBEmC3V/G4ehsn90ZT5cxkjqcsDH0YuJ3l6qpiLP+sv9bFaHqjxvr3IEqrP5oyBAZ5gR5l6oTkPTEdGJ3m1fYY5GWN624hAeJ8bMlic+5gqaUbXj2s40plsRCDu8gw8WpfqjJgywNzEGN40JZBdlOd/TjHPAHNj1Ix1BMI1+YjFPebLOe8aMJCs4Ure4j5PK3zcoov2wp7hhdJSUVlRKVxdXYWPj49o1YrflcMKc8Sf6vE8WRgSOBjXdmu+P//8i8jasElk53wrCgsLRXn5H8LNzU20CwgQkZE9RXJykkhJSRZ+vjxndyhhjpgrSaCu5nDLDYDNcv78eZo8dQb5+f+JhGhJ7QKDqH/sQEq86x66fcgwCuvSg9zcW5No4UG3RcXQh+s+svmZN0EBf6ShF1TAEzhka0WOHD1KAxKGgDg36tWnHy1b/hYd/u03unz5slRdXV1NxcXF9Olnn9PYcRPIs5UveXj50Evz5lNNTUMenbHVUsmVp45BqAsH/rBF7YULpTRo8J0kXDxo0sOP0blz5yyqWwfvC+4YRq4tW9ELL75sMb+aDKWlZfTjj7vpmx076df/7de9TDW6DMowV2GGBA41SFQVnfvsC9LzHpyQQVeuXLFax87sHOoYEo5m7U3zXnnV6nKWMjJx7NndevSWns4vqY1vO4ofMJgyV//bHh4/1JDADEsVqi+9oOAYtQ8KofCIHnT69On6sppN+/rrHdQhuDO19GhNf1uw0GweJTdPnz5Ddw67W/bBIaFdacLESTRt+l9pxMg08kXf3MLNi6ZMnanoRZt5foYhgXPNZLD61lv/XCG9b/6rC6wuY5rxs8+3U2D7juTu2YYWL3nDNNnq66vXrtG4ByZK8sajNRQWHjcqm5f3PcXEJsiuZukby43SFF7MMSRwkcLCRtm52Xp5+9Hu3XuM7iu92LJ1GwXcEiSbHL8UNfLFl1+ROzw5cXgyVVRU6FRUXtZF6eChQ3Rrp3AKDe9ORUVF+gRlsdcNCXxHWVl9bh5ZE24fStxUiktsP6CVtWGjnAK1at2W3nufz/4okxkzn5ZN9ONPPpUFL5YTLXyX6PGXiLK245isZrCfPec56YUbNm5S9gB97hVMoHYp565jU2EEBIqqyirh7u4uvDy9xJkzZ8T+/fkCo7BCTdezp44eJd5+a5mcdE+bMUt8uG691XoOHjwkcnPzRGBgoLitDy+shMjBGYMdmPKeLxXiP9uEKOSzB5C4ON4TIHH4sKozRazCg/9oCeS4KuHVha+vjwgO7iAefexJ0T82QcTGD5LhU5OngdCzivWOG3e/WPbmElGDl/OXp6aKzVtgeR2C+aOAt4nU9HECc1Cxd99Pkvzqaj5zjhmpZq0FVcIV1jJYqq/hBgjEBqm8tukPvFJ1E2aP5glzRNdIOZ+LG3A7PTg+g27rG4OO3F0273PnzusdX0Fs5b/elX1rYPtbafv2L2uV3Lkzh5JTRsopEA8+9ySPoGGJSeSB+Kb/bpH5q9D3rcW52Zf+QbTjB72KKVgtubh60ubNqg/VyiYsiYdamwaRyVOmy8o8+9yLuo67rKyM4JFyNLRlkswvh8kJujWUsrO/lQzwC5k+42lq7RMgyRsxKo148ODVTDbmlby6GYR+metgTvLyvpNLzO49+1BJCR9WVSVGg8gcVSpQqAQDR2h4N4rqF0uVlZVGaoqwGunUOQLThoE2rQAWvrZYkhjRrRetWbNWrq15udg3Oo6ysjYaTYp5UHvk0Sfki0uCR+7du49q8I+FR+WPkD88oidaize9n7nGqL4KL4ymMRkKC+uyFxw7Rv7tOtDI0em6e9oIe0T8wMGyeV+8eFF7W1U4Z+7zcnrDntg/ZgA99/yLdXpPaWkppY95AB2cO7UNaE/DsJGRNmYcRfePlx7r3caf/v6aTY2ObXhI12/iQvVS7ncQw02BVyHnsBNjKAcOHJRNZcjQu+gaJrhq5OrVq7Rq1XsUE5dAUX1j0Tx9pQcWFdW/1q5C5/f2ipVyByi4Y6icGnUM6ULp9z9AvPKxgxgt5cKgUPVmAvd9vHWVmj6W9ufn06VLl+SkmonjNSgPBmokJ2cXJd87kgQ6e55gMyFTp82U87fBdyQSRniLamfMfIb69oujd9/LxKS5ftItKtNnqLWZYNN2FjeZe1NGSRLZ0B6RUeTjd4vszLkfOnnylP7RVsR25ebRQ5MekYNEC7wA7h727ftJlqyqqqIJDz0sn8V7jPXt+vCSkMv36hMtt9GseLS1WXjrT7+dxW0ZN2zaUL0Ir3t90VIaAs/ojQqn3DdaLuK52TChr8xfQHv27KXy8vJaleTOnT2XPZU9jvso3nDFfBIbruuJBwZDYQ8fnXq/JHHgoDvoq6++MdoYOIUNjWdmPyv7TF5fY1fcsLg94vxlRim6WSS0zsId/dCsyaA0gB4BLxFeXl4CuyJi4WuLsJr4SBSdOS282/iIsNBQEdI5RPi3bStVl5aViRPHT4hj2PYvu3BBeHl7i/j4ODEpY6JISx0lvHFtTjAoiVlPzxXvZ64WLVu2FH2jokRoWGdRgc9e4K2i4MgR0aVrBFY1y0Vi4p3mVNhybxYm4ItZgSGB/JkwnwW02+ci/ACWo0cLxNZtHwt4isg/cEAUF5dIkjnNw8ND+Pv7iy5dwkXCwAHi7uGJIjq6n/wAitMtycZNm8U7K1cJeLfAgCbLBQcFifvwecu0qZNFSEgnSyqUpvMSZgAIxALRmEBu0/uAbpxwo4SNLAGBaMryEexhTGDbtrYdQzx2rFCcPXtWvpCQEHi4/3UPvwF2HIDOviCwinXrPJAv0PyWIpjOcafUycBSkDdTm2q6mbAeCeyiTjHPAHPDHOnElMDvkbJbl+qMmDLA3Mi+T5tgRCBc8xoSVmoTnWEtBlZqONIlGPWBfBf9oA8CHkxC+dopOgYKELN8wBIM8zngZbpizoiWgTc13GivZVjLA/muxgu5rXeVuZx/DoGCGHMEGvWBWp40GV/WXjtDMc8cecyLWQ/kBHghr0i2AM39zOAn4OA+EGh2elcngSjEJHZHkAvYtkxgZY4pZai2uq96sb1gnZctszneTGU2OMivz/Z6PZALwgs5Tyag38LGRTOQNbBxEgjEtlndYpFALgoS+Rjp50Bz+c4wr8iGg7zfEdYrVhHIGkBiGALnV/5N6DQ7jTHJIy/xNo4iwt9i0hyOMJfL4e+xbekaW60yxmoCWRsU46SJSAWaIolsE//sCdtotSgikLXiAXkIUgD2yKYibAvP9XKVGqSYQH6A5i0NR5TJdHT5DgbwgKFqG08VgcwYHngEAa9SMgFHldWoeJLGlptnA0Zo58/f2Uo/SOQfYLx+pgyRRix8ni3SVntvSHlUzAVozD8BOgH1U91t3RDSzClFJflHaKcBjeFHaLkOMwDH2xDhSgOPAE32Z5CtXsqZ8zRr74FA3luMB3gSngTwNpm9m1INdPIPcX8KZAF5GF3N7uEhzW7SIAQa1hZkeuK6N6D9KXj+7q3an4I/ibK/AnwkJRv4BaRVImwwaXACTS0Dofzta/5BxxCgkyYegLAN4AGwXAYuASUAL7mOAyeAm/6fEaAOTrGFgf8D7aneSf5+gBMAAAAASUVORK5CYII=",
+    "options": {
+      "baseURL": "https://www.string.ink/v1",
+      "key": "",
+      "claudeKey": "",
+      "openaiKey": "",
+      "domesticKey": "",
+      "otherKey": ""
+    }
+  },
+  "engines": { "node": ">=20" },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/string-ai#readme",
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  }
+}
