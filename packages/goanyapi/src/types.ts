@@ -2,7 +2,7 @@ export const PROVIDER = "goanyapi";
 export const API_BASE = "https://api.goanyapi.com";
 export const MCP_BASE = "https://mcp.goanyapi.com";
 // Identifies Magpie traffic to GoAnyAPI; keep in step with package.json.
-export const USER_AGENT = "goanyapi-magpie/0.1.1";
+export const USER_AGENT = "goanyapi-magpie/0.1.0";
 
 export interface StoredOAuth {
   type: "oauth";

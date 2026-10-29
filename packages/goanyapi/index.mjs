@@ -1,8 +1,8 @@
 import { join } from "node:path";
 import { Credentials } from "./src/auth.ts";
 import { startOAuth } from "./src/oauth.ts";
-import { loadApiCatalog } from "./src/catalog.ts";
-import { serviceURL } from "./src/types.ts";
+import { cachedCatalog, loadApiCatalog } from "./src/catalog.ts";
+import { serviceURL, USER_AGENT } from "./src/types.ts";
 
 const API = "https://api.goanyapi.com";
 const MCP = "https://mcp.goanyapi.com";
@@ -68,7 +68,7 @@ async function mcpCall(mcpBase, token, method, params, signal) {
       "Content-Type": "application/json",
       "Accept": "application/json, text/event-stream",
       "MCP-Protocol-Version": "2025-11-25",
-      "User-Agent": "goanyapi-magpie/0.1.0"
+      "User-Agent": USER_AGENT
     },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     signal: AbortSignal.any([signal, AbortSignal.timeout(48_000)])
@@ -88,6 +88,13 @@ async function mcpCall(mcpBase, token, method, params, signal) {
   } else message = await resultJson(response, "MCP");
   if (!message || message.jsonrpc !== "2.0") throw new Error("GoAnyAPI MCP response is invalid");
   if (message.error) throw new Error("GoAnyAPI MCP returned an error (" + (message.error.code ?? "unknown") + ")");
+  // a tool that failed answers with a result marked isError, not a JSON-RPC
+  // error: it is the call's failure, with GoAnyAPI's own words
+  if (message.result?.isError === true) {
+    const said = (Array.isArray(message.result.content) ? message.result.content : [])
+      .filter(c => c?.type === "text" && typeof c.text === "string").map(c => c.text).join("\n").trim();
+    throw new Error("GoAnyAPI tool failed" + (said ? ": " + said.slice(0, 500) : ""));
+  }
   return message.result;
 }
 
@@ -95,7 +102,13 @@ export async function GoAnyAPITools(input, options = {}) {
   const apiBase = safeBase(options.baseUrl, API);
   const mcpBase = safeBase(options.mcpBaseUrl, MCP);
   const credentials = new Credentials(input, options);
-  const definitions = await loadApiCatalog(apiBase);
+  // The named tools come from what is kept (the last live read on disk, else
+  // the bundled copy), so loading never waits on the network: magpie loads
+  // its plugins one after another. The live read runs in the background and
+  // is kept for the next load; catalog and call_dynamic read it live.
+  const diskPath = input?.directory ? join(input.directory, "goanyapi-catalog.json") : undefined;
+  const definitions = cachedCatalog(apiBase, diskPath);
+  loadApiCatalog(apiBase, 0, diskPath).catch(() => {});
   const byName = new Map();
   const tool = {};
 
@@ -119,7 +132,7 @@ export async function GoAnyAPITools(input, options = {}) {
     u.search = encodeQuery(validated).toString();
     return resultJson(await fetch(u, {
       method: "GET", redirect: "error", signal,
-      headers: { authorization: "Bearer " + auth.token, accept: "application/json", "User-Agent": "goanyapi-magpie/0.1.0" }
+      headers: { authorization: "Bearer " + auth.token, accept: "application/json", "User-Agent": USER_AGENT }
     }), name);
   }
 
@@ -139,7 +152,7 @@ export async function GoAnyAPITools(input, options = {}) {
     description: "Discover the current GoAnyAPI tool catalog; newly added tools can be invoked with call_dynamic without reinstalling this plugin. Catalog is public and does not consume API credits.",
     args: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
-      const defs = await loadApiCatalog(apiBase, 0);
+      const defs = await loadApiCatalog(apiBase, 0, diskPath);
       return defs.filter(d => nameOf(d)).map(d => ({ name: d.mcpName, description: d.description, inputSchema: d.inputSchema }));
     }
   };
@@ -156,7 +169,7 @@ export async function GoAnyAPITools(input, options = {}) {
     },
     async execute(value, ctx) {
       if (!isObject(value) || typeof value.name !== "string" || !isObject(value.arguments)) throw new Error("Invalid dynamic call arguments");
-      const defs = await loadApiCatalog(apiBase, 0);
+      const defs = await loadApiCatalog(apiBase, 0, diskPath);
       const def = defs.find(x => x.mcpName === value.name && nameOf(x));
       if (!def) throw new Error("Tool is not published in the current GoAnyAPI catalog");
       return invoke(def, value.arguments, ctx);
