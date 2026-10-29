@@ -101,10 +101,10 @@
     { "package": "@magpie-community/opencode-river-auth", "name": "River", "providers": ["river"], "community": true,
       "summary": { "en": "River (river.ai) pay-as-you-go inference with your API key: per-account models from /v1/models, documented reasoning efforts and live prices from River's public pricing endpoint.", "zh": "用你的 API key 接入 River (river.ai) 按量计费推理：按账号从 /v1/models 列出模型，带官方推理档位与实时价格。" } },
     { "package": "@hoptoper/magpie-agent-wispterm", "name": "WispTerm", "kind": "agent",
-      "summary": {"en": "WispTerm through Magpie: select models and restore settings on disconnect. Requires a compatible app build and one-time config directory setup.", "zh": "通过 Magpie 为 WispTerm 选择模型，断开恢复配置。需要兼容的主程序版本，首次使用须初始化接入目录。"} },
+      "summary": {"en": "WispTerm through Magpie: select models and restore settings on disconnect. Initializes its connection directory automatically; requires a compatible app build.", "zh": "通过 Magpie 为 WispTerm 选择模型，断开恢复配置；自动初始化接入目录，需要支持 magpie.json 的主程序版本。"} },
     { "package": "@hoptoper/magpie-agent-citebox", "name": "CiteBox", "kind": "agent",
-      "summary": {"en": "CiteBox through Magpie: select models and restore settings on disconnect. Requires a compatible app build and one-time config directory setup.", "zh": "通过 Magpie 为 CiteBox 选择模型，断开恢复配置。需要兼容的主程序版本，首次使用须初始化接入目录。"} },
+      "summary": {"en": "CiteBox through Magpie: select models and restore settings on disconnect. Initializes its connection directory automatically; requires a compatible app build.", "zh": "通过 Magpie 为 CiteBox 选择模型，断开恢复配置；自动初始化接入目录，需要支持 magpie.json 的主程序版本。"} },
     { "package": "@hoptoper/magpie-agent-wisp-science", "name": "Wisp Science", "kind": "agent",
-      "summary": {"en": "Wisp Science through Magpie: select models and restore settings on disconnect. Requires a compatible app build and one-time config directory setup.", "zh": "通过 Magpie 为 Wisp Science 选择模型，断开恢复配置。需要兼容的主程序版本，首次使用须初始化接入目录。"} }
+      "summary": {"en": "Wisp Science through Magpie: select models and restore settings on disconnect. Initializes its connection directory automatically; requires a compatible app build.", "zh": "通过 Magpie 为 Wisp Science 选择模型，断开恢复配置；自动初始化接入目录，需要支持 magpie.json 的主程序版本。"} }
   ]
 }
