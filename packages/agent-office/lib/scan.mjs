@@ -14,7 +14,12 @@ import { readClaude, readCodex, readDsh, readGemini, readPi } from "./readers.mj
 
 const HEAD = 64 * 1024 // what is kept of a file's start: its header, its first prompt
 const TAIL = 512 * 1024 // what is read of a big file's end
-const ZSTD_MAX = 16 * 1024 * 1024 // a compressed session bigger than this is skipped
+// A dsh session is one compressed file that is rewritten on every step, so
+// decoding all of it each 1.5 s tick is wasteful while it is being written.
+// The cap keeps a pathological file from stalling a tick, and an active one
+// is decoded at most once every ZSTD_EVERY: its last facts stand meanwhile.
+const ZSTD_MAX = 8 * 1024 * 1024
+const ZSTD_EVERY = 4000
 
 function env(k) { return (process.env[k] || "").trim() }
 function home(...p) { return join(env("HOME") || homedir(), ...p) }
@@ -112,7 +117,7 @@ function codexTitles() {
 }
 
 export function createScanner(opts = {}) {
-  const o = { days: 2, max: 40, ...opts }
+  const o = { days: 2, max: 40, zstdMax: ZSTD_MAX, zstdEvery: ZSTD_EVERY, ...opts }
   const files = new Map() // path -> { size, mtime, head, session }
   let srcs = o.sources || sources()
 
@@ -134,9 +139,19 @@ export function createScanner(opts = {}) {
     let titles = null
     for (const f of keep) {
       let c = files.get(f.path)
-      if (!c || c.size !== f.size || c.mtime !== f.mtime) {
-        try { c = readOne(f, c) } catch (e) { continue }
-        files.set(f.path, c)
+      const changed = !c || c.size !== f.size || c.mtime !== f.mtime
+      if (changed) {
+        const zstd = f.path.endsWith(".zstd")
+        // decode an active compressed session at most once every
+        // zstdEvery ms; its file time still says it is at work
+        if (zstd && c?.session && now - (c.decodedAt || 0) < o.zstdEvery) {
+          c.size = f.size
+          c.mtime = f.mtime
+          c.session.touched = Math.max(c.session.touched || 0, f.mtime)
+        } else {
+          try { c = readOne(f, c, now) } catch (e) { continue }
+          files.set(f.path, c)
+        }
       }
       if (!c.session) continue
       if (c.session.agent === "codex") {
@@ -149,13 +164,16 @@ export function createScanner(opts = {}) {
     return out
   }
 
-  function readOne(f, was) {
+  function readOne(f, was, now = Date.now()) {
     const read = readerFor(f.src.kind, f.src.agent)
     const id = idOf(f.src, f.path)
     let text
     if (f.path.endsWith(".zstd")) {
-      if (f.size > ZSTD_MAX) return { size: f.size, mtime: f.mtime, session: was?.session || null }
+      if (f.size > o.zstdMax) return { size: f.size, mtime: f.mtime, session: was?.session || null, decodedAt: now }
       text = zstd(f.path)
+      const s = read(text, id)
+      s.path = f.path
+      return { size: f.size, mtime: f.mtime, session: finish(s, f), decodedAt: now }
     } else if (f.size <= HEAD + TAIL) {
       text = readRange(f.path, 0, f.size)
     } else {

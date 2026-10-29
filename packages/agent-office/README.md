@@ -9,7 +9,7 @@
 
 A live activity dashboard for your coding agents inside [magpie](https://usemagpie.ai): every session becomes a little worker in a voxel space-station office, driven by the agent's own session files rather than guesses from network traffic.
 
-![Agent Office in magpie's window](docs/in-magpie.png)
+![Agent Office in magpie's window](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/in-magpie.png)
 
 ## 快速开始 · Quick start
 
@@ -25,6 +25,8 @@ magpie plugin add @magpie-community/page-agent-office
 - **画中画**：可拖动、可缩放的悬浮小窗，✕ 或 Esc 放回。
 
 支持直接读取会话文件的 Agent：Claude Code、Codex、DeepSeek Harness、Gemini CLI、Qwen Code、Pi、omp、Qoder、WorkBuddy、CodeBuddy。其他 Agent（Cursor、OpenCode、Copilot、Kimi 等）在通过 magpie 的模型工作时也会显示。
+
+**它会读取什么：** 这些 Agent 写在本机的会话文件，包括提问、回复和工具命令，并在插件自己的目录里生成 `page/live.js` 供页面显示。设置里关闭「显示提问和回复」后只保留状态与工具名，不再写入提问、回复或命令参数。
 
 仓库带有 `magpie-plugin` topic，因此也会出现在 **插件 › 发现 › 非官方插件 · GitHub**。插件市场的收录进展见 [magpie-community/plugins](https://github.com/magpie-community/plugins)。
 
@@ -43,7 +45,7 @@ magpie plugin add @magpie-community/page-agent-office
 
 The counts at the top are how many need you (waiting for an approval or an answer, failed, or stuck), how many are working and how many are done. Below, real sessions: DeepSeek Harness running a tool, Codex done on the sofa, the panel of the first opened by a click:
 
-![A real session's panel](docs/panel.png)
+![A real session's panel](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/panel.png)
 
 ## Which way each worker faces
 
@@ -78,7 +80,7 @@ All 60 agents magpie knows are named with their own icons, the files magpie itse
 
 ## Using it
 
-Hovering only highlights a worker. **Click** a worker, its name tag or a row in the list to open its panel — the task, the last thing you asked, the step it's on, how its answer begins, its model and folder, **Copy resume command** — which stays at the side until you close it (✕ or Esc) or click another agent.
+Hovering only highlights a worker. **Click** a worker, its name tag or a row in the list to open its panel — the task, the last thing you asked, the step it's on, how its answer begins, its model and folder, and **Resume command**, shown selected so ⌘C / Ctrl+C copies it — which stays at the side until you close it (✕ or Esc) or click another agent.
 
 ## Privacy
 
@@ -90,12 +92,12 @@ Hovering only highlights a worker. **Click** a worker, its name tag or a row in 
 
 **Picture in picture** (画中画) lifts the office into a small window of the page's own, over the rest of it: drag its bar to move it, drag its corner to reshape it, click ✕ or press Esc to put it back. Only the agents that need you keep their name tags there; hover any of them for the card.
 
-![The office in its own window, in magpie](docs/picture-in-picture.png)
+![The office in its own window, in magpie](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/picture-in-picture.png)
 
 magpie frames a plugin's page with `allow=""` and `sandbox="allow-scripts"`, so the browser's own floating window (a `<video>`'s picture-in-picture, or `documentPictureInPicture`) is refused a page inside it — that was tried first, and it left nothing on screen. A window drawn in the page is not.
 
-![2D](docs/office-2d.png)
-![The list](docs/list.png)
+![2D](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/office-2d.png)
+![The list](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/list.png)
 
 ## Options
 

@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, utimesSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createTracker, outcomeOf, replyOf } from "./lib/track.mjs"
@@ -59,6 +59,19 @@ test("a page magpie serves, with a host part and no reads", () => {
   }
   for (const f of ["index.html", "style.css", "agents.js", "model.js", "icons.js", "scene.js", "app.js", "icon.svg"]) expect(pkg.files).toContain(`page/${f}`)
   for (const f of ["page/icons", "lib", "office.hooks.mjs"]) expect(pkg.files).toContain(f)
+  // screenshots are linked from GitHub: an install needs none of them
+  expect(pkg.files).not.toContain("docs")
+  for (const m of readFileSync(join(dir, "README.md"), "utf8").matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
+    // badges and screenshots are remote: nothing relative ships in the install
+    expect(m[1]).toMatch(/^https:\/\//)
+    expect(m[1]).not.toMatch(/^docs\//)
+  }
+})
+
+test("the page reaches no clipboard API it cannot have", () => {
+  const src = read("app.js")
+  expect(src).not.toContain("navigator.clipboard")
+  expect(src).not.toContain("execCommand")
 })
 
 test("the page reads nothing of magpie's and reaches no network", () => {
@@ -144,6 +157,41 @@ test("the scanner reads each agent's folder, and only what changed", () => {
   writeFileSync(join(cl, "c1.jsonl"), F.claudeDone)
   got = sc.scan(now + 1000)
   expect(got.find((s) => s.agent === "claude").phase).toBe("done")
+})
+
+test("an active dsh session is decompressed only once per interval", () => {
+  const h = tmp()
+  const sd = join(h, "sessions", "--Users-me-site--", "session-z")
+  mkdirSync(sd, { recursive: true })
+  const file = join(sd, "session.v4.jsonl.zstd")
+  const enc = (t) => new TextEncoder().encode(t)
+  writeFileSync(file, Bun.zstdCompressSync(enc(F.dshApproval)))
+  const sc = createScanner({
+    sources: [{ agent: "dsh", kind: "dsh", root: join(h, "sessions"), depth: 2, match: (n) => n.endsWith(".zstd") }],
+    days: 2,
+    zstdEvery: 60000,
+  })
+  const now = Date.now()
+  const orig = Bun.zstdDecompressSync
+  let decodes = 0
+  Bun.zstdDecompressSync = (...a) => { decodes++; return orig(...a) }
+  try {
+    let got = sc.scan(now)
+    expect(decodes).toBe(1)
+    expect(got[0].phase).toBe("approval")
+    // the agent writes on: within the interval the last facts stand
+    writeFileSync(file, Bun.zstdCompressSync(enc(F.dshError)))
+    utimesSync(file, (now + 20000) / 1000, (now + 20000) / 1000)
+    got = sc.scan(now + 1500)
+    expect(decodes).toBe(1)
+    expect(got[0].phase).toBe("approval")
+    expect(got[0].touched).toBeGreaterThan(now)
+    // once the interval has passed it reads the new state
+    utimesSync(file, (now + 30000) / 1000, (now + 30000) / 1000)
+    got = sc.scan(now + 62000)
+    expect(decodes).toBe(2)
+    expect(got[0].phase).toBe("error")
+  } finally { Bun.zstdDecompressSync = orig }
 })
 
 // ---- walking -------------------------------------------------------------

@@ -228,7 +228,7 @@
     P.meta = el("span", "pm")
     P.copy = el("button", "pc")
     P.copy.type = "button"
-    P.copy.addEventListener("click", (e) => { e.stopPropagation(); copyText(P.copy.dataset.value, P.copy) })
+    P.copy.addEventListener("click", (e) => { e.stopPropagation(); showCommand(P.copy.dataset.value, P.copy) })
     foot.append(P.meta, P.copy)
     P.src = el("div", "psrc")
     panel.replaceChildren(head, P.title, P.status, P.query, P.step, P.err, P.reply, foot, P.src)
@@ -259,6 +259,8 @@
     setText(P.meta, [a.model, a.project].filter(Boolean).join(" · "))
     const copy = a.resume || a.session
     P.copy.hidden = !copy
+    const box = P.copy.nextElementSibling
+    if (box?.classList.contains("pcopy")) box.remove()
     if (copy && P.copy.dataset.value !== copy) {
       P.copy.dataset.value = copy
       P.copy.dataset.label = a.resume ? w.copyResume : w.copySession
@@ -287,29 +289,18 @@
     for (const tr of $("rows").children) tr.classList.remove("on")
   }
 
-  async function copyText(s, btn) {
-    let ok = false
-    try { await navigator.clipboard.writeText(s); ok = true } catch {}
-    if (!ok) {
-      const ta = document.createElement("textarea")
-      ta.value = s
-      ta.style.position = "fixed"; ta.style.opacity = "0"
-      document.body.append(ta)
-      ta.select()
-      try { ok = document.execCommand("copy") } catch {}
-      ta.remove()
-    }
-    if (ok) {
-      btn.textContent = t().copied
-      setTimeout(() => { btn.textContent = btn.dataset.label }, 1400)
-    } else {
-      // the frame may not reach the clipboard: let the reader copy it
-      const box = el("input", "pcopy")
-      box.readOnly = true
-      box.value = s
-      btn.after(box)
-      box.select()
-    }
+  // magpie frames a page with allow="", so a page cannot reach the
+  // clipboard. Show the command selected instead: ⌘C / Ctrl+C copies it
+  // without a step that can only fail.
+  function showCommand(s, btn) {
+    const box = el("input", "pcopy")
+    box.readOnly = true
+    box.value = s
+    box.setAttribute("aria-label", btn.dataset.label || "")
+    btn.hidden = true
+    btn.after(box)
+    box.focus()
+    box.select()
   }
 
   // ---- the list --------------------------------------------------------

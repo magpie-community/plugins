@@ -29,6 +29,12 @@ const LIVE = join(PAGE, "live.js")
 const PREFIX = "globalThis.AgentOfficeLive = "
 const EVERY = 1500
 
+// the package's own name, so plugins.json's spec is found however it was
+// written: @magpie-community/page-agent-office, QingJ01/magpie-agent-office,
+// a folder, or the short name alone
+let packageName = ""
+try { packageName = JSON.parse(readFileSync(join(here, "package.json"), "utf8")).name || "" } catch {}
+
 let tracker = null
 let scanner = null
 let timer = null
@@ -49,9 +55,12 @@ function track(opts) {
 function fromFiles(s, text) {
   return {
     key: s.key, source: "files", agent: s.agent, session: s.id, cwd: s.cwd, project: s.project,
-    title: s.title || (text ? s.query : ""), query: text ? s.query : "", model: s.model,
+    // with text off the title falls back to the folder and the step to the
+    // tool's name: a prompt and a command line can both carry secrets
+    title: text ? (s.title || s.project || "") : (s.project || ""),
+    query: text ? s.query : "", model: s.model,
     started: s.started, updated: Math.max(s.updated || 0, s.touched || 0), touched: s.touched,
-    phase: s.phase || "done", step: s.step, reply: text ? s.reply : "", error: text ? s.error : "",
+    phase: s.phase || "done", step: text ? s.step : (s.stepName || ""), reply: text ? s.reply : "", error: text ? s.error : "",
     pendingSince: s.pending?.[0]?.at || 0, turns: s.turns,
   }
 }
@@ -138,7 +147,13 @@ export async function onResponse(reply, ctx) {
 try {
   const cfg = process.env.XDG_CONFIG_HOME || join(process.env.HOME || "", ".config")
   const list = JSON.parse(readFileSync(join(cfg, "magpie", "plugins.json"), "utf8"))
-  const me = (list.plugins || []).find((p) => /magpie-agent-office/.test(p.spec || ""))
+  const short = packageName.replace(/^@[^/]+\//, "")
+  const names = new Set([packageName, short, "page-agent-office", "magpie-agent-office", "agent-office"].filter(Boolean))
+  const me = (list.plugins || []).find((p) => {
+    const spec = String(p.spec || "")
+    const base = spec.split(/[\/#]/).filter(Boolean).pop() || ""
+    return names.has(spec) || names.has(base)
+  })
   if (me?.options) options = me.options
 } catch {}
 if (!process.env.MAGPIE_AGENT_OFFICE_PAGE) start()

@@ -87,7 +87,7 @@ function base(p) {
 
 function fresh(agent, id) {
   return { agent, id, cwd: "", project: "", title: "", query: "", model: "", started: 0, updated: 0,
-    phase: "", step: "", reply: "", pending: [], error: "", turns: 0 }
+    phase: "", step: "", stepName: "", reply: "", pending: [], error: "", turns: 0 }
 }
 
 function touch(s, t) {
@@ -114,6 +114,7 @@ function called(s, id, name, args, t) {
   const line = toolLine(name, args)
   s.pending.push({ id: String(id || line), name: String(name), line, at: t })
   s.step = line
+  s.stepName = String(name)
   s.phase = ASK_TOOLS.test(name) ? "ask" : "tool"
   touch(s, t)
 }
@@ -198,7 +199,8 @@ export function readCodex(text, id = "") {
           break
         case "exec_approval_request": case "apply_patch_approval_request": case "request_permissions":
           s.phase = "approval"
-          s.step = p.command ? toolLine("shell", { command: p.command }) : p.type === "apply_patch_approval_request" ? "apply_patch" : s.step
+          s.stepName = p.command ? "shell" : p.type === "apply_patch_approval_request" ? "apply_patch" : "request_permissions"
+          s.step = p.command ? toolLine("shell", { command: p.command }) : s.stepName
           touch(s, t)
           break
         case "request_user_input": s.phase = "ask"; touch(s, t); break
@@ -303,6 +305,7 @@ export function readGemini(text, agent = "gemini", id = "") {
       s.pending = []
       for (const c of calls) {
         const st = String(c.status || "").toLowerCase()
+        if (c.name) s.stepName = String(c.name)
         if (st === "awaiting_approval") { s.phase = "approval"; s.step = toolLine(c.name, c.args) }
         else if (st === "scheduled" || st === "executing" || st === "validating") { s.pending.push({ id: c.id, name: c.name, line: toolLine(c.name, c.args), at: t }); s.step = toolLine(c.name, c.args) }
         else if (c.name) s.step = toolLine(c.name, c.args)
