@@ -68,6 +68,21 @@ Refreshing:
 - Only one refresh runs at a time. A request that reads the sign-in before
   magpie saved a renewal uses the renewed pair, and a renewal handed a pair
   a request already spent gives what that request got.
+- A job token's end is what Qoder says: `expire_time` or `expires_at` (a
+  date, or an epoch in seconds or milliseconds), then `expires_in`
+  (milliseconds), then a day.
+- A chat Qoder answers 401 or 403 with no other code ("Login expired") is
+  sent again once: with the pair saved since, when another request, magpie
+  or another process renewed it meanwhile, else after one refresh, under the
+  same lock. A token renewed less than 5 minutes ago and refused again isn't
+  renewed again; the refusal is the answer.
+- A model Qoder serves that the account's listing has off or leaves out is
+  asked for the same way: the job token is renewed once (or the pair saved
+  since is used) and the list read again, before the request is answered
+  `unknown or disabled model`. On a job token Qoder no longer honours in
+  full, the listing can have only the free models on (#484). The same
+  5-minute rule holds, and an id Qoder has never served is said unknown at
+  once, with no renewal.
 - The device token, which reads usage, has no end on record: it is rotated
   when Qoder refuses it. On a [Qoder CN](#qoder-cn) device-token account it
   is the chat token too, and is renewed as above.
@@ -286,6 +301,25 @@ paths, client id and protocol are the public ones:
 
 The hosts and reply shapes come from a real VPC account's report
 (yetone/magpie#312). This plugin has not been tried with a VPC account.
+
+## The card's name
+
+An account signed in with a phone is shown by that phone — masked, `138****8000` — not by
+its `accountId`, which is a uuid. Qoder CN's user info answers the number as `security_mobile`
+(measured `13800138000`), so that is what the card takes.
+
+QwenWork's phone accounts answer only the last four digits, as `name`, beside a synthetic
+`phone_<uuid>@phone.local` email (measured): the card shows `****8000` and never that email.
+An email sign-in keeps its email.
+
+`accountId` stays the account's identity — what magpie keys the user's own name for
+it, its proxy, model picks, caps and a gateway key's account list by — so it never
+changes: it is what a sign-in and every renewal give back. The card's name is usage's
+`user`, a field magpie shows and never keys by.
+
+A sign-in reads the user info, and a renewal reads it again (outside the token lock),
+so an account stored by an earlier version shows the phone on the card at its next
+renewal. A failed read changes nothing and never costs a sign-in.
 
 ## QwenWork (千问办公)
 

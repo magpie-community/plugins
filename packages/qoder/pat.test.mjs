@@ -91,7 +91,9 @@ test("qoder-cn: a PAT account keeps the name its browser sign-in takes", async (
 
   // no suffix: magpie's host replaces an account on a new sign-in when both
   // the accountId and the uid match, so a re-signed PAT must name the same
-  // account the browser sign-in does, not a row of its own beside it
+  // account the browser sign-in does, not a row of its own beside it.
+  // This account has neither a phone nor an email: both paths keep naming it
+  // by its uid, as they did before the phone label (review #487, 5).
   expect(res.accountId).toBe("same-user")
   expect(res.uid).toBe("same-user")
   expect(res.email).toBe("")
@@ -323,4 +325,46 @@ test("qoder: a refused PAT re-exchange ends the sign-in", async () => {
   const res = await l.fetch(l.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "efficient" }) })
   expect(res.status).toBe(401)
   expect(res.headers.get("X-Magpie-Sign-In")).toBe("expired")
+})
+
+test("qoder-cn: a non-phone account keeps one name through sign-in, renewal and sign-in again (review #487, A)", async () => {
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url))
+    if (u.pathname === "/api/v1/jobToken/exchange") return json({ token: "jt-1", refresh_token: "jrt-1", expires_in: 86400000 })
+    if (u.pathname === "/api/v1/jobToken/refresh") return json({ token: "jt-2", refresh_token: "jrt-2", expires_in: 86400000 })
+    if (u.pathname === "/api/v1/userinfo") return json({ id: "same-user", name: "Someone" })
+    return new Response("", { status: 500 })
+  }
+  const hooks = await QoderCNAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const pat = hooks.auth.methods.find((m) => m.label?.includes("PAT"))
+  const first = await pat.authorize({ pat: "pt-x" }).callback()
+  expect(first.accountId).toBe("same-user")
+  // a renewal must not rename it: no phone, so the name the sign-in gave stays
+  const renewed = await hooks.auth.refresh({ ...first, type: "oauth", expires: Date.now() + 1_000 })
+  expect(renewed.accountId).toBeUndefined()
+  // No phone and no email: a renewal renames nothing and gives no cardName
+  expect(renewed.cardName).toBeUndefined()
+  const again = await pat.authorize({ pat: "pt-x" }).callback()
+  expect(again.accountId).toBe("same-user")
+})
+
+test("qoder-cn: an email account with a phone bound keeps its email, here and on renewal (review #487, B)", async () => {
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url))
+    if (u.pathname === "/api/v1/jobToken/exchange") return json({ token: "jt-e", refresh_token: "jrt-e", expires_in: 86400000 })
+    if (u.pathname === "/api/v1/jobToken/refresh") return json({ token: "jt-e2", refresh_token: "jrt-e2", expires_in: 86400000 })
+    if (u.pathname === "/api/v1/userinfo")
+      return json({ id: "u-e", email: "bob@example.com", security_mobile: "13800138000" })
+    return new Response("", { status: 500 })
+  }
+  const hooks = await QoderCNAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const pat = hooks.auth.methods.find((m) => m.label?.includes("PAT"))
+  const first = await pat.authorize({ pat: "pt-e" }).callback()
+  expect(first.accountId).toBe("bob@example.com")
+  expect(first.cardName).toBe("bob@example.com")
+  const renewed = await hooks.auth.refresh({ ...first, type: "oauth", expires: Date.now() + 1_000 })
+  expect(renewed.accountId).toBeUndefined()
+  // The card's name stays the email too: a renewal must not swap it for the phone
+  expect(renewed.cardName).toBe("bob@example.com")
+  expect(renewed.phoneLabel).toBe("138****8000")
 })

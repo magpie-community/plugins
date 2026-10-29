@@ -1,0 +1,72 @@
+{
+  "name": "@magpie-community/page-agent-office",
+  "version": "0.1.0",
+  "description": "我的 Agent 在干嘛：读取本机 Claude Code、Codex、DeepSeek Harness、Gemini CLI、Qwen Code、Pi、omp、Qoder、WorkBuddy、CodeBuddy 的会话文件（提问、回复与工具命令，可用 text:false 关闭文本），把每个会话画成太空站办公室里的小人（3D/2D）或列表。Live agent activity dashboard for magpie that reads local agent session files.",
+  "type": "module",
+  "files": [
+    "page/index.html",
+    "page/style.css",
+    "page/agents.js",
+    "page/model.js",
+    "page/icons.js",
+    "page/scene.js",
+    "page/app.js",
+    "page/icon.svg",
+    "page/icons",
+    "lib",
+    "office.hooks.mjs",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "magpie-page",
+    "agents",
+    "status",
+    "office",
+    "dashboard",
+    "opencode"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/agent-office"
+  },
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/agent-office#readme",
+  "engines": {
+    "magpie": ">=0.1.1318"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "page": {
+      "title": "Agent Office",
+      "titles": {
+        "zh": "Agent 办公室",
+        "zh-TW": "Agent 辦公室",
+        "ja": "エージェントオフィス",
+        "de": "Agent-Büro"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg"
+    },
+    "hooks": "./office.hooks.mjs",
+    "permissions": [],
+    "options": {
+      "mode": "office",
+      "dim": "3d",
+      "demo": false,
+      "showDone": true,
+      "hideAfter": "6h",
+      "text": true,
+      "remote": false
+    }
+  }
+}

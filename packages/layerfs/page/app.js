@@ -9,13 +9,14 @@
 // counters count up along the same easing magpie itself uses
 // (--ease, cubic-bezier(.2,.8,.2,1)).
 //
-// The data is the trajectory bundled with the package (trajectory.js,
-// a labeled sample from the benchmark run). A magpie page cannot read
-// plugin-private data: the bridge's reads are a fixed host list
-// (usage:summary, providers:list), and the sandbox allows no fetch.
-// The tools therefore never write a live file into the plugin's
-// install folder; the live trajectory stays available through the
-// tools (history, status) and backend.trajectory().
+// The data is the trajectory the host service embedded in this page
+// (<script type="application/json" id="data">): the service reads it
+// from the store on every request, so a reload is always current. A
+// page opened without the service — the bundled sample defining
+// globalThis.LayerfsTrajectory — still works from that global. A
+// magpie page cannot read plugin-private data: the bridge's reads are
+// a fixed host list (usage:summary, providers:list), and the sandbox
+// allows no fetch, so the service, not a file, is the channel.
 (async () => {
   const V = globalThis.LayerfsView;
   const $ = (id) => document.getElementById(id);
@@ -25,7 +26,12 @@
   const PULSE_MS = 650;
 
   let theme = { lang: "en", dark: matchMedia("(prefers-color-scheme: dark)").matches };
-  try { theme = (await magpie.ready) || theme; } catch { /* standalone preview */ }
+  // The service hands the language over as LayerfsTheme (the served
+  // page is outside magpie, so magpie.ready is not there to ask); a
+  // page still inside magpie asks magpie.ready as before.
+  const preset = globalThis.LayerfsTheme
+  if (preset && typeof preset.lang === "string" && preset.lang) theme.lang = preset.lang
+  else try { theme = (await magpie.ready) || theme; } catch { /* standalone preview */ }
   const lang = theme.lang || "en";
   const t = V.text(lang);
   document.querySelectorAll("[data-t]").forEach((e) => { e.textContent = t[e.dataset.t]; });
@@ -43,14 +49,51 @@
     (V.agentOf(branch) || {}).color ||
     (lane === 0 ? mainColor() : series()[(lane - 1) % series().length]);
 
-  const data = globalThis.LayerfsTrajectory;
+  // The embedded recording first; the bundled sample's global second.
+  const embedded = document.getElementById("data");
+  let data = null;
+  if (embedded) {
+    try { data = JSON.parse(embedded.textContent); } catch { /* a broken embed shows the empty state */ }
+  }
+  if (!data) data = globalThis.LayerfsTrajectory;
   const projects = (data && data.projects || []).filter((p) => p.branches.some((b) => b.commits.length));
   if (!projects.length) {
-    $("stage").hidden = true; $("controls").hidden = true; $("stats").hidden = true;
+    $("stage").hidden = true; $("controls").hidden = true; $("stats").hidden = true; $("agents").hidden = true;
     $("empty").hidden = false; $("empty").textContent = t.noData;
     return;
   }
   $("stamp").textContent = data.sample ? t.sample : `${t.recorded} ${String(data.generatedAt || "").replace("T", " ").slice(0, 19)} · ${data.backend || ""}`;
+
+  // Agent activity: every recorded tool call, newest last, each naming
+  // the calling agent, the tool, the project, the branch and when. The
+  // events arrive in the service's embedded trajectory; with none
+  // recorded the table gives way to an empty note.
+  {
+    const events = (data.events || []).slice(-40);
+    const section = $("agents"), rows = $("agentRows"), emptyMsg = $("agentsEmpty");
+    section.hidden = false;
+    if (!events.length) {
+      $("agentTable").hidden = true;
+      emptyMsg.hidden = false;
+      emptyMsg.textContent = t.agentsEmpty;
+    } else {
+      $("agentTable").hidden = false;
+      emptyMsg.hidden = true;
+      for (const e of events) {
+        const tr = document.createElement("tr");
+        const cells = [
+          e.agent || "—", e.kind || "—", e.project || "—", e.branch || "—",
+          String(e.t || "").replace("T", " ").slice(0, 19),
+        ];
+        for (const c of cells) {
+          const td = document.createElement("td");
+          td.textContent = c;
+          tr.append(td);
+        }
+        rows.append(tr);
+      }
+    }
+  }
 
   // the project picker: a magpie-style menu (a button and a listbox),
   // not a native <select> — magpie's own UI never uses one
@@ -459,5 +502,37 @@
   $("statsLine").textContent =
     `${t.stats} · ${t.dedupe} ${totals.dedupRatio ?? "–"}× · ${t.stored} ${V.bytes(totals.storedBytes)} / ${V.bytes(totals.logicalBytes)}`;
 
-  show(projects[0].name);
+  // A reload restores the view the old document left in location.hash
+  // (see view.js): the project, the scroll, and the replay position —
+  // paused, not replayed. Without a hash this is a plain first look
+  // and the replay runs.
+  const restored = V.resolveRestoredView(projects, location.hash, RM);
+  show(restored ? restored.project : projects[0].name, !!restored);
+  if (restored) {
+    playhead = (restored.settled || RM) ? view.stepsList.length : restored.playhead;
+    render();
+    if (restored.scrollY) window.scrollTo(0, restored.scrollY);
+  }
+
+  // Liveness: the page reloads itself every few seconds so the picture
+  // stays current — but never in the middle of a look. While the
+  // replay runs or the project menu stands open the tick waits and
+  // tries again; otherwise it writes the view into the hash first, so
+  // the fresh document restores exactly this look instead of starting
+  // over at the first project, the top, and the replay's beginning.
+  // A reload-only-when-changed tick is not possible in the frame: the
+  // sandbox allows no fetch, so the page cannot learn whether the
+  // trajectory moved without reloading — and the service must not
+  // answer cross-origin reads. The hash is the whole channel.
+  function armReload() { setTimeout(reloadTick, 5000); }
+  function reloadTick() {
+    if (playing || !projList.hidden) { armReload(); return; }
+    location.hash = V.formatViewHash({
+      project: currentProject,
+      scrollY: Math.round(window.scrollY || 0),
+      playhead,
+    });
+    location.reload();
+  }
+  armReload();
 })();

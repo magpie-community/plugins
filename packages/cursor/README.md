@@ -240,6 +240,11 @@ go without the list for 5 minutes instead of each waiting for it again.
 ## Usage
 
 magpie shows Cursor Models, Other Models and Total for the billing period.
+A plan of Cursor's merged billing (`GetPlanInfo`'s `isMerged`, the newer
+plans) has no Other Models pool: its included usage is one allowance every
+model draws on, as the dashboard's "Weekly usage limit" shows it. magpie
+shows that as one window, Weekly (Monthly on a monthly plan), for every
+model.
 Accounts with a Grok Bot allowance also show its usage and reset time;
 active trials are labelled separately. A spent Bot allowance doesn't stop
 Cursor requests.
@@ -264,6 +269,21 @@ and unlimited or still has room, the Enterprise window is informational:
 reaching its included allowance doesn't count the account as used up.
 On-demand also shows the team's spend when known, with its limit when it
 has one. A reached on-demand limit counts the account as used up.
+
+### Included usage only (optional)
+
+In magpie, open the Cursor provider, turn on **Included usage only** under
+**Plugin options**, and save (or set `"pluginOptions": {"cursor":
+{"included_only": true}}` in magpie's settings.json). It is off by default,
+applies to every Cursor account, and takes effect at each account's next
+usage reading.
+
+When on, Cursor Models and Other Models (a merged plan's Weekly, an
+Enterprise account's allowance) are what keep an account in routing: once one is used up, magpie moves its
+models to the next account until the period resets, even when on-demand
+could still pay for them. On-demand and Total are still shown but never
+keep an account in routing. Use it when on-demand is a shared or paid pool
+you don't want spent. When off, on-demand works as described above.
 
 Sign in to the Cursor account linked in Grok Bot. A linked SuperGrok
 subscription grants Bot access without a paid Cursor plan; see

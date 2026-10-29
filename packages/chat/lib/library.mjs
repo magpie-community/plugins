@@ -123,7 +123,7 @@ export async function composeSystem(settings, dir = configDir()) {
 
 // 供应商图标：magpie 的 providers.json 里每个供应商有 icon，
 // 可能是内置图标名（deepseek-color）、file: 本地文件，或 http 地址。
-// 这里统一变成服务端能直接给的 URL（/api/icon/<provider>），取不到就不给。
+// 这里统一变成服务端能直接给的 URL（api/icon/<provider>，相对对话页，经 magpie web 转发时也对），取不到就不给。
 export async function providerIcons(dir = configDir()) {
   const out = new Map();
   const providers = await readJson(join(dir, "providers.json"), null);
@@ -133,7 +133,7 @@ export async function providerIcons(dir = configDir()) {
     const id = p.id || p.name;
     const icon = p.icon || p.logo || "";
     if (!id || typeof icon !== "string" || !icon) continue;
-    out.set(String(id), "/api/icon/" + encodeURIComponent(String(id)));
+    out.set(String(id), "api/icon/" + encodeURIComponent(String(id)));
   }
   return out;
 }

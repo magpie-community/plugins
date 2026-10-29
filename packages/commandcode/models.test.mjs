@@ -10,6 +10,13 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { CommandCodePlugin, _internal } from "./index.mjs"
 
+// talking leaves out the decision model (Jev, jev.test.mjs), which every
+// plan's list has beside the models it talks to
+const talking = (ms) => {
+  delete ms[_internal.JEV]
+  return ms
+}
+
 const real = globalThis.fetch
 afterEach(() => {
   globalThis.fetch = real
@@ -34,7 +41,7 @@ async function models(reply) {
     return new Response("", { status: 404 })
   }
   const hooks = await CommandCodePlugin()
-  const ms = await hooks.provider.models({ models: {} }, { auth: go })
+  const ms = talking(await hooks.provider.models({ models: {} }, { auth: go }))
   return { ms, asked }
 }
 
@@ -98,7 +105,7 @@ test("a model says it takes pictures when known, and nothing when not", async ()
     return new Response("", { status: 404 })
   }
   const hooks = await CommandCodePlugin()
-  const ms = await hooks.provider.models({ models: {} }, { auth: pro })
+  const ms = talking(await hooks.provider.models({ models: {} }, { auth: pro }))
   expect(Object.keys(ms).length).toBe(86)
   const said = (id) => ms[id].capabilities.input.image
   // Claude, the default list's and the CLI's table's

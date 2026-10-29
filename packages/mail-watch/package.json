@@ -1,0 +1,63 @@
+{
+  "name": "@magpie-community/hooks-mail-watch",
+  "version": "0.1.0",
+  "description": "Email alerts from the gateway: provider errors and exhausted quotas, with your own recipients, templates and watch list",
+  "type": "module",
+  "files": [
+    "mail-watch.hooks.js",
+    "smtp.js",
+    "watch.js",
+    "digest.js",
+    "template.js",
+    "paths.js",
+    "README.md",
+    "icon.svg"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-hooks",
+    "mail",
+    "smtp",
+    "alerts",
+    "quota",
+    "errors"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/mail-watch"
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPCEtLSBtYWlsLXdhdGNoOiBtYWlsIGFsZXJ0cyBmcm9tIHRoZSBnYXRld2F5LiBJbmRpZ28gdGlsZSwgd2hpdGUKICAgICAgIGVudmVsb3BlLCBhbWJlciBhbGVydCBiYWRnZSB3aXRoIGEgY2h1bmt5IGV4Y2xhbWF0aW9uIG1hcmsuCiAgICAgICBGbGF0IHNoYXBlcyBvbmx5OyB0aGUgYmFkZ2Ugc3RheXMgcmVhZGFibGUgZG93biB0byAxNiBweC4gLS0+CiAgPHJlY3QgeD0iMiIgeT0iMiIgd2lkdGg9IjYwIiBoZWlnaHQ9IjYwIiByeD0iMTQiIGZpbGw9IiM0ZjQ2ZTUiLz4KICA8cmVjdCB4PSIxMiIgeT0iMjAiIHdpZHRoPSI0MCIgaGVpZ2h0PSIyNiIgcng9IjQiIGZpbGw9IiNmZmZmZmYiLz4KICA8cGF0aCBkPSJNMTQgMjMgTDMyIDM3IEw1MCAyMyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGY0NmU1IiBzdHJva2Utd2lkdGg9IjMuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPGNpcmNsZSBjeD0iNDkiIGN5PSIxNyIgcj0iMTAiIGZpbGw9IiNmNTllMGIiLz4KICA8cmVjdCB4PSI0Ny41IiB5PSIxMS41IiB3aWR0aD0iMyIgaGVpZ2h0PSI3IiByeD0iMS41IiBmaWxsPSIjZmZmZmZmIi8+CiAgPGNpcmNsZSBjeD0iNDkiIGN5PSIyMS41IiByPSIxLjgiIGZpbGw9IiNmZmZmZmYiLz4KPC9zdmc+Cg==",
+    "hooks": "./mail-watch.hooks.js",
+    "options": {
+      "smtp": {
+        "host": "smtp.example.com",
+        "port": 465,
+        "secure": true,
+        "user": "me@example.com",
+        "pass": "the app password",
+        "from": "magpie@example.com"
+      },
+      "to": [
+        "me@example.com"
+      ],
+      "watch": {
+        "errors": true,
+        "quotaExhausted": true,
+        "quotaLow": false,
+        "quotaLowPct": 90,
+        "providers": []
+      },
+      "cooldownMinutes": {
+        "error": 10,
+        "quota": 240
+      },
+      "template": {
+        "subject": "[magpie] {{kind}} · {{provider}}{{window}}",
+        "body": "What: {{kind}}\nProvider: {{provider}}{{account}}\n{{modelLine}}{{windowLine}}When: {{time}}\n\n{{detail}}"
+      }
+    }
+  }
+}

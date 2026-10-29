@@ -301,3 +301,43 @@ test("the config declares qoder-cn on its gateway, with the tiers Qoder CN's CLI
   expect(cfg.provider.qoder.api).toBe("https://api3.qoder.sh")
   expect(Object.keys(cfg.provider.qoder.models)).toContain("qmodel")
 })
+
+test("qoder-cn: a device sign-in names the card by the phone (review #487, E)", async () => {
+  toServer()
+  let polls = 0
+  route = (at) => {
+    if (at === OPENAPI + "/api/v1/deviceToken/poll")
+      return ++polls < 2 ? new Response("", { status: 404 }) : json({ token: "dt-p", refresh_token: "drt-p", user_id: "u-p" })
+    if (at === OPENAPI + "/api/v1/me/jobToken") return json({ token: "jt-p", refresh_token: "jrt-p", expires_in: 3_600_000 })
+    if (at === OPENAPI + "/api/v1/userinfo")
+      return json({ id: "u-p", name: "dsh13800138000", security_mobile: "13800138000" })
+    return new Response("", { status: 404 })
+  }
+  const hooks = await QoderCNAuthPlugin({ client: store().client })
+  const flow = await hooks.auth.methods[0].authorize()
+  const cred = await flow.callback()
+  // accountId stays main's computation (Qoder CN's uuid); the card's name is cardName
+  expect(cred.accountId).toBe("u-p")
+  expect(cred.phoneLabel).toBe("138****8000")
+  expect(cred.cardName).toBe("138****8000")
+})
+
+test("qoder-cn: a device sign-in with an email and a phone shows the email (review #487, round 5)", async () => {
+  toServer()
+  let polls = 0
+  route = (at) => {
+    if (at === OPENAPI + "/api/v1/deviceToken/poll")
+      return ++polls < 2 ? new Response("", { status: 404 }) : json({ token: "dt-e", refresh_token: "drt-e", user_id: "u-e" })
+    if (at === OPENAPI + "/api/v1/me/jobToken") return json({ token: "jt-e", refresh_token: "jrt-e", expires_in: 3_600_000 })
+    if (at === OPENAPI + "/api/v1/userinfo")
+      return json({ id: "u-e", email: "bob@example.com", name: "Bob", security_mobile: "13800138000" })
+    return new Response("", { status: 404 })
+  }
+  const hooks = await QoderCNAuthPlugin({ client: store().client })
+  const flow = await hooks.auth.methods[0].authorize()
+  const cred = await flow.callback()
+  // main names a device-only account by its email; the phone is the card's
+  expect(cred.accountId).toBe("bob@example.com")
+  expect(cred.cardName).toBe("bob@example.com")
+  expect(cred.phoneLabel).toBe("138****8000")
+})

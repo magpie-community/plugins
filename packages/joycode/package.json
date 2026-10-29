@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-joycode-auth",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "OpenCode provider plugin: JoyCode (JD Cloud JoyCoder IDE credits)",
   "type": "module",
   "main": "./index.mjs",

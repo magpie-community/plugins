@@ -4,7 +4,7 @@
 import "./nonet.mjs"
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createCipheriv, createHash, randomBytes } from "node:crypto"
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, sep } from "node:path"
 import { TraeCNAuthPlugin, _internal } from "./index.mjs"
@@ -242,4 +242,64 @@ test("this machine's OS as the client names it", () => {
   expect(w.os).toMatch(/^Windows /)
   expect(_internal.thisMachine("darwin")).toEqual({ type: "mac", os: expect.stringMatching(/^macOS \d/) })
   expect(_internal.thisMachine("linux").type).toBe("linux")
+})
+
+// plugins#436 (moxuanchen, Windows 11, TRAE CN 3.4.4, plugin 0.2.24): two
+// accounts, A and B. Both of that machine's profiles, %APPDATA%\Trae CN and
+// %APPDATA%\TRAE SOLO CN, were signed in as A, with the same device. A
+// checked in (100 credits); B got 9074, and the reporter had to run
+// clientDevice by hand to learn that B's claim had gone on magpie's own
+// device. The message says which device a refused claim went on, and why.
+async function refused(uid, answer = { code: 9074, message: "当前参与用户太多，请稍后再试" }) {
+  f?.close()
+  f = fakeTrae()
+  f.route("POST /trae/api/v2/ug/checkin_credits/status", () => json({ code: 0, enable: true, checked_in: false }))
+  f.route("POST /trae/api/v2/ug/checkin_credits/claim", () => json(answer))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  return hooks.auth.checkin(async () => signedIn({ uid }))
+}
+
+function reporterProfiles() {
+  const cn = join(dir, "Trae CN", "storage.json")
+  const solo = join(dir, "TRAE SOLO CN", "storage.json")
+  for (const p of [cn, solo]) mkdirSync(join(p, ".."), { recursive: true })
+  _internal.ownClient.paths = () => [cn, solo]
+  clientFile(cn, "uid-a", { dcs: [DC] })
+  clientFile(solo, "uid-a", { dcs: [DC] })
+}
+
+test("B's 9074 says it went on magpie's own device, since both profiles here are A's (#436)", async () => {
+  reporterProfiles()
+  const out = await refused("uid-b")
+  expect(out).toEqual({
+    outcome: "ineligible",
+    message: "当前参与用户太多，请稍后再试 (9074) — Trae CN did not take this check-in for this account's device (sent on magpie's own device for this account: 2 Trae CN client profiles are on this machine, none signed in as this account)",
+  })
+  // it names neither uid nor either device
+  expect(out.message).not.toContain("uid-a")
+  expect(out.message).not.toContain(DC)
+  expect(f.seen.at(-1).headers.get("x-device-id")).toBe(_internal.ugDevice(signedIn({ uid: "uid-b" })))
+})
+
+test("A's refusal says it went on the client's device; one account in two profiles is no conflict (#436)", async () => {
+  reporterProfiles()
+  const out = await refused("uid-a", { code: 9095, message: "this device has checked in today" })
+  expect(out).toEqual({ outcome: "ineligible", message: "this device has checked in today (sent on this machine's Trae CN client's device, signed in as this account)" })
+  expect(f.seen.at(-1).headers.get("x-device-id")).toBe(DC)
+})
+
+test("a client device another account's profile also has is named as shared (#436)", async () => {
+  const other = join(dir, "other.json")
+  _internal.ownClient.paths = () => [file, other]
+  clientFile(file, "uid-a", { dcs: [DC] })
+  clientFile(other, "uid-b", { dcs: [DC] })
+  const out = await refused("uid-b", { code: 9095, message: "this device has checked in today" })
+  expect(out.message).toContain("another profile here, signed in as another account, has the same device")
+  expect(f.seen.at(-1).headers.get("x-device-id")).toBe(DC)
+})
+
+test("one profile, signed in as someone else, is counted in the singular (#436)", async () => {
+  client("uid-a")
+  const out = await refused("uid-b")
+  expect(out.message).toContain("(sent on magpie's own device for this account: 1 Trae CN client profile is on this machine, none signed in as this account)")
 })

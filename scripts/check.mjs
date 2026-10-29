@@ -15,9 +15,10 @@ for (const name of readdirSync(root)) {
   const pj = join(dir, "package.json")
   if (!existsSync(pj)) continue
   const pkg = JSON.parse(readFileSync(pj, "utf8"))
-  // gateway middleware and routings, agents and pages have no OpenCode
-  // plugin; their own tests check them
-  if (pkg.magpie?.middleware || pkg.magpie?.gateway || pkg.magpie?.agent) continue
+  // gateway middleware and routings, agents, pages and asynchronous hooks
+  // (magpie.hooks, Bun's own import) have no OpenCode plugin; their own
+  // tests check them
+  if (pkg.magpie?.middleware || pkg.magpie?.gateway || pkg.magpie?.agent || pkg.magpie?.hooks) continue
   if (pkg.magpie?.page && !pkg.main && !pkg.exports) continue
   const problems = []
   try {

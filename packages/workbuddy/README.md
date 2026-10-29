@@ -126,8 +126,8 @@ Each chat carries WorkBuddy's headers:
 - `Authorization`, `X-User-Id`, `X-Domain`, `X-Product: SaaS`, `X-IDE-Type: WorkBuddy`;
 - the desktop CLI's `User-Agent`, `WorkBuddy/<app> <appName>/<app> CLI/<cli>`:
   `WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0` on the China build and
-  `WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0` on WorkBuddy AI, each
-  build's current app on 2026-10-28; `X-IDE-Version` is the app's version.
+  `WorkBuddy/5.9.3 workbuddy-ai/5.9.3 CLI/2.165.0` on WorkBuddy AI, each
+  build's current app on 2026-10-29; `X-IDE-Version` is the app's version.
   A User-Agent not starting `WorkBuddy/<version>` is answered error 10085;
 - the client's, which WorkBuddy's usage list shows as the client that asked
   (使用端): `X-Agent-Purpose: conversation`, `X-IDE-Name: WorkBuddy`,
@@ -137,14 +137,17 @@ Each chat carries WorkBuddy's headers:
 - the conversation's ids: `X-Conversation-ID`, `X-Conversation-Request-ID`,
   `X-Conversation-Message-ID`, `X-Request-ID`. WorkBuddy's backend counts a
   user send as one request by `X-Conversation-Request-ID`, so every step of
-  one send — a tool result sent back, a retry, another account answering —
-  carries the same one, and the user's next message carries another. The
+  one send — a tool result sent back, a retry — carries the same one, and
+  the user's next message carries another. Both ids are one account's own,
+  as WorkBuddy's client is signed in as one: a conversation sent as another
+  account (another of a group, or a sign-in saved since) carries that
+  account's ids, never the same ones under two `X-User-Id`s. The
   conversation's is the session magpie (or OpenCode) names the request by,
   else the chat's first user message; nothing is made up when neither names
   one, a made-up conversation of the request's own being what splits one
   conversation into many in the usage detail;
 - what the CLI adds to a model request alone: `X-Agent-Type: main` on both
-  builds, `X-Agent-Runtime: local-agent` on the China build (new in 5.9),
+  builds, `X-Agent-Runtime: local-agent` (new in 5.9),
   `Accept: application/json`, and the `X-Stainless-*` headers of the OpenAI
   SDK it sends through (openai 6.25.0 on Electron 37's Node v22.21.1, a
   1200s timeout, no retries).
@@ -285,6 +288,79 @@ credits are read from the enterprise meter
 (`/billing/meter/get-enterprise-user-usage`), the one WorkBuddy's own usage
 page reads: the cycle's credits used of its limit, and when the cycle
 resets (magpie #1904).
+
+## The free model's daily window (WorkBuddy AI)
+
+The credits above are not the only limit. `deepseek-v4.1-flash` is served at
+`x0.00` and costs the plan nothing, yet WorkBuddy AI refuses it long before
+160 credits are touched:
+
+```
+429 usage exceeds frequency limit, but don't worry, your usage will reset at
+2026-10-20 19:47:41 UTC+8, alternatively, you can switch to the other models
+to continue using it.
+```
+
+That is a token allowance of its own — per account, per 24 hours, about 1e8
+tokens, counted as prompt + cache-read + completion. Nothing the vendor
+answers with reports it, so the plugin rebuilds the current window from
+magpie's `usage.jsonl` and gives it to the card as **Free model tokens**
+beside **Credits**. `quota alert` and `magpie quota` show it too; before,
+the card read 0% on an account that was already refused.
+
+What is measured, and what is easy to read wrongly:
+
+- **`cache_read` counts.** Prompt and completion alone are 20× smaller and
+  never approach the cap, so a window read that way looks empty while full.
+- **The window is fixed, not sliding.** It runs 24 hours from the first
+  request answered after the previous window ended, not from the reset
+  instant; a gap between the two means the new window starts later.
+- **`deepseek-v4.1-flash-sg` shares the window.** It is the paid id of the
+  same model (`ModelRateLimitCap` in the product config), not a second
+  allowance — switching to it continues the same window, at `x0.03`.
+- **1e8 is an estimate within 0.2%.** The largest value seen to still be
+  answered is 100,183,315, and the next request is refused, so it cannot be
+  probed higher.
+- **A refusal is exact, and the sum is not.** The ledger is this machine's
+  only: one window was refused at 92,792,962 because the rest of that
+  account's spending happened on another machine, which read as 93%. So a
+  429 whose named reset is still ahead makes the window full — `used: 100`,
+  `resetsAt` the reset the vendor named — whatever the rows add up to. The
+  sum carries the window only until the first refusal.
+- **The card names both ids**, `deepseek-v4.1-flash` and
+  `deepseek-v4.1-flash-sg`: magpie matches a window's models by exact id
+  (only an `@size` suffix folds into the bare id), so one alone would leave
+  the other unrestricted.
+- **The ledger is read in magpie's own folder** (`appdir.Config()`: the
+  portable data folder, `$XDG_CONFIG_HOME/magpie` when that is set (an
+  absolute path, as `appdir.rooted` has it), or `~/.config/magpie`), from its
+  end backwards — a heavy ledger runs to hundreds of MB.
+  - The window is a chain, so where it now began depends on every window
+    before it: read a slice of the ledger that starts mid-chain and every
+    window after it is shifted (4% on an account two hours from its cap, or
+    100% on one still served). The read therefore goes back until it reaches
+    an edge this account's own rows spell out — a refusal whose reset can be
+    read, or a gap of a day between two of its answered rows — plus a day
+    below that, and with neither it reads to the file's start, where there is
+    no earlier window to be shifted by.
+  - Nothing bounds that by age, so two things keep a heavy ledger cheap: a
+    line's time is read before the line is decoded, so a line under the edge
+    (of any provider or account) ends the read at once; and a read past 24h
+    with no answered free-model row of this account stops, since the window
+    has lapsed and nothing would be reported. Both bounds leave out a line
+    a client reported (`"source":"reported"`, #1874): magpie appends those
+    dated where the client's call happened, so a backfilled row says nothing
+    about where the file has got to.
+  - `providerAccount` is the account's label. Two accounts sharing a label
+    get its slot added (`pluginLabels`), the label no longer matches what
+    their rows were written under, and the card reports no free window.
+- **The offset comes from the refusal's words** (`UTC+8`, `GMT-5`,
+  `UTC+05:30`). A reset whose offset cannot be read is no edge at all,
+  rather than +08:00 guessed.
+
+A window that has lapsed reports nothing rather than 0%: nothing is
+exhausted, and the next request opens a fresh one. The China build is not
+covered; its limit has not been measured.
 
 ## When free models work but a credit model does not
 

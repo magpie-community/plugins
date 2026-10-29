@@ -19,24 +19,34 @@ test("the package declares the page magpie shows", () => {
   expect(p.file).toBe("page/index.html")
   expect(p.icon).toBe("page/icon.svg")
   expect(pkg.files).toContain("page")
-  for (const f of ["index.html", "app.js", "view.js", "style.css", "icon.svg"])
+  expect(pkg.files).toContain("page-service.mjs")
+  for (const f of ["index.html", "boot.js", "trajectory.html", "app.js", "view.js", "style.css", "icon.svg"])
     expect(existsSync(join(page, f))).toBe(true)
   const html = read("index.html")
   expect(html).toContain("_magpie/bridge.js") // the host serves the bridge beside every page
-  expect(html).toContain('src="trajectory.js"')
-  expect(html).not.toContain("trajectory-live.js") // no runtime live file: the tools never write into the install folder
-  // the page sandbox forbids inline scripts and any fetch; the only
-  // data script is the bundled sample trajectory shipped with the page
+  // the installed page only jumps: it loads the bridge and the boot
+  // script, and nothing else — no data scripts, no inline scripts
+  expect(html).toContain('src="boot.js"')
+  expect(html).not.toContain('src="trajectory.js"')
+  expect(html).not.toContain('src="trajectory-live.js"')
   expect(html).not.toMatch(/<script>(?!\s*src)/)
+  // the shell the service composes carries the UI and two injection
+  // markers, and no scripts of its own
+  const shell = read("trajectory.html")
+  expect(shell).toContain('id="graph"')
+  expect(shell).toContain("<!-- layerfs:style -->")
+  expect(shell).toContain("<!-- layerfs:scripts -->")
+  expect(shell).not.toMatch(/<script/)
 })
 
 test("item 13: the page reads only what package.json declares — nothing — and reaches no network", () => {
   // the ecosystem's convention, as the usage page's test states it: the
   // set of magpie.read names in the page's scripts equals the declared
   // permissions, and no script has a way out of the frame. This page
-  // declares no permissions: its data is the bundled sample, because
-  // the bridge's reads are a fixed host list with no plugin-private
-  // entry (see the README's page section).
+  // declares no permissions: the installed page only navigates away
+  // (boot.js, via location.replace — the one network action a page
+  // like this has), and the served page reads its data from the DOM,
+  // never by fetch (see the README's page section).
   expect(pkg.magpie.permissions).toBeUndefined()
   const reads = new Set()
   for (const f of readdirSync(page).filter((f) => f.endsWith(".js"))) {
@@ -66,7 +76,7 @@ test("item 14: every locale the package declares page titles for has a full stri
 })
 
 test("item 16: the detail card marks its branch with a dot, and the picker is a menu, not a select", () => {
-  const html = read("index.html")
+  const html = read("trajectory.html")
   expect(html).not.toContain("<select")
   expect(html).toContain('id="projBtn"')
   expect(html).toContain('id="projList"')
@@ -164,7 +174,7 @@ test("branches name their agent by token, in that agent's colour", () => {
 })
 
 test("the page's stat tiles and speed seg are in the markup, magpie-style", () => {
-  const html = read("index.html")
+  const html = read("trajectory.html")
   expect(html).toContain('class="tiles"')
   for (const id of ["nCommits", "tBranches", "vCopies", "vStored", "tDedup", "vSaved"])
     expect(html).toContain(`id="${id}"`)
@@ -343,4 +353,56 @@ test("a checkpoint's detail line carries its delta and byte split", () => {
   expect(d.delta).toContain("+1 added")
   expect(d.delta).toContain("~2 modified")
   expect(V.detail(project.branches[1].commits[1], "zh").delta).toContain("新增")
+})
+
+test("a reload restores the project, scroll and replay position from location.hash", () => {
+  // the codec round-trips, including a project name that needs escaping
+  const hash = V.formatViewHash({ project: "my site", scrollY: 99, playhead: 2.5 })
+  expect(hash).toBe("#p=my%20site&y=99&t=2.5")
+  expect(V.parseViewHash(hash)).toEqual({ project: "my site", scrollY: 99, playhead: 2.5 })
+  // nothing usable in the hash: a plain first look, replay from the start
+  expect(V.parseViewHash("")).toBeNull()
+  expect(V.parseViewHash("#y=99")).toBeNull()
+  expect(V.parseViewHash("#p=demo&y=abc&t=xyz")).toEqual({ project: "demo", scrollY: 0, playhead: 0 })
+
+  const second = { name: "api", branches: [{ name: "main", commits: [C("x1", null, "2026-01-01T00:01:00.000Z")] }] }
+  const projects = [project, second]
+  // no hash, or a hash naming a project that is gone: no restore
+  expect(V.resolveRestoredView(projects, "", false)).toBeNull()
+  expect(V.resolveRestoredView(projects, "#p=ghost&y=10&t=1", false)).toBeNull()
+  // the second project, mid-replay, scrolled: restored paused, not replayed
+  const mid = V.resolveRestoredView(projects, "#p=api&y=99&t=0.5", false)
+  expect(mid).toEqual({ project: "api", scrollY: 99, playhead: 0.5, settled: false })
+  // a finished replay settles on the final state instead of replaying
+  const done = V.resolveRestoredView(projects, "#p=demo&y=0&t=5", false)
+  expect(done).toEqual({ project: "demo", scrollY: 0, playhead: 5, settled: true })
+  // data shrank since the hash was written: the playhead clamps, settled
+  const shrunk = V.resolveRestoredView(projects, "#p=api&y=0&t=9", false)
+  expect(shrunk).toEqual({ project: "api", scrollY: 0, playhead: 1, settled: true })
+  // reduced motion settles whatever the hash says
+  const rm = V.resolveRestoredView(projects, "#p=api&y=40&t=0.5", true)
+  expect(rm).toEqual({ project: "api", scrollY: 40, playhead: 1, settled: true })
+
+  // and the page wires it in: the fresh document reads the hash before
+  // its first show, and the liveness tick writes the hash before it
+  // reloads — skipping the reload while the replay runs or the menu
+  // stands open — instead of the old blind 5 s timer.
+  const app = read("app.js")
+  expect(app).toContain("resolveRestoredView")
+  expect(app).toContain("formatViewHash")
+  expect(app).toContain("location.hash")
+  expect(app).toContain("location.reload()")
+  expect(app).toContain("playing || !projList.hidden")
+  expect(app).toContain("scrollTo")
+  // the assignment itself, not just the names: keeping the format call
+  // but dropping the write to location.hash must fail this test
+  expect(app).toMatch(/location\.hash = V\.formatViewHash/)
+  // byte counts are whole again: the mid-count fractions are gone
+  expect(V.bytes(3.164870684975676)).toBe("3 B")
+  expect(V.bytes(1500)).toBe("1.5 KB")
+})
+
+test("the service no longer appends its own blind reload timer", () => {
+  const svc = readFileSync(join(dir, "page-service.mjs"), "utf8")
+  expect(svc).not.toContain("setTimeout(() => location.reload(), 5000)")
 })

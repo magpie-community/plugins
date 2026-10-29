@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -12,6 +12,14 @@ function fakeJwt(claims) {
 
 let server = null
 let tempDir = null
+
+// No test may reach the real network: a test that starts no server points at a
+// port nothing listens on.
+// (accountPhoneOf reads user_info; pointing at the real site made the suite
+// depend on the network — review #486, point 1.)
+beforeEach(() => {
+  process.env.RACCOON_MAIN_SITE_URL = "http://127.0.0.1:9"
+})
 
 afterEach(() => {
   server?.stop(true)
@@ -172,6 +180,29 @@ test("desktop sign-in is read-only and never writes or refreshes auth.json", asy
   expect(await Bun.file(authFile).text()).toBe(originalContent)
 })
 
+test("a desktop seat is named by its phone, not by the app's `name`", async () => {
+  tempDir = mkdtempSync(join(tmpdir(), "raccoon-test-"))
+  process.env.RACCOON_BOX_AGENT_CONFIG_DIR = tempDir
+  writeFileSync(join(tempDir, "auth.json"), JSON.stringify({
+    access_token: fakeJwt({ iss: "74350b", name: "raccoon-pu-01a1365c", exp: Math.floor(Date.now() / 1000) + 3600 }),
+    refresh_token: "D1",
+  }))
+  startServer({
+    "/api/web/auth/v1/user_info": () => Response.json({ code: 0, data: { phone: "13800138000", name: "RaccoonBenjamin" } }),
+  })
+
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const method = hooks.auth.methods.find((m) => m.label?.includes("desktop") || m.label?.includes("桌面"))
+  const flow = await method.authorize()
+  const res = await flow.callback()
+  expect(res.type).toBe("success")
+  // accountId stays main's computation (the app's name); the phone is a record field
+  expect(res.accountId).toBe("raccoon-pu-01a1365c")
+  expect(res.phone).toBe("138****8000")
+  expect(res.cardName).toBe("138****8000")
+  expect(res.uid).toBeTruthy()
+})
+
 // Where Raccoon desktop 1.1.3 keeps auth.json, read from its app.asar:
 // clientProfile.ts puts the box-agent home at <profile>/agent, the profile at
 // app.getPath("appData")/office-raccoon on macOS and at ~/.office-raccoon on
@@ -254,6 +285,33 @@ test("usage does not invent 300/9000 floors when bills do not cover balance", as
   }))
   expect(u.balance).toBe("500 credits")
   expect(u.windows).toEqual([])
+})
+
+test("the name usage puts on the card is the phone, not the JWT's name (review #486)", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "RaccoonBenjamin", exp: Math.floor(Date.now() / 1000) + 3600 })
+  startServer({
+    "GET /api/web/points/v1/balance": () =>
+      Response.json({
+        code: 0,
+        data: { available_points: 500, daily_points: 0, reward_points: 500, monthly_points: 0, topup_points: 0 },
+      }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () => Response.json({ code: 0, data: { items: [] } }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  // magpie shows usage's user as the card's name; the JWT's name is on the
+  // record too, and the phone must win
+  const u = await hooks.auth.usage(async () => ({
+    type: "oauth",
+    access: validTok,
+    refresh: "rt1",
+    expires: Date.now() + 3600_000,
+    accountId: "Raccoon-7615755",
+    phone: "138****8000",
+    cardName: "138****8000",
+    name: "RaccoonBenjamin",
+  }))
+  expect(u.user).toBe("138****8000")
 })
 
 test("usage reports Credits window when unexpired bills account for total granted", async () => {
@@ -624,6 +682,28 @@ test("a desktop seat asks to sign in again once its own token expires", async ()
   const u = await hooks.auth.usage(async () => ({ ...seatA, type: "oauth", access: aTok, expires: Date.now() - 60_000 }))
   expect(u.signIn).toBe("expired")
   expect(u.error).toContain("切换为其他账号")
+})
+
+test("a uid-less desktop seat takes the app's newer token for the same account (review #486, 2)", async () => {
+  tempDir = mkdtempSync(join(tmpdir(), "raccoon-test-"))
+  process.env.RACCOON_BOX_AGENT_CONFIG_DIR = tempDir
+  const authFile = join(tempDir, "auth.json")
+  const noUid = fakeJwt({ name: "NoUid", exp: Math.floor(Date.now() / 1000) + 3600 })
+  writeFileSync(authFile, JSON.stringify({ access_token: noUid, refresh_token: "D1" }))
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const seat = await (await hooks.auth.methods[1].authorize()).callback()
+  expect(seat.uid).toBe("")
+  // the same account (same name); the app now holds a newer token
+  const newer = fakeJwt({ name: "NoUid", exp: Math.floor(Date.now() / 1000) + 7200 })
+  writeFileSync(authFile, JSON.stringify({ access_token: newer, refresh_token: "D2" }))
+  startServer({
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: 321 } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () => Response.json({ code: 0, data: { items: [] } }),
+  })
+  const u = await hooks.auth.usage(async () => ({ ...seat, type: "oauth" }))
+  expect(u.signIn).toBe("kept")
+  expect(u.balance).toBe("321 credits")
 })
 
 test("a desktop seat never takes the app's account when its own uid is unknown", async () => {
@@ -1015,4 +1095,47 @@ test("X-Client-Platform header derives desktop-mac on darwin and desktop-windows
   } finally {
     if (origDesc) Object.defineProperty(process, "platform", origDesc)
   }
+})
+
+test("a 0.1.4-style record keeps its accountId on renewal and shows the phone (review #486, 3)", async () => {
+  tempDir = mkdtempSync(join(tmpdir(), "raccoon-test-"))
+  process.env.RACCOON_BOX_AGENT_CONFIG_DIR = tempDir
+  startServer({
+    "POST /api/web/auth/v1/refresh": () =>
+      Response.json({ code: 0, data: { access_token: "new-tok", refresh_token: "rt-new", expires_in: 86400 } }),
+    "/api/web/auth/v1/user_info": () => Response.json({ code: 0, data: { phone: "13800138000", name: "RaccoonBenjamin" } }),
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: 100 } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () => Response.json({ code: 0, data: { items: [] } }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const old = {
+    type: "oauth",
+    access: "old-tok",
+    refresh: "rt-old",
+    expires: Date.now() + 1_000,
+    accountId: "Raccoon-pu-abc123",
+    uid: "7615755",
+  }
+  const renewed = await hooks.auth.refresh(old)
+  // the identity does not move: a renewal gives no accountId
+  expect(renewed.accountId).toBeUndefined()
+  expect(renewed.cardName).toBe("138****8000")
+  const u = await hooks.auth.usage(async () => ({ ...old, ...renewed, access: "new-tok", expires: Date.now() + 86_400_000 }))
+  expect(u.user).toBe("138****8000")
+})
+
+test("a desktop seat's refresh gives nothing, even when user_info answers a phone (review #486, 2)", async () => {
+  startServer({
+    "/api/web/auth/v1/user_info": () => Response.json({ code: 0, data: { phone: "13800138000" } }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const got = await hooks.auth.refresh({
+    type: "oauth",
+    source: "desktop",
+    access: "tok-desktop",
+    refresh: "D1",
+    expires: Date.now() + 1_000,
+  })
+  expect(got).toBeUndefined()
 })

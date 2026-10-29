@@ -2302,11 +2302,12 @@ function userStatus(key, server) {
 // built-in Devin account showed none of this. The day and the week don't
 // count the models Devin says are free (notModels): with them used up,
 // SWE-2 still answers, and magpie sends it to the account.
+const SIGNED_OUT = "Devin's sign-in has expired — sign in again"
 async function usage(key, server, onStatus) {
   const res = await userStatus(key, server)
   const text = await res.text()
   if (res.status === 401 || failure(res.status, text).status === 401)
-    return { error: "Devin's sign-in has expired — sign in again", windows: [] }
+    return { error: SIGNED_OUT, windows: [] }
   if (!res.ok) return { error: failure(res.status, text).message, windows: [] }
   const u = JSON.parse(text || "{}")?.userStatus ?? {}
   await onStatus?.(u)
@@ -2440,7 +2441,11 @@ export async function DevinAuthPlugin({ client } = {}) {
             } catch {}
           }
         }
-        return { ...(await usage(key, server, syncOrg)), signIn: "kept" }
+        // a key Devin refuses marks the account signed out, so magpie
+        // passes over it and its row offers Sign in again; a clean read
+        // takes the mark off. Any other failure keeps it.
+        const u = await usage(key, server, syncOrg)
+        return { ...u, signIn: u.error === SIGNED_OUT ? "expired" : u.error ? "kept" : "renewed" }
       },
     },
     async config(config) {

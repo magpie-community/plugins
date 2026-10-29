@@ -1,0 +1,50 @@
+{
+  "name": "@magpie-community/gateway-powercontext",
+  "version": "0.2.0",
+  "description": "PowerContext context recall and asynchronous conversation capture for clients behind Magpie",
+  "type": "module",
+  "files": [
+    "powercontext.hooks.mjs",
+    "conversation.mjs",
+    "README.md",
+    "page"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-gateway",
+    "powercontext",
+    "memory",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/powercontext"
+  },
+  "magpie": {
+    "icon": "https://raw.githubusercontent.com/oceanbase/powercontext/master/src/powercontext/server/dashboard/static/brand/favicon-color.svg",
+    "hooks": "./powercontext.hooks.mjs",
+    "options": {
+      "authorizationEnv": "POWERCONTEXT_AUTHORIZATION",
+      "gatewayTimeoutMs": 5000,
+      "requestTimeoutMs": 1000,
+      "recallBackoffMs": 30000,
+      "maxBytes": 8000,
+      "capture": false,
+      "captureRemote": false,
+      "recallRemote": false
+    },
+    "page": {
+      "title": "PowerContext",
+      "file": "page/settings.html",
+      "icon": "page/powercontext-favicon-color.svg"
+    }
+  },
+  "scripts": {
+    "check": "bun test ./*.test.mjs"
+  },
+  "engines": {
+    "bun": ">=1.4.2"
+  }
+}

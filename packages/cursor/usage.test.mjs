@@ -471,3 +471,62 @@ test("Bot is among the first three windows ahead of an On-demand with no limit, 
   const capped = (await botOnDemand({ ...spent, spendLimitUsage: { individualUsed: 500, limitType: "user" } }, { hardLimit: 20 })).u
   expect(capped.windows.map((w) => w.name)).toEqual(["Cursor Models", "Other Models", "On-demand", "Grok Bot", "Total"])
 })
+
+// majiang_ai on X: a plan of Cursor's merged (xAI) billing has no Other
+// Models pool. Its included usage is one allowance for every model, which
+// the dashboard's usage page shows as one meter, "Weekly usage limit", the
+// period's totalPercentUsed. The replies are a real Premium account's
+// (2026-10-29), its autoBucketModels cut short.
+const mergedPlan = { planInfo: { planName: "Premium", price: "", billingCycleEnd: "1794547141340", includedUsagePeriod: "INCLUDED_USAGE_PERIOD_WEEKLY", includedUsageResetsAt: "1793683212396" }, isMerged: true }
+const mergedPeriod = {
+  billingCycleStart: "1793078412396",
+  billingCycleEnd: "1793683212396",
+  planUsage: { remainingBonus: false, autoPercentUsed: 21.9, apiPercentUsed: 0, totalPercentUsed: 21.9 },
+  spendLimitUsage: { limitType: "user" },
+  enabled: true,
+  autoBucketModels: ["default", "composer-2.5", "grok-4.7"],
+}
+const weekEnd = new Date(1793683212396).toISOString()
+
+test("a merged plan's included usage is one Weekly window for every model, with no Other Models", async () => {
+  const { u } = await run(fresh(), (url) => (url === PLAN ? Response.json(mergedPlan) : url === HARD ? Response.json({ noUsageBasedAllowed: true }) : Response.json(mergedPeriod)))
+  expect(u.plan).toBe("Premium")
+  expect(u.windows).toEqual([{ name: "Weekly", used: 21.9, resetsAt: weekEnd, span: 604800 }])
+  for (const m of [...firstParty, ...others]) expect([m, counts(u.windows[0], m)]).toEqual([m, true])
+})
+
+test("a merged plan whose period is a month says Monthly, and a numeric enum is read too", async () => {
+  const { u } = await run(fresh(), (url) =>
+    url === PLAN ? Response.json({ ...mergedPlan, planInfo: { ...mergedPlan.planInfo, includedUsagePeriod: 1 } }) : url === HARD ? Response.json({ noUsageBasedAllowed: true }) : Response.json(mergedPeriod),
+  )
+  expect(u.windows).toEqual([{ name: "Monthly", used: 21.9, resetsAt: weekEnd }])
+})
+
+test("a merged plan that may spend on-demand keeps its Weekly aside and shows the On-demand", async () => {
+  const { u } = await run(fresh(), (url) => (url === PLAN ? Response.json(mergedPlan) : url === HARD ? Response.json({ hardLimit: 50 }) : Response.json({ ...mergedPeriod, spendLimitUsage: { limitType: "user", individualUsed: 1000 } })))
+  expect(u.windows).toEqual([
+    { name: "Weekly", used: 21.9, resetsAt: weekEnd, span: 604800, aside: true },
+    { name: "On-demand", used: 20, display: "$10.00 / $50.00", resetsAt: weekEnd },
+  ])
+})
+
+test("a merged plan's Grok Bot goes after its Weekly", async () => {
+  const a = botAuth()
+  const { u } = await run(a, (url) => (url === PLAN ? Response.json(mergedPlan) : url === BOT ? Response.json(paidBot) : url === HARD ? Response.json({ noUsageBasedAllowed: true }) : Response.json(mergedPeriod)))
+  expect(u.windows.map((w) => w.name)).toEqual(["Weekly", "Grok Bot"])
+})
+
+test("an unmerged plan, or one GetPlanInfo can't say, keeps the two pools", async () => {
+  for (const plan of [{ planInfo: { planName: "Ultra", includedUsagePeriod: "INCLUDED_USAGE_PERIOD_MONTHLY" }, isMerged: false }, new Response("no", { status: 500 })]) {
+    const { u } = await run(fresh(), (url) => (url === PLAN ? (plan instanceof Response ? plan : Response.json(plan)) : Response.json(mergedPeriod)))
+    expect(u.windows.map((w) => w.name)).toEqual(["Cursor Models", "Other Models", "Total"])
+  }
+})
+
+test("a merged plan read once is kept for the hour, not asked again", async () => {
+  const a = fresh()
+  await run(a, (url) => (url === PLAN ? Response.json(mergedPlan) : Response.json(mergedPeriod)))
+  const { u, seen } = await run(a, (url) => (url === PLAN ? new Response("no", { status: 500 }) : Response.json(mergedPeriod)))
+  expect(seen.map((r) => r.url)).not.toContain(PLAN)
+  expect(u.windows.map((w) => w.name)).toEqual(["Weekly"])
+})

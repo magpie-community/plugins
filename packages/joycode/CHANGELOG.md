@@ -1,5 +1,9 @@
 # 更新记录
 
+## 0.2.1
+
+- 修复 Codex 压缩时重放 `store: false` 的 `rs_…` reasoning id 被 JoyCode Responses 后端拒绝并连续失败的问题。转发前移除 reasoning item 的持久化 id，保留其摘要和加密内容；`store: true` 及其他 item 的 id 不变。
+
 ## 0.2.0
 
 - 按 JoyCode 模型目录中的 `extJson.adapterType` 自动选择 Chat Completions、Responses 或 Anthropic Messages，使 `/models` 返回的 GPT、Claude 及其他模型都能使用正确的 SDK 和网关。

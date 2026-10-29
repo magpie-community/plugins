@@ -109,3 +109,36 @@ test("droid 0.241.1's Gemini models are offered on Factory's Gemini route, as dr
   }
   expect(got["gemini-4-argon"].variants.high).toEqual({ thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } })
 })
+
+const DROID_251 = readFileSync(new URL("./testdata/droid-0.251.0-deepseek-1017.txt", import.meta.url), "utf8")
+
+test("DeepSeek V4.1 Flash 1017 reaches both model hooks as droid 0.251.0 has it", async () => {
+  const id = "deepseek-v4.1-flash-1017"
+  const text = DROID_251.split("\n").find((l) => l.startsWith(`"${id}":{id:"${id}",`))
+  expect(text).toContain('apiModelProvider:"generic-chat-completion-api"')
+  expect(text).toContain('apiProviders:["fireworks","baseten","databricks"]')
+  expect(text).toContain("images:!0")
+  expect(DROID_251).toContain("function c(o,t){return R({maxInputTokens:o-t,maxOutputTokens:t})}")
+  const [, context, output] = text.match(/contextLimits:c\((\d+),(\d+)\)/)
+  const efforts = JSON.parse(text.match(/reasoningEffort:\{supported:(\[[^\]]*\])/)[1]).map((e) => e === "off" ? "none" : e)
+  const variants = Object.fromEntries(efforts.map((e) => [e, { reasoningEffort: e }]))
+  const hooks = await FactoryAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const config = (await models())[id]
+  const provider = (await hooks.provider.models({ id: "factory" }, {}))[id]
+  for (const m of [config, provider]) {
+    expect(m).toBeDefined()
+    expect(m.id).toBe(id)
+    expect(m.name).toBe(text.match(/,name:"([^"]+)"/)[1])
+    expect(m.limit).toEqual({ context: Number(context), output: Number(output) })
+    expect(m.variants).toEqual(variants)
+    expect(m.rate).toBe(Number(text.match(/cost:\{tokenMultiplier:([\d.]+)/)[1]))
+    expect(m.rateWas).toBe(0)
+  }
+  expect(config.provider).toEqual({ npm: "@ai-sdk/openai-compatible", api: "https://api.factory.ai/api/llm/o/v1" })
+  expect(config.attachment).toBe(true)
+  expect(config.modalities.input).toEqual(["text", "image"])
+  expect(provider.providerID).toBe("factory")
+  expect(provider.api).toEqual({ id, url: config.provider.api, npm: config.provider.npm })
+  expect(provider.capabilities.attachment).toBe(true)
+  expect(provider.capabilities.input.image).toBe(true)
+})

@@ -30,7 +30,10 @@ its own account. Otherwise the account is named "Devin".
 The token is kept where OpenCode keeps sign-ins (`auth.json`; in magpie,
 `plugin-auth.json`) as `{ "type": "api", "key", "metadata": { "email", "plan", "orgId", "teamId" } }`.
 Devin doesn't expire it on a schedule, so there is nothing to refresh;
-when it is refused, requests fail with a 401 saying to sign in again.
+when it is refused, requests fail with a 401 saying to sign in again,
+and the usage read marks the account signed out (`signIn: "expired"`), so
+magpie passes over it and offers Sign in again on its row. A clean read
+takes the mark off.
 
 ## Requests
 

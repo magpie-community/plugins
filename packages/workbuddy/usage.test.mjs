@@ -537,3 +537,26 @@ test("a model list that can't be read leaves the credits counting every model", 
   expect(w.used).toBe(100)
   expect(w.notModels).toBeUndefined()
 })
+
+// #299: the free model's window, read from magpie's usage ledger, reaches
+// the WorkBuddy AI card beside Credits; the China build's card has none
+test("a WorkBuddy AI card carries the free model's window from the ledger", async () => {
+  const dir = join(home, ".config", "magpie")
+  mkdirSync(dir, { recursive: true })
+  const ledger = join(dir, "usage.jsonl")
+  const t = new Date(Date.now() - 3600_000).toISOString()
+  writeFileSync(ledger, JSON.stringify({ provider: "workbuddy-ai", providerAccount: "me@example.com", model: "deepseek-v4.1-flash", t, status: 200, in: 30_000_000, cache_read: 0, out: 0 }) + "\n")
+  try {
+    serve({ "/billing/meter/get-user-resource-summary": () =>
+      ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: "160", CycleUsedCapacity: "0" }] }) })
+    const auth = { type: "oauth", access: "ai-access", expires: later(), uid: "ai3", accountId: "me@example.com", domain: "www.codebuddy.ai" }
+    const out = await usageOf(WorkBuddyAIAuthPlugin, auth)
+    expect(out.windows.map((w) => w.name)).toEqual(["Credits", "Free model tokens"])
+    expect(out.windows[1]).toMatchObject({ amount: 30_000_000, limit: 1e8, unit: "tokens" })
+    serve({ "/billing/meter/get-user-resource-summary": () =>
+      ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: "160", CycleUsedCapacity: "0" }] }) })
+    expect((await usageOf(WorkBuddyAuthPlugin, { ...auth, domain: "" })).windows.map((w) => w.name)).toEqual(["Credits"])
+  } finally {
+    rmSync(ledger, { force: true })
+  }
+})

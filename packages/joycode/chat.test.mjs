@@ -255,6 +255,48 @@ test('Responses double-wrapped SSE is normalized across chunk boundaries', async
   ].join(''))
 })
 
+test('Responses drops unstored reasoning ids but keeps inline reasoning and other ids', async t => {
+  let sent
+  const payload = {
+    model: 'GPT-6 Astra',
+    store: false,
+    stream: true,
+    input: [
+      { type: 'message', role: 'user', content: 'OK' },
+      { type: 'reasoning', id: 'rs_18e2e0b7486f2800000002e3', summary: [{ type: 'summary_text', text: 'notes' }] },
+      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'ping', arguments: '{}' },
+    ],
+  }
+  const r = await request(t, new Response('data: [DONE]\n\n', {
+    headers: { 'content-type': 'text/event-stream' },
+  }), {
+    input: 'https://api-ai.jd.com/v1/responses',
+    payload,
+    upstream(_url, init) { sent = JSON.parse(init.body) },
+  })
+  assert.equal(r.status, 200)
+  assert.deepEqual(sent.input, [
+    { type: 'message', role: 'user', content: 'OK' },
+    { type: 'reasoning', summary: [{ type: 'summary_text', text: 'notes' }] },
+    { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'ping', arguments: '{}' },
+  ])
+  assert.equal(sent.store, false)
+})
+
+test('Responses keeps reasoning ids when the upstream stores the items', async t => {
+  let sent
+  const reasoning = { type: 'reasoning', id: 'rs_stored', summary: [] }
+  const r = await request(t, new Response('data: [DONE]\n\n', {
+    headers: { 'content-type': 'text/event-stream' },
+  }), {
+    input: 'https://api-ai.jd.com/v1/responses',
+    payload: { model: 'GPT-6 Astra', store: true, stream: true, input: [reasoning] },
+    upstream(_url, init) { sent = JSON.parse(init.body) },
+  })
+  assert.equal(r.status, 200)
+  assert.deepEqual(sent.input, [reasoning])
+})
+
 test('Anthropic count_tokens returns 404 without contacting upstream', async t => {
   let fetchCalls = 0
   t.mock.method(globalThis, 'fetch', async () => {

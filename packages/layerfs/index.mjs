@@ -4,19 +4,22 @@
 // agent copies no file bytes; a checkpoint stores only what changed.
 // Arguments are JSON Schema, so the package needs no dependency.
 //
-// The page shows the trajectory bundled with the package (page/trajectory.js,
-// a labeled sample): the tools never write into the plugin's install
-// folder, so no runtime live file exists there — an update replaces
-// that folder, two hosts sharing one install would race on the file,
-// and an install can be read-only. The live trajectory stays available
-// through the tools (history, status) and through backend.trajectory().
-// See the README's page section.
+// The page's data channel: the plugin host's own localhost-only service
+// (page-service.mjs). A magpie page cannot fetch and cannot read
+// plugin-private files, so the installed page/index.html only navigates
+// its frame to the service, which embeds backend.trajectory() — the
+// page's real commits, branches, storage and dedup accounting, with the
+// real calling agent on each — in the HTML it returns. The service
+// starts only once a store exists; see the README's page section.
 //
 // Backend: a local content-addressed store with the LayerFS model, in
 // layerfs.mjs. The native backend (the real LayerFS SDK) is not shipped
 // in this registry package — the SDK is still not published to npm —
 // and returns once the plugin can pin it as a dependency. See the README.
-import { checkBranch, checkInnerPath, checkProject, checkSourceDir, createBackend } from "./layerfs.mjs"
+import { readdirSync } from "node:fs"
+import { join } from "node:path"
+import { checkBranch, checkInnerPath, checkProject, checkSourceDir, createBackend, storeHome } from "./layerfs.mjs"
+import { resolvePagePort, startPageService } from "./page-service.mjs"
 
 const str = (v, name) => {
   if (typeof v !== "string" || !v) throw new Error(`${name} is a non-empty string`)
@@ -34,15 +37,51 @@ const callingAgent = (ctx) => {
   return typeof a === "string" && a.trim() ? a.trim().slice(0, 40) : ""
 }
 
+// ---- the page's live channel: the host's own service ---------------------
+// The service starts once per plugin instance, and only once a store
+// exists — two read-only gates, so a user with no store gets no service
+// and nothing written anywhere: a projects folder that holds entries
+// (not merely exists; the backend's constructor mkdirs it), and a
+// non-empty answer from the backend that will serve the calls. A host
+// whose store gains its first project later starts the service after
+// the call that created it (mutate, below). The start is off the tool
+// calls' path and every failure is swallowed: a held port or a failed
+// read leaves the tools untouched, and the page's redirect simply finds
+// nothing listening.
+
 export const LayerfsTools = async (ctx = {}, options = {}) => {
   let backendPromise
   const backend = () => (backendPromise ??= createBackend(process.env, options))
   const execEnabled = () => options?.exec === true || process.env.MAGPIE_LAYERFS_EXEC === "1"
   // A call touches only the state its own operation needs. Reads (history,
-  // resolve, status) change nothing and refresh nothing.
+  // resolve, status) change nothing and start nothing.
   const call = async (fn) => {
     const b = await backend()
     return fn(b)
+  }
+  // The page's service, started once: the gates above, then a listen on
+  // the configured port (options.pagePort, MAGPIE_LAYERFS_PAGE_PORT,
+  // else the default). A second call while the first service lives is
+  // a no-op; a failed start stays failed for this instance, quietly.
+  let service = null
+  const ensureService = async () => {
+    if (service) return
+    let hasEntries = false
+    try { hasEntries = readdirSync(join(storeHome(), "projects")).length > 0 } catch { /* no store yet */ }
+    if (!hasEntries) return
+    let data
+    try { data = await (await backend()).trajectory() } catch { return }
+    if (!data.projects.length) return
+    service = startPageService({ backend: await backend(), port: resolvePagePort(options) })
+  }
+  ensureService().catch(() => { /* no service: the tools are untouched */ })
+  // A mutating call may have created the store's first project: offer
+  // the service its start, off the call's path.
+  const mutate = async (fn) => {
+    const b = await backend()
+    const out = await fn(b)
+    ensureService().catch(() => { /* never on the tool call's path */ })
+    return out
   }
 
   return {
@@ -75,7 +114,7 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
           if (args.source === undefined) throw new Error(
             "source is required: the directory to import when the project is first created — pass the directory the user chose for this project")
           const source = checkSourceDir(str(args.source, "source"), { configDir: ctx.directory })
-          return call((b) => b.provision(project, branch, source, callingAgent(callCtx)))
+          return mutate((b) => b.provision(project, branch, source, callingAgent(callCtx)))
         },
       },
       checkpoint: {
@@ -96,7 +135,7 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
         async execute(args, callCtx) {
           const project = checkProject(str(args.project, "project"))
           const branch = checkBranch(opt(args.branch, "branch", "main"))
-          return call((b) => b.checkpoint(project, branch, opt(args.message, "message", ""), callingAgent(callCtx)))
+          return mutate((b) => b.checkpoint(project, branch, opt(args.message, "message", ""), callingAgent(callCtx)))
         },
       },
       fork: {
@@ -116,7 +155,7 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
           const project = checkProject(str(args.project, "project"))
           const branch = checkBranch(str(args.branch, "branch"))
           const from = checkBranch(opt(args.from, "from", "main"))
-          return call((b) => b.fork(project, branch, from, callingAgent(callCtx)))
+          return mutate((b) => b.fork(project, branch, from, callingAgent(callCtx)))
         },
       },
       publish: {
@@ -136,7 +175,7 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
         async execute(args, callCtx) {
           const project = checkProject(str(args.project, "project"))
           const branch = checkBranch(str(args.branch, "branch"))
-          return call((b) => b.publish(project, branch, { force: args.force === true, agent: callingAgent(callCtx) }))
+          return mutate((b) => b.publish(project, branch, { force: args.force === true, agent: callingAgent(callCtx) }))
         },
       },
       exec: {
@@ -168,7 +207,7 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
           const command = str(args.command, "command")
           const message = args.message === undefined ? "" : str(args.message, "message")
           const timeoutMs = args.timeoutMs === undefined ? 50000 : Number(args.timeoutMs) || 50000
-          return call((b) => b.exec(project, branch, command, message, timeoutMs, callingAgent(callCtx)))
+          return mutate((b) => b.exec(project, branch, command, message, timeoutMs, callingAgent(callCtx)))
         },
       },
       history: {

@@ -448,6 +448,24 @@ answered it 9074 even with the client's headers.
   changed or rotated to get round a 9095 or a 9074, and no account is
   given another account's device or its own client's device unless a
   client is signed in as that account.
+- **Which device, said (0.2.25):** a 9074 or 9095 message ends with
+  the device the claim went on: this machine's Trae CN client's, signed in
+  as the account, or magpie's own for it, with how many client profiles
+  were found and that none is signed in as the account. A client device
+  that another profile, signed in as another account, also has is said
+  too: both accounts check in on one device, which Trae takes once a day.
+  No uid or device id is named. On plugins#436 two accounts shared one
+  machine whose two profiles (`Trae CN`, `TRAE SOLO CN`) were both the
+  first account's; it checked in and the second got 9074, which took
+  running `clientDevice` by hand to explain. A profile started with its
+  own `--user-data-dir` is not read, and there is no reason to: on
+  2026-10-29 TRAE CN 3.4.4 (Windows 11) kept a second account's sign-in
+  apart in such a folder but gave it the same device id as the default
+  folder, and the client itself said 「本设备今日已签到」 for that
+  account. The check-in is counted per device, so on one machine only the
+  first account to check in gets the day's credits; the others' usage,
+  models and requests are unaffected (plugins#436, closed as not
+  planned).
 - **A claim's code 0 is not the answer (0.2.22):** Trae answers a
   claim code 0 for one that registered nothing, so the status is read back
   after every claim and only a day that is in is reported as `claimed`.

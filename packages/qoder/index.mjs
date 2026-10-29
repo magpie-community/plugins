@@ -56,6 +56,7 @@ const SIGN_IN_TIMEOUT = 15 * 60 * 1000
 const REFRESH_LEAD = 5 * 60 * 1000 // a chat token this close to its end is refreshed before a request
 const RENEW_LEAD = 10 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
 const KEEP_SPENT_MS = 60 * 60 * 1000 // how long what a spent refresh token gave is remembered
+const RELOGIN_GAP = 5 * 60 * 1000 // a token renewed this recently that Qoder refuses isn't renewed again
 const DAY = 24 * 60 * 60 * 1000
 const CHAT = "@ai-sdk/openai-compatible"
 
@@ -234,9 +235,33 @@ async function openapi(site, path, { method = "GET", token, body, query } = {}) 
   return { status: res.status, json, text }
 }
 
-// expiresAt is when a job token Qoder gave with expires_in (milliseconds)
-// runs out; a day when it said none.
-const expiresAt = (jt) => Date.now() + (jt.expires_in > 0 ? jt.expires_in : DAY)
+// expiresAt is when a job token Qoder gave runs out, read as Qoder's own
+// client reads it, for a refreshed token as for an exchanged PAT's: its
+// expire_time or expires_at first (a date, or an epoch in seconds or
+// milliseconds), then expires_in (milliseconds), then a day. A refreshed
+// token was read for expires_in alone, so an end Qoder said as a date was
+// put down as a day away, and renewed after it had run out (plugins#474).
+// An end already past is no end said.
+function expiresAt(jt) {
+  for (const k of ["expire_time", "expires_at"]) {
+    const at = whenSaid(jt?.[k])
+    if (at > Date.now()) return at
+  }
+  if (jt?.expires_in > 0) return Date.now() + jt.expires_in
+  return Date.now() + DAY
+}
+
+// whenSaid is the time a token's end field names, in milliseconds: a date,
+// or an epoch in seconds or milliseconds; 0 for none (absent, 0, unreadable).
+function whenSaid(v) {
+  if (typeof v === "number" || /^\d+$/.test(String(v ?? "").trim())) {
+    const n = Number(v)
+    if (!(n > 0)) return 0
+    return n < 1e12 ? n * 1000 : n
+  }
+  const at = Date.parse(String(v ?? "").trim())
+  return isNaN(at) ? 0 : at
+}
 
 // deviceExpiry is when a device token used for chat runs out: its
 // expires_at (a date) or expires_in (seconds), as Qoder's CLI reads it; a
@@ -350,10 +375,11 @@ async function deviceSignIn(site) {
       let email = ""
       let name = ""
       let uid = dt.user_id
+      let user = null
       try {
         const ui = await openapi(site, site.userInfoPath ?? "/api/v1/userinfo", { token: dt.token })
         if (ui.status >= 200 && ui.status < 300) {
-          const user = site.normalizeUser ? site.normalizeUser(ui.json) : ui.json
+          user = site.normalizeUser ? site.normalizeUser(ui.json) : ui.json
           ;[email, name] = [user?.email ?? "", user?.name ?? ""]
           if (site.deviceOnly) uid = String(user?.id ?? user?.user_id ?? user?.uid ?? uid ?? "") || undefined
           // a VPC poll may give the token alone: the user is then the one
@@ -368,7 +394,22 @@ async function deviceSignIn(site) {
         ...chat,
         // a VPC account is told apart from the same person's public one; a
         // device-only one is shown by name, falling back to its id
-        accountId: site.vpc ? `${email || uid} (${site.vpc})` : site.deviceOnly ? email || uid || name || dt.user_id : email || dt.user_id,
+        // accountId is the account's identity in magpie (its name, proxy,
+        // model picks and caps all hang off it, and a gateway key keys its
+        // list by it), so it stays exactly what main computes: the phone is a
+        // separate field, shown by usage's `user`, never the identity.
+        accountId: site.vpc
+          ? `${email || uid} (${site.vpc})`
+          : site.deviceOnly
+            ? email || uid || name || dt.user_id
+            : email || dt.user_id,
+        // the card's names: the phone on its own, and what magpie shows (a
+        // real email first, then the phone) — never the accountId
+        ...(() => {
+          const label = phoneLabelOf(user, email, name)
+          const suffix = (v) => (v ? (site.vpc ? `${v} (${site.vpc})` : v) : "")
+          return { phoneLabel: suffix(label), cardName: suffix(realEmailOf(email) || label) }
+        })(),
         uid,
         email,
         name: name || dt.user_name || "",
@@ -380,18 +421,6 @@ async function deviceSignIn(site) {
       }
     },
   }
-}
-
-// exchangeExpiry is when a job token from /api/v1/jobToken/exchange runs
-// out, as Qoder's own client reads it: expire_time or expires_at (a date)
-// first, then expires_in (milliseconds), then a day.
-function exchangeExpiry(jt) {
-  for (const k of ["expire_time", "expires_at"]) {
-    const at = Date.parse(String(jt?.[k] ?? "").trim())
-    if (!isNaN(at)) return at
-  }
-  if (jt?.expires_in > 0) return Date.now() + jt.expires_in
-  return Date.now() + DAY
 }
 
 // exchangeToken is the job token from an exchange response, as Qoder's
@@ -413,13 +442,15 @@ async function patSignIn(site, pat) {
   const token = exchangeToken(r.json)
   if (!token) throw new Error(`${site.name} PAT exchange: empty token in response`)
   const refresh = String(r.json?.refresh_token ?? r.json?.refreshToken ?? "").trim()
-  const chat = { access: token, refresh, expires: exchangeExpiry(r.json) }
+  const chat = { access: token, refresh, expires: expiresAt(r.json) }
   let email = ""
   let name = ""
   let uid = ""
+  let user = null
   try {
     const ui = await openapi(site, "/api/v1/userinfo", { token })
     if (ui.status >= 200 && ui.status < 300) {
+      user = ui.json
       ;[email, name] = [ui.json?.email ?? "", ui.json?.name ?? ""]
       uid = String(ui.json?.id ?? ui.json?.user_id ?? ui.json?.uid ?? "")
     }
@@ -433,6 +464,8 @@ async function patSignIn(site, pat) {
     // so a renewed PAT sign-in must keep naming the same account. A suffix
     // here would add a second row beside the lapsed one instead.
     accountId: email || uid,
+    phoneLabel: phoneLabelOf(user, email, name),
+    cardName: realEmailOf(email) || phoneLabelOf(user, email, name),
     uid,
     email,
     name: name || "",
@@ -1185,9 +1218,11 @@ function failure(status, text) {
   // lapsed: only a refused refresh did (errorResponse says kept). Qoder's
   // own words go with it: a 401 right after signing in isn't a lapsed
   // sign-in, and its reason is what says what is (Yayoi_no_yume on X).
+  // lapsed: the job token the call carried was refused, which the loader
+  // renews once and asks again with (plugins#474) before it says so.
   if (status === 401 || status === 403) {
     const said = msg && msg !== STATUS_CODES[status] ? ` (Qoder said ${status}: ${msg.slice(0, 300)})` : ""
-    return { status: 401, message: "the sign-in lapsed — sign in again" + said }
+    return { status: 401, message: "the sign-in lapsed — sign in again" + said, lapsed: true }
   }
   if (status === 429 || msg.toLowerCase().includes("quota")) return { status: 429, message: "usage limit reached: " + msg }
   return { status, message: msg }
@@ -1849,6 +1884,70 @@ function signed(res, renewed) {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
 }
 
+// ---- the card's name ----------------------------------------------------------
+//
+// The card's name is not `accountId` (a uuid is not a name, and accountId is
+// the identity magpie keys settings by). Both phone
+// sign-ins here carry the phone somewhere in their user info: Qoder CN answers
+// `security_mobile` (measured `13800138000`), QwenWork's phone accounts answer
+// only the last four digits as `name` plus a synthetic
+// `phone_<uuid>@phone.local` email (measured).
+const PHONE_EMAIL = /^phone_[0-9a-f-]+@phone\.local$/i
+
+/** A phone number as the cards show it: `0086-…`/`+86 …`/bare → `138****8000`. */
+function maskPhone(raw) {
+  let digits = String(raw ?? "").replace(/\D/g, "")
+  if (digits.startsWith("0086") && digits.length - 4 >= 7) digits = digits.slice(4)
+  else if (digits.startsWith("86") && digits.length - 2 >= 7) digits = digits.slice(2)
+  // a phone is 11 digits; a shorter run is not a number to mask
+  if (digits.length < 11) return ""
+  return `${digits.slice(0, 3)}****${digits.slice(-4)}`
+}
+
+/**
+ * What a renewal puts on the record for the card: `phoneLabel` (the phone the
+ * account signs in with, `138****8000` / `****8000`) and `cardName` (a real
+ * email first, then the phone) — both with the VPC suffix. It renames nothing:
+ * `accountId` is the identity and never changes.
+ *
+ * Read from the renewed token's user info. No cache: each renewal has a new
+ * token, so nothing is read twice (review #487, 6).
+ */
+async function refreshedNames(site, token) {
+  const key = String(token ?? "")
+  if (!key) return {}
+  try {
+    const ui = await openapi(site, site.userInfoPath ?? "/api/v1/userinfo", { token: key })
+    if (ui.status < 200 || ui.status >= 300) return {}
+    const user = site.normalizeUser ? site.normalizeUser(ui.json) : ui.json
+    const label = phoneLabelOf(user, user?.email, user?.name)
+    const suffix = (v) => (v ? (site.vpc ? `${v} (${site.vpc})` : v) : "")
+    // built as the sign-in builds it: a real email first, then the phone
+    return { phoneLabel: suffix(label), cardName: suffix(realEmailOf(user?.email) || label) }
+  } catch {
+    return {}
+  }
+}
+
+/** The account's own email, when it is a real one (a synthetic phone email is not). */
+function realEmailOf(email) {
+  const e = String(email ?? "").trim()
+  if (!e || PHONE_EMAIL.test(e)) return ""
+  return e
+}
+
+/** The phone-derived part of a card's name, or "" when the account has none. */
+function phoneLabelOf(user, email, name) {
+  const phone = maskPhone(user?.security_mobile ?? user?.phoneNumber ?? user?.phone ?? user?.mobile)
+  if (phone) return phone
+  // a synthetic phone email is never shown: its four digits are, or nothing
+  if (PHONE_EMAIL.test(String(email ?? ""))) {
+    const tail = String(name ?? "").trim()
+    if (/^\d{4}$/.test(tail)) return `****${tail}`
+  }
+  return ""
+}
+
 // changed is the fields of b that differ from a's: what auth.refresh gives.
 function changed(a, b) {
   const out = {}
@@ -2501,11 +2600,47 @@ const makePlugin = (site) => async ({ client }) => {
       return next
     })
 
+  // relogin is the account to ask again with once Qoder refused the job
+  // token refused (a chat's 401/403 "Login expired"), or undefined to say
+  // the refusal as it is. Under the lock, as fresh: the sign-in as saved
+  // now (another request, magpie's auth.refresh or another process may
+  // have renewed it meanwhile, and then that is what is used, with no
+  // refresh), else the job token renewed once and saved. Qoder has been
+  // seen to refuse a job token it had put down as a day away for minutes
+  // before magpie renewed it (plugins#474), and a request then failed
+  // until the renewal came. A token this process renewed only minutes ago
+  // that is refused too isn't renewed again: a refusal that isn't about the
+  // token's end would otherwise spend a refresh token on every request.
+  const relogin = (getAuth, refused) =>
+    locked(async () => {
+      const stored = await getAuth()
+      if (stored?.type !== "oauth" || !stored.access || !stored.uid) throw new SignInGone(`${site.name}: not signed in`)
+      siteOf(site, stored)
+      const a = latest(stored)
+      if (a.access !== refused) return a
+      const now = Date.now()
+      for (const v of spent.values()) if (v.got.access === refused && now - v.at < RELOGIN_GAP) return undefined
+      const next = { ...a, ...(await renew(a)) }
+      await client.auth.set({ path: { id: ID }, body: next })
+      renewals.add(next)
+      return next
+    })
+
+  // the ids Qoder serves: the site's shipped list and every key a listing
+  // has named, on or off
+  const served = new Set(site.models.map((m) => m.id))
+  const knows = (id) => served.has(id)
   const models = async (cred, again = false) => {
     const key = listingKey(cred)
     let l = listings.get(key)
     if (!l || again) {
-      l = modelInfos(await fetchListing(siteOf(site, cred), cred), siteOf(site, cred))
+      const s = siteOf(site, cred)
+      const listing = await fetchListing(s, cred)
+      for (const m of s.modelScene ? (Array.isArray(listing?.[s.modelScene]) ? listing[s.modelScene] : []) : sceneModels(listing)) {
+        const k = String(m?.key ?? "").trim()
+        if (k) served.add(k)
+      }
+      l = modelInfos(listing, s)
       listings.set(key, l)
     }
     return l
@@ -2554,6 +2689,8 @@ const makePlugin = (site) => async ({ client }) => {
     try {
       const cred = await fresh(getAuth)
       if (renewed(cred)) signIn = "renewed"
+      // the card's name: magpie takes usage's `user` for it and never as a key
+      const who = cred?.cardName ? { user: cred.cardName } : {}
       // a site with its own usage path (QwenWork's account-context, signed
       // like any other call and answered with its own envelope) is read
       // there; a 401 rotates the device token once, as the qoder path does
@@ -2584,7 +2721,7 @@ const makePlugin = (site) => async ({ client }) => {
         if (site.walletsPath && ctxUser?.is_biz !== true && ctxUser?.isBiz !== true) {
           try { wallets = await read(token, site.walletsPath) } catch {}
         }
-        return { ...(site.parseUsage ? site.parseUsage(env, wallets) : { windows: [] }), signIn }
+        return { ...(site.parseUsage ? site.parseUsage(env, wallets) : { windows: [] }), signIn, ...who }
       }
       // A PAT account has no device token: the usage endpoint takes the job
       // token the exchange gave — a live PAT account answered 200 with a
@@ -2592,7 +2729,7 @@ const makePlugin = (site) => async ({ client }) => {
       // no second token here to rotate and retry with.
       if (cred.patAuth && !cred.deviceToken) {
         const env = await fetchUsage(siteOf(site, cred), cred.access)
-        return { ...(await spareFree(cred, parseUsage(env))), signIn }
+        return { ...(await spareFree(cred, parseUsage(env))), signIn, ...who }
       }
       let env
       try {
@@ -2601,7 +2738,7 @@ const makePlugin = (site) => async ({ client }) => {
         if (!(e instanceof UsageStatus) || (e.status !== 401 && e.status !== 403)) throw e
         env = await fetchUsage(siteOf(site, cred), await deviceToken(getAuth, cred.deviceToken))
       }
-      return { ...(await spareFree(cred, parseUsage(env))), signIn }
+      return { ...(await spareFree(cred, parseUsage(env))), signIn, ...who }
     } catch (e) {
       return { error: e?.message ?? String(e), signIn: e?.expired ? "expired" : signIn }
     }
@@ -2737,10 +2874,31 @@ const makePlugin = (site) => async ({ client }) => {
     })
 
   // ask is the answer to a chat completion on the live account cred.
-  const ask = async (chat, cred, init, named = "", fallback = false) => {
+  // asked is what ask asked with: the account it ended on, which a refused
+  // job token's renewal (relogin, given getAuth) changes.
+  const ask = async (chat, cred, init, named = "", fallback = false, getAuth, asked = {}) => {
+    asked.cred = cred
     let m
+    let relogged = false
+    const listed = (ms) => ms.find((x) => x.key === chat.model)
     try {
-      m = (await models(cred)).find((x) => x.key === chat.model) ?? (await models(cred, true)).find((x) => x.key === chat.model)
+      m = listed(await models(cred)) ?? listed(await models(cred, true))
+      // A model Qoder serves that the account's listing leaves out, or has
+      // off, on a job token Qoder no longer honours in full: the token is
+      // renewed once (relogin, as for a refused chat) and the list asked
+      // again. On an enterprise qoder.com account (plugins#484) the listing
+      // had only the free dfmodel and qfmodel on while the job token was
+      // stale, and every other model was answered 400 here, before a chat
+      // could be refused and renew it. An id Qoder has never served is said
+      // unknown at once, with no renewal spent on it.
+      if (!m && getAuth && knows(chat.model)) {
+        relogged = true
+        const next = await relogin(getAuth, cred.access)
+        if (next) {
+          cred = asked.cred = next
+          m = listed(await models(cred, true))
+        }
+      }
     } catch (e) {
       if (e instanceof SignInGone || e?.expired) return signedInError(e)
       return errorResponse({ status: 502, message: e?.message ?? String(e) })
@@ -2760,8 +2918,8 @@ const makePlugin = (site) => async ({ client }) => {
     // resend can be queued again before it is answered.
     const deadline = QUEUE.now() + QUEUE.budget
     const ask = { requestSetId: body.request_set_id, requestId: body.request_id, sessionId: body.session_id, modelKey: m.key }
-    for (let waited = 0; ; waited++) {
-      if (waited) {
+    for (let sent = 0, waited = 0; ; sent++) {
+      if (sent) {
         body.request_id = body.chat_record_id = randomUUID()
         ask.requestId = body.request_id
       }
@@ -2781,6 +2939,21 @@ const makePlugin = (site) => async ({ client }) => {
       }
       const f = !res.ok ? failure(res.status, (await res.text()).slice(0, 1 << 20)) : open.first.value?.error
       if (f) call.abort()
+      // a refused job token: renewed once (or the one renewed meanwhile)
+      // and the request sent again, before the refusal is said
+      if (f?.lapsed && getAuth && !relogged) {
+        relogged = true
+        let next
+        try {
+          next = await relogin(getAuth, cred.access)
+        } catch (e) {
+          return signedInError(e)
+        }
+        if (next) {
+          cred = asked.cred = next
+          continue
+        }
+      }
       // an answered call moves its task on, as Qoder's client moves it
       if (!f) task.answered = true
       // with another account, provider or group member after this one
@@ -2792,6 +2965,7 @@ const makePlugin = (site) => async ({ client }) => {
       } catch (e) {
         return errorResponse({ status: 502, message: e?.message ?? String(e) })
       }
+      waited++
     }
   }
 
@@ -2816,19 +2990,35 @@ const makePlugin = (site) => async ({ client }) => {
       refreshLead: RENEW_LEAD,
       async refresh(auth) {
         if (auth?.type !== "oauth" || !auth.access || !auth.uid || !String(auth.refresh ?? "").trim()) return undefined
-        return locked(async () => {
+        const out = await locked(async () => {
           // a request renewed it meanwhile (or magpie hasn't saved this
           // hook's last answer): what that gave, not a second refresh
           const a = latest(auth)
-          if (a.access !== auth.access && a.expires - Date.now() > RENEW_LEAD) return changed(auth, a)
+          if (a.access !== auth.access && a.expires - Date.now() > RENEW_LEAD) return { next: a, renewed: false }
           try {
-            // magpie saves what this gives
-            return changed(auth, { ...a, ...(await renew(a)) })
+            return { next: { ...a, ...(await renew(a)) }, renewed: true }
           } catch (e) {
             if (e?.expired) throw Object.assign(new Error(e.message), { signIn: "expired" })
             throw e
           }
         })
+        const fields = changed(auth, out.next)
+        if (!out.renewed) return fields
+        // The name is read outside the lock: this lock is the plugin's, shared
+        // by every account, and a user-info call may take 20 seconds — a chat
+        // from another account must not wait on it (review #487, C). The
+        // account's own site, too: a public one would send an enterprise token
+        // to the public hosts (1), and the suffix must match the sign-in (2).
+        try {
+          const s = siteOf(site, out.next)
+          const { phoneLabel, cardName } = await refreshedNames(s, out.next.access)
+          const extra = {}
+          if (phoneLabel) extra.phoneLabel = phoneLabel
+          if (cardName) extra.cardName = cardName
+          return Object.keys(extra).length ? { ...fields, ...extra } : fields
+        } catch {
+          return fields
+        }
       },
       async loader(getAuth) {
         const a = await getAuth()
@@ -2860,7 +3050,9 @@ const makePlugin = (site) => async ({ client }) => {
             }
             const h = new Headers(input instanceof Request ? input.headers : undefined)
             new Headers(init.headers ?? {}).forEach((v, k) => h.set(k, v))
-            return signed(await ask(chat, cred, init, h.get(SESSION)?.trim().slice(0, 128) ?? "", h.get(FALLBACK) === "1"), renewed(cred))
+            const asked = {}
+            const res = await ask(chat, cred, init, h.get(SESSION)?.trim().slice(0, 128) ?? "", h.get(FALLBACK) === "1", getAuth, asked)
+            return signed(res, renewed(cred) || (asked.cred !== cred && renewed(asked.cred)))
           },
         }
       },
@@ -3035,4 +3227,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }

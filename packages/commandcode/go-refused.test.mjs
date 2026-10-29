@@ -7,6 +7,13 @@
 import { afterEach, expect, test } from "bun:test"
 import { CommandCodePlugin, _internal } from "./index.mjs"
 
+// talking leaves out the decision model (Jev, jev.test.mjs), which every
+// plan's list has beside the models it talks to
+const talking = (ms) => {
+  delete ms[_internal.JEV]
+  return ms
+}
+
 const real = globalThis.fetch
 const subWait = _internal.waits.subWait
 afterEach(() => {
@@ -77,7 +84,7 @@ test("the key's models are Go's after the refusal", async () => {
   const auth = { type: "api", key: "go-key" }
   const { hooks, opts } = await plugin(auth)
   await chat(opts)
-  const ms = await hooks.provider.models({ models: {} }, { auth })
+  const ms = talking(await hooks.provider.models({ models: {} }, { auth }))
   expect(Object.keys(ms)).toEqual(_internal.GO_MODELS.filter((m) => !_internal.GO_REFUSED.has(m.id)).map((m) => m.id))
 })
 

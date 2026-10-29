@@ -219,7 +219,8 @@ const EXPIRED_CLI = EXPIRED + " with `kiro-cli login` or the Kiro IDE"
 
 // gone is an error saying the sign-in itself is gone — refused, or never
 // there. The built-in marked no Kiro account lapsed, not even then, nor
-// cleared one: every answer and usage read says the account is kept.
+// cleared one: every answer says the account is kept. The usage read says
+// expired for it, and renewed for a clean read (auth.usage).
 const gone = (msg) => Object.assign(new Error(msg), { gone: true })
 const EARLY_MS = 2 * 60 * 1000 // a token this close to its end is refreshed before a request
 const LEAD_MS = 10 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
@@ -1697,8 +1698,10 @@ export async function KiroAuthPlugin({ client } = {}) {
           },
         }
       },
-      // the account's credits, as magpie's built-in showed them; a read,
-      // clean or failed, marked the built-in's account nothing
+      // the account's credits, as magpie's built-in showed them. A sign-in
+      // Kiro refused (gone) marks the account signed out, so magpie passes
+      // over it and its row offers Sign in again; a clean read takes the
+      // mark off, as after `kiro-cli login`. Any other failure keeps it.
       async usage(getAuth) {
         const auth = await getAuth()
         if (!(auth?.type === "api" && auth.key) && auth?.type !== "oauth") return { error: "not signed in", signIn: "kept" }
@@ -1706,9 +1709,9 @@ export async function KiroAuthPlugin({ client } = {}) {
           const u = usageOf(await usageLimits(await creds(auth), true))
           // named as the account is
           if (u.user && auth.type === "oauth" && !auth.source) u.user = nameOf(u.user, auth.loginProvider)
-          return { ...u, signIn: "kept" }
+          return { ...u, signIn: "renewed" }
         } catch (e) {
-          return { error: e.message, signIn: "kept" }
+          return { error: e.message, signIn: e.gone ? "expired" : "kept" }
         }
       },
       methods: [

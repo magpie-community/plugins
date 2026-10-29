@@ -1,7 +1,15 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { RaccoonAuthPlugin, _internal } from "./index.mjs"
 
 let upstream
+// No test may reach the real network: a test that starts no server points at a
+// port nothing listens on.
+// (accountPhoneOf reads user_info; pointing at the real site made the suite
+// depend on the network — review #486, point 1.)
+beforeEach(() => {
+  process.env.RACCOON_MAIN_SITE_URL = "http://127.0.0.1:9"
+})
+
 afterEach(() => {
   upstream?.stop(true)
   upstream = undefined
@@ -26,7 +34,10 @@ function callbackURL(flow, code = "synthetic-code") {
 test("browser authorization returns automatically and completes the code exchange", async () => {
   let calls = 0
   fakeAuth(async req => {
-    expect(new URL(req.url).pathname).toBe("/api/web/auth/v1/login_with_authorization_code")
+    const path = new URL(req.url).pathname
+    // the card's name: one read of the account's own phone, after the exchange
+    if (path === "/api/web/auth/v1/user_info") return Response.json({code: 0, data: {phone: "13800138000", name: "RaccoonBenjamin"}})
+    expect(path).toBe("/api/web/auth/v1/login_with_authorization_code")
     expect(await req.json()).toEqual({authorization_code: "synthetic-code"})
     calls++
     return Response.json({code: 0, data: tokens()})
@@ -48,14 +59,24 @@ test("browser authorization returns automatically and completes the code exchang
   const page = await response.text()
   expect(page).not.toContain("synthetic-code")
   expect(page).not.toContain("synthetic-refresh")
-  expect((await done).type).toBe("success")
+  const signedIn = await done
+  expect(signedIn.type).toBe("success")
+  // accountId is the identity — `Raccoon-<uid>` when the JWT names no one —
+  // and the phone is only the name the card shows
+  expect(signedIn.accountId).toMatch(/^Raccoon-\d+$/)
+  expect(signedIn.phone).toBe("138****8000")
+  expect(signedIn.cardName).toBe("138****8000")
   expect(calls).toBe(1)
   await expect(fetch(url)).rejects.toThrow()
 })
 
 test("bad state, missing code, wrong host, path or method never consume a pending login", async () => {
   let calls = 0
-  fakeAuth(() => { calls++; return Response.json({code:0,data:tokens()}) })
+  fakeAuth(req => {
+    if (new URL(req.url).pathname === "/api/web/auth/v1/user_info") return Response.json({code: 0, data: {phone: "13800138000"}})
+    calls++
+    return Response.json({code:0,data:tokens()})
+  })
   const flow = await _internal.browserSignIn()
   const done = flow.callback()
   const good = callbackURL(flow)
@@ -106,6 +127,10 @@ test("an abandoned authorization times out and closes its listener even before c
 })
 
 test("manual callback and token sign-in remain available without a listener", async () => {
+  fakeAuth(req => {
+    if (new URL(req.url).pathname === "/api/web/auth/v1/user_info") return Response.json({code: 0, data: {phone: "13800138000"}})
+    return Response.json({code: 0, data: tokens()})
+  })
   const plugin=await RaccoonAuthPlugin({client:{}})
   const flow=await plugin.auth.methods[2].authorize()
   expect(flow.method).toBe("code")
@@ -117,7 +142,8 @@ test("manual callback and token sign-in remain available without a listener", as
 test("concurrent replay exchanges the authorization code only once", async () => {
   let calls = 0, entered
   const started = new Promise(resolve => { entered = resolve })
-  fakeAuth(async () => {
+  fakeAuth(async req => {
+    if (new URL(req.url).pathname === "/api/web/auth/v1/user_info") return Response.json({code: 0, data: {phone: "13800138000"}})
     calls++
     entered()
     await Bun.sleep(200)

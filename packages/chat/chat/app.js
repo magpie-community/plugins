@@ -556,7 +556,7 @@ function parseEventBlock(block) {
 }
 
 function streamChat(payload, onEvent, signal) {
-  return fetch("/api/chat", {
+  return fetch("api/chat", {
     method: "POST",
     headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(payload),
@@ -629,7 +629,7 @@ function patchSettings(patch) {
 
 function flushSettings() {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-  return api("/api/settings", { method: "POST", body: state.settings }).then(function (saved) {
+  return api("api/settings", { method: "POST", body: state.settings }).then(function (saved) {
     state.settings = Object.assign({}, state.settings, saved || {});
   }).catch(function (err) {
     toast("设置保存失败：" + err.message, true);
@@ -852,7 +852,7 @@ function addFiles(files) {
       return null;
     }
     return readAsDataURL(file).then(function (data) {
-      return api("/api/upload", {
+      return api("api/upload", {
         method: "POST",
         body: { name: file.name || "file", type: type, data: data, clientType: type }
       }).catch(function () {
@@ -1030,7 +1030,7 @@ function bindResizers() {
       var w = Math.round(target.getBoundingClientRect().width);
       var key = WIDTHS[cfg[1]].key;
       state.settings[key] = w;
-      api("/api/settings", { method: "POST", body: { [key]: w } }).catch(function () {});
+      api("api/settings", { method: "POST", body: { [key]: w } }).catch(function () {});
     }
 
     bar.addEventListener("mousedown", down);
@@ -1046,7 +1046,7 @@ function bindResizers() {
       target.style.setProperty(cfg[1] === "left" ? "--side-w" : "--set-w", next + "px");
       var key = WIDTHS[cfg[1]].key;
       state.settings[key] = next;
-      api("/api/settings", { method: "POST", body: { [key]: next } }).catch(function () {});
+      api("api/settings", { method: "POST", body: { [key]: next } }).catch(function () {});
     });
   });
 }
@@ -1071,7 +1071,7 @@ function toggleSettings(open, persist) {
   state.settings.settingsOpen = show;
   // 恢复上次状态时不要再写回去，否则会把用户刚改的值覆盖成旧的
   if (persist !== false) {
-    api("/api/settings", { method: "POST", body: { settingsOpen: show } }).catch(function () {});
+    api("api/settings", { method: "POST", body: { settingsOpen: show } }).catch(function () {});
   }
   if (show) renderSettings();
 }
@@ -1138,7 +1138,7 @@ function checkTools() {
   status.textContent = "检查中…";
   status.className = "set-tools-status";
   $("#checkTools").disabled = true;
-  api("/api/mcp/tools").then(function (data) {
+  api("api/mcp/tools").then(function (data) {
     var servers = (data && data.servers) || [];
     if (!servers.length) { status.textContent = "没有启用的服务器"; return; }
     var ok = servers.filter(function (s) { return s.ok; });
@@ -1161,7 +1161,7 @@ function checkTools() {
 /* ================= 会话列表 ================= */
 
 function loadConversations() {
-  return api("/api/conversations").then(function (data) {
+  return api("api/conversations").then(function (data) {
     state.conversations = (data && data.items) || [];
     renderSessions();
   }).catch(function (err) {
@@ -1217,7 +1217,7 @@ function togglePin(id, pin) {
   if (pin && at < 0) pinned.push(id);
   if (!pin && at >= 0) pinned.splice(at, 1);
   state.settings.pinned = pinned;
-  api("/api/settings", { method: "POST", body: { pinned: pinned } })
+  api("api/settings", { method: "POST", body: { pinned: pinned } })
     .then(function () { return loadConversations(); })
     .then(function () { toast(pin ? "已置顶" : "已取消置顶"); })
     .catch(function (err) { toast("置顶失败：" + err.message, true); });
@@ -1227,11 +1227,11 @@ function togglePin(id, pin) {
 function askDelete(id, title) {
   var name = String(title || "这条对话");
   {
-    api("/api/conversations/" + encodeURIComponent(id), { method: "DELETE" }).then(function () {
+    api("api/conversations/" + encodeURIComponent(id), { method: "DELETE" }).then(function () {
       // 置顶列表里也把它去掉，免得留下悬空的 id
       var pinned = (state.settings.pinned || []).filter(function (x) { return x !== id; });
       state.settings.pinned = pinned;
-      api("/api/settings", { method: "POST", body: { pinned: pinned } }).catch(function () {});
+      api("api/settings", { method: "POST", body: { pinned: pinned } }).catch(function () {});
       if (state.convId === id) {
         state.convId = null;
         state.title = "新对话";
@@ -1252,12 +1252,12 @@ function askDelete(id, title) {
 function setSidebar(open) {
   $("#app").classList.toggle("side-off", !open);
   state.settings.sidebar = open;
-  api("/api/settings", { method: "POST", body: { sidebar: open } }).catch(function () {});
+  api("api/settings", { method: "POST", body: { sidebar: open } }).catch(function () {});
 }
 
 function openConversation(id) {
   if (state.busy) { toast("正在生成，先停止再切换对话", true); return; }
-  api("/api/conversations/" + encodeURIComponent(id)).then(function (conv) {
+  api("api/conversations/" + encodeURIComponent(id)).then(function (conv) {
     if (!conv) return;
     state.convId = conv.id;
     state.title = conv.title || "新对话";
@@ -1316,7 +1316,7 @@ function persistConversation() {
       };
     })
   };
-  return api("/api/conversations", { method: "POST", body: payload }).then(function (saved) {
+  return api("api/conversations", { method: "POST", body: payload }).then(function (saved) {
     if (!saved) return;
     state.convId = saved.id;
     state.title = saved.title || state.title;
@@ -2015,7 +2015,7 @@ function stop() {
   if (!state.busy) return;
   state.stopped = true;
   var clientId = state.clientId;
-  api("/api/chat/stop", { method: "POST", body: { clientId: clientId, id: clientId } }).catch(function () { /* 断开也会中止 */ });
+  api("api/chat/stop", { method: "POST", body: { clientId: clientId, id: clientId } }).catch(function () { /* 断开也会中止 */ });
   if (state.abort) {
     try { state.abort.abort(); } catch (e) { /* 已结束 */ }
   }
@@ -2121,7 +2121,7 @@ function boot() {
   updateSend();
   renderMessages();
 
-  api("/api/bootstrap").then(function (data) {
+  api("api/bootstrap").then(function (data) {
     state.boot = data || {};
     state.models = (data && data.models) || [];
     state.library = (data && data.library) || { instructions: [], skills: [], mcp: [] };

@@ -259,6 +259,101 @@ test("accountIdentityOf reads the signer from the refresh token's user_profile",
   assert.deepEqual(x.accountIdentityOf({ refresh_token: "opaque", user_name: "bob" }), { id: "bob", name: "bob" })
 })
 
+// A credential whose refresh token carries the IAM claims a real one does.
+function credWithProfile(claims) {
+  const b64u = (o) => Buffer.from(JSON.stringify(o)).toString("base64url")
+  return {
+    access_key_id: "AK",
+    secret_access_key: "SK",
+    security_token: "ST",
+    refresh_token: `h.${b64u({ user_profile: JSON.stringify(claims) })}.s`,
+  }
+}
+
+test("maskPhone shows a number a person can tell apart, or nothing", () => {
+  // Huawei Cloud IAM answers `0086-13800138000`; the other magpie cards show
+  // `138****8000`.
+  assert.equal(x.maskPhone("0086-13800138000"), "138****8000")
+  assert.equal(x.maskPhone("+86 138 0013 8000"), "138****8000")
+  assert.equal(x.maskPhone("13800138000"), "138****8000")
+  // Too short to be a number: no name, so the caller falls back.
+  assert.equal(x.maskPhone(""), "")
+  assert.equal(x.maskPhone("12345"), "")
+  assert.equal(x.maskPhone(undefined), "")
+})
+
+test("accountIdentityOf names an account by its phone, never by IAM's ids", () => {
+  const b64u = (o) => Buffer.from(JSON.stringify(o)).toString("base64url")
+  const profile = { principal_urn: "iam::d1:user:hw12323", account_name: "hw12323" }
+  const token = `h.${b64u({ user_profile: JSON.stringify(profile) })}.s`
+  // The phone read from IAM stands in front of `hw12323` and of the URN.
+  assert.deepEqual(x.accountIdentityOf({ refresh_token: token, user_phone: "138****8000" }), {
+    id: "iam::d1:user:hw12323",
+    name: "138****8000",
+  })
+  // Without one, the account name — while `id` stays the URN magpie keys by.
+  assert.deepEqual(x.accountIdentityOf({ refresh_token: token }), { id: "iam::d1:user:hw12323", name: "hw12323" })
+})
+
+test("fetchAccountPhone reads IAM with the account's own credentials, and only once", async () => {
+  const seen = []
+  const cred = credWithProfile({ principal_id: "uid-1" })
+  const fetcher = async (url, init) => {
+    seen.push([String(url), new Headers(init.headers).get("authorization")])
+    return new Response(JSON.stringify({ user: { name: "hw12323", phone: "0086-13800138000" } }), { status: 200 })
+  }
+  assert.equal(await x.fetchAccountPhone(cred, fetcher), "138****8000")
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0][0], "https://iam.cn-north-4.myhuaweicloud.com/v3.0/OS-USER/users/uid-1")
+  assert.ok(String(seen[0][1]).startsWith("SDK-HMAC-SHA256 "), "signed, like every other call of the account")
+  // The number does not change: the second read is free.
+  assert.equal(await x.fetchAccountPhone(cred, fetcher), "138****8000")
+  assert.equal(seen.length, 1)
+})
+
+test('fetchAccountPhone is best effort — no claim, a refusal, or no number gives ""', async () => {
+  // No `principal_id` in the token: IAM is never called.
+  const unreadable = { access_key_id: "AK", secret_access_key: "SK", security_token: "ST", refresh_token: "R" }
+  assert.equal(await x.fetchAccountPhone(unreadable, async () => { throw new Error("must not be called") }), "")
+  const cred = credWithProfile({ principal_id: "uid-2" })
+  assert.equal(await x.fetchAccountPhone(cred, async () => new Response("{}", { status: 403 })), "")
+  assert.equal(
+    await x.fetchAccountPhone(cred, async () => new Response(JSON.stringify({ user: { name: "hw12323" } }), { status: 200 })),
+    "",
+  )
+})
+
+test("usage names an account by the phone its credential carries", async () => {
+  const cred = { ...(await makeCred()), user_phone: "138****8000" }
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, {
+    fetch: async () => new Response(JSON.stringify({ metrics: [
+      { name: "usageTotalPackageCredit", package_credit_amount: 500, package_credit_remain: 500 },
+    ] }), { status: 200 }),
+    ledgerPath: path.join(ledgerDir, "unused.json"),
+  })
+  const usage = await plugin.auth.usage(async () => makeAuth(cred))
+  assert.equal(usage.user, "138****8000")
+  assert.equal(usage.windows.length > 0, true, "the phone must not replace the windows")
+})
+
+test("a renewal keeps the account's name and its uid, with the phone in the credential", async () => {
+  const saved = []
+  const client = { auth: { set: async ({ body }) => { saved.push(body) } } }
+  const cred = {
+    ...(await makeCred()),
+    user_phone: "138****8000",
+    refresh_token: credWithProfile({ principal_urn: "iam::d:user:hw123" }).refresh_token,
+  }
+  const account = await x.persistCredential(client, { accountId: "iam::d:user:hw123", uid: "iam::d:user:hw123" }, cred)
+  assert.equal(saved.length, 1)
+  // accountId is the identity: it must not be renamed (magpie keys the user's
+  // own settings by it). The phone lives in the credential and is shown by usage.
+  assert.equal(saved[0].accountId, "iam::d:user:hw123")
+  assert.equal(saved[0].uid, "iam::d:user:hw123")
+  assert.equal(JSON.parse(saved[0].access).user_phone, "138****8000")
+  assert.equal(account.accountId, "iam::d:user:hw123")
+})
+
 test("accountSessionIds is stable per account and differs between accounts", async () => {
   const a = await x.accountSessionIds({ session_id: "s1", access_key_id: "AK1" })
   assert.deepEqual(await x.accountSessionIds({ session_id: "s1", access_key_id: "AK2" }), a)
@@ -2363,4 +2458,49 @@ test("a code STS turns down sends the browser to the portal's failure page", asy
     assert.equal(res.headers.get("location"), x.buildPortalLoginResultUrl(false))
     await assert.rejects(result, /token request failed: 400/)
   })
+})
+
+test("auth.refresh keeps a named account's identity and gives an unnamed one the URN (review #483)", async () => {
+  const urn = "iam::d:user:hw123"
+  const profiled = credWithProfile({ principal_urn: urn, principal_id: "pid-1" })
+  const cred = { ...(await makeCred()), refresh_token: profiled.refresh_token }
+  const fetcher = async (url) =>
+    String(url).includes("iam.cn-north-4")
+      ? new Response(JSON.stringify({ user: { phone: "0086-13800138000" } }), { status: 200 })
+      : new Response(JSON.stringify({
+      credentials: { access_key_id: "AK2", secret_access_key: "SK2", security_token: "ST2", expiration: "2031-01-01T00:00:00Z" },
+      refresh_token: profiled.refresh_token,
+    }), { status: 200 })
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: fetcher })
+
+  // an account that has an accountId: a renewal does not rename it
+  const named = await plugin.auth.refresh({ ...makeAuth(cred), accountId: urn })
+  assert.equal(named.accountId, undefined)
+  // the phone is read on the renewal and kept on the credential
+  assert.equal(JSON.parse(named.access).user_phone, "138****8000")
+
+  // an account without one: the renewal gives it the URN (else a re-sign-in
+  // would add a second row)
+  const unnamed = await plugin.auth.refresh(makeAuth(cred))
+  assert.match(String(unnamed.accountId ?? ""), /^iam::/)
+  assert.equal(JSON.parse(unnamed.access).user_phone, "138****8000")
+})
+
+test("a sign-in names the account by its URN while the card shows the phone (review #483)", async () => {
+  const b64u = (o) => Buffer.from(JSON.stringify(o)).toString("base64url")
+  const urn = "iam::d1:user:hw123"
+  const rt = `h.${b64u({ user_profile: JSON.stringify({ principal_urn: urn, principal_id: "pid-1", account_name: "hw123" }) })}.s`
+  const fetcher = async (url) =>
+    String(url).includes("iam.cn-north-4")
+      ? new Response(JSON.stringify({ user: { phone: "0086-13800138000" } }), { status: 200 })
+      : new Response(stsBody("AK", rt), { status: 200 })
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: fetcher })
+  const a = await plugin.auth.methods[0].authorize()
+  const done = a.callback()
+  const port = new URL(a.url).searchParams.get("port")
+  await fetch(`http://127.0.0.1:${port}${x.REDIRECT_PATH}?code=C1`, { redirect: "manual" })
+  const out = await done
+  // accountId is the identity (the URN); the phone is on the credential
+  assert.equal(out.accountId, urn)
+  assert.equal(JSON.parse(out.access).user_phone, "138****8000")
 })

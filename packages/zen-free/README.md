@@ -88,8 +88,13 @@ gets a small allowance a day and then `429 FreeUsageLimitError` ("Free
 models work in OpenCode") until 00:00 UTC, while OpenCode's go through.
 So a request whose system messages have no such block gets one added
 after the agent's own prompt (Anthropic `system` and Responses
-`instructions` likewise), its working directory said as unknown; a
-prompt that has one, as OpenCode's does, goes as it is.
+`instructions` likewise); a prompt that has one, as OpenCode's does, goes
+as it is. The block added is OpenCode's own, with the working directory
+the agent's prompt names (Codex's `<cwd>`, a `Working directory:` line,
+"the current working directory is ...") or the user's home folder when it
+names none. A fixed placeholder there is refused: since 2026-10-29 Zen
+answers `Working directory: unknown`, which 0.1.15 to 0.1.17 sent, with
+that 429 at once.
 
 Now and then Zen closes a streamed Chat Completions reply before its
 `[DONE]`. When the reply has said something and no tool call of it is

@@ -172,6 +172,26 @@ function requestProtocol(input, payload) {
 }
 
 /**
+ * Reasoning ids belong to items the upstream stored. Codex replays reasoning
+ * history with `store: false`, so JoyCode cannot resolve those ids and rejects
+ * the whole Responses request ("Item with id 'rs_…' not found"). The item's
+ * summary and encrypted content remain valid inline; only the stored-item id
+ * has to go.
+ */
+function withoutUnstoredReasoningIds(payload) {
+  if (payload?.store === true || !Array.isArray(payload?.input)) return payload
+  let changed = false
+  const input = payload.input.map((item) => {
+    if (!item || typeof item !== 'object' || item.type !== 'reasoning' ||
+      !Object.prototype.hasOwnProperty.call(item, 'id')) return item
+    changed = true
+    const { id, ...inline } = item
+    return inline
+  })
+  return changed ? { ...payload, input } : payload
+}
+
+/**
  * OpenAI `messages` -> { prompt, system } — fallback for accounts/backends
  * that reject multi-turn or tool-call payloads.
  */
@@ -754,8 +774,9 @@ export const JoyCodeAuthPlugin = async (_input, options) => {
                 : new TextDecoder().decode(source)
             const payload = JSON.parse(source)
             const protocol = requestProtocol(request ?? input, payload)
+            const forwarded = protocol === 'responses' ? withoutUnstoredReasoningIds(payload) : payload
             const body = JSON.stringify({
-              ...(flatten && protocol === 'chat' ? flattenBody(payload) : payload),
+              ...(flatten && protocol === 'chat' ? flattenBody(payload) : forwarded),
               ...account,
               language: 'UNKNOWN',
             })

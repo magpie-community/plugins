@@ -15,6 +15,8 @@
       live: "live", layers: "layers", history: "HISTORY", stats: "store.stats · read-only",
       dedupe: "dedupe", graft: "published", twig: "bare twig",
       checkpointsK: "Checkpoints", branchesK: "Branches",
+      agentsK: "Agent activity", agentsEmpty: "No tool calls yet. Each agent's provision, fork, checkpoint and publish lands here as it happens.",
+      agentCol: "Agent", toolCol: "Tool", projectCol: "Project", branchCol: "Branch", whenCol: "When",
     },
     zh: {
       title: "LayerFS 轨迹", replay: "回放", pause: "暂停",
@@ -26,6 +28,8 @@
       live: "条存活分支", layers: "层", history: "HISTORY", stats: "store.stats · 只读",
       dedupe: "去重", graft: "已发布", twig: "未发布的枝条",
       checkpointsK: "检查点", branchesK: "分支",
+      agentsK: "Agent 活动", agentsEmpty: "还没有工具调用。每个 agent 的 provision、fork、checkpoint 和 publish 会实时落在这里。",
+      agentCol: "Agent", toolCol: "工具", projectCol: "项目", branchCol: "分支", whenCol: "时间",
     },
     "zh-TW": {
       title: "LayerFS 軌跡", replay: "重播", pause: "暫停",
@@ -37,6 +41,8 @@
       live: "條存活分支", layers: "層", history: "HISTORY", stats: "store.stats · 唯讀",
       dedupe: "去重", graft: "已發布", twig: "未發布的枝條",
       checkpointsK: "檢查點", branchesK: "分支",
+      agentsK: "Agent 活動", agentsEmpty: "還沒有工具呼叫。每個 agent 的 provision、fork、checkpoint 和 publish 會即時落在這裡。",
+      agentCol: "Agent", toolCol: "工具", projectCol: "專案", branchCol: "分支", whenCol: "時間",
     },
     ja: {
       title: "LayerFS の軌跡", replay: "再生", pause: "一時停止",
@@ -48,6 +54,8 @@
       live: "本の生存ブランチ", layers: "レイヤー", history: "HISTORY", stats: "store.stats · 読み取り専用",
       dedupe: "重複排除", graft: "公開済み", twig: "未公開の枝",
       checkpointsK: "チェックポイント", branchesK: "ブランチ",
+      agentsK: "エージェントの活動", agentsEmpty: "まだツール呼び出しはありません。各エージェントの provision、fork、checkpoint、publish は随時ここに記録されます。",
+      agentCol: "エージェント", toolCol: "ツール", projectCol: "プロジェクト", branchCol: "ブランチ", whenCol: "時刻",
     },
   };
 
@@ -96,7 +104,56 @@
     if (n >= 1e9) return (n / 1e9).toFixed(2) + " GB";
     if (n >= 1e6) return (n / 1e6).toFixed(1) + " MB";
     if (n >= 1e3) return (n / 1e3).toFixed(1) + " KB";
-    return n + " B";
+    // byte counts are whole: the counters interpolate mid-replay, and
+    // an unrounded fraction here used to show as 3.164870684975676 B
+    return Math.round(n) + " B";
+  }
+
+  // The view state a reload carries in location.hash: the project, the
+  // vertical scroll, and the replay playhead. The hash survives
+  // location.reload() in a sandboxed frame and needs no storage, which
+  // is what makes it usable here: the page cannot fetch, and the
+  // service must not answer cross-origin reads, so the fresh document
+  // cannot ask what changed — it can only read what the old document
+  // left in the hash. Pure, so a test can check the round-trip and
+  // the restore decision without a DOM.
+  function formatViewHash(state) {
+    const p = encodeURIComponent(String(state.project || ""));
+    const y = Math.max(0, Math.round(Number(state.scrollY) || 0));
+    const t = Math.max(0, Math.round((Number(state.playhead) || 0) * 1000) / 1000);
+    return `#p=${p}&y=${y}&t=${t}`;
+  }
+  function parseViewHash(hash) {
+    const h = String(hash || "").replace(/^#/, "");
+    if (!h) return null;
+    let params;
+    try { params = new URLSearchParams(h); } catch { return null; }
+    const project = params.get("p");
+    if (!project) return null;
+    const y = Number(params.get("y"));
+    const t = Number(params.get("t"));
+    return {
+      project,
+      scrollY: Number.isFinite(y) && y > 0 ? Math.round(y) : 0,
+      playhead: Number.isFinite(t) && t > 0 ? t : 0,
+    };
+  }
+  // Which view a fresh document restores from the hash, or null for a
+  // plain first look (no hash, or a hash naming a project that is no
+  // longer there — a renamed project must not pin the page to a
+  // ghost). The playhead clamps to the project's steps: the data may
+  // have grown or shrunk since the hash was written. Under reduced
+  // motion the page settles on the final state whatever the hash says.
+  function resolveRestoredView(projects, hash, reducedMotion) {
+    const parsed = parseViewHash(hash);
+    if (!parsed) return null;
+    const project = (projects || []).find((p) => p.name === parsed.project);
+    if (!project) return null;
+    const n = steps(project).length;
+    if (reducedMotion || parsed.playhead >= n) {
+      return { project: parsed.project, scrollY: parsed.scrollY, playhead: n, settled: true };
+    }
+    return { project: parsed.project, scrollY: parsed.scrollY, playhead: Math.min(parsed.playhead, n), settled: false };
   }
 
   // Lane 0 is main, the middle bough; other branches follow in the order
@@ -392,5 +449,6 @@
     TEXT, text, bytes, lanes, steps, publishes, layout, detail, AGENTS, agentOf,
     ICONS, LEAF_GLYPH, glyphFor, iconDraw,
     cubicBezier, magpieEase, easeOutCubic, easeOutBack, clamp01, frame, pulse, markInk,
+    formatViewHash, parseViewHash, resolveRestoredView,
   };
 })();

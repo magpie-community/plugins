@@ -82,8 +82,8 @@ test("Qoder's other codes on a 403 aren't a lapsed sign-in either; 105 and no co
     expect(f(code, "credits used up")).toEqual({ status: 429, message: "usage limit reached: credits used up", signIn: "" })
   for (const code of ["406", "416", "430", "80411", "80412", "100400", "100401", "100403"])
     expect(f(code, "no")).toEqual({ status: 400, message: `Qoder refused the request (${code}): no`, signIn: "" })
-  expect(f("105", "login expired")).toEqual({ status: 401, message: "the sign-in lapsed — sign in again (Qoder said 403: login expired)" })
-  expect(_internal.failure(403, "")).toEqual({ status: 401, message: "the sign-in lapsed — sign in again" })
+  expect(f("105", "login expired")).toEqual({ status: 401, message: "the sign-in lapsed — sign in again (Qoder said 403: login expired)", lapsed: true })
+  expect(_internal.failure(403, "")).toEqual({ status: 401, message: "the sign-in lapsed — sign in again", lapsed: true })
 })
 
 test("a BOM in an SSE error body must not turn a resource limit into expired auth", async () => {

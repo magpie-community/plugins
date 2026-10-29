@@ -177,16 +177,23 @@ test("pools in different units are not added up", () => {
 
 // the loader's fetch, as OpenCode's engine calls it, against a listing and
 // a chat reply
+// a refresh is answered with a new pair, counted in refreshes: a refused
+// job token is renewed once before the refusal is said (plugins#474)
 async function chat(listing, reply) {
   const auth = { ...account(), machineId: "m1", name: "One" }
-  globalThis.fetch = async (url) => {
+  const refreshes = []
+  globalThis.fetch = async (url, init = {}) => {
     const u = new URL(String(url))
     if (u.pathname.endsWith("/model/list")) return json(listing)
+    if (u.pathname === "/api/v1/jobToken/refresh") {
+      refreshes.push(JSON.parse(init.body).refresh_token)
+      return json({ token: "jt-two", refresh_token: "rt-two", expires_in: 3_600_000 })
+    }
     return reply()
   }
   const hooks = await QoderAuthPlugin({ client: { auth: { set: async () => {} } } })
   const l = await hooks.auth.loader(async () => auth)
-  return { fetch: l.fetch, hooks, auth }
+  return { fetch: l.fetch, hooks, auth, refreshes }
 }
 
 const LISTING = {
@@ -200,25 +207,29 @@ const LISTING = {
 
 const ASK = { method: "POST", body: JSON.stringify({ model: "qmodel", messages: [{ role: "user", content: "hi" }] }) }
 
+// Refused again after the one renewal a refusal gets: the job token was
+// renewed (the account's mark comes off, as the built-in's renewal took it
+// off), and the refusal is said as the built-in's 401, never "expired".
 test("a refused chat, 401 or 403, is the built-in's 401 and leaves the account unmarked", async () => {
   for (const status of [401, 403]) {
-    const { fetch } = await chat(LISTING, () => new Response("", { status }))
+    const { fetch, refreshes } = await chat(LISTING, () => new Response("", { status }))
     const res = await fetch(API_CHAT, ASK)
     expect(res.status).toBe(401)
-    expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
+    expect(res.headers.get("X-Magpie-Sign-In")).toBe("renewed")
     expect((await res.json()).error.message).toBe("the sign-in lapsed — sign in again")
+    expect(refreshes).toEqual(["rt-one"])
   }
   // what Qoder says of the refusal is kept: a 401 just after signing in
   // has some other reason, and only Qoder's words tell it
   const said = await chat(LISTING, () => new Response(JSON.stringify({ message: "device not trusted" }), { status: 401 }))
   const r = await said.fetch(API_CHAT, ASK)
-  expect([r.status, r.headers.get("X-Magpie-Sign-In")]).toEqual([401, "kept"])
+  expect([r.status, r.headers.get("X-Magpie-Sign-In")]).toEqual([401, "renewed"])
   expect((await r.json()).error.message).toBe("the sign-in lapsed — sign in again (Qoder said 401: device not trusted)")
   // refused in the stream, before any answer: the same
   const sse = (v) => new Response(`data: ${JSON.stringify(v)}\n\n`, { headers: { "Content-Type": "text/event-stream" } })
   const { fetch } = await chat(LISTING, () => sse({ statusCodeValue: 403, body: "" }))
   const res = await fetch(API_CHAT, ASK)
-  expect([res.status, res.headers.get("X-Magpie-Sign-In")]).toEqual([401, "kept"])
+  expect([res.status, res.headers.get("X-Magpie-Sign-In")]).toEqual([401, "renewed"])
 })
 
 test("other refusals keep their status and say nothing of the sign-in", async () => {
@@ -552,4 +563,18 @@ test("a free account with no credits shows none left, not nothing", () => {
   // a pool that can't be read is no word that the account has none
   expect(_internal.parseUsage({ displayMode: "qoder", qoderUsage: { userType: "personal_standard", userQuota: { total: "0" } } }).windows).toEqual([])
   expect(_internal.parseUsage({ displayMode: "qoder", qoderUsage: { userType: "personal_standard" } }).windows).toEqual([])
+})
+
+test("usage's user is the card's name, and the accountId stays the identity (review #487, round 3)", async () => {
+  let auth = { ...account(), accountId: "one@x", cardName: "138****8000", phoneLabel: "138****8000" }
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url))
+    if (u.pathname === "/sash/api/v2/me/usage") return json(USAGE)
+    if (u.pathname === "/api/v1/deviceToken/refresh") return json({ token: "dt-new", refresh_token: "drt-new" })
+    return new Response("", { status: 404 })
+  }
+  const hooks = await QoderAuthPlugin({ client: { auth: { set: async ({ body }) => (auth = body) } } })
+  const u = await hooks.auth.usage(async () => auth)
+  expect(u.user).toBe("138****8000")
+  expect(auth.accountId).toBe("one@x")
 })

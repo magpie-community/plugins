@@ -66,3 +66,33 @@ test("no cache count adds no field", async () => {
   const res = await ask({ model: "glm-5", messages: [{ role: "user", content: "hi" }] })
   expect((await res.json()).usage).toEqual({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 })
 })
+
+// plugins#455 (chansee97): TRAE CN's own client's llm_utils_chat answer,
+// its token_usage lines as captured: an id line, and no space after any
+// colon. The cache read it says (4096 of 4122) reaches magpie.
+const CAPTURED =
+  'id:30\nevent:token_usage\ndata:{"name":"","prompt_tokens":4122,"completion_tokens":63,"total_tokens":4185,"cache_creation_input_tokens":0,"cache_read_input_tokens":4096,"reasoning_tokens":20,"prompt_tokens_total":0,"completion_tokens_total":0,"total_tokens_total":0,"cache_creation_input_tokens_total":0,"cache_read_input_tokens_total":0,"reasoning_tokens_total":0,"cluster":"normal_context"}\n\n'
+
+for (const stream of [true, false]) {
+  test(`the captured token_usage keeps its cache read (#455, stream=${stream})`, async () => {
+    f = fakeTrae()
+    f.route(
+      "POST /api/agent/v3/llm_utils_chat",
+      () =>
+        new Response('id:29\nevent:output\ndata:{"response":"ok"}\n\n' + CAPTURED + 'id:31\nevent:done\ndata:{"finish_reason":"stop"}\n\n', {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    )
+    const res = await ask({ model: "glm-5", stream, messages: [{ role: "user", content: "hi" }] })
+    const usage = stream
+      ? (await res.text()).split("\n").filter((l) => l.startsWith("data: {")).map((l) => JSON.parse(l.slice(6))).at(-1).usage
+      : (await res.json()).usage
+    expect(usage).toEqual({
+      prompt_tokens: 4122,
+      completion_tokens: 63,
+      total_tokens: 4185,
+      cache_read_input_tokens: 4096,
+      completion_tokens_details: { reasoning_tokens: 20 },
+    })
+  })
+}

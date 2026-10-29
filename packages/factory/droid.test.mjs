@@ -80,6 +80,23 @@ test("another agent's request to /api/llm/o opens with droid's line", async () =
   expect(b.instructions).toBe(DROID_LINE)
 })
 
+// droid sends registry_default with apiProviders[0], so 1017 goes to
+// Fireworks, the first of its ["fireworks","baseten","databricks"].
+test("1017 goes to its registry default, Fireworks, with every reasoning effort", async () => {
+  const { send } = await loaded({ ...signedIn })
+  const model = "deepseek-v4.1-flash-1017"
+  for (const effort of ["none", "low", "high", "max"]) {
+    const s = await send(chat, JSON.stringify({ model, messages: [{ role: "user", content: "hi" }], reasoning_effort: effort, stream: true }))
+    expect(s.url).toBe(chat)
+    expect(s.headers.get("x-api-provider")).toBe("fireworks")
+    expect(s.headers.get("x-provider-routing-source")).toBe("registry_default")
+    expect(JSON.parse(s.body)).toMatchObject({ model, reasoning_effort: effort, stream: true })
+  }
+  const original = await send(chat, JSON.stringify({ model: "deepseek-v4.1-flash", messages: [{ role: "user", content: "hi" }] }))
+  expect(original.headers.get("x-api-provider")).toBe("fireworks")
+  expect(JSON.parse(original.body).model).toBe("deepseek-v4.1-flash")
+})
+
 test("droid's own requests go on byte for byte on each API", async () => {
   const { send } = await loaded({ ...signedIn })
   for (const [url, body] of [

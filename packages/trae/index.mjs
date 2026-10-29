@@ -871,6 +871,15 @@ function clientStoragePaths(platform, home, env) {
 // seen (and one unreadable file hid every profile after it).
 async function clientDevice(uid) {
   if (!uid) return undefined
+  return (await clientProfiles()).find((p) => String(p.uid) === String(uid))?.device
+}
+
+// clientProfiles are this machine's Trae CN client profiles that can be
+// made out, in ownClient.paths' order: the account each is signed in as
+// and its one device. A file that isn't there, can't be read or parsed,
+// names no single device or has a sign-in that doesn't decode is left out.
+async function clientProfiles() {
+  const out = []
   for (const p of ownClient.paths()) {
     let text
     try {
@@ -888,12 +897,34 @@ async function clientDevice(uid) {
       const ids = Object.keys(doc ?? {}).filter((k) => k.startsWith(DC_KEY)).map((k) => k.slice(DC_KEY.length))
       if (ids.length !== 1 || !/^\d{8,20}$/.test(ids[0])) continue
       const who = clientAuth(doc[AUTH_KEY])?.userId
-      if (who != null && String(who) === String(uid)) return ids[0]
+      if (who != null && String(who) !== "") out.push({ uid: String(who), device: ids[0] })
     } catch {
       continue // a sign-in that doesn't decode: the next profile may be
     }
   }
-  return undefined
+  return out
+}
+
+// deviceNote says which device a Trae CN check-in went on, for the message
+// of a claim Trae refused (9074) or found already in (9095): the device of
+// a client on this machine signed in as uid, or magpie's own for the
+// account and why — how many client profiles were found, and that none is
+// signed in as it. It names no uid and no device id. A client's device
+// that another profile, signed in as another account, also has is said:
+// both accounts check in on one device, and Trae takes one a day
+// (plugins#436). It only states what was read; it promises no fix.
+async function deviceNote(uid) {
+  const all = await clientProfiles()
+  const mine = all.find((p) => String(p.uid) === String(uid ?? ""))
+  if (mine) {
+    const shared = all.some((p) => p.device === mine.device && String(p.uid) !== String(uid))
+    return shared
+      ? "sent on this machine's Trae CN client's device, signed in as this account — another profile here, signed in as another account, has the same device"
+      : "sent on this machine's Trae CN client's device, signed in as this account"
+  }
+  if (!all.length) return "sent on magpie's own device for this account: no Trae CN client profile was found on this machine"
+  const n = all.length
+  return `sent on magpie's own device for this account: ${n} Trae CN client profile${n === 1 ? " is" : "s are"} on this machine, none signed in as this account`
 }
 
 // clientAuth is the client's sign-in envelope, as stored or decoded
@@ -3078,7 +3109,7 @@ const makePlugin = (site) => async ({ client }) => {
     const ce = errorOf(answer)
     if (claim.status === 401 || lapsedCode(ce.code, site)) return { outcome: "failed", message: ce.message || `${a0.name || a0.uid}: Trae's sign-in has expired` }
     // 9095: this device is in for today, whoever took it — the day's answer
-    if (String(ce.code) === "9095") return { outcome: "ineligible", message: ce.message || "this device has checked in today" }
+    if (String(ce.code) === "9095") return { outcome: "ineligible", message: `${ce.message || "this device has checked in today"} (${await deviceNote(a0.uid)})` }
     // 9074: Trae did not take this claim for this account's device. Its own
     // words say the pool is busy, which measurements do not bear out: the
     // same account, token and headers were taken on a 16-digit id where a
@@ -3092,8 +3123,13 @@ const makePlugin = (site) => async ({ client }) => {
     // it in. Nothing is said of signing one in: it is the one thing seen
     // to change a 9074, but it hasn't been tried on a real account, and
     // on a claim that already rode a client's device it is what the user
-    // did — the advice would only send them back to do it again.
-    if (String(ce.code) === "9074") return { outcome: "ineligible", message: `${ce.message} (9074) — Trae CN did not take this check-in for this account's device` }
+    // did — the advice would only send them back to do it again. What it
+    // does say, after both 9074 and 9095, is which device the claim went
+    // on and why (deviceNote): moxuanchen (plugins#436) had to run
+    // clientDevice by hand to learn that the account Trae CN took (A, 100
+    // credits) rode the client's device and the one it refused 9074 (B)
+    // rode magpie's own, since both of that machine's profiles were A's.
+    if (String(ce.code) === "9074") return { outcome: "ineligible", message: `${ce.message} (9074) — Trae CN did not take this check-in for this account's device (${await deviceNote(a0.uid)})` }
     if (claim.status !== 200 || (ce.code && String(ce.code) !== "0")) return { outcome: "failed", message: ce.message || statusLine(claim.status) }
     if (!answer || typeof answer !== "object" || Array.isArray(answer)) return { outcome: "failed", message: `check-in claim: unreadable reply ${claimText.trim().slice(0, 120) || "(empty)"}` }
     // a claim's own code 0 is not proof the day is in: Trae answers it for
@@ -3545,4 +3581,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { ownClient, clientStoragePaths, clientDevice, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf }
+export const _internal = { ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf }

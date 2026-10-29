@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Office</title>
+<link rel="stylesheet" href="style.css">
+<script src="_magpie/bridge.js"></script>
+<script src="agents.js"></script>
+<script src="model.js"></script>
+<script src="icons.js"></script>
+<script src="scene.js"></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<main class="card" id="card">
+  <header class="top">
+    <h1><span class="eyes" aria-hidden="true"><i></i><i></i></span><span data-t="title">What are my agents doing</span><span class="live" id="live"><i></i><span data-t="live">live</span></span></h1>
+    <div class="counts" id="counts">
+      <span class="count need"><i></i><span data-t="needYou">Need you</span> <b id="nNeed">0</b></span>
+      <span class="count work"><i></i><span data-t="working">Working</span> <b id="nWork">0</b></span>
+      <span class="count done"><i></i><span data-t="doneN">Done</span> <b id="nDone">0</b></span>
+    </div>
+  </header>
+  <nav class="bar">
+    <div class="seg dark" role="tablist" id="modes">
+      <button type="button" role="tab" data-mode="office" data-t="office">Office</button>
+      <button type="button" role="tab" data-mode="list" data-t="list">List</button>
+    </div>
+    <div class="seg plain" role="tablist" id="dims">
+      <button type="button" role="tab" data-dim="2d">2D</button>
+      <button type="button" role="tab" data-dim="3d">3D</button>
+    </div>
+    <span class="note" id="note"></span>
+    <span class="grow"></span>
+    <button type="button" class="btn" id="pip" data-t="pip">Picture in picture</button>
+    <div class="menu-wrap">
+      <button type="button" class="btn" id="settingsBtn" aria-haspopup="true" aria-expanded="false"><span data-t="settings">Settings</span> <span class="chev">⌄</span></button>
+      <div class="menu" id="settings" hidden>
+        <label class="row"><input type="checkbox" id="optDemo"> <span data-t="demo">Sample agents</span></label>
+        <label class="row"><input type="checkbox" id="optDone"> <span data-t="showDone">Show finished agents</span></label>
+        <label class="row"><input type="checkbox" id="optText"> <span data-t="showText">Show prompts and replies</span></label>
+        <div class="row col">
+          <span data-t="hideAfter">Leave the office after</span>
+          <div class="seg small" id="optHide">
+            <button type="button" data-hide="1h" data-t="h1">1 hour</button>
+            <button type="button" data-hide="6h" data-t="h6">6 hours</button>
+            <button type="button" data-hide="24h" data-t="h24">24 hours</button>
+            <button type="button" data-hide="never" data-t="never">Never</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </nav>
+  <section class="stage" id="stage">
+    <canvas id="office"></canvas>
+    <div class="tags" id="tags"></div>
+    <div class="empty" id="empty" hidden></div>
+  </section>
+  <section class="listview" id="listview" hidden>
+    <table>
+      <thead><tr><th data-t="agent">Agent</th><th data-t="task">Task</th><th data-t="status">Status</th><th data-t="project">Folder</th><th data-t="model">Model</th><th data-t="last">Last active</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p class="empty-list" id="emptyList" hidden></p>
+  </section>
+  <aside class="pop" id="pop" hidden></aside>
+  <footer>
+    <div class="legend" id="statusLegend"></div>
+    <div class="legend brands" id="brandLegend"></div>
+  </footer>
+</main>
+<div class="float" id="float" hidden>
+  <div class="floatbar" id="floatbar"><span class="fdots" aria-hidden="true"><i></i><i></i></span><span data-t="pip">Picture in picture</span><button type="button" class="fclose" id="floatClose" aria-label="Close">✕</button></div>
+  <div class="floatslot" id="floatslot"></div>
+</div>
+</body>
+</html>

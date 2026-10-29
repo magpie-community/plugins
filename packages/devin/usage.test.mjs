@@ -49,7 +49,7 @@ test("a Teams plan: its end, its day and week, the extra usage balance", async (
       { name: "1 day", used: 0, span: 86400, resetsAt: 1790841600 },
       { name: "7 days", used: 1, span: 604800, resetsAt: 1791100800 },
     ],
-    signIn: "kept",
+    signIn: "renewed",
   })
   expect(seen[0].url).toBe("https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus")
   expect(seen[0].headers).toEqual({ "Content-Type": "application/json", "Connect-Protocol-Version": "1" })
@@ -79,19 +79,19 @@ test("a hidden quota isn't shown, nor one with no reset; ACUs with a limit are",
   expect(u).toEqual({
     until: "2026-10-26T21:45:55Z",
     windows: [{ name: "ACUs", used: 25, display: "12.5 / 50 ACUs", resetsAt: "2026-10-26T21:45:55Z", aside: true }],
-    signIn: "kept",
+    signIn: "renewed",
   })
 })
 
 test("a plan billed otherwise, with resets and no share given, has no quota windows", async () => {
   const s = status({ dailyQuotaRemainingPercent: undefined, weeklyQuotaRemainingPercent: undefined, overageBalanceMicros: undefined })
   s.userStatus.planStatus.planInfo.billingStrategy = "BILLING_STRATEGY_CREDITS"
-  expect((await run(auth, () => Response.json(s))).u).toEqual({ until: "2026-10-26T21:45:55Z", windows: [], signIn: "kept" })
+  expect((await run(auth, () => Response.json(s))).u).toEqual({ until: "2026-10-26T21:45:55Z", windows: [], signIn: "renewed" })
 })
 
 test("a plan without quotas has no windows, and leaves the row's plan be", async () => {
   const s = { userStatus: { planStatus: { planInfo: { planName: "Free" } } } }
-  expect((await run(auth, () => Response.json(s))).u).toEqual({ windows: [], signIn: "kept" })
+  expect((await run(auth, () => Response.json(s))).u).toEqual({ windows: [], signIn: "renewed" })
 })
 
 test("usage enriches an older sign-in with its organization and keeps each org's quota pool separate", async () => {
@@ -166,13 +166,13 @@ test("usage enriches an older sign-in with its organization and keeps each org's
   ])
 })
 
-// the built-in read no usage, so none marked the account: a refused key
-// says to sign in again, and says the account is kept
-test("a refused key says to sign in again, the account kept", async () => {
+// a refused key marks the account signed out, so magpie passes over it
+// and its row offers Sign in again (blue12345655 on Discord); a 500 keeps it
+test("a refused key says to sign in again, the account signed out", async () => {
   const { u } = await run(auth, () => Response.json({ code: "unauthenticated", message: "invalid api key" }, { status: 401 }))
-  expect(u).toEqual({ error: "Devin's sign-in has expired — sign in again", windows: [], signIn: "kept" })
+  expect(u).toEqual({ error: "Devin's sign-in has expired — sign in again", windows: [], signIn: "expired" })
   const bare = await run(auth, () => new Response("", { status: 401 }))
-  expect(bare.u).toEqual({ error: "Devin's sign-in has expired — sign in again", windows: [], signIn: "kept" })
+  expect(bare.u).toEqual({ error: "Devin's sign-in has expired — sign in again", windows: [], signIn: "expired" })
   expect((await run(auth, () => new Response("", { status: 500 }))).u.signIn).toBe("kept")
   expect((await run({ type: "oauth" }, () => Response.json({}))).u).toEqual({ error: "Devin isn't signed in", signIn: "kept" })
 })

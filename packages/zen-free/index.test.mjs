@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { protocols, declaredTools, toolReply } from "./tool-fixtures.mjs";
+import { addEnvironment } from "./provider.mjs";
 
 const subject = import("./index.mjs").then((module) => ({
   default: { server: module.ZenFreePlugin },
@@ -711,3 +712,43 @@ for (const { protocol, path, model } of protocols) {
     assert.equal(systemText(protocol, sent), own);
   });
 }
+
+// Zen answers 429 FreeUsageLimitError at once to the block 0.1.15 to
+// 0.1.17 added, `Working directory: unknown`, and serves the same request
+// with a path there (shanmao_10826 on magpie's Discord, 2026-10-29). The
+// block names the directory the agent's prompt names, or the home folder.
+test("the environment block names a real directory, never a fixed placeholder", () => {
+  const home = "/home/someone";
+  const added = (protocol, body) => {
+    addEnvironment(body, protocol, home);
+    return systemText(protocol, body);
+  };
+  const line = (text) => /Working directory: (.*)/.exec(text)?.[1];
+  // none named: the home folder, in OpenCode's own block
+  let text = added("chat", { messages: [{ role: "user", content: "hi" }] });
+  assert.match(text, ENV);
+  assert.equal(line(text), home);
+  assert.doesNotMatch(text, /unknown/);
+  assert.match(text, /^Here is some useful information about the environment you are running in:\n<env>\n/);
+  assert.match(text, new RegExp(`Workspace root folder: ${home}\\n  Is directory a git repo: (yes|no)\\n  Platform: ${process.platform}\\n</env>$`));
+  // Codex's <cwd> in its first user message
+  text = added("responses", {
+    instructions: "You are Codex.",
+    input: [{ role: "user", content: [{ type: "input_text", text: "<environment_context>\n  <cwd>/Users/me/app</cwd>\n</environment_context>" }] }],
+  });
+  assert.equal(line(text), "/Users/me/app");
+  // Kimi's sentence, a Windows path, in the system prompt
+  text = added("chat", {
+    messages: [
+      { role: "system", content: "You are Kimi. The current working directory is `C:\\work\\repo`." },
+      { role: "user", content: "hi" },
+    ],
+  });
+  assert.equal(line(text.split("<env>")[1]), "C:\\work\\repo");
+  // Anthropic: a "Working directory:" line outside an <env> block
+  text = added("anthropic", { system: "Working directory: /srv/proj.\nBe brief.", messages: [] });
+  assert.equal(line(text.split("<env>")[1]), "/srv/proj");
+  // a relative or bare word is not a directory
+  text = added("chat", { messages: [{ role: "system", content: "Working directory: unknown" }, { role: "user", content: "hi" }] });
+  assert.equal(line(text.split("<env>")[1]), home);
+});

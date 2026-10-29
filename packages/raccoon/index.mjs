@@ -96,6 +96,63 @@ function extractDisplayName(claims) {
   return String(claims?.name ?? "").trim()
 }
 
+// ---- the card's name --------------------------------------------------------
+
+/**
+ * A phone number as the cards show it: `86 13800138000` / `0086-…` / bare /
+ * already masked → `138****8000`.
+ */
+function maskPhone(raw) {
+  let digits = String(raw ?? "").replace(/\D/g, "")
+  if (digits.startsWith("0086") && digits.length - 4 >= 7) digits = digits.slice(4)
+  else if (digits.startsWith("86") && digits.length - 2 >= 7) digits = digits.slice(2)
+  // a phone is 11 digits; a shorter run is not a number to mask
+  if (digits.length < 11) return ""
+  return `${digits.slice(0, 3)}****${digits.slice(-4)}`
+}
+
+// One read per token, re-read after PHONE_TTL_MS; stale entries are dropped
+// when the map passes PHONE_CAP, so it does not grow for the life of the host.
+const PHONE_CAP = 2048
+const phoneByToken = new Map()
+const PHONE_TTL_MS = 6 * 60 * 60 * 1000
+
+/**
+ * The account's own phone number, read from the web API with the token the
+ * sign-in already holds (`GET /api/web/auth/v1/user_info` answers `data.phone`,
+ * measured `13800138000` on an `sms`-registered account).
+ *
+ * The JWT names the signer only by `Raccoon-pu-<uuid>` — an id, not a name —
+ * so the card used to show that string. Best effort: no token, a refusal or an
+ * answer without a number leaves the JWT's name on the card, and never costs a
+ * sign-in.
+ */
+async function accountPhoneOf(access) {
+  const token = stripBearer(access)
+  if (!token) return ""
+  const hit = phoneByToken.get(token)
+  if (hit && Date.now() - hit.at < PHONE_TTL_MS) return hit.phone
+  try {
+    const res = await fetch(`${mainOrigin()}/api/web/auth/v1/user_info`, {
+      headers: { Accept: "application/json", Authorization: "Bearer " + token },
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) return ""
+    const payload = await res.json().catch(() => null)
+    const phone = maskPhone(payload?.data?.phone)
+    if (phone) {
+      if (phoneByToken.size >= PHONE_CAP) {
+        for (const [k, v] of phoneByToken) if (Date.now() - v.at >= PHONE_TTL_MS) phoneByToken.delete(k)
+        if (phoneByToken.size >= PHONE_CAP * 2) phoneByToken.clear()
+      }
+      phoneByToken.set(token, { at: Date.now(), phone })
+    }
+    return phone
+  } catch {
+    return ""
+  }
+}
+
 function vendorErrorText(payload, fallback) {
   for (const k of ["details", "message", "msg"]) {
     if (typeof payload?.[k] === "string" && payload[k].trim()) return payload[k].trim()
@@ -258,6 +315,8 @@ function isStale(a, marginMs = EARLY_MS) {
 function sameAccount(seat, read) {
   if (!read) return false
   if (seat?.uid) return !!read.uid && String(seat.uid) === String(read.uid)
+  // accountId is the identity, as on main: the seat's own name is what the
+  // app's read carries for the same account.
   if (seat?.accountId) return !!read.name && String(seat.accountId) === String(read.name)
   return true
 }
@@ -268,12 +327,19 @@ async function currentAuth(client, auth, force = false) {
     // the app holds this seat's account: its token is the newest there is,
     // and a seat asked again after a refusal takes it
     if (sameAccount(auth, d) && !isStale(d, EARLY_MS)) {
+      let next = { ...auth, ...d }
       if (d.access && d.access !== auth.access) {
+        // A desktop seat stored by an earlier version is named `Raccoon-pu-…`:
+        // when the app's token changes, read the phone and keep it on the
+        // record (magpie replaces an account only at sign-in, merging fields
+        // on renewal).
+        const phone = await accountPhoneOf(d.access)
+        if (phone) next = { ...next, phone, cardName: phone }
         try {
-          await client?.auth?.set?.({ path: { id: PROVIDER_ID }, body: { ...auth, ...d } })
+          await client?.auth?.set?.({ path: { id: PROVIDER_ID }, body: next })
         } catch {}
       }
-      return { a: { ...auth, ...d }, didRenew: false }
+      return { a: next, didRenew: false }
     }
     // the app holds another account, or none: this seat goes on with the
     // token it was signed in with until that token ends
@@ -789,17 +855,23 @@ async function exchangeAuthCode(code) {
   return { access, refresh }
 }
 
-function toSuccessAuth(access, refresh, extra = {}) {
+async function toSuccessAuth(access, refresh, extra = {}) {
   const claims = decodeJwtClaims(access)
   const uid = extractUserId(claims)
   const name = extractDisplayName(claims)
   const expires = jwtExpiryMs(access)
+  const phone = await accountPhoneOf(access)
   return {
     type: "success",
     access,
     refresh: refresh || "",
     expires,
+    // accountId is the account's identity in magpie (its user-set name, proxy,
+    // model picks and a gateway key's list hang off it), so it stays what main
+    // computes; the phone is a separate field (`phone`, `cardName`) that usage
+    // shows as the card's name.
     accountId: name || (uid ? `Raccoon-${uid}` : PROVIDER_NAME),
+    ...(phone ? { phone, cardName: phone } : {}),
     uid: uid || "",
     ...(name ? { name } : {}),
     ...extra,
@@ -850,7 +922,7 @@ async function browserSignIn(timeoutMs = 10 * 60 * 1000) {
       const tokens = await exchangeAuthCode(code)
       if (settled) return reply(408, "登录已超时，请回到 Magpie 重新登录。")
       reply(200, "商汤小浣熊登录成功，可以关闭此页并返回 Magpie。")
-      finish(toSuccessAuth(tokens.access, tokens.refresh))
+      finish(await toSuccessAuth(tokens.access, tokens.refresh))
     } catch (e) {
       reply(502, "登录未完成，请返回 Magpie 查看错误并重新登录。")
       finish({ type: "failed", error: e?.message ?? String(e) })
@@ -884,7 +956,7 @@ function manualSignIn() {
       try {
         const parsed = parseCallbackInput(input, state)
         const tokens = parsed.direct ? parsed.direct : await exchangeAuthCode(parsed.code)
-        return toSuccessAuth(tokens.access, tokens.refresh)
+        return await toSuccessAuth(tokens.access, tokens.refresh)
       } catch (e) {
         return { type: "failed", error: e?.message ?? String(e) }
       }
@@ -913,6 +985,9 @@ function desktopSignIn() {
       if (isStale(d, EARLY_MS)) {
         return { type: "failed", error: "商汤小浣熊桌面端登录态已过期，请先打开商汤小浣熊客户端重新登录" }
       }
+      // the app's own token reads the phone too, so a seat added here is named
+      // like one signed in through the browser
+      const phone = await accountPhoneOf(d.access)
       return {
         type: "success",
         access: d.access,
@@ -920,6 +995,7 @@ function desktopSignIn() {
         expires: d.expires,
         source: "desktop",
         accountId: d.name || PROVIDER_NAME,
+        ...(phone ? { phone, cardName: phone } : {}),
         uid: d.uid || "",
       }
     },
@@ -968,15 +1044,20 @@ export const RaccoonAuthPlugin = async ({ client }) => {
       provider: PROVIDER_ID,
       refreshLead: LEAD_MS,
       async refresh(auth) {
-        if (auth?.type !== "oauth" || auth.source === "desktop" || !auth.access || !auth.refresh) return undefined
+        if (auth?.type !== "oauth" || !auth.access || auth.source === "desktop") return undefined
+        if (!auth.refresh) return undefined
         const { a, didRenew } = await currentAuth(client, auth, true)
         if (!didRenew) return undefined
+        // An account stored by an older version was named by `Raccoon-pu-…`;
+        // its renewal is where the phone can still be read and put on the card.
+        const phone = await accountPhoneOf(a.access)
         return {
           access: a.access,
           refresh: a.refresh,
           expires: a.expires,
           ...(a.uid ? { uid: a.uid } : {}),
           ...(a.name ? { name: a.name } : {}),
+          ...(phone ? { phone, cardName: phone } : {}),
         }
       },
       async loader(getAuth) {
@@ -1068,7 +1149,9 @@ export const RaccoonAuthPlugin = async ({ client }) => {
           }
           return {
             ...result,
-            user: a.name || auth.accountId || a.uid,
+            // The card's name: the phone when the record has one, else what
+            // the account is called (an older record has no phone).
+            user: a.cardName || a.accountId || a.name || a.uid,
             signIn: didRenew ? "renewed" : "kept",
           }
         } catch (e) {

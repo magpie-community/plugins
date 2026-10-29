@@ -11,6 +11,10 @@ import { createBackend } from "./layerfs.mjs"
 const envSnapshot = { ...process.env }
 const dirs = []
 const mk = (p) => { const d = mkdtempSync(join(tmpdir(), p)); dirs.push(d); return d }
+// Suite hygiene (0.10.0 review, item 3): no test may touch the real
+// HOME — the first test calls LayerfsTools with no env at all, so the
+// suite pins a scratch home before any test runs.
+process.env.MAGPIE_LAYERFS_HOME = mk("lfs-suite-home-")
 // The cleanup's time grows with the machine's disk load, not with the
 // suite: on a loaded box removing every dir took over bun's default 5s
 // hook bar (#362), so the hook carries its own.

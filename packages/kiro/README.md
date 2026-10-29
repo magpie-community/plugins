@@ -62,6 +62,9 @@ Refreshing such a sign-in:
   plugin's `auth.refresh`, once for the account and before its requests,
   models and usage need it. magpie saves the new token. A failed renewal,
   even one Kiro refused, doesn't mark the account: it is tried again.
+  The usage read does: a sign-in Kiro refused there marks the account
+  signed out (`signIn: "expired"`), so magpie passes over it and offers
+  Sign in again on its row, and a clean read takes the mark off.
 - OpenCode doesn't call that hook: there the token is refreshed 2 minutes
   before it expires, before a request, and saved.
 - Either way, a token Kiro turns down (a 403) is refreshed and the request

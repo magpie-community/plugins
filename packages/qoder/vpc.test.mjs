@@ -357,3 +357,68 @@ test("an account whose VPC instance on record isn't one is not sent to the publi
   expect((await hooks.auth.usage(s.get)).error).toContain("isn't one")
   expect(seen).toEqual([])
 })
+
+test("a VPC account's renewal asks its own instance for the name, and keeps the suffix (review #487)", async () => {
+  toServer()
+  const at = []
+  route = (where, { req }) => {
+    at.push(where)
+    if (where === OPENAPI + "/api/v1/jobToken/refresh")
+      return json({ token: "jt-vpc-2", refresh_token: "jrt-vpc-2", expires_in: 86400000 })
+    if (where === OPENAPI + "/api/v1/userinfo") {
+      expect(req.headers.get("authorization")).toBe("Bearer jt-vpc-2")
+      return json({ id: "u-vpc", name: "Alice", security_mobile: "13800138000" })
+    }
+    return new Response("", { status: 404 })
+  }
+  const hooks = await QoderCNAuthPlugin({ client: store().client })
+  const got = await hooks.auth.refresh({
+    type: "oauth",
+    access: "jt-vpc-1",
+    refresh: "jrt-vpc-1",
+    uid: "u-vpc",
+    vpc: "acme",
+    accountId: "alice@corp.example (acme)",
+    expires: Date.now() + 1_000,
+  })
+  // accountId does not move (it is the identity); the phone lands on phoneLabel only
+  expect(got.accountId).toBeUndefined()
+  expect(got.phoneLabel).toBe("138****8000 (acme)")
+  // and no public host was touched: an enterprise token never goes there
+  expect(at.some((w) => w.startsWith(OPENAPI))).toBe(true)
+  expect(at.some((w) => w.startsWith("openapi.qoder.com.cn"))).toBe(false)
+  expect(at.some((w) => PUBLIC.some((p) => w.startsWith(p)))).toBe(false)
+})
+
+test("a hanging user-info read does not hold another account's chat (review #487, C)", async () => {
+  let release
+  const gate = new Promise((r) => { release = r })
+  const real = globalThis.fetch
+  let userinfoReached = false
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(String(url))
+    if (u.pathname === "/api/v1/userinfo") { userinfoReached = true; await gate; return json({ id: "u-a", name: "A" }) }
+    if (u.pathname === "/api/v1/jobToken/refresh") return json({ token: "jt-a2", refresh_token: "jrt-a2", expires_in: 86400000 })
+    if (u.pathname.endsWith("/chat/completions")) return json({ id: "x", choices: [{ message: { content: "ok" } }] })
+    return new Response("", { status: 404 })
+  }
+  try {
+    const hooks = await QoderCNAuthPlugin({ client: { auth: { set: async () => {} } } })
+    // account A renews: its token is swapped and the name read is hanging
+    const pending = hooks.auth.refresh({ type: "oauth", access: "jt-a1", refresh: "jrt-a1", uid: "u-a", expires: Date.now() + 1_000 })
+    for (let i = 0; i < 50 && !userinfoReached; i++) await new Promise((r) => setTimeout(r, 10))
+    expect(userinfoReached).toBe(true)
+    // account B's chat must not wait on it
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "jt-b", refresh: "jrt-b", uid: "u-b", expires: Date.now() + 86_400_000 }))
+    const at = Date.now()
+    const res = await loader.fetch("https://api3.qoder.sh/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "q", messages: [] }) })
+    // the point is that it did not wait: any status is fine, being held is not
+    expect(res).toBeInstanceOf(Response)
+    expect(Date.now() - at).toBeLessThan(1_000)
+    release()
+    await pending
+  } finally {
+    release()
+    globalThis.fetch = real
+  }
+})

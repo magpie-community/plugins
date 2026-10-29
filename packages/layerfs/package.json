@@ -6,8 +6,10 @@
   "files": [
     "index.mjs",
     "layerfs.mjs",
+    "page-service.mjs",
     "page",
-    "README.md"
+    "README.md",
+    "icon.svg"
   ],
   "keywords": [
     "magpie",
@@ -23,8 +25,10 @@
   ],
   "license": "MIT",
   "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPCEtLSB0b29scy1sYXllcmZzOiBMYXllckZTIHdvcmtzcGFjZXMuIExlYWYtZ3JlZW4gdGlsZSwgd2hpdGUgbGVhZiBpbgogICAgICAgdGhlIHNoYXBlIG9mIExheWVyRlMncyBvd24gbGVhZiBnbHlwaCAocGFnZS92aWV3LmpzIExFQUZfR0xZUEgsCiAgICAgICBzY2FsZWQgeDIpLCB3aXRoIGEgZm9ya2VkIHZlaW4gaW5zaWRlIGl0OiB0aGUgYnJhbmNoIHNwbGl0dGluZywKICAgICAgIHRoZSB0cmFqZWN0b3J5IHBhZ2UncyBib3VnaCBtb3RpZi4gRmxhdCBzaGFwZXMgb25seTsgdGhlIGxlYWYKICAgICAgIHNpbGhvdWV0dGUgY2FycmllcyByZWNvZ25pdGlvbiBkb3duIHRvIDE2IHB4LiAtLT4KICA8cmVjdCB4PSIyIiB5PSIyIiB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHJ4PSIxNCIgZmlsbD0iIzE2YTM0YSIvPgogIDxwYXRoIGQ9Ik0zMiAxMSBDNDggMTkgNTIgMzkgMzIgNTMgQzEyIDM5IDE2IDE5IDMyIDExIFoiIGZpbGw9IiNmZmZmZmYiLz4KICA8cGF0aCBkPSJNMzIgNTAgTDMyIDMyIE0zMiAzMiBDMjggMjcgMjUgMjUgMjIgMjEgTTMyIDMyIEMzNiAyNyAzOSAyNSA0MiAyMSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMTZhMzRhIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K",
     "options": {
-      "exec": false
+      "exec": false,
+      "pagePort": 43717
     },
     "page": {
       "file": "page/index.html",
@@ -45,5 +49,5 @@
     "directory": "packages/layerfs"
   },
   "type": "module",
-  "version": "0.9.0"
+  "version": "0.10.0"
 }

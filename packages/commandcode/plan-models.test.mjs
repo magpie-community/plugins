@@ -17,6 +17,13 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { CommandCodePlugin, _internal } from "./index.mjs"
 
+// talking leaves out the decision model (Jev, jev.test.mjs), which every
+// plan's list has beside the models it talks to
+const talking = (ms) => {
+  delete ms[_internal.JEV]
+  return ms
+}
+
 const real = globalThis.fetch
 const saved = { ..._internal.waits }
 afterEach(() => {
@@ -59,7 +66,7 @@ async function listed({ sub, credits = CREDITS, list = LIST, metadata } = {}) {
   const hooks = await CommandCodePlugin()
   const config = { provider: {} }
   await hooks.config(config)
-  return hooks.provider.models({ models: config.provider["commandcode-plan"].models }, { auth: { type: "api", key: "k", ...(metadata ? { metadata } : {}) } })
+  return talking(await hooks.provider.models({ models: config.provider["commandcode-plan"].models }, { auth: { type: "api", key: "k", ...(metadata ? { metadata } : {}) } }))
 }
 
 // the CLI 1.79.2's models GOAT may use and Go may not: a Go account was

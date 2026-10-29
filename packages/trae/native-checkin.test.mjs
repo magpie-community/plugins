@@ -93,7 +93,10 @@ test("the device's already-checked answer is ineligible", async () => {
   f = fakeTrae()
   f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))
   f.route("POST " + CLAIM, () => json({ code: 9095, message: "this device has checked in today", credits: 100 }))
-  expect(await checkin()).toEqual({ outcome: "ineligible", message: "this device has checked in today" })
+  // which device it was is said too (plugins#436): no client here, so
+  // magpie's own
+  const out = await checkin()
+  expect(out).toEqual({ outcome: "ineligible", message: "this device has checked in today (sent on magpie's own device for this account: no Trae CN client profile was found on this machine)" })
 })
 
 // 9074 is not "the pool is busy": the same account, token and headers were
@@ -115,8 +118,9 @@ test("Trae's 9074 on the claim says the device is what Trae refused, and promise
   expect(out.message).toContain("当前参与用户太多")
   expect(out.message).toContain("9074")
   expect(out.message).toContain("device")
-  expect(out.message).not.toContain("Trae CN client")
-  expect(out.message).not.toContain("check in in the Trae CN app")
+  // it says which device it went on, and advises nothing (plugins#436)
+  expect(out.message).toContain("sent on magpie's own device for this account")
+  expect(out.message).not.toMatch(/sign (it )?in|log ?in|check in in the Trae CN app/i)
   // the check-in rides ugDevice like every other ug page: the 19-digit
   // sign-in device becomes the account's own 16-digit shape (#194)
   expect(f.seen.map((r) => r.headers.get("x-device-id"))).toEqual(["2866487253502651", "2866487253502651"])

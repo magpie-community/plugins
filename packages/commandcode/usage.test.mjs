@@ -4,6 +4,13 @@
 import { afterEach, expect, test } from "bun:test"
 import { CommandCodePlugin, _internal } from "./index.mjs"
 
+// talking leaves out the decision model (Jev, jev.test.mjs), which every
+// plan's list has beside the models it talks to
+const talking = (ms) => {
+  delete ms[_internal.JEV]
+  return ms
+}
+
 const real = globalThis.fetch
 afterEach(() => {
   globalThis.fetch = real
@@ -36,7 +43,7 @@ test("a Max account: its 5 hours, its credits second, where magpie shows two win
     },
   })
   expect(u).toEqual({
-    signIn: "kept",
+    signIn: "renewed",
     plan: "Max",
     until: "2026-10-28T00:00:00.000Z",
     renew: "off",
@@ -54,7 +61,7 @@ test("no plan: the credits bought are a balance", async () => {
     "/alpha/billing/subscriptions": { success: true, data: null },
     "/alpha/billing/credits": { credits: { monthlyCredits: 0, purchasedCredits: 7.25, freeCredits: 0 } },
   })
-  expect(u).toEqual({ signIn: "kept", plan: "No plan", balance: "$7.25", windows: [] })
+  expect(u).toEqual({ signIn: "renewed", plan: "No plan", balance: "$7.25", windows: [] })
 })
 
 test("Go: the month's $10 is the pool", async () => {
@@ -62,7 +69,7 @@ test("Go: the month's $10 is the pool", async () => {
     "/alpha/billing/subscriptions": { data: { planId: "individual-go", status: "active" } },
     "/alpha/billing/credits": { credits: { monthlyCredits: 4 } },
   })
-  expect(u).toEqual({ signIn: "kept", plan: "Go", windows: [{ name: "Credits", used: 60, display: "$6.00 / $10.00" }] })
+  expect(u).toEqual({ signIn: "renewed", plan: "Go", windows: [{ name: "Credits", used: 60, display: "$6.00 / $10.00" }] })
 })
 
 test("credits that can't be read keep the plan and say why", async () => {
@@ -77,6 +84,8 @@ test("a canceled subscription is No plan; an unread one leaves the plan unsaid",
   let { u } = await run(api, { "/alpha/billing/subscriptions": { data: { planId: "individual-pro", status: "canceled" } }, "/alpha/billing/credits": 413 })
   expect(u).toEqual({ signIn: "kept", plan: "No plan", error: "Request Entity Too Large", windows: [] })
   _internal.subsSeen.clear() // a plan read is kept ten minutes
+  // a 401 whoami doesn't confirm (404 here) keeps the account; one it
+  // does is signed out (signed-out.test.mjs)
   ;({ u } = await run(api, { "/alpha/billing/subscriptions": 401, "/alpha/billing/credits": 401 }))
   expect(u).toEqual({ signIn: "kept", error: "Unauthorized", windows: [] })
 })
@@ -87,7 +96,7 @@ test("seconds and string amounts read as magpie reads them; a half cent goes to 
     "/alpha/billing/credits": { credits: { monthlyCredits: "29.875" }, windowLimits: { fiveHour: { used: "5", cap: 0 }, weekly: { used: 150, cap: "100", resetAt: 0 } } },
   })
   expect(u).toEqual({
-    signIn: "kept",
+    signIn: "renewed",
     plan: "Pro",
     until: new Date(1790000000 * 1000).toISOString(),
     windows: [{ name: "Weekly", used: 100, span: 604800 }, { name: "Credits", used: 0.4166666666666667, display: "$0.12 / $30.00", resetsAt: new Date(1790000000 * 1000).toISOString() }],
@@ -113,11 +122,11 @@ test("a slow subscription: the windows go without it, and the next card has it",
   }
   const hooks = await CommandCodePlugin()
   const first = await hooks.auth.usage(async () => api)
-  expect(first).toEqual({ signIn: "kept", windows: [{ name: "5 hours", used: 1, span: 18000 }] })
+  expect(first).toEqual({ signIn: "renewed", windows: [{ name: "5 hours", used: 1, span: 18000 }] })
   answer()
   await new Promise((r) => setTimeout(r, 20))
   const next = await hooks.auth.usage(async () => api)
-  expect(next).toEqual({ signIn: "kept", plan: "GOAT", renew: "off", windows: [{ name: "5 hours", used: 1, span: 18000 }, { name: "Credits", used: 50, display: "$35.00 / $70.00" }] })
+  expect(next).toEqual({ signIn: "renewed", plan: "GOAT", renew: "off", windows: [{ name: "5 hours", used: 1, span: 18000 }, { name: "Credits", used: 50, display: "$35.00 / $70.00" }] })
 })
 
 test("a plan read is saved with the key, once", async () => {
@@ -150,7 +159,7 @@ test("a plan saved stands in for a subscription slow to read: waited for a momen
   const t = Date.now()
   const u = await hooks.auth.usage(async () => ({ ...api, metadata: { plan: "GOAT", planId: "individual-goat" } }))
   expect(Date.now() - t).toBeLessThan(3_000)
-  expect(u).toEqual({ signIn: "kept", plan: "GOAT", windows: [{ name: "Credits", used: 50, display: "$35.00 / $70.00" }] })
+  expect(u).toEqual({ signIn: "renewed", plan: "GOAT", windows: [{ name: "Credits", used: 50, display: "$35.00 / $70.00" }] })
   answer()
 })
 
@@ -183,7 +192,7 @@ test("a model served on Responses and not chat completions is asked on Responses
   }
   const a = { ...api, metadata: { plan: "Max" } }
   const hooks = await CommandCodePlugin()
-  const ms = await hooks.provider.models({ models: {} }, { auth: a })
+  const ms = talking(await hooks.provider.models({ models: {} }, { auth: a }))
   expect(Object.fromEntries(Object.entries(ms).map(([k, m]) => [k, m.api.npm]))).toEqual({
     "gpt-6-sol": "@ai-sdk/openai",
     "moonshotai/Kimi-K3": "@ai-sdk/openai-compatible",

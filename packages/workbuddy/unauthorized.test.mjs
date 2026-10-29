@@ -253,3 +253,28 @@ test("usage whose refresh is turned away says to sign in again, the account mark
   expect(out.signIn).toBe("expired")
   expect(out.error).toContain("WorkBuddy refused this account's sign-in (401); it refused the refresh token too")
 })
+
+// A conversation's ids are one account's own (conversation.test.mjs): a chat
+// sent again as another account, saved since by someone else, goes with
+// that account's ids, and a renewed token of the same account keeps them.
+test("a chat sent again as another account carries that account's ids", async () => {
+  const calls = serve()
+  // another account is saved once the first chat was refused
+  const stored = async () => (of(calls, "/v2/chat/completions").length ? signedIn({ access: "new", uid: "u2" }) : signedIn())
+  const res = await ask(signedIn(), { stored })
+  expect(res.status).toBe(200)
+  const chats = of(calls, "/v2/chat/completions")
+  expect(chats.length).toBe(2)
+  const [first, second] = chats.map((c) => c.headers)
+  expect(second.get("x-user-id")).toBe("u2")
+  expect(second.get("x-conversation-id")).toMatch(/^[0-9a-f]{32}$/)
+  expect(second.get("x-conversation-id")).not.toBe(first.get("x-conversation-id"))
+  expect(second.get("x-conversation-request-id")).not.toBe(first.get("x-conversation-request-id"))
+
+  const same = serve()
+  expect((await ask(signedIn())).status).toBe(200)
+  const [a, b] = of(same, "/v2/chat/completions").map((c) => c.headers)
+  expect(b.get("x-user-id")).toBe("u1")
+  expect(b.get("x-conversation-id")).toBe(a.get("x-conversation-id"))
+  expect(b.get("x-conversation-request-id")).toBe(a.get("x-conversation-request-id"))
+})

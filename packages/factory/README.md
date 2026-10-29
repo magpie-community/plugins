@@ -65,13 +65,22 @@ Each model is served on the one API droid uses for it:
 |---|---|
 | Anthropic Messages (`/api/llm/a`) | Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8 (each also in Fast Mode), Sonnet 5.5, Sonnet 5, Sonnet 4.6, Haiku 5.5, Haiku 4.5, MiniMax M2.7 |
 | OpenAI Responses (`/api/llm/o/v1`) | GPT-6.1 Sol, GPT-6 Sol/Astra/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.3-Codex (each also in Fast Mode), Grok 4.7, Grok 4.6 |
-| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, Kimi K3, DeepSeek V4.1 Flash, Qwen3.8 Max, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3 Ultra |
+| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, Kimi K3, DeepSeek V4.1 Flash, DeepSeek V4.1 Flash 1017, Qwen3.8 Max, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3 Ultra |
 | Gemini generate (`/api/llm/g/v1/generate`) | Gemini 4 Argon, Gemini 3.1 Pro, Gemini 3.8/3.7/3.6/3.5 Flash, Gemini 3 Flash |
 
 Reasoning efforts are the variants droid offers for each model. DeepSeek V4.1
-Flash, Kimi K3 and GLM-5.2 have `none`, droid's "off": they stop thinking.
+Flash (1017 too), Kimi K3 and GLM-5.2 have `none`, droid's "off": they stop
+thinking.
 Reasoning is mandatory on GLM-5.3 and GLM-5.3-Flash (Fireworks turns `none`
 away), so `low` is their least.
+
+DeepSeek V4.1 Flash 1017 (`deepseek-v4.1-flash-1017`) is a separate model
+entry, with droid 0.251.0's 1,040,000-token context, 131,072-token output,
+image support, `none`/`low`/`high`/`max` efforts and 0.12x token multiplier.
+Like every other model here it goes to its registry's default upstream,
+`apiProviders[0]`, which is Fireworks, as droid sends it with
+`x-provider-routing-source: registry_default`. Factory gates 1017 with a
+feature flag, so availability still depends on the account.
 
 A model's price is its token multiplier in droid's registry
 (`cost.tokenMultiplier`), which magpie shows beside the model as its rate

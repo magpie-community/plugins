@@ -13,11 +13,14 @@
     background: var(--magpie-bg, Canvas); color: var(--magpie-fg, CanvasText);
   }
   .box { text-align: center; color: var(--magpie-muted, GrayText); }
+  .box { max-width: 520px; padding: 0 16px; }
+  .box p { margin: 6px 0; }
+  .box button { margin-top: 8px; font: inherit; padding: 4px 14px; }
   .box b { display: block; color: var(--magpie-fg, CanvasText); font-size: 14px; margin-bottom: 4px; }
 </style>
 </head>
 <body>
-  <div class="box"><b>对话</b><span id="said">正在连接到本地对话服务…</span></div>
+  <div class="box"><b>对话</b><div id="said">正在连接到本地对话服务…</div></div>
   <script src="_magpie/bridge.js"></script>
   <script src="boot.js"></script>
 </body>

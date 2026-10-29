@@ -155,6 +155,16 @@ test("the launcher page only navigates: no fetch, XHR or socket, scripts from fi
   expect(html).not.toMatch(/<script>(?!\s*src)/)
 })
 
+test("the launcher page explains the SSH tunnel instead of navigating when magpie web is opened from another machine", () => {
+  const boot = readFileSync(join(dir, "page", "boot.js"), "utf8")
+  const tail = boot.slice(boot.indexOf("function isLoopback"))
+  const { isLoopback } = new Function(tail + "; return { isLoopback }")()
+  for (const h of ["127.0.0.1", "localhost", "[::1]", "magpie.localhost", ""]) expect(isLoopback(h)).toBe(true)
+  for (const h of ["192.168.1.20", "magpie.example.com", "[2001:db8::1]"]) expect(isLoopback(h)).toBe(false)
+  expect(boot).toMatch(/if \(!isLoopback\(location\.hostname\)\)/)
+  expect(boot).toContain("ssh -N -L ")
+})
+
 test("the chat UI sends the token on every API call", () => {
   const app = readFileSync(join(dir, "chat", "app.js"), "utf8")
   // two calls reach the service: api() with its init, and the chat stream
@@ -162,7 +172,7 @@ test("the chat UI sends the token on every API call", () => {
   expect(calls.length).toBe(2)
   expect(calls[0]).toStartWith("init")
   expect(app).toMatch(/var init = \{[^\n]*headers: authHeaders\(\)/)
-  expect(app).toMatch(/fetch\("\/api\/chat", \{\s*method: "POST",\s*headers: authHeaders\(/)
+  expect(app).toMatch(/fetch\("api\/chat", \{\s*method: "POST",\s*headers: authHeaders\(/)
   expect(app).toContain('meta[name="magpie-chat-token"]')
   expect(app).not.toMatch(/XMLHttpRequest|new WebSocket|EventSource|sendBeacon/)
 })
@@ -176,4 +186,58 @@ test("the plugin starts nothing on import and serves the option's port", async (
   expect(pkg.scripts?.postinstall).toBeUndefined()
   expect(pkg.scripts?.install).toBeUndefined()
   expect(pkg.scripts?.preinstall).toBeUndefined()
+})
+
+// aigcfree on Discord: `magpie web` on a server, opened from another
+// computer's browser. There 127.0.0.1 is the viewer's own computer, so
+// magpie web serves this service under a path of its own address
+// (magpie.page.service), and the chat UI has to work from under that path.
+test("the chat UI's addresses are relative, so it works under magpie web's path", async () => {
+  const app = readFileSync(join(dir, "chat", "app.js"), "utf8").replace(/^\s*\/\/.*$/gm, "")
+  expect(app).not.toMatch(/["'`]\/api\//)
+  const html = readFileSync(join(dir, "chat", "index.html"), "utf8")
+  expect(html).not.toMatch(/(href|src)="\//)
+  expect(html).toContain('href="api/fonts.css"')
+  // a provider's icon, as the bootstrap hands it to the UI
+  writeFileSync(join(cfg, "providers.json"), JSON.stringify([{ id: "remote", icon: "https://example.com/i.png" }]))
+  const { providerIcons } = await import("./lib/library.mjs")
+  expect((await providerIcons(cfg)).get("remote")).toBe("api/icon/remote")
+})
+
+test("the plugin declares its service on the option's port", () => {
+  const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"))
+  expect(pkg.magpie.page.service).toEqual({ port: pkg.magpie.options.port, option: "port" })
+})
+
+// boot.js run as the page's frame runs it: where it sends the frame
+async function boot(magpie, hostname = "127.0.0.1") {
+  const src = readFileSync(join(dir, "page", "boot.js"), "utf8")
+  let went = ""
+  const location = { hostname, replace: (u) => { went = u } }
+  const document = { getElementById: () => null }
+  await new Function("window", "location", "document", "return " + src.replace(/^\s*\/\/.*$/gm, "").trim().replace(/;\s*$/, ""))({ magpie }, location, document)
+  return went
+}
+
+test("the launcher goes to magpie web's path when the bridge offers one, else to 127.0.0.1", async () => {
+  const ready = Promise.resolve({ dark: true, tokens: { bg: "#000" } })
+  const options = { get: async () => ({ port: 3999 }) }
+  const svc = "http://server.lan:3430/_magpie/plugin/" + "a".repeat(32) + "/_magpie/service/"
+  const remote = await boot({ ready, options, service: svc })
+  expect(remote).toStartWith(svc + "?")
+  expect(new URL(remote).searchParams.get("theme")).toBe("dark")
+  // the desktop window, and a magpie from before magpie.service
+  expect(await boot({ ready, options, service: "" })).toStartWith("http://127.0.0.1:3999/?theme=dark")
+  expect(await boot({ ready, options })).toStartWith("http://127.0.0.1:3999/?")
+  expect(await boot(undefined)).toBe("http://127.0.0.1:3477/?")
+  // only an http(s) address is followed
+  expect(await boot({ ready, service: "javascript:alert(1)" })).toStartWith("http://127.0.0.1:3477/?")
+})
+
+test("opened from another machine, the launcher takes magpie web's path, and explains the tunnel only without one", async () => {
+  const ready = Promise.resolve({ dark: false })
+  const svc = "http://server.lan:3430/_magpie/plugin/" + "b".repeat(32) + "/_magpie/service/"
+  expect(await boot({ ready, service: svc }, "server.lan")).toStartWith(svc + "?")
+  // a magpie from before magpie.service: no navigation to a refused 127.0.0.1
+  expect(await boot({ ready }, "server.lan")).toBe("")
 })

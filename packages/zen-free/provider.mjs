@@ -1,4 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   PROVIDER,
   SDK,
@@ -123,11 +126,26 @@ function normalizeTools(body, protocol) {
 // say; the same request with the block added is served (tried against
 // opencode.ai on 2026-10-25, deepseek-v4.1-flash-free and
 // glm-5.3-flash-free). In a user message or a tool description it doesn't
-// count, and `<ENV>` or `working directory:` don't either. The directory
-// isn't known here, and the agent's own prompt says it, so it is told as
-// unknown rather than as a path that would mislead the model.
-const ENVIRONMENT = "<env>\n  Working directory: unknown\n</env>";
+// count, and `<ENV>` or `working directory:` don't either.
+//
+// Since 2026-10-29 Zen answers 429 FreeUsageLimitError at once to the
+// literal line 0.1.15 to 0.1.17 added, `Working directory: unknown`, while
+// the same request with a path there is served (shanmao_10826 on magpie's
+// Discord): fixed text that only this plugin sends is its fingerprint, as
+// its old User-Agent was. So the block is OpenCode 2.2.0's own
+// (packages/core/src/instructions/builtins.ts, without its line about
+// OpenCode's temp folder), with the directory the agent's own prompt
+// names, as OpenCode names its own, or the user's home folder when the
+// prompt names none.
 const HAS_ENVIRONMENT = /<env>[\s\S]*Working directory:[\s\S]*<\/env>/;
+// How agents name their working directory: Codex's `<cwd>`, Claude Code's
+// and others' `Working directory:`, Kimi's "The current working directory
+// is `...`". Only an absolute path counts.
+const ABSOLUTE = String.raw`((?:~?/|[A-Za-z]:[\\/]|\\\\)[^\s\x60'"<>]*)`;
+const STATED_DIRECTORY = [
+  new RegExp(String.raw`<cwd>\s*${ABSOLUTE}\s*</cwd>`),
+  new RegExp(String.raw`working directory(?: is)?:?\s+\x60?${ABSOLUTE}`, "i"),
+];
 
 function textOf(content) {
   if (typeof content === "string") return content;
@@ -135,17 +153,56 @@ function textOf(content) {
   return content.map((part) => (typeof part?.text === "string" ? part.text : "")).join("\n");
 }
 
-function withEnvironment(content) {
-  if (typeof content === "string") return content ? `${content}\n\n${ENVIRONMENT}` : ENVIRONMENT;
-  if (Array.isArray(content)) return [...content, { type: "text", text: ENVIRONMENT }];
-  return ENVIRONMENT;
-}
-
 const SYSTEM_ROLES = ["system", "developer"];
 
-export function addEnvironment(body, protocol) {
+// The agent's working directory as its own prompt (system messages,
+// instructions) or its first user message says it.
+export function statedDirectory(body, protocol) {
+  const messages = protocol === "responses" ? body.input : body.messages;
+  const texts = [textOf(protocol === "anthropic" ? body.system : body.instructions)];
+  if (Array.isArray(messages)) {
+    for (const message of messages)
+      if (SYSTEM_ROLES.includes(message?.role)) texts.push(textOf(message.content));
+    texts.push(textOf(messages.find((message) => message?.role === "user")?.content));
+  } else if (typeof messages === "string") {
+    texts.push(messages);
+  }
+  for (const text of texts) {
+    for (const pattern of STATED_DIRECTORY) {
+      const found = pattern.exec(text)?.[1]?.replace(/[.,;:)\]]+$/, "");
+      if (found && found !== "/" && found !== "~/") return found;
+    }
+  }
+  return undefined;
+}
+
+// OpenCode's block, said for `directory`.
+export function environment(directory) {
+  let git = false;
+  try {
+    git = existsSync(join(directory.replace(/^~(?=\/)/, homedir()), ".git"));
+  } catch {}
+  return [
+    "Here is some useful information about the environment you are running in:",
+    "<env>",
+    `  Working directory: ${directory}`,
+    `  Workspace root folder: ${directory}`,
+    `  Is directory a git repo: ${git ? "yes" : "no"}`,
+    `  Platform: ${process.platform}`,
+    "</env>",
+  ].join("\n");
+}
+
+function withEnvironment(content, block) {
+  if (typeof content === "string") return content ? `${content}\n\n${block}` : block;
+  if (Array.isArray(content)) return [...content, { type: "text", text: block }];
+  return block;
+}
+
+export function addEnvironment(body, protocol, home = homedir()) {
+  const block = () => environment(statedDirectory(body, protocol) ?? home);
   if (protocol === "anthropic") {
-    if (!HAS_ENVIRONMENT.test(textOf(body.system))) body.system = withEnvironment(body.system);
+    if (!HAS_ENVIRONMENT.test(textOf(body.system))) body.system = withEnvironment(body.system, block());
     return;
   }
   const messages = protocol === "chat" ? body.messages : body.input;
@@ -155,16 +212,16 @@ export function addEnvironment(body, protocol) {
   if (system.some((message) => HAS_ENVIRONMENT.test(textOf(message.content)))) return;
   if (protocol === "responses") {
     if (!HAS_ENVIRONMENT.test(textOf(body.instructions)))
-      body.instructions = withEnvironment(body.instructions);
+      body.instructions = withEnvironment(body.instructions, block());
     return;
   }
   // Added to the agent's own system message, so the prompt stays one
   // system message, the same on every turn (its cache holds); one is put
   // first when the agent sent none.
   const first = system.find((message) => message.role === "system");
-  if (first) first.content = withEnvironment(first.content);
-  else if (Array.isArray(messages)) messages.unshift({ role: "system", content: ENVIRONMENT });
-  else body.messages = [{ role: "system", content: ENVIRONMENT }];
+  if (first) first.content = withEnvironment(first.content, block());
+  else if (Array.isArray(messages)) messages.unshift({ role: "system", content: block() });
+  else body.messages = [{ role: "system", content: block() }];
 }
 
 const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";

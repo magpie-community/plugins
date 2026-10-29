@@ -60,8 +60,9 @@ test("an error line before any content keeps its status", async () => {
   expect(await ask(() => new Response(line + "\n"), true)).toEqual({ status: 429, message: "RATE_LIMITED: slow down" })
 })
 
-// the built-in never marked a Command Code account lapsed: a 401 of
-// /alpha/generate's (cmdFailure) or of the Provider API's goes on with it kept
+// a 401 of /alpha/generate's (cmdFailure) or of the Provider API's goes on
+// with the account kept while whoami doesn't refuse the key too (here it
+// answers 404); one it refuses is signed out (signed-out.test.mjs)
 test("a Go key Command Code turns away is a 401, the account kept", async () => {
   expect(await signIn(() => Response.json({ error: { message: "Invalid API key" } }, { status: 401 }))).toEqual({ status: 401, signIn: "kept" })
 })

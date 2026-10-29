@@ -20,7 +20,12 @@ An account is a Command Code API key. There are three ways to get one:
 
 The key is kept where OpenCode keeps sign-ins (`auth.json`; in magpie,
 `plugin-auth.json`) as `{ "type": "api", "key", "metadata": { "email": <user>, "plan" } }`.
-Keys don't expire, so there is nothing to refresh.
+Keys don't expire, so there is nothing to refresh. A key Command Code
+turns away (revoked, or signed out in Studio) marks the account signed out
+in magpie, which passes over it and offers Sign in again on its row: a
+usage read, or a request answered 401, asks `/alpha/whoami`, and when that
+refuses the key too, says `signIn: "expired"` (`X-Magpie-Sign-In: expired`
+on the request's answer). A clean usage read takes the mark off.
 
 ## Requests
 
@@ -124,6 +129,19 @@ The `/models` list doesn't say which models take images. A model is marked
 as taking them when it is a Claude model, or when the default list or the
 CLI's table says so. For any other model the plugin says nothing either
 way, and magpie answers from models.dev, as its built-in did.
+
+## Jev, a decision model
+
+Command Code serves TypeSafe's Jev (`typesafe/jev`), a decision model: it
+answers typed questions (`{"state", "questions"}`) with probabilities, and
+holds no conversation. Its `/models` list doesn't name it, so the plugin
+adds it to every plan's list, marked `decides`, and sets `decide` on the
+provider. magpie then offers it as a routing group's classifier and at its
+`/v1/systemone` (as `commandcode-plan/typesafe/jev`), never to an agent to
+chat with. A question goes to `POST /provider/v1/systemone` as the CLI
+(1.88.2) sends it, with the CLI's headers, and Zero Data Retention when the
+switch is on. Command Code decides which plans may use it; a refusal reaches
+magpie with its status, as a chat's does.
 
 ## Not included
 
