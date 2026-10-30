@@ -89,7 +89,16 @@ let particlesCache = { key: null, list: [] };
 let override = null; // { names: string[], until: number }
 
 const EXPEDITION_LABELS = { patrol: "短巡逻", field: "数据原野", night: "深夜远征" };
-const DECORATION_PRICES = { meadow: 10, night: 25, terminal: 40 };
+const DECORATION_PRICES = {
+  meadow: 10,
+  night: 25,
+  terminal: 40,
+  ocean: 60,
+  sunset: 80,
+  snow: 120,
+  sakura: 160,
+  void: 200,
+};
 const GOAL_LABELS = {
   care: "照顾宠物 2 次",
   expedition: "完成 1 次探险",
@@ -113,7 +122,7 @@ let actionEffect = null;
 
 function habitatVariant() {
   const theme = lastState?.collection?.equippedTheme;
-  return theme === "meadow" || theme === "night" || theme === "terminal" ? theme : "";
+  return Object.hasOwn(DECORATION_PRICES, theme) ? theme : "";
 }
 
 function spriteHue(sprite) {
@@ -393,7 +402,6 @@ function paintHero(s) {
     $("evo-text").textContent = "";
     $("evo-pct").textContent = "";
     $("battle").hidden = true;
-    $("dex-link").hidden = true;
     return;
   }
   $("pet-name").textContent = s.petName || p.node.nameEn;
@@ -408,9 +416,6 @@ function paintHero(s) {
   $("evo-pct").textContent = `${p.pct.toFixed(2)}%`;
   $("battle").hidden = !p.battle;
   if (p.battle) $("battle-foe").textContent = p.battle.nameEn;
-  const dex = $("dex-link");
-  dex.hidden = !p.node.url;
-  if (p.node.url) dex.href = p.node.url;
 }
 
 function paintCareBars(s) {
@@ -603,7 +608,7 @@ function paint(s) {
       (s.fedCost > 0 ? ` · $${s.fedCost.toFixed(2)}` : "");
   }
   const habitat = $("habitat");
-  habitat.classList.remove("habitat--meadow", "habitat--night", "habitat--terminal");
+  habitat.classList.remove(...Object.keys(DECORATION_PRICES).map((id) => `habitat--${id}`));
   const variant = habitatVariant();
   if (variant) habitat.classList.add(`habitat--${variant}`);
   $("status-line").textContent = statusText(s);
@@ -846,21 +851,6 @@ $("dex-search")?.addEventListener("input", () => {
 $("dex-filter")?.addEventListener("change", () => {
   dexPaintKey = "";
   if (lastState) paintDex(lastState);
-});
-
-// 外链图鉴在沙盒页里可能被浏览器拦截；点击后至少给出明确反馈和可复制地址。
-$("dex-link")?.addEventListener("click", (event) => {
-  const url = event.currentTarget.href;
-  if (!url || url === "#") {
-    event.preventDefault();
-    say("当前宠物没有外部图鉴链接。");
-    return;
-  }
-  event.preventDefault();
-  try {
-    window.open(url, "_blank", "noopener");
-  } catch {}
-  say(`已尝试打开图鉴；如果被浏览器拦截，请复制：${url}`, true);
 });
 
 // ---------- archive tabs ----------

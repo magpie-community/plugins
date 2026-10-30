@@ -25,6 +25,11 @@ export const DECORATIONS = {
   meadow: { price: 10 },
   night: { price: 25 },
   terminal: { price: 40 },
+  ocean: { price: 60 },
+  sunset: { price: 80 },
+  snow: { price: 120 },
+  sakura: { price: 160 },
+  void: { price: 200 },
 };
 
 // Small fragment reward per completed daily goal, claimable once per day.

@@ -99,9 +99,9 @@ test("expedition and decoration buttons carry static data-args", () => {
     assert.ok(/\bdata-args="(patrol|field|night)"/.test(btn), `expedition button needs data-args: ${btn}`);
   }
   const decorations = [...html.matchAll(/<button\b[^>]*data-command="pet-decoration-equip"[^>]*>/g)];
-  assert.ok(decorations.length >= 3, "expected 3 decorations");
+  assert.ok(decorations.length >= 8, "expected 8 decorations");
   for (const [btn] of decorations) {
-    assert.ok(/\bdata-args="(meadow|night|terminal)"/.test(btn), `decoration button needs data-args: ${btn}`);
+    assert.ok(/\bdata-args="(meadow|night|terminal|ocean|sunset|snow|sakura|void)"/.test(btn), `decoration button needs data-args: ${btn}`);
   }
 });
 

@@ -42,8 +42,17 @@ function cleanup() {
 }
 process.on("exit", cleanup);
 
-test("decoration catalog exposes three fixed ids with explicit prices", () => {
-  assert.deepEqual(Object.keys(DECORATIONS).sort(), ["meadow", "night", "terminal"]);
+test("decoration catalog exposes eight fixed ids with explicit prices", () => {
+  assert.deepEqual(Object.keys(DECORATIONS).sort(), [
+    "meadow",
+    "night",
+    "ocean",
+    "sakura",
+    "snow",
+    "sunset",
+    "terminal",
+    "void",
+  ]);
   for (const def of Object.values(DECORATIONS)) {
     assert.equal(Number.isInteger(def.price) && def.price > 0, true);
   }
