@@ -144,6 +144,8 @@ derived value for all of them.
   included.
 - `allowInsecureHttp`: default **false**. Permits plain HTTP to a server that
   is not a loopback address. Prefer HTTPS.
+- `port`: the loopback port of the page's connection test, default 3479. Change
+  it only when another program holds that port; the page reads the same value.
 
 ## What recall adds
 
@@ -262,10 +264,28 @@ own: the offline tests replace `globalThis.fetch` to keep Cursor's token local
 
 ## Page
 
-The page uses only Magpie's released `magpie.options` and theme bridge. It has
-no network access, declares no reads, and saving stores configuration without
-probing the connection or writing Memory. It shows the Server, API key, Space,
-Agent, the recall, Context Bundle, capture and keyed-agent access switches, and
-the MCP address to add in Magpie's Library. It follows Magpie's language
-(English, Simplified and Traditional Chinese, Japanese, German) and theme, and
-preserves options it does not show.
+The page uses only Magpie's released `magpie.options` and theme bridge. It
+declares no reads and saving stores configuration without probing the
+connection or writing Memory. It shows the Server, API key, Space, Agent, the
+recall, Context Bundle, capture and keyed-agent access switches, and the MCP
+address to add in Magpie's Library. It follows Magpie's language (English,
+Simplified and Traditional Chinese, Japanese, German) and theme, and preserves
+options it does not show.
+
+**Test connection** is a real check, not a saved flag. Magpie's page sandbox
+has `connect-src 'none'`, so the page cannot call Mem itself; the package's
+small host part serves a loopback page on `127.0.0.1:<port>` and the frame
+navigates to it. The page hands the form's current values (URL, key, Space) to
+that page in `window.name`; it makes one public health request and one
+authenticated Working Memory request, writes nothing, and shows reachability,
+the key and the Space with a fixed code and milliseconds. **Back to settings**
+returns to the same form with the tested values restored, so an unsaved test
+does not lose edits. The key is not put in a URL or a log, the page itself
+still opens no network connection, and the test never uses an environment key
+(Magpie's environment is not visible to the page). The helper is on
+`127.0.0.1` only, needs the page's per-process token for its JSON endpoint, and
+accepts only a Magpie plugin page as the way back.
+
+The test needs the plugin host, which the gateway hook already starts; a
+page-only install of an older Magpie version shows the test page failing to
+connect rather than a wrong result.

@@ -4,6 +4,8 @@
   "description": "Nowledge Mem recall, Context Bundle and optional conversation capture at the Magpie gateway, for every connected harness",
   "type": "module",
   "files": [
+    "service.mjs",
+    "probe.mjs",
     "mem.mjs",
     "nowledge-mem.hooks.mjs",
     "conversation.mjs",
@@ -36,12 +38,17 @@
       "capture": false,
       "captureTools": true,
       "captureRemote": false,
-      "recallRemote": false
+      "recallRemote": false,
+      "port": 3479
     },
     "page": {
       "title": "Nowledge Mem",
       "file": "page/settings.html",
-      "icon": "page/icon.svg"
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 3479,
+        "option": "port"
+      }
     }
   },
   "scripts": {
@@ -49,5 +56,6 @@
   },
   "engines": {
     "bun": ">=1.4.2"
-  }
+  },
+  "main": "./service.mjs"
 }

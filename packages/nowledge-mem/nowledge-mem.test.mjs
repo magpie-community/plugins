@@ -62,17 +62,19 @@ afterEach(() => {
   delete process.env.NMEM_API_KEY
 })
 
-test("the shipped entry is a gateway hook with its connection page", async () => {
+test("the shipped entry is a gateway hook with a page and its connection test", async () => {
   const pkg = await Bun.file(new URL("./package.json", import.meta.url)).json()
-  expect(pkg.main).toBeUndefined()
+  expect(pkg.main).toBe("./service.mjs")
   expect(pkg.bin).toBeUndefined()
   expect(pkg.magpie.gateway).toBeUndefined()
   expect(pkg.magpie.hooks).toBe("./nowledge-mem.hooks.mjs")
   expect(pkg.magpie.permissions ?? []).toEqual([])
-  for (const file of ["mem.mjs", "conversation.mjs", "page"])
+  for (const file of ["service.mjs", "probe.mjs", "mem.mjs", "conversation.mjs", "page"])
     expect(pkg.files).toContain(file)
   expect(pkg.files).toContain(pkg.magpie.hooks.slice(2))
   expect(pkg.magpie.page.file).toBe("page/settings.html")
+  expect(pkg.magpie.page.service).toEqual({ port: 3479, option: "port" })
+  expect(pkg.magpie.options.port).toBe(3479)
   const entry = await import(pkg.magpie.hooks)
   expect(entry.onRequest).toBe(onRequest)
   expect(entry.onResponse).toBe(onResponse)
@@ -650,13 +652,15 @@ test("configuration page saves the Mem connection for the shipped hook", async (
     setAttribute(name, value) { this[name] = value }, focus() {}, showModal() {}, close() {},
   }]))
   const document = { documentElement: {}, getElementById: (id) => elements[id], querySelectorAll: () => [] }
+  const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign() {} }
+  const window = { name: "" }
   let options = { apiKeyEnv: "NMEM_API_KEY", recall: true, contextBundle: true, capture: false, maxMemories: 5, maxBytes: 6000, recallRemote: true, captureRemote: true }
   let writes = 0
   const magpie = {
     theme: { lang: "en" }, ready: Promise.resolve(), onTheme() {},
     options: { get: async () => ({ ...options }), set: async (next) => { options = { ...next }; writes++ } },
   }
-  runInNewContext(`${dictionary}\n${source}`, { document, magpie, navigator: { language: "en" }, URL })
+  runInNewContext(`${dictionary}\n${source}`, { document, magpie, window, location, navigator: { language: "en" }, URL })
   await new Promise(setImmediate)
   const save = () => elements.save.onclick({ preventDefault() {} })
   const original = { ...options }
@@ -741,16 +745,57 @@ test("the page points at Mem's MCP server for agent-callable tools", async () =>
     documentElement: {}, getElementById: (id) => elements[id], querySelectorAll: () => [],
     createRange: () => ({ selectNodeContents() {} }),
   }
-  const window = { getSelection: () => ({ removeAllRanges() {}, addRange() {} }) }
+  const window = { name: "", getSelection: () => ({ removeAllRanges() {}, addRange() {} }) }
+  const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign() {} }
   const magpie = {
     theme: { lang: "en" }, ready: Promise.resolve(), onTheme() {},
     options: { get: async () => ({ serverUrl: "https://mem.example.com" }), set: async () => {} },
   }
-  runInNewContext(`${dictionary}\n${source}`, { document, magpie, window, navigator: { language: "en" }, URL })
+  runInNewContext(`${dictionary}\n${source}`, { document, magpie, window, location, navigator: { language: "en" }, URL })
   await new Promise(setImmediate)
   expect(elements["mcp-url"].textContent).toBe("https://mem.example.com/mcp")
   elements["copy-mcp"].onclick()
   expect(elements["mcp-feedback"].dataset.message).toBe("copyFallback")
+})
+
+test("the page tests the connection through its loopback page and restores unsaved values", async () => {
+  const read = (file) => Bun.file(new URL(`./page/${file}`, import.meta.url)).text()
+  const [dictionary, source, html] = await Promise.all([read("i18n.js"), read("settings.js"), read("settings.html")])
+  const makeElements = () => Object.fromEntries([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, {
+    dataset: {}, value: "", hidden: false, checked: false, disabled: false, textContent: "",
+    setAttribute(name, value) { this[name] = value }, focus() {}, close() {},
+    showModal() { this.opened = true },
+  }]))
+  const pageHref = "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html"
+  const run = async (windowName) => {
+    const elements = makeElements()
+    const document = { documentElement: {}, getElementById: (id) => elements[id], querySelectorAll: () => [] }
+    const magpie = {
+      theme: { lang: "en" }, ready: Promise.resolve(), onTheme() {}, service: "http://127.0.0.1:3479",
+      options: { get: async () => ({ serverUrl: "http://127.0.0.1:14242" }), set: async () => {} },
+    }
+    const location = { href: pageHref, assigned: "", assign(url) { this.assigned = url } }
+    const window = { name: windowName, magpie }
+    runInNewContext(`${dictionary}\n${source}`, { document, magpie, window, location, navigator: { language: "en" }, URL })
+    await new Promise(setImmediate)
+    return { elements, window, location }
+  }
+
+  const first = await run("")
+  first.elements.url.value = "https://mem.example.com"
+  first.elements.key.value = "nmem_page"
+  first.elements.space.value = "space-1"
+  first.elements.test.onclick()
+  const payload = { serverUrl: "https://mem.example.com/", apiKey: "nmem_page", spaceId: "space-1", lang: "en", returnTo: pageHref }
+  expect(first.location.assigned).toBe("http://127.0.0.1:3479/test")
+  expect(JSON.parse(first.window.name)).toEqual(payload)
+
+  const back = await run(JSON.stringify(payload))
+  expect(back.elements.url.value).toBe("https://mem.example.com/")
+  expect(back.elements.key.value).toBe("nmem_page")
+  expect(back.elements.space.value).toBe("space-1")
+  expect(back.elements.settings.opened).toBe(true)
+  expect(back.window.name).toBe("")
 })
 
 test("configuration page follows the host language without losing edits or messages", async () => {
@@ -769,7 +814,9 @@ test("configuration page follows the host language without losing edits or messa
     theme: { lang: "zh" }, ready: Promise.resolve(), onTheme: (fn) => { repaint = fn },
     options: { get: async () => ({ serverUrl: "http://127.0.0.1:14242", capture: true }) },
   }
-  const { messages, languageFor, languageTags } = runInNewContext(`${dictionary}\n${source}\nnowledgeMemI18n`, { document, magpie, navigator: { language: "en" }, URL })
+  const window = { name: "" }
+  const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign() {} }
+  const { messages, languageFor, languageTags } = runInNewContext(`${dictionary}\n${source}\nnowledgeMemI18n`, { document, magpie, window, location, navigator: { language: "en" }, URL })
   await new Promise(setImmediate)
   for (const language of ["en", "zh", "zh-TW", "ja", "de"]) {
     expect(Object.keys(messages[language]).sort()).toEqual(Object.keys(messages.en).sort())

@@ -1,4 +1,7 @@
-// Only the official configuration bridge is used; no service requests or host actions.
+// Only the official configuration bridge is used. The connection test is a
+// local loopback page the frame navigates to, because the page's sandbox has
+// no network (connect-src 'none'); it receives this form's values in
+// window.name and never saves them.
 const {languageFor, languageTags, translate} = nowledgeMemI18n;
 const $ = (id) => document.getElementById(id);
 let language = 'en', busy = false, savedOptions = null, pendingCapture = null;
@@ -31,6 +34,33 @@ function mcpAddress() {
   url.pathname = url.pathname.replace(/\/$/, "") + "/mcp";
   return url.href;
  } catch { return "http://127.0.0.1:14242/mcp" }
+}
+function formUrl(fallback = "") {
+ const raw = $("url").value.trim() || fallback;
+ let url;
+ try { url = new URL(raw); } catch { return null }
+ const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+ if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || (url.protocol === "http:" && !loopback)) return null;
+ return url;
+}
+function testService() {
+ const service = window.magpie?.service;
+ if (typeof service === "string" && /^https?:\/\//.test(service)) return service.replace(/\/+$/, "");
+ const port = Number(savedOptions?.port);
+ return `http://127.0.0.1:${Number.isInteger(port) && port > 0 ? port : 3479}`;
+}
+// The test page leaves this form's values in window.name; restore them and
+// reopen the dialog, so an unsaved test does not lose what was typed.
+function restoreTestValues() {
+ let payload;
+ try { payload = JSON.parse(window.name || "{}"); } catch { return }
+ if (!payload || payload.returnTo !== location.href.split("?")[0]) return;
+ if (typeof payload.serverUrl === "string" && payload.serverUrl) $("url").value = payload.serverUrl;
+ if (typeof payload.apiKey === "string") $("key").value = payload.apiKey;
+ if (typeof payload.spaceId === "string") $("space").value = payload.spaceId;
+ window.name = "";
+ $("result").hidden = true;
+ $("settings").showModal();
 }
 function fill(options) {
  $("url").value = options.serverUrl || "";
@@ -81,19 +111,15 @@ magpie.ready.then(async () => {
  magpie.onTheme(paint);
  try {
   const options = await magpie.options.get();
-  savedOptions = options; fill(options); summary();
+  savedOptions = options; fill(options); summary(); restoreTestValues();
   message("configured", options.serverUrl ? "loaded" : "notConfigured");
   $("save").disabled = false; $("configure").disabled = false; $("summary-capture").disabled = false;
  } catch { message("configured", "loadFailed", true); }
 }).catch(() => { paint(); message("configured", "bridgeFailed", true); });
 const save = async (event) => {
  event.preventDefault(); if (busy) return;
- let url;
- try { url = new URL($("url").value.trim()); } catch { /* validated below */ }
- const loopback = url && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
- if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || (url.protocol === "http:" && !loopback)) {
-  result("invalidUrl", true); $("url").focus(); return;
- }
+ const url = formUrl();
+ if (!url) { result("invalidUrl", true); $("url").focus(); return }
  const space = $("space").value.trim();
  const agent = $("agent").value.trim();
  const key = $("key").value.trim().replace(/^Bearer\s+/i, "");
@@ -117,6 +143,15 @@ const save = async (event) => {
   result("saveSucceeded");
  } catch { result("saveFailed", true); }
  finally { busy = false; $("save").disabled = false; $("close").disabled = false; $("cancel").disabled = false; }
+};
+
+$("test").onclick = () => {
+ const url = formUrl("http://127.0.0.1:14242");
+ if (!url) { result("invalidUrl", true); $("url").focus(); return }
+ const key = $("key").value.trim().replace(/^Bearer\s+/i, "");
+ if (key && /[\s\u0000-\u001f\u007f]/.test(key)) { result("invalidKey", true); $("key").focus(); return }
+ window.name = JSON.stringify({ serverUrl: url.href, apiKey: key, spaceId: $("space").value.trim(), lang: language, returnTo: location.href.split("?")[0] });
+ location.assign(testService() + "/test");
 };
 
 $("save").onclick = save;

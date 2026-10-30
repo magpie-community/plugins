@@ -102,7 +102,7 @@ export function resolveOptions(raw = {}, env = process.env) {
 // it strictly. A status in `expected` comes back without its body, so
 // "nothing there" is told from a failure. Failures use Mem's small outcome
 // vocabulary; the caller decides what each means for it.
-export async function request(o, { method, route, payload, signal, timeoutMs, expected = [] }) {
+export async function request(o, { method, route, payload, signal, timeoutMs, expected = [], fetch: fetcher = fetch }) {
     const headers = { "User-Agent": `magpie-nowledge-mem/${version}`, Accept: "application/json" };
     if (payload !== undefined)
         headers["Content-Type"] = "application/json";
@@ -114,7 +114,7 @@ export async function request(o, { method, route, payload, signal, timeoutMs, ex
         combined.throwIfAborted();
         let r;
         try {
-            r = await fetch(new URL(route, o.server), {
+            r = await fetcher(new URL(route, o.server), {
                 method, headers, signal: combined, redirect: "error",
                 body: payload === undefined ? undefined : JSON.stringify(payload),
             });
