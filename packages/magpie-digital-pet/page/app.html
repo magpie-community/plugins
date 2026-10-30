@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>宠物</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!-- 数据来自 /api/state，命令提交到 /api/command；动态文本一律用 textContent / DOM API 渲染，逻辑在 app.js，样式在 app.css。 -->
+<header class="topbar">
+  <h1>宠物</h1>
+  <p class="muted small" id="sub">烧 token，养电子宠物</p>
+</header>
+
+<main>
+  <section class="habitat" id="habitat" aria-label="宠物栖息地">
+    <div class="sky">
+      <canvas id="pet-canvas" width="288" height="176" role="img" aria-label="宠物像素形象"></canvas>
+    </div>
+    <div class="habitat-info">
+      <div class="pet-head">
+        <span class="pet-name" id="pet-name">…</span>
+        <span class="pet-jp" id="pet-jp"></span>
+        <span class="badge" id="pet-stage-badge"></span>
+        <span class="badge warn" id="pet-pin-badge" hidden>已钉住 · 不生长</span>
+        <span class="badge warn" id="pet-frozen-badge" hidden>冻结中 · 不生长</span>
+      </div>
+      <p class="status-line" id="status-line">读取中…</p>
+      <div class="rename-row">
+        <input id="pet-rename-input" maxlength="20" placeholder="给它起个名字" aria-label="宠物名字">
+        <button type="button" data-command="pet-rename">命名</button>
+      </div>
+      <div class="evo">
+        <div class="bar evo-bar"><i id="evo-fill"></i></div>
+        <div class="bar-note small">
+          <span id="evo-text"></span>
+          <span class="muted" id="evo-pct"></span>
+        </div>
+      </div>
+      <div class="battle" id="battle" hidden>进化对决待战：对手 <b id="battle-foe"></b>（用 CLI 迎战）</div>
+    </div>
+  </section>
+
+  <div class="hud-grid">
+    <div class="hud-main">
+      <section id="care-bars" aria-label="状态">
+        <h2>状态</h2>
+        <div class="care-row" data-stat="satiety">
+          <span class="care-label">饱食</span>
+          <div class="bar"><i class="bar-fill"></i></div>
+          <span class="care-val">–</span>
+        </div>
+        <div class="care-row" data-stat="mood">
+          <span class="care-label">心情</span>
+          <div class="bar"><i class="bar-fill"></i></div>
+          <span class="care-val">–</span>
+        </div>
+        <div class="care-row" data-stat="energy">
+          <span class="care-label">精力</span>
+          <div class="bar"><i class="bar-fill"></i></div>
+          <span class="care-val">–</span>
+        </div>
+        <div class="care-row" data-stat="hygiene">
+          <span class="care-label">清洁</span>
+          <div class="bar"><i class="bar-fill"></i></div>
+          <span class="care-val">–</span>
+        </div>
+        <div class="care-row" data-stat="bond">
+          <span class="care-label">亲密</span>
+          <div class="bar"><i class="bar-fill"></i></div>
+          <span class="care-val">–</span>
+        </div>
+      </section>
+
+      <section id="actions" aria-label="日常照顾">
+        <h2>日常照顾</h2>
+        <div class="btn-grid">
+          <button type="button" data-command="pet-feed-snack" data-cooldown="snack">喂食点心</button>
+          <button type="button" data-command="pet-play" data-cooldown="play">玩耍</button>
+          <button type="button" data-command="pet-clean" data-cooldown="clean">清洁</button>
+          <button type="button" data-command="pet-rest" data-cooldown="rest">休息</button>
+          <button type="button" data-command="pet-pet-egg" data-cooldown="petEgg" id="btn-pet-egg">摸蛋</button>
+        </div>
+        <p class="small muted hint" id="actions-hint"></p>
+      </section>
+
+      <section id="expedition" aria-label="探险">
+        <h2>探险</h2>
+        <p class="small" id="expedition-status">还没有进行中的探险。</p>
+        <div class="btn-row">
+          <button type="button" data-command="pet-expedition-start" data-args="patrol">短巡逻 · 5 分钟</button>
+          <button type="button" data-command="pet-expedition-start" data-args="field">数据原野 · 15 分钟</button>
+          <button type="button" data-command="pet-expedition-start" data-args="night">深夜远征 · 30 分钟</button>
+          <button type="button" data-command="pet-expedition-claim" class="primary" id="btn-claim" hidden>领取探险奖励</button>
+        </div>
+      </section>
+    </div>
+
+    <aside class="hud-side">
+      <section id="manage" aria-label="管理">
+        <h2>管理</h2>
+        <div class="btn-row">
+          <button type="button" data-command="digital-pet-spawn">孵新蛋</button>
+          <button type="button" data-command="digital-pet-freeze">冻结生长</button>
+          <button type="button" data-command="digital-pet-unfreeze">恢复生长</button>
+          <button type="button" data-command="pet-unpin">取消钉住</button>
+        </div>
+        <div id="set-row">
+          <input id="set-id" placeholder="4-001" spellcheck="false" aria-label="要钉住的图鉴 ID">
+          <button type="button" data-command="digital-pet-set">钉住此 ID</button>
+          <a id="dex-link" href="#" target="_blank" rel="noreferrer" hidden>图鉴 ↗</a>
+        </div>
+      </section>
+
+      <section id="collection" aria-label="收藏与装饰">
+        <h2>收藏与装饰</h2>
+        <p class="small">数据碎片：<b id="fragments">0</b> · <span class="muted" id="achievements"></span></p>
+        <div class="btn-row">
+          <button type="button" data-command="pet-decoration-equip" data-args="meadow">草原背景 · 10 碎片</button>
+          <button type="button" data-command="pet-decoration-equip" data-args="night">夜空背景 · 25 碎片</button>
+          <button type="button" data-command="pet-decoration-equip" data-args="terminal">终端背景 · 40 碎片</button>
+        </div>
+      </section>
+
+      <section id="daily-goals" aria-label="每日目标">
+        <h2>每日目标</h2>
+        <ul class="goal-list" id="daily-list"></ul>
+      </section>
+    </aside>
+  </div>
+
+  <section class="archive" id="archive" aria-label="档案">
+    <div class="tab-bar" role="tablist" aria-label="档案切换">
+      <button type="button" class="tab-btn active" role="tab" aria-selected="true" aria-controls="panel-dex" data-tab="dex">图鉴与切换</button>
+      <button type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-events" data-tab="events">喂食记录</button>
+      <button type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-gens" data-tab="gens">历代搭档</button>
+    </div>
+    <div class="archive-panels">
+      <section class="tab-panel" id="panel-dex" role="tabpanel" aria-label="图鉴与切换">
+        <div id="dex">
+          <h2>图鉴与切换</h2>
+          <div class="dex-tools">
+            <input id="dex-search" placeholder="搜索名字或 ID" aria-label="搜索图鉴">
+            <select id="dex-filter" aria-label="筛选图鉴">
+              <option value="unlocked">只看已解锁</option>
+              <option value="all">全部图鉴</option>
+              <option value="locked">只看未解锁</option>
+            </select>
+          </div>
+          <div class="dex-grid" id="dex-grid"></div>
+        </div>
+      </section>
+      <section class="tab-panel" id="panel-events" role="tabpanel" hidden aria-label="喂食记录">
+        <h2>喂食记录</h2>
+        <ul id="events"><li class="empty">读取中…</li></ul>
+      </section>
+      <section class="tab-panel" id="panel-gens" role="tabpanel" hidden aria-label="历代搭档">
+        <h2>历代搭档</h2>
+        <ul id="gens"><li class="empty">读取中…</li></ul>
+      </section>
+    </div>
+  </section>
+
+  <div id="say" role="status" aria-live="polite"></div>
+</main>
+
+<footer class="muted small">
+  数据库与 CLI 同源；页面每 5 秒刷新。<br>
+  原版引擎来自 @jcendal/opencode-digital-pet（Apache-2.0）。
+</footer>
+<script src="app.js" defer></script>
+</body>
+</html>

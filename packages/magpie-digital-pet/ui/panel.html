@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font: 13px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    margin: 0; padding: 14px 16px;
+    color: canvastext;
+  }
+  p { margin: 0 0 10px; }
+  .muted { opacity: .62; }
+  .small { font: 11px/1.5 ui-monospace, Consolas, monospace; opacity: .8; }
+  .field {
+    display: grid;
+    grid-template-columns: 10em 1fr;
+    gap: 2px 12px;
+    align-items: baseline;
+    padding: 7px 0;
+  }
+  .field > label { opacity: .62; cursor: default; }
+  .field .desc { grid-column: 2; font-size: 12px; opacity: .62; }
+  .switch { position: relative; width: 34px; height: 20px; flex: none; }
+  .switch input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+  .switch .knob {
+    position: absolute; inset: 0; border-radius: 999px;
+    background: color-mix(in srgb, canvastext 18%, transparent);
+    transition: background .15s;
+  }
+  .switch .knob::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: canvas; transition: transform .15s;
+  }
+  .switch input:checked + .knob { background: #3b82f6; }
+  .switch input:checked + .knob::after { transform: translateX(14px); }
+  .switch input:focus-visible + .knob { outline: 2px solid #3b82f6; outline-offset: 2px; }
+  button {
+    font: inherit; padding: 4px 14px; margin-top: 6px;
+    border: 1px solid color-mix(in srgb, canvastext 25%, transparent);
+    border-radius: 6px; background: canvas; color: canvastext; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  #result { margin-top: 8px; font-size: 12px; }
+  #result.ok { color: #15803d; }
+  #result.bad { color: #d5453c; }
+  code {
+    font: 11px/1.5 ui-monospace, Consolas, monospace;
+    background: color-mix(in srgb, canvastext 8%, transparent);
+    padding: 1px 5px; border-radius: 4px;
+  }
+  hr { border: none; border-top: 1px solid color-mix(in srgb, canvastext 15%, transparent); margin: 12px 0; }
+</style>
+</head>
+<body>
+  <p>烧 token，养电子宠物。统计<b>所有走 magpie 网关的请求</b>（Claude Code、Codex、Pi、OpenCode……），喂给一只 Digimon：token 攒满进化槽就进化，650 只图鉴、原版进化路线。不注入任何 agent 的上下文。</p>
+
+  <div class="field">
+    <label>启用插件</label>
+    <span class="switch"><input type="checkbox" id="enabled"><span class="knob"></span></span>
+    <span class="desc">停用后请求照常转发，宠物不再进食。立即生效。</span>
+  </div>
+  <div class="field">
+    <label>进化提示日志</label>
+    <span class="switch"><input type="checkbox" id="notifications"><span class="knob"></span></span>
+    <span class="desc">进化/孵化时往 magpie 的插件日志写一行提示。立即生效。</span>
+  </div>
+  <div class="field">
+    <label>计入缓存 token</label>
+    <span class="switch"><input type="checkbox" id="includeCacheTokens"><span class="knob"></span></span>
+    <span class="desc">默认<b>关</b>：cache 命中的 token 不喂宠物（cache 读取不花多少钱，全算会让宠物虚胖）。打开后按原版口径计入。立即生效。</span>
+  </div>
+  <div class="field">
+    <label>补录历史用量</label>
+    <span class="switch"><input type="checkbox" id="backfill"><span class="knob"></span></span>
+    <span class="desc">默认<b>关</b>：从装好那刻起算。打开后把 magpie 已记的 30 天用量一口气喂进去（蛋会立刻孵化并连跳几级）。改后需重载插件。</span>
+  </div>
+  <div class="field">
+    <label>轮询间隔（秒）</label>
+    <span><input type="number" id="pollSeconds" min="15" max="3600" step="15"></span>
+    <span class="desc">每隔多久问一次 magpie 的用量接口。默认 60。改后需重载插件。</span>
+  </div>
+
+  <button id="save">保存</button>
+  <div id="result"></div>
+
+  <hr>
+  <p class="muted">工作方式：插件作为 OpenCode v1 插件跑在 magpie 的 Bun 宿主里，定期轮询 magpie 自己的用量接口（<code>/v1/magpie/usage/requests</code>），把每个已完成请求的 token 喂给引擎。不碰任何 agent 的上下文，不改任何请求。孵蛋/冻结/查看进度用命令行：</p>
+  <p class="small">bun cli/pet-cli.mjs status | spawn | freeze | unfreeze | events | partners</p>
+  <p class="muted small">数据库：%APPDATA%\magpie-digital-pet\pet.db（个人存档与插件代码分离；可用 <code>dbPath</code> 覆盖）<br>
+  日常照顾、命名、图鉴切换与探险在侧边栏宠物页操作。<br>
+  移植自 @jcendal/opencode-digital-pet 0.18.0（Apache-2.0），只换掉了宿主，引擎原样。</p>
+
+<script>
+(async () => {
+  await magpie.ready;
+
+  const DEFAULTS = { enabled: true, notifications: true, includeCacheTokens: false, backfill: false, pollSeconds: 60 };
+  const $ = (id) => document.getElementById(id);
+  const els = { enabled: $("enabled"), notifications: $("notifications"), includeCacheTokens: $("includeCacheTokens"), backfill: $("backfill"), pollSeconds: $("pollSeconds") };
+  const result = $("result");
+  const saveBtn = $("save");
+
+  let opts = { ...DEFAULTS };
+  try {
+    const saved = await magpie.options.get();
+    opts = { ...DEFAULTS, ...(typeof saved === "object" && saved ? saved : {}) };
+  } catch {}
+
+  const paint = () => {
+    els.enabled.checked = opts.enabled !== false;
+    els.notifications.checked = opts.notifications !== false;
+    els.includeCacheTokens.checked = opts.includeCacheTokens === true;
+    els.backfill.checked = opts.backfill === true;
+    els.pollSeconds.value = Number.isFinite(opts.pollSeconds) ? opts.pollSeconds : 60;
+  };
+
+  saveBtn.onclick = async () => {
+    result.textContent = "";
+    result.className = "";
+    saveBtn.disabled = true;
+    saveBtn.textContent = "保存中…";
+    try {
+      opts = await magpie.options.set({
+        enabled: els.enabled.checked,
+        notifications: els.notifications.checked,
+        includeCacheTokens: els.includeCacheTokens.checked,
+        backfill: els.backfill.checked,
+        pollSeconds: Math.max(15, Math.min(3600, Number(els.pollSeconds.value) || 60)),
+      });
+      result.textContent = "已保存。开关立即生效；补录/间隔需重载插件（禁用再启用即可）。";
+      result.className = "ok";
+    } catch (e) {
+      result.textContent = "没能保存：" + (e?.message ?? e);
+      result.className = "bad";
+    }
+    saveBtn.disabled = false;
+    saveBtn.textContent = "保存";
+    paint();
+  };
+
+  paint();
+})();
+</script>
+</body>
+</html>
