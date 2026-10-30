@@ -63,8 +63,8 @@ export async function onRequest(body, ctx) {
 }
 async function run(body, ctx) {
     const o = resolveOptions(ctx.options);
-    const keyed = ctx.origin === "gateway-key";
-    const own = ctx.origin === "local" || (keyed && o.gatewayKeys);
+    const own = ctx.origin === "local" || ctx.origin === "magpie-key" ||
+        (ctx.origin === "gateway-key" && o.gatewayKeys);
     const recall = o.recall && own;
     const capture = o.capture && own;
     if (!recall && !capture) {

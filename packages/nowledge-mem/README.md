@@ -38,7 +38,11 @@ sequenceDiagram
     end
 ```
 
-Requires **Magpie 0.1.1273 or newer** and Bun. The package declares
+Requires **Magpie 0.1.1273 or newer** and Bun. From **Magpie 0.1.2210** the
+sharing key Magpie writes into your own agents on this computer arrives as
+`magpie-key`, and recall and saving include it automatically. On an older
+Magpie every harness key is `gateway-key`, which is off unless the advanced
+`gatewayKeys` option is set. The package declares
 `magpie.hooks: "./nowledge-mem.hooks.mjs"`, Magpie's asynchronous Bun hook
 entry; it is not gateway middleware and has no OpenCode provider. Use **Magpie
 0.1.1531 or newer** for options saved from the plugin page to reach the hook on
@@ -130,13 +134,13 @@ derived value for all of them.
   messages. Turn it off to import only what the user and the assistant wrote.
 - `allowInsecureHttp`: default **false**. Permits plain HTTP to a server that
   is not a loopback address. Prefer HTTPS.
-- `gatewayKeys`: default **false**. Include requests Magpie marks
-  `gateway-key`: every request carrying a gateway key, including keys given to
-  other people (shared, LAN, Tailscale). On, those requests receive the
+- `gatewayKeys`: default **false**, advanced. Include requests Magpie marks
+  `gateway-key`: other named keys, including keys given to other people and the
+  sharing key copied to another machine. On, those requests receive the
   recalled Memory and Context Bundle; with `capture` on, their conversations
-  are saved to your Mem. Off, recall and saving serve only direct local
-  requests without a key. `remote` and unknown origins are never included,
-  even with this on.
+  are saved to your Mem. Leave it off unless every key on this gateway is your
+  own. The page does not set it. `remote` and unknown origins are never
+  included, even with this on.
 - `installLibrary`: default **true**. Install the `Nowledge Mem` MCP entry and
   the `nowledge-mem` skill into Magpie's Library, given to no agent. Set it to
   false to stop the installer from re-adding them.
@@ -269,8 +273,10 @@ own: the offline tests replace `globalThis.fetch` to keep Cursor's token local
 The page uses only Magpie's released `magpie.options` and theme bridge. It
 declares no reads and saving stores configuration without probing the
 connection or writing Memory. It shows the Server, API key, Space, Agent, the
-recall, Context Bundle, capture and keyed-agent access switches, and the MCP
-server and skill it installs. It follows Magpie's language (English, Simplified and
+recall, Context Bundle and capture switches, and the MCP server and skill it
+installs. Its **What is sent** section says the scope: direct local requests
+and `magpie-key` from this computer; other gateway keys and remote requests are
+never included. It follows Magpie's language (English, Simplified and
 Traditional Chinese, Japanese, German) and theme, and preserves options it does
 not show.
 

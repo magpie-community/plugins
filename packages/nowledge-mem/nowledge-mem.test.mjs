@@ -446,25 +446,31 @@ test("capture is off when the option is absent", async () => {
   expect(of("threads/import")).toHaveLength(0)
 })
 
-test("a keyed request is included only when the page allows Magpie keys", async () => {
+test("the Magpie sharing key from this computer is included; other gateway keys are not", async () => {
   mock()
-  const [, off] = capturing("chat", { origin: "gateway-key", options: { gatewayKeys: false } })
-  await onRequest(structuredClone(chat), off)
-  expect(of("memories/search")).toHaveLength(0)
-  await onResponse(reply, { ...off, success: true })
-  expect(of("threads/import")).toHaveLength(0)
+  const [, own] = capturing("chat", { origin: "magpie-key", options: { gatewayKeys: false } })
+  await onRequest(structuredClone(chat), own)
+  expect(of("memories/search")).toHaveLength(1)
+  await onResponse(reply, { ...own, success: true })
+  expect(of("threads/import")).toHaveLength(1)
 
   reset()
   calls.length = 0
   mock()
-  const [, on] = capturing("chat", { origin: "gateway-key", options: { gatewayKeys: true } })
-  await onRequest(structuredClone(chat), on)
+  const [, other] = capturing("chat", { origin: "gateway-key", options: { gatewayKeys: false } })
+  await onRequest(structuredClone(chat), other)
+  expect(of("memories/search")).toHaveLength(0)
+  await onResponse(reply, { ...other, success: true })
+  expect(of("threads/import")).toHaveLength(0)
+
+  // The advanced option can include other gateway keys; remote/unknown stay out.
+  mock()
+  const [, advanced] = capturing("chat", { origin: "gateway-key", options: { gatewayKeys: true } })
+  await onRequest(structuredClone(chat), advanced)
   expect(of("memories/search")).toHaveLength(1)
-  await onResponse(reply, { ...on, success: true })
-  expect(of("threads/import")).toHaveLength(1)
 })
 
-test("remote and unknown origins stay out even with the key switch on", async () => {
+test("remote and unknown origins stay out even with the advanced key option on", async () => {
   for (const origin of ["remote", undefined]) {
     mock()
     calls.length = 0
@@ -695,7 +701,7 @@ test("configuration page saves the Mem connection for the shipped hook", async (
   const document = { documentElement: {}, getElementById: (id) => elements[id], querySelectorAll: () => [] }
   const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign(url) { this.assigned = url } }
   const window = { name: "" }
-  let options = { apiKeyEnv: "NMEM_API_KEY", recall: true, contextBundle: true, capture: false, gatewayKeys: true, maxMemories: 5, maxBytes: 6000 }
+  let options = { apiKeyEnv: "NMEM_API_KEY", recall: true, contextBundle: true, capture: false, maxMemories: 5, maxBytes: 6000 }
   let writes = 0
   const magpie = {
     theme: { lang: "en" }, ready: Promise.resolve(), onTheme() {},
@@ -718,7 +724,6 @@ test("configuration page saves the Mem connection for the shipped hook", async (
     agentId: "agent-3",
     apiKey: "nmem_page_key",
     capture: true,
-    gatewayKeys: true,
   })
   // Run the shipped hook with exactly what the page saved.
   mock({ "threads/import": (body) => Response.json({ success: true, failed_count: 0, results: [{ success: true, thread_id: body.thread_id, message_count: body.messages.length, messages_added: body.messages.length }] }) })
@@ -759,7 +764,6 @@ test("configuration page saves the Mem connection for the shipped hook", async (
   elements.space.value = "   "
   elements.agent.value = ""
   elements.capture.checked = false
-  elements["gateway-keys"].checked = false
   await save()
   expect(options.serverUrl).toBe("https://mem.example.com/")
 
@@ -769,7 +773,6 @@ test("configuration page saves the Mem connection for the shipped hook", async (
   expect(location.assigned).toBe("http://127.0.0.1:3479/test")
   expect(JSON.parse(window.name)).toEqual({ returnTo: location.href, lang: "en" })
   window.name = ""
-  expect(options.gatewayKeys).toBe(false)
   expect(options.apiKey).toBeUndefined()
   expect(options.spaceId).toBeUndefined()
   expect(options.agentId).toBeUndefined()

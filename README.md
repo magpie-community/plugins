@@ -167,11 +167,12 @@ and the Context Bundle are on; importing conversations is off until enabled.
 The plugin installs Mem's official MCP server and a short skill into Magpie's
 Library, given to no agent; choose agents in Library › MCP and Library ›
 Skills. With the [MCP hub](https://usemagpie.ai/docs/mcp-hub) on, each agent
-still gets a single `magpie` entry. A request with a Magpie gateway key can
-also carry someone else's key, so the page's key switch is off by default:
-turn it on only when the keys on this gateway are your own. **Test connection**
-checks the saved connection from a loopback helper; save changes first. Harness
-prompts and commands stay with the harnesses. See the
+still gets a single `magpie` entry. Recall and saving include direct local
+requests and the sharing key Magpie writes into your own agents on this
+computer (`magpie-key`, Magpie 0.1.2210+); other gateway keys and remote
+requests stay out. **Test connection** checks the saved connection from a
+loopback helper; save changes first. Harness prompts and commands stay with the
+harnesses. See the
 [plugin README](packages/nowledge-mem).
 
 The asynchronous hook API shipped in Magpie 0.1.1273; see the

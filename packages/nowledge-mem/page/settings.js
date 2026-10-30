@@ -49,7 +49,6 @@ function fill(options) {
  $("recall").checked = options.recall !== false;
  $("context").checked = options.contextBundle !== false;
  $("capture").checked = options.capture === true;
- $("gateway-keys").checked = options.gatewayKeys === true;
  paintSecret();
 }
 function paintSecret() {
@@ -100,7 +99,7 @@ const save = async (event) => {
  try {
   const previous = await magpie.options.get();
   // Read again before merging to preserve options not exposed by this form.
-  const next = {...previous, serverUrl: url.href, recall: $("recall").checked, contextBundle: $("context").checked, capture: $("capture").checked, gatewayKeys: $("gateway-keys").checked};
+  const next = {...previous, serverUrl: url.href, recall: $("recall").checked, contextBundle: $("context").checked, capture: $("capture").checked};
   if (space) next.spaceId = space;
   else delete next.spaceId;
   if (agent) next.agentId = agent;
