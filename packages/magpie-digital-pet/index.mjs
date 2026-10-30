@@ -8,6 +8,7 @@
 //
 // Nothing is injected into any agent's context; requests are never modified.
 
+import { createPetAdapter } from "./lib/pet.adapter.mjs";
 import { createPetWatcher } from "./lib/pet.watcher.mjs";
 import { createPetServer } from "./lib/pet.server.mjs";
 
@@ -28,10 +29,6 @@ let starting = null;
 
 async function startAll(options) {
   const opts = { ...DEFAULTS, ...(options && typeof options === "object" ? options : {}) };
-  if (opts.enabled === false) {
-    console.log("[magpie-digital-pet] disabled by options");
-    return;
-  }
   if (watcher) {
     await watcher.stop();
     watcher = null;
@@ -40,12 +37,17 @@ async function startAll(options) {
     await server.close();
     server = null;
   }
+  if (opts.enabled === false) {
+    console.log("[magpie-digital-pet] disabled by options");
+    return;
+  }
   const dbPath = typeof opts.dbPath === "string" && opts.dbPath.trim() ? opts.dbPath.trim() : undefined;
-  const port = Number.isFinite(Number(opts.port)) && Number(opts.port) > 0 ? Number(opts.port) : 3571;
+  const port = Number.isFinite(Number(opts.port)) && Number(opts.port) >= 0 ? Number(opts.port) : 3571;
 
-  server = createPetServer({ dbPath, port, notifyGate: () => opts.notifications !== false });
+  const adapter = createPetAdapter({ dbPath, notifyGate: () => opts.notifications !== false });
+  server = createPetServer({ adapter, port });
   watcher = createPetWatcher({
-    databasePath: dbPath,
+    adapter,
     gatewayUrl: opts.gatewayUrl,
     pollSeconds: opts.pollSeconds,
     includeCacheTokens: opts.includeCacheTokens === true,

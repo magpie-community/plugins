@@ -6,6 +6,8 @@
 
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 import {
   applyCareAction,
@@ -159,7 +161,9 @@ export function createCareStore({ databasePath } = {}) {
   if (typeof databasePath !== "string" || databasePath.trim() === "") {
     throw new Error("createCareStore requires a databasePath");
   }
+  mkdirSync(dirname(databasePath.trim()), { recursive: true });
   const db = new Database(databasePath.trim());
+  db.run("PRAGMA busy_timeout = 5000");
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
   let closed = false;
@@ -325,8 +329,7 @@ export function createCareStore({ databasePath } = {}) {
     return row.c;
   }
 
-  // Recomputes today's goals and grants each done goal's reward at most once.
-  function sweepDailyGoals(partnerId, nowMs) {
+  function computeDailyGoals(partnerId, nowMs) {
     const date = localDateString(nowMs);
     const { startMs, endMs } = localDayRangeMs(nowMs);
     const careEventsToday = db
@@ -340,30 +343,33 @@ export function createCareStore({ databasePath } = {}) {
       )
       .get(partnerId, startMs, endMs).c;
     const fedRequestsToday = countFedRequestsToday(partnerId, startMs, endMs);
+    return evaluateDailyGoals({ careEventsToday, fedRequestsToday, expeditionClaimsToday }).map((goal) => {
+      const stored = db
+        .query("SELECT reward_claimed FROM magpie_pet_daily WHERE date = ? AND goal_id = ?")
+        .get(date, goal.id);
+      return { ...goal, rewardClaimed: stored?.reward_claimed === 1 };
+    });
+  }
 
-    const goals = evaluateDailyGoals({ careEventsToday, fedRequestsToday, expeditionClaimsToday });
+  // Recomputes today's goals and grants each done goal's reward at most once.
+  function sweepDailyGoals(partnerId, nowMs) {
+    const date = localDateString(nowMs);
+    const goals = computeDailyGoals(partnerId, nowMs);
     return goals.map((goal) => {
       db.query(
         `INSERT INTO magpie_pet_daily (date, goal_id, progress, done, reward_claimed, claimed_at)
          VALUES (?, ?, ?, ?, 0, NULL)
          ON CONFLICT(date, goal_id) DO UPDATE SET progress = excluded.progress, done = excluded.done`,
       ).run(date, goal.id, goal.progress, goal.done ? 1 : 0);
-      let rewardClaimed = false;
-      if (goal.done) {
-        const stored = db
-          .query("SELECT reward_claimed FROM magpie_pet_daily WHERE date = ? AND goal_id = ?")
-          .get(date, goal.id);
-        if (stored.reward_claimed === 1) {
-          rewardClaimed = true;
-        } else {
-          const reward = DAILY_GOAL_REWARDS[goal.id] ?? 0;
-          if (reward > 0) addFragments(reward);
-          db.query(
-            "UPDATE magpie_pet_daily SET reward_claimed = 1, claimed_at = ? WHERE date = ? AND goal_id = ?",
-          ).run(nowMs, date, goal.id);
-          insertEvent(partnerId, "daily", goal.id, null, nowMs);
-          rewardClaimed = true;
-        }
+      let rewardClaimed = goal.rewardClaimed;
+      if (goal.done && !rewardClaimed) {
+        const reward = DAILY_GOAL_REWARDS[goal.id] ?? 0;
+        if (reward > 0) addFragments(reward);
+        db.query(
+          "UPDATE magpie_pet_daily SET reward_claimed = 1, claimed_at = ? WHERE date = ? AND goal_id = ?",
+        ).run(nowMs, date, goal.id);
+        insertEvent(partnerId, "daily", goal.id, null, nowMs);
+        rewardClaimed = true;
       }
       return { ...goal, rewardClaimed };
     });
@@ -456,22 +462,18 @@ export function createCareStore({ databasePath } = {}) {
   return {
     getCareSnapshot(partnerId, nowMs) {
       assertReadable();
-      const run = db.transaction(() => {
-        const state = currentState(partnerId, nowMs);
-        writeCareState(state);
-        const goals = sweepDailyGoals(partnerId, nowMs);
-        unlockAchievements(nowMs);
-        return {
-          partnerId,
-          petName: readPetName(partnerId),
-          state,
-          summary: careSummary(state),
-          activeExpedition: runningExpedition(partnerId),
-          daily: { date: localDateString(nowMs), goals },
-          achievements: listAchievements(),
-        };
-      });
-      return run();
+      // Read path only: decay is computed in memory, rewards/achievements are
+      // granted by the write paths (actions, expedition claims), not by GET.
+      const state = currentState(partnerId, nowMs);
+      return {
+        partnerId,
+        petName: readPetName(partnerId),
+        state,
+        summary: careSummary(state),
+        activeExpedition: runningExpedition(partnerId),
+        daily: { date: localDateString(nowMs), goals: computeDailyGoals(partnerId, nowMs) },
+        achievements: listAchievements(),
+      };
     },
 
     performAction(partnerId, action, nowMs, context) {
@@ -505,7 +507,7 @@ export function createCareStore({ databasePath } = {}) {
       if (clean.length < 1 || clean.length > 20) return { ok: false, reason: "invalid-name" };
       const run = db.transaction(() => {
         writePetName(partnerId, clean, nowMs);
-        insertEvent(partnerId, "care", "rename", `给它取名为「${clean}」`, nowMs);
+        insertEvent(partnerId, "system", "rename", `给它取名为「${clean}」`, nowMs);
       });
       run();
       return { ok: true, name: clean };

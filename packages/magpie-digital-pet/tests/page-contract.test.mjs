@@ -137,6 +137,7 @@ test("dex selection, rename controls and action effects are wired", () => {
     assert.ok(html.includes(`id="${id}"`), `missing #${id}`);
   }
   assert.ok(html.includes('data-command="pet-rename"'), "rename button missing");
+  assert.ok(js.includes("x-magpie-pet-token"), "api requests must carry the local page token");
   assert.ok(js.includes("ACTION_EFFECTS"), "per-action canvas effects missing");
   assert.ok(js.includes("paintDex"), "dex painter missing");
   assert.ok(js.includes("pet-rename"), "rename command wiring missing");

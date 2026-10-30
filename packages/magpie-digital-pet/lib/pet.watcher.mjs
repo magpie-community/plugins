@@ -35,6 +35,7 @@ function loadState(file, backfill) {
 export function createPetWatcher({
   databasePath,
   dbPath,
+  adapter: sharedAdapter,
   gatewayUrl = DEFAULT_GATEWAY,
   pollSeconds = 60,
   includeCacheTokens = false,
@@ -45,7 +46,7 @@ export function createPetWatcher({
   const fetchFn = fetchImpl ?? (typeof fetch === "function" ? fetch : null);
   if (!fetchFn) throw new Error("no fetch available in this runtime");
 
-  const adapter = createPetAdapter({
+  const adapter = sharedAdapter ?? createPetAdapter({
     databasePath,
     dbPath,
     notifyGate: () => notifications !== false,

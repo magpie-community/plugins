@@ -19,24 +19,12 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Database } from "bun:sqlite";
-import { plugin as createOpenCodePetPlugin, DIGIMON_DATA } from "./upstream/index.js";
+import { plugin as createOpenCodePetPlugin, DIGIMON_DATA } from "@jcendal/opencode-digital-pet";
 
 export { DIGIMON_DATA };
-
-let debugCount = 0;
-
-function safeShape(value, depth = 0) {
-  if (value === null || typeof value !== "object" || depth > 2) {
-    return typeof value === "string" ? value.slice(0, 300) : value;
-  }
-  if (Array.isArray(value)) return value.slice(0, 5).map((v) => safeShape(v, depth + 1));
-  const out = {};
-  for (const [k, v] of Object.entries(value).slice(0, 30)) out[k] = safeShape(v, depth + 1);
-  return out;
-}
 
 const num = (v) => {
   const n = Number(v);
@@ -49,39 +37,6 @@ export function userDataDir() {
     return join(appData, "magpie-digital-pet");
   }
   return join(homedir(), ".config", "magpie-digital-pet");
-}
-
-export const GROWTH_THRESHOLDS = Object.freeze({
-  egg: 10_000_000,
-  babyI: 20_000_000,
-  babyII: 40_000_000,
-  child: 80_000_000,
-  adult: 150_000_000,
-  perfect: 250_000_000,
-  ultimate: 400_000_000,
-  superUltimate: 600_000_000,
-});
-
-export function growthSettingsPath() {
-  if (process.platform === "win32") {
-    const appData = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
-    return join(appData, "opencode-digital-pet.json");
-  }
-  return join(homedir(), ".config", "opencode-digital-pet.json");
-}
-
-export function ensureGrowthSettings() {
-  const file = growthSettingsPath();
-  let existing = {};
-  try {
-    existing = JSON.parse(readFileSync(file, "utf8"));
-  } catch {}
-  const current = JSON.stringify(existing?.stageThresholds ?? null);
-  const wanted = JSON.stringify(GROWTH_THRESHOLDS);
-  if (current === wanted) return false;
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify({ ...existing, stageThresholds: GROWTH_THRESHOLDS }, null, 2)}\n`);
-  return true;
 }
 
 export function legacyDatabasePath() {
@@ -125,6 +80,7 @@ export function createPetAdapter({ databasePath, dbPath, notifyGate } = {}) {
     ? (typeof databasePath === "string" && databasePath.trim() ? databasePath.trim() : dbPath.trim())
     : defaultDatabasePath();
   const db = raw;
+  mkdirSync(dirname(db), { recursive: true });
   if (!explicit) migrateLegacyDatabase(db);
 
   const toasts = [];
@@ -136,10 +92,11 @@ export function createPetAdapter({ databasePath, dbPath, notifyGate } = {}) {
       // the toast text is mirrored to the plugin log instead.
       showToast: async (payload) => {
         if (gate()) {
-          toasts.push(payload);
+          const source = payload && typeof payload.body === "object" && payload.body !== null ? payload.body : payload;
+          toasts.push(source);
           try {
-            const title = typeof payload?.title === "string" ? payload.title : "";
-            const message = typeof payload?.message === "string" ? payload.message : "";
+            const title = typeof source?.title === "string" ? source.title : "";
+            const message = typeof source?.message === "string" ? source.message : typeof source?.body === "string" ? source.body : "";
             const line = `[magpie-digital-pet] ${[title, message].filter(Boolean).join(" — ")}`.trim();
             if (line.length > "[magpie-digital-pet] ".length) console.log(line);
           } catch {}
@@ -152,11 +109,6 @@ export function createPetAdapter({ databasePath, dbPath, notifyGate } = {}) {
       messages: async () => ({ data: [] }),
     },
   };
-
-  // Growth tuning is game configuration, not save data. Keep it in the user's
-  // config area, but recreate it if missing so code updates don't change the
-  // intended 2x pacing.
-  ensureGrowthSettings();
 
   const ready = createOpenCodePetPlugin({ client: fakeClient }, { databasePath: db }).then((hooks) => {
     if (typeof hooks?.event !== "function" || typeof hooks?.["command.execute.before"] !== "function") {
@@ -227,29 +179,6 @@ export function createPetAdapter({ databasePath, dbPath, notifyGate } = {}) {
     databasePath: db,
     lastToasts(n = 5) {
       return toasts.slice(-n);
-    },
-
-    // bounded capture of reply shapes we could not parse, for iterating the
-    // extractor against real traffic (5 entries, 96 KB cap)
-    debugUnknown(body, ctx) {
-      if (debugCount >= 5) return;
-      debugCount++;
-      try {
-        const dir = join(dirname(db), "debug.log");
-        mkdirSync(dirname(db), { recursive: true });
-        let size = 0;
-        try {
-          size = statSync(dir).size;
-        } catch {}
-        if (size > 96 * 1024) return;
-        appendFileSync(dir, JSON.stringify({
-          at: new Date().toISOString(),
-          bodyType: typeof body,
-          body: safeShape(body),
-          ctxKeys: ctx ? Object.keys(ctx) : null,
-          ctxRequest: safeShape(ctx?.request),
-        }) + "\n");
-      } catch {}
     },
 
     // Feed one completed request's token usage into the engine.

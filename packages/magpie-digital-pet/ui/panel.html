@@ -89,7 +89,7 @@
   <hr>
   <p class="muted">工作方式：插件作为 OpenCode v1 插件跑在 magpie 的 Bun 宿主里，定期轮询 magpie 自己的用量接口（<code>/v1/magpie/usage/requests</code>），把每个已完成请求的 token 喂给引擎。不碰任何 agent 的上下文，不改任何请求。孵蛋/冻结/查看进度用命令行：</p>
   <p class="small">bun cli/pet-cli.mjs status | spawn | freeze | unfreeze | events | partners</p>
-  <p class="muted small">数据库：%APPDATA%\magpie-digital-pet\pet.db（个人存档与插件代码分离；可用 <code>dbPath</code> 覆盖）<br>
+  <p class="muted small">数据库：用户数据目录下的 magpie-digital-pet\pet.db（个人存档与插件代码分离；Windows: %APPDATA%\magpie-digital-pet\pet.db；macOS/Linux: ~/.config/magpie-digital-pet/pet.db；可用 <code>dbPath</code> 覆盖）<br>
   日常照顾、命名、图鉴切换与探险在侧边栏宠物页操作。<br>
   移植自 @jcendal/opencode-digital-pet 0.18.0（Apache-2.0），只换掉了宿主，引擎原样。</p>
 

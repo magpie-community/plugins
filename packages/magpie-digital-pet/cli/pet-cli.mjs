@@ -20,7 +20,7 @@ const { createPetAdapter, nodeById, defaultDatabasePath, migrateLegacyDatabase }
 const { createCareStore } = await import(join(HERE, "..", "lib", "pet.care-store.mjs"));
 
 const STAGE_NAMES = ["egg", "baby I", "baby II", "child", "adult", "perfect", "ultimate", "super ultimate"];
-const STAGE_THRESHOLDS = [1e7, 2e7, 4e7, 8e7, 15e7, 25e7, 4e8, 6e8];
+const STAGE_THRESHOLDS = [5e6, 1e7, 2e7, 4e7, 75e6, 125e6, 2e8, 3e8];
 
 const argv = process.argv.slice(2);
 const dbFlagIndex = argv.indexOf("--db");
@@ -29,9 +29,8 @@ if (dbFlagIndex !== -1) argv.splice(dbFlagIndex, 2);
 else migrateLegacyDatabase(dbPath);
 
 function fmtTokens(n) {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  if (n >= 1e8) return `${(n / 1e8).toFixed(2)}亿`;
+  if (n >= 1e4) return `${(n / 1e4).toFixed(1)}万`;
   return String(n);
 }
 
@@ -96,7 +95,7 @@ function status() {
   const receipts = db.query("SELECT COUNT(*) c, SUM(token_delta) t FROM usage_receipts").get();
 
   console.log(`db        ${dbPath}`);
-  console.log(`fed       ${receipts.c} requests · ${fmtTokens(receipts.t ?? 0)} tokens (all-time)`);
+  console.log(`fed       ${receipts.c} requests · ${fmtTokens(receipts.t ?? 0)} tokens（累计）`);
   console.log(`trainer   ${fmtTokens(trainer?.total_tokens ?? 0)} tokens`);
   if (control?.cheat_node_id) {
     console.log(`mode      pinned to ${nodeLabel(control.cheat_node_id)} (set; no growth)`);
@@ -111,7 +110,7 @@ function status() {
     const threshold = STAGE_THRESHOLDS[stage] ?? 0;
     const pct = threshold > 0 ? ((partner.gauge / threshold) * 100).toFixed(2) : "?";
     console.log(`partner   gen ${partner.generation} · ${nodeLabel(partner.current_node_id)}`);
-    console.log(`          stage ${STAGE_NAMES[stage] ?? stage} · gauge ${fmtTokens(partner.gauge)} / ${fmtTokens(threshold)} (${pct}%)`);
+    console.log(`          stage ${STAGE_NAMES[stage] ?? stage} · 本阶段 ${fmtTokens(partner.gauge)} / ${fmtTokens(threshold)} (${pct}%)`);
     if (partner.battle_opponent_node_id) {
       console.log(`          evolution battle pending vs ${nodeLabel(partner.battle_opponent_node_id)}`);
     }

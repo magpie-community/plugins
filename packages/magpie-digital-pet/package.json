@@ -1,7 +1,7 @@
 {
-  "name": "magpie-digital-pet",
-  "version": "0.5.0",
-  "description": "Digital Pet for the magpie gateway: every request magpie routes feeds your Digimon partner, now with local care, expeditions and collections. Ported from @jcendal/opencode-digital-pet 0.18.0 (Apache-2.0). Polls magpie's own usage API; never touches agents' contexts.",
+  "name": "@magpie-community/page-digital-pet",
+  "version": "0.6.0",
+  "description": "A virtual pet page for the magpie gateway: routed usage feeds the active partner, with local care, expeditions and collections. Depends on @jcendal/opencode-digital-pet 0.18.0; this package bundles no sprite art. Polls magpie's own usage API; never touches agents' contexts.",
   "type": "module",
   "main": "./index.mjs",
   "files": [
@@ -20,15 +20,23 @@
     "magpie-page",
     "opencode",
     "opencode-plugin",
-    "virtual-pet",
-    "digital-pet",
-    "digimon",
-    "tamagotchi"
+    "virtual-pet"
   ],
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "local"
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/magpie-digital-pet"
+  },
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "homepage": "https://github.com/manjughosa/magpie-digital-pet#readme",
+  "engines": {
+    "magpie": ">=0.1.1340"
+  },
+  "dependencies": {
+    "@jcendal/opencode-digital-pet": "0.18.0"
   },
   "magpie": {
     "icon": "page/icon.svg",
@@ -36,6 +44,10 @@
       "title": "Digital Pet",
       "file": "page/index.html",
       "icon": "page/icon.svg",
+      "service": {
+        "port": 3571,
+        "option": "port"
+      },
       "titles": {
         "zh": "宠物",
         "zh-TW": "寵物",

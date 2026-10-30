@@ -1,10 +1,10 @@
-# magpie-digital-pet
+# @magpie-community/page-digital-pet
 
-烧 token，养电子宠物 —— 跑在 [magpie](https://github.com/) 网关上的插件，带侧边栏页面。
+烧 token，养电子宠物 —— 跑在 [magpie](https://github.com/yetone/magpie) 网关上的插件，带侧边栏页面。
 
-统计**所有 magpie 记账的请求**（Claude Code、Codex、Pi、OpenCode、Gemini CLI……不管哪个 agent、是否流式），把 token 喂给一只 Digimon 搭档：token 攒满进化槽就进化，650 只图鉴、原版 V-Pet 进化路线、进化对决。失败请求不喂。
+统计**所有 magpie 记账的请求**（Claude Code、Codex、Pi、OpenCode、Gemini CLI……不管哪个 agent、是否流式），把 token 喂给当前出战宠物。失败请求不喂。
 
-引擎移植自 [@jcendal/opencode-digital-pet](https://github.com/jcendal/digital-pet) 0.18.0（Apache-2.0，见 NOTICE）：只换了宿主 —— 原版长在 OpenCode 的 TUI 里，这个版本跑在 magpie 的 Bun 插件宿主上。游戏数值、SQLite 模式、进化逻辑全部是原版代码，未改动。
+引擎来自外部依赖 [@jcendal/opencode-digital-pet](https://github.com/jcendal/digital-pet) 0.18.0（Apache-2.0，见 NOTICE），本仓库不 vendored 上游代码、不打包图鉴数据、不打包任何精灵图素材；侧边栏页面使用程序化像素兜底图。
 
 ## 界面
 
@@ -28,7 +28,7 @@ magpie 网关 ──记账──> /v1/magpie/usage/requests
 
 不走中间件（magpie 的中间件沙箱无 IO），不解析响应体（magpie 已经替你把每个请求的 token 数好了，流式也准）。多个宿主进程同时跑 watcher 也安全：引擎按 route_id 去重，SQLite 走 WAL；页面服务固定端口，谁先绑谁服务，端口被短命宿主占着时后来者定期重试接管。
 
-成长阈值固定为原版 2 倍（例如 egg 10M tokens、baby I 20M tokens），配置写在用户目录 `opencode-digital-pet.json`；插件启动时会自动恢复这组数值，代码更新不会重置宠物。
+成长阈值使用上游引擎默认值；本插件不写 `opencode-digital-pet.json`，不覆盖上游 OpenCode 插件的全局配置。
 
 「孵新蛋」会让当前宠物退役，因此页面要求二次确认，并且同一颗新蛋 60 秒内不能连续孵化。当前伙伴必须达到 baby II 才能孵下一颗蛋；首颗蛋是 Digiegg，之后孵化池按图鉴顺序选择你还没养过的 baby 形态，不重复孵化。token 只喂给当前出战伙伴，不会平均分给历代或后备宠物。图鉴里的「切换」会展示并钉住该形态（暂停生长），管理区的「取消钉住」可随时恢复。
 

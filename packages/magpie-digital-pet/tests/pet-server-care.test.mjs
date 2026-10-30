@@ -21,7 +21,6 @@ import { createPetAdapter } from "../lib/pet.adapter.mjs";
 import { createPetServer } from "../lib/pet.server.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REAL_DB = join(dirname(HERE), "data", "pet.db");
 
 let failures = 0;
 async function test(name, fn) {
@@ -54,8 +53,11 @@ function cleanup() {
 }
 process.on("exit", cleanup);
 
+let authToken = "";
+
 // node:http request that never touches HTTP_PROXY.
 function httpJson(port, path, { method = "GET", body, headers = {} } = {}) {
+  const tokenHeaders = path.startsWith("/api/") && path !== "/api/ping" ? { "x-magpie-pet-token": authToken } : {};
   return new Promise((resolve, reject) => {
     const req = httpRequest(
       {
@@ -64,7 +66,7 @@ function httpJson(port, path, { method = "GET", body, headers = {} } = {}) {
         path,
         method,
         timeout: 5000,
-        headers: body === undefined ? { ...headers } : { "content-type": "application/json", ...headers },
+        headers: body === undefined ? { ...tokenHeaders, ...headers } : { "content-type": "application/json", ...tokenHeaders, ...headers },
       },
       (res) => {
         let text = "";
@@ -102,32 +104,43 @@ function withRawDb(databasePath, fn) {
 const dbA = freshDbPath();
 const adapterA = createPetAdapter({ databasePath: dbA, notifyGate: () => false });
 await adapterA.runCommand("digital-pet-spawn");
-const serverA = createPetServer({ databasePath: dbA, port: 3641, notifyGate: () => false });
+const serverA = createPetServer({ adapter: adapterA, port: 0, notifyGate: () => false });
 assert.equal(await serverA.start(), true);
+authToken = serverA.apiToken;
 
-await test("CORS lets Magpie's sandboxed plugin page read and command", async () => {
-  // Magpie's plugin iframe is sandboxed with allow-scripts only, so its origin
-  // is null. Without these headers the browser turns the response into
-  // "Failed to fetch" and the page stays blank.
-  const state = await httpJson(3641, "/api/state");
-  assert.equal(state.headers["access-control-allow-origin"], "*");
+await test("local service is loopback-only and token-guarded", async () => {
+  const state = await httpJson(serverA.port, "/api/state");
+  assert.equal(state.status, 200);
+  assert.notEqual(state.headers["access-control-allow-origin"], "*");
 
-  const preflight = await httpJson(3641, "/api/command", {
+  const evil = await httpJson(serverA.port, "/api/state", {
+    headers: { origin: "https://evil.example" },
+  });
+  assert.equal(evil.status, 403);
+
+  const noToken = await httpJson(serverA.port, "/api/command", {
+    method: "POST",
+    body: { name: "pet-rename", args: "pwned" },
+    headers: { "x-magpie-pet-token": "" },
+  });
+  assert.equal(noToken.status, 403);
+
+  const preflight = await httpJson(serverA.port, "/api/command", {
     method: "OPTIONS",
     headers: {
       origin: "null",
       "access-control-request-method": "POST",
-      "access-control-request-headers": "content-type",
+      "access-control-request-headers": "content-type, x-magpie-pet-token",
     },
   });
   assert.equal(preflight.status, 204);
-  assert.equal(preflight.headers["access-control-allow-origin"], "*");
+  assert.equal(preflight.headers["access-control-allow-origin"], "null");
   assert.match(preflight.headers["access-control-allow-methods"], /POST/);
-  assert.match(preflight.headers["access-control-allow-headers"], /content-type/i);
+  assert.match(preflight.headers["access-control-allow-headers"], /x-magpie-pet-token/i);
 });
 
 await test("state exposes default care snapshot, collection and frames after spawn", async () => {
-  const res = await httpJson(3641, "/api/state");
+  const res = await httpJson(serverA.port, "/api/state");
   assert.equal(res.status, 200);
   assert.match(res.headers["content-type"], /application\/json/);
   const state = res.json;
@@ -153,13 +166,9 @@ await test("state exposes default care snapshot, collection and frames after spa
   assert.deepEqual(state.collection.unlocked, []);
   assert.equal(state.collection.equippedTheme, null);
 
-  // the spawned partner is an egg: sprite "egg" ships walk_1/walk_2 only
-  assert.equal(state.frame.name, "walk_1");
-  assert.equal(typeof state.frame.content, "string");
-  assert.ok(state.frame.content.length > 0);
-  assert.ok(state.frame.available.includes("walk_1"));
-  assert.equal(typeof state.frames.walk_1, "string");
-  assert.equal(typeof state.frames.walk_2, "string");
+  // no sprite art is bundled; the page uses its procedural fallback renderer
+  assert.equal(state.frame, null);
+  assert.deepEqual(state.frames, {});
   assert.equal(state.petName, null);
   assert.equal(Array.isArray(state.dex), true);
   assert.equal(state.dex.length, 650);
@@ -168,7 +177,7 @@ await test("state exposes default care snapshot, collection and frames after spa
 });
 
 await test("rename stores a per-partner display name", async () => {
-  const renamed = await httpJson(3641, "/api/command", {
+  const renamed = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-rename", args: "小豆子" },
   });
@@ -176,7 +185,7 @@ await test("rename stores a per-partner display name", async () => {
   assert.equal(renamed.json.state.petName, "小豆子");
   assert.equal(renamed.json.state.care.petName, "小豆子");
 
-  const invalid = await httpJson(3641, "/api/command", {
+  const invalid = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-rename", args: " ".repeat(30) },
   });
@@ -185,7 +194,7 @@ await test("rename stores a per-partner display name", async () => {
 });
 
 await test("care commands mutate state, return {text,toasts,state} and respect cooldowns", async () => {
-  const fed = await httpJson(3641, "/api/command", {
+  const fed = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-feed-snack" },
   });
@@ -196,7 +205,7 @@ await test("care commands mutate state, return {text,toasts,state} and respect c
   // 72 + 10, minus a few milliseconds of decay before the snapshot
   assert.ok(fed.json.state.care.state.satiety > 81.9 && fed.json.state.care.state.satiety <= 82);
 
-  const again = await httpJson(3641, "/api/command", {
+  const again = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-feed-snack" },
   });
@@ -204,14 +213,14 @@ await test("care commands mutate state, return {text,toasts,state} and respect c
   assert.equal(again.json.reason, "cooldown");
   assert.equal(typeof again.json.error, "string");
 
-  const pet = await httpJson(3641, "/api/command", {
+  const pet = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-pet-egg" },
   });
   assert.equal(pet.status, 200);
   assert.equal(pet.json.state.care.state.bond, 2);
 
-  const unknown = await httpJson(3641, "/api/command", {
+  const unknown = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "rm -rf" },
   });
@@ -226,7 +235,7 @@ await test("pet-pet-egg is rejected with HTTP 400 once the partner leaves the eg
     // clear the cooldown from the earlier pet so the stage rule is what fires
     db.run("UPDATE magpie_pet_care_state SET cooldown_pet_egg = 0");
   });
-  const res = await httpJson(3641, "/api/command", {
+  const res = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-pet-egg" },
   });
@@ -238,14 +247,14 @@ await test("pet-pet-egg is rejected with HTTP 400 once the partner leaves the eg
 });
 
 await test("expedition commands validate kind, single active expedition and double claims", async () => {
-  const badKind = await httpJson(3641, "/api/command", {
+  const badKind = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-expedition-start", args: "moon" },
   });
   assert.equal(badKind.status, 400);
   assert.equal(badKind.json.reason, "unknown-expedition");
 
-  const start = await httpJson(3641, "/api/command", {
+  const start = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-expedition-start", args: "patrol" },
   });
@@ -254,21 +263,21 @@ await test("expedition commands validate kind, single active expedition and doub
   assert.equal(expedition.kind, "patrol");
   assert.equal(expedition.status, "running");
 
-  const second = await httpJson(3641, "/api/command", {
+  const second = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-expedition-start", args: "field" },
   });
   assert.equal(second.status, 400);
   assert.equal(second.json.reason, "expedition-active");
 
-  const wrongId = await httpJson(3641, "/api/command", {
+  const wrongId = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-expedition-claim", args: "exp-does-not-exist" },
   });
   assert.equal(wrongId.status, 400);
   assert.equal(wrongId.json.reason, "no-expedition");
 
-  const early = await httpJson(3641, "/api/command", {
+  const early = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-expedition-claim", args: expedition.expeditionId },
   });
@@ -278,7 +287,7 @@ await test("expedition commands validate kind, single active expedition and doub
   withRawDb(dbA, (db) => {
     db.query("UPDATE magpie_pet_expeditions SET ends_at = 0 WHERE expedition_id = ?").run(expedition.expeditionId);
   });
-  const claim = await httpJson(3641, "/api/command", {
+  const claim = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-expedition-claim", args: expedition.expeditionId },
   });
@@ -286,7 +295,7 @@ await test("expedition commands validate kind, single active expedition and doub
   assert.equal(claim.json.state.expedition, null);
   assert.ok(claim.json.state.collection.fragments >= 3);
 
-  const duplicate = await httpJson(3641, "/api/command", {
+  const duplicate = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-expedition-claim", args: expedition.expeditionId },
   });
@@ -295,7 +304,7 @@ await test("expedition commands validate kind, single active expedition and doub
 });
 
 await test("decoration equip validates the id and the fragment balance", async () => {
-  const badId = await httpJson(3641, "/api/command", {
+  const badId = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-decoration-equip", args: "rainbow" },
   });
@@ -303,7 +312,7 @@ await test("decoration equip validates the id and the fragment balance", async (
   assert.equal(badId.json.reason, "unknown-decoration");
 
   // patrol claim paid 3 (+5 daily-goal rewards) — not enough for meadow (10)
-  const poor = await httpJson(3641, "/api/command", {
+  const poor = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-decoration-equip", args: "meadow" },
   });
@@ -315,7 +324,7 @@ await test("decoration equip validates the id and the fragment balance", async (
       "INSERT INTO magpie_pet_inventory (item_id, kind, quantity, equipped) VALUES ('fragments', 'currency', 100, 0) ON CONFLICT(item_id) DO UPDATE SET quantity = quantity + 100",
     );
   });
-  const equip = await httpJson(3641, "/api/command", {
+  const equip = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-decoration-equip", args: "meadow" },
   });
@@ -328,13 +337,13 @@ await test("unknown pet-expedition-* commands are rejected as unknown-command wi
   // regression: the care whitelist used startsWith("pet-expedition-"), so any
   // pet-expedition-* name fell through to the decoration-equip branch and
   // spent fragments. Unknown names must be rejected before any mutation.
-  const before = await httpJson(3641, "/api/state");
+  const before = await httpJson(serverA.port, "/api/state");
   assert.equal(before.status, 200);
   const fragmentsBefore = before.json.collection.fragments;
   const themeBefore = before.json.collection.equippedTheme;
 
   for (const name of ["pet-expedition-nonsense", "pet-expedition-claimm"]) {
-    const res = await httpJson(3641, "/api/command", {
+    const res = await httpJson(serverA.port, "/api/command", {
       method: "POST",
       body: { name, args: "meadow" },
     });
@@ -342,14 +351,14 @@ await test("unknown pet-expedition-* commands are rejected as unknown-command wi
     assert.equal(res.json.reason, "unknown-command", `${name} reason`);
   }
 
-  const after = await httpJson(3641, "/api/state");
+  const after = await httpJson(serverA.port, "/api/state");
   assert.equal(after.status, 200);
   assert.equal(after.json.collection.fragments, fragmentsBefore);
   assert.equal(after.json.collection.equippedTheme, themeBefore);
 });
 
 await test("original engine commands stay compatible; set displays the pinned node and unpin restores it", async () => {
-  const set = await httpJson(3641, "/api/command", {
+  const set = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "digital-pet-set", args: "1-001" },
   });
@@ -360,14 +369,14 @@ await test("original engine commands stay compatible; set displays the pinned no
   assert.equal(set.json.state.partner.engineNode.id, "0-001");
   assert.ok(set.json.state.care);
 
-  const badSet = await httpJson(3641, "/api/command", {
+  const badSet = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "digital-pet-set", args: "DROP TABLE" },
   });
   assert.equal(badSet.status, 400);
   assert.equal(typeof badSet.json.reason, "string");
 
-  const unpin = await httpJson(3641, "/api/command", {
+  const unpin = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "pet-unpin" },
   });
@@ -377,7 +386,7 @@ await test("original engine commands stay compatible; set displays the pinned no
 });
 
 await test("spawn requires baby II and is rate limited, then uses the non-repeating starter pool", async () => {
-  const tooEarly = await httpJson(3641, "/api/command", {
+  const tooEarly = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "digital-pet-spawn" },
   });
@@ -390,7 +399,7 @@ await test("spawn requires baby II and is rate limited, then uses the non-repeat
       new Date(Date.now() - 120_000).toISOString(),
     );
   });
-  const spawn = await httpJson(3641, "/api/command", {
+  const spawn = await httpJson(serverA.port, "/api/command", {
     method: "POST",
     body: { name: "digital-pet-spawn" },
   });
@@ -406,19 +415,19 @@ await test("spawn requires baby II and is rate limited, then uses the non-repeat
 await test("static files are confined to the page directory", async () => {
   // WHATWG URL normalizes %2e%2e away before we see it; either way the
   // package.json outside page/ must not be served
-  const escape = await httpJson(3641, "/%2e%2e/package.json");
+  const escape = await httpJson(serverA.port, "/%2e%2e/package.json");
   assert.notEqual(escape.status, 200);
   assert.ok(!escape.text.includes('"name"'));
 
   // %2f survives URL normalization; after decoding it must hit the 403 guard
-  const escapeSlash = await httpJson(3641, "/%2e%2e%2fpackage.json");
+  const escapeSlash = await httpJson(serverA.port, "/%2e%2e%2fpackage.json");
   assert.equal(escapeSlash.status, 403);
   assert.ok(!escapeSlash.text.includes('"name"'));
 
-  const escapeDeep = await httpJson(3641, "/%2e%2e%2f%2e%2e%2fpackage.json");
+  const escapeDeep = await httpJson(serverA.port, "/%2e%2e%2f%2e%2e%2fpackage.json");
   assert.equal(escapeDeep.status, 403);
 
-  const page = await httpJson(3641, "/");
+  const page = await httpJson(serverA.port, "/");
   assert.equal(page.status, 200);
   assert.match(page.headers["content-type"], /text\/html/);
 });
@@ -428,11 +437,12 @@ await serverA.close();
 // ---------------------------------------------------------------- group B --
 // server over a fresh db with NO partner at all
 const dbB = freshDbPath();
-const serverB = createPetServer({ databasePath: dbB, port: 3642, notifyGate: () => false });
+const serverB = createPetServer({ databasePath: dbB, port: 0, notifyGate: () => false });
 assert.equal(await serverB.start(), true);
+authToken = serverB.apiToken;
 
 await test("state without an active partner reports nulls but keeps the collection readable", async () => {
-  const res = await httpJson(3642, "/api/state");
+  const res = await httpJson(serverB.port, "/api/state");
   assert.equal(res.status, 200);
   const state = res.json;
   assert.equal(state.care, null);
@@ -442,7 +452,7 @@ await test("state without an active partner reports nulls but keeps the collecti
   assert.equal(state.frame, null);
   assert.deepEqual(state.frames, {});
 
-  const play = await httpJson(3642, "/api/command", {
+  const play = await httpJson(serverB.port, "/api/command", {
     method: "POST",
     body: { name: "pet-play" },
   });
@@ -451,78 +461,18 @@ await test("state without an active partner reports nulls but keeps the collecti
 });
 
 await test("close() is idempotent and refuses new connections afterwards", async () => {
-  const before = await httpJson(3642, "/api/ping");
+  const before = await httpJson(serverB.port, "/api/ping");
   assert.equal(before.status, 200);
   await serverB.close();
   await serverB.close(); // idempotent
   let refused = false;
   try {
-    await httpJson(3642, "/api/ping");
+    await httpJson(serverB.port, "/api/ping");
   } catch {
     refused = true;
   }
   assert.equal(refused, true);
 });
-
-// ---------------------------------------------------------------- group C --
-// server over a COPY of the real database: history must survive, care
-// tables must migrate in place. The live db keeps being fed, so the
-// baseline is read from the copy itself, not hard-coded.
-const dbC = freshDbPath();
-{
-  // The live plugin host keeps the save in WAL; copying only pet.db can miss
-  // the newest partner/team rows. VACUUM INTO produces a consistent snapshot.
-  const src = new Database(REAL_DB, { readonly: true });
-  src.exec(`VACUUM INTO ${JSON.stringify(dbC)}`);
-  src.close();
-}
-const baseline = withRawDb(dbC, (db) => ({
-  receipts: db.query("SELECT COUNT(*) c, SUM(token_delta) t FROM usage_receipts").get(),
-  partner: db
-    .query(
-      "SELECT partner_id, generation, current_node_id FROM partners WHERE partner_id = (SELECT principal_id FROM partner_team WHERE team_id = 1) AND retired_at IS NULL",
-    )
-    .get(),
-}));
-const serverC = createPetServer({ databasePath: dbC, port: 3643, notifyGate: () => false });
-assert.equal(await serverC.start(), true);
-
-await test("state on a copy of the real database keeps history and migrates care tables", async () => {
-  assert.ok(Number.isInteger(baseline.receipts.c) && baseline.receipts.c >= 0, "real db history count should be readable");
-
-  const res = await httpJson(3643, "/api/state");
-  assert.equal(res.status, 200);
-  const state = res.json;
-  assert.equal(state.ok, true);
-  assert.equal(state.partner.generation, baseline.partner.generation);
-  assert.equal(state.partner.node.id, baseline.partner.current_node_id);
-  assert.equal(state.fedRequests, baseline.receipts.c);
-  assert.equal(state.fedTokens, baseline.receipts.t);
-  assert.equal(state.care.state.partnerId, baseline.partner.partner_id);
-  // the live db may already carry a care row (the plugin migrates it on
-  // load); the values just need to be valid care numbers
-  assert.ok(state.care.state.satiety >= 0 && state.care.state.satiety <= 100);
-  assert.equal(typeof state.care.summary.moodLabel, "string");
-
-  const tables = withRawDb(dbC, (db) =>
-    db
-      .query("SELECT name FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 11) = 'magpie_pet_'")
-      .all()
-      .map((row) => row.name)
-      .sort(),
-  );
-  assert.deepEqual(tables, [
-    "magpie_pet_achievements",
-    "magpie_pet_care_events",
-    "magpie_pet_care_state",
-    "magpie_pet_daily",
-    "magpie_pet_expeditions",
-    "magpie_pet_inventory",
-    "magpie_pet_names",
-  ]);
-});
-
-await serverC.close();
 
 if (failures > 0) {
   console.error(`\n${failures} test(s) failed`);

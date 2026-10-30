@@ -2,7 +2,8 @@
 // run: bun tests/selftest.mjs
 import { rmSync } from "node:fs";
 import { request as httpRequest } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // node:http speaks directly to 127.0.0.1 and never consults HTTP_PROXY.
 // Bun's fetch would go through the shell's proxy (HTTP_PROXY is set with an
@@ -19,7 +20,7 @@ const httpGet = (port, path) =>
     req.end();
   });
 
-const ROOT = import.meta.dir.replace(/\\tests$/, "");
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const TMP = join(ROOT, "tests", "tmp-selftest.db");
 const STATE = join(ROOT, "tests", "watcher-state.json");
 for (const p of [TMP, TMP + "-wal", TMP + "-shm", STATE]) {
@@ -140,50 +141,53 @@ ok("poll errors propagate for the tick wrapper", threw);
 // ------------------------------------------------------------------- run 8 ---
 // sidebar page server: /api/state, /api/command, static app.html
 const { createPetServer } = await import(join(ROOT, "lib", "pet.server.mjs"));
-const srv = createPetServer({ databasePath: TMP, port: 3599, notifyGate: () => false });
+const srv = createPetServer({ databasePath: TMP, port: 0, notifyGate: () => false });
 const served = await srv.start();
 ok("server binds", served === true);
+const SRV_PORT = srv.port;
+const SRV_TOKEN = srv.apiToken;
 
-const state1 = await (await fetch("http://127.0.0.1:3599/api/state")).json();
+const state1 = await (await fetch(`http://127.0.0.1:${SRV_PORT}/api/state`, { headers: { "x-magpie-pet-token": SRV_TOKEN } })).json();
 ok("api/state returns partner", state1.ok === true && state1.partner && state1.partner.node.id === "0-001", JSON.stringify(state1.partner?.node));
 ok("api/state counts receipts", state1.fedRequests === 5, `got ${state1.fedRequests}`);
 
-const pageHtml = await (await fetch("http://127.0.0.1:3599/")).text();
+const pageHtml = await (await fetch(`http://127.0.0.1:${SRV_PORT}/`)).text();
 ok("dashboard served", pageHtml.includes("\u5ba0\u7269") && pageHtml.includes("api/state"));
-const bootJs = await (await fetch("http://127.0.0.1:3599/boot.js")).text();
+const bootJs = await (await fetch(`http://127.0.0.1:${SRV_PORT}/boot.js`)).text();
 ok("boot.js served (guide page asset)", bootJs.includes("3571") && bootJs.includes("Promise.race"));
 
-const badCmd = await fetch("http://127.0.0.1:3599/api/command", {
-  method: "POST", headers: { "content-type": "application/json" },
+const badCmd = await fetch(`http://127.0.0.1:${SRV_PORT}/api/command`, {
+  method: "POST", headers: { "content-type": "application/json", "x-magpie-pet-token": SRV_TOKEN },
   body: JSON.stringify({ name: "rm -rf" }),
 });
 ok("unknown command rejected", badCmd.status === 400);
-const badSet = await fetch("http://127.0.0.1:3599/api/command", {
-  method: "POST", headers: { "content-type": "application/json" },
+const badSet = await fetch(`http://127.0.0.1:${SRV_PORT}/api/command`, {
+  method: "POST", headers: { "content-type": "application/json", "x-magpie-pet-token": SRV_TOKEN },
   body: JSON.stringify({ name: "digital-pet-set", args: "DROP TABLE" }),
 });
 ok("set id validated", badSet.status === 400);
-const goodFreeze = await (await fetch("http://127.0.0.1:3599/api/command", {
-  method: "POST", headers: { "content-type": "application/json" },
+const goodFreeze = await (await fetch(`http://127.0.0.1:${SRV_PORT}/api/command`, {
+  method: "POST", headers: { "content-type": "application/json", "x-magpie-pet-token": SRV_TOKEN },
   body: JSON.stringify({ name: "digital-pet-freeze" }),
 })).json();
 ok("freeze via page server", goodFreeze.text.length > 0 || (goodFreeze.toasts || []).length > 0);
 ok("command response carries state", goodFreeze.state && goodFreeze.state.frozen === true);
 await srv.close();
 // direct connection, no proxy: after close the port must refuse to connect
-const afterClose = await httpGet(3599, "/api/ping").then(() => false, () => true);
+const afterClose = await httpGet(SRV_PORT, "/api/ping").then(() => false, () => true);
 ok("server closed", afterClose);
 
 // ------------------------------------------------------------------- run 8b --
 // EADDRINUSE retry: second server on a taken port backs off, then takes
 // over after the holder closes
-const holder = createPetServer({ databasePath: TMP, port: 3597, notifyGate: () => false });
+const holder = createPetServer({ databasePath: TMP, port: 0, notifyGate: () => false });
 ok("holder binds", (await holder.start()) === true);
-const taker = createPetServer({ databasePath: TMP, port: 3597, notifyGate: () => false, retryMs: 250 });
+const heldPort = holder.port;
+const taker = createPetServer({ databasePath: TMP, port: heldPort, notifyGate: () => false, retryMs: 250 });
 ok("taker backs off while port held", (await taker.start()) === false);
 await holder.close();
 await new Promise((r) => setTimeout(r, 700));
-const taken = await httpGet(3597, "/api/ping")
+const taken = await httpGet(heldPort, "/api/ping")
   .then((r) => JSON.parse(r.body))
   .catch(() => null);
 ok("taker takes over after holder exits", taken && taken.ok === true);
@@ -195,7 +199,7 @@ await taker.close();
 const entry = await import(join(ROOT, "index.mjs"));
 let entryOk = true;
 try {
-  const hooks = await entry.default.server({}, { dbPath: TMP, gatewayUrl: "http://127.0.0.1:1", pollSeconds: 3600, port: 3598 });
+  const hooks = await entry.default.server({}, { dbPath: TMP, gatewayUrl: "http://127.0.0.1:1", pollSeconds: 3600, port: 0 });
   entryOk = hooks && typeof hooks === "object";
 } catch (e) {
   entryOk = false;

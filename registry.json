@@ -98,6 +98,8 @@
     {"package": "@magpie-community/tools-layerfs", "name": "LayerFS", "kind": "tools", "community": true, "summary": {"en": "LayerFS workspaces for every agent: deduplicated checkpoints and branches behind stable filesystem paths, instead of a fresh copy of the tree for every agent.", "zh": "给每个 agent 的 LayerFS 工作区：稳定的文件系统路径背后是可去重的检查点与分支，而不是每个 agent 各复制一棵项目树。"}},
     { "package": "@magpie-community/page-usage", "name": "Usage Glance", "kind": "page", "community": true,
       "summary": { "en": "A page in magpie's window with calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them. Reads only your usage summary.", "zh": "在 magpie 窗口里一眼看到今天、7 天或 30 天的调用、错误、token、费用和对应模型。只读取用量汇总。" } },
+    { "package": "@magpie-community/page-digital-pet", "name": "Digital Pet", "kind": "page", "community": true,
+      "summary": { "en": "A virtual pet fed by routed usage, with care actions, expeditions, daily goals, decorations, naming and a 650-entry dex. Runs a token-guarded local service on 127.0.0.1 and bundles no sprite art.", "zh": "由路由用量喂养的电子宠物：照顾、探险、每日目标、装饰、命名和 650 项图鉴。本地服务只监听 127.0.0.1 且带口令保护，不打包精灵图素材。" } },
     { "package": "@magpie-community/page-chat", "name": "Chat", "kind": "page", "community": true,
       "summary": { "en": "A chat page in magpie's window by Magic_zero: talk to magpie's own models with your MCP servers, instructions and skills, images and LaTeX. Runs a local service on 127.0.0.1 that only its own page can use.", "zh": "Magic_zero 做的 magpie 窗口内「对话」页面：用 magpie 自己的模型聊天，带上你的 MCP 服务器、指令和技能，支持图片与 LaTeX。本地服务只在 127.0.0.1，只给自己的页面用。" } },
     { "package": "@magpie-community/page-agent-office", "name": "Agent Office", "kind": "page", "community": true,

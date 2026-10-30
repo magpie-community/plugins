@@ -26,13 +26,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Database } from "bun:sqlite";
 
+import { createPetAdapter } from "../lib/pet.adapter.mjs";
 import { createPetServer } from "../lib/pet.server.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REAL_DB = join(dirname(HERE), "data", "pet.db");
 
-const CORE_PORT = 3651;
-const PAGE_PORT = 3652;
+let PAGE_PORT = 0;
+let authToken = "";
 
 let failures = 0;
 async function test(name, fn) {
@@ -64,21 +64,18 @@ function cleanup() {
 }
 process.on("exit", cleanup);
 
-// Take a consistent snapshot of the live save: the plugin host keeps recent
-// rows in WAL, so copying pet.db alone can miss them.
-function copyRealDb() {
+// Build a fresh fixture database in a temp dir; tests must not depend on the
+// author's local save.
+async function freshPartnerDb() {
   const target = trackTemp(join(tmpdir(), `pet-e2e-${randomUUID()}.db`));
-  const src = new Database(REAL_DB, { readonly: true });
-  try {
-    src.exec(`VACUUM INTO ${JSON.stringify(target)}`);
-  } finally {
-    src.close();
-  }
+  const adapter = createPetAdapter({ databasePath: target, notifyGate: () => false });
+  await adapter.runCommand("digital-pet-spawn");
   return target;
 }
 
 // node:http request that never touches HTTP_PROXY.
 function httpJson(port, path, { method = "GET", body } = {}) {
+  const tokenHeaders = path.startsWith("/api/") && path !== "/api/ping" ? { "x-magpie-pet-token": authToken } : {};
   return new Promise((resolvePromise, reject) => {
     const req = httpRequest(
       {
@@ -87,7 +84,7 @@ function httpJson(port, path, { method = "GET", body } = {}) {
         path,
         method,
         timeout: 5000,
-        headers: body === undefined ? {} : { "content-type": "application/json" },
+        headers: body === undefined ? { ...tokenHeaders } : { "content-type": "application/json", ...tokenHeaders },
       },
       (res) => {
         let text = "";
@@ -136,8 +133,12 @@ function readBaseline(databasePath) {
 // stats so snack/clean effects are observable and not clamped at 100.
 function resetCareFor(partnerId, databasePath) {
   withRawDb(databasePath, (db) => {
-    // The live save may already have an expedition/achievements from real use.
-    // This is a throwaway copy: reset only the care layer, never upstream history.
+    // The read path no longer creates the row; make the fixture explicit.
+    db.query(
+      `INSERT OR IGNORE INTO magpie_pet_care_state
+       (partner_id, satiety, mood, energy, hygiene, bond, last_decay_at, updated_at)
+       VALUES (?, 72, 70, 80, 75, 0, ?, ?)`,
+    ).run(partnerId, Date.now(), Date.now());
     db.query(
       `UPDATE magpie_pet_care_state SET
          satiety = 50, mood = 60, energy = 80, hygiene = 40, bond = 5,
@@ -157,17 +158,16 @@ const post = (port, name, args) =>
   httpJson(port, "/api/command", { method: "POST", body: args === undefined ? { name } : { name, args } });
 
 // =================================================================== core ==
-assert.ok(existsSync(REAL_DB), `real database missing: ${REAL_DB}`);
-const dbFile = copyRealDb();
+const dbFile = await freshPartnerDb();
 const baseline = readBaseline(dbFile);
-assert.ok(baseline.partner, "real database must carry an active partner");
-assert.ok(Number.isInteger(baseline.receipts.c) && baseline.receipts.c >= 0, "real database history count should be readable");
+assert.ok(baseline.partner, "fixture database must carry an active partner");
 
-const server = createPetServer({ databasePath: dbFile, port: CORE_PORT, notifyGate: () => false });
+const server = createPetServer({ databasePath: dbFile, port: 0, notifyGate: () => false });
 assert.equal(await server.start(), true);
+authToken = server.apiToken;
 
-await test("state on the real-save copy exposes partner, care, collection, frames and the full feed history", async () => {
-  const res = await httpJson(CORE_PORT, "/api/state");
+await test("state on the fixture exposes partner, care, collection and empty frames", async () => {
+  const res = await httpJson(server.port, "/api/state");
   assert.equal(res.status, 200);
   const state = res.json;
   assert.equal(state.ok, true);
@@ -177,7 +177,7 @@ await test("state on the real-save copy exposes partner, care, collection, frame
   assert.equal(state.partner.generation, baseline.partner.generation);
   assert.equal(state.partner.node.id, baseline.partner.current_node_id);
   assert.equal(state.fedRequests, baseline.receipts.c);
-  assert.equal(state.fedTokens, baseline.receipts.t);
+  assert.equal(state.fedTokens, baseline.receipts.t ?? 0);
   assert.equal(state.events.length, Math.min(12, baseline.partnerEvents));
 
   // care layer
@@ -201,16 +201,16 @@ await test("state on the real-save copy exposes partner, care, collection, frame
 await test("snack and clean mutate care state and record events/achievements", async () => {
   resetCareFor(baseline.partner.partner_id, dbFile);
 
-  const before = (await httpJson(CORE_PORT, "/api/state")).json;
+  const before = (await httpJson(server.port, "/api/state")).json;
   const fragmentsBefore = before.collection.fragments;
 
-  const snack = await post(CORE_PORT, "pet-feed-snack");
+  const snack = await post(server.port, "pet-feed-snack");
   assert.equal(snack.status, 200);
   assert.ok(snack.json.text.length > 0);
   // 50 + 10, minus a few milliseconds of decay before the snapshot
   assert.ok(snack.json.state.care.state.satiety > 59.9 && snack.json.state.care.state.satiety <= 60);
 
-  const clean = await post(CORE_PORT, "pet-clean");
+  const clean = await post(server.port, "pet-clean");
   assert.equal(clean.status, 200);
   assert.ok(clean.json.state.care.state.hygiene > 99.9);
   // hygiene was 40 < 50: clean grants the +1 bond bonus
@@ -227,14 +227,14 @@ await test("snack and clean mutate care state and record events/achievements", a
 
   // original feed history untouched by care actions
   assert.equal(clean.json.state.fedRequests, baseline.receipts.c);
-  assert.equal(clean.json.state.fedTokens, baseline.receipts.t);
+  assert.equal(clean.json.state.fedTokens, baseline.receipts.t ?? 0);
 });
 
 await test("patrol expedition starts and claims through /api/command, with history preserved", async () => {
-  const fragmentsBefore = (await httpJson(CORE_PORT, "/api/state")).json.collection.fragments;
-  const bondBefore = (await httpJson(CORE_PORT, "/api/state")).json.care.state.bond;
+  const fragmentsBefore = (await httpJson(server.port, "/api/state")).json.collection.fragments;
+  const bondBefore = (await httpJson(server.port, "/api/state")).json.care.state.bond;
 
-  const start = await post(CORE_PORT, "pet-expedition-start", "patrol");
+  const start = await post(server.port, "pet-expedition-start", "patrol");
   assert.equal(start.status, 200);
   const expedition = start.json.state.expedition;
   assert.equal(expedition.kind, "patrol");
@@ -243,7 +243,7 @@ await test("patrol expedition starts and claims through /api/command, with histo
   assert.ok(start.json.state.care.state.energy < 70.1 && start.json.state.care.state.energy >= 69);
 
   // too early: the production 5-minute duration still applies
-  const early = await post(CORE_PORT, "pet-expedition-claim", expedition.expeditionId);
+  const early = await post(server.port, "pet-expedition-claim", expedition.expeditionId);
   assert.equal(early.status, 400);
   assert.equal(early.json.reason, "not-finished");
 
@@ -255,7 +255,7 @@ await test("patrol expedition starts and claims through /api/command, with histo
     );
   });
 
-  const claim = await post(CORE_PORT, "pet-expedition-claim", expedition.expeditionId);
+  const claim = await post(server.port, "pet-expedition-claim", expedition.expeditionId);
   assert.equal(claim.status, 200);
   assert.ok(claim.json.text.length > 0, "claim returns the expedition note");
 
@@ -280,7 +280,7 @@ await test("patrol expedition starts and claims through /api/command, with histo
 
   // original upstream history still intact after the whole loop
   assert.equal(after.fedRequests, baseline.receipts.c);
-  assert.equal(after.fedTokens, baseline.receipts.t);
+  assert.equal(after.fedTokens, baseline.receipts.t ?? 0);
   assert.equal(after.events.length, Math.min(12, baseline.partnerEvents));
 });
 
@@ -288,7 +288,7 @@ await test("close() afterwards refuses new connections (no proxy false-positives
   await server.close();
   let refused = false;
   try {
-    await httpJson(CORE_PORT, "/api/ping");
+    await httpJson(server.port, "/api/ping");
   } catch {
     refused = true;
   }
@@ -314,11 +314,13 @@ if (!PW_PATH || !EDGE_PATH) {
   const chromium = pw.chromium ?? pw.default?.chromium;
   assert.ok(chromium, "playwright-core module must expose chromium");
 
-  // a fresh copy for the page: known stats, no cooldowns, nothing in flight
-  const pageDb = copyRealDb();
+  // a fresh fixture for the page: known stats, no cooldowns, nothing in flight
+  const pageDb = await freshPartnerDb();
   const pageBaseline = readBaseline(pageDb);
-  const pageServer = createPetServer({ databasePath: pageDb, port: PAGE_PORT, notifyGate: () => false });
+  const pageServer = createPetServer({ databasePath: pageDb, port: 0, notifyGate: () => false });
   assert.equal(await pageServer.start(), true);
+  PAGE_PORT = pageServer.port;
+  authToken = pageServer.apiToken;
   // state read creates the care row; then pin deterministic stats
   await httpJson(PAGE_PORT, "/api/state");
   resetCareFor(pageBaseline.partner.partner_id, pageDb);

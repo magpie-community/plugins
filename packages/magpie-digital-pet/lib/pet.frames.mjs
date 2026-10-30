@@ -1,34 +1,15 @@
 // lib/pet.frames.mjs
 //
-// Loads the checked-in pixel frame catalog (lib/monster-frames.json, produced
-// by tools/extract-frames.mjs from the Apache-2.0 upstream bundle) and exposes
-// small pure helpers to pick frames for a sprite. Frame strings are returned
-// exactly as stored; nothing here mutates them.
-
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+// This package ships no sprite art. The page draws a deterministic procedural
+// pixel blob per pet instead (see page/app.js drawFallback), so the frame
+// catalog is intentionally empty. The helpers stay so the server can expose a
+// stable `frames: {}` shape without reading any bundled asset.
 
 /**
- * Absolute path of the checked-in generated asset.
- * @returns {string}
- */
-export function defaultMonsterFramesPath() {
-  return join(dirname(fileURLToPath(import.meta.url)), "monster-frames.json");
-}
-
-/**
- * Load the catalog JSON into a Map of sprite id -> { frameName: content }.
- *
- * @param {string} [filePath]
  * @returns {Map<string, Record<string, string>>}
  */
-export function loadMonsterFrames(filePath = defaultMonsterFramesPath()) {
-  const parsed = JSON.parse(readFileSync(filePath, "utf8"));
-  if (!parsed || typeof parsed !== "object" || !parsed.sprites || typeof parsed.sprites !== "object") {
-    throw new Error(`invalid monster frames file: ${filePath}`);
-  }
-  return new Map(Object.entries(parsed.sprites));
+export function loadMonsterFrames() {
+  return new Map();
 }
 
 /**
@@ -41,8 +22,6 @@ export function getSpriteFrames(frames, sprite) {
 }
 
 /**
- * Pick the first available frame for a sprite, honouring preference order.
- *
  * @param {Map<string, Record<string, string>>} frames
  * @param {string} sprite
  * @param {string[]} preferredNames

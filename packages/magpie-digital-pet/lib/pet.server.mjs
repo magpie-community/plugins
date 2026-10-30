@@ -10,6 +10,7 @@
 // blindly — several host processes may load the plugin; the first one serves,
 // the others see EADDRINUSE and quietly step aside (their watchers still run).
 
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
@@ -27,7 +28,7 @@ const UI_ROOT = join(dirname(HERE), "page");
 const DEFAULT_PORT = 3571;
 
 // engine stage thresholds, mirrored for display only (upstream defaults)
-const STAGE_THRESHOLDS = [1e7, 2e7, 4e7, 8e7, 15e7, 25e7, 4e8, 6e8];
+const STAGE_THRESHOLDS = [5e6, 1e7, 2e7, 4e7, 75e6, 125e6, 2e8, 3e8];
 const STAGE_NAMES = ["egg", "baby I", "baby II", "child", "adult", "perfect", "ultimate", "super ultimate"];
 
 const MIME = {
@@ -158,6 +159,8 @@ const CARE_COMMANDS = new Map([
 ]);
 const EXPEDITION_KINDS = new Set(Object.keys(EXPEDITIONS));
 const DECORATION_IDS = new Set(Object.keys(DECORATIONS));
+const API_TOKEN = randomBytes(32).toString("hex");
+const TOKEN_HEADER = "x-magpie-pet-token";
 
 // First-frame preference for the dashboard sprite, from the live care state.
 // The page can still switch to any of the other frames shipped in `frames`.
@@ -170,8 +173,8 @@ function framePreference(careState) {
   return ["walk_1", "walk_2", "happy"];
 }
 
-export function createPetServer({ databasePath, dbPath, port = DEFAULT_PORT, notifyGate, retryMs = 30_000 } = {}) {
-  const adapter = createPetAdapter({ databasePath, dbPath, notifyGate });
+export function createPetServer({ databasePath, dbPath, adapter: sharedAdapter, port = DEFAULT_PORT, notifyGate, retryMs = 30_000 } = {}) {
+  const adapter = sharedAdapter ?? createPetAdapter({ databasePath, dbPath, notifyGate });
   const dbFile = adapter.databasePath;
   const careStore = createCareStore({ databasePath: dbFile });
   const frames = loadMonsterFrames();
@@ -246,19 +249,49 @@ export function createPetServer({ databasePath, dbPath, port = DEFAULT_PORT, not
     }
   }
 
-  // Magpie's plugin page lives in an iframe sandboxed with allow-scripts only,
-  // so its origin is opaque ("null"). Fetch from there to this local server is
-  // cross-origin and the browser refuses the response unless we allow it.
-  const CORS_HEADERS = {
-    "access-control-allow-origin": "*",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-headers": "content-type",
-  };
+  // The magpie page frame is sandboxed with an opaque origin, so Origin: null
+  // alone is not proof of anything. Every /api/* route except /api/ping needs
+  // the per-process token that only the served HTML gets; Host must be this
+  // server's own loopback name, and CORS is never wildcarded.
+  function hostAllowed(req) {
+    const actual = server.address()?.port;
+    if (!actual) return false;
+    const host = String(req.headers.host || "").toLowerCase();
+    return host === `127.0.0.1:${actual}` || host === `localhost:${actual}`;
+  }
 
-  function send(res, status, body, type = "application/json; charset=utf-8") {
+  function ownOrigins() {
+    const actual = server.address()?.port;
+    if (!actual) return new Set();
+    return new Set([`http://127.0.0.1:${actual}`, `http://localhost:${actual}`]);
+  }
+
+  function originAllowed(req) {
+    const origin = req.headers.origin;
+    return origin === undefined || origin === "null" || ownOrigins().has(origin);
+  }
+
+  function tokenOK(req) {
+    const got = Buffer.from(String(req.headers[TOKEN_HEADER] || ""));
+    const want = Buffer.from(API_TOKEN);
+    return got.length === want.length && timingSafeEqual(got, want);
+  }
+
+  function corsHeaders(req) {
+    const origin = req.headers.origin;
+    const allow = origin === "null" ? "null" : origin && ownOrigins().has(origin) ? origin : "null";
+    return {
+      "access-control-allow-origin": allow,
+      "access-control-allow-methods": "GET, POST, OPTIONS",
+      "access-control-allow-headers": `content-type, ${TOKEN_HEADER}`,
+      vary: "Origin",
+    };
+  }
+
+  function send(res, status, body, type = "application/json; charset=utf-8", cors = true) {
     const data = typeof body === "string" || body instanceof Uint8Array ? body : JSON.stringify(body);
     res.writeHead(status, {
-      ...CORS_HEADERS,
+      ...(cors ? corsHeaders(res.req) : {}),
       "content-type": type,
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
@@ -268,7 +301,7 @@ export function createPetServer({ databasePath, dbPath, port = DEFAULT_PORT, not
 
   function sendPreflight(res) {
     res.writeHead(204, {
-      ...CORS_HEADERS,
+      ...corsHeaders(res.req),
       "access-control-max-age": "600",
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
@@ -279,11 +312,15 @@ export function createPetServer({ databasePath, dbPath, port = DEFAULT_PORT, not
   const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://127.0.0.1:${port}`);
     const path = url.pathname;
+    if (!hostAllowed(req)) return send(res, 403, { error: "只服务本机宠物页" }, undefined, false);
+    if (!originAllowed(req)) return send(res, 403, { error: "只服务本机宠物页" });
+    if (req.method === "OPTIONS") return sendPreflight(res);
+    if (path.startsWith("/api/") && path !== "/api/ping" && !tokenOK(req)) {
+      return send(res, 403, { error: "口令不对：请重新打开宠物页", reload: true });
+    }
     try {
-      // CORS preflight for /api/command's application/json body
-      if (req.method === "OPTIONS") return sendPreflight(res);
       if (path === "/api/ping" && req.method === "GET") {
-        return send(res, 200, { ok: true, db: dbFile });
+        return send(res, 200, { ok: true });
       }
       if (path === "/api/state" && req.method === "GET") {
         return send(res, 200, readFullState());
@@ -413,8 +450,13 @@ export function createPetServer({ databasePath, dbPath, port = DEFAULT_PORT, not
       if (insideRoot.startsWith("..") || isAbsolute(insideRoot)) {
         return send(res, 403, { error: "forbidden" });
       }
-      const data = await readFile(file).catch(() => null);
+      let data = await readFile(file).catch(() => null);
       if (!data) return send(res, 404, "not found", "text/plain; charset=utf-8");
+      if (file.endsWith("app.html")) {
+        const html = data.toString("utf8");
+        const tokenScript = `<script>window.PET_TOKEN=${JSON.stringify(API_TOKEN)};</script>`;
+        data = Buffer.from(html.replace("</head>", `${tokenScript}</head>`), "utf8");
+      }
       return send(res, 200, data, MIME[extname(file).toLowerCase()] || "application/octet-stream");
     } catch (e) {
       return send(res, 500, { error: String(e?.message ?? e) });
@@ -446,16 +488,18 @@ export function createPetServer({ databasePath, dbPath, port = DEFAULT_PORT, not
 
   let retryTimer = null;
   let serving = false;
+  let boundPort = port;
 
   async function tryBindOnce() {
     try {
       await bind(port);
+      boundPort = server.address()?.port ?? port;
       serving = true;
       if (retryTimer) {
         clearInterval(retryTimer);
         retryTimer = null;
       }
-      console.log(`[magpie-digital-pet] sidebar page at http://127.0.0.1:${port}/ · db ${dbFile}`);
+      console.log(`[magpie-digital-pet] sidebar page at http://127.0.0.1:${boundPort}/ · db ${dbFile}`);
       return true;
     } catch (e) {
       if (e?.code !== "EADDRINUSE") {
@@ -493,9 +537,12 @@ export function createPetServer({ databasePath, dbPath, port = DEFAULT_PORT, not
   let closed = false;
 
   return {
-    port,
+    get port() {
+      return boundPort;
+    },
     databasePath: dbFile,
     adapter,
+    apiToken: API_TOKEN,
     start,
     close: async () => {
       if (closed) return;

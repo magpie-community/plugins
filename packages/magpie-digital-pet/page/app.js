@@ -3,12 +3,12 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+const apiHeaders = () => ({ "x-magpie-pet-token": window.PET_TOKEN || "" });
 
 const fmt = (n) => {
   n = Number(n) || 0;
-  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
-  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+  if (n >= 1e8) return `${(n / 1e8).toFixed(2)}亿`;
+  if (n >= 1e4) return `${(n / 1e4).toFixed(1)}万`;
   return String(n);
 };
 
@@ -412,7 +412,7 @@ function paintHero(s) {
   $("pet-pin-badge").hidden = !s.pinned;
   $("pet-frozen-badge").hidden = !s.frozen;
   $("evo-fill").style.width = `${Math.max(1.5, p.pct).toFixed(1)}%`;
-  $("evo-text").textContent = `${fmt(p.gauge)} / ${fmt(p.threshold)} tokens`;
+  $("evo-text").textContent = `本阶段 ${fmt(p.gauge)} / ${fmt(p.threshold)} tokens`;
   $("evo-pct").textContent = `${p.pct.toFixed(2)}%`;
   $("battle").hidden = !p.battle;
   if (p.battle) $("battle-foe").textContent = p.battle.nameEn;
@@ -604,7 +604,7 @@ function paint(s) {
   lastState = s;
   if (s.ok) {
     $("sub").textContent =
-      `已喂 ${s.fedRequests} 个请求 · ${fmt(s.fedTokens)} tokens` +
+      `累计已喂 ${s.fedRequests} 个请求 · ${fmt(s.fedTokens)} tokens` +
       (s.fedCost > 0 ? ` · $${s.fedCost.toFixed(2)}` : "");
   }
   const habitat = $("habitat");
@@ -756,7 +756,7 @@ async function command(name, args) {
   try {
     const r = await fetch("/api/command", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...apiHeaders() },
       body: JSON.stringify({ name, args }),
     });
     const j = await r.json().catch(() => null);
@@ -873,7 +873,7 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
 
 async function load() {
   try {
-    const r = await fetch("/api/state", { cache: "no-store" });
+    const r = await fetch("/api/state", { cache: "no-store", headers: apiHeaders() });
     paint(await r.json());
   } catch (e) {
     say(`刷新失败：${e?.message ?? e}`);

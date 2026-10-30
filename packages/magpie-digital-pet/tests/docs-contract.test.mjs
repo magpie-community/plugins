@@ -17,7 +17,7 @@ const readme = readFileSync(join(ROOT, "README.md"), "utf8");
 const panel = readFileSync(join(ROOT, "ui", "panel.html"), "utf8");
 const cli = readFileSync(join(ROOT, "cli", "pet-cli.mjs"), "utf8");
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
-const { defaultDatabasePath, legacyDatabasePath, GROWTH_THRESHOLDS } = await import("../lib/pet.adapter.mjs");
+const { defaultDatabasePath, legacyDatabasePath } = await import("../lib/pet.adapter.mjs");
 
 let failures = 0;
 function test(name, fn) {
@@ -31,10 +31,19 @@ function test(name, fn) {
   }
 }
 
-test("package.json version is 0.5.0 and keeps the porting lineage", () => {
-  assert.equal(pkg.version, "0.5.0");
+test("package.json follows the page-plugin contract and bundles no restricted art", () => {
+  assert.equal(pkg.name, "@magpie-community/page-digital-pet");
+  assert.equal(pkg.version, "0.6.0");
   assert.match(pkg.description, /@jcendal\/opencode-digital-pet 0\.18\.0/, "must keep upstream attribution");
   assert.match(pkg.description, /never touches agents' contexts/i, "must keep the no-agent-context promise");
+  assert.equal(pkg.repository.url, "git+https://github.com/magpie-community/plugins.git");
+  assert.equal(pkg.repository.directory, "packages/magpie-digital-pet");
+  assert.equal(pkg.magpie.page.service.port, 3571);
+  assert.equal(pkg.magpie.page.service.option, "port");
+  assert.equal(pkg.dependencies["@jcendal/opencode-digital-pet"], "0.18.0");
+  for (const keyword of ["digimon", "tamagotchi"]) {
+    assert.ok(!pkg.keywords.includes(keyword), `keyword ${keyword} must be removed`);
+  }
 });
 
 test("README states the save lives in the user data directory, separate from plugin code", () => {
@@ -49,10 +58,10 @@ test("default save path is outside the plugin code directory", () => {
   assert.ok(legacyDatabasePath().includes(join("data", "pet.db")));
 });
 
-test("growth thresholds are locked to twice the original pace", () => {
-  assert.equal(GROWTH_THRESHOLDS.egg, 10_000_000);
-  assert.equal(GROWTH_THRESHOLDS.babyI, 20_000_000);
-  assert.equal(GROWTH_THRESHOLDS.superUltimate, 600_000_000);
+test("plugin does not write the upstream OpenCode config", async () => {
+  const adapterSource = readFileSync(join(ROOT, "lib", "pet.adapter.mjs"), "utf8");
+  assert.ok(!adapterSource.includes("opencode-digital-pet.json"), "must not target the upstream global config file");
+  assert.ok(!adapterSource.includes("ensureGrowthSettings"), "must not rewrite upstream growth settings");
 });
 
 test("README documents the new care gameplay on the sidebar pet page", () => {
