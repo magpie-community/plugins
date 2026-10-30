@@ -153,6 +153,16 @@
         "en": "Third-party Magpie adapter for dsh-providers-hub (by JetLi): five providers, each a separate channel you can sign in to, meter and switch off on its own — AStudio (iFlytek), Accio (Alibaba), LobsterAI (Youdao), MagiCrew (letsmagic.cn / magicrew.ai). Channels that already exist in the registry are not shipped. Runs without DSH.",
         "zh": "dsh-providers-hub（作者 JetLi）的第三方适配：五条供应商（每渠道一条，可各自登录/看额度/单独关闭）——AStudio（讯飞）、Accio（阿里）、LobsterAI（有道）、超级麦吉/MagiCrew（letsmagic.cn / magicrew.ai）。与社区 registry 已有插件重叠的渠道不随包提供。不依赖 DSH 运行。"
       }
+    },
+    {
+      "package": "magpie-agent-console",
+      "name": "Agent Console",
+      "kind": "page",
+      "icon": "https://raw.githubusercontent.com/qingnian108/magpie-agent-console/main/assets/icon.svg",
+      "summary": {
+        "en": "A page in magpie to drive local Agent CLIs (Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh) with a persistent daemon and a structured timeline.",
+        "zh": "在 magpie 窗口里驱动本机 Agent CLI（Claude Code、Codex、Cursor、Copilot、OpenCode、Pi、Devin、dsh）：常驻后台 + 结构化时间线。"
+      }
     }
   ]
 }
