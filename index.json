@@ -10569,6 +10569,114 @@
       "latest": "0.1.3",
       "readme": "# @magpie-community/page-chat\n\nA chat page in [magpie](https://usemagpie.ai)'s window. Talk to magpie's own models with your MCP servers, instructions and skills, with images and LaTeX, without starting an agent.\n\nMade by **Magic_zero** ([Magiczerowxy](https://github.com/Magiczerowxy)), from [Magiczerowxy/magpie-chat](https://github.com/Magiczerowxy/magpie-chat) (0.1.21). This package is that code, with the changes listed under [Changes from the original](#changes-from-the-original).\n\n![Chat inside magpie's window](https://raw.githubusercontent.com/Magiczerowxy/magpie-chat/main/screenshots/23-math-and-layout.png)\n\n## Install\n\nFrom magpie's **Plugins › Discover**, or:\n\n```sh\nmagpie plugin add @magpie-community/page-chat\n```\n\nIt then has a tab, **Chat** (对话, 對話, チャット), under Plugins in the sidebar.\n\n## What it does\n\n- **magpie's models.** The list comes from the gateway's `/v1/models`. Models with reasoning levels get an effort picker.\n- **magpie's library.** Tick instructions and skills from `~/.config/magpie/library/` (folded into the system prompt), and MCP servers from `library.json` (their tools run as real `tool_calls`, at most 8 rounds, Streamable HTTP and stdio).\n- **Images and files.** Pick, drop or paste them. Images go to the model as `image_url`.\n- **Streaming.** Reasoning unfolds while it arrives, then collapses. While the answer streams, the page follows it down unless you scroll up yourself; scroll back to the bottom and it resumes.\n- **Model status.** Every reply ends with a line saying what the model is doing: `Magpie正在觅食ing… · 2s` with a running timer while it generates, green `Magpie找到了食物！ · 2s` when done, red `Magpie没有找到食物` on failure. The elapsed time is kept with the conversation.\n- **Math.** `$…$`, `$$…$$`, `\\(…\\)` and `\\[…\\]` render with a bundled KaTeX 0.16.11. No CDN.\n- **Conversations kept**, pinned, renamed or deleted, under `~/.config/magpie/magpie-chat/`. Clicking \"+\" starts a draft row in the sidebar; it becomes a real conversation as soon as you send, and disappears if you switch away without writing anything. The pencil button on each row renames it inline.\n- **Layout.** Conversation width and composer width are adjustable in the sidebar; a **Sync** switch keeps the two equal — move either one and the other follows.\n- **Looks like magpie.** Colors and fonts come from the window's theme.\n\nIt registers no provider, asks for no sign-in and stores no credentials of its own. Every request goes out through magpie's gateway, so usage, routing and failover are the same as an agent's.\n\n## How it works\n\nA plugin page runs in a sandboxed frame with no network (`connect-src 'none'`). Its only way out is to navigate itself. So this plugin has two parts:\n\n1. `page/index.html` and `page/boot.js`: a launcher magpie hosts. It reads the window's theme and the `port` option through `_magpie/bridge.js`, then sends its frame to `http://127.0.0.1:<port>/`. It makes no request of its own.\n2. `index.mjs`: an OpenCode v1 plugin (`export default {id, server}`). When magpie's plugin host calls `server()`, it starts a local service on `127.0.0.1:3477` (the `port` option). `lib/server.mjs` serves the chat UI in `chat/` and `/api/*`, and forwards chat to magpie's gateway.\n\n### What the service reads and sends\n\n- From magpie's config folder (`$XDG_CONFIG_HOME/magpie` or `~/.config/magpie`): `caller-keys.json` (the first gateway key, sent as `Authorization: Bearer` to the gateway, so the chat's usage is counted on that key), `providers.json` and `routing.json` (icons), `settings.json` (fonts), `library.json` and `library/` (MCP servers, instructions, skills).\n- To magpie's gateway: `MAGPIE_CHAT_GATEWAY` if set, else `MAGPIE_ADDR`, else `http://127.0.0.1:3425`. The key goes there, so set `MAGPIE_CHAT_GATEWAY` only to a gateway you trust.\n- To your MCP servers: what the model asks their tools, with the headers you configured for them. A stdio server's command is run as you configured it.\n\n### Who can use the service\n\nOnly the chat page it served:\n\n- Every `/api/` route needs `x-magpie-chat-token`, a random token made each time the service starts. The service writes it into the chat page's HTML, which it sends without CORS headers, so another page can't read it. `/api/ping`, `/api/fonts.css` and `/api/icon/*` are open; they give nothing secret.\n- `Host` must be `127.0.0.1:<port>` or `localhost:<port>`, so a DNS-rebound page is turned away.\n- `Origin` must be `null` (the sandboxed frame) or the service's own.\n\n## Options\n\n```json\n{ \"port\": 3477 }\n```\n\nThe launcher and the service both read it. Change it if something else holds 3477.\n\n## Starting it without magpie's host\n\n`serve.mjs` (`node serve.mjs`, or `start-server.cmd` / `start-server.vbs` on Windows) starts the same service on its own, and `install-autostart.cmd` puts it in Windows' Startup folder. See [SERVE.md](SERVE.md). None of these runs unless you start it.\n\n## Changes from the original\n\n- The service answered `Origin: null` and requests with no Origin, and didn't check `Host`. Any website's sandboxed iframe sends `Origin: null`, so it could chat on your gateway key, read and change conversations and settings, and drive your MCP tools. A DNS-rebound page could read conversations. The token and the Host check above close it.\n- The service started when `index.mjs` was imported, on 3477 whatever the `port` option said, while the launcher went to the option's port. It now starts when the host calls `server()`, on the option's port.\n- A remote provider icon answered 302 with no `Location`. It has one.\n- `/api/bootstrap` said version `0.1.0` whatever the version. It says the package's.\n\n## Known limits\n\n- The page opens the service on this computer's 127.0.0.1, so `magpie web` used from another machine won't reach it.\n- MCP has no legacy GET SSE stream and no reconnect.\n- Images go inline as base64, at most 24MB each.\n- Built-in provider icons live inside magpie's binary; when one can't be read, the service draws a letter badge.\n\n## Test\n\n```sh\nbun test packages/chat\n```\n\nThe test starts the service on a free port against a fake gateway, in a temporary config folder.\n\n## License\n\nMIT, © 2026 Magiczerowxy. See [LICENSE](LICENSE).\n\n---\n\n中文：Magic_zero（[Magiczerowxy](https://github.com/Magiczerowxy)）做的「对话」页面，来自 [Magiczerowxy/magpie-chat](https://github.com/Magiczerowxy/magpie-chat)。装好后侧栏「插件」里点「对话」，就能用 magpie 自己的模型聊天，带上你的 MCP 服务器、指令和技能，支持图片与 LaTeX。它不注册供应商、不保存凭据，请求都经 magpie 网关发出，用的是 `caller-keys.json` 里第一把网关 key。本地服务只听 127.0.0.1，每个 `/api/` 请求都要带上服务写进对话页里的口令，并检查 `Host`，别的网页用不了它。\n"
     },
+    "@magpie-community/page-fingerprint": {
+      "versions": {
+        "0.2.0": {
+          "file": "tgz/magpie-community-page-fingerprint-0.2.0.tgz",
+          "integrity": "sha512-P5IPmKYcSgSpK9VWS3SzSks79HBmbkr4QPGqiSBqpYur37/+nPNzZvYPGv37sxln60DS0umqCUD3nugmPMKV0A==",
+          "time": "2026-10-30T18:03:16.055Z",
+          "manifest": {
+            "name": "@magpie-community/page-fingerprint",
+            "version": "0.2.0",
+            "description": "Check for suspected model substitution with numeric response fingerprints in Magpie, powered by lm-detector.",
+            "type": "module",
+            "license": "MIT",
+            "main": "dist/plugin.js",
+            "files": [
+              "dist",
+              "page",
+              "README.md",
+              "README.zh-CN.md",
+              "LICENSE",
+              "integration.md",
+              "THIRD_PARTY_NOTICES.md"
+            ],
+            "engines": {
+              "bun": ">=1.4.2"
+            },
+            "scripts": {
+              "dev": "bun --watch src/cli.ts",
+              "start": "bun src/cli.ts",
+              "build": "bun scripts/build.ts",
+              "typecheck": "tsc --noEmit",
+              "test": "bun test",
+              "check": "bun run typecheck && bun run test && bun run build",
+              "format": "prettier --write src web scripts tests page *.json *.ts *.md",
+              "rebuild": "bun scripts/rebuild.ts"
+            },
+            "magpie": {
+              "page": {
+                "title": "Fingerprint",
+                "titles": {
+                  "zh": "模型指纹",
+                  "zh-TW": "模型指紋",
+                  "ja": "モデル指紋",
+                  "de": "Modell-Fingerabdruck"
+                },
+                "file": "page/index.html",
+                "service": {
+                  "port": 3488,
+                  "option": "port"
+                }
+              },
+              "actions": [
+                {
+                  "id": "fingerprint",
+                  "menu": "provider",
+                  "title": "Fingerprint",
+                  "titles": {
+                    "zh": "检测指纹",
+                    "zh-TW": "檢測指紋",
+                    "ja": "指紋を検査",
+                    "de": "Fingerabdruck prüfen"
+                  }
+                }
+              ],
+              "options": {
+                "port": 3488
+              },
+              "permissions": []
+            },
+            "devDependencies": {
+              "react": "19.3.1",
+              "react-dom": "19.3.1",
+              "@phosphor-icons/react": "2.1.10",
+              "@types/bun": "1.4.4",
+              "@types/react": "19.3.0",
+              "@types/react-dom": "19.3.0",
+              "@vitejs/plugin-react": "5.2.0",
+              "prettier": "3.9.10",
+              "typescript": "5.9.3",
+              "vite": "7.3.7"
+            },
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/fingerprint"
+            },
+            "bugs": {
+              "url": "https://github.com/magpie-community/plugins/issues"
+            },
+            "author": "KaranocaVe (https://github.com/KaranocaVe)",
+            "homepage": "https://github.com/KaranocaVe/magpie-fingerprint#readme",
+            "keywords": [
+              "magpie",
+              "magpie-page",
+              "magpie-plugin",
+              "llm",
+              "fingerprint",
+              "model-detection"
+            ],
+            "publishConfig": {
+              "access": "public"
+            },
+            "packageManager": "bun@1.4.4"
+          }
+        }
+      },
+      "latest": "0.2.0",
+      "readme": "# Magpie Fingerprint\n\n[简体中文](README.zh-CN.md) · [Magpie](https://github.com/yetone/magpie) · [lm-detector](https://github.com/Ikaleio/lm-detector)\n\nInvestigate suspected model substitution directly in Magpie. Compare numeric\nresponse fingerprints across providers or repeat a run after a service changes.\nThe page reuses Magpie’s configured models and gateway; the pinned\n`lmfpd-sdk` detector ranks nearby reference-bank models. Rankings are evidence\nfor investigation, not proof of model identity.\n\n![Fingerprint workspace (explicit demo data)](docs/preview.png)\n\n- Select up to 24 models across providers, with the same three challenges per batch.\n- Reuse Magpie authentication and native endpoint metadata; optionally pin an account.\n- Follow live sample counts, cancel work, and inspect the actual response route.\n- Compare ranked candidates, including partial and unscorable outcomes.\n- Keep raw replies and data versions in local history; export or copy JSON.\n- Magpie's native page bridge, controls and design tokens; follows the host's theme and language.\n- Compact model lists, keyboard-accessible view tabs, and narrow-screen layouts.\n\n## Install\n\nInstall **Fingerprint** from **Plugins → Discover**, or use the CLI. Requires\na current Magpie release with `page.service` support and Bun 1.4.2+:\n\n```sh\nmagpie plugin add @magpie-community/page-fingerprint\n```\n\nOpen **Fingerprint** in the sidebar, or choose **Fingerprint** from a provider's menu.\nStarting a detection sends three requests per selected model and uses that provider's quota.\n\n## Development\n\nRun these commands from `packages/fingerprint/`. Source, tests and the built\n`dist/` assets are checked in. Installation and the offline tests do not need\npackage downloads: `vendor/lmfpd-sdk` pins the MIT SDK at 0.2.0. Only rebuilding\nthe UI and running the type checker require the development dependencies.\nDirect build-tool versions are exact in `package.json`; `bun.lock` fixes the\ncomplete dependency graph using `registry.npmjs.org`. Builds use Bun 1.4.4.\nThere are no install/pack lifecycle scripts. After a source change, rebuild\nand commit the resulting `dist/` files.\n\nThe standalone project and release history are at\n[KaranocaVe/magpie-fingerprint](https://github.com/KaranocaVe/magpie-fingerprint).\n\n```sh\nbun run rebuild\nbun start\n```\n\n`rebuild` installs with `--frozen-lockfile --ignore-scripts` in an isolated\ncopy, runs typecheck/tests/build, and copies `dist/` back. This avoids Bun\nresolving the parent monorepo's workspaces; its temporary directory is removed\non completion. In a standalone copy of this package, `bun install\n--frozen-lockfile --registry https://registry.npmjs.org` and `bun run check`\nproduce the same build.\n\nThe plugin page service listens on `3488` by default and uses Magpie's gateway\nat `http://127.0.0.1:3425`. Opening or refreshing the page never downloads\nreference data. **Download reference data** explicitly fetches a fresh snapshot;\nstarting a run downloads one only when no usable snapshot is cached. There is\nno background refresh. The default primary source is\n`https://lm.ikale.io/data/`; its fallback is\n`https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`. These hosts see the client's\nIP address. Reference downloads carry no provider credentials, model ids,\nprompts or replies. Only an explicitly started job sends sampling prompts\nthrough the configured gateway. See [integration.md](integration.md) for gateway\nauthentication, `magpie web`, environment variables, local reference sources,\nand the explicit `--demo` fixture.\n\n## Scope and limits\n\nThe first release supports numeric fingerprinting. Each run retains its loaded\nreference snapshot and records its `builtAt` value. The remote reference data\nis not version-pinned or authenticated by a locally pinned hash; the fallback\nuses `@latest`. Runs use three shared challenges per batch, bounded work, and\ncancellation. It records proposed, observed, and failed evidence separately;\nit does not prove provider identity, authenticate a model, or infer hidden\ntokenizers. `--demo` runs an isolated illustrative workflow without model calls.\n\nMagpie middleware and protocol adapters still apply. A changed actual provider/model\ninvalidates that target's aggregate score. Account pinning is optional; it does not\nturn a routed channel into an upstream identity guarantee. Tokenizer probing is deferred.\n\nMIT licensed. Third-party notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).\n"
+    },
     "@magpie-community/page-usage": {
       "versions": {
         "0.1.0": {
