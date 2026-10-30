@@ -130,6 +130,8 @@
         "en": "Tencent Cloud OrcaTerm (遨驰终端) AI assistant models — DeepSeek, Hunyuan, GLM, Kimi — on the account's monthly question allowance. Unofficial; the README sets out the terms.",
         "zh": "用腾讯云遨驰终端（OrcaTerm）AI 助手的模型——DeepSeek、混元、GLM、Kimi——走账号每月问答额度。非官方，条款风险见 README。"
       }
-    }
+    },
+    { "package": "magpie-aws-bedrock-sso", "name": "AWS Bedrock SSO", "providers": ["bedrock-sso"],
+      "summary": { "en": "Use Amazon Bedrock Claude and GPT models with your AWS CLI profile, including SSO / IAM Identity Center. SigV4 authentication; no Bedrock API key needed.", "zh": "使用 AWS CLI 配置（支持 SSO / IAM Identity Center）接入 Amazon Bedrock 的 Claude 和 GPT 模型，通过 SigV4 签名，无需 Bedrock API 密钥。" } }
   ]
 }
