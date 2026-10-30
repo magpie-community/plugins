@@ -117,8 +117,8 @@
       "summary": { "en": "CiteBox on magpie's Agents page: pick one of magpie's models for its text AI, set reasoning effort in Settings, and switch it off to put its config back. Needs CiteBox 0.38.0 or later.", "zh": "把 CiteBox 加到 magpie 的 Agent 页：给它的文本 AI 选 magpie 的模型，在设置里调整思考强度，关掉即恢复原来的配置。需要 CiteBox 0.38.0 或更新版本。" } },
     { "package": "@hoptoper/magpie-agent-wisp-science", "name": "Wisp Science", "kind": "agent",
       "summary": { "en": "Wisp Science on magpie's Agents page: pick one of magpie's models, set reasoning effort in the composer, and switch it off to put its config back. Needs Wisp Science 1.23.0 or later.", "zh": "把 Wisp Science 加到 magpie 的 Agent 页：选择 magpie 的模型，在输入框里设置思考强度，关掉即恢复原来的配置。需要 Wisp Science 1.23.0 或更新版本。" } },
-    { "package": "@magpie-community/tools-goanyapi", "name": "GoAnyAPI", "icon": "https://goanyapi.com/logo.png", "kind": "tools", "community": true,
-      "summary": { "en": "All GoAnyAPI website traffic, SEO, SERP, backlinks and ads intelligence tools from a live MCP catalog. Supports OAuth or API key sign-in.", "zh": "自动接入 GoAnyAPI 动态目录中的全部网站流量、SEO、SERP、外链和广告情报工具，支持 OAuth 或 API Key 登录。" } },
+    { "package": "@magpie-community/tools-goanyapi", "name": "GoAnyAPI", "kind": "tools", "community": true,
+      "summary": { "en": "Explore Google Trends, website traffic, domain rating (DR), keyword suggestions, SERPs, backlinks, and ads statistics for market, keyword, and competitor research.", "zh": "查询 Google 趋势、网站流量、域名权重（DR）、关键词建议、SERP、外链和广告统计，辅助市场、关键词与竞品研究。" } },
     {
       "package": "@magpie-community/opencode-orcaterm-auth",
       "name": "OrcaTerm",
