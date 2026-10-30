@@ -1,0 +1,9 @@
+node_modules/
+data/
+.upstream/
+*.log
+*.db
+*.db-shm
+*.db-wal
+tests/tmp-selftest.db*
+tests/watcher-state.json

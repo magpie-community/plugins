@@ -1,0 +1,21 @@
+NOTICE for magpie-digital-pet
+=============================
+
+This product includes software developed as part of the "digital-pet" project
+(https://github.com/jcendal/digital-pet), originally published as the npm
+package @jcendal/opencode-digital-pet 0.18.0:
+
+  - lib/upstream/index.js is the unmodified dist bundle of
+    @jcendal/opencode-digital-pet@0.18.0 (Apache License 2.0).
+  - The Digimon catalog (650 entries), evolution routes (2606), combat stats,
+    SQLite schema/migrations and all game logic come from that bundle.
+  - Original authors: Jorge Cendal (jcendal), Sergio Bugallo (sbugallo).
+    Sprites in the upstream TUI derive from sundeth/omnipet and Tortoiseshel's
+    Full Color Digimon Dot Sprites; this port ships no sprite assets.
+
+What this repository adds on top: a magpie gateway middleware adapter
+(pet.middleware.js, lib/pet.adapter.mjs), a settings panel (ui/panel.html) and
+a CLI (cli/pet-cli.mjs) that drive the upstream engine through its plugin
+factory. The engine itself is used as-is.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).

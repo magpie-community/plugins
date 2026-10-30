@@ -1,0 +1,64 @@
+{
+  "name": "magpie-digital-pet",
+  "version": "0.5.0",
+  "description": "Digital Pet for the magpie gateway: every request magpie routes feeds your Digimon partner, now with local care, expeditions and collections. Ported from @jcendal/opencode-digital-pet 0.18.0 (Apache-2.0). Polls magpie's own usage API; never touches agents' contexts.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "lib",
+    "cli",
+    "page",
+    "ui",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "magpie-page",
+    "opencode",
+    "opencode-plugin",
+    "virtual-pet",
+    "digital-pet",
+    "digimon",
+    "tamagotchi"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "local"
+  },
+  "magpie": {
+    "icon": "page/icon.svg",
+    "page": {
+      "title": "Digital Pet",
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "titles": {
+        "zh": "宠物",
+        "zh-TW": "寵物",
+        "ja": "デジペット"
+      }
+    },
+    "panels": [
+      {
+        "slot": "settings",
+        "title": "Digital Pet",
+        "file": "ui/panel.html"
+      }
+    ],
+    "options": {
+      "enabled": true,
+      "notifications": true,
+      "includeCacheTokens": false,
+      "backfill": false,
+      "pollSeconds": 60,
+      "gatewayUrl": "http://127.0.0.1:3425",
+      "dbPath": "",
+      "port": 3571
+    },
+    "permissions": []
+  }
+}
