@@ -1,0 +1,54 @@
+{
+  "name": "@magpie-community/middleware-compress-core",
+  "version": "0.4.0",
+  "description": "magpie gateway middleware + hooks: OmniRoute context-compression engines ported. 15 strategies, four presets, byte-level telemetry.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/compress-core"
+  },
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "magpie",
+    "magpie-middleware",
+    "magpie-hooks",
+    "compression",
+    "context",
+    "tokens",
+    "llm-gateway"
+  ],
+  "magpie": {
+    "middleware": "./compress-core.middleware.js",
+    "hooks": "./observability.hooks.js",
+    "options": {
+      "strategies": {
+        "session-dedup": false,
+        "ccr": true,
+        "lite": true,
+        "rtk": false,
+        "codex-responses": false,
+        "headroom": true,
+        "relevance": false,
+        "caveman": false,
+        "read-lifecycle": false,
+        "aggressive": false,
+        "llmlingua": false,
+        "ultra": false,
+        "ionizer": false,
+        "llm": false,
+        "omniglyph": false
+      },
+      "budgetMs": 0,
+      "preserve": {
+        "system": false,
+        "lastTurns": 0
+      },
+      "gatewayTimeoutMs": 4000,
+      "capture": false
+    }
+  },
+  "scripts": {
+    "test": "node test/run.mjs"
+  }
+}

@@ -1,0 +1,188 @@
+{
+  "source": "https://github.com/diegosouzapw/OmniRoute",
+  "commit": "ff679ab86e0113a009d8aeeeee464139bd090874",
+  "path": "open-sse/services/compression",
+  "license": "MIT",
+  "note": "The port was read from an installed OmniRoute copy, so the commit was not recorded at the time. The commit above is the OmniRoute revision this port was checked against. Each sha256 is of the upstream file itself, read from that copy -- not of the ported file in this package.",
+  "files": {
+    "aggressive.ts": {
+      "ported_to": "engines/aggressive.js",
+      "sha256": "55eabb0a38a52924a78a2a3cf936e9079fe21e4b4a680372f96d9ec2ebb58fcc"
+    },
+    "progressiveAging.ts": {
+      "ported_to": "engines/aggressive.js",
+      "sha256": "8fdde8bfd739b531cb3f88a956a393b057c06891617b389148162d28e83d9982"
+    },
+    "summarizer.ts": {
+      "ported_to": "engines/aggressive.js",
+      "sha256": "c7dac6d2877c9f440af766c4e5ac705e157544f213836d76b697666b053c94d4"
+    },
+    "caveman.ts": {
+      "ported_to": "engines/caveman.js",
+      "sha256": "79754f18dfb155cdee0d77201678edda75e67c517fffb7aa876016a88769b563"
+    },
+    "preservation.ts": {
+      "ported_to": "engines/caveman.js",
+      "sha256": "78b56b877ce2b9b496b66557d153d87b72705e00de88b1c7a1a4a97f8b1d8121"
+    },
+    "validation.ts": {
+      "ported_to": "engines/caveman.js",
+      "sha256": "afa760e52286702ceed5922becd47da8f9b8f678f7fb2ba834cbbcabfd431d2f"
+    },
+    "cavemanRules.ts": {
+      "ported_to": "engines/caveman-rules.js",
+      "sha256": "f4fe6aa23208ca9fb505e59e40ba5e418b0e8b183c98a9c0a639d9c07f4b702b"
+    },
+    "engines/headroom/index.ts": {
+      "ported_to": "engines/headroom.js",
+      "sha256": "c7ac9cd2d9f9fc1a328ae76cd616c8c4c41b3d57a805f0cc0e139d3edfea810d"
+    },
+    "engines/headroom/smartcrusher.ts": {
+      "ported_to": "engines/headroom.js",
+      "sha256": "46d14b414e0f8b5cfe5fc13d8207cf7023fed1c9b48b07bf4b24830e77e9dcf7"
+    },
+    "engines/headroom/tabular.ts": {
+      "ported_to": "engines/headroom.js",
+      "sha256": "e69cd72cfe6a28104ea48c8f95ee901af86b0cea866df7b2f7bf272018029de4"
+    },
+    "engines/ionizer/index.ts": {
+      "ported_to": "engines/ionizer.js",
+      "sha256": "0eccd7a84a9af44964e60a15ee1811caa7e7c4e0e3f1dd785d60ee7221faa7fd"
+    },
+    "engines/ionizer/sample.ts": {
+      "ported_to": "engines/ionizer.js",
+      "sha256": "8d8f63da8d9a98099756d32fd5ee1945cfa98f3b0bdaf291bb036bf2f6441ad0"
+    },
+    "engines/llm/index.ts": {
+      "ported_to": "engines/llm.js",
+      "sha256": "c49f81d77e92f96056578d9250d0266e7275f30c77c8b04aea0b1a33cc2b6ac8"
+    },
+    "engines/readLifecycle/index.ts": {
+      "ported_to": "engines/read-lifecycle.js",
+      "sha256": "d8a72f68790354ded859b0d3343ea33a7eacb9321f6d73a1d26e9d76097f063f"
+    },
+    "engines/codexResponses/index.ts": {
+      "ported_to": "engines/codex-responses.js",
+      "sha256": "c8e50efea0713956fc5869f69d463dbd5d7755b1672c3d951de12b03cf1b175b"
+    },
+    "ultra.ts": {
+      "ported_to": "engines/ultra.js",
+      "sha256": "8da8706c255c11be76a14c66fab0274f644eff918c5d0d8381d701fbfa9b652f"
+    },
+    "ultraHeuristic.ts": {
+      "ported_to": "engines/ultra.js",
+      "sha256": "4de63ba55ca3ccf0e86bb2938790f72a1808dace776123c43eec2bf2d43d8a1a"
+    },
+    "engines/rtk/index.ts": {
+      "ported_to": "engines/rtk/index.js",
+      "sha256": "ff4f2cfcc3f4891a0ce68e29d83e072ff194d9a115685222684bd08a10546400"
+    },
+    "engines/rtk/commandDetector.ts": {
+      "ported_to": "engines/rtk/commandDetector.js",
+      "sha256": "5505b2d92862b4035d48a6aaee28b8a15d451c5c4dd5baa849ae99def83b94eb"
+    },
+    "engines/rtk/deduplicator.ts": {
+      "ported_to": "engines/rtk/deduplicator.js",
+      "sha256": "aed654f42b2dae714a6141136b4e3948918e71525ff1710d0c6f72c8ac32c8fd"
+    },
+    "engines/rtk/grouper.ts": {
+      "ported_to": "engines/rtk/grouper.js",
+      "sha256": "2bde8873326bd9150b71499ce7203c0c951cb59a1e7a6a8d235485c11001bb72"
+    },
+    "engines/rtk/lineFilter.ts": {
+      "ported_to": "engines/rtk/lineFilter.js",
+      "sha256": "faa1cf03da43025774b192184de12b28b67df2a29d8825441bee272529cb186c"
+    },
+    "engines/rtk/severityVocabulary.ts": {
+      "ported_to": "engines/rtk/severity.js",
+      "sha256": "1df3e5657de9402416af2adb267de589a4f9a0b776cbd0e0721c73d7f694d80b"
+    },
+    "engines/rtk/smartTruncate.ts": {
+      "ported_to": "engines/rtk/smartTruncate.js",
+      "sha256": "fb90894e9f578b0e851f350ca20f603a23073ff89094ce056ae9647c5c4812c4"
+    },
+    "engines/rtk/splitCompositeCommand.ts": {
+      "ported_to": "engines/rtk/splitCommand.js",
+      "sha256": "0ccef866b846b1238562d6ffb6e7963b7138d17796ac34557026bdae86fe720b"
+    },
+    "engines/rtk/filterLoader.ts": {
+      "ported_to": "engines/rtk/builtinFilters.js",
+      "sha256": "b7a72c055b80dc4dbbe05387585be214c002d994da32a2966da278c27e453c6b"
+    },
+    "rules/{lang}/*.json": {
+      "ported_to": "engines/rules-data.js",
+      "sha256": "cfdaa957907cf522ca5af5c6a72f525d94f3649dc544da6dbc0c9f1f813a8ec0",
+      "note": "Directory-level entry: the sha256 of every .json under upstream rules/, per language directory in name order, concatenated in that order."
+    },
+    "engines/headroom/gcf/generic.ts": {
+      "ported_to": "engines/gcf/encode.js",
+      "sha256": "8a933d064d836e5445256f58520555101b27539dbd56dd03b9e7a57359e94ba7"
+    },
+    "engines/headroom/gcf/decode_generic.ts": {
+      "ported_to": "engines/gcf/decode.js",
+      "sha256": "8ac955ab883de199ca7b7a8c1b7cb79769f41ba99d580ce3dfef2e3b72f36025"
+    },
+    "engines/headroom/gcf/scalar.ts": {
+      "ported_to": "engines/gcf/scalar.js",
+      "sha256": "901e2d45bf27e073df7655a89083a191a86d1d295b8bef6b4d179dbfae5eb298"
+    }
+  },
+  "upstreams": [
+    {
+      "name": "caveman",
+      "repository": "https://github.com/JuliusBrussee/caveman",
+      "used_by": [
+        "engines/caveman.js",
+        "engines/caveman-rules.js",
+        "engines/rules-data.js"
+      ],
+      "note": "Credited by repository: the port came through OmniRoute's copy of this project.",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "headroom",
+      "repository": "https://github.com/headroomlabs-ai/headroom",
+      "used_by": [
+        "engines/headroom.js",
+        "engines/gcf/encode.js",
+        "engines/gcf/decode.js",
+        "engines/gcf/scalar.js"
+      ],
+      "note": "Credited by repository: the GCF columnar encoding that engines/headroom.js emits, and the codec vendored under engines/gcf/, are this project's format.",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "rtk",
+      "repository": "https://github.com/rtk-ai/rtk",
+      "used_by": [
+        "engines/rtk/index.js",
+        "engines/rtk/commandDetector.js",
+        "engines/rtk/deduplicator.js",
+        "engines/rtk/grouper.js",
+        "engines/rtk/lineFilter.js",
+        "engines/rtk/severity.js",
+        "engines/rtk/smartTruncate.js",
+        "engines/rtk/splitCommand.js",
+        "engines/rtk/builtinFilters.js"
+      ],
+      "note": "Credited by repository: the port came through OmniRoute's copy of this project. An earlier revision of this file credited 'dennenulin/rtk', which does not resolve; rtk-ai/rtk is the repository that does.",
+      "license": "Apache-2.0"
+    }
+  ],
+  "changes": [
+    "Ported from TypeScript to plain ES modules: no build step, no dependency outside node: builtins.",
+    "performance.now() replaced with Date.now() where the port runs inside the gateway sandbox.",
+    "zod validation hand-written; filter matching and the severity vocabulary kept as-is.",
+    "Progress and trace logging removed; the engines report through ctx.state instead.",
+    "Hashes identify the ported copies in this package, not the upstream originals.",
+    "License kept as MIT, carrying both the OmniRoute copyright line and this plugin's.",
+    "Same turn semantics as history-trim (#423) when asked for them: the turn being sent (everything after the last assistant message, or the whole body when there is none) is left exactly as it arrived. The 21 cases copied from that package in test/fixtures/approved-lite-cases.json and cases.json now say preserveCurrentTurn: true out loud, because that mode is no longer the default; their expected bodies are unchanged.",
+    "preserve.lastTurns defaults to 0 and the lite engine's preserveCurrentTurn defaults to false: nothing that has already been sent is rewritten, so the review's prompt-cache failure — first divergence at message 12 in the Anthropic diff, message 2 with lastTurns at its old default of 2 — is gone. preserveCurrentTurn: true restores the conservative mode that leaves the turn being sent exactly as it arrived, rewriting it once when it becomes history; README says which is which.",
+    "The vendored GCF codec under engines/gcf/ is recorded in files like every other port, and the Apache-2.0 upstreams behind headroom and rtk carry their licence text in LICENSES/Apache-2.0.txt with the attribution in NOTICE.",
+    "session-dedup reads the same preserveCurrentTurn switch as lite and defaults the same way. Protecting only the current turn means the message is rewritten once in the next request, which moves the prefix with it; the switch is now the single place where that choice is made.",
+    "cases.json holds 23 cases: the 21 from history-trim plus two that pin the default preset's own behaviour (the turn being sent is folded too; a tabular tool result becomes a gcf-generic block).",
+    "test/prefix-stability.test.mjs is the acceptance test for the prompt-cache finding: the transcript grows turn by turn and the prefix sent each round must be byte-identical to the previous round, for the default preset, the safe preset, and each lossless engine on its own.",
+    "page/engines.js and page/lab-engine.bundle.js are committed. They are built by `npm run prepack` (esbuild is a devDependency) and the files here are the built output: magpie installs a plugin from the dist branch, and scripts/dist.mjs packs with `npm pack --ignore-scripts`, so a lifecycle script cannot be the only thing that produces them — an install that skips scripts would find neither file and the three pages would 404.",
+    "The package is named @magpie-community/middleware-compress-core, matching the middleware-* convention the registry's dist step checks for."
+  ]
+}
