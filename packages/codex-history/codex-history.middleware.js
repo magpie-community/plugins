@@ -34,7 +34,7 @@ function filterResponsesRequest(body, {preserveEncryptedInclude = false} = {}) {
   const clean = {...body, store: false};
   let removed = 0, removedItemIds = 0, removedEncryptedContentItems = 0;
   // include controls the NEW response, not the historical ciphertext in input.
-  // AnyRouter rejects Codex requests when this requested response field is removed.
+  // Some upstreams reject Codex requests when this requested response field is removed.
   if (body.include) clean.include = preserveEncryptedInclude ? [...body.include]
     : body.include.filter(value => value !== 'reasoning.encrypted_content');
   if (Array.isArray(body.input)) {
@@ -101,25 +101,52 @@ function removeEncryptedContent(value, onRemoved) {
   return copy;
 }
 
+// The rule for a provider ID or model prefix, after aliases; only an explicit
+// historyFilter: true turns filtering on.
+function enabledRule(name, options) {
+  const aliases = options.aliases || {};
+  const id = Object.prototype.hasOwnProperty.call(aliases, name) ? aliases[name] : name;
+  const rules = options.providers || {};
+  if (!Object.prototype.hasOwnProperty.call(rules, 'magpie:' + id)) return;
+  const rule = rules['magpie:' + id];
+  return rule?.historyFilter === true ? rule : undefined;
+}
+
 export function onRequest(body, ctx) {
   if (ctx.protocol !== 'responses' || !body || typeof body.model !== 'string' || !/^[^/]+\/.+/.test(body.model)) return;
-  const prefix = body.model.split('/')[0];
-  const options = ctx.options || {};
-  const aliases = options.aliases || {};
-  const id = Object.prototype.hasOwnProperty.call(aliases, prefix) ? aliases[prefix] : prefix;
-  const rules = options.providers || {};
-  const rule = rules['magpie:' + id];
-  if (!Object.prototype.hasOwnProperty.call(rules, 'magpie:' + id) || rule?.historyFilter !== true) return;
+  const rule = enabledRule(body.model.split('/')[0], ctx.options || {});
+  if (!rule) return;
   try {
     if (/\/compact\/?$/.test(ctx.path || '')) {
       ctx.reject(409, 'Codex history filter: encrypted compaction cannot cross resources. Use a text summary and a new session.');
       return;
     }
-    return filterResponsesRequest(body, {preserveEncryptedInclude: rule.preserveEncryptedInclude === true}).body;
+    const filtered = filterResponsesRequest(body, {preserveEncryptedInclude: rule.preserveEncryptedInclude === true}).body;
+    // A direct provider/model request is filtered here; its provider tries skip it.
+    if (ctx.state && typeof ctx.state === 'object') ctx.state.historyFiltered = true;
+    return filtered;
   } catch (error) {
     // Explicit rejection is required: Magpie forwards the original request if
     // a hook throws. Never silently discard non-portable context references.
     ctx.reject(error instanceof FilterError ? error.status : 409,
       'Codex history filter: ' + (error instanceof FilterError ? error.message : 'history could not be safely filtered.'));
+  }
+}
+
+// A request sent through a Magpie group or fallback names the group, not a
+// provider, so onRequest finds no rule. Each try on a provider applies that
+// provider's own rule. A try can't be turned away, so history that can't move
+// is sent as it was; only a direct provider/model request is refused.
+export function onProvider(body, ctx) {
+  const provider = ctx?.provider;
+  if (ctx?.state?.historyFiltered === true || ctx?.protocol !== 'responses') return;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || typeof provider?.id !== 'string') return;
+  if (/\/compact\/?$/.test(ctx.path || '')) return;
+  const rule = enabledRule(provider.id, ctx.options || {});
+  if (!rule) return;
+  try {
+    return filterResponsesRequest(body, {preserveEncryptedInclude: rule.preserveEncryptedInclude === true}).body;
+  } catch {
+    return;
   }
 }

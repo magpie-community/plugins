@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-orcaterm-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OrcaTerm (Tencent Cloud 遨驰终端) AI quota as an OpenAI-compatible provider for magpie and OpenCode",
   "type": "module",
   "main": "./index.mjs",

@@ -197,11 +197,11 @@ export function isSecretPath(rel) {
 // instead of sweeping a disk into the store.
 export const IMPORT_MAX_FILES = 20000
 export const IMPORT_MAX_BYTES = 512 * 1024 * 1024
-function checkImportLimits(files) {
+function checkImportLimits(files, maxFiles = IMPORT_MAX_FILES) {
   let bytes = 0
   for (const f of files) bytes += f.size
-  if (files.length > IMPORT_MAX_FILES)
-    throw new Error(`source holds ${files.length} files, over the import limit of ${IMPORT_MAX_FILES} — pass the project's own directory, not a parent of it`)
+  if (files.length > maxFiles)
+    throw new Error(`source holds ${files.length} files, over the import limit of ${maxFiles} — pass the project's own directory, not a parent of it`)
   if (bytes > IMPORT_MAX_BYTES)
     throw new Error(`source holds ${bytes} bytes, over the import limit of ${IMPORT_MAX_BYTES} — pass the project's own directory, not a parent of it`)
 }
@@ -233,9 +233,11 @@ function walkSourceFiles(dir) {
 
 // The sim backend's import scan: a manifest { rel: { sha, size, mode } }
 // plus the list of secret-shaped paths left out, reported to the caller.
-export function scanImportTree(dir) {
+// maxFiles is for tests: 20,001 real files took 10s to write on a quiet
+// Mac and 34s under a full suite, past the test's 30s budget.
+export function scanImportTree(dir, { maxFiles = IMPORT_MAX_FILES } = {}) {
   const { files, skipped } = walkSourceFiles(dir)
-  checkImportLimits(files)
+  checkImportLimits(files, maxFiles)
   const manifest = {}
   for (const f of files) {
     const buf = readFileSync(f.full)

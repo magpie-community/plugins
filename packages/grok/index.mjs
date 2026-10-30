@@ -395,6 +395,10 @@ function foldRoot(root, ps, depth) {
   return out
 }
 
+// what Codex asks an OpenAI provider for with output token replay on
+// (codex-rs/core/src/client.rs)
+const OUTPUT_REPLAY = "output.encrypted_content"
+
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v)
 
 // rewrite leaves out what Grok's backend doesn't take: tools of other
@@ -407,9 +411,13 @@ const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v)
 // encrypted reasoning. A function's parameters with a union at the root
 // (Codex desktop's codex_app automation_update) are folded to an object,
 // which Grok turns away otherwise: "tool parameter root must be an object
-// type" (magpie#1271).
+// type" (magpie#1271). Codex's output token replay asks for each message's
+// own sealed copy ("output.encrypted_content" in include), which Grok turns
+// away: 'Argument not supported: "output.encrypted_content" in "include"
+// field' (#524). Only that value goes; reasoning.encrypted_content and the
+// tool-output values xAI documents stay.
 function rewrite(body, xSearch = false) {
-  if (typeof body !== "string" || (!xSearch && !body.includes('"tools"') && !body.includes('"tool_choice"') && !body.includes('"reasoning"') && !body.includes('"agent_message"'))) return body
+  if (typeof body !== "string" || (!xSearch && !body.includes('"tools"') && !body.includes('"tool_choice"') && !body.includes('"reasoning"') && !body.includes('"agent_message"') && !body.includes(`"${OUTPUT_REPLAY}"`))) return body
   let m
   try {
     m = JSON.parse(body)
@@ -474,6 +482,11 @@ function rewrite(body, xSearch = false) {
       return { type: "message", role: "user", content: header
         ? [{ type: "input_text", text: `${header}\n\n` }, ...it.content] : it.content }
     })
+  }
+  if (Array.isArray(m.include) && m.include.includes(OUTPUT_REPLAY)) {
+    m.include = m.include.filter((v) => v !== OUTPUT_REPLAY)
+    if (!m.include.length) delete m.include
+    dirty = true
   }
   for (const it of Array.isArray(m.input) ? m.input : []) {
     if (it && it.type === "reasoning" && "content" in it && it.content === null) {

@@ -74,3 +74,57 @@ test("an unreadable answer becomes an error string, not a throw", async () => {
   expect(typeof u.error).toBe("string")
   expect(u.windows).toEqual([])
 })
+
+const oauthToken = `${Buffer.from('{"alg":"HS256","typ":"JWT"}').toString("base64url")}.${Buffer.from('{"userId":"test-user","providerUsername":"QR tester"}').toString("base64url")}.FAKE_SIGNATURE_ONLY`
+
+test("QR accounts read quota using ot_session only on orcaterm.com", async () => {
+  const seen = []
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), init })
+    const action = JSON.parse(init.body).action
+    if (action === "GetUserInfo") return new Response(JSON.stringify({ data: { Response: { nickName: "QR tester" } } }))
+    return billing([{ feature: "hunyuan_ai", quotaLimit: 1000, quotaUsed: 0, quotaEndDate: "2026-11-21T16:00:00.000Z" }])
+  }
+  const hooks = await OrcaTermAuthPlugin()
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: oauthToken }))
+  expect(u.windows).toHaveLength(1)
+  expect(u.windows[0].amount).toBe(0)
+  expect(u.windows[0].limit).toBe(1000)
+  expect(u.windows[0].resetsAt).toBe("2026-11-21T16:00:00.000Z")
+  expect(u.user).toBe("QR tester")
+  expect(seen).toHaveLength(2)
+  for (const { url, init } of seen) {
+    expect(new URL(url).origin).toBe("https://orcaterm.com")
+    expect(new URL(url).pathname).toBe("/cgi/api")
+    expect(url.includes(oauthToken)).toBe(false)
+    const h = new Headers(init.headers)
+    expect(h.get("cookie")).toBe(`ot_session=${oauthToken}`)
+    expect(h.get("authorization")).toBeNull()
+    expect(h.get("x-csrfcode")).toBeNull()
+    expect(init.redirect).toBe("error")
+  }
+})
+
+test("an explicitly refused OAuth quota read marks that account expired", async () => {
+  const seen = []
+  globalThis.fetch = async url => {
+    seen.push(new URL(url).origin)
+    return new Response(JSON.stringify({ data: { Response: { Error: { Code: "VERIFY_USER_FAILED" } } } }))
+  }
+  const hooks = await OrcaTermAuthPlugin()
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: oauthToken }))
+  expect(u.signIn).toBe("expired")
+  expect(u.windows).toEqual([])
+  expect(seen).toEqual(["https://orcaterm.com"])
+})
+
+test("OAuth identity lookup failure preserves the token's display name", async () => {
+  globalThis.fetch = async (url, init) => {
+    if (JSON.parse(init.body).action === "GetUserInfo") throw new Error("identity unavailable")
+    return billing([{ feature: "hunyuan_ai", quotaLimit: 1000, quotaUsed: 10 }])
+  }
+  const hooks = await OrcaTermAuthPlugin()
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: oauthToken }))
+  expect(u.user).toBe("QR tester")
+  expect(u.windows[0].amount).toBe(10)
+})

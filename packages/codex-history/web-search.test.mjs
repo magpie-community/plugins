@@ -98,10 +98,10 @@ test('search adaptation keeps unsafe context rejection and explicit encrypted-co
   assert.match(text, /RECORDED_TEXT/);
 });
 
-test('the shipped middleware remains a small import-free package with only the request hook', () => {
+test('the shipped middleware remains a small import-free package with request and provider-try hooks', () => {
   const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
-  assert.equal(pkg.version, '0.1.1');
-  assert.deepEqual(Object.keys(middleware), ['onRequest']);
+  assert.equal(pkg.version, '0.1.2');
+  assert.deepEqual(Object.keys(middleware), ['onProvider', 'onRequest']);
   assert.deepEqual(pkg.files, ['codex-history.middleware.js', 'README.md', 'LICENSE', 'PROVENANCE.json']);
   assert.deepEqual(Object.keys(pkg.magpie).sort(), ['middleware', 'options']);
   assert.equal(pkg.main, undefined);

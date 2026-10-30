@@ -398,9 +398,12 @@ test("item 3: an import skips secret-shaped files and reports them", async () =>
 
 test("item 3: an import over the file limit is refused, not swept in", () => {
   const src = mkTmp("layerfs-big-")
-  for (let i = 0; i <= IMPORT_MAX_FILES; i++) writeFileSync(join(src, `f${i}.txt`), "")
-  expect(() => scanImportTree(src)).toThrow("import limit")
-}, 30000)
+  // a small limit: 20,001 real files outran a 30s budget under load
+  for (let i = 0; i <= 50; i++) writeFileSync(join(src, `f${i}.txt`), "")
+  expect(() => scanImportTree(src, { maxFiles: 50 })).toThrow("over the import limit of 50")
+  expect(() => scanImportTree(src, { maxFiles: 51 })).not.toThrow()
+  expect(IMPORT_MAX_FILES).toBe(20000) // the default the sim backend imports with
+})
 
 test("item 4: the store is private, and a file's mode survives the store", async () => {
   const { call, home, src } = await simTools()

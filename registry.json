@@ -660,6 +660,16 @@
       }
     },
     {
+      "package": "magpie-plugin-pink",
+      "name": "PinK",
+      "kind": "agent",
+      "icon": "https://raw.githubusercontent.com/YuchenWell/magpie-plugin-pink/main/assets/pink.png",
+      "summary": {
+        "en": "Connect PinK to Magpie's models from the Agents page and track gateway usage and cost. Disconnecting restores the managed configuration.",
+        "zh": "在 Agent 页面连接 PinK，使用 Magpie 中配置的模型并查看调用用量与费用；断开时恢复插件管理的配置。"
+      }
+    },
+    {
       "package": "@hoptoper/magpie-agent-wispterm",
       "name": "WispTerm",
       "kind": "agent",

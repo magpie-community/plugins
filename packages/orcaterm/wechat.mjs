@@ -110,9 +110,11 @@ export async function exchangeCode({ code, state, base = OAUTH_BASE }) {
   }
   const d = body.data
   if (!d.accessToken) throw new WechatLoginError("INTERNAL_ERROR", "[exchange] no accessToken in the response")
+  const userId = String(d.userId ?? "").trim() || readTokenClaims(d.accessToken).userId.trim()
+  if (!userId) throw new WechatLoginError("INTERNAL_ERROR", "[exchange] no userId in the response or access token")
   const expiresIn = Number(d.expiresIn) || 0
   return {
-    userId: String(d.userId ?? ""),
+    userId,
     nickname: d.providerUsername ?? "",
     avatar: d.avatar ?? "",
     accessToken: d.accessToken,
@@ -316,10 +318,12 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
         } catch {
           /* ignore */
         }
+        // OrcaTerm's bridge uses null for missing URL parameters: successful
+        // scans carry error: null, and cancellations can carry code: null.
         if (!body || typeof body !== "object" || Array.isArray(body) ||
             typeof body.state !== "string" ||
-            (body.error !== undefined && typeof body.error !== "string") ||
-            (body.code !== undefined && typeof body.code !== "string") ||
+            (body.error != null && typeof body.error !== "string") ||
+            (body.code != null && typeof body.code !== "string") ||
             (typeof body.code !== "string" && !body.error)) {
           res.writeHead(400, { "content-type": "application/json" })
           res.end(JSON.stringify({ ok: false, error: "invalid callback body" }))

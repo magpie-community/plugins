@@ -18,6 +18,10 @@ magpie plugin login orcaterm
 
 or install it from magpie's Plugins tab and sign in there.
 
+QR sign-ins use the OrcaTerm user ID as the account identity, so signing in to the
+same user again updates that account even when the token or nickname changes.
+Older duplicate cards without this identity are not removed automatically.
+
 ## Before you use this: the terms
 
 **This plugin uses OrcaTerm's built-in AI allowance from outside OrcaTerm, and Tencent's terms do
@@ -45,7 +49,7 @@ fallback for when scanning is not possible, and it is the one that carries the r
 | --- | --- | --- |
 | `lightai.cloud.tencent.com` | every chat | the credential, the message text |
 | `api.orcaterm.cloud.tencent.com` | reading the allowance (cookie sign-ins only) | the credential |
-| `orcaterm.com` | QR sign-in, and renewing its token | the credential, and the OAuth `code` |
+| `orcaterm.com` | QR sign-in, token renewal, and OAuth account allowance reads | the credential, and the OAuth `code` |
 | `res.wx.qq.com` | QR sign-in page | nothing — it serves WeChat's `wxLogin.js` |
 | `open.weixin.qq.com` | the QR widget's iframe | the `appid`, `redirect_uri` and `state` OrcaTerm issued |
 
@@ -255,13 +259,17 @@ allowance, 1000 questions a month on the basic edition — as `amount / limit` w
 The other rows there (session sharing, secrets, space) are not shown: they are unrelated resources,
 and session sharing's unlimited `-1` would read as an exhausted account.
 
+QR accounts use the same access token as the official client's `ot_session` cookie, sent only to
+`https://orcaterm.com/cgi/api`. Console-cookie accounts use `api.orcaterm.cloud.tencent.com`.
+Both sign-in methods can show the allowance; scanning does not require console credentials.
+
 ## Tests
 
 ```sh
 bun test
 ```
 
-88 tests over eight files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
+101 tests over nine files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are the loopback listeners used by the callback tests.
 
 | file | what it holds |
 | --- | --- |
@@ -272,6 +280,7 @@ bun test
 | `peek.test.mjs` | a refusal read from the head of the stream becoming 429/401/502, and a real answer surviving the peek |
 | `usage.test.mjs` | which `usageStats` row is the AI allowance |
 | `audit.test.mjs` | invalid callback bodies; envelope whitespace and examples; EOF error frames; JSON error codes; reader cleanup; read failures and cancellation |
+| `identity.test.mjs` | stable identity across QR re-sign-ins with rotated tokens or changed nicknames; distinct users staying separate; token user ID fallback; refusing missing identity; renewal and account-scoped backfill preserving credentials and metadata |
 | `review.test.mjs` | the cases the reviews turned up: a reply containing `{"action": …}` is not truncated (including one character at a time, and one that ends mid-envelope); the JSON 429 is a 429; pacers are per account; only nine models are listed; a chat makes exactly one request and it is not `/conversation`; and `/cb` refuses a foreign `Origin`, a rebinding page, and a `state` it did not issue |
 
 `chunks.test.mjs`'s cancel case fails if `releaseUpstream()` is removed, so the leak stays fixed.
@@ -299,12 +308,16 @@ GLM、Kimi。provider id：`orcaterm`。
   `Hunyuan3/hy4-preview`。**id 必须带命名空间前缀**，否则上游答 `LLM(x) is not loaded`。
   **其余 id 不要用**（如 `qwen3`、`deepseek-reasoner`、`kimi-latest`、`hunyuan-turbos`、
   `glm-4.7-thinking` 等）：它们在选择器里选不到，属于绕过界面调用，**有封号风险**。
-- **会连到哪些主机**：`lightai.cloud.tencent.com`（每次对话）、
-  `api.orcaterm.cloud.tencent.com`（读额度，仅 cookie 登录时）、`orcaterm.com`（扫码登录与续期）；
-  另有 `res.wx.qq.com`（提供微信的 `wxLogin.js`）与 `open.weixin.qq.com`（二维码 iframe），
+- **会连到哪些主机，以及发送什么**：`lightai.cloud.tencent.com`（每次对话：凭据和消息文本）、
+  `api.orcaterm.cloud.tencent.com`（仅控制台 cookie 账号读额度：凭据）、
+  `orcaterm.com`（扫码登录、令牌续期及扫码账号读额度：OAuth 凭据与 OAuth `code`；
+  其中额度查询将 token 作为 `ot_session` cookie 发送到硬编码的 `https://orcaterm.com/cgi/api`，拒绝重定向）。
+  另有 `res.wx.qq.com`（提供微信的 `wxLogin.js`，不发送登录凭据）与 `open.weixin.qq.com`
+  （二维码 iframe，只接收 OrcaTerm 签发的 `appid`、`redirect_uri` 和 `state`，不发送登录凭据）；
   这两个只在扫码登录时加载，cookie 登录不会碰。除此之外不发往任何地方。
-- **额度**：`magpie quota` 显示每月问答次数（基础版 1000 次）与重置日期。扫码登录的账号读不到
-  配额（额度接口只认控制台会话），这不影响使用。
+- **额度**：`magpie quota` 显示每月问答次数（基础版 1000 次）与重置日期。微信扫码账号通过
+  `orcaterm.com` 的产品接口读取额度，使用已有 OAuth token 的 `ot_session` cookie，无需控制台凭据；
+  控制台 cookie 账号继续通过 `api.orcaterm.cloud.tencent.com` 查询。
 - **失败会如实报错**：上游把失败写在 SSE 里（`data: [ERROR]: …`），HTTP 状态仍是 200。
   插件会先读流头，把配额用完/限流回成 429、登录失效回成 401 并标记账号，这样 magpie 才会换账号
   或让账号歇着，而不是把失败当成一次正常回答。限流还有一条**不走 SSE** 的路径：HTTP 200 +

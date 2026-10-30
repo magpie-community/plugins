@@ -12,15 +12,16 @@
  *                   headers: x-seqid + cookie(uin/skey) + the browser-family headers
  *                   response: SSE, one `data: {...}` per line; the text is in content, the
  *                   thinking in reasoningContent
- *   account API     POST https://api.orcaterm.cloud.tencent.com/cgi/api?<signed action>
- *                   body: {action, data}; signed head and tail (X-CsrfCode is the djb2 of
- *                   the cookie's skey)
+ *   account API     POST https://api.orcaterm.cloud.tencent.com/cgi/api for uin/skey,
+ *                   or https://orcaterm.com/cgi/api for the OAuth ot_session cookie.
+ *                   body: {action, data}; console cookies also require X-CsrfCode.
  *
  * The outward contract of this file follows magpie's docs exactly:
  *   config / auth{methods, loader, usage} / provider.models / chat.headers
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 import {
+  OAUTH_BASE,
   createLocalCapture,
   exchangeCode,
   looksLikeAccessToken,
@@ -1677,25 +1678,35 @@ async function classifyUpstreamError(res) {
  * So "a non-auth error came back" means the credential is valid.
  */
 async function capiRequest(auth, action, data = {}) {
+  const bearer = bearerOf(auth)
   const t = auth?.ticket ?? {}
   const seq = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`
-  const uin = t.uin || t.p_uin || ""
-  const url = `${CAPI_URL}?action=${encodeURIComponent(action)}&t=${seq}`
+  // OrcaTerm's AuthStore.syncCookie writes this access token as ot_session.
+  // Its product API reads that cookie; an Authorization header is not enough.
+  const url = `${bearer ? `${OAUTH_BASE}/cgi/api` : CAPI_URL}?action=${encodeURIComponent(action)}&t=${seq}`
   const res = await fetch(url, {
     method: "POST",
     headers: baseHeaders({
       accept: "application/json",
       "content-type": "application/json",
       "x-seqid": seq,
-      "x-referer": WEB_TERMINAL,
-      "x-csrfcode": csrfCode(t.skey),
-      cookie: cookieHeader(auth),
+      ...(bearer ? {
+        origin: OAUTH_BASE,
+        referer: `${OAUTH_BASE}/terminal`,
+        "x-referer": `${OAUTH_BASE}/terminal`,
+        cookie: `ot_session=${bearer}`,
+      } : {
+        "x-referer": WEB_TERMINAL,
+        "x-csrfcode": csrfCode(t.skey),
+        cookie: cookieHeader(auth),
+      }),
     }),
     // Measured: upstream validates the data field strictly, and an extra sig
     // comes back as "property feature should not exist". Sending {action, data}
     // as it is works.
     body: JSON.stringify({ action, data }),
     signal: AbortSignal.timeout(15000),
+    redirect: "error",
   })
   const text = await res.text()
   try {
@@ -1786,6 +1797,17 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
       },
     ]),
   )
+
+  async function identifyAccount(auth, bearer) {
+    const userId = readTokenClaims(bearer).userId
+    // The SDK writes only the account whose loader or usage hook is running.
+    if (userId && (!auth?.accountId || !auth?.uid) && client?.auth?.set) {
+      await client.auth.set({ path: { id: PROVIDER }, body: {
+        ...auth, accountId: auth?.accountId || userId,
+        uid: auth?.uid || userId, userId,
+      } })
+    }
+  }
 
   return {
     // ---- provider declaration -----------------------------------------------
@@ -1879,6 +1901,9 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
                     access: r.accessToken,
                     refresh: r.accessToken,
                     expires: r.expiresAt ?? Date.now() + 7200 * 1000,
+                    // magpie deduplicates re-sign-ins by accountId, not userId.
+                    accountId: r.userId,
+                    uid: r.userId,
                     userId: r.userId,
                     metadata: {
                       via: "wechat-qr",
@@ -1920,11 +1945,13 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
         if (!bearer) return null
         try {
           const r = await refreshAccessToken(bearer)
+          const userId = readTokenClaims(bearer).userId || auth?.userId || auth?.metadata?.userId
           return {
             key: r.accessToken,
             access: r.accessToken,
             refresh: r.accessToken,
             expires: r.expiresAt ?? undefined,
+            ...(userId ? { accountId: auth?.accountId || String(userId), uid: auth?.uid || String(userId), userId: String(userId) } : {}),
             metadata: { ...(auth?.metadata ?? {}), via: "wechat-qr", expires: r.expiresAt ?? undefined },
           }
         } catch (err) {
@@ -1951,6 +1978,7 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
         let bound
         if (bearer) {
           const claims = readTokenClaims(bearer)
+          await identifyAccount(auth, bearer)
           if (claims.exp && claims.exp * 1000 < Date.now()) {
             throw Object.assign(new Error("OrcaTerm sign-in expired, scan again"), { signIn: "expired" })
           }
@@ -2112,16 +2140,14 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
       /** magpie's own hook: show OrcaTerm's Q&A quota on the account card */
       async usage(getAuth) {
         const auth = await getAuth()
-        // A WeChat scan yields an accessToken, not uin/skey — the quota endpoint
-        // only speaks the console session, so such an account has no quota to
-        // read. Return no windows rather than an error: the account is fine, and
-        // "credential is missing uin" would read as a failed sign-in.
         const bearer = bearerOf(auth)
-        if (bearer) return { user: readTokenClaims(bearer).nickname || undefined, windows: [] }
-        const ticket = parseTicket(auth?.key ?? "")
-        if (!ticket) return { error: "not signed in", windows: [] }
-        if (!ticket.uin) return { error: "the credential is missing uin; paste uin and skey again", windows: [] }
-        const bound = { ...auth, ticket }
+        let bound = auth
+        if (!bearer) {
+          const ticket = parseTicket(auth?.key ?? "")
+          if (!ticket) return { error: "not signed in", windows: [] }
+          if (!ticket.uin) return { error: "the credential is missing uin; paste uin and skey again", windows: [] }
+          bound = { ...auth, ticket }
+        }
 
         // A throw in usage puts an error on the account card, so everything is
         // caught here; the worst case is just "can't read the quota"
@@ -2129,6 +2155,7 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
           // Measured (2026-10-27): the real quota is in DescribeUserBillingStatus'
           // usageStats[], not in DescribeUserUsageStats (whose feature only knows
           // hunyuan_ai/session_share/secret).
+          if (bearer) await identifyAccount(auth, bearer)
           const billing = await capiRequest(bound, "DescribeUserBillingStatus", {})
           const resp = billing?.data?.Response ?? billing?.Response
           if (resp?.Error) {
@@ -2169,11 +2196,11 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
           }
 
           // also pick up the account name, so the account card reads clearly
-          let user
+          let user = bearer ? readTokenClaims(bearer).nickname || undefined : undefined
           try {
             const info = await capiRequest(bound, "GetUserInfo", {})
             const ir = info?.data?.Response ?? info?.Response
-            user = ir?.nickName ?? ir?.username ?? ir?.uin
+            user = ir?.nickName ?? ir?.username ?? ir?.uin ?? user
           } catch {
             /* fine if it can't be read */
           }

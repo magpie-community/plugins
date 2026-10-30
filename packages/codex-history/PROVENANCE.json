@@ -1,20 +1,43 @@
 {
-  "source": "https://github.com/unisong/codex-filter-manager",
-  "commit": "40f98308f364ca8533c30c11a2cede4ea00542f3",
-  "version": "v1.0.5",
+  "source": "https://github.com/unisong/magpie-codex-history-filter",
+  "commit": "43e0b5c8d5e1542a4bb58054f1c3c7f6ee0e7120",
+  "version": "0.1.2",
   "license": "MIT",
   "files": {
-    "magpie-plugin/history-filter.mjs": {
-      "sha256": "45d969daf0a6185fba2cbf8b76910d7bcb63e012d4767c46863b520f17c80925"
+    "codex-history.middleware.js": {
+      "sha256": "155522beab703641b4ba57f43f347b5a50aeab191463cfcdb0a93cb7e91f56f5"
     },
-    "magpie-plugin/history.middleware.js": {
-      "sha256": "b4da0d27961861904ba8577633717c6e14c36e78508ff95074fa24fb98d76a06"
+    "history/portable-web-search.mjs": {
+      "sha256": "3ba488941254df46f4ea3aeda5fa0e325d6cb579f2f504a13c005f7f657c5f9d"
+    },
+    "README.md": {
+      "sha256": "97cbb2a1179e4f801b9e50b177a963d5297388c48dbf1ee27a628e3507117c83"
+    },
+    "package.json": {
+      "sha256": "e0552938d8c2e3352c5b512b5f135d6696b82c228f896d6fba3449aa66a1db42"
+    },
+    "LICENSE": {
+      "sha256": "3ce553a5ba020d6cbae538031d05c0700d67ad4d673d832d51022566a9ead2e1"
+    }
+  },
+  "derivedFrom": {
+    "source": "https://github.com/unisong/codex-filter-manager",
+    "commit": "40f98308f364ca8533c30c11a2cede4ea00542f3",
+    "version": "v1.0.5",
+    "files": {
+      "magpie-plugin/history-filter.mjs": {
+        "sha256": "45d969daf0a6185fba2cbf8b76910d7bcb63e012d4767c46863b520f17c80925"
+      },
+      "magpie-plugin/history.middleware.js": {
+        "sha256": "b4da0d27961861904ba8577633717c6e14c36e78508ff95074fa24fb98d76a06"
+      }
     }
   },
   "changes": [
     "Inlined the shared history algorithm and request hook into one import-free middleware file.",
-    "Removed helper exports; only onRequest is exported.",
     "No model detection, guard, dashboard, proxy service or provider configuration is included.",
-    "Version 0.1.1 adds history/portable-web-search.mjs, inlined into the middleware to convert historical native web_search_call items to labeled text after reasoning is removed. Original source hashes above identify the v1.0.5 baseline, not the modified middleware."
+    "Version 0.1.1 adds history/portable-web-search.mjs, inlined into the middleware to convert historical native web_search_call items to labeled text after reasoning is removed.",
+    "Version 0.1.2 exports onProvider: a request through a Magpie group or fallback is filtered on each provider try with the tried provider's rule. onRequest and onProvider are the only exports.",
+    "The files above are byte-identical to the pinned commit in the source repository. derivedFrom names the original baseline; that commit is no longer on a branch or tag since the source repository's public history was rebuilt."
   ]
 }
