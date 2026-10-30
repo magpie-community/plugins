@@ -275,12 +275,14 @@ options it does not show.
 **Test connection** is a real check, not a saved flag. Magpie's page sandbox
 has `connect-src 'none'`, so the page cannot call Mem itself; the package's
 small host part serves a loopback page on `127.0.0.1:<port>` and the frame
-navigates to it. The page hands the form's current values (URL, key, Space) to
-that page in `window.name`; it makes one public health request and one
-authenticated Working Memory request, writes nothing, and shows reachability,
-the key and the Space with a fixed code and milliseconds. **Back to settings**
-returns to the same form with the tested values restored, so an unsaved test
-does not lose edits. The key is not put in a URL or a log, the page itself
+navigates to it. The **Test connection** button on the main page tests the
+saved options; the one in the dialog tests the values currently in the form.
+The page hands those values (URL, key, Space) to the test page in
+`window.name`; it makes one public health request and one authenticated
+Working Memory request, writes nothing, and shows reachability, the key and the
+Space with a fixed code and milliseconds. **Back to settings** returns to the
+same form with the tested values restored and the dialog reopened, so an
+unsaved test does not lose edits. The key is not put in a URL or a log, the page itself
 still opens no network connection, and the test never uses an environment key
 (Magpie's environment is not visible to the page). The helper is on
 `127.0.0.1` only, needs the page's per-process token for its JSON endpoint, and

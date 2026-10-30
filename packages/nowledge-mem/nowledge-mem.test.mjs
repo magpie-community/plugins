@@ -652,7 +652,7 @@ test("configuration page saves the Mem connection for the shipped hook", async (
     setAttribute(name, value) { this[name] = value }, focus() {}, showModal() {}, close() {},
   }]))
   const document = { documentElement: {}, getElementById: (id) => elements[id], querySelectorAll: () => [] }
-  const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign() {} }
+  const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign(url) { this.assigned = url } }
   const window = { name: "" }
   let options = { apiKeyEnv: "NMEM_API_KEY", recall: true, contextBundle: true, capture: false, maxMemories: 5, maxBytes: 6000, recallRemote: true, captureRemote: true }
   let writes = 0
@@ -725,6 +725,12 @@ test("configuration page saves the Mem connection for the shipped hook", async (
   expect(options.serverUrl).toBe("https://mem.example.com/")
   expect(options.recallRemote).toBe(false)
   expect(options.captureRemote).toBe(false)
+
+  // The main page's Test button uses what is saved; the dialog's uses the form.
+  elements["test-saved"].onclick()
+  expect(location.assigned).toBe("http://127.0.0.1:3479/test")
+  expect(JSON.parse(window.name)).toEqual({ serverUrl: "https://mem.example.com/", apiKey: "", spaceId: "", lang: "en", returnTo: location.href })
+  window.name = ""
   expect(options.apiKey).toBeUndefined()
   expect(options.spaceId).toBeUndefined()
   expect(options.agentId).toBeUndefined()

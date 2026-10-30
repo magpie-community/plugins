@@ -35,13 +35,15 @@ function mcpAddress() {
   return url.href;
  } catch { return "http://127.0.0.1:14242/mcp" }
 }
-function formUrl(fallback = "") {
- const raw = $("url").value.trim() || fallback;
+function validUrl(raw) {
  let url;
  try { url = new URL(raw); } catch { return null }
  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || (url.protocol === "http:" && !loopback)) return null;
  return url;
+}
+function formUrl(fallback = "") {
+ return validUrl($("url").value.trim() || fallback);
 }
 function testService() {
  const service = window.magpie?.service;
@@ -113,7 +115,7 @@ magpie.ready.then(async () => {
   const options = await magpie.options.get();
   savedOptions = options; fill(options); summary(); restoreTestValues();
   message("configured", options.serverUrl ? "loaded" : "notConfigured");
-  $("save").disabled = false; $("configure").disabled = false; $("summary-capture").disabled = false;
+  $("save").disabled = false; $("configure").disabled = false; $("test-saved").disabled = false; $("summary-capture").disabled = false;
  } catch { message("configured", "loadFailed", true); }
 }).catch(() => { paint(); message("configured", "bridgeFailed", true); });
 const save = async (event) => {
@@ -145,6 +147,14 @@ const save = async (event) => {
  finally { busy = false; $("save").disabled = false; $("close").disabled = false; $("cancel").disabled = false; }
 };
 
+$("test-saved").onclick = () => {
+ if (!savedOptions) return;
+ const url = validUrl(savedOptions.serverUrl || "http://127.0.0.1:14242");
+ if (!url) { message("configured", "invalidUrl", true); return }
+ const key = String(savedOptions.apiKey || "").replace(/^Bearer\s+/i, "");
+ window.name = JSON.stringify({ serverUrl: url.href, apiKey: key, spaceId: savedOptions.spaceId || "", lang: language, returnTo: location.href.split("?")[0] });
+ location.assign(testService() + "/test");
+};
 $("test").onclick = () => {
  const url = formUrl("http://127.0.0.1:14242");
  if (!url) { result("invalidUrl", true); $("url").focus(); return }
