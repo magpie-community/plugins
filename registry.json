@@ -132,6 +132,8 @@
       }
     },
     { "package": "magpie-aws-bedrock-sso", "name": "AWS Bedrock SSO", "providers": ["bedrock-sso"],
-      "summary": { "en": "Use Amazon Bedrock Claude and GPT models with your AWS CLI profile, including SSO / IAM Identity Center. SigV4 authentication; no Bedrock API key needed.", "zh": "使用 AWS CLI 配置（支持 SSO / IAM Identity Center）接入 Amazon Bedrock 的 Claude 和 GPT 模型，通过 SigV4 签名，无需 Bedrock API 密钥。" } }
+      "summary": { "en": "Use Amazon Bedrock Claude and GPT models with your AWS CLI profile, including SSO / IAM Identity Center. SigV4 authentication; no Bedrock API key needed.", "zh": "使用 AWS CLI 配置（支持 SSO / IAM Identity Center）接入 Amazon Bedrock 的 Claude 和 GPT 模型，通过 SigV4 签名，无需 Bedrock API 密钥。" } },
+    { "package": "quota-keepalive", "name": "Quota Keepalive", "kind": "page", "community": true,
+      "summary": { "en": "Detects signed-in providers and accounts, runs daily check-ins and real-chat keepalives, schedules tasks, and shows run history, five-day results and quota trends on one Magpie page. It reuses installed provider plugins, takes over no sign-in, and also exposes a log-reading tool.", "zh": "统一检测 Magpie 已登录的供应商与账号，执行每日签到、真实对话保活和定时任务，并展示执行记录、近 5 天结果与额度趋势。复用已安装供应商插件的登录与接口，不接管登录，也不绑定单一供应商；同时提供日志查询工具。" } }
   ]
 }
