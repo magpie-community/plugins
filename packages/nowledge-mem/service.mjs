@@ -151,4 +151,11 @@ export default {
     },
 };
 
-export const _internal = { hostOK, originOK };
+export const _internal = {
+    hostOK,
+    originOK,
+    stop() {
+        running?.stop(true);
+        running = undefined;
+    },
+};
