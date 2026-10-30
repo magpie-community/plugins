@@ -35,6 +35,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [raccoon](packages/raccoon) | SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com): account credits and daily check-in, with browser sign-in or Raccoon desktop's sign-in | `raccoon` |
 | [river](packages/river) | River (river.ai) pay-as-you-go inference, with your API key: per-account models, documented reasoning efforts and live prices | `river` |
 | [trae](packages/trae) | Trae CN (trae.cn) and Trae international (trae.ai), free tier included, with Trae's browser sign-in (experimental) | `trae-cn`, `trae-global` |
+| [volcengine-asr](packages/volcengine-asr) | Volcengine Doubao ASR (火山引擎豆包语音识别) with your own Speech API key: speech-to-text on `/v1/audio/transcriptions`, flash uploads and long-audio jobs | `volcengine-asr` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (China build, CodeBuddy plan) | `workbuddy` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (international build) | `workbuddy-ai` |
 | [zcode](packages/zcode) | ZCode: Z.ai / BigModel (智谱) GLM Coding Plan, team seats, Start Plan, daily claim of its gift plans | `zcode` |

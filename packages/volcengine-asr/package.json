@@ -1,0 +1,39 @@
+{
+  "name": "@magpie-community/opencode-volcengine-asr-auth",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./index.mjs",
+  "description": "Volcengine Doubao ASR (豆包语音识别) on magpie's /v1/audio/transcriptions: Seed ASR 2.0, BigASR 1.0 and flash, with your Volcengine Speech API key",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "volcengine",
+    "doubao",
+    "asr",
+    "speech-to-text",
+    "transcription"
+  ],
+  "license": "MIT",
+  "author": "Chengyi Xu",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/volcengine-asr"
+  },
+  "files": [
+    "index.mjs",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "magpie": {
+    "maxConcurrency": 8
+  }
+}
