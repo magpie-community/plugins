@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-nowledge-mem",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Nowledge Mem recall, Context Bundle and optional conversation capture at the Magpie gateway, for every connected harness",
   "type": "module",
   "files": [

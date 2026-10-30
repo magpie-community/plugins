@@ -763,9 +763,7 @@ test("configuration page saves the Mem connection for the shipped hook", async (
   // The main page's Test button tests the saved connection; the test page
   // reads only the way back and the language.
   elements["test-saved"].onclick()
-  expect(location.assigned).toBe("http://127.0.0.1:3479/test")
-  expect(JSON.parse(window.name)).toEqual({ returnTo: location.href, lang: "en" })
-  window.name = ""
+  expect(location.assigned).toBe("http://127.0.0.1:3479/test?lang=en")
   expect(options.apiKey).toBeUndefined()
   expect(options.spaceId).toBeUndefined()
   expect(options.agentId).toBeUndefined()

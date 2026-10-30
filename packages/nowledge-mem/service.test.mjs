@@ -41,8 +41,11 @@ test("the running service answers 403 to a foreign Host, a foreign Origin and a 
   })
   try {
     const own = `127.0.0.1:${free}`
-    const page = await send("GET", "/test", { host: own })
+    const page = await send("GET", "/test?lang=zh", { host: own })
     expect(page.status).toBe(200)
+    expect(page.body).toContain('id="back"')
+    expect(page.body).toContain("history.back()")
+    expect(page.body).not.toContain("window.name")
     const token = page.body.match(/name="nm-token" content="([0-9a-f]+)"/)[1]
 
     expect((await send("GET", "/test", { host: `evil.example:${free}` })).status).toBe(403)

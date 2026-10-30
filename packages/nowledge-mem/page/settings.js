@@ -1,7 +1,7 @@
 // Only the official configuration bridge is used. The connection test is a
 // local loopback page the frame navigates to, because the page's sandbox has
-// no network (connect-src 'none'); it receives this form's values in
-// window.name and never saves them.
+// no network (connect-src 'none'). It tests the saved options; the language
+// travels in the query and the test page's Back button uses history.back().
 const {languageFor, languageTags, translate} = nowledgeMemI18n;
 const $ = (id) => document.getElementById(id);
 let language = 'en', busy = false, savedOptions = null, pendingCapture = null;
@@ -118,8 +118,9 @@ $("test-saved").onclick = () => {
  if (!savedOptions) return;
  const url = validUrl(savedOptions.serverUrl || "http://127.0.0.1:14242");
  if (!url) { message("configured", "invalidUrl", true); return }
- window.name = JSON.stringify({ returnTo: location.href.split("?")[0], lang: language });
- location.assign(testService() + "/test");
+ const target = new URL(testService() + "/test");
+ target.searchParams.set("lang", language);
+ location.assign(target.href);
 };
 
 $("save").onclick = save;

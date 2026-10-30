@@ -32,30 +32,22 @@ function page() {
   h1 { margin: 0 0 10px; font-size: 17px; }
   p { margin: 0 0 14px; font-size: 14px; line-height: 1.5; }
   button { font: inherit; font-size: 13px; padding: 5px 12px; margin: 0 0 18px; }
-  a { display: block; font-size: 13px; color: #0a6cff; }
-  @media (prefers-color-scheme: dark) { body { color: #f5f5f7; background: #1c1c1e; } a { color: #6ea8ff; } }
+  @media (prefers-color-scheme: dark) { body { color: #f5f5f7; background: #1c1c1e; } }
 </style>
 <h1>Nowledge Mem</h1>
 <p id="state"></p>
 <button id="run" type="button" hidden></button>
-<a id="back" hidden></a>
+<button id="back" type="button" hidden></button>
 <script>
 (() => {
   const all = ${JSON.stringify(messages)};
-  let cfg = {};
-  try { cfg = JSON.parse(window.name || "{}"); } catch {}
-  window.name = "";
-  const t = all[cfg.lang] || all.en;
+  const t = all[new URL(location.href).searchParams.get("lang")] || all.en;
   const state = document.getElementById("state");
   const run = document.getElementById("run");
   const back = document.getElementById("back");
-  if (typeof cfg.returnTo === "string" && /^https?:\\/\\/(127\\.0\\.0\\.1|localhost):\\d+\\/_magpie\\/plugin\\//u.test(cfg.returnTo)) {
-    back.href = cfg.returnTo;
-    back.textContent = t.back;
-    back.hidden = false;
-  } else {
-    state.textContent = t.noReturn;
-  }
+  back.textContent = t.back;
+  back.hidden = false;
+  back.addEventListener("click", () => history.back());
   run.textContent = t.run;
   run.hidden = false;
   run.addEventListener("click", async () => {

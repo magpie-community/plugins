@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 
 // Bumped with package.json: Mem's own clients record it on imported Threads.
-export const version = "0.1.0";
+export const version = "0.1.1";
 
 // The only report codes magpie's Plugins page shows; tools turn these into
 // messages, never the service's own text.

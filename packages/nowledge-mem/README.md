@@ -256,21 +256,21 @@ not show.
 has `connect-src 'none'`, so the page cannot call Mem itself; the package's
 small host part serves a loopback page on `127.0.0.1:<port>` and the frame
 navigates to it. The **Test connection** button tests the saved options, so
-save changes first. The page passes only the way back and the language in
-`window.name`; the test page asks for a click, then the service reads the saved
-plugin options itself and makes one public health request and one authenticated
-Working Memory request. No URL, key or Space travels through the page. It
+save changes first. The language travels in the test URL's query; the test
+page asks for a click, then the service reads the saved plugin options itself
+and makes one public health request and one authenticated Working Memory
+request. No URL, key, Space or return address travels through the page. It
 writes nothing and shows reachability, the key and the Space with a fixed code
-and milliseconds. **Back to settings** returns to the page; the test saves
-nothing and changes no form values.
+and milliseconds. **Back to settings** uses the frame's history to return to
+the plugin page; the test saves nothing and changes no form values.
 
 The helper binds `127.0.0.1`, answers only when `Host` is `127.0.0.1:<port>` or
 `localhost:<port>`, and needs the page's per-process token. Its JSON endpoint
 accepts `Origin: null` from the sandboxed page and nothing else, and returns no
 `access-control-allow-origin: *`; `POST` and the page's `fetch` are therefore
-closed to other sites. The back link is accepted only for a loopback
-`/_magpie/plugin/` page. Because the `Host` must be loopback, the test works in
-the desktop app, not through a remote `magpie web` proxy.
+closed to other sites. The test page takes no return address; its Back button
+only walks the frame's history. Because the `Host` must be loopback, the test
+works in the desktop app, not through a remote `magpie web` proxy.
 
 The test needs the plugin host, which the gateway hook already starts; a
 page-only install of an older Magpie version shows the test page failing to
