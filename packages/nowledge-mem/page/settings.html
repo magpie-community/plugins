@@ -28,15 +28,14 @@
 <label class="switch-field" for="recall"><input id="recall" type="checkbox" role="switch"><span><strong data-t="recall">Memory recall</strong><small data-t="recallHelp">Search Mem with the latest user turn and add what it recalls to the request.</small></span></label>
 <label class="switch-field" for="context"><input id="context" type="checkbox" role="switch"><span><strong data-t="contextLabel">Context Bundle</strong><small data-t="contextHelp">On a session’s first turn, also send your profile, rules and Working Memory.</small></span></label>
 <label class="switch-field" for="capture"><input id="capture" type="checkbox" role="switch"><span><strong data-t="capture">Save conversations</strong><small data-t="captureHelp">Off by default. Import completed conversations as Mem Threads, which Mem distills into Memory.</small></span></label>
-<label class="switch-field" for="remote"><input id="remote" type="checkbox" role="switch"><span><strong data-t="remoteLabel">Agents using a Magpie key</strong><small data-t="remoteHelp">Most harnesses reach Magpie with their own gateway key. Recall and saving include them only when this is on.</small></span></label>
+<label class="switch-field" for="remote"><input id="remote" type="checkbox" role="switch"><span><strong data-t="remoteLabel">Include agents that use a Magpie key</strong><small data-t="remoteHelp">Access switch. Every connected harness sends its own Magpie gateway key, so Magpie marks it keyed, not local. Off, recall and saving serve only direct local requests without a key. On, they also serve those keyed harnesses. Saving conversations still needs its own switch.</small></span></label>
 </fieldset>
-<div class="test-row"><button id="test" class="secondary" type="button" data-t="testConnection">Test connection</button><small data-t="testHelp">Opens a local test page; this form's values are used. Nothing is saved.</small></div>
 <p id="result" role="status" aria-live="polite" hidden></p>
 </div><footer><span data-t="saveHelp">Advanced options are preserved.</span><div class="actions"><button id="cancel" class="secondary" type="button" data-t="cancel">Cancel</button><button id="save" type="button" disabled data-t="save">Save configuration</button></div></footer>
 </form></dialog>
 <section class="panel tools-panel" aria-labelledby="tools-title">
 <h2 id="tools-title" data-t="toolsTitle">Memory tools</h2>
-<p data-t="toolsIntro">Recall and capture are automatic for every harness. For agent-callable tools, add Mem's own MCP server once in Magpie's Library › MCP; the MCP hub then gives every agent the tools.</p>
+<p data-t="toolsIntro">This plugin adds no Library entry and no skill. Recall and capture are automatic; for agent-callable tools, add Mem's own MCP server once in Magpie's Library › MCP, and the MCP hub gives every agent the tools.</p>
 <div class="mcp-address"><code id="mcp-url">http://127.0.0.1:14242/mcp</code><button id="copy-mcp" class="secondary" type="button" data-t="copyMcp">Copy address</button></div>
 <p id="mcp-feedback" role="status" aria-live="polite" hidden></p>
 </section>

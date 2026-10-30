@@ -40,8 +40,10 @@ function page() {
 <script>
 (async () => {
   const all = ${JSON.stringify(messages)};
+  const raw = window.name;
+  window.name = "";
   let cfg = {};
-  try { cfg = JSON.parse(window.name || "{}"); } catch {}
+  try { cfg = JSON.parse(raw || "{}"); } catch {}
   const t = all[cfg.lang] || all.en;
   const state = document.getElementById("state");
   state.textContent = t.testing;

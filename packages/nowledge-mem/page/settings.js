@@ -51,19 +51,6 @@ function testService() {
  const port = Number(savedOptions?.port);
  return `http://127.0.0.1:${Number.isInteger(port) && port > 0 ? port : 3479}`;
 }
-// The test page leaves this form's values in window.name; restore them and
-// reopen the dialog, so an unsaved test does not lose what was typed.
-function restoreTestValues() {
- let payload;
- try { payload = JSON.parse(window.name || "{}"); } catch { return }
- if (!payload || payload.returnTo !== location.href.split("?")[0]) return;
- if (typeof payload.serverUrl === "string" && payload.serverUrl) $("url").value = payload.serverUrl;
- if (typeof payload.apiKey === "string") $("key").value = payload.apiKey;
- if (typeof payload.spaceId === "string") $("space").value = payload.spaceId;
- window.name = "";
- $("result").hidden = true;
- $("settings").showModal();
-}
 function fill(options) {
  $("url").value = options.serverUrl || "";
  $("space").value = options.spaceId || "";
@@ -113,7 +100,7 @@ magpie.ready.then(async () => {
  magpie.onTheme(paint);
  try {
   const options = await magpie.options.get();
-  savedOptions = options; fill(options); summary(); restoreTestValues();
+  savedOptions = options; fill(options); summary();
   message("configured", options.serverUrl ? "loaded" : "notConfigured");
   $("save").disabled = false; $("configure").disabled = false; $("test-saved").disabled = false; $("summary-capture").disabled = false;
  } catch { message("configured", "loadFailed", true); }
@@ -153,14 +140,6 @@ $("test-saved").onclick = () => {
  if (!url) { message("configured", "invalidUrl", true); return }
  const key = String(savedOptions.apiKey || "").replace(/^Bearer\s+/i, "");
  window.name = JSON.stringify({ serverUrl: url.href, apiKey: key, spaceId: savedOptions.spaceId || "", lang: language, returnTo: location.href.split("?")[0] });
- location.assign(testService() + "/test");
-};
-$("test").onclick = () => {
- const url = formUrl("http://127.0.0.1:14242");
- if (!url) { result("invalidUrl", true); $("url").focus(); return }
- const key = $("key").value.trim().replace(/^Bearer\s+/i, "");
- if (key && /[\s\u0000-\u001f\u007f]/.test(key)) { result("invalidKey", true); $("key").focus(); return }
- window.name = JSON.stringify({ serverUrl: url.href, apiKey: key, spaceId: $("space").value.trim(), lang: language, returnTo: location.href.split("?")[0] });
  location.assign(testService() + "/test");
 };
 

@@ -764,46 +764,6 @@ test("the page points at Mem's MCP server for agent-callable tools", async () =>
   expect(elements["mcp-feedback"].dataset.message).toBe("copyFallback")
 })
 
-test("the page tests the connection through its loopback page and restores unsaved values", async () => {
-  const read = (file) => Bun.file(new URL(`./page/${file}`, import.meta.url)).text()
-  const [dictionary, source, html] = await Promise.all([read("i18n.js"), read("settings.js"), read("settings.html")])
-  const makeElements = () => Object.fromEntries([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, {
-    dataset: {}, value: "", hidden: false, checked: false, disabled: false, textContent: "",
-    setAttribute(name, value) { this[name] = value }, focus() {}, close() {},
-    showModal() { this.opened = true },
-  }]))
-  const pageHref = "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html"
-  const run = async (windowName) => {
-    const elements = makeElements()
-    const document = { documentElement: {}, getElementById: (id) => elements[id], querySelectorAll: () => [] }
-    const magpie = {
-      theme: { lang: "en" }, ready: Promise.resolve(), onTheme() {}, service: "http://127.0.0.1:3479",
-      options: { get: async () => ({ serverUrl: "http://127.0.0.1:14242" }), set: async () => {} },
-    }
-    const location = { href: pageHref, assigned: "", assign(url) { this.assigned = url } }
-    const window = { name: windowName, magpie }
-    runInNewContext(`${dictionary}\n${source}`, { document, magpie, window, location, navigator: { language: "en" }, URL })
-    await new Promise(setImmediate)
-    return { elements, window, location }
-  }
-
-  const first = await run("")
-  first.elements.url.value = "https://mem.example.com"
-  first.elements.key.value = "nmem_page"
-  first.elements.space.value = "space-1"
-  first.elements.test.onclick()
-  const payload = { serverUrl: "https://mem.example.com/", apiKey: "nmem_page", spaceId: "space-1", lang: "en", returnTo: pageHref }
-  expect(first.location.assigned).toBe("http://127.0.0.1:3479/test")
-  expect(JSON.parse(first.window.name)).toEqual(payload)
-
-  const back = await run(JSON.stringify(payload))
-  expect(back.elements.url.value).toBe("https://mem.example.com/")
-  expect(back.elements.key.value).toBe("nmem_page")
-  expect(back.elements.space.value).toBe("space-1")
-  expect(back.elements.settings.opened).toBe(true)
-  expect(back.window.name).toBe("")
-})
-
 test("configuration page follows the host language without losing edits or messages", async () => {
   const read = (file) => Bun.file(new URL(`./page/${file}`, import.meta.url)).text()
   const [dictionary, source, html] = await Promise.all([read("i18n.js"), read("settings.js"), read("settings.html")])

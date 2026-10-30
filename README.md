@@ -166,9 +166,9 @@ environment, and falls back to a local Mem at `http://127.0.0.1:14242`. Recall
 and the Context Bundle are on; importing conversations is off until enabled.
 Agents that reach Magpie with their own gateway key need the page's **Agents
 using a Magpie key** switch; Magpie classifies keyed requests as `gateway-key`,
-not `local`. **Test connection** on the page checks Mem from a loopback helper
-without saving the form. Tools for agents come from Mem's own MCP server: add
-it once in
+not `local`. **Test connection** on the page checks the saved connection from a loopback
+helper; save changes first. Tools for agents come from Mem's own MCP server:
+add it once in
 Magpie's Library › MCP, and the
 [MCP hub](https://usemagpie.ai/docs/mcp-hub) gives every agent the same tools.
 Harness prompts, skills and commands stay with the harnesses. See the
