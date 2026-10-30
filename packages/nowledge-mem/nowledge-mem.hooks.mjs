@@ -369,7 +369,9 @@ function bind(body, ctx, o) {
     // A client's environment notice is a user message before the real prompt.
     // The title is the message Magpie read as the query, kept for the Thread.
     const query = (ctx.query ?? "").trim();
-    const opening = (query && users.find((m) => m.content.includes(query))?.content) || first;
+    // A client's own notice can be the first user message; the last user turn
+    // is a better title when Magpie has no query for this protocol.
+    const opening = (query && users.find((m) => m.content.includes(query))?.content) || users.at(-1)?.content || first;
     return {
         o, send: client(o), body: structuredClone(body), threadId,
         hostAgentId: hostAgentOf(o, ctx),

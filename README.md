@@ -164,8 +164,10 @@ Nowledge Mem needs no deployment of its own: the hook takes the endpoint and
 key from the plugin page, or from `NMEM_API_URL` and `NMEM_API_KEY` in Magpie's
 environment, and falls back to a local Mem at `http://127.0.0.1:14242`. Recall
 and the Context Bundle are on; importing conversations is off until enabled.
-Tools for agents come from Mem's own MCP server: add it once in Magpie's
-Library › MCP, and the
+Agents that reach Magpie with their own gateway key need the page's **Agents
+using a Magpie key** switch; Magpie classifies keyed requests as `gateway-key`,
+not `local`. Tools for agents come from Mem's own MCP server: add it once in
+Magpie's Library › MCP, and the
 [MCP hub](https://usemagpie.ai/docs/mcp-hub) gives every agent the same tools.
 Harness prompts, skills and commands stay with the harnesses. See the
 [plugin README](packages/nowledge-mem).

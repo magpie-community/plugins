@@ -528,6 +528,20 @@ test("credentials anywhere in the conversation stop capture", async () => {
   expect(of("threads/import")).toHaveLength(0)
 })
 
+test("a client's injected notice does not become the Thread title", async () => {
+  mock()
+  const [, context] = capturing("responses", { query: "" })
+  const body = {
+    input: [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "<recommended_plugins> Available plugins: Dropbox, Box </recommended_plugins>" }] },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Quartz codename?" }] },
+    ],
+  }
+  await onRequest(body, context)
+  await onResponse({ status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "QUARTZ-8413" }] }] }, { ...context, success: true })
+  expect(of("threads/import")[0].body.title).toBe("Quartz codename?")
+})
+
 test("capture includes client tool results unless captureTools is off", async () => {
   const toolBody = {
     messages: [
@@ -636,7 +650,7 @@ test("configuration page saves the Mem connection for the shipped hook", async (
     setAttribute(name, value) { this[name] = value }, focus() {}, showModal() {}, close() {},
   }]))
   const document = { documentElement: {}, getElementById: (id) => elements[id], querySelectorAll: () => [] }
-  let options = { apiKeyEnv: "NMEM_API_KEY", recall: true, contextBundle: true, capture: false, maxMemories: 5, maxBytes: 6000 }
+  let options = { apiKeyEnv: "NMEM_API_KEY", recall: true, contextBundle: true, capture: false, maxMemories: 5, maxBytes: 6000, recallRemote: true, captureRemote: true }
   let writes = 0
   const magpie = {
     theme: { lang: "en" }, ready: Promise.resolve(), onTheme() {},
@@ -659,6 +673,8 @@ test("configuration page saves the Mem connection for the shipped hook", async (
     agentId: "agent-3",
     apiKey: "nmem_page_key",
     capture: true,
+    recallRemote: true,
+    captureRemote: true,
   })
   // Run the shipped hook with exactly what the page saved.
   mock({ "threads/import": (body) => Response.json({ success: true, failed_count: 0, results: [{ success: true, thread_id: body.thread_id, message_count: body.messages.length, messages_added: body.messages.length }] }) })
@@ -700,8 +716,11 @@ test("configuration page saves the Mem connection for the shipped hook", async (
   elements.space.value = "   "
   elements.agent.value = ""
   elements.capture.checked = false
+  elements.remote.checked = false
   await save()
   expect(options.serverUrl).toBe("https://mem.example.com/")
+  expect(options.recallRemote).toBe(false)
+  expect(options.captureRemote).toBe(false)
   expect(options.apiKey).toBeUndefined()
   expect(options.spaceId).toBeUndefined()
   expect(options.agentId).toBeUndefined()

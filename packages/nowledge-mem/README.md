@@ -66,9 +66,15 @@ environment Magpie starts with, as Mem's own clients do:
 A key saved in the page is kept in Magpie's local plugin configuration, not the
 system keychain, and takes precedence over the environment. Enter it directly;
 the form also accepts an existing `Bearer …` value. The page's **Configure
-connection** form also sets the Space, Agent and the recall, Context Bundle and
-capture switches; Magpie's plugin **Options** editor remains available for
-advanced settings.
+connection** form also sets the Space, Agent and the recall, Context Bundle,
+capture and **Agents using a Magpie key** switches; Magpie's plugin **Options**
+editor remains available for advanced settings.
+
+The access switch matters for real harnesses: Magpie gives each connected agent
+its own gateway key, and the gateway classifies a keyed request as `gateway-key`
+rather than `local`. With the switch off, recall and saving apply only to
+direct loopback requests without a key. Turn it on to include the agents you
+actually use. Saving conversations remains a separate opt-in.
 
 `serverUrl` must be HTTPS, or HTTP only for `localhost`, `127.0.0.1` and
 `[::1]`. Credentials, a query or a fragment in the URL are refused. Set
@@ -114,6 +120,10 @@ derived value for all of them.
   request, default 1500, range 50–5000. The host's hook deadline can end it
   earlier. Thread imports keep a separate ten-second deadline because a
   completed reply's notification is not bound to the live request.
+- `gatewayTimeoutMs` (Magpie's own option, not this package's): the whole hook
+  chain's deadline, default 1000 ms, range 100–10000. A local Mem fits the
+  default; over the network, set it to 5000–10000 so the first turn's Context
+  Bundle and search can finish.
 - `recallBackoffMs`: after a connection failure, timeout or unavailable
   response, skip Mem for this endpoint/credential/Space for this long, default
   30000, range 100–300000. A failing optional bundle backs off only itself; the
@@ -124,10 +134,14 @@ derived value for all of them.
 - `captureTools`: default **true**. Include client tool results as `tool`
   messages. Turn it off to import only what the user and the assistant wrote.
 - `captureRemote`: default **false**. With capture on, only host-classified
-  `local` requests are imported. Remote and named/shared Gateway Key requests
-  are skipped unless this is set. It does not enable recall.
+  `local` requests are imported. Remote and keyed requests are skipped unless
+  this is set. It does not enable recall.
 - `recallRemote`: default **false**. Recall and the session context similarly
   serve only `local` requests unless this is set. It does not enable capture.
+  Most harnesses behind Magpie connect with their own gateway key, which the
+  gateway classifies as `gateway-key`, not `local`; the page's **Agents using a
+  Magpie key** switch sets both this and `captureRemote` so those harnesses are
+  included.
 - `allowInsecureHttp`: default **false**. Permits plain HTTP to a server that
   is not a loopback address. Prefer HTTPS.
 
@@ -251,7 +265,7 @@ own: the offline tests replace `globalThis.fetch` to keep Cursor's token local
 The page uses only Magpie's released `magpie.options` and theme bridge. It has
 no network access, declares no reads, and saving stores configuration without
 probing the connection or writing Memory. It shows the Server, API key, Space,
-Agent, the recall, Context Bundle and capture switches, and the MCP address to
-add in Magpie's Library. It follows Magpie's language (English, Simplified and
-Traditional Chinese, Japanese, German) and theme, and preserves options it does
-not show.
+Agent, the recall, Context Bundle, capture and keyed-agent access switches, and
+the MCP address to add in Magpie's Library. It follows Magpie's language
+(English, Simplified and Traditional Chinese, Japanese, German) and theme, and
+preserves options it does not show.
