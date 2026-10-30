@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/page-agent-office",
-  "version": "0.2.4",
-  "description": "我的 Agent 在干嘛：读取本机 Claude Code、Codex、Copilot CLI、Kimi Code、DeepSeek Harness、Gemini CLI、Qwen Code、Pi、omp、Qoder、WorkBuddy、CodeBuddy、Grok Build 的会话文件，把每个会话画成真 3D / 等距 / 2D 办公室里的小人，或分组工作台。Live agent activity dashboard for magpie, with a real WebGL office and six scenes.",
+  "version": "0.4.0",
+  "description": "我的 Agent 在干嘛：读取本机 Claude Code、Codex、Copilot CLI、Kimi Code、DeepSeek Harness、Gemini CLI、Qwen Code、Pi、omp、Qoder、WorkBuddy、CodeBuddy、Grok Build 的会话文件，把每个会话画成真 3D / 等距 / 2D 办公室里的小人，或分组工作台。Live agent activity dashboard for magpie, with a real WebGL office and six scenes.；可选 notifyWebhook 把「需要你」的会话推送成企业微信机器人的一张卡片（按人路由），roster 名单给每个 agent 起名字。",
   "type": "module",
   "files": [
     "page/index.html",
@@ -21,7 +21,8 @@
     "README.md",
     "LICENSE",
     "bin",
-    "SKILL.md"
+    "SKILL.md",
+    "roster.example.json"
   ],
   "keywords": [
     "magpie",
@@ -81,7 +82,20 @@
       "showSub": true,
       "showIdle": true,
       "side": false,
-      "lang": "auto"
+      "lang": "auto",
+      "approvalAfterSec": 90,
+      "notifyWebhook": "",
+      "notifyEvents": "waiting,error,stuck,done",
+      "notifyLang": "zh",
+      "notifyCooldownMin": 15,
+      "notifyErrorMin": 5,
+      "notifyStuckMin": 10,
+      "notifyMinWorkSec": 60,
+      "notifyIncludeText": false,
+      "notifyQuietHours": "",
+      "notifyAgents": "",
+      "showName": true,
+      "rosterFile": ""
     }
   },
   "bin": {

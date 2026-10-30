@@ -100,6 +100,7 @@ bun bin/agent-office.mjs --json   # 一次性快照，适合让 Agent 在聊天�
 - `live.js` 保存在插件自己的目录，不发送到任何地方；页面 `permissions` 为空，不读 magpie 的会话 API。
 - `text:false` 同时由 host 和页面执行：标题回退到目录名，步骤只留工具名，最近对话整段清空。即使 `live.js` 是旧的，页面也不会把被关闭的文本画出来。
 - 独立 CLI 只监听 `127.0.0.1`；`--private` 与插件里的开关等价。
+- 不配 `notifyWebhook` 时，告警功能一张卡片也不发；配了且 `notifyIncludeText` 关着（默认）时，卡片只带状态与工具名——提问、回复、错误、命令一个字都不出这台电脑。
 
 ## 设置
 
@@ -111,6 +112,7 @@ bun bin/agent-office.mjs --json   # 一次性快照，适合让 Agent 在聊天�
   "quality": "medium",
   "demo": false,
   "showDone": true,
+  "showName": true,
   "hideAfter": "6h",
   "text": true,
   "agents": [],
@@ -118,7 +120,19 @@ bun bin/agent-office.mjs --json   # 一次性快照，适合让 Agent 在聊天�
   "showIdle": true,
   "side": true,
   "lang": "auto",
-  "remote": false
+  "remote": false,
+  "approvalAfterSec": 90,
+  "notifyWebhook": "",
+  "notifyEvents": "waiting,error,stuck,done",
+  "notifyLang": "zh",
+  "notifyIncludeText": false,
+  "notifyCooldownMin": 15,
+  "notifyErrorMin": 5,
+  "notifyStuckMin": 10,
+  "notifyMinWorkSec": 60,
+  "notifyQuietHours": "",
+  "notifyAgents": "",
+  "rosterFile": ""
 }
 ```
 
@@ -137,7 +151,15 @@ bun bin/agent-office.mjs --json   # 一次性快照，适合让 Agent 在聊天�
 | `lang` | `auto` 或九种语言代码 |
 | `cleared` | { 会话 key: 时间 }：被「清除」的会话，文件再动就回来 |
 | `remote` | 网关部分也记录其他电脑的请求 |
-| `approvalAfterSec` | 只有网关记录时，工具运行多久算等你批准（90） |
+| `approvalAfterSec` | 只有网关记录时，工具运行多久算等你批准（90）——页面与卡片共用此时钟 |
+| `showName` | 名牌/列表/详情/卡片显示 roster 里的人名（开） |
+| `notifyWebhook` | 企业微信群机器人 webhook；空 = 不推送 |
+| `notifyEvents` | 推哪些卡片：`waiting,error,stuck,done`（`recover` 显式开启） |
+| `notifyIncludeText` | 卡片带提问/回复/错误原文（`false`：只带状态与工具名） |
+| `notifyCooldownMin` / `notifyErrorMin` | 等待/卡住与错误的重复提醒间隔（15 / 5 分钟） |
+| `notifyStuckMin` / `notifyMinWorkSec` | 多久没动静算卡住（10 分）；一轮工作满多久才报完成（60 秒） |
+| `notifyQuietHours` / `notifyAgents` / `notifyLang` | 静音时段 / 只看这些 agent / 卡片语言 |
+| `rosterFile` | roster 文件位置（默认 `~/.config/magpie/agent-office-roster.json`） |
 
 ## 独立 CLI
 

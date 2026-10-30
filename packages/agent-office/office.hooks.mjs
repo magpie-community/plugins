@@ -20,6 +20,9 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createTracker } from "./lib/track.mjs"
 import { createScanner } from "./lib/scan.mjs"
+import { createAlerter } from "./lib/alerts.mjs"
+import { createRouter } from "./lib/notify.mjs"
+import { loadRoster } from "./lib/roster.mjs"
 import { createJumper, judgeJump } from "./lib/jump.mjs"
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -53,6 +56,46 @@ let lastJumpPromise = null
 // fail closed: until an install's options are read, or a request carries
 // them, no prompt, reply or command is written
 let options = { text: false }
+
+let alerter = null
+let router = null
+// the router's own knobs: remade when the defaults move
+let routerKey = ""
+
+// the notification side stays off until an install's options say where a
+// card goes: no webhook, nothing leaves. The alerter always stands (it is
+// pure deciding); the router owns the timers and the network — one notifier
+// per person's group bot, the default for everyone without one
+function notifySetup() {
+  if (!alerter) alerter = createAlerter()
+  // the plugin's options are one flat bag, notify-prefixed; the alerter
+  // takes its own names, so they cross here, in the one place that knows
+  // both. An approval waits on the page's own clock, that the two never
+  // disagree
+  alerter.set({
+    events: options.notifyEvents, stuckMin: options.notifyStuckMin, approvalSec: options.approvalAfterSec,
+    cooldownMin: options.notifyCooldownMin, errorMin: options.notifyErrorMin, minWorkSec: options.notifyMinWorkSec,
+    agents: options.notifyAgents, quietHours: options.notifyQuietHours,
+  })
+  const hook = String(options.notifyWebhook || "")
+  const key = JSON.stringify([hook, options.notifyLang, options.notifyIncludeText])
+  if (key !== routerKey) {
+    router?.stop()
+    routerKey = key
+    router = createRouter({ defaultWebhook: hook, lang: options.notifyLang, includeText: options.notifyIncludeText })
+  } else if (!hook && router) {
+    router.stop()
+    router = null
+  }
+}
+
+// a card that leaves is decided from the very snapshot the page draws, and
+// what it says can never stop the office
+function notifyTick(snap, now) {
+  if (!alerter || !router) return
+  const says = alerter.tick(snap.sessions, now, snap.people)
+  if (says.length) router.push(says)
+}
 
 function track(opts) {
   const o = { text: opts?.text !== false, remote: opts?.remote === true }
@@ -106,14 +149,16 @@ export function snapshot(now = Date.now()) {
       sessions.push({ ...g, source: "gateway" })
     }
   }
-  return { v: 2, written: now, text, sessions }
+  return { v: 2, written: now, text, people: loadRoster(options.rosterFile).people, sessions }
 }
 
 export function write(now = Date.now()) {
   timer = null
   checkJumpOption()
+  let snap
   let body
-  try { body = JSON.stringify(snapshot(now)) } catch { return }
+  try { snap = snapshot(now); body = JSON.stringify(snap) } catch { return }
+  try { notifyTick(snap, now) } catch {}
   // only a change is written; the time alone is no change
   const same = body.replace(/"written":\d+,/, "")
   if (same === last) return
@@ -136,6 +181,7 @@ function soon() {
 export function start(opts = {}) {
   options = { ...options, ...opts }
   if (!scanner) scanner = createScanner({ days: 2, max: 40, ...(opts.scanner || {}) })
+  notifySetup()
   if (!jumper && (opts.jumper || !process.env.MAGPIE_AGENT_OFFICE_PAGE)) {
     jumper = createJumper({ onUpdate: soon, ...(opts.jumper || {}) })
     void jumper.refreshState(Date.now(), options.preferredJumpHost || "herdr-app")
@@ -159,6 +205,7 @@ export function waitForJump() {
 export function stop() {
   if (ticking) clearInterval(ticking)
   ticking = null
+  router?.stop()
 }
 
 export async function onRequest(body, ctx) {
