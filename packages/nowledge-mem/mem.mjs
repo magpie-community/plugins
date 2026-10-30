@@ -90,7 +90,6 @@ export function resolveOptions(raw = {}, env = process.env) {
         recall: bool("recall", true),
         contextBundle: bool("contextBundle", true),
         capture: bool("capture", false),
-        gatewayKeys: bool("gatewayKeys", false),
         captureTools: bool("captureTools", true),
         maxMemories: integer("maxMemories", 5, 1, 20),
         maxBytes: integer("maxBytes", 6000, 512, 32768),

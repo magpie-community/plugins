@@ -41,8 +41,8 @@ sequenceDiagram
 Requires **Magpie 0.1.1273 or newer** and Bun. From **Magpie 0.1.2210** the
 sharing key Magpie writes into your own agents on this computer arrives as
 `magpie-key`, and recall and saving include it automatically. On an older
-Magpie every harness key is `gateway-key`, which is off unless the advanced
-`gatewayKeys` option is set. The package declares
+Magpie every harness key is `gateway-key`, which is not included: upgrade
+Magpie for keyed harnesses, or only unkeyed local requests get Mem. The package declares
 `magpie.hooks: "./nowledge-mem.hooks.mjs"`, Magpie's asynchronous Bun hook
 entry; it is not gateway middleware and has no OpenCode provider. Use **Magpie
 0.1.1531 or newer** for options saved from the plugin page to reach the hook on
@@ -134,16 +134,6 @@ derived value for all of them.
   messages. Turn it off to import only what the user and the assistant wrote.
 - `allowInsecureHttp`: default **false**. Permits plain HTTP to a server that
   is not a loopback address. Prefer HTTPS.
-- `gatewayKeys`: default **false**, advanced. Include requests Magpie marks
-  `gateway-key`: other named keys, including keys given to other people and the
-  sharing key copied to another machine. On, those requests receive the
-  recalled Memory and Context Bundle; with `capture` on, their conversations
-  are saved to your Mem. Leave it off unless every key on this gateway is your
-  own. The page does not set it. `remote` and unknown origins are never
-  included, even with this on.
-- `installLibrary`: default **true**. Install the `Nowledge Mem` MCP entry and
-  the `nowledge-mem` skill into Magpie's Library, given to no agent. Set it to
-  false to stop the installer from re-adding them.
 - `port`: the loopback port of the page's connection test, default 3479. Change
   it only when another program holds that port; the page reads the same value.
 
@@ -211,34 +201,17 @@ not sent twice. A failed import fails open and is not retried blindly.
 `capture` is the only switch that exports conversation content. Recall works
 without it.
 
-## Library: MCP server and skill
+## Tools: Mem's own MCP server
 
-Harness plugins bundle tool sets and skills because each one owns a harness.
-This gateway plugin installs them into Magpie's Library instead, because Magpie
-already has the place where an MCP server and a skill are chosen per agent.
+The package adds no Library entry, no Magpie tool hook, no skill and no
+system-prompt edit. To give agents Mem's tools, add Mem's official MCP server
+once in Library › MCP, with `<serverUrl>/mcp` (or `NMEM_API_URL` when Server
+URL is empty) and the connection's key. With the
+[MCP hub](https://usemagpie.ai/docs/mcp-hub) on, each agent still gets a single
+`magpie` entry, and the tools are Mem's own, not a second surface.
 
-When the plugin host starts, it adds two Library items, given to no agent:
-
-- **MCP server** `Nowledge Mem` at `<serverUrl>/mcp`, carrying the connection's
-  key. Its tools are Nowledge Mem's official ones, not a second tool surface.
-- **Skill** `nowledge-mem`, a short guide to using those tools.
-
-Nothing is injected until you choose agents. Open Library › MCP and Library ›
-Skills, tick the agents that should receive Mem, and Magpie writes the server
-and skill into them. With the [MCP hub](https://usemagpie.ai/docs/mcp-hub) on,
-each agent still gets a single `magpie` entry.
-
-The installer merges into the same `library.json` the Library page reads. Other
-entries and the agents already chosen are kept; a second start updates the URL
-and key instead of duplicating. A skill folder that already has edits is left
-as it is. If you remove an item, the next plugin host start adds it again;
-`installLibrary: false` stops that. Changing the page's URL or key and saving
-reloads the host and updates the MCP entry; to apply it to agents that already
-received the server, re-open Library › MCP or run `magpie library sync`.
-
-The address itself lives in Library › MCP. The package ships no Magpie tool hook, no slash commands and no system-prompt edit;
-the skill is the only prompt-shaped content, and it is off until you give it to
-an agent. If you want a custom system prompt for Memory, Magpie's
+The page shows the effective Server URL in its summary; it does not add the
+Library entry itself. If you want a custom system prompt for Memory, Magpie's
 [system-prompt](../system-prompt) middleware does that on its own.
 
 ## Validation
@@ -273,10 +246,9 @@ own: the offline tests replace `globalThis.fetch` to keep Cursor's token local
 The page uses only Magpie's released `magpie.options` and theme bridge. It
 declares no reads and saving stores configuration without probing the
 connection or writing Memory. It shows the Server, API key, Space, Agent, the
-recall, Context Bundle and capture switches, and the MCP server and skill it
-installs. Its **What is sent** section says the scope: direct local requests
-and `magpie-key` from this computer; other gateway keys and remote requests are
-never included. It follows Magpie's language (English, Simplified and
+recall, Context Bundle and capture switches. Its **What is sent** section says
+the scope: direct local requests and `magpie-key` from this computer; other
+gateway keys and remote requests are never included. It follows Magpie's language (English, Simplified and
 Traditional Chinese, Japanese, German) and theme, and preserves options it does
 not show.
 

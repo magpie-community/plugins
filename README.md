@@ -116,7 +116,7 @@ These add a page to magpie's window, in the app and in `magpie web`, under Plugi
 |---|---|---|
 | [usage](packages/usage) | Usage glance: calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them | `usage:summary` |
 | [powercontext](packages/powercontext) | Connection settings for an independently deployed PowerContext service | None |
-| [nowledge-mem](packages/nowledge-mem) | Connection settings, recall and capture switches, a real connection test, and the MCP server and skill it installs into the Library, given to no agent until chosen | None |
+| [nowledge-mem](packages/nowledge-mem) | Connection settings, recall and capture switches, a real connection test, and the scope of what is sent | None |
 | [agent-office](packages/agent-office) | What are my agents doing: live sessions as workers in a voxel office (3D/2D) or a list, with status, current step and resume commands | no `magpie.read`; its host part reads the local session files of Claude Code, Codex, dsh, Gemini CLI, Qwen Code, Pi, omp, Qoder, WorkBuddy and CodeBuddy, including prompts, replies and tool commands (`text:false` keeps statuses and tool names only) |
 | [chat](packages/chat) | Chat with magpie's models, your MCP servers, instructions and skills, by Magic_zero ([Magiczerowxy](https://github.com/Magiczerowxy)). Has a host part: a local service the page goes to | none (its service calls magpie's gateway) |
 
@@ -164,15 +164,12 @@ Nowledge Mem needs no deployment of its own: the hook takes the endpoint and
 key from the plugin page, or from `NMEM_API_URL` and `NMEM_API_KEY` in Magpie's
 environment, and falls back to a local Mem at `http://127.0.0.1:14242`. Recall
 and the Context Bundle are on; importing conversations is off until enabled.
-The plugin installs Mem's official MCP server and a short skill into Magpie's
-Library, given to no agent; choose agents in Library › MCP and Library ›
-Skills. With the [MCP hub](https://usemagpie.ai/docs/mcp-hub) on, each agent
-still gets a single `magpie` entry. Recall and saving include direct local
-requests and the sharing key Magpie writes into your own agents on this
-computer (`magpie-key`, Magpie 0.1.2210+); other gateway keys and remote
-requests stay out. **Test connection** checks the saved connection from a
-loopback helper; save changes first. Harness prompts and commands stay with the
-harnesses. See the
+Tools are Mem's own MCP server, added once in Library › MCP; the package adds
+no Library entry. Recall and saving include direct local requests and the
+sharing key Magpie writes into your own agents on this computer (`magpie-key`,
+Magpie 0.1.2210+); other gateway keys and remote requests stay out. **Test
+connection** checks the saved connection from a loopback helper; save changes
+first. Harness prompts and commands stay with the harnesses. See the
 [plugin README](packages/nowledge-mem).
 
 The asynchronous hook API shipped in Magpie 0.1.1273; see the

@@ -4,7 +4,6 @@
 // service checks the saved connection with the plugin's own options. No URL,
 // key or Space comes from the page, so a page cannot aim it at another host.
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { installLibrary } from "./library.mjs";
 import { testConnection, textsFor } from "./probe.mjs";
 
 const DEFAULT_PORT = 3479;
@@ -79,19 +78,17 @@ function page() {
 </script>`;
 }
 
-function hostOK(req) {
-    const port = running?.port;
+function hostOK(req, port = running?.port) {
     if (!port)
         return false;
     const host = String(req.headers.get("host") ?? "").toLowerCase();
     return host === `127.0.0.1:${port}` || host === `localhost:${port}`;
 }
 
-function originOK(req) {
+function originOK(req, port = running?.port) {
     const origin = req.headers.get("origin");
     if (origin === null || origin === "null")
         return true;
-    const port = running?.port;
     return origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
 }
 
@@ -134,16 +131,8 @@ async function handle(req) {
 
 export default {
     id: "magpie-nowledge-mem",
-    async server(input, options) {
+    async server(_input, options) {
         pluginOptions = options ?? {};
-        try {
-            const installed = installLibrary({ directory: input?.directory, options: pluginOptions });
-            if (!installed.skipped)
-                console.log(`[nowledge-mem] Library: ${installed.mcp} and ${installed.skill}, given to no agent yet`);
-        }
-        catch (error) {
-            console.error(`[nowledge-mem] Library install failed: ${error?.message ?? error}`);
-        }
         if (running)
             return {};
         const port = Number(pluginOptions.port ?? DEFAULT_PORT);
@@ -161,3 +150,5 @@ export default {
         return {};
     },
 };
+
+export const _internal = { hostOK, originOK };

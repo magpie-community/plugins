@@ -13,7 +13,7 @@
 //    "spaceId": "", "agentId": "", "hostAgentId": "", "recall": true,
 //    "contextBundle": true, "maxMemories": 5, "maxBytes": 6000,
 //    "requestTimeoutMs": 900, "recallBackoffMs": 30000, "capture": false,
-//    "captureTools": true, "gatewayKeys": false, "allowInsecureHttp": false}
+//    "captureTools": true, "allowInsecureHttp": false}
 //
 // A turn keeps the block it was given for the rest of the conversation, so what
 // the agent sends stays the same from one request to the next and the
@@ -63,8 +63,7 @@ export async function onRequest(body, ctx) {
 }
 async function run(body, ctx) {
     const o = resolveOptions(ctx.options);
-    const own = ctx.origin === "local" || ctx.origin === "magpie-key" ||
-        (ctx.origin === "gateway-key" && o.gatewayKeys);
+    const own = ctx.origin === "local" || ctx.origin === "magpie-key";
     const recall = o.recall && own;
     const capture = o.capture && own;
     if (!recall && !capture) {

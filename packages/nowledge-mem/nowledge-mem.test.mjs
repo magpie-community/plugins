@@ -70,13 +70,12 @@ test("the shipped entry is a gateway hook with a page and its connection test", 
   expect(pkg.magpie.gateway).toBeUndefined()
   expect(pkg.magpie.hooks).toBe("./nowledge-mem.hooks.mjs")
   expect(pkg.magpie.permissions ?? []).toEqual([])
-  for (const file of ["service.mjs", "probe.mjs", "library.mjs", "mem.mjs", "conversation.mjs", "page"])
+  for (const file of ["service.mjs", "probe.mjs", "mem.mjs", "conversation.mjs", "page"])
     expect(pkg.files).toContain(file)
   expect(pkg.files).toContain(pkg.magpie.hooks.slice(2))
   expect(pkg.magpie.page.file).toBe("page/settings.html")
   expect(pkg.magpie.page.service).toEqual({ port: 3479, option: "port" })
   expect(pkg.magpie.options.port).toBe(3479)
-  expect(pkg.magpie.options.installLibrary).toBe(true)
   const entry = await import(pkg.magpie.hooks)
   expect(entry.onRequest).toBe(onRequest)
   expect(entry.onResponse).toBe(onResponse)
@@ -448,7 +447,7 @@ test("capture is off when the option is absent", async () => {
 
 test("the Magpie sharing key from this computer is included; other gateway keys are not", async () => {
   mock()
-  const [, own] = capturing("chat", { origin: "magpie-key", options: { gatewayKeys: false } })
+  const [, own] = capturing("chat", { origin: "magpie-key" })
   await onRequest(structuredClone(chat), own)
   expect(of("memories/search")).toHaveLength(1)
   await onResponse(reply, { ...own, success: true })
@@ -457,24 +456,18 @@ test("the Magpie sharing key from this computer is included; other gateway keys 
   reset()
   calls.length = 0
   mock()
-  const [, other] = capturing("chat", { origin: "gateway-key", options: { gatewayKeys: false } })
+  const [, other] = capturing("chat", { origin: "gateway-key" })
   await onRequest(structuredClone(chat), other)
-  expect(of("memories/search")).toHaveLength(0)
   await onResponse(reply, { ...other, success: true })
+  expect(of("memories/search")).toHaveLength(0)
   expect(of("threads/import")).toHaveLength(0)
-
-  // The advanced option can include other gateway keys; remote/unknown stay out.
-  mock()
-  const [, advanced] = capturing("chat", { origin: "gateway-key", options: { gatewayKeys: true } })
-  await onRequest(structuredClone(chat), advanced)
-  expect(of("memories/search")).toHaveLength(1)
 })
 
-test("remote and unknown origins stay out even with the advanced key option on", async () => {
+test("remote and unknown origins stay out", async () => {
   for (const origin of ["remote", undefined]) {
     mock()
     calls.length = 0
-    const [, context] = capturing("chat", { origin, options: { gatewayKeys: true } })
+    const [, context] = capturing("chat", { origin })
     await onRequest(structuredClone(chat), context)
     await onResponse(reply, { ...context, success: true })
     expect(of("memories/search")).toHaveLength(0)
