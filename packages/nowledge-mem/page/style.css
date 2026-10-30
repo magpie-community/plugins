@@ -44,15 +44,7 @@ dt { color: var(--muted); font-size: 11.5px; }
 dd { margin: 0; overflow-wrap: anywhere; font-size: 12px; }
 #summary-url { font-family: var(--magpie-code, ui-monospace, monospace); font-size: 11.5px; }
 .capture-status { display: flex; align-items: center; gap: 8px; }
-.test-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
-.test-row small { color: var(--magpie-muted, #6b7280); font-size: 11.5px; line-height: 1.4; }
 .tools-panel { padding-top: 4px; }
-.mcp-address { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
-.mcp-address code {
-  padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--card);
-  font-family: var(--magpie-code, ui-monospace, monospace); font-size: 11.5px; overflow-wrap: anywhere;
-}
-#mcp-feedback { margin-top: 6px; font-size: 11.5px; }
 .data-notice { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 14px; }
 .data-notice h2 { margin-bottom: 4px; }
 .data-notice p { max-width: 78ch; }

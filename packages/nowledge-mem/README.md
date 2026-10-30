@@ -7,9 +7,9 @@ that fits it, and completed conversations can flow back into Mem. No harness
 needs its own Nowledge Mem plugin, skill or MCP configuration for that.
 
 Agent-callable Memory tools are a separate surface and stay where Magpie
-already provides them: add Mem's own MCP server once in Magpie's
-[Library › MCP](https://usemagpie.ai/docs/mcp-hub), and the MCP hub gives every
-agent the same tools. This plugin does not ship a second tool surface.
+already provides them: the plugin installs Mem's own MCP server and a short
+skill into Magpie's [Library](https://usemagpie.ai/docs/mcp-hub), given to no
+agent; choose the agents there. This keeps one tool surface, Mem's own.
 
 ```mermaid
 sequenceDiagram
@@ -67,14 +67,8 @@ A key saved in the page is kept in Magpie's local plugin configuration, not the
 system keychain, and takes precedence over the environment. Enter it directly;
 the form also accepts an existing `Bearer …` value. The page's **Configure
 connection** form also sets the Space, Agent and the recall, Context Bundle,
-capture and **Agents using a Magpie key** switches; Magpie's plugin **Options**
-editor remains available for advanced settings.
-
-The access switch matters for real harnesses: Magpie gives each connected agent
-its own gateway key, and the gateway classifies a keyed request as `gateway-key`
-rather than `local`. With the switch off, recall and saving apply only to
-direct loopback requests without a key. Turn it on to include the agents you
-actually use. Saving conversations remains a separate opt-in.
+capture switches; Magpie's plugin **Options** editor remains available for
+advanced settings. Saving conversations remains a separate opt-in.
 
 `serverUrl` must be HTTPS, or HTTP only for `localhost`, `127.0.0.1` and
 `[::1]`. Credentials, a query or a fragment in the URL are refused. Set
@@ -98,7 +92,7 @@ derived value for all of them.
 - `serverUrl`: Mem base URL. If unset, `NMEM_API_URL`, then
   `http://127.0.0.1:14242`.
 - `apiKey`: Bearer API key. If unset, the variable named in `apiKeyEnv`.
-- `apiKeyEnv`: environment fallback name, default `NMEM_API_KEY`.
+- `apiKeyEnv`: environment fallback name, default `NMEM_API_KEY`; only an `NMEM_*` name is accepted. The environment key goes to the endpoint the hook resolves: page `serverUrl` first, then `NMEM_API_URL`. Keep the two paired; a page URL with an unrelated `NMEM_*` key sends that key there.
 - `spaceId`: Mem Space for recall, context and imports. Empty means the default
   Space.
 - `agentId`: optional portable Mem agent profile. It selects a profile for the
@@ -117,7 +111,8 @@ derived value for all of them.
   512–32768. On the first turn the session context takes up to 45% of it, and
   the rest stays available for Memory.
 - `requestTimeoutMs`: deadline for each search, bundle or Working Memory
-  request, default 1500, range 50–5000. The host's hook deadline can end it
+  request, default 900, range 50–5000. It fits inside Magpie's default 1000 ms
+  hook deadline. The host's hook deadline can end it
   earlier. Thread imports keep a separate ten-second deadline because a
   completed reply's notification is not bound to the live request.
 - `gatewayTimeoutMs` (Magpie's own option, not this package's): the whole hook
@@ -133,17 +128,18 @@ derived value for all of them.
   Set `"capture": true` explicitly to opt in.
 - `captureTools`: default **true**. Include client tool results as `tool`
   messages. Turn it off to import only what the user and the assistant wrote.
-- `captureRemote`: default **false**. With capture on, only host-classified
-  `local` requests are imported. Remote and keyed requests are skipped unless
-  this is set. It does not enable recall.
-- `recallRemote`: default **false**. Recall and the session context similarly
-  serve only `local` requests unless this is set. It does not enable capture.
-  Most harnesses behind Magpie connect with their own gateway key, which the
-  gateway classifies as `gateway-key`, not `local`; the page's **Agents using a
-  Magpie key** switch sets both this and `captureRemote` so those harnesses are
-  included.
 - `allowInsecureHttp`: default **false**. Permits plain HTTP to a server that
   is not a loopback address. Prefer HTTPS.
+- `gatewayKeys`: default **false**. Include requests Magpie marks
+  `gateway-key`: every request carrying a gateway key, including keys given to
+  other people (shared, LAN, Tailscale). On, those requests receive the
+  recalled Memory and Context Bundle; with `capture` on, their conversations
+  are saved to your Mem. Off, recall and saving serve only direct local
+  requests without a key. `remote` and unknown origins are never included,
+  even with this on.
+- `installLibrary`: default **true**. Install the `Nowledge Mem` MCP entry and
+  the `nowledge-mem` skill into Magpie's Library, given to no agent. Set it to
+  false to stop the installer from re-adding them.
 - `port`: the loopback port of the page's connection test, default 3479. Change
   it only when another program holds that port; the page reads the same value.
 
@@ -208,32 +204,38 @@ not a guarantee. Each Thread import is one bounded request; conversations over
 512 KiB are skipped, and an identical replay of the last successful import is
 not sent twice. A failed import fails open and is not retried blindly.
 
-`capture` and `captureRemote` are the only switches that export conversation
-content. Recall works without them.
+`capture` is the only switch that exports conversation content. Recall works
+without it.
 
-## Memory tools belong to Magpie's MCP hub
+## Library: MCP server and skill
 
-Harness plugins bundle tool sets, skills and commands because each one owns a
-harness and cannot rely on anything else. Magpie is different: it already has
-one MCP server for tools, and Nowledge Mem already ships a complete MCP server
-of its own. Re-creating that tool surface in this plugin would mean two sources
-of truth, two update cycles and a second thing to configure.
+Harness plugins bundle tool sets and skills because each one owns a harness.
+This gateway plugin installs them into Magpie's Library instead, because Magpie
+already has the place where an MCP server and a skill are chosen per agent.
 
-The integration therefore stays split by responsibility:
+When the plugin host starts, it adds two Library items, given to no agent:
 
-- **This plugin** provides what only the gateway can: automatic recall,
-  session context, per-harness provenance and conversation capture for every
-  harness, with no harness cooperation.
-- **Magpie's Library › MCP** provides the tools: add
-  `http://127.0.0.1:14242/mcp` (or the remote `/mcp` with its key) once. With
-  the [MCP hub](https://usemagpie.ai/docs/mcp-hub) on, each agent gets a single
-  `magpie` entry and every Library server's tools, including Mem's.
+- **MCP server** `Nowledge Mem` at `<serverUrl>/mcp`, carrying the connection's
+  key. Its tools are Nowledge Mem's official ones, not a second tool surface.
+- **Skill** `nowledge-mem`, a short guide to using those tools.
 
-The plugin page shows the MCP address derived from `serverUrl` and copies it.
-No tool definitions, skills or slash commands are installed by this package,
-and it never edits a harness's prompts. If you want a custom system prompt for
-Memory, Magpie's [system-prompt](../system-prompt) middleware does that
-on its own.
+Nothing is injected until you choose agents. Open Library › MCP and Library ›
+Skills, tick the agents that should receive Mem, and Magpie writes the server
+and skill into them. With the [MCP hub](https://usemagpie.ai/docs/mcp-hub) on,
+each agent still gets a single `magpie` entry.
+
+The installer merges into the same `library.json` the Library page reads. Other
+entries and the agents already chosen are kept; a second start updates the URL
+and key instead of duplicating. A skill folder that already has edits is left
+as it is. If you remove an item, the next plugin host start adds it again;
+`installLibrary: false` stops that. Changing the page's URL or key and saving
+reloads the host and updates the MCP entry; to apply it to agents that already
+received the server, re-open Library › MCP or run `magpie library sync`.
+
+The address itself lives in Library › MCP. The package ships no Magpie tool hook, no slash commands and no system-prompt edit;
+the skill is the only prompt-shaped content, and it is off until you give it to
+an agent. If you want a custom system prompt for Memory, Magpie's
+[system-prompt](../system-prompt) middleware does that on its own.
 
 ## Validation
 
@@ -268,24 +270,29 @@ The page uses only Magpie's released `magpie.options` and theme bridge. It
 declares no reads and saving stores configuration without probing the
 connection or writing Memory. It shows the Server, API key, Space, Agent, the
 recall, Context Bundle, capture and keyed-agent access switches, and the MCP
-address to add in Magpie's Library. It follows Magpie's language (English,
-Simplified and Traditional Chinese, Japanese, German) and theme, and preserves
-options it does not show.
+server and skill it installs. It follows Magpie's language (English, Simplified and
+Traditional Chinese, Japanese, German) and theme, and preserves options it does
+not show.
 
 **Test connection** is a real check, not a saved flag. Magpie's page sandbox
 has `connect-src 'none'`, so the page cannot call Mem itself; the package's
 small host part serves a loopback page on `127.0.0.1:<port>` and the frame
-navigates to it. The **Test connection** button on the main page tests the
-saved options, so save changes first. The page hands the saved values (URL,
-key, Space) to the test page in `window.name`; it makes one public health
-request and one authenticated Working Memory request, writes nothing, and shows
-reachability, the key and the Space with a fixed code and milliseconds.
-**Back to settings** returns to the page; the test saves nothing and changes no
-form values. The key is not put in a URL or a log, the page itself
-still opens no network connection, and the test never uses an environment key
-(Magpie's environment is not visible to the page). The helper is on
-`127.0.0.1` only, needs the page's per-process token for its JSON endpoint, and
-accepts only a Magpie plugin page as the way back.
+navigates to it. The **Test connection** button tests the saved options, so
+save changes first. The page passes only the way back and the language in
+`window.name`; the test page asks for a click, then the service reads the saved
+plugin options itself and makes one public health request and one authenticated
+Working Memory request. No URL, key or Space travels through the page. It
+writes nothing and shows reachability, the key and the Space with a fixed code
+and milliseconds. **Back to settings** returns to the page; the test saves
+nothing and changes no form values.
+
+The helper binds `127.0.0.1`, answers only when `Host` is `127.0.0.1:<port>` or
+`localhost:<port>`, and needs the page's per-process token. Its JSON endpoint
+accepts `Origin: null` from the sandboxed page and nothing else, and returns no
+`access-control-allow-origin: *`; `POST` and the page's `fetch` are therefore
+closed to other sites. The back link is accepted only for a loopback
+`/_magpie/plugin/` page. Because the `Host` must be loopback, the test works in
+the desktop app, not through a remote `magpie web` proxy.
 
 The test needs the plugin host, which the gateway hook already starts; a
 page-only install of an older Magpie version shows the test page failing to

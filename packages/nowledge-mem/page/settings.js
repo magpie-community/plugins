@@ -23,17 +23,6 @@ function summary() {
  capture.checked = pendingCapture ?? savedOptions.capture === true;
  $("capture-state").textContent = savedOptions.capture === true ? t("on") : t("off");
  capture.title = t("captureHelp");
- $("mcp-url").textContent = mcpAddress();
-}
-// The Mem MCP server is added to Magpie's Library once; the MCP hub then gives
-// every agent its tools. This page only shows the address.
-function mcpAddress() {
- const base = savedOptions?.serverUrl || "http://127.0.0.1:14242";
- try {
-  const url = new URL(base);
-  url.pathname = url.pathname.replace(/\/$/, "") + "/mcp";
-  return url.href;
- } catch { return "http://127.0.0.1:14242/mcp" }
 }
 function validUrl(raw) {
  let url;
@@ -60,7 +49,7 @@ function fill(options) {
  $("recall").checked = options.recall !== false;
  $("context").checked = options.contextBundle !== false;
  $("capture").checked = options.capture === true;
- $("remote").checked = options.recallRemote === true || options.captureRemote === true;
+ $("gateway-keys").checked = options.gatewayKeys === true;
  paintSecret();
 }
 function paintSecret() {
@@ -87,14 +76,6 @@ function paint() {
  document.querySelectorAll("[data-message]").forEach((el) => { el.textContent = t(el.dataset.message); });
  document.querySelectorAll("[data-t]").forEach((el) => { el.textContent = t(el.dataset.t); });
 }
-$("copy-mcp").onclick = () => {
- const selection = window.getSelection(), range = document.createRange();
- range.selectNodeContents($("mcp-url")); selection.removeAllRanges(); selection.addRange(range);
- let copied = false;
- try { copied = document.execCommand("copy"); } catch { /* Keep the address selected for manual copying. */ }
- if (copied) selection.removeAllRanges();
- message("mcp-feedback", copied ? "copied" : "copyFallback");
-};
 magpie.ready.then(async () => {
  paint();
  magpie.onTheme(paint);
@@ -119,7 +100,7 @@ const save = async (event) => {
  try {
   const previous = await magpie.options.get();
   // Read again before merging to preserve options not exposed by this form.
-  const next = {...previous, serverUrl: url.href, recall: $("recall").checked, contextBundle: $("context").checked, capture: $("capture").checked, recallRemote: $("remote").checked, captureRemote: $("remote").checked};
+  const next = {...previous, serverUrl: url.href, recall: $("recall").checked, contextBundle: $("context").checked, capture: $("capture").checked, gatewayKeys: $("gateway-keys").checked};
   if (space) next.spaceId = space;
   else delete next.spaceId;
   if (agent) next.agentId = agent;
@@ -138,8 +119,7 @@ $("test-saved").onclick = () => {
  if (!savedOptions) return;
  const url = validUrl(savedOptions.serverUrl || "http://127.0.0.1:14242");
  if (!url) { message("configured", "invalidUrl", true); return }
- const key = String(savedOptions.apiKey || "").replace(/^Bearer\s+/i, "");
- window.name = JSON.stringify({ serverUrl: url.href, apiKey: key, spaceId: savedOptions.spaceId || "", lang: language, returnTo: location.href.split("?")[0] });
+ window.name = JSON.stringify({ returnTo: location.href.split("?")[0], lang: language });
  location.assign(testService() + "/test");
 };
 

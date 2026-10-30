@@ -12,9 +12,8 @@
 //   {"serverUrl": "http://127.0.0.1:14242", "apiKey": "nmem_…", "apiKeyEnv": "NMEM_API_KEY",
 //    "spaceId": "", "agentId": "", "hostAgentId": "", "recall": true,
 //    "contextBundle": true, "maxMemories": 5, "maxBytes": 6000,
-//    "requestTimeoutMs": 1500, "recallBackoffMs": 30000, "capture": false,
-//    "captureTools": true, "captureRemote": false, "recallRemote": false,
-//    "allowInsecureHttp": false}
+//    "requestTimeoutMs": 900, "recallBackoffMs": 30000, "capture": false,
+//    "captureTools": true, "gatewayKeys": false, "allowInsecureHttp": false}
 //
 // A turn keeps the block it was given for the rest of the conversation, so what
 // the agent sends stays the same from one request to the next and the
@@ -64,9 +63,10 @@ export async function onRequest(body, ctx) {
 }
 async function run(body, ctx) {
     const o = resolveOptions(ctx.options);
-    const local = ctx.origin === "local";
-    const recall = o.recall && (local || o.recallRemote);
-    const capture = o.capture && (local || o.captureRemote);
+    const keyed = ctx.origin === "gateway-key";
+    const own = ctx.origin === "local" || (keyed && o.gatewayKeys);
+    const recall = o.recall && own;
+    const capture = o.capture && own;
     if (!recall && !capture) {
         ctx.report?.("skipped");
         return;
@@ -120,7 +120,7 @@ async function run(body, ctx) {
         return changed ? body : undefined;
     }
     const send = client(o);
-    const first = all.filter((t) => t.role === "user").length === 1;
+    const first = !all.some((t) => t.role === "assistant");
     const [found, contextInfo] = await Promise.all([
         search(send, o, query, ctx.signal),
         first && o.contextBundle ? context(send, o, ctx.signal, hostAgentId) : null,

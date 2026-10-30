@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { testConnection, validReturn } from "./probe.mjs"
+import { testConnection } from "./probe.mjs"
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 const fake = (routes) => async (url) => {
@@ -41,13 +41,4 @@ test("the connection test refuses an invalid endpoint", async () => {
   const result = await testConnection({ serverUrl: "ftp://mem.example.com" }, fake({}))
   expect(result.ok).toBe(false)
   expect(result.code).toBe("invalid")
-})
-
-test("only a Magpie plugin page can be the way back", () => {
-  const host = "mem.test:3479"
-  expect(validReturn("http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", host)).toBe(true)
-  expect(validReturn("https://mem.test/_magpie/plugin/t/page/settings.html", host)).toBe(true)
-  expect(validReturn("https://evil.test/_magpie/plugin/t/page/settings.html", host)).toBe(false)
-  expect(validReturn("https://mem.test/other/page.html", host)).toBe(false)
-  expect(validReturn("javascript:alert(1)", host)).toBe(false)
 })

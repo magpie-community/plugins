@@ -1,17 +1,18 @@
 // The connection test's loopback service. A Magpie page runs with
-// connect-src 'none', so the settings page cannot fetch Mem. The page hands
-// its form values to this service by navigating to /test with them in
-// window.name; the service makes the two requests and shows the result, with
-// a link back to the settings page. It is only a test: it writes nothing.
+// connect-src 'none', so the settings page cannot fetch Mem. The page's Test
+// button navigates the frame here; the test page asks for a click, then this
+// service checks the saved connection with the plugin's own options. No URL,
+// key or Space comes from the page, so a page cannot aim it at another host.
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { testConnection, textsFor, validReturn } from "./probe.mjs";
+import { installLibrary } from "./library.mjs";
+import { testConnection, textsFor } from "./probe.mjs";
 
 const DEFAULT_PORT = 3479;
 const TOKEN = randomBytes(32).toString("hex");
 const TOKEN_HEADER = "x-nmem-token";
 let running;
+let pluginOptions = {};
 
-// The service page's own copy, in every language the settings page speaks.
 const messages = {
     en: textsFor("en"),
     zh: textsFor("zh"),
@@ -30,50 +31,78 @@ function page() {
   :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
   body { margin: 0; padding: 28px; color: #1d1d1f; background: #fff; }
   h1 { margin: 0 0 10px; font-size: 17px; }
-  p { margin: 0 0 18px; font-size: 14px; line-height: 1.5; }
-  a { font-size: 13px; color: #0a6cff; }
+  p { margin: 0 0 14px; font-size: 14px; line-height: 1.5; }
+  button { font: inherit; font-size: 13px; padding: 5px 12px; margin: 0 0 18px; }
+  a { display: block; font-size: 13px; color: #0a6cff; }
   @media (prefers-color-scheme: dark) { body { color: #f5f5f7; background: #1c1c1e; } a { color: #6ea8ff; } }
 </style>
 <h1>Nowledge Mem</h1>
-<p id="state">Testing the connection…</p>
+<p id="state"></p>
+<button id="run" type="button" hidden></button>
 <a id="back" hidden></a>
 <script>
-(async () => {
+(() => {
   const all = ${JSON.stringify(messages)};
-  const raw = window.name;
-  window.name = "";
   let cfg = {};
-  try { cfg = JSON.parse(raw || "{}"); } catch {}
+  try { cfg = JSON.parse(window.name || "{}"); } catch {}
+  window.name = "";
   const t = all[cfg.lang] || all.en;
   const state = document.getElementById("state");
-  state.textContent = t.testing;
-  if (!cfg.returnTo) { state.textContent = t.noReturn; return; }
-  try {
-    const r = await fetch(new URL("api/test", location.href), {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-nmem-token": document.querySelector('meta[name="nm-token"]').content },
-      body: JSON.stringify({ serverUrl: cfg.serverUrl, apiKey: cfg.apiKey, spaceId: cfg.spaceId, returnTo: cfg.returnTo }),
-    });
-    const d = await r.json();
-    if (d.returnTo) {
-      const back = document.getElementById("back");
-      back.href = d.returnTo;
-      back.textContent = t.back;
-      back.hidden = false;
-    }
-    state.textContent = d.ok ? t.connected + " · " + d.ms + " ms" : t.failed + " · " + (t[d.code] || d.code || t.empty);
-  } catch {
-    state.textContent = t.noService;
+  const run = document.getElementById("run");
+  const back = document.getElementById("back");
+  if (typeof cfg.returnTo === "string" && /^https?:\\/\\/(127\\.0\\.0\\.1|localhost):\\d+\\/_magpie\\/plugin\\//u.test(cfg.returnTo)) {
+    back.href = cfg.returnTo;
+    back.textContent = t.back;
+    back.hidden = false;
+  } else {
+    state.textContent = t.noReturn;
   }
+  run.textContent = t.run;
+  run.hidden = false;
+  run.addEventListener("click", async () => {
+    run.disabled = true;
+    state.textContent = t.testing;
+    try {
+      const r = await fetch(new URL("api/test", location.href), {
+        method: "POST",
+        headers: { "x-nmem-token": document.querySelector('meta[name="nm-token"]').content },
+      });
+      const d = await r.json();
+      state.textContent = d.ok ? t.connected + " · " + d.ms + " ms" : t.failed + " · " + (t[d.code] || d.code || t.empty);
+    } catch {
+      state.textContent = t.noService;
+    } finally {
+      run.disabled = false;
+    }
+  });
 })();
 </script>`;
 }
 
-function cors() {
+function hostOK(req) {
+    const port = running?.port;
+    if (!port)
+        return false;
+    const host = String(req.headers.get("host") ?? "").toLowerCase();
+    return host === `127.0.0.1:${port}` || host === `localhost:${port}`;
+}
+
+function originOK(req) {
+    const origin = req.headers.get("origin");
+    if (origin === null || origin === "null")
+        return true;
+    const port = running?.port;
+    return origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
+}
+
+function cors(req) {
+    if (req.headers.get("origin") !== "null")
+        return {};
     return {
-        "access-control-allow-origin": "*",
-        "access-control-allow-headers": `content-type, ${TOKEN_HEADER}`,
+        "access-control-allow-origin": "null",
+        "access-control-allow-headers": TOKEN_HEADER,
         "access-control-allow-methods": "POST, OPTIONS",
+        vary: "Origin",
     };
 }
 
@@ -84,33 +113,42 @@ function tokenOK(req) {
 }
 
 async function handle(req) {
+    if (!hostOK(req))
+        return new Response("Forbidden", { status: 403 });
     const url = new URL(req.url);
-    if (req.method === "OPTIONS")
-        return new Response(null, { status: 204, headers: cors() });
+    if (req.method === "OPTIONS") {
+        if (!originOK(req))
+            return new Response("Forbidden", { status: 403 });
+        return new Response(null, { status: 204, headers: cors(req) });
+    }
     if (url.pathname === "/test" && req.method === "GET")
         return new Response(page(), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" } });
     if (url.pathname === "/api/test" && req.method === "POST") {
-        if (!tokenOK(req))
-            return Response.json({ error: "forbidden" }, { status: 403, headers: cors() });
-        const body = await req.json().catch(() => null);
-        if (!body || typeof body !== "object")
-            return Response.json({ error: "invalid" }, { status: 400, headers: cors() });
-        if (!validReturn(body.returnTo, req.headers.get("host") ?? ""))
-            return Response.json({ error: "invalid" }, { status: 400, headers: cors() });
-        const result = await testConnection({ serverUrl: body.serverUrl, apiKey: body.apiKey, spaceId: body.spaceId });
-        return Response.json({ ...result, returnTo: body.returnTo }, { headers: cors() });
+        if (!originOK(req) || !tokenOK(req))
+            return new Response("Forbidden", { status: 403 });
+        const result = await testConnection(pluginOptions);
+        return Response.json(result, { headers: cors(req) });
     }
     return new Response("Not found", { status: 404 });
 }
 
 export default {
     id: "magpie-nowledge-mem",
-    async server(_input, options) {
+    async server(input, options) {
+        pluginOptions = options ?? {};
+        try {
+            const installed = installLibrary({ directory: input?.directory, options: pluginOptions });
+            if (!installed.skipped)
+                console.log(`[nowledge-mem] Library: ${installed.mcp} and ${installed.skill}, given to no agent yet`);
+        }
+        catch (error) {
+            console.error(`[nowledge-mem] Library install failed: ${error?.message ?? error}`);
+        }
         if (running)
             return {};
-        const port = Number(options?.port ?? DEFAULT_PORT);
+        const port = Number(pluginOptions.port ?? DEFAULT_PORT);
         if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-            console.error(`[nowledge-mem] the connection test needs a port, got ${options?.port}`);
+            console.error(`[nowledge-mem] the connection test needs a port, got ${pluginOptions.port}`);
             return {};
         }
         try {

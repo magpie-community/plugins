@@ -77,6 +77,8 @@ export function resolveOptions(raw = {}, env = process.env) {
         throw new MemFailure("invalid");
     server.pathname = server.pathname.replace(/\/$/, "") + "/";
     const apiKeyEnv = text(raw.apiKeyEnv) ?? "NMEM_API_KEY";
+    if (!/^NMEM_[A-Za-z0-9_]+$/u.test(apiKeyEnv))
+        throw new MemFailure("invalid");
     const apiKey = bearer(text(raw.apiKey) ?? text(env[apiKeyEnv]));
     if (apiKey && /[\s\u0000-\u001f\u007f]/u.test(apiKey))
         throw new MemFailure("invalid");
@@ -88,9 +90,8 @@ export function resolveOptions(raw = {}, env = process.env) {
         recall: bool("recall", true),
         contextBundle: bool("contextBundle", true),
         capture: bool("capture", false),
+        gatewayKeys: bool("gatewayKeys", false),
         captureTools: bool("captureTools", true),
-        captureRemote: bool("captureRemote", false),
-        recallRemote: bool("recallRemote", false),
         maxMemories: integer("maxMemories", 5, 1, 20),
         maxBytes: integer("maxBytes", 6000, 512, 32768),
         requestTimeoutMs: integer("requestTimeoutMs", 1500, 50, 5000),

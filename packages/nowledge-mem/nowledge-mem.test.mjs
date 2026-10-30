@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { runInNewContext } from "node:vm"
 import { onRequest, onResponse, reset } from "./nowledge-mem.hooks.mjs"
+import { request, resolveOptions } from "./mem.mjs"
 
 const realFetch = globalThis.fetch
 const calls = []
@@ -69,12 +70,13 @@ test("the shipped entry is a gateway hook with a page and its connection test", 
   expect(pkg.magpie.gateway).toBeUndefined()
   expect(pkg.magpie.hooks).toBe("./nowledge-mem.hooks.mjs")
   expect(pkg.magpie.permissions ?? []).toEqual([])
-  for (const file of ["service.mjs", "probe.mjs", "mem.mjs", "conversation.mjs", "page"])
+  for (const file of ["service.mjs", "probe.mjs", "library.mjs", "mem.mjs", "conversation.mjs", "page"])
     expect(pkg.files).toContain(file)
   expect(pkg.files).toContain(pkg.magpie.hooks.slice(2))
   expect(pkg.magpie.page.file).toBe("page/settings.html")
   expect(pkg.magpie.page.service).toEqual({ port: 3479, option: "port" })
   expect(pkg.magpie.options.port).toBe(3479)
+  expect(pkg.magpie.options.installLibrary).toBe(true)
   const entry = await import(pkg.magpie.hooks)
   expect(entry.onRequest).toBe(onRequest)
   expect(entry.onResponse).toBe(onResponse)
@@ -178,6 +180,19 @@ test("recall keeps each protocol's own shape", async () => {
     reset()
     calls.length = 0
   }
+})
+
+test("a request with a client notice before the prompt is still a first turn", async () => {
+  mock()
+  const body = {
+    input: [
+      { type: "message", role: "developer", content: [{ type: "input_text", text: "AGENTS.md" }] },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>cwd=/tmp/quartz</environment_context>" }] },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Quartz codename?" }] },
+    ],
+  }
+  await onRequest(body, ctx("responses"))
+  expect(of("context/bundle")).toHaveLength(1)
 })
 
 test("a session's first turn also gets Mem's Context Bundle; later turns do not", async () => {
@@ -421,6 +436,63 @@ test("capture is a separate opt-in; recall alone sends no Thread", async () => {
   expect(reports.at(-1)[0]).toBe("ready")
 })
 
+test("capture is off when the option is absent", async () => {
+  mock()
+  const context = ctx("chat", { options: { serverUrl: "http://127.0.0.1:14242", apiKey: "nmem_test" } })
+  context.state = {}
+  await onRequest(structuredClone(chat), context)
+  expect(context.state.nowledgeMem).toBeUndefined()
+  await onResponse(reply, { ...context, success: true })
+  expect(of("threads/import")).toHaveLength(0)
+})
+
+test("a keyed request is included only when the page allows Magpie keys", async () => {
+  mock()
+  const [, off] = capturing("chat", { origin: "gateway-key", options: { gatewayKeys: false } })
+  await onRequest(structuredClone(chat), off)
+  expect(of("memories/search")).toHaveLength(0)
+  await onResponse(reply, { ...off, success: true })
+  expect(of("threads/import")).toHaveLength(0)
+
+  reset()
+  calls.length = 0
+  mock()
+  const [, on] = capturing("chat", { origin: "gateway-key", options: { gatewayKeys: true } })
+  await onRequest(structuredClone(chat), on)
+  expect(of("memories/search")).toHaveLength(1)
+  await onResponse(reply, { ...on, success: true })
+  expect(of("threads/import")).toHaveLength(1)
+})
+
+test("remote and unknown origins stay out even with the key switch on", async () => {
+  for (const origin of ["remote", undefined]) {
+    mock()
+    calls.length = 0
+    const [, context] = capturing("chat", { origin, options: { gatewayKeys: true } })
+    await onRequest(structuredClone(chat), context)
+    await onResponse(reply, { ...context, success: true })
+    expect(of("memories/search")).toHaveLength(0)
+    expect(of("threads/import")).toHaveLength(0)
+    reset()
+  }
+})
+
+test("a keyed environment name must stay under NMEM_", () => {
+  expect(() => resolveOptions({ apiKeyEnv: "OPENAI_API_KEY" })).toThrow("invalid")
+})
+
+test("a Mem redirect is refused, not followed", async () => {
+  const seen = []
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), redirect: init.redirect })
+    return new Response(null, { status: 302, headers: { location: "https://evil.example/" } })
+  }
+  const o = resolveOptions({ serverUrl: "https://mem.example.com", apiKey: "nmem_test" })
+  await expect(request(o, { method: "GET", route: "health", timeoutMs: 900 })).rejects.toThrow("unavailable")
+  expect(seen).toHaveLength(1)
+  expect(seen[0].redirect).toBe("error")
+})
+
 test("capture imports the completed conversation as a Mem Thread", async () => {
   mock()
   const [reports, context] = capturing("chat")
@@ -571,37 +643,6 @@ test("capture includes client tool results unless captureTools is off", async ()
   expect(of("threads/import")[0].body.messages.map((m) => m.role)).toEqual(["user", "assistant"])
 })
 
-test("capture excludes nonlocal and gateway-key requests unless explicitly permitted", async () => {
-  for (const origin of ["remote", "gateway-key", undefined]) {
-    mock()
-    calls.length = 0
-    const [, context] = capturing("chat", { origin })
-    await onRequest(structuredClone(chat), context)
-    await onResponse(reply, { ...context, success: true })
-    expect(of("threads/import")).toHaveLength(0)
-    expect(of("memories/search")).toHaveLength(0)
-    reset()
-  }
-  mock()
-  const [, remote] = capturing("chat", { origin: "remote", options: { captureRemote: true } })
-  await onRequest(structuredClone(chat), remote)
-  expect(remote.state.nowledgeMem).toBeDefined()
-  await onResponse(reply, { ...remote, success: true })
-  expect(of("threads/import")).toHaveLength(1)
-  // Remote capture permission alone never enables recall.
-  expect(of("memories/search")).toHaveLength(0)
-})
-
-test("remote recall and capture permissions are independent", async () => {
-  mock()
-  const [, context] = capturing("chat", { origin: "remote", options: { recallRemote: true, capture: false } })
-  await onRequest(structuredClone(chat), context)
-  expect(of("memories/search")).toHaveLength(1)
-  const [, local] = capturing("chat", { origin: "remote", options: { captureRemote: true, recallRemote: false } })
-  await onRequest(structuredClone(chat), local)
-  expect(of("memories/search")).toHaveLength(1)
-})
-
 test("an import that fails fails open and reports a fixed code", async () => {
   mock({ "threads/import": () => Response.json({ detail: "database is locked" }, { status: 500 }) })
   const [reports, context] = capturing("chat")
@@ -654,7 +695,7 @@ test("configuration page saves the Mem connection for the shipped hook", async (
   const document = { documentElement: {}, getElementById: (id) => elements[id], querySelectorAll: () => [] }
   const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign(url) { this.assigned = url } }
   const window = { name: "" }
-  let options = { apiKeyEnv: "NMEM_API_KEY", recall: true, contextBundle: true, capture: false, maxMemories: 5, maxBytes: 6000, recallRemote: true, captureRemote: true }
+  let options = { apiKeyEnv: "NMEM_API_KEY", recall: true, contextBundle: true, capture: false, gatewayKeys: true, maxMemories: 5, maxBytes: 6000 }
   let writes = 0
   const magpie = {
     theme: { lang: "en" }, ready: Promise.resolve(), onTheme() {},
@@ -677,8 +718,7 @@ test("configuration page saves the Mem connection for the shipped hook", async (
     agentId: "agent-3",
     apiKey: "nmem_page_key",
     capture: true,
-    recallRemote: true,
-    captureRemote: true,
+    gatewayKeys: true,
   })
   // Run the shipped hook with exactly what the page saved.
   mock({ "threads/import": (body) => Response.json({ success: true, failed_count: 0, results: [{ success: true, thread_id: body.thread_id, message_count: body.messages.length, messages_added: body.messages.length }] }) })
@@ -691,7 +731,6 @@ test("configuration page saves the Mem connection for the shipped hook", async (
   expect(of("threads/import")[0].body.space_id).toBe("space-7")
   expect(of("threads/import")[0].body.metadata.agent_id).toBe("agent-3")
 
-  expect(elements["mcp-url"].textContent).toBe("http://127.0.0.1:14242/mcp")
   elements.configure.onclick()
   expect(elements.key.type).toBe("password")
   expect(elements.key.value).toBe("nmem_page_key")
@@ -720,48 +759,23 @@ test("configuration page saves the Mem connection for the shipped hook", async (
   elements.space.value = "   "
   elements.agent.value = ""
   elements.capture.checked = false
-  elements.remote.checked = false
+  elements["gateway-keys"].checked = false
   await save()
   expect(options.serverUrl).toBe("https://mem.example.com/")
-  expect(options.recallRemote).toBe(false)
-  expect(options.captureRemote).toBe(false)
 
-  // The main page's Test button uses what is saved; the dialog's uses the form.
+  // The main page's Test button tests the saved connection; the test page
+  // reads only the way back and the language.
   elements["test-saved"].onclick()
   expect(location.assigned).toBe("http://127.0.0.1:3479/test")
-  expect(JSON.parse(window.name)).toEqual({ serverUrl: "https://mem.example.com/", apiKey: "", spaceId: "", lang: "en", returnTo: location.href })
+  expect(JSON.parse(window.name)).toEqual({ returnTo: location.href, lang: "en" })
   window.name = ""
+  expect(options.gatewayKeys).toBe(false)
   expect(options.apiKey).toBeUndefined()
   expect(options.spaceId).toBeUndefined()
   expect(options.agentId).toBeUndefined()
   expect(options.apiKeyEnv).toBe("NMEM_API_KEY")
   expect(options.maxBytes).toBe(6000)
   expect(elements["summary-space"].textContent).toBe("Default Space")
-  expect(elements["mcp-url"].textContent).toBe("https://mem.example.com/mcp")
-})
-
-test("the page points at Mem's MCP server for agent-callable tools", async () => {
-  const read = (file) => Bun.file(new URL(`./page/${file}`, import.meta.url)).text()
-  const [dictionary, source, html] = await Promise.all([read("i18n.js"), read("settings.js"), read("settings.html")])
-  const elements = Object.fromEntries([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, {
-    dataset: {}, value: "", hidden: false, checked: false, textContent: "",
-    setAttribute(name, value) { this[name] = value }, focus() {}, close() {},
-  }]))
-  const document = {
-    documentElement: {}, getElementById: (id) => elements[id], querySelectorAll: () => [],
-    createRange: () => ({ selectNodeContents() {} }),
-  }
-  const window = { name: "", getSelection: () => ({ removeAllRanges() {}, addRange() {} }) }
-  const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign() {} }
-  const magpie = {
-    theme: { lang: "en" }, ready: Promise.resolve(), onTheme() {},
-    options: { get: async () => ({ serverUrl: "https://mem.example.com" }), set: async () => {} },
-  }
-  runInNewContext(`${dictionary}\n${source}`, { document, magpie, window, location, navigator: { language: "en" }, URL })
-  await new Promise(setImmediate)
-  expect(elements["mcp-url"].textContent).toBe("https://mem.example.com/mcp")
-  elements["copy-mcp"].onclick()
-  expect(elements["mcp-feedback"].dataset.message).toBe("copyFallback")
 })
 
 test("configuration page follows the host language without losing edits or messages", async () => {

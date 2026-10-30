@@ -6,6 +6,7 @@
   "files": [
     "service.mjs",
     "probe.mjs",
+    "library.mjs",
     "mem.mjs",
     "nowledge-mem.hooks.mjs",
     "conversation.mjs",
@@ -33,13 +34,13 @@
       "contextBundle": true,
       "maxMemories": 5,
       "maxBytes": 6000,
-      "requestTimeoutMs": 1500,
+      "requestTimeoutMs": 900,
       "recallBackoffMs": 30000,
       "capture": false,
       "captureTools": true,
-      "captureRemote": false,
-      "recallRemote": false,
-      "port": 3479
+      "port": 3479,
+      "installLibrary": true,
+      "gatewayKeys": false
     },
     "page": {
       "title": "Nowledge Mem",
