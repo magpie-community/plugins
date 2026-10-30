@@ -54,4 +54,9 @@ export async function run() {
   check("CMD-03 丢了 journal 才会重放（守卫是必要的）", true)
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) await run()
+// Direct-run convenience: `node test/capture-command.test.mjs`. Guarded against bun:
+// under `bun test`, process.argv[1] IS this file, so an unguarded self-run would
+// execute the suite once at load and again from ci.test.mjs — and the second pass
+// fails, because options-commands.js?host=1 is a cached module whose `completed`
+// Set already holds the command id. `typeof Bun` is the reliable runtime split.
+if (typeof Bun === "undefined" && process.argv[1] === fileURLToPath(import.meta.url)) await run()

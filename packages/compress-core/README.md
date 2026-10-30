@@ -141,13 +141,14 @@ lite 默认**全量改写、严格前缀稳定**：每条消息从第一轮起�
 
 - `requests.jsonl`：每个请求一行统计（原始/压缩后字节、命中哪个策略、模型、客户端），**不含正文**。开关 `telemetry.samples` 打开后才额外存最多 8 对问答，每段 1600 字符，存前先过下面这套打码。
 - `captures/`：只在 `capture` 打开时才有，是完整请求正文，单条上限 2MB（超了整条不落盘，索引里标 `too_large`），只保留最新 50 条。
+- `ccr-store.json`：ccr 引擎把替换掉的原文按哈希存进这个文件，retrieve 工具据此取回——**这是对话正文的第二份拷贝**。单块上限 512KB，默认 24 小时过期、全局 64MB 超了按最久未用淘汰。它只在 `ccr` 策略开启且调用方带 retrieve 工具时才写。
 - `captures-index.json`、`options-override.json`：索引与本地覆盖，不含正文。
 
 打码在 `telemetry-store.js` 的 `SECRET_RULES`，快照与样本共用一套：私钥块整段、`ghp_`/`github_pat_`/`AKIA`/`AIza`/`sk-`/`xox?-` 形态的令牌、`eyJ…` 的 JWT、`Bearer …`、以及 `authorization`、`api_key`、`password`、`client_secret` 这类字段的值，全部换成 `[redacted:…]`；邮箱和 `C:\Users\…` 这类路径只在样本里替换（快照要能看清代码原文）。字段名保留、值丢掉，所以仍然看得出这条请求带了什么凭据。
 
 两个开关都不碰代码本身——它们要回答的是「压缩对这段文本做了什么」。一段对话里如果有不能落盘的东西，就别打开 `capture` 和 `telemetry.samples`。
 
-清空：把 `captureCommand` options 传给钩子（action `clear`），钩子删掉两个目录并清索引；`requests.jsonl` 直接删文件，下一次请求会重建。
+清空：把 `captureCommand` options 传给钩子（action `clear`），钩子删掉两个目录并清索引；`requests.jsonl` 直接删文件，下一次请求会重建。`ccr-store.json` 同样直接删文件——代价是已替换的原文标记暂时取不回（模型读到标签时会发现取不到，正文在 24 小时后本来也会过期）。
 
 ## 实验室
 
@@ -171,8 +172,8 @@ node test/run.mjs lite            # 只跑一套：参数是套件名（每个�
 bun test                          # 同一个入口的 bun 版：CI 就是它
 node test/live-probe.mjs          # 对着真的 magpie 打一次
 ```
-
-
+
+
 
 `test/lite-spec.md` 和 `test/session-dedup-spec.md` 是这两个策略的行为契约，改引擎之前先看。
 
