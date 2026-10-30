@@ -1,0 +1,53 @@
+{
+  "name": "@magpie-community/gateway-nowledge-mem",
+  "version": "0.1.0",
+  "description": "Nowledge Mem recall, Context Bundle and optional conversation capture at the Magpie gateway, for every connected harness",
+  "type": "module",
+  "files": [
+    "mem.mjs",
+    "nowledge-mem.hooks.mjs",
+    "conversation.mjs",
+    "README.md",
+    "page"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-gateway",
+    "nowledge-mem",
+    "memory",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/nowledge-mem"
+  },
+  "magpie": {
+    "hooks": "./nowledge-mem.hooks.mjs",
+    "options": {
+      "apiKeyEnv": "NMEM_API_KEY",
+      "recall": true,
+      "contextBundle": true,
+      "maxMemories": 5,
+      "maxBytes": 6000,
+      "requestTimeoutMs": 1500,
+      "recallBackoffMs": 30000,
+      "capture": false,
+      "captureTools": true,
+      "captureRemote": false,
+      "recallRemote": false
+    },
+    "page": {
+      "title": "Nowledge Mem",
+      "file": "page/settings.html",
+      "icon": "page/icon.svg"
+    }
+  },
+  "scripts": {
+    "check": "bun test ./*.test.mjs"
+  },
+  "engines": {
+    "bun": ">=1.4.2"
+  }
+}

@@ -116,6 +116,7 @@ These add a page to magpie's window, in the app and in `magpie web`, under Plugi
 |---|---|---|
 | [usage](packages/usage) | Usage glance: calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them | `usage:summary` |
 | [powercontext](packages/powercontext) | Connection settings for an independently deployed PowerContext service | None |
+| [nowledge-mem](packages/nowledge-mem) | Connection settings, recall and capture switches, and the address of Mem's MCP server for Magpie's MCP hub | None |
 | [agent-office](packages/agent-office) | What are my agents doing: live sessions as workers in a voxel office (3D/2D) or a list, with status, current step and resume commands | no `magpie.read`; its host part reads the local session files of Claude Code, Codex, dsh, Gemini CLI, Qwen Code, Pi, omp, Qoder, WorkBuddy and CodeBuddy, including prompts, replies and tool commands (`text:false` keeps statuses and tool names only) |
 | [chat](packages/chat) | Chat with magpie's models, your MCP servers, instructions and skills, by Magic_zero ([Magiczerowxy](https://github.com/Magiczerowxy)). Has a host part: a local service the page goes to | none (its service calls magpie's gateway) |
 
@@ -137,11 +138,13 @@ Like middleware, these run on the requests agents send, but in magpie's Bun host
 | Package | What it does |
 |---|---|
 | [powercontext](packages/powercontext) | [PowerContext](https://github.com/oceanbase/powercontext) recall and opt-in completed-conversation capture; no client MCP or skill required |
+| [nowledge-mem](packages/nowledge-mem) | [Nowledge Mem](https://mem.nowledge.co) recall, Context Bundle or Working Memory, per-harness provenance and opt-in conversation import as Mem Threads, automatic for every harness behind Magpie |
 
 Use the same plugin management commands as middleware:
 
 ```sh
 magpie plugin add @magpie-community/gateway-powercontext
+magpie plugin add @magpie-community/gateway-nowledge-mem
 ```
 
 Installed plugins use **Plugins › Installed › Options** and the normal on/off
@@ -156,6 +159,17 @@ No Server URL is assumed and capture defaults to off;
 remote/shared-key recall and capture each need a separate opt-in. The package calls an existing
 Server; it does not provision services or manage processes. See the
 [plugin README](packages/powercontext).
+
+Nowledge Mem needs no deployment of its own: the hook takes the endpoint and
+key from the plugin page, or from `NMEM_API_URL` and `NMEM_API_KEY` in Magpie's
+environment, and falls back to a local Mem at `http://127.0.0.1:14242`. Recall
+and the Context Bundle are on; importing conversations is off until enabled.
+Tools for agents come from Mem's own MCP server: add it once in Magpie's
+Library › MCP, and the
+[MCP hub](https://usemagpie.ai/docs/mcp-hub) gives every agent the same tools.
+Harness prompts, skills and commands stay with the harnesses. See the
+[plugin README](packages/nowledge-mem).
+
 The asynchronous hook API shipped in Magpie 0.1.1273; see the
 [released host contract](https://github.com/yetone/magpie/blob/v0.1.1273/docs/subsystems/gateway-request-hooks.md).
 
