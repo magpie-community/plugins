@@ -455,7 +455,8 @@ export function createPetServer({ databasePath, dbPath, adapter: sharedAdapter, 
       if (file.endsWith("app.html")) {
         const html = data.toString("utf8");
         const tokenScript = `<script>window.PET_TOKEN=${JSON.stringify(API_TOKEN)};</script>`;
-        data = Buffer.from(html.replace("</head>", `${tokenScript}</head>`), "utf8");
+        const stamped = html.replace('src="app.js"', `src="app.js?v=${API_TOKEN.slice(0, 8)}"`);
+        data = Buffer.from(stamped.replace("</head>", `${tokenScript}</head>`), "utf8");
       }
       return send(res, 200, data, MIME[extname(file).toLowerCase()] || "application/octet-stream");
     } catch (e) {

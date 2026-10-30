@@ -874,6 +874,15 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
 async function load() {
   try {
     const r = await fetch("/api/state", { cache: "no-store", headers: apiHeaders() });
+    if (r.status === 403) {
+      say("页面口令过期，正在刷新…");
+      if (!sessionStorage.getItem("pet-token-reloaded")) {
+        sessionStorage.setItem("pet-token-reloaded", "1");
+        setTimeout(() => location.reload(), 300);
+      }
+      return;
+    }
+    sessionStorage.removeItem("pet-token-reloaded");
     paint(await r.json());
   } catch (e) {
     say(`刷新失败：${e?.message ?? e}`);
