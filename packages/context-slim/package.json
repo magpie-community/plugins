@@ -1,0 +1,22 @@
+{
+  "name": "@magpie-community/middleware-context-slim",
+  "version": "0.1.0",
+  "description": "Thin an agent's long history where it was only read once — old tool results and texts to head and tail, old images to a note — keeping message count, tool pairing and the recent window intact, as magpie gateway middleware",
+  "type": "module",
+  "files": ["context-slim.middleware.js", "README.md"],
+  "keywords": ["magpie", "magpie-middleware", "context", "history", "compaction", "tool-results", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/context-slim" },
+  "magpie": {
+    "middleware": "./context-slim.middleware.js",
+    "options": {
+      "threshold": 96000,
+      "keep_recent": 12,
+      "tool_head": 600,
+      "tool_tail": 300,
+      "text_head": 1200,
+      "text_tail": 400,
+      "drop_old_images": true
+    }
+  }
+}
