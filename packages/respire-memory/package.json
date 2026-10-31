@@ -25,7 +25,8 @@
     "archive-context.mjs",
     "generation.mjs",
     "memory-tools.mjs",
-    "policy.mjs"
+    "policy.mjs",
+    "docs"
   ],
   "engines": {
     "bun": ">=1.3.6"
