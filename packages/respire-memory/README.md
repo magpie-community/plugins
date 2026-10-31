@@ -6,10 +6,10 @@ This supports agent self-evolution through reusable experience. It does not trai
 
 ## Install
 
-Install the [Respire CLI](https://github.com/risense-ai/respire-cli) first: this plugin is only the Magpie integration; the CLI provides the memory library and local Runtime. Follow the [npm installation guide](https://github.com/risense-ai/respire-cli/blob/main/npm/README.md), or download your platform from [CLI Releases](https://github.com/risense-ai/respire-cli/releases).
+Install the [Respire CLI](https://github.com/risense-ai/respire-cli) first: this plugin is only the Magpie integration; the CLI provides the memory library and local Runtime. Follow the [npm installation guide](https://www.npmjs.com/package/rsrs-cli), or download your platform from [CLI Releases](https://github.com/risense-ai/respire-cli/releases).
 
 ~~~sh
-npm install -g @rsrsai/cli
+npm install -g rsrs-cli
 ~~~
 
 Prepare your account/model and start/unlock the local HTTP Runtime using the [Runtime guide](https://github.com/risense-ai/respire-cli/blob/main/docs/runtime.md). Check `rsrs --client-only status --json`, then install this plugin:

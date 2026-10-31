@@ -9,7 +9,7 @@
   <header><img class="brand brand-light" src="icon-respire-ai-memory-light.svg" width="46" height="46" alt=""><img class="brand brand-dark" src="icon-respire-ai-memory.svg" width="46" height="46" alt=""><div><h1>respire-memory</h1><p>吸即存，呼即取——让 AI Agent 在实践中积累经验，持续自进化。</p></div></header>
   <section aria-labelledby="setup-title"><h2 id="setup-title">首次使用：先安装 Respire 本体</h2>
     <p>此插件是 Magpie 的接入层，需要另行安装 <a href="https://github.com/risense-ai/respire-cli" target="_blank" rel="noopener noreferrer">Respire CLI（GitHub 安装说明）</a>。它提供记忆库与本地 Runtime；只安装插件还不能读存记忆。</p>
-    <ol><li>在自己的终端执行 <code>npm install -g @rsrsai/cli</code>，或从 <a href="https://github.com/risense-ai/respire-cli/releases" target="_blank" rel="noopener noreferrer">CLI Releases</a> 下载对应平台版本。</li>
+    <ol><li>在自己的终端执行 <code>npm install -g rsrs-cli</code>，或从 <a href="https://github.com/risense-ai/respire-cli/releases" target="_blank" rel="noopener noreferrer">CLI Releases</a> 下载对应平台版本。</li>
       <li>按 <a href="https://github.com/risense-ai/respire-cli/blob/main/docs/runtime.md" target="_blank" rel="noopener noreferrer">CLI Runtime 指南</a>准备账号、模型，启动并解锁本地 HTTP Runtime。</li>
       <li>执行 <code>rsrs --client-only status --json</code> 确认连接，再在下方配置 Runtime 地址及归档生成模型并保存。</li></ol>
     <p class="disclosure">插件不会代装 CLI、启动 Runtime 或管理账号；登录与解锁请在 Respire 中完成，不要在此页面输入密码或密钥。</p>
