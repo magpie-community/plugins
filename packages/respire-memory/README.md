@@ -29,7 +29,7 @@ Enabling model-based archival sends completed turn/tool evidence and relevant me
 
 ## Options and diagnosis
 
-Defaults include runtimeUrl=http://127.0.0.1:15169, project empty, archive=true, capture=false, readOnly=false, showMemoryStatus=false. Set generationBaseUrl, generationModel and authorizationEnv as needed. The obsolete injectRules flag cannot disable mandatory policy reads. Full policy has a separate 128 KiB allowance plus the host adapter; expect extra context cost.
+Defaults include runtimeUrl=http://127.0.0.1:15169, project empty, archive=true, capture=false, readOnly=false, showMemoryStatus=false. Set generationBaseUrl, generationModel and authorizationEnv as needed. The ineffective injectRules option has been removed. Complete policy is read every new turn, but identical text is injected once per conversation and again only when it changes; later blocks carry memories and read receipts. Full policy has a separate 128 KiB allowance plus the host adapter; expect extra context cost.
 
 From the complete installed plugin directory, worker.mjs supports setup, status, run, recover and evidence. For example:
 

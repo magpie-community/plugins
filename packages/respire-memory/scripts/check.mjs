@@ -45,7 +45,7 @@ assert(hasSecret({ content: '{"api_key":"fixture-secret"}' }));
 assert(hasSecret({ tool: { PGPASSWORD: 'fixture-secret' } }));
 const id = '11111111-1111-4111-8111-111111111111';
 let calls = 0;
-let generationRound = 0, unknownWrite = false, writes = 0, policyReady = true, emptyRecall = false;
+let generationRound = 0, unknownWrite = false, writes = 0, policyReady = true, emptyRecall = false, fixturePolicy = 'Complete fixture policy';
 const savedId = '22222222-2222-4222-8222-222222222222';
 const diaryId = '33333333-3333-4333-8333-333333333333';
 const commandLog = [];
@@ -69,7 +69,7 @@ const server = createServer(async (req, res) => {
   commandLog.push(command);
   const envelope = { status: 'ok', summary: command === 'status' ? { data_dir: 'fixture', unlocked: true, session: { has_session: true, user: 'fixture', addr: 'fixture' } }
     : command === 'agent-config' ? { readonly: false, memory_off: false, workspace_mode: 'normal' }
-    : command === 'prompt' ? { instructions: policyReady ? 'Complete fixture policy' : '' } : {},
+    : command === 'prompt' ? { instructions: policyReady ? fixturePolicy : '' } : {},
     details: command === 'recall' ? (emptyRecall ? [] : [{ id }]) : command === 'prompt' ? null : { entry: entries.get(r.args[2]) ?? entries.get(id) } };
   if (command === 'show') envelope.summary.id = r.args[2];
   if (command === 'remember') {
@@ -134,7 +134,7 @@ try {
   }
   emptyRecall = false;
   const policyCtx = { protocol: 'chat', origin: 'local', session: 'policy-each-turn', state: {}, signal: AbortSignal.timeout(10000),
-    options: { runtimeUrl: `http://127.0.0.1:${server.address().port}`, stateDir, archive: false, maxBytes: 1024, injectRules: false } };
+    options: { runtimeUrl: `http://127.0.0.1:${server.address().port}`, stateDir, archive: false, maxBytes: 1024 } };
   for (const content of ['第一轮项目问题', '第二轮项目问题', '记住：项目需要逐轮验证', '解释字面量 <respire-reference>', '解释字面量 [Respire background archive]']) {
     const at = commandLog.length;
     const output = await onRequest({ messages: [{ role: 'user', content }] }, policyCtx);
@@ -147,8 +147,44 @@ try {
   assert.equal(commandLog.length, internalAt);
   policyReady = false;
   const unavailable = await onRequest({ messages: [{ role: 'user', content: '缺失政策的回合' }] }, policyCtx);
-  assert(JSON.stringify(unavailable).includes('未满足答前读忆流程'));
+  assert.equal(unavailable, undefined, 'Failed reads must leave the latest turn unchanged');
   policyReady = true;
+  for (const protocol of ['chat', 'responses', 'anthropic', 'gemini']) {
+    const ctx = { ...policyCtx, protocol, session: 'policy-dedup-' + protocol };
+    const messages = [];
+    const wrap = list => protocol === 'gemini' ? { contents: list } : protocol === 'responses' ? { input: list } : { messages: list };
+    const item = (role, text) => protocol === 'gemini' ? { role: role === 'assistant' ? 'model' : role, parts: [{ text }] }
+      : { role, content: text };
+    const listOf = result => result.contents ?? result.input ?? result.messages;
+    let previous;
+    for (let turn = 0; turn < 5; turn++) {
+      messages.push(item('user', 'Policy growth probe ' + turn));
+      const at = commandLog.length;
+      reset();
+      const result = await onRequest(wrap(messages), ctx);
+      assert.equal(JSON.stringify(result).split('<respire-policy>').length - 1, 1, 'Same policy must occur once across five turns and restarts');
+      assert.equal(commandLog.slice(at).filter(c => c === 'prompt').length, 1, 'Every new turn must still read the full policy');
+      assert.equal(commandLog.slice(at).filter(c => c === 'recall').length, 1);
+      if (previous) assert.deepEqual(listOf(result).slice(0, -2), previous, 'Every historical prefix must stay byte-identical');
+      previous = listOf(result);
+      messages.push(item('assistant', 'probe complete'));
+    }
+    fixturePolicy = 'Changed complete fixture policy';
+    messages.push(item('user', 'Policy changed'));
+    const changed = await onRequest(wrap(messages), ctx);
+    assert.equal(JSON.stringify(changed).split('<respire-policy>').length - 1, 2);
+    assert.deepEqual(listOf(changed).slice(0, -2), previous);
+    previous = listOf(changed);
+    messages.push(item('assistant', 'changed policy read'), item('user', 'Policy unchanged again'));
+    reset();
+    const same = await onRequest(wrap(messages), ctx);
+    assert.equal(JSON.stringify(same).split('<respire-policy>').length - 1, 2);
+    assert.deepEqual(listOf(same).slice(0, -2), previous);
+    fixturePolicy = 'Complete fixture policy';
+    messages.push(item('assistant', 'same policy read'), item('user', 'Policy reverted'));
+    const reverted = await onRequest(wrap(messages), ctx);
+    assert.equal(JSON.stringify(reverted).split('<respire-policy>').length - 1, 3, 'Returning to a previous policy must inject the new current version');
+  }
   const originalCtx = { ...policyCtx, session: 'history-restoration' };
   const original = await onRequest({ messages: [{ role: 'user', content: '第一回合稳定历史' }] }, originalCtx);
   const controlKey = 'control-' + digest(await accountIdentity(options(policyCtx.options), args => rpc(options(policyCtx.options), args, policyCtx.signal)), options(policyCtx.options).url, '');
@@ -307,7 +343,7 @@ try {
   assert.equal((await call(['remember', 'pending-fixture-content'])).status, 'pending');
   console.log('Detached worker check passed: gateway completion -> encrypted queue -> child process -> model tools -> readback.');
   console.log('Archive checks passed: real HTTP model tool loop, readback, encrypted persistence, unknown-write no-retry, read-only, tool restrictions and source-checked segmentation.');
-  console.log('Review regressions passed: stale/live locks, completed receipt preservation, active-only queue cap, retention, leases, stable history and neutral user agents.');
+  console.log('Review regressions passed: stale/live locks, receipts, capacity, retention, leases, stable history, four-protocol policy dedup/change/revert and neutral user agents.');
 } finally {
   await new Promise(resolve => server.close(resolve));
   for (let i = 0; i < 100 && existsSync(join(scratch, 'state', 'worker.lock')); i++) await new Promise(r => setTimeout(r, 25));

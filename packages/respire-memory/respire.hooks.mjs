@@ -64,14 +64,18 @@ function block(data, budget) {
   return text;
 }
 
-async function prepare(o, query, signal, entry, extra = {}) {
+async function prepare(o, query, signal, entry, extra = {}, priorPolicy) {
   const data = { memories: [], ...extra };
   const scoped = o.project ? ['--project', o.project] : [];
   const recalled = SKIP_PREFIX.test(query) ? { status: 'skip', details: [] }
     : await rpc(o, ['recall', query, '--titles', '--limit', String(o.limit), ...scoped], signal);
   const policy = await rpc(o, ['prompt'], signal);
   if (policy.status !== 'ok' || typeof policy.summary?.instructions !== 'string' || !policy.summary.instructions.trim()) throw new Failure('invalid');
-  data.rules = RULES + '\n\n' + policy.summary.instructions;
+  const rules = RULES + '\n\n' + policy.summary.instructions;
+  entry.policyHash = hash(rules);
+  // Read every turn; retain the full text once in history and again on change.
+  if (entry.policyHash !== priorPolicy) data.rules = rules;
+  data.reads = { recall: recalled.status === 'skip' ? 'skipped' : 'complete', policy: 'complete', policyHash: entry.policyHash };
   data.workflow = { archive: o.archive, generationConfigured: !!(o.generationBaseUrl && o.generationModel),
     note: o.readOnly ? '只读，禁止写入。' : !o.archive ? '归档已关闭，未满足每轮读存流程。'
       : !o.generationBaseUrl || !o.generationModel ? '尚未配置归档模型，不能完成每轮存储。'
@@ -147,13 +151,13 @@ export async function onRequest(body, ctx) {
     ctx.state.respire = { body: structuredClone(body), o, key: digest(account, keyOf(latest)), account, sessionKey,
       storeRequest: STORE_PREFIX.test(originalQuery) };
   }
-  let modified = false;
+  let modified = false, priorPolicy;
   const priorTurn = async t => {
     let prior = cache.get(keyOf(t));
     if (!prior) {
       const saved = await store.get('turn-' + digest(account, keyOf(t)));
       if (saved?.phase === 'done' && saved.text) {
-        prior = { text: saved.text, storage: saved.storage, bytes: bytes(saved.text) }; retain(cache, keyOf(t), prior);
+        prior = { text: saved.text, storage: saved.storage, policyHash: saved.policyHash, bytes: bytes(saved.text) }; retain(cache, keyOf(t), prior);
       }
     }
     return prior;
@@ -161,6 +165,7 @@ export async function onRequest(body, ctx) {
   for (const t of users) {
     if (t === latest) continue;
     const prior = await priorTurn(t);
+    if (prior?.policyHash) priorPolicy = prior.policyHash;
     if (prior?.text && !t.text.endsWith(prior.text)) { t.append(prior.text); modified = true; }
   }
   if (all.at(-1) !== latest) {
@@ -178,14 +183,14 @@ export async function onRequest(body, ctx) {
     // Share the in-flight operation across concurrent requests of the same turn.
     retain(cache, key, entry);
     entry.pending = store.change(durableKey, async (saved, persist) => {
-      if (saved?.phase === 'done') { entry.storage = saved.storage; return saved.text; }
+      if (saved?.phase === 'done') { entry.storage = saved.storage; entry.policyHash = saved.policyHash; return saved.text; }
       if (saved?.phase === 'writing') return block({ storage: { status: 'uncertain', message: '该回合曾开始写入，结果未确认。先查库核实，禁止重试写入。' } }, o.maxBytes);
       await persist({ phase: 'processing' });
       entry.beforeWrite = () => persist({ phase: 'writing' });
       const extra = {};
       if (o.showMemoryStatus && session.lastArchive && session.lastArchive.source !== session.reportedSource) extra.priorSave = session.lastArchive;
-      const text = await prepare(o, STORE_PREFIX.test(originalQuery) ? originalQuery : q, ctx.signal, entry, extra);
-      await persist({ phase: 'done', text, storage: entry.storage });
+      const text = await prepare(o, STORE_PREFIX.test(originalQuery) ? originalQuery : q, ctx.signal, entry, extra, priorPolicy);
+      await persist({ phase: 'done', text, storage: entry.storage, policyHash: entry.policyHash });
       if (extra.priorSave) {
         try { await store.change('session-' + sessionKey, async (current = {}, save) => save({ ...current, reportedSource: extra.priorSave.source })); }
         catch { ctx.report?.('session-notification-failed'); }
@@ -205,8 +210,7 @@ export async function onRequest(body, ctx) {
     return modified ? changed : undefined;
   } catch (error) {
     ctx.report?.(error instanceof Failure ? error.code : 'unavailable');
-    latest.append(block({ workflow: { status: 'unavailable', note: '本轮召回或完整政策读取失败，未满足答前读忆流程；不得宣称记忆流程已完成。' } }, o.maxBytes));
-    return changed;
+    return modified ? changed : undefined;
   }
 }
 

@@ -26,14 +26,14 @@ export function options(raw = {}) {
   const o = { url: url.href, project: raw.project ?? '', timeout: raw.requestTimeoutMs ?? 1500,
     maxBytes: raw.maxBytes ?? 8000, limit: raw.limit ?? 3, remember: raw.remember ?? true, capture: raw.capture ?? false,
     readOnly: raw.readOnly ?? false, archive: raw.archive ?? true, showMemoryStatus: raw.showMemoryStatus ?? false,
-    injectRules: raw.injectRules ?? true, stateDir: raw.stateDir ?? '', generationBaseUrl: raw.generationBaseUrl ?? '',
+    stateDir: raw.stateDir ?? '', generationBaseUrl: raw.generationBaseUrl ?? '',
     generationModel: raw.generationModel ?? '', authorizationEnv: raw.authorizationEnv ?? 'RESPIRE_MAGPIE_AUTHORIZATION' };
   if (typeof o.project !== 'string' || o.project.length > 256 || /[\x00-\x1f\x7f]/.test(o.project) ||
       typeof o.remember !== 'boolean' || typeof o.capture !== 'boolean' ||
       !Number.isInteger(o.timeout) || o.timeout < 100 || o.timeout > 5000 ||
       !Number.isInteger(o.maxBytes) || o.maxBytes < 1024 || o.maxBytes > 32768 ||
       !Number.isInteger(o.limit) || o.limit < 1 || o.limit > 5) throw new Failure('invalid');
-  for (const key of ['readOnly', 'archive', 'showMemoryStatus', 'injectRules']) if (typeof o[key] !== 'boolean') throw new Failure('invalid');
+  for (const key of ['readOnly', 'archive', 'showMemoryStatus']) if (typeof o[key] !== 'boolean') throw new Failure('invalid');
   for (const key of ['stateDir', 'generationBaseUrl', 'generationModel', 'authorizationEnv']) if (typeof o[key] !== 'string' || o[key].length > 2048 || /[\x00-\x1f\x7f]/.test(o[key])) throw new Failure('invalid');
   if (o.stateDir && !isAbsolute(o.stateDir)) throw new Failure('invalid');
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(o.authorizationEnv)) throw new Failure('invalid');
