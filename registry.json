@@ -58,6 +58,8 @@
       "summary": { "en": "Nous Portal models, with Nous Portal's device sign-in.", "zh": "通过 Nous Portal 自己的设备码登录使用 Nous Portal 模型。" } },
     { "package": "@magpie-community/opencode-raccoon-auth", "name": "商汤小浣熊", "icon": "sensenova-color", "providers": ["raccoon"], "community": true,
       "summary": { "en": "SenseTime Raccoon (xiaohuanxiong.com) models, account credits and daily check-in, with browser sign-in or Raccoon desktop's live sign-in.", "zh": "商汤小浣熊（xiaohuanxiong.com）模型、积分余额与每日签到，支持浏览器登录或直接复用小浣熊桌面端登录态。" } },
+    { "package": "@magpie-community/opencode-sensenova-auth", "name": "SenseNova", "icon": "sensenova-color", "providers": ["sensenova-token-plan"], "community": true,
+      "summary": { "en": "SenseNova (SenseTime 日日新) Token Plan: one console sign-in reads the credit pools, their 5-hour and 7-day windows and the expiring grants, and — with an API key pasted at sign-in — serves the plan's own models for chat.", "zh": "商汤日日新 Token Plan：一次控制台登录即可读取积分池、5 小时 / 7 天窗口与将过期的返赠余额；登录时粘贴 API Key，同一个账号就能直接调用计划内模型对话。" } },
     { "package": "@magpie-community/opencode-autoclaw-auth", "name": "AutoClaw", "providers": ["autoclaw", "autoclaw-cn"], "community": true,
       "summary": { "en": "AutoClaw (Zhipu OpenClaw) cloud accounts: oversea web sign-in (Google/z.ai) or CN phone SMS, credit balance and daily check-in.", "zh": "AutoClaw（智谱澳龙/OpenClaw）云端账号：国际版网页登录（Google/z.ai）或国内手机验证码，积分余额与每日签到。" } },
     { "package": "@magpie-community/opencode-codearts-auth", "name": "CodeArts / OfficeAce", "providers": ["codearts", "officeace"], "community": true,
