@@ -1,0 +1,141 @@
+{
+ "session": "01a1924c-38e5-7500-a8c0-f380ea187bd4",
+ "body": {
+  "model": "gpt-5.1-codex",
+  "stream": true,
+  "tools": [
+   {
+    "type": "function",
+    "name": "exec_command"
+   },
+   {
+    "type": "function",
+    "name": "write_stdin"
+   },
+   {
+    "type": "function",
+    "name": "request_user_input"
+   },
+   {
+    "type": "function",
+    "name": "view_image"
+   },
+   {
+    "type": "function",
+    "name": "get_goal"
+   },
+   {
+    "type": "function",
+    "name": "create_goal"
+   },
+   {
+    "type": "function",
+    "name": "update_goal"
+   },
+   {
+    "type": "web_search"
+   }
+  ],
+  "input": [
+   {
+    "type": "message",
+    "id": "msg_abb9d6e0-7d72-58bd-8f23-c0f289f1fba5",
+    "role": "developer",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project \n…(cut)"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1924c-5279-76f3-b997-2eeb5451ce48",
+    "role": "developer",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Be\n…(cut)"
+     },
+     {
+      "type": "input_text",
+      "text": "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`: No filesystem sandboxing - all commands are permitted. Network access is enabled.\nApproval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.\n</permissions instructions>"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1924c-5279-76f3-b997-2ef0d89d1df4",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<environment_context>\n  <cwd>/tmp/sbx/proj</cwd>\n  <shell>bash</shell>\n  <current_date>2026-10-31</current_date>\n  <timezone>Etc/UTC</timezone>\n  <filesystem><workspace_roots><root>/tmp/sbx/proj</root></workspace_roots><permission_profile type=\"disabled\"><file_system type=\"unrestricted\" /></permission_profile></filesystem>\n</environment_context>"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1924c-5281-7702-8450-e64879f78253",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "SUBTASK_CX: run sleep 3 then echo hi"
+     }
+    ]
+   },
+   {
+    "type": "function_call",
+    "status": "completed",
+    "id": "fc_17",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"sleep 3; echo hi\"}",
+    "call_id": "call_17"
+   },
+   {
+    "type": "function_call_output",
+    "id": "fco_01a1924c-77b4-7ee3-8c34-f4c9f1168f2a",
+    "call_id": "call_17",
+    "output": "Chunk ID: 3d4df3\nWall time: 2.8560 seconds\nProcess exited with code 0\nOriginal token count: 1\nOutput:\nhi\n"
+   }
+  ],
+  "client_metadata": {
+   "thread_id": "01a1924c-5250-73c3-af0f-383de4907baa",
+   "session_id": "01a1924c-38e5-7500-a8c0-f380ea187bd4",
+   "x-codex-parent-thread-id": "01a1924c-38e5-7500-a8c0-f380ea187bd4",
+   "x-openai-subagent": "collab_spawn"
+  }
+ },
+ "reply": {
+  "id": "resp_18",
+  "object": "response",
+  "status": "completed",
+  "output": [
+   {
+    "type": "message",
+    "id": "msg_18",
+    "role": "assistant",
+    "status": "completed",
+    "content": [
+     {
+      "type": "output_text",
+      "text": "Sub done.",
+      "annotations": []
+     }
+    ]
+   }
+  ],
+  "usage": {
+   "input_tokens": 90000,
+   "output_tokens": 50,
+   "total_tokens": 90050,
+   "input_tokens_details": {
+    "cached_tokens": 0
+   },
+   "output_tokens_details": {
+    "reasoning_tokens": 0
+   }
+  }
+ }
+}

@@ -11,7 +11,7 @@
 // message to the channels and returns at once. Nothing here throws, and
 // nothing is awaited on the request's path: a broken channel must never
 // touch the request.
-import { hasTools, opensTurn, ending, firstWords, compacting, continued, background } from "./turn.mjs"
+import { hasTools, opensTurn, ending, firstWords, compacting, continued, background, subagent } from "./turn.mjs"
 import { send, usable } from "./channels.mjs"
 
 // open conversations: key -> { key, base, start, seen, agent, model, cwd, busy, waiting, nested, failed, background, compactedAt }
@@ -168,7 +168,7 @@ export function onRequest(body, ctx) {
     } else if (turn && !resumed && opensTurn(body, ctx.protocol) && !turn.nested) {
       turn.start = t // a new message from the user starts the turn over
     } else if (!turn) {
-      const nested = parentActive(base, t)
+      const nested = subagent(body, ctx.protocol) || parentActive(base, t)
       turn = { key, base, start: t, seen: t, agent: ctx.agent ?? "", model: ctx.model ?? body?.model ?? "", cwd: ctx.cwd ?? "", busy: 0, waiting: false, nested, failed: null, background: new Set(), compactedAt: 0 }
       turns.set(key, turn)
       if (!nested) latest.set(base, key)

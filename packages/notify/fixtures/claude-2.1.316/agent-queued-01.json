@@ -1,0 +1,31 @@
+{
+ "session": "7ae071b6-f401-4d89-9a0f-92277359e5dd",
+ "body": {
+  "model": "claude-sonnet-4-5",
+  "stream": true,
+  "system": "(system prompt trimmed)",
+  "tools": [],
+  "messages": [
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "<session>\nSCN_QUEUE go\n</session>\n\nWrite the title in the predominant language of the session — a stray word or code token in another language doesn't change it, and neither does the English of these instructions."
+     }
+    ]
+   }
+  ]
+ },
+ "reply": {
+  "type": "message",
+  "role": "assistant",
+  "content": [
+   {
+    "type": "text",
+    "text": "Title"
+   }
+  ],
+  "stop_reason": "end_turn"
+ }
+}

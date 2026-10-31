@@ -3,9 +3,9 @@
 // faked with fetch: no network, no account.
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createHmac } from "node:crypto"
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { onRequest, onResponse, reset, settled, options, duration, message } from "./notify.hooks.mjs"
-import { opensTurn, ending, hasTools, firstWords, compacting, continued, notificationOnly, background } from "./turn.mjs"
+import { opensTurn, ending, hasTools, firstWords, compacting, continued, notificationOnly, background, subagent } from "./turn.mjs"
 import { send, usable } from "./channels.mjs"
 
 const realFetch = globalThis.fetch
@@ -364,27 +364,105 @@ test("a retried request carries the same launch twice; the agent is still counte
   expect(JSON.parse(calls[0].body).message).toContain("took 11 min")
 })
 
-test("the same agent notifying twice does not end the turn while another is still running", async () => {
-  const l = fx("agent-3-launched"), nt = fx("agent-4-notified")
-  const r = l.body.messages.at(-1).content[0]
-  const launched = { ...l.body, messages: [...l.body.messages.slice(0, -1), { role: "user", content: [{ ...r, tool_use_id: "toolu_a" }, { ...r, tool_use_id: "toolu_b" }] }] }
-  expect(background(launched, "anthropic").launched).toEqual(["toolu_a", "toolu_b"])
-  const note = (id) => {
-    const p = nt.body.messages.at(-1).content[0]
-    return { ...nt.body, messages: [...nt.body.messages.slice(0, -1), { role: "user", content: [{ ...p, text: p.text.replace("<tool-use-id>toolu_agent</tool-use-id>", `<tool-use-id>${id}</tool-use-id>`) }] }] }
+// a recorded run, request by request in the order Claude Code sent them, with
+// `gap` minutes before each; returns how many pushes there were after each
+const recorded = (prefix) => readdirSync(new URL("./fixtures/claude-2.1.316/", import.meta.url)).filter((f) => f.startsWith(prefix + "-")).sort().map((f) => f.slice(0, -5))
+async function replay(names, gap) {
+  const after = []
+  for (const name of names) { minutes(gap); await send1(name); after.push(calls.length) }
+  return after
+}
+
+test("captured: an agent's notification that arrives while the main conversation is still working rides in a tool_result, and still counts", async () => {
+  const names = recorded("agent-busy") // main: Agent (background), then three Bash calls; the notification comes with the first Bash result
+  expect(background(fx("agent-busy-05").body, "anthropic")).toEqual({ launched: [], stopped: ["toolu_ag1"] })
+  expect(await replay(names, 2)).toEqual([0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 12 min")
+})
+
+test("captured: two background agents in one reply; the turn ends when both have reported, even if the first notifies twice", async () => {
+  const names = recorded("agent-two") // 06 is the first agent's notification, 08 the second's
+  expect(background(fx("agent-two-04").body, "anthropic").launched).toEqual(["toolu_a", "toolu_b"])
+  const twice = [...names.slice(0, 6), "agent-two-06", ...names.slice(6)]
+  expect(await replay(twice, 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 16 min")
+})
+
+test("captured: a Workflow runs in the background like an Agent and holds the turn", async () => {
+  expect(background(fx("workflow-03").body, "anthropic").launched).toEqual(["toolu_wf"])
+  expect(await replay(recorded("workflow"), 3)).toEqual([0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 12 min")
+})
+
+test("captured: a foreground Agent is an ordinary subagent; a background Bash command doesn't hold the turn", async () => {
+  expect(await replay(recorded("agent-foreground"), 3)).toEqual([0, 0, 0, 1])
+  reset(() => clock, fakeTimers); calls = []
+  // the main conversation stops while the command runs: that is the end of
+  // the turn (a dev server never stops); the notification after it is no
+  // new turn of the user's, and too short to push on its own
+  expect(background(fx("bash-background-02").body, "anthropic").launched).toEqual([])
+  expect(await replay(recorded("bash-background"), 3)).toEqual([0, 1, 1])
+})
+
+test("captured (interactive): you type while a background agent runs; the push still waits for the agent, timed from your new message", async () => {
+  expect(opensTurn(fx("agent-queued-06").body, "anthropic")).toBe(true) // "hello there", typed while the agent works
+  expect(await replay(recorded("agent-queued"), 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 4 min")
+})
+
+test("an Agent result that only quotes the launch text (a file read, say) launches nothing", () => {
+  const l = fx("agent-3-launched").body
+  const read = { ...l, messages: [...l.messages.slice(0, -2), { role: "assistant", content: [{ type: "tool_use", id: "toolu_read", name: "Read", input: {} }] }, { role: "user", content: [{ ...l.messages.at(-1).content[0], tool_use_id: "toolu_read" }] }] }
+  expect(background(read, "anthropic").launched).toEqual([])
+})
+
+// the same, for runs recorded from the real codex 0.166.0 (codex exec, and
+// the TUI for subagent-nowait) against a local recording endpoint
+const cxDir = new URL("./fixtures/codex-0.166.0/", import.meta.url)
+const cx = (name) => JSON.parse(readFileSync(new URL(`${name}.json`, cxDir), "utf8"))
+async function cxReplay(prefix, gap) {
+  const after = []
+  for (const f of readdirSync(cxDir).filter((f) => f.startsWith(prefix + "-")).sort()) {
+    const r = cx(f.slice(0, -5))
+    minutes(gap)
+    await exchange("responses", r.body, r.reply, { agent: "codex", session: r.session })
+    after.push(calls.length)
   }
-  const session = l.session
-  await send1("agent-1-main")
-  minutes(1)
-  await exchange("anthropic", launched, l.reply, { session })
-  minutes(3)
-  await exchange("anthropic", note("toolu_a"), nt.reply, { session })
-  await exchange("anthropic", note("toolu_a"), nt.reply, { session }) // "the same task-id may notify more than once"
-  expect(calls).toHaveLength(0)
-  minutes(5)
-  await exchange("anthropic", note("toolu_b"), nt.reply, { session })
-  expect(calls).toHaveLength(1)
-  expect(JSON.parse(calls[0].body).message).toContain("took 9 min")
+  return after
+}
+
+test("captured Codex auto-compaction, local (custom provider) and remote (OpenAI): one push, timed from the user's message", async () => {
+  expect(compacting(cx("compact-local-03").body, "responses")).toBe(true)
+  expect(opensTurn(cx("compact-local-04").body, "responses")).toBe(false) // the summary, as a user message
+  expect(await cxReplay("compact-local", 3)).toEqual([0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 18 min")
+  reset(() => clock, fakeTimers); calls = []
+  expect(compacting(cx("compact-remote-03").body, "responses")).toBe(true) // ends with compaction_trigger, tools and all
+  expect(await cxReplay("compact-remote", 3)).toEqual([0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 18 min")
+})
+
+test("captured Codex subagents: told apart by thread id, nested by client_metadata, and their notification is not the user's words", async () => {
+  // every Codex conversation's first user message is the same <environment_context>
+  expect(firstWords(cx("subagent-wait-03").body, "responses")).not.toBe(firstWords(cx("subagent-wait-01").body, "responses"))
+  expect(firstWords(cx("subagent-wait-03").body, "responses")).toBe(`codex thread ${cx("subagent-wait-03").body.client_metadata.thread_id}`)
+  expect(subagent(cx("subagent-wait-03").body, "responses")).toBe(true)
+  expect(subagent(cx("subagent-wait-01").body, "responses")).toBe(false)
+  const review = { ...cx("subagent-wait-03").body, client_metadata: { ...cx("subagent-wait-03").body.client_metadata, "x-openai-subagent": "review" } }
+  expect(subagent(review, "responses")).toBe(false) // /review is yours to wait for
+  expect(opensTurn(cx("subagent-wait-05").body, "responses")).toBe(false) // <subagent_notification>
+  expect(await cxReplay("subagent-wait", 3)).toEqual([0, 0, 0, 0, 1]) // spawn, wait_agent, the subagent's two requests, the end
+  expect(JSON.parse(calls[0].body).message).toContain("took 12 min")
+  reset(() => clock, fakeTimers); calls = []
+  // the parent stopped before its subagent's first request: still nested
+  expect(await cxReplay("subagent-nowait", 5)).toEqual([0, 1, 1, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 5 min")
+})
+
+test("without client_metadata, a Codex conversation is still told apart by its first user message that isn't Codex's own block", () => {
+  const strip = (b) => { const { client_metadata, ...rest } = b; return rest }
+  expect(firstWords(strip(cx("subagent-wait-01").body), "responses")).toBe("CX_SPAWN please")
+  expect(firstWords(strip(cx("subagent-wait-03").body), "responses")).toBe("SUBTASK_CX: run sleep 3 then echo hi")
 })
 
 test("Codex remote compaction neither ends nor restarts the turn", async () => {

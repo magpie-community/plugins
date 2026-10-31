@@ -24,7 +24,9 @@ export function opensTurn(body, protocol) {
       const last = body.input.at(-1)
       if (!isObj(last)) return false
       if (last.type != null && last.type !== "message") return false
-      return last.role === "user"
+      // Codex sends some blocks of its own as user messages (a subagent's
+      // notification, the environment), and after a compaction the summary
+      return last.role === "user" && !codexContext(last.content) && !holds(last.content, [CODEX_SUMMARY])
     }
     case "anthropic": {
       const last = Array.isArray(body.messages) ? body.messages.at(-1) : undefined
@@ -87,11 +89,20 @@ export function ending(reply, protocol) {
   }
 }
 
-// firstWords: the text of the conversation's first user message, which stays
-// the same on every request of one conversation, so it tells two
-// conversations in one session apart (an agent and the subagents it starts).
-// Only text is read: cache markers and other per-request fields move around.
-// "" when the request carries no user message at all.
+// Codex's own blocks, sent with role "user" (from the codex binary). Its
+// first user message is always <environment_context>, the same for every
+// conversation in a folder, a subagent's too.
+const CODEX_CONTEXT = ["<environment_context>", "<user_instructions>", "# AGENTS.md instructions", "<INSTRUCTIONS>", "<subagent_notification>",
+  "<turn_aborted>", "<user_shell_command>", "<skill>", "<model_switch>", "<personality_spec>", "<collaboration_mode>", "<apps_instructions>"]
+const codexContext = (c) => { const t = texts(c); return t.length > 0 && t.every((x) => CODEX_CONTEXT.some((p) => x.trimStart().startsWith(p))) }
+const codexMeta = (body) => isObj(body?.client_metadata) ? body.client_metadata : {}
+
+// firstWords: what tells two conversations in one session apart (an agent
+// and the subagents it starts), and stays the same on every request of one
+// conversation: Codex's thread id (client_metadata.thread_id) when it sends
+// one, else the text of the conversation's first user message (for Codex,
+// the first one that isn't its own block). Only text is read: cache markers
+// and other per-request fields move around. "" when there is nothing.
 export function firstWords(body, protocol) {
   if (!isObj(body)) return ""
   const text = (c) => typeof c === "string" ? c
@@ -99,9 +110,11 @@ export function firstWords(body, protocol) {
     : ""
   switch (protocol) {
     case "responses": {
+      const thread = codexMeta(body).thread_id
+      if (typeof thread === "string" && thread) return `codex thread ${thread}`
       if (typeof body.input === "string") return body.input
       if (!Array.isArray(body.input)) return ""
-      const first = body.input.find((i) => isObj(i) && (i.type == null || i.type === "message") && i.role === "user")
+      const first = body.input.find((i) => isObj(i) && (i.type == null || i.type === "message") && i.role === "user" && !codexContext(i.content))
       return first ? text(first.content) : ""
     }
     case "gemini": {
@@ -175,12 +188,15 @@ export function continued(body, protocol) {
   return !!first && holds(first.content, [CLAUDE_CONTINUED])
 }
 
-// Claude Code's background agents. The Agent tool can return at once with
-// BACKGROUND_LAUNCHED; the main conversation may then end its turn while the
-// agent works. When the agent stops, Claude Code resumes the main
-// conversation with a user message that is only a notification
-// (NOTIFICATION, wrapping a <task-notification>), not the user's words.
-const BACKGROUND_LAUNCHED = "Async agent launched successfully"
+// Claude Code's background agents. The Agent tool can return at once ("Async
+// agent launched successfully"), and the Workflow tool always does ("Workflow
+// launched in background"): LAUNCHED, by the tool that answers so. The main
+// conversation may then end its turn while the agents work. When one stops,
+// Claude Code resumes the main conversation with a user message that is only
+// a notification (NOTIFICATION, wrapping a <task-notification>), not the
+// user's words. Background Bash commands notify the same way but don't hold
+// the turn: a dev server never stops.
+const LAUNCHED = { Agent: "Async agent launched successfully", Task: "Async agent launched successfully", Workflow: "Workflow launched in background" }
 const NOTIFICATION = "[SYSTEM NOTIFICATION - NOT USER INPUT]"
 
 const lastUser = (body) => Array.isArray(body?.messages) ? body.messages.at(-1) : undefined
@@ -201,21 +217,38 @@ export function notificationOnly(body, protocol) {
 }
 
 // background: the background agents the newest user message launched (the
-// tool_use_id of each "launched" tool result) and the ones it says have
-// stopped (the <tool-use-id> of each notification that is not "running").
-// Ids, not counts: a retried request carries the same launch again, and the
-// same agent may notify more than once.
+// tool_use_id of each "launched" result of an Agent, Task or Workflow call
+// the previous reply made) and the ones it says have stopped (the
+// <tool-use-id> of each notification that is not "running"). A notification that arrives while
+// the main conversation is still working rides inside a tool_result (as
+// captured), so tool results are read too. Ids, not counts: a retried request
+// carries the same launch again, and the same agent may notify more than once.
 export function background(body, protocol) {
   const none = { launched: [], stopped: [] }
-  if (protocol !== "anthropic") return none
-  const last = lastUser(body)
-  if (!isObj(last) || last.role !== "user" || !Array.isArray(last.content) && typeof last.content !== "string") return none
-  const launched = Array.isArray(last.content) ? last.content.flatMap((p) => isObj(p) && p.type === "tool_result" && typeof p.tool_use_id === "string" &&
-    texts(p.content).some((t) => t.includes(BACKGROUND_LAUNCHED)) ? [p.tool_use_id] : []) : []
-  const stopped = texts(last.content).flatMap((t) => [...t.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)].flatMap((m) => {
+  if (protocol !== "anthropic" || !Array.isArray(body?.messages)) return none
+  const last = body.messages.at(-1)
+  if (!isObj(last) || last.role !== "user") return none
+  const prev = body.messages.at(-2)
+  const calls = new Map(isObj(prev) && prev.role === "assistant" && Array.isArray(prev.content)
+    ? prev.content.filter((p) => isObj(p) && p.type === "tool_use" && Object.hasOwn(LAUNCHED, p.name)).map((p) => [p.id, LAUNCHED[p.name]]) : [])
+  const launched = Array.isArray(last.content) ? last.content.flatMap((p) => isObj(p) && p.type === "tool_result" && calls.has(p.tool_use_id) &&
+    texts(p.content).some((t) => t.includes(calls.get(p.tool_use_id))) ? [p.tool_use_id] : []) : []
+  const stopped = [...texts(last.content), ...resultTexts(last.content)].flatMap((t) => [...t.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)].flatMap((m) => {
     const status = m[1].match(/<status>\s*(\w+)\s*<\/status>/)?.[1]
     const id = m[1].match(/<tool-use-id>\s*([^<\s]+)\s*<\/tool-use-id>/)?.[1]
     return id && status && status !== "running" ? [id] : []
   }))
   return { launched, stopped }
+}
+
+// subagent: the request says itself that a subagent sends it. Codex marks
+// the threads it starts in client_metadata: x-openai-subagent names the kind
+// (collab_spawn for spawn_agent, memory_consolidation, compact, review) and
+// spawned ones carry parent_thread_id. These are nested even when the parent
+// has already stopped, except /review, which you start and wait for.
+// Claude Code says nothing of the kind; parentActive works it out.
+export function subagent(body, protocol) {
+  if (protocol !== "responses") return false
+  const m = codexMeta(body), kind = m["x-openai-subagent"]
+  return kind ? kind !== "review" : !!(m.parent_thread_id || m["x-codex-parent-thread-id"])
 }
