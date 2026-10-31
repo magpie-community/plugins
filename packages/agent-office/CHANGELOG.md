@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 · 2026-10-31
+
+### Added
+
+- Jump directly to the live macOS terminal tab, multiplexer pane or desktop app window running a session (`lib/jump.mjs`), with single-click panel buttons, multi-host selector when a multiplexer session (`herdr` / `tmux`) is attached in multiple terminals, and double-click on workers, name tags, list rows or side-rail rows (#552).
+
 ## 0.2.1 · 2026-10-31
 
 ### Fixed

@@ -447,8 +447,20 @@
     "ESTAÇÃO ORBITAL 7"
   ]
 }
+  const JUMP_TEXT = {
+    en: { jumpTo: "↗ {n}", jumpingTo: "↗ Opening {n}…", host: "Host: {n}", jumpTip: "Focus the terminal tab, pane or app window running this session (or double-click)" },
+    "zh-CN": { jumpTo: "↗ {n}", jumpingTo: "↗ 正在切换到 {n}…", host: "宿主: {n}", jumpTip: "直接切回该会话所在的终端标签页、分屏或桌面窗口（也可双击直接跳转）" },
+    "zh-TW": { jumpTo: "↗ {n}", jumpingTo: "↗ 正在切換到 {n}…", host: "宿主: {n}", jumpTip: "直接切回該工作階段所在的終端分頁、分割畫面或桌面視窗（也可雙擊直接跳轉）" },
+    ja: { jumpTo: "↗ {n}", jumpingTo: "↗ {n} を開いています…", host: "ホスト: {n}", jumpTip: "このセッションを実行中のターミナルタブ・ペイン・ウィンドウに切り替えます（ダブルクリックでも移動）" },
+    ko: { jumpTo: "↗ {n}", jumpingTo: "↗ {n} 여는 중…", host: "호스트: {n}", jumpTip: "이 세션이 실행 중인 터미널 탭·패널·창으로 바로 이동합니다 (더블클릭 가능)" },
+    es: { jumpTo: "↗ {n}", jumpingTo: "↗ Abriendo {n}…", host: "Host: {n}", jumpTip: "Ir a la pestaña, panel o ventana donde corre esta sesión (o doble clic)" },
+    fr: { jumpTo: "↗ {n}", jumpingTo: "↗ Ouverture de {n}…", host: "Hôte : {n}", jumpTip: "Basculer vers l'onglet, le panneau ou la fenêtre de cette session (ou double-clic)" },
+    de: { jumpTo: "↗ {n}", jumpingTo: "↗ Öffne {n}…", host: "Host: {n}", jumpTip: "Zum Terminal-Tab, Pane oder Fenster dieser Sitzung wechseln (oder Doppelklick)" },
+    pt: { jumpTo: "↗ {n}", jumpingTo: "↗ Abrindo {n}…", host: "Host: {n}", jumpTip: "Alternar para a aba, painel ou janela onde esta sessão está rodando (ou clique duplo)" },
+  }
   const EXTRA_KEYS = ["sceneOffice", "sceneStation", "sceneCafe", "sceneCastle", "scenePirate", "sceneGraveyard", "qLow", "qMedium", "qHigh", "webglFallback", "you", "venueReading", "venueArcade", "venueMeeting", "venuePingpong", "venueCoffee", "stationSign"]
   for (const [code, values] of Object.entries(EXTRA_TEXT)) EXTRA_KEYS.forEach((key, i) => { TEXT[code][key] = values[i] })
+  for (const [code, map] of Object.entries(JUMP_TEXT)) Object.assign(TEXT[code], map)
   const LANGS = ["en", "zh-CN", "zh-TW", "ja", "ko", "es", "fr", "de", "pt"]
   const LANG_NAMES = {
     en: "English", "zh-CN": "简体中文", "zh-TW": "繁體中文", ja: "日本語", ko: "한국어",
@@ -706,7 +718,7 @@
         messages: Array.isArray(s.messages) ? s.messages : [],
         private: s.private === true,
         noProgress: sub === "noprog" || sub === "stuck",
-        resume: resume(s), seed: hash(s.key),
+        resume: resume(s), target: s.target || null, seed: hash(s.key),
       })
     }
     return out

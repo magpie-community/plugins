@@ -20,6 +20,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createTracker } from "./lib/track.mjs"
 import { createScanner } from "./lib/scan.mjs"
+import { createJumper } from "./lib/jump.mjs"
 
 const here = dirname(fileURLToPath(import.meta.url))
 // the page's folder, where live.js goes; a test points this elsewhere so it
@@ -43,9 +44,11 @@ const ownDir = (() => { try { return realpathSync(here) } catch { return here } 
 
 let tracker = null
 let scanner = null
+let jumper = null
 let timer = null
 let ticking = null
 let last = ""
+let lastJumpAt = 0
 // fail closed: until an install's options are read, or a request carries
 // them, no prompt, reply or command is written
 let options = { text: false }
@@ -76,6 +79,7 @@ function fromFiles(s, text) {
     messages: text && Array.isArray(s.messages) ? s.messages.slice(-8) : [],
     tokensToday: Number(s.tokensToday) || 0, turnsToday: Number(s.turnsToday) || 0,
     context: Number(s.context) || 0, contextWindow: Number(s.contextWindow) || 0,
+    target: s.target || null,
   }
 }
 
@@ -92,6 +96,7 @@ export function snapshot(now = Date.now()) {
       sessions.push(fromFiles(s, text))
     }
   }
+  if (jumper) jumper.decorate(sessions, now, options.preferredJumpHost || "herdr-app")
   // what only the gateway saw: an agent whose files aren't read here
   if (tracker) {
     for (const g of tracker.snapshot(now).sessions) {
@@ -105,6 +110,7 @@ export function snapshot(now = Date.now()) {
 
 export function write(now = Date.now()) {
   timer = null
+  checkJumpOption()
   let body
   try { body = JSON.stringify(snapshot(now)) } catch { return }
   // only a change is written; the time alone is no change
@@ -129,11 +135,20 @@ function soon() {
 export function start(opts = {}) {
   options = { ...options, ...opts }
   if (!scanner) scanner = createScanner({ days: 2, max: 40, ...(opts.scanner || {}) })
+  if (!jumper && (opts.jumper || !process.env.MAGPIE_AGENT_OFFICE_PAGE)) {
+    jumper = createJumper({ onUpdate: soon, ...(opts.jumper || {}) })
+    void jumper.refreshState(Date.now(), options.preferredJumpHost || "herdr-app")
+  }
+  if (opts.jumpRequest) checkJumpOption(opts.jumpRequest)
   if (!ticking) {
     write()
     ticking = setInterval(write, EVERY)
     ticking.unref?.()
   }
+}
+
+export function jump(req) {
+  return jumper ? jumper.jump(req) : Promise.resolve({ ok: false, steps: [] })
 }
 
 export function stop() {
@@ -195,8 +210,54 @@ function readOptions() {
   return null
 }
 
+function clearJumpOption() {
+  const cfg = process.env.XDG_CONFIG_HOME || join(process.env.HOME || "", ".config")
+  for (const file of [join(process.cwd(), "plugins.json"), join(cfg, "magpie", "plugins.json")]) {
+    let list
+    try { list = JSON.parse(readFileSync(file, "utf8")) } catch { continue }
+    const me = (list.plugins || []).find((p) => matchSpec(p?.spec))
+    if (!me) return
+    if (me.options && typeof me.options === "object" && "jumpRequest" in me.options) {
+      delete me.options.jumpRequest
+      try {
+        const tmp = file + ".tmp"
+        writeFileSync(tmp, JSON.stringify(list, null, 2) + "\n")
+        renameSync(tmp, file)
+      } catch {}
+    }
+    return
+  }
+}
+
+function checkJumpOption(directReq) {
+  if (!jumper) return
+  const fresh = readOptions()
+  if (fresh) options = { ...options, ...fresh }
+  const req = directReq || options.jumpRequest
+  if (!req || typeof req !== "object") return
+  const at = Number(req.at || 0)
+  // Ignore stale requests written before this host process started (>15s old)
+  // so restarting magpie does not replay a previous session jump.
+  if (!at || at <= lastJumpAt || Date.now() - at > 15000) {
+    if (at > lastJumpAt) lastJumpAt = at
+    if (options.jumpRequest) { delete options.jumpRequest; clearJumpOption() }
+    return
+  }
+  lastJumpAt = at
+  delete options.jumpRequest
+  clearJumpOption()
+  void jumper.jump({
+    key: String(req.key || ""),
+    session: String(req.session || ""),
+    preferredHostId: String(req.preferredHostId || options.preferredJumpHost || ""),
+  })
+}
+
 // read what the plugin's options say about text, then start: a host that
 // loads this module starts watching at once, before any request
 const loaded = readOptions()
-if (loaded) options = { text: false, ...loaded }
+if (loaded) {
+  options = { text: false, ...loaded }
+  if (Number(loaded.jumpRequest?.at) > 0) lastJumpAt = Number(loaded.jumpRequest.at)
+}
 if (!process.env.MAGPIE_AGENT_OFFICE_PAGE) start()

@@ -79,7 +79,7 @@ process.env.MAGPIE_AGENT_OFFICE_PAGE = scratch
 
 const hook = await import("../office.hooks.mjs")
 const startOpts = { text: !o.private, scanner: { days, max: 200 } }
-hook.start(startOpts)
+hook.start({ ...startOpts, jumper: {} })
 await new Promise((r) => setTimeout(r, 250))
 const first = hook.snapshot()
 
@@ -187,10 +187,10 @@ async function route(req) {
     }
     // UI preferences remain local to this bridge; never accept scanner paths or
     // other hook internals from a request body.
-    for (const key of ["text", "remote", "mode", "dim", "demo", "showDone", "hideAfter", "scene", "quality", "agents", "showSub", "showIdle", "side", "sideV", "cleared", "approvalAfterSec", "lang"]) {
+    for (const key of ["text", "remote", "mode", "dim", "demo", "showDone", "hideAfter", "scene", "quality", "agents", "showSub", "showIdle", "side", "sideV", "cleared", "approvalAfterSec", "lang", "preferredJumpHost"]) {
       if (Object.hasOwn(next, key)) options[key] = next[key]
     }
-    hook.start({ text: options.text !== false, remote: options.remote === true })
+    hook.start({ text: options.text !== false, remote: options.remote === true, jumper: {}, jumpRequest: next.jumpRequest, preferredJumpHost: options.preferredJumpHost })
     return json(options)
   }
   if (req.method !== "GET" && req.method !== "HEAD") return json({ error: "method not allowed" }, 405)

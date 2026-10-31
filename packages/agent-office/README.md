@@ -45,6 +45,7 @@ bun bin/agent-office.mjs --json   # 一次性快照，适合让 Agent 在聊天�
 
 ![Today usage and context](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/today.png)
 - **最近对话**：点击 Agent 查看任务、当前步骤、最近消息、模型、目录、上下文和续接命令。
+- **一键跳回终端**：在 macOS 上自动识别活跃会话所在的终端标签页、分屏或桌面窗口（Terminal.app、iTerm2、tmux、Herdr、Otty、Claude Desktop、Cursor、VS Code），支持面板点击（多宿主并排切换）或双击小人/名牌/列表行直接切回。
 - **页内提醒**：新出现的「需要你」或错误会在页面右下角弹出提示；标题栏显示需要你的数量。magpie 的 iframe 没有系统通知权限，所以不调用浏览器通知。
 - **9 种语言**：English、简体中文、繁體中文、日本語、한국어、Español、Français、Deutsch、Português。自动按最近提问的语言选择，也可手动指定。
 - **画中画**：可拖动、可缩放的页内悬浮小窗，✕ 或 Esc 放回。
