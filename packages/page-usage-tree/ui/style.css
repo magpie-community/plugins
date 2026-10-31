@@ -1,0 +1,888 @@
+/* magpie's own base, as pagebridge.js gives a plugin page: the window's
+   font, colours and control shapes. This page is served by its own service
+   instead of by magpie, so the same baseline lives here. The real values
+   arrive as --magpie-* variables; the ones below are only fallbacks. */
+
+:root {
+  --magpie-bg: #f5f6f8;
+  --magpie-card: #ffffff;
+  --magpie-fg: #23262e;
+  --magpie-fg-2: #3a3f4a;
+  --magpie-muted: #6b7280;
+  --magpie-faint: #9aa0aa;
+  --magpie-line: #e2e4e9;
+  --magpie-accent: #5b5bd6;
+  --magpie-accent-soft: #ececfb;
+  --magpie-green: #1f7a4d;
+  --magpie-red: #b3352f;
+  color-scheme: light;
+}
+
+html[data-theme="dark"] {
+  --magpie-bg: #15171c;
+  --magpie-card: #1c1f26;
+  --magpie-fg: #e8e9ee;
+  --magpie-fg-2: #c9ccd4;
+  --magpie-muted: #9aa0aa;
+  --magpie-faint: #70757f;
+  --magpie-line: #2c3038;
+  --magpie-accent: #8f8ff0;
+  --magpie-accent-soft: #262a3a;
+  --magpie-green: #5ac08a;
+  --magpie-red: #e0716a;
+  color-scheme: dark;
+}
+
+html {
+  background: var(--magpie-bg);
+  color: var(--magpie-fg);
+  font: 13px/1.45 var(--magpie-font, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  padding: 20px 24px;
+}
+
+h1, h2 {
+  margin: 0 0 8px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+h1 { font-size: 20px; }
+h2 { font-size: 15px; }
+p { margin: 0 0 8px; }
+
+button, input, select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  padding: 3px 10px;
+  border: 1px solid var(--magpie-line);
+  border-radius: 6px;
+  background: var(--magpie-card);
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--magpie-muted);
+}
+
+button:disabled {
+  opacity: .5;
+}
+
+input, select {
+  padding: 4px 8px;
+  border: 1px solid var(--magpie-line);
+  border-radius: 6px;
+  background: var(--magpie-card);
+}
+
+:focus-visible {
+  outline: 2px solid var(--magpie-accent);
+  outline-offset: 1px;
+}
+
+/* This page takes magpie's own look: the bridge already sets the window's
+   font, colours, headings and controls (:where rules of no weight). What is
+   below is layout only, in the same tokens magpie's built-in pages use. */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 1180px;
+}
+
+/* ---- the head: the page's name, the period, a refresh ------------------- */
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.head-text h1 {
+  margin: 0;
+}
+
+.head-text p {
+  margin: 2px 0 0;
+  color: var(--magpie-muted);
+  font-size: 11.5px;
+}
+
+.head-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.segs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 0;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--magpie-fg) 7%, transparent);
+}
+
+.segs button {
+  min-width: 52px;
+  height: 22px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--magpie-muted);
+  font-size: 12px;
+}
+
+.segs button:hover {
+  color: var(--magpie-fg-2);
+}
+
+.segs button[aria-selected="true"] {
+  background: var(--magpie-card);
+  color: var(--magpie-fg);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--magpie-fg) 14%, transparent);
+}
+
+.icon {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 7px;
+  place-items: center;
+}
+
+.icon svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon.busy svg {
+  animation: spin .85s linear infinite;
+}
+
+/* ---- the totals: magpie's .stats, four cells on one card ---------------- */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--magpie-line);
+  border-radius: 12px;
+  background: var(--magpie-line);
+}
+
+.stats:empty {
+  display: none;
+}
+
+.summary-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 12px 14px 11px;
+  background: var(--magpie-card);
+}
+
+.summary-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--magpie-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.summary-label svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.summary-value {
+  overflow: hidden;
+  margin-top: 3px;
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.01em;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary-sub {
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--magpie-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary-card.loading {
+  animation: breathe 1.3s ease-in-out infinite alternate;
+}
+
+/* ---- the list ----------------------------------------------------------- */
+
+.panel {
+  overflow: hidden;
+  border: 1px solid var(--magpie-line);
+  border-radius: 12px;
+  background: var(--magpie-card);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--magpie-line);
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--magpie-line);
+  border-radius: 6px;
+  background: var(--magpie-card);
+}
+
+.search:focus-within {
+  border-color: var(--magpie-muted);
+}
+
+.search svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  fill: none;
+  stroke: var(--magpie-muted);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.search input {
+  width: 190px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 11.5px;
+}
+
+.search input::placeholder {
+  color: var(--magpie-faint);
+}
+
+.sort {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding-left: 8px;
+  border: 1px solid var(--magpie-line);
+  border-radius: 6px;
+  color: var(--magpie-muted);
+  font-size: 11.5px;
+}
+
+.sort select {
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 11.5px;
+}
+
+.text {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  color: var(--magpie-muted);
+}
+
+.text:hover {
+  color: var(--magpie-fg);
+}
+
+.warn {
+  margin: 10px 14px 0;
+  padding: 6px 10px;
+  border-radius: 7px;
+  background: var(--magpie-accent-soft);
+  color: var(--magpie-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* one set of column names for the two list levels, so a row needs no
+   labels of its own and the numbers line up down the page */
+.cols {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.2fr) 64px 82px minmax(72px, 0.55fr) 46px 82px 76px 20px;
+  gap: 12px;
+  align-items: center;
+  padding: 7px 14px 6px;
+  border-bottom: 1px solid var(--magpie-line);
+  color: var(--magpie-faint);
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.cols span:not(:first-child) {
+  text-align: right;
+}
+
+.cols .col-share {
+  text-align: right;
+}
+
+/* ---- an account, and the models it opens -------------------------------- */
+
+.accounts:empty {
+  display: none;
+}
+
+/* ---- the tree: a provider, its accounts, their models -------------------- */
+
+.provider {
+  border-bottom: 1px solid var(--magpie-line);
+}
+
+.provider:last-child {
+  border-bottom: 0;
+}
+
+.provider-main {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.2fr) 64px 82px minmax(72px, 0.55fr) 46px 82px 76px 20px;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 9px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.provider-main:hover {
+  background: color-mix(in srgb, var(--magpie-fg) 4%, transparent);
+}
+
+.provider.open .provider-main {
+  background: color-mix(in srgb, var(--magpie-fg) 3%, transparent);
+}
+
+.provider-main .provider-badge {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  font-size: 10px;
+}
+
+.provider-main .level-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* the provider's own errors, where the account's are under it */
+.provider-main .errors-cell {
+  display: block;
+}
+
+.provider-accounts {
+  display: none;
+  border-top: 1px solid var(--magpie-line);
+  background: color-mix(in srgb, var(--magpie-fg) 2%, transparent);
+}
+
+.provider.open .provider-accounts {
+  display: block;
+}
+
+/* the account, one level in: the provider's own name is above it */
+.provider-accounts .account {
+  border-bottom: 1px solid color-mix(in srgb, var(--magpie-line) 60%, transparent);
+}
+
+.provider-accounts .account:last-child {
+  border-bottom: 0;
+}
+
+.provider-accounts .account-main {
+  padding: 7px 14px 7px 38px;
+}
+
+.provider-accounts .provider-badge {
+  display: none;
+}
+
+.account {
+  border-bottom: 1px solid var(--magpie-line);
+}
+
+.account:last-child {
+  border-bottom: 0;
+}
+
+.account-main {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.2fr) 64px 82px minmax(72px, 0.55fr) 46px 82px 76px 20px;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 9px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.account-main:hover {
+  background: color-mix(in srgb, var(--magpie-fg) 4%, transparent);
+}
+
+.account.open .account-main {
+  background: color-mix(in srgb, var(--magpie-fg) 3%, transparent);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.provider-badge {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border-radius: 6px;
+  background: var(--magpie-accent-soft);
+  color: var(--magpie-accent);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  place-items: center;
+}
+
+.identity-text {
+  min-width: 0;
+}
+
+.level-name {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.level-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: var(--magpie-muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.account-sub i {
+  width: 2px;
+  height: 2px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--magpie-faint);
+}
+
+.metric {
+  min-width: 0;
+}
+
+.metric-label {
+  color: var(--magpie-faint);
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.metric-value {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the numbers line up under the shared column names */
+.calls-cell,
+.cost-cell,
+.errors-cell {
+  text-align: right;
+}
+
+.metric-detail {
+  overflow: hidden;
+  color: var(--magpie-muted);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the share: a bar of the list's own scale and the share of it */
+.share-cell {
+  min-width: 0;
+}
+
+.share-label-cell {
+  color: var(--magpie-muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.tokens-cell .metric-value {
+  text-align: right;
+}
+
+.model-split {
+  overflow: hidden;
+  color: var(--magpie-faint);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar {
+  height: 4px;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--magpie-line);
+}
+
+.bar i {
+  display: block;
+  width: var(--bar, 0%);
+  height: 100%;
+  border-radius: 2px;
+  background: var(--magpie-accent);
+  opacity: .7;
+}
+
+.cost-cell .metric-value {
+  color: var(--magpie-green);
+}
+
+/* a call with no known price is no cost: it is not a green one */
+.cost-cell.unpriced .metric-value {
+  color: var(--magpie-faint);
+}
+
+.metric.bad .metric-value,
+.metric.bad .metric-detail {
+  color: var(--magpie-red);
+}
+
+.chevron {
+  display: grid;
+  color: var(--magpie-muted);
+  place-items: center;
+}
+
+.chevron svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform .15s;
+}
+
+.account.open .chevron svg {
+  transform: rotate(180deg);
+}
+
+.model-list {
+  display: none;
+  border-top: 1px solid var(--magpie-line);
+  background: color-mix(in srgb, var(--magpie-fg) 2%, transparent);
+}
+
+.account.open .model-list {
+  display: block;
+}
+
+.model-head,
+.model-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.2fr) 64px 82px minmax(72px, 0.55fr) 46px 82px 76px;
+  gap: 12px;
+  align-items: center;
+}
+
+.model-head {
+  padding: 6px 48px 0 62px;
+  color: var(--magpie-faint);
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.model-head span:nth-child(2),
+.model-head span:nth-child(3),
+.model-head span:nth-child(5),
+.model-head span:nth-child(6) {
+  text-align: right;
+}
+
+.model-head span:not(:first-child) {
+  text-align: right;
+}
+
+.model-row {
+  padding: 6px 48px 7px 62px;
+  border-top: 1px solid color-mix(in srgb, var(--magpie-line) 60%, transparent);
+}
+
+/* the model, the third level: the lightest of the three */
+.model-name {
+  color: var(--magpie-fg-2);
+}
+
+.model-name {
+  overflow: hidden;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-provider {
+  color: var(--magpie-muted);
+  font-size: 10.5px;
+}
+
+.model-host {
+  overflow: hidden;
+  color: var(--magpie-faint);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- an empty or failed read -------------------------------------------- */
+
+.state {
+  margin: 14px;
+  padding: 22px 16px;
+  border: 1px dashed var(--magpie-line);
+  border-radius: 10px;
+  color: var(--magpie-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.state strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--magpie-fg);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.state button {
+  margin-top: 10px;
+  font-size: 11.5px;
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px 4px;
+  color: var(--magpie-faint);
+  font-size: 10.5px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes breathe {
+  from { opacity: .55; }
+  to { opacity: .9; }
+}
+
+@media (max-width: 900px) {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .account-main {
+    grid-template-columns: minmax(150px, 1fr) 60px 74px minmax(80px, 0.7fr) 44px 74px 20px;
+  }
+
+  .provider-main {
+    grid-template-columns: minmax(150px, 1fr) 60px 74px minmax(80px, 0.7fr) 44px 74px 20px;
+  }
+
+  .account-main .errors-cell {
+    display: none;
+  }
+
+  .model-head,
+  .model-row {
+    grid-template-columns: minmax(150px, 1fr) 60px 74px minmax(80px, 0.7fr) 44px 74px;
+  }
+
+  .model-head > :last-child,
+  .model-row > :last-child {
+    display: none;
+  }
+
+  .cols {
+    grid-template-columns: minmax(150px, 1fr) 60px 74px minmax(80px, 0.7fr) 44px 74px 74px 20px;
+  }
+
+  .cols .col-share {
+    display: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .head {
+    align-items: flex-start;
+  }
+
+  .tools {
+    width: 100%;
+  }
+
+  .search {
+    flex: 1 1 auto;
+  }
+
+  .search input {
+    width: 100%;
+  }
+
+  .account-main {
+    grid-template-columns: minmax(0, 1fr) 60px 20px;
+  }
+
+  .provider-main {
+    grid-template-columns: minmax(0, 1fr) 60px 20px;
+  }
+
+  .provider-main .token-cell,
+  .provider-main .cost-cell,
+  .provider-main .share-cell {
+    display: none;
+  }
+
+  .account-main .token-cell,
+  .account-main .cost-cell,
+  .account-main .share-cell {
+    display: none;
+  }
+
+  .model-head {
+    display: none;
+  }
+
+  .model-row {
+    grid-template-columns: minmax(0, 1fr) 56px 70px;
+    padding: 7px 12px 8px 20px;
+    border-top: 1px solid var(--magpie-line);
+  }
+
+  .cols {
+    grid-template-columns: minmax(0, 1fr) 60px 20px;
+  }
+
+  .cols span:nth-child(3),
+  .cols span:nth-child(4),
+  .cols span:nth-child(5),
+  .cols span:nth-child(6) {
+    display: none;
+  }
+
+  .model-row .model-provider,
+  .model-row .model-split,
+  .model-row .metric-detail {
+    display: none;
+  }
+
+  .foot {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

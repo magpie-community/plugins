@@ -1,0 +1,67 @@
+{
+  "name": "@magpie-community/page-usage-tree",
+  "version": "0.1.0",
+  "description": "A page in magpie's window: usage as provider -> account -> model, each level expandable, with calls, tokens and cost. Reads your local usage ledger only.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "serve.mjs",
+    "lib",
+    "page",
+    "ui",
+    "assets",
+    "LICENSE",
+    "README.md",
+    "PUBLISHING.md"
+  ],
+  "scripts": {
+    "start": "node serve.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "magpie": ">=0.1.1340"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "magpie-plugin",
+    "usage",
+    "accounts",
+    "models",
+    "tokens",
+    "cost"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/page-usage-tree"
+  },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/page-usage-tree",
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "magpie": {
+    "page": {
+      "title": "Account usage",
+      "titles": {
+        "zh": "账号用量",
+        "zh-TW": "帳號用量",
+        "ja": "アカウント使用量",
+        "de": "Kontonutzung"
+      },
+      "file": "page/index.html",
+      "service": {
+        "port": 3488,
+        "option": "port"
+      },
+      "icon": "page/icon.svg"
+    },
+    "options": {
+      "port": 3488,
+      "usdCny": 7.2
+    },
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4IiB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgZmlsbD0ibm9uZSI+CiAgPHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIHJ4PSIyOCIgZmlsbD0iIzNhM2Y0YiIvPgogIDxnIHN0cm9rZT0iI2U5ZTdmMiIgc3Ryb2tlLXdpZHRoPSI5LjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+CiAgICA8cmVjdCB4PSI0Mi40IiB5PSIxMy42IiB3aWR0aD0iNDMuMiIgaGVpZ2h0PSIyNi40IiByeD0iMTAuNCIvPgogICAgPHBhdGggZD0iTTY0IDQwdjE2Ii8+CiAgICA8cGF0aCBkPSJNMzAuNCA4Mi40VjcyLjhhMTAuNCAxMC40IDAgMCAxIDEwLjQtMTAuNGg0Ni40YTEwLjQgMTAuNCAwIDAgMSAxMC40IDEwLjR2OS42Ii8+CiAgICA8cmVjdCB4PSIxNC40IiB5PSI4Mi40IiB3aWR0aD0iMzAuNCIgaGVpZ2h0PSIyMi40IiByeD0iOS42Ii8+CiAgICA8cmVjdCB4PSI0OC44IiB5PSI4Mi40IiB3aWR0aD0iMzAuNCIgaGVpZ2h0PSIyMi40IiByeD0iOS42Ii8+CiAgICA8cmVjdCB4PSI4My4yIiB5PSI4Mi40IiB3aWR0aD0iMzAuNCIgaGVpZ2h0PSIyMi40IiByeD0iOS42Ii8+CiAgICA8cGF0aCBkPSJNMTguNCAxMTQuNGg5MS4yIi8+CiAgPC9nPgo8L3N2Zz4K"
+  }
+}

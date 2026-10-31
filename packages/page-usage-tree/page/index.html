@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>账号用量</title>
+  <style>
+    :root { color-scheme: light dark; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: grid;
+      place-items: center;
+      font: 13px/1.6 "Aptos", "Segoe UI Variable", "Noto Sans SC", "PingFang SC", sans-serif;
+      color: var(--magpie-fg, CanvasText);
+      background: var(--magpie-bg, Canvas);
+    }
+    .waiting {
+      display: grid;
+      gap: 6px;
+      max-width: 460px;
+      padding: 0 20px;
+      color: var(--magpie-muted, GrayText);
+      text-align: center;
+    }
+    .waiting b { color: var(--magpie-fg, CanvasText); font-size: 14px; font-weight: 600; }
+    .waiting button { justify-self: center; margin-top: 8px; padding: 5px 14px; font: inherit; }
+  </style>
+</head>
+<body>
+  <div class="waiting">
+    <b>账号用量</b>
+    <div id="said">正在连接本地用量服务…</div>
+    <button id="retry" type="button" hidden>重试</button>
+  </div>
+  <script src="_magpie/bridge.js"></script>
+  <script src="boot.js"></script>
+</body>
+</html>
