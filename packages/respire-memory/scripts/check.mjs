@@ -165,7 +165,7 @@ try {
   assert.equal(continuation.messages[0].content, original.messages[0].content, 'Tool continuation must restore the durable block after restart');
   const o = options({ stateDir, runtimeUrl: `http://127.0.0.1:${server.address().port}`, archive: true,
     generationBaseUrl: `http://127.0.0.1:${server.address().port}/v1`, generationModel: 'fixture', authorizationEnv: 'RESPIRE_MAGPIE_FIXTURE_KEY' });
-  const store = new Store(stateDir), signal = AbortSignal.timeout(20000), call = args => rpc(o, args, signal);
+  const store = new Store(stateDir), call = args => rpc(o, args);
   const account = await accountIdentity(o, call);
   const acceptedAt = Date.now();
   await store.put('control-' + digest(account, o.url, o.project), { readOnly: false, archive: true, capture: false, updatedAt: acceptedAt, signature: controlSignature(o) });
@@ -199,7 +199,7 @@ try {
   assert.throws(() => emptyFinish.finish('{"result":"nothing-to-store","ids":[]}'), /turn-diary-required/);
   let extractionCount = 0, finalRound = 0, userAt = 0, diaryRound = 0;
   const largeJob = makeJob(digest('large-turn')); largeJob.messages[0].content = 'a'.repeat(270000);
-  const segmented = await archiveTurn(largeJob, { call, signal, model: async (_o, messages, tools) => {
+  const segmented = await archiveTurn(largeJob, { call, signal: AbortSignal.timeout(20000), model: async (_o, messages, tools) => {
     if (!tools.length) { extractionCount++; return { role: 'assistant', content: '{"facts":[],"constraints":[]}' }; }
     const input = JSON.parse(messages[1].content); let command;
     if (finalRound++ === 0) command = { name: 'respire_memory', arguments: JSON.stringify({ command: 'recall', args: ['project'] }) };
