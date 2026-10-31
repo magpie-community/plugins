@@ -61,17 +61,29 @@ test("a cold listing gives the plan's models, not the raw catalogue", async () =
   expect(Object.keys(models).sort()).toEqual(["glm-5.2", "sensenova-6.8-flash-lite"])
 })
 
-test("the listing carries each model's limits, input kinds and effort levels", async () => {
+test("the listing carries each model's limits, input kinds and effort tiers", async () => {
   f = fakeSenseNova()
   serve()
   const p = await plugin()
   const models = await p.provider.models({ id: "sensenova-token-plan", models: {} }, { auth })
   expect(models["glm-5.2"].limit).toEqual({ context: 1048576, output: 131072 })
-  // the effort levels the platform declares, glm-5.2 taking max, the others not
-  expect(Object.keys(models["glm-5.2"].variants)).toEqual(["none", "low", "medium", "high", "xhigh", "max"])
-  expect(models["sensenova-6.8-flash-lite"].variants).toHaveProperty("none")
+  // the tiers are the same for every model: the platform publishes no per-model
+  // list, so nothing narrower than "these are offered" is claimed
+  expect(Object.keys(models["glm-5.2"].variants)).toEqual(["none", "low", "high"])
+  expect(Object.keys(models["sensenova-6.8-flash-lite"].variants)).toEqual(["none", "low", "high"])
+  // what is claimed is checkable from the reply itself: whether it takes images
   expect(models["sensenova-6.8-flash-lite"].capabilities.input.image).toBe(true)
   expect(models["glm-5.2"].capabilities.input.image).toBe(false)
+})
+
+test("a model the catalogue says doesn't reason gets no effort tiers", () => {
+  // the gate is the catalogue's own supported_features, not a hand-kept table:
+  // a model that stops reasoning stops offering tiers, with nothing to update
+  const flat = _internal.modelOf({ id: "x", name: "x", context: 1000, output: 100, reasoning: false })
+  expect(flat.reasoning).toBe(false)
+  expect(flat.variants).toBeUndefined()
+  const deep = _internal.modelOf({ id: "y", name: "y", context: 1000, output: 100, reasoning: true })
+  expect(Object.keys(deep.variants)).toEqual(["none", "low", "high"])
 })
 
 test("two accounts on different plans list different models", async () => {

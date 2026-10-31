@@ -332,20 +332,14 @@ async function passwordLogin(username, password) {
 
 // ---- the model catalogue (an API key's models)
 
-// Reasoning effort levels each model takes. There is no public page listing
-// them: these are the levels a free Token Plan account's own requests were
-// answered with, and the ones it answers 400 to. `reasoning_effort` is the
-// field the OpenAI-compatible request carries; `none` is thinking off. Only
-// the levels a model truly takes are listed — glm-5.2 takes `max`, the
-// flash-lite and v4-flash don't. testdata/models.json holds the catalogue
-// these were read against.
-const EFFORTS = {
-  "glm-5.2": ["none", "low", "medium", "high", "xhigh", "max"],
-  "deepseek-v4-flash": ["none", "low", "high", "xhigh"],
-  "deepseek-flash": ["none", "low", "high", "xhigh"],
-  "kimi-k3": ["none", "low", "high", "xhigh"],
-  "sensenova-6.8-flash-lite": ["none", "low", "high"],
-}
+// The reasoning effort levels offered for a model. The platform publishes no
+// list of them, and the per-model tiers this account's requests happened to be
+// answered with cannot be checked from outside that account, so this is
+// deliberately the narrow set: three levels an OpenAI-compatible reasoning
+// endpoint takes, `none` being thinking off. What *is* checkable is whether a
+// model reasons at all — the catalogue's own `supported_features` says so, and
+// testdata/models.json holds a real reply — so that is the only gate here.
+const EFFORTS = ["none", "low", "high"]
 
 // the models the plan ships, as magpie's provider starts with: the same ids
 // the catalogue serves, with the limits the platform declared when this was
@@ -396,7 +390,7 @@ async function apiModels(key) {
 // says nothing about where it goes.
 function modelOf(m, provider) {
   const image = m.image === true
-  const efforts = EFFORTS[m.id]
+  const efforts = m.reasoning !== false ? EFFORTS : undefined
   return {
     id: m.id,
     name: m.name || m.id,
