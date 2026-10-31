@@ -12,7 +12,7 @@
 // the request (slim.mjs) and puts the memory it gets back after the last
 // user message. Anything that goes wrong leaves the request as it came.
 import { createHash } from "node:crypto"
-import { aeliosProtocol, appendPatch, hasSecret, humanTurn, serverState, slim, spoken } from "./slim.mjs"
+import { aeliosProtocol, appendPatch, hasSecret, humanTurn, lastUserText, serverState, slim, spoken } from "./slim.mjs"
 
 const version = "0.1.0"
 const maxResponseBytes = 256 << 10
@@ -76,7 +76,7 @@ async function recall(body, ctx, o, report) {
     return
   }
   const slimmed = slim(body, protocol)
-  if (hasSecret(slimmed)) {
+  if (hasSecret(lastUserText(slimmed, protocol))) {
     if (ctx.state) delete ctx.state.aelios
     report("skipped")
     return
@@ -179,7 +179,7 @@ export function onResponse(reply, ctx) {
       report("skipped")
       return
     }
-    if (hasSecret(state.slimmed) || hasSecret(spoken(reply))) {
+    if (hasSecret(lastUserText(state.slimmed, state.protocol)) || hasSecret(spoken(reply))) {
       report("skipped")
       return
     }

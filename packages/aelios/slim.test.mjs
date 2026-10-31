@@ -1,7 +1,7 @@
 // slim, the turn guess, the patch and the secret check, on their own: pure
 // functions, no hook, no network.
 import { expect, test } from "bun:test"
-import { aeliosProtocol, appendPatch, hasSecret, humanTurn, serverState, slim, spoken } from "./slim.mjs"
+import { aeliosProtocol, appendPatch, hasSecret, humanTurn, lastUserText, serverState, slim, spoken } from "./slim.mjs"
 
 const big = (n) => "x".repeat(n)
 
@@ -24,7 +24,7 @@ function claudeCode() {
       { role: "assistant", content: [
         { type: "thinking", thinking: big(4000), signature: big(400) },
         { type: "text", text: "Looking at it." },
-        { type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "/src/login.ts" } },
+        { type: "tool_use", id: "toolu_1", name: "Read" },
       ] },
       { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: big(20000) }] },
       { role: "assistant", content: [{ type: "tool_use", id: "toolu_2", name: "Write", input: { file_path: "/src/big.ts", content: big(20000) } }] },
@@ -67,10 +67,10 @@ test("slim makes an 80 KB Claude Code request much smaller and keeps only what w
   expect(wire).not.toContain("cache_control")
   expect(wire).not.toContain("thinking")
   expect(wire).not.toContain("signature")
-  expect(s.messages[1].content).toEqual([{ type: "text", text: "Looking at it." }, { type: "tool_use", name: "Read", input: { file_path: "/src/login.ts" } }])
+  expect(s.messages[1].content).toEqual([{ type: "text", text: "Looking at it." }, { type: "tool_use", name: "Read" }])
   expect(s.messages[2].content).toEqual([{ type: "tool_result", content: "" }])
-  // a tool call over 16 KB keeps its name, not its arguments
-  expect(s.messages[3].content).toEqual([{ type: "tool_use", name: "Write", input: {} }])
+  // every historical tool call keeps its name, not its arguments
+  expect(s.messages[3].content).toEqual([{ type: "tool_use", name: "Write" }])
   expect(s.messages[6].content).toEqual([{ type: "text", text: "[image]" }, { type: "text", text: "Thanks! Now the logout one." }])
 })
 
@@ -81,14 +81,14 @@ test("chat: system prompts and tool output go, tool calls and names stay", () =>
     messages: [
       { role: "system", content: "sys" },
       { role: "user", content: [{ type: "text", text: "hi" }, { type: "image_url", image_url: { url: "data:x" } }] },
-      { role: "assistant", content: null, reasoning_content: "hmm", tool_calls: [{ id: "c1", type: "function", function: { name: "send_message", arguments: "{\"to\":\"mum\"}" } }] },
+      { role: "assistant", content: null, reasoning_content: "hmm", tool_calls: [{ id: "c1", type: "function", function: { name: "send_message" } }] },
       { role: "tool", tool_call_id: "c1", content: "sent ok" },
     ],
   }, "chat")
   expect(s).toEqual({
     messages: [
       { role: "user", content: [{ type: "text", text: "hi" }, { type: "text", text: "[image]" }] },
-      { role: "assistant", content: "", tool_calls: [{ type: "function", function: { name: "send_message", arguments: "{\"to\":\"mum\"}" } }] },
+      { role: "assistant", content: "", tool_calls: [{ type: "function", function: { name: "send_message" } }] },
       { role: "tool", content: "" },
     ],
     tools: [{ type: "function", function: { name: "send_message" } }],
@@ -104,7 +104,7 @@ test("responses: string input, items, reasoning dropped, outputs emptied, server
       { type: "message", role: "developer", content: "dev" },
       { type: "message", role: "user", content: [{ type: "input_text", text: "run it" }, { type: "input_image", image_url: "x" }] },
       { type: "reasoning", summary: [], encrypted_content: "zzz" },
-      { type: "function_call", call_id: "c", name: "shell", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", call_id: "c", name: "shell" },
       { type: "function_call_output", call_id: "c", output: "file list" },
       { type: "item_reference", id: "msg_1" },
     ],
@@ -112,7 +112,7 @@ test("responses: string input, items, reasoning dropped, outputs emptied, server
   expect(s).toEqual({
     input: [
       { type: "message", role: "user", content: [{ type: "input_text", text: "run it" }, { type: "text", text: "[image]" }] },
-      { type: "function_call", name: "shell", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", name: "shell" },
       { type: "function_call_output", output: "" },
       { type: "item_reference" },
     ],
@@ -193,4 +193,56 @@ test("spoken takes text and tool arguments from each reply shape", () => {
   expect(spoken({ choices: [{ message: { content: "a", tool_calls: [{ function: { arguments: "{}" } }] } }] })).toEqual(["a", "{}"])
   expect(spoken({ output: [{ type: "message", content: [{ type: "output_text", text: "a" }] }, { type: "function_call", arguments: "{}" }] })).toEqual(["a", "{}"])
   expect(spoken(null)).toEqual([])
+})
+
+
+test("history credentials are omitted by text block, current text stays intact, and slimming stays pure", () => {
+  for (const protocol of ["messages", "chat", "responses"]) {
+    const messages = [
+      { role: "user", content: "password=synthetic-history-only" },
+      { role: "assistant", content: [{ type: "text", text: "token=getToken()" }, { type: "text", text: "safe context" }] },
+      { role: "user", content: [{ type: "text", text: "token=synthetic-current-only" }] },
+    ]
+    const body = protocol === "responses" ? { input: messages } : { messages }
+    const before = JSON.stringify(body)
+    const result = slim(body, protocol)
+    const list = protocol === "responses" ? result.input : result.messages
+    expect(list[0].content).toBe("[credential omitted]")
+    expect(list[1].content).toEqual([{ type: "text", text: "[credential omitted]" }, { type: "text", text: "safe context" }])
+    expect(lastUserText(result, protocol)).toBe("token=synthetic-current-only")
+    expect(JSON.stringify(result)).toBe(JSON.stringify(slim(body, protocol)))
+    expect(JSON.stringify(body)).toBe(before)
+  }
+})
+
+test("lastUserText only reads the final user item, never a prior human turn", () => {
+  const human = { role: "user", content: "password=synthetic-history-only" }
+  for (const protocol of ["messages", "chat", "responses"]) {
+    for (const last of [
+      { role: "user", content: [{ type: "tool_result", content: "hidden tool text" }] },
+      { role: "assistant", content: "reply" },
+      protocol === "responses" ? { type: "function_call_output", output: "tool text" } : { role: "tool", content: "tool text" },
+    ]) {
+      const list = [human, last]
+      const body = protocol === "responses" ? { input: list } : { messages: list }
+      expect(lastUserText(slim(body, protocol), protocol)).toBe("")
+    }
+  }
+  expect(lastUserText({ input: "token=synthetic-current" }, "responses")).toBe("token=synthetic-current")
+})
+
+test("generation token parameters do not weaken real token detection", () => {
+  for (const key of ["max_token", "max_tokens", "input_tokens", "output_tokens"]) {
+    expect(hasSecret(`${key}: 4000`)).toBe(false)
+    expect(hasSecret({ [key]: 4000 })).toBe(false)
+    expect(hasSecret(`${key}: 4000 token=synthetic-secret`)).toBe(true)
+    expect(hasSecret(`${key}: sk-abcdefghijklmnop`)).toBe(true)
+  }
+  for (const text of ["token=getToken()", "token=synthetic-secret", "api_token=synthetic-secret", "my_token=synthetic-secret"]) expect(hasSecret(text)).toBe(true)
+})
+
+test("Responses custom tool history loses input, while new reply speech keeps it", () => {
+  const call = { type: "custom_tool_call", name: "send_message", input: "synthetic speech" }
+  expect(slim({ input: [call] }, "responses")).toEqual({ input: [{ type: "custom_tool_call", name: "send_message" }] })
+  expect(spoken({ output: [call] })).toEqual(["synthetic speech"])
 })

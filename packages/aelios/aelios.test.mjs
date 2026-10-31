@@ -29,7 +29,7 @@ const hang = (_body, init) => new Promise((_, reject) => init.signal.addEventLis
 function ctx(protocol, extra = {}) {
   const reports = []
   const c = {
-    protocol, model: "claude-opus-4-5", stream: true, path: "/v1/messages", origin: "local", agent: "claude-code",
+    protocol, model: "claude-opus-4-5", stream: true, path: "/v1/messages", origin: "local", agent: "claude",
     session: "session-a", cwd: "/tmp/x", query: "", state: {}, signal: new AbortController().signal,
     report: (code, bytes) => reports.push(bytes === undefined ? [code] : [code, bytes]),
     ...extra,
@@ -102,7 +102,7 @@ for (const [protocol, name, make, pick, check] of placements) {
     expect(call.init.headers.Authorization).toBe(`Bearer ${KEY}`)
     expect(call.body.protocol).toBe({ anthropic: "messages", chat: "chat", responses: "responses" }[protocol])
     expect(call.body.model).toBe("claude-opus-4-5")
-    expect(call.body.agent).toBe("claude-code")
+    expect(call.body.agent).toBe("claude")
     expect(call.body.session).toBe("session-a")
     // slimmed: no system prompt or instructions travel
     expect(JSON.stringify(call.body.body)).not.toContain('"sys"')
@@ -152,7 +152,7 @@ test("a tool step sends no recall, and onResponse records it", async () => {
   await flush()
   const [rec] = of("/v1/hook/record")
   expect(rec.body).toEqual({
-    protocol: "messages", model: "claude-opus-4-5", agent: "claude-code", session: "session-a",
+    protocol: "messages", model: "claude-opus-4-5", agent: "claude", session: "session-a",
     body: c.state.aelios.slimmed, reply, success: true, upstream_model: "claude-opus-4-5-20260101",
   })
   expect(rec.body.body.messages[2].content).toEqual([{ type: "tool_result", content: "" }])
@@ -183,15 +183,6 @@ for (const record of [false, true]) {
     expect(reports).toEqual([["skipped"]])
   })
 }
-
-test("a credential in earlier history prevents recall export", async () => {
-  mock()
-  const [c] = ctx("chat", { options: { record: true } })
-  await onRequest({ messages: [{ role: "user", content: "password=synthetic-review-only" },
-    { role: "assistant", content: "ok" }, { role: "user", content: "What do you remember?" }] }, c)
-  expect(calls).toHaveLength(0)
-  expect(c.state.aelios).toBeUndefined()
-})
 
 test("transport-wrapped human speech reaches recall and receives memory", async () => {
   mock()
@@ -278,13 +269,13 @@ test("magpie-key, magpie's own key on this computer, counts as the owner's", asy
 
 test("agents limits which agents are handled", async () => {
   mock()
-  const [c, reports] = ctx("chat", { agent: "codex", options: { agents: ["claude-code"], record: true } })
+  const [c, reports] = ctx("chat", { agent: "codex", options: { agents: ["claude"], record: true } })
   expect(await onRequest(chat(), c)).toBeUndefined()
   onResponse({ choices: [] }, { ...c, success: true })
   await flush()
   expect(calls).toHaveLength(0)
   expect(reports).toEqual([["skipped"]])
-  const [c2] = ctx("chat", { agent: "claude-code", options: { agents: ["claude-code"] } })
+  const [c2] = ctx("chat", { agent: "claude", options: { agents: ["claude"] } })
   expect(await onRequest(chat(), c2)).toBeDefined()
   const [c3] = ctx("chat", { agent: "codex", options: { agents: [] } })
   expect(await onRequest(chat(), c3)).toBeDefined()
@@ -335,7 +326,7 @@ test("bad options throw invalid (the host rolls back) without the key in the err
     { requestTimeoutMs: 10 },
     { requestTimeoutMs: 9001 },
     { record: "yes" },
-    { agents: "claude-code" },
+    { agents: "claude" },
     { gatewayTimeoutMs: 50 },
   ]) {
     const [c, reports] = ctx("chat", { options })
@@ -360,7 +351,7 @@ const identityRoutes = [
 
 for (const [protocol, model, agent, make, identity] of [
   ["chat", "gpt-5", "codex", chat, "gpt-husband"],
-  ["anthropic", "claude-opus-4-5", "claude-code", anthropicString, "claude-husband"],
+  ["anthropic", "claude-opus-4-5", "claude", anthropicString, "claude-husband"],
 ]) {
   test(`${model}: recall and record use its isolated identity`, async () => {
     mock({ "/v1/hook/recall": (body) => Response.json({ memory: "injected", patch: `<memory>${body.identity}</memory>` }) })
@@ -461,7 +452,7 @@ test("payload is pinned before recall awaits; changed response context and route
   const pending = onRequest(chat(), c)
   expect(c.state.aelios.payload.identity).toBe("gpt-husband")
   c.model = "claude-opus-4-5"
-  c.agent = "claude-code"
+  c.agent = "claude"
   c.session = "different-session"
   c.options.routes = [{ models: ["*"], identity: "changed" }]
   c.options.identity = "changed-default"
@@ -624,4 +615,142 @@ test("a slimmed request is the same at recall and at record, so Aelios hashes on
   await flush()
   expect(JSON.stringify(of("/v1/hook/record")[0].body.body)).toBe(JSON.stringify(of("/v1/hook/recall")[0].body.body))
   expect(JSON.stringify(of("/v1/hook/record")[0].body.body)).not.toContain(PATCH)
+})
+
+
+// The request history is sanitized; the fresh reply remains OutputCollector's
+// original protocol object, including speech tool arguments.
+const privacyProtocols = [
+  {
+    protocol: "anthropic", key: "messages",
+    calls: [
+      { role: "assistant", content: [{ type: "tool_use", name: "Edit", input: { file_path: "/synthetic-private.ts", old_string: "old", new_string: "const token = getToken(req)" } }] },
+      { role: "assistant", content: [{ type: "server_tool_use", name: "Write", input: { content: "interface Opts { apiKey: string }; password=synthetic-history-only" } }] },
+    ],
+    reply: (text) => ({ content: [{ type: "tool_use", name: "send_message", input: { text } }] }),
+  },
+  {
+    protocol: "chat", key: "messages",
+    calls: [{ role: "assistant", tool_calls: [
+      { type: "function", function: { name: "Edit", arguments: '{"new_string":"const token = getToken(req)","file_path":"/synthetic-private.ts"}' } },
+      { type: "function", function: { name: "Write", arguments: '{"content":"interface Opts { apiKey: string }; password=synthetic-history-only"}' } },
+    ] }],
+    reply: (text) => ({ choices: [{ message: { tool_calls: [{ type: "function", function: { name: "send_message", arguments: JSON.stringify({ text }) } }] } }] }),
+  },
+  {
+    protocol: "responses", key: "input",
+    calls: [
+      { type: "function_call", name: "Edit", arguments: '{"new_string":"const token = getToken(req)","file_path":"/synthetic-private.ts"}' },
+      { type: "custom_tool_call", name: "Write", input: "interface Opts { apiKey: string }; password=synthetic-history-only" },
+    ],
+    reply: (text) => ({ output: [{ type: "function_call", name: "send_message", arguments: JSON.stringify({ text }) }, { type: "custom_tool_call", name: "send_message", input: text }] }),
+  },
+]
+
+for (const { protocol, key, calls: history, reply } of privacyProtocols) {
+  test(`${protocol}: historical Edit/Write arguments never export; next turn recalls and fresh speech stays intact`, async () => {
+    mock()
+    const [c] = ctx(protocol, { options: { record: true } })
+    const req = { [key]: [{ role: "user", content: "Fix the code" }, ...history, { role: "user", content: "What is for dinner?" }] }
+    const before = structuredClone(req)
+    expect(await onRequest(req, c)).toBeDefined()
+    const fresh = reply("synthetic speech for the recipient")
+    onResponse(fresh, { ...c, success: true })
+    await flush()
+    expect(of("/v1/hook/recall")).toHaveLength(1)
+    expect(of("/v1/hook/record")).toHaveLength(1)
+    const recalled = of("/v1/hook/recall")[0].body.body
+    const recorded = of("/v1/hook/record")[0].body
+    expect(recorded.body).toEqual(recalled)
+    expect(recorded.reply).toEqual(fresh)
+    const wire = JSON.stringify(recorded.body)
+    for (const privateText of ["getToken", "Opts", "synthetic-history-only", "synthetic-private", "old_string", "new_string", "arguments"]) expect(wire).not.toContain(privateText)
+    expect(JSON.stringify(recalled[key])).not.toContain('"input":')
+    expect(wire).toContain("Edit")
+    expect(wire).toContain("Write")
+    expect(req[key].slice(0, -1)).toEqual(before[key].slice(0, -1))
+  })
+
+  for (const record of [false, true]) {
+    test(`${protocol}: historical secret text is omitted and ordinary current turn recalls (record ${record})`, async () => {
+      mock()
+      const [c] = ctx(protocol, { options: { record } })
+      const req = { [key]: [
+        { role: "user", content: "password=synthetic-history-only" },
+        { role: "assistant", content: [{ type: "text", text: "sk-abcdefghijklmnopqrstuvwxyz" }, { type: "text", text: "safe context" }] },
+        { role: "user", content: "What do you remember?" },
+      ] }
+      expect(await onRequest(req, c)).toBeDefined()
+      onResponse(reply("safe speech"), { ...c, success: true })
+      await flush()
+      expect(of("/v1/hook/recall")).toHaveLength(1)
+      expect(of("/v1/hook/record")).toHaveLength(record ? 1 : 0)
+      for (const call of calls) {
+        const wire = JSON.stringify(call.body)
+        expect(wire).not.toContain("synthetic-history-only")
+        expect(wire).not.toContain("sk-abcdefghijklmnopqrstuvwxyz")
+        expect(call.body.body[key][0].content).toBe("[credential omitted]")
+        expect(call.body.body[key][1].content).toEqual([{ type: "text", text: "[credential omitted]" }, { type: "text", text: "safe context" }])
+      }
+    })
+
+    test(`${protocol}: current credential skips whole turn and next human turn recovers (record ${record})`, async () => {
+      mock()
+      const [c] = ctx(protocol, { options: { record } })
+      const secret = { role: "user", content: [{ type: "text", text: "token=synthetic-current-only" }] }
+      const req = { [key]: [secret] }
+      expect(await onRequest(req, c)).toBeUndefined()
+      expect(req[key][0]).toEqual(secret)
+      expect(c.state.aelios).toBeUndefined()
+      onResponse(reply("safe speech"), { ...c, success: true })
+      await flush()
+      expect(calls).toHaveLength(0)
+      const next = { [key]: [secret, { role: "assistant", content: "ok" }, { role: "user", content: "What should I eat?" }] }
+      expect(await onRequest(next, c)).toBeDefined()
+      onResponse(reply("safe speech"), { ...c, success: true })
+      await flush()
+      expect(of("/v1/hook/recall")).toHaveLength(1)
+      expect(of("/v1/hook/record")).toHaveLength(record ? 1 : 0)
+      for (const call of calls) expect(JSON.stringify(call.body)).not.toContain("synthetic-current-only")
+    })
+  }
+
+  test(`${protocol}: secret in fresh speech arguments still prevents recording`, async () => {
+    mock()
+    const [c, reports] = ctx(protocol, { options: { record: true } })
+    await onRequest({ [key]: [{ role: "user", content: "Say hello" }] }, c)
+    onResponse(reply("token=synthetic-reply-only"), { ...c, success: true })
+    await flush()
+    expect(of("/v1/hook/recall")).toHaveLength(1)
+    expect(of("/v1/hook/record")).toHaveLength(0)
+    expect(reports.at(-1)).toEqual(["skipped"])
+  })
+}
+
+test("tool-only final user records safely after a credential-bearing human turn", async () => {
+  mock()
+  const [c] = ctx("anthropic", { options: { record: true } })
+  const req = anthropicTool()
+  req.messages[0].content = "password=synthetic-prior-human"
+  expect(await onRequest(req, c)).toBeUndefined()
+  onResponse({ content: [{ type: "text", text: "Done" }] }, { ...c, success: true })
+  await flush()
+  expect(of("/v1/hook/recall")).toHaveLength(0)
+  expect(of("/v1/hook/record")).toHaveLength(1)
+  expect(calls[0].body.body.messages[0].content).toBe("[credential omitted]")
+  expect(JSON.stringify(calls[0].body)).not.toContain("synthetic-prior-human")
+})
+
+test("legacy claude-code remains an exact supported agent id", async () => {
+  mock()
+  const [c] = ctx("anthropic", { agent: "claude-code", options: { agents: ["claude-code"] } })
+  expect(await onRequest(anthropicString(), c)).toBeDefined()
+  expect(calls[0].body.agent).toBe("claude-code")
+})
+
+test("ordinary generation max_token text still recalls", async () => {
+  mock()
+  const [c] = ctx("chat")
+  expect(await onRequest({ messages: [{ role: "user", content: "Use max_token: 4000" }] }, c)).toBeDefined()
+  expect(of("/v1/hook/recall")).toHaveLength(1)
 })

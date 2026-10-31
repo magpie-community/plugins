@@ -52,7 +52,8 @@ provider. It needs **Magpie 0.1.1273 or newer** and Bun; from **Magpie
 2. **Add your agents' model names to the assistant's main models** in Aelios
    `/admin` (or use `*`). Aelios only recalls and records for its main
    models; for anything else it answers `off` and the plugin shows
-   *unbound*.
+   *unbound*. To keep GPT and Claude in separate spaces, set each assistant's
+   main models separately in `/admin`.
 
 ## Install and configure
 
@@ -104,7 +105,8 @@ With nonempty `routes`, an unmatched request uses only an explicitly configured
 top-level `identity`. Without that fallback, both recall and recording are
 skipped, preventing accidental use of the server's default identity. Omit
 `routes` or use `[]` to preserve the existing behavior: top-level `identity`
-is used when set, otherwise Aelios chooses the key's default assistant.
+is used when set, otherwise Aelios chooses the first assistant available to the key whose main
+models match this request's model, falling back to the key's default assistant.
 
 **Separate identities need separate Aelios memory namespaces.** Give these
 identities different `namespace` values and avoid shared `readNamespaces` if
@@ -123,14 +125,13 @@ separate for each resolved identity.
 
 ## What is sent
 
-Recall sends a **slimmed copy** of the request: roles and message text, the
-names of the tools, the arguments of tool calls (Aelios keeps what "speech"
-tools such as sending a message said), and the session id. It does **not**
-send system prompts or instructions, what tools returned (tool results are
-sent empty), images, files or audio (replaced by `[image]`, `[file]`,
-`[audio]`), or thinking. A single tool call over 16 KB is sent without its
-arguments. Only turns where the user said something are recalled; tool steps
-are not sent at all.
+Recall sends a **slimmed copy** of the request: roles and message text, tool
+names, and the session id. Historical tool calls keep only their type and
+name; their arguments and input are never sent. It does **not** send system
+prompts or instructions, what tools returned (tool results are sent empty),
+images, files or audio (replaced by `[image]`, `[file]`, `[audio]`), or thinking.
+Only turns where the user said something are recalled; tool steps are not
+sent for recall.
 
 **`record` is off by default.** Recall sends `record: false`, so Aelios
 searches existing memories without saving the user's words or creating new
@@ -146,10 +147,17 @@ With `record` on, after each reply the slimmed request and the completed
 reply are sent to Aelios: what you said, what the assistant said, and the
 arguments of its tool calls. Tool results are not sent. For coding agents
 (Claude Code, Codex, OpenCode, …) Aelios replaces code blocks with `[code]`.
-A request whose slimmed conversation looks like it contains a credential
-(an API key, a token, a private key, `password=`…) is skipped before either
-recall or recording is sent. A credential in the completed reply also skips
-recording. Each record is sent once and never retried.
+If the current user text looks like it contains a credential (an API key, a
+token, a private key, `password=`…), the entire turn skips both recall and
+recording, even with `record: false`, so read-only recall cannot upload it.
+Historical text that matches the same check is replaced with the fixed marker
+`[credential omitted]` in the slimmed copy, preserving the message structure.
+A later ordinary user turn can recall and record normally; a credential in
+history does not disable memory for the rest of the conversation. The original
+request sent to the model is untouched by this sanitization. A credential in
+the completed reply's text or tool arguments still skips recording. The new
+reply, including speech tool arguments, is otherwise sent unchanged. Each
+record is sent once and never retried.
 
 ## Things to know
 
@@ -177,9 +185,9 @@ recording. Each record is sent once and never retried.
 | `serverUrl` | none | Your Aelios Worker. Without it nothing is sent. HTTPS only (plain HTTP allowed for `localhost`, `127.0.0.1`, `[::1]`); no user, password, query or fragment in the URL. |
 | `apiKey` | none | Aelios API key. Without it, the variable named by `apiKeyEnv` is used. Without either, nothing is sent. |
 | `apiKeyEnv` | `AELIOS_API_KEY` | Environment variable that holds the key. |
-| `identity` | none | Aelios assistant space slug; fallback for unmatched routes. Without routes, the key's default assistant if empty. |
+| `identity` | none | Aelios assistant space slug; fallback for unmatched routes. Without routes and when empty, Aelios selects the first available assistant whose main models match this model, falling back to the key's default assistant. |
 | `routes` | none | Up to 64 identity routes in priority order. Each needs a valid ASCII identity slug (max 64 characters; Aelios reserved slugs excluded) and nonempty `models` and/or `agents` arrays. Model patterns are nonblank strings up to 200 characters; agents are nonblank exact ids. Nonempty routes without a match or explicit `identity` skip recall and recording. |
-| `agents` | all | Only these Magpie agent ids, e.g. `["claude-code","claude-desktop"]`. Empty means all. |
+| `agents` | all | Only these Magpie agent ids, e.g. `["claude","claude-desktop"]`. Empty means all. Other ids include `qwen` and `kimi`; legacy `claude-code` remains supported as an exact id. |
 | `recall` | `true` | Recall before each turn. |
 | `record` | `false` | Record each turn after the reply. |
 | `allowRemote` | `false` | Also handle other gateway keys, remote and unknown origins (recall and record). |

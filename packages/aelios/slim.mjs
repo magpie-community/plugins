@@ -10,9 +10,6 @@ export function aeliosProtocol(protocol) {
   return protocols[protocol] ?? null
 }
 
-// A single tool call's arguments above this are dropped (kept as an empty
-// object), so one large file write doesn't make the request large.
-const maxToolInput = 16 << 10
 const placeholders = {
   image: "[image]", image_url: "[image]", input_image: "[image]",
   document: "[file]", file: "[file]", input_file: "[file]",
@@ -23,17 +20,6 @@ const thinking = new Set(["thinking", "redacted_thinking", "reasoning"])
 const object = (v) => !!v && typeof v === "object" && !Array.isArray(v)
 const isText = (p) => object(p) && ["text", "input_text", "output_text"].includes(p.type) && typeof p.text === "string"
 
-function capObject(value) {
-  if (value === undefined) return undefined
-  let size
-  try { size = Buffer.byteLength(JSON.stringify(value) ?? "", "utf8") } catch { return {} }
-  return size > maxToolInput ? {} : value
-}
-function capString(value) {
-  if (typeof value !== "string") return capObject(value)
-  return Buffer.byteLength(value, "utf8") > maxToolInput ? "{}" : value
-}
-
 // One content block of a message, or undefined to drop it.
 function block(p) {
   if (!object(p)) return undefined
@@ -43,7 +29,6 @@ function block(p) {
   if (p.type === "tool_use" || p.type === "server_tool_use") {
     const out = { type: p.type }
     if (typeof p.name === "string") out.name = p.name
-    out.input = capObject(p.input) ?? {}
     return out
   }
   // tool_result, mcp_tool_result, web_search_tool_result, …: the structure
@@ -72,7 +57,7 @@ function chatItem(m) {
   if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
     out.tool_calls = m.tool_calls.filter(object).map((t) => ({
       type: typeof t.type === "string" ? t.type : "function",
-      function: { name: typeof t.function?.name === "string" ? t.function.name : "", arguments: capString(t.function?.arguments ?? "") },
+      function: { name: typeof t.function?.name === "string" ? t.function.name : "" },
     }))
   }
   return out
@@ -91,11 +76,10 @@ function responsesItem(item) {
     return out
   }
   if (type === "function_call") {
-    return { type, name: typeof item.name === "string" ? item.name : "", arguments: capString(item.arguments ?? "") }
+    return { type, name: typeof item.name === "string" ? item.name : "" }
   }
   if (type === "custom_tool_call") {
-    const input = typeof item.input === "string" && Buffer.byteLength(item.input, "utf8") > maxToolInput ? "" : item.input ?? ""
-    return { type, name: typeof item.name === "string" ? item.name : "", input }
+    return { type, name: typeof item.name === "string" ? item.name : "" }
   }
   if (/_output$/.test(type)) return { type, output: "" }
   // other items (item_reference, local_shell_call, web_search_call, …)
@@ -118,12 +102,9 @@ function tool(t, protocol) {
   return Object.keys(out).length ? out : undefined
 }
 
-// slim keeps what was said: roles, text, tool names and the arguments of
-// tool calls (Aelios records "speech" tools, such as sending a message, from
-// them). Tool results become empty, attachments become placeholders,
-// thinking goes, and so do system prompts and everything at the top level
-// but the messages, the tool names, the session id and whether a Responses
-// request continues server-side state.
+// slim keeps roles, text and tool names. Historical tool arguments and
+// results never leave the plugin; speech is collected from the new reply.
+// Credential-bearing historical text keeps its structure with a fixed marker.
 export function slim(body, protocol) {
   const src = object(body) ? body : {}
   const out = {}
@@ -133,6 +114,17 @@ export function slim(body, protocol) {
   } else {
     const item = protocol === "chat" ? chatItem : messagesItem
     out.messages = (Array.isArray(src.messages) ? src.messages : []).map(item).filter(Boolean)
+  }
+  const list = items(out, protocol)
+  for (const [index, item] of list.entries()) {
+    // Only the final item can be the current user turn. Never search backward
+    // past a tool result or assistant message for an earlier human turn.
+    if (index === list.length - 1 && item.role === "user" &&
+        (!item.type || ["message", "input_message"].includes(item.type))) continue
+    if (typeof item.content === "string") item.content = historicalText(item.content)
+    else if (Array.isArray(item.content)) {
+      item.content = item.content.map((part) => isText(part) ? { ...part, text: historicalText(part.text) } : part)
+    }
   }
   if (Array.isArray(src.tools)) out.tools = src.tools.map((t) => tool(t, protocol)).filter(Boolean)
   if (typeof src.metadata?.session_id === "string") out.metadata = { session_id: src.metadata.session_id }
@@ -153,6 +145,19 @@ export function items(body, protocol) {
 export function serverState(body, protocol) {
   return protocol === "responses" && !!(body.previous_response_id || body.conversation ||
     items(body, protocol).some((i) => object(i) && i.type === "item_reference"))
+}
+
+function historicalText(text) {
+  return hasSecret(text) ? "[credential omitted]" : text
+}
+
+// The final user item's text, including instruction wrappers for the secret
+// guard. A tool-only final item has no new user text, even after a human turn.
+export function lastUserText(body, protocol) {
+  const last = items(body, protocol).at(-1)
+  if (!object(last) || last.role !== "user" ||
+      (last.type && !["message", "input_message"].includes(last.type))) return ""
+  return visible(last.content)
 }
 
 function visible(c) {
@@ -258,7 +263,7 @@ export function spoken(reply) {
 // A turn that looks like it holds a credential is not recorded at all
 // (masking part of it could still leave the rest on the server). The same
 // patterns PowerContext's hook checks.
-const secret = /(?:(?:^|[^A-Za-z0-9])(?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|access[_-]?token|token|authorization|[A-Za-z0-9]*(?:password|passwd|pwd)|secret|private[_-]?key|client[_-]?secret)["']?\s*[:=]\s*\S+|\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]+:[^\s/?#@]+@|\b(?:sk|rk)_live_[A-Za-z0-9]{8,}|\bAIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])|\bbearer\s+[A-Za-z0-9._~+/=-]{8,}|\bsk-[A-Za-z0-9_-]{8,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b|-----BEGIN [^-]*PRIVATE KEY-----)/iu
+const secret = /(?:(?:^|[^A-Za-z0-9])(?!(?:max_tokens?|input_tokens|output_tokens)["']?\s*[:=])(?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|access[_-]?token|(?<!max_)token|authorization|[A-Za-z0-9]*(?:password|passwd|pwd)|secret|private[_-]?key|client[_-]?secret)["']?\s*[:=]\s*\S+|\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]+:[^\s/?#@]+@|\b(?:sk|rk)_live_[A-Za-z0-9]{8,}|\bAIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])|\bbearer\s+[A-Za-z0-9._~+/=-]{8,}|\bsk-[A-Za-z0-9_-]{8,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b|-----BEGIN [^-]*PRIVATE KEY-----)/iu
 export function hasSecret(value) {
   if (typeof value === "string") {
     if (secret.test(value)) return true
