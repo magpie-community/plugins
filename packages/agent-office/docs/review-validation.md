@@ -23,7 +23,7 @@ This is the 0.2.0 repair for [PR #551](https://github.com/magpie-community/plugi
 
 ## Validation
 
-`bun test`: **128 passed, 0 failed**, 11 files. Marketplace package tests also pass 128 tests; the marketplace check script passes.
+`bun test`: **163 passed, 0 failed**, 11 files. Marketplace package tests also pass 163 tests; the marketplace check script passes.
 
 Browser tests use actual magpie Web UI navigation, options bridge, theme and sandbox. Only live.js is replaced by synthetic data. No model calls or user prompt screenshots are needed.
 
@@ -35,4 +35,22 @@ Synthetic narrow-frame evidence: [settings](qa-retina-settings.png), [text disab
 
 ## Practical limits
 
-Changed-JSONL replay is O(file size); a very long individual line still requires buffering. Compressed DSH retains its 8 MiB input limit and four-second throttle. Grok sidecars are capped at 32 MiB and usage is assigned to the recorded turn-end date. Stub-GPU tests do not replace device-specific performance testing.
+The first read and a reset/replacement replay are O(file size). Normal JSONL polling parses only appended complete records and performs at most 128 bytes of old-prefix/end checks; an unfinished record still requires buffering until complete. Arbitrary non-append middle edits preserving inode and both witnesses while growing are outside the append-only log contract. Compressed DSH retains its 8 MiB input limit and four-second throttle. Grok sidecars are capped at 32 MiB and usage is assigned to the recorded turn-end date. Stub-GPU tests do not replace device-specific performance testing.
+
+
+## Follow-up review: incremental JSONL
+
+[Follow-up review](https://github.com/magpie-community/plugins/pull/551#pullrequestreview-5722086970) confirmed the previous blockers fixed and identified growing-log replay as the remaining blocker.
+
+The scanner now keeps the file identity, byte offset, UTF-8 decoder, JSON framing and resumable reader state. Normal ticks never replay historical events. No-change ticks do not read the log; metadata-only updates refresh sidecars without reading JSONL. Codex thread titles also retain a cursor. First reads, truncation/replacement and detected rewrites rebuild state. Prefix/end guards add at most 128 old bytes per growing file, catching common truncate-and-regrow without scanning history.
+
+New regressions cover actual bytes read after appending to a 100 MiB file; every reader's batch/full equivalence and parse-call counts; midnight; usage corrections; pending tools; metadata replacement/removal and precedence; partial UTF-8; delayed newline; large image fragments; quoted braces; interrupted reads; and resets/source changes. An incomplete quoted string ending in `}` is never speculatively re-parsed each tick. A complete EOF record may be parsed twice when first completed (validation then reader), but not on later ticks or when its newline arrives.
+
+Reproducible synthetic benchmark: `bun scripts/bench-scan.mjs 100 1` and `bun scripts/bench-scan.mjs 100 4`. One local run:
+
+| Workload | First read | No-change read | Five append scans | Bytes per append scan |
+| --- | ---: | ---: | ---: | ---: |
+| One ~100 MiB log | 130.695 ms | 0.172 ms / 0 B | 0.097–0.388 ms | 4,003 new + 128 guard |
+| Four ~100 MiB logs | 514.631 ms | 0.216 ms / 0 B | 0.257–0.656 ms | 16,012 new + 512 guards |
+
+These are measurements on this machine, not CI speed thresholds. Deterministic tests assert byte and parse counts instead. Complete usage sidecars are not retained or re-aggregated on each append; only current day totals are retained by the reader. Gemini JSON documents and compressed DSH snapshots remain full-document reads when changed.

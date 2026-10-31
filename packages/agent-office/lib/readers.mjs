@@ -66,12 +66,13 @@ export function toolLine(name, args) {
 }
 
 function* lines(text) {
-  // The scanner supplies an iterator for JSONL so large logs can be replayed
-  // completely without retaining their raw text or parsed events in memory.
+  // The scanner supplies complete appended JSONL lines. Consume each batch
+  // immediately without retaining raw text or parsed events between updates.
   const input = typeof text === "string" ? text.split("\n") : text || []
   for (const l of input) {
-    if (!l || l[0] !== "{") continue
-    try { yield JSON.parse(l) } catch {}
+    const line = typeof l === "string" ? l.trimStart() : ""
+    if (!line || line[0] !== "{") continue
+    try { yield JSON.parse(line) } catch {}
   }
 }
 
@@ -101,6 +102,11 @@ function bucket(s, t) {
 function countTurn(s, t) {
   const b = bucket(s, t)
   if (b) b.turns++
+}
+function adjustTokens(s, t, n) {
+  if (!Number.isFinite(n) || n === 0) return
+  const b = bucket(s, t)
+  if (b) b.tokens += n
 }
 function addTokens(s, t, n) {
   if (!Number.isFinite(n) || n <= 0) return
@@ -220,32 +226,31 @@ function answered(s, id, t) {
 // ~/.claude/projects/<folder>/<session>.jsonl: one line per message; an
 // assistant message with tool_use blocks, then a user message whose
 // tool_result blocks answer them; stop_reason "end_turn" ends the turn.
-export function readClaude(text, agent = "claude", id = "", opts = {}) {
-  const s = fresh(agent, id)
+function claudeEvents(s, opts) {
   if (opts.subagent) s.subagent = true
   const responseUsage = new Map()
-  for (const d of lines(text)) {
+  return (d) => {
     const t = ms(d.timestamp)
     if (d.sessionId && !s.id) s.id = d.sessionId
     if (d.cwd) { s.cwd = d.cwd; s.project = base(d.cwd) }
     if (d.type === "custom-title" && d.customTitle) { s.title = clip(d.customTitle, TITLE_MAX); s.named = true }
     else if (d.type === "ai-title" && d.aiTitle && !s.named) s.title = clip(d.aiTitle, TITLE_MAX)
-    if (d.isSidechain && !s.subagent) continue
+    if (d.isSidechain && !s.subagent) return
     const m = d.message
-    if (!m) continue
+    if (!m) return
     if (d.type === "user" && m.role === "user") {
       if (Array.isArray(m.content)) {
         let results = 0
         for (const b of m.content) if (b?.type === "tool_result") { answered(s, b.tool_use_id, t); results++ }
-        if (results) continue
+        if (results) return
         const txt = textOf(m.content)
-        if (/^\[Request interrupted/.test(txt.trim())) { s.phase = "aborted"; s.pending = []; touch(s, t); continue }
+        if (/^\[Request interrupted/.test(txt.trim())) { s.phase = "aborted"; s.pending = []; touch(s, t); return }
         if (!d.isMeta) prompted(s, txt, t)
       } else if (!d.isMeta) {
-        if (/^\[Request interrupted/.test(String(m.content).trim())) { s.phase = "aborted"; s.pending = []; touch(s, t); continue }
+        if (/^\[Request interrupted/.test(String(m.content).trim())) { s.phase = "aborted"; s.pending = []; touch(s, t); return }
         prompted(s, m.content, t)
       }
-      continue
+      return
     }
     if (d.type === "assistant" && m.role === "assistant") {
       if (m.model && m.model !== "<synthetic>") s.model = m.model
@@ -264,7 +269,12 @@ export function readClaude(text, agent = "claude", id = "", opts = {}) {
           s.contextWindow = s.context > 200_000 ? 1_000_000 : 200_000
         }
         const tokens = n("input_tokens") + n("cache_creation_input_tokens") + out
-        if (m.id != null) responseUsage.set(m.id, { t, tokens })
+        if (m.id != null) {
+          const old = responseUsage.get(m.id)
+          if (old) adjustTokens(s, old.t, -old.tokens)
+          responseUsage.set(m.id, { t, tokens })
+          addTokens(s, t, tokens)
+        }
         else addTokens(s, t, tokens)
       }
       const blocks = Array.isArray(m.content) ? m.content : []
@@ -277,9 +287,6 @@ export function readClaude(text, agent = "claude", id = "", opts = {}) {
       touch(s, t)
     }
   }
-  for (const { t, tokens } of responseUsage.values()) addTokens(s, t, tokens)
-  finalizeUsage(s, opts.now ?? Date.now())
-  return s
 }
 
 // ---- Codex ----------------------------------------------------------------
@@ -287,16 +294,15 @@ export function readClaude(text, agent = "claude", id = "", opts = {}) {
 // response_items (messages, function_call / custom_tool_call and their
 // outputs) and event_msgs (task_started, task_complete, turn_aborted,
 // *_approval_request, error).
-export function readCodex(text, id = "", opts = {}) {
-  const s = fresh("codex", id)
-  for (const d of lines(text)) {
+function codexEvents(s, opts) {
+  return (d) => {
     const t = ms(d.timestamp)
     const p = d.payload || {}
     if (d.type === "session_meta") {
       s.id = p.id || p.session_id || s.id
       if (p.cwd) { s.cwd = p.cwd; s.project = base(p.cwd) }
       touch(s, ms(p.timestamp) || t)
-      continue
+      return
     }
     if (d.type === "turn_context" && p.cwd) { s.cwd = p.cwd; s.project = base(p.cwd); if (p.model) s.model = p.model }
     if (d.type === "event_msg") {
@@ -334,7 +340,7 @@ export function readCodex(text, id = "", opts = {}) {
         case "turn_aborted": s.phase = "aborted"; s.pending = []; touch(s, ms(p.completed_at) || t); break
         case "error": s.phase = "error"; s.error = clip(p.message, 160); s.pending = []; touch(s, t); break
       }
-      continue
+      return
     }
     if (d.type === "response_item") {
       switch (p.type) {
@@ -350,17 +356,14 @@ export function readCodex(text, id = "", opts = {}) {
       }
     }
   }
-  finalizeUsage(s, opts.now ?? Date.now())
-  return s
 }
 
 // ---- DeepSeek Harness -----------------------------------------------------
 // ~/.dsh/sessions/<folder>/<session>/session.v4.jsonl.zstd: typed events —
 // session, turn/start, tool/call, approval/asked, approval/decided,
 // tool/result, assistant/message, turn/end {reason: completed|aborted|error}.
-export function readDsh(text, id = "", opts = {}) {
-  const s = fresh("dsh", id)
-  for (const d of lines(text)) {
+function dshEvents(s, opts) {
+  return (d) => {
     const t = ms(d.time || d.createdAt)
     const x = d.data || {}
     switch (d.type) {
@@ -392,34 +395,20 @@ export function readDsh(text, id = "", opts = {}) {
       }
     }
   }
-  finalizeUsage(s, opts.now ?? Date.now())
-  return s
 }
 
 // ---- Gemini CLI / Qwen Code -----------------------------------------------
 // ~/.gemini/tmp/<project>/chats/session-*.json(l): messages, the model's
 // with toolCalls each carrying a status (scheduled, awaiting_approval,
 // executing, success, error, cancelled).
-export function readGemini(text, agent = "gemini", id = "", opts = {}) {
-  const s = fresh(agent, id)
-  let msgs = []
-  const trimmed = typeof text === "string" ? text.trim() : ""
-  if (trimmed.startsWith("{") && !trimmed.includes("\n{")) {
-    try { const j = JSON.parse(trimmed); msgs = j.messages || []; s.id = j.sessionId || id; touch(s, ms(j.startTime)) } catch {}
-  } else {
-    for (const d of lines(text)) {
-      if (d.sessionId && !s.id) s.id = d.sessionId
-      if (Array.isArray(d.messages)) msgs.push(...d.messages)
-      else if (d.type) msgs.push(d)
-    }
-  }
+function geminiEvents(s, opts) {
   const seenTools = new Set()
-  for (const m of msgs) {
+  return (m) => {
     const t = ms(m.timestamp)
     if (m.type === "user") {
       const txt = typeof m.content === "string" ? m.content : textOf(m.content)
       if (!/functionResponse/.test(JSON.stringify(m.content || ""))) prompted(s, txt, t)
-      continue
+      return
     }
     if (m.type === "gemini" || m.type === "model" || m.type === "assistant") {
       if (m.model) s.model = m.model
@@ -442,26 +431,23 @@ export function readGemini(text, agent = "gemini", id = "", opts = {}) {
     if (m.type === "error") { s.phase = "error"; s.error = clip(m.content, 160); touch(s, t) }
     if (m.type === "info" && /cancel/i.test(String(m.content))) { s.phase = "aborted"; touch(s, t) }
   }
-  finalizeUsage(s, opts.now ?? Date.now())
-  return s
 }
 
 // ---- Pi / omp ----------------------------------------------------------------
 // ~/.pi/agent/sessions/<folder>/<time>_<id>.jsonl: a session header, then
 // message lines whose message has a role (user, assistant, toolResult) and,
 // for the assistant, a stopReason (stop, toolUse, aborted, error).
-export function readPi(text, agent = "pi", id = "", opts = {}) {
-  const s = fresh(agent, id)
-  for (const d of lines(text)) {
+function piEvents(s, opts) {
+  return (d) => {
     const t = ms(d.timestamp)
-    if (d.type === "session") { s.id = d.id || s.id; if (d.cwd) { s.cwd = d.cwd; s.project = base(d.cwd) } touch(s, t); continue }
+    if (d.type === "session") { s.id = d.id || s.id; if (d.cwd) { s.cwd = d.cwd; s.project = base(d.cwd) } touch(s, t); return }
     if (d.type === "session_info" && d.name) s.title = clip(d.name, TITLE_MAX)
     if (d.type === "title_change" && d.title) s.title = clip(d.title, TITLE_MAX)
     if (d.type === "model_change") s.model = d.modelId || d.model || s.model
     const m = d.message
-    if (d.type !== "message" || !m) continue
-    if (m.role === "user") { prompted(s, textOf(m.content), t); continue }
-    if (m.role === "toolResult") { answered(s, m.toolCallId, t); continue }
+    if (d.type !== "message" || !m) return
+    if (m.role === "user") { prompted(s, textOf(m.content), t); return }
+    if (m.role === "toolResult") { answered(s, m.toolCallId, t); return }
     if (m.role === "assistant") {
       if (m.model) s.model = m.model
       const parts = Array.isArray(m.content) ? m.content : []
@@ -474,8 +460,6 @@ export function readPi(text, agent = "pi", id = "", opts = {}) {
       touch(s, t)
     }
   }
-  finalizeUsage(s, opts.now ?? Date.now())
-  return s
 }
 
 // ---- GitHub Copilot CLI ----------------------------------------------------
@@ -495,10 +479,9 @@ function extractCopilotText(value, depth = 0) {
   return ""
 }
 
-export function readCopilot(text, id = "", opts = {}) {
-  const s = fresh("copilot", id)
-  for (const d of lines(text)) {
-    if (!d || typeof d !== "object") continue
+function copilotEvents(s, opts) {
+  return (d) => {
+    if (!d || typeof d !== "object") return
     const data = d.data || d
     const t = ms(d.timestamp) || ms(data.startTime) || ms(data.timestamp)
     switch (d.type) {
@@ -537,8 +520,6 @@ export function readCopilot(text, id = "", opts = {}) {
       case "session.error": s.phase = "error"; s.error = clip(data.message || data.error, 160); touch(s, t); break
     }
   }
-  finalizeUsage(s, opts.now ?? Date.now())
-  return s
 }
 
 // ---- Kimi Code --------------------------------------------------------------
@@ -546,25 +527,16 @@ export function readCopilot(text, id = "", opts = {}) {
 // <session>/state.json for cwd/title. A child agent is a session of its own:
 // id "<session>/<agent>", parent "<session>". Event names and shapes follow
 // whatsmyagentdoing's Kimi reader (MIT).
-export function readKimi(text, id = "", meta = {}, opts = {}) {
-  const s = fresh("kimi", id)
-  const rawId = String(id || "")
+function kimiEvents(s, opts) {
+  const rawId = String(s.id || "")
   if (rawId.includes("/")) { s.subagent = true; s.parent = rawId.slice(0, rawId.lastIndexOf("/")) }
-  if (meta && typeof meta === "object") {
-    if (typeof meta.cwd === "string" && meta.cwd) { s.cwd = meta.cwd; s.project = base(s.cwd) }
-    else if (typeof meta.workDir === "string" && meta.workDir) { s.cwd = meta.workDir; s.project = base(s.cwd) }
-    if (typeof meta.title === "string" && meta.title) s.title = clip(meta.title, TITLE_MAX)
-    else if (typeof meta.customTitle === "string" && meta.customTitle) s.title = clip(meta.customTitle, TITLE_MAX)
-    if (typeof meta.model === "string" && meta.model) s.model = meta.model
-    else if (typeof meta.modelAlias === "string" && meta.modelAlias) s.model = meta.modelAlias
-    touch(s, ms(meta.createdAt))
-  }
   const approvals = new Map() // id -> "approval" | "ask"
   const sync = () => {
     if (approvals.size) { s.phase = approvals.values().next().value; return }
     s.phase = s.pending.length ? "tool" : "thinking"
   }
   const ended = (reason, t, err) => {
+    endStream(s)
     s.pending = []; approvals.clear()
     const k = String(reason || "").toLowerCase()
     if (["cancelled", "canceled", "aborted", "interrupted", "max-tokens", "max_tokens"].includes(k)) s.phase = "aborted"
@@ -572,7 +544,7 @@ export function readKimi(text, id = "", meta = {}, opts = {}) {
     else s.phase = "done"
     touch(s, t)
   }
-  for (const d of lines(text)) {
+  return (d) => {
     const t = ms(d.time)
     const e = d.event || {}
     switch (d.type) {
@@ -581,10 +553,12 @@ export function readKimi(text, id = "", meta = {}, opts = {}) {
         if (d.environmentDisclosure?.cwd) { s.cwd = d.environmentDisclosure.cwd; s.project = base(s.cwd) }
         break
       case "turn.prompt":
+        endStream(s)
         s.pending = []; approvals.clear()
         if (!prompted(s, textOf(d.input), t)) { s.phase = "thinking"; s.reply = ""; touch(s, t) }
         break
       case "agent.turn.started":
+        endStream(s)
         s.pending = []; approvals.clear(); s.reply = ""; s.phase = "thinking"; s.error = ""
         touch(s, t)
         break
@@ -612,6 +586,7 @@ export function readKimi(text, id = "", meta = {}, opts = {}) {
         ended(d.outcome, t, d.error?.message || d.error)
         break
       case "forked":
+        endStream(s)
         s.pending = []; approvals.clear(); s.reply = ""; s.query = ""; s.phase = "thinking"; touch(s, t)
         break
       case "context.append_loop_event":
@@ -643,8 +618,6 @@ export function readKimi(text, id = "", meta = {}, opts = {}) {
       }
     }
   }
-  finalizeUsage(s, opts.now ?? Date.now())
-  return s
 }
 
 // ---- Grok Build -------------------------------------------------------------
@@ -652,26 +625,11 @@ export function readKimi(text, id = "", meta = {}, opts = {}) {
 // cwd/title/model and an explicit subagent kind. Each line is
 // { timestamp (seconds), params: { update: { sessionUpdate, ... } } }; ACP
 // chunk types follow whatsmyagentdoing's Grok reader (MIT).
-export function readGrok(text, id = "", meta = {}, opts = {}) {
-  const s = fresh("grok", id)
-  if (meta && typeof meta === "object") {
-    const info = meta.info || {}
-    if (typeof info.cwd === "string" && info.cwd) { s.cwd = info.cwd; s.project = base(s.cwd) }
-    const title = meta.generated_title || meta.session_summary || meta.title
-    if (typeof title === "string" && title) s.title = clip(title, TITLE_MAX)
-    if (typeof meta.current_model_id === "string" && meta.current_model_id) s.model = meta.current_model_id
-    touch(s, ms(meta.created_at))
-    // A fork is a separate main session; only an explicit subagent kind is a child.
-    if (typeof meta.session_kind === "string" && meta.session_kind.startsWith("subagent")) {
-      s.subagent = true
-      if (meta.parent_session_id) s.parent = String(meta.parent_session_id)
-    }
-  }
+function grokEvents(s, opts) {
   let previous = ""
   let userBuf = ""
   let userTurn = null
   let userPrompted = false
-  const generatedTitle = !s.title
   let replyStream = null
   let replyBuf = ""
   const completeTool = (callId, title) => {
@@ -682,7 +640,7 @@ export function readGrok(text, id = "", meta = {}, opts = {}) {
     }
     if (!s.pending.length && s.phase === "tool") s.phase = "thinking"
   }
-  for (const d of lines(text)) {
+  return (d) => {
     const p = d.params || {}
     const e = p.update || {}
     const type = e.sessionUpdate
@@ -692,6 +650,9 @@ export function readGrok(text, id = "", meta = {}, opts = {}) {
     switch (type) {
       case "user_message_chunk": {
         if (previous !== type || (Number.isFinite(tm.turnStartMs) && tm.turnStartMs !== userTurn)) {
+          endStream(s)
+          replyStream = null
+          replyBuf = ""
           userBuf = ""
           userPrompted = false
           userTurn = start
@@ -700,7 +661,7 @@ export function readGrok(text, id = "", meta = {}, opts = {}) {
         if (!userPrompted) userPrompted = prompted(s, userBuf, start)
         if (userPrompted) {
           s.query = clip(userBuf, QUERY_MAX)
-          if (generatedTitle && s.turns === 1) s.title = clip(userBuf, TITLE_MAX)
+          if (s.turns === 1) s.title = clip(userBuf, TITLE_MAX)
           const last = s.messages[s.messages.length - 1]
           if (last?.role === "user") last.text = clip(userBuf, MESSAGE_TEXT_MAX)
         }
@@ -762,17 +723,131 @@ export function readGrok(text, id = "", meta = {}, opts = {}) {
     }
     if (type) previous = type
   }
-  // Vendor schema: xai-org/grok-build, crates/codegen/xai-grok-shell/
-  // src/session/usage_file.rs (SessionUsageFile / flattened TurnUsage).
-  // The session total repeats these deltas; modelUsage repeats their breakdown.
-  // Neither is an additional charge or a timestamped context measurement.
-  for (const turn of Array.isArray(opts.usage?.turns) ? opts.usage.turns : []) {
-    if (!turn || typeof turn !== "object") continue
-    const n = (k) => Number.isFinite(turn[k]) && turn[k] > 0 ? turn[k] : 0
-    addTokens(s, ms(turn.endedAt), Math.max(0, n("inputTokens") - n("cachedReadTokens")) + n("outputTokens"))
+}
+
+// A reader owns only its live parsing state, bounded text, and usage/dedupe
+// indexes. update receives newly appended complete lines, never a replay.
+const PROCESSORS = { claude: claudeEvents, codex: codexEvents, dsh: dshEvents,
+  gemini: geminiEvents, pi: piEvents, copilot: copilotEvents, kimi: kimiEvents, grok: grokEvents }
+
+function refreshMetadata(s, kind, meta) {
+  if (!meta || typeof meta !== "object") return
+  if (kind === "kimi") {
+    const cwd = typeof meta.cwd === "string" && meta.cwd ? meta.cwd : meta.workDir
+    if (!s.cwd && typeof cwd === "string" && cwd) { s.cwd = cwd; s.project = base(cwd) }
+    const title = typeof meta.title === "string" && meta.title ? meta.title : meta.customTitle
+    if (typeof title === "string" && title) s.title = clip(title, TITLE_MAX)
+    const model = typeof meta.model === "string" && meta.model ? meta.model : meta.modelAlias
+    if (!s.model && typeof model === "string" && model) s.model = model
+    touch(s, ms(meta.createdAt))
+  } else if (kind === "grok") {
+    const cwd = meta.info?.cwd
+    if (!s.cwd && typeof cwd === "string" && cwd) { s.cwd = cwd; s.project = base(cwd) }
+    const title = meta.generated_title || meta.session_summary || meta.title
+    if (typeof title === "string" && title) s.title = clip(title, TITLE_MAX)
+    if (!s.model && typeof meta.current_model_id === "string" && meta.current_model_id) s.model = meta.current_model_id
+    touch(s, ms(meta.created_at))
+    if (typeof meta.session_kind === "string") {
+      s.subagent = meta.session_kind.startsWith("subagent")
+      s.parent = s.subagent && meta.parent_session_id ? String(meta.parent_session_id) : ""
+    }
   }
-  finalizeUsage(s, opts.now ?? Date.now())
-  return s
+}
+
+export function createSessionReader(kind, agent = kind, id = "", opts = {}) {
+  const processor = PROCESSORS[kind]
+  if (!processor) throw new TypeError(`Unknown session reader: ${kind}`)
+  const session = fresh(agent, id)
+  // Sidecars describe the current snapshot, not events. Keep their values out
+  // of parser state so removing them restores facts already read from the log.
+  const exposed = kind === "kimi" || kind === "grok" ? fresh(agent, id) : session
+  const days = new Map()
+  BUCKETS.set(session, days)
+  BUCKETS.set(exposed, days) // cached scans finalize usage on the exposed object
+  let metadata = opts.meta
+  const defaultNow = opts.now
+  const state = { subagent: opts.subagent }
+  const consume = processor(session, state)
+  const publish = (now) => {
+    if (exposed !== session) {
+      Object.assign(exposed, session)
+      refreshMetadata(exposed, kind, metadata)
+    }
+    finalizeUsage(exposed, now)
+    return exposed
+  }
+  let usageDays = new Map()
+  // Grok's usage sidecar is a replacement snapshot. Keep only totals per
+  // calendar day so corrections and removal never double count prior usage.
+  // Its session total and modelUsage repeat turn deltas, not extra charges.
+  const refreshUsage = (usage) => {
+    const next = new Map()
+    for (const turn of Array.isArray(usage?.turns) ? usage.turns : []) {
+      if (!turn || typeof turn !== "object") continue
+      const t = ms(turn.endedAt)
+      if (!t) continue
+      const n = (k) => Number.isFinite(turn[k]) && turn[k] > 0 ? turn[k] : 0
+      const key = dayKey(t)
+      const day = next.get(key) || { t, tokens: 0 }
+      day.tokens += Math.max(0, n("inputTokens") - n("cachedReadTokens")) + n("outputTokens")
+      next.set(key, day)
+    }
+    for (const day of usageDays.values()) adjustTokens(session, day.t, -day.tokens)
+    for (const day of next.values()) addTokens(session, day.t, day.tokens)
+    usageDays = next
+  }
+  if (kind === "grok" && opts.usage !== undefined) refreshUsage(opts.usage)
+  function update(input, changes = {}) {
+    const { usage, now } = changes
+    if (Object.hasOwn(changes, "meta")) metadata = changes.meta
+    for (const d of lines(input)) {
+      if (kind === "gemini") {
+        if (d.sessionId && !session.id) session.id = d.sessionId
+        if (d.startTime) touch(session, ms(d.startTime))
+        if (Array.isArray(d.messages)) { for (const m of d.messages) consume(m) }
+        else if (d.type) consume(d)
+      } else consume(d)
+    }
+    if (kind === "grok" && usage !== undefined) refreshUsage(usage)
+    return publish(now ?? defaultNow ?? Date.now())
+  }
+  publish(opts.now ?? Date.now())
+  return { session: exposed, update }
+}
+
+export function readClaude(text, agent = "claude", id = "", opts = {}) {
+  return createSessionReader("claude", agent, id, opts).update(text)
+}
+export function readCodex(text, id = "", opts = {}) {
+  return createSessionReader("codex", "codex", id, opts).update(text)
+}
+export function readDsh(text, id = "", opts = {}) {
+  return createSessionReader("dsh", "dsh", id, opts).update(text)
+}
+export function readGemini(text, agent = "gemini", id = "", opts = {}) {
+  // Gemini also writes a whole JSON document rather than JSONL.
+  if (typeof text === "string") {
+    try {
+      const document = JSON.parse(text)
+      if (document && Array.isArray(document.messages)) {
+        id = document.sessionId || id
+        text = [JSON.stringify(document)]
+      }
+    } catch {}
+  }
+  return createSessionReader("gemini", agent, id, opts).update(text)
+}
+export function readPi(text, agent = "pi", id = "", opts = {}) {
+  return createSessionReader("pi", agent, id, opts).update(text)
+}
+export function readCopilot(text, id = "", opts = {}) {
+  return createSessionReader("copilot", "copilot", id, opts).update(text)
+}
+export function readKimi(text, id = "", meta = {}, opts = {}) {
+  return createSessionReader("kimi", "kimi", id, { ...opts, meta }).update(text)
+}
+export function readGrok(text, id = "", meta = {}, opts = {}) {
+  return createSessionReader("grok", "grok", id, { ...opts, meta }).update(text)
 }
 
 export const READERS = { claude: readClaude, codex: readCodex, dsh: readDsh, gemini: readGemini, pi: readPi,

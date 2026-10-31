@@ -1,14 +1,15 @@
-// Finds the session files each agent writes and replays changed logs.
-// JSONL is read in chunks, keeping every event (including today's usage)
-// without retaining a whole large log in memory. Unchanged facts are cached;
-// their calendar-day counters are refreshed on every scan.
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs"
+// Finds each agent's session files. JSONL readers keep their parsing state
+// and byte cursor: a normal tick reads only appended bytes. A replacement,
+// truncation or same-size rewrite starts a fresh replay. Calendar-day usage
+// is refreshed even when the log has not changed.
+import { closeSync, existsSync, openSync, fstatSync, readFileSync, readSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { StringDecoder } from "node:string_decoder"
-import { finalizeUsage, readClaude, readCodex, readCopilot, readDsh, readGemini, readGrok, readKimi, readPi } from "./readers.mjs"
+import { createSessionReader, finalizeUsage, readClaude, readCodex, readCopilot, readDsh, readGemini, readGrok, readKimi, readPi } from "./readers.mjs"
 
 const READ_CHUNK = 64 * 1024
+const GUARD_BYTES = 64 // bounded prefix/end witnesses catch truncate-and-regrow between ticks
 // A dsh session is one compressed file that is rewritten on every step, so
 // decoding all of it each 1.5 s tick is wasteful while it is being written.
 // The cap keeps a pathological file from stalling a tick, and an active one
@@ -97,33 +98,107 @@ function walk(root, depth, match, since, out) {
     } else if (e.isFile() && match(e.name, p)) {
       let st
       try { st = statSync(p) } catch { continue }
-      if (st.mtimeMs >= since) out.push({ path: p, size: st.size, mtime: st.mtimeMs })
+      if (st.mtimeMs >= since) out.push({ path: p, size: st.size, mtime: st.mtimeMs, ctime: st.ctimeMs, dev: st.dev, ino: st.ino, birthtime: st.birthtimeMs })
     }
   }
 }
 
-function* readLines(path, size) {
-  const fd = openSync(path, "r")
-  const decoder = new StringDecoder("utf8")
-  const buf = Buffer.alloc(READ_CHUNK)
-  let rest = ""
-  let pos = 0
+// A cursor buffers only the current unfinished line. StringDecoder carries
+// an incomplete UTF-8 code point between chunks AND between scan ticks.
+function framing() { return { started: false, quoted: false, escape: false, depth: 0, complete: false, invalid: false } }
+function framePart(state, text) {
+  for (const char of text) {
+    if (state.invalid) return
+    if (!state.started) {
+      if (/\s/.test(char)) continue
+      state.started = true
+      if (char !== "{") { state.invalid = true; return }
+      state.depth = 1
+    } else if (state.complete) {
+      if (!/\s/.test(char)) state.invalid = true
+    } else if (state.quoted) {
+      if (state.escape) state.escape = false
+      else if (char === "\\") state.escape = true
+      else if (char === '"') state.quoted = false
+    } else if (char === '"') state.quoted = true
+    else if (char === "{" || char === "[") state.depth++
+    else if (char === "}" || char === "]") { state.depth--; if (state.depth === 0) state.complete = true }
+  }
+}
+function cursor() {
+  return { offset: 0, decoder: new StringDecoder("utf8"), parts: [], frame: framing(), committedTail: false, prefix: Buffer.alloc(0), tail: Buffer.alloc(0) }
+}
+// Size growth alone cannot distinguish append from truncate-and-regrow
+// between ticks. Verify at most 128 old bytes without parsing any history.
+function appendWitnessMatches(f, c, read) {
+  const fd = openSync(f.path, "r")
   try {
-    while (pos < size) {
-      const n = readSync(fd, buf, 0, Math.min(buf.length, size - pos), pos)
+    const st = fstatSync(fd)
+    if (st.dev !== f.dev || st.ino !== f.ino || st.size < c.offset) return false
+    const prefix = Buffer.alloc(c.prefix.length)
+    if (prefix.length && (read(fd, prefix, 0, prefix.length, 0) !== prefix.length || !prefix.equals(c.prefix))) return false
+    if (c.offset > prefix.length && c.tail.length) {
+      const tail = Buffer.alloc(c.tail.length)
+      if (read(fd, tail, 0, tail.length, c.offset - tail.length) !== tail.length || !tail.equals(c.tail)) return false
+    }
+    return true
+  } finally { closeSync(fd) }
+}
+class ExtendedTail extends Error {}
+
+function* readAppended(f, c, read) {
+  const fd = openSync(f.path, "r")
+  const buf = Buffer.alloc(READ_CHUNK)
+  try {
+    const st = fstatSync(fd)
+    // The path can rotate between walk() and open(). Retry next tick rather
+    // than adding another file's bytes to the existing reader.
+    if (st.dev !== f.dev || st.ino !== f.ino || st.size < c.offset) throw new Error("session file changed while opening")
+    while (c.offset < f.size) {
+      const n = read(fd, buf, 0, Math.min(buf.length, f.size - c.offset), c.offset)
       if (!n) break
-      pos += n
-      rest += decoder.write(buf.subarray(0, n))
+      c.offset += n
+      const block = buf.subarray(0, n)
+      if (c.prefix.length < GUARD_BYTES) c.prefix = Buffer.concat([c.prefix, block.subarray(0, GUARD_BYTES - c.prefix.length)])
+      c.tail = Buffer.from(n >= GUARD_BYTES ? block.subarray(n - GUARD_BYTES) : Buffer.concat([c.tail, block]).subarray(-GUARD_BYTES))
+      const text = c.decoder.write(block)
       let start = 0
-      let end
-      while ((end = rest.indexOf("\n", start)) >= 0) {
-        yield rest.slice(start, end)
+      while (start < text.length) {
+        const end = text.indexOf("\n", start)
+        const part = text.slice(start, end < 0 ? text.length : end)
+        if (c.committedTail) {
+          // A valid record at EOF was already applied. Its later newline
+          // must not count it twice. Non-whitespace extending that record
+          // instead invalidates the speculative EOF parse and needs replay.
+          if (/\S/.test(part)) throw new ExtendedTail()
+          if (end >= 0) c.committedTail = false
+        } else if (end >= 0) {
+          c.parts.push(part)
+          const line = c.parts.join("")
+          c.parts = []
+          c.frame = framing()
+          yield line
+        } else if (part) {
+          c.parts.push(part)
+          framePart(c.frame, part)
+        }
+        if (end < 0) break
         start = end + 1
       }
-      rest = rest.slice(start)
     }
-    rest += decoder.end()
-    if (rest) yield rest
+    // Some clients flush a complete JSON record before its newline. Accept
+    // it once, but never repeatedly parse a growing base64/text fragment.
+    if (!c.committedTail && c.frame.complete && !c.frame.invalid && !c.frame.quoted) {
+      const tail = c.parts.join("")
+      let complete = false
+      try { const record = JSON.parse(tail); complete = !!record && typeof record === "object" && !Array.isArray(record) } catch { c.frame.invalid = true }
+      if (complete) {
+        c.parts = []
+        c.frame = framing()
+        c.committedTail = true
+        yield tail
+      }
+    }
   } finally { closeSync(fd) }
 }
 
@@ -234,25 +309,40 @@ function sidecars(src, path) {
 
 // Codex names a thread in session_index.jsonl ({id, thread_name}), the
 // latest line for an id winning
-function codexTitles() {
+function codexTitles(was, readBytes) {
   const dir = env("CODEX_HOME") ? expand(env("CODEX_HOME")) : home(".codex")
-  const out = new Map()
+  const path = join(dir, "session_index.jsonl")
+  let f
   try {
-    for (const l of readFileSync(join(dir, "session_index.jsonl"), "utf8").split("\n")) {
-      if (!l) continue
-      try { const d = JSON.parse(l); if (d.id && d.thread_name) out.set(d.id, String(d.thread_name).trim()) } catch {}
+    const st = statSync(path)
+    f = { path, size: st.size, mtime: st.mtimeMs, ctime: st.ctimeMs, dev: st.dev, ino: st.ino, birthtime: st.birthtimeMs }
+  } catch { return { titles: new Map() } }
+  const same = was?.path === path && was.dev === f.dev && was.ino === f.ino && was.birthtime === f.birthtime
+  if (same && was.size === f.size && was.mtime === f.mtime && was.ctime === f.ctime) return was
+  const reusable = same && was.cursor && f.size > was.size && f.size >= was.cursor.offset && appendWitnessMatches(f, was.cursor, readBytes)
+  let c = reusable ? was : { cursor: cursor(), titles: new Map() }
+  const consume = () => {
+    for (const line of readAppended(f, c.cursor, readBytes)) {
+      try { const d = JSON.parse(line); if (d.id && d.thread_name) c.titles.set(d.id, String(d.thread_name).trim()) } catch {}
     }
-  } catch {}
-  return out
+  }
+  try { consume() }
+  catch (error) {
+    if (error instanceof ExtendedTail && reusable) { c = { cursor: cursor(), titles: new Map() }; consume() }
+    else return was || { titles: new Map() }
+  }
+  return Object.assign(c, f)
 }
 
 export function createScanner(opts = {}) {
   const o = { days: 2, max: 40, zstdMax: ZSTD_MAX, zstdEvery: ZSTD_EVERY, ...opts }
-  const files = new Map() // path -> { size, mtime, head, session }
+  const files = new Map() // path -> file identity, JSONL cursor/reader, published session
+  const readBytes = typeof o.readSync === "function" ? o.readSync : readSync
   const procs = createProcesses()
   let srcs = o.sources || sources()
+  let titleCache = null
 
-  // one pass: every changed file read again; gives the sessions, latest first
+  // One pass: append-only JSONL changes reuse reader state; latest sessions first.
   function scan(now = Date.now()) {
     const since = now - o.days * 86400e3
     const found = []
@@ -272,7 +362,7 @@ export function createScanner(opts = {}) {
     for (const f of keep) {
       let c = files.get(f.path)
       const metadata = sidecars(f.src, f.path)
-      const changed = !c || c.size !== f.size || c.mtime !== f.mtime || c.metadata !== metadata
+      const changed = !c || c.size !== f.size || c.mtime !== f.mtime || c.ctime !== f.ctime || c.dev !== f.dev || c.ino !== f.ino || c.birthtime !== f.birthtime || c.metadata !== metadata || (c.cursor && c.cursor.offset < f.size)
       if (changed) {
         const zstd = f.path.endsWith(".zstd")
         // Leave size/mtime at the last decoded revision while throttled, so
@@ -280,16 +370,26 @@ export function createScanner(opts = {}) {
         if (zstd && c?.session && now - (c.decodedAt || 0) < o.zstdEvery) {
           c.session.touched = Math.max(c.session.touched || 0, f.mtime)
         } else {
-          try { c = readOne(f, c, now) } catch (e) { continue }
-          c.metadata = metadata
-          files.set(f.path, c)
+          try {
+            c = readOne({ ...f, metadata }, c, now)
+            c.metadata = metadata
+            files.set(f.path, c)
+          } catch (e) {
+            // Keep valid facts/cursor progress through a transient read
+            // failure. Do not mark the new metadata revision consumed.
+            if (!c?.session) continue
+          }
         }
       }
       if (!c.session) continue
-      const s = c.session
-      finalizeUsage(s, now)
+      // Keep scanner-derived path/title/time fields out of the parser's
+      // stable state, so they cannot override subsequent log events.
+      const parsed = c.reader ? c.reader.session : c.session
+      finalizeUsage(parsed, now)
+      const s = c.reader ? finish({ ...parsed, path: f.path }, f) : c.session
+      c.session = s
       if (s.agent === "codex") {
-        titles ??= codexTitles()
+        if (!titles) { titleCache = codexTitles(titleCache, readBytes); titles = titleCache.titles }
         const t = titles.get(s.id)
         if (t) s.title = t.length > 48 ? t.slice(0, 47) + "…" : t
       }
@@ -304,23 +404,40 @@ export function createScanner(opts = {}) {
   }
 
   function readOne(f, was, now = Date.now()) {
-    const read = readerFor(f.src.kind, f.src.agent, f.src)
     const id = idOf(f.src, f.path)
-    const meta = readMeta(f.src, f.path)
-    const usage = readMeta(f.src, f.path, "usage")
-    let text
-    if (f.path.endsWith(".zstd")) {
-      if (f.size > o.zstdMax) return { size: f.size, mtime: f.mtime, session: was?.session || null, decodedAt: now }
-      text = zstd(f.path)
-    } else if (f.src.kind === "gemini" && f.path.endsWith(".json")) {
-      // Gemini's .json format is a single document, not an event log.
-      text = readFileSync(f.path, "utf8")
-    } else {
-      text = readLines(f.path, f.size)
+    const sig = f.metadata.split("|")
+    const before = was?.metadata?.split("|")
+    const compressed = f.path.endsWith(".zstd")
+    const document = f.src.kind === "gemini" && f.path.endsWith(".json")
+    if (compressed || document) {
+      // A rewritten compressed blob / JSON document has no append cursor.
+      if (compressed && f.size > o.zstdMax) return { ...f, session: was?.session || null, decodedAt: now }
+      const text = compressed ? zstd(f.path) : readFileSync(f.path, "utf8")
+      const s = readerFor(f.src.kind, f.src.agent, f.src)(text, id, readMeta(f.src, f.path), now, readMeta(f.src, f.path, "usage"))
+      s.path = f.path
+      return { size: f.size, mtime: f.mtime, ctime: f.ctime, dev: f.dev, ino: f.ino, birthtime: f.birthtime, session: finish(s, f), decodedAt: now }
     }
-    const s = read(text, id, meta, now, usage)
-    s.path = f.path
-    return { size: f.size, mtime: f.mtime, session: finish(s, f), decodedAt: now }
+    const sameFile = was && was.dev === f.dev && was.ino === f.ino && was.birthtime === f.birthtime
+    const rewritten = sameFile && f.size === was.size && (f.mtime !== was.mtime || f.ctime !== was.ctime)
+    const reusable = sameFile && was.reader && was.cursor && f.size >= was.cursor.offset && !rewritten && (f.size === was.cursor.offset || appendWitnessMatches(f, was.cursor, readBytes))
+    let c = reusable ? was : {
+      reader: createSessionReader(f.src.kind, f.src.agent, id, { subagent: !!f.src.subagent }),
+      cursor: cursor(),
+    }
+    const changes = { now }
+    // Do not retain a whole usage.json snapshot or re-aggregate it on each
+    // append. The reader keeps its daily totals; re-read only a new revision.
+    if (!reusable || before?.[0] !== sig[0]) changes.meta = readMeta(f.src, f.path)
+    if (!reusable || before?.[1] !== sig[1]) changes.usage = readMeta(f.src, f.path, "usage")
+    try { c.reader.update(readAppended(f, c.cursor, readBytes), changes) }
+    catch (error) {
+      if (!(error instanceof ExtendedTail) || !reusable) throw error
+      c = { reader: createSessionReader(f.src.kind, f.src.agent, id, { subagent: !!f.src.subagent }), cursor: cursor() }
+      c.reader.update(readAppended(f, c.cursor, readBytes), { meta: readMeta(f.src, f.path), usage: readMeta(f.src, f.path, "usage"), now })
+    }
+    Object.assign(c, { size: f.size, mtime: f.mtime, ctime: f.ctime, dev: f.dev, ino: f.ino, birthtime: f.birthtime, decodedAt: now })
+    c.session = finish({ ...c.reader.session, path: f.path }, f)
+    return c
   }
 
   function finish(s, f) {
@@ -338,5 +455,5 @@ export function createScanner(opts = {}) {
     return s
   }
 
-  return { scan, files, setSources: (x) => { srcs = x; files.clear() } }
+  return { scan, files, setSources: (x) => { srcs = x; files.clear(); titleCache = null } }
 }
