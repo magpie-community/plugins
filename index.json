@@ -10249,9 +10249,37 @@
               "directory": "packages/zed"
             }
           }
+        },
+        "0.1.12": {
+          "file": "tgz/magpie-community-opencode-zed-auth-0.1.12.tgz",
+          "integrity": "sha512-wrbi6wSB+XVINtEAye33IEzqaJmVr1QReD233JEsoMA3JWC4RvPu76Mqe97oJhr60cKsVDDoLjJ7PkdQMmqg2Q==",
+          "time": "2026-10-31T14:05:43.737Z",
+          "manifest": {
+            "name": "@magpie-community/opencode-zed-auth",
+            "version": "0.1.12",
+            "description": "Sign in to a Zed subscription (Zed Pro, trial, student, business) from OpenCode or magpie",
+            "type": "module",
+            "main": "./index.mjs",
+            "files": [
+              "index.mjs",
+              "README.md"
+            ],
+            "keywords": [
+              "opencode",
+              "opencode-plugin",
+              "magpie",
+              "zed"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/zed"
+            }
+          }
         }
       },
-      "latest": "0.1.11",
+      "latest": "0.1.12",
       "readme": "# @magpie-community/opencode-zed-auth\n\nSigns in to a **Zed** subscription (Zed Pro, its trial, a student or business\nplan) and calls the models Zed hosts: Anthropic's, OpenAI's, Google's and\nxAI's, through `cloud.zed.dev`, the way the Zed editor calls them. Provider\nid: `zed`. Ported from magpie's built-in Zed account.\n\n## Sign-in\n\n**Sign in with Zed (browser)** is Zed's own sign-in:\n\n1. The plugin makes an RSA-2048 key and listens on a port of `127.0.0.1`.\n2. The browser opens `zed.dev/native_app_signin` with that port and the\n   key's public half.\n3. Once you sign in, zed.dev sends the browser back to the port with your\n   user id and an access token encrypted to the key. The browser is then\n   sent on to zed.dev's \"signed in\" page.\n4. The plugin asks Zed who the account is (`/client/users/me`). That gives\n   the organization the models are called under, and its plan. An\n   organization with Zed's hosted models turned off is refused.\n\n## Organization\n\nZed asks for a model token per organization. The Zed editor starts in the\naccount's default organization and lets you switch to another from its\ntitle bar. The plugin has no switcher, so it picks the organization with a\nplan that calls models (any plan but Free), in this order (#232):\n\n1. the organization it saved before, while that one still has such a plan;\n2. the default organization, if it has one;\n3. the personal organization, if it has one;\n4. any other organization that has one.\n\nWhen none has such a plan, it keeps what Zed picks: the saved organization,\nelse the default, else the first. The plan shown is the picked\norganization's own (none when Zed lists none for it), never the account's\nplan in its place. When Zed answers 402 for the organization a sign-in was\nsaved under (\"Organization does not have an active subscription\"), the\nplugin reads the account again, moves to an organization with a plan if\nthere is one, saves it with the sign-in, and asks once more. The plan card\nre-checks the organization the same way.\n\nThe sign-in is kept as an `oauth` entry: `access` is the access token and\n`refresh` is JSON holding the user id, machine id, organization and plan.\nZed has no refresh token, so the token lasts until Zed refuses it. When\nZed refuses it, you are asked to sign in again. `accountId` is the account's\nGitHub login.\n\n## Requests\n\n- **Model token:** each request uses a short-lived model token, minted from\n  the sign-in with `POST /client/llm_tokens` and kept in memory. If Zed calls\n  the token stale (a 401, `x-zed-expired-token` or `x-zed-outdated-token`),\n  it is minted again once.\n- **API per model:** each model is declared on the AI SDK package of its\n  own provider, so the request the SDK writes is already what Zed wants.\n  The plugin's `fetch` wraps it as `{provider, model, provider_request}` and\n  sends it to `POST /completions` with Zed's headers:\n\n  | Zed provider | AI SDK package | API |\n  |---|---|---|\n  | anthropic | `@ai-sdk/anthropic` | Messages |\n  | open_ai | `@ai-sdk/openai` | Responses |\n  | x_ai | `@ai-sdk/openai-compatible` | chat completions |\n  | google | `@ai-sdk/google` | generateContent |\n\n- **Request changes, as magpie makes them:**\n  - Anthropic: the request loses `stream`, since the cloud always streams.\n    Every `tool_result` gets `is_error` (Zed's cloud refuses one without it).\n  - xAI: `max_tokens` becomes `max_completion_tokens`.\n  - Gemini: the model is named in the request as `models/<id>`.\n- **Replies:**\n  - Zed's newline-delimited lines are sent back as each API's own\n    server-sent events.\n  - A caller that didn't ask for a stream gets one whole reply.\n  - A failure Zed reports mid-stream keeps its status (429, 402, 529 …).\n    So does a reply without Zed's `stream_ended`, which comes back as an\n    error rather than a shorter answer, except one case. A streamed xAI\n    (chat) reply that has already said something, and has no tool call\n    half written, ends cut short instead, with a note saying so, a `stop`\n    and `[DONE]` (#91). magpie's gateway can go on with an Anthropic or\n    Responses reply cut short, but not with a chat one.\n  - A 402 means the plan doesn't include Zed's hosted models, or its\n    allowance is used up.\n\n## Models\n\n- **After sign-in:** the account's own list comes from Zed's `GET /models`,\n  read when you sign in and every 10 minutes after. Disabled models are\n  left out. Each model's effort levels become its variants. When a read\n  fails, the list read last is kept; when none was ever read (Zed down,\n  or a list with nothing callable, as for an organization without an\n  active subscription), the hook throws why, and magpie shows that reason\n  with the account, the declared models marked as not its list (#229).\n- **Before sign-in:** the config hook declares one model of each family\n  (Claude Sonnet 5, Opus 5.5, Haiku 4.5, GPT-5.5, Gemini 3.5 Flash,\n  Grok 4.7), which the account's list replaces.\n\n## Usage\n\nmagpie's `auth.usage` hook shows what Zed tells its editor of the plan,\nas magpie's built-in Zed account did. Zed doesn't report how much of the\nallowance is spent, so there are no windows:\n\n- the plan's name (Pro, Pro Trial, Business, Student, VIP). A free\n  account's card says \"No plan\"; its account row still names it Free;\n- when the billing period ends;\n- an overdue invoice, as the card's error (\"its models are paused\");\n- a sign-in Zed refuses (`/users/me` or the model list answering 401)\n  marks the account as needing to sign in again. A plan that changed is\n  saved with the sign-in.\n\n## In magpie, not the plugin\n\nThese come from magpie itself, as they did for the built-in:\n\n- Several Zed accounts at once. magpie keeps a sign-in per account and\n  switches between them; plain OpenCode keeps one sign-in per provider.\n- Web search. A model that can't search is given magpie's web-search\n  stand-in, when a search API is set up in magpie.\n"
     },
     "@magpie-community/opencode-zen-free-auth": {
