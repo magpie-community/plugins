@@ -52,6 +52,11 @@ export async function acquireLock(path, { waitMs = 5000 } = {}) {
         if (error.code !== 'ENOENT') throw error;
       }
     } catch (error) {
+      // Windows can keep a released directory delete-pending before the next mkdir.
+      if (process.platform === 'win32' && error.code === 'EPERM' && error.syscall === 'mkdir' && error.path === path) {
+        if (Date.now() >= deadline) throw error;
+        await delay(25); continue;
+      }
       if (error.code !== 'EEXIST') throw error;
       try {
         if ((await lstat(path)).isDirectory()) {
