@@ -1,0 +1,33 @@
+{
+  "name": "@magpie-community/opencode-doubao-free-auth",
+  "version": "0.1.0",
+  "description": "OpenCode & Magpie provider plugin for Doubao free models",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "doubao",
+    "free",
+    "magpie"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/doubao-free"
+  },
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "magpie": {
+    "icon": "https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/web/logo-icon.png",
+    "maxConcurrency": 2
+  }
+}

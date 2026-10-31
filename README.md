@@ -40,6 +40,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [zcode](packages/zcode) | ZCode: Z.ai / BigModel (智谱) GLM Coding Plan, team seats, Start Plan, daily claim of its gift plans | `zcode` |
 | [zed](packages/zed) | Zed (Pro, Pro Trial, Student, Business): Anthropic, OpenAI, Google and xAI models hosted by Zed | `zed` |
 | [zen-free](packages/zen-free) | OpenCode Zen free models with the public credential | `opencode-zen-free` |
+| [doubao-free](packages/doubao-free) | Doubao free models through the doubao-free-api gateway | `doubao-free` |
 
 ## Gateway middleware
 
