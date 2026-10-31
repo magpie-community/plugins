@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1 · 2026-10-31
+
+修复 0.2.0 在真实 magpie 窄窗口中的布局回归。
+
+### Fixed
+
+- Toolbar controls are grouped, so Settings never wraps alone on a second row.
+- The page fills the plugin frame without an outer scrollbar; the stage shrinks instead of overflowing.
+- Name tags use their laid-out position for collision stacking, stay inside the stage, and are capped by priority so they cannot cover the office.
+- The grouped side rail starts closed and opens from **Panel**.
+
 ## 0.2.0 · 2026-10-31
 
 功能对齐 [whatsmyagentdoing](https://github.com/Charonyuu/whatsmyagentdoing)，并加入真正的 3D 与独立运行方式。

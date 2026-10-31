@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-agent-office",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "我的 Agent 在干嘛：读取本机 Claude Code、Codex、Copilot CLI、Kimi Code、DeepSeek Harness、Gemini CLI、Qwen Code、Pi、omp、Qoder、WorkBuddy、CodeBuddy、Grok Build 的会话文件，把每个会话画成真 3D / 等距 / 2D 办公室里的小人，或分组工作台。Live agent activity dashboard for magpie, with a real WebGL office and six scenes.",
   "type": "module",
   "files": [
