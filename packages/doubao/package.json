@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/tools-doubao",
+  "version": "0.1.0",
+  "description": "Doubao (豆包) image generation relay for Magpie: text-to-image and image-to-image with the user's own Doubao web session (QR-code sign-in), served to every agent via /mcp/magpie/tools",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "src", "scripts", "config.example.json", "README.md", "LICENSE"],
+  "keywords": ["magpie", "magpie-tools", "mcp", "opencode", "opencode-plugin", "doubao", "seedream", "image-generation", "text-to-image"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/doubao" }
+}
