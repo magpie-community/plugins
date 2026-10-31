@@ -40,6 +40,8 @@ node worker.mjs evidence <turn-source-hash>
 
 Evidence is private and expires after the retention period. status includes safe progress and notification errors. setup does not install/start an engine or call a generation model. Unknown writes must be checked against the actual library before a manual retry decision.
 
+A matching full record is retained when its causal chain exceeds the memory allowance, with an explicit omission notice. Shared daily remember output is removed before model disclosure. Current-turn diary readback uses a source marker, bounded search/fragment calls and exact body/version/Unicode-range checks; only this turn's body and complete locators reach the model. Unsupported, stale, incomplete or oversized readback stays unconfirmed without whole-diary fallback or write replay. Large raw capture is not guaranteed to fit the bounded fragment allowance.
+
 ## Checks in this repository
 
 From this repository root:

@@ -45,7 +45,7 @@ assert(hasSecret({ content: '{"api_key":"fixture-secret"}' }));
 assert(hasSecret({ tool: { PGPASSWORD: 'fixture-secret' } }));
 const id = '11111111-1111-4111-8111-111111111111';
 let calls = 0;
-let generationRound = 0, unknownWrite = false, writes = 0, policyReady = true, emptyRecall = false, fixturePolicy = 'Complete fixture policy';
+let generationRound = 0, unknownWrite = false, writes = 0, policyReady = true, emptyRecall = false, oversizedChain = false, brokenDiary = false, wholeDiaryReads = 0, fixturePolicy = 'Complete fixture policy';
 const savedId = '22222222-2222-4222-8222-222222222222';
 const diaryId = '33333333-3333-4333-8333-333333333333';
 const commandLog = [];
@@ -55,6 +55,7 @@ const server = createServer(async (req, res) => {
   let body = ''; for await (const chunk of req) body += chunk;
   const r = JSON.parse(body); calls++;
   if (req.url === '/v1/chat/completions') {
+    assert(!body.includes('Other turn: private unrelated content'), 'Daily aggregate must never reach the model through remember or show');
     const actions = [ ['recall', ['project']], ['prompt', []], ['agent-config', []], ['show', [id]],
       ['remember', ['【前因】用户明确项目约定。【行为】实际采用规则。【后果】保留规则。', '--title', '项目已明确采用现有验证规则', '--importance', 'important', '--parent', id]], ['show', [savedId]],
       ['remember', ['助手在fixture主机完成项目规则验证。', '--importance', 'trivial']], ['show', [diaryId]] ];
@@ -70,15 +71,28 @@ const server = createServer(async (req, res) => {
   const envelope = { status: 'ok', summary: command === 'status' ? { data_dir: 'fixture', unlocked: true, session: { has_session: true, user: 'fixture', addr: 'fixture' } }
     : command === 'agent-config' ? { readonly: false, memory_off: false, workspace_mode: 'normal' }
     : command === 'prompt' ? { instructions: policyReady ? fixturePolicy : '' } : {},
-    details: command === 'recall' ? (emptyRecall ? [] : [{ id }]) : command === 'prompt' ? null : { entry: entries.get(r.args[2]) ?? entries.get(id) } };
-  if (command === 'show') envelope.summary.id = r.args[2];
+    details: command === 'recall' ? (emptyRecall ? [] : [{ id }]) : command === 'prompt' ? null : command === 'chain' && oversizedChain ? { content: 'x'.repeat(16000) } : { entry: entries.get(r.args[2]) ?? entries.get(id) } };
+  if (command === 'show') { envelope.summary.id = r.args[2]; if (r.args[2] === diaryId) wholeDiaryReads++; }
+  if (command === 'diary-search' || command === 'diary-fragment') {
+    const text = command === 'diary-fragment' && brokenDiary ? 'Only the marker remains: ' + (entries.get(diaryId)?.content.split('【来源】回合 ')[1] ?? '') : entries.get(diaryId)?.content ?? '';
+    envelope.details = { items: [{ source_id: diaryId, fragment_id: 'fixture-fragment', source_version: 'fixture-version',
+      text, start: 0, end: Array.from(text).length, truncated: false }] };
+    if (command === 'diary-fragment') {
+      const chars = Array.from(text), split = Math.floor(chars.length / 2);
+      envelope.details.items = [
+        { ...envelope.details.items[0], fragment_id: 'fixture-neighbor', text: chars.slice(0, split + 8).join(''), end: split + 8 },
+        { ...envelope.details.items[0], text: chars.slice(split).join(''), start: split }
+      ];
+    }
+  }
   if (command === 'remember') {
     if (r.args[2] === 'pending-fixture-content') {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ v: 1, id: r.id, ok: false, exit: 2, envelope: { status: 'pending', summary: {}, items: [] } })); return;
     }
     const writtenId = r.args.includes('trivial') ? diaryId : savedId;
-    writes++; entries.set(writtenId, { id: writtenId, title: 'Saved', content: r.args[2], project: '' }); envelope.summary.id = writtenId;
+    writes++; entries.set(writtenId, { id: writtenId, title: 'Saved', content: r.args.includes('trivial') ? 'Other turn: private unrelated content.\n' + r.args[2] : r.args[2], project: '', importance: r.args.includes('trivial') ? 'trivial' : 'important' }); envelope.summary.id = writtenId;
+    if (writtenId === diaryId) envelope.details = { entry: entries.get(diaryId) };
     if (unknownWrite) { res.destroy(); return; }
   }
   res.setHeader('Content-Type', 'application/json');
@@ -120,6 +134,13 @@ try {
     const count = calls; await onRequest(body, ctx); assert.equal(calls, count + 1);
     assert.equal(await onRequest(body, { ...ctx, origin: 'gateway-key' }), undefined);
   }
+  oversizedChain = true;
+  entries.get(id).kind = 'decision';
+  const bounded = await onRequest({ messages: [{ role: 'user', content: 'Oversized chain must not hide its matching record' }] },
+    { protocol: 'chat', origin: 'local', session: 'chain-budget', options: { runtimeUrl: `http://127.0.0.1:${server.address().port}`, stateDir, maxBytes: 1024 } });
+  assert(JSON.stringify(bounded).includes('Historical evidence'));
+  assert(JSON.stringify(bounded).includes('causalChainOmitted'));
+  oversizedChain = false; delete entries.get(id).kind;
   emptyRecall = true;
   for (const protocol of ['chat', 'responses', 'anthropic', 'gemini']) {
     const ctx = { protocol, origin: 'local', session: 'empty-policy', state: {}, signal: AbortSignal.timeout(5000),
@@ -229,6 +250,17 @@ try {
   await assert.rejects(() => guarded.run({ command: 'remember', args: ['text', '--force'] }));
   await assert.rejects(() => guarded.run({ command: 'remember', args: ['text', '--importance', 'important', '--title', 'title', '--parent', id] }));
   await assert.rejects(() => guarded.run({ command: 'agent-config', args: ['--set', 'readonly=false'] }));
+  await assert.rejects(() => guarded.run({ command: 'show', args: [diaryId.slice(0,8)] }), /full-id-required/);
+  const diaryGuard = memoryTools(call, { source: digest('strict-diary-readback') });
+  await diaryGuard.run({ command: 'recall', args: ['project'] }); await diaryGuard.run({ command: 'prompt', args: [] });
+  const diaryWrite = await diaryGuard.run({ command: 'remember', args: ['Current turn complete diary.', '--importance', 'trivial'] });
+  assert(!JSON.stringify(diaryWrite).includes('Other turn:'));
+  await assert.rejects(() => diaryGuard.run({ command: 'remember', args: ['Do not overwrite unverified daily write.', '--importance', 'trivial'] }), /diary-readback-required/);
+  brokenDiary = true;
+  await assert.rejects(() => diaryGuard.run({ command: 'show', args: [diaryId] }), /diary-readback-unconfirmed/);
+  assert(diaryGuard.uncertain);
+  await assert.rejects(() => diaryGuard.run({ command: 'remember', args: ['No replay after incomplete readback.', '--importance', 'trivial'] }), /read-before-write/);
+  brokenDiary = false;
   const large = prepareArchiveContext([{ type: 'userMessage', content: [{ text: 'a'.repeat(270000) }] }]);
   assert(large.chunks.length > 1); assert.equal(readEvidence(large.fragments, [large.userSources[0]])[0].text.length, 6000);
   assert.throws(() => parseExtraction(JSON.stringify({ facts: [{ text: 'x', status: 'confirmed', sources: ['invented'] }], constraints: [] }), large.fragments));
@@ -249,6 +281,7 @@ try {
     return { role: 'assistant', content: null, tool_calls: [{ id: 'large-' + finalRound, type: 'function', function: command }] };
   } });
   assert(extractionCount > 1); assert.equal(segmented.result, 'stored'); assert(segmented.checkedRecords.includes(diaryId));
+  assert.equal(wholeDiaryReads, 0, 'Known current-turn diaries must use fragment readback, never whole-source show');
   generationRound = 0;
   const queuedCtx = { protocol: 'chat', origin: 'local', session: 'detached-worker', state: {}, signal: AbortSignal.timeout(20000),
     options: { ...o, runtimeUrl: o.url, maxBytes: 32768 } };
@@ -341,6 +374,17 @@ try {
   for (const key of await capacity.jobs()) unlinkSync(capacity.path(key));
   await holdCapacity();
   assert.equal((await call(['remember', 'pending-fixture-content'])).status, 'pending');
+  const captureOptions = { ...o, archive: false, capture: true };
+  for (const [label, text, expected] of [['short', '短回合🙂', 'completed'], ['large', 'x'.repeat(5000), 'unconfirmed']]) {
+    const captureAcceptedAt = Date.now();
+    await store.put('control-' + digest(account, o.url, ''), { readOnly: false, archive: false, capture: true, updatedAt: captureAcceptedAt, signature: controlSignature(captureOptions) });
+    const captureSource = digest('strict-raw-capture', label), name = 'job-' + captureSource;
+    await store.put(name, { ...makeJob(captureSource), o: captureOptions, createdAt: new Date(captureAcceptedAt).toISOString(), messages: [{ role: 'user', content: text }, { role: 'assistant', content: '收到' }] });
+    await processJob(store, name);
+    assert.equal((await store.get(name)).status, expected);
+    const beforeReplay = writes; await processJob(store, name); assert.equal(writes, beforeReplay);
+  }
+  assert.equal(wholeDiaryReads, 0);
   console.log('Detached worker check passed: gateway completion -> encrypted queue -> child process -> model tools -> readback.');
   console.log('Archive checks passed: real HTTP model tool loop, readback, encrypted persistence, unknown-write no-retry, read-only, tool restrictions and source-checked segmentation.');
   console.log('Review regressions passed: stale/live locks, receipts, capacity, retention, leases, stable history, four-protocol policy dedup/change/revert and neutral user agents.');

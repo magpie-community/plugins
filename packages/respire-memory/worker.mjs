@@ -6,6 +6,7 @@ import { archiveTurn } from './archive.mjs';
 import { generate } from './generation.mjs';
 import { acquireLock, alive } from './lock.mjs';
 import { checkControl } from './queue.mjs';
+import { readDiary } from './memory-tools.mjs';
 
 export async function processJob(store, name, { model, call: injectedCall } = {}) {
   let job = await store.get(name);
@@ -58,6 +59,8 @@ export async function processJob(store, name, { model, call: injectedCall } = {}
       if (['remember', 'update'].includes(args[0]) && doc.status === 'ok' && validId(doc.summary?.id)) {
         records.push(doc.summary.id); await save({ records: [...new Set(records)] });
       }
+      if (args[0] === 'remember' && args.includes('--importance') && args[args.indexOf('--importance') + 1] === 'trivial')
+        return { status: doc.status, summary: { id: doc.summary?.id } };
       return doc;
     };
     let diary;
@@ -70,8 +73,8 @@ export async function processJob(store, name, { model, call: injectedCall } = {}
       if (hasSecret(job.messages) || Buffer.byteLength(content) > 2 * 1024 * 1024) throw new Error('capture-content-limit');
       diary = receipt(await call(['remember', content, '--importance', 'trivial']));
       if (diary.status !== 'stored') throw new Error('capture-unconfirmed');
-      const check = await rawCall(['show', diary.id]);
-      if (check.status !== 'ok' || check.details?.entry?.id !== diary.id || !check.details.entry.content.includes(job.source)) throw new Error('capture-readback-failed');
+      const check = await readDiary(rawCall, diary.id, content, job.source);
+      if (check.details?.diaryReadback?.verified !== true) throw new Error('capture-readback-failed');
       await save({ diary: { ...diary, verified: true } });
     }
     const result = job.o.archive ? await archiveTurn(job, { call, signal, model: async (...args) => {

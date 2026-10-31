@@ -54,7 +54,7 @@ function block(data, budget) {
   // Complete engine policy has its own bounded allowance; legacy recall budgets must not truncate it.
   const policyBytes = data.rules ? bytes(JSON.stringify(data.rules)) : 0;
   if (policyBytes > 128 * 1024) throw new Failure('invalid');
-  const encode = ({ rules, ...value }) => (rules ? `\n\n<respire-policy>\n${rules}\n\n【宿主执行回执】本轮网关已执行召回（/nomem除外）、完整政策读取及选中正文读取。你须阅读这些内容，但不必重复宿主已执行的命令。客户端未提供记忆工具时，不得虚构Shell、exec_command或任何工具调用；按用户原任务和输出格式回答。每轮存检由回复完成后的独立worker执行，结果以真实回执为准；这不保证回复发出前已落库。\n</respire-policy>` : '')
+  const encode = ({ rules, ...value }) => (rules ? `\n\n<respire-policy>\n${rules}\n\n【respire · host execution receipt】This turn the gateway already ran recall (except for /nomem), the complete policy read, and the selected body reads. You must read this content, but you need not repeat the commands the host already executed. When the client provides no memory tools, do not fabricate Shell, exec_command, or any tool call; answer per the user's original task and output format. The per-turn storage check runs in a separate worker after the reply completes; its real receipt is authoritative, and this does not guarantee the data landed before the reply was sent.\n</respire-policy>` : '')
     + `\n\n${open}\n${notice}\n\n${JSON.stringify(value).replace(/</g, '\\u003c')}\n${close}`;
   budget += bytes(encode({ rules: data.rules })) - bytes(encode({}));
   let text = encode(data);
@@ -102,7 +102,8 @@ async function prepare(o, query, signal, entry, extra = {}, priorPolicy) {
     if (['decision', 'skill', 'preference', 'task'].includes(String(e.kind).toLowerCase()) || /决策|报错|教训|约定|故障/.test(e.title + '\n' + e.content)) {
       const chain = await rpc(o, ['chain', id, '--depth', '3'], signal);
       if (chain.status !== 'ok') throw new Failure('invalid');
-      record.causalChain = chain.details;
+      if (bytes(JSON.stringify({ ...record, causalChain: chain.details })) <= o.maxBytes - 600) record.causalChain = chain.details;
+      else record.causalChainOmitted = 'Read by host; exceeds memory injection budget. Do not claim to have read the chain text.';
     }
     return bytes(JSON.stringify(record)) <= o.maxBytes - 600 ? record : undefined;
   }));

@@ -30,13 +30,39 @@ function boundedDiaryArgs(command, args) {
   return [...args.slice(0, positional), ...[...options].flat()]
 }
 
-export function memoryTools(call, { readOnly = false } = {}) {
+export async function readDiary(call, id, content, source) {
+  if (!validId(id) || !/^[a-f0-9]{64}$/.test(source ?? '') || !content.includes(source)) throw new Error('diary-readback-source');
+  const found = await call(['diary-search', source, '--limit', '5', '--max-chars', '4000', '--mode', 'hybrid']);
+  if (Array.from(JSON.stringify(found.details ?? {})).length > 4000) throw new Error('diary-output-too-large');
+  const candidate = found.details?.items?.find(item => item.source_id === id && !item.truncated && item.text?.includes(source));
+  if (found.status !== 'ok' || !candidate?.fragment_id || !candidate.source_version) throw new Error('diary-readback-unconfirmed');
+  const fragment = await call(['diary-fragment', id, candidate.fragment_id, '--neighbors', '1', '--max-chars', '4000']);
+  if (Array.from(JSON.stringify(fragment.details ?? {})).length > 4000) throw new Error('diary-output-too-large');
+  const items = fragment.details?.items;
+  if (fragment.status !== 'ok' || !Array.isArray(items) || !items.some(item => item.fragment_id === candidate.fragment_id)
+    || items.some(item => item.source_id !== id || item.source_version !== candidate.source_version || item.truncated || typeof item.text !== 'string'
+      || !Number.isInteger(item.start) || !Number.isInteger(item.end) || item.end - item.start !== Array.from(item.text).length)) throw new Error('diary-readback-unconfirmed');
+  const ordered = [...items].sort((a,b) => a.start - b.start);
+  const start = ordered[0].start, text = Array.from(ordered[0].text);
+  let end = ordered[0].end;
+  for (const item of ordered.slice(1)) {
+    const chars = Array.from(item.text), overlap = Math.min(end - item.start, chars.length);
+    if (overlap < 0 || text.slice(item.start - start, item.start - start + overlap).join('') !== chars.slice(0, overlap).join('')) throw new Error('diary-readback-unconfirmed');
+    text.push(...chars.slice(overlap)); end = Math.max(end, item.end);
+  }
+  if (!text.join('').includes(content)) throw new Error('diary-readback-unconfirmed');
+  // Return only the verified write, never adjacent turns from the daily source.
+  return { status: 'ok', summary: { id }, details: { entry: { id, importance: 'trivial', content },
+    diaryReadback: { verified: true, fragments: ordered.map(({ source_id, fragment_id, source_version, start, end }) => ({ source_id, fragment_id, source_version, start, end })) } } };
+}
+
+export function memoryTools(call, { readOnly = false, source } = {}) {
   let recalled = false
   let policy = false
   let uncertain = false
   let diaryUnavailable = false
   const written = new Set()
-  const diaries = new Set()
+  const diaries = new Map()
   const shown = new Set()
   const verified = new Set()
   const commands = []
@@ -51,15 +77,21 @@ export function memoryTools(call, { readOnly = false } = {}) {
       if (args.some(arg => /^(?:--(?:direct|force|merge-ids|go|ensure|set|addr|data-dir))(?:=|$)/.test(arg))) throw new Error('forbidden-memory-option')
       if (command === 'taxonomy' && (args.length !== 1 || args[0] !== '--list')) throw new Error('read-only-taxonomy')
       if (command === 'agent-config' && args.length) throw new Error('read-only-config')
+      if (command === 'show' && !validId(args[0])) throw new Error('full-id-required')
       const diary = command === 'diary-search' || command === 'diary-fragment'
       if (diary && diaryUnavailable) throw new Error('diary-unsupported')
       if (diary) args = boundedDiaryArgs(command, args)
       const write = WRITE.has(command)
+      const trivial = command === 'remember' && args.includes('--importance') && args[args.indexOf('--importance') + 1] === 'trivial'
       if (write) {
         if (readOnly) throw new Error('read-only')
         if (uncertain || !recalled || !policy) throw new Error('read-before-write')
+        if ([...diaries.keys()].some(id => !verified.has(id))) throw new Error('diary-readback-required')
         if (containsSecret(JSON.stringify(input))) throw new Error('secret-content')
-        const trivial = command === 'remember' && args.includes('--importance') && args[args.indexOf('--importance') + 1] === 'trivial'
+        if (trivial) {
+          if (!/^[a-f0-9]{64}$/.test(source ?? '') || !args[0]?.trim()) throw new Error('diary-source-required')
+          args = [...args]; args[0] += `\n【来源】回合 ${source}`
+        }
         const title = args.indexOf('--title')
         if (!trivial && (title < 0 || !args[title + 1]?.trim())) throw new Error('title-required')
         if (command === 'remember' && !trivial) {
@@ -74,8 +106,10 @@ export function memoryTools(call, { readOnly = false } = {}) {
       }
       commands.push(command)
       let doc
-      try { doc = await call([command, ...args]) }
+      try { doc = command === 'show' && diaries.has(args[0])
+        ? await readDiary(call, args[0], diaries.get(args[0]), source) : await call([command, ...args]) }
       catch (error) {
+        if (command === 'show' && diaries.has(args[0])) uncertain = true
         if (diary && error.message === 'diary-unsupported') diaryUnavailable = true
         throw error
       }
@@ -86,6 +120,7 @@ export function memoryTools(call, { readOnly = false } = {}) {
         if (recalled) policy = true
       }
       if (command === 'show' && doc.status === 'ok' && validId(doc.summary?.id)) {
+        if (doc.details?.entry?.importance === 'trivial' && !doc.details?.diaryReadback?.verified) throw new Error('bounded-diary-required')
         if (!validId(args[0]) || !doc.summary.id.startsWith(args[0])) throw new Error('invalid-readback')
         shown.add(doc.summary.id)
         shown.add(args[0])
@@ -95,11 +130,11 @@ export function memoryTools(call, { readOnly = false } = {}) {
         if (doc.status === 'pending' || doc.status === 'skip') uncertain = false
         else if (doc.status === 'ok' && validId(doc.summary?.id)) {
           uncertain = false; written.add(doc.summary.id); verified.delete(doc.summary.id)
-          if (command === 'remember' && args.includes('--importance') && args[args.indexOf('--importance') + 1] === 'trivial') diaries.add(doc.summary.id)
+          if (trivial) diaries.set(doc.summary.id, args[0])
         }
         else throw new Error('write-unconfirmed')
       }
-      return doc
+      return trivial ? { status: doc.status, summary: { id: doc.summary?.id }, details: { diaryReadback: { verified: false } } } : doc
     },
     finish(text) {
       if (uncertain || !recalled || !policy) throw new Error('archive-unconfirmed')
@@ -107,7 +142,7 @@ export function memoryTools(call, { readOnly = false } = {}) {
       try { receipt = JSON.parse(text) } catch { throw new Error('archive-invalid-receipt') }
       if (!['stored', 'already-stored', 'nothing-to-store', 'read-only'].includes(receipt.result) || !Array.isArray(receipt.ids) || receipt.ids.some(id => !validId(id) || !shown.has(id))) throw new Error('archive-invalid-receipt')
       if ([...written].some(id => !verified.has(id)) || (receipt.result === 'stored' && !written.size) || (receipt.result === 'already-stored' && !receipt.ids.length)) throw new Error('archive-unverified')
-      if (!readOnly && ![...diaries].some(id => verified.has(id))) throw new Error('turn-diary-required')
+      if (!readOnly && ![...diaries.keys()].some(id => verified.has(id))) throw new Error('turn-diary-required')
       return { result: written.size ? 'stored' : receipt.result, records: [...written], checkedRecords: [...new Set([...receipt.ids, ...verified])], calls: commands.length }
     },
   }

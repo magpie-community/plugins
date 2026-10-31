@@ -77,6 +77,11 @@ export async function acquireLock(path, { waitMs = 5000 } = {}) {
         }
       } catch (e) {
         if (['ENOENT', 'EISDIR', 'ENOTDIR'].includes(e.code)) continue;
+        // Recheck legacy ownership after Windows releases a busy PID-file handle.
+        if (process.platform === 'win32' && e.code === 'EBUSY' && e.syscall === 'unlink' && e.path === path) {
+          if (Date.now() >= deadline) throw e;
+          await delay(25); continue;
+        }
         // A competing release can leave the lock directory delete-pending during a probe.
         if (process.platform === 'win32' && e.code === 'EPERM' && e.syscall === 'scandir' && e.path === path) {
           if (Date.now() >= deadline) throw e;
