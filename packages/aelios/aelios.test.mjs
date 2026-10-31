@@ -353,6 +353,172 @@ test("bad options throw invalid (the host rolls back) without the key in the err
   expect(calls).toHaveLength(1)
 })
 
+const identityRoutes = [
+  { models: ["gpt-*"], identity: "gpt-husband" },
+  { models: ["claude-*"], identity: "claude-husband" },
+]
+
+for (const [protocol, model, agent, make, identity] of [
+  ["chat", "gpt-5", "codex", chat, "gpt-husband"],
+  ["anthropic", "claude-opus-4-5", "claude-code", anthropicString, "claude-husband"],
+]) {
+  test(`${model}: recall and record use its isolated identity`, async () => {
+    mock({ "/v1/hook/recall": (body) => Response.json({ memory: "injected", patch: `<memory>${body.identity}</memory>` }) })
+    const [c] = ctx(protocol, { model, agent, options: { routes: identityRoutes, record: true } })
+    const req = make()
+    const original = structuredClone(req)
+    await onRequest(req, c)
+    onResponse({ content: [{ type: "text", text: "ok" }] }, { ...c, success: true, request: req })
+    await flush()
+    expect(of("/v1/hook/recall")[0].body.identity).toBe(identity)
+    expect(of("/v1/hook/record")[0].body.identity).toBe(identity)
+    expect(JSON.stringify(req)).toContain(`<memory>${identity}</memory>`)
+    for (const key of ["model", "stream", "tools", "tool_choice", "system", "instructions"]) expect(req[key]).toEqual(original[key])
+    expect(of("/v1/hook/record")[0].body.body).toEqual(of("/v1/hook/recall")[0].body.body)
+  })
+}
+
+for (const [pattern, model, matches] of [
+  ["gpt-*", "provider/nested/GPT-5", true],
+  ["PROVIDER/*/gpt-*", "provider/nested/gpt-5", true],
+  ["gpt-*", "other-gpt-5", false],
+  ["gpt-5", "gpt-5-extra", false],
+  ["gpt-5.1+test", "gpt-5.1+test", true],
+  ["gpt-5.1+test", "gpt-5X11test", false],
+]) {
+  test(`model pattern ${pattern} matches ${model}: ${matches}`, async () => {
+    mock()
+    const [c] = ctx("chat", { model, options: { routes: [{ models: [pattern], identity: "selected" }] } })
+    await onRequest(chat(), c)
+    expect(calls).toHaveLength(matches ? 1 : 0)
+    if (matches) expect(calls[0].body.identity).toBe("selected")
+  })
+}
+
+test("agent and model selectors require AND; the first matching route wins", async () => {
+  mock()
+  const routing = [
+    { models: ["claude-*"], agents: ["codex"], identity: "wrong-model" },
+    { models: ["gpt-*"], agents: ["Codex"], identity: "wrong-agent-case" },
+    { models: ["gpt-*"], agents: ["codex"], identity: "first" },
+    { models: ["gpt-*"], identity: "second" },
+  ]
+  const [c] = ctx("chat", { model: "gpt-5", agent: "codex", options: { routes: routing } })
+  await onRequest(chat(), c)
+  expect(calls[0].body.identity).toBe("first")
+  const [agentOnly] = ctx("chat", { model: "other", agent: "codex", options: { routes: [{ agents: ["codex"], identity: "agent-only" }] } })
+  await onRequest(chat(), agentOnly)
+  expect(calls[1].body.identity).toBe("agent-only")
+})
+
+for (const identity of [undefined, "fallback"]) {
+  test(`unmatched routes ${identity ? "use explicit fallback" : "skip recall and record, including stale state"}`, async () => {
+    mock()
+    const [c, reports] = ctx("chat", { model: "other", options: { routes: identityRoutes, identity, record: true } })
+    c.state.aelios = { payload: { identity: "stale" }, slimmed: {} }
+    await onRequest(chat(), c)
+    onResponse({ choices: [] }, { ...c, success: true })
+    await flush()
+    expect(calls).toHaveLength(identity ? 2 : 0)
+    if (identity) for (const call of calls) expect(call.body.identity).toBe(identity)
+    else { expect(c.state.aelios).toBeUndefined(); expect(reports).toEqual([["skipped"]]) }
+  })
+}
+
+for (const routes of [undefined, []]) {
+  test(`routes ${JSON.stringify(routes)} preserve server default identity`, async () => {
+    mock()
+    const [c] = ctx("chat", { options: { routes, record: true } })
+    await onRequest(chat(), c)
+    onResponse({ choices: [] }, { ...c, success: true })
+    await flush()
+    expect(calls).toHaveLength(2)
+    for (const call of calls) expect(call.body.identity).toBeUndefined()
+  })
+}
+
+for (const [name, make, protocol, model] of [
+  ["tool continuation", anthropicTool, "anthropic", "claude-opus-4-5"],
+  ["recall:false", chat, "chat", "gpt-5"],
+]) {
+  test(`${name} still resolves routing and records with original metadata`, async () => {
+    mock()
+    const [c] = ctx(protocol, { model, options: { routes: identityRoutes, record: true, recall: name !== "recall:false" } })
+    await onRequest(make(), c)
+    expect(calls).toHaveLength(0)
+    onResponse({ choices: [] }, { ...c, success: true })
+    await flush()
+    expect(calls).toHaveLength(1)
+    expect(calls[0].path).toBe("/v1/hook/record")
+    expect(calls[0].body.identity).toBe(model.startsWith("gpt") ? "gpt-husband" : "claude-husband")
+  })
+}
+
+test("payload is pinned before recall awaits; changed response context and routes cannot redirect recording", async () => {
+  let release
+  mock({ "/v1/hook/recall": () => new Promise((resolve) => { release = () => resolve(Response.json({ memory: "empty" })) }) })
+  const [c] = ctx("chat", { model: "provider/gpt-5", agent: "codex", options: { routes: identityRoutes, record: true } })
+  const pending = onRequest(chat(), c)
+  expect(c.state.aelios.payload.identity).toBe("gpt-husband")
+  c.model = "claude-opus-4-5"
+  c.agent = "claude-code"
+  c.session = "different-session"
+  c.options.routes = [{ models: ["*"], identity: "changed" }]
+  c.options.identity = "changed-default"
+  release()
+  await pending
+  c.state = JSON.parse(JSON.stringify(c.state))
+  onResponse({ model: "actual-upstream", choices: [] }, { ...c, request: { model: "other" }, success: true })
+  await flush()
+  const { record, ...original } = of("/v1/hook/recall")[0].body
+  const { reply, success, upstream_model, ...recorded } = of("/v1/hook/record")[0].body
+  expect(recorded).toEqual(original)
+  expect(recorded).toMatchObject({ identity: "gpt-husband", model: "provider/gpt-5", agent: "codex", session: "session-a" })
+  expect(upstream_model).toBe("actual-upstream")
+})
+
+for (const change of [{ record: false }, { agents: ["different"] }, { allowRemote: false }]) {
+  test(`response still checks current permission ${JSON.stringify(change)}`, async () => {
+    mock()
+    const [c] = ctx("chat", { model: "gpt-5", options: { routes: identityRoutes, record: true } })
+    await onRequest(chat(), c)
+    onResponse({ choices: [] }, { ...c, origin: "allowRemote" in change ? "remote" : "local", options: { ...c.options, ...change } })
+    await flush()
+    expect(of("/v1/hook/record")).toHaveLength(0)
+  })
+}
+
+test("backoff is isolated by resolved identity on the same server and key", async () => {
+  mock({ "/v1/hook/recall": (body) => body.identity === "gpt-husband" ? new Response("", { status: 503 }) : Response.json({ memory: "empty" }) })
+  for (const model of ["gpt-5", "claude-opus-4-5", "gpt-6", "claude-sonnet-4-5"]) {
+    const [c] = ctx("chat", { model, options: { routes: identityRoutes } })
+    await onRequest(chat(), c)
+  }
+  expect(calls.map((call) => call.body.identity)).toEqual(["gpt-husband", "claude-husband", "claude-husband"])
+})
+
+test("invalid routes always fail with a fixed error and zero network, clearing stale state", async () => {
+  mock()
+  const valid = { models: ["gpt-*"], identity: "gpt-husband" }
+  for (const routes of [
+    null, {}, "routes", Array(65).fill(valid), [null], [[]], ["route"], [{}],
+    [{ ...valid, identity: "" }], [{ ...valid, identity: " " }], [{ ...valid, identity: "a".repeat(65) }],
+    ...["/path", "with space", "é", "_leading", "admin", "V1"].map((identity) => [{ ...valid, identity }]),
+    [{ identity: "valid" }], [{ ...valid, models: [] }], [{ ...valid, models: "gpt-*" }],
+    ...[null, 12, "", " ", "x".repeat(201)].map((pattern) => [{ ...valid, models: [pattern] }]),
+    [{ ...valid, agents: [] }], [{ ...valid, agents: null }], [{ ...valid, agents: [""] }], [{ ...valid, agents: [1] }],
+  ]) {
+    const [c, reports] = ctx("chat", { options: { routes, record: true } })
+    c.state.aelios = { payload: { identity: "stale" }, slimmed: {} }
+    await expect(onRequest(chat(), c)).rejects.toThrow("Aelios invalid")
+    onResponse({ choices: [] }, c)
+    await flush()
+    expect(c.state.aelios).toBeUndefined()
+    expect(reports).toEqual([["invalid"]])
+    expect(calls).toHaveLength(0)
+  }
+})
+
 const answers = [
   ["401", () => new Response("", { status: 401 }), "unauthorized", true],
   ["403", () => new Response("", { status: 403 }), "unbound", false],

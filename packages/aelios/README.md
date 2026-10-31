@@ -71,6 +71,56 @@ the plugin then gives Aelios a little under that.
 To use a separate assistant space (recommended while you try it out), create
 one in Aelios `/admin` and set `"identity": "<its slug>"`.
 
+## Route models to separate identities
+
+Create `gpt-husband` and `claude-husband` identities in Aelios `/admin`, then
+configure the plugin:
+
+```json
+{
+  "serverUrl": "https://<your-aelios>.workers.dev",
+  "gatewayTimeoutMs": 5000,
+  "record": true,
+  "routes": [
+    { "models": ["gpt-*"], "identity": "gpt-husband" },
+    { "models": ["claude-*"], "identity": "claude-husband" }
+  ]
+}
+```
+
+Routes are checked in order; **the first match wins**, ahead of the top-level
+`identity`. Model patterns match the whole name, case insensitively, with `*`
+matching any characters. Both the full Magpie model name and the suffix after
+its last `/` are tried, so `openai/gpt-5` matches `gpt-*`. Other punctuation
+is literal. The request body's model is used if Magpie provides no model.
+
+A route can also select exact Magpie agent ids:
+`{"agents":["codex"],"models":["gpt-*"],"identity":"gpt-husband"}`.
+When both selectors are present, **both must match**. Agent ids are case
+sensitive; `*` has no special meaning in an agent id. The top-level `agents`
+option still limits which requests the plugin handles.
+
+With nonempty `routes`, an unmatched request uses only an explicitly configured
+top-level `identity`. Without that fallback, both recall and recording are
+skipped, preventing accidental use of the server's default identity. Omit
+`routes` or use `[]` to preserve the existing behavior: top-level `identity`
+is used when set, otherwise Aelios chooses the key's default assistant.
+
+**Separate identities need separate Aelios memory namespaces.** Give these
+identities different `namespace` values and avoid shared `readNamespaces` if
+they must not recall each other's memories. Routing chooses an identity; it
+does not create identities or isolate spaces that Aelios is configured to
+share. Each identity's Aelios `models` whitelist must also allow its actual
+model names (or `*`), including provider-prefixed names when sent; the plugin's
+route patterns do not configure that server whitelist.
+
+Routing also applies to tool continuations and `recall: false`. The original
+identity, model, agent, session and slimmed request are saved before recall,
+so recording uses the same exchange metadata even if the response context or
+route options change. Recording still requires the current `record` permission
+and the current origin and top-level agent restrictions. Recall backoff is
+separate for each resolved identity.
+
 ## What is sent
 
 Recall sends a **slimmed copy** of the request: roles and message text, the
@@ -127,7 +177,8 @@ recording. Each record is sent once and never retried.
 | `serverUrl` | none | Your Aelios Worker. Without it nothing is sent. HTTPS only (plain HTTP allowed for `localhost`, `127.0.0.1`, `[::1]`); no user, password, query or fragment in the URL. |
 | `apiKey` | none | Aelios API key. Without it, the variable named by `apiKeyEnv` is used. Without either, nothing is sent. |
 | `apiKeyEnv` | `AELIOS_API_KEY` | Environment variable that holds the key. |
-| `identity` | none | Aelios assistant space slug; the key's default assistant if empty. |
+| `identity` | none | Aelios assistant space slug; fallback for unmatched routes. Without routes, the key's default assistant if empty. |
+| `routes` | none | Up to 64 identity routes in priority order. Each needs a valid ASCII identity slug (max 64 characters; Aelios reserved slugs excluded) and nonempty `models` and/or `agents` arrays. Model patterns are nonblank strings up to 200 characters; agents are nonblank exact ids. Nonempty routes without a match or explicit `identity` skip recall and recording. |
 | `agents` | all | Only these Magpie agent ids, e.g. `["claude-code","claude-desktop"]`. Empty means all. |
 | `recall` | `true` | Recall before each turn. |
 | `record` | `false` | Record each turn after the reply. |

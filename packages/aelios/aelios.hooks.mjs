@@ -47,6 +47,8 @@ export function flush() {
 
 export async function onRequest(body, ctx) {
   const report = (code, bytes) => { try { ctx.report?.(code, bytes) } catch { /* never fails the request */ } }
+  // A skipped or invalid request must never reuse an earlier turn's identity.
+  if (ctx.state) delete ctx.state.aelios
   let o
   try {
     o = options(ctx.options)
@@ -79,9 +81,18 @@ async function recall(body, ctx, o, report) {
     report("skipped")
     return
   }
-  // kept for onResponse, tool steps included: Claude Code's final answer is
-  // often the reply to a tool step
-  if (ctx.state) ctx.state.aelios = { protocol, slimmed }
+  const original = payload(ctx, o, protocol, slimmed, body)
+  const route = o.routes?.find((r) =>
+    (!r.agents || r.agents.includes(original.agent)) &&
+    (!r.models || r.models.some((pattern) => modelMatches(pattern, original.model))))
+  if (route) original.identity = route.identity
+  else if (o.routes?.length && !o.identity) {
+    report("skipped")
+    return
+  }
+  // Pin metadata before any network await, including tool steps and recall:false.
+  if (ctx.state) ctx.state.aelios = { protocol, slimmed, payload: original }
+  o = { ...o, identity: original.identity }
   if (serverState(body, protocol) || !humanTurn(slimmed, protocol) || !o.recall) {
     report("skipped")
     return
@@ -101,7 +112,7 @@ async function recall(body, ctx, o, report) {
   const deadline = Math.max(50, Math.min(o.requestTimeoutMs, (o.gatewayTimeoutMs ?? hostDefaultTimeoutMs) - 50))
   let r
   try {
-    r = await post(o, "v1/hook/recall", { ...payload(ctx, o, protocol, slimmed, body), record: o.record }, ctx.signal, deadline)
+    r = await post(o, "v1/hook/recall", { ...original, record: o.record }, ctx.signal, deadline)
   } catch (error) {
     if (ctx.signal?.aborted) return // the client went away: not Aelios's failure
     trip(key, o)
@@ -173,7 +184,7 @@ export function onResponse(reply, ctx) {
       return
     }
     const body = {
-      ...payload(ctx, o, state.protocol, state.slimmed, ctx.request),
+      ...state.payload,
       reply: reply ?? null,
       success: ctx.success === true,
     }
@@ -217,6 +228,13 @@ function payload(ctx, o, protocol, slimmed, body) {
   return out
 }
 
+// Only '*' is special; punctuation in a model name is always literal.
+function modelMatches(pattern, model) {
+  if (!model) return false
+  const regex = new RegExp("^" + pattern.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i")
+  return regex.test(model) || regex.test(model.slice(model.lastIndexOf("/") + 1))
+}
+
 function options(raw = {}, env = process.env) {
   raw = raw && typeof raw === "object" ? raw : {}
   const text = (v) => {
@@ -250,6 +268,26 @@ function options(raw = {}, env = process.env) {
   }
   const identity = text(raw.identity)
   if (identity !== undefined && identity.length > 128) throw new Failure("invalid")
+  let routes
+  if (raw.routes !== undefined) {
+    if (!Array.isArray(raw.routes) || raw.routes.length > 64) throw new Failure("invalid")
+    routes = raw.routes.map((route) => {
+      if (!route || typeof route !== "object" || Array.isArray(route) ||
+          typeof route.identity !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(route.identity) ||
+          ["v1", "api", "admin", "health", "mcp", "memory-mcp", "memory-admin", "guide-dog"].includes(route.identity.toLowerCase()))
+        throw new Failure("invalid")
+      const selectors = {}
+      for (const name of ["models", "agents"]) {
+        if (route[name] === undefined) continue
+        if (!Array.isArray(route[name]) || !route[name].length ||
+            !route[name].every((v) => typeof v === "string" && v.trim() && (name !== "models" || v.length <= 200)))
+          throw new Failure("invalid")
+        selectors[name] = route[name].map((v) => v.trim())
+      }
+      if (!selectors.models && !selectors.agents) throw new Failure("invalid")
+      return { identity: route.identity, ...selectors }
+    })
+  }
   const apiKeyEnv = text(raw.apiKeyEnv) ?? "AELIOS_API_KEY"
   const apiKey = text(raw.apiKey) ?? text(env[apiKeyEnv])
   if (!serverUrl) return
@@ -266,7 +304,7 @@ function options(raw = {}, env = process.env) {
       !(server.protocol === "https:" || (server.protocol === "http:" && local)))
     throw new Failure("invalid")
   server.pathname = server.pathname.replace(/\/+$/, "") + "/"
-  return { server, apiKey, identity, agents, recall, record, allowRemote, gatewayTimeoutMs, requestTimeoutMs, recallBackoffMs }
+  return { server, apiKey, identity, routes, agents, recall, record, allowRemote, gatewayTimeoutMs, requestTimeoutMs, recallBackoffMs }
 }
 
 // post sends JSON to the configured server only and reads at most 256 KiB
