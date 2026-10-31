@@ -155,13 +155,13 @@
       }
     },
     {
-      "package": "magpie-agent-console",
+      "package": "@magpie-community/page-agent-console",
       "name": "Agent Console",
       "kind": "page",
-      "icon": "https://raw.githubusercontent.com/qingnian108/magpie-agent-console/main/assets/icon.svg",
+      "community": true,
       "summary": {
-        "en": "A page in magpie to drive local Agent CLIs (Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh) with a persistent daemon and a structured timeline.",
-        "zh": "在 magpie 窗口里驱动本机 Agent CLI（Claude Code、Codex、Cursor、Copilot、OpenCode、Pi、Devin、dsh）：常驻后台 + 结构化时间线。"
+        "en": "A page in magpie's window that drives the Agent CLIs on this computer (Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh) through a local daemon on 127.0.0.1, with a structured timeline, Git, files and a terminal. The daemon starts when the page opens and stops with magpie; only its own page gets its token.",
+        "zh": "在 magpie 窗口里驱动本机的 Agent CLI（Claude Code、Codex、Cursor、Copilot、OpenCode、Pi、Devin、dsh）：本地服务只在 127.0.0.1，带结构化时间线、Git、文件和终端。打开页面时才启动，随 magpie 退出；令牌只交给自己的页面。"
       }
     }
   ]
