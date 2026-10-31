@@ -55,15 +55,17 @@ const anthropicTool = () => ({ model: "claude-opus-4-5", stream: true, messages:
   { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "a.ts b.ts" }] },
 ] })
 
-test("the shipped entry is a Bun hook, not middleware, and has no main", async () => {
+test("the shipped hook and settings service use separate host entry points", async () => {
   const pkg = await Bun.file(new URL("./package.json", import.meta.url)).json()
   expect(pkg.name).toBe("@magpie-community/gateway-aelios")
-  expect(pkg.main).toBeUndefined()
+  expect(pkg.main).toBe("./service.mjs")
+  expect(pkg.magpie.page.file).toBe("page/settings.html")
+  expect(pkg.magpie.page.service).toEqual({ port: 3481, option: "port" })
   expect(pkg.exports).toBeUndefined()
   expect(pkg.magpie.middleware).toBeUndefined()
   expect(pkg.magpie.gateway).toBeUndefined()
   expect(pkg.magpie.hooks).toBe("./aelios.hooks.mjs")
-  expect(pkg.files).toEqual(["aelios.hooks.mjs", "slim.mjs", "README.md"])
+  expect(pkg.files).toEqual(["aelios.hooks.mjs", "slim.mjs", "service.mjs", "probe.mjs", "page", "README.md"])
   const entry = await import(pkg.magpie.hooks)
   expect(entry.onRequest).toBe(onRequest)
   expect(entry.onResponse).toBe(onResponse)

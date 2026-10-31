@@ -6,6 +6,9 @@
   "files": [
     "aelios.hooks.mjs",
     "slim.mjs",
+    "service.mjs",
+    "probe.mjs",
+    "page",
     "README.md"
   ],
   "keywords": [
@@ -29,9 +32,17 @@
       "gatewayTimeoutMs": 5000,
       "requestTimeoutMs": 4000,
       "recallBackoffMs": 30000,
-      "record": false
+      "record": false,
+      "port": 3481
+    },
+    "page": {
+      "title": "Aelios",
+      "file": "page/settings.html",
+      "icon": "page/icon.svg",
+      "service": { "port": 3481, "option": "port" }
     }
   },
+  "main": "./service.mjs",
   "scripts": {
     "check": "bun test ./*.test.mjs"
   },

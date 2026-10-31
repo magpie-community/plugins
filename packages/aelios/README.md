@@ -59,6 +59,29 @@ provider. It needs **Magpie 0.1.1273 or newer** and Bun; from **Magpie
 
 ```sh
 magpie plugin add @magpie-community/gateway-aelios
+```
+
+Then open **Plugins › Aelios** in Magpie. The plugin adds its own page: fill in
+the server URL and API key, choose whether to recall and record, and add one
+row per assistant space. Nothing needs hand-written JSON.
+
+The page has three parts. **Connection** takes the server URL, the API key
+(stored in Magpie's local plugin settings) or the name of an environment
+variable holding it, and a default/fallback identity. **Memory behavior** has
+the two switches: *Recall memory* on, *Record conversations* off by default.
+**Identity routes** is the ordered table described below; each row needs an
+identity plus model and/or agent selectors, and rows move up and down.
+
+**Test connection** checks the saved settings from Magpie's local service page.
+It sends empty messages, so no dialogue is created and nothing is recorded;
+with explicit identities it checks each one's permission once, and in the
+automatic case it can only confirm the connection, not every model mapping.
+Because a Magpie page has no network access of its own, the button opens
+Magpie's local service page in the same frame and asks for a click there.
+
+The same options can still be set from the command line:
+
+```sh
 magpie plugin options aelios '{"serverUrl":"https://<your-aelios>.workers.dev","gatewayTimeoutMs":5000}'
 ```
 
@@ -67,7 +90,8 @@ Give it your Aelios API key in Magpie's environment as `AELIOS_API_KEY`, or as
 your `serverUrl` only, never through a redirect.
 
 Set `gatewayTimeoutMs` as above: without it Magpie gives a hook 1 second, and
-the plugin then gives Aelios a little under that.
+the plugin then gives Aelios a little under that. The page fills in 5000 when
+the setting is absent.
 
 To use a separate assistant space (recommended while you try it out), create
 one in Aelios `/admin` and set `"identity": "<its slug>"`.
@@ -194,6 +218,7 @@ record is sent once and never retried.
 | `gatewayTimeoutMs` | Magpie's 1000 | How long Magpie waits for the hook, 100–10000 ms. Set it to about 5000. |
 | `requestTimeoutMs` | `4000` | Deadline of one recall request to Aelios, 50–9000 ms, kept just under `gatewayTimeoutMs`. Records have their own 10 s. |
 | `recallBackoffMs` | `30000` | After a failure, how long recall is paused (0 turns the pause off). |
+| `port` | `3481` | Loopback port of the settings page's connection test. Change it only if that port is taken. |
 
 Invalid options make the hook stand aside (*invalid*); the key never appears
 in a report or error.
@@ -214,3 +239,10 @@ state).
 ```sh
 bun test ./*.test.mjs      # Aelios faked with fetch; no network, no key
 ```
+
+The settings page is `page/settings.html` with `page/settings.js`, `page/form.js`,
+`page/style.css` and `page/i18n.js`; the connection test is `service.mjs` and
+`probe.mjs`. `page.test.mjs` drives the browser script in a small `node:vm`
+harness, so the form's validation, the option merge and the save/test paths are
+covered without a browser. Magpie frames a page with `allow-scripts` but not
+`allow-forms`, so saving is a button click and never a form submit.
