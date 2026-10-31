@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-respire-memory",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "帮助 AI Agent 通过记忆召回、经验积累与后台归档持续自进化",
   "type": "module",
   "license": "MIT",

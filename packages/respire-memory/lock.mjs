@@ -41,7 +41,14 @@ export async function acquireLock(path, { waitMs = 5000 } = {}) {
           await unlink(join(path, owner)); await removeEmpty(path);
         };
         await unlink(join(path, owner));
-      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      } catch (error) {
+        // A directory removed before ownership is published reports open EPERM on Windows.
+        if (process.platform === 'win32' && error.code === 'EPERM' && error.syscall === 'open' && error.path === join(path, owner)) {
+          if (Date.now() >= deadline) throw error;
+          await delay(25); continue;
+        }
+        if (error.code !== 'ENOENT') throw error;
+      }
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
       try {

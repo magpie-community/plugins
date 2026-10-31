@@ -107,8 +107,10 @@ try {
   assert(lockChildren.every(r => r.status === 'fulfilled'), lockChildren.filter(r => r.status === 'rejected').map(r => String(r.reason)).join('\n'));
   assert.equal(readFileSync(sharedCounter, 'utf8'), '4');
   const concurrent = new Store(stateDir), counterKey = 'session-' + digest('lock-counter');
-  await Promise.all(Array.from({ length: 8 }, () => concurrent.change(counterKey, async (v = {}, save) => save({ count: (v.count ?? 0) + 1 }))));
-  assert.equal((await concurrent.get(counterKey)).count, 8);
+  for (let round = 0; round < 8; round++) {
+    await Promise.all(Array.from({ length: 8 }, () => concurrent.change(counterKey, async (v = {}, save) => save({ count: (v.count ?? 0) + 1 }))));
+  }
+  assert.equal((await concurrent.get(counterKey)).count, 64);
   for (const protocol of ['chat', 'responses', 'anthropic', 'gemini']) {
     reset(); const ctx = { protocol, origin: 'local', session: 'check', state: {}, signal: AbortSignal.timeout(5000), options: { runtimeUrl: `http://127.0.0.1:${server.address().port}`, stateDir, maxBytes: 32768, capture: false } };
     const body = protocol === 'gemini' ? { contents: [{ role: 'user', parts: [{ text: 'project question' }] }] } : protocol === 'responses' ? { input: 'project question' } : { messages: [{ role: 'user', content: 'project question' }] };
