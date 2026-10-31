@@ -4,7 +4,9 @@
       "name": "主号",
       "sessionid": "粘贴 www.doubao.com F12 → Application → Cookies → sessionid 的值",
       "ttwid": "可选，同页面 Cookie 里的 ttwid，带上更稳",
-      "passport_csrf_token": "可选，同页面 Cookie 里的 passport_csrf_token"
+      "passport_csrf_token": "可选，同页面 Cookie 里的 passport_csrf_token",
+      "deviceId": "可选，扫码登录会自动生成并保存；手动配置可留空",
+      "webId": "可选，同上"
     }
   ],
   "model": "Seedream 5.0 Flash",
@@ -12,7 +14,5 @@
   "channel": "auto",
   "outDir": "",
   "timeoutSeconds": 180,
-  "ratioHint": true,
-  "removeWatermark": false,
-  "watermarkExtend": "1/4"
+  "ratioHint": true
 }

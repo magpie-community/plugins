@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { randomInt } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { decodePng } from "./png.mjs";
 
@@ -26,6 +27,14 @@ const BASE_HEADERS = {
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 每次扫码登录随机生成一套自己的设备遥测号（非任何真实设备的指纹），随凭证保存供后续请求使用。 */
+function generateDeviceParams() {
+  return {
+    deviceId: String(randomInt(7_000_000_000_000_000, 7_999_999_999_999_999)),
+    webId: String(randomInt(7_600_000_000_000_000_000, 7_699_999_999_999_999_999)),
+  };
+}
 
 /** GET 一次请求；把响应的 Set-Cookie 合并进 cookies。返回 {status, text}。 */
 async function httpGet(url, headers, cookies, { follow = false, timeoutMs = 15_000 } = {}) {
@@ -202,10 +211,23 @@ export async function qrLogin({ onStatus = () => {}, timeoutMs = 180_000, pollMs
       if (d.redirect_url) await httpGet(d.redirect_url, BASE_HEADERS, cookies, { follow: true, timeoutMs: 20_000 });
       const sessionid = cookies.sessionid || "";
       if (!sessionid) throw new Error("手机已确认登录，但未取到 sessionid，请重试。");
+      // 拿昵称/user_id 做展示名（不暴露 sessionid）
+      let userId = "";
+      let userName = "";
+      try {
+        const info = await getJson(`${BASE_URL}/passport/account/info/v2`, { ...BASE_HEADERS, Cookie: serialize(cookies) }, {});
+        userId = String(info?.data?.user_id ?? "");
+        userName = String(info?.data?.name ?? info?.data?.user_name ?? "");
+      } catch {
+        /* 展示名拿不到不影响登录 */
+      }
       return {
         sessionid,
         ttwid: cookies.ttwid || "",
         passport_csrf_token: cookies.passport_csrf_token || "",
+        ...generateDeviceParams(),
+        userId,
+        userName,
         cookies: { ...cookies },
         qrPng,
       };

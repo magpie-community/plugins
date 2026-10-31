@@ -1,7 +1,7 @@
-// 图片下载落盘。按魔数识别真实格式，content-type 兜底。
+// 图片下载落盘：只从豆包/字节的图片 CDN 下载，按响应字节原样保存（不重新编码）。
 import { mkdir, writeFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { USER_AGENT, DoubaoError } from "./http.mjs";
+import { USER_AGENT, DoubaoError, fetchPublic } from "./http.mjs";
 
 /** 文件大小（字节），失败返回 0。 */
 export async function fileSize(file) {
@@ -11,6 +11,9 @@ export async function fileSize(file) {
     return 0;
   }
 }
+
+// 豆包图片资源的 CDN 域名（ImageX/TOS）；此外的域名一律拒绝下载。
+const IMAGE_CDN_SUFFIXES = ["byteimg.com", "bytetos.com", "doubao.com"];
 
 const EXT_BY_CONTENT_TYPE = {
   "image/png": "png",
@@ -30,12 +33,13 @@ function sniffExt(buf, contentType) {
   return EXT_BY_CONTENT_TYPE[ct] || "png";
 }
 
-/** 下载一张图到 outDir，返回 { file, bytes }。 */
+/** 下载一张图到 outDir，按响应字节原样写盘，返回 { file, bytes }。 */
 export async function downloadImage(url, outDir, baseName) {
-  const resp = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT, Referer: "https://www.doubao.com/" },
-    signal: AbortSignal.timeout(120_000),
-  });
+  const resp = await fetchPublic(
+    url,
+    { headers: { "User-Agent": USER_AGENT, Referer: "https://www.doubao.com/" }, signal: AbortSignal.timeout(120_000) },
+    { allowHosts: IMAGE_CDN_SUFFIXES },
+  );
   if (!resp.ok) throw new DoubaoError(`图片下载失败 (${resp.status}): ${url.slice(0, 120)}`);
   const buf = Buffer.from(await resp.arrayBuffer());
   if (!buf.length) throw new DoubaoError(`图片下载为空: ${url.slice(0, 120)}`);

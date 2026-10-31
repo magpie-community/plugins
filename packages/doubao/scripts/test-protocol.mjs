@@ -7,7 +7,6 @@
 import path from "node:path";
 import { loadConfig, configSource } from "../src/config.mjs";
 import { generate, checkLogin } from "../src/client.mjs";
-import { removeWatermarkByExtend } from "../src/watermark.mjs";
 import { downloadImage, fileStamp } from "../src/download.mjs";
 
 function parseArgv(argv) {
@@ -21,7 +20,6 @@ function parseArgv(argv) {
     else if (a === "--out") opts.out = argv[++i];
     else if (a === "--account") opts.account = argv[++i];
     else if (a === "--ref") opts.refs.push(argv[++i]);
-    else if (a === "--wm") opts.wm = true;
     else if (a === "--no-hint") opts.noHint = true;
     else if (!a.startsWith("--")) opts.prompt += (opts.prompt ? " " : "") + a;
   }
@@ -76,16 +74,6 @@ try {
     const img = result.images[i];
     const { file, bytes } = await downloadImage(img.url, outDir, `doubao-${fileStamp()}-${i + 1}`);
     console.log(`图片 ${i + 1}: ${file} (${(bytes / 1024).toFixed(0)} KB, ${img.width || "?"}x${img.height || "?"})`);
-    if (args.wm && !args.refs.length) {
-      console.log("去水印：扩图+裁剪中…");
-      const r = await removeWatermarkByExtend(cfg, {
-        file,
-        prompt: args.prompt,
-        ratio: args.ratio,
-        account: args.account,
-      });
-      console.log(`  完成：${r.width}x${r.height}（扩图前 ${r.width}x${r.origHeight}，扩图比例 ${Math.round(r.extendFrac * 100)}%）`);
-    }
   }
 } catch (err) {
   console.error(`生成失败: ${err.message}`);

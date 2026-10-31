@@ -5,20 +5,22 @@
 //   generate_image — 文生图 / 图生图（参考图），可指定比例与免费档模型
 //   check_login    — 各账号登录态自检
 //
-// 凭证配置（任选其一，优先级从高到低）：
-//   1. env DOUBAO_IMAGE_CONFIG 指向的 JSON 文件
-//   2. 本插件目录下的 config.json（参考 config.example.json）
-//   3. env DOUBAO_ACCOUNTS="主号:sessionid=xxx,ttwid=yyy;小号:sessionid=zzz"
-//   4. Magpie options（magpie plugin options tools-doubao '<json>'）
+// 账号来源（优先级从高到低，详见 src/config.mjs 顶部说明）：
+//   1. magpie 登录态 —— 扫码登录后 magpie 存入 plugin-auth.json，工具执行时读回
+//   2. env DOUBAO_ACCOUNTS="主号:sessionid=xxx,ttwid=yyy;小号:sessionid=zzz"
+//   3. Magpie options 里的 accounts（magpie plugin options <插件> '<json>'）
+//   4. env DOUBAO_IMAGE_CONFIG 指向的 JSON / 插件目录 config.json（手动填写，注意 0600 权限）
+//
+// 注意：本文件只导出这一个插件函数。Magpie 把每个导出函数都当作插件，
+// 再加 default 导出会让同一 provider 注册两次（UI 会报"已登录但无法列出"）。
 import path from "node:path";
 import { loadConfig } from "./src/config.mjs";
 import { generate, checkLogin, FREE_MODELS, DEFAULT_MODEL, RATIOS } from "./src/client.mjs";
 import { DoubaoError } from "./src/http.mjs";
 import { downloadImage, fileStamp, fileSize } from "./src/download.mjs";
-import { qrLogin, saveQrPng, openInViewer, writeAccountToConfig } from "./src/qlogin.mjs";
-import { removeWatermarkByExtend } from "./src/watermark.mjs";
+import { qrLogin, saveQrPng, openInViewer } from "./src/qlogin.mjs";
 
-// 本地文件夹加载时 Magpie 用目录名作为插件 id（工具前缀也来自它）
+// 插件 id：本地文件夹加载时取目录名，npm 包安装时取包名去掉 scope 与 tools- 前缀
 const PLUGIN_ID = "doubao";
 
 function resolveOutDir(args, context, cfg) {
@@ -37,6 +39,8 @@ function failMessage(err) {
 
 export const DoubaoTools = async (input, options) => {
   const pluginOptions = options && typeof options === "object" ? options : {};
+  // input.directory 是 magpie 的配置目录（plugin-auth.json 所在处），扫码登录态从这里读回
+  const magpieDir = input?.directory || "";
 
   return {
     tool: {
@@ -68,37 +72,29 @@ export const DoubaoTools = async (input, options) => {
             ref_images: {
               type: "array",
               items: { type: "string" },
-              description: "参考图（图生图）：本地文件路径或图片 URL，可多张",
+              description: "参考图（图生图）：本地图片文件（png/jpg/webp/gif）或公网图片 URL，可多张",
+            },
+            account: {
+              type: "string",
+              description: "要使用的账号名（可选，默认用第一个账号；仅按账号名匹配）",
             },
             out_dir: {
               type: "string",
               description: "图片保存目录，默认当前项目下的 generated-images/",
             },
-            remove_watermark: {
-              type: "boolean",
-              description:
-                "去除右下角“豆包AI生成”水印：生成后自动以原图为参考追加“往下扩图四分之一”再生成一次，" +
-                "并把底部扩出部分裁掉（多花一次生成额度，画面边缘会被重新演绎）。" +
-                "不传则跟随配置 removeWatermark（默认关闭）",
-            },
           },
           required: ["prompt"],
         },
         async execute(args, context) {
-          const cfg = loadConfig(pluginOptions);
-          const removeWm =
-            args.remove_watermark !== undefined
-              ? Boolean(args.remove_watermark)
-              : Boolean(cfg.removeWatermark);
+          const cfg = loadConfig(pluginOptions, magpieDir, PLUGIN_ID);
           try {
-            const genOpts = {
+            const result = await generate(cfg, {
               prompt: String(args.prompt || ""),
               ratio: args.ratio,
               model: args.model,
               refImages: args.ref_images,
               account: args.account,
-            };
-            const result = await generate(cfg, genOpts);
+            });
             const dir = resolveOutDir(args, context, cfg);
             const stamp = fileStamp();
             const saved = [];
@@ -110,25 +106,6 @@ export const DoubaoTools = async (input, options) => {
               );
               saved.push({ file, bytes });
             }
-            // 去水印（扩图裁剪法）：仅对文生图生效；图生图保留用户原图语义，不自动扩图
-            let wmNote = "";
-            if (removeWm && !args.ref_images?.length) {
-              for (const s of saved) {
-                try {
-                  const r = await removeWatermarkByExtend(cfg, {
-                    file: s.file,
-                    prompt: genOpts.prompt,
-                    ratio: args.ratio,
-                    account: args.account,
-                  });
-                  wmNote += `\n[去水印] 已扩图${Math.round(r.extendFrac * 100)}%并裁剪：${r.width}×${r.height}（扩图前 ${r.width}×${r.origHeight}）`;
-                } catch (err) {
-                  wmNote += `\n[去水印] 失败，已保留带水印原图：${err?.message || err}`;
-                  break;
-                }
-              }
-            }
-            for (const s of saved) s.bytes = await fileSize(s.file);
             const lines = saved.map(
               (s, i) => `${i + 1}. ${s.file}（${(s.bytes / 1024).toFixed(0)} KB）`,
             );
@@ -136,7 +113,7 @@ export const DoubaoTools = async (input, options) => {
               `已通过豆包生成 ${saved.length} 张图片。\n` +
               `账号 ${result.account} · ${result.channel === "web" ? "网页通道" : "客户端通道"}${
                 result.conversationId ? ` · 会话 ${result.conversationId}` : ""
-              }${result.text ? `\n${result.text.slice(0, 200)}` : ""}${wmNote}\n` +
+              }${result.text ? `\n${result.text.slice(0, 200)}` : ""}\n` +
               `文件：\n${lines.join("\n")}\n\n` +
               saved.map((s, i) => `[生成图 ${i + 1}](${s.file})`).join(" · ")
             );
@@ -150,11 +127,11 @@ export const DoubaoTools = async (input, options) => {
           "检查豆包生图插件的账号配置与登录态：列出每个配置账号是否存活。生图报登录失效/风控时先跑这个。",
         args: { type: "object", properties: {} },
         async execute() {
-          const cfg = loadConfig(pluginOptions);
+          const cfg = loadConfig(pluginOptions, magpieDir, PLUGIN_ID);
           if (!cfg.accounts.length) {
             return (
-              "尚未配置任何豆包账号。请让用户运行 `node scripts/login.mjs` 扫码登录，或把 doubao.com 网页版 Cookie 里的 sessionid 写入插件目录的 " +
-              "config.json（参考 config.example.json），或设置环境变量 DOUBAO_ACCOUNTS=\"主号:sessionid=xxx\"。"
+              "尚未配置任何豆包账号。请在 Magpie 插件页点击「登录」扫码，或设置环境变量 " +
+              "DOUBAO_ACCOUNTS=\"主号:sessionid=xxx\"（也可手动填写 config.json，参考 config.example.json）。"
             );
           }
           const statuses = await checkLogin(cfg);
@@ -167,12 +144,13 @@ export const DoubaoTools = async (input, options) => {
         },
       },
     },
-    // 扫码登录：magpie plugin login doubao-image-plugin 时触发。
-    // 豆包没有 OAuth，采用与 doubao2api 相同的二维码扫码流：
-    // 弹出二维码图片 → 用户手机豆包 App 扫码确认 → 轮询拿到 sessionid 写入 config.json。
+    // 扫码登录：magpie plugin login doubao（或插件页「登录」按钮）时触发。
+    // 豆包没有 OAuth，采用与 doubao2api 相同的二维码扫码流：弹出二维码图片 →
+    // 用户手机豆包 App 扫码确认 → 轮询拿到登录态。凭证交给 magpie 保管
+    // （magpie 写入 plugin-auth.json，0600），插件自身不再另存凭证文件。
     auth: {
       provider: PLUGIN_ID,
-      single: true, // 账号由插件 config.json 管理，Magpie 侧只存一份登录态
+      single: true, // 账号在插件 config/env 里管理，magpie 侧只存这一份扫码登录态
       methods: [
         {
           type: "oauth",
@@ -181,7 +159,9 @@ export const DoubaoTools = async (input, options) => {
             url: "",
             method: "auto",
             instructions:
-              "将弹出豆包登录二维码（系统看图程序）。请用手机豆包 App 扫码并在手机上确认，登录态会自动写入插件 config.json。",
+              "将弹出豆包登录二维码（系统看图程序）。请用手机豆包 App 扫码并在手机上确认；" +
+              "登录态由 magpie 保管，插件不另存凭证文件。远程（magpie web）使用时若看不到二维码，" +
+              "请在运行 magpie 的机器上操作一次，或改用 DOUBAO_ACCOUNTS 环境变量。",
             callback: async () => {
               try {
                 const result = await qrLogin({
@@ -189,8 +169,16 @@ export const DoubaoTools = async (input, options) => {
                     if (stage === "ready" && Buffer.isBuffer(detail)) openInViewer(saveQrPng(detail));
                   },
                 });
-                const file = writeAccountToConfig(result, "扫码登录");
-                return { type: "success", accountId: `豆包 · ${result.sessionid.slice(0, 6)}…`, configFile: file };
+                return {
+                  type: "success",
+                  // 展示名用昵称/user_id，不暴露 sessionid
+                  accountId: result.userName || (result.userId ? `豆包用户 ${result.userId}` : "豆包账号"),
+                  sessionid: result.sessionid,
+                  ttwid: result.ttwid || "",
+                  passport_csrf_token: result.passport_csrf_token || "",
+                  deviceId: result.deviceId || "",
+                  webId: result.webId || "",
+                };
               } catch (err) {
                 return { type: "failed", error: `豆包扫码登录失败：${err?.message || err}` };
               }

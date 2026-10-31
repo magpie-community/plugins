@@ -1,29 +1,24 @@
-// 多账号轮换与登录态检测。
+// 多账号管理：固定使用第一个账号，仅在登录失效时切换到下一个（不做额度摊薄式轮换）。
 import { BASE_URL, baseHeaders, DoubaoError } from "./http.mjs";
 
-let cursor = 0;
-
 /**
- * 生成尝试顺序：preferred（如指定）最优先，然后从轮换游标开始铺满全部账号。
- * 同一进程内游标自增，多次调用自动分摊额度。
+ * 生成尝试顺序：配置顺序即优先级（第一个账号始终优先），不做游标轮换。
+ * preferred 只按账号名匹配。
  */
 export function accountOrder(accounts, preferred) {
   if (!accounts.length) {
     throw new DoubaoError(
       "未配置豆包账号。",
-      "把 doubao.com 网页版 Cookie 里的 sessionid 写入插件目录 config.json（参考 config.example.json），或设置环境变量 DOUBAO_ACCOUNTS=\"主号:sessionid=xxx\"。",
+      "运行 magpie plugin login doubao 扫码登录，或设置环境变量 DOUBAO_ACCOUNTS=\"主号:sessionid=xxx\"。",
     );
   }
   const rest = accounts.slice();
   const ordered = [];
   if (preferred) {
-    const idx = rest.findIndex((a) => a.name === preferred || a.sessionid === preferred);
+    const idx = rest.findIndex((a) => a.name === preferred);
     if (idx >= 0) ordered.push(...rest.splice(idx, 1));
   }
-  for (let i = 0; i < rest.length; i++) {
-    ordered.push(rest[(cursor + i) % rest.length]);
-  }
-  cursor += 1;
+  ordered.push(...rest);
   return ordered;
 }
 

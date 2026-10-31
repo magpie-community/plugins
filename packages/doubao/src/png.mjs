@@ -1,35 +1,8 @@
-// 零依赖 PNG 解码 / 编码 / 裁剪（8-bit，bit depth 固定 8）。
-// 解码支持 colorType 0/2/3/4/6，统一输出 RGB；编码输出 colorType 2（RGB）。
-// 用途：扫码登录二维码转 ASCII、去水印的扩图裁剪。
-import { inflateSync, deflateSync } from "node:zlib";
+// 零依赖 PNG 解码（8-bit，输出 RGB）。用途：扫码登录二维码转终端 ASCII。
+// 仅解码，不写 PNG —— 生成图按响应字节原样落盘，不做任何重新编码。
+import { inflateSync } from "node:zlib";
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-// 自带 CRC32（zlib.crc32 在部分 Bun 版本缺失，为兼容 Bun 宿主手动实现）
-const CRC_TABLE = (() => {
-  const table = new Int32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    table[n] = c;
-  }
-  return table;
-})();
-
-function crc32(buf) {
-  let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-function chunk(type, data) {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(body));
-  return Buffer.concat([len, body, crc]);
-}
 
 /**
  * 解码 PNG 为 RGB。返回 { width, height, data: Buffer(RGB interleaved) }。
@@ -124,41 +97,4 @@ export function decodePng(buf) {
     rgb[j + 2] = b;
   }
   return { width, height, data: rgb };
-}
-
-/** 把 RGB 像素编码为 PNG（colorType 2，filter 0）。 */
-export function encodePng(width, height, rgb) {
-  const stride = width * 3;
-  const raw = Buffer.alloc((stride + 1) * height);
-  for (let y = 0; y < height; y++) {
-    raw[y * (stride + 1)] = 0; // filter: none
-    rgb.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
-  }
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 2; // truecolor RGB
-  return Buffer.concat([
-    SIGNATURE,
-    chunk("IHDR", ihdr),
-    chunk("IDAT", deflateSync(raw, { level: 6 })),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
-}
-
-/**
- * 裁掉 PNG 底部：保留顶部 keepTopFrac 比例（默认 0.8，对应"往下扩图四分之一"）。
- * 返回 { buffer, width, height, origHeight }；输入非 PNG 时抛错。
- */
-export function cropPngBottom(pngBuf, keepTopFrac = 0.8) {
-  const img = decodePng(pngBuf);
-  const newHeight = Math.max(1, Math.round(img.height * keepTopFrac));
-  const data = img.data.subarray(0, newHeight * img.width * 3);
-  return {
-    buffer: encodePng(img.width, newHeight, data),
-    width: img.width,
-    height: newHeight,
-    origHeight: img.height,
-  };
 }

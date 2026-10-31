@@ -19,8 +19,6 @@ import {
   RISK_CODES,
   AUTH_CODES,
   riskHint,
-  FP,
-  CHROMIUM_VERSION,
 } from "./http.mjs";
 import { uploadRefImages } from "./upload.mjs";
 
@@ -30,11 +28,10 @@ export const DEFAULT_MODEL = "Seedream 5.0 Flash";
 export const RATIOS = ["auto", "1:1", "16:9", "9:16", "4:3", "3:4"];
 
 // —— 各端点共用的 query 参数（抓包真值；多为埋点字段，服务端主要看 cookie/aid/头） ——
-export function securityParams(profile) {
+// device_id/web_id 来自账号自己的登录（扫码时随机生成并随凭证保存），fp 一律不发送：
+// 不共用任何第三方设备的指纹，也不用他人的验证结果。
+export function securityParams(profile, account = {}) {
   const common = {
-    device_id: "714003710229497",
-    tea_uuid: "714003710229497",
-    web_id: "7604137868021548590",
     device_platform: "web",
     language: "zh",
     region: "CN",
@@ -44,9 +41,13 @@ export function securityParams(profile) {
     runtime_version: "3.5.4",
     samantha_web: "1",
     "use-olympus-account": "1",
-    fp: FP,
     web_tab_id: randomUUID(),
   };
+  if (account.deviceId) {
+    common.device_id = account.deviceId;
+    common.tea_uuid = account.deviceId;
+  }
+  if (account.webId) common.web_id = account.webId;
   const byProfile =
     profile === "web"
       ? {
@@ -135,8 +136,9 @@ function throwGatewayError(json) {
   throw new DoubaoError(`豆包网关错误 (gateway-error code=${code}) ${msg}`);
 }
 
-const PC_IMAGE_ORDER = ["image_ori", "image_raw", "image_thumb"]; // pc 通道 ori 为最高清下载档
-const WEB_IMAGE_ORDER = ["image_raw", "image_ori", "image_thumb"]; // web 通道 image_raw 为无水印档
+// 统一取豆包自己提供的下载档（image_ori），不做任何去水印式的偏好；
+// 图片按响应字节原样落盘，不重新编码、不剥离元数据。
+const IMAGE_ORDER = ["image_ori", "image_raw", "image_thumb"];
 
 /** 从一个图片资源对象里挑出最优 URL（按通道优先级）。 */
 function pickImageVariants(item, order) {
@@ -218,7 +220,7 @@ export function parsePcImages(raw) {
     }
     if (msg.content_type === 2010 && Array.isArray(content?.data)) {
       for (const item of content.data) {
-        const img = pickImageVariants(item, PC_IMAGE_ORDER);
+        const img = pickImageVariants(item, IMAGE_ORDER);
         if (img) images.push(img);
       }
     } else if (content?.text) {
@@ -261,7 +263,7 @@ export async function generateViaPc(cfg, account, { prompt, ratio }, refs = []) 
     local_conversation_id: randomUUID(),
     local_message_id: randomUUID(),
   };
-  const url = `${BASE_URL}/samantha/chat/completion?${new URLSearchParams(securityParams("pc"))}`;
+  const url = `${BASE_URL}/samantha/chat/completion?${new URLSearchParams(securityParams("pc", account))}`;
   const resp = await fetch(url, {
     method: "POST",
     headers: baseHeaders(account, SSE_HEADERS),
@@ -287,7 +289,7 @@ export function parseWebImages(raw) {
   const scanCreations = (creations) => {
     for (const c of creations || []) {
       if (!c || typeof c !== "object") continue;
-      const img = pickImageVariants(c.image || c, WEB_IMAGE_ORDER);
+      const img = pickImageVariants(c.image || c, IMAGE_ORDER);
       if (img) images.push(img);
     }
   };
@@ -421,13 +423,12 @@ export async function generateViaWeb(cfg, account, { prompt, ratio, model }) {
     chat_ability: { ability_type: 3, ability_param: abilityParam },
     ext: {
       use_deep_think: "0",
-      fp: FP,
       use_submit_pipeline: "1",
       commerce_credit_config_enable: "0",
       sub_conv_firstmet_type: "1",
     },
   };
-  const url = `${BASE_URL}/chat/completion?${new URLSearchParams(securityParams("web"))}`;
+  const url = `${BASE_URL}/chat/completion?${new URLSearchParams(securityParams("web", account))}`;
   const resp = await fetch(url, {
     method: "POST",
     headers: baseHeaders(account, SSE_HEADERS),

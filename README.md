@@ -96,6 +96,7 @@ These give tools to every agent magpie connects. magpie serves them on its MCP s
 |---|---|
 | [search1api](packages/search1api) | Web search, news, agentic search, page retrieval, sitemaps and trends, with Search1API OAuth or an API key |
 | [calc](packages/calc) | `eval` exact arithmetic in fractions, `convert` units (data, time, length, mass, angle, temperature), `date` calendar date math across time zones and DST. No network, no key |
+| [doubao](packages/doubao) | `generate_image` text-to-image and image-to-image with the user's own Doubao account (Seedream free tiers, QR sign-in, images saved to disk), `check_login` session status |
 
 ```sh
 magpie plugin add @magpie-community/tools-<name>
