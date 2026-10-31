@@ -26,7 +26,8 @@ A *turn* starts when your own words reach the model, and ends when the model ans
 - A request that fails (`errors`, on by default) ends the turn too, with ❌ instead of ✅.
 - Requests that offer the model no tools — the titles, summaries and probes agents make on the side — are left out: they neither start nor end a turn.
 - A new message from you while a turn runs starts it over.
-- Subagents are left out. Claude Code's subagents share their parent's session, so a conversation is the session plus its first user message; one that first shows up while another conversation in the same session is running a tool is a subagent, and its end sends nothing and doesn't touch the main turn.
+- Subagents are left out. Claude Code's subagents share their parent's session, so a conversation is the session plus its first user message; one that first shows up while another conversation in the same session is mid-request or running a tool is a subagent, and its end sends nothing and doesn't touch the main turn. A conversation unseen for 15 minutes no longer counts, and agents magpie gives no session id are never treated as nested.
+- Compaction doesn't end a turn. Claude Code's summary request (and Codex's remote compaction) neither opens nor closes one, and the conversation that goes on from the summary keeps the turn's start time. Codex's local compaction offers no tools, so it's left out like any side call.
 - A failure push waits `failureHoldSeconds` (60 by default) and is dropped if the conversation goes on, since agents retry 429s and 5xx on their own and Esc reaches magpie as a failure too.
 - One push per conversation per `cooldownSeconds`.
 - Only requests magpie marks as `local` by default: an agent on this computer that uses no gateway key. Requests with a named gateway key (`gateway-key`, which may be a friend's, and includes magpie's sharing key) and requests from another device (`remote`) are left out unless `allOrigins` is on.

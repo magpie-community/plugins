@@ -11,14 +11,16 @@
 // message to the channels and returns at once. Nothing here throws, and
 // nothing is awaited on the request's path: a broken channel must never
 // touch the request.
-import { hasTools, opensTurn, ending, firstWords } from "./turn.mjs"
+import { hasTools, opensTurn, ending, firstWords, compacting, continued } from "./turn.mjs"
 import { send, usable } from "./channels.mjs"
 
-// open conversations: key -> { base, start, agent, model, cwd, waiting, nested, failed }
+// open conversations: key -> { key, base, start, seen, agent, model, cwd, busy, waiting, nested, failed }
 //   base     the session (or agent and folder) the conversation runs in
+//   seen     when magpie last saw a request or reply of it
+//   busy     requests of it whose onResponse hasn't come yet
 //   waiting  its last reply asked for a tool, so the agent is running one now
-//   nested   it first showed up while another conversation in the same base
-//            was waiting on a tool: a subagent, which never sends a push
+//   nested   it first showed up while another top-level conversation in the
+//            same session was busy or waiting: a subagent, which never pushes
 //   failed   { at, timer } while a failure push is held back
 const turns = new Map()
 // the newest top-level conversation per base, for requests that carry no
@@ -28,6 +30,9 @@ const latest = new Map()
 const sentAt = new Map()
 const MAX_TURNS = 500
 const STALE = 24 * 3600 * 1000
+// a conversation unseen this long no longer makes a new one nested: the agent
+// was quit mid-tool, or its reply was dropped
+const ACTIVE = 15 * 60 * 1000
 
 let now = () => Date.now()
 let later = (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t }
@@ -99,44 +104,69 @@ function prune(t) {
   for (const [k, v] of sentAt) if (t - v > STALE) sentAt.delete(k)
 }
 
+// a conversation that shows up while another top-level one in the same
+// session is mid-request or running a tool is one that agent started: a
+// subagent. Only a real session can say that; a base made of agent and folder
+// is often reused by an unrelated conversation later.
+const parentActive = (base, t) => base.startsWith("s:") &&
+  [...turns.values()].some((v) => v.base === base && !v.nested && (v.busy > 0 || v.waiting) && t - v.seen < ACTIVE)
+
 export function onRequest(body, ctx) {
   try {
     const o = options(ctx?.options)
     if (!o.channels.length || !ownOrigin(ctx, o)) return undefined
     if (o.agents.length && !o.agents.includes(ctx?.agent ?? "")) return undefined
     if (!hasTools(body, ctx?.protocol)) return undefined
+    if (compacting(body, ctx.protocol)) return undefined // the summary is not the turn's answer
     const base = baseOf(ctx)
     if (!base) return undefined
     const first = firstWords(body, ctx.protocol)
     const key = first ? `${base}#${hash(first)}` : latest.get(base) ?? `${base}#`
     const t = now()
     let turn = turns.get(key)
+    if (!turn && continued(body, ctx.protocol)) {
+      // the conversation goes on after compaction under new first words:
+      // it is the newest top-level conversation here, start time and all
+      const old = turns.get(latest.get(base))
+      if (old) {
+        turns.delete(old.key)
+        if (sentAt.has(old.key)) sentAt.set(key, sentAt.get(old.key))
+        old.key = key
+        turns.set(key, old)
+        latest.set(base, key)
+        turn = old
+      }
+    }
     if (turn?.failed) {
       // the agent retried, or the user went on after Esc: the failure was
       // not the end of the turn
       cancel(turn.failed.timer)
       turn.failed = null
-    } else if (turn && opensTurn(body, ctx.protocol) && !turn.nested) {
+    } else if (turn && !continued(body, ctx.protocol) && opensTurn(body, ctx.protocol) && !turn.nested) {
       turn.start = t // a new message from the user starts the turn over
     } else if (!turn) {
-      const nested = [...turns.values()].some((v) => v.base === base && v.waiting)
-      turn = { base, start: t, agent: ctx.agent ?? "", model: ctx.model ?? body?.model ?? "", cwd: ctx.cwd ?? "", waiting: false, nested, failed: null }
+      const nested = parentActive(base, t)
+      turn = { key, base, start: t, seen: t, agent: ctx.agent ?? "", model: ctx.model ?? body?.model ?? "", cwd: ctx.cwd ?? "", busy: 0, waiting: false, nested, failed: null }
       turns.set(key, turn)
       if (!nested) latest.set(base, key)
       prune(t)
     }
     turn.waiting = false
-    if (ctx.state) ctx.state.notify = { key }
+    turn.busy++
+    turn.seen = t
+    if (ctx.state) ctx.state.notify = { turn }
   } catch {}
   return undefined
 }
 
 export function onResponse(reply, ctx) {
   try {
-    const key = ctx?.state?.notify?.key
-    if (!key) return
-    const turn = turns.get(key)
+    const turn = ctx?.state?.notify?.turn
     if (!turn) return
+    turn.busy = Math.max(0, turn.busy - 1)
+    turn.seen = now()
+    const key = turn.key
+    if (turns.get(key) !== turn) return
     const failed = ctx.success === false
     const end = failed ? { done: true, text: "" } : ending(reply, ctx.protocol)
     if (!end.done) { turn.waiting = true; return }
@@ -148,9 +178,9 @@ export function onResponse(reply, ctx) {
     // too: hold the push, and drop it if the conversation goes on
     const at = now()
     const timer = later(() => {
-      if (turns.get(key) !== turn || turn.failed?.timer !== timer) return
-      turns.delete(key)
-      notify(key, { ...turn, model }, at, false, "", o)
+      if (turns.get(turn.key) !== turn || turn.failed?.timer !== timer) return
+      turns.delete(turn.key)
+      notify(turn.key, { ...turn, model }, at, false, "", o)
     }, o.failureHoldSeconds * 1000)
     turn.failed = { at, timer }
   } catch {}

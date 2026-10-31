@@ -113,3 +113,50 @@ export function firstWords(body, protocol) {
     }
   }
 }
+
+// Compaction. When an agent runs out of context it asks the model for a
+// summary, then goes on in a conversation that starts from that summary.
+//   Claude Code: the conversation's own messages and tools plus a user text
+//     starting with CLAUDE_COMPACT, answered with plain text and end_turn —
+//     which reads like a finished turn; it then goes on with a first user
+//     message starting with CLAUDE_CONTINUED.
+//   Codex: local compaction sends no tools (left out like any side call);
+//     remote compaction ends its input with a compaction_trigger item. It goes
+//     on with a "compaction" item in its input, or a user message starting
+//     with CODEX_SUMMARY.
+const CLAUDE_COMPACT = "Your task is to create a detailed summary of the conversation so far"
+const CLAUDE_CONTINUED = "This session is being continued from a previous conversation"
+const CODEX_COMPACT = "You are performing a CONTEXT CHECKPOINT COMPACTION"
+const CODEX_SUMMARY = "Another language model started to solve this problem"
+
+const texts = (c) => typeof c === "string" ? [c]
+  : Array.isArray(c) ? c.flatMap((p) => typeof p === "string" ? [p] : isObj(p) && typeof p.text === "string" && p.type !== "tool_result" ? [p.text] : [])
+  : []
+const startsWith = (c, prefix) => texts(c).some((t) => t.trimStart().startsWith(prefix))
+
+// compacting: the request asks for the summary; it neither opens nor closes a turn
+export function compacting(body, protocol) {
+  if (!isObj(body)) return false
+  if (protocol === "responses") {
+    if (!Array.isArray(body.input)) return false
+    const last = body.input.at(-1)
+    if (isObj(last) && last.type === "compaction_trigger") return true
+    const user = body.input.findLast((i) => isObj(i) && (i.type == null || i.type === "message") && i.role === "user")
+    return !!user && startsWith(user.content, CODEX_COMPACT)
+  }
+  if (protocol === "gemini") return false
+  const user = Array.isArray(body.messages) ? body.messages.findLast((m) => isObj(m) && m.role === "user") : undefined
+  return !!user && startsWith(user.content, CLAUDE_COMPACT)
+}
+
+// continued: the conversation starts from a compaction summary
+export function continued(body, protocol) {
+  if (!isObj(body)) return false
+  if (protocol === "responses") {
+    if (!Array.isArray(body.input)) return false
+    return body.input.some((i) => isObj(i) && (i.type === "compaction" || i.type === "compaction_summary"
+      || ((i.type == null || i.type === "message") && i.role === "user" && startsWith(i.content, CODEX_SUMMARY))))
+  }
+  if (protocol === "gemini") return false
+  return firstWords(body, protocol).trimStart().startsWith(CLAUDE_CONTINUED)
+}

@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createHmac } from "node:crypto"
 import { onRequest, onResponse, reset, settled, options, duration, message } from "./notify.hooks.mjs"
-import { opensTurn, ending, hasTools, firstWords } from "./turn.mjs"
+import { opensTurn, ending, hasTools, firstWords, compacting, continued } from "./turn.mjs"
 import { send, usable } from "./channels.mjs"
 
 const realFetch = globalThis.fetch
@@ -179,6 +179,92 @@ test("parallel subagents are all nested; a later conversation in the session is 
   minutes(4)
   await exchange("anthropic", subResult, subFinal)
   expect(calls).toHaveLength(1)
+})
+
+test("a subagent whose first request beats the parent reply's onResponse is still nested", async () => {
+  // Claude Code runs Task tool_use blocks while the reply still streams, and
+  // magpie calls onResponse only after the last byte: the subagent's request
+  // reaches onRequest first
+  const main = ctx("anthropic")
+  onRequest(aUser, main)
+  minutes(1)
+  await exchange("anthropic", subUser, subToolUse) // while the parent is mid-request
+  onResponse(taskUse, main) // the parent's two-Task reply finishes
+  await exchange("anthropic", { ...subUser, messages: [{ role: "user", content: "Read the docs folder" }] }, subToolUse)
+  minutes(4)
+  await exchange("anthropic", subResult, subFinal)
+  expect(calls).toHaveLength(0)
+  await exchange("anthropic", aResult, aFinal)
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 5 min")
+})
+
+test("a conversation left waiting stops making new ones nested", async () => {
+  // no session: agent and folder are the base, and nesting is never inferred
+  const noSession = { session: undefined, agent: "crush" }
+  await exchange("chat", { tools: [{}], messages: [{ role: "user", content: "a" }] }, { choices: [{ finish_reason: "tool_calls", message: { tool_calls: [{}] } }] }, noSession)
+  minutes(5) // quit during the tool run; a new conversation in the same folder
+  const b = { tools: [{}], messages: [{ role: "user", content: "b" }] }
+  await exchange("chat", b, { choices: [{ finish_reason: "tool_calls", message: { tool_calls: [{}] } }] }, noSession)
+  minutes(5)
+  await exchange("chat", { ...b, messages: [...b.messages, { role: "tool", content: "x" }] }, { choices: [{ finish_reason: "stop", message: { content: "ok" } }] }, noSession)
+  expect(calls).toHaveLength(1)
+  // a real session: a parent unseen for 15 minutes no longer counts
+  calls = []
+  await exchange("anthropic", aUser, taskUse, { session: "s9" })
+  minutes(16)
+  await exchange("anthropic", subUser, subToolUse, { session: "s9" })
+  minutes(4)
+  await exchange("anthropic", subResult, subFinal, { session: "s9" })
+  expect(calls).toHaveLength(1)
+})
+
+// ---- compaction ----
+const COMPACT = "Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests."
+const summary = { ...aFinal, content: [{ type: "text", text: "<summary>…</summary>" }] }
+const resumed = { model: "m", tools, messages: [{ role: "user", content: "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>…</summary>" }] }
+const resumedResult = { ...resumed, messages: [...resumed.messages, { role: "assistant", content: aToolUse.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] }] }
+
+for (const [shape, compactBody] of [
+  ["in the tool_result's message", { ...aResult, messages: [...aResult.messages.slice(0, -1), { role: "user", content: [...aResult.messages.at(-1).content, { type: "text", text: COMPACT }] }] }],
+  ["as its own message", { ...aResult, messages: [...aResult.messages, { role: "user", content: COMPACT }] }],
+]) {
+  test(`Claude Code compaction (prompt ${shape}) neither ends nor restarts the turn`, async () => {
+    await exchange("anthropic", aUser, aToolUse)
+    minutes(16)
+    await exchange("anthropic", compactBody, summary) // reads like a finished turn
+    expect(calls).toHaveLength(0)
+    await exchange("anthropic", resumed, aToolUse) // goes on under new first words
+    minutes(4)
+    await exchange("anthropic", resumedResult, aFinal)
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse(calls[0].body).message).toContain("took 20 min")
+  })
+}
+
+test("Codex remote compaction neither ends nor restarts the turn", async () => {
+  const rTools = [{ type: "function", name: "shell" }]
+  const user = { type: "message", role: "user", content: [{ type: "input_text", text: "refactor the parser" }] }
+  const call = { status: "completed", output: [{ type: "function_call", name: "shell" }] }
+  const done = { status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }] }
+  const x = { agent: "codex" }
+  await exchange("responses", { tools: rTools, input: [user] }, call, x)
+  minutes(10)
+  await exchange("responses", { tools: rTools, input: [user, { type: "function_call_output", output: "x" }, { type: "compaction_trigger" }] }, { status: "completed", output: [{ type: "compaction", encrypted_content: "…" }] }, x)
+  expect(calls).toHaveLength(0)
+  const after = [{ type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>…</environment_context>" }] }, { type: "compaction", encrypted_content: "…" }]
+  await exchange("responses", { tools: rTools, input: after }, call, x)
+  minutes(5)
+  await exchange("responses", { tools: rTools, input: [...after, { type: "function_call_output", output: "y" }] }, done, x)
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 15 min")
+})
+
+test("Codex local compaction sends no tools, and its summary carries the turn on", async () => {
+  expect(hasTools({ input: [{ role: "user", content: "You are performing a CONTEXT CHECKPOINT COMPACTION." }] }, "responses")).toBe(false)
+  expect(continued({ input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Another language model started to solve this problem and produced a summary…" }] }] }, "responses")).toBe(true)
+  expect(compacting({ input: [{ type: "message", role: "user", content: "fix it" }] }, "responses")).toBe(false)
+  expect(continued(aUser, "anthropic")).toBe(false)
 })
 
 test("a conversation is told apart by its first words' text, not cache markers", () => {
