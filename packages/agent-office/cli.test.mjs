@@ -97,6 +97,21 @@ test("--json prints the same snapshot and honours --private", () => {
   expect(priv.sessions[0].query).toBe("")
   expect(priv.sessions[0].messages).toEqual([])
   expect(JSON.stringify(priv)).not.toContain(SECRET)
+
+  // Even when agent-office is also installed in magpie's plugins.json with
+  // text:true, --private must stay private and never leak prompts.
+  const cfg = tmp()
+  mkdirSync(join(cfg, "magpie"), { recursive: true })
+  writeFileSync(join(cfg, "magpie", "plugins.json"), JSON.stringify({
+    plugins: [{ spec: "@magpie-community/page-agent-office", options: { text: true, jumpRequest: { key: "claude|s1", session: "s1", at: Date.now() } } }],
+  }))
+  const envWithMagpie = { ...envFor(h), XDG_CONFIG_HOME: cfg }
+  const r = Bun.spawnSync({ cmd: [process.execPath, script, "--json", "--hours", "1", "--private"], cwd: dir, env: envWithMagpie, stdout: "pipe", stderr: "pipe" })
+  expect(r.exitCode).toBe(0)
+  const privWithMagpie = JSON.parse(new TextDecoder().decode(r.stdout))
+  expect(privWithMagpie.text).toBe(false)
+  expect(privWithMagpie.sessions[0].query).toBe("")
+  expect(JSON.stringify(privWithMagpie)).not.toContain(SECRET)
 })
 
 test("the authenticated standalone page, bridge, live data and JSON options work", async () => {

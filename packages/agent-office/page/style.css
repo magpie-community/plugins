@@ -113,6 +113,7 @@ canvas[hidden] { display: none; }
 .pjump:hover { opacity: .9; }
 .pjump.alt { background: rgba(79, 70, 229, .12); color: var(--accent, #4f46e5); font-weight: 600; padding: 4px 8px; }
 .pjump.alt:hover { background: rgba(79, 70, 229, .2); }
+.pjump.err { background: var(--err, #ef4444); color: #fff; }
 .pcopy { width: 100%; margin-top: 6px; font: 12px var(--mono); padding: 4px 6px; border: 1px solid #e5e7eb; border-radius: 6px; }
 .psrc { margin-top: 6px; color: #b0b5bd; font-size: 11.5px; }
 

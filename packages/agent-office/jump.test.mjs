@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -174,8 +174,6 @@ test("Herdr sessions expose all attached hosts (Herdr.app, Otty) and switch betw
     "herdr workspace focus wM",
     "herdr tab focus wM:t73",
     "herdr agent focus wM:p8C",
-    "herdr-app do space.select --id sp1",
-    "herdr-app do tab.select --id tb1",
     "open -b dev.herdr.app",
   ])
 
@@ -276,4 +274,86 @@ test("office.hooks.mjs imported without MAGPIE_AGENT_OFFICE_PAGE writes page/liv
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test("magpie host restart on options.set executes a fresh jumpRequest once and never touches plugins.json", () => {
+  if (process.platform !== "darwin") return
+  const root = mkdtempSync(join(tmpdir(), "agent-office-restart-probe-"))
+  try {
+    const home = join(root, "home")
+    const cfg = join(root, "cfg")
+    const cache = join(root, "cache")
+    const pkgDir = join(root, "pkg")
+    mkdirSync(join(pkgDir, "page"), { recursive: true })
+    cpSync(join(dir, "lib"), join(pkgDir, "lib"), { recursive: true })
+    cpSync(join(dir, "office.hooks.mjs"), join(pkgDir, "office.hooks.mjs"))
+    cpSync(join(dir, "package.json"), join(pkgDir, "package.json"))
+
+    // Fake herdr in $HOME/.local/bin/herdr logging every invocation
+    const binDir = join(home, ".local", "bin")
+    const herdrLog = join(home, "herdr.log")
+    mkdirSync(binDir, { recursive: true })
+    const fakeHerdr = join(binDir, "herdr")
+    writeFileSync(fakeHerdr, `#!/bin/sh
+echo "$@" >> "${herdrLog}"
+if [ "$1" = "pane" ] && [ "$2" = "list" ]; then
+  echo '{"result":{"panes":[{"pane_id":"wM:p8C","tab_id":"wM:t73","workspace_id":"wM","cwd":"/tmp/probe","agent_session":{"value":"11111111-2222-3333-4444-555555555555"}}]}}'
+fi
+`)
+    chmodSync(fakeHerdr, 0o755)
+
+    // plugins.json written 0600 with another plugin's apiKey + fresh jumpRequest
+    const magpieCfg = join(cfg, "magpie")
+    mkdirSync(magpieCfg, { recursive: true })
+    const pluginsFile = join(magpieCfg, "plugins.json")
+    const pluginsContent = JSON.stringify({
+      plugins: [
+        { spec: "other-plugin", options: { apiKey: "secret-api-key" } },
+        {
+          spec: "@magpie-community/page-agent-office",
+          options: {
+            text: true,
+            jumpRequest: {
+              key: "claude|11111111-2222-3333-4444-555555555555",
+              session: "11111111-2222-3333-4444-555555555555",
+              preferredHostId: "herdr-cli",
+              at: Date.now(),
+            },
+          },
+        },
+      ],
+    }, null, 2)
+    writeFileSync(pluginsFile, pluginsContent, { mode: 0o600 })
+    chmodSync(pluginsFile, 0o600)
+
+    const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: cache }
+    delete env.MAGPIE_AGENT_OFFICE_PAGE
+    const hookUrl = pathToFileURL(join(pkgDir, "office.hooks.mjs")).href
+    const code = `
+      const h = await import(${JSON.stringify(hookUrl)});
+      await h.waitForJump();
+      h.stop();
+    `
+    // First host startup (right after magpie's SetOptions -> Restart)
+    const r1 = Bun.spawnSync({ cmd: [process.execPath, "-e", code], cwd: pkgDir, env, stdout: "pipe", stderr: "pipe" })
+    expect(r1.exitCode).toBe(0)
+    const log1 = readFileSync(herdrLog, "utf8")
+    expect(log1).toContain("workspace focus wM")
+    expect(log1).toContain("tab focus wM:t73")
+    expect(log1).toContain("agent focus wM:p8C")
+
+    // plugins.json mode (0600) and content must be untouched
+    expect(statSync(pluginsFile).mode & 0o777).toBe(0o600)
+    expect(readFileSync(pluginsFile, "utf8")).toBe(pluginsContent)
+
+    // Second host startup with the same plugins.json must not replay the jump
+    writeFileSync(herdrLog, "")
+    const r2 = Bun.spawnSync({ cmd: [process.execPath, "-e", code], cwd: pkgDir, env, stdout: "pipe", stderr: "pipe" })
+    expect(r2.exitCode).toBe(0)
+    const log2 = readFileSync(herdrLog, "utf8")
+    expect(log2).not.toContain("workspace focus wM")
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 

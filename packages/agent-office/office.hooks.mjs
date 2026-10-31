@@ -49,6 +49,7 @@ let timer = null
 let ticking = null
 let last = ""
 let lastJumpAt = 0
+let lastJumpPromise = null
 // fail closed: until an install's options are read, or a request carries
 // them, no prompt, reply or command is written
 let options = { text: false }
@@ -151,6 +152,10 @@ export function jump(req) {
   return jumper ? jumper.jump(req) : Promise.resolve({ ok: false, steps: [] })
 }
 
+export function waitForJump() {
+  return lastJumpPromise || Promise.resolve(null)
+}
+
 export function stop() {
   if (ticking) clearInterval(ticking)
   ticking = null
@@ -210,43 +215,51 @@ function readOptions() {
   return null
 }
 
-function clearJumpOption() {
-  const cfg = process.env.XDG_CONFIG_HOME || join(process.env.HOME || "", ".config")
-  for (const file of [join(process.cwd(), "plugins.json"), join(cfg, "magpie", "plugins.json")]) {
-    let list
-    try { list = JSON.parse(readFileSync(file, "utf8")) } catch { continue }
-    const me = (list.plugins || []).find((p) => matchSpec(p?.spec))
-    if (!me) return
-    if (me.options && typeof me.options === "object" && "jumpRequest" in me.options) {
-      delete me.options.jumpRequest
-      try {
-        const tmp = file + ".tmp"
-        writeFileSync(tmp, JSON.stringify(list, null, 2) + "\n")
-        renameSync(tmp, file)
-      } catch {}
-    }
-    return
-  }
+function jumpCacheFile() {
+  const cache = process.env.XDG_CACHE_HOME || join(process.env.HOME || "", ".cache")
+  return join(cache, "agent-office", "last-jump.json")
+}
+
+function readLastJumpAt() {
+  try {
+    const j = JSON.parse(readFileSync(jumpCacheFile(), "utf8"))
+    return Number(j?.at) > 0 ? Number(j.at) : 0
+  } catch { return 0 }
+}
+
+function writeLastJumpAt(at) {
+  try {
+    const file = jumpCacheFile()
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify({ at }) + "\n", { mode: 0o600 })
+  } catch {}
 }
 
 function checkJumpOption(directReq) {
   if (!jumper) return
-  const fresh = readOptions()
-  if (fresh) options = { ...options, ...fresh }
-  const req = directReq || options.jumpRequest
+  const standalone = !!process.env.MAGPIE_AGENT_OFFICE_PAGE
+  // Standalone CLI and tests set MAGPIE_AGENT_OFFICE_PAGE and pass jumpRequest
+  // explicitly to start(); they must never read or act on magpie's plugins.json.
+  if (standalone && !directReq) return
+  const fresh = standalone ? null : readOptions()
+  if (fresh && typeof fresh.preferredJumpHost === "string") options.preferredJumpHost = fresh.preferredJumpHost
+  const req = directReq || fresh?.jumpRequest
   if (!req || typeof req !== "object") return
   const at = Number(req.at || 0)
-  // Ignore stale requests written before this host process started (>15s old)
-  // so restarting magpie does not replay a previous session jump.
+  // magpie restarts the plugin host when options.set writes jumpRequest to
+  // plugins.json. Keep the last handled timestamp in our own cache file (never
+  // touching plugins.json) so the freshly started host acts on a ≤15s request
+  // once and never replays it on later restarts.
   if (!at || at <= lastJumpAt || Date.now() - at > 15000) {
-    if (at > lastJumpAt) lastJumpAt = at
-    if (options.jumpRequest) { delete options.jumpRequest; clearJumpOption() }
+    if (at > lastJumpAt) {
+      lastJumpAt = at
+      if (!standalone) writeLastJumpAt(at)
+    }
     return
   }
   lastJumpAt = at
-  delete options.jumpRequest
-  clearJumpOption()
-  void jumper.jump({
+  if (!standalone) writeLastJumpAt(at)
+  lastJumpPromise = jumper.jump({
     key: String(req.key || ""),
     session: String(req.session || ""),
     preferredHostId: String(req.preferredHostId || options.preferredJumpHost || ""),
@@ -256,8 +269,8 @@ function checkJumpOption(directReq) {
 // read what the plugin's options say about text, then start: a host that
 // loads this module starts watching at once, before any request
 const loaded = readOptions()
-if (loaded) {
-  options = { text: false, ...loaded }
-  if (Number(loaded.jumpRequest?.at) > 0) lastJumpAt = Number(loaded.jumpRequest.at)
+if (loaded) options = { text: false, ...loaded }
+if (!process.env.MAGPIE_AGENT_OFFICE_PAGE) {
+  lastJumpAt = readLastJumpAt()
+  start()
 }
-if (!process.env.MAGPIE_AGENT_OFFICE_PAGE) start()

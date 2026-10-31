@@ -450,8 +450,14 @@
     const targetLabel = a?.target?.label || a?.target?.badge || a?.target?.app || ""
     if (!targetLabel) return
     const w = t()
-    const orig = btn ? (btn.dataset.label || btn.textContent) : ""
-    if (btn) btn.textContent = M.fill(w.jumpingTo, targetLabel)
+    const targetBtn = btn || (!P.jumpWrap.hidden ? P.jumpWrap.querySelector(".pjump") : null)
+    const orig = targetBtn ? (targetBtn.dataset.label || targetBtn.textContent) : ""
+    if (targetBtn) {
+      targetBtn.classList.remove("err")
+      targetBtn.textContent = M.fill(w.jumpingTo, targetLabel)
+    }
+    clearTimeout(saving)
+    saving = null
     try {
       const next = {
         ...wanted(),
@@ -465,8 +471,17 @@
       }
       opts = await magpie.options.set(next)
       saved = JSON.stringify(wanted())
-    } catch {}
-    if (btn) setTimeout(() => { if (btn.dataset.label) btn.textContent = orig }, 900)
+      if (targetBtn) setTimeout(() => { if (targetBtn.dataset.label) targetBtn.textContent = orig }, 900)
+    } catch {
+      if (targetBtn) {
+        targetBtn.classList.add("err")
+        targetBtn.textContent = w.jumpFail
+        setTimeout(() => {
+          targetBtn.classList.remove("err")
+          if (targetBtn.dataset.label) targetBtn.textContent = orig
+        }, 1600)
+      }
+    }
   }
 
   // out of the office until its session moves again; kept in options, only

@@ -206,8 +206,6 @@ export function resolveTarget(s, state) {
       herdrWorkspace: hp.workspaceId,
       herdrTab: hp.tabId,
       herdrPane: hp.paneId,
-      herdrAppSpace: primary.herdrAppSpace || "",
-      herdrAppTab: primary.herdrAppTab || "",
       ottyPane: primary.ottyPane || "",
       outerBundleId: primary.bundleId || "dev.herdr.app",
       hosts,
@@ -252,8 +250,6 @@ export function resolveTarget(s, state) {
         herdrWorkspace: cp?.workspaceId || "",
         herdrTab: cp?.tabId || "",
         herdrPane: paneId,
-        herdrAppSpace: primary.herdrAppSpace || "",
-        herdrAppTab: primary.herdrAppTab || "",
         ottyPane: primary.ottyPane || "",
         outerBundleId: primary.bundleId || "dev.herdr.app",
         hosts,
@@ -366,7 +362,6 @@ export function buildJumpPlan(req, state, bins = {}) {
   const home = homeDir()
   const B = {
     herdr: bins.herdr || findBin("herdr", [join(home, ".local", "bin", "herdr")]),
-    herdrApp: bins.herdrApp || findBin("herdr-app", [join(home, ".local", "bin", "herdr-app"), "/Applications/Herdr.app/Contents/MacOS/herdr-app"]),
     ottyCli: bins.ottyCli || findBin("otty-cli", ["/Applications/Otty.app/Contents/MacOS/otty-cli"]),
     tmux: bins.tmux || findBin("tmux", ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux"]),
     osascript: bins.osascript || "/usr/bin/osascript",
@@ -381,22 +376,19 @@ export function buildJumpPlan(req, state, bins = {}) {
     case "herdr": {
       const wantHostId = typeof req?.preferredHostId === "string" ? req.preferredHostId : (target.hostId || "")
       const hosts = Array.isArray(target.hosts) ? target.hosts : []
-      const chosen = hosts.find((h) => h.id === wantHostId) || {
-        id: target.hostId || (target.outerBundleId === "dev.herdr.app" ? "herdr-app" : "otty"),
-        app: target.app || "Herdr.app",
-        bundleId: target.outerBundleId || "dev.herdr.app",
-        ottyPane: target.ottyPane || "",
-        herdrAppSpace: target.herdrAppSpace || "",
-        herdrAppTab: target.herdrAppTab || "",
-        tty: target.tty || "",
-      }
+      const chosen = wantHostId === "herdr-cli"
+        ? { id: "herdr-cli", app: "herdr", bundleId: "" }
+        : (hosts.find((h) => h.id === wantHostId) || {
+          id: target.hostId || (target.outerBundleId === "dev.herdr.app" ? "herdr-app" : "otty"),
+          app: target.app || "Herdr.app",
+          bundleId: target.outerBundleId || "dev.herdr.app",
+          ottyPane: target.ottyPane || "",
+          tty: target.tty || "",
+        })
       if (target.herdrWorkspace) steps.push({ cmd: B.herdr, args: ["workspace", "focus", target.herdrWorkspace], desc: `herdr workspace focus ${target.herdrWorkspace}` })
       if (target.herdrTab) steps.push({ cmd: B.herdr, args: ["tab", "focus", target.herdrTab], desc: `herdr tab focus ${target.herdrTab}` })
       if (target.herdrPane) steps.push({ cmd: B.herdr, args: ["agent", "focus", target.herdrPane], desc: `herdr agent focus ${target.herdrPane}` })
-      if (chosen.id === "herdr-app") {
-        if (chosen.herdrAppSpace) steps.push({ cmd: B.herdrApp, args: ["do", "space.select", "--id", chosen.herdrAppSpace], desc: `herdr-app do space.select --id ${chosen.herdrAppSpace}` })
-        if (chosen.herdrAppTab) steps.push({ cmd: B.herdrApp, args: ["do", "tab.select", "--id", chosen.herdrAppTab], desc: `herdr-app do tab.select --id ${chosen.herdrAppTab}` })
-      } else if (chosen.id === "otty" && chosen.ottyPane) {
+      if (chosen.id === "otty" && chosen.ottyPane) {
         steps.push({ cmd: B.ottyCli, args: ["pane", "focus", chosen.ottyPane], desc: `otty-cli pane focus ${chosen.ottyPane}` })
       } else if (chosen.id === "iterm2" && validTty(chosen.tty)) {
         const script = appleScriptIterm(chosen.tty)
