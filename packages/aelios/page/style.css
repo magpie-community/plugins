@@ -1,1 +1,96 @@
-:root{font-family:var(--magpie-font,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif);color:var(--magpie-fg,#202624);background:var(--magpie-bg,#f5f6f5);font-size:13px;line-height:1.5;--surface:var(--magpie-card,#fff);--line:var(--magpie-line,#dfe5e1);--muted:var(--magpie-muted,#69736d);--accent:var(--magpie-accent,#247655);--soft:var(--magpie-accent-soft,#eaf3ee);--error:#b53333;color-scheme:light}html[data-theme=dark]{--surface:var(--magpie-card,#222825);--line:var(--magpie-line,#39423d);--muted:var(--magpie-muted,#a2afa7);--accent:var(--magpie-accent,#83c5a3);--soft:var(--magpie-accent-soft,#283e32);--error:#f0a0a0;color:var(--magpie-fg,#e5ece7);background:var(--magpie-bg,#191e1b);color-scheme:dark}*{box-sizing:border-box}body{margin:0;padding:32px 28px 24px}main{max-width:900px;margin:auto}.page-head{display:flex;align-items:center;gap:14px;margin:0 0 28px}.page-head img{flex:none;border-radius:12px}.page-head h1{font-size:23px;letter-spacing:-.6px;line-height:1.25;margin:0 0 4px;font-weight:650}.page-head p{margin:0;color:var(--muted)}.badge{margin-left:auto;padding:4px 9px;border:1px solid var(--line);border-radius:20px;color:var(--muted);font-size:11px;text-align:center;max-width:40%}.badge[data-dirty=true]{color:var(--accent);background:var(--soft);border-color:transparent}fieldset{margin:0;padding:0;border:0;min-width:0}.panel{padding:24px;margin:0 0 18px;background:var(--surface);border:1px solid var(--line);border-radius:13px}.section-head{display:flex;justify-content:space-between;gap:16px;margin-bottom:22px}.section-head h2{font-size:15px;margin:0 0 3px;font-weight:650}.section-head p{margin:0;color:var(--muted)}.section-number{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;padding-top:2px;opacity:.65}.fields{display:grid;grid-template-columns:1fr 1fr;gap:20px}.wide{grid-column:1/-1}label{display:flex;flex-direction:column;gap:7px;font-weight:500;min-width:0}input{font:inherit;color:inherit;background:var(--magpie-bg,#f8faf9);border:1px solid var(--line);padding:9px 11px;min-width:0;width:100%;border-radius:7px;transition:border-color .15s}html[data-theme=dark] input{background:var(--magpie-bg,#1b211d)}input::placeholder{color:var(--muted);opacity:.65}input:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}input[aria-invalid=true]{border-color:var(--error)}small{font-size:12px;color:var(--muted);font-weight:400;line-height:1.5}.secret{position:relative;display:flex}.secret input{padding-right:72px}.reveal{position:absolute;right:4px;top:4px;bottom:4px;min-height:0;padding:0 9px;font-size:11px}.toggle-row{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:24px;margin:0;padding:16px 0;border-top:1px solid var(--line);cursor:pointer}.toggle-row:first-of-type{padding-top:0;border-top:0}.toggle-row span{display:flex;flex-direction:column;gap:4px;max-width:650px}.toggle-row strong{font-size:13px;font-weight:550}.toggle-row input{appearance:none;flex:none;width:34px;height:20px;padding:0;margin:0;position:relative;border-radius:12px;background:var(--line);border:0;cursor:pointer}.toggle-row input:before{content:"";position:absolute;width:16px;height:16px;left:2px;top:2px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0002;transition:transform .15s}.toggle-row input:checked{background:var(--accent)}.toggle-row input:checked:before{transform:translateX(14px)}.agent-field{padding-top:18px;border-top:1px solid var(--line);margin-top:2px}.notice{padding:12px 14px;margin:0 0 20px;border-radius:7px;background:var(--soft);color:var(--muted);font-size:12px;line-height:1.65}.empty{font-size:12px;padding:8px 0 17px;color:var(--muted);margin:0}.route{position:relative;margin:0 0 16px;border:1px solid var(--line);border-radius:9px;padding:15px}.route legend{color:var(--muted);font-size:11px;padding:0 7px;margin-left:-3px}.route-actions{display:flex;gap:3px;position:absolute;top:-16px;right:9px;background:var(--surface);padding:0 4px}.route-fields{display:grid;grid-template-columns:1fr 1.45fr 1.2fr;gap:12px}.route label{font-size:12px}.route input{padding:8px 9px}.route-limit{display:block;margin-top:10px}.route-action{width:28px;height:26px;min-height:0;padding:0;line-height:1;font-size:17px}button{font:inherit;font-weight:550;cursor:pointer;border:1px solid transparent;border-radius:7px;min-height:35px;padding:7px 14px;color:var(--surface);background:var(--accent)}button.secondary{border-color:var(--line);background:var(--surface);color:inherit}button.quiet{background:transparent;color:var(--muted);border-color:transparent}button:hover:not(:disabled){filter:brightness(.95)}button.quiet:hover:not(:disabled){background:var(--soft);color:var(--accent)}button:disabled{cursor:default;opacity:.45}fieldset:disabled input{opacity:.6}.advanced{padding:0 24px}.advanced summary{font-weight:550;padding:17px 0;cursor:pointer;color:var(--muted)}.advanced[open] summary{color:inherit}.advanced .toggle-row{padding:8px 0 22px;border:0}footer{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:4px 0 18px}footer>div:first-child{min-width:0}footer p{margin:0 0 5px;font-size:12px;color:var(--accent)}footer p[data-error=true]{color:var(--error)}.actions{display:flex;gap:8px;flex:none}.privacy{color:var(--muted);font-size:11px;margin:0;line-height:1.65;max-width:770px}[hidden]{display:none!important}@media(max-width:640px){body{padding:22px 16px}.page-head{gap:11px;margin-bottom:22px}.page-head h1{font-size:21px}.page-head img{width:38px;height:38px}.badge{font-size:10px}.panel{padding:19px 17px}.fields{grid-template-columns:1fr;gap:18px}.route-fields{grid-template-columns:1fr}.route{padding:14px 12px}.section-head{margin-bottom:18px}.advanced{padding:0 17px}.toggle-row{gap:16px}footer{align-items:stretch;flex-direction:column;gap:14px}.actions{justify-content:flex-end}.actions button{flex:1}.notice{padding:11px 12px}.privacy{font-size:11px}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+/* The window's own sheet (the bridge adds it for every plugin page) already
+   gives the font, colours, headings, buttons, inputs and tables. What is left
+   here is layout over the theme's --magpie-* tokens. Where magpie has a
+   control of its own, the values are taken from it: the switch is Plugins'
+   .lib-switch (32x19, a 15px knob, off --line, on --fg), the primary button is
+   a .text.primary, and a route is the box an account's rows sit in. */
+*, *::before, *::after { box-sizing: border-box; }
+main { max-width: 720px; }
+
+.page-head { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 18px; }
+.page-head > div { flex: 1; min-width: 0; }
+.page-head h1 { font-size: 15px; }
+.page-head p { margin: 2px 0 0; }
+.badge { flex: none; padding-top: 2px; color: var(--magpie-muted); font-size: 11.5px; }
+.badge[data-dirty="true"] { color: var(--magpie-accent); }
+
+fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.panel { padding: 0 0 18px; }
+.panel + .panel { padding-top: 18px; border-top: 1px solid var(--magpie-line); }
+.section-head h2 { margin: 0; }
+.section-head p { margin: 3px 0 14px; color: var(--magpie-muted); }
+
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.wide { grid-column: 1 / -1; }
+label { display: block; min-width: 0; }
+label > span { display: block; margin-bottom: 5px; font-size: 12px; }
+label > small, small { display: block; margin-top: 5px; }
+label input:not([type="checkbox"]) { display: block; width: 100%; min-width: 0; }
+input::placeholder { color: var(--magpie-faint); }
+
+.secret { display: flex; align-items: center; gap: 6px; }
+.secret input { flex: 1; min-width: 0; }
+.secret button { flex: none; }
+
+.toggle-row { display: flex; align-items: center; gap: 12px; min-height: 30px; padding: 5px 0; cursor: pointer; }
+.toggle-row > span { flex: 1; min-width: 0; }
+.toggle-row strong { display: block; font-size: 12px; font-weight: 500; }
+.toggle-row small { margin-top: 2px; }
+
+/* magpie's switch, as Plugins draws it */
+input[role="switch"] {
+  appearance: none; -webkit-appearance: none; position: relative; flex: none;
+  width: 32px; height: 19px; margin: 0; padding: 0; border: 0; border-radius: 10px;
+  background: var(--magpie-line); cursor: pointer;
+  transition: background .2s cubic-bezier(.2, .8, .2, 1);
+}
+input[role="switch"]::before {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 2px #00000040;
+  transition: transform .22s cubic-bezier(.2, .8, .2, 1);
+}
+input[role="switch"]:checked { background: var(--magpie-fg); }
+input[role="switch"]:checked::before { transform: translateX(13px); }
+input[role="switch"]:disabled { opacity: .5; cursor: default; }
+
+.agent-field { display: block; margin-top: 10px; }
+
+.notice { margin: 0 0 12px; color: var(--magpie-muted); font-size: 12px; max-width: 74ch; }
+
+#routes { display: grid; gap: 10px; }
+.route {
+  position: relative; padding: 10px 12px;
+  border: 1px solid var(--magpie-line); border-radius: 10px; background: var(--magpie-card);
+}
+.route legend { padding: 0 4px; color: var(--magpie-muted); font-size: 11px; }
+.route-actions { position: absolute; top: 6px; right: 8px; display: flex; gap: 2px; }
+.route-action {
+  width: 24px; height: 22px; padding: 0; font-size: 12px; line-height: 1;
+  color: var(--magpie-muted); background: transparent; border-color: transparent;
+}
+.route-action:hover:not(:disabled) { color: var(--magpie-fg); border-color: var(--magpie-line); }
+.route-fields { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 10px; }
+.empty { margin: 0 0 12px; color: var(--magpie-muted); font-size: 12px; }
+.route-limit { margin-top: 8px; }
+#add-route { margin-top: 10px; }
+
+.advanced { padding: 0 0 18px; }
+.advanced summary { cursor: pointer; font-size: 12px; color: var(--magpie-muted); }
+.advanced[open] summary { margin-bottom: 10px; }
+
+footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; border-top: 1px solid var(--magpie-line); }
+footer > div { min-width: 0; }
+footer small { margin-top: 0; }
+.actions { flex: none; display: flex; gap: 8px; }
+#save { background: var(--magpie-accent); color: var(--magpie-accent-fg); border-color: transparent; font-weight: 500; }
+#save:hover:not(:disabled) { filter: brightness(1.08); }
+#result { margin: 0 0 8px; padding: 6px 9px; border-radius: 6px; background: var(--magpie-accent-soft); color: var(--magpie-fg); font-size: 12px; }
+#result[data-error="true"] { background: color-mix(in srgb, var(--magpie-red) 12%, var(--magpie-card)); color: var(--magpie-red); }
+.privacy { margin: 14px 0 0; color: var(--magpie-muted); font-size: 11.5px; max-width: 74ch; }
+
+@media (max-width: 620px) {
+  .fields, .route-fields { grid-template-columns: 1fr; }
+  .wide { grid-column: auto; }
+  footer { align-items: stretch; flex-direction: column; }
+  .actions { justify-content: flex-end; }
+}
