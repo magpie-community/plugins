@@ -32,28 +32,32 @@ function boundedDiaryArgs(command, args) {
 
 export async function readDiary(call, id, content, source) {
   if (!validId(id) || !/^[a-f0-9]{64}$/.test(source ?? '') || !content.includes(source)) throw new Error('diary-readback-source');
-  const found = await call(['diary-search', source, '--limit', '5', '--max-chars', '4000', '--mode', 'hybrid']);
+  // A turn hash is an exact locator, not a semantic history query.
+  const found = await call(['diary-search', source, '--limit', '5', '--max-chars', '4000', '--mode', 'lexical']);
   if (Array.from(JSON.stringify(found.details ?? {})).length > 4000) throw new Error('diary-output-too-large');
-  const candidate = found.details?.items?.find(item => item.source_id === id && !item.truncated && item.text?.includes(source));
-  if (found.status !== 'ok' || !candidate?.fragment_id || !candidate.source_version) throw new Error('diary-readback-unconfirmed');
-  const fragment = await call(['diary-fragment', id, candidate.fragment_id, '--neighbors', '1', '--max-chars', '4000']);
-  if (Array.from(JSON.stringify(fragment.details ?? {})).length > 4000) throw new Error('diary-output-too-large');
-  const items = fragment.details?.items;
-  if (fragment.status !== 'ok' || !Array.isArray(items) || !items.some(item => item.fragment_id === candidate.fragment_id)
-    || items.some(item => item.source_id !== id || item.source_version !== candidate.source_version || item.truncated || typeof item.text !== 'string'
-      || !Number.isInteger(item.start) || !Number.isInteger(item.end) || item.end - item.start !== Array.from(item.text).length)) throw new Error('diary-readback-unconfirmed');
-  const ordered = [...items].sort((a,b) => a.start - b.start);
-  const start = ordered[0].start, text = Array.from(ordered[0].text);
-  let end = ordered[0].end;
-  for (const item of ordered.slice(1)) {
-    const chars = Array.from(item.text), overlap = Math.min(end - item.start, chars.length);
-    if (overlap < 0 || text.slice(item.start - start, item.start - start + overlap).join('') !== chars.slice(0, overlap).join('')) throw new Error('diary-readback-unconfirmed');
-    text.push(...chars.slice(overlap)); end = Math.max(end, item.end);
+  const candidates = found.details?.items?.filter(item => item.source_id === id && !item.truncated && item.text?.includes(source) && item.fragment_id && item.source_version);
+  if (found.status !== 'ok' || !candidates?.length) throw new Error('diary-readback-unconfirmed');
+  for (const candidate of candidates) {
+    const fragment = await call(['diary-fragment', id, candidate.fragment_id, '--neighbors', '1', '--max-chars', '4000']);
+    if (Array.from(JSON.stringify(fragment.details ?? {})).length > 4000) throw new Error('diary-output-too-large');
+    const items = fragment.details?.items;
+    if (fragment.status !== 'ok' || !Array.isArray(items) || !items.some(item => item.fragment_id === candidate.fragment_id)
+      || items.some(item => item.source_id !== id || item.source_version !== candidate.source_version || item.truncated || typeof item.text !== 'string'
+        || !Number.isInteger(item.start) || !Number.isInteger(item.end) || item.end - item.start !== Array.from(item.text).length)) throw new Error('diary-readback-unconfirmed');
+    const ordered = [...items].sort((a,b) => a.start - b.start);
+    const start = ordered[0].start, text = Array.from(ordered[0].text);
+    let end = ordered[0].end;
+    for (const item of ordered.slice(1)) {
+      const chars = Array.from(item.text), overlap = Math.min(end - item.start, chars.length);
+      if (overlap < 0 || text.slice(item.start - start, item.start - start + overlap).join('') !== chars.slice(0, overlap).join('')) throw new Error('diary-readback-unconfirmed');
+      text.push(...chars.slice(overlap)); end = Math.max(end, item.end);
+    }
+    if (!text.join('').includes(content)) continue;
+    // Return only the verified write, never adjacent turns from the daily source.
+    return { status: 'ok', summary: { id }, details: { entry: { id, importance: 'trivial', content },
+      diaryReadback: { verified: true, fragments: ordered.map(({ source_id, fragment_id, source_version, start, end }) => ({ source_id, fragment_id, source_version, start, end })) } } };
   }
-  if (!text.join('').includes(content)) throw new Error('diary-readback-unconfirmed');
-  // Return only the verified write, never adjacent turns from the daily source.
-  return { status: 'ok', summary: { id }, details: { entry: { id, importance: 'trivial', content },
-    diaryReadback: { verified: true, fragments: ordered.map(({ source_id, fragment_id, source_version, start, end }) => ({ source_id, fragment_id, source_version, start, end })) } } };
+  throw new Error('diary-readback-unconfirmed');
 }
 
 export function memoryTools(call, { readOnly = false, source } = {}) {
@@ -113,7 +117,7 @@ export function memoryTools(call, { readOnly = false, source } = {}) {
         if (diary && error.message === 'diary-unsupported') diaryUnavailable = true
         throw error
       }
-      if (diary && JSON.stringify(doc).length > 8000) throw new Error('diary-output-too-large')
+      if (diary && Array.from(JSON.stringify(doc.details ?? {})).length > Number(args[args.indexOf('--max-chars') + 1])) throw new Error('diary-output-too-large')
       if (command === 'recall' && ['ok', 'skip'].includes(doc.status)) recalled = true
       if (command === 'prompt') {
         if (doc.status !== 'ok' || typeof doc.summary?.instructions !== 'string' || !doc.summary.instructions.trim()) throw new Error('invalid-engine-policy')
