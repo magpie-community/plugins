@@ -12,7 +12,7 @@
 // the request (slim.mjs) and puts the memory it gets back after the last
 // user message. Anything that goes wrong leaves the request as it came.
 import { createHash } from "node:crypto"
-import { aeliosProtocol, appendPatch, hasSecret, humanTurn, lastUserText, serverState, slim, spoken } from "./slim.mjs"
+import { aeliosProtocol, appendPatch, hasSecret, humanTurn, lastUserText, serverState, slim, slimReply, spoken } from "./slim.mjs"
 
 const version = "0.1.0"
 const maxResponseBytes = 256 << 10
@@ -36,9 +36,13 @@ class Failure extends Error {
 // magpie's Bun host is long-lived: this lasts till the plugin is reloaded.
 const backoff = new Map()
 const inflight = new Set()
+const identitiesCache = new Map()
+const identitiesTTL = 60_000
+const identitiesRetryMs = 5000
 export function reset() {
   backoff.clear()
   inflight.clear()
+  identitiesCache.clear()
 }
 // flush waits for the records already sent (tests use it).
 export function flush() {
@@ -90,8 +94,30 @@ async function recall(body, ctx, o, report) {
     report("skipped")
     return
   }
-  // Pin metadata before any network await, including tool steps and recall:false.
-  if (ctx.state) ctx.state.aelios = { protocol, slimmed, payload: original }
+  if (!o.apiKey) {
+    report("unauthorized")
+    return
+  }
+  // Admission carries no dialogue. Bound metadata and recall together to the
+  // request budget, including record-only requests and tool continuations.
+  const deadline = Math.max(50, Math.min(o.requestTimeoutMs, (o.gatewayTimeoutMs ?? hostDefaultTimeoutMs) - 50))
+  const started = Date.now()
+  const metadata = await authorizedIdentities(o, deadline)
+  ctx.signal?.throwIfAborted()
+  if (metadata.code) {
+    report(metadata.code)
+    return
+  }
+  const identity = metadata.identities.find((item) =>
+    (!original.identity || item.slug === original.identity) &&
+    item.mainModels.some((pattern) => modelMatches(pattern, original.model)))
+  if (!identity) {
+    report("unbound")
+    return
+  }
+  // Fix the selection for recall AND record: the server's ordering can change.
+  original.identity = identity.slug
+  if (ctx.state) ctx.state.aelios = { admitted: true, protocol, slimmed, payload: original }
   o = { ...o, identity: original.identity }
   if (serverState(body, protocol) || !humanTurn(slimmed, protocol) || !o.recall) {
     report("skipped")
@@ -102,17 +128,14 @@ async function recall(body, ctx, o, report) {
     report("unavailable")
     return
   }
-  if (!o.apiKey) {
-    // Aelios would refuse it; what was said is not sent without a key
-    report("unauthorized")
+  const remaining = deadline - (Date.now() - started)
+  if (remaining <= 0) {
+    report("unavailable")
     return
   }
-  // Our own deadline ends before the host's, so a slow Aelios is told from
-  // a client that went away and backs off.
-  const deadline = Math.max(50, Math.min(o.requestTimeoutMs, (o.gatewayTimeoutMs ?? hostDefaultTimeoutMs) - 50))
   let r
   try {
-    r = await post(o, "v1/hook/recall", { ...original, record: o.record }, ctx.signal, deadline)
+    r = await post(o, "v1/hook/recall", { ...original, record: o.record }, ctx.signal, remaining)
   } catch (error) {
     if (ctx.signal?.aborted) return // the client went away: not Aelios's failure
     trip(key, o)
@@ -172,20 +195,21 @@ export function onResponse(reply, ctx) {
   const report = (code, bytes) => { try { ctx.report?.(code, bytes) } catch { /* nothing to fail */ } }
   try {
     const state = ctx.state?.aelios
-    if (!state) return
+    if (!state?.admitted || !state.payload?.identity) return
     let o
     try { o = options(ctx.options) } catch { return }
     if (!o || !o.record || !allowed(ctx, o) || !o.apiKey) {
       report("skipped")
       return
     }
-    if (hasSecret(lastUserText(state.slimmed, state.protocol)) || hasSecret(spoken(reply))) {
+    const recordedReply = slimReply(reply, state.protocol)
+    if (hasSecret(lastUserText(state.slimmed, state.protocol)) || hasSecret(spoken(recordedReply))) {
       report("skipped")
       return
     }
     const body = {
       ...state.payload,
-      reply: reply ?? null,
+      reply: recordedReply,
       success: ctx.success === true,
     }
     if (typeof reply?.model === "string" && reply.model) body.upstream_model = reply.model
@@ -307,6 +331,66 @@ function options(raw = {}, env = process.env) {
   return { server, apiKey, identity, routes, agents, recall, record, allowRemote, gatewayTimeoutMs, requestTimeoutMs, recallBackoffMs }
 }
 
+// Cache authorization by service and credential, never by a selected identity.
+// Failed refreshes replace stale permissions and retry after a short backoff.
+async function authorizedIdentities(o, timeoutMs) {
+  const key = createHash("sha256").update([o.server.href, o.apiKey].join("\0")).digest("hex")
+  let entry = identitiesCache.get(key)
+  if (!entry || (!entry.pending && entry.expires <= Date.now())) {
+    entry = { pending: true }
+    identitiesCache.set(key, entry)
+    entry.promise = fetchIdentities(o, timeoutMs).then((result) => {
+      entry.pending = false
+      entry.expires = Date.now() + (result.code ? identitiesRetryMs : identitiesTTL)
+      return result
+    })
+    while (identitiesCache.size > maxServices) identitiesCache.delete(identitiesCache.keys().next().value)
+  }
+  // An already pending lookup may have a longer deadline than this caller.
+  let timer
+  try {
+    return await Promise.race([entry.promise, new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ code: "unavailable" }), timeoutMs)
+    })])
+  } finally { clearTimeout(timer) }
+}
+
+async function fetchIdentities(o, timeoutMs) {
+  const controller = new AbortController()
+  let timer
+  const work = async () => {
+    const r = await fetch(new URL("v1/hook/identities", o.server), {
+      method: "GET", redirect: "error", signal: controller.signal,
+      headers: { Authorization: /^bearer\s/i.test(o.apiKey) ? o.apiKey : `Bearer ${o.apiKey}`, "User-Agent": `magpie-aelios/${version}` },
+    })
+    if (controller.signal.aborted) {
+      r.body?.cancel().catch(() => {})
+      return { code: "unavailable" }
+    }
+    if (r.status !== 200) {
+      r.body?.cancel().catch(() => {})
+      return { code: r.status === 401 ? "unauthorized" : r.status === 403 ? "unbound" : r.status === 404 || r.status === 429 || r.status >= 500 ? "unavailable" : "invalid" }
+    }
+    const data = await json(r, controller.signal)
+    if (!data || !Array.isArray(data.identities) || data.identities.length > 256) return { code: "invalid" }
+    const identities = []
+    for (const item of data.identities) {
+      if (!item || typeof item.slug !== "string" || !item.slug || item.slug.length > 128 ||
+          typeof item.name !== "string" || item.name.length > 512 ||
+          !Array.isArray(item.mainModels) || item.mainModels.length > 256 ||
+          !item.mainModels.every((model) => typeof model === "string" && model.length <= 512)) return { code: "invalid" }
+      identities.push({ slug: item.slug, mainModels: [...item.mainModels] })
+    }
+    return { identities }
+  }
+  try {
+    return await Promise.race([work(), new Promise((resolve) => {
+      timer = setTimeout(() => { controller.abort(); resolve({ code: "unavailable" }) }, timeoutMs)
+    })])
+  } catch { return { code: "unavailable" } }
+  finally { clearTimeout(timer) }
+}
+
 // post sends JSON to the configured server only and reads at most 256 KiB
 // of the answer. It throws only when no answer came (network, deadline,
 // cancellation, an answer cut off); any status comes back.
@@ -330,13 +414,20 @@ async function post(o, route, body, signal, timeoutMs) {
   }
 }
 
-async function json(r) {
+async function json(r, signal) {
   const reader = r.body?.getReader()
   if (!reader) return undefined
+  const cancel = () => { reader.cancel().catch(() => {}) }
+  signal?.addEventListener("abort", cancel, { once: true })
   const chunks = []
   let size = 0
   try {
+    if (Number(r.headers.get("content-length")) > maxResponseBytes) {
+      cancel()
+      return undefined
+    }
     for (;;) {
+      signal?.throwIfAborted()
       const { value, done } = await reader.read()
       if (done) break
       size += value.byteLength
@@ -347,6 +438,7 @@ async function json(r) {
       chunks.push(value)
     }
   } finally {
+    signal?.removeEventListener("abort", cancel)
     try { reader.releaseLock() } catch { /* released */ }
   }
   try {

@@ -50,9 +50,9 @@ provider. It needs **Magpie 0.1.1273 or newer** and Bun; from **Magpie
    saves no user message or remember-now memory. An older Aelios without these endpoints
    answers 404; the plugin then leaves requests alone and shows *unavailable*.
 2. **Add your agents' model names to the assistant's main models** in Aelios
-   `/admin` (or use `*`). Aelios only recalls and records for its main
-   models; for anything else it answers `off` and the plugin shows
-   *unbound*. To keep GPT and Claude in separate spaces, set each assistant's
+   `/admin` (or use `*`). The plugin checks the authorized main-model list
+   locally; unmatched requests are not sent and show *unbound*. To keep GPT
+   and Claude in separate spaces, set each assistant's
    main models separately in `/admin`.
 
 ## Install and configure
@@ -73,15 +73,16 @@ by default). Configured settings do not mean the connection has been verified.
 **View matching list / retest** opens the local service page, which tests the
 saved connection and shows the server-authorized assistants and their main
 model matching rules through read-only `GET /v1/hook/identities`. This list needs
-an Aelios version containing that endpoint; older Workers still support recall
-and recording, while the page explains that the list is unavailable. The service
+an Aelios version containing that endpoint. If the list is unavailable (including
+on older Workers), hooks pause without sending conversations and show *unavailable*. The service
 page has a button back to settings. Testing
 sends empty messages; it creates no dialogue and records nothing.
 
-**Assistant assignment** defaults to **Automatic**, reusing Aelios's main-model
-matching rules, choosing the first authorized assistant whose main-model pattern
-matches. Unmatched models do not use memory. Existing `identity` or `routes`
-are shown as **Custom** and retain their semantics. The collapsed **Advanced
+**Assistant assignment** defaults to **Automatic**. The plugin uses Aelios's
+authorized matching list to select the first assistant whose main-model pattern
+matches locally. Unmatched turns are not sent. If the list is unavailable,
+recall and recording pause with status *unavailable*. Existing `identity` or
+`routes` are shown as **Custom** and retain their routing priority. The collapsed **Advanced
 settings** section contains the default/fallback identity, ordered identity
 routes, agent filter, API key environment variable and remote-request switch.
 You can continue editing those settings there; ordinary saves preserve them.
@@ -136,9 +137,10 @@ option still limits which requests the plugin handles.
 With nonempty `routes`, an unmatched request uses only an explicitly configured
 top-level `identity`. Without that fallback, both recall and recording are
 skipped, preventing accidental use of the server's default identity. Omit
-`routes` or use `[]` to preserve the existing behavior: top-level `identity`
-is used when set, otherwise Aelios chooses the first assistant available to the key whose main
-models match this request's model, falling back to the key's default assistant.
+`routes` or use `[]`: the top-level `identity` is used when set; otherwise the
+plugin selects the first authorized assistant whose main models match locally.
+Unmatched requests are not sent. Custom identities and route targets must also
+be authorized and match the request model in the server's main-model list.
 
 **Separate identities need separate Aelios memory namespaces.** Give these
 identities different `namespace` values and avoid shared `readNamespaces` if
@@ -175,9 +177,12 @@ If you want Aelios to remember your conversations, turn it on:
 magpie plugin options aelios '{"serverUrl":"https://<your-aelios>.workers.dev","gatewayTimeoutMs":5000,"record":true}'
 ```
 
-With `record` on, after each reply the slimmed request and the completed
-reply are sent to Aelios: what you said, what the assistant said, and the
-arguments of its tool calls. Tool results are not sent. For coding agents
+With `record` on, after each reply the slimmed request and a **slimmed reply**
+are sent to Aelios: what you said, what the assistant said, the arguments of
+its tool calls, and the completion status. Thinking/redacted-thinking blocks,
+Responses reasoning items and summaries, Chat reasoning fields, signatures,
+encrypted content and other provider metadata are omitted before the secret
+check and before export. Tool results are not sent. For coding agents
 (Claude Code, Codex, OpenCode, …) Aelios replaces code blocks with `[code]`.
 If the current user text looks like it contains a credential (an API key, a
 token, a private key, `password=`…), the entire turn skips both recall and
@@ -187,8 +192,8 @@ Historical text that matches the same check is replaced with the fixed marker
 A later ordinary user turn can recall and record normally; a credential in
 history does not disable memory for the rest of the conversation. The original
 request sent to the model is untouched by this sanitization. A credential in
-the completed reply's text or tool arguments still skips recording. The new
-reply, including speech tool arguments, is otherwise sent unchanged. Each
+the completed reply's retained text or tool arguments still skips recording.
+The reply delivered to the client remains unchanged. Each
 record is sent once and never retried.
 
 ## Things to know
@@ -217,7 +222,7 @@ record is sent once and never retried.
 | `serverUrl` | none | Your Aelios Worker. Without it nothing is sent. HTTPS only (plain HTTP allowed for `localhost`, `127.0.0.1`, `[::1]`); no user, password, query or fragment in the URL. |
 | `apiKey` | none | Aelios API key. Without it, the variable named by `apiKeyEnv` is used. Without either, nothing is sent. |
 | `apiKeyEnv` | `AELIOS_API_KEY` | Environment variable that holds the key. |
-| `identity` | none | Aelios assistant space slug; fallback for unmatched routes. Without routes and when empty, Aelios selects the first available assistant whose main models match this model, falling back to the key's default assistant. |
+| `identity` | none | Aelios assistant space slug; fallback for unmatched routes. Without routes and when empty, the plugin selects the first authorized assistant whose main models match locally; unmatched requests are not sent. Custom identities must also be authorized and match the model. |
 | `routes` | none | Up to 64 identity routes in priority order. Each needs a valid ASCII identity slug (max 64 characters; Aelios reserved slugs excluded) and nonempty `models` and/or `agents` arrays. Model patterns are nonblank strings up to 200 characters; agents are nonblank exact ids. Nonempty routes without a match or explicit `identity` skip recall and recording. |
 | `agents` | all | Only these Magpie agent ids, e.g. `["claude","claude-desktop"]`. Empty means all. Other ids include `qwen` and `kimi`; legacy `claude-code` remains supported as an exact id. |
 | `recall` | `true` | Recall before each turn. |
@@ -237,7 +242,7 @@ Magpie's Plugins page shows one code per request, never any content:
 `ready` (memory added, with its size), `empty` (nothing relevant),
 `unbound` (not a main model, or the key has no such assistant),
 `unauthorized` (Aelios refused the key, or there is none), `unavailable`
-(timeout, 5xx, an Aelios without hook endpoints, or paused after a failure),
+(timeout, 5xx, missing hook endpoints or authorized matching list, or paused after a failure),
 `invalid` (bad options or an answer the plugin can't read) and `skipped`
 (origin or agent not handled, a tool step, Gemini, server-side Responses
 state).

@@ -27,7 +27,6 @@
   "magpie": {
     "hooks": "./aelios.hooks.mjs",
     "options": {
-      "serverUrl": "https://<your-aelios>.workers.dev",
       "apiKeyEnv": "AELIOS_API_KEY",
       "gatewayTimeoutMs": 5000,
       "requestTimeoutMs": 4000,

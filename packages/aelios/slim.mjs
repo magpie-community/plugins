@@ -235,6 +235,42 @@ export function appendPatch(body, protocol, patch) {
   return true
 }
 
+// Only fields consumed by Aelios's OutputCollector cross the record boundary.
+// Never copy provider reasoning, signatures, encrypted blobs or arbitrary metadata.
+export function slimReply(reply, protocol) {
+  if (!object(reply)) return null
+  const out = {}
+  for (const name of ['model', 'status', 'stop_reason']) if (typeof reply[name] === 'string') out[name] = reply[name]
+  if (reply.error) out.error = true
+  const replyContent = value => typeof value === 'string' ? value : Array.isArray(value)
+    ? value.filter(isText).map(part => ({ type: part.type, text: part.text })) : []
+  if (protocol === 'messages') {
+    out.content = (Array.isArray(reply.content) ? reply.content : []).flatMap(part => {
+      if (isText(part)) return [{ type: part.type, text: part.text }]
+      if (object(part) && part.type === 'tool_use') return [{ type: 'tool_use', name: part.name, input: structuredClone(part.input) }]
+      return []
+    })
+  } else if (protocol === 'chat') {
+    out.choices = (Array.isArray(reply.choices) ? reply.choices : []).filter(object).map(choice => {
+      const message = object(choice.message) ? choice.message : {}
+      const clean = { role: 'assistant', content: replyContent(message.content) }
+      if (Array.isArray(message.tool_calls)) clean.tool_calls = message.tool_calls.filter(object).map(call => ({
+        type: 'function', function: { name: call.function?.name, arguments: structuredClone(call.function?.arguments) },
+      }))
+      return { index: choice.index, finish_reason: choice.finish_reason, message: clean }
+    })
+  } else if (protocol === 'responses') {
+    out.output = (Array.isArray(reply.output) ? reply.output : []).flatMap(item => {
+      if (!object(item)) return []
+      if (item.type === 'message' && item.role === 'assistant') return [{ type: 'message', role: 'assistant', content: replyContent(item.content) }]
+      if (item.type === 'function_call') return [{ type: item.type, name: item.name, arguments: structuredClone(item.arguments) }]
+      if (item.type === 'custom_tool_call') return [{ type: item.type, name: item.name, input: structuredClone(item.input) }]
+      return []
+    })
+  }
+  return out
+}
+
 // What the assistant said in a reply (each protocol's non-streaming shape):
 // its text and the arguments of its tool calls, for the secret check.
 export function spoken(reply) {

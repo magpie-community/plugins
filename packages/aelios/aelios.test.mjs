@@ -7,10 +7,17 @@ const realFetch = globalThis.fetch
 const KEY = "synthetic-aelios-key"
 const PATCH = "<memory>synthetic recalled fact</memory>"
 const calls = []
+const identitySlugs = [
+  "default", "magpie-test", "gpt-husband", "claude-husband", "selected",
+  "wrong-model", "wrong-agent-case", "first", "second", "agent-only", "fallback",
+  "stale", "changed", "changed-default", "valid",
+]
+const metadata = () => Response.json({ identities: identitySlugs.map((slug) => ({ slug, name: slug, mainModels: ["*"] })) })
 let routes = {}
 
 function mock(extra = {}) {
   routes = {
+    "/v1/hook/identities": metadata,
     "/v1/hook/recall": () => Response.json({ memory: "injected", patch: PATCH, recall_id: "rcl_1", remember: "none" }),
     "/v1/hook/record": () => Response.json({ recorded: true, exchange_id: "gw_req_1", completion: "complete" }),
     ...extra,
@@ -24,6 +31,16 @@ function mock(extra = {}) {
   }
 }
 const of = (path) => calls.filter((c) => c.path === path)
+const dialogue = () => calls.filter((c) => /\/v1\/hook\/(recall|record)$/.test(c.path))
+function checkMetadata(path = "/v1/hook/identities", key = KEY) {
+  const [call] = of(path)
+  expect(of(path)).toHaveLength(1)
+  expect(call.init.method).toBe("GET")
+  expect(call.init.redirect).toBe("error")
+  expect(call.init.headers.Authorization).toBe(`Bearer ${key}`)
+  expect(call.init.body).toBeUndefined()
+  expect(call.body).toBeUndefined()
+}
 const hang = (_body, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)))
 
 function ctx(protocol, extra = {}) {
@@ -65,6 +82,7 @@ test("the shipped hook and settings service use separate host entry points", asy
   expect(pkg.magpie.middleware).toBeUndefined()
   expect(pkg.magpie.gateway).toBeUndefined()
   expect(pkg.magpie.hooks).toBe("./aelios.hooks.mjs")
+  expect(Object.hasOwn(pkg.magpie.options, "serverUrl")).toBe(false)
   expect(pkg.files).toEqual(["aelios.hooks.mjs", "slim.mjs", "service.mjs", "probe.mjs", "page", "README.md"])
   const entry = await import(pkg.magpie.hooks)
   expect(entry.onRequest).toBe(onRequest)
@@ -97,7 +115,11 @@ for (const [protocol, name, make, pick, check] of placements) {
     // everything before the last message is untouched
     if (original.messages) expect(out.messages.slice(0, -1)).toEqual(original.messages.slice(0, -1))
     expect(reports).toEqual([["ready", Buffer.byteLength(PATCH)]])
+    checkMetadata()
+    expect(calls).toHaveLength(2)
+    expect(calls[0].path).toBe("/v1/hook/identities")
     const [call] = of("/v1/hook/recall")
+    expect(call.body.identity).toBe("default")
     expect(call.url).toBe("https://aelios.example.workers.dev/v1/hook/recall")
     expect(call.init.method).toBe("POST")
     expect(call.init.redirect).toBe("error")
@@ -115,9 +137,11 @@ for (const [protocol, name, make, pick, check] of placements) {
 }
 
 test("identity and a server path prefix are passed through", async () => {
-  mock({ "/base/v1/hook/recall": () => Response.json({ memory: "empty", patch: "" }) })
+  mock({ "/base/v1/hook/identities": metadata, "/base/v1/hook/recall": () => Response.json({ memory: "empty", patch: "" }) })
   const [c, reports] = ctx("anthropic", { options: { serverUrl: "https://a.example/base/", identity: "magpie-test" } })
   expect(await onRequest(anthropicString(), c)).toBeUndefined()
+  checkMetadata("/base/v1/hook/identities")
+  expect(of("/base/v1/hook/identities")[0].url).toBe("https://a.example/base/v1/hook/identities")
   expect(of("/base/v1/hook/recall")[0].body.identity).toBe("magpie-test")
   expect(reports).toEqual([["empty"]])
 })
@@ -128,6 +152,7 @@ test("the key can come from AELIOS_API_KEY or a named variable", async () => {
   try {
     const [c] = ctx("chat", { options: { apiKey: undefined, apiKeyEnv: "AELIOS_TEST_KEY" } })
     await onRequest(chat(), c)
+    checkMetadata("/v1/hook/identities", "from-env")
     expect(of("/v1/hook/recall")[0].init.headers.Authorization).toBe("Bearer from-env")
   } finally {
     delete process.env.AELIOS_TEST_KEY
@@ -147,15 +172,19 @@ test("a tool step sends no recall, and onResponse records it", async () => {
   const [c, reports] = ctx("anthropic", { options: { record: true } })
   const req = anthropicTool()
   expect(await onRequest(structuredClone(req), c)).toBeUndefined()
-  expect(calls).toHaveLength(0)
+  checkMetadata()
+  expect(calls).toHaveLength(1)
+  expect(dialogue()).toHaveLength(0)
   expect(reports).toEqual([["skipped"]])
   const reply = { id: "msg_1", type: "message", role: "assistant", model: "claude-opus-4-5-20260101", content: [{ type: "text", text: "Two files." }], stop_reason: "end_turn" }
   onResponse(reply, { ...c, success: true, request: req })
   await flush()
   const [rec] = of("/v1/hook/record")
   expect(rec.body).toEqual({
-    protocol: "messages", model: "claude-opus-4-5", agent: "claude", session: "session-a",
-    body: c.state.aelios.slimmed, reply, success: true, upstream_model: "claude-opus-4-5-20260101",
+    protocol: "messages", model: "claude-opus-4-5", agent: "claude", session: "session-a", identity: "default",
+    body: c.state.aelios.slimmed,
+    reply: { model: reply.model, content: reply.content, stop_reason: reply.stop_reason },
+    success: true, upstream_model: "claude-opus-4-5-20260101",
   })
   expect(rec.body.body.messages[2].content).toEqual([{ type: "tool_result", content: "" }])
   expect(reports.at(-1)[0]).toBe("ready")
@@ -306,7 +335,9 @@ test("a Responses request that continues server-side state is skipped", async ()
   mock()
   const [c, reports] = ctx("responses")
   expect(await onRequest({ ...responsesString(), previous_response_id: "resp_1" }, c)).toBeUndefined()
-  expect(calls).toHaveLength(0)
+  checkMetadata()
+  expect(calls).toHaveLength(1)
+  expect(dialogue()).toHaveLength(0)
   expect(reports).toEqual([["skipped"]])
 })
 
@@ -314,7 +345,9 @@ test("recall off: no recall request", async () => {
   mock()
   const [c] = ctx("chat", { options: { recall: false } })
   expect(await onRequest(chat(), c)).toBeUndefined()
-  expect(calls).toHaveLength(0)
+  checkMetadata()
+  expect(calls).toHaveLength(1)
+  expect(dialogue()).toHaveLength(0)
 })
 
 test("bad options throw invalid (the host rolls back) without the key in the error", async () => {
@@ -343,7 +376,8 @@ test("bad options throw invalid (the host rolls back) without the key in the err
   routes["/v1/hook/recall"] = () => Response.json({ memory: "empty", patch: "" })
   await onRequest(chat(), c)
   expect(of("/v1/hook/recall")[0].url).toBe("http://127.0.0.1:8787/v1/hook/recall")
-  expect(calls).toHaveLength(1)
+  checkMetadata()
+  expect(calls).toHaveLength(2)
 })
 
 const identityRoutes = [
@@ -383,8 +417,11 @@ for (const [pattern, model, matches] of [
     mock()
     const [c] = ctx("chat", { model, options: { routes: [{ models: [pattern], identity: "selected" }] } })
     await onRequest(chat(), c)
-    expect(calls).toHaveLength(matches ? 1 : 0)
-    if (matches) expect(calls[0].body.identity).toBe("selected")
+    expect(dialogue()).toHaveLength(matches ? 1 : 0)
+    if (matches) {
+      checkMetadata()
+      expect(of("/v1/hook/recall")[0].body.identity).toBe("selected")
+    } else expect(calls).toHaveLength(0)
   })
 }
 
@@ -398,10 +435,12 @@ test("agent and model selectors require AND; the first matching route wins", asy
   ]
   const [c] = ctx("chat", { model: "gpt-5", agent: "codex", options: { routes: routing } })
   await onRequest(chat(), c)
-  expect(calls[0].body.identity).toBe("first")
+  expect(of("/v1/hook/recall")[0].body.identity).toBe("first")
   const [agentOnly] = ctx("chat", { model: "other", agent: "codex", options: { routes: [{ agents: ["codex"], identity: "agent-only" }] } })
   await onRequest(chat(), agentOnly)
-  expect(calls[1].body.identity).toBe("agent-only")
+  checkMetadata()
+  expect(calls).toHaveLength(3)
+  expect(of("/v1/hook/recall")[1].body.identity).toBe("agent-only")
 })
 
 for (const identity of [undefined, "fallback"]) {
@@ -412,21 +451,31 @@ for (const identity of [undefined, "fallback"]) {
     await onRequest(chat(), c)
     onResponse({ choices: [] }, { ...c, success: true })
     await flush()
-    expect(calls).toHaveLength(identity ? 2 : 0)
-    if (identity) for (const call of calls) expect(call.body.identity).toBe(identity)
-    else { expect(c.state.aelios).toBeUndefined(); expect(reports).toEqual([["skipped"]]) }
+    expect(dialogue()).toHaveLength(identity ? 2 : 0)
+    if (identity) {
+      checkMetadata()
+      expect(calls).toHaveLength(3)
+      for (const call of dialogue()) expect(call.body.identity).toBe(identity)
+    }
+    else {
+      expect(calls).toHaveLength(0)
+      expect(c.state.aelios).toBeUndefined()
+      expect(reports).toEqual([["skipped"]])
+    }
   })
 }
 
 for (const routes of [undefined, []]) {
-  test(`routes ${JSON.stringify(routes)} preserve server default identity`, async () => {
+  test(`routes ${JSON.stringify(routes)} automatically select the first admitted identity`, async () => {
     mock()
     const [c] = ctx("chat", { options: { routes, record: true } })
     await onRequest(chat(), c)
     onResponse({ choices: [] }, { ...c, success: true })
     await flush()
-    expect(calls).toHaveLength(2)
-    for (const call of calls) expect(call.body.identity).toBeUndefined()
+    checkMetadata()
+    expect(calls).toHaveLength(3)
+    expect(dialogue()).toHaveLength(2)
+    for (const call of dialogue()) expect(call.body.identity).toBe("default")
   })
 }
 
@@ -438,20 +487,29 @@ for (const [name, make, protocol, model] of [
     mock()
     const [c] = ctx(protocol, { model, options: { routes: identityRoutes, record: true, recall: name !== "recall:false" } })
     await onRequest(make(), c)
-    expect(calls).toHaveLength(0)
+    checkMetadata()
+    expect(calls).toHaveLength(1)
+    expect(dialogue()).toHaveLength(0)
     onResponse({ choices: [] }, { ...c, success: true })
     await flush()
-    expect(calls).toHaveLength(1)
-    expect(calls[0].path).toBe("/v1/hook/record")
-    expect(calls[0].body.identity).toBe(model.startsWith("gpt") ? "gpt-husband" : "claude-husband")
+    expect(calls).toHaveLength(2)
+    expect(dialogue()).toHaveLength(1)
+    expect(of("/v1/hook/recall")).toHaveLength(0)
+    expect(of("/v1/hook/record")[0].body.identity).toBe(model.startsWith("gpt") ? "gpt-husband" : "claude-husband")
   })
 }
 
 test("payload is pinned before recall awaits; changed response context and routes cannot redirect recording", async () => {
   let release
-  mock({ "/v1/hook/recall": () => new Promise((resolve) => { release = () => resolve(Response.json({ memory: "empty" })) }) })
+  let entered
+  const recalling = new Promise((resolve) => { entered = resolve })
+  mock({ "/v1/hook/recall": () => new Promise((resolve) => {
+    release = () => resolve(Response.json({ memory: "empty" }))
+    entered()
+  }) })
   const [c] = ctx("chat", { model: "provider/gpt-5", agent: "codex", options: { routes: identityRoutes, record: true } })
   const pending = onRequest(chat(), c)
+  await recalling
   expect(c.state.aelios.payload.identity).toBe("gpt-husband")
   c.model = "claude-opus-4-5"
   c.agent = "claude"
@@ -487,7 +545,8 @@ test("backoff is isolated by resolved identity on the same server and key", asyn
     const [c] = ctx("chat", { model, options: { routes: identityRoutes } })
     await onRequest(chat(), c)
   }
-  expect(calls.map((call) => call.body.identity)).toEqual(["gpt-husband", "claude-husband", "claude-husband"])
+  checkMetadata()
+  expect(of("/v1/hook/recall").map((call) => call.body.identity)).toEqual(["gpt-husband", "claude-husband", "claude-husband"])
 })
 
 test("invalid routes always fail with a fixed error and zero network, clearing stale state", async () => {
@@ -620,8 +679,8 @@ test("a slimmed request is the same at recall and at record, so Aelios hashes on
 })
 
 
-// The request history is sanitized; the fresh reply remains OutputCollector's
-// original protocol object, including speech tool arguments.
+// The request history is sanitized; fresh speech fields consumed by
+// OutputCollector, including speech tool arguments, survive reply slimming.
 const privacyProtocols = [
   {
     protocol: "anthropic", key: "messages",
@@ -657,6 +716,7 @@ for (const { protocol, key, calls: history, reply } of privacyProtocols) {
     const before = structuredClone(req)
     expect(await onRequest(req, c)).toBeDefined()
     const fresh = reply("synthetic speech for the recipient")
+    const originalReply = structuredClone(fresh)
     onResponse(fresh, { ...c, success: true })
     await flush()
     expect(of("/v1/hook/recall")).toHaveLength(1)
@@ -664,7 +724,10 @@ for (const { protocol, key, calls: history, reply } of privacyProtocols) {
     const recalled = of("/v1/hook/recall")[0].body.body
     const recorded = of("/v1/hook/record")[0].body
     expect(recorded.body).toEqual(recalled)
-    expect(recorded.reply).toEqual(fresh)
+    expect(recorded.reply).toEqual(protocol === "chat"
+      ? { choices: [{ message: { role: "assistant", content: [], tool_calls: originalReply.choices[0].message.tool_calls } }] }
+      : originalReply)
+    expect(fresh).toEqual(originalReply)
     const wire = JSON.stringify(recorded.body)
     for (const privateText of ["getToken", "Opts", "synthetic-history-only", "synthetic-private", "old_string", "new_string", "arguments"]) expect(wire).not.toContain(privateText)
     expect(JSON.stringify(recalled[key])).not.toContain('"input":')
@@ -687,7 +750,7 @@ for (const { protocol, key, calls: history, reply } of privacyProtocols) {
       await flush()
       expect(of("/v1/hook/recall")).toHaveLength(1)
       expect(of("/v1/hook/record")).toHaveLength(record ? 1 : 0)
-      for (const call of calls) {
+      for (const call of dialogue()) {
         const wire = JSON.stringify(call.body)
         expect(wire).not.toContain("synthetic-history-only")
         expect(wire).not.toContain("sk-abcdefghijklmnopqrstuvwxyz")
@@ -713,7 +776,7 @@ for (const { protocol, key, calls: history, reply } of privacyProtocols) {
       await flush()
       expect(of("/v1/hook/recall")).toHaveLength(1)
       expect(of("/v1/hook/record")).toHaveLength(record ? 1 : 0)
-      for (const call of calls) expect(JSON.stringify(call.body)).not.toContain("synthetic-current-only")
+      for (const call of dialogue()) expect(JSON.stringify(call.body)).not.toContain("synthetic-current-only")
     })
   }
 
@@ -739,15 +802,15 @@ test("tool-only final user records safely after a credential-bearing human turn"
   await flush()
   expect(of("/v1/hook/recall")).toHaveLength(0)
   expect(of("/v1/hook/record")).toHaveLength(1)
-  expect(calls[0].body.body.messages[0].content).toBe("[credential omitted]")
-  expect(JSON.stringify(calls[0].body)).not.toContain("synthetic-prior-human")
+  expect(of("/v1/hook/record")[0].body.body.messages[0].content).toBe("[credential omitted]")
+  expect(JSON.stringify(of("/v1/hook/record")[0].body)).not.toContain("synthetic-prior-human")
 })
 
 test("legacy claude-code remains an exact supported agent id", async () => {
   mock()
   const [c] = ctx("anthropic", { agent: "claude-code", options: { agents: ["claude-code"] } })
   expect(await onRequest(anthropicString(), c)).toBeDefined()
-  expect(calls[0].body.agent).toBe("claude-code")
+  expect(of("/v1/hook/recall")[0].body.agent).toBe("claude-code")
 })
 
 test("ordinary generation max_token text still recalls", async () => {
