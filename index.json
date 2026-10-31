@@ -12167,9 +12167,111 @@
             },
             "packageManager": "bun@1.4.4"
           }
+        },
+        "0.2.1": {
+          "file": "tgz/magpie-community-page-fingerprint-0.2.1.tgz",
+          "integrity": "sha512-r9LUt4SkdMBUOt9z8fswcRdSe7A590RXcumHPuBFQo4UwVwnmwCr3QT3lW5d3VFUSFKXt/ectSAV0Opli8ojgg==",
+          "time": "2026-10-31T16:11:43.270Z",
+          "manifest": {
+            "name": "@magpie-community/page-fingerprint",
+            "version": "0.2.1",
+            "description": "Check for suspected model substitution with numeric response fingerprints in Magpie, powered by lm-detector.",
+            "type": "module",
+            "license": "MIT",
+            "main": "dist/plugin.js",
+            "files": [
+              "dist",
+              "page",
+              "README.md",
+              "README.zh-CN.md",
+              "LICENSE",
+              "integration.md",
+              "THIRD_PARTY_NOTICES.md"
+            ],
+            "engines": {
+              "bun": ">=1.4.2"
+            },
+            "scripts": {
+              "dev": "bun --watch src/cli.ts",
+              "start": "bun src/cli.ts",
+              "build": "bun scripts/build.ts",
+              "typecheck": "tsc --noEmit",
+              "test": "bun test",
+              "check": "bun run typecheck && bun run test && bun run build",
+              "format": "prettier --write src web scripts tests page *.json *.ts *.md",
+              "rebuild": "bun scripts/rebuild.ts"
+            },
+            "magpie": {
+              "page": {
+                "title": "Fingerprint",
+                "titles": {
+                  "zh": "模型指纹",
+                  "zh-TW": "模型指紋",
+                  "ja": "モデル指紋",
+                  "de": "Modell-Fingerabdruck"
+                },
+                "file": "page/index.html",
+                "service": {
+                  "port": 3488,
+                  "option": "port"
+                }
+              },
+              "actions": [
+                {
+                  "id": "fingerprint",
+                  "menu": "provider",
+                  "title": "Fingerprint",
+                  "titles": {
+                    "zh": "检测指纹",
+                    "zh-TW": "檢測指紋",
+                    "ja": "指紋を検査",
+                    "de": "Fingerabdruck prüfen"
+                  }
+                }
+              ],
+              "options": {
+                "port": 3488
+              },
+              "permissions": []
+            },
+            "devDependencies": {
+              "react": "19.3.1",
+              "react-dom": "19.3.1",
+              "@phosphor-icons/react": "2.1.10",
+              "@types/bun": "1.4.4",
+              "@types/react": "19.3.0",
+              "@types/react-dom": "19.3.0",
+              "@vitejs/plugin-react": "5.2.0",
+              "prettier": "3.9.10",
+              "typescript": "5.9.3",
+              "vite": "7.3.7"
+            },
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/fingerprint"
+            },
+            "bugs": {
+              "url": "https://github.com/magpie-community/plugins/issues"
+            },
+            "author": "KaranocaVe (https://github.com/KaranocaVe)",
+            "homepage": "https://github.com/KaranocaVe/magpie-fingerprint#readme",
+            "keywords": [
+              "magpie",
+              "magpie-page",
+              "magpie-plugin",
+              "llm",
+              "fingerprint",
+              "model-detection"
+            ],
+            "publishConfig": {
+              "access": "public"
+            },
+            "packageManager": "bun@1.4.4"
+          }
         }
       },
-      "latest": "0.2.0",
+      "latest": "0.2.1",
       "readme": "# Magpie Fingerprint\n\n[简体中文](README.zh-CN.md) · [Magpie](https://github.com/yetone/magpie) · [lm-detector](https://github.com/Ikaleio/lm-detector)\n\nInvestigate suspected model substitution directly in Magpie. Compare numeric\nresponse fingerprints across providers or repeat a run after a service changes.\nThe page reuses Magpie’s configured models and gateway; the pinned\n`lmfpd-sdk` detector ranks nearby reference-bank models. Rankings are evidence\nfor investigation, not proof of model identity.\n\n![Fingerprint workspace (explicit demo data)](docs/preview.png)\n\n- Select up to 24 models across providers, with the same three challenges per batch.\n- Reuse Magpie authentication and native endpoint metadata; optionally pin an account.\n- Follow live sample counts, cancel work, and inspect the actual response route.\n- Compare ranked candidates, including partial and unscorable outcomes.\n- Keep raw replies and data versions in local history; export or copy JSON.\n- Magpie's native page bridge, controls and design tokens; follows the host's theme and language.\n- Compact model lists, keyboard-accessible view tabs, and narrow-screen layouts.\n\n## Install\n\nInstall **Fingerprint** from **Plugins → Discover**, or use the CLI. Requires\na current Magpie release with `page.service` support and Bun 1.4.2+:\n\n```sh\nmagpie plugin add @magpie-community/page-fingerprint\n```\n\nOpen **Fingerprint** in the sidebar, or choose **Fingerprint** from a provider's menu.\nStarting a detection sends three requests per selected model and uses that provider's quota.\n\n## Development\n\nRun these commands from `packages/fingerprint/`. Source, tests and the built\n`dist/` assets are checked in. Installation and the offline tests do not need\npackage downloads: `vendor/lmfpd-sdk` pins the MIT SDK at 0.2.0. Only rebuilding\nthe UI and running the type checker require the development dependencies.\nDirect build-tool versions are exact in `package.json`; `bun.lock` fixes the\ncomplete dependency graph using `registry.npmjs.org`. Builds use Bun 1.4.4.\nThere are no install/pack lifecycle scripts. After a source change, rebuild\nand commit the resulting `dist/` files.\n\nThe standalone project and release history are at\n[KaranocaVe/magpie-fingerprint](https://github.com/KaranocaVe/magpie-fingerprint).\n\n```sh\nbun run rebuild\nbun start\n```\n\n`rebuild` installs with `--frozen-lockfile --ignore-scripts` in an isolated\ncopy, runs typecheck/tests/build, and copies `dist/` back. This avoids Bun\nresolving the parent monorepo's workspaces; its temporary directory is removed\non completion. In a standalone copy of this package, `bun install\n--frozen-lockfile --registry https://registry.npmjs.org` and `bun run check`\nproduce the same build.\n\nThe plugin page service listens on `3488` by default and uses Magpie's gateway\nat `http://127.0.0.1:3425`. Opening or refreshing the page never downloads\nreference data. **Download reference data** explicitly fetches a fresh snapshot;\nstarting a run downloads one only when no usable snapshot is cached. There is\nno background refresh. The default primary source is\n`https://lm.ikale.io/data/`; its fallback is\n`https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`. These hosts see the client's\nIP address. Reference downloads carry no provider credentials, model ids,\nprompts or replies. Only an explicitly started job sends sampling prompts\nthrough the configured gateway. See [integration.md](integration.md) for gateway\nauthentication, `magpie web`, environment variables, local reference sources,\nand the explicit `--demo` fixture.\n\n## Scope and limits\n\nThe first release supports numeric fingerprinting. Each run retains its loaded\nreference snapshot and records its `builtAt` value. The remote reference data\nis not version-pinned or authenticated by a locally pinned hash; the fallback\nuses `@latest`. Runs use three shared challenges per batch, bounded work, and\ncancellation. It records proposed, observed, and failed evidence separately;\nit does not prove provider identity, authenticate a model, or infer hidden\ntokenizers. `--demo` runs an isolated illustrative workflow without model calls.\n\nMagpie middleware and protocol adapters still apply. A changed actual provider/model\ninvalidates that target's aggregate score. Account pinning is optional; it does not\nturn a routed channel into an upstream identity guarantee. Tokenizer probing is deferred.\n\nMIT licensed. Third-party notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).\n"
     },
     "@magpie-community/page-usage": {
