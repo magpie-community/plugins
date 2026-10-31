@@ -1,0 +1,41 @@
+{
+  "name": "@magpie-community/gateway-aelios",
+  "version": "0.1.0",
+  "description": "Aelios long-term memory for every agent behind magpie: recall before each turn, optional recording after it",
+  "type": "module",
+  "files": [
+    "aelios.hooks.mjs",
+    "slim.mjs",
+    "README.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-gateway",
+    "aelios",
+    "memory",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/aelios"
+  },
+  "magpie": {
+    "hooks": "./aelios.hooks.mjs",
+    "options": {
+      "serverUrl": "https://<your-aelios>.workers.dev",
+      "apiKeyEnv": "AELIOS_API_KEY",
+      "gatewayTimeoutMs": 5000,
+      "requestTimeoutMs": 4000,
+      "recallBackoffMs": 30000,
+      "record": false
+    }
+  },
+  "scripts": {
+    "check": "bun test ./*.test.mjs"
+  },
+  "engines": {
+    "bun": ">=1.4.2"
+  }
+}

@@ -140,12 +140,14 @@ Like middleware, these run on the requests agents send, but in magpie's Bun host
 |---|---|
 | [powercontext](packages/powercontext) | [PowerContext](https://github.com/oceanbase/powercontext) recall and opt-in completed-conversation capture; no client MCP or skill required |
 | [nowledge-mem](packages/nowledge-mem) | [Nowledge Mem](https://mem.nowledge.co) recall, Context Bundle or Working Memory, per-harness provenance and opt-in conversation import as Mem Threads, automatic for every harness behind Magpie |
+| [aelios](packages/aelios) | [Aelios](https://github.com/wusaki0723/Aelios) recall before each turn from your own Aelios on Cloudflare, and opt-in recording of each turn so Aelios can remember it |
 
 Use the same plugin management commands as middleware:
 
 ```sh
 magpie plugin add @magpie-community/gateway-powercontext
 magpie plugin add @magpie-community/gateway-nowledge-mem
+magpie plugin add @magpie-community/gateway-aelios
 ```
 
 Installed plugins use **Plugins › Installed › Options** and the normal on/off
