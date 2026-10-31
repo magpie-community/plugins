@@ -28,15 +28,38 @@ export function startFakeLlm() {
       }
       if (url.includes("/messages")) {
         if (url.includes("count_tokens")) return json({ input_tokens: 1 });
-        const msg = { id: "msg_1", type: "message", role: "assistant", model, content: [{ type: "text", text: "I see it" }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } };
+        // "RUN_TOOL" in the last user message (and no tool result yet): ask to run Bash (a node one-liner that writes a file, which needs a permission)
+        const last = Array.isArray(body?.messages) ? body.messages[body.messages.length - 1] : null;
+        const parts = Array.isArray(last?.content) ? last.content : [{ type: "text", text: String(last?.content ?? "") }];
+        const wantsTool = parts.some((p) => p?.type === "text" && String(p.text).includes("RUN_TOOL")) && !parts.some((p) => p?.type === "tool_result");
+        const toolResult = parts.find((p) => p?.type === "tool_result");
+        const reply = toolResult ? `tool said: ${JSON.stringify(toolResult.content).slice(0, 200)}` : "I see it";
+        const content = wantsTool
+          ? [{ type: "tool_use", id: "toolu_real_1", name: "Bash", input: { command: "node -e \"require('fs').writeFileSync('ac-real.txt', 'x'); console.log('real-hi')\"", description: "Write a file" } }]
+          : [{ type: "text", text: reply }];
+        const stop = wantsTool ? "tool_use" : "end_turn";
+        const msg = { id: `msg_${requests.length}`, type: "message", role: "assistant", model, content, stop_reason: stop, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } };
         if (!body?.stream) return json(msg);
         sse();
         const ev = (type, d) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...d })}\n\n`);
         ev("message_start", { message: { ...msg, content: [], stop_reason: null } });
-        ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
-        ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "I see it" } });
+        // "SLOW_REPLY": start answering, then hang until the client goes away (or 60 s), to test interrupting a turn
+        if (parts.some((p) => p?.type === "text" && String(p.text).includes("SLOW_REPLY"))) {
+          ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+          ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "working" } });
+          const t = setTimeout(() => res.end(), 60000);
+          res.on("close", () => clearTimeout(t));
+          return;
+        }
+        if (wantsTool) {
+          ev("content_block_start", { index: 0, content_block: { ...content[0], input: {} } });
+          ev("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(content[0].input) } });
+        } else {
+          ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+          ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: reply } });
+        }
         ev("content_block_stop", { index: 0 });
-        ev("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
+        ev("message_delta", { delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: 1 } });
         ev("message_stop", {});
         return res.end();
       }

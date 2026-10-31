@@ -36,6 +36,11 @@ const dict: Record<AppLocale, Record<string, string>> = {
     "notice.acpImageByPathSwitched": "{agent} 是在另一个模型上启动的，只对那个模型接收图片，这次改为发送图片的文件路径（当前模型能看图时它会用 read_image 打开）：{paths}",
     "notice.acpSessionNotRestored": "{agent} 不能恢复上一轮对话（它的 ACP 既不支持 session/load 也不支持 session/resume），已新开一轮；先前的上下文不会带回。",
     "notice.attachmentIssue": "附件问题：{detail}",
+    "claude.notFound": "找不到 claude（{detail}）。本插件不附带 Claude Code，请先安装：{hint}",
+    "claude.startFailed": "无法启动 claude：{detail}",
+    "claude.exited": "claude 进程意外退出（{code}）",
+    "claude.notRunning": "claude 没有在运行，消息未发出",
+    "claude.closed": "会话已关闭",
     "export.defaultModel": "默认",
   },
   en: {
@@ -51,6 +56,11 @@ const dict: Record<AppLocale, Record<string, string>> = {
     "notice.acpImageByPathSwitched": "{agent} was started on another model and takes image blocks only for that one, so the image went as its file path (it opens it with read_image when this model sees images): {paths}",
     "notice.acpSessionNotRestored": "{agent} can't restore the previous conversation (its ACP advertises neither session/load nor session/resume); started a new one — prior context won't come back.",
     "notice.attachmentIssue": "Attachment issue: {detail}",
+    "claude.notFound": "claude was not found ({detail}). Claude Code is not bundled with this plugin; install it first: {hint}",
+    "claude.startFailed": "Could not start claude: {detail}",
+    "claude.exited": "claude exited unexpectedly ({code})",
+    "claude.notRunning": "claude is not running; the message was not sent",
+    "claude.closed": "The session is closed",
     "export.defaultModel": "Default",
   },
 };

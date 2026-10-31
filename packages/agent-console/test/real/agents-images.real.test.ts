@@ -1,7 +1,7 @@
 // Do the real agent CLIs get the image Agent Console sends, all the way into the model request?
 // Opt-in (npm run test:real); each agent runs only when its CLI is named:
 //   AC_REAL_DSH=<dsh>  AC_REAL_OPENCODE=<opencode>  AC_REAL_PI_ACP=<pi-acp> (with pi on PATH)  AC_REAL_COPILOT=<copilot>
-//   AC_REAL_CODEX=<codex>  AC_REAL_CLAUDE=1 (the SDK's bundled claude)  AC_REAL_DEVIN=<devin>  AC_REAL_CURSOR=<cursor-agent>
+//   AC_REAL_CODEX=<codex>  AC_REAL_CLAUDE=<claude>  AC_REAL_DEVIN=<devin>  AC_REAL_CURSOR=<cursor-agent>
 // Each runs in a throwaway HOME pointed at test/real/fake-llm.mjs (a local stand-in for the model API, no key, nothing
 // leaves the machine), through Agent Console's own provider session, and the test looks for the image in what reached
 // the "model". Devin and Cursor need a sign-in to run a model: for them it checks initialize and the exact ACP prompt
@@ -15,6 +15,7 @@ import { acpConfigForEntry } from "../../daemon/src/providers/acp/specs.js";
 import { knownPromptCaps } from "../../daemon/src/providers/acp/promptCaps.js";
 import { catalogById } from "../../daemon/src/providers/catalog.js";
 import { ClaudeSession } from "../../daemon/src/providers/claude/session.js";
+import { resolveBinWith } from "../../daemon/src/util/bin.js";
 import { createCodexProvider } from "../../daemon/src/providers/codex/provider.js";
 import type { ProviderSession } from "../../daemon/src/providers/types.js";
 import type { ProviderEvent } from "../../daemon/src/timeline/types.js";
@@ -191,10 +192,12 @@ describe("real agents see the image", () => {
     }
   });
 
-  it.runIf(has("AC_REAL_CLAUDE"))("Claude Code (Agent SDK, bundled claude)", async () => {
+  it.runIf(has("AC_REAL_CLAUDE"))("Claude Code (the user's claude over stream-json)", async () => {
     const env = isolate({ ANTHROPIC_BASE_URL: fake.url, ANTHROPIC_API_KEY: "fake" });
     const before = fake.requests.length;
-    const session = new ClaudeSession({ threadId: "real", cwd: env.home, model: "claude-sonnet-4-5", mode: "default", effort: null, resumeId: null, binCmd: "", binPrefixArgs: [] });
+    const bin = await resolveBinWith("claude", { find: () => [process.env.AC_REAL_CLAUDE!] });
+    if (!bin.ok) throw new Error(bin.reason);
+    const session = new ClaudeSession({ threadId: "real", cwd: env.home, model: "claude-sonnet-4-5", mode: "default", effort: null, resumeId: null, bin });
     try {
       const ev = await turn(session, "What colour is this image? Answer in one word.");
       const reached = fake.requests.slice(before).flatMap((r) => imageParts(r.body));

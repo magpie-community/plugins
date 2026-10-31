@@ -17,7 +17,7 @@ const dir = import.meta.dir
 const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"))
 const read = (f) => readFileSync(join(dir, f), "utf8")
 
-const RUNTIME = ["@agentclientprotocol/sdk", "@anthropic-ai/claude-agent-sdk", "ignore", "ws", "zod"]
+const RUNTIME = ["@agentclientprotocol/sdk", "ignore", "ws", "zod"]
 const BUNDLED = ["@tanstack/react-virtual", "@xterm/addon-fit", "@xterm/xterm", "clsx", "dompurify", "highlight.js", "lucide-react", "marked", "react", "react-dom", "zustand"]
 
 test("package.json: name, page, permissions and files", () => {
@@ -51,6 +51,11 @@ test("dependencies: only what runs, every version pinned, lockfile in step", () 
     }
   }
   for (const name of BUNDLED) expect(lock.packages[`node_modules/${name}`].dev).toBe(true)
+  // Claude Code is the user's own claude CLI: no Anthropic package is installed, locked or bundled
+  const named = [...Object.keys(lock.packages), ...["dependencies", "optionalDependencies", "devDependencies"].flatMap((k) => Object.keys(pkg[k] ?? {}))]
+  expect(named.filter((n) => n.includes("@anthropic-ai/"))).toEqual([])
+  // (the one @anthropic-ai/ name left in the bundle is the install hint for the user's own claude)
+  expect(read("daemon/dist/main.js").match(/@anthropic-ai\/[\w-]+/g)?.filter((n) => n !== "@anthropic-ai/claude-code") ?? []).toEqual([])
 })
 
 test("the daemon bundle and the host part import only builtins and declared packages", () => {

@@ -1148,7 +1148,7 @@ function mapSdkMessage(m, st, cwd) {
     return out;
   }
   if (r.type === "stream_event") {
-    const e = rec(m.event);
+    const e = rec(r.event);
     if (e.type === "message_start") {
       const mid = str(rec(e.message).id);
       if (mid) st.msgId = mid;
@@ -1329,6 +1329,11 @@ var init_i18n = __esm({
         "notice.acpImageByPathSwitched": "{agent} \u662F\u5728\u53E6\u4E00\u4E2A\u6A21\u578B\u4E0A\u542F\u52A8\u7684\uFF0C\u53EA\u5BF9\u90A3\u4E2A\u6A21\u578B\u63A5\u6536\u56FE\u7247\uFF0C\u8FD9\u6B21\u6539\u4E3A\u53D1\u9001\u56FE\u7247\u7684\u6587\u4EF6\u8DEF\u5F84\uFF08\u5F53\u524D\u6A21\u578B\u80FD\u770B\u56FE\u65F6\u5B83\u4F1A\u7528 read_image \u6253\u5F00\uFF09\uFF1A{paths}",
         "notice.acpSessionNotRestored": "{agent} \u4E0D\u80FD\u6062\u590D\u4E0A\u4E00\u8F6E\u5BF9\u8BDD\uFF08\u5B83\u7684 ACP \u65E2\u4E0D\u652F\u6301 session/load \u4E5F\u4E0D\u652F\u6301 session/resume\uFF09\uFF0C\u5DF2\u65B0\u5F00\u4E00\u8F6E\uFF1B\u5148\u524D\u7684\u4E0A\u4E0B\u6587\u4E0D\u4F1A\u5E26\u56DE\u3002",
         "notice.attachmentIssue": "\u9644\u4EF6\u95EE\u9898\uFF1A{detail}",
+        "claude.notFound": "\u627E\u4E0D\u5230 claude\uFF08{detail}\uFF09\u3002\u672C\u63D2\u4EF6\u4E0D\u9644\u5E26 Claude Code\uFF0C\u8BF7\u5148\u5B89\u88C5\uFF1A{hint}",
+        "claude.startFailed": "\u65E0\u6CD5\u542F\u52A8 claude\uFF1A{detail}",
+        "claude.exited": "claude \u8FDB\u7A0B\u610F\u5916\u9000\u51FA\uFF08{code}\uFF09",
+        "claude.notRunning": "claude \u6CA1\u6709\u5728\u8FD0\u884C\uFF0C\u6D88\u606F\u672A\u53D1\u51FA",
+        "claude.closed": "\u4F1A\u8BDD\u5DF2\u5173\u95ED",
         "export.defaultModel": "\u9ED8\u8BA4"
       },
       en: {
@@ -1344,6 +1349,11 @@ var init_i18n = __esm({
         "notice.acpImageByPathSwitched": "{agent} was started on another model and takes image blocks only for that one, so the image went as its file path (it opens it with read_image when this model sees images): {paths}",
         "notice.acpSessionNotRestored": "{agent} can't restore the previous conversation (its ACP advertises neither session/load nor session/resume); started a new one \u2014 prior context won't come back.",
         "notice.attachmentIssue": "Attachment issue: {detail}",
+        "claude.notFound": "claude was not found ({detail}). Claude Code is not bundled with this plugin; install it first: {hint}",
+        "claude.startFailed": "Could not start claude: {detail}",
+        "claude.exited": "claude exited unexpectedly ({code})",
+        "claude.notRunning": "claude is not running; the message was not sent",
+        "claude.closed": "The session is closed",
         "export.defaultModel": "Default"
       }
     };
@@ -1474,17 +1484,224 @@ var init_content = __esm({
   }
 });
 
-// daemon/src/providers/claude/session.ts
-import { query } from "@anthropic-ai/claude-agent-sdk";
-function claudeExecutable(o) {
-  if (!o.binCmd) return null;
-  if (o.binVia === "cmd-shim" || o.binVia === "ps1") return null;
-  const last = o.binPrefixArgs[o.binPrefixArgs.length - 1];
-  if (last && /\.(c|m)?js$/i.test(last)) return { path: last, node: true };
-  if (o.binPrefixArgs.length) return null;
-  return { path: o.binCmd, node: false };
+// daemon/src/providers/claude/cli.ts
+function claudeArgs(o) {
+  const args = [
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--permission-prompt-tool",
+    "stdio",
+    "--setting-sources",
+    "user,project,local"
+  ];
+  const put = (flag, v) => {
+    if (!v) return;
+    if (!SAFE_ARG.test(v)) throw new Error(`Refusing to pass an unexpected value to claude ${flag}: ${JSON.stringify(v).slice(0, 80)}`);
+    args.push(flag, v);
+  };
+  put("--permission-mode", o.permissionMode);
+  if (o.permissionMode === "bypassPermissions") args.push("--allow-dangerously-skip-permissions");
+  put("--model", o.model);
+  put("--effort", o.effort);
+  put("--resume", o.resume);
+  return args;
 }
-var EFFORTS, rid2, ClaudeSession;
+var SAFE_ARG, ClaudeCli;
+var init_cli = __esm({
+  "daemon/src/providers/claude/cli.ts"() {
+    init_bin();
+    init_queue();
+    SAFE_ARG = /^[A-Za-z0-9][A-Za-z0-9._:\[\]\/@+-]{0,199}$/;
+    ClaudeCli = class {
+      constructor(o, canUseTool) {
+        this.o = o;
+        this.canUseTool = canUseTool;
+        const args = claudeArgs(o);
+        this.child = spawnBin(o.bin, args, {
+          cwd: o.cwd,
+          env: { ...o.env ?? process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+          stdio: ["pipe", "pipe", "pipe"],
+          group: true
+        });
+        this.child.stdout?.setEncoding("utf8");
+        this.child.stdout?.on("data", (d) => this.onData(d));
+        this.child.stderr?.on("data", (d) => {
+          this.stderrTail = (this.stderrTail + d.toString()).slice(-4096);
+        });
+        this.child.stdin?.on("error", () => {
+        });
+        this.exited = new Promise((resolve2) => {
+          this.child.on("error", (e) => {
+            this.spawnError = e;
+            this.finish();
+            resolve2({ code: null, signal: null });
+          });
+          this.child.on("close", (code, signal) => {
+            this.finish();
+            resolve2({ code, signal });
+          });
+        });
+        this.initialized = this.request({ subtype: "initialize" }, 6e4).catch(() => null);
+      }
+      o;
+      canUseTool;
+      /** Conversation messages (everything that is not a control message) */
+      messages = new AsyncQueue();
+      exited;
+      /** The answer to initialize (commands, models, account …), null when it failed */
+      initialized;
+      child;
+      buf = "";
+      seq = 0;
+      pending = /* @__PURE__ */ new Map();
+      cancels = /* @__PURE__ */ new Map();
+      stderrTail = "";
+      dead = false;
+      spawnError = null;
+      get stderr() {
+        return this.stderrTail;
+      }
+      get failure() {
+        return this.spawnError;
+      }
+      get alive() {
+        return !this.dead;
+      }
+      finish() {
+        if (this.dead) return;
+        this.dead = true;
+        for (const [, p] of this.pending) {
+          if (p.timer) clearTimeout(p.timer);
+          p.reject(new Error("claude exited"));
+        }
+        this.pending.clear();
+        for (const [, c] of this.cancels) c.abort();
+        this.cancels.clear();
+        this.messages.close();
+      }
+      onData(d) {
+        this.buf += d;
+        let i;
+        while ((i = this.buf.indexOf("\n")) >= 0) {
+          const line = this.buf.slice(0, i).trim();
+          this.buf = this.buf.slice(i + 1);
+          if (!line) continue;
+          let m;
+          try {
+            m = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (m && typeof m === "object") this.onMessage(m);
+        }
+      }
+      onMessage(m) {
+        if (m.type === "control_response") {
+          const r = m.response ?? {};
+          const id = String(r.request_id ?? "");
+          const p = this.pending.get(id);
+          if (!p) return;
+          this.pending.delete(id);
+          if (p.timer) clearTimeout(p.timer);
+          if (r.subtype === "success") p.resolve(r.response ?? {});
+          else p.reject(new Error(String(r.error ?? "control request failed")));
+          return;
+        }
+        if (m.type === "control_request") {
+          void this.onControlRequest(String(m.request_id ?? ""), m.request ?? {});
+          return;
+        }
+        if (m.type === "control_cancel_request") {
+          const id = String(m.request_id ?? "");
+          this.cancels.get(id)?.abort();
+          this.cancels.delete(id);
+          return;
+        }
+        if (m.type === "keep_alive") return;
+        this.messages.push(m);
+      }
+      async onControlRequest(id, req) {
+        if (req.subtype !== "can_use_tool") {
+          this.write({ type: "control_response", response: { subtype: "error", request_id: id, error: `Unsupported control request: ${String(req.subtype)}` } });
+          return;
+        }
+        const ac = new AbortController();
+        this.cancels.set(id, ac);
+        try {
+          const decision = await this.canUseTool({
+            toolName: String(req.tool_name ?? ""),
+            input: req.input && typeof req.input === "object" ? req.input : {},
+            toolUseId: typeof req.tool_use_id === "string" ? req.tool_use_id : void 0,
+            signal: ac.signal
+          });
+          if (ac.signal.aborted && !this.cancels.has(id)) return;
+          this.write({ type: "control_response", response: { subtype: "success", request_id: id, response: decision } });
+        } catch (e) {
+          this.write({ type: "control_response", response: { subtype: "error", request_id: id, error: String(e?.message ?? e) } });
+        } finally {
+          this.cancels.delete(id);
+        }
+      }
+      write(o) {
+        if (this.dead || !this.child.stdin || this.child.stdin.destroyed) return false;
+        try {
+          this.child.stdin.write(JSON.stringify(o) + "\n");
+          return true;
+        } catch {
+          return false;
+        }
+      }
+      /** Send one control request and wait for its answer */
+      request(request, timeoutMs = 1e4) {
+        if (this.dead) return Promise.reject(new Error("claude is not running"));
+        const id = `ac_${++this.seq}_${Math.random().toString(36).slice(2, 8)}`;
+        return new Promise((resolve2, reject) => {
+          const p = { resolve: resolve2, reject };
+          p.timer = setTimeout(() => {
+            if (this.pending.delete(id)) reject(new Error(`claude did not answer ${String(request.subtype)} in ${Math.round(timeoutMs / 1e3)} s`));
+          }, timeoutMs);
+          this.pending.set(id, p);
+          if (!this.write({ type: "control_request", request_id: id, request })) {
+            this.pending.delete(id);
+            clearTimeout(p.timer);
+            reject(new Error("claude is not running"));
+          }
+        });
+      }
+      /** One user message into the conversation */
+      sendUser(content, sessionId) {
+        return this.write({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, session_id: sessionId ?? "" });
+      }
+      interrupt() {
+        return this.request({ subtype: "interrupt" }, 5e3);
+      }
+      setModel(model) {
+        return this.request(model ? { subtype: "set_model", model } : { subtype: "set_model" });
+      }
+      setPermissionMode(mode) {
+        return this.request({ subtype: "set_permission_mode", mode });
+      }
+      /** End stdin (the CLI finishes and exits), then end the process tree if it lingers */
+      async close(graceMs = 2e3) {
+        try {
+          this.child.stdin?.end();
+        } catch {
+        }
+        const done = await Promise.race([this.exited.then(() => true), new Promise((r) => setTimeout(() => r(false), graceMs))]);
+        if (!done) await killTree(this.child, { graceMs: 500 });
+        this.finish();
+      }
+    };
+  }
+});
+
+// daemon/src/providers/claude/session.ts
+var EFFORTS, MODES, rid2, ClaudeSession;
 var init_session = __esm({
   "daemon/src/providers/claude/session.ts"() {
     init_queue();
@@ -1495,7 +1712,9 @@ var init_session = __esm({
     init_content();
     init_i18n();
     init_slash();
+    init_cli();
     EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+    MODES = ["plan", "default", "acceptEdits", "bypassPermissions"];
     rid2 = () => Math.random().toString(36).slice(2, 10);
     ClaudeSession = class {
       constructor(o) {
@@ -1506,9 +1725,7 @@ var init_session = __esm({
       o;
       events;
       q = new AsyncQueue();
-      input = new AsyncQueue();
-      query = null;
-      abort = new AbortController();
+      cli = null;
       sessionId;
       turnId = null;
       turnNum = 0;
@@ -1517,69 +1734,59 @@ var init_session = __esm({
       needsRestart = false;
       restarting = null;
       closed = false;
-      stderrTail = "";
+      stopping = /* @__PURE__ */ new WeakSet();
       pumpDone = null;
-      // The query is only started before the first send (a failed detection should be reported quickly)
-      ensureQuery() {
-        if (this.query && !this.needsRestart) return this.query;
-        this.abort = new AbortController();
+      /** Mode the running CLI was started with (bypassPermissions has to be allowed at launch) */
+      launchedMode = null;
+      // The CLI is only started before the first send (or a command list request)
+      ensureCli() {
+        if (this.cli && !this.needsRestart) return this.cli;
         this.st = newMapState();
-        const options = {
-          cwd: this.o.cwd,
-          model: this.o.model ?? void 0,
-          permissionMode: this.o.mode,
-          canUseTool: (toolName, input, opts) => this.canUseTool(toolName, input, opts),
-          includePartialMessages: true,
-          settingSources: ["user", "project", "local"],
-          systemPrompt: { type: "preset", preset: "claude_code" },
-          abortController: this.abort,
-          ...this.sessionId ? { resume: this.sessionId } : {},
-          stderr: (d) => {
-            this.stderrTail = (this.stderrTail + d).slice(-4096);
-          }
-        };
-        const exe = claudeExecutable(this.o);
-        if (exe) {
-          options.pathToClaudeCodeExecutable = exe.path;
-          if (exe.node) options.executable = "node";
-        }
-        if (this.o.effort && EFFORTS.includes(this.o.effort)) {
-          options.effort = this.o.effort;
-        }
-        const q = query({ prompt: this.input, options });
-        this.query = q;
+        const effort = this.o.effort && EFFORTS.includes(this.o.effort) ? this.o.effort : null;
+        const cli = new ClaudeCli(
+          {
+            bin: this.o.bin,
+            cwd: this.o.cwd,
+            model: this.o.model,
+            permissionMode: MODES.includes(this.o.mode) ? this.o.mode : "default",
+            effort,
+            resume: this.sessionId,
+            env: this.o.env
+          },
+          (req) => this.canUseTool(req)
+        );
+        this.cli = cli;
+        this.launchedMode = this.o.mode;
         this.needsRestart = false;
-        this.pumpDone = this.pump(q);
-        return q;
+        this.pumpDone = this.pump(cli);
+        return cli;
       }
-      async pump(q) {
-        try {
-          for await (const m of q) {
-            for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) this.emit(ev);
-          }
-        } catch (e) {
-          if (!this.abort.signal.aborted && !this.closed) {
-            this.emit({ type: "notice", level: "error", message: "Claude \u4F1A\u8BDD\u5F02\u5E38\uFF1A" + this.errText(e) });
-          }
+      async pump(cli) {
+        for await (const m of cli.messages) {
+          for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) this.emit(ev);
         }
-        if (!this.closed && this.query === q) {
+        const exit = await cli.exited;
+        if (this.closed || this.stopping.has(cli)) return;
+        const detail = cli.failure ? tr("claude.startFailed", { detail: String(cli.failure.message) }) : tr("claude.exited", { code: String(exit.code ?? exit.signal ?? "?") });
+        const tail = cli.stderr.trim().slice(-400);
+        this.emit({ type: "notice", level: "error", message: tail ? `${detail} \u2014 stderr: ${tail}` : detail });
+        if (this.turnId) this.emit({ type: "turn_ended", turnId: this.turnId, status: "failed", error: detail });
+        this.turnId = null;
+        if (this.cli === cli) {
           this.needsRestart = true;
           this.q.close();
         }
       }
       emit(ev) {
         if (ev.type === "turn_ended" && !ev.turnId) ev.turnId = this.turnId ?? "unknown";
+        if (ev.type === "turn_ended") this.turnId = null;
         if (ev.type === "provider_session_id" && ev.id) this.sessionId = ev.id;
         this.q.push(ev);
       }
-      errText(e) {
-        const base = String(e?.message ?? e);
-        return this.stderrTail ? `${base}\uFF1Bstderr: ${this.stderrTail.slice(-400)}` : base;
-      }
       async send(input) {
-        if (this.closed) throw new Error("\u4F1A\u8BDD\u5DF2\u5173\u95ED");
+        if (this.closed) throw new Error(tr("claude.closed"));
         if (this.needsRestart) await this.restart();
-        const q = this.ensureQuery();
+        const cli = this.ensureCli();
         this.turnNum++;
         this.turnId = "u_" + Date.now().toString(36) + "_" + this.turnNum;
         this.st.sawInterrupt = false;
@@ -1592,29 +1799,22 @@ var init_session = __esm({
         });
         const built = await buildClaudeContent(input.text, input.images ?? []);
         for (const w of built.warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
-        const content = built.blocks;
-        this.input.push({
-          type: "user",
-          message: { role: "user", content },
-          parent_tool_use_id: null,
-          session_id: this.sessionId ?? ""
-        });
-        void q;
+        if (!cli.sendUser(built.blocks, this.sessionId)) throw new Error(tr("claude.notRunning"));
       }
       async restart() {
         if (this.restarting) return this.restarting;
         this.restarting = (async () => {
-          this.query = null;
-          try {
-            this.input.close();
-            this.abort.abort();
-          } catch {
+          const old = this.cli;
+          this.cli = null;
+          if (old) {
+            this.stopping.add(old);
+            await old.close().catch(() => {
+            });
           }
           if (this.pumpDone) await this.pumpDone.catch(() => {
           });
-          this.input = new AsyncQueue();
           try {
-            this.ensureQuery();
+            this.ensureCli();
           } finally {
             this.restarting = null;
           }
@@ -1622,9 +1822,10 @@ var init_session = __esm({
         return this.restarting;
       }
       // ---- permissions (§7.2.4) ----
-      canUseTool(toolName, input, opts) {
+      canUseTool(req) {
+        const { toolName, input, signal } = req;
         const requestId = "perm_" + rid2();
-        const { signal } = opts;
+        const opts = { toolUseID: req.toolUseId };
         if (toolName === "ExitPlanMode") {
           return this.handlePlanMode(requestId, input, signal, opts.toolUseID);
         }
@@ -1649,7 +1850,7 @@ var init_session = __esm({
           ]
         });
         return new Promise((resolve2) => {
-          this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve2(this.toPermissionResult(a, input)) });
+          this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve2(this.toPermissionDecision(a, input)) });
           signal.addEventListener("abort", () => {
             if (this.pending.delete(requestId)) {
               this.emit({ type: "permission_resolved", requestId, cancelled: true });
@@ -1658,7 +1859,7 @@ var init_session = __esm({
           }, { once: true });
         });
       }
-      toPermissionResult(a, input) {
+      toPermissionDecision(a, input) {
         if (a.cancelled || a.optionId === "deny") {
           return { behavior: "deny", message: "\u7528\u6237\u62D2\u7EDD\u4E86\u6B64\u64CD\u4F5C", ...a.cancelled ? { interrupt: true } : {} };
         }
@@ -1693,7 +1894,7 @@ var init_session = __esm({
           return { behavior: "deny", message: "\u7528\u6237\u62D2\u7EDD\u4E86\u8BA1\u5212\uFF0C\u8BF7\u6839\u636E\u53CD\u9988\u4FEE\u6539", ...answer.cancelled ? { interrupt: true } : {} };
         }
         try {
-          await this.query?.setPermissionMode("default");
+          await this.cli?.setPermissionMode("default");
           this.o.mode = "default";
           this.o.onModeChange?.("default");
         } catch (e) {
@@ -1739,33 +1940,40 @@ var init_session = __esm({
           p.resolve({ cancelled: true });
         }
         this.pending.clear();
+        const cli = this.cli;
+        if (!cli || !cli.alive) return;
         try {
-          const q = this.query;
-          if (q) {
-            await Promise.race([
-              q.interrupt(),
-              new Promise((_, rej) => setTimeout(() => rej(new Error("interrupt \u8D85\u65F6")), 3e3))
-            ]);
-          }
+          await cli.interrupt();
         } catch (e) {
-          log("warn", "interrupt \u5931\u8D25", { err: String(e) });
+          log("warn", "claude interrupt failed", { err: String(e) });
+          this.stopping.add(cli);
           this.needsRestart = true;
+          void cli.close(500);
+          if (this.turnId) this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
         }
       }
       async setModel(model) {
         this.o.model = model;
+        if (!this.cli?.alive) return;
         try {
-          await this.query?.setModel(model ?? void 0);
+          await this.cli.setModel(model);
         } catch (e) {
-          log("warn", "setModel \u5931\u8D25", { err: String(e) });
+          log("warn", "claude set_model failed", { err: String(e) });
+          this.needsRestart = true;
         }
       }
       async setMode(mode) {
         this.o.mode = mode;
+        if (!this.cli?.alive) return;
+        if (mode === "bypassPermissions" && this.launchedMode !== "bypassPermissions") {
+          this.needsRestart = true;
+          return;
+        }
         try {
-          await this.query?.setPermissionMode(mode);
+          await this.cli.setPermissionMode(mode);
         } catch (e) {
-          log("warn", "setPermissionMode \u5931\u8D25", { err: String(e) });
+          log("warn", "claude set_permission_mode failed", { err: String(e) });
+          this.needsRestart = true;
         }
       }
       async setEffort(effort) {
@@ -1774,14 +1982,14 @@ var init_session = __esm({
       }
       async listCommands() {
         try {
-          const q = this.ensureQuery();
-          const commands = await q.supportedCommands();
+          const init = await this.ensureCli().initialized;
+          const commands = Array.isArray(init?.commands) ? init.commands : [];
           const map = /* @__PURE__ */ new Map();
           for (const cmd of commands) {
-            if (!map.has(cmd.name)) {
+            if (cmd?.name && !map.has(cmd.name)) {
               map.set(cmd.name, {
                 name: cmd.name,
-                description: cmd.description,
+                description: cmd.description ?? "",
                 argumentHint: cmd.argumentHint,
                 kind: classifyClaudeSlashCommand(cmd.name)
               });
@@ -1796,10 +2004,11 @@ var init_session = __esm({
         this.closed = true;
         for (const [, p] of this.pending) p.resolve({ cancelled: true });
         this.pending.clear();
-        this.input.close();
-        try {
-          this.abort.abort();
-        } catch {
+        const cli = this.cli;
+        if (cli) {
+          this.stopping.add(cli);
+          await cli.close().catch(() => {
+          });
         }
         if (this.pumpDone) {
           await Promise.race([this.pumpDone.catch(() => {
@@ -1962,7 +2171,7 @@ function createClaudeProvider() {
     },
     async createSession(o) {
       const bin = await resolveBin("claude");
-      if (!bin.ok) throw new Error(`\u627E\u4E0D\u5230 claude\uFF1A${bin.reason}`);
+      if (!bin.ok) throw new Error(tr("claude.notFound", { detail: bin.reason, hint: INSTALL_HINT }));
       return new ClaudeSession({
         threadId: o.threadId,
         cwd: o.cwd,
@@ -1970,9 +2179,7 @@ function createClaudeProvider() {
         mode: o.mode,
         effort: o.effort,
         resumeId: o.resumeId,
-        binCmd: bin.cmd,
-        binPrefixArgs: bin.prefixArgs,
-        binVia: bin.via
+        bin
       });
     },
     // §7.6: jsonl sessions under ~/.claude/projects matched by cwd
@@ -2008,6 +2215,7 @@ var init_provider = __esm({
     init_models();
     init_import();
     init_map();
+    init_i18n();
     INSTALL_HINT = "npm i -g @anthropic-ai/claude-code";
     claudeCapabilities = {
       resume: true,

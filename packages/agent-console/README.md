@@ -14,9 +14,11 @@ Or in Magpie: **Settings → Plugins → Add plugin**, enter `@magpie-community/
 
 Install the Agent CLIs you want to use (for example `claude` or `codex`). Missing CLIs show an install hint in Settings.
 
+A cold install is about **46 MB** of `node_modules`, mostly `node-pty`'s native terminal module (~26 MB). Claude Code is **not** bundled: to use the Claude Code Agent, install the `claude` CLI yourself (`npm i -g @anthropic-ai/claude-code` or Anthropic's native installer). / 冷安装约占 **46 MB** 的 `node_modules`，主要是 `node-pty` 原生终端模块（约 26 MB）。插件**不**附带 Claude Code：要用 Claude Code Agent，请自行安装 `claude` CLI（`npm i -g @anthropic-ai/claude-code` 或 Anthropic 的原生安装器）。
+
 ---
 
-This is not a gateway chat box. The daemon talks to the real CLIs through `@anthropic-ai/claude-agent-sdk`, `codex app-server`, and ACP, normalizes a structured event stream (tool calls, thinking, permission requests, usage), and pushes it to the React page over WebSocket.
+This is not a gateway chat box. The daemon talks to the real CLIs through `claude -p --input-format stream-json --output-format stream-json` (the user's own `claude`, with its control messages for permissions, interrupt, model and mode), `codex app-server`, and ACP, normalizes a structured event stream (tool calls, thinking, permission requests, usage), and pushes it to the React page over WebSocket.
 
 UI principle: **obvious at a glance, nothing extra**. Three columns — sidebar (projects × threads), conversation timeline, and a right panel (changes / files / terminal).
 
@@ -30,7 +32,7 @@ UI principle: **obvious at a glance, nothing extra**. Three columns — sidebar 
 - **Changes panel**: git status refresh every 3s, unified per-file diffs; discarded untracked files go to trash instead of a hard delete
 - **Files panel**: lazy directory tree (respects `.gitignore`), syntax-highlighted preview
 - **Terminal panel**: real PTY via node-pty (pwsh / powershell); reconnects after reopening the page; degrades if PTY is unavailable
-- **Images**: attach or paste images (and text files). Only PNG, JPEG, GIF and WebP are sent as images. Claude Code and Codex take them natively; Claude Code gets a text file (up to 1 MB) as a plain-text document, Codex gets its path; any other file (SVG, binaries, images over Claude's 5 MB limit) goes by path, with a notice. An ACP Agent (Cursor, Copilot, OpenCode, Pi, Devin CLI, dsh) gets image blocks when its ACP `initialize` advertises `promptCapabilities.image`; otherwise it gets each image's file path (as text and a `resource_link`), so it can open it with its file tools, and the timeline says it can't see the image itself. The composer says so before you send once the Agent has been asked. dsh answers `initialize` for the route its ACP starts on (its `acp` config row, which ships as a model dsh's catalog doesn't have) and refuses image blocks otherwise, so Agent Console starts dsh with a `--patch` overlay that puts that row on the conversation's model: on a model that sees images (Magpie writes those as `input: [text, image]`) dsh then takes image blocks; after a switch to another model in the same chat, images go by path and dsh opens them with its `read_image` tool. Checked on 2026-10-31 with the real CLIs, a throwaway HOME, no sign-in and a local stand-in for the model API (`npm run test:real`, see `test/real/`): the image reaches the model request from Claude Code (Agent SDK 0.3.312), Codex 0.165.0, Copilot 1.0.105 (BYOK), OpenCode 1.19.5, Pi (pi-acp 0.0.34 + pi 1.4.0) and dsh 0.2.1-rc.5; Devin CLI 3000.11.234 and Cursor 2026.10.22 advertise images and Devin gets the image block, but both need a sign-in to run a model. Inline media is capped at 10 MB per file and 16 MB per message (an ACP SDK peer refuses messages over 32 MB); larger images go by path
+- **Images**: attach or paste images (and text files). Only PNG, JPEG, GIF and WebP are sent as images. Claude Code and Codex take them natively; Claude Code gets a text file (up to 1 MB) as a plain-text document, Codex gets its path; any other file (SVG, binaries, images over Claude's 5 MB limit) goes by path, with a notice. An ACP Agent (Cursor, Copilot, OpenCode, Pi, Devin CLI, dsh) gets image blocks when its ACP `initialize` advertises `promptCapabilities.image`; otherwise it gets each image's file path (as text and a `resource_link`), so it can open it with its file tools, and the timeline says it can't see the image itself. The composer says so before you send once the Agent has been asked. dsh answers `initialize` for the route its ACP starts on (its `acp` config row, which ships as a model dsh's catalog doesn't have) and refuses image blocks otherwise, so Agent Console starts dsh with a `--patch` overlay that puts that row on the conversation's model: on a model that sees images (Magpie writes those as `input: [text, image]`) dsh then takes image blocks; after a switch to another model in the same chat, images go by path and dsh opens them with its `read_image` tool. Checked on 2026-10-31 with the real CLIs, a throwaway HOME, no sign-in and a local stand-in for the model API (`npm run test:real`, see `test/real/`): the image reaches the model request from Claude Code 2.1.316 (stream-json), Codex 0.165.0, Copilot 1.0.105 (BYOK), OpenCode 1.19.5, Pi (pi-acp 0.0.34 + pi 1.4.0) and dsh 0.2.1-rc.5; Devin CLI 3000.11.234 and Cursor 2026.10.22 advertise images and Devin gets the image block, but both need a sign-in to run a model. Inline media is capped at 10 MB per file and 16 MB per message (an ACP SDK peer refuses messages over 32 MB); larger images go by path
 - **Import history**: import matching sessions from `~/.claude/projects` and `~/.codex/sessions` as new threads (resumable)
 - **Thread management**: search (Ctrl+K), pin, rename, archive, delete (trash), export Markdown, thread info (usage / cost / session ID)
 - **Mock Agent**: `AGENT_CONSOLE_MOCK=1` registers a demo Agent with 8 scripts (`default` / `perm` / `plan` / `ask` / `slow` / `error` / `long` / `exit`) so UI work does not burn tokens
@@ -108,10 +110,10 @@ npm run verify:build                   # rebuilds into a temp dir, byte-compares
 
 All dependencies and devDependencies are pinned to exact versions, and `package-lock.json` matches them (`npm ci` succeeds).
 
-- **Installed for users** (`dependencies`): `@agentclientprotocol/sdk`, `@anthropic-ai/claude-agent-sdk`, `ignore`, `ws`, `zod`. These are what `daemon/dist/main.js` imports (esbuild bundles it with `packages: "external"`, so every package it imports is loaded from `node_modules`); `index.mjs` itself only imports `ws`.
+- **Installed for users** (`dependencies`): `@agentclientprotocol/sdk`, `ignore`, `ws`, `zod`. These are what `daemon/dist/main.js` imports (esbuild bundles it with `packages: "external"`, so every package it imports is loaded from `node_modules`); `index.mjs` itself only imports `ws`.
 - **Optional** (`optionalDependencies`): `node-pty`, for the terminal panel only (see below).
 - **Build only** (`devDependencies`): the UI packages `react`, `react-dom`, `@xterm/xterm`, `@xterm/addon-fit`, `lucide-react`, `marked`, `dompurify`, `highlight.js`, `zustand`, `@tanstack/react-virtual` and `clsx` are bundled into `app/app.js` and never loaded from `node_modules` at run time, plus esbuild, TypeScript, vitest and type packages.
-- `@anthropic-ai/claude-agent-sdk` is distributed under Anthropic's commercial terms.
+- No Claude Code or Anthropic package is installed or bundled: the Claude Code Agent is the user's own `claude` CLI, started per conversation and driven over its stream-json protocol (`daemon/src/providers/claude/cli.ts`).
 
 ### Why `node-pty` is `1.2.0-beta.15`
 
@@ -181,6 +183,6 @@ Daemon CLI: `node daemon/dist/main.js [--port N|0] [--data DIR] [--token T] [--p
 
 ## License
 
-MIT (see LICENSE). Third-party licenses are in THIRD-PARTY-NOTICES.md: the 6 installed packages and the 11 bundled into `app/app.js` (mostly MIT; DOMPurify MPL-2.0/Apache-2.0, highlight.js BSD-3-Clause, lucide-react ISC; `@anthropic-ai/claude-agent-sdk` is Anthropic's commercial terms). Build/test: esbuild, vitest, TypeScript, playwright-core.
+MIT (see LICENSE). Third-party licenses are in THIRD-PARTY-NOTICES.md: the 5 installed packages and the 11 bundled into `app/app.js` (mostly MIT; DOMPurify MPL-2.0/Apache-2.0, highlight.js BSD-3-Clause, lucide-react ISC). Build/test: esbuild, vitest, TypeScript, playwright-core.
 
 Architecture takes cues from Paseo (persistent daemon + provider abstraction) and T3 Code (timeline shape and three-column layout) — ideas only, no copied code.

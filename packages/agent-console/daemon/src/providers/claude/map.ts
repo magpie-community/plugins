@@ -1,5 +1,4 @@
-// SDK messages → ProviderEvent (§7.2.3). Ported from normalize in lib/agents/claude.mjs.
-import type { SDKMessage, SDKPartialAssistantMessage } from "@anthropic-ai/claude-agent-sdk";
+// claude stream-json messages (and ~/.claude/projects jsonl lines) → ProviderEvent (§7.2.3). Ported from normalize in lib/agents/claude.mjs.
 import type { ProviderEvent } from "../../timeline/types.js";
 import { callInfo, todoItems } from "../../agents/kinds.js";
 import { editDetail } from "../../agents/diff.js";
@@ -12,7 +11,7 @@ export type MapState = {
   blocks: Map<number, string>; // content_block_start index → block type
   msgId: string; // Current streaming message.id
   // Streaming block index → unified itemId (msgId:type:ordinal within type).
-  // The SDK's content_block index interleaves thinking/text, while the content array of the assistant event
+  // claude's content_block index interleaves thinking/text, while the content array of the assistant event
   // may be renumbered (when thinking is split into another message, text goes back to 0) — a bare index would make
   // the delta and complete event itemIds diverge and the frontend render two duplicate replies. Align both sides by type + ordinal within type.
   itemIdByBlock: Map<number, string>;
@@ -41,8 +40,8 @@ type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (v && typeof v === "object" ? (v as Rec) : {});
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
-// One SDK message → 0..n unified events
-export function mapSdkMessage(m: SDKMessage, st: MapState, cwd: string): ProviderEvent[] {
+// One stream-json message → 0..n unified events
+export function mapSdkMessage(m: unknown, st: MapState, cwd: string): ProviderEvent[] {
   const out: ProviderEvent[] = [];
   if (!m || typeof m !== "object") return out;
   const r = m as unknown as Rec;
@@ -63,7 +62,7 @@ export function mapSdkMessage(m: SDKMessage, st: MapState, cwd: string): Provide
   }
 
   if (r.type === "stream_event") {
-    const e = rec((m as SDKPartialAssistantMessage).event);
+    const e = rec(r.event);
     if (e.type === "message_start") {
       const mid = str(rec(e.message).id);
       if (mid) st.msgId = mid;

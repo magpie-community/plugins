@@ -6,6 +6,7 @@ import { listClaudeModels } from "./models.js";
 import { listClaudeHistory, readClaudeHistory } from "../../history/import.js";
 import { mapSdkMessage, newMapState } from "./map.js";
 import type { ProviderEvent } from "../../timeline/types.js";
+import { tr } from "../../util/i18n.js";
 
 const INSTALL_HINT = "npm i -g @anthropic-ai/claude-code";
 
@@ -62,7 +63,7 @@ export function createClaudeProvider(): Provider {
     },
     async createSession(o): Promise<ProviderSession> {
       const bin = await resolveBin("claude");
-      if (!bin.ok) throw new Error(`找不到 claude：${bin.reason}`);
+      if (!bin.ok) throw new Error(tr("claude.notFound", { detail: bin.reason, hint: INSTALL_HINT }));
       return new ClaudeSession({
         threadId: o.threadId,
         cwd: o.cwd,
@@ -70,9 +71,7 @@ export function createClaudeProvider(): Provider {
         mode: o.mode,
         effort: o.effort,
         resumeId: o.resumeId,
-        binCmd: bin.cmd,
-        binPrefixArgs: bin.prefixArgs,
-        binVia: bin.via,
+        bin,
       });
     },
     // §7.6: jsonl sessions under ~/.claude/projects matched by cwd
@@ -86,7 +85,7 @@ export function createClaudeProvider(): Provider {
       const out: ProviderEvent[] = [];
       for (const m of msgs) {
         const r = m as { type?: string; message?: { content?: unknown } };
-        // User text messages don't appear as events in the SDK stream (the manager writes user_message itself); emit them here
+        // User text messages don't appear as events in claude's stream-json output (the manager writes user_message itself); emit them here
         if (r.type === "user") {
           const content = r.message?.content;
           const text = typeof content === "string"

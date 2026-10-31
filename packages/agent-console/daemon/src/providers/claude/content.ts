@@ -1,4 +1,4 @@
-// One user message → the content blocks of a Claude Code SDK user message (Anthropic MessageParam content).
+// One user message → the content blocks of a claude stream-json user message (Anthropic Messages content).
 // - PNG / JPEG / GIF / WebP (Base64ImageSource's media types), up to 5 MB each: an image block
 // - text files up to 1 MB: a document block with a plain-text source (DocumentBlockParam + PlainTextSource)
 // - anything else, or too large: the file's absolute path in the text, which Claude Code can Read; with a warning
@@ -56,6 +56,6 @@ export async function buildClaudeContent(
     else if (kind === "text" && size > CLAUDE_MAX_TEXT_BYTES) warnings.push(`${basename(file)}: ${(size / 1024 / 1024).toFixed(1)} MB, too large to attach inline; sent its path`);
   }
   const fullText = [text, ...(notes.length ? [notes.join("\n")] : [])].filter(Boolean).join("\n\n");
-  // Media first, as before; the text block always comes last (the SDK needs at least one block)
+  // Media first, as before; the text block always comes last (claude needs at least one block)
   return { blocks: [...media, { type: "text", text: fullText }], warnings };
 }

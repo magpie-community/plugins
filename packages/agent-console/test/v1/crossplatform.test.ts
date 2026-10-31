@@ -20,7 +20,7 @@ import { pickShell, simpleShellArgs } from "../../daemon/src/terminal/service.js
 import { normPath } from "../../daemon/src/util/paths.js";
 import { augmentPath, pidAlive } from "../../daemon/src/util/proc.js";
 import { moveAcrossDevices } from "../../daemon/src/git/service.js";
-import { claudeExecutable } from "../../daemon/src/providers/claude/session.js";
+import { claudeArgs } from "../../daemon/src/providers/claude/cli.js";
 
 const lower = (s: string) => s.toLowerCase();
 
@@ -194,15 +194,35 @@ describe("cmd.exe escaping (cmd-shim)", () => {
   });
 });
 
-describe("claudeExecutable", () => {
-  it("shim-js → cli.js + node; native exe passed directly; cmd-shim/ps1 left to the SDK to find", () => {
-    expect(claudeExecutable({ binCmd: "C:\\n\\node.exe", binPrefixArgs: ["C:\\x\\cli.js"], binVia: "shim-js" })).toEqual({
-      path: "C:\\x\\cli.js",
-      node: true,
-    });
-    expect(claudeExecutable({ binCmd: "/usr/local/bin/claude", binPrefixArgs: [] })).toEqual({ path: "/usr/local/bin/claude", node: false });
-    expect(claudeExecutable({ binCmd: "cmd.exe", binPrefixArgs: [], binVia: "cmd-shim" })).toBeNull();
-    expect(claudeExecutable({ binCmd: "powershell.exe", binPrefixArgs: ["-File", "c.ps1"], binVia: "ps1" })).toBeNull();
+describe("claude CLI launch", () => {
+  const base = { model: null, permissionMode: "default", effort: null, resume: null };
+  it("stream-json both ways, permissions over stdio, model / effort / resume as flags", () => {
+    const a = claudeArgs({ ...base, model: "claude-sonnet-4-5", effort: "high", resume: "0b9c3c3e-1111-2222-3333-444455556666" });
+    expect(a.slice(0, 1)).toEqual(["-p"]);
+    expect(a.join(" ")).toContain("--input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio");
+    expect(a).toEqual(expect.arrayContaining(["--model", "claude-sonnet-4-5", "--effort", "high", "--resume", "0b9c3c3e-1111-2222-3333-444455556666", "--permission-mode", "default"]));
+    expect(a).not.toContain("--allow-dangerously-skip-permissions");
+    expect(claudeArgs({ ...base, permissionMode: "bypassPermissions" })).toContain("--allow-dangerously-skip-permissions");
+  });
+  it("refuses values that could become another flag or shell syntax", () => {
+    for (const bad of ["--dangerously-skip-permissions", "a b", "x&calc", 'a"b', "m|n", "%PATH%"]) {
+      expect(() => claudeArgs({ ...base, model: bad })).toThrow(/unexpected value/);
+      expect(() => claudeArgs({ ...base, resume: bad })).toThrow(/unexpected value/);
+    }
+  });
+  it("a Windows .cmd shim runs through cmd.exe with every argument escaped; a .ps1 through PowerShell -File; an npm shim as node + cli.js", () => {
+    const args = claudeArgs({ ...base, model: "opus[1m]" });
+    const cmd = argvFor({ ok: true, cmd: "C:\\Windows\\cmd.exe", prefixArgs: [], display: "", via: "cmd-shim", shim: "C:\\Users\\a b\\claude.cmd" }, args);
+    expect(cmd.cmd).toBe("C:\\Windows\\cmd.exe");
+    expect(cmd.windowsVerbatimArguments).toBe(true);
+    expect(cmd.args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
+    expect(cmd.args[3]).toContain("C:\\Users\\a^ b\\claude.cmd");
+    expect(cmd.args[3]).toContain('^^^"opus^^^[1m^^^]^^^"');
+    const ps1 = argvFor({ ok: true, cmd: "powershell.exe", prefixArgs: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "C:\\x\\claude.ps1"], display: "", via: "ps1" }, args);
+    expect(ps1.args.slice(0, 6)).toEqual(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "C:\\x\\claude.ps1"]);
+    expect(ps1.args.slice(6)).toEqual(args);
+    const js = argvFor({ ok: true, cmd: "C:\\n\\node.exe", prefixArgs: ["C:\\x\\cli.js"], display: "", via: "shim-js" }, args);
+    expect(js).toEqual({ cmd: "C:\\n\\node.exe", args: ["C:\\x\\cli.js", ...args] });
   });
 });
 

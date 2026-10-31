@@ -62,7 +62,7 @@ Magpie plugin host (Bun)
 Local background daemon (separate Node process, Node ≥ 20)
   ├ WS gateway (hello token auth, RPC, subscription push)
   ├ AgentManager (resident sessions, state machine, queueing, idle reclaim, restart recovery)
-  │   ├ ClaudeProvider: @anthropic-ai/claude-agent-sdk, runs the local claude executable
+  │   ├ ClaudeProvider: the local claude executable over stream-json (no SDK)
   │   ├ CodexProvider: codex app-server (JSON-RPC over stdio)
   │   ├ ACP providers: Cursor, Copilot, OpenCode, Pi, Devin CLI, dsh (Agent Client Protocol over stdio)
   │   └ MockProvider (development/testing)

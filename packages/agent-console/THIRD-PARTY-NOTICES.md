@@ -18,7 +18,6 @@ Installed with the plugin (`dependencies`, and `node-pty` as an `optionalDepende
 | Package | Version | License |
 |---|---|---|
 | @agentclientprotocol/sdk | 2.1.0 | Apache-2.0 |
-| @anthropic-ai/claude-agent-sdk | 0.3.312 | SEE LICENSE IN README.md (Anthropic commercial terms) |
 | ignore | 7.0.14 | MIT |
 | node-pty (optional) | 1.2.0-beta.15 | MIT |
 | ws | 8.22.0 | MIT |

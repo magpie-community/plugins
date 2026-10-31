@@ -1,5 +1,5 @@
-// Claude ProviderSession (§7.2.2/7.2.4/7.2.5/7.2.6): persistent query, streaming, permissions, interrupt, hot switching.
-import { query, type Query, type Options, type SDKUserMessage, type PermissionResult, type EffortLevel, type PermissionMode } from "@anthropic-ai/claude-agent-sdk";
+// Claude ProviderSession (§7.2.2/7.2.4/7.2.5/7.2.6): the user's own `claude` CLI over stream-json (./cli.ts),
+// one process per conversation, streaming, permissions, interrupt, hot switching. No SDK.
 import type { ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../types.js";
 import type { ProviderEvent } from "../../timeline/types.js";
 import { AsyncQueue } from "../../util/queue.js";
@@ -10,8 +10,10 @@ import { log } from "../../log.js";
 import { buildClaudeContent } from "./content.js";
 import { tr } from "../../util/i18n.js";
 import { classifyClaudeSlashCommand, sortSlashCommands } from "../slash.js";
+import { ClaudeCli, type ClaudeBin, type PermissionDecision, type ToolRequest } from "./cli.js";
 
-const EFFORTS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const MODES = ["plan", "default", "acceptEdits", "bypassPermissions"];
 const rid = () => Math.random().toString(36).slice(2, 10);
 
 type PendingReq = {
@@ -26,31 +28,17 @@ export type ClaudeSessionOpts = {
   mode: Mode;
   effort: string | null;
   resumeId: string | null;
-  binCmd: string; // The claude executable (resolveBin's cmd)
-  binPrefixArgs: string[]; // = [cli.js] in the shim case of node cli.js
-  binVia?: string; // resolveBin's via: for cmd-shim / ps1 the SDK can't launch this file directly
+  /** The user's claude, as resolveBin found it (a .cmd / .ps1 shim is started through cmd.exe / PowerShell by spawnBin) */
+  bin: ClaudeBin;
+  /** Environment for the CLI (tests point it at a stand-in); process.env when absent */
+  env?: NodeJS.ProcessEnv;
   onModeChange?: (mode: Mode) => void; // Callback when a plan is approved → default (the manager updates meta)
 };
-
-/** resolveBin result → pathToClaudeCodeExecutable for the SDK.
- *  - shim-js (node + cli.js): give cli.js to the SDK, which launches it with node;
- *  - executable (native claude / claude.exe): pass it directly;
- *  - cmd-shim / ps1 (.cmd / .ps1 wrappers on Windows): Node can't spawn them directly, so let the SDK find claude itself. */
-export function claudeExecutable(o: Pick<ClaudeSessionOpts, "binCmd" | "binPrefixArgs" | "binVia">): { path: string; node: boolean } | null {
-  if (!o.binCmd) return null;
-  if (o.binVia === "cmd-shim" || o.binVia === "ps1") return null;
-  const last = o.binPrefixArgs[o.binPrefixArgs.length - 1];
-  if (last && /\.(c|m)?js$/i.test(last)) return { path: last, node: true };
-  if (o.binPrefixArgs.length) return null;
-  return { path: o.binCmd, node: false };
-}
 
 export class ClaudeSession implements ProviderSession {
   events: AsyncIterable<ProviderEvent>;
   private q = new AsyncQueue<ProviderEvent>();
-  private input = new AsyncQueue<SDKUserMessage>();
-  private query: Query | null = null;
-  private abort = new AbortController();
+  private cli: ClaudeCli | null = null;
   private sessionId: string | null;
   private turnId: string | null = null;
   private turnNum = 0;
@@ -59,82 +47,72 @@ export class ClaudeSession implements ProviderSession {
   private needsRestart = false;
   private restarting: Promise<void> | null = null;
   private closed = false;
-  private stderrTail = "";
+  private stopping = new WeakSet<ClaudeCli>();
   private pumpDone: Promise<void> | null = null;
+  /** Mode the running CLI was started with (bypassPermissions has to be allowed at launch) */
+  private launchedMode: string | null = null;
 
   constructor(private o: ClaudeSessionOpts) {
     this.sessionId = o.resumeId;
     this.events = this.q;
   }
 
-  // The query is only started before the first send (a failed detection should be reported quickly)
-  private ensureQuery(): Query {
-    if (this.query && !this.needsRestart) return this.query;
-    this.abort = new AbortController();
+  // The CLI is only started before the first send (or a command list request)
+  private ensureCli(): ClaudeCli {
+    if (this.cli && !this.needsRestart) return this.cli;
     this.st = newMapState();
-    const options: Options = {
-      cwd: this.o.cwd,
-      model: this.o.model ?? undefined,
-      permissionMode: this.o.mode as PermissionMode,
-      canUseTool: (toolName, input, opts) => this.canUseTool(toolName, input, opts),
-      includePartialMessages: true,
-      settingSources: ["user", "project", "local"],
-      systemPrompt: { type: "preset", preset: "claude_code" },
-      abortController: this.abort,
-      ...(this.sessionId ? { resume: this.sessionId } : {}),
-      stderr: (d: string) => {
-        this.stderrTail = (this.stderrTail + d).slice(-4096);
+    const effort = this.o.effort && EFFORTS.includes(this.o.effort) ? this.o.effort : null;
+    const cli = new ClaudeCli(
+      {
+        bin: this.o.bin,
+        cwd: this.o.cwd,
+        model: this.o.model,
+        permissionMode: MODES.includes(this.o.mode) ? this.o.mode : "default",
+        effort,
+        resume: this.sessionId,
+        env: this.o.env,
       },
-    };
-    const exe = claudeExecutable(this.o);
-    if (exe) {
-      options.pathToClaudeCodeExecutable = exe.path;
-      if (exe.node) options.executable = "node";
-    }
-    if (this.o.effort && EFFORTS.includes(this.o.effort as EffortLevel)) {
-      options.effort = this.o.effort as EffortLevel;
-    }
-    const q = query({ prompt: this.input as AsyncIterable<SDKUserMessage>, options });
-    this.query = q;
+      (req) => this.canUseTool(req),
+    );
+    this.cli = cli;
+    this.launchedMode = this.o.mode;
     this.needsRestart = false;
-    this.pumpDone = this.pump(q);
-    return q;
+    this.pumpDone = this.pump(cli);
+    return cli;
   }
 
-  private async pump(q: Query): Promise<void> {
-    try {
-      for await (const m of q) {
-        for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) this.emit(ev);
-      }
-    } catch (e) {
-      // An end caused by abort is not a crash
-      if (!this.abort.signal.aborted && !this.closed) {
-        this.emit({ type: "notice", level: "error", message: "Claude 会话异常：" + this.errText(e) });
-      }
+  private async pump(cli: ClaudeCli): Promise<void> {
+    for await (const m of cli.messages) {
+      for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) this.emit(ev);
     }
-    // The event stream ended. An old query that restart() deliberately replaced (this.query is no longer it) must not close the event queue,
-    // otherwise every event of the new query is dropped and the next turn stays running forever.
-    if (!this.closed && this.query === q) {
-      this.needsRestart = true; // Rebuild with resume on the next send
+    const exit = await cli.exited;
+    // A CLI this session stopped on purpose (restart / close) is not a crash
+    if (this.closed || this.stopping.has(cli)) return;
+    const detail = cli.failure
+      ? tr("claude.startFailed", { detail: String(cli.failure.message) })
+      : tr("claude.exited", { code: String(exit.code ?? exit.signal ?? "?") });
+    const tail = cli.stderr.trim().slice(-400);
+    this.emit({ type: "notice", level: "error", message: tail ? `${detail} — stderr: ${tail}` : detail });
+    if (this.turnId) this.emit({ type: "turn_ended", turnId: this.turnId, status: "failed", error: detail });
+    this.turnId = null;
+    // The event stream ended: an old CLI that restart() replaced must not close the event queue
+    if (this.cli === cli) {
+      this.needsRestart = true; // Rebuild with --resume on the next send
       this.q.close();
     }
   }
 
   private emit(ev: ProviderEvent): void {
     if (ev.type === "turn_ended" && !ev.turnId) ev.turnId = this.turnId ?? "unknown";
+    if (ev.type === "turn_ended") this.turnId = null;
     if (ev.type === "provider_session_id" && ev.id) this.sessionId = ev.id;
     this.q.push(ev);
   }
 
-  private errText(e: unknown): string {
-    const base = String((e as Error)?.message ?? e);
-    return this.stderrTail ? `${base}；stderr: ${this.stderrTail.slice(-400)}` : base;
-  }
-
   async send(input: SendInput): Promise<void> {
-    if (this.closed) throw new Error("会话已关闭");
+    if (this.closed) throw new Error(tr("claude.closed"));
     if (this.needsRestart) await this.restart();
-    const q = this.ensureQuery();
+    const cli = this.ensureCli();
     this.turnNum++;
     this.turnId = "u_" + Date.now().toString(36) + "_" + this.turnNum;
     this.st.sawInterrupt = false; // A new turn clears the old interrupt flag
@@ -147,30 +125,21 @@ export class ClaudeSession implements ProviderSession {
     });
     const built = await buildClaudeContent(input.text, input.images ?? []);
     for (const w of built.warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
-    const content = built.blocks as unknown as SDKUserMessage["message"]["content"];
-    this.input.push({
-      type: "user",
-      message: { role: "user", content },
-      parent_tool_use_id: null,
-      session_id: this.sessionId ?? "",
-    });
-    void q; // Messages flow into the running query through input
+    if (!cli.sendUser(built.blocks, this.sessionId)) throw new Error(tr("claude.notRunning"));
   }
 
   private async restart(): Promise<void> {
     if (this.restarting) return this.restarting;
     this.restarting = (async () => {
-      // Close the old query (drop the reference first so the old pump knows on exit that this was a deliberate restart)
-      this.query = null;
-      try {
-        this.input.close();
-        this.abort.abort();
-      } catch {}
+      const old = this.cli;
+      this.cli = null;
+      if (old) {
+        this.stopping.add(old);
+        await old.close().catch(() => {});
+      }
       if (this.pumpDone) await this.pumpDone.catch(() => {});
-      // New input queue (the old one may already be closed)
-      this.input = new AsyncQueue<SDKUserMessage>();
       try {
-        this.ensureQuery();
+        this.ensureCli();
       } finally {
         this.restarting = null;
       }
@@ -179,13 +148,10 @@ export class ClaudeSession implements ProviderSession {
   }
 
   // ---- permissions (§7.2.4) ----
-  private canUseTool(
-    toolName: string,
-    input: Record<string, unknown>,
-    opts: { signal: AbortSignal; toolUseID?: string },
-  ): Promise<PermissionResult | null> {
+  private canUseTool(req: ToolRequest): Promise<PermissionDecision> {
+    const { toolName, input, signal } = req;
     const requestId = "perm_" + rid();
-    const { signal } = opts;
+    const opts = { toolUseID: req.toolUseId };
 
     if (toolName === "ExitPlanMode") {
       return this.handlePlanMode(requestId, input, signal, opts.toolUseID);
@@ -211,8 +177,8 @@ export class ClaudeSession implements ProviderSession {
         { id: "deny", label: "拒绝", kind: "reject_once" },
       ],
     });
-    return new Promise<PermissionResult | null>((resolve) => {
-      this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve(this.toPermissionResult(a, input)) });
+    return new Promise<PermissionDecision>((resolve) => {
+      this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve(this.toPermissionDecision(a, input)) });
       signal.addEventListener("abort", () => {
         if (this.pending.delete(requestId)) {
           this.emit({ type: "permission_resolved", requestId, cancelled: true });
@@ -222,14 +188,14 @@ export class ClaudeSession implements ProviderSession {
     });
   }
 
-  private toPermissionResult(a: RespondAnswer, input: Record<string, unknown>): PermissionResult {
+  private toPermissionDecision(a: RespondAnswer, input: Record<string, unknown>): PermissionDecision {
     if (a.cancelled || a.optionId === "deny") {
       return { behavior: "deny", message: "用户拒绝了此操作", ...(a.cancelled ? { interrupt: true } : {}) };
     }
     return { behavior: "allow", updatedInput: input };
   }
 
-  private async handlePlanMode(requestId: string, input: Record<string, unknown>, signal: AbortSignal, toolUseID?: string): Promise<PermissionResult | null> {
+  private async handlePlanMode(requestId: string, input: Record<string, unknown>, signal: AbortSignal, toolUseID?: string): Promise<PermissionDecision> {
     const planText = typeof input.plan === "string" ? input.plan : "";
     if (planText) {
       this.emit({ type: "plan", itemId: toolUseID ?? requestId, markdown: planText });
@@ -259,7 +225,7 @@ export class ClaudeSession implements ProviderSession {
     }
     // implement: switch back to default mode
     try {
-      await this.query?.setPermissionMode("default");
+      await this.cli?.setPermissionMode("default");
       this.o.mode = "default";
       this.o.onModeChange?.("default");
     } catch (e) {
@@ -268,7 +234,7 @@ export class ClaudeSession implements ProviderSession {
     return { behavior: "allow", updatedInput: input };
   }
 
-  private async handleQuestion(requestId: string, input: Record<string, unknown>, signal: AbortSignal): Promise<PermissionResult | null> {
+  private async handleQuestion(requestId: string, input: Record<string, unknown>, signal: AbortSignal): Promise<PermissionDecision> {
     this.emit({ type: "question", requestId, questions: input.questions as unknown[] });
     const answer = await new Promise<RespondAnswer>((resolve) => {
       this.pending.set(requestId, { kind: "question", resolve: (a) => resolve(a as RespondAnswer) });
@@ -310,54 +276,63 @@ export class ClaudeSession implements ProviderSession {
       p.resolve({ cancelled: true });
     }
     this.pending.clear();
+    const cli = this.cli;
+    if (!cli || !cli.alive) return;
     try {
-      const q = this.query;
-      if (q) {
-        await Promise.race([
-          q.interrupt(),
-          new Promise((_, rej) => setTimeout(() => rej(new Error("interrupt 超时")), 3000)),
-        ]);
-      }
+      await cli.interrupt();
     } catch (e) {
-      log("warn", "interrupt 失败", { err: String(e) });
+      // No answer: stop this CLI; the next send starts it again with --resume
+      log("warn", "claude interrupt failed", { err: String(e) });
+      this.stopping.add(cli);
       this.needsRestart = true;
+      void cli.close(500);
+      if (this.turnId) this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
     }
   }
 
   async setModel(model: string | null): Promise<void> {
     this.o.model = model;
+    if (!this.cli?.alive) return;
     try {
-      await this.query?.setModel(model ?? undefined);
+      await this.cli.setModel(model);
     } catch (e) {
-      log("warn", "setModel 失败", { err: String(e) });
+      log("warn", "claude set_model failed", { err: String(e) });
+      this.needsRestart = true;
     }
   }
 
   async setMode(mode: Mode): Promise<void> {
     this.o.mode = mode;
+    if (!this.cli?.alive) return;
+    // bypassPermissions is only accepted by a CLI started with it allowed: restart into it (--resume keeps the context)
+    if (mode === "bypassPermissions" && this.launchedMode !== "bypassPermissions") {
+      this.needsRestart = true;
+      return;
+    }
     try {
-      await this.query?.setPermissionMode(mode as PermissionMode);
+      await this.cli.setPermissionMode(mode);
     } catch (e) {
-      log("warn", "setPermissionMode 失败", { err: String(e) });
+      log("warn", "claude set_permission_mode failed", { err: String(e) });
+      this.needsRestart = true;
     }
   }
 
   async setEffort(effort: string | null): Promise<void> {
     this.o.effort = effort;
-    // SDK Options.effort only applies when the query is created → rebuild (continued via resume)
+    // --effort is a launch flag → restart (continued via --resume)
     this.needsRestart = true;
   }
 
   async listCommands(): Promise<SlashCommand[]> {
     try {
-      const q = this.ensureQuery();
-      const commands = await q.supportedCommands();
+      const init = await this.ensureCli().initialized;
+      const commands = Array.isArray(init?.commands) ? (init!.commands as { name?: string; description?: string; argumentHint?: string }[]) : [];
       const map = new Map<string, SlashCommand>();
       for (const cmd of commands) {
-        if (!map.has(cmd.name)) {
+        if (cmd?.name && !map.has(cmd.name)) {
           map.set(cmd.name, {
             name: cmd.name,
-            description: cmd.description,
+            description: cmd.description ?? "",
             argumentHint: cmd.argumentHint,
             kind: classifyClaudeSlashCommand(cmd.name),
           });
@@ -373,10 +348,11 @@ export class ClaudeSession implements ProviderSession {
     this.closed = true;
     for (const [, p] of this.pending) p.resolve({ cancelled: true });
     this.pending.clear();
-    this.input.close();
-    try {
-      this.abort.abort();
-    } catch {}
+    const cli = this.cli;
+    if (cli) {
+      this.stopping.add(cli);
+      await cli.close().catch(() => {});
+    }
     if (this.pumpDone) {
       await Promise.race([this.pumpDone.catch(() => {}), new Promise((r) => setTimeout(r, 3000))]);
     }

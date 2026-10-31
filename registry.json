@@ -160,8 +160,8 @@
       "kind": "page",
       "community": true,
       "summary": {
-        "en": "A page in magpie's window that drives the Agent CLIs on this computer (Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh) through a local daemon on 127.0.0.1, with a structured timeline, Git, files and a terminal. The daemon starts when the page opens and stops with magpie; only its own page gets its token.",
-        "zh": "在 magpie 窗口里驱动本机的 Agent CLI（Claude Code、Codex、Cursor、Copilot、OpenCode、Pi、Devin、dsh）：本地服务只在 127.0.0.1，带结构化时间线、Git、文件和终端。打开页面时才启动，随 magpie 退出；令牌只交给自己的页面。"
+        "en": "A page in magpie's window that drives the Agent CLIs on this computer (Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh) through a local daemon on 127.0.0.1, with a structured timeline, Git, files and a terminal. The daemon starts when the page opens and stops with magpie; only its own page gets its token. Cold install ~46 MB (mostly node-pty ~26 MB); Claude Code is not bundled — install the `claude` CLI yourself to use it.",
+        "zh": "在 magpie 窗口里驱动本机的 Agent CLI（Claude Code、Codex、Cursor、Copilot、OpenCode、Pi、Devin、dsh）：本地服务只在 127.0.0.1，带结构化时间线、Git、文件和终端。打开页面时才启动，随 magpie 退出；令牌只交给自己的页面。冷安装约 46 MB（主要是 node-pty 约 26 MB）；不附带 Claude Code，使用该 Agent 请自行安装 `claude` CLI。"
       }
     }
   ]

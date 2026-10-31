@@ -1,17 +1,18 @@
 import { describe, it, expect } from "vitest";
 import { mapSdkMessage, newMapState } from "../../daemon/src/providers/claude/map.js";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+/** A claude stream-json message */
+type Msg = Record<string, unknown>;
 
 const cwd = "D:/proj";
 
-const sys = (o: Record<string, unknown>) => ({ type: "system", ...o }) as unknown as SDKMessage;
-const stream = (event: Record<string, unknown>) => ({ type: "stream_event", event }) as unknown as SDKMessage;
+const sys = (o: Record<string, unknown>) => ({ type: "system", ...o }) as Msg;
+const stream = (event: Record<string, unknown>) => ({ type: "stream_event", event }) as Msg;
 const assistant = (content: unknown[], id = "msg_1") =>
-  ({ type: "assistant", message: { id, content } }) as unknown as SDKMessage;
-const user = (content: unknown[]) => ({ type: "user", message: { role: "user", content } }) as unknown as SDKMessage;
-const result = (o: Record<string, unknown>) => ({ type: "result", ...o }) as unknown as SDKMessage;
+  ({ type: "assistant", message: { id, content } }) as Msg;
+const user = (content: unknown[]) => ({ type: "user", message: { role: "user", content } }) as Msg;
+const result = (o: Record<string, unknown>) => ({ type: "result", ...o }) as Msg;
 
-describe("claude map: SDK messages → unified events", () => {
+describe("claude map: stream-json messages → unified events", () => {
   it("system init → provider_session_id", () => {
     const st = newMapState();
     const evs = mapSdkMessage(sys({ subtype: "init", session_id: "abc-123", model: "sonnet" }), st, cwd);

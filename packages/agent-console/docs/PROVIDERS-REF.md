@@ -8,7 +8,7 @@ Both use the same structure: **one "driver" per Agent**. The driver starts the C
 
 | Kind | Description | Examples |
 |---|---|---|
-| Official SDK | Call the vendor's SDK library directly | Claude (`@anthropic-ai/claude-agent-sdk`) |
+| CLI stream-json | Spawn the user's CLI and speak its line-delimited JSON protocol | Claude (`claude -p --input-format stream-json --output-format stream-json`) |
 | Private protocol | The CLI has its own JSON mode, different per vendor, each needs its own driver | Codex `codex app-server`, Pi `pi --mode rpc`, OpenCode `opencode serve` (HTTP) |
 | **ACP (common protocol)** | Agent Client Protocol, a standard: `initialize → session/new → session/prompt`, with standard fields for permissions, models and thinking level. **One generic driver is shared by several Agents** | Cursor `cursor-agent acp`, Copilot `copilot --acp`, Devin `devin acp`, Kimi `kimi acp`, OpenCode `opencode acp` |
 
