@@ -85,3 +85,31 @@ export function ending(reply, protocol) {
     }
   }
 }
+
+// firstWords: the text of the conversation's first user message, which stays
+// the same on every request of one conversation, so it tells two
+// conversations in one session apart (an agent and the subagents it starts).
+// Only text is read: cache markers and other per-request fields move around.
+// "" when the request carries no user message at all.
+export function firstWords(body, protocol) {
+  if (!isObj(body)) return ""
+  const text = (c) => typeof c === "string" ? c
+    : Array.isArray(c) ? c.map((p) => typeof p === "string" ? p : isObj(p) && typeof p.text === "string" && p.type !== "tool_result" ? p.text : "").join("\n")
+    : ""
+  switch (protocol) {
+    case "responses": {
+      if (typeof body.input === "string") return body.input
+      if (!Array.isArray(body.input)) return ""
+      const first = body.input.find((i) => isObj(i) && (i.type == null || i.type === "message") && i.role === "user")
+      return first ? text(first.content) : ""
+    }
+    case "gemini": {
+      const first = Array.isArray(body.contents) ? body.contents.find((c) => isObj(c) && (c.role == null || c.role === "user")) : undefined
+      return first && Array.isArray(first.parts) ? first.parts.map((p) => isObj(p) && typeof p.text === "string" ? p.text : "").join("\n") : ""
+    }
+    default: { // anthropic and chat
+      const first = Array.isArray(body.messages) ? body.messages.find((m) => isObj(m) && m.role === "user") : undefined
+      return first ? text(first.content) : ""
+    }
+  }
+}

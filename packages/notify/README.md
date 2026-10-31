@@ -4,8 +4,11 @@ A push to your phone or team chat when an agent's turn is done — Claude Code, 
 
 ```sh
 magpie plugin add @magpie-community/gateway-notify
-magpie plugin options notify '{"channels":[{"type":"ntfy","topic":"pick-a-long-random-topic"}]}'
+TOPIC="magpie-$(openssl rand -hex 12)"; echo "$TOPIC"
+magpie plugin options notify "{\"channels\":[{\"type\":\"ntfy\",\"topic\":\"$TOPIC\"}]}"
 ```
+
+The topic is the only thing keeping your pushes private on ntfy.sh — anyone who knows it can read them — so use a random one like this, never a word or a name. The options the plugin ships with leave the topic empty, and nothing is sent until you fill it in.
 
 Then subscribe to the same topic in the ntfy app (iOS, Android, or the web), and you'll hear about every turn that ran 3 minutes or more:
 
@@ -23,8 +26,10 @@ A *turn* starts when your own words reach the model, and ends when the model ans
 - A request that fails (`errors`, on by default) ends the turn too, with ❌ instead of ✅.
 - Requests that offer the model no tools — the titles, summaries and probes agents make on the side — are left out: they neither start nor end a turn.
 - A new message from you while a turn runs starts it over.
+- Subagents are left out. Claude Code's subagents share their parent's session, so a conversation is the session plus its first user message; one that first shows up while another conversation in the same session is running a tool is a subagent, and its end sends nothing and doesn't touch the main turn.
+- A failure push waits `failureHoldSeconds` (60 by default) and is dropped if the conversation goes on, since agents retry 429s and 5xx on their own and Esc reaches magpie as a failure too.
 - One push per conversation per `cooldownSeconds`.
-- Only your own agents on this computer by default (magpie's local and sharing key). Requests through another gateway key are left out unless `allOrigins` is on.
+- Only requests magpie marks as `local` by default: an agent on this computer that uses no gateway key. Requests with a named gateway key (`gateway-key`, which may be a friend's, and includes magpie's sharing key) and requests from another device (`remote`) are left out unless `allOrigins` is on.
 
 The hook changes nothing in a request, and sending never holds one up: it returns at once and posts in the background, with a 10-second limit per channel.
 
@@ -45,8 +50,9 @@ The hook changes nothing in a request, and sending never holds one up: it return
   "minMinutes": 3,                 // shorter turns send nothing; 0 sends every one
   "cooldownSeconds": 30,
   "errors": true,                  // push a turn that ends in a failed request
+  "failureHoldSeconds": 60,        // wait this long before a failure push; a retry cancels it
   "agents": [],                    // empty: every agent; else only these ids ("claude", "codex", …)
-  "allOrigins": false,             // also requests through other gateway keys
+  "allOrigins": false,             // also gateway-key and remote requests
   "includeText": false,            // add the start of the model's last answer
   "maxTextLength": 200,
   "lang": "en"                     // "en" or "zh"

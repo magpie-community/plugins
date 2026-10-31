@@ -3,20 +3,32 @@
 // faked with fetch: no network, no account.
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createHmac } from "node:crypto"
-import { onRequest, onResponse, reset, settled, options } from "./notify.hooks.mjs"
-import { opensTurn, ending, hasTools } from "./turn.mjs"
+import { onRequest, onResponse, reset, settled, options, duration, message } from "./notify.hooks.mjs"
+import { opensTurn, ending, hasTools, firstWords } from "./turn.mjs"
 import { send, usable } from "./channels.mjs"
 
 const realFetch = globalThis.fetch
 let calls = []
 let answer = () => Response.json({ ok: true })
 let clock = 1_000_000
+let timers = [] // failure pushes held back: { at, fn }
+const fakeTimers = {
+  later: (fn, ms) => { const t = { at: clock + ms, fn }; timers.push(t); return t },
+  cancel: (t) => { timers = timers.filter((x) => x !== t) },
+}
+// move the clock on, firing the held pushes that come due
+async function wait(ms) {
+  clock += ms
+  for (const t of timers.filter((x) => x.at <= clock)) { timers = timers.filter((x) => x !== t); t.fn() }
+  await settled()
+}
 
 beforeEach(() => {
   calls = []
   answer = () => Response.json({ ok: true })
   clock = 1_000_000
-  reset(() => clock)
+  timers = []
+  reset(() => clock, fakeTimers)
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), init, body: init.body })
     return answer(String(url), init)
@@ -36,11 +48,9 @@ const minutes = (n) => { clock += n * 60_000 }
 async function exchange(protocol, body, reply, extra = {}) {
   const c = ctx(protocol, extra)
   onRequest(body, c)
-  const reports = []
-  c.report = (code) => reports.push(code)
   onResponse(reply, c)
   await settled()
-  return reports
+  return c
 }
 
 // ---- Anthropic Messages (Claude Code) ----
@@ -51,11 +61,12 @@ const aResult = { model: "m", tools, messages: [...aUser.messages, { role: "assi
 const aFinal = { type: "message", role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "All tests pass now." }] }
 
 test("a long Claude Code turn is pushed once, when the model stops asking for tools", async () => {
-  expect(await exchange("anthropic", aUser, aToolUse)).toEqual(["skipped"])
+  await exchange("anthropic", aUser, aToolUse)
   minutes(4)
-  expect(await exchange("anthropic", aResult, aToolUse)).toEqual(["skipped"])
+  await exchange("anthropic", aResult, aToolUse)
+  expect(calls).toHaveLength(0)
   minutes(2)
-  expect(await exchange("anthropic", aResult, aFinal)).toEqual(["ready"])
+  await exchange("anthropic", aResult, aFinal)
   expect(calls).toHaveLength(1)
   expect(calls[0].url).toBe("https://ntfy.sh")
   const sent = JSON.parse(calls[0].body)
@@ -69,7 +80,7 @@ test("a long Claude Code turn is pushed once, when the model stops asking for to
 test("a short turn sends nothing", async () => {
   await exchange("anthropic", aUser, aToolUse)
   minutes(1)
-  expect(await exchange("anthropic", aResult, aFinal)).toEqual(["skipped"])
+  await exchange("anthropic", aResult, aFinal)
   expect(calls).toHaveLength(0)
 })
 
@@ -86,21 +97,110 @@ test("side calls without tools neither open nor close a turn", async () => {
   await exchange("anthropic", aUser, aToolUse)
   minutes(5)
   const title = { model: "haiku", messages: [{ role: "user", content: "title this" }] }
-  expect(await exchange("anthropic", title, aFinal)).toEqual([])
+  const c = await exchange("anthropic", title, aFinal)
+  expect(c.state.notify).toBeUndefined()
   await exchange("anthropic", aResult, aFinal)
   expect(calls).toHaveLength(1)
 })
 
-test("a failed request ends the turn with a failure push, unless errors is off", async () => {
+test("a failed request ends the turn with a failure push after the hold, unless errors is off", async () => {
   await exchange("anthropic", aUser, aToolUse)
   minutes(5)
   await exchange("anthropic", aResult, null, { success: false })
-  expect(JSON.parse(calls[0].body).title).toStartWith("❌ Claude Code failed")
+  expect(calls).toHaveLength(0) // held back
+  await wait(59_000)
+  expect(calls).toHaveLength(0)
+  await wait(1_000)
+  expect(calls).toHaveLength(1)
+  const sent = JSON.parse(calls[0].body)
+  expect(sent.title).toStartWith("❌ Claude Code failed")
+  expect(sent.message).toContain("took 5 min") // timed to the failure, not the hold
   calls = []
   await exchange("anthropic", aUser, aToolUse, { options: { errors: false } })
   minutes(5)
   await exchange("anthropic", aResult, null, { success: false, options: { errors: false } })
   expect(calls).toHaveLength(0)
+})
+
+test("a failure the agent retries sends no ❌, and the turn's clock keeps running", async () => {
+  await exchange("anthropic", aUser, aToolUse)
+  minutes(4)
+  await exchange("anthropic", aResult, null, { success: false }) // 529
+  await wait(10_000)
+  await exchange("anthropic", aResult, aFinal) // the agent's retry
+  await wait(120_000)
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).title).toStartWith("✅")
+})
+
+test("Esc (a failure) then a new message continues the same turn", async () => {
+  await exchange("anthropic", aUser, aToolUse)
+  minutes(5)
+  await exchange("anthropic", aResult, null, { success: false })
+  await wait(20_000)
+  await exchange("anthropic", aUser, aToolUse)
+  await wait(120_000)
+  expect(calls).toHaveLength(0)
+})
+
+// ---- Claude Code subagents share their parent's session ----
+const subUser = { model: "m", tools, messages: [{ role: "user", content: "Search the repo for TODOs and list them" }] }
+const subToolUse = { ...aToolUse, content: [{ type: "tool_use", id: "s1", name: "Grep", input: {} }] }
+const subResult = { model: "m", tools, messages: [...subUser.messages, { role: "assistant", content: subToolUse.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "s1", content: "x" }] }] }
+const subFinal = { ...aFinal, content: [{ type: "text", text: "Found 3 TODOs." }] }
+const taskUse = { ...aToolUse, content: [{ type: "tool_use", id: "t1", name: "Task", input: {} }] }
+
+test("a subagent's end sends no push and leaves the main turn's clock alone", async () => {
+  await exchange("anthropic", aUser, taskUse) // the main agent starts a subagent
+  minutes(2)
+  await exchange("anthropic", subUser, subToolUse) // the subagent, same session
+  minutes(4)
+  await exchange("anthropic", subResult, subFinal) // it ends after 4 min: no push
+  expect(calls).toHaveLength(0)
+  minutes(1)
+  await exchange("anthropic", aResult, aFinal) // the main turn ends, 7 min in
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 7 min")
+})
+
+test("parallel subagents are all nested; a later conversation in the session is not", async () => {
+  await exchange("anthropic", aUser, taskUse)
+  await exchange("anthropic", subUser, subToolUse)
+  await exchange("anthropic", { ...subUser, messages: [{ role: "user", content: "Read the docs folder" }] }, subFinal)
+  minutes(5)
+  await exchange("anthropic", subResult, subFinal)
+  expect(calls).toHaveLength(0)
+  await exchange("anthropic", aResult, aFinal)
+  expect(calls).toHaveLength(1)
+  // the main turn is over; a new conversation (/clear) in the same session pushes as usual
+  calls = []
+  minutes(1)
+  await exchange("anthropic", subUser, subToolUse)
+  minutes(4)
+  await exchange("anthropic", subResult, subFinal)
+  expect(calls).toHaveLength(1)
+})
+
+test("a conversation is told apart by its first words' text, not cache markers", () => {
+  const a = { messages: [{ role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }] }] }
+  const b = { messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }, { role: "assistant", content: "x" }, { role: "user", content: [{ type: "tool_result", content: "r" }] }] }
+  expect(firstWords(a, "anthropic")).toBe(firstWords(b, "anthropic"))
+  expect(firstWords({ input: [{ type: "function_call_output" }] }, "responses")).toBe("")
+  expect(firstWords({ input: [{ type: "message", role: "developer", content: "d" }, { role: "user", content: [{ type: "input_text", text: "go" }] }] }, "responses")).toBe("go")
+  expect(firstWords({ contents: [{ role: "user", parts: [{ text: "g" }] }] }, "gemini")).toBe("g")
+})
+
+test("a Responses request with no user message stays in the conversation it continues", async () => {
+  const rTools = [{ type: "function", name: "shell" }]
+  const open = { tools: rTools, input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "go" }] }] }
+  const cont = { tools: rTools, previous_response_id: "r1", input: [{ type: "function_call_output", call_id: "c", output: "x" }] }
+  const call = { status: "completed", output: [{ type: "function_call", name: "shell" }] }
+  const done = { status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }] }
+  await exchange("responses", open, call, { agent: "codex" })
+  minutes(4)
+  await exchange("responses", cont, done, { agent: "codex" })
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).title).toBe("✅ Codex done · magpie-plugins")
 })
 
 test("includeText adds the reply, cut to maxTextLength; lang zh", async () => {
@@ -120,12 +220,14 @@ test("cooldown: two turns closing within it send one push", async () => {
   expect(calls).toHaveLength(1)
 })
 
-test("other gateways' keys and agents off the list are left alone", async () => {
-  await exchange("anthropic", aUser, aFinal, { origin: "team-key", options: { minMinutes: 0 } })
+test("only local requests count unless allOrigins; agents off the list are left alone", async () => {
+  await exchange("anthropic", aUser, aFinal, { origin: "gateway-key", options: { minMinutes: 0 } })
+  await exchange("anthropic", aUser, aFinal, { session: "s1b", origin: "remote", options: { minMinutes: 0 } })
   await exchange("anthropic", aUser, aFinal, { session: "s2", options: { minMinutes: 0, agents: ["codex"] } })
   expect(calls).toHaveLength(0)
-  await exchange("anthropic", aUser, aFinal, { session: "s3", origin: "team-key", options: { minMinutes: 0, allOrigins: true } })
-  expect(calls).toHaveLength(1)
+  await exchange("anthropic", aUser, aFinal, { session: "s3", origin: "gateway-key", options: { minMinutes: 0, allOrigins: true } })
+  await exchange("anthropic", aUser, aFinal, { session: "s4", origin: "remote", options: { minMinutes: 0, allOrigins: true } })
+  expect(calls).toHaveLength(2)
 })
 
 test("no channel, no work", async () => {
@@ -134,16 +236,30 @@ test("no channel, no work", async () => {
   expect(c.state.notify).toBeUndefined()
 })
 
-test("a channel that answers an error code is reported unavailable", async () => {
+test("a channel that answers an error code is not ok", async () => {
   answer = () => Response.json({ errcode: 310000, errmsg: "sign not match" })
-  const r = await exchange("anthropic", aUser, aFinal, { options: { minMinutes: 0, channels: [{ type: "dingtalk", webhook: "https://oapi.dingtalk.com/robot/send?access_token=x" }] } })
-  expect(r).toEqual(["unavailable"])
+  expect((await send({ type: "dingtalk", webhook: "https://oapi.dingtalk.com/robot/send?access_token=x" }, m)).ok).toBe(false)
 })
 
 test("a thrown fetch never reaches the request", async () => {
   answer = () => { throw new Error("offline") }
-  const r = await exchange("anthropic", aUser, aFinal, { options: { minMinutes: 0 } })
-  expect(r).toEqual(["unavailable"])
+  expect(await exchange("anthropic", aUser, aFinal, { options: { minMinutes: 0 } })).toBeDefined()
+  expect(calls).toHaveLength(1)
+  expect((await send(ntfy, m)).ok).toBe(false)
+})
+
+test("the suggested options send nowhere until a topic is filled in", async () => {
+  const pkg = await Bun.file(new URL("./package.json", import.meta.url)).json()
+  expect(options(pkg.magpie.options).channels).toEqual([])
+})
+
+test("durations and agent names read well", () => {
+  const w = { s: "s", min: "min", h: "h" }
+  expect(duration(45_000, w)).toBe("45 s")
+  expect(duration(12 * 60_000, w)).toBe("12 min")
+  expect(duration(125 * 60_000, w)).toBe("2 h 5 min")
+  expect(duration(120 * 60_000, w)).toBe("2 h")
+  expect(message({ agent: "other", cwd: "" }, 60_000, true, "", options({})).title).toBe("✅ Other done")
 })
 
 // ---- the other APIs ----

@@ -10,7 +10,7 @@
   "magpie": {
     "hooks": "./notify.hooks.mjs",
     "options": {
-      "channels": [{ "type": "ntfy", "topic": "pick-a-long-random-topic" }],
+      "channels": [{ "type": "ntfy", "topic": "" }],
       "minMinutes": 3,
       "cooldownSeconds": 30,
       "errors": true,
