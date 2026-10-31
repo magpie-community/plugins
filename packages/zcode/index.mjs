@@ -257,6 +257,23 @@ async function plansOf(s) {
 // model for a minute, so one turn that is refused does not ask again.
 const blocked = new Map()
 
+// refused remembers the account's gift answering a freeFirst request with
+// a refusal: the replay answered from the plan, and the usage card says so
+// until the rest is out — a gift sitting idle beside a fat balance needs
+// the why. A blocked address says so for the route's ten minutes, a spent
+// answer for its minute, any other answer with its status.
+const refused = new Map()
+const REFUSED_TTL = 600_000
+const refusedId = (s) => s.key + "\0" + s.jwt
+const refusedWhy = (r) => ({ blocked: "the network's address is blocked", restricted: "ZCode restricted this account", spent: "its quota said spent" }[r.why] ?? r.why)
+function refusedLine(s) {
+  const r = refused.get(refusedId(s))
+  if (!r || Date.now() >= r.until) return null
+  const d = new Date(r.until)
+  const hhmm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0")
+  return { name: "ZCode's gift is refusing requests", used: 0, aside: true, display: `freeFirst answers from the coding plan until ${hhmm} (${refusedWhy(r)})` }
+}
+
 // giftServes: the gift's buckets name their models lowercased ("glm-5.3-
 // flash"); what is asked for arrives as the plan lists it ("GLM-5.3-Flash").
 const giftServes = (gift, m) => (gift.models ?? []).some((x) => x.toLowerCase() === m.toLowerCase())
@@ -2341,7 +2358,21 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 const raw = giftModel(gift, m)
                 const available = raw && giftUsable(s, gift, raw)
                 if (!available) {
-                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: raw ? `ZCode's limited quota for ${raw} is exhausted or temporarily unavailable` : `ZCode has no active limited quota for ${m}` }
+                  // the refused record says why the model rests: a blocked
+                  // address or a restricted account is not a rate limit and
+                  // not the quota — the reply carries the hint magpie's
+                  // gateway classifies the rest by. A model the gift never
+                  // serves keeps its own no-quota 400.
+                  const r = refused.get(refusedId(s))
+                  const blocked = raw && r && Date.now() < r.until && (r.why === "blocked" || r.why === "restricted")
+                  const said = blocked && r.why === "blocked"
+                    ? `ZCode's gift is blocked from this network — ${START_EDGE}`
+                    : blocked
+                      ? `ZCode's gift is restricted — ${START_RESTRICTED}`
+                      : raw
+                        ? `ZCode's limited quota for ${raw} is exhausted or temporarily unavailable`
+                        : `ZCode has no active limited quota for ${m}`
+                  const error = { type: blocked || !raw ? "invalid_request_error" : "rate_limit_error", message: said }
                   return kept(new Response(JSON.stringify({ type: "error", error }), { status: raw ? 429 : 400, headers: { "content-type": "application/json" } }))
                 }
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: raw })
@@ -2375,14 +2406,19 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
             const askedUrl = url
             const place = workPlace(h)
             const sid = sessionOf(h.get("x-session-id"), s.device)
-            // restModel is the gift saying this model has nothing left: the
-            // model rests a minute (blocked) and the route is dropped, so
-            // the requests behind it re-read the balance and go straight to
-            // the plan.
-            const restModel = () => {
+            // rest is the gift saying this model — or, with a blocked
+            // address, every model it serves — has nothing useful right
+            // now: each model rests for ms, the route read is dropped, and
+            // the refusal is recorded for the usage card to say why the
+            // gift sits idle.
+            const rest = (models, ms, why) => {
               for (const [k, until] of blocked) if (Date.now() >= until) blocked.delete(k)
-              blocked.set(s.key + "\0" + s.jwt + "\0" + asked.toLowerCase(), Date.now() + 60_000)
-              routes.delete(s.key + "\0" + s.jwt)
+              for (const [k, r] of refused) if (Date.now() >= r.until) refused.delete(k)
+              const id = refusedId(s)
+              const until = Date.now() + ms
+              for (const m of models) blocked.set(id + "\0" + m.toLowerCase(), until)
+              routes.delete(id)
+              refused.set(id, { until, why })
             }
             // replayOnPlan is free first's answer to a gift that refused
             // what its own balance read had promised: the model as the
@@ -2466,7 +2502,12 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 // none) reads its plans again on the next request, so a
                 // coding plan that is there after all is used (#369)
                 if (freeGift) {
-                  restModel()
+                  // what the card says must say what happened: a block page
+                  // is the network's address being refused (every model the
+                  // gift serves rests for the route's ten minutes, so the
+                  // fallback costs nothing while it holds); ZCode's own 3012
+                  // is the account restricted, not the address
+                  rest(giftNames(known), REFUSED_TTL, EDGE_PAGE.test(text) ? "blocked" : "restricted")
                   return done(kept(await replayOnPlan()))
                 }
                 if (s.key && !forcedGift) routes.delete(s.key + "\0" + s.jwt)
@@ -2517,15 +2558,22 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 const cap = busy(res.status, text)
                 const spent = !cap && spentUp(text, res.status)
                 if (spent) {
-                  restModel()
+                  rest([asked], 60_000, "spent")
                   return done(kept(await replayOnPlan()))
                 }
                 if (res.status >= 400) {
                   if (!cap && (res.status === 401 || res.status === 403)) routes.delete(s.key + "\0" + s.jwt)
+                  // the card's line must hold for the rest it declares: the
+                  // asked model rests the minute with the record. The gift's
+                  // own waited-out cap is a turn not come, not a refusal.
+                  if (!cap) rest([asked], 60_000, "it answered " + res.status)
                   return done(kept(await replayOnPlan()))
                 }
+                refused.delete(refusedId(s))
                 return done(kept(res, text))
               }
+              // a stream's 200 is the gift answering again
+              refused.delete(refusedId(s))
             }
             // the plan's answer goes on as it came, the account kept: the
             // built-in never marked a ZCode account lapsed nor cleared one
@@ -2587,6 +2635,10 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
             // -Trial models, said on the card rather than left out unsaid
             const need = start ? null : giftSignIn(s, auth?.type === "api")
             if (need) card.windows = [...(card.windows ?? []), need]
+            // a gift refusing freeFirst's requests while its balance looks
+            // fat: the card says the plan is answering, and until when
+            const refusal = refusedLine(s)
+            if (refusal) card.windows = [...(card.windows ?? []), refusal]
           }
           return card
         } catch (e) {
@@ -2650,4 +2702,4 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY }
+export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, refused, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY }
