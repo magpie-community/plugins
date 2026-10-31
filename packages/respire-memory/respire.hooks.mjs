@@ -60,7 +60,7 @@ function block(data, budget) {
   let text = encode(data);
   while (bytes(text) > budget && data.memories?.length) { data.memories.pop(); text = encode(data); }
   if (bytes(text) > budget && data.rules) throw new Failure('invalid');
-  if (bytes(text) > budget) text = encode({ storage: data.storage ? { status: data.storage.status, message: '请通过 Respire 检查存储回执，勿重复写入。' } : undefined });
+  if (bytes(text) > budget) text = encode({ storage: data.storage ? { status: data.storage.status, message: 'Check the storage receipt through Respire; do not write again.' } : undefined });
   return text;
 }
 
@@ -77,12 +77,12 @@ async function prepare(o, query, signal, entry, extra = {}, priorPolicy) {
   if (entry.policyHash !== priorPolicy) data.rules = rules;
   data.reads = { recall: recalled.status === 'skip' ? 'skipped' : 'complete', policy: 'complete', policyHash: entry.policyHash };
   data.workflow = { archive: o.archive, generationConfigured: !!(o.generationBaseUrl && o.generationModel),
-    note: o.readOnly ? '只读，禁止写入。' : !o.archive ? '归档已关闭，未满足每轮读存流程。'
-      : !o.generationBaseUrl || !o.generationModel ? '尚未配置归档模型，不能完成每轮存储。'
-      : '完成回合后后台存检；未收到完成回执前不得声称已保存。' };
+    note: o.readOnly ? 'Read-only; writing is forbidden.' : !o.archive ? 'Archiving is off; the per-turn read-and-store flow is not satisfied.'
+      : !o.generationBaseUrl || !o.generationModel ? 'No archive model is configured; the per-turn store cannot complete.'
+      : 'The background storage check runs after the turn completes; do not claim it was saved before the completion receipt arrives.' };
   if (STORE_PREFIX.test(query) && o.remember) {
     data.storage = { status: o.readOnly || !o.archive ? 'skipped' : 'pending',
-      message: o.readOnly || !o.archive ? '未启用可写归档，未提交存储。' : '本轮完成后后台先查政策和候选，再判级存储；当前尚未写入。' };
+      message: o.readOnly || !o.archive ? 'No writable archive is enabled; nothing was submitted for storage.' : 'After this turn, the background reads policy and candidates first, then classifies and stores; nothing has been written yet.' };
     entry.storage = data.storage;
   }
   if (recalled.status === 'skip') return block(data, o.maxBytes);
@@ -109,7 +109,7 @@ async function prepare(o, query, signal, entry, extra = {}, priorPolicy) {
   }));
   data.memories = records.filter(Boolean);
   if (o.showMemoryStatus) data.display = { notice: `Memory: ${data.memories.length} found`,
-    instruction: '仅非严格格式时显示简短状态。实际采用且已读正文才报告 Used: 真实短ID [basis|ref|history]（简短标题），默认ref；评分不是可信度，写后回读仅证明落库。未采用不编造Used。', priorSave: extra.priorSave };
+    instruction: 'Show the brief status only when the output format is not strict. Report Used: with the real short ID [basis|ref|history] (short title) only when memory is actually adopted and its body was read, defaulting to ref; scores are not confidence, and a write-then-read-back only proves the write landed. Never fabricate a Used line when nothing was adopted.', priorSave: extra.priorSave };
   return block(data, o.maxBytes);
 }
 
@@ -185,7 +185,7 @@ export async function onRequest(body, ctx) {
     retain(cache, key, entry);
     entry.pending = store.change(durableKey, async (saved, persist) => {
       if (saved?.phase === 'done') { entry.storage = saved.storage; entry.policyHash = saved.policyHash; return saved.text; }
-      if (saved?.phase === 'writing') return block({ storage: { status: 'uncertain', message: '该回合曾开始写入，结果未确认。先查库核实，禁止重试写入。' } }, o.maxBytes);
+      if (saved?.phase === 'writing') return block({ storage: { status: 'uncertain', message: 'This turn started a write whose result is unconfirmed. Verify against the store first; retrying the write is forbidden.' } }, o.maxBytes);
       await persist({ phase: 'processing' });
       entry.beforeWrite = () => persist({ phase: 'writing' });
       const extra = {};

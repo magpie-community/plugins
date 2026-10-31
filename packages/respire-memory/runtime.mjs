@@ -83,9 +83,9 @@ export async function rpc(o, args, signal) {
 }
 
 export function receipt(doc) {
-  if (doc.status === 'skip') return { status: 'skipped', message: '引擎跳过存储，遵循其只读或暂停状态。' };
+  if (doc.status === 'skip') return { status: 'skipped', message: 'The engine skipped the store; follow its read-only or paused state.' };
   if (doc.status === 'ok' && validId(doc.summary?.id)) return { status: 'stored', id: doc.summary.id };
-  if (doc.status === 'pending') return { status: 'pending', message: '尚未写入；需读候选后决定更新、合并或挂靠，不要强制重复存储。',
+  if (doc.status === 'pending') return { status: 'pending', message: 'Nothing was written yet; read the candidates and decide to update, merge, or attach — never force a duplicate store.',
     candidates: (Array.isArray(doc.items) ? doc.items : []).slice(0, 5).filter(x => !containsSecret(JSON.stringify(x))).map(x => ({ name: String(x.name).slice(0, 80), value: String(x.value).slice(0, 180) })) };
-  return { status: 'uncertain', message: '结果未确认，可能已写入；请先查库，禁止自动重试。' };
+  return { status: 'uncertain', message: 'The result is unconfirmed and it may already have been written; check the store first — automatic retries are forbidden.' };
 }

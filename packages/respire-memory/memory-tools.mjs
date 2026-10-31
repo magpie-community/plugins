@@ -9,7 +9,7 @@ export const TOOL = {
   inputSchema: { type: 'object', properties: { command: { type: 'string', enum: [...READ, ...WRITE] }, args: { type: 'array', items: { type: 'string' } } }, required: ['command', 'args'], additionalProperties: false },
 }
 
-// 日记检索只开放固定预算的只读参数，不能由模型扩大成整库正文读取。
+// Diary reads expose only fixed-budget read-only options; the model must not widen them into whole-store body reads.
 function boundedDiaryArgs(command, args) {
   const search = command === 'diary-search'
   const positional = search ? 1 : 2

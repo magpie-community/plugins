@@ -65,7 +65,7 @@ export async function processJob(store, name, { model, call: injectedCall } = {}
     };
     let diary;
     if (job.o.capture) {
-      await rawCall(['recall', '回合过程采集', '--titles', '--limit', '1']);
+      await rawCall(['recall', 'turn process capture', '--titles', '--limit', '1']);
       const policy = await rawCall(['prompt']);
       if (policy.status !== 'ok' || typeof policy.summary?.instructions !== 'string' || !policy.summary.instructions.trim()) throw new Error('invalid-engine-policy');
       await beforeWrite();
