@@ -55,6 +55,7 @@ These packages aren't OpenCode plugins. magpie runs them in its gateway, on the 
 | [antigravity-cloak](packages/antigravity-cloak) | Claude Code and Claude Desktop on Antigravity: break the words Antigravity turns their system prompt away for, in what Antigravity alone is sent |
 | [codex-history](packages/codex-history) | Opt-in Responses history compatibility after switching providers: remove historical ciphertext and optional item IDs while preserving readable content and tool-call pairing |
 | [history-trim](packages/history-trim) | Send a request's history smaller: fold a run of blank lines, drop a system prompt written twice and a message repeated right after itself, and cut a past tool result longer than `maxToolLength` at a word boundary |
+| [compress-core](packages/compress-core) | Send a request's history smaller with three lossless strategies: whitespace and repeated lines, text already sent earlier in the session, and tabular JSON folded to a columnar summary. Strict prefix stability keeps the provider's prompt cache reusable |
 
 ```sh
 magpie plugin add @magpie-community/middleware-<name>
@@ -352,6 +353,13 @@ A version bump pushed to `main` ships itself, two ways
   version: a new package, or one npm refused. It installs a tarball only
   when the sha512 matches. This needs nobody, so **a new plugin is merged
   as soon as its review is done**; it never waits for npm.
+- **page files**: a package that ships files it builds names the build in
+  `scripts.build:page` and pins `esbuild` exactly in `devDependencies`. The
+  test job -- which cannot push -- builds them (`scripts/build-pages.mjs`)
+  and uploads them; the dist job copies them into the package before packing,
+  and never runs a package's own scripts itself. Commit the small build
+  outputs (a generated catalog) with a test that regenerates and compares
+  them; leave the large ones (a page bundle) to this step.
 - **npm**: every version npm doesn't have yet is published. npm tries
   trusted publishing (OIDC) first, which needs the package to name
   `publish.yml` as its Trusted Publisher on npmjs.com with `npm publish`
