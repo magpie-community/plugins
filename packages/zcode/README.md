@@ -182,8 +182,11 @@ requests behind it go straight to the plan. The `-Trial` entries keep
 their own strict semantics —
 asking one is still an explicit pick of the gift alone, never the plan;
 a spent one answers 429 with freeFirst on, as it does without it, and
-one asked while the gift is blocked or restricted says that, not a
-quota.
+one asked while the gift is blocked or restricted says that with the
+block's own hint ("…the provider's network firewall blocked requests
+from this IP…" / "…ZCode's risk control blocked this account…") and an
+error type that is not a rate limit, so the gateway rests the route by
+what happened; a model the gift never serves keeps its no-quota 400.
 
 ## A few at once
 

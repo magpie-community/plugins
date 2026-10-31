@@ -465,8 +465,58 @@ test("a blocked gift's -Trial entry says the network is blocked, not the quota",
   const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash-Trial") })
   expect(res.status).toBe(429)
   const said = await res.json()
-  expect(said.error.message).toContain("blocked from this network")
+  // an address block is not a rate limit: magpie classifies by the type
+  expect(said.error.type).toBe("invalid_request_error")
+  expect(said.error.message).toContain("network firewall blocked requests from this IP")
   expect(said.error.message).not.toContain("quota")
+})
+
+test("a restricted gift's -Trial entry says the account is restricted", async () => {
+  planAndBalance()
+  answers["/api/monitor/usage/quota/limit"] = ok({ limits: [{ type: "CREDIT_LIMIT", unit: 6, number: 1, percentage: 20 }] })
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ error: { message: "request has been blocked due to unusual activity", code: 3012 } }), { status: 405, headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const h = await freePlugin({ freeFirst: true })
+  const opts = await h.loader(async () => coding, { id: "zcode" })
+  await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash-Trial") })
+  expect(res.status).toBe(429)
+  const said = await res.json()
+  expect(said.error.type).toBe("invalid_request_error")
+  expect(said.error.message).toContain("risk control blocked this account")
+})
+
+test("a spent gift's -Trial entry keeps its quota reply", async () => {
+  planAndBalance()
+  answers["/api/monitor/usage/quota/limit"] = ok({ limits: [{ type: "CREDIT_LIMIT", unit: 6, number: 1, percentage: 20 }] })
+  // the freeFirst plain request hears the gift say its quota is spent, and
+  // the trial entry after it is answered from that rest, locally
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ error: { message: "Insufficient balance or no resource package", code: 1113 } }), { status: 429, headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const h = await freePlugin({ freeFirst: true })
+  const opts = await h.loader(async () => coding, { id: "zcode" })
+  await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash-Trial") })
+  expect(res.status).toBe(429)
+  const said = await res.json()
+  expect(said.error.type).toBe("rate_limit_error")
+  expect(said.error.message).toContain("limited quota")
+})
+
+test("a -Trial entry the gift never serves keeps its no-quota 400", async () => {
+  planAndBalance()
+  answers["/api/monitor/usage/quota/limit"] = ok({ limits: [{ type: "CREDIT_LIMIT", unit: 6, number: 1, percentage: 20 }] })
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response('<!doctypehtml><html lang="zh-cn"><title>405</title>errors.aliyun.com</html>', { status: 405 })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const h = await freePlugin({ freeFirst: true })
+  const opts = await h.loader(async () => coding, { id: "zcode" })
+  await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.2-Trial") })
+  expect(res.status).toBe(400)
+  const said = await res.json()
+  expect(said.error.type).toBe("invalid_request_error")
+  expect(said.error.message).toContain("no active limited quota")
+  expect(said.error.message).not.toContain("blocked")
 })
 
 test("a gift success clears the card's refusal line", async () => {

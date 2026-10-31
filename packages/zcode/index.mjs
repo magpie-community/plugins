@@ -2359,17 +2359,20 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 const available = raw && giftUsable(s, gift, raw)
                 if (!available) {
                   // the refused record says why the model rests: a blocked
-                  // address or a restricted account is not the quota, and
-                  // the agent should read the truth
+                  // address or a restricted account is not a rate limit and
+                  // not the quota — the reply carries the hint magpie's
+                  // gateway classifies the rest by. A model the gift never
+                  // serves keeps its own no-quota 400.
                   const r = refused.get(refusedId(s))
-                  const live = r && Date.now() < r.until
-                  const quota = raw ? `ZCode's limited quota for ${raw} is exhausted or temporarily unavailable` : `ZCode has no active limited quota for ${m}`
-                  const said = live && r.why === "blocked"
-                    ? "ZCode's gift is blocked from this network; wait a while, or switch to another network or proxy"
-                    : live && r.why === "restricted"
-                      ? "ZCode's gift is restricted by its risk control (code 3012); only ZCode support lifts it"
-                      : quota
-                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: said }
+                  const blocked = raw && r && Date.now() < r.until && (r.why === "blocked" || r.why === "restricted")
+                  const said = blocked && r.why === "blocked"
+                    ? `ZCode's gift is blocked from this network — ${START_EDGE}`
+                    : blocked
+                      ? `ZCode's gift is restricted — ${START_RESTRICTED}`
+                      : raw
+                        ? `ZCode's limited quota for ${raw} is exhausted or temporarily unavailable`
+                        : `ZCode has no active limited quota for ${m}`
+                  const error = { type: blocked || !raw ? "invalid_request_error" : "rate_limit_error", message: said }
                   return kept(new Response(JSON.stringify({ type: "error", error }), { status: raw ? 429 : 400, headers: { "content-type": "application/json" } }))
                 }
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: raw })
