@@ -25,7 +25,7 @@ export function options(raw = {}) {
       url.href.includes('@') || url.search || url.hash || url.pathname !== '/') throw new Failure('invalid');
   const o = { url: url.href, project: raw.project ?? '', timeout: raw.requestTimeoutMs ?? 1500,
     maxBytes: raw.maxBytes ?? 8000, limit: raw.limit ?? 3, remember: raw.remember ?? true, capture: raw.capture ?? false,
-    readOnly: raw.readOnly ?? false, archive: raw.archive ?? true, showMemoryStatus: raw.showMemoryStatus ?? true,
+    readOnly: raw.readOnly ?? false, archive: raw.archive ?? true, showMemoryStatus: raw.showMemoryStatus ?? false,
     injectRules: raw.injectRules ?? true, stateDir: raw.stateDir ?? '', generationBaseUrl: raw.generationBaseUrl ?? '',
     generationModel: raw.generationModel ?? '', authorizationEnv: raw.authorizationEnv ?? 'RESPIRE_MAGPIE_AUTHORIZATION' };
   if (typeof o.project !== 'string' || o.project.length > 256 || /[\x00-\x1f\x7f]/.test(o.project) ||
@@ -51,7 +51,7 @@ export async function rpc(o, args, signal) {
   let response;
   try {
     response = await fetch(new URL('api/rpc', o.url), { method: 'POST', redirect: 'error', signal: combined,
-      headers: { 'Content-Type': 'application/json', 'User-Agent': 'respire-magpie/0.1.0' },
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'respire-runtime-client' },
       body: JSON.stringify({ v: 1, id, method: 'cli.exec', args: ['--json', ...args], queue_wait_ms: Math.min(500, o.timeout) }) });
   } catch { throw new Failure('unavailable'); }
   if (!response.ok) {

@@ -6,7 +6,7 @@ export async function generate(o, messages, tools, signal) {
   const local = ['127.0.0.1', '[::1]'].includes(url.hostname);
   if (url.href.includes('@') || url.search || url.hash || !(url.protocol === 'https:' || local && url.protocol === 'http:')) throw new Error('invalid-generation-url');
   url.pathname = url.pathname.replace(/\/$/, '') + '/chat/completions';
-  const headers = { 'Content-Type': 'application/json', 'User-Agent': 'respire-magpie-worker/0.2.0' };
+  const headers = { 'Content-Type': 'application/json', 'User-Agent': 'respire-memory' };
   const token = process.env[o.authorizationEnv];
   if (token) headers.Authorization = /^Bearer /i.test(token) ? token : `Bearer ${token}`;
   const response = await fetch(url, { method: 'POST', redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(60000)]), headers,

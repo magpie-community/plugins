@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { options, rpc, Failure, bytes, validId, containsSecret, hasSecret, STORE_PREFIX, SKIP_PREFIX } from './runtime.mjs';
 import { conversation } from './conversation.mjs';
 import { Store, stateDirectory, accountIdentity, digest } from './state.mjs';
-import { enqueue, wakeQueue } from './queue.mjs';
+import { enqueue, wakeQueue, controlSignature } from './queue.mjs';
 import { RULES, WORKER_MARKER } from './policy.mjs';
 
 const open = '<respire-reference>';
@@ -12,6 +12,8 @@ const references = /\n{0,2}<respire-reference>\nRespire host-supplied context\.[
 const policies = /\n{0,2}<respire-policy>\n[\s\S]*?\n<\/respire-policy>/g;
 const cache = new Map();
 const captured = new Map();
+const recovered = new Set();
+const maintained = new Map();
 const trusted = ctx => ['local', 'magpie-key'].includes(ctx.origin);
 const hash = (...parts) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 const clean = text => text.replace(references, '').replace(policies, '');
@@ -52,7 +54,7 @@ function block(data, budget) {
   // Complete engine policy has its own bounded allowance; legacy recall budgets must not truncate it.
   const policyBytes = data.rules ? bytes(JSON.stringify(data.rules)) : 0;
   if (policyBytes > 128 * 1024) throw new Failure('invalid');
-  const encode = ({ rules, ...value }) => (rules ? `\n\n<respire-policy>\n${rules}\n\n【Magpie宿主执行回执】本轮网关已执行召回（/nomem除外）、完整政策读取及选中正文读取。你须阅读这些内容，但不必重复宿主已执行的命令。客户端未提供记忆工具时，不得虚构Shell、exec_command或任何工具调用；按用户原任务和输出格式回答。每轮存检由回复完成后的独立worker执行，结果以真实回执为准；这不保证回复发出前已落库。\n</respire-policy>` : '')
+  const encode = ({ rules, ...value }) => (rules ? `\n\n<respire-policy>\n${rules}\n\n【宿主执行回执】本轮网关已执行召回（/nomem除外）、完整政策读取及选中正文读取。你须阅读这些内容，但不必重复宿主已执行的命令。客户端未提供记忆工具时，不得虚构Shell、exec_command或任何工具调用；按用户原任务和输出格式回答。每轮存检由回复完成后的独立worker执行，结果以真实回执为准；这不保证回复发出前已落库。\n</respire-policy>` : '')
     + `\n\n${open}\n${notice}\n\n${JSON.stringify(value).replace(/</g, '\\u003c')}\n${close}`;
   budget += bytes(encode({ rules: data.rules })) - bytes(encode({}));
   let text = encode(data);
@@ -103,15 +105,17 @@ async function prepare(o, query, signal, entry, extra = {}) {
   data.memories = records.filter(Boolean);
   if (o.showMemoryStatus) data.display = { notice: `Memory: ${data.memories.length} found`,
     instruction: '仅非严格格式时显示简短状态。实际采用且已读正文才报告 Used: 真实短ID [basis|ref|history]（简短标题），默认ref；评分不是可信度，写后回读仅证明落库。未采用不编造Used。', priorSave: extra.priorSave };
-  return data.memories.length || Object.keys(extra).length || o.showMemoryStatus ? block(data, o.maxBytes) : '';
+  return block(data, o.maxBytes);
 }
 
 export async function onRequest(body, ctx) {
   if (!trusted(ctx)) { ctx.report?.('skipped'); return; }
-  if (JSON.stringify(body).includes(WORKER_MARKER)) { ctx.report?.('skipped'); return; }
+  if (ctx.protocol === 'chat' && body.messages?.[0]?.role === 'system' && typeof body.messages[0].content === 'string'
+      && body.messages[0].content.startsWith(WORKER_MARKER + '\n')) { ctx.report?.('skipped'); return; }
   let o;
   try { o = options(ctx.options); }
   catch { ctx.report?.('invalid'); return; }
+  const configuredArchive = o.archive && !!(o.generationBaseUrl && o.generationModel);
   const changed = structuredClone(body);
   const all = turns(changed, ctx.protocol);
   const users = all.filter(t => t.role === 'user');
@@ -119,35 +123,52 @@ export async function onRequest(body, ctx) {
   const latest = query ? users.findLast(t => clean(t.text).includes(query)) ?? users.at(-1) : users.at(-1);
   if (!latest) { ctx.report?.('skipped'); return; }
   const opening = clean(users[0].text);
-  const identity = hash(o, ctx.protocol, ctx.origin, ctx.session ?? '', ctx.cwd ?? '', opening);
+  const identity = hash({ url: o.url, project: o.project, limit: o.limit, maxBytes: o.maxBytes }, ctx.protocol, ctx.origin, ctx.session ?? '', ctx.cwd ?? '', opening);
   const keyOf = t => hash(account, identity, t.index, clean(t.text));
   const originalQuery = clean(latest.text).trim();
   let account, store, sessionKey, session;
   try {
     account = await accountIdentity(o, args => rpc(o, args, ctx.signal));
     store = new Store(stateDirectory(o)); sessionKey = digest(account, identity);
-    session = await store.get('session-' + sessionKey) ?? {};
-    await store.put('control-' + digest(account, o.url, o.project), { readOnly: o.readOnly, archive: o.archive, capture: o.capture });
-    if ((o.archive || o.capture) && !o.readOnly) wakeQueue(o);
+    session = o.showMemoryStatus ? await store.get('session-' + sessionKey) ?? {} : {};
+    const controlName = 'control-' + digest(account, o.url, o.project);
+    const changedControl = c => !c || c.signature !== controlSignature(o) || Date.now() - (c.updatedAt ?? 0) > 30000;
+    if (changedControl(await store.get(controlName))) await store.change(controlName, async (current, save) => {
+      if (changedControl(current)) await save({ readOnly: o.readOnly, archive: o.archive, capture: o.capture, signature: controlSignature(o), updatedAt: Date.now() });
+    });
+    if (Date.now() - (maintained.get(store.dir) ?? 0) > 3600000) { maintained.set(store.dir, Date.now()); await store.prune(); }
+    if ((configuredArchive || o.capture) && !o.readOnly && !recovered.has(store.dir)) {
+      recovered.add(store.dir);
+      for (const name of await store.jobs()) if (['queued', 'running'].includes((await store.get(name))?.status)) { wakeQueue(o); break; }
+    }
   } catch { ctx.report?.('unavailable'); return; }
-  if ((o.capture || o.archive) && !o.readOnly && !containsSecret(originalQuery)) {
+  if ((o.capture || configuredArchive) && !o.readOnly && !containsSecret(originalQuery)) {
     ctx.state ??= {};
     ctx.state.respire = { body: structuredClone(body), o, key: digest(account, keyOf(latest)), account, sessionKey,
       storeRequest: STORE_PREFIX.test(originalQuery) };
   }
   let modified = false;
+  const priorTurn = async t => {
+    let prior = cache.get(keyOf(t));
+    if (!prior) {
+      const saved = await store.get('turn-' + digest(account, keyOf(t)));
+      if (saved?.phase === 'done' && saved.text) {
+        prior = { text: saved.text, storage: saved.storage, bytes: bytes(saved.text) }; retain(cache, keyOf(t), prior);
+      }
+    }
+    return prior;
+  };
   for (const t of users) {
-    if (t === latest || t.text.includes(open)) continue;
-    const prior = cache.get(keyOf(t));
-    if (prior?.text) { t.append(prior.text); modified = true; }
+    if (t === latest) continue;
+    const prior = await priorTurn(t);
+    if (prior?.text && !t.text.endsWith(prior.text)) { t.append(prior.text); modified = true; }
   }
   if (all.at(-1) !== latest) {
-    const prior = cache.get(keyOf(latest));
-    if (prior?.text && !latest.text.includes(open)) { latest.append(prior.text); modified = true; }
+    const prior = await priorTurn(latest);
+    if (prior?.text && !latest.text.endsWith(prior.text)) { latest.append(prior.text); modified = true; }
     ctx.report?.('skipped');
     return modified ? changed : undefined;
   }
-  if (latest.text.includes(open)) { ctx.report?.('skipped'); return modified ? changed : undefined; }
   const q = Array.from(query || originalQuery).slice(0, 8000).join('');
   if (!q || containsSecret(originalQuery)) { ctx.report?.('skipped'); return modified ? changed : undefined; }
   const key = keyOf(latest), durableKey = 'turn-' + digest(account, key);
@@ -165,8 +186,10 @@ export async function onRequest(body, ctx) {
       if (o.showMemoryStatus && session.lastArchive && session.lastArchive.source !== session.reportedSource) extra.priorSave = session.lastArchive;
       const text = await prepare(o, STORE_PREFIX.test(originalQuery) ? originalQuery : q, ctx.signal, entry, extra);
       await persist({ phase: 'done', text, storage: entry.storage });
-      await store.change('session-' + sessionKey, async (current = {}, save) => save({ ...current, rulesSent: true,
-        reportedSource: session.lastArchive?.source ?? current.reportedSource }));
+      if (extra.priorSave) {
+        try { await store.change('session-' + sessionKey, async (current = {}, save) => save({ ...current, reportedSource: extra.priorSave.source })); }
+        catch { ctx.report?.('session-notification-failed'); }
+      }
       return text;
     }).then(text => {
       entry.text = text; entry.bytes = bytes(text); entry.pending = undefined;
@@ -177,7 +200,7 @@ export async function onRequest(body, ctx) {
     if (entry.pending) await entry.pending;
     if (ctx.state?.respire) ctx.state.respire.storage = entry.storage;
     ctx.signal?.throwIfAborted();
-    if (entry.text) { latest.append(entry.text); modified = true; }
+    if (entry.text && !latest.text.endsWith(entry.text)) { latest.append(entry.text); modified = true; }
     ctx.report?.(entry.text ? 'ready' : 'empty', entry.bytes);
     return modified ? changed : undefined;
   } catch (error) {
@@ -196,7 +219,7 @@ export async function onResponse(reply, ctx) {
   const doc = conversation(state.body, reply, ctx.protocol);
   if (!doc) return;
   const lastUser = doc.messages.findLastIndex(m => m.role === 'user');
-  const content = JSON.stringify({ schema: 'respire.magpie.turn.v1', source: state.key, protocol: ctx.protocol, messages: doc.messages.slice(lastUser) });
+  const content = JSON.stringify({ schema: 'respire.memory.turn.v1', source: state.key, protocol: ctx.protocol, messages: doc.messages.slice(lastUser) });
   if (hasSecret(doc.messages) || bytes(content) > 2 * 1024 * 1024) { ctx.report?.('skipped'); return; }
   // Notifications are best-effort; never replay a write with an uncertain result.
   retain(captured, state.key, { bytes: 0 });

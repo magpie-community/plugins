@@ -1,7 +1,8 @@
-import { mkdir, open, readFile, rename, unlink, readdir, link } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, unlink, readdir, link, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
+import { acquireLock } from './lock.mjs';
 
 export const digest = (...parts) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 export const stateDirectory = o => o.stateDir || join(homedir(), '.rsrs', 'magpie');
@@ -52,9 +53,43 @@ export class Store {
   async change(name, fn) {
     await this.key();
     const path = this.path(name) + '.lock';
-    const handle = await open(path, 'wx', 0o600);
+    const release = await acquireLock(path);
     try { return await fn(await this.get(name), value => this.put(name, value)); }
-    finally { await handle.close(); await unlink(path); }
+    finally { await release(); }
+  }
+  async prune(now = Date.now()) {
+    await this.key();
+    let release;
+    try { release = await acquireLock(join(this.dir, 'prune.lock'), { waitMs: 0 }); }
+    catch (error) { if (error.message === 'lock-busy') return; throw error; }
+    try {
+    for (const file of await readdir(this.dir)) {
+      if (!/^(?:turn|session|job)-[a-f0-9]{64}\.json$/.test(file)) continue;
+      const name = file.slice(0, -5);
+      let age;
+      try { age = now - (await stat(this.path(name))).mtimeMs; } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+      if (name.startsWith('job-')) {
+        if (age < 86400000) continue;
+        await this.change(name, async (job, save) => {
+          if (!job || !['completed', 'unconfirmed', 'expired'].includes(job.status)) return;
+          const retentionAt = job.retentionAt ?? job.finishedAt ?? job.createdAt ?? new Date(now - age).toISOString();
+          const lifetime = now - Date.parse(retentionAt);
+          if (!Number.isFinite(lifetime)) throw new Error('invalid-retention-time');
+          if (lifetime < 86400000) return;
+          if (job.messages) { const { messages, ...receipt } = job; await save({ ...receipt, retentionAt, evidenceExpired: true }); }
+          // Unknown writes retain their compact receipt and are never made replayable by expiry.
+          if (job.status !== 'unconfirmed' && lifetime > 7 * 86400000) await unlink(this.path(name));
+        });
+      } else if (age > 7 * 86400000) await this.change(name, async value => {
+        if (now - (await stat(this.path(name))).mtimeMs < 7 * 86400000) return;
+        if (value?.phase === 'writing' || value?.storage?.status === 'uncertain') {
+          if (value.text) { const { text, ...marker } = value; await this.put(name, marker); }
+          return;
+        }
+        await unlink(this.path(name));
+      });
+    }
+    } finally { await release(); }
   }
   async jobs() {
     await this.key();

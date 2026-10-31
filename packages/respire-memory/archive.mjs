@@ -10,7 +10,7 @@ const rules = `${WORKER_MARKER}\n${RULES}\n你只整理这一回合的记忆，�
 export async function archiveTurn(job, { call, signal, progress = async () => {}, model = generate } = {}) {
   const memory = memoryTools(call, { readOnly: job.o.readOnly });
   const startup = [];
-  const query = job.messages.findLast(m => m.role === 'user')?.content ?? job.o.project ?? 'Magpie';
+  const query = job.messages.findLast(m => m.role === 'user')?.content ?? job.o.project ?? '回合记忆';
   for (const input of [{ command: 'recall', args: [Array.from(query).slice(0, 1000).join(''), '--titles', '--limit', '5'] },
     { command: 'prompt', args: [] }, { command: 'agent-config', args: [] }]) {
     const output = await memory.run(input);

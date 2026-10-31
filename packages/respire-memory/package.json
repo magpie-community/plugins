@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-respire-memory",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "description": "帮助 AI Agent 通过记忆召回、经验积累与后台归档持续自进化",
   "type": "module",
   "license": "MIT",
@@ -13,10 +13,10 @@
   "files": [
     "respire.hooks.mjs",
     "runtime.mjs",
+    "lock.mjs",
     "conversation.mjs",
     "page",
     "README.md",
-    "docs",
     "LICENSE",
     "NOTICE",
     "state.mjs",
@@ -44,7 +44,7 @@
       "capture": false,
       "readOnly": false,
       "archive": true,
-      "showMemoryStatus": true,
+      "showMemoryStatus": false,
       "injectRules": true,
       "generationBaseUrl": "",
       "generationModel": "",
@@ -60,7 +60,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/risense-ai/respire-magpie.git"
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/respire-memory"
   },
   "homepage": "https://github.com/risense-ai/respire-magpie#readme",
   "bugs": {

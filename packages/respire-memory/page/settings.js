@@ -11,7 +11,7 @@ magpie.ready.then(async () => {
     $('capture').checked = o.capture === true;
     $('readOnly').checked = o.readOnly === true;
     $('archive').checked = o.archive !== false;
-    $('showMemoryStatus').checked = o.showMemoryStatus !== false;
+    $('showMemoryStatus').checked = o.showMemoryStatus === true;
     for (const name of ['generationBaseUrl', 'generationModel', 'stateDir']) $(name).value = o[name] ?? '';
     $('authorizationEnv').value = o.authorizationEnv ?? 'RESPIRE_MAGPIE_AUTHORIZATION';
     $('save').disabled = false;
