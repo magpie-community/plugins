@@ -43,10 +43,12 @@ provider. It needs **Magpie 0.1.1273 or newer** and Bun; from **Magpie
 1. **Deploy Aelios yourself.** Follow the
    [Aelios README](https://github.com/wusaki0723/Aelios#readme). The plugin
    needs an Aelios that has the hook endpoints, `POST /v1/hook/recall` and
-   `POST /v1/hook/record`. **TODO before the pull request: the first Aelios
-   commit/version with these endpoints** (they come after `aa46c15` on
-   `main`). An older Aelios answers 404; the plugin then leaves requests alone
-   and shows *unavailable*.
+   `POST /v1/hook/record`, including the recall endpoint's explicit `record`
+   permission added in [commit a57269c](https://github.com/sakisakisa-design/Aelios/commit/a57269c)
+   ([Aelios PR #102](https://github.com/wusaki0723/Aelios/pull/102)).
+   Deploy that commit or a later version containing it; omitting `record`
+   saves no user message or remember-now memory. An older Aelios without these endpoints
+   answers 404; the plugin then leaves requests alone and shows *unavailable*.
 2. **Add your agents' model names to the assistant's main models** in Aelios
    `/admin` (or use `*`). Aelios only recalls and records for its main
    models; for anything else it answers `off` and the plugin shows
@@ -80,8 +82,11 @@ sent empty), images, files or audio (replaced by `[image]`, `[file]`,
 arguments. Only turns where the user said something are recalled; tool steps
 are not sent at all.
 
-**`record` is off by default.** If you want Aelios to remember your
-conversations, turn it on:
+**`record` is off by default.** Recall sends `record: false`, so Aelios
+searches existing memories without saving the user's words or creating new
+memories. This requires an Aelios hook endpoint that honors the `record`
+permission; upgrade older hook endpoints before using the plugin.
+If you want Aelios to remember your conversations, turn it on:
 
 ```sh
 magpie plugin options aelios '{"serverUrl":"https://<your-aelios>.workers.dev","gatewayTimeoutMs":5000,"record":true}'
@@ -91,9 +96,10 @@ With `record` on, after each reply the slimmed request and the completed
 reply are sent to Aelios: what you said, what the assistant said, and the
 arguments of its tool calls. Tool results are not sent. For coding agents
 (Claude Code, Codex, OpenCode, …) Aelios replaces code blocks with `[code]`.
-A turn that looks like it contains a credential (an API key, a token, a
-private key, `password=`…) is not recorded at all. Each record is sent once
-and never retried.
+A request whose slimmed conversation looks like it contains a credential
+(an API key, a token, a private key, `password=`…) is skipped before either
+recall or recording is sent. A credential in the completed reply also skips
+recording. Each record is sent once and never retried.
 
 ## Things to know
 

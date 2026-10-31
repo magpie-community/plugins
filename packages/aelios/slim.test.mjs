@@ -138,6 +138,27 @@ test("humanTurn: the user's own words, not a tool result or an envelope", () => 
   expect(humanTurn({ messages: [] }, "messages")).toBe(false)
 })
 
+test("humanTurn retains ordinary XML and transport speech but skips instruction wrappers", () => {
+  const human = (text) => humanTurn({ messages: [{ role: "user", content: text }] }, "chat")
+  for (const text of [
+    "<question>What is my favorite food?</question>",
+    '<message sender="user" msg_id="123">What is my favorite food?</message>',
+    "<wecom-message>Where do I live?</wecom-message>",
+    '<message sender="user" msg_id="123">Where do I live?',
+    "<system-reminder>environment</system-reminder>\n<question>Where do I live?</question>",
+  ]) expect(human(text)).toBe(true)
+  for (const text of [
+    "<system-reminder>environment</system-reminder>",
+    "<system-reminder>unclosed environment",
+    "<hook-payload/>",
+    "<recap>earlier conversation</recap>",
+    '<message sender="user" msg_id="123"><system-reminder>environment</system-reminder></message>',
+    "<wecom-message><hook-payload>machine only</hook-payload></wecom-message>",
+    "user stepped away; returning. recap: machine context",
+    "已发送。",
+  ]) expect(human(text)).toBe(false)
+})
+
 test("appendPatch follows Aelios's appendMemory for each shape", () => {
   const str = { messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }, { role: "user", content: "c" }] }
   expect(appendPatch(str, "messages", "MEM")).toBe(true)

@@ -160,9 +160,42 @@ function visible(c) {
   if (!Array.isArray(c)) return ""
   return c.filter(isText).map((p) => p.text).join("\n")
 }
-// Client envelopes (<system-reminder>, <environment_context>, …) are not the
-// person talking.
-const envelope = /<([a-z][a-z0-9_-]*)(?:\s[^>]*)?>[\s\S]*?<\/\1>/gi
+// Match Aelios's cleanMessageText instruction wrappers. Ordinary XML and
+// transport messages contain the person's words and must remain visible.
+function humanText(text) {
+  const instruction = (tag) => {
+    const name = tag.toLowerCase()
+    return name === "recap" || /[-_]reminder$/.test(name) || /^(system|local|command|agent|task|hook)[-_]/.test(name)
+  }
+  const transport = (tag, attrs) => /wecom|wechat|weixin/i.test(tag) ||
+    (/message/i.test(tag) && /\b(?:from|sender|sender_id|msg_id|message_id)\s*=/i.test(attrs))
+  const closed = /<([a-zA-Z][\w:-]*)\b([^>]*)>([\s\S]*?)<\/\1\s*>/gi
+  // Unwrap transport envelopes before inspecting their instruction blocks.
+  text = text.replace(closed, (full, tag, attrs, inner) => transport(tag, attrs) ? inner : full)
+  const hasClose = (after, tag) => new RegExp(`</${tag}\\s*>`, "i").test(after)
+  const open = /<([a-zA-Z][\w:-]*)\b([^>]*?)>/gi
+  for (const match of text.matchAll(open)) {
+    if (match[0].endsWith("/>") || !transport(match[1], match[2])) continue
+    const after = text.slice(match.index + match[0].length)
+    if (!hasClose(after, match[1])) {
+      text = text.slice(0, match.index) + after
+      break
+    }
+  }
+  text = text.replace(/<([a-zA-Z][\w:-]*)\b[^>]*\/>/gi, (full, tag) => instruction(tag) ? "" : full)
+    .replace(closed, (full, tag) => instruction(tag) ? "" : full)
+  for (const match of text.matchAll(open)) {
+    if (match[0].endsWith("/>") || !instruction(match[1]) || /^time[-_]reminder$/i.test(match[1])) continue
+    if (!hasClose(text.slice(match.index + match[0].length), match[1])) {
+      text = text.slice(0, match.index)
+      break
+    }
+  }
+  return text.replace(/(?:^|\n)user stepped away;?\s*returning\.\s*recap:[\s\S]*$/i, "")
+    .replace(/(?:^|\n)recap:\s*<[\s\S]*$/i, "")
+    .replace(/(?:^|\n)today:\s*\d{4}-\d{2}-\d{2}\b[\s\S]*current working directory[\s\S]*$/i, "")
+    .split("\n").filter((line) => !/^(已回(?:她|他|你|完)?|已回复|已发送|已送达)[。.!！]*$/u.test(line.replace(/\s+/g, ""))).join("\n").trim()
+}
 
 // humanTurn is a local first guess at Aelios's classifyTurn on a slimmed
 // body: the last item is the user's, with text of their own, and not just a
@@ -173,7 +206,7 @@ export function humanTurn(slimmed, protocol) {
   const last = list.at(-1)
   if (!object(last) || last.role !== "user") return false
   if (last.type && !["message", "input_message"].includes(last.type)) return false
-  const text = visible(last.content).replace(envelope, "").trim()
+  const text = humanText(visible(last.content))
   if (!text) return false
   return true
 }

@@ -74,6 +74,11 @@ async function recall(body, ctx, o, report) {
     return
   }
   const slimmed = slim(body, protocol)
+  if (hasSecret(slimmed)) {
+    if (ctx.state) delete ctx.state.aelios
+    report("skipped")
+    return
+  }
   // kept for onResponse, tool steps included: Claude Code's final answer is
   // often the reply to a tool step
   if (ctx.state) ctx.state.aelios = { protocol, slimmed }
@@ -96,7 +101,7 @@ async function recall(body, ctx, o, report) {
   const deadline = Math.max(50, Math.min(o.requestTimeoutMs, (o.gatewayTimeoutMs ?? hostDefaultTimeoutMs) - 50))
   let r
   try {
-    r = await post(o, "v1/hook/recall", payload(ctx, o, protocol, slimmed, body), ctx.signal, deadline)
+    r = await post(o, "v1/hook/recall", { ...payload(ctx, o, protocol, slimmed, body), record: o.record }, ctx.signal, deadline)
   } catch (error) {
     if (ctx.signal?.aborted) return // the client went away: not Aelios's failure
     trip(key, o)

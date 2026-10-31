@@ -159,6 +159,50 @@ test("a tool step sends no recall, and onResponse records it", async () => {
   expect(reports.at(-1)[0]).toBe("ready")
 })
 
+for (const record of [undefined, false, true]) {
+  test(`recall explicitly sends recording permission (${record ?? "default"})`, async () => {
+    mock()
+    const [c] = ctx("chat", { options: record === undefined ? {} : { record } })
+    await onRequest(chat(), c)
+    expect(of("/v1/hook/recall")[0].body.record).toBe(record === true)
+  })
+}
+
+for (const record of [false, true]) {
+  test(`credentials prevent both recall and response export (record ${record})`, async () => {
+    mock()
+    const [c, reports] = ctx("chat", { options: { record } })
+    // Even stale request state must not allow an onResponse export.
+    c.state.aelios = { protocol: "chat", slimmed: { messages: [] } }
+    const req = { messages: [{ role: "user", content: "password=synthetic-review-only" }] }
+    expect(await onRequest(req, c)).toBeUndefined()
+    expect(c.state.aelios).toBeUndefined()
+    onResponse({ choices: [{ message: { content: "ok" } }] }, { ...c, success: true })
+    await flush()
+    expect(calls).toHaveLength(0)
+    expect(reports).toEqual([["skipped"]])
+  })
+}
+
+test("a credential in earlier history prevents recall export", async () => {
+  mock()
+  const [c] = ctx("chat", { options: { record: true } })
+  await onRequest({ messages: [{ role: "user", content: "password=synthetic-review-only" },
+    { role: "assistant", content: "ok" }, { role: "user", content: "What do you remember?" }] }, c)
+  expect(calls).toHaveLength(0)
+  expect(c.state.aelios).toBeUndefined()
+})
+
+test("transport-wrapped human speech reaches recall and receives memory", async () => {
+  mock()
+  const [c] = ctx("chat")
+  const text = '<message sender="user" msg_id="123">What is my favorite food?</message>'
+  const req = { messages: [{ role: "user", content: text }] }
+  expect(await onRequest(req, c)).toBeDefined()
+  expect(of("/v1/hook/recall")).toHaveLength(1)
+  expect(req.messages[0].content).toBe(`${text}\n\n${PATCH}`)
+})
+
 test("record is off by default: onResponse sends nothing", async () => {
   mock()
   const [c] = ctx("chat")
