@@ -1,0 +1,26 @@
+{
+  "name": "@magpie-community/agent-omo-hephaestus",
+  "version": "0.1.0",
+  "description": "OmO (oh-my-openagent) on magpie's Agents page: pick one of magpie's models for the deep autonomous worker (OmO allows only GPT-family models there); magpie writes ~/.omo/omo.jsonc's top-level agents.hephaestus.model",
+  "type": "module",
+  "files": [
+    "omo-hephaestus.agent.js"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "omo",
+    "oh-my-openagent",
+    "opencode",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/omo-hephaestus"
+  },
+  "magpie": {
+    "agent": "./omo-hephaestus.agent.js"
+  }
+}

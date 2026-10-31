@@ -1,0 +1,26 @@
+{
+  "name": "@magpie-community/agent-omo-momus",
+  "version": "0.1.0",
+  "description": "OmO (oh-my-openagent) on magpie's Agents page: pick one of magpie's models for the plan critic that wants strict logic; magpie writes ~/.omo/omo.jsonc's top-level agents.momus.model",
+  "type": "module",
+  "files": [
+    "omo-momus.agent.js"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "omo",
+    "oh-my-openagent",
+    "opencode",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/omo-momus"
+  },
+  "magpie": {
+    "agent": "./omo-momus.agent.js"
+  }
+}

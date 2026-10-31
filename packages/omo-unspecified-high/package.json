@@ -1,0 +1,26 @@
+{
+  "name": "@magpie-community/agent-omo-unspecified-high",
+  "version": "0.1.0",
+  "description": "OmO (oh-my-openagent) on magpie's Agents page: pick one of magpie's models for the high fallback for unclassified requests; magpie writes ~/.omo/omo.jsonc's top-level categories.unspecified-high.model",
+  "type": "module",
+  "files": [
+    "omo-unspecified-high.agent.js"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "omo",
+    "oh-my-openagent",
+    "opencode",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/omo-unspecified-high"
+  },
+  "magpie": {
+    "agent": "./omo-unspecified-high.agent.js"
+  }
+}
