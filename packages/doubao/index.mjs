@@ -172,6 +172,7 @@ export const DoubaoTools = async (input, options) => {
     // 弹出二维码图片 → 用户手机豆包 App 扫码确认 → 轮询拿到 sessionid 写入 config.json。
     auth: {
       provider: PLUGIN_ID,
+      single: true, // 账号由插件 config.json 管理，Magpie 侧只存一份登录态
       methods: [
         {
           type: "oauth",
@@ -200,5 +201,3 @@ export const DoubaoTools = async (input, options) => {
     },
   };
 };
-
-export default DoubaoTools;
