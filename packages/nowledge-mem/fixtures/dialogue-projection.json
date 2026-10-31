@@ -1,0 +1,28 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "Synthetic human question"
+    },
+    {
+      "role": "assistant",
+      "content": "I will check the change"
+    },
+    {
+      "role": "assistant",
+      "content": "Synthetic assistant answer"
+    },
+    {
+      "role": "user",
+      "content": "/skill:review fixture"
+    },
+    {
+      "role": "user",
+      "content": "Look at these"
+    },
+    {
+      "role": "assistant",
+      "content": "I reviewed the attachments"
+    }
+  ]
+}

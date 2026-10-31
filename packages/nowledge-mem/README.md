@@ -132,6 +132,14 @@ derived value for all of them.
   Set `"capture": true` explicitly to opt in.
 - `captureTools`: default **true**. Include client tool results as `tool`
   messages. Turn it off to import only what the user and the assistant wrote.
+- `captureFilter`: `"off"` (default) or `"human"`. Human mode stores only
+  user/assistant text, including commentary attached to completed tool calls;
+  it excludes tool results regardless of `captureTools`. Only the saved copy
+  changes. See [capture filtering and its limits](CAPTURE_FILTER.md).
+- `captureCindy`: default **false**. With `captureFilter: "human"`, remove
+  complete known leading Cindy notes only when Magpie identifies the agent
+  as `cindy`. It does not infer native Side Chat boundaries. Configure both
+  options in Plugins → Options; existing connection settings stay unchanged.
 - `allowInsecureHttp`: default **false**. Permits plain HTTP to a server that
   is not a loopback address. Prefer HTTPS.
 - `port`: the loopback port of the page's connection test, default 3479. Change
@@ -189,7 +197,9 @@ sent plus the assistant's reply, and imported with `POST /threads/import`:
   directory — not their raw values.
 
 Messages are text only. Assistant tool-call steps with no text are not
-messages; client tool results are included while `captureTools` is on. The
+messages; client tool results are included while `captureTools` is on and
+`captureFilter` is `"off"`. In `"human"` mode, the title comes from the first
+retained user message and is cached after a successful import. The
 recalled `<nowledge-mem-reference>` blocks are stripped before import, so
 Memory is never learned as a new conversation. A conversation with a
 credential-like assignment, URL password, bearer token or common key format in
@@ -199,7 +209,8 @@ not a guarantee. Each Thread import is one bounded request; conversations over
 not sent twice. A failed import fails open and is not retried blindly.
 
 `capture` is the only switch that exports conversation content. Recall works
-without it.
+without it. Filtering is opt-in and does not automatically migrate saved Threads;
+see the [migration notes](CAPTURE_FILTER.md#changing-policy-and-returning-to-upstream).
 
 ## Tools: Mem's own MCP server
 
@@ -218,6 +229,7 @@ Library entry itself. If you want a custom system prompt for Memory, Magpie's
 
 ```sh
 bun test packages/nowledge-mem                  # offline tests
+node --test packages/nowledge-mem/capture-filter.test.mjs # focused capture contract
 NMEM_E2E=1 bun test packages/nowledge-mem       # also the live checks, when .env is set
 bun packages/nowledge-mem/e2e.run.mjs           # the live checks alone
 ```

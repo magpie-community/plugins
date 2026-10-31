@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 
 // Bumped with package.json: Mem's own clients record it on imported Threads.
-export const version = "0.1.1";
+export const version = "0.1.2";
 
 // The only report codes magpie's Plugins page shows; tools turn these into
 // messages, never the service's own text.
@@ -42,6 +42,9 @@ export function resolveOptions(raw = {}, env = process.env) {
             throw new MemFailure("invalid");
         return value;
     };
+    const captureFilter = raw.captureFilter === undefined ? "off" : raw.captureFilter;
+    if (captureFilter !== "off" && captureFilter !== "human")
+        throw new MemFailure("invalid");
     // The Mem endpoint, as its own clients resolve it: the option, then the
     // portable NMEM_API_URL, then the local desktop default. A URL from the
     // environment that isn't an HTTP(S) address is ignored rather than fatal.
@@ -91,6 +94,8 @@ export function resolveOptions(raw = {}, env = process.env) {
         contextBundle: bool("contextBundle", true),
         capture: bool("capture", false),
         captureTools: bool("captureTools", true),
+        captureFilter,
+        captureCindy: bool("captureCindy", false),
         maxMemories: integer("maxMemories", 5, 1, 20),
         maxBytes: integer("maxBytes", 6000, 512, 32768),
         requestTimeoutMs: integer("requestTimeoutMs", 1500, 50, 5000),

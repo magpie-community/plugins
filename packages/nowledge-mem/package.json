@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-nowledge-mem",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Nowledge Mem recall, Context Bundle and optional conversation capture at the Magpie gateway, for every connected harness",
   "type": "module",
   "files": [
@@ -9,6 +9,8 @@
     "mem.mjs",
     "nowledge-mem.hooks.mjs",
     "conversation.mjs",
+    "capture-filter.mjs",
+    "CAPTURE_FILTER.md",
     "README.md",
     "page"
   ],
@@ -37,6 +39,8 @@
       "recallBackoffMs": 30000,
       "capture": false,
       "captureTools": true,
+      "captureFilter": "off",
+      "captureCindy": false,
       "port": 3479
     },
     "page": {
