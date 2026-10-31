@@ -42,8 +42,10 @@ export async function acquireLock(path, { waitMs = 5000 } = {}) {
         };
         await unlink(join(path, owner));
       } catch (error) {
-        // A directory removed before ownership is published reports open EPERM on Windows.
-        if (process.platform === 'win32' && error.code === 'EPERM' && error.syscall === 'open' && error.path === join(path, owner)) {
+        // Concurrent parent removal reports EPERM on Windows and EINVAL on macOS Bun.
+        const racedOpen = (process.platform === 'win32' && error.code === 'EPERM')
+          || (process.platform === 'darwin' && process.versions.bun && error.code === 'EINVAL');
+        if (racedOpen && error.syscall === 'open' && error.path === join(path, owner)) {
           if (Date.now() >= deadline) throw error;
           await delay(25); continue;
         }
@@ -68,7 +70,15 @@ export async function acquireLock(path, { waitMs = 5000 } = {}) {
             continue;
           }
         }
-      } catch (e) { if (['ENOENT', 'EISDIR', 'ENOTDIR'].includes(e.code)) continue; throw e; }
+      } catch (e) {
+        if (['ENOENT', 'EISDIR', 'ENOTDIR'].includes(e.code)) continue;
+        // A competing release can leave the lock directory delete-pending during a probe.
+        if (process.platform === 'win32' && e.code === 'EPERM' && e.syscall === 'scandir' && e.path === path) {
+          if (Date.now() >= deadline) throw e;
+          await delay(25); continue;
+        }
+        throw e;
+      }
     }
     if (waitMs === 0 || Date.now() >= deadline) throw new Error('lock-busy');
     await delay(25);
