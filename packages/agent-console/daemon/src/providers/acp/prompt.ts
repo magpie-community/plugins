@@ -1,5 +1,5 @@
 // Turn one user message (text + attachments) into an ACP prompt (ContentBlock[]) for what this Agent accepts.
-// - image/* : an image block (base64 + mimeType) when the Agent advertises promptCapabilities.image;
+// - PNG/JPEG/GIF/WebP: an image block (base64 + mimeType) when the Agent advertises promptCapabilities.image;
 //             otherwise the saved file's absolute path, as a resource_link (ACP baseline) and as a line of text,
 //             so an Agent with file tools can still open it; the caller shows a notice that it can't see the image.
 // - audio/* : an audio block when promptCapabilities.audio, else the same path fallback.
@@ -11,6 +11,7 @@ import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveImagePath } from "../../util/attachmentRefs.js";
 import type { AcpPromptCaps } from "./promptCaps.js";
+import { attachmentKind } from "../../util/attachmentKinds.js";
 
 /** Largest image / audio sent inline as base64 (above it, the path is sent instead) */
 export const MAX_INLINE_MEDIA_BYTES = 10 * 1024 * 1024;
@@ -28,7 +29,7 @@ export type AcpPromptBuild = {
   warnings: string[];
 };
 
-const isText = (mime: string) => mime.startsWith("text/") || mime === "application/json";
+const isText = (mime: string) => attachmentKind(mime) === "text";
 
 export async function buildAcpPrompt(
   text: string,
@@ -58,7 +59,8 @@ export async function buildAcpPrompt(
       warnings.push(`${a.path}: ${String((e as Error)?.message ?? e)}`);
       continue;
     }
-    const image = mime.startsWith("image/");
+    // Only the four image types model APIs take (svg, bmp… go by path like any other file)
+    const image = attachmentKind(mime) === "image";
     const audio = mime.startsWith("audio/");
     if ((image && caps.image) || (audio && caps.audio)) {
       if (size > MAX_INLINE_MEDIA_BYTES || inlineBytes + size > MAX_INLINE_TOTAL_BYTES) {

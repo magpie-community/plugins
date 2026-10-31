@@ -1399,9 +1399,79 @@ var init_attachmentRefs = __esm({
   }
 });
 
+// daemon/src/util/attachmentKinds.ts
+function baseMime(mime) {
+  return String(mime ?? "").split(";")[0].trim().toLowerCase();
+}
+function attachmentKind(mime) {
+  const m = baseMime(mime);
+  if (MODEL_IMAGE_MIMES.has(m)) return "image";
+  if (m.startsWith("text/") || TEXT_APP.has(m)) return "text";
+  return "other";
+}
+function pathNote(kind, file) {
+  return `${kind === "image" ? "Attached image" : "Attached file"}: ${file}`;
+}
+var MODEL_IMAGE_MIMES, TEXT_APP;
+var init_attachmentKinds = __esm({
+  "daemon/src/util/attachmentKinds.ts"() {
+    MODEL_IMAGE_MIMES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+    TEXT_APP = /* @__PURE__ */ new Set(["application/json", "application/xml", "application/yaml", "application/x-yaml", "application/toml", "application/javascript"]);
+  }
+});
+
+// daemon/src/providers/claude/content.ts
+import { readFile as readFile4, stat as stat3 } from "node:fs/promises";
+import { basename } from "node:path";
+async function buildClaudeContent(text, attachments) {
+  const media = [];
+  const notes = [];
+  const warnings = [];
+  for (const a of attachments) {
+    let file;
+    let size;
+    try {
+      file = await resolveImagePath(a.path);
+      size = (await stat3(file)).size;
+    } catch (e) {
+      warnings.push(`${a.path}: ${String(e?.message ?? e)}`);
+      continue;
+    }
+    const kind = attachmentKind(a.mime);
+    try {
+      if (kind === "image" && size <= CLAUDE_MAX_IMAGE_BYTES) {
+        const data = (await readFile4(file)).toString("base64");
+        media.push({ type: "image", source: { type: "base64", media_type: baseMime(a.mime), data } });
+        continue;
+      }
+      if (kind === "text" && size <= CLAUDE_MAX_TEXT_BYTES) {
+        const data = await readFile4(file, "utf8");
+        media.push({ type: "document", source: { type: "text", media_type: "text/plain", data }, title: basename(file), context: file });
+        continue;
+      }
+    } catch (e) {
+      warnings.push(`${basename(file)}: ${String(e?.message ?? e)}`);
+    }
+    notes.push(pathNote(kind, file));
+    if (kind === "other") warnings.push(`${basename(file)} (${baseMime(a.mime) || "unknown type"}) is not an image or a text file; sent its path`);
+    else if (kind === "image" && size > CLAUDE_MAX_IMAGE_BYTES) warnings.push(`${basename(file)}: ${(size / 1024 / 1024).toFixed(1)} MB, over Claude's 5 MB image limit; sent its path`);
+    else if (kind === "text" && size > CLAUDE_MAX_TEXT_BYTES) warnings.push(`${basename(file)}: ${(size / 1024 / 1024).toFixed(1)} MB, too large to attach inline; sent its path`);
+  }
+  const fullText = [text, ...notes.length ? [notes.join("\n")] : []].filter(Boolean).join("\n\n");
+  return { blocks: [...media, { type: "text", text: fullText }], warnings };
+}
+var CLAUDE_MAX_IMAGE_BYTES, CLAUDE_MAX_TEXT_BYTES;
+var init_content = __esm({
+  "daemon/src/providers/claude/content.ts"() {
+    init_attachmentRefs();
+    init_attachmentKinds();
+    CLAUDE_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+    CLAUDE_MAX_TEXT_BYTES = 1024 * 1024;
+  }
+});
+
 // daemon/src/providers/claude/session.ts
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { readFile as readFile4 } from "node:fs/promises";
 function claudeExecutable(o) {
   if (!o.binCmd) return null;
   if (o.binVia === "cmd-shim" || o.binVia === "ps1") return null;
@@ -1418,7 +1488,8 @@ var init_session = __esm({
     init_diff();
     init_map();
     init_log();
-    init_attachmentRefs();
+    init_content();
+    init_i18n();
     init_slash();
     EFFORTS = ["low", "medium", "high", "xhigh", "max"];
     rid2 = () => Math.random().toString(36).slice(2, 10);
@@ -1515,21 +1586,9 @@ var init_session = __esm({
           mode: this.o.mode,
           effort: this.o.effort
         });
-        const content = [];
-        const blocks = content;
-        for (const img of input.images ?? []) {
-          try {
-            const disk = await resolveImagePath(img.path);
-            const data = await readFile4(disk);
-            blocks.push({
-              type: "image",
-              source: { type: "base64", media_type: img.mime, data: data.toString("base64") }
-            });
-          } catch (e) {
-            this.emit({ type: "notice", level: "warn", message: `\u56FE\u7247\u8BFB\u53D6\u5931\u8D25 ${img.path}\uFF1A${String(e)}` });
-          }
-        }
-        blocks.push({ type: "text", text: input.text });
+        const built = await buildClaudeContent(input.text, input.images ?? []);
+        for (const w of built.warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
+        const content = built.blocks;
         this.input.push({
           type: "user",
           message: { role: "user", content },
@@ -1758,7 +1817,7 @@ var init_models = __esm({
 });
 
 // daemon/src/history/import.ts
-import { readdir, readFile as readFile5, stat as stat3 } from "node:fs/promises";
+import { readdir, readFile as readFile5, stat as stat4 } from "node:fs/promises";
 import { existsSync as existsSync6 } from "node:fs";
 import { join as join6 } from "node:path";
 import { homedir as homedir3 } from "node:os";
@@ -1810,7 +1869,7 @@ async function listClaudeHistory(cwd) {
         if (p.userText) count++;
       }
       if (!match) continue;
-      const s = await stat3(path3).catch(() => null);
+      const s = await stat4(path3).catch(() => null);
       out.push({
         sessionId: f.replace(/\.jsonl$/, ""),
         title: title || "\uFF08\u65E0\u6807\u9898\uFF09",
@@ -1962,7 +2021,7 @@ var init_provider = __esm({
 });
 
 // daemon/src/history/codex.ts
-import { readdir as readdir2, readFile as readFile6, stat as stat4 } from "node:fs/promises";
+import { readdir as readdir2, readFile as readFile6, stat as stat5 } from "node:fs/promises";
 import { join as join7 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 function textOf(content, kind) {
@@ -1973,7 +2032,7 @@ async function* walk(dir, depth = 0) {
   if (depth > 6) return;
   for (const name of await readdir2(dir).catch(() => [])) {
     const p = join7(dir, name);
-    const s = await stat4(p).catch(() => null);
+    const s = await stat5(p).catch(() => null);
     if (!s) continue;
     if (s.isDirectory()) yield* walk(p, depth + 1);
     else if (/^rollout-.*\.jsonl$/.test(name)) yield p;
@@ -2016,7 +2075,7 @@ async function listCodexHistory(cwd) {
       }
     }
     if (!match) continue;
-    const s = await stat4(path3).catch(() => null);
+    const s = await stat5(path3).catch(() => null);
     out.push({ sessionId, title: title || "\uFF08\u65E0\u6807\u9898\uFF09", updatedAt: s ? Math.round(s.mtimeMs) : 0, messageCount: count });
   }
   out.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -2281,6 +2340,38 @@ var init_rpc = __esm({
   }
 });
 
+// daemon/src/providers/codex/input.ts
+import { basename as basename2 } from "node:path";
+async function buildCodexInput(text, attachments) {
+  const images = [];
+  const notes = [];
+  const warnings = [];
+  for (const a of attachments) {
+    let file;
+    try {
+      file = await resolveImagePath(a.path);
+    } catch (e) {
+      warnings.push(`${a.path}: ${String(e?.message ?? e)}`);
+      continue;
+    }
+    const kind = attachmentKind(a.mime);
+    if (kind === "image") {
+      images.push({ type: "localImage", path: file });
+      continue;
+    }
+    notes.push(pathNote(kind, file));
+    if (kind === "other") warnings.push(`${basename2(file)} (${baseMime(a.mime) || "unknown type"}) is not an image or a text file; sent its path`);
+  }
+  const fullText = [text, ...notes.length ? [notes.join("\n")] : []].filter(Boolean).join("\n\n");
+  return { items: [{ type: "text", text: fullText }, ...images], warnings };
+}
+var init_input = __esm({
+  "daemon/src/providers/codex/input.ts"() {
+    init_attachmentRefs();
+    init_attachmentKinds();
+  }
+});
+
 // daemon/src/providers/codex/map.ts
 function newCodexMapState() {
   return { currentTurnId: null, filesChanged: 0, diffText: "" };
@@ -2498,9 +2589,9 @@ var init_map2 = __esm({
 });
 
 // daemon/src/providers/codex/commands.ts
-import { readdir as readdir3, readFile as readFile7, stat as stat5 } from "node:fs/promises";
+import { readdir as readdir3, readFile as readFile7, stat as stat6 } from "node:fs/promises";
 import { homedir as homedir5 } from "node:os";
-import { basename, join as join8 } from "node:path";
+import { basename as basename3, join as join8 } from "node:path";
 function parseFrontMatter(raw) {
   if (!raw.startsWith("---\n")) return { meta: {}, body: raw };
   const end = raw.indexOf("\n---\n", 4);
@@ -2532,11 +2623,11 @@ async function readPromptFiles(dir) {
     if (!f.endsWith(".md")) continue;
     const path3 = join8(dir, f);
     try {
-      const st = await stat5(path3);
+      const st = await stat6(path3);
       if (!st.isFile()) continue;
       const raw = await readFile7(path3, "utf8");
       const { meta, body } = parseFrontMatter(raw);
-      const name = basename(f, ".md");
+      const name = basename3(f, ".md");
       out.push({
         name,
         description: meta.description || firstLine(body) || name,
@@ -2560,7 +2651,7 @@ async function readSkillDirs(root) {
   for (const d of dirs) {
     const skillPath = join8(root, d, "SKILL.md");
     try {
-      const st = await stat5(skillPath);
+      const st = await stat6(skillPath);
       if (!st.isFile()) continue;
       const raw = await readFile7(skillPath, "utf8");
       const { meta, body } = parseFrontMatter(raw);
@@ -2613,7 +2704,8 @@ var init_commands = __esm({
 var rid3, MODE_PRESETS, CodexSession;
 var init_session2 = __esm({
   "daemon/src/providers/codex/session.ts"() {
-    init_attachmentRefs();
+    init_input();
+    init_i18n();
     init_queue();
     init_rpc();
     init_bin();
@@ -2733,10 +2825,7 @@ var init_session2 = __esm({
         const entries = this.codexSlash ?? await loadCodexSlashEntries(this.o.cwd);
         this.codexSlash = entries;
         const wireText = expandCodexSlash(input.text, entries);
-        const items = [{ type: "text", text: wireText }];
-        for (const img of input.images ?? []) {
-          items.push({ type: "localImage", path: await resolveImagePath(img.path) });
-        }
+        const { items, warnings } = await buildCodexInput(wireText, input.images ?? []);
         this.interruptWanted = false;
         const turnId = "u_" + Date.now().toString(36) + "_" + rid3();
         if (this.ourTurnId && this.st.currentTurnId) this.staleCodexTurns.add(this.st.currentTurnId);
@@ -2749,6 +2838,7 @@ var init_session2 = __esm({
           mode: this.o.mode,
           effort: this.o.effort
         });
+        for (const w of warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
         try {
           await rpc.request("turn/start", {
             threadId: this.sessionThreadId ?? void 0,
@@ -2769,10 +2859,8 @@ var init_session2 = __esm({
       }
       async steer(input) {
         if (!this.rpc || !this.st.currentTurnId) throw new Error("\u5F53\u524D\u8F6E\u6B21\u8FD8\u6CA1\u5F00\u59CB\uFF0C\u65E0\u6CD5\u63D2\u8BDD");
-        const items = [{ type: "text", text: input.text }];
-        for (const img of input.images ?? []) {
-          items.push({ type: "localImage", path: await resolveImagePath(img.path) });
-        }
+        const { items, warnings } = await buildCodexInput(input.text, input.images ?? []);
+        for (const w of warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
         try {
           await this.rpc.request("turn/steer", {
             threadId: this.threadId(),
@@ -3284,8 +3372,8 @@ var init_promptCaps = __esm({
 });
 
 // daemon/src/providers/acp/prompt.ts
-import { readFile as readFile9, stat as stat6 } from "node:fs/promises";
-import { basename as basename2 } from "node:path";
+import { readFile as readFile9, stat as stat7 } from "node:fs/promises";
+import { basename as basename4 } from "node:path";
 import { pathToFileURL } from "node:url";
 async function buildAcpPrompt(text, attachments, caps) {
   const media = [];
@@ -3295,7 +3383,7 @@ async function buildAcpPrompt(text, attachments, caps) {
   const warnings = [];
   let inlineBytes = 0;
   const byPath = (file, mime, size, label) => {
-    links.push({ type: "resource_link", uri: pathToFileURL(file).href, name: basename2(file), mimeType: mime, ...size !== null ? { size } : {} });
+    links.push({ type: "resource_link", uri: pathToFileURL(file).href, name: basename4(file), mimeType: mime, ...size !== null ? { size } : {} });
     pathLines.push(`${label}: ${file}`);
   };
   for (const a of attachments) {
@@ -3304,17 +3392,17 @@ async function buildAcpPrompt(text, attachments, caps) {
     let size = null;
     try {
       file = await resolveImagePath(a.path);
-      size = (await stat6(file)).size;
+      size = (await stat7(file)).size;
     } catch (e) {
       warnings.push(`${a.path}: ${String(e?.message ?? e)}`);
       continue;
     }
-    const image = mime.startsWith("image/");
+    const image = attachmentKind(mime) === "image";
     const audio = mime.startsWith("audio/");
     if (image && caps.image || audio && caps.audio) {
       if (size > MAX_INLINE_MEDIA_BYTES || inlineBytes + size > MAX_INLINE_TOTAL_BYTES) {
         const limit = size > MAX_INLINE_MEDIA_BYTES ? MAX_INLINE_MEDIA_BYTES : MAX_INLINE_TOTAL_BYTES;
-        warnings.push(`${basename2(file)}: ${(size / 1024 / 1024).toFixed(1)} MB, over the ${limit / 1024 / 1024} MB inline limit; sent as a file path`);
+        warnings.push(`${basename4(file)}: ${(size / 1024 / 1024).toFixed(1)} MB, over the ${limit / 1024 / 1024} MB inline limit; sent as a file path`);
         byPath(file, mime, size, image ? "Attached image" : "Attached audio");
         if (image) imagesByPath.push(file);
         continue;
@@ -3324,7 +3412,7 @@ async function buildAcpPrompt(text, attachments, caps) {
         media.push(image ? { type: "image", data, mimeType: mime } : { type: "audio", data, mimeType: mime });
         inlineBytes += size;
       } catch (e) {
-        warnings.push(`${basename2(file)}: ${String(e?.message ?? e)}`);
+        warnings.push(`${basename4(file)}: ${String(e?.message ?? e)}`);
         byPath(file, mime, size, image ? "Attached image" : "Attached audio");
         if (image) imagesByPath.push(file);
       }
@@ -3356,10 +3444,11 @@ var MAX_INLINE_MEDIA_BYTES, MAX_INLINE_TOTAL_BYTES, MAX_EMBED_TEXT_BYTES, isText
 var init_prompt = __esm({
   "daemon/src/providers/acp/prompt.ts"() {
     init_attachmentRefs();
+    init_attachmentKinds();
     MAX_INLINE_MEDIA_BYTES = 10 * 1024 * 1024;
     MAX_INLINE_TOTAL_BYTES = 16 * 1024 * 1024;
     MAX_EMBED_TEXT_BYTES = 1024 * 1024;
-    isText = (mime) => mime.startsWith("text/") || mime === "application/json";
+    isText = (mime) => attachmentKind(mime) === "text";
   }
 });
 
@@ -6850,7 +6939,7 @@ var AgentManager = class {
 // daemon/src/git/service.ts
 import { execFile as execFile4 } from "node:child_process";
 import { existsSync as existsSync10 } from "node:fs";
-import { cp, mkdir as mkdir6, readFile as readFile15, rename as rename4, rm, stat as stat8 } from "node:fs/promises";
+import { cp, mkdir as mkdir6, readFile as readFile15, rename as rename4, rm, stat as stat9 } from "node:fs/promises";
 import { join as join14, normalize as normalize2, sep as sep2 } from "node:path";
 var TIMEOUT2 = 15e3;
 var DIFF_LIMIT = 1024 * 1024;
@@ -6916,7 +7005,7 @@ var GitService = class {
     if (ls.code !== 0) {
       const full = join14(projectPath, rel);
       if (!existsSync10(full)) return { error: "\u6587\u4EF6\u4E0D\u5B58\u5728" };
-      const s = await stat8(full);
+      const s = await stat9(full);
       if (!s.isFile()) return { error: "\u4E0D\u662F\u6587\u4EF6" };
       if (s.size > DIFF_LIMIT) return { tooLarge: true };
       const text = await readFile15(full, "utf8").catch(() => null);
@@ -6963,7 +7052,7 @@ ${lines}` };
 };
 
 // daemon/src/files/service.ts
-import { readdir as readdir5, readFile as readFile16, stat as stat9 } from "node:fs/promises";
+import { readdir as readdir5, readFile as readFile16, stat as stat10 } from "node:fs/promises";
 import { join as join15, normalize as normalize3, sep as sep3, extname as extname3 } from "node:path";
 import ignore from "ignore";
 function decodeText(buf) {
@@ -7038,7 +7127,7 @@ var FileService = class {
   igCache = /* @__PURE__ */ new Map();
   async igFor(projectPath) {
     const gi = join15(projectPath, ".gitignore");
-    const st = await stat9(gi).catch(() => null);
+    const st = await stat10(gi).catch(() => null);
     const mtime = st?.isFile() ? st.mtimeMs : -1;
     const hit = this.igCache.get(projectPath);
     if (hit && hit.mtime === mtime) return hit.ig;
@@ -7057,7 +7146,7 @@ var FileService = class {
     const rel = insidePath2(projectPath, dir);
     if (rel === null) return { error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
     const abs = join15(projectPath, rel);
-    const s = await stat9(abs).catch(() => null);
+    const s = await stat10(abs).catch(() => null);
     if (!s?.isDirectory()) return { error: "\u76EE\u5F55\u4E0D\u5B58\u5728" };
     const ig = await this.igFor(projectPath);
     const dirents = await readdir5(abs, { withFileTypes: true }).catch(() => null);
@@ -7070,7 +7159,7 @@ var FileService = class {
       const childRel = rel === "." ? name : `${rel}/${name}`;
       let isDir2 = d.isDirectory();
       if (d.isSymbolicLink()) {
-        const st = await stat9(join15(projectPath, childRel)).catch(() => null);
+        const st = await stat10(join15(projectPath, childRel)).catch(() => null);
         if (!st) continue;
         isDir2 = st.isDirectory();
       } else if (!d.isFile() && !isDir2) {
@@ -7088,7 +7177,7 @@ var FileService = class {
     const rel = insidePath2(projectPath, p);
     if (rel === null) return { error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
     const abs = join15(projectPath, rel);
-    const s = await stat9(abs).catch(() => null);
+    const s = await stat10(abs).catch(() => null);
     if (!s) return { error: "\u6587\u4EF6\u4E0D\u5B58\u5728" };
     if (!s.isFile()) return { error: "\u4E0D\u662F\u6587\u4EF6" };
     if (s.size > MAX_READ) return { tooLarge: true };

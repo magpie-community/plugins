@@ -1,6 +1,7 @@
 // Codex ProviderSession (§7.3.3/7.3.5): codex app-server JSON-RPC session.
 import type { ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../types.js";
-import { resolveImagePath } from "../../util/attachmentRefs.js";
+import { buildCodexInput } from "./input.js";
+import { tr } from "../../util/i18n.js";
 import type { ProviderEvent } from "../../timeline/types.js";
 import { AsyncQueue } from "../../util/queue.js";
 import { CodexRpc } from "./rpc.js";
@@ -154,10 +155,7 @@ export class CodexSession implements ProviderSession {
     const entries = this.codexSlash ?? (await loadCodexSlashEntries(this.o.cwd));
     this.codexSlash = entries;
     const wireText = expandCodexSlash(input.text, entries);
-    const items: Record<string, unknown>[] = [{ type: "text", text: wireText }];
-    for (const img of input.images ?? []) {
-      items.push({ type: "localImage", path: await resolveImagePath(img.path) });
-    }
+    const { items, warnings } = await buildCodexInput(wireText, input.images ?? []);
     this.interruptWanted = false;
     const turnId = "u_" + Date.now().toString(36) + "_" + rid();
     // A new turn started before the previous one completed (interrupt fallback) → remember its Codex turnId
@@ -171,6 +169,7 @@ export class CodexSession implements ProviderSession {
       mode: this.o.mode,
       effort: this.o.effort,
     });
+    for (const w of warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
     try {
       await rpc.request("turn/start", {
         threadId: this.sessionThreadId ?? undefined,
@@ -193,10 +192,8 @@ export class CodexSession implements ProviderSession {
   async steer(input: SendInput): Promise<void> {
     // No Codex turnId yet (turn/started hasn't arrived) → throw; the manager queues instead so the message isn't lost
     if (!this.rpc || !this.st.currentTurnId) throw new Error("当前轮次还没开始，无法插话");
-    const items: Record<string, unknown>[] = [{ type: "text", text: input.text }];
-    for (const img of input.images ?? []) {
-      items.push({ type: "localImage", path: await resolveImagePath(img.path) });
-    }
+    const { items, warnings } = await buildCodexInput(input.text, input.images ?? []);
+    for (const w of warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
     try {
       await this.rpc.request("turn/steer", {
         threadId: this.threadId(),

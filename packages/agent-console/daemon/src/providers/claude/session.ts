@@ -1,6 +1,5 @@
 // Claude ProviderSession (§7.2.2/7.2.4/7.2.5/7.2.6): persistent query, streaming, permissions, interrupt, hot switching.
 import { query, type Query, type Options, type SDKUserMessage, type PermissionResult, type EffortLevel, type PermissionMode } from "@anthropic-ai/claude-agent-sdk";
-import { readFile } from "node:fs/promises";
 import type { ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../types.js";
 import type { ProviderEvent } from "../../timeline/types.js";
 import { AsyncQueue } from "../../util/queue.js";
@@ -8,7 +7,8 @@ import { callInfo } from "../../agents/kinds.js";
 import { editDetail } from "../../agents/diff.js";
 import { mapSdkMessage, newMapState, type MapState } from "./map.js";
 import { log } from "../../log.js";
-import { resolveImagePath } from "../../util/attachmentRefs.js";
+import { buildClaudeContent } from "./content.js";
+import { tr } from "../../util/i18n.js";
 import { classifyClaudeSlashCommand, sortSlashCommands } from "../slash.js";
 
 const EFFORTS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
@@ -145,21 +145,9 @@ export class ClaudeSession implements ProviderSession {
       mode: this.o.mode,
       effort: this.o.effort,
     });
-    const content = [] as unknown as SDKUserMessage["message"]["content"];
-    const blocks = content as unknown as Record<string, unknown>[];
-    for (const img of input.images ?? []) {
-      try {
-        const disk = await resolveImagePath(img.path);
-        const data = await readFile(disk);
-        blocks.push({
-          type: "image",
-          source: { type: "base64", media_type: img.mime, data: data.toString("base64") },
-        });
-      } catch (e) {
-        this.emit({ type: "notice", level: "warn", message: `图片读取失败 ${img.path}：${String(e)}` });
-      }
-    }
-    blocks.push({ type: "text", text: input.text });
+    const built = await buildClaudeContent(input.text, input.images ?? []);
+    for (const w of built.warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
+    const content = built.blocks as unknown as SDKUserMessage["message"]["content"];
     this.input.push({
       type: "user",
       message: { role: "user", content },
