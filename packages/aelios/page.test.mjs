@@ -37,8 +37,9 @@ test('preserved invalid timing options are rejected', () => {
 });
 
 class Element {
-  constructor(tag = 'div') { this.tagName = tag.toUpperCase(); this.dataset = {}; this.children = []; this.value = ''; this.checked = false; this.type = ''; this.hidden = false; this.attributes = {}; }
-  append(...children) { this.children.push(...children); }
+  constructor(tag = 'div') { this.tagName = tag.toUpperCase(); this.dataset = {}; this.children = []; this.value = ''; this.checked = false; this.type = ''; this.hidden = false; this.attributes = {}; this.open = false; this.parentElement = null; }
+  closest(selector) { return this.tagName.toLowerCase() === selector ? this : this.parentElement?.closest(selector) || null; }
+  append(...children) { for (const child of children) child.parentElement = this; this.children.push(...children); }
   replaceChildren(...children) { this.children = children; }
   setAttribute(key, value) { this.attributes[key] = value; }
   removeAttribute(key) { delete this.attributes[key]; }
@@ -51,19 +52,87 @@ async function setup(initial = {}, setMode = 'success') {
     const visit = (node) => node.id === id ? node : node.children.map(visit).find(Boolean);
     return [...elements.values()].map(visit).find(Boolean);
   } };
-  for (const [, id] of source('settings.html').matchAll(/\bid="([^"]+)"/g)) elements.set(id, new Element());
+  const stack = [];
+  for (const token of source('settings.html').matchAll(/<(\/?)([a-z][\w-]*)([^>]*)>/gi)) {
+    const [, closing, tag, attributes] = token;
+    if (closing) { stack.pop(); continue; }
+    const node = new Element(tag);
+    const id = /\bid="([^"]+)"/.exec(attributes)?.[1];
+    if (id) { node.id = id; elements.set(id, node); }
+    node.open = /\bopen\b/.test(attributes); node.hidden = /\bhidden\b/.test(attributes);
+    stack.at(-1)?.append(node);
+    if (!['meta', 'link', 'input', 'br', 'hr', 'img'].includes(tag)) stack.push(node);
+  }
   elements.get('key').type = 'password';
   let options = structuredClone(initial), sets = 0, reads = 0, target;
   const magpie = { theme: { lang: 'zh-CN' }, service: '', ready: Promise.resolve(), onTheme(fn) { this.onThemeChange = fn; }, options: {
     async get() { reads++; return structuredClone(options); },
     async set(next) { sets++; if (setMode !== 'reject') options = structuredClone(next); if (setMode !== 'success') throw new Error('bridge failed'); return next; }
   } };
-  const sandbox = vm.createContext({ URL, document, navigator: { language: 'en' }, magpie, location: { assign: (url) => { target = url; } } });
+  const sandbox = vm.createContext({ URL, setTimeout: (fn) => setTimeout(fn, 0), document, navigator: { language: 'en' }, magpie, location: { assign: (url) => { target = url; } } });
   sandbox.window = sandbox;
   for (const name of ['i18n.js', 'form.js', 'settings.js']) vm.runInContext(source(name), sandbox);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  return { elements, magpie, async save() { await elements.get('save').onclick(); }, async submit() { await elements.get('form').onsubmit({ preventDefault() {} }); }, async test() { await elements.get('test').onclick(); }, updateOptions(next) { options = next; }, get options() { return options; }, get sets() { return sets; }, get reads() { return reads; }, get target() { return target; } };
+  return { elements, magpie, async connect() { await elements.get('connect').onclick(); }, async save() { await elements.get('save').onclick(); }, async submit() { await elements.get('form').onsubmit({ preventDefault() {} }); }, async test() { await elements.get('test').onclick(); }, updateOptions(next) { options = next; }, get options() { return options; }, get sets() { return sets; }, get reads() { return reads; }, get target() { return target; } };
 }
+test('first connection shows only connection controls and advanced settings stay collapsed', async () => {
+  const page = await setup();
+  expect(page.elements.get('connection-editor').open).toBe(true);
+  expect(page.elements.get('connection-summary').hidden).toBe(true);
+  expect(page.elements.get('daily-settings').hidden).toBe(true);
+  expect(page.elements.get('saved-actions').hidden).toBe(true);
+  expect(page.elements.get('advanced').open).toBe(false);
+  for (const id of ['identity', 'routes', 'agents', 'key-env', 'allow-remote']) {
+    expect(page.elements.get(id).closest('details').id).toBe('advanced');
+  }
+  expect(page.elements.get('assignment-summary').textContent).toContain('自动');
+  expect(page.elements.get('assignment-summary').textContent).toContain('主模型匹配');
+  expect(source('settings.html')).toContain('placeholder="claude, codex"');
+  expect(source('settings.js')).not.toContain('claude-code, codex');
+});
+test('configured connection is collapsed and clearly distinguishes configuration from verification', async () => {
+  const page = await setup({ serverUrl: 'https://example.test/base' });
+  expect(page.elements.get('connection-editor').open).toBe(false);
+  expect(page.elements.get('connection-summary').hidden).toBe(false);
+  expect(page.elements.get('configured-url').textContent).toBe('https://example.test/base');
+  expect(page.elements.get('change-connection').textContent).toBe('更改连接');
+  expect(page.elements.get('daily-settings').hidden).toBe(false);
+  expect(source('i18n.js')).toContain('已配置不代表已验证连接');
+});
+test('custom identity and routes remain visible in the summary and survive ordinary saves', async () => {
+  for (const custom of [{ identity: 'personal' }, { routes: [{ identity: 'work', models: ['gpt-*'], custom: 1 }] }, { identity: 'fallback', routes: [{ identity: 'work', agents: ['claude'] }] }]) {
+    const page = await setup({ serverUrl: 'https://example.test', ...custom });
+    expect(page.elements.get('advanced').open).toBe(false);
+    expect(page.elements.get('assignment-summary').textContent).toContain('自定义');
+    if (custom.identity) expect(page.elements.get('assignment-summary').textContent).toContain(custom.identity);
+    if (custom.routes) expect(page.elements.get('assignment-summary').textContent).toContain('身份路由: 1');
+    page.elements.get('record').checked = true;
+    await page.save();
+    expect(page.options.identity).toEqual(custom.identity);
+    expect(page.options.routes).toEqual(custom.routes);
+  }
+});
+test('first connect saves then opens automatic testing, and a failed save never navigates', async () => {
+  for (const mode of ['success', 'write-then-reject', 'reject']) {
+    const page = await setup({}, mode);
+    page.elements.get('url').value = 'https://example.test';
+    page.elements.get('key').value = 'test-key';
+    await page.connect();
+    expect(page.sets).toBe(1);
+    if (mode === 'reject') {
+      expect(page.target).toBeUndefined();
+      expect(page.elements.get('connection-editor').open).toBe(true);
+      expect(page.elements.get('url').value).toBe('https://example.test');
+      expect(page.elements.get('result').dataset.message).toBe('saveFailed');
+    } else {
+      expect(page.options.serverUrl).toBe('https://example.test/');
+      expect(page.target).toBe('http://127.0.0.1:3481/test?lang=zh&auto=1');
+    }
+  }
+  const blank = await setup(); await blank.connect();
+  expect(blank.sets).toBe(0); expect(blank.target).toBeUndefined();
+});
+
 test('saving is a click, never a form submit, because Magpie frames forbid forms', async () => {
   const html = source('settings.html');
   expect(/<button id="save"[^>]*type="button"/.test(html)).toBe(true);
@@ -109,9 +178,9 @@ test('testing blocks dirty edits and navigates only using saved options and them
   expect(page.elements.get('identity').value).toBe('draft');
   expect(page.elements.get('result').dataset.message).toBe('saveFirst');
   await page.save(); await page.test();
-  expect(page.target).toBe('http://127.0.0.1:3481/test?lang=zh');
+  expect(page.target).toBe('http://127.0.0.1:3481/test?lang=zh&auto=1');
   page.updateOptions({ ...page.options, port: 4567 }); await page.test();
-  expect(page.target).toBe('http://127.0.0.1:4567/test?lang=zh');
+  expect(page.target).toBe('http://127.0.0.1:4567/test?lang=zh&auto=1');
   page.magpie.service = 'https://host.test/plugin-service/'; page.magpie.theme.lang = 'en'; page.magpie.onThemeChange();
-  await page.test(); expect(page.target).toBe('https://host.test/plugin-service/test?lang=en');
+  await page.test(); expect(page.target).toBe('https://host.test/plugin-service/test?lang=en&auto=1');
 });

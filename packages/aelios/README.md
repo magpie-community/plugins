@@ -61,23 +61,31 @@ provider. It needs **Magpie 0.1.1273 or newer** and Bun; from **Magpie
 magpie plugin add @magpie-community/gateway-aelios
 ```
 
-Then open **Plugins › Aelios** in Magpie. The plugin adds its own page: fill in
-the server URL and API key, choose whether to recall and record, and add one
-row per assistant space. Nothing needs hand-written JSON.
+Then open **Plugins › Aelios** in Magpie. On first use, enter the server URL
+and API key and click **Connect and test**. The plugin saves through Magpie,
+confirms the saved settings, then opens its local service page with automatic
+testing enabled. If saving cannot be confirmed, your edits stay in the form
+and the page does not navigate.
 
-The page has three parts. **Connection** takes the server URL, the API key
-(stored in Magpie's local plugin settings) or the name of an environment
-variable holding it, and a default/fallback identity. **Memory behavior** has
-the two switches: *Recall memory* on, *Record conversations* off by default.
-**Identity routes** is the ordered table described below; each row needs an
-identity plus model and/or agent selectors, and rows move up and down.
+Once configured, the page shows the saved URL, a **Change connection** control,
+and the recall/record switches (*Recall memory* on, *Record conversations* off
+by default). Configured settings do not mean the connection has been verified.
+**View matching list / retest** opens the local service page, which tests the
+saved connection and shows the server-authorized assistants and their main
+model matching rules through read-only `GET /v1/hook/identities`. This list needs
+an Aelios version containing that endpoint; older Workers still support recall
+and recording, while the page explains that the list is unavailable. The service
+page has a button back to settings. Testing
+sends empty messages; it creates no dialogue and records nothing.
 
-**Test connection** checks the saved settings from Magpie's local service page.
-It sends empty messages, so no dialogue is created and nothing is recorded;
-with explicit identities it checks each one's permission once, and in the
-automatic case it can only confirm the connection, not every model mapping.
-Because a Magpie page has no network access of its own, the button opens
-Magpie's local service page in the same frame and asks for a click there.
+**Assistant assignment** defaults to **Automatic**, reusing Aelios's main-model
+matching rules, choosing the first authorized assistant whose main-model pattern
+matches. Unmatched models do not use memory. Existing `identity` or `routes`
+are shown as **Custom** and retain their semantics. The collapsed **Advanced
+settings** section contains the default/fallback identity, ordered identity
+routes, agent filter, API key environment variable and remote-request switch.
+You can continue editing those settings there; ordinary saves preserve them.
+No hand-written JSON is needed.
 
 The same options can still be set from the command line:
 

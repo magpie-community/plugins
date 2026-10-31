@@ -1,9 +1,30 @@
 import { expect, test } from "bun:test"
-import { testConnection, textsFor } from "./probe.mjs"
+import { readIdentities, testConnection, textsFor } from "./probe.mjs"
 
 const saved = { serverUrl: "https://aelios.example/base/", apiKey: "secret-test-key" }
 const quiet = (memory = "skipped") => Response.json({ memory, patch: "", recall_id: null, remember: "none" })
 const noEnv = {}
+
+test('matching list uses authenticated read-only endpoint and projects display metadata only', async () => {
+  const result = await readIdentities(saved, async (url, init) => {
+    expect(String(url)).toBe('https://aelios.example/base/v1/hook/identities')
+    expect(init.method).toBe('GET')
+    expect(init.body).toBeUndefined()
+    expect(init.redirect).toBe('error')
+    expect(init.headers.Authorization).toBe('Bearer secret-test-key')
+    return Response.json({ identities: [{ slug: 'first', name: 'Assistant', mainModels: ['gpt-*'], namespace: 'never-display' }], secret: 'never-display' })
+  }, 1000, noEnv)
+  expect(result).toEqual({ available: true, identities: [{ slug: 'first', name: 'Assistant', mainModels: ['gpt-*'] }] })
+  expect(JSON.stringify(result)).not.toContain('never-display')
+})
+
+test('matching list tolerates older Workers and bounds malformed or hanging responses', async () => {
+  expect(await readIdentities(saved, async () => new Response('private', { status: 404 }), 1000, noEnv)).toEqual({ available: false, code: 'unsupported' })
+  for (const data of [{ identities: [{}] }, { identities: Array(257).fill({}) }, { identities: [{ slug: 'ok', name: 'ok', mainModels: [1] }] }]) {
+    expect((await readIdentities(saved, async () => Response.json(data), 1000, noEnv)).available).toBe(false)
+  }
+  expect(await readIdentities(saved, async () => new Promise(() => {}), 10, noEnv)).toEqual({ available: false, code: 'timeout' })
+})
 
 test("empty-input probe checks every distinct route identity plus fallback without records or dialogue", async () => {
   const requests = []

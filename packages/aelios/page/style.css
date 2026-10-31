@@ -1,10 +1,6 @@
-/* The window's own sheet (the bridge adds it for every plugin page) already
-   gives the font, colours, headings, buttons, inputs and tables. What is left
-   here is layout over the theme's --magpie-* tokens. Where magpie has a
-   control of its own, the values are taken from it: the switch is Plugins'
-   .lib-switch (32x19, a 15px knob, off --line, on --fg), the primary button is
-   a .text.primary, and a route is the box an account's rows sit in. */
+/* Magpie's bridge supplies base typography, colours and controls. */
 *, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
 main { max-width: 720px; }
 
 .page-head { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 18px; }
@@ -53,7 +49,10 @@ input[role="switch"]:checked { background: var(--magpie-fg); }
 input[role="switch"]:checked::before { transform: translateX(13px); }
 input[role="switch"]:disabled { opacity: .5; cursor: default; }
 
-.agent-field { display: block; margin-top: 10px; }
+#configured-url { overflow-wrap: anywhere; }
+#connection-editor summary { cursor: pointer; }
+#connect { margin-top: 14px; }
+.advanced section { margin-top: 18px; }
 
 .notice { margin: 0 0 12px; color: var(--magpie-muted); font-size: 12px; max-width: 74ch; }
 

@@ -20,11 +20,28 @@
   }
   const fingerprint = () => JSON.stringify(collect());
   const dirty = () => fingerprint() !== baseline;
+  function paintAssignment() {
+    const identity = $('identity').value.trim();
+    $('assignment-summary').textContent = identity || routes.length
+      ? `${t('customAssignment')}${identity ? ` · ${t('fallback')}: ${identity}` : ''}${routes.length ? ` · ${t('routes')}: ${routes.length}` : ''}`
+      : t('automaticAssignment');
+  }
+  function paintConnection() {
+    const configured = Boolean(text(savedOptions?.serverUrl).trim());
+    $('connection-summary').hidden = !configured;
+    $('configured-url').textContent = text(savedOptions?.serverUrl);
+    $('connection-editor').open = !configured;
+    $('change-connection').textContent = t(configured ? 'changeConnection' : 'connectionIntro');
+    $('daily-settings').hidden = !configured;
+    $('saved-actions').hidden = !configured;
+  }
   function paintState() {
     const key = busy ? 'saving' : dirty() ? 'unsaved' : 'loaded';
     $('state').dataset.message = key; $('state').textContent = t(key); $('state').dataset.dirty = String(dirty());
     $('save').disabled = busy || !savedOptions;
     $('test').disabled = busy || !savedOptions;
+    $('connect').disabled = busy || !savedOptions;
+    paintAssignment();
     $('editor').disabled = busy || !savedOptions;
     $('add-route').disabled = busy || routes.length >= 64;
   }
@@ -58,7 +75,7 @@
       }, false));
       row.append(actions);
       const fields = document.createElement('div'); fields.className = 'route-fields';
-      for (const [name, label, placeholder] of [['identity', 'routeIdentity', 'personal'], ['models', 'models', 'claude-*, gpt-*'], ['agents', 'routeAgents', 'claude-code, codex']]) {
+      for (const [name, label, placeholder] of [['identity', 'routeIdentity', 'personal'], ['models', 'models', 'claude-*, gpt-*'], ['agents', 'routeAgents', 'claude, codex']]) {
         const wrapper = document.createElement('label'); const caption = document.createElement('span'); caption.textContent = t(label);
         const input = document.createElement('input'); input.id = `route-${index}-${name}`; input.value = route[name]; input.placeholder = placeholder; input.autocomplete = 'off'; input.spellcheck = false;
         if (name === 'identity') input.maxLength = 64;
@@ -74,7 +91,7 @@
     $('key-env').value = text(options.apiKeyEnv); $('identity').value = text(options.identity); $('agents').value = list(options.agents);
     $('recall').checked = options.recall !== false; $('record').checked = options.record === true; $('allow-remote').checked = options.allowRemote === true;
     routes = Array.isArray(options.routes) ? options.routes.map((route) => ({ identity: text(route?.identity), models: list(route?.models), agents: list(route?.agents), original: route && typeof route === 'object' ? { ...route } : {} })) : [];
-    renderRoutes(); secret(); baseline = fingerprint(); paintState();
+    renderRoutes(); secret(); baseline = fingerprint(); paintConnection(); paintState();
   }
   function changed() {
     document.querySelectorAll('[aria-invalid="true"]').forEach((el) => el.removeAttribute('aria-invalid'));
@@ -86,7 +103,10 @@
     document.title = language === 'zh' ? 'Aelios · 设置' : 'Aelios · Settings';
     document.querySelectorAll('[data-t]').forEach((el) => { el.textContent = t(el.dataset.t); });
     document.querySelectorAll('[data-message]').forEach((el) => { el.textContent = t(el.dataset.message); });
-    secret(); renderRoutes(); if (savedOptions) paintState();
+    secret(); renderRoutes(); if (savedOptions) {
+      $('change-connection').textContent = t(text(savedOptions.serverUrl).trim() ? 'changeConnection' : 'connectionIntro');
+      paintState();
+    }
   }
   $('show-key').onclick = () => { $('key').type = $('key').type === 'password' ? 'text' : 'password'; secret(); };
   $('form').addEventListener('input', (event) => { if (!event.target.closest('.route')) changed(); });
@@ -100,7 +120,8 @@
   $('form').onsubmit = (event) => event.preventDefault();
   $('form').addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' || event.target.closest('.route') || !['INPUT'].includes(event.target.tagName) || event.target.type === 'checkbox') return;
-    event.preventDefault(); save();
+    event.preventDefault();
+    if (!text(savedOptions?.serverUrl).trim()) connect(); else save();
   });
   async function save() {
     if (busy || !savedOptions) return;
@@ -114,12 +135,12 @@
       await magpie.options.set(candidate);
       // Read the authoritative state even after an acknowledged write.
       savedOptions = await magpie.options.get(); confirmed = true;
-      fill(savedOptions); message('saved');
+      fill(savedOptions); message('saved'); return true;
     } catch (error) {
       try {
         savedOptions = await magpie.options.get(); confirmed = true;
         // A write can succeed even when the bridge response is rejected.
-        if (candidate && equivalent(candidate, savedOptions)) { fill(savedOptions); message('saved'); }
+        if (candidate && equivalent(candidate, savedOptions)) { fill(savedOptions); message('saved'); return true; }
         else if (error.field || ['invalidAdvanced', 'invalidOptions'].includes(error.message)) validationError(error);
         else message('saveFailed', true);
       } catch { confirmed = false; message('reconcileFailed', true); }
@@ -135,8 +156,33 @@
   function validationError(error) {
     message(error.message || 'invalidOptions', true);
     const field = error.field && $(error.field);
-    if (field) { field.setAttribute('aria-invalid', 'true'); field.focus(); }
+    if (field) {
+      field.setAttribute('aria-invalid', 'true');
+      const details = field.closest('details'); if (details) details.open = true;
+      field.focus();
+    }
   }
+  function openTest() {
+    const port = savedOptions.port;
+    const localService = `http://127.0.0.1:${Number.isInteger(port) && port > 0 && port <= 65535 ? port : 3481}`;
+    const target = new URL(`${magpie.service || localService}`.replace(/\/+$/, '') + '/test');
+    target.searchParams.set('lang', language);
+    target.searchParams.set('auto', '1');
+    location.assign(target.href);
+  }
+  async function connect() {
+    if (busy || !savedOptions) return;
+    if (!$('url').value.trim()) { validationError({ message: 'invalidUrl', field: 'url' }); return; }
+    if (await save()) {
+      // options.set restarts Magpie's plugin host. Its acknowledgement precedes
+      // the local listener; let the host bind before navigating the frame.
+      busy = true; paintState();
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try { openTest(); } catch { message('testFailed', true); }
+      finally { busy = false; paintState(); }
+    }
+  }
+  $('connect').onclick = connect;
   $('test').onclick = async () => {
     if (busy || !savedOptions) return;
     if (dirty() || !confirmed) { message('saveFirst', true); return; }
@@ -145,11 +191,7 @@
       savedOptions = await magpie.options.get(); confirmed = true;
       // A different window may have changed the saved options; reflect those.
       fill(savedOptions);
-      const port = savedOptions.port;
-      const localService = `http://127.0.0.1:${Number.isInteger(port) && port > 0 && port <= 65535 ? port : 3481}`;
-      const target = new URL(`${magpie.service || localService}`.replace(/\/+$/, '') + '/test');
-      target.searchParams.set('lang', language);
-      location.assign(target.href);
+      openTest();
     } catch { message('testFailed', true); }
     finally { busy = false; paintState(); }
   };

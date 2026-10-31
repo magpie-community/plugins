@@ -24,6 +24,41 @@ const texts = {
 }
 export function textsFor(lang) { return texts[lang] ?? texts.en }
 
+// Display-only metadata, read through the same local service as the probe.
+// An older Worker may not offer this endpoint; it must not break recall.
+export async function readIdentities(raw = {}, fetcher = globalThis.fetch, timeoutMs = 5000, env = process.env) {
+  const controller = new AbortController()
+  let timer
+  try {
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 9000) throw new Failure('invalid')
+    const o = settings(raw, env)
+    const work = async () => {
+      const response = await fetcher(new URL('v1/hook/identities', o.server), {
+        method: 'GET', redirect: 'error', signal: controller.signal,
+        headers: { Authorization: /^bearer\s/i.test(o.apiKey) ? o.apiKey : `Bearer ${o.apiKey}` },
+      })
+      if (response.status !== 200) {
+        response.body?.cancel().catch(() => {})
+        return { available: false, code: response.status === 404 ? 'unsupported' : 'unavailable' }
+      }
+      const data = await readJSON(response, controller.signal)
+      if (!data || !Array.isArray(data.identities) || data.identities.length > 256) throw new Failure('invalid')
+      const identities = data.identities.map(item => {
+        if (!item || typeof item.slug !== 'string' || item.slug.length > 128 ||
+            typeof item.name !== 'string' || item.name.length > 512 ||
+            !Array.isArray(item.mainModels) || item.mainModels.length > 256 ||
+            !item.mainModels.every(model => typeof model === 'string' && model.length <= 512)) throw new Failure('invalid')
+        return { slug: item.slug, name: item.name, mainModels: item.mainModels }
+      })
+      return { available: true, identities }
+    }
+    return await Promise.race([work(), new Promise((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(new Failure('timeout')) }, timeoutMs)
+    })])
+  } catch { return { available: false, code: controller.signal.aborted ? 'timeout' : 'unavailable' } }
+  finally { clearTimeout(timer) }
+}
+
 function settings(raw, env) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Failure("invalid")
   const text = (value) => {
