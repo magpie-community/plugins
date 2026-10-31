@@ -62,6 +62,26 @@ user text and all assistant text stay untouched. Exactly matching raw templates
 pasted at the beginning of a Cindy user message cannot be distinguished from
 host notes; quote or fence such examples, or disable this option.
 
+Scheduled-run and partner-handoff messages can combine host bookkeeping, event
+data, a user's request, constraints and a partner's objective in one wire
+message. The gateway has no trusted per-span provenance for those messages. If
+any of the guarded scheduled-run or handoff markers appears anywhere in Cindy
+user text, cleanup preserves the **entire** message, including recognized notes
+before it. This is a conservative stop, not a claim that the marker proves a
+scheduled run or identifies a speaker. An ordinary user, quoted example or
+fenced sample containing a marker also stops cleanup. Unknown variants may not
+contain those markers and are not reliably classified. These messages and their
+host text may still be saved and used for the Thread title.
+
+The imported `role=user` is the incoming protocol role, not verified authorship:
+the receiving application may display a combined partner objective as a user
+message. This filter cannot split or attribute those spans safely; it does not
+remove the objective or identify it as human-authored. Use a native integration
+with trustworthy per-message provenance when correct attribution is required.
+A user-pasted exact *older* recognized leading template without a guarded marker
+can still be stripped; disable `captureCindy` to preserve it. There is no safe
+text-only way to distinguish that paste from the host's identical text.
+
 WeChat display names and explicit ownership survive as `metadata.cindy_origin`;
 group/non-owner speech also keeps a short speaker label. Recognized channel and
 client headers lose their transport chat/user/device IDs. This is not a general
@@ -105,8 +125,11 @@ do **not** claim to reproduce or fix the reports' other integrations end to end.
 | [nowledge-mem #161](https://github.com/nowledge-co/nowledge-mem/issues/161) | Capture filtering leaves inference requests, tools, recalled content and live output unchanged | Not a backend cache-routing fix |
 | [community #459](https://github.com/nowledge-co/community/issues/459) | An unsuccessful import is not recorded as an acknowledged filtered replay; a later event can succeed | No new retry worker or persistent delivery guarantee |
 
-Additional negative tests retain inherited Side Chat history and ambiguous OMP
-user text, and enforce opt-in, source restrictions, secrets in removed content,
+Additional synthetic scheduled-run and partner-handoff tests preserve mixed
+source text, task constraints, quoted/fenced examples and original message IDs.
+They do not verify real host payloads or identify authors. Other negative tests
+retain inherited Side Chat history and ambiguous OMP user text, and enforce
+opt-in, source restrictions, secrets in removed content,
 unsettled tools, incomplete output and package/default contracts.
 
 Run the focused suite with either runtime:

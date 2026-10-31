@@ -145,7 +145,17 @@ function knownPrefix(content) {
     const remainder = newline < 0 ? "" : content.slice(newline + 1);
     return channelPrefix(line, remainder) || clientPrefix(line, remainder) || contextPrefix(content, line);
 }
+// These strings only make cleanup more conservative. They are not evidence of
+// origin or identity: a user can write or quote any of them. Keep the whole
+// message, including any recognized earlier prefix, when boundaries are unclear.
+const mixedSourceMarkers = [
+    "主人开启了自动跟进；这一轮由宿主的任务事件唤醒，不是主人刚说的话。",
+    "[Scheduled run context]", "[Routine checkpoint]", "[Silent scheduled run]",
+    "[Task delivery]", "[消息来源]", "[任务来源]",
+];
 function cindyText(content) {
+    if (mixedSourceMarkers.some((marker) => content.includes(marker)))
+        return { content };
     let remainder = content;
     let origin;
     for (let count = 0; count < maxPrefixes; count++) {

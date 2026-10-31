@@ -138,8 +138,9 @@ derived value for all of them.
   changes. See [capture filtering and its limits](CAPTURE_FILTER.md).
 - `captureCindy`: default **false**. With `captureFilter: "human"`, remove
   complete known leading Cindy notes only when Magpie identifies the agent
-  as `cindy`. It does not infer native Side Chat boundaries. Configure both
-  options in Plugins → Options; existing connection settings stay unchanged.
+  as `cindy`. Mixed scheduled or partner handoff text is conservatively retained;
+  the protocol role does not establish authorship. It does not infer native Side
+  Chat boundaries. Configure both options in Plugins → Options.
 - `allowInsecureHttp`: default **false**. Permits plain HTTP to a server that
   is not a loopback address. Prefer HTTPS.
 - `port`: the loopback port of the page's connection test, default 3479. Change

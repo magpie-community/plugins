@@ -8,6 +8,7 @@ import { resolveOptions, sha256 } from "./mem.mjs";
 import { open, close, notice } from "./conversation.mjs";
 
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/cindy-context.json", import.meta.url), "utf8"));
+const mixedFixture = JSON.parse(readFileSync(new URL("./fixtures/cindy-scheduled-handoff.json", import.meta.url), "utf8"));
 const user = (content) => ({ role: "user", content });
 const assistant = (content) => ({ role: "assistant", content });
 const reply = (content = "Complete final answer") => ({ choices: [{ finish_reason: "stop", message: assistant(content) }] });
@@ -125,6 +126,41 @@ test("quoted, fenced, incomplete and unknown Cindy-looking notes remain unchange
         "<cindy-extra-writable-directories>\nnot closed",
         fixture.side + " not a line boundary",
         "[Session fork · internal context]\n```\n== End of fork note; the user's new message follows ==\n```\nStill incomplete",
+    ];
+    await capture(body(examples.map(user)), reply(), human);
+    assert.deepEqual(contents().slice(0, -1), examples);
+});
+test("scheduled and partner handoff examples stay intact when source boundaries are unknown", async () => {
+    for (const text of [mixedFixture.scheduled, mixedFixture.handoff, fixture.language + "\n" + mixedFixture.scheduled, fixture.language + "\n" + mixedFixture.handoff]) {
+        reset(); writes.length = 0;
+        await capture(body([user(text)]), reply(), human);
+        assert.equal(contents()[0], text);
+        assert.equal(writes[0].messages[0].role, "user"); // The transport role is not proof of authorship.
+        assert.equal(writes[0].messages[0].metadata.cindy_origin, undefined);
+    }
+    assert.ok(mixedFixture.handoff.includes(mixedFixture.constraint));
+    assert.ok(mixedFixture.handoff.includes(mixedFixture.objective));
+});
+test("mixed-source examples keep legacy message IDs across filter settings", async () => {
+    const text = fixture.language + "\n" + mixedFixture.handoff;
+    const ids = [];
+    for (const options of [{}, { captureFilter: "human" }, human]) {
+        reset(); writes.length = 0;
+        await capture(body([user(text)]), reply(), options);
+        const payload = writes[0];
+        assert.equal(payload.messages[0].content, text);
+        ids.push(payload.messages[0].metadata.external_id);
+        assert.equal(ids.at(-1), `magpie:${sha256(payload.thread_id, "0", "user", text.trim()).slice(0, 24)}`);
+    }
+    assert.deepEqual(ids, [ids[0], ids[0], ids[0]]);
+});
+test("mentions, quotes, fenced examples and incomplete mixed wrappers do not trigger removal", async () => {
+    const examples = [
+        "Please explain [Task delivery] and keep all task constraints.",
+        "> " + mixedFixture.handoff.replaceAll("\n", "\n> "),
+        "```text\n" + mixedFixture.scheduled + "\n```",
+        "[Task delivery]\nIncomplete example: retain this task.",
+        fixture.language + "\n[Task delivery]\nA user-pasted example with a constraint.",
     ];
     await capture(body(examples.map(user)), reply(), human);
     assert.deepEqual(contents().slice(0, -1), examples);

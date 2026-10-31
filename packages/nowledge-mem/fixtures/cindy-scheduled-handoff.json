@@ -1,0 +1,6 @@
+{
+  "scheduled": "主人开启了自动跟进；这一轮由宿主的任务事件唤醒，不是主人刚说的话。\n<untrusted-data>\n{\"event\":\"scheduled\",\"task\":\"synthetic-example\"}\n</untrusted-data>\n[Scheduled run context]\nSynthetic scheduling details.\n[Routine checkpoint]\nPreserve the task constraints.\n[Silent scheduled run]\nSynthetic continuation.",
+  "handoff": "[Task delivery]\nHost bookkeeping: synthetic event.\n[UI language]\nSynthetic language note.\n[消息来源] 伙伴 Cindy\n[Session fork · internal context]\nSynthetic inherited context.\n== End of fork note; the user's new message follows ==\n[任务来源]\n用户原话：请检查示例配置，不要修改文件。\nObjective: Inspect the synthetic configuration and report findings.",
+  "constraint": "用户原话：请检查示例配置，不要修改文件。",
+  "objective": "Objective: Inspect the synthetic configuration and report findings."
+}
