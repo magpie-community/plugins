@@ -286,7 +286,7 @@
   const HIDE = { "1h": 3600e3, "6h": 6 * 3600e3, "24h": 24 * 3600e3, never: Infinity }
   const DEFAULTS = {
     mode: "office", dim: "3d", scene: "office", quality: "medium", demo: false, showDone: true,
-    hideAfter: "6h", approvalAfterSec: 90, agents: [], showSub: true, showIdle: true, side: true,
+    hideAfter: "6h", approvalAfterSec: 90, agents: [], showSub: true, showIdle: true, side: false,
     lang: "auto", progress: true, text: true, cleared: {},
   }
   // a turn whose file hasn't moved this long has made no progress

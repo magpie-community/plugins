@@ -14,13 +14,13 @@
 * { box-sizing: border-box; }
 /* the page paints no background of its own: magpie's shows through, so
    there is never a ring of a different colour at the frame's edge */
-html, body { margin: 0; height: 100%; background: transparent; color: var(--fg); }
+html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; color: var(--fg); }
 /* no card around the page: it meets magpie's own background, so the
    window's inset shows no ring of a different colour */
 body { padding: 18px 24px 12px; font: 13px/1.45 var(--font); }
 button { font: inherit; color: inherit; }
 
-.card { display: flex; flex-direction: column; height: 100%; min-height: 520px; }
+.card { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 body.panel, .card { background: none; }
 .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 21px; font-weight: 700; letter-spacing: -.01em; }
@@ -37,9 +37,10 @@ h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 21px; 
 .counts.alert .need i { animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(245, 158, 11, .25); } }
 
-.bar { display: flex; align-items: center; gap: 14px; padding: 14px 0; }
-.grow { flex: 1; }
-.note { color: var(--muted); font-size: 12px; }
+.bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 14px 0; }
+.grow { flex: 1; min-width: 0; }
+.tools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.note { color: var(--muted); font-size: 12px; min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; }
 .seg button { border: 0; background: none; padding: 6px 15px; border-radius: 8px; color: var(--muted); font-size: 14px; cursor: pointer; }
 .seg.dark { background: var(--bg); border: 1px solid var(--line); }
@@ -62,12 +63,12 @@ h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 21px; 
 .menu .row.col { flex-direction: column; align-items: flex-start; cursor: default; }
 .menu .row.col:hover { background: none; }
 
-.stage { position: relative; flex: 1; min-height: 340px; border-radius: 14px; overflow: hidden; background: #05070f; }
+.stage { position: relative; flex: 1; min-height: 0; border-radius: 14px; overflow: hidden; background: #05070f; }
 .stage[hidden], .listview[hidden] { display: none; }
 canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 canvas[hidden] { display: none; }
 .tags { position: absolute; inset: 0; pointer-events: none; }
-.tag { position: absolute; left: 0; top: 0; pointer-events: auto; display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 3px 10px 3px 4px; border: 0; border-radius: 999px; background: rgba(236, 238, 243, .9); color: #1f2937; font: 600 12px/1.3 var(--font); box-shadow: 0 2px 8px rgba(0, 0, 0, .35); cursor: pointer; white-space: nowrap; will-change: transform; transition: background .12s, box-shadow .12s; }
+.tag { position: absolute; left: 0; top: 0; pointer-events: auto; display: inline-flex; align-items: center; gap: 5px; max-width: 190px; padding: 2px 8px 2px 4px; border: 0; border-radius: 999px; background: rgba(236, 238, 243, .92); color: #1f2937; font: 600 11.5px/1.3 var(--font); box-shadow: 0 2px 8px rgba(0, 0, 0, .35); cursor: pointer; white-space: nowrap; will-change: transform; transition: background .12s, box-shadow .12s; }
 .tag[hidden] { display: none; } /* the rule above would otherwise show it */
 .tag .mark { flex: none; }
 .tag .tn { overflow: hidden; text-overflow: ellipsis; }
@@ -233,6 +234,13 @@ tr.group:hover td { background: var(--bg); }
 .toast .tn b { display: block; font-size: 12.5px; }
 .toast .tn span { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+
+@media (max-width: 1100px) {
+  .tools { width: 100%; margin-left: 0; justify-content: flex-end; }
+  .note { display: none; }
+  .seg button { padding: 6px 11px; font-size: 13px; }
+  .btn { padding: 6px 11px; font-size: 13px; }
+}
 
 @media (max-width: 720px) {
   body { padding: 8px; }

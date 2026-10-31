@@ -37,7 +37,7 @@
     showSub: opts.showSub !== false,
     showIdle: opts.showIdle !== false,
     agents: Array.isArray(opts.agents) ? opts.agents.filter((x) => typeof x === "string") : [],
-    side: opts.side !== false,
+    side: opts.side === true,
     cleared: opts.cleared && typeof opts.cleared === "object" && !Array.isArray(opts.cleared) ? { ...opts.cleared } : {},
   }
   let manualLang = opts.lang === "auto" || M.LANG_NAMES[opts.lang] ? opts.lang : "auto"
@@ -207,23 +207,40 @@
       if (!e._w) e._w = e.offsetWidth || 90
       shown.push({ e, p })
     }
-    // two tags that would sit on each other are stacked, the lower one first
-    shown.sort((a, b) => a.p.y - b.p.y || a.p.x - b.p.x)
+    // with many agents the office can hold more name tags than it can show
+    // without turning into a wall of labels: keep the ones that need you,
+    // are working, are selected/hovered, then the rest by recency
+    const box = $("tags")
+    const W = box?.clientWidth || 0
+    const limit = floatHome ? 4 : W < 850 ? 4 : W < 1100 ? 5 : W < 1500 ? 6 : 8
+    const rank = new Map()
+    for (const a of state.list) {
+      const r = a.key === state.open || a.key === state.hover ? 0
+        : a.status === "waiting" || a.status === "error" ? 1
+        : a.status === "thinking" || a.status === "executing" || a.status === "replying" ? 2
+        : 3
+      rank.set(a.key, r)
+    }
+    shown.sort((a, b) => (rank.get(a.p.key) ?? 3) - (rank.get(b.p.key) ?? 3) || b.p.y - a.p.y)
+    const keep = shown.slice(0, limit)
+    keep.sort((a, b) => a.p.y - b.p.y || a.p.x - b.p.x)
     const placed = []
-    const H = 24
-    for (const it of shown) {
+    const H = 26
+    for (const it of keep) {
       let y = it.p.y
-      for (let pass = 0; pass < 6; pass++) {
+      for (let pass = 0; pass < 40; pass++) {
         const hit = placed.find((q) => Math.abs(q.x - it.p.x) < (q.w + it.e._w) / 2 + 4 && Math.abs(q.y - y) < H)
         if (!hit) break
         y = hit.y - H
       }
-      it.y = y
-      placed.push({ x: it.p.x, y, w: it.e._w })
+      it.y = Math.max(H, y)
+      const half = (it.e._w || 90) / 2
+      it.x = W ? Math.max(half + 6, Math.min(W - half - 6, it.p.x)) : it.p.x
+      placed.push({ x: it.x, y: it.y, w: it.e._w })
     }
-    for (const it of shown) {
+    for (const it of keep) {
       seen.add(it.p.key)
-      const tf = `translate(${Math.round(it.p.x)}px, ${Math.round(it.p.y)}px) translate(-50%, -100%)`
+      const tf = `translate(${Math.round(it.x)}px, ${Math.round(it.y)}px) translate(-50%, -100%)`
       if (it.e.style.transform !== tf) it.e.style.transform = tf
     }
     for (const [k, e] of tags) {
