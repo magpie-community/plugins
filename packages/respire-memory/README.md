@@ -6,8 +6,16 @@ This supports agent self-evolution through reusable experience. It does not trai
 
 ## Install
 
+Install the [Respire CLI](https://github.com/risense-ai/respire-cli) first: this plugin is only the Magpie integration; the CLI provides the memory library and local Runtime. Follow the [npm installation guide](https://github.com/risense-ai/respire-cli/blob/main/npm/README.md), or download your platform from [CLI Releases](https://github.com/risense-ai/respire-cli/releases).
+
 ~~~sh
-magpie plugin add @magpie-community/gateway-respire-memory
+npm install -g @rsrsai/cli
+~~~
+
+Prepare your account/model and start/unlock the local HTTP Runtime using the [Runtime guide](https://github.com/risense-ai/respire-cli/blob/main/docs/runtime.md). Check `rsrs --client-only status --json`, then install this plugin:
+
+~~~sh
+magpie plugin add respire-memory
 ~~~
 
 Requires Magpie 0.1.1273+ and Bun 1.3.6+, with an existing unlocked local Respire HTTP Runtime. Page saves reaching hooks require Magpie 0.1.1531+. The magpie-key classification needs a newer host; older hosts may skip that origin. This plugin does not provision an engine, manage accounts/services or reuse private provider credentials.
