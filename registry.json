@@ -79,6 +79,8 @@
       "summary": { "en": "Send a request's history smaller: fold a run of blank lines, drop a system prompt written twice and a message repeated right after itself, and cut a past tool result longer than maxToolLength at a word boundary. The turn being sent now is left whole.", "zh": "把请求的历史发得更小：折叠连续空行、去掉逐字重复的 system 提示与紧挨着重复的消息、把历史中超过 maxToolLength 的工具结果在词边界处截断；正在发送的这一轮原样不动。" } },
     { "package": "@magpie-community/agent-aider", "name": "Aider", "kind": "agent", "community": true,
       "summary": { "en": "Aider (aider.chat) on magpie's Agents page: pick one of magpie's models for it, and switch it off to put its config back.", "zh": "把 Aider（aider.chat）加到 magpie 的 Agent 页：给它选 magpie 的模型，关掉即恢复它原来的配置。" } },
+    { "package": "@magpie-community/agent-craft-agents", "name": "Craft Agents", "kind": "agent", "community": true,
+      "summary": { "en": "Craft Agents on Magpie's Agents page: select a Magpie model and disconnect to restore its original connections.", "zh": "把 Craft Agents 加到 Magpie 的 Agent 页：选择 Magpie 模型，断开后恢复原连接。" } },
     { "package": "@magpie-community/agent-pig", "name": "PiG", "kind": "agent", "community": true,
       "summary": { "en": "PiG (Pi in Go): add Magpie's endpoint and model catalog, choose models in PiG, and keep startup settings unchanged.", "zh": "为 PiG（Pi in Go）注入 Magpie 端点与模型列表，在 PiG 内选择模型，保持启动设置不变。" } },
     { "package": "@magpie-community/agent-bub", "name": "Bub", "kind": "agent", "community": true,
