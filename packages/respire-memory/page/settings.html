@@ -20,7 +20,7 @@
     <label class="check"><input id="capture" type="checkbox">将每轮完成的对话保存到日记</label>
     <p class="disclosure">开启采集后，用户与助手消息、工具参数和结果中的文件内容、命令输出均可能进入 Respire。日记仍按你的同步设置同步；这不会自动提炼为长期结论。</p>
     <fieldset><legend>后台记忆整理</legend>
-      <label class="check"><input id="archive" type="checkbox">回合结束后，用独立模型提炼、查重并整理记忆</label>
+      <label class="check"><input id="archive" type="checkbox" checked>每个完成回合自动存过程日记，并提炼、查重和整理长期记忆</label>
       <label for="generationBaseUrl">生成服务地址（兼容 Chat Completions）</label>
       <input id="generationBaseUrl" type="url" placeholder="https://provider.example/v1" autocomplete="off" spellcheck="false">
       <label for="generationModel">生成模型名称</label><input id="generationModel" autocomplete="off" spellcheck="false">
@@ -28,7 +28,7 @@
       <small>仅填变量名，不在此处输入密钥。变量应在 Magpie 启动环境中配置；插件不会读取客户端私有登录凭据。</small>
       <label for="stateDir">状态目录（可选，填写绝对路径）</label><input id="stateDir" autocomplete="off" spellcheck="false">
       <small>留空使用用户目录的 .rsrs/magpie。状态与待处理证据加密保存在此处；密钥同目录保存，应按敏感资料保护整个目录。</small>
-      <p class="disclosure">开启后，本轮消息、工具结果与相关记忆会发送给所配置的生成服务，并产生额外模型用量。网关缺失的历史无法恢复。后台队列成功入盘后可恢复，但宿主入队前丢失通知仍会漏记。只读开关在后续请求同步给 worker，不会撤销已经接受的写入。</p>
+      <p class="disclosure">完整读存流程需要配置生成服务。每轮自动归档默认开启；关闭或模型未配置时不能视为满足每轮必存。消息、工具结果与相关记忆会发送给此服务，并产生额外模型用量。宿主只在回复完成后通知，不能保证回复发出前已存；缺失历史或入队前丢失通知仍会漏记。只读开关在后续请求同步给 worker，不会撤销已接受的写入。</p>
     </fieldset>
     <button id="save" type="submit" disabled>保存配置</button>
     <p id="status" role="status" aria-live="polite">正在读取配置…</p>

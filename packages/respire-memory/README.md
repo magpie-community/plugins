@@ -1,14 +1,14 @@
 # respire-memory
 
-Community distribution of [respire-memory for Magpie](https://github.com/risense-ai/respire-magpie), runtime code synchronized from upstream v0.2.1, with post-release documentation. MIT; see NOTICE for reused components.
+Community distribution of [respire-memory for Magpie](https://github.com/risense-ai/respire-magpie), runtime synchronized from v0.3.0.
 
 ```sh
 magpie plugin add @magpie-community/gateway-respire-memory
 ```
 
-Requires an existing unlocked local Respire Runtime. Recall and explicit remember are enabled; capture and model-based background archival are off until configured. Helps AI agents evolve through reusable memories and lessons, without changing model weights.
+Requires an existing unlocked local Respire Runtime and a configured generation model for full per-turn processing. Automatic archival defaults to on; every successful writable archival must store and read back a process diary. Raw transcript capture defaults to off.
 
-Run the package checks from this directory with `npm run check`. The checks use isolated simulated services and a real detached worker, without production accounts.
+**Not strict engine-policy parity:** Magpie only notifies after reply completion, so this plugin cannot guarantee persistence before the answer is sent. See [0.3.0 correction report](docs/TEST-REPORT-0.3.0.md).
 
 # respire-memory for Magpie
 
@@ -16,15 +16,15 @@ Run the package checks from this directory with `npm run check`. The checks use 
 
 > 吸即存，呼即取——给 AI Agent 装上记忆，让经验成为下一轮行动的起点。
 
-**respire-memory 帮助 AI Agent 持续自进化。** 它通过 Magpie 接入 Respire：回答前找回相关经验，用户明确要求时存下事实；开启后台整理后，再从完成的对话中提炼决定、方法和教训，查重并保存，供后续任务使用。
+**respire-memory 帮助 AI Agent 持续自进化。** 它通过 Magpie 接入 Respire：每轮先召回并读取引擎完整政策，再读选中正文；每个完成回合自动保存过程日记，并从对话中提炼决定、方法和教训，查重、更新或挂靠，供后续任务使用。“记住”是强调意图，不是唯一存储入口。
 
 这里的自进化来自记忆与经验的持续积累，不涉及修改模型权重；效果取决于记录质量、召回结果和 Agent 的实际采用。
 
 插件支持自动召回正文、显式存储、会话规则、后台提炼与查重归档、大回合分段、证据回读、持久去重，以及只读和显示偏好。
 
-详细说明：[功能与边界矩阵](https://github.com/risense-ai/respire-magpie/blob/main/docs/FEATURES.md) · [0.2.1 测试报告](https://github.com/risense-ai/respire-magpie/blob/main/docs/TEST-REPORT.md)。核心链路已经实现并验收；自动识别客户端 plan、真实 SessionStart/恢复/压缩事件和原生状态行仍受宿主接口限制，不能视为与 Codex 全功能等价。
+详细说明：[功能与边界矩阵](https://github.com/risense-ai/respire-magpie/blob/main/docs/FEATURES.md) · [0.3.0 政策修复报告](https://github.com/risense-ai/respire-magpie/blob/main/docs/TEST-REPORT-0.3.0.md) · [0.2.1 历史验收](https://github.com/risense-ai/respire-magpie/blob/main/docs/TEST-REPORT.md)。核心链路已经实现并验收；自动识别客户端 plan、真实 SessionStart/恢复/压缩事件和原生状态行仍受宿主接口限制，不能视为与 Codex 全功能等价。
 
-后台整理默认关闭，需要明确配置生成模型。没有生成服务也能使用基础召回和显式存储。网关不会取得或复用客户端私有登录凭据，也不会注册或执行客户端工具。
+0.3.0 每轮自动存检默认开启，使用前必须配置生成模型。没有模型、主动关闭归档或处于只读模式时，插件会说明未满足完整读存流程；不会把待处理当作已存。原始对话采集仍默认关闭。网关不会取得或复用客户端私有登录凭据，也不会注册或执行客户端工具。
 
 [GitHub Releases](https://github.com/risense-ai/respire-magpie/releases) 提供分发包与 SHA256SUMS。npm 首发按用户决定暂缓，**不要假定 @rsrsai/magpie 已可从 npm 安装**。
 
@@ -38,7 +38,7 @@ Run the package checks from this directory with `npm run check`. The checks use 
 复用现有 Respire 账号、模型和 Runtime；不自行安装、启动或升级 Runtime，不索取凭据。
 检查 magpie plugin list --json，避免重复；尚未安装时执行 magpie plugin add <完整目录>。
 安装整个目录，不只安装 respire.hooks.mjs。保留无关插件和配置，不自行升级 Magpie。
-在插件页面配置实际 Runtime 与项目。capture 和 archive 保持关闭，除非我明确允许采集或后台处理。
+在插件页面配置实际 Runtime、项目和独立生成模型。archive 默认开启，每轮需保存过程日记；capture 原始采集保持关闭。未授权后台处理时先设 readOnly 并说明完整读存尚未启用。
 如启用 archive，说明发送的消息、工具结果和相关记忆、额外模型用量及本地状态存储。
 在我自己的终端环境配置密钥；页面仅填写环境变量名称，不接收密钥。
 先用无敏感问题验证召回。写入验收先取得我对测试事实的授权，再读取实际记录。
@@ -73,7 +73,7 @@ magpie plugin add D:\sources\repos-new\gh\1memory\respire-magpie
   "injectRules": true,
   "showMemoryStatus": true,
   "capture": false,
-  "archive": false,
+  "archive": true,
   "generationBaseUrl": "",
   "generationModel": "",
   "authorizationEnv": "RESPIRE_MAGPIE_AUTHORIZATION",
@@ -87,14 +87,14 @@ magpie plugin add D:\sources\repos-new\gh\1memory\respire-magpie
 | project | 非空时过滤召回、标注新写入并限制后台更新目标；留空可使用当前整个库。不是权限或账号边界。 |
 | gatewayTimeoutMs | 宿主 Hook 超时，100–10000 毫秒；整个链另有总预算。后台模型处理不占用这段预算。 |
 | requestTimeoutMs | 前台每个 Runtime 请求含正文读取的预算，100–5000 毫秒。 |
-| maxBytes | 注入块 UTF-8 字节上限，1024–32768。首次规则占此预算，不足以完整放入时报告 invalid，不静默删减。 |
+| maxBytes | 记忆与回执注入预算，1024–32768 字节。完整政策另有最多 128 KiB 预算及固定宿主适配说明，每轮完整注入，不裁剪政策；总上下文成本会增加。 |
 | limit | 候选 1–5 条，默认 3；超预算或含疑似凭据的正文跳过。 |
 | remember | 处理“记：”“存：”“记录：”“记住：”“remember:”前缀，默认开启。 |
 | readOnly | 禁止本插件显式存储、采集及后台写入，不限制其他客户端工具。 |
-| injectRules | 首次观察会话时注入 Respire 规则并检查 Runtime，默认开启。 |
+| injectRules | 兼容旧配置保留；0.3.0 不再允许此项关闭每轮完整政策读取与注入。 |
 | showMemoryStatus | 提供 Memory、Used 及上次归档状态提示，默认开启；不能保证客户端显示，严格格式应省略标签。 |
 | capture | 完成回合原始文字与工具记录保存为 trivial 日记，默认关闭。 |
-| archive | 用独立模型提炼、查重、更新或挂靠并验证回执，默认关闭。 |
+| archive | 每个完成回合保存过程日记，并用独立模型提炼、查重、更新或挂靠与回读，默认开启；必须配置模型。关闭即不满足完整每轮必存。 |
 | generationBaseUrl | 兼容 Chat Completions 的基础地址，如 https://provider.example/v1；插件追加 /chat/completions。远程须 HTTPS，回环可 HTTP，不跟随重定向。 |
 | generationModel | 服务实际支持的模型名，启用 archive 时须填写。 |
 | authorizationEnv | 凭据所在环境变量名称，默认 RESPIRE_MAGPIE_AUTHORIZATION。无认证服务可不设置变量。 |
@@ -106,11 +106,11 @@ magpie plugin add D:\sources\repos-new\gh\1memory\respire-magpie
 
 1. 只接受宿主标记的 local 或 magpie-key。远程、其他具名密钥、代理和未知来源全部跳过。
 2. 核对当前 Runtime 账号与库，并隔离缓存和任务；不能确认账号或未解锁时继续原推理，报告不可用。
-3. recall 选标题后 show 正文，被取代的条目优先读新条。资料作为不可信历史参考注入，保留完整标识与正文，放不进预算就跳过整条。
-4. 显式存储只尝试一次，不 force。pending 是未写入；未知回执可能已经写入，不能自动重试。启用 archive 后可在回复完成时处理 pending；成功或未确认的显式写入不重复启动归档。
+3. 每个新回合先 recall，再 prompt 完整政策，再 show 正文；涉及决策、报错、教训或约定的记录读 chain。政策单独标注为引擎规则，记忆仍是不可信历史参考；保留设备与来源，放不进记忆预算的条目整条跳过。
+4. 显式存储也先召回与读政策，不在前台绕过分类直接 remember。前台 pending 表示等待本轮完成后的后台处理，不是引擎已存回执。旧版本未知回执仍禁止自动重试。
 5. 完成回复后，将任务写入加密队列，再启动独立 worker。失败、截断、工具未完成、疑似凭据或缺失历史的回合不入队。
 6. worker 复核当前账号、插件控制记录和引擎模式，再做可选日记采集及模型归档。模型只有受限记忆与本轮证据工具，不能调用 Shell、任意网络工具、凭据、配置或服务生命周期操作。
-7. 归档先召回、读完整政策和候选，优先更新，或挂到已读 parent；写后读回实际记录。长期结论附本轮来源标识，原始证据可通过 CLI 精确读回。
+7. 归档先召回、读完整政策和候选，优先更新，或挂到已读 parent；每轮必须写过程日记并回读。没有新长期结论也不能以 nothing-to-store 成功结束。长期结论另存并附本轮来源，原始证据可通过 CLI 精确读回。
 8. 下一条请求可提示上次归档状态。Used 仍由实际采用资料的模型报告，不是网关独立测量；回读成功只证明落库，不证明正文真实。
 
 `/nomem`、`#nomem` 只跳过本条召回；后台仍可按用户已启用的 capture/archive 运行，与 Codex 插件语义一致。要禁止本插件写入，请打开 readOnly，或关闭 remember、capture、archive。引擎的只读、暂停和权限规则始终有效。
@@ -144,7 +144,7 @@ setup 检查默认 Runtime、模式及状态目录，不发模型请求或安装
 | 能力 | 当前状态 |
 | --- | --- |
 | 自动召回、显式存储、待决与未知回执 | 已实现；自动注入正文而非只注入标题。 |
-| 规则与引擎检查 | 首次观察会话时执行；没有真实 SessionStart/恢复/压缩事件。 |
+| 规则与引擎检查 | 每个新回合读取并注入完整政策；没有真实 SessionStart/恢复/压缩事件。 |
 | 后台提炼、查重、更新/挂靠和回读 | 已实现独立 worker，另配生成服务，不依赖 Codex app-server。 |
 | 分段、证据读取与成功出口校验 | 已实现并保留来源。 |
 | 持久去重、进度、未知写入不重放 | 已实现；不弥补入队前的通知丢失。 |
@@ -153,6 +153,8 @@ setup 检查默认 Runtime、模式及状态目录，不发模型请求或安装
 | setup/settings | 提供本地 setup 命令和配置页面，不是 Codex 专用技能。 |
 
 开关在下一条请求同步给 worker；已接受的写入不能撤销。切换生成服务、模型或项目后，应先查看旧任务状态，不把配置保存当成旧任务已取消。
+
+**时点限制**：本插件只能在宿主完成回复后归档，无法保证引擎要求的“发出回复前已经落库”。这是尚未满足的严格时点要求，不能因每轮后台成功而声称完整政策已全部对齐。
 
 ## CI/CD 与发布
 

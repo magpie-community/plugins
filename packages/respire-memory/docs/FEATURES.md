@@ -1,56 +1,46 @@
-# respire-memory: capabilities and boundaries
+# respire-memory capabilities and boundaries
 
-Applies to upstream **v0.2.1** (`0ac7162`) and the proposed Magpie community distribution. See the [test report](TEST-REPORT.md) for the scope of verification. Implemented does not mean every path has been tested against a production service.
+Applies to **v0.3.0**. See the [policy-correction report](TEST-REPORT-0.3.0.md) and [historical v0.2.1 acceptance report](TEST-REPORT.md). A working memory round trip is not proof of full engine-policy compliance.
 
-## Purpose: agent self-evolution through experience
+## Agent self-evolution through experience
 
-respire-memory connects an agent's request/reply cycle to an existing Respire memory library. The agent can recall earlier experience before answering. Explicit remember requests can save facts; optional background archival extracts decisions, methods and lessons from completed turns, checks existing records, and reads back writes. Later turns can reuse those records.
+Each newly observed user turn recalls memory, reads the complete Runtime policy, then reads selected records and relevant causal chains. The answering agent receives the full policy separately from untrusted historical memory. A host-execution receipt identifies the initial steps already performed; the agent must not fabricate unavailable tools or repeat host actions mechanically.
 
-This is a memory-based feedback loop, not model-weight training. Records remain historical evidence, not instructions. Readback confirms storage, not the truth of a model's conclusions. No benchmark establishes a general improvement in agent quality.
+Every successfully archived writable turn must write and read back a process diary, even when there is no new long-term conclusion. New reusable facts, decisions and lessons are separately updated or attached to existing records. Explicit remember emphasizes the user's intent; it is not the sole storage trigger. Archival defaults to on and requires a configured generation model. Raw transcript capture remains separate and off by default.
 
-## What this offers Magpie users
+This feedback loop changes reusable memory, not model weights. Readback confirms storage, not the truth of a conclusion. No general agent-quality or comparative performance benchmark is claimed.
 
-- **One gateway integration:** clients using Chat Completions, Responses, Anthropic or Gemini request shapes can receive memory context without installing a separate memory plugin in each client. Only trusted local origins qualify; supported protocol shapes are not a claim that every client has been tested.
-- **Reusable experience, beyond a transcript:** optional archival can extract and organize facts, decisions and lessons, rather than only retaining raw conversation text. Raw diary capture and archival are separate, opt-in controls.
-- **Independent background work:** a detached worker uses a separately configured Chat Completions model. The foreground request does not wait for that model's full archival loop. Extra model calls still consume provider quota.
-- **Inspectable writes:** pending, completed and unconfirmed outcomes are distinct. The worker records returned IDs, verifies writes by reading them back, and preserves source evidence for inspection.
-- **Conservative recovery:** encrypted durable state supports deduplication and queued work. A write with an unknown result is not blindly retried. Source tools are bounded; they do not expose a shell or client tools to the archival model.
-- **Existing-library reuse:** the plugin uses the user's existing local Respire Runtime and engine policy. It does not require a new account, install an engine, manage a service, or import a provider's private credentials.
+## Current feature matrix
 
-These are design properties and tested behaviors within the report's scope. They are not comparative performance or security claims about PowerContext or other memory systems.
-
-## Feature matrix
-
-| Capability | Implementation in v0.2.1 | Verification / boundary |
+| Capability | Implementation | Evidence / limitation |
 | --- | --- | --- |
-| Recall before a request | Retrieves candidates, reads complete selected records and injects bounded context with IDs | Four protocol shapes checked with fixtures; real local Chat gateway and fresh-session recall passed |
-| Explicit remember prefixes | Handles 记 / 存 / 记录 / 记住 / remember prefixes; reports engine receipt | Real pending receipt and subsequent worker resolution passed; simulated successful writes also checked |
-| Pending / unknown outcomes | Accepts pending envelopes with exit code 2; unknown writes remain uncertain | Regression assertion and live pending path passed; uncertain-write no-retry checked with a simulated connection failure |
-| Library / account identity | Associates durable state and queued work with the current Runtime identity | Implemented; exhaustive account-switch race testing has not been performed |
-| Session rules and engine checks | Runs when the plugin first observes a session | An approximation at the gateway, not native SessionStart, resume or compaction hooks |
-| Raw diary capture | Optional trivial diary storage for completed visible turns | Implemented; production raw-capture acceptance was not performed; default off |
-| Background archival | Detached worker plus independently configured generation service | Real WorkBuddy model completed archival and record readback; fixture HTTP tool loop and detached worker also passed |
-| Deduplicate / update / attach | Restricted memory tools require policy and candidate reads; can update or attach under a parent | Policy guards checked; live parent attachment passed; every update/merge branch has not been independently accepted |
-| Write verification and source evidence | Reads actual records and retains turn source references | Automated checks and real record readback passed; stored conclusions are not thereby proven true |
-| Large-turn handling | Bounded context, segmentation, extraction, and source evidence tools | 270,000-character user input exercised in automated checks; no equivalent production long-turn model acceptance |
-| Durable queue and deduplication | AES-256-GCM records, atomic replacement, locks, persistent turn/job state | Persistence and detached-worker path checked; not a power-loss, concurrent-load or long-duration qualification |
-| Recovery commands | setup / status / run / recover / evidence | Implemented; no real crash-and-recovery acceptance claimed. Writes already attempted are not replayed |
-| Read-only mode | Blocks this plugin's explicit writes, capture and archival | Worker read-only case checked; cannot restrict unrelated client tools or revoke already accepted writes |
-| Memory / Used / prior-save hints | Supplies instructions and display preferences to the answering model | Implemented; Used is the model's report, not independent attribution measurement or a native UI status line |
-| Automatic plan-mode prohibition | No trusted client permission_mode is available | **Not implemented automatically**; use readOnly explicitly |
-| Caller boundary | Local / magpie-key only; shared, remote and unknown callers excluded | Shared-key rejection checked; installed Magpie 0.1.1908 does not reliably identify magpie-key; upgrade recommended for that path |
-| Configuration page and icons | Sandboxed settings, adaptive inline/sidebar SVG, light/dark page assets | Names, settings introduction and icons inspected in real Magpie web; native desktop window not directly inspected |
-| Safe bypass / failure handling | /nomem and #nomem skip recall only; connection failure preserves the original conversation | Implemented; skipping recall does not disable opted-in capture or archival |
-| Packaging and delivery | GitHub Release tarball and SHA256; three-OS Node/Bun CI; npm workflow gated | v0.2.1 released and checksum verified; npm deferred; community listing requires PR merge |
+| Per-turn read | Recall, complete policy from summary.instructions, selected full records; causal chain for decision/lesson/agreement/error-like hits | Four protocol fixtures; real Runtime complete-policy injection inspected. Same-turn retries reuse durable results |
+| Policy presence | Full policy is supplied every new turn, independently of the obsolete injectRules flag | Legacy small recall budgets do not clip policy; separate 128 KiB allowance plus fixed adapter; increases context cost |
+| Explicit remember | Front end reads policy/candidates, reports pending and defers classification and writes | No direct foreground remember that bypasses classification; pending is not saved |
+| Automatic archival | Default on; detached worker uses a separately configured Chat Completions model | Requires generation setup. Disabled/unconfigured archival is disclosed as incomplete, not successful |
+| Mandatory process diary | Writable success requires a new trivial write in this archival and readback of its returned ID | No-write nothing-to-store is rejected. Existing long-term facts still must not be duplicated |
+| Long-term organization | Restricted recall/show/chain/tree/taxonomy plus remember/update; shown parent required for new important records | Main-loop and fixture checks pass; destructive merges/configuration changes remain unavailable |
+| Source evidence and long turns | Bounded evidence tools, segmentation and user-source reads before writing | 270,000-character automated case; no real-provider long-turn qualification |
+| Persistence and failures | Encrypted queue, turn deduplication, progress, record IDs and unknown-write no-retry | Unknown writes stop archival; no exactly-once/power-loss guarantee |
+| Read-only and caller control | Local/magpie-key only; explicit readOnly and engine restrictions remain authoritative | Shared-key fixture rejection checked; old host magpie-key classification remains limited |
+| Optional raw capture | Trivial raw turn diary when explicitly enabled | Default off; distinct from model-produced process diary; no live raw-capture acceptance claimed |
+| Settings and status | Settings page, Memory/Used/prior-save hints, adaptive local light/dark icon | v0.2.1 actual Magpie web rendering inspected; hints depend on the answering model |
+| Delivery | Three-OS Node/Bun checks and tagged GitHub Release tarball/SHA256 | npm deferred; community registry delivery requires maintainer merge |
 
-## Important operational limits
+## Strict requirements that remain unmet
 
-- A persistent queue cannot recover a completion notification lost before the host enqueues it. No exactly-once end-to-end delivery guarantee is made.
-- Responses requests that depend on unseen `previous_response_id` history are skipped for capture/archival. Missing client history is not reconstructed.
-- Images, audio and private reasoning are not archived. Only the visible, supported conversation content is processed.
-- Project filtering narrows retrieval/update targets; it is not an authorization boundary.
-- Enabling archival sends turn content, relevant memory and tool evidence to the configured generation service. Capture and archival default to off.
-- The local state encryption key is stored beside its ciphertext. Protect the whole directory; this is not an OS keychain or a substitute for Respire library encryption.
-- Changes to readOnly/capture/archive reach the worker on a subsequent request. Inspect existing jobs when changing model, endpoint or project settings.
+**Magpie's completion notification arrives after the reply has completed.** This plugin therefore cannot guarantee the engine's strict requirement to store before the reply is sent. A verified process diary after completion does not satisfy that timing requirement. The implementation must not be described as complete engine-policy parity.
 
-Installation, configuration and recovery commands are in the [README](../README.md).
+The gateway also lacks native client SessionStart/resume/compaction events, trustworthy automatic client plan-mode detection, guaranteed native status lines, and visibility into the client's filesystem/tool actions outside gateway traffic. Use readOnly explicitly for plan/no-write workflows.
+
+## Operational limits
+
+- Only completed, visible, supported turns qualify. Lost notifications before enqueue, truncated replies, unresolved tools, sensitive content and unseen Responses previous_response_id history can prevent archival. These are incomplete rounds, not saved rounds.
+- Raw images, audio and private reasoning are not archived. Missing history is not reconstructed.
+- Project filtering is not authorization. Other client tools are outside this plugin's control.
+- Archival sends turn/tool evidence and relevant memory to the configured provider and consumes model quota. Missing setup and disabled controls must be disclosed.
+- State encryption keys live beside ciphertext; protect the whole directory. This is not an OS keychain.
+- Changed controls reach workers on a subsequent request and cannot revoke an accepted write. Unknown writes must be checked against the actual library before any manual decision to retry.
+- No exhaustive crash recovery, account-switch race, concurrent-load, power-loss, live all-protocol or native desktop rendering acceptance is claimed.
+
+Installation and recovery commands: [README](../README.md).

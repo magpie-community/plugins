@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-respire-memory",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "帮助 AI Agent 通过记忆召回、经验积累与后台归档持续自进化",
   "type": "module",
   "license": "MIT",
@@ -16,6 +16,7 @@
     "conversation.mjs",
     "page",
     "README.md",
+    "docs",
     "LICENSE",
     "NOTICE",
     "state.mjs",
@@ -25,8 +26,7 @@
     "archive-context.mjs",
     "generation.mjs",
     "memory-tools.mjs",
-    "policy.mjs",
-    "docs"
+    "policy.mjs"
   ],
   "engines": {
     "bun": ">=1.3.6"
@@ -43,7 +43,7 @@
       "remember": true,
       "capture": false,
       "readOnly": false,
-      "archive": false,
+      "archive": true,
       "showMemoryStatus": true,
       "injectRules": true,
       "generationBaseUrl": "",

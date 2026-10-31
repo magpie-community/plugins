@@ -42,6 +42,11 @@ export async function processJob(store, name, { model, call: injectedCall } = {}
         }
       }
       if (['recall', 'remember'].includes(args[0]) && job.o.project) {
+        if (args.includes('--project')) {
+          const at = args.indexOf('--project');
+          if (args[at + 1] !== job.o.project || args.lastIndexOf('--project') !== at) throw new Error('project-override');
+          args = [...args.slice(0, at), ...args.slice(at + 2)];
+        }
         if (args.some(a => a.startsWith('--project'))) throw new Error('project-override');
         args = [...args, '--project', job.o.project];
       }
@@ -53,6 +58,9 @@ export async function processJob(store, name, { model, call: injectedCall } = {}
     };
     let diary;
     if (job.o.capture) {
+      await rawCall(['recall', 'Magpie 回合过程采集', '--titles', '--limit', '1']);
+      const policy = await rawCall(['prompt']);
+      if (policy.status !== 'ok' || typeof policy.summary?.instructions !== 'string' || !policy.summary.instructions.trim()) throw new Error('invalid-engine-policy');
       await beforeWrite();
       const content = JSON.stringify({ schema: 'respire.magpie.turn.v1', source: job.source, messages: job.messages });
       if (hasSecret(job.messages) || Buffer.byteLength(content) > 2 * 1024 * 1024) throw new Error('capture-content-limit');

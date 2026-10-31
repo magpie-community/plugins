@@ -9,7 +9,8 @@ magpie.ready.then(async () => {
     $('project').value = o.project ?? '';
     $('remember').checked = o.remember !== false;
     $('capture').checked = o.capture === true;
-    for (const name of ['readOnly', 'archive']) $(name).checked = o[name] === true;
+    $('readOnly').checked = o.readOnly === true;
+    $('archive').checked = o.archive !== false;
     $('showMemoryStatus').checked = o.showMemoryStatus !== false;
     for (const name of ['generationBaseUrl', 'generationModel', 'stateDir']) $(name).value = o[name] ?? '';
     $('authorizationEnv').value = o.authorizationEnv ?? 'RESPIRE_MAGPIE_AUTHORIZATION';

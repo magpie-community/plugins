@@ -1,7 +1,7 @@
 // Reused from Respire Codex's restricted archival tools.
 import { containsSecret, validId } from './runtime.mjs';
 const record = value => value && typeof value === 'object' && !Array.isArray(value);
-const READ = new Set(['recall', 'show', 'prompt', 'tree', 'taxonomy', 'agent-config', 'query-log', 'diary-search', 'diary-fragment'])
+const READ = new Set(['recall', 'show', 'chain', 'prompt', 'tree', 'taxonomy', 'agent-config', 'query-log', 'diary-search', 'diary-fragment'])
 const WRITE = new Set(['remember', 'update'])
 export const TOOL = {
   type: 'function', name: 'respire_memory',
@@ -36,6 +36,7 @@ export function memoryTools(call, { readOnly = false } = {}) {
   let uncertain = false
   let diaryUnavailable = false
   const written = new Set()
+  const diaries = new Set()
   const shown = new Set()
   const verified = new Set()
   const commands = []
@@ -56,7 +57,7 @@ export function memoryTools(call, { readOnly = false } = {}) {
       const write = WRITE.has(command)
       if (write) {
         if (readOnly) throw new Error('read-only')
-        if (uncertain || !recalled || !policy || !shown.size) throw new Error('read-before-write')
+        if (uncertain || !recalled || !policy) throw new Error('read-before-write')
         if (containsSecret(JSON.stringify(input))) throw new Error('secret-content')
         const trivial = command === 'remember' && args.includes('--importance') && args[args.indexOf('--importance') + 1] === 'trivial'
         const title = args.indexOf('--title')
@@ -79,8 +80,11 @@ export function memoryTools(call, { readOnly = false } = {}) {
         throw error
       }
       if (diary && JSON.stringify(doc).length > 8000) throw new Error('diary-output-too-large')
-      if (command === 'recall' && (doc.status === 'ok' || (doc.status === 'skip' && doc.summary?.count === 0))) recalled = true
-      if (command === 'prompt' && recalled && doc.status === 'ok') policy = true
+      if (command === 'recall' && ['ok', 'skip'].includes(doc.status)) recalled = true
+      if (command === 'prompt') {
+        if (doc.status !== 'ok' || typeof doc.summary?.instructions !== 'string' || !doc.summary.instructions.trim()) throw new Error('invalid-engine-policy')
+        if (recalled) policy = true
+      }
       if (command === 'show' && doc.status === 'ok' && validId(doc.summary?.id)) {
         if (!validId(args[0]) || !doc.summary.id.startsWith(args[0])) throw new Error('invalid-readback')
         shown.add(doc.summary.id)
@@ -89,7 +93,10 @@ export function memoryTools(call, { readOnly = false } = {}) {
       }
       if (write) {
         if (doc.status === 'pending' || doc.status === 'skip') uncertain = false
-        else if (doc.status === 'ok' && validId(doc.summary?.id)) { uncertain = false; written.add(doc.summary.id); verified.delete(doc.summary.id) }
+        else if (doc.status === 'ok' && validId(doc.summary?.id)) {
+          uncertain = false; written.add(doc.summary.id); verified.delete(doc.summary.id)
+          if (command === 'remember' && args.includes('--importance') && args[args.indexOf('--importance') + 1] === 'trivial') diaries.add(doc.summary.id)
+        }
         else throw new Error('write-unconfirmed')
       }
       return doc
@@ -100,6 +107,7 @@ export function memoryTools(call, { readOnly = false } = {}) {
       try { receipt = JSON.parse(text) } catch { throw new Error('archive-invalid-receipt') }
       if (!['stored', 'already-stored', 'nothing-to-store', 'read-only'].includes(receipt.result) || !Array.isArray(receipt.ids) || receipt.ids.some(id => !validId(id) || !shown.has(id))) throw new Error('archive-invalid-receipt')
       if ([...written].some(id => !verified.has(id)) || (receipt.result === 'stored' && !written.size) || (receipt.result === 'already-stored' && !receipt.ids.length)) throw new Error('archive-unverified')
+      if (!readOnly && ![...diaries].some(id => verified.has(id))) throw new Error('turn-diary-required')
       return { result: written.size ? 'stored' : receipt.result, records: [...written], checkedRecords: [...new Set([...receipt.ids, ...verified])], calls: commands.length }
     },
   }
