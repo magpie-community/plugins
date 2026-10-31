@@ -226,9 +226,11 @@ show the resets the vendor's usage page lists
 (`/api/biz/customer-package-reset/list`, `targetType=PERSONAL` with the
 plan's key, `TEAM` with the team's sign-in): how many of the five hours
 and of the week are still available, and when each runs out, soonest
-first. A team's are marked a team's. They are only read; a reset is
-spent on the vendor's own page. A list that can't be read, or has none
-left, shows no count.
+first. Five-hour resets that run out within two hours are counted as
+`fiveHourExpiringSoon`, so a caller can spend one before it lapses. A
+team's are marked a team's. They are only read; a reset is spent on the
+vendor's own page. A list that can't be read, or has none left, shows no
+count.
 
 **Gift plans ZCode holds but has not granted.** ZCode hands out one-off
 trust-build / gift plans (a day's ZCode Trust Build, say) that are not
