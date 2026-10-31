@@ -62,6 +62,8 @@ export class Gateway {
   private methods = new Map<string, MethodHandler>();
   private helloTimers = new Map<string, NodeJS.Timeout>();
   onTerminalInput?: (conn: Conn, index: number, op: number, payload: Buffer) => void;
+  /** Called after a connection closes, with how many are left (the preview proxy closes when none are) */
+  onConnectionClosed?: (left: number) => void;
 
   constructor(private cfg: Config) {
     this.wss = new WebSocketServer({ noServer: true });
@@ -122,6 +124,7 @@ export class Gateway {
     });
     ws.on("close", () => {
       this.conns.delete(conn.id);
+      try { this.onConnectionClosed?.(this.conns.size); } catch {}
       const t = this.helloTimers.get(conn.id);
       if (t) clearTimeout(t);
       this.helloTimers.delete(conn.id);

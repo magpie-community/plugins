@@ -1,4 +1,5 @@
 // Entry: read the hash token and theme params, mount <App/>.
+import { usePreview } from "./stores/preview";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/layout.css";
@@ -7,6 +8,8 @@ import "./styles/composer.css";
 import { createRoot } from "react-dom/client";
 import { applyMagpieTokensFromSearch } from "./layout/applyMagpieTokens.js";
 import { applyTheme, initTheme } from "./layout/theme.js";
+import { startMagpieThemeBridge } from "./layout/magpieBridge.js";
+import { applyChatLayout } from "./layout/chatLayout.js";
 import { goBackToMagpie, watchReconnect } from "./api/backToMagpie.js";
 import { initLocale, getLocale } from "./i18n/index.js";
 import { WsClient } from "./api/ws";
@@ -24,11 +27,13 @@ const params = new URLSearchParams(location.search);
 initLocale(location.search);
 applyMagpieTokensFromSearch(location.search);
 initTheme(location.search);
+// Follow Magpie's light/dark live (the frame no longer has bridge.js after boot.js navigated it here)
+startMagpieThemeBridge();
 
 export const ws = new WsClient(token, getLocale());
 // For the debug page (P1-8) and e2e driving: expose the authenticated client and internal stores.
 (window as unknown as { __ws?: WsClient; __stores?: unknown }).__ws = ws;
-(window as unknown as { __stores?: unknown }).__stores = { useData, useUi, useConnection };
+(window as unknown as { __stores?: unknown }).__stores = { useData, useUi, useConnection, usePreview };
 void import("./stores/timeline").then((m) => {
   (window as unknown as { __tl?: unknown }).__tl = m.useTimeline;
 });
@@ -44,6 +49,7 @@ ws.waitHello().then(async (h) => {
     const s = (await ws.call("settings.get")) as Record<string, unknown>;
     useUi.getState().hydrate(s);
     applyTheme(s.theme);
+    applyChatLayout(s);
   } catch {}
   // Fetch the project/conversation/provider lists and subscribe to the sidebar channel
   await useData.getState().bind(ws);

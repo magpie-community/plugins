@@ -91,6 +91,31 @@ var init_log = __esm({
   }
 });
 
+// daemon/src/security.ts
+import { timingSafeEqual, createHash } from "node:crypto";
+function checkHost(host, port) {
+  if (!host) return { ok: false, code: 421, message: "Host \u4E0D\u5BF9" };
+  const h = host.toLowerCase();
+  if (h === `127.0.0.1:${port}` || h === `localhost:${port}`) return { ok: true };
+  return { ok: false, code: 421, message: "Host \u4E0D\u5BF9" };
+}
+function classifyOrigin(origin, port) {
+  if (origin === void 0 || origin === "") return "none";
+  if (origin === "null") return "opaque";
+  const o = origin.toLowerCase();
+  if (o === `http://127.0.0.1:${port}` || o === `http://localhost:${port}`) return "self";
+  return "foreign";
+}
+function tokenEqual(a, b) {
+  const ha = createHash("sha256").update(a).digest();
+  const hb = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
+var init_security = __esm({
+  "daemon/src/security.ts"() {
+  }
+});
+
 // daemon/src/util/i18n.ts
 function normalizeLang(raw) {
   const s = String(raw ?? "").trim().toLowerCase();
@@ -129,6 +154,7 @@ var init_i18n = __esm({
         "notice.acpImageByPathSwitched": "{agent} \u662F\u5728\u53E6\u4E00\u4E2A\u6A21\u578B\u4E0A\u542F\u52A8\u7684\uFF0C\u53EA\u5BF9\u90A3\u4E2A\u6A21\u578B\u63A5\u6536\u56FE\u7247\uFF0C\u8FD9\u6B21\u6539\u4E3A\u53D1\u9001\u56FE\u7247\u7684\u6587\u4EF6\u8DEF\u5F84\uFF08\u5F53\u524D\u6A21\u578B\u80FD\u770B\u56FE\u65F6\u5B83\u4F1A\u7528 read_image \u6253\u5F00\uFF09\uFF1A{paths}",
         "notice.acpSessionNotRestored": "{agent} \u4E0D\u80FD\u6062\u590D\u4E0A\u4E00\u8F6E\u5BF9\u8BDD\uFF08\u5B83\u7684 ACP \u65E2\u4E0D\u652F\u6301 session/load \u4E5F\u4E0D\u652F\u6301 session/resume\uFF09\uFF0C\u5DF2\u65B0\u5F00\u4E00\u8F6E\uFF1B\u5148\u524D\u7684\u4E0A\u4E0B\u6587\u4E0D\u4F1A\u5E26\u56DE\u3002",
         "notice.attachmentIssue": "\u9644\u4EF6\u95EE\u9898\uFF1A{detail}",
+        "notice.mentionSkipped": "\u8FD9\u4E9B\u8DEF\u5F84\u4E0D\u5728\u9879\u76EE\u91CC\u6216\u5DF2\u4E0D\u5B58\u5728\uFF0C\u6CA1\u6709\u53D1\u7ED9 Agent\uFF1A{paths}",
         "claude.notFound": "\u627E\u4E0D\u5230 claude\uFF08{detail}\uFF09\u3002\u672C\u63D2\u4EF6\u4E0D\u9644\u5E26 Claude Code\uFF0C\u8BF7\u5148\u5B89\u88C5\uFF1A{hint}",
         "claude.startFailed": "\u65E0\u6CD5\u542F\u52A8 claude\uFF1A{detail}",
         "claude.exited": "claude \u8FDB\u7A0B\u610F\u5916\u9000\u51FA\uFF08{code}\uFF09",
@@ -146,6 +172,9 @@ var init_i18n = __esm({
         "provider.unavailable": "{name} \u672A\u5B89\u88C5\u6216\u4E0D\u53EF\u7528",
         "provider.unknown": "\u672A\u77E5 Agent\uFF1A{id}",
         "provider.timeout": "\u68C0\u6D4B\u8D85\u65F6",
+        "err.previewUrl": "\u9884\u89C8\u53EA\u652F\u6301\u672C\u673A\u5730\u5740\uFF08localhost\u3001127.0.0.1 \u7B49\uFF09",
+        "err.previewDenied": "\u8FD9\u4E2A\u7AEF\u53E3\u4E0D\u80FD\u9884\u89C8\uFF08\u662F Agent \u63A7\u5236\u53F0\u6216 Magpie \u81EA\u5DF1\u7684\u7AEF\u53E3\uFF09",
+        "err.previewUnavailable": "\u9884\u89C8\u4E0D\u53EF\u7528",
         "err.projectMissing": "\u9879\u76EE\u4E0D\u5B58\u5728",
         "err.threadMissing": "\u5BF9\u8BDD\u4E0D\u5B58\u5728",
         "err.dirMissing": "\u76EE\u5F55\u4E0D\u5B58\u5728\u6216\u4E0D\u662F\u6587\u4EF6\u5939",
@@ -235,6 +264,7 @@ var init_i18n = __esm({
         "notice.acpImageByPathSwitched": "{agent} was started on another model and takes image blocks only for that one, so the image went as its file path (it opens it with read_image when this model sees images): {paths}",
         "notice.acpSessionNotRestored": "{agent} can't restore the previous conversation (its ACP advertises neither session/load nor session/resume); started a new one \u2014 prior context won't come back.",
         "notice.attachmentIssue": "Attachment issue: {detail}",
+        "notice.mentionSkipped": "Not sent to the Agent (outside the project or gone): {paths}",
         "claude.notFound": "claude was not found ({detail}). Claude Code is not bundled with this plugin; install it first: {hint}",
         "claude.startFailed": "Could not start claude: {detail}",
         "claude.exited": "claude exited unexpectedly ({code})",
@@ -252,6 +282,9 @@ var init_i18n = __esm({
         "provider.unavailable": "{name} is not installed or not available",
         "provider.unknown": "Unknown agent: {id}",
         "provider.timeout": "Detection timed out",
+        "err.previewUrl": "Preview only supports local addresses (localhost, 127.0.0.1, \u2026)",
+        "err.previewDenied": "This port can't be previewed (it belongs to Agent Console or Magpie)",
+        "err.previewUnavailable": "Preview is unavailable",
         "err.projectMissing": "Project not found",
         "err.threadMissing": "Conversation not found",
         "err.dirMissing": "The folder does not exist or is not a folder",
@@ -774,6 +807,7 @@ function pickScript(text) {
   if (t.startsWith("/error")) return scriptError;
   if (t.startsWith("/long")) return scriptLong;
   if (t.startsWith("/exit")) return scriptExit;
+  if (t.startsWith("/serve")) return scriptServe;
   return scriptDefault;
 }
 async function sleepAbortable(ms, ctx) {
@@ -788,6 +822,25 @@ function chunkText(s, n) {
   const out = [];
   for (let i = 0; i < s.length; i += n) out.push(s.slice(i, i + n));
   return out;
+}
+async function scriptServe(ctx) {
+  const emit = (e) => ctx.emit(e);
+  const reply = [
+    "\u5F00\u53D1\u670D\u52A1\u5668\u5DF2\u7ECF\u542F\u52A8\uFF1Ahttp://localhost:5173/ \uFF0C\u63A5\u53E3\u5728 127.0.0.1:5173/api.json\u3002",
+    "",
+    "- \u5728\u9884\u89C8\u91CC\u6253\u5F00 [\u9996\u9875](http://localhost:5173/) \u6216 [about](http://localhost:5173/about.html)",
+    "- \u6587\u6863\uFF1A[Vite](https://vite.dev/guide/)",
+    "",
+    "```",
+    "  VITE v5.4.21  ready in 139 ms",
+    "  \u279C  Local:   http://localhost:5173/",
+    "```"
+  ].join("\n");
+  for (const ch of chunkText(reply, 40)) {
+    if (await sleepAbortable(20, ctx)) return;
+    emit({ type: "assistant_delta", itemId: "sv", text: ch });
+  }
+  emit({ type: "assistant_message", itemId: "sv", text: reply });
 }
 function mockReply(ctx) {
   const base = [
@@ -931,21 +984,21 @@ var init_mock = __esm({
         }
       }
       respond(requestId, answer) {
-        const resolve2 = this.pendingReq.get(requestId);
-        if (resolve2) {
+        const resolve3 = this.pendingReq.get(requestId);
+        if (resolve3) {
           this.pendingReq.delete(requestId);
-          resolve2(answer);
+          resolve3(answer);
         }
       }
       waitFor(requestId) {
-        return new Promise((resolve2) => {
-          this.pendingReq.set(requestId, resolve2);
+        return new Promise((resolve3) => {
+          this.pendingReq.set(requestId, resolve3);
         });
       }
       async interrupt() {
         this.interruptFlag = true;
-        for (const [id2, resolve2] of this.pendingReq) {
-          resolve2({ cancelled: true });
+        for (const [id2, resolve3] of this.pendingReq) {
+          resolve3({ cancelled: true });
           this.pendingReq.delete(id2);
         }
         await sleep(120);
@@ -973,7 +1026,7 @@ var init_mock = __esm({
       }
       async close() {
         this.closed = true;
-        for (const [, resolve2] of this.pendingReq) resolve2({ cancelled: true });
+        for (const [, resolve3] of this.pendingReq) resolve3({ cancelled: true });
         this.pendingReq.clear();
         this.q.close();
       }
@@ -1037,8 +1090,8 @@ function extraBinDirs({ platform = process.platform, env = process.env, home = h
   return dirs;
 }
 function searchDirs({ platform = process.platform, env = process.env, home = homedir2(), extra = true } = {}) {
-  const sep4 = platform === "win32" ? ";" : ":";
-  const raw = String(envGet(env, "PATH") ?? "").split(sep4).map((d) => d.trim().replace(/^"(.*)"$/, "$1")).filter(Boolean);
+  const sep5 = platform === "win32" ? ";" : ":";
+  const raw = String(envGet(env, "PATH") ?? "").split(sep5).map((d) => d.trim().replace(/^"(.*)"$/, "$1")).filter(Boolean);
   const all = extra ? [...raw, ...extraBinDirs({ platform, env, home })] : raw;
   const seen = /* @__PURE__ */ new Set();
   const out = [];
@@ -1768,15 +1821,15 @@ var init_cli = __esm({
         });
         this.child.stdin?.on("error", () => {
         });
-        this.exited = new Promise((resolve2) => {
+        this.exited = new Promise((resolve3) => {
           this.child.on("error", (e) => {
             this.spawnError = e;
             this.finish();
-            resolve2({ code: null, signal: null });
+            resolve3({ code: null, signal: null });
           });
           this.child.on("close", (code, signal) => {
             this.finish();
-            resolve2({ code, signal });
+            resolve3({ code, signal });
           });
         });
         this.initialized = this.request({ subtype: "initialize" }, 6e4).catch(() => null);
@@ -1893,8 +1946,8 @@ var init_cli = __esm({
       request(request, timeoutMs = 1e4) {
         if (this.dead) return Promise.reject(new Error("claude is not running"));
         const id2 = `ac_${++this.seq}_${Math.random().toString(36).slice(2, 8)}`;
-        return new Promise((resolve2, reject) => {
-          const p = { resolve: resolve2, reject };
+        return new Promise((resolve3, reject) => {
+          const p = { resolve: resolve3, reject };
           p.timer = setTimeout(() => {
             if (this.pending.delete(id2)) reject(new Error(`claude did not answer ${String(request.subtype)} in ${Math.round(timeoutMs / 1e3)} s`));
           }, timeoutMs);
@@ -2083,12 +2136,12 @@ var init_session = __esm({
             { id: "deny", label: tr("perm.deny"), kind: "reject_once" }
           ]
         });
-        return new Promise((resolve2) => {
-          this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve2(this.toPermissionDecision(a, input)) });
+        return new Promise((resolve3) => {
+          this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve3(this.toPermissionDecision(a, input)) });
           signal.addEventListener("abort", () => {
             if (this.pending.delete(requestId)) {
               this.emit({ type: "permission_resolved", requestId, cancelled: true });
-              resolve2({ behavior: "deny", message: "Cancelled by the user", interrupt: true });
+              resolve3({ behavior: "deny", message: "Cancelled by the user", interrupt: true });
             }
           }, { once: true });
         });
@@ -2115,12 +2168,12 @@ var init_session = __esm({
             { id: "reject", label: tr("perm.deny"), kind: "reject_once" }
           ]
         });
-        const answer = await new Promise((resolve2) => {
-          this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve2(a) });
+        const answer = await new Promise((resolve3) => {
+          this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve3(a) });
           signal.addEventListener("abort", () => {
             if (this.pending.delete(requestId)) {
               this.emit({ type: "permission_resolved", requestId, cancelled: true });
-              resolve2({ cancelled: true });
+              resolve3({ cancelled: true });
             }
           }, { once: true });
         });
@@ -2138,12 +2191,12 @@ var init_session = __esm({
       }
       async handleQuestion(requestId, input, signal) {
         this.emit({ type: "question", requestId, questions: input.questions });
-        const answer = await new Promise((resolve2) => {
-          this.pending.set(requestId, { kind: "question", resolve: (a) => resolve2(a) });
+        const answer = await new Promise((resolve3) => {
+          this.pending.set(requestId, { kind: "question", resolve: (a) => resolve3(a) });
           signal.addEventListener("abort", () => {
             if (this.pending.delete(requestId)) {
               this.emit({ type: "permission_resolved", requestId, cancelled: true });
-              resolve2({ cancelled: true });
+              resolve3({ cancelled: true });
             }
           }, { once: true });
         });
@@ -2387,14 +2440,14 @@ function runVersion(r, args, timeoutMs = 5e3) {
   });
 }
 function createClaudeProvider(opts = {}) {
-  const resolve2 = opts.resolve ?? resolveBin;
+  const resolve3 = opts.resolve ?? resolveBin;
   const resolveCustom = opts.resolve ? (l) => opts.resolve(l.cmd) : resolveLaunch;
   return {
     id: "claude",
     name: "Claude Code",
     capabilities: claudeCapabilities,
     async detect(launch) {
-      const bin = launch ? await resolveCustom(launch) : await resolve2("claude");
+      const bin = launch ? await resolveCustom(launch) : await resolve3("claude");
       if (!bin.ok) return { available: false, reason: bin.reason, installHint: INSTALL_HINT };
       try {
         const version = await runVersion(bin, [...launch?.prefixArgs ?? [], "--version"]);
@@ -2407,7 +2460,7 @@ function createClaudeProvider(opts = {}) {
       return listClaudeModels();
     },
     async createSession(o) {
-      const bin = o.launch ? await resolveCustom(o.launch) : await resolve2("claude");
+      const bin = o.launch ? await resolveCustom(o.launch) : await resolve3("claude");
       if (!bin.ok) throw new Error(tr("claude.notFound", { detail: bin.reason, hint: INSTALL_HINT }));
       return new ClaudeSession({
         threadId: o.threadId,
@@ -3423,8 +3476,8 @@ var init_session2 = __esm({
         }
       }
       waitFor(requestId) {
-        return new Promise((resolve2) => {
-          this.pending.set(requestId, { kind: "permission", resolve: resolve2 });
+        return new Promise((resolve3) => {
+          this.pending.set(requestId, { kind: "permission", resolve: resolve3 });
         });
       }
       respond(requestId, answer) {
@@ -3943,7 +3996,7 @@ var init_sessionCaps = __esm({
 import { readFile as readFile10, stat as stat7 } from "node:fs/promises";
 import { basename as basename4 } from "node:path";
 import { pathToFileURL } from "node:url";
-async function buildAcpPrompt(text, attachments, caps) {
+async function buildAcpPrompt(text, attachments, caps, mentions = []) {
   const media = [];
   const links = [];
   const pathLines = [];
@@ -4006,6 +4059,9 @@ async function buildAcpPrompt(text, attachments, caps) {
   const blocks = [];
   if (fullText) blocks.push({ type: "text", text: fullText });
   blocks.push(...media, ...links);
+  for (const m of mentions) {
+    blocks.push({ type: "resource_link", uri: pathToFileURL(m.path).href, name: basename4(m.path) || m.path });
+  }
   return { blocks, imagesByPath, warnings };
 }
 var MAX_INLINE_MEDIA_BYTES, MAX_INLINE_TOTAL_BYTES, MAX_EMBED_TEXT_BYTES, isText;
@@ -4309,8 +4365,8 @@ var init_session3 = __esm({
         await this.applyCursorAutoReviewConfig(false);
       }
       waitPerm(requestId) {
-        return new Promise((resolve2) => {
-          this.permPending.set(requestId, resolve2);
+        return new Promise((resolve3) => {
+          this.permPending.set(requestId, resolve3);
         });
       }
       respond(requestId, answer) {
@@ -4347,7 +4403,7 @@ var init_session3 = __esm({
           this.q.push({ type: "turn_ended", turnId: this.turnId, status: "completed" });
           return;
         }
-        const built = await buildAcpPrompt(text, attachments, this.promptCaps);
+        const built = await buildAcpPrompt(text, attachments, this.promptCaps, input.mentions ?? []);
         const agent = this.o.providerName ?? this.o.binName;
         if (built.imagesByPath.length && !this.promptCaps.image) {
           const switched = this.o.imagesFollowStartModel && this.initCaps.image && this.o.model !== this.startModel;
@@ -5222,13 +5278,677 @@ var init_modes = __esm({
   }
 });
 
+// daemon/src/util/mentions.ts
+import { realpath, stat as stat8 } from "node:fs/promises";
+import { isAbsolute, resolve as resolve2, sep as sep2, win32 as win322, posix as posix2 } from "node:path";
+function insideRoot(root, child, platform = process.platform) {
+  const p = platform === "win32" ? win322 : posix2;
+  const norm = (s) => platform === "win32" ? p.resolve(s).toLowerCase() : p.resolve(s);
+  const r = p.relative(norm(root), norm(child));
+  return r === "" || !r.startsWith("..") && !p.isAbsolute(r);
+}
+async function resolveMentions(projectPath, refs) {
+  const mentions = [];
+  const warnings = [];
+  const seen = /* @__PURE__ */ new Set();
+  let root;
+  try {
+    root = await realpath(projectPath);
+  } catch {
+    return { mentions, warnings: refs.map((r) => r.rel) };
+  }
+  for (const ref of refs.slice(0, MAX_MENTIONS)) {
+    const rel = String(ref.rel ?? "").replace(/\\/g, "/");
+    if (!rel || rel.includes("\0") || isAbsolute(rel) || /^[a-zA-Z]:/.test(rel)) {
+      warnings.push(rel || "(empty)");
+      continue;
+    }
+    const abs = resolve2(root, rel === "." ? "" : rel);
+    if (!insideRoot(root, abs)) {
+      warnings.push(rel);
+      continue;
+    }
+    let real;
+    let isDir2;
+    try {
+      real = await realpath(abs);
+      isDir2 = (await stat8(real)).isDirectory();
+    } catch {
+      warnings.push(rel);
+      continue;
+    }
+    if (!insideRoot(root, real)) {
+      warnings.push(rel);
+      continue;
+    }
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    mentions.push({ path: abs, isDir: isDir2 });
+  }
+  return { mentions, warnings };
+}
+function mentionSection(mentions) {
+  if (!mentions.length) return "";
+  const lines = mentions.map((m) => {
+    const shown = m.isDir && !m.path.endsWith(sep2) && !m.path.endsWith("/") ? m.path + (m.path.includes("\\") && !m.path.includes("/") ? "\\" : "/") : m.path;
+    const quoted = /\s|`/.test(shown) ? "`" + shown.replace(/`/g, "'") + "`" : shown;
+    return `- ${quoted}${m.isDir ? " (folder)" : ""}`;
+  });
+  return `Referenced files (read them as needed):
+${lines.join("\n")}`;
+}
+function withMentions(text, mentions) {
+  const sec = mentionSection(mentions);
+  if (!sec) return text;
+  return text.trim() ? `${text}
+
+${sec}` : sec;
+}
+var MAX_MENTIONS;
+var init_mentions = __esm({
+  "daemon/src/util/mentions.ts"() {
+    MAX_MENTIONS = 50;
+  }
+});
+
+// daemon/src/preview/url.ts
+function isLoopbackHost(host) {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost")) return /^[a-z0-9.-]+$/.test(h) && !h.includes("..");
+  if (h === "0.0.0.0" || h === "::1" || h === "::") return true;
+  const m = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  return !!m && m.slice(1).every((x) => Number(x) <= 255);
+}
+function connectHosts(h) {
+  if (h === "localhost" || h.endsWith(".localhost")) return ["127.0.0.1", "::1"];
+  if (h === "0.0.0.0") return ["127.0.0.1"];
+  if (h === "::1") return ["::1"];
+  if (h === "::") return ["::1", "127.0.0.1"];
+  return [h];
+}
+function withScheme(raw) {
+  const s = raw.trim();
+  if (/^\d{1,5}$/.test(s)) return `http://localhost:${s}/`;
+  if (/^:\d{1,5}(?:[/?#].*)?$/.test(s)) return `http://localhost${s}`;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return s;
+  if (/^[a-z][a-z0-9+.-]*:(?!\d)/i.test(s)) return s;
+  return `http://${s}`;
+}
+function checkPreviewUrl(raw) {
+  if (typeof raw !== "string" || !raw.trim()) return { ok: false, reason: "empty" };
+  if (raw.length > MAX_PREVIEW_URL) return { ok: false, reason: "too_long" };
+  let u;
+  try {
+    u = new URL(withScheme(raw));
+  } catch {
+    return { ok: false, reason: "bad_url" };
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return { ok: false, reason: "scheme" };
+  if (u.username || u.password) return { ok: false, reason: "userinfo" };
+  const hostname = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!isLoopbackHost(hostname)) return { ok: false, reason: "not_local" };
+  const secure = u.protocol === "https:";
+  const port = u.port ? Number(u.port) : secure ? 443 : 80;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, reason: "port" };
+  const href = u.href;
+  if (href.length > MAX_PREVIEW_URL) return { ok: false, reason: "too_long" };
+  const hostForUrl = hostname.includes(":") ? `[${hostname}]` : hostname;
+  return {
+    ok: true,
+    target: {
+      href,
+      origin: `${u.protocol}//${hostForUrl}:${port}`,
+      path: `${u.pathname}${u.search}${u.hash}`,
+      secure,
+      hostname,
+      port,
+      connect: connectHosts(hostname),
+      hostHeader: `${hostForUrl}:${port}`
+    }
+  };
+}
+function deniedPort(port, denied) {
+  for (const d of denied) if (d === port) return true;
+  return false;
+}
+function displayOrigin(origin) {
+  return origin.replace(/^http:\/\/(.+):80$/, "http://$1").replace(/^https:\/\/(.+):443$/, "https://$1");
+}
+function externalHref(raw) {
+  if (typeof raw !== "string" || !raw || raw.length > MAX_PREVIEW_URL) return null;
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  if (!u.hostname) return null;
+  const href = u.href;
+  if (/[\s"'<>`\\^{|}]/.test(href) || href.length > MAX_PREVIEW_URL) return null;
+  return href;
+}
+var MAX_PREVIEW_URL;
+var init_url = __esm({
+  "daemon/src/preview/url.ts"() {
+    MAX_PREVIEW_URL = 2048;
+  }
+});
+
+// daemon/src/util/openExternal.ts
+import { execFile as execFile3 } from "node:child_process";
+function openerFor(platform, href) {
+  if (platform === "win32") return { cmd: "rundll32.exe", args: ["url.dll,FileProtocolHandler", href] };
+  if (platform === "darwin") return { cmd: "open", args: [href] };
+  return { cmd: "xdg-open", args: [href] };
+}
+async function openExternal(raw, opts = {}) {
+  const href = externalHref(raw);
+  if (!href) return { ok: false, reason: "bad_url" };
+  const { cmd, args } = openerFor(opts.platform ?? process.platform, href);
+  const run = opts.exec ?? execFile3;
+  return await new Promise((resolve3) => {
+    let settled = false;
+    const done = (v) => {
+      if (!settled) {
+        settled = true;
+        resolve3(v);
+      }
+    };
+    try {
+      const child = run(cmd, args, { windowsHide: true, timeout: 15e3 }, (err) => {
+        done(err ? { ok: false, href, reason: "opener_failed" } : { ok: true, href });
+      });
+      child.on("error", () => done({ ok: false, href, reason: "no_opener" }));
+    } catch {
+      done({ ok: false, href, reason: "no_opener" });
+    }
+    setTimeout(() => done({ ok: true, href }), opts.waitMs ?? 4e3).unref?.();
+  });
+}
+var init_openExternal = __esm({
+  "daemon/src/util/openExternal.ts"() {
+    init_url();
+  }
+});
+
+// daemon/src/preview/inject.ts
+function injectScriptTag(html) {
+  const tag = `<script src="${PREVIEW_SCRIPT_PATH}"></script>`;
+  const head = /<head(\s[^>]*)?>/i.exec(html);
+  if (head) return html.slice(0, head.index + head[0].length) + tag + html.slice(head.index + head[0].length);
+  const root = /<html(\s[^>]*)?>/i.exec(html);
+  if (root) return html.slice(0, root.index + root[0].length) + tag + html.slice(root.index + root[0].length);
+  const doctype = /^\s*<!doctype[^>]*>/i.exec(html);
+  if (doctype) return html.slice(0, doctype[0].length) + tag + html.slice(doctype[0].length);
+  return tag + html;
+}
+var PREVIEW_SCRIPT_PATH, PREVIEW_SCRIPT;
+var init_inject = __esm({
+  "daemon/src/preview/inject.ts"() {
+    PREVIEW_SCRIPT_PATH = "/__agent_console__/preview.js";
+    PREVIEW_SCRIPT = `(function(){
+  "use strict";
+  if (window.__acPreview) return; window.__acPreview = 1;
+  function mem(){ var m = new Map(); var s = {
+    getItem: function(k){ k = String(k); return m.has(k) ? m.get(k) : null; },
+    setItem: function(k, v){ m.set(String(k), String(v)); },
+    removeItem: function(k){ m.delete(String(k)); },
+    clear: function(){ m.clear(); },
+    key: function(i){ var a = Array.from(m.keys()); return i >= 0 && i < a.length ? a[i] : null; }
+  }; Object.defineProperty(s, "length", { get: function(){ return m.size; } }); return s; }
+  ["localStorage", "sessionStorage"].forEach(function(n){
+    var ok = true; try { var st = window[n]; st.getItem("__ac"); } catch (e) { ok = false; }
+    if (!ok) { try { Object.defineProperty(window, n, { value: mem(), configurable: true }); } catch (e) {} }
+  });
+  try { void document.cookie; } catch (e) {
+    var jar = {};
+    try { Object.defineProperty(document, "cookie", { configurable: true,
+      get: function(){ return Object.keys(jar).map(function(k){ return k + "=" + jar[k]; }).join("; "); },
+      set: function(v){ var p = String(v).split(";")[0]; var i = p.indexOf("="); if (i > 0) jar[p.slice(0, i).trim()] = p.slice(i + 1).trim(); }
+    }); } catch (e2) {}
+  }
+  var parentWin = window.parent;
+  if (!parentWin || parentWin === window) return;
+  var last = "";
+  function report(){ try {
+    var msg = { ac_preview: 1, href: String(location.href), title: String(document.title || "") };
+    var key = msg.href + "\\n" + msg.title; if (key === last) return; last = key;
+    parentWin.postMessage(msg, "*");
+  } catch (e) {} }
+  ["pushState", "replaceState"].forEach(function(k){
+    var orig = history[k]; if (typeof orig !== "function") return;
+    history[k] = function(){ var r = orig.apply(this, arguments); setTimeout(report, 0); return r; };
+  });
+  window.addEventListener("popstate", report);
+  window.addEventListener("hashchange", report);
+  window.addEventListener("load", report);
+  document.addEventListener("DOMContentLoaded", report);
+  setInterval(report, 1000);
+  window.addEventListener("message", function(e){
+    if (e.source !== parentWin) return;
+    var d = e.data; if (!d || typeof d !== "object") return;
+    var c = d.ac_preview_cmd;
+    if (c === "back") history.back();
+    else if (c === "forward") history.forward();
+    else if (c === "reload") location.reload();
+    else if (c === "ping") { last = ""; report(); }
+  });
+  report();
+})();
+`;
+  }
+});
+
+// daemon/src/preview/proxy.ts
+import { createServer as createServer2, request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { connect as netConnect, isIP } from "node:net";
+import { connect as tlsConnect } from "node:tls";
+function esc(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+function rewriteRequestHeaders(inH, t, proxyOrigin, upgrade) {
+  const out = {};
+  const targetOrigin = displayOrigin(t.origin);
+  for (const [k, v] of Object.entries(inH)) {
+    if (v === void 0) continue;
+    const key = k.toLowerCase();
+    if (!upgrade && HOP.has(key)) continue;
+    if (upgrade && (key === "proxy-connection" || key === "proxy-authorization" || key === "keep-alive" || key === "te" || key === "trailer" || key === "transfer-encoding")) continue;
+    if (key === "cookie" || key === "host" || key === "origin" || key === "referer" || key === "forwarded" || key.startsWith("x-forwarded-")) continue;
+    out[key] = v;
+  }
+  out.host = t.hostHeader.replace(/:(80|443)$/, (m) => m === ":80" && !t.secure || m === ":443" && t.secure ? "" : m);
+  if (inH.origin !== void 0) out.origin = targetOrigin;
+  const ref = inH.referer;
+  if (typeof ref === "string" && (ref === proxyOrigin || ref.startsWith(proxyOrigin + "/"))) out.referer = targetOrigin + ref.slice(proxyOrigin.length);
+  if (inH["sec-fetch-site"] !== void 0) out["sec-fetch-site"] = "same-origin";
+  if (!upgrade) out["accept-encoding"] = "identity";
+  return out;
+}
+function rewriteResponseHeaders(inH, t, proxyOrigin) {
+  const out = {};
+  for (const [k, v] of Object.entries(inH)) {
+    if (v === void 0) continue;
+    const key = k.toLowerCase();
+    if (HOP.has(key)) continue;
+    if (key === "x-frame-options" || key === "set-cookie" || key.startsWith("access-control-allow-")) continue;
+    if (key === "content-security-policy" || key === "content-security-policy-report-only") {
+      const kept = (Array.isArray(v) ? v : [v]).map(stripFrameAncestors).filter(Boolean);
+      if (kept.length) out[key] = kept.join(", ");
+      continue;
+    }
+    if (key === "location" && typeof v === "string") {
+      out[key] = rewriteLocation(v, t, proxyOrigin);
+      continue;
+    }
+    out[key] = v;
+  }
+  out["access-control-allow-origin"] = "null";
+  const vary = typeof out.vary === "string" ? out.vary : "";
+  out.vary = vary ? /\borigin\b/i.test(vary) ? vary : `${vary}, Origin` : "Origin";
+  return out;
+}
+function stripFrameAncestors(csp) {
+  return csp.split(";").map((d) => d.trim()).filter((d) => d && !/^frame-ancestors(\s|$)/i.test(d)).join("; ");
+}
+function rewriteLocation(loc, t, proxyOrigin) {
+  let u;
+  try {
+    u = new URL(loc, t.href);
+  } catch {
+    return loc;
+  }
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(loc) && !loc.startsWith("//")) return loc;
+  const port = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (u.protocol === (t.secure ? "https:" : "http:") && host === t.hostname && port === t.port) {
+    return proxyOrigin + u.pathname + u.search + u.hash;
+  }
+  return loc;
+}
+var PreviewError, HOP, RETRY_CODES, PreviewProxy;
+var init_proxy = __esm({
+  "daemon/src/preview/proxy.ts"() {
+    init_security();
+    init_url();
+    init_inject();
+    PreviewError = class extends Error {
+      code;
+      constructor(code, message) {
+        super(message);
+        this.code = code;
+      }
+    };
+    HOP = /* @__PURE__ */ new Set(["connection", "keep-alive", "proxy-connection", "proxy-authorization", "proxy-authenticate", "te", "trailer", "transfer-encoding", "upgrade"]);
+    RETRY_CODES = /* @__PURE__ */ new Set(["ECONNREFUSED", "EADDRNOTAVAIL", "EAFNOSUPPORT", "ENETUNREACH", "EHOSTUNREACH", "ECONNRESET", "ETIMEDOUT"]);
+    PreviewProxy = class {
+      constructor(opts) {
+        this.opts = opts;
+        this.idleMs = opts.idleMs ?? 10 * 60 * 1e3;
+        this.maxTargets = opts.maxTargets ?? 8;
+        this.maxHtml = opts.maxHtmlBytes ?? 8 * 1024 * 1024;
+        this.now = opts.now ?? Date.now;
+      }
+      opts;
+      byOrigin = /* @__PURE__ */ new Map();
+      opening = /* @__PURE__ */ new Map();
+      sweepTimer = null;
+      idleMs;
+      maxTargets;
+      maxHtml;
+      now;
+      /** Ports of the listeners themselves (a preview of a preview is refused) */
+      ports() {
+        return [...this.byOrigin.values()].map((l) => l.port);
+      }
+      get size() {
+        return this.byOrigin.size;
+      }
+      async open(raw) {
+        const c = checkPreviewUrl(raw);
+        if (!c.ok) throw new PreviewError(c.reason, `preview url refused: ${c.reason}`);
+        const t = c.target;
+        if (deniedPort(t.port, [...this.opts.deniedPorts(), ...this.ports()])) {
+          throw new PreviewError("denied_port", `port ${t.port} can't be previewed`);
+        }
+        let l = this.byOrigin.get(t.origin);
+        if (!l) {
+          let p = this.opening.get(t.origin);
+          if (!p) {
+            p = this.listen(t).finally(() => this.opening.delete(t.origin));
+            this.opening.set(t.origin, p);
+          }
+          l = await p;
+        }
+        l.lastUsed = this.now();
+        this.ensureSweep();
+        return { proxyOrigin: l.proxyOrigin, target: t.origin, url: t.href, path: t.path, proxyHref: l.proxyOrigin + t.path };
+      }
+      /** Close the listener for this target (any URL on it, or its origin) */
+      release(raw) {
+        const c = checkPreviewUrl(raw);
+        if (!c.ok) return false;
+        const l = this.byOrigin.get(c.target.origin);
+        if (!l) return false;
+        this.close(l);
+        return true;
+      }
+      closeAll() {
+        for (const l of [...this.byOrigin.values()]) this.close(l);
+        if (this.sweepTimer) clearInterval(this.sweepTimer);
+        this.sweepTimer = null;
+      }
+      /** Close listeners idle for idleMs (no request and no open WebSocket); exposed for tests with a fake clock */
+      sweep() {
+        const now = this.now();
+        for (const l of [...this.byOrigin.values()]) {
+          if (l.tunnels === 0 && now - l.lastUsed > this.idleMs) {
+            this.opts.log?.("info", `preview proxy for ${l.target.origin} idle, closing`);
+            this.close(l);
+          }
+        }
+        if (this.byOrigin.size === 0 && this.sweepTimer) {
+          clearInterval(this.sweepTimer);
+          this.sweepTimer = null;
+        }
+      }
+      ensureSweep() {
+        if (this.sweepTimer) return;
+        this.sweepTimer = setInterval(() => this.sweep(), 60 * 1e3);
+        this.sweepTimer.unref();
+      }
+      close(l) {
+        if (this.byOrigin.get(l.target.origin) === l) this.byOrigin.delete(l.target.origin);
+        try {
+          l.server.close();
+        } catch {
+        }
+        for (const s of l.sockets) s.destroy();
+        l.sockets.clear();
+      }
+      async listen(t) {
+        while (this.byOrigin.size >= this.maxTargets) {
+          const oldest = [...this.byOrigin.values()].sort((a2, b) => a2.lastUsed - b.lastUsed)[0];
+          if (!oldest) break;
+          this.close(oldest);
+        }
+        const server = createServer2();
+        const l = { target: t, server, port: 0, proxyOrigin: "", lastUsed: this.now(), sockets: /* @__PURE__ */ new Set(), tunnels: 0, addr: null };
+        server.on("connection", (s) => {
+          l.sockets.add(s);
+          s.on("close", () => l.sockets.delete(s));
+        });
+        server.on("request", (req, res) => this.onRequest(l, req, res));
+        server.on("upgrade", (req, socket, head) => this.onUpgrade(l, req, socket, head));
+        server.on("clientError", (_e, socket) => {
+          try {
+            socket.destroy();
+          } catch {
+          }
+        });
+        await new Promise((resolve3, reject) => {
+          server.once("error", reject);
+          server.listen(0, "127.0.0.1", () => resolve3());
+        });
+        const a = server.address();
+        l.port = a && typeof a === "object" ? a.port : 0;
+        l.proxyOrigin = `http://127.0.0.1:${l.port}`;
+        this.byOrigin.set(t.origin, l);
+        this.opts.log?.("info", `preview proxy ${l.proxyOrigin} \u2192 ${t.origin}`);
+        return l;
+      }
+      // ---- request gate shared by HTTP and WS ----
+      gate(l, req) {
+        const hc = checkHost(req.headers.host, l.port);
+        if (!hc.ok) return { code: 421, why: "bad_host" };
+        const o = req.headers.origin;
+        if (o !== void 0 && o !== "" && o !== "null") {
+          const lo = o.toLowerCase();
+          if (lo !== `http://127.0.0.1:${l.port}` && lo !== `http://localhost:${l.port}`) return { code: 403, why: "bad_origin" };
+        }
+        return null;
+      }
+      onRequest(l, req, res) {
+        l.lastUsed = this.now();
+        const bad = this.gate(l, req);
+        if (bad) {
+          res.writeHead(bad.code, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+          res.end(bad.why);
+          req.resume();
+          return;
+        }
+        const path3 = (req.url ?? "/").split("?")[0];
+        if (path3 === PREVIEW_SCRIPT_PATH) {
+          res.writeHead(200, {
+            "content-type": "text/javascript; charset=utf-8",
+            "cache-control": "no-store",
+            "access-control-allow-origin": "null",
+            "x-content-type-options": "nosniff"
+          });
+          res.end(req.method === "HEAD" ? void 0 : PREVIEW_SCRIPT);
+          return;
+        }
+        if (req.method === "OPTIONS" && req.headers["access-control-request-method"]) {
+          const h = {
+            "access-control-allow-origin": "null",
+            "access-control-allow-methods": String(req.headers["access-control-request-method"]).slice(0, 200) + ", GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
+            "access-control-max-age": "600",
+            vary: "origin"
+          };
+          const rh = req.headers["access-control-request-headers"];
+          if (typeof rh === "string") h["access-control-allow-headers"] = rh.slice(0, 2e3);
+          res.writeHead(204, h);
+          res.end();
+          req.resume();
+          return;
+        }
+        void this.forward(l, req, res);
+      }
+      async resolveAddr(l) {
+        if (l.addr) return l.addr;
+        for (const host of l.target.connect) {
+          const ok = await new Promise((resolve3) => {
+            const s = netConnect({ host, port: l.target.port });
+            const done = (v) => {
+              s.removeAllListeners();
+              s.destroy();
+              resolve3(v);
+            };
+            s.setTimeout(3e3, () => done(false));
+            s.once("connect", () => done(true));
+            s.once("error", () => done(false));
+          });
+          if (ok) {
+            l.addr = host;
+            return host;
+          }
+        }
+        return null;
+      }
+      servername(l) {
+        return isIP(l.target.hostname) ? void 0 : l.target.hostname;
+      }
+      async forward(l, req, res) {
+        const addr = await this.resolveAddr(l);
+        if (!addr) {
+          this.errorPage(l, req, res);
+          return;
+        }
+        const headers = rewriteRequestHeaders(req.headers, l.target, l.proxyOrigin, false);
+        const reqFn = l.target.secure ? httpsRequest : httpRequest;
+        const up = reqFn({
+          host: addr,
+          port: l.target.port,
+          method: req.method,
+          path: req.url ?? "/",
+          headers,
+          ...l.target.secure ? { rejectUnauthorized: false, servername: this.servername(l) } : {}
+        });
+        up.on("response", (ur) => this.respond(l, req, res, ur));
+        up.on("error", (e) => {
+          if (RETRY_CODES.has(e.code ?? "")) l.addr = null;
+          if (!res.headersSent) this.errorPage(l, req, res);
+          else res.destroy();
+        });
+        req.on("aborted", () => up.destroy());
+        res.on("close", () => {
+          if (!res.writableFinished) up.destroy();
+        });
+        req.pipe(up);
+      }
+      respond(l, req, res, ur) {
+        l.lastUsed = this.now();
+        const h = rewriteResponseHeaders(ur.headers, l.target, l.proxyOrigin);
+        const status = ur.statusCode ?? 502;
+        const ctype = String(ur.headers["content-type"] ?? "").toLowerCase();
+        const encoded = !!ur.headers["content-encoding"] && ur.headers["content-encoding"] !== "identity";
+        const html = ctype.includes("text/html") && !encoded && req.method !== "HEAD" && status !== 204 && status !== 304;
+        if (!html) {
+          res.writeHead(status, h);
+          ur.pipe(res);
+          return;
+        }
+        const chunks = [];
+        let size = 0;
+        let passthrough = false;
+        ur.on("data", (c) => {
+          if (passthrough) return;
+          size += c.length;
+          chunks.push(c);
+          if (size > this.maxHtml) {
+            passthrough = true;
+            res.writeHead(status, h);
+            for (const x of chunks) res.write(x);
+            ur.removeAllListeners("data");
+            ur.removeAllListeners("end");
+            ur.pipe(res);
+          }
+        });
+        ur.on("end", () => {
+          if (passthrough) return;
+          const out = Buffer.from(injectScriptTag(Buffer.concat(chunks).toString("latin1")), "latin1");
+          h["content-length"] = String(out.length);
+          res.writeHead(status, h);
+          res.end(out);
+        });
+        ur.on("error", () => res.destroy());
+      }
+      errorPage(l, req, res) {
+        const where = displayOrigin(l.target.origin).replace(/^https?:\/\//, "");
+        const body = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(where)}</title>
+<style>body{font:13px/1.6 system-ui,sans-serif;color:#525252;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#fff}
+@media (prefers-color-scheme:dark){body{background:#1a1a1a;color:#a3a3a3}button{background:#262626;color:#e5e5e5;border-color:#3a3a3a}}
+.b{text-align:center;max-width:420px;padding:20px}code{font-family:ui-monospace,monospace}button{margin-top:12px;padding:5px 14px;border:1px solid #d4d4d4;border-radius:6px;background:#fafafa;cursor:pointer;font:inherit}</style></head>
+<body><div class="b"><div><code>${esc(where)}</code> \u6CA1\u6709\u54CD\u5E94\uFF0Cdev server \u542F\u52A8\u4E86\u5417\uFF1F</div><div><code>${esc(where)}</code> is not responding. Is the dev server running?</div>
+<button onclick="location.reload()">\u91CD\u8BD5 / Retry</button></div></body></html>`;
+        res.writeHead(502, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "null" });
+        res.end(req.method === "HEAD" ? void 0 : body);
+        req.resume();
+      }
+      // ---- WebSocket (HMR) ----
+      onUpgrade(l, req, socket, head) {
+        l.lastUsed = this.now();
+        const bad = this.gate(l, req);
+        if (bad) {
+          socket.end(`HTTP/1.1 ${bad.code} ${bad.code === 421 ? "Misdirected Request" : "Forbidden"}\r
+connection: close\r
+\r
+`);
+          return;
+        }
+        socket.on("error", () => {
+        });
+        void this.resolveAddr(l).then((addr) => {
+          if (!addr || socket.destroyed) {
+            socket.end("HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\n\r\n");
+            return;
+          }
+          const up = l.target.secure ? tlsConnect({ host: addr, port: l.target.port, rejectUnauthorized: false, servername: this.servername(l) }) : netConnect({ host: addr, port: l.target.port });
+          const ready = l.target.secure ? "secureConnect" : "connect";
+          l.tunnels++;
+          let counted = true;
+          const done = () => {
+            if (counted) {
+              counted = false;
+              l.tunnels--;
+              l.lastUsed = this.now();
+            }
+            up.destroy();
+            socket.destroy();
+          };
+          up.once(ready, () => {
+            const lines = [`${req.method ?? "GET"} ${req.url ?? "/"} HTTP/1.1`];
+            const hs = rewriteRequestHeaders(req.headers, l.target, l.proxyOrigin, true);
+            for (const [k, v] of Object.entries(hs)) {
+              if (v === void 0) continue;
+              for (const one of Array.isArray(v) ? v : [v]) lines.push(`${k}: ${String(one).replace(/[\r\n]/g, "")}`);
+            }
+            up.write(lines.join("\r\n") + "\r\n\r\n");
+            if (head?.length) up.write(head);
+            up.pipe(socket);
+            socket.pipe(up);
+          });
+          up.on("data", () => {
+            l.lastUsed = this.now();
+          });
+          up.on("error", done);
+          up.on("close", done);
+          socket.on("close", done);
+        });
+      }
+    };
+  }
+});
+
 // daemon/src/ws/methods.ts
 import { z } from "zod";
 import { existsSync as existsSync8, statSync as statSync4 } from "node:fs";
 import { mkdir as mkdir3, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir8 } from "node:os";
 import { dirname as dirname3, join as join12, win32 as win32Path } from "node:path";
-import { execFile as execFile3 } from "node:child_process";
+import { execFile as execFile4 } from "node:child_process";
 function wrap(schema, fn) {
   return (params, ctx) => {
     const r = schema.safeParse(params ?? {});
@@ -5250,6 +5970,33 @@ function registerMethods(gw, svc) {
     setTimeout(() => process.exit(0), 100);
     return { ok: true };
   }));
+  gw.method("app.openExternal", wrap(z.object({ url: z.string().min(1).max(MAX_PREVIEW_URL) }), async (p) => openExternal(p.url)));
+  gw.method("preview.open", wrap(
+    z.object({ url: z.string().min(1).max(MAX_PREVIEW_URL), threadId: z.string().max(200).optional() }),
+    async (p) => {
+      if (!svc.preview) throw new ApiError("unavailable", tr("err.previewUnavailable"));
+      let r;
+      try {
+        r = await svc.preview.open(p.url);
+      } catch (e) {
+        if (e instanceof PreviewError) {
+          throw new ApiError(e.code === "denied_port" ? "preview_denied" : "preview_url", tr(e.code === "denied_port" ? "err.previewDenied" : "err.previewUrl"));
+        }
+        throw e;
+      }
+      if (p.threadId) {
+        const meta = await svc.threads.get(p.threadId);
+        if (meta && meta.previewUrl !== r.url) {
+          const next = await svc.threads.patch(p.threadId, { previewUrl: r.url });
+          gw.publish("sidebar", { type: "thread.upsert", thread: next });
+        }
+      }
+      return r;
+    }
+  ));
+  gw.method("preview.release", wrap(z.object({ url: z.string().min(1).max(MAX_PREVIEW_URL) }), (p) => ({
+    ok: svc.preview?.release(p.url) ?? false
+  })));
   gw.method("settings.get", wrap(zEmpty, () => svc.settings.get()));
   gw.method("settings.set", wrap(z.object({ patch: z.record(z.string(), z.unknown()) }), async (p) => {
     const checked = parseSettingsPatch(p.patch);
@@ -5355,7 +6102,7 @@ function registerMethods(gw, svc) {
     if (!existsSync8(proj.path)) throw new ApiError("bad_path", tr("err.dirMissing"));
     const cmd = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
     const target = process.platform === "win32" ? win32Path.normalize(proj.path) : proj.path;
-    execFile3(cmd, [target], { windowsHide: true }, () => {
+    execFile4(cmd, [target], { windowsHide: true }, () => {
     }).on("error", () => {
     });
     return { ok: true };
@@ -5429,7 +6176,8 @@ function registerMethods(gw, svc) {
       id: z.string(),
       title: z.string().optional(),
       pinned: z.boolean().optional(),
-      archived: z.boolean().optional()
+      archived: z.boolean().optional(),
+      previewUrl: z.string().max(MAX_PREVIEW_URL).nullable().optional()
     }),
     async (p) => {
       const meta = await svc.threads.get(p.id);
@@ -5441,6 +6189,14 @@ function registerMethods(gw, svc) {
       }
       if (p.pinned !== void 0) patch.pinned = p.pinned;
       if (p.archived !== void 0) patch.archived = p.archived;
+      if (p.previewUrl !== void 0) {
+        if (p.previewUrl === null) patch.previewUrl = null;
+        else {
+          const c = checkPreviewUrl(p.previewUrl);
+          if (!c.ok) throw new ApiError("bad_params", tr("err.previewUrl"));
+          patch.previewUrl = c.target.href;
+        }
+      }
       const next = await svc.threads.patch(p.id, patch);
       gw.publish("sidebar", { type: "thread.upsert", thread: next });
       return next;
@@ -5564,10 +6320,12 @@ function registerMethods(gw, svc) {
       id: z.string(),
       text: z.string(),
       attachments: z.array(z.object({ path: z.string(), mime: z.string(), name: z.string().optional() })).optional(),
+      // 1.2: paths dragged from the Files panel, relative to the project (the daemon resolves and checks them)
+      mentions: z.array(z.object({ rel: z.string().min(1).max(4096), isDir: z.boolean().optional() })).max(MAX_MENTIONS).optional(),
       behavior: z.enum(["queue", "steer"]).optional()
     }),
     async (p) => {
-      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments }, p.behavior ?? "queue");
+      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments, mentions: p.mentions }, p.behavior ?? "queue");
       return { ok: true, delivered: delivered ?? "started" };
     }
   ));
@@ -5638,11 +6396,13 @@ function registerMethods(gw, svc) {
     L.push(`> ${meta.provider} \xB7 ${meta.model ?? tr("export.defaultModel")} \xB7 ${meta.mode} \xB7 ${new Date(meta.createdAt).toLocaleString(intlLocale())}`, "");
     for (const e of events) {
       switch (e.type) {
-        case "user_message":
+        case "user_message": {
+          const refs = e.mentions?.length ? "\n\n" + e.mentions.map((m) => `- \`${m.path}${m.isDir ? "/" : ""}\``).join("\n") : "";
           L.push(`**${tr("export.me")}**${e.steered ? tr("export.steered") : ""}:
 
-${e.text}`, "");
+${e.text}${refs}`, "");
           break;
+        }
         case "assistant_message":
           L.push(e.text, "");
           break;
@@ -5702,18 +6462,18 @@ ${e.text}
 }
 function revealInFileManager(filePath) {
   if (process.platform === "win32") {
-    execFile3("explorer.exe", ["/select," + win32Path.normalize(filePath)], { windowsHide: true }, () => {
+    execFile4("explorer.exe", ["/select," + win32Path.normalize(filePath)], { windowsHide: true }, () => {
     }).on("error", () => {
     });
     return;
   }
   if (process.platform === "darwin") {
-    execFile3("open", ["-R", filePath], () => {
+    execFile4("open", ["-R", filePath], () => {
     }).on("error", () => {
     });
     return;
   }
-  execFile3("xdg-open", [dirname3(filePath)], () => {
+  execFile4("xdg-open", [dirname3(filePath)], () => {
   }).on("error", () => {
   });
 }
@@ -5730,6 +6490,10 @@ var init_methods = __esm({
     init_launch();
     init_modes();
     init_i18n();
+    init_mentions();
+    init_openExternal();
+    init_proxy();
+    init_url();
     threadModeSchema = z.enum(["plan", "default", "acceptEdits", "bypassPermissions", "ask"]);
     ApiError = class extends Error {
       code;
@@ -5790,10 +6554,14 @@ function sanitizeStored(raw) {
   }
   return out;
 }
-var DEFAULT_SETTINGS, IDLE_CLOSE_MIN, IDLE_CLOSE_MAX, mode, id, settingsPatchSchema, SettingsStore;
+var CONTENT_WIDTHS, CHAT_FONT_MIN, CHAT_FONT_MAX, CHAT_FONT_DEFAULT, DEFAULT_SETTINGS, IDLE_CLOSE_MIN, IDLE_CLOSE_MAX, mode, id, settingsPatchSchema, SettingsStore;
 var init_settings = __esm({
   "daemon/src/store/settings.ts"() {
     init_atomic();
+    CONTENT_WIDTHS = ["narrow", "default", "wide", "full"];
+    CHAT_FONT_MIN = 12;
+    CHAT_FONT_MAX = 18;
+    CHAT_FONT_DEFAULT = 13;
     DEFAULT_SETTINGS = {
       defaultProvider: "claude",
       defaultMode: "default",
@@ -5801,6 +6569,8 @@ var init_settings = __esm({
       runningSend: "queue",
       showThinking: true,
       theme: "auto",
+      contentWidth: "default",
+      chatFontSize: CHAT_FONT_DEFAULT,
       idleCloseMinutes: 30,
       collapsedProjects: [],
       panel: { open: false, tab: "changes", width: 440 },
@@ -5821,10 +6591,13 @@ var init_settings = __esm({
       showThinking: z2.boolean(),
       // auto = follow the host: Magpie's light/dark inside Magpie, the OS outside it
       theme: z2.enum(["auto", "light", "dark"]),
+      contentWidth: z2.enum(CONTENT_WIDTHS),
+      chatFontSize: z2.number().int().min(CHAT_FONT_MIN).max(CHAT_FONT_MAX),
       idleCloseMinutes: z2.number().int().min(IDLE_CLOSE_MIN).max(IDLE_CLOSE_MAX),
       collapsedProjects: z2.array(id).max(1e3),
       panel: z2.object({ open: z2.boolean(), tab: z2.string().max(40), width: z2.number().min(0).max(5e3) }).partial(),
       sidebarWidth: z2.number().min(0).max(5e3),
+      sidebarHidden: z2.boolean(),
       lastProjectId: id.nullable(),
       lastThreadId: id.nullable(),
       recentDirs: z2.array(z2.string().max(4096)).max(50),
@@ -6236,6 +7009,7 @@ function parseConfig(argv) {
   let data = null;
   let token = null;
   let parentPid;
+  let gatePort;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--port" && argv[i + 1]) port = Number(argv[++i]);
@@ -6246,6 +7020,8 @@ function parseConfig(argv) {
     else if (a.startsWith("--token=")) token = a.slice(8);
     else if (a === "--parent-pid" && argv[i + 1]) parentPid = Number(argv[++i]);
     else if (a.startsWith("--parent-pid=")) parentPid = Number(a.slice(13));
+    else if (a === "--gate-port" && argv[i + 1]) gatePort = Number(argv[++i]);
+    else if (a.startsWith("--gate-port=")) gatePort = Number(a.slice(12));
   }
   if (port == null || !Number.isInteger(port) || port < 0 || port > 65535) {
     const envPort = Number(process.env.AGENT_CONSOLE_PORT || "");
@@ -6261,7 +7037,8 @@ function parseConfig(argv) {
     version: pkgVersion(),
     idleExitMinutes: Number.isFinite(idleEnv) && idleEnv > 0 ? idleEnv : 60,
     buildStamp: daemonBuildStamp(),
-    parentPid: Number.isInteger(parentPid) ? parentPid : void 0
+    parentPid: Number.isInteger(parentPid) ? parentPid : void 0,
+    gatePort: Number.isInteger(gatePort) && gatePort > 0 && gatePort <= 65535 ? gatePort : void 0
   };
 }
 
@@ -6269,35 +7046,13 @@ function parseConfig(argv) {
 init_log();
 
 // daemon/src/http.ts
+init_security();
+init_log();
+init_i18n();
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { existsSync as existsSync2 } from "node:fs";
 import { join as join4, normalize, extname } from "node:path";
-
-// daemon/src/security.ts
-import { timingSafeEqual, createHash } from "node:crypto";
-function checkHost(host, port) {
-  if (!host) return { ok: false, code: 421, message: "Host \u4E0D\u5BF9" };
-  const h = host.toLowerCase();
-  if (h === `127.0.0.1:${port}` || h === `localhost:${port}`) return { ok: true };
-  return { ok: false, code: 421, message: "Host \u4E0D\u5BF9" };
-}
-function classifyOrigin(origin, port) {
-  if (origin === void 0 || origin === "") return "none";
-  if (origin === "null") return "opaque";
-  const o = origin.toLowerCase();
-  if (o === `http://127.0.0.1:${port}` || o === `http://localhost:${port}`) return "self";
-  return "foreign";
-}
-function tokenEqual(a, b) {
-  const ha = createHash("sha256").update(a).digest();
-  const hb = createHash("sha256").update(b).digest();
-  return timingSafeEqual(ha, hb);
-}
-
-// daemon/src/http.ts
-init_log();
-init_i18n();
 var MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -6784,10 +7539,11 @@ var ThreadsStore = class {
 };
 
 // daemon/src/ws/gateway.ts
-import { WebSocketServer, WebSocket } from "ws";
-import { randomBytes as randomBytes5 } from "node:crypto";
+init_security();
 init_log();
 init_i18n();
+import { WebSocketServer, WebSocket } from "ws";
+import { randomBytes as randomBytes5 } from "node:crypto";
 var Conn = class {
   id;
   ws;
@@ -6840,6 +7596,8 @@ var Gateway = class {
   methods = /* @__PURE__ */ new Map();
   helloTimers = /* @__PURE__ */ new Map();
   onTerminalInput;
+  /** Called after a connection closes, with how many are left (the preview proxy closes when none are) */
+  onConnectionClosed;
   method(name, fn) {
     this.methods.set(name, fn);
   }
@@ -6890,6 +7648,10 @@ var Gateway = class {
     });
     ws.on("close", () => {
       this.conns.delete(conn.id);
+      try {
+        this.onConnectionClosed?.(this.conns.size);
+      } catch {
+      }
       const t = this.helloTimers.get(conn.id);
       if (t) clearTimeout(t);
       this.helloTimers.delete(conn.id);
@@ -7037,6 +7799,7 @@ var Coalescer = class {
 init_methods();
 init_log();
 init_i18n();
+init_mentions();
 init_commands();
 var SLASH_CACHE_TTL_MS = 10 * 60 * 1e3;
 var MAX_WARM_IDLE = 3;
@@ -7061,6 +7824,17 @@ var AgentManager = class {
   /** attachment.path in the frontend's thread.send is really an upload id; resolve it to the file under dataDir/attachments */
   resolveAttachments(refs) {
     return resolveAttachmentRefs(this.attachments, refs);
+  }
+  /** Mentions from the Files panel → absolute paths inside the project; a path that can't be used gets a notice */
+  async resolveMentionRefs(threadId, projectId, refs) {
+    if (!refs?.length) return [];
+    const proj = await this.projects.get(projectId);
+    if (!proj) return [];
+    const { mentions, warnings } = await resolveMentions(proj.path, refs);
+    if (warnings.length) {
+      await this.appendRaw(threadId, { type: "notice", level: "warn", message: tr("notice.mentionSkipped", { paths: warnings.join(", ") }) });
+    }
+    return mentions;
   }
   attachmentLabels(refs) {
     return refs.map((a) => ({ id: a.path, name: (a.name ?? "").trim() || a.path, mime: a.mime }));
@@ -7179,6 +7953,7 @@ var AgentManager = class {
   // ---- send ----
   async send(threadId, input, behavior = "queue") {
     const meta = await this.mustThread(threadId);
+    const mentions = await this.resolveMentionRefs(threadId, meta.projectId, input.mentions);
     if (meta.archived) {
       await this.threads.patch(threadId, { archived: false });
       this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
@@ -7202,36 +7977,37 @@ var AgentManager = class {
       if (behavior === "steer" && provider?.capabilities.steer && rt.session?.steer && !rt.starting) {
         try {
           const images = await this.resolveAttachments(attachmentRefs);
-          await rt.session.steer({ text: input.text, images });
+          await rt.session.steer({ text: withMentions(input.text, mentions), images, mentions });
           await this.appendRaw(threadId, {
             type: "user_message",
             text: input.text,
             steered: true,
-            attachments: this.attachmentLabels(attachmentRefs)
+            attachments: this.attachmentLabels(attachmentRefs),
+            ...mentions.length ? { mentions } : {}
           });
           return "steered";
         } catch (e) {
           log("info", `thread ${threadId} \u63D2\u8BDD\u5931\u8D25\uFF0C\u6539\u4E3A\u6392\u961F\uFF1A${String(e)}`);
         }
       }
-      const q = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs };
+      const q = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs, ...mentions.length ? { mentions } : {} };
       rt.queue.push(q);
       this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
       return "queued";
     }
-    await this.startTurn(threadId, input.text, attachmentRefs);
+    await this.startTurn(threadId, input.text, attachmentRefs, mentions);
     return "started";
   }
-  async startTurn(threadId, text, attachmentRefs) {
+  async startTurn(threadId, text, attachmentRefs, mentions = []) {
     const rt = this.rt(threadId);
     rt.starting = true;
     try {
-      await this.startTurnInner(threadId, text, attachmentRefs);
+      await this.startTurnInner(threadId, text, attachmentRefs, mentions);
     } finally {
       rt.starting = false;
     }
   }
-  async startTurnInner(threadId, text, attachmentRefs) {
+  async startTurnInner(threadId, text, attachmentRefs, mentions) {
     const meta = await this.mustThread(threadId);
     const rt = this.rt(threadId);
     const provider = await this.assertProviderUsable(meta.provider, { allowDisabled: !!meta.providerSessionId });
@@ -7254,12 +8030,13 @@ var AgentManager = class {
     await this.appendRaw(threadId, {
       type: "user_message",
       text,
-      attachments: this.attachmentLabels(attachmentRefs)
+      attachments: this.attachmentLabels(attachmentRefs),
+      ...mentions.length ? { mentions } : {}
     });
     await this.setStatus(threadId, "running");
     try {
       const images = await this.resolveAttachments(attachmentRefs);
-      await rt.session.send({ text, images });
+      await rt.session.send({ text: withMentions(text, mentions), images, mentions });
     } catch (e) {
       const msg = String(e?.message ?? e);
       await this.appendRaw(threadId, { type: "notice", level: "error", message: tr("notice.sendFailed", { detail: msg }) });
@@ -7390,7 +8167,7 @@ var AgentManager = class {
       });
       if (next) {
         this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
-        await this.startTurn(threadId, next.text, next.attachments).catch((e) => {
+        await this.startTurn(threadId, next.text, next.attachments, next.mentions ?? []).catch((e) => {
           log("warn", `thread ${threadId} \u6392\u961F\u6D88\u606F\u542F\u52A8\u5931\u8D25\uFF1A${String(e)}`);
         });
       }
@@ -7755,15 +8532,15 @@ var AgentManager = class {
 
 // daemon/src/git/service.ts
 init_i18n();
-import { execFile as execFile4 } from "node:child_process";
+import { execFile as execFile5 } from "node:child_process";
 import { existsSync as existsSync10 } from "node:fs";
-import { cp, mkdir as mkdir7, readFile as readFile16, rename as rename4, rm, stat as stat9 } from "node:fs/promises";
-import { join as join16, normalize as normalize2, sep as sep2 } from "node:path";
+import { cp, mkdir as mkdir7, readFile as readFile16, rename as rename4, rm, stat as stat10 } from "node:fs/promises";
+import { join as join16, normalize as normalize2, sep as sep3 } from "node:path";
 var TIMEOUT2 = 15e3;
 var DIFF_LIMIT = 1024 * 1024;
 function runGit(cwd, args) {
   return new Promise((res) => {
-    execFile4("git", ["-c", "core.quotepath=false", ...args], { cwd, timeout: TIMEOUT2, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (e, stdout, stderr) => {
+    execFile5("git", ["-c", "core.quotepath=false", ...args], { cwd, timeout: TIMEOUT2, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (e, stdout, stderr) => {
       const code = e && typeof e.code === "number" ? e.code : e ? 1 : 0;
       const missing = e?.code === "ENOENT";
       res({ code, out: String(stdout ?? ""), err: missing ? tr("git.missing") : String(stderr || (e?.message ?? "")) });
@@ -7774,7 +8551,7 @@ function insidePath(projectPath, p) {
   const rel = normalize2(p).replace(/\\/g, "/");
   const abs = normalize2(join16(projectPath, rel));
   const proj = normalize2(projectPath);
-  if (abs !== proj && !abs.startsWith(proj + sep2)) return null;
+  if (abs !== proj && !abs.startsWith(proj + sep3)) return null;
   return rel.replace(/\\/g, "/");
 }
 async function moveAcrossDevices(from, to, ops = {}) {
@@ -7823,7 +8600,7 @@ var GitService = class {
     if (ls.code !== 0) {
       const full = join16(projectPath, rel);
       if (!existsSync10(full)) return { error: tr("fs.fileMissing") };
-      const s = await stat9(full);
+      const s = await stat10(full);
       if (!s.isFile()) return { error: tr("fs.notFile") };
       if (s.size > DIFF_LIMIT) return { tooLarge: true };
       const text = await readFile16(full, "utf8").catch(() => null);
@@ -7871,8 +8648,8 @@ ${lines}` };
 
 // daemon/src/files/service.ts
 init_i18n();
-import { readdir as readdir5, readFile as readFile17, stat as stat10 } from "node:fs/promises";
-import { join as join17, normalize as normalize3, sep as sep3, extname as extname3 } from "node:path";
+import { readdir as readdir5, readFile as readFile17, stat as stat11 } from "node:fs/promises";
+import { join as join17, normalize as normalize3, sep as sep4, extname as extname3 } from "node:path";
 import ignore from "ignore";
 function decodeText(buf) {
   try {
@@ -7937,7 +8714,7 @@ function insidePath2(projectPath, p) {
   const rel = normalize3(p || ".").replace(/\\/g, "/");
   const abs = normalize3(join17(projectPath, rel));
   const proj = normalize3(projectPath);
-  if (abs !== proj && !abs.startsWith(proj + sep3)) return null;
+  if (abs !== proj && !abs.startsWith(proj + sep4)) return null;
   return rel;
 }
 var FileService = class {
@@ -7946,7 +8723,7 @@ var FileService = class {
   igCache = /* @__PURE__ */ new Map();
   async igFor(projectPath) {
     const gi = join17(projectPath, ".gitignore");
-    const st = await stat10(gi).catch(() => null);
+    const st = await stat11(gi).catch(() => null);
     const mtime = st?.isFile() ? st.mtimeMs : -1;
     const hit = this.igCache.get(projectPath);
     if (hit && hit.mtime === mtime) return hit.ig;
@@ -7965,7 +8742,7 @@ var FileService = class {
     const rel = insidePath2(projectPath, dir);
     if (rel === null) return { error: tr("fs.pathDenied") };
     const abs = join17(projectPath, rel);
-    const s = await stat10(abs).catch(() => null);
+    const s = await stat11(abs).catch(() => null);
     if (!s?.isDirectory()) return { error: tr("fs.dirMissing") };
     const ig = await this.igFor(projectPath);
     const dirents = await readdir5(abs, { withFileTypes: true }).catch(() => null);
@@ -7978,7 +8755,7 @@ var FileService = class {
       const childRel = rel === "." ? name : `${rel}/${name}`;
       let isDir2 = d.isDirectory();
       if (d.isSymbolicLink()) {
-        const st = await stat10(join17(projectPath, childRel)).catch(() => null);
+        const st = await stat11(join17(projectPath, childRel)).catch(() => null);
         if (!st) continue;
         isDir2 = st.isDirectory();
       } else if (!d.isFile() && !isDir2) {
@@ -7996,7 +8773,7 @@ var FileService = class {
     const rel = insidePath2(projectPath, p);
     if (rel === null) return { error: tr("fs.pathDenied") };
     const abs = join17(projectPath, rel);
-    const s = await stat10(abs).catch(() => null);
+    const s = await stat11(abs).catch(() => null);
     if (!s) return { error: tr("fs.fileMissing") };
     if (!s.isFile()) return { error: tr("fs.notFile") };
     if (s.size > MAX_READ) return { tooLarge: true };
@@ -8296,9 +9073,9 @@ function pidAlive(pid, kill = (p, s) => process.kill(p, s)) {
 }
 function augmentPath(env, nodeDir, platform = process.platform, home) {
   const win = platform === "win32";
-  const sep4 = win ? ";" : platform === process.platform ? delimiter : ":";
+  const sep5 = win ? ";" : platform === process.platform ? delimiter : ":";
   const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
-  const cur = (env[key] ?? "").split(sep4).filter(Boolean);
+  const cur = (env[key] ?? "").split(sep5).filter(Boolean);
   const norm = (d) => win ? d.replace(/[\\/]+$/, "").toLowerCase() : d.replace(/\/+$/, "");
   const seen = new Set(cur.map(norm));
   const out = [...cur];
@@ -8307,7 +9084,35 @@ function augmentPath(env, nodeDir, platform = process.platform, home) {
     seen.add(norm(d));
     out.push(d);
   }
-  return out.join(sep4);
+  return out.join(sep5);
+}
+
+// daemon/src/main.ts
+init_proxy();
+
+// daemon/src/preview/ports.ts
+var MAGPIE_DEFAULT_PORTS = [3425, 3430];
+var GATE_DEFAULT_PORT = 3488;
+function portOf(addr) {
+  if (!addr) return null;
+  const m = /:(\d{1,5})\/?$/.exec(addr.trim());
+  const n = m ? Number(m[1]) : NaN;
+  return Number.isInteger(n) && n > 0 && n <= 65535 ? n : null;
+}
+function previewDeniedPorts(cfg2, env = process.env) {
+  const out = /* @__PURE__ */ new Set([cfg2.port, GATE_DEFAULT_PORT, ...MAGPIE_DEFAULT_PORTS]);
+  if (cfg2.gatePort) out.add(cfg2.gatePort);
+  for (const k of ["MAGPIE_ADDR", "MAGPIE_WEB_ADDR", "MAGPIE_URL"]) {
+    const p = portOf(env[k]);
+    if (p) out.add(p);
+  }
+  const extra = env.AGENT_CONSOLE_PREVIEW_DENY;
+  if (extra) for (const s of extra.split(/[,\s]+/)) {
+    const n = Number(s);
+    if (Number.isInteger(n) && n > 0 && n <= 65535) out.add(n);
+  }
+  out.delete(0);
+  return [...out];
 }
 
 // daemon/src/main.ts
@@ -8348,6 +9153,13 @@ async function main() {
   const manager = new AgentManager(gateway, threads, projects, settings, attachments);
   await manager.recoverOnStart();
   const terminals = new TerminalService(gateway);
+  const preview = new PreviewProxy({
+    deniedPorts: () => previewDeniedPorts(cfg),
+    log: (level, msg) => log(level, msg)
+  });
+  gateway.onConnectionClosed = (left) => {
+    if (left === 0) preview.closeAll();
+  };
   registerMethods(gateway, {
     cfg,
     settings,
@@ -8358,6 +9170,7 @@ async function main() {
     git: new GitService(),
     files: new FileService(),
     terminals,
+    preview,
     runtime: (id2) => manager.runtimeInfo(id2)
   });
   const server = createHttpServer(cfg, appDir, attachments, {
@@ -8419,6 +9232,7 @@ async function main() {
     shuttingDown = true;
     log("info", "daemon \u5173\u95ED\u4E2D");
     terminals.killAll();
+    preview.closeAll();
     gateway.closeAll();
     try {
       rmSync2(daemonJsonPath, { force: true });

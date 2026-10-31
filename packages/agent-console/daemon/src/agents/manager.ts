@@ -17,6 +17,7 @@ import { Coalescer } from "../timeline/coalescer.js";
 import { ApiError } from "../ws/methods.js";
 import { log } from "../log.js";
 import { tr } from "../util/i18n.js";
+import { resolveMentions, withMentions, type Mention, type MentionRef } from "../util/mentions.js";
 import {
   codexSlashCommandsFromEntries,
   loadCodexSlashEntries,
@@ -26,7 +27,7 @@ const SLASH_CACHE_TTL_MS = 10 * 60 * 1000;
 /** Idle Agent processes kept warm at most (one per conversation); older idle ones are closed (resumed on the next message) */
 export const MAX_WARM_IDLE = 3;
 
-type QueuedMessage = { id: string; text: string; attachments: { path: string; mime: string; name?: string }[] };
+type QueuedMessage = { id: string; text: string; attachments: { path: string; mime: string; name?: string }[]; mentions?: Mention[] };
 type PendingRequest = {
   kind: "permission" | "question";
   requestId: string;
@@ -78,6 +79,18 @@ export class AgentManager {
   /** attachment.path in the frontend's thread.send is really an upload id; resolve it to the file under dataDir/attachments */
   private resolveAttachments(refs: { path: string; mime: string; name?: string }[]) {
     return resolveAttachmentRefs(this.attachments, refs);
+  }
+
+  /** Mentions from the Files panel → absolute paths inside the project; a path that can't be used gets a notice */
+  private async resolveMentionRefs(threadId: string, projectId: string, refs: MentionRef[] | undefined): Promise<Mention[]> {
+    if (!refs?.length) return [];
+    const proj = await this.projects.get(projectId);
+    if (!proj) return [];
+    const { mentions, warnings } = await resolveMentions(proj.path, refs);
+    if (warnings.length) {
+      await this.appendRaw(threadId, { type: "notice", level: "warn", message: tr("notice.mentionSkipped", { paths: warnings.join(", ") }) });
+    }
+    return mentions;
   }
 
   private attachmentLabels(refs: { path: string; mime: string; name?: string }[]) {
@@ -207,8 +220,9 @@ export class AgentManager {
   }
 
   // ---- send ----
-  async send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[] }, behavior: SendBehavior = "queue"): Promise<"started" | "steered" | "queued"> {
+  async send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[]; mentions?: MentionRef[] }, behavior: SendBehavior = "queue"): Promise<"started" | "steered" | "queued"> {
     const meta = await this.mustThread(threadId);
+    const mentions = await this.resolveMentionRefs(threadId, meta.projectId, input.mentions);
     if (meta.archived) {
       await this.threads.patch(threadId, { archived: false });
       this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
@@ -232,12 +246,13 @@ export class AgentManager {
       if (behavior === "steer" && provider?.capabilities.steer && rt.session?.steer && !rt.starting) {
         try {
           const images = await this.resolveAttachments(attachmentRefs);
-          await rt.session.steer({ text: input.text, images });
+          await rt.session.steer({ text: withMentions(input.text, mentions), images, mentions });
           await this.appendRaw(threadId, {
             type: "user_message",
             text: input.text,
             steered: true,
             attachments: this.attachmentLabels(attachmentRefs),
+            ...(mentions.length ? { mentions } : {}),
           });
           return "steered";
         } catch (e) {
@@ -245,27 +260,27 @@ export class AgentManager {
           log("info", `thread ${threadId} 插话失败，改为排队：${String(e)}`);
         }
       }
-      const q: QueuedMessage = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs };
+      const q: QueuedMessage = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs, ...(mentions.length ? { mentions } : {}) };
       rt.queue.push(q);
       this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
       return "queued";
     }
 
-    await this.startTurn(threadId, input.text, attachmentRefs);
+    await this.startTurn(threadId, input.text, attachmentRefs, mentions);
     return "started";
   }
 
-  private async startTurn(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[]): Promise<void> {
+  private async startTurn(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[], mentions: Mention[] = []): Promise<void> {
     const rt = this.rt(threadId);
     rt.starting = true;
     try {
-      await this.startTurnInner(threadId, text, attachmentRefs);
+      await this.startTurnInner(threadId, text, attachmentRefs, mentions);
     } finally {
       rt.starting = false;
     }
   }
 
-  private async startTurnInner(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[]): Promise<void> {
+  private async startTurnInner(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[], mentions: Mention[]): Promise<void> {
     const meta = await this.mustThread(threadId);
     const rt = this.rt(threadId);
     // Conversations that already ran (have a providerSessionId) ignore "disabled": disabling only blocks new conversations
@@ -293,11 +308,12 @@ export class AgentManager {
       type: "user_message",
       text,
       attachments: this.attachmentLabels(attachmentRefs),
+      ...(mentions.length ? { mentions } : {}),
     });
     await this.setStatus(threadId, "running");
     try {
       const images = await this.resolveAttachments(attachmentRefs);
-      await rt.session!.send({ text, images });
+      await rt.session!.send({ text: withMentions(text, mentions), images, mentions });
     } catch (e) {
       // A failed send must not leave the conversation running
       const msg = String((e as Error)?.message ?? e);
@@ -440,7 +456,7 @@ export class AgentManager {
       if (next) {
         this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
         // A queued message that fails to start is only logged; it must not break the event pump (startTurn already wrote notice/turn_ended)
-        await this.startTurn(threadId, next.text, next.attachments).catch((e) => {
+        await this.startTurn(threadId, next.text, next.attachments, next.mentions ?? []).catch((e) => {
           log("warn", `thread ${threadId} 排队消息启动失败：${String(e)}`);
         });
       }

@@ -384,6 +384,7 @@ function pickScript(text: string): (ctx: Ctx) => Promise<void> {
   if (t.startsWith("/error")) return scriptError;
   if (t.startsWith("/long")) return scriptLong;
   if (t.startsWith("/exit")) return scriptExit;
+  if (t.startsWith("/serve")) return scriptServe;
   return scriptDefault;
 }
 
@@ -400,6 +401,27 @@ function chunkText(s: string, n: number): string[] {
   const out: string[] = [];
   for (let i = 0; i < s.length; i += n) out.push(s.slice(i, i + n));
   return out;
+}
+
+// "/serve": a reply with local dev-server addresses (1.2 preview links) and one external link
+async function scriptServe(ctx: Ctx): Promise<void> {
+  const emit = (e: Parameters<Ctx["emit"]>[0]) => ctx.emit(e);
+  const reply = [
+    "开发服务器已经启动：http://localhost:5173/ ，接口在 127.0.0.1:5173/api.json。",
+    "",
+    "- 在预览里打开 [首页](http://localhost:5173/) 或 [about](http://localhost:5173/about.html)",
+    "- 文档：[Vite](https://vite.dev/guide/)",
+    "",
+    "```",
+    "  VITE v5.4.21  ready in 139 ms",
+    "  ➜  Local:   http://localhost:5173/",
+    "```",
+  ].join("\n");
+  for (const ch of chunkText(reply, 40)) {
+    if (await sleepAbortable(20, ctx)) return;
+    emit({ type: "assistant_delta", itemId: "sv", text: ch });
+  }
+  emit({ type: "assistant_message", itemId: "sv", text: reply });
 }
 
 function mockReply(ctx: Ctx): string {

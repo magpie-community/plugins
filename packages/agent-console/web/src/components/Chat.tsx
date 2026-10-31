@@ -10,6 +10,7 @@ import { Composer } from "./Composer";
 import { Icon } from "./Icons";
 import { ws } from "../main";
 import { toast } from "./Toast";
+import { relFromAbs } from "../composer/mentions";
 import { useLiveSettings } from "./Settings";
 import { errMsg, localizeDaemonMessage, t as tr, tf } from "../i18n/index.js";
 
@@ -82,9 +83,14 @@ export function Chat() {
     setHasNew(false);
   };
 
-  const resend = (text: string) => {
+  const resend = (text: string, mentions?: { path: string; isDir: boolean }[]) => {
     if (!activeThreadId) return;
-    void ws.call("thread.send", { id: activeThreadId, text });
+    // chips go along again (as project-relative paths; the daemon re-checks them)
+    const root = project?.path;
+    const rels = root && mentions?.length
+      ? mentions.map((m) => ({ rel: relFromAbs(root, m.path), isDir: m.isDir })).filter((m): m is { rel: string; isDir: boolean } => !!m.rel)
+      : [];
+    void ws.call("thread.send", { id: activeThreadId, text, ...(rels.length ? { mentions: rels } : {}) });
   };
   const retryLast = () => {
     if (tl.lastUserText) resend(tl.lastUserText);

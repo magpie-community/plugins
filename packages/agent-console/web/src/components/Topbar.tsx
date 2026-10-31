@@ -6,6 +6,7 @@ import { useUi, type PanelTab } from "../stores/ui";
 import { useConnection } from "../stores/connection";
 import { ws } from "../main";
 import { Icon } from "./Icons";
+import { SidebarToggle } from "./Sidebar";
 import { Menu, useMenu, type MenuItem } from "./Menu";
 import { Dialog } from "./Dialog";
 import { copyText } from "./Markdown";
@@ -55,6 +56,7 @@ export function Topbar({ pendingCount }: { pendingCount: number }) {
     { tab: "changes", icon: "changes", title: t("topbar.panelChanges") },
     { tab: "files", icon: "files", title: t("topbar.panelFiles") },
     { tab: "terminal", icon: "term", title: t("topbar.panelTerminal") },
+    { tab: "preview", icon: "globe", title: t("preview.tab") },
   ];
 
   const moreItems: MenuItem[] = thread
@@ -72,13 +74,8 @@ export function Topbar({ pendingCount }: { pendingCount: number }) {
 
   return (
     <header className="topbar">
-      <button
-        className="ibtn tb-menu-btn"
-        title={t("topbar.sidebar")}
-        onClick={() => ui.setSbOpen(!ui.sbOpen)}
-      >
-        <Icon name="menu" />
-      </button>
+      {/* sidebar collapsed (or a narrow window's drawer): the toggle lives here, before the breadcrumb */}
+      <SidebarToggle className={`tb-menu-btn${ui.sbHidden ? " tb-sb-collapsed" : ""}`} />
       {project && <span className="tb-crumb">{project.name}</span>}
       {project && thread && <span className="tb-sep">/</span>}
       {thread ? (

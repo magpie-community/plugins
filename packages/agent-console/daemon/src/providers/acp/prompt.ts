@@ -35,6 +35,7 @@ export async function buildAcpPrompt(
   text: string,
   attachments: { path: string; mime: string }[],
   caps: AcpPromptCaps,
+  mentions: { path: string; isDir: boolean }[] = [],
 ): Promise<AcpPromptBuild> {
   const media: ContentBlock[] = [];
   const links: ContentBlock[] = [];
@@ -103,5 +104,9 @@ export async function buildAcpPrompt(
   const blocks: ContentBlock[] = [];
   if (fullText) blocks.push({ type: "text", text: fullText });
   blocks.push(...media, ...links);
+  // Files / folders referenced from the Files panel: a resource_link each (ACP baseline); the text already names them too
+  for (const m of mentions) {
+    blocks.push({ type: "resource_link", uri: pathToFileURL(m.path).href, name: basename(m.path) || m.path });
+  }
   return { blocks, imagesByPath, warnings };
 }

@@ -10,11 +10,13 @@ import type { ProviderInfo } from "../types/models.js";
 import { useData } from "../stores/data.js";
 import { IDLE_MAX, IDLE_MIN, parseArgsDraft, parseIdleDraft } from "./settingsFields.js";
 import { applyTheme, embeddedInMagpie, normalizeThemeSetting } from "../layout/theme.js";
+import { applyChatLayout, normalizeChatFont, normalizeContentWidth, CHAT_FONT_MIN, CHAT_FONT_MAX, CHAT_FONT_DEFAULT } from "../layout/chatLayout.js";
 
 type Settings = {
   defaultProvider?: string; defaultMode?: string;
   sendKey?: string; runningSend?: string; showThinking?: boolean;
   theme?: string; idleCloseMinutes?: number;
+  contentWidth?: string; chatFontSize?: number;
   providerEnabled?: Record<string, boolean>;
   providerCommand?: Record<string, { executable?: string; args?: string[] }>;
   [k: string]: unknown;
@@ -63,6 +65,8 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
     const next = { ...s, ...patch } as Settings;
     setS(next);
     if (patch.theme) applyTheme(patch.theme);
+    const layout = patch.contentWidth !== undefined || patch.chatFontSize !== undefined;
+    if (layout) applyChatLayout(next);
     try {
       await ws.call("settings.set", { patch });
       window.dispatchEvent(new CustomEvent("settings-changed", { detail: next }));
@@ -70,6 +74,7 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
     } catch (e) {
       setS(prev);
       if (patch.theme) applyTheme(prev?.theme);
+      if (layout) applyChatLayout(prev ?? {});
       toast(t("settings.failSave") + errMsg(e), true);
       return false;
     }
@@ -232,6 +237,24 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
             { value: "dark", label: t("settings.themeDark") },
           ]} />
       ))}
+      {row(t("settings.contentWidth"), (
+        <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.contentWidth")}
+          value={normalizeContentWidth(s.contentWidth)} onChange={(v) => void set({ contentWidth: v })}
+          options={[
+            { value: "narrow", label: t("settings.widthNarrow") },
+            { value: "default", label: t("settings.widthDefault") },
+            { value: "wide", label: t("settings.widthWide") },
+            { value: "full", label: t("settings.widthFull") },
+          ]} />
+      ))}
+      {row(t("settings.chatFont"), (
+        <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.chatFont")}
+          value={String(normalizeChatFont(s.chatFontSize))} onChange={(v) => void set({ chatFontSize: Number(v) })}
+          options={Array.from({ length: CHAT_FONT_MAX - CHAT_FONT_MIN + 1 }, (_, i) => CHAT_FONT_MIN + i).map((n) => ({
+            value: String(n),
+            label: `${n} px${n === CHAT_FONT_DEFAULT ? t("settings.chatFontDefault") : ""}`,
+          }))} />
+      ), t("settings.chatFontHint"))}
       {row(t("settings.sendKey"), (
         <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.sendKey")}
           value={s.sendKey ?? "enter"} onChange={(v) => void set({ sendKey: v })}

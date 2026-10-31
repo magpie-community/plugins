@@ -24,6 +24,10 @@ import { cachedDetect, cachedModels, clearProviderCache } from "../providers/inf
 import { launchFromSettings } from "../providers/launch.js";
 import { clampMode } from "../providers/modes.js";
 import { tr, intlLocale } from "../util/i18n.js";
+import { MAX_MENTIONS } from "../util/mentions.js";
+import { openExternal } from "../util/openExternal.js";
+import { PreviewError, type PreviewProxy } from "../preview/proxy.js";
+import { checkPreviewUrl, MAX_PREVIEW_URL } from "../preview/url.js";
 
 const threadModeSchema = z.enum(["plan", "default", "acceptEdits", "bypassPermissions", "ask"]);
 
@@ -36,10 +40,12 @@ export type Services = {
   git: GitService;
   files: FileService;
   terminals: TerminalService;
+  /** 1.2 preview proxy (absent in some tests) */
+  preview?: PreviewProxy;
   // AgentManager provides runtime info once wired in at P1-4; may be empty (no session started)
   runtime?: (threadId: string) => { status: string; queue: unknown[]; pending: unknown[] } | null;
   manager?: {
-    send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[] }, behavior?: "queue" | "steer"): Promise<"started" | "steered" | "queued" | void>;
+    send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[]; mentions?: { rel: string; isDir?: boolean }[] }, behavior?: "queue" | "steer"): Promise<"started" | "steered" | "queued" | void>;
     interrupt(threadId: string): Promise<void>;
     respond(threadId: string, requestId: string, answer: { optionId?: string; answers?: Record<string, string>; cancelled?: boolean }): Promise<void>;
     setModel(threadId: string, model: string | null): Promise<void>;
@@ -86,6 +92,38 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     setTimeout(() => process.exit(0), 100);
     return { ok: true };
   }));
+
+  // 1.2: open an http(s) link in the system browser (the sandboxed page can't open popups)
+  gw.method("app.openExternal", wrap(z.object({ url: z.string().min(1).max(MAX_PREVIEW_URL) }), async (p) => openExternal(p.url)));
+
+  // 1.2 preview: a local-only reverse proxy for a loopback dev URL (see preview/proxy.ts for the limits)
+  gw.method("preview.open", wrap(
+    z.object({ url: z.string().min(1).max(MAX_PREVIEW_URL), threadId: z.string().max(200).optional() }),
+    async (p) => {
+      if (!svc.preview) throw new ApiError("unavailable", tr("err.previewUnavailable"));
+      let r;
+      try {
+        r = await svc.preview.open(p.url);
+      } catch (e) {
+        if (e instanceof PreviewError) {
+          throw new ApiError(e.code === "denied_port" ? "preview_denied" : "preview_url", tr(e.code === "denied_port" ? "err.previewDenied" : "err.previewUrl"));
+        }
+        throw e;
+      }
+      if (p.threadId) {
+        const meta = await svc.threads.get(p.threadId);
+        if (meta && meta.previewUrl !== r.url) {
+          const next = await svc.threads.patch(p.threadId, { previewUrl: r.url });
+          gw.publish("sidebar", { type: "thread.upsert", thread: next });
+        }
+      }
+      return r;
+    },
+  ));
+
+  gw.method("preview.release", wrap(z.object({ url: z.string().min(1).max(MAX_PREVIEW_URL) }), (p) => ({
+    ok: svc.preview?.release(p.url) ?? false,
+  })));
 
   gw.method("settings.get", wrap(zEmpty, () => svc.settings.get()));
 
@@ -296,6 +334,7 @@ export function registerMethods(gw: Gateway, svc: Services): void {
       title: z.string().optional(),
       pinned: z.boolean().optional(),
       archived: z.boolean().optional(),
+      previewUrl: z.string().max(MAX_PREVIEW_URL).nullable().optional(),
     }),
     async (p) => {
       const meta = await svc.threads.get(p.id);
@@ -307,6 +346,15 @@ export function registerMethods(gw: Gateway, svc: Services): void {
       }
       if (p.pinned !== undefined) patch.pinned = p.pinned;
       if (p.archived !== undefined) patch.archived = p.archived;
+      if (p.previewUrl !== undefined) {
+        // Only a loopback URL is remembered (normalized); null clears it
+        if (p.previewUrl === null) patch.previewUrl = null;
+        else {
+          const c = checkPreviewUrl(p.previewUrl);
+          if (!c.ok) throw new ApiError("bad_params", tr("err.previewUrl"));
+          patch.previewUrl = c.target.href;
+        }
+      }
       const next = await svc.threads.patch(p.id, patch);
       gw.publish("sidebar", { type: "thread.upsert", thread: next });
       return next;
@@ -445,11 +493,13 @@ export function registerMethods(gw: Gateway, svc: Services): void {
       id: z.string(),
       text: z.string(),
       attachments: z.array(z.object({ path: z.string(), mime: z.string(), name: z.string().optional() })).optional(),
+      // 1.2: paths dragged from the Files panel, relative to the project (the daemon resolves and checks them)
+      mentions: z.array(z.object({ rel: z.string().min(1).max(4096), isDir: z.boolean().optional() })).max(MAX_MENTIONS).optional(),
       behavior: z.enum(["queue", "steer"]).optional(),
     }),
     async (p) => {
       // delivered tells the composer what happened: a steer an Agent can't take is queued (B7)
-      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments }, p.behavior ?? "queue");
+      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments, mentions: p.mentions }, p.behavior ?? "queue");
       return { ok: true, delivered: delivered ?? "started" };
     }
   ));
@@ -533,7 +583,11 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     L.push(`> ${meta.provider} · ${meta.model ?? tr("export.defaultModel")} · ${meta.mode} · ${new Date(meta.createdAt).toLocaleString(intlLocale())}`, "");
     for (const e of events) {
       switch (e.type) {
-        case "user_message": L.push(`**${tr("export.me")}**${e.steered ? tr("export.steered") : ""}:\n\n${e.text}`, ""); break;
+        case "user_message": {
+          const refs = e.mentions?.length ? "\n\n" + e.mentions.map((m) => `- \`${m.path}${m.isDir ? "/" : ""}\``).join("\n") : "";
+          L.push(`**${tr("export.me")}**${e.steered ? tr("export.steered") : ""}:\n\n${e.text}${refs}`, "");
+          break;
+        }
         case "assistant_message": L.push(e.text, ""); break;
         case "reasoning": L.push(`<details><summary>${tr("export.reasoning")}</summary>\n\n${e.text}\n</details>`, ""); break;
         case "tool_call": {

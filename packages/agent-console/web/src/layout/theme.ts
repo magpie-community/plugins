@@ -38,6 +38,16 @@ export function embeddedInMagpie(): boolean {
   return hostTheme !== null;
 }
 
+/** Magpie switched light/dark while the page is open (bridge theme event, see magpieBridge.ts) */
+export function setHostTheme(t: Theme): void {
+  hostTheme = t;
+  applyTheme(current);
+}
+
+export function currentSetting(): ThemeSetting {
+  return current;
+}
+
 export function applyTheme(setting: unknown): void {
   current = normalizeThemeSetting(setting);
   const { theme, hostColors } = resolveTheme(current, hostTheme, osTheme());

@@ -105,6 +105,7 @@ body.col-drag iframe, body.col-drag .xterm { pointer-events: none; }
   padding: 0 10px; border-bottom: 1px solid var(--line);
 }
 .tb-menu-btn { display: none; }
+.tb-menu-btn.tb-sb-collapsed { display: inline-flex; margin-right: 2px; }
 .tb-crumb { flex: none; max-width: 26%; font-size: var(--fs-m); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tb-sep { flex: none; color: var(--muted); }
 .tb-title {
@@ -134,7 +135,7 @@ body.col-drag iframe, body.col-drag .xterm { pointer-events: none; }
 
 /* Timeline: content max width 760, centered */
 .scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; position: relative; }
-/* Conversation and composer share one 720px column */
+/* Conversation and composer share one column: --col, 720px by default (Settings → Content width: 640 / 720 / 880 / full) */
 .tl-wrap { max-width: calc(var(--col) + 40px); min-width: 0; margin: 0 auto; padding: 24px 20px 16px; }
 
 /* ↓ jump-to-bottom button */
@@ -218,7 +219,7 @@ body.col-drag iframe, body.col-drag .xterm { pointer-events: none; }
 .ft-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ft-err { color: var(--danger); font-size: var(--fs-s); padding: 2px 0; }
 .ft-view { flex: 1; min-height: 0; overflow: auto; border-top: 1px solid var(--line); }
-.ft-pre { margin: 0; padding: 10px 12px; font-family: var(--font-mono); font-size: var(--fs-s); line-height: 1.55; }
+.ft-pre { margin: 0; padding: 10px 12px; font-family: var(--font-mono); font-size: var(--chat-code-fs); line-height: 1.55; }
 .ft-pre code { background: none; padding: 0; display: block; white-space: pre; }
 
 /* Terminal panel */
@@ -263,9 +264,17 @@ body.col-drag iframe, body.col-drag .xterm { pointer-events: none; }
 
 /* Wide screens: Ctrl+B hides the whole column / Ctrl+J hides the panel */
 @media (min-width: 760px) {
-  .sidebar.w-hide { display: none; }
+  /* collapse slides the column out (quick, and none with reduced motion); hidden afterwards so it can't take focus */
+  .sidebar { transition: margin-left var(--dur-2) var(--ease), visibility 0s linear 0s; }
+  .sidebar.w-hide {
+    margin-left: calc(-1 * var(--sb-w, 248px)); visibility: hidden;
+    transition: margin-left var(--dur-2) var(--ease), visibility 0s linear var(--dur-2);
+  }
   .sidebar.w-hide + .rs-l { display: none; }
 }
+@media (prefers-reduced-motion: reduce) { .sidebar, .sidebar.w-hide { transition: none; } }
+.sb-row .sb-toggle { flex: none; color: var(--muted); }
+.sb-toggle:hover { color: var(--fg); }
 @media (min-width: 900px) {
   .panel.w-hide { display: none; }
 }
@@ -311,3 +320,30 @@ body.col-drag iframe, body.col-drag .xterm { pointer-events: none; }
 .cpal-item.on { background: var(--surface-hover); }
 .cpal-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cpal-hint { flex: none; font-size: var(--fs-s); color: var(--muted); }
+
+/* ---- 1.2 Preview tab ---- */
+.pv { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.pv-bar { flex: none; display: flex; align-items: center; gap: 2px; height: 38px; padding: 0 6px; border-bottom: 1px solid var(--line); }
+.pv-bar .ibtn { width: 26px; height: 26px; flex: none; color: var(--muted); }
+.pv-bar .ibtn:hover:not(:disabled) { color: var(--fg); }
+.pv-bar .ibtn:disabled { opacity: .35; cursor: default; }
+.pv-addr {
+  flex: 1; min-width: 0; height: 26px; padding: 0 8px; margin: 0 2px; border-radius: var(--r-s);
+  background: var(--search-bg); border: 1px solid transparent; color: var(--fg);
+  font-family: var(--font-mono); font-size: var(--fs-s); outline: none;
+}
+.pv-addr:focus { border-color: var(--cp-focus); background: var(--bg); }
+.pv-addr.err { border-color: color-mix(in oklab, var(--danger) 60%, var(--bg)); }
+.pv-note { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: var(--fs-s); color: var(--muted); border-bottom: 1px solid var(--line); }
+.pv-note.err { color: var(--danger); }
+.pv-note .btn { height: 24px; font-size: var(--fs-s); }
+.pv-frame-wrap { flex: 1; min-height: 0; position: relative; background: var(--bg); }
+.pv-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+.pv-loading { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--accent-2); opacity: .5; animation: breathe 1s infinite; }
+.pv-empty { padding: 28px 22px; color: var(--muted); font-size: var(--fs-m); text-align: center; line-height: 1.7; }
+.pv-empty code { font-family: var(--font-mono); font-size: var(--fs-s); background: var(--code-bg); border: 1px solid var(--code-line); border-radius: 4px; padding: 0 4px; color: var(--code-fg); }
+.pv-hint { margin-top: 10px; font-size: var(--fs-s); color: var(--meta); }
+
+/* Files panel rows can be dragged into the composer */
+.ft-row[draggable="true"] { cursor: default; }
+.ft-row.dragging { opacity: .5; }

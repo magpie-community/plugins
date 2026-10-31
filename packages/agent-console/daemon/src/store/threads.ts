@@ -34,6 +34,8 @@ export type ThreadMeta = {
   cursorFast?: boolean;
   /** Cursor Agent: Auto-review, the client auto-approves safe tool permissions */
   cursorAutoReview?: boolean;
+  /** 1.2: last URL shown in the Preview tab (the target, not the proxy URL) */
+  previewUrl?: string | null;
 };
 
 export type { Mode };

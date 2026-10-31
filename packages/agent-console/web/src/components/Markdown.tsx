@@ -3,11 +3,14 @@ import { useMemo, useRef, useEffect } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
+import { linkifyLocal } from "../util/localLinks";
+import { onChatLinkClick } from "../preview/open";
+import { t } from "../i18n/index.js";
 
 marked.setOptions({ gfm: true, breaks: true });
 
 const purify = (html: string) =>
-  DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, ADD_ATTR: ["target", "rel"] });
+  DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
 
 export function renderMarkdown(text: string): string {
   return purify(marked.parse(text, { async: false }));
@@ -17,14 +20,12 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
   const ref = useRef<HTMLDivElement>(null);
   const html = useMemo(() => renderMarkdown(text), [text]);
 
-  // After rendering: highlight code blocks + copy button; external links target=_blank
+  // After rendering: highlight code blocks + copy button, then local addresses become Preview links (1.2).
+  // Link clicks are handled by onChatLinkClick (system browser / Preview tab): target=_blank can't open anything in
+  // Magpie's sandboxed frame, and a plain click would navigate the whole page away.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    for (const a of el.querySelectorAll("a[href^='http']")) {
-      (a as HTMLAnchorElement).target = "_blank";
-      (a as HTMLAnchorElement).rel = "noopener";
-    }
     for (const pre of el.querySelectorAll("pre")) {
       const code = pre.querySelector("code");
       if (code && !code.dataset.hl) {
@@ -34,20 +35,24 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
       if (!pre.querySelector(".cb-copy")) {
         const btn = document.createElement("button");
         btn.className = "cb-copy";
-        btn.textContent = "复制";
+        btn.type = "button";
+        btn.textContent = t("common.copy");
         btn.onclick = () => {
-          const t = code?.textContent ?? "";
-          void copyText(t).then(() => { btn.textContent = "已复制"; setTimeout(() => (btn.textContent = "复制"), 1200); });
+          const txt = code?.textContent ?? "";
+          void copyText(txt).then(() => { btn.textContent = t("common.copied"); setTimeout(() => (btn.textContent = t("common.copy")), 1200); });
         };
         pre.appendChild(btn);
       }
     }
-  }, [html]);
+    // While streaming the text changes many times a second: link once it settles (and on every final render)
+    if (!streaming) linkifyLocal(el, t("links.openPreviewTitle"));
+  }, [html, streaming]);
 
   return (
     <div
       ref={ref}
       className={`md${streaming ? " streaming" : ""}`}
+      onClick={onChatLinkClick}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

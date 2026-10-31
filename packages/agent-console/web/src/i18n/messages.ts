@@ -28,7 +28,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       panelChanges: "改动（Ctrl+J）", panelFiles: "文件", panelTerminal: "终端",
     },
     sidebar: {
-      newProject: "新建项目", filterPlaceholder: "过滤对话标题", searchTitle: "搜索（Ctrl+K）",
+      newProject: "新建项目", collapse: "收起侧栏", expand: "展开侧栏", filterPlaceholder: "过滤对话标题", searchTitle: "搜索（Ctrl+K）",
       noProjectsTitle: "还没有项目", noProjectsSub: "项目对应一个本机目录，对话都在目录里干活。",
       newThread: "新建对话", projectMenu: "项目菜单", showAll: "显示全部 {n} 条", noThreads: "还没有对话",
       rename: "重命名", pin: "置顶", unpin: "取消置顶", archive: "归档", unarchive: "取消归档",
@@ -95,6 +95,8 @@ export const messages: Record<LocaleId, MessageTree> = {
       effort: { low: "低", medium: "中", high: "高", xhigh: "超高", max: "最高", minimal: "最低", none: "关闭" },
     },
     settings: {
+      contentWidth: "内容宽度", widthNarrow: "窄（640）", widthDefault: "默认（720）", widthWide: "宽（880）", widthFull: "铺满",
+      chatFont: "聊天字号", chatFontDefault: "（默认）", chatFontHint: "对话正文、输入框、工具输出和代码一起缩放（代码小 1px）",
       title: "设置", defaultAgent: "默认 Agent", defaultMode: "默认权限模式", theme: "主题",
       themeAuto: "跟随系统", themeMagpie: "跟随 Magpie", themeLight: "浅色", themeDark: "深色",
       sendKey: "发送键", sendEnter: "Enter 发送 / Shift+Enter 换行", sendCtrl: "Ctrl+Enter 发送 / Enter 换行",
@@ -160,6 +162,21 @@ export const messages: Record<LocaleId, MessageTree> = {
       busy: "正忙，请稍后再试", bad_path: "路径无效",
       connClosed: "连接中断", notConnected: "连接未建立", timeout: "请求超时",
     },
+    preview: {
+      tab: "预览", address: "预览地址", placeholder: "localhost:5173", back: "后退", forward: "前进", reload: "刷新",
+      openExternal: "用系统浏览器打开", widen: "加宽面板", onlyLocal: "预览只支持本机地址（localhost、127.0.0.1 等）",
+      failed: "打不开预览：",
+      empty: "还没有预览地址。在对话里点 localhost 链接，或在上方输入，例如 localhost:5173",
+      limits: "预览在沙箱里运行：弹窗、alert 和原生表单提交不可用；localStorage 和登录 cookie 刷新后会丢失，需要时请用系统浏览器打开。",
+    },
+    links: {
+      openPreviewTitle: "在预览中打开（Ctrl/⌘+点击用浏览器打开）",
+      externalFailed: "打不开系统浏览器，已复制链接",
+    },
+    mention: {
+      drop: "松开以插入到聊天", add: "插入到聊天", copyRel: "复制相对路径", remove: "移除",
+      otherProject: "只能插入当前对话所在项目里的文件",
+    },
   },
   en: {
     app: { title: "Agent Console", subtitle: "Create or select a project in the sidebar" },
@@ -185,7 +202,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       panelChanges: "Changes (Ctrl+J)", panelFiles: "Files", panelTerminal: "Terminal",
     },
     sidebar: {
-      newProject: "New project", filterPlaceholder: "Filter conversations", searchTitle: "Search (Ctrl+K)",
+      newProject: "New project", collapse: "Collapse sidebar", expand: "Expand sidebar", filterPlaceholder: "Filter conversations", searchTitle: "Search (Ctrl+K)",
       noProjectsTitle: "No projects yet", noProjectsSub: "A project maps to a folder on this machine.",
       newThread: "New conversation", projectMenu: "Project menu", showAll: "Show all {n}",
       noThreads: "No conversations yet",
@@ -251,6 +268,8 @@ export const messages: Record<LocaleId, MessageTree> = {
       effort: { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", minimal: "Minimal", none: "Off" },
     },
     settings: {
+      contentWidth: "Content width", widthNarrow: "Narrow (640)", widthDefault: "Default (720)", widthWide: "Wide (880)", widthFull: "Full",
+      chatFont: "Chat font size", chatFontDefault: " (default)", chatFontHint: "Scales the conversation, the input, tool output and code (code 1px smaller)",
       title: "Settings", defaultAgent: "Default agent", defaultMode: "Default permission mode", theme: "Theme",
       themeAuto: "System", themeMagpie: "Follow Magpie", themeLight: "Light", themeDark: "Dark",
       sendKey: "Send shortcut", sendEnter: "Enter sends / Shift+Enter newline",
@@ -316,6 +335,21 @@ export const messages: Record<LocaleId, MessageTree> = {
       requestFailed: "Request failed", bad_params: "Invalid parameters", not_found: "Not found",
       busy: "Busy — try again later", bad_path: "Invalid path",
       connClosed: "Connection lost", notConnected: "Not connected", timeout: "Request timed out",
+    },
+    preview: {
+      tab: "Preview", address: "Preview address", placeholder: "localhost:5173", back: "Back", forward: "Forward", reload: "Reload",
+      openExternal: "Open in browser", widen: "Widen panel", onlyLocal: "Preview only supports local addresses (localhost, 127.0.0.1, …)",
+      failed: "Can't open the preview: ",
+      empty: "Nothing to preview yet. Click a localhost link in the chat, or type an address above, e.g. localhost:5173",
+      limits: "The preview runs sandboxed: popups, alert and native form posts don't work; localStorage and login cookies are lost on reload. Open it in your browser when you need them.",
+    },
+    links: {
+      openPreviewTitle: "Open in Preview (Ctrl/⌘+click opens the browser)",
+      externalFailed: "Couldn't open the browser; the link was copied",
+    },
+    mention: {
+      drop: "Drop to add to the chat", add: "Add to chat", copyRel: "Copy relative path", remove: "Remove",
+      otherProject: "Only files of this conversation's project can be added",
     },
   },
 };

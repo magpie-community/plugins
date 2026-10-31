@@ -37,7 +37,7 @@
 
 .cp-ta {
   width: 100%; border: 0; resize: none; background: none; outline: none; color: var(--text);
-  font-size: var(--fs-l); line-height: 22px; min-height: 34px; max-height: calc(22px * 12); overflow-y: auto;
+  font-size: var(--chat-fs); line-height: calc(var(--chat-fs) * 1.62); min-height: 34px; max-height: calc(var(--chat-fs) * 1.62 * 12); overflow-y: auto;
   display: block; padding: 0;
 }
 .cp-ta::placeholder { color: var(--meta); }
@@ -204,3 +204,8 @@
 @media (max-width: 560px) {
   .composer { padding: 0 10px 10px; }
 }
+
+/* 1.2: drop target while a Files-panel row is dragged over the composer */
+.cp-card.drop-on { outline: 1.5px dashed var(--cp-focus); outline-offset: 2px; }
+.cp-drop-hint { padding: 4px 10px 0; font-size: var(--fs-s); color: var(--muted); }
+.att-bar .mention { height: 24px; }

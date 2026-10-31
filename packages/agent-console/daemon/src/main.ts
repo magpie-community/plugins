@@ -18,6 +18,8 @@ import { GitService } from "./git/service.js";
 import { FileService } from "./files/service.js";
 import { TerminalService } from "./terminal/service.js";
 import { augmentPath, pidAlive } from "./util/proc.js";
+import { PreviewProxy } from "./preview/proxy.js";
+import { previewDeniedPorts } from "./preview/ports.js";
 
 // The bundle targets node20: an older Node (or being started by Bun by mistake) gets a clear message instead of crashing on some API
 const nodeMajor = Number(/^v?(\d+)/.exec(process.versions.node ?? "")?.[1] ?? 0);
@@ -68,6 +70,12 @@ async function main(): Promise<void> {
   const manager = new AgentManager(gateway, threads, projects, settings, attachments);
   await manager.recoverOnStart();
   const terminals = new TerminalService(gateway);
+  const preview = new PreviewProxy({
+    deniedPorts: () => previewDeniedPorts(cfg),
+    log: (level, msg) => log(level, msg),
+  });
+  // Last page gone → no preview frame is left to use the proxies
+  gateway.onConnectionClosed = (left) => { if (left === 0) preview.closeAll(); };
   registerMethods(gateway, {
     cfg,
     settings,
@@ -78,6 +86,7 @@ async function main(): Promise<void> {
     git: new GitService(),
     files: new FileService(),
     terminals,
+    preview,
     runtime: (id) => manager.runtimeInfo(id),
   });
 
@@ -155,6 +164,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     log("info", "daemon 关闭中");
     terminals.killAll();
+    preview.closeAll();
     gateway.closeAll();
     try {
       rmSync(daemonJsonPath, { force: true });

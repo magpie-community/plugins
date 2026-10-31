@@ -8,7 +8,8 @@ import { useTimeline } from "../stores/timeline";
 import { ws } from "../main";
 import { getToken } from "../api/token";
 import { Icon } from "./Icons";
-import { attachmentUrl } from "./Timeline";
+import { attachmentUrl, MentionChip } from "./Timeline";
+import { MENTION_MIME, addMention, joinProjectPath, mentionsForSend, parseMentionDrag, type MentionDraft } from "../composer/mentions";
 import type { Mode, ModelInfo } from "../types/models";
 import type { SlashCommand } from "../composer/slashMenu";
 import { toast } from "./Toast";
@@ -34,10 +35,12 @@ const MODEL_LIST_CAP = 150;
 
 export function Composer() {
   const ui = useUi();
-  const { threads, providers } = useData();
+  const { threads, providers, projects } = useData();
   const tl = useTimeline();
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [mentions, setMentions] = useState<MentionDraft[]>([]);
+  const [dropHint, setDropHint] = useState(false);
   const [agentPop, setAgentPop] = useState(false);
   const [pickerProviderId, setPickerProviderId] = useState<string | null>(null);
   const [modelQ, setModelQ] = useState("");
@@ -173,22 +176,26 @@ export function Composer() {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 12 * 22) + "px";
+    // 12 lines at the current chat font size (line-height follows --chat-fs)
+    const lh = parseFloat(getComputedStyle(ta).lineHeight) || 22;
+    ta.style.height = Math.min(ta.scrollHeight, Math.round(12 * lh)) + "px";
   }, [text]);
 
   const send = useCallback(async (behavior: "queue" | "steer" = "queue") => {
     const id = ui.currentThreadId;
     const msg = text.trim();
-    if (!id || (!msg && attachments.length === 0)) return;
+    if (!id || (!msg && attachments.length === 0 && mentions.length === 0)) return;
     if (running && behavior === "queue") setLastSent((s) => [...s, msg]);
     setText("");
     try {
       const r = (await ws.call("thread.send", {
         id, text: msg,
         attachments: attachments.map((a) => ({ path: a.path, mime: a.mime, name: a.name })),
+        ...(mentions.length ? { mentions: mentionsForSend(mentions) } : {}),
         behavior: running && behavior === "steer" && steerOk ? "steer" : "queue",
       })) as { delivered?: "started" | "steered" | "queued" } | undefined;
       setAttachments([]);
+      setMentions([]);
       // Say what really happened to a message sent mid-turn (B7: agents without steer queue it)
       if (r?.delivered === "queued" && running) toast(tr("composer.queuedToast"));
       else if (r?.delivered === "steered") toast(tr("composer.steeredToast"));
@@ -197,7 +204,7 @@ export function Composer() {
       setText(msg);
       toast(tr("composer.failSend") + errMsg(e), true);
     }
-  }, [text, attachments, ui.currentThreadId, running, steerOk]);
+  }, [text, attachments, mentions, ui.currentThreadId, running, steerOk]);
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (isImeComposing(e.nativeEvent)) return;
@@ -291,8 +298,33 @@ export function Composer() {
     }
   };
 
+  const project = projects.find((p) => p.id === thread?.projectId) ?? null;
+  const takeMention = (m: MentionDraft | null) => {
+    if (!m) return;
+    if (!thread || m.projectId !== thread.projectId) {
+      toast(tr("mention.otherProject"), true);
+      return;
+    }
+    setMentions((list) => addMention(list, m));
+    taRef.current?.focus();
+  };
+  // Files panel → context menu "Add to chat"
+  useEffect(() => {
+    const on = (e: Event) => takeMention((e as CustomEvent).detail as MentionDraft);
+    window.addEventListener("ac-insert-mention", on);
+    return () => window.removeEventListener("ac-insert-mention", on);
+  });
+  // A new conversation starts with no chips
+  useEffect(() => { setMentions([]); }, [ui.currentThreadId]);
+
   const onDrop = async (e: React.DragEvent) => {
     e.preventDefault();
+    setDropHint(false);
+    // A row from our Files panel: a path chip, not an upload. Files from the OS file manager keep the old behaviour.
+    if (e.dataTransfer.types.includes(MENTION_MIME)) {
+      takeMention(parseMentionDrag(e.dataTransfer.getData(MENTION_MIME)));
+      return;
+    }
     for (const f of e.dataTransfer.files) {
       if (f.type.startsWith("image/") || f.type.startsWith("text/")) await upload(f);
     }
@@ -339,7 +371,14 @@ export function Composer() {
   if (!ui.currentThreadId) return null;
 
   return (
-    <div className={`composer${waiting ? " waiting" : ""}`} onDrop={onDrop} onDragOver={(e) => e.preventDefault()}>
+    <div className={`composer${waiting ? " waiting" : ""}`} onDrop={onDrop}
+      onDragOver={(e) => {
+        e.preventDefault();
+        const ours = e.dataTransfer.types.includes(MENTION_MIME);
+        if (ours) e.dataTransfer.dropEffect = "copy";
+        if (ours !== dropHint) setDropHint(ours);
+      }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropHint(false); }}>
       {/* queue list */}
       {tl.queue.length > 0 && (
         <div className="q-list">
@@ -356,12 +395,17 @@ export function Composer() {
       {mode === "bypassPermissions" && (
         <div className="cp-danger">{tr("composer.bypassWarn")}</div>
       )}
-      <div className={`cp-card${waiting ? " waiting" : ""}${mode === "bypassPermissions" ? " danger" : ""}`}>
+      <div className={`cp-card${waiting ? " waiting" : ""}${mode === "bypassPermissions" ? " danger" : ""}${dropHint ? " drop-on" : ""}`}>
+        {dropHint && <div className="cp-drop-hint">{tr("mention.drop")}</div>}
         {imagesByPath && attachments.some((a) => a.mime.startsWith("image/")) && (
           <div className="att-note">{tf("composer.imagesByPath", { agent: provider?.name ?? "" })}</div>
         )}
-        {attachments.length > 0 && (
+        {(attachments.length > 0 || mentions.length > 0) && (
           <div className="att-bar">
+            {mentions.map((m) => (
+              <MentionChip key={m.rel} path={project ? joinProjectPath(project.path, m.rel) : m.rel} isDir={m.isDir}
+                onRemove={() => setMentions((list) => list.filter((x) => x !== m))} />
+            ))}
             {attachments.map((a, i) => (
               <span key={i} className={`att${a.uploading ? " up" : ""}`}>
                 {a.mime.startsWith("image/") && a.path
@@ -640,7 +684,7 @@ export function Composer() {
             {running ? (
               <>
                 <span className="cp-clock">{elapsed}s</span>
-                {(text.trim() || attachments.length > 0) && (
+                {(text.trim() || attachments.length > 0 || mentions.length > 0) && (
                   <button className="cp-send" title={tr(steerOk && prefs.runningSend === "steer" ? "settings.steer" : "settings.queue")}
                     disabled={waiting || attachments.some((a) => a.uploading)}
                     onClick={() => void send(prefs.runningSend === "steer" && steerOk ? "steer" : "queue")}>
@@ -652,7 +696,7 @@ export function Composer() {
                 </button>
               </>
             ) : (
-              <button className="cp-send" title={tr("common.send")} disabled={waiting || (!text.trim() && attachments.length === 0) || attachments.some((a) => a.uploading)}
+              <button className="cp-send" title={tr("common.send")} disabled={waiting || (!text.trim() && attachments.length === 0 && mentions.length === 0) || attachments.some((a) => a.uploading)}
                 onClick={() => void send("queue")}>
                 <Icon name="arrowUp" />
               </button>
