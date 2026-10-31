@@ -247,6 +247,42 @@ no line at all, and a card that is an error keeps its error. Claim the
 plan in the ZCode app (open it once), or let the daily claim below do it;
 the next read shows it as an ordinary gift bucket.
 
+## 订阅窗口预热（待宿主接入）
+
+插件提供可选接口 `auth.warmup(getAuth, provider, options?)`。目前 Magpie
+宿主尚未调用它，安装或更新插件不会自动预热，也不会创建定时器。
+主程序需要另行实现开关、账号调度、窗口判断、并发控制、去重及失败重试。
+此接口是本插件提出的接入契约，尚非 Magpie 已发布的标准接口。
+
+```js
+const result = await hooks.auth.warmup(
+  async () => accountAuth,
+  { id: "zcode" },
+  { signal: abortController.signal },
+)
+```
+
+- `getAuth`：返回本次指定账号的凭据，与 `auth.usage` 的约定相同。
+- `provider`：为宿主接入保留，当前实现不读取它的配置。
+- `options.signal`：可选的 `AbortSignal`；网络请求另有 30 秒超时。
+- 返回 `{ outcome: "sent", model }`：订阅端点返回有效的 Messages 响应，
+  **仅确认请求成功，不保证五小时窗口已经启动**。宿主应重新调用 `auth.usage`
+  检查五小时窗口的 `resetsAt`、`span` 和用量；额度变化可能延迟。
+- 返回 `{ outcome: "ineligible", message }`：未登录、仅有赠送套餐、没有有效
+  个人订阅，或团队账号尚未保存套餐 key；不发送模型消息。团队账号缺少 key 时
+  先正常使用一次，由现有请求流程取得 key，预热本身不会创建 key。
+- 返回 `{ outcome: "failed", message, model?, status? }`：资格查询、网络、取消、
+  HTTP 或响应体错误。失败不修改凭据，不自行重试；宿主按自己的策略处理。
+
+每次调用发送一条 `hi`，使用 `GLM-5-Turbo`、关闭思考、非流式、最多输出
+16 token。该模型是现有模型表中支持关闭思考的选项，并不承诺它永远是最便宜的
+模型或适用于未来所有套餐。请求直接使用个人或团队 Coding Plan 的 key 和端点，
+绕过 `freeFirst`，不会消费 Start Plan 或 `-Trial` 赠送额度，也不会转发到其他账号。
+团队账号的套餐有效性由订阅端点判定，不查询其个人套餐。
+
+实际消耗及是否启动同一五小时窗口，需要接入后通过真实套餐验证；本地测试仅使用
+模拟网络，不使用真实凭据或消耗额度。
+
 ## The daily claim
 
 With ZCode turned on in magpie's Settings → Daily check-in (it is off

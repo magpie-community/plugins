@@ -1472,7 +1472,7 @@ function ownLocation(store, key) {
 // made: a location whose key is gone (404) leaves the sign-in keyless, as
 // before; any other failure is said. A key read is kept for the token.
 const locatedKeys = new Map()
-async function located(s) {
+async function located(s, signal) {
   if (!s || s.key || !s.loc || !s.token) return s
   const l = s.loc
   const id = [s.token, l.origin, l.org, l.project, l.apiKeyId].join("\0")
@@ -1480,7 +1480,7 @@ async function located(s) {
   if (!got || (got.err && Date.now() - got.at >= 60_000)) {
     const auth = s.site === "zai" ? "Bearer " + s.token : s.token
     try {
-      const secret = first((await call("GET", `${keysURL(l.origin, l.org, l.project)}/copy/${encodeURIComponent(l.apiKeyId)}`, { auth }))?.secretKey)
+      const secret = first((await call("GET", `${keysURL(l.origin, l.org, l.project)}/copy/${encodeURIComponent(l.apiKeyId)}`, { auth, signal }))?.secretKey)
       got = secret ? { key: `${l.apiKeyId}.${secret}` } : { err: new Error("no secret for the key") }
     } catch (e) {
       got = e?.status === 404 ? { key: "" } : { err: e }
@@ -2202,6 +2202,56 @@ function sessionOf(id, device) {
   return uuidOf(own ? "zcode-session\0" + own : "zcode-session-device\0" + (device ?? ""))
 }
 
+const WARMUP_MODEL = "GLM-5-Turbo"
+const WARMUP_MAX_TOKENS = 16
+const WARMUP_TIMEOUT_MS = 30_000
+
+/** 向指定账号的 Coding Plan 发起一次预热；窗口判断、去重及重试由宿主负责。 */
+async function warmCoding(getAuth, { signal } = {}) {
+  const timeout = AbortSignal.timeout(WARMUP_TIMEOUT_MS)
+  const bounded = signal ? AbortSignal.any([signal, timeout]) : timeout
+  try {
+    bounded.throwIfAborted()
+    const s = await located(stateOf(await getAuth()), bounded)
+    if (!s) return { outcome: "ineligible", message: "not signed in to ZCode" }
+    if (!s.key && !isTeam(s)) return { outcome: "ineligible", message: "warm-up requires a GLM Coding Plan, not a gift plan" }
+    if (!isTeam(s)) {
+      const subs = await call("GET", rootOf(s.base) + "/api/biz/subscription/list", { auth: s.key, signal: bounded })
+      if (!Array.isArray(subs)) throw new Error("no subscription list in the reply")
+      if (!subs.some((x) => String(x?.status).toUpperCase() === "VALID"))
+        return { outcome: "ineligible", message: "no active GLM Coding Plan" }
+    }
+    const key = s.key
+    if (!key) return { outcome: "ineligible", message: "no saved team coding plan key; use the account once before warming up" }
+    bounded.throwIfAborted()
+    const sid = uuid()
+    const headers = {
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01",
+      "user-agent": UA,
+      "x-api-key": key,
+      Authorization: "Bearer " + key,
+      "x-session-id": sid,
+    }
+    // 直接请求订阅端点，避免 freeFirst 将预热转到赠送额度；后台预热不抢占并发重试。
+    const res = await fetch(s.base + "/v1/messages", {
+      method: "POST", headers, signal: bounded,
+      body: marked(JSON.stringify({ model: WARMUP_MODEL, max_tokens: WARMUP_MAX_TOKENS,
+        stream: false, thinking: { type: "disabled" }, messages: [{ role: "user", content: "hi" }] }), s.device, sid),
+    })
+    const text = await res.text()
+    let body
+    try { body = JSON.parse(text) } catch {}
+    if (!res.ok || body?.type !== "message" || !Array.isArray(body.content) || body.error || (body.code != null && !["0", "200"].includes(String(body.code)))) {
+      const message = first(body?.error?.message, body?.msg, body?.message, STATUS_TEXT[res.status], "invalid Messages reply")
+      return { outcome: "failed", model: WARMUP_MODEL, message, status: res.status }
+    }
+    return { outcome: "sent", model: WARMUP_MODEL }
+  } catch (e) {
+    return { outcome: "failed", message: e?.message ?? String(e) }
+  }
+}
+
 // ---- the plugin ------------------------------------------------------------------
 
 export async function ZCodeAuthPlugin({ client }, options = {}) {
@@ -2294,6 +2344,10 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
       // own cap follows its tier (Max > Pro > Lite) and the time of day, and
       // a user who knows theirs can raise this on the account
       maxConcurrency: DEFAULT_CONCURRENCY,
+      /** 可选宿主接口；仅显式调用时发送请求，不启动后台任务。 */
+      async warmup(getAuth, _provider, options) {
+        return warmCoding(getAuth, options)
+      },
       async loader(getAuth, provider) {
         const s0 = stateOf(await getAuth())
         if (!s0) return {}
