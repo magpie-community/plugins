@@ -41,6 +41,7 @@
     // ignored until this version saves the preference again
     side: opts.side === true && Number(opts.sideV) === 2,
     cleared: opts.cleared && typeof opts.cleared === "object" && !Array.isArray(opts.cleared) ? { ...opts.cleared } : {},
+    preferredJumpHost: typeof opts.preferredJumpHost === "string" ? opts.preferredJumpHost : "",
   }
   let manualLang = opts.lang === "auto" || M.LANG_NAMES[opts.lang] ? opts.lang : "auto"
   const state = {
@@ -183,6 +184,7 @@
       e.type = "button"
       e.dataset.key = a.key
       e.addEventListener("click", (ev) => { ev.stopPropagation(); open(a.key) })
+      e.addEventListener("dblclick", (ev) => { ev.stopPropagation(); const cur = state.list.find((x) => x.key === a.key); if (cur?.target) triggerJump(cur, view.preferredJumpHost, null) })
       e.addEventListener("mouseenter", () => highlight(a.key))
       e.addEventListener("mouseleave", () => highlight(""))
       $("tags").append(e)
@@ -277,6 +279,12 @@
       if (k) open(k)
       else close()
     })
+    canvas.addEventListener("dblclick", (e) => {
+      const k = scene.hit(e.offsetX, e.offsetY)
+      if (!k) return
+      const a = state.list.find((x) => x.key === k)
+      if (a?.target) triggerJump(a, view.preferredJumpHost, null)
+    })
   }
   bindCanvas(office2)
   bindCanvas(office3)
@@ -324,13 +332,15 @@
     P.msgs = el("div", "pmsgs")
     const foot = el("div", "pf")
     P.meta = el("span", "pm")
+    P.jumpWrap = el("span", "pjump-wrap")
+    P.jumpWrap.hidden = true
     P.copy = el("button", "pc")
     P.copy.type = "button"
     P.copy.addEventListener("click", (e) => { e.stopPropagation(); showCommand(P.copy.dataset.value, P.copy) })
     P.clear = el("button", "pc")
     P.clear.type = "button"
     P.clear.addEventListener("click", (e) => { e.stopPropagation(); clearAgent(P.clear.dataset.key) })
-    foot.append(P.meta, P.copy, P.clear)
+    foot.append(P.meta, P.jumpWrap, P.copy, P.clear)
     P.src = el("div", "psrc")
     panel.replaceChildren(head, P.title, P.status, P.query, P.step, P.err, P.reply, P.ctx, P.convoHead, P.msgs, foot, P.src)
   })()
@@ -388,6 +398,37 @@
     setText(P.convoHead, msgs.length ? w.recent : "")
     renderMessages(msgs)
     setText(P.meta, [a.model, a.project].filter(Boolean).join(" · "))
+    const target = a.target
+    const targetLabel = target?.label || target?.badge || target?.app || ""
+    if (target && targetLabel) {
+      P.jumpWrap.hidden = false
+      const paneId = target.paneId || target.herdrPane || target.tmuxPane || ""
+      const rawHosts = Array.isArray(target.hosts) && target.hosts.length > 1
+        ? target.hosts
+        : [{ id: target.hosts?.[0]?.id || target.hostId || "default", label: targetLabel }]
+      const hosts = rawHosts.map((h) => ({ id: String(h?.id || "default"), label: String(h?.label || h?.app || targetLabel) }))
+      const sig = `${a.key}|${lang}|${view.preferredJumpHost}|${paneId}|${hosts.map((h) => `${h.id}:${h.label}`).join(",")}`
+      if (P.jumpWrap.dataset.sig !== sig) {
+        P.jumpWrap.dataset.sig = sig
+        P.jumpWrap.replaceChildren(...hosts.map((h, idx) => {
+          const isPrimary = view.preferredJumpHost ? h.id === view.preferredJumpHost : idx === 0
+          const text = idx === 0 && paneId && !h.label.includes(paneId) ? `${h.label} · ${paneId}` : h.label
+          const btn = el("button", isPrimary ? "pjump" : "pjump alt", M.fill(w.jumpTo, text))
+          btn.type = "button"
+          btn.dataset.label = M.fill(w.jumpTo, text)
+          btn.title = w.jumpTip
+          btn.addEventListener("click", (e) => {
+            e.stopPropagation()
+            if (hosts.length > 1 && h.id) view.preferredJumpHost = h.id
+            triggerJump(a, h.id, btn)
+          })
+          return btn
+        }))
+      }
+    } else {
+      P.jumpWrap.hidden = true
+      P.jumpWrap.dataset.sig = ""
+    }
     const copy = a.resume || a.session
     P.copy.hidden = !copy
     const box = P.copy.nextElementSibling
@@ -401,7 +442,46 @@
     P.clear.dataset.key = a.key
     setText(P.clear, w.clear)
     P.clear.title = w.clearTip
-    setText(P.src, a.source === "files" ? w.fromFiles : w.via)
+    const baseSrc = a.source === "files" ? w.fromFiles : w.via
+    setText(P.src, targetLabel ? `${baseSrc} · ${M.fill(w.host, targetLabel)}` : baseSrc)
+  }
+
+  async function triggerJump(a, hostId, btn) {
+    const targetLabel = a?.target?.label || a?.target?.badge || a?.target?.app || ""
+    if (!targetLabel) return
+    const w = t()
+    const targetBtn = btn || (!P.jumpWrap.hidden ? P.jumpWrap.querySelector(".pjump") : null)
+    const orig = targetBtn ? (targetBtn.dataset.label || targetBtn.textContent) : ""
+    if (targetBtn) {
+      targetBtn.classList.remove("err")
+      targetBtn.textContent = M.fill(w.jumpingTo, targetLabel)
+    }
+    clearTimeout(saving)
+    saving = null
+    try {
+      const next = {
+        ...wanted(),
+        preferredJumpHost: hostId || view.preferredJumpHost || "",
+        jumpRequest: {
+          key: a.key,
+          session: a.session || "",
+          preferredHostId: hostId || view.preferredJumpHost || "",
+          at: Date.now(),
+        },
+      }
+      opts = await magpie.options.set(next)
+      saved = JSON.stringify(wanted())
+      if (targetBtn) setTimeout(() => { if (targetBtn.dataset.label) targetBtn.textContent = orig }, 900)
+    } catch {
+      if (targetBtn) {
+        targetBtn.classList.add("err")
+        targetBtn.textContent = w.jumpFail
+        setTimeout(() => {
+          targetBtn.classList.remove("err")
+          if (targetBtn.dataset.label) targetBtn.textContent = orig
+        }, 1600)
+      }
+    }
   }
 
   // out of the office until its session moves again; kept in options, only
@@ -486,6 +566,7 @@
       r.title = el("div", "lt"); r.sub = el("div", "ls"); r.task.append(r.title, r.sub)
       r.badge = el("span", "badge"); r.st.append(r.badge)
       tr.addEventListener("click", () => open(a.key))
+      tr.addEventListener("dblclick", (e) => { e.stopPropagation(); const cur = state.list.find((x) => x.key === a.key); if (cur?.target) triggerJump(cur, view.preferredJumpHost, null) })
       tr.addEventListener("keydown", (e) => { if (e.key === "Enter") open(a.key) })
       rowsByKey.set(a.key, r)
     }
@@ -581,6 +662,7 @@
         row.append(st)
         row.title = `${a.brand.name} · ${label(a)}`
         row.addEventListener("click", (e) => { e.stopPropagation(); open(a.key) })
+        row.addEventListener("dblclick", (e) => { e.stopPropagation(); if (a.target) triggerJump(a, view.preferredJumpHost, null) })
         kids.push(row)
       }
     }
@@ -798,11 +880,13 @@
   let saved = JSON.stringify(opts)
   const textOn = () => $("optText").checked
   function wanted() {
+    const base = { ...opts }
+    delete base.jumpRequest
     return {
-      ...opts, mode: view.mode, dim: view.dim, demo: view.demo, showDone: view.showDone, hideAfter: view.hideAfter,
+      ...base, mode: view.mode, dim: view.dim, demo: view.demo, showDone: view.showDone, hideAfter: view.hideAfter,
       text: textOn(), agents: view.agents.slice(), showSub: view.showSub, showIdle: view.showIdle,
       side: view.side, sideV: 2, lang: manualLang, scene: view.scene, quality: view.quality,
-      cleared: { ...view.cleared },
+      cleared: { ...view.cleared }, preferredJumpHost: view.preferredJumpHost || "",
     }
   }
   function save() {
