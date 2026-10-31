@@ -38,6 +38,8 @@ export function LinkifiedText({ text }: { text: string }) {
 const baseName = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
 
 /** A path chip (composer, user bubble): icon + name (folders end with /), full path on hover */
+const isImageMime = (m: string | undefined): boolean => !m || m.startsWith("image/");
+
 export function MentionChip({ path, isDir, onRemove }: { path: string; isDir: boolean; onRemove?: () => void }) {
   return (
     <span className="mention" title={path}>
@@ -53,9 +55,17 @@ export function UserItem({ it, onRetry }: { it: Extract<DisplayItem, { kind: "us
   return (
     <div className="um-row">
       <div className="um">
-        {it.attachments?.map((a) => (
+        {it.attachments?.filter((a) => isImageMime(a.mime)).map((a) => (
           <img key={a.id} className="um-img" src={`/attachments/${a.id}?t=${token()}`} alt={a.name} />
         ))}
+        {/* text / PDF / other files: a name chip (they used to render as a broken <img>) */}
+        {it.attachments?.some((a) => !isImageMime(a.mime)) && (
+          <span className="um-mentions">
+            {it.attachments.filter((a) => !isImageMime(a.mime)).map((a) => (
+              <span key={a.id} className="mention" title={a.name}><Icon name="file" size={12} /><span className="mention-name">{a.name}</span></span>
+            ))}
+          </span>
+        )}
         {it.mentions && it.mentions.length > 0 && (
           <span className="um-mentions">{it.mentions.map((m) => <MentionChip key={m.path} path={m.path} isDir={m.isDir} />)}</span>
         )}
@@ -117,12 +127,14 @@ export function ToolGroupItem({ it }: { it: Extract<DisplayItem, { kind: "toolgr
   useEffect(() => {
     if (!userToggled.current && (hasFail || hasDiff)) setOpen(true);
   }, [hasFail, hasDiff]);
-  const summary = useMemo(() => {
+  // Not memoized on it.steps: the reducer appends steps to the same array while a turn streams,
+  // so a memo keyed on the array kept the first count ("1 step · Read 1" next to five steps).
+  const summary = (() => {
     const counts = new Map<string, number>();
     for (const s of it.steps) counts.set(s.kind, (counts.get(s.kind) ?? 0) + 1);
     const parts = [...counts.entries()].map(([k, n]) => `${toolKind(k)} ${n}`);
-    return tf("timeline.toolSummary", { n: it.steps.length, parts: parts.join(" · ") });
-  }, [it.steps]);
+    return tf(it.steps.length === 1 ? "timeline.toolSummaryOne" : "timeline.toolSummary", { n: it.steps.length, parts: parts.join(" · ") });
+  })();
   const runningStep = it.steps.find((s) => s.status === "running");
   return (
     <div className="tg">

@@ -11,7 +11,7 @@ import { applyTheme, initTheme } from "./layout/theme.js";
 import { startMagpieThemeBridge } from "./layout/magpieBridge.js";
 import { applyChatLayout } from "./layout/chatLayout.js";
 import { goBackToMagpie, watchReconnect } from "./api/backToMagpie.js";
-import { initLocale, getLocale } from "./i18n/index.js";
+import { initLocale, getLocale, setLocale } from "./i18n/index.js";
 import { WsClient } from "./api/ws";
 import { useConnection } from "./stores/connection";
 import { useUi } from "./stores/ui";
@@ -28,9 +28,14 @@ initLocale(location.search);
 applyMagpieTokensFromSearch(location.search);
 initTheme(location.search);
 // Follow Magpie's light/dark live (the frame no longer has bridge.js after boot.js navigated it here)
-startMagpieThemeBridge();
-
 export const ws = new WsClient(token, getLocale());
+// ...and its language: re-render the tree in the new language (t() isn't reactive), tell the daemon for its own text
+startMagpieThemeBridge((th) => {
+  if (!th.lang || !setLocale(th.lang)) return;
+  ws.setLang(getLocale());
+  void ws.call("app.setLocale", { lang: getLocale() }).catch(() => {});
+  renderApp();
+});
 // For the debug page (P1-8) and e2e driving: expose the authenticated client and internal stores.
 (window as unknown as { __ws?: WsClient; __stores?: unknown }).__ws = ws;
 (window as unknown as { __stores?: unknown }).__stores = { useData, useUi, useConnection, usePreview };
@@ -57,7 +62,13 @@ ws.waitHello().then(async (h) => {
 setInterval(() => ws.ping(), 10000);
 
 const isDebug = params.get("debug") === "1";
-createRoot(document.getElementById("root")!).render(isDebug ? <DebugApp /> : <App />);
+const root = createRoot(document.getElementById("root")!);
+let renders = 0;
+function renderApp(): void {
+  renders++;
+  root.render(isDebug ? <DebugApp /> : <App key={`${getLocale()}-${renders}`} />);
+}
+renderApp();
 
 // ?audit=1 (§11.3 screenshot self-check metrics): count visible borders on the first screen, font-size set, accent-colored elements, horizontal scroll,
 // written to <pre id="audit"> (after 1.5s so the first screen settles).

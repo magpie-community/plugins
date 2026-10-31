@@ -154,7 +154,7 @@ export const messages: Record<LocaleId, MessageTree> = {
         read: "读取", edit: "修改", write: "写入", bash: "运行", search: "搜索", glob: "搜索",
         web: "联网", task: "子任务", mcp: "工具", todo: "待办", other: "工具", processing: "处理",
       },
-      toolSummary: "已执行 {n} 步 · {parts}", toolRunning: "正在{kind}：{title}",
+      toolSummary: "已执行 {n} 步 · {parts}", toolSummaryOne: "已执行 1 步 · {parts}", toolRunning: "正在{kind}：{title}",
       showAllLines: "显示全部 {n} 行", diffClip: "（只显示前 {n} 行）",
     },
     api: {
@@ -328,7 +328,7 @@ export const messages: Record<LocaleId, MessageTree> = {
         read: "Read", edit: "Edit", write: "Write", bash: "Run", search: "Search", glob: "Search",
         web: "Web", task: "Subtask", mcp: "Tool", todo: "Todo", other: "Tool", processing: "Working",
       },
-      toolSummary: "{n} step(s) · {parts}", toolRunning: "{kind}: {title}",
+      toolSummary: "{n} steps · {parts}", toolSummaryOne: "1 step · {parts}", toolRunning: "{kind}: {title}",
       showAllLines: "Show all {n} lines", diffClip: "(first {n} lines only)",
     },
     api: {

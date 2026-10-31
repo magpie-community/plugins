@@ -145,6 +145,7 @@ body.col-drag iframe, body.col-drag .xterm { pointer-events: none; }
   display: flex; align-items: center; justify-content: center; color: var(--muted); z-index: 5;
 }
 .jump:hover { color: var(--fg); }
+.jump svg { transform: rotate(90deg); }
 .jump .jd { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 
 /* ---- right panel ---- */

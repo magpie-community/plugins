@@ -387,7 +387,7 @@ describe("content width and chat font size", () => {
 
 describe("live Magpie theme (bridge messages after the redirect)", () => {
   it("reads theme events and our hello answer only", () => {
-    expect(themeFromMessage({ magpie: 1, event: "theme", data: { dark: true, lang: "zh", tokens: { bg: "#111" } } }, 5)).toEqual({ dark: true, tokens: { bg: "#111" } });
+    expect(themeFromMessage({ magpie: 1, event: "theme", data: { dark: true, lang: "zh", tokens: { bg: "#111" } } }, 5)).toEqual({ dark: true, lang: "zh", tokens: { bg: "#111" } });
     expect(themeFromMessage({ magpie: 1, id: 5, result: { dark: false, tokens: {} } }, 5)).toEqual({ dark: false, tokens: {} });
     expect(themeFromMessage({ magpie: 1, id: 6, result: { dark: false } }, 5)).toBeNull();
     expect(themeFromMessage({ event: "theme", data: { dark: true } }, 5)).toBeNull();
@@ -398,5 +398,44 @@ describe("live Magpie theme (bridge messages after the redirect)", () => {
     expect(magpieTokenVars({ bg: "#111", "fg-2": "#eee", accent: "#f00", "accent-soft": "#f00", bad: "red;}", "x y": "1", font: "Inter, sans-serif" })).toEqual({
       "--magpie-bg": "#111", "--magpie-fg-2": "#eee", "--magpie-font": "Inter, sans-serif",
     });
+  });
+});
+
+describe("1.2 QA fixes", () => {
+  it("Claude Write says Create for a new file, Overwrite for an existing one", async () => {
+    const { targetExists, callInfo } = await import("../../daemon/src/agents/kinds.js");
+    const dir = mkdtempSync(join(tmpdir(), "ac12-k-"));
+    writeFileSync(join(dir, "old.txt"), "x");
+    expect(targetExists({ file_path: join(dir, "old.txt") })).toBe(true);
+    expect(targetExists({ file_path: "old.txt" }, dir)).toBe(true);
+    expect(targetExists({ file_path: join(dir, "new.txt") })).toBe(false);
+    expect(targetExists({})).toBe(false);
+    const create = callInfo("Write", { file_path: join(dir, "new.txt"), _exists: targetExists({ file_path: join(dir, "new.txt") }) }, dir);
+    expect(create.title).toMatch(/新建|Create/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  it("the theme bridge carries Magpie's language, and the UI language can switch at runtime", async () => {
+    expect(parseMagpieTheme({ dark: false, lang: "en", tokens: {} })).toEqual({ dark: false, lang: "en", tokens: {} });
+    expect(parseMagpieTheme({ dark: false, lang: "x".repeat(40) })).toEqual({ dark: false, tokens: {} });
+    const i18n = await import("../../web/src/i18n/index.js");
+    i18n.initLocale("?lang=zh");
+    expect(i18n.t("sidebar.newProject")).toBe("新建项目");
+    expect(i18n.setLocale("en")).toBe(true);
+    expect(i18n.t("sidebar.newProject")).toBe("New project");
+    expect(i18n.setLocale("en-US")).toBe(false);
+    expect(i18n.setLocale("zh-TW")).toBe(true);
+    expect(i18n.tf("timeline.toolSummaryOne", { n: 1, parts: "读取 1" })).toBe("已执行 1 步 · 读取 1");
+  });
+  it("every new 1.2 key exists in both languages", async () => {
+    const { messages } = await import("../../web/src/i18n/messages.js");
+    const keys = (o: Record<string, unknown>, p = ""): string[] => Object.entries(o).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v as Record<string, unknown>, p + k + ".") : [p + k]));
+    const zh = new Set(keys(messages.zh as unknown as Record<string, unknown>));
+    const en = new Set(keys(messages.en as unknown as Record<string, unknown>));
+    for (const k of ["preview.tab", "preview.empty", "preview.limits", "links.openPreviewTitle", "links.externalFailed", "mention.add", "mention.drop", "sidebar.collapse", "sidebar.expand", "settings.contentWidth", "settings.chatFont", "timeline.toolSummaryOne"]) {
+      expect(zh.has(k), "zh " + k).toBe(true);
+      expect(en.has(k), "en " + k).toBe(true);
+    }
+    expect([...zh].filter((k) => !en.has(k) && !k.startsWith("composer.agentMode."))).toEqual([]);
+    expect([...en].filter((k) => !zh.has(k))).toEqual([]);
   });
 });

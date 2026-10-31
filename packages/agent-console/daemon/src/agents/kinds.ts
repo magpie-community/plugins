@@ -2,6 +2,8 @@
 // Adapters call callInfo(name, input, cwd) to get {kind, title, detail}; the frontend renders by kind.
 import type { ToolKind } from "../timeline/types.js";
 import { tr } from "../util/i18n.js";
+import { existsSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 
 const MAX_CMD = 80;
 const trunc = (s: string, n = MAX_CMD): string => (s.length > n ? s.slice(0, n - 1) + "…" : s);
@@ -16,6 +18,17 @@ export function relPath(p: string, cwd: string): string {
   if (a.toLowerCase().startsWith(b.toLowerCase() + "/")) return a.slice(b.length + 1);
   if (a.toLowerCase() === b.toLowerCase()) return ".";
   return s;
+}
+
+/** Whether a Write target already exists (checked when the tool call arrives, i.e. before it runs). */
+export function targetExists(input: Record<string, unknown>, cwd = ""): boolean {
+  const p = String(input.file_path ?? input.path ?? "");
+  if (!p) return false;
+  try {
+    return existsSync(isAbsolute(p) || !cwd ? p : resolve(cwd, p));
+  } catch {
+    return false;
+  }
 }
 
 export type CallInfo = { kind: ToolKind; title: string; detail: Record<string, unknown> };

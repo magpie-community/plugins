@@ -21,6 +21,11 @@ export class WsClient {
 
   constructor(private token: string, private lang = "zh") {}
 
+  /** Language sent in the next hello (reconnects) */
+  setLang(lang: string): void {
+    this.lang = lang;
+  }
+
   onState(fn: (s: ConnState) => void): () => void {
     this.stateListeners.add(fn);
     fn(this.state);

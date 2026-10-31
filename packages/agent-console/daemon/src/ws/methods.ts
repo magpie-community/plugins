@@ -23,7 +23,7 @@ import { clearBinCache } from "../util/bin.js";
 import { cachedDetect, cachedModels, clearProviderCache } from "../providers/infoCache.js";
 import { launchFromSettings } from "../providers/launch.js";
 import { clampMode } from "../providers/modes.js";
-import { tr, intlLocale } from "../util/i18n.js";
+import { setAppLocale, tr, intlLocale } from "../util/i18n.js";
 import { MAX_MENTIONS } from "../util/mentions.js";
 import { openExternal } from "../util/openExternal.js";
 import { PreviewError, type PreviewProxy } from "../preview/proxy.js";
@@ -80,6 +80,12 @@ function wrap<T extends z.ZodType>(schema: T, fn: (p: z.infer<T>, ctx: ConnCtx) 
 
 export function registerMethods(gw: Gateway, svc: Services): void {
   const zEmpty = z.object({}).passthrough().optional();
+
+  // Magpie's language changed while the page is open (1.2): daemon-made text (notices, tool titles) follows it
+  gw.method("app.setLocale", wrap(z.object({ lang: z.string().max(32) }), (p) => {
+    setAppLocale(p.lang);
+    return true;
+  }));
 
   gw.method("app.info", wrap(zEmpty, () => ({
     version: svc.cfg.version,

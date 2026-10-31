@@ -3,19 +3,21 @@
 // to the frame's window, and answers a {magpie:1, method:"hello"} call with the current theme. This page speaks that small
 // part of the bridge protocol itself: at load (the theme may have changed during the redirect, or after a self-heal) and on
 // every switch, so the page follows Magpie's light/dark and neutral colours without a reload.
-// Only messages from window.parent with magpie:1 are read, and only the theme fields are used (no commands are taken).
+// Only messages from window.parent with magpie:1 are read, and only the theme fields (and the language) are used; no commands are taken.
 import { applyMagpieTokens } from "./applyMagpieTokens.js";
 import { setHostTheme } from "./theme.js";
 
-export type MagpieTheme = { dark: boolean; tokens: Record<string, unknown> };
+export type MagpieTheme = { dark: boolean; tokens: Record<string, unknown>; lang?: string };
 
 /** A theme payload from Magpie (event data, or a hello answer) → {dark, tokens}, or null if it isn't one */
 export function parseMagpieTheme(d: unknown): MagpieTheme | null {
   if (!d || typeof d !== "object") return null;
-  const o = d as { dark?: unknown; tokens?: unknown };
+  const o = d as { dark?: unknown; tokens?: unknown; lang?: unknown };
   if (typeof o.dark !== "boolean") return null;
   const tokens = o.tokens && typeof o.tokens === "object" && !Array.isArray(o.tokens) ? (o.tokens as Record<string, unknown>) : {};
-  return { dark: o.dark, tokens };
+  const out: MagpieTheme = { dark: o.dark, tokens };
+  if (typeof o.lang === "string" && o.lang.length <= 32) out.lang = o.lang;
+  return out;
 }
 
 /** Which theme a bridge message carries, given the id of our own hello call */

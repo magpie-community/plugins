@@ -984,21 +984,21 @@ var init_mock = __esm({
         }
       }
       respond(requestId, answer) {
-        const resolve3 = this.pendingReq.get(requestId);
-        if (resolve3) {
+        const resolve4 = this.pendingReq.get(requestId);
+        if (resolve4) {
           this.pendingReq.delete(requestId);
-          resolve3(answer);
+          resolve4(answer);
         }
       }
       waitFor(requestId) {
-        return new Promise((resolve3) => {
-          this.pendingReq.set(requestId, resolve3);
+        return new Promise((resolve4) => {
+          this.pendingReq.set(requestId, resolve4);
         });
       }
       async interrupt() {
         this.interruptFlag = true;
-        for (const [id2, resolve3] of this.pendingReq) {
-          resolve3({ cancelled: true });
+        for (const [id2, resolve4] of this.pendingReq) {
+          resolve4({ cancelled: true });
           this.pendingReq.delete(id2);
         }
         await sleep(120);
@@ -1026,7 +1026,7 @@ var init_mock = __esm({
       }
       async close() {
         this.closed = true;
-        for (const [, resolve3] of this.pendingReq) resolve3({ cancelled: true });
+        for (const [, resolve4] of this.pendingReq) resolve4({ cancelled: true });
         this.pendingReq.clear();
         this.q.close();
       }
@@ -1359,6 +1359,8 @@ var init_bin = __esm({
 });
 
 // daemon/src/agents/kinds.ts
+import { existsSync as existsSync5 } from "node:fs";
+import { isAbsolute, resolve as resolve2 } from "node:path";
 function relPath(p, cwd) {
   if (!p) return "";
   const s = String(p);
@@ -1369,6 +1371,15 @@ function relPath(p, cwd) {
   if (a.toLowerCase().startsWith(b.toLowerCase() + "/")) return a.slice(b.length + 1);
   if (a.toLowerCase() === b.toLowerCase()) return ".";
   return s;
+}
+function targetExists(input, cwd = "") {
+  const p = String(input.file_path ?? input.path ?? "");
+  if (!p) return false;
+  try {
+    return existsSync5(isAbsolute(p) || !cwd ? p : resolve2(cwd, p));
+  } catch {
+    return false;
+  }
 }
 function callInfo(name, input = {}, cwd = "") {
   const t = String(name || "");
@@ -1574,7 +1585,7 @@ function mapToolUse(blk, cwd) {
   const input = rec(blk.input);
   const name = str(blk.name) ?? "tool";
   const id2 = str(blk.id) ?? "";
-  const info = callInfo(name, { ...input, _exists: true }, cwd);
+  const info = callInfo(name, { ...input, _exists: name === "Write" ? targetExists(input, cwd) : true }, cwd);
   let detail = info.detail;
   if (info.kind === "edit" && (input.old_string !== void 0 || Array.isArray(input.edits))) {
     detail = editDetail({ path: info.detail.path, old: input.old_string, new: input.new_string, edits: input.edits });
@@ -1626,7 +1637,7 @@ __export(attachmentRefs_exports, {
   resolveAttachmentRefs: () => resolveAttachmentRefs,
   resolveImagePath: () => resolveImagePath
 });
-import { existsSync as existsSync5 } from "node:fs";
+import { existsSync as existsSync6 } from "node:fs";
 function bindAttachmentStore(store) {
   globalAttachmentStore = store;
 }
@@ -1649,7 +1660,7 @@ async function resolveAttachmentRefs(store, refs) {
       out.push({ path: viaGlobal, mime: a.mime });
       continue;
     }
-    if (existsSync5(a.path)) {
+    if (existsSync6(a.path)) {
       out.push(a);
       continue;
     }
@@ -1658,7 +1669,7 @@ async function resolveAttachmentRefs(store, refs) {
   return out;
 }
 async function resolveImagePath(ref) {
-  if (existsSync5(ref)) return ref;
+  if (existsSync6(ref)) return ref;
   const p = await lookupAttachmentPath(ref);
   if (p) return p;
   throw new Error(tr("attachment.missing", { ref }));
@@ -1821,15 +1832,15 @@ var init_cli = __esm({
         });
         this.child.stdin?.on("error", () => {
         });
-        this.exited = new Promise((resolve3) => {
+        this.exited = new Promise((resolve4) => {
           this.child.on("error", (e) => {
             this.spawnError = e;
             this.finish();
-            resolve3({ code: null, signal: null });
+            resolve4({ code: null, signal: null });
           });
           this.child.on("close", (code, signal) => {
             this.finish();
-            resolve3({ code, signal });
+            resolve4({ code, signal });
           });
         });
         this.initialized = this.request({ subtype: "initialize" }, 6e4).catch(() => null);
@@ -1946,8 +1957,8 @@ var init_cli = __esm({
       request(request, timeoutMs = 1e4) {
         if (this.dead) return Promise.reject(new Error("claude is not running"));
         const id2 = `ac_${++this.seq}_${Math.random().toString(36).slice(2, 8)}`;
-        return new Promise((resolve3, reject) => {
-          const p = { resolve: resolve3, reject };
+        return new Promise((resolve4, reject) => {
+          const p = { resolve: resolve4, reject };
           p.timer = setTimeout(() => {
             if (this.pending.delete(id2)) reject(new Error(`claude did not answer ${String(request.subtype)} in ${Math.round(timeoutMs / 1e3)} s`));
           }, timeoutMs);
@@ -2119,7 +2130,7 @@ var init_session = __esm({
         if (toolName === "AskUserQuestion" && Array.isArray(input.questions)) {
           return this.handleQuestion(requestId, input, signal);
         }
-        const info = callInfo(toolName, { ...input, _exists: true }, this.o.cwd);
+        const info = callInfo(toolName, { ...input, _exists: toolName === "Write" ? targetExists(input, this.o.cwd) : true }, this.o.cwd);
         let detail = { ...info.detail, toolName };
         if (info.kind === "edit" && (input.old_string !== void 0 || Array.isArray(input.edits))) {
           detail = { ...editDetail({ path: info.detail.path, old: input.old_string, new: input.new_string, edits: input.edits }), toolName };
@@ -2136,12 +2147,12 @@ var init_session = __esm({
             { id: "deny", label: tr("perm.deny"), kind: "reject_once" }
           ]
         });
-        return new Promise((resolve3) => {
-          this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve3(this.toPermissionDecision(a, input)) });
+        return new Promise((resolve4) => {
+          this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve4(this.toPermissionDecision(a, input)) });
           signal.addEventListener("abort", () => {
             if (this.pending.delete(requestId)) {
               this.emit({ type: "permission_resolved", requestId, cancelled: true });
-              resolve3({ behavior: "deny", message: "Cancelled by the user", interrupt: true });
+              resolve4({ behavior: "deny", message: "Cancelled by the user", interrupt: true });
             }
           }, { once: true });
         });
@@ -2168,12 +2179,12 @@ var init_session = __esm({
             { id: "reject", label: tr("perm.deny"), kind: "reject_once" }
           ]
         });
-        const answer = await new Promise((resolve3) => {
-          this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve3(a) });
+        const answer = await new Promise((resolve4) => {
+          this.pending.set(requestId, { kind: "permission", resolve: (a) => resolve4(a) });
           signal.addEventListener("abort", () => {
             if (this.pending.delete(requestId)) {
               this.emit({ type: "permission_resolved", requestId, cancelled: true });
-              resolve3({ cancelled: true });
+              resolve4({ cancelled: true });
             }
           }, { once: true });
         });
@@ -2191,12 +2202,12 @@ var init_session = __esm({
       }
       async handleQuestion(requestId, input, signal) {
         this.emit({ type: "question", requestId, questions: input.questions });
-        const answer = await new Promise((resolve3) => {
-          this.pending.set(requestId, { kind: "question", resolve: (a) => resolve3(a) });
+        const answer = await new Promise((resolve4) => {
+          this.pending.set(requestId, { kind: "question", resolve: (a) => resolve4(a) });
           signal.addEventListener("abort", () => {
             if (this.pending.delete(requestId)) {
               this.emit({ type: "permission_resolved", requestId, cancelled: true });
-              resolve3({ cancelled: true });
+              resolve4({ cancelled: true });
             }
           }, { once: true });
         });
@@ -2318,7 +2329,7 @@ var init_models = __esm({
 
 // daemon/src/history/import.ts
 import { readdir, readFile as readFile5, stat as stat4 } from "node:fs/promises";
-import { existsSync as existsSync6 } from "node:fs";
+import { existsSync as existsSync7 } from "node:fs";
 import { join as join6 } from "node:path";
 import { homedir as homedir3 } from "node:os";
 function parseLine(line) {
@@ -2385,7 +2396,7 @@ async function readClaudeHistory(sessionId, cwd) {
   const dirs = await readdir(CLAUDE_ROOT).catch(() => []);
   for (const d of dirs) {
     const path3 = join6(CLAUDE_ROOT, d, `${sessionId}.jsonl`);
-    if (!existsSync6(path3)) continue;
+    if (!existsSync7(path3)) continue;
     const msgs = [];
     let matched = false;
     for await (const line of linesOf(path3)) {
@@ -2440,14 +2451,14 @@ function runVersion(r, args, timeoutMs = 5e3) {
   });
 }
 function createClaudeProvider(opts = {}) {
-  const resolve3 = opts.resolve ?? resolveBin;
+  const resolve4 = opts.resolve ?? resolveBin;
   const resolveCustom = opts.resolve ? (l) => opts.resolve(l.cmd) : resolveLaunch;
   return {
     id: "claude",
     name: "Claude Code",
     capabilities: claudeCapabilities,
     async detect(launch) {
-      const bin = launch ? await resolveCustom(launch) : await resolve3("claude");
+      const bin = launch ? await resolveCustom(launch) : await resolve4("claude");
       if (!bin.ok) return { available: false, reason: bin.reason, installHint: INSTALL_HINT };
       try {
         const version = await runVersion(bin, [...launch?.prefixArgs ?? [], "--version"]);
@@ -2460,7 +2471,7 @@ function createClaudeProvider(opts = {}) {
       return listClaudeModels();
     },
     async createSession(o) {
-      const bin = o.launch ? await resolveCustom(o.launch) : await resolve3("claude");
+      const bin = o.launch ? await resolveCustom(o.launch) : await resolve4("claude");
       if (!bin.ok) throw new Error(tr("claude.notFound", { detail: bin.reason, hint: INSTALL_HINT }));
       return new ClaudeSession({
         threadId: o.threadId,
@@ -3476,8 +3487,8 @@ var init_session2 = __esm({
         }
       }
       waitFor(requestId) {
-        return new Promise((resolve3) => {
-          this.pending.set(requestId, { kind: "permission", resolve: resolve3 });
+        return new Promise((resolve4) => {
+          this.pending.set(requestId, { kind: "permission", resolve: resolve4 });
         });
       }
       respond(requestId, answer) {
@@ -4365,8 +4376,8 @@ var init_session3 = __esm({
         await this.applyCursorAutoReviewConfig(false);
       }
       waitPerm(requestId) {
-        return new Promise((resolve3) => {
-          this.permPending.set(requestId, resolve3);
+        return new Promise((resolve4) => {
+          this.permPending.set(requestId, resolve4);
         });
       }
       respond(requestId, answer) {
@@ -5022,13 +5033,13 @@ var init_pickFolderWin = __esm({
 
 // daemon/src/util/pickFolder.ts
 import { execFile as execFile2 } from "node:child_process";
-import { existsSync as existsSync7, statSync as statSync3 } from "node:fs";
+import { existsSync as existsSync8, statSync as statSync3 } from "node:fs";
 function appleScriptString(s) {
   return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
 }
 function isDir(p) {
   try {
-    return !!p && existsSync7(p) && statSync3(p).isDirectory();
+    return !!p && existsSync8(p) && statSync3(p).isDirectory();
   } catch {
     return false;
   }
@@ -5280,7 +5291,7 @@ var init_modes = __esm({
 
 // daemon/src/util/mentions.ts
 import { realpath, stat as stat8 } from "node:fs/promises";
-import { isAbsolute, resolve as resolve2, sep as sep2, win32 as win322, posix as posix2 } from "node:path";
+import { isAbsolute as isAbsolute2, resolve as resolve3, sep as sep2, win32 as win322, posix as posix2 } from "node:path";
 function insideRoot(root, child, platform = process.platform) {
   const p = platform === "win32" ? win322 : posix2;
   const norm = (s) => platform === "win32" ? p.resolve(s).toLowerCase() : p.resolve(s);
@@ -5299,11 +5310,11 @@ async function resolveMentions(projectPath, refs) {
   }
   for (const ref of refs.slice(0, MAX_MENTIONS)) {
     const rel = String(ref.rel ?? "").replace(/\\/g, "/");
-    if (!rel || rel.includes("\0") || isAbsolute(rel) || /^[a-zA-Z]:/.test(rel)) {
+    if (!rel || rel.includes("\0") || isAbsolute2(rel) || /^[a-zA-Z]:/.test(rel)) {
       warnings.push(rel || "(empty)");
       continue;
     }
-    const abs = resolve2(root, rel === "." ? "" : rel);
+    const abs = resolve3(root, rel === "." ? "" : rel);
     if (!insideRoot(root, abs)) {
       warnings.push(rel);
       continue;
@@ -5447,12 +5458,12 @@ async function openExternal(raw, opts = {}) {
   if (!href) return { ok: false, reason: "bad_url" };
   const { cmd, args } = openerFor(opts.platform ?? process.platform, href);
   const run = opts.exec ?? execFile3;
-  return await new Promise((resolve3) => {
+  return await new Promise((resolve4) => {
     let settled = false;
     const done = (v) => {
       if (!settled) {
         settled = true;
-        resolve3(v);
+        resolve4(v);
       }
     };
     try {
@@ -5728,9 +5739,9 @@ var init_proxy = __esm({
           } catch {
           }
         });
-        await new Promise((resolve3, reject) => {
+        await new Promise((resolve4, reject) => {
           server.once("error", reject);
-          server.listen(0, "127.0.0.1", () => resolve3());
+          server.listen(0, "127.0.0.1", () => resolve4());
         });
         const a = server.address();
         l.port = a && typeof a === "object" ? a.port : 0;
@@ -5789,12 +5800,12 @@ var init_proxy = __esm({
       async resolveAddr(l) {
         if (l.addr) return l.addr;
         for (const host of l.target.connect) {
-          const ok = await new Promise((resolve3) => {
+          const ok = await new Promise((resolve4) => {
             const s = netConnect({ host, port: l.target.port });
             const done = (v) => {
               s.removeAllListeners();
               s.destroy();
-              resolve3(v);
+              resolve4(v);
             };
             s.setTimeout(3e3, () => done(false));
             s.once("connect", () => done(true));
@@ -5944,7 +5955,7 @@ connection: close\r
 
 // daemon/src/ws/methods.ts
 import { z } from "zod";
-import { existsSync as existsSync8, statSync as statSync4 } from "node:fs";
+import { existsSync as existsSync9, statSync as statSync4 } from "node:fs";
 import { mkdir as mkdir3, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir8 } from "node:os";
 import { dirname as dirname3, join as join12, win32 as win32Path } from "node:path";
@@ -5960,6 +5971,10 @@ function wrap(schema, fn) {
 }
 function registerMethods(gw, svc) {
   const zEmpty = z.object({}).passthrough().optional();
+  gw.method("app.setLocale", wrap(z.object({ lang: z.string().max(32) }), (p) => {
+    setAppLocale(p.lang);
+    return true;
+  }));
   gw.method("app.info", wrap(zEmpty, () => ({
     version: svc.cfg.version,
     dataDir: svc.cfg.dataDir,
@@ -6099,7 +6114,7 @@ function registerMethods(gw, svc) {
   gw.method("projects.open", wrap(z.object({ id: z.string() }), async (p) => {
     const proj = await svc.projects.get(p.id);
     if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
-    if (!existsSync8(proj.path)) throw new ApiError("bad_path", tr("err.dirMissing"));
+    if (!existsSync9(proj.path)) throw new ApiError("bad_path", tr("err.dirMissing"));
     const cmd = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
     const target = process.platform === "win32" ? win32Path.normalize(proj.path) : proj.path;
     execFile4(cmd, [target], { windowsHide: true }, () => {
@@ -6111,7 +6126,7 @@ function registerMethods(gw, svc) {
     let exists = false;
     let isDir2 = false;
     try {
-      exists = existsSync8(p.path);
+      exists = existsSync9(p.path);
       isDir2 = exists && statSync4(p.path).isDirectory();
     } catch {
     }
@@ -6140,7 +6155,7 @@ function registerMethods(gw, svc) {
     async (p) => {
       const proj = await svc.projects.get(p.projectId);
       if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
-      if (!existsSync8(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
+      if (!existsSync9(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
       if (!p.providerSessionId && !isProviderEnabled(await svc.settings.get(), p.provider)) {
         throw new ApiError("bad_params", tr("provider.disabledNamed", { name: catalogById(p.provider)?.name ?? p.provider }));
       }
@@ -6213,7 +6228,7 @@ function registerMethods(gw, svc) {
   const projectPath = async (projectId) => {
     const proj = await svc.projects.get(projectId);
     if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
-    if (!existsSync8(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
+    if (!existsSync9(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
     return proj.path;
   };
   gw.method("git.status", wrap(
@@ -6451,7 +6466,7 @@ ${e.text}
       await mkdir3(dir, { recursive: true });
     }
     let dest = join12(dir, filename);
-    if (existsSync8(dest)) {
+    if (existsSync9(dest)) {
       const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
       dest = join12(dir, `${safe}-${stamp2}.md`);
     }
@@ -6692,7 +6707,7 @@ __export(legacy_exports, {
   migrateLegacy: () => migrateLegacy
 });
 import { cp as cp2, mkdir as mkdir8, readdir as readdir6, readFile as readFile18 } from "node:fs/promises";
-import { existsSync as existsSync12 } from "node:fs";
+import { existsSync as existsSync13 } from "node:fs";
 import { join as join19 } from "node:path";
 function stamp() {
   const d = /* @__PURE__ */ new Date();
@@ -6704,17 +6719,17 @@ async function migrateLegacy(dataDir, stores) {
   if (settings.v1Migrated) return { migrated: 0, skipped: true };
   const oldDir = join19(dataDir, "sessions");
   const oldSettingsPath = join19(dataDir, "settings.json");
-  if (!existsSync12(oldDir) && !existsSync12(oldSettingsPath)) {
+  if (!existsSync13(oldDir) && !existsSync13(oldSettingsPath)) {
     await stores.settings.set({ v1Migrated: true });
     return { migrated: 0, skipped: true };
   }
   const backup = join19(dataDir, "trash", `legacy-${stamp()}`);
   await mkdir8(backup, { recursive: true });
-  if (existsSync12(oldDir)) await cp2(oldDir, join19(backup, "sessions"), { recursive: true }).catch(() => {
+  if (existsSync13(oldDir)) await cp2(oldDir, join19(backup, "sessions"), { recursive: true }).catch(() => {
   });
-  if (existsSync12(oldSettingsPath)) await cp2(oldSettingsPath, join19(backup, "settings.json")).catch(() => {
+  if (existsSync13(oldSettingsPath)) await cp2(oldSettingsPath, join19(backup, "settings.json")).catch(() => {
   });
-  const oldSettings = existsSync12(oldSettingsPath) ? JSON.parse(await readFile18(oldSettingsPath, "utf8").catch(() => "{}")) : {};
+  const oldSettings = existsSync13(oldSettingsPath) ? JSON.parse(await readFile18(oldSettingsPath, "utf8").catch(() => "{}")) : {};
   const projectIdByPath = /* @__PURE__ */ new Map();
   const lc = (p) => p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
   for (const p of oldSettings.projects ?? []) {
@@ -6728,7 +6743,7 @@ async function migrateLegacy(dataDir, stores) {
   }
   let sessionIds = [];
   try {
-    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync12(join19(oldDir, d, "meta.json")));
+    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync13(join19(oldDir, d, "meta.json")));
   } catch {
   }
   const metas = [];
@@ -6748,7 +6763,7 @@ async function migrateLegacy(dataDir, stores) {
     extraDirs.push(m.cwd);
   }
   for (const d of extraDirs) {
-    if (!existsSync12(d)) continue;
+    if (!existsSync13(d)) continue;
     try {
       const name = d.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? d;
       const proj = await stores.projects.create(d, name);
@@ -6805,7 +6820,7 @@ async function migrateLegacy(dataDir, stores) {
         seq: 0
       };
       const tdir = join19(threadsDir, meta.id);
-      if (existsSync12(tdir)) meta.id = `t_${m.id}_v1`.slice(0, 80);
+      if (existsSync13(tdir)) meta.id = `t_${m.id}_v1`.slice(0, 80);
       await mkdir8(join19(threadsDir, meta.id), { recursive: true });
       const oldEvts = (await readFile18(join19(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
         try {
@@ -7314,7 +7329,7 @@ init_atomic();
 init_paths();
 init_methods();
 import { readFile as readFile13 } from "node:fs/promises";
-import { existsSync as existsSync9, statSync as statSync5 } from "node:fs";
+import { existsSync as existsSync10, statSync as statSync5 } from "node:fs";
 import { join as join14 } from "node:path";
 import { randomBytes as randomBytes3 } from "node:crypto";
 function newId() {
@@ -7349,7 +7364,7 @@ var ProjectsStore = class {
   }
   async create(path3, name) {
     if (!path3 || typeof path3 !== "string") throw new ApiError("bad_params", "\u8DEF\u5F84\u4E0D\u80FD\u4E3A\u7A7A");
-    if (!existsSync9(path3) || !statSync5(path3).isDirectory()) {
+    if (!existsSync10(path3) || !statSync5(path3).isDirectory()) {
       throw new ApiError("bad_path", "\u76EE\u5F55\u4E0D\u5B58\u5728\u6216\u4E0D\u662F\u6587\u4EF6\u5939");
     }
     const np = normPath(path3);
@@ -8533,7 +8548,7 @@ var AgentManager = class {
 // daemon/src/git/service.ts
 init_i18n();
 import { execFile as execFile5 } from "node:child_process";
-import { existsSync as existsSync10 } from "node:fs";
+import { existsSync as existsSync11 } from "node:fs";
 import { cp, mkdir as mkdir7, readFile as readFile16, rename as rename4, rm, stat as stat10 } from "node:fs/promises";
 import { join as join16, normalize as normalize2, sep as sep3 } from "node:path";
 var TIMEOUT2 = 15e3;
@@ -8599,7 +8614,7 @@ var GitService = class {
     const ls = await runGit(projectPath, ["ls-files", "--error-unmatch", "--", rel]);
     if (ls.code !== 0) {
       const full = join16(projectPath, rel);
-      if (!existsSync10(full)) return { error: tr("fs.fileMissing") };
+      if (!existsSync11(full)) return { error: tr("fs.fileMissing") };
       const s = await stat10(full);
       if (!s.isFile()) return { error: tr("fs.notFile") };
       if (s.size > DIFF_LIMIT) return { tooLarge: true };
@@ -8633,7 +8648,7 @@ ${lines}` };
       return { ok: true };
     }
     const full = join16(projectPath, rel);
-    if (!existsSync10(full)) return { ok: false, error: tr("fs.fileMissing") };
+    if (!existsSync11(full)) return { ok: false, error: tr("fs.fileMissing") };
     const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const dest = join16(dataDir, "trash", "discarded", stamp2, rel);
     await mkdir7(join16(dest, ".."), { recursive: true });
@@ -8791,7 +8806,7 @@ init_pathscan();
 init_log();
 init_i18n();
 import { spawn as spawn3, execFileSync as execFileSync2 } from "node:child_process";
-import { accessSync as accessSync2, chmodSync, constants as fsc, existsSync as existsSync11, statSync as statSync6 } from "node:fs";
+import { accessSync as accessSync2, chmodSync, constants as fsc, existsSync as existsSync12, statSync as statSync6 } from "node:fs";
 import { createRequire as moduleRequire } from "node:module";
 import { release } from "node:os";
 import { dirname as dirname6, join as join18 } from "node:path";
@@ -8841,7 +8856,7 @@ function fixSpawnHelper() {
     const root = dirname6(req.resolve("node-pty/package.json"));
     for (const sub of [`prebuilds/darwin-${process.arch}`, "build/Release"]) {
       const f = join18(root, sub, "spawn-helper");
-      if (existsSync11(f) && !isExecFile(f)) {
+      if (existsSync12(f) && !isExecFile(f)) {
         chmodSync(f, 493);
         log("info", "\u5DF2\u4FEE\u590D node-pty spawn-helper \u7684\u53EF\u6267\u884C\u4F4D", { file: f });
       }

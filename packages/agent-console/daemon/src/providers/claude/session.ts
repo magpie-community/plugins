@@ -3,7 +3,7 @@
 import type { LaunchCommand, ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../types.js";
 import type { ProviderEvent } from "../../timeline/types.js";
 import { AsyncQueue } from "../../util/queue.js";
-import { callInfo } from "../../agents/kinds.js";
+import { targetExists, callInfo } from "../../agents/kinds.js";
 import { editDetail } from "../../agents/diff.js";
 import { mapSdkMessage, newMapState, type MapState } from "./map.js";
 import { log } from "../../log.js";
@@ -162,7 +162,7 @@ export class ClaudeSession implements ProviderSession {
       return this.handleQuestion(requestId, input, signal);
     }
 
-    const info = callInfo(toolName, { ...input, _exists: true }, this.o.cwd);
+    const info = callInfo(toolName, { ...input, _exists: toolName === "Write" ? targetExists(input, this.o.cwd) : true }, this.o.cwd);
     let detail: Record<string, unknown> = { ...(info.detail as Record<string, unknown>), toolName };
     if (info.kind === "edit" && (input.old_string !== undefined || Array.isArray(input.edits))) {
       detail = { ...editDetail({ path: info.detail.path as string, old: input.old_string, new: input.new_string, edits: input.edits }), toolName };
