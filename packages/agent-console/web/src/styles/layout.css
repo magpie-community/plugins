@@ -61,7 +61,7 @@
   font-size: var(--fs-m); transition: background var(--dur-1);
 }
 .t-item:hover { background: var(--surface-hover); }
-/* Active conversation: white card, 1px outline, 2px teal bar on the left */
+/* Active conversation: white card, 1px outline, 2px dark-grey bar on the left */
 .t-item.on { background: var(--active-bg); box-shadow: 0 0 0 1px var(--active-line), 0 1px 2px rgb(0 0 0 / .04); font-weight: 500; }
 .t-item.on::before { content: ""; position: absolute; left: -1px; top: 7px; bottom: 7px; width: 2px; border-radius: 2px; background: var(--accent-2); }
 .t-item.archived { opacity: 0.55; }

@@ -1,8 +1,8 @@
 /* Design tokens — "option B": quiet neutrals, one accent.
-   Magpie passes its palette as --magpie-* (?tokens=). Its font and accent always apply; its surface colors apply only while this page
+   Magpie passes its palette as --magpie-* (?tokens=). Its font always applies; its surface colors apply only while this page
    shows the same light/dark as Magpie (html[data-host-colors], set by layout/theme.ts), so an explicit Light/Dark setting never mixes palettes.
-   The accent is Magpie's (--magpie-accent); the teal below is only the fallback for a standalone run with no tokens.
-   Everything accent-tinted (bubble, focus ring, running pill, active bar, send button) is derived from --accent with color-mix.
+   The accent is deliberately monochrome: charcoal in light mode, light grey in dark mode. Magpie's accent tokens are ignored
+   (layout/applyMagpieTokens.ts drops them), so the page never picks up a hue. Only semantic colors (ok/warn/danger/info, diff) carry color.
    Font sizes are 12/13/14 (+ 18 for empty-state titles), weights 400/500/600. */
 :root {
   --own-bg: #ffffff; --own-sb: #f8f8f7; --own-fg: #1f1f1f; --own-muted: #737373; --own-line: #ececec;
@@ -13,20 +13,20 @@
   --line: var(--own-line);
   --meta: #a3a3a3;
   --text: #262626;
-  --accent: var(--magpie-accent, #0f766e);       /* send, primary buttons, links, active marker, running dot */
-  --accent-2: var(--accent);
-  --accent-fg: var(--magpie-accent-fg, #ffffff);
-  --accent-soft: color-mix(in oklab, var(--accent) 8%, var(--bg));   /* user bubble */
+  --accent: #262626;        /* charcoal: send, primary buttons, links, active marker, running dot */
+  --accent-2: #525252;      /* dark grey: active bar, running dot */
+  --accent-fg: #ffffff;
+  --accent-soft: #f0f0f0;   /* user bubble: light neutral grey */
   --surface:       color-mix(in oklab, var(--fg) 3%, var(--bg));
   --surface-hover: color-mix(in oklab, var(--fg) 6%, var(--bg));
   --chip-bg: #f4f5f5; --chip-line: #ececec; --pill-fg: #525252;
   --search-bg: #efefee;
   --tile-bg: color-mix(in oklab, var(--fg) 90%, var(--bg)); --tile-fg: var(--bg);
   --badge-bg: color-mix(in oklab, var(--fg) 7%, var(--bg)); --badge-fg: color-mix(in oklab, var(--fg) 80%, var(--bg));
-  --run-bg: color-mix(in oklab, var(--accent) 10%, var(--bg)); --run-fg: var(--accent);
+  --run-bg: #f0f0f0; --run-fg: #404040;
   --cp-line: color-mix(in oklab, var(--fg) 11%, var(--bg));
-  --cp-focus: color-mix(in oklab, var(--accent) 40%, var(--cp-line));
-  --cp-ring: color-mix(in srgb, var(--accent) 10%, transparent);
+  --cp-focus: #a3a3a3;              /* neutral grey focus border */
+  --cp-ring: rgb(0 0 0 / .06);
   --active-bg: #ffffff; --active-line: #e6e6e6;
   --ok: #16a34a; --warn: #d97706; --danger: #dc2626; --info: #2563eb;
   --code-bg: #f4f5f5; --code-line: #eaeceb; --code-fg: #404040;
@@ -50,14 +50,15 @@
   --own-bg: #1a1a1a; --own-sb: #151515; --own-fg: #ececec; --own-muted: #9b9b9b; --own-line: #2c2c2c;
   --meta: #7c7c7c;
   --text: #e2e2e2;
-  --accent: var(--magpie-accent, #2dd4bf);
-  --accent-fg: var(--magpie-accent-fg, #04201c);
-  --accent-soft: color-mix(in oklab, var(--accent) 14%, var(--bg));
+  --accent: #e5e5e5;        /* light grey / near-white */
+  --accent-2: #b3b3b3;
+  --accent-fg: #171717;     /* dark icon/text on light accent */
+  --accent-soft: #2e2e2e;
   --chip-bg: #252727; --chip-line: #323434; --pill-fg: #bdbdbd;
   --search-bg: #242424;
-  --run-bg: color-mix(in oklab, var(--accent) 16%, var(--bg));
-  --cp-focus: color-mix(in oklab, var(--accent) 45%, var(--cp-line));
-  --cp-ring: color-mix(in srgb, var(--accent) 14%, transparent);
+  --run-bg: #2e2e2e; --run-fg: #d4d4d4;
+  --cp-focus: #6b6b6b;
+  --cp-ring: rgb(255 255 255 / .07);
   --active-bg: #242424; --active-line: #333333;
   --info: #60a5fa;
   --code-bg: #232323; --code-line: #303030; --code-fg: #d4d4d4;

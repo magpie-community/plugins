@@ -1,4 +1,4 @@
-/* Input area (§8.6 Composer) — option B: white card, 1px border, 14px radius, teal focus ring */
+/* Input area (§8.6 Composer) — option B: white card, 1px border, 14px radius, neutral grey focus ring */
 .composer { flex: none; padding: 0 16px 16px; }
 .cp-card {
   width: 100%; max-width: var(--col); margin: 0 auto;

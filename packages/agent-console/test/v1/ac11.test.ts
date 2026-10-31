@@ -338,37 +338,59 @@ describe("daemon log: a closed console pipe (host killed hard) is not a crash", 
   });
 });
 
-describe("Magpie's accent is taken over (PR #569 review)", () => {
-  it("passes --magpie-accent (and a bare --accent) through like every other token", async () => {
-    const { applyMagpieTokensFromSearch } = await import("../../web/src/layout/applyMagpieTokens.js");
+describe("monochrome accent: Magpie's accent is ignored, neutrals still follow Magpie", () => {
+  it("drops accent tokens (named or bare) but passes every other token through", async () => {
+    const { applyMagpieTokensFromSearch, isAccentToken } = await import("../../web/src/layout/applyMagpieTokens.js");
     const g = globalThis as Record<string, unknown>;
     const saved = g.document;
     const set = new Map<string, string>();
     g.document = { documentElement: { style: { setProperty: (k: string, v: string) => set.set(k, v) } } };
     try {
       const enc = (o: object) => "?tokens=" + Buffer.from(JSON.stringify(o)).toString("base64");
-      applyMagpieTokensFromSearch(enc({ accent: "#4f46e5", "accent-soft": "#eeedfd", "accent-fg": "#ffffff", bg: "#f4f4f6" }));
-      expect(set.get("--magpie-accent")).toBe("#4f46e5");
-      expect(set.get("--magpie-accent-fg")).toBe("#ffffff");
+      applyMagpieTokensFromSearch(enc({ accent: "#4f46e5", "accent-soft": "#eeedfd", "accent-fg": "#ffffff", bg: "#f4f4f6", fg: "#1c1c21", line: "#e3e3e8", red: "#d64545", font: "system-ui" }));
+      expect(set.has("--magpie-accent")).toBe(false);
+      expect(set.has("--magpie-accent-soft")).toBe(false);
+      expect(set.has("--magpie-accent-fg")).toBe(false);
       expect(set.get("--magpie-bg")).toBe("#f4f4f6");
-      applyMagpieTokensFromSearch(enc({ "--accent": "#ff0000" }));
-      expect(set.get("--accent")).toBe("#ff0000");
+      expect(set.get("--magpie-fg")).toBe("#1c1c21");
+      expect(set.get("--magpie-line")).toBe("#e3e3e8");
+      expect(set.get("--magpie-red")).toBe("#d64545");
+      expect(set.get("--magpie-font")).toBe("system-ui");
+      applyMagpieTokensFromSearch(enc({ "--accent": "#ff0000", "--accent-2": "#ff0000", "magpie-accent": "#ff0000", "--magpie-accent-fg": "#000" }));
+      expect([...set.keys()].some((k) => /accent/i.test(k))).toBe(false);
+      expect(isAccentToken("accent")).toBe(true);
+      expect(isAccentToken("--accent-soft")).toBe(true);
+      expect(isAccentToken("accented")).toBe(false);
+      expect(isAccentToken("bg")).toBe(false);
     } finally {
       g.document = saved;
     }
   });
-  it("tokens.css: teal only as the fallback, every accent tint derived from --accent", async () => {
-    const { readFileSync } = await import("node:fs");
-    const css = readFileSync(join(resolve(__dirname, "..", ".."), "web", "src", "styles", "tokens.css"), "utf8");
-    // every hard-coded teal sits inside a var(--magpie-accent, …) fallback
-    for (const m of css.matchAll(/#(0f766e|14b8a6|2dd4bf)/gi)) {
-      const line = css.slice(css.lastIndexOf("\n", m.index!) + 1, css.indexOf("\n", m.index!));
-      expect(line).toMatch(/var\(--magpie-accent, #/);
+  it("tokens.css: neutral accent, no teal, no --magpie-accent anywhere in web/src styles", async () => {
+    const { readFileSync, readdirSync } = await import("node:fs");
+    const stylesDir = join(resolve(__dirname, "..", ".."), "web", "src", "styles");
+    const css = readFileSync(join(stylesDir, "tokens.css"), "utf8");
+    const decl = (block: string, v: string) => new RegExp(`${v}:\\s*([^;]+);`).exec(block)?.[1]?.trim() ?? "";
+    const light = css.slice(css.indexOf(":root {"), css.indexOf(":root[data-theme=\"dark\"]"));
+    const dark = css.slice(css.indexOf(":root[data-theme=\"dark\"]"), css.indexOf(":root[data-host-colors]"));
+    const isGrey = (c: string) => {
+      const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c);
+      return !!m && m[1] === m[2] && m[2] === m[3];
+    };
+    for (const block of [light, dark]) {
+      for (const v of ["--accent", "--accent-2", "--accent-fg", "--accent-soft", "--run-bg", "--run-fg", "--cp-focus"]) {
+        expect(isGrey(decl(block, v)), `${v} = ${decl(block, v)}`).toBe(true);
+      }
     }
-    for (const v of ["--accent-soft", "--run-bg", "--cp-focus", "--cp-ring"]) {
-      const decl = new RegExp(`${v}:\\s*([^;]+);`).exec(css)?.[1] ?? "";
-      expect(decl, v).toContain("var(--accent)");
+    // light: charcoal accent with white text; dark: light accent with dark text
+    expect(parseInt(decl(light, "--accent").slice(1, 3), 16)).toBeLessThan(0x50);
+    expect(decl(light, "--accent-fg").toLowerCase()).toBe("#ffffff");
+    expect(parseInt(decl(dark, "--accent").slice(1, 3), 16)).toBeGreaterThan(0xc0);
+    expect(parseInt(decl(dark, "--accent-fg").slice(1, 3), 16)).toBeLessThan(0x40);
+    for (const f of readdirSync(stylesDir)) {
+      const src = readFileSync(join(stylesDir, f), "utf8");
+      expect(src, f).not.toMatch(/#(0f766e|14b8a6|2dd4bf|0d9488|115e59|5eead4|99f6e4|ccfbf1|04201c)\b/i);
+      expect(src, f).not.toMatch(/--magpie-accent/);
     }
-    expect(css).toMatch(/--run-fg:\s*var\(--accent\)/);
   });
 });
