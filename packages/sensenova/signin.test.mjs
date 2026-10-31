@@ -35,8 +35,9 @@ function iamAccept(req) {
   expect(req.json?.is_encrypt).toBe(true)
   expect(String(req.json?.password ?? '').split('.').length).toBe(5)
   expect(req.json?.challenge).toBe('challenge-abc')
-  // the state the authorize issued, kept from its hop
-  return json({ redirect: 'http://127.0.0.1/callback?code=auth-code-123&state=' + authState })
+  // the state the authorize issued, kept from its hop; the callback comes
+  // back on the console's own origin, as the real redirect_uri does
+  return json({ redirect: f.origin + '/callback?code=auth-code-123&state=' + authState })
 }
 
 test("a password is sealed into a JWE and the tokens come back", async () => {
@@ -92,10 +93,57 @@ test("a refresh token is renewed, and the new one replaces the old", async () =>
   expect(renewed.refresh).toBe("new-r")
 })
 
-test("a refresh token the platform has revoked is marked dead", async () => {
+test("a refresh token the platform has revoked says the sign-in is gone", async () => {
   f = fakeSenseNova()
   f.route("POST " + TOKEN_PATH, () => json({ error: "invalid_grant" }, 400))
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
-  // a dead refresh throws, so a caller that re-logs in knows to
-  expect(p.auth.refresh({ type: "oauth", access: "old", refresh: "dead", expires: Date.now() + 1000 })).rejects.toThrow()
+  // the host only marks an account signed-out on an error that says so
+  // (host.js: e?.signIn === "expired"); without it the dead token is retried
+  // every RENEW_RETRY (30 s) and the account never asks to be signed in again
+  const err = await p
+    .auth.refresh({ type: "oauth", access: "old", refresh: "dead", expires: Date.now() + 1000 })
+    .then(() => null, (e) => e)
+  expect(err).toBeInstanceOf(Error)
+  expect(err.dead).toBe(true)
+  expect(err.signIn).toBe("expired")
+})
+
+test("a failed refresh that says nothing about the token keeps the sign-in", async () => {
+  // a 500, or a 400 naming another problem, is not the token being dead: the
+  // pair in hand is still good and the account must not be signed out
+  f = fakeSenseNova()
+  f.route("POST " + TOKEN_PATH, () => json({ error: "server_error" }, 500))
+  const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
+  expect(await p.auth.refresh({ type: "oauth", access: "old", refresh: "r", expires: Date.now() + 1000 })).toBeUndefined()
+})
+
+test("a walk that leaves the SenseNova hosts is refused, not followed", async () => {
+  // the walk carries Hydra session and CSRF cookies: a redirect to another
+  // domain must not be fetched, or those cookies go with it
+  f = fakeSenseNova()
+  f.route("GET " + JWKS_PATH, () => json(jwksOf()))
+  f.route("GET " + AUTH_PATH, () =>
+    new Response(null, { status: 302, headers: { location: "https://not-sensenova.example/continue" } }),
+  )
+  const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const out = await p.auth.methods[0].authorize({ username: "u", password: "p", apiKey: "" }).callback()
+  expect(out.type).toBe("failed")
+  expect(out.error).toContain("SenseNova hosts")
+})
+
+test("a page body pointing off-site is not taken as the next hop", async () => {
+  // nextFromBody reads client-side redirects out of a 200 body; an off-site
+  // one is dropped, so the walk ends without a challenge rather than leaving
+  f = fakeSenseNova()
+  f.route("GET " + JWKS_PATH, () => json(jwksOf()))
+  f.route("GET " + AUTH_PATH, () =>
+    new Response('<script>window.location.href="https://evil.example/?login_challenge=stolen"</script>', {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    }),
+  )
+  const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const out = await p.auth.methods[0].authorize({ username: "u", password: "p", apiKey: "" }).callback()
+  expect(out.type).toBe("failed")
+  expect(out.error).toContain("login challenge")
 })

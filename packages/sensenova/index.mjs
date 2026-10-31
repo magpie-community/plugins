@@ -17,9 +17,7 @@
 // the user's own custom provider (an sk- key at token.sensenova.cn), and a
 // plugin claiming it would take over the models it already serves.
 
-import { createHash, randomBytes } from "node:crypto"
-
-// ---- the platform's endpoints (docs/sensenova-api-reference, dsh plugin AUTH.md)
+// ---- the platform's endpoints, as the console's own traffic uses them
 // They live in ENDPOINTS so a test can point them at a local fake; the
 // plugin itself never changes them.
 const ENDPOINTS = {
@@ -102,54 +100,82 @@ const pkce = async () => {
   return { verifier, challenge }
 }
 
-function readJwtExpiry(token) {
+// ---- the redirect walk (cookies kept per host; fetch can't do this itself)
+
+// The domains the walk may visit. It carries Hydra session and CSRF cookies,
+// so a hop found in a page body to some other domain must not be taken. The
+// hosts the endpoints are set to are allowed too, which is how a test running
+// the whole flow against a local fake gets through.
+const SENSENOVA_HOSTS = [/(^|\.)sensenova\.cn$/, /(^|\.)sensecore\.cn$/, /(^|\.)sensecoreapi\.cn$/]
+
+function allowedHost(url) {
+  let u
   try {
-    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"))
-    return typeof payload?.exp === "number" ? payload.exp * 1000 : undefined
+    u = new URL(url)
   } catch {
-    return undefined
+    return false
+  }
+  if (Object.values(ENDPOINTS).some((e) => { try { return new URL(e).host === u.host } catch { return false } })) return true
+  return SENSENOVA_HOSTS.some((re) => re.test(u.hostname))
+}
+
+// cookies keyed by host: one that set a cookie is the only one it goes back to
+function newJar() {
+  return new Map()
+}
+
+const hostOf = (url) => {
+  try {
+    return new URL(url).host
+  } catch {
+    return ""
   }
 }
 
-// ---- the redirect walk (one cookie jar across hosts; fetch can't do this)
-
-function cookieHeader(jar) {
-  return [...jar.entries()].map(([n, v]) => `${n}=${v}`).join("; ")
+function cookieHeader(jar, url) {
+  const own = jar.get(hostOf(url))
+  return own && own.size ? [...own.entries()].map(([n, v]) => `${n}=${v}`).join("; ") : ""
 }
 
-function collectCookies(response, jar) {
+function collectCookies(response, jar, url) {
+  const host = hostOf(url)
+  if (!host) return
   const raw = typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : []
+  let own = jar.get(host)
+  if (!own) jar.set(host, (own = new Map()))
   for (const line of raw) {
     const [pair = ""] = line.split(";")
     const i = pair.indexOf("=")
-    if (i > 0) jar.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim())
+    if (i > 0) own.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim())
   }
 }
 
 async function httpGet(url, jar) {
-  return fetch(url, {
-    redirect: "manual",
-    headers: { "user-agent": UA, accept: "*/*", cookie: cookieHeader(jar) },
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  })
+  if (!allowedHost(url)) throw new Error(`refusing to visit ${url}: outside the SenseNova hosts`)
+  const headers = { "user-agent": UA, accept: "*/*" }
+  const cookie = cookieHeader(jar, url)
+  if (cookie) headers.cookie = cookie
+  return fetch(url, { redirect: "manual", headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
 }
 
 // Some transitions are rendered client-side: scan a 200 body for the next hop.
+// Only a hop to an allowed host is taken, so a page that points elsewhere
+// can't pull the walk (and the cookies it holds) off-site.
 function nextFromBody(body, wanted) {
   if (!body) return ""
-  for (const m of body.matchAll(/https?:\/\/[^"'\s<>]+[?&][^"'\s<>]*/g)) {
-    if (wanted.test(m[0])) return m[0]
-  }
+  const found = []
+  for (const m of body.matchAll(/https?:\/\/[^"'\s<>]+[?&][^"'\s<>]*/g)) found.push(m[0])
   const meta = /<meta[^>]+http-equiv=["']refresh["'][^>]+url=["']([^"']+)/i.exec(body)
-  if (meta) return meta[1]
+  if (meta) found.push(meta[1])
   for (const p of [
     /window\.location\.replace\(["']([^"']+)["']/,
     /window\.location\.href\s*=\s*["']([^"']+)["']/,
     /location\.href\s*=\s*["']([^"']+)["']/,
   ]) {
     const f = p.exec(body)
-    if (f) return f[1]
+    if (f) found.push(f[1])
   }
+  for (const u of found) if (allowedHost(u) && wanted.test(u)) return u
   return ""
 }
 
@@ -158,9 +184,11 @@ async function followUntil(start, wanted, jar) {
   for (let hop = 0; hop < MAX_HOPS && location; hop++) {
     if (wanted.test(location)) return location
     const res = await httpGet(location, jar)
-    collectCookies(res, jar)
+    collectCookies(res, jar, location)
     const next = res.headers.get("location") ?? ""
     location = next !== "" ? next : nextFromBody(await res.text(), wanted)
+    if (location && !wanted.test(location) && !allowedHost(location))
+      throw new Error(`the sign-in walk left the SenseNova hosts for ${location}`)
   }
   return wanted.test(location) ? location : ""
 }
@@ -192,7 +220,13 @@ async function refreshToken(refresh) {
     // only invalid_grant means the refresh token itself is dead; any other
     // 400 says nothing about it and must not purge a healthy pair
     const dead = res.status === 400 && body.error === "invalid_grant"
-    throw Object.assign(new Error(`refresh rejected (HTTP ${res.status}): ${body.error_description ?? body.error ?? ""}`), { dead })
+    throw Object.assign(
+      new Error(`refresh rejected (HTTP ${res.status}): ${body.error_description ?? body.error ?? ""}`),
+      // the host only marks an account signed-out on an error that says so
+      // (host.js: e?.signIn === "expired"); without it a dead token is
+      // retried every RENEW_RETRY (30 s) and never shown as needing a sign-in
+      { dead, ...(dead ? { signIn: "expired" } : {}) },
+    )
   }
   return {
     access: body.access_token,
@@ -206,7 +240,7 @@ async function passwordLogin(username, password) {
   const secret = String(password ?? "")
   if (!user || !secret.trim()) throw new Error("username and password are required")
 
-  const jar = new Map()
+  const jar = newJar()
   const { verifier, challenge } = await pkce()
   const nonce = b64url(crypto.getRandomValues(new Uint8Array(16)))
 
@@ -225,7 +259,7 @@ async function passwordLogin(username, password) {
       state: nonce,
     }).toString()
   const first = await httpGet(authUrl, jar)
-  collectCookies(first, jar)
+  collectCookies(first, jar, authUrl)
   const challengeUrl = await followUntil(first.headers.get("location") ?? authUrl, /[?&]login_challenge=/, jar)
   const loginChallenge = paramOf(challengeUrl, "login_challenge")
   if (!loginChallenge) throw new Error("could not obtain a login challenge from the authorization endpoint")
@@ -289,11 +323,13 @@ async function passwordLogin(username, password) {
 
 // ---- the model catalogue (an API key's models)
 
-// Reasoning effort levels each model takes, as the platform's docs declare
-// them (the dsh plugin's SENSENOVA-API §7.6). `reasoning_effort` is what
-// the OpenAI-compatible request carries; `none` is thinking off. Only the
-// levels a model truly accepts are listed — glm-5.2 takes `max`, the
-// flash-lite and v4-flash don't (the platform answers 400).
+// Reasoning effort levels each model takes. There is no public page listing
+// them: these are the levels a free Token Plan account's own requests were
+// answered with, and the ones it answers 400 to. `reasoning_effort` is the
+// field the OpenAI-compatible request carries; `none` is thinking off. Only
+// the levels a model truly takes are listed — glm-5.2 takes `max`, the
+// flash-lite and v4-flash don't. testdata/models.json holds the catalogue
+// these were read against.
 const EFFORTS = {
   "glm-5.2": ["none", "low", "medium", "high", "xhigh", "max"],
   "deepseek-v4-flash": ["none", "low", "high", "xhigh"],
@@ -315,12 +351,11 @@ const BOOT_MODELS = {
   "kimi-k3": { name: "kimi-k3", context: 1048576, output: 65536 },
 }
 
-// The model ids the plan covers, as the console account's pools say them.
-// The quota account's usage is read every minute by the running magpie, so
-// this is warm within a minute of it signing in; until then the catalogue
-// is the list. An id the plan doesn't cover is a model the key can't call
-// (the vendor refuses it with 403), so it is not listed.
-let planModelIds = null
+// What the plan covers is read from the account's own pools each time its
+// models are listed (provider.models below) and never kept in a module
+// global: a global would be shared between accounts (two SenseNova accounts
+// on different plans would filter each other's lists) and would be cold in a
+// fresh host process, where it would list a model the vendor answers 403 to.
 
 // The catalogue the platform serves: free, read-only, and it costs no
 // inference allowance. Its own fields are the authority on a model's
@@ -380,13 +415,12 @@ function modelOf(m, provider) {
 // pools → the card's windows and balance. The console returns its numbers
 // as strings: limit/used/remaining per window, reset_at as epoch seconds.
 //
-// The GUI draws an account's first TWO windows as meters and puts the rest
-// in the row's tooltip (app.js), and a plugin's usage windows carry no
-// `pool` to group by (the host drops the field). So the default pool — the
-// one every model draws on — takes the two meters, the dedicated pools
-// follow as windows for the tooltip and the CLI, and the grants — a
-// balance that expires, not a window that gets spent — go to `balance`,
-// which the GUI draws as its own chip beside the meters.
+// The GUI draws only an account's first two windows as meters and puts the
+// rest in the row's tooltip, so each window says which models its pool covers
+// — the host keeps that field (`ids(w?.models)`) and the GUI groups windows by
+// it, which gives every pool its own meters instead of one pool's meters with
+// the rest hidden. The grants — a balance that expires, not a window that gets
+// spent — go to `balance`, which the GUI draws as its own chip beside them.
 function usageOf(pools) {
   const round = (n) => Math.round(n * 100) / 100
   const windows = []
@@ -432,6 +466,7 @@ function usageOf(pools) {
 }
 
 async function poolUsage(access) {
+  if (!access) throw new Error("no console token to read the plan with")
   const res = await fetch(poolUsageUrl(), {
     headers: { authorization: "Bearer " + access, accept: "application/json", "user-agent": UA },
     signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -443,9 +478,10 @@ async function poolUsage(access) {
   const plan = obj(body?.plan)
   const pools = Array.isArray(body?.pools) ? body.pools : []
   const ids = pools.flatMap((p) => (Array.isArray(p?.model_ids) ? p.model_ids : [])).filter((x) => typeof x === "string" && x)
-  if (ids.length) planModelIds = new Set(ids)
   return {
     plan: str(plan, "name") ?? str(plan, "id") ?? "SenseNova",
+    // the ids this account's plan covers: provider.models lists against these
+    models: ids,
     ...usageOf(pools),
   }
 }
@@ -467,28 +503,6 @@ function makePlugin() {
         return true
       } catch {
         return false
-      }
-    }
-
-    // a fresh access token: renew when it's near its end or was refused
-    const fresh = async (getAuth, rejected) => {
-      const stored = await getAuth()
-      if (stored?.type !== "oauth" || !stored.access) throw new Error("SenseNova isn't signed in")
-      if (rejected && stored.access !== rejected) return stored
-      const nearEnd = stored.expires && Date.now() >= stored.expires - EARLY_MS
-      if (!rejected && !nearEnd) return stored
-      if (!stored.refresh) throw new Error("no refresh token; sign in again")
-      try {
-        const t = await refreshToken(stored.refresh)
-        // keep the API key through a renewal: the console JWT changes, the
-        // key doesn't, and the account serves models with the key
-        await save({ ...stored, ...t })
-        return { ...stored, ...t }
-      } catch (e) {
-        if (e?.dead) throw new Error("refresh token rejected; sign in again")
-        // passing: the token in hand may still do
-        if (!rejected && stored.expires && Date.now() < stored.expires) return stored
-        throw e
       }
     }
 
@@ -519,32 +533,53 @@ function makePlugin() {
       // one that draws (a chat endpoint answers 404 to it), stays unlisted.
       provider: {
         id: PROVIDER_ID,
+        // The account's models: what its own plan covers, ∩ what its key
+        // serves, ∩ what a chat endpoint answers (a drawing model 404s there).
+        // Both reads are this account's and both happen here, so a cold host
+        // lists the same set a warm one does. Either read failing gives the
+        // bootstrap list back — every id in which the plan does cover — rather
+        // than a raw catalogue that would carry deepseek-v4.1-flash, which the
+        // vendor refuses with 403.
         async models(provider, { auth }) {
           const key = apiKeyOf(auth)
-          if (!key) return provider.models
+          // no key: this account can call nothing, so it advertises nothing
+          if (!key) return {}
+          let plan
           try {
-            const list = await apiModels(key)
-            const chat = list.filter((m) => !m.draws)
-            const covered = planModelIds ? chat.filter((m) => planModelIds.has(m.id)) : chat
-            if (!covered.length) return provider.models
-            return Object.fromEntries(covered.map((m) => [m.id, modelOf(m, provider)]))
+            plan = await poolUsage(auth?.access)
           } catch {
             return provider.models
           }
+          const covered = new Set(plan.models)
+          if (!covered.size) return provider.models
+          let list
+          try {
+            list = await apiModels(key)
+          } catch {
+            return provider.models
+          }
+          const models = list.filter((m) => !m.draws && covered.has(m.id))
+          if (!models.length) return provider.models
+          return Object.fromEntries(models.map((m) => [m.id, modelOf(m, provider)]))
         },
       },
-      refreshLead: EARLY_MS,
       auth: {
         // which provider this sign-in belongs to: magpie files the card and
         // the account under it (host.js reads auth.provider, not the hook's
         // own provider field)
         provider: PROVIDER_ID,
+        // the host reads the lead off auth (leadOf(a), with a = auth), not off
+        // the hooks object: where it sits decides whether magpie renews this
+        // far ahead of the token's end or at its own default of 5 minutes
+        refreshLead: EARLY_MS,
         // magpie renews ahead of the token's end, once per account
         async refresh(auth) {
           if (auth?.type !== "oauth" || !auth.access || !auth.refresh) return undefined
           try {
             return await refreshToken(auth.refresh)
           } catch (e) {
+            // a dead token goes back as it came: it carries signIn "expired",
+            // which is how the account is marked as needing a new sign-in
             if (e?.dead) throw e
             return undefined
           }
@@ -560,37 +595,40 @@ function makePlugin() {
           if (!key) return {}
           return { baseURL: API_BASE(), apiKey: key }
         },
-        // the account's credit pools (the console JWT, not the API key)
+        // the account's credit pools (the console JWT, not the API key).
+        // Renewal is the host's job: it renews through auth.refresh, this far
+        // ahead of the token's end, before usage runs. So usage reads with the
+        // token in hand and renews only when the console refuses it with a 401
+        // — a second standing renewal path here would spend one refresh token
+        // twice, and Hydra rotates it, so the second spend is refused.
         async usage(getAuth) {
           const auth = await getAuth()
           if (auth?.type !== "oauth" || !auth.access) return { error: "not signed in" }
-          let a
+          const card = (u, signIn) => ({
+            plan: u.plan,
+            ...(u.balance ? { balance: u.balance } : {}),
+            windows: u.windows,
+            user: auth.accountId ?? auth.email ?? "sensenova",
+            signIn,
+          })
           try {
-            a = await fresh(getAuth)
+            return card(await poolUsage(auth.access), "kept")
           } catch (e) {
-            return { error: e?.message ?? String(e), signIn: "expired" }
+            if (e?.status !== 401) return { error: e?.message ?? String(e), signIn: "kept" }
           }
+          // refused with a token believed good: renew once, read once more
+          if (!auth.refresh) return { error: "no refresh token; sign in again", signIn: "expired" }
           try {
-            const u = await poolUsage(a.access)
-            return {
-              plan: u.plan,
-              ...(u.balance ? { balance: u.balance } : {}),
-              windows: u.windows,
-              user: auth.accountId ?? auth.email ?? "sensenova",
-              signIn: "kept",
-            }
+            const t = await refreshToken(auth.refresh)
+            // the API key rides through: the JWT changes, the key doesn't
+            await save({ ...auth, ...t })
+            return card(await poolUsage(t.access), "renewed")
           } catch (e) {
-            if (e?.status === 401) {
-              // refused with a token we believed fresh: force a renew, once
-              try {
-                a = await fresh(getAuth, a.access)
-                const u = await poolUsage(a.access)
-                return { plan: u.plan, ...(u.balance ? { balance: u.balance } : {}), windows: u.windows, user: auth.accountId ?? "sensenova", signIn: "renewed" }
-              } catch (e2) {
-                return { error: e2?.message ?? String(e2), signIn: "expired" }
-              }
-            }
-            return { error: e?.message ?? String(e), signIn: "kept" }
+            const why = e?.message ?? String(e)
+            // a dead refresh token ends the sign-in: say what to do as well as
+            // what the vendor answered
+            if (e?.dead) return { error: `${why}; sign in again`, signIn: "expired" }
+            return { error: why, signIn: "kept" }
           }
         },
         methods: [
@@ -632,7 +670,10 @@ function makePlugin() {
               const apiKey = String(inputs?.apiKey ?? "").trim()
               if (!username || !password) throw new Error("enter your SenseNova account and password")
               return {
-                url: CONSOLE(),
+                // no page to open: the sign-in runs in the background from the
+                // prompts, as loomy and the other prompt sign-ins do it. A url
+                // here would have magpie open the console for nothing.
+                url: "",
                 instructions: "Signs in to the SenseNova console with your account; the password is sealed (JWE) and never stored.",
                 method: "auto",
                 async callback() {
@@ -678,4 +719,5 @@ export const _internal = {
   ENDPOINTS,
   EFFORTS,
   BOOT_MODELS,
+  EARLY_MS,
 }

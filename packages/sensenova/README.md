@@ -36,6 +36,27 @@ API Key 读 `GET /v1/models`（免费、只读、不计费），目录里的 `co
 后 403。每个模型声明它支持的 reasoning effort 档位（`none` / `low` / `medium`
 / `high` / `xhigh` / `max`），magpie 出思考强度选择器。
 
+## 数据来源与可核查性
+
+商汤没有公开列出这些内容的文档页（`platform.sensenova.cn/docs` 由 JS 渲染，
+`sensenova.cn/token-plan` 只点名了两个模型）。所以本插件的口径来自**一个免费
+Token Plan 账号的实测**，并且把抓到的字面响应放进了仓库：
+
+- `testdata/models.json` —— 一次真实 `GET /v1/models` 回复（7 个模型）
+- `testdata/pool-usage.json` —— 一次真实 `pool-usage` 回复（两个积分池）
+
+两份都只替换了账号自己的 pool id，其余按原样保留（包括额度数字是**字符串**
+这件事）。`testdata.test.mjs` 直接拿这两份字节跑解析与过滤，所以 fixture 不是
+编的。
+
+一个实测结论值得注意：目录里 7 个模型**全都**标着 `businesses:
+["tokenplan","metered"]`，但计划的积分池只覆盖其中 6 个，而第 7 个
+（`deepseek-v4.1-flash`）调用会被平台拒为 403。**目录自己区分不出来**，所以
+必须用该账号的池去过滤——这也是每次列模型都重新读一次池、不缓存全局的原因。
+
+`EFFORTS` 表（各模型的思考档位）同样是实测：向平台请求某个档位，回 200 即支持、
+回 400 即不支持。若平台调整档位，改这张表即可，不影响其他逻辑。
+
 ## 安装
 
 ```sh
