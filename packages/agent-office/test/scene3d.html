@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Office 3D — standalone harness</title>
+<style>
+  :root { color-scheme: dark; --accent: #3b82f6; --panel: rgba(10, 16, 30, .82); --line: rgba(148, 163, 184, .22); }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #05070f; color: #e5edf8; overflow: hidden;
+    font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas#office { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; outline: none; }
+  .tags { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .tag {
+    position: absolute; left: 0; top: 0; pointer-events: auto; display: inline-flex; align-items: center; gap: 6px;
+    max-width: 210px; padding: 3px 10px 3px 4px; border: 0; border-radius: 999px;
+    background: rgba(236, 238, 243, .92); color: #1f2937; font: 600 12px/1.3 inherit;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .4); cursor: pointer; white-space: nowrap;
+    transform: translate(-50%, -100%); transition: background .12s, box-shadow .12s, opacity .12s;
+  }
+  .tag[hidden] { display: none; }
+  .tag .mark { width: 20px; height: 20px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--c, #64748b); color: #fff; font-size: 10px; font-weight: 800; }
+  .tag .tn { overflow: hidden; text-overflow: ellipsis; }
+  .tag .td { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--c, #64748b); }
+  .tag.on { background: #fff; box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--accent), 0 2px 8px rgba(0, 0, 0, .4); z-index: 3; }
+  .tag[data-status="waiting"]:not(.on) { box-shadow: 0 0 0 2px #f59e0b, 0 2px 8px rgba(0,0,0,.4); }
+  .tag[data-status="error"]:not(.on) { box-shadow: 0 0 0 2px #ef4444, 0 2px 8px rgba(0,0,0,.4); }
+
+  .panel {
+    position: fixed; left: 16px; top: 16px; width: min(330px, calc(100vw - 32px)); padding: 14px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; backdrop-filter: blur(10px);
+    box-shadow: 0 12px 34px rgba(0, 0, 0, .4); z-index: 10;
+  }
+  .panel h1 { margin: 0 0 2px; font-size: 15px; letter-spacing: .01em; }
+  .panel p { margin: 0 0 10px; color: #94a3b8; font-size: 11.5px; }
+  .row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+  .row.scenes { margin-top: 10px; }
+  .btn {
+    appearance: none; border: 1px solid var(--line); background: rgba(148, 163, 184, .08); color: #dbe5f3;
+    border-radius: 8px; padding: 5px 9px; font: inherit; font-size: 11.5px; cursor: pointer;
+  }
+  .btn:hover { background: rgba(148, 163, 184, .16); }
+  .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .sep { height: 1px; background: var(--line); margin: 11px 0 3px; }
+  .hint { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); color: #9fb0c7; font-size: 11.5px; background: rgba(8, 13, 24, .74); border: 1px solid var(--line); padding: 6px 12px; border-radius: 999px; z-index: 10; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; color: #94a3b8; font-size: 11px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; }
+  #err {
+    position: fixed; inset: 0; display: none; place-items: center; z-index: 20;
+    background: radial-gradient(circle at 50% 35%, #16233d, #05070f 70%); text-align: center; padding: 24px;
+  }
+  #err.show { display: grid; }
+  #err strong { display: block; margin-bottom: 6px; font-size: 16px; }
+  #err span { color: #9fb0c7; font-size: 12.5px; max-width: 520px; }
+  @media (max-width: 640px) { .panel { padding: 10px; } .panel p { display: none; } }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="office" aria-label="3D agent office"></canvas>
+  <div class="tags" id="tags"></div>
+</div>
+
+<div class="panel">
+  <h1>Agent Office <span style="color:#64748b;font-weight:500">3D harness</span></h1>
+  <p>Procedural three.js office · offline · mock live data</p>
+  <div class="row scenes" id="scenes"></div>
+  <div class="sep"></div>
+  <div class="row">
+    <button class="btn" type="button" data-quality="high">High</button>
+    <button class="btn" type="button" data-quality="medium">Medium</button>
+    <button class="btn" type="button" data-quality="low">Low</button>
+    <button class="btn" type="button" id="reset">Reset view</button>
+    <button class="btn" type="button" id="night">Night</button>
+    <button class="btn" type="button" id="day">Noon</button>
+  </div>
+  <div class="row" style="margin-top:10px;justify-content:space-between">
+    <span class="badge"><i class="dot" style="background:#f59e0b"></i> waiting</span>
+    <span class="badge"><i class="dot" style="background:#3b82f6"></i> working</span>
+    <span class="badge"><i class="dot" style="background:#22a35a"></i> done</span>
+    <span class="badge"><i class="dot" style="background:#ef4444"></i> error</span>
+  </div>
+</div>
+<div class="hint">drag to orbit · wheel / pinch to zoom · double-click to reset · click a name tag</div>
+<div id="err"><div><strong>WebGL unavailable</strong><span id="errmsg">This harness needs a WebGL-capable browser.</span></div></div>
+
+<script src="../page/three.min.js"></script>
+<script src="../page/scene3d.js"></script>
+<script>
+(function () {
+  "use strict"
+  var STATUS = { thinking: "#8b6cf6", executing: "#3b82f6", replying: "#10b981", waiting: "#f59e0b", done: "#22a35a", error: "#ef4444", idle: "#9ca3af" }
+  var ICON = { done: "✓", error: "!", waiting: "?", thinking: "…", executing: "⟳", replying: "✎", idle: "·" }
+  var MOCK = [
+    { key: "claude:7f2a", agent: "claude", brand: { name: "Claude", color: "#d97757" }, status: "thinking", sub: "", title: "Refactor the scene bridge", project: "agent-office", at: Date.now() - 12000, step: "reading page/scene.js", query: "factor the office renderer", reply: "" },
+    { key: "codex:2b91", agent: "codex", brand: { name: "Codex", color: "#10a37f" }, status: "executing", sub: "", title: "Run the acceptance checks", project: "magpie", at: Date.now() - 9000, step: "bun test scene3d.test.mjs", query: "", reply: "" },
+    { key: "dsh:ff03", agent: "deepseek-harness", brand: { name: "DeepSeek", color: "#4d6bfe" }, status: "replying", sub: "", title: "Draft the release note", project: "harness", at: Date.now() - 4000, step: "", query: "", reply: "All six rooms now render…" },
+    { key: "gemini:aa14", agent: "gemini-cli", brand: { name: "Gemini", color: "#4285f4" }, status: "waiting", sub: "approval", title: "Waiting to deploy the preview", project: "site", at: Date.now() - 60000, step: "bun run deploy --preview", query: "", reply: "" },
+    { key: "qwen:88cd", agent: "qwen-code", brand: { name: "Qwen", color: "#7c3aed" }, status: "done", sub: "", title: "Polish the animations", project: "office", at: Date.now() - 700000, step: "", query: "", reply: "Done — 18 poses tuned.", idle: false },
+    { key: "pi:104e", agent: "pi", brand: { name: "Pi", color: "#0ea5e9" }, status: "error", sub: "stuck", title: "Migrate the renderer", project: "legacy", at: Date.now() - 150000, step: "bun run migrate", error: "ETIMEDOUT after 120s" },
+    { key: "qoder:5f6g", agent: "qoder", brand: { name: "Qoder", color: "#f97316" }, status: "waiting", sub: "ask", title: "Pick a palette for the café", project: "office", at: Date.now() - 30000, step: "", query: "Warm amber or sage green?" },
+    { key: "buddy:7h8i", agent: "workbuddy", brand: { name: "WorkBuddy", color: "#14b8a6" }, status: "done", sub: "stopped", title: "Tidy the tag layout", project: "page", at: Date.now() - 3600000, idle: true },
+    { key: "omp:9j0k", agent: "omp", brand: { name: "omp", color: "#a855f7" }, status: "thinking", sub: "", title: "Measure the render budget", project: "perf", at: Date.now() - 20000, step: "profiling frame time" }
+  ]
+
+  var canvas = document.getElementById("office")
+  var tagsEl = document.getElementById("tags")
+  var scene = null
+  var tags = new Map()
+  var selected = null
+  var scenes = document.getElementById("scenes")
+  var sceneIds = (window.AgentOfficeScene3D && window.AgentOfficeScene3D.SCENE_IDS) || ["office"]
+  var labels = { office: "Office", station: "Station", cafe: "Café", castle: "Castle", pirate: "Pirate", graveyard: "Graveyard" }
+
+  function fail(err) {
+    document.getElementById("err").classList.add("show")
+    document.getElementById("errmsg").textContent = String(err && err.message || err || "no WebGL") +
+      " — page/scene3d.js still exposes pure helpers, but this harness needs a GPU context."
+  }
+
+  try {
+    if (!window.AgentOfficeScene3D) throw new Error("scene3d.js did not load")
+    scene = new window.AgentOfficeScene3D(canvas, { scene: "office", quality: "high", agents: MOCK })
+    window.scene3d = scene
+    if (!scene.available) throw scene.error || new Error("WebGL context could not be created")
+  } catch (err) {
+    fail(err)
+    return
+  }
+
+  for (var i = 0; i < sceneIds.length; i++) {
+    (function (id) {
+      var b = document.createElement("button")
+      b.type = "button"
+      b.className = "btn" + (id === "office" ? " on" : "")
+      b.textContent = labels[id] || id
+      b.dataset.scene = id
+      b.addEventListener("click", function () {
+        scene.setScene(id)
+        var all = scenes.querySelectorAll("button")
+        for (var k = 0; k < all.length; k++) all[k].classList.toggle("on", all[k] === b)
+      })
+      scenes.appendChild(b)
+    })(sceneIds[i])
+  }
+
+  var qualityButtons = document.querySelectorAll("[data-quality]")
+  for (var q = 0; q < qualityButtons.length; q++) {
+    qualityButtons[q].addEventListener("click", function (e) {
+      scene.setQuality(e.target.dataset.quality)
+      for (var k = 0; k < qualityButtons.length; k++) qualityButtons[k].classList.toggle("on", qualityButtons[k] === e.target)
+    })
+    qualityButtons[q].classList.toggle("on", qualityButtons[q].dataset.quality === "high")
+  }
+  document.getElementById("reset").addEventListener("click", function () {
+    scene.azimuth = 0.82; scene.polar = 0.96; scene.zoom = 1.05; scene._applyCamera()
+  })
+  document.getElementById("night").addEventListener("click", function () { scene.setTime(new Date(2024, 0, 1, 2, 30)) })
+  document.getElementById("day").addEventListener("click", function () { scene.setTime(new Date(2024, 0, 1, 12, 0)) })
+
+  var agents = new Map()
+  for (var m = 0; m < MOCK.length; m++) agents.set(MOCK[m].key, MOCK[m])
+
+  function ensureTag(agent) {
+    var e = tags.get(agent.key)
+    if (e) return e
+    e = document.createElement("button")
+    e.type = "button"
+    e.className = "tag"
+    e.hidden = true
+    e.dataset.key = agent.key
+    var mark = document.createElement("span")
+    mark.className = "mark"
+    mark.textContent = (agent.brand && agent.brand.name || agent.agent || "?").slice(0, 1).toUpperCase()
+    var name = document.createElement("span")
+    name.className = "tn"
+    name.textContent = (agent.brand && agent.brand.name || agent.agent || agent.key)
+    var dot = document.createElement("i")
+    dot.className = "td"
+    e.append(mark, name, dot)
+    e.style.setProperty("--c", (agent.brand && agent.brand.color) || STATUS[agent.status] || "#64748b")
+    e.dataset.status = agent.status
+    e.addEventListener("click", function () { selectTag(agent.key) })
+    tagsEl.appendChild(e)
+    tags.set(agent.key, e)
+    return e
+  }
+
+  function selectTag(key) {
+    selected = selected === key ? null : key
+    scene.setSelected(selected)
+    tags.forEach(function (e, k) { e.classList.toggle("on", k === selected) })
+  }
+
+  function frame() {
+    requestAnimationFrame(frame)
+    var anchors = scene.anchors()
+    var shown = new Set()
+    for (var i = 0; i < anchors.length; i++) {
+      var a = anchors[i]
+      var agent = agents.get(a.key)
+      if (!agent) continue
+      var e = ensureTag(agent)
+      shown.add(a.key)
+      e.hidden = !a.visible
+      if (!a.visible) continue
+      e.style.transform = "translate(" + Math.round(a.x) + "px," + Math.round(a.y) + "px) translate(-50%, -100%)"
+    }
+    tags.forEach(function (e, k) { if (!shown.has(k)) e.hidden = true })
+  }
+  requestAnimationFrame(frame)
+
+})();
+</script>
+</body>
+</html>

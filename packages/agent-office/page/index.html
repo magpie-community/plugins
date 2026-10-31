@@ -10,6 +10,8 @@
 <script src="model.js"></script>
 <script src="icons.js"></script>
 <script src="scene.js"></script>
+<script src="three.min.js"></script>
+<script src="scene3d.js"></script>
 <script src="app.js" defer></script>
 </head>
 <body>
@@ -29,17 +31,37 @@
     </div>
     <div class="seg plain" role="tablist" id="dims">
       <button type="button" role="tab" data-dim="2d">2D</button>
+      <button type="button" role="tab" data-dim="iso">ISO</button>
       <button type="button" role="tab" data-dim="3d">3D</button>
     </div>
     <span class="note" id="note"></span>
     <span class="grow"></span>
+    <div class="menu-wrap">
+      <button type="button" class="btn" id="todayBtn" aria-haspopup="true" aria-expanded="false"><span data-t="today">Today</span> <span class="today-tokens" id="todayTokens"></span></button>
+      <div class="menu today-panel" id="todayMenu" hidden></div>
+    </div>
+    <button type="button" class="btn" id="sideBtn" aria-pressed="true"><span data-t="panel">Panel</span></button>
     <button type="button" class="btn" id="pip" data-t="pip">Picture in picture</button>
     <div class="menu-wrap">
       <button type="button" class="btn" id="settingsBtn" aria-haspopup="true" aria-expanded="false"><span data-t="settings">Settings</span> <span class="chev">⌄</span></button>
-      <div class="menu" id="settings" hidden>
+      <div class="menu wide" id="settings" hidden>
         <label class="row"><input type="checkbox" id="optDemo"> <span data-t="demo">Sample agents</span></label>
         <label class="row"><input type="checkbox" id="optDone"> <span data-t="showDone">Show finished agents</span></label>
         <label class="row"><input type="checkbox" id="optText"> <span data-t="showText">Show prompts and replies</span></label>
+        <label class="row"><input type="checkbox" id="optSub"> <span data-t="showSub">Show subagents</span></label>
+        <label class="row"><input type="checkbox" id="optIdle"> <span data-t="showIdle">Show idle agents</span></label>
+        <div class="row col">
+          <span data-t="agents">Agents</span>
+          <div class="agent-filter" id="optAgents"></div>
+        </div>
+        <div class="row col">
+          <span data-t="language">Language</span>
+          <select class="lang-select" id="optLang"></select>
+        </div>
+        <div class="row col">
+          <span data-t="scene">Scene</span>
+          <select class="lang-select" id="optScene"></select>
+        </div>
         <div class="row col">
           <span data-t="hideAfter">Leave the office after</span>
           <div class="seg small" id="optHide">
@@ -54,6 +76,7 @@
   </nav>
   <section class="stage" id="stage">
     <canvas id="office"></canvas>
+    <canvas id="office3d" hidden></canvas>
     <div class="tags" id="tags"></div>
     <div class="empty" id="empty" hidden></div>
   </section>
@@ -64,6 +87,10 @@
     </table>
     <p class="empty-list" id="emptyList" hidden></p>
   </section>
+  <aside class="rail" id="rail" hidden>
+    <div class="rail-head"><span data-t="agents">Agents</span> <b id="railCount">0</b><span class="grow"></span><button type="button" class="px" id="railClose" aria-label="Close">✕</button></div>
+    <div class="rail-groups" id="railGroups"></div>
+  </aside>
   <aside class="pop" id="pop" hidden></aside>
   <footer>
     <div class="legend" id="statusLegend"></div>
@@ -74,5 +101,6 @@
   <div class="floatbar" id="floatbar"><span class="fdots" aria-hidden="true"><i></i><i></i></span><span data-t="pip">Picture in picture</span><button type="button" class="fclose" id="floatClose" aria-label="Close">✕</button></div>
   <div class="floatslot" id="floatslot"></div>
 </div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
 </body>
 </html>

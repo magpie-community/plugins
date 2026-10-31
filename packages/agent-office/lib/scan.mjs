@@ -10,24 +10,24 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
-import { readClaude, readCodex, readDsh, readGemini, readPi } from "./readers.mjs"
+import { readClaude, readCodex, readCopilot, readDsh, readGemini, readGrok, readKimi, readPi } from "./readers.mjs"
 
 const HEAD = 64 * 1024 // what is kept of a file's start: its header, its first prompt
 const TAIL = 512 * 1024 // what is read of a big file's end
+// Kimi and Grok need every event (a tool still open can be far from the end),
+// so a file up to this size is replayed whole; past it the head/tail read
+// keeps a tick from stalling on a pathological log.
+const REPLAY_MAX = 32 * 1024 * 1024
 // A dsh session is one compressed file that is rewritten on every step, so
 // decoding all of it each 1.5 s tick is wasteful while it is being written.
 // The cap keeps a pathological file from stalling a tick, and an active one
 // is decoded at most once every ZSTD_EVERY: its last facts stand meanwhile.
 const ZSTD_MAX = 8 * 1024 * 1024
 const ZSTD_EVERY = 4000
-// Claude Code keeps one file per running process, <config>/sessions/<pid>.json
-// ({pid, sessionId, …}). It takes the file away when it ends on SIGINT or
-// SIGTERM and leaves it when SIGKILLed, so a session with no living process
-// in that folder has stopped, whatever its last line says. That is the case
-// of an agent another agent ran and interrupted (`claude -p` killed from the
-// shell): its file ends mid-turn, and without this it read as at work and
-// then stuck for good. A turn quiet less than GONE_AFTER is not judged: the
-// process may be starting.
+const META_MAX = 256 * 1024 // a state.json / summary.json is small; never read more
+// Claude Code keeps one file per running process, <config>/sessions/<pid>.json.
+// A mid-turn session with no live process has stopped, even when the file
+// ends before a turn-ending event: `claude -p` killed from another agent.
 const GONE_AFTER = 10e3
 const MIDTURN = new Set(["thinking", "tool", "approval", "ask"])
 
@@ -35,31 +35,61 @@ function env(k) { return (process.env[k] || "").trim() }
 function home(...p) { return join(env("HOME") || homedir(), ...p) }
 function expand(p) { return p.startsWith("~/") ? home(p.slice(2)) : p }
 
+// an agent's home may be overridden by a *_HOME or *_CONFIG_DIR variable
+function agentHome(homeVar, configVar, ...fallback) {
+  if (env(homeVar)) return expand(env(homeVar))
+  if (configVar && env(configVar)) return expand(env(configVar))
+  return home(...fallback)
+}
+
+// omp keeps a profile per working identity: <home>/profiles/<name>/agent/sessions
+function ompProfiles(omp) {
+  const out = []
+  let names = []
+  try { names = readdirSync(join(omp, "profiles"), { withFileTypes: true }) } catch { return out }
+  for (const e of names) {
+    if (!e.isDirectory()) continue
+    out.push({ agent: "omp", kind: "pi", root: join(omp, "profiles", e.name, "agent", "sessions"), depth: 1, match: (n) => n.endsWith(".jsonl"), profile: e.name })
+  }
+  return out
+}
+
 // where each agent keeps its sessions: { agent, kind, root, depth, match }
 // depth: how many folders down from root the files sit
 export function sources() {
-  const claude = env("CLAUDE_CONFIG_DIR") ? expand(env("CLAUDE_CONFIG_DIR")) : home(".claude")
-  const codex = env("CODEX_HOME") ? expand(env("CODEX_HOME")) : home(".codex")
-  const dsh = env("DSH_HOME") ? expand(env("DSH_HOME")) : home(".dsh")
+  const claude = agentHome("CLAUDE_CONFIG_DIR", "", ".claude")
+  const codex = agentHome("CODEX_HOME", "", ".codex")
+  const dsh = agentHome("DSH_HOME", "", ".dsh")
   const pi = env("PI_CODING_AGENT_DIR") ? expand(env("PI_CODING_AGENT_DIR")) : home(".pi", "agent")
-  const qoder = env("QODER_CONFIG_DIR") ? expand(env("QODER_CONFIG_DIR")) : home(".qoder")
-  const qodercn = env("QODERCN_CONFIG_DIR") ? expand(env("QODERCN_CONFIG_DIR")) : home(".qoder-cn")
-  const workbuddy = env("WORKBUDDY_CONFIG_DIR") ? expand(env("WORKBUDDY_CONFIG_DIR")) : home(".workbuddy")
-  const codebuddy = env("CODEBUDDY_CONFIG_DIR") ? expand(env("CODEBUDDY_CONFIG_DIR")) : home(".codebuddy")
+  const omp = agentHome("OMP_HOME", "OMP_CONFIG_DIR", ".omp")
+  const kimi = agentHome("KIMI_CODE_HOME", "KIMI_CONFIG_DIR", ".kimi-code")
+  const grok = agentHome("GROK_HOME", "GROK_CONFIG_DIR", ".grok")
+  const copilot = agentHome("COPILOT_HOME", "COPILOT_CONFIG_DIR", ".copilot")
+  const qoder = agentHome("QODER_CONFIG_DIR", "", ".qoder")
+  const qodercn = agentHome("QODERCN_CONFIG_DIR", "", ".qoder-cn")
+  const workbuddy = agentHome("WORKBUDDY_CONFIG_DIR", "", ".workbuddy")
+  const codebuddy = agentHome("CODEBUDDY_CONFIG_DIR", "", ".codebuddy")
   const jsonl = (n) => n.endsWith(".jsonl")
-  return [
+  const srcs = [
     { agent: "claude", kind: "claude", root: join(claude, "projects"), depth: 1, match: jsonl, live: join(claude, "sessions") },
+    // a subagent's file sits project/<session>/subagents/<agent>.jsonl
+    { agent: "claude", kind: "claude", root: join(claude, "projects"), depth: 3, match: (n, p) => n.endsWith(".jsonl") && basename(dirname(p)) === "subagents", subagent: true },
     { agent: "codex", kind: "codex", root: join(codex, "sessions"), depth: 3, match: (n) => n.startsWith("rollout-") && n.endsWith(".jsonl") },
     { agent: "dsh", kind: "dsh", root: join(dsh, "sessions"), depth: 2, match: (n) => n === "session.v4.jsonl.zstd" || n === "session.v4.jsonl" },
     { agent: "gemini", kind: "gemini", root: home(".gemini", "tmp"), depth: 2, match: (n) => n.startsWith("session-") && (n.endsWith(".json") || n.endsWith(".jsonl")) },
     { agent: "qwen", kind: "gemini", root: home(".qwen", "tmp"), depth: 2, match: (n) => n.startsWith("session-") && (n.endsWith(".json") || n.endsWith(".jsonl")) },
     { agent: "pi", kind: "pi", root: join(pi, "sessions"), depth: 1, match: jsonl },
-    { agent: "omp", kind: "pi", root: home(".omp", "agent", "sessions"), depth: 1, match: jsonl },
+    { agent: "omp", kind: "pi", root: join(omp, "agent", "sessions"), depth: 1, match: jsonl },
+    ...ompProfiles(omp),
+    { agent: "kimi", kind: "kimi", root: join(kimi, "sessions"), depth: 4, match: (n) => n === "wire.jsonl", meta: (p) => join(dirname(dirname(dirname(p))), "state.json") },
+    { agent: "grok", kind: "grok", root: join(grok, "sessions"), depth: 2, match: (n) => n === "updates.jsonl", meta: (p) => join(dirname(p), "summary.json") },
+    { agent: "copilot", kind: "copilot", root: join(copilot, "session-state"), depth: 1, match: (n) => n === "events.jsonl" },
     { agent: "qoder", kind: "claude", root: join(qoder, "projects"), depth: 1, match: jsonl, live: join(qoder, "sessions") },
     { agent: "qoder-cn", kind: "claude", root: join(qodercn, "projects"), depth: 1, match: jsonl, live: join(qodercn, "sessions") },
     { agent: "workbuddy", kind: "claude", root: join(workbuddy, "projects"), depth: 1, match: jsonl, live: join(workbuddy, "sessions") },
     { agent: "codebuddy", kind: "claude", root: join(codebuddy, "projects"), depth: 1, match: jsonl, live: join(codebuddy, "sessions") },
   ]
+  return srcs
 }
 
 // the files under root, `depth` folders down, changed since `since`
@@ -72,7 +102,7 @@ function walk(root, depth, match, since, out) {
       if (!e.isDirectory()) continue
       // Codex's YYYY/MM/DD: a whole old month or day is skipped by its name
       walk(p, depth - 1, match, since, out)
-    } else if (e.isFile() && match(e.name)) {
+    } else if (e.isFile() && match(e.name, p)) {
       let st
       try { st = statSync(p) } catch { continue }
       if (st.mtimeMs >= since) out.push({ path: p, size: st.size, mtime: st.mtimeMs })
@@ -102,12 +132,11 @@ function pidAlive(pid) {
 }
 
 // The sessions folder of a Claude-format agent: which session ids have a
-// running process. null when it can't say: the folder has never been seen
-// to hold such a file (an agent, or a version, that doesn't keep them), or
-// can't be read. Once a folder has held one, an empty folder means no
-// process runs.
+// running process. null when it can't say: the folder has never held such a
+// file (an agent/version that keeps none), or can't be read. Once it has
+// held one, an empty folder means no process runs.
 export function createProcesses() {
-  const dirs = new Map() // dir -> { kept: bool, files: Map(name -> { mtime, pid, id, here }) }
+  const dirs = new Map()
   function running(dir) {
     let d = dirs.get(dir)
     if (!d) { d = { kept: false, files: new Map() }; dirs.set(dir, d) }
@@ -125,8 +154,6 @@ export function createProcesses() {
         let j
         try { j = JSON.parse(readFileSync(p, "utf8")) } catch { j = null }
         if (!j) { d.files.delete(n); return null } // half-written: unknown this time
-        // a pid of another system's (Claude Code in WSL writing here) can't
-        // be asked about from this one
         const here = !j.pidDomain || j.pidDomain === process.platform
         f = { mtime: st.mtimeMs, pid: Number(j.pid), id: String(j.sessionId || ""), here }
         d.files.set(n, f)
@@ -142,13 +169,16 @@ export function createProcesses() {
   return { running }
 }
 
-function readerFor(kind, agent) {
+function readerFor(kind, agent, src = {}) {
   switch (kind) {
-    case "claude": return (t, id) => readClaude(t, agent, id)
-    case "codex": return (t, id) => readCodex(t, id)
-    case "dsh": return (t, id) => readDsh(t, id)
-    case "gemini": return (t, id) => readGemini(t, agent, id)
-    case "pi": return (t, id) => readPi(t, agent, id)
+    case "claude": return (t, id, meta, now) => readClaude(t, agent, id, { subagent: !!src.subagent, now })
+    case "codex": return (t, id, meta, now) => readCodex(t, id, { now })
+    case "dsh": return (t, id, meta, now) => readDsh(t, id, { now })
+    case "gemini": return (t, id, meta, now) => readGemini(t, agent, id, { now })
+    case "pi": return (t, id, meta, now) => readPi(t, agent, id, { now })
+    case "copilot": return (t, id, meta, now) => readCopilot(t, id, { now })
+    case "kimi": return (t, id, meta, now) => readKimi(t, id, meta, { now })
+    case "grok": return (t, id, meta, now) => readGrok(t, id, meta, { now })
   }
 }
 
@@ -156,7 +186,32 @@ function idOf(src, path) {
   const name = basename(path)
   if (src.kind === "dsh") return basename(dirname(path))
   if (src.kind === "codex") { const m = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:_[^.]*)?\.jsonl$/i.exec(name); return m ? m[1] : name }
+  // the session folder names the session: ~/.grok/sessions/<project>/<session>
+  if (src.kind === "grok" || src.kind === "copilot") return basename(dirname(path))
+  if (src.kind === "kimi") {
+    const child = basename(dirname(path)) // …/<session>/agents/<agent>/wire.jsonl
+    const session = basename(dirname(dirname(dirname(path))))
+    return child === "main" ? session : `${session}/${child}`
+  }
   return name.replace(/\.jsonl?$/, "").replace(/^\d{4}-\d{2}-\d{2}T[^_]+_/, "")
+}
+
+// the parent a source's file layout implies, for a child session without one
+function parentOf(src, path, id) {
+  if (src.kind === "claude" && src.subagent) return basename(dirname(dirname(path))) // project/<session>/subagents/<agent>.jsonl
+  const i = String(id || "").lastIndexOf("/")
+  return i > 0 ? String(id).slice(0, i) : ""
+}
+
+// state.json / summary.json, bounded: a broken or huge one is simply ignored
+function readMeta(src, path) {
+  if (typeof src.meta !== "function") return null
+  try {
+    const file = src.meta(path)
+    const st = statSync(file)
+    if (!st.isFile() || st.size > META_MAX) return null
+    return JSON.parse(readFileSync(file, "utf8"))
+  } catch { return null }
 }
 
 // Codex names a thread in session_index.jsonl ({id, thread_name}), the
@@ -176,8 +231,8 @@ function codexTitles() {
 export function createScanner(opts = {}) {
   const o = { days: 2, max: 40, zstdMax: ZSTD_MAX, zstdEvery: ZSTD_EVERY, ...opts }
   const files = new Map() // path -> { size, mtime, head, session }
+  const procs = createProcesses()
   let srcs = o.sources || sources()
-  const procs = o.processes || createProcesses()
 
   // one pass: every changed file read again; gives the sessions, latest first
   function scan(now = Date.now()) {
@@ -194,8 +249,8 @@ export function createScanner(opts = {}) {
     const live = new Set(keep.map((f) => f.path))
     for (const p of files.keys()) if (!live.has(p)) files.delete(p)
     const out = []
+    const running = new Map() // a live-process folder, once per tick
     let titles = null
-    const running = new Map() // a sessions folder, read once a pass
     for (const f of keep) {
       let c = files.get(f.path)
       const changed = !c || c.size !== f.size || c.mtime !== f.mtime
@@ -213,12 +268,12 @@ export function createScanner(opts = {}) {
         }
       }
       if (!c.session) continue
-      if (c.session.agent === "codex") {
-        titles ??= codexTitles()
-        const t = titles.get(c.session.id)
-        if (t) c.session.title = t.length > 48 ? t.slice(0, 47) + "…" : t
-      }
       const s = c.session
+      if (s.agent === "codex") {
+        titles ??= codexTitles()
+        const t = titles.get(s.id)
+        if (t) s.title = t.length > 48 ? t.slice(0, 47) + "…" : t
+      }
       if (f.src.live && MIDTURN.has(s.phase) && now - f.mtime >= GONE_AFTER) {
         if (!running.has(f.src.live)) running.set(f.src.live, procs.running(f.src.live))
         const ids = running.get(f.src.live)
@@ -230,15 +285,19 @@ export function createScanner(opts = {}) {
   }
 
   function readOne(f, was, now = Date.now()) {
-    const read = readerFor(f.src.kind, f.src.agent)
+    const read = readerFor(f.src.kind, f.src.agent, f.src)
     const id = idOf(f.src, f.path)
+    const meta = readMeta(f.src, f.path)
     let text
     if (f.path.endsWith(".zstd")) {
       if (f.size > o.zstdMax) return { size: f.size, mtime: f.mtime, session: was?.session || null, decodedAt: now }
       text = zstd(f.path)
-      const s = read(text, id)
+      const s = read(text, id, meta, now)
       s.path = f.path
       return { size: f.size, mtime: f.mtime, session: finish(s, f), decodedAt: now }
+    } else if ((f.src.kind === "kimi" || f.src.kind === "grok") && f.size <= REPLAY_MAX) {
+      // every event matters: a tool still open may be far from the end
+      text = readRange(f.path, 0, f.size)
     } else if (f.size <= HEAD + TAIL) {
       text = readRange(f.path, 0, f.size)
     } else {
@@ -247,17 +306,23 @@ export function createScanner(opts = {}) {
       let tail = readRange(f.path, f.size - TAIL, TAIL)
       tail = tail.slice(tail.indexOf("\n") + 1)
       text = head.slice(0, head.lastIndexOf("\n") + 1) + tail
-      const s = read(text, id)
+      const s = read(text, id, meta, now)
       s.path = f.path
       return { size: f.size, mtime: f.mtime, head, session: finish(s, f) }
     }
-    const s = read(text, id)
+    const s = read(text, id, meta, now)
     s.path = f.path
     return { size: f.size, mtime: f.mtime, session: finish(s, f) }
   }
 
   function finish(s, f) {
     if (!s.id) s.id = idOf(f.src, f.path)
+    if (f.src.subagent) {
+      s.subagent = true
+      if (!s.parent) s.parent = parentOf(f.src, f.path, s.id)
+    }
+    if (f.src.kind === "kimi" && s.subagent && !s.parent) s.parent = parentOf(f.src, f.path, s.id)
+    if (f.src.profile) s.profile = f.src.profile
     if (!s.updated) s.updated = f.mtime
     // the file's own time: a line being written is the session at work
     s.touched = f.mtime

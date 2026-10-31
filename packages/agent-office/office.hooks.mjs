@@ -70,6 +70,12 @@ function fromFiles(s, text) {
     started: s.started, updated: Math.max(s.updated || 0, s.touched || 0), touched: s.touched,
     phase: s.phase || "done", step: text ? s.step : (s.stepName || ""), reply: text ? s.reply : "", error: text ? s.error : "",
     pendingSince: s.pending?.[0]?.at || 0, turns: s.turns,
+    // the workbench's extra facts: a child session, its recent words, and
+    // what this session used today. Words are dropped with text off.
+    subagent: s.subagent === true, parent: s.parent || "", profile: s.profile || "",
+    messages: text && Array.isArray(s.messages) ? s.messages.slice(-8) : [],
+    tokensToday: Number(s.tokensToday) || 0, turnsToday: Number(s.turnsToday) || 0,
+    context: Number(s.context) || 0, contextWindow: Number(s.contextWindow) || 0,
   }
 }
 

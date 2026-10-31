@@ -62,12 +62,34 @@
   const ZONE_SPOTS = []
   for (let j = 0; j < 3; j++) for (let i = 0; i < 4; i++) ZONE_SPOTS.push([ZONE.x + 0.6 + i * 1.05 + (j % 2) * 0.3, ZONE.y + 0.6 + j * 1.05])
   const ERROR_SPOTS = [[12.3, 9.6], [14.5, 8.6], [12.9, 10.45], [14.6, 10.3]]
-  const WANDER = [[7.0, 4.4], [8.6, 5.7], [6.0, 5.8], [9.0, 8.0], [10.2, 9.0], [2.8, 3.2], [5.0, 3.4], [9.6, 2.9], [2.4, 6.0]]
+  const WANDER = [[7.0, 4.4], [8.6, 5.7], [6.0, 5.8], [9.0, 8.0], [10.2, 9.0], [4.9, 4.8], [5.0, 3.4], [9.6, 2.9], [2.4, 6.0]]
   const DOOR = [0.6, 2.6]
+
+  // ---- activity venues -------------------------------------------------
+  // A finished worker doesn't only sleep on the sofa any more: it drifts
+  // to a venue, lingers a while, then drifts on. Each venue has a front
+  // approach on the side the camera sees (south or east) and a facing that
+  // looks at the furniture, so a reader can tell what it is doing.
+  const ACTIVITIES = [
+    { id: "bookshelf", label: "READING", x: 1.45, y: 0.5, w: 1.6, d: 0.55, ax: 2.25, ay: 1.65, face: "n", lz: 2.4, color: "#fcd34d" },
+    { id: "arcade", label: "ARCADE", x: 2.5, y: 3.2, w: 0.9, d: 0.7, ax: 3.95, ay: 3.55, face: "w", lz: 1.95, color: "#38bdf8" },
+    { id: "meeting", label: "HUDDLE", x: 6.9, y: 2.55, w: 1.7, d: 0.95, ax: 7.75, ay: 3.95, face: "n", lz: 2.05, color: "#a78bfa" },
+    { id: "pingpong", label: "PING-PONG", x: 9.55, y: 7.15, w: 1.9, d: 1.05, ax: 10.5, ay: 8.85, face: "n", lz: 1.15, color: "#34d399" },
+    { id: "coffee", label: "COFFEE", x: 14.35, y: 2.15, w: 1.35, d: 0.85, ax: 14.9, ay: 3.4, face: "n", lz: 1.55, color: "#fb923c" },
+  ]
+  const POIS = ACTIVITIES
+  const POI_APPROACHES = ACTIVITIES.map((a) => [a.ax, a.ay, a.face])
+  // The sofa seats are venues too: a worker that has finished for a while
+  // may curl up there instead of standing at a table.
+  const ACTIVITY_SPOTS = [
+    ...ACTIVITIES.map((a) => [a.ax, a.ay, a.face]),
+    ...SOFA.map(([x, y], i) => [x, y, SOFA_FACE[i]]),
+  ]
 
   // What stands on the floor and can't be walked through, and the places a
   // worker goes, which are free even inside a piece of furniture (a seat).
   const BLOCKERS = [
+    ...ACTIVITIES.map((a) => [a.x, a.y, a.w, a.d]),
     ...DESKS.map((d) => [d.x, d.y, d.w, d.d]),
     [0, 4.1, 1.5, 5.0], // full sofa and the gap behind its backrest
     [2.5, 10.55, 2.4, 1.45], // full sofa and rear wall gap
@@ -78,7 +100,7 @@
     [14.3, 6.6, 1.2, 1.6], // the broken console
     [14.0, 0.5, 1.6, 1.0], // the console on the far wall
   ]
-  const FREE = [...DESKS.map((d) => d.seat), ...SOFA_APPROACH, ...ZONE_SPOTS, ...ERROR_SPOTS, ...WANDER, DOOR]
+  const FREE = [...DESKS.map((d) => d.seat), ...SOFA_APPROACH, ...ZONE_SPOTS, ...ERROR_SPOTS, ...WANDER, ...ACTIVITIES.map((a) => [a.ax, a.ay]), DOOR]
 
   // A coarse grid of where a worker may walk, and the shortest way across
   // it: eight neighbours, diagonals only when both sides are free, then
@@ -219,6 +241,41 @@
       amount: Math.sin(Math.PI * phase / 4), phase }
   }
 
+  // ---- local time of day ------------------------------------------------
+  // The office follows the viewer's clock: dawn warms the glass, day is a
+  // cool blue, dusk goes pink, night is the dark space station again. Pure:
+  // an hour or a Date in, a palette out (the tests use it directly).
+  const SKY_PHASES = {
+    night: { sky: ["#05070f", "#0b1020"], star: 1, glass: "rgba(120,170,255,.09)", ambient: "rgba(10,16,32,.16)", planet: 1, label: "night" },
+    dawn: { sky: ["#17162e", "#3a2438"], star: 0.35, glass: "rgba(251,146,60,.15)", ambient: "rgba(251,146,60,.06)", planet: 0.85, label: "dawn" },
+    day: { sky: ["#0d1b2e", "#1e3a5f"], star: 0.06, glass: "rgba(147,197,253,.22)", ambient: "rgba(147,197,253,.05)", planet: 0.7, label: "day" },
+    dusk: { sky: ["#21132b", "#4a2440"], star: 0.45, glass: "rgba(244,114,182,.17)", ambient: "rgba(244,114,182,.05)", planet: 0.9, label: "dusk" },
+  }
+  function phaseOfHour(hour) {
+    const h = ((Number.isFinite(hour) ? hour : 12) % 24 + 24) % 24
+    if (h >= 5 && h < 7.5) return "dawn"
+    if (h >= 7.5 && h < 17) return "day"
+    if (h >= 17 && h < 19.5) return "dusk"
+    return "night"
+  }
+  function dayPhase(when) {
+    let hour
+    if (when instanceof Date) hour = when.getHours() + when.getMinutes() / 60
+    else if (typeof when === "number" && Number.isFinite(when)) hour = when
+    else { const d = new Date(); hour = d.getHours() + d.getMinutes() / 60 }
+    const phase = phaseOfHour(hour)
+    return { phase, hour: ((hour % 24) + 24) % 24, ...SKY_PHASES[phase] }
+  }
+
+  // a finished worker lingers 8–30 s at a venue before drifting to another
+  function activityDwell(seed) {
+    return Math.round((8 + rnd(seed >>> 0, 71) * 22) * 10) / 10
+  }
+
+  // how far the camera may zoom and pan; pan is a fraction of the canvas so
+  // a corner can be inspected but the office can never be lost
+  const CAMERA = { minZoom: 1, maxZoom: 4, panMargin: 0.12, smooth: 0.18 }
+
   class Scene {
     constructor(canvas, opts = {}) {
       this.c = canvas
@@ -230,15 +287,31 @@
       this.last = 0
       this.running = false
       this.first = true
+      this.cam = { x: 0, y: 0, z: 1 }
+      this.roomBox = null
+      this.dayState = null
+      this.phaseOverride = null
+      this.cat = opts.cat === false ? null : { seed: 0 }
       this.reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches || false
       this.stars = Array.from({ length: 140 }, (_, i) => [rnd(7, i), rnd(11, i), rnd(13, i)])
       this.resize()
+      this.bindInput()
     }
 
     // ---- geometry ----------------------------------------------------
-    P(x, y, z = 0) {
+    // rawP is the fitted room projected with no camera; P adds pan and zoom
+    // about the canvas centre, so every anchor, bubble and hit test follows.
+    rawP(x, y, z = 0) {
       if (this.dim === "3d") return [this.ox + (x - y) * this.s * 0.866, this.oy + (x + y) * this.s * 0.5 - z * this.s]
       return [this.ox + x * this.s, this.oy + y * this.s * 0.82 - z * this.s * 0.5]
+    }
+    P(x, y, z = 0) {
+      const p = this.rawP(x, y, z)
+      const cam = this.cam
+      if (!cam || !this.W || !this.H) return p
+      const zf = Number.isFinite(cam.z) && cam.z > 0 ? cam.z : 1
+      const cx = this.W / 2, cy = this.H / 2
+      return [cx + (p[0] - cx) * zf + (cam.x || 0), cy + (p[1] - cy) * zf + (cam.y || 0)]
     }
     depth(x, y, z = 0) {
       return this.dim === "3d" ? x + y + z * 0.001 : y + z * 0.001
@@ -258,22 +331,174 @@
     fit() {
       // the room's corners at scale 1, then scale and centre it
       this.s = 1; this.ox = 0; this.oy = 0
-      const pts = []
-      for (const [x, y] of [[0, 0], [ROOM.w, 0], [0, ROOM.d], [ROOM.w, ROOM.d]]) {
-        pts.push(this.P(x, y, 0))
-        if (x === 0 || y === 0) pts.push(this.P(x, y, this.dim === "3d" ? ROOM.wall : 0.9))
-      }
+      const pts = this.roomOutline().map(([x, y, z]) => this.rawP(x, y, z))
       const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1])
       const bw = Math.max(...xs) - Math.min(...xs), bh = Math.max(...ys) - Math.min(...ys)
       const pad = this.dim === "3d" ? 0.04 : 0.06
       this.s = Math.min((this.W * (1 - pad * 2)) / bw, (this.H * (1 - pad * 2)) / bh)
       this.ox = (this.W - bw * this.s) / 2 - Math.min(...xs) * this.s
       this.oy = (this.H - bh * this.s) / 2 - Math.min(...ys) * this.s + (this.dim === "3d" ? this.H * 0.02 : 0)
+      // remember the fitted room so pan and zoom can be clamped around it
+      const screen = this.roomOutline().map(([x, y, z]) => this.rawP(x, y, z))
+      const sx = screen.map((p) => p[0]), sy = screen.map((p) => p[1])
+      this.roomBox = { minX: Math.min(...sx), maxX: Math.max(...sx), minY: Math.min(...sy), maxY: Math.max(...sy) }
+      this.clampCamera()
+    }
+
+    roomOutline() {
+      const pts = []
+      for (const [x, y] of [[0, 0], [ROOM.w, 0], [0, ROOM.d], [ROOM.w, ROOM.d]]) {
+        pts.push([x, y, 0])
+        if (x === 0 || y === 0) pts.push([x, y, this.dim === "3d" ? ROOM.wall : 0.9])
+      }
+      return pts
     }
 
     setDim(dim) {
       this.dim = dim === "2d" ? "2d" : "3d"
       this.fit()
+    }
+
+    // ---- camera: drag to pan, wheel or two fingers to zoom -------------
+    clampCamera() {
+      const cam = this.cam
+      if (!cam) return
+      const z = Number.isFinite(cam.z) ? Math.min(CAMERA.maxZoom, Math.max(CAMERA.minZoom, cam.z)) : 1
+      cam.z = z
+      cam.x = Number.isFinite(cam.x) ? cam.x : 0
+      cam.y = Number.isFinite(cam.y) ? cam.y : 0
+      if (!this.roomBox || !this.W || !this.H) return
+      const b = this.roomBox
+      const mx = Math.max(0, ((b.maxX - b.minX) * z - this.W) / 2) + this.W * CAMERA.panMargin
+      const my = Math.max(0, ((b.maxY - b.minY) * z - this.H) / 2) + this.H * CAMERA.panMargin
+      cam.x = Math.max(-mx, Math.min(mx, cam.x))
+      cam.y = Math.max(-my, Math.min(my, cam.y))
+    }
+
+    panBy(dx, dy) {
+      const cam = this.cam
+      if (!cam) return this
+      cam.x = (cam.x || 0) + (Number(dx) || 0)
+      cam.y = (cam.y || 0) + (Number(dy) || 0)
+      this.clampCamera()
+      return this
+    }
+
+    // zoom about a point of the canvas, keeping that point under the pointer
+    zoomAt(px, py, factor) {
+      const cam = this.cam
+      if (!cam) return this
+      const f = Number(factor)
+      if (!Number.isFinite(f) || f <= 0) return this
+      const z0 = Number.isFinite(cam.z) && cam.z > 0 ? cam.z : 1
+      const z1 = Math.min(CAMERA.maxZoom, Math.max(CAMERA.minZoom, z0 * f))
+      if (Math.abs(z1 - z0) < 1e-6) return this
+      const cx = this.W / 2, cy = this.H / 2
+      const ox = (Number.isFinite(px) ? px : cx) - cx
+      const oy = (Number.isFinite(py) ? py : cy) - cy
+      const r = z1 / z0
+      cam.x = ox - (ox - (cam.x || 0)) * r
+      cam.y = oy - (oy - (cam.y || 0)) * r
+      cam.z = z1
+      this.clampCamera()
+      return this
+    }
+
+    resetCamera() {
+      this.cam = { x: 0, y: 0, z: 1 }
+      return this
+    }
+
+    bindInput() {
+      const c = this.c
+      if (!c?.addEventListener) return
+      this._ptrs = new Map()
+      this._drag = null
+      this._pinch = null
+      this._suppressClick = false
+      if (c.style) c.style.touchAction = "none" // two fingers must zoom, not scroll the page
+      const point = (e) => {
+        const r = c.getBoundingClientRect?.() || { left: 0, top: 0 }
+        return [e.clientX - r.left, e.clientY - r.top]
+      }
+      const down = (e) => {
+        if (e.pointerType === "mouse" && e.button !== 0) return
+        const [x, y] = point(e)
+        this._ptrs.set(e.pointerId, { x, y })
+        c.setPointerCapture?.(e.pointerId)
+        this._suppressClick = false
+        if (this._ptrs.size >= 2) {
+          const [a, b] = [...this._ptrs.values()]
+          this._pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 }
+          this._drag = null
+        } else {
+          this._drag = { x, y, sx: x, sy: y, moved: false }
+        }
+      }
+      const move = (e) => {
+        if (!this._ptrs.has(e.pointerId)) return
+        const [x, y] = point(e)
+        this._ptrs.set(e.pointerId, { x, y })
+        if (this._ptrs.size >= 2 && this._pinch) {
+          const [a, b] = [...this._ptrs.values()]
+          const d = Math.hypot(a.x - b.x, a.y - b.y)
+          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
+          if (this._pinch.d > 1) this.zoomAt(mx, my, d / this._pinch.d)
+          this.panBy(mx - this._pinch.mx, my - this._pinch.my)
+          this._pinch = { d, mx, my }
+          this._suppressClick = true
+          e.preventDefault?.()
+          return
+        }
+        const drag = this._drag
+        if (!drag) return
+        if (!drag.moved && Math.hypot(x - drag.sx, y - drag.sy) > 3) drag.moved = true
+        if (drag.moved) {
+          this.panBy(x - drag.x, y - drag.y)
+          this._suppressClick = true
+          if (c.style) c.style.cursor = "grabbing"
+          e.preventDefault?.()
+        }
+        drag.x = x; drag.y = y
+      }
+      const up = (e) => {
+        this._ptrs.delete(e.pointerId)
+        if (this._ptrs.size < 2) this._pinch = null
+        if (!this._ptrs.size) {
+          this._drag = null
+          if (c.style) c.style.cursor = ""
+          // the click that follows a drag must not open the panel
+          if (this._suppressClick) setTimeout(() => { this._suppressClick = false }, 0)
+        }
+      }
+      c.addEventListener("pointerdown", down)
+      c.addEventListener("pointermove", move)
+      c.addEventListener("pointerup", up)
+      c.addEventListener("pointercancel", up)
+      c.addEventListener("wheel", (e) => {
+        e.preventDefault?.()
+        const [x, y] = point(e)
+        this.zoomAt(x, y, Math.exp(-(Number(e.deltaY) || 0) * 0.0018))
+      }, { passive: false })
+      // registered before the page's click handler, so a drag stays a drag
+      c.addEventListener("click", (e) => {
+        if (!this._suppressClick) return
+        this._suppressClick = false
+        e.stopImmediatePropagation?.()
+        e.preventDefault?.()
+      }, true)
+      // 0 or Home brings the office back to its fitted view
+      this._onKey = (e) => {
+        if (e.defaultPrevented) return
+        const tag = e.target?.tagName
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target?.isContentEditable) return
+        if (e.key === "0" || e.key === "Home") { this.resetCamera(); e.preventDefault?.() }
+      }
+      globalThis.document?.addEventListener?.("keydown", this._onKey)
+    }
+
+    dispose() {
+      globalThis.document?.removeEventListener?.("keydown", this._onKey)
     }
 
     // ---- drawing primitives ----------------------------------------
@@ -329,17 +554,31 @@
       g.fillText(s, x, y)
     }
 
+    // the day/night palette, re-read every half minute (or overridden)
+    currentPhase() {
+      if (this.phaseOverride != null) return dayPhase(this.phaseOverride)
+      const now = Date.now()
+      if (!this._day || !this._dayAt || now - this._dayAt > 30000) {
+        this._dayAt = now
+        this._day = dayPhase(new Date(now))
+      }
+      return this._day
+    }
+
     // ---- the room ----------------------------------------------------
     background() {
       const g = this.g
+      const day = this.dayState || dayPhase()
       const sky = g.createLinearGradient(0, 0, 0, this.H)
-      sky.addColorStop(0, "#05070f")
-      sky.addColorStop(1, "#0b1020")
+      sky.addColorStop(0, day.sky[0])
+      sky.addColorStop(1, day.sky[1])
       g.fillStyle = sky
       g.fillRect(0, 0, this.W, this.H)
-      for (const [a, b, c] of this.stars) {
+      if (day.star > 0.02) for (const [a, b, c] of this.stars) {
         const tw = 0.5 + 0.5 * Math.sin(this.t * (0.6 + c) + a * 40)
-        g.fillStyle = `rgba(255,255,255,${0.15 + 0.55 * c * tw})`
+        const alpha = (0.15 + 0.55 * c * tw) * day.star
+        if (alpha < 0.02) continue
+        g.fillStyle = `rgba(255,255,255,${alpha})`
         g.fillRect(a * this.W, b * this.H, c > 0.8 ? 2 : 1, c > 0.8 ? 2 : 1)
       }
       if (this.dim !== "3d") return
@@ -355,6 +594,11 @@
       base.addColorStop(1, "#b34e1f")
       g.fillStyle = base
       g.fillRect(px - R, py - R, R * 2, R * 2)
+      // dawn and dusk tint the planet's lit limb the way the room is lit
+      if (day.planet < 1) {
+        g.fillStyle = day.ambient
+        g.fillRect(px - R, py - R, R * 2, R * 2)
+      }
       const bands = ["#f6c48b", "#d9773b", "#fbe0b8", "#c85f29", "#efae6c", "#a8441b"]
       g.translate(px, py)
       g.rotate(-0.28)
@@ -416,10 +660,25 @@
       })
       g.stroke()
       g.restore()
+      // each venue's front approach: a soft ring where a worker stands
+      for (const a of ACTIVITIES) {
+        const [mx, my] = this.P(a.ax, a.ay, 0.012)
+        const [r, gg, b] = rgb(a.color)
+        const glow = 0.32 + 0.18 * Math.sin(this.t * 1.3 + a.ax * 3)
+        g.save()
+        g.strokeStyle = `rgba(${r},${gg},${b},${glow})`
+        g.lineWidth = 1.5
+        g.setLineDash([4, 4])
+        g.beginPath()
+        g.ellipse(mx, my, Math.max(4, this.s * 0.19), Math.max(3, this.s * 0.11), 0, 0, Math.PI * 2)
+        g.stroke()
+        g.restore()
+      }
     }
 
     walls() {
       const H = ROOM.wall
+      const day = this.dayState || dayPhase()
       if (this.dim !== "3d") {
         this.box(-0.35, -0.35, 0, ROOM.w + 0.35, 0.35, 0.9, "#9aa1ad")
         this.box(-0.35, 0, 0, 0.35, ROOM.d, 0.9, "#8a919c")
@@ -444,8 +703,8 @@
       g.fill("evenodd")
       g.restore()
       for (const [a, b] of wins) {
-        // glass and frame
-        this.poly(far(a, b, 1.05, H - 0.35), "rgba(120,170,255,.06)", "#7d838f")
+        // glass and frame: the glass carries the local time's tint
+        this.poly(far(a, b, 1.05, H - 0.35), day.glass, "#7d838f")
         this.poly(far((a + b) / 2 - 0.04, (a + b) / 2 + 0.04, 1.05, H - 0.35), "#7d838f")
       }
       this.poly(far(0, ROOM.w, 0, 0.32), "#9097a3")
@@ -488,6 +747,18 @@
       if (side === "left") g.transform(1, -0.577, 0, 1, 0, 0)
       this.text(s, 0, 0, Math.max(7, this.s * 0.22), color, "800")
       g.restore()
+    }
+
+    // a thin wash over the room so dawn/day/dusk/night reads on the floor
+    // and walls too; the workers themselves stay fully readable
+    ambient() {
+      const day = this.dayState || dayPhase()
+      const g = this.g
+      const wash = g.createLinearGradient(0, 0, 0, this.H)
+      wash.addColorStop(0, day.ambient)
+      wash.addColorStop(1, "rgba(0,0,0,0)")
+      g.fillStyle = wash
+      g.fillRect(0, 0, this.W, this.H)
     }
 
     // ---- furniture: each a drawable with a depth -------------------
@@ -569,7 +840,7 @@
           S.box(x + 0.15, y + 0.15, z + 0.55, 0.3, 0.3, 0.01, "#f6c453", { line: false })
         }
       })
-      // the robot dog
+      // the robot dog, pacing its own open pocket by the crates
       const rx = 11.3 + Math.sin(this.t * 0.4) * 0.8
       add(rx, 10.9, 0.8, 0.5, () => {
         S.box(rx, 10.9, 0.15, 0.7, 0.45, 0.3, "#3f3f46")
@@ -597,7 +868,145 @@
         S.box(14.1, 0.5, 0.8, 1.4, 0.35, 0.6, "#374151")
         S.onFront(14.1, 0.5, 0.8, 1.4, 0.35, 0.6, 0.1, 0.15, 0.9, 0.85, glow("#f59e0b"))
       })
+      // the activity venues: coffee counter, table tennis, reading shelf,
+      // whiteboard huddle, arcade cabinet, and the office cat on the shelf
+      out.push(...this.activityProps())
       return out
+    }
+
+    activityProps() {
+      const out = []
+      const S = this
+      const add = (x, y, w, d, fn) => out.push({ k: this.depth(x + w / 2, y + d), fn })
+      const glow = (c) => shade(c, 0.08 + 0.07 * Math.sin(this.t * 3))
+      const by = (id) => ACTIVITIES.find((a) => a.id === id)
+
+      // reading nook: a tall shelf of book spines
+      const shelf = by("bookshelf")
+      add(shelf.x, shelf.y, shelf.w, shelf.d, () => {
+        S.box(shelf.x, shelf.y, 0, shelf.w, shelf.d, 0.16, "#4a2f1b")
+        S.box(shelf.x, shelf.y, 0.16, shelf.w, shelf.d, 1.62, "#6b4426")
+        for (const z of [0.56, 1.02, 1.48]) S.box(shelf.x, shelf.y + shelf.d - 0.03, z, shelf.w, 0.03, 0.05, "#8a5a32", { line: false })
+        const books = ["#ef4444", "#3b82f6", "#22c55e", "#f59e0b", "#a78bfa", "#ec4899", "#14b8a6", "#e5e7eb"]
+        for (let i = 0; i < 8; i++) {
+          const x = shelf.x + 0.07 + i * 0.185
+          S.onFront(x, shelf.y, 0.28, 0.145, shelf.d, 1.1, 0.08, 0.05, 0.92, 0.62, books[i])
+          S.onFront(x, shelf.y, 0.28, 0.145, shelf.d, 1.1, 0.08, 0.66, 0.92, 0.95, books[(i + 3) % books.length])
+        }
+        // the shelf's led
+        S.box(shelf.x + 0.05, shelf.y + shelf.d - 0.06, 1.78, shelf.w - 0.1, 0.06, 0.03, glow("#fcd34d"), { line: false })
+      })
+      // the cat: one slow, capped animation on top of the shelf
+      if (this.cat) {
+        const base = this.depth(shelf.x + shelf.w / 2, shelf.y + shelf.d) + 0.05
+        out.push({ k: base, fn: () => S.catOnShelf() })
+      }
+
+      // arcade: a cabinet whose lit screen faces the worker (east)
+      const arc = by("arcade")
+      add(arc.x, arc.y, arc.w, arc.d, () => {
+        S.box(arc.x, arc.y, 0, arc.w, arc.d, 1.52, "#1e293b")
+        S.box(arc.x, arc.y, 1.52, arc.w, arc.d, 0.1, "#0f172a")
+        // marquee
+        S.onRight(arc.x, arc.y, 1.18, arc.w, arc.d, 0.28, 0.08, 0.08, 0.92, 0.92, glow("#38bdf8"))
+        // screen and controls on the east face
+        S.onRight(arc.x, arc.y, 0.5, arc.w, arc.d, 0.55, 0.12, 0.12, 0.88, 0.88, glow("#0ea5e9"))
+        S.onRight(arc.x, arc.y, 0.18, arc.w, arc.d, 0.12, 0.1, 0.1, 0.9, 0.9, "#0f172a")
+        S.box(arc.x + 0.1, arc.y + 0.12, 0.1, 0.18, 0.1, 0.12, "#f43f5e", { line: false })
+        S.box(arc.x + 0.52, arc.y + 0.12, 0.1, 0.18, 0.1, 0.12, "#22d3ee", { line: false })
+        // a glowing top panel keeps the cabinet readable in the 2D view
+        S.box(arc.x + 0.16, arc.y + 0.14, 1.52, 0.58, 0.42, 0.05, glow("#38bdf8"), { line: false })
+      })
+
+      // whiteboard huddle: a low table and a lit whiteboard facing south
+      const meet = by("meeting")
+      add(meet.x, meet.y, meet.w, meet.d, () => {
+        S.box(meet.x, meet.y, 0, meet.w, meet.d, 0.14, "#52525b")
+        S.box(meet.x + 0.12, meet.y + 0.28, 0, 0.1, 0.1, 0.64, "#71717a", { line: false })
+        S.box(meet.x + meet.w - 0.22, meet.y + 0.28, 0, 0.1, 0.1, 0.64, "#71717a", { line: false })
+        S.box(meet.x, meet.y + 0.18, 0.62, meet.w, meet.d - 0.34, 0.1, "#d6d3d1")
+        // the board stands on the north edge; its face looks south
+        S.box(meet.x + 0.12, meet.y + 0.03, 0.1, meet.w - 0.24, 0.07, 1.28, "#e5e7eb")
+        S.box(meet.x + 0.02, meet.y + 0.0, 0, meet.w - 0.04, 0.13, 0.14, "#64748b")
+        S.onFront(meet.x + 0.18, meet.y + 0.03, 0.3, meet.w - 0.36, 0.07, 0.9, 0.1, 0.72, 0.52, 0.79, "#c4b5fd")
+        S.onFront(meet.x + 0.18, meet.y + 0.03, 0.3, meet.w - 0.36, 0.07, 0.9, 0.16, 0.58, 0.78, 0.65, "#7dd3fc")
+        S.onFront(meet.x + 0.18, meet.y + 0.03, 0.3, meet.w - 0.36, 0.07, 0.9, 0.1, 0.44, 0.44, 0.51, "#fca5a5")
+        S.onFront(meet.x + 0.18, meet.y + 0.03, 0.3, meet.w - 0.36, 0.07, 0.9, 0.52, 0.3, 0.86, 0.37, "#86efac")
+        // mugs and notes on the table
+        for (const [mx, my, mc] of [[0.35, 0.72, "#f472b6"], [0.95, 0.74, "#fbbf24"], [1.35, 0.7, "#34d399"]]) {
+          S.box(meet.x + mx, meet.y + my, 0.72, 0.09, 0.09, 0.1, mc, { line: false })
+        }
+      })
+
+      // ping-pong: green table, white net, paddles and a ball, legs and all
+      const pp = by("pingpong")
+      add(pp.x, pp.y, pp.w, pp.d, () => {
+        for (const [lx, ly] of [[0.1, 0.1], [pp.w - 0.18, 0.1], [0.1, pp.d - 0.18], [pp.w - 0.18, pp.d - 0.18]]) {
+          S.box(pp.x + lx, pp.y + ly, 0, 0.1, 0.1, 0.66, "#475569", { line: false })
+        }
+        S.box(pp.x, pp.y, 0.66, pp.w, pp.d, 0.09, "#1f7a4d")
+        S.box(pp.x + 0.02, pp.y + 0.02, 0.75, pp.w - 0.04, pp.d - 0.04, 0.02, "#2fa96a", { line: false })
+        // net across the width, dividing the two ends
+        S.box(pp.x - 0.03, pp.y + pp.d / 2 - 0.03, 0.75, pp.w + 0.06, 0.06, 0.2, "#f8fafc")
+        S.box(pp.x + 0.12, pp.y + pp.d / 2 - 0.015, 0.77, pp.w - 0.24, 0.03, 0.015, "#e2e8f0", { line: false })
+        // paddles and a ball
+        S.box(pp.x + 0.28, pp.y + 0.3, 0.78, 0.2, 0.14, 0.03, "#ef4444")
+        S.box(pp.x + 1.42, pp.y + 0.62, 0.78, 0.2, 0.14, 0.03, "#3b82f6")
+        S.box(pp.x + 0.95, pp.y + 0.42, 0.8, 0.05, 0.05, 0.05, "#fef08a", { line: false })
+      })
+
+      // coffee / pantry: counter, machine, cups and a warm glow
+      const cof = by("coffee")
+      add(cof.x, cof.y, cof.w, cof.d, () => {
+        S.box(cof.x, cof.y, 0, cof.w, cof.d, 0.92, "#8b5e3c")
+        S.box(cof.x + 0.04, cof.y + 0.04, 0.92, cof.w - 0.08, cof.d - 0.08, 0.06, "#f5e6d3")
+        S.box(cof.x + 0.14, cof.y + 0.1, 0.98, 0.46, 0.34, 0.5, "#334155")
+        S.box(cof.x + 0.2, cof.y + 0.1, 1.14, 0.34, 0.02, 0.2, glow("#fb923c"), { line: false })
+        S.box(cof.x + 0.26, cof.y + 0.58, 0.88, 0.14, 0.14, 0.1, "#e5e7eb", { line: false })
+        for (let i = 0; i < 3; i++) S.box(cof.x + 0.86 + i * 0.14, cof.y + 0.34, 0.98, 0.09, 0.09, 0.13, ["#f8fafc", "#fcd34d", "#f472b6"][i], { line: false })
+        // a jar shelf above the counter
+        S.box(cof.x + 0.06, cof.y + 0.02, 1.7, cof.w - 0.12, 0.16, 0.06, "#6b4426")
+        for (let i = 0; i < 4; i++) S.box(cof.x + 0.16 + i * 0.26, cof.y + 0.05, 1.76, 0.16, 0.12, 0.18, ["#ef4444", "#22c55e", "#f59e0b", "#3b82f6"][i], { line: false })
+      })
+      return out
+    }
+
+    // one calm cat: a slow pace along the shelf, a tail flick, a blink
+    catAt() {
+      const shelf = ACTIVITIES.find((a) => a.id === "bookshelf")
+      const t = this.reducedMotion ? 0 : this.t
+      const pace = 0.5 + 0.5 * Math.sin(t * 0.22 + (this.cat?.seed || 0))
+      const x = shelf.x + 0.34 + pace * (shelf.w - 0.68)
+      const y = shelf.y + shelf.d / 2
+      const awake = !this.reducedMotion && Math.sin(t * 0.31) > -0.35
+      return { x, y, z: 1.81, awake, tail: Math.sin(t * (awake ? 1.5 : 0.4)), pace }
+    }
+
+    catOnShelf() {
+      const cat = this.catAt()
+      const { x, y, z } = cat
+      // a bright cushion makes the cat readable on the dark shelf in both views
+      this.box(x - 0.27, y - 0.17, z - 0.03, 0.54, 0.34, 0.05, "#f472b6")
+      this.box(x - 0.21, y - 0.12, z + 0.01, 0.42, 0.24, 0.02, "#fda4af", { line: false })
+      this.box(x - 0.17, y - 0.1, z, 0.34, 0.2, 0.12, "#fef3c7")
+      this.box(x + 0.12, y - 0.07, z + 0.06, 0.17, 0.15, 0.13, "#fff7ed")
+      this.box(x + 0.15, y - 0.05, z + 0.19, 0.04, 0.04, 0.07, "#f59e0b", { line: false })
+      this.box(x + 0.25, y - 0.05, z + 0.19, 0.04, 0.04, 0.07, "#f59e0b", { line: false })
+      // tabby stripes and a flicking tail
+      this.box(x - 0.12, y - 0.1, z + 0.1, 0.06, 0.2, 0.025, "#f59e0b", { line: false })
+      this.box(x - 0.02, y - 0.1, z + 0.1, 0.05, 0.2, 0.025, "#f59e0b", { line: false })
+      this.box(x - 0.28, y + 0.02 + cat.tail * 0.04, z + 0.05, 0.13, 0.05, 0.05, "#f59e0b", { line: false })
+      // closed eyes while dozing, dark slits while awake
+      this.onFront(x + 0.15, y - 0.07, z + 0.06, 0.1, 0.14, 0.13, 0.2, cat.awake ? 0.42 : 0.44, 0.36, cat.awake ? 0.56 : 0.46, "#1f2937")
+      this.onFront(x + 0.15, y - 0.07, z + 0.06, 0.1, 0.14, 0.13, 0.64, cat.awake ? 0.42 : 0.44, 0.8, cat.awake ? 0.56 : 0.46, "#1f2937")
+    }
+
+    // the venues' names, in their own colours, above the furniture
+    labels() {
+      for (const a of ACTIVITIES) {
+        const [x, y] = this.P(a.x + a.w / 2, a.y + a.d / 2, a.lz)
+        this.text(a.label, x, y, Math.max(7, this.s * 0.14), a.color, "800")
+      }
     }
 
     sofaLayer(front) {
@@ -625,9 +1034,18 @@
       } }
     }
 
+    // a worker's sofa slot, wherever its place came from: the old sofa kind
+    // or an activity slot that happens to be a sofa seat
+    sofaSlot(w) {
+      if (w.kind === "sofa") return w.slot
+      if (w.kind === "activity" && w.slot >= ACTIVITIES.length) return w.slot - ACTIVITIES.length
+      return -1
+    }
+
     sofaGroup(w) {
       if (Number.isInteger(w.transit)) return w.transit >= 5 ? 1 : 0
-      if (w.kind === "sofa" && !w.walking) return w.slot >= 5 ? 1 : 0
+      const slot = this.sofaSlot(w)
+      if (slot >= 0 && !w.walking) return slot >= 5 ? 1 : 0
       // The aisle is in front: a distant backrest must not cover its walkers.
       if (w.x >= 1.5 && w.x <= 2.5 && w.y >= 4.1 && w.y <= 9.1) return 0
       if (w.x >= 2.5 && w.x <= 4.9 && w.y >= 9.8 && w.y <= 10.55) return 1
@@ -637,13 +1055,14 @@
     // ---- workers -------------------------------------------------------
     setAgents(list) {
       const seen = new Set()
-      const used = { seat: new Set(), sofa: new Set(), zone: new Set(), err: new Set(), wander: new Set() }
-      const kindOf = (a) => (a.status === "waiting" ? "zone" : a.status === "error" ? "err" : a.status === "done" ? "sofa" : "seat")
+      const used = { seat: new Set(), sofa: new Set(), zone: new Set(), err: new Set(), activity: new Set(), wander: new Set() }
+      const kindOf = (a) => (a.status === "waiting" ? "zone" : a.status === "error" ? "err" : a.status === "done" ? "activity" : "seat")
       const spots = {
         seat: DESKS.map((d) => [d.seat[0], d.seat[1], d.face || "n"]),
         sofa: SOFA.map(([x, y], i) => [x, y, SOFA_FACE[i]]),
         zone: ZONE_SPOTS.map(([x, y]) => [x, y, "s"]),
         err: ERROR_SPOTS.map(([x, y]) => [x, y, "s"]),
+        activity: ACTIVITY_SPOTS,
         wander: WANDER.map(([x, y]) => [x, y, "s"]),
       }
       // the ones whose place is still theirs keep it
@@ -683,6 +1102,7 @@
           used[kind].add(slot)
           w.kind = kind
           w.slot = slot
+          w.lingerUntil = 0
         }
         const [tx, ty, facing] = spots[w.kind][w.slot]
         const to = tx + "," + ty
@@ -692,6 +1112,35 @@
         if (w.x == null) { w.x = tx; w.y = ty }
       }
       for (const k of [...this.workers.keys()]) if (!seen.has(k)) this.workers.delete(k)
+      // finished workers linger 8–30 s at a venue, then drift to another
+      // free one; the timer is wall-clock so it only ticks in a live page
+      const now = Date.now()
+      for (const w of this.workers.values()) {
+        if (w.kind !== "activity" || w.walking) continue
+        if (!w.lingerUntil) {
+          // start counting only once it has actually arrived at the venue
+          if (Math.hypot(w.x - w.tx, w.y - w.ty) > 0.05) continue
+          w.lingerUntil = now + activityDwell(w.a.seed || 0) * 1000
+          continue
+        }
+        if (now < w.lingerUntil) continue
+        const n = ACTIVITY_SPOTS.length
+        let target = -1
+        for (let i = 1; i <= n; i++) {
+          const j = (w.slot + i) % n
+          if (!used.activity.has(j)) { target = j; break }
+        }
+        if (target < 0) { w.lingerUntil = now + 4000; continue }
+        used.activity.delete(w.slot)
+        used.activity.add(target)
+        w.slot = target
+        const [tx, ty, facing] = ACTIVITY_SPOTS[target]
+        w.tx = tx; w.ty = ty; w.facing = facing || "s"
+        w.pathTo = tx + "," + ty
+        w.path = null
+        w.transit = null
+        w.lingerUntil = 0
+      }
       this.first = false
       this.atSeat = {}
       for (const w of this.workers.values()) if (w.kind === "seat") this.atSeat[w.slot] = w
@@ -750,9 +1199,9 @@
     worker(w) {
       const S = this, t = this.t + w.phase, a = w.a
       const st = a.status
-      const sitting = !w.walking && (w.kind === "seat" || w.kind === "sofa")
+      const sitting = !w.walking && (w.kind === "seat" || this.sofaSlot(w) >= 0)
       const pose = idlePose(w, this.t, this.reducedMotion)
-      const sleeping = sitting && w.kind === "sofa" && (a.idle || pose.kind === "doze")
+      const sleeping = sitting && this.sofaSlot(w) >= 0 && (a.idle || pose.kind === "doze")
       const f0 = w.walking ? "s" : (w.facing || "s")
       let { x, y } = w
       let z = 0
@@ -935,23 +1384,34 @@
 
     draw() {
       const g = this.g
+      this.dayState = this.currentPhase()
       g.clearRect(0, 0, this.W, this.H)
       this.background()
       this.floor()
       this.walls()
+      this.ambient()
       const items = this.props()
       // a person sitting is ordered by the seat's front edge, not their
       // middle, so their legs are over the cushion and not inside it
       for (const w of this.workers.values()) {
         if (this.sofaGroup(w) >= 0) continue // boarding, seated, or alighting
-        const sits = !w.walking && (w.kind === "seat" || w.kind === "sofa")
+        const sits = !w.walking && (w.kind === "seat" || this.sofaSlot(w) >= 0)
         items.push({ k: this.depth(w.x, w.y + (sits ? 0.34 : 0)) + 0.02, fn: () => this.worker(w) })
       }
       items.sort((a, b) => a.k - b.k)
       for (const it of items) it.fn()
+      this.labels()
       for (const w of this.workers.values()) this.bubble(w)
       const anchors = []
-      for (const w of this.workers.values()) if (w.screen) anchors.push({ key: w.key, x: w.screen.x, y: w.screen.y - this.s * 0.25, r: w.screen.r, fx: w.screen.foot[0], fy: w.screen.foot[1] })
+      const zoom = Number.isFinite(this.cam?.z) && this.cam.z > 0 ? this.cam.z : 1
+      for (const w of this.workers.values()) if (w.screen) anchors.push({
+        key: w.key,
+        x: w.screen.x,
+        y: w.screen.y - this.s * 0.25 * zoom,
+        r: w.screen.r * zoom,
+        fx: w.screen.foot[0],
+        fy: w.screen.foot[1],
+      })
       this.onFrame(anchors)
     }
 
@@ -983,5 +1443,10 @@
     }
   }
 
-  globalThis.AgentOfficeScene = { Scene, ROOM, DESKS, SOFA, ZONE, ZONE_SPOTS, NAV, BLOCKERS, SOFA_APPROACH, SOFA_FACE, DESKS, idlePose }
+  globalThis.AgentOfficeScene = {
+    Scene, ROOM, DESKS, SOFA, ZONE, ZONE_SPOTS, NAV, BLOCKERS, SOFA_APPROACH, SOFA_FACE, DESKS, idlePose,
+    // activity venues and the new clock/camera helpers
+    ACTIVITIES, POIS, POI_APPROACHES, ACTIVITY_SPOTS, SKY_PHASES, CAMERA,
+    dayPhase, phaseOfHour, activityDwell,
+  }
 })()

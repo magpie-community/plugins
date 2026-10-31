@@ -43,7 +43,8 @@ function runHost(spec, options, after = "", where = "xdg") {
   const code = `const h = await import(${JSON.stringify(mod + "?privacy=" + Math.random())}); h.start(); ${after} h.stop(); h.write();`
   const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: join(home, ".cache"), MAGPIE_AGENT_OFFICE_PAGE: out }
   // an agent's own home override must not reach the sessions of the real user
-  for (const k of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "DSH_HOME", "PI_CODING_AGENT_DIR", "QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "GROK_HOME", "FACTORY_HOME_OVERRIDE", "CURSOR_CONFIG_DIR", "KIMI_CODE_HOME", "MINIMAX_DATA_DIR", "CLINE_SESSION_DATA_DIR", "CLINE_DATA_DIR", "CLINE_DIR"]) delete env[k]
+  for (const k of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "DSH_HOME", "PI_CODING_AGENT_DIR", "QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "GROK_HOME", "FACTORY_HOME_OVERRIDE", "CURSOR_CONFIG_DIR", "KIMI_CODE_HOME", "MINIMAX_DATA_DIR", "CLINE_SESSION_DATA_DIR", "CLINE_DATA_DIR", "CLINE_DIR",
+    "COPILOT_HOME", "COPILOT_CONFIG_DIR", "KIMI_CODE_HOME", "KIMI_CONFIG_DIR", "GROK_HOME", "GROK_CONFIG_DIR", "OMP_HOME", "WMAD_OMP_SESSIONS_DIR"]) delete env[k]
   const r = spawnSync(process.execPath, ["-e", code], { cwd: where === "cwd" ? work : dir, env, encoding: "utf8" })
   if (r.status !== 0) throw new Error(`host run failed: ${r.stderr || r.stdout}`)
   return readFileSync(join(out, "live.js"), "utf8")

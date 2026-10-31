@@ -115,13 +115,13 @@ test("a stuck session the user clears leaves the office until it moves again", (
   const c = readCodex(fixture("codex-sigterm.jsonl"))
   const s = { ...c, key: "codex|" + c.id, source: "files", touched: now - 20 * 60e3, updated: now - 20 * 60e3 }
   const snap = { sessions: [s] }
-  const [a] = M.agents(snap, now, {})
+  const [a] = M.agents(snap, now, { progress: false })
   expect([a.status, a.sub]).toEqual(["error", "stuck"])
   expect(M.clearable(a.status)).toBe(true)
-  expect(M.agents(snap, now, { cleared: { [a.key]: a.at } })).toEqual([])
+  expect(M.agents(snap, now, { progress: false, cleared: { [a.key]: a.at } })).toEqual([])
   // its file moves: it is back
   const moved = { sessions: [{ ...s, touched: now }] }
-  expect(M.agents(moved, now, { cleared: { [a.key]: a.at } }).map((x) => x.key)).toEqual([a.key])
+  expect(M.agents(moved, now, { progress: false, cleared: { [a.key]: a.at } }).map((x) => x.key)).toEqual([a.key])
 })
 
 test("an agent at work can't be cleared", () => {

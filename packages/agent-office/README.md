@@ -2,140 +2,167 @@
 
 [![Latest release](https://img.shields.io/github/v/release/QingJ01/magpie-agent-office)](https://github.com/QingJ01/magpie-agent-office/releases)
 [![magpie ≥ 0.1.1318](https://img.shields.io/badge/magpie-%E2%89%A5%200.1.1318-4f46e5)](https://usemagpie.ai)
-[![Tests](https://img.shields.io/badge/tests-54%20passing-22a35a)](#test)
+[![Tests](https://img.shields.io/badge/tests-96%20passing-22a35a)](#test)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**一个住在 magpie 窗口里的实时 Agent 办公室。** 直接读取各 Agent 自己的会话记录，把正在思考、执行工具、等待批准或已经完成的工作，变成太空站里的小人。支持等距 3D、俯视 2D、实时列表和可拖动的悬浮小窗。
+**一个住在 magpie 窗口里的实时 Agent 办公室。** 直接读取各 Agent 自己的会话记录，把正在思考、执行工具、等待批准或已经完成的工作，变成真 3D 办公室里的小人；也可以切到等距画布、俯视 2D 或分组列表。
 
-A live activity dashboard for your coding agents inside [magpie](https://usemagpie.ai): every session becomes a little worker in a voxel space-station office, driven by the agent's own session files rather than guesses from network traffic.
+A live activity dashboard for your coding agents inside [magpie](https://usemagpie.ai). Every session becomes a worker in a real WebGL office, an isometric canvas room, or a grouped workbench — driven by the agent's own session files, not guesses from network traffic.
 
 ![Agent Office in magpie's window](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/in-magpie.png)
 
+![The real 3D office, six scenes, orbit camera](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/office-3d.png)
+
 ## 快速开始 · Quick start
+
+**magpie 插件（推荐）**
 
 ```sh
 magpie plugin add @magpie-community/page-agent-office
 ```
 
-安装后打开 **插件 › Agent 办公室**。默认显示真实会话，不是演示数据；第一次没有会话时会看到空办公室。想预览完整效果，可在 **设置 › 示例 Agent** 临时打开示例。
+安装后打开 **插件 › Agent 办公室**。第一次没有会话时会看到空办公室；想预览完整效果，可在 **设置 › 示例 Agent** 临时打开示例。
 
-- **3D / 2D**：等距太空站或俯视图。
-- **办公室 / 列表**：实时状态、当前步骤、目录、模型和最近活动时间。
-- **点击小人或列表行**：查看任务、最近提问、工具步骤、回复摘要和续接命令。
-- **画中画**：可拖动、可缩放的悬浮小窗，✕ 或 Esc 放回。
+**独立运行（没有 magpie 时）**
 
-支持直接读取会话文件的 Agent：Claude Code、Codex、DeepSeek Harness、Gemini CLI、Qwen Code、Pi、omp、Qoder、WorkBuddy、CodeBuddy。其他 Agent（Cursor、OpenCode、Copilot、Kimi 等）在通过 magpie 的模型工作时也会显示。
+```sh
+bun bin/agent-office.mjs          # 本地页面，默认 127.0.0.1:4545
+bun bin/agent-office.mjs --json   # 一次性快照，适合让 Agent 在聊天里汇报
+```
 
-**它会读取什么：** 这些 Agent 写在本机的会话文件，包括提问、回复和工具命令，并在插件自己的目录里生成 `page/live.js` 供页面显示。设置里关闭「显示提问和回复」后只保留状态与工具名，不再写入提问、回复或命令参数。
+仓库也带 `SKILL.md`，可放进 Claude Code / Codex 的 skills 目录，用 `/agent-office` 启动。
 
-仓库带有 `magpie-plugin` topic，因此也会出现在 **插件 › 发现 › 非官方插件 · GitHub**。插件市场的收录进展见 [magpie-community/plugins](https://github.com/magpie-community/plugins)。
+### 主要功能
 
-[功能与状态](#where-a-worker-is-is-what-it-is-doing) · [数据来源](#how-it-knows) · [隐私](#privacy) · [设置](#options) · [限制](#what-it-cannot-know) · [开发测试](#test)
+- **真 3D（WebGL）**：等距相机、拖拽旋转、滚轮缩放、实时光照与阴影；办公室、空间站、咖啡店、城堡、海盗湾、幽灵谷六种程序化场景。
+- **ISO / 2D**：不依赖 WebGL 的等距画布与俯视图；相机拖拽、滚轮缩放、昼夜窗光、办公室猫和五个活动点。
 
-## Where a worker is, is what it is doing
+![The isometric canvas office, with venues and the cat](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/office-iso.png)
+- **分组工作台**：按 **需要你 → 工作中 → 已结束** 分组；可按 Agent、子 Agent、摸鱼 Agent 过滤。
+- **今日面板**：今天的轮次、tokens、按 Agent 与目录汇总，以及上下文使用率条（60% 黄、85% 红）。
 
-| Status | Where | Sign |
-|---|---|---|
-| Thinking · 思考中 | at a desk | … |
-| Running tools · 执行中 | at a desk, typing, its screen lit | spinner, how long it has run |
-| Replying · 回复中 | at a desk | lines |
-| Waiting for you · 等你回应 | in the purple square, waving | **!** |
-| Done · 已完成 | on the sofa, asleep after 20 minutes | z |
-| Error · 错误 | at the broken console | × |
+![Today usage and context](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/today.png)
+- **最近对话**：点击 Agent 查看任务、当前步骤、最近消息、模型、目录、上下文和续接命令。
+- **页内提醒**：新出现的「需要你」或错误会在页面右下角弹出提示；标题栏显示需要你的数量。magpie 的 iframe 没有系统通知权限，所以不调用浏览器通知。
+- **9 种语言**：English、简体中文、繁體中文、日本語、한국어、Español、Français、Deutsch、Português。自动按最近提问的语言选择，也可手动指定。
+- **画中画**：可拖动、可缩放的页内悬浮小窗，✕ 或 Esc 放回。
 
-The counts at the top are how many need you (waiting for an approval or an answer, failed, or stuck), how many are working and how many are done. Below, real sessions: DeepSeek Harness running a tool, Codex done on the sofa, the panel of the first opened by a click:
+## 支持哪些 Agent
 
-![A real session's panel](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/panel.png)
+直接读取会话文件：
 
-## Which way each worker faces
-
-A seat says which way its owner looks: at a desk the sitter faces the desk, so the monitor stands on the desk's far edge with its lit side toward them and the chair's back behind; on the left wall's sofa they look east and on the front sofa north, away from the backrest. The head shows a face when that side is toward the camera, a profile when it is east, and the back of the head when it is away.
-
-## Movement and idle gestures
-
-Completed agents occasionally stretch, glance sideways, swing their legs or nod off. Their schedules differ, and these gestures pause while walking or working. The new gestures respect the system's reduced-motion preference; name tags remain steady.
-
-Sofas are blocked to normal foot traffic, including the space behind their backrests. Each seat has a front approach: walk through the aisle, board from the front, then leave by that same approach. Rerouting midway through boarding first returns to the aisle. Path smoothing checks every crossed grid cell, and an unreachable destination never falls back to walking straight through furniture.
-
-## How it knows
-
-From each agent's **own session file**, as the agent writes it — not a guess from traffic. The plugin's host part (it runs in magpie's plugin host while magpie is open) reads them every 1.5 seconds, only what changed:
-
-| Agent | File it reads |
+| Agent | 文件 |
 |---|---|
-| Claude Code | `~/.claude/projects/*/*.jsonl` |
-| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (+ `session_index.jsonl` for titles) |
-| DeepSeek Harness | `~/.dsh/sessions/*/*/session.v4.jsonl.zstd` |
+| Claude Code | `~/.claude/projects/*/*.jsonl`（以及 `subagents/*.jsonl`；`sessions/*.json` 只用来判断进程是否还在） |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`（+ `session_index.jsonl`） |
+| Copilot CLI | `~/.copilot/session-state/*/events.jsonl` |
+| Kimi Code | `~/.kimi-code/sessions/*/*/agents/*/wire.jsonl` |
+| DeepSeek Harness | `~/.dsh/sessions/*/*/session.v4.jsonl[.zstd]` |
 | Gemini CLI · Qwen Code | `~/.gemini/tmp/*/chats/session-*`, `~/.qwen/tmp/*/chats/session-*` |
-| Pi · omp | `~/.pi/agent/sessions/*/*.jsonl`, `~/.omp/agent/sessions/*/*.jsonl` |
-| Qoder · WorkBuddy · CodeBuddy | their `projects/*/*.jsonl` (Claude Code's format) |
+| Pi · omp | `~/.pi/agent/sessions/*/*.jsonl`, `~/.omp/agent/sessions/*/*.jsonl`，以及 `~/.omp/profiles/*/agent/sessions` |
+| Grok Build | `~/.grok/sessions/*/*/updates.jsonl` + `summary.json` |
+| Qoder · WorkBuddy · CodeBuddy | 各自的 `projects/*/*.jsonl`（Claude Code 格式） |
 
-The `*_HOME` / `*_CONFIG_DIR` variables those agents honour are honoured here too. What each file says decides the status outright: a tool call with no result yet is **running**, an approval asked (Codex's `exec_approval_request`, DeepSeek Harness's `approval/asked`, Gemini's `awaiting_approval`) is **waiting for you**, a question tool is **asked you something**, the turn's end is **done**, an interruption is **stopped**, an error turn is **error**. A turn whose file hasn't moved for ten minutes is shown as stuck.
+`*_HOME` / `*_CONFIG_DIR` 覆盖变量都支持。Claude 子 Agent、Kimi 子 Agent、Grok 子 Agent 会标为子 Agent，并带父会话；OMP profiles 带 profile 名。其他 Agent（Cursor、OpenCode、Copilot 等）在通过 magpie 的模型工作时，仍会由异步网关钩子看到。
 
-An agent killed mid-turn writes no end at all: one agent running another (`claude -p` or `codex exec` from a Bash tool) and interrupting it leaves the other's file mid-turn. Claude Code keeps a file per running process (`sessions/<pid>.json`), so a Claude Code session with no running process is **stopped**, at once. Codex and the other agents keep nothing a reader can check, so such a session shows as stuck. Any agent not at work — stuck, failed, stopped, done or waiting — can be taken out of the office with **Clear** (清除) in its panel; it comes back when its session moves again.
+## 状态与办公室
 
-Every other agent (Cursor, OpenCode, Copilot, Kimi…) shows while it works through magpie: the module is also an [asynchronous gateway hook](https://usemagpie.ai/docs/plugins#gateway-request) that sees its requests. The hook returns no body, so no request changes.
+| 状态 | 在哪里 | 标记 |
+|---|---|---|
+| Thinking · 思考中 | 工位 | … |
+| Running tools · 执行中 | 工位，屏幕亮着 | 工具名、已运行时间 |
+| Replying · 回复中 | 工位 | 正在写入的回复 |
+| Waiting for you · 等你回应 | 紫色区域，挥手 | **!** |
+| Done · 已完成 | 沙发、书架、咖啡台、乒乓球、街机、白板或电话亭 | ✓ / 摸鱼 |
+| Error · 错误 | 故障终端 | × |
 
-Both write `page/live.js` beside the page, which the page loads every second (a plugin page has no network; its own files it may load). The green **live** dot by the title turns grey if the host stops writing.
+工作 8 分钟没有新动静标 **No progress**，工具运行 10 分钟标 **No progress · 10m**，仍留在「工作中」；20 分钟后的完成会话进入摸鱼状态。办公室有五个活动点、可撸的猫、随本地时间变化的窗光，以及可拖拽缩放的相机。
 
-All 60 agents magpie knows are named with their own icons, the files magpie itself shows (`page/icons`, from magpie's assets, MIT).
+## 怎么知道
 
-## Using it
+每个 Agent 自己写在本机的会话文件是唯一事实来源。host 每 1.5 秒读取变化，页面每秒加载一次 `page/live.js`：
 
-Hovering only highlights a worker. **Click** a worker, its name tag or a row in the list to open its panel — the task, the last thing you asked, the step it's on, how its answer begins, its model and folder, and **Resume command**, shown selected so ⌘C / Ctrl+C copies it — which stays at the side until you close it (✕ or Esc) or click another agent.
+- 工具有调用没结果 → **执行中**
+- 请求批准 / 提问（Codex、DSH、Gemini、Kimi 等）→ **需要你**
+- 本轮结束 → **完成**；中断 → **已结束**；错误 → **错误**
+- 会话文件 8 / 10 分钟没动 → **No progress**
 
-## Privacy
+通过网关看到、没有本地文件的 Agent，按请求推断；它不会因为一次请求结束就冒充「完成」。hook 返回空 body，不修改任何请求。
 
-- It reads the agents' session files on this computer, only reads them, and only the last two days'. Through the gateway it records only requests made on this computer (magpie's `origin: local`) unless you set `"remote": true`.
-- `live.js` holds the agent, the session id, the folder name and path, the model, the last prompt (200 characters), the first 280 characters of the last answer, and the names and targets of the last tool calls. It never holds a key, a header or a whole conversation. With `"text": false` (Settings › Show prompts and replies, off) it keeps statuses and tool names only.
-- `live.js` stays in the plugin's folder and is never sent anywhere. The page asks magpie for no data at all: its `permissions` list is empty.
+**它会读取什么：** 本机的会话文件，包括提问、回复、工具命令、最近 8 条消息和用量字段，并在插件目录生成 `page/live.js`。设置里关闭「显示提问和回复」后只保留状态与工具名，不写入提问、回复、消息或命令参数；配置读不到时默认关闭文本（fail closed）。
 
-## Picture in picture
+## 隐私
 
-**Picture in picture** (画中画) lifts the office into a small window of the page's own, over the rest of it: drag its bar to move it, drag its corner to reshape it, click ✕ or press Esc to put it back. Only the agents that need you keep their name tags there; hover any of them for the card.
+- 只读本机 Agent 会话；默认只看最近两天、最多 40 个会话，CLI 可放到 200 个。
+- `live.js` 保存在插件自己的目录，不发送到任何地方；页面 `permissions` 为空，不读 magpie 的会话 API。
+- `text:false` 同时由 host 和页面执行：标题回退到目录名，步骤只留工具名，最近对话整段清空。即使 `live.js` 是旧的，页面也不会把被关闭的文本画出来。
+- 独立 CLI 只监听 `127.0.0.1`；`--private` 与插件里的开关等价。
 
-![The office in its own window, in magpie](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/picture-in-picture.png)
-
-magpie frames a plugin's page with `allow=""` and `sandbox="allow-scripts"`, so the browser's own floating window (a `<video>`'s picture-in-picture, or `documentPictureInPicture`) is refused a page inside it — that was tried first, and it left nothing on screen. A window drawn in the page is not.
-
-![2D](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/office-2d.png)
-![The list](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/list.png)
-
-## Options
+## 设置
 
 ```json
-{ "mode": "office", "dim": "3d", "demo": false, "showDone": true, "hideAfter": "6h", "text": true, "remote": false }
+{
+  "mode": "office",
+  "dim": "3d",
+  "scene": "office",
+  "quality": "medium",
+  "demo": false,
+  "showDone": true,
+  "hideAfter": "6h",
+  "text": true,
+  "agents": [],
+  "showSub": true,
+  "showIdle": true,
+  "side": true,
+  "lang": "auto",
+  "remote": false
+}
 ```
 
 | Key | |
 |---|---|
-| `mode` | `office` or `list` |
-| `dim` | `3d` or `2d` |
-| `demo` | show sample agents (Settings › Sample agents) |
-| `showDone` | keep finished agents on the sofa |
-| `hideAfter` | when a finished or failed agent leaves: `1h`, `6h`, `24h`, `never` |
-| `text` | keep prompts and replies (`false`: statuses and tool names only) |
-| `remote` | the gateway part also records requests from other computers and gateway keys |
-| `approvalAfterSec` | for an agent seen only through the gateway: how long its tools run before it counts as waiting for you (90) |
+| `mode` | `office` 或 `list` |
+| `dim` | `3d`（WebGL）、`iso`（等距画布）或 `2d`（俯视） |
+| `scene` | `office`、`station`、`cafe`、`castle`、`pirate`、`graveyard` |
+| `quality` | `low`、`medium`、`high`（3D 阴影与 DPR） |
+| `showDone` | 保留已完成的 Agent |
+| `hideAfter` | 完成后多久离开：`1h`、`6h`、`24h`、`never` |
+| `text` | 保留提问、回复和最近对话（`false`：只留状态与工具名） |
+| `agents` | 只显示这些 Agent；空数组为全部 |
+| `showSub` / `showIdle` | 显示子 Agent / 摸鱼 Agent |
+| `side` | 显示分组侧栏 |
+| `lang` | `auto` 或九种语言代码 |
+| `cleared` | { 会话 key: 时间 }：被「清除」的会话，文件再动就回来 |
+| `remote` | 网关部分也记录其他电脑的请求 |
+| `approvalAfterSec` | 只有网关记录时，工具运行多久算等你批准（90） |
 
-The page saves the first five as you change them; a change restarts the plugin's host (magpie's options do), so it waits until it has been left alone a moment.
+## 独立 CLI
+
+```sh
+bun bin/agent-office.mjs [--port 4545] [--hours 48] [--private] [--json] [--no-open]
+```
+
+`--json` 输出与页面相同的快照，方便 Agent 在聊天里总结；不带 `--json` 时启动同一个页面，数据来自同一个扫描器。需要 Bun（DSH 的 zstd 解码用到 `Bun.zstdDecompressSync`）。
 
 ## What it cannot know
 
-- **An agent whose files it doesn't read and that doesn't use magpie's models.** It has no record here at all.
-- **The model's word-by-word progress.** A file is written per message, so "replying" means the session's file is moving and the model has begun its answer.
-- **Sessions older than two days**, or more than the latest 40: they are left out to keep each read cheap.
+- **完全不读文件、也不经过 magpie 的 Agent**：没有任何记录。
+- **逐 token 的模型进度**：会话文件按消息写入，回复中只表示文件在动。
+- **系统通知**：magpie 的页面 iframe 没有通知权限，本插件用页内提示取代。
+- **超过 40 个会话 / 两天**：默认不进入页面；CLI 可调大。
+- **3D 需要 WebGL**：不可用时自动退回 ISO 画布，功能不丢。
 
 ## Files
 
-- `lib/readers.mjs` — each agent's session format turned into its phase, step, prompt and answer. No I/O.
-- `lib/scan.mjs` — finds the files in each agent's folder and rereads only the ones that changed.
-- `lib/track.mjs` — what the gateway hook keeps, from requests and replies in each API (Anthropic Messages, Chat Completions, Responses, Gemini). No I/O, so the tests drive it directly.
-- `office.hooks.mjs` — the host part: scans every 1.5 s, sees the gateway's requests, writes `page/live.js`.
-- `page/agents.js`, `page/icons/` — every agent magpie knows, with its own icon.
-- `page/model.js` — statuses, counts, words (English and Chinese), agent marks, resume commands and sample agents, with no DOM.
-- `page/scene.js` — the office, drawn on a canvas in isometric 3D or top-down 2D.
-- `page/icons.js`, `page/app.js`, `page/index.html`, `page/style.css` — the page.
+- `lib/readers.mjs` — 各 Agent 会话格式转成状态、步骤、消息、用量；无 I/O。
+- `lib/scan.mjs` — 找到会话文件，只重读变化；支持子 Agent、OMP profiles、DSH zstd 节流。
+- `lib/track.mjs` — 网关请求 / 回复的推断；无 I/O。
+- `office.hooks.mjs` — 插件 host：每 1.5 秒扫描、看网关请求、写 `page/live.js`。
+- `page/model.js` — 状态、分组、过滤、Today、九语言、续接命令、隐私裁剪。
+- `page/scene.js` — Canvas 等距 / 2D 办公室、五个活动点、猫、相机、昼夜。
+- `page/scene3d.js`, `page/three.min.js` — WebGL 真 3D、六场景、光照阴影；three.js r169，MIT。
+- `page/app.js`, `page/index.html`, `page/style.css`, `page/icons.js`, `page/icons/` — 页面、面板、侧栏、提醒和图标。
+- `bin/agent-office.mjs`, `SKILL.md` — 没有 magpie 时的独立页面、`--json` 和 skill 包装。
 
 ## Test
 
@@ -143,8 +170,19 @@ The page saves the first five as you change them; a change restarts the plugin's
 bun test
 ```
 
-Checked in magpie 0.1.1318's own window (`magpie web`), in every view: 3D, 2D, list, and the window of its own.
+96 项测试覆盖会话解析（含新客户端）、隐私、路径与朝向、沙发合成、2D 活动点、相机、昼夜、3D API、CLI 与独立服务。浏览器检查在 magpie 0.1.1318 的窗口和独立页面里做过 3D、ISO、2D、列表、场景切换、今日面板和隐私开关。
+
+## Prior art
+
+The office metaphor and several interaction ideas were inspired by
+[**whatsmyagentdoing**](https://github.com/Charonyuu/whatsmyagentdoing) by
+[Charonyuu](https://github.com/Charonyuu) — a standalone Claude Code / Codex
+skill that renders a live 3D office in the browser. It is an independent
+project under the MIT license; this plugin is a magpie-native implementation
+with its own renderer, session readers and privacy model. Thanks to its author
+for showing how much life a small office can have.
 
 ## License
 
-MIT
+MIT. The bundled three.js is MIT; see the notice in `page/three.min.js` and
+`page/scene3d.js`.

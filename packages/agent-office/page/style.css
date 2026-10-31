@@ -65,6 +65,7 @@ h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 21px; 
 .stage { position: relative; flex: 1; min-height: 340px; border-radius: 14px; overflow: hidden; background: #05070f; }
 .stage[hidden], .listview[hidden] { display: none; }
 canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+canvas[hidden] { display: none; }
 .tags { position: absolute; inset: 0; pointer-events: none; }
 .tag { position: absolute; left: 0; top: 0; pointer-events: auto; display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 3px 10px 3px 4px; border: 0; border-radius: 999px; background: rgba(236, 238, 243, .9); color: #1f2937; font: 600 12px/1.3 var(--font); box-shadow: 0 2px 8px rgba(0, 0, 0, .35); cursor: pointer; white-space: nowrap; will-change: transform; transition: background .12s, box-shadow .12s; }
 .tag[hidden] { display: none; } /* the rule above would otherwise show it */
@@ -158,10 +159,87 @@ footer { padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .floatslot > .stage { position: absolute; inset: 0; min-height: 0; border-radius: 0; }
 .stage-slot { flex: 1; min-height: 340px; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--line); border-radius: 14px; color: var(--muted); font-size: 13px; }
 
+/* ---- workbench additions: grouped list, side rail, Today, transcript ---- */
+.menu.wide { width: 300px; max-height: min(72vh, 520px); overflow: auto; }
+.today-tokens { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+.today-panel { width: min(340px, calc(100vw - 36px)); max-height: min(70vh, 480px); overflow: auto; }
+.today-big { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.today-big div { padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.today-big b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
+.today-big span, .today-note, .today-head { font-size: 12px; color: var(--muted); }
+.today-head { margin: 12px 0 4px; font-weight: 600; }
+.today-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; min-width: 0; }
+.today-row .trn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.today-row .n { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
+.today-note { margin-top: 12px; line-height: 1.5; }
+.ctx { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); padding: 3px 0; min-width: 0; }
+.ctx .cn { flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx .bar { flex: 1; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.ctx .bar i { display: block; height: 100%; border-radius: 2px; background: var(--done); }
+.ctx .cp { flex: none; font-variant-numeric: tabular-nums; }
+.ctx.warn .bar i { background: var(--wait); }
+.ctx.full .bar i { background: var(--err); }
+.ctx.warn .cp { color: var(--wait); }
+.ctx.full .cp { color: var(--err); }
+
+.agent-filter { display: flex; flex-direction: column; gap: 1px; max-height: 176px; overflow: auto; width: 100%; margin-top: 4px; }
+.agent-filter .af { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 7px; cursor: pointer; font-size: 12.5px; }
+.agent-filter .af:hover { background: var(--card); }
+.agent-filter .af input { margin: 0; accent-color: var(--accent); }
+.agent-filter .afn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-filter .afc { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11.5px; }
+.lang-select { width: 100%; margin-top: 6px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); font: inherit; font-size: 13px; }
+
+/* the list's three groups, as sticky-ish heading rows */
+tr.group td { background: var(--bg); color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 12px 14px 5px; border-bottom: 1px solid var(--line); }
+tr.group:hover { background: none; }
+tr.group .gcount { margin-left: 7px; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
+tr.group .gcount::before { content: "· "; }
+tr.group:hover td { background: var(--bg); }
+
+/* the office's side rail: the same three groups, click to open the panel */
+.rail { position: absolute; z-index: 12; right: 26px; top: 152px; width: min(256px, 44%); max-height: calc(100% - 300px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--bg) 94%, transparent); box-shadow: 0 12px 34px rgba(0, 0, 0, .18); backdrop-filter: blur(6px); }
+.rail[hidden] { display: none; }
+.rail-head { display: flex; align-items: center; gap: 7px; padding: 8px 10px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; }
+.rail-head b { color: var(--fg); font-variant-numeric: tabular-nums; }
+.rail-head .px { margin-left: 2px; }
+.rail-groups { overflow: auto; padding: 4px 6px 8px; }
+.rail-group { margin: 8px 6px 3px; color: var(--muted); font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.rail-row { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 27px; padding: 4px 6px; border: 0; border-radius: 8px; background: none; color: var(--fg); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.rail-row:hover { background: var(--card); }
+.rail-row .rn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-row .rs { flex: none; color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+.rail-row.on { background: var(--accent-soft, rgba(79, 70, 229, .1)); }
+
+/* context bar and the recent conversation inside the agent panel */
+.pctx { margin: 8px 0 2px; }
+.pconvo-h { margin: 10px 0 4px; color: #9ca3af; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.pconvo-h[hidden], .pmsgs[hidden] { display: none; }
+.pmsgs { max-height: 150px; overflow: auto; display: flex; flex-direction: column; gap: 6px; padding: 2px 0 4px; }
+.msg { font-size: 12.5px; line-height: 1.45; padding: 5px 8px; border-radius: 8px; background: #f3f4f6; color: #374151; overflow-wrap: anywhere; }
+.msg .mn { display: block; font-size: 10px; color: #9ca3af; font-weight: 700; letter-spacing: .03em; margin-bottom: 1px; text-transform: uppercase; }
+.msg .mt { float: right; color: #b0b5bd; font-size: 10px; margin-left: 6px; }
+.msg.user { background: rgba(79, 70, 229, .08); }
+.msg.assistant { background: rgba(16, 185, 129, .09); }
+.msg.tool { font-family: var(--mono); font-size: 11.5px; background: #f9fafb; color: #6b7280; }
+
+/* in-page toast: magpie's frame has no Notification permission */
+.toasts { position: fixed; z-index: 80; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; max-width: min(350px, calc(100vw - 36px)); }
+.toasts:empty { display: none; }
+.toast { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-left: 3px solid var(--wait); border-radius: 12px; background: var(--bg); color: var(--fg); box-shadow: 0 14px 38px rgba(0, 0, 0, .22); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; animation: toast-in .18s ease-out; }
+.toast.error { border-left-color: var(--err); }
+.toast .t-ico { flex: none; display: inline-flex; }
+.toast .tn { flex: 1; min-width: 0; }
+.toast .tn b { display: block; font-size: 12.5px; }
+.toast .tn span { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+
 @media (max-width: 720px) {
   body { padding: 8px; }
   .card { padding: 14px; }
   .counts { gap: 12px; font-size: 13px; }
   .bar { flex-wrap: wrap; }
   td.mono, th:nth-child(4), th:nth-child(5) { display: none; }
+  .rail { display: none; }
+  .menu.wide { width: min(300px, calc(100vw - 28px)); }
 }
