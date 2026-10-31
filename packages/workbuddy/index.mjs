@@ -2738,6 +2738,38 @@ function pinned(rows, account) {
 // exported function of a plugin as one of its own factories (host.js,
 // servers()), so freeWindowRows et al. must not be exports of the plugin.
 
+// The packages' codes, as WorkBuddy's own client lists them when it asks
+// for each package's credits (its COMMODITY_CODES): the API refuses a
+// detail list without them (10001 "PackageCodes required").
+const CODE = (n, s) => `TCACA_code_${n}_${s}`
+const PAID_CODES = [CODE("002", "AkiJS3ZHF5"), CODE("005", "maRGyrHhw1"), CODE("003", "FAnt7lcmRT"), CODE("023", "4xbGhMrE6q"),
+  CODE("026", "BaESVICNoi"), CODE("027", "0FCGVA6vSa"), CODE("009", "0XmEQc2xOf"), CODE("038", "OhvqZtiPKr"), CODE("036", "lupO5WgNdG"),
+  CODE("043", "6oIkxT7Z0S")]
+const DAILY_CODE = CODE("001", "PqouKr6QWV")
+const FREE_CODES = [DAILY_CODE, CODE("008", "cfWoLwvjU4"), CODE("035", "ArVxJcGDsm"), CODE("006", "DbXS0lrypC"), CODE("039", "KRcQj7wUat"),
+  CODE("040", "mi9rCYg46x"), CODE("007", "nzdH5h4Nl0"), CODE("028", "NtpWi0jzXs"), CODE("037", "WxOD3MpI2o"), CODE("029", "6wCGEWquYy"),
+  CODE("030", "BjSt89qTvr")]
+// a slice package (CapacityType 4) is refreshed each day: its credits are
+// lost at the same midnight on every account, so they tell none apart
+const SLICE = "4"
+
+// WorkBuddy groups its credits into plan allowance (planBase, planBonus),
+// platform activity gifts (benefit), and top-ups (addon).
+const PLAN_BASE = [CODE("002", "AkiJS3ZHF5"), CODE("005", "maRGyrHhw1"), CODE("003", "FAnt7lcmRT"), CODE("023", "4xbGhMrE6q"),
+  CODE("026", "BaESVICNoi"), CODE("027", "0FCGVA6vSa"), CODE("043", "6oIkxT7Z0S"), CODE("035", "ArVxJcGDsm"), CODE("039", "KRcQj7wUat"), CODE("040", "mi9rCYg46x")]
+const PLAN_BONUS = [CODE("028", "NtpWi0jzXs"), CODE("037", "WxOD3MpI2o")]
+const ADDON = [CODE("009", "0XmEQc2xOf"), CODE("038", "OhvqZtiPKr"), CODE("036", "lupO5WgNdG")]
+const BENEFIT = [CODE("007", "nzdH5h4Nl0"), CODE("029", "6wCGEWquYy"), CODE("030", "BjSt89qTvr")]
+
+function resolveCreditGroup(code, isIntl = false) {
+  if (!code) return null
+  if (PLAN_BASE.includes(code) || (!isIntl && code === CODE("008", "cfWoLwvjU4"))) return "planBase"
+  if (PLAN_BONUS.includes(code)) return "planBonus"
+  if (ADDON.includes(code)) return "addon"
+  if (BENEFIT.includes(code) || code === CODE("006", "DbXS0lrypC") || (isIntl && code === CODE("008", "cfWoLwvjU4"))) return "benefit"
+  return null
+}
+
 // usageOf is the account's credits, from its resource summary: the plan's
 // credits used against what the cycle grants, as magpie's built-in said —
 // the count itself too (amount of limit, in credits), for magpie to say it
@@ -2754,20 +2786,91 @@ function pinned(rows, account) {
 // CycleRemainCapacity at all leaves the window out. TotalCredits is not a
 // fallback: an account with no packages at all keeps its unknown allowance,
 // as before, so its free models are not skipped.
-function usageOf(sum, plan) {
+function usageOf(sum, plan, isIntl = false) {
   const out = { plan: plan || (sum?.IsPaidUser ? "Pro" : "Free plan"), windows: [] }
+
+  if (Array.isArray(sum?.CreditGroups) && sum.CreditGroups.length > 0) {
+    const planKinds = ["plan_base", "plan_bonus"]
+    const giftKinds = ["benefit", "addon"]
+    const planTotal = sum.CreditGroups.filter((g) => planKinds.includes(g?.Kind)).reduce((acc, g) => acc + capacity(g?.CycleTotalCapacity), 0)
+    const planUsed = sum.CreditGroups.filter((g) => planKinds.includes(g?.Kind)).reduce((acc, g) => acc + capacity(g?.CycleUsedCapacity), 0)
+    const giftTotal = sum.CreditGroups.filter((g) => giftKinds.includes(g?.Kind)).reduce((acc, g) => acc + capacity(g?.CycleTotalCapacity), 0)
+    const giftUsed = sum.CreditGroups.filter((g) => giftKinds.includes(g?.Kind)).reduce((acc, g) => acc + capacity(g?.CycleUsedCapacity), 0)
+
+    if (planTotal > 0) {
+      out.windows.push({
+        name: "Plan credits",
+        used: (100 * planUsed) / planTotal,
+        display: `${compact(planUsed)} / ${compact(planTotal)}`,
+        amount: planUsed,
+        limit: planTotal,
+        unit: "credits",
+      })
+    }
+    if (giftTotal > 0) {
+      out.windows.push({
+        name: "Gifted credits",
+        used: (100 * giftUsed) / giftTotal,
+        display: `${compact(giftUsed)} / ${compact(giftTotal)}`,
+        amount: giftUsed,
+        limit: giftTotal,
+        unit: "credits",
+      })
+    }
+    if (out.windows.length > 0) return out
+  }
+
   let total = 0, used = 0, left = 0, bags = 0
+  let planTotal = 0, planUsed = 0, giftTotal = 0, giftUsed = 0
+  let hasClassified = false
+
   for (const p of sum?.Packages ?? []) {
     const hasTotal = p?.CycleTotalCapacity != null && p.CycleTotalCapacity !== ""
     if (hasTotal) {
-      total += capacity(p.CycleTotalCapacity)
-      used += capacity(p?.CycleUsedCapacity)
+      const tot = capacity(p.CycleTotalCapacity)
+      const u = capacity(p?.CycleUsedCapacity)
+      total += tot
+      used += u
+      const g = resolveCreditGroup(p?.PackageCode, isIntl)
+      if (g === "planBase" || g === "planBonus") {
+        planTotal += tot
+        planUsed += u
+        hasClassified = true
+      } else if (g === "addon" || g === "benefit") {
+        giftTotal += tot
+        giftUsed += u
+        hasClassified = true
+      }
     } else if (p?.CycleRemainCapacity != null && p.CycleRemainCapacity !== "") {
       left += capacity(p.CycleRemainCapacity)
       bags++
     }
   }
-  if (total > 0) out.windows.push({ name: "Credits", used: (100 * used) / total, display: `${compact(used)} / ${compact(total)}`, amount: used, limit: total, unit: "credits" })
+
+  if (hasClassified) {
+    if (planTotal > 0) {
+      out.windows.push({
+        name: "Plan credits",
+        used: (100 * planUsed) / planTotal,
+        display: `${compact(planUsed)} / ${compact(planTotal)}`,
+        amount: planUsed,
+        limit: planTotal,
+        unit: "credits",
+      })
+    }
+    if (giftTotal > 0) {
+      out.windows.push({
+        name: "Gifted credits",
+        used: (100 * giftUsed) / giftTotal,
+        display: `${compact(giftUsed)} / ${compact(giftTotal)}`,
+        amount: giftUsed,
+        limit: giftTotal,
+        unit: "credits",
+      })
+    }
+  } else if (total > 0) {
+    out.windows.push({ name: "Credits", used: (100 * used) / total, display: `${compact(used)} / ${compact(total)}`, amount: used, limit: total, unit: "credits" })
+  }
   if (bags > 0 && (total === 0 || left > 0)) out.windows.push({ name: "Prepaid credits", balance: left, display: `${compact(left)} credits`, unit: "credits" })
   return out
 }
@@ -2809,19 +2912,7 @@ async function spareFree(site, a, windows) {
   return windows
 }
 
-// The packages' codes, as WorkBuddy's own client lists them when it asks
-// for each package's credits (its COMMODITY_CODES): the API refuses a
-// detail list without them (10001 "PackageCodes required").
-const CODE = (n, s) => `TCACA_code_${n}_${s}`
-const PAID_CODES = [CODE("002", "AkiJS3ZHF5"), CODE("005", "maRGyrHhw1"), CODE("003", "FAnt7lcmRT"), CODE("023", "4xbGhMrE6q"),
-  CODE("026", "BaESVICNoi"), CODE("027", "0FCGVA6vSa"), CODE("009", "0XmEQc2xOf"), CODE("038", "OhvqZtiPKr"), CODE("036", "lupO5WgNdG")]
-const DAILY_CODE = CODE("001", "PqouKr6QWV")
-const FREE_CODES = [DAILY_CODE, CODE("008", "cfWoLwvjU4"), CODE("035", "ArVxJcGDsm"), CODE("006", "DbXS0lrypC"), CODE("039", "KRcQj7wUat"),
-  CODE("040", "mi9rCYg46x"), CODE("007", "nzdH5h4Nl0"), CODE("028", "NtpWi0jzXs"), CODE("037", "WxOD3MpI2o"), CODE("029", "6wCGEWquYy"),
-  CODE("030", "BjSt89qTvr")]
-// a slice package (CapacityType 4) is refreshed each day: its credits are
-// lost at the same midnight on every account, so they tell none apart
-const SLICE = "4"
+
 
 // beijing is WorkBuddy's own time ("2026-10-13 00:39:27" is UTC+8, as its
 // DeductionEndTime for the same package says).
@@ -3584,7 +3675,7 @@ function makePlugin(site) {
             }
             said = "renewed"
           }
-          const out = usageOf(sum, auth.plan)
+          const out = usageOf(sum, auth.plan, site.ai)
           // an enterprise account's summary has no packages: its credits
           // are the enterprise meter's (#1904). A personal account's
           // refusal of it (10001 "uid or enterpriseID is empty") leaves
@@ -3599,11 +3690,23 @@ function makePlugin(site) {
           // when the plan's credits start again (cycleOf), and when the credits
           // left run out, for routing to spend them first (runsOutOf);
           // a list that can't be read leaves it unknown, the card stands
+          const planWin = out.windows.find((w) => w.name === "Plan credits")
+          const giftWin = out.windows.find((w) => w.name === "Gifted credits")
           const credits = out.windows.find((w) => w.name === "Credits")
-          if (credits) {
+          if (planWin || giftWin || credits) {
             try {
               const packages = await packagesOf(site, a)
-              Object.assign(credits, cycleOf(sum, packages) ?? {}, runsOutOf(sum, packages) ?? {})
+              const cycle = cycleOf(sum, packages)
+              const runs = runsOutOf(sum, packages)
+              if (planWin && cycle) Object.assign(planWin, cycle)
+              if (giftWin && runs) {
+                Object.assign(giftWin, runs)
+                if (!giftWin.resetsAt) giftWin.resetsAt = runs.runsOutAt
+              }
+              if (credits) Object.assign(credits, cycle ?? {}, runs ?? {})
+              if (runs) {
+                out.resets = { count: Math.round(runs.runsOut), until: runs.runsOutAt }
+              }
             } catch {}
           }
           await spareFree(site, a, out.windows)
@@ -3759,4 +3862,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { idFor, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { idFor, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, resolveCreditGroup, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }

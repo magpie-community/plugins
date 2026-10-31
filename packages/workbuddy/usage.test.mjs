@@ -313,9 +313,10 @@ test("the credits that run out soonest, for routing to spend first (cdredfox on 
   })
   const auth = { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" }
   const u = await usageOf(WorkBuddyAIAuthPlugin, auth)
-  const w = u.windows.find((x) => x.name === "Credits")
+  const w = u.windows.find((x) => x.name === "Gifted credits")
   expect(w.runsOutAt).toBe("2036-10-12T16:39:27.000Z")
   expect(w.runsOut).toBe(232.4)
+  expect(u.resets).toEqual({ count: 232, until: "2036-10-12T16:39:27.000Z" })
   // the lists are asked for as WorkBuddy's client asks: without the codes
   // the API answers 10001 "PackageCodes required"
   expect(bodies.paid).toMatchObject({ PageNumber: 1, PageSize: 200, Status: [0, 3], NeedRenewInfo: true })
@@ -366,7 +367,7 @@ test("used credits say when the plan's cycle starts again, as WorkBuddy's client
     "/billing/meter/get-user-resource-free-packages": () => ok(on(LIVE_FREE)),
   })
   const u = await usageOf(WorkBuddyAIAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
-  const w = u.windows.find((x) => x.name === "Credits")
+  const w = u.windows.find((x) => x.name === "Plan credits")
   expect(w.amount).toBeCloseTo(89.2, 5)
   expect(w.resetsAt).toBe("2036-10-28T16:40:52.000Z")
   expect(w.span).toBe(30 * 86400 - 1)
@@ -428,7 +429,10 @@ test("a detail list that can't be read leaves the card as it was", async () => {
   })
   const u = await usageOf(WorkBuddyAIAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
   expect(u.error).toBeUndefined()
-  expect(u.windows[0]).toEqual({ name: "Credits", used: 100 * 17.6 / 2250, display: "17.6 / 2250", amount: 17.6, limit: 2250, unit: "credits" })
+  expect(u.windows).toEqual([
+    { name: "Plan credits", used: 0, display: "0 / 2000", amount: 0, limit: 2000, unit: "credits" },
+    { name: "Gifted credits", used: (100 * 17.6) / 250, display: "17.6 / 250", amount: 17.6, limit: 250, unit: "credits" },
+  ])
 })
 
 // magpie #1904 (CnsMaple): an enterprise account's resource summary has no
@@ -565,4 +569,43 @@ test("a WorkBuddy AI card carries the free model's window from the ledger", asyn
   } finally {
     rmSync(ledger, { force: true })
   }
+})
+
+test("a China-site free account's dual credit windows: plan and gifted credits apart", async () => {
+  const YEARS = 10
+  const on = (d) => ({ ...d, Accounts: d.Accounts.map((p) => ({ ...p, DeductionEndTime: p.DeductionEndTime + Date.UTC(2036, 9, 1) - Date.UTC(2026, 9, 1),
+    CycleEndTime: "2036" + p.CycleEndTime.slice(4) })) })
+  serve({
+    "/billing/meter/get-user-resource-summary": () => ok(CN_FREE_SUMMARY),
+    "/billing/meter/get-user-resource-paid-packages": () => ok({ TotalCount: 0, Accounts: [] }),
+    "/billing/meter/get-user-resource-free-packages": () => ok(on(CN_FREE)),
+  })
+  const auth = { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u", domain: "" }
+  const u = await usageOf(WorkBuddyAuthPlugin, auth)
+  expect(u.windows.map((w) => w.name)).toEqual(["Plan credits", "Gifted credits"])
+  const plan = u.windows.find((w) => w.name === "Plan credits")
+  const gift = u.windows.find((w) => w.name === "Gifted credits")
+  expect(plan).toMatchObject({ amount: 0, limit: 500, display: "0 / 500" })
+  expect(plan.resetsAt).toBe("2036-10-31T15:59:59.000Z")
+  expect(gift).toMatchObject({ limit: 2900, display: "282 / 2900" })
+  expect(gift.runsOutAt).toBe("2036-10-29T17:34:42.000Z")
+  expect(gift.runsOut).toBeCloseTo(18.44, 2)
+  expect(u.resets).toEqual({ count: 18, until: "2036-10-29T17:34:42.000Z" })
+})
+
+test("CreditGroups from API splits into Plan credits and Gifted credits", () => {
+  const sumWithGroups = {
+    IsPaidUser: true,
+    CreditGroups: [
+      { Kind: "plan_base", CycleTotalCapacity: "1000", CycleUsedCapacity: "100" },
+      { Kind: "plan_bonus", CycleTotalCapacity: "500", CycleUsedCapacity: "0" },
+      { Kind: "benefit", CycleTotalCapacity: "2000", CycleUsedCapacity: "400" },
+      { Kind: "addon", CycleTotalCapacity: "500", CycleUsedCapacity: "100" },
+    ],
+  }
+  const out = _internal.usageOf(sumWithGroups, "Pro")
+  expect(out.windows).toEqual([
+    { name: "Plan credits", used: (100 * 100) / 1500, display: "100 / 1500", amount: 100, limit: 1500, unit: "credits" },
+    { name: "Gifted credits", used: (100 * 500) / 2500, display: "500 / 2500", amount: 500, limit: 2500, unit: "credits" },
+  ])
 })
