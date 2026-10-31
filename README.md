@@ -34,6 +34,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [qoder](packages/qoder) | Qoder CN subscription (qoder.cn), with Qoder CN's device sign-in | `qoder-cn` |
 | [raccoon](packages/raccoon) | SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com): account credits and daily check-in, with browser sign-in or Raccoon desktop's sign-in | `raccoon` |
 | [river](packages/river) | River (river.ai) pay-as-you-go inference, with your API key: per-account models, documented reasoning efforts and live prices | `river` |
+| [sensenova](packages/sensenova) | SenseNova (商汤日日新) Token Plan: one console sign-in gives the credit pools, windows and grants, and (with an optional API key) the plan's models for chat | `sensenova-token-plan` |
 | [trae](packages/trae) | Trae CN (trae.cn) and Trae international (trae.ai), free tier included, with Trae's browser sign-in (experimental) | `trae-cn`, `trae-global` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (China build, CodeBuddy plan) | `workbuddy` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (international build) | `workbuddy-ai` |
