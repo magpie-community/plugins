@@ -190,7 +190,10 @@ export function continued(body, protocol) {
 
 // Claude Code's background agents. The Agent tool can return at once ("Async
 // agent launched successfully"), and the Workflow tool always does ("Workflow
-// launched in background"): LAUNCHED, by the tool that answers so. The main
+// launched in background"): LAUNCHED, by the tool that answers so. SendMessage
+// to an agent that has stopped resumes it in the background: its result is
+// JSON with "resumedAgentId" (RESUMED; left out when the call waits for the
+// agent and its report comes back in the result instead). The main
 // conversation may then end its turn while the agents work. When one stops,
 // Claude Code resumes the main conversation with a user message that is only
 // a notification (NOTIFICATION, wrapping a <task-notification>), not the
@@ -198,6 +201,16 @@ export function continued(body, protocol) {
 // the turn: a dev server never stops.
 const LAUNCHED = { Agent: "Async agent launched successfully", Task: "Async agent launched successfully", Workflow: "Workflow launched in background" }
 const NOTIFICATION = "[SYSTEM NOTIFICATION - NOT USER INPUT]"
+const RESUMED = /"resumedAgentId"\s*:\s*"([^"\\]+)"/
+const AGENT_ID = /^agentId:\s*([\w-]+)/m
+// A "completed" notification that says the agent will notify again (from the
+// claude binary, both captured): it stopped with background work of its own
+// still running, or messages sent to it came too late and it is being resumed
+// with them. Either way the turn isn't over yet.
+const INTERIM = [
+  "This agent stopped with background work of its own still running",
+  "The agent is being resumed with them and will notify again",
+]
 
 const lastUser = (body) => Array.isArray(body?.messages) ? body.messages.at(-1) : undefined
 const resultTexts = (c) => Array.isArray(c) ? c.flatMap((p) => isObj(p) && p.type === "tool_result" ? texts(p.content) : []) : []
@@ -217,28 +230,42 @@ export function notificationOnly(body, protocol) {
 }
 
 // background: the background agents the newest user message launched (the
-// tool_use_id of each "launched" result of an Agent, Task or Workflow call
-// the previous reply made) and the ones it says have stopped (the
-// <tool-use-id> of each notification that is not "running"). A notification that arrives while
-// the main conversation is still working rides inside a tool_result (as
-// captured), so tool results are read too. Ids, not counts: a retried request
-// carries the same launch again, and the same agent may notify more than once.
+// tool_use_id of each "launched" result of an Agent, Task or Workflow call,
+// or "resumed" result of a SendMessage call, the previous reply made), the
+// agent id each of those names (agents: tool_use_id -> agent id), and the
+// ids each notification that says a task has stopped names (its <tool-use-id>
+// and its <task-id>). A notification is left out while "running", or when it
+// says the agent will notify again (INTERIM). Both ids matter: the
+// notification of an agent that resumed on its own carries only its
+// <task-id>, and one resumed by SendMessage carries that call's tool-use id
+// (both captured). A notification that arrives while the main conversation is
+// still working rides inside a tool_result (as captured), so tool results are
+// read too. Ids, not counts: a retried request carries the same launch again,
+// and the same agent may notify more than once.
 export function background(body, protocol) {
-  const none = { launched: [], stopped: [] }
+  const none = { launched: [], stopped: [], agents: {} }
   if (protocol !== "anthropic" || !Array.isArray(body?.messages)) return none
   const last = body.messages.at(-1)
   if (!isObj(last) || last.role !== "user") return none
   const prev = body.messages.at(-2)
   const calls = new Map(isObj(prev) && prev.role === "assistant" && Array.isArray(prev.content)
-    ? prev.content.filter((p) => isObj(p) && p.type === "tool_use" && Object.hasOwn(LAUNCHED, p.name)).map((p) => [p.id, LAUNCHED[p.name]]) : [])
-  const launched = Array.isArray(last.content) ? last.content.flatMap((p) => isObj(p) && p.type === "tool_result" && calls.has(p.tool_use_id) &&
-    texts(p.content).some((t) => t.includes(calls.get(p.tool_use_id))) ? [p.tool_use_id] : []) : []
+    ? prev.content.filter((p) => isObj(p) && p.type === "tool_use" && (Object.hasOwn(LAUNCHED, p.name) || p.name === "SendMessage")).map((p) => [p.id, p.name]) : [])
+  const launched = [], agents = {}
+  for (const p of Array.isArray(last.content) ? last.content : []) {
+    if (!isObj(p) || p.type !== "tool_result" || !calls.has(p.tool_use_id) || p.is_error) continue
+    const t = texts(p.content), name = calls.get(p.tool_use_id)
+    const agent = name === "SendMessage" ? t.map((x) => x.match(RESUMED)?.[1]).find(Boolean)
+      : t.some((x) => x.includes(LAUNCHED[name])) ? t.map((x) => x.match(AGENT_ID)?.[1]).find(Boolean) ?? "" : undefined
+    if (agent === undefined) continue
+    launched.push(p.tool_use_id)
+    if (agent) agents[p.tool_use_id] = agent
+  }
   const stopped = [...texts(last.content), ...resultTexts(last.content)].flatMap((t) => [...t.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)].flatMap((m) => {
     const status = m[1].match(/<status>\s*(\w+)\s*<\/status>/)?.[1]
-    const id = m[1].match(/<tool-use-id>\s*([^<\s]+)\s*<\/tool-use-id>/)?.[1]
-    return id && status && status !== "running" ? [id] : []
+    if (!status || status === "running" || INTERIM.some((s) => m[1].includes(s))) return []
+    return [m[1].match(/<tool-use-id>\s*([^<\s]+)\s*<\/tool-use-id>/)?.[1], m[1].match(/<task-id>\s*([^<\s]+)\s*<\/task-id>/)?.[1]].filter(Boolean)
   }))
-  return { launched, stopped }
+  return { launched, stopped: [...new Set(stopped)], agents }
 }
 
 // subagent: the request says itself that a subagent sends it. Codex marks

@@ -310,8 +310,8 @@ test("a subagent that compacts and continues stays nested, and never takes over 
 test("captured background Agent: the turn ends when the agent has reported back, not when the main conversation pauses", async () => {
   expect(notificationOnly(fx("agent-4-notified").body, "anthropic")).toBe(true)
   expect(opensTurn(fx("agent-4-notified").body, "anthropic")).toBe(false)
-  expect(background(fx("agent-3-launched").body, "anthropic")).toEqual({ launched: ["toolu_agent"], stopped: [] })
-  expect(background(fx("agent-4-notified").body, "anthropic")).toEqual({ launched: [], stopped: ["toolu_agent"] })
+  expect(background(fx("agent-3-launched").body, "anthropic")).toEqual({ launched: ["toolu_agent"], stopped: [], agents: { toolu_agent: "ae13a2280b760859f" } })
+  expect(background(fx("agent-4-notified").body, "anthropic")).toEqual({ launched: [], stopped: ["toolu_agent", "ae13a2280b760859f"], agents: {} })
   await send1("agent-1-main")
   minutes(1)
   await send1("agent-3-launched") // "Agent launched, waiting." and end_turn
@@ -375,7 +375,7 @@ async function replay(names, gap) {
 
 test("captured: an agent's notification that arrives while the main conversation is still working rides in a tool_result, and still counts", async () => {
   const names = recorded("agent-busy") // main: Agent (background), then three Bash calls; the notification comes with the first Bash result
-  expect(background(fx("agent-busy-05").body, "anthropic")).toEqual({ launched: [], stopped: ["toolu_ag1"] })
+  expect(background(fx("agent-busy-05").body, "anthropic")).toEqual({ launched: [], stopped: ["toolu_ag1", "a841b16453011b54b"], agents: {} })
   expect(await replay(names, 2)).toEqual([0, 0, 0, 0, 0, 0, 1])
   expect(JSON.parse(calls[0].body).message).toContain("took 12 min")
 })
@@ -413,6 +413,50 @@ test("captured (interactive): you type while a background agent runs; the push s
 test("an Agent result that only quotes the launch text (a file read, say) launches nothing", () => {
   const l = fx("agent-3-launched").body
   const read = { ...l, messages: [...l.messages.slice(0, -2), { role: "assistant", content: [{ type: "tool_use", id: "toolu_read", name: "Read", input: {} }] }, { role: "user", content: [{ ...l.messages.at(-1).content[0], tool_use_id: "toolu_read" }] }] }
+  expect(background(read, "anthropic").launched).toEqual([])
+})
+
+test("captured: an agent that stops with background work of its own notifies twice; the first note is interim and the turn waits for the second, which names only the agent", async () => {
+  // 02/04/06 are the agent: it starts a background Bash command and stops; 05
+  // says it may be interim; the command ends, the agent goes on by itself (06)
+  // and notifies again (07) with its <task-id> and no <tool-use-id>
+  expect(background(fx("agent-interim-03").body, "anthropic")).toEqual({ launched: ["toolu_ag_int"], stopped: [], agents: { toolu_ag_int: "a15d8133fab6acdfa" } })
+  expect(fx("agent-interim-05").body.messages.at(-1).content.at(-1).text).toContain("<status>completed</status>")
+  expect(background(fx("agent-interim-05").body, "anthropic").stopped).toEqual([])
+  expect(fx("agent-interim-07").body.messages.at(-1).content.at(-1).text).not.toContain("<tool-use-id>")
+  expect(background(fx("agent-interim-07").body, "anthropic").stopped).toEqual(["a15d8133fab6acdfa"])
+  expect(await replay(recorded("agent-interim"), 2)).toEqual([0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 12 min")
+})
+
+test("captured: SendMessage to an agent that has finished resumes it and holds the turn until it notifies again, under the SendMessage call's id", async () => {
+  // 04 is the agent's first notification, 05 the SendMessage call, 06 the
+  // agent going on with the message, 07 the "resumedAgentId" result after which
+  // the main conversation stops and says it's waiting, 08 the notification
+  expect(background(fx("sendmessage-07").body, "anthropic")).toEqual({ launched: ["toolu_send"], stopped: [], agents: { toolu_send: "a30dced5371a10fb5" } })
+  expect(background(fx("sendmessage-08").body, "anthropic").stopped).toEqual(["toolu_send", "a30dced5371a10fb5"])
+  expect(await replay(recorded("sendmessage"), 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 14 min")
+})
+
+test("captured: a message sent while the agent works (queued) launches nothing; one that arrives too late makes its notification interim, and the turn waits for the next", async () => {
+  // 05: "Message queued for delivery", no resumedAgentId; 07: the agent's
+  // notification says it is being resumed with the message; 08 is the next
+  expect(background(fx("late-message-05").body, "anthropic")).toEqual({ launched: [], stopped: [], agents: {} })
+  expect(background(fx("late-message-07").body, "anthropic").stopped).toEqual([])
+  expect(background(fx("late-message-08").body, "anthropic").stopped).toEqual(["a3e9a0241c2ccf282"])
+  expect(await replay(recorded("late-message"), 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 14 min")
+})
+
+test("a SendMessage that failed, or that waited and brought the agent's report back in its result, launches nothing", () => {
+  const f = fx("sendmessage-07").body, r = f.messages.at(-1).content[0]
+  const withResult = (content, extra = {}) => ({ ...f, messages: [...f.messages.slice(0, -1), { role: "user", content: [{ ...r, content, ...extra }] }] })
+  expect(background(withResult([{ type: "text", text: '{"success":false,"message":"Agent not found"}' }]), "anthropic").launched).toEqual([])
+  expect(background(withResult([{ type: "text", text: '{"success":true,"message":"done: the report"}' }]), "anthropic").launched).toEqual([])
+  expect(background(withResult(r.content, { is_error: true }), "anthropic").launched).toEqual([])
+  // the same text from another tool (a file read) is no resume either
+  const read = { ...f, messages: [...f.messages.slice(0, -2), { role: "assistant", content: [{ type: "tool_use", id: "toolu_send", name: "Read", input: {} }] }, f.messages.at(-1)] }
   expect(background(read, "anthropic").launched).toEqual([])
 })
 

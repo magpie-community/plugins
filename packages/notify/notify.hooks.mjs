@@ -22,9 +22,9 @@ import { send, usable } from "./channels.mjs"
 //   nested   it first showed up while another top-level conversation in the
 //            same session was busy or waiting: a subagent, which never pushes
 //   failed   { at, timer } while a failure push is held back
-//   background  the tool_use_ids of the Claude Code background agents it
-//            launched that haven't reported back: the turn isn't over
-//            until they have
+//   background  the Claude Code background agents it launched (or resumed
+//            with SendMessage) that haven't reported back, tool_use_id ->
+//            agent id: the turn isn't over until they have
 //   compactedAt  when it last asked for a compaction summary, so the
 //            conversation that goes on from the summary can find it
 const turns = new Map()
@@ -169,14 +169,16 @@ export function onRequest(body, ctx) {
       turn.start = t // a new message from the user starts the turn over
     } else if (!turn) {
       const nested = subagent(body, ctx.protocol) || parentActive(base, t)
-      turn = { key, base, start: t, seen: t, agent: ctx.agent ?? "", model: ctx.model ?? body?.model ?? "", cwd: ctx.cwd ?? "", busy: 0, waiting: false, nested, failed: null, background: new Set(), compactedAt: 0 }
+      turn = { key, base, start: t, seen: t, agent: ctx.agent ?? "", model: ctx.model ?? body?.model ?? "", cwd: ctx.cwd ?? "", busy: 0, waiting: false, nested, failed: null, background: new Map(), compactedAt: 0 }
       turns.set(key, turn)
       if (!nested) latest.set(base, key)
       prune(t)
     }
     const bg = background(body, ctx.protocol)
-    for (const id of bg.launched) turn.background.add(id)
-    for (const id of bg.stopped) turn.background.delete(id)
+    for (const id of bg.launched) turn.background.set(id, bg.agents[id] ?? "")
+    // a notification names the call that launched or last resumed the agent,
+    // or only the agent: either ends every call that agent is out under
+    for (const id of bg.stopped) for (const [k, agent] of turn.background) if (k === id || agent === id) turn.background.delete(k)
     turn.waiting = false
     turn.busy++
     turn.seen = t
