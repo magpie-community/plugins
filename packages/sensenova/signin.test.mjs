@@ -119,13 +119,24 @@ test("a refresh token the platform has revoked says the sign-in is gone", async 
   expect(err.signIn).toBe("expired")
 })
 
-test("a failed refresh that says nothing about the token keeps the sign-in", async () => {
-  // a 500, or a 400 naming another problem, is not the token being dead: the
-  // pair in hand is still good and the account must not be signed out
+test("a refresh that fails for any reason other than a dead token keeps the sign-in", async () => {
+  // a 500, and a 400 naming something other than invalid_grant, say nothing
+  // about the token: the pair in hand is still good and the account must not
+  // be signed out. Both still go back as an error, because host.js records its
+  // RENEW_RETRY cooldown only when auth.refresh throws — returning undefined
+  // would have magpie retry the same failing call on every hook until the
+  // token's own expiry passed.
   f = fakeSenseNova()
-  f.route("POST " + TOKEN_PATH, () => json({ error: "server_error" }, 500))
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
-  expect(await p.auth.refresh({ type: "oauth", access: "old", refresh: "r", expires: Date.now() + 1000 })).toBeUndefined()
+  for (const [status, error] of [[500, "server_error"], [400, "invalid_request"]]) {
+    f.route("POST " + TOKEN_PATH, () => json({ error }, status))
+    const err = await p
+      .auth.refresh({ type: "oauth", access: "old", refresh: "r", expires: Date.now() + 1000 })
+      .then(() => null, (e) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err.dead).toBe(false)
+    expect(err.signIn).toBeUndefined()
+  }
 })
 
 test("a walk that leaves the SenseNova hosts is refused, not followed", async () => {

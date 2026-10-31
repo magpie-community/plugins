@@ -115,9 +115,20 @@ function allowedHost(url) {
   } catch {
     return false
   }
-  // a test points ENDPOINTS at a local fake (http on loopback): those hosts
-  // are allowed as they are set, whatever their scheme
-  if (Object.values(ENDPOINTS).some((e) => { try { return new URL(e).host === u.host } catch { return false } })) return true
+  // a test points ENDPOINTS at a local fake (http on loopback). The match is
+  // per origin, protocol included: matching the host alone would let an
+  // http:// downgrade of a production https endpoint through this line, before
+  // the check below ever got to see it — and the jar keys off .host too, so
+  // the session cookie would go with it in the clear
+  const sameOrigin = (e) => {
+    try {
+      const x = new URL(e)
+      return x.host === u.host && x.protocol === u.protocol
+    } catch {
+      return false
+    }
+  }
+  if (Object.values(ENDPOINTS).some(sameOrigin)) return true
   // the platform itself is https only: an http://sensenova.cn is not the
   // platform but a downgrade or a spoof of it
   if (u.protocol !== "https:") return false
@@ -198,7 +209,14 @@ async function followUntil(start, wanted, jar) {
     const next = res.headers.get("location") ?? ""
     location = next !== "" ? next : nextFromBody(await res.text(), wanted)
   }
-  return location && wanted.test(location) ? location : ""
+  // the last hop's target is a hop too, so it is checked like any other: a
+  // walk that used up its budget must not hand back an off-site URL merely
+  // because it looks like the thing it was looking for
+  if (location && wanted.test(location)) {
+    if (!allowedHost(location)) throw new Error(`the sign-in walk left the SenseNova hosts for ${location}`)
+    return location
+  }
+  return ""
 }
 
 const paramOf = (url, name) => {
@@ -221,6 +239,10 @@ async function refreshToken(refresh) {
       client_id: CLIENT_ID,
       scope: SCOPE,
     }).toString(),
+    // a 307 or 308 replays this POST, body included, to wherever the reply
+    // points — a refresh token must never leave with a redirect, so one is an
+    // error here rather than a step to follow
+    redirect: "manual",
     signal: AbortSignal.timeout(TIMEOUT_MS),
   })
   const body = await res.json().catch(() => ({}))
@@ -286,6 +308,7 @@ async function passwordLogin(username, password) {
       cookie: cookieHeader(jar, iamUrl),
     },
     body: JSON.stringify({ username: user, password: encrypted, challenge: loginChallenge, is_encrypt: true }),
+    redirect: "manual", // the sealed password must not be replayed off-origin
     signal: AbortSignal.timeout(TIMEOUT_MS),
   })
   const iamBody = await iamRes.json().catch(() => ({}))
@@ -318,6 +341,7 @@ async function passwordLogin(username, password) {
       redirect_uri: CONSOLE(),
       scope: SCOPE,
     }).toString(),
+    redirect: "manual", // nor the authorization code with its PKCE verifier
     signal: AbortSignal.timeout(TIMEOUT_MS),
   })
   const tokenBody = await tokenRes.json().catch(() => ({}))
@@ -332,13 +356,16 @@ async function passwordLogin(username, password) {
 
 // ---- the model catalogue (an API key's models)
 
-// The reasoning effort levels offered for a model. The platform publishes no
-// list of them, and the per-model tiers this account's requests happened to be
-// answered with cannot be checked from outside that account, so this is
-// deliberately the narrow set: three levels an OpenAI-compatible reasoning
-// endpoint takes, `none` being thinking off. What *is* checkable is whether a
-// model reasons at all — the catalogue's own `supported_features` says so, and
-// testdata/models.json holds a real reply — so that is the only gate here.
+// The reasoning effort levels this plugin offers. The platform publishes no
+// list of them, and what a given model actually answers can only be learned by
+// asking from inside an account — so this table claims no knowledge of any
+// model's real tiers. The three are a deliberately narrow common set (`none`
+// being thinking off), and being wrong here is loud rather than silent: a
+// level the vendor doesn't take answers 400 and magpie shows that, where a
+// guessed-at tier would only show up as a confusing failure mid-task. What
+// *is* checkable is whether a model reasons at all — the catalogue's own
+// `supported_features` says so, and testdata/models.json holds a real reply —
+// so that is the only gate here.
 const EFFORTS = ["none", "low", "high"]
 
 // the models the plan ships, as magpie's provider starts with: the same ids
@@ -368,7 +395,8 @@ async function apiModels(key) {
     headers: { authorization: "Bearer " + key, accept: "application/json" },
     signal: AbortSignal.timeout(TIMEOUT_MS),
   })
-  if (res.status === 401 || res.status === 403) throw new Error(`SenseNova refused the API key (HTTP ${res.status})`)
+  if (res.status === 401 || res.status === 403)
+    throw Object.assign(new Error(`SenseNova refused the API key (HTTP ${res.status})`), { refused: true })
   if (!res.ok) throw new Error(`model catalogue: HTTP ${res.status}`)
   const body = await res.json().catch(() => ({}))
   const data = Array.isArray(body?.data) ? body.data : []
@@ -478,8 +506,13 @@ async function poolUsage(access) {
     throw Object.assign(new Error(`console refused the token (HTTP ${res.status})`), { status: res.status })
   if (!res.ok) throw new Error(`pool-usage: HTTP ${res.status}`)
   const body = await res.json().catch(() => ({}))
+  // a 200 that isn't the shape the console sends is a failed read, not an
+  // empty plan: read the other way it would list no models for an account that
+  // has a whole plan, and hide that the platform changed under us
+  if (!body || typeof body !== "object" || !Array.isArray(body.pools))
+    throw new Error("pool-usage: the reply carries no pools to read")
   const plan = obj(body?.plan)
-  const pools = Array.isArray(body?.pools) ? body.pools : []
+  const pools = body.pools
   const ids = pools.flatMap((p) => (Array.isArray(p?.model_ids) ? p.model_ids : [])).filter((x) => typeof x === "string" && x)
   return {
     plan: str(plan, "name") ?? str(plan, "id") ?? "SenseNova",
@@ -553,20 +586,24 @@ function makePlugin() {
           } catch {
             return provider.models
           }
-          // a plan naming no models means this account can call none of the
-          // catalogue: that is an answer, not a failed read, and falling back
-          // to the bootstrap list here would offer models the vendor refuses.
-          // Only a read that failed falls back.
+          // An empty plan, and an empty overlap with the catalogue, are both
+          // answers: this account has nothing to offer. Only a read that
+          // failed falls back to the bootstrap list — that list is the one set
+          // known to sit inside a free plan, so falling back is safe where
+          // guessing an unfiltered catalogue would not be.
           const covered = new Set(plan.models)
           if (!covered.size) return {}
           let list
           try {
             list = await apiModels(key)
-          } catch {
+          } catch (e) {
+            // the key itself refused: it calls nothing, whatever the plan
+            // covers, so nothing is listed rather than the bootstrap set
+            if (e?.refused) return {}
             return provider.models
           }
           const models = list.filter((m) => !m.draws && covered.has(m.id))
-          if (!models.length) return provider.models
+          if (!models.length) return {}
           return Object.fromEntries(models.map((m) => [m.id, modelOf(m, provider)]))
         },
       },
@@ -582,14 +619,13 @@ function makePlugin() {
         // magpie renews ahead of the token's end, once per account
         async refresh(auth) {
           if (auth?.type !== "oauth" || !auth.access || !auth.refresh) return undefined
-          try {
-            return await refreshToken(auth.refresh)
-          } catch (e) {
-            // a dead token goes back as it came: it carries signIn "expired",
-            // which is how the account is marked as needing a new sign-in
-            if (e?.dead) throw e
-            return undefined
-          }
+          // every failure goes back as an error, not as undefined: host.js
+          // records its RENEW_RETRY cooldown only when auth.refresh throws, so
+          // returning undefined would have magpie retry the same failing call
+          // on every hook until the token's own expiry passed. Only a dead
+          // token carries signIn "expired" and ends the sign-in; a transient
+          // one leaves it as it was, for the vendor's answer to tell.
+          return await refreshToken(auth.refresh)
         },
         // the chat loader: an account with an API key serves the models
         // (OpenAI-compatible at token.sensenova.cn/v1). magpie sends
@@ -604,10 +640,13 @@ function makePlugin() {
         },
         // the account's credit pools (the console JWT, not the API key).
         // Renewal is the host's job: it renews through auth.refresh, this far
-        // ahead of the token's end, before usage runs. So usage reads with the
-        // token in hand and renews only when the console refuses it with a 401
-        // — a second standing renewal path here would spend one refresh token
-        // twice, and Hydra rotates it, so the second spend is refused.
+        // ahead of the token's end, under a cross-process lock. So usage reads
+        // with the token in hand and touches a refresh token only when the
+        // console refuses that token with a 401 — and it first looks for a
+        // renewal someone else already made. That narrows the window rather
+        // than closing it: a plugin can't take the host's lock, so if the host
+        // is mid-renewal at this exact moment the two can still spend one
+        // rotating token twice and the second is refused. The next read recovers.
         async usage(getAuth) {
           const auth = await getAuth()
           if (auth?.type !== "oauth" || !auth.access) return { error: "not signed in" }
@@ -623,17 +662,28 @@ function makePlugin() {
           } catch (e) {
             if (e?.status !== 401) return { error: e?.message ?? String(e), signIn: "kept" }
           }
-          // refused with a token believed good: renew once, read once more
-          if (!auth.refresh) return { error: "no refresh token; sign in again", signIn: "expired" }
+          // refused mid-life: another renewal may have landed while this read
+          // was in flight, and Hydra spends a refresh token once, so look
+          // before spending one of our own
+          const now = await getAuth()
+          if (now?.access && now.access !== auth.access) {
+            try {
+              return card(await poolUsage(now.access), "renewed")
+            } catch (e) {
+              return { error: e?.message ?? String(e), signIn: "kept" }
+            }
+          }
+          if (!now?.refresh) return { error: "no refresh token; sign in again", signIn: "expired" }
           try {
-            const t = await refreshToken(auth.refresh)
+            const t = await refreshToken(now.refresh)
             // the API key rides through: the JWT changes, the key doesn't
-            await save({ ...auth, ...t })
+            if (!(await save({ ...now, ...t })))
+              // an unsaved pair is no recovery: the next host would spend a
+              // refresh token that is already spent
+              return { error: "renewed, but the new tokens could not be saved; sign in again", signIn: "kept" }
             return card(await poolUsage(t.access), "renewed")
           } catch (e) {
             const why = e?.message ?? String(e)
-            // a dead refresh token ends the sign-in: say what to do as well as
-            // what the vendor answered
             if (e?.dead) return { error: `${why}; sign in again`, signIn: "expired" }
             return { error: why, signIn: "kept" }
           }
@@ -727,4 +777,9 @@ export const _internal = {
   EFFORTS,
   BOOT_MODELS,
   EARLY_MS,
+  allowedHost,
+  newJar,
+  cookieHeader,
+  collectCookies,
+  followUntil,
 }

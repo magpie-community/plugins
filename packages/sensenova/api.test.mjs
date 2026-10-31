@@ -120,10 +120,25 @@ test("a plan read that fails keeps the bootstrap list rather than the catalogue"
   expect(await p.provider.models({ id: "sensenova-token-plan", models: given }, { auth })).toEqual(given)
 })
 
-test("a key the platform refuses keeps the list the provider started with", async () => {
+test("a key the platform has refused lists nothing, not the bootstrap set", async () => {
+  // a refused key calls nothing, whatever the plan covers: falling back to the
+  // bootstrap list here would advertise five models that every request to them
+  // would fail on
   f = fakeSenseNova()
   serve()
   f.route("GET /models", () => json({ error: "unauthorized" }, 401))
+  const p = await plugin()
+  const given = { "glm-5.2": {} }
+  expect(await p.provider.models({ id: "sensenova-token-plan", models: given }, { auth })).toEqual({})
+})
+
+test("a 200 that carries no pools is a failed read, so the bootstrap list stands", async () => {
+  // an empty plan and a reply that isn't the console's shape must not be read
+  // the same way: the first means the account can call nothing, the second
+  // means we don't know, and only the second falls back
+  f = fakeSenseNova()
+  f.route("GET /lite/console/v1/tokenplan/pool-usage", () => json({ plan: { name: "Free Plan" } }))
+  f.route("GET /models", () => json(CATALOGUE))
   const p = await plugin()
   const given = { "glm-5.2": {} }
   expect(await p.provider.models({ id: "sensenova-token-plan", models: given }, { auth })).toEqual(given)
@@ -174,13 +189,31 @@ test("the sign-in asks for the account, its password and an optional key", async
 
 test("a plan that names no models lists none, rather than the bootstrap set", async () => {
   // an empty plan is an answer, not a failed read: falling back to the
-  // bootstrap list would offer models the vendor then refuses
+  // bootstrap list would offer models the vendor then refuses. The pools must
+  // be read for this to mean anything — a test that returns {} before reading
+  // them would pass whatever this branch does.
   f = fakeSenseNova()
   f.route("GET /lite/console/v1/tokenplan/pool-usage", () => json({ plan: { name: "Free Plan" }, pools: [] }))
-  f.route("GET /models", () => json({ data: [] }))
-  const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
-  const models = await p.provider.models({ id: "sensenova-token-plan", models: { "glm-5.2": {} } }, {
-    type: "oauth", access: "tok", apiKey: "sk-test",
-  })
+  f.route("GET /models", () => json(CATALOGUE))
+  const p = await plugin()
+  const given = { "glm-5.2": {} }
+  const models = await p.provider.models({ id: "sensenova-token-plan", models: given }, { auth })
   expect(models).toEqual({})
+  // it got as far as the plan, and stopped there: the catalogue was never asked
+  expect(f.seen.some((r) => r.path.includes("pool-usage"))).toBe(true)
+  expect(f.seen.some((r) => r.path === "/models")).toBe(false)
+})
+
+test("a plan and a catalogue that share no model list none", async () => {
+  // both reads succeeded and agree there is nothing to offer: that is an
+  // answer too, and the bootstrap set must not reappear to cover it up
+  f = fakeSenseNova()
+  f.route("GET /lite/console/v1/tokenplan/pool-usage", () => json(PLAN(["some-model-the-key-isnt-served"])))
+  f.route("GET /models", () => json(CATALOGUE))
+  const p = await plugin()
+  const given = { "glm-5.2": {} }
+  expect(await p.provider.models({ id: "sensenova-token-plan", models: given }, { auth })).toEqual({})
+  // both were really consulted this time
+  expect(f.seen.some((r) => r.path.includes("pool-usage"))).toBe(true)
+  expect(f.seen.some((r) => r.path === "/models")).toBe(true)
 })
