@@ -310,8 +310,8 @@ test("a subagent that compacts and continues stays nested, and never takes over 
 test("captured background Agent: the turn ends when the agent has reported back, not when the main conversation pauses", async () => {
   expect(notificationOnly(fx("agent-4-notified").body, "anthropic")).toBe(true)
   expect(opensTurn(fx("agent-4-notified").body, "anthropic")).toBe(false)
-  expect(background(fx("agent-3-launched").body, "anthropic")).toEqual({ launched: 1, stopped: 0 })
-  expect(background(fx("agent-4-notified").body, "anthropic")).toEqual({ launched: 0, stopped: 1 })
+  expect(background(fx("agent-3-launched").body, "anthropic")).toEqual({ launched: ["toolu_agent"], stopped: [] })
+  expect(background(fx("agent-4-notified").body, "anthropic")).toEqual({ launched: [], stopped: ["toolu_agent"] })
   await send1("agent-1-main")
   minutes(1)
   await send1("agent-3-launched") // "Agent launched, waiting." and end_turn
@@ -325,6 +325,66 @@ test("captured background Agent: the turn ends when the agent has reported back,
   await send1("agent-4-notified")
   expect(calls).toHaveLength(1)
   expect(JSON.parse(calls[0].body).message).toContain("took 7 min")
+})
+
+test("captured notification that carries another reminder (the agent ran Bash) still ends the turn once, timed from the user's message", async () => {
+  const n = fx("agent-bash-5-notified").body
+  expect(n.messages.at(-1).content).toHaveLength(2) // <tools-used-before-summary>, then the notification
+  expect(notificationOnly(n, "anthropic")).toBe(true)
+  expect(opensTurn(n, "anthropic")).toBe(false)
+  // a reminder alone, or a reminder beside words the user typed, is not a notification
+  const typed = { ...n, messages: [...n.messages.slice(0, -1), { role: "user", content: [n.messages.at(-1).content[0], { type: "text", text: "and also fix the docs" }] }] }
+  expect(notificationOnly(typed, "anthropic")).toBe(false)
+  await send1("agent-bash-1-main")
+  minutes(1)
+  await send1("agent-bash-3-launched") // the main conversation stops for now
+  const sub = fx("agent-bash-2-subagent"), c = ctx("anthropic", { session: sub.session })
+  onRequest(sub.body, c)
+  minutes(5)
+  onResponse(sub.reply, c)
+  minutes(5)
+  await send1("agent-bash-4-subagent-done")
+  expect(calls).toHaveLength(0)
+  await send1("agent-bash-5-notified")
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 11 min")
+})
+
+test("a retried request carries the same launch twice; the agent is still counted once", async () => {
+  await send1("agent-1-main")
+  minutes(1)
+  const l = fx("agent-3-launched")
+  await exchange("anthropic", l.body, null, { session: l.session, success: false }) // 529: Claude Code sends the same body again
+  await send1("agent-3-launched")
+  minutes(10)
+  await wait(0)
+  expect(calls).toHaveLength(0)
+  await send1("agent-4-notified")
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 11 min")
+})
+
+test("the same agent notifying twice does not end the turn while another is still running", async () => {
+  const l = fx("agent-3-launched"), nt = fx("agent-4-notified")
+  const r = l.body.messages.at(-1).content[0]
+  const launched = { ...l.body, messages: [...l.body.messages.slice(0, -1), { role: "user", content: [{ ...r, tool_use_id: "toolu_a" }, { ...r, tool_use_id: "toolu_b" }] }] }
+  expect(background(launched, "anthropic").launched).toEqual(["toolu_a", "toolu_b"])
+  const note = (id) => {
+    const p = nt.body.messages.at(-1).content[0]
+    return { ...nt.body, messages: [...nt.body.messages.slice(0, -1), { role: "user", content: [{ ...p, text: p.text.replace("<tool-use-id>toolu_agent</tool-use-id>", `<tool-use-id>${id}</tool-use-id>`) }] }] }
+  }
+  const session = l.session
+  await send1("agent-1-main")
+  minutes(1)
+  await exchange("anthropic", launched, l.reply, { session })
+  minutes(3)
+  await exchange("anthropic", note("toolu_a"), nt.reply, { session })
+  await exchange("anthropic", note("toolu_a"), nt.reply, { session }) // "the same task-id may notify more than once"
+  expect(calls).toHaveLength(0)
+  minutes(5)
+  await exchange("anthropic", note("toolu_b"), nt.reply, { session })
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 9 min")
 })
 
 test("Codex remote compaction neither ends nor restarts the turn", async () => {

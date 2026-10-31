@@ -187,22 +187,35 @@ const lastUser = (body) => Array.isArray(body?.messages) ? body.messages.at(-1) 
 const resultTexts = (c) => Array.isArray(c) ? c.flatMap((p) => isObj(p) && p.type === "tool_result" ? texts(p.content) : []) : []
 
 // notificationOnly: the newest user message is Claude Code's notification
-// that a background task stopped, with nothing the user typed
+// that a background task stopped, with nothing the user typed. Other
+// <system-reminder> blocks may ride along (a captured one carries
+// <tools-used-before-summary> as a text part of its own).
+const REMINDER_ONLY = /^\s*(?:<system-reminder>[\s\S]*?<\/system-reminder>\s*)+$/
+const isNotification = (x) => x.includes(NOTIFICATION) || x.trimStart().startsWith("<task-notification>")
 export function notificationOnly(body, protocol) {
   if (protocol !== "anthropic") return false
   const last = lastUser(body)
   if (!isObj(last) || last.role !== "user") return false
   const t = texts(last.content)
-  return t.length > 0 && !resultTexts(last.content).length && t.every((x) => x.includes(NOTIFICATION) || x.trimStart().startsWith("<task-notification>"))
+  return t.some(isNotification) && !resultTexts(last.content).length && t.every((x) => isNotification(x) || REMINDER_ONLY.test(x))
 }
 
-// background: how many background agents the newest user message launched
-// (tool results) and how many it says have stopped (notifications)
+// background: the background agents the newest user message launched (the
+// tool_use_id of each "launched" tool result) and the ones it says have
+// stopped (the <tool-use-id> of each notification that is not "running").
+// Ids, not counts: a retried request carries the same launch again, and the
+// same agent may notify more than once.
 export function background(body, protocol) {
-  if (protocol !== "anthropic") return { launched: 0, stopped: 0 }
+  const none = { launched: [], stopped: [] }
+  if (protocol !== "anthropic") return none
   const last = lastUser(body)
-  if (!isObj(last) || last.role !== "user") return { launched: 0, stopped: 0 }
-  const launched = resultTexts(last.content).filter((t) => t.includes(BACKGROUND_LAUNCHED)).length
-  const stopped = texts(last.content).reduce((n, t) => n + [...t.matchAll(/<task-notification>[\s\S]*?<status>\s*(\w+)\s*<\/status>/g)].filter((m) => m[1] !== "running").length, 0)
+  if (!isObj(last) || last.role !== "user" || !Array.isArray(last.content) && typeof last.content !== "string") return none
+  const launched = Array.isArray(last.content) ? last.content.flatMap((p) => isObj(p) && p.type === "tool_result" && typeof p.tool_use_id === "string" &&
+    texts(p.content).some((t) => t.includes(BACKGROUND_LAUNCHED)) ? [p.tool_use_id] : []) : []
+  const stopped = texts(last.content).flatMap((t) => [...t.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)].flatMap((m) => {
+    const status = m[1].match(/<status>\s*(\w+)\s*<\/status>/)?.[1]
+    const id = m[1].match(/<tool-use-id>\s*([^<\s]+)\s*<\/tool-use-id>/)?.[1]
+    return id && status && status !== "running" ? [id] : []
+  }))
   return { launched, stopped }
 }

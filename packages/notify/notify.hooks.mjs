@@ -22,8 +22,9 @@ import { send, usable } from "./channels.mjs"
 //   nested   it first showed up while another top-level conversation in the
 //            same session was busy or waiting: a subagent, which never pushes
 //   failed   { at, timer } while a failure push is held back
-//   background  Claude Code background agents it launched that haven't
-//            reported back: the turn isn't over until they have
+//   background  the tool_use_ids of the Claude Code background agents it
+//            launched that haven't reported back: the turn isn't over
+//            until they have
 //   compactedAt  when it last asked for a compaction summary, so the
 //            conversation that goes on from the summary can find it
 const turns = new Map()
@@ -116,7 +117,7 @@ function prune(t) {
 // is often reused by an unrelated conversation later.
 const parentActive = (base, t) => base.startsWith("s:") &&
   [...turns.values()].some((v) => v.base === base && !v.nested &&
-    (((v.busy > 0 || v.waiting) && t - v.seen < ACTIVE) || (v.background > 0 && t - v.seen < BACKGROUND)))
+    (((v.busy > 0 || v.waiting) && t - v.seen < ACTIVE) || (v.background.size > 0 && t - v.seen < BACKGROUND)))
 
 // the conversation a continued one goes on from: the one in its base that
 // asked for a compaction summary most recently. A subagent's compaction is
@@ -168,13 +169,14 @@ export function onRequest(body, ctx) {
       turn.start = t // a new message from the user starts the turn over
     } else if (!turn) {
       const nested = parentActive(base, t)
-      turn = { key, base, start: t, seen: t, agent: ctx.agent ?? "", model: ctx.model ?? body?.model ?? "", cwd: ctx.cwd ?? "", busy: 0, waiting: false, nested, failed: null, background: 0, compactedAt: 0 }
+      turn = { key, base, start: t, seen: t, agent: ctx.agent ?? "", model: ctx.model ?? body?.model ?? "", cwd: ctx.cwd ?? "", busy: 0, waiting: false, nested, failed: null, background: new Set(), compactedAt: 0 }
       turns.set(key, turn)
       if (!nested) latest.set(base, key)
       prune(t)
     }
     const bg = background(body, ctx.protocol)
-    turn.background = Math.max(0, turn.background + bg.launched - bg.stopped)
+    for (const id of bg.launched) turn.background.add(id)
+    for (const id of bg.stopped) turn.background.delete(id)
     turn.waiting = false
     turn.busy++
     turn.seen = t
@@ -196,7 +198,7 @@ export function onResponse(reply, ctx) {
     if (!end.done) { turn.waiting = true; return }
     // Claude Code's background agents are still at work: the main
     // conversation will be resumed when they stop, and that is the end
-    if (!failed && turn.background > 0) return
+    if (!failed && turn.background.size > 0) return
     const o = options(ctx.options)
     if (turn.nested || (failed && !o.errors)) { forget(key); return }
     const model = ctx.model ?? turn.model
