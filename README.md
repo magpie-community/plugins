@@ -96,6 +96,7 @@ These give tools to every agent magpie connects. magpie serves them on its MCP s
 |---|---|
 | [search1api](packages/search1api) | Web search, news, agentic search, page retrieval, sitemaps and trends, with Search1API OAuth or an API key |
 | [calc](packages/calc) | `eval` exact arithmetic in fractions, `convert` units (data, time, length, mass, angle, temperature), `date` calendar date math across time zones and DST. No network, no key |
+| [ccx](packages/ccx) | `sessions` lists Claude Code or Codex conversations, `read` reads one in pages (messages, tool calls in short, the plan) so another agent can carry on the task. Read-only, through [ccx](https://github.com/aaronwong1999/ccx) on macOS |
 
 ```sh
 magpie plugin add @magpie-community/tools-<name>
