@@ -32,6 +32,8 @@ const dict: Record<AppLocale, Record<string, string>> = {
     "notice.effortResetOnModel": "当前模型不支持该思考强度，已恢复为 Default",
     "turn.agentExit": "Agent 进程意外退出",
     "attachment.missing": "附件不存在或已失效（{ref}），请重新上传",
+    "notice.acpImageByPath": "{agent} 不能直接看图片（它的 ACP 初始化未声明支持图片输入），已改为发送图片的文件路径：{paths}",
+    "notice.attachmentIssue": "附件问题：{detail}",
     "export.defaultModel": "默认",
   },
   en: {
@@ -43,6 +45,8 @@ const dict: Record<AppLocale, Record<string, string>> = {
     "notice.effortResetOnModel": "This model does not support that effort level; reset to Default",
     "turn.agentExit": "Agent process exited unexpectedly",
     "attachment.missing": "Attachment missing or expired ({ref}) — upload again",
+    "notice.acpImageByPath": "{agent} can't see images directly (its ACP initialize doesn't advertise image input); sent the image file path instead: {paths}",
+    "notice.attachmentIssue": "Attachment issue: {detail}",
     "export.defaultModel": "Default",
   },
 };

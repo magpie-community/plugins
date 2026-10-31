@@ -1325,6 +1325,8 @@ var init_i18n = __esm({
         "notice.effortResetOnModel": "\u5F53\u524D\u6A21\u578B\u4E0D\u652F\u6301\u8BE5\u601D\u8003\u5F3A\u5EA6\uFF0C\u5DF2\u6062\u590D\u4E3A Default",
         "turn.agentExit": "Agent \u8FDB\u7A0B\u610F\u5916\u9000\u51FA",
         "attachment.missing": "\u9644\u4EF6\u4E0D\u5B58\u5728\u6216\u5DF2\u5931\u6548\uFF08{ref}\uFF09\uFF0C\u8BF7\u91CD\u65B0\u4E0A\u4F20",
+        "notice.acpImageByPath": "{agent} \u4E0D\u80FD\u76F4\u63A5\u770B\u56FE\u7247\uFF08\u5B83\u7684 ACP \u521D\u59CB\u5316\u672A\u58F0\u660E\u652F\u6301\u56FE\u7247\u8F93\u5165\uFF09\uFF0C\u5DF2\u6539\u4E3A\u53D1\u9001\u56FE\u7247\u7684\u6587\u4EF6\u8DEF\u5F84\uFF1A{paths}",
+        "notice.attachmentIssue": "\u9644\u4EF6\u95EE\u9898\uFF1A{detail}",
         "export.defaultModel": "\u9ED8\u8BA4"
       },
       en: {
@@ -1336,6 +1338,8 @@ var init_i18n = __esm({
         "notice.effortResetOnModel": "This model does not support that effort level; reset to Default",
         "turn.agentExit": "Agent process exited unexpectedly",
         "attachment.missing": "Attachment missing or expired ({ref}) \u2014 upload again",
+        "notice.acpImageByPath": "{agent} can't see images directly (its ACP initialize doesn't advertise image input); sent the image file path instead: {paths}",
+        "notice.attachmentIssue": "Attachment issue: {detail}",
         "export.defaultModel": "Default"
       }
     };
@@ -3257,6 +3261,108 @@ var init_mapUpdate = __esm({
   }
 });
 
+// daemon/src/providers/acp/promptCaps.ts
+function promptCapsFromInitialize(res) {
+  const pc = res?.agentCapabilities?.promptCapabilities;
+  return {
+    image: pc?.image === true,
+    audio: pc?.audio === true,
+    embeddedContext: pc?.embeddedContext === true
+  };
+}
+function rememberPromptCaps(providerId, caps) {
+  if (providerId) learned.set(providerId, caps);
+}
+function knownPromptCaps(providerId) {
+  return learned.get(providerId);
+}
+var learned;
+var init_promptCaps = __esm({
+  "daemon/src/providers/acp/promptCaps.ts"() {
+    learned = /* @__PURE__ */ new Map();
+  }
+});
+
+// daemon/src/providers/acp/prompt.ts
+import { readFile as readFile9, stat as stat6 } from "node:fs/promises";
+import { basename as basename2 } from "node:path";
+import { pathToFileURL } from "node:url";
+async function buildAcpPrompt(text, attachments, caps) {
+  const media = [];
+  const links = [];
+  const pathLines = [];
+  const imagesByPath = [];
+  const warnings = [];
+  let inlineBytes = 0;
+  const byPath = (file, mime, size, label) => {
+    links.push({ type: "resource_link", uri: pathToFileURL(file).href, name: basename2(file), mimeType: mime, ...size !== null ? { size } : {} });
+    pathLines.push(`${label}: ${file}`);
+  };
+  for (const a of attachments) {
+    const mime = a.mime || "application/octet-stream";
+    let file;
+    let size = null;
+    try {
+      file = await resolveImagePath(a.path);
+      size = (await stat6(file)).size;
+    } catch (e) {
+      warnings.push(`${a.path}: ${String(e?.message ?? e)}`);
+      continue;
+    }
+    const image = mime.startsWith("image/");
+    const audio = mime.startsWith("audio/");
+    if (image && caps.image || audio && caps.audio) {
+      if (size > MAX_INLINE_MEDIA_BYTES || inlineBytes + size > MAX_INLINE_TOTAL_BYTES) {
+        const limit = size > MAX_INLINE_MEDIA_BYTES ? MAX_INLINE_MEDIA_BYTES : MAX_INLINE_TOTAL_BYTES;
+        warnings.push(`${basename2(file)}: ${(size / 1024 / 1024).toFixed(1)} MB, over the ${limit / 1024 / 1024} MB inline limit; sent as a file path`);
+        byPath(file, mime, size, image ? "Attached image" : "Attached audio");
+        if (image) imagesByPath.push(file);
+        continue;
+      }
+      try {
+        const data = (await readFile9(file)).toString("base64");
+        media.push(image ? { type: "image", data, mimeType: mime } : { type: "audio", data, mimeType: mime });
+        inlineBytes += size;
+      } catch (e) {
+        warnings.push(`${basename2(file)}: ${String(e?.message ?? e)}`);
+        byPath(file, mime, size, image ? "Attached image" : "Attached audio");
+        if (image) imagesByPath.push(file);
+      }
+      continue;
+    }
+    if (image || audio) {
+      byPath(file, mime, size, image ? "Attached image" : "Attached audio");
+      if (image) imagesByPath.push(file);
+      continue;
+    }
+    if (isText(mime) && caps.embeddedContext && size <= MAX_EMBED_TEXT_BYTES && inlineBytes + size <= MAX_INLINE_TOTAL_BYTES) {
+      try {
+        const body = await readFile9(file, "utf8");
+        media.push({ type: "resource", resource: { uri: pathToFileURL(file).href, mimeType: mime, text: body } });
+        inlineBytes += size;
+        continue;
+      } catch {
+      }
+    }
+    byPath(file, mime, size, "Attached file");
+  }
+  const fullText = [text, ...pathLines.length ? [pathLines.join("\n")] : []].filter(Boolean).join("\n\n");
+  const blocks = [];
+  if (fullText) blocks.push({ type: "text", text: fullText });
+  blocks.push(...media, ...links);
+  return { blocks, imagesByPath, warnings };
+}
+var MAX_INLINE_MEDIA_BYTES, MAX_INLINE_TOTAL_BYTES, MAX_EMBED_TEXT_BYTES, isText;
+var init_prompt = __esm({
+  "daemon/src/providers/acp/prompt.ts"() {
+    init_attachmentRefs();
+    MAX_INLINE_MEDIA_BYTES = 10 * 1024 * 1024;
+    MAX_INLINE_TOTAL_BYTES = 16 * 1024 * 1024;
+    MAX_EMBED_TEXT_BYTES = 1024 * 1024;
+    isText = (mime) => mime.startsWith("text/") || mime === "application/json";
+  }
+});
+
 // daemon/src/providers/acp/session.ts
 import { client, methods as methods2, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
 var AcpSession;
@@ -3268,6 +3374,9 @@ var init_session3 = __esm({
     init_spawn();
     init_clientHandlers();
     init_mapUpdate();
+    init_promptCaps();
+    init_prompt();
+    init_i18n();
     init_log();
     AcpSession = class {
       constructor(o) {
@@ -3300,6 +3409,8 @@ var init_session3 = __esm({
       slashCommands = [];
       activeTurnId = null;
       configOptions = null;
+      // initialize → agentCapabilities.promptCapabilities (ACP baseline until initialize answers: text + resource_link)
+      promptCaps = { image: false, audio: false, embeddedContext: false };
       wakePump = null;
       // listCommands waits for the first batch of commands (or confirmation there are none), following Paseo's waitForInitialCommands
       commandsReady;
@@ -3335,12 +3446,14 @@ var init_session3 = __esm({
           const stream = acpStreamFromChild(this.child);
           this.conn = app.connect(stream);
           this.ctx = this.conn.agent;
-          await this.ctx.request(methods2.agent.initialize, {
+          const initRes = await this.ctx.request(methods2.agent.initialize, {
             protocolVersion: PROTOCOL_VERSION,
             // Cursor: declare support for the parameterized model picker (as Paseo does); only then does it expose levels / Fast as separate config options
             clientCapabilities: this.o.flavor === "cursor" ? { _meta: { parameterizedModelPicker: true } } : {},
             clientInfo: { name: "Agent Console", version: this.o.appVersion }
           });
+          this.promptCaps = promptCapsFromInitialize(initRes);
+          rememberPromptCaps(this.o.providerId, this.promptCaps);
           const cwd = absCwd(this.o.cwd);
           const ctx = this.ctx;
           if (!ctx) throw new Error("ACP \u672A\u8FDE\u63A5");
@@ -3562,19 +3675,31 @@ var init_session3 = __esm({
           effort: this.o.effort
         });
         const text = input.text.trim();
-        if (!text) {
+        const attachments = input.images ?? [];
+        if (!text && !attachments.length) {
           this.running = false;
           this.q.push({ type: "turn_ended", turnId: this.turnId, status: "completed" });
           return;
         }
-        void this.runTurn(text);
+        const built = await buildAcpPrompt(text, attachments, this.promptCaps);
+        const agent = this.o.providerName ?? this.o.binName;
+        if (built.imagesByPath.length && !this.promptCaps.image) {
+          this.q.push({ type: "notice", level: "warn", message: tr("notice.acpImageByPath", { agent, paths: built.imagesByPath.join(", ") }) });
+        }
+        for (const w of built.warnings) this.q.push({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
+        if (!built.blocks.length) {
+          this.running = false;
+          this.q.push({ type: "turn_ended", turnId: this.turnId, status: "completed" });
+          return;
+        }
+        void this.runTurn(built.blocks);
       }
       // Send this turn's prompt; reading updates is the job of the persistent pumpUpdates() (following Paseo: session/update is handled at session level)
-      async runTurn(text) {
+      async runTurn(prompt) {
         this.activeTurnId = this.turnId;
         this.wakePump?.();
         this.wakePump = null;
-        this.active.prompt(text).catch(() => {
+        this.active.prompt(prompt).catch(() => {
         });
       }
       endTurn(ev) {
@@ -3706,7 +3831,11 @@ function createAcpProvider(cfg2) {
   return {
     id: cfg2.id,
     name: cfg2.name,
-    capabilities: caps,
+    // images is what the Agent's own initialize says (probe at warm-up / providers.list, or any session); until then unknown
+    get capabilities() {
+      const learned2 = knownPromptCaps(cfg2.id);
+      return learned2 ? { ...caps, images: learned2.image, imagesKnown: true } : { ...caps, images: false, imagesKnown: false };
+    },
     async detect() {
       const r = await resolveProviderBin(cfg2);
       if (!r.ok) {
@@ -3734,6 +3863,8 @@ function createAcpProvider(cfg2) {
     async createSession(o) {
       return new AcpSession({
         threadId: o.threadId,
+        providerId: cfg2.id,
+        providerName: cfg2.name,
         cwd: o.cwd,
         model: o.model,
         mode: o.mode,
@@ -3758,6 +3889,7 @@ var init_provider3 = __esm({
     init_bin();
     init_bin();
     init_session3();
+    init_promptCaps();
     acpCapabilities = {
       resume: true,
       interrupt: true,
@@ -3804,8 +3936,11 @@ function parseAcpSession(res) {
   const currentThinking = typeof thoughtOpt?.currentValue === "string" ? thoughtOpt.currentValue : null;
   return { models: models2, currentModel, thinking, currentThinking };
 }
-function probeAcp(r, acpArgs, timeoutMs = 3e4) {
-  return probeAcpRaw(r, acpArgs, timeoutMs).then((x) => x.parsed);
+function probeAcp(r, acpArgs, timeoutMs = 3e4, providerId) {
+  return probeAcpRaw(r, acpArgs, timeoutMs).then((x) => {
+    rememberPromptCaps(providerId, x.promptCaps);
+    return x.parsed;
+  });
 }
 function probeAcpRaw(r, acpArgs, timeoutMs = 3e4, extMethod) {
   return new Promise((resolvePromise, reject) => {
@@ -3858,11 +3993,11 @@ function probeAcpRaw(r, acpArgs, timeoutMs = 3e4, extMethod) {
     });
     void (async () => {
       try {
-        await send2("initialize", { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "Agent Console", version: "probe" } });
+        const init = await send2("initialize", { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "Agent Console", version: "probe" } });
         const res = await send2("session/new", { cwd: tmpdir(), mcpServers: [] });
         let ext = null;
         if (extMethod) ext = await send2(extMethod, {}).catch(() => null);
-        finish(null, { parsed: parseAcpSession(res ?? {}), ext });
+        finish(null, { parsed: parseAcpSession(res ?? {}), ext, promptCaps: promptCapsFromInitialize(init) });
       } catch (e) {
         finish(e instanceof Error ? e : new Error(String(e)));
       }
@@ -3898,10 +4033,11 @@ function cursorCatalogToModels(catalog, currentModel) {
   }
   return out;
 }
-function cursorProbeModels(acpArgs) {
+function cursorProbeModels(acpArgs, providerId) {
   return async (r) => {
     try {
-      const { parsed, ext } = await probeAcpRaw(r, acpArgs, 4e4, "cursor/list_available_models");
+      const { parsed, ext, promptCaps } = await probeAcpRaw(r, acpArgs, 4e4, "cursor/list_available_models");
+      rememberPromptCaps(providerId, promptCaps);
       const fromCatalog = ext ? cursorCatalogToModels(ext, parsed.currentModel) : [];
       return fromCatalog.length ? fromCatalog : probeToModels(parsed);
     } catch (e) {
@@ -3910,10 +4046,10 @@ function cursorProbeModels(acpArgs) {
     }
   };
 }
-function acpProbeModels(acpArgs) {
+function acpProbeModels(acpArgs, providerId) {
   return async (r) => {
     try {
-      return probeToModels(await probeAcp(r, acpArgs));
+      return probeToModels(await probeAcp(r, acpArgs, 3e4, providerId));
     } catch (e) {
       log("warn", "ACP \u63A2\u6D4B\u6A21\u578B\u5931\u8D25", { err: String(e) });
       return [];
@@ -3925,6 +4061,7 @@ var init_probe = __esm({
   "daemon/src/providers/acp/probe.ts"() {
     init_spawn();
     init_log();
+    init_promptCaps();
     EFFORT_LABEL = {
       none: "None",
       minimal: "Minimal",
@@ -3956,13 +4093,13 @@ function acpConfigForEntry(entry, appVersion) {
         flavor: "cursor",
         capabilities: cursorAcpCapabilities,
         // Each model's own thinking levels come from cursor/list_available_models (as Paseo does)
-        fetchModels: cursorProbeModels(["acp"])
+        fetchModels: cursorProbeModels(["acp"], entry.id)
       };
     case "devin":
       return {
         ...base,
         acpArgs: ["acp"],
-        fetchModels: acpProbeModels(["acp"]),
+        fetchModels: acpProbeModels(["acp"], entry.id),
         modeMap: { plan: "plan", default: "ask", acceptEdits: "accept-edits", bypassPermissions: "bypass" },
         modeLabels: { plan: "Plan", default: "Ask", acceptEdits: "Code", bypassPermissions: "Bypass Permissions" }
       };
@@ -3970,7 +4107,7 @@ function acpConfigForEntry(entry, appVersion) {
       return {
         ...base,
         acpArgs: ["acp"],
-        fetchModels: acpProbeModels(["acp"]),
+        fetchModels: acpProbeModels(["acp"], entry.id),
         modeMap: { plan: "plan", default: "build" },
         modeLabels: { plan: "Plan", default: "Build" }
       };
@@ -3978,14 +4115,14 @@ function acpConfigForEntry(entry, appVersion) {
       return {
         ...base,
         acpArgs: ["--acp"],
-        fetchModels: acpProbeModels(["--acp"]),
+        fetchModels: acpProbeModels(["--acp"], entry.id),
         modeMap: { plan: "plan", default: "agent", bypassPermissions: "allow-all" },
         modeLabels: { plan: "Plan", default: "Agent", bypassPermissions: "Allow All" }
       };
     case "pi":
-      return { ...base, acpArgs: [], fetchModels: acpProbeModels([]), modeMap: { default: "" } };
+      return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { default: "" } };
     case "dsh":
-      return { ...base, acpArgs: ["--profile", "acp"], fetchModels: acpProbeModels(["--profile", "acp"]) };
+      return { ...base, acpArgs: ["--profile", "acp"], fetchModels: acpProbeModels(["--profile", "acp"], entry.id) };
     default:
       return null;
   }
@@ -4141,12 +4278,12 @@ var init_pickFolder = __esm({
 });
 
 // daemon/src/providers/magpieGateway.ts
-import { readFile as readFile9 } from "node:fs/promises";
+import { readFile as readFile10 } from "node:fs/promises";
 import { homedir as homedir6 } from "node:os";
 import { join as join9 } from "node:path";
 async function readJson(path3) {
   try {
-    return JSON.parse(await readFile9(path3, "utf8"));
+    return JSON.parse(await readFile10(path3, "utf8"));
   } catch {
     return null;
   }
@@ -4835,12 +4972,12 @@ var init_atomic = __esm({
 });
 
 // daemon/src/util/jsonl.ts
-import { appendFile, readFile as readFile12, mkdir as mkdir4, rename as rename2, writeFile as writeFile5 } from "node:fs/promises";
+import { appendFile, readFile as readFile13, mkdir as mkdir4, rename as rename2, writeFile as writeFile5 } from "node:fs/promises";
 import { dirname as dirname5 } from "node:path";
 async function readJsonl(file) {
   let text = "";
   try {
-    text = await readFile12(file, "utf8");
+    text = await readFile13(file, "utf8");
   } catch {
     return [];
   }
@@ -4886,7 +5023,7 @@ var legacy_exports = {};
 __export(legacy_exports, {
   migrateLegacy: () => migrateLegacy
 });
-import { cp as cp2, mkdir as mkdir7, readdir as readdir6, readFile as readFile16 } from "node:fs/promises";
+import { cp as cp2, mkdir as mkdir7, readdir as readdir6, readFile as readFile17 } from "node:fs/promises";
 import { existsSync as existsSync12 } from "node:fs";
 import { join as join17 } from "node:path";
 function stamp() {
@@ -4909,7 +5046,7 @@ async function migrateLegacy(dataDir, stores) {
   });
   if (existsSync12(oldSettingsPath)) await cp2(oldSettingsPath, join17(backup, "settings.json")).catch(() => {
   });
-  const oldSettings = existsSync12(oldSettingsPath) ? JSON.parse(await readFile16(oldSettingsPath, "utf8").catch(() => "{}")) : {};
+  const oldSettings = existsSync12(oldSettingsPath) ? JSON.parse(await readFile17(oldSettingsPath, "utf8").catch(() => "{}")) : {};
   const projectIdByPath = /* @__PURE__ */ new Map();
   const lc = (p) => p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
   for (const p of oldSettings.projects ?? []) {
@@ -4929,7 +5066,7 @@ async function migrateLegacy(dataDir, stores) {
   const metas = [];
   for (const id of sessionIds) {
     try {
-      const m = JSON.parse(await readFile16(join17(oldDir, id, "meta.json"), "utf8"));
+      const m = JSON.parse(await readFile17(join17(oldDir, id, "meta.json"), "utf8"));
       if (m?.cwd) metas.push(m);
     } catch {
     }
@@ -5002,7 +5139,7 @@ async function migrateLegacy(dataDir, stores) {
       const tdir = join17(threadsDir, meta.id);
       if (existsSync12(tdir)) meta.id = `t_${m.id}_v1`.slice(0, 80);
       await mkdir7(join17(threadsDir, meta.id), { recursive: true });
-      const oldEvts = (await readFile16(join17(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
+      const oldEvts = (await readFile17(join17(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
         try {
           return JSON.parse(l);
         } catch {
@@ -5520,7 +5657,7 @@ var AttachmentStore = class {
 
 // daemon/src/store/settings.ts
 init_atomic();
-import { readFile as readFile10 } from "node:fs/promises";
+import { readFile as readFile11 } from "node:fs/promises";
 import { join as join11 } from "node:path";
 var DEFAULT_SETTINGS = {
   defaultProvider: "claude",
@@ -5551,7 +5688,7 @@ var SettingsStore = class {
     if (this.cache) return this.cache;
     let raw = {};
     try {
-      raw = JSON.parse(await readFile10(this.file, "utf8"));
+      raw = JSON.parse(await readFile11(this.file, "utf8"));
     } catch {
     }
     this.cache = { ...DEFAULT_SETTINGS, ...raw, panel: { ...DEFAULT_SETTINGS.panel, ...raw.panel } };
@@ -5572,7 +5709,7 @@ var SettingsStore = class {
 init_atomic();
 init_paths();
 init_methods();
-import { readFile as readFile11 } from "node:fs/promises";
+import { readFile as readFile12 } from "node:fs/promises";
 import { existsSync as existsSync9, statSync as statSync5 } from "node:fs";
 import { join as join12 } from "node:path";
 import { randomBytes as randomBytes3 } from "node:crypto";
@@ -5589,7 +5726,7 @@ var ProjectsStore = class {
   async list() {
     if (this.cache) return this.cache;
     try {
-      this.cache = JSON.parse(await readFile11(this.file, "utf8"));
+      this.cache = JSON.parse(await readFile12(this.file, "utf8"));
       if (!Array.isArray(this.cache)) this.cache = [];
     } catch {
       this.cache = [];
@@ -5648,7 +5785,7 @@ init_jsonl();
 init_paths();
 init_methods();
 init_i18n();
-import { mkdir as mkdir5, rename as rename3, readdir as readdir4, readFile as readFile13 } from "node:fs/promises";
+import { mkdir as mkdir5, rename as rename3, readdir as readdir4, readFile as readFile14 } from "node:fs/promises";
 import { join as join13 } from "node:path";
 import { randomBytes as randomBytes4 } from "node:crypto";
 function newId2() {
@@ -5691,7 +5828,7 @@ var ThreadsStore = class {
     }
     for (const id of ids) {
       try {
-        const m = JSON.parse(await readFile13(this.metaPath(id), "utf8"));
+        const m = JSON.parse(await readFile14(this.metaPath(id), "utf8"));
         if (m && typeof m.id === "string") this.metas.set(m.id, m);
       } catch {
       }
@@ -6713,7 +6850,7 @@ var AgentManager = class {
 // daemon/src/git/service.ts
 import { execFile as execFile4 } from "node:child_process";
 import { existsSync as existsSync10 } from "node:fs";
-import { cp, mkdir as mkdir6, readFile as readFile14, rename as rename4, rm, stat as stat7 } from "node:fs/promises";
+import { cp, mkdir as mkdir6, readFile as readFile15, rename as rename4, rm, stat as stat8 } from "node:fs/promises";
 import { join as join14, normalize as normalize2, sep as sep2 } from "node:path";
 var TIMEOUT2 = 15e3;
 var DIFF_LIMIT = 1024 * 1024;
@@ -6779,10 +6916,10 @@ var GitService = class {
     if (ls.code !== 0) {
       const full = join14(projectPath, rel);
       if (!existsSync10(full)) return { error: "\u6587\u4EF6\u4E0D\u5B58\u5728" };
-      const s = await stat7(full);
+      const s = await stat8(full);
       if (!s.isFile()) return { error: "\u4E0D\u662F\u6587\u4EF6" };
       if (s.size > DIFF_LIMIT) return { tooLarge: true };
-      const text = await readFile14(full, "utf8").catch(() => null);
+      const text = await readFile15(full, "utf8").catch(() => null);
       if (text === null) return { error: "\u4E8C\u8FDB\u5236\u6216\u65E0\u6CD5\u8BFB\u53D6" };
       const lines = text.split("\n").map((l) => "+" + l).join("\n");
       return { untracked: true, diff: `--- /dev/null
@@ -6826,7 +6963,7 @@ ${lines}` };
 };
 
 // daemon/src/files/service.ts
-import { readdir as readdir5, readFile as readFile15, stat as stat8 } from "node:fs/promises";
+import { readdir as readdir5, readFile as readFile16, stat as stat9 } from "node:fs/promises";
 import { join as join15, normalize as normalize3, sep as sep3, extname as extname3 } from "node:path";
 import ignore from "ignore";
 function decodeText(buf) {
@@ -6901,14 +7038,14 @@ var FileService = class {
   igCache = /* @__PURE__ */ new Map();
   async igFor(projectPath) {
     const gi = join15(projectPath, ".gitignore");
-    const st = await stat8(gi).catch(() => null);
+    const st = await stat9(gi).catch(() => null);
     const mtime = st?.isFile() ? st.mtimeMs : -1;
     const hit = this.igCache.get(projectPath);
     if (hit && hit.mtime === mtime) return hit.ig;
     let ig = null;
     if (mtime >= 0) {
       try {
-        ig = ignore().add(await readFile15(gi, "utf8"));
+        ig = ignore().add(await readFile16(gi, "utf8"));
       } catch {
         ig = null;
       }
@@ -6920,7 +7057,7 @@ var FileService = class {
     const rel = insidePath2(projectPath, dir);
     if (rel === null) return { error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
     const abs = join15(projectPath, rel);
-    const s = await stat8(abs).catch(() => null);
+    const s = await stat9(abs).catch(() => null);
     if (!s?.isDirectory()) return { error: "\u76EE\u5F55\u4E0D\u5B58\u5728" };
     const ig = await this.igFor(projectPath);
     const dirents = await readdir5(abs, { withFileTypes: true }).catch(() => null);
@@ -6933,7 +7070,7 @@ var FileService = class {
       const childRel = rel === "." ? name : `${rel}/${name}`;
       let isDir2 = d.isDirectory();
       if (d.isSymbolicLink()) {
-        const st = await stat8(join15(projectPath, childRel)).catch(() => null);
+        const st = await stat9(join15(projectPath, childRel)).catch(() => null);
         if (!st) continue;
         isDir2 = st.isDirectory();
       } else if (!d.isFile() && !isDir2) {
@@ -6951,11 +7088,11 @@ var FileService = class {
     const rel = insidePath2(projectPath, p);
     if (rel === null) return { error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
     const abs = join15(projectPath, rel);
-    const s = await stat8(abs).catch(() => null);
+    const s = await stat9(abs).catch(() => null);
     if (!s) return { error: "\u6587\u4EF6\u4E0D\u5B58\u5728" };
     if (!s.isFile()) return { error: "\u4E0D\u662F\u6587\u4EF6" };
     if (s.size > MAX_READ) return { tooLarge: true };
-    const buf = await readFile15(abs).catch(() => null);
+    const buf = await readFile16(abs).catch(() => null);
     if (!buf) return { error: "\u65E0\u6CD5\u8BFB\u53D6" };
     const head = buf.subarray(0, 8192);
     if (head.includes(0)) return { binary: true };

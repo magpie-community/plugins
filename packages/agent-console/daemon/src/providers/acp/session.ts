@@ -10,6 +10,9 @@ import { resolveFirstBin, type ResolveResult } from "../../util/bin.js";
 import { absCwd, acpStreamFromChild, killAcpChild, spawnResolved } from "./spawn.js";
 import { registerAcpClientHandlers } from "./clientHandlers.js";
 import { mapSessionUpdate, newMapCtx, stopToTurnEnd, type MapCtx } from "./mapUpdate.js";
+import { promptCapsFromInitialize, rememberPromptCaps, type AcpPromptCaps } from "./promptCaps.js";
+import { buildAcpPrompt } from "./prompt.js";
+import { tr } from "../../util/i18n.js";
 
 type AcpSelectValue = { value?: string; name?: string; options?: AcpSelectValue[] };
 type AcpConfigOption = { id: string; category?: string | null; type?: string; currentValue?: unknown; options?: AcpSelectValue[] };
@@ -23,6 +26,9 @@ type AttachableCtx = {
 
 export type AcpSessionOpts = {
   threadId: string;
+  /** Provider id and display name: the Agent's prompt capabilities are remembered under the id; notices name the Agent */
+  providerId?: string;
+  providerName?: string;
   cwd: string;
   model: string | null;
   mode: Mode;
@@ -61,6 +67,8 @@ export class AcpSession implements ProviderSession {
   private slashCommands: SlashCommand[] = [];
   private activeTurnId: string | null = null;
   private configOptions: AcpConfigOption[] | null = null;
+  // initialize → agentCapabilities.promptCapabilities (ACP baseline until initialize answers: text + resource_link)
+  private promptCaps: AcpPromptCaps = { image: false, audio: false, embeddedContext: false };
   private wakePump: (() => void) | null = null;
   // listCommands waits for the first batch of commands (or confirmation there are none), following Paseo's waitForInitialCommands
   private commandsReady!: Promise<void>;
@@ -109,12 +117,14 @@ export class AcpSession implements ProviderSession {
       const stream = acpStreamFromChild(this.child);
       this.conn = app.connect(stream);
       this.ctx = this.conn.agent;
-      await this.ctx.request(methods.agent.initialize, {
+      const initRes = await this.ctx.request(methods.agent.initialize, {
         protocolVersion: PROTOCOL_VERSION,
         // Cursor: declare support for the parameterized model picker (as Paseo does); only then does it expose levels / Fast as separate config options
         clientCapabilities: this.o.flavor === "cursor" ? { _meta: { parameterizedModelPicker: true } } : {},
         clientInfo: { name: "Agent Console", version: this.o.appVersion },
       });
+      this.promptCaps = promptCapsFromInitialize(initRes);
+      rememberPromptCaps(this.o.providerId, this.promptCaps);
 
       const cwd = absCwd(this.o.cwd);
       const ctx = this.ctx;
@@ -367,20 +377,34 @@ export class AcpSession implements ProviderSession {
       effort: this.o.effort,
     });
     const text = input.text.trim();
-    if (!text) {
+    const attachments = input.images ?? [];
+    if (!text && !attachments.length) {
       this.running = false;
       this.q.push({ type: "turn_ended", turnId: this.turnId, status: "completed" });
       return;
     }
-    void this.runTurn(text);
+    // An image-only message is still a prompt: images go as image blocks when the Agent takes them, else by file path
+    const built = await buildAcpPrompt(text, attachments, this.promptCaps);
+    const agent = this.o.providerName ?? this.o.binName;
+    if (built.imagesByPath.length && !this.promptCaps.image) {
+      this.q.push({ type: "notice", level: "warn", message: tr("notice.acpImageByPath", { agent, paths: built.imagesByPath.join(", ") }) });
+    }
+    for (const w of built.warnings) this.q.push({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
+    if (!built.blocks.length) {
+      // Every attachment failed to resolve and there was no text: nothing to send
+      this.running = false;
+      this.q.push({ type: "turn_ended", turnId: this.turnId, status: "completed" });
+      return;
+    }
+    void this.runTurn(built.blocks);
   }
 
   // Send this turn's prompt; reading updates is the job of the persistent pumpUpdates() (following Paseo: session/update is handled at session level)
-  private async runTurn(text: string): Promise<void> {
+  private async runTurn(prompt: Parameters<ActiveSession["prompt"]>[0]): Promise<void> {
     this.activeTurnId = this.turnId;
     this.wakePump?.();
     this.wakePump = null;
-    this.active!.prompt(text).catch(() => {
+    this.active!.prompt(prompt).catch(() => {
       /* failures surface through nextUpdate() and pumpUpdates ends the turn */
     });
   }

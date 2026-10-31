@@ -75,6 +75,9 @@ export function localizeDaemonMessage(msg: string): string {
   if (msg === "Agent 进程意外退出") return "Agent process exited unexpectedly";
   const att = msg.match(/^附件不存在或已失效（(.+)），请重新上传$/);
   if (att) return `Attachment missing or expired (${att[1]}) — upload again`;
+  const img = msg.match(/^(.+) 不能直接看图片（它的 ACP 初始化未声明支持图片输入），已改为发送图片的文件路径：(.+)$/s);
+  if (img) return `${img[1]} can't see images directly (its ACP initialize doesn't advertise image input); sent the image file path instead: ${img[2]}`;
+  if (msg.startsWith("附件问题：")) return "Attachment issue: " + msg.slice("附件问题：".length);
   return msg;
 }
 

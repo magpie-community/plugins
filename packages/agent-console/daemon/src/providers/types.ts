@@ -8,7 +8,10 @@ export type Capabilities = {
   resume: boolean;
   interrupt: boolean;
   steer: boolean;
+  /** The Agent takes images in a prompt (sees them itself). For ACP Agents: what initialize advertised, false until known */
   images: boolean;
+  /** false while an ACP Agent's image support is not known yet (before its probe or first session); absent = known */
+  imagesKnown?: boolean;
   plan: boolean;
   questions: boolean;
   cost: boolean;

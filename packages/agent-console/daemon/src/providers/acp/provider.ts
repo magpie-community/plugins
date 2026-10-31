@@ -2,6 +2,7 @@ import type { Provider, DetectResult, ModelInfo, Capabilities, Mode } from "../t
 import { killTree, spawnBin, type ResolveResult } from "../../util/bin.js";
 import { resolveFirstBin } from "../../util/bin.js";
 import { AcpSession } from "./session.js";
+import { knownPromptCaps } from "./promptCaps.js";
 
 export type AcpProviderConfig = {
   id: string;
@@ -75,7 +76,11 @@ export function createAcpProvider(cfg: AcpProviderConfig): Provider {
   return {
     id: cfg.id,
     name: cfg.name,
-    capabilities: caps,
+    // images is what the Agent's own initialize says (probe at warm-up / providers.list, or any session); until then unknown
+    get capabilities(): Capabilities {
+      const learned = knownPromptCaps(cfg.id);
+      return learned ? { ...caps, images: learned.image, imagesKnown: true } : { ...caps, images: false, imagesKnown: false };
+    },
     async detect(): Promise<DetectResult> {
       const r = await resolveProviderBin(cfg);
       if (!r.ok) {
@@ -104,6 +109,8 @@ export function createAcpProvider(cfg: AcpProviderConfig): Provider {
     async createSession(o) {
       return new AcpSession({
         threadId: o.threadId,
+        providerId: cfg.id,
+        providerName: cfg.name,
         cwd: o.cwd,
         model: o.model,
         mode: o.mode,

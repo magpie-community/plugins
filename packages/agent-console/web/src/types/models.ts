@@ -20,6 +20,8 @@ export type ThreadMeta = {
 
 export type Capabilities = {
   resume: boolean; interrupt: boolean; steer: boolean; images: boolean;
+  /** false while an ACP Agent's image support isn't known yet; absent = known */
+  imagesKnown?: boolean;
   plan: boolean; questions: boolean; cost: boolean;
   effort: string[]; modes: Mode[];
   /** each mode's original name in this Agent (Copilot: Agent / Plan / Allow All, etc.) */

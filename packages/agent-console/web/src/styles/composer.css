@@ -12,6 +12,7 @@
   max-width: 680px; margin: 0 auto 6px; display: flex; align-items: center; gap: 6px;
   color: var(--danger); font-size: var(--fs-s); padding: 0 2px;
 }
+.att-note { padding: 6px 10px 0; color: var(--muted); font-size: var(--fs-s); }
 .cp-ta-wrap { position: relative; }
 .slash-pop {
   position: absolute; left: 0; right: 0; bottom: 100%; margin-bottom: 6px;

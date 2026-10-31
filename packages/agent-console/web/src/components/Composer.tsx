@@ -55,6 +55,8 @@ export function Composer() {
   const running = tl.status === "running" || tl.status === "initializing";
   const waiting = tl.pending.length > 0;
   const steerOk = provider?.capabilities.steer ?? false;
+  // Known not to take images (an ACP Agent whose initialize doesn't advertise them): images still go, as file paths
+  const imagesByPath = !!provider && !provider.capabilities.images && provider.capabilities.imagesKnown !== false;
   const mode = thread?.mode ?? "default";
   const modes = composerModeOptions(thread?.provider, provider?.capabilities.modes ?? [], provider?.capabilities.modeLabels);
   const modeMeta = modes.find((m) => m.id === mode);
@@ -350,6 +352,9 @@ export function Composer() {
         <div className="cp-danger">{tr("composer.bypassWarn")}</div>
       )}
       <div className={`cp-card${waiting ? " waiting" : ""}${mode === "bypassPermissions" ? " danger" : ""}`}>
+        {imagesByPath && attachments.some((a) => a.mime.startsWith("image/")) && (
+          <div className="att-note">{tf("composer.imagesByPath", { agent: provider?.name ?? "" })}</div>
+        )}
         {attachments.length > 0 && (
           <div className="att-bar">
             {attachments.map((a, i) => (

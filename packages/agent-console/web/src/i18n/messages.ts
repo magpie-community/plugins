@@ -57,6 +57,7 @@ export const messages: Record<LocaleId, MessageTree> = {
     composer: {
       waitPerm: "等待你确认上面的授权请求", queuePlaceholder: "输入排队消息（Ctrl+Enter 插话）",
       inputPlaceholder: "输入消息…", bypassWarn: "Bypass：Agent 的所有操作不会再问你。",
+      imagesByPath: "{agent} 不能直接看图片：会把图片的文件路径发给它（它能用文件工具打开）。",
       agentModel: "Agent & model", agentLocked: "Agent (locked)", agent: "Agent",
       model: "Model", searchModel: "Search", searchAllModels: "Search models…", providers: "Providers",
       agentLockedHint: "已开始的对话不能更换 Agent；要用别的 Agent 请新建对话。",
@@ -199,6 +200,7 @@ export const messages: Record<LocaleId, MessageTree> = {
     composer: {
       waitPerm: "Waiting for your approval above", queuePlaceholder: "Queue a message (Ctrl+Enter to steer)",
       inputPlaceholder: "Message…", bypassWarn: "Bypass: the agent will not ask for permission.",
+      imagesByPath: "{agent} can't see images directly: it gets the image's file path instead (it can open it with its file tools).",
       agentModel: "Agent & model", agentLocked: "Agent (locked after first message)", agent: "Agent",
       model: "Model", searchModel: "Search", searchAllModels: "Search all models…", providers: "Providers",
       agentLockedHint: "The agent can't change after the conversation starts. Start a new conversation to use another agent.",

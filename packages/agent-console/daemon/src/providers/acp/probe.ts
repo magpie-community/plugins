@@ -5,6 +5,7 @@ import type { ModelInfo } from "../types.js";
 import type { ResolveResult } from "../../util/bin.js";
 import { spawnResolved, killAcpChild } from "./spawn.js";
 import { log } from "../../log.js";
+import { promptCapsFromInitialize, rememberPromptCaps, type AcpPromptCaps } from "./promptCaps.js";
 
 type SelectOption = { value?: unknown; name?: unknown; options?: SelectOption[] };
 type ConfigOption = { id?: string; category?: string; type?: string; currentValue?: unknown; options?: SelectOption[] };
@@ -47,8 +48,12 @@ export function parseAcpSession(res: { configOptions?: ConfigOption[]; models?: 
   return { models, currentModel, thinking, currentThinking };
 }
 
-export function probeAcp(r: ResolveResult & { ok: true }, acpArgs: string[], timeoutMs = 30000): Promise<AcpProbeResult> {
-  return probeAcpRaw(r, acpArgs, timeoutMs).then((x) => x.parsed);
+/** providerId: remember what the Agent's initialize advertised for prompts (images) under this id */
+export function probeAcp(r: ResolveResult & { ok: true }, acpArgs: string[], timeoutMs = 30000, providerId?: string): Promise<AcpProbeResult> {
+  return probeAcpRaw(r, acpArgs, timeoutMs).then((x) => {
+    rememberPromptCaps(providerId, x.promptCaps);
+    return x.parsed;
+  });
 }
 
 /** Like probeAcp, but also calls an Agent-specific method after session/new (e.g. Cursor's cursor/list_available_models) */
@@ -57,14 +62,14 @@ export function probeAcpRaw(
   acpArgs: string[],
   timeoutMs = 30000,
   extMethod?: string,
-): Promise<{ parsed: AcpProbeResult; ext: unknown }> {
+): Promise<{ parsed: AcpProbeResult; ext: unknown; promptCaps: AcpPromptCaps }> {
   return new Promise((resolvePromise, reject) => {
     const child = spawnResolved(r, acpArgs, { cwd: tmpdir() });
     let buf = "";
     let nextId = 0;
     const pending = new Map<number, { res: (v: unknown) => void; rej: (e: Error) => void }>();
     let done = false;
-    const finish = (err: Error | null, v?: { parsed: AcpProbeResult; ext: unknown }) => {
+    const finish = (err: Error | null, v?: { parsed: AcpProbeResult; ext: unknown; promptCaps: AcpPromptCaps }) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
@@ -108,11 +113,11 @@ export function probeAcpRaw(
     });
     void (async () => {
       try {
-        await send("initialize", { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "Agent Console", version: "probe" } });
+        const init = await send("initialize", { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "Agent Console", version: "probe" } });
         const res = (await send("session/new", { cwd: tmpdir(), mcpServers: [] })) as Parameters<typeof parseAcpSession>[0];
         let ext: unknown = null;
         if (extMethod) ext = await send(extMethod, {}).catch(() => null);
-        finish(null, { parsed: parseAcpSession(res ?? {}), ext });
+        finish(null, { parsed: parseAcpSession(res ?? {}), ext, promptCaps: promptCapsFromInitialize(init) });
       } catch (e) {
         finish(e instanceof Error ? e : new Error(String(e)));
       }
@@ -169,10 +174,11 @@ export function cursorCatalogToModels(catalog: CursorCatalog, currentModel: stri
   return out;
 }
 
-export function cursorProbeModels(acpArgs: string[]) {
+export function cursorProbeModels(acpArgs: string[], providerId?: string) {
   return async (r: ResolveResult & { ok: true }): Promise<ModelInfo[]> => {
     try {
-      const { parsed, ext } = await probeAcpRaw(r, acpArgs, 40000, "cursor/list_available_models");
+      const { parsed, ext, promptCaps } = await probeAcpRaw(r, acpArgs, 40000, "cursor/list_available_models");
+      rememberPromptCaps(providerId, promptCaps);
       const fromCatalog = ext ? cursorCatalogToModels(ext as CursorCatalog, parsed.currentModel) : [];
       // If the extension method is unavailable (older Cursor CLI), fall back to the model list reported by the session (no levels)
       return fromCatalog.length ? fromCatalog : probeToModels(parsed);
@@ -183,10 +189,10 @@ export function cursorProbeModels(acpArgs: string[]) {
   };
 }
 
-export function acpProbeModels(acpArgs: string[]) {
+export function acpProbeModels(acpArgs: string[], providerId?: string) {
   return async (r: ResolveResult & { ok: true }): Promise<ModelInfo[]> => {
     try {
-      return probeToModels(await probeAcp(r, acpArgs));
+      return probeToModels(await probeAcp(r, acpArgs, 30000, providerId));
     } catch (e) {
       log("warn", "ACP 探测模型失败", { err: String(e) });
       return [];
