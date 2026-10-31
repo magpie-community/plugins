@@ -1,7 +1,8 @@
 import type { ProviderCatalogEntry } from "../catalog.js";
 import type { AcpProviderConfig } from "./provider.js";
 import { cursorAcpCapabilities } from "./provider.js";
-import { acpProbeModels, cursorProbeModels } from "./probe.js";
+import { acpProbeModels, cursorProbeModels, dshProbeModels } from "./probe.js";
+import { DSH_ACP_ARGS, dshAcpArgs } from "./dsh.js";
 
 const ACP_IDS = new Set(["cursor", "devin", "opencode", "dsh", "pi", "copilot"]);
 
@@ -64,7 +65,14 @@ export function acpConfigForEntry(entry: ProviderCatalogEntry, appVersion: strin
       // pi-acp has no mode options; thinking level thought_level (low…max)
       return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { default: "" } };
     case "dsh":
-      return { ...base, acpArgs: ["--profile", "acp"], fetchModels: acpProbeModels(["--profile", "acp"], entry.id) };
+      // Started on the conversation's route (--patch), so its initialize advertises image input for that model (see dsh.ts)
+      return {
+        ...base,
+        acpArgs: DSH_ACP_ARGS,
+        argsFor: (model) => dshAcpArgs(model),
+        imagesFollowStartModel: true,
+        fetchModels: dshProbeModels(entry.id),
+      };
     default:
       return null;
   }

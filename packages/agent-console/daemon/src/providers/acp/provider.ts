@@ -11,6 +11,10 @@ export type AcpProviderConfig = {
   /** Takes precedence over binName: detect / listModels / session resolve these in order */
   binCandidates?: string[];
   acpArgs: string[];
+  /** Arguments for one session's ACP process from its model (dsh starts on the conversation's route); default acpArgs */
+  argsFor?: (model: string | null) => Promise<string[]>;
+  /** The Agent decides at initialize whether it takes images, for the model it started on (dsh): a model picked later sends images by path */
+  imagesFollowStartModel?: boolean;
   installHint: string;
   appVersion?: string;
   flavor?: "cursor" | "generic";
@@ -118,7 +122,8 @@ export function createAcpProvider(cfg: AcpProviderConfig): Provider {
         resumeId: o.resumeId,
         binName: cfg.binName,
         binCandidates: cfg.binCandidates ?? [cfg.binName],
-        acpArgs: cfg.acpArgs,
+        acpArgs: cfg.argsFor ? await cfg.argsFor(o.model) : cfg.acpArgs,
+        imagesFollowStartModel: cfg.imagesFollowStartModel,
         appVersion: cfg.appVersion ?? "0.0.1",
         flavor: cfg.flavor ?? "generic",
         modeMap: cfg.modeMap,

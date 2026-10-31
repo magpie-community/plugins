@@ -1326,6 +1326,7 @@ var init_i18n = __esm({
         "turn.agentExit": "Agent \u8FDB\u7A0B\u610F\u5916\u9000\u51FA",
         "attachment.missing": "\u9644\u4EF6\u4E0D\u5B58\u5728\u6216\u5DF2\u5931\u6548\uFF08{ref}\uFF09\uFF0C\u8BF7\u91CD\u65B0\u4E0A\u4F20",
         "notice.acpImageByPath": "{agent} \u4E0D\u80FD\u76F4\u63A5\u770B\u56FE\u7247\uFF08\u5B83\u7684 ACP \u521D\u59CB\u5316\u672A\u58F0\u660E\u652F\u6301\u56FE\u7247\u8F93\u5165\uFF09\uFF0C\u5DF2\u6539\u4E3A\u53D1\u9001\u56FE\u7247\u7684\u6587\u4EF6\u8DEF\u5F84\uFF1A{paths}",
+        "notice.acpImageByPathSwitched": "{agent} \u662F\u5728\u53E6\u4E00\u4E2A\u6A21\u578B\u4E0A\u542F\u52A8\u7684\uFF0C\u53EA\u5BF9\u90A3\u4E2A\u6A21\u578B\u63A5\u6536\u56FE\u7247\uFF0C\u8FD9\u6B21\u6539\u4E3A\u53D1\u9001\u56FE\u7247\u7684\u6587\u4EF6\u8DEF\u5F84\uFF08\u5F53\u524D\u6A21\u578B\u80FD\u770B\u56FE\u65F6\u5B83\u4F1A\u7528 read_image \u6253\u5F00\uFF09\uFF1A{paths}",
         "notice.attachmentIssue": "\u9644\u4EF6\u95EE\u9898\uFF1A{detail}",
         "export.defaultModel": "\u9ED8\u8BA4"
       },
@@ -1339,6 +1340,7 @@ var init_i18n = __esm({
         "turn.agentExit": "Agent process exited unexpectedly",
         "attachment.missing": "Attachment missing or expired ({ref}) \u2014 upload again",
         "notice.acpImageByPath": "{agent} can't see images directly (its ACP initialize doesn't advertise image input); sent the image file path instead: {paths}",
+        "notice.acpImageByPathSwitched": "{agent} was started on another model and takes image blocks only for that one, so the image went as its file path (it opens it with read_image when this model sees images): {paths}",
         "notice.attachmentIssue": "Attachment issue: {detail}",
         "export.defaultModel": "Default"
       }
@@ -3471,6 +3473,7 @@ var init_session3 = __esm({
       constructor(o) {
         this.o = o;
         this.events = this.q;
+        this.startModel = o.model;
         this.cursorFast = o.cursorFast ?? false;
         this.cursorAutoReview = false;
         this.commandsReady = new Promise((r) => this.settleCommands = r);
@@ -3500,6 +3503,8 @@ var init_session3 = __esm({
       configOptions = null;
       // initialize → agentCapabilities.promptCapabilities (ACP baseline until initialize answers: text + resource_link)
       promptCaps = { image: false, audio: false, embeddedContext: false };
+      initCaps = this.promptCaps;
+      startModel = null;
       wakePump = null;
       // listCommands waits for the first batch of commands (or confirmation there are none), following Paseo's waitForInitialCommands
       commandsReady;
@@ -3542,6 +3547,7 @@ var init_session3 = __esm({
             clientInfo: { name: "Agent Console", version: this.o.appVersion }
           });
           this.promptCaps = promptCapsFromInitialize(initRes);
+          this.initCaps = this.promptCaps;
           rememberPromptCaps(this.o.providerId, this.promptCaps);
           const cwd = absCwd(this.o.cwd);
           const ctx = this.ctx;
@@ -3773,7 +3779,8 @@ var init_session3 = __esm({
         const built = await buildAcpPrompt(text, attachments, this.promptCaps);
         const agent = this.o.providerName ?? this.o.binName;
         if (built.imagesByPath.length && !this.promptCaps.image) {
-          this.q.push({ type: "notice", level: "warn", message: tr("notice.acpImageByPath", { agent, paths: built.imagesByPath.join(", ") }) });
+          const switched = this.o.imagesFollowStartModel && this.initCaps.image && this.o.model !== this.startModel;
+          this.q.push({ type: "notice", level: "warn", message: tr(switched ? "notice.acpImageByPathSwitched" : "notice.acpImageByPath", { agent, paths: built.imagesByPath.join(", ") }) });
         }
         for (const w of built.warnings) this.q.push({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
         if (!built.blocks.length) {
@@ -3842,6 +3849,9 @@ var init_session3 = __esm({
       async setModel(model) {
         this.o.model = model;
         await this.ready();
+        if (this.o.imagesFollowStartModel) {
+          this.promptCaps = model === this.startModel ? this.initCaps : { ...this.initCaps, image: false };
+        }
         await this.applySessionModel(model);
       }
       async setMode(mode) {
@@ -3961,7 +3971,8 @@ function createAcpProvider(cfg2) {
         resumeId: o.resumeId,
         binName: cfg2.binName,
         binCandidates: cfg2.binCandidates ?? [cfg2.binName],
-        acpArgs: cfg2.acpArgs,
+        acpArgs: cfg2.argsFor ? await cfg2.argsFor(o.model) : cfg2.acpArgs,
+        imagesFollowStartModel: cfg2.imagesFollowStartModel,
         appVersion: cfg2.appVersion ?? "0.0.1",
         flavor: cfg2.flavor ?? "generic",
         modeMap: cfg2.modeMap,
@@ -3998,8 +4009,53 @@ var init_provider3 = __esm({
   }
 });
 
-// daemon/src/providers/acp/probe.ts
+// daemon/src/providers/acp/dsh.ts
+import { createHash as createHash2 } from "node:crypto";
+import { mkdir as mkdir2, writeFile as writeFile3 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join as join9 } from "node:path";
+function dshRoute(model) {
+  if (!model) return null;
+  try {
+    const v = JSON.parse(model);
+    if (Array.isArray(v) && v.length === 2 && typeof v[0] === "string" && typeof v[1] === "string" && v[0] && v[1]) {
+      return { provider: v[0], model: v[1] };
+    }
+  } catch {
+  }
+  return null;
+}
+function dshRoutePatch(route) {
+  return [
+    "# Agent Console: the route dsh's ACP starts on, so initialize advertises image input for it",
+    "- id: acp",
+    "  config:",
+    `    provider: ${JSON.stringify(route.provider)}`,
+    `    model: ${JSON.stringify(route.model)}`,
+    ""
+  ].join("\n");
+}
+async function dshAcpArgs(model, dir = join9(tmpdir(), "agent-console-dsh")) {
+  const route = dshRoute(model);
+  if (!route) return [...DSH_ACP_ARGS];
+  const body = dshRoutePatch(route);
+  const file = join9(dir, `acp-route-${createHash2("sha256").update(body).digest("hex").slice(0, 16)}.yml`);
+  await mkdir2(dir, { recursive: true });
+  await writeFile3(file, body, { mode: 384 });
+  return [...DSH_ACP_ARGS, "--patch", file];
+}
+function dshDefaultModel(models2, current) {
+  return models2.find((m) => /magpie/i.test(m.id))?.id ?? current ?? models2[0]?.id ?? null;
+}
+var DSH_ACP_ARGS;
+var init_dsh = __esm({
+  "daemon/src/providers/acp/dsh.ts"() {
+    DSH_ACP_ARGS = ["--profile", "acp"];
+  }
+});
+
+// daemon/src/providers/acp/probe.ts
+import { tmpdir as tmpdir2 } from "node:os";
 function flatten(opts) {
   const out = [];
   for (const o of opts ?? []) {
@@ -4033,7 +4089,7 @@ function probeAcp(r, acpArgs, timeoutMs = 3e4, providerId) {
 }
 function probeAcpRaw(r, acpArgs, timeoutMs = 3e4, extMethod) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawnResolved(r, acpArgs, { cwd: tmpdir() });
+    const child = spawnResolved(r, acpArgs, { cwd: tmpdir2() });
     let buf = "";
     let nextId = 0;
     const pending = /* @__PURE__ */ new Map();
@@ -4083,7 +4139,7 @@ function probeAcpRaw(r, acpArgs, timeoutMs = 3e4, extMethod) {
     void (async () => {
       try {
         const init = await send2("initialize", { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "Agent Console", version: "probe" } });
-        const res = await send2("session/new", { cwd: tmpdir(), mcpServers: [] });
+        const res = await send2("session/new", { cwd: tmpdir2(), mcpServers: [] });
         let ext = null;
         if (extMethod) ext = await send2(extMethod, {}).catch(() => null);
         finish(null, { parsed: parseAcpSession(res ?? {}), ext, promptCaps: promptCapsFromInitialize(init) });
@@ -4135,6 +4191,23 @@ function cursorProbeModels(acpArgs, providerId) {
     }
   };
 }
+function dshProbeModels(providerId) {
+  return async (r) => {
+    try {
+      const first = await probeAcpRaw(r, DSH_ACP_ARGS, 3e4);
+      let caps = first.promptCaps;
+      const start = dshDefaultModel(first.parsed.models, first.parsed.currentModel);
+      if (start && start !== first.parsed.currentModel && dshRoute(start)) {
+        caps = await probeAcpRaw(r, await dshAcpArgs(start), 3e4).then((x) => x.promptCaps, () => caps);
+      }
+      rememberPromptCaps(providerId, caps);
+      return probeToModels(first.parsed);
+    } catch (e) {
+      log("warn", "ACP \u63A2\u6D4B\u6A21\u578B\u5931\u8D25", { err: String(e) });
+      return [];
+    }
+  };
+}
 function acpProbeModels(acpArgs, providerId) {
   return async (r) => {
     try {
@@ -4151,6 +4224,7 @@ var init_probe = __esm({
     init_spawn();
     init_log();
     init_promptCaps();
+    init_dsh();
     EFFORT_LABEL = {
       none: "None",
       minimal: "Minimal",
@@ -4211,7 +4285,13 @@ function acpConfigForEntry(entry, appVersion) {
     case "pi":
       return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { default: "" } };
     case "dsh":
-      return { ...base, acpArgs: ["--profile", "acp"], fetchModels: acpProbeModels(["--profile", "acp"], entry.id) };
+      return {
+        ...base,
+        acpArgs: DSH_ACP_ARGS,
+        argsFor: (model) => dshAcpArgs(model),
+        imagesFollowStartModel: true,
+        fetchModels: dshProbeModels(entry.id)
+      };
     default:
       return null;
   }
@@ -4221,6 +4301,7 @@ var init_specs = __esm({
   "daemon/src/providers/acp/specs.ts"() {
     init_provider3();
     init_probe();
+    init_dsh();
     ACP_IDS = /* @__PURE__ */ new Set(["cursor", "devin", "opencode", "dsh", "pi", "copilot"]);
   }
 });
@@ -4369,7 +4450,7 @@ var init_pickFolder = __esm({
 // daemon/src/providers/magpieGateway.ts
 import { readFile as readFile10 } from "node:fs/promises";
 import { homedir as homedir6 } from "node:os";
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 async function readJson(path3) {
   try {
     return JSON.parse(await readFile10(path3, "utf8"));
@@ -4378,10 +4459,10 @@ async function readJson(path3) {
   }
 }
 async function readApplied() {
-  return await readJson(join9(homedir6(), ".config", "magpie", "applied.json")) ?? {};
+  return await readJson(join10(homedir6(), ".config", "magpie", "applied.json")) ?? {};
 }
 async function readClaudeEnv() {
-  const s = await readJson(join9(homedir6(), ".claude", "settings.json"));
+  const s = await readJson(join10(homedir6(), ".claude", "settings.json"));
   return s?.env ?? {};
 }
 async function gatewayBase() {
@@ -4551,9 +4632,9 @@ var init_infoCache = __esm({
 // daemon/src/ws/methods.ts
 import { z } from "zod";
 import { existsSync as existsSync8, statSync as statSync4 } from "node:fs";
-import { mkdir as mkdir2, writeFile as writeFile3 } from "node:fs/promises";
+import { mkdir as mkdir3, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir7 } from "node:os";
-import { dirname as dirname3, join as join10, win32 as win32Path } from "node:path";
+import { dirname as dirname3, join as join11, win32 as win32Path } from "node:path";
 import { execFile as execFile3 } from "node:child_process";
 function wrap(schema, fn) {
   return (params, ctx) => {
@@ -4991,14 +5072,14 @@ ${e.text}
     const markdown = L.join("\n");
     const safe = meta.title.replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 60) || "thread";
     const filename = `${safe}.md`;
-    const dir = join10(homedir7(), "Downloads");
-    await mkdir2(dir, { recursive: true });
-    let dest = join10(dir, filename);
+    const dir = join11(homedir7(), "Downloads");
+    await mkdir3(dir, { recursive: true });
+    let dest = join11(dir, filename);
     if (existsSync8(dest)) {
       const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      dest = join10(dir, `${safe}-${stamp2}.md`);
+      dest = join11(dir, `${safe}-${stamp2}.md`);
     }
-    await writeFile3(dest, markdown, "utf8");
+    await writeFile4(dest, markdown, "utf8");
     revealInFileManager(dest);
     return { markdown, filename, path: dest };
   }));
@@ -5041,13 +5122,13 @@ var init_methods = __esm({
 });
 
 // daemon/src/util/atomic.ts
-import { writeFile as writeFile4, rename, mkdir as mkdir3 } from "node:fs/promises";
+import { writeFile as writeFile5, rename, mkdir as mkdir4 } from "node:fs/promises";
 import { dirname as dirname4 } from "node:path";
 async function writeJsonAtomic(file, obj) {
   try {
-    await mkdir3(dirname4(file), { recursive: true });
+    await mkdir4(dirname4(file), { recursive: true });
     const tmp = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-    await writeFile4(tmp, JSON.stringify(obj, null, 2), "utf8");
+    await writeFile5(tmp, JSON.stringify(obj, null, 2), "utf8");
     await rename(tmp, file);
   } catch (e) {
     if (e instanceof ApiError) throw e;
@@ -5061,7 +5142,7 @@ var init_atomic = __esm({
 });
 
 // daemon/src/util/jsonl.ts
-import { appendFile, readFile as readFile13, mkdir as mkdir4, rename as rename2, writeFile as writeFile5 } from "node:fs/promises";
+import { appendFile, readFile as readFile13, mkdir as mkdir5, rename as rename2, writeFile as writeFile6 } from "node:fs/promises";
 import { dirname as dirname5 } from "node:path";
 async function readJsonl(file) {
   let text = "";
@@ -5085,7 +5166,7 @@ function appendJsonl(file, obj) {
   const prev = writers.get(file) ?? Promise.resolve();
   const next = prev.then(async () => {
     try {
-      await mkdir4(dirname5(file), { recursive: true });
+      await mkdir5(dirname5(file), { recursive: true });
       await appendFile(file, JSON.stringify(obj) + "\n", "utf8");
     } catch (e) {
       if (e instanceof ApiError) throw e;
@@ -5112,9 +5193,9 @@ var legacy_exports = {};
 __export(legacy_exports, {
   migrateLegacy: () => migrateLegacy
 });
-import { cp as cp2, mkdir as mkdir7, readdir as readdir6, readFile as readFile17 } from "node:fs/promises";
+import { cp as cp2, mkdir as mkdir8, readdir as readdir6, readFile as readFile17 } from "node:fs/promises";
 import { existsSync as existsSync12 } from "node:fs";
-import { join as join17 } from "node:path";
+import { join as join18 } from "node:path";
 function stamp() {
   const d = /* @__PURE__ */ new Date();
   const p = (n) => String(n).padStart(2, "0");
@@ -5123,17 +5204,17 @@ function stamp() {
 async function migrateLegacy(dataDir, stores) {
   const settings = await stores.settings.get();
   if (settings.v1Migrated) return { migrated: 0, skipped: true };
-  const oldDir = join17(dataDir, "sessions");
-  const oldSettingsPath = join17(dataDir, "settings.json");
+  const oldDir = join18(dataDir, "sessions");
+  const oldSettingsPath = join18(dataDir, "settings.json");
   if (!existsSync12(oldDir) && !existsSync12(oldSettingsPath)) {
     await stores.settings.set({ v1Migrated: true });
     return { migrated: 0, skipped: true };
   }
-  const backup = join17(dataDir, "trash", `legacy-${stamp()}`);
-  await mkdir7(backup, { recursive: true });
-  if (existsSync12(oldDir)) await cp2(oldDir, join17(backup, "sessions"), { recursive: true }).catch(() => {
+  const backup = join18(dataDir, "trash", `legacy-${stamp()}`);
+  await mkdir8(backup, { recursive: true });
+  if (existsSync12(oldDir)) await cp2(oldDir, join18(backup, "sessions"), { recursive: true }).catch(() => {
   });
-  if (existsSync12(oldSettingsPath)) await cp2(oldSettingsPath, join17(backup, "settings.json")).catch(() => {
+  if (existsSync12(oldSettingsPath)) await cp2(oldSettingsPath, join18(backup, "settings.json")).catch(() => {
   });
   const oldSettings = existsSync12(oldSettingsPath) ? JSON.parse(await readFile17(oldSettingsPath, "utf8").catch(() => "{}")) : {};
   const projectIdByPath = /* @__PURE__ */ new Map();
@@ -5149,13 +5230,13 @@ async function migrateLegacy(dataDir, stores) {
   }
   let sessionIds = [];
   try {
-    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync12(join17(oldDir, d, "meta.json")));
+    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync12(join18(oldDir, d, "meta.json")));
   } catch {
   }
   const metas = [];
   for (const id of sessionIds) {
     try {
-      const m = JSON.parse(await readFile17(join17(oldDir, id, "meta.json"), "utf8"));
+      const m = JSON.parse(await readFile17(join18(oldDir, id, "meta.json"), "utf8"));
       if (m?.cwd) metas.push(m);
     } catch {
     }
@@ -5188,7 +5269,7 @@ async function migrateLegacy(dataDir, stores) {
     return best ? projectIdByPath.get(best) : null;
   };
   let migrated = 0;
-  const threadsDir = join17(dataDir, "threads");
+  const threadsDir = join18(dataDir, "threads");
   for (const m of metas) {
     try {
       const projectId = projectOf(m.cwd);
@@ -5225,10 +5306,10 @@ async function migrateLegacy(dataDir, stores) {
         importedFrom: m.cliSessionId ? { provider, sessionId: m.cliSessionId } : void 0,
         seq: 0
       };
-      const tdir = join17(threadsDir, meta.id);
+      const tdir = join18(threadsDir, meta.id);
       if (existsSync12(tdir)) meta.id = `t_${m.id}_v1`.slice(0, 80);
-      await mkdir7(join17(threadsDir, meta.id), { recursive: true });
-      const oldEvts = (await readFile17(join17(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
+      await mkdir8(join18(threadsDir, meta.id), { recursive: true });
+      const oldEvts = (await readFile17(join18(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
         try {
           return JSON.parse(l);
         } catch {
@@ -5307,9 +5388,9 @@ async function migrateLegacy(dataDir, stores) {
         seq++;
         lines.push({ type: "tool_call", itemId: key, kind: "other", title: o.title, status: "failed", seq, ts: Date.now(), threadId: meta.id });
       }
-      for (const ev of lines) await appendJsonl(join17(threadsDir, meta.id, "timeline.jsonl"), ev);
+      for (const ev of lines) await appendJsonl(join18(threadsDir, meta.id, "timeline.jsonl"), ev);
       meta.seq = seq;
-      await writeJsonAtomic(join17(threadsDir, meta.id, "meta.json"), meta);
+      await writeJsonAtomic(join18(threadsDir, meta.id, "meta.json"), meta);
       migrated++;
     } catch (e) {
       log("warn", "\u8FC1\u79FB\uFF1A\u4F1A\u8BDD\u5931\u8D25", { id: m.id, err: String(e) });
@@ -5374,7 +5455,7 @@ var init_warm = __esm({
 
 // daemon/src/main.ts
 import { mkdirSync as mkdirSync2, rmSync as rmSync2, chmodSync as chmodSync2 } from "node:fs";
-import { join as join18, dirname as dirname7 } from "node:path";
+import { join as join19, dirname as dirname7 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // daemon/src/config.ts
@@ -5747,7 +5828,7 @@ var AttachmentStore = class {
 // daemon/src/store/settings.ts
 init_atomic();
 import { readFile as readFile11 } from "node:fs/promises";
-import { join as join11 } from "node:path";
+import { join as join12 } from "node:path";
 var DEFAULT_SETTINGS = {
   defaultProvider: "claude",
   defaultMode: "default",
@@ -5771,7 +5852,7 @@ var SettingsStore = class {
   cache = null;
   writing = Promise.resolve();
   constructor(dataDir) {
-    this.file = join11(dataDir, "settings.json");
+    this.file = join12(dataDir, "settings.json");
   }
   async get() {
     if (this.cache) return this.cache;
@@ -5800,7 +5881,7 @@ init_paths();
 init_methods();
 import { readFile as readFile12 } from "node:fs/promises";
 import { existsSync as existsSync9, statSync as statSync5 } from "node:fs";
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 import { randomBytes as randomBytes3 } from "node:crypto";
 function newId() {
   return "p_" + Date.now().toString(36) + randomBytes3(3).toString("hex");
@@ -5810,7 +5891,7 @@ var ProjectsStore = class {
   cache = null;
   writing = Promise.resolve();
   constructor(dataDir) {
-    this.file = join12(dataDir, "projects.json");
+    this.file = join13(dataDir, "projects.json");
   }
   async list() {
     if (this.cache) return this.cache;
@@ -5874,8 +5955,8 @@ init_jsonl();
 init_paths();
 init_methods();
 init_i18n();
-import { mkdir as mkdir5, rename as rename3, readdir as readdir4, readFile as readFile14 } from "node:fs/promises";
-import { join as join13 } from "node:path";
+import { mkdir as mkdir6, rename as rename3, readdir as readdir4, readFile as readFile14 } from "node:fs/promises";
+import { join as join14 } from "node:path";
 import { randomBytes as randomBytes4 } from "node:crypto";
 function newId2() {
   return "t_" + Date.now().toString(36) + randomBytes4(3).toString("hex");
@@ -5894,17 +5975,17 @@ var ThreadsStore = class {
     return p;
   }
   constructor(dataDir) {
-    this.dir = join13(dataDir, "threads");
-    this.trashDir = join13(dataDir, "trash", "threads");
+    this.dir = join14(dataDir, "threads");
+    this.trashDir = join14(dataDir, "trash", "threads");
   }
   tdir(id) {
-    return join13(this.dir, id);
+    return join14(this.dir, id);
   }
   metaPath(id) {
-    return join13(this.tdir(id), "meta.json");
+    return join14(this.tdir(id), "meta.json");
   }
   timelinePath(id) {
-    return join13(this.tdir(id), "timeline.jsonl");
+    return join14(this.tdir(id), "timeline.jsonl");
   }
   async loadAll() {
     if (this.loaded) return;
@@ -5959,7 +6040,7 @@ var ThreadsStore = class {
       seq: 0
     };
     try {
-      await mkdir5(this.tdir(meta.id), { recursive: true });
+      await mkdir6(this.tdir(meta.id), { recursive: true });
     } catch (e) {
       throw new ApiError("io_error", `\u521B\u5EFA\u5BF9\u8BDD\u76EE\u5F55\u5931\u8D25\uFF1A${e?.message ?? e}`);
     }
@@ -6005,10 +6086,10 @@ var ThreadsStore = class {
     const meta = await this.get(id);
     if (!meta) return;
     const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    await mkdir5(this.trashDir, { recursive: true });
+    await mkdir6(this.trashDir, { recursive: true });
     for (let attempt = 0; ; attempt++) {
       try {
-        await rename3(this.tdir(id), join13(this.trashDir, `${id}-${stamp2}`));
+        await rename3(this.tdir(id), join14(this.trashDir, `${id}-${stamp2}`));
         break;
       } catch (e) {
         const code = e?.code;
@@ -6857,6 +6938,10 @@ var AgentManager = class {
         await this.threads.patch(threadId, { model });
         this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
       }
+    } else if (meta.provider === "dsh" && !model) {
+      const available = await cachedModels(provider).catch(() => []);
+      const magpie = available.filter((m) => /magpie/i.test(m.id));
+      model = (magpie.find((m) => m.isDefault) ?? magpie[0] ?? available.find((m) => m.isDefault))?.id ?? null;
     }
     if (opts.updateStatus) await this.setStatus(threadId, "initializing");
     const settings = await this.settings.get();
@@ -6939,8 +7024,8 @@ var AgentManager = class {
 // daemon/src/git/service.ts
 import { execFile as execFile4 } from "node:child_process";
 import { existsSync as existsSync10 } from "node:fs";
-import { cp, mkdir as mkdir6, readFile as readFile15, rename as rename4, rm, stat as stat9 } from "node:fs/promises";
-import { join as join14, normalize as normalize2, sep as sep2 } from "node:path";
+import { cp, mkdir as mkdir7, readFile as readFile15, rename as rename4, rm, stat as stat9 } from "node:fs/promises";
+import { join as join15, normalize as normalize2, sep as sep2 } from "node:path";
 var TIMEOUT2 = 15e3;
 var DIFF_LIMIT = 1024 * 1024;
 function runGit(cwd, args) {
@@ -6954,7 +7039,7 @@ function runGit(cwd, args) {
 }
 function insidePath(projectPath, p) {
   const rel = normalize2(p).replace(/\\/g, "/");
-  const abs = normalize2(join14(projectPath, rel));
+  const abs = normalize2(join15(projectPath, rel));
   const proj = normalize2(projectPath);
   if (abs !== proj && !abs.startsWith(proj + sep2)) return null;
   return rel.replace(/\\/g, "/");
@@ -7003,7 +7088,7 @@ var GitService = class {
     if (!rel) return { error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
     const ls = await runGit(projectPath, ["ls-files", "--error-unmatch", "--", rel]);
     if (ls.code !== 0) {
-      const full = join14(projectPath, rel);
+      const full = join15(projectPath, rel);
       if (!existsSync10(full)) return { error: "\u6587\u4EF6\u4E0D\u5B58\u5728" };
       const s = await stat9(full);
       if (!s.isFile()) return { error: "\u4E0D\u662F\u6587\u4EF6" };
@@ -7037,11 +7122,11 @@ ${lines}` };
       if (r.code !== 0) return { ok: false, error: r.err.trim() || "\u653E\u5F03\u5931\u8D25" };
       return { ok: true };
     }
-    const full = join14(projectPath, rel);
+    const full = join15(projectPath, rel);
     if (!existsSync10(full)) return { ok: false, error: "\u6587\u4EF6\u4E0D\u5B58\u5728" };
     const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const dest = join14(dataDir, "trash", "discarded", stamp2, rel);
-    await mkdir6(join14(dest, ".."), { recursive: true });
+    const dest = join15(dataDir, "trash", "discarded", stamp2, rel);
+    await mkdir7(join15(dest, ".."), { recursive: true });
     try {
       await moveAcrossDevices(full, dest);
     } catch (e) {
@@ -7053,7 +7138,7 @@ ${lines}` };
 
 // daemon/src/files/service.ts
 import { readdir as readdir5, readFile as readFile16, stat as stat10 } from "node:fs/promises";
-import { join as join15, normalize as normalize3, sep as sep3, extname as extname3 } from "node:path";
+import { join as join16, normalize as normalize3, sep as sep3, extname as extname3 } from "node:path";
 import ignore from "ignore";
 function decodeText(buf) {
   try {
@@ -7116,7 +7201,7 @@ var LANG = {
 };
 function insidePath2(projectPath, p) {
   const rel = normalize3(p || ".").replace(/\\/g, "/");
-  const abs = normalize3(join15(projectPath, rel));
+  const abs = normalize3(join16(projectPath, rel));
   const proj = normalize3(projectPath);
   if (abs !== proj && !abs.startsWith(proj + sep3)) return null;
   return rel;
@@ -7126,7 +7211,7 @@ var FileService = class {
   // Invalidate by .gitignore mtime: an edited .gitignore takes effect the next time a directory is expanded
   igCache = /* @__PURE__ */ new Map();
   async igFor(projectPath) {
-    const gi = join15(projectPath, ".gitignore");
+    const gi = join16(projectPath, ".gitignore");
     const st = await stat10(gi).catch(() => null);
     const mtime = st?.isFile() ? st.mtimeMs : -1;
     const hit = this.igCache.get(projectPath);
@@ -7145,7 +7230,7 @@ var FileService = class {
   async tree(projectPath, dir) {
     const rel = insidePath2(projectPath, dir);
     if (rel === null) return { error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
-    const abs = join15(projectPath, rel);
+    const abs = join16(projectPath, rel);
     const s = await stat10(abs).catch(() => null);
     if (!s?.isDirectory()) return { error: "\u76EE\u5F55\u4E0D\u5B58\u5728" };
     const ig = await this.igFor(projectPath);
@@ -7159,7 +7244,7 @@ var FileService = class {
       const childRel = rel === "." ? name : `${rel}/${name}`;
       let isDir2 = d.isDirectory();
       if (d.isSymbolicLink()) {
-        const st = await stat10(join15(projectPath, childRel)).catch(() => null);
+        const st = await stat10(join16(projectPath, childRel)).catch(() => null);
         if (!st) continue;
         isDir2 = st.isDirectory();
       } else if (!d.isFile() && !isDir2) {
@@ -7176,7 +7261,7 @@ var FileService = class {
   async read(projectPath, p) {
     const rel = insidePath2(projectPath, p);
     if (rel === null) return { error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
-    const abs = join15(projectPath, rel);
+    const abs = join16(projectPath, rel);
     const s = await stat10(abs).catch(() => null);
     if (!s) return { error: "\u6587\u4EF6\u4E0D\u5B58\u5728" };
     if (!s.isFile()) return { error: "\u4E0D\u662F\u6587\u4EF6" };
@@ -7197,7 +7282,7 @@ import { spawn as spawn3, execFileSync as execFileSync2 } from "node:child_proce
 import { accessSync as accessSync2, chmodSync, constants as fsc, existsSync as existsSync11, statSync as statSync6 } from "node:fs";
 import { createRequire as moduleRequire } from "node:module";
 import { release } from "node:os";
-import { dirname as dirname6, join as join16 } from "node:path";
+import { dirname as dirname6, join as join17 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 var MAX_TERMS_PER_PROJECT = 8;
 var BUF_MAX = 2 * 1024 * 1024;
@@ -7243,7 +7328,7 @@ function fixSpawnHelper() {
     const req = moduleRequire(import.meta.url);
     const root = dirname6(req.resolve("node-pty/package.json"));
     for (const sub of [`prebuilds/darwin-${process.arch}`, "build/Release"]) {
-      const f = join16(root, sub, "spawn-helper");
+      const f = join17(root, sub, "spawn-helper");
       if (existsSync11(f) && !isExecFile(f)) {
         chmodSync(f, 493);
         log("info", "\u5DF2\u4FEE\u590D node-pty spawn-helper \u7684\u53EF\u6267\u884C\u4F4D", { file: f });
@@ -7507,10 +7592,10 @@ process.on("unhandledRejection", (e) => {
 async function main() {
   initLog(cfg.dataDir);
   for (const d of ["threads", "attachments", "trash", "logs"]) {
-    mkdirSync2(join18(cfg.dataDir, d), { recursive: true });
+    mkdirSync2(join19(cfg.dataDir, d), { recursive: true });
   }
-  const appDir = join18(dirname7(fileURLToPath3(import.meta.url)), "..", "..", "app");
-  const attachments = new AttachmentStore(join18(cfg.dataDir, "attachments"));
+  const appDir = join19(dirname7(fileURLToPath3(import.meta.url)), "..", "..", "app");
+  const attachments = new AttachmentStore(join19(cfg.dataDir, "attachments"));
   const { bindAttachmentStore: bindAttachmentStore2 } = await Promise.resolve().then(() => (init_attachmentRefs(), attachmentRefs_exports));
   bindAttachmentStore2(attachments);
   const settings = new SettingsStore(cfg.dataDir);
@@ -7569,7 +7654,7 @@ async function main() {
     const { warmProviderCache: warmProviderCache2 } = await Promise.resolve().then(() => (init_warm(), warm_exports));
     await warmProviderCache2(await settings.get());
   })().catch((e) => log("warn", "Provider \u9884\u70ED\u5931\u8D25", { err: String(e) }));
-  const daemonJsonPath = join18(cfg.dataDir, "daemon.json");
+  const daemonJsonPath = join19(cfg.dataDir, "daemon.json");
   await writeJsonAtomic(daemonJsonPath, {
     pid: process.pid,
     port: cfg.port,

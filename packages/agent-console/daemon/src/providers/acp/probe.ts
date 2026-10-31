@@ -6,6 +6,7 @@ import type { ResolveResult } from "../../util/bin.js";
 import { spawnResolved, killAcpChild } from "./spawn.js";
 import { log } from "../../log.js";
 import { promptCapsFromInitialize, rememberPromptCaps, type AcpPromptCaps } from "./promptCaps.js";
+import { DSH_ACP_ARGS, dshAcpArgs, dshDefaultModel, dshRoute } from "./dsh.js";
 
 type SelectOption = { value?: unknown; name?: unknown; options?: SelectOption[] };
 type ConfigOption = { id?: string; category?: string; type?: string; currentValue?: unknown; options?: SelectOption[] };
@@ -184,6 +185,28 @@ export function cursorProbeModels(acpArgs: string[], providerId?: string) {
       return fromCatalog.length ? fromCatalog : probeToModels(parsed);
     } catch (e) {
       log("warn", "Cursor 模型探测失败", { err: String(e) });
+      return [];
+    }
+  };
+}
+
+/**
+ * dsh: the model list from a plain `dsh --profile acp`, then whether it takes images from an initialize started on the
+ * route a new conversation uses (dsh answers for the route it starts on, see dsh.ts).
+ */
+export function dshProbeModels(providerId?: string) {
+  return async (r: ResolveResult & { ok: true }): Promise<ModelInfo[]> => {
+    try {
+      const first = await probeAcpRaw(r, DSH_ACP_ARGS, 30000);
+      let caps = first.promptCaps;
+      const start = dshDefaultModel(first.parsed.models, first.parsed.currentModel);
+      if (start && start !== first.parsed.currentModel && dshRoute(start)) {
+        caps = await probeAcpRaw(r, await dshAcpArgs(start), 30000).then((x) => x.promptCaps, () => caps);
+      }
+      rememberPromptCaps(providerId, caps);
+      return probeToModels(first.parsed);
+    } catch (e) {
+      log("warn", "ACP 探测模型失败", { err: String(e) });
       return [];
     }
   };

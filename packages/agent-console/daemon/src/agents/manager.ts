@@ -697,6 +697,11 @@ export class AgentManager {
         await this.threads.patch(threadId, { model });
         this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
       }
+    } else if (meta.provider === "dsh" && !model) {
+      // No model picked: start dsh on the route a new conversation would use (its ACP takes images only for the route it starts on)
+      const available = await cachedModels(provider).catch(() => []);
+      const magpie = available.filter((m) => /magpie/i.test(m.id));
+      model = (magpie.find((m) => m.isDefault) ?? magpie[0] ?? available.find((m) => m.isDefault))?.id ?? null;
     }
     if (opts.updateStatus) await this.setStatus(threadId, "initializing");
     const settings = await this.settings.get();

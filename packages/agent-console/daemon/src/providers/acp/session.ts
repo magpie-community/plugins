@@ -37,6 +37,8 @@ export type AcpSessionOpts = {
   binName: string;
   binCandidates: string[];
   acpArgs: string[];
+  /** initialize's image answer holds for the start model only (dsh): after a switch, images go by path */
+  imagesFollowStartModel?: boolean;
   appVersion: string;
   flavor: "cursor" | "generic";
   modeMap?: Partial<Record<Mode, string>>;
@@ -69,6 +71,8 @@ export class AcpSession implements ProviderSession {
   private configOptions: AcpConfigOption[] | null = null;
   // initialize → agentCapabilities.promptCapabilities (ACP baseline until initialize answers: text + resource_link)
   private promptCaps: AcpPromptCaps = { image: false, audio: false, embeddedContext: false };
+  private initCaps: AcpPromptCaps = this.promptCaps;
+  private startModel: string | null = null;
   private wakePump: (() => void) | null = null;
   // listCommands waits for the first batch of commands (or confirmation there are none), following Paseo's waitForInitialCommands
   private commandsReady!: Promise<void>;
@@ -76,6 +80,7 @@ export class AcpSession implements ProviderSession {
 
   constructor(private o: AcpSessionOpts) {
     this.events = this.q;
+    this.startModel = o.model; // the model the process is launched for (argsFor), before any setModel
     this.cursorFast = o.cursorFast ?? false;
     // The shield (auto-accept permission prompts) UI was removed: never auto-approve, so conversations that once turned it on don't keep approving with the toggle hidden
     this.cursorAutoReview = false;
@@ -124,6 +129,7 @@ export class AcpSession implements ProviderSession {
         clientInfo: { name: "Agent Console", version: this.o.appVersion },
       });
       this.promptCaps = promptCapsFromInitialize(initRes);
+      this.initCaps = this.promptCaps;
       rememberPromptCaps(this.o.providerId, this.promptCaps);
 
       const cwd = absCwd(this.o.cwd);
@@ -387,7 +393,8 @@ export class AcpSession implements ProviderSession {
     const built = await buildAcpPrompt(text, attachments, this.promptCaps);
     const agent = this.o.providerName ?? this.o.binName;
     if (built.imagesByPath.length && !this.promptCaps.image) {
-      this.q.push({ type: "notice", level: "warn", message: tr("notice.acpImageByPath", { agent, paths: built.imagesByPath.join(", ") }) });
+      const switched = this.o.imagesFollowStartModel && this.initCaps.image && this.o.model !== this.startModel;
+      this.q.push({ type: "notice", level: "warn", message: tr(switched ? "notice.acpImageByPathSwitched" : "notice.acpImageByPath", { agent, paths: built.imagesByPath.join(", ") }) });
     }
     for (const w of built.warnings) this.q.push({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
     if (!built.blocks.length) {
@@ -464,6 +471,10 @@ export class AcpSession implements ProviderSession {
   async setModel(model: string | null): Promise<void> {
     this.o.model = model;
     await this.ready();
+    if (this.o.imagesFollowStartModel) {
+      // dsh answered initialize for the model it started on; another model may not take image blocks (it refuses the prompt)
+      this.promptCaps = model === this.startModel ? this.initCaps : { ...this.initCaps, image: false };
+    }
     await this.applySessionModel(model);
   }
 

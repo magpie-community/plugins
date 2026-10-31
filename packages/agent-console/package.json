@@ -63,7 +63,8 @@
     "check:v1": "tsc -p tsconfig.daemon.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "e2e:v1": "node scripts/e2e-v1.mjs",
     "shot:v1": "node scripts/shot-v1.mjs",
-    "verify:build": "node scripts/verify-build.mjs"
+    "verify:build": "node scripts/verify-build.mjs",
+    "test:real": "vitest run --config vitest.real.config.ts"
   },
   "engines": {
     "node": ">=20",
