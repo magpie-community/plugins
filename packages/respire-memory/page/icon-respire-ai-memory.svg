@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- 1. 极简暖炭黑底座：衬托暖白与 #a93021 铁锈红，拒绝廉价纯黑 -->
+    <linearGradient id="bg-obsidian" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#141413" />
+      <stop offset="100%" stop-color="#0A0A09" />
+    </linearGradient>
+
+    <!-- 2. 曲线交汇处的微妙暖红呼吸晕染 (仅 9% 不透明度，克制提味) -->
+    <radialGradient id="crimson-breath" cx="50%" cy="52%" r="42%">
+      <stop offset="0%" stop-color="#A93021" stop-opacity="0.14" />
+      <stop offset="65%" stop-color="#A93021" stop-opacity="0.03" />
+      <stop offset="100%" stop-color="#0A0A09" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- 3. 主线光学渐变 (对应原版 currentColor，暖调羊皮纸白，两端微收) -->
+    <linearGradient id="stroke-primary" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#F5F2EB" stop-opacity="0.35" />
+      <stop offset="15%" stop-color="#F5F2EB" stop-opacity="0.98" />
+      <stop offset="85%" stop-color="#F5F2EB" stop-opacity="0.98" />
+      <stop offset="100%" stop-color="#F5F2EB" stop-opacity="0.45" />
+    </linearGradient>
+
+    <!-- 4. 辅线光学渐变 (对应原版 #a93021 铁锈朱砂红，中心交汇处微亮) -->
+    <linearGradient id="stroke-rust" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#A93021" stop-opacity="0.4" />
+      <stop offset="18%" stop-color="#A93021" stop-opacity="1" />
+      <stop offset="52%" stop-color="#D14332" stop-opacity="1" />
+      <stop offset="85%" stop-color="#A93021" stop-opacity="1" />
+      <stop offset="100%" stop-color="#A93021" stop-opacity="0.45" />
+    </linearGradient>
+
+    <!-- 5. 极轻微的笔触质感阴影 -->
+    <filter id="line-lift" x="-10%" y="-20%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.6" />
+    </filter>
+
+    <!-- 6. AI 火花（四角星）局部坐标：tip 26 / 腰 9，便于复用缩放 -->
+    <path id="spark" d="M0 -26 Q4 -6 24 0 Q4 6 0 26 Q-4 6 -24 0 Q-4 -6 0 -26 Z" />
+  </defs>
+
+  <!-- 图标圆角底座 -->
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bg-obsidian)" />
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#crimson-breath)" />
+
+  <!-- 1px 极细微内边框，确保在 Qoder 深色背景中边界清晰 -->
+  <rect x="24.75" y="24.75" width="462.5" height="462.5" rx="107.25" fill="none" stroke="#F5F2EB" stroke-opacity="0.07" stroke-width="1.5" />
+
+  <!-- 记忆层：芯片本体后方两层错位轮廓（记忆 = 一层层存下去） -->
+  <g fill="none" stroke="url(#stroke-rust)" stroke-width="4" stroke-linejoin="round">
+    <rect x="110" y="134" width="320" height="272" rx="48" stroke-opacity="0.30" />
+    <rect x="124" y="148" width="320" height="272" rx="48" stroke-opacity="0.14" />
+  </g>
+
+  <!-- AI 芯片本体：承载呼吸曲线，另叠一层暖红晕染 -->
+  <rect x="96" y="120" width="320" height="272" rx="48" fill="url(#bg-obsidian)" />
+  <rect x="96" y="120" width="320" height="272" rx="48" fill="url(#crimson-breath)" />
+  <rect x="96" y="120" width="320" height="272" rx="48" fill="none" stroke="url(#stroke-primary)" stroke-width="5" />
+
+  <!-- 芯片引脚：上下各 3、左右各 3，圆头 -->
+  <g stroke="#F5F2EB" stroke-opacity="0.8" stroke-width="5" stroke-linecap="round">
+    <path d="M176 120V96 M256 120V96 M336 120V96" />
+    <path d="M176 392v24 M256 392v24 M336 392v24" />
+    <path d="M96 184H72 M96 256H72 M96 328H72" />
+    <path d="M416 184h24 M416 256h24 M416 328h24" />
+  </g>
+
+  <!-- 核心图形：100% 原生 viewBox (0 0 52 44) 等比居中映射，两端穿出芯片 = 记忆进出的信号线 -->
+  <g transform="translate(68.8, 97.6) scale(7.2)" filter="url(#line-lift)">
+    <!-- 辅线 (Exhale / Remember)：原生 #a93021 路径 -->
+    <path d="M3 25C9 14 13 10 19 14s11 24 20 20c5-2 7-6 10-9" fill="none" stroke="url(#stroke-rust)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+    <!-- 主线 (Inhale / Recall)：原生 currentColor 路径 -->
+    <path d="M3 23C10 22 9 6 18 7S32 40 41 36c4-2 6-8 8-12" fill="none" stroke="url(#stroke-primary)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+
+  <!-- 记忆条目：卡内左下三条存档（宽度递减 = 存进去的一条条记录） -->
+  <g fill="#F5F2EB" rx="5">
+    <rect x="132" y="318" width="68" height="10" rx="5" fill-opacity="0.60" />
+    <rect x="132" y="336" width="52" height="10" rx="5" fill-opacity="0.42" />
+    <rect x="132" y="354" width="36" height="10" rx="5" fill-opacity="0.26" />
+  </g>
+
+  <!-- AI 火花：右上主火花（铁锈红）+ 左上小火花（暖白），点明「人工智能」 -->
+  <use href="#spark" x="370" y="164" fill="url(#stroke-rust)" />
+  <use href="#spark" transform="translate(142 170) scale(0.5)" fill="#F5F2EB" fill-opacity="0.75" opacity="0.9" />
+</svg>

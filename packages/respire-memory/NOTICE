@@ -1,0 +1,14 @@
+conversation.mjs is adapted from magpie-community/plugins, packages/powercontext/conversation.mjs.
+Upstream blob: dc97399af3c41f569c188dd449b8e2750b52e0f3
+https://github.com/magpie-community/plugins/blob/main/packages/powercontext/conversation.mjs
+Copyright (c) 2026 magpie-community contributors. MIT License (included in LICENSE).
+
+The gateway-hook architecture was informed by PowerContext and Magpie's released hook contract.
+Respire-specific integration and configuration: Copyright (c) 2026 Respire contributors.
+
+Respire icons originate from the 1memory/icon directory. The adaptive page/icon.svg
+reuses the Respire DSH composition of the same light and dark source images.
+
+archive-context.mjs, memory-tools.mjs and policy.mjs reuse Respire Codex's
+evidence preparation, restricted memory tools and memory policy respectively.
+https://github.com/risense-ai/respire-codex

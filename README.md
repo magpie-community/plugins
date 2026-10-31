@@ -138,6 +138,7 @@ Like middleware, these run on the requests agents send, but in magpie's Bun host
 
 | Package | What it does |
 |---|---|
+| [respire-memory](packages/respire-memory) | [Respire](https://github.com/risense-ai/respire-magpie): help agents evolve through memory recall, explicit remember and opt-in model-based experience archival with deduplication and readback |
 | [powercontext](packages/powercontext) | [PowerContext](https://github.com/oceanbase/powercontext) recall and opt-in completed-conversation capture; no client MCP or skill required |
 | [nowledge-mem](packages/nowledge-mem) | [Nowledge Mem](https://mem.nowledge.co) recall, Context Bundle or Working Memory, per-harness provenance and opt-in conversation import as Mem Threads, automatic for every harness behind Magpie |
 | [aelios](packages/aelios) | [Aelios](https://github.com/wusaki0723/Aelios) recall before each turn from your own Aelios on Cloudflare, and opt-in recording of each turn so Aelios can remember it |

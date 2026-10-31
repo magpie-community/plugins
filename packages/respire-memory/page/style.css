@@ -1,0 +1,24 @@
+:root { color-scheme: light dark; --bg: var(--magpie-bg, #f5f6f8); --card: var(--magpie-card, #fff); --fg: var(--magpie-fg, #18232d); --muted: var(--magpie-muted, #687580); --line: var(--magpie-line, #dce2e7); --accent: var(--magpie-accent, #16745c); }
+:root[data-theme=dark] { --bg: var(--magpie-bg, #15191d); --card: var(--magpie-card, #20262c); --fg: var(--magpie-fg, #eef2f4); --line: var(--magpie-line, #38434c); --muted: var(--magpie-muted, #a9b5be); }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 var(--magpie-font, system-ui, sans-serif); }
+main { max-width: 720px; margin: auto; padding: 28px 20px; }
+header { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+.brand { flex: none; width: 46px; height: 46px; }
+.brand-dark { display: none; }
+:root[data-theme=dark] .brand-light { display: none; }
+:root[data-theme=dark] .brand-dark { display: block; }
+h1 { font-size: 23px; margin: 0; } h2 { font-size: 16px; } p { margin: 6px 0 14px; } header p, small, .disclosure { color: var(--muted); }
+form { padding: 24px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+label { display: block; margin: 12px 0 6px; font-weight: 600; }
+input:not([type=checkbox]) { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--fg); font: inherit; }
+small { display: block; margin: 5px 0 20px; font-size: 12px; }
+.check { display: flex; align-items: baseline; gap: 9px; font-weight: 400; }
+input[type=checkbox] { accent-color: var(--accent); }
+.disclosure { font-size: 12px; margin: 8px 0 20px; }
+button { border: 0; border-radius: 7px; padding: 9px 18px; background: var(--accent); color: var(--magpie-accent-fg, #fff); font: inherit; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+#status { font-size: 12px; margin: 12px 0 0; } section { margin-top: 24px; }
+fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 20px 0; padding: 14px; min-width: 0; }
+legend { padding: 0 6px; font-weight: 600; }

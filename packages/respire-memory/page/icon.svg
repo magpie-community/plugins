@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Respire AI memory icon: light variant by default, dark variant under dark color scheme. -->
+  <style>
+    .respire-icon-dark { display: none }
+    @media (prefers-color-scheme: dark) {
+      .respire-icon-light { display: none }
+      .respire-icon-dark { display: inline }
+    }
+  </style>
+  <defs>
+    <!-- Light variant (l- prefix): warm paper base, warm ink lines. -->
+    <linearGradient id="l-bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FAF7F0" />
+      <stop offset="100%" stop-color="#EFEAE0" />
+    </linearGradient>
+    <radialGradient id="l-breath" cx="50%" cy="52%" r="42%">
+      <stop offset="0%" stop-color="#A93021" stop-opacity="0.08" />
+      <stop offset="65%" stop-color="#A93021" stop-opacity="0.02" />
+      <stop offset="100%" stop-color="#A93021" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="l-ink" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#211E19" stop-opacity="0.30" />
+      <stop offset="15%" stop-color="#211E19" stop-opacity="0.92" />
+      <stop offset="85%" stop-color="#211E19" stop-opacity="0.92" />
+      <stop offset="100%" stop-color="#211E19" stop-opacity="0.40" />
+    </linearGradient>
+    <linearGradient id="l-rust" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#A93021" stop-opacity="0.4" />
+      <stop offset="18%" stop-color="#A93021" stop-opacity="1" />
+      <stop offset="52%" stop-color="#D14332" stop-opacity="1" />
+      <stop offset="85%" stop-color="#A93021" stop-opacity="1" />
+      <stop offset="100%" stop-color="#A93021" stop-opacity="0.45" />
+    </linearGradient>
+    <linearGradient id="l-chip" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFDF8" />
+      <stop offset="100%" stop-color="#F6F2E9" />
+    </linearGradient>
+    <filter id="l-lift" x="-10%" y="-20%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#3A332A" flood-opacity="0.22" />
+    </filter>
+    <path id="l-spark" d="M0 -26 Q4 -6 24 0 Q4 6 0 26 Q-4 6 -24 0 Q-4 -6 0 -26 Z" />
+    <!-- Dark variant (d- prefix): warm obsidian base, parchment lines. -->
+    <linearGradient id="d-bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#141413" />
+      <stop offset="100%" stop-color="#0A0A09" />
+    </linearGradient>
+    <radialGradient id="d-breath" cx="50%" cy="52%" r="42%">
+      <stop offset="0%" stop-color="#A93021" stop-opacity="0.14" />
+      <stop offset="65%" stop-color="#A93021" stop-opacity="0.03" />
+      <stop offset="100%" stop-color="#0A0A09" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="d-line" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#F5F2EB" stop-opacity="0.35" />
+      <stop offset="15%" stop-color="#F5F2EB" stop-opacity="0.98" />
+      <stop offset="85%" stop-color="#F5F2EB" stop-opacity="0.98" />
+      <stop offset="100%" stop-color="#F5F2EB" stop-opacity="0.45" />
+    </linearGradient>
+    <linearGradient id="d-rust" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#A93021" stop-opacity="0.4" />
+      <stop offset="18%" stop-color="#A93021" stop-opacity="1" />
+      <stop offset="52%" stop-color="#D14332" stop-opacity="1" />
+      <stop offset="85%" stop-color="#A93021" stop-opacity="1" />
+      <stop offset="100%" stop-color="#A93021" stop-opacity="0.45" />
+    </linearGradient>
+    <filter id="d-lift" x="-10%" y="-20%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.6" />
+    </filter>
+    <path id="d-spark" d="M0 -26 Q4 -6 24 0 Q4 6 0 26 Q-4 6 -24 0 Q-4 -6 0 -26 Z" />
+  </defs>
+
+  <!-- Light variant body -->
+  <g class="respire-icon-light">
+    <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#l-bg)" />
+    <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#l-breath)" />
+    <rect x="24.75" y="24.75" width="462.5" height="462.5" rx="107.25" fill="none" stroke="#211E19" stroke-opacity="0.10" stroke-width="1.5" />
+    <g fill="none" stroke="url(#l-rust)" stroke-width="4" stroke-linejoin="round">
+      <rect x="110" y="134" width="320" height="272" rx="48" stroke-opacity="0.35" />
+      <rect x="124" y="148" width="320" height="272" rx="48" stroke-opacity="0.18" />
+    </g>
+    <rect x="96" y="120" width="320" height="272" rx="48" fill="url(#l-chip)" />
+    <rect x="96" y="120" width="320" height="272" rx="48" fill="url(#l-breath)" />
+    <rect x="96" y="120" width="320" height="272" rx="48" fill="none" stroke="url(#l-ink)" stroke-width="5" />
+    <g stroke="#211E19" stroke-opacity="0.75" stroke-width="5" stroke-linecap="round">
+      <path d="M176 120V96 M256 120V96 M336 120V96" />
+      <path d="M176 392v24 M256 392v24 M336 392v24" />
+      <path d="M96 184H72 M96 256H72 M96 328H72" />
+      <path d="M416 184h24 M416 256h24 M416 328h24" />
+    </g>
+    <g transform="translate(68.8, 97.6) scale(7.2)" filter="url(#l-lift)">
+      <path d="M3 25C9 14 13 10 19 14s11 24 20 20c5-2 7-6 10-9" fill="none" stroke="url(#l-rust)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M3 23C10 22 9 6 18 7S32 40 41 36c4-2 6-8 8-12" fill="none" stroke="url(#l-ink)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+    </g>
+    <g fill="#211E19">
+      <rect x="132" y="318" width="68" height="10" rx="5" fill-opacity="0.55" />
+      <rect x="132" y="336" width="52" height="10" rx="5" fill-opacity="0.38" />
+      <rect x="132" y="354" width="36" height="10" rx="5" fill-opacity="0.22" />
+    </g>
+    <use href="#l-spark" x="370" y="164" fill="url(#l-rust)" />
+    <use href="#l-spark" transform="translate(142 170) scale(0.5)" fill="#211E19" fill-opacity="0.68" />
+  </g>
+
+  <!-- Dark variant body -->
+  <g class="respire-icon-dark">
+    <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#d-bg)" />
+    <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#d-breath)" />
+    <rect x="24.75" y="24.75" width="462.5" height="462.5" rx="107.25" fill="none" stroke="#F5F2EB" stroke-opacity="0.07" stroke-width="1.5" />
+    <g fill="none" stroke="url(#d-rust)" stroke-width="4" stroke-linejoin="round">
+      <rect x="110" y="134" width="320" height="272" rx="48" stroke-opacity="0.30" />
+      <rect x="124" y="148" width="320" height="272" rx="48" stroke-opacity="0.14" />
+    </g>
+    <rect x="96" y="120" width="320" height="272" rx="48" fill="url(#d-bg)" />
+    <rect x="96" y="120" width="320" height="272" rx="48" fill="url(#d-breath)" />
+    <rect x="96" y="120" width="320" height="272" rx="48" fill="none" stroke="url(#d-line)" stroke-width="5" />
+    <g stroke="#F5F2EB" stroke-opacity="0.8" stroke-width="5" stroke-linecap="round">
+      <path d="M176 120V96 M256 120V96 M336 120V96" />
+      <path d="M176 392v24 M256 392v24 M336 392v24" />
+      <path d="M96 184H72 M96 256H72 M96 328H72" />
+      <path d="M416 184h24 M416 256h24 M416 328h24" />
+    </g>
+    <g transform="translate(68.8, 97.6) scale(7.2)" filter="url(#d-lift)">
+      <path d="M3 25C9 14 13 10 19 14s11 24 20 20c5-2 7-6 10-9" fill="none" stroke="url(#d-rust)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M3 23C10 22 9 6 18 7S32 40 41 36c4-2 6-8 8-12" fill="none" stroke="url(#d-line)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+    </g>
+    <g fill="#F5F2EB">
+      <rect x="132" y="318" width="68" height="10" rx="5" fill-opacity="0.60" />
+      <rect x="132" y="336" width="52" height="10" rx="5" fill-opacity="0.42" />
+      <rect x="132" y="354" width="36" height="10" rx="5" fill-opacity="0.26" />
+    </g>
+    <use href="#d-spark" x="370" y="164" fill="url(#d-rust)" />
+    <use href="#d-spark" transform="translate(142 170) scale(0.5)" fill="#F5F2EB" fill-opacity="0.75" opacity="0.9" />
+  </g>
+</svg>
