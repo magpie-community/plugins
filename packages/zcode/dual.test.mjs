@@ -390,7 +390,7 @@ test("an abort while the gift is in flight stays an abort", async () => {
 test("a firewall block on the gift shows on the card and rests the gift's models", async () => {
   planAndBalance()
   answers["/api/monitor/usage/quota/limit"] = ok({ limits: [{ type: "CREDIT_LIMIT", unit: 6, number: 1, percentage: 20 }] })
-  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ error: { message: "request has been blocked due to unusual activity", code: 3012 } }), { status: 405, headers: { "content-type": "application/json" } })
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response('<!doctypehtml><html lang="zh-cn"><title>405</title>errors.aliyun.com</html>', { status: 405 })
   answers["/api/anthropic/v1/messages"] = ok({ type: "message", model: "GLM-5.3-Flash", content: [] })
   const h = await freePlugin({ freeFirst: true })
   const opts = await h.loader(async () => coding, { id: "zcode" })
@@ -437,6 +437,72 @@ test("a gift failure the plan answers shows on the card with the status", async 
   const line = (u.windows ?? []).find((w) => w.aside && /refusing requests/.test(w.name))
   expect(line.display).toMatch(/coding plan until \d\d:\d\d/)
   expect(line.display).toContain("500")
+})
+
+test("a 3012 says the account is restricted, not the address", async () => {
+  planAndBalance()
+  answers["/api/monitor/usage/quota/limit"] = ok({ limits: [{ type: "CREDIT_LIMIT", unit: 6, number: 1, percentage: 20 }] })
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ error: { message: "request has been blocked due to unusual activity", code: 3012 } }), { status: 405, headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", model: "GLM-5.3-Flash", content: [] })
+  const h = await freePlugin({ freeFirst: true })
+  const opts = await h.loader(async () => coding, { id: "zcode" })
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  const u = await h.usage(async () => coding, { id: "zcode" })
+  const line = (u.windows ?? []).find((w) => w.aside && /refusing requests/.test(w.name))
+  expect(line.display).toContain("restricted")
+  expect(line.display).not.toContain("blocked")
+})
+
+test("a blocked gift's -Trial entry says the network is blocked, not the quota", async () => {
+  planAndBalance()
+  answers["/api/monitor/usage/quota/limit"] = ok({ limits: [{ type: "CREDIT_LIMIT", unit: 6, number: 1, percentage: 20 }] })
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response('<!doctypehtml><html lang="zh-cn"><title>405</title>errors.aliyun.com</html>', { status: 405 })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const h = await freePlugin({ freeFirst: true })
+  const opts = await h.loader(async () => coding, { id: "zcode" })
+  await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash-Trial") })
+  expect(res.status).toBe(429)
+  const said = await res.json()
+  expect(said.error.message).toContain("blocked from this network")
+  expect(said.error.message).not.toContain("quota")
+})
+
+test("a gift success clears the card's refusal line", async () => {
+  planAndBalance()
+  answers["/api/monitor/usage/quota/limit"] = ok({ limits: [{ type: "CREDIT_LIMIT", unit: 6, number: 1, percentage: 20 }] })
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response('<!doctypehtml><html lang="zh-cn"><title>405</title>errors.aliyun.com</html>', { status: 405 })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const h = await freePlugin({ freeFirst: true })
+  const opts = await h.loader(async () => coding, { id: "zcode" })
+  await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  // the block out, the gift answers: the line goes with it
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  _internal.blocked.set(KEY + "\0" + jwt + "\0glm-5.3-flash", Date.now() - 1)
+  await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  const u = await h.usage(async () => coding, { id: "zcode" })
+  expect((u.windows ?? []).find((w) => w.aside && /refusing requests/.test(w.name))).toBeUndefined()
+})
+
+test("the gift's own busy cap is not a refusal for the card", async () => {
+  planAndBalance()
+  answers["/api/monitor/usage/quota/limit"] = ok({ limits: [{ type: "CREDIT_LIMIT", unit: 6, number: 1, percentage: 20 }] })
+  const waits = _internal.BUSY_WAITS.splice(0)
+  _internal.BUSY_WAITS.push(1)
+  try {
+    answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ code: "3008", msg: "user concurrency limit exceeded" }), { status: 429, headers: { "content-type": "application/json" } })
+    answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+    const h = await freePlugin({ freeFirst: true })
+    const opts = await h.loader(async () => coding, { id: "zcode" })
+    const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+    expect(res.status).toBe(200)
+    const u = await h.usage(async () => coding, { id: "zcode" })
+    expect((u.windows ?? []).find((w) => w.aside && /refusing requests/.test(w.name))).toBeUndefined()
+  } finally {
+    _internal.BUSY_WAITS.length = 0
+    _internal.BUSY_WAITS.push(...waits)
+  }
 })
 
 for (const [name, paid, gift] of [

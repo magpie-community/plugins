@@ -265,7 +265,7 @@ const blocked = new Map()
 const refused = new Map()
 const REFUSED_TTL = 600_000
 const refusedId = (s) => s.key + "\0" + s.jwt
-const refusedWhy = (r) => ({ blocked: "the network's address is blocked", spent: "its quota said spent" }[r.why] ?? r.why)
+const refusedWhy = (r) => ({ blocked: "the network's address is blocked", restricted: "ZCode restricted this account", spent: "its quota said spent" }[r.why] ?? r.why)
 function refusedLine(s) {
   const r = refused.get(refusedId(s))
   if (!r || Date.now() >= r.until) return null
@@ -2358,7 +2358,18 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 const raw = giftModel(gift, m)
                 const available = raw && giftUsable(s, gift, raw)
                 if (!available) {
-                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: raw ? `ZCode's limited quota for ${raw} is exhausted or temporarily unavailable` : `ZCode has no active limited quota for ${m}` }
+                  // the refused record says why the model rests: a blocked
+                  // address or a restricted account is not the quota, and
+                  // the agent should read the truth
+                  const r = refused.get(refusedId(s))
+                  const live = r && Date.now() < r.until
+                  const quota = raw ? `ZCode's limited quota for ${raw} is exhausted or temporarily unavailable` : `ZCode has no active limited quota for ${m}`
+                  const said = live && r.why === "blocked"
+                    ? "ZCode's gift is blocked from this network; wait a while, or switch to another network or proxy"
+                    : live && r.why === "restricted"
+                      ? "ZCode's gift is restricted by its risk control (code 3012); only ZCode support lifts it"
+                      : quota
+                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: said }
                   return kept(new Response(JSON.stringify({ type: "error", error }), { status: raw ? 429 : 400, headers: { "content-type": "application/json" } }))
                 }
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: raw })
@@ -2399,6 +2410,7 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
             // gift sits idle.
             const rest = (models, ms, why) => {
               for (const [k, until] of blocked) if (Date.now() >= until) blocked.delete(k)
+              for (const [k, r] of refused) if (Date.now() >= r.until) refused.delete(k)
               const id = refusedId(s)
               const until = Date.now() + ms
               for (const m of models) blocked.set(id + "\0" + m.toLowerCase(), until)
@@ -2487,11 +2499,12 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 // none) reads its plans again on the next request, so a
                 // coding plan that is there after all is used (#369)
                 if (freeGift) {
-                  // a block page is the network's address being refused, not
-                  // one model's quota: every model the gift serves rests for
-                  // the route's ten minutes, so the fallback costs nothing
-                  // while the address is blocked, and the card says why
-                  rest(giftNames(known), REFUSED_TTL, "blocked")
+                  // what the card says must say what happened: a block page
+                  // is the network's address being refused (every model the
+                  // gift serves rests for the route's ten minutes, so the
+                  // fallback costs nothing while it holds); ZCode's own 3012
+                  // is the account restricted, not the address
+                  rest(giftNames(known), REFUSED_TTL, EDGE_PAGE.test(text) ? "blocked" : "restricted")
                   return done(kept(await replayOnPlan()))
                 }
                 if (s.key && !forcedGift) routes.delete(s.key + "\0" + s.jwt)
@@ -2547,11 +2560,17 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 }
                 if (res.status >= 400) {
                   if (!cap && (res.status === 401 || res.status === 403)) routes.delete(s.key + "\0" + s.jwt)
-                  refused.set(refusedId(s), { until: Date.now() + 60_000, why: "it answered " + res.status })
+                  // the card's line must hold for the rest it declares: the
+                  // asked model rests the minute with the record. The gift's
+                  // own waited-out cap is a turn not come, not a refusal.
+                  if (!cap) rest([asked], 60_000, "it answered " + res.status)
                   return done(kept(await replayOnPlan()))
                 }
+                refused.delete(refusedId(s))
                 return done(kept(res, text))
               }
+              // a stream's 200 is the gift answering again
+              refused.delete(refusedId(s))
             }
             // the plan's answer goes on as it came, the account kept: the
             // built-in never marked a ZCode account lapsed nor cleared one
