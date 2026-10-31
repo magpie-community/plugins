@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Quota estimates</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="_magpie/bridge.js"></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div><h1 data-t="title">Quota estimates</h1><p class="intro" data-t="intro">Token capacity and API-equivalent USD for a full allowance window</p></div>
+    <span id="updated" role="status" aria-live="polite" data-t="status">Waiting for a Magpie data read</span>
+  </header>
+  <div class="notice" role="status" aria-live="polite">
+    <h2 data-t="unavailable">Quota estimates are not available yet</h2>
+    <p data-t="reason">Magpie's page bridge does not expose account-specific quota windows and their matching usage.</p>
+  </div>
+  <main id="cards" aria-busy="true">
+    <section class="account">
+      <div class="windows">
+        <section class="window">
+          <h2 data-t="five">5-hour allowance</h2>
+          <p class="metric-label" data-t="capacity">Full-window estimate</p>
+          <div class="capacity unavailable">—</div><p class="value-meta unavailable">Token · — USD</p>
+          <p class="status" data-t="pending">Awaiting a permissioned quota-window read</p>
+        </section>
+        <section class="window">
+          <h2 data-t="week">Weekly allowance</h2>
+          <p class="metric-label" data-t="capacity">Full-window estimate</p>
+          <div class="capacity unavailable">—</div><p class="value-meta unavailable">Token · — USD</p>
+          <p class="status" data-t="pending">Awaiting a permissioned quota-window read</p>
+        </section>
+      </div>
+      <details><summary data-t="details">Data needed</summary><p class="basis" data-t="needed">Per-account quota percentages and matching window usage are required.</p></details>
+    </section>
+  </main>
+  <footer><p data-t="footer">Estimates are observations, not provider guarantees or subscription bills.</p><span data-t="boundary">Page only · No data reads or background collector</span></footer>
+</body>
+</html>
