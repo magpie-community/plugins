@@ -37,7 +37,9 @@
     showSub: opts.showSub !== false,
     showIdle: opts.showIdle !== false,
     agents: Array.isArray(opts.agents) ? opts.agents.filter((x) => typeof x === "string") : [],
-    side: opts.side === true,
+    // an old saved side:true predates the default-closed rail; it is
+    // ignored until this version saves the preference again
+    side: opts.side === true && Number(opts.sideV) === 2,
     cleared: opts.cleared && typeof opts.cleared === "object" && !Array.isArray(opts.cleared) ? { ...opts.cleared } : {},
   }
   let manualLang = opts.lang === "auto" || M.LANG_NAMES[opts.lang] ? opts.lang : "auto"
@@ -790,7 +792,7 @@
     return {
       ...opts, mode: view.mode, dim: view.dim, demo: view.demo, showDone: view.showDone, hideAfter: view.hideAfter,
       text: textOn(), agents: view.agents.slice(), showSub: view.showSub, showIdle: view.showIdle,
-      side: view.side, lang: manualLang, scene: view.scene, quality: view.quality,
+      side: view.side, sideV: 2, lang: manualLang, scene: view.scene, quality: view.quality,
       cleared: { ...view.cleared },
     }
   }
