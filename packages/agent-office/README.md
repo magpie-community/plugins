@@ -2,7 +2,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/QingJ01/magpie-agent-office)](https://github.com/QingJ01/magpie-agent-office/releases)
 [![magpie ≥ 0.1.1318](https://img.shields.io/badge/magpie-%E2%89%A5%200.1.1318-4f46e5)](https://usemagpie.ai)
-[![Tests](https://img.shields.io/badge/tests-163%20passing-22a35a)](#test)
+[![Tests](https://img.shields.io/badge/tests-167%20passing-22a35a)](#test)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 **一个住在 magpie 窗口里的实时 Agent 办公室。** 直接读取各 Agent 自己的会话记录，把正在思考、执行工具、等待批准或已经完成的工作，变成真 3D 办公室里的小人；也可以切到等距画布、俯视 2D 或分组列表。
@@ -172,7 +172,7 @@ bun bin/agent-office.mjs [--port 4545] [--hours 48] [--private] [--json] [--no-o
 bun test
 ```
 
-163 项测试覆盖会话解析（含新客户端）、隐私、路径与朝向、沙发合成、2D 活动点、相机、昼夜、3D API、CLI 与独立服务。3D 回归测试执行随包 THREE 的真实场景、几何、动画和矩阵路径，仅替换 GPU 边界；另有真实 magpie 页面宿主的浏览器回归脚本 `test/browser.mjs`，覆盖 Retina 窄视口、菜单边界、标签碰撞、切换与关闭文本后的 DOM。
+167 项测试覆盖会话解析（含新客户端）、隐私、路径与朝向、沙发合成、2D 活动点、相机、昼夜、3D API、CLI 与独立服务。3D 回归测试执行随包 THREE 的真实场景、几何、动画和矩阵路径，仅替换 GPU 边界；另有真实 magpie 页面宿主的浏览器回归脚本 `test/browser.mjs`，覆盖 Retina 窄视口、菜单边界、标签碰撞、切换与关闭文本后的 DOM。
 
 ```sh
 # 可选浏览器测试（另行安装 Playwright 与浏览器，先启动 magpie web）
@@ -180,7 +180,7 @@ OFFICE_PLAYWRIGHT=/path/to/playwright/index.mjs \
 OFFICE_HOST_URL="http://127.0.0.1:4571/?k=YOUR_LOCAL_KEY" bun test/browser.mjs
 ```
 
-magpie 0.1.2305 的 Web 宿主在 CSP 源地址中省略协议；WebKit 会拒绝加载资源，Chromium 则接受。WebKit 集成检查需显式设置 `OFFICE_NORMALIZE_WEBKIT_CSP=1`，仅在测试响应中补全现有地址的协议，不改变域名、目录白名单或 sandbox。未修改宿主的 WebKit 集成仍受此问题阻塞，不能视为已通过。
+在 macOS 15.7.9（24G830，arm64）、Playwright 1.56.1 的 WebKit 26.0（build 2215）上，测试的无协议数字主机 CSP 源会阻止脚本加载，补全 `http://` 后同一 sandbox 内可执行。维护者使用 Linux WebKit build 2336 未复现，因此这不是对所有 WebKit / Safari 的结论；原生 Safari / WKWebView 未自动化测试。受影响的 Mac 环境可显式设置 `OFFICE_NORMALIZE_WEBKIT_CSP=1`，仅规范化测试响应里的协议，保持原域名、目录白名单和 sandbox。可用 `OFFICE_PLAYWRIGHT=/path/to/playwright/index.mjs bun test/webkit-csp.mjs` 收集本机版本、实际 CSP 和控制台错误；详见 [后续验证](docs/follow-up-validation.md)。
 
 JSONL 首次打开会重放一次，后续轮询保留字节偏移、UTF-8/JSON 分帧和各 reader 的解析状态，只解析追加的完整记录。截断、替换和同尺寸重写会重建状态；每次增长额外检查最多 128 字节的前缀/旧末尾，识别常见的两次轮询间截断再增长。未变化时不读取日志。metadata/usage sidecar 仅在其版本变化时重读；Codex 标题索引也采用追加游标。
 
@@ -189,9 +189,10 @@ JSONL 首次打开会重放一次，后续轮询保留字节偏移、UTF-8/JSON 
 ```sh
 bun scripts/bench-scan.mjs 100 1 # 一份 100 MiB 日志
 bun scripts/bench-scan.mjs 100 4 # 四份并发日志
+bun scripts/bench-scan.mjs 100 1 1 # 每 30 条文本后包含 1 MiB base64 图片
 ```
 
-普通 JSONL 按追加日志处理；任意修改中部、同时保留 inode 与两处检查片段又增长的非追加编辑无法在不重读整个文件的前提下完整识别。初次读取或重建仍有 O(文件大小) 成本。完整 JSON 文档、压缩 DSH 和发生变化的 usage sidecar 仍按各自快照格式读取。
+普通 JSONL 按追加日志处理；任意修改中部、同时保留 inode 与两处检查片段又增长的非追加编辑无法在不重读整个文件的前提下完整识别。初次读取或重建仍有 O(文件大小) 成本，但完整记录即使跨读取块也直接解析，只有 EOF 未完成的记录需要词法分帧。完整 JSON 文档、压缩 DSH 和发生变化的 usage sidecar 仍按各自快照格式读取。
 
 修改页面资源后运行 `bun scripts/stamp-page.mjs` 更新内容指纹；`--check` 可验证没有旧指纹。画质切换调整像素比和阴影，抗锯齿在 WebGL 上下文创建时固定。人物使用 InstancedMesh 批量绘制，保留四肢动画与各 Agent 颜色。
 

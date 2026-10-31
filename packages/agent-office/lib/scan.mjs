@@ -126,7 +126,7 @@ function framePart(state, text) {
   }
 }
 function cursor() {
-  return { offset: 0, decoder: new StringDecoder("utf8"), parts: [], frame: framing(), committedTail: false, prefix: Buffer.alloc(0), tail: Buffer.alloc(0) }
+  return { offset: 0, decoder: new StringDecoder("utf8"), parts: [], framedParts: 0, frame: framing(), committedTail: false, prefix: Buffer.alloc(0), tail: Buffer.alloc(0) }
 }
 // Size growth alone cannot distinguish append from truncate-and-regrow
 // between ticks. Verify at most 128 old bytes without parsing any history.
@@ -176,16 +176,20 @@ function* readAppended(f, c, read) {
           c.parts.push(part)
           const line = c.parts.join("")
           c.parts = []
+          c.framedParts = 0
           c.frame = framing()
           yield line
         } else if (part) {
           c.parts.push(part)
-          framePart(c.frame, part)
         }
         if (end < 0) break
         start = end + 1
       }
     }
+    // Completed lines already went straight to the reader, even when they
+    // span many read chunks. Only the unfinished EOF record needs lexical
+    // framing; remember which fragments were framed on earlier ticks.
+    for (; c.framedParts < c.parts.length; c.framedParts++) framePart(c.frame, c.parts[c.framedParts])
     // Some clients flush a complete JSON record before its newline. Accept
     // it once, but never repeatedly parse a growing base64/text fragment.
     if (!c.committedTail && c.frame.complete && !c.frame.invalid && !c.frame.quoted) {
@@ -194,6 +198,7 @@ function* readAppended(f, c, read) {
       try { const record = JSON.parse(tail); complete = !!record && typeof record === "object" && !Array.isArray(record) } catch { c.frame.invalid = true }
       if (complete) {
         c.parts = []
+        c.framedParts = 0
         c.frame = framing()
         c.committedTail = true
         yield tail

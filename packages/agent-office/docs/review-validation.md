@@ -1,6 +1,6 @@
 # 0.2.0 review validation
 
-This is the 0.2.0 repair for [PR #551](https://github.com/magpie-community/plugins/pull/551). No release/tag is created or moved for this repair. CI success is not maintainer approval; the requested-changes review still needs re-review.
+[PR #551](https://github.com/magpie-community/plugins/pull/551) was approved at 3bf522f and merged on 2026-10-31. The results below record that repair. Nonblocking post-merge improvements and current validation are recorded in [follow-up validation](follow-up-validation.md). No release/tag is created or moved by these repairs.
 
 ## Review blockers
 
@@ -12,7 +12,7 @@ This is the 0.2.0 repair for [PR #551](https://github.com/magpie-community/plugi
 
 ## Other findings
 
-- Today refreshes from private daily buckets at local midnight. Changed JSONL logs replay fully with a UTF-8-safe chunk iterator. Grok usage.json uses the published vendor per-turn schema; sidecar-only edits invalidate cache.
+- Today refreshes from private daily buckets at local midnight. Changed JSONL logs retain UTF-8-safe cursors and parse appended records. Grok usage.json uses the published vendor per-turn schema; sidecar-only edits invalidate cache.
 - No-progress/idle labels update without new writes. No-progress sessions can be cleared until their next write. Rail/list labels agree; filters do not replay old error toasts.
 - Bun requirement, occupied-port behavior, --port 0, Grok skill support and capability URL documentation are accurate.
 - Nine-language scene/quality/fallback/role/venue text; focused camera shortcuts; wheel handling only consumes a zoom change; notification dots.
@@ -29,7 +29,7 @@ Browser tests use actual magpie Web UI navigation, options bridge, theme and san
 
 DPR-2 window sizes 600×620, 820×650 and 1440×1000 give plugin CSS viewports 576×500, 788×594 and 1196×944. Checks cover menus, tag collisions, modes, hidden buffers, the No-progress clock, alert history and text-off scrubbing. The largest size also exercises six scenes and three quality settings.
 
-**Chromium passes unchanged. WebKit limitation:** magpie 0.1.2305's Web host emits scheme-less numeric-host CSP sources, which WebKit rejects. WebKit UI checks pass only with explicit `OFFICE_NORMALIZE_WEBKIT_CSP=1`, adding the existing URL scheme while preserving the same host/path allowlist and sandbox. Unmodified WebKit Web-host integration remains blocked by that host CSP behavior. Native WKWebView was not automated.
+**Chromium passed unchanged. Mac WebKit qualification:** the observed refusal is limited to Playwright 1.56.1 WebKit 26.0 build 2215 on macOS 15.7.9 (24G830, arm64). Its UI checks used explicit `OFFICE_NORMALIZE_WEBKIT_CSP=1`; host/path/sandbox were preserved. The maintainer reports no reproduction on Linux build 2336. This is not a general WebKit or native Safari/WKWebView result; see the [minimal repro and exact console error](follow-up-validation.md#mac-webkit-csp-evidence).
 
 Synthetic narrow-frame evidence: [settings](qa-retina-settings.png), [text disabled](qa-retina-privacy.png).
 
@@ -56,4 +56,4 @@ Reproducible synthetic benchmark: `bun scripts/bench-scan.mjs 100 1` and `bun sc
 These are measurements on this machine, not CI speed thresholds. Deterministic tests assert byte and parse counts instead. Complete usage sidecars are not retained or re-aggregated on each append; only current day totals are retained by the reader. Gemini JSON documents and compressed DSH snapshots remain full-document reads when changed.
 
 
-Follow-up validation at the incremental repair: full marketplace `HOME=$(mktemp -d) bun test` completed with **4115 passed, 4 skipped, 0 failed**, across 327 files. Package tests pass 163 tests across 13 files. The installed 0.2.0 scanner/readers were checked against the source SHA-256 hashes. CI passed for the incremental code commit; maintainer re-review is still required.
+Follow-up validation at the incremental repair: full marketplace `HOME=$(mktemp -d) bun test` completed with **4115 passed, 4 skipped, 0 failed**, across 327 files. Package tests pass 163 tests across 13 files. The installed 0.2.0 scanner/readers were checked against the source SHA-256 hashes. CI passed for the incremental code commit; maintainer approval and merge followed at 3bf522f.

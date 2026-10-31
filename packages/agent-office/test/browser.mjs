@@ -27,9 +27,10 @@ for(const engine of (process.env.OFFICE_BROWSERS||'chromium,webkit').split(','))
   const errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text())})
   await page.route('**/live.js*',route=>route.fulfill({contentType:'text/javascript',body:`globalThis.AgentOfficeLive=${JSON.stringify(snapshot)};`}))
   // magpie 0.1.2305 web emits scheme-less numeric-host CSP sources.
-  // Chromium accepts them; WebKit rejects every resource. Optional test-only
-  // normalization adds the existing response URL's scheme, keeping the same
-  // exact host/path allowlist. It does not change the bridge or sandbox.
+  // Observed refusal: Playwright 1.56.1 / WebKit 26.0 build 2215 on
+  // macOS 15.7.9 arm64. Maintainer could not reproduce on Linux build 2336.
+  // Explicit opt-in normalization keeps the same host/path and sandbox;
+  // it is not evidence that every WebKit/Safari release needs this workaround.
   if(engine==='webkit' && process.env.OFFICE_NORMALIZE_WEBKIT_CSP==='1') {
    await page.route('**/_magpie/plugin/**/index.html',async route=>{
     const response=await route.fetch()

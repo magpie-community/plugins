@@ -21,6 +21,10 @@
 
 ### Fixed
 
+- Follow-up after PR #551 approval/merge: skip per-character framing for complete image-heavy records during initial/reset scans; frame only new fragments of the unfinished EOF record.
+- Cover identical-witness inode replacement, invalidated committed EOF records, exact Codex-title append reads and unchanged summary caching with independently mutation-checked regressions.
+- Narrow the CSP compatibility note to the reproduced Mac Playwright/WebKit build and add a local diagnostic; Linux build 2336 did not reproduce the refusal.
+
 - Secure the standalone server with per-run capability URLs, validated Host and same-origin JSON writes; reject cross-site data/script access.
 - Scrub hidden rail, list, conversation and closed-panel DOM when text is disabled.
 - Keep stopped 3D renderers stopped across visibility and context restoration; avoid hidden-canvas DPR growth.

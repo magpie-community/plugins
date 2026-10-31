@@ -69,6 +69,47 @@ test("a complete record flushed before its newline is applied exactly once",()=>
  expect(scanner.scan(time)[0]).toMatchObject({turns:1,tokensToday:130})
 })
 
+test("non-whitespace extending an EOF-committed record replays the invalidated line",()=>{
+ const root=tmp(),path=join(root,"extended-eof.jsonl")
+ writeFileSync(path,line(user("before"))+JSON.stringify(done("speculative",30)))
+ const {scanner,reads,reset}=tracked([source(root)])
+ expect(scanner.scan(time)[0]).toMatchObject({turns:1,tokensToday:130,phase:"done"})
+ const reader=scanner.files.get(path).reader
+ // The previously valid JSON now has trailing junk before its first newline.
+ // Fresh parsing must discard that entire line, including its usage/phase.
+ appendFileSync(path,"invalid extension\n"+line(user("after")))
+ reset()
+ const actual=scanner.scan(time)[0]
+ expect(actual).toEqual(createScanner({sources:[source(root)]}).scan(time)[0])
+ expect(actual).toMatchObject({turns:2,tokensToday:0,query:"after",phase:"thinking"})
+ expect(scanner.files.get(path).reader).not.toBe(reader)
+ expect(reads.filter(r=>r.position===0)).toHaveLength(2) // prefix probe, then fresh replay
+})
+
+test("inode replacement resets even when both append witnesses are identical",()=>{
+ const root=tmp(),path=join(root,"identity.jsonl"),replacement=join(root,"replacement.tmp")
+ const prefix=line({type:"padding",text:"p".repeat(256)})
+ const suffix=line({type:"padding",text:"s".repeat(256)})
+ const initial=Buffer.from(prefix+line(user("OLD middle"))+suffix)
+ const replaced=Buffer.from(prefix+line(user("NEW middle"))+suffix+line(done("replacement",20)))
+ writeFileSync(path,initial)
+ const {scanner,reads,reset}=tracked([source(root)])
+ expect(scanner.scan(time)[0]).toMatchObject({query:"OLD middle",turns:1})
+ const reader=scanner.files.get(path).reader,identity=statSync(path)
+ expect(replaced.length).toBeGreaterThan(initial.length)
+ expect(replaced.subarray(0,64)).toEqual(initial.subarray(0,64))
+ expect(replaced.subarray(initial.length-64,initial.length)).toEqual(initial.subarray(-64))
+ writeFileSync(replacement,replaced);renameSync(replacement,path)
+ expect(statSync(path).ino).not.toBe(identity.ino)
+ reset()
+ const actual=scanner.scan(time)[0]
+ expect(actual).toEqual(createScanner({sources:[source(root)]}).scan(time)[0])
+ expect(actual).toMatchObject({query:"NEW middle",turns:1,tokensToday:120})
+ expect(scanner.files.get(path).reader).not.toBe(reader)
+ expect(reads[0].position).toBe(0)
+ expect(reads.reduce((sum,r)=>sum+r.n,0)).toBe(replaced.length)
+})
+
 test("a partially written large image record reads new bytes plus bounded guards",()=>{
  const root=tmp(),path=join(root,"image.jsonl")
  writeFileSync(path,line(user("before image")))
@@ -117,17 +158,27 @@ test("midnight and metadata-only changes do not read JSONL again",()=>{
  expect(scanner.scan(before)[0]).toMatchObject({title:"old title",tokensToday:110,turnsToday:1})
  reset();expect(scanner.scan(after)[0]).toMatchObject({tokensToday:0,turnsToday:0})
  expect(bytes()).toBe(0)
- writeFileSync(meta,JSON.stringify({title:"new title"}));writeFileSync(usage,JSON.stringify(use(200)))
+ writeFileSync(meta,JSON.stringify({title:"new title",summaryCacheProbe:"summary-cache-marker"}));writeFileSync(usage,JSON.stringify(use(200)))
  reset();expect(scanner.scan(before)[0]).toMatchObject({title:"new title",tokensToday:210,turnsToday:1})
  expect(bytes()).toBe(0)
  const original=JSON.parse
- let sidecarParses=0
- JSON.parse=function(text,...args){if(String(text).includes('"endedAt"'))sidecarParses++;return original.call(this,text,...args)}
+ let usageParses=0,summaryParses=0
+ JSON.parse=function(text,...args){
+  if(String(text).includes('"endedAt"'))usageParses++
+  if(String(text).includes('"summaryCacheProbe"'))summaryParses++
+  return original.call(this,text,...args)
+ }
  try {
   appendFileSync(path,line({timestamp:before/1000,params:{update:{sessionUpdate:"agent_message_chunk",content:{text:"hello"}}}}))
   expect(scanner.scan(before)[0]).toMatchObject({tokensToday:210,title:"new title"})
-  expect(sidecarParses).toBe(0)
+  expect(usageParses).toBe(0)
+  expect(summaryParses).toBe(0)
   expect(scanner.files.get(path)).not.toHaveProperty("usageValue")
+  writeFileSync(meta,JSON.stringify({title:"changed summary title",summaryCacheProbe:"summary-cache-marker"}))
+  reset();expect(scanner.scan(before)[0].title).toBe("changed summary title")
+  expect(summaryParses).toBe(1)
+  expect(usageParses).toBe(0)
+  expect(bytes()).toBe(0)
  }finally{JSON.parse=original}
  rmSync(meta)
  reset();expect(scanner.scan(before)[0]).toMatchObject({title:"work",cwd:"",model:"",subagent:false,tokensToday:210})
@@ -188,17 +239,25 @@ test("Codex thread titles also reuse an append cursor",()=>{
  mkdirSync(sessions)
  const id="019a0000-0000-7000-8000-000000000001",path=join(sessions,`rollout-${id}.jsonl`)
  writeFileSync(path,line({timestamp:stamp,type:"session_meta",payload:{id,cwd:"/fixture"}}))
- writeFileSync(index,line({id,thread_name:"old title"}))
+ writeFileSync(index,line({id,thread_name:"old title"})+Array.from({length:1024},(_,i)=>line({id:`unrelated-${i}`,thread_name:"padding "+"x".repeat(256)})).join(""))
+ const indexSize=statSync(index).size
  const previous=process.env.CODEX_HOME;process.env.CODEX_HOME=root
  try {
-  const {scanner,bytes,reset}=tracked([source(sessions,"codex")])
+  const {scanner,reads,bytes,reset}=tracked([source(sessions,"codex")])
+  const sessionSize=statSync(path).size
   expect(scanner.scan(time)[0].title).toBe("old title")
+  expect(bytes()).toBe(sessionSize+indexSize)
   reset();scanner.scan(time);expect(bytes()).toBe(0)
   const more=line({timestamp:stamp,type:"event_msg",payload:{type:"task_complete"}})
   const title=line({id,thread_name:"new title"})
   appendFileSync(path,more);appendFileSync(index,title);reset()
   expect(scanner.scan(time)[0].title).toBe("new title")
-  expect(bytes()).toBeLessThanOrEqual(Buffer.byteLength(more+title)+256)
+  expect(bytes()).toBe(Buffer.byteLength(more+title)+256)
+  expect(reads.map(r=>({position:r.position,n:r.n}))).toEqual([
+   {position:0,n:64},{position:sessionSize-64,n:64},{position:sessionSize,n:Buffer.byteLength(more)},
+   {position:0,n:64},{position:indexSize-64,n:64},{position:indexSize,n:Buffer.byteLength(title)},
+  ])
+  reset();expect(scanner.scan(time)[0].title).toBe("new title");expect(bytes()).toBe(0)
   writeFileSync(index,line({id,thread_name:"alt title"}))
   utimesSync(index,(time+1000)/1000,(time+1000)/1000)
   expect(scanner.scan(time)[0].title).toBe("alt title")
