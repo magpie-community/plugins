@@ -64,7 +64,9 @@ for (const name of readdirSync(root)) {
         const signInOnly = hooks.tool && p?.models && !Object.keys(p.models).length && !p.npm
         if (p && !signInOnly) {
           needsLoader = true
-          if (!p.npm || !p.models || !Object.keys(p.models).length) problems.push(`${fn.name}: config gives ${auth.provider} no npm or models`)
+          // 账号动态目录由匹配的 provider.models 钩子提供，无需伪造静态模型。
+          const dynamic = hooks.provider?.id === auth.provider && typeof hooks.provider.models === "function"
+          if (!p.npm || !p.models || (!Object.keys(p.models).length && !dynamic)) problems.push(`${fn.name}: config gives ${auth.provider} no npm or models`)
         }
       }
       if ((needsLoader || auth.loader !== undefined) && typeof auth.loader !== "function") problems.push(`${fn.name}: auth.loader`)
