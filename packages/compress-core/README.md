@@ -76,14 +76,14 @@ ccr 越倾向不再压它（防乒乓）。模型读到的标签行前面会保�
 方便它判断要不要取回。
 
 技术细节（store 格式、ramp、门控规则、与上游 OmniRoute 的差异）见
-`docs/ccr-retrieval-chain.md`。
+`docs/ccr-retrieval-chain.md`（随文档 PR 提供）。
 
 ## 四档预设
 
 | 档 | 含义 |
 | --- | --- |
 | 关闭 | 全关。 |
-| 稳妥 | OmniRoute 的"安全默认"：**无损且可用**的策略全开，其余不开。也就是 `session-dedup`、`ccr`、`lite`、`headroom`。 |
+| 稳妥 | OmniRoute 的"安全默认"：**不删原文**的策略全开，其余不开。也就是 `session-dedup`、`ccr`、`lite`、`headroom`。前两个会把文本换成引用标记（dedup 指向本会话里已有的副本，ccr 可经 retrieve 取回），所以这里说的是"原文仍在"，不是"一个字节都不动"。 |
 | 自定义 | 你自己逐个点出来的结果。手动改任何开关，档位自动落到这一档。 |
 | 全开 | 所有可用策略全开（不可用的仍然开不了）。 |
 
@@ -142,7 +142,7 @@ lite 默认**全量改写、严格前缀稳定**：每条消息从第一轮起�
 - `requests.jsonl`：每个请求一行统计（原始/压缩后字节、命中哪个策略、模型、客户端），**不含正文**。开关 `telemetry.samples` 打开后才额外存最多 8 对问答，每段 1600 字符，存前先过下面这套打码。
 - `captures/`：只在 `capture` 打开时才有，是完整请求正文，单条上限 2MB（超了整条不落盘，索引里标 `too_large`），只保留最新 50 条。
 - `ccr-store.json`：ccr 引擎把替换掉的原文按哈希存进这个文件，retrieve 工具据此取回——**这是对话正文的第二份拷贝**。单块上限 512KB，默认 24 小时过期、全局 64MB 超了按最久未用淘汰。它只在 `ccr` 策略开启且调用方带 retrieve 工具时才写。
-- `captures-index.json`、`options-override.json`：索引与本地覆盖，不含正文。
+- `captures-index.json`：索引，不含正文。
 
 打码在 `telemetry-store.js` 的 `SECRET_RULES`，快照与样本共用一套：私钥块整段、`ghp_`/`github_pat_`/`AKIA`/`AIza`/`sk-`/`xox?-` 形态的令牌、`eyJ…` 的 JWT、`Bearer …`、以及 `authorization`、`api_key`、`password`、`client_secret` 这类字段的值，全部换成 `[redacted:…]`；邮箱和 `C:\Users\…` 这类路径只在样本里替换（快照要能看清代码原文）。字段名保留、值丢掉，所以仍然看得出这条请求带了什么凭据。
 

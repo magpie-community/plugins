@@ -1,11 +1,8 @@
 // Page sandbox <-> Bun file channel. Commands run on a subsequent local request;
 // a result never replaces unrelated strategies or settings.
 import { randomUUID } from "node:crypto"
-import { execFile } from "node:child_process"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
-import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { join } from "node:path"
 import { runLab } from "./lab.js"
 import { clearCaptures } from "./capture-store.js"
 import { clearCaptureIndex, flush } from "./stats-writer.js"

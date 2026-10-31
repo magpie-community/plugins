@@ -39,6 +39,7 @@ export const suites = [
   "body-limit.test.mjs",
   "audit.test.mjs",
   "config-contract.test.mjs",
+  "performance.test.mjs",
 ]
 
 /**
