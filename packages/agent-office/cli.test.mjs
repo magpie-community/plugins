@@ -1,11 +1,14 @@
 import { afterAll, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { request } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const dir = import.meta.dir
 const script = join(dir, "bin", "agent-office.mjs")
+// Other marketplace tests temporarily remove node from PATH. Resolve once
+// and use an absolute executable; Bun-only machines still test the CLI.
+const nodeExecutable = Bun.which("node") || ["/usr/local/bin/node", "/opt/homebrew/bin/node", "/usr/bin/node"].find(existsSync)
 const tmps = []
 const tmp = () => { const d = mkdtempSync(join(tmpdir(), "agent-office-cli-")); tmps.push(d); return d }
 afterAll(() => { for (const d of tmps) rmSync(d, { recursive: true, force: true }) })
@@ -213,9 +216,11 @@ test("an occupied port fails clearly; help and executable require Bun", async ()
     const help = Bun.spawnSync({ cmd: [process.execPath, script, "--help"], cwd: dir })
     expect(new TextDecoder().decode(help.stderr)).toContain("Requires Bun 1.2+")
     expect(new TextDecoder().decode(help.stderr)).not.toContain("next free one")
-    const node = Bun.spawnSync({ cmd: ["node", script, "--no-open"], cwd: dir, env: envFor(homeWithSession()) })
-    expect(node.exitCode).toBe(1)
-    expect(new TextDecoder().decode(node.stderr)).toContain("requires Bun 1.2+")
-    expect(new TextDecoder().decode(node.stderr)).not.toContain("ReferenceError")
+    if (nodeExecutable) {
+      const node = Bun.spawnSync({ cmd: [nodeExecutable, script, "--no-open"], cwd: dir, env: envFor(homeWithSession()) })
+      expect(node.exitCode).toBe(1)
+      expect(new TextDecoder().decode(node.stderr)).toContain("requires Bun 1.2+")
+      expect(new TextDecoder().decode(node.stderr)).not.toContain("ReferenceError")
+    }
   } finally { await s.stop() }
 })
