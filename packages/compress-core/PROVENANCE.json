@@ -1,0 +1,91 @@
+{
+  "source": "https://github.com/diegosouzapw/OmniRoute",
+  "commit": "ff679ab86e0113a009d8aeeeee464139bd090874",
+  "path": "open-sse/services/compression",
+  "license": "MIT",
+  "note": "The port was read from an installed OmniRoute copy, so the commit was not recorded at the time. The commit above is the OmniRoute revision this port was checked against; the hashes are of the ported files in this package, not of the upstream originals.",
+  "files": {
+    "lite.ts": {
+      "ported_to": "engines/lite.js",
+      "sha256": "ed81882418c8e02def8c67eb7b939f4ac4884fc11234d0068976943eb714e6e1"
+    },
+    "engines/session-dedup/index.ts": {
+      "ported_to": "engines/session-dedup.js",
+      "sha256": "3aa5926f7fb43822a86443127fadc87fb79ee56a1cb8d763d10911fa02004d9e"
+    },
+    "engines/session-dedup/fuzzy.ts": {
+      "ported_to": "engines/session-dedup.js",
+      "sha256": "e1558816c6375bd104895874bed95614f19d38a8aa99d2e0d0930b7b42ebdfde"
+    },
+    "engines/ccr/protocolInstruction.ts": {
+      "ported_to": "engines/session-dedup.js",
+      "sha256": "634b24e7bc94a7291967b6a9febf19e3c97abb615bfed6f41afc0d2d52cc1949"
+    },
+    "engines/headroom/index.ts": {
+      "ported_to": "engines/headroom.js",
+      "sha256": "c7ac9cd2d9f9fc1a328ae76cd616c8c4c41b3d57a805f0cc0e139d3edfea810d"
+    },
+    "engines/headroom/smartcrusher.ts": {
+      "ported_to": "engines/headroom.js",
+      "sha256": "46d14b414e0f8b5cfe5fc13d8207cf7023fed1c9b48b07bf4b24830e77e9dcf7"
+    },
+    "engines/headroom/tabular.ts": {
+      "ported_to": "engines/headroom.js",
+      "sha256": "e69cd72cfe6a28104ea48c8f95ee901af86b0cea866df7b2f7bf272018029de4"
+    },
+    "engines/headroom/gcf/generic.ts": {
+      "ported_to": "engines/gcf/encode.js",
+      "sha256": "8a933d064d836e5445256f58520555101b27539dbd56dd03b9e7a57359e94ba7"
+    },
+    "engines/headroom/gcf/decode_generic.ts": {
+      "ported_to": "engines/gcf/decode.js",
+      "sha256": "8ac955ab883de199ca7b7a8c1b7cb79769f41ba99d580ce3dfef2e3b72f36025"
+    },
+    "engines/headroom/gcf/scalar.ts": {
+      "ported_to": "engines/gcf/scalar.js",
+      "sha256": "901e2d45bf27e073df7655a89083a191a86d1d295b8bef6b4d179dbfae5eb298"
+    }
+  },
+  "upstreams": [
+    {
+      "name": "headroom",
+      "repository": "https://github.com/headroomlabs-ai/headroom",
+      "used_by": [
+        "engines/headroom.js",
+        "engines/gcf/encode.js",
+        "engines/gcf/decode.js",
+        "engines/gcf/scalar.js"
+      ],
+      "note": "Credited by repository: the GCF columnar encoding that engines/headroom.js emits, and the codec vendored under engines/gcf/, are this project's format. Apache-2.0, so its licence text is in LICENSES/Apache-2.0.txt and its NOTICE attribution is carried in NOTICE.",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "gcf-typescript",
+      "repository": "https://github.com/blackwell-systems/gcf-typescript",
+      "used_by": [
+        "engines/gcf/encode.js",
+        "engines/gcf/decode.js",
+        "engines/gcf/scalar.js"
+      ],
+      "note": "Vendored: the columnar codec under engines/gcf/ is this project's, reached through headroom's own copy of it. Apache-2.0, so its licence text is in LICENSES/Apache-2.0.txt and its NOTICE attribution is carried in NOTICE.",
+      "license": "Apache-2.0"
+    }
+  ],
+  "changes": [
+    "Ported from TypeScript to plain ES modules: no build step, no dependency outside node: builtins.",
+    "performance.now() replaced with Date.now() where the port runs inside the gateway sandbox.",
+    "zod validation hand-written; filter matching and the severity vocabulary kept as-is.",
+    "Progress and trace logging removed; the engines report through ctx.state instead.",
+    "Hashes identify the ported copies in this package, not the upstream originals.",
+    "License kept as MIT, carrying both the OmniRoute copyright line and this plugin's.",
+    "lite.ts and the session-dedup pair were missing from this table in earlier revisions; they are here now. session-dedup also carries callerSupportsCcrRetrieve, which is the one function it needs from engines/ccr/protocolInstruction.ts — the ccr engine itself is not in this package.",
+    "Same turn semantics as history-trim (#423) when asked for them: the turn being sent (everything after the last assistant message, or the whole body when there is none) is left exactly as it arrived. The 21 cases copied from that package in cases.json now say preserveCurrentTurn: true out loud, because that mode is no longer the default; their expected bodies are unchanged.",
+    "preserve.lastTurns defaults to 0 and the lite engine's preserveCurrentTurn defaults to false: nothing that has already been sent is rewritten, so the review's prompt-cache failure — first divergence at message 12 in the Anthropic diff, message 2 with lastTurns at its old default of 2 — is gone. preserveCurrentTurn: true restores the conservative mode that leaves the turn being sent exactly as it arrived, rewriting it once when it becomes history; README says which is which.",
+    "session-dedup reads the same preserveCurrentTurn switch as lite and defaults the same way. Protecting only the current turn means the message is rewritten once in the next request, which moves the prefix with it; the switch is now the single place where that choice is made.",
+    "cases.json holds 23 cases: the 21 from history-trim plus two that pin the default preset's own behaviour (the turn being sent is folded too; a tabular tool result becomes a gcf-generic block).",
+    "test/prefix-stability.test.mjs is the acceptance test for the prompt-cache finding: the transcript grows turn by turn and the prefix sent each round must be byte-identical to the previous round, for the default preset, the safe preset, and each lossless engine on its own.",
+    "The vendored GCF codec under engines/gcf/ is recorded in files like every other port, and each Apache-2.0 upstream behind it — headroom and gcf-typescript — carries its licence text in LICENSES/Apache-2.0.txt and its attribution text in NOTICE.",
+    "The package is named @magpie-community/middleware-compress-core, matching the middleware-* convention the registry's dist step checks for.",
+    "This package is the middleware only: the strategies it ships are lite, headroom and session-dedup. The rest of the ports (ccr, rtk, codex-responses, caveman, relevance, read-lifecycle, aggressive, ultra, ionizer, llm, rules-data, gcf's callers), the gateway hooks with their own storage, and the page land in later pull requests, with their own entries here."
+  ]
+}
