@@ -318,10 +318,20 @@ The price list is read again at most once a minute for requests.
 ## Credits in magpie
 
 magpie's usage card shows the account's credits from the resource summary.
-It also says when the soonest credits left run out (`runsOutAt`, and how
-many: `runsOut`), from the paid and free package lists WorkBuddy's own
-client reads. The daily Free Plan slice isn't counted: it ends at the same
-midnight on every account. magpie's smart routing spends the account whose
+When an account holds both a subscription plan and gift or promotional credits
+(or when the API answers with `CreditGroups`), the card splits the credits into
+two bars:
+
+- **Plan credits**: what the plan includes (`planBase`) and bonus credits granted
+  with it (`planBonus`), showing its billing cycle reset (`resetsAt`).
+- **Gifted credits**: platform activity rewards (`benefit`) and purchased
+  add-ons (`addon`), showing the soonest moment credits left run out
+  (`runsOutAt`, and how many: `runsOut`).
+
+The card also reports an account-level reset badge pointing to the earliest
+expiring amount. Packages that cannot be classified fall back to a single
+**Credits** bar. The daily Free Plan slice isn't counted in `runsOut`: it ends at
+the same midnight on every account. magpie's smart routing spends the account whose
 credits run out first.
 
 An enterprise (team) account's resource summary lists no packages. Its
