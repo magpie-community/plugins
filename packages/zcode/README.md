@@ -168,7 +168,15 @@ behind it go straight to the plan. A gift that cannot be asked at all —
 the network, the host — is answered from the plan the same way, the
 route read dropped for the next request, while a caller's own abort
 stays an abort. The agent sees the plan's answer
-either way. And the `-Trial` entries keep their own strict semantics —
+either way. When a refusal is fresh, the usage card says so — **"ZCode's
+gift is refusing requests — freeFirst answers from the coding plan until
+14:02 (the network's address is blocked)"** — so a gift sitting idle
+beside a fat balance is explained, not silent. A block page rests every
+model the gift serves for the route's ten minutes (an address block
+outlasts a minute), a spent answer rests its one model for a minute, and
+any other failure is named with its status; while a rest is on, the
+requests behind it go straight to the plan. And the `-Trial` entries
+keep their own strict semantics —
 asking one is still an explicit pick of the gift alone, never the plan;
 a spent one answers 429 with freeFirst on, as it does without it.
 
