@@ -23,7 +23,7 @@ This is the 0.2.0 repair for [PR #551](https://github.com/magpie-community/plugi
 
 ## Validation
 
-`bun test`: **163 passed, 0 failed**, 11 files. Marketplace package tests also pass 163 tests; the marketplace check script passes.
+`bun test`: **163 passed, 0 failed**, 13 files. Marketplace package tests also pass 163 tests; the marketplace check script passes.
 
 Browser tests use actual magpie Web UI navigation, options bridge, theme and sandbox. Only live.js is replaced by synthetic data. No model calls or user prompt screenshots are needed.
 
@@ -54,3 +54,6 @@ Reproducible synthetic benchmark: `bun scripts/bench-scan.mjs 100 1` and `bun sc
 | Four ~100 MiB logs | 514.631 ms | 0.216 ms / 0 B | 0.257–0.656 ms | 16,012 new + 512 guards |
 
 These are measurements on this machine, not CI speed thresholds. Deterministic tests assert byte and parse counts instead. Complete usage sidecars are not retained or re-aggregated on each append; only current day totals are retained by the reader. Gemini JSON documents and compressed DSH snapshots remain full-document reads when changed.
+
+
+Follow-up validation at the incremental repair: full marketplace `HOME=$(mktemp -d) bun test` completed with **4115 passed, 4 skipped, 0 failed**, across 327 files. Package tests pass 163 tests across 13 files. The installed 0.2.0 scanner/readers were checked against the source SHA-256 hashes. CI passed for the incremental code commit; maintainer re-review is still required.
