@@ -1,0 +1,26 @@
+{
+  "name": "@magpie-community/agent-omo-atlas",
+  "version": "0.1.0",
+  "description": "OmO (oh-my-openagent) on magpie's Agents page: pick one of magpie's models for the head orchestrator: judgment first, short outputs; magpie writes ~/.omo/omo.jsonc's top-level agents.atlas.model",
+  "type": "module",
+  "files": [
+    "omo-atlas.agent.js"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "omo",
+    "oh-my-openagent",
+    "opencode",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/omo-atlas"
+  },
+  "magpie": {
+    "agent": "./omo-atlas.agent.js"
+  }
+}

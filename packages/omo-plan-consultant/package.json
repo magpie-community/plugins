@@ -1,0 +1,26 @@
+{
+  "name": "@magpie-community/agent-omo-plan-consultant",
+  "version": "0.1.0",
+  "description": "OmO (oh-my-openagent) on magpie's Agents page: pick one of magpie's models for the native harness's pre-plan consultant; magpie writes ~/.omo/omo.jsonc's top-level agents.plan-consultant.model",
+  "type": "module",
+  "files": [
+    "omo-plan-consultant.agent.js"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "omo",
+    "oh-my-openagent",
+    "opencode",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/omo-plan-consultant"
+  },
+  "magpie": {
+    "agent": "./omo-plan-consultant.agent.js"
+  }
+}

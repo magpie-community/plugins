@@ -1,0 +1,26 @@
+{
+  "name": "@magpie-community/agent-omo-deep-low",
+  "version": "0.1.0",
+  "description": "OmO (oh-my-openagent) on magpie's Agents page: pick one of magpie's models for the deep-work low tier; magpie writes ~/.omo/omo.jsonc's top-level categories.deep-low.model",
+  "type": "module",
+  "files": [
+    "omo-deep-low.agent.js"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "omo",
+    "oh-my-openagent",
+    "opencode",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/omo-deep-low"
+  },
+  "magpie": {
+    "agent": "./omo-deep-low.agent.js"
+  }
+}

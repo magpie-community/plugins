@@ -189,6 +189,8 @@ on magpie's Agents page like the ones magpie ships with: pick one of magpie's
 models in its row and magpie writes it into the agent's config, and switching
 it off puts the config back.
 
+[oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (OmO) keeps a model for every agent and category in `~/.omo/omo.jsonc`'s top-level `agents`/`categories`. magpie's own OmO row sets only its global default (`~/.omo/agent/settings.json`), and a magpie agent plugin carries one model slot, so each slot below is its own package:
+
 | Package | Agent |
 |---|---|
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
@@ -198,6 +200,29 @@ it off puts the config back.
 | [pig](packages/pig) | [PiG](https://github.com/MichaelKinsy/PiG): injects Magpie's endpoint and model catalog into `~/.pig/agent/models.json`; choose the model in PiG, startup settings stay unchanged |
 | [type4me](packages/type4me) | [Type4Me](https://github.com/joewongjc/type4me), macOS voice input: `~/Library/Application Support/Type4Me/magpie-agent.json`, for its LLM post-processing |
 | [opencodereview](packages/opencodereview) | [Open Code Review](https://github.com/alibaba/open-code-review) (`ocr`): `~/.opencodereview/config.json` as a custom Anthropic provider, so `ocr review` / `ocr scan` run on magpie's models |
+| [omo-sisyphus](packages/omo-sisyphus) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) sisyphus slot — the always-on main agent that writes code and carries the long context: writes `agents.sisyphus.model` in `~/.omo/omo.jsonc` |
+| [omo-sisyphus-junior](packages/omo-sisyphus-junior) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) sisyphus-junior slot — the sub agent that executes without delegating: writes `agents.sisyphus-junior.model` in `~/.omo/omo.jsonc` |
+| [omo-hephaestus](packages/omo-hephaestus) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) hephaestus slot — the deep autonomous worker (OmO allows only GPT-family models there): writes `agents.hephaestus.model` in `~/.omo/omo.jsonc` |
+| [omo-atlas](packages/omo-atlas) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) atlas slot — the head orchestrator: judgment first, short outputs: writes `agents.atlas.model` in `~/.omo/omo.jsonc` |
+| [omo-prometheus](packages/omo-prometheus) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) prometheus slot — the plan writer: long structured output: writes `agents.prometheus.model` in `~/.omo/omo.jsonc` |
+| [omo-metis](packages/omo-metis) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) metis slot — the pre-plan consultant that clarifies vague requirements: writes `agents.metis.model` in `~/.omo/omo.jsonc` |
+| [omo-momus](packages/omo-momus) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) momus slot — the plan critic that wants strict logic: writes `agents.momus.model` in `~/.omo/omo.jsonc` |
+| [omo-oracle](packages/omo-oracle) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) oracle slot — the consultant for hard questions and design reviews: writes `agents.oracle.model` in `~/.omo/omo.jsonc` |
+| [omo-explore](packages/omo-explore) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) explore slot — the fast explorer that finds files and searches code: writes `agents.explore.model` in `~/.omo/omo.jsonc` |
+| [omo-librarian](packages/omo-librarian) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) librarian slot — the researcher for docs and external knowledge: writes `agents.librarian.model` in `~/.omo/omo.jsonc` |
+| [omo-multimodal-looker](packages/omo-multimodal-looker) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) multimodal-looker slot — the image looker for screenshots and design mockups: writes `agents.multimodal-looker.model` in `~/.omo/omo.jsonc` |
+| [omo-plan-consultant](packages/omo-plan-consultant) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) plan-consultant slot — the native harness's pre-plan consultant: writes `agents.plan-consultant.model` in `~/.omo/omo.jsonc` |
+| [omo-plan-reviewer](packages/omo-plan-reviewer) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) plan-reviewer slot — the native harness's plan reviewer: writes `agents.plan-reviewer.model` in `~/.omo/omo.jsonc` |
+| [omo-artistry](packages/omo-artistry) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) artistry slot — the creative/writing request category: writes `categories.artistry.model` in `~/.omo/omo.jsonc` |
+| [omo-architect](packages/omo-architect) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) architect slot — the architecture-design request category: writes `categories.architect.model` in `~/.omo/omo.jsonc` |
+| [omo-quick](packages/omo-quick) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) quick slot — the quick-questions-and-small-tasks category: writes `categories.quick.model` in `~/.omo/omo.jsonc` |
+| [omo-ultrabrain](packages/omo-ultrabrain) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) ultrabrain slot — the deepest-thinking category for hard problems: writes `categories.ultrabrain.model` in `~/.omo/omo.jsonc` |
+| [omo-deep-high](packages/omo-deep-high) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) deep-high slot — the deep-work high tier: writes `categories.deep-high.model` in `~/.omo/omo.jsonc` |
+| [omo-deep-low](packages/omo-deep-low) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) deep-low slot — the deep-work low tier: writes `categories.deep-low.model` in `~/.omo/omo.jsonc` |
+| [omo-unspecified-high](packages/omo-unspecified-high) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) unspecified-high slot — the high fallback for unclassified requests: writes `categories.unspecified-high.model` in `~/.omo/omo.jsonc` |
+| [omo-unspecified-low](packages/omo-unspecified-low) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) unspecified-low slot — the light fallback for unclassified requests: writes `categories.unspecified-low.model` in `~/.omo/omo.jsonc` |
+| [omo-visual-engineering](packages/omo-visual-engineering) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) visual-engineering slot — the visual-engineering category (UI, charts): writes `categories.visual-engineering.model` in `~/.omo/omo.jsonc` |
+| [omo-writing](packages/omo-writing) | [OmO](https://github.com/code-yeongyu/oh-my-openagent) writing slot — the long-form-writing category: writes `categories.writing.model` in `~/.omo/omo.jsonc` |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
