@@ -159,3 +159,16 @@ test("the sign-in asks for the account, its password and an optional key", async
   // the sign-in runs in the background: a url would open the console for nothing
   expect(m.authorize({ username: "u", password: "p", apiKey: "" }).url).toBe("")
 })
+
+test("a plan that names no models lists none, rather than the bootstrap set", async () => {
+  // an empty plan is an answer, not a failed read: falling back to the
+  // bootstrap list would offer models the vendor then refuses
+  f = fakeSenseNova()
+  f.route("GET /lite/console/v1/tokenplan/pool-usage", () => json({ plan: { name: "Free Plan" }, pools: [] }))
+  f.route("GET /models", () => json({ data: [] }))
+  const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const models = await p.provider.models({ id: "sensenova-token-plan", models: { "glm-5.2": {} } }, {
+    type: "oauth", access: "tok", apiKey: "sk-test",
+  })
+  expect(models).toEqual({})
+})

@@ -115,7 +115,12 @@ function allowedHost(url) {
   } catch {
     return false
   }
+  // a test points ENDPOINTS at a local fake (http on loopback): those hosts
+  // are allowed as they are set, whatever their scheme
   if (Object.values(ENDPOINTS).some((e) => { try { return new URL(e).host === u.host } catch { return false } })) return true
+  // the platform itself is https only: an http://sensenova.cn is not the
+  // platform but a downgrade or a spoof of it
+  if (u.protocol !== "https:") return false
   return SENSENOVA_HOSTS.some((re) => re.test(u.hostname))
 }
 
@@ -182,15 +187,18 @@ function nextFromBody(body, wanted) {
 async function followUntil(start, wanted, jar) {
   let location = start
   for (let hop = 0; hop < MAX_HOPS && location; hop++) {
+    // the host is checked before what the hop carries: a URL holding the very
+    // parameter we're looking for, on a domain we have no business visiting, is
+    // not the answer — taking it would walk off-site with the Hydra session
+    // and CSRF cookies the jar holds
+    if (!allowedHost(location)) throw new Error(`the sign-in walk left the SenseNova hosts for ${location}`)
     if (wanted.test(location)) return location
     const res = await httpGet(location, jar)
     collectCookies(res, jar, location)
     const next = res.headers.get("location") ?? ""
     location = next !== "" ? next : nextFromBody(await res.text(), wanted)
-    if (location && !wanted.test(location) && !allowedHost(location))
-      throw new Error(`the sign-in walk left the SenseNova hosts for ${location}`)
   }
-  return wanted.test(location) ? location : ""
+  return location && wanted.test(location) ? location : ""
 }
 
 const paramOf = (url, name) => {
@@ -266,7 +274,8 @@ async function passwordLogin(username, password) {
 
   // step 2 — seal the password and sign in at IAM
   const encrypted = await sealPassword(secret)
-  const iamRes = await fetch(`${IAM_ORIGIN()}/iam/authn/v1/auth/nova/login`, {
+  const iamUrl = `${IAM_ORIGIN()}/iam/authn/v1/auth/nova/login`
+  const iamRes = await fetch(iamUrl, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -274,7 +283,7 @@ async function passwordLogin(username, password) {
       accept: "application/json",
       origin: CONSOLE(),
       referer: CONSOLE() + "/",
-      cookie: cookieHeader(jar),
+      cookie: cookieHeader(jar, iamUrl),
     },
     body: JSON.stringify({ username: user, password: encrypted, challenge: loginChallenge, is_encrypt: true }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -550,8 +559,12 @@ function makePlugin() {
           } catch {
             return provider.models
           }
+          // a plan naming no models means this account can call none of the
+          // catalogue: that is an answer, not a failed read, and falling back
+          // to the bootstrap list here would offer models the vendor refuses.
+          // Only a read that failed falls back.
           const covered = new Set(plan.models)
-          if (!covered.size) return provider.models
+          if (!covered.size) return {}
           let list
           try {
             list = await apiModels(key)
