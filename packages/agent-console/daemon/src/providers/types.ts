@@ -19,6 +19,8 @@ export type Capabilities = {
   modes: Mode[];
   /** Each mode's name in this Agent (like Paseo, show the Agent's own naming); our default names are used when absent */
   modeLabels?: Partial<Record<Mode, string>>;
+  /** The Agent only streams text deltas and never sends the complete message (ACP): the manager saves each text segment itself */
+  deltasOnly?: boolean;
 };
 
 export type ThinkingOption = { id: string; label: string };
@@ -35,6 +37,8 @@ export type ModelInfo = {
   thinkingParam?: string;
 };
 export type DetectResult = { available: boolean; bin?: string; version?: string; reason?: string; installHint?: string };
+/** Custom launch (Settings › Launch command). args are appended after the built-in arguments; prefixArgs (internal) go before them. */
+export type LaunchCommand = { cmd: string; prefixArgs?: string[]; args?: string[] };
 export type HistoryItem = { provider: string; sessionId: string; title: string; updatedAt: number; messageCount: number; imported: boolean };
 export type SendInput = { text: string; images: { path: string; mime: string }[] };
 export type RespondAnswer = { optionId?: string; answers?: Record<string, string>; cancelled?: boolean };
@@ -43,8 +47,8 @@ export interface Provider {
   id: string;
   name: string;
   capabilities: Capabilities;
-  detect(): Promise<DetectResult>;
-  listModels(): Promise<ModelInfo[]>;
+  detect(launch?: LaunchCommand): Promise<DetectResult>;
+  listModels(launch?: LaunchCommand): Promise<ModelInfo[]>;
   createSession(o: {
     threadId: string;
     cwd: string;
@@ -54,7 +58,7 @@ export interface Provider {
     resumeId: string | null;
     cursorFast?: boolean;
     cursorAutoReview?: boolean;
-    launch?: { cmd: string; prefixArgs: string[] };
+    launch?: LaunchCommand;
   }): Promise<ProviderSession>;
   listHistory?(cwd: string): Promise<HistoryItem[]>;
   readHistory?(sessionId: string, cwd: string): Promise<ProviderEvent[]>;
@@ -74,3 +78,6 @@ export interface ProviderSession {
 }
 
 export type { SlashCommand, SlashCommandKind } from "./slash.js";
+
+/** Name of our own "Default" placeholder model row (id "default") */
+export const PLACEHOLDER_MODEL_NAME = "Default";

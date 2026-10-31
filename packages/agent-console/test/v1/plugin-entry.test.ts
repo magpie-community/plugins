@@ -18,7 +18,7 @@ let pageDir = "";
 let leftoverPids: number[] = [];
 let stopHost: (() => Promise<void>) | null = null;
 
-function parseSession(text: string): { v: number; port: number; key: string; token?: string } {
+function parseSession(text: string): { v: number; port: number; key: string; token?: string; ts?: number } {
   const match = /^globalThis\.AgentConsoleSession = (\{.*\});\n$/.exec(text);
   if (!match) throw new Error(`unexpected session.js: ${text}`);
   return JSON.parse(match[1]);
@@ -83,7 +83,9 @@ describe("plugin entry (index.mjs)", () => {
       expect(session.key).toMatch(/^[0-9a-f]{64}$/);
       // Any page that knows Magpie's page path can read session.js via <script src>: it must not contain the daemon token
       expect(session.token).toBeUndefined();
-      expect(Object.keys(session).sort()).toEqual(["key", "port", "v"]);
+      expect(Object.keys(session).sort()).toEqual(["key", "port", "ts", "v"]);
+      // ts is refreshed while the host lives, so boot.js can tell a killed host's leftover file from a live one
+      expect(Math.abs(Date.now() - (session as { ts?: number }).ts!)).toBeLessThan(10000);
       const key = session.key;
 
       // Gate: /open → 302 to the daemon, token only in the # fragment

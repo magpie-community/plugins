@@ -93,7 +93,7 @@ export class WsClient {
       // Reject all pending requests
       for (const [id, p] of this.pending) {
         clearTimeout(p.timer);
-        p.rej(new Error("连接中断"));
+        p.rej(new Error(t("api.connClosed")));
         this.pending.delete(id);
       }
       if (this.closed) return;
@@ -114,13 +114,13 @@ export class WsClient {
     return new Promise((res, rej) => {
       const ws = this.ws;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        rej(new Error("连接未建立"));
+        rej(new Error(t("api.notConnected")));
         return;
       }
       const id = ++this.seq;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        rej(new Error("请求超时"));
+        rej(new Error(t("api.timeout")));
       }, timeoutMs);
       this.pending.set(id, { res, rej, timer });
       ws.send(JSON.stringify({ t: "req", id, m: method, p: params ?? {} }));

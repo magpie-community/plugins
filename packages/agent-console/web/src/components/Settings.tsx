@@ -7,11 +7,13 @@ import { permissionModes } from "../i18n/modes.js";
 import { errMsg, t, tf } from "../i18n/index.js";
 import type { ProviderInfo } from "../types/models.js";
 import { useData } from "../stores/data.js";
+import { IDLE_MAX, IDLE_MIN, parseArgsDraft, parseIdleDraft } from "./settingsFields.js";
+import { applyTheme, embeddedInMagpie, normalizeThemeSetting } from "../layout/theme.js";
 
 type Settings = {
-  defaultProvider?: string; defaultMode?: string; defaultEffort?: string | null;
-  sendKey?: string; runningSend?: string; showThinking?: boolean; density?: string;
-  theme?: string; idleCloseMinutes?: number; idleExitMinutes?: number;
+  defaultProvider?: string; defaultMode?: string;
+  sendKey?: string; runningSend?: string; showThinking?: boolean;
+  theme?: string; idleCloseMinutes?: number;
   providerEnabled?: Record<string, boolean>;
   providerCommand?: Record<string, { executable?: string; args?: string[] }>;
   [k: string]: unknown;
@@ -30,11 +32,24 @@ function statusLabel(p: ProviderInfo): string {
   return t("settings.providerPending");
 }
 
+/** Refresh the provider list in the background (no forced re-detect of every agent) */
+function refreshProviders(): void {
+  void ws.call("providers.list").then((list) => {
+    useData.setState({ providers: list as ProviderInfo[] });
+  }).catch(() => {});
+}
+
 export function SettingsDialog({ onClose, providers }: { onClose: () => void; providers: ProviderInfo[] }) {
-  const wsClient = useData((s) => s.ws);
   const [s, setS] = useState<Settings | null>(null);
   const [info, setInfo] = useState<{ version?: string; dataDir?: string; pid?: number }>({});
   const [expanded, setExpanded] = useState<string | null>(null);
+  // Optimistic on/off per agent until providers.list catches up (B2)
+  const [enabledDraft, setEnabledDraft] = useState<Record<string, boolean>>({});
+  // Text drafts for the launch fields and the idle minutes, committed on blur / Enter (B5, B6)
+  const [exeDraft, setExeDraft] = useState<Record<string, string>>({});
+  const [argsDraft, setArgsDraft] = useState<Record<string, string>>({});
+  const [argsErr, setArgsErr] = useState<Record<string, boolean>>({});
+  const [idleDraft, setIdleDraft] = useState<string | null>(null);
   const modes = permissionModes();
 
   useEffect(() => {
@@ -42,26 +57,41 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
     void ws.call("app.info").then((v) => setInfo(v as typeof info)).catch(() => {});
   }, []);
 
-  const set = async (patch: Partial<Settings>) => {
+  const set = async (patch: Partial<Settings>): Promise<boolean> => {
+    const prev = s;
     const next = { ...s, ...patch } as Settings;
     setS(next);
+    if (patch.theme) applyTheme(patch.theme);
     try {
       await ws.call("settings.set", { patch });
       window.dispatchEvent(new CustomEvent("settings-changed", { detail: next }));
-      if (patch.theme) applyTheme(patch.theme as string);
-      if (patch.providerEnabled && wsClient) {
-        void ws.call("providers.list", { refresh: true }).then((list) => {
-          useData.setState({ providers: list as ProviderInfo[] });
-        });
-      }
+      return true;
     } catch (e) {
+      setS(prev);
+      if (patch.theme) applyTheme(prev?.theme);
       toast(t("settings.failSave") + errMsg(e), true);
+      return false;
     }
   };
 
-  const toggleProvider = (id: string, on: boolean) => {
+  const toggleProvider = async (id: string, on: boolean) => {
+    setEnabledDraft((d) => ({ ...d, [id]: on }));
     const cur = s?.providerEnabled ?? {};
-    void set({ providerEnabled: { ...cur, [id]: on } });
+    const prev = s;
+    const next = { ...s, providerEnabled: { ...cur, [id]: on } } as Settings;
+    setS(next);
+    try {
+      await ws.call("settings.set", { patch: { providerEnabled: next.providerEnabled } });
+      window.dispatchEvent(new CustomEvent("settings-changed", { detail: next }));
+      // Only this change is reflected locally; the list refreshes quietly (newly enabled agents get detected then)
+      if (!on) useData.setState((st) => ({ providers: st.providers.map((p) => (p.id === id ? { ...p, enabled: false } : p)) }));
+      refreshProviders();
+    } catch (e) {
+      setS(prev);
+      toast(t("settings.providerToggleFailed") + errMsg(e), true);
+    } finally {
+      setEnabledDraft((d) => { const n = { ...d }; delete n[id]; return n; });
+    }
   };
 
   const redetect = () => {
@@ -71,14 +101,45 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
     }).catch((e) => toast(errMsg(e), true));
   };
 
-  const setLaunch = (id: string, patch: { executable?: string; args?: string[] }) => {
+  const setLaunch = async (id: string, patch: { executable?: string; args?: string[] }) => {
     const cur = { ...(s?.providerCommand ?? {}) };
-    cur[id] = { ...cur[id], ...patch };
-    void set({ providerCommand: cur });
+    const merged = { ...cur[id], ...patch };
+    if (!merged.executable) delete merged.executable;
+    if (!merged.args || merged.args.length === 0) delete merged.args;
+    const same = JSON.stringify(cur[id] ?? {}) === JSON.stringify(merged);
+    if (same) return;
+    cur[id] = merged;
+    if (await set({ providerCommand: cur })) refreshProviders();
   };
 
-  const providerStatus = (p: ProviderInfo) => {
-    if (p.enabled === false) return { dot: "off", text: t("settings.providerOff") };
+  const commitExe = (id: string) => {
+    const v = exeDraft[id];
+    if (v === undefined) return;
+    void setLaunch(id, { executable: v.trim() || undefined });
+    setExeDraft((d) => { const n = { ...d }; delete n[id]; return n; });
+  };
+
+  const commitArgs = (id: string) => {
+    const v = argsDraft[id];
+    if (v === undefined) return;
+    const parsed = parseArgsDraft(v);
+    if (parsed === null) { setArgsErr((e) => ({ ...e, [id]: true })); return; }
+    setArgsErr((e) => ({ ...e, [id]: false }));
+    void setLaunch(id, { args: parsed });
+    setArgsDraft((d) => { const n = { ...d }; delete n[id]; return n; });
+  };
+
+  const commitIdle = () => {
+    if (idleDraft === null) return;
+    const n = parseIdleDraft(idleDraft);
+    if (n === null) return; // stays in the field with the error shown
+    setIdleDraft(null);
+    if (n !== s?.idleCloseMinutes) void set({ idleCloseMinutes: n });
+  };
+
+  const providerStatus = (p: ProviderInfo, on: boolean) => {
+    if (!on) return { dot: "off", text: t("settings.providerOff") };
+    if (p.enabled === false) return { dot: "pending", text: t("settings.providerPending") };
     if (!p.available) return { dot: "off", text: p.reason ?? t("common.notDetected") };
     const n = p.models?.length ?? 0;
     const base = statusLabel(p);
@@ -88,9 +149,11 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
 
   if (!s) return <Dialog title={t("settings.title")} onClose={onClose}><div className="dlg-hint">{t("common.loading")}</div></Dialog>;
 
-  const row = (label: string, el: React.ReactNode) => (
-    <div className="dlg-row"><label>{label}</label>{el}</div>
+  const row = (label: string, el: React.ReactNode, hint?: string) => (
+    <div className="dlg-row"><label>{label}</label>{el}{hint && <div className="dlg-hint" style={{ marginTop: 4 }}>{hint}</div>}</div>
   );
+  const idleBad = idleDraft !== null && parseIdleDraft(idleDraft) === null;
+  const enterCommits = (fn: () => void) => (e: React.KeyboardEvent) => { if (e.key === "Enter") { e.preventDefault(); fn(); } };
 
   return (
     <Dialog title={t("settings.title")} onClose={onClose} wide
@@ -105,10 +168,11 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
         <div className="provider-list">
           <button type="button" className="btn sm provider-redetect" onClick={redetect}>{t("settings.providerRedetect")}</button>
           {providers.map((p) => {
-            const st = providerStatus(p);
-            const on = p.enabled !== false;
+            const on = enabledDraft[p.id] ?? (s.providerEnabled?.[p.id] ?? p.enabled !== false);
+            const st = providerStatus(p, on);
             const open = expanded === p.id;
             const cmd = s.providerCommand?.[p.id];
+            const argsText = argsDraft[p.id] ?? (cmd?.args?.length ? JSON.stringify(cmd.args) : "");
             return (
               <div key={p.id} className={`provider-row${open ? " open" : ""}`}>
                 <button type="button" className="provider-head" onClick={() => setExpanded(open ? null : p.id)}>
@@ -120,27 +184,30 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
                   <span className="mi-caret">{open ? "▾" : "▸"}</span>
                 </button>
                 <label className="provider-switch" title={p.name}>
-                  <input type="checkbox" checked={on} onChange={(e) => toggleProvider(p.id, e.target.checked)} />
+                  <input type="checkbox" checked={on} disabled={enabledDraft[p.id] !== undefined}
+                    onChange={(e) => void toggleProvider(p.id, e.target.checked)} />
                 </label>
                 {open && (
                   <div className="provider-detail">
                     {p.bin && <div className="dlg-hint">{p.bin}{p.version ? ` · ${p.version}` : ""}</div>}
                     {p.installHint && (
                       <div className="provider-hint-row">
-                        <span className="dlg-hint">{p.installHint}</span>
+                        <code className="dlg-hint">{p.installHint}</code>
                         <button type="button" className="te-files" onClick={() => void navigator.clipboard?.writeText(p.installHint ?? "").then(() => toast(t("common.copied")))}>{t("settings.providerCopyHint")}</button>
                       </div>
                     )}
                     <div className="dlg-hint">{t("settings.providerLaunchCmd")}</div>
-                    <input className="tinput" placeholder={t("settings.providerLaunchExe")} value={cmd?.executable ?? ""}
-                      onChange={(e) => setLaunch(p.id, { executable: e.target.value || undefined })} />
-                    <input className="tinput" placeholder='["--acp"]' value={cmd?.args ? JSON.stringify(cmd.args) : ""}
-                      onChange={(e) => {
-                        try {
-                          const v = e.target.value.trim();
-                          setLaunch(p.id, { args: v ? (JSON.parse(v) as string[]) : undefined });
-                        } catch { /* typing */ }
-                      }} />
+                    <input className="tinput" placeholder={t("settings.providerLaunchExe")} aria-label={t("settings.providerLaunchExe")}
+                      value={exeDraft[p.id] ?? cmd?.executable ?? ""}
+                      onChange={(e) => { const v = e.target.value; setExeDraft((d) => ({ ...d, [p.id]: v })); }}
+                      onBlur={() => commitExe(p.id)} onKeyDown={enterCommits(() => commitExe(p.id))} />
+                    <input className={`tinput${argsErr[p.id] ? " err" : ""}`} placeholder='["--foo"]' aria-label={t("settings.providerLaunchArgs")}
+                      value={argsText}
+                      onChange={(e) => { const v = e.target.value; setArgsDraft((d) => ({ ...d, [p.id]: v })); if (argsErr[p.id]) setArgsErr((x) => ({ ...x, [p.id]: parseArgsDraft(v) === null })); }}
+                      onBlur={() => commitArgs(p.id)} onKeyDown={enterCommits(() => commitArgs(p.id))} />
+                    <div className={`dlg-hint${argsErr[p.id] ? " err" : ""}`}>
+                      {argsErr[p.id] ? t("settings.providerArgsInvalid") : t("settings.providerLaunchArgsHint")}
+                    </div>
                   </div>
                 )}
               </div>
@@ -150,12 +217,12 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
       </div>
       {row(t("settings.defaultMode"), (
         <select className="tinput" value={s.defaultMode ?? "default"} onChange={(e) => void set({ defaultMode: e.target.value })}>
-          {modes.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          {modes.map((m) => <option key={m.id} value={m.id}>{m.label} — {m.desc}</option>)}
         </select>
-      ))}
+      ), t("settings.defaultModeHint"))}
       {row(t("settings.theme"), (
-        <select className="tinput" value={s.theme ?? "auto"} onChange={(e) => void set({ theme: e.target.value })}>
-          <option value="auto">{t("settings.themeAuto")}</option>
+        <select className="tinput" value={normalizeThemeSetting(s.theme)} onChange={(e) => void set({ theme: e.target.value })}>
+          <option value="auto">{embeddedInMagpie() ? t("settings.themeMagpie") : t("settings.themeAuto")}</option>
           <option value="light">{t("settings.themeLight")}</option>
           <option value="dark">{t("settings.themeDark")}</option>
         </select>
@@ -171,7 +238,7 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
           <option value="queue">{t("settings.queue")}</option>
           <option value="steer">{t("settings.steer")}</option>
         </select>
-      ))}
+      ), t("settings.steerHint"))}
       {row(t("settings.thinking"), (
         <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: "var(--fs-m)", color: "var(--fg)" }}>
           <input type="checkbox" checked={s.showThinking !== false} onChange={(e) => void set({ showThinking: e.target.checked })} />
@@ -180,12 +247,14 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
       ))}
       {row(t("settings.idleClose"), (
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input className="tinput" type="number" min={5} max={240} style={{ width: 90 }}
-            value={s.idleCloseMinutes ?? 30}
-            onChange={(e) => void set({ idleCloseMinutes: Math.max(5, Number(e.target.value) || 30) })} />
+          <input className={`tinput${idleBad ? " err" : ""}`} type="number" min={IDLE_MIN} max={IDLE_MAX} step={1} style={{ width: 90, flex: "none" }}
+            aria-label={t("settings.idleClose")}
+            value={idleDraft ?? String(s.idleCloseMinutes ?? 30)}
+            onChange={(e) => setIdleDraft(e.target.value)}
+            onBlur={commitIdle} onKeyDown={enterCommits(commitIdle)} />
           <span className="dlg-hint">{t("settings.idleMinutes")}</span>
         </div>
-      ))}
+      ), idleBad ? t("settings.idleInvalid") : undefined)}
       <div className="msep" />
       <div className="dlg-hint">
         {tf("settings.versionLine", { ver: info.version ?? "?", pid: info.pid ?? "?" })}<br />
@@ -193,12 +262,6 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
       </div>
     </Dialog>
   );
-}
-
-export function applyTheme(theme: string) {
-  const preferDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-  document.documentElement.dataset.theme =
-    theme === "light" || theme === "dark" ? theme : preferDark ? "dark" : "light";
 }
 
 export type LiveSettings = {

@@ -1,17 +1,19 @@
-/* Input area (§8.6 Composer) */
-.composer { flex: none; padding: 0 16px 12px; }
+/* Input area (§8.6 Composer) — option B: white card, 1px border, 14px radius, teal focus ring */
+.composer { flex: none; padding: 0 16px 16px; }
 .cp-card {
-  width: 100%; max-width: 680px; margin: 0 auto;
-  background: var(--surface); border-radius: var(--r-l); border: 1px solid transparent;
-  padding: 8px 10px 6px; transition: border-color var(--dur-2) var(--ease);
+  width: 100%; max-width: var(--col); margin: 0 auto;
+  background: var(--bg); border-radius: 14px; border: 1px solid var(--cp-line);
+  padding: 12px 12px 8px 14px; box-shadow: 0 1px 2px rgb(0 0 0 / .04);
+  transition: border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
 }
-.cp-card:focus-within { border-color: color-mix(in oklab, var(--fg) 18%, var(--bg)); }
-.cp-card.waiting { box-shadow: inset 2px 0 0 var(--warn); }
-.cp-card.danger { box-shadow: inset 2px 0 0 var(--danger); }
+.cp-card:focus-within { border-color: var(--cp-focus); box-shadow: 0 0 0 3px var(--cp-ring), 0 1px 2px rgb(0 0 0 / .04); }
+.cp-card.waiting { border-color: color-mix(in oklab, var(--warn) 45%, var(--bg)); }
+.cp-card.danger { border-color: color-mix(in oklab, var(--danger) 40%, var(--bg)); }
 .cp-danger {
-  max-width: 680px; margin: 0 auto 6px; display: flex; align-items: center; gap: 6px;
+  max-width: var(--col); margin: 0 auto 6px; display: flex; align-items: center; gap: 6px;
   color: var(--danger); font-size: var(--fs-s); padding: 0 2px;
 }
+.cp-hint { max-width: var(--col); margin: 6px auto 0; font-size: 11.5px; color: var(--meta); text-align: center; }
 .att-note { padding: 6px 10px 0; color: var(--muted); font-size: var(--fs-s); }
 .cp-ta-wrap { position: relative; }
 .slash-pop {
@@ -34,46 +36,62 @@
 .slash-pop .mi.slash-item.sel { background: var(--surface-hover); }
 
 .cp-ta {
-  width: 100%; border: 0; resize: none; background: none; outline: none;
-  font-size: var(--fs-m); line-height: 1.55; max-height: calc(1.7em * 10); overflow-y: auto;
-  display: block;
+  width: 100%; border: 0; resize: none; background: none; outline: none; color: var(--text);
+  font-size: var(--fs-l); line-height: 22px; min-height: 34px; max-height: calc(22px * 12); overflow-y: auto;
+  display: block; padding: 0;
 }
-.cp-ta::placeholder { color: var(--muted); }
+.cp-ta::placeholder { color: var(--meta); }
 .cp-bar {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px;
-  margin-top: 4px; min-width: 0;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+  margin: 4px 0 0 -6px; min-width: 0;
 }
 
-/* Pill controls */
+/* Pill controls: 26px, 7px radius, 12px text; the agent·model chip is filled, the others are icon + label */
 .pill-wrap { position: relative; flex: 0 1 auto; min-width: 0; max-width: 100%; }
 .pill {
-  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
-  border-radius: var(--r-full); background: var(--surface-hover); color: var(--fg);
-  font-size: var(--fs-s); max-width: min(220px, 100%); min-width: 0;
+  position: relative; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
+  border-radius: 7px; background: none; color: var(--pill-fg, var(--muted)); border: 1px solid transparent;
+  font-size: var(--fs-s); max-width: min(240px, 100%); min-width: 0; white-space: nowrap; cursor: pointer;
+  transition: background var(--dur-1);
 }
-.pill .p-a { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.pill .p-t { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+.pill:hover { background: var(--surface-hover); }
+.pill svg { flex: none; }
+.pill.chip { background: var(--chip-bg); border-color: var(--chip-line); padding: 0 8px 0 4px; gap: 6px; max-width: min(300px, 100%); }
+.pill.chip:hover { background: var(--surface-hover); }
+.chip-logo { border-radius: 5px; }
+.chip-caret { color: var(--meta); }
+.pill .p-a { font-weight: 500; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 0 auto; max-width: 120px; }
+.pill .p-t { color: var(--meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+.pill .p-t::before { content: "·"; margin-right: 5px; }
+.ipill .ip-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ipill .ip-sel {
+  position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer;
+  appearance: none; border: 0; font-size: var(--fs-s);
+}
+.ipill:focus-within { outline: 2px solid color-mix(in oklab, var(--accent) 45%, var(--bg)); outline-offset: -1px; }
+.ipill.danger { color: var(--danger); }
 .pill.sel {
-  appearance: none; border: 0; padding: 0 22px 0 10px; cursor: pointer;
-  max-width: min(140px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  background: var(--surface-hover) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23737373' d='M1 1l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 8px center;
+  appearance: none; border: 0; padding: 0 22px 0 8px;
+  max-width: min(140px, 100%); overflow: hidden; text-overflow: ellipsis;
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23a3a3a3' d='M1 1l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 8px center;
 }
+.pill.sel:hover { background-color: var(--surface-hover); }
 .pill.sel.danger { color: var(--danger); }
-.pill.cursor-shield { padding: 0 8px; color: var(--muted); border: 0; cursor: pointer; }
-.pill.cursor-shield.on { color: var(--ok, #3ecf8e); background: color-mix(in oklab, var(--ok, #3ecf8e) 14%, var(--surface-hover)); }
-.pill.sel.cursor-fast { max-width: min(72px, 100%); }
+.pill.sel.cursor-fast { max-width: min(80px, 100%); }
+.cp-div { width: 1px; height: 14px; background: var(--line); margin: 0 4px; flex: none; }
 .cp-bar > .ibtn { flex: none; }
+.cp-attach { color: var(--pill-fg, var(--muted)); }
 
 /* When the composer gets narrow (depends on the middle column's width, not the window) */
 .cp-card { container-type: inline-size; container-name: composer; }
 @container composer (max-width: 520px) {
   .pill .p-t { display: none; }
   .pill { max-width: min(160px, 100%); }
-  .pill.sel { max-width: min(104px, 100%); font-size: 11px; padding-right: 20px; }
+  .ipill .ip-l { max-width: 64px; }
 }
 @container composer (max-width: 380px) {
-  .pill { max-width: min(120px, 100%); padding: 0 8px; }
-  .pill.sel { max-width: min(80px, 100%); padding-left: 7px; padding-right: 18px; }
+  .pill { max-width: min(120px, 100%); padding: 0 6px; }
+  .ipill .ip-l { display: none; }
 }
 
 /* Agent·model popover */
@@ -181,15 +199,15 @@
 .att-x:hover { color: var(--fg); }
 
 .cp-right { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; }
-.cp-clock { font-size: var(--fs-s); color: var(--muted); }
+.cp-clock { font-size: var(--fs-s); color: var(--meta); font-variant-numeric: tabular-nums; }
 .cp-send, .cp-stop {
-  width: 28px; height: 28px; border-radius: 50%; flex: none;
+  width: 30px; height: 30px; border-radius: 50%; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
   transition: filter var(--dur-1), opacity var(--dur-1);
 }
 .cp-send { background: var(--accent); color: var(--accent-fg); }
 .cp-send:hover { filter: brightness(1.08); }
-.cp-send[disabled] { opacity: .3; cursor: default; filter: none; }
+.cp-send[disabled] { opacity: .35; cursor: default; filter: none; }
 .cp-stop { background: var(--fg); color: var(--bg); }
 .cp-stop:hover { filter: brightness(1.15); }
 

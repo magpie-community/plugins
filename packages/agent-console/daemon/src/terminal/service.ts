@@ -10,6 +10,7 @@ import { StringDecoder } from "node:string_decoder";
 import { findOnPath } from "../../../lib/pathscan.mjs";
 import type { Gateway } from "../ws/gateway.js";
 import { log } from "../log.js";
+import { tr } from "../util/i18n.js";
 
 type Pty = {
   write(data: string): void;
@@ -144,10 +145,10 @@ export class TerminalService {
 
   async create(projectId: string, cwd: string, cols: number, rows: number): Promise<{ id: string; index: number; simple: boolean } | { error: string }> {
     const alive = [...this.terms.values()].filter((t) => t.projectId === projectId && t.alive);
-    if (alive.length >= MAX_TERMS_PER_PROJECT) return { error: `每个项目最多 ${MAX_TERMS_PER_PROJECT} 个终端` };
+    if (alive.length >= MAX_TERMS_PER_PROJECT) return { error: tr("term.max", { n: MAX_TERMS_PER_PROJECT }) };
     const shell = pickShell();
     const term: Term = {
-      id: rid(), index: nextIndex++, projectId, cwd, title: `终端 ${alive.length + 1}`,
+      id: rid(), index: nextIndex++, projectId, cwd, title: tr("term.title", { n: alive.length + 1 }),
       alive: true, simple: false, pty: null, proc: null, buf: "", pend: "", timer: null,
     };
     const pty = await this.loadPty();
@@ -194,7 +195,7 @@ export class TerminalService {
     error?: string;
   } {
     const t = this.terms.get(id);
-    if (!t) return { error: "终端不存在" };
+    if (!t) return { error: tr("err.terminalMissing") };
     // Last 5000 lines
     const lines = t.buf.split("\n");
     const snapshot = lines.length > SNAP_LINES ? lines.slice(-SNAP_LINES).join("\n") : t.buf;

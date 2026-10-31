@@ -27,6 +27,15 @@
   if (said) said.textContent = zh ? "正在启动本地服务…" : "Starting local service…";
   if (brand) brand.textContent = zh ? "Agent 控制台" : "Agent Console";
 
+  // ts: the host refreshes it every few seconds; one that stopped moving belongs to a host that was killed (Magpie restarting it)
+  // and its gate is gone, so wait for the new host's file instead of navigating to a dead port.
+  const STALE_MS = 12000;
+  // ac_lost: set by the daemon page when it lost its connection and came back here. The old host's file was last refreshed before
+  // that moment, so only a session.js refreshed after it (a live host's) is used.
+  const here = new URL(location.href);
+  const lostAt = Number(here.searchParams.get("ac_lost")) || 0;
+  here.searchParams.delete("ac_lost");
+  here.hash = "";
   function validSession(s) {
     return (
       s &&
@@ -35,7 +44,8 @@
       s.port > 0 &&
       s.port <= 65535 &&
       typeof s.key === "string" &&
-      /^[0-9a-f]{64}$/.test(s.key)
+      /^[0-9a-f]{64}$/.test(s.key) &&
+      (typeof s.ts !== "number" || (Math.abs(Date.now() - s.ts) < STALE_MS && (!lostAt || s.ts > lostAt)))
     );
   }
 
@@ -62,8 +72,8 @@
   const preloaded = validSession(globalThis.AgentConsoleSession) ? globalThis.AgentConsoleSession : null;
   let session = await loadFreshSession(0);
   if (!session && preloaded) session = preloaded;
-  // Right after the host starts the file may not be written yet: retry every 500ms for about 10 seconds
-  for (let attempt = 1; !session && attempt <= 20; attempt++) {
+  // Right after the host starts (or restarts) the file may be missing or stale: retry every 500ms for about 30 seconds
+  for (let attempt = 1; !session && attempt <= 60; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     session = await loadFreshSession(attempt);
   }
@@ -94,6 +104,12 @@
   if (Object.keys(slim).length) {
     try { q.set("tokens", btoa(unescape(encodeURIComponent(JSON.stringify(slim))))); } catch { /* fine if it can't be passed along */ }
   }
+  // This page's own URL: when Magpie restarts the plugin host (new gate key, the old daemon exits), the daemon page comes back here
+  // to read the fresh session.js. The gate checks it and puts it only in the # fragment.
+  try {
+    const back = here.toString();
+    if (back.length <= 2048) q.set("back", back);
+  } catch { /* no self-heal, the page still works */ }
 
   location.replace("http://127.0.0.1:" + session.port + "/open?" + q.toString());
 })();

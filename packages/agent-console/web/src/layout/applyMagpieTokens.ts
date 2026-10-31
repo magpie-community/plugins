@@ -13,6 +13,8 @@ export function applyMagpieTokensFromSearch(search: string): void {
     const s = String(v ?? "").trim();
     if (!s) continue;
     const varName = k.startsWith("--") ? k : k.startsWith("magpie-") ? `--${k}` : `--magpie-${k}`;
+    // The plugin keeps its own teal accent: Magpie's accent (indigo) is not taken over
+    if (/accent/i.test(varName)) continue;
     root.style.setProperty(varName, s);
   }
 }

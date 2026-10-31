@@ -30,10 +30,19 @@ function textFromContent(content: schema.ContentBlock): string {
   return "";
 }
 
-export type MapCtx = { itemPrefix: string; messageIds: Map<string, string> };
+/** seg: text segment number, bumped when a tool call / plan comes between two runs of text, so the text before and
+ *  after a tool call are separate items (live and persisted alike: the manager saves each segment when the next item starts). */
+export type MapCtx = { itemPrefix: string; messageIds: Map<string, string>; seg: number; lastWasText: boolean };
 
 export function newMapCtx(): MapCtx {
-  return { itemPrefix: "a" + rid() + "_", messageIds: new Map() };
+  return { itemPrefix: "a" + rid() + "_", messageIds: new Map(), seg: 0, lastWasText: false };
+}
+
+function endTextSegment(ctx: MapCtx): void {
+  if (ctx.lastWasText) {
+    ctx.seg++;
+    ctx.lastWasText = false;
+  }
 }
 
 export function mapSessionUpdate(update: schema.SessionUpdate, ctx: MapCtx): ProviderEvent[] {
@@ -44,19 +53,22 @@ export function mapSessionUpdate(update: schema.SessionUpdate, ctx: MapCtx): Pro
     case "agent_message_chunk": {
       const text = textFromContent(update.content);
       if (!text) break;
-      const itemId = mid ? ctx.messageIds.get(mid) ?? ctx.itemPrefix + mid : ctx.itemPrefix + "msg";
+      const itemId = `${ctx.itemPrefix}${mid ?? "msg"}_${ctx.seg}`;
       if (mid) ctx.messageIds.set(mid, itemId);
+      ctx.lastWasText = true;
       out.push({ type: "assistant_delta", itemId, text });
       break;
     }
     case "agent_thought_chunk": {
       const text = textFromContent(update.content);
       if (!text) break;
-      const itemId = mid ? ctx.itemPrefix + "t_" + mid : ctx.itemPrefix + "think";
+      const itemId = `${ctx.itemPrefix}t_${mid ?? "think"}_${ctx.seg}`;
+      ctx.lastWasText = true;
       out.push({ type: "reasoning_delta", itemId, text });
       break;
     }
     case "tool_call":
+      endTextSegment(ctx);
       out.push({
         type: "tool_call",
         itemId: ctx.itemPrefix + update.toolCallId,
@@ -67,17 +79,19 @@ export function mapSessionUpdate(update: schema.SessionUpdate, ctx: MapCtx): Pro
       });
       break;
     case "tool_call_update":
+      endTextSegment(ctx);
       out.push({
         type: "tool_call",
         itemId: ctx.itemPrefix + update.toolCallId,
         kind: mapToolKind(update.kind),
-        title: update.title ?? update.name ?? "tool",
+        title: update.title ?? update.name ?? "",
         status: mapToolStatus(update.status),
         input: update.rawInput,
         output: typeof update.rawOutput === "string" ? update.rawOutput : undefined,
       });
       break;
     case "plan":
+      endTextSegment(ctx);
       out.push({
         type: "plan",
         itemId: ctx.itemPrefix + "plan",

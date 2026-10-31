@@ -2,7 +2,8 @@
 import { z } from "zod";
 import type { Gateway, ConnCtx } from "./gateway.js";
 import type { Config } from "../config.js";
-import type { SettingsStore } from "../store/settings.js";
+import type { SettingsStore, Settings } from "../store/settings.js";
+import { parseSettingsPatch } from "../store/settings.js";
 import type { ProjectsStore } from "../store/projects.js";
 import type { ThreadsStore } from "../store/threads.js";
 import { listProviders, getProvider } from "../providers/registry.js";
@@ -20,6 +21,9 @@ import { execFile } from "node:child_process";
 import { pickFolder } from "../util/pickFolder.js";
 import { clearBinCache } from "../util/bin.js";
 import { cachedDetect, cachedModels, clearProviderCache } from "../providers/infoCache.js";
+import { launchFromSettings } from "../providers/launch.js";
+import { clampMode } from "../providers/modes.js";
+import { tr, intlLocale } from "../util/i18n.js";
 
 const threadModeSchema = z.enum(["plan", "default", "acceptEdits", "bypassPermissions", "ask"]);
 
@@ -35,7 +39,7 @@ export type Services = {
   // AgentManager provides runtime info once wired in at P1-4; may be empty (no session started)
   runtime?: (threadId: string) => { status: string; queue: unknown[]; pending: unknown[] } | null;
   manager?: {
-    send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[] }, behavior?: "queue" | "steer"): Promise<void>;
+    send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[] }, behavior?: "queue" | "steer"): Promise<"started" | "steered" | "queued" | void>;
     interrupt(threadId: string): Promise<void>;
     respond(threadId: string, requestId: string, answer: { optionId?: string; answers?: Record<string, string>; cancelled?: boolean }): Promise<void>;
     setModel(threadId: string, model: string | null): Promise<void>;
@@ -46,6 +50,7 @@ export type Services = {
     close(threadId: string): Promise<void>;
     deleteThread(threadId: string): Promise<void>;
     listCommands(threadId: string, opts?: { load?: boolean }): Promise<SlashCommand[]>;
+    removeQueued(threadId: string, queueId: string): boolean;
   };
 };
 
@@ -61,7 +66,7 @@ function wrap<T extends z.ZodType>(schema: T, fn: (p: z.infer<T>, ctx: ConnCtx) 
   return (params: unknown, ctx: ConnCtx) => {
     const r = schema.safeParse(params ?? {});
     if (!r.success) {
-      throw new ApiError("bad_params", "参数不对：" + r.error.issues.map((i) => i.message).join("；"));
+      throw new ApiError("bad_params", tr("err.badParams", { detail: r.error.issues.map((i) => i.message).join("; ") }));
     }
     return fn(r.data, ctx);
   };
@@ -84,9 +89,19 @@ export function registerMethods(gw: Gateway, svc: Services): void {
 
   gw.method("settings.get", wrap(zEmpty, () => svc.settings.get()));
 
-  gw.method("settings.set", wrap(z.object({ patch: z.record(z.string(), z.unknown()) }), (p) =>
-    svc.settings.set(p.patch)
-  ));
+  gw.method("settings.set", wrap(z.object({ patch: z.record(z.string(), z.unknown()) }), async (p) => {
+    const checked = parseSettingsPatch(p.patch);
+    if (!checked.ok) throw new ApiError("bad_params", `Invalid setting: ${checked.error}`);
+    const before = await svc.settings.get();
+    const next = await svc.settings.set(checked.patch as Partial<Settings>);
+    // A changed launch command only invalidates that Agent's detection / model cache (B2: toggling never wipes the rest)
+    for (const id of Object.keys(checked.patch.providerCommand ?? {})) {
+      if (JSON.stringify(before.providerCommand?.[id] ?? null) !== JSON.stringify(next.providerCommand?.[id] ?? null)) {
+        clearProviderCache(id);
+      }
+    }
+    return next;
+  }));
 
   gw.method("sub.add", wrap(
     z.object({ ch: z.string().min(1).max(120), afterSeq: z.number().int().nonnegative().optional() }),
@@ -121,12 +136,13 @@ export function registerMethods(gw: Gateway, svc: Services): void {
         listProviders().map(async (p) => {
           const entry = catalogById(p.id);
           const enabled = isProviderEnabled(settings, p.id);
+          const launch = launchFromSettings(settings, p.id);
           // Disabled / not-integrated ones are neither detected nor asked for models (saves seconds of CLI startup)
           const skip = !enabled || entry?.status === "planned";
           const det: import("../providers/types.js").DetectResult = skip
-            ? { available: false, reason: !enabled ? "已在设置中禁用" : "尚未接入" }
-            : await cachedDetect(p);
-          const models = !skip && det.available ? await cachedModels(p) : [];
+            ? { available: false, reason: !enabled ? tr("provider.disabled") : tr("provider.planned") }
+            : await cachedDetect(p, launch);
+          const models = !skip && det.available ? await cachedModels(p, launch) : [];
           return {
             id: p.id,
             name: p.name,
@@ -136,7 +152,7 @@ export function registerMethods(gw: Gateway, svc: Services): void {
             ready: entry?.status === "verified",
             bin: det.bin,
             version: det.version,
-            reason: !enabled ? "已在设置中禁用" : det.reason,
+            reason: !enabled ? tr("provider.disabled") : det.reason,
             installHint: det.installHint,
             capabilities: p.capabilities,
             models,
@@ -176,7 +192,7 @@ export function registerMethods(gw: Gateway, svc: Services): void {
 
   gw.method("projects.remove", wrap(z.object({ id: z.string() }), async (p) => {
     const proj = await svc.projects.get(p.id);
-    if (!proj) throw new ApiError("not_found", "项目不存在");
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
     // Move all of the project's conversations to the trash
     for (const t of await svc.threads.list()) {
       if (t.projectId === p.id) {
@@ -191,8 +207,8 @@ export function registerMethods(gw: Gateway, svc: Services): void {
 
   gw.method("projects.open", wrap(z.object({ id: z.string() }), async (p) => {
     const proj = await svc.projects.get(p.id);
-    if (!proj) throw new ApiError("not_found", "项目不存在");
-    if (!existsSync(proj.path)) throw new ApiError("bad_path", "目录不存在或不是文件夹");
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
+    if (!existsSync(proj.path)) throw new ApiError("bad_path", tr("err.dirMissing"));
     const cmd = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
     // explorer.exe doesn't understand forward-slash paths (it opens "Documents"); a missing xdg-open must not make the daemon throw either
     const target = process.platform === "win32" ? win32Path.normalize(proj.path) : proj.path;
@@ -238,17 +254,20 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     }),
     async (p) => {
       const proj = await svc.projects.get(p.projectId);
-      if (!proj) throw new ApiError("not_found", "项目不存在");
-      if (!existsSync(proj.path)) throw new ApiError("bad_path", "项目目录已不存在");
+      if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
+      if (!existsSync(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
       // New conversations must use an enabled Agent (except imported sessions, which already ran)
       if (!p.providerSessionId && !isProviderEnabled(await svc.settings.get(), p.provider)) {
-        throw new ApiError("bad_params", "该 Agent 已在设置中禁用");
+        throw new ApiError("bad_params", tr("provider.disabledNamed", { name: catalogById(p.provider)?.name ?? p.provider }));
       }
       const cat = catalogById(p.provider);
       if (!p.providerSessionId && cat && !providerCreatable(cat.status)) {
-        throw new ApiError("bad_params", `${cat.name} 尚未接入，暂不能新建对话`);
+        throw new ApiError("bad_params", tr("provider.plannedNamed", { name: cat.name }));
       }
-      const meta = await svc.threads.create(p);
+      // B8: the default permission mode is mapped onto this Agent's own modes (same rule as thread.setProvider)
+      const provider = getProvider(p.provider);
+      const mode = clampMode(provider?.capabilities.modes ?? [], p.mode);
+      const meta = await svc.threads.create({ ...p, mode });
       gw.publish("sidebar", { type: "thread.upsert", thread: meta });
       return meta;
     }
@@ -258,7 +277,7 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     z.object({ id: z.string(), afterSeq: z.number().int().nonnegative().optional() }),
     async (p) => {
       const meta = await svc.threads.get(p.id);
-      if (!meta) throw new ApiError("not_found", "对话不存在");
+      if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
       const events = await svc.threads.readEvents(p.id, p.afterSeq ?? 0, 5000);
       const rt = svc.runtime?.(p.id) ?? null;
       return {
@@ -280,7 +299,7 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     }),
     async (p) => {
       const meta = await svc.threads.get(p.id);
-      if (!meta) throw new ApiError("not_found", "对话不存在");
+      if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
       const patch: Record<string, unknown> = {};
       if (p.title !== undefined) {
         patch.title = p.title.trim() || meta.title;
@@ -296,7 +315,7 @@ export function registerMethods(gw: Gateway, svc: Services): void {
 
   gw.method("threads.delete", wrap(z.object({ id: z.string() }), async (p) => {
     const meta = await svc.threads.get(p.id);
-    if (!meta) throw new ApiError("not_found", "对话不存在");
+    if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
     if (svc.manager) await svc.manager.deleteThread(p.id);
     else await svc.threads.delete(p.id);
     gw.publish("sidebar", { type: "thread.remove", id: p.id });
@@ -306,8 +325,8 @@ export function registerMethods(gw: Gateway, svc: Services): void {
   // ---- git.* (§5.8) ----
   const projectPath = async (projectId: string): Promise<string> => {
     const proj = await svc.projects.get(projectId);
-    if (!proj) throw new ApiError("not_found", "项目不存在");
-    if (!existsSync(proj.path)) throw new ApiError("bad_path", "项目目录已不存在");
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
+    if (!existsSync(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
     return proj.path;
   };
 
@@ -335,7 +354,7 @@ export function registerMethods(gw: Gateway, svc: Services): void {
   // ---- history.* (§7.6) ----
   gw.method("history.list", wrap(z.object({ projectId: z.string() }), async (p) => {
     const proj = await svc.projects.get(p.projectId);
-    if (!proj) throw new ApiError("not_found", "项目不存在");
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
     const imported = new Set(
       (await svc.threads.list())
         .filter((t) => t.projectId === p.projectId && t.providerSessionId)
@@ -357,7 +376,7 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     }),
     async (p) => {
       const proj = await svc.projects.get(p.projectId);
-      if (!proj) throw new ApiError("not_found", "项目不存在");
+      if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
       const metas = [];
       for (const item of p.items) {
         const provider = getProvider(item.provider);
@@ -403,7 +422,7 @@ export function registerMethods(gw: Gateway, svc: Services): void {
 
   gw.method("terminal.attach", wrap(z.object({ id: z.string() }), async (p, ctx) => {
     const r = svc.terminals.attach(p.id);
-    if (r.error || r.index == null) throw new ApiError("not_found", r.error ?? "终端不存在");
+    if (r.error || r.index == null) throw new ApiError("not_found", r.error ?? tr("err.terminalMissing"));
     // attach also subscribes to the terminal:<index> channel (input frames are gated on that subscription too)
     svc.gateway.subscribe(ctx.conn, `terminal:${r.index}`);
     return r;
@@ -417,7 +436,7 @@ export function registerMethods(gw: Gateway, svc: Services): void {
 
   // ---- thread.* (runtime operations, need the manager) ----
   const needManager = () => {
-    if (!svc.manager) throw new ApiError("unavailable", "会话管理器未启动");
+    if (!svc.manager) throw new ApiError("unavailable", tr("err.noManager"));
     return svc.manager;
   };
 
@@ -429,10 +448,16 @@ export function registerMethods(gw: Gateway, svc: Services): void {
       behavior: z.enum(["queue", "steer"]).optional(),
     }),
     async (p) => {
-      await needManager().send(p.id, { text: p.text, attachments: p.attachments }, p.behavior ?? "queue");
-      return { ok: true };
+      // delivered tells the composer what happened: a steer an Agent can't take is queued (B7)
+      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments }, p.behavior ?? "queue");
+      return { ok: true, delivered: delivered ?? "started" };
     }
   ));
+
+  // The composer's queue list has a remove button; it used to call a method that didn't exist
+  gw.method("thread.queueRemove", wrap(z.object({ id: z.string(), queueId: z.string() }), async (p) => {
+    return { ok: needManager().removeQueued(p.id, p.queueId) };
+  }));
 
   gw.method("thread.interrupt", wrap(z.object({ id: z.string() }), async (p) => {
     await needManager().interrupt(p.id);
@@ -501,23 +526,23 @@ export function registerMethods(gw: Gateway, svc: Services): void {
   // ---- thread.exportMarkdown (P2-7): persisted events → Markdown text ----
   gw.method("thread.exportMarkdown", wrap(z.object({ id: z.string() }), async (p) => {
     const meta = await svc.threads.get(p.id);
-    if (!meta) throw new ApiError("not_found", "对话不存在");
+    if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
     const events = await svc.threads.readEvents(p.id, 0, 20000);
     const L: string[] = [];
     L.push(`# ${meta.title}`, "");
-    L.push(`> ${meta.provider} · ${meta.model ?? "默认"} · ${meta.mode} · ${new Date(meta.createdAt).toLocaleString("zh-CN")}`, "");
+    L.push(`> ${meta.provider} · ${meta.model ?? tr("export.defaultModel")} · ${meta.mode} · ${new Date(meta.createdAt).toLocaleString(intlLocale())}`, "");
     for (const e of events) {
       switch (e.type) {
-        case "user_message": L.push(`**我**${e.steered ? "（插话）" : ""}：\n\n${e.text}`, ""); break;
+        case "user_message": L.push(`**${tr("export.me")}**${e.steered ? tr("export.steered") : ""}:\n\n${e.text}`, ""); break;
         case "assistant_message": L.push(e.text, ""); break;
-        case "reasoning": L.push(`<details><summary>思考</summary>\n\n${e.text}\n</details>`, ""); break;
+        case "reasoning": L.push(`<details><summary>${tr("export.reasoning")}</summary>\n\n${e.text}\n</details>`, ""); break;
         case "tool_call": {
           const icon = e.status === "ok" ? "✓" : e.status === "failed" ? "✗" : "…";
           L.push(`- \`${e.kind}\` ${icon} ${e.title}${e.output ? `\n  \`\`\`\n  ${e.output.slice(0, 2000)}\n  \`\`\`` : ""}`);
           break;
         }
-        case "plan": L.push("### 计划\n\n" + e.markdown, ""); break;
-        case "todo": L.push("### 待办\n\n" + e.items.map((i) => `- [${i.status === "done" || i.status === "completed" ? "x" : " "}] ${i.text}`).join("\n"), ""); break;
+        case "plan": L.push(`### ${tr("export.plan")}\n\n` + e.markdown, ""); break;
+        case "todo": L.push(`### ${tr("export.todo")}\n\n` + e.items.map((i) => `- [${i.status === "done" || i.status === "completed" ? "x" : " "}] ${i.text}`).join("\n"), ""); break;
         case "notice": L.push(`_${e.message}_`, ""); break;
         case "turn_ended": L.push(`— ${e.status}${e.durationMs ? ` · ${Math.round(e.durationMs / 1000)}s` : ""}${e.error ? ` · ${e.error}` : ""} —`, ""); break;
         default: break;
@@ -526,8 +551,14 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     const markdown = L.join("\n");
     const safe = meta.title.replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 60) || "thread";
     const filename = `${safe}.md`;
-    const dir = join(homedir(), "Downloads");
-    await mkdir(dir, { recursive: true });
+    // ~/Downloads when it can be used, else <data>/exports (B21); the file is revealed with execFile (no shell)
+    let dir = join(homedir(), "Downloads");
+    try {
+      await mkdir(dir, { recursive: true });
+    } catch {
+      dir = join(svc.cfg.dataDir, "exports");
+      await mkdir(dir, { recursive: true });
+    }
     let dest = join(dir, filename);
     if (existsSync(dest)) {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);

@@ -1,43 +1,76 @@
-/* Design tokens (ported from ui/styles/tokens.css, not a single color changed).
-   The magpie theme injects --magpie-* variables via ?tokens=; every one falls back to our own value here.
-   Font sizes across the app are only 12/13/14 (+ 18 for empty-state titles), weights only 400/500/600, borders only --line, shadows only on popovers. */
+/* Design tokens — "option B": quiet neutrals with a teal accent.
+   Magpie passes its palette as --magpie-* (?tokens=). Its font always applies; its colors apply only while this page shows the same
+   light/dark as Magpie (html[data-host-colors], set by layout/theme.ts), so an explicit Light/Dark setting never mixes palettes.
+   Magpie's accent is never used: the plugin keeps its own teal.
+   Font sizes are 12/13/14 (+ 18 for empty-state titles), weights 400/500/600. */
 :root {
-  --bg:        var(--magpie-bg, #ffffff);
-  --fg:        var(--magpie-fg, #1f1f1f);
-  --muted:     var(--magpie-muted, #737373);
-  --accent:    var(--magpie-accent, #0d9488);
+  --own-bg: #ffffff; --own-sb: #f8f8f7; --own-fg: #1f1f1f; --own-muted: #737373; --own-line: #ececec;
+  --bg: var(--own-bg);
+  --sb-bg: var(--own-sb);
+  --fg: var(--own-fg);
+  --muted: var(--own-muted);
+  --line: var(--own-line);
+  --meta: #a3a3a3;
+  --text: #262626;
+  --accent: #0f766e;          /* send, primary buttons, links */
+  --accent-2: #14b8a6;        /* active marker, running dot */
   --accent-fg: #ffffff;
-  --accent-soft: color-mix(in oklab, var(--accent) 12%, var(--bg));
+  --accent-soft: #eef5f4;     /* user bubble */
   --surface:       color-mix(in oklab, var(--fg) 3%, var(--bg));
   --surface-hover: color-mix(in oklab, var(--fg) 6%, var(--bg));
-  --line:      color-mix(in oklab, var(--fg) 9%, var(--bg));
+  --chip-bg: #f4f5f5; --chip-line: #ececec; --pill-fg: #525252;
+  --search-bg: #efefee;
+  --tile-bg: #1f2a2a; --tile-fg: #ffffff;
+  --badge-bg: #e6efed; --badge-fg: #404040;
+  --run-bg: #e8f4f2; --run-fg: #0f766e;
+  --cp-line: #e5e5e5; --cp-focus: #9fd3cc; --cp-ring: rgba(20, 184, 166, .10);
+  --active-bg: #ffffff; --active-line: #e6e6e6;
   --ok: #16a34a; --warn: #d97706; --danger: #dc2626; --info: #2563eb;
-  --code-bg:   color-mix(in oklab, var(--fg) 4%, var(--bg));
+  --code-bg: #f4f5f5; --code-line: #eaeceb; --code-fg: #404040;
+  --add-bg: #ecfdf3; --del-bg: #fef2f2;
   --r-s: 6px; --r-m: 8px; --r-l: 12px; --r-full: 999px;
   --font-ui: var(--magpie-font, "Segoe UI Variable Text", "Segoe UI", -apple-system, "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif);
-  --font-mono: "Cascadia Code", "Cascadia Mono", "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --font-mono: var(--magpie-code, "Cascadia Code", "Cascadia Mono", "JetBrains Mono", ui-monospace, Consolas, monospace);
   --fs-s: 12px; --fs-m: 13px; --fs-l: 14px;
   --fs-hero: 18px;
   --lh: 1.6;
+  --col: 720px;
+  --row: 26px;
   --shadow-pop: 0 8px 24px -6px rgb(0 0 0 / .16), 0 0 0 1px var(--line);
   --term-bg: #ffffff;
   --term-fg: #1e1e1e;
   --ease: cubic-bezier(.2,.7,.2,1);
   --dur-1: 120ms; --dur-2: 200ms;
+  color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: var(--magpie-bg, #1a1a1a); --fg: var(--magpie-fg, #ececec); --muted: var(--magpie-muted, #9b9b9b);
-    --accent: var(--magpie-accent, #2dd4bf); --accent-fg: #04201c; --info: #60a5fa;
-    --shadow-pop: 0 8px 24px -6px rgb(0 0 0 / .5), 0 0 0 1px var(--line);
-    --term-bg: #0c0c0c;
-    --term-fg: #cccccc;
-  }
-}
-[data-theme="dark"] {
-  --bg: var(--magpie-bg, #1a1a1a); --fg: var(--magpie-fg, #ececec); --muted: var(--magpie-muted, #9b9b9b);
-  --accent: var(--magpie-accent, #2dd4bf); --accent-fg: #04201c; --info: #60a5fa;
+:root[data-theme="dark"] {
+  --own-bg: #1a1a1a; --own-sb: #151515; --own-fg: #ececec; --own-muted: #9b9b9b; --own-line: #2c2c2c;
+  --meta: #7c7c7c;
+  --text: #e2e2e2;
+  --accent: #2dd4bf;
+  --accent-2: #2dd4bf;
+  --accent-fg: #04201c;
+  --accent-soft: #1d3331;
+  --chip-bg: #252727; --chip-line: #323434; --pill-fg: #bdbdbd;
+  --search-bg: #242424;
+  --tile-bg: #e6eeee; --tile-fg: #1f2a2a;
+  --badge-bg: #23302e; --badge-fg: #d4d4d4;
+  --run-bg: #17312e; --run-fg: #5eead4;
+  --cp-line: #333333; --cp-focus: #2a7f76; --cp-ring: rgba(45, 212, 191, .14);
+  --active-bg: #242424; --active-line: #333333;
+  --info: #60a5fa;
+  --code-bg: #232323; --code-line: #303030; --code-fg: #d4d4d4;
+  --add-bg: rgb(22 163 74 / .16); --del-bg: rgb(220 38 38 / .16);
   --shadow-pop: 0 8px 24px -6px rgb(0 0 0 / .5), 0 0 0 1px var(--line);
   --term-bg: #0c0c0c;
   --term-fg: #cccccc;
+  color-scheme: dark;
+}
+/* Same light/dark as Magpie: use its surfaces and text colors (card = content, bg = sidebar) */
+:root[data-host-colors] {
+  --bg: var(--magpie-card, var(--magpie-bg, var(--own-bg)));
+  --sb-bg: var(--magpie-bg, var(--own-sb));
+  --fg: var(--magpie-fg, var(--own-fg));
+  --muted: var(--magpie-muted, var(--own-muted));
+  --line: var(--magpie-line, var(--own-line));
 }

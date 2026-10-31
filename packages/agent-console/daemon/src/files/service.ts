@@ -4,6 +4,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, normalize, sep, relative, extname } from "node:path";
 import ignore from "ignore";
+import { tr } from "../util/i18n.js";
 
 export type TreeEntry = { name: string; path: string; isDir: boolean };
 export type ReadResult = {
@@ -77,13 +78,13 @@ export class FileService {
 
   async tree(projectPath: string, dir: string): Promise<{ entries?: TreeEntry[]; error?: string }> {
     const rel = insidePath(projectPath, dir);
-    if (rel === null) return { error: "路径不允许" };
+    if (rel === null) return { error: tr("fs.pathDenied") };
     const abs = join(projectPath, rel);
     const s = await stat(abs).catch(() => null);
-    if (!s?.isDirectory()) return { error: "目录不存在" };
+    if (!s?.isDirectory()) return { error: tr("fs.dirMissing") };
     const ig = await this.igFor(projectPath);
     const dirents = await readdir(abs, { withFileTypes: true }).catch(() => null);
-    if (!dirents) return { error: "无法读取目录" };
+    if (!dirents) return { error: tr("fs.dirUnreadable") };
     const out: TreeEntry[] = [];
     for (const d of dirents) {
       if (out.length >= MAX_PER_LEVEL) break;
@@ -111,14 +112,14 @@ export class FileService {
 
   async read(projectPath: string, p: string): Promise<ReadResult> {
     const rel = insidePath(projectPath, p);
-    if (rel === null) return { error: "路径不允许" };
+    if (rel === null) return { error: tr("fs.pathDenied") };
     const abs = join(projectPath, rel);
     const s = await stat(abs).catch(() => null);
-    if (!s) return { error: "文件不存在" };
-    if (!s.isFile()) return { error: "不是文件" };
+    if (!s) return { error: tr("fs.fileMissing") };
+    if (!s.isFile()) return { error: tr("fs.notFile") };
     if (s.size > MAX_READ) return { tooLarge: true };
     const buf = await readFile(abs).catch(() => null);
-    if (!buf) return { error: "无法读取" };
+    if (!buf) return { error: tr("fs.unreadable") };
     const head = buf.subarray(0, 8192);
     if (head.includes(0)) return { binary: true };
     const { text, encoding } = decodeText(buf);

@@ -91,7 +91,6 @@ export function Sidebar({ pendingByThread }: { pendingByThread: Set<string> }) {
         provider,
         model: null,
         mode: (s.defaultMode as string) ?? "default",
-        effort: (s.defaultEffort as string | null) ?? null,
       })) as ThreadMeta;
       ui.select(projectId, t.id);
     } catch (e) {
@@ -155,7 +154,7 @@ export function Sidebar({ pendingByThread }: { pendingByThread: Set<string> }) {
     <>
       <div className="sb-row">
         <button className="sb-new" onClick={() => setNewProjOpen(true)}>
-          <Icon name="plus" /> {tr("sidebar.newProject")}
+          <span className="sb-new-tile"><Icon name="plus" size={12} /></span>{tr("sidebar.newProject")}
         </button>
         <button className="ibtn" title={tr("common.settings")} onClick={() => window.dispatchEvent(new CustomEvent("open-settings"))}>
           <Icon name="settings" />
@@ -164,8 +163,9 @@ export function Sidebar({ pendingByThread }: { pendingByThread: Set<string> }) {
           <Icon name="search" />
         </button>
       </div>
-      <div className="sb-row" style={{ height: 32, paddingTop: 0 }}>
+      <div className="sb-row sb-row-search">
         <div className="sb-search">
+          <Icon name="search" size={13} />
           <input
             ref={filterRef}
             placeholder={tr("sidebar.filterPlaceholder")}

@@ -5,6 +5,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { samePath } from "../util/paths.js";
+import { tr } from "../util/i18n.js";
 
 const CODEX_ROOT = join(homedir(), ".codex", "sessions");
 
@@ -77,7 +78,7 @@ export async function listCodexHistory(cwd: string): Promise<CodexHistItem[]> {
     }
     if (!match) continue;
     const s = await stat(path).catch(() => null);
-    out.push({ sessionId, title: title || "（无标题）", updatedAt: s ? Math.round(s.mtimeMs) : 0, messageCount: count });
+    out.push({ sessionId, title: title || tr("history.untitled"), updatedAt: s ? Math.round(s.mtimeMs) : 0, messageCount: count });
   }
   out.sort((a, b) => b.updatedAt - a.updatedAt);
   return out;
@@ -135,7 +136,7 @@ export async function readCodexHistory(sessionId: string, cwd: string): Promise<
         }
       } else if (p.type === "function_call" || p.type === "custom_tool_call") {
         const name = str(p.name) ?? "tool";
-        out.push({ type: "notice", level: "info", message: `（历史）调用 ${name}` });
+        out.push({ type: "notice", level: "info", message: tr("history.toolCall", { name }) });
       }
       continue;
     }
@@ -161,7 +162,7 @@ export async function readCodexHistory(sessionId: string, cwd: string): Promise<
     if (p2.type === "function_call" || p2.type === "custom_tool_call") {
       // Tool steps collapse into a one-line notice (§7.6, Codex part)
       const name = str(p2.name) ?? "tool";
-      out.push({ type: "notice", level: "info", message: `（历史）调用 ${name}` });
+      out.push({ type: "notice", level: "info", message: tr("history.toolCall", { name }) });
     }
   }
   out.push({ type: "turn_ended", turnId: "import", status: "completed" });

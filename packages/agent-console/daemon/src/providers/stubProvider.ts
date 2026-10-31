@@ -3,6 +3,7 @@ import { resolveBin } from "../util/bin.js";
 import type { Provider, DetectResult, ModelInfo, ProviderSession } from "./types.js";
 import type { ProviderCatalogEntry } from "./catalog.js";
 import type { Capabilities } from "./types.js";
+import { tr } from "../util/i18n.js";
 
 const stubCapabilities: Capabilities = {
   resume: false,
@@ -18,7 +19,7 @@ const stubCapabilities: Capabilities = {
 
 function notReadySession(): ProviderSession {
   const err = () => {
-    throw new Error("该 Agent 尚未在 Agent Console 接入，敬请期待");
+    throw new Error(tr("stub.planned"));
   };
   return {
     events: (async function* () {})(),
@@ -45,17 +46,17 @@ export function createStubProvider(entry: ProviderCatalogEntry): Provider {
           return {
             available: true,
             bin: r.display,
-            reason: entry.status === "verified" ? undefined : "已检测到 CLI，会话驱动尚未完全验证",
+            reason: entry.status === "verified" ? undefined : tr("stub.unverified"),
           };
         }
       }
-      return { available: false, reason: `未找到 ${entry.bins[0]}`, installHint: entry.installHint };
+      return { available: false, reason: tr("stub.notFound", { bin: entry.bins[0] }), installHint: entry.installHint };
     },
     async listModels(): Promise<ModelInfo[]> {
       return [];
     },
     async createSession() {
-      if (entry.status === "planned") throw new Error("该 Agent 尚未在 Agent Console 接入，敬请期待");
+      if (entry.status === "planned") throw new Error(tr("stub.planned"));
       return notReadySession();
     },
   };

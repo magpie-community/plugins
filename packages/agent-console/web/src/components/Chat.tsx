@@ -101,19 +101,32 @@ export function Chat() {
   if (!activeThreadId) {
     return (
       <div className="scroll" ref={scrollRef}>
-        <div className="empty-wrap">
-          {project ? (
-            <>
-              <div className="cp-hero-t">{tf("chat.newInProject", { name: project.name })}</div>
-              <EmptyComposer projectId={project.id} />
-            </>
-          ) : (
-            <WorkspaceEmpty kind="no-projects" />
-          )}
-        </div>
+        {project ? (
+          <div className="empty-wrap">
+            <div className="cp-hero-t">{tf("chat.newInProject", { name: project.name })}</div>
+            <EmptyComposer projectId={project.id} />
+          </div>
+        ) : (
+          // Projects exist but none is selected (B12): don't claim there are no projects
+          <WorkspaceEmpty kind="pick-project" />
+        )}
       </div>
     );
   }
+
+  let lastTurnEnd = -1;
+  for (let i = items.length - 1; i >= 0; i--) if (items[i]!.kind === "turnend") { lastTurnEnd = i; break; }
+
+  /** Text of the reply a turn-end row belongs to (for its copy button) */
+  const replyTextBefore = (idx: number): string => {
+    const parts: string[] = [];
+    for (let i = idx - 1; i >= 0; i--) {
+      const it = items[i]!;
+      if (it.kind === "user" || it.kind === "turnend") break;
+      if (it.kind === "assistant") parts.unshift(it.text);
+    }
+    return parts.join("\n\n");
+  };
 
   return (
     <>
@@ -130,7 +143,9 @@ export function Chat() {
                   ref={virt.measureElement}
                   style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${v.start}px)` }}
                 >
-                  <TimelineRow it={it} threadId={activeThreadId} onEditResend={resend} onRetryLast={retryLast} />
+                  <TimelineRow it={it} threadId={activeThreadId} onEditResend={resend}
+                    onRetryLast={v.index === lastTurnEnd ? retryLast : undefined}
+                    replyText={it.kind === "turnend" ? replyTextBefore(v.index) : undefined} />
                 </div>
               );
             })}
@@ -153,12 +168,12 @@ export function Chat() {
 }
 
 /** No project / nothing selected: centered onboarding matching the sidebar's empty state, no Composer at the bottom */
-function WorkspaceEmpty({ kind }: { kind: "no-projects" }) {
-  void kind;
+function WorkspaceEmpty({ kind }: { kind: "no-projects" | "pick-project" }) {
+  const pick = kind === "pick-project";
   return (
     <div className="empty-wrap workspace-empty">
-      <div className="cp-hero-t">{tr("sidebar.noProjectsTitle")}</div>
-      <div className="cp-hero-s">{tr("sidebar.noProjectsSub")}</div>
+      <div className="cp-hero-t">{tr(pick ? "chat.pickProjectTitle" : "sidebar.noProjectsTitle")}</div>
+      <div className="cp-hero-s">{tr(pick ? "chat.pickProjectSub" : "sidebar.noProjectsSub")}</div>
       <div className="empty-actions">
         <button type="button" className="btn primary" onClick={() => window.dispatchEvent(new CustomEvent("open-new-project"))}>
           {tr("sidebar.newProject")}
@@ -179,10 +194,10 @@ function EmptyComposer({ projectId }: { projectId: string }) {
     setBusy(true);
     try {
       const provider = await pickDefaultProvider();
-      const s = (await ws.call("settings.get")) as { defaultMode?: string; defaultEffort?: string | null };
+      const s = (await ws.call("settings.get")) as { defaultMode?: string };
       const created = (await ws.call("threads.create", {
         projectId, provider, model: null,
-        mode: s.defaultMode ?? "default", effort: s.defaultEffort ?? null,
+        mode: s.defaultMode ?? "default",
       })) as { id: string };
       ui.select(projectId, created.id);
       await ws.call("thread.send", { id: created.id, text: text.trim() });

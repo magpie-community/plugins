@@ -1,5 +1,19 @@
 # Agent Console
 
+**把终端里的 Agent CLI 搬进 magpie 窗口，直接对话使用。**
+
+作者 qingnian108，源码在 [qingnian108/magpie-agent-console](https://github.com/qingnian108/magpie-agent-console)，欢迎提问题和建议。
+
+支持 Claude Code、Codex、Cursor 等，直接用你电脑上已安装的 CLI。左边是项目和对话，中间聊天，右边看改动、文件和终端。
+
+**Use your terminal Agent CLIs right inside magpie, by chat.**
+
+By qingnian108. Source: [qingnian108/magpie-agent-console](https://github.com/qingnian108/magpie-agent-console). Issues welcome.
+
+Works with Claude Code, Codex, Cursor and more, using the CLIs you already have.
+
+---
+
 A Magpie page plugin that drives real local Agent CLIs (Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh). Each conversation is a **persistent Agent session** on a standalone Node daemon. Close or refresh the page — the Agent keeps running while Magpie is open. Reopen the page and you pick up where you left off. When Magpie quits, the daemon and its Agents stop; threads are persisted and can be resumed next time.
 
 ## Install
@@ -68,12 +82,14 @@ The daemon can run Agents with full access to your machine, so the token that un
 - **Host is checked on every request and WebSocket upgrade** (gate and daemon): it must be `127.0.0.1:<port>` or `localhost:<port>` with the actually bound port, otherwise 421. This blocks DNS rebinding, where the attacker's requests carry no `Origin` at all.
 - The gate answers only `GET /open?k=<gate key>` (the daemon token is not accepted there), refuses any request that carries an `Origin` header, and sends `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
 - WebSocket connections must send `hello` with the token within 5 seconds, otherwise they are closed with code 4401.
+- **Coming back after a plugin host restart.** Magpie restarts its plugin host from time to time; the old host's daemon exits with it and the new host has a new gate key. `boot.js` passes its own page URL to the gate as `back`; the gate accepts it only if it is a loopback `/_magpie/plugin/<id>/index.html` URL and forwards it **only in the fragment** (`#t=…&b=…`). When the daemon page can't reconnect for 5 seconds (or on 重试 / Retry) it navigates back to that page, which reads the fresh `session.js` and opens the new gate. The daemon page checks the URL again before following it, so it is never an open redirect, and the token never leaves its own fragment.
 
 ## Lifecycle
 
 - Importing `index.mjs` has no side effects (no port, no process, no files).
 - `server()` (called by Magpie's plugin host at host start-up — this includes short-lived hosts started by CLI commands such as `magpie plugin add` or `magpie plugin list`) binds the gate and writes `page/session.js`. If the port is busy it retries every 2 s in the background without blocking the host; a detached 0.1.0 daemon still holding the port is shut down once, only after it proves its identity by answering `/api/ping` with the token from `daemon.json`.
 - The daemon starts when the page is opened for the first time and is reused for later opens. It is a normal (non-detached) child of the plugin host.
+- `server()` waits ~1.2 s before binding the gate (`AGENT_CONSOLE_BIND_DELAY_MS`), so the short-lived hosts started by `magpie` CLI commands usually exit before they take the gate or write `session.js`; a gate port held by the long-lived host is logged only if it stays busy for ~10 s.
 - The daemon exits when its stdin pipe closes or its parent pid disappears (checked every 2 s) — i.e. when Magpie quits or the plugin host restarts — and after 60 minutes idle.
 - Magpie's plugin host treats the value returned by `server()` as OpenCode hooks and never calls `stop()`; it exits the Bun process when Magpie closes its stdin. A synchronous `exit` handler therefore closes the daemon's lifeline, signals it, and removes the `session.js` this host wrote. `stop()` (used by tests and other hosts) closes the gate, ends the daemon (graceful, then forced) and removes `session.js`.
 - Agents stop with the daemon. Threads are persisted and can be resumed after reopening the page. On macOS/Linux every Agent CLI, the Codex app-server and the no-PTY shell run in their own process group, so stopping one ends everything it started; on Windows the same is done with `taskkill /T`. A process `exit` hook reaps any tree still alive when the daemon exits.

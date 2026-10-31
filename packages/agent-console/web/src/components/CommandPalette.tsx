@@ -1,4 +1,5 @@
 // Command palette (§8.6 Ctrl+K): filter projects/conversations/actions, ↑↓ to select, Enter to run.
+import { applyTheme, currentTheme } from "../layout/theme.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isImeComposing } from "../composer/ime";
 import { createPortal } from "react-dom";
@@ -61,9 +62,9 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
 
   async function newThread(projectId: string) {
     try {
-      const s = (await ws.call("settings.get")) as { defaultProvider?: string; defaultMode?: string; defaultEffort?: string | null };
+      const s = (await ws.call("settings.get")) as { defaultProvider?: string; defaultMode?: string };
       const provider = await pickDefaultProvider();
-      const th = (await ws.call("threads.create", { projectId, provider, mode: s.defaultMode ?? "default", effort: s.defaultEffort ?? null })) as { id: string };
+      const th = (await ws.call("threads.create", { projectId, provider, mode: s.defaultMode ?? "default" })) as { id: string };
       useUi.getState().select(projectId, th.id);
     } catch (e) { toast(t("palette.failNew") + errMsg(e), true); }
   }
@@ -92,7 +93,9 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
 }
 
 async function cycleTheme() {
-  const cur = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  document.documentElement.dataset.theme = cur;
-  try { await ws.call("settings.set", { patch: { theme: cur } }); } catch {}
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  applyTheme(next);
+  try {
+    await ws.call("settings.set", { patch: { theme: next } });
+  } catch {}
 }

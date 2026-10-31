@@ -30,5 +30,17 @@ export function composerModeOptions(
   // As in Paseo: when an Agent has its own mode names, use them (Copilot shows Agent rather than Always Ask)
   return base
     .filter((m) => allowed.includes(m.id))
-    .map((m) => (labels?.[m.id] ? { ...m, label: labels[m.id]! } : m));
+    .map((m) => (labels?.[m.id] ? { ...m, label: agentModeLabel(labels[m.id]!) } : m));
+}
+
+/** An Agent's own mode name (from the daemon, English) in the UI language when we know it */
+export function agentModeLabel(name: string): string {
+  const v = t(`composer.agentMode.${name}`);
+  return v.startsWith("composer.agentMode.") ? name : v;
+}
+
+/** Reasoning effort id → short label in the UI language (unknown ids are shown as given) */
+export function effortLabel(id: string, fallback?: string): string {
+  const v = t(`composer.effort.${id}`);
+  return v.startsWith("composer.effort.") ? fallback ?? id : v;
 }

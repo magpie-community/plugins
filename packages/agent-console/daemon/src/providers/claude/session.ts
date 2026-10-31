@@ -1,6 +1,6 @@
 // Claude ProviderSession (§7.2.2/7.2.4/7.2.5/7.2.6): the user's own `claude` CLI over stream-json (./cli.ts),
 // one process per conversation, streaming, permissions, interrupt, hot switching. No SDK.
-import type { ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../types.js";
+import type { LaunchCommand, ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../types.js";
 import type { ProviderEvent } from "../../timeline/types.js";
 import { AsyncQueue } from "../../util/queue.js";
 import { callInfo } from "../../agents/kinds.js";
@@ -30,6 +30,7 @@ export type ClaudeSessionOpts = {
   resumeId: string | null;
   /** The user's claude, as resolveBin found it (a .cmd / .ps1 shim is started through cmd.exe / PowerShell by spawnBin) */
   bin: ClaudeBin;
+  launch?: LaunchCommand;
   /** Environment for the CLI (tests point it at a stand-in); process.env when absent */
   env?: NodeJS.ProcessEnv;
   onModeChange?: (mode: Mode) => void; // Callback when a plan is approved → default (the manager updates meta)
@@ -71,6 +72,7 @@ export class ClaudeSession implements ProviderSession {
         effort,
         resume: this.sessionId,
         env: this.o.env,
+        launch: this.o.launch,
       },
       (req) => this.canUseTool(req),
     );
@@ -172,9 +174,9 @@ export class ClaudeSession implements ProviderSession {
       kind: "tool",
       detail,
       options: [
-        { id: "allow", label: "允许", kind: "allow_once" },
-        { id: "allow_always", label: "本对话都允许", kind: "allow_always" },
-        { id: "deny", label: "拒绝", kind: "reject_once" },
+        { id: "allow", label: tr("perm.allow"), kind: "allow_once" },
+        { id: "allow_always", label: tr("perm.allowSession"), kind: "allow_always" },
+        { id: "deny", label: tr("perm.deny"), kind: "reject_once" },
       ],
     });
     return new Promise<PermissionDecision>((resolve) => {
@@ -182,7 +184,7 @@ export class ClaudeSession implements ProviderSession {
       signal.addEventListener("abort", () => {
         if (this.pending.delete(requestId)) {
           this.emit({ type: "permission_resolved", requestId, cancelled: true });
-          resolve({ behavior: "deny", message: "已取消", interrupt: true });
+          resolve({ behavior: "deny", message: "Cancelled by the user", interrupt: true });
         }
       }, { once: true });
     });
@@ -190,7 +192,7 @@ export class ClaudeSession implements ProviderSession {
 
   private toPermissionDecision(a: RespondAnswer, input: Record<string, unknown>): PermissionDecision {
     if (a.cancelled || a.optionId === "deny") {
-      return { behavior: "deny", message: "用户拒绝了此操作", ...(a.cancelled ? { interrupt: true } : {}) };
+      return { behavior: "deny", message: "The user denied this action", ...(a.cancelled ? { interrupt: true } : {}) };
     }
     return { behavior: "allow", updatedInput: input };
   }
@@ -203,12 +205,12 @@ export class ClaudeSession implements ProviderSession {
     this.emit({
       type: "permission_request",
       requestId,
-      title: "Agent 提交了计划",
+      title: tr("perm.plan"),
       kind: "plan",
       detail: { plan: planText },
       options: [
-        { id: "implement", label: "实施", kind: "allow_once" },
-        { id: "reject", label: "拒绝", kind: "reject_once" },
+        { id: "implement", label: tr("perm.implement"), kind: "allow_once" },
+        { id: "reject", label: tr("perm.deny"), kind: "reject_once" },
       ],
     });
     const answer = await new Promise<RespondAnswer>((resolve) => {
@@ -221,7 +223,7 @@ export class ClaudeSession implements ProviderSession {
       }, { once: true });
     });
     if (answer.cancelled || answer.optionId === "reject") {
-      return { behavior: "deny", message: "用户拒绝了计划，请根据反馈修改", ...(answer.cancelled ? { interrupt: true } : {}) };
+      return { behavior: "deny", message: "The user rejected the plan; revise it based on their feedback", ...(answer.cancelled ? { interrupt: true } : {}) };
     }
     // implement: switch back to default mode
     try {
@@ -246,7 +248,7 @@ export class ClaudeSession implements ProviderSession {
       }, { once: true });
     });
     if (answer.cancelled) {
-      return { behavior: "deny", message: "用户取消了提问", interrupt: true };
+      return { behavior: "deny", message: "The user cancelled the question", interrupt: true };
     }
     // answers are keyed by the question text (Claude's AskUserQuestion schema keys answers by question text)
     const questions = (input.questions as { question?: string; header?: string }[]) ?? [];

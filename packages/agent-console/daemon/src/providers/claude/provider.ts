@@ -1,5 +1,5 @@
 // Claude Provider (§7.2): detection + createSession(ClaudeSession).
-import type { Provider, ProviderSession, DetectResult, ModelInfo, HistoryItem } from "../types.js";
+import type { Provider, ProviderSession, DetectResult, ModelInfo, HistoryItem, LaunchCommand } from "../types.js";
 import { resolveBin, killTree, spawnBin, type ResolveResult } from "../../util/bin.js";
 import { ClaudeSession } from "./session.js";
 import { listClaudeModels } from "./models.js";
@@ -7,6 +7,7 @@ import { listClaudeHistory, readClaudeHistory } from "../../history/import.js";
 import { mapSdkMessage, newMapState } from "./map.js";
 import type { ProviderEvent } from "../../timeline/types.js";
 import { tr } from "../../util/i18n.js";
+import { resolveLaunch } from "../launch.js";
 
 const INSTALL_HINT = "npm i -g @anthropic-ai/claude-code";
 
@@ -43,16 +44,18 @@ function runVersion(r: ResolveResult & { ok: true }, args: string[], timeoutMs =
   });
 }
 
-export function createClaudeProvider(): Provider {
+export function createClaudeProvider(opts: { resolve?: (name: string) => Promise<ResolveResult> } = {}): Provider {
+  const resolve = opts.resolve ?? resolveBin;
+  const resolveCustom = opts.resolve ? (l: LaunchCommand) => opts.resolve!(l.cmd) : resolveLaunch;
   return {
     id: "claude",
     name: "Claude Code",
     capabilities: claudeCapabilities,
-    async detect(): Promise<DetectResult> {
-      const bin = await resolveBin("claude");
+    async detect(launch?: LaunchCommand): Promise<DetectResult> {
+      const bin = launch ? await resolveCustom(launch) : await resolve("claude");
       if (!bin.ok) return { available: false, reason: bin.reason, installHint: INSTALL_HINT };
       try {
-        const version = await runVersion(bin, ["--version"]);
+        const version = await runVersion(bin, [...(launch?.prefixArgs ?? []), "--version"]);
         return { available: true, bin: bin.display, version: version.trim().split("\n")[0] || "" };
       } catch {
         return { available: true, bin: bin.display, version: "" };
@@ -62,7 +65,7 @@ export function createClaudeProvider(): Provider {
       return listClaudeModels();
     },
     async createSession(o): Promise<ProviderSession> {
-      const bin = await resolveBin("claude");
+      const bin = o.launch ? await resolveCustom(o.launch) : await resolve("claude");
       if (!bin.ok) throw new Error(tr("claude.notFound", { detail: bin.reason, hint: INSTALL_HINT }));
       return new ClaudeSession({
         threadId: o.threadId,
@@ -72,6 +75,7 @@ export function createClaudeProvider(): Provider {
         effort: o.effort,
         resumeId: o.resumeId,
         bin,
+        launch: o.launch,
       });
     },
     // §7.6: jsonl sessions under ~/.claude/projects matched by cwd

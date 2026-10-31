@@ -129,7 +129,12 @@ async function main(): Promise<void> {
   chmodSync(daemonJsonPath, 0o600);
   log("info", `daemon 已启动 端口 ${cfg.port} 数据目录 ${cfg.dataDir} 版本 ${cfg.version} pid ${process.pid}`);
   // Standalone dev mode: print the open URL with the token to the console (console only, never the log file)
-  if (!cfg.parentPid) console.log(`[agent-console] 打开 http://127.0.0.1:${cfg.port}/#t=${cfg.token}`);
+  // B20: standalone (dev) runs only: the token goes to an interactive terminal, never to a redirected stdout or a log
+  if (!cfg.parentPid) {
+    console.log(process.stdout.isTTY
+      ? `[agent-console] open http://127.0.0.1:${cfg.port}/#t=${cfg.token}`
+      : `[agent-console] listening on http://127.0.0.1:${cfg.port}/ (token not printed: stdout is not a terminal)`);
+  }
 
   // Idle exit: check every minute; no WS connection + no running conversation + no open terminal → exit after idleExitMinutes
   let idleSince = Date.now();
@@ -173,8 +178,10 @@ async function main(): Promise<void> {
       }
     }, 2000);
     parentWatch.unref();
-    process.stdin.on("end", () => shutdown(0));
-    process.stdin.on("close", () => shutdown(0));
+    // Logged so a daemon that went away with its plugin host (Magpie restarting it) can be told from an idle exit
+    const lifelineClosed = () => { log("info", "plugin host closed the lifeline (stdin); daemon exiting with it"); shutdown(0); };
+    process.stdin.on("end", lifelineClosed);
+    process.stdin.on("close", lifelineClosed);
     process.stdin.on("error", () => shutdown(0));
     process.stdin.resume();
   }

@@ -1,5 +1,5 @@
 // Codex ProviderSession (§7.3.3/7.3.5): codex app-server JSON-RPC session.
-import type { ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../types.js";
+import type { LaunchCommand, ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../types.js";
 import { buildCodexInput } from "./input.js";
 import { tr } from "../../util/i18n.js";
 import type { ProviderEvent } from "../../timeline/types.js";
@@ -14,6 +14,7 @@ import {
   type CodexSlashEntry,
 } from "./commands.js";
 import { log } from "../../log.js";
+import { launchArgv } from "../launch.js";
 
 const rid = () => Math.random().toString(36).slice(2, 10);
 
@@ -60,6 +61,7 @@ export class CodexSession implements ProviderSession {
       binVia?: string;
       binShim?: string;
       version: string;
+      launch?: LaunchCommand;
     },
   ) {
     this.events = this.q;
@@ -85,7 +87,7 @@ export class CodexSession implements ProviderSession {
       const rpc = new CodexRpc(
         argvFor(
           { ok: true, cmd: this.o.binCmd, prefixArgs: this.o.binPrefixArgs, display: this.o.binCmd, via: this.o.binVia ?? "path", shim: this.o.binShim },
-          ["app-server"],
+          launchArgv(["app-server"], this.o.launch),
         ),
         { cwd: this.o.cwd },
       );
@@ -148,7 +150,7 @@ export class CodexSession implements ProviderSession {
   }
 
   async send(input: SendInput): Promise<void> {
-    if (this.closed) throw new Error("会话已关闭");
+    if (this.closed) throw new Error(tr("codex.closed"));
     await this.start();
     const rpc = this.rpc!;
     const preset = MODE_PRESETS[this.o.mode];
@@ -191,7 +193,7 @@ export class CodexSession implements ProviderSession {
 
   async steer(input: SendInput): Promise<void> {
     // No Codex turnId yet (turn/started hasn't arrived) → throw; the manager queues instead so the message isn't lost
-    if (!this.rpc || !this.st.currentTurnId) throw new Error("当前轮次还没开始，无法插话");
+    if (!this.rpc || !this.st.currentTurnId) throw new Error(tr("codex.noTurnSteer"));
     const { items, warnings } = await buildCodexInput(input.text, input.images ?? []);
     for (const w of warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
     try {
@@ -243,13 +245,13 @@ export class CodexSession implements ProviderSession {
         this.emit({
           type: "permission_request",
           requestId,
-          title: `运行 ${command.slice(0, 80)}`,
+          title: tr("tool.run", { x: command.slice(0, 80) }),
           kind: "tool",
           detail: { command, cwd: params.cwd, reason: params.reason, approvalId: params.approvalId, itemId: params.itemId },
           options: [
-            { id: "accept", label: "允许", kind: "allow_once" },
-            { id: "acceptForSession", label: "本对话都允许", kind: "allow_always" },
-            { id: "decline", label: "拒绝", kind: "reject_once" },
+            { id: "accept", label: tr("perm.allow"), kind: "allow_once" },
+            { id: "acceptForSession", label: tr("perm.allowSession"), kind: "allow_always" },
+            { id: "decline", label: tr("perm.deny"), kind: "reject_once" },
           ],
         });
         const a = await this.waitFor(requestId);
@@ -258,18 +260,21 @@ export class CodexSession implements ProviderSession {
         return { decision: opt };
       }
       case "item/fileChange/requestApproval": {
-        const changes = Array.isArray(params.changes) ? params.changes : [];
+        const itemId = typeof params.itemId === "string" ? params.itemId : "";
+        const changes = Array.isArray(params.changes) && params.changes.length
+          ? params.changes
+          : (itemId ? this.st.fileChangesByItemId.get(itemId) ?? [] : []);
         const requestId = "perm_" + rid();
         this.emit({
           type: "permission_request",
           requestId,
-          title: "修改文件",
+          title: tr("perm.editFiles"),
           kind: "tool",
           detail: { changes, approvalId: params.approvalId, itemId: params.itemId, reason: params.reason },
           options: [
-            { id: "accept", label: "允许", kind: "allow_once" },
-            { id: "acceptForSession", label: "本对话都允许", kind: "allow_always" },
-            { id: "decline", label: "拒绝", kind: "reject_once" },
+            { id: "accept", label: tr("perm.allow"), kind: "allow_once" },
+            { id: "acceptForSession", label: tr("perm.allowSession"), kind: "allow_always" },
+            { id: "decline", label: tr("perm.deny"), kind: "reject_once" },
           ],
         });
         const a = await this.waitFor(requestId);

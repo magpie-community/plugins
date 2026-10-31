@@ -2,7 +2,7 @@
 // Rules: dedup by seq; deltas merge by itemId, complete events replace them and set streaming=false;
 // consecutive tool_calls go into one ToolGroupItem (interrupted by text/plan/permission etc. -> new group);
 // a permission shows "cancelled" when runtimeStatus is not running and it is unresolved.
-import type { TimelineEvent } from "./types";
+import type { TimelineEvent } from "./types.js";
 
 export type ToolStep = {
   itemId: string; kind: string; title: string;
@@ -41,6 +41,8 @@ type State = {
   turnUsage: Map<string, TurnUsage>;
   // turnId -> index of the last user message (for the error card's "Retry")
   lastUserIdx: Map<string, number>;
+  // turnId -> turn_started ts (fallback duration for agents that don't report one, e.g. ACP)
+  turnStart: Map<string, number>;
 };
 
 export function newTimelineState(): State {
@@ -53,6 +55,7 @@ export function newTimelineState(): State {
     reqLoc: new Map(),
     turnUsage: new Map(),
     lastUserIdx: new Map(),
+    turnStart: new Map(),
   };
 }
 
@@ -246,12 +249,14 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
       breakGroup(st);
       st.items.push({
         kind: "turnend", key: `te:${ev.seq}`, status: ev.status,
-        durationMs: ev.durationMs, error: ev.error, filesChanged: ev.filesChanged,
+        durationMs: ev.durationMs ?? (st.turnStart.has(ev.turnId) ? Math.max(0, ev.ts - st.turnStart.get(ev.turnId)!) : undefined),
+        error: ev.error, filesChanged: ev.filesChanged,
         usage: st.turnUsage.get(ev.turnId),
       });
       return;
     case "turn_started":
       // not shown as an item; the status pill uses status events / runtime
+      st.turnStart.set(ev.turnId, ev.ts);
       return;
     case "status":
       return;

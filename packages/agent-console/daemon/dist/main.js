@@ -69,6 +69,247 @@ var init_log = __esm({
   }
 });
 
+// daemon/src/util/i18n.ts
+function normalizeLang(raw) {
+  const s = String(raw ?? "").trim().toLowerCase();
+  if (!s) return "zh";
+  if (s === "zh" || s.startsWith("zh-")) return "zh";
+  return "en";
+}
+function setAppLocale(lang) {
+  locale = normalizeLang(lang);
+}
+function intlLocale() {
+  return locale === "zh" ? "zh-CN" : "en-US";
+}
+function tr(key, params) {
+  let s = dict[locale][key] ?? dict.en[key] ?? key;
+  if (params) {
+    for (const [k, v] of Object.entries(params)) s = s.replaceAll(`{${k}}`, String(v));
+  }
+  return s;
+}
+var locale, dict;
+var init_i18n = __esm({
+  "daemon/src/util/i18n.ts"() {
+    locale = "zh";
+    dict = {
+      zh: {
+        "thread.defaultTitle": "\u65B0\u5BF9\u8BDD",
+        "notice.daemonRestart": "\u540E\u53F0\u5DF2\u91CD\u542F\uFF0C\u672C\u8F6E\u5DF2\u4E2D\u65AD",
+        "notice.sessionStartFailed": "\u4F1A\u8BDD\u542F\u52A8\u5931\u8D25\uFF1A{detail}",
+        "notice.sendFailed": "\u53D1\u9001\u5931\u8D25\uFF1A{detail}",
+        "notice.effortNextTurn": "\u601D\u8003\u5F3A\u5EA6\u5DF2\u4FDD\u5B58\uFF0C\u5C06\u5728\u4E0B\u4E00\u8F6E\u751F\u6548",
+        "notice.effortResetOnModel": "\u5F53\u524D\u6A21\u578B\u4E0D\u652F\u6301\u8BE5\u601D\u8003\u5F3A\u5EA6\uFF0C\u5DF2\u6062\u590D\u4E3A Default",
+        "turn.agentExit": "Agent \u8FDB\u7A0B\u610F\u5916\u9000\u51FA",
+        "attachment.missing": "\u9644\u4EF6\u4E0D\u5B58\u5728\u6216\u5DF2\u5931\u6548\uFF08{ref}\uFF09\uFF0C\u8BF7\u91CD\u65B0\u4E0A\u4F20",
+        "notice.acpImageByPath": "{agent} \u4E0D\u80FD\u76F4\u63A5\u770B\u56FE\u7247\uFF08\u5B83\u7684 ACP \u521D\u59CB\u5316\u672A\u58F0\u660E\u652F\u6301\u56FE\u7247\u8F93\u5165\uFF09\uFF0C\u5DF2\u6539\u4E3A\u53D1\u9001\u56FE\u7247\u7684\u6587\u4EF6\u8DEF\u5F84\uFF1A{paths}",
+        "notice.acpImageByPathSwitched": "{agent} \u662F\u5728\u53E6\u4E00\u4E2A\u6A21\u578B\u4E0A\u542F\u52A8\u7684\uFF0C\u53EA\u5BF9\u90A3\u4E2A\u6A21\u578B\u63A5\u6536\u56FE\u7247\uFF0C\u8FD9\u6B21\u6539\u4E3A\u53D1\u9001\u56FE\u7247\u7684\u6587\u4EF6\u8DEF\u5F84\uFF08\u5F53\u524D\u6A21\u578B\u80FD\u770B\u56FE\u65F6\u5B83\u4F1A\u7528 read_image \u6253\u5F00\uFF09\uFF1A{paths}",
+        "notice.acpSessionNotRestored": "{agent} \u4E0D\u80FD\u6062\u590D\u4E0A\u4E00\u8F6E\u5BF9\u8BDD\uFF08\u5B83\u7684 ACP \u65E2\u4E0D\u652F\u6301 session/load \u4E5F\u4E0D\u652F\u6301 session/resume\uFF09\uFF0C\u5DF2\u65B0\u5F00\u4E00\u8F6E\uFF1B\u5148\u524D\u7684\u4E0A\u4E0B\u6587\u4E0D\u4F1A\u5E26\u56DE\u3002",
+        "notice.attachmentIssue": "\u9644\u4EF6\u95EE\u9898\uFF1A{detail}",
+        "claude.notFound": "\u627E\u4E0D\u5230 claude\uFF08{detail}\uFF09\u3002\u672C\u63D2\u4EF6\u4E0D\u9644\u5E26 Claude Code\uFF0C\u8BF7\u5148\u5B89\u88C5\uFF1A{hint}",
+        "claude.startFailed": "\u65E0\u6CD5\u542F\u52A8 claude\uFF1A{detail}",
+        "claude.exited": "claude \u8FDB\u7A0B\u610F\u5916\u9000\u51FA\uFF08{code}\uFF09",
+        "claude.notRunning": "claude \u6CA1\u6709\u5728\u8FD0\u884C\uFF0C\u6D88\u606F\u672A\u53D1\u51FA",
+        "claude.closed": "\u4F1A\u8BDD\u5DF2\u5173\u95ED",
+        "export.defaultModel": "\u9ED8\u8BA4",
+        "bin.notOnPath": "PATH \u91CC\u627E\u4E0D\u5230 {name}",
+        "bin.or": " \u6216 ",
+        "launch.notFound": "\u627E\u4E0D\u5230\u81EA\u5B9A\u4E49\u7684\u53EF\u6267\u884C\u6587\u4EF6\uFF1A{cmd}\uFF08\u8BF7\u586B\u5199\u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u6216 PATH \u91CC\u80FD\u627E\u5230\u7684\u547D\u4EE4\u540D\uFF09",
+        "codex.notFound": "\u627E\u4E0D\u5230 codex\uFF08{detail}\uFF09\u3002\u8BF7\u5148\u5B89\u88C5\uFF1A{hint}",
+        "provider.disabled": "\u5DF2\u5728\u8BBE\u7F6E\u4E2D\u7981\u7528",
+        "provider.planned": "\u5C1A\u672A\u63A5\u5165",
+        "provider.disabledNamed": "{name} \u5DF2\u5728\u8BBE\u7F6E\u4E2D\u7981\u7528",
+        "provider.plannedNamed": "{name} \u5C1A\u672A\u63A5\u5165\uFF0C\u6682\u4E0D\u80FD\u65B0\u5EFA\u5BF9\u8BDD",
+        "provider.unavailable": "{name} \u672A\u5B89\u88C5\u6216\u4E0D\u53EF\u7528",
+        "provider.unknown": "\u672A\u77E5 Agent\uFF1A{id}",
+        "provider.timeout": "\u68C0\u6D4B\u8D85\u65F6",
+        "err.projectMissing": "\u9879\u76EE\u4E0D\u5B58\u5728",
+        "err.threadMissing": "\u5BF9\u8BDD\u4E0D\u5B58\u5728",
+        "err.dirMissing": "\u76EE\u5F55\u4E0D\u5B58\u5728\u6216\u4E0D\u662F\u6587\u4EF6\u5939",
+        "err.projectDirGone": "\u9879\u76EE\u76EE\u5F55\u5DF2\u4E0D\u5B58\u5728",
+        "err.terminalMissing": "\u7EC8\u7AEF\u4E0D\u5B58\u5728",
+        "err.noManager": "\u4F1A\u8BDD\u7BA1\u7406\u5668\u672A\u542F\u52A8",
+        "err.badParams": "\u53C2\u6570\u4E0D\u5BF9\uFF1A{detail}",
+        "export.me": "\u6211",
+        "export.steered": "\uFF08\u63D2\u8BDD\uFF09",
+        "export.reasoning": "\u601D\u8003",
+        "export.plan": "\u8BA1\u5212",
+        "export.todo": "\u5F85\u529E",
+        "err.requestGone": "\u6388\u6743/\u63D0\u95EE\u4E0D\u5B58\u5728\u6216\u5DF2\u56DE\u5E94",
+        "err.badOption": "optionId \u975E\u6CD5\uFF1A{id}",
+        "err.cursorOnly": "\u4EC5 Cursor \u5BF9\u8BDD\u652F\u6301\u8BE5\u9009\u9879",
+        "err.busySwitch": "\u5BF9\u8BDD\u8FD0\u884C\u4E2D\uFF0C\u4E0D\u80FD\u66F4\u6362 Agent",
+        "err.hasMessages": "\u5DF2\u6709\u6D88\u606F\uFF0C\u4E0D\u80FD\u66F4\u6362 Agent",
+        "tool.read": "\u8BFB\u53D6 {x}",
+        "tool.edit": "\u7F16\u8F91 {x}",
+        "tool.multiEdit": "\u7F16\u8F91 {x}\uFF08{n} \u5904\uFF09",
+        "tool.overwrite": "\u8986\u76D6 {x}",
+        "tool.create": "\u65B0\u5EFA {x}",
+        "tool.notebook": "\u7F16\u8F91\u7B14\u8BB0\u672C {x}",
+        "tool.run": "\u8FD0\u884C {x}",
+        "tool.output": "\u67E5\u770B\u8F93\u51FA {x}",
+        "tool.kill": "\u7ED3\u675F\u8FDB\u7A0B {x}",
+        "tool.grep": '\u641C\u7D22 "{x}"',
+        "tool.glob": "\u67E5\u627E {x}",
+        "tool.fetch": "\u6253\u5F00 {x}",
+        "tool.webSearch": '\u641C\u7D22\u7F51\u9875 "{x}"',
+        "tool.todo": "\u66F4\u65B0\u5F85\u529E\uFF08{done}/{n}\uFF09",
+        "tool.task": "\u5B50\u4EFB\u52A1\uFF1A{x}",
+        "tool.generic": "\u5DE5\u5177",
+        "tool.editFiles": "\u4FEE\u6539 {n} \u4E2A\u6587\u4EF6",
+        "tool.needsApproval": "\u9700\u8981\u6388\u6743",
+        "perm.editFiles": "\u4FEE\u6539\u6587\u4EF6",
+        "perm.allow": "\u5141\u8BB8",
+        "perm.allowSession": "\u672C\u5BF9\u8BDD\u90FD\u5141\u8BB8",
+        "perm.deny": "\u62D2\u7EDD",
+        "perm.plan": "Agent \u63D0\u4EA4\u4E86\u8BA1\u5212",
+        "perm.implement": "\u5B9E\u65BD",
+        "http.internal": "\u670D\u52A1\u5185\u90E8\u9519\u8BEF",
+        "http.badOrigin": "\u6765\u6E90\u4E0D\u5141\u8BB8",
+        "http.badPreflight": "\u9884\u68C0\u4E0D\u5141\u8BB8",
+        "http.badToken": "\u4EE4\u724C\u65E0\u6548",
+        "http.noAttachment": "\u9644\u4EF6\u4E0D\u5B58\u5728",
+        "http.method": "\u65B9\u6CD5\u4E0D\u5141\u8BB8",
+        "http.noApp": "app \u8FD8\u6CA1\u6784\u5EFA\uFF08\u7F3A app/index.html\uFF09",
+        "http.badPath": "\u8DEF\u5F84\u4E0D\u5408\u6CD5",
+        "http.pathDenied": "\u8DEF\u5F84\u4E0D\u5141\u8BB8",
+        "http.noFile": "\u6587\u4EF6\u4E0D\u5B58\u5728",
+        "http.badType": "\u4E0D\u652F\u6301\u7684\u6587\u4EF6\u7C7B\u578B",
+        "http.tooLarge": "\u6587\u4EF6\u592A\u5927\uFF08\u4E0A\u9650 50MB\uFF09",
+        "http.noRoute": "\u63A5\u53E3\u4E0D\u5B58\u5728",
+        "codex.error": "Codex \u9519\u8BEF",
+        "codex.closed": "\u4F1A\u8BDD\u5DF2\u5173\u95ED",
+        "codex.noTurnSteer": "\u5F53\u524D\u8F6E\u6B21\u8FD8\u6CA1\u5F00\u59CB\uFF0C\u65E0\u6CD5\u63D2\u8BDD",
+        "acp.exited": "{name} \u8FDB\u7A0B\u9000\u51FA ({code})",
+        "notice.apiRetry": "API \u91CD\u8BD5\u4E2D\uFF08\u7B2C {n} \u6B21\uFF09",
+        "notice.compacted": "\u4E0A\u4E0B\u6587\u5DF2\u538B\u7F29",
+        "term.max": "\u6BCF\u4E2A\u9879\u76EE\u6700\u591A {n} \u4E2A\u7EC8\u7AEF",
+        "term.title": "\u7EC8\u7AEF {n}",
+        "stub.planned": "\u8BE5 Agent \u5C1A\u672A\u5728 Agent Console \u63A5\u5165\uFF0C\u656C\u8BF7\u671F\u5F85",
+        "stub.unverified": "\u5DF2\u68C0\u6D4B\u5230 CLI\uFF0C\u4F1A\u8BDD\u9A71\u52A8\u5C1A\u672A\u5B8C\u5168\u9A8C\u8BC1",
+        "stub.notFound": "\u672A\u627E\u5230 {bin}",
+        "history.untitled": "\uFF08\u65E0\u6807\u9898\uFF09",
+        "history.toolCall": "\uFF08\u5386\u53F2\uFF09\u8C03\u7528 {name}",
+        "fs.pathDenied": "\u8DEF\u5F84\u4E0D\u5141\u8BB8",
+        "fs.dirMissing": "\u76EE\u5F55\u4E0D\u5B58\u5728",
+        "fs.dirUnreadable": "\u65E0\u6CD5\u8BFB\u53D6\u76EE\u5F55",
+        "fs.fileMissing": "\u6587\u4EF6\u4E0D\u5B58\u5728",
+        "fs.notFile": "\u4E0D\u662F\u6587\u4EF6",
+        "fs.unreadable": "\u65E0\u6CD5\u8BFB\u53D6",
+        "git.missing": "\u627E\u4E0D\u5230 git\uFF08\u8BF7\u5148\u5B89\u88C5 git \u5E76\u52A0\u5165 PATH\uFF09",
+        "git.binary": "\u4E8C\u8FDB\u5236\u6216\u65E0\u6CD5\u8BFB\u53D6"
+      },
+      en: {
+        "thread.defaultTitle": "New chat",
+        "notice.daemonRestart": "Daemon restarted \u2014 this turn was interrupted",
+        "notice.sessionStartFailed": "Session start failed: {detail}",
+        "notice.sendFailed": "Send failed: {detail}",
+        "notice.effortNextTurn": "Reasoning effort saved \u2014 takes effect on the next turn",
+        "notice.effortResetOnModel": "This model does not support that effort level; reset to Default",
+        "turn.agentExit": "Agent process exited unexpectedly",
+        "attachment.missing": "Attachment missing or expired ({ref}) \u2014 upload again",
+        "notice.acpImageByPath": "{agent} can't see images directly (its ACP initialize doesn't advertise image input); sent the image file path instead: {paths}",
+        "notice.acpImageByPathSwitched": "{agent} was started on another model and takes image blocks only for that one, so the image went as its file path (it opens it with read_image when this model sees images): {paths}",
+        "notice.acpSessionNotRestored": "{agent} can't restore the previous conversation (its ACP advertises neither session/load nor session/resume); started a new one \u2014 prior context won't come back.",
+        "notice.attachmentIssue": "Attachment issue: {detail}",
+        "claude.notFound": "claude was not found ({detail}). Claude Code is not bundled with this plugin; install it first: {hint}",
+        "claude.startFailed": "Could not start claude: {detail}",
+        "claude.exited": "claude exited unexpectedly ({code})",
+        "claude.notRunning": "claude is not running; the message was not sent",
+        "claude.closed": "The session is closed",
+        "export.defaultModel": "Default",
+        "bin.notOnPath": "{name} was not found on PATH",
+        "bin.or": " or ",
+        "launch.notFound": "Custom executable not found: {cmd} (use an absolute path or a command name on PATH)",
+        "codex.notFound": "codex was not found ({detail}). Install it first: {hint}",
+        "provider.disabled": "Disabled in Settings",
+        "provider.planned": "Not supported yet",
+        "provider.disabledNamed": "{name} is disabled in Settings",
+        "provider.plannedNamed": "{name} is not supported yet; it can't start new conversations",
+        "provider.unavailable": "{name} is not installed or not available",
+        "provider.unknown": "Unknown agent: {id}",
+        "provider.timeout": "Detection timed out",
+        "err.projectMissing": "Project not found",
+        "err.threadMissing": "Conversation not found",
+        "err.dirMissing": "The folder does not exist or is not a folder",
+        "err.projectDirGone": "The project folder no longer exists",
+        "err.terminalMissing": "Terminal not found",
+        "err.noManager": "The session manager is not running",
+        "err.badParams": "Invalid parameters: {detail}",
+        "export.me": "Me",
+        "export.steered": " (steer)",
+        "export.reasoning": "Reasoning",
+        "export.plan": "Plan",
+        "export.todo": "Todos",
+        "err.requestGone": "That approval or question no longer exists or was already answered",
+        "err.badOption": "Invalid optionId: {id}",
+        "err.cursorOnly": "Only Cursor conversations support this option",
+        "err.busySwitch": "The conversation is running; the agent can't be changed",
+        "err.hasMessages": "The conversation already has messages; the agent can't be changed",
+        "tool.read": "Read {x}",
+        "tool.edit": "Edit {x}",
+        "tool.multiEdit": "Edit {x} ({n} edits)",
+        "tool.overwrite": "Overwrite {x}",
+        "tool.create": "Create {x}",
+        "tool.notebook": "Edit notebook {x}",
+        "tool.run": "Run {x}",
+        "tool.output": "Read output {x}",
+        "tool.kill": "Stop process {x}",
+        "tool.grep": 'Search "{x}"',
+        "tool.glob": "Find {x}",
+        "tool.fetch": "Open {x}",
+        "tool.webSearch": 'Web search "{x}"',
+        "tool.todo": "Update todos ({done}/{n})",
+        "tool.task": "Subtask: {x}",
+        "tool.generic": "Tool",
+        "tool.editFiles": "Edit {n} file(s)",
+        "tool.needsApproval": "Needs approval",
+        "perm.editFiles": "Edit files",
+        "perm.allow": "Allow",
+        "perm.allowSession": "Allow for this chat",
+        "perm.deny": "Deny",
+        "perm.plan": "The agent proposed a plan",
+        "perm.implement": "Implement",
+        "http.internal": "Internal error",
+        "http.badOrigin": "Origin not allowed",
+        "http.badPreflight": "Preflight not allowed",
+        "http.badToken": "Invalid token",
+        "http.noAttachment": "Attachment not found",
+        "http.method": "Method not allowed",
+        "http.noApp": "The app is not built (app/index.html is missing)",
+        "http.badPath": "Invalid path",
+        "http.pathDenied": "Path not allowed",
+        "http.noFile": "File not found",
+        "http.badType": "Unsupported file type",
+        "http.tooLarge": "File too large (50 MB max)",
+        "http.noRoute": "No such endpoint",
+        "codex.error": "Codex error",
+        "codex.closed": "The session is closed",
+        "codex.noTurnSteer": "The turn hasn't started yet; can't steer",
+        "acp.exited": "{name} exited ({code})",
+        "notice.apiRetry": "Retrying the API (attempt {n})",
+        "notice.compacted": "Context compacted",
+        "term.max": "At most {n} terminals per project",
+        "term.title": "Terminal {n}",
+        "stub.planned": "This agent isn't supported in Agent Console yet",
+        "stub.unverified": "CLI found; its session driver isn't fully verified yet",
+        "stub.notFound": "{bin} was not found",
+        "history.untitled": "(untitled)",
+        "history.toolCall": "(history) called {name}",
+        "fs.pathDenied": "Path not allowed",
+        "fs.dirMissing": "Folder not found",
+        "fs.dirUnreadable": "Can't read the folder",
+        "fs.fileMissing": "File not found",
+        "fs.notFile": "Not a file",
+        "fs.unreadable": "Can't read the file",
+        "git.missing": "git was not found (install git and add it to PATH)",
+        "git.binary": "Binary or unreadable"
+      }
+    };
+  }
+});
+
 // daemon/src/util/paths.ts
 import { realpathSync, existsSync as existsSync3 } from "node:fs";
 import { posix, sep, win32 } from "node:path";
@@ -94,8 +335,8 @@ function normPath(p, platform = process.platform) {
 function samePath(a, b) {
   return normPath(a) === normPath(b);
 }
-function validId(id) {
-  return typeof id === "string" && ID_RE.test(id);
+function validId(id2) {
+  return typeof id2 === "string" && ID_RE.test(id2);
 }
 var ID_RE;
 var init_paths = __esm({
@@ -394,9 +635,9 @@ async function scriptPerm(ctx) {
     kind: "tool",
     detail: { command: "npm test", cwd: ".", toolName: "Bash" },
     options: [
-      { id: "accept", label: "\u5141\u8BB8", kind: "allow_once" },
-      { id: "acceptForSession", label: "\u672C\u5BF9\u8BDD\u90FD\u5141\u8BB8", kind: "allow_always" },
-      { id: "decline", label: "\u62D2\u7EDD", kind: "reject_once" }
+      { id: "accept", label: tr("perm.allow"), kind: "allow_once" },
+      { id: "acceptForSession", label: tr("perm.allowSession"), kind: "allow_always" },
+      { id: "decline", label: tr("perm.deny"), kind: "reject_once" }
     ]
   });
   const ans = await ctx.waitFor(requestId);
@@ -431,7 +672,7 @@ async function scriptPlan(ctx) {
     detail: { markdown: "\u89C1\u4E0A\u65B9\u8BA1\u5212" },
     options: [
       { id: "implement", label: "\u5F00\u59CB\u5B9E\u65BD", kind: "allow_once" },
-      { id: "reject", label: "\u62D2\u7EDD", kind: "reject_once" }
+      { id: "reject", label: tr("perm.deny"), kind: "reject_once" }
     ]
   });
   const ans = await ctx.waitFor(requestId);
@@ -475,10 +716,10 @@ async function scriptAsk(ctx) {
 async function scriptSlow(ctx) {
   const { emit } = ctx;
   for (let i = 1; i <= 6; i++) {
-    const id = "s" + i;
-    emit({ type: "tool_call", itemId: id, kind: "bash", title: `\u6B65\u9AA4 ${i}/6`, status: "running", input: { command: `step ${i}` } });
+    const id2 = "s" + i;
+    emit({ type: "tool_call", itemId: id2, kind: "bash", title: `\u6B65\u9AA4 ${i}/6`, status: "running", input: { command: `step ${i}` } });
     if (await sleepAbortable(2e3, ctx)) return;
-    emit({ type: "tool_call", itemId: id, kind: "bash", title: `\u6B65\u9AA4 ${i}/6`, status: "ok", output: `\u6B65\u9AA4 ${i} \u5B8C\u6210`, durationMs: 2e3 });
+    emit({ type: "tool_call", itemId: id2, kind: "bash", title: `\u6B65\u9AA4 ${i}/6`, status: "ok", output: `\u6B65\u9AA4 ${i} \u5B8C\u6210`, durationMs: 2e3 });
   }
   emit({ type: "assistant_message", itemId: "sm", text: "6 \u4E2A\u6B65\u9AA4\u5168\u90E8\u8DD1\u5B8C\u3002" });
 }
@@ -572,6 +813,7 @@ function createMockProvider() {
 var mockCapabilities, rid, sleep, MockCrash, MockSession, mockProviderMetrics;
 var init_mock = __esm({
   "daemon/src/providers/mock.ts"() {
+    init_i18n();
     init_queue();
     init_diff();
     init_slash();
@@ -639,7 +881,7 @@ var init_mock = __esm({
             if (e.itemId) e.itemId = p + e.itemId;
             this.emit(ev);
           },
-          waitFor: (id) => this.waitFor(id),
+          waitFor: (id2) => this.waitFor(id2),
           interrupted: () => this.interruptFlag || this.closed,
           steerText: () => this.steered.join("\uFF1B"),
           replyPrefix: () => this.resumePrefix(),
@@ -680,9 +922,9 @@ var init_mock = __esm({
       }
       async interrupt() {
         this.interruptFlag = true;
-        for (const [id, resolve2] of this.pendingReq) {
+        for (const [id2, resolve2] of this.pendingReq) {
           resolve2({ cancelled: true });
-          this.pendingReq.delete(id);
+          this.pendingReq.delete(id2);
         }
         await sleep(120);
       }
@@ -692,8 +934,8 @@ var init_mock = __esm({
       async setModel(model) {
         this.o.model = model;
       }
-      async setMode(mode) {
-        this.o.mode = mode;
+      async setMode(mode2) {
+        this.o.mode = mode2;
       }
       async setEffort(effort) {
         this.o.effort = effort;
@@ -924,7 +1166,7 @@ async function resolveFirstBin(names) {
     if (r.ok) return { ...r, binName };
   }
   const label = uniq[0] ?? "cli";
-  return { ok: false, reason: `PATH \u91CC\u627E\u4E0D\u5230 ${uniq.length > 1 ? uniq.join(" \u6216 ") : label}` };
+  return { ok: false, reason: tr("bin.notOnPath", { name: uniq.length > 1 ? uniq.join(tr("bin.or")) : label }) };
 }
 function clearBinCache(name) {
   if (name) cache.delete(name);
@@ -939,7 +1181,7 @@ async function resolveBinWith(name, deps = {}) {
   const P = win ? path2.win32 : path2.posix;
   const exists = deps.exists ?? existsSync4;
   const hits = (deps.find ?? which)(name);
-  if (!hits.length) return { ok: false, reason: `PATH \u91CC\u627E\u4E0D\u5230 ${name}` };
+  if (!hits.length) return { ok: false, reason: tr("bin.notOnPath", { name }) };
   const first = hits[0];
   if (!win) return { ok: true, cmd: first, prefixArgs: [], display: first, via: "path" };
   const ext = P.extname(first).toLowerCase();
@@ -1031,6 +1273,7 @@ var IS_WIN, cache, CACHE_MS, CMD_META, liveTrees, exitHookInstalled;
 var init_bin = __esm({
   "daemon/src/util/bin.ts"() {
     init_pathscan();
+    init_i18n();
     IS_WIN = process.platform === "win32";
     cache = /* @__PURE__ */ new Map();
     CACHE_MS = 60 * 1e3;
@@ -1058,44 +1301,44 @@ function callInfo(name, input = {}, cwd = "") {
   const file = String(input.file_path ?? input.path ?? input.notebook_path ?? "");
   switch (t) {
     case "Read":
-      return f("read", `\u8BFB\u53D6 ${relPath(file, cwd)}`, { path: file, offset: input.offset, limit: input.limit });
+      return f("read", tr("tool.read", { x: relPath(file, cwd) }), { path: file, offset: input.offset, limit: input.limit });
     case "Edit":
-      return f("edit", `\u7F16\u8F91 ${relPath(file, cwd)}`, { path: file, old: input.old_string, new: input.new_string });
+      return f("edit", tr("tool.edit", { x: relPath(file, cwd) }), { path: file, old: input.old_string, new: input.new_string });
     case "MultiEdit":
-      return f("edit", `\u7F16\u8F91 ${relPath(file, cwd)}\uFF08${(input.edits || []).length} \u5904\uFF09`, { path: file, edits: input.edits ?? [] });
+      return f("edit", tr("tool.multiEdit", { x: relPath(file, cwd), n: (input.edits || []).length }), { path: file, edits: input.edits ?? [] });
     case "Write":
-      return f("write", `${input._exists ? "\u8986\u76D6" : "\u65B0\u5EFA"} ${relPath(file, cwd)}`, { path: file, content: input.content });
+      return f("write", tr(input._exists ? "tool.overwrite" : "tool.create", { x: relPath(file, cwd) }), { path: file, content: input.content });
     case "NotebookEdit":
-      return f("edit", `\u7F16\u8F91\u7B14\u8BB0\u672C ${relPath(String(input.notebook_path || file), cwd)}`, { path: input.notebook_path ?? file });
+      return f("edit", tr("tool.notebook", { x: relPath(String(input.notebook_path || file), cwd) }), { path: input.notebook_path ?? file });
     case "Bash":
-      return f("bash", `\u8FD0\u884C ${trunc(String(input.command ?? ""))}`, { command: input.command, description: input.description });
+      return f("bash", tr("tool.run", { x: trunc(String(input.command ?? "")) }), { command: input.command, description: input.description });
     case "BashOutput":
-      return f("bash", `\u67E5\u770B\u8F93\u51FA ${String(input.bash_id ?? "")}`, { bashId: input.bash_id });
+      return f("bash", tr("tool.output", { x: String(input.bash_id ?? "") }), { bashId: input.bash_id });
     case "KillShell":
-      return f("bash", `\u7ED3\u675F\u8FDB\u7A0B ${String(input.shell_id ?? "")}`, { shellId: input.shell_id });
+      return f("bash", tr("tool.kill", { x: String(input.shell_id ?? "") }), { shellId: input.shell_id });
     case "Grep":
-      return f("search", `\u641C\u7D22 "${trunc(String(input.pattern ?? ""), 40)}"`, { pattern: input.pattern, path: input.path, glob: input.glob });
+      return f("search", tr("tool.grep", { x: trunc(String(input.pattern ?? ""), 40) }), { pattern: input.pattern, path: input.path, glob: input.glob });
     case "Glob":
     case "LS":
-      return f("glob", `\u67E5\u627E ${trunc(String(input.pattern ?? input.path ?? ""), 40)}`, { pattern: input.pattern, path: input.path });
+      return f("glob", tr("tool.glob", { x: trunc(String(input.pattern ?? input.path ?? ""), 40) }), { pattern: input.pattern, path: input.path });
     case "WebFetch":
-      return f("web", `\u6253\u5F00 ${hostOf(String(input.url ?? ""))}`, { url: input.url });
+      return f("web", tr("tool.fetch", { x: hostOf(String(input.url ?? "")) }), { url: input.url });
     case "WebSearch":
-      return f("web", `\u641C\u7D22\u7F51\u9875 "${trunc(String(input.query ?? ""), 40)}"`, { query: input.query });
+      return f("web", tr("tool.webSearch", { x: trunc(String(input.query ?? ""), 40) }), { query: input.query });
     case "TodoWrite": {
       const items = todoItems(input.todos ?? []);
       const done = items.filter((x) => x.status === "done").length;
-      return f("todo", `\u66F4\u65B0\u5F85\u529E\uFF08${done}/${items.length}\uFF09`, { items });
+      return f("todo", tr("tool.todo", { done, n: items.length }), { items });
     }
     case "Task":
     case "Agent":
-      return f("task", `\u5B50\u4EFB\u52A1\uFF1A${trunc(String(input.description ?? input.prompt ?? ""), 40)}`, { description: input.description });
+      return f("task", tr("tool.task", { x: trunc(String(input.description ?? input.prompt ?? ""), 40) }), { description: input.description });
     default:
       break;
   }
   const m = /^mcp__([^_]+)__(.+)$/.exec(t);
   if (m) return f("mcp", `${m[1]} \xB7 ${m[2]}`, { server: m[1], tool: m[2] });
-  return f("other", t || "\u5DE5\u5177", {});
+  return f("other", t || tr("tool.generic"), {});
 }
 function hostOf(url) {
   try {
@@ -1113,6 +1356,7 @@ function todoItems(todos = []) {
 var MAX_CMD, trunc;
 var init_kinds = __esm({
   "daemon/src/agents/kinds.ts"() {
+    init_i18n();
     MAX_CMD = 80;
     trunc = (s, n = MAX_CMD) => s.length > n ? s.slice(0, n - 1) + "\u2026" : s;
   }
@@ -1126,9 +1370,14 @@ function itemIdFor(st, blockIdx, blkType) {
   const k = blockKind(blkType);
   const n = st.typeSeq.get(k) ?? 0;
   st.typeSeq.set(k, n + 1);
-  const id = `${st.msgId}:${k}${n}`;
-  st.itemIdByBlock.set(blockIdx, id);
-  return id;
+  const id2 = `${st.msgId}:${k}${n}`;
+  st.itemIdByBlock.set(blockIdx, id2);
+  return id2;
+}
+function costIsReal(modelUsage) {
+  if (!modelUsage || typeof modelUsage !== "object") return true;
+  const names = Object.keys(modelUsage);
+  return names.every((n) => /claude|opus|sonnet|haiku/i.test(n));
 }
 function mapSdkMessage(m, st, cwd) {
   const out = [];
@@ -1140,10 +1389,10 @@ function mapSdkMessage(m, st, cwd) {
       if (sid) out.push({ type: "provider_session_id", id: sid });
     }
     if (r.subtype === "api_retry") {
-      out.push({ type: "notice", level: "warn", message: `API \u91CD\u8BD5\u4E2D\uFF08\u7B2C ${r.attempt ?? "?"} \u6B21\uFF09` });
+      out.push({ type: "notice", level: "warn", message: tr("notice.apiRetry", { n: String(r.attempt ?? "?") }) });
     }
     if (r.subtype === "compact_boundary") {
-      out.push({ type: "notice", level: "info", message: "\u4E0A\u4E0B\u6587\u5DF2\u538B\u7F29" });
+      out.push({ type: "notice", level: "info", message: tr("notice.compacted") });
     }
     return out;
   }
@@ -1227,7 +1476,7 @@ function mapSdkMessage(m, st, cwd) {
       inputTokens: num("input_tokens"),
       outputTokens: num("output_tokens"),
       cacheReadTokens: num("cache_read_input_tokens"),
-      costUsd: typeof r.total_cost_usd === "number" ? r.total_cost_usd : 0
+      costUsd: typeof r.total_cost_usd === "number" && costIsReal(r.modelUsage) ? r.total_cost_usd : 0
     });
     const subtype = str(r.subtype) ?? "";
     const interrupted = st.sawInterrupt || /interrupt/i.test(subtype);
@@ -1249,7 +1498,7 @@ function mapSdkMessage(m, st, cwd) {
 function mapToolUse(blk, cwd) {
   const input = rec(blk.input);
   const name = str(blk.name) ?? "tool";
-  const id = str(blk.id) ?? "";
+  const id2 = str(blk.id) ?? "";
   const info = callInfo(name, { ...input, _exists: true }, cwd);
   let detail = info.detail;
   if (info.kind === "edit" && (input.old_string !== void 0 || Array.isArray(input.edits))) {
@@ -1262,7 +1511,7 @@ function mapToolUse(blk, cwd) {
   const out = [
     {
       type: "tool_call",
-      itemId: id,
+      itemId: id2,
       kind: info.kind,
       title: info.title,
       status: "running",
@@ -1285,78 +1534,13 @@ var init_map = __esm({
   "daemon/src/providers/claude/map.ts"() {
     init_kinds();
     init_diff();
+    init_i18n();
     MAX_OUTPUT = 20 * 1024;
     ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07/g;
     clean = (s) => String(s ?? "").replace(ANSI_RE, "");
     blockKind = (t) => t === "thinking" || t === "redacted_thinking" ? "k" : t === "text" ? "t" : "x";
     rec = (v) => v && typeof v === "object" ? v : {};
     str = (v) => typeof v === "string" ? v : void 0;
-  }
-});
-
-// daemon/src/util/i18n.ts
-function normalizeLang(raw) {
-  const s = String(raw ?? "").trim().toLowerCase();
-  if (!s) return "zh";
-  if (s === "zh" || s.startsWith("zh-")) return "zh";
-  return "en";
-}
-function setAppLocale(lang) {
-  locale = normalizeLang(lang);
-}
-function tr(key, params) {
-  let s = dict[locale][key] ?? dict.en[key] ?? key;
-  if (params) {
-    for (const [k, v] of Object.entries(params)) s = s.replaceAll(`{${k}}`, String(v));
-  }
-  return s;
-}
-var locale, dict;
-var init_i18n = __esm({
-  "daemon/src/util/i18n.ts"() {
-    locale = "zh";
-    dict = {
-      zh: {
-        "thread.defaultTitle": "\u65B0\u5BF9\u8BDD",
-        "notice.daemonRestart": "\u540E\u53F0\u5DF2\u91CD\u542F\uFF0C\u672C\u8F6E\u5DF2\u4E2D\u65AD",
-        "notice.sessionStartFailed": "\u4F1A\u8BDD\u542F\u52A8\u5931\u8D25\uFF1A{detail}",
-        "notice.sendFailed": "\u53D1\u9001\u5931\u8D25\uFF1A{detail}",
-        "notice.effortNextTurn": "\u601D\u8003\u5F3A\u5EA6\u5DF2\u4FDD\u5B58\uFF0C\u5C06\u5728\u4E0B\u4E00\u8F6E\u751F\u6548",
-        "notice.effortResetOnModel": "\u5F53\u524D\u6A21\u578B\u4E0D\u652F\u6301\u8BE5\u601D\u8003\u5F3A\u5EA6\uFF0C\u5DF2\u6062\u590D\u4E3A Default",
-        "turn.agentExit": "Agent \u8FDB\u7A0B\u610F\u5916\u9000\u51FA",
-        "attachment.missing": "\u9644\u4EF6\u4E0D\u5B58\u5728\u6216\u5DF2\u5931\u6548\uFF08{ref}\uFF09\uFF0C\u8BF7\u91CD\u65B0\u4E0A\u4F20",
-        "notice.acpImageByPath": "{agent} \u4E0D\u80FD\u76F4\u63A5\u770B\u56FE\u7247\uFF08\u5B83\u7684 ACP \u521D\u59CB\u5316\u672A\u58F0\u660E\u652F\u6301\u56FE\u7247\u8F93\u5165\uFF09\uFF0C\u5DF2\u6539\u4E3A\u53D1\u9001\u56FE\u7247\u7684\u6587\u4EF6\u8DEF\u5F84\uFF1A{paths}",
-        "notice.acpImageByPathSwitched": "{agent} \u662F\u5728\u53E6\u4E00\u4E2A\u6A21\u578B\u4E0A\u542F\u52A8\u7684\uFF0C\u53EA\u5BF9\u90A3\u4E2A\u6A21\u578B\u63A5\u6536\u56FE\u7247\uFF0C\u8FD9\u6B21\u6539\u4E3A\u53D1\u9001\u56FE\u7247\u7684\u6587\u4EF6\u8DEF\u5F84\uFF08\u5F53\u524D\u6A21\u578B\u80FD\u770B\u56FE\u65F6\u5B83\u4F1A\u7528 read_image \u6253\u5F00\uFF09\uFF1A{paths}",
-        "notice.acpSessionNotRestored": "{agent} \u4E0D\u80FD\u6062\u590D\u4E0A\u4E00\u8F6E\u5BF9\u8BDD\uFF08\u5B83\u7684 ACP \u65E2\u4E0D\u652F\u6301 session/load \u4E5F\u4E0D\u652F\u6301 session/resume\uFF09\uFF0C\u5DF2\u65B0\u5F00\u4E00\u8F6E\uFF1B\u5148\u524D\u7684\u4E0A\u4E0B\u6587\u4E0D\u4F1A\u5E26\u56DE\u3002",
-        "notice.attachmentIssue": "\u9644\u4EF6\u95EE\u9898\uFF1A{detail}",
-        "claude.notFound": "\u627E\u4E0D\u5230 claude\uFF08{detail}\uFF09\u3002\u672C\u63D2\u4EF6\u4E0D\u9644\u5E26 Claude Code\uFF0C\u8BF7\u5148\u5B89\u88C5\uFF1A{hint}",
-        "claude.startFailed": "\u65E0\u6CD5\u542F\u52A8 claude\uFF1A{detail}",
-        "claude.exited": "claude \u8FDB\u7A0B\u610F\u5916\u9000\u51FA\uFF08{code}\uFF09",
-        "claude.notRunning": "claude \u6CA1\u6709\u5728\u8FD0\u884C\uFF0C\u6D88\u606F\u672A\u53D1\u51FA",
-        "claude.closed": "\u4F1A\u8BDD\u5DF2\u5173\u95ED",
-        "export.defaultModel": "\u9ED8\u8BA4"
-      },
-      en: {
-        "thread.defaultTitle": "New chat",
-        "notice.daemonRestart": "Daemon restarted \u2014 this turn was interrupted",
-        "notice.sessionStartFailed": "Session start failed: {detail}",
-        "notice.sendFailed": "Send failed: {detail}",
-        "notice.effortNextTurn": "Reasoning effort saved \u2014 takes effect on the next turn",
-        "notice.effortResetOnModel": "This model does not support that effort level; reset to Default",
-        "turn.agentExit": "Agent process exited unexpectedly",
-        "attachment.missing": "Attachment missing or expired ({ref}) \u2014 upload again",
-        "notice.acpImageByPath": "{agent} can't see images directly (its ACP initialize doesn't advertise image input); sent the image file path instead: {paths}",
-        "notice.acpImageByPathSwitched": "{agent} was started on another model and takes image blocks only for that one, so the image went as its file path (it opens it with read_image when this model sees images): {paths}",
-        "notice.acpSessionNotRestored": "{agent} can't restore the previous conversation (its ACP advertises neither session/load nor session/resume); started a new one \u2014 prior context won't come back.",
-        "notice.attachmentIssue": "Attachment issue: {detail}",
-        "claude.notFound": "claude was not found ({detail}). Claude Code is not bundled with this plugin; install it first: {hint}",
-        "claude.startFailed": "Could not start claude: {detail}",
-        "claude.exited": "claude exited unexpectedly ({code})",
-        "claude.notRunning": "claude is not running; the message was not sent",
-        "claude.closed": "The session is closed",
-        "export.defaultModel": "Default"
-      }
-    };
   }
 });
 
@@ -1484,6 +1668,32 @@ var init_content = __esm({
   }
 });
 
+// daemon/src/providers/launch.ts
+function launchFromSettings(settings, providerId) {
+  const c = settings.providerCommand?.[providerId];
+  const cmd = typeof c?.executable === "string" ? c.executable.trim() : "";
+  if (!cmd) return void 0;
+  const args = Array.isArray(c?.args) ? c.args.filter((a) => typeof a === "string") : [];
+  return { cmd, args };
+}
+function launchArgv(builtin, launch) {
+  return [...launch?.prefixArgs ?? [], ...builtin, ...launch?.args ?? []];
+}
+async function resolveLaunch(launch) {
+  const r = await resolveBin(launch.cmd);
+  if (r.ok) return r;
+  return { ok: false, reason: tr("launch.notFound", { cmd: launch.cmd }) };
+}
+function launchKey(launch) {
+  return launch ? `${launch.cmd}\0${(launch.prefixArgs ?? []).join("\0")}\0\0${(launch.args ?? []).join("\0")}` : "";
+}
+var init_launch = __esm({
+  "daemon/src/providers/launch.ts"() {
+    init_bin();
+    init_i18n();
+  }
+});
+
 // daemon/src/providers/claude/cli.ts
 function claudeArgs(o) {
   const args = [
@@ -1514,6 +1724,7 @@ function claudeArgs(o) {
 var SAFE_ARG, ClaudeCli;
 var init_cli = __esm({
   "daemon/src/providers/claude/cli.ts"() {
+    init_launch();
     init_bin();
     init_queue();
     SAFE_ARG = /^[A-Za-z0-9][A-Za-z0-9._:\[\]\/@+-]{0,199}$/;
@@ -1521,7 +1732,7 @@ var init_cli = __esm({
       constructor(o, canUseTool) {
         this.o = o;
         this.canUseTool = canUseTool;
-        const args = claudeArgs(o);
+        const args = launchArgv(claudeArgs(o), o.launch);
         this.child = spawnBin(o.bin, args, {
           cwd: o.cwd,
           env: { ...o.env ?? process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
@@ -1603,10 +1814,10 @@ var init_cli = __esm({
       onMessage(m) {
         if (m.type === "control_response") {
           const r = m.response ?? {};
-          const id = String(r.request_id ?? "");
-          const p = this.pending.get(id);
+          const id2 = String(r.request_id ?? "");
+          const p = this.pending.get(id2);
           if (!p) return;
-          this.pending.delete(id);
+          this.pending.delete(id2);
           if (p.timer) clearTimeout(p.timer);
           if (r.subtype === "success") p.resolve(r.response ?? {});
           else p.reject(new Error(String(r.error ?? "control request failed")));
@@ -1617,21 +1828,21 @@ var init_cli = __esm({
           return;
         }
         if (m.type === "control_cancel_request") {
-          const id = String(m.request_id ?? "");
-          this.cancels.get(id)?.abort();
-          this.cancels.delete(id);
+          const id2 = String(m.request_id ?? "");
+          this.cancels.get(id2)?.abort();
+          this.cancels.delete(id2);
           return;
         }
         if (m.type === "keep_alive") return;
         this.messages.push(m);
       }
-      async onControlRequest(id, req) {
+      async onControlRequest(id2, req) {
         if (req.subtype !== "can_use_tool") {
-          this.write({ type: "control_response", response: { subtype: "error", request_id: id, error: `Unsupported control request: ${String(req.subtype)}` } });
+          this.write({ type: "control_response", response: { subtype: "error", request_id: id2, error: `Unsupported control request: ${String(req.subtype)}` } });
           return;
         }
         const ac = new AbortController();
-        this.cancels.set(id, ac);
+        this.cancels.set(id2, ac);
         try {
           const decision = await this.canUseTool({
             toolName: String(req.tool_name ?? ""),
@@ -1639,12 +1850,12 @@ var init_cli = __esm({
             toolUseId: typeof req.tool_use_id === "string" ? req.tool_use_id : void 0,
             signal: ac.signal
           });
-          if (ac.signal.aborted && !this.cancels.has(id)) return;
-          this.write({ type: "control_response", response: { subtype: "success", request_id: id, response: decision } });
+          if (ac.signal.aborted && !this.cancels.has(id2)) return;
+          this.write({ type: "control_response", response: { subtype: "success", request_id: id2, response: decision } });
         } catch (e) {
-          this.write({ type: "control_response", response: { subtype: "error", request_id: id, error: String(e?.message ?? e) } });
+          this.write({ type: "control_response", response: { subtype: "error", request_id: id2, error: String(e?.message ?? e) } });
         } finally {
-          this.cancels.delete(id);
+          this.cancels.delete(id2);
         }
       }
       write(o) {
@@ -1659,15 +1870,15 @@ var init_cli = __esm({
       /** Send one control request and wait for its answer */
       request(request, timeoutMs = 1e4) {
         if (this.dead) return Promise.reject(new Error("claude is not running"));
-        const id = `ac_${++this.seq}_${Math.random().toString(36).slice(2, 8)}`;
+        const id2 = `ac_${++this.seq}_${Math.random().toString(36).slice(2, 8)}`;
         return new Promise((resolve2, reject) => {
           const p = { resolve: resolve2, reject };
           p.timer = setTimeout(() => {
-            if (this.pending.delete(id)) reject(new Error(`claude did not answer ${String(request.subtype)} in ${Math.round(timeoutMs / 1e3)} s`));
+            if (this.pending.delete(id2)) reject(new Error(`claude did not answer ${String(request.subtype)} in ${Math.round(timeoutMs / 1e3)} s`));
           }, timeoutMs);
-          this.pending.set(id, p);
-          if (!this.write({ type: "control_request", request_id: id, request })) {
-            this.pending.delete(id);
+          this.pending.set(id2, p);
+          if (!this.write({ type: "control_request", request_id: id2, request })) {
+            this.pending.delete(id2);
             clearTimeout(p.timer);
             reject(new Error("claude is not running"));
           }
@@ -1683,8 +1894,8 @@ var init_cli = __esm({
       setModel(model) {
         return this.request(model ? { subtype: "set_model", model } : { subtype: "set_model" });
       }
-      setPermissionMode(mode) {
-        return this.request({ subtype: "set_permission_mode", mode });
+      setPermissionMode(mode2) {
+        return this.request({ subtype: "set_permission_mode", mode: mode2 });
       }
       /** End stdin (the CLI finishes and exits), then end the process tree if it lingers */
       async close(graceMs = 2e3) {
@@ -1751,7 +1962,8 @@ var init_session = __esm({
             permissionMode: MODES.includes(this.o.mode) ? this.o.mode : "default",
             effort,
             resume: this.sessionId,
-            env: this.o.env
+            env: this.o.env,
+            launch: this.o.launch
           },
           (req) => this.canUseTool(req)
         );
@@ -1844,9 +2056,9 @@ var init_session = __esm({
           kind: "tool",
           detail,
           options: [
-            { id: "allow", label: "\u5141\u8BB8", kind: "allow_once" },
-            { id: "allow_always", label: "\u672C\u5BF9\u8BDD\u90FD\u5141\u8BB8", kind: "allow_always" },
-            { id: "deny", label: "\u62D2\u7EDD", kind: "reject_once" }
+            { id: "allow", label: tr("perm.allow"), kind: "allow_once" },
+            { id: "allow_always", label: tr("perm.allowSession"), kind: "allow_always" },
+            { id: "deny", label: tr("perm.deny"), kind: "reject_once" }
           ]
         });
         return new Promise((resolve2) => {
@@ -1854,14 +2066,14 @@ var init_session = __esm({
           signal.addEventListener("abort", () => {
             if (this.pending.delete(requestId)) {
               this.emit({ type: "permission_resolved", requestId, cancelled: true });
-              resolve2({ behavior: "deny", message: "\u5DF2\u53D6\u6D88", interrupt: true });
+              resolve2({ behavior: "deny", message: "Cancelled by the user", interrupt: true });
             }
           }, { once: true });
         });
       }
       toPermissionDecision(a, input) {
         if (a.cancelled || a.optionId === "deny") {
-          return { behavior: "deny", message: "\u7528\u6237\u62D2\u7EDD\u4E86\u6B64\u64CD\u4F5C", ...a.cancelled ? { interrupt: true } : {} };
+          return { behavior: "deny", message: "The user denied this action", ...a.cancelled ? { interrupt: true } : {} };
         }
         return { behavior: "allow", updatedInput: input };
       }
@@ -1873,12 +2085,12 @@ var init_session = __esm({
         this.emit({
           type: "permission_request",
           requestId,
-          title: "Agent \u63D0\u4EA4\u4E86\u8BA1\u5212",
+          title: tr("perm.plan"),
           kind: "plan",
           detail: { plan: planText },
           options: [
-            { id: "implement", label: "\u5B9E\u65BD", kind: "allow_once" },
-            { id: "reject", label: "\u62D2\u7EDD", kind: "reject_once" }
+            { id: "implement", label: tr("perm.implement"), kind: "allow_once" },
+            { id: "reject", label: tr("perm.deny"), kind: "reject_once" }
           ]
         });
         const answer = await new Promise((resolve2) => {
@@ -1891,7 +2103,7 @@ var init_session = __esm({
           }, { once: true });
         });
         if (answer.cancelled || answer.optionId === "reject") {
-          return { behavior: "deny", message: "\u7528\u6237\u62D2\u7EDD\u4E86\u8BA1\u5212\uFF0C\u8BF7\u6839\u636E\u53CD\u9988\u4FEE\u6539", ...answer.cancelled ? { interrupt: true } : {} };
+          return { behavior: "deny", message: "The user rejected the plan; revise it based on their feedback", ...answer.cancelled ? { interrupt: true } : {} };
         }
         try {
           await this.cli?.setPermissionMode("default");
@@ -1914,7 +2126,7 @@ var init_session = __esm({
           }, { once: true });
         });
         if (answer.cancelled) {
-          return { behavior: "deny", message: "\u7528\u6237\u53D6\u6D88\u4E86\u63D0\u95EE", interrupt: true };
+          return { behavior: "deny", message: "The user cancelled the question", interrupt: true };
         }
         const questions = input.questions ?? [];
         const normalized = {};
@@ -1935,8 +2147,8 @@ var init_session = __esm({
       }
       async interrupt() {
         this.st.sawInterrupt = true;
-        for (const [id, p] of this.pending) {
-          this.emit({ type: "permission_resolved", requestId: id, cancelled: true });
+        for (const [id2, p] of this.pending) {
+          this.emit({ type: "permission_resolved", requestId: id2, cancelled: true });
           p.resolve({ cancelled: true });
         }
         this.pending.clear();
@@ -1962,15 +2174,15 @@ var init_session = __esm({
           this.needsRestart = true;
         }
       }
-      async setMode(mode) {
-        this.o.mode = mode;
+      async setMode(mode2) {
+        this.o.mode = mode2;
         if (!this.cli?.alive) return;
-        if (mode === "bypassPermissions" && this.launchedMode !== "bypassPermissions") {
+        if (mode2 === "bypassPermissions" && this.launchedMode !== "bypassPermissions") {
           this.needsRestart = true;
           return;
         }
         try {
-          await this.cli.setPermissionMode(mode);
+          await this.cli.setPermissionMode(mode2);
         } catch (e) {
           log("warn", "claude set_permission_mode failed", { err: String(e) });
           this.needsRestart = true;
@@ -2085,7 +2297,7 @@ async function listClaudeHistory(cwd) {
       const s = await stat4(path3).catch(() => null);
       out.push({
         sessionId: f.replace(/\.jsonl$/, ""),
-        title: title || "\uFF08\u65E0\u6807\u9898\uFF09",
+        title: title || tr("history.untitled"),
         updatedAt: s ? Math.round(s.mtimeMs) : 0,
         messageCount: count
       });
@@ -2123,6 +2335,7 @@ var CLAUDE_ROOT, rec2, str2;
 var init_import = __esm({
   "daemon/src/history/import.ts"() {
     init_paths();
+    init_i18n();
     CLAUDE_ROOT = join6(homedir3(), ".claude", "projects");
     rec2 = (v) => v && typeof v === "object" ? v : {};
     str2 = (v) => typeof v === "string" ? v : void 0;
@@ -2151,16 +2364,18 @@ function runVersion(r, args, timeoutMs = 5e3) {
     });
   });
 }
-function createClaudeProvider() {
+function createClaudeProvider(opts = {}) {
+  const resolve2 = opts.resolve ?? resolveBin;
+  const resolveCustom = opts.resolve ? (l) => opts.resolve(l.cmd) : resolveLaunch;
   return {
     id: "claude",
     name: "Claude Code",
     capabilities: claudeCapabilities,
-    async detect() {
-      const bin = await resolveBin("claude");
+    async detect(launch) {
+      const bin = launch ? await resolveCustom(launch) : await resolve2("claude");
       if (!bin.ok) return { available: false, reason: bin.reason, installHint: INSTALL_HINT };
       try {
-        const version = await runVersion(bin, ["--version"]);
+        const version = await runVersion(bin, [...launch?.prefixArgs ?? [], "--version"]);
         return { available: true, bin: bin.display, version: version.trim().split("\n")[0] || "" };
       } catch {
         return { available: true, bin: bin.display, version: "" };
@@ -2170,7 +2385,7 @@ function createClaudeProvider() {
       return listClaudeModels();
     },
     async createSession(o) {
-      const bin = await resolveBin("claude");
+      const bin = o.launch ? await resolveCustom(o.launch) : await resolve2("claude");
       if (!bin.ok) throw new Error(tr("claude.notFound", { detail: bin.reason, hint: INSTALL_HINT }));
       return new ClaudeSession({
         threadId: o.threadId,
@@ -2179,7 +2394,8 @@ function createClaudeProvider() {
         mode: o.mode,
         effort: o.effort,
         resumeId: o.resumeId,
-        bin
+        bin,
+        launch: o.launch
       });
     },
     // §7.6: jsonl sessions under ~/.claude/projects matched by cwd
@@ -2216,6 +2432,7 @@ var init_provider = __esm({
     init_import();
     init_map();
     init_i18n();
+    init_launch();
     INSTALL_HINT = "npm i -g @anthropic-ai/claude-code";
     claudeCapabilities = {
       resume: true,
@@ -2288,7 +2505,7 @@ async function listCodexHistory(cwd) {
     }
     if (!match) continue;
     const s = await stat5(path3).catch(() => null);
-    out.push({ sessionId, title: title || "\uFF08\u65E0\u6807\u9898\uFF09", updatedAt: s ? Math.round(s.mtimeMs) : 0, messageCount: count });
+    out.push({ sessionId, title: title || tr("history.untitled"), updatedAt: s ? Math.round(s.mtimeMs) : 0, messageCount: count });
   }
   out.sort((a, b) => b.updatedAt - a.updatedAt);
   return out;
@@ -2341,7 +2558,7 @@ async function readCodexHistory(sessionId, cwd) {
         }
       } else if (p.type === "function_call" || p.type === "custom_tool_call") {
         const name = str3(p.name) ?? "tool";
-        out.push({ type: "notice", level: "info", message: `\uFF08\u5386\u53F2\uFF09\u8C03\u7528 ${name}` });
+        out.push({ type: "notice", level: "info", message: tr("history.toolCall", { name }) });
       }
       continue;
     }
@@ -2365,7 +2582,7 @@ async function readCodexHistory(sessionId, cwd) {
     const p2 = rec3(r.payload);
     if (p2.type === "function_call" || p2.type === "custom_tool_call") {
       const name = str3(p2.name) ?? "tool";
-      out.push({ type: "notice", level: "info", message: `\uFF08\u5386\u53F2\uFF09\u8C03\u7528 ${name}` });
+      out.push({ type: "notice", level: "info", message: tr("history.toolCall", { name }) });
     }
   }
   out.push({ type: "turn_ended", turnId: "import", status: "completed" });
@@ -2375,6 +2592,7 @@ var CODEX_ROOT, rec3, str3, WRAPPERS;
 var init_codex = __esm({
   "daemon/src/history/codex.ts"() {
     init_paths();
+    init_i18n();
     CODEX_ROOT = join7(homedir4(), ".codex", "sessions");
     rec3 = (v) => v && typeof v === "object" ? v : {};
     str3 = (v) => typeof v === "string" ? v : void 0;
@@ -2461,10 +2679,10 @@ var init_rpc = __esm({
       async dispatch(msg) {
         const hasId = msg.id !== void 0 && msg.id !== null;
         if (hasId && ("result" in msg || "error" in msg)) {
-          const id = Number(msg.id);
-          const p = this.pending.get(id);
+          const id2 = Number(msg.id);
+          const p = this.pending.get(id2);
           if (p) {
-            this.pending.delete(id);
+            this.pending.delete(id2);
             if (msg.error) {
               const e = msg.error;
               p.reject(new CodexRpcError(e.message ?? "RPC error", e.code));
@@ -2475,12 +2693,12 @@ var init_rpc = __esm({
           return;
         }
         if (hasId && msg.method) {
-          const id = Number(msg.id);
+          const id2 = Number(msg.id);
           try {
             const result = this.onServerRequest ? await this.onServerRequest(String(msg.method), msg.params ?? {}) : void 0;
-            this.send({ id, result: result ?? null });
+            this.send({ id: id2, result: result ?? null });
           } catch (e) {
-            this.send({ id, error: { code: -32603, message: String(e?.message ?? e) } });
+            this.send({ id: id2, error: { code: -32603, message: String(e?.message ?? e) } });
           }
           return;
         }
@@ -2501,13 +2719,13 @@ var init_rpc = __esm({
       }
       request(method, params, timeoutMs = 6e4) {
         if (this.exited) return Promise.reject(new CodexProcessExitedError());
-        const id = this.nextId++;
+        const id2 = this.nextId++;
         return new Promise((resolvePromise, reject) => {
           const timer = setTimeout(() => {
-            this.pending.delete(id);
+            this.pending.delete(id2);
             reject(new CodexRpcError(`\u8BF7\u6C42\u8D85\u65F6\uFF1A${method}`));
           }, timeoutMs);
-          this.pending.set(id, {
+          this.pending.set(id2, {
             resolve: (v) => {
               clearTimeout(timer);
               resolvePromise(v);
@@ -2517,7 +2735,7 @@ var init_rpc = __esm({
               reject(e);
             }
           });
-          this.send({ jsonrpc: "2.0", id, method, params: params ?? {} });
+          this.send({ jsonrpc: "2.0", id: id2, method, params: params ?? {} });
         });
       }
       notify(method, params) {
@@ -2586,7 +2804,7 @@ var init_input = __esm({
 
 // daemon/src/providers/codex/map.ts
 function newCodexMapState() {
-  return { currentTurnId: null, filesChanged: 0, diffText: "" };
+  return { currentTurnId: null, filesChanged: 0, diffText: "", fileChangesByItemId: /* @__PURE__ */ new Map(), reasoningRaw: /* @__PURE__ */ new Map() };
 }
 function mapNotification(method, params, st) {
   const out = [];
@@ -2598,6 +2816,8 @@ function mapNotification(method, params, st) {
       if (tid) st.currentTurnId = tid;
       st.filesChanged = 0;
       st.diffText = "";
+      st.fileChangesByItemId.clear();
+      st.reasoningRaw.clear();
       break;
     }
     case "item/agentMessage/delta": {
@@ -2613,7 +2833,10 @@ function mapNotification(method, params, st) {
     case "item/reasoning/textDelta": {
       const itemId = str4(params.itemId) ?? "";
       const delta = str4(params.delta) ?? "";
-      if (itemId && delta) out.push({ type: "reasoning_delta", itemId, text: delta });
+      if (itemId && delta) {
+        if (method === "item/reasoning/textDelta") st.reasoningRaw.set(itemId, (st.reasoningRaw.get(itemId) ?? "") + delta);
+        out.push({ type: "reasoning_delta", itemId, text: delta });
+      }
       break;
     }
     case "item/commandExecution/outputDelta":
@@ -2634,17 +2857,18 @@ function mapNotification(method, params, st) {
           type: "tool_call",
           itemId,
           kind: "bash",
-          title: `\u8FD0\u884C ${trunc2(cmd)}`,
+          title: tr("tool.run", { x: trunc2(cmd) }),
           status: "running",
           detail: { command: cmd, cwd: str4(item.cwd) }
         });
       } else if (type === "fileChange") {
         const changes = Array.isArray(item.changes) ? item.changes : [];
+        if (itemId) st.fileChangesByItemId.set(itemId, changes);
         out.push({
           type: "tool_call",
           itemId,
           kind: "edit",
-          title: `\u4FEE\u6539 ${changes.length} \u4E2A\u6587\u4EF6`,
+          title: tr("tool.editFiles", { n: changes.length }),
           status: "running",
           detail: { changes }
         });
@@ -2663,7 +2887,7 @@ function mapNotification(method, params, st) {
           type: "tool_call",
           itemId,
           kind: "web",
-          title: `\u641C\u7D22\u7F51\u9875 "${trunc2(str4(item.query) ?? "", 40)}"`,
+          title: tr("tool.webSearch", { x: trunc2(str4(item.query) ?? "", 40) }),
           status: "running"
         });
       }
@@ -2678,7 +2902,10 @@ function mapNotification(method, params, st) {
         if (text) out.push({ type: "assistant_message", itemId, text });
       } else if (type === "reasoning") {
         const summary = Array.isArray(item.summary) ? item.summary : [];
-        const text = summary.filter((s) => typeof s === "string").join("\n");
+        const content = Array.isArray(item.content) ? item.content : [];
+        const strings = (a) => a.filter((s) => typeof s === "string").join("\n");
+        const text = strings(summary) || strings(content) || st.reasoningRaw.get(itemId) || "";
+        st.reasoningRaw.delete(itemId);
         if (text) out.push({ type: "reasoning", itemId, text });
       } else if (type === "commandExecution") {
         const cmd = str4(item.command) ?? "";
@@ -2688,7 +2915,7 @@ function mapNotification(method, params, st) {
           type: "tool_call",
           itemId,
           kind: "bash",
-          title: `\u8FD0\u884C ${trunc2(cmd)}`,
+          title: tr("tool.run", { x: trunc2(cmd) }),
           status: exitCode === 0 ? "ok" : "failed",
           output: output.length > MAX_OUTPUT2 ? output.slice(0, MAX_OUTPUT2) : output,
           exitCode,
@@ -2696,13 +2923,14 @@ function mapNotification(method, params, st) {
         });
       } else if (type === "fileChange") {
         const changes = Array.isArray(item.changes) ? item.changes : [];
+        if (itemId) st.fileChangesByItemId.set(itemId, changes);
         const istatus = str4(item.status);
         st.filesChanged += changes.length;
         out.push({
           type: "tool_call",
           itemId,
           kind: "edit",
-          title: `\u4FEE\u6539 ${changes.length} \u4E2A\u6587\u4EF6`,
+          title: tr("tool.editFiles", { n: changes.length }),
           status: istatus === "failed" ? "failed" : "ok",
           detail: { changes }
         });
@@ -2724,7 +2952,7 @@ function mapNotification(method, params, st) {
           type: "tool_call",
           itemId,
           kind: "web",
-          title: `\u641C\u7D22\u7F51\u9875 "${trunc2(str4(item.query) ?? "", 40)}"`,
+          title: tr("tool.webSearch", { x: trunc2(str4(item.query) ?? "", 40) }),
           status: "ok"
         });
       } else if (type === "plan") {
@@ -2781,7 +3009,7 @@ function mapNotification(method, params, st) {
       break;
     }
     case "error": {
-      const msg = str4(params.message) ?? "Codex \u9519\u8BEF";
+      const msg = str4(params.message) ?? tr("codex.error");
       out.push({ type: "notice", level: "error", message: msg });
       break;
     }
@@ -2793,6 +3021,7 @@ function mapNotification(method, params, st) {
 var MAX_OUTPUT2, trunc2, rec4, str4;
 var init_map2 = __esm({
   "daemon/src/providers/codex/map.ts"() {
+    init_i18n();
     MAX_OUTPUT2 = 20 * 1024;
     trunc2 = (s, n = 80) => s.length > n ? s.slice(0, n - 1) + "\u2026" : s;
     rec4 = (v) => v && typeof v === "object" ? v : {};
@@ -2924,6 +3153,7 @@ var init_session2 = __esm({
     init_map2();
     init_commands();
     init_log();
+    init_launch();
     rid3 = () => Math.random().toString(36).slice(2, 10);
     MODE_PRESETS = {
       plan: { approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly" } },
@@ -2967,7 +3197,7 @@ var init_session2 = __esm({
           const rpc = new CodexRpc(
             argvFor(
               { ok: true, cmd: this.o.binCmd, prefixArgs: this.o.binPrefixArgs, display: this.o.binCmd, via: this.o.binVia ?? "path", shim: this.o.binShim },
-              ["app-server"]
+              launchArgv(["app-server"], this.o.launch)
             ),
             { cwd: this.o.cwd }
           );
@@ -3030,7 +3260,7 @@ var init_session2 = __esm({
         return this.started;
       }
       async send(input) {
-        if (this.closed) throw new Error("\u4F1A\u8BDD\u5DF2\u5173\u95ED");
+        if (this.closed) throw new Error(tr("codex.closed"));
         await this.start();
         const rpc = this.rpc;
         const preset = MODE_PRESETS[this.o.mode];
@@ -3070,7 +3300,7 @@ var init_session2 = __esm({
         }
       }
       async steer(input) {
-        if (!this.rpc || !this.st.currentTurnId) throw new Error("\u5F53\u524D\u8F6E\u6B21\u8FD8\u6CA1\u5F00\u59CB\uFF0C\u65E0\u6CD5\u63D2\u8BDD");
+        if (!this.rpc || !this.st.currentTurnId) throw new Error(tr("codex.noTurnSteer"));
         const { items, warnings } = await buildCodexInput(input.text, input.images ?? []);
         for (const w of warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
         try {
@@ -3117,13 +3347,13 @@ var init_session2 = __esm({
             this.emit({
               type: "permission_request",
               requestId,
-              title: `\u8FD0\u884C ${command.slice(0, 80)}`,
+              title: tr("tool.run", { x: command.slice(0, 80) }),
               kind: "tool",
               detail: { command, cwd: params.cwd, reason: params.reason, approvalId: params.approvalId, itemId: params.itemId },
               options: [
-                { id: "accept", label: "\u5141\u8BB8", kind: "allow_once" },
-                { id: "acceptForSession", label: "\u672C\u5BF9\u8BDD\u90FD\u5141\u8BB8", kind: "allow_always" },
-                { id: "decline", label: "\u62D2\u7EDD", kind: "reject_once" }
+                { id: "accept", label: tr("perm.allow"), kind: "allow_once" },
+                { id: "acceptForSession", label: tr("perm.allowSession"), kind: "allow_always" },
+                { id: "decline", label: tr("perm.deny"), kind: "reject_once" }
               ]
             });
             const a = await this.waitFor(requestId);
@@ -3132,18 +3362,19 @@ var init_session2 = __esm({
             return { decision: opt };
           }
           case "item/fileChange/requestApproval": {
-            const changes = Array.isArray(params.changes) ? params.changes : [];
+            const itemId = typeof params.itemId === "string" ? params.itemId : "";
+            const changes = Array.isArray(params.changes) && params.changes.length ? params.changes : itemId ? this.st.fileChangesByItemId.get(itemId) ?? [] : [];
             const requestId = "perm_" + rid3();
             this.emit({
               type: "permission_request",
               requestId,
-              title: "\u4FEE\u6539\u6587\u4EF6",
+              title: tr("perm.editFiles"),
               kind: "tool",
               detail: { changes, approvalId: params.approvalId, itemId: params.itemId, reason: params.reason },
               options: [
-                { id: "accept", label: "\u5141\u8BB8", kind: "allow_once" },
-                { id: "acceptForSession", label: "\u672C\u5BF9\u8BDD\u90FD\u5141\u8BB8", kind: "allow_always" },
-                { id: "decline", label: "\u62D2\u7EDD", kind: "reject_once" }
+                { id: "accept", label: tr("perm.allow"), kind: "allow_once" },
+                { id: "acceptForSession", label: tr("perm.allowSession"), kind: "allow_always" },
+                { id: "decline", label: tr("perm.deny"), kind: "reject_once" }
               ]
             });
             const a = await this.waitFor(requestId);
@@ -3184,8 +3415,8 @@ var init_session2 = __esm({
       async setModel(model) {
         this.o.model = model;
       }
-      async setMode(mode) {
-        this.o.mode = mode;
+      async setMode(mode2) {
+        this.o.mode = mode2;
       }
       async setEffort(effort) {
         this.o.effort = effort;
@@ -3210,7 +3441,18 @@ var init_session2 = __esm({
   }
 });
 
+// daemon/src/providers/types.ts
+var PLACEHOLDER_MODEL_NAME;
+var init_types = __esm({
+  "daemon/src/providers/types.ts"() {
+    PLACEHOLDER_MODEL_NAME = "Default";
+  }
+});
+
 // daemon/src/providers/codex/provider.ts
+import { homedir as homedir6 } from "node:os";
+import { join as join9 } from "node:path";
+import { readFile as readFile8 } from "node:fs/promises";
 function runVersion2(r, args, timeoutMs = 5e3) {
   return new Promise((resolvePromise, reject) => {
     let out = "";
@@ -3240,8 +3482,8 @@ function normalizeEfforts(raw) {
   }
   return out;
 }
-async function fetchModels(r, cwd) {
-  const rpc = new CodexRpc(argvFor(r, ["app-server"]), { cwd });
+async function fetchModels(r, cwd, launch) {
+  const rpc = new CodexRpc(argvFor(r, launchArgv(["app-server"], launch)), { cwd });
   try {
     await rpc.request("initialize", {
       clientInfo: { name: "agent-console", title: "Agent Console", version: "0" },
@@ -3267,39 +3509,97 @@ async function fetchModels(r, cwd) {
     await rpc.close();
   }
 }
+function tomlValue(raw) {
+  const v = raw.trim().replace(/\s+#.*$/, "");
+  const quoted = v.match(/^"([\s\S]*)"$/) ?? v.match(/^'([\s\S]*)'$/);
+  if (quoted) return quoted[1];
+  if (v.startsWith("[") && v.endsWith("]")) {
+    return v.slice(1, -1).split(",").map((x) => tomlValue(x)).filter((x) => typeof x === "string");
+  }
+  return null;
+}
+function parseCodexConfig(text) {
+  let section = "";
+  const values = /* @__PURE__ */ new Map();
+  for (const line of text.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s || s.startsWith("#")) continue;
+    const header = s.match(/^\[([^\]]+)\]$/);
+    if (header) {
+      section = header[1];
+      continue;
+    }
+    const m = s.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
+    if (!m) continue;
+    const value = tomlValue(m[2]);
+    if (typeof value === "string" || Array.isArray(value)) values.set(`${section}\0${m[1]}`, value);
+  }
+  const top = (key) => values.get(`\0${key}`);
+  const profile = top("profile");
+  const profileName = typeof profile === "string" ? profile : null;
+  const profileValue = (key) => profileName ? values.get(`profiles.${profileName}\0${key}`) : void 0;
+  const modelProvider = profileValue("model_provider") ?? top("model_provider");
+  const model = profileValue("model") ?? top("model");
+  const provider = typeof modelProvider === "string" ? modelProvider : null;
+  const models2 = /* @__PURE__ */ new Set();
+  if (typeof model === "string" && model) models2.add(model);
+  for (const [key, value] of values) {
+    if (provider && key === `model_providers.${provider}\0models` && Array.isArray(value)) {
+      for (const m of value) models2.add(m);
+    }
+  }
+  return { modelProvider: provider, model: typeof model === "string" ? model : null, providerModels: [...models2] };
+}
+async function readCodexConfig() {
+  const home = process.env.CODEX_HOME?.trim() || join9(homedir6(), ".codex");
+  const file = home.toLowerCase().endsWith(".toml") ? home : join9(home, "config.toml");
+  try {
+    return parseCodexConfig(await readFile8(file, "utf8"));
+  } catch {
+    return { modelProvider: null, model: null, providerModels: [] };
+  }
+}
+function isChatGptProvider(id2) {
+  return !id2 || /^(openai|chatgpt)$/i.test(id2);
+}
 function createCodexProvider(version) {
   return {
     id: "codex",
     name: "Codex",
     capabilities: codexCapabilities,
-    async detect() {
-      const bin = await resolveBin("codex");
+    async detect(launch) {
+      const bin = launch ? await resolveLaunch(launch) : await resolveBin("codex");
       if (!bin.ok) {
         return { available: false, reason: bin.reason, installHint: INSTALL_HINT2 };
       }
       try {
-        const v = await runVersion2(bin, ["--version"]);
+        const v = await runVersion2(bin, [...launch?.prefixArgs ?? [], "--version"]);
         return { available: true, bin: bin.display, version: v.trim().split("\n")[0] || "" };
       } catch (e) {
         return { available: true, bin: bin.display, version: "", reason: String(e) };
       }
     },
-    async listModels() {
-      if (modelCache && Date.now() - modelCache.at < MODEL_CACHE_MS) return modelCache.models;
-      const bin = await resolveBin("codex");
-      if (!bin.ok) return [{ id: "", name: "\u9ED8\u8BA4" }];
+    async listModels(launch) {
+      const config = await readCodexConfig();
+      if (!isChatGptProvider(config.modelProvider)) {
+        const rows = config.providerModels.map((id2, i) => ({ id: id2, name: id2, isDefault: i === 0 }));
+        return rows.length ? rows : [{ id: "", name: `${PLACEHOLDER_MODEL_NAME} (${config.modelProvider})`, isDefault: true }];
+      }
+      if (!launch && modelCache && Date.now() - modelCache.at < MODEL_CACHE_MS) return modelCache.models;
+      const bin = launch ? await resolveLaunch(launch) : await resolveBin("codex");
+      if (!bin.ok) return [{ id: "", name: PLACEHOLDER_MODEL_NAME }];
       try {
-        const models2 = await fetchModels(bin, process.cwd());
+        const models2 = await fetchModels(bin, process.cwd(), launch);
         modelCache = { at: Date.now(), models: models2 };
         return models2;
       } catch (e) {
         log("warn", "codex model/list \u5931\u8D25", { err: String(e) });
-        return [{ id: "", name: "\u9ED8\u8BA4" }];
+        return [{ id: "", name: PLACEHOLDER_MODEL_NAME }];
       }
     },
     async createSession(o) {
-      const bin = await resolveBin("codex");
-      if (!bin.ok) throw new Error(`\u627E\u4E0D\u5230 codex\uFF1A${bin.reason}`);
+      const bin = o.launch ? await resolveLaunch(o.launch) : await resolveBin("codex");
+      if (!bin.ok) throw new Error(tr("codex.notFound", { detail: bin.reason, hint: INSTALL_HINT2 }));
       return new CodexSession({
         threadId: o.threadId,
         cwd: o.cwd,
@@ -3311,6 +3611,7 @@ function createCodexProvider(version) {
         binPrefixArgs: bin.prefixArgs,
         binVia: bin.via,
         binShim: bin.shim,
+        launch: o.launch,
         version
       });
     },
@@ -3332,6 +3633,9 @@ var init_provider2 = __esm({
     init_rpc();
     init_session2();
     init_log();
+    init_i18n();
+    init_launch();
+    init_types();
     INSTALL_HINT2 = "npm i -g @openai/codex";
     codexCapabilities = {
       resume: true,
@@ -3344,7 +3648,9 @@ var init_provider2 = __esm({
       // tokenUsage yes, cost no
       effort: [],
       // effort values depend on the model — filled from model/list after detect
-      modes: ["plan", "default", "acceptEdits", "bypassPermissions"]
+      // No "plan": app-server 0.16x has no plan/collaboration mode on turn/start, and a read-only "plan" was the same preset as default (B9)
+      modes: ["default", "acceptEdits", "bypassPermissions"],
+      modeLabels: { default: "Read Only", acceptEdits: "Auto", bypassPermissions: "Full Access" }
     };
     modelCache = null;
     MODEL_CACHE_MS = 10 * 60 * 1e3;
@@ -3352,8 +3658,8 @@ var init_provider2 = __esm({
 });
 
 // daemon/src/providers/catalog.ts
-function catalogById(id) {
-  return PROVIDER_CATALOG.find((p) => p.id === id);
+function catalogById(id2) {
+  return PROVIDER_CATALOG.find((p) => p.id === id2);
 }
 function providerCreatable(status) {
   return status !== "planned";
@@ -3363,12 +3669,12 @@ var init_catalog = __esm({
   "daemon/src/providers/catalog.ts"() {
     PROVIDER_CATALOG = [
       { id: "claude", name: "Claude Code", bins: ["claude"], installHint: "npm i -g @anthropic-ai/claude-code", status: "verified" },
-      { id: "codex", name: "Codex", bins: ["codex"], installHint: "\u89C1 OpenAI Codex CLI \u5B89\u88C5\u8BF4\u660E", status: "verified" },
-      { id: "cursor", name: "Cursor", bins: ["cursor-agent", "cursor"], installHint: "\u5B89\u88C5 Cursor \u5E76\u786E\u4FDD CLI \u5728 PATH", status: "verified" },
-      { id: "copilot", name: "Copilot", bins: ["copilot"], installHint: "GitHub Copilot CLI \u5B89\u88C5\u8BF4\u660E", status: "verified" },
-      { id: "opencode", name: "OpenCode", bins: ["opencode"], installHint: "npm i -g opencode / \u89C1 OpenCode \u6587\u6863", status: "verified" },
-      { id: "pi", name: "Pi", bins: ["pi-acp", "pi", "pi-coding-agent"], installHint: "npm i -g pi-acp\uFF08\u6216 Pi coding agent + ACP \u9002\u914D\u5668\uFF09", status: "verified" },
-      { id: "devin", name: "Devin CLI", bins: ["devin"], installHint: "Devin CLI \u5B98\u65B9\u5B89\u88C5", status: "verified" },
+      { id: "codex", name: "Codex", bins: ["codex"], installHint: "npm i -g @openai/codex", status: "verified" },
+      { id: "cursor", name: "Cursor", bins: ["cursor-agent", "cursor"], installHint: "curl https://cursor.com/install -fsS | bash", status: "verified" },
+      { id: "copilot", name: "Copilot", bins: ["copilot"], installHint: "npm i -g @github/copilot", status: "verified" },
+      { id: "opencode", name: "OpenCode", bins: ["opencode"], installHint: "npm i -g opencode-ai", status: "verified" },
+      { id: "pi", name: "Pi", bins: ["pi-acp", "pi", "pi-coding-agent"], installHint: "npm i -g pi-acp", status: "verified" },
+      { id: "devin", name: "Devin CLI", bins: ["devin"], installHint: "https://docs.devin.ai/cli", status: "verified" },
       { id: "dsh", name: "dsh", bins: ["dsh"], installHint: "npm i -g @deepseek-ai/dsh", status: "verified" }
     ];
   }
@@ -3405,11 +3711,11 @@ var init_spawn = __esm({
 });
 
 // daemon/src/providers/acp/clientHandlers.ts
-import { readFile as readFile8, writeFile as writeFile2 } from "node:fs/promises";
+import { readFile as readFile9, writeFile as writeFile2 } from "node:fs/promises";
 import { methods } from "@agentclientprotocol/sdk";
 function registerAcpClientHandlers(app, bridge) {
   app.onRequest(methods.client.fs.readTextFile, async (ctx) => {
-    const text = await readFile8(ctx.params.path, "utf8");
+    const text = await readFile9(ctx.params.path, "utf8");
     return { content: text };
   });
   app.onRequest(methods.client.fs.writeTextFile, async (ctx) => {
@@ -3431,7 +3737,7 @@ function registerAcpClientHandlers(app, bridge) {
     bridge.push({
       type: "permission_request",
       requestId,
-      title: tc.title ?? tc.name ?? "\u9700\u8981\u6388\u6743",
+      title: tc.title ?? tc.name ?? tr("tool.needsApproval"),
       kind: tc.kind ?? "tool",
       detail: tc.rawInput ?? void 0,
       options
@@ -3445,6 +3751,7 @@ function registerAcpClientHandlers(app, bridge) {
 }
 var init_clientHandlers = __esm({
   "daemon/src/providers/acp/clientHandlers.ts"() {
+    init_i18n();
   }
 });
 
@@ -3473,7 +3780,13 @@ function textFromContent(content) {
   return "";
 }
 function newMapCtx() {
-  return { itemPrefix: "a" + rid4() + "_", messageIds: /* @__PURE__ */ new Map() };
+  return { itemPrefix: "a" + rid4() + "_", messageIds: /* @__PURE__ */ new Map(), seg: 0, lastWasText: false };
+}
+function endTextSegment(ctx) {
+  if (ctx.lastWasText) {
+    ctx.seg++;
+    ctx.lastWasText = false;
+  }
 }
 function mapSessionUpdate(update, ctx) {
   const out = [];
@@ -3482,19 +3795,22 @@ function mapSessionUpdate(update, ctx) {
     case "agent_message_chunk": {
       const text = textFromContent(update.content);
       if (!text) break;
-      const itemId = mid ? ctx.messageIds.get(mid) ?? ctx.itemPrefix + mid : ctx.itemPrefix + "msg";
+      const itemId = `${ctx.itemPrefix}${mid ?? "msg"}_${ctx.seg}`;
       if (mid) ctx.messageIds.set(mid, itemId);
+      ctx.lastWasText = true;
       out.push({ type: "assistant_delta", itemId, text });
       break;
     }
     case "agent_thought_chunk": {
       const text = textFromContent(update.content);
       if (!text) break;
-      const itemId = mid ? ctx.itemPrefix + "t_" + mid : ctx.itemPrefix + "think";
+      const itemId = `${ctx.itemPrefix}t_${mid ?? "think"}_${ctx.seg}`;
+      ctx.lastWasText = true;
       out.push({ type: "reasoning_delta", itemId, text });
       break;
     }
     case "tool_call":
+      endTextSegment(ctx);
       out.push({
         type: "tool_call",
         itemId: ctx.itemPrefix + update.toolCallId,
@@ -3505,17 +3821,19 @@ function mapSessionUpdate(update, ctx) {
       });
       break;
     case "tool_call_update":
+      endTextSegment(ctx);
       out.push({
         type: "tool_call",
         itemId: ctx.itemPrefix + update.toolCallId,
         kind: mapToolKind(update.kind),
-        title: update.title ?? update.name ?? "tool",
+        title: update.title ?? update.name ?? "",
         status: mapToolStatus(update.status),
         input: update.rawInput,
         output: typeof update.rawOutput === "string" ? update.rawOutput : void 0
       });
       break;
     case "plan":
+      endTextSegment(ctx);
       out.push({
         type: "plan",
         itemId: ctx.itemPrefix + "plan",
@@ -3600,7 +3918,7 @@ var init_sessionCaps = __esm({
 });
 
 // daemon/src/providers/acp/prompt.ts
-import { readFile as readFile9, stat as stat7 } from "node:fs/promises";
+import { readFile as readFile10, stat as stat7 } from "node:fs/promises";
 import { basename as basename4 } from "node:path";
 import { pathToFileURL } from "node:url";
 async function buildAcpPrompt(text, attachments, caps) {
@@ -3636,7 +3954,7 @@ async function buildAcpPrompt(text, attachments, caps) {
         continue;
       }
       try {
-        const data = (await readFile9(file)).toString("base64");
+        const data = (await readFile10(file)).toString("base64");
         media.push(image ? { type: "image", data, mimeType: mime } : { type: "audio", data, mimeType: mime });
         inlineBytes += size;
       } catch (e) {
@@ -3653,7 +3971,7 @@ async function buildAcpPrompt(text, attachments, caps) {
     }
     if (isText(mime) && caps.embeddedContext && size <= MAX_EMBED_TEXT_BYTES && inlineBytes + size <= MAX_INLINE_TOTAL_BYTES) {
       try {
-        const body = await readFile9(file, "utf8");
+        const body = await readFile10(file, "utf8");
         media.push({ type: "resource", resource: { uri: pathToFileURL(file).href, mimeType: mime, text: body } });
         inlineBytes += size;
         continue;
@@ -3688,6 +4006,7 @@ var init_session3 = __esm({
     init_slash();
     init_queue();
     init_bin();
+    init_launch();
     init_spawn();
     init_clientHandlers();
     init_mapUpdate();
@@ -3737,17 +4056,10 @@ var init_session3 = __esm({
       commandsReady;
       settleCommands;
       async boot() {
-        const bin = this.o.launch ? {
-          ok: true,
-          cmd: this.o.launch.cmd,
-          prefixArgs: this.o.launch.prefixArgs,
-          display: this.o.launch.cmd,
-          via: "custom",
-          binName: "custom"
-        } : await resolveFirstBin(this.o.binCandidates?.length ? this.o.binCandidates : [this.o.binName]);
+        const bin = this.o.launch ? await resolveLaunch(this.o.launch).then((r) => r.ok ? { ...r, binName: "custom" } : r) : await resolveFirstBin(this.o.binCandidates?.length ? this.o.binCandidates : [this.o.binName]);
         if (!bin.ok) throw new Error(bin.reason);
         try {
-          this.child = spawnResolved(bin, this.o.acpArgs, { cwd: this.o.cwd });
+          this.child = spawnResolved(bin, launchArgv(this.o.acpArgs, this.o.launch), { cwd: this.o.cwd });
           this.child.stderr?.on("data", (d) => {
             const t = d.toString().trim();
             if (t) log("info", `[${this.o.binName} acp] ${t.slice(0, 500)}`);
@@ -3755,13 +4067,13 @@ var init_session3 = __esm({
           this.child.on("error", (e) => this.failInit(e));
           this.child.on("close", (code) => {
             if (!this.closed && code !== 0) {
-              this.q.push({ type: "notice", level: "error", message: `${this.o.binName} \u8FDB\u7A0B\u9000\u51FA (${code})` });
+              this.q.push({ type: "notice", level: "error", message: tr("acp.exited", { name: this.o.binName, code: String(code) }) });
             }
           });
           const app = client({ name: "magpie-agent-console" });
           registerAcpClientHandlers(app, {
             push: (ev) => this.q.push(ev),
-            waitFor: (id) => this.waitPerm(id),
+            waitFor: (id2) => this.waitPerm(id2),
             autoAcceptPermissions: () => this.cursorAutoReview
           });
           const stream = acpStreamFromChild(this.child);
@@ -3886,9 +4198,9 @@ var init_session3 = __esm({
         }
         return (this.active?.modes?.availableModes ?? []).map((m) => ({ id: m.id, name: m.name, configId: null }));
       }
-      resolveAcpModeId(mode) {
+      resolveAcpModeId(mode2) {
         if (this.o.modeMap) {
-          const want = this.o.modeMap[mode];
+          const want = this.o.modeMap[mode2];
           if (!want) return null;
           const hit = this.modeChoices().find(
             (m) => m.id === want || m.id.endsWith(`#${want}`) || m.name.toLowerCase() === want
@@ -3897,24 +4209,24 @@ var init_session3 = __esm({
         }
         if (this.o.flavor === "cursor") {
           const map = { default: "agent", plan: "plan", ask: "ask" };
-          const want = map[mode] ?? "agent";
+          const want = map[mode2] ?? "agent";
           const avail = this.active?.modes?.availableModes ?? [];
           const hit = avail.find((m) => m.id === want || m.name.toLowerCase() === want);
           return hit?.id ?? want;
         }
-        return mode === "plan" ? "plan" : "default";
+        return mode2 === "plan" ? "plan" : "default";
       }
-      async applySessionMode(mode) {
+      async applySessionMode(mode2) {
         if (!this.ctx || !this.active) return;
         const hasAllowAll = this.currentConfig().some((o) => o.id === "allow_all");
-        if (this.o.modeMap?.[mode] === "allow-all") {
+        if (this.o.modeMap?.[mode2] === "allow-all") {
           const agentId = this.modeChoices().find((m) => m.id === "agent" || m.id.endsWith("#agent"));
           if (agentId?.configId) await this.setOption(agentId.configId, agentId.id);
           if (hasAllowAll) await this.setOption("allow_all", "on");
           return;
         }
         if (hasAllowAll && this.o.modeMap) await this.setOption("allow_all", "off");
-        const modeId = this.resolveAcpModeId(mode);
+        const modeId = this.resolveAcpModeId(mode2);
         if (!modeId) return;
         try {
           const viaConfig = this.modeChoices().find((m) => m.id === modeId)?.configId;
@@ -3927,7 +4239,7 @@ var init_session3 = __esm({
             modeId
           });
         } catch (e) {
-          log("info", `ACP setMode(${mode}): ${String(e)}`);
+          log("info", `ACP setMode(${mode2}): ${String(e)}`);
         }
       }
       /**
@@ -4091,10 +4403,10 @@ var init_session3 = __esm({
         }
         await this.applySessionModel(model);
       }
-      async setMode(mode) {
-        this.o.mode = mode;
+      async setMode(mode2) {
+        this.o.mode = mode2;
         await this.ready();
-        await this.applySessionMode(mode);
+        await this.applySessionMode(mode2);
       }
       async setEffort(effort) {
         this.o.effort = effort;
@@ -4172,29 +4484,27 @@ function createAcpProvider(cfg2) {
       const learned2 = knownPromptCaps(cfg2.id);
       return learned2 ? { ...caps, images: learned2.image, imagesKnown: true } : { ...caps, images: false, imagesKnown: false };
     },
-    async detect() {
-      const r = await resolveProviderBin(cfg2);
+    async detect(launch) {
+      const r = launch ? await resolveLaunch(launch) : await resolveProviderBin(cfg2);
       if (!r.ok) {
         return { available: false, reason: r.reason, installHint: cfg2.installHint };
       }
       let version;
+      const versionArgs = cfg2.id === "devin" ? ["version"] : ["cursor", "opencode"].includes(cfg2.id) ? ["--version"] : null;
       try {
-        if (cfg2.id === "cursor") {
-          version = (await runVersion3(r, ["--version"])).split(/\r?\n/)[0]?.trim();
-        } else if (cfg2.id === "devin") {
-          version = (await runVersion3(r, ["version"])).split(/\r?\n/)[0]?.trim();
-        } else if (cfg2.id === "opencode") {
-          version = (await runVersion3(r, ["--version"])).split(/\r?\n/)[0]?.trim();
+        if (versionArgs) {
+          version = (await runVersion3(r, [...launch?.prefixArgs ?? [], ...versionArgs])).split(/\r?\n/)[0]?.trim();
         }
       } catch {
       }
       return { available: true, bin: r.display, version };
     },
-    async listModels() {
-      const r = await resolveProviderBin(cfg2);
-      if (!r.ok) return [{ id: "default", name: "\u9ED8\u8BA4", isDefault: true }];
-      if (cfg2.fetchModels) return cfg2.fetchModels(r);
-      return [{ id: "default", name: "\u9ED8\u8BA4", isDefault: true }];
+    async listModels(launch) {
+      const resolved = launch ? await resolveLaunch(launch) : await resolveProviderBin(cfg2);
+      if (!resolved.ok) return [{ id: "default", name: PLACEHOLDER_MODEL_NAME, isDefault: true }];
+      const r = launch?.prefixArgs?.length && resolved.via !== "cmd-shim" ? { ...resolved, prefixArgs: [...resolved.prefixArgs, ...launch.prefixArgs] } : resolved;
+      if (cfg2.fetchModels) return cfg2.fetchModels(r, launch?.args ?? []);
+      return [{ id: "default", name: PLACEHOLDER_MODEL_NAME, isDefault: true }];
     },
     async createSession(o) {
       return new AcpSession({
@@ -4225,6 +4535,8 @@ var init_provider3 = __esm({
   "daemon/src/providers/acp/provider.ts"() {
     init_bin();
     init_bin();
+    init_launch();
+    init_types();
     init_session3();
     init_promptCaps();
     acpCapabilities = {
@@ -4236,7 +4548,8 @@ var init_provider3 = __esm({
       questions: false,
       cost: false,
       effort: [],
-      modes: ["plan", "default", "acceptEdits", "bypassPermissions"]
+      modes: ["plan", "default", "acceptEdits", "bypassPermissions"],
+      deltasOnly: true
     };
     cursorAcpCapabilities = {
       ...acpCapabilities,
@@ -4250,7 +4563,7 @@ var init_provider3 = __esm({
 import { createHash as createHash2 } from "node:crypto";
 import { mkdir as mkdir2, writeFile as writeFile3 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 function dshRoute(model) {
   if (!model) return null;
   try {
@@ -4272,11 +4585,11 @@ function dshRoutePatch(route) {
     ""
   ].join("\n");
 }
-async function dshAcpArgs(model, dir = join9(tmpdir(), "agent-console-dsh")) {
+async function dshAcpArgs(model, dir = join10(tmpdir(), "agent-console-dsh")) {
   const route = dshRoute(model);
   if (!route) return [...DSH_ACP_ARGS];
   const body = dshRoutePatch(route);
-  const file = join9(dir, `acp-route-${createHash2("sha256").update(body).digest("hex").slice(0, 16)}.yml`);
+  const file = join10(dir, `acp-route-${createHash2("sha256").update(body).digest("hex").slice(0, 16)}.yml`);
   await mkdir2(dir, { recursive: true });
   await writeFile3(file, body, { mode: 384 });
   return [...DSH_ACP_ARGS, "--patch", file];
@@ -4342,9 +4655,9 @@ function probeAcpRaw(r, acpArgs, timeoutMs = 3e4, extMethod) {
     };
     const timer = setTimeout(() => finish(new Error("ACP \u63A2\u6D4B\u8D85\u65F6")), timeoutMs);
     const send2 = (method, params) => new Promise((res, rej) => {
-      const id = ++nextId;
-      pending.set(id, { res, rej });
-      child.stdin?.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+      const id2 = ++nextId;
+      pending.set(id2, { res, rej });
+      child.stdin?.write(JSON.stringify({ jsonrpc: "2.0", id: id2, method, params }) + "\n");
     });
     child.on("error", (e) => finish(e));
     child.on("close", () => finish(new Error("ACP \u8FDB\u7A0B\u63D0\u524D\u9000\u51FA")));
@@ -4399,13 +4712,13 @@ function cursorCatalogToModels(catalog, currentModel) {
   const out = [];
   for (const m of catalog.models ?? []) {
     if (typeof m.value !== "string" || !m.value) continue;
-    const id = m.value.replace(/\[.*\]$/u, "");
+    const id2 = m.value.replace(/\[.*\]$/u, "");
     const thought = (m.configOptions ?? []).find((o) => o.category === "thought_level");
     const levels = flatten(thought?.options);
     out.push({
-      id,
-      name: typeof m.name === "string" && m.name ? m.name : id,
-      isDefault: id === currentBase,
+      id: id2,
+      name: typeof m.name === "string" && m.name ? m.name : id2,
+      isDefault: id2 === currentBase,
       ...thought && levels.length ? {
         thinkingOptions: levels.map((l) => ({ id: l.id, label: EFFORT_LABEL[l.id] ?? l.name })),
         defaultThinking: typeof thought.currentValue === "string" ? thought.currentValue : void 0,
@@ -4416,9 +4729,9 @@ function cursorCatalogToModels(catalog, currentModel) {
   return out;
 }
 function cursorProbeModels(acpArgs, providerId) {
-  return async (r) => {
+  return async (r, launchArgs = []) => {
     try {
-      const { parsed, ext, promptCaps } = await probeAcpRaw(r, acpArgs, 4e4, "cursor/list_available_models");
+      const { parsed, ext, promptCaps } = await probeAcpRaw(r, [...acpArgs, ...launchArgs], 4e4, "cursor/list_available_models");
       rememberPromptCaps(providerId, promptCaps);
       const fromCatalog = ext ? cursorCatalogToModels(ext, parsed.currentModel) : [];
       return fromCatalog.length ? fromCatalog : probeToModels(parsed);
@@ -4429,13 +4742,13 @@ function cursorProbeModels(acpArgs, providerId) {
   };
 }
 function dshProbeModels(providerId) {
-  return async (r) => {
+  return async (r, launchArgs = []) => {
     try {
-      const first = await probeAcpRaw(r, DSH_ACP_ARGS, 3e4);
+      const first = await probeAcpRaw(r, [...DSH_ACP_ARGS, ...launchArgs], 3e4);
       let caps = first.promptCaps;
       const start = dshDefaultModel(first.parsed.models, first.parsed.currentModel);
       if (start && start !== first.parsed.currentModel && dshRoute(start)) {
-        caps = await probeAcpRaw(r, await dshAcpArgs(start), 3e4).then((x) => x.promptCaps, () => caps);
+        caps = await probeAcpRaw(r, [...await dshAcpArgs(start), ...launchArgs], 3e4).then((x) => x.promptCaps, () => caps);
       }
       rememberPromptCaps(providerId, caps);
       return probeToModels(first.parsed);
@@ -4446,9 +4759,9 @@ function dshProbeModels(providerId) {
   };
 }
 function acpProbeModels(acpArgs, providerId) {
-  return async (r) => {
+  return async (r, launchArgs = []) => {
     try {
-      return probeToModels(await probeAcp(r, acpArgs, 3e4, providerId));
+      return probeToModels(await probeAcp(r, [...acpArgs, ...launchArgs], 3e4, providerId));
     } catch (e) {
       log("warn", "ACP \u63A2\u6D4B\u6A21\u578B\u5931\u8D25", { err: String(e) });
       return [];
@@ -4547,8 +4860,8 @@ var init_specs = __esm({
 function registerProvider(p) {
   providers.set(p.id, p);
 }
-function getProvider(id) {
-  return providers.get(id);
+function getProvider(id2) {
+  return providers.get(id2);
 }
 function listProviders() {
   return [...providers.values()];
@@ -4581,10 +4894,10 @@ var init_registry = __esm({
 });
 
 // daemon/src/providers/enabled.ts
-function isProviderEnabled(settings, id) {
+function isProviderEnabled(settings, id2) {
   const m = settings.providerEnabled;
-  if (m && typeof m === "object" && typeof m[id] === "boolean") return m[id];
-  const entry = catalogById(id);
+  if (m && typeof m === "object" && typeof m[id2] === "boolean") return m[id2];
+  const entry = catalogById(id2);
   if (!entry) return true;
   return entry.status === "verified";
 }
@@ -4685,21 +4998,21 @@ var init_pickFolder = __esm({
 });
 
 // daemon/src/providers/magpieGateway.ts
-import { readFile as readFile10 } from "node:fs/promises";
-import { homedir as homedir6 } from "node:os";
-import { join as join10 } from "node:path";
+import { readFile as readFile11 } from "node:fs/promises";
+import { homedir as homedir7 } from "node:os";
+import { join as join11 } from "node:path";
 async function readJson(path3) {
   try {
-    return JSON.parse(await readFile10(path3, "utf8"));
+    return JSON.parse(await readFile11(path3, "utf8"));
   } catch {
     return null;
   }
 }
 async function readApplied() {
-  return await readJson(join10(homedir6(), ".config", "magpie", "applied.json")) ?? {};
+  return await readJson(join11(homedir7(), ".config", "magpie", "applied.json")) ?? {};
 }
 async function readClaudeEnv() {
-  const s = await readJson(join10(homedir6(), ".claude", "settings.json"));
+  const s = await readJson(join11(homedir7(), ".claude", "settings.json"));
   return s?.env ?? {};
 }
 async function gatewayBase() {
@@ -4713,7 +5026,7 @@ async function fetchGatewayModelIds() {
     const res = await fetch(`${base}/v1/models`, { signal: AbortSignal.timeout(5e3) });
     if (!res.ok) return [];
     const j = await res.json();
-    return (j.data ?? []).map((m) => m.id).filter((id) => typeof id === "string" && !!id);
+    return (j.data ?? []).map((m) => m.id).filter((id2) => typeof id2 === "string" && !!id2);
   } catch (e) {
     log("warn", "\u8BFB\u53D6 magpie \u7F51\u5173\u6A21\u578B\u5217\u8868\u5931\u8D25", { err: String(e) });
     return [];
@@ -4773,7 +5086,7 @@ async function withMagpie(providerId, own) {
     return {
       ...m,
       name,
-      thinkingOptions: levels.map((id) => ({ id, label: EFFORT_LABEL2[id] ?? id })),
+      thinkingOptions: levels.map((id2) => ({ id: id2, label: EFFORT_LABEL2[id2] ?? id2 })),
       defaultThinking: m.isDefault ? def : m.defaultThinking ?? def
     };
   });
@@ -4806,46 +5119,53 @@ function withTimeout(p, ms, fb) {
 function fresh(e, ttl) {
   return !!e && Date.now() - e.at < ttl;
 }
-async function cachedDetect(p) {
-  const hit = detects.get(p.id);
+function cacheKey(p, launch) {
+  return launch ? `${p.id}\0${launchKey(launch)}` : p.id;
+}
+async function cachedDetect(p, launch) {
+  const key = cacheKey(p, launch);
+  const hit = detects.get(key);
   if (fresh(hit, DETECT_MS)) return hit.value;
-  let job = inflightDetect.get(p.id);
+  let job = inflightDetect.get(key);
   if (!job) {
+    const timedOut = { available: false, reason: tr("provider.timeout") };
     job = withTimeout(
-      p.detect().catch((e) => ({ available: false, reason: String(e?.message ?? e) })),
+      p.detect(launch).catch((e) => ({ available: false, reason: String(e?.message ?? e) })),
       STEP_TIMEOUT_MS,
-      { available: false, reason: "\u68C0\u6D4B\u8D85\u65F6" }
+      timedOut
     ).then((v) => {
-      if (v.reason !== "\u68C0\u6D4B\u8D85\u65F6") detects.set(p.id, { at: Date.now(), value: v });
+      if (v !== timedOut) detects.set(key, { at: Date.now(), value: v });
       return v;
-    }).finally(() => inflightDetect.delete(p.id));
-    inflightDetect.set(p.id, job);
+    }).finally(() => inflightDetect.delete(key));
+    inflightDetect.set(key, job);
   }
   return job;
 }
-async function cachedModels(p) {
-  const hit = models.get(p.id);
+async function cachedModels(p, launch) {
+  const key = cacheKey(p, launch);
+  const hit = models.get(key);
   if (fresh(hit, MODELS_MS)) return hit.value;
-  let job = inflightModels.get(p.id);
+  let job = inflightModels.get(key);
   if (!job) {
-    job = withTimeout(p.listModels().catch(() => []), MODELS_TIMEOUT_MS, null).then(async (v) => {
-      if (v === null) return models.get(p.id)?.value ?? [];
+    job = withTimeout(p.listModels(launch).catch(() => []), MODELS_TIMEOUT_MS, null).then(async (v) => {
+      if (v === null) return models.get(key)?.value ?? [];
       const list = await withMagpie(p.id, dropPlaceholder(v)).catch(() => dropPlaceholder(v));
-      models.set(p.id, { at: Date.now(), value: list });
+      models.set(key, { at: Date.now(), value: list });
       return list;
-    }).finally(() => inflightModels.delete(p.id));
-    inflightModels.set(p.id, job);
+    }).finally(() => inflightModels.delete(key));
+    inflightModels.set(key, job);
   }
   return job;
 }
 function dropPlaceholder(list) {
-  if (list.length === 1 && list[0].id === "default" && list[0].name === "\u9ED8\u8BA4") return [];
+  if (list.length === 1 && list[0].id === "default" && (list[0].name === "\u9ED8\u8BA4" || list[0].name === PLACEHOLDER_MODEL_NAME)) return [];
   return list;
 }
-function clearProviderCache(id) {
-  if (id) {
-    detects.delete(id);
-    models.delete(id);
+function clearProviderCache(id2) {
+  if (id2) {
+    for (const m of [detects, models]) {
+      for (const k of [...m.keys()]) if (k === id2 || k.startsWith(id2 + "\0")) m.delete(k);
+    }
   } else {
     detects.clear();
     models.clear();
@@ -4854,7 +5174,10 @@ function clearProviderCache(id) {
 var DETECT_MS, MODELS_MS, STEP_TIMEOUT_MS, MODELS_TIMEOUT_MS, detects, models, inflightDetect, inflightModels;
 var init_infoCache = __esm({
   "daemon/src/providers/infoCache.ts"() {
+    init_types();
     init_magpieGateway();
+    init_launch();
+    init_i18n();
     DETECT_MS = 60 * 1e3;
     MODELS_MS = 10 * 60 * 1e3;
     STEP_TIMEOUT_MS = 15e3;
@@ -4866,18 +5189,29 @@ var init_infoCache = __esm({
   }
 });
 
+// daemon/src/providers/modes.ts
+function clampMode(modes, mode2) {
+  if (mode2 && modes.includes(mode2)) return mode2;
+  if (modes.includes("default")) return "default";
+  return modes[0] ?? "default";
+}
+var init_modes = __esm({
+  "daemon/src/providers/modes.ts"() {
+  }
+});
+
 // daemon/src/ws/methods.ts
 import { z } from "zod";
 import { existsSync as existsSync8, statSync as statSync4 } from "node:fs";
 import { mkdir as mkdir3, writeFile as writeFile4 } from "node:fs/promises";
-import { homedir as homedir7 } from "node:os";
-import { dirname as dirname3, join as join11, win32 as win32Path } from "node:path";
+import { homedir as homedir8 } from "node:os";
+import { dirname as dirname3, join as join12, win32 as win32Path } from "node:path";
 import { execFile as execFile3 } from "node:child_process";
 function wrap(schema, fn) {
   return (params, ctx) => {
     const r = schema.safeParse(params ?? {});
     if (!r.success) {
-      throw new ApiError("bad_params", "\u53C2\u6570\u4E0D\u5BF9\uFF1A" + r.error.issues.map((i) => i.message).join("\uFF1B"));
+      throw new ApiError("bad_params", tr("err.badParams", { detail: r.error.issues.map((i) => i.message).join("; ") }));
     }
     return fn(r.data, ctx);
   };
@@ -4895,10 +5229,18 @@ function registerMethods(gw, svc) {
     return { ok: true };
   }));
   gw.method("settings.get", wrap(zEmpty, () => svc.settings.get()));
-  gw.method("settings.set", wrap(
-    z.object({ patch: z.record(z.string(), z.unknown()) }),
-    (p) => svc.settings.set(p.patch)
-  ));
+  gw.method("settings.set", wrap(z.object({ patch: z.record(z.string(), z.unknown()) }), async (p) => {
+    const checked = parseSettingsPatch(p.patch);
+    if (!checked.ok) throw new ApiError("bad_params", `Invalid setting: ${checked.error}`);
+    const before = await svc.settings.get();
+    const next = await svc.settings.set(checked.patch);
+    for (const id2 of Object.keys(checked.patch.providerCommand ?? {})) {
+      if (JSON.stringify(before.providerCommand?.[id2] ?? null) !== JSON.stringify(next.providerCommand?.[id2] ?? null)) {
+        clearProviderCache(id2);
+      }
+    }
+    return next;
+  }));
   gw.method("sub.add", wrap(
     z.object({ ch: z.string().min(1).max(120), afterSeq: z.number().int().nonnegative().optional() }),
     async (p, ctx) => {
@@ -4927,9 +5269,10 @@ function registerMethods(gw, svc) {
         listProviders().map(async (p2) => {
           const entry = catalogById(p2.id);
           const enabled = isProviderEnabled(settings, p2.id);
+          const launch = launchFromSettings(settings, p2.id);
           const skip = !enabled || entry?.status === "planned";
-          const det = skip ? { available: false, reason: !enabled ? "\u5DF2\u5728\u8BBE\u7F6E\u4E2D\u7981\u7528" : "\u5C1A\u672A\u63A5\u5165" } : await cachedDetect(p2);
-          const models2 = !skip && det.available ? await cachedModels(p2) : [];
+          const det = skip ? { available: false, reason: !enabled ? tr("provider.disabled") : tr("provider.planned") } : await cachedDetect(p2, launch);
+          const models2 = !skip && det.available ? await cachedModels(p2, launch) : [];
           return {
             id: p2.id,
             name: p2.name,
@@ -4939,7 +5282,7 @@ function registerMethods(gw, svc) {
             ready: entry?.status === "verified",
             bin: det.bin,
             version: det.version,
-            reason: !enabled ? "\u5DF2\u5728\u8BBE\u7F6E\u4E2D\u7981\u7528" : det.reason,
+            reason: !enabled ? tr("provider.disabled") : det.reason,
             installHint: det.installHint,
             capabilities: p2.capabilities,
             models: models2
@@ -4973,7 +5316,7 @@ function registerMethods(gw, svc) {
   }));
   gw.method("projects.remove", wrap(z.object({ id: z.string() }), async (p) => {
     const proj = await svc.projects.get(p.id);
-    if (!proj) throw new ApiError("not_found", "\u9879\u76EE\u4E0D\u5B58\u5728");
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
     for (const t of await svc.threads.list()) {
       if (t.projectId === p.id) {
         await svc.threads.delete(t.id);
@@ -4986,8 +5329,8 @@ function registerMethods(gw, svc) {
   }));
   gw.method("projects.open", wrap(z.object({ id: z.string() }), async (p) => {
     const proj = await svc.projects.get(p.id);
-    if (!proj) throw new ApiError("not_found", "\u9879\u76EE\u4E0D\u5B58\u5728");
-    if (!existsSync8(proj.path)) throw new ApiError("bad_path", "\u76EE\u5F55\u4E0D\u5B58\u5728\u6216\u4E0D\u662F\u6587\u4EF6\u5939");
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
+    if (!existsSync8(proj.path)) throw new ApiError("bad_path", tr("err.dirMissing"));
     const cmd = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
     const target = process.platform === "win32" ? win32Path.normalize(proj.path) : proj.path;
     execFile3(cmd, [target], { windowsHide: true }, () => {
@@ -5027,16 +5370,18 @@ function registerMethods(gw, svc) {
     }),
     async (p) => {
       const proj = await svc.projects.get(p.projectId);
-      if (!proj) throw new ApiError("not_found", "\u9879\u76EE\u4E0D\u5B58\u5728");
-      if (!existsSync8(proj.path)) throw new ApiError("bad_path", "\u9879\u76EE\u76EE\u5F55\u5DF2\u4E0D\u5B58\u5728");
+      if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
+      if (!existsSync8(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
       if (!p.providerSessionId && !isProviderEnabled(await svc.settings.get(), p.provider)) {
-        throw new ApiError("bad_params", "\u8BE5 Agent \u5DF2\u5728\u8BBE\u7F6E\u4E2D\u7981\u7528");
+        throw new ApiError("bad_params", tr("provider.disabledNamed", { name: catalogById(p.provider)?.name ?? p.provider }));
       }
       const cat = catalogById(p.provider);
       if (!p.providerSessionId && cat && !providerCreatable(cat.status)) {
-        throw new ApiError("bad_params", `${cat.name} \u5C1A\u672A\u63A5\u5165\uFF0C\u6682\u4E0D\u80FD\u65B0\u5EFA\u5BF9\u8BDD`);
+        throw new ApiError("bad_params", tr("provider.plannedNamed", { name: cat.name }));
       }
-      const meta = await svc.threads.create(p);
+      const provider = getProvider(p.provider);
+      const mode2 = clampMode(provider?.capabilities.modes ?? [], p.mode);
+      const meta = await svc.threads.create({ ...p, mode: mode2 });
       gw.publish("sidebar", { type: "thread.upsert", thread: meta });
       return meta;
     }
@@ -5045,7 +5390,7 @@ function registerMethods(gw, svc) {
     z.object({ id: z.string(), afterSeq: z.number().int().nonnegative().optional() }),
     async (p) => {
       const meta = await svc.threads.get(p.id);
-      if (!meta) throw new ApiError("not_found", "\u5BF9\u8BDD\u4E0D\u5B58\u5728");
+      if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
       const events = await svc.threads.readEvents(p.id, p.afterSeq ?? 0, 5e3);
       const rt = svc.runtime?.(p.id) ?? null;
       return {
@@ -5066,7 +5411,7 @@ function registerMethods(gw, svc) {
     }),
     async (p) => {
       const meta = await svc.threads.get(p.id);
-      if (!meta) throw new ApiError("not_found", "\u5BF9\u8BDD\u4E0D\u5B58\u5728");
+      if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
       const patch = {};
       if (p.title !== void 0) {
         patch.title = p.title.trim() || meta.title;
@@ -5081,7 +5426,7 @@ function registerMethods(gw, svc) {
   ));
   gw.method("threads.delete", wrap(z.object({ id: z.string() }), async (p) => {
     const meta = await svc.threads.get(p.id);
-    if (!meta) throw new ApiError("not_found", "\u5BF9\u8BDD\u4E0D\u5B58\u5728");
+    if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
     if (svc.manager) await svc.manager.deleteThread(p.id);
     else await svc.threads.delete(p.id);
     gw.publish("sidebar", { type: "thread.remove", id: p.id });
@@ -5089,8 +5434,8 @@ function registerMethods(gw, svc) {
   }));
   const projectPath = async (projectId) => {
     const proj = await svc.projects.get(projectId);
-    if (!proj) throw new ApiError("not_found", "\u9879\u76EE\u4E0D\u5B58\u5728");
-    if (!existsSync8(proj.path)) throw new ApiError("bad_path", "\u9879\u76EE\u76EE\u5F55\u5DF2\u4E0D\u5B58\u5728");
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
+    if (!existsSync8(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
     return proj.path;
   };
   gw.method("git.status", wrap(
@@ -5115,7 +5460,7 @@ function registerMethods(gw, svc) {
   ));
   gw.method("history.list", wrap(z.object({ projectId: z.string() }), async (p) => {
     const proj = await svc.projects.get(p.projectId);
-    if (!proj) throw new ApiError("not_found", "\u9879\u76EE\u4E0D\u5B58\u5728");
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
     const imported = new Set(
       (await svc.threads.list()).filter((t) => t.projectId === p.projectId && t.providerSessionId).map((t) => t.providerSessionId)
     );
@@ -5134,7 +5479,7 @@ function registerMethods(gw, svc) {
     }),
     async (p) => {
       const proj = await svc.projects.get(p.projectId);
-      if (!proj) throw new ApiError("not_found", "\u9879\u76EE\u4E0D\u5B58\u5728");
+      if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
       const metas = [];
       for (const item of p.items) {
         const provider = getProvider(item.provider);
@@ -5179,7 +5524,7 @@ function registerMethods(gw, svc) {
   ));
   gw.method("terminal.attach", wrap(z.object({ id: z.string() }), async (p, ctx) => {
     const r = svc.terminals.attach(p.id);
-    if (r.error || r.index == null) throw new ApiError("not_found", r.error ?? "\u7EC8\u7AEF\u4E0D\u5B58\u5728");
+    if (r.error || r.index == null) throw new ApiError("not_found", r.error ?? tr("err.terminalMissing"));
     svc.gateway.subscribe(ctx.conn, `terminal:${r.index}`);
     return r;
   }));
@@ -5189,7 +5534,7 @@ function registerMethods(gw, svc) {
   ));
   gw.method("terminal.kill", wrap(z.object({ id: z.string() }), (p) => svc.terminals.kill(p.id)));
   const needManager = () => {
-    if (!svc.manager) throw new ApiError("unavailable", "\u4F1A\u8BDD\u7BA1\u7406\u5668\u672A\u542F\u52A8");
+    if (!svc.manager) throw new ApiError("unavailable", tr("err.noManager"));
     return svc.manager;
   };
   gw.method("thread.send", wrap(
@@ -5200,10 +5545,13 @@ function registerMethods(gw, svc) {
       behavior: z.enum(["queue", "steer"]).optional()
     }),
     async (p) => {
-      await needManager().send(p.id, { text: p.text, attachments: p.attachments }, p.behavior ?? "queue");
-      return { ok: true };
+      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments }, p.behavior ?? "queue");
+      return { ok: true, delivered: delivered ?? "started" };
     }
   ));
+  gw.method("thread.queueRemove", wrap(z.object({ id: z.string(), queueId: z.string() }), async (p) => {
+    return { ok: needManager().removeQueued(p.id, p.queueId) };
+  }));
   gw.method("thread.interrupt", wrap(z.object({ id: z.string() }), async (p) => {
     await needManager().interrupt(p.id);
     return { ok: true };
@@ -5261,15 +5609,15 @@ function registerMethods(gw, svc) {
   }));
   gw.method("thread.exportMarkdown", wrap(z.object({ id: z.string() }), async (p) => {
     const meta = await svc.threads.get(p.id);
-    if (!meta) throw new ApiError("not_found", "\u5BF9\u8BDD\u4E0D\u5B58\u5728");
+    if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
     const events = await svc.threads.readEvents(p.id, 0, 2e4);
     const L = [];
     L.push(`# ${meta.title}`, "");
-    L.push(`> ${meta.provider} \xB7 ${meta.model ?? "\u9ED8\u8BA4"} \xB7 ${meta.mode} \xB7 ${new Date(meta.createdAt).toLocaleString("zh-CN")}`, "");
+    L.push(`> ${meta.provider} \xB7 ${meta.model ?? tr("export.defaultModel")} \xB7 ${meta.mode} \xB7 ${new Date(meta.createdAt).toLocaleString(intlLocale())}`, "");
     for (const e of events) {
       switch (e.type) {
         case "user_message":
-          L.push(`**\u6211**${e.steered ? "\uFF08\u63D2\u8BDD\uFF09" : ""}\uFF1A
+          L.push(`**${tr("export.me")}**${e.steered ? tr("export.steered") : ""}:
 
 ${e.text}`, "");
           break;
@@ -5277,7 +5625,7 @@ ${e.text}`, "");
           L.push(e.text, "");
           break;
         case "reasoning":
-          L.push(`<details><summary>\u601D\u8003</summary>
+          L.push(`<details><summary>${tr("export.reasoning")}</summary>
 
 ${e.text}
 </details>`, "");
@@ -5291,10 +5639,14 @@ ${e.text}
           break;
         }
         case "plan":
-          L.push("### \u8BA1\u5212\n\n" + e.markdown, "");
+          L.push(`### ${tr("export.plan")}
+
+` + e.markdown, "");
           break;
         case "todo":
-          L.push("### \u5F85\u529E\n\n" + e.items.map((i) => `- [${i.status === "done" || i.status === "completed" ? "x" : " "}] ${i.text}`).join("\n"), "");
+          L.push(`### ${tr("export.todo")}
+
+` + e.items.map((i) => `- [${i.status === "done" || i.status === "completed" ? "x" : " "}] ${i.text}`).join("\n"), "");
           break;
         case "notice":
           L.push(`_${e.message}_`, "");
@@ -5309,12 +5661,17 @@ ${e.text}
     const markdown = L.join("\n");
     const safe = meta.title.replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 60) || "thread";
     const filename = `${safe}.md`;
-    const dir = join11(homedir7(), "Downloads");
-    await mkdir3(dir, { recursive: true });
-    let dest = join11(dir, filename);
+    let dir = join12(homedir8(), "Downloads");
+    try {
+      await mkdir3(dir, { recursive: true });
+    } catch {
+      dir = join12(svc.cfg.dataDir, "exports");
+      await mkdir3(dir, { recursive: true });
+    }
+    let dest = join12(dir, filename);
     if (existsSync8(dest)) {
       const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      dest = join11(dir, `${safe}-${stamp2}.md`);
+      dest = join12(dir, `${safe}-${stamp2}.md`);
     }
     await writeFile4(dest, markdown, "utf8");
     revealInFileManager(dest);
@@ -5341,12 +5698,16 @@ function revealInFileManager(filePath) {
 var threadModeSchema, ApiError;
 var init_methods = __esm({
   "daemon/src/ws/methods.ts"() {
+    init_settings();
     init_registry();
     init_catalog();
     init_enabled();
     init_pickFolder();
     init_bin();
     init_infoCache();
+    init_launch();
+    init_modes();
+    init_i18n();
     threadModeSchema = z.enum(["plan", "default", "acceptEdits", "bypassPermissions", "ask"]);
     ApiError = class extends Error {
       code;
@@ -5378,13 +5739,118 @@ var init_atomic = __esm({
   }
 });
 
+// daemon/src/store/settings.ts
+import { readFile as readFile12 } from "node:fs/promises";
+import { join as join13 } from "node:path";
+import { z as z2 } from "zod";
+function parseSettingsPatch(patch) {
+  const r = settingsPatchSchema.safeParse(patch);
+  if (r.success) return { ok: true, patch: r.data };
+  return {
+    ok: false,
+    error: r.error.issues.map((i) => `${i.path.join(".") || "(patch)"}: ${i.message}`).join("; ")
+  };
+}
+function sanitizeStored(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const shape = settingsPatchSchema.shape;
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const field = shape[k];
+    if (field && k !== "idleCloseMinutes" && !field.safeParse(v).success) continue;
+    if (k === "idleCloseMinutes") {
+      const n = Number(v);
+      if (!Number.isFinite(n)) continue;
+      out[k] = Math.min(IDLE_CLOSE_MAX, Math.max(IDLE_CLOSE_MIN, Math.round(n)));
+      continue;
+    }
+    out[k] = v;
+  }
+  return out;
+}
+var DEFAULT_SETTINGS, IDLE_CLOSE_MIN, IDLE_CLOSE_MAX, mode, id, settingsPatchSchema, SettingsStore;
+var init_settings = __esm({
+  "daemon/src/store/settings.ts"() {
+    init_atomic();
+    DEFAULT_SETTINGS = {
+      defaultProvider: "claude",
+      defaultMode: "default",
+      sendKey: "enter",
+      runningSend: "queue",
+      showThinking: true,
+      theme: "auto",
+      idleCloseMinutes: 30,
+      collapsedProjects: [],
+      panel: { open: false, tab: "changes", width: 440 },
+      sidebarWidth: 248,
+      lastProjectId: null,
+      lastThreadId: null,
+      recentDirs: []
+    };
+    IDLE_CLOSE_MIN = 5;
+    IDLE_CLOSE_MAX = 240;
+    mode = z2.enum(["plan", "default", "acceptEdits", "bypassPermissions", "ask"]);
+    id = z2.string().min(1).max(200);
+    settingsPatchSchema = z2.object({
+      defaultProvider: z2.string().min(1).max(64),
+      defaultMode: mode,
+      sendKey: z2.enum(["enter", "ctrlEnter"]),
+      runningSend: z2.enum(["queue", "steer"]),
+      showThinking: z2.boolean(),
+      // auto = follow the host: Magpie's light/dark inside Magpie, the OS outside it
+      theme: z2.enum(["auto", "light", "dark"]),
+      idleCloseMinutes: z2.number().int().min(IDLE_CLOSE_MIN).max(IDLE_CLOSE_MAX),
+      collapsedProjects: z2.array(id).max(1e3),
+      panel: z2.object({ open: z2.boolean(), tab: z2.string().max(40), width: z2.number().min(0).max(5e3) }).partial(),
+      sidebarWidth: z2.number().min(0).max(5e3),
+      lastProjectId: id.nullable(),
+      lastThreadId: id.nullable(),
+      recentDirs: z2.array(z2.string().max(4096)).max(50),
+      providerEnabled: z2.record(z2.string().max(64), z2.boolean()),
+      providerCommand: z2.record(
+        z2.string().max(64),
+        z2.object({ executable: z2.string().max(4096).optional(), args: z2.array(z2.string().max(4096)).max(64).optional() }).strict()
+      ),
+      v1Migrated: z2.boolean()
+    }).partial().strict();
+    SettingsStore = class {
+      file;
+      cache = null;
+      writing = Promise.resolve();
+      constructor(dataDir) {
+        this.file = join13(dataDir, "settings.json");
+      }
+      async get() {
+        if (this.cache) return this.cache;
+        let raw = {};
+        try {
+          raw = JSON.parse(await readFile12(this.file, "utf8"));
+        } catch {
+        }
+        raw = sanitizeStored(raw);
+        this.cache = { ...DEFAULT_SETTINGS, ...raw, panel: { ...DEFAULT_SETTINGS.panel, ...raw.panel } };
+        return this.cache;
+      }
+      async set(patch) {
+        const cur = await this.get();
+        const next = { ...cur, ...patch, panel: { ...cur.panel, ...patch.panel } };
+        this.cache = next;
+        const snap = next;
+        this.writing = this.writing.then(() => writeJsonAtomic(this.file, snap));
+        await this.writing;
+        return next;
+      }
+    };
+  }
+});
+
 // daemon/src/util/jsonl.ts
-import { appendFile, readFile as readFile13, mkdir as mkdir5, rename as rename2, writeFile as writeFile6 } from "node:fs/promises";
+import { appendFile, readFile as readFile14, mkdir as mkdir5, rename as rename2, writeFile as writeFile6 } from "node:fs/promises";
 import { dirname as dirname5 } from "node:path";
 async function readJsonl(file) {
   let text = "";
   try {
-    text = await readFile13(file, "utf8");
+    text = await readFile14(file, "utf8");
   } catch {
     return [];
   }
@@ -5430,9 +5896,9 @@ var legacy_exports = {};
 __export(legacy_exports, {
   migrateLegacy: () => migrateLegacy
 });
-import { cp as cp2, mkdir as mkdir8, readdir as readdir6, readFile as readFile17 } from "node:fs/promises";
+import { cp as cp2, mkdir as mkdir8, readdir as readdir6, readFile as readFile18 } from "node:fs/promises";
 import { existsSync as existsSync12 } from "node:fs";
-import { join as join18 } from "node:path";
+import { join as join19 } from "node:path";
 function stamp() {
   const d = /* @__PURE__ */ new Date();
   const p = (n) => String(n).padStart(2, "0");
@@ -5441,19 +5907,19 @@ function stamp() {
 async function migrateLegacy(dataDir, stores) {
   const settings = await stores.settings.get();
   if (settings.v1Migrated) return { migrated: 0, skipped: true };
-  const oldDir = join18(dataDir, "sessions");
-  const oldSettingsPath = join18(dataDir, "settings.json");
+  const oldDir = join19(dataDir, "sessions");
+  const oldSettingsPath = join19(dataDir, "settings.json");
   if (!existsSync12(oldDir) && !existsSync12(oldSettingsPath)) {
     await stores.settings.set({ v1Migrated: true });
     return { migrated: 0, skipped: true };
   }
-  const backup = join18(dataDir, "trash", `legacy-${stamp()}`);
+  const backup = join19(dataDir, "trash", `legacy-${stamp()}`);
   await mkdir8(backup, { recursive: true });
-  if (existsSync12(oldDir)) await cp2(oldDir, join18(backup, "sessions"), { recursive: true }).catch(() => {
+  if (existsSync12(oldDir)) await cp2(oldDir, join19(backup, "sessions"), { recursive: true }).catch(() => {
   });
-  if (existsSync12(oldSettingsPath)) await cp2(oldSettingsPath, join18(backup, "settings.json")).catch(() => {
+  if (existsSync12(oldSettingsPath)) await cp2(oldSettingsPath, join19(backup, "settings.json")).catch(() => {
   });
-  const oldSettings = existsSync12(oldSettingsPath) ? JSON.parse(await readFile17(oldSettingsPath, "utf8").catch(() => "{}")) : {};
+  const oldSettings = existsSync12(oldSettingsPath) ? JSON.parse(await readFile18(oldSettingsPath, "utf8").catch(() => "{}")) : {};
   const projectIdByPath = /* @__PURE__ */ new Map();
   const lc = (p) => p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
   for (const p of oldSettings.projects ?? []) {
@@ -5467,13 +5933,13 @@ async function migrateLegacy(dataDir, stores) {
   }
   let sessionIds = [];
   try {
-    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync12(join18(oldDir, d, "meta.json")));
+    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync12(join19(oldDir, d, "meta.json")));
   } catch {
   }
   const metas = [];
-  for (const id of sessionIds) {
+  for (const id2 of sessionIds) {
     try {
-      const m = JSON.parse(await readFile17(join18(oldDir, id, "meta.json"), "utf8"));
+      const m = JSON.parse(await readFile18(join19(oldDir, id2, "meta.json"), "utf8"));
       if (m?.cwd) metas.push(m);
     } catch {
     }
@@ -5500,13 +5966,13 @@ async function migrateLegacy(dataDir, stores) {
   const projectOf = (cwd) => {
     const l = lc(cwd);
     let best = null;
-    for (const [pp, id] of projectIdByPath) {
+    for (const [pp, id2] of projectIdByPath) {
       if (belongsTo(l, pp) && (best == null || pp.length > best.length)) best = pp;
     }
     return best ? projectIdByPath.get(best) : null;
   };
   let migrated = 0;
-  const threadsDir = join18(dataDir, "threads");
+  const threadsDir = join19(dataDir, "threads");
   for (const m of metas) {
     try {
       const projectId = projectOf(m.cwd);
@@ -5543,10 +6009,10 @@ async function migrateLegacy(dataDir, stores) {
         importedFrom: m.cliSessionId ? { provider, sessionId: m.cliSessionId } : void 0,
         seq: 0
       };
-      const tdir = join18(threadsDir, meta.id);
+      const tdir = join19(threadsDir, meta.id);
       if (existsSync12(tdir)) meta.id = `t_${m.id}_v1`.slice(0, 80);
-      await mkdir8(join18(threadsDir, meta.id), { recursive: true });
-      const oldEvts = (await readFile17(join18(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
+      await mkdir8(join19(threadsDir, meta.id), { recursive: true });
+      const oldEvts = (await readFile18(join19(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
         try {
           return JSON.parse(l);
         } catch {
@@ -5625,9 +6091,9 @@ async function migrateLegacy(dataDir, stores) {
         seq++;
         lines.push({ type: "tool_call", itemId: key, kind: "other", title: o.title, status: "failed", seq, ts: Date.now(), threadId: meta.id });
       }
-      for (const ev of lines) await appendJsonl(join18(threadsDir, meta.id, "timeline.jsonl"), ev);
+      for (const ev of lines) await appendJsonl(join19(threadsDir, meta.id, "timeline.jsonl"), ev);
       meta.seq = seq;
-      await writeJsonAtomic(join18(threadsDir, meta.id, "meta.json"), meta);
+      await writeJsonAtomic(join19(threadsDir, meta.id, "meta.json"), meta);
       migrated++;
     } catch (e) {
       log("warn", "\u8FC1\u79FB\uFF1A\u4F1A\u8BDD\u5931\u8D25", { id: m.id, err: String(e) });
@@ -5692,7 +6158,7 @@ var init_warm = __esm({
 
 // daemon/src/main.ts
 import { mkdirSync as mkdirSync2, rmSync as rmSync2, chmodSync as chmodSync2 } from "node:fs";
-import { join as join19, dirname as dirname7 } from "node:path";
+import { join as join20, dirname as dirname7 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // daemon/src/config.ts
@@ -5809,6 +6275,7 @@ function tokenEqual(a, b) {
 
 // daemon/src/http.ts
 init_log();
+init_i18n();
 var MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -5850,7 +6317,7 @@ function createHttpServer(cfg2, appDir, attachments, hooks = {}) {
       await route(req, res);
     } catch (e) {
       log("error", "HTTP \u5904\u7406\u5F02\u5E38", { url: req.url, err: String(e) });
-      if (!res.headersSent) sendJson(res, 500, { ok: false, e: { code: "internal", message: "\u670D\u52A1\u5185\u90E8\u9519\u8BEF" } });
+      if (!res.headersSent) sendJson(res, 500, { ok: false, e: { code: "internal", message: tr("http.internal") } });
       else res.end();
     }
   });
@@ -5862,7 +6329,7 @@ function createHttpServer(cfg2, appDir, attachments, hooks = {}) {
     }
     const origin = classifyOrigin(req.headers.origin, cfg2.port);
     if (origin === "foreign") {
-      sendJson(res, 403, { ok: false, e: { code: "bad_origin", message: "\u6765\u6E90\u4E0D\u5141\u8BB8" } });
+      sendJson(res, 403, { ok: false, e: { code: "bad_origin", message: tr("http.badOrigin") } });
       return;
     }
     const url = new URL(req.url ?? "/", `http://127.0.0.1:${cfg2.port}`);
@@ -5871,7 +6338,7 @@ function createHttpServer(cfg2, appDir, attachments, hooks = {}) {
     const isAttachment = pathname.startsWith("/attachments/");
     if (req.method === "OPTIONS") {
       if (pathname !== "/api/upload" || origin === "none") {
-        sendJson(res, 403, { ok: false, e: { code: "bad_preflight", message: "\u9884\u68C0\u4E0D\u5141\u8BB8" } });
+        sendJson(res, 403, { ok: false, e: { code: "bad_preflight", message: tr("http.badPreflight") } });
         return;
       }
       send(res, 204, "", {
@@ -5888,7 +6355,7 @@ function createHttpServer(cfg2, appDir, attachments, hooks = {}) {
       const queryToken = isAttachment ? url.searchParams.get("t") : null;
       const validToken = typeof headerToken === "string" && tokenEqual(headerToken, cfg2.token) || typeof queryToken === "string" && tokenEqual(queryToken, cfg2.token);
       if (!validToken) {
-        sendJson(res, 403, { ok: false, e: { code: "bad_token", message: "\u4EE4\u724C\u65E0\u6548" } });
+        sendJson(res, 403, { ok: false, e: { code: "bad_token", message: tr("http.badToken") } });
         return;
       }
       if (origin === "opaque") {
@@ -5899,10 +6366,10 @@ function createHttpServer(cfg2, appDir, attachments, hooks = {}) {
         await routeApi(req, res, pathname, url);
         return;
       }
-      const id = safeDecode(pathname.slice("/attachments/".length));
-      const a = id === null ? null : await attachments.get(id);
+      const id2 = safeDecode(pathname.slice("/attachments/".length));
+      const a = id2 === null ? null : await attachments.get(id2);
       if (!a) {
-        sendJson(res, 404, { ok: false, e: { code: "not_found", message: "\u9644\u4EF6\u4E0D\u5B58\u5728" } });
+        sendJson(res, 404, { ok: false, e: { code: "not_found", message: tr("http.noAttachment") } });
         return;
       }
       const data2 = await attachments.read(a.id);
@@ -5910,11 +6377,11 @@ function createHttpServer(cfg2, appDir, attachments, hooks = {}) {
       return;
     }
     if (origin === "opaque") {
-      sendJson(res, 403, { ok: false, e: { code: "bad_origin", message: "\u6765\u6E90\u4E0D\u5141\u8BB8" } });
+      sendJson(res, 403, { ok: false, e: { code: "bad_origin", message: tr("http.badOrigin") } });
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") {
-      sendJson(res, 405, { ok: false, e: { code: "method", message: "\u65B9\u6CD5\u4E0D\u5141\u8BB8" } });
+      sendJson(res, 405, { ok: false, e: { code: "method", message: tr("http.method") } });
       return;
     }
     if (pathname === "/" || pathname === "/index.html") {
@@ -5922,23 +6389,23 @@ function createHttpServer(cfg2, appDir, attachments, hooks = {}) {
         const html = await readFile(join4(appDir, "index.html"), "utf8");
         send(res, 200, html, { ...STATIC_HEADERS, "content-type": "text/html; charset=utf-8" });
       } catch {
-        send(res, 503, "app \u8FD8\u6CA1\u6784\u5EFA\uFF08\u7F3A app/index.html\uFF09", { ...STATIC_HEADERS, "content-type": "text/plain; charset=utf-8" });
+        send(res, 503, tr("http.noApp"), { ...STATIC_HEADERS, "content-type": "text/plain; charset=utf-8" });
       }
       return;
     }
     const decoded = safeDecode(pathname);
     if (decoded === null) {
-      sendJson(res, 400, { ok: false, e: { code: "bad_path", message: "\u8DEF\u5F84\u4E0D\u5408\u6CD5" } });
+      sendJson(res, 400, { ok: false, e: { code: "bad_path", message: tr("http.badPath") } });
       return;
     }
     const rel = normalize(decoded).replace(/^([\\/])+/, "");
     const full = normalize(join4(appDir, rel));
     if (!full.startsWith(normalize(appDir)) || rel.includes("..")) {
-      sendJson(res, 403, { ok: false, e: { code: "bad_path", message: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" } });
+      sendJson(res, 403, { ok: false, e: { code: "bad_path", message: tr("http.pathDenied") } });
       return;
     }
     if (!existsSync2(full) || !(await stat(full)).isFile()) {
-      sendJson(res, 404, { ok: false, e: { code: "not_found", message: "\u6587\u4EF6\u4E0D\u5B58\u5728" } });
+      sendJson(res, 404, { ok: false, e: { code: "not_found", message: tr("http.noFile") } });
       return;
     }
     const data = await readFile(full);
@@ -5952,13 +6419,13 @@ function createHttpServer(cfg2, appDir, attachments, hooks = {}) {
     if (pathname === "/api/upload" && req.method === "POST") {
       const name = url.searchParams.get("name") ?? "";
       if (!attachments.allowedExt(name)) {
-        sendJson(res, 400, { ok: false, e: { code: "bad_type", message: "\u4E0D\u652F\u6301\u7684\u6587\u4EF6\u7C7B\u578B" } });
+        sendJson(res, 400, { ok: false, e: { code: "bad_type", message: tr("http.badType") } });
         return;
       }
       const declared = Number(req.headers["content-length"] ?? 0);
       if (declared > MAX_UPLOAD) {
         res.setHeader("connection", "close");
-        sendJson(res, 413, { ok: false, e: { code: "too_large", message: "\u6587\u4EF6\u592A\u5927\uFF08\u4E0A\u9650 50MB\uFF09" } });
+        sendJson(res, 413, { ok: false, e: { code: "too_large", message: tr("http.tooLarge") } });
         req.resume();
         return;
       }
@@ -5969,7 +6436,7 @@ function createHttpServer(cfg2, appDir, attachments, hooks = {}) {
         size += b.length;
         if (size > MAX_UPLOAD) {
           res.setHeader("connection", "close");
-          sendJson(res, 413, { ok: false, e: { code: "too_large", message: "\u6587\u4EF6\u592A\u5927\uFF08\u4E0A\u9650 50MB\uFF09" } });
+          sendJson(res, 413, { ok: false, e: { code: "too_large", message: tr("http.tooLarge") } });
           return;
         }
         chunks.push(b);
@@ -5978,7 +6445,7 @@ function createHttpServer(cfg2, appDir, attachments, hooks = {}) {
       sendJson(res, 200, { ok: true, id: a.id, name: a.name, mime: a.mime, size: a.size });
       return;
     }
-    sendJson(res, 404, { ok: false, e: { code: "not_found", message: "\u63A5\u53E3\u4E0D\u5B58\u5728" } });
+    sendJson(res, 404, { ok: false, e: { code: "not_found", message: tr("http.noRoute") } });
   }
   if (hooks.onUpgrade) {
     server.on("upgrade", hooks.onUpgrade);
@@ -6020,105 +6487,58 @@ var AttachmentStore = class {
   async save(name, data) {
     const ext = this.safeExt(name);
     if (!ext) throw new Error("\u4E0D\u652F\u6301\u7684\u6587\u4EF6\u7C7B\u578B");
-    const id = "a_" + Date.now().toString(36) + randomBytes2(3).toString("hex");
+    const id2 = "a_" + Date.now().toString(36) + randomBytes2(3).toString("hex");
     await mkdir(this.dir, { recursive: true });
-    const file = join5(this.dir, id + ext);
+    const file = join5(this.dir, id2 + ext);
     await writeFile(file, data);
-    this.files.set(id, id + ext);
+    this.files.set(id2, id2 + ext);
     const mime = MIME2[ext] ?? TEXT_MIME;
-    return { id, name: name || "\u672A\u547D\u540D" + ext, mime, size: data.length, path: file };
+    return { id: id2, name: name || "\u672A\u547D\u540D" + ext, mime, size: data.length, path: file };
   }
-  async get(id) {
-    if (!validId(id)) return null;
-    const known = this.files.get(id);
+  async get(id2) {
+    if (!validId(id2)) return null;
+    const known = this.files.get(id2);
     if (known) {
-      const hit = await this.describe(id, known);
+      const hit = await this.describe(id2, known);
       if (hit) return hit;
-      this.files.delete(id);
+      this.files.delete(id2);
     }
     const { readdir: readdir7 } = await import("node:fs/promises");
     try {
       for (const f of await readdir7(this.dir)) {
-        if (f.startsWith(id + ".")) {
-          this.files.set(id, f);
-          return await this.describe(id, f);
+        if (f.startsWith(id2 + ".")) {
+          this.files.set(id2, f);
+          return await this.describe(id2, f);
         }
       }
     } catch {
     }
     return null;
   }
-  async describe(id, f) {
+  async describe(id2, f) {
     const p = join5(this.dir, f);
     const s = await stat2(p).catch(() => null);
     if (!s?.isFile()) return null;
     const ext = extname2(f).toLowerCase();
-    return { id, name: f.slice(id.length + 1) || f, mime: MIME2[ext] ?? TEXT_MIME, size: s.size, path: p };
+    return { id: id2, name: f.slice(id2.length + 1) || f, mime: MIME2[ext] ?? TEXT_MIME, size: s.size, path: p };
   }
-  async read(id) {
-    const a = await this.get(id);
+  async read(id2) {
+    const a = await this.get(id2);
     if (!a) return null;
     return readFile2(a.path);
   }
 };
 
-// daemon/src/store/settings.ts
-init_atomic();
-import { readFile as readFile11 } from "node:fs/promises";
-import { join as join12 } from "node:path";
-var DEFAULT_SETTINGS = {
-  defaultProvider: "claude",
-  defaultMode: "default",
-  defaultEffort: null,
-  sendKey: "enter",
-  runningSend: "queue",
-  showThinking: true,
-  density: "comfortable",
-  theme: "auto",
-  idleCloseMinutes: 30,
-  idleExitMinutes: 60,
-  collapsedProjects: [],
-  panel: { open: false, tab: "changes", width: 440 },
-  sidebarWidth: 248,
-  lastProjectId: null,
-  lastThreadId: null,
-  recentDirs: []
-};
-var SettingsStore = class {
-  file;
-  cache = null;
-  writing = Promise.resolve();
-  constructor(dataDir) {
-    this.file = join12(dataDir, "settings.json");
-  }
-  async get() {
-    if (this.cache) return this.cache;
-    let raw = {};
-    try {
-      raw = JSON.parse(await readFile11(this.file, "utf8"));
-    } catch {
-    }
-    this.cache = { ...DEFAULT_SETTINGS, ...raw, panel: { ...DEFAULT_SETTINGS.panel, ...raw.panel } };
-    return this.cache;
-  }
-  async set(patch) {
-    const cur = await this.get();
-    const next = { ...cur, ...patch, panel: { ...cur.panel, ...patch.panel } };
-    this.cache = next;
-    const snap = next;
-    this.writing = this.writing.then(() => writeJsonAtomic(this.file, snap));
-    await this.writing;
-    return next;
-  }
-};
+// daemon/src/main.ts
+init_settings();
 
 // daemon/src/store/projects.ts
 init_atomic();
 init_paths();
 init_methods();
-import { readFile as readFile12 } from "node:fs/promises";
+import { readFile as readFile13 } from "node:fs/promises";
 import { existsSync as existsSync9, statSync as statSync5 } from "node:fs";
-import { join as join13 } from "node:path";
+import { join as join14 } from "node:path";
 import { randomBytes as randomBytes3 } from "node:crypto";
 function newId() {
   return "p_" + Date.now().toString(36) + randomBytes3(3).toString("hex");
@@ -6128,21 +6548,21 @@ var ProjectsStore = class {
   cache = null;
   writing = Promise.resolve();
   constructor(dataDir) {
-    this.file = join13(dataDir, "projects.json");
+    this.file = join14(dataDir, "projects.json");
   }
   async list() {
     if (this.cache) return this.cache;
     try {
-      this.cache = JSON.parse(await readFile12(this.file, "utf8"));
+      this.cache = JSON.parse(await readFile13(this.file, "utf8"));
       if (!Array.isArray(this.cache)) this.cache = [];
     } catch {
       this.cache = [];
     }
     return this.cache;
   }
-  async get(id) {
-    if (!validId(id)) return null;
-    return (await this.list()).find((p) => p.id === id) ?? null;
+  async get(id2) {
+    if (!validId(id2)) return null;
+    return (await this.list()).find((p) => p.id === id2) ?? null;
   }
   async save(list) {
     this.cache = list;
@@ -6169,17 +6589,17 @@ var ProjectsStore = class {
     await this.save(list);
     return proj;
   }
-  async rename(id, name) {
+  async rename(id2, name) {
     const list = await this.list();
-    const p = list.find((x) => x.id === id);
+    const p = list.find((x) => x.id === id2);
     if (!p) throw new ApiError("not_found", "\u9879\u76EE\u4E0D\u5B58\u5728");
     p.name = name.trim() || p.name;
     await this.save(list);
     return p;
   }
-  async remove(id) {
+  async remove(id2) {
     const list = await this.list();
-    const idx = list.findIndex((x) => x.id === id);
+    const idx = list.findIndex((x) => x.id === id2);
     if (idx < 0) return;
     list.splice(idx, 1);
     await this.save(list);
@@ -6192,8 +6612,8 @@ init_jsonl();
 init_paths();
 init_methods();
 init_i18n();
-import { mkdir as mkdir6, rename as rename3, readdir as readdir4, readFile as readFile14 } from "node:fs/promises";
-import { join as join14 } from "node:path";
+import { mkdir as mkdir6, rename as rename3, readdir as readdir4, readFile as readFile15 } from "node:fs/promises";
+import { join as join15 } from "node:path";
 import { randomBytes as randomBytes4 } from "node:crypto";
 function newId2() {
   return "t_" + Date.now().toString(36) + randomBytes4(3).toString("hex");
@@ -6212,17 +6632,17 @@ var ThreadsStore = class {
     return p;
   }
   constructor(dataDir) {
-    this.dir = join14(dataDir, "threads");
-    this.trashDir = join14(dataDir, "trash", "threads");
+    this.dir = join15(dataDir, "threads");
+    this.trashDir = join15(dataDir, "trash", "threads");
   }
-  tdir(id) {
-    return join14(this.dir, id);
+  tdir(id2) {
+    return join15(this.dir, id2);
   }
-  metaPath(id) {
-    return join14(this.tdir(id), "meta.json");
+  metaPath(id2) {
+    return join15(this.tdir(id2), "meta.json");
   }
-  timelinePath(id) {
-    return join14(this.tdir(id), "timeline.jsonl");
+  timelinePath(id2) {
+    return join15(this.tdir(id2), "timeline.jsonl");
   }
   async loadAll() {
     if (this.loaded) return;
@@ -6233,9 +6653,9 @@ var ThreadsStore = class {
     } catch {
       return;
     }
-    for (const id of ids) {
+    for (const id2 of ids) {
       try {
-        const m = JSON.parse(await readFile14(this.metaPath(id), "utf8"));
+        const m = JSON.parse(await readFile15(this.metaPath(id2), "utf8"));
         if (m && typeof m.id === "string") this.metas.set(m.id, m);
       } catch {
       }
@@ -6245,10 +6665,10 @@ var ThreadsStore = class {
     await this.loadAll();
     return [...this.metas.values()].sort((a, b) => b.updatedAt - a.updatedAt);
   }
-  async get(id) {
-    if (!validId(id)) return null;
+  async get(id2) {
+    if (!validId(id2)) return null;
     await this.loadAll();
-    return this.metas.get(id) ?? null;
+    return this.metas.get(id2) ?? null;
   }
   async saveMeta(meta) {
     this.metas.set(meta.id, meta);
@@ -6284,9 +6704,9 @@ var ThreadsStore = class {
     await this.saveMeta(meta);
     return meta;
   }
-  async patch(id, patch) {
+  async patch(id2, patch) {
     return this.serial(async () => {
-      const meta = await this.get(id);
+      const meta = await this.get(id2);
       if (!meta) throw new ApiError("not_found", "\u5BF9\u8BDD\u4E0D\u5B58\u5728");
       if (patch.title !== void 0 && patch.titleAuto === void 0) patch = { ...patch, titleAuto: false };
       const next = { ...meta, ...patch, id: meta.id, updatedAt: Date.now() };
@@ -6296,37 +6716,37 @@ var ThreadsStore = class {
   }
   // Append an event: inside the serialized section take meta.seq+1 as seq, write the jsonl and update meta.
   // A passed-in seq is ignored (keeps it strictly increasing); ts/threadId are filled in when missing.
-  async appendEvent(id, ev) {
+  async appendEvent(id2, ev) {
     return this.serial(async () => {
-      const meta = await this.get(id);
+      const meta = await this.get(id2);
       if (!meta) throw new ApiError("not_found", "\u5BF9\u8BDD\u4E0D\u5B58\u5728");
       const full = {
         ...ev,
         seq: meta.seq + 1,
         ts: ev.ts ?? Date.now(),
-        threadId: id
+        threadId: id2
       };
-      await appendJsonl(this.timelinePath(id), full);
+      await appendJsonl(this.timelinePath(id2), full);
       meta.seq = full.seq;
       meta.updatedAt = Date.now();
-      this.metas.set(id, meta);
-      await writeJsonAtomic(this.metaPath(id), meta);
+      this.metas.set(id2, meta);
+      await writeJsonAtomic(this.metaPath(id2), meta);
       return full;
     });
   }
-  async readEvents(id, afterSeq = 0, limit = 5e3) {
-    const rows = await readJsonl(this.timelinePath(id));
+  async readEvents(id2, afterSeq = 0, limit = 5e3) {
+    const rows = await readJsonl(this.timelinePath(id2));
     const out = rows.filter((e) => typeof e.seq === "number" && e.seq > afterSeq);
     return out.slice(-limit);
   }
-  async delete(id) {
-    const meta = await this.get(id);
+  async delete(id2) {
+    const meta = await this.get(id2);
     if (!meta) return;
     const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
     await mkdir6(this.trashDir, { recursive: true });
     for (let attempt = 0; ; attempt++) {
       try {
-        await rename3(this.tdir(id), join14(this.trashDir, `${id}-${stamp2}`));
+        await rename3(this.tdir(id2), join15(this.trashDir, `${id2}-${stamp2}`));
         break;
       } catch (e) {
         const code = e?.code;
@@ -6337,7 +6757,7 @@ var ThreadsStore = class {
         throw new ApiError("internal", "\u79FB\u5165\u56DE\u6536\u76EE\u5F55\u5931\u8D25\uFF1A" + String(e));
       }
     }
-    this.metas.delete(id);
+    this.metas.delete(id2);
   }
 };
 
@@ -6544,6 +6964,8 @@ init_atomic();
 init_registry();
 
 // daemon/src/agents/manager.ts
+init_launch();
+init_modes();
 init_attachmentRefs();
 init_registry();
 init_catalog();
@@ -6585,7 +7007,7 @@ var Coalescer = class {
     this.flush(itemId);
   }
   dispose() {
-    for (const id of [...this.acc.keys()]) this.flush(id);
+    for (const id2 of [...this.acc.keys()]) this.flush(id2);
   }
 };
 
@@ -6595,6 +7017,7 @@ init_log();
 init_i18n();
 init_commands();
 var SLASH_CACHE_TTL_MS = 10 * 60 * 1e3;
+var MAX_WARM_IDLE = 3;
 var DELTA_TYPES = ["assistant_delta", "reasoning_delta", "tool_output_delta"];
 var deltaKey = (type, itemId) => `${type}\0${itemId}`;
 var AgentManager = class {
@@ -6673,6 +7096,16 @@ var AgentManager = class {
     }
     return false;
   }
+  /** Drop a queued message that hasn't been sent yet (the × on the composer's queue list) */
+  removeQueued(threadId, queueId) {
+    const rt = this.runtimes.get(threadId);
+    if (!rt) return false;
+    const before = rt.queue.length;
+    rt.queue = rt.queue.filter((q) => q.id !== queueId);
+    if (rt.queue.length === before) return false;
+    this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
+    return true;
+  }
   runtimeInfo(threadId) {
     const rt = this.runtimes.get(threadId);
     if (!rt) return null;
@@ -6703,7 +7136,9 @@ var AgentManager = class {
         endedTurnIds: /* @__PURE__ */ new Set(),
         starting: false,
         commands: [],
-        sessionCreating: null
+        sessionCreating: null,
+        pendingText: /* @__PURE__ */ new Map(),
+        deltasOnly: false
       };
       this.runtimes.set(threadId, r);
     }
@@ -6752,17 +7187,18 @@ var AgentManager = class {
             steered: true,
             attachments: this.attachmentLabels(attachmentRefs)
           });
-          return;
+          return "steered";
         } catch (e) {
           log("info", `thread ${threadId} \u63D2\u8BDD\u5931\u8D25\uFF0C\u6539\u4E3A\u6392\u961F\uFF1A${String(e)}`);
         }
       }
-      const q = { id: "q" + Date.now().toString(36), text: input.text, attachments: attachmentRefs };
+      const q = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs };
       rt.queue.push(q);
       this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
-      return;
+      return "queued";
     }
     await this.startTurn(threadId, input.text, attachmentRefs);
+    return "started";
   }
   async startTurn(threadId, text, attachmentRefs) {
     const rt = this.rt(threadId);
@@ -6857,12 +7293,21 @@ var AgentManager = class {
       return;
     }
     if (ev.type === "assistant_delta" || ev.type === "reasoning_delta" || ev.type === "tool_output_delta") {
+      if (rt.deltasOnly && ev.type !== "tool_output_delta") {
+        const key = `${ev.type === "assistant_delta" ? "assistant" : "reasoning"}\0${ev.itemId}`;
+        const prior = rt.pendingText.get(key);
+        rt.pendingText.set(key, { type: ev.type === "assistant_delta" ? "assistant" : "reasoning", itemId: ev.itemId, text: (prior?.text ?? "") + ev.text });
+      }
       rt.coalescer.push(deltaKey(ev.type, ev.itemId), ev.text);
       return;
     }
     const evItemId = ev.itemId;
     if (typeof evItemId === "string") this.flushDeltas(rt, evItemId);
+    if (rt.pendingText.size && ev.type !== "usage" && ev.type !== "assistant_message" && ev.type !== "reasoning") {
+      await this.persistPendingText(threadId, rt);
+    }
     if (ev.type === "assistant_message" || ev.type === "reasoning") {
+      rt.pendingText.delete(`${ev.type === "assistant_message" ? "assistant" : "reasoning"}\0${ev.itemId}`);
       await this.appendRaw(threadId, ev);
       return;
     }
@@ -6919,6 +7364,8 @@ var AgentManager = class {
       if (ev.status === "failed" && rt.session && !this.alive(rt.session)) rt.session = null;
       await this.setStatus(threadId, "idle");
       const next = rt.queue.shift();
+      if (!next) void this.recycleIdle().catch(() => {
+      });
       if (next) {
         this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
         await this.startTurn(threadId, next.text, next.attachments).catch((e) => {
@@ -6929,6 +7376,15 @@ var AgentManager = class {
     }
     await this.appendRaw(threadId, ev);
   }
+  async persistPendingText(threadId, rt) {
+    const pending = [...rt.pendingText.values()];
+    rt.pendingText.clear();
+    for (const p of pending) {
+      if (!p.text) continue;
+      this.flushDeltas(rt, p.itemId);
+      await this.appendRaw(threadId, { type: p.type === "assistant" ? "assistant_message" : "reasoning", itemId: p.itemId, text: p.text });
+    }
+  }
   alive(_s) {
     return true;
   }
@@ -6936,10 +7392,10 @@ var AgentManager = class {
   async respond(threadId, requestId, answer) {
     const rt = this.rt(threadId);
     const pending = rt.pending.get(requestId);
-    if (!pending) throw new ApiError("not_found", "\u6388\u6743/\u63D0\u95EE\u4E0D\u5B58\u5728\u6216\u5DF2\u56DE\u5E94");
+    if (!pending) throw new ApiError("not_found", tr("err.requestGone"));
     if (pending.kind === "permission" && answer.optionId) {
       const valid = pending.options.some((o) => o.id === answer.optionId);
-      if (!valid) throw new ApiError("bad_params", `optionId \u975E\u6CD5\uFF1A${answer.optionId}`);
+      if (!valid) throw new ApiError("bad_params", tr("err.badOption", { id: String(answer.optionId) }));
     }
     rt.pending.delete(requestId);
     if (pending.kind === "permission") {
@@ -6967,8 +7423,8 @@ var AgentManager = class {
   async interrupt(threadId) {
     const rt = this.rt(threadId);
     if (!rt.session || rt.status !== "running") return;
-    for (const [id, p] of rt.pending) {
-      await this.appendRaw(threadId, { type: "permission_resolved", requestId: id, cancelled: true });
+    for (const [id2, p] of rt.pending) {
+      await this.appendRaw(threadId, { type: "permission_resolved", requestId: id2, cancelled: true });
       p.resolve({ cancelled: true });
     }
     rt.pending.clear();
@@ -7006,10 +7462,10 @@ var AgentManager = class {
     if (rt.session) await rt.session.setModel(model);
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
-  async setMode(threadId, mode) {
-    await this.threads.patch(threadId, { mode });
+  async setMode(threadId, mode2) {
+    await this.threads.patch(threadId, { mode: mode2 });
     const rt = this.rt(threadId);
-    if (rt.session) await rt.session.setMode(mode);
+    if (rt.session) await rt.session.setMode(mode2);
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
   async setEffort(threadId, effort) {
@@ -7028,7 +7484,7 @@ var AgentManager = class {
   }
   async setCursorOpts(threadId, patch) {
     const meta = await this.mustThread(threadId);
-    if (meta.provider !== "cursor") throw new ApiError("bad_params", "\u4EC5 Cursor \u5BF9\u8BDD\u652F\u6301\u8BE5\u9009\u9879");
+    if (meta.provider !== "cursor") throw new ApiError("bad_params", tr("err.cursorOnly"));
     const next = await this.threads.patch(threadId, patch);
     const rt = this.rt(threadId);
     const sess = rt.session;
@@ -7041,14 +7497,14 @@ var AgentManager = class {
   async setProvider(threadId, providerId) {
     await this.mustThread(threadId);
     const meta = await this.threads.get(threadId);
-    if (!meta) throw new ApiError("not_found", "\u5BF9\u8BDD\u4E0D\u5B58\u5728");
+    if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
     const rt = this.rt(threadId);
     if (rt.status === "running" || rt.status === "initializing" || rt.starting) {
-      throw new ApiError("busy", "\u5BF9\u8BDD\u8FD0\u884C\u4E2D\uFF0C\u4E0D\u80FD\u66F4\u6362 Agent");
+      throw new ApiError("busy", tr("err.busySwitch"));
     }
     const events = await this.threads.readEvents(threadId, 0, 5e3);
     if (events.some((e) => e.type === "user_message")) {
-      throw new ApiError("bad_params", "\u5DF2\u6709\u6D88\u606F\uFF0C\u4E0D\u80FD\u66F4\u6362 Agent");
+      throw new ApiError("bad_params", tr("err.hasMessages"));
     }
     const p = await this.assertProviderUsable(providerId);
     if (rt.session) {
@@ -7063,7 +7519,7 @@ var AgentManager = class {
     await this.threads.patch(threadId, {
       provider: providerId,
       model: null,
-      mode: p.capabilities.modes.includes(meta.mode) ? meta.mode : p.capabilities.modes[0] ?? "default",
+      mode: clampMode(p.capabilities.modes, meta.mode),
       effort: null,
       providerSessionId: null,
       status: "idle"
@@ -7166,7 +7622,7 @@ var AgentManager = class {
     if (rt.session) return rt.session;
     const provider = await this.assertProviderUsable(meta.provider, { allowDisabled: !!meta.providerSessionId });
     const proj = await this.projects.get(meta.projectId);
-    if (!proj) throw new ApiError("not_found", "\u9879\u76EE\u4E0D\u5B58\u5728");
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
     let model = meta.model;
     if (meta.provider === "dsh" && model) {
       const available = await cachedModels(provider).catch(() => []);
@@ -7182,13 +7638,13 @@ var AgentManager = class {
     }
     if (opts.updateStatus) await this.setStatus(threadId, "initializing");
     const settings = await this.settings.get();
-    const custom = settings.providerCommand?.[meta.provider];
-    const launch = custom?.executable?.trim() ? { cmd: custom.executable.trim(), prefixArgs: custom.args ?? [] } : void 0;
+    const launch = launchFromSettings(settings, meta.provider);
+    rt.deltasOnly = !!provider.capabilities.deltasOnly;
     rt.session = await provider.createSession({
       threadId,
       cwd: proj.path,
       model,
-      mode: meta.mode,
+      mode: clampMode(provider.capabilities.modes, meta.mode),
       effort: meta.effort,
       resumeId: meta.providerSessionId,
       cursorFast: meta.cursorFast,
@@ -7206,7 +7662,7 @@ var AgentManager = class {
   // ---- internals ----
   async mustThread(threadId) {
     const meta = await this.threads.get(threadId);
-    if (!meta) throw new ApiError("not_found", "\u5BF9\u8BDD\u4E0D\u5B58\u5728");
+    if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
     return meta;
   }
   providerOf(meta) {
@@ -7214,17 +7670,17 @@ var AgentManager = class {
   }
   async assertProviderUsable(providerId, opts = {}) {
     const p = getProvider(providerId);
-    if (!p) throw new ApiError("bad_params", `\u672A\u77E5 Agent\uFF1A${providerId}`);
+    if (!p) throw new ApiError("bad_params", tr("provider.unknown", { id: providerId }));
     const s = await this.settings.get();
     if (!opts.allowDisabled && !isProviderEnabled(s, providerId)) {
-      throw new ApiError("bad_params", `${p.name} \u5DF2\u5728\u8BBE\u7F6E\u4E2D\u7981\u7528`);
+      throw new ApiError("bad_params", tr("provider.disabledNamed", { name: p.name }));
     }
     const entry = catalogById(providerId);
     if (entry && !providerCreatable(entry.status)) {
-      throw new ApiError("bad_params", `${p.name} \u5C1A\u672A\u63A5\u5165\uFF0C\u6682\u4E0D\u80FD\u65B0\u5EFA\u5BF9\u8BDD`);
+      throw new ApiError("bad_params", tr("provider.plannedNamed", { name: p.name }));
     }
-    const det = await cachedDetect(p);
-    if (!det.available) throw new ApiError("bad_params", det.reason ?? `${p.name} \u672A\u5B89\u88C5\u6216\u4E0D\u53EF\u7528`);
+    const det = await cachedDetect(p, launchFromSettings(s, providerId));
+    if (!det.available) throw new ApiError("bad_params", det.reason ?? tr("provider.unavailable", { name: p.name }));
     return p;
   }
   async setStatus(threadId, status) {
@@ -7246,23 +7702,41 @@ var AgentManager = class {
     const full = { ...ev, seq: -1, ts: Date.now(), threadId };
     this.gw.publish(`thread:${threadId}`, { type: "event", event: full });
   }
+  /** B17: idle Agent processes are closed after idleCloseMinutes, and at most MAX_WARM_IDLE of them stay warm
+   *  (least recently used go first). A running turn, one starting, or one waiting on an approval is never touched. */
+  recycling = false;
   async recycleIdle() {
-    const s = await this.settings.get();
-    const limit = (s.idleCloseMinutes ?? 30) * 6e4;
-    for (const rt of this.runtimes.values()) {
-      if (rt.status === "idle" && rt.pending.size === 0 && Date.now() - rt.lastActivity > limit) {
-        log("info", `\u7A7A\u95F2\u56DE\u6536 thread ${rt.threadId}`);
-        await this.close(rt.threadId);
+    if (this.recycling) return;
+    this.recycling = true;
+    try {
+      const s = await this.settings.get();
+      const minutes = Number(s.idleCloseMinutes);
+      const limit = (Number.isFinite(minutes) && minutes > 0 ? minutes : 30) * 6e4;
+      const idle = [...this.runtimes.values()].filter((rt) => rt.session && rt.status === "idle" && !rt.starting && !rt.sessionCreating && rt.pending.size === 0 && rt.queue.length === 0).sort((a, b) => b.lastActivity - a.lastActivity);
+      const now = Date.now();
+      for (const [i, rt] of idle.entries()) {
+        const expired = now - rt.lastActivity > limit;
+        if (!expired && i < MAX_WARM_IDLE) continue;
+        log("info", `idle cleanup: closing thread ${rt.threadId} (${expired ? "idle timeout" : "over the warm limit"})`);
+        try {
+          await this.close(rt.threadId);
+        } catch (e) {
+          log("info", `idle cleanup: thread ${rt.threadId}: ${String(e?.message ?? e)}`);
+          this.runtimes.delete(rt.threadId);
+        }
       }
+    } finally {
+      this.recycling = false;
     }
   }
 };
 
 // daemon/src/git/service.ts
+init_i18n();
 import { execFile as execFile4 } from "node:child_process";
 import { existsSync as existsSync10 } from "node:fs";
-import { cp, mkdir as mkdir7, readFile as readFile15, rename as rename4, rm, stat as stat9 } from "node:fs/promises";
-import { join as join15, normalize as normalize2, sep as sep2 } from "node:path";
+import { cp, mkdir as mkdir7, readFile as readFile16, rename as rename4, rm, stat as stat9 } from "node:fs/promises";
+import { join as join16, normalize as normalize2, sep as sep2 } from "node:path";
 var TIMEOUT2 = 15e3;
 var DIFF_LIMIT = 1024 * 1024;
 function runGit(cwd, args) {
@@ -7270,13 +7744,13 @@ function runGit(cwd, args) {
     execFile4("git", ["-c", "core.quotepath=false", ...args], { cwd, timeout: TIMEOUT2, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (e, stdout, stderr) => {
       const code = e && typeof e.code === "number" ? e.code : e ? 1 : 0;
       const missing = e?.code === "ENOENT";
-      res({ code, out: String(stdout ?? ""), err: missing ? "\u627E\u4E0D\u5230 git\uFF08\u8BF7\u5148\u5B89\u88C5 git \u5E76\u52A0\u5165 PATH\uFF09" : String(stderr || (e?.message ?? "")) });
+      res({ code, out: String(stdout ?? ""), err: missing ? tr("git.missing") : String(stderr || (e?.message ?? "")) });
     });
   });
 }
 function insidePath(projectPath, p) {
   const rel = normalize2(p).replace(/\\/g, "/");
-  const abs = normalize2(join15(projectPath, rel));
+  const abs = normalize2(join16(projectPath, rel));
   const proj = normalize2(projectPath);
   if (abs !== proj && !abs.startsWith(proj + sep2)) return null;
   return rel.replace(/\\/g, "/");
@@ -7322,16 +7796,16 @@ var GitService = class {
   // Unified diff text; {tooLarge:true} when the diff is > 1MB
   async diff(projectPath, p) {
     const rel = insidePath(projectPath, p);
-    if (!rel) return { error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
+    if (!rel) return { error: tr("fs.pathDenied") };
     const ls = await runGit(projectPath, ["ls-files", "--error-unmatch", "--", rel]);
     if (ls.code !== 0) {
-      const full = join15(projectPath, rel);
-      if (!existsSync10(full)) return { error: "\u6587\u4EF6\u4E0D\u5B58\u5728" };
+      const full = join16(projectPath, rel);
+      if (!existsSync10(full)) return { error: tr("fs.fileMissing") };
       const s = await stat9(full);
-      if (!s.isFile()) return { error: "\u4E0D\u662F\u6587\u4EF6" };
+      if (!s.isFile()) return { error: tr("fs.notFile") };
       if (s.size > DIFF_LIMIT) return { tooLarge: true };
-      const text = await readFile15(full, "utf8").catch(() => null);
-      if (text === null) return { error: "\u4E8C\u8FDB\u5236\u6216\u65E0\u6CD5\u8BFB\u53D6" };
+      const text = await readFile16(full, "utf8").catch(() => null);
+      if (text === null) return { error: tr("git.binary") };
       const lines = text.split("\n").map((l) => "+" + l).join("\n");
       return { untracked: true, diff: `--- /dev/null
 +++ b/${rel}
@@ -7350,8 +7824,8 @@ ${lines}` };
   // Tracked → git restore; untracked → move to trash/discarded/<ts>/<relpath>
   async discard(projectPath, p, dataDir) {
     const rel = insidePath(projectPath, p);
-    if (!rel) return { ok: false, error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
-    if (rel === "." || rel === "" || rel === "./") return { ok: false, error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
+    if (!rel) return { ok: false, error: tr("fs.pathDenied") };
+    if (rel === "." || rel === "" || rel === "./") return { ok: false, error: tr("fs.pathDenied") };
     const ls = await runGit(projectPath, ["ls-files", "--error-unmatch", "--", rel]);
     if (ls.code === 0) {
       let r = await runGit(projectPath, ["restore", "--staged", "--worktree", "--", rel]);
@@ -7359,11 +7833,11 @@ ${lines}` };
       if (r.code !== 0) return { ok: false, error: r.err.trim() || "\u653E\u5F03\u5931\u8D25" };
       return { ok: true };
     }
-    const full = join15(projectPath, rel);
-    if (!existsSync10(full)) return { ok: false, error: "\u6587\u4EF6\u4E0D\u5B58\u5728" };
+    const full = join16(projectPath, rel);
+    if (!existsSync10(full)) return { ok: false, error: tr("fs.fileMissing") };
     const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const dest = join15(dataDir, "trash", "discarded", stamp2, rel);
-    await mkdir7(join15(dest, ".."), { recursive: true });
+    const dest = join16(dataDir, "trash", "discarded", stamp2, rel);
+    await mkdir7(join16(dest, ".."), { recursive: true });
     try {
       await moveAcrossDevices(full, dest);
     } catch (e) {
@@ -7374,8 +7848,9 @@ ${lines}` };
 };
 
 // daemon/src/files/service.ts
-import { readdir as readdir5, readFile as readFile16, stat as stat10 } from "node:fs/promises";
-import { join as join16, normalize as normalize3, sep as sep3, extname as extname3 } from "node:path";
+init_i18n();
+import { readdir as readdir5, readFile as readFile17, stat as stat10 } from "node:fs/promises";
+import { join as join17, normalize as normalize3, sep as sep3, extname as extname3 } from "node:path";
 import ignore from "ignore";
 function decodeText(buf) {
   try {
@@ -7438,7 +7913,7 @@ var LANG = {
 };
 function insidePath2(projectPath, p) {
   const rel = normalize3(p || ".").replace(/\\/g, "/");
-  const abs = normalize3(join16(projectPath, rel));
+  const abs = normalize3(join17(projectPath, rel));
   const proj = normalize3(projectPath);
   if (abs !== proj && !abs.startsWith(proj + sep3)) return null;
   return rel;
@@ -7448,7 +7923,7 @@ var FileService = class {
   // Invalidate by .gitignore mtime: an edited .gitignore takes effect the next time a directory is expanded
   igCache = /* @__PURE__ */ new Map();
   async igFor(projectPath) {
-    const gi = join16(projectPath, ".gitignore");
+    const gi = join17(projectPath, ".gitignore");
     const st = await stat10(gi).catch(() => null);
     const mtime = st?.isFile() ? st.mtimeMs : -1;
     const hit = this.igCache.get(projectPath);
@@ -7456,7 +7931,7 @@ var FileService = class {
     let ig = null;
     if (mtime >= 0) {
       try {
-        ig = ignore().add(await readFile16(gi, "utf8"));
+        ig = ignore().add(await readFile17(gi, "utf8"));
       } catch {
         ig = null;
       }
@@ -7466,13 +7941,13 @@ var FileService = class {
   }
   async tree(projectPath, dir) {
     const rel = insidePath2(projectPath, dir);
-    if (rel === null) return { error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
-    const abs = join16(projectPath, rel);
+    if (rel === null) return { error: tr("fs.pathDenied") };
+    const abs = join17(projectPath, rel);
     const s = await stat10(abs).catch(() => null);
-    if (!s?.isDirectory()) return { error: "\u76EE\u5F55\u4E0D\u5B58\u5728" };
+    if (!s?.isDirectory()) return { error: tr("fs.dirMissing") };
     const ig = await this.igFor(projectPath);
     const dirents = await readdir5(abs, { withFileTypes: true }).catch(() => null);
-    if (!dirents) return { error: "\u65E0\u6CD5\u8BFB\u53D6\u76EE\u5F55" };
+    if (!dirents) return { error: tr("fs.dirUnreadable") };
     const out = [];
     for (const d of dirents) {
       if (out.length >= MAX_PER_LEVEL) break;
@@ -7481,7 +7956,7 @@ var FileService = class {
       const childRel = rel === "." ? name : `${rel}/${name}`;
       let isDir2 = d.isDirectory();
       if (d.isSymbolicLink()) {
-        const st = await stat10(join16(projectPath, childRel)).catch(() => null);
+        const st = await stat10(join17(projectPath, childRel)).catch(() => null);
         if (!st) continue;
         isDir2 = st.isDirectory();
       } else if (!d.isFile() && !isDir2) {
@@ -7497,14 +7972,14 @@ var FileService = class {
   }
   async read(projectPath, p) {
     const rel = insidePath2(projectPath, p);
-    if (rel === null) return { error: "\u8DEF\u5F84\u4E0D\u5141\u8BB8" };
-    const abs = join16(projectPath, rel);
+    if (rel === null) return { error: tr("fs.pathDenied") };
+    const abs = join17(projectPath, rel);
     const s = await stat10(abs).catch(() => null);
-    if (!s) return { error: "\u6587\u4EF6\u4E0D\u5B58\u5728" };
-    if (!s.isFile()) return { error: "\u4E0D\u662F\u6587\u4EF6" };
+    if (!s) return { error: tr("fs.fileMissing") };
+    if (!s.isFile()) return { error: tr("fs.notFile") };
     if (s.size > MAX_READ) return { tooLarge: true };
-    const buf = await readFile16(abs).catch(() => null);
-    if (!buf) return { error: "\u65E0\u6CD5\u8BFB\u53D6" };
+    const buf = await readFile17(abs).catch(() => null);
+    if (!buf) return { error: tr("fs.unreadable") };
     const head = buf.subarray(0, 8192);
     if (head.includes(0)) return { binary: true };
     const { text, encoding } = decodeText(buf);
@@ -7515,11 +7990,12 @@ var FileService = class {
 // daemon/src/terminal/service.ts
 init_pathscan();
 init_log();
+init_i18n();
 import { spawn as spawn3, execFileSync as execFileSync2 } from "node:child_process";
 import { accessSync as accessSync2, chmodSync, constants as fsc, existsSync as existsSync11, statSync as statSync6 } from "node:fs";
 import { createRequire as moduleRequire } from "node:module";
 import { release } from "node:os";
-import { dirname as dirname6, join as join17 } from "node:path";
+import { dirname as dirname6, join as join18 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 var MAX_TERMS_PER_PROJECT = 8;
 var BUF_MAX = 2 * 1024 * 1024;
@@ -7565,7 +8041,7 @@ function fixSpawnHelper() {
     const req = moduleRequire(import.meta.url);
     const root = dirname6(req.resolve("node-pty/package.json"));
     for (const sub of [`prebuilds/darwin-${process.arch}`, "build/Release"]) {
-      const f = join17(root, sub, "spawn-helper");
+      const f = join18(root, sub, "spawn-helper");
       if (existsSync11(f) && !isExecFile(f)) {
         chmodSync(f, 493);
         log("info", "\u5DF2\u4FEE\u590D node-pty spawn-helper \u7684\u53EF\u6267\u884C\u4F4D", { file: f });
@@ -7608,14 +8084,14 @@ var TerminalService = class {
   }
   async create(projectId, cwd, cols, rows) {
     const alive = [...this.terms.values()].filter((t) => t.projectId === projectId && t.alive);
-    if (alive.length >= MAX_TERMS_PER_PROJECT) return { error: `\u6BCF\u4E2A\u9879\u76EE\u6700\u591A ${MAX_TERMS_PER_PROJECT} \u4E2A\u7EC8\u7AEF` };
+    if (alive.length >= MAX_TERMS_PER_PROJECT) return { error: tr("term.max", { n: MAX_TERMS_PER_PROJECT }) };
     const shell = pickShell();
     const term = {
       id: rid5(),
       index: nextIndex++,
       projectId,
       cwd,
-      title: `\u7EC8\u7AEF ${alive.length + 1}`,
+      title: tr("term.title", { n: alive.length + 1 }),
       alive: true,
       simple: false,
       pty: null,
@@ -7663,25 +8139,25 @@ var TerminalService = class {
     this.byIndex.set(term.index, term);
     return { id: term.id, index: term.index, simple: term.simple };
   }
-  attach(id) {
-    const t = this.terms.get(id);
-    if (!t) return { error: "\u7EC8\u7AEF\u4E0D\u5B58\u5728" };
+  attach(id2) {
+    const t = this.terms.get(id2);
+    if (!t) return { error: tr("err.terminalMissing") };
     const lines = t.buf.split("\n");
     const snapshot = lines.length > SNAP_LINES ? lines.slice(-SNAP_LINES).join("\n") : t.buf;
     const windowsPty = process.platform === "win32" && t.pty ? conptyInfo() : void 0;
     return { index: t.index, snapshot, simple: t.simple, ...windowsPty ? { windowsPty } : {} };
   }
-  indexOf(id) {
-    return this.terms.get(id)?.index ?? null;
+  indexOf(id2) {
+    return this.terms.get(id2)?.index ?? null;
   }
-  resize(id, cols, rows) {
-    const t = this.terms.get(id);
+  resize(id2, cols, rows) {
+    const t = this.terms.get(id2);
     if (!t || !t.alive) return { ok: false };
     t.pty?.resize(Math.max(20, cols), Math.max(5, rows));
     return { ok: true };
   }
-  kill(id) {
-    const t = this.terms.get(id);
+  kill(id2) {
+    const t = this.terms.get(id2);
     if (!t) return { ok: false };
     this.killTerm(t);
     return { ok: true };
@@ -7829,10 +8305,10 @@ process.on("unhandledRejection", (e) => {
 async function main() {
   initLog(cfg.dataDir);
   for (const d of ["threads", "attachments", "trash", "logs"]) {
-    mkdirSync2(join19(cfg.dataDir, d), { recursive: true });
+    mkdirSync2(join20(cfg.dataDir, d), { recursive: true });
   }
-  const appDir = join19(dirname7(fileURLToPath3(import.meta.url)), "..", "..", "app");
-  const attachments = new AttachmentStore(join19(cfg.dataDir, "attachments"));
+  const appDir = join20(dirname7(fileURLToPath3(import.meta.url)), "..", "..", "app");
+  const attachments = new AttachmentStore(join20(cfg.dataDir, "attachments"));
   const { bindAttachmentStore: bindAttachmentStore2 } = await Promise.resolve().then(() => (init_attachmentRefs(), attachmentRefs_exports));
   bindAttachmentStore2(attachments);
   const settings = new SettingsStore(cfg.dataDir);
@@ -7859,7 +8335,7 @@ async function main() {
     git: new GitService(),
     files: new FileService(),
     terminals,
-    runtime: (id) => manager.runtimeInfo(id)
+    runtime: (id2) => manager.runtimeInfo(id2)
   });
   const server = createHttpServer(cfg, appDir, attachments, {
     onUpgrade: (req, socket, head) => gateway.handleUpgrade(req, socket, head)
@@ -7891,7 +8367,7 @@ async function main() {
     const { warmProviderCache: warmProviderCache2 } = await Promise.resolve().then(() => (init_warm(), warm_exports));
     await warmProviderCache2(await settings.get());
   })().catch((e) => log("warn", "Provider \u9884\u70ED\u5931\u8D25", { err: String(e) }));
-  const daemonJsonPath = join19(cfg.dataDir, "daemon.json");
+  const daemonJsonPath = join20(cfg.dataDir, "daemon.json");
   await writeJsonAtomic(daemonJsonPath, {
     pid: process.pid,
     port: cfg.port,
@@ -7902,7 +8378,9 @@ async function main() {
   });
   chmodSync2(daemonJsonPath, 384);
   log("info", `daemon \u5DF2\u542F\u52A8 \u7AEF\u53E3 ${cfg.port} \u6570\u636E\u76EE\u5F55 ${cfg.dataDir} \u7248\u672C ${cfg.version} pid ${process.pid}`);
-  if (!cfg.parentPid) console.log(`[agent-console] \u6253\u5F00 http://127.0.0.1:${cfg.port}/#t=${cfg.token}`);
+  if (!cfg.parentPid) {
+    console.log(process.stdout.isTTY ? `[agent-console] open http://127.0.0.1:${cfg.port}/#t=${cfg.token}` : `[agent-console] listening on http://127.0.0.1:${cfg.port}/ (token not printed: stdout is not a terminal)`);
+  }
   let idleSince = Date.now();
   setInterval(() => {
     const busy = gateway.connectionCount > 0 || manager.anyBusy() || terminals.count > 0;
@@ -7939,8 +8417,12 @@ async function main() {
       }
     }, 2e3);
     parentWatch.unref();
-    process.stdin.on("end", () => shutdown(0));
-    process.stdin.on("close", () => shutdown(0));
+    const lifelineClosed = () => {
+      log("info", "plugin host closed the lifeline (stdin); daemon exiting with it");
+      shutdown(0);
+    };
+    process.stdin.on("end", lifelineClosed);
+    process.stdin.on("close", lifelineClosed);
     process.stdin.on("error", () => shutdown(0));
     process.stdin.resume();
   }

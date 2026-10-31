@@ -5,6 +5,8 @@ import type { ProjectsStore } from "../store/projects.js";
 import type { SettingsStore } from "../store/settings.js";
 import type { AttachmentStore } from "../store/attachments.js";
 import type { Provider, ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../providers/types.js";
+import { launchFromSettings } from "../providers/launch.js";
+import { clampMode } from "../providers/modes.js";
 import { resolveAttachmentRefs } from "../util/attachmentRefs.js";
 import { getProvider } from "../providers/registry.js";
 import { catalogById, providerCreatable } from "../providers/catalog.js";
@@ -21,6 +23,8 @@ import {
 } from "../providers/codex/commands.js";
 
 const SLASH_CACHE_TTL_MS = 10 * 60 * 1000;
+/** Idle Agent processes kept warm at most (one per conversation); older idle ones are closed (resumed on the next message) */
+export const MAX_WARM_IDLE = 3;
 
 type QueuedMessage = { id: string; text: string; attachments: { path: string; mime: string; name?: string }[] };
 type PendingRequest = {
@@ -46,6 +50,9 @@ type Runtime = {
   starting: boolean; // startTurn in progress (session is still null while it is being created)
   commands: SlashCommand[];
   sessionCreating: Promise<ProviderSession> | null;
+  /** Text streamed as deltas only (ACP Agents): saved per segment as assistant_message / reasoning (B1) */
+  pendingText: Map<string, { type: "assistant" | "reasoning"; itemId: string; text: string }>;
+  deltasOnly: boolean;
 };
 
 type DeltaType = "assistant_delta" | "reasoning_delta" | "tool_output_delta";
@@ -136,6 +143,17 @@ export class AgentManager {
     return false;
   }
 
+  /** Drop a queued message that hasn't been sent yet (the × on the composer's queue list) */
+  removeQueued(threadId: string, queueId: string): boolean {
+    const rt = this.runtimes.get(threadId);
+    if (!rt) return false;
+    const before = rt.queue.length;
+    rt.queue = rt.queue.filter((q) => q.id !== queueId);
+    if (rt.queue.length === before) return false;
+    this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
+    return true;
+  }
+
   runtimeInfo(threadId: string): { status: string; queue: unknown[]; pending: unknown[] } | null {
     const rt = this.runtimes.get(threadId);
     if (!rt) return null;
@@ -168,6 +186,8 @@ export class AgentManager {
         starting: false,
         commands: [],
         sessionCreating: null,
+        pendingText: new Map(),
+        deltasOnly: false,
       };
       this.runtimes.set(threadId, r);
     }
@@ -187,7 +207,7 @@ export class AgentManager {
   }
 
   // ---- send ----
-  async send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[] }, behavior: SendBehavior = "queue"): Promise<void> {
+  async send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[] }, behavior: SendBehavior = "queue"): Promise<"started" | "steered" | "queued"> {
     const meta = await this.mustThread(threadId);
     if (meta.archived) {
       await this.threads.patch(threadId, { archived: false });
@@ -219,19 +239,20 @@ export class AgentManager {
             steered: true,
             attachments: this.attachmentLabels(attachmentRefs),
           });
-          return;
+          return "steered";
         } catch (e) {
           // Steering failed (e.g. the turn hasn't really started yet) → fall back to queueing so the message isn't lost
           log("info", `thread ${threadId} 插话失败，改为排队：${String(e)}`);
         }
       }
-      const q: QueuedMessage = { id: "q" + Date.now().toString(36), text: input.text, attachments: attachmentRefs };
+      const q: QueuedMessage = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs };
       rt.queue.push(q);
       this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
-      return;
+      return "queued";
     }
 
     await this.startTurn(threadId, input.text, attachmentRefs);
+    return "started";
   }
 
   private async startTurn(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[]): Promise<void> {
@@ -337,14 +358,24 @@ export class AgentManager {
       return;
     }
     if (ev.type === "assistant_delta" || ev.type === "reasoning_delta" || ev.type === "tool_output_delta") {
-      // Goes through the coalescer, not persisted
+      // Goes through the coalescer, not persisted; Agents that never send the complete message get it saved from the deltas
+      if (rt.deltasOnly && ev.type !== "tool_output_delta") {
+        const key = `${ev.type === "assistant_delta" ? "assistant" : "reasoning"}\0${ev.itemId}`;
+        const prior = rt.pendingText.get(key);
+        rt.pendingText.set(key, { type: ev.type === "assistant_delta" ? "assistant" : "reasoning", itemId: ev.itemId, text: (prior?.text ?? "") + ev.text });
+      }
       rt.coalescer.push(deltaKey(ev.type, ev.itemId), ev.text);
       return;
     }
     // Before persisting a complete event, flush that itemId's pending deltas first (keeps ordering)
     const evItemId = (ev as { itemId?: unknown }).itemId;
     if (typeof evItemId === "string") this.flushDeltas(rt, evItemId);
+    // Another item starts (tool call, plan, permission …) or the turn ends: the text streamed so far is complete, save it first
+    if (rt.pendingText.size && ev.type !== "usage" && ev.type !== "assistant_message" && ev.type !== "reasoning") {
+      await this.persistPendingText(threadId, rt);
+    }
     if (ev.type === "assistant_message" || ev.type === "reasoning") {
+      rt.pendingText.delete(`${ev.type === "assistant_message" ? "assistant" : "reasoning"}\0${ev.itemId}`);
       await this.appendRaw(threadId, ev);
       return;
     }
@@ -405,6 +436,7 @@ export class AgentManager {
       await this.setStatus(threadId, "idle");
       // Next queued message
       const next = rt.queue.shift();
+      if (!next) void this.recycleIdle().catch(() => {});
       if (next) {
         this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
         // A queued message that fails to start is only logged; it must not break the event pump (startTurn already wrote notice/turn_ended)
@@ -418,6 +450,16 @@ export class AgentManager {
     await this.appendRaw(threadId, ev);
   }
 
+  private async persistPendingText(threadId: string, rt: Runtime): Promise<void> {
+    const pending = [...rt.pendingText.values()];
+    rt.pendingText.clear();
+    for (const p of pending) {
+      if (!p.text) continue;
+      this.flushDeltas(rt, p.itemId);
+      await this.appendRaw(threadId, { type: p.type === "assistant" ? "assistant_message" : "reasoning", itemId: p.itemId, text: p.text });
+    }
+  }
+
   private alive(_s: ProviderSession): boolean {
     return true; // mock /exit closes the queue; end of the event stream is handled separately
   }
@@ -426,10 +468,10 @@ export class AgentManager {
   async respond(threadId: string, requestId: string, answer: RespondAnswer): Promise<void> {
     const rt = this.rt(threadId);
     const pending = rt.pending.get(requestId);
-    if (!pending) throw new ApiError("not_found", "授权/提问不存在或已回应");
+    if (!pending) throw new ApiError("not_found", tr("err.requestGone"));
     if (pending.kind === "permission" && answer.optionId) {
       const valid = pending.options.some((o) => o.id === answer.optionId);
-      if (!valid) throw new ApiError("bad_params", `optionId 非法：${answer.optionId}`);
+      if (!valid) throw new ApiError("bad_params", tr("err.badOption", { id: String(answer.optionId) }));
     }
     rt.pending.delete(requestId);
     if (pending.kind === "permission") {
@@ -527,7 +569,7 @@ export class AgentManager {
     patch: { cursorFast?: boolean; cursorAutoReview?: boolean },
   ): Promise<void> {
     const meta = await this.mustThread(threadId);
-    if (meta.provider !== "cursor") throw new ApiError("bad_params", "仅 Cursor 对话支持该选项");
+    if (meta.provider !== "cursor") throw new ApiError("bad_params", tr("err.cursorOnly"));
     const next = await this.threads.patch(threadId, patch);
     const rt = this.rt(threadId);
     const sess = rt.session as { updateCursorOpts?(f: boolean, a: boolean): Promise<void> } | null;
@@ -541,14 +583,14 @@ export class AgentManager {
   async setProvider(threadId: string, providerId: string): Promise<void> {
     await this.mustThread(threadId);
     const meta = await this.threads.get(threadId);
-    if (!meta) throw new ApiError("not_found", "对话不存在");
+    if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
     const rt = this.rt(threadId);
     if (rt.status === "running" || rt.status === "initializing" || rt.starting) {
-      throw new ApiError("busy", "对话运行中，不能更换 Agent");
+      throw new ApiError("busy", tr("err.busySwitch"));
     }
     const events = await this.threads.readEvents(threadId, 0, 5000);
     if (events.some((e) => e.type === "user_message")) {
-      throw new ApiError("bad_params", "已有消息，不能更换 Agent");
+      throw new ApiError("bad_params", tr("err.hasMessages"));
     }
     const p = await this.assertProviderUsable(providerId);
     if (rt.session) {
@@ -562,7 +604,7 @@ export class AgentManager {
     await this.threads.patch(threadId, {
       provider: providerId,
       model: null,
-      mode: p.capabilities.modes.includes(meta.mode) ? meta.mode : (p.capabilities.modes[0] ?? "default"),
+      mode: clampMode(p.capabilities.modes, meta.mode),
       effort: null,
       providerSessionId: null,
       status: "idle",
@@ -684,7 +726,7 @@ export class AgentManager {
     if (rt.session) return rt.session;
     const provider = await this.assertProviderUsable(meta.provider, { allowDisabled: !!meta.providerSessionId });
     const proj = await this.projects.get(meta.projectId);
-    if (!proj) throw new ApiError("not_found", "项目不存在");
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
     let model = meta.model;
     // DSH model IDs come from ACP; old conversations may still hold a model ID from another Agent.
     // Clear that stale value so it isn't sent to the wrong Magpie provider route.
@@ -705,16 +747,13 @@ export class AgentManager {
     }
     if (opts.updateStatus) await this.setStatus(threadId, "initializing");
     const settings = await this.settings.get();
-    const custom = settings.providerCommand?.[meta.provider];
-    const launch =
-      custom?.executable?.trim()
-        ? { cmd: custom.executable.trim(), prefixArgs: custom.args ?? [] }
-        : undefined;
+    const launch = launchFromSettings(settings, meta.provider);
+    rt.deltasOnly = !!provider.capabilities.deltasOnly;
     rt.session = await provider.createSession({
       threadId,
       cwd: proj.path,
       model,
-      mode: meta.mode,
+      mode: clampMode(provider.capabilities.modes, meta.mode),
       effort: meta.effort,
       resumeId: meta.providerSessionId,
       cursorFast: meta.cursorFast,
@@ -734,7 +773,7 @@ export class AgentManager {
   // ---- internals ----
   private async mustThread(threadId: string): Promise<ThreadMeta> {
     const meta = await this.threads.get(threadId);
-    if (!meta) throw new ApiError("not_found", "对话不存在");
+    if (!meta) throw new ApiError("not_found", tr("err.threadMissing"));
     return meta;
   }
 
@@ -744,17 +783,17 @@ export class AgentManager {
 
   private async assertProviderUsable(providerId: string, opts: { allowDisabled?: boolean } = {}): Promise<Provider> {
     const p = getProvider(providerId);
-    if (!p) throw new ApiError("bad_params", `未知 Agent：${providerId}`);
+    if (!p) throw new ApiError("bad_params", tr("provider.unknown", { id: providerId }));
     const s = await this.settings.get();
     if (!opts.allowDisabled && !isProviderEnabled(s, providerId)) {
-      throw new ApiError("bad_params", `${p.name} 已在设置中禁用`);
+      throw new ApiError("bad_params", tr("provider.disabledNamed", { name: p.name }));
     }
     const entry = catalogById(providerId);
     if (entry && !providerCreatable(entry.status)) {
-      throw new ApiError("bad_params", `${p.name} 尚未接入，暂不能新建对话`);
+      throw new ApiError("bad_params", tr("provider.plannedNamed", { name: p.name }));
     }
-    const det = await cachedDetect(p);
-    if (!det.available) throw new ApiError("bad_params", det.reason ?? `${p.name} 未安装或不可用`);
+    const det = await cachedDetect(p, launchFromSettings(s, providerId));
+    if (!det.available) throw new ApiError("bad_params", det.reason ?? tr("provider.unavailable", { name: p.name }));
     return p;
   }
 
@@ -780,14 +819,34 @@ export class AgentManager {
     this.gw.publish(`thread:${threadId}`, { type: "event", event: full });
   }
 
-  private async recycleIdle(): Promise<void> {
-    const s = await this.settings.get();
-    const limit = (s.idleCloseMinutes ?? 30) * 60_000;
-    for (const rt of this.runtimes.values()) {
-      if (rt.status === "idle" && rt.pending.size === 0 && Date.now() - rt.lastActivity > limit) {
-        log("info", `空闲回收 thread ${rt.threadId}`);
-        await this.close(rt.threadId);
+  /** B17: idle Agent processes are closed after idleCloseMinutes, and at most MAX_WARM_IDLE of them stay warm
+   *  (least recently used go first). A running turn, one starting, or one waiting on an approval is never touched. */
+  private recycling = false;
+  async recycleIdle(): Promise<void> {
+    if (this.recycling) return;
+    this.recycling = true;
+    try {
+      const s = await this.settings.get();
+      const minutes = Number(s.idleCloseMinutes);
+      const limit = (Number.isFinite(minutes) && minutes > 0 ? minutes : 30) * 60_000;
+      const idle = [...this.runtimes.values()]
+        .filter((rt) => rt.session && rt.status === "idle" && !rt.starting && !rt.sessionCreating && rt.pending.size === 0 && rt.queue.length === 0)
+        .sort((a, b) => b.lastActivity - a.lastActivity);
+      const now = Date.now();
+      for (const [i, rt] of idle.entries()) {
+        const expired = now - rt.lastActivity > limit;
+        if (!expired && i < MAX_WARM_IDLE) continue;
+        log("info", `idle cleanup: closing thread ${rt.threadId} (${expired ? "idle timeout" : "over the warm limit"})`);
+        try {
+          await this.close(rt.threadId);
+        } catch (e) {
+          // The conversation may have been deleted meanwhile: just forget its runtime
+          log("info", `idle cleanup: thread ${rt.threadId}: ${String((e as Error)?.message ?? e)}`);
+          this.runtimes.delete(rt.threadId);
+        }
       }
+    } finally {
+      this.recycling = false;
     }
   }
 }

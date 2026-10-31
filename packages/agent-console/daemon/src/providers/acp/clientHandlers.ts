@@ -3,6 +3,7 @@ import type { ClientApp } from "@agentclientprotocol/sdk";
 import { methods } from "@agentclientprotocol/sdk";
 import type { RespondAnswer } from "../types.js";
 import type { ProviderEvent } from "../../timeline/types.js";
+import { tr } from "../../util/i18n.js";
 
 export type PermBridge = {
   push(ev: ProviderEvent): void;
@@ -36,7 +37,7 @@ export function registerAcpClientHandlers(app: ClientApp, bridge: PermBridge): v
     bridge.push({
       type: "permission_request",
       requestId,
-      title: tc.title ?? tc.name ?? "需要授权",
+      title: tc.title ?? tc.name ?? tr("tool.needsApproval"),
       kind: tc.kind ?? "tool",
       detail: tc.rawInput ?? undefined,
       options,

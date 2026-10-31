@@ -16,17 +16,23 @@ const PATHS: Record<string, string> = {
   refresh: "M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6",
   copy: "M8 8h11v12H8zM5 16V4h11",
   check: "M5 13l4 4L19 7",
+  gauge: "M5.6 18.4a9 9 0 1 1 12.8 0M12 13l3.5-3.5M12 13h.01",
+  arrowUp: "M12 19V5m-6 6 6-6 6 6",
+  stopFill: "M8 8h8v8H8z",
   shield: "M12 3l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V6l8-3z",
   zap: "M13 2L4 14h7l-1 8 9-12h-7l1-8z",
   settings: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z",
 };
 
+const FILLED = new Set(["stopFill"]);
+const BOLD = new Set(["arrowUp"]);
+
 export function Icon({ name, size = 16 }: { name: keyof typeof PATHS | string; size?: number }) {
   const d = PATHS[name];
   if (!d) return null;
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={FILLED.has(name) ? "currentColor" : "none"} stroke="currentColor"
+      strokeWidth={BOLD.has(name) ? "2.2" : "1.6"} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d={d} />
     </svg>
   );

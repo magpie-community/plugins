@@ -6,6 +6,7 @@ import { findOnPath, findNode as findNodeOnPath, isNodeExecutable } from "../../
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { tr } from "./i18n.js";
 
 const IS_WIN = process.platform === "win32";
 const cache = new Map<string, { out: ResolveResult; at: number }>();
@@ -161,7 +162,7 @@ export async function resolveFirstBin(names: string[]): Promise<ResolvedBin | Re
     if (r.ok) return { ...r, binName };
   }
   const label = uniq[0] ?? "cli";
-  return { ok: false, reason: `PATH 里找不到 ${uniq.length > 1 ? uniq.join(" 或 ") : label}` };
+  return { ok: false, reason: tr("bin.notOnPath", { name: uniq.length > 1 ? uniq.join(tr("bin.or")) : label }) };
 }
 
 export function clearBinCache(name?: string): void {
@@ -189,7 +190,7 @@ export async function resolveBinWith(name: string, deps: ResolveDeps = {}): Prom
   const P = win ? path.win32 : path.posix;
   const exists = deps.exists ?? existsSync;
   const hits = (deps.find ?? which)(name);
-  if (!hits.length) return { ok: false, reason: `PATH 里找不到 ${name}` };
+  if (!hits.length) return { ok: false, reason: tr("bin.notOnPath", { name }) };
   // Take the first hit in PATH order (same as typing the command in a terminal; within one directory on Windows, PATHEXT order)
   const first = hits[0];
   if (!win) return { ok: true, cmd: first, prefixArgs: [], display: first, via: "path" };

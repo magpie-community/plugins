@@ -1,4 +1,5 @@
 import type { ModelInfo } from "../types.js";
+import { PLACEHOLDER_MODEL_NAME } from "../types.js";
 import { killTree, spawnBin, type ResolveResult } from "../../util/bin.js";
 
 export function runCli(r: ResolveResult & { ok: true }, args: string[], timeoutMs = 25000): Promise<string> {
@@ -33,7 +34,7 @@ export function parseDevinModelsList(text: string): ModelInfo[] {
     if (!id || id.length < 3) continue;
     models.push({ id, name });
   }
-  if (!models.length) return [{ id: "default", name: "默认", isDefault: true }];
+  if (!models.length) return [{ id: "default", name: PLACEHOLDER_MODEL_NAME, isDefault: true }];
   const adaptive = models.find((x) => x.id === "adaptive");
   if (adaptive) adaptive.isDefault = true;
   else models[0]!.isDefault = true;
@@ -50,7 +51,7 @@ export function parseOpencodeModels(text: string): ModelInfo[] {
     const name = id.includes("/") ? id.split("/").slice(1).join("/") : id;
     models.push({ id, name: name.replace(/-/g, " ") });
   }
-  if (!models.length) return [{ id: "default", name: "默认", isDefault: true }];
+  if (!models.length) return [{ id: "default", name: PLACEHOLDER_MODEL_NAME, isDefault: true }];
   models[0]!.isDefault = true;
   return models;
 }

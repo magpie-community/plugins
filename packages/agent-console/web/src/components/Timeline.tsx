@@ -10,6 +10,7 @@ import { normalizeHunks } from "../timeline/diffHunks";
 import { fmtDur, fmtTokens, fmtCost } from "../util/format";
 import { useUi } from "../stores/ui";
 import { localizeDaemonMessage, t, tf } from "../i18n/index.js";
+import { toast } from "./Toast";
 
 const token = () => getToken();
 
@@ -117,7 +118,7 @@ function ToolStepRow({ s }: { s: ToolStep }) {
     <div className="ts">
       <button className="ts-head" onClick={() => hasDetail && setOpen(!open)}>
         <span className={`ts-ic ${cls}`}>{icon}</span>
-        <span className="ts-title">{s.title}</span>
+        <span className="ts-title">{s.title || toolKind(s.kind)}</span>
         {s.durationMs != null && <span className="ts-meta">{fmtDur(s.durationMs)}</span>}
         {s.exitCode != null && s.exitCode !== 0 && <span className="ts-meta err">exit {s.exitCode}</span>}
       </button>
@@ -289,7 +290,7 @@ export function QuestionItem({ it, threadId }: { it: Extract<DisplayItem, { kind
 }
 
 // ---------- error / turn end ----------
-export function TurnEndItem({ it, onRetry }: { it: Extract<DisplayItem, { kind: "turnend" }>; onRetry?: () => void }) {
+export function TurnEndItem({ it, onRetry, replyText }: { it: Extract<DisplayItem, { kind: "turnend" }>; onRetry?: () => void; replyText?: string }) {
   const ui = useUi();
   const [showErr, setShowErr] = useState(false);
   if (it.status === "failed") {
@@ -316,7 +317,17 @@ export function TurnEndItem({ it, onRetry }: { it: Extract<DisplayItem, { kind: 
   if (it.status === "interrupted") parts.push(t("timeline.interrupted"));
   return (
     <div className="te">
-      <span>{parts.join(" · ") || it.status}</span>
+      {parts.length > 0 && <span className="te-meta">{parts.join(" · ")}</span>}
+      {replyText && (
+        <button className="te-act" title={t("common.copy")} onClick={() => void copyText(replyText).then(() => toast(t("common.copied")))}>
+          <Icon name="copy" size={13} /><span>{t("common.copy")}</span>
+        </button>
+      )}
+      {onRetry && (
+        <button className="te-act" title={t("common.retry")} onClick={onRetry}>
+          <Icon name="refresh" size={13} /><span>{t("common.retry")}</span>
+        </button>
+      )}
       {it.filesChanged != null && it.filesChanged > 0 && (
         <button className="te-files" onClick={() => ui.openPanel("changes")}>
           {tf("timeline.filesChanged", { n: it.filesChanged })}
@@ -327,8 +338,8 @@ export function TurnEndItem({ it, onRetry }: { it: Extract<DisplayItem, { kind: 
 }
 
 // ---------- dispatch ----------
-export function TimelineRow({ it, threadId, onEditResend, onRetryLast }: {
-  it: DisplayItem; threadId: string;
+export function TimelineRow({ it, threadId, onEditResend, onRetryLast, replyText }: {
+  it: DisplayItem; threadId: string; replyText?: string;
   onEditResend?: (text: string) => void;
   onRetryLast?: () => void;
 }) {
@@ -342,7 +353,7 @@ export function TimelineRow({ it, threadId, onEditResend, onRetryLast }: {
     case "permission": return <PermissionItem it={it} threadId={threadId} />;
     case "question": return <QuestionItem it={it} threadId={threadId} />;
     case "notice": return <div className={`nt ${it.level}`}>{localizeDaemonMessage(it.message)}</div>;
-    case "turnend": return <TurnEndItem it={it} onRetry={onRetryLast} />;
+    case "turnend": return <TurnEndItem it={it} onRetry={onRetryLast} replyText={replyText} />;
     case "gone": return null;
     default: return null;
   }

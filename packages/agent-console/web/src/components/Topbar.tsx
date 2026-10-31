@@ -104,7 +104,7 @@ export function Topbar({ pendingCount }: { pendingCount: number }) {
       ) : (
         <span className="tb-title ghost">{project ? t("topbar.pickThread") : t("app.title")}</span>
       )}
-      {pill && <span className={`tb-pill ${pill.cls}`}>{pill.text}</span>}
+      {pill && <span className={`tb-pill ${pill.cls}`}>{pill.cls === "run" && <span className="tb-pill-dot" />}{pill.text}</span>}
       <div className="tb-right">
         {thread?.model && <span className="tb-model">{thread.model}</span>}
         {panelBtns.map((b) => (

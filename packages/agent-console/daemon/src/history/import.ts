@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { samePath } from "../util/paths.js";
+import { tr } from "../util/i18n.js";
 
 const CLAUDE_ROOT = join(homedir(), ".claude", "projects");
 
@@ -68,7 +69,7 @@ export async function listClaudeHistory(cwd: string): Promise<{ sessionId: strin
       const s = await stat(path).catch(() => null);
       out.push({
         sessionId: f.replace(/\.jsonl$/, ""),
-        title: title || "（无标题）",
+        title: title || tr("history.untitled"),
         updatedAt: s ? Math.round(s.mtimeMs) : 0,
         messageCount: count,
       });

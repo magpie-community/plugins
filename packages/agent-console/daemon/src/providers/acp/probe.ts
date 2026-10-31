@@ -176,9 +176,9 @@ export function cursorCatalogToModels(catalog: CursorCatalog, currentModel: stri
 }
 
 export function cursorProbeModels(acpArgs: string[], providerId?: string) {
-  return async (r: ResolveResult & { ok: true }): Promise<ModelInfo[]> => {
+  return async (r: ResolveResult & { ok: true }, launchArgs: string[] = []): Promise<ModelInfo[]> => {
     try {
-      const { parsed, ext, promptCaps } = await probeAcpRaw(r, acpArgs, 40000, "cursor/list_available_models");
+      const { parsed, ext, promptCaps } = await probeAcpRaw(r, [...acpArgs, ...launchArgs], 40000, "cursor/list_available_models");
       rememberPromptCaps(providerId, promptCaps);
       const fromCatalog = ext ? cursorCatalogToModels(ext as CursorCatalog, parsed.currentModel) : [];
       // If the extension method is unavailable (older Cursor CLI), fall back to the model list reported by the session (no levels)
@@ -195,13 +195,13 @@ export function cursorProbeModels(acpArgs: string[], providerId?: string) {
  * route a new conversation uses (dsh answers for the route it starts on, see dsh.ts).
  */
 export function dshProbeModels(providerId?: string) {
-  return async (r: ResolveResult & { ok: true }): Promise<ModelInfo[]> => {
+  return async (r: ResolveResult & { ok: true }, launchArgs: string[] = []): Promise<ModelInfo[]> => {
     try {
-      const first = await probeAcpRaw(r, DSH_ACP_ARGS, 30000);
+      const first = await probeAcpRaw(r, [...DSH_ACP_ARGS, ...launchArgs], 30000);
       let caps = first.promptCaps;
       const start = dshDefaultModel(first.parsed.models, first.parsed.currentModel);
       if (start && start !== first.parsed.currentModel && dshRoute(start)) {
-        caps = await probeAcpRaw(r, await dshAcpArgs(start), 30000).then((x) => x.promptCaps, () => caps);
+        caps = await probeAcpRaw(r, [...await dshAcpArgs(start), ...launchArgs], 30000).then((x) => x.promptCaps, () => caps);
       }
       rememberPromptCaps(providerId, caps);
       return probeToModels(first.parsed);
@@ -213,9 +213,9 @@ export function dshProbeModels(providerId?: string) {
 }
 
 export function acpProbeModels(acpArgs: string[], providerId?: string) {
-  return async (r: ResolveResult & { ok: true }): Promise<ModelInfo[]> => {
+  return async (r: ResolveResult & { ok: true }, launchArgs: string[] = []): Promise<ModelInfo[]> => {
     try {
-      return probeToModels(await probeAcp(r, acpArgs, 30000, providerId));
+      return probeToModels(await probeAcp(r, [...acpArgs, ...launchArgs], 30000, providerId));
     } catch (e) {
       log("warn", "ACP 探测模型失败", { err: String(e) });
       return [];

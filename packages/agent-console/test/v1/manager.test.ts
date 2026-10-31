@@ -207,4 +207,29 @@ describe("AgentManager", () => {
     await (manager as unknown as { recycleIdle(): Promise<void> }).recycleIdle();
     expect((await threads.get(threadId))?.status).toBe("closed");
   }, 15000);
+
+  it("B17: at most MAX_WARM_IDLE idle agent processes stay warm", async () => {
+    const proj = (await projects.list())[0]!;
+    const ids = [threadId];
+    for (let i = 0; i < 4; i++) ids.push((await threads.create({ projectId: proj.id, provider: "mock" })).id);
+    for (const id of ids) {
+      await manager.send(id, { text: "hi" });
+      await waitFor(async () => (await threads.get(id))?.status === "idle", 20000);
+    }
+    await manager.recycleIdle();
+    const warm = [...(manager as unknown as { runtimes: Map<string, { session: unknown }> }).runtimes.values()].filter((r) => r.session);
+    expect(warm.length).toBeLessThanOrEqual(3);
+  }, 60000);
+
+  it("a queued message can be removed before it is sent", async () => {
+    await manager.send(threadId, { text: "/slow" });
+    await waitFor(async () => (await threads.get(threadId))?.status === "running");
+    expect(await manager.send(threadId, { text: "later" })).toBe("queued");
+    const q = manager.runtimeInfo(threadId)!.queue as { id: string }[];
+    expect(q.length).toBe(1);
+    expect(manager.removeQueued(threadId, q[0]!.id)).toBe(true);
+    expect(manager.runtimeInfo(threadId)!.queue.length).toBe(0);
+    expect(manager.removeQueued(threadId, "nope")).toBe(false);
+    await manager.interrupt(threadId);
+  }, 20000);
 });

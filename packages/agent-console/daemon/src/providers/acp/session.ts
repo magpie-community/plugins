@@ -2,11 +2,12 @@
 import type { ActiveSession, ClientConnection, ClientContext } from "@agentclientprotocol/sdk";
 import { client, methods, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
 import type { ChildProcess } from "node:child_process";
-import type { ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../types.js";
+import type { LaunchCommand, ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../types.js";
 import { mapAcpAvailableCommands, sortSlashCommands } from "../slash.js";
 import type { ProviderEvent } from "../../timeline/types.js";
 import { AsyncQueue } from "../../util/queue.js";
 import { resolveFirstBin, type ResolveResult } from "../../util/bin.js";
+import { launchArgv, resolveLaunch } from "../launch.js";
 import { absCwd, acpStreamFromChild, killAcpChild, spawnResolved } from "./spawn.js";
 import { registerAcpClientHandlers } from "./clientHandlers.js";
 import { mapSessionUpdate, newMapCtx, stopToTurnEnd, type MapCtx } from "./mapUpdate.js";
@@ -45,7 +46,7 @@ export type AcpSessionOpts = {
   modeMap?: Partial<Record<Mode, string>>;
   cursorFast?: boolean;
   cursorAutoReview?: boolean;
-  launch?: { cmd: string; prefixArgs: string[] };
+  launch?: LaunchCommand;
 };
 
 export class AcpSession implements ProviderSession {
@@ -91,18 +92,11 @@ export class AcpSession implements ProviderSession {
 
   private async boot(): Promise<void> {
     const bin = this.o.launch
-      ? ({
-          ok: true as const,
-          cmd: this.o.launch.cmd,
-          prefixArgs: this.o.launch.prefixArgs,
-          display: this.o.launch.cmd,
-          via: "custom",
-          binName: "custom",
-        } satisfies ResolveResult & { ok: true; binName: string })
+      ? await resolveLaunch(this.o.launch).then((r) => r.ok ? ({ ...r, binName: "custom" } as ResolveResult & { ok: true; binName: string }) : r)
       : await resolveFirstBin(this.o.binCandidates?.length ? this.o.binCandidates : [this.o.binName]);
     if (!bin.ok) throw new Error(bin.reason);
     try {
-      this.child = spawnResolved(bin, this.o.acpArgs, { cwd: this.o.cwd });
+      this.child = spawnResolved(bin, launchArgv(this.o.acpArgs, this.o.launch), { cwd: this.o.cwd });
       this.child.stderr?.on("data", (d: Buffer) => {
         const t = d.toString().trim();
         if (t) log("info", `[${this.o.binName} acp] ${t.slice(0, 500)}`);
@@ -110,7 +104,7 @@ export class AcpSession implements ProviderSession {
       this.child.on("error", (e) => this.failInit(e));
       this.child.on("close", (code) => {
         if (!this.closed && code !== 0) {
-          this.q.push({ type: "notice", level: "error", message: `${this.o.binName} 进程退出 (${code})` });
+          this.q.push({ type: "notice", level: "error", message: tr("acp.exited", { name: this.o.binName, code: String(code) }) });
         }
       });
 

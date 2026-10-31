@@ -1,5 +1,6 @@
 // MockProvider: registered only with AGENT_CONSOLE_MOCK=1. Persistent session, interruptible, with permissions and steering.
 // Scripts by message prefix: default /perm /plan /ask /slow /error /long /exit; supports steer/interrupt/resume.
+import { tr } from "../util/i18n.js";
 import type { Provider, ProviderSession, DetectResult, ModelInfo,
   Mode, SendInput, RespondAnswer, SlashCommand,
 } from "./types.js";
@@ -259,9 +260,9 @@ async function scriptPerm(ctx: Ctx): Promise<void> {
     kind: "tool",
     detail: { command: "npm test", cwd: ".", toolName: "Bash" },
     options: [
-      { id: "accept", label: "允许", kind: "allow_once" },
-      { id: "acceptForSession", label: "本对话都允许", kind: "allow_always" },
-      { id: "decline", label: "拒绝", kind: "reject_once" },
+      { id: "accept", label: tr("perm.allow"), kind: "allow_once" },
+      { id: "acceptForSession", label: tr("perm.allowSession"), kind: "allow_always" },
+      { id: "decline", label: tr("perm.deny"), kind: "reject_once" },
     ],
   });
   const ans = await ctx.waitFor(requestId);
@@ -297,7 +298,7 @@ async function scriptPlan(ctx: Ctx): Promise<void> {
     detail: { markdown: "见上方计划" },
     options: [
       { id: "implement", label: "开始实施", kind: "allow_once" },
-      { id: "reject", label: "拒绝", kind: "reject_once" },
+      { id: "reject", label: tr("perm.deny"), kind: "reject_once" },
     ],
   });
   const ans = await ctx.waitFor(requestId);

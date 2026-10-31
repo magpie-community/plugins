@@ -1,5 +1,6 @@
 // Codex app-server notifications → ProviderEvent (§7.3.4). Method and field names follow the generated schema.
 import type { ProviderEvent } from "../../timeline/types.js";
+import { tr } from "../../util/i18n.js";
 
 const MAX_OUTPUT = 20 * 1024;
 const trunc = (s: string, n = 80): string => (s.length > n ? s.slice(0, n - 1) + "…" : s);
@@ -12,10 +13,13 @@ export type CodexMapState = {
   currentTurnId: string | null;
   filesChanged: number;
   diffText: string;
+  fileChangesByItemId: Map<string, unknown[]>;
+  /** Raw reasoning text streamed per item (DeepSeek and others send no summary): saved when the item completes (B15) */
+  reasoningRaw: Map<string, string>;
 };
 
 export function newCodexMapState(): CodexMapState {
-  return { currentTurnId: null, filesChanged: 0, diffText: "" };
+  return { currentTurnId: null, filesChanged: 0, diffText: "", fileChangesByItemId: new Map(), reasoningRaw: new Map() };
 }
 
 // One server notification → 0..n unified events. Server requests (approvals) don't go through here.
@@ -30,6 +34,8 @@ export function mapNotification(method: string, params: Rec, st: CodexMapState):
       if (tid) st.currentTurnId = tid;
       st.filesChanged = 0;
       st.diffText = "";
+      st.fileChangesByItemId.clear();
+      st.reasoningRaw.clear();
       break;
     }
     case "item/agentMessage/delta": {
@@ -46,7 +52,10 @@ export function mapNotification(method: string, params: Rec, st: CodexMapState):
     case "item/reasoning/textDelta": {
       const itemId = str(params.itemId) ?? "";
       const delta = str(params.delta) ?? "";
-      if (itemId && delta) out.push({ type: "reasoning_delta", itemId, text: delta });
+      if (itemId && delta) {
+        if (method === "item/reasoning/textDelta") st.reasoningRaw.set(itemId, (st.reasoningRaw.get(itemId) ?? "") + delta);
+        out.push({ type: "reasoning_delta", itemId, text: delta });
+      }
       break;
     }
     case "item/commandExecution/outputDelta":
@@ -65,14 +74,15 @@ export function mapNotification(method: string, params: Rec, st: CodexMapState):
         const cmd = str(item.command) ?? "";
         out.push({
           type: "tool_call", itemId, kind: "bash",
-          title: `运行 ${trunc(cmd)}`, status: "running",
+          title: tr("tool.run", { x: trunc(cmd) }), status: "running",
           detail: { command: cmd, cwd: str(item.cwd) },
         });
       } else if (type === "fileChange") {
         const changes = Array.isArray(item.changes) ? item.changes : [];
+        if (itemId) st.fileChangesByItemId.set(itemId, changes);
         out.push({
           type: "tool_call", itemId, kind: "edit",
-          title: `修改 ${changes.length} 个文件`, status: "running",
+          title: tr("tool.editFiles", { n: changes.length }), status: "running",
           detail: { changes },
         });
       } else if (type === "mcpToolCall" || type === "dynamicToolCall") {
@@ -85,7 +95,7 @@ export function mapNotification(method: string, params: Rec, st: CodexMapState):
       } else if (type === "webSearch") {
         out.push({
           type: "tool_call", itemId, kind: "web",
-          title: `搜索网页 "${trunc(str(item.query) ?? "", 40)}"`, status: "running",
+          title: tr("tool.webSearch", { x: trunc(str(item.query) ?? "", 40) }), status: "running",
         });
       }
       // agentMessage/reasoning/userMessage/plan etc.: wait for a delta or completed
@@ -100,7 +110,11 @@ export function mapNotification(method: string, params: Rec, st: CodexMapState):
         if (text) out.push({ type: "assistant_message", itemId, text });
       } else if (type === "reasoning") {
         const summary = Array.isArray(item.summary) ? item.summary : [];
-        const text = summary.filter((s): s is string => typeof s === "string").join("\n");
+        const content = Array.isArray(item.content) ? item.content : [];
+        const strings = (a: unknown[]) => a.filter((s): s is string => typeof s === "string").join("\n");
+        // The summary when there is one, else the raw reasoning (on the item, or as streamed)
+        const text = strings(summary) || strings(content) || st.reasoningRaw.get(itemId) || "";
+        st.reasoningRaw.delete(itemId);
         if (text) out.push({ type: "reasoning", itemId, text });
       } else if (type === "commandExecution") {
         const cmd = str(item.command) ?? "";
@@ -108,7 +122,7 @@ export function mapNotification(method: string, params: Rec, st: CodexMapState):
         const output = str(item.aggregatedOutput) ?? "";
         out.push({
           type: "tool_call", itemId, kind: "bash",
-          title: `运行 ${trunc(cmd)}`,
+          title: tr("tool.run", { x: trunc(cmd) }),
           status: exitCode === 0 ? "ok" : "failed",
           output: output.length > MAX_OUTPUT ? output.slice(0, MAX_OUTPUT) : output,
           exitCode,
@@ -116,11 +130,12 @@ export function mapNotification(method: string, params: Rec, st: CodexMapState):
         });
       } else if (type === "fileChange") {
         const changes = Array.isArray(item.changes) ? item.changes : [];
+        if (itemId) st.fileChangesByItemId.set(itemId, changes);
         const istatus = str(item.status);
         st.filesChanged += changes.length;
         out.push({
           type: "tool_call", itemId, kind: "edit",
-          title: `修改 ${changes.length} 个文件`,
+          title: tr("tool.editFiles", { n: changes.length }),
           status: istatus === "failed" ? "failed" : "ok",
           detail: { changes },
         });
@@ -138,7 +153,7 @@ export function mapNotification(method: string, params: Rec, st: CodexMapState):
       } else if (type === "webSearch") {
         out.push({
           type: "tool_call", itemId, kind: "web",
-          title: `搜索网页 "${trunc(str(item.query) ?? "", 40)}"`, status: "ok",
+          title: tr("tool.webSearch", { x: trunc(str(item.query) ?? "", 40) }), status: "ok",
         });
       } else if (type === "plan") {
         const text = str(item.text) ?? "";
@@ -194,7 +209,7 @@ export function mapNotification(method: string, params: Rec, st: CodexMapState):
       break;
     }
     case "error": {
-      const msg = str(params.message) ?? "Codex 错误";
+      const msg = str(params.message) ?? tr("codex.error");
       out.push({ type: "notice", level: "error", message: msg });
       break;
     }

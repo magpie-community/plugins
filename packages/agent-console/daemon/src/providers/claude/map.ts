@@ -2,6 +2,7 @@
 import type { ProviderEvent } from "../../timeline/types.js";
 import { callInfo, todoItems } from "../../agents/kinds.js";
 import { editDetail } from "../../agents/diff.js";
+import { tr } from "../../util/i18n.js";
 
 const MAX_OUTPUT = 20 * 1024;
 const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07/g;
@@ -41,6 +42,14 @@ const rec = (v: unknown): Rec => (v && typeof v === "object" ? (v as Rec) : {});
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 // One stream-json message → 0..n unified events
+/** total_cost_usd is Claude Code's estimate at Anthropic's prices. For another vendor's model behind a gateway (DeepSeek through
+ *  magpie, say) it is meaningless, so it is only kept when every model the turn used is a Claude model (B14). */
+export function costIsReal(modelUsage: unknown): boolean {
+  if (!modelUsage || typeof modelUsage !== "object") return true;
+  const names = Object.keys(modelUsage as Record<string, unknown>);
+  return names.every((n) => /claude|opus|sonnet|haiku/i.test(n));
+}
+
 export function mapSdkMessage(m: unknown, st: MapState, cwd: string): ProviderEvent[] {
   const out: ProviderEvent[] = [];
   if (!m || typeof m !== "object") return out;
@@ -53,10 +62,10 @@ export function mapSdkMessage(m: unknown, st: MapState, cwd: string): ProviderEv
     }
     // compact_boundary / status / api_retry etc. → lightweight notices
     if (r.subtype === "api_retry") {
-      out.push({ type: "notice", level: "warn", message: `API 重试中（第 ${r.attempt ?? "?"} 次）` });
+      out.push({ type: "notice", level: "warn", message: tr("notice.apiRetry", { n: String(r.attempt ?? "?") }) });
     }
     if (r.subtype === "compact_boundary") {
-      out.push({ type: "notice", level: "info", message: "上下文已压缩" });
+      out.push({ type: "notice", level: "info", message: tr("notice.compacted") });
     }
     return out;
   }
@@ -147,7 +156,7 @@ export function mapSdkMessage(m: unknown, st: MapState, cwd: string): ProviderEv
       inputTokens: num("input_tokens"),
       outputTokens: num("output_tokens"),
       cacheReadTokens: num("cache_read_input_tokens"),
-      costUsd: typeof r.total_cost_usd === "number" ? r.total_cost_usd : 0,
+      costUsd: typeof r.total_cost_usd === "number" && costIsReal(r.modelUsage) ? r.total_cost_usd : 0,
     });
     const subtype = str(r.subtype) ?? "";
     const interrupted = st.sawInterrupt || /interrupt/i.test(subtype);

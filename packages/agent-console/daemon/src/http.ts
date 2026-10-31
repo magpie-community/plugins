@@ -7,6 +7,7 @@ import { checkHost, classifyOrigin, tokenEqual } from "./security.js";
 import type { Config } from "./config.js";
 import type { AttachmentStore } from "./store/attachments.js";
 import { log } from "./log.js";
+import { tr } from "./util/i18n.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -61,7 +62,7 @@ export function createHttpServer(cfg: Config, appDir: string, attachments: Attac
       await route(req, res);
     } catch (e) {
       log("error", "HTTP 处理异常", { url: req.url, err: String(e) });
-      if (!res.headersSent) sendJson(res, 500, { ok: false, e: { code: "internal", message: "服务内部错误" } });
+      if (!res.headersSent) sendJson(res, 500, { ok: false, e: { code: "internal", message: tr("http.internal") } });
       else res.end();
     }
   });
@@ -81,7 +82,7 @@ export function createHttpServer(cfg: Config, appDir: string, attachments: Attac
     }
     const origin = classifyOrigin(req.headers.origin, cfg.port);
     if (origin === "foreign") {
-      sendJson(res, 403, { ok: false, e: { code: "bad_origin", message: "来源不允许" } });
+      sendJson(res, 403, { ok: false, e: { code: "bad_origin", message: tr("http.badOrigin") } });
       return;
     }
 
@@ -95,7 +96,7 @@ export function createHttpServer(cfg: Config, appDir: string, attachments: Attac
     // the preflight itself returns no data, and the real request still has to pass the token check.
     if (req.method === "OPTIONS") {
       if (pathname !== "/api/upload" || origin === "none") {
-        sendJson(res, 403, { ok: false, e: { code: "bad_preflight", message: "预检不允许" } });
+        sendJson(res, 403, { ok: false, e: { code: "bad_preflight", message: tr("http.badPreflight") } });
         return;
       }
       send(res, 204, "", {
@@ -117,7 +118,7 @@ export function createHttpServer(cfg: Config, appDir: string, attachments: Attac
         (typeof headerToken === "string" && tokenEqual(headerToken, cfg.token)) ||
         (typeof queryToken === "string" && tokenEqual(queryToken, cfg.token));
       if (!validToken) {
-        sendJson(res, 403, { ok: false, e: { code: "bad_token", message: "令牌无效" } });
+        sendJson(res, 403, { ok: false, e: { code: "bad_token", message: tr("http.badToken") } });
         return;
       }
       // In a sandbox iframe (no allow-same-origin) the page's origin is null, so even a same-address fetch is cross-origin:
@@ -134,7 +135,7 @@ export function createHttpServer(cfg: Config, appDir: string, attachments: Attac
       const id = safeDecode(pathname.slice("/attachments/".length));
       const a = id === null ? null : await attachments.get(id);
       if (!a) {
-        sendJson(res, 404, { ok: false, e: { code: "not_found", message: "附件不存在" } });
+        sendJson(res, 404, { ok: false, e: { code: "not_found", message: tr("http.noAttachment") } });
         return;
       }
       const data = await attachments.read(a.id);
@@ -145,11 +146,11 @@ export function createHttpServer(cfg: Config, appDir: string, attachments: Attac
     // Static assets: refuse Origin: null. Ordinary navigations and <script src>/<link> subresource requests carry no Origin;
     // one with null can only be someone else's sandboxed/data:/file: page doing a fetch — give it nothing, and no CORS headers.
     if (origin === "opaque") {
-      sendJson(res, 403, { ok: false, e: { code: "bad_origin", message: "来源不允许" } });
+      sendJson(res, 403, { ok: false, e: { code: "bad_origin", message: tr("http.badOrigin") } });
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") {
-      sendJson(res, 405, { ok: false, e: { code: "method", message: "方法不允许" } });
+      sendJson(res, 405, { ok: false, e: { code: "method", message: tr("http.method") } });
       return;
     }
     if (pathname === "/" || pathname === "/index.html") {
@@ -158,24 +159,24 @@ export function createHttpServer(cfg: Config, appDir: string, attachments: Attac
         const html = await readFile(join(appDir, "index.html"), "utf8");
         send(res, 200, html, { ...STATIC_HEADERS, "content-type": "text/html; charset=utf-8" });
       } catch {
-        send(res, 503, "app 还没构建（缺 app/index.html）", { ...STATIC_HEADERS, "content-type": "text/plain; charset=utf-8" });
+        send(res, 503, tr("http.noApp"), { ...STATIC_HEADERS, "content-type": "text/plain; charset=utf-8" });
       }
       return;
     }
     // Other static files must be inside app/
     const decoded = safeDecode(pathname);
     if (decoded === null) {
-      sendJson(res, 400, { ok: false, e: { code: "bad_path", message: "路径不合法" } });
+      sendJson(res, 400, { ok: false, e: { code: "bad_path", message: tr("http.badPath") } });
       return;
     }
     const rel = normalize(decoded).replace(/^([\\/])+/, "");
     const full = normalize(join(appDir, rel));
     if (!full.startsWith(normalize(appDir)) || rel.includes("..")) {
-      sendJson(res, 403, { ok: false, e: { code: "bad_path", message: "路径不允许" } });
+      sendJson(res, 403, { ok: false, e: { code: "bad_path", message: tr("http.pathDenied") } });
       return;
     }
     if (!existsSync(full) || !(await stat(full)).isFile()) {
-      sendJson(res, 404, { ok: false, e: { code: "not_found", message: "文件不存在" } });
+      sendJson(res, 404, { ok: false, e: { code: "not_found", message: tr("http.noFile") } });
       return;
     }
     const data = await readFile(full);
@@ -190,14 +191,14 @@ export function createHttpServer(cfg: Config, appDir: string, attachments: Attac
     if (pathname === "/api/upload" && req.method === "POST") {
       const name = url.searchParams.get("name") ?? "";
       if (!attachments.allowedExt(name)) {
-        sendJson(res, 400, { ok: false, e: { code: "bad_type", message: "不支持的文件类型" } });
+        sendJson(res, 400, { ok: false, e: { code: "bad_type", message: tr("http.badType") } });
         return;
       }
       // The declared size is already over the limit: reject without reading the body
       const declared = Number(req.headers["content-length"] ?? 0);
       if (declared > MAX_UPLOAD) {
         res.setHeader("connection", "close");
-        sendJson(res, 413, { ok: false, e: { code: "too_large", message: "文件太大（上限 50MB）" } });
+        sendJson(res, 413, { ok: false, e: { code: "too_large", message: tr("http.tooLarge") } });
         req.resume();
         return;
       }
@@ -208,7 +209,7 @@ export function createHttpServer(cfg: Config, appDir: string, attachments: Attac
         size += b.length;
         if (size > MAX_UPLOAD) {
           res.setHeader("connection", "close");
-          sendJson(res, 413, { ok: false, e: { code: "too_large", message: "文件太大（上限 50MB）" } });
+          sendJson(res, 413, { ok: false, e: { code: "too_large", message: tr("http.tooLarge") } });
           return;
         }
         chunks.push(b);
@@ -217,7 +218,7 @@ export function createHttpServer(cfg: Config, appDir: string, attachments: Attac
       sendJson(res, 200, { ok: true, id: a.id, name: a.name, mime: a.mime, size: a.size });
       return;
     }
-    sendJson(res, 404, { ok: false, e: { code: "not_found", message: "接口不存在" } });
+    sendJson(res, 404, { ok: false, e: { code: "not_found", message: tr("http.noRoute") } });
   }
 
   if (hooks.onUpgrade) {

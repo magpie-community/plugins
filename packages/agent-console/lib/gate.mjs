@@ -56,6 +56,24 @@ export function failureHtml(error) {
   );
 }
 
+/**
+ * The Magpie plugin page boot.js came from (?back=), so the daemon page can go back through it after the plugin host restarts
+ * (fresh session.js → new gate → new daemon). Only a loopback Magpie plugin page is accepted, so the daemon page can't be turned
+ * into an open redirect; it travels in the 302's # fragment next to the token and never reaches a server.
+ * Keep in sync with web/src/api/backToMagpie.ts.
+ */
+export function safeBackUrl(raw) {
+  if (typeof raw !== "string" || !raw || raw.length > 2048) return null;
+  let u;
+  try { u = new URL(raw); } catch { return null; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  if (u.username || u.password) return null;
+  const hostname = u.hostname.toLowerCase();
+  if (hostname !== "127.0.0.1" && hostname !== "localhost" && hostname !== "[::1]") return null;
+  if (!/^\/_magpie\/plugin\/[A-Za-z0-9_-]{1,128}\/(?:page\/)?index\.html$/.test(u.pathname)) return null;
+  return `${u.protocol}//${u.host}${u.pathname}${u.search}`;
+}
+
 const REOPEN_HTML =
   "<!doctype html><meta charset=utf-8><p>Agent Console: 链接已失效，请在 Magpie 里重新打开插件页。" +
   "<br>The link is no longer valid. Please reopen the Agent Console page in Magpie.</p>";
@@ -117,7 +135,9 @@ export function createGate({ port, key, token, ensureDaemon, host = "127.0.0.1" 
     for (const name of ["theme", "lang", "tokens"]) {
       if (url.searchParams.has(name)) query.set(name, url.searchParams.get(name));
     }
-    const location = `http://127.0.0.1:${daemon.port}/?${query}#t=${encodeURIComponent(token)}`;
+    const back = safeBackUrl(url.searchParams.get("back"));
+    const fragment = `t=${encodeURIComponent(token)}` + (back ? `&b=${encodeURIComponent(back)}` : "");
+    const location = `http://127.0.0.1:${daemon.port}/?${query}#${fragment}`;
     res.writeHead(302, { ...SAFE_HEADERS, location });
     res.end();
   }

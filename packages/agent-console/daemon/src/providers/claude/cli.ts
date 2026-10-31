@@ -8,6 +8,8 @@
 //   ← {type:"control_request", request_id, request:{subtype:"can_use_tool", tool_name, input, tool_use_id, ...}}
 //   → {type:"control_response", response:{subtype:"success", request_id, response:{behavior:"allow", updatedInput} | {behavior:"deny", message, interrupt?}}}
 //   ← {type:"control_cancel_request", request_id}   (the CLI no longer waits for that answer)
+import type { LaunchCommand } from "../types.js";
+import { launchArgv } from "../launch.js";
 import type { ChildProcess } from "node:child_process";
 import { killTree, spawnBin, type ResolveResult } from "../../util/bin.js";
 import { AsyncQueue } from "../../util/queue.js";
@@ -23,6 +25,8 @@ export type ClaudeCliOpts = {
   effort: string | null;
   resume: string | null;
   env?: NodeJS.ProcessEnv;
+  /** Settings › Launch command: internal prefix before, user args after the built-in flags */
+  launch?: LaunchCommand;
 };
 
 export type PermissionDecision =
@@ -78,7 +82,7 @@ export class ClaudeCli {
   private spawnError: Error | null = null;
 
   constructor(private o: ClaudeCliOpts, private canUseTool: CanUseTool) {
-    const args = claudeArgs(o);
+    const args = launchArgv(claudeArgs(o), o.launch);
     this.child = spawnBin(o.bin, args, {
       cwd: o.cwd,
       env: { ...(o.env ?? process.env), NO_COLOR: "1", FORCE_COLOR: "0" },

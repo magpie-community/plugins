@@ -8,7 +8,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ClaudeSession } from "../../daemon/src/providers/claude/session.js";
 import { createClaudeProvider } from "../../daemon/src/providers/claude/provider.js";
-import { clearBinCache } from "../../daemon/src/util/bin.js";
 import { setAppLocale } from "../../daemon/src/util/i18n.js";
 import type { ProviderEvent } from "../../daemon/src/timeline/types.js";
 
@@ -246,15 +245,8 @@ describe("claude over stream-json", () => {
   });
 
   it("no claude on PATH: createSession says, in English, that Claude Code is not bundled and how to install it", async () => {
-    const path = process.env.PATH;
-    process.env.PATH = join(dir, "empty");
-    clearBinCache("claude");
-    try {
-      await expect(createClaudeProvider().createSession({ threadId: "t", cwd: dir, model: null, mode: "default", effort: null, resumeId: null }))
-        .rejects.toThrow(/^claude was not found .*Claude Code is not bundled with this plugin; install it first: npm i -g @anthropic-ai\/claude-code/);
-    } finally {
-      process.env.PATH = path;
-      clearBinCache("claude");
-    }
+    const missing = { ok: false as const, reason: "PATH has no claude" };
+    await expect(createClaudeProvider({ resolve: async () => missing }).createSession({ threadId: "t", cwd: dir, model: null, mode: "default", effort: null, resumeId: null }))
+      .rejects.toThrow(/^claude was not found .*Claude Code is not bundled with this plugin; install it first: npm i -g @anthropic-ai\/claude-code/);
   });
 });

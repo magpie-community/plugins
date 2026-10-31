@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { join, normalize, sep } from "node:path";
+import { tr } from "../util/i18n.js";
 
 export type GitFileEntry = {
   path: string;
@@ -21,7 +22,7 @@ function runGit(cwd: string, args: string[]): Promise<{ code: number; out: strin
     execFile("git", ["-c", "core.quotepath=false", ...args], { cwd, timeout: TIMEOUT, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (e, stdout, stderr) => {
       const code = e && typeof (e as { code?: number }).code === "number" ? (e as { code: number }).code! : e ? 1 : 0;
       const missing = (e as NodeJS.ErrnoException | null)?.code === "ENOENT";
-      res({ code, out: String(stdout ?? ""), err: missing ? "找不到 git（请先安装 git 并加入 PATH）" : String(stderr || (e?.message ?? "")) });
+      res({ code, out: String(stdout ?? ""), err: missing ? tr("git.missing") : String(stderr || (e?.message ?? "")) });
     });
   });
 }
@@ -84,18 +85,18 @@ export class GitService {
   // Unified diff text; {tooLarge:true} when the diff is > 1MB
   async diff(projectPath: string, p: string): Promise<{ diff?: string; tooLarge?: boolean; untracked?: boolean; error?: string }> {
     const rel = insidePath(projectPath, p);
-    if (!rel) return { error: "路径不允许" };
+    if (!rel) return { error: tr("fs.pathDenied") };
     // Check untracked first (git diff prints nothing for untracked files)
     const ls = await runGit(projectPath, ["ls-files", "--error-unmatch", "--", rel]);
     if (ls.code !== 0) {
       // Untracked/not in the index: treat the whole file as added
       const full = join(projectPath, rel);
-      if (!existsSync(full)) return { error: "文件不存在" };
+      if (!existsSync(full)) return { error: tr("fs.fileMissing") };
       const s = await stat(full);
-      if (!s.isFile()) return { error: "不是文件" };
+      if (!s.isFile()) return { error: tr("fs.notFile") };
       if (s.size > DIFF_LIMIT) return { tooLarge: true };
       const text = await readFile(full, "utf8").catch(() => null);
-      if (text === null) return { error: "二进制或无法读取" };
+      if (text === null) return { error: tr("git.binary") };
       const lines = text.split("\n").map((l) => "+" + l).join("\n");
       return { untracked: true, diff: `--- /dev/null\n+++ b/${rel}\n@@ -0,0 +1,${text.split("\n").length} @@\n${lines}` };
     }
@@ -112,9 +113,9 @@ export class GitService {
   // Tracked → git restore; untracked → move to trash/discarded/<ts>/<relpath>
   async discard(projectPath: string, p: string, dataDir: string): Promise<{ ok: boolean; trashedTo?: string; error?: string }> {
     const rel = insidePath(projectPath, p);
-    if (!rel) return { ok: false, error: "路径不允许" };
+    if (!rel) return { ok: false, error: tr("fs.pathDenied") };
     // Only discard a single file: an empty path / "." would make git restore act on the whole repository
-    if (rel === "." || rel === "" || rel === "./") return { ok: false, error: "路径不允许" };
+    if (rel === "." || rel === "" || rel === "./") return { ok: false, error: tr("fs.pathDenied") };
     const ls = await runGit(projectPath, ["ls-files", "--error-unmatch", "--", rel]);
     if (ls.code === 0) {
       let r = await runGit(projectPath, ["restore", "--staged", "--worktree", "--", rel]);
@@ -123,7 +124,7 @@ export class GitService {
       return { ok: true };
     }
     const full = join(projectPath, rel);
-    if (!existsSync(full)) return { ok: false, error: "文件不存在" };
+    if (!existsSync(full)) return { ok: false, error: tr("fs.fileMissing") };
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const dest = join(dataDir, "trash", "discarded", stamp, rel);
     await mkdir(join(dest, ".."), { recursive: true });

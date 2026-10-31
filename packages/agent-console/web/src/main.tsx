@@ -6,6 +6,8 @@ import "./styles/chat.css";
 import "./styles/composer.css";
 import { createRoot } from "react-dom/client";
 import { applyMagpieTokensFromSearch } from "./layout/applyMagpieTokens.js";
+import { applyTheme, initTheme } from "./layout/theme.js";
+import { goBackToMagpie, watchReconnect } from "./api/backToMagpie.js";
 import { initLocale, getLocale } from "./i18n/index.js";
 import { WsClient } from "./api/ws";
 import { useConnection } from "./stores/connection";
@@ -17,14 +19,11 @@ import { DebugApp } from "./Debug";
 import { getToken } from "./api/token";
 const token = getToken();
 
-// Theme: ?theme=light|dark first, otherwise follow the system (settings.theme override happens after hydrate, completed in P2-6)
+// Theme: Magpie's ?theme= (or the OS) until the saved setting arrives; an explicit Light/Dark setting then wins (B4)
 const params = new URLSearchParams(location.search);
-const themeParam = params.get("theme");
 initLocale(location.search);
 applyMagpieTokensFromSearch(location.search);
-const preferDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-document.documentElement.dataset.theme =
-  themeParam === "light" || themeParam === "dark" ? themeParam : preferDark ? "dark" : "light";
+initTheme(location.search);
 
 export const ws = new WsClient(token, getLocale());
 // For the debug page (P1-8) and e2e driving: expose the authenticated client and internal stores.
@@ -34,6 +33,8 @@ void import("./stores/timeline").then((m) => {
   (window as unknown as { __tl?: unknown }).__tl = m.useTimeline;
 });
 ws.onState((s) => useConnection.getState().set({ state: s }));
+// Daemon gone for 5s (usually: Magpie restarted the plugin host) → back through the Magpie page to the new gate
+watchReconnect(ws, () => { goBackToMagpie(); });
 ws.connect();
 ws.waitHello().then(async (h) => {
   useConnection.getState().set({ version: (h as { version?: string }).version ?? null });
@@ -42,11 +43,7 @@ ws.waitHello().then(async (h) => {
   try {
     const s = (await ws.call("settings.get")) as Record<string, unknown>;
     useUi.getState().hydrate(s);
-    // settings.theme override (only without a ?theme= parameter)
-    if (!themeParam) {
-      const { applyTheme } = await import("./components/Settings");
-      applyTheme((s.theme as string) ?? "auto");
-    }
+    applyTheme(s.theme);
   } catch {}
   // Fetch the project/conversation/provider lists and subscribe to the sidebar channel
   await useData.getState().bind(ws);
