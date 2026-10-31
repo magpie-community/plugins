@@ -9,7 +9,7 @@
   * { box-sizing: border-box; }
   #root { height: 100%; }
   button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
-  input, textarea, select { font: inherit; color: inherit; }
+  input, textarea { font: inherit; color: inherit; }
   a { color: var(--accent); }
   :focus-visible { outline: 2px solid color-mix(in oklab, var(--accent) 55%, var(--bg)); outline-offset: -1px; }
 }
@@ -55,10 +55,6 @@
 .tinput.err { border-color: var(--danger); }
 .tinput::placeholder { color: var(--muted); }
 textarea.tinput { height: auto; min-height: 60px; padding: 6px 10px; resize: vertical; }
-select.tinput { padding-right: 26px; appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
-  background-position: calc(100% - 14px) 50%, calc(100% - 10px) 50%; background-size: 4px 4px; background-repeat: no-repeat;
-}
 
 /* Dropdown/context menus and popovers */
 .menu {
@@ -144,3 +140,23 @@ select.tinput { padding-right: 26px; appearance: none;
 
 /* Hidden but visible to a11y/screenshot audits */
 .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* SelectMenu (components/SelectMenu.tsx): the page's own dropdown in place of native <select> */
+.menu.select-menu { z-index: 80; overflow-y: auto; outline: none; max-width: 320px; }
+.sm-opt { cursor: pointer; user-select: none; height: auto; min-height: 28px; padding: 4px 8px 4px 10px; }
+.sm-opt.on { background: var(--surface-hover); }
+.sm-opt.off { color: var(--muted); cursor: default; }
+.sm-opt.off:hover { background: none; }
+.sm-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.sm-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-hint { font-size: var(--fs-s); color: var(--muted); white-space: normal; line-height: 1.4; }
+.sm-check { flex: none; width: 14px; display: inline-flex; color: var(--accent); }
+.sm-opt[aria-selected="true"] .sm-label { font-weight: 500; }
+/* Form-field trigger (Settings): looks like .tinput with a caret */
+.tinput.sm-field {
+  display: flex; align-items: center; text-align: left; padding-right: 26px; cursor: pointer; position: relative; color: var(--fg);
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 10px) 50%; background-size: 4px 4px; background-repeat: no-repeat;
+}
+.tinput.sm-field[aria-expanded="true"] { border-color: color-mix(in oklab, var(--accent) 55%, var(--bg)); }
+.sm-field .sm-val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

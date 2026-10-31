@@ -27,8 +27,10 @@
   if (said) said.textContent = zh ? "正在启动本地服务…" : "Starting local service…";
   if (brand) brand.textContent = zh ? "Agent 控制台" : "Agent Console";
 
-  // ts: the host refreshes it every few seconds; one that stopped moving belongs to a host that was killed (Magpie restarting it)
-  // and its gate is gone, so wait for the new host's file instead of navigating to a dead port.
+  // ts: when the host wrote the file. beat: true once the host refreshes it every few seconds (from the first page open on);
+  // a beating file whose ts stopped moving belongs to a host that was killed (Magpie restarting it) and its gate is gone, so wait
+  // for the new host's file instead of navigating to a dead port. A file that doesn't beat (the page was never opened) can be old
+  // and still live; a dead host's one is deleted by the next host when it starts.
   const STALE_MS = 12000;
   // ac_lost: set by the daemon page when it lost its connection and came back here. The old host's file was last refreshed before
   // that moment, so only a session.js refreshed after it (a live host's) is used.
@@ -45,8 +47,14 @@
       s.port <= 65535 &&
       typeof s.key === "string" &&
       /^[0-9a-f]{64}$/.test(s.key) &&
-      (typeof s.ts !== "number" || (Math.abs(Date.now() - s.ts) < STALE_MS && (!lostAt || s.ts > lostAt)))
+      fresh(s)
     );
+  }
+  function fresh(s) {
+    if (typeof s.ts !== "number") return true; // a host from before ts
+    if (lostAt && !(s.ts > lostAt)) return false;
+    if (s.beat === false) return true;
+    return Math.abs(Date.now() - s.ts) < STALE_MS;
   }
 
   // Reload an uncached copy of session.js (the key changes after the plugin host restarts).

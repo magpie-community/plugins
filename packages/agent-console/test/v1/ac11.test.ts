@@ -267,9 +267,9 @@ describe("boot.js (self-heal)", () => {
   const key1 = "1".repeat(64), key2 = "2".repeat(64);
   it("skips a killed host's stale session.js and opens the new gate, passing its own page as back", async () => {
     const url = await runBoot([
-      { v: 2, port: 3488, key: key1, ts: Date.now() - 60_000 },
-      { v: 2, port: 3488, key: key1, ts: Date.now() - 60_000 },
-      { v: 2, port: 3488, key: key2, ts: Date.now() },
+      { v: 2, port: 3488, key: key1, ts: Date.now() - 60_000, beat: true },
+      { v: 2, port: 3488, key: key1, ts: Date.now() - 60_000, beat: true },
+      { v: 2, port: 3488, key: key2, ts: Date.now(), beat: false },
     ]);
     expect(url).toBeTruthy();
     const u = new URL(url!);
@@ -287,6 +287,27 @@ describe("boot.js (self-heal)", () => {
     // ac_lost isn't passed on, so it can't pile up
     expect(u.searchParams.get("back")).toBe("http://127.0.0.1:3430/_magpie/plugin/abc/index.html");
   });
+  it("accepts an old session.js that never beat (page never opened) on a normal load", async () => {
+    const url = await runBoot([{ v: 2, port: 3488, key: key1, ts: Date.now() - 3_600_000, beat: false }]);
+    expect(new URL(url!).searchParams.get("k")).toBe(key1);
+  });
+  it("after a lost connection, waits for a beat newer than the loss (gate still up, daemon crashed)", async () => {
+    const lost = Date.now() - 2000;
+    const url = await runBoot([
+      { v: 2, port: 3488, key: key1, ts: lost - 3000, beat: true },
+      { v: 2, port: 3488, key: key1, ts: lost - 3000, beat: true },
+      { v: 2, port: 3488, key: key1, ts: Date.now(), beat: true },
+    ], `http://127.0.0.1:3430/_magpie/plugin/abc/index.html?ac_lost=${lost}`);
+    expect(new URL(url!).searchParams.get("k")).toBe(key1);
+  });
+  it("after a lost connection, a new host's first (non-beating) file written after the loss is used", async () => {
+    const lost = Date.now() - 4000;
+    const url = await runBoot([
+      { v: 2, port: 3488, key: key1, ts: lost - 1000, beat: true },
+      { v: 2, port: 3488, key: key2, ts: lost + 2500, beat: false },
+    ], `http://127.0.0.1:3430/_magpie/plugin/abc/index.html?ac_lost=${lost}`);
+    expect(new URL(url!).searchParams.get("k")).toBe(key2);
+  });
   it("still accepts a session.js without ts (older host)", async () => {
     const url = await runBoot([{ v: 2, port: 3488, key: key1 }]);
     expect(new URL(url!).searchParams.get("k")).toBe(key1);
@@ -301,5 +322,53 @@ describe("turn end duration fallback (ACP agents report none)", () => {
     applyEvent(st, { seq: 2, ts: 5200, threadId: "t", turnId: "u", type: "turn_ended", status: "completed" } as never);
     const te = st.items.find((i) => i.kind === "turnend") as { durationMs?: number };
     expect(te.durationMs).toBe(4200);
+  });
+});
+
+describe("daemon log: a closed console pipe (host killed hard) is not a crash", () => {
+  it("swallows EPIPE on stdout and stops writing to the console", async () => {
+    const { log, consoleClosed } = await import("../../daemon/src/log.js");
+    log("info", "before");
+    expect(consoleClosed()).toBe(false);
+    const err = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    // Without a listener this emit would throw (and in the daemon become an uncaughtException)
+    expect(() => process.stdout.emit("error", err)).not.toThrow();
+    expect(consoleClosed()).toBe(true);
+    expect(() => log("info", "after")).not.toThrow();
+  });
+});
+
+describe("Magpie's accent is taken over (PR #569 review)", () => {
+  it("passes --magpie-accent (and a bare --accent) through like every other token", async () => {
+    const { applyMagpieTokensFromSearch } = await import("../../web/src/layout/applyMagpieTokens.js");
+    const g = globalThis as Record<string, unknown>;
+    const saved = g.document;
+    const set = new Map<string, string>();
+    g.document = { documentElement: { style: { setProperty: (k: string, v: string) => set.set(k, v) } } };
+    try {
+      const enc = (o: object) => "?tokens=" + Buffer.from(JSON.stringify(o)).toString("base64");
+      applyMagpieTokensFromSearch(enc({ accent: "#4f46e5", "accent-soft": "#eeedfd", "accent-fg": "#ffffff", bg: "#f4f4f6" }));
+      expect(set.get("--magpie-accent")).toBe("#4f46e5");
+      expect(set.get("--magpie-accent-fg")).toBe("#ffffff");
+      expect(set.get("--magpie-bg")).toBe("#f4f4f6");
+      applyMagpieTokensFromSearch(enc({ "--accent": "#ff0000" }));
+      expect(set.get("--accent")).toBe("#ff0000");
+    } finally {
+      g.document = saved;
+    }
+  });
+  it("tokens.css: teal only as the fallback, every accent tint derived from --accent", async () => {
+    const { readFileSync } = await import("node:fs");
+    const css = readFileSync(join(resolve(__dirname, "..", ".."), "web", "src", "styles", "tokens.css"), "utf8");
+    // every hard-coded teal sits inside a var(--magpie-accent, …) fallback
+    for (const m of css.matchAll(/#(0f766e|14b8a6|2dd4bf)/gi)) {
+      const line = css.slice(css.lastIndexOf("\n", m.index!) + 1, css.indexOf("\n", m.index!));
+      expect(line).toMatch(/var\(--magpie-accent, #/);
+    }
+    for (const v of ["--accent-soft", "--run-bg", "--cp-focus", "--cp-ring"]) {
+      const decl = new RegExp(`${v}:\\s*([^;]+);`).exec(css)?.[1] ?? "";
+      expect(decl, v).toContain("var(--accent)");
+    }
+    expect(css).toMatch(/--run-fg:\s*var\(--accent\)/);
   });
 });

@@ -38,6 +38,15 @@ function initLog(dataDir) {
   } catch {
   }
 }
+function guardConsole() {
+  if (guarded) return;
+  guarded = true;
+  for (const stream of [process.stdout, process.stderr]) {
+    stream?.on?.("error", () => {
+      consoleGone = true;
+    });
+  }
+}
 function log(level, msg, extra) {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] [${level}] ${msg}${extra !== void 0 ? " " + safeJson(extra) : ""}`;
   try {
@@ -50,8 +59,19 @@ function log(level, msg, extra) {
     if (logFile) appendFileSync(logFile, line + "\n", "utf8");
   } catch {
   }
+  guardConsole();
+  if (consoleGone) return;
+  const stream = level === "info" ? process.stdout : process.stderr;
+  if (stream?.destroyed || stream?.writableEnded) {
+    consoleGone = true;
+    return;
+  }
   const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
-  fn(`[agent-console] ${msg}`, extra !== void 0 ? extra : "");
+  try {
+    fn(`[agent-console] ${msg}`, extra !== void 0 ? extra : "");
+  } catch {
+    consoleGone = true;
+  }
 }
 function safeJson(v) {
   try {
@@ -60,12 +80,14 @@ function safeJson(v) {
     return String(v);
   }
 }
-var logDir, today, logFile;
+var logDir, today, logFile, consoleGone, guarded;
 var init_log = __esm({
   "daemon/src/log.ts"() {
     logDir = "";
     today = "";
     logFile = "";
+    consoleGone = false;
+    guarded = false;
   }
 });
 
@@ -3243,7 +3265,7 @@ var init_session2 = __esm({
           }
         })();
         this.started = attempt.catch((e) => {
-          if (this.started === guarded) {
+          if (this.started === guarded2) {
             this.started = null;
             const rpc = this.rpc;
             this.rpc = null;
@@ -3256,7 +3278,7 @@ var init_session2 = __esm({
           }
           throw e;
         });
-        const guarded = this.started;
+        const guarded2 = this.started;
         return this.started;
       }
       async send(input) {
@@ -8297,6 +8319,7 @@ if (nodeMajor < 20) {
 process.env.PATH = augmentPath(process.env, dirname7(process.execPath));
 var cfg = parseConfig(process.argv.slice(2));
 process.on("uncaughtException", (e) => {
+  if (e?.code === "EPIPE") return;
   log("error", "uncaughtException", { err: String(e?.stack ?? e) });
 });
 process.on("unhandledRejection", (e) => {
@@ -8417,13 +8440,16 @@ async function main() {
       }
     }, 2e3);
     parentWatch.unref();
+    let lifelineGone = false;
     const lifelineClosed = () => {
+      if (lifelineGone) return;
+      lifelineGone = true;
       log("info", "plugin host closed the lifeline (stdin); daemon exiting with it");
       shutdown(0);
     };
     process.stdin.on("end", lifelineClosed);
     process.stdin.on("close", lifelineClosed);
-    process.stdin.on("error", () => shutdown(0));
+    process.stdin.on("error", lifelineClosed);
     process.stdin.resume();
   }
 }

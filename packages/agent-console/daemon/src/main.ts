@@ -34,6 +34,8 @@ const cfg = parseConfig(process.argv.slice(2));
 
 // Top-level safety net: log, don't exit
 process.on("uncaughtException", (e) => {
+  // A console write after the host's pipe closed (EPIPE) is expected while exiting, not a crash worth logging
+  if ((e as NodeJS.ErrnoException)?.code === "EPIPE") return;
   log("error", "uncaughtException", { err: String(e?.stack ?? e) });
 });
 process.on("unhandledRejection", (e) => {
@@ -179,10 +181,17 @@ async function main(): Promise<void> {
     }, 2000);
     parentWatch.unref();
     // Logged so a daemon that went away with its plugin host (Magpie restarting it) can be told from an idle exit
-    const lifelineClosed = () => { log("info", "plugin host closed the lifeline (stdin); daemon exiting with it"); shutdown(0); };
+    // 'end' and 'close' both fire when the pipe goes away: handle it once
+    let lifelineGone = false;
+    const lifelineClosed = () => {
+      if (lifelineGone) return;
+      lifelineGone = true;
+      log("info", "plugin host closed the lifeline (stdin); daemon exiting with it");
+      shutdown(0);
+    };
     process.stdin.on("end", lifelineClosed);
     process.stdin.on("close", lifelineClosed);
-    process.stdin.on("error", () => shutdown(0));
+    process.stdin.on("error", lifelineClosed);
     process.stdin.resume();
   }
 }

@@ -69,7 +69,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       providersLoading: "正在检测 Agent…", moreModels: "还有 {n} 个模型，请用上方搜索",
       pickModel: "选择模型", noModelMatch: "没有匹配的模型",
       // Options below the composer are English throughout (as in Paseo); hint text stays Chinese
-      defaultModel: "Default", defaultEffort: "Default", defaultEffortNamed: "Default ({level})",
+      defaultModel: "默认", defaultEffort: "默认", defaultEffortNamed: "默认（{level}）",
       effortTitle: "思考强度", modeTitle: "权限模式", attachTitle: "附件（图片/文本）",
       failSwitchAgent: "切换 Agent 失败：", failSend: "发送失败：", failUpload: "附件上传失败：",
       uploadFailed: "上传失败", steerTag: "插话",

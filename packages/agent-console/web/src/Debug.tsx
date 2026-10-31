@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useConnection } from "./stores/connection";
 import { ws } from "./main";
+import { SelectMenu } from "./components/SelectMenu";
 
 type Project = { id: string; name: string; path: string };
 type ThreadMeta = {
@@ -130,10 +131,8 @@ export function DebugApp() {
     <div style={{ display: "flex", height: "100vh", font: "13px/1.5 system-ui", color: "var(--fg)" }}>
       <div style={{ width: 260, borderRight: "1px solid var(--border)", padding: 12, overflowY: "auto" }}>
         <div style={{ marginBottom: 8 }}>{state === "open" ? `已连接 · ${version ?? ""}` : "连接中…"}</div>
-        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ width: "100%" }}>
-          <option value="">选择项目</option>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
+        <SelectMenu className="tinput sm-field" matchWidth ariaLabel="选择项目" value={projectId} onChange={setProjectId}
+          options={[{ value: "", label: "选择项目" }, ...projects.map((p) => ({ value: p.id, label: p.name }))]} />
         <button onClick={() => void createThread()} disabled={!projectId} style={{ width: "100%", marginTop: 8 }}>新建对话（mock）</button>
         <div style={{ marginTop: 12 }}>
           {threads.filter((t) => !projectId || t.projectId === projectId).map((t) => (

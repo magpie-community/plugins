@@ -58,6 +58,8 @@ function paths() {
     logsDir: join(dataDir, "logs"),
     spawnLog: join(dataDir, "logs", "daemon-spawn.log"),
     daemonJson: join(dataDir, "daemon.json"),
+    // pid of the host that wrote page/session.js (kept out of the page directory, which any page can read)
+    sessionOwner: join(dataDir, "session-owner.json"),
     pageDir: process.env.AGENT_CONSOLE_PAGE_DIR || join(here, "page"),
   };
 }
@@ -189,14 +191,45 @@ async function shutdownLegacy(info, log) {
 
 // session.js is a script file holding only the gate port (a number) and the gate key (hex); "<" is still escaped just in case.
 // Any page that knows Magpie's page path can read it with <script src>, so the daemon token must never go here.
-// ts: refreshed every SESSION_BEAT_MS while the gate is up. A host that is killed hard (Magpie restarting it, Windows) can't delete
-// its session.js; boot.js treats one whose ts stopped moving as stale and waits for the new host's instead of opening a dead gate.
-function writeSession(pageDir, port, key) {
+// ts: when it was written. beat: whether this host keeps refreshing it (every SESSION_BEAT_MS, from the first page open on).
+// A host that is killed hard (Magpie restarting it, Windows) can't delete its session.js:
+// - boot.js treats a beating file whose ts stopped moving as stale, and after a lost connection (ac_lost) takes only a file written
+//   after the loss, so it waits for the new host's file instead of opening a dead gate;
+// - a file that never beat (the page was never opened) says nothing by its age, so the next host deletes it at startup when the
+//   host that wrote it is gone (removeDeadSession), before Magpie serves the page.
+function writeSession(pageDir, port, key, beat = false) {
   mkdirSync(pageDir, { recursive: true });
-  const json = JSON.stringify({ v: 2, port, key, ts: Date.now() }).replace(/</g, "\\u003c");
+  const json = JSON.stringify({ v: 2, port, key, ts: Date.now(), beat }).replace(/</g, "\\u003c");
   const temp = join(pageDir, `.session-${process.pid}-${randomBytes(4).toString("hex")}.tmp`);
   writeFileSync(temp, `globalThis.AgentConsoleSession = ${json};\n`, { mode: 0o600 });
   renameSync(temp, join(pageDir, "session.js"));
+}
+
+// At host startup (synchronously, so before Magpie serves the page that made it start this host): a session.js left by a host
+// that is no longer running points at a dead gate; delete it so boot.js waits for this host's file.
+// session-owner.json holds the writer's pid; a live writer (another host, e.g. Magpie's own while a `magpie` CLI command runs) is left alone.
+function removeDeadSession(p) {
+  const sessionPath = join(p.pageDir, "session.js");
+  let owner;
+  try {
+    owner = JSON.parse(readFileSync(p.sessionOwner, "utf8"));
+  } catch {
+    return;
+  }
+  if (!owner || !Number.isInteger(owner.pid) || owner.pid === process.pid || pidAlive(owner.pid)) return;
+  try {
+    const cur = readFileSync(sessionPath, "utf8");
+    if (typeof owner.key === "string" && owner.key && !cur.includes(owner.key)) return;
+    unlinkSync(sessionPath);
+  } catch {}
+}
+
+function writeSessionOwner(p, key) {
+  try {
+    mkdirSync(p.dataDir, { recursive: true });
+    // Only the first 16 hex chars of the gate key: enough to recognise the file, useless for opening the gate
+    writeFileSync(p.sessionOwner, JSON.stringify({ pid: process.pid, key: key.slice(0, 16) }), { mode: 0o600 });
+  } catch {}
 }
 
 function removeSession(pageDir, key) {
@@ -246,6 +279,24 @@ function createHost(port) {
   let legacyChecked = false;
   let wakeBindLoop = null;
   let beat = null;
+  let bound = false;
+  removeDeadSession(p);
+
+  // From the first page open on, session.js is rewritten every SESSION_BEAT_MS (only while it is still ours), so a page that lost
+  // its connection can tell this live host's file from a dead host's. Before that there is nothing to tell apart: no writes.
+  function startBeat() {
+    if (beat || stopped || !bound) return;
+    const refresh = () => {
+      if (stopped) return;
+      try {
+        const cur = readFileSync(join(p.pageDir, "session.js"), "utf8");
+        if (cur.includes(key)) writeSession(p.pageDir, port, key, true);
+      } catch { /* deleted or unreadable: leave it */ }
+    };
+    refresh();
+    beat = setInterval(refresh, SESSION_BEAT_MS);
+    beat.unref?.();
+  }
 
   async function checkLegacyOnce() {
     if (legacyChecked) return;
@@ -376,7 +427,14 @@ function createHost(port) {
     return { port: await starting };
   }
 
-  const gate = createGate({ port, key, token, ensureDaemon });
+  // The gate calls this only for an /open with the right key
+  const gate = createGate({
+    port, key, token,
+    ensureDaemon: () => {
+      startBeat();
+      return ensureDaemon();
+    },
+  });
 
   function waitForRetry() {
     return new Promise((resolve) => {
@@ -427,22 +485,15 @@ function createHost(port) {
         return;
       }
       try {
-        writeSession(p.pageDir, port, key);
+        writeSession(p.pageDir, port, key, false);
+        writeSessionOwner(p, key);
+        bound = true;
         liveSessions.set(p.pageDir, key);
         installExitHook();
         log(`gate listening on 127.0.0.1:${port}; session.js written`);
       } catch (error) {
         log(`writing session.js failed: ${error}`);
       }
-      beat = setInterval(() => {
-        if (stopped) return;
-        // Only while session.js is still ours (another host may have taken over the page directory)
-        try {
-          const cur = readFileSync(join(p.pageDir, "session.js"), "utf8");
-          if (cur.includes(key)) writeSession(p.pageDir, port, key);
-        } catch { /* deleted or unreadable: leave it */ }
-      }, SESSION_BEAT_MS);
-      beat.unref?.();
       return;
     }
   }

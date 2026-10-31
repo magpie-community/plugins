@@ -15,6 +15,7 @@ import { toast } from "./Toast";
 import { useLiveSettings } from "./Settings";
 import { composerModeOptions, effortLabel } from "../i18n/modes.js";
 import { Logo } from "./Logo";
+import { SelectMenu } from "./SelectMenu";
 import { errMsg, t as tr, tf } from "../i18n/index.js";
 import {
   applySlashPick,
@@ -563,52 +564,70 @@ export function Composer() {
               </div>
             )}
           </div>
-          {/* thinking level: icon + short label, the native select sits on top (keyboard + a11y keep working) */}
+          {/* thinking level: icon + short label; the menu is the page's own (SelectMenu), opening upwards */}
           {showThinking && (
-            <label className="pill ipill" title={tr("composer.effortTitle")}>
+            <SelectMenu
+              className="pill ipill"
+              title={tr("composer.effortTitle")}
+              ariaLabel={tr("composer.effortTitle")}
+              prefer="up"
+              upAnchor=".cp-card"
+              value={thread?.effort ?? ""}
+              onChange={(v) => setEffort(v || null)}
+              options={[
+                {
+                  value: "",
+                  label: defaultThinking
+                    ? tf("composer.defaultEffortNamed", { level: effortLabel(defaultThinking) })
+                    : tr("composer.defaultEffort"),
+                },
+                // an Agent's own "default" level is the same thing as the first entry
+                ...thinkingOpts.filter((e) => e.id !== "default").map((e) => ({ value: e.id, label: effortLabel(e.id, e.label) })),
+              ]}
+            >
               <Icon name="gauge" size={14} />
               <span className="ip-l">{(() => {
                 const cur = thread?.effort ?? defaultThinking;
                 if (!cur) return tr("composer.defaultEffort");
                 return effortLabel(cur, thinkingOpts.find((o) => o.id === cur)?.label);
               })()}</span>
-              <select className="ip-sel" value={thread?.effort ?? ""} aria-label={tr("composer.effortTitle")}
-                onChange={(e) => setEffort(e.target.value || null)}>
-                <option value="">
-                  {defaultThinking
-                    ? tf("composer.defaultEffortNamed", { level: effortLabel(defaultThinking) })
-                    : tr("composer.defaultEffort")}
-                </option>
-                {thinkingOpts.map((e) => <option key={e.id} value={e.id}>{effortLabel(e.id, e.label)}</option>)}
-              </select>
-            </label>
+            </SelectMenu>
           )}
           {/* permission mode: list only the modes this Agent really has; hidden when there is only one (e.g. Pi has no modes) */}
           {modes.length > 1 && (() => {
             // The mode stored on the conversation doesn't exist for this Agent → show the one it will actually use
             const shown = modes.find((m) => m.id === mode) ?? modes[0]!;
             return (
-              <label className={`pill ipill${shown.danger ? " danger" : ""}`} title={shown.desc}>
+              <SelectMenu
+                className={`pill ipill${shown.danger ? " danger" : ""}`}
+                title={shown.desc}
+                ariaLabel={tr("composer.modeTitle")}
+                prefer="up"
+              upAnchor=".cp-card"
+                menuClassName="mode-menu"
+                value={shown.id}
+                onChange={(v) => setMode(v as Mode)}
+                options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc, danger: m.danger }))}
+              >
                 <Icon name="shield" size={14} />
                 <span className="ip-l">{shown.label}</span>
-                <select className="ip-sel" value={shown.id} aria-label={tr("composer.modeTitle")}
-                  onChange={(e) => setMode(e.target.value as Mode)}>
-                  {modes.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-                </select>
-              </label>
+              </SelectMenu>
             );
           })()}
-          {/* Cursor speed (like Paseo's Fast toggle); the old shield (auto-accept permissions) was removed */}
+          {/* Cursor speed (like Paseo's Fast toggle) */}
           {thread?.provider === "cursor" && (
-            <select
-              className="pill sel cursor-fast"
-              value={thread.cursorFast ? "fast" : "off"}
+            <SelectMenu
+              className="pill ipill cursor-fast"
               title="Fast"
-              onChange={(e) => setCursorOpts({ cursorFast: e.target.value === "fast" })}
+              ariaLabel="Fast"
+              prefer="up"
+              upAnchor=".cp-card"
+              value={thread.cursorFast ? "fast" : "off"}
+              onChange={(v) => setCursorOpts({ cursorFast: v === "fast" })}
+              options={[{ value: "off", label: "Fast: Off" }, { value: "fast", label: "Fast: On" }]}
             >
-              <option value="off">Fast: Off</option>
-              <option value="fast">Fast: On</option>
-            </select>
+              <span className="ip-l">{thread.cursorFast ? "Fast: On" : "Fast: Off"}</span>
+            </SelectMenu>
           )}
           <span className="cp-div" aria-hidden="true" />
           {/* attachments */}

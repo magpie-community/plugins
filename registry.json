@@ -165,8 +165,8 @@
       "kind": "page",
       "community": true,
       "summary": {
-        "en": "Use your terminal Agent CLIs right inside magpie, by chat.",
-        "zh": "把终端里的 Agent CLI 搬进 magpie 窗口，直接对话使用"
+        "en": "Use your terminal Agent CLIs right inside magpie, by chat. Runs a local service on 127.0.0.1 that starts when the page opens and stops with magpie; only its own page gets the token. First install ~46 MB; Claude Code isn't bundled, so install the `claude` CLI yourself.",
+        "zh": "把终端里的 Agent CLI 搬进 magpie 窗口，直接对话使用。会在本机 127.0.0.1 跑一个后台服务，打开页面才启动，随 magpie 退出；令牌只交给自己的页面。首次安装约 46 MB；不自带 Claude Code，要用请自己装 `claude` CLI。"
       }
     }
   ]

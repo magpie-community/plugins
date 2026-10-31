@@ -1,4 +1,4 @@
-/** Parse the ?tokens= (base64 JSON) passed by boot.js and write --magpie-* CSS variables */
+/** Parse the ?tokens= (base64 JSON) passed by boot.js and write --magpie-* CSS variables (accent included: the page follows Magpie's accent) */
 export function applyMagpieTokensFromSearch(search: string): void {
   const raw = new URLSearchParams(search).get("tokens");
   if (!raw) return;
@@ -13,8 +13,6 @@ export function applyMagpieTokensFromSearch(search: string): void {
     const s = String(v ?? "").trim();
     if (!s) continue;
     const varName = k.startsWith("--") ? k : k.startsWith("magpie-") ? `--${k}` : `--magpie-${k}`;
-    // The plugin keeps its own teal accent: Magpie's accent (indigo) is not taken over
-    if (/accent/i.test(varName)) continue;
     root.style.setProperty(varName, s);
   }
 }

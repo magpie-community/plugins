@@ -14,7 +14,8 @@ export function Dialog({
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.stopPropagation(); onClose(); }
+      // An open dropdown (SelectMenu) inside the dialog takes Esc first: it closes itself, not the dialog
+      if (e.key === "Escape" && !document.querySelector("[data-select-menu]")) { e.stopPropagation(); onClose(); }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);

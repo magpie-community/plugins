@@ -29,6 +29,23 @@ export function initLog(dataDir: string): void {
   } catch {}
 }
 
+// The console is a pipe to the plugin host. When the host is killed hard, the reader is gone and a write fails with EPIPE
+// (asynchronously, as an 'error' event on the stream): without a listener that becomes an uncaughtException. Once that happens
+// the console is dropped and only the log file is written.
+let consoleGone = false;
+let guarded = false;
+function guardConsole(): void {
+  if (guarded) return;
+  guarded = true;
+  for (const stream of [process.stdout, process.stderr]) {
+    // EPIPE, EIO, ERR_STREAM_DESTROYED…: any write error means the reader is gone; logging must never take the daemon down
+    stream?.on?.("error", () => { consoleGone = true; });
+  }
+}
+export function consoleClosed(): boolean {
+  return consoleGone;
+}
+
 export function log(level: "info" | "warn" | "error", msg: string, extra?: unknown): void {
   const line = `[${new Date().toISOString()}] [${level}] ${msg}${extra !== undefined ? " " + safeJson(extra) : ""}`;
   try {
@@ -40,8 +57,16 @@ export function log(level: "info" | "warn" | "error", msg: string, extra?: unkno
     }
     if (logFile) appendFileSync(logFile, line + "\n", "utf8");
   } catch {}
+  guardConsole();
+  if (consoleGone) return;
+  const stream = level === "info" ? process.stdout : process.stderr;
+  if (stream?.destroyed || stream?.writableEnded) { consoleGone = true; return; }
   const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
-  fn(`[agent-console] ${msg}`, extra !== undefined ? extra : "");
+  try {
+    fn(`[agent-console] ${msg}`, extra !== undefined ? extra : "");
+  } catch {
+    consoleGone = true;
+  }
 }
 
 function safeJson(v: unknown): string {

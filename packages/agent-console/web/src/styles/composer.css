@@ -64,20 +64,10 @@
 .pill .p-t { color: var(--meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
 .pill .p-t::before { content: "·"; margin-right: 5px; }
 .ipill .ip-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.ipill .ip-sel {
-  position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer;
-  appearance: none; border: 0; font-size: var(--fs-s);
-}
-.ipill:focus-within { outline: 2px solid color-mix(in oklab, var(--accent) 45%, var(--bg)); outline-offset: -1px; }
+.ipill:focus-visible { outline: 2px solid color-mix(in oklab, var(--accent) 45%, var(--bg)); outline-offset: -1px; }
+.ipill[aria-expanded="true"] { background: var(--surface-hover); }
 .ipill.danger { color: var(--danger); }
-.pill.sel {
-  appearance: none; border: 0; padding: 0 22px 0 8px;
-  max-width: min(140px, 100%); overflow: hidden; text-overflow: ellipsis;
-  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23a3a3a3' d='M1 1l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 8px center;
-}
-.pill.sel:hover { background-color: var(--surface-hover); }
-.pill.sel.danger { color: var(--danger); }
-.pill.sel.cursor-fast { max-width: min(80px, 100%); }
+.mode-menu { max-width: 300px; }
 .cp-div { width: 1px; height: 14px; background: var(--line); margin: 0 4px; flex: none; }
 .cp-bar > .ibtn { flex: none; }
 .cp-attach { color: var(--pill-fg, var(--muted)); }

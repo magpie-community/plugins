@@ -1,7 +1,7 @@
 // Plugin entry (index.mjs): import has no side effects; server() → session.js → /open → daemon → stop() end to end.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,7 +10,7 @@ import { canBind, freePort, pidAlive, request, waitFor } from "./helpers-net.js"
 const repo = resolve(__dirname, "..", "..");
 const entryUrl = pathToFileURL(join(repo, "index.mjs")).href;
 const hasDist = existsSync(join(repo, "daemon", "dist", "main.js"));
-const ENV_KEYS = ["AGENT_CONSOLE_PAGE_DIR", "XDG_CONFIG_HOME", "AGENT_CONSOLE_PORT", "AGENT_CONSOLE_MOCK"];
+const ENV_KEYS = ["AGENT_CONSOLE_PAGE_DIR", "XDG_CONFIG_HOME", "AGENT_CONSOLE_PORT", "AGENT_CONSOLE_MOCK", "AGENT_CONSOLE_BIND_DELAY_MS"];
 
 let savedEnv: Record<string, string | undefined> = {};
 let tempDirs: string[] = [];
@@ -64,6 +64,35 @@ describe("plugin entry (index.mjs)", () => {
     expect(existsSync(join(process.env.XDG_CONFIG_HOME!, "magpie", "agent-console"))).toBe(false);
   });
 
+  it("a session.js left by a host that is gone is deleted when the next host starts; a live host's is kept", async () => {
+    const sessionPath = join(pageDir, "session.js");
+    const dataDir = join(process.env.XDG_CONFIG_HOME!, "magpie", "agent-console");
+    mkdirSync(dataDir, { recursive: true });
+    const stale = `globalThis.AgentConsoleSession = {"v":2,"port":1,"key":"${"ab".repeat(32)}","ts":1,"beat":false};\n`;
+    // a pid that can't be running
+    const dead = spawnSync(process.execPath, ["-e", "process.pid"]).pid!;
+    process.env.AGENT_CONSOLE_PORT = String(await freePort());
+    process.env.AGENT_CONSOLE_BIND_DELAY_MS = "60000";
+
+    writeFileSync(sessionPath, stale);
+    writeFileSync(join(dataDir, "session-owner.json"), JSON.stringify({ pid: process.ppid, key: "abababababababab" }));
+    vi.resetModules();
+    let mod = await import(/* @vite-ignore */ `${entryUrl}?live=${Date.now()}`);
+    let host = await mod.default.server({}, {});
+    expect(readFileSync(sessionPath, "utf8")).toBe(stale);
+    await host.stop();
+
+    writeFileSync(sessionPath, stale);
+    writeFileSync(join(dataDir, "session-owner.json"), JSON.stringify({ pid: dead, key: "abababababababab" }));
+    vi.resetModules();
+    mod = await import(/* @vite-ignore */ `${entryUrl}?dead=${Date.now()}`);
+    host = await mod.default.server({}, {});
+    // synchronously, before server() even returns its first bind attempt
+    expect(existsSync(sessionPath)).toBe(false);
+    await host.stop();
+    delete process.env.AGENT_CONSOLE_BIND_DELAY_MS;
+  });
+
   it.skipIf(!hasDist)(
     "end to end: server() → session.js → /open → daemon → stop()",
     async () => {
@@ -83,9 +112,10 @@ describe("plugin entry (index.mjs)", () => {
       expect(session.key).toMatch(/^[0-9a-f]{64}$/);
       // Any page that knows Magpie's page path can read session.js via <script src>: it must not contain the daemon token
       expect(session.token).toBeUndefined();
-      expect(Object.keys(session).sort()).toEqual(["key", "port", "ts", "v"]);
-      // ts is refreshed while the host lives, so boot.js can tell a killed host's leftover file from a live one
+      expect(Object.keys(session).sort()).toEqual(["beat", "key", "port", "ts", "v"]);
       expect(Math.abs(Date.now() - (session as { ts?: number }).ts!)).toBeLessThan(10000);
+      // No page has opened yet: the file isn't refreshed (no writes every few seconds for a page nobody uses)
+      expect((session as { beat?: boolean }).beat).toBe(false);
       const key = session.key;
 
       // Gate: /open → 302 to the daemon, token only in the # fragment
@@ -96,6 +126,10 @@ describe("plugin entry (index.mjs)", () => {
       const daemonPort = Number(location.port);
       expect(daemonPort).toBeGreaterThan(0);
       expect(daemonPort).not.toBe(port);
+      // From the first open on the host refreshes session.js (beat), so a page that lost its connection can tell it from a dead host's
+      const beating = parseSession(readFileSync(sessionPath, "utf8")) as { beat?: boolean; key: string };
+      expect(beating.beat).toBe(true);
+      expect(beating.key).toBe(key);
       expect(location.searchParams.get("theme")).toBe("dark");
       expect(location.searchParams.has("t")).toBe(false);
       const token = new URLSearchParams(location.hash.slice(1)).get("t") ?? "";

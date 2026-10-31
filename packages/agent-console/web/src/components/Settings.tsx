@@ -1,6 +1,7 @@
 // Settings dialog (§8.6): fields = §5.6; saved on change; version/data directory/PID at the bottom.
 import { useEffect, useState } from "react";
 import { Dialog } from "./Dialog";
+import { SelectMenu } from "./SelectMenu";
 import { ws } from "../main";
 import { toast } from "./Toast";
 import { permissionModes } from "../i18n/modes.js";
@@ -159,9 +160,9 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
     <Dialog title={t("settings.title")} onClose={onClose} wide
       footer={<button className="btn primary" onClick={onClose}>{t("common.done")}</button>}>
       {row(t("settings.defaultAgent"), (
-        <select className="tinput" value={s.defaultProvider ?? "claude"} onChange={(e) => void set({ defaultProvider: e.target.value })}>
-          {providers.map((p) => <option key={p.id} value={p.id} disabled={!providerUsable(p)}>{p.name}{!providerUsable(p) ? t("common.notInstalled") : ""}</option>)}
-        </select>
+        <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.defaultAgent")}
+          value={s.defaultProvider ?? "claude"} onChange={(v) => void set({ defaultProvider: v })}
+          options={providers.map((p) => ({ value: p.id, label: p.name + (!providerUsable(p) ? t("common.notInstalled") : ""), disabled: !providerUsable(p) }))} />
       ))}
       <div className="dlg-row dlg-row-top">
         <label>{t("settings.providers")}</label>
@@ -216,28 +217,30 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
         </div>
       </div>
       {row(t("settings.defaultMode"), (
-        <select className="tinput" value={s.defaultMode ?? "default"} onChange={(e) => void set({ defaultMode: e.target.value })}>
-          {modes.map((m) => <option key={m.id} value={m.id}>{m.label} — {m.desc}</option>)}
-        </select>
+        <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.defaultMode")}
+          value={s.defaultMode ?? "default"} onChange={(v) => void set({ defaultMode: v })}
+          options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc }))}>
+          <span className="sm-val">{(() => { const m = modes.find((x) => x.id === (s.defaultMode ?? "default")); return m ? `${m.label} — ${m.desc}` : ""; })()}</span>
+        </SelectMenu>
       ), t("settings.defaultModeHint"))}
       {row(t("settings.theme"), (
-        <select className="tinput" value={normalizeThemeSetting(s.theme)} onChange={(e) => void set({ theme: e.target.value })}>
-          <option value="auto">{embeddedInMagpie() ? t("settings.themeMagpie") : t("settings.themeAuto")}</option>
-          <option value="light">{t("settings.themeLight")}</option>
-          <option value="dark">{t("settings.themeDark")}</option>
-        </select>
+        <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.theme")}
+          value={normalizeThemeSetting(s.theme)} onChange={(v) => void set({ theme: v })}
+          options={[
+            { value: "auto", label: embeddedInMagpie() ? t("settings.themeMagpie") : t("settings.themeAuto") },
+            { value: "light", label: t("settings.themeLight") },
+            { value: "dark", label: t("settings.themeDark") },
+          ]} />
       ))}
       {row(t("settings.sendKey"), (
-        <select className="tinput" value={s.sendKey ?? "enter"} onChange={(e) => void set({ sendKey: e.target.value })}>
-          <option value="enter">{t("settings.sendEnter")}</option>
-          <option value="ctrlEnter">{t("settings.sendCtrl")}</option>
-        </select>
+        <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.sendKey")}
+          value={s.sendKey ?? "enter"} onChange={(v) => void set({ sendKey: v })}
+          options={[{ value: "enter", label: t("settings.sendEnter") }, { value: "ctrlEnter", label: t("settings.sendCtrl") }]} />
       ))}
       {row(t("settings.runningSend"), (
-        <select className="tinput" value={s.runningSend ?? "queue"} onChange={(e) => void set({ runningSend: e.target.value })}>
-          <option value="queue">{t("settings.queue")}</option>
-          <option value="steer">{t("settings.steer")}</option>
-        </select>
+        <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.runningSend")}
+          value={s.runningSend ?? "queue"} onChange={(v) => void set({ runningSend: v })}
+          options={[{ value: "queue", label: t("settings.queue") }, { value: "steer", label: t("settings.steer") }]} />
       ), t("settings.steerHint"))}
       {row(t("settings.thinking"), (
         <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: "var(--fs-m)", color: "var(--fg)" }}>
