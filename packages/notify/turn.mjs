@@ -232,18 +232,19 @@ export function notificationOnly(body, protocol) {
 // background: the background agents the newest user message launched (the
 // tool_use_id of each "launched" result of an Agent, Task or Workflow call,
 // or "resumed" result of a SendMessage call, the previous reply made), the
-// agent id each of those names (agents: tool_use_id -> agent id), and the
-// ids each notification that says a task has stopped names (its <tool-use-id>
-// and its <task-id>). A notification is left out while "running", or when it
-// says the agent will notify again (INTERIM). Both ids matter: the
-// notification of an agent that resumed on its own carries only its
-// <task-id>, and one resumed by SendMessage carries that call's tool-use id
-// (both captured). A notification that arrives while the main conversation is
-// still working rides inside a tool_result (as captured), so tool results are
-// read too. Ids, not counts: a retried request carries the same launch again,
+// agent id each of those names (agents: tool_use_id -> agent id), and the id
+// each notification that says a task has stopped names: its <tool-use-id>,
+// or its <task-id> (the agent id) when it has none. A notification is left
+// out while "running"; one whose <note> says the agent will notify again
+// (INTERIM) goes in interim instead of stopped. The notification of an agent
+// that resumed on its own carries only its <task-id>, and one resumed by
+// SendMessage carries that call's tool-use id (both captured); a tool-use id
+// names one run, so an older run's notification can't end a newer one. A
+// notification that arrives while the main conversation is still working
+// rides inside a tool_result (as captured), so tool results are read too. Ids, not counts: a retried request carries the same launch again,
 // and the same agent may notify more than once.
 export function background(body, protocol) {
-  const none = { launched: [], stopped: [], agents: {} }
+  const none = { launched: [], stopped: [], interim: [], agents: {} }
   if (protocol !== "anthropic" || !Array.isArray(body?.messages)) return none
   const last = body.messages.at(-1)
   if (!isObj(last) || last.role !== "user") return none
@@ -260,12 +261,18 @@ export function background(body, protocol) {
     launched.push(p.tool_use_id)
     if (agent) agents[p.tool_use_id] = agent
   }
-  const stopped = [...texts(last.content), ...resultTexts(last.content)].flatMap((t) => [...t.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)].flatMap((m) => {
+  const stopped = [], interim = []
+  for (const t of [...texts(last.content), ...resultTexts(last.content)]) for (const m of t.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)) {
     const status = m[1].match(/<status>\s*(\w+)\s*<\/status>/)?.[1]
-    if (!status || status === "running" || INTERIM.some((s) => m[1].includes(s))) return []
-    return [m[1].match(/<tool-use-id>\s*([^<\s]+)\s*<\/tool-use-id>/)?.[1], m[1].match(/<task-id>\s*([^<\s]+)\s*<\/task-id>/)?.[1]].filter(Boolean)
-  }))
-  return { launched, stopped: [...new Set(stopped)], agents }
+    if (!status || status === "running") continue
+    const id = m[1].match(/<tool-use-id>\s*([^<\s]+)\s*<\/tool-use-id>/)?.[1] ?? m[1].match(/<task-id>\s*([^<\s]+)\s*<\/task-id>/)?.[1]
+    if (!id) continue
+    // only the <note> says it's interim: <result> is the agent's own text,
+    // unescaped, and may quote the same words
+    const note = m[1].match(/<note>([\s\S]*?)<\/note>/)?.[1] ?? ""
+    ;(INTERIM.some((s) => note.includes(s)) ? interim : stopped).push(id)
+  }
+  return { launched, stopped: [...new Set(stopped)], interim: [...new Set(interim)], agents }
 }
 
 // subagent: the request says itself that a subagent sends it. Codex marks
