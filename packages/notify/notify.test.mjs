@@ -3,8 +3,9 @@
 // faked with fetch: no network, no account.
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createHmac } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { onRequest, onResponse, reset, settled, options, duration, message } from "./notify.hooks.mjs"
-import { opensTurn, ending, hasTools, firstWords, compacting, continued } from "./turn.mjs"
+import { opensTurn, ending, hasTools, firstWords, compacting, continued, notificationOnly, background } from "./turn.mjs"
 import { send, usable } from "./channels.mjs"
 
 const realFetch = globalThis.fetch
@@ -219,28 +220,112 @@ test("a conversation left waiting stops making new ones nested", async () => {
   expect(calls).toHaveLength(1)
 })
 
-// ---- compaction ----
-const COMPACT = "Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests."
-const summary = { ...aFinal, content: [{ type: "text", text: "<summary>…</summary>" }] }
-const resumed = { model: "m", tools, messages: [{ role: "user", content: "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>…</summary>" }] }
-const resumedResult = { ...resumed, messages: [...resumed.messages, { role: "assistant", content: aToolUse.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] }] }
+// ---- compaction and background agents, from captured Claude Code bodies ----
+// fixtures/claude-2.1.316 holds request bodies recorded from the real
+// `claude` 2.1.316 (`claude -p` with a sandbox HOME / CLAUDE_CONFIG_DIR and
+// ANTHROPIC_BASE_URL at a recording endpoint), with each long
+// <system-reminder>, the system prompt and the tool schemas cut short; the
+// order and shape of the content blocks are as sent. `reply` is what the
+// endpoint answered.
+const fx = (name) => JSON.parse(readFileSync(new URL(`./fixtures/claude-2.1.316/${name}.json`, import.meta.url), "utf8"))
+const send1 = async (name, extra = {}) => { const f = fx(name); return exchange("anthropic", f.body, f.reply, { session: f.session, ...extra }) }
 
-for (const [shape, compactBody] of [
-  ["in the tool_result's message", { ...aResult, messages: [...aResult.messages.slice(0, -1), { role: "user", content: [...aResult.messages.at(-1).content, { type: "text", text: COMPACT }] }] }],
-  ["as its own message", { ...aResult, messages: [...aResult.messages, { role: "user", content: COMPACT }] }],
-]) {
-  test(`Claude Code compaction (prompt ${shape}) neither ends nor restarts the turn`, async () => {
-    await exchange("anthropic", aUser, aToolUse)
-    minutes(16)
-    await exchange("anthropic", compactBody, summary) // reads like a finished turn
-    expect(calls).toHaveLength(0)
-    await exchange("anthropic", resumed, aToolUse) // goes on under new first words
-    minutes(4)
-    await exchange("anthropic", resumedResult, aFinal)
-    expect(calls).toHaveLength(1)
-    expect(JSON.parse(calls[0].body).message).toContain("took 20 min")
-  })
-}
+test("captured auto-compaction during a tool loop neither ends nor restarts the turn", async () => {
+  expect(compacting(fx("autocompact-1-start").body, "anthropic")).toBe(false)
+  expect(compacting(fx("autocompact-2-compact").body, "anthropic")).toBe(true) // the prompt follows "CRITICAL: …", after the tool_result
+  expect(continued(fx("autocompact-3-continued").body, "anthropic")).toBe(true) // after the <system-reminder> blocks
+  await send1("autocompact-1-start")
+  minutes(16)
+  await send1("autocompact-2-compact") // plain text and end_turn
+  expect(calls).toHaveLength(0)
+  await send1("autocompact-3-continued") // new first words
+  minutes(4)
+  await send1("autocompact-4-tool")
+  await send1("autocompact-5-done")
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 20 min")
+})
+
+test("captured /compact after a turn, then a new message: one push per turn, each timed from its own message", async () => {
+  await send1("compact-1-start")
+  minutes(5)
+  await send1("compact-2-done")
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 5 min")
+  minutes(1)
+  expect(compacting(fx("compact-3-compact").body, "anthropic")).toBe(true)
+  await send1("compact-3-compact")
+  expect(calls).toHaveLength(1)
+  const f = fx("compact-4-continued") // the summary as a string, then "/compact" caveats and the user's text
+  expect(continued(f.body, "anthropic")).toBe(true)
+  const c = ctx("anthropic", { session: f.session })
+  onRequest(f.body, c)
+  minutes(4)
+  onResponse(f.reply, c)
+  await settled()
+  expect(calls).toHaveLength(2)
+  expect(JSON.parse(calls[1].body).message).toContain("took 4 min")
+})
+
+test("every compaction wording in the binary is found anywhere in the last user message", () => {
+  const f = fx("autocompact-2-compact").body
+  const part = f.messages.at(-1).content.findIndex((p) => p.type === "text" && p.text.startsWith("CRITICAL"))
+  for (const w of [
+    "Your task is to create a detailed summary of the conversation so far, paying close attention",
+    "Your task is to create a detailed summary of the RECENT portion of the conversation — the messages that follow",
+    "Your task is to create a detailed summary of this conversation.",
+    "Summarize the transcript inside <summary></summary> tags. Include relevant information",
+  ]) {
+    const content = f.messages.at(-1).content.map((p, i) => i === part ? { ...p, text: `CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\n${w}` } : p)
+    expect(compacting({ ...f, messages: [...f.messages.slice(0, -1), { role: "user", content }] }, "anthropic")).toBe(true)
+  }
+  expect(compacting(fx("compact-2-done").body, "anthropic")).toBe(false)
+})
+
+test("a subagent that compacts and continues stays nested, and never takes over the main turn", async () => {
+  const main = fx("agent-1-main"), sub = fx("agent-2-subagent")
+  const session = main.session
+  const subTool = { ...aToolUse }
+  await send1("agent-1-main") // main asks for the Agent tool and waits
+  await exchange("anthropic", sub.body, subTool, { session })
+  minutes(10)
+  const compact = fx("autocompact-2-compact").body.messages.at(-1).content.find((p) => p.type === "text" && p.text.startsWith("CRITICAL"))
+  const subCompact = { ...sub.body, messages: [...sub.body.messages, { role: "assistant", content: subTool.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }, compact] }] }
+  await exchange("anthropic", subCompact, fx("autocompact-2-compact").reply, { session })
+  const cont = fx("autocompact-3-continued").body
+  await exchange("anthropic", cont, aToolUse, { session })
+  minutes(1)
+  await exchange("anthropic", { ...cont, messages: [...cont.messages, { role: "assistant", content: aToolUse.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] }] }, aFinal, { session })
+  expect(calls).toHaveLength(0) // the subagent's end
+  // with no compaction seen, a continued conversation in a busy session is a new, nested one
+  await exchange("anthropic", { ...cont, messages: [{ role: "user", content: [...cont.messages[0].content, { type: "text", text: "other" }] }] }, aFinal, { session })
+  expect(calls).toHaveLength(0)
+  minutes(2)
+  const launched = { ...main.body, messages: [...main.body.messages, { role: "assistant", content: main.reply.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_agent", content: "done" }] }] }
+  await exchange("anthropic", launched, aFinal, { session })
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 13 min")
+})
+
+test("captured background Agent: the turn ends when the agent has reported back, not when the main conversation pauses", async () => {
+  expect(notificationOnly(fx("agent-4-notified").body, "anthropic")).toBe(true)
+  expect(opensTurn(fx("agent-4-notified").body, "anthropic")).toBe(false)
+  expect(background(fx("agent-3-launched").body, "anthropic")).toEqual({ launched: 1, stopped: 0 })
+  expect(background(fx("agent-4-notified").body, "anthropic")).toEqual({ launched: 0, stopped: 1 })
+  await send1("agent-1-main")
+  minutes(1)
+  await send1("agent-3-launched") // "Agent launched, waiting." and end_turn
+  expect(calls).toHaveLength(0)
+  const sub = fx("agent-2-subagent"), c = ctx("anthropic", { session: sub.session })
+  onRequest(sub.body, c) // the agent's first request comes after its parent paused
+  minutes(6)
+  onResponse(sub.reply, c)
+  await settled()
+  expect(calls).toHaveLength(0) // the agent's end
+  await send1("agent-4-notified")
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 7 min")
+})
 
 test("Codex remote compaction neither ends nor restarts the turn", async () => {
   const rTools = [{ type: "function", name: "shell" }]

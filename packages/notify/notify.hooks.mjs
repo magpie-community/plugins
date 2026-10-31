@@ -11,10 +11,10 @@
 // message to the channels and returns at once. Nothing here throws, and
 // nothing is awaited on the request's path: a broken channel must never
 // touch the request.
-import { hasTools, opensTurn, ending, firstWords, compacting, continued } from "./turn.mjs"
+import { hasTools, opensTurn, ending, firstWords, compacting, continued, background } from "./turn.mjs"
 import { send, usable } from "./channels.mjs"
 
-// open conversations: key -> { key, base, start, seen, agent, model, cwd, busy, waiting, nested, failed }
+// open conversations: key -> { key, base, start, seen, agent, model, cwd, busy, waiting, nested, failed, background, compactedAt }
 //   base     the session (or agent and folder) the conversation runs in
 //   seen     when magpie last saw a request or reply of it
 //   busy     requests of it whose onResponse hasn't come yet
@@ -22,6 +22,10 @@ import { send, usable } from "./channels.mjs"
 //   nested   it first showed up while another top-level conversation in the
 //            same session was busy or waiting: a subagent, which never pushes
 //   failed   { at, timer } while a failure push is held back
+//   background  Claude Code background agents it launched that haven't
+//            reported back: the turn isn't over until they have
+//   compactedAt  when it last asked for a compaction summary, so the
+//            conversation that goes on from the summary can find it
 const turns = new Map()
 // the newest top-level conversation per base, for requests that carry no
 // user message to tell them apart (a Responses request continuing by id)
@@ -33,6 +37,8 @@ const STALE = 24 * 3600 * 1000
 // a conversation unseen this long no longer makes a new one nested: the agent
 // was quit mid-tool, or its reply was dropped
 const ACTIVE = 15 * 60 * 1000
+// a background agent may run long with no word from its parent
+const BACKGROUND = 2 * 3600 * 1000
 
 let now = () => Date.now()
 let later = (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t }
@@ -109,31 +115,47 @@ function prune(t) {
 // subagent. Only a real session can say that; a base made of agent and folder
 // is often reused by an unrelated conversation later.
 const parentActive = (base, t) => base.startsWith("s:") &&
-  [...turns.values()].some((v) => v.base === base && !v.nested && (v.busy > 0 || v.waiting) && t - v.seen < ACTIVE)
+  [...turns.values()].some((v) => v.base === base && !v.nested &&
+    (((v.busy > 0 || v.waiting) && t - v.seen < ACTIVE) || (v.background > 0 && t - v.seen < BACKGROUND)))
+
+// the conversation a continued one goes on from: the one in its base that
+// asked for a compaction summary most recently. A subagent's compaction is
+// matched to the subagent, so it stays nested.
+function compacted(base, t) {
+  let best = null
+  for (const v of turns.values()) if (v.base === base && v.compactedAt && t - v.compactedAt < ACTIVE && (!best || v.compactedAt > best.compactedAt)) best = v
+  return best
+}
 
 export function onRequest(body, ctx) {
   try {
     const o = options(ctx?.options)
     if (!o.channels.length || !ownOrigin(ctx, o)) return undefined
     if (o.agents.length && !o.agents.includes(ctx?.agent ?? "")) return undefined
-    if (!hasTools(body, ctx?.protocol)) return undefined
-    if (compacting(body, ctx.protocol)) return undefined // the summary is not the turn's answer
     const base = baseOf(ctx)
     if (!base) return undefined
-    const first = firstWords(body, ctx.protocol)
+    const first = firstWords(body, ctx?.protocol)
     const key = first ? `${base}#${hash(first)}` : latest.get(base) ?? `${base}#`
     const t = now()
+    if (compacting(body, ctx?.protocol)) {
+      // the summary is not the turn's answer: neither open nor close, but
+      // remember which conversation is about to go on under new first words
+      const c = turns.get(key)
+      if (c) { c.compactedAt = t; c.seen = t }
+      return undefined
+    }
+    if (!hasTools(body, ctx.protocol)) return undefined
     let turn = turns.get(key)
-    if (!turn && continued(body, ctx.protocol)) {
-      // the conversation goes on after compaction under new first words:
-      // it is the newest top-level conversation here, start time and all
-      const old = turns.get(latest.get(base))
+    const resumed = !turn && continued(body, ctx.protocol)
+    if (resumed) {
+      const old = compacted(base, t)
       if (old) {
         turns.delete(old.key)
         if (sentAt.has(old.key)) sentAt.set(key, sentAt.get(old.key))
+        if (latest.get(base) === old.key) latest.set(base, key)
         old.key = key
+        old.compactedAt = 0
         turns.set(key, old)
-        latest.set(base, key)
         turn = old
       }
     }
@@ -142,15 +164,17 @@ export function onRequest(body, ctx) {
       // not the end of the turn
       cancel(turn.failed.timer)
       turn.failed = null
-    } else if (turn && !continued(body, ctx.protocol) && opensTurn(body, ctx.protocol) && !turn.nested) {
+    } else if (turn && !resumed && opensTurn(body, ctx.protocol) && !turn.nested) {
       turn.start = t // a new message from the user starts the turn over
     } else if (!turn) {
       const nested = parentActive(base, t)
-      turn = { key, base, start: t, seen: t, agent: ctx.agent ?? "", model: ctx.model ?? body?.model ?? "", cwd: ctx.cwd ?? "", busy: 0, waiting: false, nested, failed: null }
+      turn = { key, base, start: t, seen: t, agent: ctx.agent ?? "", model: ctx.model ?? body?.model ?? "", cwd: ctx.cwd ?? "", busy: 0, waiting: false, nested, failed: null, background: 0, compactedAt: 0 }
       turns.set(key, turn)
       if (!nested) latest.set(base, key)
       prune(t)
     }
+    const bg = background(body, ctx.protocol)
+    turn.background = Math.max(0, turn.background + bg.launched - bg.stopped)
     turn.waiting = false
     turn.busy++
     turn.seen = t
@@ -170,6 +194,9 @@ export function onResponse(reply, ctx) {
     const failed = ctx.success === false
     const end = failed ? { done: true, text: "" } : ending(reply, ctx.protocol)
     if (!end.done) { turn.waiting = true; return }
+    // Claude Code's background agents are still at work: the main
+    // conversation will be resumed when they stop, and that is the end
+    if (!failed && turn.background > 0) return
     const o = options(ctx.options)
     if (turn.nested || (failed && !o.errors)) { forget(key); return }
     const model = ctx.model ?? turn.model

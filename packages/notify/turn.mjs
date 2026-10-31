@@ -29,6 +29,7 @@ export function opensTurn(body, protocol) {
     case "anthropic": {
       const last = Array.isArray(body.messages) ? body.messages.at(-1) : undefined
       if (!isObj(last) || last.role !== "user") return false
+      if (notificationOnly(body, protocol)) return false
       if (typeof last.content === "string") return true
       return Array.isArray(last.content) && !last.content.some((p) => isObj(p) && p.type === "tool_result")
     }
@@ -116,23 +117,35 @@ export function firstWords(body, protocol) {
 
 // Compaction. When an agent runs out of context it asks the model for a
 // summary, then goes on in a conversation that starts from that summary.
-//   Claude Code: the conversation's own messages and tools plus a user text
-//     starting with CLAUDE_COMPACT, answered with plain text and end_turn —
-//     which reads like a finished turn; it then goes on with a first user
-//     message starting with CLAUDE_CONTINUED.
-//   Codex: local compaction sends no tools (left out like any side call);
-//     remote compaction ends its input with a compaction_trigger item. It goes
-//     on with a "compaction" item in its input, or a user message starting
-//     with CODEX_SUMMARY.
-const CLAUDE_COMPACT = "Your task is to create a detailed summary of the conversation so far"
+// Both requests were captured from the real claude 2.1.316 (the fixtures in
+// fixtures/), which is why these look inside every text part rather than at
+// the start of one:
+//   Claude Code: the conversation's own messages and tools, and a last user
+//     message whose text holds the summary instructions after a
+//     "CRITICAL: Respond with TEXT ONLY…" preamble (merged into the last
+//     tool_result's message when compaction is automatic). The binary carries
+//     several wordings, picked by a server flag: CLAUDE_COMPACT. The reply is
+//     plain text and end_turn, which reads like a finished turn. It then goes
+//     on with a first user message that holds CLAUDE_CONTINUED, either as the
+//     whole string or as one text part after <system-reminder> blocks.
+//   Codex: local compaction sends no tools; remote compaction ends its input
+//     with a compaction_trigger item. Either asks with CODEX_COMPACT. It goes
+//     on with a compaction item in its input, or a user message holding
+//     CODEX_SUMMARY. (From openai/codex's source; not captured.)
+const CLAUDE_COMPACT = [
+  "Your task is to create a detailed summary of the conversation so far",
+  "Your task is to create a detailed summary of the RECENT portion of the conversation",
+  "Your task is to create a detailed summary of this conversation",
+  "Summarize the transcript inside <summary></summary> tags",
+]
 const CLAUDE_CONTINUED = "This session is being continued from a previous conversation"
-const CODEX_COMPACT = "You are performing a CONTEXT CHECKPOINT COMPACTION"
+const CODEX_COMPACT = ["You are performing a CONTEXT CHECKPOINT COMPACTION"]
 const CODEX_SUMMARY = "Another language model started to solve this problem"
 
 const texts = (c) => typeof c === "string" ? [c]
   : Array.isArray(c) ? c.flatMap((p) => typeof p === "string" ? [p] : isObj(p) && typeof p.text === "string" && p.type !== "tool_result" ? [p.text] : [])
   : []
-const startsWith = (c, prefix) => texts(c).some((t) => t.trimStart().startsWith(prefix))
+const holds = (c, needles) => texts(c).some((t) => needles.some((n) => t.includes(n)))
 
 // compacting: the request asks for the summary; it neither opens nor closes a turn
 export function compacting(body, protocol) {
@@ -142,11 +155,11 @@ export function compacting(body, protocol) {
     const last = body.input.at(-1)
     if (isObj(last) && last.type === "compaction_trigger") return true
     const user = body.input.findLast((i) => isObj(i) && (i.type == null || i.type === "message") && i.role === "user")
-    return !!user && startsWith(user.content, CODEX_COMPACT)
+    return !!user && holds(user.content, CODEX_COMPACT)
   }
   if (protocol === "gemini") return false
   const user = Array.isArray(body.messages) ? body.messages.findLast((m) => isObj(m) && m.role === "user") : undefined
-  return !!user && startsWith(user.content, CLAUDE_COMPACT)
+  return !!user && holds(user.content, CLAUDE_COMPACT)
 }
 
 // continued: the conversation starts from a compaction summary
@@ -155,8 +168,41 @@ export function continued(body, protocol) {
   if (protocol === "responses") {
     if (!Array.isArray(body.input)) return false
     return body.input.some((i) => isObj(i) && (i.type === "compaction" || i.type === "compaction_summary"
-      || ((i.type == null || i.type === "message") && i.role === "user" && startsWith(i.content, CODEX_SUMMARY))))
+      || ((i.type == null || i.type === "message") && i.role === "user" && holds(i.content, [CODEX_SUMMARY]))))
   }
   if (protocol === "gemini") return false
-  return firstWords(body, protocol).trimStart().startsWith(CLAUDE_CONTINUED)
+  const first = Array.isArray(body.messages) ? body.messages.find((m) => isObj(m) && m.role === "user") : undefined
+  return !!first && holds(first.content, [CLAUDE_CONTINUED])
+}
+
+// Claude Code's background agents. The Agent tool can return at once with
+// BACKGROUND_LAUNCHED; the main conversation may then end its turn while the
+// agent works. When the agent stops, Claude Code resumes the main
+// conversation with a user message that is only a notification
+// (NOTIFICATION, wrapping a <task-notification>), not the user's words.
+const BACKGROUND_LAUNCHED = "Async agent launched successfully"
+const NOTIFICATION = "[SYSTEM NOTIFICATION - NOT USER INPUT]"
+
+const lastUser = (body) => Array.isArray(body?.messages) ? body.messages.at(-1) : undefined
+const resultTexts = (c) => Array.isArray(c) ? c.flatMap((p) => isObj(p) && p.type === "tool_result" ? texts(p.content) : []) : []
+
+// notificationOnly: the newest user message is Claude Code's notification
+// that a background task stopped, with nothing the user typed
+export function notificationOnly(body, protocol) {
+  if (protocol !== "anthropic") return false
+  const last = lastUser(body)
+  if (!isObj(last) || last.role !== "user") return false
+  const t = texts(last.content)
+  return t.length > 0 && !resultTexts(last.content).length && t.every((x) => x.includes(NOTIFICATION) || x.trimStart().startsWith("<task-notification>"))
+}
+
+// background: how many background agents the newest user message launched
+// (tool results) and how many it says have stopped (notifications)
+export function background(body, protocol) {
+  if (protocol !== "anthropic") return { launched: 0, stopped: 0 }
+  const last = lastUser(body)
+  if (!isObj(last) || last.role !== "user") return { launched: 0, stopped: 0 }
+  const launched = resultTexts(last.content).filter((t) => t.includes(BACKGROUND_LAUNCHED)).length
+  const stopped = texts(last.content).reduce((n, t) => n + [...t.matchAll(/<task-notification>[\s\S]*?<status>\s*(\w+)\s*<\/status>/g)].filter((m) => m[1] !== "running").length, 0)
+  return { launched, stopped }
 }
