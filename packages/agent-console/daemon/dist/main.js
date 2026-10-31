@@ -1327,6 +1327,7 @@ var init_i18n = __esm({
         "attachment.missing": "\u9644\u4EF6\u4E0D\u5B58\u5728\u6216\u5DF2\u5931\u6548\uFF08{ref}\uFF09\uFF0C\u8BF7\u91CD\u65B0\u4E0A\u4F20",
         "notice.acpImageByPath": "{agent} \u4E0D\u80FD\u76F4\u63A5\u770B\u56FE\u7247\uFF08\u5B83\u7684 ACP \u521D\u59CB\u5316\u672A\u58F0\u660E\u652F\u6301\u56FE\u7247\u8F93\u5165\uFF09\uFF0C\u5DF2\u6539\u4E3A\u53D1\u9001\u56FE\u7247\u7684\u6587\u4EF6\u8DEF\u5F84\uFF1A{paths}",
         "notice.acpImageByPathSwitched": "{agent} \u662F\u5728\u53E6\u4E00\u4E2A\u6A21\u578B\u4E0A\u542F\u52A8\u7684\uFF0C\u53EA\u5BF9\u90A3\u4E2A\u6A21\u578B\u63A5\u6536\u56FE\u7247\uFF0C\u8FD9\u6B21\u6539\u4E3A\u53D1\u9001\u56FE\u7247\u7684\u6587\u4EF6\u8DEF\u5F84\uFF08\u5F53\u524D\u6A21\u578B\u80FD\u770B\u56FE\u65F6\u5B83\u4F1A\u7528 read_image \u6253\u5F00\uFF09\uFF1A{paths}",
+        "notice.acpSessionNotRestored": "{agent} \u4E0D\u80FD\u6062\u590D\u4E0A\u4E00\u8F6E\u5BF9\u8BDD\uFF08\u5B83\u7684 ACP \u65E2\u4E0D\u652F\u6301 session/load \u4E5F\u4E0D\u652F\u6301 session/resume\uFF09\uFF0C\u5DF2\u65B0\u5F00\u4E00\u8F6E\uFF1B\u5148\u524D\u7684\u4E0A\u4E0B\u6587\u4E0D\u4F1A\u5E26\u56DE\u3002",
         "notice.attachmentIssue": "\u9644\u4EF6\u95EE\u9898\uFF1A{detail}",
         "export.defaultModel": "\u9ED8\u8BA4"
       },
@@ -1341,6 +1342,7 @@ var init_i18n = __esm({
         "attachment.missing": "Attachment missing or expired ({ref}) \u2014 upload again",
         "notice.acpImageByPath": "{agent} can't see images directly (its ACP initialize doesn't advertise image input); sent the image file path instead: {paths}",
         "notice.acpImageByPathSwitched": "{agent} was started on another model and takes image blocks only for that one, so the image went as its file path (it opens it with read_image when this model sees images): {paths}",
+        "notice.acpSessionNotRestored": "{agent} can't restore the previous conversation (its ACP advertises neither session/load nor session/resume); started a new one \u2014 prior context won't come back.",
         "notice.attachmentIssue": "Attachment issue: {detail}",
         "export.defaultModel": "Default"
       }
@@ -3373,6 +3375,22 @@ var init_promptCaps = __esm({
   }
 });
 
+// daemon/src/providers/acp/sessionCaps.ts
+function sessionOpenFromInitialize(res) {
+  const caps = res?.agentCapabilities;
+  const resume = caps?.sessionCapabilities?.resume != null && typeof caps.sessionCapabilities.resume === "object";
+  return { load: caps?.loadSession === true, resume };
+}
+function pickReconnect(open) {
+  if (open.load) return "load";
+  if (open.resume) return "resume";
+  return "none";
+}
+var init_sessionCaps = __esm({
+  "daemon/src/providers/acp/sessionCaps.ts"() {
+  }
+});
+
 // daemon/src/providers/acp/prompt.ts
 import { readFile as readFile9, stat as stat7 } from "node:fs/promises";
 import { basename as basename4 } from "node:path";
@@ -3466,6 +3484,7 @@ var init_session3 = __esm({
     init_clientHandlers();
     init_mapUpdate();
     init_promptCaps();
+    init_sessionCaps();
     init_prompt();
     init_i18n();
     init_log();
@@ -3553,15 +3572,25 @@ var init_session3 = __esm({
           const ctx = this.ctx;
           if (!ctx) throw new Error("ACP \u672A\u8FDE\u63A5");
           if (this.o.resumeId) {
-            const loaded = await ctx.request(methods2.agent.session.load, {
-              sessionId: this.o.resumeId,
-              cwd,
-              mcpServers: []
-            });
-            this.active = ctx.attachSession({
-              sessionId: this.o.resumeId,
-              modes: loaded.modes
-            });
+            const how = pickReconnect(sessionOpenFromInitialize(initRes));
+            if (how === "load" || how === "resume") {
+              const method = how === "load" ? methods2.agent.session.load : methods2.agent.session.resume;
+              const restored = await ctx.request(method, {
+                sessionId: this.o.resumeId,
+                cwd,
+                mcpServers: []
+              });
+              this.active = ctx.attachSession({
+                sessionId: this.o.resumeId,
+                modes: restored.modes,
+                configOptions: restored.configOptions
+              });
+              if (Array.isArray(restored.configOptions)) this.configOptions = restored.configOptions;
+            } else {
+              this.active = await ctx.buildSession(cwd).start();
+              const agent = this.o.providerName ?? this.o.binName;
+              this.q.push({ type: "notice", level: "warn", message: tr("notice.acpSessionNotRestored", { agent }) });
+            }
           } else {
             this.active = await ctx.buildSession(cwd).start();
           }

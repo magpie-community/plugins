@@ -15,6 +15,9 @@ process.stdin.on("data", (d) => {
     try {
       const m = JSON.parse(line);
       if (m.method === "session/prompt" && process.env.ACP_TEE_LOG) appendFileSync(process.env.ACP_TEE_LOG, JSON.stringify(m.params.prompt) + "\n");
+      if (/^session\/(new|load|resume)$/.test(m.method) && process.env.ACP_TEE_SESSION_LOG) {
+        appendFileSync(process.env.ACP_TEE_SESSION_LOG, JSON.stringify({ method: m.method, sessionId: m.params?.sessionId ?? null }) + "\n");
+      }
     } catch {}
   }
 });

@@ -38,11 +38,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       return answer(m.id, {
         protocolVersion: 1,
         agentInfo: { name: "deepseek-harness-acp", version: "0.0.1" },
-        agentCapabilities: { promptCapabilities: { image, audio: false, embeddedContext: false }, sessionCapabilities: { close: {}, list: {}, resume: {} } },
+        agentCapabilities: { loadSession: false, promptCapabilities: { image, audio: false, embeddedContext: false }, sessionCapabilities: { close: {}, list: {}, resume: {} } },
         authMethods: [],
       });
     case "session/new":
       return answer(m.id, { sessionId: "fake-dsh-1", configOptions: configOptions() });
+    case "session/resume":
+      return answer(m.id, { configOptions: configOptions() });
+    case "session/load":
+      return out({ id: m.id, error: { code: -32601, message: '"Method not found": session/load' } });
     case "session/set_config_option":
       if (p.configId === "model") current = JSON.parse(p.value);
       return answer(m.id, { configOptions: configOptions() });

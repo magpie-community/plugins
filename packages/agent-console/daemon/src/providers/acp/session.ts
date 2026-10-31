@@ -11,6 +11,7 @@ import { absCwd, acpStreamFromChild, killAcpChild, spawnResolved } from "./spawn
 import { registerAcpClientHandlers } from "./clientHandlers.js";
 import { mapSessionUpdate, newMapCtx, stopToTurnEnd, type MapCtx } from "./mapUpdate.js";
 import { promptCapsFromInitialize, rememberPromptCaps, type AcpPromptCaps } from "./promptCaps.js";
+import { pickReconnect, sessionOpenFromInitialize } from "./sessionCaps.js";
 import { buildAcpPrompt } from "./prompt.js";
 import { tr } from "../../util/i18n.js";
 
@@ -21,7 +22,7 @@ import { log } from "../../log.js";
 const rid = () => Math.random().toString(36).slice(2, 10);
 
 type AttachableCtx = {
-  attachSession(response: { sessionId: string; modes?: unknown }): ActiveSession;
+  attachSession(response: { sessionId: string; modes?: unknown; configOptions?: unknown }): ActiveSession;
 };
 
 export type AcpSessionOpts = {
@@ -136,15 +137,26 @@ export class AcpSession implements ProviderSession {
       const ctx = this.ctx;
       if (!ctx) throw new Error("ACP 未连接");
       if (this.o.resumeId) {
-        const loaded = await ctx.request(methods.agent.session.load, {
-          sessionId: this.o.resumeId,
-          cwd,
-          mcpServers: [],
-        });
-        this.active = (ctx as unknown as AttachableCtx).attachSession({
-          sessionId: this.o.resumeId,
-          modes: loaded.modes,
-        });
+        // Prefer the method the Agent's initialize advertises: load (replays history) over resume (reconnects only); neither → new session + notice
+        const how = pickReconnect(sessionOpenFromInitialize(initRes));
+        if (how === "load" || how === "resume") {
+          const method = how === "load" ? methods.agent.session.load : methods.agent.session.resume;
+          const restored = (await ctx.request(method, {
+            sessionId: this.o.resumeId,
+            cwd,
+            mcpServers: [],
+          })) as { modes?: unknown; configOptions?: AcpConfigOption[] };
+          this.active = (ctx as unknown as AttachableCtx).attachSession({
+            sessionId: this.o.resumeId,
+            modes: restored.modes,
+            configOptions: restored.configOptions,
+          });
+          if (Array.isArray(restored.configOptions)) this.configOptions = restored.configOptions;
+        } else {
+          this.active = await ctx.buildSession(cwd).start();
+          const agent = this.o.providerName ?? this.o.binName;
+          this.q.push({ type: "notice", level: "warn", message: tr("notice.acpSessionNotRestored", { agent }) });
+        }
       } else {
         this.active = await ctx.buildSession(cwd).start();
       }
