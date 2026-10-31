@@ -120,6 +120,7 @@ These add a page to magpie's window, in the app and in `magpie web`, under Plugi
 | [agent-office](packages/agent-office) | What are my agents doing: live sessions as workers in a voxel office (3D/2D) or a list, with status, current step and resume commands | no `magpie.read`; its host part reads the local session files of Claude Code, Codex, dsh, Gemini CLI, Qwen Code, Pi, omp, Qoder, WorkBuddy and CodeBuddy, including prompts, replies and tool commands (`text:false` keeps statuses and tool names only) |
 | [fingerprint](packages/fingerprint) | Numeric response fingerprints to investigate suspected model substitution across providers, with shared challenges, candidate rankings, local evidence and JSON export | none (its local service calls magpie’s gateway; sampling uses provider quota) |
 | [chat](packages/chat) | Chat with magpie's models, your MCP servers, instructions and skills, by Magic_zero ([Magiczerowxy](https://github.com/Magiczerowxy)). Has a host part: a local service the page goes to | none (its service calls magpie's gateway) |
+| [agent-console](packages/agent-console) | Drive the Agent CLIs on this computer (Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh) with a timeline, Git changes, files and a terminal, by [qingnian108](https://github.com/qingnian108). Has a host part: a gate and a daemon on 127.0.0.1, started when the page opens | none (its daemon runs the Agent CLIs you pick, in the projects you open) |
 
 ```sh
 magpie plugin add @magpie-community/page-<name>

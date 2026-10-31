@@ -1,0 +1,6 @@
+_tmp/
+node_modules/
+*.log
+.DS_Store
+page/session.js
+*.tgz

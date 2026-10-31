@@ -1,0 +1,43 @@
+/* Design tokens (ported from ui/styles/tokens.css, not a single color changed).
+   The magpie theme injects --magpie-* variables via ?tokens=; every one falls back to our own value here.
+   Font sizes across the app are only 12/13/14 (+ 18 for empty-state titles), weights only 400/500/600, borders only --line, shadows only on popovers. */
+:root {
+  --bg:        var(--magpie-bg, #ffffff);
+  --fg:        var(--magpie-fg, #1f1f1f);
+  --muted:     var(--magpie-muted, #737373);
+  --accent:    var(--magpie-accent, #0d9488);
+  --accent-fg: #ffffff;
+  --accent-soft: color-mix(in oklab, var(--accent) 12%, var(--bg));
+  --surface:       color-mix(in oklab, var(--fg) 3%, var(--bg));
+  --surface-hover: color-mix(in oklab, var(--fg) 6%, var(--bg));
+  --line:      color-mix(in oklab, var(--fg) 9%, var(--bg));
+  --ok: #16a34a; --warn: #d97706; --danger: #dc2626; --info: #2563eb;
+  --code-bg:   color-mix(in oklab, var(--fg) 4%, var(--bg));
+  --r-s: 6px; --r-m: 8px; --r-l: 12px; --r-full: 999px;
+  --font-ui: var(--magpie-font, "Segoe UI Variable Text", "Segoe UI", -apple-system, "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif);
+  --font-mono: "Cascadia Code", "Cascadia Mono", "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --fs-s: 12px; --fs-m: 13px; --fs-l: 14px;
+  --fs-hero: 18px;
+  --lh: 1.6;
+  --shadow-pop: 0 8px 24px -6px rgb(0 0 0 / .16), 0 0 0 1px var(--line);
+  --term-bg: #ffffff;
+  --term-fg: #1e1e1e;
+  --ease: cubic-bezier(.2,.7,.2,1);
+  --dur-1: 120ms; --dur-2: 200ms;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: var(--magpie-bg, #1a1a1a); --fg: var(--magpie-fg, #ececec); --muted: var(--magpie-muted, #9b9b9b);
+    --accent: var(--magpie-accent, #2dd4bf); --accent-fg: #04201c; --info: #60a5fa;
+    --shadow-pop: 0 8px 24px -6px rgb(0 0 0 / .5), 0 0 0 1px var(--line);
+    --term-bg: #0c0c0c;
+    --term-fg: #cccccc;
+  }
+}
+[data-theme="dark"] {
+  --bg: var(--magpie-bg, #1a1a1a); --fg: var(--magpie-fg, #ececec); --muted: var(--magpie-muted, #9b9b9b);
+  --accent: var(--magpie-accent, #2dd4bf); --accent-fg: #04201c; --info: #60a5fa;
+  --shadow-pop: 0 8px 24px -6px rgb(0 0 0 / .5), 0 0 0 1px var(--line);
+  --term-bg: #0c0c0c;
+  --term-fg: #cccccc;
+}

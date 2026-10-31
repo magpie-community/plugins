@@ -1,0 +1,104 @@
+{
+  "name": "@magpie-community/page-agent-console",
+  "version": "1.0.0",
+  "description": "在 magpie 窗口里加一个「Agent 控制台」页面：用常驻本地服务驱动本机的 Agent CLI（Claude Code、Codex、Cursor 等），带结构化时间线。A Magpie page that drives local Agent CLIs (Claude Code, Codex, Cursor, and others) with a persistent local daemon and a structured timeline.",
+  "author": "qingnian108 (https://github.com/qingnian108)",
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/agent-console#readme",
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/agent-console"
+  },
+  "files": [
+    "index.mjs",
+    "lib",
+    "page/index.html",
+    "page/boot.js",
+    "app",
+    "daemon/dist",
+    "assets",
+    "README.md",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "agent",
+    "claude",
+    "codex"
+  ],
+  "license": "MIT",
+  "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4IiB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCI+CiAgPHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIHJ4PSIyOCIgZmlsbD0iIzBkOTQ4OCIvPgogIDxwYXRoIGQ9Ik0zNCA0NGg2MGE4IDggMCAwIDEgOCA4djI0YTggOCAwIDAgMS04IDhINjJsLTE0IDEydi0xMkgzNGE4IDggMCAwIDEtOC04VjUyYTggOCAwIDAgMSA4LTh6IiBmaWxsPSIjZmZmIi8+CiAgPGcgZmlsbD0iIzBkOTQ4OCI+CiAgICA8Y2lyY2xlIGN4PSI0OCIgY3k9IjYyIiByPSI1Ii8+CiAgICA8Y2lyY2xlIGN4PSI2NCIgY3k9IjYyIiByPSI1Ii8+CiAgICA8Y2lyY2xlIGN4PSI4MCIgY3k9IjYyIiByPSI1Ii8+CiAgPC9nPgogIDxwYXRoIGQ9Ik00MCA5NmwtOCAxMk04OCA5Nmw4IDEyIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPgo=",
+    "page": {
+      "title": "Agent Console",
+      "titles": {
+        "zh": "Agent 控制台",
+        "zh-TW": "Agent 控制台"
+      },
+      "file": "page/index.html",
+      "icon": "assets/icon.svg"
+    },
+    "permissions": []
+  },
+  "main": "./index.mjs",
+  "type": "module",
+  "scripts": {
+    "dev": "node daemon/dist/main.js --port 3499 --data _tmp/xdg-dev",
+    "start": "node daemon/dist/main.js",
+    "test": "vitest run",
+    "build": "node scripts/build-v1.mjs",
+    "check": "tsc -p tsconfig.daemon.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "build:v1": "node scripts/build-v1.mjs",
+    "dev:v1": "node scripts/build-v1.mjs --watch",
+    "daemon:v1": "node daemon/dist/main.js --port 3499 --data _tmp/xdg-dev",
+    "test:v1": "vitest run",
+    "check:v1": "tsc -p tsconfig.daemon.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "e2e:v1": "node scripts/e2e-v1.mjs",
+    "shot:v1": "node scripts/shot-v1.mjs",
+    "verify:build": "node scripts/verify-build.mjs"
+  },
+  "engines": {
+    "node": ">=20",
+    "magpie": ">=0.1.1340"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.1.0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.312",
+    "ignore": "7.0.14",
+    "ws": "8.22.0",
+    "zod": "4.6.7"
+  },
+  "optionalDependencies": {
+    "node-pty": "1.2.0-beta.15"
+  },
+  "devDependencies": {
+    "@tanstack/react-virtual": "3.14.24",
+    "@types/dompurify": "3.0.5",
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/ws": "8.18.2",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "clsx": "2.1.1",
+    "dompurify": "3.4.17",
+    "esbuild": "0.28.2",
+    "highlight.js": "11.12.0",
+    "lucide-react": "1.64.0",
+    "marked": "18.1.2",
+    "playwright-core": "1.64.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5",
+    "zustand": "5.0.16"
+  }
+}
