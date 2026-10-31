@@ -961,6 +961,12 @@
   if ($("optScene")) {
     $("optScene").replaceChildren(...SCENE_OPTIONS.map(([id, name]) => { const o = el("option", "", name); o.value = id; return o }))
     $("optScene").value = view.scene
+    $("optQuality").value = view.quality
+    $("optQuality").addEventListener("change", (e) => {
+      view.quality = e.target.value
+      if (scene3) scene3.setQuality(view.quality)
+      save()
+    })
     $("optScene").addEventListener("change", (e) => {
       view.scene = e.target.value
       // a scene belongs to the real 3D view; choosing one takes you there
