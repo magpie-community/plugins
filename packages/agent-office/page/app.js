@@ -52,7 +52,7 @@
   const navLangs = () => (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language])
   // manual pick → the newest prompt's script → magpie's theme → the browser
   function pickLang(sample) {
-    return M.detectLang({ manual: manualLang, theme: themeLang, nav: navLangs(), sample: sample || M.sample(state.snap) })
+    return M.detectLang({ manual: manualLang, theme: themeLang, nav: navLangs(), sample: view.text && state.snap?.text !== false ? (sample || M.sample(state.snap)) : "" })
   }
   let lang = pickLang()
 
@@ -82,6 +82,10 @@
     todaySig = ""
     langSelectSig = ""
     syncLangSelect()
+    if (typeof scene2 !== "undefined") scene2.lang = lang
+    if ($("optScene")) {
+      for (const option of $("optScene").options) option.textContent = t()["scene" + ({office:"Office",station:"Station",cafe:"Cafe",castle:"Castle",pirate:"Pirate",graveyard:"Graveyard"})[option.value]]
+    }
   }
 
   function statusLegend() {
@@ -140,7 +144,7 @@
   // WebGL one. They cannot share a canvas context, so each has its own and
   // only the selected one is visible and running.
   const office2 = $("office"), office3 = $("office3d")
-  const scene2 = new Scene(office2, { dim: view.dim === "2d" ? "2d" : "3d", onFrame: place })
+  const scene2 = new Scene(office2, { dim: view.dim === "2d" ? "2d" : "3d", onFrame: (anchors) => { if (scene === scene2 && view.mode === "office" && !document.hidden) place(anchors) } })
   let scene3 = null
   let scene = scene2
 
@@ -149,7 +153,7 @@
     if (!wants3D()) return null
     if (!scene3) {
       try {
-        scene3 = new Scene3D(office3, { scene: view.scene, quality: view.quality, agents: state.list, onFrame: place })
+        scene3 = new Scene3D(office3, { scene: view.scene, quality: view.quality, agents: state.list, onFrame: (anchors) => { if (scene === scene3 && view.mode === "office" && !document.hidden) place(anchors) } })
         if (!scene3.available) { try { scene3.dispose() } catch {} ; scene3 = null; state.scene3Failed = true }
       } catch { scene3 = null; state.scene3Failed = true }
     }
@@ -157,6 +161,7 @@
     return scene3
   }
   function activateScene() {
+    office3.hidden = !wants3D()
     const s3 = ensure3D()
     if (s3) {
       if (scene !== s3) { try { scene2.stop() } catch {} ; scene = s3 }
@@ -206,7 +211,11 @@
     for (const p of anchors) {
       const e = tags.get(p.key)
       if (!e || p.visible === false) continue
-      if (!e._w) e._w = e.offsetWidth || 90
+      // Hidden labels have zero offsetWidth: measure them invisibly so
+      // collision tests use actual text width, never a guessed 90px.
+      if (e.hidden) { e.style.visibility = "hidden"; e.hidden = false }
+      e._w = e.offsetWidth || 190
+      e.style.visibility = ""
       shown.push({ e, p })
     }
     // with many agents the office can hold more name tags than it can show
@@ -224,26 +233,15 @@
       rank.set(a.key, r)
     }
     shown.sort((a, b) => (rank.get(a.p.key) ?? 3) - (rank.get(b.p.key) ?? 3) || b.p.y - a.p.y)
-    const keep = shown.slice(0, limit)
-    keep.sort((a, b) => a.p.y - b.p.y || a.p.x - b.p.x)
-    const placed = []
-    const H = 26
-    for (const it of keep) {
-      let y = it.p.y
-      for (let pass = 0; pass < 40; pass++) {
-        const hit = placed.find((q) => Math.abs(q.x - it.p.x) < (q.w + it.e._w) / 2 + 4 && Math.abs(q.y - y) < H)
-        if (!hit) break
-        y = hit.y - H
-      }
-      it.y = Math.max(H, y)
-      const half = (it.e._w || 90) / 2
-      it.x = W ? Math.max(half + 6, Math.min(W - half - 6, it.p.x)) : it.p.x
-      placed.push({ x: it.x, y: it.y, w: it.e._w })
-    }
-    for (const it of keep) {
-      seen.add(it.p.key)
+    const byKey = new Map(shown.map(it => [it.p.key, it]))
+    const arranged = M.layoutTags(shown.filter(it => !few || few.has(it.p.key)).map(it => ({
+      key: it.p.key, x: it.p.x, y: it.p.y, w: it.e._w, h: it.e.offsetHeight || 22,
+    })), W, box?.clientHeight || 0, limit)
+    for (const it of arranged) {
+      const e = byKey.get(it.key).e
+      seen.add(it.key)
       const tf = `translate(${Math.round(it.x)}px, ${Math.round(it.y)}px) translate(-50%, -100%)`
-      if (it.e.style.transform !== tf) it.e.style.transform = tf
+      if (e.style.transform !== tf) e.style.transform = tf
     }
     for (const [k, e] of tags) {
       const hide = !seen.has(k) || (few ? !few.has(k) : false)
@@ -351,7 +349,7 @@
     P.msgs.replaceChildren(...msgs.map((m) => {
       const role = m?.role === "assistant" ? "assistant" : m?.role === "tool" ? "tool" : "user"
       const row = el("div", "msg " + role)
-      if (role !== "tool") row.append(el("span", "mn", m?.name || (role === "assistant" ? t().agent : role === "user" ? "you" : "")))
+      if (role !== "tool") row.append(el("span", "mn", m?.name || (role === "assistant" ? t().agent : role === "user" ? t().you : "")))
       row.append(document.createTextNode(String(m?.text || "")))
       if (m?.at) row.append(el("span", "mt", clock(m.at)))
       return row
@@ -387,10 +385,8 @@
     // the conversation: only when text is on and the session has messages
     const msgs = state.showText && !a.private && Array.isArray(a.messages) ? a.messages.slice(-8) : []
     P.convoHead.hidden = P.msgs.hidden = !msgs.length
-    if (msgs.length) {
-      setText(P.convoHead, w.recent)
-      renderMessages(msgs)
-    }
+    setText(P.convoHead, msgs.length ? w.recent : "")
+    renderMessages(msgs)
     setText(P.meta, [a.model, a.project].filter(Boolean).join(" · "))
     const copy = a.resume || a.session
     P.copy.hidden = !copy
@@ -401,7 +397,7 @@
       P.copy.dataset.label = a.resume ? w.copyResume : w.copySession
       P.copy.textContent = P.copy.dataset.label
     }
-    P.clear.hidden = !M.clearable(a.status)
+    P.clear.hidden = !M.clearable(a)
     P.clear.dataset.key = a.key
     setText(P.clear, w.clear)
     P.clear.title = w.clearTip
@@ -412,7 +408,7 @@
   // for sessions live.js still has
   function clearAgent(key) {
     const a = state.list.find((x) => x.key === key)
-    if (!a || !M.clearable(a.status)) return
+    if (!a || !M.clearable(a)) return
     const now = Date.now()
     const known = new Set((snapshot(now)?.sessions || []).map((s) => s?.key))
     const next = {}
@@ -434,10 +430,17 @@
     msgSig = ""
     fillPanel(a)
     panel.hidden = false
+    positionOverlays()
     $("rail").hidden = true
     for (const [k, e] of tags) e.classList.toggle("on", k === key)
     for (const tr of $("rows").children) tr.classList.toggle("on", tr.dataset.key === key)
     for (const b of $("railGroups").querySelectorAll(".rail-row")) b.classList.toggle("on", b.dataset.key === key)
+  }
+  function clearPanelText() {
+    for (const n of [P.title, P.query, P.step, P.err, P.reply, P.convoHead, P.msgs, P.meta, P.src]) n.replaceChildren()
+    P.copy.nextElementSibling?.classList.contains("pcopy") && P.copy.nextElementSibling.remove()
+    delete P.copy.dataset.value
+    msgSig = ""
   }
   function close() {
     if (!state.open) return
@@ -445,6 +448,7 @@
     scene.selected = ""
     scene.setSelected?.(null)
     panel.hidden = true
+    clearPanelText()
     renderRail()
     for (const e of tags.values()) e.classList.remove("on")
     for (const tr of $("rows").children) tr.classList.remove("on")
@@ -552,13 +556,13 @@
     const menus = ($("settings") && !$("settings").hidden) || ($("todayMenu") && !$("todayMenu").hidden)
     const show = view.side && view.mode === "office" && !floatHome && !state.open && !menus
     rail.hidden = !show
+    if (show) positionOverlays()
     const btn = $("sideBtn")
     btn.classList.toggle("on", view.side)
     btn.setAttribute("aria-pressed", String(view.side))
-    if (!show) return
     $("railCount").textContent = state.list.length
     const groups = M.groups(state.list)
-    const sig = lang + "|" + groups.map((g) => g.key + ":" + g.list.map((a) => a.key + a.status + (a.sub || "") + (a.idle ? 1 : 0)).join(",")).join("|")
+    const sig = JSON.stringify([lang, state.showText, groups.map(g => [g.key, g.list.map(a => [a.key, a.title, label(a), a.status, a.at])])])
     if (sig === railSig) return
     railSig = sig
     const kids = []
@@ -572,7 +576,7 @@
         row.classList.toggle("on", a.key === state.open)
         row.append(I.mark(a.brand, 15))
         row.append(el("span", "rn", a.title || a.project || a.brand.name))
-        const st = el("span", "rs", a.sub === "noprog" ? t().noProgress : a.idle ? t().idle : t()[a.status])
+        const st = el("span", "rs", label(a))
         st.style.color = M.COLORS[a.status]
         row.append(st)
         row.title = `${a.brand.name} · ${label(a)}`
@@ -700,7 +704,7 @@
     setTimeout(() => b.remove(), 8000)
   }
   function trackAlerts() {
-    const next = new Map()
+    const next = new Map(state.alerts)
     // the first snapshot with real sessions is the baseline: sessions that
     // were already waiting when the page opened are not news
     const seeded = state.alertsSeeded === true
@@ -718,6 +722,7 @@
   // ---- everything ------------------------------------------------------
   function refresh() {
     const now = Date.now()
+    const wasText = state.showText
     // text off in the page as well as the host: a stale live.js or a host
     // that has not restarted yet must not render what the switch hid
     state.showText = view.text && state.snap?.text !== false
@@ -732,7 +737,11 @@
     const base = { ...view, progress: true }
     state.all = M.agents(snap, now, { ...base, agents: [], showSub: true, showIdle: true })
     state.list = M.agents(snap, now, base)
-    if (!state.showText) { state.list = M.redact(state.list); state.all = M.redact(state.all) }
+    if (!state.showText) {
+      state.list = M.redact(state.list); state.all = M.redact(state.all)
+      if (wasText) $("toasts").replaceChildren()
+      if (!state.open) clearPanelText()
+    }
     const c = M.counts(state.list)
     const set = (id, v) => { const n = $(id); if (n.textContent !== String(v)) n.textContent = v }
     set("nNeed", c.needYou)
@@ -752,12 +761,12 @@
     }
     $("empty").hidden = state.list.length > 0
     if (!$("empty").hidden) $("empty").textContent = emptyText()
-    set("note", view.demo ? t().demoOn : (view.dim === "3d" && state.scene3Failed ? "WebGL unavailable · ISO view" : ""))
+    set("note", view.demo ? t().demoOn : (view.dim === "3d" && state.scene3Failed ? t().webglFallback : ""))
     const age = state.snap?.written ? now - state.snap.written : 0
     const live = $("live")
     live.classList.toggle("stale", !!state.snap && age > 15000)
     live.title = state.snap ? M.fill(t().stale, M.ago(age, lang)) : ""
-    if (view.mode === "list") rows()
+    rows()
     brandLegend()
     renderRail()
     renderToday()
@@ -827,6 +836,24 @@
   // settings and the Today panel share one menu behaviour
   const menu = $("settings")
   const todayMenu = $("todayMenu")
+  function positionOverlays() {
+    for (const [button, menuId] of [["settingsBtn", "settings"], ["todayBtn", "todayMenu"]]) {
+      const m = $(menuId)
+      if (m.hidden) continue
+      const anchor = $(button).getBoundingClientRect()
+      const width = Math.min(300, innerWidth - 16)
+      const top = Math.min(Math.max(8, anchor.bottom + 6), Math.max(8, innerHeight - 160))
+      Object.assign(m.style, {left: Math.max(8, Math.min(innerWidth-width-8, anchor.right-width)) + "px", top: top + "px", width: width + "px", maxHeight: Math.max(80, innerHeight-top-8) + "px"})
+    }
+    const rect = $("stage").getBoundingClientRect()
+    for (const [id, preferred] of [["pop", 400], ["rail", 256]]) {
+      const node = $(id)
+      if (node.hidden || rect.height <= 0) continue
+      const width = Math.min(preferred, Math.max(0, rect.width-20))
+      Object.assign(node.style, {position: "fixed", right: "auto", left: Math.max(8, rect.right-width-10) + "px", top: Math.max(8, rect.top+10) + "px", width: width + "px", maxHeight: Math.max(80, Math.min(rect.height-20, innerHeight-rect.top-18)) + "px"})
+    }
+  }
+  addEventListener("resize", positionOverlays)
   function closeMenus(except) {
     let changed = false
     for (const [btn, m] of [[$("settingsBtn"), menu], [$("todayBtn"), todayMenu]]) {
@@ -842,6 +869,7 @@
     closeMenus(willOpen ? m : null)
     m.hidden = !willOpen
     btn.setAttribute("aria-expanded", String(willOpen))
+    positionOverlays()
     renderRail()
   }
   $("settingsBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu($("settingsBtn"), menu) })
@@ -954,7 +982,7 @@
   new ResizeObserver(() => {
     if (resizeQueued) return
     resizeQueued = true
-    requestAnimationFrame(() => { resizeQueued = false; scene.resize() })
+    requestAnimationFrame(() => { resizeQueued = false; scene.resize(); positionOverlays() })
   }).observe($("stage"))
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return
@@ -974,11 +1002,11 @@
   })
 
   const SCENE_OPTIONS = [
-    ["office", "🏢 Office"], ["station", "🚀 Space station"], ["cafe", "☕ Café"],
-    ["castle", "🏰 Castle"], ["pirate", "🏴‍☠️ Pirate cove"], ["graveyard", "🪦 Haunted hollow"],
+    ["office", "sceneOffice"], ["station", "sceneStation"], ["cafe", "sceneCafe"],
+    ["castle", "sceneCastle"], ["pirate", "scenePirate"], ["graveyard", "sceneGraveyard"],
   ]
   if ($("optScene")) {
-    $("optScene").replaceChildren(...SCENE_OPTIONS.map(([id, name]) => { const o = el("option", "", name); o.value = id; return o }))
+    $("optScene").replaceChildren(...SCENE_OPTIONS.map(([id, name]) => { const o = el("option", "", t()[name]); o.value = id; return o }))
     $("optScene").value = view.scene
     $("optQuality").value = view.quality
     $("optQuality").addEventListener("change", (e) => {
@@ -1004,5 +1032,6 @@
   // the host writes live.js within a second and a half of a change; the
   // page looks every second, and "N min ago" moves with its own clock
   setInterval(load, 1000)
-  setInterval(() => { if (state.open) { const a = state.list.find((x) => x.key === state.open); if (a) fillPanel(a) } }, 5000)
+  // Time-based states must move even when a stalled file never changes.
+  setInterval(() => { if (!document.hidden) refresh() }, 1000)
 })()

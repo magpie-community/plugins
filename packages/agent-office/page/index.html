@@ -4,15 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent Office</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=284374c66e69">
 <script src="_magpie/bridge.js"></script>
-<script src="agents.js"></script>
-<script src="model.js"></script>
-<script src="icons.js"></script>
-<script src="scene.js"></script>
-<script src="three.min.js"></script>
-<script src="scene3d.js"></script>
-<script src="app.js" defer></script>
+<script src="agents.js?v=d958111cd669"></script>
+<script src="model.js?v=691ef399f1c8"></script>
+<script src="icons.js?v=e918b44d46c2"></script>
+<script src="scene.js?v=b27c2e100f3a"></script>
+<script src="three.min.js?v=5b5a0ae404b6"></script>
+<script src="scene3d.js?v=f6a154f817d4"></script>
+<script src="app.js?v=744effc0b6ea" defer></script>
 </head>
 <body>
 <main class="card" id="card">
@@ -66,9 +66,9 @@
         <div class="row col">
           <span data-t="quality">Quality</span>
           <select class="lang-select" id="optQuality">
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
+            <option value="low" data-t="qLow">Low</option>
+            <option value="medium" data-t="qMedium">Medium</option>
+            <option value="high" data-t="qHigh">High</option>
           </select>
         </div>
         <div class="row col">
@@ -85,8 +85,8 @@
     </div>
   </nav>
   <section class="stage" id="stage">
-    <canvas id="office"></canvas>
-    <canvas id="office3d" hidden></canvas>
+    <canvas id="office" tabindex="0" aria-label="Agent office"></canvas>
+    <canvas id="office3d" tabindex="0" aria-label="3D Agent office" hidden></canvas>
     <div class="tags" id="tags"></div>
     <div class="empty" id="empty" hidden></div>
   </section>

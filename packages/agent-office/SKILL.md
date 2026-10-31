@@ -1,6 +1,6 @@
 ---
 name: agent-office
-description: Open a live office view of every coding agent on this machine — Claude Code, Codex, Copilot CLI, Kimi Code, DeepSeek Harness, Gemini CLI, Qwen Code, Pi, omp, Qoder, WorkBuddy and CodeBuddy — and show who is thinking, running a tool, waiting for you, done or stuck. Use when the user types /agent-office, asks what their agents are doing, or wants a machine-readable snapshot.
+description: Open a live office view of every coding agent on this machine — Claude Code, Codex, Copilot CLI, Kimi Code, Grok Build, DeepSeek Harness, Gemini CLI, Qwen Code, Pi, omp, Qoder, WorkBuddy and CodeBuddy — and show who is thinking, running a tool, waiting for you, done or stuck. Use when the user types /agent-office, asks what their agents are doing, or wants a machine-readable snapshot.
 ---
 
 # agent-office
@@ -14,7 +14,11 @@ Start the office in the background so it keeps running:
 bun "<base directory>/bin/agent-office.mjs" --no-open
 ```
 
-Then open the URL it prints. Running it again while it is up reuses the server.
+Then open the full URL it prints, including its random per-run path. Treat that
+URL as private: it grants access to local session data. Keep using that URL
+while the process is running. A second run on the same port exits with an
+address-in-use error; it does not reuse the server. Use `--port 0` to start a
+separate server on an available port, or choose a different `--port`.
 
 For a one-off answer in chat, print a snapshot instead of opening a page:
 
@@ -35,5 +39,5 @@ Options:
 - `--no-open` — don't open a browser
 
 It reads the agents' own local session files, binds to `127.0.0.1` only, and
-writes nothing back. Requires Bun; Node alone cannot run the compressed DSH
-reader.
+writes nothing back. Requires Bun 1.2+ for the local server and compressed DSH
+reader; Node alone is not supported.

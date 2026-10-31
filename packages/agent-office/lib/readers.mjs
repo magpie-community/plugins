@@ -6,7 +6,7 @@
 // talks to: one that never passes magpie's gateway is seen as well as one
 // that does.
 //
-// Pure: a reader takes a file's text (its tail) and gives a session's facts.
+// Pure: a reader takes a file's text or JSONL line iterator and gives a session's facts.
 // No I/O of its own; lib/scan.mjs finds and reads the files and knows today.
 //
 // A session's facts: { agent, id, cwd, title, query, model, started, updated,
@@ -65,13 +65,14 @@ export function toolLine(name, args) {
   return s ? `${name} · ${s}` : String(name)
 }
 
-function lines(text) {
-  const out = []
-  for (const l of String(text).split("\n")) {
+function* lines(text) {
+  // The scanner supplies an iterator for JSONL so large logs can be replayed
+  // completely without retaining their raw text or parsed events in memory.
+  const input = typeof text === "string" ? text.split("\n") : text || []
+  for (const l of input) {
     if (!l || l[0] !== "{") continue
-    try { out.push(JSON.parse(l)) } catch {}
+    try { yield JSON.parse(l) } catch {}
   }
-  return out
 }
 
 function ms(t) {
@@ -106,10 +107,16 @@ function addTokens(s, t, n) {
   const b = bucket(s, t)
   if (b) b.tokens += n
 }
-function finalizeUsage(s, now) {
+export function finalizeUsage(s, now) {
   const b = BUCKETS.get(s)?.get(dayKey(now))
   s.tokensToday = b ? Math.round(b.tokens) : 0
   s.turnsToday = b ? b.turns : 0
+}
+
+// Preserve a trailing separator until the next chunk, but normalize runs so
+// whitespace-only chunks cannot consume the whole bounded text buffer.
+function appendChunk(text, chunk, max) {
+  return (text + String(chunk ?? "")).replace(/\s+/g, " ").trimStart().slice(0, max + 2)
 }
 
 // A tool's arguments can hold secrets; a message keeps only its name.
@@ -123,8 +130,10 @@ function streamMsg(s, role, chunk, t) {
     STREAMS.set(s, st)
     while (s.messages.length > MESSAGES_MAX) s.messages.shift()
   }
-  st.text = clip(st.text + String(chunk ?? ""), MESSAGE_TEXT_MAX)
-  st.msg.text = st.text
+  // Keep raw, bounded text between chunks; clip only the displayed value.
+  // Trimming each chunk turns ["hello ", "world"] into "helloworld".
+  st.text = appendChunk(st.text, chunk, MESSAGE_TEXT_MAX)
+  st.msg.text = clip(st.text, MESSAGE_TEXT_MAX)
 }
 function endStream(s) { STREAMS.delete(s) }
 
@@ -214,7 +223,7 @@ function answered(s, id, t) {
 export function readClaude(text, agent = "claude", id = "", opts = {}) {
   const s = fresh(agent, id)
   if (opts.subagent) s.subagent = true
-  let usageId = null
+  const responseUsage = new Map()
   for (const d of lines(text)) {
     const t = ms(d.timestamp)
     if (d.sessionId && !s.id) s.id = d.sessionId
@@ -240,10 +249,11 @@ export function readClaude(text, agent = "claude", id = "", opts = {}) {
     }
     if (d.type === "assistant" && m.role === "assistant") {
       if (m.model && m.model !== "<synthetic>") s.model = m.model
-      // One response is logged once per content block with the same usage.
+      // A response can appear once per content block, with a later block
+      // updating its output usage. Count its final record once, even if other
+      // responses were interleaved between its blocks.
       const u = m.usage
-      if (u && typeof u === "object" && (m.id == null || m.id !== usageId)) {
-        if (m.id != null) usageId = m.id
+      if (u && typeof u === "object") {
         const n = (k) => (Number.isFinite(u[k]) ? u[k] : 0)
         const prompt = n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens")
         const out = n("output_tokens")
@@ -253,7 +263,9 @@ export function readClaude(text, agent = "claude", id = "", opts = {}) {
           // record the window itself.
           s.contextWindow = s.context > 200_000 ? 1_000_000 : 200_000
         }
-        addTokens(s, t, n("input_tokens") + n("cache_creation_input_tokens") + out)
+        const tokens = n("input_tokens") + n("cache_creation_input_tokens") + out
+        if (m.id != null) responseUsage.set(m.id, { t, tokens })
+        else addTokens(s, t, tokens)
       }
       const blocks = Array.isArray(m.content) ? m.content : []
       const txt = blocks.filter((b) => b?.type === "text").map((b) => b.text).join("\n").trim()
@@ -265,6 +277,7 @@ export function readClaude(text, agent = "claude", id = "", opts = {}) {
       touch(s, t)
     }
   }
+  for (const { t, tokens } of responseUsage.values()) addTokens(s, t, tokens)
   finalizeUsage(s, opts.now ?? Date.now())
   return s
 }
@@ -390,7 +403,7 @@ export function readDsh(text, id = "", opts = {}) {
 export function readGemini(text, agent = "gemini", id = "", opts = {}) {
   const s = fresh(agent, id)
   let msgs = []
-  const trimmed = String(text).trim()
+  const trimmed = typeof text === "string" ? text.trim() : ""
   if (trimmed.startsWith("{") && !trimmed.includes("\n{")) {
     try { const j = JSON.parse(trimmed); msgs = j.messages || []; s.id = j.sessionId || id; touch(s, ms(j.startTime)) } catch {}
   } else {
@@ -414,6 +427,7 @@ export function readGemini(text, agent = "gemini", id = "", opts = {}) {
       if (txt.trim()) { s.reply = clip(txt, TEXT_MAX); message(s, "assistant", txt, t) }
       const calls = Array.isArray(m.toolCalls) ? m.toolCalls : []
       s.pending = []
+      s.phase = "thinking"
       for (const c of calls) {
         const st = String(c.status || "").toLowerCase()
         if (c.name) s.stepName = String(c.name)
@@ -607,8 +621,8 @@ export function readKimi(text, id = "", meta = {}, opts = {}) {
           case "tool.result": answered(s, e.toolCallId, t); if (approvals.size) sync(); break
           case "content.part":
             if (e.part?.type === "text" && e.part.text) {
-              s.reply = clip((s.reply || "") + e.part.text, TEXT_MAX)
               message(s, "assistant", e.part.text, t, undefined, true)
+              s.reply = clip(STREAMS.get(s).text, TEXT_MAX)
               if (s.phase !== "tool" && s.phase !== "approval" && s.phase !== "ask") s.phase = "thinking"
               touch(s, t)
             } else if (e.part?.type === "think") {
@@ -655,6 +669,9 @@ export function readGrok(text, id = "", meta = {}, opts = {}) {
   }
   let previous = ""
   let userBuf = ""
+  let userTurn = null
+  let userPrompted = false
+  const generatedTitle = !s.title
   let replyStream = null
   let replyBuf = ""
   const completeTool = (callId, title) => {
@@ -674,13 +691,16 @@ export function readGrok(text, id = "", meta = {}, opts = {}) {
     const start = Number.isFinite(tm.turnStartMs) ? tm.turnStartMs : t
     switch (type) {
       case "user_message_chunk": {
-        if (previous !== type) {
+        if (previous !== type || (Number.isFinite(tm.turnStartMs) && tm.turnStartMs !== userTurn)) {
           userBuf = ""
-          prompted(s, e.content?.text || "", start)
+          userPrompted = false
+          userTurn = start
         }
-        userBuf = clip(userBuf + (e.content?.text || ""), QUERY_MAX)
-        if (userBuf) {
-          s.query = userBuf
+        userBuf = appendChunk(userBuf, e.content?.text, MESSAGE_TEXT_MAX)
+        if (!userPrompted) userPrompted = prompted(s, userBuf, start)
+        if (userPrompted) {
+          s.query = clip(userBuf, QUERY_MAX)
+          if (generatedTitle && s.turns === 1) s.title = clip(userBuf, TITLE_MAX)
           const last = s.messages[s.messages.length - 1]
           if (last?.role === "user") last.text = clip(userBuf, MESSAGE_TEXT_MAX)
         }
@@ -700,8 +720,8 @@ export function readGrok(text, id = "", meta = {}, opts = {}) {
           replyBuf = ""
           endStream(s)
         }
-        replyBuf = clip(replyBuf + (e.content?.text || ""), TEXT_MAX)
-        if (replyBuf) s.reply = replyBuf
+        replyBuf = appendChunk(replyBuf, e.content?.text, TEXT_MAX)
+        if (replyBuf) s.reply = clip(replyBuf, TEXT_MAX)
         message(s, "assistant", e.content?.text || "", t, undefined, true)
         if (s.phase !== "tool" && s.phase !== "approval" && s.phase !== "ask") s.phase = "thinking"
         touch(s, t)
@@ -741,6 +761,15 @@ export function readGrok(text, id = "", meta = {}, opts = {}) {
         break
     }
     if (type) previous = type
+  }
+  // Vendor schema: xai-org/grok-build, crates/codegen/xai-grok-shell/
+  // src/session/usage_file.rs (SessionUsageFile / flattened TurnUsage).
+  // The session total repeats these deltas; modelUsage repeats their breakdown.
+  // Neither is an additional charge or a timestamped context measurement.
+  for (const turn of Array.isArray(opts.usage?.turns) ? opts.usage.turns : []) {
+    if (!turn || typeof turn !== "object") continue
+    const n = (k) => Number.isFinite(turn[k]) && turn[k] > 0 ? turn[k] : 0
+    addTokens(s, ms(turn.endedAt), Math.max(0, n("inputTokens") - n("cachedReadTokens")) + n("outputTokens"))
   }
   finalizeUsage(s, opts.now ?? Date.now())
   return s

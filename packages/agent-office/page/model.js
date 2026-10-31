@@ -274,6 +274,181 @@
       unitS: "s", unitM: "min", unitH: "h",
     },
   }
+  const EXTRA_TEXT = {
+  "en": [
+    "Office",
+    "Space station",
+    "Café",
+    "Castle",
+    "Pirate cove",
+    "Haunted hollow",
+    "Low",
+    "Medium",
+    "High",
+    "WebGL unavailable · ISO view",
+    "You",
+    "READING",
+    "ARCADE",
+    "HUDDLE",
+    "PING-PONG",
+    "COFFEE",
+    "ORBITAL STATION 7"
+  ],
+  "zh-CN": [
+    "办公室",
+    "空间站",
+    "咖啡店",
+    "城堡",
+    "海盗湾",
+    "幽灵谷",
+    "低",
+    "中",
+    "高",
+    "WebGL 不可用 · 已切换等距视图",
+    "你",
+    "阅读",
+    "街机",
+    "讨论",
+    "乒乓球",
+    "咖啡",
+    "轨道空间站 7"
+  ],
+  "zh-TW": [
+    "辦公室",
+    "太空站",
+    "咖啡店",
+    "城堡",
+    "海盜灣",
+    "幽靈谷",
+    "低",
+    "中",
+    "高",
+    "WebGL 無法使用 · 已切換等距視圖",
+    "你",
+    "閱讀",
+    "街機",
+    "討論",
+    "乒乓球",
+    "咖啡",
+    "軌道太空站 7"
+  ],
+  "ja": [
+    "オフィス",
+    "宇宙ステーション",
+    "カフェ",
+    "城",
+    "海賊の入り江",
+    "幽霊の谷",
+    "低",
+    "中",
+    "高",
+    "WebGL が利用できません · 等角表示",
+    "あなた",
+    "読書",
+    "ゲーム",
+    "相談",
+    "卓球",
+    "コーヒー",
+    "軌道ステーション 7"
+  ],
+  "ko": [
+    "사무실",
+    "우주 정거장",
+    "카페",
+    "성",
+    "해적 만",
+    "유령 골짜기",
+    "낮음",
+    "중간",
+    "높음",
+    "WebGL 사용 불가 · 등각 보기",
+    "나",
+    "독서",
+    "게임",
+    "회의",
+    "탁구",
+    "커피",
+    "궤도 정거장 7"
+  ],
+  "es": [
+    "Oficina",
+    "Estación espacial",
+    "Cafetería",
+    "Castillo",
+    "Bahía pirata",
+    "Valle encantado",
+    "Baja",
+    "Media",
+    "Alta",
+    "WebGL no disponible · Vista ISO",
+    "Tú",
+    "LECTURA",
+    "JUEGOS",
+    "REUNIÓN",
+    "PING-PONG",
+    "CAFÉ",
+    "ESTACIÓN ORBITAL 7"
+  ],
+  "fr": [
+    "Bureau",
+    "Station spatiale",
+    "Café",
+    "Château",
+    "Baie pirate",
+    "Vallée hantée",
+    "Basse",
+    "Moyenne",
+    "Haute",
+    "WebGL indisponible · Vue ISO",
+    "Vous",
+    "LECTURE",
+    "ARCADE",
+    "RÉUNION",
+    "PING-PONG",
+    "CAFÉ",
+    "STATION ORBITALE 7"
+  ],
+  "de": [
+    "Büro",
+    "Raumstation",
+    "Café",
+    "Burg",
+    "Piratenbucht",
+    "Geistertal",
+    "Niedrig",
+    "Mittel",
+    "Hoch",
+    "WebGL nicht verfügbar · ISO-Ansicht",
+    "Du",
+    "LESEN",
+    "SPIELE",
+    "TREFFEN",
+    "TISCHTENNIS",
+    "KAFFEE",
+    "ORBITALSTATION 7"
+  ],
+  "pt": [
+    "Escritório",
+    "Estação espacial",
+    "Café",
+    "Castelo",
+    "Baía pirata",
+    "Vale assombrado",
+    "Baixa",
+    "Média",
+    "Alta",
+    "WebGL indisponível · Vista ISO",
+    "Você",
+    "LEITURA",
+    "JOGOS",
+    "REUNIÃO",
+    "PINGUE-PONGUE",
+    "CAFÉ",
+    "ESTAÇÃO ORBITAL 7"
+  ]
+}
+  const EXTRA_KEYS = ["sceneOffice", "sceneStation", "sceneCafe", "sceneCastle", "scenePirate", "sceneGraveyard", "qLow", "qMedium", "qHigh", "webglFallback", "you", "venueReading", "venueArcade", "venueMeeting", "venuePingpong", "venueCoffee", "stationSign"]
+  for (const [code, values] of Object.entries(EXTRA_TEXT)) EXTRA_KEYS.forEach((key, i) => { TEXT[code][key] = values[i] })
   const LANGS = ["en", "zh-CN", "zh-TW", "ja", "ko", "es", "fr", "de", "pt"]
   const LANG_NAMES = {
     en: "English", "zh-CN": "简体中文", "zh-TW": "繁體中文", ja: "日本語", ko: "한국어",
@@ -406,7 +581,11 @@
 
   // what the user may clear: an agent not at work. A stuck one (error), a
   // stopped or finished one, and one waiting on a process that may be gone.
-  function clearable(st) { return st === "done" || st === "error" || st === "waiting" }
+  function clearable(value, sub = "") {
+    const st = typeof value === "object" ? value?.status : value
+    const detail = typeof value === "object" ? value?.sub : sub
+    return st === "done" || st === "error" || st === "waiting" || detail === "stuck" || detail === "noprog"
+  }
 
   function ago(ms, lang) {
     const t = text(lang)
@@ -504,7 +683,7 @@
       if ((st === "done" || st === "error") && quiet > hide) continue
       if (st === "done" && !o.showDone) continue
       const c = Number(cleared[s.key])
-      if (c && at <= c && clearable(st)) continue
+      if (c && at <= c && clearable(st, sub)) continue
       const idle = st === "done" && quiet > IDLE_MS
       if (idle && o.showIdle === false) continue
       const b = brand(s.agent)
@@ -612,13 +791,41 @@
   function redact(list) {
     return list.map((a) => {
       const step = String(a.step || "")
-      const name = step.includes(" · ") ? step.split(" · ")[0]
-        : /^[A-Za-z0-9_.-]{1,40}$/.test(step) ? step : ""
+      const candidate = step.split(" · ", 1)[0]
+      const name = /^[A-Za-z_][A-Za-z0-9_.:-]{0,95}$/.test(candidate) ? candidate : ""
       return {
         ...a, title: a.project || a.brand?.name || a.agent || "", query: "", reply: "", error: "", step: name,
         messages: [], private: true,
       }
     })
+  }
+
+  // Pack labels in CSS pixels after clamping to the viewport. Candidates
+  // above and below an anchor let dense crowds spread without clamping
+  // every label to the same top edge. Omit a label if no safe box exists.
+  function layoutTags(items, width, height, limit = 8) {
+    const gap = 6, edge = 6, placed = []
+    if (width <= edge * 2 || height <= edge * 2) return placed
+    for (const item of items) {
+      if (placed.length >= limit) break
+      const w = Math.min(item.w || 90, width - edge * 2), h = item.h || 22
+      if (h > height - edge * 2) continue
+      const clampX = x => Math.max(edge + w / 2, Math.min(width - edge - w / 2, x))
+      const clampY = y => Math.max(edge + h, Math.min(height - edge, y))
+      const xs = [...new Set([item.x, item.x - w - gap, item.x + w + gap, width / 2].map(clampX))]
+      const baseY = clampY(item.y)
+      const candidates = []
+      for (let row = 0; row <= Math.ceil(height / (h + gap)); row++) {
+        for (const y of row ? [baseY - row * (h + gap), baseY + row * (h + gap)] : [baseY]) {
+          if (y - h < edge || y > height - edge) continue
+          for (const x of xs) candidates.push({x, y, score: Math.abs(x - item.x) + Math.abs(y - item.y) * 1.4})
+        }
+      }
+      candidates.sort((a,b) => a.score-b.score)
+      const fit = candidates.find(p => !placed.some(q => p.x-w/2 < q.x+q.w/2+gap && p.x+w/2+gap > q.x-q.w/2 && p.y-h < q.y+gap && p.y+gap > q.y-q.h))
+      if (fit) placed.push({key: item.key, x: fit.x, y: fit.y, w, h})
+    }
+    return placed
   }
 
   // what the page draws: what the host wrote, and, with sample agents on,
@@ -683,6 +890,6 @@
     text, normalizeLang, scriptLang, detectLang, sample, fill, hash, brand,
     state, status, ago, duration, resume,
     context, fmtTokens, today, agents, counts, sorted, groups,
-    demo, merge, redact,
+    demo, merge, redact, layoutTags,
   }
 })()

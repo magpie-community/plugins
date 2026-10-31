@@ -21,6 +21,15 @@
 
 ### Fixed
 
+- Secure the standalone server with per-run capability URLs, validated Host and same-origin JSON writes; reject cross-site data/script access.
+- Scrub hidden rail, list, conversation and closed-panel DOM when text is disabled.
+- Keep stopped 3D renderers stopped across visibility and context restoration; avoid hidden-canvas DPR growth.
+- Execute bundled THREE in renderer tests; batch articulated worker meshes with InstancedMesh, preserve crowd capacity and keep six-scene props clear of seating routes.
+- Refresh Today usage at local midnight, replay full JSONL logs and read Grok's vendor-documented usage sidecar.
+- Recompute time-based states without new log writes; allow clearing No progress sessions, unify rail/list labels and retain alert history across filters.
+- Bound menus and panels to the current CSS viewport; fingerprint static assets to prevent mixing old resources after a same-version update.
+- Translate scene/quality/fallback/venue labels and scope camera shortcuts to a focused canvas.
+
 - Inactive canvas is hidden explicitly, so switching between 3D, ISO and 2D never leaves the previous renderer visible.
 - The grouped rail and menus no longer sit under the agent detail panel.
 - The security test distinguishes the vendored three.js bundle from our own page code; `scene3d.js` still has no network calls.

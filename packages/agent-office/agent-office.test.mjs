@@ -55,12 +55,12 @@ test("a page magpie serves, with a host part and no reads", () => {
   }
   for (const m of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
     if (m[1].startsWith("_magpie/")) continue
-    expect(readdirSync(page)).toContain(m[1])
+    expect(readdirSync(page)).toContain(m[1].split("?")[0])
   }
   for (const f of ["index.html", "style.css", "agents.js", "model.js", "icons.js", "scene.js", "app.js", "icon.svg"]) expect(pkg.files).toContain(`page/${f}`)
   for (const f of ["page/icons", "lib", "office.hooks.mjs", "page/scene3d.js", "page/three.min.js", "bin", "SKILL.md"]) expect(pkg.files).toContain(f)
-  expect(html).toContain('<script src="three.min.js"></script>')
-  expect(html).toContain('<script src="scene3d.js"></script>')
+  expect(html).toMatch(/<script src="three\.min\.js\?v=[a-f0-9]+"><\/script>/)
+  expect(html).toMatch(/<script src="scene3d\.js\?v=[a-f0-9]+"><\/script>/)
   // screenshots are linked from GitHub: an install needs none of them
   expect(pkg.files).not.toContain("docs")
   expect(new Set(pkg.files).size).toBe(pkg.files.length)

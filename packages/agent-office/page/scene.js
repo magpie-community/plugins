@@ -423,6 +423,7 @@
       }
       const down = (e) => {
         if (e.pointerType === "mouse" && e.button !== 0) return
+        c.focus?.({ preventScroll: true })
         const [x, y] = point(e)
         this._ptrs.set(e.pointerId, { x, y })
         c.setPointerCapture?.(e.pointerId)
@@ -476,9 +477,10 @@
       c.addEventListener("pointerup", up)
       c.addEventListener("pointercancel", up)
       c.addEventListener("wheel", (e) => {
-        e.preventDefault?.()
+        const before = this.cam.z
         const [x, y] = point(e)
         this.zoomAt(x, y, Math.exp(-(Number(e.deltaY) || 0) * 0.0018))
+        if (this.cam.z !== before) e.preventDefault?.()
       }, { passive: false })
       // registered before the page's click handler, so a drag stays a drag
       c.addEventListener("click", (e) => {
@@ -489,7 +491,8 @@
       }, true)
       // 0 or Home brings the office back to its fitted view
       this._onKey = (e) => {
-        if (e.defaultPrevented) return
+        if (e.defaultPrevented || !this.running || c.hidden || c.getClientRects?.().length === 0) return
+        if (e.target !== c) return
         const tag = e.target?.tagName
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target?.isContentEditable) return
         if (e.key === "0" || e.key === "Home") { this.resetCamera(); e.preventDefault?.() }
@@ -735,7 +738,7 @@
       g.transform(1, 0.577, 0, 1, 0, 0)
       g.fillStyle = "#1f2937"
       g.fillRect(-this.s * 1.5, -this.s * 0.24, this.s * 3, this.s * 0.48)
-      this.text("ORBITAL STATION 7", 0, 0, Math.max(7, this.s * 0.26), "#e5e7eb", "800")
+      this.text(globalThis.AgentOfficeModel?.text(this.lang)?.stationSign || "ORBITAL STATION 7", 0, 0, Math.max(7, this.s * 0.26), "#e5e7eb", "800")
       g.restore()
     }
 
@@ -1005,7 +1008,7 @@
     labels() {
       for (const a of ACTIVITIES) {
         const [x, y] = this.P(a.x + a.w / 2, a.y + a.d / 2, a.lz)
-        this.text(a.label, x, y, Math.max(7, this.s * 0.14), a.color, "800")
+        this.text(globalThis.AgentOfficeModel?.text(this.lang)?.[({bookshelf:"venueReading",arcade:"venueArcade",meeting:"venueMeeting",pingpong:"venuePingpong",coffee:"venueCoffee"})[a.id]] || a.label, x, y, Math.max(7, this.s * 0.14), a.color, "800")
       }
     }
 

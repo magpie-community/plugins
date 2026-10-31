@@ -196,3 +196,39 @@ test("the page carries the workbench hooks and still reaches no network", () => 
   // the page serves only its own files
   for (const f of readdirSync(page).filter((f) => f.endsWith(".js") && f !== "live.js")) expect(read(f)).toBeTruthy()
 })
+
+test("crowded labels remain disjoint after edge clamping at Retina CSS widths", () => {
+  for (const [width,height] of [[280,180],[520,260],[1100,700]]) {
+    const items=Array.from({length:12},(_,i)=>({key:String(i),x:i%2?2:width-2,y:30+i,w:190,h:22}))
+    const labels=M.layoutTags(items,width,height,12)
+    expect(labels.length).toBeGreaterThan(1)
+    for (let i=0;i<labels.length;i++) {
+      const a=labels[i]
+      expect(a.x-a.w/2).toBeGreaterThanOrEqual(6)
+      expect(a.x+a.w/2).toBeLessThanOrEqual(width-6)
+      expect(a.y-a.h).toBeGreaterThanOrEqual(6)
+      expect(a.y).toBeLessThanOrEqual(height-6)
+      for (const b of labels.slice(i+1)) expect(a.x+a.w/2<=b.x-b.w/2 || b.x+b.w/2<=a.x-a.w/2 || a.y<=b.y-b.h || b.y<=a.y-a.h).toBe(true)
+    }
+  }
+})
+
+test("No progress sessions can be cleared in the default working state until another write", () => {
+  const snap={sessions:[S("tool",{updated:now-11*60e3,touched:now-11*60e3})]}
+  const [a]=M.agents(snap,now,{})
+  expect(a.status).toBe("executing")
+  expect(a.sub).toBe("stuck")
+  expect(M.clearable(a)).toBe(true)
+  expect(M.agents(snap,now,{cleared:{[a.key]:a.at}})).toEqual([])
+  snap.sessions[0].touched=now
+  expect(M.agents(snap,now,{cleared:{[a.key]:a.at}})).toHaveLength(1)
+})
+
+
+test("redaction rejects command-like tool prefixes instead of retaining arbitrary text", () => {
+  const list=[{title:"private",query:"secret",step:"private command with spaces · --token secret"},{title:"private",step:"functions.exec_command · secret"}]
+  const got=M.redact(list)
+  expect(got[0].step).toBe("")
+  expect(got[1].step).toBe("functions.exec_command")
+  expect(JSON.stringify(got)).not.toContain("secret")
+})

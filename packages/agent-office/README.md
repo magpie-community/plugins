@@ -2,7 +2,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/QingJ01/magpie-agent-office)](https://github.com/QingJ01/magpie-agent-office/releases)
 [![magpie ≥ 0.1.1318](https://img.shields.io/badge/magpie-%E2%89%A5%200.1.1318-4f46e5)](https://usemagpie.ai)
-[![Tests](https://img.shields.io/badge/tests-96%20passing-22a35a)](#test)
+[![Tests](https://img.shields.io/badge/tests-128%20passing-22a35a)](#test)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 **一个住在 magpie 窗口里的实时 Agent 办公室。** 直接读取各 Agent 自己的会话记录，把正在思考、执行工具、等待批准或已经完成的工作，变成真 3D 办公室里的小人；也可以切到等距画布、俯视 2D 或分组列表。
@@ -29,6 +29,8 @@ magpie plugin add @magpie-community/page-agent-office
 bun bin/agent-office.mjs          # 本地页面，默认 127.0.0.1:4545
 bun bin/agent-office.mjs --json   # 一次性快照，适合让 Agent 在聊天里汇报
 ```
+
+独立服务会打印带随机访问令牌的完整 URL，请用该 URL 打开；固定的 `/live.js` 和数据 API 不公开。服务拒绝不匹配的 Host、跨站请求和缺少同源 Origin 的写入。端口占用时会报错，可用 `--port 0` 自动选择空闲端口。
 
 仓库也带 `SKILL.md`，可放进 Claude Code / Codex 的 skills 目录，用 `/agent-office` 启动。
 
@@ -170,7 +172,17 @@ bun bin/agent-office.mjs [--port 4545] [--hours 48] [--private] [--json] [--no-o
 bun test
 ```
 
-96 项测试覆盖会话解析（含新客户端）、隐私、路径与朝向、沙发合成、2D 活动点、相机、昼夜、3D API、CLI 与独立服务。浏览器检查在 magpie 0.1.1318 的窗口和独立页面里做过 3D、ISO、2D、列表、场景切换、今日面板和隐私开关。
+128 项测试覆盖会话解析（含新客户端）、隐私、路径与朝向、沙发合成、2D 活动点、相机、昼夜、3D API、CLI 与独立服务。3D 回归测试执行随包 THREE 的真实场景、几何、动画和矩阵路径，仅替换 GPU 边界；另有真实 magpie 页面宿主的浏览器回归脚本 `test/browser.mjs`，覆盖 Retina 窄视口、菜单边界、标签碰撞、切换与关闭文本后的 DOM。
+
+```sh
+# 可选浏览器测试（另行安装 Playwright 与浏览器，先启动 magpie web）
+OFFICE_PLAYWRIGHT=/path/to/playwright/index.mjs \
+OFFICE_HOST_URL="http://127.0.0.1:4571/?k=YOUR_LOCAL_KEY" bun test/browser.mjs
+```
+
+magpie 0.1.2305 的 Web 宿主在 CSP 源地址中省略协议；WebKit 会拒绝加载资源，Chromium 则接受。WebKit 集成检查需显式设置 `OFFICE_NORMALIZE_WEBKIT_CSP=1`，仅在测试响应中补全现有地址的协议，不改变域名、目录白名单或 sandbox。未修改宿主的 WebKit 集成仍受此问题阻塞，不能视为已通过。
+
+修改页面资源后运行 `bun scripts/stamp-page.mjs` 更新内容指纹；`--check` 可验证没有旧指纹。画质切换调整像素比和阴影，抗锯齿在 WebGL 上下文创建时固定。人物使用 InstancedMesh 批量绘制，保留四肢动画与各 Agent 颜色。
 
 ## Prior art
 

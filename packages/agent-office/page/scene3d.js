@@ -201,7 +201,7 @@
       desk: "#8d5a3b", chair: "#6b4226", metal: "#b08968", wood: "#7a4a2b", sofa: "#b45309",
       plant: "#3f8f5a", skyDay: "#ffe1b8", skyNight: "#1a1220", windowDay: "#ffe9c9", windowNight: "#59405f",
       fog: "#1b120b", ambient: "#ffe8c7",
-      props: ["coffee", "cafe", "bookshelf", "sofa2"],
+      props: ["coffee", "cafe", "bookshelf"],
     },
     castle: {
       id: "castle", label: "Castle", note: "stone keep",
@@ -486,7 +486,7 @@
       const kind = spotKindForStatus(a.status)
       const order = [kind, ...(FALLBACKS[kind] || [])]
       let found = null
-      for (const k of order) {
+      for (const k of [...new Set([...order, ...Object.keys(POOLS)])]) {
         const pool = POOLS[k]
         if (!pool) continue
         const start = hashKey(a.key) % pool.length
@@ -538,7 +538,7 @@
     this.width = 0
     this.height = 0
     this.zoom = clampZoom(o.zoom == null ? 1.05 : o.zoom)
-    this.azimuth = wrapAzimuth(o.azimuth == null ? 0.82 : o.azimuth)
+    this.azimuth = clamp(wrapAzimuth(o.azimuth == null ? 0.82 : o.azimuth), 0.12, Math.PI / 2 - 0.12)
     this.polar = clampPolar(o.polar == null ? 0.96 : o.polar)
     this.selected = null
     this.agents = []
@@ -548,9 +548,12 @@
     this._listeners = []
     this._raf = null
     this._last = 0
+    this._frameGeneration = 0
     this._timeAcc = 0
     this._anim = 0
-    this._hidden = false
+    this._hidden = !!(global.document && global.document.hidden)
+    this._enabled = true
+    this._contextLost = false
     this._sharedGeo = new Set()
     this._sharedMat = new Set()
     this._envGeo = new Set()
@@ -558,7 +561,6 @@
     this._envTex = new Set()
     this._matCache = new Map()
     this._v = THREE ? new THREE.Vector3() : null
-    this._noop = () => {}
     this.onFrame = typeof o.onFrame === "function" ? o.onFrame : null
     this.dragged = false
     if (!this.canvas || !THREE || !THREE.WebGLRenderer) return
@@ -570,8 +572,7 @@
     } catch (err) {
       this.error = err instanceof Error ? err : new Error(String(err))
       this.available = false
-      this._stop()
-      this._teardown()
+      this.dispose()
     }
   }
 
@@ -580,7 +581,8 @@
     const canvas = this.canvas
     if (typeof canvas.getContext !== "function") throw new Error("no canvas context")
     this.renderer = new T.WebGLRenderer({
-      canvas, antialias: this.quality !== "low", alpha: false, powerPreference: "high-performance",
+      // Context antialiasing is fixed at creation; live quality changes DPR and shadows.
+      canvas, antialias: true, alpha: false, powerPreference: "high-performance",
     })
     if (!this.renderer || !this.renderer.getContext || !this.renderer.getContext()) throw new Error("no WebGL context")
     this.available = true
@@ -598,6 +600,9 @@
     this.camera = new T.OrthographicCamera(-8, 8, 5, -5, 0.1, 120)
     this.target = new T.Vector3(ROOM.w / 2, 0.75, ROOM.d / 2)
     this._buildSharedGeometry()
+    this._workerBatches = new Map()
+    this._workerMatrix = new T.Matrix4()
+    this._workerInverse = new T.Matrix4()
     this._screenMat = null
     this._buildEnvironment()
     this._bind()
@@ -726,6 +731,7 @@
     this.env = env
     this.scene.add(env)
     this._textures = {}
+    this._decorations = []
     this._screenMat = null
     this._windowMats = []
     this._lights = {}
@@ -740,10 +746,71 @@
       if (seen.has(prop)) continue
       seen.add(prop)
       const fn = this._propBuilders[prop]
-      if (fn) fn.call(this, env, theme)
+      if (fn) {
+        const props = new T.Group()
+        props.name = "props:" + prop
+        env.add(props)
+        fn.call(this, props, theme)
+        // These fixtures already occupy the reserved furniture footprints.
+        if (!["coffee", "pingpong", "bookshelf", "arcade", "whiteboard", "banners"].includes(prop)) {
+          for (const object of props.children) this._placeDecoration(object)
+        }
+      }
     }
     this._buildLights(env, theme)
     this._applyTime()
+  }
+
+  // Decorations use the same reserved seats and aisles in every theme. Keep
+  // their body-height footprint clear instead of adding invisible obstructions
+  // to routes that workers already follow.
+  AgentOfficeScene3D.prototype._placeDecoration = function (object) {
+    this.env.updateMatrixWorld(true)
+    const bounds = new THREE.Box3()
+    object.traverse((mesh) => {
+      if (!mesh.isMesh) return
+      const b = new THREE.Box3().setFromObject(mesh)
+      if (b.max.y > 0.06 && b.min.y < 1.7) bounds.union(b)
+    })
+    if (bounds.isEmpty()) return
+    const original = object.position.clone()
+    const cx = (bounds.min.x + bounds.max.x) / 2
+    const cz = (bounds.min.z + bounds.max.z) / 2
+    const halfX = (bounds.max.x - bounds.min.x) / 2
+    const halfZ = (bounds.max.z - bounds.min.z) / 2
+    const overlaps = (a, b, pad) => a[0] < b[2] + pad && a[2] > b[0] - pad && a[1] < b[3] + pad && a[3] > b[1] - pad
+    const clear = (b) => {
+      if (b[0] < 0.3 || b[1] < 0.3 || b[2] > ROOM.w - 0.3 || b[3] > ROOM.d - 0.3) return false
+      for (const f of BLOCKERS) if (overlaps(b, [f[0], f[1], f[0] + f[2], f[1] + f[3]], 0.12)) return false
+      for (const f of this._decorations) if (overlaps(b, f, 0.12)) return false
+      for (const pool of Object.values(SPOTS)) for (const spot of pool) {
+        const route = spot.route
+        for (let i = 0; i < route.length - 1; i++) {
+          const a = route[i], c = route[i + 1]
+          const n = Math.max(1, Math.ceil(Math.hypot(c[0] - a[0], c[1] - a[1]) / 0.15))
+          for (let j = 0; j <= n; j++) {
+            const x = a[0] + (c[0] - a[0]) * j / n, z = a[1] + (c[1] - a[1]) * j / n
+            if (x > b[0] - 0.32 && x < b[2] + 0.32 && z > b[1] - 0.32 && z < b[3] + 0.32) return false
+          }
+        }
+      }
+      return true
+    }
+    const candidates = [[cx, cz]]
+    for (let z = 0.6; z < ROOM.d - 0.5; z += 0.3) for (let x = 0.6; x < ROOM.w - 0.5; x += 0.3) candidates.push([x, z])
+    candidates.sort((a, b) => Math.hypot(a[0] - cx, a[1] - cz) - Math.hypot(b[0] - cx, b[1] - cz))
+    for (const scale of [1, 0.85, 0.7, 0.55]) for (const [x, z] of candidates) {
+      const b = [x - halfX * scale, z - halfZ * scale, x + halfX * scale, z + halfZ * scale]
+      if (!clear(b)) continue
+      object.scale.multiplyScalar(scale)
+      object.position.x = x + (original.x - cx) * scale
+      object.position.z = z + (original.z - cz) * scale
+      this._decorations.push(b)
+      object.userData.decoration = true
+      return
+    }
+    // An optional ornament may be omitted when no safe footprint remains.
+    object.visible = false
   }
 
   AgentOfficeScene3D.prototype._disposeEnv = function () {
@@ -1090,11 +1157,7 @@
     // rug under the lounge
     this._box(env, mixColor(theme.accent, theme.floor, 0.72), 3.5, 0.012, 7.0, 4.4, 0.02, 4.6, { cast: false })
     this._box(env, mixColor(theme.accent, theme.floor, 0.55), 3.5, 0.016, 7.0, 3.9, 0.02, 4.1, { cast: false })
-    // low table
-    this._box(env, theme.wood, 3.5, 0.3, 7.0, 1.4, 0.08, 0.8)
-    for (const x of [-0.55, 0.55]) for (const z of [-0.28, 0.28]) this._box(env, darken(theme.wood, 0.3), 3.5 + x, 0.15, 7.0 + z, 0.07, 0.3, 0.07)
-    this._cyl(env, "#f8fafc", 3.3, 0.38, 7.0, 0.09, 0.06)
-    this._box(env, theme.accent, 3.8, 0.36, 7.0, 0.3, 0.025, 0.22, { cast: false })
+    // Keep the lounge aisle clear for workers moving to the waiting area.
   }
 
   AgentOfficeScene3D.prototype._buildBaseProps = function (env, theme) {
@@ -1128,6 +1191,7 @@
       const y = 0.75 + rand() * 0.5
       this._ico(g, mixColor(theme.plant, i % 2 ? "#ffffff" : "#000000", i % 2 ? 0.12 : 0.12), Math.cos(a) * r, y, Math.sin(a) * r, 0.16 + rand() * 0.12, { cast: false })
     }
+    if (parent === this.env) this._placeDecoration(g)
   }
 
   AgentOfficeScene3D.prototype._propBuilders = {}
@@ -1304,6 +1368,8 @@
     for (let i = 0; i < 5; i++) this._cyl(g, ["#f59e0b", "#f8fafc", "#38bdf8", "#ef4444", "#10b981"][i], 14.5, 1.08, 5.1 + i * 0.28, 0.09, 0.1)
     // two round tables with stools
     for (const [x, z] of [[5.0, 4.45], [7.5, 5.3]]) {
+      const g = new THREE.Group()
+      env.add(g)
       this._cyl(g, theme.wood, x, 0.72, z, 0.55, 0.08)
       this._cyl(g, darken(theme.metal, 0.4), x, 0.36, z, 0.07, 0.72)
       this._cyl(g, darken(theme.metal, 0.4), x, 0.03, z, 0.3, 0.06)
@@ -1317,11 +1383,9 @@
     // string lights across the room
     for (let i = 0; i < 9; i++) {
       const x = 2.2 + i * 1.45
-      this._sphere(g, "#ffe6a3", x, 2.65 + Math.sin(i * 1.3) * 0.08, 7.4, 0.07, { emissive: "#ffd27a", ei: 1.4, cast: false })
+      this._sphere(env, "#ffe6a3", x, 2.65 + Math.sin(i * 1.3) * 0.08, 7.4, 0.07, { emissive: "#ffd27a", ei: 1.4, cast: false })
     }
   }
-
-  AgentOfficeScene3D.prototype._propBuilders.sofa2 = function () {}
 
   AgentOfficeScene3D.prototype._propBuilders.throne = function (env, theme) {
     const g = new THREE.Group()
@@ -1500,7 +1564,7 @@
     return "hsl(" + h + " 58% 46%)"
   }
 
-  AgentOfficeScene3D.prototype._makeWorker = function (a, spot) {
+  AgentOfficeScene3D.prototype._makeWorker = function (a) {
     const T = THREE
     const group = new T.Group()
     group.name = "worker:" + a.key
@@ -1528,7 +1592,6 @@
     // badge with the status colour
     const badge = this._box(group, "#ffffff", 0.13, 0.96, 0.145, 0.1, 0.07, 0.02, { cast: false })
     parts.badge = badge
-    parts.badgeMat = badge.material
     this._box(group, darken(clothing, 0.35), 0, 1.12, 0, 0.46, 0.08, 0.24)
 
     parts.armL = new T.Group()
@@ -1556,13 +1619,66 @@
 
     group.position.set(ENTRY[0], 0, ENTRY[1])
     group.rotation.y = 0
+    // Keep the articulated graph for poses and CPU interactions. Only the
+    // instance batches render; invisible objects still update matrixWorld.
+    const meshes = []
+    group.traverse((mesh) => { if (mesh.isMesh) meshes.push(mesh) })
+    group.visible = false
     this.workerGroup.add(group)
-    return { group, parts }
+    return { group, parts, meshes }
+  }
+
+  AgentOfficeScene3D.prototype._syncWorkerInstances = function () {
+    const buckets = new Map()
+    this.workerGroup.updateMatrixWorld(true)
+    this._workerInverse.copy(this.workerGroup.matrixWorld).invert()
+    for (const rt of this._map.values()) {
+      for (const mesh of rt.meshes) {
+        const badge = mesh === rt.parts.badge
+        // Status badges retain their exact emissive material. Body colors
+        // multiply a white standard material through the instance color.
+        const key = badge ? "badge:" + mesh.material.color.getHexString() : (mesh.castShadow ? "body" : "detail")
+        let bucket = buckets.get(key)
+        if (!bucket) {
+          bucket = { meshes: [], material: badge ? mesh.material : this._mat("#ffffff"), cast: mesh.castShadow }
+          buckets.set(key, bucket)
+        }
+        bucket.meshes.push(mesh)
+      }
+    }
+    for (const batch of this._workerBatches.values()) { batch.count = 0; batch.visible = false }
+    for (const [key, bucket] of buckets) {
+      let batch = this._workerBatches.get(key)
+      if (!batch || batch.instanceMatrix.count < bucket.meshes.length) {
+        const capacity = Math.max(32, 2 ** Math.ceil(Math.log2(bucket.meshes.length)))
+        if (batch) { this.workerGroup.remove(batch); batch.dispose() }
+        batch = new THREE.InstancedMesh(this.gBox, bucket.material, capacity)
+        batch.name = "worker-batch:" + key
+        batch.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+        batch.castShadow = bucket.cast
+        batch.receiveShadow = true
+        // Walkers and departures move every frame; stale aggregate bounds
+        // must never cull their bodies or shadows.
+        batch.frustumCulled = false
+        this.workerGroup.add(batch)
+        this._workerBatches.set(key, batch)
+      }
+      batch.count = bucket.meshes.length
+      batch.visible = true
+      for (let i = 0; i < bucket.meshes.length; i++) {
+        const mesh = bucket.meshes[i]
+        this._workerMatrix.multiplyMatrices(this._workerInverse, mesh.matrixWorld)
+        batch.setMatrixAt(i, this._workerMatrix)
+        if (!key.startsWith("badge:")) batch.setColorAt(i, mesh.material.color)
+      }
+      batch.instanceMatrix.needsUpdate = true
+      if (batch.instanceColor) batch.instanceColor.needsUpdate = true
+    }
   }
 
   AgentOfficeScene3D.prototype._freeSpot = function (kind, key, current) {
     const order = [kind, ...(FALLBACKS[kind] || [])]
-    for (const k of order) {
+    for (const k of [...new Set([...order, ...Object.keys(POOLS)])]) {
       const pool = POOLS[k]
       if (!pool) continue
       const start = hashKey(key) % pool.length
@@ -1608,7 +1724,7 @@
     rt.route = null
     rt.walkIndex = 0
     rt.walkT = 0
-    this._setPose(rt, true)
+    this._setPose(rt)
   }
 
   AgentOfficeScene3D.prototype._startRoute = function (rt, route) {
@@ -1620,7 +1736,7 @@
     rt.group.position.y = 0
   }
 
-  AgentOfficeScene3D.prototype._setPose = function (rt, force) {
+  AgentOfficeScene3D.prototype._setPose = function (rt) {
     const p = rt.parts
     if (!p) return
     if (rt.mode === "walk") return
@@ -1660,10 +1776,9 @@
       p.head.rotation.x = 0
     }
     p.head.rotation.z = 0
-    if (force) return
   }
 
-  AgentOfficeScene3D.prototype._animate = function (rt, dt) {
+  AgentOfficeScene3D.prototype._animate = function (rt) {
     const p = rt.parts
     if (!p) return
     const t = this._anim
@@ -1744,16 +1859,17 @@
     this.agents = arr
     this._pending = arr
     if (!this.available || !this.scene) return this
-    const present = new Set()
+    const present = new Set(arr.map((a) => a.key))
+    // Departing workers release reservations before replacements are seated.
+    for (const [key, rt] of this._map) if (!present.has(key)) this._takeSpot(rt, null)
     for (const a of arr) {
-      present.add(a.key)
       let rt = this._map.get(a.key)
       if (!rt) {
         const kind = spotKindForStatus(a.status)
         const spot = this._freeSpot(kind, a.key, null)
-        const made = this._makeWorker(a, spot)
+        const made = this._makeWorker(a)
         rt = {
-          key: a.key, data: a, group: made.group, parts: made.parts,
+          key: a.key, data: a, group: made.group, parts: made.parts, meshes: made.meshes,
           pos: { x: ENTRY[0], z: ENTRY[1] }, spot: null, kind: null,
           route: null, walkIndex: 0, walkT: 0, speed: 2.1 + (hashKey(a.key) % 30) / 100,
           mode: "walk", phase: (hashKey(a.key) % 100) / 18, leaving: false, at: this._anim,
@@ -1771,6 +1887,7 @@
         rt.data = a
         rt.leaving = false
         rt.group.scale.setScalar(1)
+        rt.fade = 1
         // status changes pick a new kind of seat, but keep the same seat otherwise
         const kind = spotKindForStatus(a.status)
         if (wasLeaving) {
@@ -1800,6 +1917,7 @@
       this._startRoute(rt, route)
       rt.exitAt = this._anim + 8
     }
+    this._syncWorkerInstances()
     return this
   }
 
@@ -1813,8 +1931,7 @@
     for (const rt of this._map.values()) {
       if (!rt.group) continue
       if (rt.mode === "walk") this._walk(rt, dt)
-      if (rt.mode === "walk") this._animate(rt, dt)
-      else this._animate(rt, dt)
+      this._animate(rt)
       if (rt.leaving && !rt.route && rt.mode !== "walk") {
         rt.fade = (rt.fade == null ? 1 : rt.fade) - dt * 2.2
         rt.group.scale.setScalar(Math.max(0.001, rt.fade * 0.7 + 0.3))
@@ -1829,6 +1946,7 @@
       this._map.delete(key)
       if (this.selected === key) this.selected = null
     }
+    this._syncWorkerInstances()
     if (this._ring) {
       const rt = this.selected ? this._map.get(this.selected) : null
       this._ring.visible = !!rt
@@ -1875,8 +1993,8 @@
         h = Math.round(r.height)
       }
       if (!w || !h) { w = this.canvas.clientWidth || 0; h = this.canvas.clientHeight || 0 }
-      if (!w || !h) { w = this.canvas.width || 800; h = this.canvas.height || 600 }
-    } catch (err) { w = 800; h = 600 }
+      if (!w || !h) { w = this.width || 800; h = this.height || 600 }
+    } catch (err) { w = this.width || 800; h = this.height || 600 }
     this.width = w
     this.height = h
     try {
@@ -1894,35 +2012,63 @@
       target.addEventListener(type, fn, opts)
       this._listeners.push([target, type, fn, opts])
     }
+    this._pointers = new Map()
+    this._touchAction = canvas.style.touchAction
+    canvas.style.touchAction = "none"
     this._onDown = (e) => {
       if (e.button != null && e.button !== 0) return
+      if (!this._enabled || this._contextLost) return
+      this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (this._pointers.size === 2) {
+        const [a, b] = this._pointers.values()
+        this._pinch = Math.hypot(a.x - b.x, a.y - b.y)
+        this.dragged = true
+      }
       this._drag = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false }
-      this.dragged = false
+      if (this._pointers.size === 1) this.dragged = false
       if (canvas.setPointerCapture && e.pointerId != null) { try { canvas.setPointerCapture(e.pointerId) } catch (err) { /* noop */ } }
       canvas.style.cursor = "grabbing"
     }
     this._onMove = (e) => {
+      if (!this._enabled || this._contextLost) return
+      if (this._pointers.has(e.pointerId)) this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (this._pointers.size >= 2) {
+        const [a, b] = this._pointers.values()
+        const distance = Math.hypot(a.x - b.x, a.y - b.y)
+        if (this._pinch > 0 && distance > 0) this.setZoom(this.zoom * distance / this._pinch)
+        this._pinch = distance
+        this.dragged = true
+        if (this._drag) this._drag.moved = true
+        return
+      }
       if (!this._drag || (this._drag.id != null && e.pointerId != null && this._drag.id !== e.pointerId)) return
       const dx = e.clientX - this._drag.x
       const dy = e.clientY - this._drag.y
       this._drag.x = e.clientX
       this._drag.y = e.clientY
       if (Math.abs(dx) + Math.abs(dy) > 0) this._drag.moved = true
-      this.azimuth = wrapAzimuth(this.azimuth - dx * 0.007)
+      this.azimuth = clamp(this.azimuth - dx * 0.007, 0.12, Math.PI / 2 - 0.12)
       this.polar = clampPolar(this.polar + dy * 0.006)
       this._applyCamera()
     }
     this._onUp = (e) => {
       if (!this._drag) return
-      this.dragged = this._drag.moved === true
-      this._drag = null
+      this.dragged = this.dragged || this._drag.moved === true
+      this._pointers.delete(e.pointerId)
+      this._pinch = 0
+      const remaining = this._pointers.entries().next().value
+      this._drag = remaining ? { id: remaining[0], x: remaining[1].x, y: remaining[1].y, moved: true } : null
       canvas.style.cursor = "grab"
       if (canvas.releasePointerCapture && e && e.pointerId != null) { try { canvas.releasePointerCapture(e.pointerId) } catch (err) { /* noop */ } }
     }
     this._onWheel = (e) => {
+      if (!this._enabled || this._contextLost) return
+      const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.height : 1)
+      if (!isFinite(dy)) return
+      const zoom = clampZoom(this.zoom * Math.exp(-dy * 0.0012))
+      if (zoom === this.zoom) return
       if (e.cancelable) e.preventDefault()
-      const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY
-      this.zoom = clampZoom(this.zoom * Math.exp(-dy * 0.0012))
+      this.zoom = zoom
       this._applyCamera()
     }
     this._onDouble = () => {
@@ -1931,6 +2077,18 @@
       this.zoom = 1.05
       this._applyCamera()
     }
+    add(canvas, "webglcontextlost", (e) => {
+      if (e.cancelable) e.preventDefault()
+      this._contextLost = true
+      this._stop()
+    })
+    add(canvas, "webglcontextrestored", () => {
+      if (this.disposed) return
+      this._contextLost = false
+      this.error = null
+      this.resize()
+      this._start()
+    })
     add(canvas, "pointerdown", this._onDown)
     add(canvas, "pointermove", this._onMove)
     add(canvas, "pointerup", this._onUp)
@@ -1962,12 +2120,14 @@
   }
 
   AgentOfficeScene3D.prototype._start = function () {
-    if (!this.available || this.disposed || this._raf != null || this._hidden) return this
+    if (!this.available || this.disposed || !this._enabled || this._contextLost || this._raf != null || this._hidden) return this
     if (typeof global.requestAnimationFrame !== "function") return this
     this._last = 0
+    const generation = ++this._frameGeneration
     const tick = (now) => {
+      if (generation !== this._frameGeneration) return
       this._raf = null
-      if (!this.available || this.disposed || this._hidden) return
+      if (!this.available || this.disposed || !this._enabled || this._contextLost || this._hidden) return
       this._raf = global.requestAnimationFrame(tick)
       if (!this._last) this._last = now
       const dt = Math.min(0.05, (now - this._last) / 1000)
@@ -1976,7 +2136,14 @@
       this._timeAcc += dt
       if (this._timeAcc > 25) { this._timeAcc = 0; this.refreshTime() }
       this._updateWorkers(dt)
-      if (this.renderer && this.scene && this.camera) this.renderer.render(this.scene, this.camera)
+      if (this.renderer && this.scene && this.camera) {
+        try { this.renderer.render(this.scene, this.camera) }
+        catch (err) {
+          this.error = err instanceof Error ? err : new Error(String(err))
+          this._stop()
+          return
+        }
+      }
       if (this.onFrame) { try { this.onFrame(this.anchors()) } catch (err) { /* a broken tag must not stop the office */ } }
     }
     this._raf = global.requestAnimationFrame(tick)
@@ -1984,6 +2151,11 @@
   }
 
   AgentOfficeScene3D.prototype._stop = function () {
+    this._frameGeneration++
+    this._drag = null
+    this._pinch = 0
+    if (this.canvas && this.canvas.style) this.canvas.style.cursor = "grab"
+    if (this._pointers) this._pointers.clear()
     if (this._raf != null && typeof global.cancelAnimationFrame === "function") {
       global.cancelAnimationFrame(this._raf)
     }
@@ -2033,8 +2205,8 @@
     return this
   }
 
-  AgentOfficeScene3D.prototype.start = function () { return this._start() }
-  AgentOfficeScene3D.prototype.stop = function () { return this._stop() }
+  AgentOfficeScene3D.prototype.start = function () { this._enabled = true; return this._start() }
+  AgentOfficeScene3D.prototype.stop = function () { this._enabled = false; return this._stop() }
   AgentOfficeScene3D.prototype.setDim = function () { return this }
 
   // what the pointer is over: the box around a worker's body, not the tag
@@ -2080,6 +2252,18 @@
       try { target.removeEventListener(type, fn, opts) } catch (err) { /* noop */ }
     }
     this._listeners.length = 0
+    if (this.canvas && this.canvas.style && this._touchAction !== undefined) this.canvas.style.touchAction = this._touchAction
+    if (this._pointers) this._pointers.clear()
+    if (this._workerBatches) {
+      for (const batch of this._workerBatches.values()) batch.dispose()
+      this._workerBatches.clear()
+    }
+    if (this.workerGroup) {
+      this.workerGroup.clear()
+      if (this.scene) this.scene.remove(this.workerGroup)
+      this.workerGroup = null
+    }
+    this._workerMatrix = this._workerInverse = null
     this._map.clear()
     this._taken.clear()
     for (const g of this._sharedGeo) { try { g.dispose() } catch (err) { /* noop */ } }

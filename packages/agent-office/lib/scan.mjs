@@ -1,30 +1,22 @@
-// Finds the session files each agent writes, in each agent's own folder,
-// and reads the ones that changed: whole when new, then only what was
-// appended. readers.mjs turns the text into a session's facts.
-//
-// Cheap on purpose: it runs every second or two while magpie is open. A
-// folder is listed only for files changed in the last `days`; a file is
-// read again only when its size or time moved; a big file is read from its
-// tail (a turn's state is in its last lines, and the start of the file —
-// the session header, its first prompt — is read once and kept).
+// Finds the session files each agent writes and replays changed logs.
+// JSONL is read in chunks, keeping every event (including today's usage)
+// without retaining a whole large log in memory. Unchanged facts are cached;
+// their calendar-day counters are refreshed on every scan.
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
-import { readClaude, readCodex, readCopilot, readDsh, readGemini, readGrok, readKimi, readPi } from "./readers.mjs"
+import { StringDecoder } from "node:string_decoder"
+import { finalizeUsage, readClaude, readCodex, readCopilot, readDsh, readGemini, readGrok, readKimi, readPi } from "./readers.mjs"
 
-const HEAD = 64 * 1024 // what is kept of a file's start: its header, its first prompt
-const TAIL = 512 * 1024 // what is read of a big file's end
-// Kimi and Grok need every event (a tool still open can be far from the end),
-// so a file up to this size is replayed whole; past it the head/tail read
-// keeps a tick from stalling on a pathological log.
-const REPLAY_MAX = 32 * 1024 * 1024
+const READ_CHUNK = 64 * 1024
 // A dsh session is one compressed file that is rewritten on every step, so
 // decoding all of it each 1.5 s tick is wasteful while it is being written.
 // The cap keeps a pathological file from stalling a tick, and an active one
 // is decoded at most once every ZSTD_EVERY: its last facts stand meanwhile.
 const ZSTD_MAX = 8 * 1024 * 1024
 const ZSTD_EVERY = 4000
-const META_MAX = 256 * 1024 // a state.json / summary.json is small; never read more
+const META_MAX = 256 * 1024 // state.json / summary.json remain small
+const USAGE_MAX = 32 * 1024 * 1024 // usage.json grows with every recorded turn
 // Claude Code keeps one file per running process, <config>/sessions/<pid>.json.
 // A mid-turn session with no live process has stopped, even when the file
 // ends before a turn-ending event: `claude -p` killed from another agent.
@@ -35,10 +27,9 @@ function env(k) { return (process.env[k] || "").trim() }
 function home(...p) { return join(env("HOME") || homedir(), ...p) }
 function expand(p) { return p.startsWith("~/") ? home(p.slice(2)) : p }
 
-// an agent's home may be overridden by a *_HOME or *_CONFIG_DIR variable
-function agentHome(homeVar, configVar, ...fallback) {
+// Use the agent's own home variable, without inventing CONFIG_DIR aliases.
+function agentHome(homeVar, ...fallback) {
   if (env(homeVar)) return expand(env(homeVar))
-  if (configVar && env(configVar)) return expand(env(configVar))
   return home(...fallback)
 }
 
@@ -57,18 +48,19 @@ function ompProfiles(omp) {
 // where each agent keeps its sessions: { agent, kind, root, depth, match }
 // depth: how many folders down from root the files sit
 export function sources() {
-  const claude = agentHome("CLAUDE_CONFIG_DIR", "", ".claude")
-  const codex = agentHome("CODEX_HOME", "", ".codex")
-  const dsh = agentHome("DSH_HOME", "", ".dsh")
+  // Vendor-documented: https://code.claude.com/docs/en/settings#find-or-create-your-settings-files
+  const claude = agentHome("CLAUDE_CONFIG_DIR", ".claude")
+  const codex = agentHome("CODEX_HOME", ".codex")
+  const dsh = agentHome("DSH_HOME", ".dsh")
   const pi = env("PI_CODING_AGENT_DIR") ? expand(env("PI_CODING_AGENT_DIR")) : home(".pi", "agent")
-  const omp = agentHome("OMP_HOME", "OMP_CONFIG_DIR", ".omp")
-  const kimi = agentHome("KIMI_CODE_HOME", "KIMI_CONFIG_DIR", ".kimi-code")
-  const grok = agentHome("GROK_HOME", "GROK_CONFIG_DIR", ".grok")
-  const copilot = agentHome("COPILOT_HOME", "COPILOT_CONFIG_DIR", ".copilot")
-  const qoder = agentHome("QODER_CONFIG_DIR", "", ".qoder")
-  const qodercn = agentHome("QODERCN_CONFIG_DIR", "", ".qoder-cn")
-  const workbuddy = agentHome("WORKBUDDY_CONFIG_DIR", "", ".workbuddy")
-  const codebuddy = agentHome("CODEBUDDY_CONFIG_DIR", "", ".codebuddy")
+  const omp = agentHome("OMP_HOME", ".omp")
+  const kimi = agentHome("KIMI_CODE_HOME", ".kimi-code")
+  const grok = agentHome("GROK_HOME", ".grok")
+  const copilot = agentHome("COPILOT_HOME", ".copilot")
+  const qoder = home(".qoder")
+  const qodercn = home(".qoder-cn")
+  const workbuddy = home(".workbuddy")
+  const codebuddy = home(".codebuddy")
   const jsonl = (n) => n.endsWith(".jsonl")
   const srcs = [
     { agent: "claude", kind: "claude", root: join(claude, "projects"), depth: 1, match: jsonl, live: join(claude, "sessions") },
@@ -82,7 +74,7 @@ export function sources() {
     { agent: "omp", kind: "pi", root: join(omp, "agent", "sessions"), depth: 1, match: jsonl },
     ...ompProfiles(omp),
     { agent: "kimi", kind: "kimi", root: join(kimi, "sessions"), depth: 4, match: (n) => n === "wire.jsonl", meta: (p) => join(dirname(dirname(dirname(p))), "state.json") },
-    { agent: "grok", kind: "grok", root: join(grok, "sessions"), depth: 2, match: (n) => n === "updates.jsonl", meta: (p) => join(dirname(p), "summary.json") },
+    { agent: "grok", kind: "grok", root: join(grok, "sessions"), depth: 2, match: (n) => n === "updates.jsonl", meta: (p) => join(dirname(p), "summary.json"), usage: (p) => join(dirname(p), "usage.json") },
     { agent: "copilot", kind: "copilot", root: join(copilot, "session-state"), depth: 1, match: (n) => n === "events.jsonl" },
     { agent: "qoder", kind: "claude", root: join(qoder, "projects"), depth: 1, match: jsonl, live: join(qoder, "sessions") },
     { agent: "qoder-cn", kind: "claude", root: join(qodercn, "projects"), depth: 1, match: jsonl, live: join(qodercn, "sessions") },
@@ -110,12 +102,28 @@ function walk(root, depth, match, since, out) {
   }
 }
 
-function readRange(path, from, len) {
+function* readLines(path, size) {
   const fd = openSync(path, "r")
+  const decoder = new StringDecoder("utf8")
+  const buf = Buffer.alloc(READ_CHUNK)
+  let rest = ""
+  let pos = 0
   try {
-    const b = Buffer.alloc(len)
-    const n = readSync(fd, b, 0, len, from)
-    return b.subarray(0, n).toString("utf8")
+    while (pos < size) {
+      const n = readSync(fd, buf, 0, Math.min(buf.length, size - pos), pos)
+      if (!n) break
+      pos += n
+      rest += decoder.write(buf.subarray(0, n))
+      let start = 0
+      let end
+      while ((end = rest.indexOf("\n", start)) >= 0) {
+        yield rest.slice(start, end)
+        start = end + 1
+      }
+      rest = rest.slice(start)
+    }
+    rest += decoder.end()
+    if (rest) yield rest
   } finally { closeSync(fd) }
 }
 
@@ -178,7 +186,7 @@ function readerFor(kind, agent, src = {}) {
     case "pi": return (t, id, meta, now) => readPi(t, agent, id, { now })
     case "copilot": return (t, id, meta, now) => readCopilot(t, id, { now })
     case "kimi": return (t, id, meta, now) => readKimi(t, id, meta, { now })
-    case "grok": return (t, id, meta, now) => readGrok(t, id, meta, { now })
+    case "grok": return (t, id, meta, now, usage) => readGrok(t, id, meta, { now, usage })
   }
 }
 
@@ -204,14 +212,24 @@ function parentOf(src, path, id) {
 }
 
 // state.json / summary.json, bounded: a broken or huge one is simply ignored
-function readMeta(src, path) {
-  if (typeof src.meta !== "function") return null
+function readMeta(src, path, field = "meta") {
+  if (typeof src[field] !== "function") return null
   try {
-    const file = src.meta(path)
+    const file = src[field](path)
     const st = statSync(file)
-    if (!st.isFile() || st.size > META_MAX) return null
+    if (!st.isFile() || st.size > (field === "usage" ? USAGE_MAX : META_MAX)) return null
     return JSON.parse(readFileSync(file, "utf8"))
   } catch { return null }
+}
+
+function sidecars(src, path) {
+  return ["meta", "usage"].map((field) => {
+    if (typeof src[field] !== "function") return ""
+    try {
+      const st = statSync(src[field](path))
+      return `${st.size}:${st.mtimeMs}:${st.ctimeMs}`
+    } catch { return "missing" }
+  }).join("|")
 }
 
 // Codex names a thread in session_index.jsonl ({id, thread_name}), the
@@ -253,22 +271,23 @@ export function createScanner(opts = {}) {
     let titles = null
     for (const f of keep) {
       let c = files.get(f.path)
-      const changed = !c || c.size !== f.size || c.mtime !== f.mtime
+      const metadata = sidecars(f.src, f.path)
+      const changed = !c || c.size !== f.size || c.mtime !== f.mtime || c.metadata !== metadata
       if (changed) {
         const zstd = f.path.endsWith(".zstd")
-        // decode an active compressed session at most once every
-        // zstdEvery ms; its file time still says it is at work
+        // Leave size/mtime at the last decoded revision while throttled, so
+        // a final write is still decoded after the throttle interval elapses.
         if (zstd && c?.session && now - (c.decodedAt || 0) < o.zstdEvery) {
-          c.size = f.size
-          c.mtime = f.mtime
           c.session.touched = Math.max(c.session.touched || 0, f.mtime)
         } else {
           try { c = readOne(f, c, now) } catch (e) { continue }
+          c.metadata = metadata
           files.set(f.path, c)
         }
       }
       if (!c.session) continue
       const s = c.session
+      finalizeUsage(s, now)
       if (s.agent === "codex") {
         titles ??= codexTitles()
         const t = titles.get(s.id)
@@ -288,31 +307,20 @@ export function createScanner(opts = {}) {
     const read = readerFor(f.src.kind, f.src.agent, f.src)
     const id = idOf(f.src, f.path)
     const meta = readMeta(f.src, f.path)
+    const usage = readMeta(f.src, f.path, "usage")
     let text
     if (f.path.endsWith(".zstd")) {
       if (f.size > o.zstdMax) return { size: f.size, mtime: f.mtime, session: was?.session || null, decodedAt: now }
       text = zstd(f.path)
-      const s = read(text, id, meta, now)
-      s.path = f.path
-      return { size: f.size, mtime: f.mtime, session: finish(s, f), decodedAt: now }
-    } else if ((f.src.kind === "kimi" || f.src.kind === "grok") && f.size <= REPLAY_MAX) {
-      // every event matters: a tool still open may be far from the end
-      text = readRange(f.path, 0, f.size)
-    } else if (f.size <= HEAD + TAIL) {
-      text = readRange(f.path, 0, f.size)
+    } else if (f.src.kind === "gemini" && f.path.endsWith(".json")) {
+      // Gemini's .json format is a single document, not an event log.
+      text = readFileSync(f.path, "utf8")
     } else {
-      // the start once (header, first prompt), and the end every time
-      const head = was?.head ?? readRange(f.path, 0, HEAD)
-      let tail = readRange(f.path, f.size - TAIL, TAIL)
-      tail = tail.slice(tail.indexOf("\n") + 1)
-      text = head.slice(0, head.lastIndexOf("\n") + 1) + tail
-      const s = read(text, id, meta, now)
-      s.path = f.path
-      return { size: f.size, mtime: f.mtime, head, session: finish(s, f) }
+      text = readLines(f.path, f.size)
     }
-    const s = read(text, id, meta, now)
+    const s = read(text, id, meta, now, usage)
     s.path = f.path
-    return { size: f.size, mtime: f.mtime, session: finish(s, f) }
+    return { size: f.size, mtime: f.mtime, session: finish(s, f), decodedAt: now }
   }
 
   function finish(s, f) {

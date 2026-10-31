@@ -5,11 +5,11 @@
 // Every fixture lives in a fresh temporary HOME; no test reads a real agent's
 // folder.
 import { afterAll, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createScanner, sources } from "./lib/scan.mjs"
-import { readClaude, readCodex, MESSAGES_MAX, MESSAGE_TEXT_MAX } from "./lib/readers.mjs"
+import { readClaude, readCodex, readGemini, readGrok, readKimi, MESSAGES_MAX, MESSAGE_TEXT_MAX } from "./lib/readers.mjs"
 
 const dir = import.meta.dir
 const tmps = []
@@ -246,4 +246,199 @@ test("messages keep text, clip it, and never carry a tool's arguments", () => {
   expect(JSON.stringify(r.messages)).not.toContain("hunter2")
   expect(r.messages.some((m) => m.role === "tool" && m.text === "Bash" && m.name === "Bash")).toBe(true)
   expect(r.messages.every((m) => Number.isFinite(m.at))).toBe(true)
+})
+
+const source = (root, kind, extra = {}) => ({ root, kind, agent: kind, depth: 0, match: (n) => n.endsWith(".jsonl"), ...extra })
+const claudeTurn = (time, prompt = "work", tokens = 100) => [
+  { type: "user", timestamp: new Date(time).toISOString(), message: { role: "user", content: prompt } },
+  { type: "assistant", timestamp: new Date(time + 1000).toISOString(), message: { id: `msg-${time}`, role: "assistant", usage: { input_tokens: tokens, output_tokens: 10 }, stop_reason: "end_turn", content: [{ type: "text", text: "done" }] } },
+]
+
+test("cached Today counts roll over at local midnight without rereading the file", () => {
+  const h = tmp()
+  const before = new Date(2026, 9, 28, 23, 59, 30).getTime()
+  const after = new Date(2026, 9, 29, 0, 0, 30).getTime()
+  const p = write(h, "cached.jsonl", claudeTurn(before))
+  utimesSync(p, before / 1000, before / 1000)
+  const sc = createScanner({ sources: [source(h, "claude")] })
+  expect(sc.scan(before)[0]).toMatchObject({ tokensToday: 110, turnsToday: 1 })
+  const cached = sc.files.get(p)
+  expect(sc.scan(after)[0]).toMatchObject({ tokensToday: 0, turnsToday: 0, turns: 1 })
+  expect(sc.files.get(p)).toBe(cached)
+  // Buckets remain private, and scanning another day does not discard history.
+  expect(sc.scan(before)[0]).toMatchObject({ tokensToday: 110, turnsToday: 1 })
+  expect(JSON.stringify(sc.scan(after))).not.toContain("buckets")
+})
+
+test("large JSONL replays usage and turns in the omitted middle, across updates and rewrites", () => {
+  const h = tmp()
+  const now = Date.now()
+  // Today's only events sit between >64 KiB of head and >512 KiB of tail.
+  const padding = { type: "padding", text: "x".repeat(1024) }
+  const rows = [
+    { type: "user", timestamp: new Date(now - 3 * 86400e3).toISOString(), cwd: "/old/project", message: { role: "user", content: "old prompt" } },
+    ...Array.from({ length: 100 }, () => padding),
+    ...claudeTurn(now - 10000, "middle prompt", 6000),
+    ...Array.from({ length: 600 }, () => padding),
+  ]
+  const p = write(h, "large.jsonl", rows)
+  const sc = createScanner({ sources: [source(h, "claude")] })
+  expect(statSync(p).size).toBeGreaterThan(576 * 1024)
+  expect(sc.scan(now)[0]).toMatchObject({ tokensToday: 6010, turnsToday: 1, turns: 2, cwd: "/old/project", query: "middle prompt", phase: "done" })
+  write(h, "large.jsonl", [...rows, ...claudeTurn(now - 5000, "new prompt", 200)])
+  expect(sc.scan(now)[0]).toMatchObject({ tokensToday: 6220, turnsToday: 2, turns: 3, query: "new prompt" })
+  rows[0].cwd = "/new/project"
+  write(h, "large.jsonl", rows)
+  expect(sc.scan(now)[0]).toMatchObject({ cwd: "/new/project", tokensToday: 6010, turnsToday: 1 })
+})
+
+test("chunked JSONL preserves UTF-8 characters split across a read boundary", () => {
+  const h = tmp()
+  const prefix = j({ type: "padding", text: "x".repeat(65500) }) + "\n"
+  const user = j({ type: "user", timestamp: new Date().toISOString(), message: { role: "user", content: "hello 世界 🌍" } })
+  // Put the first Chinese character's first byte at the end of a read chunk.
+  const marker = Buffer.byteLength(prefix + user.slice(0, user.indexOf("世")))
+  const target = Math.ceil(marker / 65536) * 65536 - 1
+  const adjusted = prefix.replace("x", "x".repeat(target - marker + 1))
+  write(h, "utf8.jsonl", adjusted + user + "\n")
+  const sc = createScanner({ sources: [source(h, "claude")] })
+  expect(sc.scan()[0].query).toBe("hello 世界 🌍")
+})
+
+test("undocumented CONFIG_DIR aliases are ignored while Claude's documented override works", () => {
+  const h = tmp()
+  const aliases = ["OMP_CONFIG_DIR", "KIMI_CONFIG_DIR", "GROK_CONFIG_DIR", "COPILOT_CONFIG_DIR", "QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR"]
+  withEnv({ HOME: h, CLAUDE_CONFIG_DIR: join(h, "claude-custom"), ...Object.fromEntries(aliases.map((k) => [k, join(h, "ignored", k)])) }, () => {
+    const roots = sources().map((s) => s.root)
+    expect(roots.every((p) => !p.includes("/ignored/"))).toBe(true)
+    expect(roots).toContain(join(h, "claude-custom", "projects"))
+    expect(roots).toContain(join(h, ".qoder", "projects"))
+    expect(roots).toContain(join(h, ".workbuddy", "projects"))
+  })
+})
+
+const grokEvent = (time, type, text = "", extra = {}) => ({ timestamp: time / 1000, params: { update: { sessionUpdate: type, content: { text }, ...extra } } })
+
+test("Grok uses timestamped usage.json deltas, refreshes sidecars and resets at midnight", () => {
+  const h = tmp()
+  const now = new Date(2026, 9, 28, 12).getTime()
+  const yesterday = new Date(2026, 9, 27, 12).getTime()
+  const nextDay = new Date(2026, 9, 29, 12).getTime()
+  write(h, ".grok/sessions/proj/session/updates.jsonl", [grokEvent(now, "user_message_chunk", "test"), grokEvent(now + 1000, "turn_completed")])
+  const summary = { generated_title: "old title", info: { cwd: "/old" } }
+  const rel = ".grok/sessions/proj/session"
+  write(h, `${rel}/summary.json`, summary)
+  // Schema taken from xai-org/grok-build's SessionUsageFile / TurnUsage.
+  const usage = { padding: "x".repeat(300 * 1024), sessionId: "session", updatedAt: new Date(now).toISOString(), session: { inputTokens: 999999, outputTokens: 999999 }, turns: [
+    { turnNumber: 1, endedAt: new Date(yesterday).toISOString(), inputTokens: 5000, outputTokens: 1000 },
+    { turnNumber: 2, endedAt: new Date(now).toISOString(), inputTokens: 1000, cachedReadTokens: 400, cacheCreationTokens: 50, outputTokens: 80, reasoningTokens: 20, totalTokens: 1080, modelUsage: { grok: { inputTokens: 1000, outputTokens: 80 } } },
+  ] }
+  write(h, `${rel}/usage.json`, usage)
+  withEnv({ HOME: h }, () => {
+    const sc = createScanner({ sources: sources().filter((s) => s.kind === "grok"), days: 10000 })
+    expect(sc.scan(now)[0]).toMatchObject({ title: "old title", tokensToday: 680, turnsToday: 1, context: 0 })
+    write(h, `${rel}/summary.json`, { ...summary, generated_title: "updated title", info: { cwd: "/new" } })
+    usage.turns[1].outputTokens = 120
+    write(h, `${rel}/usage.json`, usage)
+    expect(sc.scan(now)[0]).toMatchObject({ title: "updated title", cwd: "/new", tokensToday: 720, turnsToday: 1 })
+    expect(sc.scan(nextDay)[0]).toMatchObject({ tokensToday: 0, turnsToday: 0 })
+    // A malformed or missing sidecar must not keep its stale usage or hide the session.
+    write(h, `${rel}/usage.json`, "{")
+    expect(sc.scan(now)[0]).toMatchObject({ phase: "done", tokensToday: 0, turnsToday: 1 })
+    rmSync(join(h, rel, "usage.json"))
+    expect(sc.scan(now)[0].tokensToday).toBe(0)
+  })
+})
+
+test("Grok does not invent a usage day from lifetime totals or malformed turn values", () => {
+  const now = Date.now()
+  const text = [grokEvent(now, "user_message_chunk", "hi"), grokEvent(now + 1000, "turn_completed")].map(j).join("\n")
+  expect(readGrok(text, "g", {}, { now, usage: { session: { totalTokens: 5000 }, updatedAt: new Date(now).toISOString() } }).tokensToday).toBe(0)
+  expect(readGrok(text, "g", {}, { now, usage: { turns: [null, { endedAt: "bad date", inputTokens: 200 }, { endedAt: new Date(now).toISOString(), inputTokens: "100", outputTokens: -2 }] } }).tokensToday).toBe(0)
+})
+
+test("Grok and Kimi streamed whitespace survives chunk boundaries and clipping", () => {
+  const now = Date.now()
+  for (const chunks of [["hello ", "world"], ["hello", " ", "world"], ["hel", "lo", " world"], ["hello\n", "world"], ["x".repeat(499), " ", "tail"], ["x".repeat(500), " ".repeat(1000), "tail"], [" ".repeat(1000), "hello ", "world"]]) {
+    const expected = chunks.join("").replace(/\s+/g, " ").trim()
+    const kimi = readKimi(chunks.map((text) => j({ type: "context.append_loop_event", time: now, event: { type: "content.part", part: { type: "text", text } } })).join("\n"))
+    const grok = readGrok(chunks.map((text) => j(grokEvent(now, "agent_message_chunk", text))).join("\n"))
+    const clipped = expected.length > MESSAGE_TEXT_MAX ? expected.slice(0, MESSAGE_TEXT_MAX - 1).trimEnd() + "…" : expected
+    for (const s of [kimi, grok]) {
+      expect(s.messages).toHaveLength(1)
+      expect(s.messages[0].text).toBe(clipped)
+      expect(s.reply).toBe(expected.length > 280 ? expected.slice(0, 279).trimEnd() + "…" : expected)
+    }
+  }
+})
+
+test("Grok streamed user messages retain message length beyond the query limit", () => {
+  const now = Date.now()
+  const chunks = ["hello ", "world ", "x".repeat(250)]
+  const s = readGrok(chunks.map((text) => j(grokEvent(now, "user_message_chunk", text))).join("\n"))
+  expect(s.turns).toBe(1)
+  expect(s.messages[0].text).toBe(chunks.join(""))
+  expect(s.query.length).toBe(200)
+  expect(s.query.startsWith("hello world ")).toBe(true)
+})
+
+test("Gemini approval clears when a tool resolves or the assistant finishes", () => {
+  for (const final of [
+    { type: "gemini", content: "", toolCalls: [{ id: "t1", name: "shell", status: "success" }] },
+    { type: "gemini", content: "done" },
+  ]) {
+    const s = readGemini(j({ messages: [
+      { type: "user", content: "run it" },
+      { type: "gemini", content: "", toolCalls: [{ id: "t1", name: "shell", status: "awaiting_approval" }] },
+      final,
+    ] }))
+    expect(s.phase).toBe(final.toolCalls ? "thinking" : "done")
+    expect(s.pending).toHaveLength(0)
+  }
+})
+
+test("compressed scan eventually decodes a final write skipped by the throttle", () => {
+  const h = tmp()
+  const now = Date.now()
+  const header = { type: "session", id: "compressed", createdAt: new Date(now).toISOString() }
+  const p = join(h, "session.v4.jsonl.zstd")
+  const compressed = (events) => writeFileSync(p, Bun.zstdCompressSync(Buffer.from(events.map(j).join("\n") + "\n")))
+  compressed([header, { type: "turn/start", time: new Date(now).toISOString(), data: {} }])
+  const sc = createScanner({ sources: [source(h, "dsh", { match: (n) => n.endsWith(".zstd") })], zstdEvery: 4000 })
+  expect(sc.scan(now)[0].phase).toBe("thinking")
+  compressed([header, { type: "turn/end", time: new Date(now + 1000).toISOString(), data: { reason: { kind: "completed" } } }])
+  expect(sc.scan(now + 1000)[0].phase).toBe("thinking")
+  expect(sc.scan(now + 4001)[0].phase).toBe("done")
+})
+
+test("Grok logs beyond the old 32 MiB cap retain middle turns and open tools", () => {
+  const h = tmp()
+  const now = Date.now()
+  const padding = j({ type: "padding", text: "x".repeat(1024 * 1024) }) + "\n"
+  const events = [grokEvent(now, "user_message_chunk", "middle prompt"), grokEvent(now + 1000, "tool_call", "", { toolCallId: "still-open", title: "Read", status: "in_progress" })]
+  write(h, "updates.jsonl", padding + events.map(j).join("\n") + "\n" + padding.repeat(32))
+  const sc = createScanner({ sources: [source(h, "grok")] })
+  const s = sc.scan(now + 2000)[0]
+  expect(s).toMatchObject({ query: "middle prompt", turnsToday: 1, phase: "tool" })
+  expect(s.pending.map((p) => p.id)).toEqual(["still-open"])
+})
+
+test("Grok empty prompt chunks wait for text and turn metadata separates adjacent turns", () => {
+  const now = Date.now()
+  const chunks = ["", " ", "hello ", "world"]
+  const rows = chunks.map((text) => grokEvent(now, "user_message_chunk", text))
+  for (const row of rows) row.params._meta = { turnStartMs: now }
+  let s = readGrok(rows.map(j).join("\n"), "g", {}, { now })
+  expect(s).toMatchObject({ query: "hello world", title: "hello world", turns: 1, turnsToday: 1 })
+  expect(s.messages.map((m) => m.text)).toEqual(["hello world"])
+  const next = grokEvent(now + 1000, "user_message_chunk", "second turn")
+  next.params._meta = { turnStartMs: now + 1000 }
+  s = readGrok([...rows, next].map(j).join("\n"), "g", { title: "named" }, { now })
+  expect(s).toMatchObject({ query: "second turn", title: "named", turns: 2, turnsToday: 2 })
+})
+
+test("Claude counts final usage once for interleaved blocks of the same response", () => {
+  const row = (id, output, time) => ({ type: "assistant", timestamp: at(time), message: { id, role: "assistant", usage: { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 400, output_tokens: output }, content: [] } })
+  const s = readClaude([row("a", 0, 1), row("b", 5, 2), row("a", 10, 3), row("b", 5, 4)].map(j).join("\n"), "claude", "c", { now: NOW })
+  expect(s).toMatchObject({ tokensToday: 255, context: 525 })
 })

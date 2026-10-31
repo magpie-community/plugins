@@ -1,6 +1,6 @@
 // Tests for the standalone 3D office renderer. These run in bun without a
-// DOM, WebGL or network: scene3d.js must still load and expose its pure
-// helpers, and the geometry/layout/API must be sane.
+// browser, WebGL or network. Pure helpers also work without THREE; renderer
+// regressions use the bundled THREE and stub only the GPU boundary.
 import { describe, expect, test } from "bun:test"
 import { readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -233,5 +233,393 @@ describe("pure math helpers", () => {
     // a camera-like object works too
     const fakeCamera = { project: (p) => ({ x: p.x * 0.5, y: p.y * 0.5, z: 0 }) }
     expect(S.projectToScreen({ x: 0.5, y: 0.5, z: 0 }, fakeCamera, 200, 100)).toEqual({ x: 125, y: 37.5, visible: true })
+  })
+})
+
+// Exercise the shipped THREE scene graph, geometry, materials and projection.
+// Only the GPU boundary is stubbed; no renderer methods are bypassed.
+function threeFixture({ hidden = false, failRender = false, failInit = false } = {}) {
+  class Events {
+    constructor() { this.listeners = new Map() }
+    addEventListener(type, fn) {
+      if (!this.listeners.has(type)) this.listeners.set(type, new Set())
+      this.listeners.get(type).add(fn)
+    }
+    removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn) }
+    emit(type, event = {}) { for (const fn of this.listeners.get(type) || []) fn(event) }
+  }
+  const canvas = new Events()
+  Object.assign(canvas, {
+    width: 300, height: 150, clientWidth: 800, clientHeight: 600,
+    style: { touchAction: "auto" },
+    getContext: () => ({}),
+    getBoundingClientRect() { return { width: this.clientWidth, height: this.clientHeight } },
+    setPointerCapture() {}, releasePointerCapture() {},
+  })
+  const document = new Events()
+  document.hidden = hidden
+  const ctx = new Proxy({}, { get(target, key) { return target[key] || (() => {}) }, set(target, key, value) { target[key] = value; return true } })
+  document.createElement = () => ({ getContext: () => ctx })
+  const callbacks = new Map()
+  let serial = 0
+  const world = new Events()
+  Object.assign(world, {
+    document, devicePixelRatio: 2,
+    requestAnimationFrame(fn) { const id = ++serial; callbacks.set(id, fn); return id },
+    cancelAnimationFrame(id) { callbacks.delete(id) },
+  })
+  new Function("globalThis", read("three.min.js"))(world)
+  const T = world.THREE
+  class Renderer {
+    constructor(options) {
+      this.options = options
+      this.shadowMap = {}
+      this.renders = 0
+      this.dpr = 1
+      this.disposed = false
+    }
+    getContext() { if (failInit) throw new Error("init failed"); return {} }
+    setPixelRatio(dpr) { this.dpr = dpr }
+    setSize(w, h) { canvas.width = Math.floor(w * this.dpr); canvas.height = Math.floor(h * this.dpr) }
+    render(scene, camera) {
+      if (failRender) throw new Error("render failed")
+      this.renders++
+      scene.updateMatrixWorld(true)
+      camera.updateMatrixWorld(true)
+      // Mirror renderer submissions: an InstancedMesh with one material is
+      // one group, regardless of instance count. Hidden pose graphs submit none.
+      this.workerDrawGroups = 0
+      this.workerShadowGroups = 0
+      this.workerInstances = 0
+      scene.getObjectByName("workers").traverseVisible((object) => {
+        if (!object.isMesh || (object.isInstancedMesh && object.count === 0)) return
+        const groups = Array.isArray(object.material) ? object.geometry.groups.length : 1
+        this.workerDrawGroups += groups
+        if (object.castShadow) this.workerShadowGroups += groups
+        this.workerInstances += object.isInstancedMesh ? object.count : 1
+      })
+    }
+    dispose() { this.disposed = true }
+    forceContextLoss() { this.lost = true }
+  }
+  world.THREE = { ...T, WebGLRenderer: Renderer }
+  new Function("globalThis", "document", read("scene3d.js"))(world, document)
+  const scene = new world.AgentOfficeScene3D(canvas)
+  const frame = (now = 1000) => {
+    const queued = [...callbacks.values()]
+    callbacks.clear()
+    for (const fn of queued) fn(now)
+  }
+  return { scene, canvas, document, callbacks, frame, T, world }
+}
+
+function requireThree(fixture) {
+  expect(fixture.scene.error).toBeNull()
+  expect(fixture.scene.available).toBe(true)
+  expect(fixture.scene.env.children.length).toBeGreaterThan(10)
+  return fixture
+}
+
+describe("THREE renderer path", () => {
+  test("visibility resumes only an enabled renderer, including a queued stale frame", () => {
+    const f = requireThree(threeFixture())
+    let labels = 0
+    f.scene.onFrame = () => labels++
+    f.frame()
+    expect(labels).toBe(1)
+    const stale = [...f.callbacks.values()][0]
+    f.scene.stop()
+    f.document.hidden = true
+    f.document.emit("visibilitychange")
+    f.document.hidden = false
+    f.document.emit("visibilitychange")
+    stale(1100)
+    expect(f.callbacks.size).toBe(0)
+    expect(labels).toBe(1)
+    f.scene.start()
+    stale(1200)
+    expect(f.callbacks.size).toBe(1)
+    f.document.hidden = true
+    f.document.emit("visibilitychange")
+    expect(f.callbacks.size).toBe(0)
+    f.document.hidden = false
+    f.document.emit("visibilitychange")
+    expect(f.callbacks.size).toBe(1)
+    f.scene.dispose()
+    f.document.emit("visibilitychange")
+    expect(f.callbacks.size).toBe(0)
+  })
+
+  test("initial hidden state and hidden resizes preserve CSS dimensions at DPR two", () => {
+    const f = requireThree(threeFixture({ hidden: true }))
+    expect(f.callbacks.size).toBe(0)
+    expect(f.canvas.width).toBe(1600)
+    f.canvas.clientWidth = f.canvas.clientHeight = 0
+    for (let i = 0; i < 8; i++) f.scene.resize()
+    expect([f.scene.width, f.scene.height]).toEqual([800, 600])
+    expect([f.canvas.width, f.canvas.height]).toEqual([1600, 1200])
+    f.scene.setQuality("low")
+    expect([f.canvas.width, f.canvas.height]).toEqual([800, 600])
+    expect(f.scene.renderer.options.antialias).toBe(true)
+    expect(f.scene._lights.sun.shadow.mapSize.x).toBe(512)
+    f.canvas.clientWidth = 640
+    f.canvas.clientHeight = 480
+    f.scene.setQuality("high")
+    expect([f.canvas.width, f.canvas.height]).toEqual([1280, 960])
+    expect(f.scene._lights.sun.shadow.mapSize.x).toBe(2048)
+    f.scene.dispose()
+  })
+
+  test("context loss suspends frames and restoration respects an intervening mode switch", () => {
+    const f = requireThree(threeFixture())
+    let prevented = false
+    f.canvas.emit("webglcontextlost", { cancelable: true, preventDefault() { prevented = true } })
+    expect(prevented).toBe(true)
+    expect(f.callbacks.size).toBe(0)
+    f.canvas.emit("webglcontextrestored")
+    expect(f.callbacks.size).toBe(1)
+    f.frame()
+    expect(f.scene.renderer.renders).toBe(1)
+    f.canvas.emit("webglcontextlost", { cancelable: false })
+    f.scene.stop()
+    f.canvas.emit("webglcontextrestored")
+    expect(f.callbacks.size).toBe(0)
+    const renderer = f.scene.renderer
+    f.scene.dispose()
+    expect(renderer.disposed).toBe(true)
+    expect([...f.canvas.listeners.values()].every((set) => set.size === 0)).toBe(true)
+    expect(f.canvas.style.touchAction).toBe("auto")
+  })
+
+  test("GPU initialization and rendering failures release resources or stop scheduling", () => {
+    const failed = threeFixture({ failInit: true })
+    expect(failed.scene.available).toBe(false)
+    expect(failed.scene.error.message).toBe("init failed")
+    expect(failed.callbacks.size).toBe(0)
+    expect(failed.scene.disposed).toBe(true)
+    const f = requireThree(threeFixture({ failRender: true }))
+    f.frame()
+    expect(f.scene.error.message).toBe("render failed")
+    expect(f.callbacks.size).toBe(0)
+    f.scene.dispose()
+  })
+
+  test("worker draw groups stay bounded for 32 articulated workers and retain colors and shadows", () => {
+    const f = requireThree(threeFixture())
+    const statuses = Object.keys(S.STATUS_COLORS)
+    const crowd = Array.from({ length: 32 }, (_, i) => ({ key: `batch-${i}`, status: statuses[i % statuses.length], brand: { color: i % 2 ? "#ff2200" : "#2255ff" } }))
+    f.scene.setAgents(crowd.slice(0, 1))
+    f.frame(1000)
+    expect(f.scene.renderer.workerDrawGroups).toBe(3)
+    expect(f.scene.renderer.workerInstances).toBe(19)
+    const only = f.scene._map.get("batch-0")
+    const onlyBody = new f.T.Vector3(only.pos.x, 0.95, only.pos.z).project(f.scene.camera)
+    expect(f.scene.hit((onlyBody.x + 1) * f.scene.width / 2, (1 - onlyBody.y) * f.scene.height / 2)).toBe("batch-0")
+    expect(f.scene.anchors().map((a) => a.key)).toEqual(["batch-0"])
+    f.scene.setAgents([{ ...crowd[0], status: "error" }])
+    expect(f.scene._workerBatches.get("badge:" + new f.T.Color(S.STATUS_COLORS.thinking).getHexString()).count).toBe(0)
+    const errorBadge = f.scene._workerBatches.get("badge:" + new f.T.Color(S.STATUS_COLORS.error).getHexString())
+    expect(errorBadge.count).toBe(1)
+    expect(errorBadge.material.emissive.getHexString()).toBe(new f.T.Color(S.STATUS_COLORS.error).getHexString())
+    f.scene.setAgents(crowd)
+    f.frame(1100)
+    expect(f.scene.renderer.workerDrawGroups).toBe(2 + statuses.length)
+    expect(f.scene.renderer.workerDrawGroups).toBeLessThan(10)
+    expect(f.scene.renderer.workerShadowGroups).toBe(1)
+    expect(f.scene.renderer.workerInstances).toBe(32 * 19)
+    const matrix = new f.T.Matrix4(), color = new f.T.Color()
+    const offsets = new Map()
+    for (const rt of f.scene._map.values()) {
+      expect(rt.group.visible).toBe(false)
+      for (const mesh of rt.meshes) {
+        const badge = mesh === rt.parts.badge
+        const key = badge ? "badge:" + mesh.material.color.getHexString() : (mesh.castShadow ? "body" : "detail")
+        const index = offsets.get(key) || 0
+        offsets.set(key, index + 1)
+        const batch = f.scene._workerBatches.get(key)
+        expect(batch.isInstancedMesh).toBe(true)
+        expect(batch.receiveShadow).toBe(mesh.receiveShadow)
+        expect(batch.castShadow).toBe(mesh.castShadow)
+        batch.getMatrixAt(index, matrix)
+        matrix.elements.forEach((v, i) => expect(v).toBeCloseTo(mesh.matrixWorld.elements[i], 5))
+        if (badge) {
+          expect(batch.material).toBe(mesh.material)
+          expect(batch.material.emissive.getHexString()).toBe(mesh.material.color.getHexString())
+          expect(batch.material.emissiveIntensity).toBe(0.5)
+        } else {
+          expect(batch.material.color.getHexString()).toBe("ffffff")
+          batch.getColorAt(index, color)
+          expect(color.r).toBeCloseTo(mesh.material.color.r, 6)
+          expect(color.g).toBeCloseTo(mesh.material.color.g, 6)
+          expect(color.b).toBeCloseTo(mesh.material.color.b, 6)
+        }
+      }
+    }
+    const rt = f.scene._map.get("batch-0")
+    const body = f.scene._workerBatches.get("body")
+    const before = Array.from(body.instanceMatrix.array.slice(0, 16))
+    const legBefore = rt.parts.legL.rotation.x
+    const version = body.instanceMatrix.version
+    f.frame(1200)
+    expect(Array.from(body.instanceMatrix.array.slice(0, 16))).not.toEqual(before)
+    expect(rt.parts.legL.rotation.x).not.toBe(legBefore)
+    expect(body.instanceMatrix.version).toBeGreaterThan(version)
+    body.getMatrixAt(0, matrix)
+    matrix.elements.forEach((v, i) => expect(v).toBeCloseTo(rt.meshes[0].matrixWorld.elements[i], 5))
+    expect(f.scene.anchors().length).toBe(32)
+    const projected = new f.T.Vector3(rt.pos.x, 0.95, rt.pos.z).project(f.scene.camera)
+    expect(f.scene.hit((projected.x + 1) * f.scene.width / 2, (1 - projected.y) * f.scene.height / 2)).toBeTruthy()
+    f.scene.dispose()
+  })
+
+  test("instance capacity grows for overlapping crowds and all instance resources dispose once", () => {
+    const f = requireThree(threeFixture())
+    const crowd = (prefix) => Array.from({ length: 32 }, (_, i) => ({ key: `${prefix}-${i}`, status: "waiting" }))
+    f.scene.setAgents(crowd("old"))
+    const replaced = f.scene._workerBatches.get("body")
+    let replacementDisposals = 0
+    replaced.addEventListener("dispose", () => replacementDisposals++)
+    f.scene.setAgents(crowd("new"))
+    expect(replacementDisposals).toBe(1)
+    f.frame()
+    expect(f.scene.renderer.workerInstances).toBe(64 * 19)
+    expect(f.scene.renderer.workerDrawGroups).toBe(3)
+    for (let i = 0; i < 500; i++) f.scene._updateWorkers(0.05)
+    f.frame(1100)
+    expect(f.scene.renderer.workerInstances).toBe(32 * 19)
+    f.scene.setAgents([])
+    for (let i = 0; i < 500; i++) f.scene._updateWorkers(0.05)
+    f.frame(1200)
+    expect(f.scene.renderer.workerDrawGroups).toBe(0)
+    const resources = [...f.scene._workerBatches.values(), ...f.scene._sharedGeo, ...f.scene._sharedMat]
+    const disposed = new Map(resources.map((r) => [r, 0]))
+    for (const resource of resources) resource.addEventListener("dispose", () => disposed.set(resource, disposed.get(resource) + 1))
+    const group = f.scene.workerGroup
+    f.scene.dispose()
+    f.scene.dispose()
+    expect([...disposed.values()].every((count) => count === 1)).toBe(true)
+    expect(group.children.length).toBe(0)
+    expect(group.parent).toBeNull()
+    expect(f.scene._workerBatches.size).toBe(0)
+    expect(f.scene.workerGroup).toBeNull()
+    expect(f.callbacks.size).toBe(0)
+  })
+
+  test("32 workers receive distinct spots, walk to them, change status and leave", () => {
+    const f = requireThree(threeFixture())
+    const agents = Array.from({ length: 32 }, (_, i) => ({ key: `worker-${i}`, status: "executing" }))
+    f.scene.setAgents(agents)
+    expect(f.scene._map.size).toBe(32)
+    expect(f.scene._taken.size).toBe(32)
+    expect([...f.scene._map.values()].every((rt) => rt.spot && rt.group.children.length > 10)).toBe(true)
+    for (let i = 0; i < 400; i++) f.scene._updateWorkers(0.05)
+    const workers = [...f.scene._map.values()]
+    expect(workers.every((rt) => rt.mode !== "walk")).toBe(true)
+    expect(new Set(workers.map((rt) => `${rt.pos.x},${rt.pos.z}`)).size).toBe(32)
+    expect(workers.every((rt) => rt.pos.x !== S.Layout.ENTRY[0] || rt.pos.z !== S.Layout.ENTRY[1])).toBe(true)
+    f.scene.setAgents([{ key: "worker-0", status: "error" }])
+    expect(f.scene._map.get("worker-0").spot.kind).toBe("error")
+    expect(f.scene._taken.size).toBe(1)
+    for (let i = 0; i < 500; i++) f.scene._updateWorkers(0.05)
+    expect(f.scene._map.size).toBe(1)
+    expect(f.scene._taken.size).toBe(1)
+    f.frame()
+    expect(f.scene.anchors().map((a) => a.key)).toEqual(["worker-0"])
+    f.scene.dispose()
+    expect(f.scene._sharedGeo.size).toBe(0)
+    expect(f.scene._envTex.size).toBe(0)
+  })
+
+  test("a full crowd can be replaced before departing workers finish leaving", () => {
+    const f = requireThree(threeFixture())
+    const crowd = (prefix) => Array.from({ length: 32 }, (_, i) => ({ key: `${prefix}-${i}`, status: "waiting" }))
+    f.scene.setAgents(crowd("old"))
+    for (let i = 0; i < 400; i++) f.scene._updateWorkers(0.05)
+    f.scene.setAgents(crowd("new"))
+    expect(f.scene._taken.size).toBe(32)
+    const active = [...f.scene._map.values()].filter((rt) => !rt.leaving)
+    expect(active.length).toBe(32)
+    expect(active.every((rt) => rt.spot)).toBe(true)
+    for (let i = 0; i < 500; i++) f.scene._updateWorkers(0.05)
+    expect(f.scene._map.size).toBe(32)
+    expect([...f.scene._map.values()].every((rt) => rt.mode !== "walk")).toBe(true)
+    f.scene.dispose()
+  })
+
+  test("six THREE environments keep decorations off seats and walking routes", () => {
+    const f = requireThree(threeFixture())
+    for (const id of S.SCENE_IDS) {
+      const previous = f.scene.env
+      f.scene.setScene(id)
+      expect(previous.parent).toBeNull()
+      expect(f.scene.env.children.length).toBeGreaterThan(10)
+      for (const prop of S.SCENES[id].props) {
+        const group = f.scene.env.getObjectByName("props:" + prop)
+        expect(group.children.length).toBeGreaterThan(0)
+        expect(group.children.every((object) => object.visible), `${id} retains ${prop}`).toBe(true)
+      }
+      f.scene.env.updateMatrixWorld(true)
+      let checked = 0
+      f.scene.env.traverse((object) => {
+        if (!object.userData.decoration || !object.visible) return
+        const bounds = new f.T.Box3()
+        object.traverse((mesh) => {
+          if (!mesh.isMesh) return
+          const b = new f.T.Box3().setFromObject(mesh)
+          if (b.max.y > 0.06 && b.min.y < 1.7) bounds.union(b)
+        })
+        checked++
+        for (const pool of Object.values(S.SPOTS)) for (const spot of pool) {
+          for (let i = 1; i < spot.route.length; i++) {
+            const a = spot.route[i - 1], b = spot.route[i]
+            const n = Math.max(1, Math.ceil(Math.hypot(a[0] - b[0], a[1] - b[1]) / 0.1))
+            for (let j = 0; j <= n; j++) {
+              const x = a[0] + (b[0] - a[0]) * j / n, z = a[1] + (b[1] - a[1]) * j / n
+              const hit = x > bounds.min.x - 0.3 && x < bounds.max.x + 0.3 && z > bounds.min.z - 0.3 && z < bounds.max.z + 0.3
+              if (hit) throw new Error(`${id} decoration intersects ${spot.id} route at ${x},${z}`)
+            }
+          }
+        }
+      })
+      expect(checked).toBeGreaterThan(4)
+    }
+    f.scene.dispose()
+  })
+
+  test("wheel consumes scrolling only when the active renderer can change zoom", () => {
+    const f = requireThree(threeFixture())
+    let prevented = 0
+    const wheel = { deltaY: -100, deltaMode: 0, cancelable: true, preventDefault() { prevented++ } }
+    f.scene.stop()
+    f.canvas.emit("wheel", wheel)
+    expect(prevented).toBe(0)
+    f.scene.start().setZoom(3)
+    f.canvas.emit("wheel", wheel)
+    expect(prevented).toBe(0)
+    f.canvas.emit("wheel", { ...wheel, deltaY: 100 })
+    expect(prevented).toBe(1)
+    expect(f.scene.zoom).toBeLessThan(3)
+    f.scene.dispose()
+  })
+
+  test("touch pinch zooms, single pointers orbit within the open walls, and cancellation resets", () => {
+    const f = requireThree(threeFixture())
+    const pointer = (pointerId, clientX, clientY = 100) => ({ pointerId, clientX, clientY, button: 0 })
+    f.canvas.emit("pointerdown", pointer(1, 100))
+    f.canvas.emit("pointerdown", pointer(2, 200))
+    f.canvas.emit("pointermove", pointer(2, 300))
+    expect(f.scene.zoom).toBeCloseTo(2.1)
+    expect(f.scene.dragged).toBe(true)
+    f.canvas.emit("pointerup", pointer(2, 300))
+    f.canvas.emit("pointermove", pointer(1, 10000))
+    expect(f.scene.azimuth).toBeGreaterThan(0)
+    expect(f.scene.azimuth).toBeLessThan(Math.PI / 2)
+    f.canvas.emit("pointermove", pointer(1, -10000))
+    expect(f.scene.azimuth).toBeGreaterThan(0)
+    expect(f.scene.azimuth).toBeLessThan(Math.PI / 2)
+    f.canvas.emit("pointercancel", pointer(1, -10000))
+    expect(f.scene._pointers.size).toBe(0)
+    expect(f.scene._drag).toBeNull()
+    f.scene.dispose()
   })
 })
