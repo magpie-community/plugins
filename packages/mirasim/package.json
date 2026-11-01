@@ -1,0 +1,23 @@
+{
+  "name": "@magpie-community/opencode-mirasim-auth",
+  "version": "0.1.0",
+  "description": "MiraSim (mirasim.ai) token auth, profile and 5h/7d rolling-window quota, ported from CreditDaddy.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "mirasim"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/mirasim"
+  }
+}
