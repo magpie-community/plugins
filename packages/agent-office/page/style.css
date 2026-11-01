@@ -108,6 +108,12 @@ canvas[hidden] { display: none; }
 .pm { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pc { border: 0; background: none; color: #6b7280; cursor: pointer; padding: 0; white-space: nowrap; }
 .pc:hover { color: #1f2937; text-decoration: underline; }
+.pjump-wrap { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; flex-wrap: nowrap; }
+.pjump { display: inline-flex; align-items: center; gap: 4px; border: 0; border-radius: 7px; padding: 4px 10px; background: var(--accent, #4f46e5); color: #fff; font: 600 12px/1.3 var(--font); cursor: pointer; white-space: nowrap; transition: opacity .12s; }
+.pjump:hover { opacity: .9; }
+.pjump.alt { background: rgba(79, 70, 229, .12); color: var(--accent, #4f46e5); font-weight: 600; padding: 4px 8px; }
+.pjump.alt:hover { background: rgba(79, 70, 229, .2); }
+.pjump.err { background: var(--err, #ef4444); color: #fff; }
 .pcopy { width: 100%; margin-top: 6px; font: 12px var(--mono); padding: 4px 6px; border: 1px solid #e5e7eb; border-radius: 6px; }
 .psrc { margin-top: 6px; color: #b0b5bd; font-size: 11.5px; }
 
