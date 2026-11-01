@@ -69,6 +69,10 @@ GitHub login.
     Every `tool_result` gets `is_error` (Zed's cloud refuses one without it).
   - xAI: `max_tokens` becomes `max_completion_tokens`.
   - Gemini: the model is named in the request as `models/<id>`.
+    `thinkingConfig.thinkingLevel` is sent uppercase (`HIGH`) and
+    `toolConfig.functionCallingConfig.mode` lowercase (`auto`), the only
+    spellings Zed's cloud parses. A model's effort variants are keyed
+    lowercase (`low`, `high`) whatever case Zed's model list uses.
 - **Replies:**
   - Zed's newline-delimited lines are sent back as each API's own
     server-sent events.

@@ -836,6 +836,21 @@ const withPrompt = (protocol, prompt, user) =>
           ],
         };
 
+// What Claude Code 2.1.100 ends its system prompt with (cli.js, the
+// environment section), for a folder that is no git repository.
+const claudeCodePrompt = [
+  "You are Claude Code, Anthropic's official CLI for Claude.",
+  "Here is useful information about the environment you are running in:",
+  "<env>",
+  "Working directory: /Users/me/project",
+  "Is directory a git repo: No",
+  "Platform: darwin",
+  "Shell: zsh",
+  "OS Version: Darwin 25.2.0",
+  "</env>",
+  "You are powered by the model big-pickle.",
+].join("\n");
+
 for (const { protocol, path, model } of protocols) {
   test(`${protocol}: an agent's own prompt goes with OpenCode's environment block, once`, async (t) => {
     const { plugin, state, origin } = await fixture(t);
@@ -870,6 +885,16 @@ for (const { protocol, path, model } of protocols) {
     const own = `${agentPrompt}\n<env>\n  Working directory: /Users/me/project\n</env>`;
     sent = await send(withPrompt(protocol, own, "hello"));
     assert.equal(systemText(protocol, sent), own);
+    // Claude Code's own block (2.1.100's words) is not OpenCode's: it
+    // stays, and OpenCode's, naming the same folder, follows it
+    sent = await send(withPrompt(protocol, claudeCodePrompt, "hello"));
+    system = systemText(protocol, sent);
+    assert.ok(system.startsWith(claudeCodePrompt), system);
+    assert.equal(system.match(/<env>/g).length, 2);
+    assert.match(
+      system.slice(claudeCodePrompt.length),
+      /^\n\nHere is some useful information about the environment you are running in:\n<env>\n {2}Working directory: \/Users\/me\/project\n/,
+    );
   });
 }
 

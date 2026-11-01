@@ -27,6 +27,8 @@ export function fakeLoomy() {
     logins: 0,
     chatCalls: [],
     chatRefusal: null, // set to an upstream message to answer 400 instead
+    imageCalls: [],
+    imageStatus: null, // set to a status to answer it instead of drawing
     firstLoginCalls: 0,
     dailyBalance: 3000, // the day's first first-login refreshes it to 5000
     recordsReads: 0,
@@ -40,6 +42,8 @@ export function fakeLoomy() {
       state.logins = 0
       state.chatCalls = []
       state.chatRefusal = null
+      state.imageCalls = []
+      state.imageStatus = null
       state.firstLoginCalls = 0
       state.dailyBalance = 3000
       state.recordsReads = 0
@@ -134,6 +138,15 @@ export function fakeLoomy() {
             )
           : json(200, { id: "c1", model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "你好" }, finish_reason: "stop" }] })
         return reply
+      }
+
+      if (url.pathname === "/api/v1/images/generations") {
+        const ct = req.headers.get("content-type") ?? ""
+        if (!/charset\s*=\s*"?utf-8/i.test(ct)) return json(400, { code: "100009", desc: "content-type must name utf-8" })
+        state.imageCalls.push({ accept: req.headers.get("accept"), token, bearer, body: await req.json().catch(() => null) })
+        if (state.imageStatus) return json(state.imageStatus, { error: { message: `refused ${state.imageStatus}` } })
+        // the reporter's measured answer, byte for byte (#609)
+        return new Response('{"created":1793554989,"data":[{"url":"https://aigc-output-image-...png"}],"points_consumed":110}', { headers: { "content-type": "application/json" } })
       }
 
       if (url.pathname === "/api/v1/points/first-login") {

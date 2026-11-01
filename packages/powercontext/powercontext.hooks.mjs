@@ -16,7 +16,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { conversation as transcript, history } from "./conversation.mjs";
-const version = "0.2.0";
+const version = "0.2.1";
 const schema = "powercontext.prepared-context.v1";
 const open = "<powercontext-reference>";
 const close = "</powercontext-reference>";

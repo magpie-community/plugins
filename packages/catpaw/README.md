@@ -29,7 +29,7 @@ magpie plugin login catpaw     # 选「网页登录」/「妙手桌面端登录�
 ## 协议细节
 
 - 请求头（客户端抓包原样）：`m-appkey: com.sankuai.mcopilot.cli`、`m-debug: true`、`User-Agent: axios/1.19.0`、`m-traceid`/`x-request-id`/`x-trace-id` 每请求随机、`x-agent-version: 1.2.0-beta.6`、`Cookie: X-Passport-Token=...`（聊天网关 `ai.catpaw.meituan.com`）；抓包里的 `m-host` 是客户端本机局域网 IP，插件不发这个头。
-- 请求体（客户端抓包原样）：`source: CatX`、`mode: CATX_APP`、`permissionMode: "unsafeBypassPermissions"`、`toolVersion: 2.0.2`。
+- 请求体：`source: CatX`、`mode: CATX_APP`（round 与 turn 同一份）、`permissionMode: "unsafeBypassPermissions"`、`toolVersion: 2.0.2`。2026-10-09 抓包里的 `CatPawCLI` / `CLI` 已被网关停用（返回 `code=400 msg=source 不存在或未启用: CatPawCLI`，plugins#605），0.1.1 起改回 `CatX` / `CATX_APP`，请求头不变。
 - **注意**：上表是**聊天网关**的头；**余额接口**（`catx.nocode.cn`）改用 `X-Auth-Token`（见上）。
 - turn SSE 总超时：15 分钟（带工具循环的长回答全程在推流，更短会把长回答掐断）。
 

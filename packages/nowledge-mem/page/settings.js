@@ -13,7 +13,7 @@ const result = (key, error = false) => message('result', key, error);
 const fields = [
  ['url','serverUrl','text'], ['space','spaceId','text'], ['agent','agentId','text'], ['host-agent','hostAgentId','text'], ['key-env','apiKeyEnv','text'],
  ['skip-agents','skipAgents','list'],
- ['recall','recall','bool',true], ['context','contextBundle','bool',true], ['capture','capture','bool',false],
+ ['recall','recall','bool',true], ['recall-remote','recallRemote','bool',false], ['context','contextBundle','bool',true], ['capture','capture','bool',false], ['capture-remote','captureRemote','bool',false],
  ['capture-tools','captureTools','bool',true], ['capture-filter','captureFilter','filter','off'], ['capture-cindy','captureCindy','bool',false],
  ['max-memories','maxMemories','number',5,1,20], ['max-bytes','maxBytes','number',6000,512,32768],
  ['request-timeout','requestTimeoutMs','number',1500,50,5000], ['recall-backoff','recallBackoffMs','number',30000,100,300000],
@@ -67,6 +67,7 @@ function attachOrigins() {
    else if (kind === 'filter') input.checked = fallback === 'human';
    else input.value = '';
    if (id === 'capture-filter') syncFilter();
+   if (id === 'recall' || id === 'capture') syncRemote();
    paintReset(id,name); input.focus();
   };
   const edited = () => {
@@ -93,7 +94,7 @@ function fill(options) {
  clearKey = false; $('key').value = ''; $('key').type = 'password';
  baseline = {fields:snapshotForm()};
  for (const [id,name] of fields) paintReset(id,name);
- syncFilter(); paintSecret(); paintKeyAction();
+ syncFilter(); syncRemote(); paintSecret(); paintKeyAction();
 }
 function paintSecret() {
  const visible = $('key').type === 'text', label = t(visible ? 'hideKey' : 'showKey');
@@ -117,6 +118,14 @@ function syncFilter() {
  paintReset('capture-tools','captureTools');
 }
 $('capture-filter').onchange = syncFilter;
+function syncRemote() {
+ $('recall-remote').disabled = !$('recall').checked;
+ $('capture-remote').disabled = !$('capture').checked;
+ paintReset('recall-remote','recallRemote');
+ paintReset('capture-remote','captureRemote');
+}
+$('recall').onchange = syncRemote;
+$('capture').onchange = syncRemote;
 function close() { if (!busy) $('settings').close(); }
 $('configure').onclick = async () => {
  if (busy || !savedOptions) return;
@@ -201,6 +210,13 @@ async function save(event) {
   // This detects changes since opening the draft, but the subsequent set is
   // not atomic with this read on released hosts.
   if (changes.some(({path}) => !sameAtPath(draftOptions,current,path))) { result('conflict',true); return; }
+  // Enabling a gate must not silently activate a newly changed remote grant
+  // or send credentials to a newly changed HTTP endpoint.
+  const dependencies = [];
+  if (next.recall !== false && draftOptions.recall === false) dependencies.push(['recallRemote']);
+  if (next.capture === true && draftOptions.capture !== true) dependencies.push(['captureRemote']);
+  if (next.allowInsecureHttp === true && draftOptions.allowInsecureHttp !== true) dependencies.push(['serverUrl']);
+  if (dependencies.some((path) => !sameAtPath(draftOptions,current,path))) { result('conflict',true); return; }
   const merged = applyChanges(current,changes);
   validateExplicitOptions(merged);
   await magpie.options.set(merged);
@@ -256,6 +272,9 @@ $('summary-capture').onchange = async () => {
 };
 $('test-saved').onclick = () => {
  if (!savedOptions) return;
+ if (!validUrl(savedOptions.serverUrl || 'http://127.0.0.1:14242', savedOptions.allowInsecureHttp === true)) {
+  message('configured','invalidUrl',true); return;
+ }
  const target = new URL(testService() + '/test'); target.searchParams.set('lang',language); location.assign(target.href);
 };
 $('save').onclick = save;

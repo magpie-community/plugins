@@ -14,7 +14,7 @@ const messages = {
     "dialogTitle": "Connection settings",
     "settingsIntro": "Connect Magpie to your Nowledge Mem.",
     "serviceSection": "Mem service",
-    "urlHelp": "Local HTTP or remote HTTPS without credentials in the URL. Empty uses NMEM_API_URL or the local default.",
+    "urlHelp": "Local HTTP or remote HTTPS without credentials in the URL. Remote HTTP requires the advanced exception. Empty uses NMEM_API_URL or the local default.",
     "spaceHelp": "Optional. Leave empty for the default Space.",
     "agentHelp": "Optional. Selects the Mem agent profile used for the Context Bundle.",
     "authSection": "Authentication",
@@ -36,7 +36,7 @@ const messages = {
     "dataTitle": "What is sent",
     "recallDisclosure": "Recall sends the latest user turn to the configured Mem URL (NMEM_API_URL when Server URL is empty, else the local default), even when saving conversations is off.",
     "captureDisclosure": "Saving conversations is off by default. When enabled, completed user and assistant turns are imported to that Mem, plus client tool results unless captureTools is off.",
-    "scopeDisclosure": "By default, recall and saving apply to direct local requests and to the Magpie sharing key this computer writes into your own agents (magpie-key). Other gateway keys, a sharing key from another machine, and remote requests are not included.",
+    "scopeDisclosure": "By default, recall and saving apply to direct local requests and to the Magpie sharing key this computer writes into your own agents (magpie-key). Other gateway keys, a sharing key from another machine, and remote requests are not included. The recallRemote and captureRemote options let them in, each separately; saving does not grant recall.",
     "localDefault": "NMEM_API_URL if set, else http://127.0.0.1:14242",
     "defaultSpace": "Default Space",
     "on": "On",
@@ -50,7 +50,7 @@ const messages = {
     "notConfigured": "Not configured",
     "loadFailed": "Could not load configuration. Reopen this page to retry.",
     "bridgeFailed": "Magpie configuration bridge unavailable.",
-    "invalidUrl": "Use local HTTP or remote HTTPS without credentials, query or fragment.",
+    "invalidUrl": "Use HTTP(S) without credentials, query or fragment. Non-local HTTP requires the advanced exception.",
     "invalidKey": "Enter an API key without spaces or line breaks.",
     "configurationSaved": "Configuration saved",
     "saveSucceeded": "Saved. Connectivity has not been checked and no conversation was written.",
@@ -72,7 +72,7 @@ const messages = {
     "dialogTitle": "连接设置",
     "settingsIntro": "把 Magpie 连接到你的 Nowledge Mem。",
     "serviceSection": "Mem 服务",
-    "urlHelp": "支持本机 HTTP 或远程 HTTPS，URL 不得包含凭据。留空时使用 NMEM_API_URL 或本机默认地址。",
+    "urlHelp": "本机 HTTP 或远程 HTTPS，URL 不得包含凭据。远程 HTTP 需要开启高级设置中的例外。留空使用 NMEM_API_URL 或本机默认地址。",
     "spaceHelp": "可选。留空使用默认 Space。",
     "agentHelp": "可选。选择 Context Bundle 使用的 Mem agent 档案。",
     "authSection": "认证",
@@ -94,7 +94,7 @@ const messages = {
     "dataTitle": "发送的内容",
     "recallDisclosure": "即使关闭对话保存，召回也会把最新用户消息发送到配置的 Mem 地址（Server URL 留空时用 NMEM_API_URL，否则用本机默认值）。",
     "captureDisclosure": "对话保存默认关闭。启用后，已完成的用户与助手消息会导入该 Mem；除非关闭 captureTools，客户端工具结果也会一并导入。",
-    "scopeDisclosure": "默认情况下，召回和保存适用于本机直连请求，以及 Magpie 写入你自己 agent 的本机共享密钥（magpie-key）。其他人的网关密钥、来自另一台机器的共享密钥和远端请求都不包含。",
+    "scopeDisclosure": "默认情况下，召回和保存适用于本机直连请求，以及 Magpie 写入你自己 agent 的本机共享密钥（magpie-key）。其他人的网关密钥、来自另一台机器的共享密钥和远端请求都不包含。选项 recallRemote 和 captureRemote 可分别让它们加入；允许保存不等于允许召回。",
     "localDefault": "已设置 NMEM_API_URL 时用它，否则 http://127.0.0.1:14242",
     "defaultSpace": "默认 Space",
     "on": "开",
@@ -108,7 +108,7 @@ const messages = {
     "notConfigured": "尚未配置",
     "loadFailed": "无法读取配置。请重新打开此页面重试。",
     "bridgeFailed": "Magpie 配置桥不可用。",
-    "invalidUrl": "请使用本机 HTTP 或远端 HTTPS，且不含凭据、查询参数或片段。",
+    "invalidUrl": "请使用不含凭据、查询参数或片段的 HTTP(S) 地址；非本机 HTTP 需要开启高级设置中的例外。",
     "invalidKey": "请输入不含空格或换行的 API 密钥。",
     "configurationSaved": "配置已保存",
     "saveSucceeded": "已保存。未检测连通性，也没有写入对话。",
@@ -130,7 +130,7 @@ const messages = {
     "dialogTitle": "連線設定",
     "settingsIntro": "把 Magpie 連接到你的 Nowledge Mem。",
     "serviceSection": "Mem 服務",
-    "urlHelp": "支援本機 HTTP 或遠端 HTTPS，網址不得包含憑據。留空時使用 NMEM_API_URL 或本機預設位址。",
+    "urlHelp": "本機 HTTP 或遠端 HTTPS，網址不得包含憑據。遠端 HTTP 需要開啟進階設定中的例外。留空使用 NMEM_API_URL 或本機預設位址。",
     "spaceHelp": "選填。留空使用預設 Space。",
     "agentHelp": "選填。選擇 Context Bundle 使用的 Mem agent 設定檔。",
     "authSection": "驗證",
@@ -152,7 +152,7 @@ const messages = {
     "dataTitle": "傳送的內容",
     "recallDisclosure": "即使關閉對話儲存，召回也會把最新使用者訊息傳送到設定的 Mem 位址（Server URL 留空時用 NMEM_API_URL，否則用本機預設值）。",
     "captureDisclosure": "對話儲存預設關閉。啟用後，已完成的用戶與助手訊息會匯入該 Mem；除非關閉 captureTools，用戶端工具結果也會一併匯入。",
-    "scopeDisclosure": "預設情況下，召回與儲存適用於本機直連請求，以及 Magpie 寫入你自己 agent 的本機共享金鑰（magpie-key）。其他人的閘道金鑰、來自另一台機器的共享金鑰和遠端請求都不包含。",
+    "scopeDisclosure": "預設情況下，召回與儲存適用於本機直連請求，以及 Magpie 寫入你自己 agent 的本機共享金鑰（magpie-key）。其他人的閘道金鑰、來自另一台機器的共享金鑰和遠端請求都不包含。選項 recallRemote 和 captureRemote 可分別讓它們加入；允許儲存不等於允許召回。",
     "localDefault": "已設定 NMEM_API_URL 時用它，否則 http://127.0.0.1:14242",
     "defaultSpace": "預設 Space",
     "on": "開",
@@ -166,7 +166,7 @@ const messages = {
     "notConfigured": "尚未設定",
     "loadFailed": "無法讀取設定。請重新開啟此頁面重試。",
     "bridgeFailed": "Magpie 設定橋不可用。",
-    "invalidUrl": "請使用本機 HTTP 或遠端 HTTPS，且不含憑證、查詢參數或片段。",
+    "invalidUrl": "請使用不含憑據、查詢參數或片段的 HTTP(S) 位址；非本機 HTTP 需要開啟進階設定中的例外。",
     "invalidKey": "請輸入不含空格或換行的 API 金鑰。",
     "configurationSaved": "設定已儲存",
     "saveSucceeded": "已儲存。未偵測連線，也沒有寫入對話。",
@@ -188,7 +188,7 @@ const messages = {
     "dialogTitle": "接続設定",
     "settingsIntro": "Magpie を Nowledge Mem に接続します。",
     "serviceSection": "Mem サービス",
-    "urlHelp": "ローカル HTTP またはリモート HTTPS。URL に認証情報は含められません。空欄では NMEM_API_URL またはローカル既定値を使います。",
+    "urlHelp": "ローカル HTTP またはリモート HTTPS。URL に認証情報は含められません。リモート HTTP は詳細設定での許可が必要です。空欄では NMEM_API_URL またはローカル既定値を使います。",
     "spaceHelp": "任意。空欄なら既定の Space を使います。",
     "agentHelp": "任意。Context Bundle に使う Mem の agent プロファイルを選びます。",
     "authSection": "認証",
@@ -210,7 +210,7 @@ const messages = {
     "dataTitle": "送信される内容",
     "recallDisclosure": "会話の保存がオフでも、呼び出しは最新のユーザーの発話を設定した Mem の URL（Server URL が空なら NMEM_API_URL、なければローカル既定値）に送ります。",
     "captureDisclosure": "会話の保存は既定でオフです。有効にすると、完了したユーザーとアシスタントの発話をその Mem に取り込みます。captureTools をオフにしない限り、クライアントのツール結果も含みます。",
-    "scopeDisclosure": "既定では、呼び出しと保存は直接のローカル要求と、Magpie があなた自身の agent に書き込むこのコンピューターの共有キー（magpie-key）に適用されます。他のゲートウェイキー、別のコンピューターからの共有キー、リモート要求は含まれません。",
+    "scopeDisclosure": "既定では、呼び出しと保存は直接のローカル要求と、Magpie があなた自身の agent に書き込むこのコンピューターの共有キー（magpie-key）に適用されます。他のゲートウェイキー、別のコンピューターからの共有キー、リモート要求は含まれません。オプション recallRemote と captureRemote で、それぞれ個別に含められます。保存の許可は呼び出しの許可を含みません。",
     "localDefault": "NMEM_API_URL があればそれ、なければ http://127.0.0.1:14242",
     "defaultSpace": "既定の Space",
     "on": "オン",
@@ -224,7 +224,7 @@ const messages = {
     "notConfigured": "未設定",
     "loadFailed": "設定を読み込めませんでした。このページを開き直してください。",
     "bridgeFailed": "Magpie の設定ブリッジを利用できません。",
-    "invalidUrl": "ローカル HTTP またはリモート HTTPS を、認証情報・クエリ・フラグメントなしで指定してください。",
+    "invalidUrl": "認証情報・クエリ・フラグメントのない HTTP(S) を指定してください。ローカル以外の HTTP は詳細設定での許可が必要です。",
     "invalidKey": "空白や改行を含まない API キーを入力してください。",
     "configurationSaved": "設定を保存しました",
     "saveSucceeded": "保存しました。接続確認はしておらず、会話も書き込んでいません。",
@@ -246,7 +246,7 @@ const messages = {
     "dialogTitle": "Verbindungseinstellungen",
     "settingsIntro": "Verbinde Magpie mit deiner Nowledge Mem.",
     "serviceSection": "Mem-Dienst",
-    "urlHelp": "Lokales HTTP oder entferntes HTTPS ohne Zugangsdaten in der URL. Leer verwendet NMEM_API_URL oder den lokalen Standard.",
+    "urlHelp": "Lokales HTTP oder entferntes HTTPS ohne Zugangsdaten in der URL. Entferntes HTTP benötigt die Ausnahme unter Erweitert. Leer verwendet NMEM_API_URL oder den lokalen Standard.",
     "spaceHelp": "Optional. Leer lassen für den Standard-Space.",
     "agentHelp": "Optional. Wählt das Mem-Agent-Profil für das Context Bundle.",
     "authSection": "Authentifizierung",
@@ -268,7 +268,7 @@ const messages = {
     "dataTitle": "Was gesendet wird",
     "recallDisclosure": "Der Abruf sendet den letzten Benutzerbeitrag an die konfigurierte Mem-URL (NMEM_API_URL, wenn Server URL leer ist, sonst der lokale Standard), auch wenn das Speichern von Gesprächen aus ist.",
     "captureDisclosure": "Das Speichern von Gesprächen ist standardmäßig aus. Wenn aktiviert, werden abgeschlossene Benutzer- und Assistentenbeiträge an diese Mem importiert, dazu Tool-Ergebnisse des Clients, sofern captureTools nicht aus ist.",
-    "scopeDisclosure": "Standardmäßig gelten Abruf und Speichern für direkte lokale Anfragen und für den Magpie-Sharing-Schlüssel, den dieser Computer in deine eigenen Agenten schreibt (magpie-key). Andere Gateway-Schlüssel, ein Sharing-Schlüssel von einem anderen Computer und entfernte Anfragen sind nicht enthalten.",
+    "scopeDisclosure": "Standardmäßig gelten Abruf und Speichern für direkte lokale Anfragen und für den Magpie-Sharing-Schlüssel, den dieser Computer in deine eigenen Agenten schreibt (magpie-key). Andere Gateway-Schlüssel, ein Sharing-Schlüssel von einem anderen Computer und entfernte Anfragen sind nicht enthalten. Die Optionen recallRemote und captureRemote lassen sie jeweils einzeln zu; Speichern erlaubt keinen Abruf.",
     "localDefault": "NMEM_API_URL, falls gesetzt, sonst http://127.0.0.1:14242",
     "defaultSpace": "Standard-Space",
     "on": "An",
@@ -282,7 +282,7 @@ const messages = {
     "notConfigured": "Nicht konfiguriert",
     "loadFailed": "Konfiguration konnte nicht geladen werden. Seite zum Wiederholen neu öffnen.",
     "bridgeFailed": "Magpies Konfigurationsschnittstelle ist nicht verfügbar.",
-    "invalidUrl": "Lokales HTTP oder entferntes HTTPS ohne Zugangsdaten, Abfrage oder Fragment verwenden.",
+    "invalidUrl": "HTTP(S) ohne Zugangsdaten, Abfrage oder Fragment verwenden. Nichtlokales HTTP benötigt die Ausnahme unter Erweitert.",
     "invalidKey": "API-Schlüssel ohne Leerzeichen oder Zeilenumbrüche eingeben.",
     "configurationSaved": "Konfiguration gespeichert",
     "saveSucceeded": "Gespeichert. Die Verbindung wurde nicht geprüft und kein Gespräch geschrieben.",
@@ -342,6 +342,13 @@ Object.assign(messages.zh, {keySaved:"已保存",keyNotSet:"未保存密钥",key
 Object.assign(messages["zh-TW"], {keySaved:"已儲存",keyNotSet:"未儲存金鑰",keyRemove:"清除已儲存的金鑰",keyUndo:"復原清除",humanOnly:"僅儲存人類對話",filterHelp:"儲存對話時排除工具結果。",cindyHelp:"僅在人類對話模式開啟時可用。",captureToolsHelp:"僅在「僅儲存人類對話」關閉時生效。",insecureHelp:"僅在可信任的網路中使用。"});
 Object.assign(messages.ja, {keySaved:"保存済み",keyNotSet:"保存したキーなし",keyRemove:"保存したキーを削除",keyUndo:"削除を取り消す",humanOnly:"人間の対話のみ",filterHelp:"保存する会話からツール結果を除きます。",cindyHelp:"人間の対話のみが有効なときに使用できます。",captureToolsHelp:"人間の対話のみがオフのときに適用されます。",insecureHelp:"信頼できるネットワークでのみ使用してください。"});
 Object.assign(messages.de, {keySaved:"Gespeichert",keyNotSet:"Kein gespeicherter Schlüssel",keyRemove:"Gespeicherten Schlüssel entfernen",keyUndo:"Entfernen rückgängig",humanOnly:"Nur menschlicher Dialog",filterHelp:"Tool-Ergebnisse aus gespeicherten Gesprächen ausschließen.",cindyHelp:"Nur verfügbar, wenn menschlicher Dialog aktiviert ist.",captureToolsHelp:"Gilt nur, wenn der Filter für menschlichen Dialog aus ist.",insecureHelp:"Nur in einem vertrauenswürdigen Netzwerk verwenden."});
+
+
+Object.assign(messages.en,{recallRemote:"Recall for remote and other gateway keys",recallRemoteHelp:"Requires recall. May share the configured Mem memories and Context Bundle with all such clients. This is not tenant isolation.",captureRemote:"Save remote and other gateway conversations",captureRemoteHelp:"Requires saving conversations. Saves conversations from all such clients to this Mem."});
+Object.assign(messages.zh,{recallRemote:"允许远端和其他网关密钥召回",recallRemoteHelp:"需要开启记忆召回。可能向所有此类客户端提供所配置 Mem 的记忆和 Context Bundle。这不是租户隔离。",captureRemote:"保存远端和其他网关密钥的对话",captureRemoteHelp:"需要开启保存对话。会将所有此类客户端的对话保存到此 Mem。"});
+Object.assign(messages["zh-TW"],{recallRemote:"允許遠端與其他閘道金鑰召回",recallRemoteHelp:"需要開啟記憶召回。可能向所有此類用戶端提供所設定 Mem 的記憶與 Context Bundle。這不是租戶隔離。",captureRemote:"儲存遠端與其他閘道金鑰的對話",captureRemoteHelp:"需要開啟儲存對話。會將所有此類用戶端的對話儲存到此 Mem。"});
+Object.assign(messages.ja,{recallRemote:"リモートと他のゲートウェイキーの検索を許可",recallRemoteHelp:"記憶の検索が必要です。設定した Mem の記憶と Context Bundle を該当する全クライアントに共有する可能性があります。テナント分離ではありません。",captureRemote:"リモートと他のゲートウェイキーの会話を保存",captureRemoteHelp:"会話の保存が必要です。該当する全クライアントの会話をこの Mem に保存します。"});
+Object.assign(messages.de,{recallRemote:"Abruf für entfernte und andere Gateway-Schlüssel",recallRemoteHelp:"Erfordert den Erinnerungsabruf. Kann Erinnerungen und Context Bundle des konfigurierten Mem mit allen solchen Clients teilen. Dies ist keine Mandantentrennung.",captureRemote:"Entfernte und andere Gateway-Gespräche speichern",captureRemoteHelp:"Erfordert das Speichern von Gesprächen. Speichert Gespräche aller solchen Clients in diesem Mem."});
 
 const languageTags = {en: 'en', zh: 'zh-CN', 'zh-TW': 'zh-TW', ja: 'ja-JP', de: 'de-DE'};
 

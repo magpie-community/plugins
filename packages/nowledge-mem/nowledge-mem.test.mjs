@@ -314,6 +314,8 @@ test("options it can't use are invalid, before anything is sent", async () => {
     { serverUrl: "http://127.0.0.1:14242", requestTimeoutMs: 10_000 },
     { serverUrl: "http://127.0.0.1:14242", recallBackoffMs: 10 },
     { serverUrl: "http://127.0.0.1:14242", capture: "yes" },
+    { serverUrl: "http://127.0.0.1:14242", recallRemote: "yes" },
+    { serverUrl: "http://127.0.0.1:14242", captureRemote: 1 },
     { serverUrl: "http://127.0.0.1:14242", skipAgents: 5 },
     { serverUrl: "http://127.0.0.1:14242", skipAgents: ["Mozilla", 1] },
     { serverUrl: "http://127.0.0.1:14242", apiKey: "bad key" },
@@ -705,4 +707,61 @@ test("a canceled request keeps its reason and does not back off the service", as
   const body = structuredClone(chat)
   expect(await onRequest(body, ctx("chat"))).toBe(body)
   expect(body.messages[1].content).toContain("QUARTZ-8413")
+})
+
+test("remote and gateway-key requests get recall and capture only by their own opt-in (#608)", async () => {
+  for (const origin of ["remote", "gateway-key"]) {
+    for (const [recallRemote, captureRemote] of [[false, false], [true, false], [false, true], [true, true]]) {
+      mock()
+      calls.length = 0
+      const [reports, context] = capturing("chat", { origin, options: { recallRemote, captureRemote } })
+      const body = structuredClone(chat)
+      const out = await onRequest(body, context)
+      await onResponse(reply, { ...context, success: true })
+      expect(of("memories/search")).toHaveLength(recallRemote ? 1 : 0)
+      expect(of("threads/import")).toHaveLength(captureRemote ? 1 : 0)
+      // capture permission alone saves the conversation but recalls nothing
+      if (!recallRemote) {
+        expect(out).toBeUndefined()
+        expect(body).toEqual(chat)
+        expect(reports[0]).toEqual(["skipped"])
+      } else expect(JSON.stringify(out)).toContain("QUARTZ-8413")
+      reset()
+    }
+    // captureRemote does not turn capture on
+    mock()
+    calls.length = 0
+    const [, off] = capturing("chat", { origin, options: { capture: false, captureRemote: true } })
+    await onRequest(structuredClone(chat), off)
+    await onResponse(reply, { ...off, success: true })
+    expect(calls).toHaveLength(0)
+    reset()
+  }
+  // a missing or unknown origin stays out even with both opt-ins
+  for (const origin of [undefined, "unrecognized"]) {
+    mock()
+    calls.length = 0
+    const [, context] = capturing("chat", { origin, options: { recallRemote: true, captureRemote: true } })
+    await onRequest(structuredClone(chat), context)
+    await onResponse(reply, { ...context, success: true })
+    expect(calls).toHaveLength(0)
+    reset()
+  }
+})
+
+test("remote opt-ins apply consistently across all gateway protocols", async () => {
+  const fixtures = [
+    ["chat",chat,reply],
+    ["responses",{input:[{role:"user",content:[{type:"input_text",text:"Quartz codename?"}]}]},{status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"answer"}]}]}],
+    ["anthropic",{messages:[{role:"user",content:[{type:"text",text:"Quartz codename?"}]}]},{type:"message",role:"assistant",content:[{type:"text",text:"answer"}],stop_reason:"end_turn"}],
+    ["gemini",{contents:[{role:"user",parts:[{text:"Quartz codename?"}]}]},{candidates:[{content:{role:"model",parts:[{text:"answer"}]},finishReason:"STOP"}]}],
+  ]
+  for (const origin of ["remote","gateway-key"]) for (const [protocol,input,response] of fixtures) {
+    reset();calls.length=0;mock()
+    const [,c]=capturing(protocol,{origin,options:{recallRemote:true,captureRemote:true}})
+    await onRequest(structuredClone(input),c)
+    await onResponse(response,{...c,success:true})
+    expect(of("memories/search")).toHaveLength(1)
+    expect(of("threads/import")).toHaveLength(1)
+  }
 })

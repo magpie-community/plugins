@@ -58,7 +58,7 @@ const messages = {
     "automaticScope": "Resolved by service",
     "dataTitle": "What is sent",
     "recallDisclosure": "Recall sends the latest user turn to the configured service URL above, even when capture is off.",
-    "captureDisclosure": "Capture is off by default. When enabled, complete user and assistant turns, client tool calls and results, including files and command output read by the Agent, are sent to that same service. Remote recall and capture require separate opt-ins."
+    "captureDisclosure": "Capture is off by default. When enabled, complete user and assistant turns, client tool calls and results, including files and command output read by the Agent, are sent to that same service. Remote recall and capture require separate opt-ins. Saved conversations feed Memory and Topic Memory, not Experience: Experience needs task-outcome Sources the agent records with PowerContext’s record_task_outcome MCP tool."
   },
   "zh": {
     "deployButton": "部署方式",
@@ -116,7 +116,7 @@ const messages = {
     "automaticScope": "由服务端解析",
     "dataTitle": "发送的内容",
     "recallDisclosure": "召回会将最新一轮用户消息发送到上方配置的服务地址，即使对话存回关闭也会发送。",
-    "captureDisclosure": "对话存回默认关闭。开启后会向同一服务发送完整的用户和助手消息、客户端工具调用与结果，包括 Agent 读取的文件内容和命令输出。远程召回与存回需要分别授权开启。"
+    "captureDisclosure": "对话存回默认关闭。开启后会向同一服务发送完整的用户和助手消息、客户端工具调用与结果，包括 Agent 读取的文件内容和命令输出。远程召回与存回需要分别授权开启。保存的对话用于 Memory 和 Topic Memory，不用于 Experience：Experience 需要 agent 通过 PowerContext 的 record_task_outcome MCP 工具记录的 task-outcome Source。"
   },
   "zh-TW": {
     "deployButton": "部署方式",
@@ -174,7 +174,7 @@ const messages = {
     "automaticScope": "由伺服器解析",
     "dataTitle": "傳送的內容",
     "recallDisclosure": "記憶檢索會將最新一輪使用者訊息傳送至上方設定的服務位址，即使對話儲存關閉也會傳送。",
-    "captureDisclosure": "對話儲存預設關閉。開啟後會向同一服務傳送完整的使用者和助理訊息、用戶端工具呼叫與結果，包括 Agent 讀取的檔案內容和指令輸出。遠端檢索與儲存需要分別授權開啟。"
+    "captureDisclosure": "對話儲存預設關閉。開啟後會向同一服務傳送完整的使用者和助理訊息、用戶端工具呼叫與結果，包括 Agent 讀取的檔案內容和指令輸出。遠端檢索與儲存需要分別授權開啟。儲存的對話用於 Memory 和 Topic Memory，不用於 Experience：Experience 需要 agent 透過 PowerContext 的 record_task_outcome MCP 工具記錄的 task-outcome Source。"
   },
   "ja": {
     "deployButton": "デプロイ方法",
@@ -232,7 +232,7 @@ const messages = {
     "automaticScope": "サービス側で解決",
     "dataTitle": "送信される内容",
     "recallDisclosure": "記憶検索は、会話の保存が無効でも、最新のユーザー発言を上記の設定済みサービス URL に送信します。",
-    "captureDisclosure": "会話の保存は既定で無効です。有効にすると、ユーザーとアシスタントの全発言、クライアントのツール呼び出しと結果（Agent が読み取ったファイルやコマンド出力を含む）を同じサービスに送信します。リモートの検索と保存にはそれぞれ明示的な許可が必要です。"
+    "captureDisclosure": "会話の保存は既定で無効です。有効にすると、ユーザーとアシスタントの全発言、クライアントのツール呼び出しと結果（Agent が読み取ったファイルやコマンド出力を含む）を同じサービスに送信します。リモートの検索と保存にはそれぞれ明示的な許可が必要です。保存した会話は Memory と Topic Memory に使われ、Experience には使われません。Experience には、agent が PowerContext の record_task_outcome MCP ツールで記録する task-outcome Source が必要です。"
   },
   "de": {
     "deployButton": "Bereitstellung",
@@ -290,7 +290,7 @@ const messages = {
     "automaticScope": "Vom Dienst aufgelöst",
     "dataTitle": "Übertragene Inhalte",
     "recallDisclosure": "Der Abruf sendet den letzten Benutzerbeitrag an die oben konfigurierte Dienst-URL, auch wenn die Gesprächsspeicherung deaktiviert ist.",
-    "captureDisclosure": "Die Gesprächsspeicherung ist standardmäßig deaktiviert. Wenn aktiviert, werden vollständige Benutzer- und Assistentenbeiträge sowie Tool-Aufrufe und Ergebnisse des Clients an denselben Dienst gesendet, einschließlich vom Agent gelesener Dateien und Befehlsausgaben. Entfernter Abruf und entfernte Speicherung benötigen jeweils eine separate Freigabe."
+    "captureDisclosure": "Die Gesprächsspeicherung ist standardmäßig deaktiviert. Wenn aktiviert, werden vollständige Benutzer- und Assistentenbeiträge sowie Tool-Aufrufe und Ergebnisse des Clients an denselben Dienst gesendet, einschließlich vom Agent gelesener Dateien und Befehlsausgaben. Entfernter Abruf und entfernte Speicherung benötigen jeweils eine separate Freigabe. Gespeicherte Gespräche speisen Memory und Topic Memory, nicht Experience: Experience braucht task-outcome-Sources, die der Agent mit PowerContexts MCP-Tool record_task_outcome aufzeichnet."
   }
 };
 

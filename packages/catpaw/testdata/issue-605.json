@@ -1,0 +1,7 @@
+{
+  "note": "plugins#605 (1007cordon-ux, 2026-11-01): what magpie showed for every chat with plugin 0.1.0, verbatim. The plugin formats a refused round as `妙手 round 失败：HTTP <status> code=<code> msg=<msg>`, so the gateway answered HTTP 200 with the body under `upstream`. The reporter verified that source CatX / mode CATX_APP, with the same headers, gets a normal completion.",
+  "reported": "妙手 CatPaw: 妙手 round 失败：HTTP 200 code=400 msg=source 不存在或未启用: CatPawCLI",
+  "upstreamStatus": 200,
+  "upstream": { "code": 400, "msg": "source 不存在或未启用: CatPawCLI" },
+  "served": { "source": "CatX", "mode": "CATX_APP" }
+}

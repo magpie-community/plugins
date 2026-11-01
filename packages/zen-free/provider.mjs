@@ -283,7 +283,18 @@ function normalizeTools(body, protocol) {
 // Zen on 2026-11-01, its temp folder line included), with the directory
 // the agent's own prompt names, as OpenCode names its own, or the user's
 // home folder when the prompt names none.
-const HAS_ENVIRONMENT = /<env>[\s\S]*Working directory:[\s\S]*<\/env>/;
+//
+// Only OpenCode's own block counts as already there: `<env>` and then
+// `  Working directory: `, two spaces in, as every OpenCode (1.x and 2.x)
+// writes it. Another agent's block is its own text, not OpenCode's: Claude
+// Code up to 2.1.100 or so ends its prompt with "Here is useful information
+// about the environment you are running in:\n<env>\nWorking directory: ...",
+// and with that taken for OpenCode's, its requests went to Zen without
+// OpenCode's block while Pi's, which has none, got it. Zen then served Pi
+// and answered Claude Code 429 FreeUsageLimitError from the same address
+// (MrHayesLin on X, 2026-11-01). The agent's block stays; OpenCode's
+// follows it.
+const HAS_ENVIRONMENT = /<env>\r?\n {2}Working directory: [^\n]*\n[\s\S]*?<\/env>/;
 // How agents name their working directory: Codex's `<cwd>`, Claude Code's
 // and others' `Working directory:`, Kimi's "The current working directory
 // is `...`". Only an absolute path counts.

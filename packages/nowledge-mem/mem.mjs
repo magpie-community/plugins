@@ -8,7 +8,7 @@ import "./page/validate.js";
 const validateExplicitOptions = globalThis.__nowledgeMemValidateOptions;
 
 // Bumped with package.json: Mem's own clients record it on imported Threads.
-export const version = "0.1.4";
+export const version = "0.1.5";
 
 // The only report codes magpie's Plugins page shows; tools turn these into
 // messages, never the service's own text.
@@ -89,6 +89,8 @@ export function resolveOptions(raw = {}, env = process.env) {
         recall: raw.recall ?? true,
         contextBundle: raw.contextBundle ?? true,
         capture: raw.capture ?? false,
+        recallRemote: raw.recallRemote ?? false,
+        captureRemote: raw.captureRemote ?? false,
         captureTools: raw.captureTools ?? true,
         captureFilter,
         captureCindy: raw.captureCindy ?? false,

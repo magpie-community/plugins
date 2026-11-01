@@ -217,6 +217,93 @@ test("human-dialogue switch preserves filter semantics and controls Cindy", asyn
  await f.save();expect(f.get().captureFilter).toBe("human")
 })
 
+test("remote recall and capture are independent and gated by their global switches", async () => {
+ const f=await pageFixture({apiKey:"saved",future:{keep:true}}),e=f.elements
+ await e.configure.onclick()
+ expect(e["recall-remote"].checked).toBe(false)
+ expect(e["capture-remote"].checked).toBe(false)
+ expect(e["recall-remote"].disabled).toBe(false)
+ expect(e["capture-remote"].disabled).toBe(true)
+ e["recall-remote"].checked=true;e["recall-remote"].dispatchEvent({type:"change"})
+ await f.save()
+ expect(f.get()).toEqual({apiKey:"saved",future:{keep:true},recallRemote:true})
+ e.capture.checked=true;e.capture.onchange();e.capture.dispatchEvent({type:"change"})
+ expect(e["capture-remote"].disabled).toBe(false)
+ e["capture-remote"].checked=true;e["capture-remote"].dispatchEvent({type:"change"})
+ await f.save()
+ expect(f.get().captureRemote).toBe(true)
+ expect(f.get().recallRemote).toBe(true)
+ e.recall.checked=false;e.recall.onchange();e.recall.dispatchEvent({type:"change"})
+ expect(e["recall-remote"].disabled).toBe(true)
+ await f.save()
+ expect(f.get().recall).toBe(false)
+ expect(f.get().recallRemote).toBe(true)
+ expect(f.get().captureRemote).toBe(true)
+})
+
+test("a saved remote grant stays visible while its global switch is off", async () => {
+ const f=await pageFixture({capture:false,captureRemote:true}),e=f.elements
+ await e.configure.onclick()
+ expect(e["capture-remote"].checked).toBe(true)
+ expect(e["capture-remote"].disabled).toBe(true)
+ e.capture.checked=true;e.capture.onchange();e.capture.dispatchEvent({type:"change"})
+ expect(e["capture-remote"].disabled).toBe(false)
+ expect(e["capture-remote"].checked).toBe(true)
+ await f.save()
+ expect(f.get().captureRemote).toBe(true)
+})
+
+test("enabling a global gate conflicts if its remote grant changed elsewhere", async () => {
+ for (const [field,remote] of [["recall","recallRemote"],["capture","captureRemote"]]) {
+  const f=await pageFixture({[field]:false,[remote]:false}),e=f.elements
+  await e.configure.onclick()
+  e[field].checked=true;e[field].onchange();e[field].dispatchEvent({type:"change"})
+  f.external({[field]:false,[remote]:true});await f.save()
+  expect(e.result.dataset.message).toBe("conflict")
+  expect(e[field].checked).toBe(true)
+  expect(f.get()[field]).toBe(false)
+  expect(f.writes()).toBe(0)
+ }
+})
+
+test("remote scope disclosure and exposure warnings exist in every language", async () => {
+ const f=await pageFixture({})
+ for (const language of ["en","zh","zh-TW","ja","de"]) {
+  const m=f.i18n.messages[language]
+  expect(m.scopeDisclosure).toContain("recallRemote")
+  expect(m.scopeDisclosure).toContain("captureRemote")
+  expect(m.recallRemoteHelp).toContain("Context Bundle")
+  expect(m.captureRemoteHelp.length).toBeGreaterThan(10)
+ }
+})
+
+test("non-local HTTP requires the explicit exception for saving and testing", async () => {
+ const f=await pageFixture({future:{keep:true},apiKey:"saved"}),e=f.elements
+ await e.configure.onclick();e.url.value="http://mem.tailnet.invalid:14242"
+ await f.save();expect(e.result.dataset.message).toBe("invalidUrl");expect(f.writes()).toBe(0)
+ e.insecure.checked=true;e.insecure.dispatchEvent({type:"change"});await f.save()
+ expect(f.get()).toEqual({future:{keep:true},apiKey:"saved",serverUrl:"http://mem.tailnet.invalid:14242",allowInsecureHttp:true})
+ e["test-saved"].onclick();expect(f.location.assigned).toBe("http://127.0.0.1:3479/test?lang=en")
+ e.insecure.checked=false;e.insecure.dispatchEvent({type:"change"});await f.save()
+ expect(e.result.dataset.message).toBe("invalidUrl")
+ expect(f.get().allowInsecureHttp).toBe(true)
+ e.url.value="https://mem.example";await f.save()
+ expect(f.get().allowInsecureHttp).toBe(false)
+ const invalid=await pageFixture({serverUrl:"http://mem.tailnet.invalid:14242"})
+ invalid.elements["test-saved"].onclick()
+ expect(invalid.location.assigned).toBeUndefined()
+ expect(invalid.elements.configured.dataset.message).toBe("invalidUrl")
+})
+
+test("enabling HTTP exception conflicts if the saved endpoint changed elsewhere", async () => {
+ const f=await pageFixture({serverUrl:"https://mem.example",apiKey:"saved"}),e=f.elements
+ await e.configure.onclick();e.insecure.checked=true;e.insecure.dispatchEvent({type:"change"})
+ f.external({serverUrl:"http://other.invalid",apiKey:"saved"});await f.save()
+ expect(e.result.dataset.message).toBe("conflict")
+ expect(f.get()).toEqual({serverUrl:"http://other.invalid",apiKey:"saved"})
+ expect(f.writes()).toBe(0)
+})
+
 test("settings avoid native selects and associate help with controls", async () => {
  const html=await Bun.file(new URL("./page/settings.html",import.meta.url)).text()
  expect(html).not.toMatch(/<select\b/i)
@@ -225,7 +312,7 @@ test("settings avoid native selects and associate help with controls", async () 
  for (const [,legend] of legends) expect(legend).toContain('<svg')
  for (const [,references] of html.matchAll(/\baria-describedby="([^"]+)"/g))
   for (const id of references.split(/\s+/)) expect(html).toContain(`id="${id}"`)
- for (const id of ["host-agent","key-env","recall","context","capture","capture-tools","capture-filter","capture-cindy","max-memories","max-bytes","request-timeout","recall-backoff","gateway-timeout","port","insecure"])
+ for (const id of ["host-agent","key-env","recall","recall-remote","context","capture","capture-remote","capture-tools","capture-filter","capture-cindy","max-memories","max-bytes","request-timeout","recall-backoff","gateway-timeout","port","insecure"])
   expect(html).toMatch(new RegExp(`<input id="${id}"[^>]*aria-describedby="[^"]+"`))
 })
 
