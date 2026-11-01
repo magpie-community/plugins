@@ -31,9 +31,15 @@ function authHeaders(token) {
   return { Authorization: `Bearer ${token}`, Accept: "application/json" }
 }
 
-export async function refreshMirasimToken(refreshToken) {
+// Internal only — exporting this made Magpie's plugin host treat it as a hook.
+async function refreshMirasimToken(refreshToken) {
   if (!refreshToken) throw new Error("没有 refreshToken，无法刷新，请重新登录后重新导入")
-  const res = await jget(AUTH_REFRESH_URL, { "Content-Type": "application/json", Accept: "application/json" }, 20000)
+  const res = await fetch(AUTH_REFRESH_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+    signal: AbortSignal.timeout(20000),
+  })
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
       const e = new Error("refreshToken 已失效，请重新登录后重新导入")
@@ -53,7 +59,8 @@ export async function refreshMirasimToken(refreshToken) {
   return { token, refreshToken: d.refresh_token || d.refreshToken || refreshToken, expiresAt }
 }
 
-export function normalizeMirasimLimits(limits, profile = null) {
+// Internal only — keep module exports limited to the plugin factory.
+function normalizeMirasimLimits(limits, profile = null) {
   const windows = Array.isArray(limits?.windows) ? limits.windows : []
   const epochToIso = (sec) => (Number.isFinite(sec) && sec > 0 ? new Date(sec * 1000).toISOString() : null)
   const WINDOW_LABELS = {
