@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { runInNewContext } from "node:vm"
-import { onRequest, reset } from "./nowledge-mem.hooks.mjs"
+import { onRequest, onResponse, reset } from "./nowledge-mem.hooks.mjs"
 
 test("the shared validator remains available after its module is cached", async () => {
  const validator=globalThis.__nowledgeMemValidateOptions
@@ -107,6 +107,23 @@ test("skipAgents retains existing formats, edits names, and updates the summary"
   expect(f.get().skipAgents).toBeUndefined()
   expect(e["summary-skip"].textContent).toBe("None")
  }
+})
+
+test("a skipped app saved by the page reaches the hook without Mem requests", async () => {
+ const f=await pageFixture({capture:true}),e=f.elements
+ await e.configure.onclick();e["skip-agents"].value="Mozilla, Claude Code";await f.save()
+ const previousFetch=globalThis.fetch, calls=[]
+ globalThis.fetch=async (...args)=>{calls.push(args);return Response.json([])}
+ try {
+  reset()
+  const state={}, body={messages:[{role:"user",content:"hello"}]}
+  const context={protocol:"chat",origin:"local",agent:"claude-code",query:"hello",session:"s",options:f.get(),state,signal:new AbortController().signal}
+  await onRequest(body,context)
+  await onResponse({choices:[{message:{role:"assistant",content:"answer"},finish_reason:"stop"}]},{...context,success:true})
+  expect(calls).toHaveLength(0)
+  expect(state.nowledgeMem).toBeUndefined()
+  expect(body.messages[0].content).toBe("hello")
+ } finally { globalThis.fetch=previousFetch;reset() }
 })
 
 test("released hosts save only edited fields using a fresh read and retain secrets", async () => {
