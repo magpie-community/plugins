@@ -18,6 +18,12 @@
 // `until` (the next Beijing midnight, plus a per-account jitter) and a dead
 // session is remembered for the rest of the day instead of being re-asked
 // ~48 times.
+//
+// Usage contract (auth.usage): Magpie draws a provider's card on its 观测 /
+// 用量 page only when the plugin has this hook. It reads /alice/ug/campaign/
+// v3/detail/ — the call check-in already makes, through fetchWithCooldown, so
+// a cooldown sends nothing — and answers { plan, windows, signIn } with one
+// 体验额度 window. Failures are answered, never thrown: { error, signIn }.
 
 import { createHash } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
@@ -108,6 +114,20 @@ function accountKeyOf(provider, auth) {
   if (uid) return `uid:${uid}`
   const secret = String(auth?.key ?? auth?.refresh ?? "")
   return `${provider}:${createHash("sha256").update(secret).digest("hex").slice(0, 16)}`
+}
+
+// Doubao's web session is a cookie, not a bearer token. A full cookie string
+// (`name=value; name=value; …`, what `document.cookie` gives) is sent as it
+// is. A bare JWT — what the sign-in prompt used to ask for — is sent as
+// `sessionid=`, the cookie Doubao's web session actually lives in: a bare
+// value in a Cookie header has no name, so Doubao reads it as anonymous and
+// answers 710012001 "login expired" whatever the token's own `exp` says.
+function cookieOf(auth) {
+  const full = String(auth?.metadata?.cookie ?? auth?.cookie ?? "").trim()
+  if (full.includes("=")) return full
+  const key = String(auth?.key ?? full ?? "").trim()
+  if (!key) return ""
+  return key.includes("=") ? key : `sessionid=${key}`
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +284,9 @@ function findCheckinTask(body) {
   return tasks.find((t) => t && t.task_kind === "daily_signin") || null
 }
 
+// compact is a count as the card's display says one: whole, else to two places.
+const compact = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""))
+
 async function fetchDoubaoStatus(cookie, accountKey, deviceSeed) {
   const r = await fetchWithCooldown("doubao", accountKey, () => postJson(apiUrl(DETAIL_URL, deviceSeed), cookie, { campaign_group_code: CAMPAIGN_GROUP }))
   if (r.skipped) return { cooling: true, retryAt: r.retryAt, checkin: null, totalAmount: 0 }
@@ -370,25 +393,9 @@ export const DoubaoAuthPlugin = async () => ({
   },
   auth: {
     provider: "doubao",
-    methods: [
-      {
-        type: "api",
-        label: "会话 Cookie",
-        prompts: [{ type: "text", key: "cookie", message: "粘贴豆包（doubao.com）网页会话 Cookie" }],
-      },
-    ],
-    async loader(getAuth) {
-      const auth = await getAuth()
-      if (auth?.type !== "api" || !auth.key) return {}
-      return {
-        baseURL: "",
-        apiKey: "",
-        headers: { Cookie: String(auth.key), "User-Agent": CLIENT_UA },
-      }
-    },
     async checkin(getAuth) {
       const auth = await getAuth()
-      const cookie = auth?.key
+      const cookie = cookieOf(auth)
       if (!cookie) return { outcome: "failed", message: "未提供豆包会话 Cookie" }
       const accountKey = accountKeyOf("doubao", auth)
       // The device seed is NOT the ledger key: it must stay stable across a
@@ -402,8 +409,45 @@ export const DoubaoAuthPlugin = async () => ({
         return { outcome: "failed", message: `签到请求失败：${e?.message ?? e}` }
       }
     },
+    // The account's experience credits, as the campaign panel reads them.
+    // detail's progress.total_amount is the only count Doubao tells: a
+    // running credit total with no denominator, so it is sent as magpie's
+    // wallet-shaped window (balance, no share) rather than a made-up limit.
+    async usage(getAuth) {
+      const auth = await getAuth()
+      const cookie = cookieOf(auth)
+      if (!cookie) return { error: "not signed in", signIn: "kept" }
+      const accountKey = accountKeyOf("doubao", auth)
+      const seen = stateRead("doubao").accts[accountKey] ?? {}
+      // A fused day is answered from the ledger: a card is no reason to
+      // spend a request on a session already known dead (0 requests today).
+      if (seen.authExpiredOn === beijingDay()) {
+        return { plan: "Web 体验额度", windows: [], error: "会话已失效，请重新登录后重新捕获 Cookie", signIn: "expired" }
+      }
+      const cooling = Date.parse(seen.cooldownUntil ?? "")
+      if (Number.isFinite(cooling) && Date.now() < cooling) {
+        return { plan: "Web 体验额度", windows: [], error: "豆包暂时限流（本地冷却中），稍后再查", signIn: "kept" }
+      }
+      try {
+        const st = await fetchDoubaoStatus(String(cookie), accountKey, String(auth?.uid ?? ""))
+        if (st.loginInvalid) {
+          fuseAuthExpired(accountKey)
+          return { plan: "Web 体验额度", windows: [], error: "会话已失效，请重新登录后重新捕获 Cookie", signIn: "expired" }
+        }
+        if (st.cooling) return { plan: "Web 体验额度", windows: [], error: "豆包暂时限流（已进入本地冷却），稍后再查", signIn: "kept" }
+        if (st.unexpected) return { plan: "Web 体验额度", windows: [], error: `豆包接口异常（${st.code}）`, signIn: "kept" }
+        const credits = Number(st.totalAmount) || 0
+        return {
+          plan: "Web 体验额度",
+          windows: [{ name: "体验额度", balance: credits, display: `${compact(credits)} credits`, unit: "credits" }],
+          signIn: "kept",
+        }
+      } catch (e) {
+        return { plan: "Web 体验额度", windows: [], error: e?.message ?? String(e), signIn: "kept" }
+      }
+    },
     async getInfo(auth) {
-      const cookie = auth?.key
+      const cookie = cookieOf(auth)
       if (!cookie) return { error: "not signed in", signIn: "kept" }
       const accountKey = accountKeyOf("doubao", auth)
       const seen = stateRead("doubao").accts[accountKey] ?? {}
@@ -438,5 +482,28 @@ export const DoubaoAuthPlugin = async () => ({
         return { error: e?.message ?? String(e), signIn: "kept" }
       }
     },
+    async loader(getAuth) {
+      const auth = await getAuth()
+      if (auth?.type !== "api" || !auth.key) return {}
+      return {
+        baseURL: "",
+        apiKey: "",
+        headers: { Cookie: cookieOf(auth), "User-Agent": CLIENT_UA },
+      }
+    },
+    methods: [
+      {
+        type: "api",
+        label: "网页 Cookie（完整 document.cookie）",
+        prompts: [
+          {
+            type: "text",
+            key: "cookie",
+            message:
+              "粘贴 doubao.com 的完整 Cookie（浏览器 F12 → Network → 任一请求 → Request Headers 里的 Cookie 整行，形如 `sessionid=…; sessionid_ss=…; sid_tt=…`）。只贴一串 JWT 会被豆包当成未登录（710012001）。",
+          },
+        ],
+      },
+    ],
   },
 })

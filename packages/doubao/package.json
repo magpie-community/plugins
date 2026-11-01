@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-doubao-auth",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Doubao (doubao.com) daily web check-in for experience credits, ported from CreditDaddy.",
   "type": "module",
   "main": "./index.mjs",

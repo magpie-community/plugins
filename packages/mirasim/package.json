@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-mirasim-auth",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MiraSim (mirasim.ai) token auth, profile and 5h/7d rolling-window quota, ported from CreditDaddy.",
   "type": "module",
   "main": "./index.mjs",

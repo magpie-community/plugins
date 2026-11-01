@@ -19,6 +19,13 @@
 // plus a cross-process lock file, and stops swallowing the "refresh token is
 // dead" error (it used to be silent, leaving the account looking alive until
 // every request 401'd).
+//
+// Usage contract (auth.usage): Magpie draws a provider's card on its 观测 /
+// 用量 page only when the plugin has this hook. It reads /v1/limits, with
+// /auth/me for the plan — the calls getInfo already makes, limits through
+// fetchWithCooldown, so a cooldown sends nothing — and answers { plan, until,
+// windows, signIn } with the 5h / 7d rolling windows. Failures are answered,
+// never thrown: { error, signIn } ("expired" when the token is dead).
 
 import { createHash } from "node:crypto"
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
@@ -28,6 +35,19 @@ import { dirname } from "node:path"
 const AUTH_ME_URL = "https://auth.mirasim.ai/auth/me"
 const RELAY_LIMITS_URL = "https://relay.mirasim.ai/v1/limits"
 const AUTH_REFRESH_URL = "https://auth.mirasim.ai/auth/refresh"
+
+// A 429 from the relay is one of two things: "too many requests" (wait and it
+// passes) or "this network region is not served at all"
+// (type shared_quota_unavailable). The second never passes by waiting on the
+// same network, so cooling down for it hides the real reason and makes the
+// card look like a rate limit the user could sit out.
+const REGION_BLOCKED_TEXT = "MiraSim 云端中转在当前网络区域不提供服务（shared_quota_unavailable），与账号无关：换地区/换网络才能用"
+
+function regionBlocked(body) {
+  const type = String(body?.type ?? body?.error?.type ?? "")
+  const msg = String(body?.error?.message ?? body?.message ?? "")
+  return type === "shared_quota_unavailable" || /network region|not served/i.test(msg)
+}
 
 // A stable client UA. Bun's fetch sends `user-agent: Bun/<version>` by default,
 // which is a free fingerprint for a Bearer-token caller. Same status with
@@ -284,6 +304,9 @@ function normalizeMirasimLimits(limits, profile = null) {
     "7d_opus": "7天 Opus 上限",
     "7d_fable": "7天 Fable 上限",
   }
+  // How long each rolling window runs, in seconds, as magpie's window says
+  // it (a 7-day cap is seven days, whatever it caps).
+  const WINDOW_SPANS = { "5h": 18_000, "7d": 604_800, "7d_claude": 604_800, "7d_sonnet": 604_800, "7d_opus": 604_800, "7d_fable": 604_800 }
   const parts = windows.map((w) => {
     const budget = Number(w.budget) || 0
     const used = Number(w.used) || 0
@@ -291,6 +314,7 @@ function normalizeMirasimLimits(limits, profile = null) {
     const usedPct = budget > 0 ? Math.min(100, Math.round((used / budget) * 1000) / 10) : 0
     return {
       name: WINDOW_LABELS[w.name] || w.name,
+      span: WINDOW_SPANS[w.name] || 0,
       total: budget,
       used,
       remaining,
@@ -323,6 +347,39 @@ const MIRASIM_MODELS = {
   "mirasim-default": { name: "MiraSim", context: 200000 },
 }
 
+// compact is a count as the card's display says one: whole, else to two places.
+const compact = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""))
+
+// usageWindow is one normalized part as magpie's window: the share used of
+// its budget, the window's own length, and when it starts again. A part the
+// relay gives no budget for has no share to tell, so it says only its name.
+function usageWindow(p) {
+  const w = { name: p.name, span: p.span || 0 }
+  if (p.resetAt) w.resetsAt = p.resetAt
+  if (p.total > 0) {
+    w.used = p.percent
+    w.amount = p.used
+    w.limit = p.total
+    w.display = `${compact(p.used)} / ${compact(p.total)}`
+  }
+  return w
+}
+
+// renewForUsage answers a read the relay refused with the account's own
+// renewal, once: { auth, renewed } when another token came back, { expired }
+// when the refresh token itself is dead (or there is none to spend), {} when
+// another process is renewing right now or the network was out — a sign-in is
+// not marked dead for those.
+async function renewForUsage(auth) {
+  if (!auth?.refresh) return { expired: true }
+  try {
+    const next = await mirasimRefreshHook(auth)
+    return next?.key && next.key !== auth.key ? { auth: next, renewed: true } : {}
+  } catch (e) {
+    return e?.signIn === "expired" || e?.authInvalid ? { expired: true } : {}
+  }
+}
+
 export const MiraSimAuthPlugin = async () => ({
   config: async (config) => {
     config.provider ??= {}
@@ -339,27 +396,57 @@ export const MiraSimAuthPlugin = async () => ({
   },
   auth: {
     provider: "mirasim",
-    methods: [
-      {
-        type: "api",
-        label: "访问令牌",
-        prompts: [
-          { type: "text", key: "token", message: "粘贴 mirasim.ai 访问令牌（Bearer）" },
-          { type: "text", key: "refresh", message: "（可选）粘贴 refresh token 以自动续期" },
-        ],
-      },
-    ],
-    async loader(getAuth) {
-      const auth = await getAuth()
-      if (auth?.type !== "api" || !auth.key) return {}
-      return {
-        baseURL: "https://relay.mirasim.ai/v1",
-        apiKey: String(auth.key),
-        headers: authHeaders(auth.key),
-      }
-    },
+    refresh: mirasimRefreshHook,
     async checkin() {
       return { outcome: "ineligible", message: "MiraSim 无每日签到；额度来自套餐滚动窗口" }
+    },
+    // The plan's rolling windows, as /v1/limits tells them: each part's share
+    // used, its own length (5 hours, 7 days) and when it starts again. A 401
+    // is answered once by the account's own renewal, as a chat's is.
+    async usage(getAuth) {
+      let auth = await getAuth()
+      if (!auth?.key) return { error: "not signed in", signIn: "kept" }
+      const accountKey = accountKeyOf("mirasim", auth)
+      const cooling = Date.parse(stateRead("mirasim").accts[accountKey]?.cooldownUntil ?? "")
+      if (Number.isFinite(cooling) && Date.now() < cooling) {
+        return { windows: [], error: "云端限流（本地冷却中），稍后再查", signIn: "kept" }
+      }
+      try {
+        let said = "kept"
+        // the same call getInfo makes, through the ledger's cooldown
+        const limits = () => fetchWithCooldown("mirasim", accountKey, () => jget(RELAY_LIMITS_URL, { ...authHeaders(auth.key), "x-mirasim-probe": "usage" }))
+        let r = await limits()
+        if (!r.skipped && r.res.status === 401) {
+          const next = await renewForUsage(auth)
+          if (!next.renewed) {
+            return { windows: [], error: "令牌已过期，请重新登录后重新导入", signIn: next.expired ? "expired" : "kept" }
+          }
+          auth = next.auth
+          said = "renewed"
+          r = await limits()
+        }
+        if (r.skipped) return { windows: [], error: "云端限流（本地冷却中），稍后再查", signIn: said }
+        const lres = r.res
+        if (lres.status === 401) return { windows: [], error: "令牌已过期（续期一次后仍被拒绝）", signIn: "expired" }
+        if (lres.status === 429) {
+          const why = await lres.json().catch(() => null)
+          if (regionBlocked(why)) return { windows: [], error: REGION_BLOCKED_TEXT, signIn: said }
+          return { windows: [], error: "云端限流（已进入本地冷却），稍后再查", signIn: said }
+        }
+        if (!lres.ok) return { windows: [], error: `查询额度失败: HTTP ${lres.status}`, signIn: said }
+        const limitsBody = await lres.json()
+        // the plan's name and end belong to the profile, which a card can do
+        // without: a failed read leaves the plan as the limits said it
+        let profile = null
+        try {
+          const pres = await jget(AUTH_ME_URL, authHeaders(auth.key))
+          if (pres.ok) profile = await pres.json().catch(() => null)
+        } catch {}
+        const norm = normalizeMirasimLimits(limitsBody, profile)
+        return { plan: norm.plan, until: norm.planExpiresAt ?? "", windows: norm.parts.map(usageWindow), signIn: said }
+      } catch (e) {
+        return { windows: [], error: e?.message ?? String(e), signIn: e?.signIn === "expired" ? "expired" : "kept" }
+      }
     },
     async getInfo(auth) {
       const token = auth?.key
@@ -379,7 +466,10 @@ export const MiraSimAuthPlugin = async () => ({
         if (lres.status === 401) return { error: "令牌已过期", signIn: "expired" }
         if (lres.status === 429) {
           // The wrapper already recorded the cooldown, so the next refresh of
-          // the panel will not hit the endpoint again.
+          // the panel will not hit the endpoint again. A region block is said
+          // as what it is instead of as a rate limit.
+          const why = await lres.json().catch(() => null)
+          if (regionBlocked(why)) return { plan: profile?.plan || "Plus", windows: [], error: REGION_BLOCKED_TEXT, signIn: "kept" }
           return { plan: profile?.plan || "Plus", windows: [], warning: "云端限流（已进入本地冷却），稍后再查", signIn: "kept" }
         }
         if (!lres.ok) return { error: `查询额度失败: HTTP ${lres.status}`, signIn: "kept" }
@@ -396,6 +486,24 @@ export const MiraSimAuthPlugin = async () => ({
         return { error: e?.message ?? String(e), signIn: "kept" }
       }
     },
-    refresh: mirasimRefreshHook,
+    async loader(getAuth) {
+      const auth = await getAuth()
+      if (auth?.type !== "api" || !auth.key) return {}
+      return {
+        baseURL: "https://relay.mirasim.ai/v1",
+        apiKey: String(auth.key),
+        headers: authHeaders(auth.key),
+      }
+    },
+    methods: [
+      {
+        type: "api",
+        label: "访问令牌",
+        prompts: [
+          { type: "text", key: "token", message: "粘贴 mirasim.ai 访问令牌（Bearer）" },
+          { type: "text", key: "refresh", message: "（可选）粘贴 refresh token 以自动续期" },
+        ],
+      },
+    ],
   },
 })

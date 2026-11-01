@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-longcat-auth",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "LongCat (longcat.chat, Meituan) token resource-pack balance reader, ported from CreditDaddy.",
   "type": "module",
   "main": "./index.mjs",

@@ -9,6 +9,13 @@
 // cookie in `auth.key`; the loader/getInfo below read it there. Magpie's
 // exact storage of a custom prompted value should be confirmed against the
 // running host.
+//
+// Usage contract (auth.usage): Magpie draws a provider's card on its 观测 /
+// 用量 page only when the plugin has this hook. It reads the token-packs
+// summary (/api/pay/quota/metering/token-packs/summary) — the call getInfo
+// already makes, through fetchWithCooldown, so a cooldown sends nothing — and
+// answers { plan, windows, signIn } with the packs' remaining as one 资源包
+// window. Failures are answered, never thrown: { error, signIn }.
 
 import { createHash } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
@@ -208,6 +215,9 @@ function pct1(rem, tot) {
   return tot > 0 ? Math.max(0, Math.min(100, Math.round((rem / tot) * 1000) / 10)) : 0
 }
 
+// compact is a count as the card's display says one: whole, else to two places.
+const compact = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""))
+
 const LONGCAT_MODELS = {
   "longcat-default": { name: "LongCat (token pack)", context: 128000 },
 }
@@ -228,21 +238,53 @@ export const LongCatAuthPlugin = async () => ({
   },
   auth: {
     provider: "longcat",
-    methods: [
-      {
-        type: "api",
-        label: "会话 Cookie",
-        prompts: [{ type: "text", key: "cookie", message: "粘贴 longcat.chat 会话 Cookie（美团 SSO）" }],
-      },
-    ],
-    async loader(getAuth) {
-      const auth = await getAuth()
-      if (auth?.type !== "api" || !auth.key) return {}
-      return { baseURL: "", apiKey: "", headers: lcHeaders(auth.key) }
-    },
     // LongCat grants are purchased/gifted: no daily check-in endpoint.
     async checkin() {
       return { outcome: "ineligible", message: "LongCat 资源包为购买/赠送发放，无每日签到" }
+    },
+    // The packs' remaining tokens, as the usage page reads them: one window
+    // for what is left over all packages, and — with more than one pack —
+    // each pack's own share, beside the account, since spending one up only
+    // moves on to the next.
+    async usage(getAuth) {
+      const auth = await getAuth()
+      const cookie = auth?.key
+      if (!cookie) return { error: "not signed in", signIn: "kept" }
+      try {
+        const r = await fetchLongcatPacks(String(cookie), accountKeyOf("longcat", auth))
+        if (r.cooling) return { plan: "Token 资源包", windows: [], error: "longcat 暂时限流（本地冷却中），稍后再查", signIn: "kept" }
+        if (!r.ok) {
+          return {
+            plan: "Token 资源包",
+            windows: [],
+            error: r.authExpired ? "会话已失效，请重新登录后重新捕获 Cookie" : r.error || `HTTP ${r.status}`,
+            signIn: r.authExpired ? "expired" : "kept",
+          }
+        }
+        const active = r.packs.filter((p) => Number.isFinite(Number(p.remaining)))
+        const balance = active.reduce((s, p) => s + Math.max(0, Number(p.remaining)), 0)
+        const windows = [{ name: "Token 资源包", balance, display: `${compact(balance)} tokens`, unit: "tokens" }]
+        if (active.length > 1) {
+          for (const [i, p] of active.entries()) {
+            const total = Math.max(0, Number(p.total) || 0)
+            const remain = Math.max(0, Number(p.remaining) || 0)
+            const used = Math.max(0, Number(p.consumed) || 0)
+            const gift = p.grantCategory === "GIFT" || p.source === "FREE_PACK"
+            windows.push({
+              name: `${gift ? "获赠资源包" : "资源包"} ${i + 1}`,
+              ...(total > 0 ? { used: (100 * used) / total, amount: used, limit: total } : {}),
+              display: `${compact(remain)} / ${compact(total)}`,
+              unit: "tokens",
+              // what is left in the pack is lost when it expires
+              ...(p.expireAt ? { runsOutAt: p.expireAt, runsOut: remain } : {}),
+              aside: true,
+            })
+          }
+        }
+        return { plan: "Token 资源包", windows, signIn: "kept" }
+      } catch (e) {
+        return { plan: "Token 资源包", windows: [], error: e?.message ?? String(e), signIn: "kept" }
+      }
     },
     async getInfo(auth) {
       const cookie = auth?.key
@@ -270,5 +312,17 @@ export const LongCatAuthPlugin = async () => ({
         signIn: "kept",
       }
     },
+    async loader(getAuth) {
+      const auth = await getAuth()
+      if (auth?.type !== "api" || !auth.key) return {}
+      return { baseURL: "", apiKey: "", headers: lcHeaders(auth.key) }
+    },
+    methods: [
+      {
+        type: "api",
+        label: "会话 Cookie",
+        prompts: [{ type: "text", key: "cookie", message: "粘贴 longcat.chat 会话 Cookie（美团 SSO）" }],
+      },
+    ],
   },
 })
