@@ -1,0 +1,26 @@
+{
+  "name": "@magpie-community/agent-omo-writing",
+  "version": "0.1.0",
+  "description": "OmO (oh-my-openagent) on magpie's Agents page: pick one of magpie's models for the long-form-writing category; magpie writes ~/.omo/omo.jsonc's top-level categories.writing.model",
+  "type": "module",
+  "files": [
+    "omo-writing.agent.js"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "omo",
+    "oh-my-openagent",
+    "opencode",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/omo-writing"
+  },
+  "magpie": {
+    "agent": "./omo-writing.agent.js"
+  }
+}

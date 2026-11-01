@@ -1,0 +1,26 @@
+{
+  "name": "@magpie-community/agent-omo-visual-engineering",
+  "version": "0.1.0",
+  "description": "OmO (oh-my-openagent) on magpie's Agents page: pick one of magpie's models for the visual-engineering category (UI, charts); magpie writes ~/.omo/omo.jsonc's top-level categories.visual-engineering.model",
+  "type": "module",
+  "files": [
+    "omo-visual-engineering.agent.js"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "omo",
+    "oh-my-openagent",
+    "opencode",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/omo-visual-engineering"
+  },
+  "magpie": {
+    "agent": "./omo-visual-engineering.agent.js"
+  }
+}

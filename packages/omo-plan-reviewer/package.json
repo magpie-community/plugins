@@ -1,0 +1,26 @@
+{
+  "name": "@magpie-community/agent-omo-plan-reviewer",
+  "version": "0.1.0",
+  "description": "OmO (oh-my-openagent) on magpie's Agents page: pick one of magpie's models for the native harness's plan reviewer; magpie writes ~/.omo/omo.jsonc's top-level agents.plan-reviewer.model",
+  "type": "module",
+  "files": [
+    "omo-plan-reviewer.agent.js"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "omo",
+    "oh-my-openagent",
+    "opencode",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/omo-plan-reviewer"
+  },
+  "magpie": {
+    "agent": "./omo-plan-reviewer.agent.js"
+  }
+}

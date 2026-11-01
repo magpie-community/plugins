@@ -1,0 +1,26 @@
+{
+  "name": "@magpie-community/agent-omo-ultrabrain",
+  "version": "0.1.0",
+  "description": "OmO (oh-my-openagent) on magpie's Agents page: pick one of magpie's models for the deepest-thinking category for hard problems; magpie writes ~/.omo/omo.jsonc's top-level categories.ultrabrain.model",
+  "type": "module",
+  "files": [
+    "omo-ultrabrain.agent.js"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "omo",
+    "oh-my-openagent",
+    "opencode",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/omo-ultrabrain"
+  },
+  "magpie": {
+    "agent": "./omo-ultrabrain.agent.js"
+  }
+}
