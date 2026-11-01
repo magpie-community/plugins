@@ -2,6 +2,25 @@
 
 把 **AStudio（科大讯飞 Astron Studio 桌面端）** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：复用桌面端登录态，直连云端模型网关（OpenAI Responses 协议），agent 以 `astudio/<model>` 使用它的模型；支持每日登录积分自动签到与积分余额显示。
 
+## 与 Providers Hub 的 `hub-astudio` 的区别
+
+AStudio 在 registry 里有两个入口，都保留（[#614](https://github.com/magpie-community/plugins/issues/614)）：
+
+| | 本包（`astudio`） | [magpie-providers-hub](https://www.npmjs.com/package/magpie-providers-hub)（`hub-astudio`） |
+| --- | --- | --- |
+| 登录 | 读取本机 AStudio 桌面端的登录态，或粘贴 `modelBearerToken`；不需要再输手机号或密码 | 本机打开一个登录页：手机验证码、账号密码或微信扫码（含极验验证），不依赖桌面端 |
+| 适合 | 装了 AStudio 桌面端的用户（数据目录按 `ASTUDIO_HOME`、Windows 注册表、`~/.acode` 查找；其他情况粘贴凭据） | 任何平台，没装桌面端也行 |
+| 模型端点 | `…/model-gateway/v1/responses`（OpenAI Responses，与桌面端一致） | `…/model-gateway/v1/chat/completions` |
+| 每日积分 | 做一次会话活跃，按前后余额差记录，不调用领取接口 | 调用 `client-popups` 领取每日奖励和新人礼包弹窗 |
+
+两者用同一个 AStudio 账号时，读的是同一个 `points/balance`，模型调用也扣同一份积分：**每日登录积分是一个池子，装两个不会多一份。** 同一账号两边都登录只会重复显示同一笔余额。
+
+English: two entries serve AStudio. This one reuses the AStudio desktop's
+sign-in (or a pasted `modelBearerToken`) and calls the Responses endpoint;
+Providers Hub's `hub-astudio` signs in on a local page (SMS code, password
+or WeChat QR) and calls chat/completions. On one account both draw on the
+same daily points balance.
+
 ## 登录什么
 
 两种方式（登录时二选一）：

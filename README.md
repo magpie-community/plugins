@@ -350,6 +350,24 @@ it can't. To list a plugin, add an entry with its npm `package`, a
 magpie has, or none) and a `summary` in English and Chinese (`{"en": …, "zh": …}`), and open a pull
 request.
 
+### One channel already listed
+
+Duplicates are judged by channel, not by the shape of the package. A
+channel is the vendor service a provider id signs in to, so `astudio` and
+`hub-astudio` are one channel. A channel counts as listed when any entry
+has it, including an aggregate package that names it in its `providers`
+array.
+
+A new standalone package for a listed channel says how it differs from
+the entry already there: how it signs in, which endpoint it calls, what it
+supports, and what it can do that the existing entry can't. That goes in
+three places: the pull request, the package's README and its registry
+`summary` (en and zh), so a user can tell which one to install. A package
+that can't name a difference is not merged. Two entries for one channel
+that are both kept say in their READMEs and summaries what they share,
+such as one account's credit pool
+([#614](https://github.com/magpie-community/plugins/issues/614)).
+
 ## Publishing
 
 A version bump pushed to `main` ships itself, two ways
