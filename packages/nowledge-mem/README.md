@@ -70,10 +70,8 @@ environment Magpie starts with, as Mem's own clients do:
 
 A key saved in the page is kept in Magpie's local plugin configuration, not the
 system keychain, and takes precedence over the environment. Enter it directly;
-the form also accepts an existing `Bearer …` value. The page's **Configure
-connection** form also sets the Space, Agent and the recall, Context Bundle,
-capture switches; Magpie's plugin **Options** editor remains available for
-advanced settings. Saving conversations remains a separate opt-in.
+the form also accepts an existing `Bearer …` value. The page's **Settings** form also sets the Space, Agent, recall, Context Bundle,
+capture and advanced options; Magpie's plugin **Options** editor remains available. Saving conversations remains a separate opt-in.
 
 `serverUrl` must be HTTPS, or HTTP only for `localhost`, `127.0.0.1` and
 `[::1]`. Credentials, a query or a fragment in the URL are refused. Set
@@ -258,10 +256,11 @@ own: the offline tests replace `globalThis.fetch` to keep Cursor's token local
 
 ## Page
 
-The page uses only Magpie's released `magpie.options` and theme bridge. It
+The page uses Magpie's released `magpie.options` and theme bridge. Before
+saving it re-reads and merges edited fields, but another write between the read
+and write can still be lost. Use one editor at a time. It
 declares no reads and saving stores configuration without probing the
-connection or writing Memory. It shows the Server, API key, Space, Agent, the
-recall, Context Bundle and capture switches. Its **What is sent** section says
+connection or writing Memory. It shows connection, recall, capture, filtering and advanced options. Its **What is sent** section says
 the scope: direct local requests and `magpie-key` from this computer; other
 gateway keys and remote requests are never included. It follows Magpie's language (English, Simplified and
 Traditional Chinese, Japanese, German) and theme, and preserves options it does
