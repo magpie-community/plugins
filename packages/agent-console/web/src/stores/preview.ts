@@ -2,6 +2,9 @@
 // when the page has no navigation bridge (the bridge, when present, drives back/forward inside the frame instead).
 import { create } from "zustand";
 import { checkPreviewUrl, displayOrigin } from "../../../daemon/src/preview/url.js";
+import { t as tr } from "../i18n/index.js";
+
+const t_noLocalhost = () => tr("preview.noLocalhost");
 
 export type PreviewEntry = {
   /** normalized target URL currently shown */
@@ -39,6 +42,32 @@ type PreviewStore = {
 export const threadKey = (threadId: string | null | undefined) => threadId ?? "_";
 
 const inflight = new Map<string, Promise<boolean>>();
+
+// The proxy answers only at http://ac<key>.localhost:<port> (#582, daemon/src/preview/proxy.ts). Before showing the frame,
+// check that this web view resolves that name (Chromium/WebView2 and WebKitGTK do, WebKit on macOS before 26 doesn't):
+// otherwise say why instead of a blank "can't find server" frame. Checked once per proxy origin.
+export const PREVIEW_PING_PATH = "/__agent_console__/ping";
+const reachable = new Map<string, Promise<boolean>>();
+export function canReachProxy(proxyOrigin: string, timeoutMs = 5000): Promise<boolean> {
+  let p = reachable.get(proxyOrigin);
+  if (!p) {
+    p = (async () => {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), timeoutMs);
+      try {
+        const r = await fetch(proxyOrigin + PREVIEW_PING_PATH, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal: ac.signal });
+        return r.ok;
+      } catch {
+        return false;
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+    reachable.set(proxyOrigin, p);
+    void p.then((ok) => { if (!ok) reachable.delete(proxyOrigin); });
+  }
+  return p;
+}
 
 export const usePreview = create<PreviewStore>((set, get) => ({
   byThread: {},
@@ -80,6 +109,10 @@ export const usePreview = create<PreviewStore>((set, get) => ({
       p = (async () => {
         try {
           const r = (await call("preview.open", { url: t.href, ...(threadId ? { threadId } : {}) })) as { proxyOrigin: string; proxyHref: string; url: string };
+          if (!(await canReachProxy(r.proxyOrigin))) {
+            void call("preview.release", { url: t.origin }).catch(() => {});
+            throw new Error(t_noLocalhost());
+          }
           set((s) => {
             const cur = s.byThread[key];
             if (!cur || cur.url !== t.href) return s;

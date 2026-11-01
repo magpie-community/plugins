@@ -2,6 +2,8 @@
 // The page sends {rel, isDir} relative to the conversation's project; the daemon resolves the absolute path itself and
 // checks (with realpath, so a symlink can't escape) that it is still inside the project. A mention only names a path:
 // no file content is read, so it never widens what the Agent may read.
+// The path handed to the Agent is built on the project path as it was opened (macOS /var/… stays /var/…, a symlinked
+// workspace keeps its own name); realpath is only used for the containment check (#582).
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, resolve, sep, win32, posix } from "node:path";
 
@@ -22,9 +24,11 @@ export async function resolveMentions(projectPath: string, refs: MentionRef[]): 
   const mentions: Mention[] = [];
   const warnings: string[] = [];
   const seen = new Set<string>();
-  let root: string;
+  // shown: the project path as opened (what the user and the Agent know); realRoot: where it really is (containment only)
+  const shown = resolve(projectPath);
+  let realRoot: string;
   try {
-    root = await realpath(projectPath);
+    realRoot = await realpath(shown);
   } catch {
     return { mentions, warnings: refs.map((r) => r.rel) };
   }
@@ -34,8 +38,8 @@ export async function resolveMentions(projectPath: string, refs: MentionRef[]): 
       warnings.push(rel || "(empty)");
       continue;
     }
-    const abs = resolve(root, rel === "." ? "" : rel);
-    if (!insideRoot(root, abs)) {
+    const abs = resolve(shown, rel === "." ? "" : rel);
+    if (!insideRoot(shown, abs)) {
       warnings.push(rel);
       continue;
     }
@@ -48,7 +52,7 @@ export async function resolveMentions(projectPath: string, refs: MentionRef[]): 
       warnings.push(rel);
       continue;
     }
-    if (!insideRoot(root, real)) {
+    if (!insideRoot(realRoot, real)) {
       warnings.push(rel);
       continue;
     }

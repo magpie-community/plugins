@@ -5,10 +5,24 @@
 // storage throws. The proxy makes a dev app work there: it answers CORS for "null", sends the dev server its own Host/Origin,
 // drops X-Frame-Options / frame-ancestors, and adds a tiny script with in-memory storage and a navigation bridge.
 //
+// Who may use a listener (#582): the preview frame is an opaque origin, so every request it makes carries Origin: null (or
+// none) and, from an opaque document, no Referer; any other web page can send exactly the same from a sandboxed iframe of
+// its own. Origin/Referer/Sec-Fetch-* can't tell them apart, and the port is not a secret (a page can scan for it). So each
+// listener has a 128-bit random key and is only reachable at http://ac<key>.localhost:<port>: the browser puts that host
+// name in the Host header of every request the frame makes (navigations, module scripts and their imports, fetch/XHR,
+// CSS url(), workers, the HMR WebSocket), because they are all resolved against the page's own URL; no rewriting needed.
+// A request whose Host is not exactly that name is refused before anything is forwarded, with no CORS headers:
+// 127.0.0.1:<port> / localhost:<port> (no key) → 403, any other Host → 421 (DNS rebinding). Only preview.open on an
+// authenticated WS connection hands out the name. Browsers resolve *.localhost to loopback themselves (Chromium/WebView2,
+// WebKit on macOS 26+ and WebKitGTK through GLib); where a system can't (older macOS), the frame doesn't load at all and
+// the page says so (stores/preview.ts probes /__agent_console__/ping first): it fails closed.
+// Responses carry Referrer-Policy: no-referrer so the key isn't sent to other sites a previewed page loads from.
+//
 // Limits (see README "Preview proxy"):
 // - created only through preview.open on an authenticated WS connection; targets are loopback only (preview/url.ts);
-//   the daemon's, the gate's and Magpie's ports (and the proxy's own) are refused;
-// - each listener serves exactly one target; Host must be 127.0.0.1:<p> or localhost:<p> (DNS rebinding);
+//   the daemon's, the gate's and Magpie's ports (ports.ts: defaults, env, Magpie's settings.json) and the proxy's own
+//   are refused, and so is any target that answers like Magpie's gateway (GET / names "magpie", or X-Magpie-* headers);
+// - each listener serves exactly one target; Host must be ac<key>.localhost:<p> (see above);
 //   a request with a foreign Origin is refused (only "null", none, or the proxy's own origin);
 // - cookies are not forwarded in either direction (127.0.0.1 cookies are shared across ports: Magpie's would leak to the
 //   dev server, and the dev server could set cookies other local apps see);
@@ -18,7 +32,8 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { request as httpsRequest } from "node:https";
 import { connect as netConnect, isIP, type Socket } from "node:net";
 import { connect as tlsConnect } from "node:tls";
-import { checkHost } from "../security.js";
+import { randomBytes } from "node:crypto";
+import { checkHost, tokenEqual } from "../security.js";
 import { checkPreviewUrl, deniedPort, displayOrigin, type PreviewTarget } from "./url.js";
 import { PREVIEW_SCRIPT, PREVIEW_SCRIPT_PATH, injectScriptTag } from "./inject.js";
 
@@ -37,6 +52,8 @@ export type PreviewProxyOptions = {
   maxTargets?: number;
   maxHtmlBytes?: number;
   now?: () => number;
+  /** how long the "is this Magpie?" check waits for GET / (fails closed: no answer, nothing forwarded) */
+  identityTimeoutMs?: number;
   /** For tests: a fixed listening port is never used, always 0 (random) */
   log?: (level: "info" | "warn", msg: string) => void;
 };
@@ -45,7 +62,14 @@ type Listener = {
   target: PreviewTarget;
   server: Server;
   port: number;
+  /** ac<128-bit hex key>.localhost:<port>: the only Host this listener answers */
+  authority: string;
   proxyOrigin: string;
+  /** the target answered like Magpie's gateway: nothing is forwarded any more */
+  magpie: boolean;
+  /** when the target's identity was last checked (it is checked again after IDENTITY_TTL) */
+  checkedAt: number;
+  resolving: Promise<string | null> | null;
   lastUsed: number;
   sockets: Set<Socket>;
   /** open WebSocket tunnels (HMR): a listener with one is never idle */
@@ -58,6 +82,9 @@ export type PreviewOpen = { proxyOrigin: string; target: string; url: string; pa
 
 const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authorization", "proxy-authenticate", "te", "trailer", "transfer-encoding", "upgrade"]);
 const RETRY_CODES = new Set(["ECONNREFUSED", "EADDRNOTAVAIL", "EAFNOSUPPORT", "ENETUNREACH", "EHOSTUNREACH", "ECONNRESET", "ETIMEDOUT"]);
+/** a listener's target is asked again whether it is Magpie after this long (the port may have changed hands) */
+const IDENTITY_TTL = 60 * 1000;
+export const PREVIEW_PING_PATH = "/__agent_console__/ping";
 
 export class PreviewProxy {
   private byOrigin = new Map<string, Listener>();
@@ -67,12 +94,14 @@ export class PreviewProxy {
   private maxTargets: number;
   private maxHtml: number;
   private now: () => number;
+  private identityTimeout: number;
 
   constructor(private opts: PreviewProxyOptions) {
     this.idleMs = opts.idleMs ?? 10 * 60 * 1000;
     this.maxTargets = opts.maxTargets ?? 8;
     this.maxHtml = opts.maxHtmlBytes ?? 8 * 1024 * 1024;
     this.now = opts.now ?? Date.now;
+    this.identityTimeout = opts.identityTimeoutMs ?? 30 * 1000;
   }
 
   /** Ports of the listeners themselves (a preview of a preview is refused) */
@@ -93,6 +122,13 @@ export class PreviewProxy {
     }
     let l = this.byOrigin.get(t.origin);
     if (!l) {
+      // Defense in depth for a gateway on a port we don't know about: ask the target first (short wait; the request
+      // path asks again and fails closed)
+      const who = await identify(t, t.connect, Math.min(3000, this.identityTimeout));
+      if (who === "magpie") {
+        this.opts.log?.("warn", `preview refused: ${t.origin} answers like Magpie's gateway`);
+        throw new PreviewError("denied_port", `${t.origin} is Magpie's gateway`);
+      }
       let p = this.opening.get(t.origin);
       if (!p) {
         p = this.listen(t).finally(() => this.opening.delete(t.origin));
@@ -157,7 +193,10 @@ export class PreviewProxy {
       this.close(oldest);
     }
     const server = createServer();
-    const l: Listener = { target: t, server, port: 0, proxyOrigin: "", lastUsed: this.now(), sockets: new Set(), tunnels: 0, addr: null };
+    const l: Listener = {
+      target: t, server, port: 0, authority: "", proxyOrigin: "", magpie: false, checkedAt: 0, resolving: null,
+      lastUsed: this.now(), sockets: new Set(), tunnels: 0, addr: null,
+    };
     server.on("connection", (s) => {
       l.sockets.add(s);
       s.on("close", () => l.sockets.delete(s));
@@ -171,40 +210,66 @@ export class PreviewProxy {
     });
     const a = server.address();
     l.port = a && typeof a === "object" ? a.port : 0;
-    l.proxyOrigin = `http://127.0.0.1:${l.port}`;
+    l.authority = `ac${randomBytes(16).toString("hex")}.localhost:${l.port}`;
+    l.proxyOrigin = `http://${l.authority}`;
     this.byOrigin.set(t.origin, l);
-    this.opts.log?.("info", `preview proxy ${l.proxyOrigin} → ${t.origin}`);
+    this.opts.log?.("info", `preview proxy 127.0.0.1:${l.port} → ${t.origin}`); // the key is never logged
     return l;
   }
 
   // ---- request gate shared by HTTP and WS ----
   private gate(l: Listener, req: IncomingMessage): { code: number; why: string } | null {
-    const hc = checkHost(req.headers.host, l.port);
-    if (!hc.ok) return { code: 421, why: "bad_host" };
+    const host = String(req.headers.host ?? "").toLowerCase();
+    if (!tokenEqual(host, l.authority)) {
+      // the bare loopback address carries no key: any page could send that (#582)
+      return checkHost(req.headers.host, l.port).ok ? { code: 403, why: "preview_key" } : { code: 421, why: "bad_host" };
+    }
     const o = req.headers.origin;
     if (o !== undefined && o !== "" && o !== "null") {
-      const lo = o.toLowerCase();
-      if (lo !== `http://127.0.0.1:${l.port}` && lo !== `http://localhost:${l.port}`) return { code: 403, why: "bad_origin" };
+      if (o.toLowerCase() !== l.proxyOrigin) return { code: 403, why: "bad_origin" };
     }
     return null;
   }
 
+  /** A refusal: plain text, no CORS headers (the page that sent it can't read it), nothing forwarded */
+  private refuse(res: ServerResponse, req: IncomingMessage, code: number, why: string): void {
+    res.writeHead(code, {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "sandbox; default-src 'none'",
+      "referrer-policy": "no-referrer",
+    });
+    res.end(req.method === "HEAD" ? undefined : why);
+    req.resume();
+  }
+
   private onRequest(l: Listener, req: IncomingMessage, res: ServerResponse): void {
-    l.lastUsed = this.now();
     const bad = this.gate(l, req);
     if (bad) {
-      res.writeHead(bad.code, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-      res.end(bad.why);
+      this.refuse(res, req, bad.code, bad.why); // a refused request doesn't keep the listener alive
+      return;
+    }
+    l.lastUsed = this.now();
+    const path = (req.url ?? "/").split("?")[0];
+    if (path === PREVIEW_PING_PATH) {
+      // the page checks this before showing the frame: does this system resolve ac<key>.localhost?
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "null", "referrer-policy": "no-referrer" });
+      res.end(req.method === "HEAD" ? undefined : "ok");
       req.resume();
       return;
     }
-    const path = (req.url ?? "/").split("?")[0];
+    if (l.magpie) {
+      this.refuse(res, req, 403, "magpie");
+      return;
+    }
     if (path === PREVIEW_SCRIPT_PATH) {
       res.writeHead(200, {
         "content-type": "text/javascript; charset=utf-8",
         "cache-control": "no-store",
         "access-control-allow-origin": "null",
         "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
       });
       res.end(req.method === "HEAD" ? undefined : PREVIEW_SCRIPT);
       return;
@@ -227,8 +292,37 @@ export class PreviewProxy {
     void this.forward(l, req, res);
   }
 
-  private async resolveAddr(l: Listener): Promise<string | null> {
-    if (l.addr) return l.addr;
+  /**
+   * The address to forward to, once the target is known not to be Magpie's gateway (asked again after IDENTITY_TTL).
+   * Fails closed: no answer to the identity check → null (error page), Magpie → l.magpie (refused from then on).
+   */
+  private resolveAddr(l: Listener): Promise<string | null> {
+    if (l.magpie) return Promise.resolve(null);
+    if (l.addr && this.now() - l.checkedAt < IDENTITY_TTL) return Promise.resolve(l.addr);
+    if (!l.resolving) {
+      l.resolving = (async () => {
+        const addr = l.addr ?? (await this.probeAddr(l));
+        if (!addr) return null;
+        const who = await identify(l.target, [addr], this.identityTimeout);
+        if (who === "magpie") {
+          l.magpie = true;
+          l.addr = null;
+          this.opts.log?.("warn", `preview proxy for ${l.target.origin}: the target answers like Magpie's gateway, refusing`);
+          return null;
+        }
+        if (who === "none") {
+          l.addr = null;
+          return null;
+        }
+        l.addr = addr;
+        l.checkedAt = this.now();
+        return addr;
+      })().finally(() => { l.resolving = null; });
+    }
+    return l.resolving;
+  }
+
+  private async probeAddr(l: Listener): Promise<string | null> {
     for (const host of l.target.connect) {
       const ok = await new Promise<boolean>((resolve) => {
         const s = netConnect({ host, port: l.target.port });
@@ -237,10 +331,7 @@ export class PreviewProxy {
         s.once("connect", () => done(true));
         s.once("error", () => done(false));
       });
-      if (ok) {
-        l.addr = host;
-        return host;
-      }
+      if (ok) return host;
     }
     return null;
   }
@@ -251,6 +342,10 @@ export class PreviewProxy {
 
   private async forward(l: Listener, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const addr = await this.resolveAddr(l);
+    if (l.magpie) {
+      this.refuse(res, req, 403, "magpie");
+      return;
+    }
     if (!addr) {
       this.errorPage(l, req, res);
       return;
@@ -278,6 +373,14 @@ export class PreviewProxy {
 
   private respond(l: Listener, req: IncomingMessage, res: ServerResponse, ur: IncomingMessage): void {
     l.lastUsed = this.now();
+    if (looksLikeMagpie(ur.headers)) {
+      // a gateway reply (X-Magpie-*): the port changed hands since the last check
+      l.magpie = true;
+      l.addr = null;
+      ur.resume();
+      this.refuse(res, req, 403, "magpie");
+      return;
+    }
     const h = rewriteResponseHeaders(ur.headers, l.target, l.proxyOrigin);
     const status = ur.statusCode ?? 502;
     const ctype = String(ur.headers["content-type"] ?? "").toLowerCase();
@@ -331,12 +434,13 @@ export class PreviewProxy {
 
   // ---- WebSocket (HMR) ----
   private onUpgrade(l: Listener, req: IncomingMessage, socket: Socket, head: Buffer): void {
-    l.lastUsed = this.now();
     const bad = this.gate(l, req);
-    if (bad) {
-      socket.end(`HTTP/1.1 ${bad.code} ${bad.code === 421 ? "Misdirected Request" : "Forbidden"}\r\nconnection: close\r\n\r\n`);
+    if (bad || l.magpie) {
+      const code = bad?.code ?? 403;
+      socket.end(`HTTP/1.1 ${code} ${code === 421 ? "Misdirected Request" : "Forbidden"}\r\nconnection: close\r\n\r\n`);
       return;
     }
+    l.lastUsed = this.now();
     socket.on("error", () => {});
     void this.resolveAddr(l).then((addr) => {
       if (!addr || socket.destroyed) {
@@ -411,7 +515,7 @@ export function rewriteResponseHeaders(inH: IncomingMessage["headers"], t: Previ
     if (v === undefined) continue;
     const key = k.toLowerCase();
     if (HOP.has(key)) continue;
-    if (key === "x-frame-options" || key === "set-cookie" || key.startsWith("access-control-allow-")) continue;
+    if (key === "x-frame-options" || key === "set-cookie" || key === "referrer-policy" || key.startsWith("access-control-allow-")) continue;
     if (key === "content-security-policy" || key === "content-security-policy-report-only") {
       const kept = (Array.isArray(v) ? v : [v]).map(stripFrameAncestors).filter(Boolean);
       if (kept.length) out[key] = kept.join(", ");
@@ -424,6 +528,8 @@ export function rewriteResponseHeaders(inH: IncomingMessage["headers"], t: Previ
     out[key] = v;
   }
   out["access-control-allow-origin"] = "null";
+  // the proxy's host name holds the listener key: never send it to another site in a Referer
+  out["referrer-policy"] = "no-referrer";
   const vary = typeof out.vary === "string" ? out.vary : "";
   out.vary = vary ? (/\borigin\b/i.test(vary) ? vary : `${vary}, Origin`) : "Origin";
   return out;
@@ -452,4 +558,61 @@ export function rewriteLocation(loc: string, t: PreviewTarget, proxyOrigin: stri
     return proxyOrigin + u.pathname + u.search + u.hash;
   }
   return loc;
+}
+
+/** Reply headers only Magpie's gateway sends */
+export function looksLikeMagpie(h: IncomingMessage["headers"]): boolean {
+  return Object.keys(h).some((k) => k.toLowerCase().startsWith("x-magpie-"));
+}
+
+/** GET / body of Magpie's gateway: {"name":"magpie","apis":[…],"version":…} */
+export function magpieIndex(body: string): boolean {
+  try {
+    const j = JSON.parse(body) as { name?: unknown; apis?: unknown; version?: unknown };
+    return !!j && typeof j === "object" && j.name === "magpie" && (Array.isArray(j.apis) || typeof j.version === "string");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Does the target answer like Magpie's gateway? GET / on the first address that answers.
+ * "magpie" / "other" (any other HTTP answer) / "none" (no HTTP answer in time: the caller fails closed).
+ */
+export async function identify(t: PreviewTarget, addrs: string[], timeoutMs: number): Promise<"magpie" | "other" | "none"> {
+  for (const addr of addrs) {
+    const r = await new Promise<"magpie" | "other" | "none">((resolve) => {
+      let settled = false;
+      const done = (v: "magpie" | "other" | "none") => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } };
+      const reqFn = t.secure ? httpsRequest : httpRequest;
+      const q = reqFn({
+        host: addr,
+        port: t.port,
+        method: "GET",
+        path: "/",
+        headers: { host: t.hostHeader, accept: "application/json", "accept-encoding": "identity", "user-agent": "agent-console-preview-check" },
+        agent: false,
+        ...(t.secure ? { rejectUnauthorized: false, servername: isIP(t.hostname) ? undefined : t.hostname } : {}),
+      });
+      const timer = setTimeout(() => { q.destroy(); done("none"); }, timeoutMs);
+      q.on("error", () => done("none"));
+      q.on("response", (res) => {
+        if (looksLikeMagpie(res.headers)) { res.destroy(); return done("magpie"); }
+        const ct = String(res.headers["content-type"] ?? "").toLowerCase();
+        if (!ct.includes("json")) { res.destroy(); return done("other"); }
+        const chunks: Buffer[] = [];
+        let size = 0;
+        res.on("data", (c: Buffer) => {
+          size += c.length;
+          if (size > 256 * 1024) { res.destroy(); done("other"); return; }
+          chunks.push(c);
+        });
+        res.on("end", () => done(magpieIndex(Buffer.concat(chunks).toString("utf8")) ? "magpie" : "other"));
+        res.on("error", () => done("none"));
+      });
+      q.end();
+    });
+    if (r !== "none") return r;
+  }
+  return "none";
 }

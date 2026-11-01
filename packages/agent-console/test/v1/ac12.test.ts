@@ -2,10 +2,21 @@
 import { describe, expect, it, afterEach } from "vitest";
 import http from "node:http";
 import net from "node:net";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { request } from "./helpers-net.js";
+import { join, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
+import { request as netRequest } from "./helpers-net.js";
+
+// Preview listeners answer only at ac<key>.localhost:<port> (#582): requests below go there unless a test sets Host itself
+const proxyHosts = new Map<number, string>();
+function remember<T extends { proxyOrigin: string }>(r: T): T {
+  const u = new URL(r.proxyOrigin);
+  proxyHosts.set(Number(u.port), u.host);
+  return r;
+}
+const request = (port: number, path: string, headers: Record<string, string> = {}, method?: string) =>
+  netRequest(port, path, { host: proxyHosts.get(port) ?? `127.0.0.1:${port}`, ...headers }, method);
 import { checkPreviewUrl, deniedPort, displayHref, externalHref, withScheme } from "../../daemon/src/preview/url.js";
 import { PreviewProxy, rewriteLocation, stripFrameAncestors } from "../../daemon/src/preview/proxy.js";
 import { injectScriptTag, PREVIEW_SCRIPT_PATH } from "../../daemon/src/preview/inject.js";
@@ -127,14 +138,14 @@ describe("preview proxy", () => {
     const up = await upstream(handler);
     const proxy = new PreviewProxy({ deniedPorts: () => [], ...opts });
     cleanup.push(() => { proxy.closeAll(); up.server.close(); });
-    const r = await proxy.open(`http://localhost:${up.port}/start`);
+    const r = remember(await proxy.open(`http://localhost:${up.port}/start`));
     const port = Number(new URL(r.proxyOrigin).port);
     return { up, proxy, r, port };
   }
 
   it("opens one random-port listener per target and refuses denied ports", async () => {
     const { proxy, r, up, port } = await setup((_q, s) => s.end("ok"));
-    expect(r.proxyOrigin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(r.proxyOrigin).toMatch(/^http:\/\/ac[0-9a-f]{32}\.localhost:\d+$/);
     expect(r.proxyHref).toBe(`${r.proxyOrigin}/start`);
     expect(r.target).toBe(`http://localhost:${up.port}`);
     const again = await proxy.open(`localhost:${up.port}/other`);
@@ -150,9 +161,15 @@ describe("preview proxy", () => {
     const { up, port } = await setup((_q, s) => s.end("hi"));
     expect((await request(port, "/", { host: `evil.test:${port}` })).status).toBe(421);
     expect((await request(port, "/", { host: `127.0.0.1:${port + 1}` })).status).toBe(421);
+    // the bare loopback address (no key) is refused, with nothing a page could read (#582)
+    for (const host of [`127.0.0.1:${port}`, `localhost:${port}`, `ac${"0".repeat(32)}.localhost:${port}`]) {
+      const no = await request(port, "/", { host, origin: "null" });
+      expect([403, 421]).toContain(no.status);
+      expect(no.headers["access-control-allow-origin"]).toBeUndefined();
+    }
     expect((await request(port, "/", { origin: "https://evil.test" })).status).toBe(403);
     expect((await request(port, "/", { origin: "http://localhost:3430" })).status).toBe(403);
-    const ok = await request(port, "/x", { origin: "null", cookie: "magpie=secret", referer: `http://127.0.0.1:${port}/a`, "sec-fetch-site": "cross-site" });
+    const ok = await request(port, "/x", { origin: "null", cookie: "magpie=secret", referer: `http://${proxyHosts.get(port)}/a`, "sec-fetch-site": "cross-site" });
     expect(ok.status).toBe(200);
     expect(ok.headers["access-control-allow-origin"]).toBe("null");
     const h = up.seen.at(-1)!;
@@ -219,7 +236,7 @@ describe("preview proxy", () => {
     await new Promise((r) => dead.server.close(r));
     const proxy = new PreviewProxy({ deniedPorts: () => [] });
     cleanup.push(() => proxy.closeAll());
-    const r = await proxy.open(`localhost:${deadPort}`);
+    const r = remember(await proxy.open(`localhost:${deadPort}`));
     const res = await request(Number(new URL(r.proxyOrigin).port), "/");
     expect(res.status).toBe(502);
     expect(res.body).toContain(`localhost:${deadPort}`);
@@ -228,15 +245,15 @@ describe("preview proxy", () => {
 
   it("tunnels WebSocket upgrades (HMR) with the Origin rewritten, and refuses a foreign Origin", async () => {
     const { up, port } = await setup((_q, s) => s.end());
-    const talk = (origin: string) => new Promise<string>((resolve) => {
+    const talk = (origin: string, host = proxyHosts.get(port)!) => new Promise<string>((resolve) => {
       const s = net.connect(port, "127.0.0.1", () => {
-        s.write(`GET /hmr HTTP/1.1\r\nhost: 127.0.0.1:${port}\r\nupgrade: websocket\r\nconnection: Upgrade\r\norigin: ${origin}\r\nsec-websocket-key: x\r\nsec-websocket-version: 13\r\n\r\n`);
+        s.write(`GET /hmr HTTP/1.1\r\nhost: ${host}\r\nupgrade: websocket\r\nconnection: Upgrade\r\norigin: ${origin}\r\nsec-websocket-key: x\r\nsec-websocket-version: 13\r\n\r\n`);
       });
       let got = "";
       s.on("data", (d) => {
         got += d.toString();
         if (got.includes("101") && !got.includes("echo:")) s.write("ping");
-        if (got.includes("echo:ping") || got.includes("403")) { s.destroy(); resolve(got); }
+        if (got.includes("echo:ping") || got.includes("403") || got.includes("421")) { s.destroy(); resolve(got); }
       });
       s.on("close", () => resolve(got));
     });
@@ -246,6 +263,7 @@ describe("preview proxy", () => {
     expect(up.seen.at(-1)!.origin).toBe(`http://localhost:${up.port}`);
     expect(up.seen.at(-1)!.host).toBe(`localhost:${up.port}`);
     expect(await talk("https://evil.test")).toContain("403");
+    expect(await talk("null", `127.0.0.1:${port}`)).toContain("403"); // no key (#582)
   });
 
   it("closes idle listeners (fake clock), on release, and keeps at most N targets", async () => {
@@ -254,8 +272,8 @@ describe("preview proxy", () => {
     const b = await upstream((_q, s) => s.end("b"));
     const proxy = new PreviewProxy({ deniedPorts: () => [], now: () => now, idleMs: 10_000, maxTargets: 1 });
     cleanup.push(() => { proxy.closeAll(); a.server.close(); b.server.close(); });
-    const ra = await proxy.open(`localhost:${a.port}`);
-    const rb = await proxy.open(`localhost:${b.port}`);
+    const ra = remember(await proxy.open(`localhost:${a.port}`));
+    const rb = remember(await proxy.open(`localhost:${b.port}`));
     expect(proxy.size).toBe(1); // a was closed for b
     expect(proxy.ports()).toEqual([Number(new URL(rb.proxyOrigin).port)]);
     await expect(request(Number(new URL(ra.proxyOrigin).port), "/")).rejects.toThrow();
@@ -321,20 +339,49 @@ describe("path chips (mentions)", () => {
       { rel: "src/a b.ts" }, { rel: "src", isDir: true }, { rel: "src/a b.ts" },
       { rel: "../secret.txt" }, { rel: "/etc/passwd" }, { rel: "C:/x" }, { rel: "link.txt" }, { rel: "nope.ts" },
     ]);
-    expect(r.mentions.map((m) => [m.path.slice(proj.length), m.isDir])).toEqual([["/src/a b.ts", false], ["/src", true]]);
+    // the path as the project was opened, with this OS's separators (#582: not the realpath, not always "/")
+    expect(r.mentions.map((m) => [m.path, m.isDir])).toEqual([[join(proj, "src", "a b.ts"), false], [join(proj, "src"), true]]);
     expect(r.warnings).toEqual(expect.arrayContaining(["../secret.txt", "/etc/passwd", "C:/x", "nope.ts"]));
     if (process.platform !== "win32") expect(r.warnings).toContain("link.txt");
   });
+  it("keeps the project path as opened when it goes through a symlink (macOS /var → /private/var, a linked workspace)", async () => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), "ac12-ml-")));
+    const realProj = join(dir, "real", "proj");
+    mkdirSync(join(realProj, "src"), { recursive: true });
+    writeFileSync(join(realProj, "src", "a.ts"), "x");
+    writeFileSync(join(dir, "outside.txt"), "o");
+    const alias = join(dir, "alias");
+    try { symlinkSync(join(dir, "real"), alias, "junction"); } catch { return; } // no symlinks allowed here: nothing to check
+    const proj = join(alias, "proj");
+    // a link inside the project that points back into it through the real path is fine; one that leaves it is not
+    try { symlinkSync(join(realProj, "src", "a.ts"), join(realProj, "inner.ts")); } catch {}
+    try { symlinkSync(join(dir, "outside.txt"), join(realProj, "out.txt")); } catch {}
+    const r = await resolveMentions(proj, [{ rel: "src/a.ts" }, { rel: "src", isDir: true }, { rel: "." , isDir: true }, { rel: "../../outside.txt" }, { rel: "out.txt" }]);
+    expect(r.mentions.map((m) => m.path)).toEqual([join(proj, "src", "a.ts"), join(proj, "src"), proj]);
+    expect(r.warnings).toEqual(expect.arrayContaining(["../../outside.txt"]));
+    if (existsSync(join(realProj, "out.txt"))) expect(r.warnings).toContain("out.txt");
+    if (existsSync(join(realProj, "inner.ts"))) {
+      const r2 = await resolveMentions(proj, [{ rel: "inner.ts" }]);
+      expect(r2.mentions.map((m) => m.path)).toEqual([join(proj, "inner.ts")]);
+    }
+    // a project opened with a trailing separator or a "." segment is the same project
+    const r3 = await resolveMentions(proj + sep + "." + sep, [{ rel: "src/a.ts" }]);
+    expect(r3.mentions.map((m) => m.path)).toEqual([join(proj, "src", "a.ts")]);
+  });
   it("serializes for every Agent; ACP also gets resource_link blocks", async () => {
-    const m = [{ path: "/p/src/a b.ts", isDir: false }, { path: "/p/src", isDir: true }];
-    expect(mentionSection(m)).toBe("Referenced files (read them as needed):\n- `/p/src/a b.ts`\n- /p/src/ (folder)");
+    const P = resolve(sep, "p");
+    const m = [{ path: join(P, "src", "a b.ts"), isDir: false }, { path: join(P, "src"), isDir: true }];
+    const slash = sep === "\\" ? "\\" : "/";
+    expect(mentionSection(m)).toBe(`Referenced files (read them as needed):\n- \`${m[0]!.path}\`\n- ${m[1]!.path}${slash} (folder)`);
+    expect(mentionSection([{ path: "/p/src/a b.ts", isDir: false }, { path: "/p/src", isDir: true }])).toBe("Referenced files (read them as needed):\n- `/p/src/a b.ts`\n- /p/src/ (folder)");
     expect(withMentions("fix it", m)).toBe("fix it\n\n" + mentionSection(m));
     expect(withMentions("", m)).toBe(mentionSection(m));
     expect(withMentions("x", [])).toBe("x");
     expect(mentionSection([{ path: "C:\\p\\src", isDir: true }])).toContain("C:\\p\\src\\ (folder)");
     const built = await buildAcpPrompt(withMentions("fix", m), [], { image: false, audio: false, embeddedContext: false }, m);
     expect(built.blocks[0]).toMatchObject({ type: "text" });
-    expect(built.blocks.filter((b) => b.type === "resource_link").map((b) => (b as { uri: string }).uri)).toEqual(["file:///p/src/a%20b.ts", "file:///p/src"]);
+    expect(built.blocks.filter((b) => b.type === "resource_link").map((b) => (b as { uri: string }).uri)).toEqual([pathToFileURL(m[0]!.path).href, pathToFileURL(m[1]!.path).href]);
+    if (sep === "/") expect(pathToFileURL(m[0]!.path).href).toBe("file:///p/src/a%20b.ts");
   });
   it("insideRoot handles Windows case and prefixes", () => {
     expect(insideRoot("C:\\Work\\App", "c:\\work\\app\\src", "win32")).toBe(true);
@@ -431,7 +478,7 @@ describe("1.2 QA fixes", () => {
     const keys = (o: Record<string, unknown>, p = ""): string[] => Object.entries(o).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v as Record<string, unknown>, p + k + ".") : [p + k]));
     const zh = new Set(keys(messages.zh as unknown as Record<string, unknown>));
     const en = new Set(keys(messages.en as unknown as Record<string, unknown>));
-    for (const k of ["preview.tab", "preview.empty", "preview.limits", "links.openPreviewTitle", "links.externalFailed", "mention.add", "mention.drop", "sidebar.collapse", "sidebar.expand", "settings.contentWidth", "settings.chatFont", "timeline.toolSummaryOne"]) {
+    for (const k of ["preview.tab", "preview.empty", "preview.limits", "preview.noLocalhost", "links.openPreviewTitle", "links.externalFailed", "mention.add", "mention.drop", "sidebar.collapse", "sidebar.expand", "settings.contentWidth", "settings.chatFont", "timeline.toolSummaryOne"]) {
       expect(zh.has(k), "zh " + k).toBe(true);
       expect(en.has(k), "en " + k).toBe(true);
     }

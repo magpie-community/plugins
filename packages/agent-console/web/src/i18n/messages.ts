@@ -168,6 +168,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       failed: "打不开预览：",
       empty: "还没有预览地址。在对话里点 localhost 链接，或在上方输入，例如 localhost:5173",
       limits: "预览在沙箱里运行：弹窗、alert 和原生表单提交不可用；localStorage 和登录 cookie 刷新后会丢失，需要时请用系统浏览器打开。",
+      noLocalhost: "这台电脑的网页内核打不开 *.localhost 地址（macOS 26 以前的系统会这样）。预览靠这个地址挡住别的网页读取你的 dev server，所以这里不能预览，请用系统浏览器打开。",
     },
     links: {
       openPreviewTitle: "在预览中打开（Ctrl/⌘+点击用浏览器打开）",
@@ -342,6 +343,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       failed: "Can't open the preview: ",
       empty: "Nothing to preview yet. Click a localhost link in the chat, or type an address above, e.g. localhost:5173",
       limits: "The preview runs sandboxed: popups, alert and native form posts don't work; localStorage and login cookies are lost on reload. Open it in your browser when you need them.",
+      noLocalhost: "This system's web view can't open *.localhost addresses (macOS before 26 can't). The preview needs one to keep other web pages out of your dev server, so it can't run here: open it in your browser instead.",
     },
     links: {
       openPreviewTitle: "Open in Preview (Ctrl/⌘+click opens the browser)",

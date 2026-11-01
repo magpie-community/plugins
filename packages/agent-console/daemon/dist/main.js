@@ -5302,9 +5302,10 @@ async function resolveMentions(projectPath, refs) {
   const mentions = [];
   const warnings = [];
   const seen = /* @__PURE__ */ new Set();
-  let root;
+  const shown = resolve3(projectPath);
+  let realRoot;
   try {
-    root = await realpath(projectPath);
+    realRoot = await realpath(shown);
   } catch {
     return { mentions, warnings: refs.map((r) => r.rel) };
   }
@@ -5314,8 +5315,8 @@ async function resolveMentions(projectPath, refs) {
       warnings.push(rel || "(empty)");
       continue;
     }
-    const abs = resolve3(root, rel === "." ? "" : rel);
-    if (!insideRoot(root, abs)) {
+    const abs = resolve3(shown, rel === "." ? "" : rel);
+    if (!insideRoot(shown, abs)) {
       warnings.push(rel);
       continue;
     }
@@ -5328,7 +5329,7 @@ async function resolveMentions(projectPath, refs) {
       warnings.push(rel);
       continue;
     }
-    if (!insideRoot(root, real)) {
+    if (!insideRoot(realRoot, real)) {
       warnings.push(rel);
       continue;
     }
@@ -5556,6 +5557,7 @@ import { createServer as createServer2, request as httpRequest } from "node:http
 import { request as httpsRequest } from "node:https";
 import { connect as netConnect, isIP } from "node:net";
 import { connect as tlsConnect } from "node:tls";
+import { randomBytes as randomBytes3 } from "node:crypto";
 function esc(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
@@ -5584,7 +5586,7 @@ function rewriteResponseHeaders(inH, t, proxyOrigin) {
     if (v === void 0) continue;
     const key = k.toLowerCase();
     if (HOP.has(key)) continue;
-    if (key === "x-frame-options" || key === "set-cookie" || key.startsWith("access-control-allow-")) continue;
+    if (key === "x-frame-options" || key === "set-cookie" || key === "referrer-policy" || key.startsWith("access-control-allow-")) continue;
     if (key === "content-security-policy" || key === "content-security-policy-report-only") {
       const kept = (Array.isArray(v) ? v : [v]).map(stripFrameAncestors).filter(Boolean);
       if (kept.length) out[key] = kept.join(", ");
@@ -5597,6 +5599,7 @@ function rewriteResponseHeaders(inH, t, proxyOrigin) {
     out[key] = v;
   }
   out["access-control-allow-origin"] = "null";
+  out["referrer-policy"] = "no-referrer";
   const vary = typeof out.vary === "string" ? out.vary : "";
   out.vary = vary ? /\borigin\b/i.test(vary) ? vary : `${vary}, Origin` : "Origin";
   return out;
@@ -5619,7 +5622,74 @@ function rewriteLocation(loc, t, proxyOrigin) {
   }
   return loc;
 }
-var PreviewError, HOP, RETRY_CODES, PreviewProxy;
+function looksLikeMagpie(h) {
+  return Object.keys(h).some((k) => k.toLowerCase().startsWith("x-magpie-"));
+}
+function magpieIndex(body) {
+  try {
+    const j = JSON.parse(body);
+    return !!j && typeof j === "object" && j.name === "magpie" && (Array.isArray(j.apis) || typeof j.version === "string");
+  } catch {
+    return false;
+  }
+}
+async function identify(t, addrs, timeoutMs) {
+  for (const addr of addrs) {
+    const r = await new Promise((resolve4) => {
+      let settled = false;
+      const done = (v) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve4(v);
+        }
+      };
+      const reqFn = t.secure ? httpsRequest : httpRequest;
+      const q = reqFn({
+        host: addr,
+        port: t.port,
+        method: "GET",
+        path: "/",
+        headers: { host: t.hostHeader, accept: "application/json", "accept-encoding": "identity", "user-agent": "agent-console-preview-check" },
+        agent: false,
+        ...t.secure ? { rejectUnauthorized: false, servername: isIP(t.hostname) ? void 0 : t.hostname } : {}
+      });
+      const timer = setTimeout(() => {
+        q.destroy();
+        done("none");
+      }, timeoutMs);
+      q.on("error", () => done("none"));
+      q.on("response", (res) => {
+        if (looksLikeMagpie(res.headers)) {
+          res.destroy();
+          return done("magpie");
+        }
+        const ct = String(res.headers["content-type"] ?? "").toLowerCase();
+        if (!ct.includes("json")) {
+          res.destroy();
+          return done("other");
+        }
+        const chunks = [];
+        let size = 0;
+        res.on("data", (c) => {
+          size += c.length;
+          if (size > 256 * 1024) {
+            res.destroy();
+            done("other");
+            return;
+          }
+          chunks.push(c);
+        });
+        res.on("end", () => done(magpieIndex(Buffer.concat(chunks).toString("utf8")) ? "magpie" : "other"));
+        res.on("error", () => done("none"));
+      });
+      q.end();
+    });
+    if (r !== "none") return r;
+  }
+  return "none";
+}
+var PreviewError, HOP, RETRY_CODES, IDENTITY_TTL, PREVIEW_PING_PATH, PreviewProxy;
 var init_proxy = __esm({
   "daemon/src/preview/proxy.ts"() {
     init_security();
@@ -5634,6 +5704,8 @@ var init_proxy = __esm({
     };
     HOP = /* @__PURE__ */ new Set(["connection", "keep-alive", "proxy-connection", "proxy-authorization", "proxy-authenticate", "te", "trailer", "transfer-encoding", "upgrade"]);
     RETRY_CODES = /* @__PURE__ */ new Set(["ECONNREFUSED", "EADDRNOTAVAIL", "EAFNOSUPPORT", "ENETUNREACH", "EHOSTUNREACH", "ECONNRESET", "ETIMEDOUT"]);
+    IDENTITY_TTL = 60 * 1e3;
+    PREVIEW_PING_PATH = "/__agent_console__/ping";
     PreviewProxy = class {
       constructor(opts) {
         this.opts = opts;
@@ -5641,6 +5713,7 @@ var init_proxy = __esm({
         this.maxTargets = opts.maxTargets ?? 8;
         this.maxHtml = opts.maxHtmlBytes ?? 8 * 1024 * 1024;
         this.now = opts.now ?? Date.now;
+        this.identityTimeout = opts.identityTimeoutMs ?? 30 * 1e3;
       }
       opts;
       byOrigin = /* @__PURE__ */ new Map();
@@ -5650,6 +5723,7 @@ var init_proxy = __esm({
       maxTargets;
       maxHtml;
       now;
+      identityTimeout;
       /** Ports of the listeners themselves (a preview of a preview is refused) */
       ports() {
         return [...this.byOrigin.values()].map((l) => l.port);
@@ -5666,6 +5740,11 @@ var init_proxy = __esm({
         }
         let l = this.byOrigin.get(t.origin);
         if (!l) {
+          const who = await identify(t, t.connect, Math.min(3e3, this.identityTimeout));
+          if (who === "magpie") {
+            this.opts.log?.("warn", `preview refused: ${t.origin} answers like Magpie's gateway`);
+            throw new PreviewError("denied_port", `${t.origin} is Magpie's gateway`);
+          }
           let p = this.opening.get(t.origin);
           if (!p) {
             p = this.listen(t).finally(() => this.opening.delete(t.origin));
@@ -5726,7 +5805,20 @@ var init_proxy = __esm({
           this.close(oldest);
         }
         const server = createServer2();
-        const l = { target: t, server, port: 0, proxyOrigin: "", lastUsed: this.now(), sockets: /* @__PURE__ */ new Set(), tunnels: 0, addr: null };
+        const l = {
+          target: t,
+          server,
+          port: 0,
+          authority: "",
+          proxyOrigin: "",
+          magpie: false,
+          checkedAt: 0,
+          resolving: null,
+          lastUsed: this.now(),
+          sockets: /* @__PURE__ */ new Set(),
+          tunnels: 0,
+          addr: null
+        };
         server.on("connection", (s) => {
           l.sockets.add(s);
           s.on("close", () => l.sockets.delete(s));
@@ -5745,38 +5837,61 @@ var init_proxy = __esm({
         });
         const a = server.address();
         l.port = a && typeof a === "object" ? a.port : 0;
-        l.proxyOrigin = `http://127.0.0.1:${l.port}`;
+        l.authority = `ac${randomBytes3(16).toString("hex")}.localhost:${l.port}`;
+        l.proxyOrigin = `http://${l.authority}`;
         this.byOrigin.set(t.origin, l);
-        this.opts.log?.("info", `preview proxy ${l.proxyOrigin} \u2192 ${t.origin}`);
+        this.opts.log?.("info", `preview proxy 127.0.0.1:${l.port} \u2192 ${t.origin}`);
         return l;
       }
       // ---- request gate shared by HTTP and WS ----
       gate(l, req) {
-        const hc = checkHost(req.headers.host, l.port);
-        if (!hc.ok) return { code: 421, why: "bad_host" };
+        const host = String(req.headers.host ?? "").toLowerCase();
+        if (!tokenEqual(host, l.authority)) {
+          return checkHost(req.headers.host, l.port).ok ? { code: 403, why: "preview_key" } : { code: 421, why: "bad_host" };
+        }
         const o = req.headers.origin;
         if (o !== void 0 && o !== "" && o !== "null") {
-          const lo = o.toLowerCase();
-          if (lo !== `http://127.0.0.1:${l.port}` && lo !== `http://localhost:${l.port}`) return { code: 403, why: "bad_origin" };
+          if (o.toLowerCase() !== l.proxyOrigin) return { code: 403, why: "bad_origin" };
         }
         return null;
       }
+      /** A refusal: plain text, no CORS headers (the page that sent it can't read it), nothing forwarded */
+      refuse(res, req, code, why) {
+        res.writeHead(code, {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+          "content-security-policy": "sandbox; default-src 'none'",
+          "referrer-policy": "no-referrer"
+        });
+        res.end(req.method === "HEAD" ? void 0 : why);
+        req.resume();
+      }
       onRequest(l, req, res) {
-        l.lastUsed = this.now();
         const bad = this.gate(l, req);
         if (bad) {
-          res.writeHead(bad.code, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-          res.end(bad.why);
+          this.refuse(res, req, bad.code, bad.why);
+          return;
+        }
+        l.lastUsed = this.now();
+        const path3 = (req.url ?? "/").split("?")[0];
+        if (path3 === PREVIEW_PING_PATH) {
+          res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "null", "referrer-policy": "no-referrer" });
+          res.end(req.method === "HEAD" ? void 0 : "ok");
           req.resume();
           return;
         }
-        const path3 = (req.url ?? "/").split("?")[0];
+        if (l.magpie) {
+          this.refuse(res, req, 403, "magpie");
+          return;
+        }
         if (path3 === PREVIEW_SCRIPT_PATH) {
           res.writeHead(200, {
             "content-type": "text/javascript; charset=utf-8",
             "cache-control": "no-store",
             "access-control-allow-origin": "null",
-            "x-content-type-options": "nosniff"
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer"
           });
           res.end(req.method === "HEAD" ? void 0 : PREVIEW_SCRIPT);
           return;
@@ -5797,8 +5912,38 @@ var init_proxy = __esm({
         }
         void this.forward(l, req, res);
       }
-      async resolveAddr(l) {
-        if (l.addr) return l.addr;
+      /**
+       * The address to forward to, once the target is known not to be Magpie's gateway (asked again after IDENTITY_TTL).
+       * Fails closed: no answer to the identity check → null (error page), Magpie → l.magpie (refused from then on).
+       */
+      resolveAddr(l) {
+        if (l.magpie) return Promise.resolve(null);
+        if (l.addr && this.now() - l.checkedAt < IDENTITY_TTL) return Promise.resolve(l.addr);
+        if (!l.resolving) {
+          l.resolving = (async () => {
+            const addr = l.addr ?? await this.probeAddr(l);
+            if (!addr) return null;
+            const who = await identify(l.target, [addr], this.identityTimeout);
+            if (who === "magpie") {
+              l.magpie = true;
+              l.addr = null;
+              this.opts.log?.("warn", `preview proxy for ${l.target.origin}: the target answers like Magpie's gateway, refusing`);
+              return null;
+            }
+            if (who === "none") {
+              l.addr = null;
+              return null;
+            }
+            l.addr = addr;
+            l.checkedAt = this.now();
+            return addr;
+          })().finally(() => {
+            l.resolving = null;
+          });
+        }
+        return l.resolving;
+      }
+      async probeAddr(l) {
         for (const host of l.target.connect) {
           const ok = await new Promise((resolve4) => {
             const s = netConnect({ host, port: l.target.port });
@@ -5811,10 +5956,7 @@ var init_proxy = __esm({
             s.once("connect", () => done(true));
             s.once("error", () => done(false));
           });
-          if (ok) {
-            l.addr = host;
-            return host;
-          }
+          if (ok) return host;
         }
         return null;
       }
@@ -5823,6 +5965,10 @@ var init_proxy = __esm({
       }
       async forward(l, req, res) {
         const addr = await this.resolveAddr(l);
+        if (l.magpie) {
+          this.refuse(res, req, 403, "magpie");
+          return;
+        }
         if (!addr) {
           this.errorPage(l, req, res);
           return;
@@ -5851,6 +5997,13 @@ var init_proxy = __esm({
       }
       respond(l, req, res, ur) {
         l.lastUsed = this.now();
+        if (looksLikeMagpie(ur.headers)) {
+          l.magpie = true;
+          l.addr = null;
+          ur.resume();
+          this.refuse(res, req, 403, "magpie");
+          return;
+        }
         const h = rewriteResponseHeaders(ur.headers, l.target, l.proxyOrigin);
         const status = ur.statusCode ?? 502;
         const ctype = String(ur.headers["content-type"] ?? "").toLowerCase();
@@ -5900,15 +6053,16 @@ var init_proxy = __esm({
       }
       // ---- WebSocket (HMR) ----
       onUpgrade(l, req, socket, head) {
-        l.lastUsed = this.now();
         const bad = this.gate(l, req);
-        if (bad) {
-          socket.end(`HTTP/1.1 ${bad.code} ${bad.code === 421 ? "Misdirected Request" : "Forbidden"}\r
+        if (bad || l.magpie) {
+          const code = bad?.code ?? 403;
+          socket.end(`HTTP/1.1 ${code} ${code === 421 ? "Misdirected Request" : "Forbidden"}\r
 connection: close\r
 \r
 `);
           return;
         }
+        l.lastUsed = this.now();
         socket.on("error", () => {
         });
         void this.resolveAddr(l).then((addr) => {
@@ -6708,7 +6862,7 @@ __export(legacy_exports, {
 });
 import { cp as cp2, mkdir as mkdir8, readdir as readdir6, readFile as readFile18 } from "node:fs/promises";
 import { existsSync as existsSync13 } from "node:fs";
-import { join as join19 } from "node:path";
+import { join as join20 } from "node:path";
 function stamp() {
   const d = /* @__PURE__ */ new Date();
   const p = (n) => String(n).padStart(2, "0");
@@ -6717,17 +6871,17 @@ function stamp() {
 async function migrateLegacy(dataDir, stores) {
   const settings = await stores.settings.get();
   if (settings.v1Migrated) return { migrated: 0, skipped: true };
-  const oldDir = join19(dataDir, "sessions");
-  const oldSettingsPath = join19(dataDir, "settings.json");
+  const oldDir = join20(dataDir, "sessions");
+  const oldSettingsPath = join20(dataDir, "settings.json");
   if (!existsSync13(oldDir) && !existsSync13(oldSettingsPath)) {
     await stores.settings.set({ v1Migrated: true });
     return { migrated: 0, skipped: true };
   }
-  const backup = join19(dataDir, "trash", `legacy-${stamp()}`);
+  const backup = join20(dataDir, "trash", `legacy-${stamp()}`);
   await mkdir8(backup, { recursive: true });
-  if (existsSync13(oldDir)) await cp2(oldDir, join19(backup, "sessions"), { recursive: true }).catch(() => {
+  if (existsSync13(oldDir)) await cp2(oldDir, join20(backup, "sessions"), { recursive: true }).catch(() => {
   });
-  if (existsSync13(oldSettingsPath)) await cp2(oldSettingsPath, join19(backup, "settings.json")).catch(() => {
+  if (existsSync13(oldSettingsPath)) await cp2(oldSettingsPath, join20(backup, "settings.json")).catch(() => {
   });
   const oldSettings = existsSync13(oldSettingsPath) ? JSON.parse(await readFile18(oldSettingsPath, "utf8").catch(() => "{}")) : {};
   const projectIdByPath = /* @__PURE__ */ new Map();
@@ -6743,13 +6897,13 @@ async function migrateLegacy(dataDir, stores) {
   }
   let sessionIds = [];
   try {
-    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync13(join19(oldDir, d, "meta.json")));
+    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync13(join20(oldDir, d, "meta.json")));
   } catch {
   }
   const metas = [];
   for (const id2 of sessionIds) {
     try {
-      const m = JSON.parse(await readFile18(join19(oldDir, id2, "meta.json"), "utf8"));
+      const m = JSON.parse(await readFile18(join20(oldDir, id2, "meta.json"), "utf8"));
       if (m?.cwd) metas.push(m);
     } catch {
     }
@@ -6782,7 +6936,7 @@ async function migrateLegacy(dataDir, stores) {
     return best ? projectIdByPath.get(best) : null;
   };
   let migrated = 0;
-  const threadsDir = join19(dataDir, "threads");
+  const threadsDir = join20(dataDir, "threads");
   for (const m of metas) {
     try {
       const projectId = projectOf(m.cwd);
@@ -6819,10 +6973,10 @@ async function migrateLegacy(dataDir, stores) {
         importedFrom: m.cliSessionId ? { provider, sessionId: m.cliSessionId } : void 0,
         seq: 0
       };
-      const tdir = join19(threadsDir, meta.id);
+      const tdir = join20(threadsDir, meta.id);
       if (existsSync13(tdir)) meta.id = `t_${m.id}_v1`.slice(0, 80);
-      await mkdir8(join19(threadsDir, meta.id), { recursive: true });
-      const oldEvts = (await readFile18(join19(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
+      await mkdir8(join20(threadsDir, meta.id), { recursive: true });
+      const oldEvts = (await readFile18(join20(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
         try {
           return JSON.parse(l);
         } catch {
@@ -6901,9 +7055,9 @@ async function migrateLegacy(dataDir, stores) {
         seq++;
         lines.push({ type: "tool_call", itemId: key, kind: "other", title: o.title, status: "failed", seq, ts: Date.now(), threadId: meta.id });
       }
-      for (const ev of lines) await appendJsonl(join19(threadsDir, meta.id, "timeline.jsonl"), ev);
+      for (const ev of lines) await appendJsonl(join20(threadsDir, meta.id, "timeline.jsonl"), ev);
       meta.seq = seq;
-      await writeJsonAtomic(join19(threadsDir, meta.id, "meta.json"), meta);
+      await writeJsonAtomic(join20(threadsDir, meta.id, "meta.json"), meta);
       migrated++;
     } catch (e) {
       log("warn", "\u8FC1\u79FB\uFF1A\u4F1A\u8BDD\u5931\u8D25", { id: m.id, err: String(e) });
@@ -6968,8 +7122,8 @@ var init_warm = __esm({
 
 // daemon/src/main.ts
 import { mkdirSync as mkdirSync2, rmSync as rmSync2, chmodSync as chmodSync2 } from "node:fs";
-import { join as join20, dirname as dirname7 } from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { join as join21, dirname as dirname8 } from "node:path";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // daemon/src/config.ts
 import { randomBytes } from "node:crypto";
@@ -7331,9 +7485,9 @@ init_methods();
 import { readFile as readFile13 } from "node:fs/promises";
 import { existsSync as existsSync10, statSync as statSync5 } from "node:fs";
 import { join as join14 } from "node:path";
-import { randomBytes as randomBytes3 } from "node:crypto";
+import { randomBytes as randomBytes4 } from "node:crypto";
 function newId() {
-  return "p_" + Date.now().toString(36) + randomBytes3(3).toString("hex");
+  return "p_" + Date.now().toString(36) + randomBytes4(3).toString("hex");
 }
 var ProjectsStore = class {
   file;
@@ -7406,9 +7560,9 @@ init_methods();
 init_i18n();
 import { mkdir as mkdir6, rename as rename3, readdir as readdir4, readFile as readFile15 } from "node:fs/promises";
 import { join as join15 } from "node:path";
-import { randomBytes as randomBytes4 } from "node:crypto";
+import { randomBytes as randomBytes5 } from "node:crypto";
 function newId2() {
-  return "t_" + Date.now().toString(36) + randomBytes4(3).toString("hex");
+  return "t_" + Date.now().toString(36) + randomBytes5(3).toString("hex");
 }
 var ThreadsStore = class {
   dir;
@@ -7558,7 +7712,7 @@ init_security();
 init_log();
 init_i18n();
 import { WebSocketServer, WebSocket } from "ws";
-import { randomBytes as randomBytes5 } from "node:crypto";
+import { randomBytes as randomBytes6 } from "node:crypto";
 var Conn = class {
   id;
   ws;
@@ -7567,7 +7721,7 @@ var Conn = class {
   alive = true;
   lastMsg = Date.now();
   constructor(ws) {
-    this.id = "c_" + randomBytes5(4).toString("hex");
+    this.id = "c_" + randomBytes6(4).toString("hex");
     this.ws = ws;
   }
   send(obj) {
@@ -9106,6 +9260,10 @@ function augmentPath(env, nodeDir, platform = process.platform, home) {
 init_proxy();
 
 // daemon/src/preview/ports.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import { homedir as homedir9 } from "node:os";
+import { basename as basename5, dirname as dirname7, isAbsolute as isAbsolute3, join as join19 } from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 var MAGPIE_DEFAULT_PORTS = [3425, 3430];
 var GATE_DEFAULT_PORT = 3488;
 function portOf(addr) {
@@ -9114,11 +9272,59 @@ function portOf(addr) {
   const n = m ? Number(m[1]) : NaN;
   return Number.isInteger(n) && n > 0 && n <= 65535 ? n : null;
 }
-function previewDeniedPorts(cfg2, env = process.env) {
+function magpieDirFromInstall(p) {
+  const norm = p.replace(/\\/g, "/");
+  const i = norm.lastIndexOf("/plugins/node_modules/");
+  if (i <= 0) return null;
+  return p.slice(0, i);
+}
+function magpieConfigDirs(env = process.env, where = {}) {
+  const out = [];
+  const add = (d) => {
+    if (d && isAbsolute3(d) && !out.includes(d)) out.push(d);
+  };
+  let self = where.self;
+  if (self === void 0) {
+    try {
+      self = fileURLToPath3(import.meta.url);
+    } catch {
+      self = "";
+    }
+  }
+  add(magpieDirFromInstall(self));
+  const cwd = where.cwd ?? (env === process.env ? process.cwd() : "");
+  if (cwd && basename5(cwd) === "plugin-work") add(dirname7(cwd));
+  const x = env.XDG_CONFIG_HOME;
+  if (x && isAbsolute3(x)) add(join19(x, "magpie"));
+  const platform = where.platform ?? process.platform;
+  const home = where.home ?? (env === process.env ? homedir9() : platform === "win32" ? env.USERPROFILE : env.HOME);
+  if (home) add(join19(home, ".config", "magpie"));
+  return out;
+}
+function savedGatewayPort(file, read = (f) => readFileSync2(f, "utf8")) {
+  let raw;
+  try {
+    raw = read(file);
+  } catch {
+    return null;
+  }
+  try {
+    const s = JSON.parse(raw);
+    const p = typeof s?.port === "number" ? s.port : 0;
+    return Number.isInteger(p) && p >= 1024 && p <= 65535 ? p : MAGPIE_DEFAULT_PORTS[0];
+  } catch {
+    return null;
+  }
+}
+function previewDeniedPorts(cfg2, env = process.env, opts = {}) {
   const out = /* @__PURE__ */ new Set([cfg2.port, GATE_DEFAULT_PORT, ...MAGPIE_DEFAULT_PORTS]);
   if (cfg2.gatePort) out.add(cfg2.gatePort);
   for (const k of ["MAGPIE_ADDR", "MAGPIE_WEB_ADDR", "MAGPIE_URL"]) {
     const p = portOf(env[k]);
+    if (p) out.add(p);
+  }
+  for (const d of opts.configDirs ?? magpieConfigDirs(env)) {
+    const p = savedGatewayPort(join19(d, "settings.json"), opts.read);
     if (p) out.add(p);
   }
   const extra = env.AGENT_CONSOLE_PREVIEW_DENY;
@@ -9136,7 +9342,7 @@ if (nodeMajor < 20) {
   console.error(`[agent-console] \u9700\u8981 Node.js 20 \u6216\u66F4\u9AD8\u7248\u672C\uFF0C\u5F53\u524D ${process.version}\uFF08${process.execPath}\uFF09`);
   process.exit(3);
 }
-process.env.PATH = augmentPath(process.env, dirname7(process.execPath));
+process.env.PATH = augmentPath(process.env, dirname8(process.execPath));
 var cfg = parseConfig(process.argv.slice(2));
 process.on("uncaughtException", (e) => {
   if (e?.code === "EPIPE") return;
@@ -9148,10 +9354,10 @@ process.on("unhandledRejection", (e) => {
 async function main() {
   initLog(cfg.dataDir);
   for (const d of ["threads", "attachments", "trash", "logs"]) {
-    mkdirSync2(join20(cfg.dataDir, d), { recursive: true });
+    mkdirSync2(join21(cfg.dataDir, d), { recursive: true });
   }
-  const appDir = join20(dirname7(fileURLToPath3(import.meta.url)), "..", "..", "app");
-  const attachments = new AttachmentStore(join20(cfg.dataDir, "attachments"));
+  const appDir = join21(dirname8(fileURLToPath4(import.meta.url)), "..", "..", "app");
+  const attachments = new AttachmentStore(join21(cfg.dataDir, "attachments"));
   const { bindAttachmentStore: bindAttachmentStore2 } = await Promise.resolve().then(() => (init_attachmentRefs(), attachmentRefs_exports));
   bindAttachmentStore2(attachments);
   const settings = new SettingsStore(cfg.dataDir);
@@ -9218,7 +9424,7 @@ async function main() {
     const { warmProviderCache: warmProviderCache2 } = await Promise.resolve().then(() => (init_warm(), warm_exports));
     await warmProviderCache2(await settings.get());
   })().catch((e) => log("warn", "Provider \u9884\u70ED\u5931\u8D25", { err: String(e) }));
-  const daemonJsonPath = join20(cfg.dataDir, "daemon.json");
+  const daemonJsonPath = join21(cfg.dataDir, "daemon.json");
   await writeJsonAtomic(daemonJsonPath, {
     pid: process.pid,
     port: cfg.port,
