@@ -258,7 +258,8 @@ own: the offline tests replace `globalThis.fetch` to keep Cursor's token local
 
 The page uses Magpie's released `magpie.options` and theme bridge. Before
 saving it re-reads and merges edited fields, but another write between the read
-and write can still be lost. Use one editor at a time. It
+and write can still be lost. The released bridge can also round integers outside
+JavaScript's exact range, including in unlisted options. Use one editor at a time. It
 declares no reads and saving stores configuration without probing the
 connection or writing Memory. It shows connection, recall, capture, filtering and advanced options. Its **What is sent** section says
 the scope: direct local requests and `magpie-key` from this computer; other
