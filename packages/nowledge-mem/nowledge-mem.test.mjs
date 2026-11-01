@@ -912,16 +912,22 @@ test("named key permissions are independent, require an authenticated ID and an 
 })
 
 test("skipAgents blocks even an explicitly granted gateway key", async () => {
-  for (const [recall, capture] of [[true,false],[false,true],[true,true]]) {
+  const fixtures = [
+    ["chat",chat,reply],
+    ["responses",{input:[{role:"user",content:[{type:"input_text",text:"Quartz codename?"}]}]},{status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"answer"}]}]}],
+    ["anthropic",{messages:[{role:"user",content:[{type:"text",text:"Quartz codename?"}]}]},{type:"message",role:"assistant",content:[{type:"text",text:"answer"}],stop_reason:"end_turn"}],
+    ["gemini",{contents:[{role:"user",parts:[{text:"Quartz codename?"}]}]},{candidates:[{content:{role:"model",parts:[{text:"answer"}]},finishReason:"STOP"}]}],
+  ]
+  for (const [protocol, input, response] of fixtures) for (const [recall, capture] of [[true,false],[false,true],[true,true]]) {
     reset(); calls.length = 0; mock()
-    const [, c] = capturing("chat", { origin:"gateway-key", callerKeyId:"key-a", agent:"Claude Code", options: {
+    const [, c] = capturing(protocol, { origin:"gateway-key", callerKeyId:"key-a", agent:"Claude Code", options: {
       recall:true, capture:true, skipAgents:["claude-code"],
       keyPolicies:{"key-a":{recall,capture,spaceId:"space-a"}},
     } })
-    const body=structuredClone(chat)
+    const body=structuredClone(input)
     await onRequest(body,c)
-    await onResponse(reply,{...c,success:true})
-    expect(body).toEqual(chat)
+    await onResponse(response,{...c,success:true})
+    expect(body).toEqual(input)
     expect(calls).toHaveLength(0)
     expect(c.state.nowledgeMem).toBeUndefined()
   }
