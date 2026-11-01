@@ -1,6 +1,9 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/agent-junie", "name": "Junie CLI", "kind": "agent", "community": true,
+      "icon": "https://junie.jetbrains.com/favicons/favicon.svg",
+      "summary": { "en": "An explicit seed copies Magpie's full model catalog into Junie CLI and uses Magpie's selected model as the launch default, without LiteLLM. Native ECO is unavailable for custom profiles in Junie 3893.6.", "zh": "手动 seed 向 Junie CLI 同步全部模型，并将 Magpie 所选模型设为启动默认模型，无需 LiteLLM。Junie 3893.6 的自定义 profile 不支持原生 ECO。" } },
     { "package": "@magpie-community/gateway-powercontext", "name": "PowerContext", "kind": "middleware", "community": true,
       "icon": "https://raw.githubusercontent.com/oceanbase/powercontext/master/src/powercontext/server/dashboard/static/brand/favicon-color.svg",
       "summary": { "en": "Recall from your PowerContext service and optionally save complete conversations. Configure the service URL first; capture is off by default.", "zh": "从自己的 PowerContext 服务召回记忆，并按需存回完整对话。先配置服务地址；对话存回默认关闭。" } },
