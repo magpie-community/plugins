@@ -188,7 +188,7 @@ test("loadConfig 解析 DOUBAO_ACCOUNTS 并过滤无效账号", () => {
 test("magpie 登录态（plugin-auth.json）优先于 env 与配置文件", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "doubao-test-"));
   try {
-    writeFileSync(path.join(dir, "plugin-auth.json"), JSON.stringify({ doubao: { type: "oauth", accountId: "zeppeli", sessionid: "magpie123456789", ttwid: "tt", deviceId: "d1", webId: "w1" } }));
+    writeFileSync(path.join(dir, "plugin-auth.json"), JSON.stringify({ doubao: { type: "api", key: "magpie123456789", accountId: "zeppeli", metadata: { ttwid: "tt", deviceId: "d1", webId: "w1" } } }));
     process.env.DOUBAO_ACCOUNTS = "环境变量账号:sessionid=env1234567890";
     const cfg = loadConfig({}, dir, "doubao");
     expect(cfg.accounts.length).toBe(1);
@@ -197,6 +197,7 @@ test("magpie 登录态（plugin-auth.json）优先于 env 与配置文件", () =
     delete process.env.DOUBAO_ACCOUNTS;
     const rec = accountsFromMagpieAuth(dir, "doubao");
     expect(rec[0].sessionid).toBe("magpie123456789");
+    expect(rec[0].name).toBe("zeppeli");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

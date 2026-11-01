@@ -69,15 +69,18 @@ export function accountsFromMagpieAuth(magpieDir, pluginId) {
     if (!magpieDir) return null;
     const data = JSON.parse(readFileSync(path.join(magpieDir, "plugin-auth.json"), "utf8"));
     const rec = data?.[pluginId];
-    if (!rec || typeof rec.sessionid !== "string" || rec.sessionid.length <= 8) return null;
+    // magpie 存的是 save() 的 api 形态：{ type:"api", key:<sessionid>, metadata:{…} }
+    const sessionid = rec?.key ?? rec?.sessionid;
+    const md = rec?.metadata ?? rec ?? {};
+    if (!rec || typeof sessionid !== "string" || sessionid.length <= 8) return null;
     return [
       {
-        name: rec.accountId || "扫码登录",
-        sessionid: rec.sessionid,
-        ttwid: rec.ttwid || "",
-        passport_csrf_token: rec.passport_csrf_token || "",
-        deviceId: rec.deviceId || "",
-        webId: rec.webId || "",
+        name: rec.accountId || md.accountId || "扫码登录",
+        sessionid,
+        ttwid: md.ttwid || "",
+        passport_csrf_token: md.passport_csrf_token || "",
+        deviceId: md.deviceId || "",
+        webId: md.webId || "",
       },
     ];
   } catch {

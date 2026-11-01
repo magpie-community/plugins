@@ -169,15 +169,19 @@ export const DoubaoTools = async (input, options) => {
                     if (stage === "ready" && Buffer.isBuffer(detail)) openInViewer(saveQrPng(detail));
                   },
                 });
+                // magpie 的 save() 契约：结果带 key（或 refresh）才会持久化。
+                // key = sessionid（存为 type:"api"），其余凭证进 metadata。
                 return {
                   type: "success",
                   // 展示名用昵称/user_id，不暴露 sessionid
                   accountId: result.userName || (result.userId ? `豆包用户 ${result.userId}` : "豆包账号"),
-                  sessionid: result.sessionid,
-                  ttwid: result.ttwid || "",
-                  passport_csrf_token: result.passport_csrf_token || "",
-                  deviceId: result.deviceId || "",
-                  webId: result.webId || "",
+                  key: result.sessionid,
+                  metadata: {
+                    ttwid: result.ttwid || "",
+                    passport_csrf_token: result.passport_csrf_token || "",
+                    deviceId: result.deviceId || "",
+                    webId: result.webId || "",
+                  },
                 };
               } catch (err) {
                 return { type: "failed", error: `豆包扫码登录失败：${err?.message || err}` };
