@@ -17,7 +17,8 @@
 // 「复用桌面端登录态」同款），第二种让用户手动粘贴 modelBearerToken。目录与
 // 思考档位按账号实时拉取（目录读取不计费）。AStudio 有「每日登录积分」
 // （服务端在当天账号会话首次活跃时发放，客户端弹窗只做通知，无领取接口），
-// auth.checkin 用「发放前后余额差」观测：涨了记 claimed，没涨记 done。
+// auth.checkin 用「发放前后余额差」观测：涨了记 claimed，没涨不谎称已签——
+// 记 inactive 并说明未观测到（宿主把 done 渲染成「今日已签到」，是没发生的断言）。
 
 import { spawnSync } from "node:child_process"
 import { readFileSync } from "node:fs"
@@ -34,12 +35,13 @@ const REGISTRY_KEY = "HKCU\\Software\\AStudioStorage"
 const REGISTRY_PREFIXES = ["Production", "Canary", "Development"]
 
 // 未登录/拿不到桌面端数据时的兜底目录（桌面端未在注册表登记时也可能落在这些位置）。
+// 函数吃 homedir 参数（readDesktopCredential 注入，缺省回落真实家目录），测试可重定向。
 const SESSION_FALLBACKS = [
-  () => join(osHomedir(), ".acode", "acode", "userdata", "astron-session.json"),
+  (home = osHomedir()) => join(home, ".acode", "acode", "userdata", "astron-session.json"),
 ]
 
 const ACODE_CONFIG_FALLBACKS = [
-  () => join(osHomedir(), ".acode", "acode", "config.toml"),
+  (home = osHomedir()) => join(home, ".acode", "acode", "config.toml"),
 ]
 
 // 模型目录读不到时的启动表（2026-11-01 实测目录快照；models 钩子会用实时目录覆盖）。
@@ -165,8 +167,8 @@ function readDesktopCredential({ env = process.env, homedir = osHomedir(), readF
     sessionPaths.push(join(root, "userdata", "astron-session.json"))
     configPaths.push(join(root, "runtime", "acode-home", "config.toml"))
   }
-  for (const p of SESSION_FALLBACKS) sessionPaths.push(p())
-  for (const p of ACODE_CONFIG_FALLBACKS) configPaths.push(p())
+  for (const p of SESSION_FALLBACKS) sessionPaths.push(p(homedir))
+  for (const p of ACODE_CONFIG_FALLBACKS) configPaths.push(p(homedir))
 
   const problems = []
   for (const path of sessionPaths) {
@@ -325,8 +327,13 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
         {
           type: "api",
           label: "粘贴 modelBearerToken",
-          placeholder: "在 astron-session.json 或 acode config.toml 里复制",
           prompts: [
+            {
+              type: "password",
+              key: "modelBearerToken",
+              message: "modelBearerToken（astron-session.json 或 acode config.toml 里的值）",
+              validate: (v) => (v && v.trim() ? undefined : "必填"),
+            },
             {
               type: "text",
               key: "uid",
@@ -335,9 +342,44 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
             {
               type: "password",
               key: "sessionToken",
-              message: "网页会话 token（可选：astron-session.json 的 token 字段；用于积分余额与每日签到）",
+              message: "网页会话 token（astron-session.json 的 token 字段；用于积分余额与每日签到）",
+            },
+            {
+              type: "text",
+              key: "accountId",
+              message: "账号面 accountId（与 sessionToken 一起填，积分余额与签到才可用）",
+            },
+            {
+              type: "password",
+              key: "ssoSessionId",
+              message: "ssoSessionId（可选，Cookie 会话补充材料）",
             },
           ],
+          // 粘贴路径此前只问不存（没有 authorize，输入全部丢弃）。现在按桌面端
+          // 成功返回的同一形状落库；token+accountId 齐才组得出 Cookie 会话。
+          async authorize(inputs) {
+            const key = String(inputs?.modelBearerToken ?? "").trim()
+            if (!key) return { type: "failed", error: "modelBearerToken 必填" }
+            if (key.length > 4096) return { type: "failed", error: "凭据异常地长" }
+            const token = String(inputs?.sessionToken ?? "").trim()
+            const accountId = String(inputs?.accountId ?? "").trim()
+            const ssoSessionId = String(inputs?.ssoSessionId ?? "").trim()
+            const uid = String(inputs?.uid ?? "").trim() || undefined
+            const session = token && accountId
+              ? { token, accountId, ...(ssoSessionId ? { ssoSessionId } : {}) }
+              : undefined
+            return {
+              type: "success",
+              key,
+              accountId: accountId || uid,
+              metadata: {
+                uid,
+                source: "paste",
+                method: "paste",
+                ...(session ? { session } : {}),
+              },
+            }
+          },
         },
       ],
       // @ai-sdk/openai 把 apiKey 发成 Authorization: Bearer <key>，与桌面端内核
@@ -366,14 +408,21 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
           if (!res.ok) return { error: `AStudio 返回 HTTP ${res.status}`, windows: [] }
           return { plan: "AStudio", windows: [] }
         }
+        // 单项失败不塌方（一边挂了另一边还能显示），但登录态过期必须透传，
+        // 不能折叠成「账号信息读取失败」。
+        const tolerate = (promise) =>
+          promise.catch((error) => {
+            if (error?.signIn === "expired") throw error
+            return null
+          })
         let balance, membership
         try {
           ;[balance, membership] = await Promise.all([
-            readBalance(session).catch(() => null),
-            studioJson("membership/me", { session, fetchImpl, operation: "会员信息" }).catch(() => null),
+            tolerate(readBalance(session)),
+            tolerate(studioJson("membership/me", { session, fetchImpl, operation: "会员信息" })),
           ])
         } catch (error) {
-          return { error: error?.message ?? "AStudio 账号信息读取失败", windows: [] }
+          return { error: error?.message ?? "AStudio 账号信息读取失败", signIn: "expired", windows: [] }
         }
         if (!balance && !membership) {
           return { error: "AStudio 账号信息读取失败", windows: [] }
@@ -442,7 +491,10 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
         }
         const delta = after.totalBalance - before.totalBalance
         if (delta > 0) return { outcome: "claimed", credit: delta, message: `每日登录积分 +${delta}` }
-        return { outcome: "done", message: "今日未观测到新发放（可能已发放，或发放挂靠桌面端登录）" }
+        // 余额没涨 ≠ 已发放：无领取接口，发放可能挂靠桌面端登录，本次未观测到。
+        // 不能报 done（宿主渲染成「今日已签到」，是没发生的断言）；inactive 是
+        // 静默结算态，message 仍会把实情带给用户。
+        return { outcome: "inactive", message: "未观测到新发放：余额无变化（发放可能挂靠桌面端登录）" }
       },
     },
 

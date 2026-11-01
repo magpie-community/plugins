@@ -1,4 +1,4 @@
-# mass-astudio
+# @magpie-community/opencode-astudio-auth
 
 把 **AStudio（科大讯飞 Astron Studio 桌面端）** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：复用桌面端登录态，直连云端模型网关（OpenAI Responses 协议），agent 以 `astudio/<model>` 使用它的模型；支持每日登录积分自动签到与积分余额显示。
 
@@ -11,7 +11,7 @@
    - Windows 注册表 `HKCU\Software\AStudioStorage` 的 `Production/Canary/DevelopmentDataRoot`；
    - 兜底 `~/.acode/acode/`。
    - 目标文件：`<数据根>/userdata/astron-session.json`（其次 `<数据根>/runtime/acode-home/config.toml`，该方式无网页会话，积分/签到不可用）。
-2. **粘贴 modelBearerToken**——从 `astron-session.json` 的 `modelBearerToken`（或 `config.toml` 的 `experimental_bearer_token`）复制粘贴；可选填 uid 与网页会话 `token`（补全积分/签到能力）。
+2. **粘贴 modelBearerToken**——从 `astron-session.json` 的 `modelBearerToken`（或 `config.toml` 的 `experimental_bearer_token`）复制粘贴；可选填账号面 `accountId` 与网页会话 `token`（两者齐才能用积分/签到，另有 `ssoSessionId`/uid 可选）。
 
 每个 AStudio 账号登录一次即得一个 magpie 账号，可多账号故障切换。凭据保存在 magpie 的 `plugin-auth.json`（权限 600），不上传。
 
@@ -33,7 +33,7 @@
 
 ## 每日签到（每日登录积分）
 
-AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放（体验版 100 分/天，标准版 200，高级/畅享 400；活动期 31 天有效），客户端弹窗只做通知、没有领取接口。插件为此提供 magpie 的 `auth.checkin`：每天替账号做一次会话活跃（只读请求）并观测前后余额差——涨了记为已领取，没涨记为今日已发/未观测到。签到需要账号带网页会话（桌面端登录态方式默认有）。
+AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放（体验版 100 分/天，标准版 200，高级/畅享 400；活动期 31 天有效），客户端弹窗只做通知、没有领取接口。插件为此提供 magpie 的 `auth.checkin`：每天替账号做一次会话活跃（只读请求）并观测前后余额差——涨了记为已领取；没涨**不谎称已签**，如实报「未观测到新发放」（发放可能挂靠桌面端登录）。签到需要账号带网页会话（桌面端登录态方式默认有）。
 
 ## 用量
 
@@ -52,8 +52,8 @@ AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃
 ## 安装与开发
 
 ```
-magpie plugin add ./mass-astudio   # 文件夹就地加载
-magpie plugin login astudio                 # 选「读取 AStudio 桌面端登录态」
+magpie plugin add @magpie-community/opencode-astudio-auth
+magpie plugin login astudio                 # 选「读取 AStudio 桌面端登录态」或「粘贴 modelBearerToken」
 magpie provider test astudio spark-x2.6-4b  # 限免模型，验收一发
 ```
 

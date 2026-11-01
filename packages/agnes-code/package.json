@@ -27,6 +27,6 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/magpie-community/plugins.git",
-    "directory": "packages/opencode-agnes-code-auth"
+    "directory": "packages/agnes-code"
   }
 }

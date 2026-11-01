@@ -16,9 +16,10 @@
 //   积分余额  GET  https://api.agnes-ai.com/api/v2/subscription/credits-balance
 //
 // 本插件复用这份登录态：第一种登录方式在磁盘上解出桌面端会话（同用户同机器的
-// DPAPI 即可解，无需密钥口令），第二种让用户手动粘贴 accessToken。积分「每日
-// 登录送 600」（免费档）由服务端随当日会话发放、无领取接口，auth.checkin 用
-// 发放前后余额差观测：涨了记 claimed，没涨记 done。
+// DPAPI 即可解，无需密钥口令，仅 Windows），第二种让用户手动粘贴 accessToken。
+// 积分「每日登录送 600」（免费档）由服务端随当日会话发放、无领取接口，
+// auth.checkin 用发放前后余额差观测：涨了记 claimed，没涨不谎称已签——
+// 记 inactive 并说明未观测到（宿主把 done 渲染成「今日已签到」，是没发生的断言）。
 
 import { spawn } from "node:child_process"
 import { createDecipheriv } from "node:crypto"
@@ -33,8 +34,6 @@ const CHAT_GATEWAY_BASE = "https://api-agnes-code.agnes-ai.com/v1"
 const MODELS_URL = "https://api-agnes-code.agnes-ai.com/v1/models"
 const POINTS_API_BASE = "https://api.agnes-ai.com"
 const BALANCE_PATH = "/api/v2/subscription/credits-balance"
-
-const JWT_MAX_AGE_SECONDS = 60 * 60 * 24 * 60
 
 // 模型目录读不到时的启动表（2026-11-01 实测快照；models 钩子会用实时目录覆盖）。
 const BOOTSTRAP = [
@@ -157,14 +156,14 @@ function isExpiredJwt(token, nowMs = Date.now()) {
 }
 
 // readDesktopCredential 在磁盘上解出桌面端登录态，返回 { key, accountId, username, source }。
-async function readDesktopCredential({ homedir = osHomedir(), platform = process.platform, readFileImpl, dpapiImpl, nowMs } = {}) {
+async function readDesktopCredential({ homedir = osHomedir(), platform = process.platform, env = process.env, readFileImpl, dpapiImpl, nowMs } = {}) {
+  // 平台检查前置：macOS/Linux 走不到 DPAPI，先在读盘前给出明确指引，
+  // 而不是让 encrypted_key 形状检查抢先把错误说糊。
+  if (platform !== "win32") {
+    throw new Error("桌面端会话解密目前仅支持 Windows；请改用「粘贴 accessToken」方式")
+  }
   const readFile = readFileImpl ?? ((path) => readFileSync(path))
-  const dataDirs =
-    platform === "win32"
-      ? [join(process.env.APPDATA ?? join(homedir, "AppData", "Roaming"), "AgnesCode")]
-      : platform === "darwin"
-        ? [join(homedir, "Library", "Application Support", "AgnesCode")]
-        : [join(homedir, ".config", "AgnesCode")]
+  const dataDirs = [join(env.APPDATA ?? join(homedir, "AppData", "Roaming"), "AgnesCode")]
 
   const problems = []
   for (const dir of dataDirs) {
@@ -272,14 +271,31 @@ function createPlugin({ fetchImpl = globalThis.fetch, readFileImpl, dpapiImpl, h
         {
           type: "api",
           label: "粘贴 accessToken",
-          placeholder: "Agnes Code 会话里的 JWT accessToken（eyJ…）",
           prompts: [
+            {
+              type: "password",
+              key: "accessToken",
+              message: "Agnes Code 会话里的 JWT accessToken（eyJ…）",
+              validate: (v) => (v && v.trim() ? undefined : "必填"),
+            },
             {
               type: "text",
               key: "username",
               message: "用户名（可选，用于显示）",
             },
           ],
+          // username 只作显示名；原先没 authorize，输入会被整体丢弃。
+          async authorize(inputs) {
+            const key = String(inputs?.accessToken ?? "").trim()
+            if (!key) return { type: "failed", error: "accessToken 必填" }
+            const username = String(inputs?.username ?? "").trim() || undefined
+            return {
+              type: "success",
+              key,
+              accountId: username,
+              metadata: { username, source: "paste", method: "paste" },
+            }
+          },
         },
       ],
       // @ai-sdk/openai-compatible 把 apiKey 发成 Authorization: Bearer <key>，
@@ -340,7 +356,9 @@ function createPlugin({ fetchImpl = globalThis.fetch, readFileImpl, dpapiImpl, h
         }
         const delta = after.total_balance - before.total_balance
         if (delta > 0) return { outcome: "claimed", credit: delta, message: `每日登录积分 +${delta}` }
-        return { outcome: "done", message: "今日未观测到新发放（可能已发放，或发放挂靠桌面端登录）" }
+        // 余额没涨 ≠ 已发放：无领取接口，发放可能挂靠桌面端登录，本次未观测到。
+        // 不能报 done（宿主渲染成「今日已签到」）；inactive 是静默结算态，message 仍带实情。
+        return { outcome: "inactive", message: "未观测到新发放：余额无变化（发放可能挂靠桌面端登录）" }
       },
     },
 
