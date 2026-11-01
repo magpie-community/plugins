@@ -14,10 +14,16 @@ export interface Account {
 }
 export interface Target {
   model: string;
+  /** The account the samples are pinned to: Magpie's own name for it (its user, an email or a login), which routing rests and matches it by. */
   account?: string;
+  /** Its name as the page listed it, when the catalog had it. */
+  accountName?: string;
 }
 export interface RunConfig {
   targets: Target[];
+  /** The account every target is pinned to, and its name; absent in jobs saved before 0.2.2 and when the targets differ. */
+  account?: string;
+  accountName?: string;
   api: Api | 'auto';
   effort: string;
   serviceTier: 'default' | 'flex' | 'fast' | 'ultrafast';

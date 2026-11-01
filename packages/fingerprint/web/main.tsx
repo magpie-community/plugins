@@ -1169,6 +1169,7 @@ function ResultRow({
         <span className="result-model">
           <strong>{r.target.model}</strong>
           <small>
+            {r.target.account ? `${r.target.accountName || r.target.account} · ` : ''}
             {r.api} · {stateLabel(t, r.state)}
           </small>
         </span>

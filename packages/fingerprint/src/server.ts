@@ -3,14 +3,14 @@ import { readFile, mkdir, rename, unlink, access } from 'node:fs/promises';
 import { join, resolve, relative, isAbsolute, extname } from 'node:path';
 import { loadDetector, parseNumbers, type Detector } from '../vendor/lmfpd-sdk/index.js';
 import { options, type Options } from './config';
-import { Gateway } from './gateway';
+import { Gateway, accountHeader } from './gateway';
 import { Store } from './store';
 import { boundedText, BodyTooLargeError } from './http';
 import { normalizeChatStream } from './sse';
 import { serviceIdentity, VERSION } from './service-identity';
 import { createJob, runJob } from './detector';
 import { demoModels, demoHistory, demoAnalysis } from './demo';
-import type { Job, Model, Provenance, TargetResult, RunConfig } from './types';
+import type { Account, Job, Model, Provenance, TargetResult, RunConfig } from './types';
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
@@ -42,6 +42,7 @@ export async function startServer(input: Options = {}) {
     bankError = '',
     loading: Promise<Detector | undefined> | undefined;
   let models: Model[] = [],
+    accounts: Account[] = [],
     catalogError = '';
   let closed = false,
     creatingJob = false;
@@ -121,11 +122,13 @@ export async function startServer(input: Options = {}) {
   async function catalog() {
     if (opt.demo) {
       models = demoModels;
-      return { models, accounts: [] };
+      accounts = [];
+      return { models, accounts };
     }
     try {
       const result = await gateway.catalog();
       models = result.models;
+      accounts = result.accounts;
       catalogError = '';
       return result;
     } catch (e) {
@@ -186,7 +189,9 @@ export async function startServer(input: Options = {}) {
         const startedAt = Date.now();
         const headers = gateway.headers({
           'X-Magpie-Session': provenance.session,
-          ...(result.target.account ? { 'X-Magpie-Account': result.target.account } : {}),
+          ...(result.target.account
+            ? { 'X-Magpie-Account': accountHeader(result.target.account) }
+            : {}),
         });
         for (const name of ['anthropic-version', 'anthropic-beta', 'accept']) {
           const value = req.headers.get(name);
@@ -506,7 +511,7 @@ export async function startServer(input: Options = {}) {
                 const config = JSON.parse(text) as RunConfig;
                 await catalog();
                 // Reject malformed targets before allowing any reference download.
-                const job = createJob(config, models, '');
+                const job = createJob(config, models, '', accounts);
                 const engine = await ensureDetector();
                 if (!opt.demo && !engine)
                   return json({ error: bankError || 'Reference data unavailable' }, 503, cors);

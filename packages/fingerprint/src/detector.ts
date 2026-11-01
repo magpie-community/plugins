@@ -5,7 +5,7 @@ import {
   type DetectConfig,
   type Sample,
 } from '../vendor/lmfpd-sdk/index.js';
-import type { Api, Challenge, Job, Model, RunConfig, TargetResult } from './types.js';
+import type { Account, Api, Challenge, Job, Model, RunConfig, Target, TargetResult } from './types.js';
 
 const APIS: Api[] = ['responses', 'chat_completions', 'messages'];
 const SDK_VERSION = '0.2.0';
@@ -60,6 +60,11 @@ function validate(config: RunConfig, models: Model[]): void {
   if (!['default', 'flex', 'fast', 'ultrafast'].includes(config.serviceTier))
     fail('unknown service tier');
   if (!['auto', ...APIS].includes(config.api)) fail('unknown API');
+  if (
+    config.account !== undefined &&
+    (typeof config.account !== 'string' || config.account.length > 256)
+  )
+    fail('account must be at most 256 characters');
   for (const target of config.targets) {
     if (typeof target.model !== 'string' || !target.model.trim()) fail('target model must be text');
     if (
@@ -103,13 +108,55 @@ function queuedSample(challenge: Challenge): Sample {
   };
 }
 
-export function createJob(config: RunConfig, models: Model[], builtAt: string): Job {
+/**
+ * A target as the job keeps it: the account named (its own, else the
+ * config's) as Magpie names it, by the catalog's id when the name matches
+ * one of the model's provider's accounts by id or, alone, by its name, and
+ * that account's name beside it.
+ */
+function pinned(target: Target, fallback: string | undefined, model: Model, accounts: Account[]) {
+  const named = target.account || fallback;
+  if (!named) return { model: target.model };
+  const mine = accounts.filter((a) => a.provider === model.provider);
+  const byName = mine.filter((a) => a.name === named);
+  const hit =
+    mine.find((a) => a.id.toLowerCase() === named.toLowerCase()) ??
+    (byName.length === 1 ? byName[0] : undefined);
+  return {
+    model: target.model,
+    account: hit?.id ?? named,
+    ...(hit ? { accountName: hit.name } : {}),
+  };
+}
+
+export function createJob(
+  config: RunConfig,
+  models: Model[],
+  builtAt: string,
+  accounts: Account[] = [],
+): Job {
   validate(config, models);
+  const targets: Target[] = config.targets.map((target) =>
+    pinned(
+      target,
+      config.account,
+      models.find((candidate) => candidate.id === target.model)!,
+      accounts,
+    ),
+  );
+  const keys = targets.map((target) => `${target.model}\0${target.account ?? ''}`);
+  if (new Set(keys).size !== keys.length) fail('duplicate targets are not allowed');
+  // the account every target is pinned to, for a reader of the job file
+  // that asks which seat it measured (plugins#615)
+  const one =
+    targets[0].account !== undefined && targets.every((t) => t.account === targets[0].account)
+      ? targets[0]
+      : undefined;
   const normalizedConfig: RunConfig = {
-    targets: config.targets.map((target) => ({
-      model: target.model,
-      ...(target.account === undefined ? {} : { account: target.account }),
-    })),
+    targets,
+    ...(one
+      ? { account: one.account, ...(one.accountName ? { accountName: one.accountName } : {}) }
+      : {}),
     api: config.api,
     effort: config.effort,
     serviceTier: config.serviceTier,
