@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { defaultProfile, validateProject } from "./lib/browser.mjs"
-import { resolveIdentity, startLogin, tokenProvider, accountOf } from "./lib/credentials.mjs"
-import { fetchCredits, usageOf } from "./lib/credits.mjs"
+import { resolveIdentity, startLogin, tokenProvider, identityOf } from "./lib/credentials.mjs"
+import { consoleAccountFor, fetchCredits, usageOf } from "./lib/credits.mjs"
 import { testEndpoint } from "./lib/endpoint.mjs"
 import { providerModels, seedModels } from "./lib/models.mjs"
 
@@ -29,7 +29,16 @@ function settings(provider = {}, auth = {}) {
     location: auth.location || options.location || env.GOOGLE_VERTEX_LOCATION || "global",
     billingAccount: auth.billingAccount || options.billingAccount || env.VERTEX_BILLING_ACCOUNT,
     profile: auth.profile || options.profile || env.VERTEX_CHROME_PROFILE || defaultProfile(),
-    account: auth.accountId || auth.account || options.account || env.VERTEX_GCLOUD_ACCOUNT,
+    // The credential selector: gcloud keeps an account's credentials under the
+    // address it was signed in with, so it must not follow an email rename.
+    account: auth.credentialAccount || auth.accountId || auth.account || options.account || env.VERTEX_GCLOUD_ACCOUNT,
+    // The current Console address, which may differ from `account` after a
+    // rename; credits are read for it, verified by googleSubject.
+    consoleAccount: auth.consoleAccount,
+    googleSubject: auth.googleSubject,
+    // Explicit aliases: a fallback for a Console session whose email cannot be
+    // confirmed by subject (saved address -> current Console address).
+    consoleAccountAliases: options.consoleAccountAliases,
     authMode: auth.authMode || options.authMode || env.VERTEX_GCLOUD_AUTH_MODE,
     // Only the directory this plugin filed for an account, never a machine-wide
     // CLOUDSDK_CONFIG: one variable would point every account at one ADC, and a
@@ -64,11 +73,6 @@ function geminiRoute(pathname, base) {
   return GEMINI_ROUTE.test(pathname.slice(base.length))
 }
 
-// ADC records a project and a quota project, not who signed in, so a sign-in
-// made in ADC mode is saved without an account id and the row reads "Signed
-// in". The token can tell the host that account once; it is written back so
-// later reads of the sign-in are labelled without asking Google again.
-const named = new Set()
 // One probe per project and location per process: the answer cannot change
 // between two model calls in the same run, and the same run's later loads
 // should not ask Google again.
@@ -84,15 +88,7 @@ async function endorse(identity, location, owner) {
   tested.add(key)
 }
 
-async function label(client, auth, account) {
-  if (!account || auth.accountId === account) return
-  const key = `${auth.authMode ?? ""}/${account}`
-  if (named.has(key)) return
-  named.add(key)
-  try { await client?.auth?.set?.({ path: { id: ID }, body: { ...auth, accountId: account } }) } catch { named.delete(key) }
-}
-
-export const GoogleVertexAuthPlugin = async (input = {}) => {
+export const GoogleVertexAuthPlugin = async (input = {}, pluginOptions = {}) => {
   const client = input.client
   let configured = {}
   return {
@@ -147,7 +143,7 @@ export const GoogleVertexAuthPlugin = async (input = {}) => {
           const login = await startLogin(options)
           return {
             url: "", method: "auto",
-            instructions: `A Chrome window opens on Google's consent page and you approve it there; when the plugin already has an account, it opens Google's add-account page first so you can pick which account this is. The plugin closes the window itself when gcloud finishes, so leave it open. An addition counts only when the account approved in the window and the account the new ADC belongs to are the same, and neither was here before; anything else is an overwrite and is removed again. The project is the first of the account's projects that already has the Vertex AI API enabled, chosen automatically; with no such project the sign-in fails instead, so create one and enable the API before trying again. The sign-in expires after ten minutes.`,
+            instructions: `A Chrome window opens on Google's consent page and you approve it there; when the plugin already has an account, it opens Google's add-account page first so you can pick which account this is. The plugin closes the window itself when gcloud finishes, so leave it open. Google must confirm the new ADC's email and stable subject (sub). A subject already present in a managed ADC is the same Google account even after an email change, so the new credentials are removed and the original ones are kept; if an existing ADC's subject cannot be confirmed, nothing is added. The project is the first of the account's projects that already has the Vertex AI API enabled, chosen automatically; with no such project the sign-in fails instead, so create one and enable the API before trying again. The sign-in expires after ten minutes.`,
             async callback() {
               try {
                 const identity = await login.result
@@ -165,7 +161,10 @@ export const GoogleVertexAuthPlugin = async (input = {}) => {
                 if (identity.cloudsdkConfig) record.cloudsdkConfig = identity.cloudsdkConfig
                 // startLogin names an ADC sign-in from its token; when even
                 // that fails the record still succeeds, just unnamed.
-                if (identity.account) record.accountId = identity.account
+                if (identity.accountId || identity.account) record.accountId = identity.accountId || identity.account
+                // Google's stable account ID, saved at sign-in so a later email
+                // change can be told apart from a different account.
+                if (identity.subject) record.googleSubject = identity.subject
                 return { ...record, ...(identity.warning ? { warning: identity.warning } : {}) }
               } catch (error) {
                 return { type: "failed", error: error.message }
@@ -210,14 +209,52 @@ export const GoogleVertexAuthPlugin = async (input = {}) => {
           const auth = await getAuth()
           if (!auth) return { error: "GCP AI is not signed in", signIn: "kept" }
           const options = settings(provider, auth)
-          // The row is named after this read as well, so a sign-in made before
-          // this naming existed is fixed on its next usage refresh.
-          if (!auth.accountId && auth.authMode === "adc" && auth.project) {
-            void tokenProvider(options)()
-              .then((token) => accountOf(token))
-              .then((account) => label(client, auth, account)).catch(() => {})
+          options.consoleAccountAliases ??= pluginOptions.consoleAccountAliases
+          // Validated even when Google can confirm the email by subject.
+          const mapped = consoleAccountFor(options.account, options.consoleAccountAliases)
+          const aliased = mapped?.toLowerCase() !== options.account?.toLowerCase()
+          const snapshot = JSON.stringify(auth)
+          // userinfo: the token's current email and its stable `sub`. A failed
+          // lookup only leaves the identity unconfirmed for this read.
+          const current = options.account || auth.authMode === "adc"
+            ? await tokenProvider(options)().then(identityOf).catch(() => undefined) : undefined
+          // A different (or missing) subject is another Google account, never
+          // this one under a new email.
+          if (auth.googleSubject && current && current.subject !== auth.googleSubject) {
+            throw new Error("Google credentials no longer identify the saved account; remove it and sign in again")
           }
-          return usageOf(await fetchCredits(options))
+          const saved = auth
+          if (current?.subject) {
+            // Console may know a newer email than userinfo: keep an address
+            // already confirmed for this same subject. The usage hook does not
+            // persist this derived label: client.auth.set is not a conditional
+            // write, so persisting here could resurrect a sign-out that races
+            // the refresh. Login already stores the stable subject and key.
+            options.consoleAccount = auth.consoleSubject === current.subject
+              ? auth.consoleAccount || current.account : current.account
+            options.googleSubject = current.subject
+            // A sign-out or replacement while userinfo was pending wins.
+            if (JSON.stringify(await getAuth()) !== snapshot) {
+              return { error: "The GCP AI sign-in changed during the refresh; retry", signIn: "kept" }
+            }
+          }
+          if (aliased) options.consoleAccount = mapped
+          const credits = await fetchCredits(options)
+          // A browser read can outlive a sign-out or replacement: its result
+          // is dropped before any label is updated or balance returned.
+          if (JSON.stringify(await getAuth()) !== JSON.stringify(saved)) {
+            return { error: "The GCP AI sign-in changed during the refresh; retry", signIn: "kept" }
+          }
+          let user = saved.consoleAccount || current?.account || saved.accountId
+          // The Console page named its own subject: when it is this account's,
+          // the address it shows is this account's current email. Keep it in
+          // this usage result only; the host has no conditional auth.set API.
+          if (credits.consoleAccount && options.googleSubject && credits.googleSubject === options.googleSubject) {
+            user = credits.consoleAccount
+          }
+          // usage().user is how Magpie shows the account where it differs from
+          // the account's key; the key itself stays accountId.
+          return { ...usageOf(credits), ...(user ? { user } : {}) }
         } catch (error) { return { error: error.message, signIn: "kept" } }
       },
     },

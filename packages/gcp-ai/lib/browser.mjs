@@ -484,7 +484,7 @@ function projectInConsole(waitForConsole = false) {
 // page without the key has no answer at all and none is invented.
 function accountInPage() {
   const text = document.documentElement?.innerHTML ?? ""
-  const keyed = text.match(/"oPEP7c":"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})"/)?.[1]
+  const keyed = text.match(/"oPEP7c"\s*:\s*"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})"/)?.[1]
   if (keyed && !/(\.gserviceaccount\.com|@system\.|noreply|no-reply)/i.test(keyed)) return keyed
   return null
 }
@@ -492,6 +492,37 @@ function accountInPage() {
 export async function extractAccount(page, { timeout = 20000 } = {}) {
   const found = await page.waitForFunction(accountInPage, undefined, { timeout }).catch(() => undefined)
   try { return found ? await found.jsonValue() : undefined } finally { await found?.dispose().catch(() => {}) }
+}
+
+// Console's current-session JSON contains both its display email and Gaia ID.
+// These are private page fields, not an OAuth API: accept only top-level
+// identity records with corroborating IDs, never IDs in account-picker arrays
+// or arbitrary text. Conflicting records fail closed if the page changes.
+export async function extractConsoleIdentity(page, { timeout = 20000 } = {}) {
+  const account = await extractAccount(page, { timeout })
+  return page.evaluate((account) => {
+    if (location.origin !== "https://console.cloud.google.com") return { conflict: true }
+    const identities = []
+    for (const script of document.querySelectorAll('script[type="application/json"]')) {
+      let data
+      try { data = JSON.parse(script.textContent) } catch { continue }
+      if (!data || Array.isArray(data) || typeof data.oPEP7c !== "string") continue
+      if (!/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(data.oPEP7c)) continue
+      const ids = [data.W3Yyqf, data.S06Grb, data.qDCSke]
+      if (ids.every((id) => id === undefined)) continue
+      if (!ids.every((id) => typeof id === "string" && /^[0-9]{10,255}$/.test(id))) return { account, conflict: true }
+      if (new Set(ids).size !== 1) return { account, conflict: true }
+      identities.push({ account: data.oPEP7c, subject: ids[0] })
+    }
+    if (!identities.length) return { account }
+    const first = identities[0]
+    if ((account && first.account.toLowerCase() !== account.toLowerCase())
+      || identities.some((identity) => identity.subject !== first.subject
+        || identity.account.toLowerCase() !== first.account.toLowerCase())) {
+      return { account, conflict: true }
+    }
+    return first
+  }, account)
 }
 
 // One page visit answers both questions, so this waits for either signal and
