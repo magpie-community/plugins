@@ -92,6 +92,7 @@ function paintSecret() {
  $('show-key').setAttribute('aria-label',label); $('show-key').setAttribute('title',label); $('show-key').setAttribute('aria-pressed',String(visible));
 }
 $('show-key').onclick = () => { $('key').type = $('key').type === 'password' ? 'text' : 'password'; paintSecret(); };
+$('settings').onclose = () => { $('key').type = 'password'; paintSecret(); };
 $('key-action').onchange = () => { $('key').disabled = $('key-action').value !== 'replace'; };
 $('capture-filter').onchange = () => { $('capture-cindy').disabled = $('capture-filter').value !== 'human'; };
 function close() { if (!busy) $('settings').close(); }

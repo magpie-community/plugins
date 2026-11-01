@@ -50,7 +50,7 @@ async function pageFixture(initial) {
   const [dictionary, validator, source, html] = await Promise.all([read("i18n.js"), read("validate.js"), read("settings.js"), read("settings.html")])
   const make = () => ({
     dataset: {}, value: "", type: "text", checked: false, children: [], hidden: false,
-    setAttribute(name, value) { this[name] = value }, focus() {}, showModal() { this.open = true }, close() { this.open = false },
+    setAttribute(name, value) { this[name] = value }, focus() {}, showModal() { this.open = true }, close() { this.open = false; this.onclose?.() },
     append(...xs) { this.children.push(...xs); for (const x of xs) x.parent = this },
     replaceChildren(...xs) { this.children = xs }, remove() { if (this.parent) this.parent.children = this.parent.children.filter((x) => x !== this) },
   })
@@ -82,6 +82,10 @@ test("released hosts save only edited fields using a fresh read and retain secre
 })
 
 test("connection status stays separate from the concurrency notice", async () => {
+ const html=await Bun.file(new URL("./page/settings.html",import.meta.url)).text()
+ const noticePos=html.indexOf('data-t="concurrencyHelp"')
+ expect(noticePos).toBeGreaterThan(html.indexOf('class="dialog-body"'))
+ expect(noticePos).toBeLessThan(html.indexOf('</div><footer>'))
  for (const [options,status] of [[{},"notConfigured"],[{serverUrl:"https://mem.example"},"loaded"]]) {
   const f=await pageFixture(options), e=f.elements
   expect(e.configured.dataset.message).toBe(status)
@@ -105,6 +109,31 @@ test("secret controls keep, replace and clear the saved value", async () => {
  expect(f.get().apiKey).toBeUndefined()
  expect(f.get().apiKeyEnv).toBe("NMEM_API_KEY")
  expect(f.get().future).toEqual({x:1})
+})
+
+test("key visibility resets on close while its draft remains", async () => {
+ const f=await pageFixture({}),e=f.elements
+ const html=await Bun.file(new URL("./page/settings.html",import.meta.url)).text()
+ expect(html).toMatch(/<svg class="eye-show"/)
+ expect(html).toMatch(/<svg class="eye-hide"/)
+ expect(html).toContain('aria-describedby="key-storage key-help"')
+ expect(html).toContain('data-t="keyHelp"')
+ await e.configure.onclick();e["key-action"].value="replace";e["key-action"].onchange();e.key.value="synthetic_secret"
+ e["show-key"].onclick()
+ expect(e.key.type).toBe("text")
+ expect(e["show-key"]["aria-pressed"]).toBe("true")
+ e.close.onclick()
+ expect(e.key.type).toBe("password")
+ expect(e["show-key"]["aria-pressed"]).toBe("false")
+ await e.configure.onclick()
+ expect(e.key.type).toBe("password")
+ expect(e.key.value).toBe("synthetic_secret")
+})
+
+test("test connection opens the saved local service and language", async () => {
+ const f=await pageFixture({}),e=f.elements
+ e["test-saved"].onclick()
+ expect(f.location.assigned).toBe("http://127.0.0.1:3479/test?lang=en")
 })
 
 test("invalid connection values do not write and closing keeps an unsaved draft", async () => {
