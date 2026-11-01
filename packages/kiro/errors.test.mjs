@@ -66,9 +66,62 @@ test("a quota exception before the answer is a 429", async () => {
 })
 
 test("another exception before the answer is a 502, not a stream", async () => {
-  const res = await ask(stream(exception("ValidationException", "Input is too long.")), true)
+  const res = await ask(stream(exception("InternalServerException", "Encountered an unexpected error")), true)
   expect(res.status).toBe(502)
-  expect((await res.json()).error.message).toBe("ValidationException: Input is too long.")
+  expect((await res.json()).error.message).toBe("InternalServerException: Encountered an unexpected error")
+})
+
+// magpie's gateway (tooLong) takes a 400 with these words for a conversation
+// past the model's window: another member with room is asked, no account
+// rests, and a lone agent is told to compact. As a 502 the Kiro account
+// rested, was asked again, and the agent got a vendor error it never
+// compacted for (ergou0954_54426 on Discord: "kiro 那边报错说超出上下文").
+const saysTooLong = (m) => /^input is too long for the model's context: /.test(m)
+
+test("Kiro's too-long exception in the stream is a 400 that says too long, streamed or not", async () => {
+  for (const [kind, msg] of [
+    ["ValidationException", "Input is too long."],
+    ["ValidationException", "Improperly formed request. (CONTENT_LENGTH_EXCEEDS_THRESHOLD)"],
+  ]) {
+    for (const s of [true, false]) {
+      const res = await ask(stream(exception(kind, msg)), s)
+      expect(res.status).toBe(400)
+      const b = await res.json()
+      expect(b.error.type).toBe("invalid_request_error")
+      expect(saysTooLong(b.error.message)).toBe(true)
+      expect(b.error.message).toContain(msg)
+    }
+  }
+})
+
+test("a reply Kiro stops for a full window before a word is a 400 that says too long", async () => {
+  const full = () => stream(frame({ ":message-type": "event", ":event-type": "metadataEvent" }, { stopReason: "MODEL_CONTEXT_WINDOW_EXCEEDED" }))
+  for (const s of [true, false]) {
+    const res = await ask(full(), s)
+    expect(res.status).toBe(400)
+    expect(saysTooLong((await res.json()).error.message)).toBe(true)
+  }
+})
+
+test("a reply Kiro stops for a full window after some of it says it was cut short", async () => {
+  const cut = () =>
+    stream(text("Half an ans"), frame({ ":message-type": "event", ":event-type": "metadataEvent" }, { stopReason: "MODEL_CONTEXT_WINDOW_EXCEEDED" }))
+  const res = await ask(cut(), false)
+  expect(res.status).toBe(200)
+  expect((await res.json()).stop_reason).toBe("model_context_window_exceeded")
+  const sse = await (await ask(cut(), true)).text()
+  expect(sse).toContain('"stop_reason":"model_context_window_exceeded"')
+})
+
+test("Kiro's HTTP 400 for a too-long input stays a 400 that says too long", () => {
+  const f = failure(400, JSON.stringify({ message: "Input is too long.", reason: "CONTENT_LENGTH_EXCEEDS_THRESHOLD" }))
+  expect(f.status).toBe(400)
+  expect(saysTooLong(f.message)).toBe(true)
+})
+
+test("a quota or throttle still isn't taken for too long", async () => {
+  expect((await ask(stream(exception("ServiceQuotaExceededException", "You have reached the limit")), true)).status).toBe(429)
+  expect((await ask(stream(exception("ThrottlingException", "Too many requests")), true)).status).toBe(429)
 })
 
 test("an exception after the answer began ends the stream with an error event", async () => {

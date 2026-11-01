@@ -22,9 +22,11 @@ import { send, usable } from "./channels.mjs"
 //   nested   it first showed up while another top-level conversation in the
 //            same session was busy or waiting: a subagent, which never pushes
 //   failed   { at, timer } while a failure push is held back
-//   background  the tool_use_ids of the Claude Code background agents it
-//            launched that haven't reported back: the turn isn't over
-//            until they have
+//   background  the Claude Code background agents it launched (or resumed
+//            with SendMessage) that haven't reported back, tool_use_id ->
+//            { agent, interim }: the turn isn't over until they have. interim:
+//            the agent's last notification said it would notify again; the
+//            user's next message drops it, since they have seen that report
 //   compactedAt  when it last asked for a compaction summary, so the
 //            conversation that goes on from the summary can find it
 const turns = new Map()
@@ -167,16 +169,32 @@ export function onRequest(body, ctx) {
       turn.failed = null
     } else if (turn && !resumed && opensTurn(body, ctx.protocol) && !turn.nested) {
       turn.start = t // a new message from the user starts the turn over
+      // an agent whose report was interim may never notify again (a dev
+      // server): the user has seen the report and moved on, so it holds no
+      // later turn
+      for (const [k, v] of turn.background) if (v.interim) turn.background.delete(k)
     } else if (!turn) {
       const nested = subagent(body, ctx.protocol) || parentActive(base, t)
-      turn = { key, base, start: t, seen: t, agent: ctx.agent ?? "", model: ctx.model ?? body?.model ?? "", cwd: ctx.cwd ?? "", busy: 0, waiting: false, nested, failed: null, background: new Set(), compactedAt: 0 }
+      turn = { key, base, start: t, seen: t, agent: ctx.agent ?? "", model: ctx.model ?? body?.model ?? "", cwd: ctx.cwd ?? "", busy: 0, waiting: false, nested, failed: null, background: new Map(), compactedAt: 0 }
       turns.set(key, turn)
       if (!nested) latest.set(base, key)
       prune(t)
     }
     const bg = background(body, ctx.protocol)
-    for (const id of bg.launched) turn.background.add(id)
-    for (const id of bg.stopped) turn.background.delete(id)
+    for (const id of bg.launched) {
+      const agent = bg.agents[id] ?? ""
+      // an agent runs once at a time: a SendMessage that resumes it replaces
+      // the calls it was out under before, so their late notifications match
+      // nothing and can't end the resumed run
+      if (agent) for (const [k, v] of turn.background) if (k !== id && v.agent === agent) turn.background.delete(k)
+      turn.background.set(id, { agent, interim: false })
+    }
+    // a notification names the call that launched or last resumed the agent
+    // (its tool-use id), and ends that call only; one that names only the
+    // agent (background() gives its task-id then) ends every call it is out under
+    const match = (id, k, v) => k === id || v.agent === id
+    for (const id of bg.interim) for (const [k, v] of turn.background) if (match(id, k, v)) v.interim = true
+    for (const id of bg.stopped) for (const [k, v] of turn.background) if (match(id, k, v)) turn.background.delete(k)
     turn.waiting = false
     turn.busy++
     turn.seen = t
