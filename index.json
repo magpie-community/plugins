@@ -2017,6 +2017,94 @@
       "latest": "0.1.1",
       "readme": "# @magpie-community/middleware-word-guard\n\nNew API's **敏感词过滤** as [magpie](https://usemagpie.ai) gateway middleware. It keeps the words and patterns you list out of what agents send: a request with one is turned away, or has the word masked. It can mask them in replies too.\n\nInstall it from magpie's **Plugins › Discover**, or with `magpie plugin add @magpie-community/middleware-word-guard`. Set its options under **Plugins › Installed › Options**, or with `magpie plugin options word-guard '<json>'`.\n\n## Options\n\n```json\n{ \"words\": [\"project-codename\"],\n  \"patterns\": [\"\\\\b\\\\d{3}-\\\\d{4}\\\\b\"],\n  \"action\": \"reject\",\n  \"check\": \"last\" }\n```\n\n- **`words`.** Words matched anywhere in the text, ignoring case.\n- **`patterns`.** Regular expressions, also matched ignoring case.\n- **`action`.** `reject` (the default) turns the request away with a 400 that names the word, in the agent's API's error shape. `mask` replaces each match with `mask` (default `***`) and sends the request on.\n- **`check`.** `last` (the default) reads only the last user message that has text, which is the turn being sent. That is what New API reads. `all` reads every user message, so a word earlier in the conversation keeps turning requests away.\n- **`replies`.** Set it to `true` to mask matches in the text that comes back as well, in every API magpie serves — Anthropic, Chat, Responses and Gemini, streamed or whole. A word split across two streamed events isn't caught.\n- **`message`.** The error text to use in place of the default one.\n\nThe middleware reads only the user's own text. It doesn't read tool results, tool calls or the system prompt, so a file an agent reads that contains the word doesn't stop it.\n\nIf you want a listed word to be a 400 rather than something masked, and you also want every earlier user turn and the system prompt read, that is [block-patterns](../block-patterns). It never masks and never reads replies, so the two can be installed together.\n\nmagpie already redacts secrets (API keys and tokens) before a request leaves your computer, and puts them back in the reply. You don't need this middleware for secrets.\n\n中文：New API 的「敏感词过滤」，作为 magpie 网关中间件。只检查用户自己写的文字，可拒绝请求或替换成 `***`，也可以替换回复里的词。\n"
     },
+    "@magpie-community/opencode-agnes-code-auth": {
+      "versions": {
+        "0.1.0": {
+          "file": "tgz/magpie-community-opencode-agnes-code-auth-0.1.0.tgz",
+          "integrity": "sha512-IaHqSSmBpz8mb/e3usXVWZlqj+Ns3ja81K53PBsNDrBFcjYrUA9LbpjwYYWdtCWxJkuN9JPrqZ5EEd5VkZK2LQ==",
+          "time": "2026-11-01T19:35:59.000Z",
+          "manifest": {
+            "name": "@magpie-community/opencode-agnes-code-auth",
+            "version": "0.1.0",
+            "description": "Agnes Code desktop sign-in as an OpenCode/magpie provider: OpenAI-compatible chat gateway, live model catalog, daily check-in and points balance",
+            "type": "module",
+            "main": "./index.mjs",
+            "files": [
+              "index.mjs",
+              "README.md",
+              "LICENSE"
+            ],
+            "keywords": [
+              "opencode",
+              "opencode-plugin",
+              "magpie",
+              "agnes",
+              "agnes-code"
+            ],
+            "license": "MIT",
+            "scripts": {
+              "test": "node --test"
+            },
+            "magpie": {
+              "icon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAALDSURBVFhHvZffS5NRGMffP6D6Q7rq3fp9o4F43n4JXQhqXQRdKFpExTISisKKCBJndJGY/YAuJr1nk9jKzCVubsOtSdOoRZFY+1E5F5W4re2Jc9rGds7rrHZ8H/gwON/nvM/3nOfAeCSpJHY2WNfLCu6Ukeo1IHXRoGAQAlITMsIeA1JNpEZpzWIY6627DAqOc5sFIytqzIhwLVdcVnCaTV4zEE4VTWxV7Bv0ODmLjHB0Y41lnUR6zoq6gVSTRB8cK+jHJLmBpIagD0hNSNxilWzfb4Pu3iCcvODlNC2EG7g7FIZC/I0J4QZsT+aKBi72vOB0FuEG0EEHYMcHGLSEYds+G6ezCDdA2NEwDC1HnbB5j5XTWIQbaD/rhsVvKdqCji43p7MINUCu//uPNGQyWWqgse0Zl8MizIBxNwbnZIQWJr/ZXI62gs1jEWbg+q0QLb6QWIbLfdMQjS9xOVoIMdB2xlW89nPX/HD/4VvwBT9zeVpUbeDQMSf8XMrQ4u6pGG1FIPQVhh6953K1qMrA4RPjkMy/eHL1dc122ndiiLSEzdeiooGm9jFurYCp2wfLqV+0eDabg+PnPfQ/YMIXpWsj4x/hjiUM5tuz3N5SKhoYHpmDKzemy9bqWxzw+Pk8LVKIS+Yg1cwDM2XrrqkY1DXZue+WUtGA/+UXyOUAvIE4/ZMZc0cglT91IUpPSPr/5l2SrvcOzHDf02JVAysFMdJ11c/tuXnvFdVbO12cpkVFA32Ds2xdGp5AHBpbR7l8AnkLqXQWDhx5ymlaVDSwZa8VevpD9OpHJz5B/4PX0Nyx8sMkkDas1vdSJKEDyD8iK3hBohOLhqgPqpsYOM0L+mCsx6fy86AaY8W1RlZwhA4mdDRDuFbv0WyTotaUz4fEBMJRLlkw5ORc8UKQKyHjEplYyAtlN/8vf76luknPi9eej986sOvbZw1S8QAAAABJRU5ErkJggg==",
+              "maxConcurrency": 4
+            },
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/agnes-code"
+            }
+          }
+        }
+      },
+      "latest": "0.1.0",
+      "readme": "# @magpie-community/opencode-agnes-code-auth\n\n把 **Agnes Code 桌面端** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：复用桌面端登录态（会话文件解密），直连云端 OpenAI 兼容网关，agent 以 `agnes-code/<model>` 使用它的模型；支持「每日登录送积分」自动观测与积分余额显示。\n\n## 登录什么\n\n两种方式（登录时二选一）：\n\n1. **读取 Agnes Code 桌面端登录态（推荐，仅 Windows）**——本机装有 Agnes Code 桌面版并登录过即可。插件按 Chrome 同款方案解出会话（`Local State` 的 DPAPI 包裹 AES 主密钥 → 解 `code-auth-session.v1` 的 AES-256-GCM），只在本机、当前 Windows 用户下可解，凭据不外传：\n   - 会话目录：`%APPDATA%\\AgnesCode\\`。macOS/Linux 下桌面端解密不可用，会明确提示改用粘贴方式。\n   - 会话 JWT 过期会提示打开 Agnes Code 重新登录后重试（桌面端负责续期）。\n2. **粘贴 accessToken**——从桌面端会话里复制 JWT（`eyJ…`）；可选填用户名便于区分账号。\n\n每个账号登录一次即得一个 magpie 账号，可多账号故障切换。凭据保存在 magpie 的 `plugin-auth.json`（权限 600），不上传。\n\n## 模型\n\n供应商 id `agnes-code`。目录**按账号实时拉取**（`GET /v1/models`，读取不计费）。2026-11 实测目录：\n\n| modelId | context | 备注 |\n| --- | --- | --- |\n| `agnes-3.0-flash` | 512k | 免费，思考 |\n| `agnes-2.5-flash` | 512k | 免费，思考 |\n| `agnes-2.5-pro` | 512k | 免费，思考 |\n| `gpt-6.1-sol` | 1M | 会员 |\n| `gpt-6-astra` | 1M | 会员 |\n| `grok-4.7` | 500k | 会员 |\n| `claude-opus-5-5` | 1M | 会员 |\n| `deepseek-v4.1-flash` | 1M | 会员，思考 |\n| `deepseek-v4-pro` | 1M | 会员，思考 |\n| `glm-5.3` | 1M | 会员 |\n| `kimi-k3` | 1M | 会员 |\n\n带 `thinking_toggle` 的模型标为推理模型；会员专属模型照常列出，免费账号调用会得到上游透明的 403（`subscription_required`），不影响登录态。\n\n## 每日签到\n\n免费档「每日登录送 600 积分」由服务端随当日会话自动发放，没有领取接口——插件的 `auth.checkin` 每天做一次账号会话活跃（只读请求）并观测发放前后的余额差：涨了记已领取（+600）；没涨**不谎称已签**，如实报「未观测到新发放」（发放可能挂靠桌面端登录）。\n\n## 用量\n\n显示真实积分余额（`GET /api/v2/subscription/credits-balance`，读取不计费）：积分总额、限时积分、永久积分（有则显示）。401/403 会把账号标记为需要重新登录。\n\n## 协议与上游\n\n- 模型调用：`POST https://api-agnes-code.agnes-ai.com/v1/chat/completions`（OpenAI chat 协议，`Authorization: Bearer <accessToken>`，思考在 `reasoning_content`）。\n- 模型目录：`GET https://api-agnes-code.agnes-ai.com/v1/models`。\n- 积分：`GET https://api.agnes-ai.com/api/v2/subscription/credits-balance`。\n\n## 风险提示\n\n非官方集成，凭据与协议来自桌面客户端逆向，上游随时可能变更；共享登录态的自动化使用可能违反 Agnes Code 服务条款，账号风险自担。请勿用于批量/滥用场景。\n\n## 安装与开发\n\n```\nmagpie plugin add @magpie-community/opencode-agnes-code-auth\nmagpie plugin login agnes-code              # 选「读取 Agnes Code 桌面端登录态」或「粘贴 accessToken」\nmagpie provider test agnes-code agnes-3.0-flash\n```\n\n测试（零依赖，Node ≥18 或 Bun）：\n\n```\nnpm test          # = node --test\n# 或 bun test\n```\n"
+    },
+    "@magpie-community/opencode-astudio-auth": {
+      "versions": {
+        "0.1.0": {
+          "file": "tgz/magpie-community-opencode-astudio-auth-0.1.0.tgz",
+          "integrity": "sha512-o9cA97R4dhHyuxk9Khz34tuzOR48N2mLRPyWZuYeITpi4XS7x9UgcN1CMrfOVIJG5GDFhywtIAlBEZ2YmF6oQg==",
+          "time": "2026-11-01T19:35:59.219Z",
+          "manifest": {
+            "name": "@magpie-community/opencode-astudio-auth",
+            "version": "0.1.0",
+            "description": "AStudio (iFLYTEK Astron Studio) desktop sign-in as an OpenCode/magpie provider: Responses model gateway with live model catalog",
+            "type": "module",
+            "main": "./index.mjs",
+            "files": [
+              "index.mjs",
+              "README.md",
+              "LICENSE"
+            ],
+            "keywords": [
+              "opencode",
+              "opencode-plugin",
+              "magpie",
+              "astudio",
+              "astron",
+              "iflytek",
+              "xfyun"
+            ],
+            "license": "MIT",
+            "scripts": {
+              "test": "node --test"
+            },
+            "magpie": {
+              "icon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAVJSURBVFhHxVdrUxVHEDX55v9J/At5fNcqK6n4xcSUmqiJ8QUaUHmphEdQQQV8IBqFlFYZISDRxBAwEUIQDFoiivhAEAXuzuzudO9J9T5guZcraDSZqq69d3e2z+k+PTO9CxbEBoA34v9fx5gTQym1iJnXOI6TKaa13vpvTfyIT9d1FyXj+UNYAVjoOM5xvOYRYiycykRWVtabctVa18oErbVRShm5vkqLfIYYtXHsBZZlvSUPbNt2tdastZZJXmjye05TSq7Kv8Z/J/lhwRAswZySQCn1JQCZJAReGFgpNQVohZZEIk5ECHi2bX8xRUAKJSQgaQpeCB37zsVJ6DS6NxVpDFyunlFgE7+XYiKDYG2NE8iM9J+KPnQYRDkTNJ5meW5ZGo6tYFkKDVcJLV0mJJBCwg8yxMpMRyAAnZFeuWdD2yqwmPMI/Om4xpk2wqr9HjYeBkaf2bBty38+SwZSCIgEMwjEJVCThPFhxtMhg8kRFyoxTUZARp7auNTNqG4m5J8mlJ1jTEyKHys5A3ECMyRIIaAsKaYg2olRwmAnob+ZMdDkYaDVw70exsiQwdiYixtDhLY+g8YOg8MXCOeukF8bIolkIC7h/AmE6VXawuQzB3fbGDfqCddOMH4/Trhc6+GXOg+tjR462xnXehldN0V/xl+3DdhI9AGBmatCzY9AQCJcBbbCyN+EvjpGZy3j12OM5mrG2UOMkxWMYwcYNYcZdfUeGi4w2v8kDD5wfBlcR8G4ItVLZEDSKFIorZAYs3GridFew7h4lHG+ilF/kFFTzjhQxigu9pBbyMguJGSXMgoqGYfOMBrbCD39LsbGbZ/MvDIwnS6NhFSxsqAdhaFeRtsJD03VhLOVHk5WeKjex9j7LWNPMWNHIWFzAWFNDuHjbMJHWYRlOxmrShgbKz1cv2OD3DkIzARXMI6FZxMafUMG/fcIXU2MHyoZdQcZx/ZL9ITiEg953xC27Tb4Kp+wOoexfDvjgyzCexsIi1YT3skg9N7RskmlJ6D8DIRaKdnRLPQ/cNBwlfFTF6Fn0MXNXkJDjYfackLVPkJZKWN3EWP7HsKmAsLaXMaKHYQlWwjvricsyzc40uTg0ZOgFiw1Rw1E4LZWaLxqkHvKQ0UD+0vrSp/BrSGD35oZR/czyssIRSWB9pm7DNbnEz7dTliaQdhQZtDYbmN8Uklovv6yGrSeIwOydmXy6cuEJQXA8lJG3inC0RbCjx2Ezn6D3uuE7454KC1h7CpiZIfRr95J+LyA0N4dFBy8IJBEYp7LMCLgOArHLzJWlAEr93nYVuOh/Dzj+1bGpW5C9wDhQrOH4hJGTiH50Yv2yzIYFfVy2Fk+aBLw/JahTBLWkwmNwWEbAw9tDDxwMDjs4P6Ig0ejDp5M2Lh91+BAtYevdxE25hPW5hGWbibUtThgDt5PcyClJxAvQiEhRUOhGSeQRu6Lua5Cy8+ErXsY63INVuYQFm9iXOqw/dQnEinAcxNIXoZRcxFtpZH5J6Bj4eGwjaIq9rVfvt1gcQah55aGRyrYP1LB0xJIOY6fZ8EeH2SouZXwWR7jw22ED7IJ9x/L9muFFT+rzXocpzYkaSxKa9AHWHg8aiOvirF4C+GT3QaTibBfmD0DaRuS1JbsORZIIWlWIKPQ8ofB+xs8rNtrwCRNSFr9xYTAzJbsRZvSyHlUrOMTGrXNBh19NoyJeoCU99I3pS/TlseLVUhI5UszGt2fBVh+p7bl0ceBUuqlP0yU0iZhaSP7fPKz6TnTHyaCFcf+fz/Nkofrum+7rvvffpxGIy2rVziSMf4B2dvP/4LPzYQAAAAASUVORK5CYII=",
+              "maxConcurrency": 4
+            },
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/astudio"
+            }
+          }
+        }
+      },
+      "latest": "0.1.0",
+      "readme": "# @magpie-community/opencode-astudio-auth\n\n把 **AStudio（科大讯飞 Astron Studio 桌面端）** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：复用桌面端登录态，直连云端模型网关（OpenAI Responses 协议），agent 以 `astudio/<model>` 使用它的模型；支持每日登录积分自动签到与积分余额显示。\n\n## 登录什么\n\n两种方式（登录时二选一）：\n\n1. **读取 AStudio 桌面端登录态（推荐）**——本机装有 AStudio 桌面版并登录过即可，插件自动从它的数据目录读出模型凭据与网页会话（积分/签到用）。数据目录按以下顺序查找：\n   - `ASTUDIO_HOME`（或 `SYNARA_HOME`）环境变量指定的目录；\n   - Windows 注册表 `HKCU\\Software\\AStudioStorage` 的 `Production/Canary/DevelopmentDataRoot`；\n   - 兜底 `~/.acode/acode/`。\n   - 目标文件：`<数据根>/userdata/astron-session.json`（其次 `<数据根>/runtime/acode-home/config.toml`，该方式无网页会话，积分/签到不可用）。\n2. **粘贴 modelBearerToken**——从 `astron-session.json` 的 `modelBearerToken`（或 `config.toml` 的 `experimental_bearer_token`）复制粘贴；可选填账号面 `accountId` 与网页会话 `token`（两者齐才能用积分/签到，另有 `ssoSessionId`/uid 可选）。\n\n每个 AStudio 账号登录一次即得一个 magpie 账号，可多账号故障切换。凭据保存在 magpie 的 `plugin-auth.json`（权限 600），不上传。\n\n## 模型\n\n供应商 id `astudio`。目录**按账号实时拉取**（`GET /api/v1/model-manager/models`，读取不计费），含思考档位与限免标记。2026-11 实测目录：\n\n| modelId | 名称 | context | 备注 |\n| --- | --- | --- | --- |\n| `astronclaw-auto` | Auto | 256k | 智能路由 |\n| `spark-x2.6` | Spark-X2.6 | 256k | 抢先体验 |\n| `spark-x2.6-4b` | Spark-X2.6-Lite | 1M | **限免** |\n| `spark-x2.5` | Spark-X2.5 | 256k | |\n| `xopglm52` | GLM-5.2 | 1M | |\n| `xopdeepseekv4pro0813` | DeepSeek-V4-Pro | 1M | |\n| `xopdsv4flash0731in` | DeepSeek-V4-Flash | 1M | |\n\n思考档位（none / high / max，随模型）映射为 magpie 的推理档位；上游字段变化以实时目录为准。\n\n## 每日签到（每日登录积分）\n\nAStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放（体验版 100 分/天，标准版 200，高级/畅享 400；活动期 31 天有效），客户端弹窗只做通知、没有领取接口。插件为此提供 magpie 的 `auth.checkin`：每天替账号做一次会话活跃（只读请求）并观测前后余额差——涨了记为已领取；没涨**不谎称已签**，如实报「未观测到新发放」（发放可能挂靠桌面端登录）。签到需要账号带网页会话（桌面端登录态方式默认有）。\n\n## 用量\n\n有网页会话时显示真实数据：会员档（体验版/标准版/高级版/畅享版）、通用积分余额（含最近到期批次与时间）、星火积分余额。所有读取均不计费；模型调用本身才消耗账号额度。401/403/登录异常会把账号标记为需要重新登录。\n\n## 协议与上游\n\n- 模型调用：`POST https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1/responses`（OpenAI Responses，`Authorization: Bearer`）——与 AStudio 桌面端写进 acode 内核的 `base_url` / `wire_api` 完全一致。\n- 模型目录：`GET https://astronstudio-api-volces-prod.xf-yun.com/api/v1/model-manager/models`。\n- 账号面：`https://agent.xfyun.cn/xingchen-studio/`（`points/balance`、`membership/me`、`membership/plan-config`，Cookie 会话鉴权）。\n\n## 风险提示\n\n非官方集成，凭据与协议来自桌面客户端逆向，上游随时可能变更；共享登录态的自动化使用可能违反 AStudio 服务条款，账号风险自担。请勿用于批量/滥用场景。\n\n## 安装与开发\n\n```\nmagpie plugin add @magpie-community/opencode-astudio-auth\nmagpie plugin login astudio                 # 选「读取 AStudio 桌面端登录态」或「粘贴 modelBearerToken」\nmagpie provider test astudio spark-x2.6-4b  # 限免模型，验收一发\n```\n\n测试（零依赖，Node ≥18 或 Bun）：\n\n```\nnpm test          # = node --test\n# 或 bun test\n```\n"
+    },
     "@magpie-community/opencode-autoclaw-auth": {
       "versions": {
         "0.2.0": {
