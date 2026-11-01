@@ -146,6 +146,7 @@ Like middleware, these run on the requests agents send, but in magpie's Bun host
 | [nowledge-mem](packages/nowledge-mem) | [Nowledge Mem](https://mem.nowledge.co) recall, Context Bundle or Working Memory, per-harness provenance and opt-in conversation import as Mem Threads, automatic for every harness behind Magpie |
 | [aelios](packages/aelios) | [Aelios](https://github.com/wusaki0723/Aelios) recall before each turn from your own Aelios on Cloudflare, and opt-in recording of each turn so Aelios can remember it |
 | [respire-memory](packages/respire-memory) | [Respire](https://github.com/risense-ai/respire-magpie): per-turn recall and complete policy reads, automatic process diaries, and grounded experience archival with readback; storage runs after reply completion |
+| [OpenViking](https://github.com/volcengine/OpenViking/tree/main/examples/magpie-memory-plugin) | OpenViking context recall and opt-in completed-conversation capture using existing OpenViking configuration; published as `@openviking/magpie-plugin` and maintained in the OpenViking repository |
 | [notify](packages/notify) | A push to ntfy, Bark, Gotify, Server酱, Feishu, DingTalk, WeCom, Telegram or a webhook when an agent's turn is done or fails, after it ran `minMinutes` or longer |
 
 Use the same plugin management commands as middleware:
