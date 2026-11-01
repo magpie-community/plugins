@@ -2305,10 +2305,49 @@
               "directory": "packages/astudio"
             }
           }
+        },
+        "0.1.1": {
+          "file": "tgz/magpie-community-opencode-astudio-auth-0.1.1.tgz",
+          "integrity": "sha512-UZN3ld14LwkitqWUl23Iy8bZ4mrPvVEprFen5xGcunqQKhtRzNGGfnBscwUCu1kV/6QBcB+BgwcJ57qZuQwM/A==",
+          "time": "2026-11-01T22:37:48.091Z",
+          "manifest": {
+            "name": "@magpie-community/opencode-astudio-auth",
+            "version": "0.1.1",
+            "description": "AStudio (iFLYTEK Astron Studio) desktop sign-in as an OpenCode/magpie provider: Responses model gateway with live model catalog",
+            "type": "module",
+            "main": "./index.mjs",
+            "files": [
+              "index.mjs",
+              "README.md",
+              "LICENSE"
+            ],
+            "keywords": [
+              "opencode",
+              "opencode-plugin",
+              "magpie",
+              "astudio",
+              "astron",
+              "iflytek",
+              "xfyun"
+            ],
+            "license": "MIT",
+            "scripts": {
+              "test": "node --test"
+            },
+            "magpie": {
+              "icon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAVJSURBVFhHxVdrUxVHEDX55v9J/At5fNcqK6n4xcSUmqiJ8QUaUHmphEdQQQV8IBqFlFYZISDRxBAwEUIQDFoiivhAEAXuzuzudO9J9T5guZcraDSZqq69d3e2z+k+PTO9CxbEBoA34v9fx5gTQym1iJnXOI6TKaa13vpvTfyIT9d1FyXj+UNYAVjoOM5xvOYRYiycykRWVtabctVa18oErbVRShm5vkqLfIYYtXHsBZZlvSUPbNt2tdastZZJXmjye05TSq7Kv8Z/J/lhwRAswZySQCn1JQCZJAReGFgpNQVohZZEIk5ECHi2bX8xRUAKJSQgaQpeCB37zsVJ6DS6NxVpDFyunlFgE7+XYiKDYG2NE8iM9J+KPnQYRDkTNJ5meW5ZGo6tYFkKDVcJLV0mJJBCwg8yxMpMRyAAnZFeuWdD2yqwmPMI/Om4xpk2wqr9HjYeBkaf2bBty38+SwZSCIgEMwjEJVCThPFhxtMhg8kRFyoxTUZARp7auNTNqG4m5J8mlJ1jTEyKHys5A3ECMyRIIaAsKaYg2olRwmAnob+ZMdDkYaDVw70exsiQwdiYixtDhLY+g8YOg8MXCOeukF8bIolkIC7h/AmE6VXawuQzB3fbGDfqCddOMH4/Trhc6+GXOg+tjR462xnXehldN0V/xl+3DdhI9AGBmatCzY9AQCJcBbbCyN+EvjpGZy3j12OM5mrG2UOMkxWMYwcYNYcZdfUeGi4w2v8kDD5wfBlcR8G4ItVLZEDSKFIorZAYs3GridFew7h4lHG+ilF/kFFTzjhQxigu9pBbyMguJGSXMgoqGYfOMBrbCD39LsbGbZ/MvDIwnS6NhFSxsqAdhaFeRtsJD03VhLOVHk5WeKjex9j7LWNPMWNHIWFzAWFNDuHjbMJHWYRlOxmrShgbKz1cv2OD3DkIzARXMI6FZxMafUMG/fcIXU2MHyoZdQcZx/ZL9ITiEg953xC27Tb4Kp+wOoexfDvjgyzCexsIi1YT3skg9N7RskmlJ6D8DIRaKdnRLPQ/cNBwlfFTF6Fn0MXNXkJDjYfackLVPkJZKWN3EWP7HsKmAsLaXMaKHYQlWwjvricsyzc40uTg0ZOgFiw1Rw1E4LZWaLxqkHvKQ0UD+0vrSp/BrSGD35oZR/czyssIRSWB9pm7DNbnEz7dTliaQdhQZtDYbmN8Uklovv6yGrSeIwOydmXy6cuEJQXA8lJG3inC0RbCjx2Ezn6D3uuE7454KC1h7CpiZIfRr95J+LyA0N4dFBy8IJBEYp7LMCLgOArHLzJWlAEr93nYVuOh/Dzj+1bGpW5C9wDhQrOH4hJGTiH50Yv2yzIYFfVy2Fk+aBLw/JahTBLWkwmNwWEbAw9tDDxwMDjs4P6Ig0ejDp5M2Lh91+BAtYevdxE25hPW5hGWbibUtThgDt5PcyClJxAvQiEhRUOhGSeQRu6Lua5Cy8+ErXsY63INVuYQFm9iXOqw/dQnEinAcxNIXoZRcxFtpZH5J6Bj4eGwjaIq9rVfvt1gcQah55aGRyrYP1LB0xJIOY6fZ8EeH2SouZXwWR7jw22ED7IJ9x/L9muFFT+rzXocpzYkaSxKa9AHWHg8aiOvirF4C+GT3QaTibBfmD0DaRuS1JbsORZIIWlWIKPQ8ofB+xs8rNtrwCRNSFr9xYTAzJbsRZvSyHlUrOMTGrXNBh19NoyJeoCU99I3pS/TlseLVUhI5UszGt2fBVh+p7bl0ceBUuqlP0yU0iZhaSP7fPKz6TnTHyaCFcf+fz/Nkofrum+7rvvffpxGIy2rVziSMf4B2dvP/4LPzYQAAAAASUVORK5CYII=",
+              "maxConcurrency": 4
+            },
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/astudio"
+            }
+          }
         }
       },
-      "latest": "0.1.0",
-      "readme": "# @magpie-community/opencode-astudio-auth\n\n把 **AStudio（科大讯飞 Astron Studio 桌面端）** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：复用桌面端登录态，直连云端模型网关（OpenAI Responses 协议），agent 以 `astudio/<model>` 使用它的模型；支持每日登录积分自动签到与积分余额显示。\n\n## 登录什么\n\n两种方式（登录时二选一）：\n\n1. **读取 AStudio 桌面端登录态（推荐）**——本机装有 AStudio 桌面版并登录过即可，插件自动从它的数据目录读出模型凭据与网页会话（积分/签到用）。数据目录按以下顺序查找：\n   - `ASTUDIO_HOME`（或 `SYNARA_HOME`）环境变量指定的目录；\n   - Windows 注册表 `HKCU\\Software\\AStudioStorage` 的 `Production/Canary/DevelopmentDataRoot`；\n   - 兜底 `~/.acode/acode/`。\n   - 目标文件：`<数据根>/userdata/astron-session.json`（其次 `<数据根>/runtime/acode-home/config.toml`，该方式无网页会话，积分/签到不可用）。\n2. **粘贴 modelBearerToken**——从 `astron-session.json` 的 `modelBearerToken`（或 `config.toml` 的 `experimental_bearer_token`）复制粘贴；可选填账号面 `accountId` 与网页会话 `token`（两者齐才能用积分/签到，另有 `ssoSessionId`/uid 可选）。\n\n每个 AStudio 账号登录一次即得一个 magpie 账号，可多账号故障切换。凭据保存在 magpie 的 `plugin-auth.json`（权限 600），不上传。\n\n## 模型\n\n供应商 id `astudio`。目录**按账号实时拉取**（`GET /api/v1/model-manager/models`，读取不计费），含思考档位与限免标记。2026-11 实测目录：\n\n| modelId | 名称 | context | 备注 |\n| --- | --- | --- | --- |\n| `astronclaw-auto` | Auto | 256k | 智能路由 |\n| `spark-x2.6` | Spark-X2.6 | 256k | 抢先体验 |\n| `spark-x2.6-4b` | Spark-X2.6-Lite | 1M | **限免** |\n| `spark-x2.5` | Spark-X2.5 | 256k | |\n| `xopglm52` | GLM-5.2 | 1M | |\n| `xopdeepseekv4pro0813` | DeepSeek-V4-Pro | 1M | |\n| `xopdsv4flash0731in` | DeepSeek-V4-Flash | 1M | |\n\n思考档位（none / high / max，随模型）映射为 magpie 的推理档位；上游字段变化以实时目录为准。\n\n## 每日签到（每日登录积分）\n\nAStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放（体验版 100 分/天，标准版 200，高级/畅享 400；活动期 31 天有效），客户端弹窗只做通知、没有领取接口。插件为此提供 magpie 的 `auth.checkin`：每天替账号做一次会话活跃（只读请求）并观测前后余额差——涨了记为已领取；没涨**不谎称已签**，如实报「未观测到新发放」（发放可能挂靠桌面端登录）。签到需要账号带网页会话（桌面端登录态方式默认有）。\n\n## 用量\n\n有网页会话时显示真实数据：会员档（体验版/标准版/高级版/畅享版）、通用积分余额（含最近到期批次与时间）、星火积分余额。所有读取均不计费；模型调用本身才消耗账号额度。401/403/登录异常会把账号标记为需要重新登录。\n\n## 协议与上游\n\n- 模型调用：`POST https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1/responses`（OpenAI Responses，`Authorization: Bearer`）——与 AStudio 桌面端写进 acode 内核的 `base_url` / `wire_api` 完全一致。\n- 模型目录：`GET https://astronstudio-api-volces-prod.xf-yun.com/api/v1/model-manager/models`。\n- 账号面：`https://agent.xfyun.cn/xingchen-studio/`（`points/balance`、`membership/me`、`membership/plan-config`，Cookie 会话鉴权）。\n\n## 风险提示\n\n非官方集成，凭据与协议来自桌面客户端逆向，上游随时可能变更；共享登录态的自动化使用可能违反 AStudio 服务条款，账号风险自担。请勿用于批量/滥用场景。\n\n## 安装与开发\n\n```\nmagpie plugin add @magpie-community/opencode-astudio-auth\nmagpie plugin login astudio                 # 选「读取 AStudio 桌面端登录态」或「粘贴 modelBearerToken」\nmagpie provider test astudio spark-x2.6-4b  # 限免模型，验收一发\n```\n\n测试（零依赖，Node ≥18 或 Bun）：\n\n```\nnpm test          # = node --test\n# 或 bun test\n```\n"
+      "latest": "0.1.1",
+      "readme": "# @magpie-community/opencode-astudio-auth\n\n把 **AStudio（科大讯飞 Astron Studio 桌面端）** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：复用桌面端登录态，直连云端模型网关（OpenAI Responses 协议），agent 以 `astudio/<model>` 使用它的模型；支持每日登录积分自动签到与积分余额显示。\n\n## 与 Providers Hub 的 `hub-astudio` 的区别\n\nAStudio 在 registry 里有两个入口，都保留（[#614](https://github.com/magpie-community/plugins/issues/614)）：\n\n| | 本包（`astudio`） | [magpie-providers-hub](https://www.npmjs.com/package/magpie-providers-hub)（`hub-astudio`） |\n| --- | --- | --- |\n| 登录 | 读取本机 AStudio 桌面端的登录态，或粘贴 `modelBearerToken`；不需要再输手机号或密码 | 本机打开一个登录页：手机验证码、账号密码或微信扫码（含极验验证），不依赖桌面端 |\n| 适合 | 装了 AStudio 桌面端的用户（数据目录按 `ASTUDIO_HOME`、Windows 注册表、`~/.acode` 查找；其他情况粘贴凭据） | 任何平台，没装桌面端也行 |\n| 模型端点 | `…/model-gateway/v1/responses`（OpenAI Responses，与桌面端一致） | `…/model-gateway/v1/chat/completions` |\n| 每日积分 | 做一次会话活跃，按前后余额差记录，不调用领取接口 | 调用 `client-popups` 领取每日奖励和新人礼包弹窗 |\n\n两者用同一个 AStudio 账号时，读的是同一个 `points/balance`，模型调用也扣同一份积分：**每日登录积分是一个池子，装两个不会多一份。** 同一账号两边都登录只会重复显示同一笔余额。\n\nEnglish: two entries serve AStudio. This one reuses the AStudio desktop's\nsign-in (or a pasted `modelBearerToken`) and calls the Responses endpoint;\nProviders Hub's `hub-astudio` signs in on a local page (SMS code, password\nor WeChat QR) and calls chat/completions. On one account both draw on the\nsame daily points balance.\n\n## 登录什么\n\n两种方式（登录时二选一）：\n\n1. **读取 AStudio 桌面端登录态（推荐）**——本机装有 AStudio 桌面版并登录过即可，插件自动从它的数据目录读出模型凭据与网页会话（积分/签到用）。数据目录按以下顺序查找：\n   - `ASTUDIO_HOME`（或 `SYNARA_HOME`）环境变量指定的目录；\n   - Windows 注册表 `HKCU\\Software\\AStudioStorage` 的 `Production/Canary/DevelopmentDataRoot`；\n   - 兜底 `~/.acode/acode/`。\n   - 目标文件：`<数据根>/userdata/astron-session.json`（其次 `<数据根>/runtime/acode-home/config.toml`，该方式无网页会话，积分/签到不可用）。\n2. **粘贴 modelBearerToken**——从 `astron-session.json` 的 `modelBearerToken`（或 `config.toml` 的 `experimental_bearer_token`）复制粘贴；可选填账号面 `accountId` 与网页会话 `token`（两者齐才能用积分/签到，另有 `ssoSessionId`/uid 可选）。\n\n每个 AStudio 账号登录一次即得一个 magpie 账号，可多账号故障切换。凭据保存在 magpie 的 `plugin-auth.json`（权限 600），不上传。\n\n## 模型\n\n供应商 id `astudio`。目录**按账号实时拉取**（`GET /api/v1/model-manager/models`，读取不计费），含思考档位与限免标记。2026-11 实测目录：\n\n| modelId | 名称 | context | 备注 |\n| --- | --- | --- | --- |\n| `astronclaw-auto` | Auto | 256k | 智能路由 |\n| `spark-x2.6` | Spark-X2.6 | 256k | 抢先体验 |\n| `spark-x2.6-4b` | Spark-X2.6-Lite | 1M | **限免** |\n| `spark-x2.5` | Spark-X2.5 | 256k | |\n| `xopglm52` | GLM-5.2 | 1M | |\n| `xopdeepseekv4pro0813` | DeepSeek-V4-Pro | 1M | |\n| `xopdsv4flash0731in` | DeepSeek-V4-Flash | 1M | |\n\n思考档位（none / high / max，随模型）映射为 magpie 的推理档位；上游字段变化以实时目录为准。\n\n## 每日签到（每日登录积分）\n\nAStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放（体验版 100 分/天，标准版 200，高级/畅享 400；活动期 31 天有效），客户端弹窗只做通知、没有领取接口。插件为此提供 magpie 的 `auth.checkin`：每天替账号做一次会话活跃（只读请求）并观测前后余额差——涨了记为已领取；没涨**不谎称已签**，如实报「未观测到新发放」（发放可能挂靠桌面端登录）。签到需要账号带网页会话（桌面端登录态方式默认有）。\n\n## 用量\n\n有网页会话时显示真实数据：会员档（体验版/标准版/高级版/畅享版）、通用积分余额（含最近到期批次与时间）、星火积分余额。所有读取均不计费；模型调用本身才消耗账号额度。401/403/登录异常会把账号标记为需要重新登录。\n\n## 协议与上游\n\n- 模型调用：`POST https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1/responses`（OpenAI Responses，`Authorization: Bearer`）——与 AStudio 桌面端写进 acode 内核的 `base_url` / `wire_api` 完全一致。\n- 模型目录：`GET https://astronstudio-api-volces-prod.xf-yun.com/api/v1/model-manager/models`。\n- 账号面：`https://agent.xfyun.cn/xingchen-studio/`（`points/balance`、`membership/me`、`membership/plan-config`，Cookie 会话鉴权）。\n\n## 风险提示\n\n非官方集成，凭据与协议来自桌面客户端逆向，上游随时可能变更；共享登录态的自动化使用可能违反 AStudio 服务条款，账号风险自担。请勿用于批量/滥用场景。\n\n## 安装与开发\n\n```\nmagpie plugin add @magpie-community/opencode-astudio-auth\nmagpie plugin login astudio                 # 选「读取 AStudio 桌面端登录态」或「粘贴 modelBearerToken」\nmagpie provider test astudio spark-x2.6-4b  # 限免模型，验收一发\n```\n\n测试（零依赖，Node ≥18 或 Bun）：\n\n```\nnpm test          # = node --test\n# 或 bun test\n```\n"
     },
     "@magpie-community/opencode-autoclaw-auth": {
       "versions": {
