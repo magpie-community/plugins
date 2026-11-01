@@ -372,7 +372,7 @@ function parseModels(text) {
 // variant is what the AI SDK package a model is on is given for an effort.
 function variant(provider, effort) {
   if (provider === "anthropic") return { effort }
-  if (provider === "google") return { thinkingConfig: { includeThoughts: true, thinkingLevel: String(effort).toUpperCase() } }
+  if (provider === "google") return { thinkingConfig: { includeThoughts: true, thinkingLevel: effort } }
   return { reasoningEffort: effort }
 }
 

@@ -48,13 +48,13 @@ test("a request without either is sent untouched", () => {
   expect(req).toEqual({ ...gemini({}), model: "models/gemini-4-argon" })
 })
 
-test("the variants a Google model declares carry Zed's uppercase level", () => {
+test("the variants a Google model declares keep the AI SDK's lowercase level", () => {
   const e = _internal.entry({ provider: "google", id: "gemini-3.8-flash", supports_thinking: true, supported_effort_levels: [{ value: "low" }, { value: "high" }] })
-  expect(e.variants.low.thinkingConfig.thinkingLevel).toBe("LOW")
-  expect(e.variants.high.thinkingConfig.thinkingLevel).toBe("HIGH")
+  expect(e.variants.low.thinkingConfig.thinkingLevel).toBe("low")
+  expect(e.variants.high.thinkingConfig.thinkingLevel).toBe("high")
 })
 
-test("a Claude Code turn through magpie reaches Zed's /completions with HIGH and auto", async () => {
+test("a declared Google variant reaches Zed's /completions with HIGH and auto", async () => {
   let got
   globalThis.fetch = async (url, init) => {
     const path = new URL(String(url)).pathname
@@ -72,8 +72,9 @@ test("a Claude Code turn through magpie reaches Zed's /completions with HIGH and
     }
     return new Response("", { status: 404 })
   }
+  const e = _internal.entry({ provider: "google", id: "gemini-4-argon", supports_thinking: true, supported_effort_levels: [{ value: "high" }] })
   const body = gemini({
-    generationConfig: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } },
+    generationConfig: e.variants.high,
     tools: [{ functionDeclarations: [{ name: "Bash", description: "run a command", parameters: { type: "object", properties: { command: { type: "string" } } } }] }],
     toolConfig: { functionCallingConfig: { mode: "AUTO" } },
   })
