@@ -445,7 +445,7 @@ test("capture is off when the option is absent", async () => {
   expect(of("threads/import")).toHaveLength(0)
 })
 
-test("the Magpie sharing key from this computer is included; other gateway keys are not", async () => {
+test("the Magpie sharing key from this computer is included; other gateway keys are not by default", async () => {
   mock()
   const [, own] = capturing("chat", { origin: "magpie-key" })
   await onRequest(structuredClone(chat), own)
@@ -673,7 +673,7 @@ test("a canceled request keeps its reason and does not back off the service", as
 })
 
 // The official sandbox page may configure options, but has no network or custom host API.
-test("configuration page uses only the released options and theme bridge", async () => {
+test("configuration page uses the options and theme bridge without direct network access", async () => {
   const source = await Bun.file(new URL("./page/settings.js", import.meta.url)).text()
   const calls = [...source.matchAll(/magpie\.([\w.]+)/g)].map((match) => match[1])
   expect([...new Set(calls)].sort()).toEqual(["onTheme", "options.compareAndPatch", "options.get", "options.snapshot", "ready.then", "theme"])
@@ -798,6 +798,22 @@ test("configuration page follows host language without losing edits", async () =
   for (const el of f.translated) expect(el.textContent).toBe(messages[language][el.dataset.t])
  }
  expect(languageFor("zh-Hant-TW")).toBe("zh-TW")
+})
+
+test("scope disclosure describes default exclusions and explicit named-key grants in every language", async () => {
+ const {i18n:{messages}} = await pageFixture({})
+ const requirements = {
+  en: [/By default/, /direct local requests/, /magpie-key/, /policy can restrict/, /gateway keys are excluded by default/, /only when a policy grants the operation/, /authenticated ID/, /explicit Space ID/, /global switches/, /Remote or unknown origins are excluded/],
+  zh: [/默认情况下/, /本机直连请求/, /magpie-key/, /策略可以限制/, /网关密钥默认排除/, /策略并授予相应操作后才会参与/, /认证 ID/, /明确的 Space ID/, /总开关/, /远端或未知来源不包含/],
+  "zh-TW": [/預設情況下/, /本機直連請求/, /magpie-key/, /策略可以限制/, /閘道金鑰預設排除/, /策略並授予相應操作後才會參與/, /認證 ID/, /明確的 Space ID/, /總開關/, /遠端或未知來源不包含/],
+  ja: [/既定では/, /直接のローカル要求/, /magpie-key/, /ポリシーで共有キーを制限/, /ゲートウェイキーは既定で除外/, /ポリシーで各操作を許可した場合のみ対象/, /認証済み ID/, /明示的な Space ID/, /全体スイッチ/, /リモートまたは不明な origin は除外/],
+  de: [/Standardmäßig/, /direkte lokale Anfragen/, /magpie-key/, /Regel kann diesen Sharing-Schlüssel einschränken/, /Gateway-Schlüssel sind standardmäßig ausgeschlossen/, /nur teil, wenn eine Regel die jeweilige Aktion/, /authentifizierte ID/, /explizite Space-ID/, /globalen Schalter/, /Entfernte oder unbekannte Origins sind ausgeschlossen/],
+ }
+ for (const [language, patterns] of Object.entries(requirements)) {
+  for (const pattern of patterns) expect(messages[language].scopeDisclosure).toMatch(pattern)
+ }
+ const html = await Bun.file(new URL("./page/settings.html", import.meta.url)).text()
+ expect(html.match(/<p data-t="scopeDisclosure">([^<]+)<\/p>/)?.[1]).toBe(messages.en.scopeDisclosure)
 })
 
 test("named key permissions are independent, require an authenticated ID and an explicit Space", async () => {

@@ -298,14 +298,14 @@ own: the offline tests replace `globalThis.fetch` to keep Cursor's token local
 
 ## Page
 
-The page uses only Magpie's released `magpie.options` and theme bridge. It
-declares no reads and saving stores configuration without probing the
-connection or writing Memory. It shows the Server, API key, Space, Agent, the
-recall, Context Bundle and capture switches. Its **What is sent** section says
-the scope: direct local requests and `magpie-key` from this computer; other
-gateway keys and remote requests are never included. It follows Magpie's language (English, Simplified and
-Traditional Chinese, Japanese, German) and theme, and preserves options it does
-not show.
+The page uses Magpie's options and theme bridge. Its conditional-save methods
+require the host proposal described above; without them the page is read-only.
+It declares no reads and saving stores configuration without probing the
+connection or writing Memory. It shows connection, recall, capture, key policy
+and advanced options. Its **What is sent** section describes the local and
+sharing-key defaults, explicit named-key grants, and excluded origins. It follows
+Magpie's language (English, Simplified and Traditional Chinese, Japanese,
+German) and theme, and preserves options it does not show.
 
 **Test connection** is a real check, not a saved flag. Magpie's page sandbox
 has `connect-src 'none'`, so the page cannot call Mem itself; the package's
