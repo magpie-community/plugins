@@ -1,6 +1,9 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@openviking/magpie-plugin", "name": "OpenViking", "kind": "middleware", "community": true,
+      "icon": "https://raw.githubusercontent.com/volcengine/OpenViking/main/docs/images/ov-logo-icon.png",
+      "summary": { "en": "Recall OpenViking context before model requests and optionally capture completed conversations. Reuses your existing OpenViking configuration; capture is off by default. Maintained by the OpenViking project.", "zh": "在模型请求前召回 OpenViking 上下文，并按需采集完整对话。复用现有 OpenViking 配置；采集默认关闭。由 OpenViking 项目维护。" } },
     { "package": "@magpie-community/gateway-powercontext", "name": "PowerContext", "kind": "middleware", "community": true,
       "icon": "https://raw.githubusercontent.com/oceanbase/powercontext/master/src/powercontext/server/dashboard/static/brand/favicon-color.svg",
       "summary": { "en": "Recall from your PowerContext service and optionally save complete conversations. Configure the service URL first; capture is off by default.", "zh": "从自己的 PowerContext 服务召回记忆，并按需存回完整对话。先配置服务地址；对话存回默认关闭。" } },
