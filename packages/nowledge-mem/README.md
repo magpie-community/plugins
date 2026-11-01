@@ -2,14 +2,15 @@
 
 [Nowledge Mem](https://mem.nowledge.co) is a local-first memory layer for
 people and AI tools. Magpie is the gateway in front of every harness, so this
-plugin puts Mem *in the gateway*: every request Magpie routes gets the Memory
-that fits it, and completed conversations can flow back into Mem. No harness
-needs its own Nowledge Mem plugin, skill or MCP configuration for that.
+plugin puts Mem *in the gateway*: eligible local requests can receive the
+Memory that fits them, and completed conversations can flow back into Mem
+when capture is enabled. No harness needs its own Nowledge Mem plugin, skill
+or MCP configuration for that.
 
-Agent-callable Memory tools are a separate surface and stay where Magpie
-already provides them: the plugin installs Mem's own MCP server and a short
-skill into Magpie's [Library](https://usemagpie.ai/docs/mcp-hub), given to no
-agent; choose the agents there. This keeps one tool surface, Mem's own.
+Agent-callable Memory tools are a separate surface. The plugin adds no
+Library entry or skill; add Mem's own MCP server in Magpie's
+[Library](https://usemagpie.ai/docs/mcp-hub) and choose the agents that may
+use it. See [Tools: Mem's own MCP server](#tools-mems-own-mcp-server) below.
 
 ```mermaid
 sequenceDiagram
@@ -115,10 +116,11 @@ derived value for all of them.
   512–32768. On the first turn the session context takes up to 45% of it, and
   the rest stays available for Memory.
 - `requestTimeoutMs`: deadline for each search, bundle or Working Memory
-  request, default 900, range 50–5000. It fits inside Magpie's default 1000 ms
-  hook deadline. The host's hook deadline can end it
-  earlier. Thread imports keep a separate ten-second deadline because a
-  completed reply's notification is not bound to the live request.
+  request, default 1500, range 50–5000. Magpie's default 1000 ms hook
+  deadline can end the request earlier. The package's example options set
+  this to 900 when used explicitly. Thread imports keep a separate ten-second
+  deadline because a completed reply's notification is not bound to the live
+  request.
 - `gatewayTimeoutMs` (Magpie's own option, not this package's): the whole hook
   chain's deadline, default 1000 ms, range 100–10000. A local Mem fits the
   default; over the network, set it to 5000–10000 so the first turn's Context
