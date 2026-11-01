@@ -81,6 +81,46 @@ advanced settings. Saving conversations remains a separate opt-in.
 
 ## One gateway, several harnesses
 
+### Named gateway keys
+
+On a Magpie host that supplies the authenticated `callerKeyId` to hooks,
+`keyPolicies` can grant each exact ID automatic recall, automatic saving,
+both, or neither. Find the non-secret ID with `magpie gateway-key list`; do
+not put a key secret in this option. No named key is allowed by default. The
+global `recall` and `capture` switches remain prerequisites. An explicit
+policy for the local sharing key also applies to it; without one its existing
+local behavior is unchanged. For that local sharing-key origin, the policy
+controls the two permissions while the ordinary connection Space remains in
+use; the policy's Space is used when the same key arrives as `gateway-key`.
+A host that does not supply an ID cannot grant
+named-key access. Remote or unknown origins without an authenticated
+gateway-key origin stay excluded.
+
+```json
+{"capture":true,"keyPolicies":{"example-key-id":{"recall":true,"capture":false,"spaceId":"example-space"}}}
+```
+
+Each named-key grant requires the exact Space ID returned by Mem. Search and
+import use that Space; recall discards hits with a different or missing
+`space_id`. Context Bundle and Working Memory are omitted for named-key requests
+because they can contain the owner's profile and rules. A shared Space or Mem
+credential can still expose memories to the key holder: this is not tenant
+isolation. A key identifies its credential, not a person or application;
+anyone holding a shared key gets its access. Rename and rotation retain the
+ID, while a new key gets a new ID. An issued child key needs its own policy.
+Revoking a policy affects requests begun after the change; an already bound
+completion may still be imported under the policy it started with.
+
+Keyed recall blocks and Thread IDs are isolated by key ID, even for identical
+sessions. Existing local and sharing-key Thread IDs are unchanged. The
+gateway's local trust model accepts arbitrary local tokens, so this cannot
+isolate mutually untrusted processes on the same computer.
+
+The settings page uses conditional saves when the host supports them; an
+older host remains readable but the page does not save there. The host must
+also coordinate all writers with the same lock; older Magpie processes and
+external file editors that do not participate are outside that guarantee.
+
 Magpie knows which agent sent a request. Unless `hostAgentId` is set, the hook
 uses `magpie:<agent>` as the host identity and sends it with the Context Bundle
 request. Mem derives an AI identity per harness from it, so a Claude Code

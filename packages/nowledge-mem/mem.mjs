@@ -4,6 +4,9 @@
 // same options and environment, so they never disagree about where Mem is or
 // which Space they speak to.
 import { createHash } from "node:crypto";
+import "./page/validate.js";
+const validateExplicitOptions = globalThis.__nowledgeMemValidateOptions;
+delete globalThis.__nowledgeMemValidateOptions;
 
 // Bumped with package.json: Mem's own clients record it on imported Threads.
 export const version = "0.1.2";
@@ -24,6 +27,7 @@ export class MemFailure extends Error {
 const maxResponseBytes = 512 << 10;
 
 export function resolveOptions(raw = {}, env = process.env) {
+    try { validateExplicitOptions(raw); } catch { throw new MemFailure("invalid"); }
     const text = (v) => {
         if (v === undefined || v === null || v === "")
             return undefined;
@@ -45,6 +49,17 @@ export function resolveOptions(raw = {}, env = process.env) {
     const captureFilter = raw.captureFilter === undefined ? "off" : raw.captureFilter;
     if (captureFilter !== "off" && captureFilter !== "human")
         throw new MemFailure("invalid");
+    // IDs come from Magpie's authenticated caller, never the request body.
+    // Both permissions must be explicit; malformed policy fails closed.
+    const policies = raw.keyPolicies ?? {};
+    if (!policies || typeof policies !== "object" || Array.isArray(policies))
+        throw new MemFailure("invalid");
+    for (const [id, policy] of Object.entries(policies)) {
+        if (!id || !policy || typeof policy !== "object" || Array.isArray(policy) ||
+            typeof policy.recall !== "boolean" || typeof policy.capture !== "boolean" ||
+            (policy.spaceId !== undefined && (typeof policy.spaceId !== "string" || !policy.spaceId.trim())))
+            throw new MemFailure("invalid");
+    }
     // The Mem endpoint, as its own clients resolve it: the option, then the
     // portable NMEM_API_URL, then the local desktop default. A URL from the
     // environment that isn't an HTTP(S) address is ignored rather than fatal.
@@ -87,6 +102,7 @@ export function resolveOptions(raw = {}, env = process.env) {
         throw new MemFailure("invalid");
     return {
         server, apiKey, apiKeyEnv,
+        keyPolicies: policies,
         spaceId: text(raw.spaceId),
         agentId: text(raw.agentId),
         hostAgentId: text(raw.hostAgentId),

@@ -284,6 +284,63 @@ const messages = {
   }
 };
 
+// Additional settings; missing translations fall back to English without changing locale selection.
+Object.assign(messages.en, {
+ keyHostHelp:"Named-key access requires a host that supplies authenticated key IDs. Results without the exact Space ID are discarded.", concurrencyHelp:"Older Magpie processes and direct file edits do not participate in conflict detection.",
+ configure: "Settings", dialogTitle: "Nowledge Mem settings", settingsIntro: "Configure connection, recall, saving and key access.", saveHelp: "Unchanged and unlisted options are preserved.", notConfigured: "Using the environment or local default · not tested yet",
+ explicitValue: "Explicit value", explicitEmpty: "Explicit empty value (fallback applies)", defaultValue: "Default", inherited: "Environment or default", useDefault: "Use default / inherit",
+ hostAgent: "Host agent ID", hostAgentHelp: "Empty derives an identity from the harness.",
+ keyKeep: "Keep saved value", keyReplace: "Replace", keyClear: "Clear saved value",
+ keyActionHelp: "Clearing the saved value falls back to the environment variable; it does not disable it.",
+ keyEnv: "API key environment variable", keyEnvHelp: "Only NMEM_* names are accepted. Empty uses NMEM_API_KEY.",
+ filterSection: "Saving and filtering", captureTools: "Include client tool results", captureFilter: "Capture filter", filterOff: "Off", filterHuman: "Human dialogue", captureCindy: "Clean recognized Cindy wrappers in human mode",
+ keyPolicies: "Gateway key permissions", keyPolicyHelp: "Get the non-secret ID from magpie gateway-key list; do not paste a key secret. Choose recall and saving separately and give an explicit Space ID. Both global switches still apply. A shared Space or credential can expose its memories to that key holder; this is not tenant isolation. Named-key recall excludes Context Bundle and Working Memory. Sharing a key shares its access.",
+ addKey: "Add key", keyId: "Authenticated key ID", keySpace: "Space ID", keyMode: "Access", keyNone: "No access", keyRead: "Automatic recall only", keyWrite: "Automatic saving only", keyBoth: "Recall and saving", removeKey: "Remove", keyPolicyInvalid: "Each row needs a unique key ID and a Space for any access.",
+ advanced: "Advanced", maxMemories: "Maximum memories (1–20)", maxBytes: "Recall bytes (512–32768)", requestTimeout: "Request timeout ms (50–5000)", recallBackoff: "Recall backoff ms (100–300000)", gatewayTimeout: "Host hook timeout ms (100–10000)", port: "Connection-test port (1024–65535)", insecure: "Allow HTTP to a non-local server (credentials travel unencrypted)", defaultsHelp: "Empty fields inherit the environment where supported, otherwise use the shown default. Unchanged values remain as configured. The host timeout can end a request first.",
+ conflict: "Configuration changed elsewhere. Your draft is kept; cancel and reopen to load the latest values.", unsupported: "This Magpie version cannot safely save concurrent edits. Upgrade Magpie to edit here.", invalidOption: "Check the highlighted values and ranges.", invalidPolicy: "Cannot edit invalid saved key policies. Repair them in the JSON editor first.",
+});
+Object.assign(messages.zh, {
+ keyHostHelp:"命名密钥接入需要宿主提供已认证的密钥 ID；不含完全匹配 Space ID 的结果会被丢弃。", concurrencyHelp:"旧版 Magpie 进程和直接编辑文件不参与冲突检测。",
+ configure: "设置", dialogTitle: "Nowledge Mem 设置", settingsIntro: "配置连接、召回、保存和密钥权限。", saveHelp: "未修改及未列出的选项会保留。", notConfigured: "使用环境变量或本机默认值 · 尚未测试",
+ explicitValue: "已显式设置", explicitEmpty: "显式空值（实际使用回退值）", defaultValue: "默认值", inherited: "继承环境或默认值", useDefault: "恢复默认 / 继承",
+ hostAgent: "宿主 Agent ID", hostAgentHelp: "留空时从客户端类型推导。", keyKeep: "保留已保存的值", keyReplace: "更换", keyClear: "清除已保存的值", keyActionHelp: "清除保存值后仍会继承环境变量，不会禁用环境变量。", keyEnv: "API 密钥环境变量", keyEnvHelp: "仅接受 NMEM_* 名称；留空使用 NMEM_API_KEY。",
+ filterSection: "保存与过滤", captureTools: "包含客户端工具结果", captureFilter: "保存过滤", filterOff: "关闭", filterHuman: "人类对话", captureCindy: "在人类对话模式清理已识别的 Cindy 包装",
+ keyPolicies: "网关密钥权限", keyPolicyHelp: "用 magpie gateway-key list 查看非秘密的密钥 ID；不要粘贴密钥正文。为每个 ID 分别选择召回和保存，并明确填写 Space ID；上方总开关仍然生效。共享 Space 或凭据可能把其中的记忆交给持钥者，这不是多租户隔离。命名密钥召回不包含 Context Bundle 或 Working Memory。共享密钥即共享权限。",
+ addKey: "添加密钥", keyId: "已认证的密钥 ID", keySpace: "Space ID", keyMode: "访问权限", keyNone: "不接入", keyRead: "仅自动召回", keyWrite: "仅自动保存", keyBoth: "召回和保存", removeKey: "移除", keyPolicyInvalid: "每行需填写唯一密钥 ID；开启访问时还需填写 Space。",
+ advanced: "高级设置", maxMemories: "最多召回记忆数（1–20）", maxBytes: "召回字节数（512–32768）", requestTimeout: "请求超时毫秒（50–5000）", recallBackoff: "召回退避毫秒（100–300000）", gatewayTimeout: "宿主 hook 超时毫秒（100–10000）", port: "连接测试端口（1024–65535）", insecure: "允许非本机 HTTP（凭据将明文传输）", defaultsHelp: "留空时，支持环境继承的选项使用环境值，其余使用显示的默认值。未修改的值保持原样；宿主超时可能更早结束请求。",
+ conflict: "配置已在其他位置更改。草稿已保留；取消并重新打开以加载最新值。", unsupported: "此版本 Magpie 无法安全保存并发编辑，请升级后在此编辑。", invalidOption: "请检查输入及允许范围。", invalidPolicy: "已保存的密钥策略无效，请先在 JSON 编辑器修复。",
+});
+Object.assign(messages["zh-TW"], {
+ keyHostHelp:"命名金鑰接入需要宿主提供已驗證的金鑰 ID；不含完全相符 Space ID 的結果會被捨棄。", concurrencyHelp:"舊版 Magpie 程序和直接編輯檔案不參與衝突偵測。",
+ configure:"設定", dialogTitle:"Nowledge Mem 設定", settingsIntro:"設定連線、召回、儲存與金鑰權限。", saveHelp:"未修改及未列出的選項會保留。", notConfigured:"使用環境變數或本機預設值 · 尚未測試",
+ explicitValue:"已明確設定", explicitEmpty:"明確空值（實際使用回退值）", defaultValue:"預設值", inherited:"繼承環境或預設值", useDefault:"恢復預設 / 繼承",
+ hostAgent:"宿主 Agent ID", hostAgentHelp:"留空時從用戶端類型推導。", keyKeep:"保留已儲存的值", keyReplace:"更換", keyClear:"清除已儲存的值", keyActionHelp:"清除儲存值後仍會繼承環境變數，不會停用環境變數。", keyEnv:"API 金鑰環境變數", keyEnvHelp:"僅接受 NMEM_* 名稱；留空使用 NMEM_API_KEY。",
+ filterSection:"儲存與過濾", captureTools:"包含用戶端工具結果", captureFilter:"儲存過濾", filterOff:"關閉", filterHuman:"人類對話", captureCindy:"在人類對話模式清理已識別的 Cindy 包裝",
+ keyPolicies:"閘道金鑰權限", keyPolicyHelp:"用 magpie gateway-key list 查看非秘密的金鑰 ID；不要貼上金鑰內容。分別選擇召回和儲存並明確填寫 Space ID；上方總開關仍生效。共用 Space 或憑據可能將其中記憶交給持鑰者，這不是多租戶隔離。命名金鑰召回不含 Context Bundle 或 Working Memory；共用金鑰即共用權限。",
+ addKey:"新增金鑰", keyId:"已驗證的金鑰 ID", keySpace:"Space ID", keyMode:"存取權限", keyNone:"不接入", keyRead:"僅自動召回", keyWrite:"僅自動儲存", keyBoth:"召回和儲存", removeKey:"移除", keyPolicyInvalid:"每列須填唯一金鑰 ID；啟用存取時還需填 Space。",
+ advanced:"進階設定", maxMemories:"最多召回記憶數（1–20）", maxBytes:"召回位元組數（512–32768）", requestTimeout:"請求逾時毫秒（50–5000）", recallBackoff:"召回退避毫秒（100–300000）", gatewayTimeout:"宿主 hook 逾時毫秒（100–10000）", port:"連線測試埠（1024–65535）", insecure:"允許非本機 HTTP（憑據將明文傳輸）", defaultsHelp:"留空時，支援環境繼承的選項使用環境值，其餘使用顯示的預設值。未修改的值保持原樣；宿主逾時可能更早結束請求。", conflict:"設定已在其他位置更改。草稿已保留；取消並重新開啟以載入最新值。", unsupported:"此版本 Magpie 無法安全儲存並行編輯，請升級後在此編輯。", invalidOption:"請檢查輸入及允許範圍。", invalidPolicy:"已儲存的金鑰策略無效，請先在 JSON 編輯器修復。",
+});
+Object.assign(messages.ja, {
+ keyHostHelp:"名前付きキーには認証済みキー ID を渡せるホストが必要です。Space ID が完全一致しない結果は破棄します。", concurrencyHelp:"古い Magpie プロセスや直接のファイル編集は競合検出に参加しません。",
+ configure:"設定", dialogTitle:"Nowledge Mem の設定", settingsIntro:"接続、検索、保存、キー権限を設定します。", saveHelp:"変更していない項目と一覧にない項目は保持されます。", notConfigured:"環境変数またはローカルの既定値を使用 · 未テスト",
+ explicitValue:"明示値", explicitEmpty:"明示的な空値（フォールバック）", defaultValue:"既定値", inherited:"環境変数または既定値", useDefault:"既定値 / 継承に戻す", hostAgent:"ホスト Agent ID", hostAgentHelp:"空欄の場合はハーネスから導出します。", keyKeep:"保存済みの値を維持", keyReplace:"変更", keyClear:"保存済みの値を削除", keyActionHelp:"保存値を消すと環境変数にフォールバックします。環境変数は無効になりません。", keyEnv:"API キーの環境変数", keyEnvHelp:"NMEM_* のみ。空欄では NMEM_API_KEY を使用します。",
+ filterSection:"保存とフィルター", captureTools:"クライアントのツール結果を含める", captureFilter:"保存フィルター", filterOff:"オフ", filterHuman:"人間の会話", captureCindy:"人間の会話モードで既知の Cindy 包装を整理", keyPolicies:"ゲートウェイキーの権限", keyPolicyHelp:"magpie gateway-key list で秘密ではないキー ID を確認し、キー本体は貼らないでください。キーごとに検索と保存を選び、Space ID を指定します。上の全体スイッチも必要です。共有 Space や認証情報は記憶をキー保持者に公開する可能性があり、テナント分離ではありません。名前付きキーには Context Bundle と Working Memory を渡しません。キーの共有は権限の共有です。", addKey:"キーを追加", keyId:"認証済みキー ID", keySpace:"Space ID", keyMode:"アクセス", keyNone:"アクセスなし", keyRead:"自動検索のみ", keyWrite:"自動保存のみ", keyBoth:"検索と保存", removeKey:"削除", keyPolicyInvalid:"各行に一意のキー ID が必要です。アクセスを許可する場合は Space も指定してください。",
+ advanced:"詳細設定", maxMemories:"記憶の最大数（1–20）", maxBytes:"検索のバイト数（512–32768）", requestTimeout:"リクエスト時間制限 ms（50–5000）", recallBackoff:"検索の再試行待ち ms（100–300000）", gatewayTimeout:"ホスト hook の時間制限 ms（100–10000）", port:"接続テストのポート（1024–65535）", insecure:"ローカル以外の HTTP を許可（認証情報は平文で送信）", defaultsHelp:"空欄は対応する環境変数、それ以外は表示された既定値を使用します。未変更の値は保持されます。ホストの時間制限が先に切れる場合があります。", conflict:"設定が別の場所で変更されました。下書きは保持されています。キャンセルして開き直してください。", unsupported:"この Magpie では同時編集を安全に保存できません。アップグレードしてください。", invalidOption:"入力と範囲を確認してください。", invalidPolicy:"保存されたキー設定が無効です。先に JSON エディターで修正してください。",
+});
+Object.assign(messages.de, {
+ keyHostHelp:"Benannte Schlüssel benötigen einen Host mit authentifizierter Schlüssel-ID. Treffer ohne exakt passende Space-ID werden verworfen.", concurrencyHelp:"Ältere Magpie-Prozesse und direkte Dateiänderungen nehmen nicht an der Konflikterkennung teil.",
+ configure:"Einstellungen", dialogTitle:"Nowledge Mem Einstellungen", settingsIntro:"Verbindung, Abruf, Speichern und Schlüsselzugriff konfigurieren.", saveHelp:"Unveränderte und nicht aufgeführte Optionen bleiben erhalten.", notConfigured:"Umgebung oder lokaler Standard · noch nicht getestet",
+ explicitValue:"Expliziter Wert", explicitEmpty:"Explizit leer (Fallback gilt)", defaultValue:"Standardwert", inherited:"Umgebung oder Standard", useDefault:"Standard / Erben", hostAgent:"Host-Agent-ID", hostAgentHelp:"Leer leitet die Identität aus dem Harness ab.", keyKeep:"Gespeicherten Wert behalten", keyReplace:"Ersetzen", keyClear:"Gespeicherten Wert löschen", keyActionHelp:"Nach dem Löschen gilt weiterhin die Umgebungsvariable; sie wird nicht deaktiviert.", keyEnv:"Umgebungsvariable für API-Schlüssel", keyEnvHelp:"Nur NMEM_*; leer verwendet NMEM_API_KEY.",
+ filterSection:"Speichern und filtern", captureTools:"Client-Tool-Ergebnisse einschließen", captureFilter:"Speicherfilter", filterOff:"Aus", filterHuman:"Menschlicher Dialog", captureCindy:"Erkannte Cindy-Hüllen im Dialogmodus bereinigen", keyPolicies:"Gateway-Schlüsselrechte", keyPolicyHelp:"Die nicht geheime Schlüssel-ID steht in magpie gateway-key list; keinen Schlüssel selbst einfügen. Abruf und Speichern getrennt wählen und eine Space-ID angeben. Die globalen Schalter gelten weiter. Ein geteilter Space oder Zugang kann Erinnerungen dem Schlüsselinhaber offenlegen; dies ist keine Mandantentrennung. Benannte Schlüssel erhalten kein Context Bundle oder Working Memory. Wer den Schlüssel teilt, teilt seine Rechte.", addKey:"Schlüssel hinzufügen", keyId:"Authentifizierte Schlüssel-ID", keySpace:"Space-ID", keyMode:"Zugriff", keyNone:"Kein Zugriff", keyRead:"Nur automatischer Abruf", keyWrite:"Nur automatisches Speichern", keyBoth:"Abruf und Speichern", removeKey:"Entfernen", keyPolicyInvalid:"Jede Zeile braucht eine eindeutige Schlüssel-ID; Zugriff benötigt zusätzlich einen Space.",
+ advanced:"Erweitert", maxMemories:"Maximale Erinnerungen (1–20)", maxBytes:"Abruf-Bytes (512–32768)", requestTimeout:"Anfrage-Timeout ms (50–5000)", recallBackoff:"Abruf-Wartezeit ms (100–300000)", gatewayTimeout:"Host-Hook-Timeout ms (100–10000)", port:"Verbindungstest-Port (1024–65535)", insecure:"HTTP zu fremdem Server erlauben (Zugangsdaten unverschlüsselt)", defaultsHelp:"Leer verwendet die Umgebung, wo unterstützt, sonst den angezeigten Standard. Unveränderte Werte bleiben erhalten. Das Host-Timeout kann früher enden.", conflict:"Die Konfiguration wurde anderswo geändert. Der Entwurf bleibt erhalten; zum Neuladen abbrechen und erneut öffnen.", unsupported:"Diese Magpie-Version kann parallele Änderungen nicht sicher speichern. Bitte aktualisieren.", invalidOption:"Eingaben und Wertebereiche prüfen.", invalidPolicy:"Die gespeicherten Schlüsselrechte sind ungültig. Bitte zuerst im JSON-Editor korrigieren.",
+});
+messages.en.keyPolicyHelp += " For the local sharing key, a policy changes permissions but the ordinary connection Space remains in use.";
+messages.zh.keyPolicyHelp += " 对本机分享密钥，策略只改变权限，仍使用连接中的普通 Space。";
+messages["zh-TW"].keyPolicyHelp += " 對本機分享金鑰，策略只改變權限，仍使用連線中的一般 Space。";
+messages.ja.keyPolicyHelp += " ローカル共有キーでは権限だけが変わり、接続の Space が使われます。";
+messages.de.keyPolicyHelp += " Beim lokalen Freigabeschlüssel ändert die Regel nur die Rechte; der Space der Verbindung bleibt in Gebrauch.";
+for (const language of ["zh-TW", "ja", "de"]) for (const [key, value] of Object.entries(messages.en)) if (!(key in messages[language])) messages[language][key] = value;
+
 const languageTags = {en: 'en', zh: 'zh-CN', 'zh-TW': 'zh-TW', ja: 'ja-JP', de: 'de-DE'};
 
 function languageFor(value = '') {
