@@ -50,7 +50,7 @@ export function resolveOptions(raw = {}, env = process.env) {
     if (!policies || typeof policies !== "object" || Array.isArray(policies))
         throw new MemFailure("invalid");
     for (const [id, policy] of Object.entries(policies)) {
-        if (!id || !policy || typeof policy !== "object" || Array.isArray(policy) ||
+        if (!id || id.startsWith("sk-magpie-") || !policy || typeof policy !== "object" || Array.isArray(policy) ||
             typeof policy.recall !== "boolean" || typeof policy.capture !== "boolean" ||
             (policy.spaceId !== undefined && (typeof policy.spaceId !== "string" || !policy.spaceId.trim())))
             throw new MemFailure("invalid");

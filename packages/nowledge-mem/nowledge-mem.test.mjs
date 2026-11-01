@@ -813,20 +813,29 @@ test("configuration page follows the host language without losing edits or messa
   }
 })
 
-test("scope disclosure describes explicit named-key grants in all locales", async () => {
+test("scope disclosure states that key policies cannot work on released hosts", async () => {
   const dictionary = await Bun.file(new URL("./page/i18n.js", import.meta.url)).text()
   const {messages} = runInNewContext(`${dictionary}\nnowledgeMemI18n`)
-  const requirements = {
-    en: [/gateway keys are excluded by default/, /only when a policy grants the operation/, /authenticated ID/, /explicit Space ID/],
-    zh: [/网关密钥默认排除/, /策略并授予相应操作后才会参与/, /认证 ID/, /明确的 Space ID/],
-    "zh-TW": [/閘道金鑰預設排除/, /策略並授予相應操作後才會參與/, /認證 ID/, /明確的 Space ID/],
-    ja: [/ゲートウェイキーは既定で除外/, /ポリシーで各操作を許可した場合のみ対象/, /認証済み ID/, /明示的な Space ID/],
-    de: [/Gateway-Schlüssel sind standardmäßig ausgeschlossen/, /nur teil, wenn eine Regel die jeweilige Aktion/, /authentifizierte ID/, /explizite Space-ID/],
-  }
-  for (const [language, patterns] of Object.entries(requirements))
-    for (const pattern of patterns) expect(messages[language].scopeDisclosure).toMatch(pattern)
+  for (const [language, patterns] of Object.entries({
+    en: [/no released Magpie/, /policies have no effect today/],
+    zh: [/没有已发布的 Magpie/, /策略当前不会生效/],
+    "zh-TW": [/沒有已發行的 Magpie/, /策略目前不會生效/],
+    ja: [/リリース済みの Magpie は提供しない/, /ポリシーはまだ有効になりません/],
+    de: [/keine veröffentlichte Magpie-Version/, /Regeln derzeit nicht/],
+  })) for (const pattern of patterns) expect(messages[language].scopeDisclosure).toMatch(pattern)
   const html = await Bun.file(new URL("./page/settings.html", import.meta.url)).text()
-  expect(html.match(/<p data-t="scopeDisclosure">([^<]+)<\/p>/)?.[1]).toBe(messages.en.scopeDisclosure)
+  expect(html).toContain("no released Magpie supplies them yet, so policies have no effect today")
+})
+
+test("without a host key ID, a sharing-key policy cannot restrict existing access", async () => {
+  mock()
+  const [, c] = capturing("chat", { origin: "magpie-key", options: {
+    capture: true, keyPolicies: { "key-own": { recall: false, capture: false } },
+  } })
+  await onRequest(structuredClone(chat), c)
+  await onResponse(reply, { ...c, success: true })
+  expect(of("memories/search")).toHaveLength(1)
+  expect(of("threads/import")).toHaveLength(1)
 })
 
 test("named key permissions are independent, require an authenticated ID and an explicit Space", async () => {
@@ -905,7 +914,7 @@ test("same session and prompt do not share named-key recall or Thread identity",
 })
 
 test("malformed key policies fail closed", () => {
-  for (const keyPolicies of [[], "all", { a: true }, { a: { recall: true } }, { a: { recall: true, capture: "yes" } }, { a: { recall: true, capture: true, spaceId: " " } }]) {
+  for (const keyPolicies of [[], "all", { a: true }, { a: { recall: true } }, { a: { recall: true, capture: "yes" } }, { a: { recall: true, capture: true, spaceId: " " } }, { "sk-magpie-synthetic": { recall: true, capture: true, spaceId: "space-a" } }]) {
     expect(() => resolveOptions({ keyPolicies }, {})).toThrow("invalid")
   }
 })
