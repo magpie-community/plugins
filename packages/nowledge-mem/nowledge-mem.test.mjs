@@ -314,6 +314,8 @@ test("options it can't use are invalid, before anything is sent", async () => {
     { serverUrl: "http://127.0.0.1:14242", requestTimeoutMs: 10_000 },
     { serverUrl: "http://127.0.0.1:14242", recallBackoffMs: 10 },
     { serverUrl: "http://127.0.0.1:14242", capture: "yes" },
+    { serverUrl: "http://127.0.0.1:14242", skipAgents: 5 },
+    { serverUrl: "http://127.0.0.1:14242", skipAgents: ["Mozilla", 1] },
     { serverUrl: "http://127.0.0.1:14242", apiKey: "bad key" },
     { serverUrl: "http://127.0.0.1:14242", apiKey: "bad\nkey" },
   ]) {
@@ -461,6 +463,39 @@ test("the Magpie sharing key from this computer is included; other gateway keys 
   await onResponse(reply, { ...other, success: true })
   expect(of("memories/search")).toHaveLength(0)
   expect(of("threads/import")).toHaveLength(0)
+})
+
+test("an app named in skipAgents gets no recall and no capture; other apps still do (#597)", async () => {
+  for (const skipAgents of [["Mozilla", "Claude Code"], "mozilla，claude-code", " MOZILLA ,\nclaude_code "]) {
+    for (const agent of ["Mozilla", "claude-code"]) {
+      mock()
+      calls.length = 0
+      const [reports, context] = capturing("chat", { agent, options: { skipAgents } })
+      const body = structuredClone(chat)
+      expect(await onRequest(body, context)).toBeUndefined()
+      expect(body).toEqual(chat)
+      expect(context.state.nowledgeMem).toBeUndefined()
+      await onResponse(reply, { ...context, success: true })
+      expect(calls).toHaveLength(0)
+      expect(reports).toEqual([["skipped"]])
+      reset()
+    }
+    mock()
+    calls.length = 0
+    const [, other] = capturing("chat", { agent: "codex", options: { skipAgents } })
+    const body = structuredClone(chat)
+    await onRequest(body, other)
+    expect(body.messages[1].content).toContain("QUARTZ-8413")
+    await onResponse(reply, { ...other, success: true })
+    expect(of("memories/search")).toHaveLength(1)
+    expect(of("threads/import")).toHaveLength(1)
+    reset()
+  }
+  // a request with no agent is not taken for a listed one
+  mock()
+  calls.length = 0
+  await onRequest(structuredClone(chat), ctx("chat", { options: { serverUrl: "http://127.0.0.1:14242", skipAgents: ["", " "] } }))
+  expect(of("memories/search")).toHaveLength(1)
 })
 
 test("remote and unknown origins stay out", async () => {

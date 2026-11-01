@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.4 · 2026-11-01
+
+### Fixed
+
+- A `jumpRequest.at` ahead of the clock no longer blocks every later jump. A request is acted on only from 15 s old to 5 s ahead; one stamped further ahead is set aside and remembered, so it never fires when the clock gets there. A `last-jump.json` time ahead of now — written by 0.2.3 for such a request, or after the clock stepped back — now blocks only that same request, and every other click jumps; the file is rewritten at the next request. A request already handled is still never replayed across restarts (#583).
+
 ## 0.2.3 · 2026-11-01
 
 ### Added

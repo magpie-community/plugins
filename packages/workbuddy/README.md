@@ -329,6 +329,12 @@ provider settings in magpie, off by default (#430). When it is on:
 
 The price list is read again at most once a minute for requests.
 
+The switch gives its label and description in magpie's other languages
+(`labels`, `descriptions`: Chinese, Traditional Chinese, Japanese, German),
+and says `filtersModels`, so while it is on magpie says under the models
+that the list is filtered (#590). Both are magpie's own fields; an older
+magpie shows the English words and no note.
+
 ## Credits in magpie
 
 magpie's usage card shows the account's credits from the resource summary.

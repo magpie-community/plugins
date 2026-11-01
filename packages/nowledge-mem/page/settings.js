@@ -12,6 +12,7 @@ function message(id, key, error = false) {
 const result = (key, error = false) => message('result', key, error);
 const fields = [
  ['url','serverUrl','text'], ['space','spaceId','text'], ['agent','agentId','text'], ['host-agent','hostAgentId','text'], ['key-env','apiKeyEnv','text'],
+ ['skip-agents','skipAgents','list'],
  ['recall','recall','bool',true], ['context','contextBundle','bool',true], ['capture','capture','bool',false],
  ['capture-tools','captureTools','bool',true], ['capture-filter','captureFilter','choice','off'], ['capture-cindy','captureCindy','bool',false],
  ['max-memories','maxMemories','number',5,1,20], ['max-bytes','maxBytes','number',6000,512,32768],
@@ -23,9 +24,14 @@ function summary() {
  $('summary-url').textContent = savedOptions.serverUrl || t('localDefault');
  $('summary-space').textContent = savedOptions.spaceId || t('defaultSpace');
  $('summary-recall').textContent = savedOptions.recall === false ? t('off') : t('on');
+ $('summary-skip').textContent = skipList(savedOptions.skipAgents).join(', ') || t('none');
  $('summary-capture').checked = savedOptions.capture === true;
  $('summary-capture').disabled = busy;
  $('capture-state').textContent = savedOptions.capture === true ? t('on') : t('off');
+}
+function skipList(value) {
+ const names = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[,，\n]/) : [];
+ return names.filter((name) => typeof name === 'string').map((name) => name.trim()).filter(Boolean);
 }
 function validUrl(raw, insecure) {
  let url; try { url = new URL(raw); } catch { return false }
@@ -79,6 +85,7 @@ function fill(options) {
  resets.clear(); attachOrigins();
  for (const [id,name,kind,fallback] of fields) {
   if (kind === 'bool') $(id).checked = options[name] ?? fallback;
+  else if (kind === 'list') $(id).value = skipList(options[name]).join(', ');
   else if (kind === 'choice') $(id).value = options[name] ?? fallback;
   else $(id).value = options[name] == null ? '' : String(options[name]);
  }
@@ -132,6 +139,10 @@ function nextOptions() {
   if (resets.has(id)) { delete next[name]; continue; }
   if (current === baseline.fields[id]) continue;
   if (kind === 'bool' || kind === 'choice') next[name] = current;
+  else if (kind === 'list') {
+   const names = skipList(current);
+   if (names.length) next[name] = names; else delete next[name];
+  }
   else if (kind === 'number') {
    if (current === '') delete next[name];
    else { const n = Number(current); if (!Number.isInteger(n) || n < min || n > max) throw new Error('invalidOption'); next[name] = n; }

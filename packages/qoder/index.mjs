@@ -681,6 +681,23 @@ function sceneModels(listing) {
 // and "default" route inside Qoder and aren't one model. A site with its
 // own scene reads that scene's list; one that lists all models keeps the
 // disabled ones too (QwenWork's qwork scene carries its whole catalog).
+// freeView is whether a listing is the one Qoder gives a caller it doesn't
+// take for the account: every model that costs credits off, the free ones
+// on. Qoder CN's gateway answers a caller it doesn't know with that list
+// (2026-11-01: Qwen3.8-Flash on, Auto, Fast, Qwen3.8-Max, DeepSeek, GLM,
+// Kimi and MiniMax off, in every scene), and an enterprise qoder.com
+// account's stale job token was answered the same (plugins#484). A listing
+// with no model that costs credits, or with one of them on, isn't it.
+function freeView(entries) {
+  let off = false
+  for (const m of entries) {
+    if (!m || ["", "auto", "default"].includes(String(m.key ?? "").trim()) || freeOf(m)) continue
+    if (m.enable) return false
+    off = true
+  }
+  return off
+}
+
 function modelInfos(listing, site) {
   if (site?.modelScene) {
     return (Array.isArray(listing?.[site.modelScene]) ? listing[site.modelScene] : [])
@@ -2653,6 +2670,8 @@ const makePlugin = (site) => async ({ client }) => {
   // the ids Qoder serves: the site's shipped list and every key a listing
   // has named, on or off
   const served = new Set(site.models.map((m) => m.id))
+  // the job tokens a renewal gave that Qoder still listed the free view for
+  const stillFree = new Set()
   const knows = (id) => served.has(id)
   const models = async (cred, again = false) => {
     const key = listingKey(cred)
@@ -2665,6 +2684,7 @@ const makePlugin = (site) => async ({ client }) => {
         if (k) served.add(k)
       }
       l = modelInfos(listing, s)
+      if (!s.modelScene) l.freeView = freeView(sceneModels(listing))
       listings.set(key, l)
     }
     return l
@@ -3183,7 +3203,29 @@ const makePlugin = (site) => async ({ client }) => {
         }
         if (renewals.has(cred)) unsaid.add(listingKey(cred))
         try {
-          const ms = await models(cred, true)
+          let ms = await models(cred, true)
+          // The free view (freeView) on a job token is what Qoder lists for
+          // a token it no longer takes in full: the token is renewed once,
+          // as a chat for a model the list has off renews it (plugins#484),
+          // and the list read again. Without it the account's list is the
+          // free model alone, and magpie's agents see only that one (Qoder
+          // CN, star21321321124_93024 on Discord, 2026-11-01). A token the
+          // free view came back on after a renewal is not renewed again for
+          // it: that account lists only the free models.
+          if (ms.freeView && !stillFree.has(cred.access)) {
+            let next
+            try {
+              next = await relogin(async () => auth, cred.access)
+            } catch (e) {
+              if (e?.expired) throw Object.assign(new Error(e.message), { signIn: "expired" })
+            }
+            if (next && next.access !== cred.access) {
+              if (renewals.has(next)) unsaid.add(listingKey(next))
+              cred = next
+              ms = await models(cred, true)
+              if (ms.freeView) stillFree.add(cred.access)
+            }
+          }
           if (!ms.length) return provider.models
           const s = siteOf(site, cred)
           return Object.fromEntries(
@@ -3260,4 +3302,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }

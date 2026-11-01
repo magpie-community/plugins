@@ -10,6 +10,8 @@ globalThis.__nowledgeMemValidateOptions = (raw = {}) => {
   return v;
  };
  for (const name of ['spaceId','agentId','hostAgentId']) text(name);
+ const skip = raw.skipAgents;
+ if (skip != null && typeof skip !== 'string' && (!Array.isArray(skip) || skip.some((name) => typeof name !== 'string'))) fail();
  for (const name of ['recall','contextBundle','capture','captureTools','captureCindy'])
   if (raw[name] !== undefined && typeof raw[name] !== 'boolean') fail();
  for (const [name,fallback,min,max] of [['maxMemories',5,1,20],['maxBytes',6000,512,32768],['requestTimeoutMs',1500,50,5000],['recallBackoffMs',30000,100,300000]]) {

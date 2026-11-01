@@ -3,7 +3,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rm
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
-import { appleScriptQuote, buildJumpPlan, createJumper, parseHerdrPanes, parsePs, parseTmuxPanes, resolveTarget, validTty, walkAncestors } from "./lib/jump.mjs"
+import { appleScriptQuote, buildJumpPlan, createJumper, judgeJump, parseHerdrPanes, parsePs, parseTmuxPanes, resolveTarget, validTty, walkAncestors } from "./lib/jump.mjs"
 
 const dir = import.meta.dir
 const scope = {}
@@ -357,3 +357,103 @@ fi
 })
 
 
+
+test("judgeJump acts once near now, and a time ahead of the clock blocks only itself (#583)", () => {
+  const now = 1_800_000_000_000
+  const hour = 3600e3
+  // a fresh request fires and is recorded; the same one again does nothing
+  expect(judgeJump(now, 0, now)).toEqual({ fire: true, record: true })
+  expect(judgeJump(now, now, now + 1000)).toEqual({ fire: false, record: false })
+  // stale or far ahead: set aside, recorded so it never fires later
+  expect(judgeJump(now - 16000, 0, now)).toEqual({ fire: false, record: true })
+  expect(judgeJump(now + hour, 0, now)).toEqual({ fire: false, record: true })
+  expect(judgeJump(now + hour, now + hour, now + hour)).toEqual({ fire: false, record: false })
+  // a little ahead (page clock in front) still fires
+  expect(judgeJump(now + 4000, 0, now)).toEqual({ fire: true, record: true })
+  // seen ahead of now (0.2.3 last-jump.json, a clock stepped back): later requests fire
+  expect(judgeJump(now, now + hour, now)).toEqual({ fire: true, record: true })
+  expect(judgeJump(now - 1000, now + 4000, now)).toEqual({ fire: true, record: true })
+  // with seen in the past, an older or equal request never replays
+  expect(judgeJump(now - 1000, now - 500, now)).toEqual({ fire: false, record: false })
+  // junk times
+  for (const at of [0, -1, NaN, Infinity]) expect(judgeJump(at, 0, now)).toEqual({ fire: false, record: false })
+})
+
+function hostJumpProbe(root, jumpAt) {
+  const home = join(root, "home")
+  const cfg = join(root, "cfg")
+  const cache = join(root, "cache")
+  const pkgDir = join(root, "pkg")
+  mkdirSync(join(pkgDir, "page"), { recursive: true })
+  cpSync(join(dir, "lib"), join(pkgDir, "lib"), { recursive: true })
+  cpSync(join(dir, "office.hooks.mjs"), join(pkgDir, "office.hooks.mjs"))
+  cpSync(join(dir, "package.json"), join(pkgDir, "package.json"))
+  const binDir = join(home, ".local", "bin")
+  const herdrLog = join(home, "herdr.log")
+  mkdirSync(binDir, { recursive: true })
+  const fakeHerdr = join(binDir, "herdr")
+  writeFileSync(fakeHerdr, `#!/bin/sh
+echo "$@" >> "${herdrLog}"
+if [ "$1" = "pane" ] && [ "$2" = "list" ]; then
+  echo '{"result":{"panes":[{"pane_id":"wM:p8C","tab_id":"wM:t73","workspace_id":"wM","cwd":"/tmp/probe","agent_session":{"value":"11111111-2222-3333-4444-555555555555"}}]}}'
+fi
+`)
+  chmodSync(fakeHerdr, 0o755)
+  const magpieCfg = join(cfg, "magpie")
+  mkdirSync(magpieCfg, { recursive: true })
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: cache }
+  delete env.MAGPIE_AGENT_OFFICE_PAGE
+  const hookUrl = pathToFileURL(join(pkgDir, "office.hooks.mjs")).href
+  const code = `
+    const h = await import(${JSON.stringify(hookUrl)});
+    await h.waitForJump();
+    h.stop();
+  `
+  const lastJump = join(cache, "agent-office", "last-jump.json")
+  return {
+    lastJump,
+    run(at) {
+      writeFileSync(join(magpieCfg, "plugins.json"), JSON.stringify({
+        plugins: [{
+          spec: "@magpie-community/page-agent-office",
+          options: { jumpRequest: { key: "claude|11111111-2222-3333-4444-555555555555", session: "11111111-2222-3333-4444-555555555555", preferredHostId: "herdr-cli", at } },
+        }],
+      }), { mode: 0o600 })
+      writeFileSync(herdrLog, "")
+      const r = Bun.spawnSync({ cmd: [process.execPath, "-e", code], cwd: pkgDir, env, stdout: "pipe", stderr: "pipe" })
+      expect(r.exitCode).toBe(0)
+      return readFileSync(herdrLog, "utf8").includes("workspace focus wM")
+    },
+  }
+}
+
+test("a last-jump.json ahead of the clock (0.2.3) does not block a fresh jump, and it still runs once (#583)", () => {
+  if (process.platform !== "darwin") return
+  const root = mkdtempSync(join(tmpdir(), "agent-office-ahead-probe-"))
+  try {
+    const p = hostJumpProbe(root)
+    mkdirSync(join(root, "cache", "agent-office"), { recursive: true })
+    writeFileSync(p.lastJump, JSON.stringify({ at: Date.now() + 3600e3 }) + "\n")
+    const at = Date.now()
+    expect(p.run(at)).toBe(true)
+    expect(JSON.parse(readFileSync(p.lastJump, "utf8")).at).toBe(at)
+    expect(p.run(at)).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a jumpRequest stamped far ahead never fires and does not block the next click (#583)", () => {
+  if (process.platform !== "darwin") return
+  const root = mkdtempSync(join(tmpdir(), "agent-office-future-probe-"))
+  try {
+    const p = hostJumpProbe(root)
+    const ahead = Date.now() + 3600e3
+    expect(p.run(ahead)).toBe(false)
+    // recorded, so it can't fire when the clock gets there
+    expect(JSON.parse(readFileSync(p.lastJump, "utf8")).at).toBe(ahead)
+    expect(p.run(Date.now())).toBe(true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

@@ -50,11 +50,16 @@ async function pageFixture(initial) {
   const [dictionary, validator, source, html] = await Promise.all([read("i18n.js"), read("validate.js"), read("settings.js"), read("settings.html")])
   const make = () => ({
     dataset: {}, value: "", type: "text", checked: false, children: [], hidden: false,
+    listeners: {},
     setAttribute(name, value) { this[name] = value }, focus() {}, showModal() { this.open = true }, close() { this.open = false; this.onclose?.() },
+    addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn) },
+    dispatchEvent(event) { for (const fn of this.listeners[event.type] ?? []) fn(event) },
     append(...xs) { this.children.push(...xs); for (const x of xs) x.parent = this },
     replaceChildren(...xs) { this.children = xs }, remove() { if (this.parent) this.parent.children = this.parent.children.filter((x) => x !== this) },
   })
   const elements = Object.fromEntries([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, make()]))
+  const labels = Object.fromEntries([...html.matchAll(/<label\b[^>]*\bfor="([^"]+)"/g)].map(([, id]) => [id, make()]))
+  for (const [id, label] of Object.entries(labels)) if (elements[id]) elements[id].closest = (selector) => selector === 'label' ? label : null
   const translated = [...html.matchAll(/data-t="([^"]+)"/g)].map(([, key]) => ({dataset:{t:key}}))
   const document = {documentElement:{},getElementById:(id)=>elements[id],createElement:make,
     querySelectorAll:(selector)=>selector === "[data-t]" ? translated : Object.values(elements).filter((el)=>el.dataset.message)}
@@ -64,9 +69,45 @@ async function pageFixture(initial) {
   const window = {name:""}
   const i18n = runInNewContext(`${dictionary}\n${validator}\n${source}\nnowledgeMemI18n`, {document,magpie,window,location,navigator:{language:"en"},URL})
   await new Promise(setImmediate)
-  return {elements,magpie,i18n,translated,document,location,repaint:()=>repaint(),get:()=>options,writes:()=>writes,
+  return {elements,labels,magpie,i18n,translated,document,location,repaint:()=>repaint(),get:()=>options,writes:()=>writes,
     external:(next)=>{options=structuredClone(next);version++},save:()=>elements.save.onclick({preventDefault(){}})}
 }
+
+test("default buttons execute their real handlers and clear explicit values", async () => {
+ const f=await pageFixture({recall:false,requestTimeoutMs:900,skipAgents:["Mozilla"],apiKey:"saved",future:{v:1}}),e=f.elements
+ await e.configure.onclick()
+ for (const id of ["recall","request-timeout","skip-agents"]) {
+  const reset=f.labels[id].children.find((child)=>child.className === "secondary option-reset")
+  expect(typeof reset?.onclick).toBe("function")
+  reset.onclick()
+ }
+ expect(e.recall.checked).toBe(true)
+ expect(e["request-timeout"].value).toBe("")
+ expect(e["skip-agents"].value).toBe("")
+ await f.save()
+ expect(f.get()).toEqual({apiKey:"saved",future:{v:1}})
+ // Typing after a reset cancels inheritance and saves an explicit value.
+ const reset=f.labels.recall.children.find((child)=>child.className === "secondary option-reset")
+ reset.onclick();e.recall.checked=false;e.recall.dispatchEvent({type:"change"})
+ await f.save();expect(f.get().recall).toBe(false)
+})
+
+test("skipAgents retains existing formats, edits names, and updates the summary", async () => {
+ for (const original of [["Mozilla", "Claude Code"], "Mozilla，Claude Code"]) {
+  const f=await pageFixture({skipAgents:original,apiKey:"saved"}),e=f.elements
+  expect(e["summary-skip"].textContent).toBe("Mozilla, Claude Code")
+  await e.configure.onclick()
+  expect(e["skip-agents"].value).toBe("Mozilla, Claude Code")
+  e.space.value="space-a";await f.save()
+  expect(f.get().skipAgents).toEqual(original)
+  e["skip-agents"].value="Mozilla,, Codex，";await f.save()
+  expect(f.get().skipAgents).toEqual(["Mozilla","Codex"])
+  expect(e["summary-skip"].textContent).toBe("Mozilla, Codex")
+  e["skip-agents"].value=" , ";await f.save()
+  expect(f.get().skipAgents).toBeUndefined()
+  expect(e["summary-skip"].textContent).toBe("None")
+ }
+})
 
 test("released hosts save only edited fields using a fresh read and retain secrets", async () => {
  const f=await pageFixture({serverUrl:"http://127.0.0.1:14242",apiKey:"saved_secret",custom:{a:1}}), e=f.elements

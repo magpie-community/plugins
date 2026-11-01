@@ -8,7 +8,7 @@ import "./page/validate.js";
 const validateExplicitOptions = globalThis.__nowledgeMemValidateOptions;
 
 // Bumped with package.json: Mem's own clients record it on imported Threads.
-export const version = "0.1.3";
+export const version = "0.1.4";
 
 // The only report codes magpie's Plugins page shows; tools turn these into
 // messages, never the service's own text.
@@ -34,6 +34,11 @@ export function resolveOptions(raw = {}, env = process.env) {
             throw new MemFailure("invalid");
         return v;
     };
+    // A name may be a list or comma/newline-separated text, as in #597.
+    let skip = raw.skipAgents ?? [];
+    if (typeof skip === "string") skip = skip.split(/[,，\n]/u);
+    if (!Array.isArray(skip) || skip.some((name) => typeof name !== "string")) throw new MemFailure("invalid");
+    const skipAgents = new Set(skip.map(agentKey).filter(Boolean));
     const captureFilter = raw.captureFilter === undefined ? "off" : raw.captureFilter;
     // The Mem endpoint, as its own clients resolve it: the option, then the
     // portable NMEM_API_URL, then the local desktop default. A URL from the
@@ -80,6 +85,7 @@ export function resolveOptions(raw = {}, env = process.env) {
         spaceId: text(raw.spaceId),
         agentId: text(raw.agentId),
         hostAgentId: text(raw.hostAgentId),
+        skipAgents,
         recall: raw.recall ?? true,
         contextBundle: raw.contextBundle ?? true,
         capture: raw.capture ?? false,
@@ -91,6 +97,12 @@ export function resolveOptions(raw = {}, env = process.env) {
         requestTimeoutMs: raw.requestTimeoutMs ?? 1500,
         recallBackoffMs: raw.recallBackoffMs ?? 30_000,
     };
+}
+
+// agentKey is an app's name as skipAgents compares it: magpie's id
+// ("claude-code") and the name its pages show ("Claude Code") are one app.
+export function agentKey(name) {
+    return String(name ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
 // request sends to the configured Mem only, reads a bounded reply and decodes

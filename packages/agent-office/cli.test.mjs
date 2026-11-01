@@ -119,7 +119,7 @@ test("the authenticated standalone page, bridge, live data and JSON options work
   try {
     const ping = await (await fetch(s.url + "api/ping")).json()
     expect(ping.name).toBe("agent-office")
-    expect(ping.version).toBe("0.2.3")
+    expect(ping.version).toBe("0.2.4")
     const page = await fetch(s.url)
     expect(page.status).toBe(200)
     expect(await page.text()).toContain('src="_magpie/bridge.js"')

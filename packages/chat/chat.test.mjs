@@ -544,3 +544,51 @@ test("with mcpAll on, a chat gets magpie's own MCP servers that are on, beside t
     await own.close()
   }
 })
+
+// magpie swaps hosts (a plugin updated, installed or set) while the old one
+// still finishes a call, so the old host's service keeps the page's port
+// for as long as that call runs. The new host's service used to give up
+// after 6s, and once the old host left nothing listened there: every
+// request of the page failed to fetch (ferock, page-chat 0.1.6 updated to
+// 0.1.7 under a busy host).
+test("a port held past the first wait is taken once its holder lets go", async () => {
+  const { createServer } = await import("node:net")
+  const holder = createServer()
+  await new Promise((r) => holder.listen(0, "127.0.0.1", r))
+  const port = holder.address().port
+  const { startServer } = await import("./lib/server.mjs")
+  const svc = await startServer({ configDir: cfg, options: { port }, bindTries: 1 })
+  try {
+    expect(svc.listening).toBe(false)
+    expect(svc.port).toBe(port)
+    await new Promise((r) => holder.close(r))
+    expect(await svc.ready).toBe(port)
+    const got = await new Promise((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, method: "GET", path: "/api/ping", headers: { host: `127.0.0.1:${port}`, origin: "null" } }, (res) => {
+        let data = ""
+        res.setEncoding("utf8")
+        res.on("data", (c) => (data += c))
+        res.on("end", () => resolve({ status: res.statusCode, body: data }))
+      })
+      req.on("error", reject)
+      req.end()
+    })
+    expect(got.status).toBe(200)
+    expect(JSON.parse(got.body).port).toBe(port)
+  } finally {
+    holder.listening && holder.close()
+    await svc.close()
+  }
+})
+
+test("a service closed while it waits for its port stops waiting", async () => {
+  const { createServer } = await import("node:net")
+  const holder = createServer()
+  await new Promise((r) => holder.listen(0, "127.0.0.1", r))
+  const port = holder.address().port
+  const { startServer } = await import("./lib/server.mjs")
+  const svc = await startServer({ configDir: cfg, options: { port }, bindTries: 1 })
+  await svc.close()
+  expect(await svc.ready).toBe(0)
+  await new Promise((r) => holder.close(r))
+})
