@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-powercontext",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "PowerContext context recall and asynchronous conversation capture for clients behind Magpie",
   "type": "module",
   "files": [

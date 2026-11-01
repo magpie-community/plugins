@@ -7,6 +7,7 @@ import { CatPawAuthPlugin, _internal } from "./index.mjs"
 import { fakeCatPaw } from "./fake.mjs"
 import capturedRound from "./testdata/captured-round.json"
 import capturedTurn from "./testdata/captured-turn.json"
+import issue605 from "./testdata/issue-605.json"
 
 // every test runs against the fake upstream in fake.mjs: no network, no real
 // token ever leaves this process. The upstream base is monkey-patched because
@@ -399,15 +400,69 @@ describe("captured protocol", () => {
     })
     const sent = fake.state.conversations[0]
     expect(sent.permissionMode).toBe(capturedRound.bodyProtocol.permissionMode)
-    // one client identity end to end: the body's source/mode are the same
-    // captured request's values as the headers are
-    expect(sent.source).toBe(capturedRound.bodyProtocol.source)
-    expect(sent.mode).toBe(capturedRound.bodyProtocol.mode)
+    // source/mode are not the capture's any more: the gateway turned the
+    // captured CatPawCLI off (plugins#605), see the "source" tests below
+    expect(sent.source).toBe(issue605.served.source)
+    expect(sent.mode).toBe(issue605.served.mode)
   })
 
   test("the captured turn request carries the same permissionMode", () => {
     expect(capturedTurn.bodyProtocol.permissionMode).toBe(capturedRound.bodyProtocol.permissionMode)
     expect(capturedRound.headers["user-agent"]).toBe(capturedTurn.headers["user-agent"])
+  })
+})
+
+describe("source (plugins#605)", () => {
+  const chat = async (stream) => {
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch("https://ai.catpaw.meituan.com/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "glm-5.3-flashx", stream, messages: [{ role: "user", content: "hi" }] }),
+    })
+    return { status: res.status, text: await res.text() }
+  }
+
+  test("the fake refuses CatPawCLI with the reporter's exact bytes", async () => {
+    // the fake's refusal, fed through the plugin's own round error format,
+    // is the reporter's line word for word (minus magpie's "妙手 CatPaw: ")
+    const res = await fetch("https://ai.catpaw.meituan.com/api/agent/conversation/round", {
+      method: "POST",
+      headers: _internal.gatewayHeaders(fake.state.token),
+      body: JSON.stringify({ conversationId: "c", source: "CatPawCLI", mode: "CLI" }),
+    })
+    const body = await res.json()
+    expect(res.status).toBe(issue605.upstreamStatus)
+    expect(body).toEqual(issue605.upstream)
+    expect(`妙手 CatPaw: 妙手 round 失败：HTTP ${res.status} code=${body.code} msg=${body.msg}`).toBe(issue605.reported)
+  })
+
+  test("a chat no longer meets the reporter's refusal: round and turn both name CatX/CATX_APP", async () => {
+    for (const stream of [true, false]) {
+      fake.state.reset()
+      const { status, text } = await chat(stream)
+      expect(text).not.toContain(issue605.upstream.msg)
+      expect(status).toBe(200)
+      expect(text).toContain("收到")
+      expect(fake.state.conversations[0].source).toBe("CatX")
+      expect(fake.state.conversations[0].mode).toBe("CATX_APP")
+      expect(fake.state.turnBodies).toHaveLength(1)
+      expect(fake.state.turnBodies[0].source).toBe("CatX")
+      expect(fake.state.turnBodies[0].mode).toBe("CATX_APP")
+    }
+  })
+
+  test("the headers stay the captured client's: only the body's source changed", () => {
+    const ours = _internal.gatewayHeaders("t")
+    expect(ours["m-appkey"]).toBe(capturedRound.headers["m-appkey"])
+    expect(ours["x-agent-version"]).toBe(capturedTurn.headers["x-agent-version"])
+    expect(ours["User-Agent"]).toBe(capturedRound.headers["user-agent"])
+  })
+
+  test("if the gateway turns the source off again, the user reads its words", async () => {
+    fake.state.disabledSources.add(_internal.BODY_IDENTITY.source)
+    const { text } = await chat(true)
+    expect(text).toContain(`妙手 round 失败：HTTP 200 code=400 msg=source 不存在或未启用: ${_internal.BODY_IDENTITY.source}`)
+    expect(fake.state.turns).toBe(0)
   })
 })
 

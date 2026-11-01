@@ -37,8 +37,8 @@ const REQUEST_TIMEOUT = 20_000
 
 
 // the chat models the live /api/v1/models returned on 2026-10-16 (the image
-// models are served through the same gateway too, but only chat models
-// register as provider models). The live list replaces or extends this —
+// models come from the live list only; the loader draws with them through
+// /images/generations, #609). The live list replaces or extends this —
 // entries here only make the picker usable before the first sign-in.
 const STATIC_MODELS = {
   "DeepSeek-V4.1-Flash": { name: "DeepSeek V4.1 Flash (x2.0)", limit: { context: 1_048_576, output: 384_000 } },
@@ -388,13 +388,50 @@ export async function LoomyAuthPlugin({ client } = {}) {
       async loader(getAuth) {
         const a = await getAuth()
         if (a?.type !== "oauth") return {}
+        // draw sends magpie's images request to the same gateway's
+        // /images/generations with the session, as #609's reporter measured:
+        // 200 {"created":…,"data":[{"url":…}],"points_consumed":110}. The
+        // answer is plain JSON, so it is asked for as JSON, not as a stream;
+        // the body goes as magpie wrote it (the chat path's rewrites are
+        // about messages, which a draw has none of)
+        const draw = async (body, signal) => {
+          const session = (await getAuth())?.access ?? a.access
+          if (!session) return errorResponse(401, "Loomy 登录态缺失，请重新登录")
+          let res
+          try {
+            res = await fetch(`${modelBase()}/images/generations`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json;charset=utf-8",
+                Accept: "application/json",
+                token: session,
+                Authorization: `Bearer ${session}`,
+              },
+              body,
+              signal,
+            })
+          } catch (e) {
+            return errorResponse(502, e?.message ?? String(e))
+          }
+          if (res.status === 401 || res.status === 403) return errorResponse(401, "Loomy 登录态已失效，请重新登录")
+          if (!res.ok) {
+            const raw = await res.text().catch(() => "")
+            return errorResponse(res.status, `Loomy 上游返回 ${res.status}: ${raw.slice(0, 4096) || "无错误说明"}`)
+          }
+          return res
+        }
         return {
           baseURL: modelBase(),
           apiKey: "loomy",
           async fetch(input, init = {}) {
             const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
-            if (!/\/chat\/completions$/.test(new URL(url).pathname))
-              return errorResponse(404, "only chat completions are served")
+            const pathname = new URL(url).pathname
+            if (/\/images\/generations$/.test(pathname)) return draw(await bodyText(input, init), init.signal)
+            // /images/edits is not served: magpie sends an edit to a plugin
+            // as multipart (internal/gateway/draw.go drawImages), and no one
+            // has measured what Loomy's gateway takes for one (#609)
+            if (!/\/chat\/completions$/.test(pathname))
+              return errorResponse(404, "only chat completions and image generations are served")
             let chat
             try {
               chat = JSON.parse(await bodyText(input, init))

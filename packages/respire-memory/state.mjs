@@ -6,6 +6,31 @@ import { acquireLock } from './lock.mjs';
 
 export const digest = (...parts) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 export const stateDirectory = o => o.stateDir || join(homedir(), '.rsrs', 'magpie');
+const BACKUP_NAME = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}-\d{4}-\d{2}-\d{2}T\d{6}\.\d{3}Z\.bin$/i;
+const BACKUP_MAX_AGE_MS = 7 * 86400000;
+
+// The single encryption format used for every persisted record and update backup.
+export function encryptRecord(key, name, value) {
+  const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, iv);
+  cipher.setAAD(Buffer.from(name));
+  const data = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
+  return JSON.stringify({ v: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') });
+}
+
+export function decryptRecord(key, name, text) {
+  const value = JSON.parse(text);
+  const decrypt = createDecipheriv('aes-256-gcm', key, Buffer.from(value.iv, 'base64'));
+  decrypt.setAAD(Buffer.from(name)); decrypt.setAuthTag(Buffer.from(value.tag, 'base64'));
+  return JSON.parse(Buffer.concat([decrypt.update(Buffer.from(value.data, 'base64')), decrypt.final()]).toString('utf8'));
+}
+
+// Write 0600, flush, then atomically replace — the same durability as Store.put.
+export async function writeFileAtomic(path, text) {
+  const temp = path + '.' + randomBytes(8).toString('hex') + '.tmp';
+  const handle = await open(temp, 'wx', 0o600);
+  try { await handle.writeFile(text); await handle.sync(); } finally { await handle.close(); }
+  await rename(temp, path);
+}
 
 export class Store {
   constructor(dir) { this.dir = dir; }
@@ -33,22 +58,30 @@ export class Store {
   async get(name) {
     let text;
     try { text = await readFile(this.path(name), 'utf8'); } catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
-    const value = JSON.parse(text);
-    const decrypt = createDecipheriv('aes-256-gcm', await this.key(), Buffer.from(value.iv, 'base64'));
-    decrypt.setAAD(Buffer.from(name)); decrypt.setAuthTag(Buffer.from(value.tag, 'base64'));
-    return JSON.parse(Buffer.concat([decrypt.update(Buffer.from(value.data, 'base64')), decrypt.final()]).toString('utf8'));
+    return decryptRecord(await this.key(), name, text);
   }
   async put(name, value) {
-    const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', await this.key(), iv);
-    cipher.setAAD(Buffer.from(name));
-    const data = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
-    const temp = this.path(name) + '.' + randomBytes(8).toString('hex') + '.tmp';
-    const handle = await open(temp, 'wx', 0o600);
-    try {
-      await handle.writeFile(JSON.stringify({ v: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') }));
-      await handle.sync();
-    } finally { await handle.close(); }
-    await rename(temp, this.path(name));
+    await writeFileAtomic(this.path(name), encryptRecord(await this.key(), name, value));
+  }
+  async putBackup(name, value) {
+    if (!BACKUP_NAME.test(name)) throw new Error('invalid-backup-name');
+    const dir = join(this.dir, 'backups');
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await writeFileAtomic(join(dir, name), encryptRecord(await this.key(), name, value));
+  }
+  async getBackup(name) {
+    if (!BACKUP_NAME.test(name)) throw new Error('invalid-backup-name');
+    return decryptRecord(await this.key(), name, await readFile(join(this.dir, 'backups', name), 'utf8'));
+  }
+  async pruneBackups(now = Date.now()) {
+    const dir = join(this.dir, 'backups');
+    let files;
+    try { files = await readdir(dir); } catch (error) { if (error.code !== 'ENOENT') throw error; return; }
+    for (const file of files) {
+      if (!BACKUP_NAME.test(file)) continue;
+      try { if (now - (await stat(join(dir, file))).mtimeMs > BACKUP_MAX_AGE_MS) await unlink(join(dir, file)); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
   }
   async change(name, fn) {
     await this.key();

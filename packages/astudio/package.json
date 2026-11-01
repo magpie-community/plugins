@@ -1,0 +1,34 @@
+{
+  "name": "@magpie-community/opencode-astudio-auth",
+  "version": "0.1.1",
+  "description": "AStudio (iFLYTEK Astron Studio) desktop sign-in as an OpenCode/magpie provider: Responses model gateway with live model catalog",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "astudio",
+    "astron",
+    "iflytek",
+    "xfyun"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  },
+  "magpie": {
+    "icon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAVJSURBVFhHxVdrUxVHEDX55v9J/At5fNcqK6n4xcSUmqiJ8QUaUHmphEdQQQV8IBqFlFYZISDRxBAwEUIQDFoiivhAEAXuzuzudO9J9T5guZcraDSZqq69d3e2z+k+PTO9CxbEBoA34v9fx5gTQym1iJnXOI6TKaa13vpvTfyIT9d1FyXj+UNYAVjoOM5xvOYRYiycykRWVtabctVa18oErbVRShm5vkqLfIYYtXHsBZZlvSUPbNt2tdastZZJXmjye05TSq7Kv8Z/J/lhwRAswZySQCn1JQCZJAReGFgpNQVohZZEIk5ECHi2bX8xRUAKJSQgaQpeCB37zsVJ6DS6NxVpDFyunlFgE7+XYiKDYG2NE8iM9J+KPnQYRDkTNJ5meW5ZGo6tYFkKDVcJLV0mJJBCwg8yxMpMRyAAnZFeuWdD2yqwmPMI/Om4xpk2wqr9HjYeBkaf2bBty38+SwZSCIgEMwjEJVCThPFhxtMhg8kRFyoxTUZARp7auNTNqG4m5J8mlJ1jTEyKHys5A3ECMyRIIaAsKaYg2olRwmAnob+ZMdDkYaDVw70exsiQwdiYixtDhLY+g8YOg8MXCOeukF8bIolkIC7h/AmE6VXawuQzB3fbGDfqCddOMH4/Trhc6+GXOg+tjR462xnXehldN0V/xl+3DdhI9AGBmatCzY9AQCJcBbbCyN+EvjpGZy3j12OM5mrG2UOMkxWMYwcYNYcZdfUeGi4w2v8kDD5wfBlcR8G4ItVLZEDSKFIorZAYs3GridFew7h4lHG+ilF/kFFTzjhQxigu9pBbyMguJGSXMgoqGYfOMBrbCD39LsbGbZ/MvDIwnS6NhFSxsqAdhaFeRtsJD03VhLOVHk5WeKjex9j7LWNPMWNHIWFzAWFNDuHjbMJHWYRlOxmrShgbKz1cv2OD3DkIzARXMI6FZxMafUMG/fcIXU2MHyoZdQcZx/ZL9ITiEg953xC27Tb4Kp+wOoexfDvjgyzCexsIi1YT3skg9N7RskmlJ6D8DIRaKdnRLPQ/cNBwlfFTF6Fn0MXNXkJDjYfackLVPkJZKWN3EWP7HsKmAsLaXMaKHYQlWwjvricsyzc40uTg0ZOgFiw1Rw1E4LZWaLxqkHvKQ0UD+0vrSp/BrSGD35oZR/czyssIRSWB9pm7DNbnEz7dTliaQdhQZtDYbmN8Uklovv6yGrSeIwOydmXy6cuEJQXA8lJG3inC0RbCjx2Ezn6D3uuE7454KC1h7CpiZIfRr95J+LyA0N4dFBy8IJBEYp7LMCLgOArHLzJWlAEr93nYVuOh/Dzj+1bGpW5C9wDhQrOH4hJGTiH50Yv2yzIYFfVy2Fk+aBLw/JahTBLWkwmNwWEbAw9tDDxwMDjs4P6Ig0ejDp5M2Lh91+BAtYevdxE25hPW5hGWbibUtThgDt5PcyClJxAvQiEhRUOhGSeQRu6Lua5Cy8+ErXsY63INVuYQFm9iXOqw/dQnEinAcxNIXoZRcxFtpZH5J6Bj4eGwjaIq9rVfvt1gcQah55aGRyrYP1LB0xJIOY6fZ8EeH2SouZXwWR7jw22ED7IJ9x/L9muFFT+rzXocpzYkaSxKa9AHWHg8aiOvirF4C+GT3QaTibBfmD0DaRuS1JbsORZIIWlWIKPQ8ofB+xs8rNtrwCRNSFr9xYTAzJbsRZvSyHlUrOMTGrXNBh19NoyJeoCU99I3pS/TlseLVUhI5UszGt2fBVh+p7bl0ceBUuqlP0yU0iZhaSP7fPKz6TnTHyaCFcf+fz/Nkofrum+7rvvffpxGIy2rVziSMf4B2dvP/4LPzYQAAAAASUVORK5CYII=",
+    "maxConcurrency": 4
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/astudio"
+  }
+}

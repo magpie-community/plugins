@@ -1,0 +1,73 @@
+{
+  "plan": {
+    "id": "free",
+    "name": "Free Plan",
+    "type": "TOKEN_PLAN_PLAN_TYPE_FREE"
+  },
+  "pools": [
+    {
+      "id": "pool_00000000-0000-4000-8000-000000000001",
+      "name": "通用积分池",
+      "model_ids": [
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "glm-5.1",
+        "glm-5.2",
+        "kimi-k2.6",
+        "kimi-k3",
+        "minimax-m2.7",
+        "qwen3.6-27b",
+        "sensenova-6.7-flash-lite",
+        "sensenova-6.8-flash",
+        "sensenova-6.8-flash-lite",
+        "sensenova-mask",
+        "sensenova-pe",
+        "sensenova-u1-fast",
+        "sensenova-u1-pro-previews-v2.3",
+        "sensenova-u1.5-fast",
+        "sensenova-u1.5-lite"
+      ],
+      "window_5h": {
+        "limit": "120000",
+        "used": "120000",
+        "remaining": "0",
+        "reset_at": "1793483140"
+      },
+      "window_7d": {
+        "limit": "1200000",
+        "used": "438285.55472",
+        "remaining": "761714.44528",
+        "reset_at": "1793673940"
+      },
+      "grant_balance": "0",
+      "nearest_grant_expiry": "0",
+      "nearest_grant_expiring_balance": "0",
+      "pool_type": "default"
+    },
+    {
+      "id": "pool_00000000-0000-4000-8000-000000000002",
+      "name": "Flash-Lite积分池",
+      "model_ids": [
+        "sensenova-6.7-flash-lite",
+        "sensenova-6.8-flash-lite"
+      ],
+      "window_5h": {
+        "limit": "120000",
+        "used": "2877.6448",
+        "remaining": "117122.3552",
+        "reset_at": "1793483140"
+      },
+      "window_7d": {
+        "limit": "1200000",
+        "used": "12747.1272",
+        "remaining": "1187252.8728",
+        "reset_at": "1793673940"
+      },
+      "grant_balance": "0",
+      "nearest_grant_expiry": "0",
+      "nearest_grant_expiring_balance": "0",
+      "pool_type": "dedicated"
+    }
+  ]
+}

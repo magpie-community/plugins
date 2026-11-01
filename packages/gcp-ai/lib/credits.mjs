@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
-import { assertConsoleSession, cacheRoot, defaultProfile, expandPath, extractAccount, safeGoto, validateBillingAccount, validateProject, withPage } from "./browser.mjs"
+import { assertConsoleSession, cacheRoot, defaultProfile, expandPath, extractConsoleIdentity, safeGoto, validateBillingAccount, validateProject, withPage } from "./browser.mjs"
 import { take } from "./lock.mjs"
 import { effectiveAuthMode, resolveProject, validateAccount } from "./credentials.mjs"
 
@@ -114,16 +114,45 @@ async function nextPage(page) {
 // the wrong person is worse than no balance: it is a plausible wrong number on
 // someone else's row. So every read that names an account checks that the page
 // agrees, and refuses rather than report another account's credits.
-async function confirmAccount(page, account) {
-  if (!account) return
-  const shown = await extractAccount(page, { timeout: 8000 })
+async function confirmAccount(page, account, subject) {
+  if (!account && !subject) return
+  const identity = await extractConsoleIdentity(page, { timeout: 8000 })
+  const shown = identity.account
+  if (identity.conflict) throw new Error("Cloud Console returned conflicting account identity fields; refusing to report credits")
+  // Google userinfo can retain the old email while Console shows the renamed
+  // address. A matching page subject establishes identity despite that label.
+  // A different subject must be rejected even when the emails happen to match.
+  if (subject && identity.subject) {
+    if (identity.subject !== subject) throw new Error("Cloud Console is signed in to a different Google account (subject mismatch); refusing to report credits")
+    return identity
+  }
   // A page that never named an account is not evidence that it named this one.
   // A fallback to another authuser is exactly what the check is for, and it is
   // silent: the URL still says this account while the page is another person's.
-  if (!shown) throw new Error(`Cloud Console did not show which account the credits belong to; refusing to report a balance that may be another account's. Sign in as ${account} in the Chrome profile and retry`)
+  if (!shown || !account) throw new Error("Cloud Console did not show which account the credits belong to with a verifiable identity; refusing to report a balance that may be another account's")
   if (shown.toLowerCase() !== account.toLowerCase()) {
     throw new Error(`Cloud Console is signed in as ${shown}, not ${account}; sign in as ${account} in the Chrome profile and retry`)
   }
+  return { account: shown }
+}
+
+export function consoleAccountFor(account, aliases) {
+  if (aliases === undefined) return account
+  if (!aliases || typeof aliases !== "object" || Array.isArray(aliases)) {
+    throw new Error("consoleAccountAliases must be an object mapping saved account emails to current Console emails")
+  }
+  // Normalize both sides once so renamed emails and case differences select
+  // the same Console session without changing the saved credential account.
+  const normalized = new Map()
+  for (const [saved, current] of Object.entries(aliases)) {
+    const key = validateAccount(saved).toLowerCase()
+    const value = validateAccount(current).toLowerCase()
+    if (normalized.has(key)) throw new Error(`Duplicate consoleAccountAliases entry for ${key}`)
+    normalized.set(key, value)
+  }
+  if (!normalized.size) return account
+  if (!account) throw new Error("consoleAccountAliases requires a saved account email")
+  return normalized.get(validateAccount(account).toLowerCase()) ?? account
 }
 
 async function readPage(page, options) {
@@ -132,8 +161,9 @@ async function readPage(page, options) {
   // assertConsoleSession below (which says a lapsed session is a lapsed
   // session) and the table's own wait, whose timeout is the failure to report.
   const wait = (fallback) => (Number(options.scrapeTimeout) > 0 ? Math.min(Number(options.scrapeTimeout), fallback) : fallback)
-  const account = options.billingAccount ? validateBillingAccount(options.billingAccount) : await discoverBillingAccount(page, options.project, options.account)
-  const source = `https://console.cloud.google.com/billing/${account}/credits/all?hl=en${options.account ? `&authuser=${encodeURIComponent(options.account)}` : ""}`
+  const consoleAccount = options.consoleAccount
+  const account = options.billingAccount ? validateBillingAccount(options.billingAccount) : await discoverBillingAccount(page, options.project, consoleAccount)
+  const source = `https://console.cloud.google.com/billing/${account}/credits/all?hl=en${consoleAccount ? `&authuser=${encodeURIComponent(consoleAccount)}` : ""}`
   await safeGoto(page, source)
   await page.waitForFunction(() => location.hostname === "accounts.google.com" || [...document.querySelectorAll("th, [role='columnheader']")].some((cell) => cell.innerText.trim() === "Remaining value"), undefined, { timeout: wait(45000) }).catch(() => {})
   await assertConsoleSession(page, { timeout: wait(20000) })
@@ -141,7 +171,7 @@ async function readPage(page, options) {
   // the error says which of the two waits ran out.
   await page.waitForFunction(() => [...document.querySelectorAll("tbody tr, [role='row']")].some((row) => /\$\s*\d/.test(row.innerText)), undefined, { timeout: wait(30000) })
     .catch(() => { throw new Error("Google Cloud Credits table was not found or is empty; the session may be expired, the page may still be loading, or its layout changed") })
-  await confirmAccount(page, options.account)
+  const confirmed = await confirmAccount(page, consoleAccount, options.googleSubject)
   const tables = []
   const seen = new Set()
   for (let index = 0; index < 100; index++) {
@@ -150,7 +180,10 @@ async function readPage(page, options) {
     if (seen.has(signature)) throw new Error("Credits pagination did not advance; refusing an incomplete balance")
     seen.add(signature)
     tables.push(...next)
-    if (!(await nextPage(page))) return { ...parseCreditTables(tables), billingAccount: account, source }
+    if (!(await nextPage(page))) return {
+      ...parseCreditTables(tables), billingAccount: account, source,
+      ...(confirmed?.subject ? { googleSubject: confirmed.subject, consoleAccount: confirmed.account } : {}),
+    }
     await page.waitForFunction((before) => {
       const tables = [...document.querySelectorAll("table, [role='grid'], [role='table']")].map((table) => ({
         headers: [...table.querySelectorAll("thead th, [role='columnheader']")].map((cell) => cell.innerText),
@@ -185,10 +218,21 @@ export async function fetchCredits(options = {}) {
   else settings.project = await resolveProject(settings, undefined, await effectiveAuthMode(settings))
   if (settings.project) validateProject(settings.project)
   if (settings.account) validateAccount(settings.account)
+  const mapped = consoleAccountFor(settings.account, settings.consoleAccountAliases)
+  settings.consoleAccount = mapped?.toLowerCase() !== settings.account?.toLowerCase()
+    ? mapped : settings.consoleAccount || mapped
+  if (settings.consoleAccount) validateAccount(settings.consoleAccount)
   // The Chrome profile alone does not tell two Google accounts apart: one
   // profile can hold both, so each read also names the account whose cookies
   // it used (and, when it has one, that account's own ADC directory).
-  const identity = JSON.stringify([expandPath(settings.profile), settings.project ?? "", settings.billingAccount ?? "", settings.account ?? "", settings.cloudsdkConfig ?? ""])
+  const identityParts = [expandPath(settings.profile), settings.project ?? "", settings.billingAccount ?? "", settings.account ?? "", settings.cloudsdkConfig ?? ""]
+  // Preserve existing caches unless an alias changes the selected Console
+  // session; an old email-mismatch error must not block the renamed account.
+  if (settings.consoleAccount?.toLowerCase() !== settings.account?.toLowerCase()) identityParts.push(settings.consoleAccount)
+  // A subject-verified request must not reuse legacy email-only balances or
+  // mismatch failures. Include the subject and validation version in its key.
+  if (settings.googleSubject) identityParts.push({ googleSubject: settings.googleSubject, identityVersion: 2 })
+  const identity = JSON.stringify(identityParts)
   const digest = createHash("sha256").update(identity).digest("hex").slice(0, 24)
   const file = join(cacheRoot(), "magpie", "gcp-ai", `credits-${digest}.json`)
   // The cache is what keeps this from opening a browser on every poll, so both
@@ -200,14 +244,20 @@ export async function fetchCredits(options = {}) {
   const ttl = Number(options.ttl ?? process.env.VERTEX_CREDITS_CACHE_TTL ?? 300)
   if (!Number.isFinite(ttl) || ttl < 0) throw new Error("VERTEX_CREDITS_CACHE_TTL must be a nonnegative number of seconds")
   const cached = async () => {
+    let data
     try {
-      const data = JSON.parse(await readFile(file, "utf8"))
-      const age = Date.now() - Date.parse(data.failedAt ?? data.fetchedAt)
-      if (settings.force || !(age >= 0)) return undefined
-      if (data.failedAt) return age < (transient(data) ? transientTtl : failureTtl) * 1000 ? { ...data, cached: false } : undefined
-      const futureExpiry = !data.runsOutAt || Date.parse(data.runsOutAt) > Date.now()
-      if (age < ttl * 1000 && futureExpiry && data.currency === "USD" && Number.isFinite(data.remaining) && Number.isFinite(data.original) && Number.isFinite(data.usedPercent)) return { ...data, cached: true }
-    } catch {}
+      data = JSON.parse(await readFile(file, "utf8"))
+    } catch {
+      return undefined
+    }
+    if (data.googleSubject && data.googleSubject !== settings.googleSubject) {
+      throw new Error("Cached Google Cloud credits identify a different Google account; refusing to report that balance")
+    }
+    const age = Date.now() - Date.parse(data.failedAt ?? data.fetchedAt)
+    if (settings.force || !(age >= 0)) return undefined
+    if (data.failedAt) return age < (transient(data) ? transientTtl : failureTtl) * 1000 ? { ...data, cached: false } : undefined
+    const futureExpiry = !data.runsOutAt || Date.parse(data.runsOutAt) > Date.now()
+    if (age < ttl * 1000 && futureExpiry && data.currency === "USD" && Number.isFinite(data.remaining) && Number.isFinite(data.original) && Number.isFinite(data.usedPercent)) return { ...data, cached: true }
   }
   const failureTtl = Number(options.failureTtl ?? process.env.VERTEX_CREDITS_FAILURE_TTL ?? 1200)
   if (!Number.isFinite(failureTtl) || failureTtl < 0) throw new Error("VERTEX_CREDITS_FAILURE_TTL must be a nonnegative number of seconds")

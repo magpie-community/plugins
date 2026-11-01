@@ -11,6 +11,11 @@ export function fakeCatPaw() {
     events: 0,
     turns: 0,
     turnError: null, // "sse-error" makes the turn stream send an error frame
+    // sources the gateway has turned off: it answers them HTTP 200 with
+    // {code: 400, msg: "source 不存在或未启用: <source>"}, the body behind
+    // plugins#605. CatPawCLI was turned off by 2026-11-01.
+    disabledSources: new Set(["CatPawCLI"]),
+    turnBodies: [],
     balanceCalls: 0,
     // the web sign-in: sids awaiting their token, like the real vendor
     webSids: new Map(), // sid -> token to hand out
@@ -23,6 +28,8 @@ export function fakeCatPaw() {
       state.events = 0
       state.turns = 0
       state.turnError = null
+      state.disabledSources = new Set(["CatPawCLI"])
+      state.turnBodies = []
       state.balanceCalls = 0
       state.webSids = new Map()
       state.webTokens = new Set()
@@ -83,7 +90,8 @@ export function fakeCatPaw() {
 
       if (url.pathname === "/api/agent/conversation/round") {
         state.rounds++
-        if (body.source !== "CatPawCLI" || body.mode !== "CLI") return json(400, { code: 400, msg: `source/mode wrong: ${body.source}/${body.mode}` })
+        if (state.disabledSources.has(body.source)) return json(200, { code: 400, msg: `source 不存在或未启用: ${body.source}` })
+        if (body.source !== "CatX" || body.mode !== "CATX_APP") return json(400, { code: 400, msg: `source/mode wrong: ${body.source}/${body.mode}` })
         state.conversations.push({ id: body.conversationId, modelType: body.modelType, prompt: body.message?.content?.[0]?.text ?? "", token: (req.headers.get("cookie") ?? "").match(/X-Passport-Token=([^;]+)/)?.[1] ?? "", permissionMode: body.permissionMode, source: body.source, mode: body.mode })
         return json(200, { code: 0, data: { conversationId: body.conversationId } })
       }
@@ -96,7 +104,9 @@ export function fakeCatPaw() {
 
       if (url.pathname === "/api/agent/conversation/turn") {
         state.turns++
+        state.turnBodies.push(body)
         const conv = state.conversations.at(-1)
+        if (body.source !== conv?.source || body.mode !== conv?.mode) return json(400, { code: 400, msg: `turn source/mode ${body.source}/${body.mode} differ from the round's` })
         if (body.conversationId !== conv?.id) return json(400, { code: 400, msg: "turn for unknown conversation" })
         if (state.turnError === "sse-error")
           return new Response(`data: ${JSON.stringify({ error: { code: 500, message: "vendor broke" } })}\n\n`, { headers: { "content-type": "text/event-stream" } })

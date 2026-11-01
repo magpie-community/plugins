@@ -132,6 +132,16 @@ function gatewayHeaders(token, extra = {}) {
   }
 }
 
+// BODY_IDENTITY is the source/mode the round and turn bodies carry. The
+// 2026-10-09 capture (testdata/captured-*.json) had the CLI's CatPawCLI/CLI,
+// but by 2026-11-01 the gateway answered that source with HTTP 200
+// {code: 400, msg: "source 不存在或未启用: CatPawCLI"} on every round
+// (plugins#605). CatX/CATX_APP is the desktop app's source; the reporter
+// verified a real request with it and these unchanged headers, and the
+// package README has documented it from the start. Both bodies spread this
+// one object, so they can never name different sources.
+const BODY_IDENTITY = Object.freeze({ source: "CatX", mode: "CATX_APP" })
+
 async function gatewayPost(pathname, body, token, extraHeaders, signal) {
   const res = await fetch(ORIGIN + pathname, {
     method: "POST",
@@ -186,11 +196,8 @@ async function* runConversation(token, chat, signal) {
       conversationId: convId,
       message: { type: "user", messageId: msgId, content: [{ type: "text", text: prompt }], finished: true },
       modelType,
-      // the client's own round body (testdata/captured-round.json): CLI
-      // identity end to end — these source/mode values ride the same
-      // captured request as the CLI headers gatewayHeaders sends
-      source: "CatPawCLI",
-      mode: "CLI",
+      // see BODY_IDENTITY: the source the gateway still serves
+      ...BODY_IDENTITY,
       // the client's own round/turn bodies carry this exact value (captured
       // 2026-10-09, both requests) — the client's default, not ours
       permissionMode: "unsafeBypassPermissions",
@@ -222,9 +229,8 @@ async function* runConversation(token, chat, signal) {
     turnRequestId: turnId,
     message: { type: "user", messageId: msgId, content: [{ type: "text", text: prompt }], finished: true },
     modelType,
-    // the client's own turn body (testdata/captured-turn.json): CLI identity
-    source: "CatPawCLI",
-    mode: "CLI",
+    // see BODY_IDENTITY: round and turn always name the same source
+    ...BODY_IDENTITY,
     // the client's own round/turn bodies carry this exact value (captured
     // 2026-10-09, both requests) — the client's default, not ours
     permissionMode: "unsafeBypassPermissions",
@@ -628,4 +634,4 @@ export async function CatPawAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { ID, NAME, MODELS, modelTypeOf, buildPrompt, gatewayHeaders, gatewayHeadersForTest: gatewayHeaders, readAuth, authPath, configModel }
+export const _internal = { ID, BODY_IDENTITY, NAME, MODELS, modelTypeOf, buildPrompt, gatewayHeaders, gatewayHeadersForTest: gatewayHeaders, readAuth, authPath, configModel }

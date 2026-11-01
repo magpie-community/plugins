@@ -419,7 +419,14 @@ function goG(x) {
 // magpie can say what is left of it when the user shows what is left
 // (#408): display alone is the vendor's text, which magpie can't turn
 // round.
-function usageOf(l) {
+//
+// Bonus credits (each allowance's bonuses: a first upgrade's trial credits,
+// a promotion's) are a window each while ACTIVE and not expired, after the
+// month's: their count, and when they lapse (runsOutAt), as they don't
+// reset. They are shown only (aside). Kiro spends the plan's credits
+// first, then these, so a month used up while a bonus has credits left
+// is set aside too, and the account isn't taken for spent.
+function usageOf(l, now = Date.now()) {
   const at = (secs) => (secs > 0 ? new Date(Math.trunc(secs) * 1000).toISOString() : undefined)
   const count = (used, limit) => used.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") + " / " + goG(limit)
   const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : 0)
@@ -431,11 +438,22 @@ function usageOf(l) {
       windows.push({ name: "Free trial", used: (100 * used) / limit, resetsAt: at(num(t.freeTrialExpiry)), display: count(used, limit),
         amount: used, limit, unit: "credits" })
     }
+    const bonuses = []
+    for (const b of Array.isArray(u?.bonuses) ? u.bonuses : []) {
+      const used = num(b?.currentUsage), limit = num(b?.usageLimit), expires = num(b?.expiresAt)
+      if (String(b?.status ?? "").toUpperCase() !== "ACTIVE" || limit <= 0 || (expires > 0 && expires * 1000 <= now)) continue
+      const left = Math.max(0, limit - used)
+      bonuses.push({ name: b?.displayName || "Bonus credits", used: (100 * used) / limit, display: count(used, limit),
+        amount: used, limit, unit: "credits", ...(expires > 0 && left > 0 ? { runsOutAt: at(expires), runsOut: left } : {}), aside: true })
+    }
     const used = num(u?.currentUsageWithPrecision), limit = num(u?.usageLimitWithPrecision)
-    if (limit <= 0) continue
-    const reset = num(u?.nextDateReset) || num(l?.nextDateReset)
-    windows.push({ name: u?.displayNamePlural || u?.displayName || "Credits", used: (100 * used) / limit, resetsAt: at(reset),
-      display: count(used, limit), amount: used, limit, unit: "credits", span: 30 * 24 * 3600 })
+    if (limit > 0) {
+      const reset = num(u?.nextDateReset) || num(l?.nextDateReset)
+      const carried = used >= limit && bonuses.some((b) => b.amount < b.limit)
+      windows.push({ name: u?.displayNamePlural || u?.displayName || "Credits", used: (100 * used) / limit, resetsAt: at(reset),
+        display: count(used, limit), amount: used, limit, unit: "credits", span: 30 * 24 * 3600, ...(carried ? { aside: true } : {}) })
+    }
+    windows.push(...bonuses)
   }
   const email = l?.userInfo?.email
   return { plan: planName(l?.subscriptionInfo?.subscriptionTitle), ...(typeof email === "string" && email ? { user: email } : {}), windows }

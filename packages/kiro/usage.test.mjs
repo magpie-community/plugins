@@ -76,6 +76,78 @@ test("names, resets and counts as Go says them", () => {
   expect(windows.map((w) => [w.amount, w.limit, w.unit])).toEqual([[1.005, 1000000, "credits"], [150.1, 100, "credits"]])
 })
 
+// A Pro account's answer with bonus credits, as Get-Usage-Limits gave it
+// (account details replaced): the first upgrade's trial credits in
+// bonuses, and the Free trial before it expired.
+const BONUS_EXPIRES = 4100000000.5 // far off: the first test reads the real clock
+const trialCredits = (over = {}) => ({ bonusCode: "TESTBONUS#0", bonusType: "FIRST_UPGRADE_TRIAL", currentUsage: 0.0,
+  description: "Trial credits from your first upgrade", displayName: "Trial credits", expiresAt: BONUS_EXPIRES,
+  redeemedAt: 1793000000.25, status: "ACTIVE", usageLimit: 500.0, ...over })
+const PRO = { nextDateReset: 1796083200.0, overageConfiguration: { overageStatus: "DISABLED" },
+  subscriptionInfo: { subscriptionTitle: "KIRO PRO", type: "Q_DEVELOPER_STANDALONE_PRO" },
+  userInfo: { email: "me@example.com", userId: "d-0000000000.test" },
+  usageBreakdownList: [{ addOnMetadata: null, bonuses: [trialCredits()], currency: "USD", currentUsage: 48, currentUsageWithPrecision: 48.97,
+    displayName: "Credit", displayNamePlural: "Credits",
+    freeTrialInfo: { currentUsage: 24, currentUsageWithPrecision: 24.26, freeTrialExpiry: 1769846399.708, freeTrialStatus: "EXPIRED",
+      usageLimit: 500, usageLimitWithPrecision: 500.0 },
+    nextDateReset: 1796083200.0, overageCredits: [], resourceType: "CREDIT", unit: "INVOCATIONS", usageLimit: 984, usageLimitWithPrecision: 984.0 }] }
+const withBreakdown = (l, over) => ({ ...l, usageBreakdownList: [{ ...l.usageBreakdownList[0], ...over }] })
+const MONTH = { name: "Credits", used: (100 * 48.97) / 984, resetsAt: new Date(1796083200_000).toISOString(), display: "48.97 / 984",
+  amount: 48.97, limit: 984, unit: "credits", span: 30 * 24 * 3600 }
+const BONUS = { name: "Trial credits", used: 0, display: "0 / 500", amount: 0, limit: 500, unit: "credits",
+  runsOutAt: new Date(4100000000_000).toISOString(), runsOut: 500, aside: true }
+
+test("bonus credits are a window of their own after the month's, with when they lapse", async () => {
+  answer(200, PRO)
+  expect(await usage()).toEqual({ plan: "Kiro Pro", user: "me@example.com", windows: [MONTH, BONUS], signIn: "renewed" })
+  // part spent: what is left lapses
+  const { windows } = _internal.usageOf(withBreakdown(PRO, { bonuses: [trialCredits({ currentUsage: 120.5 })] }), 1800000000_000)
+  expect(windows[1]).toEqual({ ...BONUS, used: 24.1, display: "120.5 / 500", amount: 120.5, runsOut: 379.5 })
+})
+
+test("no bonuses: the windows are what they were", () => {
+  const before = _internal.usageOf(withBreakdown(PRO, { bonuses: undefined }))
+  expect(before.windows).toEqual([MONTH])
+  for (const bonuses of [[], null, "none", [null, {}, { status: "ACTIVE" }]])
+    expect(_internal.usageOf(withBreakdown(PRO, { bonuses }))).toEqual(before)
+  // the free account's answer has none either
+  expect(_internal.usageOf(FREE).windows.map((w) => w.name)).toEqual(["Free trial", "Credits"])
+})
+
+test("a bonus expired, or not active, is no window and keeps nothing aside", () => {
+  const now = 1800000000_000
+  for (const b of [trialCredits({ expiresAt: 1799999999 }), trialCredits({ status: "EXPIRED" }), trialCredits({ usageLimit: 0 })]) {
+    expect(_internal.usageOf(withBreakdown(PRO, { bonuses: [b] }), now).windows).toEqual([MONTH])
+    // a month used up stops the account as before
+    const spent = _internal.usageOf(withBreakdown(PRO, { bonuses: [b], currentUsageWithPrecision: 984 }), now).windows
+    expect(spent).toHaveLength(1)
+    expect(spent[0].aside).toBeUndefined()
+  }
+  // one with no expiry is kept, with no lapse told
+  const open = _internal.usageOf(withBreakdown(PRO, { bonuses: [trialCredits({ expiresAt: undefined })] }), now).windows[1]
+  expect(open.runsOutAt).toBeUndefined()
+  expect(open.aside).toBe(true)
+})
+
+test("a free trial and bonus credits together, and a spent month set aside while a bonus has credits left", () => {
+  const now = 1790500000_000
+  const l = withBreakdown(FREE, { bonuses: [trialCredits({ displayName: "Bonus credits", currentUsage: 10, usageLimit: 100 })] })
+  const { windows } = _internal.usageOf(l, now)
+  expect(windows.map((w) => [w.name, w.display, w.aside])).toEqual([
+    ["Free trial", "100 / 500", undefined], ["Credits", "12.5 / 50", undefined], ["Bonus credits", "10 / 100", true]])
+  expect(windows[2].runsOut).toBe(90)
+  // the month used up: Kiro goes on to the bonus, so the month is shown only
+  const spent = _internal.usageOf(withBreakdown(l, { currentUsageWithPrecision: 50 }), now).windows
+  expect(spent.find((w) => w.name === "Credits").aside).toBe(true)
+  expect(spent.find((w) => w.name === "Free trial").aside).toBeUndefined()
+  // and the bonus used up too: the month stops the account again
+  const all = _internal.usageOf(withBreakdown(l, { currentUsageWithPrecision: 50,
+    bonuses: [trialCredits({ displayName: "Bonus credits", currentUsage: 100, usageLimit: 100 })] }), now).windows
+  expect(all.find((w) => w.name === "Credits").aside).toBeUndefined()
+  expect(all.find((w) => w.name === "Bonus credits")).toMatchObject({ used: 100, aside: true })
+  expect(all.find((w) => w.name === "Bonus credits").runsOutAt).toBeUndefined()
+})
+
 test("Kiro's refusal is the card's error", async () => {
   answer(403, { message: "The bearer token included in the request is invalid." })
   expect(await usage()).toEqual({ error: "Kiro: The bearer token included in the request is invalid. (403)", signIn: "kept" })

@@ -67,6 +67,10 @@ The plugin's `fetch` handles this:
     `prompt_cache_options {type: EPHEMERAL}` (field 8), as the devin CLI
     marks its own. Blocks joined into one message lose the mark: a grown
     history then read only ~558 tokens from the cache.
+  - Mid-conversation `role: "system"` notices stay in the history as user
+    prompts, with their block boundaries and cache marks. A notice that
+    arrives before pending tool results follows those results, as Devin
+    requires; it does not replace them or join the stable system prefix.
   - Claude Code's `x-anthropic-billing-header` line isn't sent: its
     `cch` changes every turn.
   - The reply comes back as Anthropic's message or events, with the

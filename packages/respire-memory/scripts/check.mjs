@@ -7,7 +7,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { onRequest, onResponse, reset } from '../respire.hooks.mjs';
 import { options, hasSecret } from '../runtime.mjs';
-import { Store, digest, accountIdentity } from '../state.mjs';
+import { Store, digest, accountIdentity, decryptRecord } from '../state.mjs';
 import { processJob, runQueue } from '../worker.mjs';
 import { acquireLock } from '../lock.mjs';
 import { enqueue, checkControl, controlSignature, CONTROL_LEASE_MS } from '../queue.mjs';
@@ -45,7 +45,7 @@ assert(hasSecret({ content: '{"api_key":"fixture-secret"}' }));
 assert(hasSecret({ tool: { PGPASSWORD: 'fixture-secret' } }));
 const id = '11111111-1111-4111-8111-111111111111';
 let calls = 0;
-let generationRound = 0, unknownWrite = false, writes = 0, policyReady = true, emptyRecall = false, oversizedChain = false, brokenDiary = false, wholeDiaryReads = 0, fixturePolicy = 'Complete fixture policy';
+let generationRound = 0, unknownWrite = false, writes = 0, updatedFrom = '', policyReady = true, emptyRecall = false, oversizedChain = false, brokenDiary = false, wholeDiaryReads = 0, fixturePolicy = 'Complete fixture policy', showMissingEntry = false;
 const savedId = '22222222-2222-4222-8222-222222222222';
 const diaryId = '33333333-3333-4333-8333-333333333333';
 const commandLog = [];
@@ -72,7 +72,7 @@ const server = createServer(async (req, res) => {
   const envelope = { status: 'ok', summary: command === 'status' ? { data_dir: 'fixture', unlocked: true, session: { has_session: true, user: 'fixture', addr: 'fixture' } }
     : command === 'agent-config' ? { readonly: false, memory_off: false, workspace_mode: 'normal' }
     : command === 'prompt' ? { instructions: policyReady ? fixturePolicy : '' } : {},
-    details: command === 'recall' ? (emptyRecall ? [] : [{ id }]) : command === 'prompt' ? null : command === 'chain' && oversizedChain ? { content: 'x'.repeat(16000) } : { entry: entries.get(r.args[2]) ?? entries.get(id) } };
+    details: command === 'recall' ? (emptyRecall ? [] : [{ id }]) : command === 'prompt' ? null : command === 'chain' && oversizedChain ? { content: 'x'.repeat(16000) } : { entry: showMissingEntry ? undefined : entries.get(r.args[2]) ?? entries.get(id) } };
   if (command === 'show') { envelope.summary.id = r.args[2]; if (r.args[2] === diaryId) wholeDiaryReads++; }
   if (command === 'diary-search' || command === 'diary-fragment') {
     const oldMatch = 'Earlier write with the same marker: ' + (entries.get(diaryId)?.content.split('【来源】回合 ')[1] ?? '');
@@ -98,6 +98,15 @@ const server = createServer(async (req, res) => {
         envelope.details.semantic_ready = true;
       }
     }
+  }
+  if (command === 'update') {
+    const target = r.args[2];
+    if (!entries.has(target)) { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ v: 1, id: r.id, ok: false, exit: 1, envelope: { status: 'fail', errors: ['not found'] } })); return; }
+    const previous = entries.get(target);
+    updatedFrom = previous.content;
+    const contentAt = r.args.indexOf('--content');
+    entries.set(target, { ...previous, content: contentAt >= 0 ? r.args[contentAt + 1] : previous.content });
+    writes++; envelope.summary.id = target; envelope.details = { entry: entries.get(target) };
   }
   if (command === 'remember') {
     if (r.args[2] === 'pending-fixture-content') {
@@ -327,6 +336,63 @@ try {
   } });
   assert.equal((await store.get(scopedName)).status, 'completed');
   generationRound = 0;
+  // MG-05: an update must persist an ENCRYPTED backup of the replaced body before overwriting it
+  const updateSource = digest('update-backup'); const updateName = 'job-' + updateSource;
+  await store.put(updateName, makeJob(updateSource));
+  let updateRound = 0; let updateWrites = 0;
+  await processJob(store, updateName, { model: async (_o, messages) => {
+    const round = updateRound++; let input;
+    if (round === 0) input = { command: 'recall', args: ['project'] };
+    else if (round === 1) input = { command: 'prompt', args: [] };
+    else if (round === 2) input = { command: 'show', args: [savedId] };
+    else if (round === 3) input = { command: 'update', args: [savedId, '--content', '【前因】规则更新。【行为】补充验证。【后果】新版本生效。', '--title', '项目验证规则已更新'] };
+    else if (round === 4) input = { command: 'show', args: [savedId] };
+    else if (round === 5) input = { command: 'remember', args: ['助手在fixture主机完成规则更新。', '--importance', 'trivial'] };
+    else if (round === 6) input = { command: 'show', args: [diaryId] };
+    else return { role: 'assistant', content: JSON.stringify({ result: 'stored', ids: [savedId] }) };
+    return { role: 'assistant', content: null, tool_calls: [{ id: 'upd-' + round, type: 'function', function: { name: 'respire_memory', arguments: JSON.stringify(input) } }] };
+  }, call: async args => { if (args[0] === 'update') updateWrites++; return rpc(o, args) } });
+  const updatedJob = await store.get(updateName);
+  assert.equal(updatedJob.status, 'completed', JSON.stringify({ error: updatedJob.error }));
+  assert.equal(updateWrites, 1);
+  const backupsDir = join(stateDir, 'backups');
+  const backupFiles = readdirSync(backupsDir).filter(name => name.startsWith(savedId));
+  assert.equal(backupFiles.length, 1, 'exactly one backup per update');
+  const backupBytes = readFileSync(join(backupsDir, backupFiles[0]));
+  assert(!backupBytes.includes('【前因】用户明确项目约定。') && !backupBytes.includes(savedId),
+    'the backup file on disk must not contain any plaintext of the old body');
+  const backupDoc = decryptRecord(await store.key(), backupFiles[0], backupBytes.toString('utf8'));
+  assert(backupDoc.content.includes('【前因】用户明确项目约定。'), 'the backup must decrypt back to the OLD body: ' + backupDoc.content.slice(0, 40));
+  assert.equal(backupDoc.id, savedId); assert.equal(backupDoc.source, updateSource);
+  assert.deepEqual(await store.getBackup(backupFiles[0]), backupDoc);
+  // Fail-closed gate: an invalid show receipt or an unusable backups directory must yield zero updates
+  const writesBaseline = writes;
+  const failClosed = async (label, target) => {
+    const name = 'job-' + digest('update-fail', label);
+    await store.put(name, makeJob(digest('update-fail', label)));
+    let round = 0, attempted = 0;
+    await processJob(store, name, { model: async () => {
+      const input = round++ === 0 ? { command: 'show', args: [target] }
+        : { command: 'update', args: [target, '--content', '绝不能无备份覆盖。', '--title', '必须失败关闭'] };
+      return { role: 'assistant', content: null, tool_calls: [{ id: 'neg-' + label, type: 'function', function: { name: 'respire_memory', arguments: JSON.stringify(input) } }] };
+    }, call: async args => { if (args[0] === 'update') attempted++; return rpc(o, args); } });
+    const job = await store.get(name);
+    assert.equal(job.status, 'unconfirmed', label + ': ' + JSON.stringify({ error: job.error }));
+    assert.equal(attempted, 0, label + ': the update must never reach the runtime');
+  };
+  rmSync(backupsDir, { recursive: true });
+  writeFileSync(backupsDir, 'blocked'); // a file in the way: the backups directory cannot be created
+  await failClosed('unwritable-backups', savedId);
+  rmSync(backupsDir);
+  showMissingEntry = true;
+  await failClosed('missing-entry', '55555555-5555-4555-8555-555555555555');
+  showMissingEntry = false;
+  await failClosed('wrong-id', '66666666-6666-4666-8666-666666666666');
+  entries.set('77777777-7777-4777-8777-777777777777', { id: '77777777-7777-4777-8777-777777777777', title: '空正文', content: '', project: '' });
+  await failClosed('empty-content', '77777777-7777-4777-8777-777777777777');
+  assert.equal(writes, writesBaseline, 'failed backups must leave the store untouched');
+  assert(!existsSync(backupsDir) || readdirSync(backupsDir).length === 0, 'failed updates must not leave backups behind');
+  generationRound = 0;
   const collision = makeJob(digest('session-collision')), collisionName = 'job-' + collision.source;
   await store.put(collisionName, collision);
   const releaseSession = await acquireLock(store.path('session-' + collision.sessionKey) + '.lock');
@@ -376,6 +442,20 @@ try {
   await retention.prune(); assert.equal((await retention.get(midJob)).messages, undefined);
   assert.equal((await retention.get(uncertainTurn)).text, undefined); assert.equal((await retention.get(uncertainTurn)).storage.status, 'uncertain');
   await retention.prune(Date.now() + 6 * 86400000); assert.equal(await retention.get(midJob), undefined);
+  const backupStore = new Store(join(scratch, 'backup-retention')); await backupStore.key();
+  const backupName = (id, at) => `${id}-${new Date(at).toISOString().replaceAll(':', '')}.bin`;
+  const staleBackup = backupName('11111111-1111-4111-8111-111111111111', Date.now() - 8 * 86400000);
+  const freshBackup = backupName('22222222-2222-4222-8222-222222222222', Date.now());
+  await backupStore.putBackup(staleBackup, { id: '11111111-1111-4111-8111-111111111111', content: 'old body' });
+  await backupStore.putBackup(freshBackup, { id: '22222222-2222-4222-8222-222222222222', content: 'fresh body' });
+  const backupDir = join(backupStore.dir, 'backups');
+  utimesSync(join(backupDir, staleBackup), oldTime, oldTime);
+  writeFileSync(join(backupDir, 'operator-notes.txt'), 'keep me');
+  await backupStore.pruneBackups();
+  assert(!existsSync(join(backupDir, staleBackup)), 'encrypted backups older than seven days are pruned');
+  assert(existsSync(join(backupDir, freshBackup)), 'recent backups survive pruning');
+  assert(existsSync(join(backupDir, 'operator-notes.txt')), 'unknown files in backups/ are left alone');
+  assert.equal((await backupStore.getBackup(freshBackup)).content, 'fresh body');
   const recoveredDir = join(scratch, 'recovery'); const recoveredStore = new Store(recoveredDir); await recoveredStore.key();
   writeFileSync(join(recoveredDir, 'worker.lock'), String(deadPid)); await runQueue(recoveredDir); assert(!existsSync(join(recoveredDir, 'worker.lock')));
   const capacity = new Store(join(scratch, 'capacity')); await capacity.key();
@@ -404,7 +484,7 @@ try {
   assert.equal(wholeDiaryReads, 0);
   assert(diaryLookups.filter(x => x.sourceLookup).every(x => x.mode === 'lexical'), 'Current-turn source hashes require exact lexical lookup');
   console.log('Detached worker check passed: gateway completion -> encrypted queue -> child process -> model tools -> readback.');
-  console.log('Archive checks passed: real HTTP model tool loop, readback, encrypted persistence, unknown-write no-retry, read-only, tool restrictions and source-checked segmentation.');
+  console.log('Archive checks passed: real HTTP model tool loop, readback, encrypted persistence, unknown-write no-retry, read-only, tool restrictions, source-checked segmentation, encrypted update backups with fail-closed validation and seven-day retention.');
   console.log('Review regressions passed: stale/live locks, receipts, capacity, retention, leases, stable history, four-protocol policy dedup/change/revert and neutral user agents.');
 } finally {
   await new Promise(resolve => server.close(resolve));

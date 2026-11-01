@@ -9,6 +9,12 @@ export const NATIVE_LIMITS = {
   resultWait: 120_000,
   lifetime: 15 * 60_000,
   batchWait: 30_000,
+  // How long a stateless step whose calls came waits for Cursor's count of
+  // them (update 27) with nothing but heartbeats before it hands the calls
+  // that came to the caller (plugins#550). A count comes within ms of the
+  // step's last call; a Run that sent calls and then only heartbeats has
+  // stopped, and the caller's next request goes on from the calls' results.
+  countWait: 60_000,
   drain: 6000,
   replayWait: 120_000,
   blobBytes: 64 << 20,
@@ -510,6 +516,14 @@ export class StepCalls {
   }
   get completed() {
     return this.byCursor.size
+  }
+  // writing is how many calls the step wrote (7) that are neither started
+  // on the client, sent as an exec, nor completed by Cursor: a call of
+  // Cursor's own still running, or one still to be sent
+  get writing() {
+    let n = 0
+    for (const id of this.partial) if (!this.started.has(id) && !this.execs.has(id) && !this.byCursor.has(id)) n++
+    return n
   }
   // nextStep starts the next step's count
   nextStep() {

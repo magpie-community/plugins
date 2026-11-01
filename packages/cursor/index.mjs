@@ -2853,7 +2853,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
 
 // decode follows the server's messages into the answer's pieces until the
 // turn ends, or the model has made its tool calls.
-async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note }) {
+async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note, countWait = NATIVE_LIMITS.countWait }) {
   let calls = 0
   // answered: the step's calls answered here (a refusal, the MCP tool
   // list), which Cursor's count of the step's calls takes in too (#142)
@@ -2937,8 +2937,48 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
     return finish(owedUsage ? await owedUsage(calls === 0).catch(() => null) : null)
   }
   const closeExec = (id) => send(pb().bytes(5, pb().bytes(1, pb().varint(1, id))).done())
+  // A step whose calls came and whose count never does: Cursor sent the
+  // calls and then only heartbeats (plugins#550, the fifth trace: two
+  // calls, no count, 240 s of heartbeats until quiet). Once countWait has
+  // passed since Cursor's last frame that wasn't a heartbeat, with no call
+  // still being written, the calls that came are the step's. Heartbeats
+  // never move the deadline: they are all such a Run sends.
+  const it = (stream[Symbol.asyncIterator] ?? stream[Symbol.iterator]).call(stream)
+  let heardAt = Date.now()
+  const read = async () => {
+    const next = Promise.resolve(it.next())
+    if (!calls || listed || step.writing) return next
+    next.catch(() => {}) // a read left behind by the cut fails unheard
+    let timer
+    const cut = new Promise((r) => {
+      timer = setTimeout(() => r({ cut: true }), Math.max(0, heardAt + countWait - Date.now()))
+      timer.unref?.()
+    })
+    try {
+      return await Promise.race([next, cut])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  const beat = (data) => {
+    try {
+      const ms = fields(data)
+      return ms.length > 0 && ms.every((m) => m.num === 1 && fields(m.data).every((u) => u.num === 13))
+    } catch {
+      return false
+    }
+  }
   try {
-    for await (const f of stream) {
+    for (;;) {
+      const r = await read()
+      if (r.cut) {
+        note?.("no count")
+        yield await settled()
+        return
+      }
+      if (r.done) break
+      const f = r.value
+      if (f.end || !beat(f.data)) heardAt = Date.now()
       if (f.end) {
         const e = failure(200, f.data)
         if (e.status < 200 || e.status > 299) yield { error: e }
@@ -3072,6 +3112,9 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
       return
     }
     yield { error: { status: 502, message: "the reply broke off: " + (e?.message ?? e) } }
+  } finally {
+    // not waited for: after a cut, the read left behind ends with the Run
+    Promise.resolve(it.return?.()).catch(() => {})
   }
 }
 

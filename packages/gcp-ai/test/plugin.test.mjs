@@ -11,7 +11,7 @@ import { EventEmitter } from "node:events"
 import { promisify } from "node:util"
 import { accountOf, adcDirectoryFor, adcDirectoryOwnedBy, adcDirectoryToCreate, adcFile, adcSlug, beginAdcLogin, command, effectiveAuthMode, gcloudProgram, hasAdc, resolveAccount, resolveIdentity, resolveProject, runGcloud, startLogin, tokenProvider, windowsCommand } from "../lib/credentials.mjs"
 import { fakeGcloud } from "./gcloud.mjs"
-import { parseCreditTables, usageOf } from "../lib/credits.mjs"
+import { consoleAccountFor, parseCreditTables, usageOf } from "../lib/credits.mjs"
 import { availableModels, toProviderModels } from "../lib/models.mjs"
 import { assertConsoleSession } from "../lib/browser.mjs"
 import { main } from "../lib/fetch_credits.mjs"
@@ -19,6 +19,32 @@ import { main } from "../lib/fetch_credits.mjs"
 const headers = ["Credit name", "Status", "Percent remaining", "Remaining value", "Original value", "Type", "Credit ID", "Usage scope", "Start date", "End date"]
 const row = (id, remaining, original = "$10.00", status = "Available", start = "July 15, 2026", end = "July 1, 2027") => ["Example benefit", status, "100%", remaining, original, "One-time", id, "All Google Cloud services", start, end]
 const now = Date.parse("2026-10-18T12:00:00Z")
+
+test("Console aliases are explicit, case-insensitive and scoped to the credential account", () => {
+  const aliases = { "OLD@example.com": "New@example.com" }
+  assert.equal(consoleAccountFor("old@example.com", aliases), "new@example.com")
+  assert.equal(consoleAccountFor("other@example.com", aliases), "other@example.com")
+  assert.equal(consoleAccountFor("old@example.com"), "old@example.com")
+  assert.equal(consoleAccountFor(undefined, {}), undefined)
+  assert.equal(consoleAccountFor("old@example.com", { ...aliases, "new@example.com": "third@example.com" }), "new@example.com")
+  for (const invalid of [null, [], "new@example.com", { "old@example.com": 42 }, { bad: "new@example.com" }]) {
+    assert.throws(() => consoleAccountFor("old@example.com", invalid))
+  }
+  assert.throws(() => consoleAccountFor(undefined, aliases), /requires a saved account/)
+  assert.throws(() => consoleAccountFor("old@example.com", { ...aliases, "old@example.com": "other@example.com" }), /Duplicate/)
+})
+
+test("the usage hook forwards Console aliases from provider options without rewriting authentication", async () => {
+  const hooks = await plugin()
+  const auth = { accountId: "old@example.com", authMode: "adc", cloudsdkConfig: "/original-adc" }
+  const before = { ...auth }
+  const usage = await hooks.auth.usage(async () => auth, {
+    options: { billingAccount: "AAAAAA-BBBBBB-CCCCCC", consoleAccountAliases: "invalid" },
+  })
+  assert.match(usage.error, /consoleAccountAliases must be an object/)
+  assert.equal(usage.signIn, "kept")
+  assert.deepEqual(auth, before)
+})
 
 test("credits sum active rows, deduplicate IDs, reject future/expired rows, and count exhausted grants", () => {
   const tables = [{ headers, rows: [row("a", "$10.00"), row("b", "$2.07"), row("b", "$2.07"), row("expired", "$262.09", "$300.00", "Expired"), row("future", "$10.00", "$10.00", "Available", "January 1, 2027"), row("used", "$0.00", "$10.00", "Exhausted")] }]
@@ -303,6 +329,11 @@ test("ADC setup reads gcloud's complete consent URL and distinguishes saved ADC 
 test("ADC uses only its own token command, never assumes the active gcloud account, and adds ADC only when there is none", { timeout: 30000 }, async () => {
   const fixture = await fakeGcloud()
   let login
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    assert.equal(url, "https://openidconnect.googleapis.com/v1/userinfo")
+    return { ok: true, json: async () => ({ email: "user@example.com", sub: "google-user-1" }) }
+  }
   try {
     await fixture.setAdc({})
     const identity = await resolveIdentity({ authMode: "adc" })
@@ -324,9 +355,10 @@ test("ADC uses only its own token command, never assumes the active gcloud accou
     // read for the gcloud identity, and no ADC login was run for them.
     assert.equal(result.project, "example-project")
     assert.equal(result.creditsSession, "ready")
+    assert.equal(result.subject, "google-user-1")
     assert.ok(!(await fixture.calls()).some((args) => args.includes("login")))
     await assert.rejects(tokenProvider({ authMode: "unknown" })(), /must be auto, gcloud or adc/)
-  } finally { await login?.close(); await fixture.close() }
+  } finally { await login?.close(); globalThis.fetch = originalFetch; await fixture.close() }
 })
 
 test("auto mode prefers ADC like official Vertex clients, takes its quota project, and falls back to gcloud", { timeout: 30000 }, async () => {
@@ -354,13 +386,14 @@ test("auto mode prefers ADC like official Vertex clients, takes its quota projec
   } finally { await fixture.close() }
 })
 
-test("a sign-in with an ADC the plugin already filed counts as an overwrite and fails", { timeout: 30000 }, async () => {
+test("a sign-in resolves the Google subject before rejecting an existing ADC account", { timeout: 30000 }, async () => {
   const fixture = await fakeGcloud()
   let login
   const original = globalThis.fetch
   globalThis.fetch = mockFetch()
   const root = join(fixture.directory, "plugin")
   try {
+    await fixture.set({ token: "user@example.com", pendingToken: "user@example.com" })
     // The plugin's own ADC for this account is the overwrite. gcloud's
     // machine-wide one is not: it belongs to gcloud, is only ever read, and a
     // sign-in writes this plugin's credential beside it.
@@ -380,8 +413,9 @@ test("a sign-in with an ADC the plugin already filed counts as an overwrite and 
     const result = await login.result
     assert.equal(result.creditsSession, "unavailable")
     assert.match(result.warning, /already signed in|ADC already existed/i)
-    // Refused before anything opened: no window, and the ADC is as it was.
-    assert.deepEqual(visited, [])
+    // Consent identifies the subject in a staging directory. The original ADC
+    // is never overwritten, even though another consent window was opened.
+    assert.equal(visited.length, 1)
     assert.equal(await readFile(join(own, "application_default_credentials.json"), "utf8").then((text) => JSON.parse(text).refresh_token), "refresh")
   } finally { await login?.close(); globalThis.fetch = original; await fixture.close() }
 })
@@ -470,12 +504,15 @@ function profileOf(accounts, project = "adc-project", added = accounts.at(-1)) {
 }
 
 // Routes fetch requests by URL host for testing sign-in and project listing.
-const mockFetch = (projects = [{ projectId: "example-project", name: "Example Project", lifecycleState: "ACTIVE" }]) => async (url, init) => {
+const mockFetch = (projects = [{ projectId: "example-project", name: "Example Project", lifecycleState: "ACTIVE" }], subject) => async (url, init) => {
   const parsed = new URL(url)
   if (parsed.host === "openidconnect.googleapis.com") {
     return {
       ok: true,
-      json: async () => ({ email: String(init.headers.authorization).replace(/^Bearer /, "") }),
+      json: async () => ({
+        email: String(init.headers.authorization).replace(/^Bearer /, ""),
+        sub: subject ?? `subject-${createHash("sha256").update(init.headers.authorization).digest("hex")}`,
+      }),
     }
   }
   if (parsed.host === "cloudresourcemanager.googleapis.com") {
@@ -502,7 +539,7 @@ test("a named sign-in saves its own ADC and refuses a later duplicate", { timeou
   let login
   let duplicate
   const original = globalThis.fetch
-  globalThis.fetch = mockFetch()
+  globalThis.fetch = mockFetch(undefined, "google-user-1")
   try {
     const account = "me@example.com"
     const root = join(fixture.directory, "plugin")
@@ -511,7 +548,7 @@ test("a named sign-in saves its own ADC and refuses a later duplicate", { timeou
     const visited = []
     login = await startLogin({ adcRoot: root, account }, signInWindowOf(visited))
     assert.deepEqual(await login.result, {
-      project: "example-project", account, source: "gcloud", authMode: "adc", cloudsdkConfig: own, creditsSession: "ready",
+      project: "example-project", account, accountId: account, subject: "google-user-1", source: "gcloud", authMode: "adc", cloudsdkConfig: own, creditsSession: "ready",
     })
     assert.equal(visited.length, 1)
     const file = join(own, "application_default_credentials.json")
@@ -520,7 +557,7 @@ test("a named sign-in saves its own ADC and refuses a later duplicate", { timeou
     assert.equal(await adcDirectoryOwnedBy(account, root), own)
     duplicate = await startLogin({ adcRoot: root, account }, signInWindowOf(visited))
     assert.match((await duplicate.result).warning, /already signed in/)
-    assert.equal(visited.length, 1)
+    assert.equal(visited.length, 2)
     assert.equal(await readFile(file, "utf8"), saved)
     assert.deepEqual(await readdir(root), ["adc-me-example-com"])
   } finally { await login?.close(); await duplicate?.close(); globalThis.fetch = original; await fixture.close() }
@@ -1068,4 +1105,16 @@ test("account settings beat the row, and row settings beat environment defaults"
     else process.env.XDG_CACHE_HOME = previousCache
     await fixture.close()
   }
+})
+
+test("usage accepts plugin-level aliases while provider options take precedence", async () => {
+  const hooks = await plugin({}, { consoleAccountAliases: "invalid-plugin-aliases" })
+  const auth = { accountId: "old@example.com" }
+  const provider = { options: { billingAccount: "AAAAAA-BBBBBB-CCCCCC" } }
+  const usage = await hooks.auth.usage(async () => auth, provider)
+  assert.match(usage.error, /consoleAccountAliases must be an object/)
+  const override = await hooks.auth.usage(async () => auth, {
+    options: { ...provider.options, consoleAccountAliases: { "old@example.com": "invalid-email" } },
+  })
+  assert.match(override.error, /intended Google account email/)
 })

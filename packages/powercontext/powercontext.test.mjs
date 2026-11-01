@@ -947,3 +947,17 @@ test("configuration page follows all host languages without losing edits or stat
     for (const el of translated) expect(el.textContent).toBe(messages[language][el.dataset.t])
   }
 })
+
+test("the README and page say capture feeds Memory/Topic, not Experience, and name record_task_outcome (#607)", async () => {
+  const read = (file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()
+  const [readme, dictionary, html] = await Promise.all([read("README.md"), read("page/i18n.js"), read("page/settings.html")])
+  expect(readme).toContain("### Capture feeds Memory and Topic Memory, not Experience")
+  expect(readme).toContain('`"kind": "task-outcome"`')
+  expect(readme).toContain("`record_task_outcome`")
+  const { messages } = runInNewContext(`${dictionary}\npowercontextI18n`, {})
+  for (const language of ["en", "zh", "zh-TW", "ja", "de"]) {
+    expect(messages[language].captureDisclosure).toContain("record_task_outcome")
+    expect(messages[language].captureDisclosure).toContain("Experience")
+  }
+  expect(html).toContain(messages.en.captureDisclosure)
+})

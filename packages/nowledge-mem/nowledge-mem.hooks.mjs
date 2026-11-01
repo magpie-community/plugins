@@ -14,7 +14,8 @@
 //    "contextBundle": true, "maxMemories": 5, "maxBytes": 6000,
 //    "requestTimeoutMs": 900, "recallBackoffMs": 30000, "capture": false,
 //    "captureTools": true, "captureFilter": "off", "captureCindy": false,
-//    "allowInsecureHttp": false, "skipAgents": []}
+//    "allowInsecureHttp": false, "recallRemote": false, "captureRemote": false,
+//    "skipAgents": []}
 //
 // A turn keeps the block it was given for the rest of the conversation, so what
 // the agent sends stays the same from one request to the next and the
@@ -71,16 +72,20 @@ async function run(body, ctx) {
         return;
     }
     const own = ctx.origin === "local" || ctx.origin === "magpie-key";
+    const other = ctx.origin === "remote" || ctx.origin === "gateway-key";
     const id = typeof ctx.callerKeyId === "string" && ctx.callerKeyId ? ctx.callerKeyId : "";
     const policy = id && Object.hasOwn(o.keyPolicies, id) ? o.keyPolicies[id] : undefined;
-    const named = ctx.origin === "gateway-key";
-    // A named key has no access unless both its exact authenticated ID and
-    // an explicit Space are configured. Bundle/Working Memory may include
-    // owner context beyond search results, so named keys do not receive it.
-    const allowed = named && policy && typeof policy.spaceId === "string" && policy.spaceId.trim();
-    const recall = o.recall && (own ? policy ? policy.recall : true : Boolean(allowed && policy.recall));
-    const capture = o.capture && (own ? policy ? policy.capture : true : Boolean(allowed && policy.capture));
-    const scope = named && allowed ? id : "";
+    // No keyPolicies option preserves main's broad remote opt-ins. Once the
+    // option is present (even {}), other origins require a trusted exact ID,
+    // an explicit Space, the per-key grant and the corresponding remote gate.
+    const allowed = other && o.enforceKeyPolicies && policy && typeof policy.spaceId === "string" && policy.spaceId.trim();
+    const keyRecall = !o.enforceKeyPolicies || Boolean(allowed && policy.recall);
+    const keyCapture = !o.enforceKeyPolicies || Boolean(allowed && policy.capture);
+    const recall = o.recall && (own ? policy ? policy.recall : true : other && o.recallRemote && keyRecall);
+    const capture = o.capture && (own ? policy ? policy.capture : true : other && o.captureRemote && keyCapture);
+    const scope = allowed ? id : "";
+    // Context Bundle and Working Memory can contain owner context outside the
+    // policy's Space; keyed requests never receive either.
     if (scope)
         o = { ...o, spaceId: policy.spaceId.trim(), contextBundle: false, capture };
     if (!recall && !capture) {
@@ -398,7 +403,7 @@ function bind(body, ctx, o, scope = "") {
     // is a better title when Magpie has no query for this protocol.
     const opening = (query && users.find((m) => m.content.includes(query))?.content) || users.at(-1)?.content || first;
     return {
-        o, send: client(o, scope), body: structuredClone(body), threadId, scope,
+        o, send: client(o, scope), body: structuredClone(body), threadId, scope, origin: ctx.origin,
         hostAgentId: scope ? `magpie:key:${sha256(scope, hostAgentOf(o, ctx)).slice(0, 24)}` : hostAgentOf(o, ctx),
         title: titles.get(threadId) ?? titleOf([{ role: "user", content: opening }]),
     };
@@ -407,7 +412,7 @@ export function onResponse(reply, ctx) {
     const state = ctx.state?.nowledgeMem;
     if (!state || ctx.success === false || !state.o.capture)
         return;
-    if (state.scope && (ctx.origin !== "gateway-key" || ctx.callerKeyId !== state.scope))
+    if (state.scope && (ctx.origin !== state.origin || ctx.callerKeyId !== state.scope))
         return;
     // The host's notification is best-effort and not awaited: the import fails
     // open, and its outcome is reported, never thrown at the client.

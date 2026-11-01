@@ -4,9 +4,11 @@
 // same options and environment, so they never disagree about where Mem is or
 // which Space they speak to.
 import { createHash } from "node:crypto";
+import "./page/validate.js";
+const validateExplicitOptions = globalThis.__nowledgeMemValidateOptions;
 
 // Bumped with package.json: Mem's own clients record it on imported Threads.
-export const version = "0.1.4";
+export const version = "0.1.6";
 
 // The only report codes magpie's Plugins page shows; tools turn these into
 // messages, never the service's own text.
@@ -24,6 +26,7 @@ export class MemFailure extends Error {
 const maxResponseBytes = 512 << 10;
 
 export function resolveOptions(raw = {}, env = process.env) {
+    try { validateExplicitOptions(raw); } catch { throw new MemFailure("invalid"); }
     const text = (v) => {
         if (v === undefined || v === null || v === "")
             return undefined;
@@ -31,30 +34,16 @@ export function resolveOptions(raw = {}, env = process.env) {
             throw new MemFailure("invalid");
         return v;
     };
-    const bool = (name, fallback) => {
-        if (raw[name] !== undefined && typeof raw[name] !== "boolean")
-            throw new MemFailure("invalid");
-        return raw[name] ?? fallback;
-    };
-    const integer = (name, fallback, min, max) => {
-        const value = raw[name] ?? fallback;
-        if (!Number.isInteger(value) || value < min || value > max)
-            throw new MemFailure("invalid");
-        return value;
-    };
-    // skipAgents names the apps whose requests this plugin leaves alone: a
-    // list, or one string of names split by commas or new lines.
+    // A name may be a list or comma/newline-separated text, as in #597.
     let skip = raw.skipAgents ?? [];
-    if (typeof skip === "string")
-        skip = skip.split(/[,，\n]/u);
-    if (!Array.isArray(skip) || skip.some((name) => typeof name !== "string"))
-        throw new MemFailure("invalid");
+    if (typeof skip === "string") skip = skip.split(/[,，\n]/u);
+    if (!Array.isArray(skip) || skip.some((name) => typeof name !== "string")) throw new MemFailure("invalid");
     const skipAgents = new Set(skip.map(agentKey).filter(Boolean));
     const captureFilter = raw.captureFilter === undefined ? "off" : raw.captureFilter;
-    if (captureFilter !== "off" && captureFilter !== "human")
-        throw new MemFailure("invalid");
+    // Presence, including an empty object, opts into fail-closed key policies.
+    const enforceKeyPolicies = Object.hasOwn(raw, "keyPolicies");
     // IDs come from the host's authenticated caller, never request text.
-    const policies = raw.keyPolicies ?? {};
+    const policies = enforceKeyPolicies ? raw.keyPolicies : {};
     if (!policies || typeof policies !== "object" || Array.isArray(policies))
         throw new MemFailure("invalid");
     for (const [id, policy] of Object.entries(policies)) {
@@ -105,21 +94,23 @@ export function resolveOptions(raw = {}, env = process.env) {
         throw new MemFailure("invalid");
     return {
         server, apiKey, apiKeyEnv,
-        keyPolicies: policies,
+        keyPolicies: policies, enforceKeyPolicies,
         spaceId: text(raw.spaceId),
         agentId: text(raw.agentId),
         hostAgentId: text(raw.hostAgentId),
         skipAgents,
-        recall: bool("recall", true),
-        contextBundle: bool("contextBundle", true),
-        capture: bool("capture", false),
-        captureTools: bool("captureTools", true),
+        recall: raw.recall ?? true,
+        contextBundle: raw.contextBundle ?? true,
+        capture: raw.capture ?? false,
+        recallRemote: raw.recallRemote ?? false,
+        captureRemote: raw.captureRemote ?? false,
+        captureTools: raw.captureTools ?? true,
         captureFilter,
-        captureCindy: bool("captureCindy", false),
-        maxMemories: integer("maxMemories", 5, 1, 20),
-        maxBytes: integer("maxBytes", 6000, 512, 32768),
-        requestTimeoutMs: integer("requestTimeoutMs", 1500, 50, 5000),
-        recallBackoffMs: integer("recallBackoffMs", 30_000, 100, 300_000),
+        captureCindy: raw.captureCindy ?? false,
+        maxMemories: raw.maxMemories ?? 5,
+        maxBytes: raw.maxBytes ?? 6000,
+        requestTimeoutMs: raw.requestTimeoutMs ?? 1500,
+        recallBackoffMs: raw.recallBackoffMs ?? 30_000,
     };
 }
 

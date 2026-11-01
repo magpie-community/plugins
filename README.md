@@ -11,6 +11,8 @@ subscription and makes its requests. The packages work in OpenCode and in
 
 | Package | Signs in to | Provider id |
 |---|---|---|
+| [agnes-code](packages/agnes-code) | Agnes AI's Agnes Code desktop, with the desktop's saved session (Windows) or a pasted access token: live models, daily credit check-in and points balance (unofficial) | `agnes-code` |
+| [astudio](packages/astudio) | iFlytek's AStudio (科大讯飞 Astron Studio desktop), with the desktop's saved credentials or a pasted model token: live model catalog, daily login-points check-in and points balance (unofficial) | `astudio` |
 | [catpaw](packages/catpaw) | Meituan's 妙手 CatPaw (ai.catpaw.meituan.com), with a browser web sign-in or the desktop client's saved credentials | `catpaw` |
 | [cline](packages/cline) | Cline (cline.bot): usage-billed models, ClinePass's and Cline's free ones, with Cline's device sign-in or an API key | `cline` |
 | [codearts](packages/codearts) | Huawei Cloud CodeArts (码道) coding plans (Trial, personal and enterprise credits), with Huawei Cloud OAuth sign-in (unofficial) | `codearts` |
@@ -34,6 +36,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [qoder](packages/qoder) | Qoder CN subscription (qoder.cn), with Qoder CN's device sign-in | `qoder-cn` |
 | [raccoon](packages/raccoon) | SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com): account credits and daily check-in, with browser sign-in or Raccoon desktop's sign-in | `raccoon` |
 | [river](packages/river) | River (river.ai) pay-as-you-go inference, with your API key: per-account models, documented reasoning efforts and live prices | `river` |
+| [sensenova](packages/sensenova) | SenseNova (商汤日日新) Token Plan: one console sign-in gives the credit pools, windows and grants, and (with an optional API key) the plan's models for chat | `sensenova-token-plan` |
 | [trae](packages/trae) | Trae CN (trae.cn) and Trae international (trae.ai), free tier included, with Trae's browser sign-in (experimental) | `trae-cn`, `trae-global` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (China build, CodeBuddy plan) | `workbuddy` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (international build) | `workbuddy-ai` |
@@ -143,7 +146,8 @@ Like middleware, these run on the requests agents send, but in magpie's Bun host
 | [nowledge-mem](packages/nowledge-mem) | [Nowledge Mem](https://mem.nowledge.co) recall, Context Bundle or Working Memory, per-harness provenance and opt-in conversation import as Mem Threads, automatic for every harness behind Magpie |
 | [aelios](packages/aelios) | [Aelios](https://github.com/wusaki0723/Aelios) recall before each turn from your own Aelios on Cloudflare, and opt-in recording of each turn so Aelios can remember it |
 | [respire-memory](packages/respire-memory) | [Respire](https://github.com/risense-ai/respire-magpie): per-turn recall and complete policy reads, automatic process diaries, and grounded experience archival with readback; storage runs after reply completion |
-| [notify](packages/notify) | A push to ntfy, Bark, Server酱, Feishu, DingTalk, WeCom, Telegram or a webhook when an agent's turn is done or fails, after it ran `minMinutes` or longer |
+| [OpenViking](https://github.com/volcengine/OpenViking/tree/main/examples/magpie-memory-plugin) | OpenViking context recall and opt-in completed-conversation capture using existing OpenViking configuration; published as `@openviking/magpie-plugin` and maintained in the OpenViking repository |
+| [notify](packages/notify) | A push to ntfy, Bark, Gotify, Server酱, Feishu, DingTalk, WeCom, Telegram or a webhook when an agent's turn is done or fails, after it ran `minMinutes` or longer |
 
 Use the same plugin management commands as middleware:
 
@@ -345,6 +349,24 @@ it can't. To list a plugin, add an entry with its npm `package`, a
 `name`, `providers` (the provider ids it signs in to), an `icon` (one
 magpie has, or none) and a `summary` in English and Chinese (`{"en": …, "zh": …}`), and open a pull
 request.
+
+### One channel already listed
+
+Duplicates are judged by channel, not by the shape of the package. A
+channel is the vendor service a provider id signs in to, so `astudio` and
+`hub-astudio` are one channel. A channel counts as listed when any entry
+has it, including an aggregate package that names it in its `providers`
+array.
+
+A new standalone package for a listed channel says how it differs from
+the entry already there: how it signs in, which endpoint it calls, what it
+supports, and what it can do that the existing entry can't. That goes in
+three places: the pull request, the package's README and its registry
+`summary` (en and zh), so a user can tell which one to install. A package
+that can't name a difference is not merged. Two entries for one channel
+that are both kept say in their READMEs and summaries what they share,
+such as one account's credit pool
+([#614](https://github.com/magpie-community/plugins/issues/614)).
 
 ## Publishing
 
