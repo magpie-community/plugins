@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FRP 连接</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="_magpie/bridge.js"></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <h1>FRP 连接</h1>
+      <p class="sub">在这里配置 FRP，插件会生成 frpc.toml 并运行 frpc。</p>
+    </header>
+
+    <div class="mode">
+      <label>
+        <input type="radio" name="mode" value="form" checked />
+        可视化配置
+      </label>
+      <label>
+        <input type="radio" name="mode" value="toml" />
+        frpc.toml
+      </label>
+    </div>
+    <p class="sub">切换模式时会自动互相转换：可视化 ↔ frpc.toml。</p>
+
+    <div id="formMode">
+    <section>
+      <h2>服务器</h2>
+      <div class="grid">
+        <label>
+          serverAddr
+          <input id="serverAddr" type="text" placeholder="frp.example.com" spellcheck="false" />
+        </label>
+        <label>
+          serverPort
+          <input id="serverPort" type="number" placeholder="7000" />
+        </label>
+        <label>
+          authMethod
+          <select id="authMethod">
+            <option value="">无</option>
+            <option value="token">token</option>
+          </select>
+        </label>
+        <label>
+          authToken
+          <input id="authToken" type="text" placeholder="可选" spellcheck="false" />
+        </label>
+        <label>
+          transport
+          <select id="transport">
+            <option value="tcp">tcp</option>
+            <option value="kcp">kcp</option>
+            <option value="quic">quic</option>
+            <option value="websocket">websocket</option>
+            <option value="wss">wss</option>
+          </select>
+        </label>
+        <label class="check">
+          <input id="autoConnect" type="checkbox" />
+          开启 magpie 时自动连接
+        </label>
+      </div>
+      <div class="frpc-source">
+        <label>
+          <input type="radio" name="frpcMode" value="download" checked />
+          自动下载 frpc（推荐）
+        </label>
+        <label>
+          <input type="radio" name="frpcMode" value="local" />
+          使用本地 frpc
+        </label>
+      </div>
+      <div id="frpcPathRow">
+        <label>
+          frpc 路径
+          <input id="frpcPath" type="text" placeholder="留空使用 PATH 里的 frpc" spellcheck="false" />
+        </label>
+      </div>
+      <div id="frpcDownloadInfo" class="sub"></div>
+    </section>
+
+    <section>
+      <h2>代理</h2>
+      <div id="proxies"></div>
+      <button id="add" type="button">添加代理</button>
+    </section>
+
+    <section>
+      <h2>生成的 frpc.toml</h2>
+      <pre id="preview"></pre>
+    </section>
+    </div>
+
+    <section id="tomlMode" hidden>
+      <h2>frpc.toml</h2>
+      <textarea id="frpcToml" spellcheck="false" placeholder="直接粘贴完整的 frpc.toml 内容"></textarea>
+    </section>
+
+    <section>
+      <h2>操作</h2>
+      <div class="actions">
+        <button id="verify" type="button">校验配置</button>
+        <button id="start" type="button" class="primary">启动</button>
+        <button id="stop" type="button">停止</button>
+        <button id="restart" type="button">重启</button>
+        <button id="refresh-log" type="button">刷新日志</button>
+      </div>
+      <p class="sub" id="action-status" role="status"></p>
+    </section>
+
+    <section>
+      <h2>运行日志</h2>
+      <p class="sub" id="log-meta">等待日志…</p>
+      <pre id="log"></pre>
+    </section>
+
+    <footer>
+      <button id="save" type="button" class="primary">保存</button>
+      <span id="status" role="status"></span>
+    </footer>
+  </body>
+</html>
