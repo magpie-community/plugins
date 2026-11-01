@@ -10,6 +10,12 @@ import { fakeSenseNova, json, jwksOf } from "./fake.mjs"
 let f
 afterEach(() => f?.close())
 
+// one sign-in, start to finish, against whatever the fake answers
+const signIn = async () => {
+  const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
+  return p.auth.methods[0].authorize({ username: "u", password: "secret", apiKey: "" }).callback()
+}
+
 // the JWKS the fake serves (a real RSA key the seal can encrypt to)
 const JWKS_PATH = "/.well-known/jwks.json"
 const AUTH_PATH = "/oauth2/auth"
@@ -207,5 +213,32 @@ test("a refresh answered with a 307 does not replay the token", async () => {
     new Response(null, { status: 307, headers: { location: f.origin + "/elsewhere" } }))
   f.route("POST /elsewhere", () => json({ access_token: "x" }))
   await expect(_internal.refreshToken("r-secret")).rejects.toThrow()
+  expect(f.seen.some((r) => r.path === "/elsewhere")).toBe(false)
+})
+
+test("an IAM login answered with a 307 does not replay the sealed password", async () => {
+  // the IAM request is the one that carries the sealed password; a redirect
+  // there has to die rather than deliver it to the reply's target
+  f = fakeSenseNova()
+  f.route("GET " + JWKS_PATH, () => json(jwksOf()))
+  f.route("GET " + AUTH_PATH, (r) => authRedirect(r))
+  f.route("POST " + IAM_PATH, () =>
+    new Response(null, { status: 307, headers: { location: f.origin + "/elsewhere" } }))
+  f.route("POST /elsewhere", () => json({ redirect: f.origin + "/cb?code=x" }))
+  expect((await signIn()).type).toBe("failed")
+  expect(f.seen.some((r) => r.path === "/elsewhere")).toBe(false)
+})
+
+test("a code exchange answered with a 307 does not replay the code and verifier", async () => {
+  // the code and its PKCE verifier ride this POST; replaying them somewhere
+  // else is how an authorization code gets stolen
+  f = fakeSenseNova()
+  f.route("GET " + JWKS_PATH, () => json(jwksOf()))
+  f.route("GET " + AUTH_PATH, (r) => authRedirect(r))
+  f.route("POST " + IAM_PATH, (r) => iamAccept(r))
+  f.route("POST " + TOKEN_PATH, () =>
+    new Response(null, { status: 307, headers: { location: f.origin + "/elsewhere" } }))
+  f.route("POST /elsewhere", () => json({ access_token: "a", refresh_token: "r" }))
+  expect((await signIn()).type).toBe("failed")
   expect(f.seen.some((r) => r.path === "/elsewhere")).toBe(false)
 })
