@@ -157,6 +157,7 @@ export function PreviewPanel() {
       {entry?.error && (
         <div className="pv-note err">
           <span>{t("preview.failed")}{localizeDaemonMessage(entry.error)}</span>
+          {external && <button type="button" className="btn" onClick={() => void openExternal(external)}>{t("preview.openExternal")}</button>}
           <button type="button" className="btn" onClick={reload}>{t("common.retry")}</button>
         </div>
       )}

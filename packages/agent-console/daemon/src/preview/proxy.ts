@@ -13,16 +13,19 @@
 // CSS url(), workers, the HMR WebSocket), because they are all resolved against the page's own URL; no rewriting needed.
 // A request whose Host is not exactly that name is refused before anything is forwarded, with no CORS headers:
 // 127.0.0.1:<port> / localhost:<port> (no key) → 403, any other Host → 421 (DNS rebinding). Only preview.open on an
-// authenticated WS connection hands out the name. Browsers resolve *.localhost to loopback themselves (Chromium/WebView2,
-// WebKit on macOS 26+ and WebKitGTK through GLib); where a system can't (older macOS), the frame doesn't load at all and
-// the page says so (stores/preview.ts probes /__agent_console__/ping first): it fails closed.
+// authenticated WS connection hands out the name. Each open also returns a per-open nonce (separate from the key): the
+// panel's ping must echo it exactly, or the listener is released at once — a plain 200 "ok" from a hostile DNS answer
+// is not enough. Before the keyed name is ever looked up, the panel probes a keyless canary host on the same port
+// (acprobe<random>.localhost) the same way; Apple WebKit before macOS 26 (Magpie's Mac app on 12–15) is refused up front
+// so the key never hits network DNS. Chromium/WebView2, WebKitGTK and WebKit on macOS 26+ resolve *.localhost themselves.
 // Responses carry Referrer-Policy: no-referrer so the key isn't sent to other sites a previewed page loads from.
 //
 // Limits (see README "Preview proxy"):
 // - created only through preview.open on an authenticated WS connection; targets are loopback only (preview/url.ts);
 //   the daemon's, the gate's and Magpie's ports (ports.ts: defaults, env, Magpie's settings.json) and the proxy's own
 //   are refused, and so is any target that answers like Magpie's gateway (GET / names "magpie", or X-Magpie-* headers);
-// - each listener serves exactly one target; Host must be ac<key>.localhost:<p> (see above);
+// - each listener serves exactly one target; Host must be ac<key>.localhost:<p> (see above), except a one-shot
+//   keyless canary host that answers only /__agent_console__/ping with a separate nonce;
 //   a request with a foreign Origin is refused (only "null", none, or the proxy's own origin);
 // - cookies are not forwarded in either direction (127.0.0.1 cookies are shared across ports: Magpie's would leak to the
 //   dev server, and the dev server could set cookies other local apps see);
@@ -62,9 +65,14 @@ type Listener = {
   target: PreviewTarget;
   server: Server;
   port: number;
-  /** ac<128-bit hex key>.localhost:<port>: the only Host this listener answers */
+  /** ac<128-bit hex key>.localhost:<port>: the Host this listener answers for real traffic */
   authority: string;
   proxyOrigin: string;
+  /** echoed by GET /__agent_console__/ping on the keyed host; rotated on every preview.open */
+  nonce: string;
+  /** keyless acprobe<random>.localhost:<port>: ping-only canary before the keyed name is looked up */
+  canaryAuthority: string;
+  canaryNonce: string;
   /** the target answered like Magpie's gateway: nothing is forwarded any more */
   magpie: boolean;
   /** when the target's identity was last checked (it is checked again after IDENTITY_TTL) */
@@ -78,7 +86,7 @@ type Listener = {
   addr: string | null;
 };
 
-export type PreviewOpen = { proxyOrigin: string; target: string; url: string; path: string; proxyHref: string };
+export type PreviewOpen = { proxyOrigin: string; target: string; url: string; path: string; proxyHref: string; nonce: string; canaryOrigin: string; canaryNonce: string };
 
 const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authorization", "proxy-authenticate", "te", "trailer", "transfer-encoding", "upgrade"]);
 const RETRY_CODES = new Set(["ECONNREFUSED", "EADDRNOTAVAIL", "EAFNOSUPPORT", "ENETUNREACH", "EHOSTUNREACH", "ECONNRESET", "ETIMEDOUT"]);
@@ -137,8 +145,22 @@ export class PreviewProxy {
       l = await p;
     }
     l.lastUsed = this.now();
+    // Fresh nonces every open: the panel must prove it reached *this* listener (not a hostile DNS answer)
+    // before the keyed name is used, and again on the keyed ping.
+    l.nonce = randomBytes(16).toString("hex");
+    l.canaryAuthority = `acprobe${randomBytes(16).toString("hex")}.localhost:${l.port}`;
+    l.canaryNonce = randomBytes(16).toString("hex");
     this.ensureSweep();
-    return { proxyOrigin: l.proxyOrigin, target: t.origin, url: t.href, path: t.path, proxyHref: l.proxyOrigin + t.path };
+    return {
+      proxyOrigin: l.proxyOrigin,
+      target: t.origin,
+      url: t.href,
+      path: t.path,
+      proxyHref: l.proxyOrigin + t.path,
+      nonce: l.nonce,
+      canaryOrigin: `http://${l.canaryAuthority}`,
+      canaryNonce: l.canaryNonce,
+    };
   }
 
   /** Close the listener for this target (any URL on it, or its origin) */
@@ -194,7 +216,8 @@ export class PreviewProxy {
     }
     const server = createServer();
     const l: Listener = {
-      target: t, server, port: 0, authority: "", proxyOrigin: "", magpie: false, checkedAt: 0, resolving: null,
+      target: t, server, port: 0, authority: "", proxyOrigin: "", nonce: "", canaryAuthority: "", canaryNonce: "",
+      magpie: false, checkedAt: 0, resolving: null,
       lastUsed: this.now(), sockets: new Set(), tunnels: 0, addr: null,
     };
     server.on("connection", (s) => {
@@ -218,17 +241,23 @@ export class PreviewProxy {
   }
 
   // ---- request gate shared by HTTP and WS ----
-  private gate(l: Listener, req: IncomingMessage): { code: number; why: string } | null {
+  /** null = refuse; otherwise which name matched (canary is ping-only) */
+  private gate(l: Listener, req: IncomingMessage): { code: number; why: string } | { role: "key" | "canary" } {
     const host = String(req.headers.host ?? "").toLowerCase();
-    if (!tokenEqual(host, l.authority)) {
+    let role: "key" | "canary" | null = null;
+    if (l.authority && tokenEqual(host, l.authority)) role = "key";
+    else if (l.canaryAuthority && tokenEqual(host, l.canaryAuthority)) role = "canary";
+    else {
       // the bare loopback address carries no key: any page could send that (#582)
       return checkHost(req.headers.host, l.port).ok ? { code: 403, why: "preview_key" } : { code: 421, why: "bad_host" };
     }
     const o = req.headers.origin;
     if (o !== undefined && o !== "" && o !== "null") {
-      if (o.toLowerCase() !== l.proxyOrigin) return { code: 403, why: "bad_origin" };
+      // canary has no stable origin of its own; only null / absent (opaque preview / no-cors probes)
+      if (role === "key" && o.toLowerCase() !== l.proxyOrigin) return { code: 403, why: "bad_origin" };
+      if (role === "canary") return { code: 403, why: "bad_origin" };
     }
-    return null;
+    return { role };
   }
 
   /** A refusal: plain text, no CORS headers (the page that sent it can't read it), nothing forwarded */
@@ -245,18 +274,24 @@ export class PreviewProxy {
   }
 
   private onRequest(l: Listener, req: IncomingMessage, res: ServerResponse): void {
-    const bad = this.gate(l, req);
-    if (bad) {
-      this.refuse(res, req, bad.code, bad.why); // a refused request doesn't keep the listener alive
+    const g = this.gate(l, req);
+    if ("code" in g) {
+      this.refuse(res, req, g.code, g.why); // a refused request doesn't keep the listener alive
       return;
     }
     l.lastUsed = this.now();
     const path = (req.url ?? "/").split("?")[0];
     if (path === PREVIEW_PING_PATH) {
-      // the page checks this before showing the frame: does this system resolve ac<key>.localhost?
+      // panel must see the nonce from preview.open (WS), not a generic 200 "ok" from hostile DNS (#582)
+      const body = g.role === "canary" ? l.canaryNonce : l.nonce;
       res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "null", "referrer-policy": "no-referrer" });
-      res.end(req.method === "HEAD" ? undefined : "ok");
+      res.end(req.method === "HEAD" ? undefined : body);
       req.resume();
+      return;
+    }
+    // canary name is ping-only: never forward, never serve the inject script
+    if (g.role === "canary") {
+      this.refuse(res, req, 403, "preview_canary");
       return;
     }
     if (l.magpie) {
@@ -434,9 +469,9 @@ export class PreviewProxy {
 
   // ---- WebSocket (HMR) ----
   private onUpgrade(l: Listener, req: IncomingMessage, socket: Socket, head: Buffer): void {
-    const bad = this.gate(l, req);
-    if (bad || l.magpie) {
-      const code = bad?.code ?? 403;
+    const g = this.gate(l, req);
+    if ("code" in g || g.role === "canary" || l.magpie) {
+      const code = "code" in g ? g.code : 403;
       socket.end(`HTTP/1.1 ${code} ${code === 421 ? "Misdirected Request" : "Forbidden"}\r\nconnection: close\r\n\r\n`);
       return;
     }

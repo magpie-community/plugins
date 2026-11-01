@@ -104,7 +104,8 @@ let nid = 1;
 const call = (m, p) => new Promise((r) => { const id = nid++; pending.set(id, r); ws.send(JSON.stringify({ t: "req", id, m, p })); });
 const opened = await call("preview.open", { url: `http://localhost:${devPort}/` });
 if (!opened.ok) throw new Error("preview.open failed: " + JSON.stringify(opened.e));
-const { proxyOrigin, proxyHref } = opened.r;
+const { proxyOrigin, proxyHref, nonce, canaryOrigin, canaryNonce } = opened.r;
+if (!nonce || !canaryOrigin || !canaryNonce) throw new Error("preview.open missing nonce/canary: " + JSON.stringify(opened.r));
 const proxyPort = Number(new URL(proxyOrigin).port);
 
 // ---- attacker: another origin, sandboxed frame, knows the proxy port (worst case) but not the key ----
@@ -133,11 +134,24 @@ const attackerPort = await listen(attacker);
 const PING = "/__agent_console__/ping";
 const consoleJs = `
 (async () => {
+  const pingOnce = async (origin, expect) => {
+    try {
+      const r = await fetch(origin + ${JSON.stringify(PING)}, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" });
+      const body = await r.text();
+      return r.status + " " + (body === expect ? "nonce-ok" : ("nonce-bad:" + body.slice(0, 40)));
+    } catch (e) { return "ERR " + e.name; }
+  };
   let ping = "n/a";
+  let canary = "n/a";
   if (${JSON.stringify(proxyOrigin)}.indexOf(".localhost:") > 0) {
-    try { ping = (await fetch(${JSON.stringify(proxyOrigin + PING)}, { cache: "no-store" })).status; } catch (e) { ping = "ERR " + e.name; }
+    canary = await pingOnce(${JSON.stringify(canaryOrigin)}, ${JSON.stringify(canaryNonce)});
+    ping = await pingOnce(${JSON.stringify(proxyOrigin)}, ${JSON.stringify(nonce)});
   }
-  addEventListener("message", (e) => { if (e.data && e.data.app) parent.postMessage({ legit: Object.assign({ ping }, e.data.app) }, "*"); });
+  addEventListener("message", (e) => { if (e.data && e.data.app) parent.postMessage({ legit: Object.assign({ ping, canary }, e.data.app) }, "*"); });
+  if (!/nonce-ok/.test(canary) || !/nonce-ok/.test(ping)) {
+    parent.postMessage({ legit: { ping, canary, module: "SKIPPED", secret: "SKIPPED", admin: "SKIPPED", image: false, ws: "SKIPPED" } }, "*");
+    return;
+  }
   const f = document.createElement("iframe"); f.src = ${JSON.stringify(proxyHref)}; f.referrerPolicy = "no-referrer"; document.body.appendChild(f);
 })();`;
 const magpieSim = http.createServer((_q, res) => {
@@ -182,7 +196,7 @@ for (const r of results) {
   if (r.error) { bad = true; continue; }
   const leaked = Object.values(r.attack).some((v) => /DEV-SECRET|ADMIN-ACTION|READ /.test(String(v))) || r.attackerHitsOnDevServer.length > 0;
   const l = r.legit;
-  const works = l && l.module === "MODULE-OK" && l.secret === "DEV-SECRET-4242" && /ADMIN-ACTION-DONE legit/.test(l.admin) && l.image === true && l.ws === "echo:hi";
+  const works = l && /nonce-ok/.test(l.canary) && /nonce-ok/.test(l.ping) && l.module === "MODULE-OK" && l.secret === "DEV-SECRET-4242" && /ADMIN-ACTION-DONE legit/.test(l.admin) && l.image === true && l.ws === "echo:hi";
   r.verdict = { attackerGotIn: leaked, legitPreviewWorks: !!works };
   if (leaked || !works) bad = true;
 }

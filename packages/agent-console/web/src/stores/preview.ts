@@ -45,28 +45,69 @@ const inflight = new Map<string, Promise<boolean>>();
 
 // The proxy answers only at http://ac<key>.localhost:<port> (#582, daemon/src/preview/proxy.ts). Before showing the frame,
 // check that this web view resolves that name (Chromium/WebView2 and WebKitGTK do, WebKit on macOS before 26 doesn't):
-// otherwise say why instead of a blank "can't find server" frame. Checked once per proxy origin.
+// otherwise say why instead of a blank "can't find server" frame. Checked with a per-open nonce so a hostile DNS answer
+// that returns a plain 200 "ok" can't pass.
 export const PREVIEW_PING_PATH = "/__agent_console__/ping";
-const reachable = new Map<string, Promise<boolean>>();
-export function canReachProxy(proxyOrigin: string, timeoutMs = 5000): Promise<boolean> {
-  let p = reachable.get(proxyOrigin);
-  if (!p) {
-    p = (async () => {
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), timeoutMs);
-      try {
-        const r = await fetch(proxyOrigin + PREVIEW_PING_PATH, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal: ac.signal });
-        return r.ok;
-      } catch {
-        return false;
-      } finally {
-        clearTimeout(timer);
-      }
-    })();
-    reachable.set(proxyOrigin, p);
-    void p.then((ok) => { if (!ok) reachable.delete(proxyOrigin); });
+
+/**
+ * Apple WebKit before macOS 26 asks the system DNS for *.localhost (Magpie's Mac app on 12–15, Safari with magpie web).
+ * Chromium / WebView2 / WebKitGTK resolve it to loopback themselves. Fail closed before preview.open so the key never
+ * hits network DNS. Linux WebKitGTK / WPE UAs have AppleWebKit but no "Mac OS X" → treated as safe.
+ */
+export function isUnsafeLocalhostResolver(ua = typeof navigator !== "undefined" ? navigator.userAgent : ""): boolean {
+  const appleWebKit = /AppleWebKit\//i.test(ua)
+    && !/Chrome\//i.test(ua)
+    && !/Chromium\//i.test(ua)
+    && !/Edg(?:e|A|iOS)?\//i.test(ua)
+    && !/OPR\//i.test(ua)
+    && !/CriOS\//i.test(ua)
+    && !/FxiOS\//i.test(ua);
+  if (!appleWebKit) return false;
+  const mac = ua.match(/Mac OS X (\d+)[._](\d+)/i);
+  if (mac) return Number(mac[1]) < 26;
+  if (/iPhone|iPad|iPod/i.test(ua)) return true;
+  return false;
+}
+
+/** GET origin+/__agent_console__/ping must return exactly expectedNonce (from preview.open over the authenticated WS). */
+export async function canReachProxy(origin: string, expectedNonce: string, timeoutMs = 5000): Promise<boolean> {
+  if (!expectedNonce) return false;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const r = await fetch(origin + PREVIEW_PING_PATH, {
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: ac.signal,
+    });
+    if (!r.ok) return false;
+    const text = await r.text();
+    return text === expectedNonce;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
-  return p;
+}
+
+type PreviewOpenResult = {
+  proxyOrigin: string;
+  proxyHref: string;
+  url: string;
+  nonce: string;
+  canaryOrigin: string;
+  canaryNonce: string;
+};
+
+/**
+ * Prove loopback resolution (keyless canary) then that the keyed host is our listener (nonce echo).
+ * On any failure the caller must preview.release so a leaked key dies with the listener.
+ */
+export async function confirmPreviewReachable(r: PreviewOpenResult, timeoutMs = 5000): Promise<boolean> {
+  // Canary first: the keyed name is never looked up if *.localhost goes to hostile DNS
+  if (!(await canReachProxy(r.canaryOrigin, r.canaryNonce, timeoutMs))) return false;
+  return canReachProxy(r.proxyOrigin, r.nonce, timeoutMs);
 }
 
 export const usePreview = create<PreviewStore>((set, get) => ({
@@ -108,8 +149,10 @@ export const usePreview = create<PreviewStore>((set, get) => ({
     if (!p) {
       p = (async () => {
         try {
-          const r = (await call("preview.open", { url: t.href, ...(threadId ? { threadId } : {}) })) as { proxyOrigin: string; proxyHref: string; url: string };
-          if (!(await canReachProxy(r.proxyOrigin))) {
+          // Fail closed before preview.open on engines that send *.localhost to network DNS (#582)
+          if (isUnsafeLocalhostResolver()) throw new Error(t_noLocalhost());
+          const r = (await call("preview.open", { url: t.href, ...(threadId ? { threadId } : {}) })) as PreviewOpenResult;
+          if (!(await confirmPreviewReachable(r))) {
             void call("preview.release", { url: t.origin }).catch(() => {});
             throw new Error(t_noLocalhost());
           }

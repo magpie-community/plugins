@@ -5753,8 +5753,20 @@ var init_proxy = __esm({
           l = await p;
         }
         l.lastUsed = this.now();
+        l.nonce = randomBytes3(16).toString("hex");
+        l.canaryAuthority = `acprobe${randomBytes3(16).toString("hex")}.localhost:${l.port}`;
+        l.canaryNonce = randomBytes3(16).toString("hex");
         this.ensureSweep();
-        return { proxyOrigin: l.proxyOrigin, target: t.origin, url: t.href, path: t.path, proxyHref: l.proxyOrigin + t.path };
+        return {
+          proxyOrigin: l.proxyOrigin,
+          target: t.origin,
+          url: t.href,
+          path: t.path,
+          proxyHref: l.proxyOrigin + t.path,
+          nonce: l.nonce,
+          canaryOrigin: `http://${l.canaryAuthority}`,
+          canaryNonce: l.canaryNonce
+        };
       }
       /** Close the listener for this target (any URL on it, or its origin) */
       release(raw) {
@@ -5811,6 +5823,9 @@ var init_proxy = __esm({
           port: 0,
           authority: "",
           proxyOrigin: "",
+          nonce: "",
+          canaryAuthority: "",
+          canaryNonce: "",
           magpie: false,
           checkedAt: 0,
           resolving: null,
@@ -5844,16 +5859,21 @@ var init_proxy = __esm({
         return l;
       }
       // ---- request gate shared by HTTP and WS ----
+      /** null = refuse; otherwise which name matched (canary is ping-only) */
       gate(l, req) {
         const host = String(req.headers.host ?? "").toLowerCase();
-        if (!tokenEqual(host, l.authority)) {
+        let role = null;
+        if (l.authority && tokenEqual(host, l.authority)) role = "key";
+        else if (l.canaryAuthority && tokenEqual(host, l.canaryAuthority)) role = "canary";
+        else {
           return checkHost(req.headers.host, l.port).ok ? { code: 403, why: "preview_key" } : { code: 421, why: "bad_host" };
         }
         const o = req.headers.origin;
         if (o !== void 0 && o !== "" && o !== "null") {
-          if (o.toLowerCase() !== l.proxyOrigin) return { code: 403, why: "bad_origin" };
+          if (role === "key" && o.toLowerCase() !== l.proxyOrigin) return { code: 403, why: "bad_origin" };
+          if (role === "canary") return { code: 403, why: "bad_origin" };
         }
-        return null;
+        return { role };
       }
       /** A refusal: plain text, no CORS headers (the page that sent it can't read it), nothing forwarded */
       refuse(res, req, code, why) {
@@ -5868,17 +5888,22 @@ var init_proxy = __esm({
         req.resume();
       }
       onRequest(l, req, res) {
-        const bad = this.gate(l, req);
-        if (bad) {
-          this.refuse(res, req, bad.code, bad.why);
+        const g = this.gate(l, req);
+        if ("code" in g) {
+          this.refuse(res, req, g.code, g.why);
           return;
         }
         l.lastUsed = this.now();
         const path3 = (req.url ?? "/").split("?")[0];
         if (path3 === PREVIEW_PING_PATH) {
+          const body = g.role === "canary" ? l.canaryNonce : l.nonce;
           res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "null", "referrer-policy": "no-referrer" });
-          res.end(req.method === "HEAD" ? void 0 : "ok");
+          res.end(req.method === "HEAD" ? void 0 : body);
           req.resume();
+          return;
+        }
+        if (g.role === "canary") {
+          this.refuse(res, req, 403, "preview_canary");
           return;
         }
         if (l.magpie) {
@@ -6053,9 +6078,9 @@ var init_proxy = __esm({
       }
       // ---- WebSocket (HMR) ----
       onUpgrade(l, req, socket, head) {
-        const bad = this.gate(l, req);
-        if (bad || l.magpie) {
-          const code = bad?.code ?? 403;
+        const g = this.gate(l, req);
+        if ("code" in g || g.role === "canary" || l.magpie) {
+          const code = "code" in g ? g.code : 403;
           socket.end(`HTTP/1.1 ${code} ${code === 421 ? "Misdirected Request" : "Forbidden"}\r
 connection: close\r
 \r

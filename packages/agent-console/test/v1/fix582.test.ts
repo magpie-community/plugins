@@ -1,7 +1,7 @@
 // #582 review fixes: the preview proxy's key (Host ac<key>.localhost), Magpie's gateway found by its settings.json port
-// and by how it answers, and the ping the page checks before showing the frame. The real-browser attack check is
-// scripts/preview-attack.mjs (Chromium / WebKit).
-import { describe, expect, it, afterEach } from "vitest";
+// and by how it answers, the per-open nonce the ping must echo (and the keyless canary before the keyed host is looked
+// up), and WebKit-before-macOS-26 fail-closed. The real-browser attack check is scripts/preview-attack.mjs (Chromium / WebKit).
+import { describe, expect, it, afterEach, vi } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -11,7 +11,13 @@ import { request } from "./helpers-net.js";
 import { PreviewProxy, PREVIEW_PING_PATH, identify, looksLikeMagpie, magpieIndex } from "../../daemon/src/preview/proxy.js";
 import { magpieConfigDirs, magpieDirFromInstall, previewDeniedPorts, savedGatewayPort } from "../../daemon/src/preview/ports.js";
 import { checkPreviewUrl, deniedPort } from "../../daemon/src/preview/url.js";
-import { PREVIEW_PING_PATH as WEB_PING } from "../../web/src/stores/preview.js";
+import {
+  PREVIEW_PING_PATH as WEB_PING,
+  canReachProxy,
+  confirmPreviewReachable,
+  isUnsafeLocalhostResolver,
+  usePreview,
+} from "../../web/src/stores/preview.js";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const f of cleanup.splice(0)) f(); });
@@ -54,7 +60,18 @@ describe("preview key (#582 finding 1)", () => {
     expect(ok.headers["access-control-allow-origin"]).toBe("null");
     expect(ok.headers["referrer-policy"]).toBe("no-referrer");
     const ping = await request(port, PREVIEW_PING_PATH, { host: hostOf(a.proxyOrigin), origin: "null" });
-    expect([ping.status, ping.body, ping.headers["access-control-allow-origin"]]).toEqual([200, "ok", "null"]);
+    expect(ping.status).toBe(200);
+    expect(ping.body).toBe(a.nonce);
+    expect(ping.body).not.toBe("ok");
+    expect(ping.headers["access-control-allow-origin"]).toBe("null");
+    expect(a.nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(a.canaryOrigin).toMatch(/^http:\/\/acprobe[0-9a-f]{32}\.localhost:\d+$/);
+    expect(a.canaryNonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(a.canaryNonce).not.toBe(a.nonce);
+    const canary = await request(port, PREVIEW_PING_PATH, { host: hostOf(a.canaryOrigin), origin: "null" });
+    expect([canary.status, canary.body]).toEqual([200, a.canaryNonce]);
+    // canary is ping-only
+    expect((await request(port, "/", { host: hostOf(a.canaryOrigin), origin: "null" })).status).toBe(403);
     expect(WEB_PING).toBe(PREVIEW_PING_PATH);
     // the name is case-insensitive like any host name; the proxy's own origin is accepted, another is not
     expect((await request(port, "/", { host: hostOf(a.proxyOrigin).toUpperCase() })).status).toBe(200);
@@ -192,5 +209,137 @@ describe("Magpie's gateway is never previewed (#582 finding 2)", () => {
     const c = checkPreviewUrl("localhost:1");
     if (!c.ok) throw new Error("x");
     expect(await identify(c.target, ["127.0.0.1"], 500)).toBe("none");
+  });
+});
+
+
+describe("preview ping nonce + canary (#582 WebKit DNS)", () => {
+  it("rotates nonces on every open; ping never answers a generic ok", async () => {
+    const up = await serve((_q, s) => s.end("dev"));
+    const proxy = new PreviewProxy({ deniedPorts: () => [] });
+    cleanup.push(() => proxy.closeAll());
+    const a = await proxy.open(`localhost:${up.port}`);
+    const b = await proxy.open(`localhost:${up.port}/again`);
+    expect(a.proxyOrigin).toBe(b.proxyOrigin);
+    expect(b.nonce).not.toBe(a.nonce);
+    expect(b.canaryNonce).not.toBe(a.canaryNonce);
+    expect(b.canaryOrigin).not.toBe(a.canaryOrigin);
+    const port = portOf(a.proxyOrigin);
+    // old nonce is gone; retired canary Host is unknown → 421 (not a bare loopback address)
+    expect((await request(port, PREVIEW_PING_PATH, { host: hostOf(a.proxyOrigin) })).body).toBe(b.nonce);
+    expect([403, 421]).toContain((await request(port, PREVIEW_PING_PATH, { host: hostOf(a.canaryOrigin) })).status);
+    expect((await request(port, PREVIEW_PING_PATH, { host: hostOf(b.canaryOrigin) })).body).toBe(b.canaryNonce);
+  });
+
+  it("a non-proxy server that answers 200 ok fails canReachProxy; navigate releases the listener", async () => {
+    const up = await serve((_q, s) => s.end("DEV-SECRET"));
+    const proxy = new PreviewProxy({ deniedPorts: () => [] });
+    cleanup.push(() => proxy.closeAll());
+    const opened = await proxy.open(`localhost:${up.port}/`);
+    expect(proxy.size).toBe(1);
+
+    // Real proxy ping body (Host header, connect to 127.0.0.1) — must be the nonce, never "ok"
+    const port = portOf(opened.proxyOrigin);
+    expect((await request(port, PREVIEW_PING_PATH, { host: hostOf(opened.proxyOrigin) })).body).toBe(opened.nonce);
+    expect((await request(port, PREVIEW_PING_PATH, { host: hostOf(opened.canaryOrigin) })).body).toBe(opened.canaryNonce);
+
+    // Attacker DNS: answers with plain 200 "ok" (what canReachProxy used to accept). Fetch via 127.0.0.1
+    // so the test does not depend on this machine's *.localhost resolver.
+    const fake = await serve((_q, s) => {
+      s.writeHead(200, { "content-type": "text/plain", "access-control-allow-origin": "null" });
+      s.end("ok");
+    });
+    const good = await serve((_q, s) => {
+      s.writeHead(200, { "content-type": "text/plain", "access-control-allow-origin": "null" });
+      s.end(opened.nonce);
+    });
+    expect(await canReachProxy(`http://127.0.0.1:${fake.port}`, opened.nonce)).toBe(false);
+    expect(await canReachProxy(`http://127.0.0.1:${good.port}`, "ok")).toBe(false);
+    expect(await canReachProxy(`http://127.0.0.1:${good.port}`, opened.nonce)).toBe(true);
+    expect(await confirmPreviewReachable({
+      proxyOrigin: `http://127.0.0.1:${fake.port}`,
+      proxyHref: `http://127.0.0.1:${fake.port}/`,
+      url: opened.url,
+      nonce: opened.nonce,
+      canaryOrigin: `http://127.0.0.1:${fake.port}`,
+      canaryNonce: opened.canaryNonce,
+    })).toBe(false);
+
+    // Panel path: preview.open returns real listener, but fetch is hijacked to the fake server → must release
+    const released: string[] = [];
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const u = new URL(url);
+      // rewrite any *.localhost lookup → fake server (simulates hostile DNS answering the lookup)
+      return prevFetch(`http://127.0.0.1:${fake.port}${u.pathname}${u.search}`, {
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+      });
+    }) as typeof fetch;
+    cleanup.push(() => { globalThis.fetch = prevFetch; });
+
+    usePreview.setState({ byThread: {} });
+    const call = async (m: string, p?: unknown) => {
+      if (m === "preview.open") {
+        return {
+          proxyOrigin: opened.proxyOrigin,
+          proxyHref: opened.proxyHref,
+          url: opened.url,
+          nonce: opened.nonce,
+          canaryOrigin: opened.canaryOrigin,
+          canaryNonce: opened.canaryNonce,
+        };
+      }
+      if (m === "preview.release") {
+        const url = String((p as { url?: string } | undefined)?.url ?? "");
+        released.push(url);
+        proxy.release(url);
+        return { ok: true };
+      }
+      return {};
+    };
+    const ok = await usePreview.getState().navigate(call, "t1", null, `http://localhost:${up.port}/`, { push: true });
+    expect(ok).toBe(false);
+    expect(released).toEqual([`http://localhost:${up.port}`]);
+    expect(proxy.size).toBe(0);
+    const entry = usePreview.getState().byThread["t1"];
+    expect(entry?.proxyHref).toBeNull();
+    expect(entry?.error).toBeTruthy();
+    // real ping would have worked; the failure was the fake answer
+    expect(entry?.error?.length ?? 0).toBeGreaterThan(10);
+  });
+
+  it("detects Apple WebKit before macOS 26 and leaves WebKitGTK / Chromium alone", () => {
+    const safari15 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15";
+    const safariFrozen = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+    const mac26 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 26_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+    const chromeMac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    const webkitGtk = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+    const edge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0";
+    expect(isUnsafeLocalhostResolver(safari15)).toBe(true);
+    expect(isUnsafeLocalhostResolver(safariFrozen)).toBe(true);
+    expect(isUnsafeLocalhostResolver(mac26)).toBe(false);
+    expect(isUnsafeLocalhostResolver(chromeMac)).toBe(false);
+    expect(isUnsafeLocalhostResolver(webkitGtk)).toBe(false);
+    expect(isUnsafeLocalhostResolver(edge)).toBe(false);
+  });
+
+  it("navigate refuses Apple WebKit before macOS 26 without calling preview.open", async () => {
+    const opened: string[] = [];
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    });
+    cleanup.push(() => vi.unstubAllGlobals());
+    usePreview.setState({ byThread: {} });
+    const ok = await usePreview.getState().navigate(async (m) => {
+      if (m === "preview.open") opened.push(m);
+      return {};
+    }, "wk", null, "http://localhost:5173/", { push: true });
+    expect(ok).toBe(false);
+    expect(opened).toEqual([]);
+    expect(usePreview.getState().byThread["wk"]?.proxyHref).toBeNull();
+    expect(usePreview.getState().byThread["wk"]?.error).toBeTruthy();
   });
 });
