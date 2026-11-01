@@ -29,10 +29,11 @@ const BASE_HEADERS = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 每次扫码登录随机生成一套自己的设备遥测号（非任何真实设备的指纹），随凭证保存供后续请求使用。 */
-function generateDeviceParams() {
+// randomInt 的取值跨度上限是 2^48-1，所以用"固定前缀 + 小范围随机"拼出 19 位号段。
+export function generateDeviceParams() {
   return {
-    deviceId: String(randomInt(7_000_000_000_000_000, 7_999_999_999_999_999)),
-    webId: String(randomInt(7_600_000_000_000_000_000, 7_699_999_999_999_999_999)),
+    deviceId: String(7_000_000_000_000_000 + randomInt(0, 99_999_999_999_999)),
+    webId: String(7_600_000_000_000_000_000 + randomInt(0, 99_999_999_999_999)),
   };
 }
 

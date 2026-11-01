@@ -8,7 +8,7 @@ import path from "node:path";
 import { parseSseBlocks, parsePcImages, parseWebImages, normalizeRatio } from "./src/client.mjs";
 import { DoubaoError, DoubaoAuthError, DoubaoRiskError, assertPublicHttpUrl } from "./src/http.mjs";
 import { loadConfig, DEFAULTS, accountsFromMagpieAuth } from "./src/config.mjs";
-import { qrPngToAscii } from "./src/qlogin.mjs";
+import { qrPngToAscii, generateDeviceParams } from "./src/qlogin.mjs";
 import { loadRefImage } from "./src/upload.mjs";
 import { accountOrder } from "./src/accounts.mjs";
 import * as mod from "./index.mjs";
@@ -242,6 +242,16 @@ test("参考图：拒绝非图片扩展名与魔数不符的文件", async () =>
 });
 
 // ———— PNG 解码 + 二维码 ASCII ————
+test("设备遥测号：随机生成、号段正确（randomInt 跨度不越 2^48 上限）", () => {
+  const a = generateDeviceParams();
+  const b = generateDeviceParams();
+  expect(/^\d{16}$/.test(a.deviceId)).toBe(true); // 7.0e15 ~ 7.1e15
+  expect(/^\d{19}$/.test(a.webId)).toBe(true); // 7.6e18 ~ 7.6e18+1e14
+  expect(a.deviceId.startsWith("7")).toBe(true);
+  expect(a.webId.startsWith("76")).toBe(true);
+  expect(a.deviceId).not.toBe(b.deviceId);
+  expect(a.webId).not.toBe(b.webId);
+});
 test("PNG 解码 RGB 无损；二维码 PNG 渲染 ASCII", () => {
   const png = makeRgbPng(4, 3, (x, y) => [x * 60, y * 80, 7]);
   const ascii = qrPngToAscii(makeQrPng(25));
