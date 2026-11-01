@@ -83,7 +83,8 @@ advanced settings. Saving conversations remains a separate opt-in.
 
 ### Named gateway keys
 
-On a Magpie host that supplies the authenticated `callerKeyId` to hooks,
+No released Magpie version supplies the authenticated `callerKeyId` to hooks
+yet, so a named-key policy has no effect today. If a future host supplies it,
 `keyPolicies` can grant each exact ID automatic recall, automatic saving,
 both, or neither. Find the non-secret ID with `magpie gateway-key list`; do
 not put a key secret in this option. No named key is allowed by default. The
@@ -115,11 +116,6 @@ Keyed recall blocks and Thread IDs are isolated by key ID, even for identical
 sessions. Existing local and sharing-key Thread IDs are unchanged. The
 gateway's local trust model accepts arbitrary local tokens, so this cannot
 isolate mutually untrusted processes on the same computer.
-
-The settings page uses conditional saves when the host supports them; an
-older host remains readable but the page does not save there. The host must
-also coordinate all writers with the same lock; older Magpie processes and
-external file editors that do not participate are outside that guarantee.
 
 Magpie knows which agent sent a request. Unless `hostAgentId` is set, the hook
 uses `magpie:<agent>` as the host identity and sends it with the Context Bundle
@@ -298,14 +294,15 @@ own: the offline tests replace `globalThis.fetch` to keep Cursor's token local
 
 ## Page
 
-The page uses Magpie's options and theme bridge. Its conditional-save methods
-require the host proposal described above; without them the page is read-only.
-It declares no reads and saving stores configuration without probing the
-connection or writing Memory. It shows connection, recall, capture, key policy
-and advanced options. Its **What is sent** section describes the local and
-sharing-key defaults, explicit named-key grants, and excluded origins. It follows
-Magpie's language (English, Simplified and Traditional Chinese, Japanese,
-German) and theme, and preserves options it does not show.
+The page uses only Magpie's released `magpie.options` and theme bridge. It
+declares no reads and saving stores configuration without probing the
+connection or writing Memory. It shows the Server, API key, Space, Agent, the
+recall, Context Bundle and capture switches. Its **What is sent** section says
+the scope: direct local requests and `magpie-key` from this computer; other
+gateway keys are excluded by default. Named-key policies require a future host
+that supplies authenticated key IDs; remote and unknown origins remain excluded. It follows Magpie's language (English, Simplified and
+Traditional Chinese, Japanese, German) and theme, and preserves options it does
+not show.
 
 **Test connection** is a real check, not a saved flag. Magpie's page sandbox
 has `connect-src 'none'`, so the page cannot call Mem itself; the package's

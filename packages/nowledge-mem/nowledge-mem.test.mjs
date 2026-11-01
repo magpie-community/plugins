@@ -673,147 +673,160 @@ test("a canceled request keeps its reason and does not back off the service", as
 })
 
 // The official sandbox page may configure options, but has no network or custom host API.
-test("configuration page uses the options and theme bridge without direct network access", async () => {
+test("configuration page uses only the released options and theme bridge", async () => {
   const source = await Bun.file(new URL("./page/settings.js", import.meta.url)).text()
   const calls = [...source.matchAll(/magpie\.([\w.]+)/g)].map((match) => match[1])
-  expect([...new Set(calls)].sort()).toEqual(["onTheme", "options.compareAndPatch", "options.get", "options.snapshot", "ready.then", "theme"])
+  expect([...new Set(calls)].sort()).toEqual(["onTheme", "options.get", "options.set", "ready.then", "theme"])
   expect(source).not.toMatch(/\b(fetch|XMLHttpRequest|WebSocket|EventSource)\b/)
   const html = await Bun.file(new URL("./page/settings.html", import.meta.url)).text()
-  expect([...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map(([, src]) => src).sort()).toEqual(["_magpie/bridge.js", "i18n.js", "settings.js", "validate.js"])
+  expect([...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map(([, src]) => src).sort()).toEqual(["_magpie/bridge.js", "i18n.js", "settings.js"])
   expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/)
   expect([...html.matchAll(/\b(?:src|href)="((?:https?:)?\/\/[^"]+)"/g)]).toEqual([])
 })
 
-async function pageFixture(initial, oldHost = false) {
+test("configuration page saves the Mem connection for the shipped hook", async () => {
   const read = (file) => Bun.file(new URL(`./page/${file}`, import.meta.url)).text()
-  const [dictionary, validator, source, html] = await Promise.all([read("i18n.js"), read("validate.js"), read("settings.js"), read("settings.html")])
-  const make = () => ({
-    dataset: {}, value: "", type: "text", checked: false, children: [], hidden: false,
-    setAttribute(name, value) { this[name] = value }, focus() {}, showModal() { this.open = true }, close() { this.open = false },
-    append(...xs) { this.children.push(...xs); for (const x of xs) x.parent = this },
-    replaceChildren(...xs) { this.children = xs }, remove() { if (this.parent) this.parent.children = this.parent.children.filter((x) => x !== this) },
-  })
-  const elements = Object.fromEntries([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, make()]))
-  const translated = [...html.matchAll(/data-t="([^"]+)"/g)].map(([, key]) => ({dataset:{t:key}}))
-  const document = {documentElement:{},getElementById:(id)=>elements[id],createElement:make,
-    querySelectorAll:(selector)=>selector === "[data-t]" ? translated : Object.values(elements).filter((el)=>el.dataset.message)}
-  let options = structuredClone(initial), version = 0, repaint, writes = 0
-  const magpie = {theme:{lang:"en"},ready:Promise.resolve(),onTheme:(fn)=>{repaint=fn},options:{get:async()=>structuredClone(options)}}
-  if (!oldHost) Object.assign(magpie.options, {
-    snapshot:async()=>({options:structuredClone(options),version:String(version)}),
-    compareAndPatch:async(expected,changes)=>{
-      if(expected !== String(version)) return {conflict:true}
-      for(const c of changes){let parent=options;for(const key of c.path.slice(0,-1)){parent[key] ??= {};parent=parent[key]};const key=c.path.at(-1);if(c.remove)delete parent[key];else parent[key]=structuredClone(c.value)}
-      version++;writes++;return {options:structuredClone(options),version:String(version)}
-    },
-  })
-  const location = {href:"http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html",assign(url){this.assigned=url}}
-  const window = {name:""}
-  const i18n = runInNewContext(`${dictionary}\n${validator}\n${source}\nnowledgeMemI18n`, {document,magpie,window,location,navigator:{language:"en"},URL})
+  const [dictionary, source, html] = await Promise.all([read("i18n.js"), read("settings.js"), read("settings.html")])
+  const elements = Object.fromEntries([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, {
+    dataset: {}, value: "", type: id === "key" ? "password" : "text", checked: false,
+    setAttribute(name, value) { this[name] = value }, focus() {}, showModal() {}, close() {},
+  }]))
+  const document = { documentElement: {}, getElementById: (id) => elements[id], querySelectorAll: () => [] }
+  const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign(url) { this.assigned = url } }
+  const window = { name: "" }
+  let options = { apiKeyEnv: "NMEM_API_KEY", recall: true, contextBundle: true, capture: false, maxMemories: 5, maxBytes: 6000 }
+  let writes = 0
+  const magpie = {
+    theme: { lang: "en" }, ready: Promise.resolve(), onTheme() {},
+    options: { get: async () => ({ ...options }), set: async (next) => { options = { ...next }; writes++ } },
+  }
+  runInNewContext(`${dictionary}\n${source}`, { document, magpie, window, location, navigator: { language: "en" }, URL })
   await new Promise(setImmediate)
-  return {elements,magpie,i18n,translated,document,location,repaint:()=>repaint(),get:()=>options,writes:()=>writes,
-    external:(next)=>{options=structuredClone(next);version++},save:()=>elements.save.onclick({preventDefault(){}})}
-}
+  const save = () => elements.save.onclick({ preventDefault() {} })
+  const original = { ...options }
+  elements.url.value = "http://127.0.0.1:14242"
+  elements.space.value = "  space-7  "
+  elements.agent.value = "agent-3"
+  elements.key.value = "Bearer nmem_page_key"
+  elements.capture.checked = true
+  await save()
+  expect(options).toEqual({
+    ...original,
+    serverUrl: "http://127.0.0.1:14242/",
+    spaceId: "space-7",
+    agentId: "agent-3",
+    apiKey: "nmem_page_key",
+    capture: true,
+  })
+  // Run the shipped hook with exactly what the page saved.
+  mock({ "threads/import": (body) => Response.json({ success: true, failed_count: 0, results: [{ success: true, thread_id: body.thread_id, message_count: body.messages.length, messages_added: body.messages.length }] }) })
+  const hookContext = ctx("chat", { options })
+  hookContext.state = {}
+  await onRequest(structuredClone(chat), hookContext)
+  expect(of("memories/search")[0].init.headers.Authorization).toBe("Bearer nmem_page_key")
+  expect(of("memories/search")[0].url.origin).toBe("http://127.0.0.1:14242")
+  await onResponse(reply, { ...hookContext, success: true })
+  expect(of("threads/import")[0].body.space_id).toBe("space-7")
+  expect(of("threads/import")[0].body.metadata.agent_id).toBe("agent-3")
 
-test("configuration saves conditionally, preserves unknown values and protects the saved key", async () => {
- const f = await pageFixture({apiKey:"saved_secret",apiKeyEnv:"NMEM_API_KEY",recall:true,capture:false,future:{x:1}})
- const e=f.elements
- await e.configure.onclick()
- expect(e.key.value).toBe("")
- expect(e["key-action"].value).toBe("keep")
- e.space.value=" space-7 "; e.capture.checked=true
- await f.save()
- expect(f.get().apiKey).toBe("saved_secret")
- expect(f.get().future).toEqual({x:1})
- expect(f.get().spaceId).toBe("space-7")
- expect(f.get().capture).toBe(true)
- expect(f.get().serverUrl).toBeUndefined()
- e["key-action"].value="replace";e.key.value="Bearer new_secret"
- await f.save(); expect(f.get().apiKey).toBe("new_secret")
- e["key-action"].value="clear";await f.save()
- expect(f.get().apiKey).toBeUndefined()
- expect(f.get().apiKeyEnv).toBe("NMEM_API_KEY")
- expect(f.writes()).toBe(3)
- e["test-saved"].onclick()
- expect(f.location.assigned).toBe("http://127.0.0.1:3479/test?lang=en")
+  elements.configure.onclick()
+  expect(elements.key.type).toBe("password")
+  expect(elements.key.value).toBe("nmem_page_key")
+  elements["show-key"].onclick()
+  expect(elements.key.type).toBe("text")
+  expect(elements["show-key"]["aria-pressed"]).toBe("true")
+  elements.settings.onclose()
+  expect(elements.key.type).toBe("password")
+  expect(elements.key.value).toBe("")
+
+  for (const invalid of ["bad key", "bad\nkey"]) {
+    elements.key.value = invalid
+    await save()
+    expect(writes).toBe(1)
+    expect(elements.result.dataset.message).toBe("invalidKey")
+  }
+  for (const invalid of ["ftp://mem.example.com", "http://mem.example.com", "https://mem.example.com?token=x"]) {
+    elements.url.value = invalid
+    await save()
+    expect(writes).toBe(1)
+    expect(elements.result.dataset.message).toBe("invalidUrl")
+  }
+
+  elements.url.value = "https://mem.example.com"
+  elements.key.value = ""
+  elements.space.value = "   "
+  elements.agent.value = ""
+  elements.capture.checked = false
+  await save()
+  expect(options.serverUrl).toBe("https://mem.example.com/")
+
+  // The main page's Test button tests the saved connection; the test page
+  // reads only the way back and the language.
+  elements["test-saved"].onclick()
+  expect(location.assigned).toBe("http://127.0.0.1:3479/test?lang=en")
+  expect(options.apiKey).toBeUndefined()
+  expect(options.spaceId).toBeUndefined()
+  expect(options.agentId).toBeUndefined()
+  expect(options.apiKeyEnv).toBe("NMEM_API_KEY")
+  expect(options.maxBytes).toBe(6000)
+  expect(elements["summary-space"].textContent).toBe("Default Space")
 })
 
-test("configuration conflict retains the draft and does not overwrite another entry", async () => {
- const f=await pageFixture({serverUrl:"https://mem.example",apiKey:"saved_secret",future:{v:1}}),e=f.elements
- await e.configure.onclick();e.space.value="draft-space"
- f.external({serverUrl:"https://mem.example",apiKey:"other_secret",future:{v:2}})
- await f.save()
- expect(e.result.dataset.message).toBe("conflict")
- expect(e.space.value).toBe("draft-space")
- expect(f.get().apiKey).toBe("other_secret")
- expect(f.get().future).toEqual({v:2})
- expect(f.writes()).toBe(0)
- e.cancel.onclick();await e.configure.onclick()
- expect(e.space.value).toBe("")
- expect(e.key.value).toBe("")
+test("configuration page follows the host language without losing edits or messages", async () => {
+  const read = (file) => Bun.file(new URL(`./page/${file}`, import.meta.url)).text()
+  const [dictionary, source, html] = await Promise.all([read("i18n.js"), read("settings.js"), read("settings.html")])
+  const elements = Object.fromEntries([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, {
+    dataset: {}, value: "", hidden: false, checked: false, setAttribute(name, value) { this[name] = value }, focus() {},
+  }]))
+  const translated = [...html.matchAll(/data-t="([^"]+)"/g)].map(([, key]) => ({ dataset: { t: key } }))
+  const document = {
+    documentElement: {}, getElementById: (id) => elements[id],
+    querySelectorAll: (selector) => selector === "[data-t]" ? translated : Object.values(elements).filter((el) => el.dataset.message),
+  }
+  let repaint
+  const magpie = {
+    theme: { lang: "zh" }, ready: Promise.resolve(), onTheme: (fn) => { repaint = fn },
+    options: { get: async () => ({ serverUrl: "http://127.0.0.1:14242", capture: true }) },
+  }
+  const window = { name: "" }
+  const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign() {} }
+  const { messages, languageFor, languageTags } = runInNewContext(`${dictionary}\n${source}\nnowledgeMemI18n`, { document, magpie, window, location, navigator: { language: "en" }, URL })
+  await new Promise(setImmediate)
+  for (const language of ["en", "zh", "zh-TW", "ja", "de"]) {
+    expect(Object.keys(messages[language]).sort()).toEqual(Object.keys(messages.en).sort())
+    expect(Object.values(messages[language]).every((text) => typeof text === "string" && text.length > 0)).toBe(true)
+  }
+  for (const [input, expected] of [["zh-CN", "zh"], ["zh-Hant-TW", "zh-TW"], ["zh_HK", "zh-TW"], ["ja-JP", "ja"], ["de-AT", "de"], ["fr-FR", "en"]]) {
+    expect(languageFor(input)).toBe(expected)
+  }
+  elements.url.value = "unsaved address"
+  await elements.save.onclick({ preventDefault() {} })
+  for (const language of ["en", "zh-TW", "ja", "de", "zh"]) {
+    magpie.theme.lang = language
+    repaint()
+    expect(document.documentElement.lang).toBe(languageTags[language])
+    expect(elements.url.value).toBe("unsaved address")
+    expect(elements.configured.textContent).toBe(messages[language].loaded)
+    expect(elements.result.textContent).toBe(messages[language].invalidUrl)
+    expect(elements.result.dataset.error).toBe("true")
+    for (const el of translated) expect(el.textContent).toBe(messages[language][el.dataset.t])
+  }
 })
 
-test("key policy controls select four modes and require a Space for access", async () => {
- const f=await pageFixture({capture:true}),e=f.elements
- await e.configure.onclick();e["add-policy"].onclick()
- const row=e["key-policies"].children[0]
- row.children[0].children[1].value="key-a"
- row.children[2].children[1].value="read"
- await f.save();expect(e.result.dataset.message).toBe("keyPolicyInvalid");expect(f.writes()).toBe(0)
- row.children[1].children[1].value="space-a"
- await f.save()
- expect(f.get().keyPolicies["key-a"]).toEqual({recall:true,capture:false,spaceId:"space-a"})
-})
-
-test("editing a key policy preserves unknown nested fields", async () => {
- const f=await pageFixture({keyPolicies:{"key-a":{recall:false,capture:false,spaceId:"space-a",future:{flag:"keep"}}}}),e=f.elements
- await e.configure.onclick()
- e["key-policies"].children[0].children[2].children[1].value="read"
- await f.save()
- expect(f.get().keyPolicies["key-a"]).toEqual({recall:true,capture:false,spaceId:"space-a",future:{flag:"keep"}})
-})
-
-test("old hosts stay readable but do not silently save without compare-and-set", async () => {
- const f=await pageFixture({serverUrl:"http://127.0.0.1:14242"},true)
- expect(f.elements.configure.disabled).toBe(false)
- expect(f.elements.configured.dataset.message).toBe("unsupported")
- await f.elements.configure.onclick()
- expect(f.elements.url.value).toBe("http://127.0.0.1:14242")
- expect(f.elements.save.disabled).toBe(true)
- f.elements.url.value="https://changed.example"; await f.save()
- expect(f.get().serverUrl).toBe("http://127.0.0.1:14242")
-})
-
-test("configuration page follows host language without losing edits", async () => {
- const f=await pageFixture({serverUrl:"http://127.0.0.1:14242"}),e=f.elements
- await e.configure.onclick();e.url.value="unsaved address"
- await f.save();expect(e.result.dataset.message).toBe("invalidUrl")
- const {messages,languageFor,languageTags}=f.i18n
- for (const language of ["en","zh","zh-TW","ja","de"]) {
-  expect(Object.keys(messages[language]).sort()).toEqual(Object.keys(messages.en).sort())
-  f.magpie.theme.lang=language;f.repaint()
-  expect(f.document.documentElement.lang).toBe(languageTags[language])
-  expect(e.url.value).toBe("unsaved address")
-  expect(e.result.textContent).toBe(messages[language].invalidUrl)
-  for (const el of f.translated) expect(el.textContent).toBe(messages[language][el.dataset.t])
- }
- expect(languageFor("zh-Hant-TW")).toBe("zh-TW")
-})
-
-test("scope disclosure describes default exclusions and explicit named-key grants in every language", async () => {
- const {i18n:{messages}} = await pageFixture({})
- const requirements = {
-  en: [/By default/, /direct local requests/, /magpie-key/, /policy can restrict/, /gateway keys are excluded by default/, /only when a policy grants the operation/, /authenticated ID/, /explicit Space ID/, /global switches/, /Remote or unknown origins are excluded/],
-  zh: [/默认情况下/, /本机直连请求/, /magpie-key/, /策略可以限制/, /网关密钥默认排除/, /策略并授予相应操作后才会参与/, /认证 ID/, /明确的 Space ID/, /总开关/, /远端或未知来源不包含/],
-  "zh-TW": [/預設情況下/, /本機直連請求/, /magpie-key/, /策略可以限制/, /閘道金鑰預設排除/, /策略並授予相應操作後才會參與/, /認證 ID/, /明確的 Space ID/, /總開關/, /遠端或未知來源不包含/],
-  ja: [/既定では/, /直接のローカル要求/, /magpie-key/, /ポリシーで共有キーを制限/, /ゲートウェイキーは既定で除外/, /ポリシーで各操作を許可した場合のみ対象/, /認証済み ID/, /明示的な Space ID/, /全体スイッチ/, /リモートまたは不明な origin は除外/],
-  de: [/Standardmäßig/, /direkte lokale Anfragen/, /magpie-key/, /Regel kann diesen Sharing-Schlüssel einschränken/, /Gateway-Schlüssel sind standardmäßig ausgeschlossen/, /nur teil, wenn eine Regel die jeweilige Aktion/, /authentifizierte ID/, /explizite Space-ID/, /globalen Schalter/, /Entfernte oder unbekannte Origins sind ausgeschlossen/],
- }
- for (const [language, patterns] of Object.entries(requirements)) {
-  for (const pattern of patterns) expect(messages[language].scopeDisclosure).toMatch(pattern)
- }
- const html = await Bun.file(new URL("./page/settings.html", import.meta.url)).text()
- expect(html.match(/<p data-t="scopeDisclosure">([^<]+)<\/p>/)?.[1]).toBe(messages.en.scopeDisclosure)
+test("scope disclosure describes explicit named-key grants in all locales", async () => {
+  const dictionary = await Bun.file(new URL("./page/i18n.js", import.meta.url)).text()
+  const {messages} = runInNewContext(`${dictionary}\nnowledgeMemI18n`)
+  const requirements = {
+    en: [/gateway keys are excluded by default/, /only when a policy grants the operation/, /authenticated ID/, /explicit Space ID/],
+    zh: [/网关密钥默认排除/, /策略并授予相应操作后才会参与/, /认证 ID/, /明确的 Space ID/],
+    "zh-TW": [/閘道金鑰預設排除/, /策略並授予相應操作後才會參與/, /認證 ID/, /明確的 Space ID/],
+    ja: [/ゲートウェイキーは既定で除外/, /ポリシーで各操作を許可した場合のみ対象/, /認証済み ID/, /明示的な Space ID/],
+    de: [/Gateway-Schlüssel sind standardmäßig ausgeschlossen/, /nur teil, wenn eine Regel die jeweilige Aktion/, /authentifizierte ID/, /explizite Space-ID/],
+  }
+  for (const [language, patterns] of Object.entries(requirements))
+    for (const pattern of patterns) expect(messages[language].scopeDisclosure).toMatch(pattern)
+  const html = await Bun.file(new URL("./page/settings.html", import.meta.url)).text()
+  expect(html.match(/<p data-t="scopeDisclosure">([^<]+)<\/p>/)?.[1]).toBe(messages.en.scopeDisclosure)
 })
 
 test("named key permissions are independent, require an authenticated ID and an explicit Space", async () => {

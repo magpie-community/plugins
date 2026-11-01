@@ -86,10 +86,6 @@ input:not([type=checkbox]):focus {
   border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 input::placeholder { color: var(--muted); opacity: .7; }
-select { width: 100%; min-height: 28px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--fg); font: inherit; }
-.option-reset { margin-top: 4px; font-size: 11px; }
-.policy-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px; margin: 8px 0; border: 1px solid var(--line); border-radius: 8px; }
-.policy-row button { align-self: end; }
 small { display: block; color: var(--muted); font-size: 11px; line-height: 1.6; margin-top: 5px; }
 .secret-input { position: relative; }
 .secret-input input { padding-right: 34px; }
