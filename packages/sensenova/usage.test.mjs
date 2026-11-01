@@ -8,6 +8,8 @@ import { fakeSenseNova, json } from "./fake.mjs"
 let f
 afterEach(() => f?.close())
 
+// the token endpoint's own path, as the fake registers it
+const TOKEN_PATH = "/oauth2/token"
 const auth = { type: "oauth", access: "tok", refresh: "r", expires: Date.now() + 3600_000, accountId: "yiheng13" }
 
 const pool = (over = {}) => ({
@@ -122,4 +124,35 @@ test("not signed in says so", async () => {
   const plugin = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
   const u = await plugin.auth.usage(async () => ({ type: "oauth" }))
   expect(u.error).toBe("not signed in")
+})
+
+test("usage spends a renewal that already landed instead of its own refresh token", async () => {
+  // the host renews under its own lock ahead of expiry; if one lands while a
+  // usage read is in flight, that renewal's token is the one to use, and the
+  // refresh token this account holds must stay unspent — Hydra spends it once
+  f = fakeSenseNova()
+  let spent = 0
+  f.route("GET /lite/console/v1/tokenplan/pool-usage", (r) =>
+    r.headers.get("authorization") === "Bearer old" ? json({}, 401) : json({ plan: { name: "P" }, pools: [] }))
+  f.route("POST " + TOKEN_PATH, () => (spent++, json({ access_token: "mine", refresh_token: "r3" })))
+  const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
+  let n = 0
+  const u = await p.auth.usage(async () => (n++ === 0
+    ? { type: "oauth", access: "old", refresh: "r1", expires: Date.now() + 3600e3 }
+    : { type: "oauth", access: "theirs", refresh: "r2", expires: Date.now() + 3600e3 }))
+  expect(u.signIn).toBe("renewed")
+  expect(spent).toBe(0)
+})
+
+test("a renewal that can't be saved is not reported as renewed", async () => {
+  // an unsaved pair is no recovery: the next host would spend a refresh token
+  // that is already spent, so this reads as a failure and nothing is claimed
+  f = fakeSenseNova()
+  f.route("GET /lite/console/v1/tokenplan/pool-usage", (r) =>
+    r.headers.get("authorization") === "Bearer old" ? json({}, 401) : json({ plan: { name: "P" }, pools: [] }))
+  f.route("POST " + TOKEN_PATH, () => json({ access_token: "new", refresh_token: "r2" }))
+  const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => { throw new Error("disk") } } } })
+  const u = await p.auth.usage(async () => ({ type: "oauth", access: "old", refresh: "r1", expires: Date.now() + 3600e3 }))
+  expect(u.error).toContain("could not be saved")
+  expect(u.signIn).not.toBe("renewed")
 })

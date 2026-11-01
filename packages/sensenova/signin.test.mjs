@@ -4,7 +4,7 @@
 // the token endpoint, with a JWKS the fake generates.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
-import { SenseNovaAuthPlugin } from "./index.mjs"
+import { SenseNovaAuthPlugin, _internal } from "./index.mjs"
 import { fakeSenseNova, json, jwksOf } from "./fake.mjs"
 
 let f
@@ -197,4 +197,15 @@ test("a downgraded http:// hop to a SenseNova domain is refused", async () => {
   const out = await p.auth.methods[0].authorize({ username: "u", password: "p", apiKey: "" }).callback()
   expect(out.type).toBe("failed")
   expect(out.error).toContain("SenseNova hosts")
+})
+
+test("a refresh answered with a 307 does not replay the token", async () => {
+  // redirect: "manual" exists so that a 307 or 308 cannot carry this POST —
+  // body included, refresh token and all — to wherever the reply points
+  f = fakeSenseNova()
+  f.route("POST " + TOKEN_PATH, () =>
+    new Response(null, { status: 307, headers: { location: f.origin + "/elsewhere" } }))
+  f.route("POST /elsewhere", () => json({ access_token: "x" }))
+  await expect(_internal.refreshToken("r-secret")).rejects.toThrow()
+  expect(f.seen.some((r) => r.path === "/elsewhere")).toBe(false)
 })
