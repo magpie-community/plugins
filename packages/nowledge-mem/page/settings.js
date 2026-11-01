@@ -49,6 +49,7 @@ function snapshotForm() { return Object.fromEntries(fields.map(([id,,kind]) => [
 function paintReset(id, name) {
  const entry = resetButtons.get(id); if (!entry || !draftOptions) return;
  entry.button.hidden = resets.has(id) || !Object.hasOwn(draftOptions, name);
+ entry.button.disabled = $(id).disabled;
  const fieldName = entry.label.querySelector?.('strong')?.textContent || entry.label.querySelector?.('span')?.textContent || id;
  const label = `${t('useDefault')}: ${fieldName}`;
  entry.button.setAttribute('aria-label',label); entry.button.setAttribute('title',label);
@@ -65,7 +66,7 @@ function attachOrigins() {
    if (kind === 'bool') input.checked = fallback;
    else if (kind === 'filter') input.checked = fallback === 'human';
    else input.value = '';
-   if (id === 'capture-filter') $('capture-cindy').disabled = !input.checked;
+   if (id === 'capture-filter') syncFilter();
    paintReset(id,name); input.focus();
   };
   const edited = () => {
@@ -92,7 +93,7 @@ function fill(options) {
  clearKey = false; $('key').value = ''; $('key').type = 'password';
  baseline = {fields:snapshotForm()};
  for (const [id,name] of fields) paintReset(id,name);
- $('capture-cindy').disabled = !$('capture-filter').checked; paintSecret(); paintKeyAction();
+ syncFilter(); paintSecret(); paintKeyAction();
 }
 function paintSecret() {
  const visible = $('key').type === 'text', label = t(visible ? 'hideKey' : 'showKey');
@@ -109,7 +110,13 @@ function paintKeyAction() {
 }
 $('key-clear').onclick = () => { clearKey = !clearKey; if (clearKey) $('key').value = ''; paintKeyAction(); };
 $('key').oninput = () => { if ($('key').value) clearKey = false; paintKeyAction(); };
-$('capture-filter').onchange = () => { $('capture-cindy').disabled = !$('capture-filter').checked; };
+function syncFilter() {
+ $('capture-cindy').disabled = !$('capture-filter').checked;
+ $('capture-tools').disabled = $('capture-filter').checked;
+ paintReset('capture-cindy','captureCindy');
+ paintReset('capture-tools','captureTools');
+}
+$('capture-filter').onchange = syncFilter;
 function close() { if (!busy) $('settings').close(); }
 $('configure').onclick = async () => {
  if (busy || !savedOptions) return;
