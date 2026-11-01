@@ -19,10 +19,16 @@ function summary() {
  $("summary-url").textContent = savedOptions.serverUrl || t("localDefault");
  $("summary-space").textContent = savedOptions.spaceId || t("defaultSpace");
  $("summary-recall").textContent = savedOptions.recall === false ? t("off") : t("on");
+ $("summary-skip").textContent = skipList(savedOptions.skipAgents).join(", ") || t("none");
  const capture = $("summary-capture");
  capture.checked = pendingCapture ?? savedOptions.capture === true;
  $("capture-state").textContent = savedOptions.capture === true ? t("on") : t("off");
  capture.title = t("captureHelp");
+}
+// skipAgents is kept as a list; one typed by hand may be a single string.
+function skipList(value) {
+ const names = Array.isArray(value) ? value : typeof value === "string" ? value.split(/[,，\n]/) : [];
+ return names.filter((name) => typeof name === "string").map((name) => name.trim()).filter(Boolean);
 }
 function validUrl(raw) {
  let url;
@@ -44,6 +50,7 @@ function fill(options) {
  $("url").value = options.serverUrl || "";
  $("space").value = options.spaceId || "";
  $("agent").value = options.agentId || "";
+ $("skip-agents").value = skipList(options.skipAgents).join(", ");
  $("key").value = (options.apiKey || "").replace(/^Bearer\s+/i, "");
  $("key").type = "password";
  $("recall").checked = options.recall !== false;
@@ -91,6 +98,7 @@ const save = async (event) => {
  if (!url) { result("invalidUrl", true); $("url").focus(); return }
  const space = $("space").value.trim();
  const agent = $("agent").value.trim();
+ const skip = skipList($("skip-agents").value);
  const key = $("key").value.trim().replace(/^Bearer\s+/i, "");
  if (key && /[\s\u0000-\u001f\u007f]/.test(key)) {
   result("invalidKey", true); $("key").focus(); return;
@@ -104,6 +112,8 @@ const save = async (event) => {
   else delete next.spaceId;
   if (agent) next.agentId = agent;
   else delete next.agentId;
+  if (skip.length) next.skipAgents = skip;
+  else delete next.skipAgents;
   if (key) next.apiKey = key;
   else delete next.apiKey;
   await magpie.options.set(next);

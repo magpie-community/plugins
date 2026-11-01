@@ -83,6 +83,12 @@ Refreshing:
   full, the listing can have only the free models on (#484). The same
   5-minute rule holds, and an id Qoder has never served is said unknown at
   once, with no renewal.
+- The account's model list (what magpie and its agents see) is read the
+  same way (since 0.2.52): a listing with every model that costs credits
+  off and the free ones on, which is what Qoder CN answers a caller it
+  doesn't take for the account, renews the job token once and is read
+  again. A renewed token that still lists only the free models isn't
+  renewed again for the list.
 - The device token, which reads usage, has no end on record: it is rotated
   when Qoder refuses it. On a [Qoder CN](#qoder-cn) device-token account it
   is the chat token too, and is renewed as above.

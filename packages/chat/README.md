@@ -60,6 +60,8 @@ Only the chat page it served:
 
 The launcher and the service both read it. Change it if something else holds 3477.
 
+When magpie swaps plugin hosts (a plugin updated, installed or set) while the old host is still finishing a call, the old host's service keeps the port until that call ends. The new host's service waits for it, trying again every second, and takes the port once it is free. The open page's next request then gets a new token and the page reloads itself.
+
 ## Starting it without magpie's host
 
 `serve.mjs` (`node serve.mjs`, or `start-server.cmd` / `start-server.vbs` on Windows) starts the same service on its own, and `install-autostart.cmd` puts it in Windows' Startup folder. See [SERVE.md](SERVE.md). None of these runs unless you start it.

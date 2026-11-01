@@ -548,7 +548,7 @@ async function runChat({ res, body, settings, store, options }, controllers) {
   }
 }
 
-export async function startServer({ configDir: dirArg, options = {} } = {}) {
+export async function startServer({ configDir: dirArg, options = {}, bindTries = 12 } = {}) {
   // 调用方常传 configDir: ""；libraryView(dir = configDir()) 的默认值只在参数是
   // undefined 时生效，空字符串会让 join("", "library") 变成相对路径，指令 / 技能 /
   // MCP 全读不到。这里统一兜成真实目录。
@@ -785,25 +785,67 @@ export async function startServer({ configDir: dirArg, options = {} } = {}) {
 
   // 端口固定用 3477 —— 带路页写死了跳这个端口（页面 CSP 是 connect-src 'none'，
   // 没法先探测再决定跳哪，只能盲跳）。所以这里也必须是 3477，换端口页面就连不上了。
-  // 被上一次的宿主占着就等它松手，最多等 6 秒。
+  // 被上一次的宿主占着就等它松手：先等 6 秒（bindTries × 500ms），还没松手就在后台
+  // 每秒再试，直到绑上为止，不放弃。
+  //
+  // 以前等满 6 秒就抛错，这个宿主就再也没有服务了：magpie 换宿主（插件更新、
+  // 装插件、改选项）时，旧宿主手上还有调用（一条回复、一次工具调用）就会接着跑完，
+  // 最多 10 分钟，端口一直在它手里。新宿主的服务等 6 秒放弃，旧宿主随后退出，
+  // 3477 上就谁也没有了 —— 页面每个请求都是 Failed to fetch（ferock，0.1.6 自动
+  // 更新到 0.1.7 时：「保存失败」「出错：Failed to fetch」，直到重开 magpie）。
+  let closed = false;
+  const own = (p) => {
+    actualPort = p;
+    OWN = new Set([`http://127.0.0.1:${p}`, `http://localhost:${p}`]);
+    HOSTS = new Set([`127.0.0.1:${p}`, `localhost:${p}`]);
+  };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let bound = false;
-  for (let i = 0; i < 12 && !bound; i++) {
+  for (let i = 0; i < bindTries && !bound; i++) {
     try {
       await bindOn(port);
       bound = true;
     } catch (err) {
       if (err?.code !== "EADDRINUSE") throw err;
       if (i === 0) console.log(`[page-chat] ${port} 被上一次的宿主占着，等一下再绑`);
-      await new Promise((r) => setTimeout(r, 500));
+      await sleep(500);
     }
   }
-  if (!bound) throw new Error(`${port} 一直被占用，服务起不来`);
-  actualPort = server.address().port;
-  OWN = new Set([`http://127.0.0.1:${actualPort}`, `http://localhost:${actualPort}`]);
-  HOSTS = new Set([`127.0.0.1:${actualPort}`, `localhost:${actualPort}`]);
+  let ready;
+  if (bound) {
+    own(server.address().port);
+    ready = Promise.resolve(actualPort);
+  } else {
+    // 端口是固定的（0 不会被占），页面认的就是它
+    own(port);
+    console.log(`[page-chat] ${port} 还被占着：它一松手就接着绑，每秒试一次`);
+    ready = (async () => {
+      while (!closed) {
+        await sleep(1000);
+        if (closed) break;
+        try {
+          await bindOn(port);
+          own(server.address().port);
+          return actualPort;
+        } catch (err) {
+          if (err?.code !== "EADDRINUSE") throw err;
+        }
+      }
+      return 0;
+    })();
+    ready.catch(() => {});
+  }
 
   // 这里以前会写 port.json 想让带路页读实际端口，但页面 CSP 是 connect-src none，读不到。
 
 
-  return { port: actualPort, server, store, close: async () => { await closeAll(); server.close(); } };
+  // listening：现在就在听；没有的话 ready 在绑上时给出端口（关掉了就是 0）
+  return {
+    port: actualPort,
+    listening: bound,
+    ready,
+    server,
+    store,
+    close: async () => { closed = true; await closeAll(); if (server.listening) server.close(); },
+  };
 }

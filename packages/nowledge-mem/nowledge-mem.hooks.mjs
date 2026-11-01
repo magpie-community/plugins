@@ -14,7 +14,7 @@
 //    "contextBundle": true, "maxMemories": 5, "maxBytes": 6000,
 //    "requestTimeoutMs": 900, "recallBackoffMs": 30000, "capture": false,
 //    "captureTools": true, "captureFilter": "off", "captureCindy": false,
-//    "allowInsecureHttp": false}
+//    "allowInsecureHttp": false, "skipAgents": []}
 //
 // A turn keeps the block it was given for the rest of the conversation, so what
 // the agent sends stays the same from one request to the next and the
@@ -23,7 +23,7 @@
 import { resolve } from "node:path";
 import { captureMessage } from "./capture-filter.mjs";
 import { conversation as transcript, history, notice, open, close } from "./conversation.mjs";
-import { MemFailure as Failure, resolveOptions, request, serviceKey, sha256, trimText, utf8, version } from "./mem.mjs";
+import { MemFailure as Failure, agentKey, resolveOptions, request, serviceKey, sha256, trimText, utf8, version } from "./mem.mjs";
 const maxQuery = 2000;
 const maxMemory = 1000;
 const maxImport = 512 << 10;
@@ -65,6 +65,11 @@ export async function onRequest(body, ctx) {
 }
 async function run(body, ctx) {
     let o = resolveOptions(ctx.options);
+    // A skipped app never uses Mem, including when its key has a grant.
+    if (o.skipAgents.has(agentKey(ctx.agent))) {
+        ctx.report?.("skipped");
+        return;
+    }
     const own = ctx.origin === "local" || ctx.origin === "magpie-key";
     const id = typeof ctx.callerKeyId === "string" && ctx.callerKeyId ? ctx.callerKeyId : "";
     const policy = id && Object.hasOwn(o.keyPolicies, id) ? o.keyPolicies[id] : undefined;

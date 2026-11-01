@@ -1577,32 +1577,49 @@ function build(chat, uid, key) {
 }
 
 // encodeRequest is the GetChatMessage request of msgs, with tools offered
-// and the sampling asked, to the model uid.
+// and the sampling asked, to the model uid. Its cache keepalive ping
+// (keepalivePing) is the same request, byte for byte, with one more user
+// prompt, "continue", and max_tokens 1, as the devin CLI pings
+// (plugins#592): each prompt is encoded once, so both carry the same bytes.
 function encodeRequest(msgs, tools, chat, uid, key) {
-  const out = new PB().bytes(1, metadata(key))
-  for (const m of msgs) out.bytes(3, encodeMsg(m))
-  out.varint(7, 5)
-  const max = chat.max || 128000 // the server holds it to the model's own
+  const head = metadata(key).done()
+  const prompts = msgs.map(encodeMsg)
   // Devin answers "an internal error occurred" to a temperature or top_p of
   // exactly 0 (on every model: its Claude ones and swe-2), where 1e-6 goes
   // through; a 0 is sent as the smallest step above it, as near greedy
   const above0 = (v) => (v === 0 ? 1e-6 : v)
   const temp = above0(typeof chat.temperature === "number" ? chat.temperature : 1)
   const topP = above0(typeof chat.top_p === "number" ? chat.top_p : 0.95)
-  out.bytes(8, new PB().varint(1, 1).varint(2, max).varint(3, 400).double(5, temp).varint(7, 40).double(8, topP))
+  const sampling = (max) => new PB().varint(1, 1).varint(2, max).varint(3, 400).double(5, temp).varint(7, 40).double(8, topP)
 
   // the caller's tools, and any the conversation used that it no longer
   // offers
   const offered = new Set()
+  const toolParts = []
   const tool = (name, desc, schema) => {
     if (!schema || typeof schema !== "object") schema = { type: "object", properties: {} }
     offered.add(name)
-    out.bytes(10, new PB().str(1, name).str(2, desc || name).bytes(3, JSON.stringify(schema)))
+    toolParts.push(new PB().str(1, name).str(2, desc || name).bytes(3, JSON.stringify(schema)).done())
   }
   for (const t of tools) tool(t.name, t.description ? `Described under <tool name="${t.name}"> in <tool_descriptions>, in the instructions.` : "", t.schema)
   for (const m of msgs) for (const c of m.calls ?? []) if (!offered.has(c.name)) tool(c.name, "Tool")
-  return out.str(21, uid).done()
+
+  const assemble = (more, max) => {
+    const out = new PB().bytes(1, head)
+    for (const p of [...prompts, ...more]) out.bytes(3, p)
+    out.varint(7, 5)
+    out.bytes(8, sampling(max))
+    for (const t of toolParts) out.bytes(10, t)
+    return out.str(21, uid).done()
+  }
+  const bytes = assemble([], chat.max || 128000) // the server holds max to the model's own
+  pingOf.set(bytes, () => assemble([encodeMsg({ role: USER, text: "continue" })], 1))
+  return bytes
 }
+
+// pingOf is each request's keepalive ping, made when one is first sent
+const pingOf = new WeakMap()
+const keepalivePing = (bytes) => pingOf.get(bytes)?.()
 
 function encodeMsg(m) {
   const b = new PB().str(1, randomUUID()).varint(2, m.role)
@@ -1747,14 +1764,20 @@ async function* prepend(first, rest) {
 const CHAT_WIRE = { effort: (chat) => effortOf(chat.reasoning_effort), build }
 const MESSAGES = { effort: anthropicEffort, build: buildMessages }
 
-async function roundtrip({ key, server, families }, chat, signal, wire = CHAT_WIRE) {
+// rpcHeaders are a GetChatMessage's headers for a framed body.
+const rpcHeaders = (key, body) => ({ "Content-Type": "application/connect+proto", "Connect-Protocol-Version": "1", ...(body[0] & 1 ? { "Connect-Content-Encoding": "gzip" } : {}), Authorization: "Basic " + key })
+
+// keep, when given, is the conversation's cache keepalive (keepaliveFor):
+// once the reply has finished, its pings are scheduled.
+async function roundtrip({ key, server, families, keep }, chat, signal, wire = CHAT_WIRE) {
   const uid = variantFor(families, chat.model, wire.effort(chat))
-  const body = frame(wire.build(chat, uid, key))
+  const msg = wire.build(chat, uid, key)
+  const body = frame(msg)
   let res
   try {
     res = await fetch(server + CHAT_RPC, {
       method: "POST",
-      headers: { "Content-Type": "application/connect+proto", "Connect-Protocol-Version": "1", ...(body[0] & 1 ? { "Connect-Content-Encoding": "gzip" } : {}), Authorization: "Basic " + key },
+      headers: rpcHeaders(key, body),
       body,
       signal,
     })
@@ -1784,12 +1807,13 @@ async function roundtrip({ key, server, families }, chat, signal, wire = CHAT_WI
     await fr.return?.()
     return head.value.error
   }
-  return { it: prepend(head.value, source) }
+  const it = prepend(head.value, source)
+  return { it: keep ? keptAfter(it, keep, { key, server, msg }) : it }
 }
 
 // complete answers a chat completion through GetChatMessage.
-async function complete({ key, server, families }, chat, signal) {
-  const rt = await roundtrip({ key, server, families }, chat, signal)
+async function complete({ key, server, families, keep }, chat, signal) {
+  const rt = await roundtrip({ key, server, families, keep }, chat, signal)
   if (!rt.it) return errorResponse(rt)
   const it = rt.it
   const id = "chatcmpl-" + randomBytes(12).toString("hex")
@@ -2016,8 +2040,8 @@ const anthropicUsage = (t = {}) => ({ input_tokens: t.input ?? 0, output_tokens:
 // completeMessages answers a Messages request through GetChatMessage, as
 // Anthropic would: the reply's blocks, its stop reason and the usage with
 // what was read from the cache and written to it.
-async function completeMessages({ key, server, families }, req, signal) {
-  const rt = await roundtrip({ key, server, families }, req, signal, MESSAGES)
+async function completeMessages({ key, server, families, keep }, req, signal) {
+  const rt = await roundtrip({ key, server, families, keep }, req, signal, MESSAGES)
   if (!rt.it) return anthropicError(rt)
   const it = rt.it
   const id = "msg_" + randomBytes(12).toString("hex")
@@ -2103,6 +2127,199 @@ async function completeMessages({ key, server, families }, req, signal) {
     },
   })
   return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Magpie-Sign-In": "kept" } })
+}
+
+// ---- cache keepalive (plugins#592) -----------------------------------------------
+
+// Devin's prompt cache lasts 5 minutes, and has no longer TTL to ask for
+// (PromptCacheOptions has only type EPHEMERAL). The devin CLI keeps it warm
+// (3000.11.205, cache_keepalive.rs): after a reply it sends the same
+// GetChatMessage again every 285 s, with "continue" at the end and
+// max_tokens 1, which reads the cache and renews it. This is the same,
+// off by default (each ping is billed as a read of the whole context):
+// after any reply that read or wrote the cache, up to max pings, until the
+// conversation's next real request, a refusal (401, 402, 429) or two
+// pings in a row that read less than half their prompt from the cache.
+// Unlike the CLI's, it also runs while the user is reading, not only while
+// a tool or subagent works: magpie can't tell those apart, and the issue's
+// reporter wants both. The CLI's ping carries query_label
+// "cache_keepalive" in its trace; this plugin labels no request, so its
+// ping doesn't either.
+const KEEPALIVE = "cache_keepalive"
+const KEEPALIVE_INTERVAL = 285 // seconds
+const KEEPALIVE_MAX = 6
+const KEEPALIVE_KEPT = 32 // conversations kept warm at once; past it the oldest stops
+const KEEPALIVE_STOP = new Set([401, 402, 429])
+
+// timers are what the pings wait on; tests hand in their own. A timer is
+// unref'd: it never keeps a process or a test running.
+const realTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (t) => clearTimeout(t) }
+let timers = realTimers
+
+const keeps = new Map() // conversation → {n, misses, timer, ctl}
+
+// keepaliveSettings are the interval (ms) and the most pings, from the
+// plugin's options (cacheKeepaliveInterval in seconds, 30–299;
+// cacheKeepaliveMaxPings, 1–50), else the CLI's interval and 6.
+function keepaliveSettings(options = {}) {
+  const sec = Number(options?.cacheKeepaliveInterval)
+  const max = Number(options?.cacheKeepaliveMaxPings)
+  return {
+    interval: (Number.isFinite(sec) && sec >= 30 && sec <= 299 ? sec : KEEPALIVE_INTERVAL) * 1000,
+    max: Number.isInteger(max) && max >= 1 && max <= 50 ? max : KEEPALIVE_MAX,
+  }
+}
+
+// the headers an agent names its session in, as magpie's gateway reads them
+const SESSION_HEADERS = ["x-claude-code-session-id", "x-session-id", "session_id", "session-id", "x-opencode-session", "x-session-affinity", "x-conversation-id"]
+
+// textsOf is a message's or system's words, without the cache marks a
+// client moves forward as the history grows
+const textsOf = (c) => (typeof c === "string" ? [c] : Array.isArray(c) ? c.map((b) => (typeof b === "string" ? b : typeof b?.text === "string" ? b.text : b?.type ?? "")) : [])
+
+// keepaliveKey is the conversation a request is of: the session the agent
+// names, the Claude Code subagent it is of (x-claude-code-agent-id, never
+// sent for the lead's own turns), and a hash of the prefix every turn
+// shares: the instructions, the tools' names and the first user message.
+// A subagent's prefix is its own, so its requests never stop its lead's
+// pings, nor the lead's its.
+function keepaliveKey(req, messages, headers) {
+  let h
+  try {
+    h = new Headers(headers ?? {})
+  } catch {
+    h = new Headers()
+  }
+  const session = SESSION_HEADERS.map((k) => h.get(k)?.trim()).find(Boolean) ?? ""
+  const agent = h.get("x-claude-code-agent-id")?.trim() ?? ""
+  let prefix
+  if (messages) {
+    const system = textsOf(req.system).map((t) => t.replace(BILLING_LINE, ""))
+    prefix = [system, (req.tools ?? []).map((t) => t?.name ?? ""), textsOf(req.messages?.[0]?.content)]
+  } else {
+    const ms = req.messages ?? []
+    const system = ms.filter((m) => m?.role === "system" || m?.role === "developer").map((m) => textsOf(m.content))
+    prefix = [system, (req.tools ?? []).map((t) => t?.function?.name ?? ""), textsOf(ms.find((m) => m?.role === "user")?.content)]
+  }
+  return [session, agent, createHash("sha256").update(JSON.stringify(prefix)).digest("hex").slice(0, 32)].join("\n")
+}
+
+// stopKeepalive stops a conversation's pings, one in flight too.
+function stopKeepalive(id) {
+  const k = keeps.get(id)
+  if (!k) return
+  keeps.delete(id)
+  if (k.timer) timers.clear(k.timer)
+  k.ctl?.abort()
+}
+
+function stopAllKeepalive() {
+  for (const id of [...keeps.keys()]) stopKeepalive(id)
+}
+
+// the pings stop with the process that sends them (the plugin host)
+let exitHooked = false
+function hookExit() {
+  if (exitHooked) return
+  exitHooked = true
+  process.once?.("exit", stopAllKeepalive)
+}
+
+// pingOnce sends a ping and reads its status and usage, and why it
+// failed (error).
+async function pingOnce(server, key, body, signal) {
+  let res
+  try {
+    res = await fetch(server + CHAT_RPC, { method: "POST", headers: rpcHeaders(key, body), body, signal })
+  } catch (e) {
+    return { status: 0, error: String(e?.message || e || "fetch failed") }
+  }
+  const failed = (e) => ({ status: e.status, error: e.message })
+  if (!res.ok) return failed(failure(res.status, (await res.text().catch(() => "")).slice(0, 1 << 16)))
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  try {
+    for await (const f of frames(res.body)) {
+      if (f.end) {
+        const e = failure(200, dec.decode(f.data))
+        if (e.status >= 300) return failed(e)
+        break
+      }
+      for (const x of fields(f.data)) {
+        if (x.num !== 7 || x.wire !== 2) continue
+        for (const g of fields(x.data)) {
+          if (g.wire !== 0) continue
+          if (g.num === 2) tokens.input = g.n
+          else if (g.num === 3) tokens.output = g.n
+          else if (g.num === 4) tokens.cacheWrite = g.n
+          else if (g.num === 5) tokens.cacheRead = g.n
+        }
+      }
+    }
+  } catch (e) {
+    return { status: 0, error: String(e?.message || e || "the reply broke off") }
+  }
+  return { status: 200, tokens }
+}
+
+// reportPing tells magpie of a ping, for its request log and usage
+// totals (magpie.usage, plugins#592): the pings were invisible there, as
+// they never pass magpie's gateway. They go straight to Devin, as the
+// gateway would re-shape the request and the cache would no longer match.
+// An aborted one (a real request came) went nowhere worth counting; an
+// older magpie, or OpenCode, has no magpie.usage and is told nothing.
+function reportPing(keep, r, ms) {
+  if (!keep.report || r.aborted) return
+  const t = r.tokens ?? {}
+  try {
+    keep.report({ kind: KEEPALIVE, model: keep.model, account: keep.account, input: t.input, output: t.output, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite, status: r.status, ms, error: r.error })
+  } catch {}
+}
+
+// scheduleKeepalive starts a conversation's pings for the request msg
+// just answered, in place of any it had.
+function scheduleKeepalive(keep, key, server, msg) {
+  const { id, interval, max } = keep
+  const ping = keepalivePing(msg)
+  if (!ping) return
+  stopKeepalive(id)
+  while (keeps.size >= KEEPALIVE_KEPT) stopKeepalive(keeps.keys().next().value)
+  const body = frame(ping)
+  const k = { n: 0, misses: 0, timer: null, ctl: null }
+  keeps.set(id, k)
+  hookExit()
+  const next = () => {
+    k.timer = timers.set(run, interval)
+    k.timer?.unref?.()
+  }
+  const run = async () => {
+    k.timer = null
+    if (keeps.get(id) !== k) return
+    k.n++
+    const ctl = (k.ctl = new AbortController())
+    const at = Date.now()
+    const r = await pingOnce(server, key, body, ctl.signal)
+    k.ctl = null
+    reportPing(keep, { ...r, aborted: ctl.signal.aborted }, Date.now() - at)
+    if (keeps.get(id) !== k) return // a real request came, or the switch went off
+    if (KEEPALIVE_STOP.has(r.status)) return stopKeepalive(id)
+    const t = r.tokens
+    const hit = r.status === 200 && t.cacheRead > 0 && t.cacheRead * 2 >= t.input + t.cacheRead + t.cacheWrite
+    k.misses = hit ? 0 : k.misses + 1
+    if (k.misses >= 2 || k.n >= max) return stopKeepalive(id)
+    next()
+  }
+  next()
+}
+
+// keptAfter passes a reply's events on, and once it has finished (any stop:
+// a tool call waiting too) schedules the conversation's pings, when the
+// reply read or wrote the cache: a request with nothing cached has nothing
+// to keep.
+async function* keptAfter(it, keep, { key, server, msg }) {
+  for await (const e of it) {
+    if (e.stop && (e.tokens?.cacheRead || e.tokens?.cacheWrite)) scheduleKeepalive(keep, key, server, msg)
+    yield e
+  }
 }
 
 // ---- OpenCode 2 ----------------------------------------------------------------------
@@ -2579,8 +2796,8 @@ export default {
   async setup(ctx) {
     await v2Setup(ctx)
   },
-  async server(input) {
-    return DevinAuthPlugin(input)
+  async server(input, options) {
+    return DevinAuthPlugin(input, options)
   },
 }
 
@@ -2692,7 +2909,12 @@ async function live(auth) {
   return { key: auth?.key, server: serverOf(auth) }
 }
 
-export async function DevinAuthPlugin({ client } = {}) {
+export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
+  // each ping, to magpie's request log (an older magpie has no usage)
+  const report = typeof magpie?.usage === "function" ? (call) => magpie.usage(ID, call) : null
+  // the cache keepalive: magpie's switch, or in OpenCode the plugin's
+  // option cacheKeepalive: true
+  const keepOn = () => magpie?.option?.(ID, KEEPALIVE) === true || options?.cacheKeepalive === true
   return {
     auth: {
       provider: ID,
@@ -2719,15 +2941,42 @@ export async function DevinAuthPlugin({ client } = {}) {
             } catch {
               return (messages ? anthropicError : errorResponse)({ status: 400, message: "a request that isn't JSON" })
             }
+            // a real request for a conversation stops its pings; its own
+            // reply starts them again
+            let keep
+            const on = keepOn()
+            if (!on) stopAllKeepalive()
+            else {
+              const id = keepaliveKey(chat, messages, init.headers ?? (input instanceof Request ? input.headers : undefined))
+              stopKeepalive(id)
+              // the model and account the pings are reported as: the
+              // request's, as magpie names them while it is in hand
+              keep = { id, ...keepaliveSettings(options), report, model: chat.model, account: magpie?.account?.(ID) }
+            }
             const { key, server } = await live(now)
             const families = await familiesFor(key, server)
-            return (messages ? completeMessages : complete)({ key, server, families }, chat, init.signal)
+            return (messages ? completeMessages : complete)({ key, server, families, keep }, chat, init.signal)
           },
         }
       },
       methods: [
         { type: "oauth", label: "Devin (browser)", authorize: browserSignIn },
         { type: "oauth", label: "Devin CLI's sign-in", authorize: cliSignIn },
+      ],
+      // magpie's own switches (OpenCode never reads auth.options)
+      options: [
+        {
+          key: KEEPALIVE,
+          label: "Keep the cache warm",
+          description: "Devin keeps a prompt cache for 5 minutes. When on, after a reply the conversation is sent again with max_tokens 1 every 285 s, up to 6 times, so a later turn reads the cache. Each ping is billed as a cache read of the whole context and shown in Usage. Interval and count: Plugins › Options.",
+          labels: { zh: "缓存保活", "zh-TW": "快取保活", ja: "キャッシュを保持", de: "Cache warm halten" },
+          descriptions: {
+            zh: "Devin 的提示词缓存只保留 5 分钟。开启后，每次回复结束会每 285 秒以 max_tokens 1 重发一次对话，最多 6 次，让之后的回合读取缓存而不是重写。每次保活都按整段上下文的缓存读取计费，并在用量里记为「缓存保活」。间隔和次数在插件 › 选项里改。",
+            "zh-TW": "Devin 的提示詞快取只保留 5 分鐘。開啟後，每次回覆結束會每 285 秒以 max_tokens 1 重送一次對話，最多 6 次，讓之後的回合讀取快取而不是重寫。每次保活都以整段上下文的快取讀取計費，並在用量裡記為「快取保活」。間隔和次數在外掛 › 選項裡改。",
+            ja: "Devin のプロンプトキャッシュは 5 分しか保持されません。オンにすると、返信のあと 285 秒ごとに会話を max_tokens 1 で再送し（最大 6 回）、次のターンがキャッシュを読めるようにします。各 ping はコンテキスト全体のキャッシュ読み取りとして課金され、使用量に表示されます。間隔と回数はプラグイン › オプションで変更できます。",
+            de: "Devin hält einen Prompt-Cache nur 5 Minuten. Ist dies an, wird das Gespräch nach einer Antwort alle 285 s mit max_tokens 1 erneut gesendet, bis zu 6-mal. Jeder Ping wird als Cache-Lesen des ganzen Kontexts berechnet und unter Nutzung gezeigt. Intervall und Anzahl: Erweiterungen › Optionen.",
+          },
+        },
       ],
       // magpie's: the plan and how much of its quota is gone. The built-in
       // read none, so no read marks the account or clears it, not even a
@@ -2798,4 +3047,4 @@ export async function DevinAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }

@@ -81,6 +81,54 @@ The plugin's `fetch` handles this:
   were counted. The plugin waits for actual content before opening a
   successful stream, so the gateway can try another channel.
 
+## Keeping the cache warm
+
+Devin keeps a prompt cache for 5 minutes, and has no longer TTL to ask
+for (`PromptCacheOptions` has only `type: EPHEMERAL`; Claude Code's
+`ttl: "1h"` has nowhere to go). After 5 minutes without a request, the
+next turn writes the whole context again.
+
+**Keep the cache warm** (`cache_keepalive`), a switch in the provider's
+editor in magpie, **off by default** (#592), keeps it as the devin CLI
+does (`cache_keepalive.rs`, 3000.11.205): after a reply that read or wrote
+the cache, whatever it stopped for (a tool call waiting too), the same
+`GetChatMessage` is sent again every 285 seconds, byte for byte, with one
+more user prompt, `continue`, and `max_tokens` 1. Each one reads the cache
+and renews it. Unlike the CLI's, it also runs while the user is reading
+the reply, not only while a tool or subagent works.
+
+- The conversation's next real request stops its pings; its own reply
+  starts them again. A conversation is the session the agent names, the
+  Claude Code subagent (`x-claude-code-agent-id`) and a hash of the
+  instructions, the tools' names and the first user message, so a
+  subagent's requests never stop its lead's pings.
+- They stop on a 401, 402 or 429, after two pings in a row that read less
+  than half their prompt from the cache, at the most pings (6), when the
+  switch goes off, and with the plugin host's process. The timers never
+  keep a process running.
+- The plugin's options change the interval and the most pings:
+  `cacheKeepaliveInterval` (seconds, 30–299, default 285) and
+  `cacheKeepaliveMaxPings` (1–50, default 6). In magpie they are set from
+  the plugin's row on the Plugins page (Installed › Options, which starts
+  from these defaults), or in its `plugins.json` entry; in OpenCode,
+  `["@magpie-community/opencode-devin-auth", {…}]`. In OpenCode, which
+  has no switch, `cacheKeepalive: true` turns it on.
+- Each ping shows in magpie's request log and usage totals as a call of
+  magpie's, *Cache keep-alive*, on the conversation's model and account,
+  with its tokens and cost (a magpie that has `magpie.usage`, from
+  11-01; #592). The pings go straight to Devin, never through magpie's
+  gateway, which would re-shape the request so the cache no longer
+  matched. One cut short by the conversation's next request isn't
+  listed. An older magpie, and OpenCode, list none.
+
+**The cost.** Each ping is billed as a cache read of the whole context, plus
+a token or two. That is about a tenth of writing it again, but it is
+spent whether or not the conversation goes on: six pings of a 300k-token
+context read 1.8M cached tokens over 28 minutes, and if the user never
+comes back, all of it is lost. It pays when the next turn comes after 5
+minutes and within half an hour; a user who leaves a conversation for good
+pays for nothing. So it is off until turned on.
+
 ## Models
 
 Devin's models are families: `swe-2`, `claude-opus-5-5`, `gpt-6-sol`, …

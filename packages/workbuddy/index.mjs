@@ -3387,6 +3387,17 @@ function makePlugin(site) {
           key: FREE_ONLY,
           label: "Free models only",
           description: `Lists only the models ${site.name} serves at no cost, and turns away a request for any other here instead of sending it, so no credits are spent. A model free only at night counts as paid.`,
+          // the same words in magpie's other languages, and that the list
+          // leaves models out while it is on (plugins#590); magpie's own
+          // fields, which an older magpie and OpenCode leave alone
+          labels: { zh: "仅免费模型", "zh-TW": "僅免費模型", ja: "無料モデルのみ", de: "Nur kostenlose Modelle" },
+          descriptions: {
+            zh: `只列出 ${site.name} 免费提供的模型；其他模型的请求在这里就被拒绝、不会发出，因此不消耗积分。只在夜间免费的模型按付费算。`,
+            "zh-TW": `只列出 ${site.name} 免費提供的模型；其他模型的請求在這裡就被拒絕、不會送出，因此不消耗積分。只在夜間免費的模型以付費計。`,
+            ja: `${site.name} が無料で提供するモデルだけを表示し、ほかのモデルへのリクエストは送信せずここで断るので、クレジットを消費しません。夜間だけ無料のモデルは有料として扱います。`,
+            de: `Listet nur die Modelle, die ${site.name} kostenlos anbietet, und weist eine Anfrage an jedes andere hier ab, statt sie zu senden, sodass keine Credits verbraucht werden. Ein Modell, das nur nachts kostenlos ist, gilt als kostenpflichtig.`,
+          },
+          filtersModels: true,
         },
       ],
       async loader(getAuth) {

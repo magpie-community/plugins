@@ -59,6 +59,23 @@ for (const [plugin, site, url] of [
     expect(o.default).toBeUndefined()
   })
 
+  // plugins#590 (anewuser6937): the switch read in English in magpie's
+  // Chinese window, and a one-model list looked broken. Its words come in
+  // each of magpie's languages, within magpie's caps (60 and 300), and it
+  // says the list leaves models out while it is on.
+  test(`${site}: says its words in magpie's languages, and that it filters the list`, async () => {
+    const h = await plugin({ client: {} })
+    const o = h.auth.options.find((x) => x.key === _internal.FREE_ONLY)
+    expect(o.filtersModels).toBe(true)
+    for (const lang of ["zh", "zh-TW", "ja", "de"]) {
+      expect(o.labels[lang].length).toBeGreaterThan(0)
+      expect(o.labels[lang].length).toBeLessThanOrEqual(60)
+      expect(o.descriptions[lang]).toContain(site === "workbuddy" ? "WorkBuddy" : "WorkBuddy AI")
+      expect(o.descriptions[lang].length).toBeLessThanOrEqual(300)
+    }
+    expect(o.labels.zh).toBe("仅免费模型")
+  })
+
   test(`${site}: on, the list holds only the free models; off, all of them`, async () => {
     serve()
     const auth = { type: "api", key: KEY }
