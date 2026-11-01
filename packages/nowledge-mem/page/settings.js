@@ -100,10 +100,10 @@ $('configure').onclick = async () => {
  if (!draftOpen) {
   try {
    const snap = {options:await magpie.options.get()};
-   if (!snap || !snap.options) throw new Error('unsupported');
+   if (!snap || !snap.options) throw new Error('missing options');
    draftOptions = snap.options; savedOptions = snap.options; $('result').hidden = true; fill(draftOptions); summary(); draftOpen = true;
-   $('save').disabled = false; result('legacySave');
-  } catch { message('configured','unsupported',true); return; }
+   $('save').disabled = false;
+  } catch { message('configured','loadFailed',true); return; }
  }
  $('settings').showModal();
 };
@@ -122,7 +122,6 @@ magpie.ready.then(async () => {
   savedOptions = await magpie.options.get(); summary();
   message('configured', savedOptions.serverUrl ? 'loaded' : 'notConfigured');
   $('configure').disabled = false; $('test-saved').disabled = false;
-  message('configured','legacySave');
  } catch { message('configured','loadFailed',true); }
 }).catch(() => { paint(); message('configured','bridgeFailed',true); });
 function nextOptions() {
