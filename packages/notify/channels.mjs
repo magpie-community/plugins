@@ -17,7 +17,7 @@ async function post(url, body, headers = {}, form = false) {
   try { data = await res.json() } catch {}
   const code = data?.code ?? data?.errcode ?? data?.StatusCode
   const okBody = data?.ok !== false && (code == null || code === 0 || code === 200)
-  return res.ok && okBody ? { ok: true, status: res.status } : { ok: false, status: res.status, error: String(data?.msg ?? data?.errmsg ?? data?.description ?? data?.message ?? res.statusText ?? "").slice(0, 200) }
+  return res.ok && okBody ? { ok: true, status: res.status } : { ok: false, status: res.status, error: String(data?.msg ?? data?.errmsg ?? data?.description ?? data?.errorDescription ?? data?.message ?? res.statusText ?? "").slice(0, 200) }
 }
 
 const trimSlash = (s) => String(s).replace(/\/+$/, "")
@@ -35,7 +35,7 @@ export const kinds = {
 
   // Gotify: self-hosted push notifications
   gotify: (c, m) => post(`${trimSlash(c.server)}/message`, {
-    title: m.title, message: m.body, priority: c.priority ?? 5, ...(c.extras ? { extras: c.extras } : {}),
+    title: m.title, message: m.body, ...(c.priority != null ? { priority: c.priority } : {}), ...(c.extras ? { extras: c.extras } : {}),
   }, { "X-Gotify-Key": c.token }),
 
   // Server酱 Turbo (SCT…) and Server酱³ (sctp<uid>t…)
