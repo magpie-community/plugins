@@ -107,6 +107,12 @@ derived value for all of them.
 - `recall`: default **true**. Whether a turn gets Mem context. Recall only
   happens when a Mem endpoint is reachable; failures leave the request as it
   came.
+- `skipAgents`: default empty. Apps this plugin leaves alone: their requests
+  get no recall, Context Bundle or capture, and nothing about them reaches Mem.
+  A list of names (`["Mozilla", "Claude Code"]`) or one comma-separated
+  string. A name is the app's agent as Magpie's Usage page shows it; case,
+  spaces and punctuation don't matter, so `Claude Code` and `claude-code` are
+  one app. A translator or other one-shot tool behind Magpie goes here (#597).
 - `contextBundle`: default **true**. On a session's first turn, ask Mem for its
   Context Bundle (owner profile, rules and Working Memory) and add its rendered
   markdown. When the bundle is empty, missing or failing, the hook falls back
@@ -261,7 +267,8 @@ own: the offline tests replace `globalThis.fetch` to keep Cursor's token local
 The page uses only Magpie's released `magpie.options` and theme bridge. It
 declares no reads and saving stores configuration without probing the
 connection or writing Memory. It shows the Server, API key, Space, Agent, the
-recall, Context Bundle and capture switches. Its **What is sent** section says
+apps without memory (`skipAgents`), and the recall, Context Bundle and capture
+switches. Its **What is sent** section says
 the scope: direct local requests and `magpie-key` from this computer; other
 gateway keys and remote requests are never included. It follows Magpie's language (English, Simplified and
 Traditional Chinese, Japanese, German) and theme, and preserves options it does

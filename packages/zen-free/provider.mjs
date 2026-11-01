@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import {
   PROVIDER,
   SDK,
@@ -20,34 +20,179 @@ import { guardToolResponse } from "./tool-response.mjs";
 // listed before then still names /zen/v1 (LEGACY_BASE), which is asked here.
 const DEFAULT_BASE = "https://opencode.ai/inference/v1";
 const LEGACY_BASE = "https://opencode.ai/zen/v1";
+// Where OpenCode 2 itself sends each protocol: the base_url models.dev's
+// v2 catalog (models.opencode.ai/experimental/v2.0/api.json, which 2.2.5
+// reads) gives every opencode model, free ones included, on 2026-11-01.
+// 0.1.18 and before sent all of them to /inference/v1, where no OpenCode
+// 2 request goes. The model list stays at /inference/v1/models: OpenCode
+// reads its catalog instead, and /inference/openai/v1/models is a 404.
+const OPENCODE_BASE = {
+  chat: "https://opencode.ai/inference/openai/v1",
+  responses: "https://opencode.ai/inference/openai/v1",
+  anthropic: "https://opencode.ai/inference/anthropic/v1",
+};
 const CATALOG = "https://models.opencode.ai/api.json";
 // OpenCode's table of what each model is asked at; packages/web's zen.mdx,
 // read before, was removed on 2026-10-12 (anomalyco/opencode#54761)
 const DOCS =
   "https://raw.githubusercontent.com/anomalyco/opencode/dev/services/www/src/docs/content/console/models.mdx";
 const PATHS = { chat: "/chat/completions", responses: "/responses", anthropic: "/messages" };
-const CORE_TOOLS = ["bash", "edit", "glob", "grep", "read"];
+// OpenCode 2's own core tools, under its names: shell, not 1.x's bash, and
+// `path`, not 1.x's filePath (what 2.2.5 sent on 2026-11-01). 0.1.18 and
+// before offered 1.x's, which no OpenCode Zen serves today sends.
+const CORE_TOOLS = ["edit", "glob", "grep", "read", "shell"];
 // The parameter each stand-in takes, OpenCode's own first one: Zen's free
-// tier answers 403 FreeTierError to bash or read offered with none.
+// tier answers 403 FreeTierError to a core tool offered with none.
 const CORE_PARAMETER = {
-  bash: "command",
-  edit: "filePath",
+  edit: "path",
   glob: "pattern",
   grep: "pattern",
-  read: "filePath",
+  read: "path",
+  shell: "command",
 };
-// What OpenCode 2.0.25 sends as its User-Agent on every protocol:
-// `opencode/${channel}/${version}/${name}` (its App service, read from the
-// release binary and captured from its requests on 2026-10-25). Since
-// 2026-10-26 Zen's free tier answers 429 FreeUsageLimitError ("Free models
-// work in OpenCode") to the exact User-Agent 0.1.6 to 0.1.15 sent, OpenCode
-// 1.19.0's `opencode/1.19.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`,
-// whatever the body says; the same request under any other string, OpenCode
-// 2.0.25's included, is served.
-const OPENCODE_VERSION = "2.0.25";
-export function userAgent() {
-  return `opencode/latest/${OPENCODE_VERSION}/cli`;
+// What OpenCode sends as its User-Agent on every protocol:
+// `opencode/${channel}/${version}/${name}` (packages/core/src/app.ts),
+// opencode/latest/2.2.5/cli from @opencode/cli 2.2.5, npm's latest on
+// 2026-11-01. Since 2026-10-26 Zen's free tier answers 429
+// FreeUsageLimitError ("Free models work in OpenCode") to the exact
+// User-Agent 0.1.6 to 0.1.15 sent, OpenCode 1.19.0's, whatever the body
+// says. A fixed version goes stale as OpenCode updates itself, so the
+// version is the one OpenCode's own updater is told is latest
+// (opencode.ai/update/api/latest/cli/npm), asked at most every six hours,
+// and this one when that can't be read.
+const OPENCODE_VERSION = "2.2.5";
+const VERSION_URL = "https://opencode.ai/update/api/latest/cli/npm";
+const VERSION_EVERY = 6 * 60 * 60 * 1000;
+export function userAgent(version = OPENCODE_VERSION) {
+  return `opencode/latest/${version}/cli`;
 }
+
+// The latest OpenCode version as `url` says it, or undefined when it can't
+// be read or isn't a release version.
+export async function latestVersion(url, current = OPENCODE_VERSION) {
+  try {
+    const response = await fetch(`${url}?current=${encodeURIComponent(current)}`, {
+      signal: AbortSignal.timeout(3000),
+      redirect: "error",
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    const version = (await response.json())?.version;
+    return typeof version === "string" && /^\d{1,4}\.\d{1,4}\.\d{1,6}$/.test(version) &&
+      newer(version, OPENCODE_VERSION)
+      ? version
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Whether a is b or later; an older one (a stale mirror) is never taken.
+function newer(a, b) {
+  const x = a.split(".").map(Number);
+  const y = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return true;
+}
+
+// OpenCode's project id (packages/core/src/project.ts): in a git repository
+// with a remote, sha1 of `git-remote:host/path`; anywhere else sha1 of
+// `directory:` and the directory. OpenCode 2 sends `global` only from a
+// git repository with no remote and no commit, so 0.1.14 to 0.1.18
+// sending it on every request put every magpie user under the one project
+// id real OpenCode almost never sends. A repository with no remote, which
+// OpenCode names by its root commit, is named by its directory here: the
+// same shape, and no git to run.
+const sha1 = (text) => createHash("sha1").update(text).digest("hex");
+
+function remotePath(value) {
+  const input = value.trim();
+  if (!input) return undefined;
+  const parts = (host, name) => {
+    const path = name.replace(/^\/+/, "").replace(/\.git\/?$/, "").replace(/\/+$/, "");
+    return host && path ? `${host.toLowerCase()}/${path}` : undefined;
+  };
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {
+    try {
+      const url = new URL(input);
+      return url.protocol === "file:" ? undefined : parts(url.hostname, url.pathname);
+    } catch {
+      return undefined;
+    }
+  }
+  const scp = /^([^@/:]+@)?([^/:]+):(.+)$/.exec(input);
+  return scp ? parts(scp[2], scp[3]) : undefined;
+}
+
+// The repository directory holds, as OpenCode finds it: the nearest .git
+// up from directory, its worktree, and the remote OpenCode names it by
+// (origin, else the first one listed).
+export function repository(directory) {
+  let dir = directory;
+  for (;;) {
+    const dotGit = join(dir, ".git");
+    let stat;
+    try {
+      stat = statSync(dotGit);
+    } catch {}
+    if (stat) {
+      let common = dotGit;
+      try {
+        if (stat.isFile()) {
+          const gitdir = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"))?.[1]?.trim();
+          if (!gitdir) return undefined;
+          const own = resolve(dir, gitdir);
+          let shared = own;
+          try {
+            shared = resolve(own, readFileSync(join(own, "commondir"), "utf8").trim());
+          } catch {}
+          common = shared;
+        }
+        const config = readFileSync(join(common, "config"), "utf8");
+        const remotes = [...config.matchAll(/^\s*\[remote\s+"([^"]+)"\]([^[]*)/gm)].map((m) => ({
+          name: m[1],
+          url: /^\s*url\s*=\s*(.+)$/m.exec(m[2])?.[1],
+        }));
+        const remote = remotes.find((r) => r.name === "origin") ?? remotes[0];
+        return { root: dir, remote: remote?.url && remotePath(remote.url) };
+      } catch {
+        return { root: dir, remote: undefined };
+      }
+    }
+    const up = dirname(dir);
+    if (up === dir) return undefined;
+    dir = up;
+  }
+}
+
+function localDirectory(directory) {
+  const dir = directory.replace(/^~(?=\/|$)/, homedir());
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+export function projectID(directory) {
+  const dir = localDirectory(directory);
+  const repo = repository(dir);
+  if (repo?.remote) return sha1(`git-remote:${repo.remote}`);
+  return sha1(`directory:${repo?.root ?? dir}`);
+}
+
+// OpenCode's temp folder, which its environment block names: its own
+// folder under the system's, as the system resolves it.
+function opencodeTmp() {
+  try {
+    return join(realpathSync(tmpdir()), "opencode");
+  } catch {
+    return join(tmpdir(), "opencode");
+  }
+}
+
 // How long a request for a model the last list didn't have waits before it
 // asks Zen's list again: a model Zen made free since is served at once,
 // and a model typed in by hand doesn't ask the list on every request.
@@ -103,12 +248,13 @@ function normalizeTools(body, protocol) {
     const parameters = {
       type: "object",
       properties: { [CORE_PARAMETER[name]]: { type: "string" } },
+      required: [CORE_PARAMETER[name]],
       additionalProperties: false,
     };
     const definition = { name, description: "Not available. Never call this tool." };
     body.tools.push(
       protocol === "chat"
-        ? { type: "function", function: { ...definition, parameters } }
+        ? { type: "function", function: { ...definition, parameters, strict: false } }
         : protocol === "anthropic"
           ? { ...definition, input_schema: parameters }
           : { type: "function", ...definition, parameters },
@@ -132,12 +278,23 @@ function normalizeTools(body, protocol) {
 // literal line 0.1.15 to 0.1.17 added, `Working directory: unknown`, while
 // the same request with a path there is served (shanmao_10826 on magpie's
 // Discord): fixed text that only this plugin sends is its fingerprint, as
-// its old User-Agent was. So the block is OpenCode 2.2.0's own
-// (packages/core/src/instructions/builtins.ts, without its line about
-// OpenCode's temp folder), with the directory the agent's own prompt
-// names, as OpenCode names its own, or the user's home folder when the
-// prompt names none.
-const HAS_ENVIRONMENT = /<env>[\s\S]*Working directory:[\s\S]*<\/env>/;
+// its old User-Agent was. So the block is OpenCode 2.2.5's own, word for
+// word (packages/core/src/instructions/builtins.ts, as 2.2.5 sent it to
+// Zen on 2026-11-01, its temp folder line included), with the directory
+// the agent's own prompt names, as OpenCode names its own, or the user's
+// home folder when the prompt names none.
+//
+// Only OpenCode's own block counts as already there: `<env>` and then
+// `  Working directory: `, two spaces in, as every OpenCode (1.x and 2.x)
+// writes it. Another agent's block is its own text, not OpenCode's: Claude
+// Code up to 2.1.100 or so ends its prompt with "Here is useful information
+// about the environment you are running in:\n<env>\nWorking directory: ...",
+// and with that taken for OpenCode's, its requests went to Zen without
+// OpenCode's block while Pi's, which has none, got it. Zen then served Pi
+// and answered Claude Code 429 FreeUsageLimitError from the same address
+// (MrHayesLin on X, 2026-11-01). The agent's block stays; OpenCode's
+// follows it.
+const HAS_ENVIRONMENT = /<env>\r?\n {2}Working directory: [^\n]*\n[\s\S]*?<\/env>/;
 // How agents name their working directory: Codex's `<cwd>`, Claude Code's
 // and others' `Working directory:`, Kimi's "The current working directory
 // is `...`". Only an absolute path counts.
@@ -178,17 +335,16 @@ export function statedDirectory(body, protocol) {
 
 // OpenCode's block, said for `directory`.
 export function environment(directory) {
-  let git = false;
-  try {
-    git = existsSync(join(directory.replace(/^~(?=\/)/, homedir()), ".git"));
-  } catch {}
+  const local = localDirectory(directory);
+  const repo = repository(local);
   return [
     "Here is some useful information about the environment you are running in:",
     "<env>",
     `  Working directory: ${directory}`,
-    `  Workspace root folder: ${directory}`,
-    `  Is directory a git repo: ${git ? "yes" : "no"}`,
+    `  Workspace root folder: ${repo && repo.root !== local ? repo.root : directory}`,
+    `  Is directory a git repo: ${repo ? "yes" : "no"}`,
     `  Platform: ${process.platform}`,
+    `  Prefer ${opencodeTmp()} over generic system temporary directories such as /tmp; it is pre-created and approved for external access.`,
     "</env>",
   ].join("\n");
 }
@@ -294,6 +450,24 @@ export function sessionID(headers, body) {
   return session;
 }
 
+// OpenCode's trace headers (its Effect tracer's B3 and W3C forms): one
+// trace a conversation, a new span each request.
+const TRACES = new Map();
+const hex = (bytes) => randomBytes(bytes).toString("hex");
+
+export function traceHeaders(session) {
+  let trace = TRACES.get(session);
+  if (trace) {
+    TRACES.delete(session);
+  } else {
+    trace = hex(16);
+    if (TRACES.size >= KEEP_SESSIONS) TRACES.delete(TRACES.keys().next().value);
+  }
+  TRACES.set(session, trace);
+  const span = hex(8);
+  return { b3: `${trace}-${span}-1-${hex(8)}`, traceparent: `00-${trace}-${span}-01` };
+}
+
 async function server(_input, options = {}) {
   const baseURL = httpURL(options.baseURL ?? DEFAULT_BASE);
   const catalogURL = httpURL(options.catalogURL ?? CATALOG);
@@ -308,9 +482,30 @@ async function server(_input, options = {}) {
   let protocols = { ...bootstrapProtocols };
   let listed = false;
   let listedAt = 0;
+  // OpenCode's latest version, asked of its updater when the base is
+  // Zen's own (or a versionURL is given), never from a test's fixture.
+  const versionURL =
+    options.versionURL ?? (options.baseURL === undefined ? VERSION_URL : undefined);
+  let version = OPENCODE_VERSION;
+  let versionAt = -Infinity;
+  let versionAsk;
+  async function currentVersion() {
+    if (!versionURL || Date.now() - versionAt < VERSION_EVERY) return version;
+    versionAsk ??= latestVersion(versionURL, version).then((found) => {
+      if (found) version = found;
+      versionAt = Date.now();
+      versionAsk = undefined;
+      return version;
+    });
+    return versionAsk;
+  }
 
   async function discover(signal) {
-    const headers = { authorization: "Bearer public", "x-opencode-client": "cli" };
+    const headers = {
+      authorization: "Bearer public",
+      "user-agent": userAgent(await currentVersion()),
+      "x-opencode-client": "cli",
+    };
     const [listing, catalog, docs] = await Promise.allSettled([
       readRemote(`${baseURL}/models`, true, headers, signal),
       readRemote(catalogURL, true, undefined, signal),
@@ -436,33 +631,38 @@ async function server(_input, options = {}) {
             addEnvironment(body, protocol);
             if (protocol === "chat")
               body.stream_options = { ...body.stream_options, include_usage: true };
-            // Only what OpenCode 2.0.25 itself sends to its gateway, so a
-            // caller's own headers (an agent's User-Agent, x-stainless-*, ...)
-            // never mark the request as not OpenCode's.
+            // Only what OpenCode 2.2.5 itself sends to its gateway, in its
+            // order, so a caller's own headers (an agent's User-Agent,
+            // x-stainless-*, ...) never mark the request as not OpenCode's.
+            // Accept is fetch's own */*, after Connection, as OpenCode's is.
             const given = request.headers;
             const session = sessionID(given, body);
             const project = _input?.project;
-            const headers = new Headers({
-              "content-type": "application/json",
-              accept: "*/*",
-              "user-agent": userAgent(),
-              "x-opencode-project":
-                given.get("x-opencode-project") ||
-                (project?.vcs === "git" && project.id ? project.id : "global"),
-              "x-opencode-session": session,
-              "x-opencode-client": "cli",
-              "x-opencode-session-id": session,
-              "x-session-affinity": session,
-              "x-session-id": session,
-            });
+            const directory = statedDirectory(body, protocol) ?? homedir();
+            const trace = traceHeaders(session);
+            const headers = new Headers();
+            if (protocol !== "anthropic") headers.set("authorization", "Bearer public");
+            headers.set("content-type", "application/json");
+            headers.set("user-agent", userAgent(await currentVersion()));
+            headers.set("b3", trace.b3);
+            headers.set("traceparent", trace.traceparent);
+            headers.set("x-opencode-client", "cli");
+            headers.set(
+              "x-opencode-project",
+              given.get("x-opencode-project") ||
+                (project?.vcs === "git" && project.id ? project.id : projectID(directory)),
+            );
+            headers.set("x-opencode-session", session);
+            headers.set("x-opencode-session-id", session);
+            headers.set("x-session-affinity", session);
+            headers.set("x-session-id", session);
             if (protocol === "anthropic") {
               headers.set("x-api-key", "public");
               headers.set("anthropic-version", given.get("anthropic-version") || "2023-06-01");
               if (given.get("anthropic-beta")) headers.set("anthropic-beta", given.get("anthropic-beta"));
-            } else {
-              headers.set("authorization", "Bearer public");
             }
-            const response = await fetch(`${baseURL}${PATHS[protocol]}`, {
+            const upstream = baseURL === DEFAULT_BASE ? OPENCODE_BASE[protocol] : baseURL;
+            const response = await fetch(`${upstream}${PATHS[protocol]}`, {
               method: "POST",
               headers,
               body: JSON.stringify(body),

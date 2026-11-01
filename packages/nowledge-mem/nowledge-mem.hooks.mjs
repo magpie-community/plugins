@@ -14,7 +14,7 @@
 //    "contextBundle": true, "maxMemories": 5, "maxBytes": 6000,
 //    "requestTimeoutMs": 900, "recallBackoffMs": 30000, "capture": false,
 //    "captureTools": true, "captureFilter": "off", "captureCindy": false,
-//    "allowInsecureHttp": false}
+//    "allowInsecureHttp": false, "skipAgents": []}
 //
 // A turn keeps the block it was given for the rest of the conversation, so what
 // the agent sends stays the same from one request to the next and the
@@ -23,7 +23,7 @@
 import { resolve } from "node:path";
 import { captureMessage } from "./capture-filter.mjs";
 import { conversation as transcript, history, notice, open, close } from "./conversation.mjs";
-import { MemFailure as Failure, resolveOptions, request, serviceKey, sha256, trimText, utf8, version } from "./mem.mjs";
+import { MemFailure as Failure, agentKey, resolveOptions, request, serviceKey, sha256, trimText, utf8, version } from "./mem.mjs";
 const maxQuery = 2000;
 const maxMemory = 1000;
 const maxImport = 512 << 10;
@@ -65,7 +65,9 @@ export async function onRequest(body, ctx) {
 }
 async function run(body, ctx) {
     const o = resolveOptions(ctx.options);
-    const own = ctx.origin === "local" || ctx.origin === "magpie-key";
+    // An app the user listed in skipAgents (a translator, say) gets neither
+    // recall nor capture: its requests go as they came, and Mem hears nothing.
+    const own = (ctx.origin === "local" || ctx.origin === "magpie-key") && !o.skipAgents.has(agentKey(ctx.agent));
     const recall = o.recall && own;
     const capture = o.capture && own;
     if (!recall && !capture) {

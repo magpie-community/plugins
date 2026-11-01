@@ -20,7 +20,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createTracker } from "./lib/track.mjs"
 import { createScanner } from "./lib/scan.mjs"
-import { createJumper } from "./lib/jump.mjs"
+import { createJumper, judgeJump } from "./lib/jump.mjs"
 
 const here = dirname(fileURLToPath(import.meta.url))
 // the page's folder, where live.js goes; a test points this elsewhere so it
@@ -223,7 +223,8 @@ function jumpCacheFile() {
 function readLastJumpAt() {
   try {
     const j = JSON.parse(readFileSync(jumpCacheFile(), "utf8"))
-    return Number(j?.at) > 0 ? Number(j.at) : 0
+    const at = Number(j?.at)
+    return Number.isFinite(at) && at > 0 ? at : 0
   } catch { return 0 }
 }
 
@@ -249,16 +250,14 @@ function checkJumpOption(directReq) {
   // magpie restarts the plugin host when options.set writes jumpRequest to
   // plugins.json. Keep the last handled timestamp in our own cache file (never
   // touching plugins.json) so the freshly started host acts on a ≤15s request
-  // once and never replays it on later restarts.
-  if (!at || at <= lastJumpAt || Date.now() - at > 15000) {
-    if (at > lastJumpAt) {
-      lastJumpAt = at
-      if (!standalone) writeLastJumpAt(at)
-    }
-    return
+  // once and never replays it on later restarts. judgeJump keeps a time ahead
+  // of the clock from blocking later requests (#583).
+  const { fire, record } = judgeJump(at, lastJumpAt, Date.now())
+  if (record) {
+    lastJumpAt = at
+    if (!standalone) writeLastJumpAt(at)
   }
-  lastJumpAt = at
-  if (!standalone) writeLastJumpAt(at)
+  if (!fire) return
   lastJumpPromise = jumper.jump({
     key: String(req.key || ""),
     session: String(req.session || ""),

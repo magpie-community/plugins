@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 
 // Bumped with package.json: Mem's own clients record it on imported Threads.
-export const version = "0.1.2";
+export const version = "0.1.3";
 
 // The only report codes magpie's Plugins page shows; tools turn these into
 // messages, never the service's own text.
@@ -42,6 +42,14 @@ export function resolveOptions(raw = {}, env = process.env) {
             throw new MemFailure("invalid");
         return value;
     };
+    // skipAgents names the apps whose requests this plugin leaves alone: a
+    // list, or one string of names split by commas or new lines.
+    let skip = raw.skipAgents ?? [];
+    if (typeof skip === "string")
+        skip = skip.split(/[,，\n]/u);
+    if (!Array.isArray(skip) || skip.some((name) => typeof name !== "string"))
+        throw new MemFailure("invalid");
+    const skipAgents = new Set(skip.map(agentKey).filter(Boolean));
     const captureFilter = raw.captureFilter === undefined ? "off" : raw.captureFilter;
     if (captureFilter !== "off" && captureFilter !== "human")
         throw new MemFailure("invalid");
@@ -90,6 +98,7 @@ export function resolveOptions(raw = {}, env = process.env) {
         spaceId: text(raw.spaceId),
         agentId: text(raw.agentId),
         hostAgentId: text(raw.hostAgentId),
+        skipAgents,
         recall: bool("recall", true),
         contextBundle: bool("contextBundle", true),
         capture: bool("capture", false),
@@ -101,6 +110,12 @@ export function resolveOptions(raw = {}, env = process.env) {
         requestTimeoutMs: integer("requestTimeoutMs", 1500, 50, 5000),
         recallBackoffMs: integer("recallBackoffMs", 30_000, 100, 300_000),
     };
+}
+
+// agentKey is an app's name as skipAgents compares it: magpie's id
+// ("claude-code") and the name its pages show ("Claude Code") are one app.
+export function agentKey(name) {
+    return String(name ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
 // request sends to the configured Mem only, reads a bounded reply and decodes

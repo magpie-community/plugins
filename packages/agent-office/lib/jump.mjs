@@ -30,6 +30,29 @@ function extraPath() {
   ].join(":")
 }
 
+// How long a jumpRequest stays good: magpie restarts the plugin host after
+// writing it, so up to 15s old; at most 5s ahead, for a page clock a little
+// in front of the host's.
+export const JUMP_PAST = 15000
+export const JUMP_AHEAD = 5000
+
+// judgeJump decides one jumpRequest from its time `at`, the time `seen` of the
+// last request the host acted on or set aside (kept across restarts), and the
+// host's clock. fire: act on it now. record: remember `at` as the new seen.
+//
+// A request is acted on once (at === seen is the same request again) and only
+// near now. One stamped further ahead is set aside and recorded, so it never
+// fires later when the clock gets there. A seen time ahead of now (a request
+// recorded ahead, a 0.2.3 last-jump.json, a clock that stepped back) blocks
+// only that same request; it no longer orders out every later one.
+export function judgeJump(at, seen, now) {
+  if (!Number.isFinite(at) || at <= 0) return { fire: false, record: false }
+  const seenAhead = seen > now
+  if (at === seen || (!seenAhead && at <= seen)) return { fire: false, record: false }
+  const fresh = now - at <= JUMP_PAST && at - now <= JUMP_AHEAD
+  return { fire: fresh, record: true }
+}
+
 export function validTty(tty) {
   return typeof tty === "string" && TTY_RE.test(tty)
 }

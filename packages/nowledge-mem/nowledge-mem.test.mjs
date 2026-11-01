@@ -314,6 +314,8 @@ test("options it can't use are invalid, before anything is sent", async () => {
     { serverUrl: "http://127.0.0.1:14242", requestTimeoutMs: 10_000 },
     { serverUrl: "http://127.0.0.1:14242", recallBackoffMs: 10 },
     { serverUrl: "http://127.0.0.1:14242", capture: "yes" },
+    { serverUrl: "http://127.0.0.1:14242", skipAgents: 5 },
+    { serverUrl: "http://127.0.0.1:14242", skipAgents: ["Mozilla", 1] },
     { serverUrl: "http://127.0.0.1:14242", apiKey: "bad key" },
     { serverUrl: "http://127.0.0.1:14242", apiKey: "bad\nkey" },
   ]) {
@@ -461,6 +463,39 @@ test("the Magpie sharing key from this computer is included; other gateway keys 
   await onResponse(reply, { ...other, success: true })
   expect(of("memories/search")).toHaveLength(0)
   expect(of("threads/import")).toHaveLength(0)
+})
+
+test("an app named in skipAgents gets no recall and no capture; other apps still do (#597)", async () => {
+  for (const skipAgents of [["Mozilla", "Claude Code"], "mozilla，claude-code", " MOZILLA ,\nclaude_code "]) {
+    for (const agent of ["Mozilla", "claude-code"]) {
+      mock()
+      calls.length = 0
+      const [reports, context] = capturing("chat", { agent, options: { skipAgents } })
+      const body = structuredClone(chat)
+      expect(await onRequest(body, context)).toBeUndefined()
+      expect(body).toEqual(chat)
+      expect(context.state.nowledgeMem).toBeUndefined()
+      await onResponse(reply, { ...context, success: true })
+      expect(calls).toHaveLength(0)
+      expect(reports).toEqual([["skipped"]])
+      reset()
+    }
+    mock()
+    calls.length = 0
+    const [, other] = capturing("chat", { agent: "codex", options: { skipAgents } })
+    const body = structuredClone(chat)
+    await onRequest(body, other)
+    expect(body.messages[1].content).toContain("QUARTZ-8413")
+    await onResponse(reply, { ...other, success: true })
+    expect(of("memories/search")).toHaveLength(1)
+    expect(of("threads/import")).toHaveLength(1)
+    reset()
+  }
+  // a request with no agent is not taken for a listed one
+  mock()
+  calls.length = 0
+  await onRequest(structuredClone(chat), ctx("chat", { options: { serverUrl: "http://127.0.0.1:14242", skipAgents: ["", " "] } }))
+  expect(of("memories/search")).toHaveLength(1)
 })
 
 test("remote and unknown origins stay out", async () => {
@@ -709,6 +744,7 @@ test("configuration page saves the Mem connection for the shipped hook", async (
   elements.agent.value = "agent-3"
   elements.key.value = "Bearer nmem_page_key"
   elements.capture.checked = true
+  elements["skip-agents"].value = " Mozilla,, Claude Code ，"
   await save()
   expect(options).toEqual({
     ...original,
@@ -717,7 +753,9 @@ test("configuration page saves the Mem connection for the shipped hook", async (
     agentId: "agent-3",
     apiKey: "nmem_page_key",
     capture: true,
+    skipAgents: ["Mozilla", "Claude Code"],
   })
+  expect(elements["summary-skip"].textContent).toBe("Mozilla, Claude Code")
   // Run the shipped hook with exactly what the page saved.
   mock({ "threads/import": (body) => Response.json({ success: true, failed_count: 0, results: [{ success: true, thread_id: body.thread_id, message_count: body.messages.length, messages_added: body.messages.length }] }) })
   const hookContext = ctx("chat", { options })
@@ -752,12 +790,17 @@ test("configuration page saves the Mem connection for the shipped hook", async (
     expect(elements.result.dataset.message).toBe("invalidUrl")
   }
 
+  elements.configure.onclick()
+  expect(elements["skip-agents"].value).toBe("Mozilla, Claude Code")
   elements.url.value = "https://mem.example.com"
   elements.key.value = ""
   elements.space.value = "   "
   elements.agent.value = ""
   elements.capture.checked = false
+  elements["skip-agents"].value = " , "
   await save()
+  expect(options.skipAgents).toBeUndefined()
+  expect(elements["summary-skip"].textContent).toBe("None")
   expect(options.serverUrl).toBe("https://mem.example.com/")
 
   // The main page's Test button tests the saved connection; the test page

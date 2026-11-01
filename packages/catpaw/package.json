@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-catpaw-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenCode & Magpie provider plugin for Meituan's 妙手 CatPaw (ai.catpaw.meituan.com): web sign-in or the desktop client's saved credentials, chat through the round/event/turn protocol, models and credit balance",
   "type": "module",
   "main": "./index.mjs",
