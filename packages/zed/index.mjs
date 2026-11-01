@@ -372,7 +372,7 @@ function parseModels(text) {
 // variant is what the AI SDK package a model is on is given for an effort.
 function variant(provider, effort) {
   if (provider === "anthropic") return { effort }
-  if (provider === "google") return { thinkingConfig: { includeThoughts: true, thinkingLevel: effort } }
+  if (provider === "google") return { thinkingConfig: { includeThoughts: true, thinkingLevel: String(effort).toUpperCase() } }
   return { reasoningEffort: effort }
 }
 
@@ -614,6 +614,30 @@ function withoutSystemTurns(messages) {
   return out
 }
 
+// Zed's cloud parses a Google request with its own serde enums (zed
+// crates/google_ai), which take fewer spellings than Google's API does:
+// ThinkingLevel is UPPERCASE only (MINIMAL, LOW, MEDIUM, HIGH) and
+// FunctionCallingMode lowercase only (auto, any, none). @ai-sdk/google and
+// magpie's own Anthropic-to-Gemini translation write the level lowercase
+// ("high", Claude Code's effort) and the mode in Google's uppercase (AUTO,
+// ANY), each answered 400 "failed to parse Google AI request: unknown
+// variant" (#215). geminiEnums spells both as Zed takes them; VALIDATED,
+// which Zed has no variant for, is asked as auto.
+const ZED_MODE = { AUTO: "auto", ANY: "any", NONE: "none", VALIDATED: "auto", MODE_UNSPECIFIED: "auto" }
+
+function geminiEnums(req) {
+  const tc = req.generationConfig?.thinkingConfig
+  if (tc && typeof tc.thinkingLevel === "string") {
+    if (tc.thinkingLevel) tc.thinkingLevel = tc.thinkingLevel.toUpperCase()
+    else delete tc.thinkingLevel
+  }
+  const fc = req.toolConfig?.functionCallingConfig
+  if (fc && typeof fc.mode === "string") {
+    const m = ZED_MODE[fc.mode.toUpperCase()]
+    if (m) fc.mode = m
+  }
+}
+
 // providerRequest is the request as Zed takes it for its provider's API,
 // and whether the caller asked for a stream (Zed always streams).
 function providerRequest(wire, req, model) {
@@ -658,6 +682,7 @@ function providerRequest(wire, req, model) {
       delete req.session_id
       delete req.sessionId
       req.model = "models/" + model
+      geminiEnums(req)
       return { req }
     }
   }
