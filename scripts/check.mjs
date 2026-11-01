@@ -1,14 +1,22 @@
 // Loads every package's plugin the way OpenCode (and magpie) do and checks
 // the shape of what it returns: an auth hook with a provider, a loader and
 // methods OpenCode knows, or, for a plugin of tools alone, its tools. It
-// signs in to nothing and sends no request.
+// signs in to nothing and sends no request. It checks registry.json first,
+// as magpie's Plugins page reads it (scripts/registry.mjs).
 import { readdirSync, readFileSync, existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
+import { registryProblems } from "./registry.mjs"
 
 const root = resolve(import.meta.dir, "..", "packages")
 const only = process.argv[2]
 let failed = 0
+{
+  const file = resolve(import.meta.dir, "..", "registry.json")
+  const problems = existsSync(file) ? registryProblems(readFileSync(file, "utf8")) : ["registry.json is missing"]
+  if (problems.length) failed++
+  console.log(problems.length ? `✗ registry.json\n  ${problems.join("\n  ")}` : "✓ registry.json")
+}
 for (const name of readdirSync(root)) {
   if (only && name !== only) continue
   const dir = join(root, name)
