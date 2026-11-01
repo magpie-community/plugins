@@ -123,4 +123,3 @@ test("configuration page follows host language without losing edits", async () =
  }
  expect(languageFor("zh-Hant-TW")).toBe("zh-TW")
 })
-
