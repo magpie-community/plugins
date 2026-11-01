@@ -268,8 +268,19 @@ plans once a day (`auth.checkin`; `magpie accounts checkin` asks now). It
 reads both lists above (the banners' feed and the preview, each plan
 once) and posts each plan to
 `POST /api/v1/zcode-plan/billing/claim` (`{"plan_id": …}`) with the
-account's ZCode session, as the app does. The answer is judged by the
-body's code, not the HTTP status:
+account's ZCode session, as the app does. An answer of nothing to claim
+carries an `until` half an hour out, so magpie's loop asks again then,
+and again, all day while neither list names a plan — two GETs, nothing
+posted: ZCode drops plans into the feed on its own schedule (a reset
+card, a weekend banner starting at 19:00 Beijing), and one that arrives
+after the day's ask used to sit unclaimed past its short life. The
+other answers stand for the day: a claimed plan leaves the feed, so
+asking again half an hour later would find nothing and flip the card
+from "Checked in today" to "No check-in event now"; a captcha plan
+re-asked makes ZCode demand its captcha again; a done plan re-asked
+posts a claim ZCode already answered. So a second plan the same day,
+after one was claimed, is seen the next day. The answer is judged by
+the body's code, not the HTTP status:
 
 - nothing listed: *inactive* (ZCode answers an account with nothing to
   claim `{"code":0,"msg":""}`, with no list at all). A list that doesn't

@@ -802,20 +802,42 @@ async function toClaim(s) {
   return { plans, unread }
 }
 
+// RECHECK is how long an "nothing to claim" stands before magpie's loop
+// asks again: ZCode drops gift plans into the feed during the day (a
+// reset card, a weekend banner) on its own schedule, and the day's ask
+// may have run hours before, so an inactive settled for the day lets a
+// plan sit unclaimed past its short life (the weekend plan of
+// testdata/touch-1030-wk.json starts 19:00 Beijing). `until` wakes the
+// loop again in half an hour, and it asks again all day while neither
+// list names a plan — two GETs and no claim posted. The other settled
+// answers stand for the day: a claimed plan leaves the feed, so asking
+// a claimed account again half an hour later finds nothing and flips
+// its card from "Checked in today" to "No check-in event now"; a
+// captcha plan re-asked makes ZCode demand its captcha again each time,
+// and a done plan re-asked posts a claim it already answered 1003. The
+// same shape as Qoder's campaign that opens mid-day, asked again on
+// magpie's side there (yetone/magpie#2696). A failed needs no until:
+// magpie asks a failed again after 30 minutes of its own.
+const RECHECK_MS = 30 * 60_000
+const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
+
 // claimDaily claims every gift plan ZCode offers the account (#503:
 // toClaim, the app's banners and its preview), as auth.checkin's answer:
 // inactive when neither lists one, claimed when one was claimed now,
 // done when each was claimed before, captcha when ZCode wants the app's
 // captcha for one (it is claimed in the ZCode app), failed when a list
 // or a claim can't be read. A failed one is asked again later in the
-// day, when a plan claimed now answers 1003.
+// day, when a plan claimed now answers 1003. An inactive stands only
+// until RECHECK_MS from now, so a plan dropped into the feed later in
+// the day is still claimed; the other settled answers stand for the day
+// (see RECHECK).
 // Nothing here marks the account: a failed claim keeps its sign-in.
 async function claimDaily(s) {
   if (!s?.jwt) return { outcome: "ineligible", message: "ZCode's gift plans are claimed with a ZCode sign-in; this account has none" }
   if (jwtExpired(s.jwt)) return { outcome: "failed", message: EXPIRED }
   const { plans, unread } = await toClaim(s)
   if (!plans.length && unread.length) return { outcome: "failed", message: unread.join("; ") }
-  if (!plans.length) return { outcome: "inactive", message: "no ZCode gift plan to claim" }
+  if (!plans.length) return { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
   const got = []
   for (const p of plans) got.push({ name: p.name, ...(await claimOne(s, p.plan_id)) })
   const named = (o) => got.filter((g) => g.outcome === o).map((g) => g.name)
