@@ -175,7 +175,7 @@
       "summary": { "en": "Doubao (doubao.com) daily web check-in for experience credits, through its session cookie. Ported from CreditDaddy; the web credits are not an agent API — point an agent at Volcengine Ark for real Doubao/Seed access.", "zh": "豆包（doubao.com）网页会话 Cookie 每日签到领体验额度。移植自 CreditDaddy；网页额度并非 agent API——真实调用豆包/Seed 模型请另行指向火山方舟（Volcengine Ark）。" } },
     { "package": "@magpie-community/opencode-longcat-auth", "name": "LongCat", "icon": "longcat", "providers": ["longcat"], "community": true,
       "summary": { "en": "LongCat (longcat.chat, Meituan) token resource-pack balance, read through its session cookie (Meituan SSO). Packs are purchased/gifted, so there is no daily check-in; the active packs' remaining/total/expiry show as usage. Ported from CreditDaddy.", "zh": "LongCat（longcat.chat，美团）会话 Cookie（美团 SSO）读取 Token 资源包余额。资源包为购买/赠送发放，无每日签到；活跃包的剩余/总量/到期在用量中展示。移植自 CreditDaddy。" } },
-    { "package": "@magpie-community/opencode-mirasim-auth", "name": "MiraSim", "icon": "https://mirasim.ai/favicon.ico", "providers": ["mirasim"], "community": true,
+    { "package": "@magpie-community/opencode-mirasim-auth", "name": "MiraSim", "icon": "https://mirasim.ai/icon.svg", "providers": ["mirasim"], "community": true,
       "summary": { "en": "MiraSim (mirasim.ai) access-token auth with profile and 5h/7d rolling-window quota, plus refresh-token renewal. Ported from CreditDaddy; confirm the relay chat endpoint path before publishing.", "zh": "MiraSim（mirasim.ai）访问令牌鉴权，含用户资料与 5 小时/7 天滚动窗口配额，以及 refresh token 续期。移植自 CreditDaddy；发布前请确认 relay 对话端点路径。" } }
   ]
 }

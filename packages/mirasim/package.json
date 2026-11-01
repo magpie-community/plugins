@@ -1,12 +1,17 @@
 {
   "name": "@magpie-community/opencode-mirasim-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MiraSim (mirasim.ai) token auth, profile and 5h/7d rolling-window quota, ported from CreditDaddy.",
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",
+  "magpie": {
+    "maxConcurrency": 1,
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjEgNC43OCAxMDIgMTAyIj48c3R5bGU+Lml7c3Ryb2tlOiMxNjE4MUF9LmF7c3Ryb2tlOiMyQTU4QzB9QG1lZGlhIChwcmVmZXJzLWNvbG9yLXNjaGVtZTpkYXJrKXsuaXtzdHJva2U6I0YxRUZFQX0uYXtzdHJva2U6Izc0OTlGMn19PC9zdHlsZT48ZyBmaWxsPSJub25lIiBzdHJva2Utd2lkdGg9IjE0IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGNsYXNzPSJpIiBkPSJNMTAgODQgQzE0IDYyIDIwIDQ2IDI4IDQ2IEMzNiA0NiAzOCA1OCAzOCA4NCIvPjxwYXRoIGNsYXNzPSJhIiBkPSJNMzggODQgQzQwIDU0IDUwIDMwIDYzIDMwIEM3NiAzMCA3OCA1MiA3OCA4NCBDODAgNzAgODYgNjIgOTQgNTgiLz48L2c+PC9zdmc+Cg=="
+  },
   "files": [
     "index.mjs",
+    "icon.svg",
     "README.md"
   ],
   "keywords": [

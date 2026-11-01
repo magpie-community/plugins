@@ -12,10 +12,170 @@
 // confirmed against the running host). The chat endpoint baseURL is set to
 // the relay host; confirm the exact path (e.g. /v1/messages vs
 // /v1/chat/completions) before publishing.
+//
+// Renewal: the host already coalesces refresh requests inside one process, but
+// the GUI and the CLI are two processes and a single-use refresh token spent
+// twice signs the account out. So this file adds an in-process single flight
+// plus a cross-process lock file, and stops swallowing the "refresh token is
+// dead" error (it used to be silent, leaving the account looking alive until
+// every request 401'd).
+
+import { createHash } from "node:crypto"
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { dirname } from "node:path"
 
 const AUTH_ME_URL = "https://auth.mirasim.ai/auth/me"
 const RELAY_LIMITS_URL = "https://relay.mirasim.ai/v1/limits"
 const AUTH_REFRESH_URL = "https://auth.mirasim.ai/auth/refresh"
+
+// A stable client UA. Bun's fetch sends `user-agent: Bun/<version>` by default,
+// which is a free fingerprint for a Bearer-token caller. Same status with
+// either UA (measured), so this is hygiene rather than a risk-control measure.
+const RELAY_UA = "mirasim-cli/1.0"
+
+// ---------------------------------------------------------------------------
+// Local ledger. Only timestamps and enums, never a token.
+// ~/.config/magpie/<provider>-state.json, deliberately NOT the host's
+// plugin-auth.json (credentials) nor plugin-checkin.json.
+// ---------------------------------------------------------------------------
+
+const STATE_VERSION = 1
+const STATE_TTL_MS = 30 * 86_400_000
+
+function statePath(provider) {
+  const override = process.env[`MAGPIE_${provider.toUpperCase()}_STATE`]
+  if (override) return override
+  const dir = process.env.XDG_CONFIG_HOME ? `${process.env.XDG_CONFIG_HOME}/magpie` : `${homedir()}/.config/magpie`
+  return `${dir}/${provider}-state.json`
+}
+
+// Reads on every call: the GUI and the CLI may be two processes, an in-memory
+// cache would overwrite the other side's writes.
+function stateRead(provider) {
+  try {
+    const v = JSON.parse(readFileSync(statePath(provider), "utf8"))
+    if (v && typeof v === "object" && typeof v.accts === "object") return v
+  } catch {}
+  return { v: STATE_VERSION, accts: {} }
+}
+
+// Temp file + rename so a concurrent write never leaves half a file; 0600 to
+// match the other magpie files. Entries unseen for 30 days are dropped.
+function stateWrite(provider, st) {
+  try {
+    const now = Date.now()
+    for (const [k, v] of Object.entries(st.accts)) {
+      const t = Date.parse(v?.seenAt ?? "")
+      if (Number.isFinite(t) && now - t > STATE_TTL_MS) delete st.accts[k]
+    }
+    const p = statePath(provider)
+    mkdirSync(dirname(p), { recursive: true })
+    const tmp = `${p}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify({ v: STATE_VERSION, accts: st.accts }), { mode: 0o600 })
+    renameSync(tmp, p)
+  } catch {}
+  return st
+}
+
+function stateUpdate(provider, fn) {
+  const st = stateRead(provider)
+  try {
+    fn(st.accts)
+  } catch {
+    return st
+  }
+  return stateWrite(provider, st)
+}
+
+// Sign-in results are keyed by sign-in key, never by display name (magpie
+// plugins#254: with duplicate names only the first account gets signed in).
+function accountKeyOf(provider, auth) {
+  const uid = String(auth?.uid ?? "").trim()
+  if (uid) return `uid:${uid}`
+  const secret = String(auth?.key ?? auth?.refresh ?? "")
+  return `${provider}:${createHash("sha256").update(secret).digest("hex").slice(0, 16)}`
+}
+
+// ---------------------------------------------------------------------------
+// Cross-process lock (O_EXCL is atomic on a local disk, which is where the
+// magpie config directory lives)
+// ---------------------------------------------------------------------------
+
+function lockAcquire(path, staleMs = 30_000) {
+  const take = () => {
+    try {
+      mkdirSync(dirname(path), { recursive: true })
+      closeSync(openSync(path, "wx", 0o600))
+      return true
+    } catch {
+      return false
+    }
+  }
+  if (take()) return true
+  // The last holder died mid-renewal: clear the stale lock and try once more.
+  try {
+    if (Date.now() - statSync(path).mtimeMs < staleMs) return false
+    unlinkSync(path)
+  } catch {
+    return false
+  }
+  return take()
+}
+
+function lockRelease(path) {
+  try {
+    unlinkSync(path)
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// 429 / Retry-After / full-jitter backoff
+// ---------------------------------------------------------------------------
+
+const RETRY_AFTER_CAP_MS = 10 * 60_000
+
+// Upstream Retry-After is not passed through to the agent (magpie writes that
+// header itself), so the plugin has to read and honour it.
+function retryAfterMs(res) {
+  const h = res.headers.get("retry-after")
+  if (!h) return 0
+  const n = Number(h)
+  if (Number.isFinite(n) && n >= 0) return Math.min(n * 1000, RETRY_AFTER_CAP_MS)
+  const t = Date.parse(h)
+  return Number.isFinite(t) ? Math.min(Math.max(0, t - Date.now()), RETRY_AFTER_CAP_MS) : 0
+}
+
+// Full jitter: 0..min(cap, base*2^attempt). Un-jittered backoff only turns
+// "everyone retries at once" into "everyone retries at once, later".
+function backoffMs(attempt, base = 800, cap = 8000) {
+  return Math.round(Math.random() * Math.min(cap, base * 2 ** attempt))
+}
+
+// 3 tries, at most 2s of sleeping: when the vendor says "come back in 2
+// minutes" we record a cooldown instead of hanging the hook for 2 minutes.
+async function fetchWithCooldown(provider, accountKey, doFetch, { tries = 3, maxWaitMs = 2000 } = {}) {
+  const until = Date.parse(stateRead(provider).accts[accountKey]?.cooldownUntil ?? "")
+  if (Number.isFinite(until) && Date.now() < until) return { skipped: true, retryAt: new Date(until).toISOString() }
+  let res
+  for (let attempt = 0; attempt < tries; attempt++) {
+    res = await doFetch()
+    if (res.status !== 429 && res.status < 500) return { res }
+    const wait = retryAfterMs(res) || backoffMs(attempt)
+    if (attempt === tries - 1 || wait > maxWaitMs) {
+      stateUpdate(provider, (accts) => {
+        accts[accountKey] = { ...(accts[accountKey] ?? {}), cooldownUntil: new Date(Date.now() + wait).toISOString(), seenAt: new Date().toISOString() }
+      })
+      return { res, cooled: true }
+    }
+    await new Promise((r) => setTimeout(r, wait))
+  }
+  return { res }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP
+// ---------------------------------------------------------------------------
 
 async function jget(url, headers, timeoutMs = 20000) {
   const ctrl = new AbortController()
@@ -28,7 +188,7 @@ async function jget(url, headers, timeoutMs = 20000) {
 }
 
 function authHeaders(token) {
-  return { Authorization: `Bearer ${token}`, Accept: "application/json" }
+  return { Authorization: `Bearer ${token}`, Accept: "application/json", "User-Agent": RELAY_UA }
 }
 
 // Internal only — exporting this made Magpie's plugin host treat it as a hook.
@@ -36,14 +196,18 @@ async function refreshMirasimToken(refreshToken) {
   if (!refreshToken) throw new Error("没有 refreshToken，无法刷新，请重新登录后重新导入")
   const res = await fetch(AUTH_REFRESH_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: { "Content-Type": "application/json", Accept: "application/json", "User-Agent": RELAY_UA },
     body: JSON.stringify({ refresh_token: refreshToken }),
     signal: AbortSignal.timeout(20000),
   })
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) {
+    const text = await res.text().catch(() => "")
+    // 401/403, or the OAuth "this grant is gone" wording: the credential is
+    // dead, retrying it will never bring it back.
+    if (res.status === 401 || res.status === 403 || /invalid_grant|invalid_token|token_revoked|refresh_token_reused/i.test(text)) {
       const e = new Error("refreshToken 已失效，请重新登录后重新导入")
       e.authInvalid = true
+      e.signIn = "expired"
       throw e
     }
     throw new Error(`mirasim 凭据刷新失败: HTTP ${res.status}`)
@@ -57,6 +221,55 @@ async function refreshMirasimToken(refreshToken) {
     if (Number.isFinite(p.exp)) expiresAt = new Date(p.exp * 1000).toISOString()
   } catch {}
   return { token, refreshToken: d.refresh_token || d.refreshToken || refreshToken, expiresAt }
+}
+
+// ---------------------------------------------------------------------------
+// Renewal: in-process single flight + cross-process lock
+// ---------------------------------------------------------------------------
+
+// One renewal at a time per process. The host does this too, but a second
+// plugin instance forked from it is out of its reach.
+let refreshing = null
+
+const LOCK_STALE_MS = 30_000
+// Another process just renewed: do not spend the refresh token again inside
+// this window.
+const JUST_REFRESHED_MS = 120_000
+
+async function refreshOnce(auth, accountKey) {
+  const lock = `${statePath("mirasim")}.${accountKey.replace(/[^A-Za-z0-9._-]/g, "_")}.lock`
+  // Another process is renewing right now: skip, do not spend the RT twice.
+  if (!lockAcquire(lock, LOCK_STALE_MS)) return auth
+  try {
+    const since = Date.parse(stateRead("mirasim").accts[accountKey]?.refreshedAt ?? "")
+    if (Number.isFinite(since) && Date.now() - since < JUST_REFRESHED_MS) return auth
+    const creds = await refreshMirasimToken(auth.refresh)
+    stateUpdate("mirasim", (accts) => {
+      accts[accountKey] = { refreshedAt: new Date().toISOString(), seenAt: new Date().toISOString() }
+    })
+    return { ...auth, key: creds.token, refresh: creds.refreshToken, expiresAt: creds.expiresAt }
+  } catch (e) {
+    // Host contract: throwing with signIn:"expired" marks the account and
+    // stops retrying. Swallowing this (the old behaviour) kept a dead refresh
+    // token invisible while every request kept 401'ing.
+    if (e?.authInvalid || e?.signIn === "expired") throw Object.assign(new Error(e.message), { signIn: "expired" })
+    return auth // transient (network / 5xx): keep the old state, retry later
+  } finally {
+    lockRelease(lock)
+  }
+}
+
+// Internal only — keep module exports limited to the plugin factory.
+async function mirasimRefreshHook(auth) {
+  if (!auth?.refresh) return auth
+  const accountKey = accountKeyOf("mirasim", auth)
+  if (refreshing) return refreshing
+  refreshing = refreshOnce(auth, accountKey)
+  try {
+    return await refreshing
+  } finally {
+    refreshing = null
+  }
 }
 
 // Internal only — keep module exports limited to the plugin factory.
@@ -151,14 +364,23 @@ export const MiraSimAuthPlugin = async () => ({
     async getInfo(auth) {
       const token = auth?.key
       if (!token) return { error: "not signed in", signIn: "kept" }
+      const accountKey = accountKeyOf("mirasim", auth)
+      const until = Date.parse(stateRead("mirasim").accts[accountKey]?.cooldownUntil ?? "")
+      if (Number.isFinite(until) && Date.now() < until) {
+        return { plan: "MiraSim", windows: [], warning: "云端限流（本地冷却中），稍后再查", signIn: "kept" }
+      }
       try {
         const pres = await jget(AUTH_ME_URL, authHeaders(token))
         if (pres.status === 401) return { error: "令牌已过期", signIn: "expired" }
         const profile = pres.ok ? await pres.json().catch(() => null) : null
-        const lres = await jget(RELAY_LIMITS_URL, { ...authHeaders(token), "x-mirasim-probe": "usage" })
+        const r = await fetchWithCooldown("mirasim", accountKey, () => jget(RELAY_LIMITS_URL, { ...authHeaders(token), "x-mirasim-probe": "usage" }))
+        if (r.skipped) return { plan: profile?.plan || "Plus", windows: [], warning: "云端限流（本地冷却中），稍后再查", signIn: "kept" }
+        const lres = r.res
         if (lres.status === 401) return { error: "令牌已过期", signIn: "expired" }
         if (lres.status === 429) {
-          return { plan: profile?.plan || "Plus", windows: [], warning: "云端限流或直连网络受限（配置代理后可查实时窗口）", signIn: "kept" }
+          // The wrapper already recorded the cooldown, so the next refresh of
+          // the panel will not hit the endpoint again.
+          return { plan: profile?.plan || "Plus", windows: [], warning: "云端限流（已进入本地冷却），稍后再查", signIn: "kept" }
         }
         if (!lres.ok) return { error: `查询额度失败: HTTP ${lres.status}`, signIn: "kept" }
         const limits = await lres.json()
@@ -174,15 +396,6 @@ export const MiraSimAuthPlugin = async () => ({
         return { error: e?.message ?? String(e), signIn: "kept" }
       }
     },
-    async refresh(auth) {
-      const rt = auth?.refresh
-      if (!rt) return auth
-      try {
-        const creds = await refreshMirasimToken(rt)
-        return { ...auth, key: creds.token, refresh: creds.refreshToken, expiresAt: creds.expiresAt }
-      } catch {
-        return auth
-      }
-    },
+    refresh: mirasimRefreshHook,
   },
 })
