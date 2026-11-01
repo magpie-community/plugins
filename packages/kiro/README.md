@@ -240,6 +240,15 @@ the `provider.models` hook replaces it with the account's own list from
 context window, output limit and whether it takes images. Claude models
 and Auto have the thinking variants.
 
+## Usage in magpie
+
+`auth.usage` reads `Get-Usage-Limits`: the month's credits, the Free trial
+while it is active, and each bonus (`bonuses`: a first upgrade's trial
+credits, a promotion's) while it is `ACTIVE` and not expired, as a window of
+its own with its count and when it lapses. Bonus windows are shown only.
+Kiro spends the plan's credits first, so a month used up while a bonus has
+credits left is shown only too, and the account isn't taken for spent.
+
 ## Not included
 
 - Usage and quota (credits, the monthly window).
