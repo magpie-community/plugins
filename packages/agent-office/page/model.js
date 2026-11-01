@@ -656,6 +656,7 @@
       case "grok": return `${cd}grok --resume ${id}`
       case "omp": return `${cd}omp --resume ${id}`
       case "dsh": return `${cd}dsh --resume ${shellQuote(id0.replace(/^session-/, ""))}`
+      case "zcode": return `${cd}zcode --resume ${id}`
       default: return ""
     }
   }

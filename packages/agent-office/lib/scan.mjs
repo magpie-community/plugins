@@ -7,7 +7,7 @@ import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { StringDecoder } from "node:string_decoder"
-import { createSessionReader, finalizeUsage, readClaude, readCodex, readCopilot, readDsh, readGemini, readGrok, readKimi, readPi } from "./readers.mjs"
+import { createSessionReader, finalizeUsage, readClaude, readCodebuddy, readCodex, readCopilot, readDsh, readGemini, readGrok, readKimi, readPi, readZcode } from "./readers.mjs"
 
 const READ_CHUNK = 64 * 1024
 const GUARD_BYTES = 64 // bounded prefix/end witnesses catch truncate-and-regrow between ticks
@@ -86,8 +86,9 @@ export function sources() {
     { agent: "copilot", kind: "copilot", root: join(copilot, "session-state"), depth: 1, match: (n) => n === "events.jsonl" },
     { agent: "qoder", kind: "claude", root: join(qoder, "projects"), depth: 1, match: jsonl, live: join(qoder, "sessions") },
     { agent: "qoder-cn", kind: "claude", root: join(qodercn, "projects"), depth: 1, match: jsonl, live: join(qodercn, "sessions") },
-    { agent: "workbuddy", kind: "claude", root: join(workbuddy, "projects"), depth: 1, match: jsonl, live: join(workbuddy, "sessions") },
-    { agent: "codebuddy", kind: "claude", root: join(codebuddy, "projects"), depth: 1, match: jsonl, live: join(codebuddy, "sessions") },
+    { agent: "workbuddy", kind: "codebuddy", root: join(workbuddy, "projects"), depth: 1, match: jsonl, live: join(workbuddy, "sessions") },
+    { agent: "codebuddy", kind: "codebuddy", root: join(codebuddy, "projects"), depth: 1, match: jsonl, live: join(codebuddy, "sessions") },
+    { agent: "zcode", kind: "zcode", root: home(".zcode", "cli", "rollout"), depth: 0, match: (n) => n.startsWith("model-io-") && n.endsWith(".jsonl") },
   ]
   return srcs
 }
@@ -274,6 +275,8 @@ function readerFor(kind, agent, src = {}) {
     case "copilot": return (t, id, meta, now) => readCopilot(t, id, { now })
     case "kimi": return (t, id, meta, now) => readKimi(t, id, meta, { now })
     case "grok": return (t, id, meta, now, usage) => readGrok(t, id, meta, { now, usage })
+    case "zcode": return (t, id) => readZcode(t, id)
+    case "codebuddy": return (t, id, meta, now) => readCodebuddy(t, agent, id)
   }
 }
 
@@ -281,6 +284,7 @@ function idOf(src, path) {
   const name = basename(path)
   if (src.kind === "dsh") return basename(dirname(path))
   if (src.kind === "codex") { const m = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:_[^.]*)?\.jsonl$/i.exec(name); return m ? m[1] : name }
+  if (src.kind === "zcode") return name.replace(/^model-io-/, "").replace(/\.jsonl$/, "")
   // the session folder names the session: ~/.grok/sessions/<project>/<session>
   if (src.kind === "grok" || src.kind === "copilot") return basename(dirname(path))
   if (src.kind === "kimi") {
@@ -442,7 +446,7 @@ export function createScanner(opts = {}) {
     const sig = f.metadata.split("|")
     const before = was?.metadata?.split("|")
     const compressed = f.path.endsWith(".zstd")
-    const document = f.src.kind === "gemini" && f.path.endsWith(".json")
+    const document = f.src.kind === "gemini" && f.path.endsWith(".json") || f.src.kind === "codebuddy" || f.src.kind === "zcode"
     if (compressed || document) {
       // A rewritten compressed blob / JSON document has no append cursor.
       if (compressed && f.size > o.zstdMax) return { ...f, session: was?.session || null, decodedAt: now }
