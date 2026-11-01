@@ -1913,18 +1913,23 @@ function buildMessages(req, uid, key) {
   // means one turn
   const turns = []
   for (const m of req.messages ?? []) {
-    if (m?.role !== "user" && m?.role !== "assistant") continue
+    if (m?.role !== "user" && m?.role !== "assistant" && m?.role !== "system") continue
     const blocks = typeof m.content === "string" ? (m.content ? [{ type: "text", text: m.content }] : []) : Array.isArray(m.content) ? m.content : []
+    // Empty effort notices must not split a streamed assistant turn.
+    if (m.role === "system" && !blocks.some((b) => b?.type === "text" && typeof b.text === "string" && b.text)) continue
     const last = turns[turns.length - 1]
     if (last?.role === m.role) last.blocks.push(...blocks)
     else turns.push({ role: m.role, blocks: [...blocks] })
   }
 
   const msgs = []
+  const notices = [] // held until the pending tool calls are answered
   let pending = [] // calls the last reply made, not yet answered
   const answer = () => {
     for (const c of pending) msgs.push({ role: TOOL, callID: c.id, text: NO_RESULT })
     pending = []
+    msgs.push(...notices)
+    notices.length = 0
   }
   for (const t of turns) {
     if (t.role === "assistant") {
@@ -1967,6 +1972,7 @@ function buildMessages(req, uid, key) {
         const said = text || "(no output)"
         msgs.push({ role: TOOL, callID: pending[i].id, text: b.is_error ? "Error: " + said : said, images, cache: marked(b) || marked(inner[inner.length - 1]) })
         pending.splice(i, 1)
+        if (!pending.length) answer()
         continue
       }
       if (b?.type === "text" && typeof b.text === "string") {
@@ -1974,10 +1980,13 @@ function buildMessages(req, uid, key) {
           if (marked(b) && words) words.cache = true
           continue
         }
-        answer()
+        // Devin requires tool results before the next user prompt. A
+        // system notice can arrive first, so hold it until they follow.
+        if (t.role !== "system") answer()
         words = { role: USER, text: b.text, images: held, cache: marked(b) }
         held = []
-        msgs.push(words)
+        if (t.role === "system" && pending.length) notices.push(words)
+        else msgs.push(words)
         continue
       }
       const im = anthropicImage(b)
