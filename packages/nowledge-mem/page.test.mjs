@@ -51,7 +51,8 @@ async function pageFixture(initial) {
   const make = () => ({
     dataset: {}, value: "", type: "text", checked: false, children: [], hidden: false,
     listeners: {},
-    setAttribute(name, value) { this[name] = value }, focus() {}, showModal() { this.open = true }, close() { this.open = false; this.onclose?.() },
+    setAttribute(name, value) { this[name] = value }, focus() { this.focused = true }, showModal() { this.open = true }, close() { this.open = false; this.onclose?.() },
+    before(node) { this.beforeNode = node },
     addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn) },
     dispatchEvent(event) { for (const fn of this.listeners[event.type] ?? []) fn(event) },
     append(...xs) { this.children.push(...xs); for (const x of xs) x.parent = this },
@@ -76,10 +77,15 @@ async function pageFixture(initial) {
 test("default buttons execute their real handlers and clear explicit values", async () => {
  const f=await pageFixture({recall:false,requestTimeoutMs:900,skipAgents:["Mozilla"],apiKey:"saved",future:{v:1}}),e=f.elements
  await e.configure.onclick()
+ expect(f.labels.space.parent.children.find((child)=>child.className === "option-reset").hidden).toBe(true)
  for (const id of ["recall","request-timeout","skip-agents"]) {
-  const reset=f.labels[id].children.find((child)=>child.className === "secondary option-reset")
+  const reset=f.labels[id].parent.children.find((child)=>child.className === "option-reset")
   expect(typeof reset?.onclick).toBe("function")
+  expect(reset.hidden).toBe(false)
+  expect(reset["aria-label"]).toContain(f.i18n.messages.en.useDefault)
   reset.onclick()
+  expect(reset.hidden).toBe(true)
+  expect(e[id].focused).toBe(true)
  }
  expect(e.recall.checked).toBe(true)
  expect(e["request-timeout"].value).toBe("")
@@ -87,9 +93,18 @@ test("default buttons execute their real handlers and clear explicit values", as
  await f.save()
  expect(f.get()).toEqual({apiKey:"saved",future:{v:1}})
  // Typing after a reset cancels inheritance and saves an explicit value.
- const reset=f.labels.recall.children.find((child)=>child.className === "secondary option-reset")
+ const reset=f.labels.recall.parent.children.find((child)=>child.className === "option-reset")
  reset.onclick();e.recall.checked=false;e.recall.dispatchEvent({type:"change"})
  await f.save();expect(f.get().recall).toBe(false)
+})
+
+test("an explicit value equal to its default can still return to inheritance", async () => {
+ const f=await pageFixture({recall:true}),e=f.elements
+ await e.configure.onclick()
+ const reset=f.labels.recall.parent.children.find((child)=>child.className === "option-reset")
+ expect(reset.hidden).toBe(false)
+ reset.onclick();await f.save()
+ expect(Object.hasOwn(f.get(),"recall")).toBe(false)
 })
 
 test("skipAgents retains existing formats, edits names, and updates the summary", async () => {
@@ -159,14 +174,56 @@ test("secret controls keep, replace and clear the saved value", async () => {
  const f=await pageFixture({apiKey:"saved_secret",apiKeyEnv:"NMEM_API_KEY",future:{x:1}}),e=f.elements
  await e.configure.onclick()
  expect(e.key.value).toBe("")
+ expect(e.key.placeholder).toBe("Saved")
+ expect(e["key-clear"].hidden).toBe(false)
+ e["key-clear"].onclick();expect(e["key-clear"]["aria-pressed"]).toBe("true")
+ expect(e["key-clear"].textContent).toBe("Undo removal")
+ e["key-clear"].onclick();expect(e["key-clear"]["aria-pressed"]).toBe("false")
  e.space.value="space-7";await f.save()
  expect(f.get().apiKey).toBe("saved_secret")
- e["key-action"].value="replace";e.key.value="Bearer new_secret";await f.save()
+ e.key.value="Bearer new_secret";e.key.oninput();await f.save()
  expect(f.get().apiKey).toBe("new_secret")
- e["key-action"].value="clear";await f.save()
+ e["key-clear"].onclick();await f.save()
  expect(f.get().apiKey).toBeUndefined()
  expect(f.get().apiKeyEnv).toBe("NMEM_API_KEY")
  expect(f.get().future).toEqual({x:1})
+ expect(e["key-clear"].hidden).toBe(true)
+ expect(e.key.placeholder).toBe("No saved key")
+})
+
+test("clearing a key detects a concurrent replacement and keeps the draft", async () => {
+ const f=await pageFixture({apiKey:"saved_secret"}),e=f.elements
+ await e.configure.onclick();e["key-clear"].onclick()
+ f.external({apiKey:"changed_elsewhere"});await f.save()
+ expect(e.result.dataset.message).toBe("conflict")
+ expect(e["key-clear"]["aria-pressed"]).toBe("true")
+ expect(f.get().apiKey).toBe("changed_elsewhere")
+ expect(f.writes()).toBe(0)
+})
+
+test("human-dialogue switch preserves filter semantics and controls Cindy", async () => {
+ const f=await pageFixture({captureFilter:"human",captureCindy:true}),e=f.elements
+ await e.configure.onclick()
+ expect(e["capture-filter"].checked).toBe(true)
+ expect(e["capture-cindy"].disabled).toBe(false)
+ e["capture-filter"].checked=false;e["capture-filter"].onchange();e["capture-filter"].dispatchEvent({type:"change"})
+ expect(e["capture-cindy"].disabled).toBe(true)
+ await f.save();expect(f.get().captureFilter).toBe("off");expect(f.get().captureCindy).toBe(true)
+ e["capture-filter"].checked=true;e["capture-filter"].onchange();e["capture-filter"].dispatchEvent({type:"change"})
+ expect(e["capture-cindy"].disabled).toBe(false)
+ await f.save();expect(f.get().captureFilter).toBe("human")
+})
+
+test("settings avoid native selects and associate help with controls", async () => {
+ const html=await Bun.file(new URL("./page/settings.html",import.meta.url)).text()
+ expect(html).not.toMatch(/<select\b/i)
+ const legends=[...html.matchAll(/<legend>(.*?)<\/legend>/gs)]
+ expect(legends).toHaveLength(5)
+ for (const [,legend] of legends) expect(legend).toContain('<svg')
+ for (const [,references] of html.matchAll(/\baria-describedby="([^"]+)"/g))
+  for (const id of references.split(/\s+/)) expect(html).toContain(`id="${id}"`)
+ for (const id of ["host-agent","key-env","recall","context","capture","capture-tools","capture-filter","capture-cindy","max-memories","max-bytes","request-timeout","recall-backoff","gateway-timeout","port","insecure"])
+  expect(html).toMatch(new RegExp(`<input id="${id}"[^>]*aria-describedby="[^"]+"`))
 })
 
 test("key visibility resets on close while its draft remains", async () => {
@@ -176,7 +233,7 @@ test("key visibility resets on close while its draft remains", async () => {
  expect(html).toMatch(/<svg class="eye-hide"/)
  expect(html).toContain('aria-describedby="key-storage key-help"')
  expect(html).toContain('data-t="keyHelp"')
- await e.configure.onclick();e["key-action"].value="replace";e["key-action"].onchange();e.key.value="synthetic_secret"
+ await e.configure.onclick();e.key.value="synthetic_secret";e.key.oninput()
  e["show-key"].onclick()
  expect(e.key.type).toBe("text")
  expect(e["show-key"]["aria-pressed"]).toBe("true")
@@ -200,7 +257,7 @@ test("invalid connection values do not write and closing keeps an unsaved draft"
  await f.save();expect(e.result.dataset.message).toBe("invalidUrl");expect(f.writes()).toBe(0)
  e.close.onclick();await e.configure.onclick()
  expect(e.url.value).toBe("http://remote.example")
- e.url.value="https://mem.example";e["key-action"].value="replace";e.key.value="bad key"
+ e.url.value="https://mem.example";e.key.value="bad key";e.key.oninput()
  await f.save();expect(e.result.dataset.message).toBe("invalidKey");expect(f.writes()).toBe(0)
 })
 
@@ -208,7 +265,7 @@ test("settings saved through the released bridge reach the hook", async () => {
  const f=await pageFixture({}),e=f.elements
  await e.configure.onclick()
  e.url.value="https://mem.example";e.space.value="space-7"
- e["key-action"].value="replace";e.key.value="synthetic_key"
+ e.key.value="synthetic_key";e.key.oninput()
  await f.save()
  const originalFetch=globalThis.fetch, calls=[]
  globalThis.fetch=async (url,init)=>{calls.push({url:String(url),init});return Response.json([])}
@@ -229,6 +286,9 @@ test("released hosts keep the draft when a changed field was edited elsewhere", 
  expect(e.space.value).toBe("draft")
  expect(f.get().spaceId).toBe("other")
  expect(f.writes()).toBe(0)
+ expect(e.result.textContent).toContain("select Cancel, then reopen")
+ e.close.onclick();await e.configure.onclick();expect(e.space.value).toBe("draft")
+ e.cancel.onclick();await e.configure.onclick();expect(e.space.value).toBe("other")
 })
 
 test("summary capture switch saves on released hosts", async () => {
@@ -245,11 +305,14 @@ test("summary capture switch saves on released hosts", async () => {
 
 test("configuration page follows host language without losing edits", async () => {
  const f=await pageFixture({serverUrl:"http://127.0.0.1:14242"}),e=f.elements
+ const dictionary=await Bun.file(new URL("./page/i18n.js",import.meta.url)).text()
+ expect(dictionary).not.toMatch(/Object\.entries\(messages\.en\).*messages\[language\]\[key\]/)
  await e.configure.onclick();e.url.value="unsaved address"
  await f.save();expect(e.result.dataset.message).toBe("invalidUrl")
  const {messages,languageFor,languageTags}=f.i18n
  for (const language of ["en","zh","zh-TW","ja","de"]) {
   expect(Object.keys(messages[language]).sort()).toEqual(Object.keys(messages.en).sort())
+  expect(Object.values(messages[language]).every((value)=>typeof value === "string" && value.length > 0)).toBe(true)
   f.magpie.theme.lang=language;f.repaint()
   expect(f.document.documentElement.lang).toBe(languageTags[language])
   expect(e.url.value).toBe("unsaved address")

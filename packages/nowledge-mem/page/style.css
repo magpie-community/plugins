@@ -86,8 +86,13 @@ input:not([type=checkbox]):focus {
   border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 input::placeholder { color: var(--muted); opacity: .7; }
-select { width: 100%; min-height: 28px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--fg); font: inherit; }
-.option-reset { margin-top: 4px; font-size: 11px; }
+.field-wrap { position: relative; min-width: 0; }
+.field-wrap > label > span:first-child { padding-right: 28px; }
+.field-wrap > label.switch-field > span { padding-right: 28px; }
+button.option-reset { position: absolute; right: 0; top: 0; min-height: 22px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 16px; }
+button.option-reset:hover { background: var(--accent-soft); color: var(--accent); filter: none; }
+button.option-reset[hidden], .key-clear[hidden] { display: none; }
+.key-clear { margin-top: 6px; font-size: 11px; }
 small { display: block; color: var(--muted); font-size: 11px; line-height: 1.6; margin-top: 5px; }
 .secret-input { position: relative; }
 .secret-input input { padding-right: 34px; }
@@ -107,6 +112,8 @@ small { display: block; color: var(--muted); font-size: 11px; line-height: 1.6; 
 .switch-field input[type=checkbox]::before { content: ""; position: absolute; width: 12px; height: 12px; top: 2px; left: 2px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px #0002; }
 .switch-field input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
 .switch-field input[type=checkbox]:checked::before { left: 14px; }
+.switch-field input[type=checkbox]:disabled { opacity: .45; cursor: not-allowed; }
+.switch-field input[type=checkbox]:disabled + span { opacity: .6; }
 .slide-switch { appearance: none; -webkit-appearance: none; position: relative; flex: none; width: 30px; height: 18px; margin: 0; border-radius: 10px; border: 1px solid var(--line); background: var(--muted); cursor: pointer; }
 .slide-switch::before { content: ""; position: absolute; width: 12px; height: 12px; top: 2px; left: 2px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px #0002; }
 .slide-switch:checked { background: var(--accent); border-color: var(--accent); }

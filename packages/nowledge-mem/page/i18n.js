@@ -14,7 +14,7 @@ const messages = {
     "dialogTitle": "Connection settings",
     "settingsIntro": "Connect Magpie to your Nowledge Mem.",
     "serviceSection": "Mem service",
-    "urlHelp": "Local HTTP or remote HTTPS. No credentials in the URL.",
+    "urlHelp": "Local HTTP or remote HTTPS without credentials in the URL. Empty uses NMEM_API_URL or the local default.",
     "spaceHelp": "Optional. Leave empty for the default Space.",
     "agentHelp": "Optional. Selects the Mem agent profile used for the Context Bundle.",
     "authSection": "Authentication",
@@ -72,7 +72,7 @@ const messages = {
     "dialogTitle": "连接设置",
     "settingsIntro": "把 Magpie 连接到你的 Nowledge Mem。",
     "serviceSection": "Mem 服务",
-    "urlHelp": "本机用 HTTP，远端用 HTTPS。地址里不要带凭据。",
+    "urlHelp": "支持本机 HTTP 或远程 HTTPS，URL 不得包含凭据。留空时使用 NMEM_API_URL 或本机默认地址。",
     "spaceHelp": "可选。留空使用默认 Space。",
     "agentHelp": "可选。选择 Context Bundle 使用的 Mem agent 档案。",
     "authSection": "认证",
@@ -130,7 +130,7 @@ const messages = {
     "dialogTitle": "連線設定",
     "settingsIntro": "把 Magpie 連接到你的 Nowledge Mem。",
     "serviceSection": "Mem 服務",
-    "urlHelp": "本機用 HTTP，遠端用 HTTPS。位址裡不要帶憑證。",
+    "urlHelp": "支援本機 HTTP 或遠端 HTTPS，網址不得包含憑據。留空時使用 NMEM_API_URL 或本機預設位址。",
     "spaceHelp": "選填。留空使用預設 Space。",
     "agentHelp": "選填。選擇 Context Bundle 使用的 Mem agent 設定檔。",
     "authSection": "驗證",
@@ -188,7 +188,7 @@ const messages = {
     "dialogTitle": "接続設定",
     "settingsIntro": "Magpie を Nowledge Mem に接続します。",
     "serviceSection": "Mem サービス",
-    "urlHelp": "ローカルは HTTP、リモートは HTTPS。URL に認証情報を含めないでください。",
+    "urlHelp": "ローカル HTTP またはリモート HTTPS。URL に認証情報は含められません。空欄では NMEM_API_URL またはローカル既定値を使います。",
     "spaceHelp": "任意。空欄なら既定の Space を使います。",
     "agentHelp": "任意。Context Bundle に使う Mem の agent プロファイルを選びます。",
     "authSection": "認証",
@@ -246,7 +246,7 @@ const messages = {
     "dialogTitle": "Verbindungseinstellungen",
     "settingsIntro": "Verbinde Magpie mit deiner Nowledge Mem.",
     "serviceSection": "Mem-Dienst",
-    "urlHelp": "Lokales HTTP oder entferntes HTTPS. Keine Zugangsdaten in der URL.",
+    "urlHelp": "Lokales HTTP oder entferntes HTTPS ohne Zugangsdaten in der URL. Leer verwendet NMEM_API_URL oder den lokalen Standard.",
     "spaceHelp": "Optional. Leer lassen für den Standard-Space.",
     "agentHelp": "Optional. Wählt das Mem-Agent-Profil für das Context Bundle.",
     "authSection": "Authentifizierung",
@@ -298,45 +298,50 @@ const messages = {
 Object.assign(messages.en, {
  concurrencyHelp:"Saving merges your edits into the latest settings, but another editor saving at the same moment can still overwrite them. Use one editor at a time. Very large integers in options may be rounded.",
  configure: "Settings", dialogTitle: "Nowledge Mem settings", settingsIntro: "Configure connection, recall and saving.", saveHelp: "Unchanged and unlisted options are preserved.", notConfigured: "Using the environment or local default · not tested yet",
- explicitValue: "Explicit value", explicitEmpty: "Explicit empty value (fallback applies)", defaultValue: "Default", inherited: "Environment or default", useDefault: "Use default / inherit",
+ useDefault: "Use default / inherit",
  hostAgent: "Host agent ID", hostAgentHelp: "Empty derives an identity from the harness.",
- keyKeep: "Keep saved value", keyReplace: "Replace", keyClear: "Clear saved value",
  keyActionHelp: "Clearing the saved value falls back to the environment variable; it does not disable it.",
  keyEnv: "API key environment variable", keyEnvHelp: "Only NMEM_* names are accepted. Empty uses NMEM_API_KEY.",
- filterSection: "Saving and filtering", captureTools: "Include client tool results", captureFilter: "Capture filter", filterOff: "Off", filterHuman: "Human dialogue", captureCindy: "Clean recognized Cindy wrappers in human mode",
+ filterSection: "Saving and filtering", captureTools: "Include client tool results", captureCindy: "Clean recognized Cindy wrappers in human mode",
  advanced: "Advanced", maxMemories: "Maximum memories (1–20)", maxBytes: "Recall bytes (512–32768)", requestTimeout: "Request timeout ms (50–5000)", recallBackoff: "Recall backoff ms (100–300000)", gatewayTimeout: "Host hook timeout ms (100–10000)", port: "Connection-test port (1024–65535)", insecure: "Allow HTTP to a non-local server (credentials travel unencrypted)", defaultsHelp: "Empty fields inherit the environment where supported, otherwise use the shown default. Unchanged values remain as configured. The host timeout can end a request first.",
- conflict: "Configuration changed elsewhere. Your draft is kept; cancel and reopen to load the latest values.", invalidOption: "Check the highlighted values and ranges.",
+ conflict:"Configuration changed elsewhere. Your draft is kept; select Cancel, then reopen Settings to load the latest values.", invalidOption: "Check the highlighted values and ranges.",
 });
 Object.assign(messages.zh, {
  concurrencyHelp:"保存时会将你的修改合并到最新设置，但其他编辑入口同时保存仍可能覆盖更改。请一次只使用一个编辑入口。选项中的超大整数可能被舍入。",
  configure: "设置", dialogTitle: "Nowledge Mem 设置", settingsIntro: "配置连接、召回与保存。", saveHelp: "未修改及未列出的选项会保留。", notConfigured: "使用环境变量或本机默认值 · 尚未测试",
- explicitValue: "已显式设置", explicitEmpty: "显式空值（实际使用回退值）", defaultValue: "默认值", inherited: "继承环境或默认值", useDefault: "恢复默认 / 继承",
- hostAgent: "宿主 Agent ID", hostAgentHelp: "留空时从客户端类型推导。", keyKeep: "保留已保存的值", keyReplace: "更换", keyClear: "清除已保存的值", keyActionHelp: "清除保存值后仍会继承环境变量，不会禁用环境变量。", keyEnv: "API 密钥环境变量", keyEnvHelp: "仅接受 NMEM_* 名称；留空使用 NMEM_API_KEY。",
- filterSection: "保存与过滤", captureTools: "包含客户端工具结果", captureFilter: "保存过滤", filterOff: "关闭", filterHuman: "人类对话", captureCindy: "在人类对话模式清理已识别的 Cindy 包装",
+ useDefault: "恢复默认 / 继承",
+ hostAgent: "宿主 Agent ID", hostAgentHelp: "留空时从客户端类型推导。", keyActionHelp: "清除保存值后仍会继承环境变量，不会禁用环境变量。", keyEnv: "API 密钥环境变量", keyEnvHelp: "仅接受 NMEM_* 名称；留空使用 NMEM_API_KEY。",
+ filterSection: "保存与过滤", captureTools: "包含客户端工具结果", captureCindy: "在人类对话模式清理已识别的 Cindy 包装",
  advanced: "高级设置", maxMemories: "最多召回记忆数（1–20）", maxBytes: "召回字节数（512–32768）", requestTimeout: "请求超时毫秒（50–5000）", recallBackoff: "召回退避毫秒（100–300000）", gatewayTimeout: "宿主 hook 超时毫秒（100–10000）", port: "连接测试端口（1024–65535）", insecure: "允许非本机 HTTP（凭据将明文传输）", defaultsHelp: "留空时，支持环境继承的选项使用环境值，其余使用显示的默认值。未修改的值保持原样；宿主超时可能更早结束请求。",
- conflict: "配置已在其他位置更改。草稿已保留；取消并重新打开以加载最新值。", invalidOption: "请检查输入及允许范围。",
+ conflict:"配置已在其他位置更改，草稿已保留。请选择“取消”，再重新打开设置以加载最新值。", invalidOption: "请检查输入及允许范围。",
 });
 Object.assign(messages["zh-TW"], {
  concurrencyHelp:"儲存時會將你的修改合併至最新設定，但其他編輯入口同時儲存仍可能覆蓋變更。請一次只使用一個編輯入口。選項中的超大整數可能被捨入。",
  configure:"設定", dialogTitle:"Nowledge Mem 設定", settingsIntro:"設定連線、召回與儲存。", saveHelp:"未修改及未列出的選項會保留。", notConfigured:"使用環境變數或本機預設值 · 尚未測試",
- explicitValue:"已明確設定", explicitEmpty:"明確空值（實際使用回退值）", defaultValue:"預設值", inherited:"繼承環境或預設值", useDefault:"恢復預設 / 繼承",
- hostAgent:"宿主 Agent ID", hostAgentHelp:"留空時從用戶端類型推導。", keyKeep:"保留已儲存的值", keyReplace:"更換", keyClear:"清除已儲存的值", keyActionHelp:"清除儲存值後仍會繼承環境變數，不會停用環境變數。", keyEnv:"API 金鑰環境變數", keyEnvHelp:"僅接受 NMEM_* 名稱；留空使用 NMEM_API_KEY。",
- filterSection:"儲存與過濾", captureTools:"包含用戶端工具結果", captureFilter:"儲存過濾", filterOff:"關閉", filterHuman:"人類對話", captureCindy:"在人類對話模式清理已識別的 Cindy 包裝",
- advanced:"進階設定", maxMemories:"最多召回記憶數（1–20）", maxBytes:"召回位元組數（512–32768）", requestTimeout:"請求逾時毫秒（50–5000）", recallBackoff:"召回退避毫秒（100–300000）", gatewayTimeout:"宿主 hook 逾時毫秒（100–10000）", port:"連線測試埠（1024–65535）", insecure:"允許非本機 HTTP（憑據將明文傳輸）", defaultsHelp:"留空時，支援環境繼承的選項使用環境值，其餘使用顯示的預設值。未修改的值保持原樣；宿主逾時可能更早結束請求。", conflict:"設定已在其他位置更改。草稿已保留；取消並重新開啟以載入最新值。", invalidOption:"請檢查輸入及允許範圍。",
+ useDefault:"恢復預設 / 繼承",
+ hostAgent:"宿主 Agent ID", hostAgentHelp:"留空時從用戶端類型推導。", keyActionHelp:"清除儲存值後仍會繼承環境變數，不會停用環境變數。", keyEnv:"API 金鑰環境變數", keyEnvHelp:"僅接受 NMEM_* 名稱；留空使用 NMEM_API_KEY。",
+ filterSection:"儲存與過濾", captureTools:"包含用戶端工具結果", captureCindy:"在人類對話模式清理已識別的 Cindy 包裝",
+ advanced:"進階設定", maxMemories:"最多召回記憶數（1–20）", maxBytes:"召回位元組數（512–32768）", requestTimeout:"請求逾時毫秒（50–5000）", recallBackoff:"召回退避毫秒（100–300000）", gatewayTimeout:"宿主 hook 逾時毫秒（100–10000）", port:"連線測試埠（1024–65535）", insecure:"允許非本機 HTTP（憑據將明文傳輸）", defaultsHelp:"留空時，支援環境繼承的選項使用環境值，其餘使用顯示的預設值。未修改的值保持原樣；宿主逾時可能更早結束請求。", conflict:"設定已在其他位置更改，草稿已保留。請選擇「取消」，再重新開啟設定以載入最新值。", invalidOption:"請檢查輸入及允許範圍。",
 });
 Object.assign(messages.ja, {
  concurrencyHelp:"保存時に変更を最新の設定に反映しますが、別の編集画面が同時に保存すると上書きされる可能性があります。一度に一つの編集画面を使ってください。非常に大きい整数は丸められる場合があります。",
  configure:"設定", dialogTitle:"Nowledge Mem の設定", settingsIntro:"接続、検索と保存を設定します。", saveHelp:"変更していない項目と一覧にない項目は保持されます。", notConfigured:"環境変数またはローカルの既定値を使用 · 未テスト",
- explicitValue:"明示値", explicitEmpty:"明示的な空値（フォールバック）", defaultValue:"既定値", inherited:"環境変数または既定値", useDefault:"既定値 / 継承に戻す", hostAgent:"ホスト Agent ID", hostAgentHelp:"空欄の場合はハーネスから導出します。", keyKeep:"保存済みの値を維持", keyReplace:"変更", keyClear:"保存済みの値を削除", keyActionHelp:"保存値を消すと環境変数にフォールバックします。環境変数は無効になりません。", keyEnv:"API キーの環境変数", keyEnvHelp:"NMEM_* のみ。空欄では NMEM_API_KEY を使用します。",
- filterSection:"保存とフィルター", captureTools:"クライアントのツール結果を含める", captureFilter:"保存フィルター", filterOff:"オフ", filterHuman:"人間の会話", captureCindy:"人間の会話モードで既知の Cindy 包装を整理", advanced:"詳細設定", maxMemories:"記憶の最大数（1–20）", maxBytes:"検索のバイト数（512–32768）", requestTimeout:"リクエスト時間制限 ms（50–5000）", recallBackoff:"検索の再試行待ち ms（100–300000）", gatewayTimeout:"ホスト hook の時間制限 ms（100–10000）", port:"接続テストのポート（1024–65535）", insecure:"ローカル以外の HTTP を許可（認証情報は平文で送信）", defaultsHelp:"空欄は対応する環境変数、それ以外は表示された既定値を使用します。未変更の値は保持されます。ホストの時間制限が先に切れる場合があります。", conflict:"設定が別の場所で変更されました。下書きは保持されています。キャンセルして開き直してください。", invalidOption:"入力と範囲を確認してください。",
+ useDefault:"既定値 / 継承に戻す", hostAgent:"ホスト Agent ID", hostAgentHelp:"空欄の場合はハーネスから導出します。", keyActionHelp:"保存値を消すと環境変数にフォールバックします。環境変数は無効になりません。", keyEnv:"API キーの環境変数", keyEnvHelp:"NMEM_* のみ。空欄では NMEM_API_KEY を使用します。",
+ filterSection:"保存とフィルター", captureTools:"クライアントのツール結果を含める", captureCindy:"人間の会話モードで既知の Cindy 包装を整理", advanced:"詳細設定", maxMemories:"記憶の最大数（1–20）", maxBytes:"検索のバイト数（512–32768）", requestTimeout:"リクエスト時間制限 ms（50–5000）", recallBackoff:"検索の再試行待ち ms（100–300000）", gatewayTimeout:"ホスト hook の時間制限 ms（100–10000）", port:"接続テストのポート（1024–65535）", insecure:"ローカル以外の HTTP を許可（認証情報は平文で送信）", defaultsHelp:"空欄は対応する環境変数、それ以外は表示された既定値を使用します。未変更の値は保持されます。ホストの時間制限が先に切れる場合があります。", conflict:"設定が別の場所で変更されました。下書きは保持されています。「キャンセル」を選び、設定を開き直してください。", invalidOption:"入力と範囲を確認してください。",
 });
 Object.assign(messages.de, {
  concurrencyHelp:"Beim Speichern werden deine Änderungen in die aktuellen Einstellungen übernommen; ein anderer gleichzeitig speichernder Editor kann sie dennoch überschreiben. Bitte nur einen Editor zugleich verwenden. Sehr große Ganzzahlen können gerundet werden.",
  configure:"Einstellungen", dialogTitle:"Nowledge Mem Einstellungen", settingsIntro:"Verbindung, Abruf und Speichern konfigurieren.", saveHelp:"Unveränderte und nicht aufgeführte Optionen bleiben erhalten.", notConfigured:"Umgebung oder lokaler Standard · noch nicht getestet",
- explicitValue:"Expliziter Wert", explicitEmpty:"Explizit leer (Fallback gilt)", defaultValue:"Standardwert", inherited:"Umgebung oder Standard", useDefault:"Standard / Erben", hostAgent:"Host-Agent-ID", hostAgentHelp:"Leer leitet die Identität aus dem Harness ab.", keyKeep:"Gespeicherten Wert behalten", keyReplace:"Ersetzen", keyClear:"Gespeicherten Wert löschen", keyActionHelp:"Nach dem Löschen gilt weiterhin die Umgebungsvariable; sie wird nicht deaktiviert.", keyEnv:"Umgebungsvariable für API-Schlüssel", keyEnvHelp:"Nur NMEM_*; leer verwendet NMEM_API_KEY.",
- filterSection:"Speichern und filtern", captureTools:"Client-Tool-Ergebnisse einschließen", captureFilter:"Speicherfilter", filterOff:"Aus", filterHuman:"Menschlicher Dialog", captureCindy:"Erkannte Cindy-Hüllen im Dialogmodus bereinigen", advanced:"Erweitert", maxMemories:"Maximale Erinnerungen (1–20)", maxBytes:"Abruf-Bytes (512–32768)", requestTimeout:"Anfrage-Timeout ms (50–5000)", recallBackoff:"Abruf-Wartezeit ms (100–300000)", gatewayTimeout:"Host-Hook-Timeout ms (100–10000)", port:"Verbindungstest-Port (1024–65535)", insecure:"HTTP zu fremdem Server erlauben (Zugangsdaten unverschlüsselt)", defaultsHelp:"Leer verwendet die Umgebung, wo unterstützt, sonst den angezeigten Standard. Unveränderte Werte bleiben erhalten. Das Host-Timeout kann früher enden.", conflict:"Die Konfiguration wurde anderswo geändert. Der Entwurf bleibt erhalten; zum Neuladen abbrechen und erneut öffnen.", invalidOption:"Eingaben und Wertebereiche prüfen.",
+ useDefault:"Standard / Erben", hostAgent:"Host-Agent-ID", hostAgentHelp:"Leer leitet die Identität aus dem Harness ab.", keyActionHelp:"Nach dem Löschen gilt weiterhin die Umgebungsvariable; sie wird nicht deaktiviert.", keyEnv:"Umgebungsvariable für API-Schlüssel", keyEnvHelp:"Nur NMEM_*; leer verwendet NMEM_API_KEY.",
+ filterSection:"Speichern und filtern", captureTools:"Client-Tool-Ergebnisse einschließen", captureCindy:"Erkannte Cindy-Hüllen im Dialogmodus bereinigen", advanced:"Erweitert", maxMemories:"Maximale Erinnerungen (1–20)", maxBytes:"Abruf-Bytes (512–32768)", requestTimeout:"Anfrage-Timeout ms (50–5000)", recallBackoff:"Abruf-Wartezeit ms (100–300000)", gatewayTimeout:"Host-Hook-Timeout ms (100–10000)", port:"Verbindungstest-Port (1024–65535)", insecure:"HTTP zu fremdem Server erlauben (Zugangsdaten unverschlüsselt)", defaultsHelp:"Leer verwendet die Umgebung, wo unterstützt, sonst den angezeigten Standard. Unveränderte Werte bleiben erhalten. Das Host-Timeout kann früher enden.", conflict:"Die Konfiguration wurde anderswo geändert. Der Entwurf bleibt erhalten. Wähle „Abbrechen“ und öffne die Einstellungen erneut.", invalidOption:"Eingaben und Wertebereiche prüfen.",
 });
-for (const language of ["zh-TW", "ja", "de"]) for (const [key, value] of Object.entries(messages.en)) if (!(key in messages[language])) messages[language][key] = value;
+
+
+Object.assign(messages.en, {keySaved:"Saved",keyNotSet:"No saved key",keyRemove:"Remove saved key",keyUndo:"Undo removal",humanOnly:"Only human dialogue",filterHelp:"Exclude tool results from saved conversations.",cindyHelp:"Available when only human dialogue is enabled.",captureToolsHelp:"Include client tool results when saving conversations.",insecureHelp:"Use only on a trusted network."});
+Object.assign(messages.zh, {keySaved:"已保存",keyNotSet:"未保存密钥",keyRemove:"清除已保存的密钥",keyUndo:"撤销清除",humanOnly:"仅保存人类对话",filterHelp:"保存对话时排除工具结果。",cindyHelp:"仅在人类对话模式开启时可用。",captureToolsHelp:"保存对话时包含客户端工具结果。",insecureHelp:"仅在可信网络中使用。"});
+Object.assign(messages["zh-TW"], {keySaved:"已儲存",keyNotSet:"未儲存金鑰",keyRemove:"清除已儲存的金鑰",keyUndo:"復原清除",humanOnly:"僅儲存人類對話",filterHelp:"儲存對話時排除工具結果。",cindyHelp:"僅在人類對話模式開啟時可用。",captureToolsHelp:"儲存對話時包含用戶端工具結果。",insecureHelp:"僅在可信任的網路中使用。"});
+Object.assign(messages.ja, {keySaved:"保存済み",keyNotSet:"保存したキーなし",keyRemove:"保存したキーを削除",keyUndo:"削除を取り消す",humanOnly:"人間の対話のみ",filterHelp:"保存する会話からツール結果を除きます。",cindyHelp:"人間の対話のみが有効なときに使用できます。",captureToolsHelp:"会話の保存時にクライアントのツール結果を含めます。",insecureHelp:"信頼できるネットワークでのみ使用してください。"});
+Object.assign(messages.de, {keySaved:"Gespeichert",keyNotSet:"Kein gespeicherter Schlüssel",keyRemove:"Gespeicherten Schlüssel entfernen",keyUndo:"Entfernen rückgängig",humanOnly:"Nur menschlicher Dialog",filterHelp:"Tool-Ergebnisse aus gespeicherten Gesprächen ausschließen.",cindyHelp:"Nur verfügbar, wenn menschlicher Dialog aktiviert ist.",captureToolsHelp:"Client-Tool-Ergebnisse beim Speichern einschließen.",insecureHelp:"Nur in einem vertrauenswürdigen Netzwerk verwenden."});
 
 const languageTags = {en: 'en', zh: 'zh-CN', 'zh-TW': 'zh-TW', ja: 'ja-JP', de: 'de-DE'};
 

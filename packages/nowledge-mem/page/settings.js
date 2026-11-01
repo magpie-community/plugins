@@ -3,8 +3,8 @@
 const {languageFor, languageTags, translate} = nowledgeMemI18n;
 const validateExplicitOptions = globalThis.__nowledgeMemValidateOptions;
 const $ = (id) => document.getElementById(id);
-let language = 'en', busy = false, savedOptions = null, draftOptions = null, baseline = null, draftOpen = false;
-const resets = new Set(), origins = new Map();
+let language = 'en', busy = false, savedOptions = null, draftOptions = null, baseline = null, draftOpen = false, clearKey = false;
+const resets = new Set(), resetButtons = new Map();
 const t = (key) => translate(language, key);
 function message(id, key, error = false) {
  const el = $(id); el.dataset.message = key; el.textContent = t(key); el.dataset.error = String(error); el.hidden = false;
@@ -14,7 +14,7 @@ const fields = [
  ['url','serverUrl','text'], ['space','spaceId','text'], ['agent','agentId','text'], ['host-agent','hostAgentId','text'], ['key-env','apiKeyEnv','text'],
  ['skip-agents','skipAgents','list'],
  ['recall','recall','bool',true], ['context','contextBundle','bool',true], ['capture','capture','bool',false],
- ['capture-tools','captureTools','bool',true], ['capture-filter','captureFilter','choice','off'], ['capture-cindy','captureCindy','bool',false],
+ ['capture-tools','captureTools','bool',true], ['capture-filter','captureFilter','filter','off'], ['capture-cindy','captureCindy','bool',false],
  ['max-memories','maxMemories','number',5,1,20], ['max-bytes','maxBytes','number',6000,512,32768],
  ['request-timeout','requestTimeoutMs','number',1500,50,5000], ['recall-backoff','recallBackoffMs','number',30000,100,300000],
  ['gateway-timeout','gatewayTimeoutMs','number',1000,100,10000], ['port','port','number',3479,1024,65535], ['insecure','allowInsecureHttp','bool',false],
@@ -44,36 +44,36 @@ function testService() {
  const port = Number(savedOptions?.port);
  return `http://127.0.0.1:${Number.isInteger(port) && port > 0 ? port : 3479}`;
 }
-function valueOf(id, kind) { return kind === 'bool' ? $(id).checked : $(id).value; }
+function valueOf(id, kind) { return kind === 'bool' ? $(id).checked : kind === 'filter' ? $(id).checked ? 'human' : 'off' : $(id).value; }
 function snapshotForm() { return Object.fromEntries(fields.map(([id,,kind]) => [id, valueOf(id, kind)])); }
-function paintOrigin(id, name) {
- const note = origins.get(id); if (!note) return;
- const inherited = name === 'serverUrl' || name === 'apiKeyEnv';
- const empty = Object.hasOwn(draftOptions, name) && (draftOptions[name] === null || draftOptions[name] === '');
- note.dataset.t = resets.has(id) || !Object.hasOwn(draftOptions, name) ? inherited ? 'inherited' : 'defaultValue' : empty ? 'explicitEmpty' : 'explicitValue';
- note.textContent = t(note.dataset.t);
+function paintReset(id, name) {
+ const entry = resetButtons.get(id); if (!entry || !draftOptions) return;
+ entry.button.hidden = resets.has(id) || !Object.hasOwn(draftOptions, name);
+ const fieldName = entry.label.querySelector?.('strong')?.textContent || entry.label.querySelector?.('span')?.textContent || id;
+ const label = `${t('useDefault')}: ${fieldName}`;
+ entry.button.setAttribute('aria-label',label); entry.button.setAttribute('title',label);
 }
 function attachOrigins() {
  for (const [id,name,kind,fallback] of fields) {
-  if (origins.has(id)) continue;
+  if (resetButtons.has(id)) continue;
   const input = $(id), label = input.closest?.('label'); if (!label) continue;
-  const note = element('small'), reset = element('button','useDefault');
-  reset.type = 'button'; reset.className = 'secondary option-reset';
+  const wrapper = element('div'), reset = element('button');
+  wrapper.className = 'field-wrap'; label.before(wrapper); wrapper.append(label,reset);
+  reset.type = 'button'; reset.className = 'option-reset'; reset.textContent = '×';
   reset.onclick = () => {
    resets.add(id);
    if (kind === 'bool') input.checked = fallback;
-   else if (kind === 'choice') input.value = fallback;
+   else if (kind === 'filter') input.checked = fallback === 'human';
    else input.value = '';
-   if (id === 'capture-filter') $('capture-cindy').disabled = input.value !== 'human';
-   paintOrigin(id,name);
+   if (id === 'capture-filter') $('capture-cindy').disabled = !input.checked;
+   paintReset(id,name); input.focus();
   };
   const edited = () => {
    resets.delete(id);
-   if (baseline && valueOf(id,kind) === baseline.fields[id]) paintOrigin(id,name);
-   else { note.dataset.t = 'explicitValue'; note.textContent = t('explicitValue'); }
+   paintReset(id,name);
   };
   input.addEventListener('input',edited); input.addEventListener('change',edited);
-  label.append(note,reset); origins.set(id,note);
+  resetButtons.set(id,{button:reset,label});
  }
 }
 function element(tag, key) {
@@ -86,13 +86,13 @@ function fill(options) {
  for (const [id,name,kind,fallback] of fields) {
   if (kind === 'bool') $(id).checked = options[name] ?? fallback;
   else if (kind === 'list') $(id).value = skipList(options[name]).join(', ');
-  else if (kind === 'choice') $(id).value = options[name] ?? fallback;
+  else if (kind === 'filter') $(id).checked = (options[name] ?? fallback) === 'human';
   else $(id).value = options[name] == null ? '' : String(options[name]);
  }
- $('key-action').value = 'keep'; $('key').value = ''; $('key').type = 'password';
+ clearKey = false; $('key').value = ''; $('key').type = 'password';
  baseline = {fields:snapshotForm()};
- for (const [id,name] of fields) paintOrigin(id,name);
- $('key').disabled = true; $('capture-cindy').disabled = $('capture-filter').value !== 'human'; paintSecret();
+ for (const [id,name] of fields) paintReset(id,name);
+ $('capture-cindy').disabled = !$('capture-filter').checked; paintSecret(); paintKeyAction();
 }
 function paintSecret() {
  const visible = $('key').type === 'text', label = t(visible ? 'hideKey' : 'showKey');
@@ -100,8 +100,16 @@ function paintSecret() {
 }
 $('show-key').onclick = () => { $('key').type = $('key').type === 'password' ? 'text' : 'password'; paintSecret(); };
 $('settings').onclose = () => { $('key').type = 'password'; paintSecret(); };
-$('key-action').onchange = () => { $('key').disabled = $('key-action').value !== 'replace'; };
-$('capture-filter').onchange = () => { $('capture-cindy').disabled = $('capture-filter').value !== 'human'; };
+function paintKeyAction() {
+ const present = typeof draftOptions?.apiKey === 'string' && !!draftOptions.apiKey.trim();
+ $('key').placeholder = t(present && !clearKey ? 'keySaved' : 'keyNotSet');
+ $('key-clear').hidden = !present;
+ $('key-clear').textContent = t(clearKey ? 'keyUndo' : 'keyRemove');
+ $('key-clear').setAttribute('aria-pressed',String(clearKey));
+}
+$('key-clear').onclick = () => { clearKey = !clearKey; if (clearKey) $('key').value = ''; paintKeyAction(); };
+$('key').oninput = () => { if ($('key').value) clearKey = false; paintKeyAction(); };
+$('capture-filter').onchange = () => { $('capture-cindy').disabled = !$('capture-filter').checked; };
 function close() { if (!busy) $('settings').close(); }
 $('configure').onclick = async () => {
  if (busy || !savedOptions) return;
@@ -123,6 +131,7 @@ function paint() {
  $('close').setAttribute('aria-label',t('close')); paintSecret(); summary();
  document.querySelectorAll('[data-message]').forEach((el) => { el.textContent = t(el.dataset.message); });
  document.querySelectorAll('[data-t]').forEach((el) => { el.textContent = t(el.dataset.t); });
+ if (draftOptions) { paintKeyAction(); for (const [id,name] of fields) paintReset(id,name); }
 }
 magpie.ready.then(async () => {
  paint(); magpie.onTheme(paint);
@@ -138,7 +147,7 @@ function nextOptions() {
   const current = valueOf(id,kind);
   if (resets.has(id)) { delete next[name]; continue; }
   if (current === baseline.fields[id]) continue;
-  if (kind === 'bool' || kind === 'choice') next[name] = current;
+  if (kind === 'bool' || kind === 'filter') next[name] = current;
   else if (kind === 'list') {
    const names = skipList(current);
    if (names.length) next[name] = names; else delete next[name];
@@ -150,8 +159,8 @@ function nextOptions() {
  }
  if (next.serverUrl && !validUrl(next.serverUrl, next.allowInsecureHttp === true)) throw new Error('invalidUrl');
  if (next.apiKeyEnv && !/^NMEM_[A-Za-z0-9_]+$/.test(next.apiKeyEnv)) throw new Error('invalidOption');
- if ($('key-action').value === 'clear') delete next.apiKey;
- if ($('key-action').value === 'replace') {
+ if (clearKey) delete next.apiKey;
+ else if ($('key').value) {
   const key = $('key').value.trim().replace(/^Bearer\s+/i,'');
   if (!key || /[\s\u0000-\u001f\u007f]/.test(key)) throw new Error('invalidKey');
   next.apiKey = key;
