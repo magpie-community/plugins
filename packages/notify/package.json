@@ -1,10 +1,10 @@
 {
   "name": "@magpie-community/gateway-notify",
-  "version": "0.1.1",
-  "description": "A push to your phone or team chat when an agent's turn is done: ntfy, Bark, Server酱, Feishu, DingTalk, WeCom, Telegram or a webhook",
+  "version": "0.1.2",
+  "description": "A push to your phone or team chat when an agent's turn is done: ntfy, Bark, Gotify, Server酱, Feishu, DingTalk, WeCom, Telegram or a webhook",
   "type": "module",
   "files": ["notify.hooks.mjs", "turn.mjs", "channels.mjs", "README.md"],
-  "keywords": ["magpie", "magpie-gateway", "magpie-hooks", "notification", "ntfy", "bark", "feishu", "dingtalk", "telegram"],
+  "keywords": ["magpie", "magpie-gateway", "magpie-hooks", "notification", "ntfy", "bark", "gotify", "feishu", "dingtalk", "telegram"],
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/notify" },
   "magpie": {

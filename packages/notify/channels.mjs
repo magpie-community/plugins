@@ -33,6 +33,11 @@ export const kinds = {
     device_key: c.key, title: m.title, body: m.body, group: c.group ?? "magpie", ...(c.sound ? { sound: c.sound } : {}),
   }),
 
+  // Gotify: self-hosted push notifications
+  gotify: (c, m) => post(`${trimSlash(c.server)}/message`, {
+    title: m.title, message: m.body, priority: c.priority ?? 5, ...(c.extras ? { extras: c.extras } : {}),
+  }, { "X-Gotify-Key": c.token }),
+
   // Server酱 Turbo (SCT…) and Server酱³ (sctp<uid>t…)
   serverchan: (c, m) => {
     const key = String(c.key ?? "")
@@ -77,7 +82,7 @@ export const kinds = {
 
 // what each kind needs before it can send
 const needs = {
-  ntfy: ["topic"], bark: ["key"], serverchan: ["key"], feishu: ["webhook"], dingtalk: ["webhook"],
+  ntfy: ["topic"], bark: ["key"], gotify: ["server", "token"], serverchan: ["key"], feishu: ["webhook"], dingtalk: ["webhook"],
   wecom: ["webhook"], telegram: ["token", "chatId"], webhook: ["url"],
 }
 

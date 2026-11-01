@@ -42,6 +42,7 @@ The hook changes nothing in a request, and sending never holds one up: it return
   "channels": [                    // one or more; each sends the same push
     { "type": "ntfy", "topic": "…", "server": "https://ntfy.sh", "token": "…", "priority": 3 },
     { "type": "bark", "key": "…", "server": "https://api.day.app", "group": "magpie", "sound": "…" },
+    { "type": "gotify", "server": "https://push.example.com", "token": "…", "priority": 5 },
     { "type": "serverchan", "key": "SCT… or sctp…" },
     { "type": "feishu", "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/…", "secret": "…" },
     { "type": "dingtalk", "webhook": "https://oapi.dingtalk.com/robot/send?access_token=…", "secret": "SEC…" },
