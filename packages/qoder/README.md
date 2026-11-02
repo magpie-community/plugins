@@ -315,6 +315,43 @@ paths, client id and protocol are the public ones:
 The hosts and reply shapes come from a real VPC account's report
 (yetone/magpie#312). This plugin has not been tried with a VPC account.
 
+### Enterprise dedicated domain (企业版专属域)
+
+An enterprise whose Qoder IDE signs in through 「企业版专属域登录」 with a
+domain of its own (any https host, such as `your-corp.rdc.aliyuncs.com`)
+signs in with **Sign in with Qoder CN Enterprise dedicated domain
+(企业版专属域)** (since 0.2.53). It asks for the domain as it is set in
+Qoder IDE's settings: a host or an https address (a path is dropped).
+
+It follows Qoder IDE 1.38.0's own rules for that setting:
+
+- It first asks `GET <domain>/algo/api/v1/version`. A 404 means a legacy
+  Lingma 1.0 (通义灵码) dedicated domain. Its sign-in goes through another
+  protocol, which this plugin doesn't have yet, so the sign-in stops and
+  says so. Any other answer means Qoder CN 2.0. A domain that doesn't answer
+  is refused.
+- A Qoder CN 2.0 domain uses the VPC protocol on hosts named the IDE's way:
+  `-openapi` or `-gateway` after the host's first label. An IP or a host
+  with no dot keeps its own origin. The sign-in uses the IDE's client id and
+  no `redirect_uri`.
+
+| | Dedicated domain `your-corp.rdc.aliyuncs.com` |
+|---|---|
+| Sign-in page | your-corp.rdc.aliyuncs.com/device/selectAccounts |
+| Accounts: poll, tokens, user info, usage | your-corp-openapi.rdc.aliyuncs.com |
+| Models and chat | your-corp-gateway.rdc.aliyuncs.com |
+
+- Models and chat use the gateway host when it answers at sign-in.
+  Otherwise they use the domain itself, which answered the probe on the
+  same `/algo` path. The IDE's language server makes this choice, and its
+  rule wasn't read, so this part is inferred.
+- The domain is kept with the account, which is named
+  `<email> (<domain>)`. An account whose kept domain isn't one is asked to
+  sign in again; it is never sent to the public hosts.
+
+The rules come from Qoder IDE's code. This plugin has not been tried with a
+dedicated account.
+
 ## The card's name
 
 An account signed in with a phone is shown by that phone — masked, `138****8000` — not by

@@ -315,6 +315,104 @@ function vpcSite(site, instance) {
   return { ...site, web: `https://${name}.${d}`, openapi: `https://${name}-openapi.${d}`, api: `https://${name}-gateway.${d}`, vpc: name }
 }
 
+// ---- enterprise dedicated domain (Qoder CN 企业版专属域) ----------------------
+//
+// Qoder IDE (1.38.0) signs in to an enterprise's dedicated domain from its
+// config.general.dedicatedUrl (Settings, 「企业版专属域登录」), any https host
+// such as <corp>.rdc.aliyuncs.com, not only <instance>.vpc.qoder.com.cn. It
+// first asks GET <domain>/algo/api/v1/version: a 404 is a legacy Lingma 1.0
+// (通义灵码) dedicated domain, signed in to through another protocol; any
+// other status is Qoder CN 2.0, signed in to with the same device flow as
+// qoder.cn: /device/selectAccounts on the domain's origin, and the poll and
+// user info on an openapi host named by putting "-openapi" after the host's
+// first label (foo.rdc.aliyuncs.com → foo-openapi.rdc.aliyuncs.com; its
+// gateway host is the same with "-gateway"). An IP, a bracketed IPv6 host or
+// a host with no dot keeps its origin. The workbench's client id there is
+// the IDE's production one.
+const DEDICATED_CLIENT = "f5a7f67c-11a8-491e-8b8e-a07f2d0df4b7"
+const DEDICATED_VERSION = "/algo/api/v1/version"
+
+// dedicatedOrigin is the https origin of what the user entered as their
+// dedicated domain: a host or an https:// address, a path dropped as the
+// IDE drops it for sign-in. undefined: not one (http://, credentials, no host).
+function dedicatedOrigin(input) {
+  let e = String(input ?? "").trim()
+  if (!e) return undefined
+  if (!/^[a-z][a-z\d+.-]*:\/\//i.test(e)) e = `https://${e}`
+  let u
+  try {
+    u = new URL(e)
+  } catch {
+    return undefined
+  }
+  if (u.protocol !== "https:" || u.username || u.password || !u.hostname) return undefined
+  return u.origin
+}
+
+// dedicatedHost is origin's host with suffix after its first label, as the
+// IDE's helper names a dedicated domain's openapi and gateway hosts; origin
+// itself for an IP, an IPv6 host or a host with no dot.
+function dedicatedHost(origin, suffix) {
+  const u = new URL(origin)
+  const h = u.hostname
+  if (!h || (h.startsWith("[") && h.endsWith("]")) || h.includes(":") || /^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return origin
+  const i = h.indexOf(".")
+  if (i <= 0 || i === h.length - 1) return origin
+  const host = `${h.slice(0, i)}${suffix}.${h.slice(i + 1)}`
+  return `${u.protocol}//${u.port ? `${host}:${u.port}` : host}`
+}
+
+// dedicatedSite is site served from a dedicated domain (its host, as kept on
+// the account), with api its chat host when the sign-in found the gateway
+// host unreachable and chose the domain's own origin; undefined: not one.
+function dedicatedSite(site, domain, api) {
+  const origin = dedicatedOrigin(domain)
+  if (!origin) return undefined
+  const host = new URL(origin).host
+  return {
+    ...site,
+    web: origin,
+    openapi: dedicatedHost(origin, "-openapi"),
+    api: api ? dedicatedOrigin(api) ?? dedicatedHost(origin, "-gateway") : dedicatedHost(origin, "-gateway"),
+    clientId: DEDICATED_CLIENT,
+    redirect: "",
+    vpc: host,
+    dedicated: host,
+  }
+}
+
+// dedicatedProbe is the status GET <origin>/algo/api/v1/version answers, as
+// the IDE's probe asks it; undefined when nothing answered.
+async function dedicatedProbe(origin) {
+  try {
+    const r = await fetch(origin + DEDICATED_VERSION, { headers: { "User-Agent": "Qoder" }, signal: AbortSignal.timeout(10_000) })
+    await r.body?.cancel().catch(() => {})
+    return r.status
+  } catch {
+    return undefined
+  }
+}
+
+// dedicatedSignIn reads the domain as the IDE does and starts its device
+// sign-in. A legacy Lingma domain is refused with what it is: its sign-in
+// (cosy's login/generateUrl, a qoder-cn-ide:// callback) isn't served here.
+// The chat host is the gateway host when it answers at all, else the
+// domain's own origin, which answered the probe on the same /algo path; the
+// IDE leaves this to its language server, whose rule wasn't read (inferred).
+async function dedicatedSignIn(site, input) {
+  const origin = dedicatedOrigin(input)
+  if (!origin) throw new Error(`Not a dedicated domain: ${String(input ?? "").slice(0, 100)}`)
+  const status = await dedicatedProbe(origin)
+  if (status === undefined) throw new Error(`${site.name}: ${origin} didn't answer (${DEDICATED_VERSION}); check the address and your network`)
+  if (status === 404)
+    throw new Error(
+      `${site.name}: ${origin} is a Lingma 1.0 (通义灵码) dedicated domain, which this plugin can't sign in to yet; ${new URL(origin).host} answers 404 at ${DEDICATED_VERSION}, as Qoder IDE tells one apart`,
+    )
+  const gateway = dedicatedHost(origin, "-gateway")
+  const api = gateway !== origin && (await dedicatedProbe(gateway)) === undefined ? origin : undefined
+  return deviceSignIn(dedicatedSite(site, origin, api))
+}
+
 // siteOf is the site an account is served from: its VPC instance's when it
 // was signed in to one, else site. An instance on record that names none
 // is not read as "no VPC", which would send the enterprise's tokens to the
@@ -326,6 +424,11 @@ function siteOf(site, a) {
   if (a?.enterpriseHost) {
     const base = `https://${a.enterpriseHost}`
     return { ...site, web: base, openapi: base, api: base, vpc: a.enterpriseHost }
+  }
+  if (a?.dedicated) {
+    const s = dedicatedSite(site, a.dedicated, a.dedicatedApi)
+    if (!s) throw new SignInGone(`${site.name}: the account's dedicated domain "${a.dedicated}" isn't one; sign in again`)
+    return s
   }
   if (a?.vpc === undefined || a?.vpc === null || a?.vpc === "") return site
   const s = vpcSite(site, a.vpc)
@@ -418,6 +521,7 @@ async function deviceSignIn(site) {
         deviceRefresh: dt.refresh_token ?? "",
         ...(site.vpc ? { vpc: site.vpc } : {}),
         ...(site.enterpriseDomain ? { vpc: site.enterpriseDomain, enterpriseHost: site.enterpriseDomain } : {}),
+        ...(site.dedicated ? { dedicated: site.dedicated, ...(site.api !== dedicatedHost(site.web, "-gateway") ? { dedicatedApi: site.api } : {}) } : {}),
       }
     },
   }
@@ -3167,6 +3271,22 @@ const makePlugin = (site) => async ({ client }) => {
                   return deviceSignIn(s)
                 },
               },
+              // an enterprise dedicated domain (企业版专属域), as Qoder IDE's
+              // settings take one: any https host, e.g. <corp>.rdc.aliyuncs.com
+              {
+                type: "oauth",
+                label: `Sign in with ${site.name} Enterprise dedicated domain (企业版专属域)`,
+                prompts: [
+                  {
+                    type: "text",
+                    key: "dedicated",
+                    message: "Your enterprise's dedicated domain, as set in Qoder IDE (企业版专属域地址)",
+                    placeholder: "your-corp.rdc.aliyuncs.com or https://your-corp.rdc.aliyuncs.com",
+                    validate: (v) => (dedicatedOrigin(v) ? undefined : "Not a dedicated domain: enter its host or https:// address"),
+                  },
+                ],
+                authorize: (inputs) => dedicatedSignIn(site, inputs?.dedicated),
+              },
             ]
           : []),
       ],
@@ -3302,4 +3422,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
