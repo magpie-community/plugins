@@ -24,6 +24,8 @@
   let themeLang = theme.lang
   let opts = {}
   try { opts = (await magpie.options.get()) || {} } catch {}
+  // ISO and 2D keep their original palette for the six original scenes; only the new ones are themed.
+  const NEW_CANVAS_THEMES = ["library", "cyberlab", "greenhouse", "arctic", "rainynight"]
   const view = {
     mode: opts.mode === "list" ? "list" : "office",
     dim: ["2d", "iso", "3d"].includes(opts.dim) ? opts.dim : "3d",
@@ -172,7 +174,7 @@
     if (scene3) scene3.stop()
     scene = scene2
     office2.hidden = false; office3.hidden = true
-    scene2.theme = Scene3D?.SCENES?.[view.scene] || null
+    scene2.theme = NEW_CANVAS_THEMES.includes(view.scene) ? Scene3D?.SCENES?.[view.scene] : null
     scene2.setDim(view.dim === "2d" ? "2d" : "3d")
     return scene2
   }
