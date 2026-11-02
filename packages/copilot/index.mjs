@@ -74,7 +74,14 @@ export async function CopilotAuthPlugin({ client }) {
               });
 
               if (!response.ok) {
-                throw new Error(`Token refresh failed: ${response.status}`);
+                // GitHub's 401 here is the OAuth token itself turned away:
+                // magpie marks the account to sign in again. Anything
+                // else (no seat, a rate limit, an outage) leaves it as
+                // it is.
+                throw Object.assign(
+                  new Error(`Token refresh failed: ${response.status}`),
+                  response.status === 401 ? { signIn: "expired" } : {},
+                );
               }
 
               const tokenData = await response.json();

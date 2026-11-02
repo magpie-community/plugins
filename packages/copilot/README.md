@@ -54,6 +54,9 @@ magpie calls `auth.usage(getAuth, provider)` independently of model requests.
 It reads `GET /copilot_internal/user` on `api.github.com` or the account's
 `api.<enterpriseUrl>` using the GitHub OAuth token, **not** the short-lived
 inference token. Reading quota neither renews nor persists either token.
+When the inference token exchange itself answers 401, the request fails
+with `signIn: "expired"` and magpie asks for a new sign-in; any other
+failure there leaves the account for the next request.
 OpenCode ignores magpie's additional hook.
 
 - Only `chat`, `completions` and `premium_interactions` snapshots are read;
@@ -82,7 +85,9 @@ OpenCode ignores magpie's additional hook.
   overage permission or adds the separate overage counter to included usage.
 - Empty, malformed or unavailable quota data is unknown, not zero usage.
   Only an explicit HTTP 401 marks the sign-in expired. Network errors, rate
-  limits, 403s and server errors keep the sign-in. No response body or token is
+  limits, 403s and server errors keep the sign-in. A read GitHub answers
+  clears a mark, since the OAuth token it took is what renews the inference
+  token (an idle account whose inference token lapsed, #618). No response body or token is
   included in error messages. Quota requests have a timeout and reject redirects.
 
 GitHub's quota endpoint is internal and may change. An organization may not

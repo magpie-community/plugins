@@ -260,3 +260,23 @@ test("device flow keeps Enterprise metadata without redirecting auth to another 
     }
   }
 });
+
+// plugins#618: only GitHub turning the OAuth token away at the token
+// exchange marks the account; another failure leaves it for the next try.
+test("a refused token exchange says the sign-in expired, another failure doesn't", async () => {
+  for (const [status, signIn] of [[401, "expired"], [403, undefined], [500, undefined]]) {
+    const seen = [];
+    globalThis.fetch = async (url) => {
+      seen.push(url);
+      return new Response("{}", { status });
+    };
+    const hooks = await CopilotAuthPlugin({ client: { auth: { set: async () => assert.fail("saved a refused exchange") } } });
+    const loader = await hooks.auth.loader(async () => signedIn({ access: "", expires: 0 }), { models: {} });
+    const err = await loader.fetch(`${loader.baseURL}/responses`, { body: "{}", headers: {} }).then(() => undefined, (e) => e);
+    assert.ok(err, `HTTP ${status} went through`);
+    assert.equal(err.signIn, signIn);
+    assert.match(err.message, new RegExp(String(status)));
+    assert.ok(!err.message.includes("mock-github-oauth"));
+    assert.equal(seen.length, 1);
+  }
+});
