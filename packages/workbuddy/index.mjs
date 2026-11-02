@@ -2674,7 +2674,7 @@ function readLedgerTail(path, st, now, chunks, account, win = FREE_WINDOW_AI) {
     let carry = ""
     let firstPass = true
     let stop = false
-    let chain = [] // this account's own rows read, latest first
+    const edge = pinning() // where this account's own rows read so far say the chain is read from
     let reach = 0 // the row below which nothing is kept: 0 until an edge is found
     let answered = false // whether an answered free-model row of it is read
 
@@ -2717,9 +2717,8 @@ function readLedgerTail(path, st, now, chunks, account, win = FREE_WINDOW_AI) {
         }
         if (!ofAccount(row, account, win)) continue
         rev.push(row)
-        chain.push(row)
         if (Number(row.status) === 200) answered = true
-        if (!reach && Number(row.status) !== 429) reach = pinned(chain, account)
+        if (!reach) reach = edge(row)
       }
       firstPass = false
     }
@@ -2785,6 +2784,51 @@ function pinned(rows, account) {
   // no edge among these rows: the read goes on to the file's start, which is
   // the whole ledger — the only place a chain needs nothing before it
   return 0
+}
+
+// pinning is pinned read a row at a time: it is handed the account's own
+// rows latest first, as readLedgerTail reads them, and answers each with what
+// pinned would answer for every row handed so far — in constant time.
+//
+// readLedgerTail used to call pinned on its whole chain after each row, and
+// pinned walks the chain, so a chain with no edge in it cost the square of
+// its rows: 10.5 s for 16,000 rows on mote, a minute and more for an account
+// a server spends on all day (a call a minute is 43,000 rows in a month).
+// That ran on the plugin host's one thread at every usage read, and the
+// ledger changes with every call, so nothing held it over: the host sat at
+// 99% CPU and every session through it stalled (xmoon76 on Discord, the
+// China build's window being read since 0.2.12).
+//
+// It holds because the rows only ever grow at their oldest end, and pinned
+// was asked only while it answered 0 — no readable refusal and no day's gap
+// among the rows so far — so the one new thing a row can bring is:
+//
+//   - a refusal with a readable reset: the newest such is the first read,
+//     and pinned answers it whatever else the rows hold, once a row that is
+//     not a refusal follows (readLedgerTail asked pinned for those alone);
+//   - a day's gap between it and the oldest answered row before it, the only
+//     pair of answered rows not already looked at. pinned answers that with
+//     the older row of the pair, this one.
+function pinning() {
+  let denied = null // the newest readable refusal's reset
+  let oldest = null // the oldest answered row's time so far
+  return (row) => {
+    const status = Number(row?.status)
+    if (status === 429) {
+      if (denied === null) {
+        const reset = windowReset(row.err)
+        if (Number.isFinite(reset)) denied = reset
+      }
+      return 0
+    }
+    if (denied !== null) return denied - FREE_WINDOW_LEAD
+    if (status !== 200) return 0
+    const t = Date.parse(row?.t)
+    if (!Number.isFinite(t)) return 0
+    if (oldest !== null && oldest - t >= FREE_WINDOW_GAP) return t - FREE_WINDOW_LEAD
+    oldest = t
+    return 0
+  }
 }
 
 // _internal is where these are handed to a test: magpie's host calls every
@@ -3896,4 +3940,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { planCodes, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_CN, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { planCodes, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_CN, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }

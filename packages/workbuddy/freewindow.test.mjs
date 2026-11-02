@@ -670,3 +670,77 @@ test("a row whose time cannot be read is passed over", () => {
   // the same bound, not Infinity and not the 0 of a chain with no edge
   expect(_internal.pinned(holey, "me@example.com")).toBe(bound)
 })
+
+// pinning answers each row as pinned would answer the rows handed so far, for
+// as long as readLedgerTail asks (pinned said 0, and the row is not a
+// refusal). Random chains of answered rows, failures, refusals with and
+// without a readable reset, unreadable times and day-wide gaps.
+test("pinning answers as pinned does, row by row", () => {
+  let seed = 7
+  const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648)
+  const now = at("2026-10-22T12:00:00+08:00")
+  const at8 = (ms) => `${new Date(ms + 8 * AN_HOUR).toISOString().slice(0, 19).replace("T", " ")} UTC+8`
+  let edged = 0
+  for (let k = 0; k < 400; k++) {
+    let t = now
+    const chain = []
+    const edge = _internal.pinning()
+    let reach = 0
+    for (let i = 0; i < 60 && !reach; i++) {
+      t -= rand() < 0.08 ? A_DAY + rand() * A_DAY : rand() * 3 * AN_HOUR
+      const p = rand()
+      const r =
+        p < 0.05
+          ? row(new Date(t).toISOString(), { status: 429, err: `${TIMEOUT_BEFORE_RESET}${at8(t + rand() * A_DAY)}, alternatively, you can switch.` })
+          : p < 0.08
+            ? row(new Date(t).toISOString(), { status: 429, err: "too many requests" })
+            : p < 0.12
+              ? row(new Date(t).toISOString(), { status: 500 })
+              : p < 0.14
+                ? row("not-a-time")
+                : row(new Date(t).toISOString())
+      chain.push(r)
+      const got = edge(r)
+      if (Number(r.status) === 429) {
+        expect(got).toBe(0)
+        continue
+      }
+      expect(got).toBe(_internal.pinned(chain, "me@example.com"))
+      reach = got
+    }
+    if (reach) edged++
+  }
+  // most chains met an edge, so both of pinned's answers were compared
+  expect(edged).toBeGreaterThan(200)
+})
+
+// xmoon76 (Discord, 2026-11-02): with WorkBuddy on, the plugin host sat at
+// 99% CPU and every session through it stalled. readLedgerTail asked pinned
+// about its whole chain after every row, and a chain with no edge — an account
+// a server spends on the free model all day, no refusal and no day's gap —
+// cost the square of its rows: 10.5 s for 16,000 on mote, on the host's one
+// thread, at every usage read. The work is counted here, not timed: every
+// time is read with Date.parse, which a quadratic read calls millions of
+// times for these 6,000 rows and a linear one a few times per line.
+test("a busy account's ledger is read in time linear in its rows", () => {
+  const now = at("2026-11-02T12:00:00+08:00")
+  const lines = []
+  for (let i = 6000; i >= 1; i--) {
+    const t = new Date(now - i * 60_000).toISOString()
+    lines.push(JSON.stringify(row(t, { in: 1000, out: 100, provider: "workbuddy" })))
+    lines.push(JSON.stringify(row(t, { in: 1, provider: "zcode", account: "other" })))
+  }
+  const root = writeLedger(lines)
+  const parse = Date.parse
+  let calls = 0
+  Date.parse = (s) => (calls++, parse(s))
+  try {
+    const path = join(root, "usage.jsonl")
+    const got = _internal.readLedgerTail(path, statSync(path), now, undefined, "me@example.com", _internal.FREE_WINDOW_CN)
+    expect(got.rows.length).toBe(6000)
+    expect(calls).toBeLessThan(lines.length * 4)
+  } finally {
+    Date.parse = parse
+    rmSync(root, { recursive: true, force: true })
+  }
+})
