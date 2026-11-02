@@ -104,8 +104,12 @@ the reply, not only while a tool or subagent works.
 - The conversation's next real request stops its pings; its own reply
   starts them again. A conversation is the session the agent names, the
   Claude Code subagent (`x-claude-code-agent-id`) and a hash of the
-  instructions, the tools' names and the first user message, so a
-  subagent's requests never stop its lead's pings.
+  instructions and the tools' names, so a subagent's or a permission
+  check's requests never stop its lead's pings. The first user message is
+  left out, as Claude Code Auto's permission check grows it with the
+  history on every check (#620). A request that names no session is also
+  told apart by its first message, where one that grew from a message
+  seen before is still that conversation.
 - They stop on a 401, 402 or 429, after two pings in a row that read less
   than half their prompt from the cache, at the most pings (6), when the
   switch goes off, and with the plugin host's process. The timers never

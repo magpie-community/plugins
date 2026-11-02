@@ -2188,10 +2188,19 @@ const textsOf = (c) => (typeof c === "string" ? [c] : Array.isArray(c) ? c.map((
 
 // keepaliveKey is the conversation a request is of: the session the agent
 // names, the Claude Code subagent it is of (x-claude-code-agent-id, never
-// sent for the lead's own turns), and a hash of the prefix every turn
-// shares: the instructions, the tools' names and the first user message.
-// A subagent's prefix is its own, so its requests never stop its lead's
-// pings, nor the lead's its.
+// sent for the lead's own turns), and a hash of what every turn of it
+// shares: the instructions and the tools' names. A subagent's, or Claude
+// Code's permission check's, instructions and tools are their own, so their
+// requests never stop the lead's pings, nor the lead's theirs.
+//
+// The first user message is not part of it: Claude Code Auto's permission
+// check sends the whole history in its first message, which grows on every
+// check, and each check's key was then new, so a check left its older
+// pings running beside its new ones (plugins#620, zelong77). Only a
+// request that names no session is told apart by its first message too,
+// as two conversations could share the rest; there, a first message that
+// grew from one seen before (blocks added, or the last one's text added
+// to) is still that conversation (firstOf).
 function keepaliveKey(req, messages, headers) {
   let h
   try {
@@ -2201,16 +2210,49 @@ function keepaliveKey(req, messages, headers) {
   }
   const session = SESSION_HEADERS.map((k) => h.get(k)?.trim()).find(Boolean) ?? ""
   const agent = h.get("x-claude-code-agent-id")?.trim() ?? ""
-  let prefix
+  let prefix, first
   if (messages) {
     const system = textsOf(req.system).map((t) => t.replace(BILLING_LINE, ""))
-    prefix = [system, (req.tools ?? []).map((t) => t?.name ?? ""), textsOf(req.messages?.[0]?.content)]
+    prefix = [system, (req.tools ?? []).map((t) => t?.name ?? "")]
+    first = textsOf(req.messages?.[0]?.content)
   } else {
     const ms = req.messages ?? []
     const system = ms.filter((m) => m?.role === "system" || m?.role === "developer").map((m) => textsOf(m.content))
-    prefix = [system, (req.tools ?? []).map((t) => t?.function?.name ?? ""), textsOf(ms.find((m) => m?.role === "user")?.content)]
+    prefix = [system, (req.tools ?? []).map((t) => t?.function?.name ?? "")]
+    first = textsOf(ms.find((m) => m?.role === "user")?.content)
   }
-  return [session, agent, createHash("sha256").update(JSON.stringify(prefix)).digest("hex").slice(0, 32)].join("\n")
+  const group = [session, agent, sha(JSON.stringify(prefix))].join("\n")
+  if (session) return group
+  return firstOf(group, first)
+}
+
+const sha = (s) => createHash("sha256").update(s).digest("hex").slice(0, 32)
+
+// firsts are the first messages of the conversations seen without a
+// session, by key: each block's hash but the last's, and the last's length
+// and hash, so a grown message is told without holding its text
+const firsts = new Map() // key → {group, n, blocks: [hash], last: {len, hash}}
+const FIRSTS_KEPT = 256
+
+// firstOf is the key of the conversation, in group, whose first message
+// first is, or grew from (the longest such one), else a new key.
+function firstOf(group, first) {
+  const hashes = first.map(sha)
+  let best, most
+  for (const [id, f] of firsts) {
+    if (f.group !== group || f.n > first.length || (f.n === 0) !== (first.length === 0)) continue
+    if (f.n > 0) {
+      const t = first[f.n - 1]
+      if (f.blocks.some((x, j) => x !== hashes[j]) || t.length < f.last.len || sha(t.slice(0, f.last.len)) !== f.last.hash) continue
+    }
+    if (!best || f.n > most.n || (f.n === most.n && f.last.len > most.last.len)) (best = id), (most = f)
+  }
+  const id = best ?? [group, sha(JSON.stringify(first))].join("\n")
+  const t = first.at(-1) ?? ""
+  firsts.delete(id)
+  firsts.set(id, { group, n: first.length, blocks: hashes.slice(0, -1), last: { len: t.length, hash: sha(t) } })
+  while (firsts.size > FIRSTS_KEPT) firsts.delete(firsts.keys().next().value)
+  return id
 }
 
 // stopKeepalive stops a conversation's pings, one in flight too.

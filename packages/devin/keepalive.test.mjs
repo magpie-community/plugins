@@ -354,3 +354,79 @@ test("package.json gives magpie's Options editor the two settings' defaults", as
   const { interval, max } = _internal.keepaliveSettings({})
   expect(pkg.magpie.options).toEqual({ cacheKeepaliveInterval: interval / 1000, cacheKeepaliveMaxPings: max })
 })
+
+// plugins#620 (zelong77): Claude Code Auto's permission check sends the
+// history in its first user message, which grows on every check. Each
+// check's key was new, so its older pings were never stopped and piled up.
+// zelong77's offline repro, with its literal requests.
+const check = {
+  model: "claude-sonnet-5-5",
+  max_tokens: 16,
+  system: [{ type: "text", text: "Permission classifier" }],
+  messages: [
+    { role: "user", content: [{ type: "text", text: "History A", cache_control: { type: "ephemeral" } }] },
+    { role: "user", content: [{ type: "text", text: "Evaluate operation" }] },
+  ],
+}
+const grown = (req, text) => {
+  const b = structuredClone(req)
+  b.messages[0].content.push({ type: "text", text, cache_control: { type: "ephemeral" } })
+  return b
+}
+const arrive = (req, headers) => {
+  const id = keepaliveKey(req, true, headers)
+  _internal.stopKeepalive(id)
+  const msg = buildMessages(req, "claude-sonnet-5-5", "fake-key")
+  _internal.scheduleKeepalive({ id, interval: 285000, max: 6 }, "fake-key", "https://example.invalid", msg)
+  return id
+}
+const session = { "x-claude-code-session-id": "same-session", "x-claude-code-agent-id": "same-agent" }
+
+for (const [name, headers] of [["with no session named", {}], ["in one session and agent", session]]) {
+  test(`a permission check whose history grew replaces its pings, ${name} (plugins#620)`, () => {
+    globalThis.fetch = () => {
+      throw new Error("Network forbidden")
+    }
+    const oldKey = arrive(check, headers)
+    arrive(check, headers)
+    expect(_internal.keeping().length).toBe(1)
+    const b = grown(check, "History B")
+    expect(arrive(b, headers)).toBe(oldKey)
+    expect(_internal.keeping()).toEqual([oldKey])
+    expect(clock.live().length).toBe(1)
+    // and again, from the grown one
+    expect(arrive(grown(b, "History C"), headers)).toBe(oldKey)
+    expect(clock.live().length).toBe(1)
+  })
+}
+
+test("a first message whose last text grew is the same conversation (plugins#620)", () => {
+  const a = { system: "S", messages: [{ role: "user", content: "History A" }] }
+  const b = { system: "S", messages: [{ role: "user", content: "History A, then B" }] }
+  const before = keepaliveKey(a, true, {})
+  expect(keepaliveKey(b, true, {})).toBe(before)
+})
+
+test("conversations that really differ keep their own pings (plugins#620)", () => {
+  // no session named: another first message is another conversation
+  const a = { system: "S", messages: [{ role: "user", content: [{ type: "text", text: "History A" }] }] }
+  const other = { system: "S", messages: [{ role: "user", content: [{ type: "text", text: "Something else" }] }] }
+  const aKey = keepaliveKey(a, true, {})
+  expect(keepaliveKey(other, true, {})).not.toBe(aKey)
+  // one that only shares its first block's start isn't grown from it
+  const shorter = { system: "S", messages: [{ role: "user", content: [{ type: "text", text: "History" }, { type: "text", text: "x" }] }] }
+  expect(keepaliveKey(shorter, true, {})).not.toBe(aKey)
+  // in one session: the lead, its permission check and a subagent
+  const s = { "x-claude-code-session-id": "s1" }
+  const leadReq = { system: "You are Claude Code.", tools: [{ name: "Bash" }], messages: [{ role: "user", content: "fix the build" }] }
+  const keys = new Set([keepaliveKey(leadReq, true, s), keepaliveKey(check, true, s), keepaliveKey(leadReq, true, { ...s, "x-claude-code-agent-id": "a1" })])
+  expect(keys.size).toBe(3)
+  // and a grown check stops only the check's pings
+  globalThis.fetch = () => {
+    throw new Error("Network forbidden")
+  }
+  arrive(leadReq, s)
+  arrive(check, s)
+  arrive(grown(check, "History B"), s)
+  expect(_internal.keeping().length).toBe(2)
+})
