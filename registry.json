@@ -67,7 +67,7 @@
     { "package": "@magpie-community/middleware-history-trim", "name": "History Trim", "kind": "middleware", "community": true,
       "summary": { "en": "Send a request's history smaller: fold a run of blank lines, drop a system prompt written twice and a message repeated right after itself, and cut a past tool result longer than maxToolLength at a word boundary. The turn being sent now is left whole.", "zh": "把请求的历史发得更小：折叠连续空行、去掉逐字重复的 system 提示与紧挨着重复的消息、把历史中超过 maxToolLength 的工具结果在词边界处截断；正在发送的这一轮原样不动。" } },
     { "package": "@magpie-community/middleware-fovea", "name": "Fovea", "kind": "middleware", "community": true,
-      "summary": { "en": "Thin an agent's old history: old tool results and long texts keep head and tail, images sent turns ago become a note — the first task message and a recent window stay whole. Message count, order and tool pairing never change.", "zh": "给 agent 的旧历史瘦身：旧工具结果与长文本留头留尾，几轮之前发的图换成一行备注；首条任务消息和最近窗口保持原样。消息条数、顺序与工具配对从不改变。" } },
+      "summary": { "en": "Thin an agent's old history while preserving a recent window and tool pairing. Optional saccade collapses sufficiently old content when the latest question differs from the first task; system/developer summaries remain untouched.", "zh": "裁薄 Agent 旧历史，同时保留最近窗口和工具配对；可选 saccade 在新问题与首条任务不同话题时折叠足够旧的内容。system/developer 中的压缩摘要不处理。" } },
     { "package": "@magpie-community/agent-aider", "name": "Aider", "kind": "agent", "community": true,
       "summary": { "en": "Aider (aider.chat) on magpie's Agents page: pick one of magpie's models for it, and switch it off to put its config back.", "zh": "把 Aider（aider.chat）加到 magpie 的 Agent 页：给它选 magpie 的模型，关掉即恢复它原来的配置。" } },
     { "package": "@magpie-community/agent-pig", "name": "PiG", "kind": "agent", "community": true,

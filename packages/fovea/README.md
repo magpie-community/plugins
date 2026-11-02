@@ -9,7 +9,7 @@ All three request shapes are read in their own way — Chat (`role:"tool"`), Ant
 Nothing is dropped:
 
 - message count and order stay as sent; an old tool result is shortened, not removed, so every `tool_call` still has its answer, in both Chat (`role:"tool"`) and Anthropic (`tool_result`) shapes
-- the system prompt, the first user message (the task the history serves) and the last `keep_recent` messages are never touched
+- the system prompt and the last `keep_recent` messages are never touched; in the default mode the first user message (the task the history serves) stays whole too
 - tool calls, ids and thinking blocks are never touched
 - content already carrying the marker is left alone, so a history the agent sends back each turn is cut once, not again
 - content matching a `protect` pattern (a diff, a key block) is left whole
@@ -33,7 +33,9 @@ Install it from magpie's **Plugins › Discover**, or with `magpie plugin add @m
 | `tool_head` / `tool_tail` | `600` / `300` | What an old tool result keeps of its start and end. |
 | `text_head` / `text_tail` | `1200` / `400` | What an old text message keeps. |
 | `drop_old_images` | `true` | Images older than the window become `[fovea: old image omitted]`. |
-| `protect` | `[]` | Regexes whose matches stay whole — `["^diff --git ", "BEGIN .*PRIVATE KEY"]` for text that is only useful verbatim. |
+| `protect` | `[]` | Regexes whose matches stay whole in both modes — `["^diff --git ", "BEGIN .*PRIVATE KEY"]` for text that is only useful verbatim. |
+| `cut_step` | `24` | Cut boundary moves only in blocks of this many messages to keep the already-cut prefix identical across nearby requests. Histories below one full block stay uncut; set `1` if you prefer immediate thinning over cache reuse. |
+| `saccade` | `"off"` | `"off"` keeps head and tail. `"auto"` checks lexical overlap between the latest question and the **first** task message; when near zero, sufficiently long old content becomes `[fovea: prior topic not carried]`. `"always"` collapses on every eligible request. Short follow-ups such as “继续” leave the earlier mode intact only for that request. |
 
 A cut carries a marker in place of what was taken:
 
@@ -47,7 +49,11 @@ so both the agent and its human can see what happened, and the middleware can re
 
 ## When not to use it
 
-The recent window is kept by message count, not tokens: a single huge recent message stays whole. What this middleware does is mechanical — it cannot tell which old detail matters, only where the head and the tail are; if an agent's work turns on re-reading an old tool output verbatim, raise `tool_head`/`tool_tail` or turn the middleware off for that run. Shortened history also means a provider's prompt cache for the shortened prefix no longer matches — it settles again a turn later, once the same old messages come back already cut.
+The recent window is kept by message count **and** an approximate token budget; a single huge recent message stays whole when it is among the last `keep_recent` messages. What this middleware does is mechanical — it cannot tell which old detail matters, only where the head and the tail are; if an agent's work turns on re-reading an old tool output verbatim, raise `tool_head`/`tool_tail` or turn the middleware off for that run.
+
+A new cut boundary changes the provider's cached prefix once per `cut_step` block. The other turns within the block keep the already-cut prefix byte-identical. `saccade: auto` can switch between head-and-tail and collapsed text on successive turns, causing additional prompt-cache misses. It uses lexical overlap, not semantic understanding: paraphrases and evolving tasks can be misclassified. Leave it `off` for a long cached tool loop; use `always` only when you know the old history is irrelevant.
+
+**Compressed summaries have a separate limit:** fovea never edits system/developer instructions or the recent window. If your agent inserts its previous-session summary there, `saccade` cannot prevent that summary from being sent. The agent or harness must decide whether to include the summary *before* building the request, or mark the summary in a removable user/assistant message outside the recent window. Do not infer from a shorter request size that a protected summary was omitted.
 
 ## Try it locally (no model call)
 

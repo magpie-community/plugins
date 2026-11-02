@@ -79,12 +79,14 @@ export function onRequest(body, ctx) {
     if (cfg.threshold > 0 && sizeOf(body) < cfg.threshold) return
 
     const at = windowStart(list, cfg.keepRecent, cfg.keepTokens)
-    // The boundary quantises down to a multiple of cut_step once there is a
-    // full block to land on, so cached prefixes stay byte-identical while
-    // the window slides. Under one block the boundary follows the window
-    // exactly: quantising 4 old messages down to 0 (cut_step 24) meant
-    // requests shorter than the block size were never thinned at all.
-    const start = at >= cfg.cutStep ? Math.floor(at / cfg.cutStep) * cfg.cutStep : at
+    // The boundary lands only on multiples of cut_step: while the window
+    // slides a round a turn, the cut prefix stays byte-identical for many
+    // turns and the provider's prompt cache settles. Under one block
+    // nothing is cut yet — a history that small reads cheap whole, and
+    // cutting it would churn the cache every turn (yetone's review, PR
+    // #467: with the boundary sliding, a cached loop costs more, not
+    // less). Options that want thinning at any size set cut_step: 1.
+    const start = Math.floor(at / cfg.cutStep) * cfg.cutStep
     if (start <= 0) return
 
     const saccade = cfg.saccade === "always" || (cfg.saccade === "auto" && topicShifted(list))
@@ -241,25 +243,25 @@ function slimContent(holder, key, head, tail, cfg) {
 function collapseMessage(m, cfg) {
   if (!m || typeof m !== "object") return false
   if (m.role === "system" || m.role === "developer") return false
-  if (m.role === "tool") return collapseText(m, "content")
+  if (m.role === "tool") return collapseContent(m, "content", cfg)
   if (m.role === "assistant") {
     let changed = false
-    if (typeof m.content === "string") changed = collapseText(m, "content")
+    if (typeof m.content === "string") changed = collapseText(m, "content", cfg)
     else if (Array.isArray(m.content)) {
       for (const b of m.content) {
-        if (b && b.type === "text" && typeof b.text === "string") changed = collapseText(b, "text") || changed
+        if (b && b.type === "text" && typeof b.text === "string") changed = collapseText(b, "text", cfg) || changed
       }
     }
     return changed
   }
   if (m.role === "user" || m.role === undefined) {
-    if (typeof m.content === "string") return collapseText(m, "content")
+    if (typeof m.content === "string") return collapseText(m, "content", cfg)
     if (!Array.isArray(m.content)) return false
     let changed = false
     for (const b of m.content) {
       if (!b || typeof b !== "object") continue
-      if (b.type === "tool_result") changed = collapseContent(b, "content") || changed
-      else if (b.type === "text" && typeof b.text === "string") changed = collapseText(b, "text") || changed
+      if (b.type === "tool_result") changed = collapseContent(b, "content", cfg) || changed
+      else if (b.type === "text" && typeof b.text === "string") changed = collapseText(b, "text", cfg) || changed
       else if (isImage(b.type)) { note(b, b.type === "input_image", NOTE); changed = true }
     }
     return changed
@@ -269,15 +271,15 @@ function collapseMessage(m, cfg) {
 
 function collapseInput(it, cfg) {
   if (!it || typeof it !== "object") return false
-  if (it.type === "function_call_output" || it.type === "custom_tool_call_output") return collapseText(it, "output")
+  if (it.type === "function_call_output" || it.type === "custom_tool_call_output") return collapseContent(it, "output", cfg)
   if (it.role === "system" || it.role === "developer") return false
   if (it.type === "message" || it.role === "user" || it.role === "assistant") {
-    if (typeof it.content === "string") return collapseText(it, "content")
+    if (typeof it.content === "string") return collapseText(it, "content", cfg)
     if (!Array.isArray(it.content)) return false
     let changed = false
     for (const b of it.content) {
       if (!b || typeof b !== "object") continue
-      if (typeof b.text === "string") changed = collapseText(b, "text") || changed
+      if (typeof b.text === "string") changed = collapseText(b, "text", cfg) || changed
       else if (isImage(b.type)) { note(b, b.type === "input_image", NOTE); changed = true }
     }
     return changed
@@ -285,22 +287,23 @@ function collapseInput(it, cfg) {
   return false
 }
 
-function collapseContent(holder, key) {
+function collapseContent(holder, key, cfg) {
   const c = holder[key]
-  if (typeof c === "string") return collapseText(holder, key)
+  if (typeof c === "string") return collapseText(holder, key, cfg)
   if (!Array.isArray(c)) return false
   let changed = false
   for (const part of c) {
     if (!part || typeof part !== "object") continue
-    if ((part.type === "text" || part.type === "input_text") && typeof part.text === "string") changed = collapseText(part, "text") || changed
+    if ((part.type === "text" || part.type === "input_text") && typeof part.text === "string") changed = collapseText(part, "text", cfg) || changed
     else if (isImage(part.type)) { note(part, part.type === "input_image", NOTE); changed = true }
   }
   return changed
 }
 
-function collapseText(holder, key) {
+function collapseText(holder, key, cfg) {
   const t = holder[key]
   if (typeof t !== "string" || t === NOTE || t.length <= NOTE_MIN) return false
+  if (cfg.protect.some((re) => re.test(t))) return false
   holder[key] = NOTE
   return true
 }

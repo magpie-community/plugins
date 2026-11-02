@@ -25,7 +25,8 @@
       "tool_head": 10,
       "tool_tail": 5,
       "text_head": 20,
-      "text_tail": 5
+      "text_tail": 5,
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -109,7 +110,8 @@
       "tool_head": 10,
       "tool_tail": 5,
       "text_head": 20,
-      "text_tail": 5
+      "text_tail": 5,
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -155,7 +157,8 @@
       "tool_head": 10,
       "tool_tail": 5,
       "text_head": 20,
-      "text_tail": 5
+      "text_tail": 5,
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -251,7 +254,8 @@
       "tool_head": 10,
       "tool_tail": 5,
       "text_head": 20,
-      "text_tail": 5
+      "text_tail": 5,
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -384,7 +388,8 @@
       "tool_head": 10,
       "tool_tail": 5,
       "text_head": 20,
-      "text_tail": 5
+      "text_tail": 5,
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -412,7 +417,8 @@
       "keep_recent": 5,
       "keep_recent_tokens": 0,
       "tool_head": 10,
-      "tool_tail": 5
+      "tool_tail": 5,
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -442,7 +448,8 @@
       "tool_head": 10,
       "tool_tail": 5,
       "text_head": 20,
-      "text_tail": 5
+      "text_tail": 5,
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -486,7 +493,8 @@
       "tool_head": 10,
       "tool_tail": 5,
       "text_head": 20,
-      "text_tail": 5
+      "text_tail": 5,
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -540,7 +548,8 @@
       "tool_head": 10,
       "tool_tail": 5,
       "text_head": 20,
-      "text_tail": 5
+      "text_tail": 5,
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -607,7 +616,8 @@
       "text_tail": 5,
       "protect": [
         "^diff --git "
-      ]
+      ],
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -637,7 +647,8 @@
       "tool_head": 10,
       "tool_tail": 5,
       "text_head": 20,
-      "text_tail": 5
+      "text_tail": 5,
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -724,7 +735,8 @@
       "text_tail": 5,
       "protect": [
         "(["
-      ]
+      ],
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -773,7 +785,8 @@
       "tool_tail": 5,
       "text_head": 20,
       "text_tail": 5,
-      "saccade": "always"
+      "saccade": "always",
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -858,7 +871,8 @@
       "tool_tail": 5,
       "text_head": 20,
       "text_tail": 5,
-      "saccade": "auto"
+      "saccade": "auto",
+      "cut_step": 1
     },
     "request": {
       "model": "m",
@@ -943,91 +957,8 @@
       "tool_tail": 5,
       "text_head": 20,
       "text_tail": 5,
-      "saccade": "auto"
-    },
-    "request": {
-      "model": "m",
-      "messages": [
-        {
-          "role": "user",
-          "content": "deploy the terraform stack to fly io region iad"
-        },
-        {
-          "role": "assistant",
-          "content": "reading",
-          "tool_calls": [
-            {
-              "id": "call_1",
-              "type": "function",
-              "function": {
-                "name": "read",
-                "arguments": "{}"
-              }
-            }
-          ]
-        },
-        {
-          "role": "tool",
-          "tool_call_id": "call_1",
-          "content": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL"
-        },
-        {
-          "role": "assistant",
-          "content": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-        },
-        {
-          "role": "user",
-          "content": "terraform stack fly io region iad dns records check please"
-        }
-      ]
-    },
-    "expect_request": {
-      "model": "m",
-      "messages": [
-        {
-          "role": "user",
-          "content": "deploy the terraform stack to fly io region iad"
-        },
-        {
-          "role": "assistant",
-          "content": "reading",
-          "tool_calls": [
-            {
-              "id": "call_1",
-              "type": "function",
-              "function": {
-                "name": "read",
-                "arguments": "{}"
-              }
-            }
-          ]
-        },
-        {
-          "role": "tool",
-          "tool_call_id": "call_1",
-          "content": "LLLLLLLLLL\n[fovea: 285 chars of old tool output omitted]\nLLLLL"
-        },
-        {
-          "role": "assistant",
-          "content": "XXXXXXXXXXXXXXXXXXXX\n[fovea: 175 chars of old text omitted]\nXXXXX"
-        },
-        {
-          "role": "user",
-          "content": "terraform stack fly io region iad dns records check please"
-        }
-      ]
-    }
-  },
-  {
-    "name": "cut_step default still thins a history shorter than the block: the old tool result is cut",
-    "options": {
-      "threshold": 0,
-      "keep_recent": 1,
-      "keep_recent_tokens": 0,
-      "tool_head": 10,
-      "tool_tail": 5,
-      "text_head": 20,
-      "text_tail": 5
+      "saccade": "auto",
+      "cut_step": 1
     },
     "request": {
       "model": "m",
