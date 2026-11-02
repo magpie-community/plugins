@@ -168,9 +168,25 @@ behind it go straight to the plan. A gift that cannot be asked at all —
 the network, the host — is answered from the plan the same way, the
 route read dropped for the next request, while a caller's own abort
 stays an abort. The agent sees the plan's answer
-either way. And the `-Trial` entries keep their own strict semantics —
+either way. When a refusal is fresh, the usage card says so — **"ZCode's
+gift is refusing requests — freeFirst answers from the coding plan until
+14:02 (…)"** — so a gift sitting idle
+beside a fat balance is explained, not silent. The why tells the two
+block kinds apart: a block page from the edge firewall says "the
+network's address is blocked" (every model the gift serves rests for the
+route's ten minutes — an address block outlasts a minute), ZCode's own
+3012 says "ZCode restricted this account", a spent answer rests its one
+model for a minute as "its quota said spent", and any other failure is
+named with its status; while a rest is on, the
+requests behind it go straight to the plan. The `-Trial` entries keep
+their own strict semantics —
 asking one is still an explicit pick of the gift alone, never the plan;
-a spent one answers 429 with freeFirst on, as it does without it.
+a spent one answers 429 with freeFirst on, as it does without it, and
+one asked while the gift is blocked or restricted says that with the
+block's own hint ("…the provider's network firewall blocked requests
+from this IP…" / "…ZCode's risk control blocked this account…") and an
+error type that is not a rate limit, so the gateway rests the route by
+what happened; a model the gift never serves keeps its no-quota 400.
 
 ## A few at once
 
