@@ -6,6 +6,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { request } from "node:http"
+import { runInNewContext } from "node:vm"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -148,6 +149,79 @@ test("with the token, a chat streams from the gateway with the caller key", asyn
   expect(got.body.model).toBe("fake/model")
   expect(got.body.stream).toBe(true)
   expect(got.body.messages.at(-1)).toEqual({ role: "user", content: "hi" })
+})
+
+function chatPage(setup = "") {
+  const page = {
+    document: { readyState: "loading", querySelector: () => ({ getAttribute: () => token }), addEventListener() {} },
+    TextDecoder,
+    fetch: (path, init) => {
+      if (path !== "api/chat") throw new Error("unexpected request: " + path)
+      return fetch(`http://127.0.0.1:${port}/api/chat`, init)
+    },
+    window: { addEventListener() {} }, location: { search: "" },
+    MagpieEpub: { isEpub: f => f.name?.endsWith(".epub") },
+  }
+  runInNewContext(readFileSync(join(dir, "chat/app.js"), "utf8") + "\n" + setup, page)
+  return page
+}
+
+test("a saved EPUB reaches the gateway once, including on a follow-up", async () => {
+  const page = chatPage("toast = message => globalThis.warnings.push(message);")
+  page.warnings = []
+  const chapters = "The lamp is blue.\n\nThe lamp goes out."
+  const file = { name: "lamp.epub", kind: "file", data: "data:;base64,Ym9vaw==" }
+  const image = { name: "lamp.png", kind: "image", data: "data:image/png;base64,cG5n" }
+  const broken = { ...file, name: "broken.epub", data: "data:;base64,YmFk" }
+  const h = { ...json, "x-magpie-chat-token": token }
+  page.MagpieEpub.read = async data => {
+    if (data === broken.data) throw new Error("damaged")
+    expect(data).toBe(file.data)
+    return { text: chapters, imagePages: 1 }
+  }
+  const past = [
+    { role: "user", content: "", files: [file, image] },
+    { role: "assistant", content: "A blue lamp." },
+    { role: "user", content: "What changed?", files: [{ ...file, name: "copy.epub" }, broken] },
+  ]
+  const saved = JSON.parse((await raw("POST", "/api/conversations", h, { messages: past })).body)
+  const history = JSON.parse((await raw("GET", "/api/conversations/" + saved.id, h)).body).messages
+  const events = []
+  await page.streamChat({ ...chatBody, messages: history }, event => events.push(event))
+  expect(events.at(-1).type).toBe("done")
+  const sent = seen.at(-1).body.messages
+  expect(sent.at(-3).content[0].text).toContain(chapters)
+  expect(sent.at(-3).content[0].text).toContain("1 个章节仅含图片")
+  expect(sent.at(-3).content[1]).toEqual({ type: "image_url", image_url: { url: image.data } })
+  expect(sent.at(-1).content).toContain("What changed?")
+  expect(sent.at(-1).content).toContain("broken.epub：damaged")
+  expect(page.warnings).toEqual(["旧附件未发送。broken.epub：damaged"])
+  expect(JSON.stringify(sent).match(/The lamp goes out/g)).toHaveLength(1)
+  expect(JSON.stringify(sent)).not.toContain("Ym9vaw==")
+  expect(history[0].content).toBe("")
+  expect(history[0].files[0].data).toBe(file.data)
+})
+
+test("switching chats discards a book that is still being read", async () => {
+  const page = chatPage(`
+    updateSend = renderAttachments = renderMessages = renderSessions = scrollBottom = () => {};
+    api = async () => ({ id: "other", messages: [] });
+    readAsDataURL = () => globalThis.reading;
+    globalThis.pending = () => pendingBooks;
+  `)
+  const reading = Promise.withResolvers()
+  page.reading = reading.promise
+  page.MagpieEpub.read = async () => ({ text: "A page", characters: 5 })
+  page.state.attachments.push({ name: "ready.epub" })
+  const job = page.addFiles([{ name: "first.epub", type: "application/epub+zip", size: 12 }])
+  expect(page.pending()).toBe(1)
+  page.openConversation("other")
+  await Promise.resolve()
+  reading.resolve("data:;base64,Ym9vaw==")
+  await job
+  expect(page.state.convId).toBe("other")
+  expect(page.state.attachments).toHaveLength(0)
+  expect(page.pending()).toBe(0)
 })
 
 test("conversations save and list with the token", async () => {
