@@ -215,8 +215,8 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
               error: "Agnes sign-in timed out; start it again",
             }
           }
-          const who = await platform("/user/self", token)
-          if (who.lapsed) {
+          const session = await platform("/user/self", token)
+          if (session.lapsed) {
             try {
               await session.evaluate('localStorage.removeItem("token")')
             } catch {}
@@ -235,9 +235,7 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
             access: key,
             expires: 0,
             consoleToken: token,
-            accountId:
-              (who.data?.email || who.data?.username || "Agnes browser sign-in") +
-              (profile === "plan" ? "" : ` · ${profile === "enterprise" ? "Enterprise" : "Personal"}`),
+            accountId: profileLabel(profile),
             source: "browser",
             keyProfile: profile,
           }
@@ -368,6 +366,7 @@ export const _internal = {
   agentWindows,
   apiKeyOf,
   keyProfileOf,
+  profileLabel,
   consoleTokenOf,
   revealApiKey,
   revealProfileKey,
@@ -395,6 +394,12 @@ function keyProfileOf(auth) {
   const key = apiKeyOf(auth)
   if (/^(?:cpk|apk)-/i.test(key)) return "plan"
   return ""
+}
+
+function profileLabel(profile) {
+  if (profile === "default") return "Agnes Personal"
+  if (profile === "enterprise") return "Agnes Enterprise"
+  return "Agnes Plan"
 }
 
 function consoleTokenOf(auth) {

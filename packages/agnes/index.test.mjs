@@ -9,6 +9,7 @@ const {
   BASE,
   PLATFORM,
   agentWindows,
+  profileLabel,
   revealApiKey,
   revealProfileKey,
   browserArgs,
@@ -533,6 +534,12 @@ describe("profile key reveal", () => {
       "no active enterprise API key",
     )
   })
+})
+
+test("profile labels contain no account identity", () => {
+  expect(profileLabel("plan")).toBe("Agnes Plan")
+  expect(profileLabel("default")).toBe("Agnes Personal")
+  expect(profileLabel("enterprise")).toBe("Agnes Enterprise")
 })
 
 test("browser args use a private profile and loopback debugging", () => {

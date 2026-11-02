@@ -39,6 +39,10 @@ The API key and console session are also stored in the plugin account. Set
 `AGNES_BROWSER` to a Chromium-based browser path if it is outside the usual
 locations.
 
+Browser accounts are labeled `Agnes Plan`, `Agnes Personal` or
+`Agnes Enterprise`; the account's email or username is not written into
+Magpie's plugin auth file.
+
 Personal and enterprise keys are billed from the account balance and can use
 the free models enabled for that key. If a profile has more than one active
 key, the browser sign-in picks the first active key in the platform's list; use
