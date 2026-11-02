@@ -1899,6 +1899,33 @@ const START_REFUSED = /unusual activity|request has been blocked|"code"\s*:\s*"?
 // or code 3012.
 const startRefused = (status, text) => status >= 400 && (status === 405 || START_REFUSED.test(text))
 
+// edge is the hold a block page puts on this computer's address: zcode.z.ai
+// (the Start Plan, a gift) is not asked again until edge.until, and its
+// requests are answered here with the same 405 and START_EDGE, so magpie
+// still reads them as the network's (provider.EdgeBlocked) and asks the
+// group's next provider. Every account of this process goes out from the
+// one address, so the hold is the process's, not an account's. Asking on
+// while the address is blocked, from every account and every session, only
+// knocks again on a firewall that is counting (plugins#649: two accounts,
+// three sessions and their subagents, and ZCode's own app blocked too; a
+// block in #369 lasted about seven minutes). EDGE_HOLD is short enough that
+// a user who switched network or proxy waits little for it.
+const EDGE_HOLD = 3 * 60_000
+const edge = { until: 0 }
+const edgeHeld = () => Date.now() < edge.until
+
+function hhmm(t) {
+  const d = new Date(t)
+  return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0")
+}
+
+// edgeHeldAnswer is a held request's answer: the block page's status and
+// meaning, and until when this computer holds off.
+function edgeHeldAnswer() {
+  const error = { type: "permission_error", message: `405 ${STATUS_TEXT[405]} — ${START_EDGE} (ZCode's Start Plan is not asked again from here until ${hhmm(edge.until)}, plugins#649)` }
+  return new Response(JSON.stringify({ type: "error", error }), { status: 405, statusText: STATUS_TEXT[405], headers: { "content-type": "application/json" } })
+}
+
 // startBlocked is the refusal's answer: what the vendor said (its status
 // for a block page), then what it means. A block page is the network's;
 // anything else, ZCode's JSON 3012 or a bare 405, the account's.
@@ -2382,7 +2409,7 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: raw })
                 m = raw
                 forcedGift = true
-              } else if (!alone && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m)) {
+              } else if (!alone && !edgeHeld() && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m)) {
                 // free first: the plain model spends the account's own live
                 // gift before it spends the coding plan, under the name the
                 // gift lists. The gift is the route's cache alone (a failed
@@ -2442,6 +2469,10 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
               delete opts.duplex
               return askBusy(u, opts, h2)
             }
+            // a block page held this computer off zcode.z.ai (edge): the
+            // Start Plan and a picked gift are answered here; free first
+            // already left the gift for the plan
+            if (start && edgeHeld()) return kept(edgeHeldAnswer())
             if (start) {
               if (jwtExpired(s.jwt)) throw new Error(EXPIRED)
               if (!s.jwt) throw new Error("ZCode's sign-in has no key; sign in again")
@@ -2500,6 +2531,8 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 // a key account sent to the Start Plan (its plan list read
                 // none) reads its plans again on the next request, so a
                 // coding plan that is there after all is used (#369)
+                // a block page holds every request off zcode.z.ai a while
+                if (EDGE_PAGE.test(text)) edge.until = Date.now() + EDGE_HOLD
                 if (freeGift) {
                   restModel()
                   return done(kept(await replayOnPlan()))
@@ -2685,4 +2718,4 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { edge, EDGE_HOLD, config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }

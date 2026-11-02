@@ -38,7 +38,14 @@ over Anthropic's Messages API. Provider id: `zcode`.
     for unusual activity (code 3012); …", which magpie reads as the account
     restricted: it rests, and the group's other providers are used. Only
     ZCode support lifts such a block. A block page from ZCode's edge
-    firewall says this network's address was blocked instead.
+    firewall says this network's address was blocked instead. Since 0.1.43
+    (plugins#649) such a page also holds zcode.z.ai off for three minutes,
+    for every account of the plugin, since they share the address: the
+    Start Plan and a picked `-Trial` entry are answered at once with the
+    same 405 and words, so magpie still uses the group's other providers,
+    and free first keeps a dual account on its coding plan. The first
+    request after the three minutes asks again. A GLM Coding Plan key, on
+    api.z.ai, is never held.
   - The Start Plan's token can't be refreshed. When it runs out, sign in
     again.
   - Every request, on any plan, names its conversation in `x-session-id`,

@@ -47,6 +47,7 @@ afterEach(() => {
   globalThis.fetch = real
   got.length = 0
   answer = null
+  _internal.edge.until = 0
 })
 
 const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 16)
@@ -410,6 +411,57 @@ test("a team seat's request goes as the agent sent it, ZCode's token or not", as
 const START_RESTRICTED = "ZCode's risk control blocked this account for unusual activity (code 3012); it rests, and the group's other providers are used. If the ZCode app fails on this account too, only ZCode support can lift the block"
 const START_EDGE = "the provider's network firewall blocked requests from this IP; wait a while, or switch to another network or proxy"
 
+// plugins#649: a block page is the address's, so the requests after it are
+// held off zcode.z.ai a while, from every account of the process, and
+// answered with the same 405 and hint; the coding plan, on another host,
+// goes on. A 3012 is the account's and holds nothing.
+test("a block page holds the Start Plan off zcode.z.ai for every account a while, and nothing else (plugins#649)", async () => {
+  const ask = async (auth) => {
+    routeToFake()
+    const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const opts = await hooks.auth.loader(async () => auth, { id: "zcode" })
+    const res = await opts.fetch("https://api.z.ai/api/anthropic/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": "zcode" }, body: agentText })
+    return { status: res.status, text: await res.text(), signIn: res.headers.get("x-magpie-sign-in") }
+  }
+  const messages = () => got.filter((r) => r.path.endsWith("/messages")).length
+  // a 3012 holds nothing: the next request is asked
+  answer = () => Response.json({ code: 3012, msg: "request has been blocked due to unusual activity." }, { status: 405 })
+  await ask(start("zai"))
+  await ask(start("zai"))
+  expect(messages()).toBe(2)
+  got.length = 0
+  answer = () => new Response("<html>Sorry, your request has been blocked due to unusual activity. errors.aliyun.com</html>", { status: 405, headers: { "content-type": "text/html" } })
+  const before = Date.now()
+  let r = await ask(start("zai"))
+  expect(r.status).toBe(405)
+  expect(messages()).toBe(1)
+  expect(_internal.edge.until).toBeGreaterThanOrEqual(before + _internal.EDGE_HOLD)
+  expect(_internal.edge.until).toBeLessThanOrEqual(Date.now() + _internal.EDGE_HOLD)
+  // held: the same account and another one are answered here, with the
+  // same status and magpie's BlockedHint, so the gateway still falls back
+  answer = () => Response.json({ type: "message", content: [] })
+  const other = { type: "oauth", access: jwt, refresh: JSON.stringify({ site: "zai", device: "99999999-2222-4333-8444-555555555555", jwt, plan: "Start Plan" }), expires: 0 }
+  for (const auth of [start("zai"), other]) {
+    r = await ask(auth)
+    expect(r.status).toBe(405)
+    expect(r.signIn).toBe("kept")
+    const e = JSON.parse(r.text).error
+    expect(e.type).toBe("permission_error")
+    expect(e.message).toStartWith("405 Method Not Allowed — " + START_EDGE + " (")
+    expect(e.message).toMatch(/until \d\d:\d\d:\d\d/)
+  }
+  expect(messages()).toBe(1)
+  // a GLM Coding Plan key goes to api.z.ai, held or not
+  r = await ask({ type: "api", key: "one.secret", metadata: { site: "zai" } })
+  expect(r.status).toBe(200)
+  expect(messages()).toBe(2)
+  // once the hold is over, the Start Plan is asked again
+  _internal.edge.until = Date.now() - 1
+  r = await ask(start("zai"))
+  expect(r.status).toBe(200)
+  expect(messages()).toBe(3)
+})
+
 test("the Start Plan's 3012 says ZCode blocked the account, and a block page the network (plugins#348, #425)", async () => {
   const ask = async (auth, url = "https://api.z.ai/api/anthropic/v1/messages") => {
     routeToFake()
@@ -442,6 +494,7 @@ test("the Start Plan's 3012 says ZCode blocked the account, and a block page the
   expect(r.status).toBe(405)
   expect(JSON.parse(r.text)).toEqual({ type: "error", error: { type: "permission_error", message: "405 Method Not Allowed — " + START_EDGE } })
   expect(r.text).not.toMatch(/request has been blocked/)
+  _internal.edge.until = 0
   // any other refusal of the Start Plan goes on as it came
   answer = () => Response.json({ type: "error", error: { type: "overloaded_error", message: "busy" } }, { status: 529 })
   r = await ask(start("zai"))
