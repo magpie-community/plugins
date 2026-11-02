@@ -126,7 +126,7 @@ bun bin/agent-office.mjs --json   # 一次性快照，适合让 Agent 在聊天�
 |---|---|
 | `mode` | `office` 或 `list` |
 | `dim` | `3d`（WebGL）、`iso`（等距画布）或 `2d`（俯视） |
-| `scene` | `office`、`station`、`cafe`、`castle`、`pirate`、`graveyard` |
+| `scene` | `office`、`station`、`cafe`、`castle`、`pirate`、`graveyard`、`library`、`cyberlab`、`greenhouse`、`arctic`、`rainynight` |
 | `quality` | `low`、`medium`、`high`（3D 阴影与 DPR） |
 | `showDone` | 保留已完成的 Agent |
 | `hideAfter` | 完成后多久离开：`1h`、`6h`、`24h`、`never` |
