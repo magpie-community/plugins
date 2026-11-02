@@ -1,6 +1,7 @@
 {
   "version": 1,
   "plugins": [
+    {"package":"@magpie-community/opencode-sap-aicore-auth","name":"SAP AI Core","providers":["sap-aicore"],"community":true,"summary":{"en":"Existing SAP AI Core deployments with client-secret credential-file sign-in, per-resource-group GPT Responses and Claude Messages discovery, streaming and agent tools. No deployment provisioning or quota reporting; Magpie only.","zh":"用本机 client-secret 凭据文件连接已有 SAP AI Core 部署：按资源组发现 GPT Responses 与 Claude Messages 模型，支持流式回复和 agent 工具。不创建部署，不报告额度；仅验证 Magpie。"}},
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
       "summary": { "en": "Agnes AI international with Chrome browser sign-in: live OpenAI-compatible text models, Token Plan and Agent Plan usage, and the USD wallet balance.", "zh": "通过 Chrome 浏览器登录 Agnes AI 国际版：动态发现 OpenAI 兼容文本模型，显示 Token Plan、Agent Plan 用量与美元余额，无需手动复制会话 token。" } },
     { "package": "@magpie-community/gateway-powercontext", "name": "PowerContext", "kind": "middleware", "community": true,

@@ -59,6 +59,41 @@ test("check still requires loaders for providers, including providers with tools
   }
 })
 
+test("check accepts account-scoped models without signing in or fetching them", () => {
+  const result = check(`export const Plugin = async () => ({
+    auth: {...${auth}, loader: async () => ({})},
+    config: async (cfg) => { cfg.provider.fixture = {npm: "@ai-sdk/openai", models: {}} },
+    provider: {id: "fixture", models() { throw new Error("must not ask for credentials") }}
+  })`)
+  expect(result.code).toBe(0)
+  expect(result.output).toContain("✓ fixture")
+})
+
+test("check rejects missing, mismatched or non-callable account catalogs and still requires npm and a loader", () => {
+  for (const provider of ["undefined", '{id: "wrong", models() {}}', '{id: "fixture", models: {}}']) {
+    const result = check(`export const Plugin = async () => ({
+      auth: {...${auth}, loader: async () => ({})},
+      config: async (cfg) => { cfg.provider.fixture = {npm: "@ai-sdk/openai", models: {}} },
+      provider: ${provider}
+    })`)
+    expect(result.code).toBe(1)
+    expect(result.output).toContain("no npm or models")
+  }
+  for (const [npm, loader, problem] of [
+    ['"@ai-sdk/openai"', "undefined", "auth.loader"],
+    ["undefined", "async () => ({})", "no npm or models"],
+  ]) {
+    const result = check(`export const Plugin = async () => ({
+      auth: {...${auth}, loader: ${loader}},
+      config: async (cfg) => { cfg.provider.fixture = {npm: ${npm}, models: {}} },
+      provider: {id: "fixture", models() {}}
+    })`)
+    expect(result.code).toBe(1)
+    expect(result.output).toContain(problem)
+  }
+})
+
+
 const fine = `export const Plugin = async () => ({ tool: ${tool} })`
 
 test("check passes this repository's own registry.json", () => {

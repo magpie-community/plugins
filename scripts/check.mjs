@@ -72,7 +72,10 @@ for (const name of readdirSync(root)) {
         const signInOnly = hooks.tool && p?.models && !Object.keys(p.models).length && !p.npm
         if (p && !signInOnly) {
           needsLoader = true
-          if (!p.npm || !p.models || !Object.keys(p.models).length) problems.push(`${fn.name}: config gives ${auth.provider} no npm or models`)
+          // Account-scoped catalogs may be empty before sign-in. Do not call
+          // their models hook here: this check must stay credential/network-free.
+          const dynamicModels = hooks.provider?.id === auth.provider && typeof hooks.provider.models === "function"
+          if (!p.npm || (!Object.keys(p.models ?? {}).length && !dynamicModels)) problems.push(`${fn.name}: config gives ${auth.provider} no npm or models`)
         }
       }
       if ((needsLoader || auth.loader !== undefined) && typeof auth.loader !== "function") problems.push(`${fn.name}: auth.loader`)

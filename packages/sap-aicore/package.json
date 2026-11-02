@@ -1,0 +1,40 @@
+{
+  "name": "@magpie-community/opencode-sap-aicore-auth",
+  "version": "0.2.0",
+  "description": "SAP AI Core deployments in Magpie with credential-file sign-in, account-scoped discovery and native Responses / Messages transport",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src/*.js",
+    "README.md",
+    "LICENSE",
+    "docs/credentials.md",
+    "docs/api-reference.md",
+    "docs/troubleshooting.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode-plugin",
+    "sap",
+    "sap-aicore"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/sap-aicore"
+  },
+  "scripts": {
+    "test": "bun test sap-aicore.test.mjs"
+  }
+}
