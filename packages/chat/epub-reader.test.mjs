@@ -116,7 +116,7 @@ test.skipIf(!browserPath && !process.env.CI)("reads complete books in spine orde
   } });
   const profile = mkdtempSync(join(tmpdir(), "magpie-epub-browser-"));
   const proc = Bun.spawn([browserPath, "--headless", "--disable-gpu", "--disable-background-networking",
-    "--no-first-run", "--user-data-dir=" + profile, String(server.url)], { stdout: "ignore", stderr: "ignore" });
+    "--no-first-run", "--use-mock-keychain", "--user-data-dir=" + profile, String(server.url)], { stdout: "ignore", stderr: "ignore" });
   try {
     const result = await Promise.race([promise, proc.exited.then(() => { throw new Error("browser exited"); }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("browser timed out")), 15000).unref())]);
