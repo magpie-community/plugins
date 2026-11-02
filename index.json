@@ -2269,6 +2269,48 @@
       "latest": "0.1.1",
       "readme": "# @magpie-community/middleware-word-guard\n\nNew API's **敏感词过滤** as [magpie](https://usemagpie.ai) gateway middleware. It keeps the words and patterns you list out of what agents send: a request with one is turned away, or has the word masked. It can mask them in replies too.\n\nInstall it from magpie's **Plugins › Discover**, or with `magpie plugin add @magpie-community/middleware-word-guard`. Set its options under **Plugins › Installed › Options**, or with `magpie plugin options word-guard '<json>'`.\n\n## Options\n\n```json\n{ \"words\": [\"project-codename\"],\n  \"patterns\": [\"\\\\b\\\\d{3}-\\\\d{4}\\\\b\"],\n  \"action\": \"reject\",\n  \"check\": \"last\" }\n```\n\n- **`words`.** Words matched anywhere in the text, ignoring case.\n- **`patterns`.** Regular expressions, also matched ignoring case.\n- **`action`.** `reject` (the default) turns the request away with a 400 that names the word, in the agent's API's error shape. `mask` replaces each match with `mask` (default `***`) and sends the request on.\n- **`check`.** `last` (the default) reads only the last user message that has text, which is the turn being sent. That is what New API reads. `all` reads every user message, so a word earlier in the conversation keeps turning requests away.\n- **`replies`.** Set it to `true` to mask matches in the text that comes back as well, in every API magpie serves — Anthropic, Chat, Responses and Gemini, streamed or whole. A word split across two streamed events isn't caught.\n- **`message`.** The error text to use in place of the default one.\n\nThe middleware reads only the user's own text. It doesn't read tool results, tool calls or the system prompt, so a file an agent reads that contains the word doesn't stop it.\n\nIf you want a listed word to be a 400 rather than something masked, and you also want every earlier user turn and the system prompt read, that is [block-patterns](../block-patterns). It never masks and never reads replies, so the two can be installed together.\n\nmagpie already redacts secrets (API keys and tokens) before a request leaves your computer, and puts them back in the reply. You don't need this middleware for secrets.\n\n中文：New API 的「敏感词过滤」，作为 magpie 网关中间件。只检查用户自己写的文字，可拒绝请求或替换成 `***`，也可以替换回复里的词。\n"
     },
+    "@magpie-community/opencode-agnes-auth": {
+      "versions": {
+        "0.1.0": {
+          "file": "tgz/magpie-community-opencode-agnes-auth-0.1.0.tgz",
+          "integrity": "sha512-zwKSo+2ZP+W+u+Kxq+sV7jjgF5Sojy8fM68jIgJI1Y9FWAFYANu3W/LRdjsEJstSLgI+OEuAa57kPoVmZVmA7Q==",
+          "time": "2026-11-02T07:57:08.705Z",
+          "manifest": {
+            "name": "@magpie-community/opencode-agnes-auth",
+            "version": "0.1.0",
+            "description": "Agnes AI international in OpenCode and magpie: Chrome browser sign-in, live text models, OpenAI-compatible chat, plan usage and USD balance",
+            "type": "module",
+            "main": "./index.mjs",
+            "files": [
+              "index.mjs",
+              "README.md",
+              "LICENSE"
+            ],
+            "keywords": [
+              "opencode",
+              "opencode-plugin",
+              "magpie",
+              "agnes",
+              "agnes-ai"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "https://github.com/magpie-community/plugins",
+              "directory": "packages/agnes"
+            },
+            "scripts": {
+              "test": "bun test"
+            },
+            "magpie": {
+              "icon": "https://www.agnes-ai.com/images/biglogo.png"
+            }
+          }
+        }
+      },
+      "latest": "0.1.0",
+      "readme": "# agnes\n\nAgnes AI ([agnes-ai.com](https://www.agnes-ai.com)) in\n[OpenCode](https://opencode.ai) and [magpie](https://usemagpie.ai). The plugin\nuses Agnes's OpenAI-compatible endpoint at `https://apihub.agnes-ai.com/v1`,\ndiscovers the account's text models, and reads both Token Plan and Agent Plan\nusage. Its primary sign-in opens the official Agnes login in a private Chrome\nwindow and finishes without asking for your password or a copied token.\n\n**Provider id:** `agnes`\n\nThis package targets the **international site**: `platform.agnes-ai.com` and\n`apihub.agnes-ai.com`. The CN site would need its own package and provider id,\nfor example `agnes-cn`.\n\n## Sign-in\n\n### Browser sign-in\n\nChoose one of the browser sign-in methods:\n\n- **Agnes browser sign-in (plan key)** for a Token Plan or Agent Plan key.\n- **Agnes browser sign-in (personal key)** for a `default` profile key.\n- **Agnes browser sign-in (enterprise key)** for an `enterprise` profile key.\n\nThe plugin starts a separate Chrome, Edge, Chromium or Brave profile, opens\nthe official Agnes login page, and waits for you to sign in. It then reads the\nsession through Chrome DevTools Protocol, reveals the selected profile's API\nkey, and closes the browser window.\n\nThe dedicated profile is kept at\n`~/.config/magpie/agnes-browser` (`AGNES_PROFILE` overrides it), so the next\nsign-in can reuse the login instead of asking again. It is separate from your\neveryday browser profile; the plugin does not read your normal cookies, saved\npasswords or history. The profile is created with mode `0700`, but it does\ncontain the Agnes session because Chrome keeps it there.\n\nThe API key and console session are also stored in the plugin account. Set\n`AGNES_BROWSER` to a Chromium-based browser path if it is outside the usual\nlocations.\n\nBrowser accounts are labeled `Agnes Plan`, `Agnes Personal` or\n`Agnes Enterprise`; the account's email or username is not written into\nMagpie's plugin auth file.\n\nPersonal and enterprise keys are billed from the account balance and can use\nthe free models enabled for that key. If a profile has more than one active\nkey, the browser sign-in picks the first active key in the platform's list; use\nthe API-key fallback if you need a specific key.\n\nThis browser path is experimental because it relies on Agnes keeping its\ncurrent `localStorage.token` login shape.\n\n### API key fallback\n\nThere are two credentials:\n\n- **API key** (for example `cpk-…` for a Token Plan key): used for model\n  requests. Create or copy it in the Agnes platform's API key page.\n- **Console token** (optional): used only to read plan usage. Sign in at\n  [platform.agnes-ai.com](https://platform.agnes-ai.com), then copy\n  `localStorage.getItem(\"token\")` from the browser console and paste it into\n  the plugin's sign-in prompt.\n\nIn the fallback, the API key is stored as the account key and the console token\nis stored in `metadata.consoleToken`. The plugin sends the console token only\nto `platform-backend.agnes-ai.com`; it never sends it to the model API. A\nrefused console token does not sign the API key out.\n\nThe fallback also asks for the key type, so a manually entered personal or\nenterprise key does not request plan quota endpoints.\n\nTreat the console token like a password: it grants access to the Agnes account,\nnot just to usage.\n\nAgnes currently offers no standard OAuth callback for third-party clients, so\nthe console token has to be pasted manually. It can expire independently of\nthe API key; sign in again with a fresh token when that happens.\n\n## Models\n\nAfter sign-in, `GET /v1/models` supplies the account's live list. Image and\nvideo generation models are left out because this is a chat provider; their\nquotas still appear on the usage card.\n\nThe bootstrap and documented text models are:\n\n| Model | Context | Max output | Input |\n| --- | ---: | ---: | --- |\n| `agnes-3.0-flash` | 512K | 65,536 | text, image URL |\n| `agnes-2.5-flash` | 512K | 65,536 | text, image URL |\n| `agnes-2.5-pro` | 1M | 65,536 | text, image URL |\n| `agnes-2.5-pro-beta` | 1M | 65,536 | text, image URL |\n\nAll documented models support streaming, tools and reasoning. Prices shown by\nmagpie use Agnes's published list prices in USD per million tokens. During a\npromotion or trial, Agnes may bill less; the platform's usage page remains the\nsource of truth.\n\n## Usage\n\nThe usage card supports both Agnes plans:\n\n- **Token Plan** (`/api/user/subscription`): text requests in the 5-hour and\n  weekly windows, daily image count and daily video seconds.\n- **Agent Plan** (`/api/user/agentplan/subscription` and `/credits`): monthly\n  Credits, the shared 5-hour Credits window and purchased Credits balance.\n- **Personal / enterprise keys** (`/api/user/balance`): the available USD\n  balance only. Their model calls are billed from that balance.\n\nAn account holding both plans sees both sets of windows. The usage endpoints\nare Agnes platform interfaces rather than the public inference API, so a\nfuture upstream change may require a plugin update.\n\nOnly accounts signed in with a **plan key** query Token Plan/Agent Plan\nusage. **Personal** and **enterprise** accounts show only the wallet balance.\nPlan-key accounts do not show the wallet balance.\n\n## Install\n\n```sh\nmagpie plugin add @magpie-community/opencode-agnes-auth\nmagpie plugin login agnes\nmagpie provider test agnes\n```\n\nIn OpenCode, add the package under `plugin` and sign in with\n`opencode auth login`.\n\n## Development\n\n```sh\nbun test\nbun scripts/check.mjs agnes\n```\n\nMIT. Not affiliated with Agnes AI.\n"
+    },
     "@magpie-community/opencode-agnes-code-auth": {
       "versions": {
         "0.1.0": {
