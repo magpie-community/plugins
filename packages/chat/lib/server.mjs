@@ -390,7 +390,8 @@ async function runChat({ res, body, settings, store, options }, controllers) {
         sse(res, "tool", { phase: "error", name: s.name, result: "无法连接 " + s.name + "：" + (err?.message || err) });
       }
     }
-    const q = String(history[history.length - 1]?.content || "").toLowerCase();
+    const last = history[history.length - 1];
+    const q = String(typeof last?.userText === "string" ? last.userText : last?.content || "").toLowerCase();
     const words = q.split(/[^a-z0-9\u4e00-\u9fff]+/).filter((w) => w.length >= 3);
     const scored = all.map((t) => {
       const hay = (t.name + " " + (t.description || "")).toLowerCase();

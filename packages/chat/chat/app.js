@@ -2187,7 +2187,7 @@ async function requestMessages(history, warn) {
     }
     if (String(m.content || "").trim()) parts.push(m.content);
     if (parts.length || otherFiles.some(function (f) { return f.kind === "image"; })) {
-      messages.push({ role: m.role, content: parts.join("\n\n"), files: otherFiles });
+      messages.push({ role: m.role, content: parts.join("\n\n"), userText: String(m.content ?? ""), files: otherFiles });
     }
   }
   return messages;
