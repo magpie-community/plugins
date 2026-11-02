@@ -672,7 +672,8 @@ function parseEventBlock(block) {
   return data;
 }
 
-function streamChat(payload, onEvent, signal) {
+async function streamChat(payload, onEvent, signal) {
+  payload.messages = await requestMessages(payload.messages, function (reason) { toast("旧附件未发送。" + reason, true); });
   return fetch("api/chat", {
     method: "POST",
     headers: authHeaders({ "content-type": "application/json" }),
@@ -972,14 +973,26 @@ function readAsDataURL(file) {
 function guessType(file) {
   if (file.type) return file.type;
   var ext = String(file.name || "").split(".").pop().toLowerCase();
-  var map = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", json: "application/json" };
+  var map = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", pdf: "application/pdf", epub: "application/epub+zip", txt: "text/plain", md: "text/markdown", json: "application/json" };
   return map[ext] || "application/octet-stream";
 }
 
 // 一批 File → 加入待发送列表
+var attachmentContext = 0, pendingBooks = 0;
+function clearPendingAttachments() {
+  attachmentContext++;
+  pendingBooks = 0;
+  state.attachments = [];
+  renderAttachments();
+}
+
 function addFiles(files) {
   var list = Array.from(files || []).slice(0, 8);
   if (!list.length) return Promise.resolve();
+  var context = attachmentContext;
+  var books = list.filter(MagpieEpub.isEpub).length;
+  pendingBooks += books;
+  updateSend();
   var jobs = list.map(function (file) {
     var type = guessType(file);
     var isImage = /^image\//.test(type);
@@ -987,7 +1000,11 @@ function addFiles(files) {
       toast((isImage ? "图片" : "文件") + "太大：" + (file.name || ""), true);
       return null;
     }
-    return readAsDataURL(file).then(function (data) {
+    return readAsDataURL(file).then(async function (data) {
+      var book = MagpieEpub.isEpub(file) ? await MagpieEpub.read(data) : null;
+      if (book) {
+        return { name: file.name, type: type, kind: "file", size: file.size, data: data, bookChars: book.characters, imagePages: book.imagePages };
+      }
       return api("api/upload", {
         method: "POST",
         body: { name: file.name || "file", type: type, data: data, clientType: type }
@@ -995,11 +1012,19 @@ function addFiles(files) {
         // 上传接口挂了也还能本地显示：直接按 data URL 用
         return { name: file.name || "file", type: type, kind: isImage ? "image" : "file", size: data.length, data: data };
       });
+    }).catch(function (err) {
+      if (context === attachmentContext) toast((file.name || "文件") + "：" + err.message, true);
+      return null;
     });
   }).filter(Boolean);
   return Promise.all(jobs).then(function (out) {
+    if (context !== attachmentContext) return;
     out.forEach(function (f) { if (f && f.data) state.attachments.push(f); });
     renderAttachments();
+  }).finally(function () {
+    if (context !== attachmentContext) return;
+    pendingBooks -= books;
+    updateSend();
   });
 }
 
@@ -1013,6 +1038,7 @@ function renderAttachments() {
     if (f.kind === "image") chip.appendChild(el("img", { src: f.data, alt: f.name || "" }));
     else chip.appendChild(el("span", { class: "ic", text: (String(f.name || "F").split(".").pop() || "F").slice(0, 3).toUpperCase() }));
     chip.appendChild(el("span", { class: "nm", text: f.name || "文件" }));
+    if (f.bookChars) chip.appendChild(el("span", { text: "随消息发送 " + f.bookChars.toLocaleString() + " 字" + (f.imagePages ? "（" + f.imagePages + " 个章节仅含图片）" : "") }));
     var rm = el("button", { class: "rm", type: "button", title: "移除", "aria-label": "移除" });
     rm.appendChild(el("span", { text: "\u00d7" }));
     rm.addEventListener("click", function () {
@@ -1461,6 +1487,7 @@ function askDelete(id, title) {
       state.settings.pinned = pinned;
       api("api/settings", { method: "POST", body: { pinned: pinned } }).catch(function () {});
       if (state.convId === id) {
+        clearPendingAttachments();
         state.convId = null;
         state.title = "新对话";
         state.messages = [];
@@ -1488,6 +1515,7 @@ function openConversation(id) {
   dropBlankDraft(); // 切换到别的对话时，空着的"新对话"不该留在列表里
   api("api/conversations/" + encodeURIComponent(id)).then(function (conv) {
     if (!conv) return;
+    if (state.convId !== conv.id) clearPendingAttachments();
     state.convId = conv.id;
     state.title = conv.title || "新对话";
     state.messages = (conv.messages || []).map(normalizeMessage);
@@ -1789,7 +1817,7 @@ function mediaBlock(files, opts) {
     } else {
       wrap.appendChild(el("span", { class: "msg-file", title: f.name || "" },
         el("span", { class: "nm", text: f.name || "文件" }),
-        el("span", { class: "hint", text: f.size ? fmtBytes(f.size) : "" })
+        el("span", { class: "hint", text: MagpieEpub.isEpub(f) ? "提问时读取正文" : (f.size ? fmtBytes(f.size) : "") })
       ));
     }
   });
@@ -2121,20 +2149,60 @@ function updateSend() {
   var btn = $("#send");
   var input = $("#input");
   $("#app").classList.toggle("busy", state.busy);
-  btn.disabled = state.busy ? false : (!input.value.trim() && !(state.attachments || []).length);
+  btn.disabled = !state.busy && (pendingBooks > 0 || (!input.value.trim() && !(state.attachments || []).length));
   btn.setAttribute("aria-label", state.busy ? "停止生成" : "发送");
   input.title = state.busy ? "生成中…（Esc 停止）" : "Enter 发送 · Shift+Enter 换行";
 }
 
+async function requestMessages(history, warn) {
+  var seen = new Set(), messages = [];
+  for (var m of history) {
+    var files = (m.files || []).filter(Boolean);
+    if (m.role === "assistant") {
+      var calls = (m.toolCalls || []).filter(function (c) { return c && c.name && (c.result || c.isError); });
+      if (m.content || calls.length) messages.push({ role: m.role, content: m.content, toolCalls: calls, files: files });
+      continue;
+    }
+    var parts = [], otherFiles = [];
+    for (var f of files) {
+      if (!MagpieEpub.isEpub(f)) {
+        if (f.data) otherFiles.push(f);
+        continue;
+      }
+      var bytes = typeof f.data === "string" ? f.data.slice(f.data.indexOf(",") + 1) : "";
+      if (seen.has(bytes)) {
+        parts.push("（" + f.name + " 的正文已附在前文。）");
+        continue;
+      }
+      try {
+        var book = await MagpieEpub.read(f.data);
+        parts.push("【电子书：" + f.name + "】\n" + book.text + "\n【电子书结束】");
+        if (book.imagePages) parts.push("（" + book.imagePages + " 个章节仅含图片，未提取文字。）");
+        seen.add(bytes);
+      } catch (err) {
+        var reason = f.name + "：" + err.message;
+        parts.push("（未附上这本电子书的正文。" + reason + "）");
+        warn(reason);
+      }
+    }
+    if (String(m.content || "").trim()) parts.push(m.content);
+    if (parts.length || otherFiles.some(function (f) { return f.kind === "image"; })) {
+      messages.push({ role: m.role, content: parts.join("\n\n"), files: otherFiles });
+    }
+  }
+  return messages;
+}
+
 function send() {
   if (state.busy) { stop(); return; }
+  if (pendingBooks) { toast("电子书还在读取，请稍候。"); return; }
   var input = $("#input");
   var text = input.value.trim();
   if (!text && !(state.attachments || []).length) return;
   if (!state.settings.model) { toast("先选一个模型", true); return; }
 
   var files = (state.attachments || []).map(function (f) {
-    return { name: f.name, type: f.type, kind: f.kind, size: f.size, data: f.data };
+    return { name: f.name, type: f.type, kind: f.kind, size: f.size, data: f.data, bookChars: f.bookChars, imagePages: f.imagePages };
   });
   var userMsg = { role: "user", content: text, reasoning: "", toolCalls: [], files: files };
   state.attachments = [];
@@ -2150,7 +2218,7 @@ function send() {
   state.messages.push(userMsg, asstMsg);
 
   if (!state.convId && state.title === "新对话") {
-    state.title = text.replace(/\s+/g, " ").slice(0, 30);
+    state.title = (text || files[0].name || "新对话").replace(/\s+/g, " ").slice(0, 30);
   }
   // 草稿发了第一条消息：先把列表里那条的标题换成刚输入的内容（不用等服务器），
   // 等保存成功再把它换成真正的对话条目（见 persistConversation）。
@@ -2177,28 +2245,8 @@ function send() {
   updateSend();
   scrollBottom(true);
 
-  var history = state.messages.filter(function (m) {
-    if (m === asstMsg) return false;
-    if (m.role === "user") return Boolean(String(m.content || "").trim());
-    return Boolean(m.content) || (m.toolCalls && m.toolCalls.length > 0);
-  }).map(function (m) {
-    // 上一轮的工具调用也带上，模型才知道它已经查过什么；服务端会把
-    // assistant.tool_calls 和对应的 tool 结果一起重放，缺结果的调用它自己丢掉。
-    var calls = m.role === "assistant" && Array.isArray(m.toolCalls)
-      ? m.toolCalls.filter(function (c) { return c && c.name && (c.result || c.isError); })
-      : [];
-    return {
-      role: m.role,
-      content: m.content,
-      toolCalls: calls,
-      files: (m.files || []).filter(function (f) { return f && f.data; }).map(function (f) {
-        return { name: f.name, type: f.type, kind: f.kind, size: f.size, data: f.data };
-      })
-    };
-  });
-
   var payload = {
-    messages: history,
+    messages: state.messages.slice(0, -1),
     model: state.settings.model,
     effort: state.settings.effort || "",
     system: state.settings.systemEnabled === false ? "" : (state.settings.system || ""),
@@ -2461,6 +2509,7 @@ function newChat() {
   if (state.busy) { toast("正在生成，先停止再新建对话", true); return; }
   // 已经在一个空白的新对话里了：再点"新对话"就保持原样，别叠出第二个
   if (isBlankDraft()) { $("#input").focus(); return; }
+  clearPendingAttachments();
   state.draft = { id: DRAFT_ID, title: "新对话", updated: Date.now() };
   state.convId = null;
   state.title = "新对话";
