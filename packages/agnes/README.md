@@ -63,6 +63,9 @@ is stored in `metadata.consoleToken`. The plugin sends the console token only
 to `platform-backend.agnes-ai.com`; it never sends it to the model API. A
 refused console token does not sign the API key out.
 
+The fallback also asks for the key type, so a manually entered personal or
+enterprise key does not request plan quota endpoints.
+
 Treat the console token like a password: it grants access to the Agnes account,
 not just to usage.
 
@@ -98,12 +101,16 @@ The usage card supports both Agnes plans:
   weekly windows, daily image count and daily video seconds.
 - **Agent Plan** (`/api/user/agentplan/subscription` and `/credits`): monthly
   Credits, the shared 5-hour Credits window and purchased Credits balance.
-- **Wallet** (`/api/user/balance`): the available USD balance, shown beside
-  the plan. It is display-only and does not replace or gate the plan windows.
+- **Personal / enterprise keys** (`/api/user/balance`): the available USD
+  balance only. Their model calls are billed from that balance.
 
 An account holding both plans sees both sets of windows. The usage endpoints
 are Agnes platform interfaces rather than the public inference API, so a
 future upstream change may require a plugin update.
+
+Only accounts signed in with a **plan key** query Token Plan/Agent Plan
+usage. **Personal** and **enterprise** accounts show only the wallet balance.
+Plan-key accounts do not show the wallet balance.
 
 ## Install
 

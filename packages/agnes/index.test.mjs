@@ -18,7 +18,11 @@ const {
 
 const apiKey = "test-api-key"
 const consoleToken = "console-token"
-const auth = { type: "api", key: apiKey, metadata: { consoleToken } }
+const auth = {
+  type: "api",
+  key: apiKey,
+  metadata: { consoleToken, keyProfile: "plan" },
+}
 
 function jsonRes(status, body) {
   return new Response(body === undefined ? null : JSON.stringify(body), {
@@ -70,12 +74,13 @@ describe("sign-in", () => {
       label: "Agnes browser sign-in (enterprise key)",
     })
     expect(plugin.auth.methods[3]).toMatchObject({ type: "api", placeholder: "cpk-…" })
-    expect(plugin.auth.methods[3].prompts[0]).toMatchObject({ key: "consoleToken" })
+    expect(plugin.auth.methods[3].prompts[0]).toMatchObject({ key: "keyProfile" })
+    expect(plugin.auth.methods[3].prompts[1]).toMatchObject({ key: "consoleToken" })
   })
 
   test("loads an OAuth account's API key and console token", async () => {
     const plugin = createPlugin()
-    const oauthAuth = { type: "oauth", access: apiKey, consoleToken }
+    const oauthAuth = { type: "oauth", access: apiKey, consoleToken, keyProfile: "plan" }
     expect(await plugin.auth.loader(async () => oauthAuth)).toEqual({
       baseURL: BASE,
       apiKey,
@@ -158,7 +163,7 @@ describe("provider.models", () => {
     const calls = []
     calls.handler = () => jsonRes(200, { data: [{ id: "agnes-3.0-flash" }] })
     const plugin = createPlugin({ fetchImpl: fakeFetch(calls) })
-    const oauthAuth = { type: "oauth", access: apiKey, consoleToken }
+    const oauthAuth = { type: "oauth", access: apiKey, consoleToken, keyProfile: "plan" }
     const models = await plugin.provider.models({ models: {} }, { auth: oauthAuth })
     expect(Object.keys(models)).toEqual(["agnes-3.0-flash"])
   })
@@ -270,7 +275,6 @@ describe("auth.usage", () => {
     calls.handler = platformHandler({
       "/user/subscription": legacyPlan,
       "/user/agentplan/subscription": { code: 404, message: "No AgentPlan subscription", data: null },
-      "/user/balance": balance,
     })
     const plugin = createPlugin({ fetchImpl: fakeFetch(calls) })
 
@@ -302,7 +306,6 @@ describe("auth.usage", () => {
     expect(calls.map((c) => c.input)).toEqual([
       `${PLATFORM}/user/subscription`,
       `${PLATFORM}/user/agentplan/subscription`,
-      `${PLATFORM}/user/balance`,
     ])
     for (const call of calls) {
       expect(call.init.headers.authorization).toBe(`Bearer ${consoleToken}`)
@@ -315,36 +318,18 @@ describe("auth.usage", () => {
     calls.handler = platformHandler({
       "/user/subscription": legacyPlan,
       "/user/agentplan/subscription": { code: 404, message: "No AgentPlan subscription", data: null },
-      "/user/balance": balance,
     })
     const plugin = createPlugin({ fetchImpl: fakeFetch(calls) })
-    const oauthAuth = { type: "oauth", access: apiKey, consoleToken }
+    const oauthAuth = { type: "oauth", access: apiKey, consoleToken, keyProfile: "plan" }
     const card = await plugin.auth.usage(async () => oauthAuth)
     expect(card.windows).toHaveLength(4)
   })
 
-  test("shows the available dollar balance without making it a routing window", async () => {
-    const calls = []
-    calls.handler = platformHandler({
-      "/user/subscription": legacyPlan,
-      "/user/agentplan/subscription": { code: 404, message: "No AgentPlan subscription", data: null },
-      "/user/balance": balance,
-    })
-    const plugin = createPlugin({ fetchImpl: fakeFetch(calls) })
-
-    const card = await plugin.auth.usage(async () => auth)
-
-    expect(card.balance).toBe("$12.00")
-    expect(card.windows).toHaveLength(4)
-    expect(card.windows.some((w) => w.balance !== undefined)).toBe(false)
-    expect(calls.map((c) => c.input)).toContain(`${PLATFORM}/user/balance`)
-  })
-
-  test("keeps plan windows when the balance request fails", async () => {
+  test("plan accounts do not query or show balance", async () => {
     const calls = []
     calls.handler = (_i, input) => {
       const path = new URL(String(input)).pathname.replace("/api", "")
-      if (path === "/user/balance") return jsonRes(503, {})
+      if (path === "/user/balance") throw new Error("must not read balance")
       if (path === "/user/agentplan/subscription") {
         return jsonRes(200, { code: 404, message: "No AgentPlan subscription", data: null })
       }
@@ -355,8 +340,38 @@ describe("auth.usage", () => {
     const card = await plugin.auth.usage(async () => auth)
 
     expect(card.windows).toHaveLength(4)
-    expect(card.error).toContain("balance")
+    expect(card.balance).toBeUndefined()
+    expect(calls).toHaveLength(2)
   })
+
+  test.each(["default", "enterprise"])(
+    "%s accounts show balance without querying plan usage",
+    async (keyProfile) => {
+      const calls = []
+      calls.handler = (_i, input) => {
+        const path = new URL(String(input)).pathname.replace("/api", "")
+        if (path !== "/user/balance") throw new Error(`unexpected ${path}`)
+        return jsonRes(200, balance)
+      }
+      const plugin = createPlugin({ fetchImpl: fakeFetch(calls) })
+      const profileAuth = {
+        type: "oauth",
+        access: keyProfile === "enterprise" ? "apk-key" : "sk-personal",
+        consoleToken,
+        keyProfile,
+      }
+
+      const card = await plugin.auth.usage(async () => profileAuth)
+
+      expect(card.plan).toBe(
+        keyProfile === "enterprise" ? "Enterprise API key" : "Personal API key",
+      )
+      expect(card.balance).toBe("$12.00")
+      expect(card.windows).toEqual([])
+      expect(calls).toHaveLength(1)
+      expect(calls[0].input).toBe(`${PLATFORM}/user/balance`)
+    },
+  )
 
   test("maps Agent Plan monthly, five-hour and purchased credits", async () => {
     const calls = []
@@ -449,9 +464,7 @@ describe("auth.usage", () => {
     calls.handler = (_i, input) =>
       String(input).endsWith("/user/agentplan/subscription")
         ? jsonRes(503, {})
-        : String(input).endsWith("/user/balance")
-          ? jsonRes(200, balance)
-          : jsonRes(200, legacyPlan)
+        : jsonRes(200, legacyPlan)
     const plugin = createPlugin({ fetchImpl: fakeFetch(calls) })
 
     const card = await plugin.auth.usage(async () => auth)

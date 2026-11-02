@@ -145,13 +145,16 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
         signIn: "kept",
       }
     }
+    const profile = keyProfileOf(auth)
+    if (profile !== "plan") {
+      return await balanceOnlyUsage(token, profile, platform)
+    }
 
-    const [legacyResult, agentResult, balanceResult] = await Promise.all([
+    const [legacyResult, agentResult] = await Promise.all([
       platform("/user/subscription", token),
       platform("/user/agentplan/subscription", token),
-      platform("/user/balance", token),
     ])
-    if (legacyResult.lapsed || agentResult.lapsed || balanceResult.lapsed) {
+    if (legacyResult.lapsed || agentResult.lapsed) {
       return {
         plan: "Agnes API",
         windows: [],
@@ -182,12 +185,9 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
     if (creditsResult?.error) {
       errors.push(`Agent Plan credits couldn't be read: ${creditsResult.error}`)
     }
-    if (balanceResult.error) errors.push(`Agnes balance couldn't be read: ${balanceResult.error}`)
-    const balance = balanceText(balanceResult.data)
 
     return {
       plan: planNames.join(" + ") || "Agnes API",
-      ...(balance ? { balance } : {}),
       ...(vendorTime(agent?.current_period_end ?? legacy?.current_period_end)
         ? { until: vendorTime(agent?.current_period_end ?? legacy?.current_period_end) }
         : {}),
@@ -293,6 +293,16 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
           placeholder: "cpk-…",
           prompts: [
             {
+              type: "select",
+              key: "keyProfile",
+              message: "Key type (which usage card it should show)",
+              options: [
+                { label: "Plan key (Token/Agent Plan)", value: "plan" },
+                { label: "Personal API key", value: "default" },
+                { label: "Enterprise API key", value: "enterprise" },
+              ],
+            },
+            {
               type: "text",
               key: "consoleToken",
               message: "Agnes console token (paste to show plan usage; leave empty to skip)",
@@ -357,6 +367,7 @@ export const _internal = {
   legacyWindows,
   agentWindows,
   apiKeyOf,
+  keyProfileOf,
   consoleTokenOf,
   revealApiKey,
   revealProfileKey,
@@ -373,6 +384,16 @@ export const _internal = {
 function apiKeyOf(auth) {
   if (auth?.type === "api" && typeof auth.key === "string") return auth.key.trim()
   if (auth?.type === "oauth" && typeof auth.access === "string") return auth.access.trim()
+  return ""
+}
+
+function keyProfileOf(auth) {
+  const profile = auth?.keyProfile ?? auth?.metadata?.keyProfile
+  if (profile === "plan" || profile === "default" || profile === "enterprise") {
+    return profile
+  }
+  const key = apiKeyOf(auth)
+  if (/^(?:cpk|apk)-/i.test(key)) return "plan"
   return ""
 }
 
@@ -411,6 +432,26 @@ async function revealProfileKey(token, profile, platform) {
     throw new Error(`Agnes could not reveal the ${profile} API key`)
   }
   return revealed.data.key
+}
+
+async function balanceOnlyUsage(token, profile, platform) {
+  const result = await platform("/user/balance", token)
+  if (result.lapsed) {
+    return {
+      plan: profile === "enterprise" ? "Enterprise API key" : "Personal API key",
+      windows: [],
+      error: "Agnes console token was refused; sign in again and paste a new token",
+      signIn: "kept",
+    }
+  }
+  const balance = balanceText(result.data)
+  return {
+    plan: profile === "enterprise" ? "Enterprise API key" : "Personal API key",
+    ...(balance ? { balance } : {}),
+    windows: [],
+    ...(result.error ? { error: `Agnes balance couldn't be read: ${result.error}` } : {}),
+    signIn: "kept",
+  }
 }
 
 function browserArgs(profile, port, url) {
