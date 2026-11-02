@@ -101,9 +101,17 @@ more user prompt, `continue`, and `max_tokens` 1. Each one reads the cache
 and renews it. Unlike the CLI's, it also runs while the user is reading
 the reply, not only while a tool or subagent works.
 
+Each ping goes 285 seconds after the request before it was *sent* (the
+real one, or the ping before), not after its reply ended: Devin renews the
+cache when it takes a request, so a 30–47 s reply or a slow ping would
+otherwise put the next ping past the 5 minutes (#626). A reply or ping
+that took longer than the interval is followed by a ping at once.
+
 - The conversation's next real request stops its pings; its own reply
-  starts them again. A conversation is the session the agent names, the
-  Claude Code subagent (`x-claude-code-agent-id`) and a hash of the
+  starts them again. A conversation is the session the agent names (in
+  magpie, `x-magpie-session`, as the agent's own headers don't reach the
+  plugin), the Claude Code subagent (`x-claude-code-agent-id`, in magpie
+  `x-magpie-subagent`) and a hash of the
   instructions and the tools' names, so a subagent's or a permission
   check's requests never stop its lead's pings. The first user message is
   left out, as Claude Code Auto's permission check grows it with the

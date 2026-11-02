@@ -1773,6 +1773,9 @@ async function roundtrip({ key, server, families, keep }, chat, signal, wire = C
   const uid = variantFor(families, chat.model, wire.effort(chat))
   const msg = wire.build(chat, uid, key)
   const body = frame(msg)
+  // when Devin was asked, which its cache's 5 minutes run from: the pings
+  // are timed from it, not from the reply's end (plugins#626)
+  const sentAt = now()
   let res
   try {
     res = await fetch(server + CHAT_RPC, {
@@ -1808,7 +1811,7 @@ async function roundtrip({ key, server, families, keep }, chat, signal, wire = C
     return head.value.error
   }
   const it = prepend(head.value, source)
-  return { it: keep ? keptAfter(it, keep, { key, server, msg }) : it }
+  return { it: keep ? keptAfter(it, keep, { key, server, msg, sentAt }) : it }
 }
 
 // complete answers a chat completion through GetChatMessage.
@@ -2160,10 +2163,12 @@ const KEEPALIVE_MAX = 6
 const KEEPALIVE_KEPT = 32 // conversations kept warm at once; past it the oldest stops
 const KEEPALIVE_STOP = new Set([401, 402, 429])
 
-// timers are what the pings wait on; tests hand in their own. A timer is
-// unref'd: it never keeps a process or a test running.
-const realTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (t) => clearTimeout(t) }
+// timers are what the pings wait on, and the clock they are timed by;
+// tests hand in their own. A timer is unref'd: it never keeps a process or
+// a test running.
+const realTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (t) => clearTimeout(t), now: () => Date.now() }
 let timers = realTimers
+const now = () => (timers.now ?? Date.now)()
 
 const keeps = new Map() // conversation → {n, misses, timer, ctl}
 
@@ -2179,8 +2184,11 @@ function keepaliveSettings(options = {}) {
   }
 }
 
-// the headers an agent names its session in, as magpie's gateway reads them
-const SESSION_HEADERS = ["x-claude-code-session-id", "x-session-id", "session_id", "session-id", "x-opencode-session", "x-session-affinity", "x-conversation-id"]
+// the headers an agent names its session in, as magpie's gateway reads them;
+// first magpie's own, which tells a plugin's fetch the session the agent
+// named to magpie (the agent's own headers never reach the plugin through
+// magpie: plugins#620)
+const SESSION_HEADERS = ["x-magpie-session", "x-claude-code-session-id", "x-session-id", "session_id", "session-id", "x-opencode-session", "x-session-affinity", "x-conversation-id"]
 
 // textsOf is a message's or system's words, without the cache marks a
 // client moves forward as the history grows
@@ -2209,7 +2217,9 @@ function keepaliveKey(req, messages, headers) {
     h = new Headers()
   }
   const session = SESSION_HEADERS.map((k) => h.get(k)?.trim()).find(Boolean) ?? ""
-  const agent = h.get("x-claude-code-agent-id")?.trim() ?? ""
+  // the Claude Code subagent, as Claude Code names it, or as magpie tells
+  // the plugin it (x-magpie-subagent)
+  const agent = (h.get("x-claude-code-agent-id")?.trim() || h.get("x-magpie-subagent")?.trim()) ?? ""
   let prefix, first
   if (messages) {
     const system = textsOf(req.system).map((t) => t.replace(BILLING_LINE, ""))
@@ -2327,8 +2337,17 @@ function reportPing(keep, r, ms) {
 }
 
 // scheduleKeepalive starts a conversation's pings for the request msg
-// just answered, in place of any it had.
-function scheduleKeepalive(keep, key, server, msg) {
+// just answered, sent at sentAt, in place of any it had.
+//
+// Each ping is timed from when the request before it was sent, the real
+// one's or the ping's own, not from when it was answered: Devin renews its
+// cache when it takes a request, and a reply of 30 to 47 s (Fable over half
+// a million tokens), or a ping of 10 to 20 s, put the next ping past the
+// cache's 5 minutes when it waited its whole interval from the end. Pings
+// 315.9 s or more after the request they followed was sent missed, and
+// each wrote the whole context again (plugins#626, zelong77). One that
+// came back after its interval had passed is followed at once.
+function scheduleKeepalive(keep, key, server, msg, sentAt = now()) {
   const { id, interval, max } = keep
   const ping = keepalivePing(msg)
   if (!ping) return
@@ -2338,8 +2357,8 @@ function scheduleKeepalive(keep, key, server, msg) {
   const k = { n: 0, misses: 0, timer: null, ctl: null }
   keeps.set(id, k)
   hookExit()
-  const next = () => {
-    k.timer = timers.set(run, interval)
+  const next = (from) => {
+    k.timer = timers.set(run, Math.max(0, interval - Math.max(0, now() - from)))
     k.timer?.unref?.()
   }
   const run = async () => {
@@ -2347,28 +2366,28 @@ function scheduleKeepalive(keep, key, server, msg) {
     if (keeps.get(id) !== k) return
     k.n++
     const ctl = (k.ctl = new AbortController())
-    const at = Date.now()
+    const at = now()
     const r = await pingOnce(server, key, body, ctl.signal)
     k.ctl = null
-    reportPing(keep, { ...r, aborted: ctl.signal.aborted }, Date.now() - at)
+    reportPing(keep, { ...r, aborted: ctl.signal.aborted }, now() - at)
     if (keeps.get(id) !== k) return // a real request came, or the switch went off
     if (KEEPALIVE_STOP.has(r.status)) return stopKeepalive(id)
     const t = r.tokens
     const hit = r.status === 200 && t.cacheRead > 0 && t.cacheRead * 2 >= t.input + t.cacheRead + t.cacheWrite
     k.misses = hit ? 0 : k.misses + 1
     if (k.misses >= 2 || k.n >= max) return stopKeepalive(id)
-    next()
+    next(at)
   }
-  next()
+  next(sentAt)
 }
 
 // keptAfter passes a reply's events on, and once it has finished (any stop:
 // a tool call waiting too) schedules the conversation's pings, when the
 // reply read or wrote the cache: a request with nothing cached has nothing
 // to keep.
-async function* keptAfter(it, keep, { key, server, msg }) {
+async function* keptAfter(it, keep, { key, server, msg, sentAt }) {
   for await (const e of it) {
-    if (e.stop && (e.tokens?.cacheRead || e.tokens?.cacheWrite)) scheduleKeepalive(keep, key, server, msg)
+    if (e.stop && (e.tokens?.cacheRead || e.tokens?.cacheWrite)) scheduleKeepalive(keep, key, server, msg, sentAt)
     yield e
   }
 }

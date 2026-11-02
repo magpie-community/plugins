@@ -19,9 +19,12 @@ const configs = new Uint8Array(readFileSync(join(import.meta.dir, "testdata", "m
 
 // fake timers: each set is held until the test fires it
 let clock
+// and a clock (now), which a timer's firing moves on to its time
 const fakeTimers = () => {
   const q = []
-  return {
+  const c = {
+    t: 1_000_000,
+    now: () => c.t,
     q,
     set(fn, ms) {
       const t = { fn, ms, cleared: false, fired: false, unrefd: false, unref: () => (t.unrefd = true) }
@@ -36,9 +39,11 @@ const fakeTimers = () => {
       const [t] = q.filter((t) => !t.cleared && !t.fired)
       if (!t) throw new Error("no timer to fire")
       t.fired = true
+      c.t += t.ms
       await t.fn()
     },
   }
+  return c
 }
 beforeEach(() => {
   clock = fakeTimers()
@@ -429,4 +434,96 @@ test("conversations that really differ keep their own pings (plugins#620)", () =
   arrive(check, s)
   arrive(grown(check, "History B"), s)
   expect(_internal.keeping().length).toBe(2)
+})
+
+// plugins#626 (zelong77): the pings were timed from the reply's end, and
+// each from the end of the ping before. Devin renews its cache when it
+// takes a request, so a long reply or a slow ping put the next ping past
+// the cache's 5 minutes: 285 s after a 33.5 s reply was 318.5 s after the
+// request, a miss that wrote 503,797 tokens again. Each is timed from when
+// the request before it was sent.
+test("the first ping is 285 s after the request was sent, not after its reply (plugins#626)", async () => {
+  devin()
+  const ask = await plugin(true)
+  // zelong77's slowest reply, 46.8 s
+  real = () => ((clock.t += 46_800), answer({ write: 200, read: 9000 }))
+  await ask(lead())
+  expect(clock.live().map((t) => t.ms)).toEqual([285_000 - 46_800])
+  // a ping that took 15 s: the next goes 285 s after it was sent
+  pings.push(() => ((clock.t += 15_000), answer({ input: 3, read: 9200 })))
+  const sentAt = clock.t + clock.live()[0].ms
+  await clock.fire()
+  expect(pingsSent()).toBe(1)
+  expect(clock.live().map((t) => t.ms)).toEqual([285_000 - 15_000])
+  expect(sentAt + 285_000).toBe(clock.t + clock.live()[0].ms)
+  // a quick one waits its whole interval, less what it took
+  pings.push(() => answer({ input: 3, read: 9200 }))
+  await clock.fire()
+  expect(clock.live().map((t) => t.ms)).toEqual([285_000])
+})
+
+test("a reply that took longer than the interval is followed by a ping at once (plugins#626)", async () => {
+  devin()
+  const ask = await plugin(true)
+  real = () => ((clock.t += 300_000), answer({ write: 200, read: 9000 }))
+  await ask(lead())
+  expect(clock.live().map((t) => t.ms)).toEqual([0])
+  // and a ping that took longer than the interval too
+  pings.push(() => ((clock.t += 290_000), answer({ input: 3, read: 9200 })))
+  await clock.fire()
+  expect(clock.live().map((t) => t.ms)).toEqual([0])
+})
+
+// plugins#620, after 0.1.33 (zelong77, 11-02): magpie hands a plugin's fetch
+// none of the agent's own headers, so x-claude-code-session-id never
+// reached the key, and magpie's translation merges Claude Code's two user
+// messages into one: [fixed instructions, transcript…, current operation].
+// The transcript grows in the middle of it, which firstOf can't follow, so
+// checks A and B kept separate pings. magpie now names the session the
+// agent named (x-magpie-session) and its Claude Code subagent
+// (x-magpie-subagent) to the plugin.
+const merged = (history, op) => ({
+  model: "claude-haiku-5-5",
+  max_tokens: 64,
+  system: [{ type: "text", text: "Permission classifier" }],
+  messages: [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Fixed instructions", cache_control: { type: "ephemeral" } },
+        ...history.map((text) => ({ type: "text", text })),
+        { type: "text", text: "Current operation:" },
+        { type: "text", text: op },
+      ],
+    },
+  ],
+})
+const mainTurn = { model: "claude-haiku-5-5", max_tokens: 64, system: [{ type: "text", text: "You are Claude Code." }], messages: [{ role: "user", content: "fix the build" }] }
+
+test("magpie's session header keys a permission check whose merged history grew in the middle (plugins#620)", async () => {
+  devin()
+  const hooks = await DevinAuthPlugin({ magpie: { option: (p, k) => p === "devin" && k === KEEPALIVE } })
+  const { fetch } = await hooks.auth.loader(async () => auth)
+  const ask = async (req, headers) => {
+    const res = await fetch("https://server.codeium.com/devin/v1/messages", { method: "POST", headers, body: JSON.stringify(req) })
+    expect(res.status).toBe(200)
+    await res.text()
+  }
+  const s = { "x-magpie-session": "cc-session-1" }
+  // check A, the main conversation C, then check B with the history grown
+  await ask(merged(["Bash ls"], "Bash rm a"), s)
+  const [a] = clock.live()
+  await ask(mainTurn, s)
+  const [, c] = clock.live()
+  await ask(merged(["Bash ls", "Bash cat b"], "Bash rm b"), s)
+  expect(a.cleared).toBe(true)
+  expect(c.cleared).toBe(false)
+  expect(clock.live().length).toBe(2)
+  expect(_internal.keeping().length).toBe(2)
+  // a subagent magpie names is a conversation of its own in that session
+  await ask(mainTurn, { ...s, "x-magpie-subagent": "agent-1" })
+  expect(c.cleared).toBe(false)
+  expect(clock.live().length).toBe(3)
+  // the same keys as Claude Code's own headers give
+  expect(keepaliveKey(mainTurn, true, { "x-magpie-session": "x", "x-magpie-subagent": "a" })).toBe(keepaliveKey(mainTurn, true, { "x-claude-code-session-id": "x", "x-claude-code-agent-id": "a" }))
 })
