@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fovea · 对照证据</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="report.js"></script>
+  <script src="live.js"></script>
+  <script src="measure.js"></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <svg class="eye" viewBox="0 0 128 128" aria-hidden="true">
+        <circle cx="64" cy="64" r="58" fill="none" stroke="currentColor" stroke-opacity=".16" stroke-width="6"/>
+        <circle cx="64" cy="64" r="42" fill="none" stroke="currentColor" stroke-opacity=".4" stroke-width="7"/>
+        <circle cx="64" cy="64" r="25" fill="none" stroke="currentColor" stroke-opacity=".8" stroke-width="8"/>
+        <circle cx="64" cy="64" r="10" class="dot"/>
+      </svg>
+      <div class="hero-text">
+        <h1>fovea <span>对照证据</span></h1>
+        <p>同一份请求，裁剪前后放在一起看。</p>
+      </div>
+      <span id="source" class="pill">—</span>
+    </header>
+
+    <section class="stats" aria-label="请求规模对照">
+      <div class="stat"><span class="label">原始请求</span><strong id="before">—</strong><small>字符</small></div>
+      <div class="stat"><span class="label">经过 fovea</span><strong id="after">—</strong><small>字符</small></div>
+      <div class="stat accent"><span class="label">减少</span><strong id="saved">—</strong><small id="changed">—</small></div>
+    </section>
+
+    <section class="panel" aria-labelledby="strip-title">
+      <div class="head"><h2 id="strip-title">消息带</h2><span id="strip-note" class="hint">—</span></div>
+      <div class="strip" aria-hidden="true">
+        <i class="m old"></i><i class="m old"></i><i class="m old"></i>
+        <span class="dots"><b></b><b></b><b></b></span>
+        <i class="m old"></i><i class="m old"></i>
+        <i class="m win"></i><i class="m win"></i><i class="m win"></i>
+      </div>
+      <p class="cap">浅色是旧消息（只剩头尾），深色是最近窗口（逐字保留）。省下的就是中间那段省略号。</p>
+    </section>
+
+    <section class="panel" aria-labelledby="size-title">
+      <div class="head"><h2 id="size-title">请求体积</h2><span id="ratio" class="pill">—</span></div>
+      <div class="bar"><span>原始</span><div class="track"><i class="fill raw"></i></div><output id="raw-bar">—</output></div>
+      <div class="bar"><span>裁剪后</span><div class="track"><i id="slim-fill" class="fill slim"></i></div><output id="slim-bar">—</output></div>
+      <p class="cap">这是本地请求的字符数，不是模型实际计费的 token。</p>
+    </section>
+
+    <section class="panel" aria-labelledby="cache-title">
+      <div class="head"><h2 id="cache-title">相邻两轮的共同前缀</h2><span id="prefix-badge" class="pill">—</span></div>
+      <div class="bar"><span>不开插件</span><div class="track"><i id="baseline-prefix-fill" class="fill raw"></i></div><output id="baseline-prefix">—</output></div>
+      <div class="bar"><span>开启插件</span><div class="track"><i id="fovea-prefix-fill" class="fill slim"></i></div><output id="fovea-prefix">—</output></div>
+      <p class="cap">共同前缀占比高，缓存命中率才有指望。它检验裁剪边界是否稳定，不替代供应商的缓存读数。</p>
+    </section>
+
+    <section class="panel" aria-labelledby="try-title">
+      <div class="head"><h2 id="try-title">用你的请求复验</h2><span class="pill">只在本机计算</span></div>
+      <p class="cap">粘贴一份请求（<code>messages</code> 或 <code>input</code>），页面只显示数字，不保存也不发送正文。</p>
+      <div class="controls">
+        <label>模式
+          <select id="mode">
+            <option value="off">保留头尾</option>
+            <option value="auto">自动判断话题</option>
+            <option value="always">旧内容全折叠</option>
+          </select>
+        </label>
+        <label>最近消息数<input id="keep" type="number" min="0" max="1000" value="4"></label>
+        <label>边界步长<input id="step" type="number" min="1" max="1000" value="4"></label>
+      </div>
+      <textarea id="input" spellcheck="false" placeholder='{"model":"...","messages":[…]}' aria-label="请求 JSON"></textarea>
+      <div class="actions">
+        <button id="analyze" type="button">计算前后差异</button>
+        <button id="clear" type="button" class="quiet">清空</button>
+        <span id="error" role="status"></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="live-title">
+      <div class="head"><h2 id="live-title">真实网关 A/B</h2><span id="live-source" class="pill">尚未运行</span></div>
+      <div id="live-summary" class="live-grid">
+        <p class="cap">在装了 fovea 的机器上运行 <code>live-benchmark.mjs</code>，这里会显示同模型、同请求的两次暖缓存调用结果。</p>
+      </div>
+      <p class="cap">供应商不回缓存字段时，卡片会写「未提供」，不用字符数推算命中。</p>
+    </section>
+
+    <section class="panel note" aria-labelledby="proof-title">
+      <h2 id="proof-title">实际省钱怎么证明</h2>
+      <p>字符变少只说明请求变短。要证明省钱，看同模型两次暖缓存调用的输入 token 与缓存读取 token，费用以 magpie 的用量记录为准。</p>
+      <p id="limits"></p>
+    </section>
+  </main>
+</body>
+</html>

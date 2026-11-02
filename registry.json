@@ -85,6 +85,8 @@
       "summary": { "en": "Kilo Code (kilo.ai) on magpie's Agents page: pick one of magpie's models for it, and switch it off to put its config back.", "zh": "把 Kilo Code（kilo.ai）加到 magpie 的 Agent 页：选择 magpie 的模型，关掉即恢复原来的配置。" } },
     { "package": "@magpie-community/middleware-antigravity-cloak", "name": "Antigravity Cloak", "kind": "middleware", "community": true,
       "summary": { "en": "Claude Code and Claude Desktop on an Antigravity account: the words Antigravity refuses their system prompt for are broken up, in what Antigravity alone is sent.", "zh": "让 Claude Code 和 Claude Desktop 能用 Antigravity 账号：只在发给 Antigravity 的请求里拆开它据以拒绝系统提示词的那几个词。" } },
+{ "package": "@magpie-community/middleware-fovea", "name": "Fovea", "kind": "middleware", "community": true,
+      "summary": { "en": "Thin an agent's old history while preserving a recent window and tool pairing. Optional saccade collapses old content on a new topic; a structured state block replaces the raw task message; cut boundaries move in blocks to keep provider prompt caches settling.", "zh": "裁薄 Agent 旧历史，保留最近窗口与工具配对；可选 saccade 在新话题时折叠旧内容，结构化状态块替代原始任务消息，裁剪边界分块移动以保护 prompt cache。" } },
     { "package": "@magpie-community/middleware-codex-history", "name": "Codex History Filter", "kind": "middleware", "community": true,
       "summary": { "en": "Opt-in, per-provider Codex Responses history filtering after switching providers. Preserves readable content and tool-call pairing; no model probes.", "zh": "按供应商开关 Codex Responses 历史过滤，缓解切换上游后的密文和历史 ID 兼容问题；保留正文与工具配对，不运行模型检测。" } },
     { "package": "@magpie-community/middleware-history-trim", "name": "History Trim", "kind": "middleware", "community": true,

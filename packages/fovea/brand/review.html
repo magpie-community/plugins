@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src &#x27;none&#x27;; img-src data:; style-src &#x27;unsafe-inline&#x27;; script-src &#x27;sha256-mJSXTJH/XNnpYd+yUAMiCdU4rpsk919aFSQhfbxCl/w=&#x27;; connect-src &#x27;none&#x27;; font-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>品牌标识 · 离线评审</title>
+<style>
+:root {color-scheme:light; font:15px/1.55 system-ui,sans-serif;color:#18212f;background:#f1f4f8}
+* {box-sizing:border-box} [hidden] {display:none!important} body {margin:0} main {max-width:1160px;margin:auto;padding:28px 20px}
+h1 {font-size:28px;margin:0 0 10px} h2 {font-size:23px} h3 {font-size:17px;margin:18px 0 8px}
+p {margin:8px 0} button,a.download {font:inherit;border:1px solid #9ca9b9;border-radius:7px;background:#fff;color:#172534;padding:7px 12px;cursor:pointer;text-decoration:none}
+button:hover,a.download:hover {background:#e8eef5} button:focus-visible,a:focus-visible,textarea:focus-visible {outline:3px solid #147aab;outline-offset:2px}
+button[aria-pressed="true"] {background:#183d64;color:white;border-color:#183d64}
+.controls,.actions,.tokens {display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+.notice {border-left:4px solid #b77812;background:#fff8e7;padding:12px 16px}
+.project {background:#fff;border:1px solid #cbd3df;border-radius:12px;margin:24px 0;padding:22px;overflow-wrap:anywhere}
+.preview-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:14px;margin:16px 0}
+figure {margin:0} .canvas {min-height:190px;display:flex;align-items:center;justify-content:center;border:1px solid #a9b2c0;border-radius:8px;background:#fff}
+.canvas[data-bg="dark"] {background:#0d1117}
+.canvas[data-bg="checker"] {background-color:#fff;background-image:conic-gradient(#d3d8de 25%,transparent 0 50%,#d3d8de 0 75%,transparent 0);background-size:20px 20px}
+.canvas img {width:32px;height:32px;object-fit:contain} figcaption {margin-top:6px;color:#4c596a}
+.token {border:1px solid #d2dae4;border-radius:6px;padding:6px 10px} .swatch {display:inline-block;width:16px;height:16px;border:1px solid #8795a6;vertical-align:middle;margin-right:7px}
+small,.muted {color:#4c596a} .evidence {font-size:13px;margin:4px 0 12px}
+pre,textarea {font:13px/1.5 ui-monospace,monospace;background:#f6f8fb;border:1px solid #c3cedc;border-radius:6px;padding:12px;max-width:100%}
+pre {white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto} textarea {display:block;width:100%;min-height:85px}
+.status {min-height:1.6em;color:#294a32} .manual {min-height:200px} .checks {padding-left:22px} a {color:#155c96}
+@media(max-width:560px) {main {padding:18px 12px}.project {padding:14px} h1 {font-size:24px}}
+</style></head><body><main>
+<h1>品牌标识 · 离线评审</h1><p>素材已内嵌，无网络依赖。外部来源链接仅供人工核验。</p>
+<p class="notice">仅做结构检查；未解码/渲染像素，未验证透明度、留白、非空图、token 与实际颜色一致性或 32px 可辨性。需要另行真实渲染并目视验收。 本页不是渲染验收报告。截图须另存到交付目录 screenshots/ 并注明来源、背景、尺寸和测试范围。</p>
+<div class="controls" role="group" aria-label="预览背景">
+<button type="button" data-background="light">浅底 #FFFFFF</button>
+<button type="button" data-background="dark">深底 #0D1117</button>
+<button type="button" data-background="checker">棋盘</button></div>
+<div class="controls" role="group" aria-label="预览尺寸">
+<button type="button" data-size="32">32px</button><button type="button" data-size="64">64px</button><button type="button" data-size="128">128px</button></div>
+<div class="actions" id="downloads"></div><noscript>本页需启用 JavaScript 才能切换预览、下载和复制。所有逻辑均已内嵌。</noscript>
+<div id="projects"></div></main><script>
+const DATA = {"manifest":{"projects":[{"id":"fovea","name":"Fovea","sources":[{"url":"https://github.com/magpie-community/plugins/pull/467","label":"\u63d2\u4ef6 PR"},{"url":"https://github.com/yetone/magpie/blob/main/site/public/img/icon-256.png","label":"magpie \u65e2\u6709\u56fe\u6807"}],"tokens":{"primary":"#161616","accent":"#161616","onLight":"#161616","onDark":"#F7F7F5","background":"transparent"},"tokenSources":{"primary":"\u7d20\u6750\u6d4b\u91cf\uff1amagpie/site/public/img/icon-256.png (256px RGBA) \u4e2d alpha\u003e200 \u4e14 RGB\u003c60 \u7684\u50cf\u7d20\u4f17\u6570\u4e3a RGB(22,22,22) = #161616\uff1b\u4e0d\u662f\u6e90\u7801\u58f0\u660e\u7684\u54c1\u724c token","accent":"\u672c\u6b21\u5efa\u8bae\uff1a\u6cbf\u7528\u53d6\u6837\u58a8\u8272\uff0c\u4e0d\u53e6\u5f15\u5f3a\u8c03\u8272","onLight":"\u7d20\u6750\u6d4b\u91cf\uff1a\u6cbf\u7528\u4e3b\u58a8\u8272 #161616","onDark":"\u672c\u6b21\u5efa\u8bae\uff1a\u6df1\u8272\u5e95\u4e0a\u4f7f\u7528 #F7F7F5\uff0c\u5bf9\u7167\u539f\u56fe\u6807\u7684\u6d45\u8272\u80cc\u666f\uff1b\u4e0d\u662f\u751f\u4ea7 token","background":"\u672c\u6b21\u5efa\u8bae\uff1aSVG \u900f\u660e\u753b\u5e03\uff0c\u4ea4\u4ed8\u540e\u7528\u4e8e\u6df1\u6d45\u80cc\u666f"},"rationale":["\u672c\u6b21\u5efa\u8bae\uff1a\u4e24\u7aef\u5b8c\u6574\u6a2a\u7ebf\u4ee3\u8868\u4fdd\u7559\u7684\u4e0a\u4e0b\u6587\uff0c\u4e2d\u95f4\u4e09\u4e2a\u70b9\u4ee3\u8868\u6709\u6807\u8bb0\u7684\u7701\u7565\uff1b\u5706\u70b9\u4e0d\u662f\u5220\u9664\u6309\u94ae\uff0c\u8868\u8fbe\u7684\u662f\u53ef\u89c1\u4e14\u53ef\u89e3\u91ca\u7684\u7f29\u77ed\u3002","\u672c\u6b21\u5efa\u8bae\uff1a\u91c7\u7528 magpie \u56fe\u6807\u53d6\u6837\u5f97\u5230\u7684\u5355\u8272\u58a8\u7ebf\uff0c\u964d\u4f4e\u793e\u533a\u63d2\u4ef6\u4e0e\u4e3b\u4ea7\u54c1\u5e76\u5217\u65f6\u7684\u89c6\u89c9\u51b2\u7a81\u3002"],"recommendations":["\u672c\u6b21\u5efa\u8bae\uff1a\u5148\u628a\u56fe\u6807\u5f53\u63d2\u4ef6\u5217\u8868\u7684 32px \u6807\u8bb0\u4f7f\u7528\uff1b\u82e5\u672a\u6765\u6210\u4e3a\u72ec\u7acb\u4ea7\u54c1\uff0c\u518d\u505a\u4e0e magpie \u4e3b\u54c1\u724c\u533a\u5206\u7684\u8272\u5f69\u7cfb\u7edf\u3002"],"asset":"assets/mark.svg","darkAsset":"assets/mark-dark.svg","oldAsset":null}]},"projects":[{"id":"fovea","name":"Fovea","tokens":{"primary":"#161616","accent":"#161616","onLight":"#161616","onDark":"#F7F7F5","background":"transparent"},"tokenSources":{"primary":"\u7d20\u6750\u6d4b\u91cf\uff1amagpie/site/public/img/icon-256.png (256px RGBA) \u4e2d alpha\u003e200 \u4e14 RGB\u003c60 \u7684\u50cf\u7d20\u4f17\u6570\u4e3a RGB(22,22,22) = #161616\uff1b\u4e0d\u662f\u6e90\u7801\u58f0\u660e\u7684\u54c1\u724c token","accent":"\u672c\u6b21\u5efa\u8bae\uff1a\u6cbf\u7528\u53d6\u6837\u58a8\u8272\uff0c\u4e0d\u53e6\u5f15\u5f3a\u8c03\u8272","onLight":"\u7d20\u6750\u6d4b\u91cf\uff1a\u6cbf\u7528\u4e3b\u58a8\u8272 #161616","onDark":"\u672c\u6b21\u5efa\u8bae\uff1a\u6df1\u8272\u5e95\u4e0a\u4f7f\u7528 #F7F7F5\uff0c\u5bf9\u7167\u539f\u56fe\u6807\u7684\u6d45\u8272\u80cc\u666f\uff1b\u4e0d\u662f\u751f\u4ea7 token","background":"\u672c\u6b21\u5efa\u8bae\uff1aSVG \u900f\u660e\u753b\u5e03\uff0c\u4ea4\u4ed8\u540e\u7528\u4e8e\u6df1\u6d45\u80cc\u666f"},"rationale":["\u672c\u6b21\u5efa\u8bae\uff1a\u4e24\u7aef\u5b8c\u6574\u6a2a\u7ebf\u4ee3\u8868\u4fdd\u7559\u7684\u4e0a\u4e0b\u6587\uff0c\u4e2d\u95f4\u4e09\u4e2a\u70b9\u4ee3\u8868\u6709\u6807\u8bb0\u7684\u7701\u7565\uff1b\u5706\u70b9\u4e0d\u662f\u5220\u9664\u6309\u94ae\uff0c\u8868\u8fbe\u7684\u662f\u53ef\u89c1\u4e14\u53ef\u89e3\u91ca\u7684\u7f29\u77ed\u3002","\u672c\u6b21\u5efa\u8bae\uff1a\u91c7\u7528 magpie \u56fe\u6807\u53d6\u6837\u5f97\u5230\u7684\u5355\u8272\u58a8\u7ebf\uff0c\u964d\u4f4e\u793e\u533a\u63d2\u4ef6\u4e0e\u4e3b\u4ea7\u54c1\u5e76\u5217\u65f6\u7684\u89c6\u89c9\u51b2\u7a81\u3002"],"userDecisions":[],"recommendations":["\u672c\u6b21\u5efa\u8bae\uff1a\u5148\u628a\u56fe\u6807\u5f53\u63d2\u4ef6\u5217\u8868\u7684 32px \u6807\u8bb0\u4f7f\u7528\uff1b\u82e5\u672a\u6765\u6210\u4e3a\u72ec\u7acb\u4ea7\u54c1\uff0c\u518d\u505a\u4e0e magpie \u4e3b\u54c1\u724c\u533a\u5206\u7684\u8272\u5f69\u7cfb\u7edf\u3002"],"sources":[{"label":"\u63d2\u4ef6 PR","value":"https://github.com/magpie-community/plugins/pull/467","url":"https://github.com/magpie-community/plugins/pull/467"},{"label":"magpie \u65e2\u6709\u56fe\u6807","value":"https://github.com/yetone/magpie/blob/main/site/public/img/icon-256.png","url":"https://github.com/yetone/magpie/blob/main/site/public/img/icon-256.png"}],"assets":{"asset":{"path":"assets/mark.svg","filename":"mark.svg","mime":"image/svg+xml","svg":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\" role=\"img\" aria-label=\"Fovea mark\"\u003e\n  \u003ctitle\u003eFovea \u2014 recent context held, old context shortened\u003c/title\u003e\n  \u003crect x=\"22\" y=\"25\" width=\"84\" height=\"12\" rx=\"6\" fill=\"#161616\"/\u003e\n  \u003crect x=\"22\" y=\"47\" width=\"84\" height=\"8\" rx=\"4\" fill=\"#161616\"/\u003e\n  \u003ccircle cx=\"49\" cy=\"68\" r=\"5\" fill=\"#161616\"/\u003e\n  \u003ccircle cx=\"64\" cy=\"68\" r=\"5\" fill=\"#161616\"/\u003e\n  \u003ccircle cx=\"79\" cy=\"68\" r=\"5\" fill=\"#161616\"/\u003e\n  \u003crect x=\"22\" y=\"81\" width=\"84\" height=\"10\" rx=\"5\" fill=\"#161616\"/\u003e\n  \u003crect x=\"22\" y=\"99\" width=\"84\" height=\"8\" rx=\"4\" fill=\"#161616\"/\u003e\n\u003c/svg\u003e\n","dataUri":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4IiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IkNvbnRleHQgU2xpbSBtYXJrIj4KICA8dGl0bGU+Q29udGV4dCBTbGltIOKAlCByZWNlbnQgY29udGV4dCBoZWxkLCBvbGQgY29udGV4dCBzaG9ydGVuZWQ8L3RpdGxlPgogIDxyZWN0IHg9IjIyIiB5PSIyNSIgd2lkdGg9Ijg0IiBoZWlnaHQ9IjEyIiByeD0iNiIgZmlsbD0iIzE2MTYxNiIvPgogIDxyZWN0IHg9IjIyIiB5PSI0NyIgd2lkdGg9Ijg0IiBoZWlnaHQ9IjgiIHJ4PSI0IiBmaWxsPSIjMTYxNjE2Ii8+CiAgPGNpcmNsZSBjeD0iNDkiIGN5PSI2OCIgcj0iNSIgZmlsbD0iIzE2MTYxNiIvPgogIDxjaXJjbGUgY3g9IjY0IiBjeT0iNjgiIHI9IjUiIGZpbGw9IiMxNjE2MTYiLz4KICA8Y2lyY2xlIGN4PSI3OSIgY3k9IjY4IiByPSI1IiBmaWxsPSIjMTYxNjE2Ii8+CiAgPHJlY3QgeD0iMjIiIHk9IjgxIiB3aWR0aD0iODQiIGhlaWdodD0iMTAiIHJ4PSI1IiBmaWxsPSIjMTYxNjE2Ii8+CiAgPHJlY3QgeD0iMjIiIHk9Ijk5IiB3aWR0aD0iODQiIGhlaWdodD0iOCIgcng9IjQiIGZpbGw9IiMxNjE2MTYiLz4KPC9zdmc+Cg==","sha256":"736bf316acd6e56c6a7ef8d9eea353dabb10aad75e4d95445acec20c07c4aa39","validation":{"format":"SVG","viewBox":[0.0,0.0,128.0,128.0],"checks":"\u6b63\u65b9\u5f62\u3001title/aria\u3001\u9759\u6001\u5b89\u5168\u5b50\u96c6\u53ca\u5185\u90e8\u5f15\u7528\u901a\u8fc7"},"limitation":"\u4ec5\u505a\u7ed3\u6784\u68c0\u67e5\uff1b\u672a\u89e3\u7801/\u6e32\u67d3\u50cf\u7d20\uff0c\u672a\u9a8c\u8bc1\u900f\u660e\u5ea6\u3001\u7559\u767d\u3001\u975e\u7a7a\u56fe\u3001token \u4e0e\u5b9e\u9645\u989c\u8272\u4e00\u81f4\u6027\u6216 32px \u53ef\u8fa8\u6027\u3002\u9700\u8981\u53e6\u884c\u771f\u5b9e\u6e32\u67d3\u5e76\u76ee\u89c6\u9a8c\u6536\u3002"},"darkAsset":{"path":"assets/mark-dark.svg","filename":"mark-dark.svg","mime":"image/svg+xml","svg":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\" role=\"img\" aria-label=\"Fovea mark for dark backgrounds\"\u003e\n  \u003ctitle\u003eFovea \u2014 recent context held, old context shortened, dark background\u003c/title\u003e\n  \u003crect x=\"22\" y=\"25\" width=\"84\" height=\"12\" rx=\"6\" fill=\"#F7F7F5\"/\u003e\n  \u003crect x=\"22\" y=\"47\" width=\"84\" height=\"8\" rx=\"4\" fill=\"#F7F7F5\"/\u003e\n  \u003ccircle cx=\"49\" cy=\"68\" r=\"5\" fill=\"#F7F7F5\"/\u003e\n  \u003ccircle cx=\"64\" cy=\"68\" r=\"5\" fill=\"#F7F7F5\"/\u003e\n  \u003ccircle cx=\"79\" cy=\"68\" r=\"5\" fill=\"#F7F7F5\"/\u003e\n  \u003crect x=\"22\" y=\"81\" width=\"84\" height=\"10\" rx=\"5\" fill=\"#F7F7F5\"/\u003e\n  \u003crect x=\"22\" y=\"99\" width=\"84\" height=\"8\" rx=\"4\" fill=\"#F7F7F5\"/\u003e\n\u003c/svg\u003e\n","dataUri":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4IiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IkNvbnRleHQgU2xpbSBtYXJrIGZvciBkYXJrIGJhY2tncm91bmRzIj4KICA8dGl0bGU+Q29udGV4dCBTbGltIOKAlCByZWNlbnQgY29udGV4dCBoZWxkLCBvbGQgY29udGV4dCBzaG9ydGVuZWQsIGRhcmsgYmFja2dyb3VuZDwvdGl0bGU+CiAgPHJlY3QgeD0iMjIiIHk9IjI1IiB3aWR0aD0iODQiIGhlaWdodD0iMTIiIHJ4PSI2IiBmaWxsPSIjRjdGN0Y1Ii8+CiAgPHJlY3QgeD0iMjIiIHk9IjQ3IiB3aWR0aD0iODQiIGhlaWdodD0iOCIgcng9IjQiIGZpbGw9IiNGN0Y3RjUiLz4KICA8Y2lyY2xlIGN4PSI0OSIgY3k9IjY4IiByPSI1IiBmaWxsPSIjRjdGN0Y1Ii8+CiAgPGNpcmNsZSBjeD0iNjQiIGN5PSI2OCIgcj0iNSIgZmlsbD0iI0Y3RjdGNSIvPgogIDxjaXJjbGUgY3g9Ijc5IiBjeT0iNjgiIHI9IjUiIGZpbGw9IiNGN0Y3RjUiLz4KICA8cmVjdCB4PSIyMiIgeT0iODEiIHdpZHRoPSI4NCIgaGVpZ2h0PSIxMCIgcng9IjUiIGZpbGw9IiNGN0Y3RjUiLz4KICA8cmVjdCB4PSIyMiIgeT0iOTkiIHdpZHRoPSI4NCIgaGVpZ2h0PSI4IiByeD0iNCIgZmlsbD0iI0Y3RjdGNSIvPgo8L3N2Zz4K","sha256":"a9c9adbfdf74f6a56fc26f6e1ab156f37e55cb08f7578bcc84979ef31b0f7ba0","validation":{"format":"SVG","viewBox":[0.0,0.0,128.0,128.0],"checks":"\u6b63\u65b9\u5f62\u3001title/aria\u3001\u9759\u6001\u5b89\u5168\u5b50\u96c6\u53ca\u5185\u90e8\u5f15\u7528\u901a\u8fc7"},"limitation":"\u4ec5\u505a\u7ed3\u6784\u68c0\u67e5\uff1b\u672a\u89e3\u7801/\u6e32\u67d3\u50cf\u7d20\uff0c\u672a\u9a8c\u8bc1\u900f\u660e\u5ea6\u3001\u7559\u767d\u3001\u975e\u7a7a\u56fe\u3001token \u4e0e\u5b9e\u9645\u989c\u8272\u4e00\u81f4\u6027\u6216 32px \u53ef\u8fa8\u6027\u3002\u9700\u8981\u53e6\u884c\u771f\u5b9e\u6e32\u67d3\u5e76\u76ee\u89c6\u9a8c\u6536\u3002"},"oldAsset":null}}],"limitation":"\u4ec5\u505a\u7ed3\u6784\u68c0\u67e5\uff1b\u672a\u89e3\u7801/\u6e32\u67d3\u50cf\u7d20\uff0c\u672a\u9a8c\u8bc1\u900f\u660e\u5ea6\u3001\u7559\u767d\u3001\u975e\u7a7a\u56fe\u3001token \u4e0e\u5b9e\u9645\u989c\u8272\u4e00\u81f4\u6027\u6216 32px \u53ef\u8fa8\u6027\u3002\u9700\u8981\u53e6\u884c\u771f\u5b9e\u6e32\u67d3\u5e76\u76ee\u89c6\u9a8c\u6536\u3002"};
+const root = document.getElementById('projects');
+const bgButtons = [...document.querySelectorAll('[data-background]')];
+const sizeButtons = [...document.querySelectorAll('[data-size]')];
+let background = 'light', size = 32;
+function el(tag, value, className) {
+  const node = document.createElement(tag);
+  if (value !== undefined) node.textContent = value;
+  if (className) node.className = className;
+  return node;
+}
+function button(label, action) {
+  const b = el('button', label); b.type = 'button'; b.addEventListener('click', action); return b;
+}
+function download(label, filename, content, type) {
+  const a = el('a', label, 'download'); a.download = filename;
+  a.href = 'data:' + type + ';base64,' + btoa(Array.from(new TextEncoder().encode(content), b => String.fromCharCode(b)).join(''));
+  return a;
+}
+function jsonDownload(label, filename, data) {
+  return download(label, filename, JSON.stringify(data, null, 2), 'application/json');
+}
+function list(parent, title, values, empty) {
+  parent.append(el('h3', title));
+  if (!values.length) {parent.append(el('p', empty, 'muted')); return;}
+  const ul = el('ul'); values.forEach(value => ul.append(el('li', value))); parent.append(ul);
+}
+function assetTask(label, asset) {
+  if (!asset) return label + '：无';
+  return label + '：' + asset.path + '\nSHA-256: ' + asset.sha256 + '\n' +
+    (asset.svg !== null ? '完整 SVG：\n' + asset.svg : '完整位图 data URI（不能替代最终 SVG）：\n' + asset.dataUri);
+}
+function fullTask(p, note) {
+  return [
+    '请依据以下完整资料继续处理品牌标识，并保留离线评审页和真实截图。',
+    '项目：' + p.name + ' (' + p.id + ')',
+    '先调用当次环境能力发现/工具帮助，再按授权选择工具及模型；不得把复制任务当成已调用。',
+    '用户已给定/确认（仅来自 manifest.userDecisions；空白不代表批准）：\n' + (p.userDecisions.join('\n') || '未记录'),
+    '建议（未获用户确认）：\n' + (p.recommendations.join('\n') || '未记录'),
+    '本页补充（建议，待用户确认）：\n' + (note.trim() || '无'),
+    'Design tokens：\n' + JSON.stringify(p.tokens, null, 2),
+    'Token 来源（来源分类按记录，不代表已经核验）：\n' + JSON.stringify(p.tokenSources, null, 2),
+    '理念（按输入记录；未经说明不得当成用户决策或历史事实）：\n' + (p.rationale.join('\n') || '未记录'),
+    '生产来源（未联网验证）：\n' + (p.sources.map(s => s.label + ' — ' + s.value).join('\n') || '未记录'),
+    ...Object.entries(p.assets).map(([key, value]) => assetTask(key, value)),
+    '结构检查：\n' + JSON.stringify(Object.fromEntries(Object.entries(p.assets).filter(([,a]) => a).map(([k,a]) => [k,a.validation])), null, 2),
+    '验证边界：' + DATA.limitation,
+    '交付：token + 来源、理念、完整 SVG、review.html、manifest JSON；截图保存到交付目录 screenshots/。',
+    '真实渲染浅底 #FFFFFF / 深底 #0D1117 / 棋盘的 32px，查看 64/128px；说明实际测试范围、截图来源及未做项。',
+    '原始 manifest（相对路径以原 manifest 目录为根；上文已附实际素材）：\n' + JSON.stringify(DATA.manifest, null, 2)
+  ].join('\n\n');
+}
+async function copyTask(content, status, fallback) {
+  status.textContent = '正在复制…'; fallback.hidden = true;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try { await navigator.clipboard.writeText(content); status.textContent = '完整任务已复制。'; return; }
+      catch (_) { /* file:// or permissions may require the explicit fallback below. */ }
+    }
+    fallback.value = content; fallback.hidden = false; fallback.focus(); fallback.select();
+    if (!document.execCommand('copy')) throw new Error('copy returned false');
+    fallback.hidden = true; status.textContent = '完整任务已复制。';
+  } catch (_) {
+    fallback.value = content; fallback.hidden = false; fallback.focus(); fallback.select();
+    status.textContent = '自动复制失败。请在下方选中完整任务并手动复制；尚未复制成功。';
+  }
+}
+const downloadBar = document.getElementById('downloads');
+downloadBar.append(jsonDownload('下载完整 JSON（含内嵌素材）', 'brand-review-bundle.json', DATA),
+  jsonDownload('下载原 manifest', 'manifest.json', DATA.manifest));
+const views = [];
+DATA.projects.forEach((p, index) => {
+  const section = el('article', undefined, 'project'); section.append(el('h2', p.name));
+  section.append(el('p', 'ID: ' + p.id, 'muted'));
+  const grid = el('div', undefined, 'preview-grid');
+  const next = el('figure'), nextCanvas = el('div', undefined, 'canvas'); nextCanvas.dataset.bg = background;
+  const nextImg = el('img'); nextImg.alt = p.name + ' 新标识'; nextCanvas.append(nextImg);
+  const caption = el('figcaption'); next.append(nextCanvas, caption); grid.append(next);
+  let oldImg = null, oldCanvas = null;
+  if (p.assets.oldAsset) {
+    const old = el('figure'); oldCanvas = el('div', undefined, 'canvas'); oldCanvas.dataset.bg = background;
+    oldImg = el('img'); oldImg.alt = p.name + ' 旧标识'; oldImg.src = p.assets.oldAsset.dataUri;
+    oldCanvas.append(oldImg); old.append(oldCanvas, el('figcaption', '旧图（对照，不推定为已批准规范）')); grid.append(old);
+  } else grid.append(el('p', '首次设计 / 未提供旧图', 'muted'));
+  section.append(grid);
+  views.push({p, nextImg, nextCanvas, caption, oldImg, oldCanvas});
+  section.append(el('h3', 'Design tokens 与来源'));
+  const tokens = el('div', undefined, 'tokens');
+  Object.entries(p.tokens).forEach(([key, value]) => {
+    const item = el('div', undefined, 'token');
+    const swatch = el('span', undefined, 'swatch');
+    // Only values validated as hex/transparent are applied as CSS.
+    if (/^#(?:[a-f\d]{3}|[a-f\d]{4}|[a-f\d]{6}|[a-f\d]{8})$/i.test(value) || value === 'transparent') swatch.style.backgroundColor = value;
+    item.append(swatch, el('strong', key + ': ' + value), el('p', p.tokenSources[key], 'evidence')); tokens.append(item);
+  }); section.append(tokens);
+  list(section, '设计理念（按输入记录）', p.rationale, '未记录理念');
+  list(section, '用户给定 / 已确认', p.userDecisions, '未记录用户决策；不能推定为批准');
+  list(section, '本次建议（待用户确认）', p.recommendations, '未记录建议');
+  section.append(el('h3', '生产资料与来源（构建时未联网核验）'));
+  const sources = el('ul');
+  p.sources.forEach(s => {
+    const li = el('li');
+    if (s.url) {const a = el('a', s.label + ' — ' + s.value); a.href = s.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; li.append(a);}
+    else li.textContent = s.label + ' — ' + s.value + '（manifest 相对路径，不随 HTML 分发）';
+    sources.append(li);
+  });
+  section.append(p.sources.length ? sources : el('p', '未记录来源，未核验', 'muted'));
+  const actions = el('div', undefined, 'actions');
+  Object.entries(p.assets).forEach(([key, asset]) => {
+    if (!asset) return;
+    const a = el('a', '下载 ' + key + ' · ' + asset.filename, 'download');
+    a.href = asset.dataUri; a.download = asset.filename; actions.append(a);
+    const detail = el('details'); detail.append(el('summary', key + ' · 结构检查 / 实际素材'));
+    detail.append(el('p', JSON.stringify(asset.validation)), el('p', asset.limitation, 'muted'));
+    if (asset.svg !== null) detail.append(el('pre', asset.svg));
+    section.append(detail);
+  });
+  section.append(actions);
+  const noteId = 'review-note-' + index;
+  const label = el('label', '评审补充（本次建议，待用户确认；刷新前请复制保存）'); label.htmlFor = noteId;
+  const note = el('textarea'); note.id = noteId;
+  const fallback = el('textarea', undefined, 'manual'); fallback.hidden = true; fallback.readOnly = true;
+  fallback.setAttribute('aria-label', '自动复制失败时的完整任务');
+  const status = el('p', '', 'status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+  section.append(label, note, button('复制完整任务（含实际素材）', () => copyTask(fullTask(p, note.value), status, fallback)), status, fallback);
+  root.append(section);
+});
+function refresh() {
+  views.forEach(v => {
+    const dark = background === 'dark' && v.p.assets.darkAsset;
+    const asset = dark || v.p.assets.asset;
+    v.nextImg.src = asset.dataUri; v.nextImg.width = v.nextImg.height = size;
+    v.nextImg.style.width = v.nextImg.style.height = size + 'px'; v.nextCanvas.dataset.bg = background;
+    v.caption.textContent = '新图 · ' + (dark ? '独立深底版' : '主版本') + ' · ' + size + 'px';
+    if (v.oldImg) {v.oldImg.style.width = v.oldImg.style.height = size + 'px'; v.oldCanvas.dataset.bg = background;}
+  });
+  bgButtons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.background === background)));
+  sizeButtons.forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.size) === size)));
+}
+bgButtons.forEach(b => b.addEventListener('click', () => {background = b.dataset.background; refresh();}));
+sizeButtons.forEach(b => b.addEventListener('click', () => {size = Number(b.dataset.size); refresh();}));
+refresh();
+</script></body></html>

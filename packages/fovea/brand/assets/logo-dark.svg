@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Fovea logo for dark backgrounds">
+  <title>Fovea — sharp centre, fading periphery (dark)</title>
+  <circle cx="64" cy="64" r="58" fill="none" stroke="#e8eef5" stroke-opacity="0.22" stroke-width="6"/>
+  <circle cx="64" cy="64" r="42" fill="none" stroke="#e8eef5" stroke-opacity="0.5" stroke-width="7"/>
+  <circle cx="64" cy="64" r="25" fill="none" stroke="#e8eef5" stroke-opacity="0.9" stroke-width="8"/>
+  <circle cx="64" cy="64" r="10" fill="#8dbbf5"/>
+</svg>
