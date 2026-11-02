@@ -1,0 +1,31 @@
+{
+  "name": "@magpie-community/agent-craft-agents",
+  "version": "0.1.0",
+  "description": "Craft Agents as a magpie agent: pick one of magpie's models for it on the Agents page",
+  "type": "module",
+  "files": [
+    "craft.agent.js",
+    "icon.js",
+    "icon-preview.png",
+    "README.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "craft-agents",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "magpie": {
+    "agent": "./craft.agent.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/craft-agents"
+  },
+  "author": {
+    "name": "HiJizo",
+    "url": "https://github.com/HiJizo"
+  }
+}
