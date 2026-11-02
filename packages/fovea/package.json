@@ -4,6 +4,7 @@
   "description": "Thin an agent's long history the way the eye sees: a recent window stays sharp, old tool results and texts keep head and tail, old images become a note — and on a saccade (saccade: auto) a new topic's request does not carry the old context at all. magpie gateway middleware",
   "type": "module",
   "files": [
+    "LICENSE",
     "README.md",
     "benchmark.mjs",
     "brand/assets/*.svg",
