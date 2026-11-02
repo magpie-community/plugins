@@ -179,6 +179,16 @@
         "zh": "把终端里的 Agent CLI 搬进 magpie 窗口，直接对话使用。会在本机 127.0.0.1 跑一个后台服务，打开页面才启动，随 magpie 退出；令牌只交给自己的页面。首次安装约 46 MB；不自带 Claude Code，要用请自己装 `claude` CLI。"
       }
     },
+    {
+      "package": "magpie-window-warmup",
+      "name": "Window Warmup",
+      "kind": "page",
+      "icon": "https://raw.githubusercontent.com/YangHonghang/magpie-window-warmup/main/page/icon.svg",
+      "summary": {
+        "en": "Start a subscription's 5-hour or weekly quota window ahead of time: send one fixed short message (\"hi\", max_tokens 16) to a provider, account and model you pick, right after its window resets, daily at set times or every few hours. Each send uses that provider's quota. Runs a local service on 127.0.0.1 that only calls magpie's own gateway; only its own page gets the token.",
+        "zh": "提前开启订阅的 5 小时或每周额度窗口：给指定的供应商、账号和模型发一条固定短消息（\"hi\"，max_tokens 16），可在窗口重置后、每天定时或每隔几小时发送。每次发送都会消耗该供应商的额度。在本机 127.0.0.1 跑一个本地服务，只调用 magpie 自己的网关；令牌只交给自己的页面。"
+      }
+    },
     { "package": "@magpie-community/opencode-astudio-auth", "name": "AStudio", "providers": ["astudio"], "community": true,
       "summary": { "en": "Unofficial AStudio (iFLYTEK Astron Studio desktop): reuse the desktop sign-in to serve its Responses model gateway, with the live model catalog, daily login-points check-in and points balance. Desktop discovery runs on Windows (registry lookup), with a paste-token fallback. Differs from Providers Hub's hub-astudio, which signs in on a local page (SMS, password or WeChat QR) and calls chat/completions; on one account both share the same daily points pool.", "zh": "非官方 AStudio（科大讯飞 Astron Studio 桌面端）：复用桌面端登录态接入其模型网关，含实时模型目录、每日登录积分签到与积分余额。桌面端发现仅 Windows（注册表定位），另有粘贴凭据方式。与 Providers Hub 的 hub-astudio 不同：那边在本地登录页用短信、密码或微信扫码登录，走 chat/completions；同一账号两边共用一个每日积分池。" } },
     { "package": "@magpie-community/opencode-agnes-code-auth", "name": "Agnes Code", "providers": ["agnes-code"], "community": true,
