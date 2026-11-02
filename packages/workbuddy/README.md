@@ -349,15 +349,19 @@ midnight on every account. magpie's smart routing spends the account whose
 credits run out first.
 
 The plan's own credits and the rest are two windows. "Credits" is the
-packages whose credits come back each cycle, as WorkBuddy's client lists
-them (Pro monthly or yearly, youth, advanced, flagship, the plan's bonus,
-the free plan's monthly base, the Pro trials, or the subscription the
-summary names), with the plan's cycle, so its pace line is the month's.
-"Extra credits" is the packages that only lapse: gifted and activity
-credits (赠送积分) and bought credit packs. Only one of the two stops the
+plan's base credits: what the subscription grants each cycle (Pro monthly
+or yearly, youth, advanced, flagship, the Pro trials, the free plan's
+monthly base, or the subscription the summary names), with the plan's
+cycle, so its pace line is the month's. "Extra credits" is every other
+kind WorkBuddy's own usage panel lists: the plan's bonus, top-ups (bought
+credit packs) and platform rewards (gifted and activity credits,
+赠送积分). The summary's CreditGroups say which is which (plan_base
+against plan_bonus, addon and benefit); a summary without them is split
+by package code as WorkBuddy's client does. Only one of the two stops the
 account, since WorkBuddy serves it while any credits are left: the extra
 window is set aside until the plan's credits are spent. A summary with
-only one kind keeps the one "Credits" window (akic404 on Discord).
+only one kind keeps the one "Credits" window (akic404 on Discord; since
+0.2.16 the plan's bonus is extra too, Jiabubu on Discord).
 
 An enterprise (team) account's resource summary lists no packages. Its
 credits are read from the enterprise meter

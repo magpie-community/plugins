@@ -2868,12 +2868,15 @@ function pinning() {
 // The plan's own credits and the rest are two windows (akic404 on
 // Discord): summed, the gifted and activity packages' credits used long
 // ago put the card at most of its allowance on the first day of the
-// month, and the plan's pace line said nothing. "Credits" is the packages
-// whose credits come back each cycle — WorkBuddy's client's own
-// onlyRefreshCodes (PLAN_CODES), or the subscription the summary names —
-// and "Extra credits" the ones that only lapse (gift, activity, bought
-// credit packs, any code the client doesn't list). A summary with only
-// one kind keeps the one "Credits" window, as before.
+// month, and the plan's pace line said nothing. "Credits" is the plan's
+// base credits and "Extra credits" every other kind, as WorkBuddy's own
+// usage panel breaks them down (Jiabubu on Discord: a plan's bonus and
+// bought credits were nowhere on the card). The summary's CreditGroups
+// say it in WorkBuddy's words: plan_base ("Plan Base Credits") is the
+// plan's, plan_bonus, addon ("Top-up Credits") and benefit ("Platform
+// Reward Credits") are extra. A summary without them is split by code as
+// the client's resolveCreditGroup does (PLAN_CODES, see planCodes). A
+// summary with only one kind keeps the one "Credits" window, as before.
 //
 // Only one of the two stops the account at a time: WorkBuddy serves it
 // while any credits are left, so the one set aside is the one whose
@@ -2884,12 +2887,13 @@ function usageOf(sum, plan, site) {
   const ofPlan = planCodes(sum, site)
   const kinds = { plan: { total: 0, used: 0 }, extra: { total: 0, used: 0 } }
   let left = 0, bags = 0
+  const hasTotal = (p) => p?.CycleTotalCapacity != null && p.CycleTotalCapacity !== ""
+  const add = (k, p) => ((k.total += capacity(p.CycleTotalCapacity)), (k.used += capacity(p?.CycleUsedCapacity)))
+  const groups = (Array.isArray(sum?.CreditGroups) ? sum.CreditGroups : []).filter(hasTotal)
+  for (const g of groups) add(kinds[g?.Kind === "plan_base" ? "plan" : "extra"], g)
   for (const p of sum?.Packages ?? []) {
-    const hasTotal = p?.CycleTotalCapacity != null && p.CycleTotalCapacity !== ""
-    if (hasTotal) {
-      const k = kinds[ofPlan(p?.PackageCode) ? "plan" : "extra"]
-      k.total += capacity(p.CycleTotalCapacity)
-      k.used += capacity(p?.CycleUsedCapacity)
+    if (hasTotal(p)) {
+      if (!groups.length) add(kinds[ofPlan(p?.PackageCode) ? "plan" : "extra"], p)
     } else if (p?.CycleRemainCapacity != null && p.CycleRemainCapacity !== "") {
       left += capacity(p.CycleRemainCapacity)
       bags++
@@ -2953,7 +2957,7 @@ async function spareFree(site, a, windows) {
 // detail list without them (10001 "PackageCodes required").
 const CODE = (n, s) => `TCACA_code_${n}_${s}`
 const PAID_CODES = [CODE("002", "AkiJS3ZHF5"), CODE("005", "maRGyrHhw1"), CODE("003", "FAnt7lcmRT"), CODE("023", "4xbGhMrE6q"),
-  CODE("026", "BaESVICNoi"), CODE("027", "0FCGVA6vSa"), CODE("009", "0XmEQc2xOf"), CODE("038", "OhvqZtiPKr"), CODE("036", "lupO5WgNdG")]
+  CODE("026", "BaESVICNoi"), CODE("027", "0FCGVA6vSa"), CODE("043", "6oIkxT7Z0S"), CODE("009", "0XmEQc2xOf"), CODE("038", "OhvqZtiPKr"), CODE("036", "lupO5WgNdG")]
 const DAILY_CODE = CODE("001", "PqouKr6QWV")
 const FREE_CODES = [DAILY_CODE, CODE("008", "cfWoLwvjU4"), CODE("035", "ArVxJcGDsm"), CODE("006", "DbXS0lrypC"), CODE("039", "KRcQj7wUat"),
   CODE("040", "mi9rCYg46x"), CODE("007", "nzdH5h4Nl0"), CODE("028", "NtpWi0jzXs"), CODE("037", "WxOD3MpI2o"), CODE("029", "6wCGEWquYy"),
@@ -2962,17 +2966,18 @@ const FREE_CODES = [DAILY_CODE, CODE("008", "cfWoLwvjU4"), CODE("035", "ArVxJcGD
 // lost at the same midnight on every account, so they tell none apart
 const SLICE = "4"
 
-// PLAN_CODES are the packages whose credits come back each cycle, as
-// WorkBuddy's client (5.9.x) lists them (onlyRefreshCodes): Pro monthly,
-// Pro monthly plus, Pro yearly, youth, advanced, flagship, the plan's
-// bonus (bonus28; bonusIntl, "Plan Bonus Quota"), the international free
-// plan (freeMonIntl), the Pro trials, and on the China build alone the
-// free plan's monthly base (freeMon, 套餐基础积分). Every other code only
-// lapses: gift (006, "Bonus Pack" / Pro trial), activity (007, 赠送积分),
-// bonus29/30, and the credit packs (009, 036, 038).
+// PLAN_CODES are the plan's base credits, as WorkBuddy's client (WorkBuddy
+// AI 5.9.4) groups them in its usage panel (resolveCreditGroup's
+// planBase): Pro monthly, Pro monthly plus, Pro yearly, youth, advanced,
+// flagship, buddyOneVip, the international free plan (freeMonIntl), the
+// Pro trials, and on the China build alone the free plan's monthly base
+// (freeMon, 套餐基础积分). The plan's bonus (bonus28; bonusIntl, "Plan
+// Bonus Quota") comes back each cycle too, but the client says it apart
+// (planBonus), as it does the credit packs (009, 036, 038: addon) and
+// activity, bonus29/30 and gift (benefit).
 const PLAN_CODES = [CODE("002", "AkiJS3ZHF5"), CODE("005", "maRGyrHhw1"), CODE("003", "FAnt7lcmRT"), CODE("023", "4xbGhMrE6q"),
-  CODE("026", "BaESVICNoi"), CODE("027", "0FCGVA6vSa"), CODE("028", "NtpWi0jzXs"), CODE("035", "ArVxJcGDsm"),
-  CODE("039", "KRcQj7wUat"), CODE("040", "mi9rCYg46x"), CODE("037", "WxOD3MpI2o")]
+  CODE("026", "BaESVICNoi"), CODE("027", "0FCGVA6vSa"), CODE("043", "6oIkxT7Z0S"), CODE("035", "ArVxJcGDsm"),
+  CODE("039", "KRcQj7wUat"), CODE("040", "mi9rCYg46x")]
 const FREE_MON = CODE("008", "cfWoLwvjU4")
 
 // planCodes says whether a package of the summary is the plan's own: one
