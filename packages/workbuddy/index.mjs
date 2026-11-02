@@ -3264,6 +3264,8 @@ function defaultEffortOf(d, efforts) {
 // effort the client named, "none" too, goes as it came.
 function withDefaultEffort(chat, list) {
   if (!chat || typeof chat !== "object" || namesEffort(chat)) return false
+  const limit = chat.max_tokens ?? chat.max_completion_tokens
+  if (typeof limit === "number" && limit > 0 && limit <= 256) return false
   const m = list?.find((x) => x.id === chat.model)
   if (!m?.effort) return false
   chat.reasoning_effort = m.effort
