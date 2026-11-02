@@ -217,8 +217,13 @@ minutes), the way pi-cursor-sdk lists Cursor's catalog:
   "Claude Opus 5.5 @ 300k"), thinking a parameter, the efforts the account
   is served, and the larger size in Max Mode with that `context`. A catalog
   variant without its own id gets the one of the model's ids that says its
-  effort, thinking and fast; with none or several it is not offered. The
-  picker's models and every model that is not Anthropic's don't change.
+  effort, thinking and fast; with none or several it is not offered. Only
+  the parameters the model defines are sent (the catalog's variants also
+  carry `cyber=false`, which the picker's don't and cursor-agent never
+  sends). With no effort asked, a model goes at Cursor's default variant
+  (Opus 5 and 4.8: high), as the picker's models do, not at medium as the
+  fallback entries did. The picker's models and every model that is not
+  Anthropic's don't change.
   An id saved from an earlier list (`claude-opus-5-5`,
   `claude-opus-4-8-thinking@1m`) runs as the model at the nearest size it
   has, as a usable id.

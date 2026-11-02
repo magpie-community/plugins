@@ -251,3 +251,20 @@ test("an id the catalog gives a variant no legacySlug of is the one that says it
   expect(slugFor({ legacySlugs: ["a-high", "b-high"], variants: [] }, { parameterValues: [{ id: "effort", value: "high" }] })).toBe("")
   expect(slugFor({ legacySlugs: [null, 5, "a-high"], variants: [] }, { parameterValues: [{ id: "effort", value: "high" }] })).toBe("a-high")
 })
+
+test("a parameter the catalog's variants carry and the model doesn't define (cyber=false) is never sent", async () => {
+  // as the real scope 3 answer has Opus 4.7 to 5.5: every variant says cyber, no definition does
+  const cyber = { ...OPUS55, variants: OPUS55.variants.map((v) => ({ ...v, parameterValues: [{ id: "cyber", value: "false" }, ...v.parameterValues] })) }
+  const raw = await list([CATALOG[0], CATALOG[1], cyber])
+  for (const id of ["claude-opus-5-5@300k", "claude-opus-5-5@1m"])
+    for (const effort of ["", "low", "medium", "high"])
+      for (const fast of [false, true]) {
+        const r = run(raw, id, effort, fast)
+        expect("cyber" in r.params).toBe(false)
+        expect(usableIDs.has(r.id)).toBe(true)
+      }
+  expect(run(raw, "claude-opus-5-5@300k", "low")).toEqual({ id: "claude-opus-5-5-low", maxMode: false, params: { context: "300k", effort: "low", fast: "false" } })
+  // the same model without it, as the picker has it, runs with the same params
+  const plain = await list([CATALOG[0], CATALOG[1], OPUS55])
+  expect(run(raw, "claude-opus-5-5@1m", "high", true)).toEqual(run(plain, "claude-opus-5-5@1m", "high", true))
+})

@@ -1103,15 +1103,21 @@ function slugFor(m, v) {
   return hits.length === 1 ? hits[0].id : ""
 }
 
-// withSlugs is a catalog model with each variant's own id filled in. A
-// variant slugFor can't name keeps no id of its own, but never goes without
-// one: served() leaves a variant with no legacySlug in, and one the account
-// can't run would be listed. So it gets a mark no usable id has, and
-// modelsOf lists it as it does a variant the account hasn't got. The
-// variants are never null.
+// withSlugs is a catalog model with each variant's own id filled in, and
+// only the parameters the model defines: the full catalog is the admin
+// settings one, and carries what the picker's variants don't (cyber=false
+// on Opus 4.7 to 5.5, which cursor-agent never sends). A variant slugFor
+// can't name keeps no id of its own, but never goes without one: served()
+// leaves a variant with no legacySlug in, and one the account can't run
+// would be listed. So it gets a mark no usable id has, and modelsOf lists
+// it as it does a variant the account hasn't got. The variants are never
+// null.
 const NO_ID = "\u0000no-id"
 function withSlugs(m) {
-  const vs = (Array.isArray(m.variants) ? m.variants : []).filter((v) => v && typeof v === "object" && Array.isArray(v.parameterValues ?? []))
+  const defined = new Set((Array.isArray(m.parameterDefinitions) ? m.parameterDefinitions : []).map((d) => d?.id))
+  const vs = (Array.isArray(m.variants) ? m.variants : [])
+    .filter((v) => v && typeof v === "object" && Array.isArray(v.parameterValues ?? []))
+    .map((v) => ({ ...v, parameterValues: (v.parameterValues ?? []).filter((p) => defined.has(p?.id)) }))
   const full = { ...m, variants: vs }
   return { ...full, variants: vs.map((v) => (v.legacySlug ? v : { ...v, legacySlug: slugFor(full, v) || NO_ID })) }
 }
