@@ -511,4 +511,5 @@ test.skipIf(!findBrowser() || process.env.AGNES_BROWSER_TEST !== "1")(
     expect(existsSync(session.profilePath)).toBe(true)
     rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   },
+  30000,
 )
