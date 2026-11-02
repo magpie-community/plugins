@@ -1470,7 +1470,10 @@ function startRename(id, rowEl, oldTitle) {
     // 正在看的就是这一条：本地标题也要跟着改，否则下一次 persistConversation
     // 会把旧的 state.title 整份 POST 回去，刚改的名字又被盖掉。
     if (id === state.convId) state.title = val;
-    api("api/conversations/" + encodeURIComponent(id), { method: "PATCH", body: { title: val } })
+    if (conversationRequest && conversationRequest.id === id) conversationRequest = null;
+    writeConversation(id, function () {
+      return api("api/conversations/" + encodeURIComponent(id), { method: "PATCH", body: { title: val } });
+    })
       .then(function () { return loadConversations(); })
       .catch(function (err) { toast("重命名失败：" + err.message, true); });
   }
@@ -1487,22 +1490,27 @@ function startRename(id, rowEl, oldTitle) {
 function askDelete(id, title) {
   var name = String(title || "这条对话");
   {
-    api("api/conversations/" + encodeURIComponent(id), { method: "DELETE" }).then(function () {
-      // 置顶列表里也把它去掉，免得留下悬空的 id
-      var pinned = (state.settings.pinned || []).filter(function (x) { return x !== id; });
-      state.settings.pinned = pinned;
-      api("api/settings", { method: "POST", body: { pinned: pinned } }).catch(function () {});
-      if (state.convId === id) {
-        clearPendingAttachments();
-        state.convId = null;
-        state.title = "新对话";
-        state.messages = [];
-        renderMessages();
-        renderSessions();
-      } else {
-        loadConversations();
-      }
-      toast("已删除「" + name.slice(0, 20) + "」");
+    return writeConversation(id, function (queue) {
+      return api("api/conversations/" + encodeURIComponent(id), { method: "DELETE" }).then(function () {
+        queue.deleted = true;
+        // 置顶列表里也把它去掉，免得留下悬空的 id
+        var pinned = (state.settings.pinned || []).filter(function (x) { return x !== id; });
+        state.settings.pinned = pinned;
+        api("api/settings", { method: "POST", body: { pinned: pinned } }).catch(function () {});
+        if (conversationRequest && conversationRequest.id === id) conversationRequest = null;
+        if (state.convId === id) {
+          conversationRequest = null;
+          clearPendingAttachments();
+          state.convId = null;
+          state.title = "新对话";
+          state.messages = [];
+          renderMessages();
+          renderSessions();
+        } else {
+          loadConversations();
+        }
+        toast("已删除「" + name.slice(0, 20) + "」");
+      });
     }).catch(function (err) {
       toast("删除失败：" + err.message, true);
     });
@@ -1516,11 +1524,17 @@ function setSidebar(open) {
   api("api/settings", { method: "POST", body: { sidebar: open } }).catch(function () {});
 }
 
+var conversationRequest = null;
 function openConversation(id) {
   if (state.busy) { toast("正在生成，先停止再切换对话", true); return; }
+  var request = { id: id };
+  conversationRequest = request;
   dropBlankDraft(); // 切换到别的对话时，空着的"新对话"不该留在列表里
-  api("api/conversations/" + encodeURIComponent(id)).then(function (conv) {
-    if (!conv) return;
+  var writing = conversationWrites.get(id);
+  return (writing ? writing.done : Promise.resolve()).then(function () {
+    if (request === conversationRequest) return api("api/conversations/" + encodeURIComponent(id));
+  }).then(function (conv) {
+    if (!conv || request !== conversationRequest) return;
     if (state.convId !== conv.id) clearPendingAttachments();
     state.convId = conv.id;
     state.title = conv.title || "新对话";
@@ -1529,7 +1543,9 @@ function openConversation(id) {
     renderSessions();
     scrollBottom(true);
   }).catch(function (err) {
-    toast("打开对话失败：" + err.message, true);
+    if (request === conversationRequest) toast("打开对话失败：" + err.message, true);
+  }).finally(function () {
+    if (request === conversationRequest) conversationRequest = null;
   });
 }
 
@@ -1538,6 +1554,9 @@ function normalizeMessage(m) {
     role: m.role === "assistant" ? "assistant" : "user",
     content: String(m.content || ""),
     reasoning: String(m.reasoning || ""),
+    rounds: Array.isArray(m.rounds) ? m.rounds.map(function (round) {
+      return { content: String(round.content || ""), toolIds: (round.toolIds || []).slice() };
+    }) : undefined,
     toolCalls: Array.isArray(m.toolCalls) ? m.toolCalls.map(function (c) {
       return {
         id: c.id || "", name: c.name || "",
@@ -1557,16 +1576,40 @@ function normalizeMessage(m) {
   };
 }
 
+// 同一会话依次写入；删除成功后，丢弃已排队的旧快照。
+var conversationWrites = new Map();
+function writeConversation(id, write) {
+  var queue = conversationWrites.get(id);
+  if (!queue) {
+    queue = { done: Promise.resolve(), deleted: false };
+    conversationWrites.set(id, queue);
+  }
+  var done = queue.done.catch(function () {}).then(function () {
+    if (!queue.deleted) return write(queue);
+  });
+  queue.done = done;
+  function clear() {
+    if (queue.done === done) conversationWrites.delete(id);
+  }
+  done.then(clear, clear);
+  return done;
+}
+
 function persistConversation() {
   if (!state.messages.length) return Promise.resolve();
+  var messages = state.messages;
+  if (!state.convId) state.convId = uid("c");
   var payload = {
-    id: state.convId || undefined,
+    id: state.convId,
     title: state.title || undefined,
     messages: state.messages.map(function (m) {
       return {
         role: m.role,
         content: m.content || "",
         reasoning: m.reasoning || "",
+        rounds: m.rounds ? m.rounds.map(function (round) {
+          return { content: round.content, toolIds: round.toolIds.slice() };
+        }) : undefined,
         toolCalls: (m.toolCalls || []).map(function (c) {
           return { id: c.id, name: c.name, args: c.args, result: c.result, isError: Boolean(c.isError) };
         }),
@@ -1579,12 +1622,16 @@ function persistConversation() {
       };
     })
   };
-  return api("api/conversations", { method: "POST", body: payload }).then(function (saved) {
-    if (!saved) return;
-    state.convId = saved.id;
-    state.title = saved.title || state.title;
-    state.draft = null; // 已经是真对话了，草稿退场
-    return loadConversations();
+  return writeConversation(payload.id, function () {
+    return api("api/conversations", { method: "POST", body: payload }).then(function (saved) {
+      if (!saved) return;
+      if (state.messages === messages) {
+        state.convId = saved.id;
+        if (state.title === payload.title) state.title = saved.title || state.title;
+        state.draft = null; // 已经是真对话了，草稿退场
+      }
+      return loadConversations();
+    });
   }).catch(function (err) {
     toast("对话保存失败：" + err.message, true);
   });
@@ -2165,8 +2212,9 @@ async function requestMessages(history, warn) {
   for (var m of history) {
     var files = (m.files || []).filter(Boolean).map(normalizeImage);
     if (m.role === "assistant") {
-      var calls = (m.toolCalls || []).filter(function (c) { return c && c.name && (c.result || c.isError); });
-      if (m.content || calls.length) messages.push({ role: m.role, content: m.content, toolCalls: calls, files: files });
+      // 连接失败的卡片没有调用参数，只在界面显示，不当作工具调用重放。
+      var calls = (m.toolCalls || []).filter(function (c) { return c && c.name && c.args !== "" && (c.result || c.isError); });
+      if (m.content || calls.length) messages.push({ role: m.role, content: m.content, rounds: m.rounds, toolCalls: calls, files: files });
       continue;
     }
     var parts = [], otherFiles = [];
@@ -2211,6 +2259,7 @@ function send() {
   var text = input.value.trim();
   if (!text && !(state.attachments || []).length) return;
   if (!state.settings.model) { toast("先选一个模型", true); return; }
+  conversationRequest = null;
 
   var files = (state.attachments || []).map(function (f) {
     return { name: f.name, type: f.type, kind: f.kind, size: f.size, data: f.data, bookChars: f.bookChars, imagePages: f.imagePages };
@@ -2292,6 +2341,10 @@ function send() {
 function handleEvent(evt, refs) {
   var msg = refs.msg;
   switch (evt.type) {
+    case "round":
+      if (!msg.rounds) msg.rounds = [];
+      msg.rounds.push({ content: "", toolIds: [] });
+      break;
     case "start":
       msg.model = evt.model || state.settings.model;
       msg.tools = Array.isArray(evt.tools) ? evt.tools : [];
@@ -2313,6 +2366,7 @@ function handleEvent(evt, refs) {
       }
       break;
     case "delta":
+      if (msg.rounds && msg.rounds.length) msg.rounds[msg.rounds.length - 1].content += evt.text || "";
       // 先攒着，交给打字机队列按帧放，文字才是连续流出来的
       if (!msg.streamStartedAt) msg.streamStartedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
       msg.pending = (msg.pending || "") + (evt.text || "");
@@ -2366,6 +2420,7 @@ function handleTool(evt, refs) {
   if (evt.phase === "call") {
     var call = { id: evt.id || uid("call"), name: evt.name || "工具", args: evt.args || {}, result: "", isError: false };
     msg.toolCalls.push(call);
+    if (msg.rounds && msg.rounds.length) msg.rounds[msg.rounds.length - 1].toolIds.push(call.id);
     var card = makeTalk(call);
     refs.cards[call.id] = card;
     refs.talks.appendChild(card.root);
@@ -2518,6 +2573,7 @@ function isBlankDraft() {
 
 function newChat() {
   if (state.busy) { toast("正在生成，先停止再新建对话", true); return; }
+  conversationRequest = null;
   // 已经在一个空白的新对话里了：再点"新对话"就保持原样，别叠出第二个
   if (isBlankDraft()) { $("#input").focus(); return; }
   clearPendingAttachments();
