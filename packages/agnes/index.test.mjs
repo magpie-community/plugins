@@ -15,10 +15,12 @@ const {
   browserArgs,
   findBrowser,
   openChromeSession,
+  cdpEvaluate,
 } = _internal
 
 const apiKey = "test-api-key"
 const consoleToken = "console-token"
+const browserToken = "browser" + "-token-value"
 const auth = {
   type: "api",
   key: apiKey,
@@ -36,6 +38,24 @@ function fakeFetch(calls) {
   return async (input, init) => {
     calls.push({ input: String(input), init })
     return calls.handler(calls.length - 1, input, init)
+  }
+}
+
+function fakeBrowserSession(token = browserToken) {
+  const events = []
+  let closed = false
+  return {
+    events,
+    token: async () => token,
+    evaluate: async (expression) => {
+      events.push(["evaluate", expression])
+    },
+    close: async () => {
+      closed = true
+    },
+    get closed() {
+      return closed
+    },
   }
 }
 
@@ -86,6 +106,97 @@ describe("sign-in", () => {
       baseURL: BASE,
       apiKey,
     })
+  })
+})
+
+describe("browser sign-in callback", () => {
+  test("finishes a plan-key browser sign-in", async () => {
+    const calls = []
+    const session = fakeBrowserSession()
+    calls.handler = (_i, input) => {
+      const path = new URL(String(input)).pathname.replace("/api", "")
+      if (path === "/user/self") {
+        expect(calls.at(-1).init.headers["x-user-language"]).toBe("en-US")
+        return jsonRes(200, { code: 200, data: {} })
+      }
+      if (path === "/user/agentplan/subscription") {
+        return jsonRes(200, { code: 404, message: "No AgentPlan subscription", data: null })
+      }
+      if (path === "/user/subscription/key/reveal") {
+        return jsonRes(200, { code: 200, data: { key: "plan-fixture" } })
+      }
+      throw new Error(`unexpected ${path}`)
+    }
+    const plugin = createPlugin({
+      fetchImpl: fakeFetch(calls),
+      openChrome: async () => session,
+    })
+
+    const flow = await plugin.auth.methods[0].authorize()
+    const saved = await flow.callback()
+
+    expect(saved).toMatchObject({
+      type: "success",
+      access: "plan-fixture",
+      consoleToken: browserToken,
+      accountId: "Agnes Plan",
+    })
+    expect(session.closed).toBe(true)
+  })
+
+  test("finishes a personal-key browser sign-in", async () => {
+    const calls = []
+    const session = fakeBrowserSession()
+    calls.handler = (_i, input) => {
+      const path = new URL(String(input)).pathname.replace("/api", "")
+      if (path === "/user/self") return jsonRes(200, { code: 200, data: {} })
+      if (path === "/token") {
+        return jsonRes(200, {
+          code: 200,
+          data: { items: [{ id: 7, key_profile: "default", status: 1 }] },
+        })
+      }
+      if (path === "/token/7/key") {
+        return jsonRes(200, { code: 200, data: { id: 7, key: "personal-fixture" } })
+      }
+      throw new Error(`unexpected ${path}`)
+    }
+    const plugin = createPlugin({
+      fetchImpl: fakeFetch(calls),
+      openChrome: async () => session,
+    })
+
+    const flow = await plugin.auth.methods[1].authorize()
+    const saved = await flow.callback()
+
+    expect(saved).toMatchObject({
+      type: "success",
+      access: "personal-fixture",
+      accountId: "Agnes Personal",
+    })
+    expect(session.closed).toBe(true)
+  })
+
+  test("clears a refused browser session token", async () => {
+    const calls = []
+    const session = fakeBrowserSession()
+    calls.handler = () => jsonRes(200, { code: 401, message: "not logged in", data: null })
+    const plugin = createPlugin({
+      fetchImpl: fakeFetch(calls),
+      openChrome: async () => session,
+    })
+
+    const flow = await plugin.auth.methods[0].authorize()
+    const saved = await flow.callback()
+
+    expect(saved.type).toBe("failed")
+    expect(saved.error).toContain("session expired")
+    expect(session.events).toContainEqual([
+      "evaluate",
+      'localStorage.removeItem("token")',
+    ])
+    expect(session.closed).toBe(true)
+    expect(calls).toHaveLength(1)
   })
 })
 
@@ -549,6 +660,35 @@ test("browser args use a private profile and loopback debugging", () => {
   expect(args).toContain("--remote-debugging-address=127.0.0.1")
   expect(args).not.toContain("--remote-allow-origins=*")
   expect(args.at(-1)).toBe("https://platform.agnes-ai.com/login")
+})
+
+test("CDP evaluation surfaces page exceptions", async () => {
+  class FakeWebSocket {
+    constructor() {
+      setTimeout(() => {
+        this.onopen?.()
+      }, 0)
+    }
+    send() {
+      setTimeout(() => {
+        this.onmessage?.({
+          data: JSON.stringify({
+            id: 1,
+            result: {
+              exceptionDetails: {
+                exception: { description: "SecurityError: localStorage access is denied" },
+              },
+            },
+          }),
+        })
+      }, 0)
+    }
+    close() {}
+  }
+
+  await expect(
+    cdpEvaluate("ws://127.0.0.1/fake", "localStorage.getItem('token')", 1000, FakeWebSocket),
+  ).rejects.toThrow("SecurityError")
 })
 
 test.skipIf(!findBrowser() || process.env.AGNES_BROWSER_TEST !== "1")(

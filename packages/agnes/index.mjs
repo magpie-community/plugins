@@ -100,7 +100,10 @@ async function accountModels(fetchImpl, key) {
   })
 }
 
-function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
+function createPlugin({
+  fetchImpl = globalThis.fetch,
+  openChrome = openChromeSession,
+} = {}) {
   async function platform(path, token, { method = "GET" } = {}) {
     let res
     try {
@@ -109,7 +112,7 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
         headers: {
           authorization: `Bearer ${token}`,
           accept: "application/json",
-          "x-user-language": "zh-CN",
+          "x-user-language": "en-US",
           ...(method === "POST" ? { "content-type": "application/json" } : {}),
         },
         signal: AbortSignal.timeout(15000),
@@ -147,9 +150,18 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
     }
     const profile = keyProfileOf(auth)
     if (profile !== "plan") {
-      return await balanceOnlyUsage(token, profile, platform)
+      return await balanceOnlyUsage(
+        token,
+        profile,
+        platform,
+        auth.type === "oauth",
+      )
     }
 
+    const refused =
+      auth.type === "oauth"
+        ? "Agnes session was refused; sign in again"
+        : "Agnes console token was refused; sign in again and paste a new token"
     const [legacyResult, agentResult] = await Promise.all([
       platform("/user/subscription", token),
       platform("/user/agentplan/subscription", token),
@@ -158,7 +170,7 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
       return {
         plan: "Agnes API",
         windows: [],
-        error: "Agnes console token was refused; sign in again and paste a new token",
+        error: refused,
         signIn: "kept",
       }
     }
@@ -169,7 +181,7 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
       return {
         plan: "Agnes API",
         windows: [],
-        error: "Agnes console token was refused; sign in again and paste a new token",
+        error: refused,
         signIn: "kept",
       }
     }
@@ -199,7 +211,7 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
   }
 
   async function browserAuthorize(profile) {
-    const session = await openChromeSession(LOGIN)
+    const session = await openChrome(LOGIN)
     return {
       url: "",
       instructions:
@@ -215,8 +227,8 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
               error: "Agnes sign-in timed out; start it again",
             }
           }
-          const session = await platform("/user/self", token)
-          if (session.lapsed) {
+          const self = await platform("/user/self", token)
+          if (self.lapsed) {
             try {
               await session.evaluate('localStorage.removeItem("token")')
             } catch {}
@@ -439,13 +451,15 @@ async function revealProfileKey(token, profile, platform) {
   return revealed.data.key
 }
 
-async function balanceOnlyUsage(token, profile, platform) {
+async function balanceOnlyUsage(token, profile, platform, browser) {
   const result = await platform("/user/balance", token)
   if (result.lapsed) {
     return {
       plan: profile === "enterprise" ? "Enterprise API key" : "Personal API key",
       windows: [],
-      error: "Agnes console token was refused; sign in again and paste a new token",
+      error: browser
+        ? "Agnes session was refused; sign in again"
+        : "Agnes console token was refused; sign in again and paste a new token",
       signIn: "kept",
     }
   }
@@ -549,11 +563,16 @@ async function cdpTarget(port, targetPrefix = "https://platform.agnes-ai.com/") 
   }
 }
 
-function cdpEvaluate(webSocketUrl, expression, timeout = 3000) {
+function cdpEvaluate(
+  webSocketUrl,
+  expression,
+  timeout = 3000,
+  WebSocketImpl = globalThis.WebSocket,
+) {
   return new Promise((resolve, reject) => {
     let ws
     try {
-      ws = new WebSocket(webSocketUrl)
+      ws = new WebSocketImpl(webSocketUrl)
     } catch (error) {
       reject(error)
       return
@@ -591,6 +610,16 @@ function cdpEvaluate(webSocketUrl, expression, timeout = 3000) {
       } catch {}
       if (message.error) {
         reject(new Error(message.error.message || "CDP evaluation failed"))
+        return
+      }
+      if (message.result?.exceptionDetails) {
+        const details = message.result.exceptionDetails
+        const text =
+          details.exception?.description ||
+          details.exception?.value ||
+          details.text ||
+          "CDP evaluation failed"
+        reject(Object.assign(new Error(String(text)), { fatal: true }))
         return
       }
       resolve(message.result?.result?.value)
@@ -654,7 +683,9 @@ async function openChromeSession(
         try {
           const value = await evaluate('localStorage.getItem("token")')
           if (typeof value === "string" && value.trim()) return value.trim()
-        } catch {}
+        } catch (error) {
+          if (error?.fatal) throw error
+        }
         await new Promise((resolve) => setTimeout(resolve, 750))
       }
       if (spawnError) throw new Error(`Chrome failed to start: ${spawnError}`)
