@@ -138,7 +138,10 @@ itself.
   - The model's own configuration from Qoder's list goes with it.
 - It picks the reasoning effort from the model's own levels:
   - The nearest level to the one asked, the higher one on a tie.
-  - The model's default when none is asked.
+  - The model's default when none is asked, unless the request's
+    `max_tokens` is 1024 or less: that is asked as "none" (since 0.2.55,
+    plugins#643), since thinking would spend so small a budget on
+    reasoning alone.
   - The lowest level for "none", when the model can't turn thinking off.
 - It picks the context window (`context_length`) from the model's own
   windows (Qoder's Context setting: 200K, 400K, 1M): the default while the

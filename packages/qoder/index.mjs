@@ -898,12 +898,24 @@ function fitEffort(want, levels) {
   return best
 }
 
+// SMALL_BUDGET is the largest max_tokens a request can name and still be
+// one no client meant to think in: Anthropic's API takes thinking only with
+// a budget of at least 1024 tokens and a max_tokens above it, and a client's
+// own short asks (a session title, a classification) name such budgets.
+// Thinking by default spends them on reasoning: on WorkBuddy, a title asked
+// at 64 tokens ended "length" with 64 reasoning tokens and no text
+// (plugins#643, itspig).
+const SMALL_BUDGET = 1024
+
 // effortFor is whether to think and at which of the model's efforts ("" for
 // none): asked for none, a model that always thinks thinks at its lowest;
-// asked for nothing, or a level Qoder doesn't name, at its own default.
-function effortFor(asked, m) {
+// asked for nothing, or a level Qoder doesn't name, at its own default —
+// unless the request's own budget (max_tokens, 0 when it named none) is
+// SMALL_BUDGET or less, which is asked as none.
+function effortFor(asked, m, budget = 0) {
   let want = String(asked ?? "").toLowerCase()
   if (!EFFORT_RANK.includes(want)) want = ""
+  if (want === "" && budget > 0 && budget <= SMALL_BUDGET) want = "none"
   if (!m.thinks || (want === "none" && !m.alwaysThinks)) return [false, ""]
   if (!m.efforts.length) return [true, ""]
   if (want === "") return [true, m.defaultEffort]
@@ -1268,7 +1280,8 @@ function qoderBody(chat, m, named = "", task, site) {
   let sysText = system ? baseSystem + "\n\n" + system : baseSystem
   if (chat.tool_choice === "required" && tools.length) sysText += "\nYou must call an available function in this response."
   const sys = { type: "text", text: sysText }
-  const [thinking, effort] = effortFor(chat.reasoning_effort, m)
+  const budget = chat.max_completion_tokens || chat.max_tokens || 0
+  const [thinking, effort] = effortFor(chat.reasoning_effort, m, typeof budget === "number" ? budget : 0)
   const params = { enable_thinking: thinking, max_tokens: chat.max_completion_tokens || chat.max_tokens || 32000 }
   if (effort) params.reasoning_effort = effort
   const window = windowFor(chat, m, params.max_tokens)
