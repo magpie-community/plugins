@@ -286,7 +286,11 @@ that names no level goes at the model's own default from the config
 (`reasoning.defaultEffort`, "high" for DeepSeek-V4.1-Flash), as WorkBuddy's
 client sends it: WorkBuddy doesn't think when a chat names none, so
 OpenCode's default variant got answers without thinking. An effort the
-client names, `none` too, goes as it came.
+client names, `none` too, goes as it came. A chat whose `max_tokens` is
+1024 or less gets no default (since 0.2.15, #643): a title or a
+classification asked at 64 tokens spent all 64 on reasoning and answered
+nothing. Anthropic's API takes no thinking under a 1024-token budget, so
+no client means to think in one that small.
 
 One value differs from the config, measured with real requests:
 DeepSeek-V4.1-Flash (and its paid `-sg` id) lists `none`, though the

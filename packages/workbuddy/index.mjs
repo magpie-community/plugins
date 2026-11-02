@@ -3259,13 +3259,27 @@ function defaultEffortOf(d, efforts) {
   return typeof own === "string" && efforts.includes(own) ? own : undefined
 }
 
+// SMALL_BUDGET is the largest output budget a chat can name and still be
+// one no client meant to think in: Anthropic's API takes thinking only with
+// a budget of at least 1024 tokens and a max_tokens above it, so a request
+// of 1024 or less can't have asked for thinking there, and a client's own
+// short asks (a session title, a classification) name such budgets. A
+// default effort spends them on reasoning: itspig (#643) saw 230+ title
+// requests at max_tokens 64 on deepseek-v4-pro end out=64, reasoning=64,
+// no text. Measured 2026-11-03 on www.workbuddy.ai, deepseek-v4.1-flash-sg
+// at its default high: max_tokens 64 ended "length" with 64 reasoning
+// tokens and no text; without an effort it answered the title.
+const SMALL_BUDGET = 1024
+
 // withDefaultEffort gives a chat that names no effort the model's default
 // (defaultEffortOf), as WorkBuddy's client sends it; true when it did. An
-// effort the client named, "none" too, goes as it came.
+// effort the client named, "none" too, goes as it came. A chat whose
+// max_tokens is SMALL_BUDGET or less is given none: WorkBuddy doesn't
+// think without one, so its budget goes to the answer.
 function withDefaultEffort(chat, list) {
   if (!chat || typeof chat !== "object" || namesEffort(chat)) return false
   const limit = chat.max_tokens ?? chat.max_completion_tokens
-  if (typeof limit === "number" && limit > 0 && limit <= 256) return false
+  if (typeof limit === "number" && limit > 0 && limit <= SMALL_BUDGET) return false
   const m = list?.find((x) => x.id === chat.model)
   if (!m?.effort) return false
   chat.reasoning_effort = m.effort
@@ -3954,4 +3968,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { planCodes, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_CN, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { planCodes, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_CN, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
