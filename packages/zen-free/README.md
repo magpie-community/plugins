@@ -97,7 +97,9 @@ offered beside `ScheduleWakeup`, as Claude Code desktop offers them
 (#624). Those tools go to Zen under other names of the same words
 (`mcp__ide__console_run`, `findings_report`, `wakeup_schedule`), in the
 agent's past calls and `tool_choice` too, and a call of one reaches the
-agent under its own name.
+agent under its own name. DSH's `subagent_fork`, and its `read_image`
+offered beside `working_directory`, are refused the same way (#632); they
+go as `conversation_delegate` and `workspace_directory`.
 
 Zen's free tier also tells OpenCode's own requests by the environment
 block every OpenCode prompt ends with (`<env>`, a `Working directory:`

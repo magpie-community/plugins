@@ -264,22 +264,41 @@ function normalizeTools(body, protocol) {
 }
 
 // Tool names Zen's free tier refuses to serve under, whatever else the
-// request says, as alonewolfsy-web bisected a real Claude Code desktop
-// request on 2026-11-01 (plugins#624): a name with "terminal" in it, in
-// any case (an MCP server's terminal tools), and ReportFindings and
-// ScheduleWakeup offered together, as Claude Code desktop's own tools are
-// (either alone was served). Each got 429 FreeUsageLimitError at once, and
-// the same request with those tools under other names was served. They go to Zen
-// under a name of the same words (ReportFindings as findings_report,
-// mcp__x__terminal_run as mcp__x__console_run), in the agent's past calls
-// and tool_choice too, and a call of one comes back under the agent's own
-// name (toolPolicy.renamed, read by tool-response.mjs's nameGuard).
-const REFUSED_NAMES = { ReportFindings: "findings_report", ScheduleWakeup: "wakeup_schedule" };
+// request says: it answers 429 FreeUsageLimitError at once, the same reply
+// as a spent allowance, and the same request with those tools under other
+// names is served. Renaming the description or parameters instead doesn't
+// help; the name is what is read. Found so far, each by bisecting a real
+// agent's request against Zen, one name at a time:
+//
+//   - a name with "terminal" in it, in any case (an MCP server's terminal
+//     tools, DSH's terminal_open), and ReportFindings offered beside
+//     ScheduleWakeup, as Claude Code desktop does (either alone was
+//     served): alonewolfsy-web, 2026-11-01, plugins#624;
+//   - DSH's subagent_fork on its own, and its read_image offered beside
+//     working_directory (either alone was served): a real 80-tool DSH
+//     request bisected on 2026-10-30 (Ebony-Vinyl/dsh-our-free-model#709),
+//     served whole with only those two names changed, as jdld-ybd saw DSH
+//     refused while other agents were served from the same address
+//     (plugins#632).
+//
+// Such a tool goes to Zen under another name (the ones those bisections
+// were served under), in the agent's past calls and tool_choice too, and a
+// call of one comes back under the agent's own name (toolPolicy.renamed,
+// read by tool-response.mjs's nameGuard). A rule renames its tools only
+// when every name it lists is offered. A new finding is one more entry.
+const REFUSED_TOGETHER = [
+  {
+    names: ["ReportFindings", "ScheduleWakeup"],
+    as: { ReportFindings: "findings_report", ScheduleWakeup: "wakeup_schedule" },
+  },
+  { names: ["subagent_fork"], as: { subagent_fork: "conversation_delegate" } },
+  { names: ["read_image", "working_directory"], as: { working_directory: "workspace_directory" } },
+];
 const REFUSED_WORD = /terminal/i;
 
 function servedName(name, taken) {
-  if (Object.hasOwn(REFUSED_NAMES, name))
-    return Object.keys(REFUSED_NAMES).every((pair) => taken.has(pair)) ? REFUSED_NAMES[name] : undefined;
+  for (const rule of REFUSED_TOGETHER)
+    if (Object.hasOwn(rule.as, name) && rule.names.every((other) => taken.has(other))) return rule.as[name];
   if (!REFUSED_WORD.test(name)) return undefined;
   return name.replace(new RegExp(REFUSED_WORD.source, "gi"), (word) =>
     word === word.toUpperCase() ? "CONSOLE" : word[0] === "T" ? "Console" : "console",
