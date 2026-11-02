@@ -187,8 +187,8 @@
       "kind": "page",
       "icon": "https://raw.githubusercontent.com/YangHonghang/magpie-window-warmup/main/page/icon.svg",
       "summary": {
-        "en": "Start a subscription's 5-hour or weekly quota window ahead of time: send one fixed short message (\"hi\", max_tokens 16) to a provider, account and model you pick, right after its window resets, daily at set times or every few hours. Each send uses that provider's quota. Runs a local service on 127.0.0.1 that only calls magpie's own gateway; only its own page gets the token.",
-        "zh": "提前开启订阅的 5 小时或每周额度窗口：给指定的供应商、账号和模型发一条固定短消息（\"hi\"，max_tokens 16），可在窗口重置后、每天定时或每隔几小时发送。每次发送都会消耗该供应商的额度。在本机 127.0.0.1 跑一个本地服务，只调用 magpie 自己的网关；令牌只交给自己的页面。"
+        "en": "Window warmup (formerly Scheduled Messages): warm up a subscription's 5-hour or weekly quota / usage window ahead of time with a keep-alive (keep alive) message. It sends one fixed short message (\"hi\", max_tokens 16) to a provider, account and model you pick, on a schedule: right after its rate limit window resets, daily at set times or every few hours. Each send uses that provider's quota. Runs a local service on 127.0.0.1 that only calls magpie's own gateway; only its own page gets the token.",
+        "zh": "窗口预热（原「定时消息」）：提前开启订阅的 5 小时或每周额度窗口，给额度保活。给指定的供应商、账号和模型发一条固定短消息（\"hi\"，max_tokens 16），可在窗口重置后、每天定时或每隔几小时发送。每次发送都会消耗该供应商的额度（配额）。在本机 127.0.0.1 跑一个本地服务，只调用 magpie 自己的网关；令牌只交给自己的页面。"
       }
     },
     { "package": "@magpie-community/opencode-astudio-auth", "name": "AStudio", "providers": ["astudio"], "community": true,
