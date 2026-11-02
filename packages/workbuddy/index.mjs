@@ -2776,20 +2776,49 @@ function pinned(rows, account) {
 // CycleRemainCapacity at all leaves the window out. TotalCredits is not a
 // fallback: an account with no packages at all keeps its unknown allowance,
 // as before, so its free models are not skipped.
-function usageOf(sum, plan) {
+//
+// The plan's own credits and the rest are two windows (akic404 on
+// Discord): summed, the gifted and activity packages' credits used long
+// ago put the card at most of its allowance on the first day of the
+// month, and the plan's pace line said nothing. "Credits" is the packages
+// whose credits come back each cycle — WorkBuddy's client's own
+// onlyRefreshCodes (PLAN_CODES), or the subscription the summary names —
+// and "Extra credits" the ones that only lapse (gift, activity, bought
+// credit packs, any code the client doesn't list). A summary with only
+// one kind keeps the one "Credits" window, as before.
+//
+// Only one of the two stops the account at a time: WorkBuddy serves it
+// while any credits are left, so the one set aside is the one whose
+// running out doesn't stop it — "Extra credits", until the plan's are
+// spent and extra ones are left.
+function usageOf(sum, plan, site) {
   const out = { plan: plan || (sum?.IsPaidUser ? "Pro" : "Free plan"), windows: [] }
-  let total = 0, used = 0, left = 0, bags = 0
+  const ofPlan = planCodes(sum, site)
+  const kinds = { plan: { total: 0, used: 0 }, extra: { total: 0, used: 0 } }
+  let left = 0, bags = 0
   for (const p of sum?.Packages ?? []) {
     const hasTotal = p?.CycleTotalCapacity != null && p.CycleTotalCapacity !== ""
     if (hasTotal) {
-      total += capacity(p.CycleTotalCapacity)
-      used += capacity(p?.CycleUsedCapacity)
+      const k = kinds[ofPlan(p?.PackageCode) ? "plan" : "extra"]
+      k.total += capacity(p.CycleTotalCapacity)
+      k.used += capacity(p?.CycleUsedCapacity)
     } else if (p?.CycleRemainCapacity != null && p.CycleRemainCapacity !== "") {
       left += capacity(p.CycleRemainCapacity)
       bags++
     }
   }
-  if (total > 0) out.windows.push({ name: "Credits", used: (100 * used) / total, display: `${compact(used)} / ${compact(total)}`, amount: used, limit: total, unit: "credits" })
+  const window = (name, { used, total }) => ({ name, used: (100 * used) / total, display: `${compact(used)} / ${compact(total)}`, amount: used, limit: total, unit: "credits" })
+  const { plan: mine, extra } = kinds
+  if (mine.total > 0 && extra.total > 0) {
+    const credits = window("Credits", mine), more = window("Extra credits", extra)
+    if (mine.used >= mine.total && extra.used < extra.total) credits.aside = true
+    else more.aside = true
+    out.windows.push(credits, more)
+  } else {
+    const total = mine.total + extra.total, used = mine.used + extra.used
+    if (total > 0) out.windows.push(window("Credits", { used, total }))
+  }
+  const total = mine.total + extra.total
   if (bags > 0 && (total === 0 || left > 0)) out.windows.push({ name: "Prepaid credits", balance: left, display: `${compact(left)} credits`, unit: "credits" })
   return out
 }
@@ -2845,6 +2874,26 @@ const FREE_CODES = [DAILY_CODE, CODE("008", "cfWoLwvjU4"), CODE("035", "ArVxJcGD
 // lost at the same midnight on every account, so they tell none apart
 const SLICE = "4"
 
+// PLAN_CODES are the packages whose credits come back each cycle, as
+// WorkBuddy's client (5.9.x) lists them (onlyRefreshCodes): Pro monthly,
+// Pro monthly plus, Pro yearly, youth, advanced, flagship, the plan's
+// bonus (bonus28; bonusIntl, "Plan Bonus Quota"), the international free
+// plan (freeMonIntl), the Pro trials, and on the China build alone the
+// free plan's monthly base (freeMon, 套餐基础积分). Every other code only
+// lapses: gift (006, "Bonus Pack" / Pro trial), activity (007, 赠送积分),
+// bonus29/30, and the credit packs (009, 036, 038).
+const PLAN_CODES = [CODE("002", "AkiJS3ZHF5"), CODE("005", "maRGyrHhw1"), CODE("003", "FAnt7lcmRT"), CODE("023", "4xbGhMrE6q"),
+  CODE("026", "BaESVICNoi"), CODE("027", "0FCGVA6vSa"), CODE("028", "NtpWi0jzXs"), CODE("035", "ArVxJcGDsm"),
+  CODE("039", "KRcQj7wUat"), CODE("040", "mi9rCYg46x"), CODE("037", "WxOD3MpI2o")]
+const FREE_MON = CODE("008", "cfWoLwvjU4")
+
+// planCodes says whether a package of the summary is the plan's own: one
+// of PLAN_CODES on that site, or the subscription the summary names.
+function planCodes(sum, site) {
+  const sub = sum?.SubscriptionPackageCode
+  return (code) => !!code && (code === sub || PLAN_CODES.includes(code) || (!site?.ai && code === FREE_MON))
+}
+
 // beijing is WorkBuddy's own time ("2026-10-13 00:39:27" is UTC+8, as its
 // DeductionEndTime for the same package says).
 const beijing = (ms) => new Date(ms + 8 * 3600_000).toISOString().slice(0, 19).replace("T", " ")
@@ -2887,11 +2936,12 @@ function endOf(p) {
 // packages are lost, and how many (cdredfox on X): smart routing spends
 // the account whose credits expire first. Only packages the summary
 // counts, with credits left, and not the daily slice; null when none.
-function runsOutOf(sum, packages, now = Date.now()) {
+// only narrows it to the packages of one window (the split's, usageOf).
+function runsOutOf(sum, packages, now = Date.now(), only = () => true) {
   const counted = new Set((sum?.Packages ?? []).map((p) => p?.PackageCode))
   let at = 0, amount = 0
   for (const p of packages ?? []) {
-    if (!counted.has(p?.PackageCode) || p?.PackageCode === DAILY_CODE || String(p?.CapacityType) === SLICE) continue
+    if (!counted.has(p?.PackageCode) || !only(p?.PackageCode) || p?.PackageCode === DAILY_CODE || String(p?.CapacityType) === SLICE) continue
     const left = capacity(p?.CycleCapacityRemainPrecise ?? p?.CycleCapacityRemain)
     const end = endOf(p)
     if (!(left > 0) || end <= now) continue
@@ -3626,7 +3676,7 @@ function makePlugin(site) {
             }
             said = "renewed"
           }
-          const out = usageOf(sum, auth.plan)
+          const out = usageOf(sum, auth.plan, site)
           // an enterprise account's summary has no packages: its credits
           // are the enterprise meter's (#1904). A personal account's
           // refusal of it (10001 "uid or enterpriseID is empty") leaves
@@ -3641,11 +3691,22 @@ function makePlugin(site) {
           // when the plan's credits start again (cycleOf), and when the credits
           // left run out, for routing to spend them first (runsOutOf);
           // a list that can't be read leaves it unknown, the card stands
+          //
+          // Split (usageOf), the plan's cycle is the plan window's alone;
+          // the soonest credits to lapse, of any package, stay on the window
+          // that stops the account, as routing reads none set aside, and
+          // the window set aside says its own.
           const credits = out.windows.find((w) => w.name === "Credits")
+          const extra = out.windows.find((w) => w.name === "Extra credits")
           if (credits) {
             try {
               const packages = await packagesOf(site, a)
-              Object.assign(credits, cycleOf(sum, packages) ?? {}, runsOutOf(sum, packages) ?? {})
+              Object.assign(credits, cycleOf(sum, packages) ?? {})
+              const ofPlan = planCodes(sum, site)
+              const stops = extra && !extra.aside ? extra : credits
+              Object.assign(stops, runsOutOf(sum, packages) ?? {})
+              const aside = extra ? (stops === credits ? extra : credits) : null
+              if (aside) Object.assign(aside, runsOutOf(sum, packages, Date.now(), (code) => ofPlan(code) === (aside === credits)) ?? {})
             } catch {}
           }
           await spareFree(site, a, out.windows)
@@ -3801,4 +3862,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { planCodes, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }

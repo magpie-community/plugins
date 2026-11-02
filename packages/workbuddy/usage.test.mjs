@@ -428,7 +428,72 @@ test("a detail list that can't be read leaves the card as it was", async () => {
   })
   const u = await usageOf(WorkBuddyAIAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
   expect(u.error).toBeUndefined()
-  expect(u.windows[0]).toEqual({ name: "Credits", used: 100 * 17.6 / 2250, display: "17.6 / 2250", amount: 17.6, limit: 2250, unit: "credits" })
+  // the plan's (Pro, Plan Bonus) and the Bonus Pack apart, as usageOf says them
+  expect(u.windows.slice(0, 2)).toEqual([
+    { name: "Credits", used: 0, display: "0 / 2000", amount: 0, limit: 2000, unit: "credits" },
+    { name: "Extra credits", used: 100 * 17.6 / 250, display: "17.6 / 250", amount: 17.6, limit: 250, unit: "credits", aside: true },
+  ])
+})
+
+// akic404 on Discord: "workbuddy 积分总量可否分离套餐内的总量和赠送的总量？…
+// 算上那些已用过的赠送积分，每月第一天就看起来用了一大半了". The plan's own
+// credits are the packages WorkBuddy's client refreshes each cycle (its
+// onlyRefreshCodes), the rest only lapse; summed, CN_FREE_SUMMARY read
+// 281.99 / 3400 on a month whose plan credits were untouched.
+test("the plan's credits and the gifted ones are two windows, the plan's with its own cycle (akic404 on Discord)", () => {
+  const { SITES } = _internal
+  // the China build: the activity package (007, 赠送积分) apart from the
+  // month's plan base (008, 套餐基础积分)
+  expect(_internal.usageOf(CN_FREE_SUMMARY, "", SITES.workbuddy).windows).toEqual([
+    { name: "Credits", used: 0, display: "0 / 500", amount: 0, limit: 500, unit: "credits" },
+    { name: "Extra credits", used: (100 * 281.9999965) / 2900, display: "282 / 2900", amount: 281.9999965, limit: 2900, unit: "credits", aside: true },
+  ])
+  // WorkBuddy AI: Pro and its Plan Bonus are the plan's, the Bonus Pack (006) is not
+  expect(_internal.usageOf(AI_SUMMARY, "", SITES["workbuddy-ai"]).windows.map((w) => [w.name, w.display, !!w.aside]))
+    .toEqual([["Credits", "0 / 2000", false], ["Extra credits", "17.6 / 250", true]])
+  // a summary of the plan's packages alone keeps the one window, as before
+  expect(_internal.usageOf(LIVE_SUMMARY, "", SITES["workbuddy-ai"]).windows.map((w) => w.name)).toEqual(["Credits"])
+  // and one of packages the client names nothing for (or none at all) too
+  expect(_internal.usageOf(PAID, "", SITES.workbuddy).windows.map((w) => [w.name, w.display])).toEqual([["Credits", "2500 / 10000"]])
+  // the plan's spent with extra ones left: those keep the account going, so
+  // it is the plan's window that is set aside, not the extra one
+  const spent = { ...CN_FREE_SUMMARY, Packages: [CN_FREE_SUMMARY.Packages[0], { ...CN_FREE_SUMMARY.Packages[1], CycleRemainCapacity: "0", CycleUsedCapacity: "500" }] }
+  expect(_internal.usageOf(spent, "", SITES.workbuddy).windows.map((w) => [w.name, !!w.aside])).toEqual([["Credits", true], ["Extra credits", false]])
+  // both spent: the plan's stops it, as the summed window did at 100%
+  const all = { ...spent, Packages: [{ ...spent.Packages[0], CycleUsedCapacity: "2900" }, spent.Packages[1]] }
+  expect(_internal.usageOf(all, "", SITES.workbuddy).windows.map((w) => [w.name, w.used, !!w.aside])).toEqual([["Credits", 100, false], ["Extra credits", 100, true]])
+  // the free plan's monthly base (008) is the plan's on the China build only;
+  // WorkBuddy AI's client lists it among the packages that only lapse
+  expect(_internal.planCodes(CN_FREE_SUMMARY, SITES.workbuddy)("TCACA_code_008_cfWoLwvjU4")).toBe(true)
+  expect(_internal.planCodes(CN_FREE_SUMMARY, SITES["workbuddy-ai"])("TCACA_code_008_cfWoLwvjU4")).toBe(false)
+  // the subscription the summary names is the plan's, whatever its code
+  expect(_internal.planCodes({ SubscriptionPackageCode: "NEW_PLAN" }, SITES.workbuddy)("NEW_PLAN")).toBe(true)
+  expect(_internal.planCodes({ SubscriptionPackageCode: "" }, SITES.workbuddy)("")).toBe(false)
+})
+
+test("split, the plan's window keeps its cycle and each says what lapses", async () => {
+  // CN_FREE's lists a year on, so the cycle is still to come
+  const on = (d) => ({ ...d, Accounts: d.Accounts.map((p) => ({ ...p, DeductionEndTime: p.DeductionEndTime + Date.UTC(2036, 9, 1) - Date.UTC(2026, 9, 1),
+    CycleStartTime: "2036" + p.CycleStartTime.slice(4), CycleEndTime: "2036" + p.CycleEndTime.slice(4) })) })
+  serve({
+    "/billing/meter/get-user-resource-summary": () => ok(CN_FREE_SUMMARY),
+    "/billing/meter/get-user-resource-paid-packages": () => ok({ TotalCount: 0, Accounts: [] }),
+    "/billing/meter/get-user-resource-free-packages": () => ok(on(CN_FREE)),
+  })
+  const u = await usageOf(WorkBuddyAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
+  const [credits, extra] = u.windows
+  expect(credits.name).toBe("Credits")
+  expect(credits.display).toBe("0 / 500")
+  // the plan base's month, so the pace line is the month's
+  expect(credits.resetsAt).toBe("2036-10-31T15:59:59.000Z")
+  expect(credits.span).toBe(31 * 86400 - 1)
+  expect(extra).toMatchObject({ name: "Extra credits", display: "282 / 2900", aside: true, runsOut: 18.4400035 })
+  expect(extra.resetsAt).toBeUndefined()
+  expect(extra.span).toBeUndefined()
+  // the window that stops the account carries the account's soonest lapse,
+  // as routing reads no window set aside (cdredfox on X)
+  expect(credits.runsOut).toBe(18.4400035)
+  expect(credits.runsOutAt).toBe(extra.runsOutAt)
 })
 
 // magpie #1904 (CnsMaple): an enterprise account's resource summary has no

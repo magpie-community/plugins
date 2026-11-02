@@ -344,6 +344,17 @@ client reads. The daily Free Plan slice isn't counted: it ends at the same
 midnight on every account. magpie's smart routing spends the account whose
 credits run out first.
 
+The plan's own credits and the rest are two windows. "Credits" is the
+packages whose credits come back each cycle, as WorkBuddy's client lists
+them (Pro monthly or yearly, youth, advanced, flagship, the plan's bonus,
+the free plan's monthly base, the Pro trials, or the subscription the
+summary names), with the plan's cycle, so its pace line is the month's.
+"Extra credits" is the packages that only lapse: gifted and activity
+credits (赠送积分) and bought credit packs. Only one of the two stops the
+account, since WorkBuddy serves it while any credits are left: the extra
+window is set aside until the plan's credits are spent. A summary with
+only one kind keeps the one "Credits" window (akic404 on Discord).
+
 An enterprise (team) account's resource summary lists no packages. Its
 credits are read from the enterprise meter
 (`/billing/meter/get-enterprise-user-usage`), the one WorkBuddy's own usage
