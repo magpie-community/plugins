@@ -11,6 +11,7 @@ import {
   configModels,
   parseProtocolDocs,
 } from "./models.mjs";
+import { createProxyPool } from "./proxy.mjs";
 import { collapseResponse } from "./stream.mjs";
 import { guardToolResponse } from "./tool-response.mjs";
 
@@ -220,10 +221,10 @@ function requirePublic(auth) {
   }
 }
 
-async function readRemote(url, json, headers, callerSignal) {
+async function readRemote(url, json, headers, callerSignal, fetcher = fetch) {
   const timeout = AbortSignal.timeout(15000);
   const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
-  const response = await fetch(url, { headers, signal });
+  const response = await fetcher(url, { headers, signal });
   if (!response.ok) {
     await response.body?.cancel();
     throw new Error(`Model discovery returned HTTP ${response.status}`);
@@ -469,6 +470,14 @@ export function traceHeaders(session) {
 }
 
 async function server(_input, options = {}) {
+  const proxyPool = createProxyPool({
+    proxies: options.proxies ?? options.proxy,
+    fetchImpl: options.fetch,
+    retryStatuses: options.retryStatuses,
+    maxAttempts: options.maxAttempts,
+    cooldownMs: options.cooldownMs,
+    maxCooldownMs: options.maxCooldownMs,
+  });
   const baseURL = httpURL(options.baseURL ?? DEFAULT_BASE);
   const catalogURL = httpURL(options.catalogURL ?? CATALOG);
   const docsURL = httpURL(options.docsURL ?? DOCS);
@@ -507,9 +516,9 @@ async function server(_input, options = {}) {
       "x-opencode-client": "cli",
     };
     const [listing, catalog, docs] = await Promise.allSettled([
-      readRemote(`${baseURL}/models`, true, headers, signal),
-      readRemote(catalogURL, true, undefined, signal),
-      readRemote(docsURL, false, undefined, signal),
+      readRemote(`${baseURL}/models`, true, headers, signal, proxyPool.fetch),
+      readRemote(catalogURL, true, undefined, signal, proxyPool.fetch),
+      readRemote(docsURL, false, undefined, signal, proxyPool.fetch),
     ]);
     signal?.throwIfAborted();
     let partial = false;
@@ -662,7 +671,7 @@ async function server(_input, options = {}) {
               if (given.get("anthropic-beta")) headers.set("anthropic-beta", given.get("anthropic-beta"));
             }
             const upstream = baseURL === DEFAULT_BASE ? OPENCODE_BASE[protocol] : baseURL;
-            const response = await fetch(`${upstream}${PATHS[protocol]}`, {
+            const response = await proxyPool.fetch(`${upstream}${PATHS[protocol]}`, {
               method: "POST",
               headers,
               body: JSON.stringify(body),
