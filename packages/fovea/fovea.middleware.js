@@ -20,6 +20,13 @@
 //   {"drop_old_images": true}     images older than the window → a note
 //   {"protect": []}               regexes whose matches are left whole
 //                                 (e.g. "^diff --git ", "BEGIN .*PRIVATE KEY")
+//   {"state_marker": ""}          a marker the agent's own structured
+//                                 state block carries. A message with the
+//                                 marker is never touched, in either mode,
+//                                 and its presence means the raw task
+//                                 message no longer needs protecting: the
+//                                 state carries the task, so that message
+//                                 is thinned like any other old content
 //   {"saccade": "off"}            off | auto | always. A saccade is the
 //                                 eye jumping to a new target: when the
 //                                 newest question is a different topic,
@@ -67,6 +74,7 @@ export function onRequest(body, ctx) {
       textTail: num(o.text_tail, 400),
       dropImages: o.drop_old_images !== false,
       protect: patterns(o.protect),
+      stateMarker: typeof o.state_marker === "string" ? o.state_marker : "",
       saccade: o.saccade === "auto" || o.saccade === "always" ? o.saccade : "off",
     }
 
@@ -90,11 +98,18 @@ export function onRequest(body, ctx) {
     if (start <= 0) return
 
     const saccade = cfg.saccade === "always" || (cfg.saccade === "auto" && topicShifted(list))
-    const firstUser = firstUserIndex(list, start)
+    // A structured state block (the agent's own JSON of task, constraints,
+    // decisions and verified facts) replaces the raw task message: it
+    // carries what that message carried, so the message no longer earns
+    // its protection and can be thinned like any other old content. The
+    // block itself is never touched — in either mode.
+    const hasState = cfg.stateMarker ? hasStateBlock(list, cfg.stateMarker) : false
+    const firstUser = hasState ? -1 : firstUserIndex(list, start)
     let changed = false
     for (let i = 0; i < start; i++) {
       if (!saccade && i === firstUser) continue
       const item = list[i]
+      if (cfg.stateMarker && carriesState(item, cfg.stateMarker)) continue
       if (list === body.input) changed = (saccade ? collapseInput : slimInput)(item, cfg) || changed
       else changed = (saccade ? collapseMessage : slimMessage)(item, cfg) || changed
     }
@@ -128,6 +143,25 @@ function firstUserIndex(list, start) {
     if (r === "user") return i
   }
   return -1
+}
+
+// A state block is one message carrying the marker. It is found in the
+// text of the message, wherever the agent put it.
+function hasStateBlock(list, marker) {
+  for (const item of list) {
+    if (carriesState(item, marker)) return true
+  }
+  return false
+}
+
+function carriesState(item, marker) {
+  if (!item || typeof item !== "object" || !marker) return false
+  if (typeof item.content === "string") return item.content.includes(marker)
+  if (!Array.isArray(item.content)) return false
+  for (const b of item.content) {
+    if (b && typeof b === "object" && typeof b.text === "string" && b.text.includes(marker)) return true
+  }
+  return false
 }
 
 // ── peripheral: the default mode, head and tail with a marker ──────────

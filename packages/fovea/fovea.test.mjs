@@ -124,3 +124,43 @@ test("system summaries and the recent window are untouched by saccade", async ()
   expect(r.messages[0].content).toBe(summary)
   expect(r.messages[3].content).toBe("new question")
 })
+
+const STATE = "<!-- fovea:state -->"
+
+test("a state block is never touched and lets the raw task message be thinned", async () => {
+  const state = STATE + "\n" + JSON.stringify({ task: "ship the parser", done: ["read the file"] })
+  const task = "T".repeat(400)
+  const request = { messages: [
+    { role: "user", content: task },
+    { role: "assistant", content: state },
+    { role: "assistant", content: "A".repeat(300) },
+    { role: "user", content: "next" },
+  ] }
+  const r = (await run(mod, { options: { ...options, keep_recent: 1, cut_step: 1, state_marker: STATE }, request })).request
+  expect(r.messages[1].content).toBe(state)
+  expect(r.messages[0].content).toContain("[fovea:")
+  expect(r.messages[0].content).not.toBe(task)
+})
+
+test("without a state block the raw task message stays protected", async () => {
+  const task = "T".repeat(400)
+  const request = { messages: [
+    { role: "user", content: task },
+    { role: "assistant", content: "A".repeat(300) },
+    { role: "user", content: "next" },
+  ] }
+  const r = (await run(mod, { options: { ...options, keep_recent: 1, cut_step: 1, state_marker: STATE }, request })).request
+  expect(r.messages[0].content).toBe(task)
+})
+
+test("a state block survives a saccade that collapses everything else", async () => {
+  const state = STATE + "\n" + JSON.stringify({ task: "ship the parser" })
+  const request = { messages: [
+    { role: "user", content: "T".repeat(400) },
+    { role: "assistant", content: state },
+    { role: "user", content: "完全不同的新话题 番茄炒蛋 蛋炒饭 紫菜汤" },
+  ] }
+  const r = (await run(mod, { options: { ...options, keep_recent: 1, cut_step: 1, saccade: "always", state_marker: STATE }, request })).request
+  expect(r.messages[1].content).toBe(state)
+  expect(r.messages[0].content).toBe("[fovea: prior topic not carried]")
+})

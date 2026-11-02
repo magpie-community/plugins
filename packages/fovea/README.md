@@ -36,6 +36,7 @@ Install it from magpie's **Plugins › Discover**, or with `magpie plugin add @m
 | `protect` | `[]` | Regexes whose matches stay whole in both modes — `["^diff --git ", "BEGIN .*PRIVATE KEY"]` for text that is only useful verbatim. |
 | `cut_step` | `24` | Cut boundary moves only in blocks of this many messages to keep the already-cut prefix identical across nearby requests. Histories below one full block stay uncut; set `1` if you prefer immediate thinning over cache reuse. |
 | `saccade` | `"off"` | `"off"` keeps head and tail. `"auto"` checks lexical overlap between the latest question and the **first** task message; when near zero, sufficiently long old content becomes `[fovea: prior topic not carried]`. `"always"` collapses on every eligible request. Short follow-ups such as “继续” leave the earlier mode intact only for that request. |
+| `state_marker` | `""` | A marker your own structured state block carries. The message with the marker is never touched in either mode, and its presence means the raw task message no longer needs protecting — the state carries the task, so that message is thinned like any other old content. |
 
 A cut carries a marker in place of what was taken:
 
@@ -46,6 +47,22 @@ A cut carries a marker in place of what was taken:
 ```
 
 so both the agent and its human can see what happened, and the middleware can recognise its own work next turn.
+
+## Structured state instead of raw history
+
+The cheapest history is the history you never had to send. If your agent keeps its own state — the task, the constraints, the decisions already taken, the facts already verified — then the raw task message and the long old tool outputs stop being the only record of that work, and this middleware can thin them.
+
+`state_marker` is the contract between the two halves: put the marker in the state block, and
+
+- the state block is never touched, in either mode (`saccade` included)
+- the raw task message no longer earns its protection — the state carries the task, so that message is thinned like any other old content
+
+`state-block.example.json` is a starting shape: a small, fixed set of dimensions (goal, acceptance, constraints, decisions, verified facts with their source, open questions). Two rules keep it cheap:
+
+- **Split it in two.** Rarely-changing fields (goal, constraints, decisions, verified facts) go in the block, early in the request. Fields that change every turn (current step, last command result) go in the last message instead — a block that changes every round invalidates the provider's cached prefix from that point on, and everything after it is re-read.
+- **Give every fact its source.** Replacing the block each round removes stale values, but it can also replace one wrong value with another: fresh is not the same as true. A fact that names where it came from can be re-read cheaply, or trusted less.
+
+Whether this pays off depends on the agent: state that costs more to write than the history it replaces is a loss, and a state block nobody maintains is worse than none. Measure it on your own workload — the plugin's page measures the request side, the usage CSV the billed side.
 
 ## When not to use it
 

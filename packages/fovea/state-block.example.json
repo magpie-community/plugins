@@ -1,0 +1,28 @@
+{
+  "_comment": "Tier A of the structured state: the fields that change rarely. Keep them small, fixed and front-loaded so the provider's cached prefix survives. Volatile fields (current step, last command result) belong in the last message, not here.",
+  "goal": "one sentence: what this session is for",
+  "acceptance": [
+    "what must be true when it is done"
+  ],
+  "constraints": [
+    "stack / version pins, paths that must not change, do-not-touch areas"
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "choice": "the option taken",
+      "why": "the reason, in one line",
+      "at": "2026-11-02"
+    }
+  ],
+  "verified": [
+    {
+      "fact": "a fact that was checked, not guessed",
+      "source": "path:line, or the command whose output showed it",
+      "verified_at": "2026-11-02"
+    }
+  ],
+  "open": [
+    "unresolved question, with who or what can answer it"
+  ]
+}
