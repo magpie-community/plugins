@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 · 2026-11-03
+
+### Fixed
+
+- README says eleven scenes, and lists the five new ones in its 3D feature line.
+
 ## 0.3.0 · 2026-11-02
 
 ### Added
