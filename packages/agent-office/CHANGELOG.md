@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0 · 2026-11-01
+
+企业微信告警 + 课题组名单（基于 0.2.4）。WeCom notifications and the group roster, rebased on 0.2.4.
+
+### Added
+
+- `notifyWebhook`：把「需要你」的会话推成企业微信群机器人的一张 markdown 卡片——等你批准、在问你、完成了一轮、出错了、或卡住没动静。判定取自页面同一份快照、同一套状态（lib/alerts.mjs），卡片与办公室永不相左。
+- **按人路由**：roster 里每人可绑自己的群机器人 webhook，卡片从该成员自己的机器人发出；没绑的走默认机器人，无处的卡片扣下不发。
+- **roster 名单**：`~/.config/magpie/agent-office-roster.json`（热读取）给每个 agent 配人名、研究方向、擅长——办公室名牌、列表、详情面板和卡片都用名字。模板 `roster.example.json`。
+- 推送有礼有节：一次一张、堆积合并、每分钟至多 18 条（微信限 20，`errcode 45009` 退避重试），失败重试后丢弃到控制台。
+- 隐私与既有姿态一致：不配 `notifyWebhook` 什么也不出这台电脑；`notifyIncludeText`（默认关）关着时卡片只带状态与工具名。
+- ZCode 读取器：读 `~/.zcode/cli/rollout/model-io-*.jsonl`，zcode 成为一线成员（历史常驻、精确 phase、`zcode --resume` 续接）。
+- WorkBuddy/CodeBuddy 改读它们自家 CLI 的事件格式（message/reasoning/function_call），此前误读为 Claude Code 格式导致状态停留在旧对话。
+- 两个读取器都走 0.2.4 的增量扫描（PROCESSORS 事件流，一个 tick 只解析新追加的行），长的会话日志不再整文件重读。
+- 页面设置新增「显示人名」开关；新选项 `notifyEvents`、`notifyIncludeText`、`notifyLang`、`notifyCooldownMin`、`notifyErrorMin`、`notifyStuckMin`、`notifyMinWorkSec`、`notifyQuietHours`、`notifyAgents`、`showName`、`rosterFile`。
+- 新测试（zcode 6、workbuddy 6、roster 8、notify 路由 2 等；两个读取器各有「分批 == 一次性」的边界测试）。
+
 ## 0.2.4 · 2026-11-01
 
 ### Fixed

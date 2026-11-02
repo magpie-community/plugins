@@ -24,6 +24,7 @@
       empty: "No agent has been at work in the last two days. Start Claude Code, Codex, DeepSeek Harness, Gemini CLI… and it walks in here.",
       noFile: "Starting… the plugin reads your agents' sessions in magpie's plugin host.",
       demo: "Sample agents", showDone: "Show finished agents", showText: "Show prompts and replies",
+      showName: "Show people's names",
       showSub: "Show subagents", showIdle: "Show idle agents", agents: "Agents", allAgents: "All agents",
       language: "Language", auto: "Auto", scene: "Scene", quality: "Quality",
       hideAfter: "Leave the office after", h1: "1 hour", h6: "6 hours", h24: "24 hours", never: "Never",
@@ -53,6 +54,7 @@
       empty: "最近两天没有 Agent 在干活。打开 Claude Code、Codex、DeepSeek Harness、Gemini CLI……它就会走进这间办公室。",
       noFile: "正在启动……插件在 magpie 的插件宿主里读取各个 Agent 的会话。",
       demo: "示例 Agent", showDone: "显示已完成的 Agent", showText: "显示提问和回复",
+      showName: "显示人名",
       showSub: "显示子 Agent", showIdle: "显示摸鱼 Agent", agents: "Agent", allAgents: "全部 Agent",
       language: "语言", auto: "自动", scene: "场景", quality: "画质",
       hideAfter: "多久后离开办公室", h1: "1 小时", h6: "6 小时", h24: "24 小时", never: "从不",
@@ -82,6 +84,7 @@
       empty: "最近兩天沒有 Agent 在幹活。打開 Claude Code、Codex、DeepSeek Harness、Gemini CLI……它就會走進這間辦公室。",
       noFile: "正在啟動……外掛在 magpie 的外掛宿主裡讀取各個 Agent 的工作階段。",
       demo: "範例 Agent", showDone: "顯示已完成的 Agent", showText: "顯示提問和回覆",
+      showName: "顯示人名",
       showSub: "顯示子 Agent", showIdle: "顯示摸魚 Agent", agents: "Agent", allAgents: "全部 Agent",
       language: "語言", auto: "自動", scene: "場景", quality: "畫質",
       hideAfter: "多久後離開辦公室", h1: "1 小時", h6: "6 小時", h24: "24 小時", never: "從不",
@@ -111,6 +114,7 @@
       empty: "この2日間、エージェントは動いていません。Claude Code、Codex、DeepSeek Harness、Gemini CLI… を起動すると、ここに現れます。",
       noFile: "起動中… プラグインが magpie のプラグインホストで各エージェントのセッションを読んでいます。",
       demo: "サンプルエージェント", showDone: "終了したエージェントを表示", showText: "プロンプトと返信を表示",
+      showName: "メンバー名を表示",
       showSub: "サブエージェントを表示", showIdle: "待機中のエージェントを表示", agents: "エージェント", allAgents: "すべてのエージェント",
       language: "言語", auto: "自動", scene: "シーン", quality: "画質",
       hideAfter: "オフィスを離れるまで", h1: "1 時間", h6: "6 時間", h24: "24 時間", never: "なし",
@@ -140,6 +144,7 @@
       empty: "지난 이틀 동안 에이전트가 작업하지 않았습니다. Claude Code, Codex, DeepSeek Harness, Gemini CLI…를 실행하면 여기로 들어옵니다.",
       noFile: "시작 중… 플러그인이 magpie의 플러그인 호스트에서 에이전트 세션을 읽고 있습니다.",
       demo: "샘플 에이전트", showDone: "완료된 에이전트 표시", showText: "프롬프트와 답변 표시",
+      showName: "멤버 이름 표시",
       showSub: "하위 에이전트 표시", showIdle: "대기 중인 에이전트 표시", agents: "에이전트", allAgents: "모든 에이전트",
       language: "언어", auto: "자동", scene: "장면", quality: "품질",
       hideAfter: "사무실을 떠나기까지", h1: "1시간", h6: "6시간", h24: "24시간", never: "안 함",
@@ -169,6 +174,7 @@
       empty: "Ningún agente ha trabajado en los últimos dos días. Abre Claude Code, Codex, DeepSeek Harness, Gemini CLI… y entrará aquí.",
       noFile: "Iniciando… el plugin lee las sesiones de tus agentes en el host de plugins de magpie.",
       demo: "Agentes de ejemplo", showDone: "Mostrar agentes terminados", showText: "Mostrar preguntas y respuestas",
+      showName: "Mostrar nombres de personas",
       showSub: "Mostrar subagentes", showIdle: "Mostrar agentes inactivos", agents: "Agentes", allAgents: "Todos los agentes",
       language: "Idioma", auto: "Auto", scene: "Escena", quality: "Calidad",
       hideAfter: "Salir de la oficina tras", h1: "1 hora", h6: "6 horas", h24: "24 horas", never: "Nunca",
@@ -198,6 +204,7 @@
       empty: "Aucun agent n'a travaillé ces deux derniers jours. Lancez Claude Code, Codex, DeepSeek Harness, Gemini CLI… et il entrera ici.",
       noFile: "Démarrage… le plugin lit les sessions de vos agents dans l'hôte de plugins de magpie.",
       demo: "Agents d'exemple", showDone: "Afficher les agents terminés", showText: "Afficher les questions et réponses",
+      showName: "Afficher les noms des personnes",
       showSub: "Afficher les sous-agents", showIdle: "Afficher les agents inactifs", agents: "Agents", allAgents: "Tous les agents",
       language: "Langue", auto: "Auto", scene: "Scène", quality: "Qualité",
       hideAfter: "Quitter le bureau après", h1: "1 heure", h6: "6 heures", h24: "24 heures", never: "Jamais",
@@ -227,6 +234,7 @@
       empty: "In den letzten zwei Tagen war kein Agent tätig. Starte Claude Code, Codex, DeepSeek Harness, Gemini CLI… und er kommt herein.",
       noFile: "Startet… das Plugin liest die Sitzungen deiner Agenten im magpie-Plugin-Host.",
       demo: "Beispiel-Agenten", showDone: "Beendete Agenten zeigen", showText: "Fragen und Antworten zeigen",
+      showName: "Personennamen anzeigen",
       showSub: "Subagenten zeigen", showIdle: "Inaktive Agenten zeigen", agents: "Agents", allAgents: "Alle Agents",
       language: "Sprache", auto: "Auto", scene: "Szene", quality: "Qualität",
       hideAfter: "Büro verlassen nach", h1: "1 Stunde", h6: "6 Stunden", h24: "24 Stunden", never: "Nie",
@@ -256,6 +264,7 @@
       empty: "Nenhum agente trabalhou nos últimos dois dias. Abra Claude Code, Codex, DeepSeek Harness, Gemini CLI… e ele entra aqui.",
       noFile: "Iniciando… o plugin lê as sessões dos seus agentes no host de plugins do magpie.",
       demo: "Agentes de exemplo", showDone: "Mostrar agentes finalizados", showText: "Mostrar perguntas e respostas",
+      showName: "Mostrar nomes das pessoas",
       showSub: "Mostrar subagentes", showIdle: "Mostrar agentes ociosos", agents: "Agentes", allAgents: "Todos os agentes",
       language: "Idioma", auto: "Auto", scene: "Cenário", quality: "Qualidade",
       hideAfter: "Sair do escritório após", h1: "1 hora", h6: "6 horas", h24: "24 horas", never: "Nunca",
@@ -472,7 +481,7 @@
   const COLORS = { thinking: "#8b6cf6", executing: "#3b82f6", replying: "#10b981", waiting: "#f59e0b", done: "#22a35a", error: "#ef4444", idle: "#9ca3af" }
   const HIDE = { "1h": 3600e3, "6h": 6 * 3600e3, "24h": 24 * 3600e3, never: Infinity }
   const DEFAULTS = {
-    mode: "office", dim: "3d", scene: "office", quality: "medium", demo: false, showDone: true,
+    mode: "office", dim: "3d", scene: "office", quality: "medium", demo: false, showDone: true, showName: true,
     hideAfter: "6h", approvalAfterSec: 90, agents: [], showSub: true, showIdle: true, side: false,
     lang: "auto", progress: true, text: true, cleared: {},
   }
@@ -647,6 +656,7 @@
       case "grok": return `${cd}grok --resume ${id}`
       case "omp": return `${cd}omp --resume ${id}`
       case "dsh": return `${cd}dsh --resume ${shellQuote(id0.replace(/^session-/, ""))}`
+      case "zcode": return `${cd}zcode --resume ${id}`
       default: return ""
     }
   }
@@ -699,12 +709,16 @@
       const idle = st === "done" && quiet > IDLE_MS
       if (idle && o.showIdle === false) continue
       const b = brand(s.agent)
+      // the roster's people, keyed by agent (office.hooks.mjs puts them in
+      // the snapshot; user-written display metadata, not behind the text gate)
+      const person = snap?.people?.[s.agent] || null
       // how long the current step has gone on
       const since = s.pendingSince ? now - s.pendingSince : quiet
       out.push({
         key: s.key, agent: s.agent, brand: b, session: s.session || "", status: st, sub, source: s.source || "gateway",
         idle,
         subagent,
+        person,
         parent: s.parent || "",
         profile: s.profile || "",
         title: s.title || s.project || b.name, project: s.project || "", cwd: s.cwd || "",
@@ -850,6 +864,11 @@
   // sample agents, for a first look (Settings › Sample agents)
   function demo(now) {
     const m = 60e3
+    const people = {
+      codex: { name: "科迪", direction: "编码与实验", skills: "写代码、跑实验" },
+      workbuddy: { name: "沃迪", direction: "文档与材料", skills: "docx/ppt" },
+      zcode: { name: "泽凯", direction: "全能支援", skills: "配环境、跑腿" },
+    }
     const msg = (role, text, name, at) => ({ role, text, name, at })
     const S = (agent, session, cwd, title, query, model, phase, extra) => ({
       key: `demo|${agent}|${session}`, source: "files", agent, session, cwd, project: cwd.split("/").pop(), title, query, model,
@@ -861,7 +880,7 @@
       ],
       ...extra,
     })
-    return { v: 2, written: now, text: true, demo: true, sessions: [
+    return { v: 2, written: now, text: true, demo: true, people, sessions: [
       S("codex", "demo-1", "/Users/me/blog", "封面图", "用 punk skill 生成文章封面", "gpt-6-astra", "done",
         { touched: now - 28 * m, updated: now - 28 * m, step: "image_gen · cover.png", reply: "已用内置生图完成「方块世界」封面，PNG · 1600×900，放进 assets/cover.png。",
           turnsToday: 3, tokensToday: 18200, context: 96000,

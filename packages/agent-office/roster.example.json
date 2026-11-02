@@ -1,0 +1,36 @@
+{
+  "group": {
+    "name": "我的课题组",
+    "directions": ["研究方向A（占位，改成你的）", "研究方向B"],
+    "projects": ["横向项目1", "横向项目2"]
+  },
+  "people": [
+    {
+      "agent": "codex",
+      "name": "小明",
+      "direction": "研究方向A",
+      "skills": "代码编写、跑实验",
+      "webhook": "",
+      "bots": { "wecomSmart": { "botId": "", "secret": "" }, "telegram": { "token": "", "chatId": "" } },
+      "note": "webhook：该成员自己的群机器人（卡片从这里出）；bots.wecomSmart：该成员自己的智能机器人（群里 @它 下指令）；bots.telegram：Telegram bot（BotFather 建）"
+    },
+    {
+      "agent": "zcode",
+      "name": "阿智",
+      "direction": "",
+      "skills": "全能打杂",
+      "webhook": "",
+      "bots": { "wecomSmart": { "botId": "", "secret": "" }, "telegram": { "token": "", "chatId": "" } },
+      "note": ""
+    },
+    {
+      "agent": "workbuddy",
+      "name": "小红",
+      "direction": "研究方向B",
+      "skills": "docx/ppt 文档",
+      "webhook": "",
+      "bots": { "telegram": { "token": "", "chatId": "" } },
+      "note": "暂不支持群里续接（无 CLI），但卡片、播报、Telegram 都可用"
+    }
+  ]
+}

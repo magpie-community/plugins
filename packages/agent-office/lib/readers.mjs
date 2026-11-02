@@ -725,10 +725,92 @@ function grokEvents(s, opts) {
   }
 }
 
+// ---- WorkBuddy / CodeBuddy -------------------------------------------------
+// Their own CLI's format (WorkBuddy bundles CodeBuddy): events, not Claude
+// Code's lines — user/assistant `message` lines with top-level role and
+// content parts (input_text / output_text), `function_call` /
+// `function_call_result` pairs for tools, `reasoning` between rounds,
+// `ai-title` and `session-meta` carrying title and cwd. An assistant
+// message with status "completed" ends the turn. The user's content may
+// carry <system-reminder> harness blocks; those aren't the user's words.
+function codebuddyEvents(s) {
+  return (d) => {
+    const t = ms(d.timestamp)
+    switch (d.type) {
+      case "session-meta":
+        s.id = d.sessionId || s.id
+        if (d.cwd) { s.cwd = d.cwd; s.project = base(d.cwd) }
+        touch(s, t)
+        break
+      case "ai-title":
+        if (d.aiTitle) { s.title = clip(d.aiTitle, TITLE_MAX); s.named = true }
+        if (d.cwd) { s.cwd = d.cwd; s.project = base(d.cwd) }
+        break
+      case "message": {
+        if (d.cwd) { s.cwd = d.cwd; s.project = base(d.cwd) }
+        const txt = (Array.isArray(d.content) ? d.content : [])
+          .filter((b) => (b?.type === "text" || b?.type === "input_text" || b?.type === "output_text") && b.text)
+          .map((b) => b.text)
+          .filter((x) => !x.startsWith("<system-reminder"))
+          .join("\n")
+        if (d.role === "user") prompted(s, txt, t)
+        else if (d.role === "assistant") {
+          if (txt) s.reply = clip(txt, TEXT_MAX)
+          s.phase = "done"
+          s.pending = []
+          touch(s, t)
+        }
+        break
+      }
+      case "reasoning":
+        if (s.phase !== "tool" && s.phase !== "done") s.phase = "thinking"
+        touch(s, t)
+        break
+      case "function_call":
+        called(s, d.callId || d.id, d.name, d.arguments, t)
+        if (d.cwd) { s.cwd = d.cwd; s.project = base(d.cwd) }
+        break
+      case "function_call_result":
+        answered(s, d.callId, t)
+        break
+    }
+  }
+}
+
+// ---- ZCode -----------------------------------------------------------------
+// Its CLI's own log: one JSON line per completed model round (type
+// "model_io"), the response carrying the text, the outstanding toolCalls
+// and the finishReason — tool-cals means the round ended asking for tools,
+// stop means a reply. The next round's line implies the previous one's
+// tools have run.
+function zcodeEvents(s) {
+  return (d) => {
+    if (d.type !== "model_io" || !d.response) return
+    const t = ms(d.completedAt || d.startedAt)
+    if (d.sessionId && !s.id) s.id = d.sessionId
+    if (d.model?.modelId) s.model = d.model.modelId
+    touch(s, t)
+    // a new round means the previous round's tools have run
+    s.pending = []
+    const calls = Array.isArray(d.response.toolCalls) ? d.response.toolCalls : []
+    const txt = String(d.response.text || "").trim()
+    if (calls.length) {
+      for (const c of calls) called(s, c.id || c.name || "tool", c.name || "tool", c.input ?? c.arguments, t)
+    } else if (String(d.response.finishReason || "") === "error") {
+      s.phase = "error"
+      s.error = clip(String(d.response.error || d.response.errorMessage || "模型返回错误"), 160)
+    } else {
+      if (txt) { s.reply = clip(txt, TEXT_MAX); s.turns++ }
+      s.phase = "done"
+    }
+  }
+}
+
 // A reader owns only its live parsing state, bounded text, and usage/dedupe
 // indexes. update receives newly appended complete lines, never a replay.
 const PROCESSORS = { claude: claudeEvents, codex: codexEvents, dsh: dshEvents,
-  gemini: geminiEvents, pi: piEvents, copilot: copilotEvents, kimi: kimiEvents, grok: grokEvents }
+  gemini: geminiEvents, pi: piEvents, copilot: copilotEvents, kimi: kimiEvents, grok: grokEvents,
+  codebuddy: codebuddyEvents, zcode: zcodeEvents }
 
 function refreshMetadata(s, kind, meta) {
   if (!meta || typeof meta !== "object") return
@@ -849,6 +931,13 @@ export function readKimi(text, id = "", meta = {}, opts = {}) {
 export function readGrok(text, id = "", meta = {}, opts = {}) {
   return createSessionReader("grok", "grok", id, { ...opts, meta }).update(text)
 }
+export function readCodebuddy(text, agent = "codebuddy", id = "", opts = {}) {
+  return createSessionReader("codebuddy", agent, id, opts).update(text)
+}
+
+export function readZcode(text, id = "", opts = {}) {
+  return createSessionReader("zcode", "zcode", id, opts).update(text)
+}
 
 export const READERS = { claude: readClaude, codex: readCodex, dsh: readDsh, gemini: readGemini, pi: readPi,
-  copilot: readCopilot, kimi: readKimi, grok: readGrok }
+  copilot: readCopilot, kimi: readKimi, grok: readGrok, zcode: readZcode, codebuddy: readCodebuddy }
