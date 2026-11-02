@@ -1,0 +1,34 @@
+{
+  "name": "@magpie-community/opencode-trae-private-auth",
+  "version": "0.2.3",
+  "description": "Magpie provider plugin for the TraeCode CN Enterprise protocol: browser SSO, rotating token refresh, JWT usage and live models. No traecli process; optional sidecar session for detailed usage.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "index.test.mjs",
+    "test/",
+    "README.md",
+    "MACHINE-SETUP.md",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
+    "docs/real-deployment.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "trae",
+    "private-deployment"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/trae-private"
+  },
+  "scripts": {
+    "test": "node index.test.mjs"
+  }
+}
