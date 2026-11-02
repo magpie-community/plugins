@@ -356,7 +356,8 @@ describe("auth.usage", () => {
       const plugin = createPlugin({ fetchImpl: fakeFetch(calls) })
       const profileAuth = {
         type: "oauth",
-        access: keyProfile === "enterprise" ? "apk-key" : "sk-personal",
+        access:
+          keyProfile === "enterprise" ? "profile-enterprise" : "profile-personal",
         consoleToken,
         keyProfile,
       }
