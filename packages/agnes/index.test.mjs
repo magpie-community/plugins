@@ -16,6 +16,7 @@ const {
   findBrowser,
   openChromeSession,
   cdpEvaluate,
+  waitForBrowserToken,
 } = _internal
 
 const apiKey = "test-api-key"
@@ -689,6 +690,57 @@ test("CDP evaluation surfaces page exceptions", async () => {
   await expect(
     cdpEvaluate("ws://127.0.0.1/fake", "localStorage.getItem('token')", 1000, FakeWebSocket),
   ).rejects.toThrow("SecurityError")
+})
+
+test("browser token polling retries page exceptions while the page loads", async () => {
+  let calls = 0
+  const token = await waitForBrowserToken(
+    async () => {
+      calls++
+      if (calls <= 2) {
+        throw Object.assign(new Error("SecurityError: localStorage access is denied"), {
+          fatal: true,
+        })
+      }
+      return "browser-token"
+    },
+    1000,
+    { pollMs: 1, fatalGraceMs: 1000 },
+  )
+
+  expect(token).toBe("browser-token")
+  expect(calls).toBe(3)
+})
+
+test("browser token polling reports the last page exception on timeout", async () => {
+  await expect(
+    waitForBrowserToken(
+      async () => {
+        throw Object.assign(new Error("SecurityError: localStorage access is denied"), {
+          fatal: true,
+        })
+      },
+      20,
+      { pollMs: 1, fatalGraceMs: 1000 },
+    ),
+  ).rejects.toThrow("SecurityError: localStorage access is denied")
+})
+
+test("browser token polling gives up on a persistent page exception", async () => {
+  let calls = 0
+  await expect(
+    waitForBrowserToken(
+      async () => {
+        calls++
+        throw Object.assign(new Error("SecurityError: localStorage access is denied"), {
+          fatal: true,
+        })
+      },
+      1000,
+      { pollMs: 1, fatalGraceMs: 5 },
+    ),
+  ).rejects.toThrow("SecurityError: localStorage access is denied")
+  expect(calls).toBeGreaterThan(1)
 })
 
 test.skipIf(!findBrowser() || process.env.AGNES_BROWSER_TEST !== "1")(

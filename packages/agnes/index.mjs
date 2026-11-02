@@ -389,6 +389,7 @@ export const _internal = {
   cdpEvaluate,
   cdpTarget,
   openChromeSession,
+  waitForBrowserToken,
   vendorTime,
 }
 
@@ -638,6 +639,39 @@ function waitForExit(child, timeoutMs) {
   })
 }
 
+// Chrome can report a transient SecurityError while the login page is loading.
+async function waitForBrowserToken(
+  evaluate,
+  timeoutMs,
+  { isActive = () => true, pollMs = 750, fatalGraceMs = 4000 } = {},
+) {
+  const deadline = Date.now() + timeoutMs
+  let lastFatalText = ""
+  let fatalSince = 0
+  while (Date.now() < deadline && isActive()) {
+    try {
+      const value = await evaluate('localStorage.getItem("token")')
+      if (typeof value === "string" && value.trim()) return value.trim()
+      lastFatalText = ""
+      fatalSince = 0
+    } catch (error) {
+      if (error?.fatal) {
+        const text = String(error.message ?? error)
+        const now = Date.now()
+        if (text !== lastFatalText) {
+          lastFatalText = text
+          fatalSince = now
+        } else if (now - fatalSince >= fatalGraceMs) {
+          throw error
+        }
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
+  }
+  if (lastFatalText) throw new Error(lastFatalText)
+  return ""
+}
+
 async function openChromeSession(
   url,
   {
@@ -678,18 +712,11 @@ async function openChromeSession(
     close,
     evaluate,
     async token(timeoutMs) {
-      const deadline = Date.now() + timeoutMs
-      while (Date.now() < deadline && !closed && !exited) {
-        try {
-          const value = await evaluate('localStorage.getItem("token")')
-          if (typeof value === "string" && value.trim()) return value.trim()
-        } catch (error) {
-          if (error?.fatal) throw error
-        }
-        await new Promise((resolve) => setTimeout(resolve, 750))
-      }
+      const token = await waitForBrowserToken(evaluate, timeoutMs, {
+        isActive: () => !closed && !exited,
+      })
       if (spawnError) throw new Error(`Chrome failed to start: ${spawnError}`)
-      return ""
+      return token
     },
   }
   async function evaluate(expression) {
