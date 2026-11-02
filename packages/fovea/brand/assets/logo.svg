@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Fovea logo">
+  <title>Fovea — sharp centre, fading periphery</title>
+  <!-- the fovea: the one point of sharp sight, rings of peripheral vision
+       fading outward; the centre is the kept recent window, the faint
+       rings are the history that stays present as outline only -->
+  <circle cx="64" cy="64" r="58" fill="none" stroke="#161616" stroke-opacity="0.18" stroke-width="6"/>
+  <circle cx="64" cy="64" r="42" fill="none" stroke="#161616" stroke-opacity="0.45" stroke-width="7"/>
+  <circle cx="64" cy="64" r="25" fill="none" stroke="#161616" stroke-opacity="0.85" stroke-width="8"/>
+  <circle cx="64" cy="64" r="10" fill="#2f63a2"/>
+</svg>

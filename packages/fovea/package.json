@@ -34,7 +34,9 @@
     "middleware": "./fovea.middleware.js",
     "page": {
       "title": "Fovea evidence",
-      "titles": { "zh": "Fovea 对照证据" },
+      "titles": {
+        "zh": "Fovea 对照证据"
+      },
       "file": "page/index.html",
       "icon": "page/icon.svg"
     },
@@ -50,6 +52,7 @@
       "drop_old_images": true,
       "protect": [],
       "saccade": "off"
-    }
+    },
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4IiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IkZvdmVhIGxvZ28gZm9yIGRhcmsgYmFja2dyb3VuZHMiPgogIDx0aXRsZT5Gb3ZlYSDigJQgc2hhcnAgY2VudHJlLCBmYWRpbmcgcGVyaXBoZXJ5IChkYXJrKTwvdGl0bGU+CiAgPGNpcmNsZSBjeD0iNjQiIGN5PSI2NCIgcj0iNTgiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2U4ZWVmNSIgc3Ryb2tlLW9wYWNpdHk9IjAuMjIiIHN0cm9rZS13aWR0aD0iNiIvPgogIDxjaXJjbGUgY3g9IjY0IiBjeT0iNjQiIHI9IjQyIiBmaWxsPSJub25lIiBzdHJva2U9IiNlOGVlZjUiIHN0cm9rZS1vcGFjaXR5PSIwLjUiIHN0cm9rZS13aWR0aD0iNyIvPgogIDxjaXJjbGUgY3g9IjY0IiBjeT0iNjQiIHI9IjI1IiBmaWxsPSJub25lIiBzdHJva2U9IiNlOGVlZjUiIHN0cm9rZS1vcGFjaXR5PSIwLjkiIHN0cm9rZS13aWR0aD0iOCIvPgogIDxjaXJjbGUgY3g9IjY0IiBjeT0iNjQiIHI9IjEwIiBmaWxsPSIjOGRiYmY1Ii8+Cjwvc3ZnPgo="
   }
 }
