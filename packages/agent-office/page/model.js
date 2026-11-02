@@ -460,6 +460,13 @@
   }
   const EXTRA_KEYS = ["sceneOffice", "sceneStation", "sceneCafe", "sceneCastle", "scenePirate", "sceneGraveyard", "qLow", "qMedium", "qHigh", "webglFallback", "you", "venueReading", "venueArcade", "venueMeeting", "venuePingpong", "venueCoffee", "stationSign"]
   for (const [code, values] of Object.entries(EXTRA_TEXT)) EXTRA_KEYS.forEach((key, i) => { TEXT[code][key] = values[i] })
+  for (const [code, text] of Object.entries(TEXT)) Object.assign(text, {
+    sceneLibrary: code === "zh-CN" ? "图书馆" : code === "zh-TW" ? "圖書館" : "Library",
+    sceneCyberlab: code === "zh-CN" ? "赛博实验室" : code === "zh-TW" ? "賽博實驗室" : "Cyberlab",
+    sceneGreenhouse: code === "zh-CN" ? "温室" : code === "zh-TW" ? "溫室" : "Greenhouse",
+    sceneArctic: code === "zh-CN" ? "极地" : code === "zh-TW" ? "極地" : "Arctic",
+    sceneRainynight: code === "zh-CN" ? "雨夜" : code === "zh-TW" ? "雨夜" : "Rainy Night",
+  })
   for (const [code, map] of Object.entries(JUMP_TEXT)) Object.assign(TEXT[code], map)
   const LANGS = ["en", "zh-CN", "zh-TW", "ja", "ko", "es", "fr", "de", "pt"]
   const LANG_NAMES = {
