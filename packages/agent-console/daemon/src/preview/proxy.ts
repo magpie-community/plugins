@@ -16,8 +16,11 @@
 // authenticated WS connection hands out the name. Each open also returns a per-open nonce (separate from the key): the
 // panel's ping must echo it exactly, or the listener is released at once — a plain 200 "ok" from a hostile DNS answer
 // is not enough. Before the keyed name is ever looked up, the panel probes a keyless canary host on the same port
-// (acprobe<random>.localhost) the same way; Apple WebKit before macOS 26 (Magpie's Mac app on 12–15) is refused up front
-// so the key never hits network DNS. Chromium/WebView2, WebKitGTK and WebKit on macOS 26+ resolve *.localhost themselves.
+// (acprobe<random>.localhost) the same way. preview.open also reports the daemon's OS (preview/host.ts: os.platform() and
+// the Darwin major of os.release(); the WebKit UA is frozen at 10_15_7 and can't say), and the panel refuses Apple WebKit
+// on a Darwin < 25 host (macOS 12–15) or with no host info before any *.localhost name is looked up, releasing the
+// listener, so the key never hits network DNS. Chromium/WebView2, WebKitGTK and WebKit on macOS 26+ resolve *.localhost
+// themselves.
 // Responses carry Referrer-Policy: no-referrer so the key isn't sent to other sites a previewed page loads from.
 //
 // Limits (see README "Preview proxy"):

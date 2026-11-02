@@ -28,6 +28,7 @@ import { MAX_MENTIONS } from "../util/mentions.js";
 import { openExternal } from "../util/openExternal.js";
 import { PreviewError, type PreviewProxy } from "../preview/proxy.js";
 import { checkPreviewUrl, MAX_PREVIEW_URL } from "../preview/url.js";
+import { previewHost } from "../preview/host.js";
 
 const threadModeSchema = z.enum(["plan", "default", "acceptEdits", "bypassPermissions", "ask"]);
 
@@ -123,7 +124,9 @@ export function registerMethods(gw: Gateway, svc: Services): void {
           gw.publish("sidebar", { type: "thread.upsert", thread: next });
         }
       }
-      return r;
+      // The daemon's real OS (the UA can't carry it, #582): the page refuses Apple WebKit on Darwin < 25 before any
+      // *.localhost name is looked up, and releases this listener
+      return { ...r, host: previewHost() };
     },
   ));
 

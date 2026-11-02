@@ -13,7 +13,7 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { platform as osPlatform, release as osRelease, tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -106,6 +106,12 @@ const opened = await call("preview.open", { url: `http://localhost:${devPort}/` 
 if (!opened.ok) throw new Error("preview.open failed: " + JSON.stringify(opened.e));
 const { proxyOrigin, proxyHref, nonce, canaryOrigin, canaryNonce } = opened.r;
 if (!nonce || !canaryOrigin || !canaryNonce) throw new Error("preview.open missing nonce/canary: " + JSON.stringify(opened.r));
+// The daemon reports its own OS (the WebKit UA is frozen at 10_15_7): the panel refuses Apple WebKit on Darwin < 25
+const host = opened.r.host;
+const wantMajor = osPlatform() === "darwin" ? Number(osRelease().split(".")[0]) : null;
+if (!host || host.platform !== osPlatform() || host.darwinMajor !== wantMajor) {
+  throw new Error("preview.open host info wrong: " + JSON.stringify(host) + " want " + JSON.stringify({ platform: osPlatform(), darwinMajor: wantMajor }));
+}
 const proxyPort = Number(new URL(proxyOrigin).port);
 
 // ---- attacker: another origin, sandboxed frame, knows the proxy port (worst case) but not the key ----

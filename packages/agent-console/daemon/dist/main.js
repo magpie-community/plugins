@@ -6132,6 +6132,19 @@ connection: close\r
   }
 });
 
+// daemon/src/preview/host.ts
+import os from "node:os";
+function previewHost(platform = os.platform(), release2 = os.release()) {
+  if (platform !== "darwin") return { platform, darwinMajor: null };
+  const m = /^(\d+)\./.exec(String(release2 ?? "").trim()) ?? /^(\d+)$/.exec(String(release2 ?? "").trim());
+  const major = m ? Number(m[1]) : NaN;
+  return { platform, darwinMajor: Number.isInteger(major) && major > 0 ? major : null };
+}
+var init_host = __esm({
+  "daemon/src/preview/host.ts"() {
+  }
+});
+
 // daemon/src/ws/methods.ts
 import { z } from "zod";
 import { existsSync as existsSync9, statSync as statSync4 } from "node:fs";
@@ -6185,7 +6198,7 @@ function registerMethods(gw, svc) {
           gw.publish("sidebar", { type: "thread.upsert", thread: next });
         }
       }
-      return r;
+      return { ...r, host: previewHost() };
     }
   ));
   gw.method("preview.release", wrap(z.object({ url: z.string().min(1).max(MAX_PREVIEW_URL) }), (p) => ({
@@ -6688,6 +6701,7 @@ var init_methods = __esm({
     init_openExternal();
     init_proxy();
     init_url();
+    init_host();
     threadModeSchema = z.enum(["plan", "default", "acceptEdits", "bypassPermissions", "ask"]);
     ApiError = class extends Error {
       code;

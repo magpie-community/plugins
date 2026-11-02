@@ -44,29 +44,49 @@ export const threadKey = (threadId: string | null | undefined) => threadId ?? "_
 const inflight = new Map<string, Promise<boolean>>();
 
 // The proxy answers only at http://ac<key>.localhost:<port> (#582, daemon/src/preview/proxy.ts). Before showing the frame,
-// check that this web view resolves that name (Chromium/WebView2 and WebKitGTK do, WebKit on macOS before 26 doesn't):
-// otherwise say why instead of a blank "can't find server" frame. Checked with a per-open nonce so a hostile DNS answer
-// that returns a plain 200 "ok" can't pass.
+// check that this web view resolves that name (Chromium/WebView2, WebKitGTK and WebKit on macOS 26+ do, WebKit on macOS
+// before 26 doesn't): otherwise say why instead of a blank "can't find server" frame. Checked with a per-open nonce so a
+// hostile DNS answer that returns a plain 200 "ok" can't pass.
 export const PREVIEW_PING_PATH = "/__agent_console__/ping";
 
+/** The daemon's OS as preview.open reports it (daemon/src/preview/host.ts) */
+export type PreviewHost = { platform: string; darwinMajor: number | null };
+
+/** Darwin 25 = macOS 26 (same constant as daemon/src/preview/host.ts) */
+export const DARWIN_LOCALHOST_LOOPBACK = 25;
+
 /**
- * Apple WebKit before macOS 26 asks the system DNS for *.localhost (Magpie's Mac app on 12–15, Safari with magpie web).
- * Chromium / WebView2 / WebKitGTK resolve it to loopback themselves. Fail closed before preview.open so the key never
- * hits network DNS. Linux WebKitGTK / WPE UAs have AppleWebKit but no "Mac OS X" → treated as safe.
+ * Apple WebKit (Magpie's Mac app = WKWebView, Safari with magpie web): no Chrome / Chromium / Edge / Opera / iOS
+ * Chrome or Firefox token, and a Mac or iOS device. Linux WebKitGTK / WPE carry AppleWebKit but no Macintosh → not it.
  */
-export function isUnsafeLocalhostResolver(ua = typeof navigator !== "undefined" ? navigator.userAgent : ""): boolean {
-  const appleWebKit = /AppleWebKit\//i.test(ua)
+export function isAppleWebKit(ua = typeof navigator !== "undefined" ? navigator.userAgent : ""): boolean {
+  return /AppleWebKit\//i.test(ua)
+    && /Macintosh|iPhone|iPad|iPod/i.test(ua)
     && !/Chrome\//i.test(ua)
     && !/Chromium\//i.test(ua)
     && !/Edg(?:e|A|iOS)?\//i.test(ua)
     && !/OPR\//i.test(ua)
     && !/CriOS\//i.test(ua)
     && !/FxiOS\//i.test(ua);
-  if (!appleWebKit) return false;
-  const mac = ua.match(/Mac OS X (\d+)[._](\d+)/i);
-  if (mac) return Number(mac[1]) < 26;
-  if (/iPhone|iPad|iPod/i.test(ua)) return true;
-  return false;
+}
+
+/**
+ * Apple WebKit before macOS 26 asks the system DNS for *.localhost (Magpie's Mac app on 12–15, Safari with magpie web).
+ * The UA can't tell: Apple froze it at "Mac OS X 10_15_7" on every macOS, 26+ included. So the version comes from the
+ * daemon (os.platform() + os.release() on the same Mac, it listens on 127.0.0.1 only). Refused: Apple WebKit on a
+ * Darwin < 25 host, or when the daemon's answer is missing / unparseable (fail closed). Non-darwin hosts and every
+ * other engine are left to the canary + nonce probe.
+ */
+export function isUnsafeLocalhostResolver(
+  host: PreviewHost | null | undefined,
+  ua = typeof navigator !== "undefined" ? navigator.userAgent : "",
+): boolean {
+  if (!isAppleWebKit(ua)) return false;
+  if (!host || typeof host.platform !== "string" || !host.platform) return true;
+  if (host.platform !== "darwin") return false;
+  const major = host.darwinMajor;
+  if (typeof major !== "number" || !Number.isInteger(major)) return true;
+  return major < DARWIN_LOCALHOST_LOOPBACK;
 }
 
 /** GET origin+/__agent_console__/ping must return exactly expectedNonce (from preview.open over the authenticated WS). */
@@ -98,6 +118,7 @@ type PreviewOpenResult = {
   nonce: string;
   canaryOrigin: string;
   canaryNonce: string;
+  host?: PreviewHost;
 };
 
 /**
@@ -149,9 +170,13 @@ export const usePreview = create<PreviewStore>((set, get) => ({
     if (!p) {
       p = (async () => {
         try {
-          // Fail closed before preview.open on engines that send *.localhost to network DNS (#582)
-          if (isUnsafeLocalhostResolver()) throw new Error(t_noLocalhost());
           const r = (await call("preview.open", { url: t.href, ...(threadId ? { threadId } : {}) })) as PreviewOpenResult;
+          // Fail closed before any *.localhost name is looked up on an engine that sends it to network DNS (#582): the
+          // key only travelled over the authenticated WS, and the listener is released right away
+          if (isUnsafeLocalhostResolver(r?.host)) {
+            void call("preview.release", { url: t.origin }).catch(() => {});
+            throw new Error(t_noLocalhost());
+          }
           if (!(await confirmPreviewReachable(r))) {
             void call("preview.release", { url: t.origin }).catch(() => {});
             throw new Error(t_noLocalhost());

@@ -1,11 +1,12 @@
 // #582 review fixes: the preview proxy's key (Host ac<key>.localhost), Magpie's gateway found by its settings.json port
 // and by how it answers, the per-open nonce the ping must echo (and the keyless canary before the keyed host is looked
-// up), and WebKit-before-macOS-26 fail-closed. The real-browser attack check is scripts/preview-attack.mjs (Chromium / WebKit).
+// up), and Apple WebKit refused only when the daemon host is before macOS 26 (Darwin < 25 from os.release(); the UA is
+// frozen at 10_15_7). The real-browser attack check is scripts/preview-attack.mjs (Chromium / WebKit).
 import { describe, expect, it, afterEach, vi } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { platform as osPlatform, release as osRelease, tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "./helpers-net.js";
 import { PreviewProxy, PREVIEW_PING_PATH, identify, looksLikeMagpie, magpieIndex } from "../../daemon/src/preview/proxy.js";
@@ -15,9 +16,12 @@ import {
   PREVIEW_PING_PATH as WEB_PING,
   canReachProxy,
   confirmPreviewReachable,
+  DARWIN_LOCALHOST_LOOPBACK as WEB_DARWIN_LOCALHOST_LOOPBACK,
+  isAppleWebKit,
   isUnsafeLocalhostResolver,
   usePreview,
 } from "../../web/src/stores/preview.js";
+import { DARWIN_LOCALHOST_LOOPBACK, previewHost } from "../../daemon/src/preview/host.js";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const f of cleanup.splice(0)) f(); });
@@ -311,35 +315,149 @@ describe("preview ping nonce + canary (#582 WebKit DNS)", () => {
     expect(entry?.error?.length ?? 0).toBeGreaterThan(10);
   });
 
-  it("detects Apple WebKit before macOS 26 and leaves WebKitGTK / Chromium alone", () => {
-    const safari15 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15";
-    const safariFrozen = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
-    const mac26 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 26_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
-    const chromeMac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-    const webkitGtk = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
-    const edge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0";
-    expect(isUnsafeLocalhostResolver(safari15)).toBe(true);
-    expect(isUnsafeLocalhostResolver(safariFrozen)).toBe(true);
-    expect(isUnsafeLocalhostResolver(mac26)).toBe(false);
-    expect(isUnsafeLocalhostResolver(chromeMac)).toBe(false);
-    expect(isUnsafeLocalhostResolver(webkitGtk)).toBe(false);
-    expect(isUnsafeLocalhostResolver(edge)).toBe(false);
+});
+
+// #582 third review: Apple froze the UA at "Mac OS X 10_15_7", so the macOS version comes from the daemon
+// (os.platform() + os.release(), Darwin 25 = macOS 26) via preview.open, never from the UA.
+describe("Apple WebKit + daemon Darwin version (#582 frozen UA)", () => {
+  // Literal UAs Apple WebKit sends on every macOS, 26+ included (a plain WKWebView on macOS 27.2, and Safari)
+  const WKWEBVIEW_FROZEN = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
+  const SAFARI_FROZEN = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+  const IPAD_SAFARI = "Mozilla/5.0 (iPad; CPU OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1";
+  const CHROME_MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+  const EDGE_WIN = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0";
+  const WEBKITGTK = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+
+  const macos26 = previewHost("darwin", "25.0.0");
+  const macos27 = previewHost("darwin", "26.2.0");
+  const macos15 = previewHost("darwin", "24.6.0");
+  const macos12 = previewHost("darwin", "21.6.0");
+  const linux = previewHost("linux", "6.8.0-45-generic");
+  const win = previewHost("win32", "10.0.26100");
+
+  it("the daemon reads the Darwin major from os.release()", () => {
+    expect(macos26).toEqual({ platform: "darwin", darwinMajor: 25 });
+    expect(macos27).toEqual({ platform: "darwin", darwinMajor: 26 });
+    expect(macos15).toEqual({ platform: "darwin", darwinMajor: 24 });
+    expect(linux).toEqual({ platform: "linux", darwinMajor: null });
+    expect(win).toEqual({ platform: "win32", darwinMajor: null });
+    expect(previewHost("darwin", "")).toEqual({ platform: "darwin", darwinMajor: null });
+    expect(previewHost("darwin", "garbage")).toEqual({ platform: "darwin", darwinMajor: null });
+    expect(DARWIN_LOCALHOST_LOOPBACK).toBe(WEB_DARWIN_LOCALHOST_LOOPBACK);
+    // default arguments = this host
+    const here = previewHost();
+    expect(here.platform).toBe(osPlatform());
+    if (here.platform === "darwin") expect(here.darwinMajor).toBe(Number(osRelease().split(".")[0]));
+    else expect(here.darwinMajor).toBeNull();
   });
 
-  it("navigate refuses Apple WebKit before macOS 26 without calling preview.open", async () => {
-    const opened: string[] = [];
-    vi.stubGlobal("navigator", {
-      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-    });
+  it("the frozen 10_15_7 UA on a macOS 26+ host is safe; on Darwin 24 or an unknown host it is refused", () => {
+    for (const ua of [WKWEBVIEW_FROZEN, SAFARI_FROZEN, IPAD_SAFARI]) {
+      expect(isAppleWebKit(ua)).toBe(true);
+      expect(isUnsafeLocalhostResolver(macos26, ua)).toBe(false);
+      expect(isUnsafeLocalhostResolver(macos27, ua)).toBe(false);
+      expect(isUnsafeLocalhostResolver(macos15, ua)).toBe(true);
+      expect(isUnsafeLocalhostResolver(macos12, ua)).toBe(true);
+      // missing / unparseable daemon info fails closed
+      expect(isUnsafeLocalhostResolver(undefined, ua)).toBe(true);
+      expect(isUnsafeLocalhostResolver(null, ua)).toBe(true);
+      expect(isUnsafeLocalhostResolver({ platform: "darwin", darwinMajor: null }, ua)).toBe(true);
+      expect(isUnsafeLocalhostResolver({ platform: "", darwinMajor: null }, ua)).toBe(true);
+      // non-darwin daemon hosts are left to the canary + nonce probe
+      expect(isUnsafeLocalhostResolver(linux, ua)).toBe(false);
+      expect(isUnsafeLocalhostResolver(win, ua)).toBe(false);
+    }
+  });
+
+  it("Chromium / Edge / WebKitGTK are never refused, whatever the host", () => {
+    for (const ua of [CHROME_MAC, EDGE_WIN, WEBKITGTK]) {
+      expect(isAppleWebKit(ua)).toBe(false);
+      for (const h of [macos12, macos15, macos26, linux, win, null]) expect(isUnsafeLocalhostResolver(h, ua)).toBe(false);
+    }
+  });
+
+  // Panel path against a real listener. fetch is routed to 127.0.0.1:<port> with the name's Host header, so the test
+  // doesn't depend on this machine's *.localhost resolver.
+  async function panel(ua: string, host: unknown) {
+    const up = await serve((_q, s) => s.end("DEV"));
+    const proxy = new PreviewProxy({ deniedPorts: () => [] });
+    cleanup.push(() => proxy.closeAll());
+    vi.stubGlobal("navigator", { userAgent: ua });
     cleanup.push(() => vi.unstubAllGlobals());
-    usePreview.setState({ byThread: {} });
-    const ok = await usePreview.getState().navigate(async (m) => {
-      if (m === "preview.open") opened.push(m);
+    const pinged: string[] = [];
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const u = new URL(String(input));
+      pinged.push(u.hostname);
+      const r = await request(Number(u.port), u.pathname + u.search, { host: u.host });
+      return new Response(r.body, { status: r.status });
+    }) as typeof fetch;
+    cleanup.push(() => { globalThis.fetch = prevFetch; });
+    const calls: string[] = [];
+    const released: string[] = [];
+    const call = async (m: string, p?: unknown) => {
+      calls.push(m);
+      if (m === "preview.open") {
+        const opened = await proxy.open(String((p as { url: string }).url));
+        return host === undefined ? opened : { ...opened, host };
+      }
+      if (m === "preview.release") {
+        const url = String((p as { url?: string } | undefined)?.url ?? "");
+        released.push(url);
+        proxy.release(url);
+        return { ok: true };
+      }
       return {};
-    }, "wk", null, "http://localhost:5173/", { push: true });
-    expect(ok).toBe(false);
-    expect(opened).toEqual([]);
-    expect(usePreview.getState().byThread["wk"]?.proxyHref).toBeNull();
-    expect(usePreview.getState().byThread["wk"]?.error).toBeTruthy();
+    };
+    usePreview.setState({ byThread: {} });
+    const ok = await usePreview.getState().navigate(call, "mac", null, `http://localhost:${up.port}/`, { push: true });
+    return { ok, calls, released, pinged, proxy, up, entry: usePreview.getState().byThread["mac"] };
+  }
+
+  it("Magpie's Mac app (frozen WKWebView UA) on a macOS 26 host (Darwin 25.x) opens the preview", async () => {
+    const r = await panel(WKWEBVIEW_FROZEN, previewHost("darwin", "25.0.0"));
+    expect(r.ok).toBe(true);
+    expect(r.calls).toEqual(["preview.open"]);
+    expect(r.released).toEqual([]);
+    expect(r.proxy.size).toBe(1);
+    expect(r.entry?.error).toBeNull();
+    expect(r.entry?.proxyHref).toMatch(/^http:\/\/ac[0-9a-f]+\.localhost:\d+\/$/);
+    // canary first, then the keyed name
+    expect(r.pinged).toHaveLength(2);
+    expect(r.pinged[0]).toMatch(/^acprobe[0-9a-f]+\.localhost$/);
+    expect(r.pinged[1]).toBe(new URL(r.entry!.proxyHref!).hostname);
+  });
+
+  it("Safari (frozen UA) with magpie web on a macOS 27 host opens the preview", async () => {
+    const r = await panel(SAFARI_FROZEN, previewHost("darwin", "26.2.0"));
+    expect(r.ok).toBe(true);
+    expect(r.entry?.proxyHref).toBeTruthy();
+    expect(r.released).toEqual([]);
+  });
+
+  it("Apple WebKit on a Darwin 24.x host (macOS 15) is refused: no *.localhost lookup, listener released", async () => {
+    const r = await panel(WKWEBVIEW_FROZEN, previewHost("darwin", "24.6.0"));
+    expect(r.ok).toBe(false);
+    expect(r.pinged).toEqual([]);
+    expect(r.released).toEqual([`http://localhost:${r.up.port}`]);
+    expect(r.proxy.size).toBe(0);
+    expect(r.entry?.proxyHref).toBeNull();
+    expect(r.entry?.error).toBeTruthy();
+  });
+
+  it("Apple WebKit with no host info from the daemon fails closed the same way", async () => {
+    const r = await panel(SAFARI_FROZEN, undefined);
+    expect(r.ok).toBe(false);
+    expect(r.pinged).toEqual([]);
+    expect(r.proxy.size).toBe(0);
+  });
+
+  it("a non-darwin daemon host is unaffected (frozen Safari UA and Chromium both open)", async () => {
+    const a = await panel(SAFARI_FROZEN, previewHost("linux", "6.8.0"));
+    expect(a.ok).toBe(true);
+    expect(a.released).toEqual([]);
+    const b = await panel(EDGE_WIN, previewHost("win32", "10.0.26100"));
+    expect(b.ok).toBe(true);
+    expect(b.released).toEqual([]);
   });
 });
