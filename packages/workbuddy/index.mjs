@@ -2299,12 +2299,23 @@ const compact = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/
 // stay apart — one build's spending must not fill the other's window.
 //
 // The China cap is the measured one, 2e8 (two accounts refused at 200.39M
-// and 200.49M). It was a soft 1.9e8 in 0.2.12 and 0.2.13, so that routing
-// rested the model before the vendor refused it; since the sum is set aside
-// (freeWindowOf's card), the cap only scales what the card says, and the
-// headroom bought nothing but a model stopped 10M tokens early (plugins#641).
+// and 200.49M), and the AI cap 1e8 the same way (100,183,315 the largest
+// still answered). Both builds' deepseek-v4.1-flash charges credits as
+// well (x0.11 on the China build) — the token window and the credits
+// meter are two limits on one model, measured side by side: the accounts
+// above were refused at 2e8 tokens while their credits were being spent.
+// Whether the estimate routes is therefore the operator's call, not the
+// model's price: on the SOFT_STOP switch the card routes at a soft cap,
+// 90% of the measured one — magpie rests the model before the vendor
+// refuses it, which also saves the credits the last 10% would burn. Off
+// (the default, plugins#641), the estimate is shown and set aside, and
+// the refusal alone decides.
+// A price list that cannot be read reads as paid too: no guess.
+const FREE_WINDOW_SOFT = 0.9
 const FREE_WINDOW_CN = { provider: "workbuddy", cap: 2e8, short: "200M" }
 const FREE_WINDOW_AI = { provider: "workbuddy-ai", cap: 1e8, short: "100M" }
+const FREE_WINDOW_CN_SOFT = { ...FREE_WINDOW_CN, cap: Math.round(FREE_WINDOW_CN.cap * FREE_WINDOW_SOFT), short: "180M", routable: true }
+const FREE_WINDOW_AI_SOFT = { ...FREE_WINDOW_AI, cap: Math.round(FREE_WINDOW_AI.cap * FREE_WINDOW_SOFT), short: "90M", routable: true }
 const FREE_WINDOW_SPAN = 24 * 3600 * 1000
 // The lead: how far back of an edge the read goes on. A chain read from a row
 // that opens a window needs the window the span makes of the rows above it,
@@ -2361,7 +2372,7 @@ function windowReset(text) {
 // before it. A window ends at a refusal's reset when the ledger holds one,
 // and otherwise a day after it began. readLedgerTail (which see) stops on
 // both, so that these rows read the same as the whole ledger.
-function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
+function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI, hard = win) {
   const mine = (Array.isArray(rows) ? rows : []).filter(
     (r) =>
       r?.provider === win.provider &&
@@ -2439,19 +2450,21 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
   const end = start + FREE_WINDOW_SPAN
   if (now >= end) return null // lapsed: nothing is exhausted, a new window opens on the next request
 
-  const card = (amount, resetsAt, refused) => ({
+  const card = (spec, amount, resetsAt, refused) => ({
     name: "Free model tokens",
-    used: Math.min(100, (100 * amount) / win.cap),
+    used: Math.min(100, (100 * amount) / spec.cap),
     amount,
-    limit: win.cap,
+    limit: spec.cap,
     unit: "tokens",
-    display: `${tokensShort(amount)} / ${win.short}`,
+    display: `${tokensShort(amount)} / ${spec.short}`,
     resetsAt: new Date(resetsAt).toISOString(),
     span: FREE_WINDOW_SPAN / 1000,
     models: FREE_WINDOW_MODELS.slice(),
-    // the ledger's sum is an estimate, shown and set aside; the vendor's
-    // refusal is the one that stops the model (see the window above)
-    ...(refused ? { refused: true } : { aside: true }),
+    // the ledger's sum is an estimate: shown and set aside unless the build
+    // serves the model free, when its soft cap is what routing acts on; the
+    // vendor's refusal is the one that always stops the model (see the
+    // window definitions above)
+    ...(refused ? { refused: true } : spec.routable ? {} : { aside: true }),
   })
 
   // A refusal still in force is exact: the account is spending this window
@@ -2465,9 +2478,11 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
     if (!Number.isFinite(t) || t <= now || t <= start) continue
     if (live === null || t > live) live = t
   }
-  if (live !== null) return card(win.cap, live, true)
+  // the refusal's card is the hard cap: the vendor's own window size, the
+  // one number its words are about
+  if (live !== null) return card(hard, hard.cap, live, true)
 
-  return card(used, end, false)
+  return card(win, used, end, false)
 }
 
 // tokensShort says a token count small: 11.9M, 812k. The credits card's
@@ -3364,6 +3379,11 @@ function replyAfterToolsOn(b) {
 // and a request for any other is answered here, never sent. A price that
 // can't be read is not free, and a list that can't be read sends nothing.
 const FREE_ONLY = "free_only"
+// the charged-model soft stop: whether the estimate also routes a model the
+// vendor charges in credits (deepseek-v4.1-flash is x0.11 on the China
+// build — charged AND token-windowed, both measured). Off, the estimate is
+// shown only and the refusal alone stops the model (plugins#641).
+const SOFT_STOP = "soft_stop_charged"
 // PRICE_TTL is how long a list read for that check is used before it is
 // read again: a promotion that ends stops counting as free within it.
 const PRICE_TTL = 60_000
@@ -3429,6 +3449,7 @@ function makePlugin(site) {
     }
   }
   const freeOnly = () => magpie?.option?.(site.id, FREE_ONLY) === true
+  const softStop = () => magpie?.option?.(site.id, SOFT_STOP) === true
   // onlyFree is a list with the switch on: its free models, or a failure
   // when there are none to tell (magpie then keeps the list it had)
   const onlyFree = (ms) => {
@@ -3536,6 +3557,18 @@ function makePlugin(site) {
             de: `Listet nur die Modelle, die ${site.name} kostenlos anbietet, und weist eine Anfrage an jedes andere hier ab, statt sie zu senden, sodass keine Credits verbraucht werden. Ein Modell, das nur nachts kostenlos ist, gilt als kostenpflichtig.`,
           },
           filtersModels: true,
+        },
+        {
+          key: SOFT_STOP,
+          label: "Rest charged models at the soft token cap",
+          description: `Also counts a model the vendor charges in credits against the estimated daily token window (deepseek-v4.1-flash at x0.11 on the China build): near the soft cap — 90% of the measured one — the model is rested before WorkBuddy's hard refusal. Off, the estimate is shown only, and the refusal alone stops the model (plugins#641).`,
+          labels: { zh: "计费模型也按 token 窗口软停", "zh-TW": "計費模型也按 token 視窗軟停", ja: "課金モデルも token ウィンドウでソフト停止", de: "Kostenpflichtige Modelle ebenfalls am Soft-Token-Limit schonen" },
+          descriptions: {
+            zh: `让按积分计费的模型（如国内版 deepseek-v4.1-flash，x0.11）也计入估算的每日 token 窗口：接近软上限（实测值的 90%）时，该模型先于 WorkBuddy 硬拒绝被休息。关闭时估算仅作显示，只有上游拒绝才会停用该模型（plugins#641）。`,
+            "zh-TW": `讓按積計費的模型（如國內版 deepseek-v4.1-flash，x0.11）也計入估算的每日 token 視窗：接近軟上限（實測值的 90%）時，該模型先於 WorkBuddy 硬拒絕被休息。關閉時估算僅作顯示，只有上游拒絕才會停用該模型（plugins#641）。`,
+            ja: `クレジットで課金されるモデル（中国版の deepseek-v4.1-flash、x0.11 など）も、推定された 1 日の token ウィンドウに数えます: ソフト上限（実測値の 90%）に近づくと、WorkBuddy のハード拒絶の前にそのモデルを休めます。オフの間は推定は表示のみで、上游の拒絶だけがモデルを停止します（plugins#641）。`,
+            de: `Lässt auch ein vom Anbieter in Credits abgerechnetes Modell (deepseek-v4.1-flash auf dem China-Build, x0.11) in das geschätzte tägliche Token-Fenster einfließen: Nahe am Soft-Limit (90 % des gemessenen) wird das Modell schonend ausgespart, bevor WorkBuddy hart ablehnt. Aus schaltet ist die Schätzung nur angezeigt, und allein die Ablehnung stoppt das Modell (plugins#641).`,
+          },
         },
       ],
       async loader(getAuth) {
@@ -3801,13 +3834,19 @@ function makePlugin(site) {
           // the free model's own window, which the credit meter above does
           // not show: what actually refuses a chat long before 160 credits
           // are spent. Both builds: WorkBuddy AI at 1e8 (ten days of
-          // refusals), the China build's at about 2e8 (2026-11-02). Set
-          // aside until the vendor refuses (see the window definitions above)
+          // refusals), the China build's at about 2e8 (2026-11-02). The
+          // model's price does not gate the window — the China build's
+          // deepseek-v4.1-flash charges credits (x0.11) and was refused at
+          // 2e8 all the same. What gates the estimate is the operator: the
+          // soft stop (90% of the measured cap, this build's window) is on
+          // by the SOFT_STOP switch; off, the estimate is set aside and the
+          // refusal alone stops the model (plugins#641's default)
           {
             const account = a.accountId || a.user || a.uid || ""
-            const win = site.ai ? FREE_WINDOW_AI : FREE_WINDOW_CN
+            const hard = site.ai ? FREE_WINDOW_AI : FREE_WINDOW_CN
+            const win = softStop() ? (site.ai ? FREE_WINDOW_AI_SOFT : FREE_WINDOW_CN_SOFT) : hard
             const rows = freeWindowRows(account, Date.now(), process.cwd(), process.env, homedir(), win)
-            const w = rows && freeWindowOf(rows, account, Date.now(), win)
+            const w = rows && freeWindowOf(rows, account, Date.now(), win, hard)
             if (w) out.windows.push(w)
           }
           return { ...out, signIn: said }
@@ -3952,4 +3991,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { planCodes, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_CN, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { planCodes, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_CN, FREE_WINDOW_AI, FREE_WINDOW_CN_SOFT, FREE_WINDOW_AI_SOFT, FREE_WINDOW_SOFT, SOFT_STOP, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }

@@ -783,3 +783,50 @@ test("a window the vendor hasn't refused is set aside, on both builds (plugins#6
   expect(aiDenied.refused).toBe(true)
   expect(aiDenied.aside).toBeUndefined()
 })
+
+// with the SOFT_STOP switch on, the card routes at the soft cap: 90% of
+// the measured one, on both builds, whatever the model's credits price —
+// the China build's deepseek-v4.1-flash charges credits (x0.11) and was
+// still refused at 2e8
+test("the soft cap routes the window when the switch is on", () => {
+  const now = at("2026-11-02T14:00:00+08:00")
+  const cn = _internal.freeWindowOf(
+    [cnRow("2026-11-02T11:08:53+08:00", { in: 7_701_367, cache: 169_000_000, out: 1_000_000 })],
+    "me@example.com",
+    now,
+    _internal.FREE_WINDOW_CN_SOFT,
+    _internal.FREE_WINDOW_CN,
+  )
+  expect(cn.amount).toBe(177_701_367)
+  expect(cn.limit).toBe(1.8e8)
+  expect(cn.display).toBe("177.7M / 180M")
+  expect(cn.aside).toBeUndefined()
+  expect(cn.refused).toBeUndefined()
+  const ai = _internal.freeWindowOf(
+    [row("2026-10-20T19:53:48+08:00", { in: 89_000_000 })],
+    "me@example.com",
+    at("2026-10-20T21:00:00+08:00"),
+    _internal.FREE_WINDOW_AI_SOFT,
+    _internal.FREE_WINDOW_AI,
+  )
+  expect(ai.limit).toBe(0.9e8)
+  expect(ai.used).toBeCloseTo(98.89, 2)
+  expect(ai.aside).toBeUndefined()
+})
+
+// and a refusal in force still reads the window full at the hard cap — the
+// vendor's own number, whatever soft cap routing acts on
+test("the refusal card reads the hard cap", () => {
+  const now = at("2026-11-02T14:00:00+08:00")
+  const cn = _internal.freeWindowOf(
+    [cnRow("2026-11-02T11:08:53+08:00", { in: 7_701_367, cache: 169_000_000, out: 1_000_000 }), cnRefusal("2026-11-03 11:08:53")],
+    "me@example.com",
+    now,
+    _internal.FREE_WINDOW_CN_SOFT,
+    _internal.FREE_WINDOW_CN,
+  )
+  expect(cn.refused).toBe(true)
+  expect(cn.limit).toBe(2e8)
+  expect(cn.display).toBe("200.0M / 200M")
+  expect(cn.aside).toBeUndefined()
+})

@@ -59,6 +59,15 @@ for (const [plugin, site, url] of [
     expect(o.default).toBeUndefined()
   })
 
+  // plugins#641 follow-up: the charged-model soft stop ships off — the
+  // estimate is shown aside until the operator asks for it
+  test(`${site}: declares the charged-model soft stop, off by default`, async () => {
+    const h = await plugin({ client: {} })
+    const o = h.auth.options.find((x) => x.key === _internal.SOFT_STOP)
+    expect(o.label).toBe("Rest charged models at the soft token cap")
+    expect(o.default).toBeUndefined()
+  })
+
   // plugins#590 (anewuser6937): the switch read in English in magpie's
   // Chinese window, and a one-model list looked broken. Its words come in
   // each of magpie's languages, within magpie's caps (60 and 300), and it

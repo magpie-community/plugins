@@ -448,6 +448,19 @@ against 2e8. In 0.2.12 and 0.2.13 it read against a soft cap of 1.9e8, so
 that routing rested the model before the vendor refused it; with the sum set
 aside that headroom only stopped the model early, so it is gone.
 
+Whether the estimate routes at all is the model's price to say, not the
+window's. A model the build serves free (`x0.00`, the price list's
+`notModels`) has this token window for its only allowance, and the estimate
+is the one signal short of a refusal: its card routes at a soft cap, 90% of
+the measured one (180M on the China build, 90M on WorkBuddy AI), so magpie
+rests the model before the vendor refuses it. A model the vendor charges in
+credits (`deepseek-v4.1-flash` at `x0.11` on the China build,
+magpie-community/plugins#641) has the credits meter for its allowance, the
+ledger's sum says nothing about that account's window, and its card stays
+set aside for the refusal alone — as does a model whose price list cannot
+be read. The refusal's own card always reads the hard cap: the vendor's
+number, whatever soft cap routing acts on.
+
 ## When free models work but a credit model does not
 
 Check the failing account and model separately before concluding that the

@@ -45,7 +45,7 @@ function serve(routes) {
   }
   return calls
 }
-const usageOf = async (plugin, auth, client = {}) => (await plugin({ client })).auth.usage(async () => auth)
+const usageOf = async (plugin, auth, client = {}, magpie = undefined) => (await plugin({ client, magpie })).auth.usage(async () => auth)
 
 test("a paid WorkBuddy account's credits", async () => {
   const calls = serve({ "/billing/meter/get-user-resource-summary": () => ok(PAID) })
@@ -640,6 +640,54 @@ test("a WorkBuddy AI card carries the free model's window from the ledger", asyn
     expect(cn.windows.map((w) => w.name)).toEqual(["Credits", "Free model tokens"])
     // the China card counts the workbuddy rows alone, against 2e8
     expect(cn.windows[1]).toMatchObject({ amount: 90_000_000, limit: 2e8, unit: "tokens", aside: true })
+  } finally {
+    rmSync(ledger, { force: true })
+  }
+})
+
+// whether the estimate routes is the model's price to say: a model the
+// build serves free has the token window for its only allowance, so its
+// card counts at the soft cap (90% of the measured one); a model the
+// vendor charges in credits keeps the aside, and the refusal alone
+// decides (plugins#641)
+// the SOFT_STOP switch decides whether the estimate routes: on, the card
+// counts at the soft cap (90% of the measured one) whatever the model's
+// credits price — the China build's deepseek-v4.1-flash charges credits
+// (x0.11) and was still refused at 2e8; off (the default, plugins#641),
+// the card is shown aside and the refusal alone decides
+test("the soft stop routes the window when on; aside when off", async () => {
+  const dir = join(home, ".config", "magpie")
+  mkdirSync(dir, { recursive: true })
+  const ledger = join(dir, "usage.jsonl")
+  const t = new Date(Date.now() - 3600_000).toISOString()
+  writeFileSync(
+    ledger,
+    [
+      JSON.stringify({ provider: "workbuddy-ai", providerAccount: "me@example.com", model: "deepseek-v4.1-flash", t, status: 200, in: 30_000_000, cache_read: 0, out: 0 }),
+      JSON.stringify({ provider: "workbuddy", providerAccount: "me@example.com", model: "deepseek-v4.1-flash", t, status: 200, in: 90_000_000, cache_read: 0, out: 0 }),
+    ].join("\n") + "\n",
+  )
+  try {
+    const summary = (cap) => ({ "/billing/meter/get-user-resource-summary": () => ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: String(cap), CycleUsedCapacity: "0" }] }) })
+    // a charged config (x0.11, as #641's reporter read and the real
+    // accounts burn credits): off, the card is aside at the hard cap
+    const PAID_CFG = () => ok({
+      agents: [{ name: "cli", models: ["deepseek-v4.1-flash"] }],
+      models: [{ id: "deepseek-v4.1-flash", name: "Deepseek-V4.1-Flash", credits: "x0.11" }],
+    })
+    const auth = { type: "oauth", access: "ai-access", expires: later(), uid: "ai3", accountId: "me@example.com", domain: "www.codebuddy.ai" }
+    serve({ ...summary(160), "/v3/config": PAID_CFG })
+    const off = await usageOf(WorkBuddyAIAuthPlugin, auth)
+    expect(off.windows[1]).toMatchObject({ amount: 30_000_000, limit: 1e8, unit: "tokens", aside: true })
+    // switch on: the same charged model routes at the soft cap, both builds
+    const magpieOn = { option: (provider, key) => key === _internal.SOFT_STOP }
+    const out = await usageOf(WorkBuddyAIAuthPlugin, auth, {}, magpieOn)
+    expect(out.windows[1]).toMatchObject({ amount: 30_000_000, limit: 0.9e8, unit: "tokens" })
+    expect(out.windows[1].aside).toBeUndefined()
+    serve({ ...summary(500), "/v3/config": PAID_CFG })
+    const cn = await usageOf(WorkBuddyAuthPlugin, { ...auth, domain: "", uid: "cn1" }, {}, magpieOn)
+    expect(cn.windows[1]).toMatchObject({ amount: 90_000_000, limit: 1.8e8, unit: "tokens" })
+    expect(cn.windows[1].aside).toBeUndefined()
   } finally {
     rmSync(ledger, { force: true })
   }
