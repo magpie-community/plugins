@@ -166,6 +166,8 @@ async function agent(options = {}) {
       marker = options.finalAfterFirst ? received.get(firstID).content[0].text : options.parallel ? [7, 8].map((id) => received.get(id).content[0].text).join("|") : received.get(8).content[0].text
       phase = 2
       if (options.stallFinal) return
+      // the answer begun and still going when the Run's deadline lands
+      if (options.halfFinal) { send(update(1, text(1, "half said"))); return }
       send(update(4, text(1, "native final thinking")))
       send(update(1, text(1, marker)))
       const usage = options.turnUsage ?? (options.zeroUsage ? message(uint(1, 0), uint(2, 0), uint(5, 0)) : message(uint(1, 23), uint(2, 7), uint(3, 10), uint(4, 0), uint(5, 4)))
@@ -356,6 +358,75 @@ test("native retention: a near-expiry Run rebuilds before submitting results or 
     expect(nativeSessions.entries.has(owner)).toBe(false)
     expect(a.errors).toEqual([])
   } finally { clock.mockRestore() }
+})
+
+// plugins#616 (yetone/magpie#4419, Okxdd123; ggbdpq's cause and repro): a
+// Pi turn's 13th tool step went on in its retained Run with 494 s of the
+// 15-minute lifetime left, and the answer was still streaming when the
+// deadline cut it. A step with less than continueReserve left starts on a
+// fresh Run instead; one with more still goes on in the same Run. The
+// clock is moved, nothing waits.
+for (const [left, fresh] of [[494_000, true], [NATIVE_LIMITS.continueReserve - 1000, true], [NATIVE_LIMITS.continueReserve + 60_000, false]]) test(`native retention: a continuation with ${left / 1000}s of the lifetime left ${fresh ? "rebuilds on a fresh Run" : "goes on in the same Run"} (#616)`, async () => {
+  const a = await agent(), account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  expect(first.status).toBe(200)
+  const owner = [...nativeSessions.entries][0]
+  const now = Date.now.bind(Date)
+  const shift = owner.expiresAt - now() - left
+  const clock = spyOn(Date, "now").mockImplementation(() => now() + shift)
+  try {
+    const marker = "step-with-" + left
+    const next = await a.ask(account, continueWith(chat, first.body, [marker]))
+    if (fresh) {
+      rebuilt(next, marker)
+      expect(a.runs).toHaveLength(2)
+      expect(a.results).toEqual([])
+      expect(owner.state).toBe("expired")
+    } else {
+      expect(next.status).toBe(200)
+      expect(next.diagnostic).toMatch(/^same-run/)
+      expect(a.runs).toHaveLength(1)
+      expect(a.results).toHaveLength(1)
+    }
+    expect(a.errors).toEqual([])
+  } finally { clock.mockRestore() }
+})
+
+// When the deadline still lands mid-answer, the 200 is long sent and the
+// agent reads only the error's words: they must be ones it asks again on.
+// Pi judges by the text alone (its _isRetryableError), as magpie's
+// passingSaid does for a stream error; both regexes are copied here.
+const piRetries = /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i
+const magpiePassing = /\b(429|500|502|503|504)\b|timed? ?out|rate.?limit|too many requests|overloaded|service.?unavailable|server.?error|internal.?error|connection.?(error|refused|reset)|retry your request|try your request again/i
+test("native retention: a Run cut at its deadline mid-answer says to retry the request (#616)", async () => {
+  const a = await agent({ finalAfterFirst: true, halfFinal: true }), account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  expect(first.status).toBe(200)
+  const owner = [...nativeSessions.entries][0]
+  const res = await a.ask(account, { ...continueWith(chat, first.body, ["after the tool"]), stream: true })
+  expect(res.status).toBe(200)
+  const reader = res.body.getReader(), dec = new TextDecoder()
+  let sse = ""
+  while (!sse.includes("half said")) {
+    const { value, done } = await reader.read()
+    if (done) break
+    sse += dec.decode(value, { stream: true })
+  }
+  expect(sse).toContain("half said")
+  // the deadline brought in to now: the answer is still going
+  owner.expireIn(0)
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    sse += dec.decode(value, { stream: true })
+  }
+  const errors = sse.split("\n\n").filter((s) => s.startsWith("data: {")).map((s) => JSON.parse(s.slice(6)).error).filter(Boolean)
+  expect(errors).toHaveLength(1)
+  expect(errors[0].message).toStartWith("native Run lifetime expired")
+  expect(errors[0].message).toMatch(piRetries)
+  expect(errors[0].message).toMatch(magpiePassing)
+  expect(errors[0].message).toContain("retry your request")
+  expect(owner.state).toBe("expired")
 })
 
 for (const limit of ["resultWait", "lifetime"]) test(`native retention: ${limit} expiry rebuilds supplied results on a fresh stateless Run`, async () => {
