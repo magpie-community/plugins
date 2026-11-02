@@ -361,7 +361,7 @@ credits are read from the enterprise meter
 page reads: the cycle's credits used of its limit, and when the cycle
 resets (magpie #1904).
 
-## The free model's daily window (WorkBuddy AI)
+## The free model's daily window (both builds)
 
 The credits above are not the only limit. `deepseek-v4.1-flash` is served at
 `x0.00` and costs the plan nothing, yet WorkBuddy AI refuses it long before
@@ -431,8 +431,14 @@ What is measured, and what is easy to read wrongly:
   rather than +08:00 guessed.
 
 A window that has lapsed reports nothing rather than 0%: nothing is
-exhausted, and the next request opens a fresh one. The China build is not
-covered; its limit has not been measured.
+exhausted, and the next request opens a fresh one. The China build
+(`copilot.tencent.com`) carries the same window: two Free-plan accounts
+refused on 2026-11-02 at 200,389,043 and 200,485,923 tokens, so its cap is
+measured at about 2e8 — and its refusals name the reset in Chinese
+(`将在 … UTC+8 重置`), which reads as an edge the same way. Its card stops
+at a **soft cap of 1.9e8**, 5% short of the measured one, so routing rests
+the model before the vendor refuses it; the headroom absorbs the account's
+spending on other machines, which this ledger cannot see.
 
 ## When free models work but a credit model does not
 
