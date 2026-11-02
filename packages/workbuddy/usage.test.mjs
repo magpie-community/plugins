@@ -612,7 +612,7 @@ test("a model list that can't be read leaves the credits counting every model", 
 // #299: the free model's window, read from magpie's usage ledger, reaches
 // the WorkBuddy AI card beside Credits. Both builds carry it now: the China
 // build refused at about 2e8 on 2026-11-02, and its card counts its own
-// ledger rows against the 1.9e8 soft cap — one phone number signed in to
+// ledger rows against 2e8 — one phone number signed in to
 // both must see its spending twice apart, not summed (see freeWindowOf)
 test("a WorkBuddy AI card carries the free model's window from the ledger", async () => {
   const dir = join(home, ".config", "magpie")
@@ -632,13 +632,14 @@ test("a WorkBuddy AI card carries the free model's window from the ledger", asyn
     const auth = { type: "oauth", access: "ai-access", expires: later(), uid: "ai3", accountId: "me@example.com", domain: "www.codebuddy.ai" }
     const out = await usageOf(WorkBuddyAIAuthPlugin, auth)
     expect(out.windows.map((w) => w.name)).toEqual(["Credits", "Free model tokens"])
-    expect(out.windows[1]).toMatchObject({ amount: 30_000_000, limit: 1e8, unit: "tokens" })
+    // the ledger's sum is set aside: shown, never the allowance (plugins#641)
+    expect(out.windows[1]).toMatchObject({ amount: 30_000_000, limit: 1e8, unit: "tokens", aside: true })
     serve({ "/billing/meter/get-user-resource-summary": () =>
       ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: "500", CycleUsedCapacity: "0" }] }) })
     const cn = await usageOf(WorkBuddyAuthPlugin, { ...auth, domain: "" })
     expect(cn.windows.map((w) => w.name)).toEqual(["Credits", "Free model tokens"])
-    // the China card counts the workbuddy rows alone, against the soft cap
-    expect(cn.windows[1]).toMatchObject({ amount: 90_000_000, limit: 1.9e8, unit: "tokens" })
+    // the China card counts the workbuddy rows alone, against 2e8
+    expect(cn.windows[1]).toMatchObject({ amount: 90_000_000, limit: 2e8, unit: "tokens", aside: true })
   } finally {
     rmSync(ledger, { force: true })
   }

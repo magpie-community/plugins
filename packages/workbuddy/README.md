@@ -399,6 +399,14 @@ What is measured, and what is easy to read wrongly:
   429 whose named reset is still ahead makes the window full — `used: 100`,
   `resetsAt` the reset the vendor named — whatever the rows add up to. The
   sum carries the window only until the first refusal.
+- **The sum is shown, not routed on.** Until the vendor refuses, the card is
+  set aside (`aside: true`): magpie draws it beside the account and never
+  counts it as the account's allowance, so an estimate near its cap does not
+  stop the model. The refusal's card does (`refused: true`), and magpie's
+  gateway rests this model alone on this account until the reset the
+  refusal names. Before 0.2.14 the sum stopped the model too, and a paid
+  China account read 99% of a cap it had never been refused at, with 2,457
+  credits left (plugins#641).
 - **The card names both ids**, `deepseek-v4.1-flash` and
   `deepseek-v4.1-flash-sg`: magpie matches a window's models by exact id
   (only an `@size` suffix folds into the bare id), so one alone would leave
@@ -435,10 +443,10 @@ exhausted, and the next request opens a fresh one. The China build
 (`copilot.tencent.com`) carries the same window: two Free-plan accounts
 refused on 2026-11-02 at 200,389,043 and 200,485,923 tokens, so its cap is
 measured at about 2e8 — and its refusals name the reset in Chinese
-(`将在 … UTC+8 重置`), which reads as an edge the same way. Its card stops
-at a **soft cap of 1.9e8**, 5% short of the measured one, so routing rests
-the model before the vendor refuses it; the headroom absorbs the account's
-spending on other machines, which this ledger cannot see.
+(`将在 … UTC+8 重置`), which reads as an edge the same way. Its card reads
+against 2e8. In 0.2.12 and 0.2.13 it read against a soft cap of 1.9e8, so
+that routing rested the model before the vendor refused it; with the sum set
+aside that headroom only stopped the model early, so it is gone.
 
 ## When free models work but a credit model does not
 

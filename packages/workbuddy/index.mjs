@@ -2276,6 +2276,17 @@ const compact = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/
 //     full whatever the sum says. That is the one exact signal there is,
 //     and routing must not pass over it either.
 //
+// So the sum is an estimate, and it is shown, not routed on: its card is set
+// aside (aside: true), which magpie draws beside the account and never counts
+// as its allowance. Only a refusal's card stops the model. The estimate used
+// to stop it as well, and it read a paid China account at 99% of a cap it had
+// never been refused at, with 2,457 credits left (XiaoFeiyu9, plugins#641):
+// the cap is two accounts' measurement, the ledger is one machine's, and
+// neither is the vendor's word for this account. Nothing is lost by waiting
+// for that word: magpie's gateway reads the refusal's reset ("将在 … 重置",
+// "reset at …") and its "switch to the other models", and rests this model
+// alone, on this account alone, until the time the vendor named.
+//
 // The ledger is magpie's own, in magpie's config folder (appdir.Config()):
 // the folder the plugin host runs in, which is the portable data folder
 // when magpie runs portable, $XDG_CONFIG_HOME/magpie when that is set, and
@@ -2287,12 +2298,12 @@ const compact = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/
 // caps: the same phone number can be signed in to both, and their ledgers
 // stay apart — one build's spending must not fill the other's window.
 //
-// The China cap is a soft one. Measured at about 2e8 (two accounts refusing
-// at 200.39M and 200.49M), the card stops the model at 1.9e8: 5% of headroom
-// for the account's spending on other machines (which this ledger cannot
-// see), so routing rests the model before the vendor's refusal does. A
-// refusal in force still reads the window full whatever the sum says.
-const FREE_WINDOW_CN = { provider: "workbuddy", cap: 1.9e8, short: "190M" }
+// The China cap is the measured one, 2e8 (two accounts refused at 200.39M
+// and 200.49M). It was a soft 1.9e8 in 0.2.12 and 0.2.13, so that routing
+// rested the model before the vendor refused it; since the sum is set aside
+// (freeWindowOf's card), the cap only scales what the card says, and the
+// headroom bought nothing but a model stopped 10M tokens early (plugins#641).
+const FREE_WINDOW_CN = { provider: "workbuddy", cap: 2e8, short: "200M" }
 const FREE_WINDOW_AI = { provider: "workbuddy-ai", cap: 1e8, short: "100M" }
 const FREE_WINDOW_SPAN = 24 * 3600 * 1000
 // The lead: how far back of an edge the read goes on. A chain read from a row
@@ -2438,7 +2449,9 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
     resetsAt: new Date(resetsAt).toISOString(),
     span: FREE_WINDOW_SPAN / 1000,
     models: FREE_WINDOW_MODELS.slice(),
-    ...(refused ? { refused: true } : {}),
+    // the ledger's sum is an estimate, shown and set aside; the vendor's
+    // refusal is the one that stops the model (see the window above)
+    ...(refused ? { refused: true } : { aside: true }),
   })
 
   // A refusal still in force is exact: the account is spending this window
@@ -3788,9 +3801,8 @@ function makePlugin(site) {
           // the free model's own window, which the credit meter above does
           // not show: what actually refuses a chat long before 160 credits
           // are spent. Both builds: WorkBuddy AI at 1e8 (ten days of
-          // refusals), the China build's refusals measured at about 2e8 on
-          // 2026-11-02, its card stopping at the 1.9e8 soft cap (see the
-          // window definitions above)
+          // refusals), the China build's at about 2e8 (2026-11-02). Set
+          // aside until the vendor refuses (see the window definitions above)
           {
             const account = a.accountId || a.user || a.uid || ""
             const win = site.ai ? FREE_WINDOW_AI : FREE_WINDOW_CN

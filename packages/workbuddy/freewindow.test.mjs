@@ -112,9 +112,9 @@ test("other accounts, other models and the other build are left out", () => {
 
 // The China build (copilot.tencent.com) has the same window under its own
 // words: measured 2026-11-02, two Free-plan accounts refused at 200,389,043
-// and 200,485,923 tokens counted the same way. Its card stops at a soft cap
-// of 1.9e8 — 5% short of the measured one — so routing rests the model
-// before the vendor refuses it. A refusal in force still reads full.
+// and 200,485,923 tokens counted the same way. Its card reads against 2e8
+// (a soft 1.9e8 in 0.2.12 and 0.2.13, plugins#641). A refusal in force
+// still reads full.
 const cnRow = (t, opts = {}) => row(t, { ...opts, provider: "workbuddy" })
 // the refusal the China build sends, in its own words
 const cnRefusal = (reset, account = "me@example.com") =>
@@ -125,13 +125,13 @@ const cnRefusal = (reset, account = "me@example.com") =>
     err: `WorkBuddy: 您的使用量已超出频率限制，将在 ${reset} UTC+8 重置，您也可以切换其他模型继续使用。`,
   })
 
-test("the China build counts its own rows against the 190M soft cap", () => {
+test("the China build counts its own rows against 200M", () => {
   const rows = [cnRow("2026-11-02T02:32:00+08:00", { in: 1_000_000, cache: 188_000_000, out: 500_000 }), cnRow("2026-11-02T03:00:00+08:00", { in: 200 })]
   const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.FREE_WINDOW_CN)
   expect(w.amount).toBe(189_500_200)
-  expect(w.limit).toBe(1.9e8)
-  expect(w.used).toBeCloseTo(99.737, 3)
-  expect(w.display).toBe("189.5M / 190M")
+  expect(w.limit).toBe(2e8)
+  expect(w.used).toBeCloseTo(94.75, 3)
+  expect(w.display).toBe("189.5M / 200M")
   expect(w.resetsAt).toBe(iso("2026-11-03T02:32:00+08:00"))
   expect(w.unit).toBe("tokens")
   expect(w.models).toEqual(["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg"])
@@ -151,7 +151,7 @@ test("the two builds' rows stay apart over one account", () => {
   expect(ai.limit).toBe(1e8)
   const cn = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.FREE_WINDOW_CN)
   expect(cn.amount).toBe(98_000_000)
-  expect(cn.limit).toBe(1.9e8)
+  expect(cn.limit).toBe(2e8)
 })
 
 // the China build names its reset in Chinese, the time in the same shape and
@@ -163,7 +163,7 @@ test("windowReset reads the China refusal", () => {
   expect(Number.isNaN(_internal.windowReset("将在明天重置"))).toBe(true)
 })
 
-// same as the AI probe the review asked for: a refusal at 100M of a 190M
+// same as the AI probe the review asked for: a refusal at 100M of a 200M
 // window (the account spent elsewhere) reads full, refused, on the Chinese
 // words alone
 test("a China account refused under the cap reads full", () => {
@@ -172,11 +172,12 @@ test("a China account refused under the cap reads full", () => {
     cnRefusal("2026-11-02 19:17:02"),
   ]
   const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.FREE_WINDOW_CN)
-  expect(w.amount).toBe(1.9e8) // the rows sum to 80M
+  expect(w.amount).toBe(2e8) // the rows sum to 80M
   expect(w.used).toBe(100)
   expect(w.refused).toBe(true)
+  expect(w.aside).toBeUndefined() // the vendor's word stops the model
   expect(w.resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
-  expect(w.display).toBe("190.0M / 190M")
+  expect(w.display).toBe("200.0M / 200M")
 })
 
 // readLedgerTail stops the chain on both languages' edges: a Chinese refusal
@@ -194,7 +195,7 @@ test("the China read stops on a Chinese refusal's edge", () => {
     const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.FREE_WINDOW_CN)
     // the row that reveals the edge is kept — the read goes back to it and
     // stops — while the window the refusal closed reads nothing: the chain
-    // opens at the next answered row, 300k of 190M, resetting 24h later
+    // opens at the next answered row, 300k of 200M, resetting 24h later
     const w = _internal.freeWindowOf(rows, "me@example.com", now, _internal.FREE_WINDOW_CN)
     expect(w.amount).toBe(300_000)
     expect(w.resetsAt).toBe(iso("2026-11-03T02:32:00+08:00"))
@@ -743,4 +744,42 @@ test("a busy account's ledger is read in time linear in its rows", () => {
     Date.parse = parse
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+// plugins#641 (XiaoFeiyu9): a paid China account, 937 answered calls and no
+// 429 on deepseek-v4.1-flash, read as 99% of the 190M soft cap while its
+// credits had 2,457 left. The ledger's sum is an estimate: it is shown, set
+// aside, and never stops the model; only the vendor's refusal does, and
+// magpie's gateway rests the model on it until the reset it names. Both
+// builds, as both read the sum the same way.
+test("a window the vendor hasn't refused is set aside, on both builds (plugins#641)", () => {
+  const now = at("2026-11-02T14:00:00+08:00")
+  // the reporter's sum, 187,701,367, in a window opened at 11:08:53
+  const cn = _internal.freeWindowOf(
+    [cnRow("2026-11-02T11:08:53+08:00", { in: 7_701_367, cache: 179_000_000, out: 1_000_000 }), cnRow("2026-11-02T12:00:00+08:00", { in: 0, cache: 0, out: 0, status: 499 })],
+    "me@example.com",
+    now,
+    _internal.FREE_WINDOW_CN,
+  )
+  expect(cn.amount).toBe(187_701_367)
+  expect(cn.limit).toBe(2e8)
+  expect(cn.display).toBe("187.7M / 200M")
+  expect(cn.aside).toBe(true)
+  expect(cn.refused).toBeUndefined()
+  // a sum over the cap is still only the sum
+  const over = _internal.freeWindowOf([row("2026-11-02T11:00:00+08:00", { in: 120_000_000 })], "me@example.com", now)
+  expect(over.used).toBe(100)
+  expect(over.aside).toBe(true)
+  // the same rows with the vendor's refusal stop the model, on both builds
+  const cnDenied = _internal.freeWindowOf(
+    [cnRow("2026-11-02T11:08:53+08:00", { in: 200_000_000 }), cnRefusal("2026-11-03 11:08:53")],
+    "me@example.com",
+    now,
+    _internal.FREE_WINDOW_CN,
+  )
+  expect(cnDenied.refused).toBe(true)
+  expect(cnDenied.aside).toBeUndefined()
+  const aiDenied = _internal.freeWindowOf([row("2026-11-02T11:00:00+08:00", { in: 100_000_000 }), refusal("2026-11-03 11:00:00")], "me@example.com", now)
+  expect(aiDenied.refused).toBe(true)
+  expect(aiDenied.aside).toBeUndefined()
 })
