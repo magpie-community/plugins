@@ -198,7 +198,7 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
     }
   }
 
-  async function browserAuthorize() {
+  async function browserAuthorize(profile) {
     const session = await openChromeSession(LOGIN)
     return {
       url: "",
@@ -225,7 +225,10 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
               error: "Agnes session expired; sign in again",
             }
           }
-          const key = await revealApiKey(token, platform)
+          const key =
+            profile === "plan"
+              ? await revealApiKey(token, platform)
+              : await revealProfileKey(token, profile, platform)
           return {
             type: "success",
             refresh: "",
@@ -233,8 +236,10 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
             expires: 0,
             consoleToken: token,
             accountId:
-              who.data?.email || who.data?.username || "Agnes browser sign-in",
+              (who.data?.email || who.data?.username || "Agnes browser sign-in") +
+              (profile === "plan" ? "" : ` · ${profile === "enterprise" ? "Enterprise" : "Personal"}`),
             source: "browser",
+            keyProfile: profile,
           }
         } catch (error) {
           return {
@@ -269,8 +274,18 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
       methods: [
         {
           type: "oauth",
-          label: "Agnes browser sign-in (Chrome/Edge)",
-          authorize: browserAuthorize,
+          label: "Agnes browser sign-in (plan key)",
+          authorize: () => browserAuthorize("plan"),
+        },
+        {
+          type: "oauth",
+          label: "Agnes browser sign-in (personal key)",
+          authorize: () => browserAuthorize("default"),
+        },
+        {
+          type: "oauth",
+          label: "Agnes browser sign-in (enterprise key)",
+          authorize: () => browserAuthorize("enterprise"),
         },
         {
           type: "api",
@@ -344,6 +359,7 @@ export const _internal = {
   apiKeyOf,
   consoleTokenOf,
   revealApiKey,
+  revealProfileKey,
   balanceText,
   browserArgs,
   browserProfileDir,
@@ -379,6 +395,22 @@ async function revealApiKey(token, platform) {
   throw new Error(
     "Agnes reported no plan API key; use the API key sign-in for a free account",
   )
+}
+
+async function revealProfileKey(token, profile, platform) {
+  const list = await platform(`/token?key_profile=${encodeURIComponent(profile)}`, token)
+  const items = Array.isArray(list?.data?.items) ? list.data.items : []
+  const active = items.find(
+    (item) => item && item.status === 1 && Number.isInteger(item.id),
+  )
+  if (!active) {
+    throw new Error(`Agnes has no active ${profile} API key; create one in the platform first`)
+  }
+  const revealed = await platform(`/token/${active.id}/key`, token, { method: "POST" })
+  if (!revealed?.data?.key) {
+    throw new Error(`Agnes could not reveal the ${profile} API key`)
+  }
+  return revealed.data.key
 }
 
 function browserArgs(profile, port, url) {

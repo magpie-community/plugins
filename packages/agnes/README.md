@@ -17,11 +17,16 @@ for example `agnes-cn`.
 
 ### Browser sign-in
 
-Choose **Agnes browser sign-in (Chrome/Edge)**. The plugin starts a separate
-Chrome, Edge, Chromium or Brave profile, opens the official Agnes login page,
-and waits for you to sign in. It then reads the session through Chrome
-DevTools Protocol, reveals the account's plan API key, and closes the browser
-window.
+Choose one of the browser sign-in methods:
+
+- **Agnes browser sign-in (plan key)** for a Token Plan or Agent Plan key.
+- **Agnes browser sign-in (personal key)** for a `default` profile key.
+- **Agnes browser sign-in (enterprise key)** for an `enterprise` profile key.
+
+The plugin starts a separate Chrome, Edge, Chromium or Brave profile, opens
+the official Agnes login page, and waits for you to sign in. It then reads the
+session through Chrome DevTools Protocol, reveals the selected profile's API
+key, and closes the browser window.
 
 The dedicated profile is kept at
 `~/.config/magpie/agnes-browser` (`AGNES_PROFILE` overrides it), so the next
@@ -33,6 +38,11 @@ contain the Agnes session because Chrome keeps it there.
 The API key and console session are also stored in the plugin account. Set
 `AGNES_BROWSER` to a Chromium-based browser path if it is outside the usual
 locations.
+
+Personal and enterprise keys are billed from the account balance and can use
+the free models enabled for that key. If a profile has more than one active
+key, the browser sign-in picks the first active key in the platform's list; use
+the API-key fallback if you need a specific key.
 
 This browser path is experimental because it relies on Agnes keeping its
 current `localStorage.token` login shape.

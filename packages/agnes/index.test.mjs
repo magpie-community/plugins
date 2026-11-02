@@ -10,6 +10,7 @@ const {
   PLATFORM,
   agentWindows,
   revealApiKey,
+  revealProfileKey,
   browserArgs,
   findBrowser,
   openChromeSession,
@@ -54,11 +55,22 @@ describe("sign-in", () => {
       baseURL: BASE,
       apiKey,
     })
-    expect(plugin.auth.methods).toHaveLength(2)
-    expect(plugin.auth.methods[0]).toMatchObject({ type: "oauth", label: "Agnes browser sign-in (Chrome/Edge)" })
+    expect(plugin.auth.methods).toHaveLength(4)
+    expect(plugin.auth.methods[0]).toMatchObject({
+      type: "oauth",
+      label: "Agnes browser sign-in (plan key)",
+    })
     expect(typeof plugin.auth.methods[0].authorize).toBe("function")
-    expect(plugin.auth.methods[1]).toMatchObject({ type: "api", placeholder: "cpk-…" })
-    expect(plugin.auth.methods[1].prompts[0]).toMatchObject({ key: "consoleToken" })
+    expect(plugin.auth.methods[1]).toMatchObject({
+      type: "oauth",
+      label: "Agnes browser sign-in (personal key)",
+    })
+    expect(plugin.auth.methods[2]).toMatchObject({
+      type: "oauth",
+      label: "Agnes browser sign-in (enterprise key)",
+    })
+    expect(plugin.auth.methods[3]).toMatchObject({ type: "api", placeholder: "cpk-…" })
+    expect(plugin.auth.methods[3].prompts[0]).toMatchObject({ key: "consoleToken" })
   })
 
   test("loads an OAuth account's API key and console token", async () => {
@@ -472,6 +484,40 @@ describe("plan key reveal", () => {
     }
     expect(await revealApiKey("jwt", platform)).toBe("cpk-key")
     expect(calls).toEqual(["/user/agentplan/subscription", "/user/subscription/key/reveal"])
+  })
+})
+
+describe("profile key reveal", () => {
+  test("selects the first active personal key and reveals it by id", async () => {
+    const calls = []
+    const platform = async (path, _token, options) => {
+      calls.push([path, options?.method ?? "GET"])
+      if (path === "/token?key_profile=default") {
+        return {
+          data: {
+            items: [
+              { id: 1, key_profile: "default", status: 0 },
+              { id: 2, key_profile: "default", status: 1 },
+              { id: 3, key_profile: "default", status: 1 },
+            ],
+          },
+        }
+      }
+      if (path === "/token/2/key") return { data: { id: 2, key: "personal-key" } }
+      throw new Error(`unexpected ${path}`)
+    }
+    expect(await revealProfileKey("jwt", "default", platform)).toBe("personal-key")
+    expect(calls).toEqual([
+      ["/token?key_profile=default", "GET"],
+      ["/token/2/key", "POST"],
+    ])
+  })
+
+  test("fails clearly when the profile has no active key", async () => {
+    const platform = async () => ({ data: { items: [{ id: 1, status: 0 }] } })
+    await expect(revealProfileKey("jwt", "enterprise", platform)).rejects.toThrow(
+      "no active enterprise API key",
+    )
   })
 })
 
