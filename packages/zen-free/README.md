@@ -91,6 +91,14 @@ itself (`edit`, `glob`, `grep`, `read`, `shell`), described as not
 available. A call of one of them the agent doesn't have reaches the agent
 like any other.
 
+Zen's free tier also refuses some tool names outright, with `429
+FreeUsageLimitError`: a name with `terminal` in it, and `ReportFindings`
+offered beside `ScheduleWakeup`, as Claude Code desktop offers them
+(#624). Those tools go to Zen under other names of the same words
+(`mcp__ide__console_run`, `findings_report`, `wakeup_schedule`), in the
+agent's past calls and `tool_choice` too, and a call of one reaches the
+agent under its own name.
+
 Zen's free tier also tells OpenCode's own requests by the environment
 block every OpenCode prompt ends with (`<env>`, a `Working directory:`
 line, `</env>`) in a system message. Another agent's request without one

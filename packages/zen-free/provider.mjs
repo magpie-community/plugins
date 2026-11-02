@@ -260,7 +260,82 @@ function normalizeTools(body, protocol) {
           : { type: "function", ...definition, parameters },
     );
   }
-  return { declared };
+  return { declared, renamed: renameRefused(body, protocol) };
+}
+
+// Tool names Zen's free tier refuses to serve under, whatever else the
+// request says, as alonewolfsy-web bisected a real Claude Code desktop
+// request on 2026-11-01 (plugins#624): a name with "terminal" in it, in
+// any case (an MCP server's terminal tools), and ReportFindings and
+// ScheduleWakeup offered together, as Claude Code desktop's own tools are
+// (either alone was served). Each got 429 FreeUsageLimitError at once, and
+// the same request with those tools under other names was served. They go to Zen
+// under a name of the same words (ReportFindings as findings_report,
+// mcp__x__terminal_run as mcp__x__console_run), in the agent's past calls
+// and tool_choice too, and a call of one comes back under the agent's own
+// name (toolPolicy.renamed, read by tool-response.mjs's nameGuard).
+const REFUSED_NAMES = { ReportFindings: "findings_report", ScheduleWakeup: "wakeup_schedule" };
+const REFUSED_WORD = /terminal/i;
+
+function servedName(name, taken) {
+  if (Object.hasOwn(REFUSED_NAMES, name))
+    return Object.keys(REFUSED_NAMES).every((pair) => taken.has(pair)) ? REFUSED_NAMES[name] : undefined;
+  if (!REFUSED_WORD.test(name)) return undefined;
+  return name.replace(new RegExp(REFUSED_WORD.source, "gi"), (word) =>
+    word === word.toUpperCase() ? "CONSOLE" : word[0] === "T" ? "Console" : "console",
+  );
+}
+
+// renameRefused gives each refused tool its served name and answers the
+// served names, each to the agent's own.
+function renameRefused(body, protocol) {
+  const get = (tool) => (protocol === "chat" ? tool?.function?.name : tool?.name);
+  const functions = protocol === "chat" && Array.isArray(body.functions) ? body.functions : [];
+  const taken = new Set(
+    [...body.tools.map(get), ...functions.map((fn) => fn?.name)].filter((name) => typeof name === "string"),
+  );
+  const served = new Map(); // agent's name -> served name
+  const renamed = new Map(); // served name -> agent's name
+  for (const name of taken) {
+    const wanted = servedName(name, taken);
+    if (!wanted) continue;
+    let alias = wanted;
+    for (let i = 2; taken.has(alias) || renamed.has(alias); i++) alias = `${wanted}_${i}`;
+    served.set(name, alias);
+    renamed.set(alias, name);
+  }
+  if (!served.size) return renamed;
+  const rename = (name) => (typeof name === "string" && served.has(name) ? served.get(name) : name);
+  for (const tool of body.tools) {
+    if (!served.has(get(tool))) continue;
+    if (protocol === "chat") tool.function.name = served.get(tool.function.name);
+    else tool.name = served.get(tool.name);
+  }
+  for (const fn of functions) if (served.has(fn?.name)) fn.name = served.get(fn.name);
+  // the agent's past calls of them
+  const messages = protocol === "responses" ? body.input : body.messages;
+  if (Array.isArray(messages)) {
+    for (const item of messages) {
+      if (protocol === "responses") {
+        if (item?.type === "function_call") item.name = rename(item.name);
+      } else if (protocol === "anthropic") {
+        if (Array.isArray(item?.content))
+          for (const part of item.content) if (part?.type === "tool_use") part.name = rename(part.name);
+      } else {
+        if (Array.isArray(item?.tool_calls))
+          for (const call of item.tool_calls) if (call?.function) call.function.name = rename(call.function.name);
+        if (item?.function_call) item.function_call.name = rename(item.function_call.name);
+      }
+    }
+  }
+  const choice = body.tool_choice;
+  if (choice && typeof choice === "object") {
+    if (choice.function && typeof choice.function === "object") choice.function.name = rename(choice.function.name);
+    else if ("name" in choice) choice.name = rename(choice.name);
+  }
+  if (body.function_call && typeof body.function_call === "object")
+    body.function_call.name = rename(body.function_call.name);
+  return renamed;
 }
 
 // Zen's free tier serves a request as OpenCode's own only when one of its
