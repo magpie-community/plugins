@@ -653,6 +653,12 @@ function providerRequest(wire, req, model) {
   switch (wire) {
     case "anthropic": {
       const stream = !!req.stream
+      // Zed does not implement Anthropic's clear-thinking edit.
+      if (req.context_management?.edits?.some(edit => edit.type === "clear_thinking_20251015")) {
+        req.context_management.edits = req.context_management.edits.filter(edit => edit.type !== "clear_thinking_20251015")
+        if (!req.context_management.edits.length) delete req.context_management.edits
+        if (!Object.keys(req.context_management).length) delete req.context_management
+      }
       // Zed's Anthropic request has no stream field: the cloud always streams
       delete req.stream
       // Zed's cloud refuses a tool result without is_error ("missing field
