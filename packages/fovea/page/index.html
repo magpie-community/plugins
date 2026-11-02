@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fovea · 对照证据</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="report.js"></script>
+  <script src="live.js"></script>
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="identity"><img src="icon.svg" alt="" width="38" height="38"><div><h1>Fovea</h1><p>同一份请求，裁剪前后</p></div></div>
+      <span id="source" class="source"></span>
+    </header>
+
+    <section class="summary" aria-label="请求规模对照">
+      <div class="metric"><span>原始请求</span><strong id="before">—</strong><small>字符</small></div>
+      <div class="metric"><span>经过 Fovea</span><strong id="after">—</strong><small>字符</small></div>
+      <div class="metric accent"><span>减少</span><strong id="saved">—</strong><small id="changed">—</small></div>
+    </section>
+
+    <section class="panel" aria-labelledby="size-title">
+      <div class="section-title"><h2 id="size-title">请求体积</h2><span id="ratio">—</span></div>
+      <div class="bar"><span>原始</span><div class="track"><i class="fill raw"></i></div><output id="raw-bar">—</output></div>
+      <div class="bar"><span>裁剪后</span><div class="track"><i id="slim-fill" class="fill slim"></i></div><output id="slim-bar">—</output></div>
+      <p class="caption">这些是本地请求的 JSON 字符数，不是模型实际计费 token。输入内容不会显示或上传。</p>
+    </section>
+
+    <section class="panel" aria-labelledby="cache-title">
+      <div class="section-title"><h2 id="cache-title">相邻两轮的共同前缀</h2><span id="prefix-badge" class="badge">—</span></div>
+      <div class="bar"><span>不开插件</span><div class="track"><i id="baseline-prefix-fill" class="fill raw"></i></div><output id="baseline-prefix">—</output></div>
+      <div class="bar"><span>开启插件</span><div class="track"><i id="fovea-prefix-fill" class="fill slim"></i></div><output id="fovea-prefix">—</output></div>
+      <p class="caption">比较连续两轮中共同前缀占各自首轮请求的比例；另逐字检查已裁部分。这仍是缓存稳定性代理指标，不等于供应商报告的缓存读取 token。</p>
+    </section>
+
+    <section class="panel" aria-labelledby="try-title">
+      <div class="section-title"><h2 id="try-title">用你的请求复验</h2><span class="badge">仅在本机浏览器计算</span></div>
+      <p>粘贴 Chat／Anthropic 的 <code>messages</code> 请求，或 Responses 的 <code>input</code> 请求。页面不会保存正文；只显示统计数字。</p>
+      <div class="controls">
+        <label>模式<select id="mode"><option value="off">保留头尾</option><option value="auto">自动判断话题</option><option value="always">旧内容全折叠</option></select></label>
+        <label>最近消息<input id="keep" type="number" min="0" max="1000" value="4"></label>
+        <label>边界步长<input id="step" type="number" min="1" max="1000" value="4"></label>
+      </div>
+      <textarea id="input" spellcheck="false" placeholder='{"model":"...","messages":[...]}' aria-label="请求 JSON"></textarea>
+      <div class="actions"><button id="analyze" type="button">计算前后差异</button><button id="clear" type="button" class="quiet">清空输入</button><span id="error" role="status"></span></div>
+    </section>
+
+    <section class="panel" aria-labelledby="live-title">
+      <div class="section-title"><h2 id="live-title">真实网关 A/B</h2><span id="live-source" class="badge">尚未运行</span></div>
+      <div id="live-summary" class="live-grid"><p class="caption">运行 <code>bun packages/fovea/live-benchmark.mjs</code> 后，这里会显示同模型、同请求、ABBA 顺序的供应商用量。运行期间插件选项会临时切换，脚本结束会恢复。</p></div>
+      <p class="caption">只比较暖缓存的第二次请求；真实费用以 Magpie 用量 CSV 的 <code>cost_usd</code> 为准。若提供商未返回缓存字段，页面会显示“未提供”，不推算命中。</p>
+    </section>
+
+    <section class="panel note" aria-labelledby="proof-title">
+      <h2 id="proof-title">实际省钱如何证明</h2>
+      <p>对同一模型、同一请求做受控 A/B。分别记录供应商返回的 <code>input_tokens</code>、<code>cache_read_tokens</code>、耗时和 Magpie 的 <code>cost_usd</code>。必须比较暖缓存的第二次调用；单看字符数或第一次调用，不能得出省钱结论。</p>
+      <p id="limits"></p>
+    </section>
+  </main>
+</body>
+</html>

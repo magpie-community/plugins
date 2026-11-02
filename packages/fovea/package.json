@@ -6,7 +6,9 @@
   "files": [
     "fovea.middleware.js",
     "preview.mjs",
+    "benchmark.mjs",
     "README.md",
+    "page/*",
     "brand/assets/*.svg",
     "brand/manifest.json",
     "brand/review.html"
@@ -30,6 +32,13 @@
   },
   "magpie": {
     "middleware": "./fovea.middleware.js",
+    "page": {
+      "title": "Fovea evidence",
+      "titles": { "zh": "Fovea 对照证据" },
+      "file": "page/index.html",
+      "icon": "page/icon.svg"
+    },
+    "permissions": [],
     "options": {
       "threshold": 96000,
       "keep_recent": 12,

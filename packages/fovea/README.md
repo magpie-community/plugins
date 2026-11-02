@@ -67,6 +67,16 @@ bun packages/fovea/preview.mjs /path/to/request.json '{"keep_recent":4,"protect"
 
 The numbers are estimated with the middleware's size walk (`chars / 4` for tokens), not a provider tokenizer. On the demo history: about 190,851 → 55,439 estimated tokens. For live usage, compare the provider's `prompt_tokens` and request latency with the middleware on and off; the separate 0.1.0 experiment used 163,143 → 42,358 prompt tokens and a median 7.1s → 2.5s. Results vary by history shape and provider cache.
 
+## Evidence, and what each kind can prove
+
+Three separate claims need three separate kinds of evidence:
+
+1. **The rewrite is sound and bounded.** `bun test packages/fovea` — one file, no network, deterministic. It covers tool pairing in all three request shapes, `protect` honoured in both modes, surrogate-pair cuts, document blocks untouched, marker idempotence, and the cut boundary staying put across consecutive rounds (`fovea.test.mjs`).
+2. **The same request gets smaller, offline.** `bun packages/fovea/benchmark.mjs [request.json] [options]` runs one request through the middleware both ways and writes `page/report.js`: character counts, messages changed, the common-prefix share of consecutive rounds, and whether the already-cut messages are byte-stable. Paste your own request into the plugin's page (Plugins › Fovea evidence) to compute the same numbers in-browser. The report contains no prompt text.
+3. **Real tokens, cache hits and cost.** `FOVEA_GATEWAY_KEY=<temporary local gateway key> bun packages/fovea/live-benchmark.mjs` sends one synthetic request through your local magpie gateway four times — raw, fovea, fovea, raw (ABBA, same model) — and records the provider's returned `input/cache_read/output` tokens and latency, restoring the plugin's options afterwards. Judge it on the warm second call; the page shows the two warm cards. **Caveats:** provider caches and routing are not under our control, `saccade: auto` may legitimately cost cache on a flip, and only magpie's usage CSV (`magpie usage --csv`) shows billed `cost_usd`. Character percentages are not dollars.
+
+What none of these can prove: that shortening history keeps a particular agent's answers equally good. Test that on your own workload with the middleware off and on.
+
 ## Mark and visual
 
 `brand/assets/mark.svg` is a transparent 1:1 monochrome mark. Full lines above and below represent preserved context; the three dots represent a visible omission. Light and dark SVG variants, color provenance, an offline review page and 32px browser screenshots are in `brand/`. The ink color `#161616` was sampled from magpie's existing icon; it is a material measurement, not an official brand token.

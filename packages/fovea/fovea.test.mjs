@@ -1,8 +1,25 @@
 import { test, expect } from "bun:test"
 import * as mod from "./fovea.middleware.js"
 import { check, run } from "../../scripts/middleware.mjs"
+import { benchmark } from "./benchmark.mjs"
 
 check(import.meta.dir, mod)
+
+test("the same-request report excludes prompt text and distinguishes size from cache evidence", () => {
+  const report = benchmark()
+  expect(report.request.before).toBeGreaterThan(report.request.after)
+  expect(report.consecutive.stable_cut_prefix).toBe(true)
+  expect(report.consecutive.baseline_prefix_share).toBeGreaterThan(0)
+  expect(report.consecutive.fovea_prefix_share).toBeGreaterThan(0)
+  expect(report.limits).toContain("不是计费 token")
+  const privateText = "sample-private-prompt-text-".repeat(8)
+  const custom = benchmark({ messages: [
+    { role: "user", content: "task" },
+    { role: "assistant", content: privateText },
+    { role: "user", content: "next" },
+  ] }, { threshold: 0, keep_recent: 1, keep_recent_tokens: 0, cut_step: 1 })
+  expect(JSON.stringify(custom)).not.toContain(privateText)
+})
 
 const options = {
   threshold: 0, keep_recent: 4, keep_recent_tokens: 0, cut_step: 4,
