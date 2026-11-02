@@ -6,30 +6,26 @@ ordinary agent module plus an explicit catalog seed script.
 
 ## Install and connect
 
-The [v0.1.0 release](https://github.com/est7/plugins/releases/tag/junie-v0.1.0)
-includes a `.tgz` package and SHA-256 checksums. Download and extract the package,
-then install the extracted folder:
+Install from Magpie's Plugins tab, or with the CLI:
 
 ```sh
-tar -xzf magpie-community-agent-junie-0.1.0.tgz
-magpie plugin add ./package
-magpie junie <provider/model>
-node ./package/seed.mjs --eco on
+magpie plugin add @magpie-community/agent-junie
 ```
 
-Magpie 0.1.2141 accepts the local folder; it does not accept a release tarball URL
-as a plugin spec. Keep the extracted folder for future seed commands.
-
-The seed command requires Node.js 18 or later. From the repository root:
+After installation, `seed.mjs` is at
+`~/.config/magpie/plugins/node_modules/@magpie-community/agent-junie/seed.mjs`.
+If `XDG_CONFIG_HOME` is set, replace `~/.config` with that directory.
+The seed command requires Node.js 18 or later. With Junie closed, connect a
+model and seed the catalog before starting Junie:
 
 ```sh
-magpie plugin add ./packages/junie
 magpie junie <provider/model>
-node packages/junie/seed.mjs --eco on
+JUNIE_SEED="${XDG_CONFIG_HOME:-$HOME/.config}/magpie/plugins/node_modules/@magpie-community/agent-junie/seed.mjs"
+node "$JUNIE_SEED" --eco on
 junie
 ```
 
-The package is not published to npm. `magpie junie <provider/model>` writes
+The commands below use `JUNIE_SEED` set above. `magpie junie <provider/model>` writes
 `~/.junie/magpie/connection.json`: its `id` is Magpie's selected model ID,
 `baseUrl` ends in `/v1/chat/completions`, and `apiKey` is the Junie agent's
 gateway key. This connection file is outside Junie's model discovery folders.
@@ -50,7 +46,7 @@ without an additional selected-model alias.
 To choose an individual catalog model as the launch default:
 
 ```sh
-node packages/junie/seed.mjs --model provider/model --eco on
+node "$JUNIE_SEED" --model provider/model --eco on
 ```
 
 You can also choose an individual model in Junie's `/model`. Running the seed
@@ -67,8 +63,8 @@ An empty, invalid, partial or unavailable catalog leaves the existing files
 in place. A user edit to a generated profile is reported instead of overwritten.
 
 ```sh
-node packages/junie/seed.mjs
-node packages/junie/seed.mjs --remove
+node "$JUNIE_SEED"
+node "$JUNIE_SEED" --remove
 magpie junie default
 ```
 
