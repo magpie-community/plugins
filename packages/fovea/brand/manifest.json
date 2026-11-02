@@ -1,0 +1,36 @@
+{
+  "projects": [
+    {
+      "id": "fovea",
+      "name": "Fovea",
+      "sources": [
+        { "url": "https://github.com/magpie-community/plugins/pull/467", "label": "插件 PR" },
+        { "url": "https://github.com/yetone/magpie/blob/main/site/public/img/icon-256.png", "label": "magpie 既有图标" }
+      ],
+      "tokens": {
+        "primary": "#161616",
+        "accent": "#161616",
+        "onLight": "#161616",
+        "onDark": "#F7F7F5",
+        "background": "transparent"
+      },
+      "tokenSources": {
+        "primary": "素材测量：magpie/site/public/img/icon-256.png (256px RGBA) 中 alpha>200 且 RGB<60 的像素众数为 RGB(22,22,22) = #161616；不是源码声明的品牌 token",
+        "accent": "本次建议：沿用取样墨色，不另引强调色",
+        "onLight": "素材测量：沿用主墨色 #161616",
+        "onDark": "本次建议：深色底上使用 #F7F7F5，对照原图标的浅色背景；不是生产 token",
+        "background": "本次建议：SVG 透明画布，交付后用于深浅背景"
+      },
+      "rationale": [
+        "本次建议：两端完整横线代表保留的上下文，中间三个点代表有标记的省略；圆点不是删除按钮，表达的是可见且可解释的缩短。",
+        "本次建议：采用 magpie 图标取样得到的单色墨线，降低社区插件与主产品并列时的视觉冲突。"
+      ],
+      "recommendations": [
+        "本次建议：先把图标当插件列表的 32px 标记使用；若未来成为独立产品，再做与 magpie 主品牌区分的色彩系统。"
+      ],
+      "asset": "assets/mark.svg",
+      "darkAsset": "assets/mark-dark.svg",
+      "oldAsset": null
+    }
+  ]
+}

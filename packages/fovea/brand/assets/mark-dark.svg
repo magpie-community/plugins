@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Fovea mark for dark backgrounds">
+  <title>Fovea — recent context held, old context shortened, dark background</title>
+  <rect x="22" y="25" width="84" height="12" rx="6" fill="#F7F7F5"/>
+  <rect x="22" y="47" width="84" height="8" rx="4" fill="#F7F7F5"/>
+  <circle cx="49" cy="68" r="5" fill="#F7F7F5"/>
+  <circle cx="64" cy="68" r="5" fill="#F7F7F5"/>
+  <circle cx="79" cy="68" r="5" fill="#F7F7F5"/>
+  <rect x="22" y="81" width="84" height="10" rx="5" fill="#F7F7F5"/>
+  <rect x="22" y="99" width="84" height="8" rx="4" fill="#F7F7F5"/>
+</svg>

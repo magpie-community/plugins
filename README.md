@@ -53,7 +53,7 @@ These packages aren't OpenCode plugins. magpie runs them in its gateway, on the 
 | [antigravity-cloak](packages/antigravity-cloak) | Claude Code and Claude Desktop on Antigravity: break the words Antigravity turns their system prompt away for, in what Antigravity alone is sent |
 | [codex-history](packages/codex-history) | Opt-in Responses history compatibility after switching providers: remove historical ciphertext and optional item IDs while preserving readable content and tool-call pairing |
 | [history-trim](packages/history-trim) | Send a request's history smaller: fold a run of blank lines, drop a system prompt written twice and a message repeated right after itself, and cut a past tool result longer than `maxToolLength` at a word boundary |
-| [context-slim](packages/context-slim) | Thin old history further than [history-trim](packages/history-trim): a recent window and the first task message stay whole, old tool results and long texts keep head and tail, and images sent turns ago become a note |
+| [fovea](packages/fovea) | See history the way the eye does, further than [history-trim](packages/history-trim): a recent window stays sharp, old tool results and long texts keep head and tail, old images become a note — and with `saccade` on, a new topic's request does not carry the old context at all |
 
 ```sh
 magpie plugin add @magpie-community/middleware-<name>

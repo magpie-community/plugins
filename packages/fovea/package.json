@@ -1,0 +1,46 @@
+{
+  "name": "@magpie-community/middleware-fovea",
+  "version": "0.2.0",
+  "description": "Thin an agent's long history the way the eye sees: a recent window stays sharp, old tool results and texts keep head and tail, old images become a note — and on a saccade (saccade: auto) a new topic's request does not carry the old context at all. magpie gateway middleware",
+  "type": "module",
+  "files": [
+    "fovea.middleware.js",
+    "preview.mjs",
+    "README.md",
+    "brand/assets/*.svg",
+    "brand/manifest.json",
+    "brand/review.html"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-middleware",
+    "context",
+    "history",
+    "compaction",
+    "tool-results",
+    "token-budget",
+    "saccade",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/fovea"
+  },
+  "magpie": {
+    "middleware": "./fovea.middleware.js",
+    "options": {
+      "threshold": 96000,
+      "keep_recent": 12,
+      "keep_recent_tokens": 16000,
+      "tool_head": 600,
+      "tool_tail": 300,
+      "text_head": 1200,
+      "text_tail": 400,
+      "drop_old_images": true,
+      "protect": [],
+      "saccade": "off"
+    }
+  }
+}
