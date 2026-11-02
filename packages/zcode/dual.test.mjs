@@ -54,7 +54,9 @@ function planAndBalance() {
   answers["/api/biz/subscription/list"] = ok([{ productName: "GLM Coding Pro", status: "VALID" }])
   answers["/api/v1/zcode-plan/billing/balance"] = ok(balance)
 }
-const hooks = async () => (await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })).auth
+// these tests are about the plan and the -Trial picks, so freeFirst (on by
+// default) is off here; the freeFirst tests below build their own
+const hooks = async () => (await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } }, { freeFirst: false })).auth
 const loader = async () => (await hooks()).loader(async () => coding, { id: "zcode" })
 async function sendTo(url, body) {
   const opts = await loader()
@@ -131,6 +133,28 @@ test("without freeFirst the plain model goes to the coding plan as before", asyn
   planAndBalance()
   answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
   const opts = await freePlugin({ freeFirst: false }).then((h) => h.loader(async () => coding, { id: "zcode", options: {} }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  expect(sent.at(-1).origin).toBe("https://api.z.ai")
+  expect(JSON.parse(sent.at(-1).body).model).toBe("GLM-5.3-Flash")
+})
+
+// freeFirst is on by default: a plugin and provider that say nothing spend
+// the gift first; false on either keeps the plain model on the plan.
+test("free first is on when nothing sets it", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin().then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  expect(sent.at(-1).origin).toBe("https://zcode.z.ai")
+  expect(JSON.parse(sent.at(-1).body).model).toBe("glm-5.3-flash")
+})
+
+test("freeFirst false on the provider keeps the plan, over a plugin that says nothing", async () => {
+  planAndBalance()
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin().then((h) => h.loader(async () => coding, { id: "zcode", options: { freeFirst: false } }))
   const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
   expect(res.status).toBe(200)
   expect(sent.at(-1).origin).toBe("https://api.z.ai")

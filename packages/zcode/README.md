@@ -136,14 +136,15 @@ never read or buffered on the way.
 
 **Free first.** Picking `-Trial` by hand keeps the choice the user's,
 but an agent that always asks the plain model never sees the gift.
-`freeFirst` turns the preference around: the plain model spends the
-account's own live gift first, and falls back to the coding plan when
-the gift cannot serve it — a bucket that is spent, a model the gift
-does not serve, no ZCode session, or the minute's rest a refusal just
-earned. Turn it on for the whole plugin in magpie's Plugins › Options
+`freeFirst`, on by default since 0.1.42, turns the preference around:
+the plain model spends the account's own live gift first, and falls
+back to the coding plan when the gift cannot serve it — a bucket that
+is spent, a model the gift does not serve, no ZCode session, or the
+minute's rest a refusal just earned. Turn it off for the whole plugin
+in magpie's Plugins › Options
 
 ```json
-{ "freeFirst": true }
+{ "freeFirst": false }
 ```
 
 or on the provider alone, under `provider.zcode.options` in the config

@@ -2241,9 +2241,12 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
   }
   // freeFirst reads the option from the provider config's options first,
   // and from the plugin's own (magpie's Plugins › Options) when the
-  // provider carries no freeFirst of its own.
+  // provider carries no freeFirst of its own. It is on unless one of them
+  // says false: a gift ZCode hands out (each weekend, sgfvdsg86265 on X)
+  // lapses unused behind an agent that asks the plain model, and every
+  // failure of the gift is answered from the plan.
   const freeFirst = (providerOptions) =>
-    providerOptions?.freeFirst !== undefined ? providerOptions.freeFirst === true : options?.freeFirst === true
+    providerOptions?.freeFirst !== undefined ? providerOptions.freeFirst !== false : options?.freeFirst !== false
   const oauth = (site) => ({
     type: "oauth",
     label: `ZCode: ${SITES[site].name}${site === "bigmodel" ? " (智谱)" : ""} GLM Coding Plan`,
