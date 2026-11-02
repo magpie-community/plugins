@@ -55,10 +55,13 @@ afterEach(() => {
 // Cursor's API; the picker answers (ok) or fails, after ms
 const PICKER = [{ name: "claude-opus-5-5", clientDisplayName: "Claude Opus 5.5", supportsNonMaxMode: true, contextTokenLimit: 300000 }]
 function fakeAPI(picker) {
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, init) => {
     const u = String(url)
     if (u.endsWith("/GetServerConfig")) return Response.json({ agentUrlConfig: { agentUrl: base } })
     if (u.endsWith("/GetUsableModels")) return Response.json({ models: [] })
+    // the full catalog (scope 3) is asked alongside, and fails here: it is
+    // not the list this file times
+    if (u.endsWith("/AvailableModels") && JSON.parse(init?.body || "{}").scope) return new Response("down", { status: 503 })
     if (u.endsWith("/AvailableModels")) {
       events.push("list asked")
       await new Promise((r) => setTimeout(r, picker.ms))
