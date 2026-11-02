@@ -224,6 +224,56 @@ test("switching chats discards a book that is still being read", async () => {
   expect(page.pending()).toBe(0)
 })
 
+test("MCP tools follow the typed question while the gateway still receives the EPUB", async () => {
+  const names = [...Array.from({ length: 12 }, (_, i) => "github_lookup_" + i),
+    ...Array.from({ length: 3 }, (_, i) => "weather_forecast_" + i), "list_items"]
+  const mcp = fakeMcp("catalog", names.map(name => ({ name, inputSchema: { type: "object", properties: {} } })))
+  const h = { ...json, "x-magpie-chat-token": token }
+  writeFileSync(join(cfg, "library.json"), JSON.stringify({
+    mcp: [{ name: "catalog", transport: "http", url: `http://127.0.0.1:${mcp.port}/mcp`, agents: [] }],
+  }))
+  const page = chatPage()
+  const chapters = "github ".repeat(1000) + "The last page."
+  const file = { name: "github.epub", kind: "file", data: "data:;base64,Ym9vaw==" }
+  page.MagpieEpub.read = async () => ({ text: chapters })
+  const weather = names.filter(name => name.startsWith("weather")).map(name => "catalog_" + name)
+  const send = async history => {
+    const before = seen.length
+    await page.streamChat({ ...chatBody, messages: history }, () => {})
+    expect(seen.length).toBe(before + 1)
+    const body = seen.at(-1).body
+    expect(JSON.stringify(body.messages).split("The last page.")).toHaveLength(2)
+    expect(body.messages.find(message => message.role === "user").content).toContain(chapters)
+    expect(body.messages.every(message => !("userText" in message))).toBe(true)
+    return (body.tools || []).map(tool => tool.function.name)
+  }
+  try {
+    await raw("POST", "/api/settings", h, { mcp: ["catalog"], mcpAll: false })
+    const first = { role: "user", content: "weather", files: [file] }
+    expect(await send([first])).toEqual(weather)
+    expect(await send([{ ...first, content: "" }])).toEqual(["catalog_list_items"])
+    expect(await send([{ ...first, content: "【电子书：例子】weather【电子书结束】" }])).toEqual(weather)
+    for (const files of [[], [file]]) {
+      expect(await send([first, { role: "assistant", content: "hello" },
+        { role: "user", content: "weather", files }])).toEqual(weather)
+    }
+    expect(await send([first, { role: "assistant", content: "hello" },
+      { role: "user", content: "github" }])).toEqual(
+      names.filter(name => name.startsWith("github")).map(name => "catalog_" + name))
+    const before = seen.length
+    const response = await raw("POST", "/api/chat", h, {
+      ...chatBody, messages: [{ role: "user", content: "weather" }],
+    })
+    expect(response.status).toBe(200)
+    expect(seen.length).toBe(before + 1)
+    expect(seen.at(-1).body.tools.map(tool => tool.function.name)).toEqual(weather)
+  } finally {
+    await raw("POST", "/api/settings", h, { mcp: [], mcpAll: false })
+    rmSync(join(cfg, "library.json"), { force: true })
+    mcp.stop(true)
+  }
+})
+
 test("conversations save and list with the token", async () => {
   const h = { ...json, origin: "null", "x-magpie-chat-token": token }
   const saved = JSON.parse((await raw("POST", "/api/conversations", h, { title: "t", messages: [{ role: "user", content: "x" }] })).body)
@@ -461,8 +511,8 @@ test("finish() renders a reply that arrived in one chunk", () => {
 
 // ---------- 0.1.6: one switch for every MCP server in magpie's Library ----------
 
-// a Streamable-HTTP MCP server on a free port that lists one tool
-function fakeMcp(tool) {
+// a Streamable-HTTP MCP server on a free port
+function fakeMcp(tool, tools) {
   return Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -472,7 +522,7 @@ function fakeMcp(tool) {
       const result = msg.method === "initialize"
         ? { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: tool, version: "1" } }
         : msg.method === "tools/list"
-          ? { tools: [{ name: tool, description: "search " + tool, inputSchema: { type: "object", properties: {} } }] }
+          ? { tools: tools || [{ name: tool, description: "search " + tool, inputSchema: { type: "object", properties: {} } }] }
           : {}
       return Response.json({ jsonrpc: "2.0", id: msg.id, result })
     },
