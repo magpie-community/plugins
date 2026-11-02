@@ -163,12 +163,14 @@
         "hub-accio",
         "hub-lobsterai",
         "hub-magicrew",
-        "hub-magicrew-intl"
+        "hub-magicrew-intl",
+        "hub-autoclaw",
+        "hub-autoclaw-cn"
       ],
       "community": true,
       "summary": {
-        "en": "Third-party Magpie adapter for dsh-providers-hub (by JetLi): five providers, each a separate channel you can sign in to, meter and switch off on its own — AStudio (iFlytek), Accio (Alibaba), LobsterAI (Youdao), MagiCrew (letsmagic.cn / magicrew.ai). Channels that already exist in the registry are not shipped. Runs without DSH. Its AStudio signs in on a local page (SMS, password or WeChat QR, no desktop app needed) and calls chat/completions; the standalone AStudio plugin (astudio) reuses the desktop sign-in and calls Responses. On one account both share the same daily points pool.",
-        "zh": "dsh-providers-hub（作者 JetLi）的第三方适配：五条供应商（每渠道一条，可各自登录/看额度/单独关闭）——AStudio（讯飞）、Accio（阿里）、LobsterAI（有道）、超级麦吉/MagiCrew（letsmagic.cn / magicrew.ai）。与社区 registry 已有插件重叠的渠道不随包提供。不依赖 DSH 运行。其中 AStudio 在本地登录页用短信、密码或微信扫码登录（不需要桌面端），走 chat/completions；独立的 AStudio 插件（astudio）复用桌面端登录态，走 Responses。同一账号两边共用一个每日积分池。"
+        "en": "Third-party Magpie adapter for dsh-providers-hub (by JetLi): seven providers, each a separate channel you can sign in to, meter and switch off on its own — AStudio (iFlytek), Accio (Alibaba), LobsterAI (Youdao), MagiCrew (letsmagic.cn / magicrew.ai), and AutoClaw (international autoglm.ai / China zhipuai.cn). Channels already in the registry are shipped only with a named difference (#614; see the AutoClaw note below). Runs without DSH. Its AStudio signs in on a local page (SMS, password or WeChat QR, no desktop app needed) and calls chat/completions; the standalone AStudio plugin (astudio) reuses the desktop sign-in and calls Responses. On one account both share the same daily points pool. Its AutoClaw providers differ from opencode-autoclaw-auth the same way: besides web OAuth / phone SMS they accept a pasted accessToken + refreshToken, and can read an already signed-in AutoClaw desktop client (current Windows user only, off unless clicked). Both plugins read one account's credit balance, so spend in one and the other sees it.",
+        "zh": "dsh-providers-hub（作者 JetLi）的第三方适配：七条供应商（每渠道一条，可各自登录/看额度/单独关闭）——AStudio（讯飞）、Accio（阿里）、LobsterAI（有道）、超级麦吉/MagiCrew（letsmagic.cn / magicrew.ai）。与社区 registry 已有插件重叠的渠道不随包提供。不依赖 DSH 运行。其中 AStudio 在本地登录页用短信、密码或微信扫码登录（不需要桌面端），走 chat/completions；独立的 AStudio 插件（astudio）复用桌面端登录态，走 Responses。同一账号两边共用一个每日积分池。其 AutoClaw 两条渠道与 opencode-autoclaw-auth 的差别同理：除网页 OAuth / 手机验证码外，还支持粘贴 accessToken + refreshToken，以及读取已登录的 AutoClaw 桌面端（仅当前 Windows 用户、默认关闭、需主动点击）。两个插件读同一账号的积分余额，一边用掉的另一边会同步减少。"
       }
     },
     {
