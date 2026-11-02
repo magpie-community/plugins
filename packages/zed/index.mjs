@@ -653,11 +653,17 @@ function providerRequest(wire, req, model) {
   switch (wire) {
     case "anthropic": {
       const stream = !!req.stream
-      // Zed does not implement Anthropic's clear-thinking edit.
-      if (req.context_management?.edits?.some(edit => edit.type === "clear_thinking_20251015")) {
-        req.context_management.edits = req.context_management.edits.filter(edit => edit.type !== "clear_thinking_20251015")
-        if (!req.context_management.edits.length) delete req.context_management.edits
-        if (!Object.keys(req.context_management).length) delete req.context_management
+      // Zed's cloud parses context_management into its own enum (zed
+      // crates/anthropic), which has only compact_20260112, and edits is
+      // required: any other edit (Claude Code's clear_thinking_20251015,
+      // clear_tool_uses_20250919) is answered 400 "unknown variant …,
+      // expected `compact_20260112`" (nllay, #636). Only compaction goes on,
+      // and without one the field is left out.
+      if ("context_management" in req) {
+        const cm = req.context_management
+        const edits = Array.isArray(cm?.edits) ? cm.edits.filter((e) => e?.type === "compact_20260112") : []
+        if (edits.length) req.context_management = { ...cm, edits }
+        else delete req.context_management
       }
       // Zed's Anthropic request has no stream field: the cloud always streams
       delete req.stream
