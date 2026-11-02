@@ -31,6 +31,7 @@
     quality: ["low", "medium", "high"].includes(opts.quality) ? opts.quality : "medium",
     demo: opts.demo === true,
     showDone: opts.showDone !== false,
+    showName: opts.showName !== false,
     hideAfter: M.HIDE[opts.hideAfter] !== undefined ? opts.hideAfter : M.DEFAULTS.hideAfter,
     text: opts.text !== false,
     approvalAfterSec: Number(opts.approvalAfterSec) > 0 ? Number(opts.approvalAfterSec) : M.DEFAULTS.approvalAfterSec,
@@ -69,6 +70,9 @@
     if (a.idle && a.status === "done") return w.idle
     return w[a.status]
   }
+
+  // the roster's person when shown: 小明 instead of the brand or the task
+  const shownName = (a) => (view.showName && a.person?.name) || a.title || a.brand.name
 
   // ---- words -----------------------------------------------------------
   let lastLegend = ""
@@ -190,13 +194,14 @@
       $("tags").append(e)
       tags.set(a.key, e)
     }
-    const sig = [a.brand.icon, a.brand.name, a.title, a.status, a.sub].join("|")
+    const name = shownName(a)
+    const sig = [a.brand.icon, a.brand.name, name, a.status, a.sub].join("|")
     if (e.dataset.sig !== sig) {
       e.dataset.sig = sig
-      const name = el("span", "tn", a.title)
+      const nameEl = el("span", "tn", name)
       const dot = el("i", "td")
       dot.style.background = M.COLORS[a.status]
-      e.replaceChildren(I.mark(a.brand, 15), name, dot)
+      e.replaceChildren(I.mark(a.brand, 15), nameEl, dot)
       e.dataset.status = a.status
       e._w = 0 // measured again on the next frame
     }
@@ -374,7 +379,7 @@
       P.mark.dataset.icon = a.brand.icon + a.brand.name
       P.mark.replaceChildren(I.mark(a.brand, 18))
     }
-    setText(P.agent, a.brand.name)
+    setText(P.agent, view.showName && a.person?.name ? `${a.person.name} · ${a.brand.name}` : a.brand.name)
     setText(P.when, M.ago(Date.now() - a.at, lang))
     setText(P.title, a.title)
     P.status.className = "ps " + a.status
@@ -572,7 +577,7 @@
     }
     const set = (n, s) => { if (n.textContent !== s) n.textContent = s }
     if (r.mark.dataset.icon !== a.brand.icon) { r.mark.dataset.icon = a.brand.icon; r.mark.replaceChildren(I.mark(a.brand, 16)) }
-    set(r.name, a.brand.name)
+    set(r.name, shownName(a))
     set(r.title, a.title)
     const sub = a.sub === "noprog" || a.sub === "stuck" ? label(a)
       : a.status === "waiting" || a.status === "done" || a.status === "error" ? a.error || a.reply || a.step || a.query
@@ -656,7 +661,7 @@
         row.dataset.key = a.key
         row.classList.toggle("on", a.key === state.open)
         row.append(I.mark(a.brand, 15))
-        row.append(el("span", "rn", a.title || a.project || a.brand.name))
+        row.append(el("span", "rn", shownName(a)))
         const st = el("span", "rs", label(a))
         st.style.color = M.COLORS[a.status]
         row.append(st)
@@ -883,7 +888,7 @@
     const base = { ...opts }
     delete base.jumpRequest
     return {
-      ...base, mode: view.mode, dim: view.dim, demo: view.demo, showDone: view.showDone, hideAfter: view.hideAfter,
+      ...base, mode: view.mode, dim: view.dim, demo: view.demo, showDone: view.showDone, showName: view.showName, hideAfter: view.hideAfter,
       text: textOn(), agents: view.agents.slice(), showSub: view.showSub, showIdle: view.showIdle,
       side: view.side, sideV: 2, lang: manualLang, scene: view.scene, quality: view.quality,
       cleared: { ...view.cleared }, preferredJumpHost: view.preferredJumpHost || "",
@@ -965,12 +970,14 @@
     if (e.target === $("settingsBtn") || e.target === $("todayBtn")) return
     closeMenus()
   })
+  $("optName").checked = view.showName
   $("optDemo").checked = view.demo
   $("optDone").checked = view.showDone
   $("optText").checked = opts.text !== false
   $("optSub").checked = view.showSub
   $("optIdle").checked = view.showIdle
   select("optHide", "hide", view.hideAfter)
+  $("optName").addEventListener("change", (e) => { view.showName = e.target.checked; refresh(); save() })
   $("optDemo").addEventListener("change", (e) => { view.demo = e.target.checked; state.demoSnap = null; refresh(); save() })
   $("optDone").addEventListener("change", (e) => { view.showDone = e.target.checked; refresh(); save() })
   $("optText").addEventListener("change", (e) => { view.text = e.target.checked; refresh(); save() })
