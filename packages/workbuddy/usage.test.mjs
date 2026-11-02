@@ -610,13 +610,22 @@ test("a model list that can't be read leaves the credits counting every model", 
 })
 
 // #299: the free model's window, read from magpie's usage ledger, reaches
-// the WorkBuddy AI card beside Credits; the China build's card has none
+// the WorkBuddy AI card beside Credits. Both builds carry it now: the China
+// build refused at about 2e8 on 2026-11-02, and its card counts its own
+// ledger rows against the 1.9e8 soft cap — one phone number signed in to
+// both must see its spending twice apart, not summed (see freeWindowOf)
 test("a WorkBuddy AI card carries the free model's window from the ledger", async () => {
   const dir = join(home, ".config", "magpie")
   mkdirSync(dir, { recursive: true })
   const ledger = join(dir, "usage.jsonl")
   const t = new Date(Date.now() - 3600_000).toISOString()
-  writeFileSync(ledger, JSON.stringify({ provider: "workbuddy-ai", providerAccount: "me@example.com", model: "deepseek-v4.1-flash", t, status: 200, in: 30_000_000, cache_read: 0, out: 0 }) + "\n")
+  writeFileSync(
+    ledger,
+    [
+      JSON.stringify({ provider: "workbuddy-ai", providerAccount: "me@example.com", model: "deepseek-v4.1-flash", t, status: 200, in: 30_000_000, cache_read: 0, out: 0 }),
+      JSON.stringify({ provider: "workbuddy", providerAccount: "me@example.com", model: "deepseek-v4.1-flash", t, status: 200, in: 90_000_000, cache_read: 0, out: 0 }),
+    ].join("\n") + "\n",
+  )
   try {
     serve({ "/billing/meter/get-user-resource-summary": () =>
       ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: "160", CycleUsedCapacity: "0" }] }) })
@@ -625,8 +634,11 @@ test("a WorkBuddy AI card carries the free model's window from the ledger", asyn
     expect(out.windows.map((w) => w.name)).toEqual(["Credits", "Free model tokens"])
     expect(out.windows[1]).toMatchObject({ amount: 30_000_000, limit: 1e8, unit: "tokens" })
     serve({ "/billing/meter/get-user-resource-summary": () =>
-      ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: "160", CycleUsedCapacity: "0" }] }) })
-    expect((await usageOf(WorkBuddyAuthPlugin, { ...auth, domain: "" })).windows.map((w) => w.name)).toEqual(["Credits"])
+      ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: "500", CycleUsedCapacity: "0" }] }) })
+    const cn = await usageOf(WorkBuddyAuthPlugin, { ...auth, domain: "" })
+    expect(cn.windows.map((w) => w.name)).toEqual(["Credits", "Free model tokens"])
+    // the China card counts the workbuddy rows alone, against the soft cap
+    expect(cn.windows[1]).toMatchObject({ amount: 90_000_000, limit: 1.9e8, unit: "tokens" })
   } finally {
     rmSync(ledger, { force: true })
   }

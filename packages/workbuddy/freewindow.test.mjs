@@ -99,7 +99,7 @@ test("-sg counts in the same window as the free id", () => {
   expect(w.models).toEqual(["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg"])
 })
 
-test("other accounts, other models and the China build are left out", () => {
+test("other accounts, other models and the other build are left out", () => {
   const rows = [
     row("2026-10-20T19:53:48+08:00", { in: 1_000 }),
     row("2026-10-20T19:54:00+08:00", { in: 9_000_000, account: "other@example.com" }),
@@ -109,6 +109,120 @@ test("other accounts, other models and the China build are left out", () => {
   ]
   expect(_internal.freeWindowOf(rows, "me@example.com", at("2026-10-20T21:00:00+08:00")).amount).toBe(1_000)
 })
+
+// The China build (copilot.tencent.com) has the same window under its own
+// words: measured 2026-11-02, two Free-plan accounts refused at 200,389,043
+// and 200,485,923 tokens counted the same way. Its card stops at a soft cap
+// of 1.9e8 — 5% short of the measured one — so routing rests the model
+// before the vendor refuses it. A refusal in force still reads full.
+const cnRow = (t, opts = {}) => row(t, { ...opts, provider: "workbuddy" })
+// the refusal the China build sends, in its own words
+const cnRefusal = (reset, account = "me@example.com") =>
+  row(`2026-11-02T11:30:00+08:00`, {
+    provider: "workbuddy",
+    status: 429,
+    account,
+    err: `WorkBuddy: 您的使用量已超出频率限制，将在 ${reset} UTC+8 重置，您也可以切换其他模型继续使用。`,
+  })
+
+test("the China build counts its own rows against the 190M soft cap", () => {
+  const rows = [cnRow("2026-11-02T02:32:00+08:00", { in: 1_000_000, cache: 188_000_000, out: 500_000 }), cnRow("2026-11-02T03:00:00+08:00", { in: 200 })]
+  const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.FREE_WINDOW_CN)
+  expect(w.amount).toBe(189_500_200)
+  expect(w.limit).toBe(1.9e8)
+  expect(w.used).toBeCloseTo(99.737, 3)
+  expect(w.display).toBe("189.5M / 190M")
+  expect(w.resetsAt).toBe(iso("2026-11-03T02:32:00+08:00"))
+  expect(w.unit).toBe("tokens")
+  expect(w.models).toEqual(["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg"])
+})
+
+// one phone number can be signed in to both builds, and both write to one
+// ledger: each build's read must see its own rows alone, or one build's
+// spending fills the other's window
+test("the two builds' rows stay apart over one account", () => {
+  const rows = [
+    cnRow("2026-11-02T02:00:00+08:00", { in: 90_000_000 }),
+    row("2026-11-02T02:10:00+08:00", { in: 40_000_000 }),
+    cnRow("2026-11-02T02:20:00+08:00", { in: 8_000_000, model: "deepseek-v4.1-flash-sg" }),
+  ]
+  const ai = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"))
+  expect(ai.amount).toBe(40_000_000)
+  expect(ai.limit).toBe(1e8)
+  const cn = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.FREE_WINDOW_CN)
+  expect(cn.amount).toBe(98_000_000)
+  expect(cn.limit).toBe(1.9e8)
+})
+
+// the China build names its reset in Chinese, the time in the same shape and
+// the offset spelled out the same way (UTC+8)
+test("windowReset reads the China refusal", () => {
+  expect(_internal.windowReset("将在 2026-11-02 19:17:02 UTC+8 重置")).toBe(Date.parse("2026-11-02T19:17:02+08:00"))
+  expect(_internal.windowReset("您的使用量已超出频率限制，将在 2026-11-03 01:14:57 UTC+8 重置，您也可以切换其他模型继续使用。")).toBe(Date.parse("2026-11-03T01:14:57+08:00"))
+  // and a time it cannot place is still no edge
+  expect(Number.isNaN(_internal.windowReset("将在明天重置"))).toBe(true)
+})
+
+// same as the AI probe the review asked for: a refusal at 100M of a 190M
+// window (the account spent elsewhere) reads full, refused, on the Chinese
+// words alone
+test("a China account refused under the cap reads full", () => {
+  const rows = [
+    cnRow("2026-11-02T02:32:00+08:00", { in: 80_000_000 }),
+    cnRefusal("2026-11-02 19:17:02"),
+  ]
+  const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.FREE_WINDOW_CN)
+  expect(w.amount).toBe(1.9e8) // the rows sum to 80M
+  expect(w.used).toBe(100)
+  expect(w.refused).toBe(true)
+  expect(w.resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
+  expect(w.display).toBe("190.0M / 190M")
+})
+
+// readLedgerTail stops the chain on both languages' edges: a Chinese refusal
+// whose reset can be read pins where the read is taken from, and the read
+// keeps its own build's rows alone
+test("the China read stops on a Chinese refusal's edge", () => {
+  const now = at("2026-11-02T12:00:00+08:00")
+  const spent = cnRow("2026-10-29T10:00:00+08:00", { in: 50_000_000 })
+  // the refusal's row time sits where it was written: after the spent
+  // window's rows, before the reset it names
+  const denied = { ...cnRefusal("2026-10-31 08:00:13"), t: "2026-10-30T11:30:00+08:00" }
+  const fresh = cnRow("2026-11-02T02:32:00+08:00", { in: 300_000 })
+  const root = writeLedger([JSON.stringify(spent), JSON.stringify(denied), JSON.stringify(fresh)])
+  try {
+    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.FREE_WINDOW_CN)
+    // the row that reveals the edge is kept — the read goes back to it and
+    // stops — while the window the refusal closed reads nothing: the chain
+    // opens at the next answered row, 300k of 190M, resetting 24h later
+    const w = _internal.freeWindowOf(rows, "me@example.com", now, _internal.FREE_WINDOW_CN)
+    expect(w.amount).toBe(300_000)
+    expect(w.resetsAt).toBe(iso("2026-11-03T02:32:00+08:00"))
+    expect(rows.every((r) => r.provider === "workbuddy")).toBe(true)
+    // the AI read over the same ledger has nothing answered inside 24h and
+    // stops at the day's bound: no window for the other build
+    expect(_internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))).toEqual([])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// two reads of one ledger, one per build, must not answer for each other
+// through the parse cache: the key carries the build
+test("the parse cache keys the build", () => {
+  const now = at("2026-11-02T12:00:00+08:00")
+  const lines = [cnRow("2026-11-02T02:00:00+08:00", { in: 90_000_000 }), row("2026-11-02T02:10:00+08:00", { in: 40_000_000 })].map((r) => JSON.stringify(r))
+  const root = writeLedger(lines)
+  try {
+    const cn = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.FREE_WINDOW_CN)
+    expect(cn.map((r) => r.provider)).toEqual(["workbuddy"])
+    const ai = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    expect(ai.map((r) => r.provider)).toEqual(["workbuddy-ai"])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 
 // a refusal carries no tokens: it neither counts nor opens a window
 test("a 429 neither counts nor opens a window", () => {
