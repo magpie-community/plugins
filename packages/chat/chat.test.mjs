@@ -154,10 +154,10 @@ test("with the token, a chat streams from the gateway with the caller key", asyn
 function chatPage(setup = "") {
   const page = {
     document: { readyState: "loading", querySelector: () => ({ getAttribute: () => token }), addEventListener() {} },
-    TextDecoder,
+    TextDecoder, atob, AbortController,
     fetch: (path, init) => {
-      if (path !== "api/chat") throw new Error("unexpected request: " + path)
-      return fetch(`http://127.0.0.1:${port}/api/chat`, init)
+      if (!["api/chat", "api/upload", "api/conversations"].includes(path) && !path.startsWith("api/conversations/")) throw new Error("unexpected request: " + path)
+      return fetch(`http://127.0.0.1:${port}/${path}`, init)
     },
     window: { addEventListener() {} }, location: { search: "" },
     MagpieEpub: { isEpub: f => f.name?.endsWith(".epub") },
@@ -165,6 +165,244 @@ function chatPage(setup = "") {
   runInNewContext(readFileSync(join(dir, "chat/app.js"), "utf8") + "\n" + setup, page)
   return page
 }
+
+function attachmentPage(setup = "") {
+  const page = chatPage(`renderAttachments = renderMessages = renderSessions = scrollBottom = () => {};\n${setup}`)
+  const nodes = new Map()
+  page.document.querySelector = selector => {
+    if (!nodes.has(selector)) nodes.set(selector, {
+      value: "", getAttribute: () => token, setAttribute() {}, classList: { toggle() {} },
+    })
+    return nodes.get(selector)
+  }
+  return page
+}
+
+test.each(["", "application/octet-stream"])("an image with MIME type '%s' finishes loading before send and reaches the gateway", async type => {
+  const page = attachmentPage(`
+    readAsDataURL = () => globalThis.reading;
+    toast = message => globalThis.warnings.push(message);
+  `)
+  page.warnings = []
+  page.document.querySelector("#input").value = "请看图片"
+  const reading = Promise.withResolvers()
+  page.reading = reading.promise
+  const job = page.addFiles([{ name: "scene.PNG", type, size: 12 }])
+  expect(page.document.querySelector("#send").disabled).toBe(true)
+  page.send()
+  expect(page.warnings).toEqual(["附件还在读取，请稍候。"])
+  const data = "data:application/octet-stream;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGDcAAAAASUVORK5CYII="
+  reading.resolve(data)
+  await job
+  expect(page.document.querySelector("#send").disabled).toBe(false)
+  expect(page.state.attachments).toHaveLength(1)
+  expect(page.state.attachments[0].kind).toBe("image")
+  const h = { ...json, "x-magpie-chat-token": token }
+  const original = { name: "scene.PNG", type, kind: "file", data }
+  const saved = JSON.parse((await raw("POST", "/api/conversations", h, { messages: [
+    { role: "user", content: "", files: [original] },
+  ] })).body)
+  const history = JSON.parse((await raw("GET", "/api/conversations/" + saved.id, h)).body).messages
+  for (const messages of [[{ role: "user", content: "", files: page.state.attachments }],
+    [...history, { role: "assistant", content: "A picture." }, { role: "user", content: "What color?" }]]) {
+    const before = seen.length
+    await page.streamChat({ ...chatBody, messages }, () => {})
+    expect(seen.length).toBe(before + 1)
+    expect(seen.at(-1).body.messages[0].content).toEqual([
+      { type: "image_url", image_url: { url: data.replace("application/octet-stream", "image/png") } },
+    ])
+  }
+  expect(history[0].files[0]).toEqual(original)
+})
+
+test("a rejected upload does not appear as an attached file", async () => {
+  const page = attachmentPage(`
+    readAsDataURL = async () => "data:image/png;base64,cG5n";
+    api = async () => { throw new Error("图片太大"); };
+    toast = message => globalThis.warnings.push(message);
+  `)
+  page.warnings = []
+  await page.addFiles([{ name: "large.png", type: "image/png", size: 12 }])
+  expect(page.state.attachments).toEqual([])
+  expect(page.warnings).toEqual(["large.png：图片太大"])
+  expect(page.document.querySelector("#send").disabled).toBe(true)
+  page.document.querySelector("#input").value = "继续"
+  page.updateSend()
+  expect(page.document.querySelector("#send").disabled).toBe(false)
+})
+
+test("overlapping uploads wait for every batch and cannot leak across conversations", async () => {
+  const page = attachmentPage(`
+    readAsDataURL = file => globalThis.reads.get(file.name).promise;
+    api = async (path, options) => path === "api/upload"
+      ? { ...options.body, kind: "image" } : { id: "other", messages: [] };
+    toast = message => globalThis.warnings.push(message);
+  `)
+  page.warnings = []
+  page.reads = new Map(["first.png", "second.png", "old.png", "new.png"].map(name => [name, Promise.withResolvers()]))
+  const add = name => page.addFiles([{ name, type: "image/png", size: 12 }])
+  const first = add("first.png"), second = add("second.png")
+  const button = page.document.querySelector("#send")
+  expect(button.disabled).toBe(true)
+  page.reads.get("second.png").resolve("data:image/png;base64,c2Vjb25k")
+  await second
+  expect(page.state.attachments.map(f => f.name)).toEqual(["second.png"])
+  expect(button.disabled).toBe(true)
+  page.send()
+  expect(page.warnings).toEqual(["附件还在读取，请稍候。"])
+  page.reads.get("first.png").resolve("data:image/png;base64,Zmlyc3Q=")
+  await first
+  expect(button.disabled).toBe(false)
+  expect(page.state.attachments.map(f => f.name)).toEqual(["second.png", "first.png"])
+
+  const old = add("old.png")
+  page.openConversation("other")
+  await Promise.resolve()
+  expect(page.state.convId).toBe("other")
+  expect(page.state.attachments).toEqual([])
+  const fresh = add("new.png")
+  page.reads.get("old.png").resolve("data:image/png;base64,b2xk")
+  await old
+  expect(page.state.attachments).toEqual([])
+  expect(button.disabled).toBe(true)
+  page.reads.get("new.png").resolve("data:image/png;base64,bmV3")
+  await fresh
+  expect(page.state.attachments.map(f => f.name)).toEqual(["new.png"])
+  expect(button.disabled).toBe(false)
+})
+
+test.each([
+  ["photo.jpg", "application/octet-stream"],
+  ["photo.txt", "image/png"],
+])("an image named %s keeps its data format through upload, send and a saved follow-up", async (name, type) => {
+  const page = attachmentPage(`
+    readAsDataURL = file => Promise.resolve(globalThis.dataByName[file.name]);
+    buildTurn = msg => ({ msg, root: {}, err: {} });
+    autoGrow = forageBegin = () => {};
+    loadConversations = async () => {};
+    renderMessages = () => globalThis.opened.resolve();
+    handleEvent = (event, refs) => { if (event.type === "delta") refs.msg.content += event.text; };
+    finish = refs => {
+      state.busy = false;
+      if (refs.msg.error) globalThis.finished.reject(new Error(refs.msg.error));
+      else persistConversation().then(() => globalThis.finished.resolve());
+    };
+    toast = message => {
+      globalThis.warnings.push(message);
+      if (globalThis.opened) globalThis.opened.reject(new Error(message));
+    };
+  `)
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGDcAAAAASUVORK5CYII="
+  const text = "# 场景\n灯亮了。"
+  const doc = "data:text/markdown;base64," + Buffer.from(text).toString("base64")
+  page.dataByName = { [name]: png, "scene.md": doc }
+  page.warnings = []
+  page.state.settings.model = chatBody.model
+  Object.assign(page.document.querySelector("#stream"), { querySelector: () => null, appendChild() {} })
+  await page.addFiles([{ name, type, size: 12 }, { name: "scene.md", type: "text/markdown", size: 12 }])
+  const checkGateway = () => {
+    const messages = seen.at(-1).body.messages
+    expect(messages[0].content).toEqual([
+      { type: "text", text: "【文档：scene.md】\n" + text + "\n【文档结束】" },
+      { type: "image_url", image_url: { url: png } },
+    ])
+    expect(messages.every(m => !("userText" in m))).toBe(true)
+  }
+  const send = async () => {
+    page.finished = Promise.withResolvers()
+    const before = seen.length
+    page.send()
+    await page.finished.promise
+    expect(seen.length).toBe(before + 1)
+    checkGateway()
+  }
+  await send()
+  expect(page.state.messages[0].files.map(f => f.data)).toEqual([png, doc])
+  const legacyImage = { name, type, kind: "image", data: png }
+  page.state.messages[0].files[0] = legacyImage
+  await page.persistConversation()
+  const savedId = page.state.convId
+  expect(savedId).toBeTruthy()
+  page.state.messages = []
+  page.state.convId = null
+  page.opened = Promise.withResolvers()
+  page.openConversation(savedId)
+  await page.opened.promise
+  expect(page.state.messages[0].files.map(f => f.data)).toEqual([png, doc])
+  page.document.querySelector("#input").value = "灯是什么颜色？"
+  await send()
+  expect(page.state.messages[0].files[0]).toEqual(legacyImage)
+  expect(seen.at(-1).body.messages.at(-1).content).toBe("灯是什么颜色？")
+  expect(page.warnings).toEqual([])
+})
+
+test("Markdown and text attachments reach the gateway after upload, save and follow-up", async () => {
+  const page = attachmentPage(`
+    toast = message => globalThis.warnings.push(message);
+    readAsDataURL = () => Promise.resolve(globalThis.fileData);
+  `)
+  page.warnings = []
+  const text = "# 第一场\n\n阿青：灯还亮着。𠀀\n\n" + "窗外有雨。\n".repeat(10000) + "最后一行。"
+  const data = "data:application/octet-stream;base64," + Buffer.from("\ufeff" + text).toString("base64")
+  page.fileData = data
+  const h = { ...json, "x-magpie-chat-token": token }
+  const image = { name: "lamp.png", kind: "image", data: "data:image/png;base64,cG5n" }
+  for (const [name, type] of [["剧本.MD", "application/octet-stream"], ["scene.markdown", ""],
+    ["notes.txt", "text/plain"], ["draft", "text/markdown"], ["a".repeat(192) + ".markdown", ""]]) {
+    page.state.attachments = []
+    await page.addFiles([{ name, type, size: Buffer.byteLength(text) }])
+    expect(page.state.attachments).toHaveLength(1)
+    const file = page.state.attachments[0]
+    const first = { role: "user", content: "读一下", files: [file] }
+    const send = async messages => {
+      const before = seen.length
+      const events = []
+      await page.streamChat({ ...chatBody, messages }, event => events.push(event))
+      expect(events.at(-1).type).toBe("done")
+      expect(seen.length).toBe(before + 1)
+      const sent = seen.at(-1).body.messages
+      expect(JSON.stringify(sent).split("最后一行。")).toHaveLength(2)
+      expect(sent.find(message => message.role === "user").content).toContain(text)
+      expect(JSON.stringify(sent)).not.toContain(data)
+      expect(sent.every(message => !("userText" in message))).toBe(true)
+      return sent
+    }
+    await send([first])
+    first.content = ""
+    await send([first])
+    const saved = JSON.parse((await raw("POST", "/api/conversations", h, { messages: [first] })).body)
+    const history = JSON.parse((await raw("GET", "/api/conversations/" + saved.id, h)).body).messages
+    history.push({ role: "assistant", content: "读到了。" },
+      { role: "user", content: "最后一句是什么？", files: [{ ...file, name: "copy." + name }, image] })
+    const sent = await send(history)
+    expect(sent.at(-1).content[0].text).toContain("最后一句是什么？")
+    expect(sent.at(-1).content[1]).toEqual({ type: "image_url", image_url: { url: image.data } })
+    expect(history[0].content).toBe("")
+    expect(history[0].files[0].data).toBe(data)
+  }
+  expect(page.warnings).toEqual([])
+})
+
+test("empty text attachments stay empty and unreadable text produces a warning", async () => {
+  const page = chatPage("toast = message => globalThis.warnings.push(message);")
+  page.warnings = []
+  for (const bytes of ["", "%%%", "/w=="]) {
+    const before = seen.length
+    await page.streamChat({ ...chatBody, messages: [{ role: "user", content: "", files: [
+      { name: "draft.md", kind: "file", data: "data:;base64," + bytes },
+    ] }] }, () => {})
+    expect(seen.length).toBe(before + 1)
+    const content = seen.at(-1).body.messages.at(-1).content
+    if (!bytes) {
+      expect(content).toBe("【文档：draft.md】\n\n【文档结束】")
+      expect(page.warnings).toEqual([])
+    } else {
+      expect(content).toContain("未附上这份文档的正文")
+      expect(page.warnings.at(-1)).toStartWith("附件未发送。draft.md：")
+      expect(content).not.toContain("\ufffd")
+    }
+  }
+})
 
 test("a saved EPUB reaches the gateway once, including on a follow-up", async () => {
   const page = chatPage("toast = message => globalThis.warnings.push(message);")
@@ -195,7 +433,7 @@ test("a saved EPUB reaches the gateway once, including on a follow-up", async ()
   expect(sent.at(-3).content[1]).toEqual({ type: "image_url", image_url: { url: image.data } })
   expect(sent.at(-1).content).toContain("What changed?")
   expect(sent.at(-1).content).toContain("broken.epub：damaged")
-  expect(page.warnings).toEqual(["旧附件未发送。broken.epub：damaged"])
+  expect(page.warnings).toEqual(["附件未发送。broken.epub：damaged"])
   expect(JSON.stringify(sent).match(/The lamp goes out/g)).toHaveLength(1)
   expect(JSON.stringify(sent)).not.toContain("Ym9vaw==")
   expect(history[0].content).toBe("")
@@ -207,7 +445,7 @@ test("switching chats discards a book that is still being read", async () => {
     updateSend = renderAttachments = renderMessages = renderSessions = scrollBottom = () => {};
     api = async () => ({ id: "other", messages: [] });
     readAsDataURL = () => globalThis.reading;
-    globalThis.pending = () => pendingBooks;
+    globalThis.pending = () => pendingAttachments;
   `)
   const reading = Promise.withResolvers()
   page.reading = reading.promise
@@ -224,7 +462,7 @@ test("switching chats discards a book that is still being read", async () => {
   expect(page.pending()).toBe(0)
 })
 
-test("MCP tools follow the typed question while the gateway still receives the EPUB", async () => {
+test.each(["epub", "md"])("MCP tools follow the typed question while the gateway receives the %s attachment", async ext => {
   const names = [...Array.from({ length: 12 }, (_, i) => "github_lookup_" + i),
     ...Array.from({ length: 3 }, (_, i) => "weather_forecast_" + i), "list_items"]
   const mcp = fakeMcp("catalog", names.map(name => ({ name, inputSchema: { type: "object", properties: {} } })))
@@ -234,7 +472,7 @@ test("MCP tools follow the typed question while the gateway still receives the E
   }))
   const page = chatPage()
   const chapters = "github ".repeat(1000) + "The last page."
-  const file = { name: "github.epub", kind: "file", data: "data:;base64,Ym9vaw==" }
+  const file = { name: "github." + ext, type: "text/plain", kind: "file", data: "data:;base64," + Buffer.from(chapters).toString("base64") }
   page.MagpieEpub.read = async () => ({ text: chapters })
   const weather = names.filter(name => name.startsWith("weather")).map(name => "catalog_" + name)
   const send = async history => {

@@ -673,7 +673,7 @@ function parseEventBlock(block) {
 }
 
 async function streamChat(payload, onEvent, signal) {
-  payload.messages = await requestMessages(payload.messages, function (reason) { toast("旧附件未发送。" + reason, true); });
+  payload.messages = await requestMessages(payload.messages, function (reason) { toast("附件未发送。" + reason, true); });
   return fetch("api/chat", {
     method: "POST",
     headers: authHeaders({ "content-type": "application/json" }),
@@ -971,17 +971,27 @@ function readAsDataURL(file) {
 }
 
 function guessType(file) {
-  if (file.type) return file.type;
+  if (file.type && file.type !== "application/octet-stream") return file.type;
   var ext = String(file.name || "").split(".").pop().toLowerCase();
-  var map = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", pdf: "application/pdf", epub: "application/epub+zip", txt: "text/plain", md: "text/markdown", json: "application/json" };
+  var map = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", pdf: "application/pdf", epub: "application/epub+zip", txt: "text/plain", md: "text/markdown", markdown: "text/markdown", json: "application/json" };
   return map[ext] || "application/octet-stream";
 }
 
+function normalizeImage(file) {
+  var dataType = /^data:(image\/[^;,]+)/i.exec(file.data || "");
+  var type = dataType ? dataType[1].toLowerCase() : guessType(file);
+  if (!/^image\//.test(type) || !file.data) return file;
+  return Object.assign({}, file, {
+    type: type, kind: "image",
+    data: String(file.data).replace(/^data:[^;,]*/, "data:" + type)
+  });
+}
+
 // 一批 File → 加入待发送列表
-var attachmentContext = 0, pendingBooks = 0;
+var attachmentContext = 0, pendingAttachments = 0;
 function clearPendingAttachments() {
   attachmentContext++;
-  pendingBooks = 0;
+  pendingAttachments = 0;
   state.attachments = [];
   renderAttachments();
 }
@@ -990,8 +1000,7 @@ function addFiles(files) {
   var list = Array.from(files || []).slice(0, 8);
   if (!list.length) return Promise.resolve();
   var context = attachmentContext;
-  var books = list.filter(MagpieEpub.isEpub).length;
-  pendingBooks += books;
+  pendingAttachments += list.length;
   updateSend();
   var jobs = list.map(function (file) {
     var type = guessType(file);
@@ -1008,9 +1017,6 @@ function addFiles(files) {
       return api("api/upload", {
         method: "POST",
         body: { name: file.name || "file", type: type, data: data, clientType: type }
-      }).catch(function () {
-        // 上传接口挂了也还能本地显示：直接按 data URL 用
-        return { name: file.name || "file", type: type, kind: isImage ? "image" : "file", size: data.length, data: data };
       });
     }).catch(function (err) {
       if (context === attachmentContext) toast((file.name || "文件") + "：" + err.message, true);
@@ -1019,11 +1025,11 @@ function addFiles(files) {
   }).filter(Boolean);
   return Promise.all(jobs).then(function (out) {
     if (context !== attachmentContext) return;
-    out.forEach(function (f) { if (f && f.data) state.attachments.push(f); });
+    out.forEach(function (f) { if (f && f.data) state.attachments.push(normalizeImage(f)); });
     renderAttachments();
   }).finally(function () {
     if (context !== attachmentContext) return;
-    pendingBooks -= books;
+    pendingAttachments -= list.length;
     updateSend();
   });
 }
@@ -2149,7 +2155,7 @@ function updateSend() {
   var btn = $("#send");
   var input = $("#input");
   $("#app").classList.toggle("busy", state.busy);
-  btn.disabled = !state.busy && (pendingBooks > 0 || (!input.value.trim() && !(state.attachments || []).length));
+  btn.disabled = !state.busy && (pendingAttachments > 0 || (!input.value.trim() && !(state.attachments || []).length));
   btn.setAttribute("aria-label", state.busy ? "停止生成" : "发送");
   input.title = state.busy ? "生成中…（Esc 停止）" : "Enter 发送 · Shift+Enter 换行";
 }
@@ -2157,7 +2163,7 @@ function updateSend() {
 async function requestMessages(history, warn) {
   var seen = new Set(), messages = [];
   for (var m of history) {
-    var files = (m.files || []).filter(Boolean);
+    var files = (m.files || []).filter(Boolean).map(normalizeImage);
     if (m.role === "assistant") {
       var calls = (m.toolCalls || []).filter(function (c) { return c && c.name && (c.result || c.isError); });
       if (m.content || calls.length) messages.push({ role: m.role, content: m.content, toolCalls: calls, files: files });
@@ -2165,7 +2171,9 @@ async function requestMessages(history, warn) {
     }
     var parts = [], otherFiles = [];
     for (var f of files) {
-      if (!MagpieEpub.isEpub(f)) {
+      var isEpub = MagpieEpub.isEpub(f);
+      var isText = !isEpub && f.kind !== "image" && (/\.(md|markdown|txt)$/i.test(f.name || "") || /^text\//i.test(f.type || ""));
+      if (!isText && !isEpub) {
         if (f.data) otherFiles.push(f);
         continue;
       }
@@ -2175,13 +2183,16 @@ async function requestMessages(history, warn) {
         continue;
       }
       try {
-        var book = await MagpieEpub.read(f.data);
-        parts.push("【电子书：" + f.name + "】\n" + book.text + "\n【电子书结束】");
+        var book = isText
+          ? { text: new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(atob(bytes), function (c) { return c.charCodeAt(0); })) }
+          : await MagpieEpub.read(f.data);
+        var label = isText ? "文档" : "电子书";
+        parts.push("【" + label + "：" + f.name + "】\n" + book.text + "\n【" + label + "结束】");
         if (book.imagePages) parts.push("（" + book.imagePages + " 个章节仅含图片，未提取文字。）");
         seen.add(bytes);
       } catch (err) {
         var reason = f.name + "：" + err.message;
-        parts.push("（未附上这本电子书的正文。" + reason + "）");
+        parts.push("（未附上" + (isText ? "这份文档" : "这本电子书") + "的正文。" + reason + "）");
         warn(reason);
       }
     }
@@ -2195,7 +2206,7 @@ async function requestMessages(history, warn) {
 
 function send() {
   if (state.busy) { stop(); return; }
-  if (pendingBooks) { toast("电子书还在读取，请稍候。"); return; }
+  if (pendingAttachments) { toast("附件还在读取，请稍候。"); return; }
   var input = $("#input");
   var text = input.value.trim();
   if (!text && !(state.attachments || []).length) return;
