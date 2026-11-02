@@ -185,6 +185,7 @@
       "package": "magpie-window-warmup",
       "name": "Window Warmup",
       "kind": "page",
+      "community": true,
       "icon": "https://raw.githubusercontent.com/YangHonghang/magpie-window-warmup/main/page/icon.svg",
       "summary": {
         "en": "Start a subscription's 5-hour or weekly quota window ahead of time: send one fixed short message (\"hi\", max_tokens 16) to a provider, account and model you pick, right after its window resets, daily at set times or every few hours. Each send uses that provider's quota. Runs a local service on 127.0.0.1 that only calls magpie's own gateway; only its own page gets the token.",
