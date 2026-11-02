@@ -13,8 +13,9 @@
 - 隐私与既有姿态一致：不配 `notifyWebhook` 什么也不出这台电脑；`notifyIncludeText`（默认关）关着时卡片只带状态与工具名。
 - ZCode 读取器：读 `~/.zcode/cli/rollout/model-io-*.jsonl`，zcode 成为一线成员（历史常驻、精确 phase、`zcode --resume` 续接）。
 - WorkBuddy/CodeBuddy 改读它们自家 CLI 的事件格式（message/reasoning/function_call），此前误读为 Claude Code 格式导致状态停留在旧对话。
+- 两个读取器都走 0.2.4 的增量扫描（PROCESSORS 事件流，一个 tick 只解析新追加的行），长的会话日志不再整文件重读。
 - 页面设置新增「显示人名」开关；新选项 `notifyEvents`、`notifyIncludeText`、`notifyLang`、`notifyCooldownMin`、`notifyErrorMin`、`notifyStuckMin`、`notifyMinWorkSec`、`notifyQuietHours`、`notifyAgents`、`showName`、`rosterFile`。
-- 新测试（zcode 5、workbuddy 5、roster 8、notify 路由 2 等）。
+- 新测试（zcode 6、workbuddy 6、roster 8、notify 路由 2 等；两个读取器各有「分批 == 一次性」的边界测试）。
 
 ## 0.2.4 · 2026-11-01
 

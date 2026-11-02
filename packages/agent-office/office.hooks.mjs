@@ -79,13 +79,18 @@ function notifySetup() {
   })
   const hook = String(options.notifyWebhook || "")
   const key = JSON.stringify([hook, options.notifyLang, options.notifyIncludeText])
-  if (key !== routerKey) {
-    router?.stop()
-    routerKey = key
-    router = createRouter({ defaultWebhook: hook, lang: options.notifyLang, includeText: options.notifyIncludeText })
-  } else if (!hook && router) {
+  if (hook) {
+    if (key !== routerKey) {
+      router?.stop()
+      routerKey = key
+      router = createRouter({ defaultWebhook: hook, lang: options.notifyLang, includeText: options.notifyIncludeText })
+    }
+  } else if (router) {
+    // no default hook: the router is torn down, not kept idling with
+    // nothing it could send
     router.stop()
     router = null
+    routerKey = ""
   }
 }
 

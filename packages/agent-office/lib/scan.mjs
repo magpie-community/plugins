@@ -275,8 +275,8 @@ function readerFor(kind, agent, src = {}) {
     case "copilot": return (t, id, meta, now) => readCopilot(t, id, { now })
     case "kimi": return (t, id, meta, now) => readKimi(t, id, meta, { now })
     case "grok": return (t, id, meta, now, usage) => readGrok(t, id, meta, { now, usage })
-    case "zcode": return (t, id) => readZcode(t, id)
-    case "codebuddy": return (t, id, meta, now) => readCodebuddy(t, agent, id)
+    case "zcode": return (t, id, meta, now) => readZcode(t, id, { now })
+    case "codebuddy": return (t, id, meta, now) => readCodebuddy(t, agent, id, { now })
   }
 }
 
@@ -446,7 +446,7 @@ export function createScanner(opts = {}) {
     const sig = f.metadata.split("|")
     const before = was?.metadata?.split("|")
     const compressed = f.path.endsWith(".zstd")
-    const document = f.src.kind === "gemini" && f.path.endsWith(".json") || f.src.kind === "codebuddy" || f.src.kind === "zcode"
+    const document = f.src.kind === "gemini" && f.path.endsWith(".json")
     if (compressed || document) {
       // A rewritten compressed blob / JSON document has no append cursor.
       if (compressed && f.size > o.zstdMax) return { ...f, session: was?.session || null, decodedAt: now }

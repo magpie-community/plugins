@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { readZcode } from "./lib/readers.mjs"
+import { createSessionReader, readZcode } from "./lib/readers.mjs"
 import { createScanner } from "./lib/scan.mjs"
 
 const T0 = 1793196000000
@@ -57,6 +57,22 @@ test("an errored round reads as an error", () => {
   const s = readZcode(bad, "sess_z1")
   expect(s.phase).toBe("error")
   expect(s.error).toContain("429")
+})
+
+test("appended batches parse the same as one shot, at every boundary", () => {
+  const rows = [
+    line({ at: T0, tools: ["Bash"] }),
+    line({ at: T0 + 60e3, tools: ["Read", "Edit"] }),
+    line({ at: T0 + 120e3, text: "改完了，测试全绿。", model: "GLM-5.3-Flash" }),
+    line({ at: T0 + 180e3, text: "又验证了一遍。", model: "GLM-5.3-Flash" }),
+  ]
+  for (const width of [1, 2, 3]) {
+    const reader = createSessionReader("zcode", "zcode", "sess_z1")
+    for (let i = 0; i < rows.length; i += width) {
+      reader.update(rows.slice(i, i + width).join("\n"))
+      expect(reader.session).toEqual(readZcode(rows.slice(0, Math.min(i + width, rows.length)).join("\n"), "sess_z1"))
+    }
+  }
 })
 
 test("the scanner finds zcode rollout files and ids them without the prefix", () => {

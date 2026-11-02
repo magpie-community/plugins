@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { readCodebuddy } from "./lib/readers.mjs"
+import { createSessionReader, readCodebuddy } from "./lib/readers.mjs"
 import { createScanner } from "./lib/scan.mjs"
 
 const T0 = 1793196000000
@@ -58,6 +58,17 @@ test("a log ending on function_call reads as running that tool", () => {
 test("system-reminder harness blocks don't count as the user's words", () => {
   const s = readCodebuddy(SAMPLE, "workbuddy", "wb-1")
   expect(s.query).toBe("再检查一遍样式") // the latest prompt wins
+})
+
+test("appended batches parse the same as one shot, at every boundary", () => {
+  const rows = SAMPLE.split("\n")
+  for (const width of [1, 2, 4]) {
+    const reader = createSessionReader("codebuddy", "workbuddy", "wb-1")
+    for (let i = 0; i < rows.length; i += width) {
+      reader.update(rows.slice(i, i + width).join("\n"))
+      expect(reader.session).toEqual(readCodebuddy(rows.slice(0, Math.min(i + width, rows.length)).join("\n"), "workbuddy", "wb-1"))
+    }
+  }
 })
 
 test("the scanner picks workbuddy sessions up through the new reader", () => {
