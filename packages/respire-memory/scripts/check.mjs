@@ -277,6 +277,21 @@ try {
   await assert.rejects(() => guarded.run({ command: 'remember', args: ['text', '--importance', 'important', '--title', 'title', '--parent', id] }));
   await assert.rejects(() => guarded.run({ command: 'agent-config', args: ['--set', 'readonly=false'] }));
   await assert.rejects(() => guarded.run({ command: 'show', args: [diaryId.slice(0,8)] }), /full-id-required/);
+  const placementCalls = [];
+  const placement = memoryTools(async args => {
+    placementCalls.push(args);
+    return { status: 'ok', summary: args[0] === 'prompt' ? { instructions: 'policy' } : { id } };
+  });
+  for (const command of ['recall', 'prompt', 'show']) await placement.run({ command, args: command === 'show' ? [id] : [] });
+  const placementBaseline = placementCalls.length;
+  const unshownParent = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  for (const suffix of [['--clear-parent'], ['--clear-parent=true'], ['--parent', unshownParent], ['--parent=' + unshownParent], ['--parent', ''], ['--parent='], ['--force=true'], ['--merge-ids=' + id]]) {
+    await assert.rejects(() => placement.run({ command: 'update', args: [id, '--title', 'kept title', ...suffix] }), /forbidden-memory-option|shown-parent-required/);
+  }
+  assert.equal(placementCalls.length, placementBaseline);
+  await placement.run({ command: 'update', args: [id, '--title', 'kept title', '--parent=' + id] });
+  await placement.run({ command: 'show', args: [id] });
+  await placement.run({ command: 'update', args: [id, '--title', 'ordinary update'] });
   const diaryGuard = memoryTools(call, { source: digest('strict-diary-readback') });
   await diaryGuard.run({ command: 'recall', args: ['project'] }); await diaryGuard.run({ command: 'prompt', args: [] });
   const diaryWrite = await diaryGuard.run({ command: 'remember', args: ['Current turn complete diary.', '--importance', 'trivial'] });

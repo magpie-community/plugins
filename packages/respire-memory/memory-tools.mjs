@@ -78,7 +78,7 @@ export function memoryTools(call, { readOnly = false, source } = {}) {
       if (!record(input) || ![...READ, ...WRITE].includes(input.command) || !Array.isArray(input.args) || input.args.some(arg => typeof arg !== 'string') || JSON.stringify(input).length > 16000) throw new Error('invalid-memory-call')
       const { command } = input
       let args = input.args.filter(arg => arg !== '--json' && arg !== '--client-only')
-      if (args.some(arg => /^(?:--(?:direct|force|merge-ids|go|ensure|set|addr|data-dir))(?:=|$)/.test(arg))) throw new Error('forbidden-memory-option')
+      if (args.some(arg => /^(?:--(?:direct|force|merge-ids|clear-parent|go|ensure|set|addr|data-dir))(?:=|$)/.test(arg))) throw new Error('forbidden-memory-option')
       if (command === 'taxonomy' && (args.length !== 1 || args[0] !== '--list')) throw new Error('read-only-taxonomy')
       if (command === 'agent-config' && args.length) throw new Error('read-only-config')
       if (command === 'show' && !validId(args[0])) throw new Error('full-id-required')
@@ -98,10 +98,8 @@ export function memoryTools(call, { readOnly = false, source } = {}) {
         }
         const title = args.indexOf('--title')
         if (!trivial && (title < 0 || !args[title + 1]?.trim())) throw new Error('title-required')
-        if (command === 'remember' && !trivial) {
-          const parent = args[args.indexOf('--parent') + 1]
-          if (!args.includes('--parent') || !validId(parent) || !shown.has(parent)) throw new Error('shown-parent-required')
-        }
+        const parents = args.flatMap((arg, index) => arg === '--parent' ? [args[index + 1]] : arg.startsWith('--parent=') ? [arg.slice('--parent='.length)] : [])
+        if ((command === 'remember' && !trivial && !parents.length) || parents.some(parent => !validId(parent) || !shown.has(parent))) throw new Error('shown-parent-required')
         if (command === 'update' && (!validId(args[0]) || !shown.has(args[0]))) throw new Error('show-before-update')
         const key = JSON.stringify([command, args])
         if (attempts.has(key)) throw new Error('duplicate-write')
