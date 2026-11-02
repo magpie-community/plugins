@@ -209,6 +209,18 @@ name remain independently selectable. The name describes the catalog
 entry used for the request, not an attestation of the backend that
 executed it.
 
+A request's `model_config` is built as Qoder's own client builds it
+(Qoder CN's CLI 1.1.81, desktop 0.4.3), not sent as the listing entry
+(since 0.2.54): `key`, `display_name`, an empty `model`, `format`,
+`is_vl`, `is_reasoning` (off when thinking is turned off), empty
+`api_key` and `url`, `source` and `max_input_tokens`. The entry's
+`minimal_version`, `strategies`, prices and `thinking_config` are not
+sent. While the whole entry was sent, Qoder CN billed DeepSeek-Flash
+(`dfmodel`, whose entry has a `minimal_version`) as Auto at Auto's rate
+(plugins#638); that the entry was the cause has not been confirmed on a
+Qoder CN account. A model whose entry has no key of its own, or whose key is
+`auto`, is refused with a 400 and nothing is sent, never served as Auto.
+
 The `provider.models` hook reads the account's own list, as Qoder's client
 asks for it (`/algo/api/v2/model/list`). It keeps the enabled models of the
 listing's `app` scene, the list Qoder's app shows and the one a request

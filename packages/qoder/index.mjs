@@ -1224,6 +1224,38 @@ function typedUnions(schema) {
   return root
 }
 
+// modelConfig is the model_config a request carries for model m, built as
+// Qoder's own client builds it (Qoder CN's CLI 1.1.81 and desktop 0.4.3,
+// the qoder-agent-sdk worker's model resolution): the listing entry's key,
+// name, format, image and reasoning flags, source and input size, with an
+// empty model, api_key and url, and is_reasoning off when thinking is.
+// Never the listing entry as it came: that also holds minimal_version,
+// strategies, prices and thinking_config, which no client sends. While it
+// was sent whole, Qoder CN billed DeepSeek-Flash (dfmodel, whose entry
+// carries a minimal_version) as Auto at Auto's rate, and Kimi-K3.1-Pro
+// (none) as itself (magpie-community/plugins#638, square-235); the entry
+// is the likely cause, not confirmed on a Qoder CN account.
+// A model with no key of its own is refused: Qoder's worker sends a
+// request with none as "auto", which is never what was asked for.
+function modelConfig(m, thinking) {
+  const raw = m.config ?? {}
+  const key = String(raw.key ?? m.key ?? "").trim()
+  if (!key || ["auto", "default"].includes(key) || key !== m.key) throw new Error(`no Qoder model key for "${m.key ?? ""}"`)
+  const max = Number.isInteger(raw.max_input_tokens) && raw.max_input_tokens > 0 ? raw.max_input_tokens : 200_000
+  return {
+    key,
+    display_name: raw.display_name || key,
+    ...(raw.outer_provider ? { outer_provider: raw.outer_provider } : { model: "" }),
+    format: raw.format ?? "openai",
+    is_vl: !!raw.is_vl,
+    is_reasoning: !!raw.is_reasoning && thinking,
+    api_key: "",
+    url: "",
+    source: raw.source || "system",
+    max_input_tokens: max,
+  }
+}
+
 // qoderBody is the plaintext agent_chat_generation takes for a chat
 // completion request, for model m, in the session the agent named (named,
 // "" when none) and the task it is a call of (taskOf's, a new one when
@@ -1254,7 +1286,7 @@ function qoderBody(chat, m, named = "", task, site) {
     agent_id: "agent_common",
     task_id: "common",
     session_type: site?.sessionType ?? "app",
-    model_config: m.config,
+    model_config: modelConfig(m, thinking),
     system: [sys],
     messages: [{ role: "system", content: [sys] }, ...cacheMarked(qoderMessages(chat.messages ?? []))],
   }
@@ -3058,7 +3090,12 @@ const makePlugin = (site) => async ({ client }) => {
     const api = siteOf(site, cred).api
     const CHAT_URL = api + CHAT_PATH
     const task = taskOf(sessionOf(chat, named), chat)
-    const body = qoderBody(chat, m, named, task, siteOf(site, cred))
+    let body
+    try {
+      body = qoderBody(chat, m, named, task, siteOf(site, cred))
+    } catch (e) {
+      return errorResponse({ status: 400, message: e?.message ?? String(e) })
+    }
     // Qoder's queue is waited out (queueWait) and the request sent again
     // under the request_set_id the queue knows, with a new request_id and
     // chat_record_id, as Qoder's client sends it (its o4i before each
