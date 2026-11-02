@@ -149,3 +149,21 @@ test("defaultEffortOf reads defaultEffort, else effort, held to the model's leve
   expect(defaultEffortOf({ reasoning: { defaultEffort: "medium" } }, ["low", "high"])).toBeUndefined()
   expect(defaultEffortOf({}, ["low"])).toBeUndefined()
 })
+
+test("a chat with small max_tokens (<= 256) is not given a default reasoning effort", async () => {
+  const sent = serve()
+  const opts = await loader()
+  for (const max_tokens of [64, 100, 256]) {
+    await ask(opts, "deepseek-v4.1-flash", { max_tokens })
+  }
+  await ask(opts, "deepseek-v4.1-flash", { max_completion_tokens: 64 })
+  await ask(opts, "deepseek-v4.1-flash", { max_tokens: 64, reasoning_effort: "low" })
+  await ask(opts, "deepseek-v4.1-flash", { max_tokens: 1000 })
+  const chats = chatsOf(sent).map((c) => JSON.parse(c.text))
+  expect(chats[0].reasoning_effort).toBeUndefined()
+  expect(chats[1].reasoning_effort).toBeUndefined()
+  expect(chats[2].reasoning_effort).toBeUndefined()
+  expect(chats[3].reasoning_effort).toBeUndefined()
+  expect(chats[4].reasoning_effort).toBe("low")
+  expect(chats[5].reasoning_effort).toBe("high")
+})
