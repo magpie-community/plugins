@@ -235,7 +235,7 @@ const REASONING_LEVELS = {
   // there is no level that turns their thinking off — offering one would be
   // saying what the model does not do.
   "kimi-k3": ["low", "medium", "high", "xhigh", "max"],
-  "kimi-k3.1-pro": ["low", "high", "xhigh", "max"],
+  "kimi-k3.1-pro": ["low", "medium", "high", "xhigh", "max"],
 }
 
 // The levels of a model, or none when it does not think (or takes none that
