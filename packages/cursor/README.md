@@ -99,7 +99,10 @@ plugin's `fetch` answers them on Cursor's agent API:
 
 Tool results can continue a retained Run in the same plugin process. The owner
 uses the same session/cache key and first user message as `conversation_id`, so
-Task subagents sharing their parent's session can run independently. Retention
+Task subagents sharing their parent's session can run independently. A new
+user turn whose earlier native calls all have their results gets a retained Run
+of its own, with those calls as imported history; while any of them is still
+pending, the turn goes stateless. Retention
 waits at most 120 seconds for a result batch and 15 minutes for a Run's total
 lifetime. A continuation arriving with less than 10 minutes of that lifetime
 left rebuilds from supplied history on a fresh Run before submitting results

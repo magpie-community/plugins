@@ -536,7 +536,11 @@ test("native retention: terminal old handles do not wedge a new user turn", asyn
   const final = await a.ask(account, next)
   expect(final.status).toBe(200)
   next.messages.push(choice(final).message, { role: "user", content: "new turn after terminal owner" })
-  rebuilt(await a.ask(account, next), "finished-tool")
+  // every old call has its result, so the new turn gets a native owner of its own
+  const fresh = await a.ask(account, next)
+  expect(fresh.status).toBe(200)
+  expect(choice(fresh).message.content).toContain("rebuilt:finished-tool")
+  expect(fresh.diagnostic).toMatch(/^same-run;/)
   expect(a.runs).toHaveLength(2)
   expect(a.results).toHaveLength(1)
 })
