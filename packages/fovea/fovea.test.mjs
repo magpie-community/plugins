@@ -187,3 +187,41 @@ test("page/measure.js is the middleware, freshly built — a stale bundle fails 
   expect(got).toBe(expected)
   expect(got.includes("globalThis.FoveaOnRequest")).toBe(true)
 })
+
+test("an old image's cache_control survives the note, in both modes", async () => {
+  for (const saccade of ["off", "always"]) {
+    const cc = { type: "ephemeral" }
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "i" + "V".repeat(400) }, cache_control: cc }
+    const request = { messages: [
+      { role: "user", content: "task" },
+      { role: "assistant", content: "ack" },
+      { role: "user", content: [image] },
+      { role: "assistant", content: "seen" },
+      { role: "user", content: "next" },
+    ] }
+    const r = (await run(mod, { options: { ...options, keep_recent: 1, cut_step: 1, saccade }, request })).request
+    const noted = r.messages[2].content[0]
+    expect(noted.type).toBe("text")
+    expect(noted.cache_control).toEqual(cc)
+    expect(noted.text).toContain("[fovea:")
+  }
+})
+
+test("Codex shape: AGENTS.md, environment_context and the task all stay whole; the first tool output is cut", async () => {
+  const agents = "# AGENTS.md instructions\n" + "A".repeat(300)
+  const env = "<environment_context>\n" + "E".repeat(300)
+  const task = "T".repeat(400)
+  const request = { input: [
+    { type: "message", role: "developer", content: "policy" },
+    { type: "message", role: "user", content: agents },
+    { type: "message", role: "user", content: env },
+    { type: "message", role: "user", content: task },
+    { type: "function_call", call_id: "c1", name: "read", arguments: "{}" },
+    { type: "function_call_output", call_id: "c1", output: "L".repeat(300) },
+    { type: "message", role: "user", content: "go on" },
+  ] }
+  const r = (await run(mod, { options: { ...options, keep_recent: 1, cut_step: 1 }, request })).request
+  expect(r.input[1].content).toBe(agents)
+  expect(r.input[3].content).toBe(task)
+  expect(r.input[5].output).toContain("[fovea:")
+})

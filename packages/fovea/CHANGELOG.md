@@ -2,9 +2,16 @@
 
 本文件记录 fovea 的对外变化。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循语义化版本。
 
+## [0.2.1] — 2026-11-03
+
+### Fixed
+
+- 旧图片换成注记时保留块的 `cache_control`——那是供应商缓存的一个断点，静默丢掉会少一个命中位（两模式均保留，有用例）。
+- 任务豁免从「第一条 user 消息」改为「首条回答之前的整段前导」：Codex 形状下 AGENTS.md 与 environment_context 在任务之前，旧规则保护的是 AGENTS.md、裁的是真任务；新规则在首条 assistant 回复 / 工具调用 / reasoning 处截止。
+
 ## [0.2.0] — 2026-11-02
 
-首个独立仓版本。前身是 magpie-community/plugins 中的 `context-slim` 草稿（PR #467，已关闭并迁移至此），yetone 的评审直接塑造了本版的缓存边界、document 与代理对处理。
+fovea 首个版本。前身是本仓的 `context-slim` 草稿（PR #467，已关闭），在[独立开发仓 webkubor/fovea](https://github.com/webkubor/fovea) 成型后回到这里；与该仓同源同版。
 
 ### Added
 

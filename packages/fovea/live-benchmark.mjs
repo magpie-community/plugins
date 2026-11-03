@@ -1,4 +1,7 @@
 // Controlled live A/B through the same local magpie gateway and same model.
+// ⚠️ A run killed midway (Ctrl-C, crash) leaves the plugin's options as
+// the last state it wrote — re-run to completion, or restore with
+// `magpie plugin options <spec> '<json>'`.
 // Temporarily switches only this plugin's options, restores them in finally.
 // The request is synthetic. The report stores usage and timing, never keys
 // or prompt bodies. Run when other agents are idle: options are global.

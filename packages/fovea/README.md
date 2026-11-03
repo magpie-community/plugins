@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="brand/assets/banner.svg" alt="fovea — keep the recent window sharp" width="820"/>
+<img src="https://raw.githubusercontent.com/webkubor/fovea/main/brand/assets/banner.svg" alt="fovea — keep the recent window sharp" width="820"/>
 
 # @magpie-community/middleware-fovea
 
@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-2f63a2.svg?style=for-the-badge)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.2.0-2f63a2.svg?style=for-the-badge)](https://github.com/webkubor/fovea/releases)
-[![Tests](https://img.shields.io/badge/tests-29%2F29-brightgreen?style=for-the-badge)](#证据三层各管什么)
+[![Tests](https://img.shields.io/badge/tests-31%2F31-brightgreen?style=for-the-badge)](#证据三层各管什么)
 [![Platform](https://img.shields.io/badge/magpie-middleware-8a6bbf?style=for-the-badge)](https://usemagpie.ai)
 [![Runtime](https://img.shields.io/badge/runtime-moejs%20%C2%B7%20zero%20deps-4a5568?style=for-the-badge)](fovea.middleware.js)
 
@@ -39,14 +39,14 @@
 ## ⚡ 30 秒上手
 
 ```sh
-magpie plugin add github:webkubor/fovea
+magpie plugin add @magpie-community/middleware-fovea
 magpie plugin options fovea '{"saccade":"auto","state_marker":"<!-- fovea:state -->"}'
 ```
 
 装完在 magpie 窗口 **Plugins › Fovea evidence** 打开证据页：粘贴你自己的请求 JSON，浏览器里现算前后差异（不联网、不保存正文）。想先看代码再装：
 
 ```sh
-git clone https://github.com/webkubor/fovea && cd fovea && bun test   # 29/29，无需任何依赖
+git clone https://github.com/magpie-community/plugins && bun test packages/fovea   # 31/31
 ```
 
 ---
@@ -77,7 +77,7 @@ git clone https://github.com/webkubor/fovea && cd fovea && bun test   # 29/29，
 
 ## 证据三层，各管什么
 
-1. **规则正确性** —— `bun test`：29 个确定性用例（离线、零依赖）。覆盖三种形状的工具配对、protect 在两种模式下生效、代理对不劈开、document 块不动、标记幂等、连续两轮已裁前缀逐字节相同。
+1. **规则正确性** —— `bun test`：31 个确定性用例（离线、零依赖）。覆盖三种形状的工具配对、protect 在两种模式下生效、代理对不劈开、document 块不动、标记幂等、连续两轮已裁前缀逐字节相同。
 2. **同一请求确实变小** —— `bun benchmark.mjs [request.json] [options]`，或直接在证据页粘贴你的请求。合成样例：47,777 → 14,148 字符，已裁的 27 条消息逐字稳定。
 3. **真实 token / 缓存 / 费用** —— `FOVEA_GATEWAY_KEY=<临时key> bun live-benchmark.mjs`：同模型、同请求、ABBA 四连发，记录供应商返回的 input / cache_read / output token 与耗时，只看暖缓存的第二次。0.1.0 时代的一次实测：163,143 → 42,358 prompt tokens，中位延迟 7.1s → 2.5s（因历史形状与供应商缓存而异）。**账单以 `magpie usage --csv` 的 `cost_usd` 为准；字符百分比不是美元。**
 
@@ -94,6 +94,5 @@ git clone https://github.com/webkubor/fovea && cd fovea && bun test   # 29/29，
 
 ## 发布物
 
-- [CHANGELOG.md](CHANGELOG.md) · [LICENSE](LICENSE)（MIT）· [brand/](brand/)（logo 双色 / banner / 品牌审查页）
-- 品牌色 `#2f63a2` 取自「中央凹」隐喻的焦点色；墨色采样自 magpie 既有图标，属实测非官方色板。
-- 致谢：yetone 对早期 context-slim 草稿的评审直接塑造了缓存边界、document、代理对等设计。
+- [CHANGELOG.md](CHANGELOG.md) · [LICENSE](LICENSE)（MIT）· banner 与品牌资产在[独立开发仓](https://github.com/webkubor/fovea/tree/main/brand)，包内只带页面图标
+- 致谢：yetone 对早期草稿与本次 PR 的评审直接塑造了缓存边界、document、代理对、cache_control 与前导任务保护

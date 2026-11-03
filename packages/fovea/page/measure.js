@@ -104,10 +104,10 @@ function onRequest(body, ctx) {
     // its protection and can be thinned like any other old content. The
     // block itself is never touched — in either mode.
     const hasState = cfg.stateMarker ? hasStateBlock(list, cfg.stateMarker) : false
-    const firstUser = hasState ? -1 : firstUserIndex(list, start)
+    const taskEnd = hasState ? 0 : leadingUserEnd(list, start)
     let changed = false
     for (let i = 0; i < start; i++) {
-      if (!saccade && i === firstUser) continue
+      if (!saccade && i < taskEnd) continue
       const item = list[i]
       if (cfg.stateMarker && carriesState(item, cfg.stateMarker)) continue
       if (list === body.input) changed = (saccade ? collapseInput : slimInput)(item, cfg) || changed
@@ -137,12 +137,20 @@ function windowStart(list, keepCount, keepTokens) {
   return Math.min(byCount, Math.max(0, i + 1))
 }
 
-function firstUserIndex(list, start) {
+// The task a history serves can be several leading items, not one: Codex
+// sends AGENTS.md instructions and an environment_context before the task
+// itself, all as user items. Everything before the first answer — an
+// assistant reply, a function_call or a reasoning item, whichever comes
+// first — is that preamble and stays whole; the history proper begins at
+// the answer.
+function leadingUserEnd(list, start) {
   for (let i = 0; i < start; i++) {
-    const r = list[i] && list[i].role
-    if (r === "user") return i
+    const it = list[i]
+    if (!it || typeof it !== "object") continue
+    if (it.role === "assistant" || it.role === "tool" || it.type === "function_call" ||
+        it.type === "reasoning" || it.type === "function_call_output") return i
   }
-  return -1
+  return start
 }
 
 // A state block is one message carrying the marker. It is found in the
@@ -407,12 +415,16 @@ function isImage(type) {
   return type === "image" || type === "image_url" || type === "input_image"
 }
 
-// Turn an image part into a text note in place, dropping the payload keys.
+// Turn an image part into a text note in place, dropping the payload keys
+// but keeping a cache_control the request asked for: it marks a breakpoint
+// the provider caches by, and losing it silently drops one of them.
 function note(part, responses, text) {
+  const cacheControl = part && part.cache_control && typeof part.cache_control === "object" ? part.cache_control : null
   const type = responses ? "input_text" : "text"
   for (const k of Object.keys(part)) delete part[k]
   part.type = type
   part.text = text
+  if (cacheControl) part.cache_control = cacheControl
 }
 
 // Head and tail with a marker in between. Content already carrying the
