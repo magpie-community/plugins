@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@arcships/magpie-dim-oauth", "name": "DimAgent", "icon": "https://raw.githubusercontent.com/arcships/magpie-dim-oauth/main/page/icon.png", "providers": ["dim-oauth"],
+      "summary": { "en": "OAuth sign-in and model forwarding for your DimAgent plan, with live models, usage and quota resets, plus purchase and renewal links. No local Dim CLI required.", "zh": "登录 DimAgent 账号使用套餐模型，查看用量、重置额度，并打开套餐购买与续期页面。提供模型转发，无需安装本机 Dim CLI。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
       "summary": { "en": "Agnes AI international with Chrome browser sign-in: live OpenAI-compatible text models, Token Plan and Agent Plan usage, and the USD wallet balance.", "zh": "通过 Chrome 浏览器登录 Agnes AI 国际版：动态发现 OpenAI 兼容文本模型，显示 Token Plan、Agent Plan 用量与美元余额，无需手动复制会话 token。" } },
     { "package": "@magpie-community/gateway-powercontext", "name": "PowerContext", "kind": "middleware", "community": true,
