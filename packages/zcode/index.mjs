@@ -29,7 +29,11 @@ const BIGMODEL_API = "https://bigmodel.cn" // BigModel's business API, where ZCo
 const ZAI_BASE = "https://api.z.ai/api/anthropic"
 const BIGMODEL_BASE = "https://open.bigmodel.cn/api/anthropic"
 const START_BASE = ZCODE + "/api/v1/zcode-plan/anthropic"
-const APP_VERSION = "3.16.3" // the ZCode whose sign-in this makes
+// APP_VERSION is the ZCode this signs in and asks as, on every call. ZCode
+// gates by it: its marketing feed answers empty to an older one (#678),
+// and its Start Plan balance "judges capability by the real app_version"
+// (zaiStartPlanBilling.ts in zai-org/ZCode@a9fe401, 3.17.2).
+const APP_VERSION = "3.17.2"
 const UA = "ZCode/" + APP_VERSION
 
 // ZCode's models before its config is read; the Start Plan has all but GLM-5.3.
@@ -167,7 +171,12 @@ const giftSpent = (x) => {
 // the gift when any of them has a live bucket serving it — a bucket past
 // its plan's own end, or one whose remaining_units says none, is skipped
 // rather than asked and refused. models are those live buckets' names.
-async function startPlan(jwt, device) {
+//
+// coming (sign-in only) also takes a plan that has not started yet, as
+// ZCode's own check does (resolveStartPlanBalanceAvailability's "pending"
+// counts as entitled): {name, models: [], coming: true}. Requests and the
+// card never ask for it: a plan not started serves nothing yet.
+async function startPlan(jwt, device, coming = false) {
   if (!jwt) throw new Error("not signed in to ZCode")
   if (jwtExpired(jwt)) throw new Error(EXPIRED)
   const b = (await call("GET", `${ZCODE}/api/v1/zcode-plan/billing/balance?app_version=${APP_VERSION}`, { auth: "Bearer " + jwt, device })) ?? {}
@@ -198,7 +207,11 @@ async function startPlan(jwt, device) {
       }
     }
   }
-  return any ? { name: name || "Start Plan", models: [...ms], allModels: [...all.values()], ttl } : null
+  if (any) return { name: name || "Start Plan", models: [...ms], allModels: [...all.values()], ttl }
+  if (!coming) return null
+  const next = plans.filter((p) => notStarted(p, now) && !(num(p?.ends_at) > 0 && num(p?.ends_at) <= now))
+    .sort((a, b) => startNum(a.starts_at) - startNum(b.starts_at))[0]
+  return next ? { name: String(next.name ?? "").trim() || "Start Plan", models: [], allModels: [], ttl, coming: true } : null
 }
 
 // plansOf says where an account's requests go and what more it can spend:
@@ -679,11 +692,10 @@ const CAPTCHA = 3007
 const CAPTCHA_WORDS = /captcha/i
 
 // The marketing feed and the claim are gated on the client's version:
-// under an older version's header the feed answers empty (11-03: the
-// day's banner showed for 3.17.2 and for no older one), so they go as
-// the current client (3.17.2) sends them.
-const MARKETING_VERSION = "3.17.2"
-const marketingHeaders = () => ({ "X-ZCode-App-Version": MARKETING_VERSION, "X-Platform": platform(), "X-Client-Language": clientLanguage() })
+// under an older version's header the feed answers empty (11-03, #678:
+// the day's banner showed for 3.17.2 and for no older one), so they go,
+// as every call does, as the current client (APP_VERSION) sends them.
+const marketingHeaders = () => ({ "X-ZCode-App-Version": APP_VERSION, "X-Platform": platform(), "X-Client-Language": clientLanguage() })
 
 // claimOne asks /billing/claim for one plan and says what its body says:
 // "claimed" (code 0), "done" (code 1003, claimed before), "captcha" (the
@@ -730,12 +742,15 @@ async function claimOne(s, planID) {
 const TOUCH = "/api/v1/marketing/touch"
 const CLAIM_ACTION = "claim_zcode_plan"
 let touchSeq = 0
+// clientLanguage is the language ZCode names to marketing/touch: zh-CN or
+// en-US, its two UI languages, never another (marketingTouchService's
+// localeSchema), so a computer set to zh-Hans-CN or en-GB asks as ZCode does.
 const clientLanguage = () => {
+  let l = ""
   try {
-    return Intl.DateTimeFormat().resolvedOptions().locale || "en-US"
-  } catch {
-    return "en-US"
-  }
+    l = Intl.DateTimeFormat().resolvedOptions().locale || ""
+  } catch {}
+  return /^zh\b/i.test(l) ? "zh-CN" : "en-US"
 }
 
 // touchPlans is the plans marketing/touch's deliveries offer to claim:
@@ -1213,7 +1228,7 @@ async function signedIn(site, token, jwt, device, onTeam = false) {
   let berr = null
   if (jwt) {
     try {
-      const sp = await startPlan(jwt, device)
+      const sp = await startPlan(jwt, device, true)
       if (sp) return { ...(err || !s?.key ? { base: SITES[site].base } : s), jwt, plan: sp.name }
     } catch (e) {
       berr = e

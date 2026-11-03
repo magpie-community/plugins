@@ -239,7 +239,8 @@ names it in a line set aside, "ZCode gift plan not started yet", with
 the plan's name and its start in this computer's time as the display
 ("Start Plan · 2026-10-29 23:00"), soonest first. An account whose only
 gift plan starts later gets a card with that line, not "ended or never
-started". The status ZCode gives such a plan has not been seen, so any
+started", and signs in with it too, as ZCode counts such a plan as the
+account's (its "pending" Start Plan). The status ZCode gives such a plan has not been seen, so any
 status but `expired` is taken; `starts_at` decides it.
 
 **Resets.** A GLM Coding Plan of the account's own, and a team seat,

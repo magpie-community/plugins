@@ -132,3 +132,54 @@ test("a plan whose start has come is live, not coming", async () => {
   const u = await usage(startAuth())
   expect(u.windows.map((w) => w.name)).toEqual(["GLM-5.1"])
 })
+
+// sliyrainbow (Discord, 11-03): a BigModel sign-in with no GLM Coding Plan
+// failed "ZCode's Start Plan has ended or was never started". ZCode itself
+// counts a Start Plan that starts later as entitled
+// (zaiStartPlanBilling.ts resolveStartPlanBalanceAvailability, "pending"),
+// so the sign-in takes it, and the card names its start.
+function bigmodel(plans) {
+  return serve(({ url }) => {
+    const p = url.pathname
+    if (p === "/api/v1/oauth/cli/init") return ok({ flow_id: "f1", authorize_url: "https://open.bigmodel.cn/login", poll_interval_sec: 0, expires_at: 0 })
+    if (p === "/api/v1/oauth/cli/poll/f1") return ok({ status: "ready", bigmodel: { access_token: "bm-token" }, token: jwt(now + 86400), user: { email: "sly@example.com" } })
+    if (p === "/api/biz/customer/getCustomerInfo")
+      return ok({ organizations: [{ organizationId: "o", organizationName: "默认机构", projects: [{ projectId: "p", projectName: "默认项目", projectType: 1 }] }] })
+    if (p === "/api/biz/v1/organization/o/projects/p/api_keys") return ok([{ name: "zcode-api-key", apiKey: "own" }])
+    if (p === "/api/biz/v1/organization/o/projects/p/api_keys/copy/own") return ok({ secretKey: "s" })
+    if (p === "/api/biz/subscription/list") return ok([])
+    if (p === "/api/v1/zcode-plan/billing/balance") return ok({ server_time: now, plans, balances: [] })
+  })
+}
+async function signIn() {
+  const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const m = hooks.auth.methods.find((x) => x.label === "ZCode: BigModel (智谱) GLM Coding Plan")
+  return (await m.authorize()).callback()
+}
+
+for (const status of ["active", "pending_unknown_word"]) {
+  test(`a sign-in whose only Start Plan starts later is taken, not 'ended or never started' (status ${status})`, async () => {
+    const calls = bigmodel([next(status)])
+    const r = await signIn()
+    expect(r.error).toBeUndefined()
+    // the balance is asked as ZCode 3.17.2 asks it: it judges by app_version
+    const b = calls.find((c) => c.url.pathname === "/api/v1/zcode-plan/billing/balance")
+    expect(b.url.searchParams.get("app_version")).toBe("3.17.2")
+    expect(r.type).toBe("success")
+    const s = JSON.parse(r.refresh)
+    expect(s).toMatchObject({ site: "bigmodel", plan: "Start Plan" })
+    // and the card says when it starts
+    bigmodel([next(status)])
+    const u = await usage(oauth(s))
+    expect(u.windows).toEqual([{ name: PENDING, used: 0, aside: true, display: `Start Plan · ${local(later)}` }])
+  })
+}
+
+test("a sign-in with no plan at all, or only an expired one, still says so", async () => {
+  for (const plans of [[], [{ ...next("expired") }], [{ ...live, ends_at: now - 60 }]]) {
+    bigmodel(plans)
+    const r = await signIn()
+    expect(r.type).toBe("failed")
+    expect(r.error).toContain("ZCode's Start Plan has ended or was never started")
+  }
+})

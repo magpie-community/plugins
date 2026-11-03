@@ -343,3 +343,20 @@ test("after the claim the feed has no delivery: nothing to claim, not a failure"
   expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
   expect(claims(calls)).toEqual([])
 })
+
+// ZCode names only zh-CN or en-US to the feed (marketingTouchService's
+// localeSchema in zai-org/ZCode@a9fe401); a computer set to another
+// locale asked with it as it was
+test("the feed is asked in zh-CN or en-US only, as the app asks it", async () => {
+  const realDTF = Intl.DateTimeFormat
+  try {
+    for (const [locale, want] of [["zh-Hans-CN", "zh-CN"], ["zh-TW", "zh-CN"], ["zh-CN", "zh-CN"], ["en-GB", "en-US"], ["ja-JP", "en-US"], ["", "en-US"]]) {
+      Intl.DateTimeFormat = function () { return { resolvedOptions: () => ({ locale }) } }
+      const calls = claimWith(() => json("", 404))
+      await checkin()
+      expect([locale, calls.find((c) => c.url.pathname === TOUCH).headers["X-Client-Language"]]).toEqual([locale, want])
+    }
+  } finally {
+    Intl.DateTimeFormat = realDTF
+  }
+})
