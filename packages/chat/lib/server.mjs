@@ -14,6 +14,7 @@ import { callTool, closeAll, listTools, workspaceDir } from "./mcp.mjs";
 const here = fileURLToPath(new URL(".", import.meta.url));
 const UI_ROOT = join(here, "..", "chat");
 const MAX_TOOL_ROUNDS = 8;
+const MAX_TOOL_RESULT = 60000;
 
 // 插件版本，从包里的 package.json 读（别在两处写死同一个数字）
 const VERSION = (() => {
@@ -418,40 +419,47 @@ async function runChat({ res, body, settings, store, options }, controllers) {
   if (system) messages.push({ role: "system", content: system });
   for (const m of history) {
     const calls = m.role === "assistant" && Array.isArray(m.toolCalls) ? m.toolCalls.filter((c) => c && c.name) : [];
-    if (!calls.length) {
+    const rounds = m.role === "assistant" && Array.isArray(m.rounds) ? m.rounds : null;
+    if (!calls.length && !rounds) {
       messages.push({ role: m.role, content: toGatewayContent(m) });
       continue;
     }
     // 一轮工具调用的完整重放：assistant.tool_calls 后面必须跟每个调用的 tool 结果，
     // 少一条网关就拒收，所以没有结果的调用不放进历史。
     const done = calls.filter((c) => String(c.result ?? "") !== "" || c.isError);
-    if (!done.length) {
-      if (m.content) messages.push({ role: "assistant", content: String(m.content) });
-      continue;
-    }
-    messages.push({
-      role: "assistant",
-      content: m.content || "",
-      tool_calls: done.map((c, i) => ({
-        id: String(c.id || `history_${i}`),
-        type: "function",
-        function: { name: String(c.name), arguments: typeof c.args === "string" ? c.args : JSON.stringify(c.args || {}) },
-      })),
-    });
-    for (const [i, c] of done.entries()) {
+    const byId = new Map(done.map(c => [c.id, c]));
+    for (const part of rounds || [{ content: m.content }]) {
+      const partCalls = rounds ? (part.toolIds || []).map(id => byId.get(id)).filter(Boolean) : done;
+      if (!partCalls.length) {
+        if (part.content) messages.push({ role: "assistant", content: String(part.content) });
+        continue;
+      }
       messages.push({
-        role: "tool",
-        tool_call_id: String(c.id || `history_${i}`),
-        content: String(c.result ?? "").slice(0, 20000) || (c.isError ? "error" : "ok"),
+        role: "assistant",
+        content: part.content || "",
+        tool_calls: partCalls.map((c, i) => ({
+          id: String(c.id || `history_${i}`),
+          type: "function",
+          function: { name: String(c.name), arguments: typeof c.args === "string" ? c.args : JSON.stringify(c.args || {}) },
+        })),
       });
+      for (const [i, c] of partCalls.entries()) {
+        messages.push({
+          role: "tool",
+          tool_call_id: String(c.id || `history_${i}`),
+          content: String(c.result ?? "").slice(0, MAX_TOOL_RESULT) || (c.isError ? "error" : "ok"),
+        });
+      }
     }
   }
 
   sse(res, "start", { model, tools: tools.map((t) => t.name), gateway: await resolveGateway(options).catch(() => gatewayURL(options)) });
 
   let usageTotal = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const callIds = new Set();
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      sse(res, "round", {});
       const payload = { model, messages, stream: true };
       if (effort) payload.reasoning_effort = effort;
       if (Number.isFinite(temperature)) payload.temperature = temperature;
@@ -499,18 +507,27 @@ async function runChat({ res, body, settings, store, options }, controllers) {
       }
 
       if (calls.size && (finish === "tool_calls" || finish === "stop")) {
-        const made = [...calls.values()].filter((c) => c.name);
+        const made = [...calls.values()].filter((c) => c.name).map((c, i) => {
+          let id = c.id;
+          if (!id || callIds.has(id)) {
+            id = `call_${round}_${i}`;
+            while (callIds.has(id)) id += "_";
+          }
+          callIds.add(id);
+          return { ...c, id };
+        });
         if (!made.length) { sse(res, "done", { ms: Date.now() - started, usage: usageTotal }); res.end(); return; }
 
         messages.push({
           role: "assistant",
           content: content || "",
-          tool_calls: made.map((c, i) => ({ id: c.id || `call_${round}_${i}`, type: "function", function: { name: c.name, arguments: c.args || "{}" } })),
+          tool_calls: made.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.args || "{}" } })),
         });
         if (content) sse(res, "delta", { text: "" });
 
         for (const c of made) {
-          const id = c.id || `call_${round}`;
+          abort.signal.throwIfAborted();
+          const id = c.id;
           let args = {};
           try { args = JSON.parse(c.args || "{}"); } catch { args = {}; }
           const tool = tools.find((t) => t.name === c.name) || tools.find((t) => t.rawName === c.name);
@@ -520,6 +537,7 @@ async function runChat({ res, body, settings, store, options }, controllers) {
             result = "没有这个工具：" + c.name; isError = true;
           } else {
             const server = (await readMcp(undefined, options)).find((s) => s.name === tool.server);
+            abort.signal.throwIfAborted();
             try {
               const out = await callTool(server, tool.rawName, args);
               result = out.text; isError = Boolean(out.isError);
@@ -527,8 +545,9 @@ async function runChat({ res, body, settings, store, options }, controllers) {
               result = String(err?.message || err); isError = true;
             }
           }
-          sse(res, "tool", { phase: "result", id, name: c.name, args, result: String(result).slice(0, 20000), isError });
-          messages.push({ role: "tool", tool_call_id: id, content: String(result).slice(0, 60000) || (isError ? "error" : "ok") });
+          result = String(result).slice(0, MAX_TOOL_RESULT) || (isError ? "error" : "ok");
+          sse(res, "tool", { phase: "result", id, name: c.name, args, result, isError });
+          messages.push({ role: "tool", tool_call_id: id, content: result });
         }
         continue; // 让模型基于工具结果继续
       }

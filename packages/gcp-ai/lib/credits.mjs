@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
-import { assertConsoleSession, cacheRoot, defaultProfile, expandPath, extractConsoleIdentity, safeGoto, validateBillingAccount, validateProject, withPage } from "./browser.mjs"
+import { assertConsoleSession, cacheRoot, defaultProfile, expandPath, extractConsoleIdentity, safeGoto, validateBillingAccount, validateProfileDirectory, validateProject, withPage } from "./browser.mjs"
 import { take } from "./lock.mjs"
 import { effectiveAuthMode, resolveProject, validateAccount } from "./credentials.mjs"
 
@@ -10,11 +10,44 @@ const normalize = (value) => String(value ?? "").replace(/\s+/g, " ").trim()
 // about the account: they are remembered for a minute, not twenty.
 const NETWORK_FAILURE = /ERR_(?:TIMED_OUT|CONNECTION|NETWORK|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|NAME_RESOLUTION_FAILED|PROXY|TUNNEL|SSL|EMPTY_RESPONSE)|net::ERR_|timed out after|TimeoutError|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up/i
 const column = (headers, name) => headers.findIndex((h) => normalize(h).toLowerCase() === name)
-const money = (value) => {
+// The currencies a credit can be read in. A billing account is read in USD
+// unless billingCurrencies names another one for it: the Console writes yen
+// and yuan with the same ¥, so a currency is never guessed from a symbol
+// (kidchen94, #667). Amounts are kept in the currency's minor unit and
+// nothing is ever converted.
+export const CURRENCIES = {
+  USD: { digits: 2, symbol: "$", marks: ["US$", "$"] },
+  JPY: { digits: 0, symbol: "¥", marks: ["JP¥", "¥", "￥"] },
+}
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+// What an amount looks like in a currency, for telling the person which one
+// the page shows when it isn't the one the billing account is read in.
+const looksLike = (text) => {
+  if (/^(?:JP¥|JPY\b)|\bJPY$/.test(text)) return "JPY"
+  if (/^(?:US\$|USD\b)|\bUSD$/.test(text)) return "USD"
+  if (/^[¥￥]/.test(text)) return "¥"
+  if (/^\$/.test(text)) return "USD"
+}
+const money = (value, currency = "USD", billingAccount) => {
   const text = normalize(value)
-  const match = /^(?:US\$|\$|USD\s*)([\d,]+)(?:\.(\d{2}))?(?:\s*USD)?$/.exec(text)
-  if (!match) throw new Error(`Unsupported credit amount/currency: ${text}. This plugin requires USD billing.`)
-  return Number(match[1].replaceAll(",", "")) * 100 + Number(match[2] ?? 0)
+  const { digits, marks } = CURRENCIES[currency]
+  const mark = `(?:${marks.map(escape).join("|")}|${currency}\\s*)`
+  const number = `(\\d{1,3}(?:,\\d{3})+|\\d+)${digits ? `(?:\\.(\\d{${digits}}))?` : ""}`
+  const match = new RegExp(`^${mark}${number}(?:\\s*${currency})?$`).exec(text) ?? new RegExp(`^${number}\\s*${currency}$`).exec(text)
+  if (!match) {
+    const seen = looksLike(text)
+    const which = billingAccount ? `billing account ${billingAccount}` : "this billing account"
+    const set = (code) => `set billingCurrencies to { "${billingAccount ?? "<billing account>"}": "${code}" }`
+    // A ¥ under JPY is yen written wrongly (a fraction, a bad grouping), not
+    // another currency.
+    if (seen && seen !== currency && !(seen === "¥" && CURRENCIES[currency].marks.includes("¥"))) {
+      throw new Error(seen === "¥"
+        ? `Credits read for ${which} are in ¥ (yen or yuan), not ${currency}. If it bills in Japanese yen, ${set("JPY")} in the gcp-ai options; other currencies are not supported`
+        : `Credits read for ${which} are in ${seen}, not ${currency}; ${set(seen)} in the gcp-ai options`)
+    }
+    throw new Error(`Unsupported credit amount/currency: ${text} (${which} is read in ${currency}; supported: ${Object.keys(CURRENCIES).join(", ")})`)
+  }
+  return Number(match[1].replaceAll(",", "")) * 10 ** digits + Number(match[2] ?? 0)
 }
 const isoDate = (value) => {
   const text = normalize(value)
@@ -27,9 +60,12 @@ const isoDate = (value) => {
 
 // Column names are read from the rendered table, not token offsets or the
 // unrelated dollar amounts in overview widgets and expired-credit tooltips.
-export function parseCreditTables(tables, { now = Date.now() } = {}) {
+export function parseCreditTables(tables, { now = Date.now(), currency = "USD", billingAccount } = {}) {
+  if (!CURRENCIES[currency]) throw new Error(`Unsupported billing currency ${currency}; supported: ${Object.keys(CURRENCIES).join(", ")}`)
+  const unit = 10 ** CURRENCIES[currency].digits
   const credits = new Map()
   let recognized = false
+  const unread = []
   // A credit's status is a small vocabulary that Google grows over time: a
   // credit that reads "Active" a month before its end date reads "Expiring in
   // 24 days" in the month of it. That wording is a fact about time rather
@@ -43,7 +79,10 @@ export function parseCreditTables(tables, { now = Date.now() } = {}) {
   for (const table of tables) {
     const headers = table.headers.map(normalize)
     const indices = Object.fromEntries(["credit name", "status", "remaining value", "original value", "credit id", "start date", "end date", "usage scope"].map((name) => [name, column(headers, name)]))
-    if (["credit name", "status", "remaining value", "original value", "credit id"].some((name) => indices[name] < 0)) continue
+    if (["credit name", "status", "remaining value", "original value", "credit id"].some((name) => indices[name] < 0)) {
+      if (headers.filter(Boolean).length >= 3 && table.rows?.length) unread.push(headers.filter(Boolean))
+      continue
+    }
     recognized = true
     for (const row of table.rows) {
       const cell = (name) => normalize(row[indices[name]])
@@ -52,26 +91,32 @@ export function parseCreditTables(tables, { now = Date.now() } = {}) {
       if (!known.includes(status) && !expiring) throw new Error(`Unknown Google Cloud credit status: ${cell("status")}`)
       const id = cell("credit id")
       if (!id || credits.has(id)) continue
-      const reported = money(cell("remaining value"))
-      const original = money(cell("original value"))
+      const reported = money(cell("remaining value"), currency, billingAccount)
+      const original = money(cell("original value"), currency, billingAccount)
       if (!Number.isSafeInteger(reported) || !Number.isSafeInteger(original) || reported < 0 || reported > original) throw new Error("Invalid Google Cloud credit amounts")
       const remaining = spent.includes(status) ? 0 : reported
       const start = isoDate(cell("start date"))
       const end = isoDate(cell("end date"))
       const eligible = (usable.includes(status) || expiring) && !(start && Date.parse(start) > now) && !(end && Date.parse(end) <= now)
-      credits.set(id, { id, name: cell("credit name"), status: cell("status"), remaining: remaining / 100, original: original / 100, start, end, scope: cell("usage scope"), eligible })
+      credits.set(id, { id, name: cell("credit name"), status: cell("status"), remaining: remaining / unit, original: original / unit, start, end, scope: cell("usage scope"), eligible })
     }
+  }
+  // A table with rows whose columns aren't the English ones is a page in
+  // another language (Chrome's translation, or a Console that ignored hl=en),
+  // not a lapsed session: say what was there.
+  if (!recognized && unread.length) {
+    throw new Error(`The Cloud Console credits table's columns are not the English ones this plugin reads (it found: ${unread[0].slice(0, 6).join(", ")}); the page may have been translated or shown in another language. Turn off translation for console.cloud.google.com in the plugin's Chrome profile and retry`)
   }
   if (!recognized || !credits.size) throw new Error("Google Cloud Credits table was not found or is empty; the session may be expired, the page may still be loading, or its layout changed")
   const active = [...credits.values()].filter((credit) => credit.eligible)
-  const remaining = active.reduce((sum, credit) => sum + Math.round(credit.remaining * 100), 0)
-  const original = active.reduce((sum, credit) => sum + Math.round(credit.original * 100), 0)
+  const remaining = active.reduce((sum, credit) => sum + Math.round(credit.remaining * unit), 0)
+  const original = active.reduce((sum, credit) => sum + Math.round(credit.original * unit), 0)
   const ends = active.filter((credit) => credit.remaining > 0 && credit.end).map((credit) => credit.end).sort()
   const soonest = ends[0]
   return {
-    currency: "USD", remaining: remaining / 100, original: original / 100, used: (original - remaining) / 100,
+    currency, remaining: remaining / unit, original: original / unit, used: (original - remaining) / unit,
     usedPercent: original > 0 ? ((original - remaining) * 100) / original : 100,
-    ...(soonest ? { runsOutAt: soonest, runsOut: active.filter((c) => c.end === soonest).reduce((s, c) => s + Math.round(c.remaining * 100), 0) / 100 } : {}),
+    ...(soonest ? { runsOutAt: soonest, runsOut: active.filter((c) => c.end === soonest).reduce((s, c) => s + Math.round(c.remaining * unit), 0) / unit } : {}),
     credits: [...credits.values()], fetchedAt: new Date(now).toISOString(), cached: false,
   }
 }
@@ -92,7 +137,9 @@ export async function discoverBillingAccount(page, project, account) {
   await page.waitForFunction(() => /billing\/[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}/i.test(location.href) || [...document.querySelectorAll("a[href]")].some((a) => /\/billing\/[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}/i.test(a.href)), undefined, { timeout: 20000 }).catch((error) => { if (error.name !== "TimeoutError") throw error })
   const urls = [await page.url(), ...(await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((link) => link.href)) ?? [])]
   const accounts = [...new Set(urls.flatMap((url) => [...url.matchAll(/\/billing\/([0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6})(?:[/?#]|$)/gi)].map((m) => m[1])))]
-  if (accounts.length !== 1) throw new Error("Cannot uniquely identify the project's billing account; set VERTEX_BILLING_ACCOUNT explicitly")
+  if (accounts.length !== 1) {
+    throw new Error(`Cannot tell which billing account project ${project} uses (the Console showed ${accounts.length ? accounts.join(", ") : "none"}); set billingAccounts to { "${project}": "<billing account>" } in the gcp-ai options`)
+  }
   return accounts[0]
 }
 
@@ -155,6 +202,41 @@ export function consoleAccountFor(account, aliases) {
   return normalized.get(validateAccount(account).toLowerCase()) ?? account
 }
 
+// The per-account and per-project maps a machine with several Google
+// accounts needs, since one machine-wide variable would point every account at
+// one value: which billing account a project's credits are read from, which
+// currency a billing account bills in, and which Chrome profile directory
+// holds an account's Console session.
+function readMap(name, value, key, entry) {
+  const map = new Map()
+  if (value === undefined || value === null) return map
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object`)
+  for (const [k, v] of Object.entries(value)) {
+    let parsed
+    try { parsed = [key(k), entry(v)] } catch (error) { throw new Error(`${name}: ${error.message}`) }
+    if (map.has(parsed[0])) throw new Error(`Duplicate ${name} entry for ${parsed[0]}`)
+    map.set(...parsed)
+  }
+  return map
+}
+const billingAccountsOf = (value) => readMap("billingAccounts", value, (project) => validateProject(project), (account) => validateBillingAccount(account).toUpperCase())
+export const billingCurrenciesOf = (value) => readMap("billingCurrencies", value, (account) => validateBillingAccount(account).toUpperCase(), (currency) => {
+  const code = typeof currency === "string" ? currency.trim().toUpperCase() : ""
+  if (!CURRENCIES[code]) throw new Error(`${JSON.stringify(currency)} is not a currency this plugin reads (${Object.keys(CURRENCIES).join(", ")})`)
+  return code
+})
+const profileDirectoriesOf = (value) => readMap("profileDirectories", value, (account) => validateAccount(account).toLowerCase(), (directory) => {
+  const name = validateProfileDirectory(directory)
+  if (!name) throw new Error("a profile directory cannot be empty")
+  return name
+})
+const currencyOf = (currencies, billingAccount) => currencies.get(String(billingAccount ?? "").toUpperCase()) ?? "USD"
+
+// Chrome marks a page it translated on its root element. Such a page's table
+// is words Chrome chose, not the Console's: it is never parsed.
+const TRANSLATED = "The Cloud Console page was translated by Chrome, so its credits table can't be read; turn off translation for console.cloud.google.com in the plugin's Chrome profile and retry"
+const translated = (page) => page.evaluate(() => location.origin === "https://console.cloud.google.com" && /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement?.className ?? ""))
+
 async function readPage(page, options) {
   // How long the Console is given to show the credits table. The first wait is
   // only a hint that the page has started answering: what decides the read is
@@ -164,13 +246,19 @@ async function readPage(page, options) {
   const consoleAccount = options.consoleAccount
   const account = options.billingAccount ? validateBillingAccount(options.billingAccount) : await discoverBillingAccount(page, options.project, consoleAccount)
   const source = `https://console.cloud.google.com/billing/${account}/credits/all?hl=en${consoleAccount ? `&authuser=${encodeURIComponent(consoleAccount)}` : ""}`
+  const currency = currencyOf(options.currencies ?? billingCurrenciesOf(options.billingCurrencies), account)
   await safeGoto(page, source)
-  await page.waitForFunction(() => location.hostname === "accounts.google.com" || [...document.querySelectorAll("th, [role='columnheader']")].some((cell) => cell.innerText.trim() === "Remaining value"), undefined, { timeout: wait(45000) }).catch(() => {})
+  await page.waitForFunction(() => location.hostname === "accounts.google.com" || /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement?.className ?? "") || [...document.querySelectorAll("th, [role='columnheader']")].some((cell) => cell.innerText.trim() === "Remaining value"), undefined, { timeout: wait(45000) }).catch(() => {})
+  if (await translated(page)) throw new Error(TRANSLATED)
   await assertConsoleSession(page, { timeout: wait(20000) })
   // The table is the read: a page that never shows one is not a balance, and
-  // the error says which of the two waits ran out.
-  await page.waitForFunction(() => [...document.querySelectorAll("tbody tr, [role='row']")].some((row) => /\$\s*\d/.test(row.innerText)), undefined, { timeout: wait(30000) })
+  // the error says which of the two waits ran out. A row is ready when its
+  // cells hold a number, in whatever currency: waiting for a "$" left a yen
+  // account waiting out the whole timeout before its currency was named.
+  await page.waitForFunction(() => /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement?.className ?? "")
+    || [...document.querySelectorAll("tbody tr, [role='row']")].some((row) => row.querySelector("td, [role='gridcell'], [role='cell']") && /\d/.test(row.innerText)), undefined, { timeout: wait(30000) })
     .catch(() => { throw new Error("Google Cloud Credits table was not found or is empty; the session may be expired, the page may still be loading, or its layout changed") })
+  if (await translated(page)) throw new Error(TRANSLATED)
   const confirmed = await confirmAccount(page, consoleAccount, options.googleSubject)
   const tables = []
   const seen = new Set()
@@ -181,7 +269,7 @@ async function readPage(page, options) {
     seen.add(signature)
     tables.push(...next)
     if (!(await nextPage(page))) return {
-      ...parseCreditTables(tables), billingAccount: account, source,
+      ...parseCreditTables(tables, { currency, billingAccount: account }), billingAccount: account, source,
       ...(confirmed?.subject ? { googleSubject: confirmed.subject, consoleAccount: confirmed.account } : {}),
     }
     await page.waitForFunction((before) => {
@@ -201,27 +289,40 @@ async function scrape(options) {
   // browser this process keeps for the profile, so a second account costs a
   // tab rather than another Chrome.
   if (options.browser) return readPage(options.browser.page, options)
-  return withPage({ profile: options.profile, headless: options.headless ?? true }, (page) => readPage(page, options))
+  return withPage({ profile: options.profile, profileDirectory: options.profileDirectory, headless: options.headless ?? true }, (page) => readPage(page, options))
 }
 
 const pending = new Map()
 
 export async function fetchCredits(options = {}) {
+  const billingAccounts = billingAccountsOf(options.billingAccounts)
+  const currencies = billingCurrenciesOf(options.billingCurrencies)
+  const profileDirectories = profileDirectoriesOf(options.profileDirectories)
+  const project = options.project ?? process.env.GOOGLE_VERTEX_PROJECT ?? process.env.GOOGLE_CLOUD_PROJECT
   const settings = {
     ...options,
     profile: options.profile ?? process.env.VERTEX_CHROME_PROFILE ?? defaultProfile(),
-    project: options.project ?? process.env.GOOGLE_VERTEX_PROJECT ?? process.env.GOOGLE_CLOUD_PROJECT,
-    billingAccount: options.billingAccount ?? process.env.VERTEX_BILLING_ACCOUNT,
+    project,
+    // The project's own entry beats a row-wide or machine-wide account.
+    billingAccount: (project && billingAccounts.get(project)) ?? options.billingAccount ?? process.env.VERTEX_BILLING_ACCOUNT,
     account: options.account ?? process.env.VERTEX_GCLOUD_ACCOUNT,
+    currencies,
   }
   if (settings.billingAccount) validateBillingAccount(settings.billingAccount)
-  else settings.project = await resolveProject(settings, undefined, await effectiveAuthMode(settings))
+  else {
+    settings.project = await resolveProject(settings, undefined, await effectiveAuthMode(settings))
+    if (settings.project && billingAccounts.has(settings.project)) settings.billingAccount = billingAccounts.get(settings.project)
+  }
   if (settings.project) validateProject(settings.project)
   if (settings.account) validateAccount(settings.account)
   const mapped = consoleAccountFor(settings.account, settings.consoleAccountAliases)
   settings.consoleAccount = mapped?.toLowerCase() !== settings.account?.toLowerCase()
     ? mapped : settings.consoleAccount || mapped
   if (settings.consoleAccount) validateAccount(settings.consoleAccount)
+  settings.profileDirectory = validateProfileDirectory(
+    profileDirectories.get(settings.account?.toLowerCase()) ?? profileDirectories.get(settings.consoleAccount?.toLowerCase())
+    ?? options.profileDirectory ?? process.env.VERTEX_CHROME_PROFILE_DIRECTORY,
+  )
   // The Chrome profile alone does not tell two Google accounts apart: one
   // profile can hold both, so each read also names the account whose cookies
   // it used (and, when it has one, that account's own ADC directory).
@@ -232,6 +333,11 @@ export async function fetchCredits(options = {}) {
   // A subject-verified request must not reuse legacy email-only balances or
   // mismatch failures. Include the subject and validation version in its key.
   if (settings.googleSubject) identityParts.push({ googleSubject: settings.googleSubject, identityVersion: 2 })
+  // Another Chrome profile is another session, and another currency another
+  // reading of the same page: neither may reuse what the other cached. Added
+  // only when set, so the caches of reads that set neither are kept.
+  if (settings.profileDirectory) identityParts.push({ profileDirectory: settings.profileDirectory })
+  if (currencies.size) identityParts.push({ currencies: [...currencies].sort(([a], [b]) => a.localeCompare(b)) })
   const identity = JSON.stringify(identityParts)
   const digest = createHash("sha256").update(identity).digest("hex").slice(0, 24)
   const file = join(cacheRoot(), "magpie", "gcp-ai", `credits-${digest}.json`)
@@ -257,7 +363,7 @@ export async function fetchCredits(options = {}) {
     if (settings.force || !(age >= 0)) return undefined
     if (data.failedAt) return age < (transient(data) ? transientTtl : failureTtl) * 1000 ? { ...data, cached: false } : undefined
     const futureExpiry = !data.runsOutAt || Date.parse(data.runsOutAt) > Date.now()
-    if (age < ttl * 1000 && futureExpiry && data.currency === "USD" && Number.isFinite(data.remaining) && Number.isFinite(data.original) && Number.isFinite(data.usedPercent)) return { ...data, cached: true }
+    if (age < ttl * 1000 && futureExpiry && data.currency === currencyOf(currencies, data.billingAccount ?? settings.billingAccount) && Number.isFinite(data.remaining) && Number.isFinite(data.original) && Number.isFinite(data.usedPercent)) return { ...data, cached: true }
   }
   const failureTtl = Number(options.failureTtl ?? process.env.VERTEX_CREDITS_FAILURE_TTL ?? 1200)
   if (!Number.isFinite(failureTtl) || failureTtl < 0) throw new Error("VERTEX_CREDITS_FAILURE_TTL must be a nonnegative number of seconds")
@@ -311,12 +417,15 @@ export async function fetchCredits(options = {}) {
 }
 
 export function usageOf(credits) {
+  const currency = CURRENCIES[credits.currency] ? credits.currency : "USD"
+  const { digits, symbol } = CURRENCIES[currency]
+  const amount = (value) => `${symbol}${value.toFixed(digits)}`
   return {
-    plan: "Google Cloud promotional credits", balance: `$${credits.remaining.toFixed(2)} USD`, signIn: "kept",
+    plan: "Google Cloud promotional credits", balance: `${amount(credits.remaining)} ${currency}`, signIn: "kept",
     windows: [{
       name: "Promotional Credits", used: credits.usedPercent,
-      display: `$${credits.remaining.toFixed(2)} remaining / $${credits.original.toFixed(2)} USD${credits.cached ? " (cached)" : ""}`,
-      amount: credits.used, limit: credits.original, unit: "USD",
+      display: `${amount(credits.remaining)} remaining / ${amount(credits.original)} ${currency}${credits.cached ? " (cached)" : ""}`,
+      amount: credits.used, limit: credits.original, unit: currency,
       ...(credits.runsOutAt ? { runsOutAt: credits.runsOutAt, runsOut: credits.runsOut } : {}),
     }],
   }

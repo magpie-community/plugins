@@ -263,6 +263,39 @@ test('local time is a pure dawn/day/dusk/night palette', () => {
 })
 
 // ---- drawing -----------------------------------------------------------
+test('every theme draws in both canvas views with finite coordinates and colours', () => {
+  const themes = {}
+  new Function('globalThis', readFileSync(new URL('./page/scene3d.js', import.meta.url), 'utf8'))(themes)
+  for (const dim of ['2d', '3d']) for (const id of themes.AgentOfficeScene3D.SCENE_IDS) {
+    const canvas = fakeCanvas()
+    const colours = []
+    const ctx = new Proxy(fakeCtx(), {
+      get(target, key) {
+        const value = target[key]
+        if (typeof value !== 'function') return value
+        return (...args) => {
+          for (const arg of args) if (typeof arg === 'number') expect(Number.isFinite(arg), `${id} ${dim} ${String(key)}`).toBe(true)
+          return value(...args)
+        }
+      },
+      set(target, key, value) {
+        if (key === 'fillStyle' && typeof value === 'string') {
+          expect(value).not.toContain('NaN')
+          colours.push(value)
+        }
+        target[key] = value
+        return true
+      },
+    })
+    canvas.getContext = () => ctx
+    const scene = new Scene(canvas, { dim })
+    scene.theme = themes.AgentOfficeScene3D.SCENES[id]
+    scene.draw()
+    expect(colours).toContain(scene.theme.floor)
+    expect(colours).toContain(scene.theme.wall)
+  }
+})
+
 
 for (const dim of ['2d', '3d']) {
   test(`${dim}: venues, the cat and the clock draw without a real canvas`, () => {

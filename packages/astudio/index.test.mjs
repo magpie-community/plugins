@@ -7,6 +7,7 @@ const {
   rowFromCatalogEntry,
   bootstrapRows,
   readDesktopCredential,
+  waitForDesktopCredential,
   readAcodeConfigToken,
   registryDataRoots,
   buildCookieHeader,
@@ -14,6 +15,8 @@ const {
   MODEL_GATEWAY_BASE,
   MODEL_MANAGER_URL,
   STUDIO_API_BASE,
+  OFFICIAL_SITE,
+  DESKTOP_WAIT_MS,
   ID,
 } = _internal
 
@@ -242,27 +245,178 @@ test("usage hook checks the credential without burning quota", async () => {
   assert.deepEqual(await ok.auth.usage(async () => undefined), {})
 })
 
+test("desktop login method is oauth, so magpie shows no key input box", () => {
+  const plugin = createPlugin({ env: {}, registryQuery: () => null, readFileImpl: fakeFs({}) })
+  const method = plugin.auth.methods[0]
+  // type:"api" 在 magpie 里就是一个 key 输入框 —— 本方法自己读磁盘，不该要用户输入。
+  assert.equal(method.type, "oauth")
+  assert.match(method.label, /桌面端/)
+  assert.equal(method.prompts, undefined)
+})
+
 test("desktop login method reads real files through authorize", async () => {
   const plugin = createPlugin({
     env: { ASTUDIO_HOME: "D:\\astudio" },
+    registryQuery: () => null,
     readFileImpl: fakeFs({
       "D:\\astudio/userdata/astron-session.json": JSON.stringify({ uid: "u9", modelBearerToken: "tok-9" }),
     }),
   })
-  const method = plugin.auth.methods[0]
-  assert.match(method.label, /桌面端/)
-  const out = await method.authorize({})
-  assert.deepEqual(out, {
+  const out = await plugin.auth.methods[0].authorize({})
+  assert.equal(out.url, "")
+  assert.match(out.instructions, /已读取本机 AStudio 登录态（u9）/)
+  assert.equal(out.method, "auto")
+  assert.deepEqual(await out.callback(), {
     type: "success",
     key: "tok-9",
     accountId: "u9",
     metadata: { uid: "u9", source: "D:\\astudio/userdata/astron-session.json", method: "desktop", session: undefined },
   })
+})
 
-  const failing = createPlugin({ env: {}, readFileImpl: fakeFs({}) })
-  const failed = await failing.auth.methods[0].authorize({})
+test("desktop login method points at the official site and waits when nothing is on disk", async () => {
+  let clock = 0
+  const slept = []
+  const plugin = createPlugin({
+    env: {},
+    registryQuery: () => null,
+    readFileImpl: fakeFs({}),
+    sleepImpl: async (ms) => {
+      slept.push(ms)
+      // 变异把 deadline 判断删掉时这里立刻报红，而不是让假 sleep 把事件循环占死。
+      if (slept.length > 400) throw new Error("轮询没有封顶")
+      clock += ms
+    },
+    nowMsImpl: () => clock,
+  })
+  const out = await plugin.auth.methods[0].authorize({})
+  assert.equal(out.url, OFFICIAL_SITE)
+  assert.equal(out.method, "auto")
+  assert.match(out.instructions, /没有找到 AStudio 桌面端登录态/)
+  // 用户去装桌面端：等不到就是 failed，并告诉他装好后重试
+  const failed = await out.callback()
   assert.equal(failed.type, "failed")
-  assert.match(failed.error, /未找到/)
+  assert.match(failed.error, /重新点一次/)
+  // 轮询被 DESKTOP_WAIT_MS 封顶，不会无限等下去
+  assert.equal(slept.length, DESKTOP_WAIT_MS / 2000)
+})
+
+test("desktop login method completes on its own once the desktop signs in", async () => {
+  const session = JSON.stringify({ uid: "u7", modelBearerToken: "tok-7" })
+  let reads = 0
+  const plugin = createPlugin({
+    env: { ASTUDIO_HOME: "D:\\astudio" },
+    registryQuery: () => null,
+    sleepImpl: async () => {},
+    readFileImpl: (path) => {
+      if (path !== "D:\\astudio/userdata/astron-session.json") throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+      reads += 1
+      if (reads < 3) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+      return session
+    },
+  })
+  const out = await plugin.auth.methods[0].authorize({})
+  assert.equal(out.url, OFFICIAL_SITE)
+  assert.equal(reads, 1) // authorize 读一次
+  assert.equal((await out.callback()).key, "tok-7")
+  assert.equal(reads, 3)
+})
+
+test("waitForDesktopCredential stops at the deadline", async () => {
+  let clock = 0
+  const slept = []
+  const result = await waitForDesktopCredential({
+    read: () => ({ error: new Error("没找到") }),
+    sleep: async (ms) => {
+      slept.push(ms)
+      clock += ms
+    },
+    now: () => clock,
+    waitMs: 5000,
+    stepMs: 2000,
+  })
+  assert.equal(result.status, "timeout")
+  assert.equal(result.error.message, "没找到") // 超时要把最后一次的原因带出来
+  assert.deepEqual(slept, [2000, 2000, 2000])
+})
+
+test("desktop login method refuses banned accounts instead of offering the site", async () => {
+  const plugin = createPlugin({
+    env: { ASTUDIO_HOME: "D:\\astudio" },
+    registryQuery: () => null,
+    readFileImpl: fakeFs({
+      "D:\\astudio/userdata/astron-session.json": JSON.stringify({ banned: true, modelBearerToken: "tok" }),
+    }),
+  })
+  // 宿主 host.js 不看 oauth authorize 结果里的 type，只看它抛出的 message 或 callback；
+  // 抛错在任何宿主版本上都把原因原样交给用户。
+  await assert.rejects(() => plugin.auth.methods[0].authorize({}, {}), /封禁/)
+})
+
+test("desktop login method explains an unreadable session instead of pointing at install", async () => {
+  const plugin = createPlugin({
+    env: { ASTUDIO_HOME: "D:\\astudio" },
+    registryQuery: () => null,
+    readFileImpl: fakeFs({ "D:\\astudio/userdata/astron-session.json": "{ 不是 JSON" }),
+  })
+  const out = await plugin.auth.methods[0].authorize({}, {})
+  assert.equal(out.url, OFFICIAL_SITE)
+  assert.match(out.instructions, /不是有效 JSON/)
+  assert.doesNotMatch(out.instructions, /本机没有找到/)
+})
+
+test("desktop login method keeps a read error instead of calling the machine empty", async () => {
+  const plugin = createPlugin({
+    env: { ASTUDIO_HOME: "D:\\astudio" },
+    registryQuery: () => null,
+    readFileImpl: () => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" })
+    },
+  })
+  const out = await plugin.auth.methods[0].authorize({}, {})
+  assert.match(out.instructions, /读取失败.*EACCES/s) // 读不了 ≠ 没装
+})
+
+test("desktop login method reports the last reason when it times out", async () => {
+  let clock = 0
+  const slept = []
+  const plugin = createPlugin({
+    env: { ASTUDIO_HOME: "D:\\astudio" },
+    registryQuery: () => null,
+    readFileImpl: fakeFs({ "D:\\astudio/userdata/astron-session.json": "{}" }),
+    sleepImpl: async (ms) => {
+      slept.push(ms)
+      if (slept.length > 400) throw new Error("轮询没有封顶")
+      clock += ms
+    },
+    nowMsImpl: () => clock,
+  })
+  const out = await plugin.auth.methods[0].authorize({}, {})
+  const failed = await out.callback(undefined, {})
+  assert.equal(failed.type, "failed")
+  assert.match(failed.error, /没有 modelBearerToken.token/)
+})
+
+test("desktop login method stops polling when the sign-in is cancelled", async () => {
+  let clock = 0
+  const slept = []
+  const controller = new AbortController()
+  const plugin = createPlugin({
+    env: {},
+    registryQuery: () => null,
+    readFileImpl: fakeFs({}),
+    sleepImpl: async (ms) => {
+      slept.push(ms)
+      clock += ms
+      controller.abort()
+    },
+    nowMsImpl: () => clock,
+  })
+  const out = await plugin.auth.methods[0].authorize({}, { signal: controller.signal })
+  const failed = await out.callback(undefined, { signal: controller.signal })
+  assert.equal(failed.type, "failed")
+  assert.match(failed.error, /取消/)
+  assert.equal(slept.length, 1) // 取消后不再空转
 })
 
 test("desktop credential carries the cookie session for points and check-in", () => {

@@ -21,9 +21,11 @@ delete process.env.MAGPIE_GATEWAY_KEY
 delete process.env.MAGPIE_ADDR
 
 const seen = []
+let chatReply = null
 // magpie's own MCP servers the fake gateway lists on /v1/magpie/mcp; null
 // answers 404, as a magpie from before the list does
 let ownList = null
+let ownListReply = null
 const ownAuth = []
 const gateway = Bun.serve({
   port: 0,
@@ -31,6 +33,7 @@ const gateway = Bun.serve({
   async fetch(req) {
     const url = new URL(req.url)
     if (url.pathname === "/v1/magpie/mcp") {
+      if (ownListReply) return ownListReply();
       return ownList ? Response.json({ servers: ownList }) : new Response("no", { status: 404 })
     }
     if (url.pathname.startsWith("/mcp/magpie/")) {
@@ -49,6 +52,7 @@ const gateway = Bun.serve({
     if (url.pathname === "/v1/models") return Response.json({ data: [{ id: "fake/model", owned_by: "fake" }] })
     if (url.pathname === "/v1/chat/completions") {
       seen.push({ auth: req.headers.get("authorization"), body: await req.json() })
+      if (chatReply) return chatReply(seen.at(-1).body)
       const chunk = (o) => `data: ${JSON.stringify(o)}\n\n`
       const body = chunk({ choices: [{ delta: { content: "hel" } }] })
         + chunk({ choices: [{ delta: { content: "lo" }, finish_reason: "stop" }] })
@@ -154,10 +158,10 @@ test("with the token, a chat streams from the gateway with the caller key", asyn
 function chatPage(setup = "") {
   const page = {
     document: { readyState: "loading", querySelector: () => ({ getAttribute: () => token }), addEventListener() {} },
-    TextDecoder,
+    TextDecoder, atob, AbortController,
     fetch: (path, init) => {
-      if (path !== "api/chat") throw new Error("unexpected request: " + path)
-      return fetch(`http://127.0.0.1:${port}/api/chat`, init)
+      if (!["api/chat", "api/upload", "api/conversations", "api/settings"].includes(path) && !path.startsWith("api/conversations/")) throw new Error("unexpected request: " + path)
+      return fetch(`http://127.0.0.1:${port}/${path}`, init)
     },
     window: { addEventListener() {} }, location: { search: "" },
     MagpieEpub: { isEpub: f => f.name?.endsWith(".epub") },
@@ -165,6 +169,505 @@ function chatPage(setup = "") {
   runInNewContext(readFileSync(join(dir, "chat/app.js"), "utf8") + "\n" + setup, page)
   return page
 }
+
+function attachmentPage(setup = "") {
+  const page = chatPage(`renderAttachments = renderMessages = renderSessions = scrollBottom = () => {};\n${setup}`)
+  const nodes = new Map()
+  page.document.querySelector = selector => {
+    if (!nodes.has(selector)) nodes.set(selector, {
+      value: "", getAttribute: () => token, setAttribute() {}, focus() {}, classList: { toggle() {} },
+    })
+    return nodes.get(selector)
+  }
+  return page
+}
+
+test.each(["", "application/octet-stream"])("an image with MIME type '%s' finishes loading before send and reaches the gateway", async type => {
+  const page = attachmentPage(`
+    readAsDataURL = () => globalThis.reading;
+    toast = message => globalThis.warnings.push(message);
+  `)
+  page.warnings = []
+  page.document.querySelector("#input").value = "请看图片"
+  const reading = Promise.withResolvers()
+  page.reading = reading.promise
+  const job = page.addFiles([{ name: "scene.PNG", type, size: 12 }])
+  expect(page.document.querySelector("#send").disabled).toBe(true)
+  page.send()
+  expect(page.warnings).toEqual(["附件还在读取，请稍候。"])
+  const data = "data:application/octet-stream;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGDcAAAAASUVORK5CYII="
+  reading.resolve(data)
+  await job
+  expect(page.document.querySelector("#send").disabled).toBe(false)
+  expect(page.state.attachments).toHaveLength(1)
+  expect(page.state.attachments[0].kind).toBe("image")
+  const h = { ...json, "x-magpie-chat-token": token }
+  const original = { name: "scene.PNG", type, kind: "file", data }
+  const saved = JSON.parse((await raw("POST", "/api/conversations", h, { messages: [
+    { role: "user", content: "", files: [original] },
+  ] })).body)
+  const history = JSON.parse((await raw("GET", "/api/conversations/" + saved.id, h)).body).messages
+  for (const messages of [[{ role: "user", content: "", files: page.state.attachments }],
+    [...history, { role: "assistant", content: "A picture." }, { role: "user", content: "What color?" }]]) {
+    const before = seen.length
+    await page.streamChat({ ...chatBody, messages }, () => {})
+    expect(seen.length).toBe(before + 1)
+    expect(seen.at(-1).body.messages[0].content).toEqual([
+      { type: "image_url", image_url: { url: data.replace("application/octet-stream", "image/png") } },
+    ])
+  }
+  expect(history[0].files[0]).toEqual(original)
+})
+
+test("a rejected upload does not appear as an attached file", async () => {
+  const page = attachmentPage(`
+    readAsDataURL = async () => "data:image/png;base64,cG5n";
+    api = async () => { throw new Error("图片太大"); };
+    toast = message => globalThis.warnings.push(message);
+  `)
+  page.warnings = []
+  await page.addFiles([{ name: "large.png", type: "image/png", size: 12 }])
+  expect(page.state.attachments).toEqual([])
+  expect(page.warnings).toEqual(["large.png：图片太大"])
+  expect(page.document.querySelector("#send").disabled).toBe(true)
+  page.document.querySelector("#input").value = "继续"
+  page.updateSend()
+  expect(page.document.querySelector("#send").disabled).toBe(false)
+})
+
+test("overlapping uploads wait for every batch and cannot leak across conversations", async () => {
+  const page = attachmentPage(`
+    readAsDataURL = file => globalThis.reads.get(file.name).promise;
+    api = async (path, options) => path === "api/upload"
+      ? { ...options.body, kind: "image" } : { id: "other", messages: [] };
+    toast = message => globalThis.warnings.push(message);
+  `)
+  page.warnings = []
+  page.reads = new Map(["first.png", "second.png", "old.png", "new.png"].map(name => [name, Promise.withResolvers()]))
+  const add = name => page.addFiles([{ name, type: "image/png", size: 12 }])
+  const first = add("first.png"), second = add("second.png")
+  const button = page.document.querySelector("#send")
+  expect(button.disabled).toBe(true)
+  page.reads.get("second.png").resolve("data:image/png;base64,c2Vjb25k")
+  await second
+  expect(page.state.attachments.map(f => f.name)).toEqual(["second.png"])
+  expect(button.disabled).toBe(true)
+  page.send()
+  expect(page.warnings).toEqual(["附件还在读取，请稍候。"])
+  page.reads.get("first.png").resolve("data:image/png;base64,Zmlyc3Q=")
+  await first
+  expect(button.disabled).toBe(false)
+  expect(page.state.attachments.map(f => f.name)).toEqual(["second.png", "first.png"])
+
+  const old = add("old.png")
+  await page.openConversation("other")
+  expect(page.state.convId).toBe("other")
+  expect(page.state.attachments).toEqual([])
+  const fresh = add("new.png")
+  page.reads.get("old.png").resolve("data:image/png;base64,b2xk")
+  await old
+  expect(page.state.attachments).toEqual([])
+  expect(button.disabled).toBe(true)
+  page.reads.get("new.png").resolve("data:image/png;base64,bmV3")
+  await fresh
+  expect(page.state.attachments.map(f => f.name)).toEqual(["new.png"])
+  expect(button.disabled).toBe(false)
+})
+
+test.each([
+  ["photo.jpg", "application/octet-stream"],
+  ["photo.txt", "image/png"],
+])("an image named %s keeps its data format through upload, send and a saved follow-up", async (name, type) => {
+  const page = attachmentPage(`
+    readAsDataURL = file => Promise.resolve(globalThis.dataByName[file.name]);
+    buildTurn = msg => ({ msg, root: {}, err: {} });
+    autoGrow = forageBegin = () => {};
+    loadConversations = async () => {};
+    renderMessages = () => globalThis.opened.resolve();
+    handleEvent = (event, refs) => { if (event.type === "delta") refs.msg.content += event.text; };
+    finish = refs => {
+      state.busy = false;
+      if (refs.msg.error) globalThis.finished.reject(new Error(refs.msg.error));
+      else persistConversation().then(() => globalThis.finished.resolve());
+    };
+    toast = message => {
+      globalThis.warnings.push(message);
+      if (globalThis.opened) globalThis.opened.reject(new Error(message));
+    };
+  `)
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGDcAAAAASUVORK5CYII="
+  const text = "# 场景\n灯亮了。"
+  const doc = "data:text/markdown;base64," + Buffer.from(text).toString("base64")
+  page.dataByName = { [name]: png, "scene.md": doc }
+  page.warnings = []
+  page.state.settings.model = chatBody.model
+  Object.assign(page.document.querySelector("#stream"), { querySelector: () => null, appendChild() {} })
+  await page.addFiles([{ name, type, size: 12 }, { name: "scene.md", type: "text/markdown", size: 12 }])
+  const checkGateway = () => {
+    const messages = seen.at(-1).body.messages
+    expect(messages[0].content).toEqual([
+      { type: "text", text: "【文档：scene.md】\n" + text + "\n【文档结束】" },
+      { type: "image_url", image_url: { url: png } },
+    ])
+    expect(messages.every(m => !("userText" in m))).toBe(true)
+  }
+  const send = async () => {
+    page.finished = Promise.withResolvers()
+    const before = seen.length
+    page.send()
+    await page.finished.promise
+    expect(seen.length).toBe(before + 1)
+    checkGateway()
+  }
+  await send()
+  expect(page.state.messages[0].files.map(f => f.data)).toEqual([png, doc])
+  const legacyImage = { name, type, kind: "image", data: png }
+  page.state.messages[0].files[0] = legacyImage
+  await page.persistConversation()
+  const savedId = page.state.convId
+  expect(savedId).toBeTruthy()
+  page.state.messages = []
+  page.state.convId = null
+  page.opened = Promise.withResolvers()
+  page.openConversation(savedId)
+  await page.opened.promise
+  expect(page.state.messages[0].files.map(f => f.data)).toEqual([png, doc])
+  page.document.querySelector("#input").value = "灯是什么颜色？"
+  await send()
+  expect(page.state.messages[0].files[0]).toEqual(legacyImage)
+  expect(seen.at(-1).body.messages.at(-1).content).toBe("灯是什么颜色？")
+  expect(page.warnings).toEqual([])
+})
+
+test.each(["new", "saved"])("a late save cannot move a %s conversation onto the old record", async destination => {
+  const page = attachmentPage(`
+    const originalFetch = fetch;
+    fetch = async (path, init) => {
+      const response = await originalFetch(path, init);
+      if (path === "api/conversations" && init.method === "POST" && globalThis.delaySave) {
+        globalThis.delaySave = false;
+        globalThis.saved.resolve(await response.clone().json());
+        await globalThis.release.promise;
+      }
+      return response;
+    };
+    renderMessages = () => globalThis.opened.resolve();
+    toast = message => globalThis.warnings.push(message);
+  `)
+  page.warnings = []
+  page.delaySave = true
+  page.saved = Promise.withResolvers()
+  page.release = Promise.withResolvers()
+  const original = { role: "user", content: "original", files: [
+    { name: "scene.md", type: "text/markdown", kind: "file", data: "data:text/markdown;base64,b3JpZ2luYWw=" },
+  ] }
+  page.state.messages = [original]
+  page.state.title = "original"
+  const saving = page.persistConversation()
+  const saved = await page.saved.promise
+  const h = { ...json, "x-magpie-chat-token": token }
+  page.opened = Promise.withResolvers()
+  let destinationId = null
+  if (destination === "new") page.newChat()
+  else {
+    const other = JSON.parse((await raw("POST", "/api/conversations", h, {
+      title: "other", messages: [{ role: "user", content: "other" }],
+    })).body)
+    destinationId = other.id
+    page.openConversation(other.id)
+  }
+  await page.opened.promise
+  expect(page.state.convId).toBe(destinationId)
+  expect(page.state.title).toBe(destination === "new" ? "新对话" : "other")
+  if (destination === "new") expect(page.state.draft).not.toBeNull()
+  try {
+    page.state.messages.push({ role: "user", content: "new scene" })
+    await page.persistConversation()
+    destinationId = page.state.convId
+  } finally {
+    page.release.resolve()
+    await saving
+  }
+  expect(page.state.convId).toBe(destinationId)
+  expect(page.state.convId).not.toBe(saved.id)
+  const unchanged = JSON.parse((await raw("GET", "/api/conversations/" + saved.id, h)).body)
+  expect(unchanged.messages).toEqual(saved.messages)
+  expect(page.warnings).toEqual([])
+})
+
+test.each(["saved", "lost"])("overlapping saves use one record in order after a %s response", async outcome => {
+  const failed = outcome === "lost"
+  const page = attachmentPage(`
+    const originalFetch = fetch;
+    fetch = async (path, init) => {
+      if (path === "api/conversations" && init.method === "POST") globalThis.posts++;
+      const response = await originalFetch(path, init);
+      if (path === "api/conversations" && init.method === "POST" && globalThis.delaySave) {
+        globalThis.delaySave = false;
+        globalThis.saved.resolve(await response.clone().json());
+        await globalThis.release.promise;
+        if (globalThis.failed) throw new Error("save response lost");
+      }
+      return response;
+    };
+    toast = message => globalThis.warnings.push(message);
+  `)
+  page.failed = failed
+  page.warnings = []
+  page.posts = 0
+  page.delaySave = true
+  page.saved = Promise.withResolvers()
+  page.release = Promise.withResolvers()
+  page.state.messages = [{ role: "user", content: "first" }]
+  const first = page.persistConversation()
+  const stored = await page.saved.promise
+  page.state.messages.push({ role: "assistant", content: "answer" }, { role: "user", content: "second" })
+  const second = page.persistConversation()
+  try {
+    await Promise.resolve()
+    expect(page.posts).toBe(1)
+  } finally {
+    page.release.resolve()
+    await Promise.all([first, second])
+  }
+  expect(page.posts).toBe(2)
+  expect(page.state.convId).toBe(stored.id)
+  const h = { ...json, "x-magpie-chat-token": token }
+  const saved = JSON.parse((await raw("GET", "/api/conversations/" + stored.id, h)).body)
+  expect(saved.messages.map(m => m.content)).toEqual(["first", "answer", "second"])
+  expect(page.warnings).toEqual(failed ? ["对话保存失败：save response lost"] : [])
+  expect(page.conversationWrites.size).toBe(0)
+})
+
+test.each(["new", "blank", "send", "other", "delete", "delete-target", "rename"])("a late conversation read cannot replace a newer %s action", async action => {
+  const page = attachmentPage(`
+    api = (path, options) => (path.endsWith("/late") || path.endsWith("/original")) && !options ? globalThis.loading.promise : globalThis.other.promise;
+    el = () => globalThis.renameInput;
+    buildTurn = msg => ({ msg, root: {}, err: {} });
+    autoGrow = forageBegin = () => {};
+    toast = () => {};
+    streamChat = async () => { globalThis.entered.resolve(); await globalThis.streaming.promise; };
+    finish = () => { state.busy = false; };
+  `)
+  page.loading = Promise.withResolvers()
+  page.other = Promise.withResolvers()
+  page.entered = Promise.withResolvers()
+  page.streaming = Promise.withResolvers()
+  page.state.convId = "original"
+  page.state.title = "original"
+  page.state.messages = [{ role: "user", content: "original" }]
+  page.state.settings.model = chatBody.model
+  Object.assign(page.document.querySelector("#stream"), { querySelector: () => null, appendChild() {} })
+  if (action === "blank") page.newChat()
+  const loading = page.openConversation(action === "rename" ? "original" : "late")
+  await Promise.resolve()
+  if (action === "new" || action === "blank") {
+    page.newChat()
+    page.state.attachments.push({ name: "new.md", data: "data:text/markdown;base64,bmV3" })
+  } else if (action === "send") {
+    page.document.querySelector("#input").value = "new question"
+    page.send()
+    await page.entered.promise
+  } else if (action === "delete" || action === "delete-target") {
+    const deleting = page.askDelete(action === "delete" ? "original" : "late", "to delete")
+    page.other.resolve({ ok: true })
+    await deleting
+  } else if (action === "rename") {
+    const handlers = {}
+    const input = { value: "", focus() {}, select() {}, addEventListener: (event, fn) => { handlers[event] = fn } }
+    page.renameInput = input
+    page.startRename("original", { style: {}, parentNode: { insertBefore() {} } }, "original")
+    input.value = "renamed"
+    handlers.keydown({ key: "Enter", preventDefault() {} })
+    page.other.resolve({ ok: true })
+  } else {
+    const opening = page.openConversation("other")
+    page.other.resolve({ id: "other", title: "other", messages: [{ role: "user", content: "other" }] })
+    await opening
+  }
+  const messages = page.state.messages
+  const attachments = page.state.attachments
+  page.loading.resolve({ id: action === "rename" ? "original" : "late", title: "late", messages: [{ role: "user", content: "late" }] })
+  await loading
+  try {
+    expect(page.state.messages).toBe(messages)
+    expect(page.state.attachments).toBe(attachments)
+    expect(page.state.convId).toBe(["send", "delete-target", "rename"].includes(action) ? "original" : action === "other" ? "other" : null)
+    if (action === "rename") expect(page.state.title).toBe("renamed")
+  } finally {
+    page.streaming.resolve()
+  }
+})
+
+test.each(["open", "rename", "delete"])("%s waits for pending writes to the same conversation", async action => {
+  const h = { ...json, "x-magpie-chat-token": token }
+  const original = JSON.parse((await raw("POST", "/api/conversations", h, {
+    title: "old", messages: [{ role: "user", content: "original" }],
+  })).body)
+  const page = attachmentPage(`
+    const originalFetch = fetch;
+    fetch = async (path, init) => {
+      if (path === "api/conversations" && init.method === "POST" && globalThis.delaySave) {
+        globalThis.delaySave = false;
+        globalThis.entered.resolve();
+        await globalThis.release.promise;
+      }
+      if (path === "api/conversations/" + globalThis.id && init.method === "GET") globalThis.reads++;
+      const response = await originalFetch(path, init);
+      if (init.method === "PATCH" || init.method === "DELETE") globalThis.mutated.resolve();
+      return response;
+    };
+    toast = message => globalThis.warnings.push(message);
+    el = () => globalThis.renameInput;
+  `)
+  page.state.convId = original.id
+  page.id = original.id
+  page.state.title = original.title
+  page.state.messages = [...original.messages, { role: "user", content: "unsaved turn" }]
+  page.warnings = []
+  page.reads = 0
+  page.delaySave = true
+  page.entered = Promise.withResolvers()
+  page.release = Promise.withResolvers()
+  page.mutated = Promise.withResolvers()
+  const first = page.persistConversation()
+  await page.entered.promise
+  let opening, second
+  try {
+    if (action === "open") {
+      page.newChat()
+      opening = page.openConversation(original.id)
+      await Promise.resolve()
+      expect(page.reads).toBe(0)
+    } else {
+      page.state.messages.push({ role: "assistant", content: "answer" })
+      second = page.persistConversation()
+      if (action === "delete") {
+        page.askDelete(original.id, "old")
+        page.state.messages.push({ role: "user", content: "while deleting" })
+        second = Promise.all([second, page.persistConversation()])
+      } else {
+        const handlers = {}
+        page.renameInput = { value: "", focus() {}, select() {}, addEventListener: (event, fn) => { handlers[event] = fn } }
+        page.startRename(original.id, { style: {}, parentNode: { insertBefore() {} } }, "old")
+        page.renameInput.value = "renamed"
+        handlers.keydown({ key: "Enter", preventDefault() {} })
+      }
+    }
+  } finally {
+    page.release.resolve()
+    await Promise.all([first, second, opening])
+  }
+  if (action !== "open") await page.mutated.promise
+  const response = await raw("GET", "/api/conversations/" + original.id, h)
+  if (action === "delete") expect(response.status).toBe(404)
+  else {
+    expect(JSON.parse(response.body).messages.map(m => m.content)).toEqual(action === "open"
+      ? ["original", "unsaved turn"] : ["original", "unsaved turn", "answer"])
+    expect(page.state.title).toBe(action === "rename" ? "renamed" : "old")
+    if (action === "rename") expect(JSON.parse(response.body).title).toBe("renamed")
+    else expect(page.state.messages.map(m => m.content)).toEqual(["original", "unsaved turn"])
+  }
+  expect(page.warnings).toEqual(action === "delete" ? ["已删除「old」"] : [])
+})
+
+test("connection errors stay visible after reopening but are not replayed as tool calls", async () => {
+  const page = attachmentPage(`
+    makeTalk = () => ({ root: {}, done() {} });
+    updateMeta = () => {};
+    renderMessages = () => globalThis.opened.resolve();
+  `)
+  const refs = { msg: { role: "assistant", content: "hello", toolCalls: [] }, talks: { appendChild() {} }, cards: {} }
+  page.handleTool({ phase: "error", name: "offline", result: "connection refused" }, refs)
+  page.handleTool({ phase: "call", id: "actual", name: "catalog_read_report", args: {} }, refs)
+  page.handleTool({ phase: "result", id: "actual", result: "file missing", isError: true }, refs)
+  page.state.messages = [{ role: "user", content: "read report" }, refs.msg]
+  await page.persistConversation()
+  const id = page.state.convId
+  expect(id).toBeTruthy()
+  page.state.convId = null
+  page.state.messages = []
+  page.opened = Promise.withResolvers()
+  page.openConversation(id)
+  await page.opened.promise
+  expect(page.state.messages[1].toolCalls.map(c => c.result)).toEqual(["connection refused", "file missing"])
+  const before = seen.length
+  await page.streamChat({ ...chatBody, useTools: false, messages: [...page.state.messages, { role: "user", content: "What happened?" }] }, () => {})
+  expect(seen.length).toBe(before + 1)
+  const sent = seen.at(-1).body.messages
+  const calls = sent.flatMap(m => m.tool_calls || [])
+  expect(calls.map(c => c.function.name)).toEqual(["catalog_read_report"])
+  expect(JSON.parse(calls[0].function.arguments)).toEqual({})
+  expect(sent.filter(m => m.role === "tool").map(m => m.content)).toEqual(["file missing"])
+})
+
+test("Markdown and text attachments reach the gateway after upload, save and follow-up", async () => {
+  const page = attachmentPage(`
+    toast = message => globalThis.warnings.push(message);
+    readAsDataURL = () => Promise.resolve(globalThis.fileData);
+  `)
+  page.warnings = []
+  const text = "# 第一场\n\n阿青：灯还亮着。𠀀\n\n" + "窗外有雨。\n".repeat(10000) + "最后一行。"
+  const data = "data:application/octet-stream;base64," + Buffer.from("\ufeff" + text).toString("base64")
+  page.fileData = data
+  const h = { ...json, "x-magpie-chat-token": token }
+  const image = { name: "lamp.png", kind: "image", data: "data:image/png;base64,cG5n" }
+  for (const [name, type] of [["剧本.MD", "application/octet-stream"], ["scene.markdown", ""],
+    ["notes.txt", "text/plain"], ["draft", "text/markdown"], ["a".repeat(192) + ".markdown", ""]]) {
+    page.state.attachments = []
+    await page.addFiles([{ name, type, size: Buffer.byteLength(text) }])
+    expect(page.state.attachments).toHaveLength(1)
+    const file = page.state.attachments[0]
+    const first = { role: "user", content: "读一下", files: [file] }
+    const send = async messages => {
+      const before = seen.length
+      const events = []
+      await page.streamChat({ ...chatBody, messages }, event => events.push(event))
+      expect(events.at(-1).type).toBe("done")
+      expect(seen.length).toBe(before + 1)
+      const sent = seen.at(-1).body.messages
+      expect(JSON.stringify(sent).split("最后一行。")).toHaveLength(2)
+      expect(sent.find(message => message.role === "user").content).toContain(text)
+      expect(JSON.stringify(sent)).not.toContain(data)
+      expect(sent.every(message => !("userText" in message))).toBe(true)
+      return sent
+    }
+    await send([first])
+    first.content = ""
+    await send([first])
+    const saved = JSON.parse((await raw("POST", "/api/conversations", h, { messages: [first] })).body)
+    const history = JSON.parse((await raw("GET", "/api/conversations/" + saved.id, h)).body).messages
+    history.push({ role: "assistant", content: "读到了。" },
+      { role: "user", content: "最后一句是什么？", files: [{ ...file, name: "copy." + name }, image] })
+    const sent = await send(history)
+    expect(sent.at(-1).content[0].text).toContain("最后一句是什么？")
+    expect(sent.at(-1).content[1]).toEqual({ type: "image_url", image_url: { url: image.data } })
+    expect(history[0].content).toBe("")
+    expect(history[0].files[0].data).toBe(data)
+  }
+  expect(page.warnings).toEqual([])
+})
+
+test("empty text attachments stay empty and unreadable text produces a warning", async () => {
+  const page = chatPage("toast = message => globalThis.warnings.push(message);")
+  page.warnings = []
+  for (const bytes of ["", "%%%", "/w=="]) {
+    const before = seen.length
+    await page.streamChat({ ...chatBody, messages: [{ role: "user", content: "", files: [
+      { name: "draft.md", kind: "file", data: "data:;base64," + bytes },
+    ] }] }, () => {})
+    expect(seen.length).toBe(before + 1)
+    const content = seen.at(-1).body.messages.at(-1).content
+    if (!bytes) {
+      expect(content).toBe("【文档：draft.md】\n\n【文档结束】")
+      expect(page.warnings).toEqual([])
+    } else {
+      expect(content).toContain("未附上这份文档的正文")
+      expect(page.warnings.at(-1)).toStartWith("附件未发送。draft.md：")
+      expect(content).not.toContain("\ufffd")
+    }
+  }
+})
 
 test("a saved EPUB reaches the gateway once, including on a follow-up", async () => {
   const page = chatPage("toast = message => globalThis.warnings.push(message);")
@@ -195,7 +698,7 @@ test("a saved EPUB reaches the gateway once, including on a follow-up", async ()
   expect(sent.at(-3).content[1]).toEqual({ type: "image_url", image_url: { url: image.data } })
   expect(sent.at(-1).content).toContain("What changed?")
   expect(sent.at(-1).content).toContain("broken.epub：damaged")
-  expect(page.warnings).toEqual(["旧附件未发送。broken.epub：damaged"])
+  expect(page.warnings).toEqual(["附件未发送。broken.epub：damaged"])
   expect(JSON.stringify(sent).match(/The lamp goes out/g)).toHaveLength(1)
   expect(JSON.stringify(sent)).not.toContain("Ym9vaw==")
   expect(history[0].content).toBe("")
@@ -207,7 +710,7 @@ test("switching chats discards a book that is still being read", async () => {
     updateSend = renderAttachments = renderMessages = renderSessions = scrollBottom = () => {};
     api = async () => ({ id: "other", messages: [] });
     readAsDataURL = () => globalThis.reading;
-    globalThis.pending = () => pendingBooks;
+    globalThis.pending = () => pendingAttachments;
   `)
   const reading = Promise.withResolvers()
   page.reading = reading.promise
@@ -224,7 +727,7 @@ test("switching chats discards a book that is still being read", async () => {
   expect(page.pending()).toBe(0)
 })
 
-test("MCP tools follow the typed question while the gateway still receives the EPUB", async () => {
+test.each(["epub", "md"])("MCP tools follow the typed question while the gateway receives the %s attachment", async ext => {
   const names = [...Array.from({ length: 12 }, (_, i) => "github_lookup_" + i),
     ...Array.from({ length: 3 }, (_, i) => "weather_forecast_" + i), "list_items"]
   const mcp = fakeMcp("catalog", names.map(name => ({ name, inputSchema: { type: "object", properties: {} } })))
@@ -234,7 +737,7 @@ test("MCP tools follow the typed question while the gateway still receives the E
   }))
   const page = chatPage()
   const chapters = "github ".repeat(1000) + "The last page."
-  const file = { name: "github.epub", kind: "file", data: "data:;base64,Ym9vaw==" }
+  const file = { name: "github." + ext, type: "text/plain", kind: "file", data: "data:;base64," + Buffer.from(chapters).toString("base64") }
   page.MagpieEpub.read = async () => ({ text: chapters })
   const weather = names.filter(name => name.startsWith("weather")).map(name => "catalog_" + name)
   const send = async history => {
@@ -272,6 +775,194 @@ test("MCP tools follow the typed question while the gateway still receives the E
     rmSync(join(cfg, "library.json"), { force: true })
     mcp.stop(true)
   }
+})
+
+test.each(["continue", "stop", "stop during lookup"])("a tool round respects %s while a call is pending", async action => {
+  const stopped = action !== "continue"
+  const duringLookup = action === "stop during lookup"
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  const called = []
+  const names = ["probe_first", "probe_second"]
+  const mcp = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    const message = await req.json()
+    if (message.id === undefined) return new Response(null, { status: 202 })
+    let result = {}
+    if (message.method === "initialize") result = { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "probe", version: "1" } }
+    if (message.method === "tools/list") result = { tools: names.map(name => ({ name, inputSchema: { type: "object", properties: {} } })) }
+    if (message.method === "tools/call") {
+      called.push(message.params.name)
+      if (!duringLookup && called.length === 1) { entered.resolve(); await release.promise }
+      result = { content: [{ type: "text", text: "completed" }] }
+    }
+    return Response.json({ jsonrpc: "2.0", id: message.id, result })
+  } })
+  const h = { ...json, "x-magpie-chat-token": token }
+  writeFileSync(join(cfg, "library.json"), JSON.stringify({
+    mcp: [{ name: "probe", transport: "http", url: `http://127.0.0.1:${mcp.port}/mcp`, agents: [] }],
+  }))
+  chatReply = body => {
+    if (duringLookup) ownListReply = async () => {
+      entered.resolve();
+      await release.promise;
+      return new Response("no", { status: 404 });
+    }
+    const hasResult = body.messages.some(m => m.role === "tool")
+    const choice = hasResult ? { delta: { content: "finished" }, finish_reason: "stop" } : {
+      delta: { tool_calls: names.map((name, index) => ({ index, id: "call_" + index, type: "function", function: { name: "probe_" + name, arguments: "{}" } })) },
+      finish_reason: "tool_calls",
+    }
+    return new Response("data: " + JSON.stringify({ choices: [choice] }) + "\n\ndata: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
+  }
+  let chatting
+  try {
+    await raw("POST", "/api/settings", h, { mcp: ["probe"], mcpAll: false })
+    chatting = raw("POST", "/api/chat", h, { ...chatBody, clientId: "tool-stop-probe", messages: [{ role: "user", content: "probe" }] })
+    await entered.promise
+    if (stopped) expect((await raw("POST", "/api/chat/stop", h, { clientId: "tool-stop-probe" })).status).toBe(200)
+    release.resolve()
+    const response = await chatting
+    expect(called).toEqual(duringLookup ? [] : stopped ? [names[0]] : names)
+    expect(response.body).toContain('"type":"done"')
+    if (stopped) expect(response.body).toContain('"stopped":true')
+  } finally {
+    release.resolve()
+    await chatting
+    chatReply = null
+    ownListReply = null
+    await raw("POST", "/api/settings", h, { mcp: [], mcpAll: false })
+    rmSync(join(cfg, "library.json"), { force: true })
+    mcp.stop(true)
+  }
+})
+
+test.each(["30000", "65000", "missing IDs", "repeated IDs"])("tool history preserves round order and result limits: %s", async scenario => {
+  const size = scenario.endsWith("IDs") ? 30000 : Number(scenario)
+  const result = "x".repeat(25000) + "TAIL_SENTINEL" + "y".repeat(size - 25013)
+  const expectedResult = result.slice(0, 60000)
+  const names = ["read_report", "read_empty", "read_detail"]
+  const called = []
+  const mcp = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    const msg = await req.json()
+    if (msg.id === undefined) return new Response(null, { status: 202 })
+    let output = {}
+    if (msg.method === "initialize") output = { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "history", version: "1" } }
+    if (msg.method === "tools/list") output = { tools: names.map(name => ({ name, inputSchema: { type: "object", properties: {} } })) }
+    if (msg.method === "tools/call") {
+      called.push(msg.params.name)
+      output = msg.params.name === names[0] ? { content: [{ type: "text", text: result }] }
+        : msg.params.name === names[1] ? { content: [] }
+        : { content: [{ type: "text", text: "detail unavailable" }], isError: true }
+    }
+    return Response.json({ jsonrpc: "2.0", id: msg.id, result: output })
+  } })
+  const h = { ...json, "x-magpie-chat-token": token }
+  writeFileSync(join(cfg, "library.json"), JSON.stringify({ mcp: [
+    { name: "history", transport: "http", url: `http://127.0.0.1:${mcp.port}/mcp`, agents: [] },
+  ] }))
+  const before = seen.length
+  chatReply = () => {
+    const round = seen.length - before - 1
+    const content = round === 0 ? "Searching. " : round === 1 ? "Reading. " : "Final answer."
+    const tools = round === 0 ? names.slice(0, 2) : round === 1 ? names.slice(2) : []
+    const delta = { content }
+    if (tools.length) delta.tool_calls = tools.map((name, index) => ({
+      index, id: scenario === "missing IDs" ? undefined : scenario === "repeated IDs" ? "call_1_" + index : "round_" + round + "_" + index,
+      type: "function", function: { name: "history_" + name, arguments: "{}" },
+    }))
+    return new Response("data: " + JSON.stringify({ choices: [{ delta, finish_reason: tools.length ? "tool_calls" : "stop" }] }) + "\n\ndata: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
+  }
+  try {
+    await raw("POST", "/api/settings", h, { mcp: ["history"], mcpAll: false })
+    const page = attachmentPage(`
+      updateMeta = updateLabel = pumpKick = () => {};
+      makeTalk = () => ({ root: {}, done() {} });
+      toast = message => globalThis.warnings.push(message);
+    `)
+    page.warnings = []
+    const assistant = { role: "assistant", content: "", reasoning: "", toolCalls: [] }
+    const refs = { msg: assistant, cards: {}, talks: { appendChild() {} }, err: {} }
+    page.state.messages = [{ role: "user", content: "read history" }, assistant]
+    await page.streamChat({ ...chatBody, messages: page.state.messages.slice(0, -1) }, evt => page.handleEvent(evt, refs))
+    page.pumpFlush(refs)
+    expect(refs.err.hidden).not.toBe(false)
+    expect(seen.length).toBe(before + 3)
+    expect(called).toEqual(names)
+    const live = seen.at(-1).body.messages
+    expect(live.filter(m => m.role === "tool").map(m => m.content)).toEqual([expectedResult, '{"content":[]}', "detail unavailable"])
+    for (let i = 0; i < live.length; i++) {
+      for (const call of live[i].tool_calls || []) expect(live.slice(i + 1).some(m => m.role === "tool" && m.tool_call_id === call.id)).toBe(true)
+    }
+    expect(assistant.content).toBe("Searching. Reading. Final answer.")
+    expect(assistant.toolCalls.map(c => c.result)).toEqual([expectedResult, '{"content":[]}', "detail unavailable"])
+    expect(assistant.toolCalls.at(-1).isError).toBe(true)
+    const followUp = { role: "user", content: "What was at the end?" }
+    const expected = [...live.filter(m => m.role !== "system"), { role: "assistant", content: "Final answer." }, followUp]
+    await page.streamChat({ ...chatBody, useTools: false, messages: [...page.state.messages, followUp] }, () => {})
+    expect(seen.at(-1).body.messages).toEqual(expected)
+    await page.persistConversation()
+    const id = page.state.convId
+    page.newChat()
+    await page.openConversation(id)
+    await page.streamChat({ ...chatBody, useTools: false, messages: [...page.state.messages, followUp] }, () => {})
+    expect(seen.at(-1).body.messages).toEqual(expected)
+    expect(called).toEqual(names)
+    expect(page.warnings).toEqual([])
+  } finally {
+    chatReply = null
+    await raw("POST", "/api/settings", h, { mcp: [], mcpAll: false })
+    rmSync(join(cfg, "library.json"), { force: true })
+    mcp.stop(true)
+  }
+})
+
+test.each(["stopped", "error"])("an interrupted %s round keeps completed history beside legacy messages", async ending => {
+  const page = attachmentPage(`
+    updateMeta = updateLabel = pumpKick = () => {};
+    makeTalk = () => ({ root: {}, done() {} });
+    toast = message => globalThis.warnings.push(message);
+  `)
+  page.warnings = []
+  const assistant = { role: "assistant", content: "", reasoning: "", toolCalls: [] }
+  const refs = { msg: assistant, cards: {}, talks: { appendChild() {} }, err: {} }
+  const user = { role: "user", content: "continue" }
+  const legacy = { role: "assistant", content: "old answer", toolCalls: [
+    { id: "old", name: "read_old", args: {}, result: "old result" },
+  ] }
+  page.state.messages = [{ role: "user", content: "old question" }, legacy, user, assistant]
+  const events = [
+    { type: "round" }, { type: "delta", text: "Looking. " },
+    { type: "tool", phase: "call", id: "done", name: "read_first", args: {} },
+    { type: "tool", phase: "result", id: "done", result: "first result" },
+    { type: "round" },
+  ]
+  if (ending === "stopped") events.push(
+    { type: "delta", text: "Partial answer." },
+    { type: "tool", phase: "call", id: "pending", name: "read_next", args: {} },
+    { type: "done", stopped: true },
+  )
+  else events.push({ type: "error", message: "upstream unavailable" })
+  for (const event of events) page.handleEvent(event, refs)
+  expect(assistant.content).toBe("")
+  expect(assistant.rounds.map(r => r.content)).toEqual(["Looking. ", ending === "stopped" ? "Partial answer." : ""])
+  page.pumpFlush(refs)
+  await page.persistConversation()
+  const id = page.state.convId
+  page.newChat()
+  await page.openConversation(id)
+  expect(page.state.messages[1].rounds).toBeUndefined()
+  const followUp = { role: "user", content: "What happened?" }
+  const before = seen.length
+  await page.streamChat({ ...chatBody, useTools: false, messages: [...page.state.messages, followUp] }, () => {})
+  expect(seen.length).toBe(before + 1)
+  const sent = seen.at(-1).body.messages
+  expect(sent.map(m => m.role)).toEqual(ending === "stopped"
+    ? ["user", "assistant", "tool", "user", "assistant", "tool", "assistant", "user"]
+    : ["user", "assistant", "tool", "user", "assistant", "tool", "user"])
+  expect(sent.flatMap(m => m.tool_calls || []).map(c => c.id)).toEqual(["old", "done"])
+  expect(sent.filter(m => m.role === "assistant").map(m => m.content)).toEqual(ending === "stopped"
+    ? ["old answer", "Looking. ", "Partial answer."] : ["old answer", "Looking. "])
+  expect(sent.filter(m => m.role === "tool").map(m => m.content)).toEqual(["old result", "first result"])
+  expect(page.warnings).toEqual([])
 })
 
 test("conversations save and list with the token", async () => {

@@ -1,12 +1,14 @@
 {
   "name": "@magpie-community/opencode-workbuddy-auth",
-  "version": "0.2.14",
+  "version": "0.2.20",
   "description": "OpenCode provider plugins for WorkBuddy's plans: WorkBuddy (CodeBuddy, copilot.tencent.com) and WorkBuddy AI (www.workbuddy.ai)",
   "type": "module",
-  "main": "./index.mjs",
-  "exports": "./index.mjs",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
   "files": [
     "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
     "README.md"
   ],
   "keywords": [

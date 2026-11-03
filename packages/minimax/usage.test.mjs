@@ -3,7 +3,7 @@
 // them. Nothing is claimed: no check-in is made.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
-import { MiniMaxCodeAuthPlugin, _internal } from "./index.mjs"
+import { MiniMaxCodeAuthPlugin, MiniMaxCodeGlobalAuthPlugin, _internal } from "./index.mjs"
 import { fakeMiniMax, json } from "./fake.mjs"
 
 let f
@@ -161,4 +161,26 @@ test("beside an M Plan the credits are aside; a ledger it can't read leaves the 
   u = await hooks.auth.usage(async () => auth)
   expect(u).toMatchObject({ plan: "M Plan Plus", balance: "88.5 credits" })
   expect(u.error).toBeUndefined()
+})
+
+// #666's side note: on the international site both membership endpoints
+// answer 404 "404 page not found", even through a proxy. That is no plan
+// read, not a Free one, and the card goes on with the credits ledger.
+test("a site without the membership API shows its credits and no plan", async () => {
+  f = fakeMiniMax()
+  const notFound = () => new Response("404 page not found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } })
+  f.route("GET /v1/api/user/info", () => json({ statusInfo: { code: 0 }, data: { userInfo: { realUserID: "u-42", userEmail: "a@example.com" } } }))
+  f.route("POST /matrix/api/v1/user/get_user_extra_info", notFound)
+  f.route("POST /matrix/api/v1/commerce/get_membership_info", notFound)
+  const live = Date.now() + 30 * day
+  ledger(f, [[batch(2, "500", "100", "400", live)]])
+  const hooks = await MiniMaxCodeGlobalAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => auth)
+  expect(u.error).toBeUndefined()
+  expect(u.plan).toBeUndefined()
+  expect(u.user).toBe("a@example.com")
+  expect(u.windows.map((w) => [w.name, w.display])).toEqual([["Credits", "100 / 500"]])
+  // one of them failing another way is still an error
+  f.route("POST /matrix/api/v1/commerce/get_membership_info", () => new Response("no", { status: 500 }))
+  expect((await hooks.auth.usage(async () => auth)).error).toBe("membership: HTTP 500")
 })

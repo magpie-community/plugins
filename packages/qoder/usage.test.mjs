@@ -60,11 +60,11 @@ test("a refused device token is rotated, saved, and the usage read with it", asy
   expect(await p.usage()).toEqual({
     plan: "pro",
     windows: [
-      { name: "Total credits", used: (100 * 45) / 170, display: "45 / 170 credits" },
-      { name: "Credits", used: 25, display: "25 / 100 credits", aside: true },
-      { name: "Add-on credits", used: 20, display: "10 / 50 credits", aside: true },
-      { name: "Shared credits", used: 50, display: "10 / 20 credits", aside: true },
-      { name: "Team", used: 20, display: "2 / 10 credits" },
+      { name: "Total credits", used: (100 * 45) / 170, display: "45 / 170 credits", amount: 45, limit: 170, unit: "credits" },
+      { name: "Credits", used: 25, display: "25 / 100 credits", amount: 25, limit: 100, unit: "credits", aside: true },
+      { name: "Add-on credits", used: 20, display: "10 / 50 credits", amount: 10, limit: 50, unit: "credits", aside: true },
+      { name: "Shared credits", used: 50, display: "10 / 20 credits", amount: 10, limit: 20, unit: "credits", aside: true },
+      { name: "Team", used: 20, display: "2 / 10 credits", amount: 2, limit: 10, unit: "credits" },
     ],
     signIn: "kept",
   })
@@ -115,8 +115,8 @@ test("snake_case fields, an expiry, units, and pools too thin to show", () => {
     plan: "Pro Trial",
     until: "2026-10-01T00:00:00.000Z",
     windows: [
-      { name: "Credits", used: 75, display: "1.5e+06 / 2e+06 tokens" },
-      { name: "Dedicated credits", used: 100, display: "9 / 5 credits" },
+      { name: "Credits", used: 75, display: "1.5e+06 / 2e+06 tokens", amount: 1500000, limit: 2000000, unit: "tokens", resetsAt: "2026-10-01T00:00:00.000Z" },
+      { name: "Dedicated credits", used: 100, display: "9 / 5 credits", amount: 9, limit: 5, unit: "credits" },
     ],
   })
   expect(_internal.when("2026-10-01T08:00:00+08:00")).toBe("2026-10-01T00:00:00.000Z")
@@ -141,13 +141,45 @@ test("a spent plan beside add-on credits left is no account used up (#454)", () 
     },
   })
   expect(u.windows).toEqual([
-    { name: "Total credits", used: (100 * 545) / 1400, display: "545 / 1400 credits" },
-    { name: "Credits", used: 100, display: "300 / 300 credits", aside: true },
-    { name: "Add-on credits", used: (100 * 245) / 1100, display: "245 / 1100 credits", aside: true },
+    { name: "Total credits", used: (100 * 545) / 1400, display: "545 / 1400 credits", amount: 545, limit: 1400, unit: "credits" },
+    { name: "Credits", used: 100, display: "300 / 300 credits", amount: 300, limit: 300, unit: "credits", aside: true },
+    { name: "Add-on credits", used: (100 * 245) / 1100, display: "245 / 1100 credits", amount: 245, limit: 1100, unit: "credits", aside: true },
   ])
   // what routing counts: the windows not set aside
   const counted = u.windows.filter((w) => !w.aside)
   expect(counted.map((w) => Math.round(100 - w.used))).toEqual([61])
+})
+
+// jzing.draw on Discord (2026-11-03): Qoder's own 我的用量 said 套餐内
+// Credits 1,817 / 2,000 (剩余 183, refreshing 2026-11-22) and 资源包
+// 2,400 / 3,400 (剩余 1,000), while magpie's Routing row said a bare
+// "剩余 15%" that matched neither. What the account has left together is
+// told with its count, each pool beside it with its own, and the plan's
+// with when it refreshes, so every figure Qoder shows is one magpie shows.
+test("the plan and the resource pack read as Qoder's own panel does, with counts and the plan's refresh", () => {
+  const u = _internal.parseUsage({
+    displayMode: "qoder",
+    qoderUsage: {
+      userType: "personal_professional",
+      expiresAt: 1795276800000, // 2026-11-22 00:00 +08:00
+      isQuotaExceeded: false,
+      userQuota: { total: 2000, used: 1817, remaining: 183, percentage: 0.9085, unit: "credits" },
+      addOnQuota: { total: 3400, used: 2400, remaining: 1000, percentage: 0.7059, unit: "credits" },
+    },
+  })
+  expect(u.plan).toBe("personal_professional")
+  expect(u.until).toBe("2026-11-21T16:00:00.000Z")
+  expect(u.windows).toEqual([
+    { name: "Total credits", used: (100 * 4217) / 5400, display: "4217 / 5400 credits", amount: 4217, limit: 5400, unit: "credits" },
+    { name: "Credits", used: (100 * 1817) / 2000, display: "1817 / 2000 credits", amount: 1817, limit: 2000, unit: "credits", aside: true, resetsAt: "2026-11-21T16:00:00.000Z" },
+    { name: "Add-on credits", used: (100 * 2400) / 3400, display: "2400 / 3400 credits", amount: 2400, limit: 3400, unit: "credits", aside: true },
+  ])
+  // what Qoder's panel says is left, pool by pool, is what magpie's counts leave
+  const left = (w) => w.limit - w.amount
+  expect(u.windows.map(left)).toEqual([1183, 183, 1000])
+  // routing counts the two together: 22% left, not the plan's 9%
+  const counted = u.windows.filter((w) => !w.aside)
+  expect(counted.map((w) => Math.round(100 - w.used))).toEqual([22])
 })
 
 test("one pool alone is shown as before, with nothing set aside", () => {
@@ -161,7 +193,7 @@ test("one pool alone is shown as before, with nothing set aside", () => {
       addOnQuota: { total: 600, used: 7, remaining: 593, percentage: 0.02, unit: "credits" },
     },
   })
-  expect(u.windows).toEqual([{ name: "Add-on credits", used: (100 * 7) / 600, display: "7 / 600 credits" }])
+  expect(u.windows).toEqual([{ name: "Add-on credits", used: (100 * 7) / 600, display: "7 / 600 credits", amount: 7, limit: 600, unit: "credits" }])
 })
 
 test("pools in different units are not added up", () => {
@@ -170,8 +202,8 @@ test("pools in different units are not added up", () => {
     qoderUsage: { userQuota: { total: 100, used: 100, unit: "tokens" }, addOnQuota: { total: 50, used: 0, unit: "credits" } },
   })
   expect(u.windows).toEqual([
-    { name: "Credits", used: 100, display: "100 / 100 tokens" },
-    { name: "Add-on credits", used: 0, display: "0 / 50 credits" },
+    { name: "Credits", used: 100, display: "100 / 100 tokens", amount: 100, limit: 100, unit: "tokens" },
+    { name: "Add-on credits", used: 0, display: "0 / 50 credits", amount: 0, limit: 50, unit: "credits" },
   ])
 })
 

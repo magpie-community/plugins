@@ -708,7 +708,7 @@ export async function startLogin(options = {}, openWindow = openSignInWindow) {
       // URL. Its window stays open until ADC is saved and read; only then does
       // this plugin close it. It is closed below, in this block's finally, on
       // every path out of the sign-in.
-      window = openWindow({ profile: options.profile, url: signInUrl(consentUrl, registered), headless: false })
+      window = openWindow({ profile: options.profile, profileDirectory: options.profileDirectory, url: signInUrl(consentUrl, registered), headless: false })
       const signing = await window
       await new Promise((resolve, reject) => {
         const expiry = setTimeout(() => reject(stopped(`Google sign-in did not finish within ${Math.round(limit / 60000)} minutes; start the sign-in again and approve the consent page in the window that opens`)), limit)

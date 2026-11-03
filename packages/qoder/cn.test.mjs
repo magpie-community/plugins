@@ -289,7 +289,7 @@ test("usage is read from openapi.qoder.com.cn with the device token", async () =
   }
   const s = store(signedIn())
   const hooks = await QoderCNAuthPlugin({ client: s.client })
-  expect(await hooks.auth.usage(s.get)).toEqual({ plan: "pro", windows: [{ name: "Credits", used: 40, display: "40 / 100 credits" }], signIn: "kept" })
+  expect(await hooks.auth.usage(s.get)).toEqual({ plan: "pro", windows: [{ name: "Credits", used: 40, display: "40 / 100 credits", amount: 40, limit: 100, unit: "credits" }], signIn: "kept" })
 })
 
 test("the config declares qoder-cn on its gateway, with the tiers Qoder CN's CLI names", async () => {

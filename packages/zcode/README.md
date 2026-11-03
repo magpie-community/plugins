@@ -38,7 +38,14 @@ over Anthropic's Messages API. Provider id: `zcode`.
     for unusual activity (code 3012); …", which magpie reads as the account
     restricted: it rests, and the group's other providers are used. Only
     ZCode support lifts such a block. A block page from ZCode's edge
-    firewall says this network's address was blocked instead.
+    firewall says this network's address was blocked instead. Since 0.1.43
+    (plugins#649) such a page also holds zcode.z.ai off for three minutes,
+    for every account of the plugin, since they share the address: the
+    Start Plan and a picked `-Trial` entry are answered at once with the
+    same 405 and words, so magpie still uses the group's other providers,
+    and free first keeps a dual account on its coding plan. The first
+    request after the three minutes asks again. A GLM Coding Plan key, on
+    api.z.ai, is never held.
   - The Start Plan's token can't be refreshed. When it runs out, sign in
     again.
   - Every request, on any plan, names its conversation in `x-session-id`,
@@ -232,7 +239,8 @@ names it in a line set aside, "ZCode gift plan not started yet", with
 the plan's name and its start in this computer's time as the display
 ("Start Plan · 2026-10-29 23:00"), soonest first. An account whose only
 gift plan starts later gets a card with that line, not "ended or never
-started". The status ZCode gives such a plan has not been seen, so any
+started", and signs in with it too, as ZCode counts such a plan as the
+account's (its "pending" Start Plan). The status ZCode gives such a plan has not been seen, so any
 status but `expired` is taken; `starts_at` decides it.
 
 **Resets.** A GLM Coding Plan of the account's own, and a team seat,
@@ -266,12 +274,14 @@ the next read shows it as an ordinary gift bucket.
 With ZCode turned on in magpie's Settings → Daily check-in (it is off
 until you turn it on), magpie has the plugin claim each account's gift
 plans once a day (`auth.checkin`; `magpie accounts checkin` asks now). It
-reads both lists above (the banners' feed and the preview, each plan
-once) and posts each plan to
+reads the banner feed above — the v3.17 client replaced the old preview
+polling with the feed alone, and the feed is gated on the client's
+version, so the plugin asks as the current client (3.17.2) sends — and
+posts each plan the feed offers to
 `POST /api/v1/zcode-plan/billing/claim` (`{"plan_id": …}`) with the
 account's ZCode session, as the app does. An answer of nothing to claim
 carries an `until` half an hour out, so magpie's loop asks again then,
-and again, all day while neither list names a plan — two GETs, nothing
+and again, all day while the feed names no plan — one GET, nothing
 posted: ZCode drops plans into the feed on its own schedule (a weekend
 banner starting at 19:00 Beijing, say), and one that arrives
 after the day's ask used to sit unclaimed past its short life. The
@@ -284,19 +294,24 @@ after one was claimed, is seen the next day. The answer is judged by
 the body's code, not the HTTP status:
 
 - nothing listed: *inactive* (ZCode answers an account with nothing to
-  claim `{"code":0,"msg":""}`, with no list at all). A list that doesn't
-  read is *failed*, never nothing to claim. A plan just claimed may show
-  in neither `billing/preview` nor `billing/current` until its
-  `effective_at`, so neither list is read as "claimed or not";
+  claim `{"code":0,"msg":""}`, with no list at all). A feed that doesn't
+  read is *failed*, never nothing to claim;
 - code 0: *claimed* (the next request uses the plan);
 - code 1003 "target already exists" (HTTP 200): *done*, claimed before;
 - code 3007 "captcha verify failed": *captcha*, the plan is claimed in
-  the ZCode app (on 10-06 ZCode wanted the app's Aliyun captcha for a
-  claim; whether it still does for a fresh plan is not known yet);
+  the ZCode app — the claim is gated on the Aliyun captcha the app's
+  renderer answers, and a claim from outside the app is refused it
+  (11-03: seven accounts' ZCODE GLOBAL BUILD all answered 3007). Once
+  claimed there, the gift lands on the account and freeFirst spends it
+  like any other;
 - anything else, an HTTP error without a code, or a reply that isn't
   JSON: *failed*, which magpie asks again later that day. It is never
   taken as claimed, and a failed claim leaves the account's sign-in
   alone.
+
+The rewards center in the client (奖励中心, the embedded
+`zcode.z.ai/{cn|en}/rewards` page) is the referral program's website,
+separate from these gift plans; its rewards are claimed on that page.
 
 An account added with a GLM Coding Plan key has no ZCode session to claim
 with (*ineligible*).

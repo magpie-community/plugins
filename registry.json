@@ -45,7 +45,7 @@
     { "package": "@magpie-community/opencode-kiro-auth", "name": "Kiro", "icon": "kiro-color", "providers": ["kiro"], "community": true, "replaces": "kiro",
       "summary": { "en": "Kiro Free, Pro, Pro+ and Power — Kiro's sign-in, kiro-cli's, or an API key.", "zh": "Kiro Free、Pro、Pro+ 与 Power：Kiro 登录、沿用 kiro-cli 的登录，或 API key。" } },
     { "package": "@magpie-community/opencode-minimax-auth", "name": "MiniMax Code", "icon": "minimax-color", "providers": ["minimax-code", "minimax-code-global"], "community": true,
-      "summary": { "en": "MiniMax Code account credits (daily check-in) and M Plan, with MiniMax Code's own device sign-in.", "zh": "用 MiniMax Code 账号的积分（每日签到）与 M Plan，使用 MiniMax Code 自己的设备登录。" } },
+      "summary": { "en": "MiniMax Code credits and M Plan with device sign-in, native web search, image/video generation and media tools through Magpie MCP.", "zh": "MiniMax Code 积分与 M Plan、设备登录，提供原生网络搜索、生图、生视频及多模态 MCP 工具。" } },
     { "package": "@magpie-community/opencode-workbuddy-auth", "name": "WorkBuddy", "icon": "workbuddy-color", "providers": ["workbuddy", "workbuddy-ai"], "community": true, "replaces": "workbuddy",
       "summary": { "en": "WorkBuddy's China build (CodeBuddy plan) and its international build.", "zh": "WorkBuddy 国内版（CodeBuddy 套餐）与国际版。" } },
     { "package": "@magpie-community/opencode-cline-auth", "name": "Cline", "icon": "cline", "providers": ["cline"], "community": true,
@@ -121,7 +121,7 @@
     { "package": "@magpie-community/page-chat", "name": "Chat", "kind": "page", "community": true,
       "summary": { "en": "A chat page in magpie's window by Magic_zero: talk to magpie's own models with your MCP servers, instructions and skills, images and LaTeX. Runs a local service on 127.0.0.1 that only its own page can use.", "zh": "Magic_zero 做的 magpie 窗口内「对话」页面：用 magpie 自己的模型聊天，带上你的 MCP 服务器、指令和技能，支持图片与 LaTeX。本地服务只在 127.0.0.1，只给自己的页面用。" } },
     { "package": "@magpie-community/page-agent-office", "name": "Agent Office", "kind": "page", "community": true,
-      "summary": { "en": "Reads the session files of Claude Code, Codex, Copilot CLI, Kimi Code, DeepSeek Harness, Gemini CLI, Qwen Code, Pi, omp, Qoder, WorkBuddy, CodeBuddy and Grok Build on this computer (prompts, replies and tool commands; text can be turned off). Shows them in a real WebGL 3D office with six scenes, an isometric/2D office, or a grouped workbench with Today usage, recent conversations and approvals.", "zh": "读取本机 Claude Code、Codex、Copilot CLI、Kimi Code、DeepSeek Harness、Gemini CLI、Qwen Code、Pi、omp、Qoder、WorkBuddy、CodeBuddy、Grok Build 的会话文件（含提问、回复与工具命令，可关闭文本），用真 3D 办公室（六种场景）、等距/2D 办公室或分组工作台展示，带今日用量、最近对话与批准状态。" } },
+      "summary": { "en": "Reads the session files of Claude Code, Codex, Copilot CLI, Kimi Code, DeepSeek Harness, Gemini CLI, Qwen Code, Pi, omp, Qoder, WorkBuddy, CodeBuddy and Grok Build on this computer (prompts, replies and tool commands; text can be turned off). Shows them in a real WebGL 3D office with eleven scenes, an isometric/2D office, or a grouped workbench with Today usage, recent conversations and approvals.", "zh": "读取本机 Claude Code、Codex、Copilot CLI、Kimi Code、DeepSeek Harness、Gemini CLI、Qwen Code、Pi、omp、Qoder、WorkBuddy、CodeBuddy、Grok Build 的会话文件（含提问、回复与工具命令，可关闭文本），用真 3D 办公室（十一种场景）、等距/2D 办公室或分组工作台展示，带今日用量、最近对话与批准状态。" } },
     {"package": "@magpie-community/agent-kimi-desktop", "name": "Kimi", "kind": "agent", "community": true, "summary": {"en": "Kimi desktop Work on Magpie's Agents page: select a model from Magpie, then disconnect to restore the original service. Not Kimi Code CLI.", "zh": "把普通 Kimi 桌面版 Work 接入 Magpie Agent 页，使用已配置的模型；断开恢复原连接。不是 Kimi Code CLI。"}},
     { "package": "@magpie-community/gateway-notify", "name": "Notify", "kind": "middleware", "community": true,
       "summary": { "en": "A push when an agent's turn is done or fails, after it ran long enough to be worth one: ntfy, Bark, Gotify, Server酱, Feishu, DingTalk, WeCom, Telegram or your own webhook. Agent, project, model and time only by default; the reply's text is opt-in.", "zh": "agent 一轮任务跑完或失败时推送提醒（只提醒跑够设定时长的任务）：支持 ntfy、Bark、Gotify、Server酱、飞书、钉钉、企业微信、Telegram 和自定义 webhook。默认只发 agent、项目、模型和用时，回复正文需手动开启。" } },
@@ -183,10 +183,11 @@
       }
     },
     {
-      "package": "magpie-window-warmup",
+      "package": "@magpie-community/page-window-warmup",
       "name": "Window Warmup",
       "kind": "page",
-      "icon": "https://raw.githubusercontent.com/YangHonghang/magpie-window-warmup/main/page/icon.svg",
+      "community": true,
+      "icon": "https://raw.githubusercontent.com/magpie-community/plugins/main/packages/window-warmup/page/icon.svg",
       "summary": {
         "en": "Window warmup (formerly Scheduled Messages): warm up a subscription's 5-hour or weekly quota / usage window ahead of time with a keep-alive (keep alive) message. It sends one fixed short message (\"hi\", max_tokens 16) to a provider, account and model you pick, on a schedule: right after its rate limit window resets, daily at set times or every few hours. Each send uses that provider's quota. Runs a local service on 127.0.0.1 that only calls magpie's own gateway; only its own page gets the token.",
         "zh": "窗口预热（原「定时消息」）：提前开启订阅的 5 小时或每周额度窗口，给额度保活。给指定的供应商、账号和模型发一条固定短消息（\"hi\"，max_tokens 16），可在窗口重置后、每天定时或每隔几小时发送。每次发送都会消耗该供应商的额度（配额）。在本机 127.0.0.1 跑一个本地服务，只调用 magpie 自己的网关；令牌只交给自己的页面。"
@@ -195,6 +196,6 @@
     { "package": "@magpie-community/opencode-astudio-auth", "name": "AStudio", "providers": ["astudio"], "community": true,
       "summary": { "en": "Unofficial AStudio (iFLYTEK Astron Studio desktop): reuse the desktop sign-in to serve its Responses model gateway, with the live model catalog, daily login-points check-in and points balance. Desktop discovery runs on Windows (registry lookup), with a paste-token fallback. Differs from Providers Hub's hub-astudio, which signs in on a local page (SMS, password or WeChat QR) and calls chat/completions; on one account both share the same daily points pool.", "zh": "非官方 AStudio（科大讯飞 Astron Studio 桌面端）：复用桌面端登录态接入其模型网关，含实时模型目录、每日登录积分签到与积分余额。桌面端发现仅 Windows（注册表定位），另有粘贴凭据方式。与 Providers Hub 的 hub-astudio 不同：那边在本地登录页用短信、密码或微信扫码登录，走 chat/completions；同一账号两边共用一个每日积分池。" } },
     { "package": "@magpie-community/opencode-agnes-code-auth", "name": "Agnes Code", "providers": ["agnes-code"], "community": true,
-      "summary": { "en": "Unofficial Agnes Code desktop: reuse the desktop sign-in for its OpenAI-compatible gateway, with the live model catalog, daily credit check-in and points balance. Desktop decryption is Windows-only; a paste-token method covers the rest.", "zh": "非官方 Agnes Code 桌面端：复用桌面端登录态接入其 OpenAI 兼容网关，含实时模型目录、每日积分签到与余额显示。桌面端解密仅限 Windows，其余平台用粘贴 accessToken。" } }
+      "summary": { "en": "Unofficial Agnes Code desktop: reuse the desktop sign-in for its OpenAI-compatible gateway, with the live model catalog, daily credit check-in and points balance. Desktop decryption is Windows-only; a paste-token method covers the rest. Differs from opencode-agnes-auth (`agnes`), which signs in to Agnes AI international in Chrome and meters that product's plans and USD balance: this one serves the Agnes Code desktop product and its daily credits.", "zh": "非官方 Agnes Code 桌面端：复用桌面端登录态接入其 OpenAI 兼容网关，含实时模型目录、每日积分签到与余额显示。桌面端解密仅限 Windows，其余平台用粘贴 accessToken。与 opencode-agnes-auth（`agnes`）不同：那边在 Chrome 里登录 Agnes AI 国际版、显示该产品的套餐与美元余额；本包服务 Agnes Code 桌面端产品与它的每日积分。" } }
   ]
 }

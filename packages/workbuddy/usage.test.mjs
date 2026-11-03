@@ -428,10 +428,10 @@ test("a detail list that can't be read leaves the card as it was", async () => {
   })
   const u = await usageOf(WorkBuddyAIAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
   expect(u.error).toBeUndefined()
-  // the plan's (Pro, Plan Bonus) and the Bonus Pack apart, as usageOf says them
+  // the plan's base (Pro) apart from its Plan Bonus and the Bonus Pack, as usageOf says them
   expect(u.windows.slice(0, 2)).toEqual([
-    { name: "Credits", used: 0, display: "0 / 2000", amount: 0, limit: 2000, unit: "credits" },
-    { name: "Extra credits", used: 100 * 17.6 / 250, display: "17.6 / 250", amount: 17.6, limit: 250, unit: "credits", aside: true },
+    { name: "Credits", used: 0, display: "0 / 1000", amount: 0, limit: 1000, unit: "credits" },
+    { name: "Extra credits", used: 100 * 17.6 / 1250, display: "17.6 / 1250", amount: 17.6, limit: 1250, unit: "credits", aside: true },
   ])
 })
 
@@ -448,11 +448,12 @@ test("the plan's credits and the gifted ones are two windows, the plan's with it
     { name: "Credits", used: 0, display: "0 / 500", amount: 0, limit: 500, unit: "credits" },
     { name: "Extra credits", used: (100 * 281.9999965) / 2900, display: "282 / 2900", amount: 281.9999965, limit: 2900, unit: "credits", aside: true },
   ])
-  // WorkBuddy AI: Pro and its Plan Bonus are the plan's, the Bonus Pack (006) is not
+  // WorkBuddy AI: Pro is the plan's base; its Plan Bonus (037) and the
+  // Bonus Pack (006) are extra, as WorkBuddy's usage panel groups them
   expect(_internal.usageOf(AI_SUMMARY, "", SITES["workbuddy-ai"]).windows.map((w) => [w.name, w.display, !!w.aside]))
-    .toEqual([["Credits", "0 / 2000", false], ["Extra credits", "17.6 / 250", true]])
-  // a summary of the plan's packages alone keeps the one window, as before
-  expect(_internal.usageOf(LIVE_SUMMARY, "", SITES["workbuddy-ai"]).windows.map((w) => w.name)).toEqual(["Credits"])
+    .toEqual([["Credits", "0 / 1000", false], ["Extra credits", "17.6 / 1250", true]])
+  // a summary of the plan's base alone keeps the one window, as before
+  expect(_internal.usageOf({ ...LIVE_SUMMARY, Packages: LIVE_SUMMARY.Packages.slice(0, 1) }, "", SITES["workbuddy-ai"]).windows.map((w) => w.name)).toEqual(["Credits"])
   // and one of packages the client names nothing for (or none at all) too
   expect(_internal.usageOf(PAID, "", SITES.workbuddy).windows.map((w) => [w.name, w.display])).toEqual([["Credits", "2500 / 10000"]])
   // the plan's spent with extra ones left: those keep the account going, so
@@ -469,6 +470,51 @@ test("the plan's credits and the gifted ones are two windows, the plan's with it
   // the subscription the summary names is the plan's, whatever its code
   expect(_internal.planCodes({ SubscriptionPackageCode: "NEW_PLAN" }, SITES.workbuddy)("NEW_PLAN")).toBe(true)
   expect(_internal.planCodes({ SubscriptionPackageCode: "" }, SITES.workbuddy)("")).toBe(false)
+})
+
+// Jiabubu on Discord (magpie 0.1.2738): a WorkBuddy account's card showed
+// the plan's credits only; its extra ones (a plan's bonus, bought, promo)
+// were nowhere. WorkBuddy's own usage panel (WorkBuddy AI 5.9.4,
+// resolveCreditGroup) has four kinds: the plan's base, the plan's bonus
+// (bonus28, bonusIntl), top-ups (009, 036, 038) and platform rewards
+// (activity, bonus29/30; gift and freeMon on WorkBuddy AI). The summary
+// says the same four as CreditGroups. Its bytes below are a real WorkBuddy
+// AI free account's, 2026-11-03 (ids left out).
+const GROUPS_SUMMARY = { Packages: [
+  { PackageCode: "TCACA_code_035_ArVxJcGDsm", CycleTotalCapacity: "100", CycleRemainCapacity: "99.81", CycleUsedCapacity: "0.19", CycleFrozenCapacity: "0", CapacityUnit: "credits", TotalCount: 1 },
+], TotalCredits: "99.81", SubscriptionPackageCode: "", SubscriptionPackageName: "Free", IsPaidUser: false, IsProtectedPriceUser: false, ProTrialStatus: 1, CreditGroups: [
+  { Kind: "plan_base", Name: "Plan Base Credits", CycleTotalCapacity: "100", CycleRemainCapacity: "99.81", CycleUsedCapacity: "0.19", CycleFrozenCapacity: "0", CapacityUnit: "credits", TotalCount: 1 },
+  { Kind: "plan_bonus", Name: "Plan Bonus Credits", CycleTotalCapacity: "0", CycleRemainCapacity: "0", CycleUsedCapacity: "0", CycleFrozenCapacity: "0", CapacityUnit: "credits", TotalCount: 0 },
+  { Kind: "addon", Name: "Top-up Credits", CycleTotalCapacity: "0", CycleRemainCapacity: "0", CycleUsedCapacity: "0", CycleFrozenCapacity: "0", CapacityUnit: "credits", TotalCount: 0 },
+  { Kind: "benefit", Name: "Platform Reward Credits", CycleTotalCapacity: "0", CycleRemainCapacity: "0", CycleUsedCapacity: "0", CycleFrozenCapacity: "0", CapacityUnit: "credits", TotalCount: 0 },
+] }
+
+test("extra credits are every kind but the plan's base, as WorkBuddy's own panel and CreditGroups say (Jiabubu on Discord)", () => {
+  const { SITES } = _internal
+  // the real free account: only the plan's base, one window as before
+  expect(_internal.usageOf(GROUPS_SUMMARY, "", SITES["workbuddy-ai"]).windows.map((w) => [w.name, w.display])).toEqual([["Credits", "0.19 / 100"]])
+  // a Pro account (LIVE_SUMMARY) with the four kinds filled in (not real
+  // bytes; the shape is the free account's): the plan's bonus, a top-up the
+  // summary's Packages doesn't list, and a reward are all extra, by the
+  // groups, not by the codes the Packages happen to list
+  const group = (Kind, total, used) => ({ ...GROUPS_SUMMARY.CreditGroups.find((g) => g.Kind === Kind), CycleTotalCapacity: String(total), CycleUsedCapacity: String(used), CycleRemainCapacity: String(total - used) })
+  const pro = { ...LIVE_SUMMARY, CreditGroups: [group("plan_base", 1000, 89.2), group("plan_bonus", 1000, 0), group("addon", 500, 120), group("benefit", 300, 30)] }
+  expect(_internal.usageOf(pro, "", SITES["workbuddy-ai"]).windows.map((w) => [w.name, w.display, w.limit, !!w.aside]))
+    .toEqual([["Credits", "89.2 / 1000", 1000, false], ["Extra credits", "150 / 1800", 1800, true]])
+  // a kind the client doesn't know yet is extra too, never the plan's
+  const odd = { ...pro, CreditGroups: [...pro.CreditGroups, { ...group("addon", 50, 5), Kind: "something_new" }] }
+  expect(_internal.usageOf(odd, "", SITES["workbuddy-ai"]).windows[1].display).toBe("155 / 1850")
+  // without CreditGroups the codes split as the client's panel does: the
+  // plan's bonus (037) is extra, not the plan's
+  expect(_internal.usageOf(LIVE_SUMMARY, "", SITES["workbuddy-ai"]).windows.map((w) => [w.name, w.display, !!w.aside]))
+    .toEqual([["Credits", "89.2 / 1000", false], ["Extra credits", "0 / 1000", true]])
+  for (const code of ["TCACA_code_028_NtpWi0jzXs", "TCACA_code_037_WxOD3MpI2o", "TCACA_code_009_0XmEQc2xOf", "TCACA_code_036_lupO5WgNdG", "TCACA_code_038_OhvqZtiPKr", "TCACA_code_007_nzdH5h4Nl0"])
+    expect(_internal.planCodes({}, SITES.workbuddy)(code)).toBe(false)
+  // buddyOneVip is a plan's base on both builds
+  expect(_internal.planCodes({}, SITES.workbuddy)("TCACA_code_043_6oIkxT7Z0S")).toBe(true)
+  // and the prepaid balance still comes from the Packages, beside the groups
+  const bag = { ...GROUPS_SUMMARY, Packages: [...GROUPS_SUMMARY.Packages, { PackageCode: "WALLET", CycleRemainCapacity: "42" }] }
+  expect(_internal.usageOf(bag, "", SITES["workbuddy-ai"]).windows.map((w) => w.name)).toEqual(["Credits", "Prepaid credits"])
 })
 
 test("split, the plan's window keeps its cycle and each says what lapses", async () => {
@@ -494,6 +540,63 @@ test("split, the plan's window keeps its cycle and each says what lapses", async
   // as routing reads no window set aside (cdredfox on X)
   expect(credits.runsOut).toBe(18.4400035)
   expect(credits.runsOutAt).toBe(extra.runsOutAt)
+})
+
+// jiabubu on Discord (magpie 0.1.2774, workbuddy 0.2.16, a China-site free
+// account): the card read "Free plan · 0 / 500" and nothing else. WorkBuddy's
+// own usage panel (WorkBuddy 5.5.6, buildCreditGroups) groups the packages
+// of the detail lists, not the summary's, so extra credits only those lists
+// have show there and were nowhere in magpie. The summary below is the plan's
+// base alone (CN_FREE_SUMMARY's 008); the lists' packages are CN_FREE's
+// shapes with a total, not the reporter's bytes (not seen).
+test("extra credits only the detail lists have are a window of their own, set aside (jiabubu on Discord)", async () => {
+  const { SITES } = _internal
+  const year = Date.UTC(2036, 9, 1) - Date.UTC(2026, 9, 1)
+  const on = (p) => ({ ...p, DeductionEndTime: p.DeductionEndTime + year, CycleStartTime: "2036" + p.CycleStartTime.slice(4), CycleEndTime: "2036" + p.CycleEndTime.slice(4) })
+  const base = { ...CN_FREE.Accounts[1], CycleCapacitySizePrecise: "500", CycleCapacityRemainPrecise: "500", SlicePeriodUsageDetails: [{ SlicePeriodCapacitySizePrecise: "500", SlicePeriodCapacityRemainPrecise: "500" }] }
+  const gift = { ...CN_FREE.Accounts[0], CycleCapacitySizePrecise: "300", CycleCapacityRemainPrecise: "280" }
+  const topup = { PackageCode: "TCACA_code_009_0XmEQc2xOf", PackageName: "加量包", CapacityType: 1, CycleCapacitySizePrecise: "1000", CycleCapacityRemainPrecise: "1000",
+    CycleStartTime: "2026-10-02 10:00:00", CycleEndTime: "2027-10-02 09:59:59", DeductionEndTime: Date.parse("2027-10-02T01:59:59Z"), ExpiredTime: "", Status: 0 }
+  const summary = { ...CN_FREE_SUMMARY, Packages: [CN_FREE_SUMMARY.Packages[1]] }
+  serve({
+    "/billing/meter/get-user-resource-summary": () => ok(summary),
+    "/billing/meter/get-user-resource-paid-packages": () => ok({ TotalCount: 1, Accounts: [on(topup)] }),
+    "/billing/meter/get-user-resource-free-packages": () => ok({ TotalCount: 2, Accounts: [on(gift), on(base)] }),
+  })
+  const u = await usageOf(WorkBuddyAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
+  expect(u.windows.slice(0, 2).map((w) => [w.name, w.display, !!w.aside])).toEqual([["Credits", "0 / 500", false], ["Extra credits", "20 / 1300", true]])
+  // the soonest to lapse is the activity's, on the window that says them
+  expect(u.windows[1]).toMatchObject({ amount: 20, limit: 1300, runsOut: 280, runsOutAt: new Date(on(gift).DeductionEndTime).toISOString() })
+  // and the window that stops the account says it too, as routing reads
+  // none set aside: an account whose extra credits lapse first is spent
+  // first (Kayphoon on Discord)
+  expect(u.windows[0]).toMatchObject({ runsOut: 280, runsOutAt: u.windows[1].runsOutAt })
+  // the plan's window keeps its cycle
+  expect(u.windows[0].resetsAt).toBe("2036-10-31T15:59:59.000Z")
+
+  const now = Date.parse("2026-11-03T00:00:00Z")
+  // past its end, a package is not counted, as the panel leaves it out
+  expect(_internal.listedExtra(summary, [gift, topup], SITES.workbuddy, now)).toEqual({ total: 1000, used: 0, runsOutAt: "2027-10-02T01:59:59.000Z", runsOut: 1000 })
+  // one the summary lists is the summary's, never counted twice
+  expect(_internal.listedExtra(CN_FREE_SUMMARY, [on(gift)], SITES.workbuddy, now)).toBeNull()
+  // the plan's base is never extra; nor, on the China build, a gift (006)
+  const giftPack = { ...topup, PackageCode: "TCACA_code_006_DbXS0lrypC" }
+  expect(_internal.listedExtra(summary, [base, giftPack], SITES.workbuddy, now)).toBeNull()
+  // WorkBuddy AI's panel counts gift and the free month among the rewards
+  expect(_internal.listedExtra(GROUPS_SUMMARY, [giftPack, { ...topup, PackageCode: "TCACA_code_008_cfWoLwvjU4" }], SITES["workbuddy-ai"], now)?.total).toBe(2000)
+  // a package with no total adds nothing
+  expect(_internal.listedExtra(summary, [{ ...topup, CycleCapacitySizePrecise: "" }], SITES.workbuddy, now)).toBeNull()
+})
+
+test("a summary that already splits the credits, or lists with no extra ones, keep the card as it was", async () => {
+  const empty = () => ok({ TotalCount: 0, Accounts: [] })
+  serve({
+    "/billing/meter/get-user-resource-summary": () => ok(GROUPS_SUMMARY),
+    "/billing/meter/get-user-resource-paid-packages": empty,
+    "/billing/meter/get-user-resource-free-packages": empty,
+  })
+  const u = await usageOf(WorkBuddyAIAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
+  expect(u.windows.map((w) => [w.name, w.display])).toEqual([["Credits", "0.19 / 100"]])
 })
 
 // magpie #1904 (CnsMaple): an enterprise account's resource summary has no
@@ -637,9 +740,9 @@ test("a WorkBuddy AI card carries the free model's window from the ledger", asyn
     serve({ "/billing/meter/get-user-resource-summary": () =>
       ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: "500", CycleUsedCapacity: "0" }] }) })
     const cn = await usageOf(WorkBuddyAuthPlugin, { ...auth, domain: "" })
-    expect(cn.windows.map((w) => w.name)).toEqual(["Credits", "Free model tokens"])
-    // the China card counts the workbuddy rows alone, against 2e8
-    expect(cn.windows[1]).toMatchObject({ amount: 90_000_000, limit: 2e8, unit: "tokens", aside: true })
+    // the China card is the model's own, and says its cap is an estimate
+    expect(cn.windows.map((w) => w.name)).toEqual(["Credits", "deepseek-v4.1-flash tokens (est.)"])
+    expect(cn.windows[1]).toMatchObject({ amount: 90_000_000, limit: 2e8, unit: "", aside: true })
   } finally {
     rmSync(ledger, { force: true })
   }

@@ -29,6 +29,15 @@ function settings(provider = {}, auth = {}) {
     location: auth.location || options.location || env.GOOGLE_VERTEX_LOCATION || "global",
     billingAccount: auth.billingAccount || options.billingAccount || env.VERTEX_BILLING_ACCOUNT,
     profile: auth.profile || options.profile || env.VERTEX_CHROME_PROFILE || defaultProfile(),
+    // A Chrome profile directory inside that profile ("Default", "Profile 1"),
+    // pinned so Chrome's last-used profile doesn't decide whose session a
+    // read uses; profileDirectories picks one per credential account.
+    profileDirectory: auth.profileDirectory || options.profileDirectory || env.VERTEX_CHROME_PROFILE_DIRECTORY,
+    profileDirectories: options.profileDirectories,
+    // Per project, the billing account its credits are read from; per billing
+    // account, the currency it bills in (USD unless named).
+    billingAccounts: options.billingAccounts,
+    billingCurrencies: options.billingCurrencies,
     // The credential selector: gcloud keeps an account's credentials under the
     // address it was signed in with, so it must not follow an email rename.
     account: auth.credentialAccount || auth.accountId || auth.account || options.account || env.VERTEX_GCLOUD_ACCOUNT,
@@ -140,6 +149,7 @@ export const GoogleVertexAuthPlugin = async (input = {}, pluginOptions = {}) => 
         // the plugin when to close it; the person never closes it themselves.
         async authorize() {
           const options = settings(configured)
+          options.profileDirectory ??= pluginOptions.profileDirectory
           const login = await startLogin(options)
           return {
             url: "", method: "auto",
@@ -155,7 +165,7 @@ export const GoogleVertexAuthPlugin = async (input = {}, pluginOptions = {}) => 
                 // the hooks that were closed over before the sign-in still
                 // resolve to the project and profile it used.
                 configured = { ...configured, options: { ...(configured.options ?? {}), ...options } }
-                const record = { type: "success", access: "", refresh: "", expires: 0, source: "gcloud", authMode: identity.authMode, project: identity.project, billingAccount: options.billingAccount, profile: options.profile, creditsSession: identity.creditsSession }
+                const record = { type: "success", access: "", refresh: "", expires: 0, source: "gcloud", authMode: identity.authMode, project: identity.project, billingAccount: options.billingAccount, profile: options.profile, ...(options.profileDirectory ? { profileDirectory: options.profileDirectory } : {}), creditsSession: identity.creditsSession }
                 // Each account's ADC lives in its own directory: without this
                 // the next sign-in would resolve against another account's.
                 if (identity.cloudsdkConfig) record.cloudsdkConfig = identity.cloudsdkConfig
@@ -210,6 +220,10 @@ export const GoogleVertexAuthPlugin = async (input = {}, pluginOptions = {}) => 
           if (!auth) return { error: "GCP AI is not signed in", signIn: "kept" }
           const options = settings(provider, auth)
           options.consoleAccountAliases ??= pluginOptions.consoleAccountAliases
+          options.profileDirectory ??= pluginOptions.profileDirectory
+          options.profileDirectories ??= pluginOptions.profileDirectories
+          options.billingAccounts ??= pluginOptions.billingAccounts
+          options.billingCurrencies ??= pluginOptions.billingCurrencies
           // Validated even when Google can confirm the email by subject.
           const mapped = consoleAccountFor(options.account, options.consoleAccountAliases)
           const aliased = mapped?.toLowerCase() !== options.account?.toLowerCase()

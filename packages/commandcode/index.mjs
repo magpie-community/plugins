@@ -72,6 +72,43 @@ const THINK_OFF = new Set([
 ])
 const OFF_EFFORTS = ["none", "low", "high", "max"]
 
+// REASONING_BACK are the models the Provider API wants each earlier
+// assistant message's reasoning back from, in reasoning_content, on every
+// turn, not only a tool call's: Reflection's Beam (reflection/beam:free)
+// answers the second turn of a chat whose first reply has none 400
+// "Missing required parameter: 'messages[1].reasoning_content'", the
+// history another model made too, and takes it with something there
+// (EDwinpzy on magpie's Discord, 0.1.2717). Its list says nothing of it,
+// so any other model the Provider API asks the same of (REASONING_ASKED)
+// is asked once more with it filled, and remembered (reasoningAsked).
+const REASONING_BACK = /^reflection\/beam(?:[:-]|$)/i
+const REASONING_ASKED = /\breasoning_content\b[^"]{0,80}\b(?:missing|required|must be (?:passed|provided|included))|\b(?:missing|required)\b[^"]{0,80}\breasoning_content\b/i
+// NO_THOUGHT is the reasoning a message with none goes with: a turn
+// another model made, or one whose thinking the client kept nothing of.
+// Not blank: what is required may be read as missing when it is only
+// whitespace, and a period says nothing to the model.
+const NO_THOUGHT = "."
+const reasoningAsked = new Set()
+const wantsReasoning = (model) => REASONING_BACK.test(String(model ?? "")) || reasoningAsked.has(String(model ?? ""))
+
+// withReasoningBack is messages with each assistant message's reasoning
+// in reasoning_content: its own when it has some, the thinking it sent
+// back in reasoning, else NO_THOUGHT; the same array when none lacks it.
+function withReasoningBack(messages) {
+  if (!Array.isArray(messages)) return messages
+  let changed = false
+  const out = messages.map((m) => {
+    if (m?.role !== "assistant") return m
+    const own = m.reasoning_content
+    if (typeof own === "string" && own.trim()) return m
+    const r = typeof m.reasoning === "string" && m.reasoning.trim() ? m.reasoning : NO_THOUGHT
+    const { reasoning, ...rest } = m
+    changed = true
+    return { ...rest, reasoning_content: r }
+  })
+  return changed ? out : messages
+}
+
 // The plan's models when its list can't be asked: Claude on Messages, the
 // rest on chat completions. Pictures as models.dev has them (DeepSeek V4
 // and GLM-5.3 read text alone, so say nothing).
@@ -1402,15 +1439,19 @@ async function generate(key, chat, signal, place, zdr = false) {
 // "off", is "off" for a model that turns thinking off (THINK_OFF), and
 // left out for any other, which refuses both "none" and "off" (#334). A
 // Google model's tools have the $refs Google can't take written out
-// (googleSchema).
+// (googleSchema). A model that wants its reasoning back (wantsReasoning)
+// has it on each assistant message (withReasoningBack).
 function providerBody(chat) {
   let out = chat
+  if (wantsReasoning(chat?.model)) {
+    const messages = withReasoningBack(chat.messages)
+    if (messages !== chat.messages) out = { ...chat, messages }
+  }
   const e = chat?.reasoning_effort
-  if (e === "none" || e === "off") {
-    out = { ...chat }
+  if ((e === "none" || e === "off") && !(e === "off" && THINK_OFF.has(chat.model))) {
+    out = { ...out }
     if (THINK_OFF.has(chat.model)) out.reasoning_effort = "off"
     else delete out.reasoning_effort
-    if (e === out.reasoning_effort) out = chat
   }
   if (isGoogle(chat?.model) && Array.isArray(chat.tools)) {
     let changed = false
@@ -1453,7 +1494,7 @@ async function systemOne(key, init, input, place, zdr) {
 
 // ---- the plugin ---------------------------------------------------------------
 
-export const _internal = { googleSchema, isGoogle, JEV, projectSlug, subsSeen, extraSeen, waits, liveKey, failure, goModels, refuses, GO_MODELS, GO_REFUSED, zdrOn }
+export const _internal = { googleSchema, isGoogle, JEV, reasoningAsked, NO_THOUGHT, projectSlug, subsSeen, extraSeen, waits, liveKey, failure, goModels, refuses, GO_MODELS, GO_REFUSED, zdrOn }
 
 export async function CommandCodePlugin({ client, magpie } = {}) {
   // isGo keeps a key as Go's, for its models and endpoint: in the
@@ -1514,16 +1555,29 @@ export async function CommandCodePlugin({ client, magpie } = {}) {
             }
             // the Provider API's answer goes on as it came, the account
             // kept, unless it is a 401 for a key whoami refuses (told)
+            const method = init.method ?? (input instanceof Request ? input.method : "POST")
             const body = chatting ? providerBody(chat) : undefined
-            const res = await (body === undefined
+            let res = await (body === undefined
               ? fetch(input, { ...init, headers })
-              : fetch(url, { ...init, method: init.method ?? (input instanceof Request ? input.method : "POST"), headers, body }))
+              : fetch(url, { ...init, method, headers, body }))
             if (res.ok) return kept(res)
+            let text = await res.text()
+            // a model asking for each earlier message's reasoning back, which
+            // its list doesn't say: it has it from now on, and this request
+            // is asked once more with it
+            if (chatting && res.status === 400 && REASONING_ASKED.test(text) && !wantsReasoning(chat?.model)) {
+              reasoningAsked.add(String(chat.model))
+              const again = providerBody(chat)
+              if (again !== undefined && again !== body) {
+                res = await fetch(url, { ...init, method, headers, body: again })
+                if (res.ok) return kept(res)
+                text = await res.text()
+              }
+            }
             // a Go key the plan wasn't known for (billing/subscriptions slow
             // or failing, nothing saved yet) is refused by the Provider API
             // (#969): it is Go from now on, and a chat completion is asked
             // again where Go is served
-            const text = await res.text()
             if (GO_NO_API.test(text)) {
               await isGo(key, (await getAuth()) ?? auth)
               if (chatting) return told(key, await generate(key, chat, init.signal, place, zdr))

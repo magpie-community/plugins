@@ -623,7 +623,7 @@
     }
 
     floor() {
-      const dark = "#262932", light = "#2d313b"
+      const dark = this.theme ? shade(this.theme.floor, -0.08) : "#262932", light = this.theme ? this.theme.floor : "#2d313b"
       for (let x = 0; x < ROOM.w; x++) for (let y = 0; y < ROOM.d; y++) {
         const P = (a, b) => this.P(a, b, 0)
         this.poly([P(x, y), P(x + 1, y), P(x + 1, y + 1), P(x, y + 1)], (x + y) % 2 ? dark : light)
@@ -683,8 +683,8 @@
       const H = ROOM.wall
       const day = this.dayState || dayPhase()
       if (this.dim !== "3d") {
-        this.box(-0.35, -0.35, 0, ROOM.w + 0.35, 0.35, 0.9, "#9aa1ad")
-        this.box(-0.35, 0, 0, 0.35, ROOM.d, 0.9, "#8a919c")
+        this.box(-0.35, -0.35, 0, ROOM.w + 0.35, 0.35, 0.9, this.theme?.wall || "#9aa1ad")
+        this.box(-0.35, 0, 0, 0.35, ROOM.d, 0.9, this.theme?.wall || "#8a919c")
         return
       }
       const g = this.g
@@ -702,7 +702,7 @@
         for (const p of pts.slice(1)) g.lineTo(p[0], p[1])
         g.closePath()
       }
-      g.fillStyle = "#c9ccd3"
+      g.fillStyle = this.theme?.wall || "#c9ccd3"
       g.fill("evenodd")
       g.restore()
       for (const [a, b] of wins) {
@@ -714,7 +714,7 @@
       this.poly([this.P(0, -0.25, H), this.P(ROOM.w, -0.25, H), this.P(ROOM.w, 0, H), this.P(0, 0, H)], "#e6e8ec")
       // the left wall (x = 0): the airlock and small portholes
       const left = (y0, y1, z0, z1) => [this.P(0, y0, z0), this.P(0, y1, z0), this.P(0, y1, z1), this.P(0, y0, z1)]
-      this.poly(left(0, ROOM.d, 0, H), "#a9aeb8")
+      this.poly(left(0, ROOM.d, 0, H), this.theme?.wall || "#a9aeb8")
       this.poly(left(0, ROOM.d, 0, 0.32), "#80868f")
       this.poly([this.P(-0.25, 0, H), this.P(0, 0, H), this.P(0, ROOM.d, H), this.P(-0.25, ROOM.d, H)], "#d7d9de")
       // airlock door
@@ -774,8 +774,8 @@
         const who = this.atSeat?.[i]
         add(dk.x, dk.y, dk.w, dk.d, () => {
           // desk
-          S.box(dk.x, dk.y, 0, dk.w, dk.d, 0.62, "#e5e7eb")
-          S.box(dk.x + 0.06, dk.y + 0.06, 0.62, dk.w - 0.12, dk.d - 0.12, 0.05, "#f6c453")
+          S.box(dk.x, dk.y, 0, dk.w, dk.d, 0.62, S.theme?.wood || "#e5e7eb")
+          S.box(dk.x + 0.06, dk.y + 0.06, 0.62, dk.w - 0.12, dk.d - 0.12, 0.05, S.theme?.desk || "#f6c453")
           // The monitor stands on the desk's far edge and its screen faces
           // the sitter: a north-facing sitter reads the +y face, a
           // south-facing one the -y face.

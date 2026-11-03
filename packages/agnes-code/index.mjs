@@ -16,7 +16,8 @@
 //   积分余额  GET  https://api.agnes-ai.com/api/v2/subscription/credits-balance
 //
 // 本插件复用这份登录态：第一种登录方式在磁盘上解出桌面端会话（同用户同机器的
-// DPAPI 即可解，无需密钥口令，仅 Windows），第二种让用户手动粘贴 accessToken。
+// DPAPI 即可解，无需密钥口令，仅 Windows；magpie 的 oauth 方式，没解到时给出
+// 官网链接并轮询，等用户去装/重开桌面端），第二种让用户手动粘贴 accessToken。
 // 积分「每日登录送 600」（免费档）由服务端随当日会话发放、无领取接口，
 // auth.checkin 用发放前后余额差观测：涨了记 claimed，没涨不谎称已签——
 // 记 inactive 并说明未观测到（宿主把 done 渲染成「今日已签到」，是没发生的断言）。
@@ -34,6 +35,14 @@ const CHAT_GATEWAY_BASE = "https://api-agnes-code.agnes-ai.com/v1"
 const MODELS_URL = "https://api-agnes-code.agnes-ai.com/v1/models"
 const POINTS_API_BASE = "https://api.agnes-ai.com"
 const BALANCE_PATH = "/api/v2/subscription/credits-balance"
+
+// 读取桌面端登录态失败时展示的跳转页：Agnes Code 官网页（含桌面端下载）。
+const OFFICIAL_SITE = "https://agnes-ai.com/agnescode"
+// PowerShell 解 DPAPI 的超时：它卡住时 read() 不返回，5 分钟的截止时间根本检查不到。
+const DPAPI_TIMEOUT_MS = 15000
+// 等待「用户去装/重开桌面端并登录」的窗口与轮询间隔。
+const DESKTOP_POLL_MS = 2000
+const DESKTOP_WAIT_MS = 5 * 60 * 1000
 
 // 模型目录读不到时的启动表（2026-11-01 实测快照；models 钩子会用实时目录覆盖）。
 const BOOTSTRAP = [
@@ -123,8 +132,8 @@ function decryptSessionWithKey(keyBuf, rawBuf) {
 }
 
 // dpapiUnprotect 用当前 Windows 用户的 DPAPI 解出主密钥（经 PowerShell）。
-async function dpapiUnprotect(blob, spawnImpl = spawn) {
-  if (process.platform !== "win32") {
+async function dpapiUnprotect(blob, spawnImpl = spawn, { timeoutMs = DPAPI_TIMEOUT_MS, platform = process.platform } = {}) {
+  if (platform !== "win32") {
     throw new Error("桌面端会话解密目前仅支持 Windows；请改用「粘贴 accessToken」方式")
   }
   const b64 = blob.toString("base64")
@@ -135,9 +144,24 @@ async function dpapiUnprotect(blob, spawnImpl = spawn) {
       { windowsHide: true },
     )
     let out = ""
+    let settled = false
+    const finish = (settle, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      settle(value)
+    }
+    // PowerShell 卡住时不能无限等：到点杀掉子进程，让这次 read() 带原因返回。
+    const timer = setTimeout(() => {
+      // 先落定再 kill：kill 会同步触发 close，顺序反了就会把「失败 exit」当成结果。
+      finish(reject, new Error(`DPAPI 解密超时（PowerShell 超过 ${Math.round(timeoutMs / 1000)}s 没有响应）`))
+      try {
+        child.kill()
+      } catch {}
+    }, timeoutMs)
     child.stdout.on("data", (chunk) => (out += chunk))
-    child.on("error", reject)
-    child.on("close", (code) => (code === 0 ? resolve(out.trim()) : reject(new Error(`DPAPI 解密失败（exit ${code}）`))))
+    child.on("error", (error) => finish(reject, error))
+    child.on("close", (code) => finish(code === 0 ? resolve : reject, code === 0 ? out.trim() : new Error(`DPAPI 解密失败（exit ${code}）`)))
   })
   const key = Buffer.from(result, "base64")
   if (key.length !== 32) throw new Error("DPAPI 解出的主密钥长度异常")
@@ -156,7 +180,7 @@ function isExpiredJwt(token, nowMs = Date.now()) {
 }
 
 // readDesktopCredential 在磁盘上解出桌面端登录态，返回 { key, accountId, username, source }。
-async function readDesktopCredential({ homedir = osHomedir(), platform = process.platform, env = process.env, readFileImpl, dpapiImpl, nowMs } = {}) {
+async function readDesktopCredential({ homedir = osHomedir(), platform = process.platform, env = process.env, readFileImpl, dpapiImpl, nowMs, keyCache } = {}) {
   // 平台检查前置：macOS/Linux 走不到 DPAPI，先在读盘前给出明确指引，
   // 而不是让 encrypted_key 形状检查抢先把错误说糊。
   if (platform !== "win32") {
@@ -175,15 +199,28 @@ async function readDesktopCredential({ homedir = osHomedir(), platform = process
       keyBlob = parseEncryptedKey(state?.os_crypt?.encrypted_key ?? "")
       raw = readFile(sessionPath)
     } catch (error) {
-      problems.push(`${dir}（${error?.message ?? "读取失败"}）`)
+      // ENOENT = 这台机器上没有 Agnes Code；其它读盘错误要留痕。
+      if (error?.code !== "ENOENT") problems.push(`${dir}（${error?.message ?? "读取失败"}）`)
       continue
+    }
+    // 同一次登录里主密钥解出一次就缓存：轮询时不必每 2 秒再起一次 PowerShell。
+    let key = keyCache?.get(statePath)
+    if (!key) {
+      try {
+        const dpapi = dpapiImpl ?? ((blob) => dpapiUnprotect(blob))
+        key = await dpapi(keyBlob)
+        keyCache?.set(statePath, key)
+      } catch (error) {
+        problems.push(`${dir}（解密失败：${error?.message ?? "未知"}）`)
+        continue
+      }
     }
     let session
     try {
-      const dpapi = dpapiImpl ?? ((blob) => dpapiUnprotect(blob))
-      const key = await dpapi(keyBlob)
       session = decryptSessionWithKey(key, raw)
     } catch (error) {
+      // 缓存的主密钥解不开这份帧（文件被别的用户/实例重写过）：丢掉缓存下次重解。
+      keyCache?.delete(statePath)
       problems.push(`${dir}（解密失败：${error?.message ?? "未知"}）`)
       continue
     }
@@ -192,7 +229,7 @@ async function readDesktopCredential({ homedir = osHomedir(), platform = process
       continue
     }
     if (isExpiredJwt(session.accessToken, nowMs)) {
-      throw new Error("Agnes Code 登录已过期，请打开 Agnes Code 重新登录后重试")
+      throw Object.assign(new Error("Agnes Code 登录已过期，请打开 Agnes Code 重新登录后重试"), { code: "expired" })
     }
     const username = typeof session.userInfo?.username === "string" && session.userInfo.username.trim()
       ? session.userInfo.username.trim()
@@ -201,7 +238,15 @@ async function readDesktopCredential({ homedir = osHomedir(), platform = process
   }
 
   const detail = problems.length ? `：${problems.join("；")}` : ""
-  throw new Error(`未找到 Agnes Code 桌面端登录态${detail}。请先启动 Agnes Code 并登录，或改用「粘贴 accessToken」方式。`)
+  // 「什么都没找到」与「有数据但读不出来」分开说：后者的用户多半已经装好了。
+  const message = problems.length
+    ? `Agnes Code 桌面端登录态读不出来${detail}。请先启动 Agnes Code 并登录，或改用「粘贴 accessToken」方式。`
+    : "未找到 Agnes Code 桌面端登录态。请先启动 Agnes Code 并登录，或改用「粘贴 accessToken」方式。"
+  throw Object.assign(
+    new Error(message),
+    // problems 为空 = 这些路径上什么都没有（新机器）；非空 = 有 Agnes Code 的数据但用不了。
+    { code: problems.length ? "unreadable" : "missing" },
+  )
 }
 
 async function fetchModels(key, fetchImpl) {
@@ -220,7 +265,48 @@ async function fetchBalance(key, fetchImpl) {
   })
 }
 
-function createPlugin({ fetchImpl = globalThis.fetch, readFileImpl, dpapiImpl, homedir = osHomedir(), platform = process.platform, sleepImpl } = {}) {
+// authResult 把解出的桌面端会话变成 magpie 的登录结果：带 key 会被存成 API key，
+// metadata 整份留给 loader / usage / checkin。
+function authResult(cred) {
+  return {
+    type: "success",
+    key: cred.key,
+    accountId: cred.accountId,
+    metadata: { username: cred.username, source: cred.source, method: "desktop" },
+  }
+}
+
+// probeDesktopCredential 解一次桌面端会话，把「没解到」变成返回值而不是异常。
+async function probeDesktopCredential(deps) {
+  try {
+    return { cred: await readDesktopCredential(deps) }
+  } catch (error) {
+    return { error }
+  }
+}
+
+// waitForDesktopCredential 轮询磁盘，等用户装好/重开桌面端并登录。返回
+// {status:"ready", result} / {status:"timeout", error} / {status:"aborted"}。
+async function waitForDesktopCredential({ read, sleep, now, signal, waitMs = DESKTOP_WAIT_MS, stepMs = DESKTOP_POLL_MS }) {
+  const deadline = now() + waitMs
+  for (;;) {
+    // magpie 取消登录时会 abort 这个 signal，别再空转剩下的几分钟。
+    if (signal?.aborted) return { status: "aborted" }
+    const trial = await read()
+    if (trial.cred) return { status: "ready", result: authResult(trial.cred) }
+    if (now() >= deadline) return { status: "timeout", error: trial.error }
+    await sleep(stepMs)
+  }
+}
+
+// reasonOf 把读盘失败压成一句给用户看的话（超时失败时带上最后一次的原因）。
+function reasonOf(error) {
+  return ["unreadable", "expired", "unsupported"].includes(error?.code)
+    ? error.message
+    : "本机没有读到 Agnes Code 桌面端登录态"
+}
+
+function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, readFileImpl, dpapiImpl, homedir = osHomedir(), platform = process.platform, sleepImpl, nowMsImpl = () => Date.now() } = {}) {
   const sleep = sleepImpl ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
 
   async function readBalance(key) {
@@ -251,20 +337,45 @@ function createPlugin({ fetchImpl = globalThis.fetch, readFileImpl, dpapiImpl, h
       provider: ID,
       methods: [
         {
-          type: "api",
+          // oauth 方式：magpie 不显示 key 输入框，authorize 必须立刻返回
+          // { url, instructions, method, callback }，结果由 callback 交回。
+          // 解得出就立刻完成（url 留空）；解不出就给出官网链接，边等边让用户去装。
+          type: "oauth",
           label: "读取 Agnes Code 桌面端登录态",
-          async authorize() {
-            let cred
-            try {
-              cred = await readDesktopCredential({ readFileImpl, dpapiImpl, homedir, platform })
-            } catch (error) {
-              return { type: "failed", error: error?.message ?? "读取 Agnes Code 桌面端登录态失败" }
+          async authorize(_inputs, { signal } = {}) {
+            // 非 Windows 解不了 DPAPI：抛错（宿主把 message 原样当失败原因），
+            // 别把用户丢进一个注定等不到的轮询里。
+            if (platform !== "win32") {
+              throw new Error("桌面端会话解密仅支持 Windows；本机请改用「粘贴 accessToken」方式")
+            }
+            // 主密钥在同一次登录里只解一次（轮询不再每 2 秒起一次 PowerShell）。
+            const keyCache = new Map()
+            const read = () => probeDesktopCredential({ readFileImpl, dpapiImpl, homedir, platform, env, nowMs: nowMsImpl(), keyCache })
+            const probe = await read()
+            if (probe.cred) {
+              return {
+                url: "",
+                instructions: `已读取本机 Agnes Code 登录态（${probe.cred.username ?? probe.cred.accountId}），正在完成登录…`,
+                method: "auto",
+                callback: async () => authResult(probe.cred),
+              }
             }
             return {
-              type: "success",
-              key: cred.key,
-              accountId: cred.accountId,
-              metadata: { username: cred.username, source: cred.source, method: "desktop" },
+              url: OFFICIAL_SITE,
+              instructions:
+                probe.error?.code === "unreadable" || probe.error?.code === "expired"
+                  ? `${probe.error.message}（上方链接是官网；打开 Agnes Code 登录或修好后，这一步会自动完成。）`
+                  : "本机没有读到 Agnes Code 桌面端登录态。装上或打开 Agnes Code 桌面端并登录就好——上方链接是官网，可下载；登录后这一步会自动完成。已有 token 的话，也可以改用「粘贴 accessToken」。",
+              method: "auto",
+              callback: async (_code, { signal: callbackSignal } = {}) => {
+                const waited = await waitForDesktopCredential({ read, sleep, now: nowMsImpl, signal: callbackSignal ?? signal })
+                if (waited.status === "ready") return waited.result
+                if (waited.status === "aborted") return { type: "failed", error: "登录已取消" }
+                return {
+                  type: "failed",
+                  error: `仍未读到 Agnes Code 桌面端登录态（最后一次：${reasonOf(waited.error)}）。登录 Agnes Code 后，重新点一次「读取 Agnes Code 桌面端登录态」即可。`,
+                }
+              },
             }
           },
         },
@@ -405,12 +516,20 @@ export const _internal = {
   bootstrapRows,
   parseEncryptedKey,
   decryptSessionWithKey,
+  dpapiUnprotect,
   readDesktopCredential,
+  probeDesktopCredential,
+  waitForDesktopCredential,
+  reasonOf,
+  authResult,
   isExpiredJwt,
   CHAT_GATEWAY_BASE,
   MODELS_URL,
   POINTS_API_BASE,
   BALANCE_PATH,
+  OFFICIAL_SITE,
+  DESKTOP_WAIT_MS,
+  DPAPI_TIMEOUT_MS,
   BOOTSTRAP,
   ID,
 }

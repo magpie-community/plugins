@@ -8,15 +8,17 @@ import { registryProblems } from "./registry.mjs"
 // real plugin, credential file or network client.
 const okRegistry = JSON.stringify({ version: 1, plugins: [{ package: "fixture", name: "Fixture", community: true, summary: { en: "A fixture.", zh: "示例。" } }] })
 
-function check(source, registry = okRegistry) {
+function check(source, registry = okRegistry, pkg = { main: "index.mjs" }, files = {}) {
   const dir = mkdtempSync(join(tmpdir(), "magpie-check-test-"))
   try {
     mkdirSync(join(dir, "scripts"))
     mkdirSync(join(dir, "packages", "fixture"), { recursive: true })
     copyFileSync(new URL("./check.mjs", import.meta.url), join(dir, "scripts", "check.mjs"))
     copyFileSync(new URL("./registry.mjs", import.meta.url), join(dir, "scripts", "registry.mjs"))
+    copyFileSync(new URL("./opencode2.mjs", import.meta.url), join(dir, "scripts", "opencode2.mjs"))
     if (registry !== null) writeFileSync(join(dir, "registry.json"), registry)
-    writeFileSync(join(dir, "packages", "fixture", "package.json"), JSON.stringify({ main: "index.mjs" }))
+    writeFileSync(join(dir, "packages", "fixture", "package.json"), JSON.stringify({ name: "fixture", ...pkg }))
+    for (const [f, body] of Object.entries(files)) writeFileSync(join(dir, "packages", "fixture", f), body)
     writeFileSync(join(dir, "packages", "fixture", "index.mjs"), source)
     const result = Bun.spawnSync([process.execPath, join(dir, "scripts", "check.mjs")])
     return { code: result.exitCode, output: result.stdout.toString() + result.stderr.toString() }
@@ -64,7 +66,9 @@ test("check accepts account-scoped models without signing in or fetching them", 
     auth: {...${auth}, loader: async () => ({})},
     config: async (cfg) => { cfg.provider.fixture = {npm: "@ai-sdk/openai", models: {}} },
     provider: {id: "fixture", models() { throw new Error("must not ask for credentials") }}
-  })`)
+  })`, okRegistry,
+  { main: "./index.mjs", exports: { ".": "./opencode2.mjs" }, files: ["index.mjs", "opencode.mjs", "opencode2.mjs"] },
+  { "opencode.mjs": 'export { Plugin } from "./index.mjs"\n', "opencode2.mjs": adapter })
   expect(result.code).toBe(0)
   expect(result.output).toContain("✓ fixture")
 })
@@ -95,6 +99,36 @@ test("check rejects missing, mismatched or non-callable account catalogs and sti
 
 
 const fine = `export const Plugin = async () => ({ tool: ${tool} })`
+
+test("check accepts quota-only providers with a loader and no model transport", () => {
+  const result = check(`export const Plugin = async () => ({
+    auth: {...${auth}, usage: async () => ({windows: []}), loader: async () => ({})},
+    config: async (cfg) => { cfg.provider.fixture = {name: "Fixture", models: {}} }
+  })`)
+  expect(result.code).toBe(0)
+  expect(result.output).toContain("✓ fixture")
+})
+
+test("quota hooks do not exempt incomplete model providers or missing loaders", () => {
+  for (const config of [
+    `{models: {}, api: "https://example.invalid/v1"}`,
+    `{models: {}, npm: "@ai-sdk/openai"}`,
+    `{models: {example: {}}}`,
+  ]) {
+    const result = check(`export const Plugin = async () => ({
+      auth: {...${auth}, usage: async () => ({windows: []}), loader: async () => ({})},
+      config: async (cfg) => { cfg.provider.fixture = ${config} }
+    })`)
+    expect(result.code).toBe(1)
+    expect(result.output).toContain("no npm or models")
+  }
+  const result = check(`export const Plugin = async () => ({
+    auth: {...${auth}, usage: async () => ({windows: []})},
+    config: async (cfg) => { cfg.provider.fixture = {models: {}} }
+  })`)
+  expect(result.code).toBe(1)
+  expect(result.output).toContain("auth.loader")
+})
 
 test("check passes this repository's own registry.json", () => {
   expect(registryProblems(readFileSync(new URL("../registry.json", import.meta.url), "utf8"))).toEqual([])
@@ -158,4 +192,39 @@ test("registry entries are held to what magpie's market reads", () => {
   expect(registryProblems(JSON.stringify({ version: 1, plugins: [] }))).toEqual(["plugins is not a list of entries"])
   expect(registryProblems(JSON.stringify({ version: 2, plugins: [base] }))).toEqual(["version 2, not 1"])
   expect(registryProblems("[]")).toEqual(["registry.json is not an object"])
+})
+
+// a model provider as the packages were before plugins#657: named 1.x
+// exports and nothing OpenCode 2.x can load
+const provider = `export const Plugin = async () => ({
+  auth: {...${auth}, loader: async () => ({})},
+  config: async (cfg) => { cfg.provider.fixture = {npm: "@ai-sdk/openai-compatible", models: {m: {}}} }
+})`
+const adapter = readFileSync(new URL("./opencode2.mjs", import.meta.url), "utf8")
+
+test("check fails a model provider OpenCode 2.x can't load (plugins#657)", () => {
+  for (const pkg of [{ main: "index.mjs" }, { main: "index.mjs", exports: "./index.mjs" }]) {
+    const result = check(provider, okRegistry, pkg)
+    expect(result.code).toBe(1)
+    expect(result.output).toContain("has no default {id, setup} (plugins#657)")
+  }
+})
+
+test("check passes a model provider with the 2.x adapter and a 1.x main", () => {
+  const files = { "opencode.mjs": 'export { Plugin } from "./index.mjs"\n', "opencode2.mjs": adapter }
+  const pkg = { main: "./opencode.mjs", exports: { ".": "./opencode2.mjs" }, files: ["index.mjs", "opencode.mjs", "opencode2.mjs"] }
+  const ok = check(provider, okRegistry, pkg, files)
+  expect(ok.output).toContain("✓ fixture")
+  expect(ok.code).toBe(0)
+  // a copy that drifted from scripts/opencode2.mjs, and a file npm won't ship
+  const drift = check(provider, okRegistry, { ...pkg, files: ["index.mjs", "opencode.mjs"] }, { ...files, "opencode2.mjs": adapter + "\n// edited\n" })
+  expect(drift.code).toBe(1)
+  expect(drift.output).toContain("differs from scripts/opencode2.mjs")
+  expect(drift.output).toContain("opencode2.mjs is not in files")
+})
+
+test("check fails a main OpenCode 1.x refuses: an export that isn't a plugin", () => {
+  const result = check(provider + "\nexport const _internal = {}\n", okRegistry, {}, {})
+  expect(result.code).toBe(1)
+  expect(result.output).toContain("main exports _internal")
 })

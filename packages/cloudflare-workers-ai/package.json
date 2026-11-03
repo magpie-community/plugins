@@ -1,9 +1,10 @@
 {
   "name": "@magpie-community/opencode-cloudflare-workers-ai-auth",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "private": false,
   "type": "module",
-  "main": "./index.mjs",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
   "description": "Cloudflare Workers AI provider plugin for Magpie with template URL and auto model discovery from models.dev",
   "keywords": [
     "opencode",
@@ -22,6 +23,8 @@
   },
   "files": [
     "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
     "src/",
     "README.md",
     "README.zh-CN.md",

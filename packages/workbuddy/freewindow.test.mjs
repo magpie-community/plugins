@@ -127,13 +127,15 @@ const cnRefusal = (reset, account = "me@example.com") =>
 
 test("the China build counts its own rows against 200M", () => {
   const rows = [cnRow("2026-11-02T02:32:00+08:00", { in: 1_000_000, cache: 188_000_000, out: 500_000 }), cnRow("2026-11-02T03:00:00+08:00", { in: 200 })]
-  const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.FREE_WINDOW_CN)
+  const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.CN_ESTIMATED_WINDOWS[0])
   expect(w.amount).toBe(189_500_200)
   expect(w.limit).toBe(2e8)
   expect(w.used).toBeCloseTo(94.75, 3)
-  expect(w.display).toBe("189.5M / 200M")
+  expect(w.display).toBe("189.5M / ~200M")
   expect(w.resetsAt).toBe(iso("2026-11-03T02:32:00+08:00"))
-  expect(w.unit).toBe("tokens")
+  // the card says the cap is an estimate, and names its own model
+  expect(w.name).toBe("deepseek-v4.1-flash tokens (est.)")
+  expect(w.unit).toBe("")
   expect(w.models).toEqual(["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg"])
 })
 
@@ -149,7 +151,7 @@ test("the two builds' rows stay apart over one account", () => {
   const ai = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"))
   expect(ai.amount).toBe(40_000_000)
   expect(ai.limit).toBe(1e8)
-  const cn = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.FREE_WINDOW_CN)
+  const cn = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.CN_ESTIMATED_WINDOWS[0])
   expect(cn.amount).toBe(98_000_000)
   expect(cn.limit).toBe(2e8)
 })
@@ -171,13 +173,13 @@ test("a China account refused under the cap reads full", () => {
     cnRow("2026-11-02T02:32:00+08:00", { in: 80_000_000 }),
     cnRefusal("2026-11-02 19:17:02"),
   ]
-  const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.FREE_WINDOW_CN)
+  const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.CN_ESTIMATED_WINDOWS[0])
   expect(w.amount).toBe(2e8) // the rows sum to 80M
   expect(w.used).toBe(100)
   expect(w.refused).toBe(true)
   expect(w.aside).toBeUndefined() // the vendor's word stops the model
   expect(w.resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
-  expect(w.display).toBe("200.0M / 200M")
+  expect(w.display).toBe("200.0M / ~200M")
 })
 
 // readLedgerTail stops the chain on both languages' edges: a Chinese refusal
@@ -192,11 +194,11 @@ test("the China read stops on a Chinese refusal's edge", () => {
   const fresh = cnRow("2026-11-02T02:32:00+08:00", { in: 300_000 })
   const root = writeLedger([JSON.stringify(spent), JSON.stringify(denied), JSON.stringify(fresh)])
   try {
-    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.FREE_WINDOW_CN)
+    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.CN_ESTIMATED_WINDOWS[0])
     // the row that reveals the edge is kept — the read goes back to it and
     // stops — while the window the refusal closed reads nothing: the chain
     // opens at the next answered row, 300k of 200M, resetting 24h later
-    const w = _internal.freeWindowOf(rows, "me@example.com", now, _internal.FREE_WINDOW_CN)
+    const w = _internal.freeWindowOf(rows, "me@example.com", now, _internal.CN_ESTIMATED_WINDOWS[0])
     expect(w.amount).toBe(300_000)
     expect(w.resetsAt).toBe(iso("2026-11-03T02:32:00+08:00"))
     expect(rows.every((r) => r.provider === "workbuddy")).toBe(true)
@@ -215,7 +217,7 @@ test("the parse cache keys the build", () => {
   const lines = [cnRow("2026-11-02T02:00:00+08:00", { in: 90_000_000 }), row("2026-11-02T02:10:00+08:00", { in: 40_000_000 })].map((r) => JSON.stringify(r))
   const root = writeLedger(lines)
   try {
-    const cn = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.FREE_WINDOW_CN)
+    const cn = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.CN_ESTIMATED_WINDOWS[0])
     expect(cn.map((r) => r.provider)).toEqual(["workbuddy"])
     const ai = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     expect(ai.map((r) => r.provider)).toEqual(["workbuddy-ai"])
@@ -737,7 +739,7 @@ test("a busy account's ledger is read in time linear in its rows", () => {
   Date.parse = (s) => (calls++, parse(s))
   try {
     const path = join(root, "usage.jsonl")
-    const got = _internal.readLedgerTail(path, statSync(path), now, undefined, "me@example.com", _internal.FREE_WINDOW_CN)
+    const got = _internal.readLedgerTail(path, statSync(path), now, undefined, "me@example.com", _internal.CN_ESTIMATED_WINDOWS[0])
     expect(got.rows.length).toBe(6000)
     expect(calls).toBeLessThan(lines.length * 4)
   } finally {
@@ -759,11 +761,11 @@ test("a window the vendor hasn't refused is set aside, on both builds (plugins#6
     [cnRow("2026-11-02T11:08:53+08:00", { in: 7_701_367, cache: 179_000_000, out: 1_000_000 }), cnRow("2026-11-02T12:00:00+08:00", { in: 0, cache: 0, out: 0, status: 499 })],
     "me@example.com",
     now,
-    _internal.FREE_WINDOW_CN,
+    _internal.CN_ESTIMATED_WINDOWS[0],
   )
   expect(cn.amount).toBe(187_701_367)
   expect(cn.limit).toBe(2e8)
-  expect(cn.display).toBe("187.7M / 200M")
+  expect(cn.display).toBe("187.7M / ~200M")
   expect(cn.aside).toBe(true)
   expect(cn.refused).toBeUndefined()
   // a sum over the cap is still only the sum
@@ -775,7 +777,7 @@ test("a window the vendor hasn't refused is set aside, on both builds (plugins#6
     [cnRow("2026-11-02T11:08:53+08:00", { in: 200_000_000 }), cnRefusal("2026-11-03 11:08:53")],
     "me@example.com",
     now,
-    _internal.FREE_WINDOW_CN,
+    _internal.CN_ESTIMATED_WINDOWS[0],
   )
   expect(cnDenied.refused).toBe(true)
   expect(cnDenied.aside).toBeUndefined()

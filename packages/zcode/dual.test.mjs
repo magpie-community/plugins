@@ -36,6 +36,7 @@ const real = globalThis.fetch
 beforeEach(async () => {
   _internal.routes.clear()
   _internal.blocked.clear()
+  _internal.edge.until = 0
   sent.length = 0
   for (const k of Object.keys(answers)) delete answers[k]
   globalThis.fetch = async (input, init = {}) => {
@@ -337,6 +338,29 @@ test("a Start Plan block page is answered from the plan too", async () => {
   expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
   // the block rests the model a minute, as a spent answer does
   expect(_internal.blocked.get(KEY + "\0" + jwt + "\0glm-5.3-flash")).toBeGreaterThan(Date.now())
+})
+
+test("a gift's block page holds free first on the plan and a trial entry here (plugins#649)", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response("<html>Sorry, your request has been blocked due to unusual activity. errors.aliyun.com</html>", { status: 405, headers: { "content-type": "text/html" } })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const ask = (model) => opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body(model) })
+  const gift = () => sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages")).length
+  const plan = () => sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages")).length
+  expect((await ask("GLM-5.3-Flash")).status).toBe(200)
+  expect([gift(), plan()]).toEqual([1, 1])
+  expect(_internal.edge.until).toBeGreaterThan(Date.now())
+  // the model's minute of rest is not what holds it: a model the gift
+  // serves, unrested, stays on the plan too while the address is held
+  _internal.blocked.clear()
+  expect((await ask("GLM-5.3-Flash")).status).toBe(200)
+  expect([gift(), plan()]).toEqual([1, 2])
+  // the user's pick of the gift is answered here, the network's 405
+  const res = await ask("GLM-5.3-Flash-Trial")
+  expect(res.status).toBe(405)
+  expect(JSON.parse(await res.text()).error.message).toContain("the provider's network firewall blocked requests from this IP")
+  expect([gift(), plan()]).toEqual([1, 2])
 })
 
 const giftUnreachable = (when = () => true) => {

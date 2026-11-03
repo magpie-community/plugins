@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 · 2026-11-03
+
+### Fixed
+
+- README says eleven scenes, and lists the five new ones in its 3D feature line.
+
+## 0.3.0 · 2026-11-02
+
+### Added
+
+- Library, cyberlab, greenhouse, arctic and rainy night scenes with themed 3D decorations.
+
 ## 0.2.4 · 2026-11-01
 
 ### Fixed

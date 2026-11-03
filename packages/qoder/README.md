@@ -138,7 +138,10 @@ itself.
   - The model's own configuration from Qoder's list goes with it.
 - It picks the reasoning effort from the model's own levels:
   - The nearest level to the one asked, the higher one on a tie.
-  - The model's default when none is asked.
+  - The model's default when none is asked, unless the request's
+    `max_tokens` is 1024 or less: that is asked as "none" (since 0.2.55,
+    plugins#643), since thinking would spend so small a budget on
+    reasoning alone.
   - The lowest level for "none", when the model can't turn thinking off.
 - It picks the context window (`context_length`) from the model's own
   windows (Qoder's Context setting: 200K, 400K, 1M): the default while the
@@ -338,10 +341,8 @@ Qoder IDE's settings: a host or an https address (a path is dropped).
 It follows Qoder IDE 1.38.0's own rules for that setting:
 
 - It first asks `GET <domain>/algo/api/v1/version`. A 404 means a legacy
-  Lingma 1.0 (通义灵码) dedicated domain. Its sign-in goes through another
-  protocol, which this plugin doesn't have yet, so the sign-in stops and
-  says so. Any other answer means Qoder CN 2.0. A domain that doesn't answer
-  is refused.
+  Lingma 1.0 (通义灵码) dedicated domain (see below). Any other answer means
+  Qoder CN 2.0. A domain that doesn't answer is refused.
 - A Qoder CN 2.0 domain uses the VPC protocol on hosts named the IDE's way:
   `-openapi` or `-gateway` after the host's first label. An IP or a host
   with no dot keeps its own origin. The sign-in uses the IDE's client id and
@@ -363,6 +364,46 @@ It follows Qoder IDE 1.38.0's own rules for that setting:
 
 The rules come from Qoder IDE's code. This plugin has not been tried with a
 dedicated account.
+
+#### Lingma 1.0 dedicated domains (since 0.2.56)
+
+A Lingma 1.0 domain has no device flow and takes no console PAT. Qoder CN
+IDE signs in to it through its own language server. So the plugin uses the
+account Qoder CN IDE is already signed in to on this computer:
+
+1. Sign in to the dedicated domain once in Qoder CN IDE (Settings →
+   「企业版专属域登录」).
+2. In magpie, choose **Sign in with Qoder CN Enterprise dedicated domain
+   (企业版专属域)** and enter the same domain.
+
+The plugin reads the IDE worker's cache, in its `SharedClientCache` folder:
+
+| System | Folder |
+|---|---|
+| macOS | `~/Library/Application Support/QoderCN/SharedClientCache` |
+| Windows | `%APPDATA%\QoderCN\SharedClientCache` |
+| Linux | `$XDG_CONFIG_HOME/QoderCN/SharedClientCache` (`~/.config/...`) |
+
+It also looks in `~/.config/Qoder CN/SharedClientCache` and `~/.lingma`, and
+`QODERCN_COSY_HOME` names another folder. `cache/id` is the machine id, and
+`cache/user` is the account, encrypted under that id.
+
+- Every call goes to the domain itself, signed as the IDE's worker signs
+  it: `Cosy-ClientType` 0, version 2.5.18, the assistant scene.
+- The models are the IDE's own: `qmodel_latest` (Qwen3.7-Max),
+  `dashscope_qmodel` (Qwen3.7-Plus) and `q36fmodel` (Qwen3.6-Flash). The
+  domain's own model list names keys its chat refuses. When the domain
+  answers "Model not exist" for a model, the next one is asked.
+- The IDE renews its sign-in itself, and the plugin reads the cache again
+  near the token's end, or when the domain refuses it (105). When the IDE
+  holds nothing newer, the account is marked expired: open Qoder CN IDE so
+  it signs in again.
+- Usage and the daily check-in are not read on such a domain.
+
+The cache layout, the request shape and the models come from Milktea's
+tests on a real Lingma dedicated domain. The folders and the model names
+were checked against Qoder CN IDE 1.38.0. This plugin itself has not been
+tried on one.
 
 ## The card's name
 

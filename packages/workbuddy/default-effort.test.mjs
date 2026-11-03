@@ -12,6 +12,8 @@ import { afterEach, expect, test } from "bun:test"
 import { WorkBuddyAuthPlugin, WorkBuddyAIAuthPlugin, _internal } from "./index.mjs"
 import { unz } from "./testdata/unz.mjs"
 
+const { SMALL_BUDGET } = _internal
+
 const real = globalThis.fetch
 afterEach(() => (globalThis.fetch = real))
 
@@ -148,4 +150,33 @@ test("defaultEffortOf reads defaultEffort, else effort, held to the model's leve
   expect(defaultEffortOf({ reasoning: { effort: "medium" } }, ["low", "medium", "high", "max"])).toBe("medium")
   expect(defaultEffortOf({ reasoning: { defaultEffort: "medium" } }, ["low", "high"])).toBeUndefined()
   expect(defaultEffortOf({}, ["low"])).toBeUndefined()
+})
+
+test("a chat with a small max_tokens is not given a default reasoning effort", async () => {
+  // itspig (#643): title requests at max_tokens 64 spent all 64 on reasoning
+  // at the default high and answered no text. Anthropic's API takes no
+  // thinking budget under 1024, so a budget of SMALL_BUDGET or less was
+  // never one to think in; a larger one, or none, still goes at the default
+  expect(SMALL_BUDGET).toBe(1024)
+  const sent = serve()
+  const opts = await loader()
+  for (const max_tokens of [64, 100, 256, 1000, 1024]) {
+    await ask(opts, "deepseek-v4.1-flash", { max_tokens })
+  }
+  await ask(opts, "deepseek-v4.1-flash", { max_completion_tokens: 64 })
+  await ask(opts, "deepseek-v4.1-flash", { max_tokens: 64, reasoning_effort: "low" })
+  await ask(opts, "deepseek-v4.1-flash", { max_tokens: 1025 })
+  await ask(opts, "deepseek-v4.1-flash", { max_completion_tokens: 32000 })
+  await ask(opts, "deepseek-v4.1-flash", { max_tokens: 0 })
+  const chats = chatsOf(sent).map((c) => JSON.parse(c.text))
+  for (let i = 0; i < 6; i++) expect(chats[i].reasoning_effort).toBeUndefined()
+  expect(chats[6].reasoning_effort).toBe("low")
+  expect(chats[7].reasoning_effort).toBe("high")
+  expect(chats[8].reasoning_effort).toBe("high")
+  expect(chats[9].reasoning_effort).toBe("high")
+  // the WorkBuddy AI build alike
+  const sent2 = serve()
+  const ai = await loader(WorkBuddyAIAuthPlugin)
+  await ask(ai, "deepseek-v4.1-flash", { max_tokens: 64 }, "https://www.workbuddy.ai/v2/chat/completions")
+  expect(JSON.parse(chatsOf(sent2)[0].text).reasoning_effort).toBeUndefined()
 })

@@ -199,8 +199,45 @@ test("parseModelInfo drops vision models, dedupes, and fills context", () => {
 test("parseModelInfo keeps the dated id, and its bare form as another model", () => {
   const seen = new Set()
   const dated = x.parseModelInfo({ model_id: "deepseek-v4-flash-0731", model_name: "deepseek-v4-flash-0731", max_tokens: 131072 }, seen)
-  assert.deepEqual(dated, { id: "deepseek-v4-flash-0731", name: "deepseek-v4-flash", context: 1048576, output: x.MAX_OUTPUT_TOKENS })
-  assert.equal(x.parseModelInfo({ model_id: "deepseek-v4-flash" }, seen).id, "deepseek-v4-flash")
+  assert.deepEqual(dated, { id: "deepseek-v4-flash-0731", name: "deepseek-v4-flash-0731", context: 1048576, output: x.MAX_OUTPUT_TOKENS })
+  const bare = x.parseModelInfo({ model_id: "deepseek-v4-flash" }, seen)
+  assert.equal(bare.id, "deepseek-v4-flash")
+  assert.notEqual(bare.name, dated.name)
+})
+
+// #677 (errorcode7): /v1/model/builtin lists deepseek-v4.1-flash and
+// deepseek-v4.1-flash-1017 side by side, two models with other off-peak
+// rates. Each keeps the name the vendor gives it.
+test("a dated builtin model keeps its own name beside its bare form (#677)", async () => {
+  const builtin = {
+    builtinModels: [
+      { model_id: "deepseek-v4.1-flash", model_name: "DeepSeek-V4.1-Flash", model_desc: "【限时体验】能力更高, 速度更快" },
+      { model_id: "deepseek-v4.1-flash-1017", model_name: "DeepSeek-V4.1-Flash-1017", model_desc: "【限时体验】许愿式编程一键成真" },
+    ],
+  }
+  const fetcher = async (url) => String(url).includes("opengw")
+    ? new Response(JSON.stringify({ result: { models: [] } }), { status: 200 })
+    : new Response(JSON.stringify(builtin), { status: 200 })
+  const models = await x.fetchRemoteModels(signedCred, fetcher)
+  assert.deepEqual(models.map((m) => [m.id, m.name]), [
+    ["deepseek-v4.1-flash", "DeepSeek-V4.1-Flash"],
+    ["deepseek-v4.1-flash-1017", "DeepSeek-V4.1-Flash-1017"],
+  ])
+})
+
+test("a dated model only the agent lists keeps its date, named or not (#677)", async () => {
+  const detail = {
+    gpts: {
+      models: [
+        { model_name: "DeepSeek-V4.1-Flash-1017", model_parameters: { model_id: "deepseek-v4.1-flash-1017" }, credit: [{ ratio: 0.0486, ratio_display: "0.18" }] },
+        { model_parameters: { model_id: "deepseek-v4.1-flash-0930" } },
+      ],
+    },
+  }
+  const models = await x.fetchRemoteModels(signedCred, modelsFetcher([], { agents: agentList, detail }))
+  const names = Object.fromEntries(models.map((m) => [m.id, m.name]))
+  assert.equal(names["deepseek-v4.1-flash-1017"], "DeepSeek-V4.1-Flash-1017")
+  assert.equal(names["deepseek-v4.1-flash-0930"], "Deepseek V4.1 Flash 0930")
 })
 
 test("prepareChatBody reshapes a chat into what the gateway accepts and meters", () => {

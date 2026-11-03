@@ -11,7 +11,7 @@ import { EventEmitter } from "node:events"
 import { promisify } from "node:util"
 import { accountOf, adcDirectoryFor, adcDirectoryOwnedBy, adcDirectoryToCreate, adcFile, adcSlug, beginAdcLogin, command, effectiveAuthMode, gcloudProgram, hasAdc, resolveAccount, resolveIdentity, resolveProject, runGcloud, startLogin, tokenProvider, windowsCommand } from "../lib/credentials.mjs"
 import { fakeGcloud } from "./gcloud.mjs"
-import { consoleAccountFor, parseCreditTables, usageOf } from "../lib/credits.mjs"
+import { billingCurrenciesOf, consoleAccountFor, parseCreditTables, usageOf } from "../lib/credits.mjs"
 import { availableModels, toProviderModels } from "../lib/models.mjs"
 import { assertConsoleSession } from "../lib/browser.mjs"
 import { main } from "../lib/fetch_credits.mjs"
@@ -78,6 +78,51 @@ test("credits fail closed on missing layout, unknown statuses, unsupported curre
   assert.throws(() => parseCreditTables([{ headers, rows: [row("a", "€1.00")] }]), /currency/)
   assert.throws(() => parseCreditTables([{ headers, rows: [row("a", "$11.00")] }]), /Invalid/)
   assert.equal(parseCreditTables([{ headers, rows: [row("a", "$10.00", "$10.00", "Expired")] }], { now }).remaining, 0)
+})
+
+// kidchen94's JPY billing account (#667): yen amounts have no minor unit, and
+// a bare ¥ is never taken for yen unless the billing account is said to bill
+// in JPY, since the Console writes yuan with the same sign.
+test("a billing account named as JPY reads yen, and a ¥ is never guessed", () => {
+  const yen = (id, remaining, original = "¥10,000", status = "Available") => row(id, remaining, original, status)
+  const result = parseCreditTables([{ headers, rows: [yen("a", "¥8,500"), yen("b", "￥1,000"), yen("c", "JP¥0", "¥5,000", "Exhausted")] }], { now, currency: "JPY", billingAccount: "AAAAAA-BBBBBB-CCCCCC" })
+  assert.equal(result.currency, "JPY")
+  assert.equal(result.remaining, 9500)
+  assert.equal(result.original, 25000)
+  const usage = usageOf(result)
+  assert.equal(usage.balance, "¥9500 JPY")
+  assert.equal(usage.windows[0].display, "¥9500 remaining / ¥25000 JPY")
+  assert.equal(usage.windows[0].unit, "JPY")
+  // The same page read as the default USD names the currency and the switch.
+  assert.throws(() => parseCreditTables([{ headers, rows: [yen("a", "¥8,500")] }], { now, billingAccount: "AAAAAA-BBBBBB-CCCCCC" }),
+    /in ¥ \(yen or yuan\), not USD\. If it bills in Japanese yen, set billingCurrencies to \{ "AAAAAA-BBBBBB-CCCCCC": "JPY" \}/)
+  // A USD page read as JPY is not taken as yen either.
+  assert.throws(() => parseCreditTables([{ headers, rows: [row("a", "$10.00")] }], { now, currency: "JPY", billingAccount: "AAAAAA-BBBBBB-CCCCCC" }), /are in USD, not JPY/)
+  // Yen has no fraction, and a misplaced group separator is not a number.
+  assert.throws(() => parseCreditTables([{ headers, rows: [yen("a", "¥8,500.50")] }], { now, currency: "JPY" }), /Unsupported credit amount/)
+  assert.throws(() => parseCreditTables([{ headers, rows: [row("a", "$1,00.00")] }], { now }), /Unsupported credit amount/)
+  assert.throws(() => parseCreditTables([{ headers, rows: [row("a", "$1.00")] }], { now, currency: "CNY" }), /Unsupported billing currency CNY/)
+  // USD reads as it did.
+  assert.equal(parseCreditTables([{ headers, rows: [row("a", "$1,234.56", "$2,000.00"), row("b", "USD 1.00"), row("c", "2.00 USD")] }], { now }).remaining, 1237.56)
+})
+
+test("billingCurrencies names a supported currency for a valid billing account", () => {
+  assert.deepEqual([...billingCurrenciesOf({ "aaaaaa-bbbbbb-cccccc": "jpy" })], [["AAAAAA-BBBBBB-CCCCCC", "JPY"]])
+  assert.throws(() => billingCurrenciesOf({ "AAAAAA-BBBBBB-CCCCCC": "CNY" }), /not a currency this plugin reads/)
+  assert.throws(() => billingCurrenciesOf({ "not-an-account": "JPY" }), /billingCurrencies/)
+  assert.throws(() => billingCurrenciesOf("JPY"), /billingCurrencies must be an object/)
+})
+
+// What Chrome's translation left of the Console's table (#667): the column
+// names and the amounts rewritten. That is a page in another language, said as
+// such, not an expired session or an empty table.
+test("a credits table whose columns were translated says so", () => {
+  const translatedHeaders = ["クレジット名", "ステータス", "残りの割合", "残額", "元の値", "タイプ", "クレジット ID", "使用範囲", "開始日", "終了日"]
+  const translatedRow = ["特典の例", "利用可能", "100%", "10.00 米ドル", "10.00 米ドル", "1回限り", "a", "すべての Google Cloud サービス", "2026年7月15日", "2027年7月1日"]
+  assert.throws(() => parseCreditTables([{ headers: [], rows: [] }, { headers: translatedHeaders, rows: [translatedRow] }], { now }),
+    /columns are not the English ones this plugin reads \(it found: クレジット名, ステータス, 残りの割合, 残額, 元の値, タイプ\); the page may have been translated/)
+  // A page with no table at all is still the old answer.
+  assert.throws(() => parseCreditTables([]), /Credits table was not found/)
 })
 
 test("a credit near its end date reads as expiring, and is still spendable", () => {
@@ -1105,6 +1150,26 @@ test("account settings beat the row, and row settings beat environment defaults"
     else process.env.XDG_CACHE_HOME = previousCache
     await fixture.close()
   }
+})
+
+test("the usage hook takes the billing, currency and profile maps from the provider's or the plugin's options", async () => {
+  // No account: nothing asks gcloud for a token before the options are read.
+  const auth = { type: "success" }
+  for (const [name, bad, wanted] of [
+    ["billingAccounts", { "example-project": "nope" }, /billingAccounts: /],
+    ["billingCurrencies", { "AAAAAA-BBBBBB-CCCCCC": "EUR" }, /billingCurrencies: "EUR" is not a currency/],
+    ["profileDirectories", { "reader@example.com": "../elsewhere" }, /profileDirectories: Invalid Chrome profile directory/],
+  ]) {
+    const fromRow = await (await plugin()).auth.usage(async () => auth, { options: { billingAccount: "AAAAAA-BBBBBB-CCCCCC", [name]: bad } })
+    assert.match(fromRow.error, wanted)
+    assert.equal(fromRow.signIn, "kept")
+    const fromPlugin = await (await plugin({}, { [name]: bad })).auth.usage(async () => auth, { options: { billingAccount: "AAAAAA-BBBBBB-CCCCCC" } })
+    assert.match(fromPlugin.error, wanted)
+  }
+  const pinned = await (await plugin()).auth.usage(async () => auth, { options: { billingAccount: "AAAAAA-BBBBBB-CCCCCC", profileDirectory: "-flag" } })
+  assert.match(pinned.error, /Invalid Chrome profile directory/)
+  const pinnedByPlugin = await (await plugin({}, { profileDirectory: "a/b" })).auth.usage(async () => auth, { options: { billingAccount: "AAAAAA-BBBBBB-CCCCCC" } })
+  assert.match(pinnedByPlugin.error, /Invalid Chrome profile directory/)
 })
 
 test("usage accepts plugin-level aliases while provider options take precedence", async () => {

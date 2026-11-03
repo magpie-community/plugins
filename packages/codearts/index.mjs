@@ -282,8 +282,10 @@ function prettify(id) {
 }
 
 // normalizeModelId drops a trailing 4-digit version tag: deepseek-v4-flash-0731
-// -> deepseek-v4-flash. Only for display names and the CONTEXT_WINDOWS lookup:
-// the dated id is the registered free model, so ids sent upstream keep it.
+// -> deepseek-v4-flash. Only for the CONTEXT_WINDOWS lookup and the vision
+// check: a dated id is a model of its own (deepseek-v4.1-flash-1017 is not
+// deepseek-v4.1-flash: other off-peak rate, other description, #677), so ids
+// and display names keep the date as the vendor writes it.
 function normalizeModelId(id) {
   if (typeof id === "string" && id.length > 5) {
     const suffix = id.slice(-5)
@@ -2103,7 +2105,7 @@ function parseModelInfo(m, seen) {
   if (seen.has(id)) return undefined
   seen.add(id)
   const rawName = m.model_name
-  const name = typeof rawName === "string" && rawName ? normalizeModelId(rawName) : prettify(base)
+  const name = typeof rawName === "string" && rawName.trim() ? rawName.trim() : prettify(id)
   const info = { id, name, context: num(m.context_window) || CONTEXT_WINDOWS[base] }
   const output = num(m.max_tokens)
   if (output > 0) info.output = Math.min(output, MAX_OUTPUT_TOKENS)
@@ -2285,7 +2287,7 @@ async function fetchRemoteModels(cred, fetcher, state) {
     } else if (!a.own && !a.hidden && !/-vl(-|$)/i.test(normalizeModelId(a.id))) {
       models.push({
         id: a.id,
-        name: a.name ? normalizeModelId(a.name) : prettify(normalizeModelId(a.id)),
+        name: a.name || prettify(a.id),
         context: a.context || CONTEXT_WINDOWS[normalizeModelId(a.id)],
         ...(a.output ? { output: a.output } : {}),
         ...(a.rate > 0 ? { rate: a.rate } : {}),

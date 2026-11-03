@@ -24,10 +24,12 @@
   let themeLang = theme.lang
   let opts = {}
   try { opts = (await magpie.options.get()) || {} } catch {}
+  // ISO and 2D keep their original palette for the six original scenes; only the new ones are themed.
+  const NEW_CANVAS_THEMES = ["library", "cyberlab", "greenhouse", "arctic", "rainynight"]
   const view = {
     mode: opts.mode === "list" ? "list" : "office",
     dim: ["2d", "iso", "3d"].includes(opts.dim) ? opts.dim : "3d",
-    scene: ["office", "station", "cafe", "castle", "pirate", "graveyard"].includes(opts.scene) ? opts.scene : "office",
+    scene: (Scene3D?.SCENE_IDS || ["office", "station", "cafe", "castle", "pirate", "graveyard"]).includes(opts.scene) ? opts.scene : "office",
     quality: ["low", "medium", "high"].includes(opts.quality) ? opts.quality : "medium",
     demo: opts.demo === true,
     showDone: opts.showDone !== false,
@@ -85,7 +87,7 @@
     syncLangSelect()
     if (typeof scene2 !== "undefined") scene2.lang = lang
     if ($("optScene")) {
-      for (const option of $("optScene").options) option.textContent = t()["scene" + ({office:"Office",station:"Station",cafe:"Cafe",castle:"Castle",pirate:"Pirate",graveyard:"Graveyard"})[option.value]]
+      for (const option of $("optScene").options) option.textContent = t()["scene" + ({office:"Office",station:"Station",cafe:"Cafe",castle:"Castle",pirate:"Pirate",graveyard:"Graveyard",library:"Library",cyberlab:"Cyberlab",greenhouse:"Greenhouse",arctic:"Arctic",rainynight:"Rainynight"})[option.value]]
     }
   }
 
@@ -172,6 +174,7 @@
     if (scene3) scene3.stop()
     scene = scene2
     office2.hidden = false; office3.hidden = true
+    scene2.theme = NEW_CANVAS_THEMES.includes(view.scene) ? Scene3D?.SCENES?.[view.scene] : null
     scene2.setDim(view.dim === "2d" ? "2d" : "3d")
     return scene2
   }
@@ -1088,6 +1091,8 @@
   const SCENE_OPTIONS = [
     ["office", "sceneOffice"], ["station", "sceneStation"], ["cafe", "sceneCafe"],
     ["castle", "sceneCastle"], ["pirate", "scenePirate"], ["graveyard", "sceneGraveyard"],
+    ["library", "sceneLibrary"], ["cyberlab", "sceneCyberlab"], ["greenhouse", "sceneGreenhouse"],
+    ["arctic", "sceneArctic"], ["rainynight", "sceneRainynight"],
   ]
   if ($("optScene")) {
     $("optScene").replaceChildren(...SCENE_OPTIONS.map(([id, name]) => { const o = el("option", "", t()[name]); o.value = id; return o }))
