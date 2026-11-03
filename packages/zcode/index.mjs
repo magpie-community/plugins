@@ -2139,23 +2139,22 @@ function workPlace(h) {
   return place
 }
 
-// environment is the prompt's environment section; provider and model
-// name the powered-by line, left out with no model. The plugin runs in
-// magpie, not in the agent's folder: the working directory and whether it
-// is a git repository are the agent's, as magpie tells them (place), and
-// each is left out when it isn't told rather than said as magpie's own
-// (#86). The agent's shell isn't known here either, so it isn't said; the
-// platform and OS version are this computer's, as ZCode's X-Os-* headers
-// say them.
-function environment(provider, model, place = {}) {
+// environment is the prompt's environment section, as ZCode 3.17.2's
+// env-info.ts renders it, bullets one space in. The plugin runs in magpie,
+// not in the agent's folder: the working directory and whether it is a git
+// repository are the agent's, as magpie tells them (place), and each is
+// left out when it isn't told rather than said as magpie's own (#86). The
+// agent's shell isn't known here either, so it isn't said; the platform
+// and OS version are this computer's, as ZCode's X-Os-* headers say them.
+function environment(place = {}) {
   const e = PROMPT.environment
   const lines = [e.heading, e.invokedLine]
   if (place.dir) {
-    lines.push(`- ${e.cwdLabel}: ${place.dir}`)
-    if (place.git) lines.push(`- ${e.gitLabel}: ${place.git === "yes" ? "yes" : e.gitNo}`)
+    lines.push(` - ${e.cwdLabel}: ${place.dir}`)
+    if (place.git) lines.push(` - ${e.gitLabel}: ${place.git === "yes" ? e.gitYes : e.gitNo}`)
   }
-  lines.push(`- ${e.platformLabel}: ${process.platform}`, `- ${e.osVersionLabel}: ${osVersion()}`)
-  if (model) lines.push(e.poweredByLine.replace("{provider}", provider).replace("{model}", model))
+  lines.push(` - ${e.platformLabel}: ${process.platform}`, ` - ${e.osVersionLabel}: ${osVersion()}`)
+  lines.push(` - ${e.untrustedNote}`)
   return lines.join("\n")
 }
 
@@ -2166,11 +2165,11 @@ function today(now = new Date()) {
 }
 
 // contextPrefix is the user turn ZCode puts before the agent's: the day in
-// a <system-reminder>, the tags hugging the text.
+// a <system-reminder>, the tags hugging the text, as 3.17.2's current-date
+// section says it alone.
 function contextPrefix() {
   const c = PROMPT.context
-  const body = [c.intro, c.currentDateHeading + "\n" + c.currentDateLine.replace("{date}", today()), "", c.outro].join("\n")
-  return { role: "user", content: [{ type: "text", text: "<system-reminder>" + body + "</system-reminder>" }] }
+  return { role: "user", content: [{ type: "text", text: "<system-reminder>" + c.currentDateLine.replace("{date}", today()) + "</system-reminder>" }] }
 }
 
 // dress is a Messages request body as ZCode sends it: ZCode's three cached
@@ -2194,18 +2193,29 @@ function dress(text, site, device, place, session) {
   const provider = site === "bigmodel" ? "bigmodel-api" : "zai-api"
   const model = typeof b.model === "string" ? b.model : ""
   // The agent's own system text joins the third block, as ZCode's
-  // ContextBuilder (3.14.3, glm/zcode.cjs assembleSystemMessages) joins
-  // every dynamic system section, an added one too, with "\n\n" into
-  // that one block: ZCode never sends more than three. zcode.z.ai turns a
-  // fourth block away with 405/3012 (#343), and the first two must stay
-  // byte for byte ZCode's.
+  // ContextBuilder (3.17.2, core/src/context/builder.ts
+  // assembleSystemMessages) joins every dynamic system section, an added
+  // one too, with "\n\n" into that one block: ZCode never sends more than
+  // three. zcode.z.ai turns a fourth block away with 405/3012 (#343), and
+  // the first two must stay byte for byte ZCode's. The third's own
+  // sections are 3.17.2's dynamic ones — the unheaded behavior paragraphs,
+  // the slash-skill guidance when the request has a Skill tool, the
+  // environment and the model, then context management.
   const own = []
   if (typeof b.system === "string") {
     if (b.system.trim()) own.push(b.system)
   } else if (Array.isArray(b.system)) {
     for (const x of b.system) if (x?.type === "text" && typeof x.text === "string" && x.text.trim()) own.push(x.text)
   }
-  const dynamic = [PROMPT.beforeEnvironment, environment(provider, model, place), PROMPT.afterEnvironment, ...own]
+  const skill = Array.isArray(b.tools) && b.tools.some((t) => t && typeof t === "object" && t.name === "Skill")
+  const dynamic = [
+    PROMPT.dynamicBehavior,
+    ...(skill ? [PROMPT.sessionGuidance] : []),
+    environment(place),
+    ...(model ? [PROMPT.poweredBy.replace("{provider}", provider).replace("{model}", model)] : []),
+    PROMPT.contextManagement,
+    ...own,
+  ]
   b.system = [cached(PROMPT.cliPrefix), cached(PROMPT.stableSections.join("\n\n")), cached("\n\n" + dynamic.join("\n\n"))]
   b.messages = [contextPrefix(), ...b.messages]
   let last = null
