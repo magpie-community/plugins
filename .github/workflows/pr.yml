@@ -18,8 +18,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: install
+        run: bun install
+      - name: browsers
+        # page 的端到端测试用真实 Chromium 与 WebKit
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
+        run: npx playwright install --with-deps chromium webkit
       - name: test
         # the tests refuse a real home: no real sign-in is ever read
+        # PLAYWRIGHT_BROWSERS_PATH keeps the page's browser tests finding the cache
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         run: HOME=$(mktemp -d) bun test
       - name: check
         run: bun scripts/check.mjs
