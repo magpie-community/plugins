@@ -114,12 +114,26 @@ test.skipIf(!browserPath && !process.env.CI)("reads complete books in spine orde
     requested.push(path);
     return new Response("", { status: 404 });
   } });
-  const profile = mkdtempSync(join(tmpdir(), "magpie-epub-browser-"));
-  const proc = Bun.spawn([browserPath, "--headless", "--disable-gpu", "--disable-background-networking",
-    "--no-first-run", "--use-mock-keychain", "--user-data-dir=" + profile, String(server.url)], { stdout: "ignore", stderr: "ignore" });
+  // A browser that is slow to start (a cold CI runner took 16s where a run takes 1.3s) is not a reader
+  // failure: each try gets its own profile and 10s (7x a normal run), and a try that posts nothing is
+  // killed and replaced. A browser that exits by itself still fails at once.
+  const tries = 3, tryMs = 10000;
+  let result;
   try {
-    const result = await Promise.race([promise, proc.exited.then(() => { throw new Error("browser exited"); }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("browser timed out")), 15000).unref())]);
+    for (let attempt = 1; !result; attempt++) {
+      const profile = mkdtempSync(join(tmpdir(), "magpie-epub-browser-"));
+      const proc = Bun.spawn([browserPath, "--headless", "--disable-gpu", "--disable-background-networking",
+        "--no-first-run", "--use-mock-keychain", "--user-data-dir=" + profile, String(server.url)], { stdout: "ignore", stderr: "ignore" });
+      let timer;
+      try {
+        result = await Promise.race([promise, proc.exited.then(() => { throw new Error("browser exited"); }),
+          new Promise(resolve => { timer = setTimeout(() => resolve(null), tryMs); })]);
+        if (!result && attempt >= tries) throw new Error(`browser timed out ${tries} times`);
+      } finally {
+        clearTimeout(timer); proc.kill(); await proc.exited;
+        rmSync(profile, { recursive: true, force: true });
+      }
+    }
     expect(result.mixed).toEqual({ text: "红楼梦𠀀。\n\n次章。\n\n有 空格\n\n下一行", characters: 14, imagePages: 0 });
     expect(result.duplicates).toEqual({ text: "同文\n\n同文", characters: 4, imagePages: 0 });
     expect(result.hybrid).toEqual({ text: "可读正文", characters: 4, imagePages: 2 });
@@ -134,7 +148,6 @@ test.skipIf(!browserPath && !process.env.CI)("reads complete books in spine orde
     expect(result.injected).toBe(false);
     expect(requested).not.toContain("/unexpected");
   } finally {
-    proc.kill(); await proc.exited; await server.stop(true);
-    rmSync(profile, { recursive: true, force: true });
+    await server.stop(true);
   }
-}, 20000);
+}, 60000);
