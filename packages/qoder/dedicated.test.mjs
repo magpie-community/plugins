@@ -3,7 +3,7 @@
 // Nothing here comes from a real dedicated account: the rules are read from
 // Qoder IDE 1.38.0's workbench (config.general.dedicatedUrl):
 // - its probe GETs <domain>/algo/api/v1/version; 404 is a Lingma 1.0
-//   dedicated domain, any other status Qoder CN 2.0;
+//   dedicated domain (lingma.test.mjs), any other status Qoder CN 2.0;
 // - a 2.0 domain signs in at <origin>/device/selectAccounts with the IDE's
 //   client id and no redirect_uri, and polls and reads the user on the host
 //   named with "-openapi" after its first label ("-gateway" for its gateway);
@@ -147,13 +147,7 @@ test("a Qoder CN 2.0 dedicated sign-in probes, opens the domain's page and polls
   expect(hostsOf()).toEqual([WEB, GATEWAY, OPENAPI])
 }, 10_000)
 
-test("a domain that answers 404 at /algo/api/v1/version is Lingma 1.0 and is refused before any sign-in", async () => {
-  toServer()
-  route = () => new Response("", { status: 404 })
-  const m = dedicatedMethod(await QoderCNAuthPlugin({ client: store().client }))
-  await expect(m.authorize({ dedicated: WEB })).rejects.toThrow("Lingma 1.0")
-  expect(seen.map((s) => s.host + s.path)).toEqual([WEB + "/algo/api/v1/version"])
-})
+// a domain that answers 404 at the probe is Lingma 1.0: lingma.test.mjs
 
 test("a domain that doesn't answer is refused, never read as either kind", async () => {
   toServer()

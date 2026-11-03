@@ -34,9 +34,9 @@
 // <instance>-openapi.vpc.qoder.com.cn, and gateway.qoder.com.cn becomes
 // <instance>-gateway.vpc.qoder.com.cn. The instance is kept on the account,
 // and an account with none is served as before.
-import { createCipheriv, createHash, publicEncrypt, randomBytes, randomUUID, constants } from "node:crypto"
+import { createCipheriv, createDecipheriv, createHash, publicEncrypt, randomBytes, randomUUID, constants } from "node:crypto"
 import { execFile } from "node:child_process"
-import { readdir, stat } from "node:fs/promises"
+import { readFile, readdir, stat } from "node:fs/promises"
 import { STATUS_CODES } from "node:http"
 import { homedir, hostname } from "node:os"
 import { join, resolve } from "node:path"
@@ -394,24 +394,216 @@ async function dedicatedProbe(origin) {
 }
 
 // dedicatedSignIn reads the domain as the IDE does and starts its device
-// sign-in. A legacy Lingma domain is refused with what it is: its sign-in
-// (cosy's login/generateUrl, a qoder-cn-ide:// callback) isn't served here.
-// The chat host is the gateway host when it answers at all, else the
-// domain's own origin, which answered the probe on the same /algo path; the
-// IDE leaves this to its language server, whose rule wasn't read (inferred).
+// sign-in. A Lingma 1.0 domain (404 at the probe) is signed in to with the
+// account Qoder CN IDE holds for it (lingmaSignIn). The chat host is the
+// gateway host when it answers at all, else the domain's own origin, which
+// answered the probe on the same /algo path; the IDE leaves this to its
+// language server, whose rule wasn't read (inferred).
 async function dedicatedSignIn(site, input) {
   const origin = dedicatedOrigin(input)
   if (!origin) throw new Error(`Not a dedicated domain: ${String(input ?? "").slice(0, 100)}`)
   const status = await dedicatedProbe(origin)
   if (status === undefined) throw new Error(`${site.name}: ${origin} didn't answer (${DEDICATED_VERSION}); check the address and your network`)
-  if (status === 404)
-    throw new Error(
-      `${site.name}: ${origin} is a Lingma 1.0 (通义灵码) dedicated domain, which this plugin can't sign in to yet; ${new URL(origin).host} answers 404 at ${DEDICATED_VERSION}, as Qoder IDE tells one apart`,
-    )
+  if (status === 404) return lingmaSignIn(site, origin)
   const gateway = dedicatedHost(origin, "-gateway")
   const api = gateway !== origin && (await dedicatedProbe(gateway)) === undefined ? origin : undefined
   return deviceSignIn(dedicatedSite(site, origin, api))
 }
+
+// ---- Lingma 1.0 dedicated domains (通义灵码专属版) ---------------------------
+//
+// A domain that answers 404 at the probe is a Lingma 1.0 deployment. Qoder
+// CN IDE (1.38.0) signs in to one through its language server, not the
+// device flow ("use extension 127 login", _loginWithExtension("dedicated")),
+// and such a host serves none of the device flow: /device/selectAccounts and
+// /api/v1/jobToken/exchange answer 404, a console PAT or the console's
+// cookies are answered {"code":"105","message":"Login timeout"} at /algo,
+// and /algo/api/v3/user/* "Request discarded" (all measured on Milktea's
+// host). What works is the session the IDE's worker already holds once the
+// user has signed in there, read from its cache as the worker writes it
+// (Milktea's gist, plugins Discord 2026-11-03):
+//   <cosyHome>/cache/id    the worker's machine id, a plain uuid (or <cosyHome>/id)
+//   <cosyHome>/cache/user  base64(AES-128-CBC(JSON)), key = IV = the id's first 16 chars
+// whose JSON has uid, organization_id, name, email, security_oauth_token,
+// refresh_token and expire_time (ms). cosyHome is the IDE's userDataPath
+// with SharedClientCache after it (its main.js; the worker is started with
+// --workDir there): ~/Library/Application Support/QoderCN on macOS,
+// %APPDATA%\QoderCN on Windows, $XDG_CONFIG_HOME (~/.config)/QoderCN on
+// Linux. "Qoder CN" and ~/.lingma are the older layouts the gist found.
+// The worker renews that session itself (its "CN 1.0 refresh"), so the
+// account here is renewed by reading the cache again, never by a refresh
+// call of its own: the host serves none that was found.
+//
+// Its chat is the same agent_chat_generation, signed with the COSY envelope
+// as the worker signs it (the gist's capture): Cosy-ClientType 0, the
+// worker's own version 2.5.18, no Cosy-Scene or Cosy-Business-*, and the
+// assistant scene. Its model list names keys the chat refuses ("Model not
+// exist"), so the models are the IDE's own (its modelSelector.item.* names):
+// a key the domain refuses falls through to the next.
+const LINGMA_VERSION = "2.5.18"
+const LINGMA_LEAD = 5 * 60 * 1000
+const LINGMA_MODELS = [
+  { key: "qmodel_latest", name: "Qwen3.7-Max" },
+  { key: "dashscope_qmodel", name: "Qwen3.7-Plus" },
+  { key: "q36fmodel", name: "Qwen3.6-Flash" },
+]
+const LINGMA_LAPSED = /"code"\s*:\s*"?105"?|Login (?:expired|timeout)/i
+const LINGMA_NOT_HERE = /model_not_found|Model not exist/i
+
+// lingmaRoots is where Qoder CN IDE's worker keeps its cache on this
+// system: QODERCN_COSY_HOME first, then the IDE's own folder, then the
+// older layouts. HOME is read first, so a sandboxed HOME is the one
+// looked in.
+function lingmaRoots(env = process.env, platform = process.platform, home = env.HOME || env.USERPROFILE || homedir()) {
+  const roots = []
+  const add = (p) => p && !roots.includes(p) && roots.push(p)
+  add(String(env.QODERCN_COSY_HOME ?? "").trim())
+  if (platform === "darwin") add(join(home, "Library", "Application Support", "QoderCN", "SharedClientCache"))
+  else if (platform === "win32") add(join(env.APPDATA || join(home, "AppData", "Roaming"), "QoderCN", "SharedClientCache"))
+  else add(join(env.XDG_CONFIG_HOME || join(home, ".config"), "QoderCN", "SharedClientCache"))
+  add(join(home, ".config", "QoderCN", "SharedClientCache"))
+  add(join(home, ".config", "Qoder CN", "SharedClientCache"))
+  add(join(home, ".lingma"))
+  return roots
+}
+
+// lingmaDecode is the account one cosyHome holds, or why there is none.
+async function lingmaDecode(root) {
+  const read = async (p) => (await readFile(p, "utf8").catch(() => "")).trim()
+  const id = (await read(join(root, "cache", "id"))) || (await read(join(root, "id")))
+  const blob = await read(join(root, "cache", "user"))
+  if (!id || !blob) return { root, reason: "no cache/id and cache/user" }
+  const key = Buffer.from(id.slice(0, 16), "utf8")
+  if (key.length !== 16) return { root, reason: "the machine id is too short" }
+  let a
+  try {
+    const d = createDecipheriv("aes-128-cbc", key, key)
+    a = JSON.parse(Buffer.concat([d.update(Buffer.from(blob, "base64")), d.final()]).toString("utf8"))
+  } catch {
+    return { root, reason: "cache/user doesn't open with the machine id" }
+  }
+  const access = String(a?.security_oauth_token ?? "").trim()
+  const uid = String(a?.uid ?? "").trim()
+  if (!access || !uid) return { root, reason: "cache/user names no signed-in account" }
+  const end = Number(a.expire_time)
+  return {
+    root,
+    machineId: id,
+    uid,
+    access,
+    email: String(a.email ?? ""),
+    name: String(a.name ?? ""),
+    orgId: String(a.organization_id ?? ""),
+    expires: Number.isFinite(end) && end > 0 ? end : 0,
+  }
+}
+
+// lingmaRead is the first account the IDE's caches hold, or an Error that
+// says where it looked and what it found.
+async function lingmaRead(site, roots = lingmaRoots()) {
+  const seen = []
+  for (const root of roots) {
+    const got = await lingmaDecode(root)
+    if (got.access) return got
+    seen.push(`${root}: ${got.reason}`)
+  }
+  return new SignInGone(
+    `${site.name}: no Qoder CN IDE sign-in found on this computer. Sign in to your dedicated domain once in Qoder CN IDE (Settings → 企业版专属域登录), then sign in here again. Looked in ${seen.join("; ")}`,
+    true,
+  )
+}
+
+const lingmaLive = (got, now = Date.now()) => !got.expires || got.expires - now > LINGMA_LEAD
+
+// lingmaAccount is the account a read gives for the domain at origin.
+function lingmaAccount(site, origin, got) {
+  const host = new URL(origin).host
+  return {
+    type: "success",
+    access: got.access,
+    // nothing here spends a refresh token: the IDE's worker renews it
+    refresh: "",
+    expires: got.expires || Date.now() + DAY,
+    accountId: `${got.email || got.uid} (${host})`,
+    cardName: `${got.email || got.name || got.uid} (${host})`,
+    uid: got.uid,
+    email: got.email,
+    name: got.name,
+    ...(got.orgId ? { orgId: got.orgId } : {}),
+    machineId: got.machineId,
+    deviceToken: "",
+    deviceRefresh: "",
+    dedicated: host,
+    lingma: true,
+  }
+}
+
+// lingmaSignIn signs in to a Lingma 1.0 domain with the account Qoder CN
+// IDE holds, read when the sign-in is asked for so a missing or lapsed one
+// is said at once.
+async function lingmaSignIn(site, origin, roots) {
+  const got = await lingmaRead(site, roots)
+  if (got instanceof Error) throw got
+  if (!lingmaLive(got))
+    throw new SignInGone(
+      `${site.name}: Qoder CN IDE's sign-in (${got.email || got.uid}) ended ${new Date(got.expires).toISOString()}; open Qoder CN IDE so it signs in again, then sign in here again`,
+      true,
+    )
+  return {
+    url: origin,
+    instructions: `${new URL(origin).host} is a Lingma 1.0 (通义灵码) dedicated domain: using the account Qoder CN IDE is signed in to (${got.email || got.uid})`,
+    method: "auto",
+    async callback() {
+      return lingmaAccount(site, origin, got)
+    },
+  }
+}
+
+// lingmaRenew is a newer token for a, from the IDE's cache: what changed,
+// or SignInGone (expired) when the IDE holds none newer that is live.
+async function lingmaRenew(site, a, roots) {
+  const got = await lingmaRead(site, roots)
+  if (got instanceof Error) throw got
+  if (got.uid !== a.uid)
+    throw new SignInGone(`${site.name}: Qoder CN IDE is now signed in as another account (${got.email || got.uid}); sign in here again`, true)
+  if (got.access === a.access || !lingmaLive(got))
+    throw new SignInGone(`${site.name}: the sign-in lapsed and Qoder CN IDE holds none newer; open Qoder CN IDE so it signs in again`, true)
+  return { access: got.access, expires: got.expires || Date.now() + DAY, machineId: got.machineId }
+}
+
+// lingmaSite is site served from a Lingma 1.0 domain: every call on its
+// own origin, signed as the IDE's worker signs them.
+function lingmaSite(site, domain) {
+  const origin = dedicatedOrigin(domain)
+  if (!origin) return undefined
+  const host = new URL(origin).host
+  return {
+    ...site,
+    web: origin,
+    openapi: origin,
+    api: origin,
+    vpc: host,
+    dedicated: host,
+    lingma: true,
+    clientType: "0",
+    cosyVersion: LINGMA_VERSION,
+    modelScene: "assistant",
+    sessionType: "assistant",
+  }
+}
+
+// lingmaHeaders are a Lingma chat's headers, as the IDE's worker sent them
+// (the gist's capture): the envelope with no scene or business headers.
+function lingmaHeaders(url, u, body, site) {
+  const h = cosyHeaders(url, u, body, site)
+  delete h["Cosy-Scene"]
+  delete h["Cosy-Business-Product"]
+  delete h["Cosy-Business-Type"]
+  return { ...h, Accept: "text/event-stream", "Cache-Control": "no-cache", "x-request-id": randomUUID() }
+}
+
+// lingmaModel is a Lingma model as a request carries it
+const lingmaModel = (m) => modelInfo({ key: m.key, display_name: m.name, format: "dashscope", source: "system", max_input_tokens: 180_000 })
 
 // siteOf is the site an account is served from: its VPC instance's when it
 // was signed in to one, else site. An instance on record that names none
@@ -424,6 +616,11 @@ function siteOf(site, a) {
   if (a?.enterpriseHost) {
     const base = `https://${a.enterpriseHost}`
     return { ...site, web: base, openapi: base, api: base, vpc: a.enterpriseHost }
+  }
+  if (a?.dedicated && a.lingma) {
+    const s = lingmaSite(site, a.dedicated)
+    if (!s) throw new SignInGone(`${site.name}: the account's dedicated domain "${a.dedicated}" isn't one; sign in again`)
+    return s
   }
   if (a?.dedicated) {
     const s = dedicatedSite(site, a.dedicated, a.dedicatedApi)
@@ -1901,6 +2098,13 @@ async function* events(body, tools = []) {
     } catch {
       continue
     }
+    // a refusal said inside an OK frame (a Lingma 1.0 domain's "Model not
+    // exist" or 105): the turn's failure, not a chunk to read past into an
+    // empty answer
+    if (!Array.isArray(chunk?.choices) && (chunk?.error || (chunk?.code != null && chunk?.message))) {
+      yield { error: failure(502, inner) }
+      return
+    }
     const delta = chunk?.choices?.[0]?.delta ?? {}
     if (delta.reasoning_content) {
       said = true
@@ -2733,6 +2937,8 @@ const makePlugin = (site) => async ({ client }) => {
   // exchanges the PAT again: the PAT lasts a year, the refresh two days.
   const renew = async (a) => {
     const s = siteOf(site, a)
+    // a Lingma 1.0 account: the token Qoder CN IDE's worker renewed
+    if (a.lingma) return lingmaRenew(s, a)
     if (a.deviceChat) {
       // the device token is the chat token: renewed as a device token,
       // both pairs being the one pair
@@ -2825,6 +3031,8 @@ const makePlugin = (site) => async ({ client }) => {
   const models = async (cred, again = false) => {
     const key = listingKey(cred)
     let l = listings.get(key)
+    // a Lingma 1.0 domain's listing names keys its chat refuses: the IDE's own
+    if (cred.lingma) return LINGMA_MODELS.map(lingmaModel)
     if (!l || again) {
       const s = siteOf(site, cred)
       const listing = await fetchListing(s, cred)
@@ -2884,6 +3092,8 @@ const makePlugin = (site) => async ({ client }) => {
       if (renewed(cred)) signIn = "renewed"
       // the card's name: magpie takes usage's `user` for it and never as a key
       const who = cred?.cardName ? { user: cred.cardName } : {}
+      // a Lingma 1.0 domain serves no usage read that was found
+      if (cred.lingma) return { windows: [], signIn, ...who }
       // a site with its own usage path (QwenWork's account-context, signed
       // like any other call and answered with its own envelope) is read
       // there; a 401 rotates the device token once, as the qoder path does
@@ -2973,6 +3183,7 @@ const makePlugin = (site) => async ({ client }) => {
   const checkin = async (getAuth) => {
     let cred
     try {
+      if ((await getAuth())?.lingma) return { outcome: "inactive", message: "a Lingma 1.0 dedicated domain has no daily credits" }
       cred = await fresh(getAuth)
     } catch (e) {
       return { outcome: "failed", message: e?.message ?? String(e), ...(e?.expired ? { signIn: "expired" } : {}) }
@@ -3176,6 +3387,68 @@ const makePlugin = (site) => async ({ client }) => {
     }
   }
 
+  // askLingma is ask for a Lingma 1.0 account: the IDE's models, signed as
+  // its worker signs them, a model the domain refuses ("Model not exist",
+  // said inside the stream) followed by the next, and a refused token (105)
+  // asked again once with the token the IDE renewed meanwhile.
+  const askLingma = async (chat, cred, init, named, getAuth, asked) => {
+    asked.cred = cred
+    const list = LINGMA_MODELS.map(lingmaModel)
+    const want = list.find((x) => x.key === chat.model)
+    if (!want) return errorResponse({ status: 400, message: `unknown model "${chat.model}"; this dedicated domain serves ${list.map((x) => x.key).join(", ")}` })
+    const order = [want, ...list.filter((x) => x !== want)]
+    const task = taskOf(sessionOf(chat, named), chat)
+    const tools = chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function") : []
+    let relogged = false
+    for (let i = 0; ; ) {
+      const m = order[i]
+      const s = siteOf(site, cred)
+      const url = s.api + CHAT_PATH
+      let body
+      try {
+        body = qoderBody(chat, m, named, task, s)
+      } catch (e) {
+        return errorResponse({ status: 400, message: e?.message ?? String(e) })
+      }
+      const wire = encodeBody(JSON.stringify(body))
+      const call = new AbortController()
+      const signal = init.signal ? AbortSignal.any([init.signal, call.signal]) : call.signal
+      let res, open
+      try {
+        res = await fetch(url, { method: "POST", headers: lingmaHeaders(url, cred, wire, s), body: wire, signal })
+        if (res.ok) open = await opened(res, tools)
+      } catch (e) {
+        return errorResponse({ status: 502, message: e.message })
+      }
+      const f = !res.ok ? failure(res.status, (await res.text()).slice(0, 1 << 20)) : open.first.value?.error
+      if (f) call.abort()
+      if (f && (f.lapsed || LINGMA_LAPSED.test(f.message))) {
+        if (getAuth && !relogged) {
+          relogged = true
+          let next
+          try {
+            next = await relogin(getAuth, cred.access)
+          } catch (e) {
+            return signedInError(e)
+          }
+          if (next) {
+            cred = asked.cred = next
+            continue
+          }
+        }
+        return errorResponse({ status: 401, message: `the sign-in lapsed — open Qoder CN IDE so it signs in again (${String(f.message).slice(0, 300)})` })
+      }
+      if (f && LINGMA_NOT_HERE.test(f.message) && i + 1 < order.length) {
+        console.warn(`qoder-cn: ${s.dedicated} doesn't serve ${m.key}; asking ${order[i + 1].key}`)
+        i++
+        continue
+      }
+      if (f) return errorResponse(f)
+      task.answered = true
+      return answer(open, chat, m.key === chat.model ? chat.model : m.key)
+    }
+  }
+
   return {
     // the session the request is part of, for session_id and its task
     // (#330): magpie names it here (DSH's x-deepseek-harness-session-id
@@ -3196,6 +3469,13 @@ const makePlugin = (site) => async ({ client }) => {
       // end on record: usage rotates it once Qoder refuses it, as before.
       refreshLead: RENEW_LEAD,
       async refresh(auth) {
+        // a Lingma 1.0 account: the IDE's newer token, when it has one;
+        // nothing when it hasn't yet (fresh says so once it is needed)
+        if (auth?.type === "oauth" && auth.lingma && auth.access && auth.uid) {
+          const a = latest(auth)
+          const next = await lingmaRenew(siteOf(site, a), a).catch(() => undefined)
+          return next ? changed(auth, { ...a, ...next }) : undefined
+        }
         if (auth?.type !== "oauth" || !auth.access || !auth.uid || !String(auth.refresh ?? "").trim()) return undefined
         const out = await locked(async () => {
           // a request renewed it meanwhile (or magpie hasn't saved this
@@ -3258,7 +3538,8 @@ const makePlugin = (site) => async ({ client }) => {
             const h = new Headers(input instanceof Request ? input.headers : undefined)
             new Headers(init.headers ?? {}).forEach((v, k) => h.set(k, v))
             const asked = {}
-            const res = await ask(chat, cred, init, h.get(SESSION)?.trim().slice(0, 128) ?? "", h.get(FALLBACK) === "1", getAuth, asked)
+            const named = h.get(SESSION)?.trim().slice(0, 128) ?? ""
+            const res = cred.lingma ? await askLingma(chat, cred, init, named, getAuth, asked) : await ask(chat, cred, init, named, h.get(FALLBACK) === "1", getAuth, asked)
             return signed(res, renewed(cred) || (asked.cred !== cred && renewed(asked.cred)))
           },
         }
@@ -3472,4 +3753,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
