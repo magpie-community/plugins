@@ -1,4 +1,4 @@
-// Aelios (github.com/wusaki0723/Aelios) long-term memory for every agent
+// Aelios (github.com/Aelios-project/Aelios) long-term memory for every agent
 // behind magpie, as a gateway request hook. Before a request goes to its
 // model, the user's turn is given what Aelios recalls for it; after the reply,
 // and only when `record` is on, the turn is handed to Aelios to remember.
