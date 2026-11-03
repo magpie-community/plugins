@@ -89,8 +89,10 @@ Webpage reading is available through Magpie's search MCP server, whose
 `web_fetch` protects loopback and private network addresses.
 
 Account-backed tools accept `site`: `minimax-code` (China, the default) or
-`minimax-code-global`. These tools read the chosen site's first stored account
-from Magpie's `plugin-auth.json` on each call. To choose a particular account,
+`minimax-code-global`. These tools read the chosen site's default account
+from Magpie's `plugin-auth.json` on each call: the one stored under the bare
+site id, else the first `site#…` key by name, as Magpie picks for a request
+that names no account. To choose a particular account,
 set `account` to its full stored key, such as `minimax-code#xxxxxx`. The
 selected account's tokens are renewed by the same refresh logic as chat.
 A missing account asks you to sign in; the selected account stays fixed

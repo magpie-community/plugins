@@ -1130,8 +1130,11 @@ function createToolRequest({ client, directory }) {
         throw new Error("MiniMax tools: Magpie's plugin-auth.json could not be read")
       }
       if (!store) throw new Error("MiniMax tools: invalid Magpie account store")
-      // Resolve once per call so a retry stays on the same account.
-      id ??= Object.keys(store).find(belongs) ?? site.id
+      // Resolve once per call so a retry stays on the same account. The
+      // default is the one magpie's host takes for a request that names
+      // none (accountsOf): the bare site id, else the first key by name,
+      // never the order the file happens to hold them in.
+      id ??= Object.keys(store).filter(belongs).sort((x, y) => (x === site.id ? -1 : y === site.id ? 1 : x < y ? -1 : x > y ? 1 : 0))[0] ?? site.id
       return Object.hasOwn(store, id) ? store[id] : undefined
     }
     await wait(getAuth())

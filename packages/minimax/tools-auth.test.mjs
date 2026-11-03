@@ -32,24 +32,29 @@ async function fixture(store = { "minimax-code": auth() }) {
 }
 const path = "/minimax-cloud/api/v1/connectors/tools/call"
 
-test("default selection follows the first stored account and refresh saves its exact key", async () => {
+test("default selection is magpie's own (bare id, else first by name) and refresh saves its exact key", async () => {
   f = fakeMiniMax()
   f.route("POST /oauth2/token", () => json({ access_token: "default-new", refresh_token: "default-refresh-new", expires_in: 3600 }))
   f.route("POST " + path, () => json({}))
   for (const site of ["minimax-code", "minimax-code-global"]) {
     const key = site + "#first"
+    // the file's order puts the bare id last, as a sign-in made again after
+    // a removal leaves it; magpie still takes the bare id first
     const t = await fixture({
       [site + "-other#unrelated"]: auth("unrelated"),
+      [site + "#zzz"]: auth("later-by-name"),
       [key]: { ...auth("default-old"), refresh: "default-refresh-" + site, expires: Date.now() - 1 },
       [site]: auth("bare"),
     })
     await t.request(site, path, {})
-    expect(f.seen.at(-1).headers.get("authorization")).toBe("Bearer default-new")
-    expect(t.saves.map(s => s.id)).toEqual([key])
+    expect(f.seen.at(-1).headers.get("authorization")).toBe("Bearer bare")
+    expect(t.saves).toHaveLength(0)
     delete t.store[site]
     await t.saveStore()
     await t.request(site, path, {})
     expect(f.seen.at(-1).headers.get("authorization")).toBe("Bearer default-new")
+    expect(t.saves.map(s => s.id)).toEqual([key])
+    delete t.store[site + "#zzz"]
     delete t.store[key]
     t.store[site + "#next"] = auth("next-default")
     await t.saveStore()
