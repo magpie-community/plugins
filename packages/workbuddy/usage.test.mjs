@@ -542,6 +542,59 @@ test("split, the plan's window keeps its cycle and each says what lapses", async
   expect(credits.runsOutAt).toBe(extra.runsOutAt)
 })
 
+// jiabubu on Discord (magpie 0.1.2774, workbuddy 0.2.16, a China-site free
+// account): the card read "Free plan · 0 / 500" and nothing else. WorkBuddy's
+// own usage panel (WorkBuddy 5.5.6, buildCreditGroups) groups the packages
+// of the detail lists, not the summary's, so extra credits only those lists
+// have show there and were nowhere in magpie. The summary below is the plan's
+// base alone (CN_FREE_SUMMARY's 008); the lists' packages are CN_FREE's
+// shapes with a total, not the reporter's bytes (not seen).
+test("extra credits only the detail lists have are a window of their own, set aside (jiabubu on Discord)", async () => {
+  const { SITES } = _internal
+  const year = Date.UTC(2036, 9, 1) - Date.UTC(2026, 9, 1)
+  const on = (p) => ({ ...p, DeductionEndTime: p.DeductionEndTime + year, CycleStartTime: "2036" + p.CycleStartTime.slice(4), CycleEndTime: "2036" + p.CycleEndTime.slice(4) })
+  const base = { ...CN_FREE.Accounts[1], CycleCapacitySizePrecise: "500", CycleCapacityRemainPrecise: "500", SlicePeriodUsageDetails: [{ SlicePeriodCapacitySizePrecise: "500", SlicePeriodCapacityRemainPrecise: "500" }] }
+  const gift = { ...CN_FREE.Accounts[0], CycleCapacitySizePrecise: "300", CycleCapacityRemainPrecise: "280" }
+  const topup = { PackageCode: "TCACA_code_009_0XmEQc2xOf", PackageName: "加量包", CapacityType: 1, CycleCapacitySizePrecise: "1000", CycleCapacityRemainPrecise: "1000",
+    CycleStartTime: "2026-10-02 10:00:00", CycleEndTime: "2027-10-02 09:59:59", DeductionEndTime: Date.parse("2027-10-02T01:59:59Z"), ExpiredTime: "", Status: 0 }
+  const summary = { ...CN_FREE_SUMMARY, Packages: [CN_FREE_SUMMARY.Packages[1]] }
+  serve({
+    "/billing/meter/get-user-resource-summary": () => ok(summary),
+    "/billing/meter/get-user-resource-paid-packages": () => ok({ TotalCount: 1, Accounts: [on(topup)] }),
+    "/billing/meter/get-user-resource-free-packages": () => ok({ TotalCount: 2, Accounts: [on(gift), on(base)] }),
+  })
+  const u = await usageOf(WorkBuddyAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
+  expect(u.windows.slice(0, 2).map((w) => [w.name, w.display, !!w.aside])).toEqual([["Credits", "0 / 500", false], ["Extra credits", "20 / 1300", true]])
+  // the soonest to lapse is the activity's, on the window that says them
+  expect(u.windows[1]).toMatchObject({ amount: 20, limit: 1300, runsOut: 280, runsOutAt: new Date(on(gift).DeductionEndTime).toISOString() })
+  // the plan's window keeps its cycle
+  expect(u.windows[0].resetsAt).toBe("2036-10-31T15:59:59.000Z")
+
+  const now = Date.parse("2026-11-03T00:00:00Z")
+  // past its end, a package is not counted, as the panel leaves it out
+  expect(_internal.listedExtra(summary, [gift, topup], SITES.workbuddy, now)).toEqual({ total: 1000, used: 0, runsOutAt: "2027-10-02T01:59:59.000Z", runsOut: 1000 })
+  // one the summary lists is the summary's, never counted twice
+  expect(_internal.listedExtra(CN_FREE_SUMMARY, [on(gift)], SITES.workbuddy, now)).toBeNull()
+  // the plan's base is never extra; nor, on the China build, a gift (006)
+  const giftPack = { ...topup, PackageCode: "TCACA_code_006_DbXS0lrypC" }
+  expect(_internal.listedExtra(summary, [base, giftPack], SITES.workbuddy, now)).toBeNull()
+  // WorkBuddy AI's panel counts gift and the free month among the rewards
+  expect(_internal.listedExtra(GROUPS_SUMMARY, [giftPack, { ...topup, PackageCode: "TCACA_code_008_cfWoLwvjU4" }], SITES["workbuddy-ai"], now)?.total).toBe(2000)
+  // a package with no total adds nothing
+  expect(_internal.listedExtra(summary, [{ ...topup, CycleCapacitySizePrecise: "" }], SITES.workbuddy, now)).toBeNull()
+})
+
+test("a summary that already splits the credits, or lists with no extra ones, keep the card as it was", async () => {
+  const empty = () => ok({ TotalCount: 0, Accounts: [] })
+  serve({
+    "/billing/meter/get-user-resource-summary": () => ok(GROUPS_SUMMARY),
+    "/billing/meter/get-user-resource-paid-packages": empty,
+    "/billing/meter/get-user-resource-free-packages": empty,
+  })
+  const u = await usageOf(WorkBuddyAIAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
+  expect(u.windows.map((w) => [w.name, w.display])).toEqual([["Credits", "0.19 / 100"]])
+})
+
 // magpie #1904 (CnsMaple): an enterprise account's resource summary has no
 // packages, and its credits are the enterprise meter's, which WorkBuddy's
 // own usage page reads. The two answers below are the reporter's, byte for
