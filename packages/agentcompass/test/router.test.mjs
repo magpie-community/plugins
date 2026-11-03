@@ -1,0 +1,1990 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
+import { DEFAULT_SCORING_POLICY } from "../src/catalog.js";
+import {
+  CACHE_COLD_MS,
+  CHATGPT_CODEX_COLD_MS,
+  SessionContinuityStore,
+  WORKER_WORN_TOKENS,
+  analyzeTurnState,
+  coldAfterMs,
+  computeSessionKey,
+  evaluateProviderContinuation,
+  firstWords,
+  isShortFollowupMessage,
+  keepsEffort,
+  sha256Hex,
+  userSaidFromText,
+} from "../src/continuity.js";
+import {
+  ROUTE_CARRIER_KEY,
+  onRequest as hookOnRequest,
+  onResponse as hookOnResponse,
+} from "../src/hooks.js";
+import {
+  AGENTCOMPASS_ICON_DATA_URI,
+  AgentCompassRouterPlugin,
+  DECISION_MODEL_ID,
+  PROVIDER_ID,
+  clearQuotasCache,
+  evaluateLevelsProbe,
+  evaluateModelQuota,
+  handleSystemOneRequest,
+  loadLiveQuotas,
+  normalizeQuotaSnapshot,
+  orderSeatsByQuotaEconomics,
+} from "../src/index.js";
+import {
+  onAccount as mwOnAccount,
+  onProvider as mwOnProvider,
+  onRequest as mwOnRequest,
+  onResponse as mwOnResponse,
+  strategies,
+} from "../src/middleware.js";
+import { capProfileText, extractRequestFacts, inferTaskProfile, profileTask } from "../src/profiler-core.js";
+import { SCORER_SYSTEM_PROMPT, clearProfileCache, parseJevScorerAnswer, scoreTaskLive } from "../src/scorer-live.js";
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+test("1.1 Routine bounded bulk work selects lightweight model (gemini-3.8-flash-high) and penalizes expensive overqualification", () => {
+    const profile = inferTaskProfile({
+      objective: "Perform a mechanical batch rename of `foo_bar` to `fooBar` across the JSON fixtures using a uniform rule.",
+    });
+    assert.equal(profile.work_kind, "bounded_bulk_work");
+    assert.equal(profile.reasoning_depth, 1);
+
+    const decision = selectBestRoute(profile);
+    assert.equal(decision.ok, true);
+    assert.equal(decision.difficulty, "routine");
+    assert.equal(decision.canonicalModel, "gemini-3.8-flash-high");
+    assert.equal(decision.targetEffort, "high");
+
+    // Verify that expensive frontier models like gpt-6-astra or claude-fable-5-1 received overqualification penalty
+    const ranked = rankCandidates(profile);
+    const astraHigh = ranked.ranking.find((c) => c.canonicalModel === "gpt-6-astra" && c.effort === "high");
+    assert.ok(astraHigh, "gpt-6-astra:high should be in eligible ranking");
+    assert.ok(astraHigh.components.overqualification > 0, "gpt-6-astra:high should pay overqualification penalty on routine work");
+  });
+
+test("1.2 Convergent single-module production coding selects gpt-6.1-sol via module_precision DNA", () => {
+    const profile = inferTaskProfile({
+      objective: "Implement a standalone self-contained LRU cache algorithm module in TypeScript with unit tests.",
+    });
+    assert.equal(profile.work_kind, "self_contained_code");
+    const decision = selectBestRoute(profile);
+    assert.equal(decision.canonicalModel, "gpt-6.1-sol");
+    assert.equal(decision.targetEffort, "high");
+  });
+
+test("1.3 Coupled cross-module deadlock & invariant audit selects claude-opus-5-5 via global_rigor + anti_hallucination", () => {
+    const profile = inferTaskProfile({
+      objective:
+        "Conduct a read-only security audit and cross-module deadlock / race condition root-cause review across the gateway subsystem.",
+    });
+    assert.equal(profile.work_kind, "debug_review");
+    assert.equal(profile.code_complexity, 0, "read-only review must force code_complexity=0");
+    assert.equal(profile.reasoning_depth, 3);
+
+    const decision = selectBestRoute(profile);
+    assert.equal(decision.difficulty, "coupled");
+    assert.equal(decision.canonicalModel, "claude-opus-5-5");
+    assert.ok(["high", "xhigh", "max"].includes(decision.targetEffort));
+  });
+
+test("1.4 Open-ended divergent architecture ideation selects gemini-4-argon-high via divergence DNA (0.96)", () => {
+    const profile = inferTaskProfile({
+      objective:
+        "Brainstorm and formulate a novel creative gameplay scheme and first-principles roadmap for an AI agent simulation game.",
+      work_kind: "direction_reasoning",
+    });
+    assert.equal(profile.divergence, 3);
+    assert.equal(profile.reasoning_depth, 3);
+
+    const decision = selectBestRoute(profile);
+    assert.equal(decision.workKind, "direction_reasoning");
+    assert.equal(decision.canonicalModel, "gemini-4-argon-high");
+  });
+
+test("1.5 Frontier mathematical proof (reasoning_depth=4, floor=4.2) selects claude-opus-5-5", () => {
+    const profile = inferTaskProfile({
+      objective: "Provide a formal mathematical proof or refute the optimal-stopping theorem bound for this Markov chain.",
+    });
+    assert.equal(profile.reasoning_depth, 4);
+    const decision = selectBestRoute(profile);
+    assert.equal(decision.difficulty, "frontier");
+    assert.equal(decision.canonicalModel, "claude-opus-5-5");
+  });
+
+test("1.6 GUI computer-use task routes to gpt-6-astra (#1 GUI grounding) and excludes text-only models", () => {
+    const profile = inferTaskProfile({
+      objective: "Operate the desktop app GUI: click the Settings button, take a screenshot, and toggle the proxy switch.",
+    });
+    assert.equal(profile.work_kind, "computer_use");
+    assert.equal(profile.needs_gui, true);
+    assert.equal(profile.needs_visual, true);
+
+    const ranked = rankCandidates(profile);
+    const grok = ranked.allCandidates.find((c) => c.canonicalModel === "grok-4.7");
+    assert.ok(grok.excluded.includes("task needs visual input"), "text-only grok-4.7 must be excluded on visual/GUI work");
+    assert.equal(ranked.selected.canonicalModel, "gpt-6-astra");
+
+    const visualReview = inferTaskProfile({
+      objective: "Compare screenshots of the login dialog and inspect the screenshot for layout misalignment.",
+    });
+    assert.equal(visualReview.work_kind, "visual_analysis");
+    assert.equal(visualReview.needs_visual, true);
+    assert.equal(visualReview.needs_gui, false);
+});
+
+test("2. Gateway Middleware (`magpie.middleware` [`moejs` 250ms]) and optional `hooks.js` state routing rewrite model & effort without polluting `body`", async () => {
+  const originalBody = {
+    model: "agentcompass/auto",
+    stream: true,
+    messages: [
+      {
+        role: "user",
+        content: "Review the diff and diagnose the cross-module race condition in internal/gateway/decide.go (read-only review).",
+      },
+    ],
+    tools: [{ type: "function", function: { name: "read_file" } }],
+  };
+
+  let reportedOutcome = null;
+  let reportedBytes = 0;
+  const hookCtx = {
+    protocol: "chat",
+    agent: "claude-code",
+    options: {
+      gatewayTimeoutMs: 8000,
+      scorerType: "heuristic",
+      candidateModels: ["claude-opus-5-5", "gpt-6.1-sol", "gemini-3.8-flash-high"],
+    },
+    state: {},
+    report(code, bytes) {
+      reportedOutcome = code;
+      reportedBytes = bytes;
+    },
+  };
+
+  // Stage 1: Run Async Bun Hook (`src/hooks.js`)
+  const bodyClone = structuredClone(originalBody);
+  const afterHook = await hookOnRequest(bodyClone, hookCtx);
+  assert.equal(afterHook, undefined, "hookOnRequest must not mutate or replace body by default");
+  assert.equal(ROUTE_CARRIER_KEY in bodyClone, false, "hookOnRequest must never inject __agentcompass_route by default");
+  assert.equal(reportedOutcome, "ready");
+  assert.ok(reportedBytes > 0);
+  assert.ok(hookCtx.state.route, "route decision must be stored in ctx.state.route");
+  assert.equal(hookCtx.state.route.targetModel, "claude-opus-5-5");
+
+  // Stage 2: Run Sync `moejs` Middleware (`src/middleware.js`)
+  const mwCtx = {
+    protocol: "chat",
+    agent: "claude-code",
+    options: {
+      injectProtocolEffort: true,
+      candidateModels: ["claude-opus-5-5", "gpt-6.1-sol", "gemini-3.8-flash-high"],
+    },
+    state: {},
+  };
+  const afterMw = mwOnRequest(bodyClone, mwCtx);
+  assert.ok(afterMw, "mwOnRequest should return mutated body");
+  assert.equal(ROUTE_CARRIER_KEY in afterMw, false, "carrier must never be present on body");
+  assert.match(afterMw.model, /^claude-opus-5-5:(high|xhigh|max)$/);
+  assert.ok(["high", "xhigh"].includes(afterMw.reasoning_effort));
+
+  // Verify `onAccount` works with Magpie's real `{ref, provider, name, kind, model}` account shape
+  const skipRes = mwOnAccount(
+    {
+      ref: "a1b2c3d4e5f60718",
+      provider: "openai",
+      name: "OpenAI Plus",
+      kind: "codex",
+      model: "gpt-6.1-sol",
+    },
+    {
+      state: mwCtx.state,
+      options: { accountsByWorkKind: { debug_review: ["anthropic"] } },
+    },
+  );
+  assert.deepEqual(skipRes, { skip: true });
+});
+
+test("3.1 Live OpenAI-compatible scorer parses 10-field JSON profile and caches it when explicitly opted in", async () => {
+  clearProfileCache();
+    let fetchCalls = 0;
+    const mockFetch = async (_url, init) => {
+      fetchCalls++;
+      assert.equal("User-Agent" in (init.headers || {}), false, "Must not send fake Magpie-Router/1.0 User-Agent");
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  work_kind: "frontend_implementation",
+                  reasoning_depth: 2,
+                  code_complexity: 2,
+                  context_scale: 1,
+                  divergence: 2,
+                  hallucination_risk: 2,
+                  error_cost: 2,
+                  needs_visual: true,
+                  needs_gui: false,
+                  local_only: true,
+                  interaction_style: "engineering",
+                  expected_hours: 1.0,
+                  hours_confidence: "high",
+                  urgency: "unknown",
+                  multi_task: false,
+                  task_count: "1",
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    };
+
+    const task = { objective: "Build the interactive React analytics dashboard component from the Figma spec." };
+    const first = await scoreTaskLive(task, {
+      allowExternalScorer: true,
+      scorerType: "openai_compatible",
+      scorerBaseUrl: "http://127.0.0.1:4096",
+      scorerModel: "gemini-3.8-flash-high",
+      fetch: mockFetch,
+    });
+    assert.equal(first.meta.source, "system_one_live");
+    assert.equal(first.profile.work_kind, "frontend_implementation");
+    assert.equal(fetchCalls, 1);
+
+    // Second call with identical task hits LRU cache in 0ms without calling fetch
+    const second = await scoreTaskLive(task, {
+      allowExternalScorer: true,
+      scorerType: "openai_compatible",
+      scorerBaseUrl: "http://127.0.0.1:4096",
+      scorerModel: "gemini-3.8-flash-high",
+      fetch: mockFetch,
+    });
+    assert.equal(second.meta.cached, true);
+    assert.equal(fetchCalls, 1);
+  });
+
+test("3.2 Timeout or HTTP failure gracefully falls back to deterministic twin without failing closed", async () => {
+    clearProfileCache();
+    const failingFetch = async () => {
+      throw new Error("Simulated timeout");
+    };
+    const res = await scoreTaskLive(
+      { objective: "Fix the memory leak in the WebSocket connection pool." },
+      {
+        allowExternalScorer: true,
+        scorerType: "openai_compatible",
+        scorerBaseUrl: "http://127.0.0.1:4096",
+        fetch: failingFetch,
+      },
+    );
+    assert.equal(res.meta.source, "heuristic_fallback");
+    assert.equal(res.profile.work_kind, "debug_review");
+});
+
+test("4. Native Magpie `/v1/systemone` Decision Handler (`handleSystemOneRequest`)", async () => {
+  // 4a. Test `jevLevelled` probe (`decide.go:310`)
+  const levelProbe = await handleSystemOneRequest({
+    model: DECISION_MODEL_ID,
+    state: { kinds: ["简单日常", "常规开发", "复杂跨模块架构"] },
+    questions: {
+      levels: { type: "noul" },
+      work0: { type: "score" },
+      work1: { type: "score" },
+      work2: { type: "score" },
+    },
+  });
+  assert.ok(levelProbe.answers.levels.noul >= 0.5, "difficulty scale intents must be recognized as levels");
+  assert.ok(levelProbe.answers.work0.score < levelProbe.answers.work2.score);
+
+  // 4b. Test `jevBody` turn classification (`decide.go:167`)
+  const turnDecision = await handleSystemOneRequest({
+    model: DECISION_MODEL_ID,
+    state: {
+      turn: "Please conduct a read-only security audit and race condition review across the authentication middleware.",
+    },
+    questions: {
+      intent: {
+        type: "choice",
+        criteria: {
+          frontend_implementation: "Frontend UI work",
+          debug_review: "Bug diagnosis and code review",
+          bounded_bulk_work: "Simple batch edits",
+          none: "None of the above",
+        },
+      },
+      effort: {
+        type: "score",
+        criteria: ["low", "medium", "high", "xhigh"],
+      },
+    },
+  });
+  assert.equal(turnDecision.answers.intent.choice, "debug_review");
+  assert.ok(turnDecision.answers.intent.confidence >= 0.6, "confidence must clear Magpie's jevSure (0.6)");
+  assert.ok(turnDecision.answers.effort.score >= 2.0, "coupled review must select high/xhigh effort (>= 2.0)");
+
+  // 4c. Default plugin export does NOT inject a fake auth/provider entry unless explicitly opted in
+  assert.equal(PROVIDER_ID, "agentcompass");
+  const defaultPlugin = await AgentCompassRouterPlugin({}, {});
+  const emptyCfg = {};
+  await defaultPlugin.config(emptyCfg);
+  assert.equal(emptyCfg.provider, undefined, "Default gateway plugin must not register a fake provider");
+  assert.equal(defaultPlugin.auth, undefined, "Default gateway plugin must not register a fake auth hook");
+
+  // Opt-in decision provider mode
+  const optInPlugin = await AgentCompassRouterPlugin({}, { enableDecisionProvider: true });
+  const cfg = {};
+  await optInPlugin.config(cfg);
+  assert.equal(cfg.provider[PROVIDER_ID].name, "AgentCompass");
+  assert.equal(cfg.provider[PROVIDER_ID].decide, true);
+  assert.equal(cfg.provider[PROVIDER_ID].models[DECISION_MODEL_ID].decides, true);
+
+  const httpRes = await optInPlugin.fetch("http://127.0.0.1/v1/systemone", {
+    method: "POST",
+    body: JSON.stringify({
+      model: DECISION_MODEL_ID,
+      state: { turn: "Batch rename all `old_id` fields to `new_id` across fixtures." },
+      questions: {
+        intent: {
+          type: "choice",
+          criteria: {
+            bounded_bulk_work: "Bulk edits",
+            debug_review: "Debugging",
+            none: "None",
+          },
+        },
+        effort: { type: "score", criteria: ["low", "medium", "high", "xhigh"] },
+      },
+    }),
+  });
+  assert.equal(httpRes.status, 200);
+  const json = await httpRes.json();
+  assert.equal(json.answers.intent.choice, "bounded_bulk_work");
+});
+
+test("5. Pool strategy `agentcompass` / `agentcompass-pure` orders non-resting lowest-used seat indexes first", () => {
+  const seats = [
+    { key: "seat-resting", used: 10, resting: true },
+    { key: "seat-busy", used: 80, resting: false },
+    { key: "seat-fresh", used: 20, resting: false },
+  ];
+  const order1 = strategies.agentcompass("anthropic", seats, {});
+  const order2 = strategies["agentcompass-pure"]("anthropic", seats, {});
+  assert.deepEqual(order1, [2, 1, 0]);
+  assert.deepEqual(order2, [2, 1, 0]);
+  assert.deepEqual(order1.map((i) => seats[i].key), ["seat-fresh", "seat-busy", "seat-resting"]);
+});
+
+test("6. Magpie Plugin Market & Registry Contract (`package.json`, `icon`, `options`, `registry.json`)", async () => {
+  assert.equal(profileTask, inferTaskProfile);
+  const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+  assert.ok(["agentcompass", "@magpie-community/gateway-agentcompass"].includes(pkg.name));
+  assert.equal(pkg.magpie.name, "AgentCompass");
+  assert.equal(pkg.magpie.hooks, undefined, "magpie.hooks must not be declared alongside magpie.middleware");
+  assert.equal(pkg.magpie.middleware, "./src/middleware.js");
+  assert.ok(pkg.magpie.icon.startsWith("data:image/svg+xml;base64,"));
+  assert.equal(pkg.magpie.icon, AGENTCOMPASS_ICON_DATA_URI);
+
+  const decodedSvg = Buffer.from(pkg.magpie.icon.split(",")[1], "base64").toString("utf8");
+  assert.ok(decodedSvg.includes("<svg"), "Decoded icon must be valid SVG for Magpie StoreIcon()");
+
+  for (const kw of ["magpie", "magpie-middleware", "magpie-routing", "routing", "load-balancing", "llm-gateway", "agentcompass"]) {
+    assert.ok(pkg.keywords.includes(kw), `package.json keywords must include "${kw}"`);
+  }
+  assert.equal(pkg.keywords.includes("provider"), false, "Middleware plugin must not claim 'provider' keyword");
+  assert.equal(pkg.keywords.includes("auth"), false, "Middleware plugin must not claim 'auth' keyword");
+  assert.equal(
+    pkg.keywords.includes("pi-package"),
+    false,
+    "Plugins must not include 'pi-package' in keywords"
+  );
+
+  const standaloneListingPath = path.join(REPO_ROOT, "docs", "magpie-community-registry-entry.json");
+  const monorepoRegistryPath = path.resolve(REPO_ROOT, "..", "..", "registry.json");
+  if (fs.existsSync(standaloneListingPath)) {
+    const listing = JSON.parse(fs.readFileSync(standaloneListingPath, "utf8"));
+    assert.ok(["agentcompass", "@magpie-community/gateway-agentcompass"].includes(listing.package));
+    assert.equal(listing.name, "AgentCompass");
+    assert.equal(listing.kind, "middleware");
+    assert.equal("providers" in listing, false);
+    assert.ok(listing.summary?.en && listing.summary?.zh);
+  }
+  if (fs.existsSync(monorepoRegistryPath)) {
+    const reg = JSON.parse(fs.readFileSync(monorepoRegistryPath, "utf8"));
+    const entry = reg.plugins.find((p) => p.package === pkg.name);
+    assert.ok(entry, `registry.json must include an entry for ${pkg.name}`);
+    assert.equal(entry.name, "AgentCompass");
+    assert.equal(entry.kind, "middleware");
+    assert.equal(entry.community, true);
+    assert.ok(entry.summary?.en && entry.summary?.zh);
+  }
+});
+
+test("7.1 Scenario 1 (`why: first` & subagent isolation): New session runs intent routing and isolates `x-claude-code-agent-id` subagents", async () => {
+    const store = new SessionContinuityStore();
+    const t0 = 1_700_000_000_000;
+    let scorerCalls = 0;
+
+    // Verify pure-JS SHA-256 against NIST test vector ("abc")
+    assert.equal(
+      sha256Hex("abc"),
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+
+    const req1 = {
+      model: "agentcompass/auto",
+      messages: [
+        {
+          role: "user",
+          content:
+            "Audit our distributed Raft consensus state machine across 4 modules to find the split-brain deadlock root cause.",
+        },
+      ],
+    };
+
+    const ctx1 = {
+      protocol: "chat",
+      headers: { "x-session-id": "sess-main-1" },
+      state: {},
+      options: {
+        continuityStore: store,
+        now: t0,
+        allowExternalScorer: true,
+        scorerType: "openai_compatible",
+        scorerBaseUrl: "http://127.0.0.1:9999/v1",
+        useCache: false,
+        fetch: async () => {
+          scorerCalls += 1;
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      work_kind: "debug_review",
+                      reasoning_depth: 3,
+                      code_complexity: 3,
+                      context_scale: 3,
+                      divergence: 1,
+                      hallucination_risk: 3,
+                      error_cost: 3,
+                      needs_visual: false,
+                      needs_gui: false,
+                      local_only: true,
+                      interaction_style: "engineering",
+                      expected_hours: 2.0,
+                      hours_confidence: "high",
+                      urgency: "normal",
+                      multi_task: false,
+                      task_count: "1",
+                    }),
+                  },
+                },
+              ],
+            }),
+            { status: 200 }
+          );
+        },
+      },
+    };
+    await hookOnRequest(req1, ctx1);
+
+    assert.equal(scorerCalls, 1, "First turn of a new session must invoke intent scorer once");
+    const carrier1 = ctx1.state.route;
+    assert.equal(carrier1.continuation.held, false);
+    assert.equal(carrier1.continuation.why, "first");
+    assert.equal(carrier1.canonicalModel, "claude-opus-5-5");
+
+    // Simulate subagent sharing the same `x-session-id` but with `x-claude-code-agent-id`
+    const subagentReq = {
+      model: "agentcompass/auto",
+      messages: [
+        {
+          role: "user",
+          content: "Batch rename `old_var` to `new_var` across JSON fixtures.",
+        },
+      ],
+    };
+    const mainKey = computeSessionKey(req1, { headers: { "x-session-id": "sess-main-1" } });
+    const subKey = computeSessionKey(subagentReq, {
+      headers: {
+        "x-session-id": "sess-main-1",
+        "x-claude-code-agent-id": "subagent-haiku-worker",
+      },
+    });
+    assert.notEqual(mainKey, subKey, "Subagent must have an isolated session key");
+
+    await hookOnRequest(subagentReq, {
+      protocol: "chat",
+      headers: {
+        "x-session-id": "sess-main-1",
+        "x-claude-code-agent-id": "subagent-haiku-worker",
+      },
+      options: { continuityStore: store, now: t0 + 1000, prefer_local_heuristic: true },
+    });
+
+    // Main session must still hold `claude-opus-5-5`, unaffected by subagent
+    assert.equal(store.get(mainKey, t0 + 1000).model, "claude-opus-5-5");
+  });
+
+test("7.2 Scenario 2 (`why: turn` mid-turn lock): Tool results & agent-injected `<system-reminder>` lock Provider/Model with 0 scorer calls", async () => {
+    const store = new SessionContinuityStore();
+    const t0 = 1_700_000_000_000;
+    let scorerCalls = 0;
+    const countingFetch = async () => {
+      scorerCalls += 1;
+      throw new Error("Scorer should NOT be called during mid-turn hold!");
+    };
+
+    // Turn 1: User starts a complex task on `claude-opus-5-5:high`
+    const firstTurn = {
+      model: "agentcompass/auto",
+      messages: [
+        {
+          role: "user",
+          content:
+            "Refactor the distributed transaction coordinator across 4 microservices to fix the two-phase commit deadlock.",
+        },
+      ],
+    };
+    const ctx1 = {
+      protocol: "chat",
+      headers: { "x-session-id": "sess-turn-lock" },
+      state: {},
+      options: {
+        continuityStore: store,
+        now: t0,
+        prefer_local_heuristic: true,
+        allowUnconstrainedCatalog: true,
+      },
+    };
+    await hookOnRequest(firstTurn, ctx1);
+    const routed1 = mwOnRequest(structuredClone(firstTurn), {
+      protocol: "chat",
+      headers: { "x-session-id": "sess-turn-lock" },
+      state: ctx1.state,
+      options: { continuityStore: store, now: t0, allowUnconstrainedCatalog: true },
+    });
+    assert.equal(routed1.model, "claude-opus-5-5:xhigh");
+
+    // Step 2a: Assistant calls a tool, and the next request ends with `role: "tool"`
+    const toolResultReq = {
+      model: "agentcompass/auto",
+      messages: [
+        ...firstTurn.messages,
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "read_file", arguments: "{}" } }],
+        },
+        {
+          role: "tool",
+          tool_call_id: "call_1",
+          content: "package coordinator // simple 10-line file",
+        },
+      ],
+    };
+
+    const ctx2a = {
+      protocol: "chat",
+      headers: { "x-session-id": "sess-turn-lock" },
+      state: {},
+      options: {
+        continuityStore: store,
+        now: t0 + 10 * 60 * 1000, // Even after 10 minutes (> 5m cache TTL), mid-turn `within: true` MUST still hold!
+        allowExternalScorer: true,
+        scorerType: "openai_compatible",
+        scorerBaseUrl: "http://127.0.0.1:9999/v1",
+        fetch: countingFetch,
+      },
+    };
+    await hookOnRequest(toolResultReq, ctx2a);
+    assert.equal(scorerCalls, 0, "Mid-turn tool result must make 0 scorer calls");
+    assert.equal(ctx2a.state.route.continuation.held, true);
+    assert.equal(ctx2a.state.route.continuation.why, "turn");
+    assert.equal(ctx2a.state.route.continuation.within, true);
+    assert.equal(ctx2a.state.route.modelWithEffort, "claude-opus-5-5:xhigh");
+
+    // Step 2b: Agent injects a `role: "user"` message containing only `<system-reminder>` and `TodoWrite` noise
+    const agentNoiseReq = {
+      model: "agentcompass/auto",
+      messages: [
+        ...toolResultReq.messages,
+        {
+          role: "user",
+          content:
+            "<system-reminder>Remember to run tests before finishing.</system-reminder>\n\nThe TodoWrite tool hasn't been used recently.",
+        },
+      ],
+    };
+    assert.equal(userSaidFromText(agentNoiseReq.messages[3].content), "");
+    const turnState2b = analyzeTurnState(agentNoiseReq);
+    assert.equal(turnState2b.within, true, "Agent-injected reminder must keep within === true");
+    assert.equal(turnState2b.turn, 1, "Agent-injected reminder must not increment user turn count");
+
+    const ctx2b = {
+      protocol: "chat",
+      headers: { "x-session-id": "sess-turn-lock" },
+      state: {},
+      options: {
+        continuityStore: store,
+        now: t0 + 12 * 60 * 1000,
+        allowExternalScorer: true,
+        scorerType: "openai_compatible",
+        scorerBaseUrl: "http://127.0.0.1:9999/v1",
+        fetch: countingFetch,
+      },
+    };
+    await hookOnRequest(agentNoiseReq, ctx2b);
+    assert.equal(scorerCalls, 0);
+    assert.equal(ctx2b.state.route.continuation.held, true);
+    assert.equal(ctx2b.state.route.continuation.why, "turn");
+  });
+
+test("7.3 Scenario 3 (`why: cache` & `why: followup` + `keepsEffort`): Warm KV cache and short follow-up nudges hold model and ratchet effort", async () => {
+    const store = new SessionContinuityStore();
+    const t0 = 1_700_000_000_000;
+    let scorerCalls = 0;
+
+    // Turn 1: Complex task routes to `claude-opus-5-5:high`
+    const turn1 = {
+      model: "agentcompass/auto",
+      messages: [
+        {
+          role: "user",
+          content:
+            "Audit the cross-module state synchronization protocol across gateway, worker, and store for race conditions.",
+        },
+      ],
+    };
+    const ctx1 = {
+      protocol: "anthropic",
+      headers: { "x-session-id": "sess-warm-cache" },
+      state: {},
+      options: { continuityStore: store, now: t0, prefer_local_heuristic: true },
+    };
+    await hookOnRequest(turn1, ctx1);
+    assert.equal(ctx1.state.route.modelWithEffort, "claude-opus-5-5:xhigh");
+
+    // Simulate response returning 4,200 tokens (>= 1024 CACHE_WORTH_TOKENS) and cache creation
+    await hookOnResponse(
+      {
+        id: "msg_1",
+        model: "claude-opus-5-5",
+        usage: {
+          input_tokens: 1800,
+          cache_creation_input_tokens: 2100,
+          output_tokens: 300,
+        },
+      },
+      ctx1
+    );
+
+    // Turn 2 (2 minutes later, within 5m Anthropic cache TTL): User asks a trivial routine question
+    // Because the 4,200-token KV cache is warm, it MUST hold `claude-opus-5-5:xhigh` (`why: "cache"`) without calling scorer!
+    const turn2 = {
+      model: "agentcompass/auto",
+      messages: [
+        ...turn1.messages,
+        { role: "assistant", content: "Here is the protocol audit and synchronization state machine." },
+        { role: "user", content: "Also rename the variable `sync_flag` to `isSynced` in that file." },
+      ],
+    };
+    const ctx2 = {
+      protocol: "anthropic",
+      headers: { "x-session-id": "sess-warm-cache" },
+      state: {},
+      options: {
+        continuityStore: store,
+        now: t0 + 2 * 60 * 1000,
+        allowExternalScorer: true,
+        scorerType: "openai_compatible",
+        scorerBaseUrl: "http://127.0.0.1:9999/v1",
+        fetch: async () => {
+          scorerCalls += 1;
+          throw new Error("Should not call scorer while KV cache is warm!");
+        },
+      },
+    };
+    await hookOnRequest(turn2, ctx2);
+    assert.equal(scorerCalls, 0);
+    assert.equal(ctx2.state.route.continuation.held, true);
+    assert.equal(ctx2.state.route.continuation.why, "cache");
+    assert.equal(ctx2.state.route.modelWithEffort, "claude-opus-5-5:xhigh");
+
+    // Turn 3 (short follow-up "继续" / "ok go ahead" even when token count < 1024):
+    assert.equal(isShortFollowupMessage("继续"), true);
+    assert.equal(isShortFollowupMessage("好的，按这个改"), true);
+    assert.equal(isShortFollowupMessage("ok, go ahead"), true);
+    assert.equal(isShortFollowupMessage("lgtm"), true);
+
+    // Verify `/v1/systemone` (`handleSystemOneRequest`) short follow-up inherits `previous_message_kind` & ratchets effort with 0 scorer calls
+    const sysOneFollowup = await handleSystemOneRequest(
+      {
+        model: DECISION_MODEL_ID,
+        state: {
+          message: "继续",
+          previous_message_kind: "debug_review",
+          previous_message_reasoning: "high",
+          previous_user_message: "Audit the distributed lock manager.",
+          previous_assistant_reply: "I found two lock ordering inversions. Shall I continue?",
+        },
+        questions: {
+          intent: {
+            type: "choice",
+            criteria: {
+              debug_review: "Debugging and review",
+              bounded_bulk_work: "Routine bulk edits",
+              none: "None",
+            },
+          },
+          effort: {
+            type: "score",
+            criteria: ["low", "medium", "high", "xhigh"],
+          },
+        },
+      },
+      {
+        allowExternalScorer: true,
+        scorerType: "openai_compatible",
+        scorerBaseUrl: "http://127.0.0.1:9999/v1",
+        fetch: async () => {
+          scorerCalls += 1;
+          throw new Error("Short follow-up in /v1/systemone must not call external scorer!");
+        },
+      }
+    );
+    assert.equal(scorerCalls, 0);
+    assert.equal(sysOneFollowup.answers.intent.choice, "debug_review");
+    assert.ok(sysOneFollowup.answers.intent.confidence >= 0.9);
+    assert.equal(sysOneFollowup.answers.effort.score, 2.0, "Effort must stay ratcheted at high (2.0)");
+    assert.equal(sysOneFollowup.agentcompass.continuation.held, true);
+    assert.equal(sysOneFollowup.agentcompass.continuation.why, "followup");
+
+    // Verify `keepsEffort` directly: warm session on `xhigh` never drops to `low`
+    const sessionSnap = store.get(ctx2.state.route.continuation.sessionKey, t0 + 2 * 60 * 1000);
+    assert.equal(keepsEffort(sessionSnap, "low", 4200, t0 + 2 * 60 * 1000), "xhigh");
+    // Verify ChatGPT/Codex & DeepSeek 1h cache TTL vs default 5m TTL
+    assert.equal(coldAfterMs("claude-opus-5-5"), CACHE_COLD_MS);
+    assert.equal(coldAfterMs("gpt-6.1-sol"), CHATGPT_CODEX_COLD_MS);
+    assert.equal(coldAfterMs("deepseek-v4.1-flash-free"), CHATGPT_CODEX_COLD_MS);
+  });
+
+test("7.4 Scenario 4 (`why: capability_outgrown` / `outgrown` / `worn`): Modality, tier escalation, 95% context window, and 2M wear trigger re-routing", async () => {
+    const store = new SessionContinuityStore();
+    const t0 = 1_700_000_000_000;
+
+    // 4a. Visual modality outgrowth: session starts on text-only `grok-4.7`, next turn sends an image
+    const sessKeyVis = "sess-vis-outgrow";
+    store.set(
+      sessKeyVis,
+      {
+        model: "grok-4.7",
+        effort: "medium",
+        tokens: 4000,
+        cached: true,
+        healthy: true,
+        turn: 1,
+      },
+      t0
+    );
+    const visReq = {
+      model: "agentcompass/auto",
+      session_id: sessKeyVis,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Inspect this UI screenshot and diagnose the overlapping flex layout bug." },
+            { type: "image_url", image_url: { url: "https://example.com/bug.png" } },
+          ],
+        },
+      ],
+    };
+    const ctxVis = {
+      protocol: "chat",
+      session_id: sessKeyVis,
+      state: {},
+      options: { continuityStore: store, now: t0 + 30_000, prefer_local_heuristic: true },
+    };
+    await hookOnRequest(visReq, ctxVis);
+    assert.equal(ctxVis.state.route.continuation.held, false);
+    assert.equal(ctxVis.state.route.continuation.why, "capability_outgrown");
+    assert.equal(ctxVis.state.route.continuation.reasonDetail, "visual_modality_required");
+    assert.notEqual(ctxVis.state.route.canonicalModel, "grok-4.7");
+
+    // 4b. Tier escalation outgrowth: session starts on lightweight `claude-haiku-5-5` (tier 3.2),
+    // next turn asks for a complex cross-module architecture & deadlock refactoring
+    const sessKeyTier = "sess-tier-outgrow";
+    store.set(
+      sessKeyTier,
+      {
+        model: "claude-haiku-5-5",
+        effort: "low",
+        tokens: 3000,
+        cached: true,
+        healthy: true,
+        turn: 1,
+      },
+      t0
+    );
+    const tierReq = {
+      model: "agentcompass/auto",
+      messages: [
+        { role: "user", content: "Rename `foo` to `bar`." },
+        { role: "assistant", content: "Done." },
+        {
+          role: "user",
+          content:
+            "Now perform a cross-module architecture refactoring and root cause deadlock audit across our consensus engine.",
+        },
+      ],
+    };
+    const tierKey = computeSessionKey(tierReq, { headers: { "x-session-id": sessKeyTier } });
+    store.set(tierKey, store.get(sessKeyTier, t0), t0);
+    const ctxTier = {
+      protocol: "chat",
+      headers: { "x-session-id": sessKeyTier },
+      state: {},
+      options: { continuityStore: store, now: t0 + 20_000, prefer_local_heuristic: true },
+    };
+    await hookOnRequest(tierReq, ctxTier);
+    assert.equal(ctxTier.state.route.continuation.held, false);
+    assert.equal(ctxTier.state.route.continuation.why, "capability_outgrown");
+    assert.equal(ctxTier.state.route.canonicalModel, "claude-opus-5-5");
+
+    // 4c. Context window 95% outgrowth (`claude-opus-5-5` has 200k limit; 95% = 190k; pass 195k tokens)
+    const outgrownReq = {
+      model: "agentcompass/auto",
+      estimated_input_tokens: 195_000,
+      messages: [
+        {
+          role: "user",
+          content: "Analyze the entire multi-module repository dump and architecture trade-offs.",
+        },
+      ],
+    };
+    const outgrownKey = computeSessionKey(outgrownReq, { headers: { "x-session-id": "sess-ctx-outgrow" } });
+    store.set(
+      outgrownKey,
+      {
+        model: "claude-opus-5-5",
+        effort: "high",
+        tokens: 195_000,
+        cached: true,
+        healthy: true,
+        turn: 2,
+      },
+      t0
+    );
+    const ctxOutgrown = {
+      protocol: "chat",
+      headers: { "x-session-id": "sess-ctx-outgrow" },
+      state: {},
+      options: { continuityStore: store, now: t0 + 10_000, prefer_local_heuristic: true },
+    };
+    await hookOnRequest(outgrownReq, ctxOutgrown);
+    assert.equal(ctxOutgrown.state.route.continuation.held, false);
+    assert.equal(ctxOutgrown.state.route.continuation.why, "outgrown");
+    // Must switch to a model whose 95% context window >= 195k (e.g. `gemini-4-argon-high` 1M or `gpt-6-astra` 400k)
+    assert.ok(
+      ["gemini-4-argon-high", "gpt-6-astra", "gpt-6.1-terra", "gpt-6.1-sol"].includes(
+        ctxOutgrown.state.route.canonicalModel
+      ),
+      `Expected >205k context model, got ${ctxOutgrown.state.route.canonicalModel}`
+    );
+
+    // 4d. 2M cumulative token wear (`compactedTokens + tokens >= 2,000,000`)
+    const wornCheck = evaluateProviderContinuation(
+      { within: false, turn: 15, estimatedInputTokens: 150_000 },
+      {
+        model: "claude-opus-5-5",
+        effort: "high",
+        tokens: 150_000,
+        compactedTokens: WORKER_WORN_TOKENS - 100_000,
+        cached: true,
+        healthy: true,
+        updatedAt: t0,
+      },
+      { now: t0 + 5_000 }
+    );
+    assert.equal(wornCheck.shouldHold, false);
+    assert.equal(wornCheck.why, "worn");
+  });
+
+test("7.5 Scenario 5 (`why: cold` & `why: compacted`): Expired KV cache or `/compact` re-evaluates and cleanly downshifts on routine work", async () => {
+    const store = new SessionContinuityStore();
+    const t0 = 1_700_000_000_000;
+
+    const routineFollowupReq = {
+      model: "agentcompass/auto",
+      messages: [
+        {
+          role: "user",
+          content: "Audit the distributed consensus engine across modules.",
+        },
+        {
+          role: "assistant",
+          content: "Audit complete.",
+        },
+        {
+          role: "user",
+          content: "Perform a mechanical batch rename of `old_key` to `newKey` across the JSON fixtures.",
+        },
+      ],
+    };
+    const sessKey = computeSessionKey(routineFollowupReq, { headers: { "x-session-id": "sess-cold-downshift" } });
+    store.set(
+      sessKey,
+      {
+        model: "claude-opus-5-5",
+        effort: "high",
+        tokens: 8000,
+        cached: true,
+        healthy: true,
+        turn: 1,
+      },
+      t0
+    );
+
+    // 5a. Advance clock by 6 minutes (> 5m Anthropic cacheCold): cache is now COLD
+    const ctxCold = {
+      protocol: "anthropic",
+      headers: { "x-session-id": "sess-cold-downshift" },
+      state: {},
+      options: {
+        continuityStore: store,
+        now: t0 + 6 * 60 * 1000,
+        prefer_local_heuristic: true,
+      },
+    };
+    await hookOnRequest(routineFollowupReq, ctxCold);
+    assert.equal(ctxCold.state.route.continuation.held, false);
+    assert.equal(ctxCold.state.route.continuation.why, "cold");
+    // Must downshift from `claude-opus-5-5` to lightweight `gemini-3.8-flash-high`!
+    assert.equal(ctxCold.state.route.canonicalModel, "gemini-3.8-flash-high");
+
+    // 5b. Reset to warm `claude-opus-5-5` with 20,000 tokens, then send a compacted context (2,000 tokens < 50% of 20,000)
+    store.set(
+      sessKey,
+      {
+        model: "claude-opus-5-5",
+        effort: "high",
+        tokens: 20_000,
+        cached: true,
+        healthy: true,
+        turn: 2,
+      },
+      t0 + 10 * 60 * 1000
+    );
+    const compactedReq = {
+      ...routineFollowupReq,
+      estimated_input_tokens: 2_000,
+    };
+    const ctxCompacted = {
+      protocol: "anthropic",
+      headers: { "x-session-id": "sess-cold-downshift" },
+      state: {},
+      options: {
+        continuityStore: store,
+        now: t0 + 11 * 60 * 1000, // Only 1 minute later, but tokens dropped from 20k -> 2k!
+        prefer_local_heuristic: true,
+      },
+    };
+    await hookOnRequest(compactedReq, ctxCompacted);
+    assert.equal(ctxCompacted.state.route.continuation.held, false);
+    assert.equal(ctxCompacted.state.route.continuation.why, "compacted");
+    assert.equal(ctxCompacted.state.route.canonicalModel, "gemini-3.8-flash-high");
+    // Verify `compactedTokens` accumulated the pre-compaction 20,000 tokens
+    assert.equal(store.get(sessKey, t0 + 11 * 60 * 1000).compactedTokens, 20_000);
+  });
+
+test("7.6 Scenario 6 (`why: provider_unhealthy`): Upstream 429/502 error in `onResponse` or `onUsage` marks model unhealthy and fails over", async () => {
+    const store = new SessionContinuityStore();
+    const t0 = 1_700_000_000_000;
+
+    const req = {
+      model: "agentcompass/auto",
+      messages: [
+        {
+          role: "user",
+          content: "Audit the cross-module concurrency lock graph and race condition invariants.",
+        },
+      ],
+    };
+    const ctx = {
+      protocol: "chat",
+      headers: { "x-session-id": "sess-failover" },
+      state: {},
+      options: { continuityStore: store, now: t0, prefer_local_heuristic: true },
+    };
+
+    await hookOnRequest(req, ctx);
+    assert.equal(ctx.state.route.canonicalModel, "claude-opus-5-5");
+
+    // Simulate upstream 429 rate-limit failure reported to `hookOnResponse` (or `mwOnUsage`)
+    await hookOnResponse(
+      { error: { message: "Rate limit exceeded", status: 429 } },
+      { ...ctx, status: 429 }
+    );
+    assert.equal(store.isModelHealthy("claude-opus-5-5", t0 + 1000), false);
+
+    // Retry the exact same request (or even a mid-turn tool loop): because `claude-opus-5-5` is unhealthy,
+    // it MUST break the lock (`why: "provider_unhealthy"`) and switch to a healthy fallback model!
+    const ctx2 = {
+      ...ctx,
+      state: {},
+      options: { ...ctx.options, now: t0 + 2000 },
+    };
+    await hookOnRequest(req, ctx2);
+    assert.equal(ctx2.state.route.continuation.held, false);
+    assert.equal(ctx2.state.route.continuation.why, "provider_unhealthy");
+    assert.notEqual(
+      ctx2.state.route.canonicalModel,
+      "claude-opus-5-5",
+      "Unhealthy model must be excluded on failover"
+    );
+
+    // Also verify `mwOnResponse` marking a model unhealthy on `{ status: 503 }` in the shared pooled request VM
+    const fallbackModel = ctx2.state.route.canonicalModel;
+    mwOnResponse(
+      {
+        error: { message: "Service unavailable", status: 503 },
+      },
+      {
+        protocol: "chat",
+        status: 503,
+        model: fallbackModel,
+        state: {
+          agentcompass: {
+            sessionKey: ctx2.state.route.continuation.sessionKey,
+            targetModel: fallbackModel,
+            targetEffort: ctx2.state.route.targetEffort,
+          },
+        },
+        options: { continuityStore: store, now: t0 + 3000 },
+      }
+    );
+    assert.equal(store.isModelHealthy(fallbackModel, t0 + 3500), false);
+  });
+
+test("8.1 Exhausted subscription window (< 5% safety margin or < 10% short-window floor) excludes provider and routes to healthy subscription", () => {
+    const t0 = 1_700_000_000_000;
+    const implProfile = {
+      work_kind: "general_implementation",
+      reasoning_depth: 2,
+      code_complexity: 2,
+      context_scale: 1,
+      divergence: 1,
+      hallucination_risk: 2,
+      error_cost: 2,
+      needs_visual: false,
+      needs_gui: false,
+      local_only: true,
+      interaction_style: "engineering",
+      expected_hours: 0.5,
+    };
+
+    // Without quota constraints, `gpt-6.1-sol` (`gpt-5.3-codex`) wins `general_implementation`
+    const baseline = selectBestRoute(implProfile, {
+      candidateModels: ["gpt-5.3-codex", "claude-sonnet-4-6"],
+      now: t0,
+    });
+    assert.equal(baseline.targetModel, "gpt-5.3-codex");
+
+    // When `codex` has only 3% remaining on its 7d window (< 5% safety_margin_pct), it is excluded
+    // and `claude-sonnet-4-6` (with 80% remaining) wins automatically!
+    const withExhaustedCodex = selectBestRoute(implProfile, {
+      candidateModels: ["gpt-5.3-codex", "claude-sonnet-4-6"],
+      now: t0,
+      quotas: {
+        "codex/work@example.com": {
+          kind: "subscription",
+          quota: {
+            windows: [
+              { name: "7d", used: 97, remaining: 3, resetsAt: new Date(t0 + 48 * 3600 * 1000).toISOString() },
+            ],
+          },
+        },
+        "claude/pro@example.com": {
+          kind: "subscription",
+          quota: {
+            windows: [
+              { name: "7d", used: 20, remaining: 80, resetsAt: new Date(t0 + 72 * 3600 * 1000).toISOString() },
+            ],
+          },
+        },
+      },
+    });
+    assert.equal(withExhaustedCodex.targetModel, "claude-sonnet-4-6");
+    assert.equal(withExhaustedCodex.selectedAccount, "claude/pro@example.com");
+  });
+
+test("8.2 High opportunity cost / scarcity on over-burned subscription shifts routing to well-funded subscription before hitting 0%", () => {
+    const t0 = 1_700_000_000_000;
+    const implProfile = {
+      work_kind: "general_implementation",
+      reasoning_depth: 2,
+      code_complexity: 2,
+      context_scale: 2,
+      divergence: 1,
+      hallucination_risk: 2,
+      error_cost: 2,
+      needs_visual: false,
+      needs_gui: false,
+      local_only: true,
+      interaction_style: "engineering",
+      expected_hours: 1.5,
+    };
+
+    // Codex has 14% left with 130h (5.4 days) remaining in its 168h week (burning 2.3%/h, high shortage probability & scarcity).
+    // Claude has 92% left with 48h remaining in its week.
+    const decision = selectBestRoute(implProfile, {
+      candidateModels: ["gpt-5.3-codex", "claude-sonnet-4-6"],
+      now: t0,
+      quotas: {
+        "codex/scarce@example.com": {
+          kind: "subscription",
+          quota: {
+            windows: [
+              {
+                name: "7d",
+                used: 86,
+                remaining: 14,
+                resetsAt: new Date(t0 + 130 * 3600 * 1000).toISOString(),
+                pct_per_hour_24h: 2.2,
+              },
+            ],
+          },
+        },
+        "claude/plentiful@example.com": {
+          kind: "subscription",
+          quota: {
+            windows: [
+              {
+                name: "7d",
+                used: 8,
+                remaining: 92,
+                resetsAt: new Date(t0 + 48 * 3600 * 1000).toISOString(),
+              },
+            ],
+          },
+        },
+      },
+    });
+    assert.equal(
+      decision.targetModel,
+      "claude-sonnet-4-6",
+      "High opportunity cost + scarcity on Codex should shift routing to plentiful Claude subscription"
+    );
+    assert.ok(decision.components.reset_bonus >= 0);
+  });
+
+test("8.3 Pre-reset surplus sprint (`reset_bonus` & `sprint_sunk`): harvests expiring subscription quota and unlocks higher effort", () => {
+    const t0 = 1_700_000_000_000;
+    const hardProfile = {
+      work_kind: "general_implementation",
+      reasoning_depth: 2,
+      code_complexity: 2,
+      context_scale: 2,
+      divergence: 1,
+      hallucination_risk: 2,
+      error_cost: 2,
+      needs_visual: false,
+      needs_gui: false,
+      local_only: true,
+      interaction_style: "engineering",
+      expected_hours: 1.0,
+    };
+
+    // Normally on `general_implementation` (depth 2), `claude-opus-4-6` pays an overqualification penalty
+    // and `gpt-5.3-codex:high` wins.
+    // Now give `claude` 65% remaining quota resetting in just 3 hours (`resetHours = 3 <= 36h horizon`)!
+    const sprintDecision = selectBestRoute(hardProfile, {
+      candidateModels: ["gpt-5.3-codex", "claude-opus-4-6"],
+      now: t0,
+      quotas: {
+        "codex/normal@example.com": {
+          kind: "subscription",
+          quota: {
+            windows: [
+              {
+                name: "7d",
+                used: 45,
+                remaining: 55,
+                resetsAt: new Date(t0 + 100 * 3600 * 1000).toISOString(),
+              },
+            ],
+          },
+        },
+        "claude/expiring-soon@example.com": {
+          kind: "subscription",
+          quota: {
+            windows: [
+              {
+                name: "7d",
+                used: 35,
+                remaining: 65,
+                resetsAt: new Date(t0 + 3 * 3600 * 1000).toISOString(),
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    assert.equal(
+      sprintDecision.targetModel,
+      "claude-opus-4-6",
+      "Expiring Claude subscription with 65% surplus resetting in 3h must win via reset_bonus"
+    );
+    assert.ok(
+      sprintDecision.components.reset_bonus > 0.8,
+      `Expected reset_bonus > 0.8, got ${sprintDecision.components.reset_bonus}`
+    );
+    assert.ok(
+      ["xhigh", "max"].includes(sprintDecision.targetEffort),
+      `Pre-reset surplus sprint on non-routine work should waive effort penalty and unlock xhigh/max effort (got ${sprintDecision.targetEffort})`
+    );
+  });
+
+test("8.4 Sticky session failover on quota exhaustion (`why: quota_exhausted`) & explicit `magpieConfigDir` quota loading", async () => {
+    const store = new SessionContinuityStore();
+    const t0 = 1_700_000_000_000;
+
+    // Create a temporary Magpie config directory with `quotas.json` and `providers.json`
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "magpie-quotas-test-"));
+    const quotasFile = path.join(tmpDir, "quotas.json");
+    fs.writeFileSync(path.join(tmpDir, "providers.json"), "{}", "utf8");
+    fs.writeFileSync(
+      quotasFile,
+      JSON.stringify({
+        "codex/acct1": {
+          kind: "subscription",
+          quota: {
+            windows: [
+              {
+                name: "7d",
+                used: 98,
+                remaining: 2,
+                resetsAt: new Date(t0 + 48 * 3600 * 1000).toISOString(),
+              },
+            ],
+          },
+        },
+        "claude/acct1": {
+          kind: "subscription",
+          quota: {
+            windows: [
+              {
+                name: "7d",
+                used: 15,
+                remaining: 85,
+                resetsAt: new Date(t0 + 72 * 3600 * 1000).toISOString(),
+              },
+            ],
+          },
+        },
+      }),
+      "utf8"
+    );
+    clearQuotasCache();
+
+    try {
+      const loaded = loadLiveQuotas({ magpieConfigDir: tmpDir }, t0);
+      assert.ok(loaded && loaded["codex/acct1"]);
+
+      const req = {
+        model: "agentcompass/auto",
+        messages: [
+          {
+            role: "user",
+            content: "Implement the next pagination helper method in the user service.",
+          },
+        ],
+      };
+      const sessKey = computeSessionKey(req, { headers: { "x-session-id": "sess-quota-spent" } });
+      // Session was previously holding `gpt-5.3-codex` with warm KV cache
+      store.set(
+        sessKey,
+        {
+          model: "gpt-5.3-codex",
+          effort: "high",
+          provider: "codex",
+          tokens: 12_000,
+          cached: true,
+          healthy: true,
+          turn: 2,
+        },
+        t0
+      );
+
+      const ctxQuota = {
+        protocol: "chat",
+        headers: { "x-session-id": "sess-quota-spent" },
+        state: {},
+        options: {
+          continuityStore: store,
+          magpieConfigDir: tmpDir,
+          candidateModels: ["gpt-5.3-codex", "claude-sonnet-4-6"],
+          now: t0 + 15_000,
+          prefer_local_heuristic: true,
+        },
+      };
+      await hookOnRequest(req, ctxQuota);
+
+      assert.equal(ctxQuota.state.route.continuation.held, false);
+      assert.equal(ctxQuota.state.route.continuation.why, "quota_exhausted");
+      assert.equal(ctxQuota.state.route.targetModel, "claude-sonnet-4-6");
+      assert.equal(ctxQuota.state.route.selectedAccount, "claude/acct1");
+    } finally {
+      clearQuotasCache();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+test("8.5 `strategies.agentcompass` pool seat ordering: `learns` -> pre-reset sprint -> healthy subscription -> API key -> low reserve -> resting/spent", () => {
+    const t0 = 1_700_000_000_000;
+    const seats = [
+      // Index 0: Resting seat
+      { key: "claude/resting", account: true, known: true, learns: false, used: 20, soon: [t0 + 48 * 3600_000], pace: 1.6, resting: true, tokens: 0 },
+      // Index 1: Low-reserve seat (94% used >= 90% keepPercent)
+      { key: "claude/low-reserve", account: true, known: true, learns: false, used: 94, soon: [t0 + 24 * 3600_000], pace: 0.25, resting: false, tokens: 100 },
+      // Index 2: Unshared pay-as-you-go API key (`account: false`, `soon: []`)
+      { key: "claude/api-key", account: false, known: false, learns: false, used: 0, soon: [], pace: 0, resting: false, tokens: 0 },
+      // Index 3: Normal healthy subscription (50% used, 100h left)
+      { key: "claude/normal-sub", account: true, known: true, learns: false, used: 50, soon: [t0 + 100 * 3600_000], pace: 0.5, resting: false, tokens: 500 },
+      // Index 4: Pre-reset surplus sprint subscription (30% used = 70% left, renewing in 3 hours!)
+      { key: "claude/sprint-sub", account: true, known: true, learns: false, used: 30, soon: [t0 + 3 * 3600_000], pace: 23.3, resting: false, tokens: 1000 },
+      // Index 5: Unknown subscription that `learns` on its first response
+      { key: "claude/learns-sub", account: true, known: false, learns: true, used: 0, soon: [], pace: 0, resting: false, tokens: 0 },
+    ];
+
+    const order = strategies.agentcompass("claude", seats, { now: t0 });
+    assert.deepEqual(
+      order,
+      [5, 4, 3, 2, 1, 0],
+      `Expected [learns(5), sprint(4), normalSub(3), apiKey(2), lowReserve(1), resting(0)], got [${order.join(", ")}]`
+    );
+  });
+
+test("8.6 Strict AgentCompass Main-Repo Parity (`allocator.py` + `reference-accounts.json` invariants)", () => {
+    // Verify calibrated subjective blend weights (0.49 / 0.34 / 0.17) and default_hours (0.4 / 1.0 / 2.0 / 3.5)
+    assert.deepEqual(DEFAULT_SCORING_POLICY.profile.subjective, {
+      weight: 0.49,
+      vector_weight: 0.34,
+      route_weight: 0.17,
+    });
+    assert.deepEqual(DEFAULT_SCORING_POLICY.default_hours, {
+      routine: 0.4,
+      hard: 1.0,
+      coupled: 2.0,
+      frontier: 3.5,
+    });
+
+    // Verify multi-task detection (`MULTI_TASK_MARK_RE`) and structured-only profile (no free-text `reason`)
+    const multiProfile = inferTaskProfile({
+      objective: "Task 1: Refactor the auth middleware.\nTask 2: Build the billing CSV exporter.",
+    });
+    assert.equal(multiProfile.multi_task, true);
+    assert.equal(multiProfile.task_count, "2");
+    assert.equal("reason" in multiProfile, false, "Structured task profile must omit free-text reason");
+    assert.equal(SCORER_SYSTEM_PROMPT.includes("- reason:"), false, "SCORER_SYSTEM_PROMPT must not request free-text reason");
+
+    // Verify `parseJevScorerAnswer` produces structured-only profile without `reason`
+    const jevParsed = parseJevScorerAnswer({
+      model: "jev-latest",
+      answers: {
+        work_kind: { choice: "debug_review" },
+        interaction_style: { choice: "exploration" },
+        reasoning_depth: { score: 2 },
+        code_complexity: { score: 0 },
+        context_scale: { score: 1 },
+        divergence: { score: 1 },
+        hallucination_risk: { score: 2 },
+        error_cost: { score: 1 },
+        needs_visual: { noul: 0.1 },
+        needs_gui: { noul: 0.1 },
+        local_only: { noul: 0.9 },
+      },
+    });
+    assert.equal("reason" in jevParsed, false);
+    assert.equal(jevParsed.work_kind, "debug_review");
+    assert.equal(jevParsed.local_only, true);
+
+    // Verify `namedRoute` trusts classifier's `work_kind` directly without secondary `code_complexity === 0` override (89f66ab)
+    assert.equal(
+      namedRoute({ work_kind: "general_implementation", code_complexity: 0 }),
+      "general_implementation"
+    );
+
+    // Verify `free_usage` (+0.18 `unlimited_bonus`) on unlimited subscription accounts
+    const unlimitedDec = selectBestRoute(
+      {
+        work_kind: "bounded_bulk_work",
+        reasoning_depth: 1,
+        code_complexity: 1,
+        context_scale: 2,
+        divergence: 1,
+        hallucination_risk: 1,
+        error_cost: 1,
+        needs_visual: false,
+        needs_gui: false,
+        local_only: true,
+        interaction_style: "engineering",
+        expected_hours: 0.4,
+      },
+      {
+        candidateModels: ["gpt-6.1-sol", "gemini-3.8-flash-high"],
+        quotas: {
+          "codex/unlimited@example.com": {
+            kind: "subscription",
+            unlimited: true,
+          },
+          "gemini/limited@example.com": {
+            kind: "subscription",
+            quota: {
+              windows: [{ name: "7d", used: 40, remaining: 60, resetHours: 100 }],
+            },
+          },
+        },
+      }
+    );
+    assert.equal(unlimitedDec.targetModel, "gpt-6.1-sol");
+    assert.equal(unlimitedDec.components.free_usage, 0.18);
+  });
+
+test("9.1 PR #670 Review Guard: Default triggers ONLY claim `agentcompass` / `agentcompass/*` and never hijack `auto` or `group/intent`", async () => {
+  for (const nonOwnedModel of ["auto", "intent", "group/intent", "default", "claude-sonnet-4-6"]) {
+    const req = {
+      model: nonOwnedModel,
+      messages: [{ role: "user", content: "Explain how HTTP/3 QUIC connection migration works." }],
+    };
+    const hookCtx = { protocol: "chat", state: {}, options: {} };
+    const hookRes = await hookOnRequest(req, hookCtx);
+    assert.equal(hookRes, undefined, `hookOnRequest must skip non-owned model "${nonOwnedModel}" by default`);
+    assert.equal(hookCtx.state.route, undefined);
+
+    const mwCtx = { protocol: "chat", state: {}, options: {} };
+    const mwRes = mwOnRequest(req, mwCtx);
+    assert.equal(mwRes, undefined, `mwOnRequest must skip non-owned model "${nonOwnedModel}" by default`);
+    assert.equal(req.model, nonOwnedModel, `req.model "${nonOwnedModel}" must remain untouched`);
+  }
+});
+
+test("9.2 PR #670 Review Guard: `availableModels` / `candidateModels` / `ctx.models` & safe fallback when candidate list is omitted", async () => {
+  // 1. When `availableModels: ["claude-haiku-5-5", "claude-sonnet-5-5"]` is passed, `agentcompass/auto` ONLY selects from those two models
+  const reqLimited = {
+    model: "agentcompass/auto",
+    messages: [
+      {
+        role: "user",
+        content:
+          "Conduct a deep cross-module deadlock and race condition root-cause audit across the distributed transaction engine.",
+      },
+    ],
+  };
+  const mwCtxLimited = {
+    protocol: "chat",
+    state: {},
+    options: {
+      availableModels: ["claude-haiku-5-5", "claude-sonnet-5-5"],
+      injectProtocolEffort: true,
+    },
+  };
+  const routedLimited = mwOnRequest(structuredClone(reqLimited), mwCtxLimited);
+  assert.ok(routedLimited, "mwOnRequest must route within availableModels");
+  assert.match(
+    routedLimited.model,
+    /^claude-sonnet-5-5:(high|xhigh|max)$/,
+    `Must pick claude-sonnet-5-5 from availableModels, got ${routedLimited.model}`
+  );
+
+  // 2. When NO candidate list is configured and `routeAllModels: true` is used on a concrete model (`claude-sonnet-4-6`),
+  // it MUST keep `claude-sonnet-4-6` and only inject effort — never rewriting to an unverified catalog model like `claude-opus-5-5`!
+  const reqConcrete = {
+    model: "claude-sonnet-4-6",
+    messages: [
+      {
+        role: "user",
+        content: "Audit the cross-module state machine for deadlocks and prove liveness invariants.",
+      },
+    ],
+  };
+  const routedConcrete = mwOnRequest(structuredClone(reqConcrete), {
+    protocol: "chat",
+    state: {},
+    options: { routeAllModels: true, injectProtocolEffort: true },
+  });
+  assert.ok(routedConcrete);
+  assert.match(
+    routedConcrete.model,
+    /^claude-sonnet-4-6:(high|xhigh|max)$/,
+    `Concrete model must not be rewritten to an unverified catalog model (got ${routedConcrete.model})`
+  );
+
+  // 3. When `model: "agentcompass/auto"` is sent WITHOUT `candidateModels` or `defaultModel`, `onRequest` calls
+  // `ctx.reject(400, "agentcompass: set candidateModels in the plugin's options")` instead of guessing from a fixed list.
+  const reqVirtual = {
+    model: "agentcompass/auto",
+    messages: [
+      {
+        role: "user",
+        content: "Implement a standalone LRU cache module in TypeScript with unit tests.",
+      },
+    ],
+  };
+  let rejectedStatus = null;
+  let rejectedMessage = null;
+  const unconfiguredRes = mwOnRequest(structuredClone(reqVirtual), {
+    protocol: "chat",
+    state: {},
+    options: { injectProtocolEffort: true },
+    reject(status, message) {
+      rejectedStatus = status;
+      rejectedMessage = message;
+      return undefined;
+    },
+  });
+  assert.equal(unconfiguredRes, undefined);
+  assert.equal(rejectedStatus, 400);
+  assert.equal(rejectedMessage, "agentcompass: set candidateModels in the plugin's options");
+
+  // With `defaultModel` configured, `onRequest` rewrites the virtual model to `defaultModel:<effort>` and `onProvider`
+  // refines within `options.modelsByProvider` using Magpie's real `{id, name, account, model}` `ctx.provider` shape!
+  const sharedState = {};
+  const afterReq = mwOnRequest(reqVirtual, {
+    protocol: "chat",
+    state: sharedState,
+    options: { defaultModel: "claude-sonnet-4-6", injectProtocolEffort: true },
+  });
+  assert.ok(afterReq, "Virtual model must be rewritten in onRequest when defaultModel is set");
+  assert.match(afterReq.model, /^claude-sonnet-4-6:(medium|high|xhigh)$/);
+  assert.ok(sharedState.agentcompass?.profile, "Task profile must be saved in ctx.state for onProvider/onAccount");
+
+  const afterProv = mwOnProvider(afterReq, {
+    protocol: "chat",
+    state: sharedState,
+    provider: {
+      id: "anthropic",
+      name: "Anthropic",
+      account: "work",
+      model: afterReq.model,
+    },
+    options: {
+      injectProtocolEffort: true,
+      modelsByProvider: {
+        anthropic: ["claude-haiku-4-5", "claude-sonnet-4-6"],
+      },
+    },
+  });
+  assert.ok(afterProv);
+  assert.match(afterProv.model, /^claude-sonnet-4-6:(medium|high|xhigh)$/);
+});
+
+test("9.3 PR #670 Review Guard: `hooks.onRequest` never injects `__agentcompass_route` and `mwOnRequest` strips it on claimed models", async () => {
+  // 1. `hooks.onRequest` leaves zero `__agentcompass_route` property on `body` even if `useRouteCarrier: true` is passed
+  const req = {
+    model: "agentcompass/auto",
+    messages: [{ role: "user", content: "Fix the bug in the parser." }],
+  };
+  const hookCtx = {
+    protocol: "chat",
+    state: {},
+    options: { candidateModels: ["claude-sonnet-5-5"], useRouteCarrier: true },
+  };
+  const hookOut = await hookOnRequest(req, hookCtx);
+  assert.equal(hookOut, undefined);
+  assert.equal(ROUTE_CARRIER_KEY in req, false);
+
+  // 2. On a claimed request (`model: "agentcompass"`), `mwOnRequest` strips `__agentcompass_route` from the returned body
+  const claimedWithCarrier = {
+    model: "agentcompass",
+    messages: [{ role: "user", content: "Fix the bug in the parser." }],
+    [ROUTE_CARRIER_KEY]: { targetModel: "claude-opus-5-5" },
+  };
+  const routed = mwOnRequest(claimedWithCarrier, {
+    protocol: "chat",
+    state: {},
+    options: { candidateModels: ["claude-sonnet-4-6"] },
+  });
+  assert.ok(routed);
+  assert.equal(ROUTE_CARRIER_KEY in routed, false);
+});
+
+test("9.4 PR #670 Review Guard: `onAccount` natively matches Magpie's `{ref, provider, name, kind, model}` context", () => {
+  const state = {
+    agentcompass: {
+      workKind: "debug_review",
+      targetModel: "claude-sonnet-5-5",
+      targetEffort: "high",
+    },
+  };
+
+  // Match by `ref`
+  assert.equal(
+    mwOnAccount(
+      { ref: "deadbeefcafe1234", provider: "anthropic", name: "Team Seat", kind: "claude", model: "claude-sonnet-5-5" },
+      { state, options: { accountsByWorkKind: { debug_review: ["deadbeefcafe1234"] } } }
+    ),
+    undefined
+  );
+
+  // Match by `provider/name`
+  assert.equal(
+    mwOnAccount(
+      { ref: "deadbeefcafe1234", provider: "anthropic", name: "work", kind: "claude", model: "claude-sonnet-5-5" },
+      { state, options: { accountsByWorkKind: { debug_review: ["anthropic/work"] } } }
+    ),
+    undefined
+  );
+
+  // Skip when neither `ref`, `name`, `provider`, `kind`, nor `${provider}/${name}` matches
+  assert.deepEqual(
+    mwOnAccount(
+      { ref: "deadbeefcafe1234", provider: "openai", name: "personal", kind: "codex", model: "gpt-5.3-codex" },
+      { state, options: { accountsByWorkKind: { debug_review: ["anthropic/work", "claude"] } } }
+    ),
+    { skip: true }
+  );
+});
+
+test("9.5 PR #670 Review Guard: Zero implicit external scorer calls and zero parent-directory `quotas.json` walking", async () => {
+  clearProfileCache();
+  clearQuotasCache();
+
+  // 1. `loadLiveQuotas({})` returns `null` without walking parent directories or reading disk
+  assert.equal(loadLiveQuotas({}), null);
+
+  // 2. `scoreTaskLive` with `scorerType: "openai_compatible"` or `"jev"` and `scorerBaseUrl` set,
+  // but WITHOUT `allowExternalScorer: true` (and without injected test `fetch`), makes 0 network calls!
+  const origFetch = globalThis.fetch;
+  let globalFetchCalled = false;
+  globalThis.fetch = async () => {
+    globalFetchCalled = true;
+    throw new Error("globalThis.fetch must not be called without allowExternalScorer: true");
+  };
+  try {
+    const res1 = await scoreTaskLive(
+      { objective: "Design a distributed consensus protocol." },
+      {
+        scorerType: "openai_compatible",
+        scorerBaseUrl: "http://127.0.0.1:4096",
+        useCache: false,
+      }
+    );
+    assert.equal(globalFetchCalled, false);
+    assert.equal(res1.meta.source, "heuristic_twin");
+
+    const res2 = await scoreTaskLive(
+      { objective: "Design a distributed consensus protocol." },
+      {
+        scorerType: "jev",
+        jevBaseUrl: "https://api.typesafe.ai",
+        useCache: false,
+      }
+    );
+    assert.equal(globalFetchCalled, false);
+    assert.equal(res2.meta.source, "heuristic_twin");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("9.6 PR #670 Round 2 & 3 Guard: Client body injection (`__agentcompass_route`, `useRouteCarrier`, `available_models`, `candidate_models`) is rejected", async () => {
+  // 1. Unclaimed model (`"claude-sonnet-4-6"`) is untouched and returns `undefined`, even if `__agentcompass_route` and `useRouteCarrier: true` are passed
+  const nonClaimedBody = {
+    model: "claude-sonnet-4-6",
+    messages: [{ role: "user", content: "hello" }],
+    [ROUTE_CARRIER_KEY]: { targetModel: "evil", modelWithEffort: "evil:max" },
+  };
+  const nonClaimedRes = mwOnRequest(nonClaimedBody, {
+    protocol: "chat",
+    state: {},
+    options: { useRouteCarrier: true },
+  });
+  assert.equal(nonClaimedRes, undefined);
+  assert.equal(nonClaimedBody.model, "claude-sonnet-4-6");
+
+  // 2a. Claimed model (`"agentcompass"`) WITH `candidateModels` where client `__agentcompass_route` names a model
+  // INSIDE `candidateModels` (`"claude-opus-4-6"`) AND passes `{ useRouteCarrier: true }` + a malformed `profile.work_kind`:
+  // MUST ignore the client carrier completely, never pass client `profile` to `selectBestRoute`, and route the rename to `"claude-haiku-4-5:low"`!
+  const claimedInCandidatesBody = {
+    model: "agentcompass",
+    messages: [{ role: "user", content: "rename the variable foo to bar in utils.go" }],
+    [ROUTE_CARRIER_KEY]: {
+      targetModel: "claude-opus-4-6",
+      targetEffort: "max",
+      modelWithEffort: "claude-opus-4-6:max",
+      profile: { work_kind: "invalid_evil_work_kind" },
+    },
+  };
+  const claimedInCandidatesRes = mwOnRequest(claimedInCandidatesBody, {
+    protocol: "chat",
+    state: {},
+    options: {
+      useRouteCarrier: true,
+      candidateModels: ["claude-opus-4-6", "claude-haiku-4-5", "gpt-5.5"],
+    },
+  });
+  assert.ok(claimedInCandidatesRes);
+  assert.equal(ROUTE_CARRIER_KEY in claimedInCandidatesRes, false);
+  assert.equal(claimedInCandidatesRes.model, "claude-haiku-4-5:low");
+
+  // 2b. Claimed model (`"agentcompass"`) where client `__agentcompass_route` names a model OUTSIDE `candidateModels`
+  // and supplies a hostile `profile.work_kind`: MUST NOT pass `profile` to `selectBestRoute` or throw!
+  const claimedOutsideCandidatesBody = {
+    model: "agentcompass",
+    messages: [{ role: "user", content: "rename the variable foo to bar in utils.go" }],
+    [ROUTE_CARRIER_KEY]: {
+      targetModel: "evil",
+      targetEffort: "max",
+      modelWithEffort: "evil:max",
+      profile: { work_kind: "unknown_hostile_work_kind" },
+    },
+  };
+  const claimedOutsideCandidatesRes = mwOnRequest(claimedOutsideCandidatesBody, {
+    protocol: "chat",
+    state: {},
+    options: {
+      useRouteCarrier: true,
+      candidateModels: ["claude-opus-4-6", "claude-haiku-4-5", "gpt-5.5"],
+    },
+  });
+  assert.ok(claimedOutsideCandidatesRes);
+  assert.equal(claimedOutsideCandidatesRes.model, "claude-haiku-4-5:low");
+
+  // 2c. Claimed model (`"agentcompass"`) with NO `candidateModels` (`allowUnconstrainedCatalog: true`) and `{ useRouteCarrier: true }`:
+  // client `__agentcompass_route` (`targetModel: "evil"`) MUST be ignored and never steer routing to `"evil:max"`!
+  const claimedNoCandidatesBody = {
+    model: "agentcompass",
+    messages: [{ role: "user", content: "rename the variable foo to bar in utils.go" }],
+    [ROUTE_CARRIER_KEY]: { targetModel: "evil", targetEffort: "max", modelWithEffort: "evil:max" },
+  };
+  const claimedNoCandidatesRes = mwOnRequest(claimedNoCandidatesBody, {
+    protocol: "chat",
+    state: {},
+    options: { useRouteCarrier: true, allowUnconstrainedCatalog: true },
+  });
+  assert.ok(claimedNoCandidatesRes);
+  assert.equal(ROUTE_CARRIER_KEY in claimedNoCandidatesRes, false);
+  assert.equal(claimedNoCandidatesRes.model, "gemini-3.8-flash-high:high");
+
+  // 3. Client-supplied `body.available_models` and `body.candidate_models` MUST NOT influence candidate model selection
+  const bodySpoofCandidates = {
+    model: "claude-sonnet-4-6",
+    available_models: ["evil-model-1", "evil-model-2"],
+    candidate_models: ["evil-model-1", "evil-model-2"],
+    messages: [{ role: "user", content: "rename the variable foo to bar in utils.go" }],
+  };
+  const spoofHookCtx = { protocol: "chat", state: {}, options: { routeAllModels: true } };
+  await hookOnRequest(bodySpoofCandidates, spoofHookCtx);
+  assert.equal(spoofHookCtx.state.route.targetModel, "claude-sonnet-4-6");
+
+  const spoofMwRes = mwOnRequest(structuredClone(bodySpoofCandidates), {
+    protocol: "chat",
+    state: {},
+    options: { routeAllModels: true },
+  });
+  assert.ok(spoofMwRes);
+  assert.match(spoofMwRes.model, /^claude-sonnet-4-6:/);
+});
+
+test("9.7 PR #670 Round 2 Guard: Mainstream real model IDs & trivial single-variable rename routing across all candidate orders", () => {
+  // 1. Built-in catalog (`allowUnconstrainedCatalog: true`) routes "rename the variable foo to bar in utils.go" to `gemini-3.8-flash-high:high`
+  const builtInBody = {
+    model: "agentcompass",
+    messages: [{ role: "user", content: "rename the variable foo to bar in utils.go" }],
+  };
+  const builtInRes = mwOnRequest(builtInBody, {
+    protocol: "chat",
+    state: {},
+    options: { allowUnconstrainedCatalog: true },
+  });
+  assert.ok(builtInRes);
+  assert.equal(builtInRes.model, "gemini-3.8-flash-high:high");
+
+  // 2. Across all 6 permutations of `["claude-opus-4-6", "claude-haiku-4-5", "gpt-5.5"]`:
+  //    - Trivial single-variable rename routes to `"claude-haiku-4-5:low"`
+  //    - Complex multi-module concurrency/deadlock architecture audit routes to `"claude-opus-4-6:high"` or `"claude-opus-4-6:xhigh"`
+  const permutations = [
+    ["claude-opus-4-6", "claude-haiku-4-5", "gpt-5.5"],
+    ["claude-opus-4-6", "gpt-5.5", "claude-haiku-4-5"],
+    ["claude-haiku-4-5", "claude-opus-4-6", "gpt-5.5"],
+    ["claude-haiku-4-5", "gpt-5.5", "claude-opus-4-6"],
+    ["gpt-5.5", "claude-opus-4-6", "claude-haiku-4-5"],
+    ["gpt-5.5", "claude-haiku-4-5", "claude-opus-4-6"],
+  ];
+
+  for (const candidateModels of permutations) {
+    const renameReq = {
+      model: "agentcompass",
+      messages: [{ role: "user", content: "rename the variable foo to bar in utils.go" }],
+    };
+    const renameOut = mwOnRequest(renameReq, {
+      protocol: "chat",
+      state: {},
+      options: { candidateModels, continuityStore: new SessionContinuityStore() },
+    });
+    assert.equal(
+      renameOut.model,
+      "claude-haiku-4-5:low",
+      `Expected claude-haiku-4-5:low for permutation [${candidateModels.join(", ")}], got ${renameOut.model}`
+    );
+
+    const auditReq = {
+      model: "agentcompass",
+      messages: [
+        {
+          role: "user",
+          content:
+            "Conduct a deep cross-module root-cause audit of the intermittent deadlock and lock-ordering race condition across internal/gateway/affinity.go and internal/gateway/decide.go.",
+        },
+      ],
+    };
+    const auditOut = mwOnRequest(auditReq, {
+      protocol: "chat",
+      state: {},
+      options: { candidateModels, continuityStore: new SessionContinuityStore() },
+    });
+    assert.match(
+      auditOut.model,
+      /^claude-opus-4-6:(high|xhigh|max)$/,
+      `Expected claude-opus-4-6:(high|xhigh|max) for permutation [${candidateModels.join(", ")}], got ${auditOut.model}`
+    );
+  }
+});
+
+test("9.8 PR #670 Round 2 Guard: `options.fetch` alone never enables external scorer unless `allowExternalScorer === true`", async () => {
+  clearProfileCache();
+  let fetchCalled = false;
+  const customFetch = async () => {
+    fetchCalled = true;
+    throw new Error("options.fetch must not be called when allowExternalScorer is not true");
+  };
+
+  const scoreRes = await scoreTaskLive(
+    { objective: "Refactor the authentication service." },
+    {
+      scorerType: "openai_compatible",
+      scorerBaseUrl: "http://127.0.0.1:4096",
+      fetch: customFetch,
+      useCache: false,
+    }
+  );
+  assert.equal(fetchCalled, false);
+  assert.equal(scoreRes.meta.source, "heuristic_twin");
+
+  const hookReq = {
+    model: "agentcompass",
+    messages: [{ role: "user", content: "Refactor the authentication service." }],
+  };
+  await hookOnRequest(hookReq, {
+    protocol: "chat",
+    state: {},
+    options: {
+      scorerType: "openai_compatible",
+      scorerBaseUrl: "http://127.0.0.1:4096",
+      fetch: customFetch,
+      candidateModels: ["claude-sonnet-4-6"],
+    },
+  });
+  assert.equal(fetchCalled, false);
+});
+
+test("9.9 PR #670 Round 2 & 3 Guard: Single-pass bounded work (`scannedChars`, `extractedTurns`, `capProfileText`) as body grows", () => {
+  const messages = [];
+  const hugeLogChunk = "x".repeat(50_000) + "\n<system-reminder>hook context reminder</system-reminder>\n";
+  for (let i = 0; i < 25; i++) {
+    messages.push({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text:
+            i === 0
+              ? `<system-reminder>Session initialized</system-reminder>\nImplement the distributed rate limiter middleware.\n${hugeLogChunk}`
+              : `Tool output batch ${i}:\n${"z".repeat(4000)}`,
+        },
+      ],
+    });
+    messages.push({
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: `Completed step ${i}. Reading next file section:\n` + "y".repeat(4000),
+        },
+      ],
+    });
+  }
+  messages.push({
+    role: "user",
+    content:
+      "Now audit the cross-module lock ordering invariants and fix the race condition in internal/gateway/affinity.go.\n" +
+      hugeLogChunk +
+      "\nEnsure deadlock freedom across all goroutines.",
+  });
+
+  const rawSize = JSON.stringify(messages).length;
+  assert.ok(rawSize >= 250_000, `Expected synthetic Claude Code payload >= 250KB, got ${rawSize} bytes`);
+
+  const req = {
+    model: "agentcompass",
+    system: "You are Claude Code, Anthropic's official CLI for Claude.\n" + "s".repeat(12_000),
+    messages,
+  };
+
+  // 1. Verify work-boundedness invariants directly (raising MAX_PROFILE_CHARS, MAX_NOISE_STRIP_CHARS, or MAX_USER_TURN_CHARS turns these red)
+  const facts = extractRequestFacts(req, { protocol: "messages" });
+  assert.ok(
+    facts.extractedTurns <= 4,
+    `Expected at most 4 full-text user turns extracted across ${messages.length} messages, got ${facts.extractedTurns}`
+  );
+  assert.ok(
+    facts.scannedChars <= 36_000,
+    `Expected total scannedChars bounded by <= 36,000 on ${(rawSize / 1024).toFixed(1)}KB body, got ${facts.scannedChars}`
+  );
+  assert.ok(
+    facts.objective.length <= 4_001,
+    `Expected extracted objective capped at <= 4,001 chars (MAX_USER_TURN_CHARS), got ${facts.objective.length}`
+  );
+  const cappedProfileInput = capProfileText("audit concurrency ".repeat(4_000));
+  assert.ok(
+    cappedProfileInput.length <= 4_001,
+    `Expected capProfileText output bounded at <= 4,001 chars (MAX_PROFILE_CHARS), got ${cappedProfileInput.length}`
+  );
+
+  // 2. Generous smoke ceiling (200ms) for end-to-end `mwOnRequest`
+  const tStart = performance.now();
+  const out = mwOnRequest(req, {
+    protocol: "messages",
+    headers: { "x-session-id": "perf-bench-run" },
+    state: {},
+    options: { candidateModels: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"] },
+  });
+  const elapsedMs = performance.now() - tStart;
+
+  assert.ok(out);
+  assert.match(out.model, /^claude-opus-4-6:(high|xhigh|max)$/);
+  assert.ok(
+    elapsedMs < 200,
+    `Expected single-pass mwOnRequest smoke check on ${(rawSize / 1024).toFixed(1)}KB body to finish in < 200ms, took ${elapsedMs.toFixed(2)}ms`
+  );
+});
+
+
+
+

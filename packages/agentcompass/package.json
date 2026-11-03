@@ -1,0 +1,46 @@
+{
+  "name": "@magpie-community/gateway-agentcompass",
+  "version": "0.1.0",
+  "description": "Intent, multi-dimensional capability, Model DNA, subscription quota opportunity-cost, and session-affinity routing plugin for Magpie, powered by AgentCompass.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./server": "./src/index.js",
+    "./hooks": "./src/hooks.js",
+    "./middleware": "./src/middleware.js",
+    "./allocator": "./src/allocator.js",
+    "./continuity": "./src/continuity.js",
+    "./quota": "./src/quota.js",
+    "./profiler": "./src/profiler-core.js",
+    "./catalog": "./src/catalog.js"
+  },
+  "magpie": {
+    "name": "AgentCompass",
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSI+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMjgiIHN0cm9rZT0iIzNCODJGNiIgc3Ryb2tlLXdpZHRoPSI0IiBmaWxsPSIjMEYxNzJBIi8+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMjIiIHN0cm9rZT0iIzYwQTVGQSIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1kYXNoYXJyYXk9IjMgMyIvPjxwb2x5Z29uIHBvaW50cz0iMzIsMTIgMzgsMzIgMzIsMjggMjYsMzIiIGZpbGw9IiNFRjQ0NDQiLz48cG9seWdvbiBwb2ludHM9IjMyLDUyIDM4LDMyIDMyLDM2IDI2LDMyIiBmaWxsPSIjRTJFOEYwIi8+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMy41IiBmaWxsPSIjRjhGQUZDIi8+PC9zdmc+",
+    "middleware": "./src/middleware.js",
+    "options": {
+      "routeAllModels": false,
+      "injectProtocolEffort": true
+    }
+  },
+  "scripts": {
+    "test": "node --test test/router.test.mjs"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-middleware",
+    "magpie-routing",
+    "routing",
+    "load-balancing",
+    "llm-gateway",
+    "agentcompass"
+  ],
+  "homepage": "https://github.com/akiiwa-games/AgentCompass",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins.git",
+    "directory": "packages/agentcompass"
+  },
+  "license": "MIT"
+}
