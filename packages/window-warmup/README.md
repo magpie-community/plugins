@@ -1,5 +1,9 @@
 # 窗口预热（Window Warmup）
 
+> **注意**：定时自动发送会真实消耗所选账号的订阅额度；部分厂商（尤其 Claude 订阅）可能把定时自动请求视为异常用量。是否使用、何时使用由用户自行判断并承担风险。
+>
+> **Note**: Scheduled sends really spend the chosen account's subscription quota. Some vendors (Claude subscriptions especially) may treat scheduled automated requests as unusual use. Whether and when to use it is the user's own call and risk.
+
 Window Warmup is a page plugin for [magpie](https://usemagpie.ai) that sends a short keep-alive message to a provider, account and model of your choice — right after a quota window resets, at a fixed time of day, or every few hours — so the next subscription usage window opens early. It runs inside the Magpie host process; a local page manages tasks and shows run history.
 
 在 magpie 窗口里按计划给指定供应商、账号和模型发一条短消息，用来提前开启下一轮额度（订阅）窗口。消息内容固定为 `hi`、`max_tokens: 16`，只当探活用，不可自定义；**每条消息都会真实发给所选模型并计费**。

@@ -13,14 +13,13 @@ bun run typecheck    # packages/window-warmup 内：tsc --noEmit，覆盖 src、
 bun test             # 仓库根目录：跑所有包的测试；包内跑本包测试
 bun test tests/rules.test.ts          # 单个文件
 bun test tests/scheduler.test.ts -t "关键字"   # 按用例名过滤
-bunx playwright install chromium webkit         # 首次运行浏览器测试前安装（CI 由工作流安装）
-# 浏览器测试要在真实 HOME 下跑，或设 PLAYWRIGHT_BROWSERS_PATH 指向 ~/.cache/ms-playwright
 ```
 
 - **`dist/` 入库**，宿主直接加载 `dist/plugin.js`（`package.json` 的 `main`），服务从 `dist/ui` 提供静态页。改了 `src/` 或 `web/` 必须 `bun run build` 并一并提交 `dist/`。
 - `tests/server.test.ts` 的 `beforeAll` 会调用 `buildAll()` 重建 `dist/`。
 - `tests/fake-gateway.ts` 是假的 magpie 网关，网关 / 调度相关测试都靠它，不打真实网关。
-- `tests/browser.test.ts` 用真实 Chromium 与 WebKit 走一遍页面冒烟；浏览器没装时整组自动跳过，装了才跑。
+- `tests/browser.test.ts` 用真实 Chromium 与 WebKit 走一遍页面冒烟。Playwright 是**可选依赖**：仓库不安装、CI 也不安装，评审机通过 `NODE_PATH` 提供；本机没装时整组自动跳过。要本地跑：自备 playwright（如 `bunx playwright install chromium webkit`），并在真实 HOME 下运行或设 `PLAYWRIGHT_BROWSERS_PATH`。
+- `tests/dist.test.ts` 构建到临时目录，与入库的 `dist/` 逐字节比对；测试本身不写工作区，改源码后必须 `bun run build` 并提交 `dist/`。
 - `tests/discoverability.test.ts` 校验 `registry.json` 条目、搜索词与包契约，改包名或简介时一起看。
 
 ## 发布

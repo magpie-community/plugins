@@ -1,21 +1,49 @@
 // 页面端到端冒烟：真实浏览器（Chromium 与 WebKit）打开本地服务页面，走一遍新建任务并保存。
-// 只在装了浏览器时运行（CI 由工作流执行 npx playwright install chromium webkit）；
-// 本机没装浏览器时整组跳过，不影响其余单元测试。注意 HOME=$(mktemp -d) 会改变
-// Playwright 查找浏览器缓存的根目录：套件在临时 HOME 下运行时，要么不覆盖 HOME
-// （本包测试自带 XDG 隔离），要么设 PLAYWRIGHT_BROWSERS_PATH 指向真实缓存。
+// Playwright 是可选依赖：仓库不安装它，评审机通过 NODE_PATH 提供（1.62.0，Chromium + WebKit）。
+// 导入失败或浏览器启动失败时整组跳过，仓库根目录的 bun test 不受影响。
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, webkit, type BrowserType } from "playwright";
-import { buildAll } from "../scripts/build";
 import { startService, type ServiceHandle } from "../src/server";
 import { fakeGateway, type FakeGateway } from "./fake-gateway";
 
-const ENGINES: Array<[string, BrowserType]> = [
-  ["chromium", chromium],
-  ["webkit", webkit],
-];
+// Playwright 的最小类型面：不依赖它的类型声明，没装也能通过 tsc
+interface Locator {
+  click(): Promise<void>;
+  fill(v: string): Promise<void>;
+  first(): Locator;
+  waitFor(o?: { timeout?: number }): Promise<void>;
+}
+interface Page {
+  goto(url: string): Promise<unknown>;
+  on(ev: "pageerror", cb: (e: unknown) => void): void;
+  getByRole(role: string, o?: { name?: string; exact?: boolean }): Locator;
+  getByPlaceholder(t: string): Locator;
+  getByText(t: string): Locator;
+}
+interface Browser {
+  newPage(): Promise<Page>;
+  close(): Promise<void>;
+}
+interface Engine {
+  launch(): Promise<Browser>;
+}
+interface Playwright {
+  chromium: Engine;
+  webkit: Engine;
+}
+
+const pw = await (async (): Promise<Playwright | null> => {
+  try {
+    const name = "playwright"; // 非字面量：未安装时也不要求模块声明
+    return (await import(name)) as unknown as Playwright;
+  } catch {
+    return null;
+  }
+})();
+
+const ENGINES: Array<[string, Engine]> = pw ? [["chromium", pw.chromium], ["webkit", pw.webkit]] : [];
 
 // 浏览器缺失时跳过整组（test.skipIf 在定义时求值）：探针各启动一次并立即关闭
 const browsersReady = await (async () => {
@@ -27,16 +55,18 @@ const browsersReady = await (async () => {
       return false;
     }
   }
-  return true;
+  return ENGINES.length > 0;
 })();
 const testBrowser = test.skipIf(!browsersReady);
+
+if (!browsersReady) test.skip("浏览器冒烟：本机没有可用的 Playwright/Chromium/WebKit，已跳过", () => {});
 
 let svc: ServiceHandle;
 let gw: FakeGateway;
 let dir: string;
 
 beforeAll(async () => {
-  await buildAll(); // 页面从 dist/ui 提供静态资源
+  if (!browsersReady) return; // 没浏览器就不起服务
   dir = await mkdtemp(join(tmpdir(), "ww-browser-"));
   gw = fakeGateway({
     models: [

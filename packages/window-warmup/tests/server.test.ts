@@ -6,13 +6,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import plugin from "../src/plugin";
-import { buildAll } from "../scripts/build";
 import { alreadyServing, insideDir, startService, type ServiceHandle } from "../src/server";
 import { fakeGateway, type FakeGateway } from "./fake-gateway";
-
-beforeAll(async () => {
-  await buildAll(); // 服务从 dist/ui 提供静态资源，先构建一次
-});
 
 const services: ServiceHandle[] = [];
 const gateways: FakeGateway[] = [];
