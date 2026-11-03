@@ -373,7 +373,9 @@
   for (const [id, positions] of Object.entries(arrangements)) {
     const type = { station: 'console', cafe: 'pedestal', castle: 'trestle', pirate: 'trestle', graveyard: 'sarcophagus' }[id]
     const desks = positions.map(p => ({ ...desk(...p), type }))
-    const decor = [{ x: .4, z: .35, w: 2.3, d: 1.05 }, { x: 10.8, z: 8.4, w: 4.7, d: 2.1 }, { x: 15.05, z: .4, w: .6, d: 7.3 }]
+    // Only reserve the floor of the fixed props a scene draws (coffee bar, bookshelf, arcade).
+    const fixed = { coffee: { x: .4, z: .35, w: 2.3, d: 1.05 }, arcade: { x: 10.8, z: 8.4, w: 4.7, d: 2.1 }, shelf: { x: 15.05, z: .4, w: .6, d: 7.3 } }
+    const decor = { station: ['coffee','shelf'], cafe: ['coffee','shelf'], castle: ['shelf'], pirate: [], graveyard: ['shelf','arcade'] }[id].map(k => fixed[k])
     layouts[id] = {
       id, room: { w: 16, d: 12, wall: 3.2 }, door: [.6,2.6], entry: [.95,2.6], desks,
       sofas: layouts.office.sofas.map(s => ({ ...s })),
@@ -399,7 +401,7 @@
     rainynight: [[3.2,.55],[5.4,.55],[7.6,.55],[9.8,.55],[12,.55],[5.4,4,'s'],[7.1,4,'s'],[8.8,4,'s']],
   }
   const decorations = {library: [], cyberlab: [], greenhouse: [], arctic: [], rainynight: []}
-  for (const [x,z,w,d] of [[6,.35,3,.55],[10,.35,3,.55],[15,3,.55,4]]) {
+  for (const [x,z,w,d] of [[5.9,.35,1.4,.55],[10.1,.35,1.4,.55],[15,3,.55,4]]) {
     const parts=[part('wood',w/2,1.1,d/2,w,2.2,d)]
     for(let row=0;row<4;row++) for(let col=0;col<6;col++) parts.push(part(col%2?'sofa':'trim', .12+(w-.24)*(col+.5)/6,.3+row*.48,d+.025,(w-.3)/7,.34,.05))
     decorations.library.push(ornament('book-wall',x,z,w,d+.05,parts))
@@ -421,8 +423,7 @@
   decorations.arctic.push(
     ornament('heater',.4,.4,2,1.04,[part('metal',1,.5,.5,2,1,1),...Array.from({length:7},(_,i)=>part('#e2b04a',.25+i*.25,.5,1.01,.08,.65,.02,true))]),
     ornament('instrument-case',14.6,5.0,1,1,[part('wood',.5,.35,.5,1,.7,1),part('trim',.5,.72,.5,1,.08,1),part('metal',.5,.8,.5,.4,.08,.1)]),
-    ornament('radio',11,11,1.5,.85,[part('metal',.75,.4,.4,1.5,.8,.8),part('accent',.4,.5,.82,.5,.25,.04,true),part('trim',1.2,1.15,.4,.04,.7,.04)]),
-    ornament('recess',14,.04,1.96,3.16,[part('wall',.98,1.595,1.58,1.96,3.19,3.16)]))
+    ornament('radio',11,11,1.5,.85,[part('metal',.75,.4,.4,1.5,.8,.8),part('accent',.4,.5,.82,.5,.25,.04,true),part('trim',1.2,1.15,.4,.04,.7,.04)]))
   decorations.arctic.push(ornament('supply-crates',13,11,1.1,.9,[part('wood',.55,.3,.45,1.1,.6,.9),part('trim',.55,.65,.45,1.1,.06,.9),part('metal',.55,.8,.45,.5,.2,.5)]))
   decorations.greenhouse.push(ornament('potting-bench',14.5,1.2,1,1.2,[part('wood',.5,.55,.6,1,.1,1.2),part('wood',.1,.27,.2,.1,.54,.1),part('wood',.9,.27,.2,.1,.54,.1),part('wood',.1,.27,1,.1,.54,.1),part('wood',.9,.27,1,.1,.54,.1),part('plant',.5,.8,.6,.6,.4,.5)]))
   decorations.rainynight.push(

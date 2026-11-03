@@ -973,20 +973,6 @@
   // ---- sofas, rug, plants, coffee, games ------------------------------
 
   AgentOfficeScene3D.prototype._buildSofa = function (env, theme) {
-    const { SOFA, SOFA_FACE, ZONE } = this.layoutRuntime
-    if (this.layoutRuntime !== RT) {
-      for (let i = 0; i < SOFA.length; i++) {
-        const g = new THREE.Group()
-        g.position.set(SOFA[i][0], 0, SOFA[i][1])
-        g.rotation.y = faceAngle(SOFA_FACE[i])
-        env.add(g)
-        this._box(g, darken(theme.sofa, 0.3), 0, 0.2, 0, 0.85, 0.34, 0.85)
-        this._box(g, theme.sofa, 0, 0.4, 0, 0.8, 0.18, 0.8)
-        this._box(g, darken(theme.sofa, 0.16), 0, 0.65, -0.38, 0.85, 0.85, 0.18)
-      }
-      this._box(env, mixColor(theme.accent, theme.floor, 0.72), ZONE.x + ZONE.w / 2, 0.012, ZONE.z + ZONE.d / 2, ZONE.w, 0.02, ZONE.d, { cast: false })
-      return
-    }
     const fabric = theme.sofa
     const cushion = lighten(fabric, 0.1)
     // west sofa: face east, against the west wall
@@ -1223,7 +1209,7 @@
 
   AgentOfficeScene3D.prototype._propBuilders.holo = function (env, theme) {
     const g = new THREE.Group()
-    g.position.set(6.7, 0, 3.35)
+    g.position.set(13, 0, 9.3)
     env.add(g)
     this._cyl(g, darken(theme.metal, 0.4), 0, 0.25, 0, 0.7, 0.5)
     this._cyl(g, theme.accent, 0, 0.52, 0, 0.66, 0.06, { emissive: theme.accent, ei: 0.6, cast: false })

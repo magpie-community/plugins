@@ -5,7 +5,7 @@
 ### Changed
 
 - The 3D view lays out each scene from its own layout: desks, sofa, zones, walls, doors, walking routes and seats now come from that scene's layout instead of the office's. Office keeps the same positions and routes as before.
-- In the 3D view of the other ten scenes, the styled office sofa and double lounge rug are replaced by a plain box per seat and one rug.
+- The styled office sofas and lounge rug stay in every scene. In station, cafe, castle, pirate and graveyard, the floor kept for the coffee bar, bookshelf and arcade now matches what the scene draws, and the station hologram table moves to the open corner. Library bookshelves sit between the windows instead of in front of them; the arctic scene no longer has a full-height block in its north-east corner.
 - Switching scene sends every worker back to the door, so they walk in again from the entrance.
 - Library, cyberlab, greenhouse, arctic and rainy night draw their decorations where their layout puts them, so walking routes go around the furniture you see.
 
