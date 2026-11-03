@@ -778,5 +778,61 @@
         }
       ]
     }
+  },
+  {
+    "name": "a long surrogate-only tool result in the turn being sent stays whole",
+    "options": {
+      "maxToolLength": 256
+    },
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        },
+        {
+          "role": "assistant",
+          "content": "reading"
+        },
+        {
+          "role": "tool",
+          "content": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a repeated message goes even when its keys are ordered differently",
+    "request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "same"
+        },
+        {
+          "content": "same",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "content": "ok"
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "m",
+      "messages": [
+        {
+          "role": "user",
+          "content": "same"
+        },
+        {
+          "role": "assistant",
+          "content": "ok"
+        }
+      ]
+    }
   }
 ]

@@ -9,6 +9,10 @@
   "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/history-trim" },
   "magpie": {
     "middleware": "./history-trim.middleware.js",
-    "options": { "maxToolLength": 2000 }
+    "options": {
+      "maxToolLength": 2000,
+      "compressToolResults": true,
+      "preserveSystemPrompt": false
+    }
   }
 }
