@@ -32,14 +32,25 @@ const AUTH_TTL = 5 * 60_000
 
 // ── the desktop client's model table (the proxy's MODEL_MAP, deduped) ──────
 
+// refreshed 2026-11-03 against the live catalog
+// (POST /api/agent/maas/model-types, body {tenant:CatDesk, scene:CATX_APP,
+// env:EXTERNAL}). Adds the four upstream entries this table predates —
+// LongCat-2.5 (10002544), DeepSeek-V4.1-Flash (97), MiniMax-M3.1-Flash
+// (10002518), Kimi-K3.1-Pro (10002533) — and drops deepseek-v4-flash (63),
+// which the catalog no longer serves (V4.1 superseded it). The two LongCat
+// entries carry rateMultiplier "0.00" + "限时免费" upstream; that caption is
+// kept in their name so the free window is visible in the picker.
 const MODELS = {
+  "longcat-2.5": { name: "LongCat-2.5 (限时免费)", type: 10002544, image: true },
   "longcat-2.0": { name: "LongCat-2.0 (限时免费)", type: 77, image: true },
   "glm-5.3-flashx": { name: "GLM-5.3-FlashX", type: 98, image: true },
   "glm-5.3-flash": { name: "GLM-5.3-Flash", type: 91, image: true },
   "glm-5.3": { name: "GLM-5.3", type: 89, image: false },
-  "deepseek-v4-flash": { name: "DeepSeek-V4-Flash", type: 63, image: false },
+  "deepseek-v4.1-flash": { name: "DeepSeek-V4.1-Flash", type: 97, image: false },
   "deepseek-v4-pro": { name: "DeepSeek-V4-Pro", type: 64, image: false },
+  "minimax-m3.1-flash": { name: "MiniMax-M3.1-Flash", type: 10002518, image: true },
   "minimax-m3": { name: "MiniMax-M3", type: 70, image: true },
+  "kimi-k3.1-pro": { name: "Kimi-K3.1-Pro", type: 10002533, image: true },
   "kimi-k3": { name: "Kimi-K3", type: 83, image: true },
   auto: { name: "Auto (自动选择)", type: 0, image: false },
 }

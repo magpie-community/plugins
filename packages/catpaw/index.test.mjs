@@ -59,8 +59,14 @@ describe("config", () => {
     expect(cfg.provider.catpaw.name).toBe("妙手 CatPaw")
     const ids = Object.keys(cfg.provider.catpaw.models)
     expect(ids).toContain("longcat-2.0")
+    expect(ids).toContain("longcat-2.5")
     expect(ids).toContain("kimi-k3")
+    expect(ids).toContain("kimi-k3.1-pro")
+    expect(ids).toContain("deepseek-v4.1-flash")
+    expect(ids).toContain("minimax-m3.1-flash")
     expect(ids).toContain("glm-5.3-flash")
+    // the upstream catalog retired v4-flash (63) when v4.1 (97) landed
+    expect(ids).not.toContain("deepseek-v4-flash")
     // no modalities and no invented limit: the text-only conversation prompt
     // takes no images, and the client publishes no per-model windows
     expect(cfg.provider.catpaw.models["longcat-2.0"].modalities).toBeUndefined()
@@ -469,7 +475,9 @@ describe("source (plugins#605)", () => {
 describe("helpers", () => {
   test("model type mapping", () => {
     expect(_internal.modelTypeOf("longcat-2.0")).toBe(77)
+    expect(_internal.modelTypeOf("longcat-2.5")).toBe(10002544)
     expect(_internal.modelTypeOf("kimi-k3")).toBe(83)
+    expect(_internal.modelTypeOf("kimi-k3.1-pro")).toBe(10002533)
     expect(_internal.modelTypeOf("unknown")).toBe(77)
   })
 })
