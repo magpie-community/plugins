@@ -1,5 +1,5 @@
 (async () => {
-  const DEFAULT_PORT = 3488;
+  const DEFAULT_PORT = 3491;
   let port = DEFAULT_PORT;
   let theme = "light";
   let lang = "zh";

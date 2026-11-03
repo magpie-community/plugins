@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { currencySetting, fxRate, loadUsageData } from "./data.mjs";
+import { displaySettings, loadUsageData } from "./data.mjs";
 import { PERIODS } from "./usage.mjs";
 
 const UI_DIR = fileURLToPath(new URL("../ui/", import.meta.url));
@@ -12,6 +12,7 @@ const CACHE_MS = 25_000;
 const STATIC = new Map([
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
   ["/view.js", ["view.js", "text/javascript; charset=utf-8"]],
+  ["/i18n.js", ["i18n.js", "text/javascript; charset=utf-8"]],
   ["/style.css", ["style.css", "text/css; charset=utf-8"]],
   ["/icon.svg", ["icon.svg", "image/svg+xml"]],
 ]);
@@ -104,9 +105,7 @@ async function probeService(port) {
 
 export async function startServer(options = {}) {
   const port = Number(options.port);
-  const requestedPort = Number.isInteger(port) && port >= 0 && port <= 65535 ? port : 3488;
-  const usdCny = fxRate(Number(options.usdCny) > 0 ? Number(options.usdCny) : 7.2);
-  const currency = currencySetting();
+  const requestedPort = Number.isInteger(port) && port >= 0 && port <= 65535 ? port : 3491;
   const token = randomBytes(24).toString("base64url");
   const loader = options.load || loadUsageData;
   const cache = new Map();
@@ -159,7 +158,10 @@ export async function startServer(options = {}) {
       });
 
     cache.set(wanted, { at: hit?.at || 0, data: hit?.data, pending });
-    if (!options.wait) return Promise.resolve(hit?.data);
+    if (!options.wait) {
+      void pending.catch(() => {});
+      return Promise.resolve(hit?.data);
+    }
     return pending;
   }
 
@@ -201,10 +203,9 @@ export async function startServer(options = {}) {
         const boot = {
           theme: url.searchParams.get("theme") === "dark" ? "dark" : "light",
           tokens: parseTokens(url.searchParams.get("tokens")),
-          currency,
-          usdCny,
+          ...displaySettings(),
         };
-        const lang = String(url.searchParams.get("lang") || "zh").slice(0, 12);
+        const lang = String(url.searchParams.get("lang") || boot.lang).slice(0, 12);
         const html = template
           .replaceAll("__USAGE_TREE_TOKEN__", escHTML(token))
           .replaceAll("__USAGE_TREE_THEME__", escHTML(boot.theme))
@@ -212,6 +213,7 @@ export async function startServer(options = {}) {
           .replaceAll("__USAGE_TREE_TOKENS__", escHTML(JSON.stringify(boot.tokens)))
           .replaceAll("__USAGE_TREE_CURRENCY__", escHTML(boot.currency))
           .replaceAll("__USAGE_TREE_USD_CNY__", escHTML(String(boot.usdCny)))
+          .replaceAll("__USAGE_TREE_CHINESE_UNITS__", String(boot.chineseUnits))
           .replaceAll(
             "__USAGE_TREE_TITLE__",
             escHTML(lang.startsWith("en") ? "Account usage" : "账号用量"),
@@ -245,7 +247,7 @@ export async function startServer(options = {}) {
         }
         const loaded = await dataFor(period, { fresh: url.searchParams.get("fresh") === "1" });
         res.setHeader("X-Usage-Tree-Cache", loaded.cache);
-        json(res, 200, loaded.data);
+        json(res, 200, { ...loaded.data, display: displaySettings() });
         return;
       }
 

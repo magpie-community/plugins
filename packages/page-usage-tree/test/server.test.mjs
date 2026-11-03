@@ -20,9 +20,9 @@ test("serves a token-protected account tree", async (t) => {
 
   const html = await fetch(`http://127.0.0.1:${info.port}/`);
   assert.equal(html.status, 200);
-  const body = await html.text();
-  assert.match(body, /meta name="usage-tree-token"/);
-  assert.match(body, /<main class="view">/);
+  const htmlBody = await html.text();
+  assert.match(htmlBody, /meta name="usage-tree-token"/);
+  assert.match(htmlBody, /<main class="view">/);
 
   const denied = await fetch(`http://127.0.0.1:${info.port}/api/tree?period=7d`);
   assert.equal(denied.status, 401);
@@ -31,7 +31,9 @@ test("serves a token-protected account tree", async (t) => {
     headers: { "x-usage-tree-token": info.token },
   });
   assert.equal(allowed.status, 200);
-  assert.deepEqual(await allowed.json(), data);
+  const jsonBody = await allowed.json();
+  assert.deepEqual({ ...jsonBody, display: undefined }, { ...data, display: undefined });
+  assert.equal(jsonBody.display.currency, "usd");
 });
 
 test("rejects a non-loopback host", async (t) => {

@@ -64,7 +64,8 @@ export function whoOf(host) {
 
 // accountOf is the subscription account that answered the call.
 export function accountOf(row) {
-  return text(row.provider_account) || whoOf(row.host);
+  const host = text(row.host);
+  return text(row.provider_account) || (host.includes(" as ") ? whoOf(host) : "");
 }
 
 // aliasOf is the name the user gave the account, the name magpie's own
@@ -144,15 +145,15 @@ function finishStats(target) {
 }
 
 function addTo(target, row) {
-  target.calls += 1;
+  if (!row.handedOn) target.calls += 1;
   target.input += row.input;
   target.output += row.output;
   target.cacheRead += row.cacheRead;
   target.cacheWrite += row.cacheWrite;
   target.reasoning += row.reasoning;
   target.credits += row.credits;
-  if (row.error) target.errors += 1;
-  if (row.cost == null) target.unpriced += 1;
+  if (!row.handedOn && row.error) target.errors += 1;
+  if (row.cost == null && !row.handedOn) target.unpriced += 1;
   else target.cost += row.cost;
   if (row.time) {
     const ms = Date.parse(row.time);
@@ -179,7 +180,7 @@ function addTotals(total, item) {
 }
 
 export function aggregateUsageCSV(csv, options = {}) {
-  const period = PERIODS.has(options.period) ? options.period : "7d";
+  const period = PERIODS.has(options.period) ? options.period : "today";
   const aliases = options.accountNames || {};
 
   const table = parseCSV(csv);
@@ -219,11 +220,8 @@ export function aggregateUsageCSV(csv, options = {}) {
     }
 
     const host = text(field(row, "host"));
-    const accountLabel = accountOf({ provider_account: field(row, "provider_account"), host });
-    if (!accountLabel) {
-      skipped += 1;
-      continue;
-    }
+    const subscription = accountOf({ provider_account: field(row, "provider_account"), host });
+    const accountLabel = subscription || "API key";
     const hostAccount = whoOf(host);
     const modelLabel =
       text(field(row, "model")) ||
@@ -247,15 +245,17 @@ export function aggregateUsageCSV(csv, options = {}) {
       reasoning: number(field(row, "reasoning_tokens")),
       cost,
       credits: number(field(row, "credits")),
-      error: truthy(field(row, "error")) || status === 0 || status >= 400,
+      handedOn: truthy(field(row, "handed_on")),
+      error: truthy(field(row, "error")) || status >= 400,
     };
 
-    const accountID = `${provider}\u001f${accountLabel}`;
+    const accountID = `${provider}\u001f${subscription ? "account" : "key"}\u001f${accountLabel}`;
     let account = accounts.get(accountID);
     if (!account) {
       account = {
         id: accountID,
         account: accountLabel,
+        kind: subscription ? "account" : "api-key",
         alias: aliasOf(aliases, provider, accountLabel),
         provider,
         providerName: providerName(provider),
@@ -286,7 +286,7 @@ export function aggregateUsageCSV(csv, options = {}) {
     }
     if (!model.served && record.served) model.served = record.served;
     const hostEntry = model.hosts.get(hostAccount) || { account: hostAccount, calls: 0 };
-    hostEntry.calls += 1;
+    if (!record.handedOn) hostEntry.calls += 1;
     model.hosts.set(hostAccount, hostEntry);
 
     addTo(account, record);
@@ -294,7 +294,8 @@ export function aggregateUsageCSV(csv, options = {}) {
   }
 
   const summary = blankStats();
-  summary.accounts = accounts.size;
+  summary.accounts = [...accounts.values()].filter((account) => account.kind === "account").length;
+  summary.apiKeyGroups = [...accounts.values()].filter((account) => account.kind === "api-key").length;
   summary.providers = 0;
   summary.models = 0;
   summary.skipped = skipped;
@@ -377,10 +378,10 @@ export function aggregateUsageCSV(csv, options = {}) {
 
   const warnings = [];
   if (skipped > 0) {
-    warnings.push(`已忽略 ${skipped} 条不属于账号统计的记录（本地会话或没有账号）。`);
+    warnings.push({ code: "skipped", count: skipped });
   }
   if (rejected > 0) {
-    warnings.push(`已忽略 ${rejected} 条被拒绝的请求。`);
+    warnings.push({ code: "rejected", count: rejected });
   }
 
   return {
@@ -411,7 +412,8 @@ export function mapLedgerRow(row) {
     cost_usd: row.cost_usd ?? row.cost ?? "",
     credits: row.credits ?? "",
     status: row.status ?? "",
-    error: row.error ?? "",
+    error: row.error ?? Boolean(row.err) ?? "",
+    handed_on: row.handed_on ?? false,
     rejected: row.rejected ?? "",
     error_message: row.error_message ?? "",
   };
@@ -448,6 +450,7 @@ export function aggregateLedgerRows(rows, options = {}) {
     "credits",
     "status",
     "error",
+    "handed_on",
     "rejected",
     "error_message",
   ];

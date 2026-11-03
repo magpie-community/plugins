@@ -9,6 +9,7 @@
   <meta name="usage-tree-tokens" content="__USAGE_TREE_TOKENS__">
   <meta name="usage-tree-currency" content="__USAGE_TREE_CURRENCY__">
   <meta name="usage-tree-usd-cny" content="__USAGE_TREE_USD_CNY__">
+  <meta name="usage-tree-chinese-units" content="__USAGE_TREE_CHINESE_UNITS__">
   <title>__USAGE_TREE_TITLE__</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
@@ -46,15 +47,13 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
             <input id="search" type="search" placeholder="搜索账号、供应商或模型" autocomplete="off">
           </label>
-          <label class="sort">
+          <div class="sort" role="group" aria-label="排序">
             <span>排序</span>
-            <select id="sort">
-              <option value="tokens">按 Token</option>
-              <option value="cost">按费用</option>
-              <option value="calls">按调用</option>
-              <option value="name">按名称</option>
-            </select>
-          </label>
+            <button type="button" class="sort-button" data-sort="tokens">按 Token</button>
+            <button type="button" class="sort-button" data-sort="cost">按费用</button>
+            <button type="button" class="sort-button" data-sort="calls">按调用</button>
+            <button type="button" class="sort-button" data-sort="name">按名称</button>
+          </div>
           <button class="text" id="expand-all" type="button">展开全部</button>
         </div>
       </div>

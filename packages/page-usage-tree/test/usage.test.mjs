@@ -33,15 +33,16 @@ test("reads the account a call went out as", () => {
 test("groups accounts before models, the way magpie groups its own tables", () => {
   const data = aggregateUsageCSV(CSV, { period: "7d" });
 
-  assert.equal(data.summary.accounts, 3);
-  assert.equal(data.summary.calls, 7);
+  assert.equal(data.summary.accounts, 2);
+  assert.equal(data.summary.apiKeyGroups, 2);
+  assert.equal(data.summary.calls, 8);
   assert.equal(data.summary.errors, 1);
-  assert.equal(data.summary.input, 2368);
-  assert.equal(data.summary.output, 2158);
-  assert.equal(data.summary.tokens, 4526);
+  assert.equal(data.summary.input, 3367);
+  assert.equal(data.summary.output, 3157);
+  assert.equal(data.summary.tokens, 6524);
   assert.equal(data.summary.cache, 3710);
   assert.equal(data.summary.cost, 4.5);
-  assert.equal(data.summary.unpriced, 2);
+  assert.equal(data.summary.unpriced, 3);
 
   const alice = data.accounts.find((account) => account.account === "alice@example.com");
   assert.equal(alice.calls, 5);
@@ -56,9 +57,9 @@ test("groups accounts before models, the way magpie groups its own tables", () =
   assert.deepEqual(gptA.hostNotes, [{ account: "chatgpt.com", calls: 1 }]);
 
   // A call whose host names no account is its own account.
-  const probe = data.accounts.find((account) => account.account === "chatgpt.com");
-  assert.ok(probe);
-  assert.equal(probe.calls, 1);
+  const apiKey = data.accounts.find((account) => account.kind === "api-key");
+  assert.ok(apiKey);
+  assert.equal(apiKey.account, "API key");
 
   // The local session record is not a call of an account.
   assert.equal(

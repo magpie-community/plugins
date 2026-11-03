@@ -45,7 +45,7 @@ Usage Glance plugin.
 
 - Listens on `127.0.0.1` only.
 - Uses a random token for every `/api/tree` request.
-- Checks `Host`, `Origin`, and does not send CORS headers.
+- Checks `Host` and `Origin`; the local sandbox origin is explicitly allowed for the page API.
 - Reads only `usage.jsonl`, `settings.json` (currency) and `providers.json`
   (the account names the user gave). Not `logins.json`, not `caller-keys.json`.
 - Aggregation stays local; no data is uploaded.
@@ -56,8 +56,7 @@ Usage Glance plugin.
 
 ```json
 {
-  "port": 3488,
-  "usdCny": 7.2
+  "port": 3491
 }
 ```
 
@@ -67,7 +66,7 @@ set to CNY. Raw usage cost comes from Magpie's CSV export.
 ## Run and test
 
 ```sh
-node serve.mjs --port 3488
+node serve.mjs --port 3491
 node --test test/*.test.mjs
 ```
 

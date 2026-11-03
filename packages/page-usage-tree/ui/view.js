@@ -45,13 +45,20 @@
     return WORDS[lang === "en" ? "en" : "zh"];
   }
 
-  function count(value) {
+  let chineseUnits = false;
+  function count(value, useChinese = chineseUnits) {
     const n = Number(value) || 0;
     if (Math.abs(n) < 1000) return String(Math.round(n));
-    return new Intl.NumberFormat("zh-CN", {
-      notation: "compact",
-      maximumFractionDigits: n >= 100000 ? 1 : 2,
-    }).format(n);
+    if (useChinese) {
+      if (n >= 1e8) return `${+(n / 1e8).toFixed(2)}亿`;
+      if (n >= 1e4) return `${+(n / 1e4).toFixed(1)}万`;
+    }
+    if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+    if (n >= 1e7) return `${Math.round(n / 1e6)}M`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e5) return `${Math.round(n / 1e3)}K`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+    return String(Math.round(n));
   }
 
   function percent(value) {
@@ -107,7 +114,7 @@
     ];
   }
 
-  function accounts(list, sort, lang) {
+  function accounts(list, sort, lang, currency = "usd", usdCny = 0) {
     const w = text(lang);
     const rows = [...list];
     rows.sort((a, b) => {
@@ -125,7 +132,7 @@
       tokens: count(account.tokens),
       share: percent(account.share),
       bar: Math.max(0.015, account.bar),
-      cost: money(account.cost, account.unpriced, account.calls, "cny", 7.2),
+      cost: money(account.cost, account.unpriced, account.calls, currency, usdCny),
       errors: account.errors ? `${count(account.errors)} ${w.failed}` : w.allOk,
       models: account.models.length,
     }));
@@ -159,5 +166,6 @@
     tiles,
     accounts,
     models,
+    setChineseUnits(value) { chineseUnits = value === true; },
   };
 })(globalThis);

@@ -27,8 +27,11 @@
     document.querySelector(`meta[name="usage-tree-${name}"]`)?.getAttribute("content") || "";
   const token = meta("token");
   const theme = meta("theme") || "light";
-  const currency = meta("currency") || "cny";
-  const usdCny = Number(meta("usd-cny")) || 7.2;
+  const lang = meta("lang").toLowerCase().startsWith("en") ? "en" : "zh";
+  let currency = meta("currency") || "usd";
+  let usdCny = Number(meta("usd-cny")) || 0;
+  let chineseUnits = meta("chinese-units") === "true";
+  V.setChineseUnits(chineseUnits);
   const saved = {
     period: store.get("usage-tree.period") || "today",
     sort: store.get("usage-tree.sort") || "tokens",
@@ -102,8 +105,10 @@
       load();
     });
 
-    $("sort").addEventListener("change", (event) => {
-      state.sort = validSorts.has(event.target.value) ? event.target.value : "tokens";
+    $("sort").addEventListener("click", (event) => {
+      const value = event.target.closest("[data-sort]")?.dataset.sort;
+      if (!value) return;
+      state.sort = validSorts.has(value) ? value : "tokens";
       store.set("usage-tree.sort", state.sort);
       renderAccounts();
     });
@@ -150,7 +155,9 @@
     for (const button of $("period").querySelectorAll("button")) {
       button.setAttribute("aria-selected", String(button.dataset.period === state.period));
     }
-    $("sort").value = state.sort;
+    for (const button of $("sort").querySelectorAll("[data-sort]")) {
+      button.setAttribute("aria-selected", String(button.dataset.sort === state.sort));
+    }
   }
 
   async function load(options = {}) {
@@ -177,6 +184,12 @@
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      if (body.display) {
+        currency = body.display.currency || currency;
+        usdCny = Number(body.display.usdCny) || 0;
+        chineseUnits = body.display.chineseUnits === true;
+        V.setChineseUnits(chineseUnits);
+      }
       const next = fingerprint(body);
       const changed = next !== state.fingerprint || !state.rendered;
       state.data = body;
@@ -267,7 +280,7 @@
     // A read from before the three-level shape has no provider count; the
     // rows still know their providers, so count those.
     const summaryData = { ...data, providers: data.providers ?? providersOf(state.data).length };
-    const items = V.tiles(summaryData, "zh", currency, usdCny).map((tile, index) => ({
+    const items = V.tiles(summaryData, lang, currency, usdCny).map((tile, index) => ({
       ...tile,
       icon: ["accounts", "calls", "tokens", "cost"][index],
     }));
@@ -278,7 +291,7 @@
         const head = el("div", "summary-label");
         head.append(icon(item.icon), document.createTextNode(item.label));
         const value = el("div", "summary-value", item.value);
-        if (item.bad) value.style.color = "var(--red)";
+        if (item.bad) value.style.color = "var(--magpie-red)";
         card.append(head, value, el("span", "summary-sub", item.sub));
         return card;
       }),
@@ -291,7 +304,17 @@
       return;
     }
     warning.hidden = false;
-    warning.textContent = warnings.join(" ");
+      warning.textContent = warnings
+        .map((item) => {
+          if (typeof item === "string") return item;
+          if (item.code === "skipped") return `${item.count} 条记录未计入账号统计。`;
+          if (item.code === "rejected") return `${item.count} 条请求被拒绝。`;
+          if (item.code === "fallback") return `命令读取失败，已回退到本地日志：${item.detail}`;
+          if (item.code === "no-cli") return "未找到 Magpie 命令，已回退到本地日志。";
+          return "";
+        })
+        .filter(Boolean)
+        .join(" ");
   }
 
   function renderError() {
@@ -317,12 +340,12 @@
     const list = [...providersOf(state.data)];
     const query = state.query;
     if (query) {
-      return list.filter(
+      list.splice(0, list.length, ...list.filter(
         (account) =>
           account.providerName.toLowerCase().includes(query) ||
           account.provider.toLowerCase().includes(query) ||
           account.accounts.some((account) => matches(account, query)),
-      );
+      ));
     }
     return list.sort((a, b) => {
       if (state.sort === "name") return a.providerName.localeCompare(b.providerName);
@@ -450,11 +473,19 @@
     });
 
     const accountBox = el("div", "provider-accounts");
-    for (const account of provider.accounts) {
+    const accounts = [...provider.accounts].sort(compareItems);
+    for (const account of accounts) {
       accountBox.append(accountCard(account, provider.accounts));
     }
     article.append(main, accountBox);
     return article;
+  }
+
+  function compareItems(a, b) {
+    if (state.sort === "name") {
+      return (a.alias || a.account || a.model).localeCompare(b.alias || b.account || b.model);
+    }
+    return sortMetric(b) - sortMetric(a) || (a.alias || a.account || a.model).localeCompare(b.alias || b.account || b.model);
   }
 
   function countModels(provider) {

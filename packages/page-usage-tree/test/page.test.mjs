@@ -115,6 +115,7 @@ test("the launcher only navigates to the local service", () => {
 });
 
 test("the summary says accounts, calls, tokens and cost", () => {
+  V.setChineseUnits(true);
   const tiles = V.tiles(summary, "zh", "cny", 6.6696);
   assert.equal(tiles.length, 4);
   assert.equal(tiles[0].value, "2");
@@ -138,6 +139,7 @@ test("a model's own host difference is a note, not a second row", () => {
 });
 
 test("numbers read short", () => {
+  V.setChineseUnits(true);
   assert.equal(V.count(999), "999");
   assert.equal(V.count(1500000), "150万");
   assert.equal(V.percent(0.8), "80%");

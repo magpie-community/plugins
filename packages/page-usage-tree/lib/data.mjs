@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   createReadStream,
   existsSync,
@@ -6,9 +7,12 @@ import {
   readFileSync,
   statSync,
   writeFileSync,
+  renameSync,
+  realpathSync,
+  unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, isAbsolute, resolve, basename } from "node:path";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
@@ -18,20 +22,24 @@ const execFileAsync = promisify(execFile);
 
 export function configDir() {
   if (process.env.MAGPIE_CONFIG_DIR) return process.env.MAGPIE_CONFIG_DIR;
-  if (process.env.XDG_CONFIG_HOME) return join(process.env.XDG_CONFIG_HOME, "magpie");
+  const portable = portableDir();
+  if (portable) return portable;
+  if (isAbsolute(process.env.XDG_CONFIG_HOME || "")) return join(process.env.XDG_CONFIG_HOME, "magpie");
   return join(homedir(), ".config", "magpie");
 }
 
 export function cacheDir() {
   if (process.env.MAGPIE_CACHE_DIR) return process.env.MAGPIE_CACHE_DIR;
-  if (process.env.XDG_CACHE_HOME) return join(process.env.XDG_CACHE_HOME, "magpie");
+  const portable = portableDir();
+  if (portable) return join(portable, "cache");
+  if (isAbsolute(process.env.XDG_CACHE_HOME || "")) return join(process.env.XDG_CACHE_HOME, "magpie");
   return join(homedir(), ".cache", "magpie");
 }
 
 // fxRate is the CNY-per-USD rate Magpie itself uses for its CNY currency
 // preference (internal/fx). Reading Magpie's own cache keeps the numbers on
 // this page the same as the ones on Magpie's Usage page.
-export function fxRate(fallback = 7.2) {
+export function fxRate(fallback = 0) {
   const file = join(cacheDir(), "fxrate.json");
   try {
     const raw = JSON.parse(readFileSync(file, "utf8"));
@@ -44,13 +52,43 @@ export function fxRate(fallback = 7.2) {
 }
 
 export function currencySetting() {
+  return displaySettings().currency;
+}
+
+export function displaySettings() {
   const file = join(configDir(), "settings.json");
   try {
     const raw = JSON.parse(readFileSync(file, "utf8"));
-    return raw?.currency === "usd" ? "usd" : "cny";
+    return {
+      currency: raw?.currency === "cny" ? "cny" : "usd",
+      chineseUnits: raw?.chineseUnits === true,
+      lang: typeof raw?.lang === "string" ? raw.lang : "en",
+      usdCny: fxRate(),
+    };
   } catch {
-    return "cny";
+    return { currency: "usd", chineseUnits: false, lang: "en", usdCny: fxRate() };
   }
+}
+
+export function portableDir(binary = findMagpieBinary()) {
+  if (!binary) return "";
+  let exe;
+  try { exe = realpathSync(binary); } catch { return ""; }
+  let base = dirname(exe);
+  if (basename(base) === "MacOS" && basename(dirname(base)) === "Contents") {
+    base = dirname(dirname(dirname(base)));
+  }
+  if (process.platform === "linux" && process.env.APPIMAGE && process.env.APPDIR &&
+      exe.startsWith(resolve(process.env.APPDIR) + "/")) base = dirname(process.env.APPIMAGE);
+  const data = join(base, "data");
+  const isFile = (p) => { try { return statSync(p).isFile(); } catch { return false; } };
+  if (isFile(join(base, ".portable"))) return data;
+  try { if (!statSync(data).isDirectory()) return ""; } catch { return ""; }
+  const hasFiles = (dir) => ["providers.json", "logins.json", "settings.json"].some((f) => isFile(join(dir, f)));
+  const installed = join(isAbsolute(process.env.XDG_CONFIG_HOME || "") ? process.env.XDG_CONFIG_HOME : join(homedir(), ".config"), "magpie");
+  const shared = [homedir(), ...["Downloads", "Desktop", "Documents", "Applications"].map((d) => join(homedir(), d)), "/Applications"]
+    .some((d) => resolve(d).toLowerCase() === resolve(base).toLowerCase());
+  return shared && (!hasFiles(data) || hasFiles(installed)) ? "" : data;
 }
 
 // accountNames are the names the user gave their accounts, kept in
@@ -106,7 +144,7 @@ export function findMagpieBinary() {
 }
 
 function normalizePeriod(period) {
-  return PERIODS.has(period) ? period : "7d";
+  return PERIODS.has(period) ? period : "today";
 }
 
 // A read of the whole log costs a second or three, so what it came to is
@@ -115,7 +153,8 @@ function normalizePeriod(period) {
 function usageSourceKey() {
   try {
     const st = statSync(join(configDir(), "usage.jsonl"));
-    return `${st.size}:${Math.round(st.mtimeMs)}`;
+    const aliases = statSync(join(configDir(), "providers.json"), { throwIfNoEntry: false });
+    return `${new Date().toDateString()}:${st.size}:${st.mtimeMs}:${aliases?.mtimeMs || 0}`;
   } catch {
     return "";
   }
@@ -128,7 +167,7 @@ function cacheFile(period) {
 // What a cache file's numbers are shaped like. A read written by an older
 // build is not the same answer: it may lack a field this page needs, so it
 // is read as a miss rather than served as if it were current.
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 
 export function cacheUsable(data) {
   return Boolean(data && Array.isArray(data.providers) && Array.isArray(data.accounts));
@@ -145,20 +184,25 @@ function readCached(period, { any = false } = {}) {
   }
 }
 
-function writeCached(period, data) {
+function writeCached(period, data, key) {
+  let temporary = "";
   try {
     const file = cacheFile(period);
     mkdirSync(dirname(file), { recursive: true });
     // The stale mark is about this read, not about the numbers: it is not
     // kept, or every later read would say it is old.
     const { stale, cached, ...keep } = data;
+    temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
     writeFileSync(
-      file,
-      JSON.stringify({ v: CACHE_VERSION, key: usageSourceKey(), at: Date.now(), data: keep }),
+      temporary,
+      JSON.stringify({ v: CACHE_VERSION, key, at: Date.now(), data: keep }),
       "utf8",
     );
+    renameSync(temporary, file);
   } catch {
     // A cache that can't be written only costs the next read its wait.
+  } finally {
+    if (temporary) try { unlinkSync(temporary); } catch {}
   }
 }
 
@@ -174,7 +218,7 @@ async function readCSVWithCLI(period, binary) {
 
 async function readLedgerFallback(period) {
   const file = join(configDir(), "usage.jsonl");
-  if (!existsSync(file)) throw new Error(`找不到用量记录：${file}`);
+  if (!existsSync(file)) throw new Error(`Usage ledger not found: ${file}`);
 
   const rows = [];
   const input = createReadStream(file, { encoding: "utf8" });
@@ -222,21 +266,21 @@ function refreshBehind(period, binary) {
 }
 
 async function refresh(wanted, binary, options = {}) {
+  const sourceKey = usageSourceKey();
   if (binary) {
     try {
       const csv = await readCSVWithCLI(wanted, binary);
       const result = aggregateUsageCSV(csv, { period: wanted, accountNames: accountNames() });
       result.source = "magpie usage --csv";
       result.command = `${binary} usage --csv ${wanted}`;
-      writeCached(wanted, result);
+      writeCached(wanted, result, sourceKey);
       return result;
     } catch (error) {
       const fallback = await readLedgerFallback(wanted);
       fallback.source = "usage.jsonl fallback";
       fallback.command = `${binary} usage --csv ${wanted}`;
-      fallback.warnings.push(`命令读取失败，已回退到只读日志：${error.message}`);
-      fallback.warnings.push("回退模式下费用字段可能不可用。");
-      writeCached(wanted, fallback);
+      fallback.warnings.push({ code: "fallback", detail: error.message });
+      writeCached(wanted, fallback, sourceKey);
       return fallback;
     }
   }
@@ -244,8 +288,7 @@ async function refresh(wanted, binary, options = {}) {
   const fallback = await readLedgerFallback(wanted);
   fallback.source = "usage.jsonl fallback";
   fallback.command = "magpie usage --csv";
-  fallback.warnings.push("未在 PATH 中找到 magpie 命令，已回退到只读日志。");
-  fallback.warnings.push("回退模式下费用字段可能不可用。");
-  writeCached(wanted, fallback);
+  fallback.warnings.push({ code: "no-cli" });
+  writeCached(wanted, fallback, sourceKey);
   return fallback;
 }
