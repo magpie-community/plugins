@@ -90,6 +90,32 @@ If Console's ID cannot be read and the shown email differs, you can map the save
 
 **Credits don't match the billing page?** Promotional credits belong to the billing account and can be shared across projects, and the Console has billing latency.
 
+**"Cannot tell which billing account project … uses"?** The project's billing page showed no billing account, or more than one. Name it per project, so each of your projects keeps its own:
+
+```json
+{ "billingAccounts": { "my-project": "AAAAAA-BBBBBB-CCCCCC" } }
+```
+
+A project's entry wins over a row's `billingAccount` and `VERTEX_BILLING_ACCOUNT`, which apply to every project.
+
+**A billing account in yen?** The credits are read in US dollars unless the billing account is named as Japanese yen (USD and JPY are the two currencies read; nothing is converted):
+
+```json
+{ "billingCurrencies": { "AAAAAA-BBBBBB-CCCCCC": "JPY" } }
+```
+
+A ¥ is never taken for yen on its own, since the Console writes Chinese yuan with the same sign: a ¥ table read as USD names the setting instead. Yen balances show as, for example, `¥8500 JPY`.
+
+**"The Cloud Console page was translated by Chrome" or "columns are not the English ones"?** The table is read by its English column names. Turn off translation for `console.cloud.google.com` in the plugin's Chrome profile (in the translate icon in the address bar: *Never translate this site*), and retry.
+
+**Several Chrome profiles in the plugin's profile folder?** Chrome opens the profile used last, so whose session a read uses can change when you switch profiles there. Pin the profile directory (its folder name inside the profile, such as `Default` or `Profile 1`), per Google account or for every account:
+
+```json
+{ "profileDirectories": { "me@example.com": "Profile 1" }, "profileDirectory": "Default" }
+```
+
+These go in the `gcp-ai` provider's `options` or the plugin's options (the provider's win). A sign-in window opens in the directory `profileDirectory` names, since the account it signs in is not known yet.
+
 ## Configuration
 
 | Environment variable | Default |
@@ -97,6 +123,7 @@ If Console's ID cannot be read and the shown email differs, you can map the save
 | `GOOGLE_VERTEX_LOCATION` | `global` |
 | `VERTEX_BILLING_ACCOUNT` | Looked up from the project |
 | `VERTEX_CHROME_PROFILE` | `~/.config/gcp-auto-profile` |
+| `VERTEX_CHROME_PROFILE_DIRECTORY` | None: Chrome's last-used profile; `profileDirectories` and `profileDirectory` win |
 | `VERTEX_CHROME_PATH` | Detected |
 | `VERTEX_GCLOUD_ACCOUNT` | The signed-in account |
 | `VERTEX_GCLOUD_AUTH_MODE` | `auto`; also `adc` or `gcloud` |

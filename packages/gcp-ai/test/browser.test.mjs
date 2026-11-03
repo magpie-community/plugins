@@ -378,3 +378,112 @@ test("a failed credit read is cached instead of opening a browser each poll", { 
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+// kidchen94's cases (#667), on a Console served from inside the test. Each
+// read would have waited out its whole timeout on the old code and said the
+// session may have expired; now it reads, or says what is wrong, at once.
+async function consoleFixture(name, serve, use) {
+  const directory = await mkdtemp(join(tmpdir(), `vertex-browser-${name}-`))
+  const previousCache = process.env.XDG_CACHE_HOME
+  let browser
+  try {
+    process.env.XDG_CACHE_HOME = directory
+    const profile = join(directory, "profile")
+    browser = await openBrowser({ profile, launchArgs })
+    const paths = []
+    await routeAll(browser.page, async (request) => {
+      const url = new URL(request.url())
+      if (url.origin !== "https://console.cloud.google.com") return request.abort()
+      paths.push(url.pathname)
+      // The Console names the account it rendered for under its own key.
+      const shown = url.searchParams.get("authuser")
+      return request.fulfill({ body: `<!doctype html>${shown ? `<script>var a={"oPEP7c":${JSON.stringify(shown)}}</script>` : ""}${serve(url)}` })
+    })
+    return await use({ profile, browser, paths })
+  } finally {
+    if (browser) await browser.close()
+    if (previousCache === undefined) delete process.env.XDG_CACHE_HOME
+    else process.env.XDG_CACHE_HOME = previousCache
+    await rm(directory, { recursive: true, force: true })
+  }
+}
+
+const creditsTable = (rows, { html = "", head = ["Credit name", "Status", "Remaining value", "Original value", "Credit ID"] } = {}) => `<html${html}><body>
+  <table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+  <tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table></body></html>`
+
+test("a JPY billing account is read in yen, and read as USD it names its currency at once", { timeout: 60000, ...needsBrowser }, async () => {
+  await consoleFixture("jpy", () => creditsTable([["Trial", "Available", "¥8,500", "¥10,000", "one"]]), async ({ profile, browser }) => {
+    const options = { profile, browser, billingAccount: "AAAAAA-BBBBBB-CCCCCC", account: "reader@example.com", scrapeTimeout: 20000 }
+    const started = Date.now()
+    await assert.rejects(fetchCredits(options), /in ¥ \(yen or yuan\), not USD\. If it bills in Japanese yen, set billingCurrencies to \{ "AAAAAA-BBBBBB-CCCCCC": "JPY" \}/)
+    assert.ok(Date.now() - started < 15000, `the currency was named after ${Date.now() - started}ms, not at once`)
+    // Naming the currency is a different read: the remembered USD failure is
+    // not handed back for it.
+    const yen = await fetchCredits({ ...options, billingCurrencies: { "AAAAAA-BBBBBB-CCCCCC": "JPY" } })
+    assert.equal(yen.currency, "JPY")
+    assert.equal(yen.remaining, 8500)
+    assert.equal(usageOf(yen).balance, "¥8500 JPY")
+    const cached = await fetchCredits({ ...options, billingCurrencies: { "AAAAAA-BBBBBB-CCCCCC": "JPY" } })
+    assert.equal(cached.cached, true)
+  })
+})
+
+test("a Console page Chrome translated is named as translated, not as an expired session", { timeout: 60000, ...needsBrowser }, async () => {
+  // Chrome marks the root of a page it translated and wraps the words it
+  // replaced in <font>; the amounts become words.
+  const font = (text) => `<font style="vertical-align: inherit;"><font style="vertical-align: inherit;">${text}</font></font>`
+  const page = creditsTable([[font("試用"), font("利用可能"), font("8.50 米ドル"), font("10.00 米ドル"), "one"]], {
+    html: ' class="translated-ltr" lang="ja"', head: ["クレジット名", "ステータス", "残額", "元の値", "クレジット ID"].map(font),
+  })
+  await consoleFixture("translated", () => page, async ({ profile, browser }) => {
+    const started = Date.now()
+    await assert.rejects(fetchCredits({ profile, browser, billingAccount: "AAAAAA-BBBBBB-CCCCCC", account: "reader@example.com", scrapeTimeout: 20000 }), /translated by Chrome/)
+    assert.ok(Date.now() - started < 15000, `the translation was named after ${Date.now() - started}ms, not at once`)
+  })
+  // The same columns without Chrome's mark (a Console in another language)
+  // are named by what they say.
+  await consoleFixture("foreign", () => page.replace(' class="translated-ltr"', ""), async ({ profile, browser }) => {
+    await assert.rejects(fetchCredits({ profile, browser, billingAccount: "AAAAAA-BBBBBB-CCCCCC", account: "reader@example.com", scrapeTimeout: 3000 }), /columns are not the English ones this plugin reads \(it found: .*クレジット名/)
+  })
+})
+
+test("billingAccounts picks a project's billing account, and an ambiguous project says which to set", { timeout: 60000, ...needsBrowser }, async () => {
+  const serve = (url) => url.pathname === "/billing/linkedaccount"
+    ? '<a href="/billing/AAAAAA-BBBBBB-CCCCCC">One</a><a href="/billing/DDDDDD-EEEEEE-FFFFFF">Two</a>'
+    : creditsTable([["Trial", "Available", "$4.00", "$10.00", url.pathname.split("/")[2]]])
+  await consoleFixture("billing", serve, async ({ profile, browser, paths }) => {
+    await browser.page.goto("https://console.cloud.google.com/")
+    await assert.rejects(discoverBillingAccount(browser.page, "example-project"), /Cannot tell which billing account project example-project uses \(the Console showed AAAAAA-BBBBBB-CCCCCC, DDDDDD-EEEEEE-FFFFFF\); set billingAccounts to \{ "example-project": "<billing account>" \}/)
+    // Mapped, the project's credits are read without asking the Console.
+    paths.length = 0
+    const options = { profile, browser, project: "example-project", account: "reader@example.com", scrapeTimeout: 5000 }
+    const mapped = await fetchCredits({ ...options, billingAccounts: { "example-project": "dddddd-eeeeee-ffffff" } })
+    assert.equal(mapped.billingAccount, "DDDDDD-EEEEEE-FFFFFF")
+    assert.equal(mapped.remaining, 4)
+    const read = paths.filter((path) => path !== "/favicon.ico")
+    assert.ok(read.length && read.every((path) => path === "/billing/DDDDDD-EEEEEE-FFFFFF/credits/all"), read.join(", "))
+  })
+})
+
+// One user-data directory holding several Chrome profiles: without
+// --profile-directory, Chrome opens the one used last.
+test("a pinned profile directory is the Chrome profile every read opens", { timeout: 60000, ...needsBrowser }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "vertex-browser-profile-dir-"))
+  try {
+    const profile = join(directory, "profile")
+    const seen = await withPage({ profile, profileDirectory: "Profile 1", launchArgs }, (page) => page.evaluate(() => "ok"))
+    assert.equal(seen, "ok")
+    await endKeptBrowsers()
+    const { readdir } = await import("node:fs/promises")
+    const entries = await readdir(profile)
+    assert.ok(entries.includes("Profile 1"), `Chrome used ${entries.filter((e) => /^(Default|Profile \d+)$/.test(e)).join(", ") || "no profile"}, not Profile 1`)
+    assert.ok(!entries.includes("Default"), "the unpinned Default profile was opened too")
+    for (const bad of ["../escape", "a/b", "-flag", ".."]) {
+      await assert.rejects(withPage({ profile, profileDirectory: bad, launchArgs }, async () => {}), /Invalid Chrome profile directory/)
+    }
+  } finally {
+    await endKeptBrowsers()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
