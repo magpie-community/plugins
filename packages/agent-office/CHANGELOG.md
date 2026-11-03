@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 · 2026-11-03
+
+### Changed
+
+- The 3D view lays out each scene from its own layout: desks, sofa, zones, walls, doors, walking routes and seats now come from that scene's layout instead of the office's. Office keeps the same positions and routes as before.
+- Decorations are placed only where their measured footprint clears the seats and walking routes of their own scene.
+
 ## 0.3.1 · 2026-11-03
 
 ### Fixed

@@ -575,7 +575,8 @@ describe("THREE renderer path", () => {
           if (b.max.y > 0.06 && b.min.y < 1.7) bounds.union(b)
         })
         checked++
-        for (const pool of Object.values(S.SPOTS)) for (const spot of pool) {
+        // Per-scene layouts: check the routes of the scene being rendered, not office.
+        for (const pool of Object.values(f.scene.layoutRuntime.SPOTS)) for (const spot of pool) {
           for (let i = 1; i < spot.route.length; i++) {
             const a = spot.route[i - 1], b = spot.route[i]
             const n = Math.max(1, Math.ceil(Math.hypot(a[0] - b[0], a[1] - b[1]) / 0.1))

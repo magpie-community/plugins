@@ -273,32 +273,13 @@
   // deterministic room layout, seats and activity props
   // ---------------------------------------------------------------------
 
-  const ROOM = { w: 16, d: 12, wall: 3.2 }
-  const ENTRY = [0.95, 2.6]
-
-  // x,z is the desk's north-west corner; seat is where the worker sits.
-  const DESKS = [
-    { x: 3.2, z: 0.55, w: 1.7, d: 0.9, seat: [4.05, 1.95], face: "n" },
-    { x: 5.9, z: 0.55, w: 1.7, d: 0.9, seat: [6.75, 1.95], face: "n" },
-    { x: 8.6, z: 0.55, w: 1.7, d: 0.9, seat: [9.45, 1.95], face: "n" },
-    { x: 11.3, z: 0.55, w: 1.7, d: 0.9, seat: [12.15, 1.95], face: "n" },
-    { x: 10.6, z: 4.6, w: 1.6, d: 0.8, seat: [11.4, 4.0], face: "s", island: true },
-    { x: 12.4, z: 4.6, w: 1.6, d: 0.8, seat: [13.2, 4.0], face: "s", island: true },
-    { x: 10.6, z: 5.4, w: 1.6, d: 0.8, seat: [11.4, 6.75], face: "n", island: true },
-    { x: 12.4, z: 5.4, w: 1.6, d: 0.8, seat: [13.2, 6.75], face: "n", island: true },
-  ]
-
-  const SOFA = [[1.1, 4.84], [1.1, 5.72], [1.1, 6.6], [1.1, 7.48], [1.1, 8.36], [3.1, 10.95], [4.3, 10.95]]
-  const SOFA_FACE = ["e", "e", "e", "e", "e", "n", "n"]
-
-  const ZONE = { x: 4.2, z: 7.2, w: 4.4, d: 3.4 }
-  const ZONE_SPOTS = []
-  for (let j = 0; j < 3; j++) for (let i = 0; i < 4; i++) {
-    ZONE_SPOTS.push([ZONE.x + 0.6 + i * 1.05 + (j % 2) * 0.3, ZONE.z + 0.6 + j * 1.05])
-  }
-  const ERROR_SPOTS = [[12.3, 9.6], [14.3, 8.6], [12.9, 10.45], [14.3, 10.3]]
-  const WANDER = [[7.0, 4.4], [8.6, 5.7], [6.0, 5.8], [9.0, 8.0], [10.2, 9.0], [2.8, 3.2], [5.0, 3.4], [9.6, 2.9], [2.4, 6.0]]
-  const DOOR = [0.6, 2.6]
+  const REGISTRY = global.AGENT_OFFICE_LAYOUTS || (typeof process !== "undefined" && process.getBuiltinModule
+    ? process.getBuiltinModule("module").createRequire(process.cwd() + "/page/scene3d.js")("./layouts.js") : null)
+  if (!REGISTRY) throw new Error("Load layouts.js before scene3d.js")
+  for (const id of SCENE_IDS) THEMES[id].layout = REGISTRY.themes[id].layout
+  // Office data comes from layouts.js; the other scenes use the same runtime shape.
+  const RT = REGISTRY.runtime("office")
+  const { ROOM, ENTRY, DESKS, SOFA, SOFA_FACE, ZONE, ZONE_SPOTS, ERROR_SPOTS, WANDER, DOOR } = RT
 
   const FACE = { n: [0, -1], s: [0, 1], e: [1, 0], w: [-1, 0] }
   const faceAngle = (face) => {
@@ -307,15 +288,7 @@
   }
 
   // Furniture that cannot be walked through. Doors/aisles are elsewhere.
-  const BLOCKERS = [
-    ...DESKS.map((d) => [d.x, d.z, d.w, d.d]),
-    [0.0, 4.55, 2.0, 4.25],       // west sofa
-    [2.55, 10.35, 2.5, 1.3],      // south sofa
-    [0.55, 0.35, 2.3, 0.95],      // coffee bar
-    [3.2, 3.9, 2.5, 1.5],         // ping-pong table
-    [14.85, 1.25, 0.8, 2.3],      // bookshelf
-    [14.65, 9.05, 0.95, 1.25],    // arcade cabinet
-  ]
+  const BLOCKERS = RT.BLOCKERS
 
   const WALL_PAD = 0.22
   function blockedAt(x, z, pad, blockers) {
@@ -506,13 +479,13 @@
     }
   }
 
-  function seatFor(key, kindOrStatus) {
-    const kind = POOLS[kindOrStatus] ? kindOrStatus : spotKindForStatus(kindOrStatus)
-    const pool = POOLS[kind] || SPOTS.wander
+  function seatFor(key, kindOrStatus, pools = POOLS) {
+    const kind = pools[kindOrStatus] ? kindOrStatus : spotKindForStatus(kindOrStatus)
+    const pool = pools[kind] || pools.wander
     return pool[hashKey(key) % pool.length]
   }
 
-  function assignSeats(list) {
+  function assignSeats(list, pools = POOLS) {
     const used = new Set()
     const out = {}
     const valid = (Array.isArray(list) ? list : []).filter((a) => a && typeof a === "object" && a.key != null)
@@ -521,8 +494,8 @@
       const kind = spotKindForStatus(a.status)
       const order = [kind, ...(FALLBACKS[kind] || [])]
       let found = null
-      for (const k of [...new Set([...order, ...Object.keys(POOLS)])]) {
-        const pool = POOLS[k]
+      for (const k of [...new Set([...order, ...Object.keys(pools)])]) {
+        const pool = pools[k]
         if (!pool) continue
         const start = hashKey(a.key) % pool.length
         for (let i = 0; i < pool.length; i++) {
@@ -564,6 +537,7 @@
     this.canvas = canvas && typeof canvas === "object" ? canvas : null
     this.id = THEMES[o.scene] ? o.scene : "office"
     this.theme = themeFor(this.id)
+    this.layoutRuntime = REGISTRY.runtime(this.theme.layout || "office")
     this.quality = QUALITIES[o.quality] ? o.quality : "high"
     this.dprCap = Math.min(2, Math.max(1, Number(o.dprCap) || 2))
     this.timeInfo = timeOfDay(o.now instanceof Date ? o.now : new Date())
@@ -612,6 +586,7 @@
   }
 
   AgentOfficeScene3D.prototype._init = function () {
+    const { ROOM } = this.layoutRuntime
     const T = THREE
     const canvas = this.canvas
     if (typeof canvas.getContext !== "function") throw new Error("no canvas context")
@@ -796,10 +771,9 @@
     this._applyTime()
   }
 
-  // Decorations use the same reserved seats and aisles in every theme. Keep
-  // their body-height footprint clear instead of adding invisible obstructions
-  // to routes that workers already follow.
+  // Keep decorations clear of this layout's furniture and worker routes.
   AgentOfficeScene3D.prototype._placeDecoration = function (object) {
+    const { ROOM, BLOCKERS, SPOTS } = this.layoutRuntime
     this.env.updateMatrixWorld(true)
     const bounds = new THREE.Box3()
     object.traverse((mesh) => {
@@ -822,10 +796,10 @@
         const route = spot.route
         for (let i = 0; i < route.length - 1; i++) {
           const a = route[i], c = route[i + 1]
-          const n = Math.max(1, Math.ceil(Math.hypot(c[0] - a[0], c[1] - a[1]) / 0.15))
+          const n = Math.max(1, Math.ceil(Math.hypot(c[0] - a[0], c[1] - a[1]) / 0.1))
           for (let j = 0; j <= n; j++) {
             const x = a[0] + (c[0] - a[0]) * j / n, z = a[1] + (c[1] - a[1]) * j / n
-            if (x > b[0] - 0.32 && x < b[2] + 0.32 && z > b[1] - 0.32 && z < b[3] + 0.32) return false
+            if (x > b[0] - 0.3 && x < b[2] + 0.3 && z > b[1] - 0.3 && z < b[3] + 0.3) return false
           }
         }
       }
@@ -837,10 +811,25 @@
     for (const scale of [1, 0.85, 0.7, 0.55]) for (const [x, z] of candidates) {
       const b = [x - halfX * scale, z - halfZ * scale, x + halfX * scale, z + halfZ * scale]
       if (!clear(b)) continue
+      const priorScale = object.scale.clone()
       object.scale.multiplyScalar(scale)
       object.position.x = x + (original.x - cx) * scale
       object.position.z = z + (original.z - cz) * scale
-      this._decorations.push(b)
+      // The estimate above ignores mesh offsets; check the placed meshes too.
+      object.updateMatrixWorld(true)
+      const actual = new THREE.Box3()
+      object.traverse((mesh) => {
+        if (!mesh.isMesh) return
+        const m = new THREE.Box3().setFromObject(mesh)
+        if (m.max.y > 0.06 && m.min.y < 1.7) actual.union(m)
+      })
+      const footprint = [actual.min.x, actual.min.z, actual.max.x, actual.max.z]
+      if (!clear(footprint)) {
+        object.scale.copy(priorScale)
+        object.position.copy(original)
+        continue
+      }
+      this._decorations.push(footprint)
       object.userData.decoration = true
       return
     }
@@ -866,6 +855,7 @@
   }
 
   AgentOfficeScene3D.prototype._buildRoom = function (env, theme) {
+    const { ROOM, DOOR } = this.layoutRuntime
     const T = THREE
     const g = new T.Group()
     env.add(g)
@@ -981,6 +971,7 @@
   }
 
   AgentOfficeScene3D.prototype._buildLights = function (env, theme) {
+    const { ROOM } = this.layoutRuntime
     const T = THREE
     const hemi = new T.HemisphereLight(theme.ambient, darken(theme.floor, 0.55), 0.62)
     env.add(hemi)
@@ -1024,6 +1015,7 @@
   }
 
   AgentOfficeScene3D.prototype._applyTime = function () {
+    const { ROOM } = this.layoutRuntime
     if (!this.scene) return
     const theme = this.theme
     const info = this.timeInfo || timeOfDay(new Date())
@@ -1079,6 +1071,7 @@
   // ---- desks, chairs, monitors ---------------------------------------
 
   AgentOfficeScene3D.prototype._buildDesks = function (env, theme) {
+    const { DESKS } = this.layoutRuntime
     for (const d of DESKS) {
       const g = new THREE.Group()
       env.add(g)
@@ -1162,6 +1155,20 @@
   // ---- sofas, rug, plants, coffee, games ------------------------------
 
   AgentOfficeScene3D.prototype._buildSofa = function (env, theme) {
+    const { SOFA, SOFA_FACE, ZONE } = this.layoutRuntime
+    if (this.layoutRuntime !== RT) {
+      for (let i = 0; i < SOFA.length; i++) {
+        const g = new THREE.Group()
+        g.position.set(SOFA[i][0], 0, SOFA[i][1])
+        g.rotation.y = faceAngle(SOFA_FACE[i])
+        env.add(g)
+        this._box(g, darken(theme.sofa, 0.3), 0, 0.2, 0, 0.85, 0.34, 0.85)
+        this._box(g, theme.sofa, 0, 0.4, 0, 0.8, 0.18, 0.8)
+        this._box(g, darken(theme.sofa, 0.16), 0, 0.65, -0.38, 0.85, 0.85, 0.18)
+      }
+      this._box(env, mixColor(theme.accent, theme.floor, 0.72), ZONE.x + ZONE.w / 2, 0.012, ZONE.z + ZONE.d / 2, ZONE.w, 0.02, ZONE.d, { cast: false })
+      return
+    }
     const fabric = theme.sofa
     const cushion = lighten(fabric, 0.1)
     // west sofa: face east, against the west wall
@@ -1653,6 +1660,7 @@
   }
 
   AgentOfficeScene3D.prototype._makeWorker = function (a) {
+    const { ENTRY } = this.layoutRuntime
     const T = THREE
     const group = new T.Group()
     group.name = "worker:" + a.key
@@ -1765,6 +1773,7 @@
   }
 
   AgentOfficeScene3D.prototype._freeSpot = function (kind, key, current) {
+    const { POOLS } = this.layoutRuntime
     const order = [kind, ...(FALLBACKS[kind] || [])]
     for (const k of [...new Set([...order, ...Object.keys(POOLS)])]) {
       const pool = POOLS[k]
@@ -1943,6 +1952,9 @@
   }
 
   AgentOfficeScene3D.prototype.setAgents = function (list) {
+    const { ENTRY } = this.layoutRuntime
+    const routes = this.layoutRuntime === RT ? { laneRoute, connectRoute, exitRoute } : this.layoutRuntime
+    const { laneRoute: lane, connectRoute: connect, exitRoute: exit } = routes
     const arr = this._normalizeAgents(list)
     this.agents = arr
     this._pending = arr
@@ -1966,7 +1978,7 @@
         rt.lane = ((hashKey(a.key) % 7) - 3) * 0.07
         rt.speed = 2.1 + (hashKey(a.key) % 30) / 100
         this._takeSpot(rt, spot)
-        this._startRoute(rt, spot ? laneRoute(spot.route, rt.lane) : dedupeRoute([ENTRY, [ENTRY[0] + 0.25, ENTRY[1]]]))
+        this._startRoute(rt, spot ? lane(spot.route, rt.lane) : dedupeRoute([ENTRY, [ENTRY[0] + 0.25, ENTRY[1]]]))
         if (rt.parts && rt.parts.badge) {
           rt.parts.badge.material = this._mat(STATUS_COLORS[a.status] || STATUS_COLORS.idle, { emissive: STATUS_COLORS[a.status] || STATUS_COLORS.idle, ei: 0.5 })
         }
@@ -1982,13 +1994,13 @@
           const spot = this._freeSpot(kind, a.key, rt.spot)
           if (spot) {
             this._takeSpot(rt, spot)
-            this._startRoute(rt, laneRoute(connectRoute([rt.pos.x, rt.pos.z], spot.route), rt.lane || 0))
+            this._startRoute(rt, lane(connect([rt.pos.x, rt.pos.z], spot.route), rt.lane || 0))
           }
         } else if (!rt.spot || rt.spot.kind !== kind) {
           const spot = this._freeSpot(kind, a.key, rt.spot)
           if (spot && spot !== rt.spot) {
             this._takeSpot(rt, spot)
-            const route = laneRoute(connectRoute([rt.pos.x, rt.pos.z], spot.route), rt.lane || 0)
+            const route = lane(connect([rt.pos.x, rt.pos.z], spot.route), rt.lane || 0)
             this._startRoute(rt, route)
           }
         }
@@ -2001,7 +2013,7 @@
       if (present.has(key) || rt.leaving) continue
       rt.leaving = true
       rt.data = Object.assign({}, rt.data, { status: "done", idle: false })
-      const route = exitRoute([rt.pos.x, rt.pos.z])
+      const route = exit([rt.pos.x, rt.pos.z])
       this._startRoute(rt, route)
       rt.exitAt = this._anim + 8
     }
@@ -2270,6 +2282,14 @@
     if (!THEMES[id]) return this
     this.id = id
     this.theme = themeFor(id)
+    const previousLayout = this.layoutRuntime
+    this.layoutRuntime = REGISTRY.runtime(this.theme.layout || "office")
+    if (previousLayout !== this.layoutRuntime && this.available && this.scene) {
+      for (const rt of this._map.values()) this.workerGroup.remove(rt.group)
+      this._map.clear()
+      this._taken.clear()
+      this.setAgents(this.agents)
+    }
     if (this.available && this.scene) {
       this._buildEnvironment()
       this._applyTime()
