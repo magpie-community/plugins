@@ -51,7 +51,7 @@ function truthy(value) {
 }
 
 export function providerName(id) {
-  return PROVIDER_NAMES[id] || id || "未知供应商";
+  return PROVIDER_NAMES[id] || id || "unknown";
 }
 
 // whoOf is the account a call went out as: the part after " as " in the
@@ -153,7 +153,7 @@ function addTo(target, row) {
   target.reasoning += row.reasoning;
   target.credits += row.credits;
   if (!row.handedOn && row.error) target.errors += 1;
-  if (row.cost == null && !row.handedOn) target.unpriced += 1;
+  if (row.cost == null) target.unpriced += 1;
   else target.cost += row.cost;
   if (row.time) {
     const ms = Date.parse(row.time);
@@ -227,7 +227,7 @@ export function aggregateUsageCSV(csv, options = {}) {
       text(field(row, "model")) ||
       text(field(row, "served_model")) ||
       text(field(row, "requested_model")) ||
-      "未记录模型";
+      "unknown model";
     const served = text(field(row, "served_model"));
 
     const cost = nullableNumber(field(row, "cost_usd"));

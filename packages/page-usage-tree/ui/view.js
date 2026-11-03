@@ -3,53 +3,19 @@
 (function (root) {
   const PERIODS = ["today", "7d", "30d", "all"];
   const SORTS = ["tokens", "cost", "calls", "name"];
-  const SHARE_WORDS = {
-    tokens: "Token 占比",
-    cost: "费用占比",
-    calls: "调用占比",
-    name: "Token 占比",
-  };
+  const I18N = globalThis.UsageI18n;
 
-  const WORDS = {
-    en: {
-      accounts: "Accounts",
-      providers: "providers",
-      calls: "Calls",
-      tokens: "Input + output tokens",
-      cost: "Estimated cost",
-      models: "models",
-      failed: "failed",
-      allOk: "all succeeded",
-      unpriced: "calls not priced",
-      noCalls: "No calls in this period",
-      noMatch: "No matching account",
-      updated: "Updated at",
-    },
-    zh: {
-      accounts: "账号",
-      providers: "供应商",
-      calls: "调用",
-      tokens: "输入 + 输出 Token",
-      cost: "估算费用",
-      models: "个模型",
-      failed: "失败",
-      allOk: "全部成功",
-      unpriced: "次调用未定价",
-      noCalls: "这个周期还没有账号用量",
-      noMatch: "没有匹配的账号",
-      updated: "更新于",
-    },
-  };
-
-  function text(lang) {
-    return WORDS[lang === "en" ? "en" : "zh"];
+  let lang = "zh";
+  function text(which) {
+    return I18N.get(which);
   }
 
   let chineseUnits = false;
   function count(value, useChinese = chineseUnits) {
     const n = Number(value) || 0;
     if (Math.abs(n) < 1000) return String(Math.round(n));
-    if (useChinese) {
+    // Magpie shortens a count in 万 and 亿 only when it speaks Chinese.
+    if (useChinese && lang !== "en") {
       if (n >= 1e8) return `${+(n / 1e8).toFixed(2)}亿`;
       if (n >= 1e4) return `${+(n / 1e4).toFixed(1)}万`;
     }
@@ -68,19 +34,30 @@
     return `${n.toFixed(2)}%`;
   }
 
+  // errorRate is errors of the calls that could have failed, so a row with
+  // no calls reads as no rate rather than as 0%.
+  function errorRate(errors, calls) {
+    const bad = Math.max(0, Number(errors) || 0);
+    const total = Math.max(0, Number(calls) || 0);
+    if (!bad || !total) return "";
+    return percent(bad / total);
+  }
+
   // shareWord names what a share is of, so a percentage keeps its meaning
   // when the list is sorted by cost or calls.
   function shareWord(sort) {
-    return SHARE_WORDS[sort] || SHARE_WORDS.tokens;
+    const share = text(lang).share;
+    return share[sort] || share.tokens;
   }
 
   function money(usd, unpriced, calls, currency, usdCny) {
     const value = Number(usd) || 0;
-    if (calls > 0 && unpriced >= calls) return "未定价";
+    const words = text(lang);
+    if (calls > 0 && unpriced >= calls) return words.unpricedOnly;
     const amount = currency === "usd" ? value : value * usdCny;
     const symbol = currency === "usd" ? "$" : "¥";
     const digits = amount >= 100 ? 0 : amount >= 1 ? 2 : 3;
-    return `≈${symbol}${amount.toFixed(digits)}`;
+    return `${symbol}${amount.toFixed(digits)}${unpriced ? "+" : ""}`;
   }
 
   function tiles(summary, lang, currency, usdCny) {
@@ -96,14 +73,16 @@
         key: "calls",
         label: w.calls,
         value: count(summary.calls),
-        sub: summary.errors ? `${count(summary.errors)} ${w.failed}` : w.allOk,
+        sub: summary.errors
+          ? `${count(summary.errors)} ${w.failed} · ${errorRate(summary.errors, summary.calls)}`
+          : w.allOk,
         bad: summary.errors > 0,
       },
       {
         key: "tokens",
         label: w.tokens,
         value: count(summary.tokens),
-        sub: `输入 ${count(summary.input)} · 输出 ${count(summary.output)} · 缓存 ${count(summary.cache)}`,
+        sub: `${w.input} ${count(summary.input)} · ${w.output} ${count(summary.output)} · ${w.cache} ${count(summary.cache)}`,
       },
       {
         key: "cost",
@@ -134,6 +113,7 @@
       bar: Math.max(0.015, account.bar),
       cost: money(account.cost, account.unpriced, account.calls, currency, usdCny),
       errors: account.errors ? `${count(account.errors)} ${w.failed}` : w.allOk,
+      errorRate: errorRate(account.errors, account.calls),
       models: account.models.length,
     }));
   }
@@ -150,6 +130,7 @@
       bar: Math.max(0.02, model.bar),
       cost: money(model.cost, model.unpriced, model.calls, currency, usdCny),
       errors: model.errors ? `${count(model.errors)} ${w.failed}` : "",
+      errorRate: errorRate(model.errors, model.calls),
       unpriced: model.unpriced ? `${count(model.unpriced)} ${w.unpriced}` : "",
       hosts: (model.hostNotes || []).map((host) => `${host.account} ${count(host.calls)}`),
     }));
@@ -161,11 +142,13 @@
     text,
     count,
     percent,
+    errorRate,
     shareWord,
     money,
     tiles,
     accounts,
     models,
     setChineseUnits(value) { chineseUnits = value === true; },
+    setLang(value) { lang = value === "en" ? "en" : "zh"; },
   };
 })(globalThis);

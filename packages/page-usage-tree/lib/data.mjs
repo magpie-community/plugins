@@ -36,6 +36,12 @@ export function cacheDir() {
   return join(homedir(), ".cache", "magpie");
 }
 
+// The service writes the pid that owns its port here, so a newer build can
+// replace an older one still holding the port.
+export function servicePidFile(port) {
+  return join(cacheDir(), "usage-tree", `service-${port}.pid`);
+}
+
 // fxRate is the CNY-per-USD rate Magpie itself uses for its CNY currency
 // preference (internal/fx). Reading Magpie's own cache keeps the numbers on
 // this page the same as the ones on Magpie's Usage page.
@@ -64,9 +70,10 @@ export function displaySettings() {
       chineseUnits: raw?.chineseUnits === true,
       lang: typeof raw?.lang === "string" ? raw.lang : "en",
       usdCny: fxRate(),
+      theme: raw?.theme === "dark" || raw?.theme === "light" ? raw.theme : "",
     };
   } catch {
-    return { currency: "usd", chineseUnits: false, lang: "en", usdCny: fxRate() };
+    return { currency: "usd", chineseUnits: false, lang: "en", usdCny: fxRate(), theme: "" };
   }
 }
 
@@ -218,7 +225,13 @@ async function readCSVWithCLI(period, binary) {
 
 async function readLedgerFallback(period) {
   const file = join(configDir(), "usage.jsonl");
-  if (!existsSync(file)) throw new Error(`Usage ledger not found: ${file}`);
+  // A fresh install has no ledger yet. That is an empty tree with a note,
+  // not an error: magpie writes the file on its first call.
+  if (!existsSync(file)) {
+    const empty = aggregateLedgerRows([], { period, accountNames: accountNames() });
+    empty.warnings.push({ code: "no-ledger" });
+    return empty;
+  }
 
   const rows = [];
   const input = createReadStream(file, { encoding: "utf8" });

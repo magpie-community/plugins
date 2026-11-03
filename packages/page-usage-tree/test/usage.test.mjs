@@ -18,6 +18,82 @@ const CSV = [
   "2026-10-31T10:07:00Z,codex,,codex,chatgpt.com,gpt-a,gpt-a,false,high,10,5,0,100,0,0.25,10,10,200,false,s8,,,,alice@example.com,8,,,,,false,,,false,,,false,,,false,,,0,0,,false,,,,",
 ].join("\n");
 
+// A row of the CSV, written by its column names, so a test cannot
+// miscount the columns.
+function row(values) {
+  return HEADER.split(",")
+    .map((name) => (values[name] ?? ""))
+    .join(",");
+}
+
+// The author's ledger: alice's try was handed on to bob after a 429, and
+// bob answered it. magpie counts one call, and no error: the try that was
+// handed on is no request of its own.
+const HANDED_ON_CSV = [
+  HEADER,
+  row({
+    time: "2026-10-31T10:10:00Z",
+    agent: "codex",
+    requested_model: "group/a",
+    provider: "codex",
+    host: "chatgpt.com as alice@example.com",
+    model: "gpt-a",
+    served_model: "gpt-a",
+    effort: "high",
+    input_tokens: "100",
+    output_tokens: "0",
+    status: "429",
+    error: "true",
+    session: "s9",
+    provider_account: "alice@example.com",
+    route_id: "9",
+    error_message: "rate limited",
+    rejected: "false",
+    tries: "2",
+    handed_on: "true",
+  }),
+  row({
+    time: "2026-10-31T10:10:01Z",
+    agent: "codex",
+    requested_model: "group/a",
+    provider: "codex",
+    host: "chatgpt.com as bob@example.com",
+    model: "gpt-a",
+    served_model: "gpt-a",
+    effort: "high",
+    input_tokens: "100",
+    output_tokens: "50",
+    cost_usd: "0.5",
+    status: "200",
+    error: "false",
+    session: "s9",
+    provider_account: "bob@example.com",
+    route_id: "9",
+    rejected: "false",
+    tries: "2",
+    handed_on: "false",
+  }),
+].join("\n");
+
+test("a try handed on to another account is no call of its own", () => {
+  const data = aggregateUsageCSV(HANDED_ON_CSV, { period: "7d" });
+
+  assert.equal(data.summary.calls, 1);
+  assert.equal(data.summary.errors, 0);
+  assert.equal(data.summary.accounts, 2);
+
+  const alice = data.accounts.find((account) => account.account === "alice@example.com");
+  const bob = data.accounts.find((account) => account.account === "bob@example.com");
+  assert.equal(alice.calls, 0);
+  assert.equal(bob.calls, 1);
+  assert.equal(bob.errors, 0);
+
+  // the tokens of both tries are counted, as magpie counts them
+  assert.equal(data.summary.input, 200);
+  assert.equal(data.summary.output, 50);
+  assert.equal(data.summary.tokens, 250);
+});
+
 test("parses quoted CSV fields", () => {
   assert.deepEqual(parseCSV('a,b,c\n1,"two, words","say ""hi"""\n'), [
     ["a", "b", "c"],

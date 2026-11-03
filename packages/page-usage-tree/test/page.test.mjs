@@ -11,6 +11,7 @@ const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
 
 // view.js is a classic script, as the page loads it.
 const scope = {};
+new Function("globalThis", read(uiDir, "i18n.js"))(scope);
 new Function("globalThis", read(uiDir, "view.js"))(scope);
 const V = scope.UsageView;
 
@@ -116,13 +117,14 @@ test("the launcher only navigates to the local service", () => {
 
 test("the summary says accounts, calls, tokens and cost", () => {
   V.setChineseUnits(true);
+  V.setLang("zh");
   const tiles = V.tiles(summary, "zh", "cny", 6.6696);
   assert.equal(tiles.length, 4);
   assert.equal(tiles[0].value, "2");
   assert.equal(tiles[1].value, "120");
   assert.equal(tiles[1].bad, true);
   assert.equal(tiles[2].value, "150万");
-  assert.match(tiles[3].value, /^≈¥/);
+  assert.match(tiles[3].value, /^¥/);
 });
 
 test("an account shows the name the user gave it", () => {
@@ -140,10 +142,33 @@ test("a model's own host difference is a note, not a second row", () => {
 
 test("numbers read short", () => {
   V.setChineseUnits(true);
+  V.setLang("zh");
   assert.equal(V.count(999), "999");
   assert.equal(V.count(1500000), "150万");
   assert.equal(V.percent(0.8), "80%");
   assert.equal(V.percent(0.004), "0.40%");
+});
+
+test("an error rate is errors of the calls", () => {
+  assert.equal(V.errorRate(3, 120), "2.5%");
+  assert.equal(V.errorRate(1, 1), "100%");
+  assert.equal(V.errorRate(0, 50), "");
+  // no calls, no rate: 0% would read as a clean record it never had
+  assert.equal(V.errorRate(2, 0), "");
+});
+
+test("english is english, chinese is chinese", () => {
+  const words = scope.UsageI18n.get("en");
+  V.setLang("en");
+  V.setChineseUnits(false);
+  assert.equal(V.count(1500000), "1.5M");
+  assert.equal(words.title, "Account usage");
+  assert.equal(words.detail, "Account details");
+  assert.match(V.tiles(summary, "en", "usd", 6.6696)[2].sub, /^In /);
+  assert.equal(V.shareWord("cost"), "Cost share");
+  V.setLang("zh");
+  assert.equal(V.shareWord("cost"), "费用占比");
+  assert.match(V.tiles(summary, "zh", "usd", 6.6696)[2].sub, /^入 /);
 });
 
 test("no function of the page calls itself", () => {
@@ -164,4 +189,31 @@ test("no function of the page calls itself", () => {
     if (!deferred) offenders.push(name);
   }
   assert.deepEqual(offenders, []);
+});
+
+test("sorting uses the segmented control and updates its selected state", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(source, /\$\("sort"\)\.addEventListener\("click"/);
+  assert.match(source, /state\.sort = validSorts\.has\(value\) \? value : "tokens";[\s\S]*?renderPeriod\(\);[\s\S]*?renderAccounts\(\);/);
+  assert.match(source, /button\.setAttribute\("aria-selected", String\(button\.dataset\.sort === state\.sort\)\)/);
+});
+
+test("the page follows magpie's language and settings without a reload", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(source, /async function readSettings\(\)/);
+  assert.match(source, /new URL\("api\/settings", location\.href\)/);
+  assert.match(source, /function applyDisplay\(display\)/);
+  assert.match(source, /W = globalThis\.UsageI18n\.get\(lang\)/);
+  // Nothing is polled: the theme message carries the language, and the read
+  // beside it covers the currency and the units.
+  assert.doesNotMatch(source, /setInterval/);
+  assert.match(source, /message\.event !== "theme"/);
+  assert.match(source, /event\.source !== window\.parent/);
+  assert.match(source, /applyThemeEvent\(message\.data\);[\s\S]*?readSettings\(\);/);
+});
+
+test("the service answers with magpie's own settings", async () => {
+  const source = readFileSync(join(dir, "lib", "server.mjs"), "utf8");
+  assert.match(source, /url\.pathname === "\/api\/settings"/);
+  assert.match(source, /json\(res, 200, displaySettings\(\)\)/);
 });

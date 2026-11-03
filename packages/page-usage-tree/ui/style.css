@@ -156,6 +156,7 @@ input, select {
 
 .icon {
   display: grid;
+  position: relative;
   width: 26px;
   height: 26px;
   padding: 0;
@@ -173,8 +174,61 @@ input, select {
   stroke-linejoin: round;
 }
 
+/* While a read runs the button turns accent: with reduced motion the spin
+   below is cut short, and the colour is what still says "reading". The
+   button is disabled then, so the shared `button:disabled { opacity: .5 }`
+   would fade the spin away: this keeps it at full strength. */
+.icon.busy,
+.icon.busy:disabled {
+  opacity: 1;
+  color: var(--magpie-accent);
+  border-color: color-mix(in srgb, var(--magpie-accent) 35%, var(--magpie-line));
+}
+
+/* A turning refresh glyph reads as nothing: its circle is all but
+   symmetrical, and at 14px the tick is too small to notice. A ring under
+   it says little more at that size, so the read is shown twice: the
+   button takes the accent, and a thin bar under the head runs a band
+   across, magpie's own indeterminate progress (.u__bar:indeterminate). */
 .icon.busy svg {
-  animation: spin .85s linear infinite;
+  opacity: .45;
+}
+
+/* ---- the read in progress: a band crossing a hairline ------------------- */
+
+.progress {
+  position: relative;
+  height: 3px;
+  margin: -2px 0 10px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--magpie-line) 40%, transparent);
+}
+
+.progress::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 28%;
+  border-radius: 2px;
+  background: var(--magpie-accent);
+  transform: translateX(-100%);
+  animation: sweep .95s ease-in-out infinite;
+}
+
+@keyframes sweep {
+  to { transform: translateX(360%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress::before {
+    width: 100%;
+    transform: none;
+    animation: none;
+    opacity: .55;
+  }
 }
 
 /* ---- the totals: magpie's .stats, four cells on one card ---------------- */
@@ -674,7 +728,9 @@ input, select {
 .model-head,
 .model-row {
   display: grid;
-  grid-template-columns: minmax(170px, 1.2fr) 64px 82px minmax(72px, 0.55fr) 46px 82px 76px;
+  /* the calls column holds "N failed · x.xx%" on one line, so it is wider
+     than the plain count the provider and account rows carry */
+  grid-template-columns: minmax(170px, 1.2fr) 96px 82px minmax(72px, 0.55fr) 46px 82px 76px;
   gap: 12px;
   align-items: center;
 }
@@ -795,7 +851,7 @@ input, select {
 
   .model-head,
   .model-row {
-    grid-template-columns: minmax(150px, 1fr) 60px 74px minmax(80px, 0.7fr) 44px 74px;
+    grid-template-columns: minmax(150px, 1fr) 92px 74px minmax(80px, 0.7fr) 44px 74px;
   }
 
   .model-head > :last-child,
