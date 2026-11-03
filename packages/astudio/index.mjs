@@ -179,12 +179,8 @@ function readDesktopCredential({ env = process.env, homedir = osHomedir(), readF
 
   const problems = []
   for (const path of sessionPaths) {
-    let raw
-    try {
-      raw = readFile(path)
-    } catch {
-      continue
-    }
+    const raw = readFileOrNull(path, readFile, problems)
+    if (raw === null) continue
     let session
     try {
       session = JSON.parse(raw)
@@ -214,19 +210,34 @@ function readDesktopCredential({ env = process.env, homedir = osHomedir(), readF
   }
 
   for (const path of configPaths) {
-    let raw
-    try {
-      raw = readFile(path)
-    } catch {
-      continue
-    }
+    const raw = readFileOrNull(path, readFile, problems)
+    if (raw === null) continue
     const parsed = readAcodeConfigToken(raw)
     if (parsed) return { ...parsed, session: undefined, source: path }
     problems.push(`${path} 里没有 astron-spark 凭据`)
   }
 
   const detail = problems.length ? `：${problems.join("；")}` : ""
-  throw new Error(`未找到 AStudio 桌面端登录态${detail}。请先启动 AStudio 并登录，或改用「粘贴 modelBearerToken」方式。`)
+  // 「什么都没找到」与「有数据但读不出来」分开说：后者的用户多半已经装好了。
+  const message = problems.length
+    ? `AStudio 桌面端登录态读不出来${detail}。请先启动 AStudio 并登录，或改用「粘贴 modelBearerToken」方式。`
+    : "未找到 AStudio 桌面端登录态。请先启动 AStudio 并登录，或改用「粘贴 modelBearerToken」方式。"
+  throw Object.assign(
+    new Error(message),
+    // problems 为空 = 这些路径上什么都没有（新机器）；非空 = 有 AStudio 的数据但用不了。
+    { code: problems.length ? "unreadable" : "missing" },
+  )
+}
+
+// readFileOrNull 读一个候选文件：不存在（ENOENT）算「这台机器上没有」，别的读盘
+// 错误（权限、I/O）要留进 problems，否则用户只会看到「没装」而看不出是读不了。
+function readFileOrNull(path, readFile, problems) {
+  try {
+    return readFile(path)
+  } catch (error) {
+    if (error?.code !== "ENOENT") problems.push(`${path} 读取失败（${error?.message ?? "未知错误"}）`)
+    return null
+  }
 }
 
 // 桌面端 buildAstronCookieHeader 的等价实现（agent.xfyun.cn 的 Cookie 会话）。
@@ -309,15 +320,25 @@ function probeDesktopCredential(deps = {}) {
   }
 }
 
-// waitForDesktopCredential 轮询磁盘，等用户在本机装好并登录桌面端；超时返回 null。
-async function waitForDesktopCredential({ read, sleep, now, waitMs = DESKTOP_WAIT_MS, stepMs = DESKTOP_POLL_MS }) {
+// waitForDesktopCredential 轮询磁盘，等用户在本机装好并登录桌面端。返回
+// {status:"ready", result} / {status:"timeout", error} / {status:"aborted"}。
+async function waitForDesktopCredential({ read, sleep, now, signal, waitMs = DESKTOP_WAIT_MS, stepMs = DESKTOP_POLL_MS }) {
   const deadline = now() + waitMs
   for (;;) {
+    // magpie 取消登录时会 abort 这个 signal，别再空转剩下的几分钟。
+    if (signal?.aborted) return { status: "aborted" }
     const trial = read()
-    if (trial.cred) return authResult(trial.cred)
-    if (now() >= deadline) return null
+    if (trial.cred) return { status: "ready", result: authResult(trial.cred) }
+    if (now() >= deadline) return { status: "timeout", error: trial.error }
     await sleep(stepMs)
   }
+}
+
+// reasonOf 把读盘失败压成一句给用户看的话（超时失败时带上最后一次的原因）。
+function reasonOf(error) {
+  return error?.code === "unreadable" || error?.code === "banned"
+    ? error.message
+    : "本机没有 AStudio 桌面端登录态"
 }
 
 function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir = osHomedir(), registryQuery, readFileImpl, sleepImpl, nowMsImpl = () => Date.now() } = {}) {
@@ -348,7 +369,7 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
           // 读得到就立刻完成（url 留空）；读不到就给出官网链接，边等边让用户去装。
           type: "oauth",
           label: "读取 AStudio 桌面端登录态",
-          async authorize() {
+          async authorize(_inputs, { signal } = {}) {
             const read = () => probeDesktopCredential({ env, homedir, registryQuery, readFileImpl })
             const probe = read()
             if (probe.cred) {
@@ -359,18 +380,23 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
                 callback: async () => authResult(probe.cred),
               }
             }
-            if (probe.error?.code === "banned") {
-              return { type: "failed", error: probe.error.message }
-            }
+            // 硬失败：抛错让宿主把原因原样当登录失败显示（0.1.2810 也认 {type:"failed"}，
+            // 但抛错在任何宿主版本上都成立），不能落到下面那条「装上吧」的说明里。
+            if (probe.error?.code === "banned") throw new Error(probe.error.message)
             return {
               url: OFFICIAL_SITE,
-              instructions: "本机没有找到 AStudio 桌面端登录态。装上并登录 AStudio 桌面端就好——上方链接是官网，可下载；登录后这一步会自动完成。已有 token 的话，也可以改用「粘贴 modelBearerToken」。",
+              instructions:
+                probe.error?.code === "unreadable"
+                  ? `${probe.error.message}（上方链接是官网；在 AStudio 里登录或修好后，这一步会自动完成。）`
+                  : "本机没有找到 AStudio 桌面端登录态。装上并登录 AStudio 桌面端就好——上方链接是官网，可下载；登录后这一步会自动完成。已有 token 的话，也可以改用「粘贴 modelBearerToken」。",
               method: "auto",
-              callback: async () => {
-                const result = await waitForDesktopCredential({ read, sleep, now: nowMsImpl })
-                return result ?? {
+              callback: async (_code, { signal: callbackSignal } = {}) => {
+                const waited = await waitForDesktopCredential({ read, sleep, now: nowMsImpl, signal: callbackSignal ?? signal })
+                if (waited.status === "ready") return waited.result
+                if (waited.status === "aborted") return { type: "failed", error: "登录已取消" }
+                return {
                   type: "failed",
-                  error: "仍未检测到 AStudio 桌面端登录态。安装并登录 AStudio 后，重新点一次「读取 AStudio 桌面端登录态」即可。",
+                  error: `仍未检测到 AStudio 桌面端登录态（最后一次：${reasonOf(waited.error)}）。装上或登录 AStudio 后，重新点一次「读取 AStudio 桌面端登录态」即可。`,
                 }
               },
             }
@@ -598,6 +624,8 @@ export const _internal = {
   readDesktopCredential,
   probeDesktopCredential,
   waitForDesktopCredential,
+  readFileOrNull,
+  reasonOf,
   authResult,
   readAcodeConfigToken,
   registryDataRoots,

@@ -12,6 +12,7 @@ const {
   decryptSessionWithKey,
   readDesktopCredential,
   isExpiredJwt,
+  dpapiUnprotect,
   OFFICIAL_SITE,
   DESKTOP_WAIT_MS,
   CHAT_GATEWAY_BASE,
@@ -133,10 +134,21 @@ test("readDesktopCredential rejects expired logins with an actionable message", 
   )
 })
 
-test("readDesktopCredential lists what it could not read", async () => {
+test("readDesktopCredential tells an empty machine from an unreadable one", async () => {
+  // 什么都没有 = missing（新机器），不该把「这台机器上没有」说成读不出来
   await assert.rejects(
     readDesktopCredential({ platform: "win32", env: { APPDATA: "/w/Roaming" }, homedir: "/home/t", readFileImpl: fixtureFs({}) }),
-    (e) => /未找到 Agnes Code 桌面端登录态/.test(e.message) && /AgnesCode/.test(e.message),
+    (e) => e.code === "missing" && !/AgnesCode（/.test(e.message),
+  )
+  // 有文件但读不出来 = unreadable，原因要留在 message 里给用户看
+  await assert.rejects(
+    readDesktopCredential({
+      platform: "win32",
+      env: { APPDATA: "/w/Roaming" },
+      homedir: "/home/t",
+      readFileImpl: fixtureFs({ [pjoin("/w/Roaming", "AgnesCode", "Local State")]: Buffer.from("{ 不是 JSON") }),
+    }),
+    (e) => e.code === "unreadable" && /不是有效|Unexpected|JSON/i.test(e.message),
   )
 })
 
@@ -225,6 +237,7 @@ test("desktop login method points at the official site and waits when the sessio
     readFileImpl: fixtureFs({}),
     sleepImpl: async (ms) => {
       slept.push(ms)
+      if (slept.length > 400) throw new Error("轮询没有封顶")
       clock += ms
     },
     nowMsImpl: () => clock,
@@ -267,9 +280,127 @@ test("desktop login method completes on its own once the desktop logs in", async
 
 test("desktop login method refuses to poll on non-Windows", async () => {
   const plugin = createPlugin({ platform: "linux", homedir: "/home/t", readFileImpl: fixtureFs({}) })
-  const out = await plugin.auth.methods[0].authorize()
-  assert.equal(out.type, "failed")
-  assert.match(out.error, /粘贴 accessToken/)
+  // 宿主 host.js 不看 oauth authorize 结果里的 type，只看抛出的 message / callback；
+  // 抛错在任何宿主版本上都把原因原样交给用户。
+  await assert.rejects(() => plugin.auth.methods[0].authorize({}, {}), /粘贴 accessToken/)
+})
+
+test("readDesktopCredential keeps a read error instead of calling the machine empty", async () => {
+  await assert.rejects(
+    readDesktopCredential({
+      platform: "win32",
+      env: WIN_ENV,
+      readFileImpl: () => {
+        throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" })
+      },
+    }),
+    (e) => e.code === "unreadable" && /读取失败|EACCES/.test(e.message),
+  )
+})
+
+test("desktop login method explains an expired or unreadable session", async () => {
+  const key = randomBytes(32)
+  const expired = `h.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 60 })).toString("base64url")}.s`
+  const plugin = createPlugin({
+    platform: "win32",
+    env: WIN_ENV,
+    dpapiImpl: async (blob) => blob,
+    readFileImpl: fixtureFs(winFiles(key, { accessToken: expired, userInfo: { username: "tester" } })),
+  })
+  const out = await plugin.auth.methods[0].authorize({}, {})
+  assert.equal(out.url, OFFICIAL_SITE)
+  assert.match(out.instructions, /登录已过期/)
+  assert.doesNotMatch(out.instructions, /本机没有读到/)
+})
+
+test("desktop login method reports the last reason when it times out", async () => {
+  const key = randomBytes(32)
+  // 假时钟从「现在」起步：JWT 才算过期，deadline 也还能走到
+  let clock = Date.now()
+  const slept = []
+  const expired = `h.${Buffer.from(JSON.stringify({ exp: Math.floor(clock / 1000) - 60 })).toString("base64url")}.s`
+  const plugin = createPlugin({
+    platform: "win32",
+    env: WIN_ENV,
+    dpapiImpl: async (blob) => blob,
+    readFileImpl: fixtureFs(winFiles(key, { accessToken: expired, userInfo: { username: "t" } })),
+    sleepImpl: async (ms) => {
+      slept.push(ms)
+      if (slept.length > 400) throw new Error("轮询没有封顶")
+      clock += ms
+    },
+    nowMsImpl: () => clock,
+  })
+  const out = await plugin.auth.methods[0].authorize({}, {})
+  const failed = await out.callback(undefined, {})
+  assert.equal(failed.type, "failed")
+  assert.match(failed.error, /登录已过期/)
+})
+
+test("desktop login method stops polling when the sign-in is cancelled", async () => {
+  let clock = 0
+  const slept = []
+  const controller = new AbortController()
+  const plugin = createPlugin({
+    platform: "win32",
+    env: WIN_ENV,
+    dpapiImpl: async (blob) => blob,
+    readFileImpl: fixtureFs({}),
+    sleepImpl: async (ms) => {
+      slept.push(ms)
+      clock += ms
+      controller.abort()
+    },
+    nowMsImpl: () => clock,
+  })
+  const out = await plugin.auth.methods[0].authorize({}, { signal: controller.signal })
+  const failed = await out.callback(undefined, { signal: controller.signal })
+  assert.equal(failed.type, "failed")
+  assert.match(failed.error, /取消/)
+  assert.equal(slept.length, 1)
+})
+
+test("the desktop master key is decrypted once per sign-in, not once per poll", async () => {
+  const key = randomBytes(32)
+  // 会话读得出来、但 JWT 已过期 ⇒ 每次轮询都会走到解密那一步，缓存与不缓存能分开
+  let clock = Date.now()
+  const slept = []
+  const expired = `h.${Buffer.from(JSON.stringify({ exp: Math.floor(clock / 1000) - 60 })).toString("base64url")}.s`
+  let dpapiCalls = 0
+  const plugin = createPlugin({
+    platform: "win32",
+    env: WIN_ENV,
+    dpapiImpl: async (blob) => {
+      dpapiCalls += 1
+      return blob
+    },
+    sleepImpl: async (ms) => {
+      slept.push(ms)
+      if (slept.length > 400) throw new Error("轮询没有封顶")
+      clock += ms
+    },
+    nowMsImpl: () => clock,
+    readFileImpl: fixtureFs(winFiles(key, { accessToken: expired, userInfo: { username: "late" } })),
+  })
+  const out = await plugin.auth.methods[0].authorize({}, {})
+  assert.equal((await out.callback(undefined, {})).type, "failed")
+  assert.ok(slept.length > 1, "应该轮询了不止一次")
+  assert.equal(dpapiCalls, 1) // 轮询再多次，主密钥也只解一次
+})
+
+test("dpapiUnprotect kills a stuck PowerShell instead of waiting forever", async () => {
+  const { EventEmitter } = await import("node:events")
+  const fakeSpawn = () => {
+    const child = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.kill = () => child.emit("close", null)
+    return child
+  }
+  const plugin = createPlugin({ platform: "win32" })
+  // 万一超时保护被删掉，这里也不能挂死：guard 先报红
+  const guard = new Promise((_, reject) => setTimeout(() => reject(new Error("dpapiUnprotect 挂住了：子进程没被杀掉")), 300))
+  await assert.rejects(Promise.race([dpapiUnprotect(Buffer.from("blob"), fakeSpawn, { timeoutMs: 0 }), guard]), /DPAPI 解密超时/)
+  assert.equal(plugin.auth.provider, ID) // 顺手确认插件实例仍然可建
 })
 
 test("config hook declares the chat-completions provider without clobbering user config", async () => {

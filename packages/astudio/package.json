@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-astudio-auth",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "AStudio (iFLYTEK Astron Studio) desktop sign-in as an OpenCode/magpie provider: Responses model gateway with live model catalog",
   "type": "module",
   "main": "./opencode.mjs",

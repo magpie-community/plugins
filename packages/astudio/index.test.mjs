@@ -283,6 +283,8 @@ test("desktop login method points at the official site and waits when nothing is
     readFileImpl: fakeFs({}),
     sleepImpl: async (ms) => {
       slept.push(ms)
+      // 变异把 deadline 判断删掉时这里立刻报红，而不是让假 sleep 把事件循环占死。
+      if (slept.length > 400) throw new Error("轮询没有封顶")
       clock += ms
     },
     nowMsImpl: () => clock,
@@ -333,7 +335,8 @@ test("waitForDesktopCredential stops at the deadline", async () => {
     waitMs: 5000,
     stepMs: 2000,
   })
-  assert.equal(result, null)
+  assert.equal(result.status, "timeout")
+  assert.equal(result.error.message, "没找到") // 超时要把最后一次的原因带出来
   assert.deepEqual(slept, [2000, 2000, 2000])
 })
 
@@ -345,9 +348,75 @@ test("desktop login method refuses banned accounts instead of offering the site"
       "D:\astudio/userdata/astron-session.json": JSON.stringify({ banned: true, modelBearerToken: "tok" }),
     }),
   })
-  const out = await plugin.auth.methods[0].authorize({})
-  assert.equal(out.type, "failed")
-  assert.match(out.error, /封禁/)
+  // 宿主 host.js 不看 oauth authorize 结果里的 type，只看它抛出的 message 或 callback；
+  // 抛错在任何宿主版本上都把原因原样交给用户。
+  await assert.rejects(() => plugin.auth.methods[0].authorize({}, {}), /封禁/)
+})
+
+test("desktop login method explains an unreadable session instead of pointing at install", async () => {
+  const plugin = createPlugin({
+    env: { ASTUDIO_HOME: "D:\astudio" },
+    registryQuery: () => null,
+    readFileImpl: fakeFs({ "D:\astudio/userdata/astron-session.json": "{ 不是 JSON" }),
+  })
+  const out = await plugin.auth.methods[0].authorize({}, {})
+  assert.equal(out.url, OFFICIAL_SITE)
+  assert.match(out.instructions, /不是有效 JSON/)
+  assert.doesNotMatch(out.instructions, /本机没有找到/)
+})
+
+test("desktop login method keeps a read error instead of calling the machine empty", async () => {
+  const plugin = createPlugin({
+    env: { ASTUDIO_HOME: "D:\\astudio" },
+    registryQuery: () => null,
+    readFileImpl: () => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" })
+    },
+  })
+  const out = await plugin.auth.methods[0].authorize({}, {})
+  assert.match(out.instructions, /读取失败.*EACCES/s) // 读不了 ≠ 没装
+})
+
+test("desktop login method reports the last reason when it times out", async () => {
+  let clock = 0
+  const slept = []
+  const plugin = createPlugin({
+    env: { ASTUDIO_HOME: "D:\astudio" },
+    registryQuery: () => null,
+    readFileImpl: fakeFs({ "D:\astudio/userdata/astron-session.json": "{}" }),
+    sleepImpl: async (ms) => {
+      slept.push(ms)
+      if (slept.length > 400) throw new Error("轮询没有封顶")
+      clock += ms
+    },
+    nowMsImpl: () => clock,
+  })
+  const out = await plugin.auth.methods[0].authorize({}, {})
+  const failed = await out.callback(undefined, {})
+  assert.equal(failed.type, "failed")
+  assert.match(failed.error, /没有 modelBearerToken.token/)
+})
+
+test("desktop login method stops polling when the sign-in is cancelled", async () => {
+  let clock = 0
+  const slept = []
+  const controller = new AbortController()
+  const plugin = createPlugin({
+    env: {},
+    registryQuery: () => null,
+    readFileImpl: fakeFs({}),
+    sleepImpl: async (ms) => {
+      slept.push(ms)
+      clock += ms
+      controller.abort()
+    },
+    nowMsImpl: () => clock,
+  })
+  const out = await plugin.auth.methods[0].authorize({}, { signal: controller.signal })
+  const failed = await out.callback(undefined, { signal: controller.signal })
+  assert.equal(failed.type, "failed")
+  assert.match(failed.error, /取消/)
+  assert.equal(slept.length, 1) // 取消后不再空转
 })
 
 test("desktop credential carries the cookie session for points and check-in", () => {
