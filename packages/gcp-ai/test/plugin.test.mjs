@@ -1153,7 +1153,8 @@ test("account settings beat the row, and row settings beat environment defaults"
 })
 
 test("the usage hook takes the billing, currency and profile maps from the provider's or the plugin's options", async () => {
-  const auth = { accountId: "reader@example.com" }
+  // No account: nothing asks gcloud for a token before the options are read.
+  const auth = { type: "success" }
   for (const [name, bad, wanted] of [
     ["billingAccounts", { "example-project": "nope" }, /billingAccounts: /],
     ["billingCurrencies", { "AAAAAA-BBBBBB-CCCCCC": "EUR" }, /billingCurrencies: "EUR" is not a currency/],
