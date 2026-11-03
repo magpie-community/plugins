@@ -1096,14 +1096,15 @@ function makePlugin(site) {
 }
 
 // Tools run outside a chat account's scope. Read the explicitly selected
-// Magpie account afresh for each call; its primary account is the default.
+// account afresh for each call; the site's first stored account is the default.
 function createToolRequest({ client, directory }) {
   const sessions = new Map()
   return async (siteID, path, body, { signal, timeoutMs = 30000, account } = {}) => {
     const site = SITES[siteID]
     if (!site) throw new Error("unknown MiniMax Code site")
-    const id = account ?? site.id
-    if (typeof id !== "string" || !(id === site.id || id.startsWith(site.id + "#") && id.length > site.id.length + 1))
+    let id = account
+    const belongs = (key) => typeof key === "string" && (key === site.id || key.startsWith(site.id + "#") && key.length > site.id.length + 1)
+    if (id !== undefined && !belongs(id))
       throw new Error("account must belong to the selected MiniMax Code site")
     if (!directory) throw new Error("MiniMax tools require Magpie's config directory")
     const abort = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
@@ -1129,8 +1130,11 @@ function createToolRequest({ client, directory }) {
         throw new Error("MiniMax tools: Magpie's plugin-auth.json could not be read")
       }
       if (!store) throw new Error("MiniMax tools: invalid Magpie account store")
+      // Resolve once per call so a retry stays on the same account.
+      id ??= Object.keys(store).find(belongs) ?? site.id
       return Object.hasOwn(store, id) ? store[id] : undefined
     }
+    await wait(getAuth())
     if (!sessions.has(id)) sessions.set(id, accountSession(site, client, id))
     const fresh = sessions.get(id)
     let { a } = await wait(fresh(getAuth))
@@ -1146,7 +1150,7 @@ function createToolRequest({ client, directory }) {
         url: new URL(path, site.llm).href,
         init: { method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "MiniMaxAgent", Authorization: "Bearer " + auth.access }, body: JSON.stringify(body) },
       }
-      return fetch(req.url, { ...req.init, signal: abort })
+      return siteFetch(site, req.url, { ...req.init, signal: abort }, site.name + " tool API")
     }
     try {
       let res = await send(a)

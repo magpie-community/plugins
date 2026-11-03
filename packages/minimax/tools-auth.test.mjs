@@ -32,6 +32,89 @@ async function fixture(store = { "minimax-code": auth() }) {
 }
 const path = "/minimax-cloud/api/v1/connectors/tools/call"
 
+test("default selection follows the first stored account and refresh saves its exact key", async () => {
+  f = fakeMiniMax()
+  f.route("POST /oauth2/token", () => json({ access_token: "default-new", refresh_token: "default-refresh-new", expires_in: 3600 }))
+  f.route("POST " + path, () => json({}))
+  for (const site of ["minimax-code", "minimax-code-global"]) {
+    const key = site + "#first"
+    const t = await fixture({
+      [site + "-other#unrelated"]: auth("unrelated"),
+      [key]: { ...auth("default-old"), refresh: "default-refresh-" + site, expires: Date.now() - 1 },
+      [site]: auth("bare"),
+    })
+    await t.request(site, path, {})
+    expect(f.seen.at(-1).headers.get("authorization")).toBe("Bearer default-new")
+    expect(t.saves.map(s => s.id)).toEqual([key])
+    delete t.store[site]
+    await t.saveStore()
+    await t.request(site, path, {})
+    expect(f.seen.at(-1).headers.get("authorization")).toBe("Bearer default-new")
+    delete t.store[key]
+    t.store[site + "#next"] = auth("next-default")
+    await t.saveStore()
+    await t.request(site, path, {})
+    expect(f.seen.at(-1).headers.get("authorization")).toBe("Bearer next-default")
+  }
+})
+
+test("an account removed during a 401 retry does not switch to another account", async () => {
+  f = fakeMiniMax()
+  const key = "minimax-code#first"
+  const t = await fixture({ [key]: auth(), "minimax-code#second": auth("second") })
+  f.route("POST " + path, async () => {
+    delete t.store[key]
+    await t.saveStore()
+    return json({}, 401)
+  })
+  await expect(t.request("minimax-code", path, {})).rejects.toThrow("isn't signed in")
+  expect(f.seen).toHaveLength(1)
+  expect(t.saves).toHaveLength(0)
+})
+
+test("tool redirects to another host stop before a 401 or token rotation", async () => {
+  f = fakeMiniMax()
+  let targetCalls = 0
+  const target = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch() { targetCalls++; return json({ error: "invalid access token" }, 401) } })
+  try {
+    const endpoints = ["/mavis/api/v1/mcp/web_search", "/minimax-cloud/api/v1/connectors/connected-tools/list", path]
+    const t = await fixture({ "minimax-code": auth(), "minimax-code-global": auth("global") })
+    for (const status of [307, 308]) {
+      for (const endpoint of endpoints) {
+        f.route("POST " + endpoint, () => new Response(null, { status, headers: { location: target.url.href + "refused" } }))
+        for (const site of ["minimax-code", "minimax-code-global"]) {
+          for (let call = 0; call < 3; call++) {
+            const e = await t.request(site, endpoint, {}).catch(e => e)
+            expect(e.status).toBe(status)
+            expect(e.message).toContain("sent the request on to")
+            expect(e.message).toContain("proxy")
+            if (site === "minimax-code-global") expect(e.message).toContain("outside mainland China")
+          }
+        }
+      }
+    }
+    expect(targetCalls).toBe(0)
+    expect(t.saves).toHaveLength(0)
+    expect(f.seen.filter(r => r.path === "/oauth2/token")).toHaveLength(0)
+    expect(f.seen).toHaveLength(36)
+  } finally { target.stop(true) }
+})
+
+test("same-host tool redirects preserve POST body and authorization", async () => {
+  f = fakeMiniMax()
+  const t = await fixture()
+  f.route("POST /tool-destination", () => json({ result_json: "{}" }))
+  for (const status of [307, 308]) {
+    f.route("POST " + path, () => new Response(null, { status, headers: { location: "/tool-destination" } }))
+    expect(await t.request("minimax-code", path, { arguments_json: "{}" })).toEqual({ result_json: "{}" })
+    expect(f.seen.at(-1).path).toBe("/tool-destination")
+    expect(f.seen.at(-1).method).toBe("POST")
+    expect(f.seen.at(-1).json).toEqual({ arguments_json: "{}" })
+    expect(f.seen.at(-1).headers.get("authorization")).toBe("Bearer tool-token")
+  }
+  expect(t.saves).toHaveLength(0)
+})
+
 test("tools use their Magpie account and the verified Connector host", async () => {
   f = fakeMiniMax()
   f.route("POST " + path, () => json({ result_json: "{}" }))
@@ -56,9 +139,12 @@ test("tools can select a second account and refresh saves that exact key", async
   expect(t.store["minimax-code"]).toEqual(primary)
 })
 
-test("a missing primary account never falls back to another account or site", async () => {
+test("an explicitly missing account stays missing and accounts stay within their site", async () => {
   const t = await fixture({ "minimax-code#second": auth(), "minimax-code-global": auth("global") })
-  await expect(t.request("minimax-code", path, {})).rejects.toThrow("isn't signed in")
+  await expect(t.request("minimax-code", path, {}, { account: "minimax-code" })).rejects.toThrow("isn't signed in")
+  await expect(t.request("minimax-code", path, {}, { account: "minimax-code#missing" })).rejects.toThrow("isn't signed in")
+  const otherSite = await fixture({ "minimax-code-global": auth("global") })
+  await expect(otherSite.request("minimax-code", path, {})).rejects.toThrow("isn't signed in")
   await expect(t.request("minimax-code", path, {}, { account: "minimax-code-global" })).rejects.toThrow("selected MiniMax Code site")
   await expect(t.request("not-a-site", path, {})).rejects.toThrow("unknown")
 })
@@ -138,7 +224,7 @@ test("the OpenCode entry retains only its two supported chat plugins", () => {
   expect(Object.keys(openCode).sort()).toEqual(["MiniMaxCodeAuthPlugin", "MiniMaxCodeGlobalAuthPlugin"])
 })
 
-test("the actual plugin exports all 21 tools flat and performs a complete generation call", async () => {
+test("the actual plugin exports all 20 tools flat and performs a complete generation call", async () => {
   f = fakeMiniMax()
   f.route("POST /minimax-cloud/api/v1/connectors/connected-tools/list", () => json({
     tools: [{ provider: "matrix", provider_tool_name: "matrix_generate_image", runtime_tool_name: "connector__matrix__generate_image", input_schema_json: JSON.stringify({ type: "object" }) }], partial: false, provider_failures: [],
@@ -146,8 +232,10 @@ test("the actual plugin exports all 21 tools flat and performs a complete genera
   f.route("POST " + path, () => json({ result_json: JSON.stringify({ code: 0, success_items: [{ node_id: "fake-node", file_name: "fake.png" }] }) }))
   const t = await fixture()
   const { tool } = await MiniMaxCodeToolsPlugin({ directory: dirs.at(-1), client: t.client })
-  expect(Object.keys(tool)).toHaveLength(21)
-  for (const name of ["generate_image", "submit_video_generation", "query_video_generation", "get_asset_url", "web_search", "web_fetch"]) {
+  expect(Object.keys(tool)).toHaveLength(20)
+  expect(tool.web_fetch).toBeUndefined()
+  for (const def of Object.values(tool)) expect(JSON.stringify({ description: def.description, args: def.args })).not.toMatch(/magpie/i)
+  for (const name of ["generate_image", "submit_video_generation", "query_video_generation", "get_asset_url", "web_search"]) {
     expect(typeof tool[name]?.execute).toBe("function")
     expect(tool[name].args.type).toBe("object")
   }

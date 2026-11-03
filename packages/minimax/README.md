@@ -70,7 +70,7 @@ that server to your agent to use the tools with any of its chat models.
 
 | Tools | What they do |
 |---|---|
-| `web_search`, `web_fetch` | Native web/news/video/place/shopping search and direct webpage retrieval |
+| `web_search` | Native web/news/video/place/shopping search |
 | `generate_image` | Text-to-image and image editing from reference URLs |
 | `submit_video_generation`, `query_video_generation` | Submit H3, H3 Max or Hailuo video tasks, then check their progress |
 | `synthesize_speech`, `batch_text_to_audio`, `get_voice_list` | Speech synthesis and voice selection |
@@ -85,12 +85,20 @@ On the combined MCP server these are named `minimax_generate_image`,
 `minimax_submit_video_generation`, and so on. In the Library's routed server,
 the separator is `minimax__generate_image`.
 
+Webpage reading is available through Magpie's search MCP server, whose
+`web_fetch` protects loopback and private network addresses.
+
 Account-backed tools accept `site`: `minimax-code` (China, the default) or
-`minimax-code-global`. These tools read the chosen site's primary account from Magpie's
-`plugin-auth.json` on each call. To use a second account, set `account` to
-its full stored key, such as `minimax-code#xxxxxx`. The selected account's
-tokens are renewed by the same refresh logic as chat. A missing account
-asks you to sign in; account selection stays explicit across calls.
+`minimax-code-global`. These tools read the chosen site's first stored account
+from Magpie's `plugin-auth.json` on each call. To choose a particular account,
+set `account` to its full stored key, such as `minimax-code#xxxxxx`. The
+selected account's tokens are renewed by the same refresh logic as chat.
+A missing account asks you to sign in; the selected account stays fixed
+during a call and its authentication retry.
+
+Tool requests use the same redirect handling as chat: redirects within
+the same host are followed, while a redirect to another host returns a
+site/proxy hint and preserves the account's refresh token.
 
 The gateway status (`base_resp.status_code`) and the tool payload status
 (`code`) are checked independently. A successful gateway response can

@@ -199,7 +199,7 @@ const siteArg = {
 }
 const accountArg = {
   type: "string",
-  description: "The full stored account key (a Magpie credential key, e.g. minimax-code or minimax-code#xxxxxx). Omit it for the site's primary account; another stored account of the same site is used only when named here — nothing silently spends a different account's quota.",
+  description: "The full stored account key, e.g. minimax-code or minimax-code#xxxxxx. Defaults to the selected site's first stored account. The selected account stays fixed during the call and any authentication retry.",
 }
 
 function routing(args, callCtx) {
