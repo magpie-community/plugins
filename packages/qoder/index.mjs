@@ -2692,7 +2692,11 @@ function parseUsage(env) {
     const used = b.used != null ? b.used : total - b.remaining
     if (used < 0) return
     const unit = b.unit || "credits"
-    const w = { name: b.name || name, used: Math.min(100, (100 * used) / total), display: `${gfmt(used)} / ${gfmt(total)} ${unit}` }
+    // the count too, so magpie says "183 / 2,000 credits left" as Qoder's
+    // own panel does, not a bare share (jzing.draw on Discord); the plan's
+    // credits refresh when the plan says, as the panel's "refreshes on" does
+    const w = { name: b.name || name, used: Math.min(100, (100 * used) / total), display: `${gfmt(used)} / ${gfmt(total)} ${unit}`, amount: used, limit: total, unit }
+    if (name === "Credits" && until) w.resetsAt = until
     out.windows.push(w)
     if (SPENT_IN_TURN.has(name)) turn.push({ w, used: Math.min(used, total), total, unit })
   }
@@ -2705,7 +2709,7 @@ function parseUsage(env) {
     const used = turn.reduce((a, p) => a + p.used, 0)
     const total = turn.reduce((a, p) => a + p.total, 0)
     for (const p of turn) p.w.aside = true
-    out.windows.unshift({ name: "Total credits", used: Math.min(100, (100 * used) / total), display: `${gfmt(used)} / ${gfmt(total)} ${turn[0].unit}` })
+    out.windows.unshift({ name: "Total credits", used: Math.min(100, (100 * used) / total), display: `${gfmt(used)} / ${gfmt(total)} ${turn[0].unit}`, amount: used, limit: total, unit: turn[0].unit })
   }
   const dedicated = field("dedicatedResourcePackages", "dedicated_resource_packages")
   for (const b of Array.isArray(dedicated) ? dedicated : []) add(b, "Dedicated credits")
