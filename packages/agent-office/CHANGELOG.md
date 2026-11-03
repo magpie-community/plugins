@@ -7,7 +7,7 @@
 - The 3D view lays out each scene from its own layout: desks, sofa, zones, walls, doors, walking routes and seats now come from that scene's layout instead of the office's. Office keeps the same positions and routes as before.
 - In the 3D view of the other ten scenes, the styled office sofa and double lounge rug are replaced by a plain box per seat and one rug.
 - Switching scene sends every worker back to the door, so they walk in again from the entrance.
-- Decorations are placed only where their measured footprint clears the seats and walking routes of their own scene, with the same 0.32 clearance as before.
+- Library, cyberlab, greenhouse, arctic and rainy night draw their decorations where their layout puts them, so walking routes go around the furniture you see.
 
 ## 0.3.1 · 2026-11-03
 

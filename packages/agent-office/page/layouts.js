@@ -238,13 +238,13 @@
     }
   }
 
-  function seatFor(key, kindOrStatus) {
-    const kind = POOLS[kindOrStatus] ? kindOrStatus : spotKindForStatus(kindOrStatus)
-    const pool = POOLS[kind] || SPOTS.wander
+  function seatFor(key, kindOrStatus, pools = POOLS) {
+    const kind = pools[kindOrStatus] ? kindOrStatus : spotKindForStatus(kindOrStatus)
+    const pool = pools[kind] || pools.wander
     return pool[hashKey(key) % pool.length]
   }
 
-  function assignSeats(list) {
+  function assignSeats(list, pools = POOLS) {
     const used = new Set()
     const out = {}
     const valid = (Array.isArray(list) ? list : []).filter((a) => a && typeof a === "object" && a.key != null)
@@ -253,8 +253,8 @@
       const kind = spotKindForStatus(a.status)
       const order = [kind, ...(FALLBACKS[kind] || [])]
       let found = null
-      for (const k of [...new Set([...order, ...Object.keys(POOLS)])]) {
-        const pool = POOLS[k]
+      for (const k of [...new Set([...order, ...Object.keys(pools)])]) {
+        const pool = pools[k]
         if (!pool) continue
         const start = hashKey(a.key) % pool.length
         for (let i = 0; i < pool.length; i++) {
@@ -270,7 +270,7 @@
 
   const LAYOUT = {
     ROOM, DESKS, SOFA, SOFA_FACE, ZONE, ZONE_SPOTS, ERROR_SPOTS, WANDER, DOOR, ENTRY,
-    HUBS, SPOTS, SPOT_BY_ID, POOLS, BLOCKERS, assignSeats, seatFor, spotKindForStatus,
+    HUBS, SPOTS, SPOT_BY_ID, POOLS, BLOCKERS, FALLBACKS, assignSeats, seatFor, spotKindForStatus,
     routeFor, connectRoute, exitRoute, laneRoute, blockedAt, routeBlocked, sampleRoute,
   }
     return LAYOUT
@@ -370,13 +370,6 @@
     pirate: [[3.2,.55], [6,.55], [9,.55], [12,.55], [6,5], [8,5], [10,5], [12,5]],
     graveyard: [[3.2,.55], [6.5,1.4], [9.5,.55], [12.5,1.7], [4,4.5], [7,5.2], [10,4.5], [13,5.2]],
   }
-  const features = {
-    station: [{ type: 'round-table', x: 9.3, z: 4.3, w: 1.5, d: 1.5, h: .76 }],
-    cafe: [{ type: 'bar', x: 10.9, z: 10.7, w: 4.1, d: .65, h: 1.1 }],
-    castle: [{ type: 'fireplace', x: 11, z: 10.7, w: 2.8, d: .7, h: 1.5 }],
-    pirate: [{ type: 'mast', x: 8.5, z: 3.3, w: .6, d: .6, h: 2.8 }, { type: 'wheel', x: 14.2, z: 7.6, w: .7, d: .65, h: 1.2 }],
-    graveyard: [{ type: 'memorial', x: 11, z: 10.7, w: 2.5, d: .7, h: 1.3 }],
-  }
   for (const [id, positions] of Object.entries(arrangements)) {
     const type = { station: 'console', cafe: 'pedestal', castle: 'trestle', pirate: 'trestle', graveyard: 'sarcophagus' }[id]
     const desks = positions.map(p => ({ ...desk(...p), type }))
@@ -388,9 +381,9 @@
       zoneSpots: Array.from({ length: 12 }, (_, i) => [4.7 + i % 4, 8.2 + Math.floor(i / 4) * .85]),
       errorSpots: [[9,9], [9,10], [9,11], [10,10]], wander: [[3,3], [6,3.3], [10.7,3.3], [3,6]],
       blockers: [...desks.map(d => [d.x,d.z,d.w,d.d]), ...office.BLOCKERS.slice(8,10),
-        ...decor.map(r => [r.x,r.z,r.w,r.d]), ...features[id].map(r => [r.x,r.z,r.w,r.d])],
+        ...decor.map(r => [r.x,r.z,r.w,r.d])],
       windows: (id === 'castle' ? [4,8,12] : id === 'pirate' ? [4.5,11.5] : [3.8,7.8,12.2]).map(x => ({ x, y: 1.75, w: id === 'castle' ? 1.3 : 2.1, h: 1.45 })),
-      decor, features: features[id], cameraHint: { targetY: .75 },
+      decor, cameraHint: { targetY: .75 },
       plants: [[.8,.8,.5], [2,.8,.5], [15.3,2,.35], [15.3,4,.35], [15.3,6,.35], [14.7,9.5,.4]],
     }
   }
@@ -447,7 +440,7 @@
       zoneSpots:Array.from({length:8},(_,i)=>[5.8+i%4*.85,10+Math.floor(i/4)*.8]),
       errorSpots:[[9.6,10.5],[9.6,11.3]],wander:[[2.8,2.8],[8,2.8],[2.8,7]],
       blockers:[...desks.map(d=>[d.x,d.z,d.w,d.d]),...office.BLOCKERS.slice(8,10),...props.flatMap(f=>f.blockers || [[f.x,f.z,f.w,f.d]])],
-      windows:id==='rainynight'?[{x:8,y:1.6,w:14.4,h:2.6}]:windows,decor,decorations:props,features:[],plants:[],cameraHint:{targetY:.75},
+      windows:id==='rainynight'?[{x:8,y:1.6,w:14.4,h:2.6}]:windows,decor,decorations:props,plants:[],cameraHint:{targetY:.75},
       rugs:id==='library'?[[8.4,4,9.8,5.3,'#80434b']]:id==='greenhouse'?[[8,6,1.2,11,'#a5b18b'],[8,5.1,14.5,1,'#a5b18b']]:[],
     }
   }
@@ -480,7 +473,7 @@
       ROOM: layout.room, DESKS: layout.desks, DOOR: layout.door, ENTRY: layout.entry,
       SOFA: sofas.map(s => [s.x,s.z]), SOFA_FACE: sofas.map(s => s.face), ZONE: layout.zone,
       ZONE_SPOTS: layout.zoneSpots, ERROR_SPOTS: layout.errorSpots, WANDER: layout.wander,
-      BLOCKERS: layout.blockers, SPOTS: spots, POOLS: spots, SPOT_BY_ID: new Map(Object.values(spots).flat().map(s => [s.id,s])),
+      BLOCKERS: layout.blockers, DECORATIONS: layout.decorations || [], FALLBACKS: office.FALLBACKS, SPOTS: spots, POOLS: spots, SPOT_BY_ID: new Map(Object.values(spots).flat().map(s => [s.id,s])),
       nav, path, connectRoute: (from, route) => path(from, route[route.length-1]), exitRoute: from => path(from,layout.entry),
       // A grid path already preserves clearance; arbitrary lane offsets need revalidation.
       laneRoute: route => route,
