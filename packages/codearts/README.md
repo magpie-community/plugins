@@ -94,6 +94,16 @@ rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash
   back into one `chat.completion` when the caller asked for JSON.
 - `thinking: { type: "enabled" }` is sent unless the caller set it, so the reasoning lands in
   `reasoning_content` and `content` is only the reply.
+- The reasoning level a caller names in `reasoning_effort` is sent as it is, and the plugin asks
+  for no thinking of its own then (`thinking: enabled` would overrule the level). A level the model
+  does not take is dropped rather than left to turn the request away — one it does not take is a
+  `400` ("reasoning_effort must be none or low or medium or high or xhigh or max"). "No thinking"
+  (`none`, `off`) is sent as `thinking: { type: "disabled" }`, which is what actually stops it:
+  `reasoning_effort: none` alone still thinks.
+- The levels each model takes are declared in the model row's `variants` (measured 2026-11-04;
+  they differ per model — `glm-5.3-flash` turns `medium` and `xhigh` away, and the two Kimis think
+  at `none` anyway, so they take no "no thinking" level), so a host offers the levels that work
+  and shows the thinking as its own row instead of as the answer.
 - Errors the gateway puts inside a `200` stream (spent quota, unknown model) come back as
   `429` / `400` / `502` with the vendor's words. The `codearts/` prefix is stripped and output
   budgets are clamped to 65536.
