@@ -2,9 +2,9 @@
 // Plan就没显示"), and a coding account's gift buckets told apart from its
 // Coding Plan windows ("无法区分Coding Plan 和Start Plan的额度").
 //
-// The balance's plans are as ZCode's /billing/balance and /billing/preview
+// The balance's plans are as ZCode's /billing/balance says them
 // give them: plan_id, user_plan_id, name, status, starts_at and ends_at in
-// Unix seconds (usage.test.mjs's PREVIEW_CLAIMABLE is a real reply). Which
+// Unix seconds (usage.test.mjs's fixtures are real replies). Which
 // status a plan not started yet carries has not been seen, so these tests
 // give it both "active" and an unknown word: the plugin goes by starts_at.
 // Nothing leaves the machine: fetch is a fake.
@@ -61,7 +61,7 @@ const bucket = (up, left, model = "GLM-5.1") => ({ plan_id: "zcode-v3-start-plan
 function zcode(balance, coding) {
   return serve(({ url }) => {
     if (url.pathname === "/api/v1/zcode-plan/billing/balance") return ok({ server_time: now, ...balance })
-    if (url.pathname === "/api/v1/zcode-plan/billing/preview") return ok({ server_time: now, plans: [] })
+    if (url.pathname === "/api/v1/marketing/touch") return ok({ deliveries: [] })
     if (!coding) return
     if (url.pathname === "/api/biz/subscription/list") return ok([{ productName: "GLM Coding Pro", status: "VALID" }])
     if (url.pathname === "/api/monitor/usage/quota/limit") return ok({ level: "pro", limits: [{ type: "CREDIT_LIMIT", unit: 3, number: 5, percentage: 25 }] })

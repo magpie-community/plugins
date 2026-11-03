@@ -1,8 +1,12 @@
-// auth.checkin claims the gift plans ZCode's preview lists for an account
-// (magpie-community/plugins#503). The preview and the "already claimed"
-// replies are real (#503's capture of 10-29, the 10-06 preview in
-// usage.test.mjs); the code 0 claim reply has not been seen yet, so its
-// fixture carries only the code.
+// auth.checkin claims the gift plans the app's marketing feed (touch)
+// offers for an account (magpie-community/plugins#503). The feed and the
+// "already claimed" replies are real (#503's captures of 10-29 and 10-30,
+// touch-1030-wk.json, the 10-06 preview in usage.test.mjs); the code 0
+// claim reply has not been seen yet, so its fixture carries only the
+// code. The v3.17 client replaced the old preview polling with the feed
+// alone (docs/marketing-touch-client.md), so the preview is read no
+// more; the rewards center's gifts are website-side — claimed in the
+// client, spent here by freeFirst once they land on the account.
 import { test, expect, afterAll, beforeAll, beforeEach } from "bun:test"
 import { homedir, tmpdir } from "node:os"
 import { readFileSync, realpathSync } from "node:fs"
@@ -62,7 +66,6 @@ const PREVIEW_ONE = {
     }],
   },
 }
-const PREVIEW_TWO = { ...PREVIEW_ONE, data: { ...PREVIEW_ONE.data, plans: [...PREVIEW_ONE.data.plans, { plan_id: "zcode-v3-start-plan-1029", name: "ZCODE GLOBAL BUILD", status: "active" }] } }
 // #503's reply to claiming a plan claimed before, as it came
 const CLAIMED_BEFORE = '{"code":1003,"msg":"target already exists","data":{"server_time":1793318302,"message":"You have already claimed this plan."},"logid":"202610292358223079156af0f90065850e"}'
 // a code 0 claim: only the code is read
@@ -75,11 +78,12 @@ const CLAIM = "/api/v1/zcode-plan/billing/claim"
 const TOUCH = "/api/v1/marketing/touch"
 // the marketing feed of an account with no banner up
 const TOUCH_NONE = '{"code":0,"msg":"","data":{"deliveries":[]}}'
-// claimWith serves the preview (and the feed, touch) and answers each
-// claim with claim(plan_id)
-function claimWith(preview, claim, touch = TOUCH_NONE) {
+// claimWith serves the feed (touch) and answers each claim with
+// claim(plan_id). The preview is served with a forever-broken answer: the
+// v3.17 client reads it no more, and a check-in that still did would fail.
+function claimWith(claim, touch = TOUCH_NONE) {
   return serve(({ url, method, body }) => {
-    if (url.pathname === PREVIEW && method === "GET") return json(preview)
+    if (url.pathname === PREVIEW && method === "GET") return json("", 500)
     if (url.pathname === TOUCH && method === "GET") return typeof touch === "function" ? touch() : json(touch)
     if (url.pathname === CLAIM && method === "POST") return claim(JSON.parse(body).plan_id)
   })
@@ -100,46 +104,66 @@ test("an inactive says until half an hour out; claimed, done, captcha and failed
     expect(t).toBeLessThan(Date.now() + 35 * 60_000)
   }
   const none = (r) => expect(r.until).toBeUndefined()
-  claimWith(PREVIEW_NONE, () => json(CLAIMED_NOW))
+  claimWith(() => json(CLAIMED_NOW))
   soon(await checkin())
-  claimWith(PREVIEW_ONE, () => json(CLAIMED_NOW))
+  claimWith(() => json(CLAIMED_NOW), touchOf(WEEKEND))
   none(await checkin())
-  claimWith(PREVIEW_ONE, () => json(CLAIMED_BEFORE))
+  claimWith(() => json(CLAIMED_BEFORE), touchOf(WEEKEND))
   none(await checkin())
-  claimWith(PREVIEW_ONE, () => json(CAPTCHA, 400))
+  claimWith(() => json(CAPTCHA, 400), touchOf(WEEKEND))
   none(await checkin())
-  claimWith("", () => json(CLAIMED_NOW))
+  // a failed check-in settles for none: magpie asks a failed again itself
+  claimWith(() => json(CLAIMED_NOW), () => { throw new Error("feed unreachable") })
   none(await checkin())
 })
 
 test("nothing to claim: inactive, and no claim is asked", async () => {
-  const calls = claimWith(PREVIEW_NONE, () => json(CLAIMED_NOW))
+  const calls = claimWith(() => json(CLAIMED_NOW))
   const r = await checkin()
   expect(r).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
   expect(claims(calls)).toEqual([])
-  // the preview went out as the app's billing calls do
-  const p = calls.find((c) => c.url.pathname === PREVIEW)
-  expect(p.url.pathname).toBe(PREVIEW)
-  expect(p.url.searchParams.get("app_version")).toBe("3.16.3")
-  expect(p.url.searchParams.get("platform")).toBe(`${process.platform}-${process.arch}`)
-  expect(p.headers.Authorization).toBe("Bearer " + TOKEN)
-  expect(p.headers["X-Device-Mid"]).toBe(DEVICE)
-  expect(p.headers["X-ZCode-App-Version"]).toBe("3.16.3")
-  expect(p.headers["X-Platform"]).toBe(`${process.platform}-${process.arch}`)
+  // the touch feed went out as the app's billing calls do (the seq counts
+  // up across the process's asks)
+  const t = calls.find((c) => c.url.pathname === TOUCH)
+  expect(Number(t.url.searchParams.get("seq"))).toBeGreaterThanOrEqual(0)
+  expect(t.headers.Authorization).toBe("Bearer " + TOKEN)
+  expect(t.headers["X-Device-Mid"]).toBe(DEVICE)
+  expect(t.headers["X-ZCode-App-Version"]).toBe("3.17.2")
+  expect(t.headers["X-Client-Language"]).toBeTruthy()
+})
+
+// the v3.17 client replaced the preview polling with the feed alone
+// (docs/marketing-touch-client.md), so whatever the preview answers is
+// nothing to claim, and it is not asked at all
+test("the preview is not read anymore", async () => {
+  for (const answer of [
+    PREVIEW_NONE,
+    PREVIEW_NO_DATA,
+    () => json(PREVIEW_ONE),
+    () => json("", 500),
+    () => json("garbled"),
+    () => json('{"code":401,"msg":"token invalid"}', 401),
+    () => { throw new Error("no network in tests") },
+  ]) {
+    const calls = serve(({ url }) => (url.pathname === PREVIEW ? (typeof answer === "function" ? answer() : json(answer)) : json(CLAIMED_NOW)))
+    expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
+    expect(calls.filter((c) => c.url.pathname === PREVIEW)).toHaveLength(0)
+    expect(claims(calls)).toEqual([])
+  }
 })
 
 test("one plan to claim, claimed with code 0", async () => {
   _internal.routes.set("\0" + TOKEN, { stale: true })
-  const calls = claimWith(PREVIEW_ONE, () => json(CLAIMED_NOW))
+  const calls = claimWith(() => json(CLAIMED_NOW), touchOf([TRUST, "ZCode Trust Build"]))
   const r = await checkin()
   expect(r).toEqual({ outcome: "claimed", message: "claimed ZCode Trust Build" })
   const [c] = claims(calls)
   expect(claims(calls).length).toBe(1)
   expect(c.url.origin).toBe("https://zcode.z.ai")
-  expect(JSON.parse(c.body)).toEqual({ plan_id: "zcode-v3-start-plan-trust-1006" })
+  expect(JSON.parse(c.body)).toEqual({ plan_id: TRUST })
   expect(c.headers.Authorization).toBe("Bearer " + TOKEN)
   expect(c.headers["X-Device-Mid"]).toBe(DEVICE)
-  expect(c.headers["X-ZCode-App-Version"]).toBe("3.16.3")
+  expect(c.headers["X-ZCode-App-Version"]).toBe("3.17.2")
   expect(c.headers["X-Platform"]).toBe(`${process.platform}-${process.arch}`)
   expect(c.headers["Content-Type"]).toBe("application/json")
   // the route is read again, so the next request uses the plan
@@ -147,12 +171,12 @@ test("one plan to claim, claimed with code 0", async () => {
 })
 
 test("a plan claimed before (HTTP 200, code 1003) is done, not a failure", async () => {
-  claimWith(PREVIEW_ONE, () => json(CLAIMED_BEFORE))
+  claimWith(() => json(CLAIMED_BEFORE), touchOf([TRUST, "ZCode Trust Build"]))
   expect(await checkin()).toEqual({ outcome: "done", message: "already claimed: ZCode Trust Build" })
 })
 
 test("a claim ZCode wants the app's captcha for is captcha: claimed in the ZCode app", async () => {
-  claimWith(PREVIEW_ONE, () => json(CAPTCHA, 400))
+  claimWith(() => json(CAPTCHA, 400), touchOf([TRUST, "ZCode Trust Build"]))
   const r = await checkin()
   expect(r.outcome).toBe("captcha")
   expect(r.message).toContain("ZCode Trust Build: claim it in the ZCode app (captcha verify failed)")
@@ -168,7 +192,7 @@ test("a claim that doesn't read is failed (unknown), never claimed", async () =>
     () => json('{"code":1001,"msg":"system busy"}'),
     () => { throw new Error("socket hang up") },
   ]) {
-    claimWith(PREVIEW_ONE, answer)
+    claimWith(answer, touchOf([TRUST, "ZCode Trust Build"]))
     const r = await checkin()
     expect(r.outcome).toBe("failed")
     expect(r.message).toStartWith("ZCode Trust Build: ")
@@ -177,38 +201,13 @@ test("a claim that doesn't read is failed (unknown), never claimed", async () =>
   }
 })
 
-test("a preview with nothing in it is nothing to claim, not a failed check-in", async () => {
-  for (const body of [PREVIEW_NO_DATA, '{"code":0,"msg":"","data":null}', '{"code":0,"msg":"","data":{"server_time":1793318263}}', '{"code":0,"msg":"","data":{"plans":null}}']) {
-    const calls = serve(({ url }) => (url.pathname === PREVIEW ? json(body) : json(CLAIMED_NOW)))
-    expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
-    expect(claims(calls)).toEqual([])
-  }
-})
-
-test("a preview that doesn't read is failed (unknown), and nothing is claimed", async () => {
-  for (const answer of [
-    () => json("", 500),
-    () => json("garbled"),
-    () => json('{"code":0,"data":{"plans":"zcode-v3-start-plan-1029"}}'), // a plan list that isn't a list
-    () => json('{"code":0,"data":"plans"}'), // data that isn't an object
-    () => json('{"code":401,"msg":"token invalid"}', 401),
-    () => { throw new Error("no network in tests") },
-  ]) {
-    const calls = serve(({ url }) => (url.pathname === PREVIEW ? answer() : json(CLAIMED_NOW)))
-    const r = await checkin()
-    expect(r.outcome).toBe("failed")
-    expect(r.signIn).toBeUndefined()
-    expect(claims(calls)).toEqual([])
-  }
-})
-
 test("one claimed and one failed is failed, naming the claimed one, so it is asked again", async () => {
-  claimWith(PREVIEW_TWO, (id) => (id === "zcode-v3-start-plan-1029" ? json("", 503) : json(CLAIMED_NOW)))
+  claimWith((id) => (id === GLOBAL ? json("", 503) : json(CLAIMED_NOW)), touchOf([TRUST, "ZCode Trust Build"], [GLOBAL, "ZCODE GLOBAL BUILD"]))
   const r = await checkin()
   expect(r.outcome).toBe("failed")
   expect(r.message).toBe("claimed ZCode Trust Build; ZCODE GLOBAL BUILD: HTTP 503, unreadable reply (empty)")
   // asked again: the one claimed answers 1003 now
-  claimWith(PREVIEW_TWO, (id) => (id === "zcode-v3-start-plan-1029" ? json(CLAIMED_NOW) : json(CLAIMED_BEFORE)))
+  claimWith((id) => (id === GLOBAL ? json(CLAIMED_NOW) : json(CLAIMED_BEFORE)), touchOf([TRUST, "ZCode Trust Build"], [GLOBAL, "ZCODE GLOBAL BUILD"]))
   expect(await checkin()).toEqual({ outcome: "claimed", message: "claimed ZCODE GLOBAL BUILD" })
 })
 
@@ -229,25 +228,32 @@ test("an account with no ZCode session asks nothing", async () => {
 // capture describes it (data.deliveries[].banner.buttons[].action and
 // banner.background.args.zcode_plan); the claim reply is the capture's own.
 const WEEKEND = "zcode-v3-start-plan-1030-wk"
+const TRUST = "zcode-v3-start-plan-trust-1006"
+const GLOBAL = "zcode-v3-start-plan-1029"
+// touchOf is a feed whose banners each claim one plan: an entry is a
+// plan_id, or [plan_id, name]
 const touchOf = (...plans) => ({
   code: 0, msg: "",
   data: {
-    deliveries: plans.map((id) => ({
-      campaign_id: "2101141259813175296",
-      banner: {
-        background: { type: "zcode_plan", args: { zcode_plan: { plan_id: id, name: "ZCODE WEEKEND BUILD", grant_units: 500000000, period: "one_time" } } },
-        buttons: [
-          { text: "领取", action: { type: "claim_zcode_plan", args: { plan_id: id } } },
-          { text: "关闭", action: { type: "close", args: {} } },
-        ],
-      },
-    })),
+    deliveries: plans.map((p) => {
+      const [id, name = "ZCODE WEEKEND BUILD"] = Array.isArray(p) ? p : [p]
+      return {
+        campaign_id: "2101141259813175296",
+        banner: {
+          background: { type: "zcode_plan", args: { zcode_plan: { plan_id: id, name, grant_units: 500000000, period: "one_time" } } },
+          buttons: [
+            { text: "领取", action: { type: "claim_zcode_plan", args: { plan_id: id } } },
+            { text: "关闭", action: { type: "close", args: {} } },
+          ],
+        },
+      }
+    }),
   },
 })
 const CLAIMED_WEEKEND = '{"code":0,"msg":"","data":{"server_time":1793369500,"plan":{"user_plan_id":"upl_2116171180260274176","plan_id":"zcode-v3-start-plan-1030-wk","name":"ZCODE WEEKEND BUILD","description":"","priority":101,"status":"active","starts_at":1793369500,"ends_at":1793581200,"entitlements":[{"entitlement_id":"ent-zcode-v3-start-plan-1030-wk-1","show_name":"GLM-5.3-Flash","meter":"model_usage","unit_type":"token","capabilities":["model:glm-5.3-flash"],"grant_units":500000000,"period":"one_time","priority":101,"effective_at":1793372400}]},"message":"Plan claimed successfully."},"logid":"202610301411405bf5f9f3da141d910e7e"}'
 
-test("a banner plan the preview doesn't list is claimed from the app's marketing feed", async () => {
-  const calls = claimWith(PREVIEW_NO_DATA, (id) => (id === WEEKEND ? json(CLAIMED_WEEKEND) : json("", 404)), touchOf(WEEKEND))
+test("a banner plan is claimed from the app's marketing feed", async () => {
+  const calls = claimWith((id) => (id === WEEKEND ? json(CLAIMED_WEEKEND) : json("", 404)), touchOf(WEEKEND))
   expect(await checkin()).toEqual({ outcome: "claimed", message: "claimed ZCODE WEEKEND BUILD" })
   expect(claims(calls).map((c) => JSON.parse(c.body))).toEqual([{ plan_id: WEEKEND }])
   // the feed went out as the app asks it
@@ -256,24 +262,17 @@ test("a banner plan the preview doesn't list is claimed from the app's marketing
   expect(Number(t.url.searchParams.get("seq"))).toBeGreaterThanOrEqual(0)
   expect(t.headers.Authorization).toBe("Bearer " + TOKEN)
   expect(t.headers["X-Device-Mid"]).toBe(DEVICE)
-  expect(t.headers["X-ZCode-App-Version"]).toBe("3.16.3")
+  expect(t.headers["X-ZCode-App-Version"]).toBe("3.17.2")
   expect(t.headers["X-Client-Language"]).toBeTruthy()
   // asked again, the plan answers 1003: done
-  claimWith(PREVIEW_NO_DATA, () => json(CLAIMED_BEFORE), touchOf(WEEKEND))
+  claimWith(() => json(CLAIMED_BEFORE), touchOf(WEEKEND))
   expect(await checkin()).toEqual({ outcome: "done", message: "already claimed: ZCODE WEEKEND BUILD" })
-})
-
-test("a plan both lists name is claimed once", async () => {
-  const both = { code: 0, msg: "", data: { plans: [{ plan_id: WEEKEND, name: "ZCODE WEEKEND BUILD" }] } }
-  const calls = claimWith(both, () => json(CLAIMED_WEEKEND), touchOf(WEEKEND))
-  expect((await checkin()).outcome).toBe("claimed")
-  expect(claims(calls)).toHaveLength(1)
 })
 
 test("a feed with no claim button, or nothing in it, is nothing to claim", async () => {
   const closeOnly = { code: 0, msg: "", data: { deliveries: [{ campaign_id: "1", banner: { buttons: [{ action: { type: "close", args: {} } }] } }] } }
   for (const feed of [TOUCH_NONE, '{"code":0,"msg":""}', closeOnly]) {
-    const calls = claimWith(PREVIEW_NO_DATA, () => json(CLAIMED_NOW), feed)
+    const calls = claimWith(() => json(CLAIMED_NOW), feed)
     expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
     expect(claims(calls)).toEqual([])
   }
@@ -286,17 +285,11 @@ test("a feed that doesn't read is failed (unknown), never nothing to claim", asy
     () => json('{"code":0,"data":{"deliveries":"x"}}'),
     () => { throw new Error("no network in tests") },
   ]) {
-    claimWith(PREVIEW_NO_DATA, () => json(CLAIMED_NOW), feed)
+    claimWith(() => json(CLAIMED_NOW), feed)
     const r = await checkin()
     expect(r.outcome).toBe("failed")
     expect(r.signIn).toBeUndefined()
   }
-  // a preview plan is still claimed beside it, and the check-in is asked again
-  const calls = claimWith(PREVIEW_ONE, () => json(CLAIMED_NOW), () => json("", 502))
-  const r = await checkin()
-  expect(r.outcome).toBe("failed")
-  expect(r.message).toStartWith("claimed ZCode Trust Build; gift plans to claim: ")
-  expect(claims(calls)).toHaveLength(1)
 })
 
 // #503, 10-30 22:11 +08:00 (kongbai01203, comment 6526694290): the real
@@ -312,7 +305,7 @@ test("a feed that doesn't read is failed (unknown), never nothing to claim", asy
 const TOUCH_REAL = readFileSync(new URL("./testdata/touch-1030-wk.json", import.meta.url), "utf8")
 
 test("the real banner feed: its one claim button is claimed, by the plan's name", async () => {
-  const calls = claimWith(PREVIEW_NO_DATA, (id) => (id === WEEKEND ? json(CLAIMED_WEEKEND) : json("", 404)), TOUCH_REAL)
+  const calls = claimWith((id) => (id === WEEKEND ? json(CLAIMED_WEEKEND) : json("", 404)), TOUCH_REAL)
   expect(await checkin()).toEqual({ outcome: "claimed", message: "claimed ZCODE WEEKEND BUILD" })
   // one claim, of the claim button's plan_id, with the body the app sends;
   // the close button and the success popup's buttons claim nothing
@@ -333,7 +326,7 @@ test("the real delivery without its claim button is nothing to claim", async () 
   // the zcode_plan it still describes (background, success popup) is no
   // offer to claim
   expect(JSON.stringify(feed)).toContain('"zcode_plan":{"plan_id":"zcode-v3-start-plan-1030-wk"')
-  const calls = claimWith(PREVIEW_NO_DATA, () => json(CLAIMED_WEEKEND), feed)
+  const calls = claimWith(() => json(CLAIMED_WEEKEND), feed)
   expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
   expect(claims(calls)).toEqual([])
 })
@@ -346,7 +339,7 @@ test("after the claim the feed has no delivery: nothing to claim, not a failure"
   // (checkin.go, claimedOn) over this later inactive.
   const after = JSON.parse(TOUCH_REAL)
   after.data.deliveries = []
-  const calls = claimWith(PREVIEW_NO_DATA, () => json(CLAIMED_WEEKEND), after)
+  const calls = claimWith(() => json(CLAIMED_WEEKEND), after)
   expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
   expect(claims(calls)).toEqual([])
 })
