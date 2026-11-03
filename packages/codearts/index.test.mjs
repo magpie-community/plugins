@@ -259,29 +259,35 @@ test("prepareChatBody reshapes a chat into what the gateway accepts and meters",
 // level that was named is passed on as it is: `thinking: enabled` would
 // overrule it. "No thinking" is the switch, not the level: `reasoning_effort:
 // none` alone still thought (89 to 135 characters of it).
-test("the caller's reasoning level is the gateway's own", () => {
+test("the caller's reasoning level is the model's own", () => {
+  // A level the model takes is passed on as it is: `thinking: enabled` would
+  // overrule it.
   for (const level of ["low", "medium", "high", "xhigh", "max"]) {
-    const out = x.prepareChatBody({ model: "GLM-5.2", messages: [], reasoning_effort: level })
+    const out = x.prepareChatBody({ model: "deepseek-v4.1-flash-1017", messages: [], reasoning_effort: level })
     assert.equal(out.body.reasoning_effort, level)
     assert.equal(out.body.thinking, undefined, level + " is the level; nothing else is asked")
   }
 
   // A host's word for no thinking is the gateway's way of not thinking.
   for (const word of ["off", "disabled", "none"]) {
-    const out = x.prepareChatBody({ model: "GLM-5.2", messages: [], reasoning_effort: word })
+    const out = x.prepareChatBody({ model: "deepseek-v4.1-flash-1017", messages: [], reasoning_effort: word })
     assert.deepEqual(out.body.thinking, { type: "disabled" }, word + " means no thinking")
     assert.equal("reasoning_effort" in out.body, false, "the level would only be a hint")
   }
 
-  // A word the gateway does not know would turn the whole request away, so it
-  // is dropped; `minimal` is the smallest thinking it does know.
-  assert.equal(x.prepareChatBody({ model: "GLM-5.2", messages: [], reasoning_effort: "minimal" }).body.reasoning_effort, "low")
-  assert.equal("reasoning_effort" in x.prepareChatBody({ model: "GLM-5.2", messages: [], reasoning_effort: "loud" }).body, false)
+  // A level the model does not take would turn the whole request away (a 400),
+  // so it is dropped and the request goes as the model serves it.
+  const notTaken = x.prepareChatBody({ model: "glm-5.3-flash", messages: [], reasoning_effort: "medium" })
+  assert.equal("reasoning_effort" in notTaken.body, false, "glm-5.3-flash takes no medium")
+  assert.deepEqual(x.prepareChatBody({ model: "glm-5.3-flash", messages: [], reasoning_effort: "high" }).body.reasoning_effort, "high")
+
+  // A word no model takes is dropped as well.
+  assert.equal("reasoning_effort" in x.prepareChatBody({ model: "deepseek-v4.1-flash-1017", messages: [], reasoning_effort: "loud" }).body, false)
 
   // A caller that said nothing still gets the thinking, as before.
-  assert.deepEqual(x.prepareChatBody({ model: "GLM-5.2", messages: [] }).body.thinking, { type: "enabled" })
+  assert.deepEqual(x.prepareChatBody({ model: "deepseek-v4.1-flash-1017", messages: [] }).body.thinking, { type: "enabled" })
   // A caller that said so itself is not overruled.
-  assert.deepEqual(x.prepareChatBody({ model: "GLM-5.2", messages: [], thinking: { type: "disabled" } }).body.thinking, { type: "disabled" })
+  assert.deepEqual(x.prepareChatBody({ model: "deepseek-v4.1-flash-1017", messages: [], thinking: { type: "disabled" } }).body.thinking, { type: "disabled" })
 })
 
 // The free model's TPM limit, word for word as the gateway sent it in a 200.
@@ -2007,32 +2013,40 @@ test("provider.models: free models once claimed, rates and parameters from the C
   assert.equal(seen.filter((s) => s.url === x.AGENT_LIST_URL).length, 1)
 })
 
-// A model that reasons is told so, with the levels the host offers: without
-// them the host has no row for the thinking and renders the reasoning text as
-// the answer (measured 2026-11-03 on a DSH host: the caller's own thinking
-// showed up where the reply should have been).
-test("provider.models: a model that reasons is given the levels a host offers", async () => {
+// A model that reasons is told so, with the levels it takes: without them the
+// host has no row for the thinking and renders the reasoning text as the answer
+// (measured 2026-11-03 on a DSH host: the caller's own thinking showed up
+// where the reply should have been).
+//
+// The levels go in the model row's `variants` — their keys are the levels, and
+// magpie reads them as the model's levels (internal/provider/plugins.go:
+// `c.Efforts, c.Reasoning = m.Variants, true`).
+test("provider.models: a model that reasons is given the levels it takes", async () => {
   const cred = await makeCred()
   const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: modelsFetcher([], { agents: agentList, detail: agentDetail }) })
   const models = await plugin.provider.models({ models: {} }, { auth: makeAuth(cred) })
 
   const thinking = models["GLM-5.2"]
   assert.equal(thinking.capabilities.reasoning, true)
-  assert.deepEqual(thinking.options.reasoning_efforts, ["off", "low", "medium", "high", "xhigh", "max"])
-  assert.equal(thinking.options.default_reasoning_effort, "medium")
+  assert.deepEqual(Object.keys(thinking.variants), ["none", "low", "medium", "high", "xhigh", "max"])
+  assert.deepEqual(thinking.variants.low, { reasoningEffort: "low" })
 
-  // A model that does not think offers no level: the host then asks for no
+  // A model measured to think is said to, whatever the vendor's own list says
+  // of it (the vendor names no level for any of them).
+  assert.deepEqual(Object.keys(models["glm-5.3"].variants), ["none", "low", "medium", "high", "xhigh", "max"])
+
+  // A model of no measured level offers none: the host then asks for no
   // thinking at all.
-  assert.equal(models["glm-5.3"].capabilities.reasoning, undefined)
-  assert.equal(models["glm-5.3"].options, undefined)
+  assert.equal(models["deepseek-v4-flash-0731"].capabilities.reasoning, undefined)
+  assert.equal(models["deepseek-v4-flash-0731"].variants, undefined)
 })
 
-test("provider.models: a caller's own levels stand", async () => {
+test("provider.models: a caller's own variants stand", async () => {
   const cred = await makeCred()
   const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: modelsFetcher([], { agents: agentList, detail: agentDetail }) })
-  const provider = { models: { "GLM-5.2": { options: { reasoning_efforts: ["low", "high"] } } } }
+  const provider = { models: { "GLM-5.2": { variants: { low: { reasoningEffort: "low" }, high: { reasoningEffort: "high" } } } } }
   const models = await plugin.provider.models(provider, { auth: makeAuth(cred) })
-  assert.deepEqual(models["GLM-5.2"].options.reasoning_efforts, ["low", "high"])
+  assert.deepEqual(Object.keys(models["GLM-5.2"].variants), ["low", "high"])
 })
 
 test("the model list comes from the main agent: original_id build, then CodeAgent, then the IDE's id", async () => {

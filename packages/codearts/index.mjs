@@ -196,16 +196,59 @@ const ENABLE_THINKING = { type: "enabled" }
 // a row, no reasoning at all). `reasoning_effort: none` alone does not: the
 // model thinks anyway (89, 91 and 135 characters of reasoning in three runs).
 const DISABLE_THINKING = { type: "disabled" }
-// The gateway takes the caller's level in `reasoning_effort` (measured
-// 2026-11-03: none, low, medium, high, xhigh and max are accepted, every
-// other value is a 400) — and the level is real: the thinking grows with it.
-const GATEWAY_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
 // The gateway's own word for "no thinking" is `none`; a host that says `off`
 // (or `disabled`) means the same thing.
 const NO_THINKING = new Set(["none", "off", "disabled"])
-// `minimal` is a host's name the gateway does not know; it is the smallest
-// thinking it does know.
-const EFFORT_ALIASES = { minimal: "low" }
+
+// The reasoning levels each model takes, measured 2026-11-04 against the
+// gateway (the account of the report that opened this): a level the model does
+// not take is a 400
+//   "parameter check failed, reasoning_effort must be none or low or medium or
+//    high or xhigh or max (InferHub.ModelArts.81001.400)"
+// — and which of those it takes differs per model, so the list is per model
+// and not one list for all.
+//
+// The levels are the gateway's own words, which is what a host sends: magpie
+// reads a plugin's model row's `variants` (its keys are the levels, internal/
+// provider/plugins.go: `c.Efforts, c.Reasoning = m.Variants, true`) and writes
+// them into the DSH route as `reasoningEfforts`, the value sent being the
+// model's own name for the level.
+//
+// "none" is the level for no thinking; a model that does not take it is left
+// without it (the host then offers no way to turn the thinking off, which is
+// the truth for that model).
+//
+// The keys are lower-cased: the agent's own list names a model "GLM-5.2", the
+// gateway's list "glm-5.2", and they are one model.
+const REASONING_LEVELS = {
+  "deepseek-v4.1-flash-1017": ["none", "low", "medium", "high", "xhigh", "max"],
+  "deepseek-v4.1-flash": ["none", "low", "medium", "high", "xhigh", "max"],
+  "glm-5.3-flash": ["none", "low", "high", "max"],
+  "glm-5.3": ["none", "low", "medium", "high", "xhigh", "max"],
+  "glm-5.2": ["none", "low", "medium", "high", "xhigh", "max"],
+  "glm-5.2-sft-harmony": ["none", "low", "medium", "high", "xhigh", "max"],
+  "openpangu-2.0-pro": ["none", "low", "medium", "high", "xhigh", "max"],
+  "openpangu-2.0-flash": ["none", "low", "medium", "high", "xhigh", "max"],
+  "speed": ["none", "low", "medium", "high", "xhigh", "max"],
+  // The two Kimis take no "none": they think at it anyway (82 and 290
+  // characters of reasoning at `none`, 22 and 332 at `thinking: disabled`), so
+  // there is no level that turns their thinking off — offering one would be
+  // saying what the model does not do.
+  "kimi-k3": ["low", "medium", "high", "xhigh", "max"],
+  "kimi-k3.1-pro": ["low", "high", "xhigh", "max"],
+}
+
+// The levels of a model, or none when it does not think (or takes none that
+// were measured).
+const reasoningLevelsOf = (model) => REASONING_LEVELS[String(model ?? "").toLowerCase()] ?? []
+
+/**
+ * A model's levels as the host is told of them: an object keyed by the level,
+ * each with the effort sent for it — the shape every plugin in this repo uses
+ * (grok, qoder, workbuddy, zen-free).
+ */
+const reasoningVariants = (levels) =>
+  Object.fromEntries(levels.map((level) => [level, { reasoningEffort: level }]))
 
 // Benefits (free-quota) models require `maas_type: benefit` as a *signed*
 // header, or the backend answers InferHub.002002009.404 "model is not
@@ -983,10 +1026,11 @@ function prepareChatBody(parsed, { thinking = true } = {}) {
   const names = shortenToolNames(body)
   // `injected`: ours to take back should a model refuse the parameter.
   //
-  // The caller's level is the gateway's own (measured 2026-11-03): `none`,
-  // `low`, `medium`, `high`, `xhigh` and `max` are accepted, every other value
-  // is a 400, so a host's word for "no thinking" is translated and an unknown
-  // word is dropped rather than left to turn the whole request away.
+  // The caller's level is the gateway's own word for it (measured 2026-11-04:
+  // a level the model does not take is a 400 — "reasoning_effort must be none
+  // or low or medium or high or xhigh or max"), and which levels a model takes
+  // differs per model, so a level this model does not take is dropped rather
+  // than left to turn the whole request away.
   //
   // A level that the caller named is passed on as it is and the plugin asks for
   // no thinking of its own: `thinking: enabled` would overrule the level.
@@ -996,14 +1040,16 @@ function prepareChatBody(parsed, { thinking = true } = {}) {
   // is the switch that is used: `thinking: disabled` is the gateway's own way
   // of not thinking at all.
   const spoken = typeof body.reasoning_effort === "string" ? body.reasoning_effort.trim().toLowerCase() : ""
-  const level = spoken === "" ? "" : (EFFORT_ALIASES[spoken] ?? spoken)
+  const levels = reasoningLevelsOf(body.model)
   if (spoken !== "") {
     if (NO_THINKING.has(spoken)) {
       delete body.reasoning_effort
       if (body.thinking === undefined) body.thinking = DISABLE_THINKING
-    } else if (GATEWAY_EFFORTS.includes(level)) {
-      body.reasoning_effort = level
+    } else if (levels.length === 0 || levels.includes(spoken)) {
+      body.reasoning_effort = spoken
     } else {
+      // a level this model does not take: the request goes as it was written,
+      // without the level, so the model serves it its own way
       delete body.reasoning_effort
     }
   }
@@ -2562,16 +2608,15 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
    * has no row for it, and the reasoning text is rendered as the answer — the
    * caller sees its own thinking where the reply should be.
    *
-   * The values are the gateway's own words (measured: `none`, `low`, `medium`,
-   * `high`, `xhigh` and `max` are accepted, every other value is a 400), so a
-   * host that picks one sends exactly what the gateway takes. `off` is a host's
-   * word for the same thing as `none` and is translated on the way out.
+   * They go in the model row's `variants`, whose keys are the levels (magpie
+   * reads them as the model's levels: internal/provider/plugins.go, `c.Efforts,
+   * c.Reasoning = m.Variants, true`) — the shape every plugin in this repo
+   * uses. The value sent for a level is the model's own word for it.
+   *
+   * Which levels a model takes differs per model (measured 2026-11-04), so
+   * they are per model; a model that takes none is not said to think at all.
    */
-  const REASONING_EFFORTS = ["off", "low", "medium", "high", "xhigh", "max"]
-  const reasoningOptions = () => ({
-    reasoning_efforts: [...REASONING_EFFORTS],
-    default_reasoning_effort: "medium",
-  })
+  const reasoningVariantsOf = (model) => reasoningVariants(reasoningLevelsOf(model))
 
   const modelOf = (provider, live, state) => {
     const base = provider.models?.[live.id] ?? {}
@@ -2587,18 +2632,23 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
     // as free while billed as paid) and `rate` (the credits a request costs,
     // as a multiple: the IDE's 「消耗系数」).
     const free = live.benefit === true && !state?.noBenefit.has(live.id)
-    // A model that reasons is told so: without the levels the host has no row
-    // for the thinking and renders it as the answer (see REASONING_EFFORTS).
-    // A caller's own levels stand.
-    const levels = live.reasoning && !base.options?.reasoning_efforts ? reasoningOptions() : undefined
+    // A model that reasons is told so, with the levels it takes: without them
+    // the host has no row for the thinking and renders it as the answer (see
+    // reasoningVariantsOf). A caller's own variants stand.
+    const variants = base.variants ? undefined : reasoningVariantsOf(live.id)
+    const levels = variants ? Object.keys(variants) : []
+    const thinks = levels.length > 0 || live.reasoning === true
     return {
       ...base,
       id: live.id,
       name: live.name || base.name || live.id,
       limit: { context: live.context ?? base.limit?.context ?? 0, output: live.output ?? MAX_OUTPUT_TOKENS },
-      capabilities,
+      capabilities: {
+        ...capabilities,
+        ...(thinks ? { reasoning: true } : {}),
+      },
       free,
-      ...(levels ? { options: { ...(base.options ?? {}), ...levels } } : {}),
+      ...(levels.length > 0 ? { variants } : {}),
       ...(!free && live.rate > 0 ? { rate: live.rate } : {}),
     }
   }
