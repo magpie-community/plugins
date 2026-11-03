@@ -78,7 +78,7 @@ Streaming is accepted only when the matched catalog version explicitly reports s
 
 The [supported model/version table](../README.md#supported-models) defines eligibility. Discovery reads the selected account's resource group, follows offset pagination, and reconciles configuration identity, backend active version, and catalog metadata. Only running supported deployments are exposed. A `latest` selector without a resolved supported backend version is insufficient. Deprecated or retired versions are excluded; the plugin never upgrades deployments.
 
-Successful discovery is cached for five minutes, including an empty list. Expiry, retirement, and account replacement invalidate it. Failed refresh does not authorize stale dispatch. Restart rebuilds the registry without requiring a prior client model-list request.
+Successful discovery is cached for five minutes, including an empty list. Either monotonic elapsed time or wall-clock age can expire the cache, so system sleep does not extend its lifetime. Expiry, retirement, and account replacement invalidate it. Failed refresh does not authorize stale dispatch. Restart rebuilds the registry without requiring a prior client model-list request.
 
 The two GPT baseline versions report catalog context length 1050000; the two Claude baseline versions report 1000000. These are catalog-derived, not stress-tested limits. Only the Claude baseline active versions `1` advertise the directly established output ceiling 128000. Missing version-specific limits remain unknown; the plugin does not derive prices. Distinct raw SAP identities can deduplicate only with matching authoritative Claude identity metadata and compatible version/contract facts; ambiguous collisions fail discovery.
 

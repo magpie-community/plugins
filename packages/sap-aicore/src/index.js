@@ -234,6 +234,8 @@ async function responseJSON(response, signal) {
 async function exchange(creds, controller) {
   return bounded(async () => {
     const started = performance.now()
+    // Bun's macOS monotonic clock pauses during sleep; SAP token lifetime does not.
+    const wallStarted = Date.now()
     let response
     try {
       response = await globalThis.fetch(creds.tokenURL, {
@@ -281,8 +283,11 @@ async function exchange(creds, controller) {
       throw oauthFailure()
     }
     const expiresAt = started + lifetime
-    if (!Number.isFinite(expiresAt) || performance.now() >= expiresAt) throw failure("oauth-response")
-    return { value: body.access_token, expiresAt, renewAt: expiresAt - Math.min(60000, lifetime / 2) }
+    const wallExpiresAt = wallStarted + lifetime
+    if (!Number.isFinite(expiresAt) || !Number.isFinite(wallExpiresAt) ||
+        performance.now() >= expiresAt || Date.now() >= wallExpiresAt) throw failure("oauth-response")
+    const margin = Math.min(60000, lifetime / 2)
+    return { value: body.access_token, expiresAt, wallExpiresAt, renewAt: expiresAt - margin, wallRenewAt: wallExpiresAt - margin }
   }, controller)
 }
 
@@ -386,7 +391,7 @@ export async function SAPAICorePlugin(input) {
     current(gen)
     if (signal?.aborted) throw failure("cancelled")
     await check()
-    if (gen.token && performance.now() < gen.token.renewAt) return gen.token
+    if (gen.token && performance.now() < gen.token.renewAt && Date.now() < gen.token.wallRenewAt) return gen.token
     if (!gen.flight) {
       const flight = { controller: new AbortController(), owners: new Set(), result: null }
       gen.flight = flight
@@ -414,7 +419,7 @@ export async function SAPAICorePlugin(input) {
       await check()
       current(gen)
       if (signal?.aborted) throw failure("cancelled")
-      if (gen.flight !== flight || performance.now() >= token.expiresAt) throw failure("superseded")
+      if (gen.flight !== flight || performance.now() >= token.expiresAt || Date.now() >= token.wallExpiresAt) throw failure("superseded")
       gen.token = token
       return token
     } catch (error) {
@@ -459,6 +464,7 @@ export async function SAPAICorePlugin(input) {
     if (signal?.aborted) throw failure("cancelled")
     const cached = gen.snapshot
     if (cached && performance.now() - cached.completedAt < DISCOVERY_TTL_MS &&
+        Date.now() - cached.wallCompletedAt < DISCOVERY_TTL_MS &&
         (cached.retireAt === undefined || Date.now() < cached.retireAt)) {
       return cached.entries
     }
@@ -479,7 +485,7 @@ export async function SAPAICorePlugin(input) {
         entries => {
           current(gen)
           if (gen.discovery === flight && !flight.controller.signal.aborted && flight.owners.size) {
-            gen.snapshot = { entries, completedAt: performance.now(), retireAt: retireAtOf(entries) }
+            gen.snapshot = { entries, completedAt: performance.now(), wallCompletedAt: Date.now(), retireAt: retireAtOf(entries) }
           }
           return entries
         },

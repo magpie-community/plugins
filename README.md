@@ -9,61 +9,57 @@ magpie, maintained by the community. To make one, see
 subscription and makes its requests. The packages work in OpenCode and in
 [magpie](https://usemagpie.ai), which runs OpenCode's provider plugins.
 
-
-| Package                             | Signs in to                                                                                                                                                                                   | Provider id              |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| [agnes](packages/agnes)             | Agnes AI international (agnes-ai.com), with Chrome browser sign-in, live text models, plan usage and USD balance                                                                              | `agnes`                  |
-| [agnes-code](packages/agnes-code)   | Agnes AI's Agnes Code desktop, with the desktop's saved session (Windows) or a pasted access token: live models, daily credit check-in and points balance (unofficial)                        | `agnes-code`             |
-| [astudio](packages/astudio)         | iFlytek's AStudio (科大讯飞 Astron Studio desktop), with the desktop's saved credentials or a pasted model token: live model catalog, daily login-points check-in and points balance (unofficial) | `astudio`                |
-| [catpaw](packages/catpaw)           | Meituan's 妙手 CatPaw (ai.catpaw.meituan.com), with a browser web sign-in or the desktop client's saved credentials                                                                             | `catpaw`                 |
-| [cline](packages/cline)             | Cline (cline.bot): usage-billed models, ClinePass's and Cline's free ones, with Cline's device sign-in or an API key                                                                          | `cline`                  |
-| [codearts](packages/codearts)       | Huawei Cloud CodeArts (码道) coding plans (Trial, personal and enterprise credits), with Huawei Cloud OAuth sign-in (unofficial)                                                                | `codearts`               |
-| [commandcode](packages/commandcode) | Command Code plans (Pro, GOAT, Max, Ultra, Go, Teams Pro)                                                                                                                                     | `commandcode-plan`       |
-| [copilot](packages/copilot)         | GitHub Copilot on GitHub.com or GitHub Enterprise, with premium request or credit quotas                                                                                                      | `github-copilot`         |
-| [cursor](packages/cursor)           | Cursor subscriptions (Pro, Pro+, Ultra, Teams), on the API cursor-agent talks to                                                                                                              | `cursor`                 |
-| [devin](packages/devin)             | Devin subscription (the devin CLI's account)                                                                                                                                                  | `devin`                  |
-| [factory](packages/factory)         | Factory (Droid) subscription                                                                                                                                                                  | `factory`                |
-| [gcp-ai](packages/gcp-ai)           | Google Cloud Vertex AI with your own gcloud / ADC login (needs `gcloud` and Chrome), plus the project's promotional credits                                                                   | `gcp-ai`                 |
-| [grok](packages/grok)               | Grok (SuperGrok / X Premium+), through the Grok Build CLI's sign-in                                                                                                                           | `grok`                   |
-| [joycode](packages/joycode)         | JoyCode IDE credits with JD account browser sign-in, live models and credit multipliers (unofficial)                                                                                          | `joycode`                |
-| [kimi-work](packages/kimi-work)     | Ordinary Kimi desktop Work subscription, through the desktop app's local sign-in; separate from Kimi Code                                                                                     | `kimi-work`              |
-| [kiro](packages/kiro)               | Kiro (Free, Pro, Pro+, Power), with Kiro's sign-in, kiro-cli's or the IDE's, or an API key                                                                                                    | `kiro`                   |
-| [loomy](packages/loomy)             | iFlytek's Loomy (loomyad.xunfei.cn), with SMS sign-in                                                                                                                                         | `loomy`                  |
-| [minimax](packages/minimax)         | MiniMax Code (China): account credits and M Plan, with MiniMax Code's device sign-in                                                                                                          | `minimax-code`           |
-| [minimax](packages/minimax)         | MiniMax Code (international): account credits and M Plan, with MiniMax Code's device sign-in                                                                                                  | `minimax-code-global`    |
-| [mimo](packages/mimo)               | Xiaomi MiMo, with a Xiaomi account                                                                                                                                                            | `mimo-app`               |
-| [nous](packages/nous)               | Nous Portal models, with Nous Portal's device sign-in                                                                                                                                         | `nous-portal`            |
-| [opendesign](packages/opendesign)   | Open Design Cloud (open-design.ai), with the Open Design CLI's device sign-in                                                                                                                 | `opendesign`             |
-| [qoder](packages/qoder)             | Qoder subscription (qoder.com), with Qoder's device sign-in                                                                                                                                   | `qoder`                  |
-| [qoder](packages/qoder)             | Qoder CN subscription (qoder.cn), with Qoder CN's device sign-in                                                                                                                              | `qoder-cn`               |
-| [raccoon](packages/raccoon)         | SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com): account credits and daily check-in, with browser sign-in or Raccoon desktop's sign-in                                                           | `raccoon`                |
-| [river](packages/river)             | River (river.ai) pay-as-you-go inference, with your API key: per-account models, documented reasoning efforts and live prices                                                                 | `river`                  |
-| [sap-aicore](packages/sap-aicore)   | SAP AI Core deployments for account-scoped GPT Responses and Claude Messages models                                                                                                           | `sap-aicore`             |
-| [sensenova](packages/sensenova)     | SenseNova (商汤日日新) Token Plan: one console sign-in gives the credit pools, windows and grants, and (with an optional API key) the plan's models for chat                                       | `sensenova-token-plan`   |
-| [trae](packages/trae)               | Trae CN (trae.cn) and Trae international (trae.ai), free tier included, with Trae's browser sign-in (experimental)                                                                            | `trae-cn`, `trae-global` |
-| [workbuddy](packages/workbuddy)     | WorkBuddy (China build, CodeBuddy plan)                                                                                                                                                       | `workbuddy`              |
-| [workbuddy](packages/workbuddy)     | WorkBuddy (international build)                                                                                                                                                               | `workbuddy-ai`           |
-| [zcode](packages/zcode)             | ZCode: Z.ai / BigModel (智谱) GLM Coding Plan, team seats, Start Plan, daily claim of its gift plans                                                                                            | `zcode`                  |
-| [zed](packages/zed)                 | Zed (Pro, Pro Trial, Student, Business): Anthropic, OpenAI, Google and xAI models hosted by Zed                                                                                               | `zed`                    |
-| [zen-free](packages/zen-free)       | OpenCode Zen free models with the public credential                                                                                                                                           | `opencode-zen-free`      |
-
+| Package | Signs in to | Provider id |
+|---|---|---|
+| [agnes](packages/agnes) | Agnes AI international (agnes-ai.com), with Chrome browser sign-in, live text models, plan usage and USD balance | `agnes` |
+| [agnes-code](packages/agnes-code) | Agnes AI's Agnes Code desktop, with the desktop's saved session (Windows) or a pasted access token: live models, daily credit check-in and points balance (unofficial) | `agnes-code` |
+| [astudio](packages/astudio) | iFlytek's AStudio (科大讯飞 Astron Studio desktop), with the desktop's saved credentials or a pasted model token: live model catalog, daily login-points check-in and points balance (unofficial) | `astudio` |
+| [catpaw](packages/catpaw) | Meituan's 妙手 CatPaw (ai.catpaw.meituan.com), with a browser web sign-in or the desktop client's saved credentials | `catpaw` |
+| [cline](packages/cline) | Cline (cline.bot): usage-billed models, ClinePass's and Cline's free ones, with Cline's device sign-in or an API key | `cline` |
+| [codearts](packages/codearts) | Huawei Cloud CodeArts (码道) coding plans (Trial, personal and enterprise credits), with Huawei Cloud OAuth sign-in (unofficial) | `codearts` |
+| [commandcode](packages/commandcode) | Command Code plans (Pro, GOAT, Max, Ultra, Go, Teams Pro) | `commandcode-plan` |
+| [copilot](packages/copilot) | GitHub Copilot on GitHub.com or GitHub Enterprise, with premium request or credit quotas | `github-copilot` |
+| [cursor](packages/cursor) | Cursor subscriptions (Pro, Pro+, Ultra, Teams), on the API cursor-agent talks to | `cursor` |
+| [devin](packages/devin) | Devin subscription (the devin CLI's account) | `devin` |
+| [factory](packages/factory) | Factory (Droid) subscription | `factory` |
+| [gcp-ai](packages/gcp-ai) | Google Cloud Vertex AI with your own gcloud / ADC login (needs `gcloud` and Chrome), plus the project's promotional credits | `gcp-ai` |
+| [grok](packages/grok) | Grok (SuperGrok / X Premium+), through the Grok Build CLI's sign-in | `grok` |
+| [joycode](packages/joycode) | JoyCode IDE credits with JD account browser sign-in, live models and credit multipliers (unofficial) | `joycode` |
+| [kimi-work](packages/kimi-work) | Ordinary Kimi desktop Work subscription, through the desktop app's local sign-in; separate from Kimi Code | `kimi-work` |
+| [kiro](packages/kiro) | Kiro (Free, Pro, Pro+, Power), with Kiro's sign-in, kiro-cli's or the IDE's, or an API key | `kiro` |
+| [loomy](packages/loomy) | iFlytek's Loomy (loomyad.xunfei.cn), with SMS sign-in | `loomy` |
+| [minimax](packages/minimax) | MiniMax Code (China): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code` |
+| [minimax](packages/minimax) | MiniMax Code (international): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code-global` |
+| [mimo](packages/mimo) | Xiaomi MiMo, with a Xiaomi account | `mimo-app` |
+| [nous](packages/nous) | Nous Portal models, with Nous Portal's device sign-in | `nous-portal` |
+| [opendesign](packages/opendesign) | Open Design Cloud (open-design.ai), with the Open Design CLI's device sign-in | `opendesign` |
+| [qoder](packages/qoder) | Qoder subscription (qoder.com), with Qoder's device sign-in | `qoder` |
+| [qoder](packages/qoder) | Qoder CN subscription (qoder.cn), with Qoder CN's device sign-in | `qoder-cn` |
+| [raccoon](packages/raccoon) | SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com): account credits and daily check-in, with browser sign-in or Raccoon desktop's sign-in | `raccoon` |
+| [river](packages/river) | River (river.ai) pay-as-you-go inference, with your API key: per-account models, documented reasoning efforts and live prices | `river` |
+| [sap-aicore](packages/sap-aicore) | SAP AI Core deployments for account-scoped GPT Responses and Claude Messages models | `sap-aicore` |
+| [sensenova](packages/sensenova) | SenseNova (商汤日日新) Token Plan: one console sign-in gives the credit pools, windows and grants, and (with an optional API key) the plan's models for chat | `sensenova-token-plan` |
+| [trae](packages/trae) | Trae CN (trae.cn) and Trae international (trae.ai), free tier included, with Trae's browser sign-in (experimental) | `trae-cn`, `trae-global` |
+| [workbuddy](packages/workbuddy) | WorkBuddy (China build, CodeBuddy plan) | `workbuddy` |
+| [workbuddy](packages/workbuddy) | WorkBuddy (international build) | `workbuddy-ai` |
+| [zcode](packages/zcode) | ZCode: Z.ai / BigModel (智谱) GLM Coding Plan, team seats, Start Plan, daily claim of its gift plans | `zcode` |
+| [zed](packages/zed) | Zed (Pro, Pro Trial, Student, Business): Anthropic, OpenAI, Google and xAI models hosted by Zed | `zed` |
+| [zen-free](packages/zen-free) | OpenCode Zen free models with the public credential | `opencode-zen-free` |
 
 ## Gateway middleware
 
 These packages aren't OpenCode plugins. magpie runs them in its gateway, on the requests every agent sends and the replies it gets back, whichever provider serves them. Each one is a port of something [New API](https://github.com/QuantumNous/new-api) does for its channels, or something agents commonly need.
 
-
-| Package                                         | What it does                                                                                                                                                                                                         |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [param-override](packages/param-override)       | New API's 参数覆盖 (`param_override`): set, delete, move, copy or rewrite request fields, for some models or under conditions, or turn a request away                                                                    |
-| [model-map](packages/model-map)                 | New API's 模型重定向 (`model_mapping`): send a model under another name, by name or `/pattern/`; replies name the model asked for                                                                                         |
-| [system-prompt](packages/system-prompt)         | Your own system prompt on every request, or on some agents' or models', in each API's own place                                                                                                                      |
-| [word-guard](packages/word-guard)               | New API's 敏感词过滤: turn away or mask words and patterns in what users send, and in replies                                                                                                                             |
-| [think-tags](packages/think-tags)               | Take `<think>…</think>` out of a reply's text, or put a Chat reply's `reasoning_content` into it (`thinking_to_content`)                                                                                             |
-| [antigravity-cloak](packages/antigravity-cloak) | Claude Code and Claude Desktop on Antigravity: break the words Antigravity turns their system prompt away for, in what Antigravity alone is sent                                                                     |
-| [codex-history](packages/codex-history)         | Opt-in Responses history compatibility after switching providers: remove historical ciphertext and optional item IDs while preserving readable content and tool-call pairing                                         |
-| [history-trim](packages/history-trim)           | Send a request's history smaller: fold a run of blank lines, drop a system prompt written twice and a message repeated right after itself, and cut a past tool result longer than `maxToolLength` at a word boundary |
-
+| Package | What it does |
+|---|---|
+| [param-override](packages/param-override) | New API's 参数覆盖 (`param_override`): set, delete, move, copy or rewrite request fields, for some models or under conditions, or turn a request away |
+| [model-map](packages/model-map) | New API's 模型重定向 (`model_mapping`): send a model under another name, by name or `/pattern/`; replies name the model asked for |
+| [system-prompt](packages/system-prompt) | Your own system prompt on every request, or on some agents' or models', in each API's own place |
+| [word-guard](packages/word-guard) | New API's 敏感词过滤: turn away or mask words and patterns in what users send, and in replies |
+| [think-tags](packages/think-tags) | Take `<think>…</think>` out of a reply's text, or put a Chat reply's `reasoning_content` into it (`thinking_to_content`) |
+| [antigravity-cloak](packages/antigravity-cloak) | Claude Code and Claude Desktop on Antigravity: break the words Antigravity turns their system prompt away for, in what Antigravity alone is sent |
+| [codex-history](packages/codex-history) | Opt-in Responses history compatibility after switching providers: remove historical ciphertext and optional item IDs while preserving readable content and tool-call pairing |
+| [history-trim](packages/history-trim) | Send a request's history smaller: fold a run of blank lines, drop a system prompt written twice and a message repeated right after itself, and cut a past tool result longer than `maxToolLength` at a word boundary |
 
 ```sh
 magpie plugin add @magpie-community/middleware-<name>
@@ -82,11 +78,9 @@ A middleware package is a folder under `packages/<name>/` with:
 
 A gateway plugin can also add routings: how one pool is ordered for a request, where the pool is a provider's accounts or keys, or a group's members. Each shows in every routing picker as `<plugin>/<name>`, beside magpie's own (smart, order, rotate, usage, pace, weight).
 
-
-| Package                     | Routings                                                                                                                                                                            |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Package | Routings |
+|---|---|
 | [reserve](packages/reserve) | `reserve/ceiling`: fill accounts in order up to a share of their allowance (80% by default), then the next; `reserve/accounts-first`: subscriptions before API keys, keys by weight |
-
 
 ```sh
 magpie plugin add @magpie-community/middleware-<name>
@@ -103,12 +97,10 @@ A routing package is a folder under `packages/<name>/` with:
 
 These give tools to every agent magpie connects. magpie serves them on its MCP server, `/mcp/magpie/tools`, named `<plugin>_<tool>`.
 
-
-| Package                           | Tools                                                                                                                                                                         |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [search1api](packages/search1api) | Web search, news, agentic search, page retrieval, sitemaps and trends, with Search1API OAuth or an API key                                                                    |
-| [calc](packages/calc)             | `eval` exact arithmetic in fractions, `convert` units (data, time, length, mass, angle, temperature), `date` calendar date math across time zones and DST. No network, no key |
-
+| Package | Tools |
+|---|---|
+| [search1api](packages/search1api) | Web search, news, agentic search, page retrieval, sitemaps and trends, with Search1API OAuth or an API key |
+| [calc](packages/calc) | `eval` exact arithmetic in fractions, `convert` units (data, time, length, mass, angle, temperature), `date` calendar date math across time zones and DST. No network, no key |
 
 ```sh
 magpie plugin add @magpie-community/tools-<name>
@@ -210,18 +202,16 @@ on magpie's Agents page like the ones magpie ships with: pick one of magpie's
 models in its row and magpie writes it into the agent's config, and switching
 it off puts the config back.
 
-
-| Package                                   | Agent                                                                                                                                                                                        |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [aider](packages/aider)                   | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix                                                                                                         |
-| [bub](packages/bub)                       | [Bub](https://bub.build): `~/.bub/config.yml`, as the `magpie:` provider (needs Bub 0.5.1 or later)                                                                                          |
-| [kilo](packages/kilo)                     | [Kilo Code](https://kilo.ai): `~/.config/kilo/kilo.jsonc`, through an OpenAI-compatible provider                                                                                             |
-| [junie](packages/junie)                   | [Junie CLI](https://junie.jetbrains.com/): an explicit `/v1/models` seed for its full picker and Magpie's selected model as the launch default; no LiteLLM                                   |
-| [kimi-desktop](packages/kimi-desktop)     | Ordinary [Kimi desktop](https://www.kimi.com/) Work, through its authenticated local runtime; not Kimi Code CLI                                                                              |
-| [pig](packages/pig)                       | [PiG](https://github.com/MichaelKinsy/PiG): injects Magpie's endpoint and model catalog into `~/.pig/agent/models.json`; choose the model in PiG, startup settings stay unchanged            |
-| [type4me](packages/type4me)               | [Type4Me](https://github.com/joewongjc/type4me), macOS voice input: `~/Library/Application Support/Type4Me/magpie-agent.json`, for its LLM post-processing                                   |
+| Package | Agent |
+|---|---|
+| [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
+| [bub](packages/bub) | [Bub](https://bub.build): `~/.bub/config.yml`, as the `magpie:` provider (needs Bub 0.5.1 or later) |
+| [kilo](packages/kilo) | [Kilo Code](https://kilo.ai): `~/.config/kilo/kilo.jsonc`, through an OpenAI-compatible provider |
+| [junie](packages/junie) | [Junie CLI](https://junie.jetbrains.com/): an explicit `/v1/models` seed for its full picker and Magpie's selected model as the launch default; no LiteLLM |
+| [kimi-desktop](packages/kimi-desktop) | Ordinary [Kimi desktop](https://www.kimi.com/) Work, through its authenticated local runtime; not Kimi Code CLI |
+| [pig](packages/pig) | [PiG](https://github.com/MichaelKinsy/PiG): injects Magpie's endpoint and model catalog into `~/.pig/agent/models.json`; choose the model in PiG, startup settings stay unchanged |
+| [type4me](packages/type4me) | [Type4Me](https://github.com/joewongjc/type4me), macOS voice input: `~/Library/Application Support/Type4Me/magpie-agent.json`, for its LLM post-processing |
 | [opencodereview](packages/opencodereview) | [Open Code Review](https://github.com/alibaba/open-code-review) (`ocr`): `~/.opencodereview/config.json` as a custom Anthropic provider, so `ocr review` / `ocr scan` run on magpie's models |
-
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
@@ -237,12 +227,10 @@ An agent package is a folder under `packages/<name>/` with:
 
 Agent skills for magpie users, in `skills/<name>/SKILL.md`.
 
-
-| Skill                               | What it does                                                                                                                                                                                                                                                        |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Skill | What it does |
+|---|---|
 | [magpie-setup](skills/magpie-setup) | Lets an agent set magpie up as the user asks, through its own `magpie` commands: keys and subscriptions, an agent's model, routing groups with fallbacks and time-of-day rules, gateway keys with budgets, and MCP servers and instructions shared with every agent |
-| [magpie-quota](skills/magpie-quota) | Lets an agent check what is left of every subscription, coding plan and key balance magpie has (`magpie quota --json`), and wait for allowance to come back                                                                                                         |
-
+| [magpie-quota](skills/magpie-quota) | Lets an agent check what is left of every subscription, coding plan and key balance magpie has (`magpie quota --json`), and wait for allowance to come back |
 
 In magpie, they are first under Library › Market › Skills. Elsewhere:
 
@@ -280,39 +268,39 @@ Each package is a folder under `packages/<name>/`:
   - `"type": "module"`, `"main": "./index.mjs"`
   - version, `"license": "MIT"`
   - no runtime dependencies unless one is really needed. Bun's and Node's
-  `fetch`, `crypto` and `fs` usually cover it.
+    `fetch`, `crypto` and `fs` usually cover it.
 - **`index.mjs`**
   - Exports one async plugin function, as OpenCode's `Plugin` type
-  describes.
+    describes.
   - Returns an `auth` hook: `{ provider, loader, methods }`.
     - A browser sign-in is `{ type: "oauth", label, prompts?, authorize }`.
-    `authorize` returns `{ url, instructions, method: "auto" | "code", callback }`.
+      `authorize` returns `{ url, instructions, method: "auto" | "code", callback }`.
     - A key is `{ type: "api", label }`.
     - `loader(getAuth, provider)` returns what the AI SDK is given:
-    `baseURL`, `apiKey`, `headers` and a `fetch` that signs each request
-    and refreshes the token (saving it with `client.auth.set`).
+      `baseURL`, `apiKey`, `headers` and a `fetch` that signs each request
+      and refreshes the token (saving it with `client.auth.set`).
   - A provider that models.dev doesn't list is declared in a `config` hook
-  that sets `config.provider[<id>] = { name, npm, api, models }`. The npm
-  field names the AI SDK package the models speak:
-  `@ai-sdk/openai-compatible` (chat completions), `@ai-sdk/openai`
-  (Responses) or `@ai-sdk/anthropic` (Messages).
+    that sets `config.provider[<id>] = { name, npm, api, models }`. The npm
+    field names the AI SDK package the models speak:
+    `@ai-sdk/openai-compatible` (chat completions), `@ai-sdk/openai`
+    (Responses) or `@ai-sdk/anthropic` (Messages).
   - A list the account decides goes in the `provider: { id, models(provider, { auth }) }`
-  hook.
+    hook.
   - A daily check-in (签到) the vendor rewards goes in the `auth` hook as
-  `checkin(getAuth, provider)`. magpie calls it once a day for each
-  signed-in account while the user has it on (Settings → Usage →
-  Plugins), and shows what came of it on the account's Usage card. It
-  returns `{ outcome, credit?, streak?, message?, until? }`, `outcome` being
-  `claimed` (checked in now), `done` (already today), `ineligible`,
-  `inactive` (no check-in event now), `captcha` or `failed`; a throw is
-  `failed` with its message, and only `failed` is tried again that day.
-  `until` (RFC 3339) is when the vendor's own day turns, if not at
-  Beijing midnight: magpie asks again then (Qoder's opens at 10:00 UTC+8).
-  Never solve a captcha: return `captcha` and the user checks in in the
-  vendor's app. Needs magpie with the hook (after v0.1.1083);
-  [the contract](https://github.com/yetone/magpie/blob/main/docs/subsystems/provider-plugins.md#a-plugins-daily-check-in).
+    `checkin(getAuth, provider)`. magpie calls it once a day for each
+    signed-in account while the user has it on (Settings → Usage →
+    Plugins), and shows what came of it on the account's Usage card. It
+    returns `{ outcome, credit?, streak?, message?, until? }`, `outcome` being
+    `claimed` (checked in now), `done` (already today), `ineligible`,
+    `inactive` (no check-in event now), `captcha` or `failed`; a throw is
+    `failed` with its message, and only `failed` is tried again that day.
+    `until` (RFC 3339) is when the vendor's own day turns, if not at
+    Beijing midnight: magpie asks again then (Qoder's opens at 10:00 UTC+8).
+    Never solve a captcha: return `captcha` and the user checks in in the
+    vendor's app. Needs magpie with the hook (after v0.1.1083);
+    [the contract](https://github.com/yetone/magpie/blob/main/docs/subsystems/provider-plugins.md#a-plugins-daily-check-in).
 - **`README.md`**: what the package signs in to, how, where the sign-in is
-kept, and the models.
+  kept, and the models.
 
 The provider id is the one magpie's built-in subscription has (`grok`,
 `zcode`, `workbuddy`, `commandcode-plan`, …). While magpie still has the
@@ -390,17 +378,18 @@ A version bump pushed to `main` ships itself, two ways
 (`.github/workflows/publish.yml`):
 
 - **dist**: every package's version is packed onto the `dist` branch
-(`scripts/dist.mjs`): `tgz/<file>` and `index.json`, which names each
-version's tarball and its sha512. magpie (0.1.1243 and later) installs a
-`@magpie-community` package from there whenever npm doesn't have the
-version: a new package, or one npm refused. It installs a tarball only
-when the sha512 matches. This needs nobody, so **a new plugin is merged
-as soon as its review is done**; it never waits for npm.
+  (`scripts/dist.mjs`): `tgz/<file>` and `index.json`, which names each
+  version's tarball and its sha512. magpie (0.1.1243 and later) installs a
+  `@magpie-community` package from there whenever npm doesn't have the
+  version: a new package, or one npm refused. It installs a tarball only
+  when the sha512 matches. This needs nobody, so **a new plugin is merged
+  as soon as its review is done**; it never waits for npm.
 - **npm**: every version npm doesn't have yet is published. npm tries
-trusted publishing (OIDC) first, which needs the package to name
-`publish.yml` as its Trusted Publisher on npmjs.com with `npm publish`
-allowed. A trust made since 2026-09-03 allows only `npm stage publish`
-unless told otherwise, so make it with `--allow-publish`:
+  trusted publishing (OIDC) first, which needs the package to name
+  `publish.yml` as its Trusted Publisher on npmjs.com with `npm publish`
+  allowed. A trust made since 2026-09-03 allows only `npm stage publish`
+  unless told otherwise, so make it with `--allow-publish`:
+
   ```sh
   npx npm@latest trust github <package> --file publish.yml \
     --repo magpie-community/plugins --allow-publish \

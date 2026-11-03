@@ -10,7 +10,7 @@ Only supported SAP `*.hana.ondemand.com` service hosts are accepted. Other lands
 
 Check the credential file's resource group, RUNNING deployment status, scenario/executable, and [model eligibility](../README.md#supported-models). GPT requires major version 6 or higher, not a fixed name or backend date. The active backend version must match the catalog and any configured version pin. For both GPT and Claude, `latest` is only a configuration selector: backend details must report a concrete version, even when the catalog includes a `latest` entry. Catalog availability alone does not mean a deployment exists. Unresolved, deprecated, or retired versions remain unavailable.
 
-Discovery refreshes after its five-minute cache expires. Restart the gateway to rebuild immediately and wait for startup discovery to finish before sending requests. A retained visible host catalog is not proof that the deployment is still usable; dispatch checks the current registry.
+Discovery refreshes after its five-minute cache expires, including time spent in system sleep. Restart the gateway to rebuild immediately and wait for startup discovery to finish before sending requests. A retained visible host catalog is not proof that the deployment is still usable; dispatch checks the current registry.
 
 ## Unsupported request parameters
 
@@ -25,6 +25,12 @@ Claude streaming requires explicit support on the matched catalog version; omitt
 Sign in again after changing credentials and restart other running gateways. Reauthorization in another process cannot revoke an already-running host's in-memory account generation at an identical file path. Deleting/recreating a file at that path is not an automatic rotation signal.
 
 Use the displayed account label to pin requests; see [account selection](credentials.md#accounts-and-credential-updates). Do not guess a selector from a hash or send SAP credentials as the gateway key.
+
+## First request after overnight sleep returns discovery 401
+
+`discovery-response` with HTTP 401 means an AI Core discovery endpoint rejected the request before inference; it does not establish an OAuth client-secret refusal. Older plugin versions used only a monotonic expiry clock, which pauses during system sleep in Bun on macOS and could retain yesterday's expired token. Token reuse now checks wall-clock deadlines as well.
+
+Fully quit and reopen the Magpie app, or restart the gateway process, to load the fixed plugin and discard the old in-memory token. Restarting pi alone does not reset the gateway's token. Do not rotate credentials based on this error alone. If discovery still returns 401 with a fresh token, check the service-key/API landscape pairing and account access.
 
 ## Error handling
 

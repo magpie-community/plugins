@@ -35,6 +35,6 @@
     "directory": "packages/sap-aicore"
   },
   "scripts": {
-    "test": "bun test sap-aicore.test.mjs"
+    "test": "node --test node-tests/*.js"
   }
 }

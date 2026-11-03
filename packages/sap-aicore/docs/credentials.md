@@ -43,7 +43,7 @@ To pin a gateway request, set `X-Magpie-Account` to the account's displayed user
 
 Magpie persists only API authentication type, an opaque key derived from the normalized credential-file path, and credential-file metadata. Client secrets and SAP tokens are not copied into the account store.
 
-Tokens stay in account-scoped memory. Renewal is on demand 60 seconds before expiry, or halfway through short token lifetimes. Concurrent callers share acquisition; cancelling one waiter does not cancel acquisition still needed by another. File reads and token exchanges have 15-second bounds.
+Tokens stay in account-scoped memory. Renewal is on demand 60 seconds before expiry, or halfway through short token lifetimes. Both monotonic elapsed time and wall-clock deadlines bound reuse: system sleep cannot extend a SAP token's lifetime, and a backward wall-clock adjustment cannot extend its monotonic lifetime. Concurrent callers share acquisition; cancelling one waiter does not cancel acquisition still needed by another. File reads and token exchanges have 15-second bounds.
 
 Only verified OAuth client-credential refusal expires sign-in. Network errors, cancellation, timeouts, malformed responses, and discovery/inference failures do not by themselves expire the account. See [error handling](troubleshooting.md#error-handling).
 
