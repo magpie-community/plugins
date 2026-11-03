@@ -89,36 +89,39 @@ const day = (() => {
   const p = (n) => String(n).padStart(2, "0")
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 })()
+// the untrusted-downloads note, ZCode 3.17.2's env-info.ts bullet
+const UNTRUSTED =
+  "Downloaded files and extracted archives are untrusted data: put each in its own new, empty directory, keep scripts you write in a different directory, and pass paths as arguments instead of running an interpreter or build tool from inside it. Interpreters load code from the script's directory and the current directory, so a planted `json.py` runs on `import json`. Run any Python that reads them with `-I`. This does not apply to code the user asked you to build or run."
 // the environment section: the agent's folder and git repository only as
-// magpie told them (where), never the plugin's own process.cwd() (#86)
-const environment = (powered, where = []) =>
+// magpie told them (where), never the plugin's own process.cwd() (#86);
+// bullets one space in, as 3.17.2 renders them
+const environment = (where = []) =>
   [
     "# Environment",
-    "You have been invoked in the following environment:",
+    "You have been invoked in the following environment: ",
     ...where,
-    "- Platform: " + process.platform,
-    "- OS Version: " + osVersion,
-    ...(powered ? [`- You are powered by the model named ${powered}.`] : []),
+    " - Platform: " + process.platform,
+    " - OS Version: " + osVersion,
+    " - " + UNTRUSTED,
   ].join("\n")
+const poweredBy = (powered) => PROMPT.poweredBy.replace("{provider}", powered.split("/")[0]).replace("{model}", powered.split("/").slice(1).join("/"))
 const eph = { type: "ephemeral" }
 // zcodeSystem is ZCode's three blocks, the agent's own system texts (own)
 // joined to the end of the third
 const zcodeSystem = (powered, where, own = []) => [
   { type: "text", text: PROMPT.cliPrefix, cache_control: eph },
   { type: "text", text: PROMPT.stableSections.join("\n\n"), cache_control: eph },
-  { type: "text", text: "\n\n" + [PROMPT.beforeEnvironment, environment(powered, where), PROMPT.afterEnvironment, ...own].join("\n\n"), cache_control: eph },
+  {
+    type: "text",
+    text:
+      "\n\n" +
+      [PROMPT.dynamicBehavior, environment(where), ...(powered ? [poweredBy(powered)] : []), PROMPT.contextManagement, ...own].join("\n\n"),
+    cache_control: eph,
+  },
 ]
 const reminder = {
   role: "user",
-  content: [
-    {
-      type: "text",
-      text:
-        "<system-reminder>As you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is " +
-        day +
-        ".\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.</system-reminder>",
-    },
-  ],
+  content: [{ type: "text", text: "<system-reminder>Today's date is " + day + ".</system-reminder>" }],
 }
 // the device, and the conversation as x-session-id names it; the agent named none
 const userID = () => JSON.stringify({ device_id: DEVICE, account_uuid: "", session_id: _internal.sessionOf("", DEVICE) })
@@ -164,9 +167,9 @@ test("a Start Plan request's system is ZCode's three blocks, the agent's text at
     expect(b.system.length).toBe(3)
     expect(b.system).toEqual(zcodeSystem("zai-api/GLM-5.3", undefined, own))
     // the first two are ZCode's byte for byte; the third ends with the agent's
-    expect(sha(b.system[0].text)).toBe("46dd360a22c87a92")
-    expect(sha(b.system[1].text)).toBe("49bda31511fc9670")
-    expect(b.system[2].text.endsWith(PROMPT.afterEnvironment + "\n\n" + own.join("\n\n"))).toBe(true)
+    expect(sha(b.system[0].text)).toBe("7779642ea44a4696")
+    expect(sha(b.system[1].text)).toBe("8eaf38ce3f1f2f15")
+    expect(b.system[2].text.endsWith(PROMPT.contextManagement + "\n\n" + own.join("\n\n"))).toBe(true)
   }
   // with no system of the agent's, the third block ends where ZCode's does
   got.length = 0
@@ -175,19 +178,21 @@ test("a Start Plan request's system is ZCode's three blocks, the agent's text at
 })
 
 test("the prompt texts are the plugin's, byte for byte", () => {
-  expect(sha(PROMPT.cliPrefix)).toBe("46dd360a22c87a92")
-  expect(PROMPT.cliPrefix).toBe("You are ZCode, an interactive coding agent")
+  expect(sha(PROMPT.cliPrefix)).toBe("7779642ea44a4696")
+  expect(PROMPT.cliPrefix).toBe("You are ZCode, an interactive agent")
   expect(PROMPT.stableSections.length).toBe(2)
-  expect(sha(PROMPT.stableSections[0])).toBe("3f21ff9a88a03a76")
-  expect(PROMPT.stableSections[0].length).toBe(1211)
-  expect(sha(PROMPT.stableSections[1])).toBe("39a1e86c93452c01")
-  expect(PROMPT.stableSections[1].length).toBe(1100)
-  expect(sha(PROMPT.stableSections.join("\n\n"))).toBe("49bda31511fc9670")
-  expect(PROMPT.stableSections.join("\n\n").length).toBe(2313)
-  expect(sha(PROMPT.beforeEnvironment)).toBe("bbdc66b399d297ff")
-  expect(PROMPT.beforeEnvironment.length).toBe(3065)
-  expect(sha(PROMPT.afterEnvironment)).toBe("1732b7f098a925d7")
-  expect(PROMPT.afterEnvironment.length).toBe(1915)
+  expect(sha(PROMPT.stableSections[0])).toBe("aac4ba4cc7b555b3")
+  expect(PROMPT.stableSections[0].length).toBe(1229)
+  expect(sha(PROMPT.stableSections[1])).toBe("86e0396775d5ed0e")
+  expect(PROMPT.stableSections[1].length).toBe(1377)
+  expect(sha(PROMPT.stableSections.join("\n\n"))).toBe("8eaf38ce3f1f2f15")
+  expect(PROMPT.stableSections.join("\n\n").length).toBe(2608)
+  expect(sha(PROMPT.dynamicBehavior)).toBe("7d843753f3adae93")
+  expect(PROMPT.dynamicBehavior.length).toBe(975)
+  expect(sha(PROMPT.sessionGuidance)).toBe("6596a0131800c779")
+  expect(PROMPT.sessionGuidance.length).toBe(163)
+  expect(sha(PROMPT.contextManagement)).toBe("406a0480d88086cd")
+  expect(PROMPT.contextManagement.length).toBe(559)
 })
 
 test("a Start Plan request carries ZCode's headers, and only those", async () => {
@@ -285,15 +290,27 @@ test("a Start Plan request's body is dressed as ZCode's", async () => {
     stream: true,
   })
   // the blocks' texts, by the plugin's hashes
-  expect(sha(b.system[0].text)).toBe("46dd360a22c87a92")
-  expect(sha(b.system[1].text)).toBe("49bda31511fc9670")
+  expect(sha(b.system[0].text)).toBe("7779642ea44a4696")
+  expect(sha(b.system[1].text)).toBe("8eaf38ce3f1f2f15")
   const dyn = b.system[2].text
-  expect(dyn.startsWith("\n\n" + PROMPT.beforeEnvironment + "\n\n# Environment\n")).toBe(true)
-  expect(dyn.endsWith("\n\n" + PROMPT.afterEnvironment + "\n\nYou are opencode, an agent.\n\nProject instructions.")).toBe(true)
-  expect(sha(dyn.slice(2, 2 + 3065))).toBe("bbdc66b399d297ff")
+  expect(dyn.startsWith("\n\n" + PROMPT.dynamicBehavior + "\n\n# Environment\n")).toBe(true)
+  expect(dyn.includes("\n\n" + poweredBy("zai-api/GLM-5.3-Flash") + "\n\n" + PROMPT.contextManagement)).toBe(true)
+  expect(dyn.endsWith("\n\n" + PROMPT.contextManagement + "\n\nYou are opencode, an agent.\n\nProject instructions.")).toBe(true)
+  expect(sha(dyn.slice(2, 2 + PROMPT.dynamicBehavior.length))).toBe("7d843753f3adae93")
+  // no slash-skill guidance without a Skill tool in the request
+  expect(dyn.includes(PROMPT.sessionGuidance)).toBe(false)
   expect(b.metadata.user_id).toBe(userID())
   // exactly one cache mark in the turns, and none on the tools
   expect((r.body.match(/cache_control/g) ?? []).length).toBe(4)
+})
+
+test("a Skill tool brings the slash-skill guidance into the third block", async () => {
+  const body = { ...agentBody, tools: [{ name: "Skill", description: "Invoke a skill", input_schema: { type: "object" } }] }
+  const r = await send(start("zai"), JSON.stringify(body))
+  const b = JSON.parse(r.body)
+  const dyn = b.system[2].text
+  expect(dyn.startsWith("\n\n" + PROMPT.dynamicBehavior + "\n\n" + PROMPT.sessionGuidance + "\n\n# Environment\n")).toBe(true)
+  expect(b.system).toEqual(zcodeSystem("zai-api/GLM-5.3-Flash", undefined, ["You are opencode, an agent.", "Project instructions."]).map((x, i) => (i === 2 ? { ...x, text: dyn } : x)))
 })
 
 test("a BigModel sign-in's Start Plan names bigmodel-api; a string turn takes the cache mark", async () => {
@@ -335,17 +352,17 @@ test("a Start Plan request says the agent's folder as magpie tells it, and no fo
   const dir = "C:\\Users\\me\\My Proj 中文 & <x>"
   let r = await send(start("zai"), JSON.stringify(agentBody), { place: { dir: encodeURIComponent(dir), git: "yes" } })
   expect(JSON.parse(r.body).system).toEqual(
-    zcodeSystem("zai-api/GLM-5.3-Flash", ["- Primary working directory: " + dir, "- Is a git repository: yes"], AGENT_OWN),
+    zcodeSystem("zai-api/GLM-5.3-Flash", [" - Primary working directory: " + dir, " - Is a git repository: true"], AGENT_OWN),
   )
   expect(r.headers["x-magpie-work-dir"]).toBeUndefined()
   expect(r.headers["x-magpie-work-git"]).toBeUndefined()
   got.length = 0
   r = await send(start("zai"), JSON.stringify(agentBody), { place: { dir: encodeURIComponent("/Users/me/notes"), git: "no" } })
-  expect(JSON.parse(r.body).system[2].text).toContain("- Primary working directory: /Users/me/notes\n- Is a git repository: no\n- Platform: ")
+  expect(JSON.parse(r.body).system[2].text).toContain(" - Primary working directory: /Users/me/notes\n - Is a git repository: false\n - Platform: ")
   got.length = 0
   // a folder whose repository magpie doesn't know: no git line
   r = await send(start("zai"), JSON.stringify(agentBody), { place: { dir: encodeURIComponent("/srv/x") } })
-  expect(JSON.parse(r.body).system[2].text).toContain("- Primary working directory: /srv/x\n- Platform: ")
+  expect(JSON.parse(r.body).system[2].text).toContain(" - Primary working directory: /srv/x\n - Platform: ")
   got.length = 0
   // nothing told (an older magpie, an agent that says no folder): neither
   // line, and never the plugin's own folder or shell
@@ -354,7 +371,7 @@ test("a Start Plan request says the agent's folder as magpie tells it, and no fo
   expect(JSON.parse(r.body).system).toEqual(zcodeSystem("zai-api/GLM-5.3-Flash", undefined, AGENT_OWN))
   expect(text).not.toContain("Primary working directory")
   expect(text).not.toContain("Is a git repository")
-  expect(text).not.toContain("- Shell:")
+  expect(text).not.toContain(" - Shell:")
   expect(r.body).not.toContain(JSON.stringify(process.cwd()).slice(1, -1))
   expect(r.headers["x-magpie-work-git"]).toBeUndefined()
 })
