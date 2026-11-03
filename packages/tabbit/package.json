@@ -1,0 +1,51 @@
+{
+  "name": "@magpie-community/opencode-tabbit-auth",
+  "version": "0.1.0",
+  "description": "Tabbit (web.tabbit.com) as a magpie / OpenCode provider: live model catalog, cookie sign-in, chat completions, cycle usage and the daily check-in",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "tabbit",
+    "provider",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "magpie": {
+    "icon": "https://web.tabbit.com/favicon.ico",
+    "maxConcurrency": 1
+  },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/tabbit#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/tabbit"
+  },
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
