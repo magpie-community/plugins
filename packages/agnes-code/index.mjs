@@ -16,7 +16,8 @@
 //   积分余额  GET  https://api.agnes-ai.com/api/v2/subscription/credits-balance
 //
 // 本插件复用这份登录态：第一种登录方式在磁盘上解出桌面端会话（同用户同机器的
-// DPAPI 即可解，无需密钥口令，仅 Windows），第二种让用户手动粘贴 accessToken。
+// DPAPI 即可解，无需密钥口令，仅 Windows；magpie 的 oauth 方式，没解到时给出
+// 官网链接并轮询，等用户去装/重开桌面端），第二种让用户手动粘贴 accessToken。
 // 积分「每日登录送 600」（免费档）由服务端随当日会话发放、无领取接口，
 // auth.checkin 用发放前后余额差观测：涨了记 claimed，没涨不谎称已签——
 // 记 inactive 并说明未观测到（宿主把 done 渲染成「今日已签到」，是没发生的断言）。
@@ -34,6 +35,12 @@ const CHAT_GATEWAY_BASE = "https://api-agnes-code.agnes-ai.com/v1"
 const MODELS_URL = "https://api-agnes-code.agnes-ai.com/v1/models"
 const POINTS_API_BASE = "https://api.agnes-ai.com"
 const BALANCE_PATH = "/api/v2/subscription/credits-balance"
+
+// 读取桌面端登录态失败时展示的跳转页：Agnes Code 官网页（含桌面端下载）。
+const OFFICIAL_SITE = "https://agnes-ai.com/agnescode"
+// 等待「用户去装/重开桌面端并登录」的窗口与轮询间隔。
+const DESKTOP_POLL_MS = 2000
+const DESKTOP_WAIT_MS = 5 * 60 * 1000
 
 // 模型目录读不到时的启动表（2026-11-01 实测快照；models 钩子会用实时目录覆盖）。
 const BOOTSTRAP = [
@@ -220,7 +227,38 @@ async function fetchBalance(key, fetchImpl) {
   })
 }
 
-function createPlugin({ fetchImpl = globalThis.fetch, readFileImpl, dpapiImpl, homedir = osHomedir(), platform = process.platform, sleepImpl } = {}) {
+// authResult 把解出的桌面端会话变成 magpie 的登录结果：带 key 会被存成 API key，
+// metadata 整份留给 loader / usage / checkin。
+function authResult(cred) {
+  return {
+    type: "success",
+    key: cred.key,
+    accountId: cred.accountId,
+    metadata: { username: cred.username, source: cred.source, method: "desktop" },
+  }
+}
+
+// probeDesktopCredential 解一次桌面端会话，把「没解到」变成返回值而不是异常。
+async function probeDesktopCredential(deps) {
+  try {
+    return { cred: await readDesktopCredential(deps) }
+  } catch (error) {
+    return { error }
+  }
+}
+
+// waitForDesktopCredential 轮询磁盘，等用户装好/重开桌面端并登录；超时返回 null。
+async function waitForDesktopCredential({ read, sleep, now, waitMs = DESKTOP_WAIT_MS, stepMs = DESKTOP_POLL_MS }) {
+  const deadline = now() + waitMs
+  for (;;) {
+    const trial = await read()
+    if (trial.cred) return authResult(trial.cred)
+    if (now() >= deadline) return null
+    await sleep(stepMs)
+  }
+}
+
+function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, readFileImpl, dpapiImpl, homedir = osHomedir(), platform = process.platform, sleepImpl, nowMsImpl = () => Date.now() } = {}) {
   const sleep = sleepImpl ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
 
   async function readBalance(key) {
@@ -251,20 +289,37 @@ function createPlugin({ fetchImpl = globalThis.fetch, readFileImpl, dpapiImpl, h
       provider: ID,
       methods: [
         {
-          type: "api",
+          // oauth 方式：magpie 不显示 key 输入框，authorize 必须立刻返回
+          // { url, instructions, method, callback }，结果由 callback 交回。
+          // 解得出就立刻完成（url 留空）；解不出就给出官网链接，边等边让用户去装。
+          type: "oauth",
           label: "读取 Agnes Code 桌面端登录态",
           async authorize() {
-            let cred
-            try {
-              cred = await readDesktopCredential({ readFileImpl, dpapiImpl, homedir, platform })
-            } catch (error) {
-              return { type: "failed", error: error?.message ?? "读取 Agnes Code 桌面端登录态失败" }
+            const read = () => probeDesktopCredential({ readFileImpl, dpapiImpl, homedir, platform, env, nowMs: nowMsImpl() })
+            // 非 Windows 解不了 DPAPI，别把用户丢进一个注定等不到的轮询里。
+            if (platform !== "win32") {
+              return { type: "failed", error: "桌面端会话解密仅支持 Windows；本机请改用「粘贴 accessToken」方式" }
+            }
+            const probe = await read()
+            if (probe.cred) {
+              return {
+                url: "",
+                instructions: `已读取本机 Agnes Code 登录态（${probe.cred.username ?? probe.cred.accountId}），正在完成登录…`,
+                method: "auto",
+                callback: async () => authResult(probe.cred),
+              }
             }
             return {
-              type: "success",
-              key: cred.key,
-              accountId: cred.accountId,
-              metadata: { username: cred.username, source: cred.source, method: "desktop" },
+              url: OFFICIAL_SITE,
+              instructions: "本机没有读到 Agnes Code 桌面端登录态。装上或打开 Agnes Code 桌面端并登录就好——上方链接是官网，可下载；登录后这一步会自动完成。已有 token 的话，也可以改用「粘贴 accessToken」。",
+              method: "auto",
+              callback: async () => {
+                const result = await waitForDesktopCredential({ read, sleep, now: nowMsImpl })
+                return result ?? {
+                  type: "failed",
+                  error: "仍未读到 Agnes Code 桌面端登录态。登录 Agnes Code 后，重新点一次「读取 Agnes Code 桌面端登录态」即可。",
+                }
+              },
             }
           },
         },
@@ -406,11 +461,16 @@ export const _internal = {
   parseEncryptedKey,
   decryptSessionWithKey,
   readDesktopCredential,
+  probeDesktopCredential,
+  waitForDesktopCredential,
+  authResult,
   isExpiredJwt,
   CHAT_GATEWAY_BASE,
   MODELS_URL,
   POINTS_API_BASE,
   BALANCE_PATH,
+  OFFICIAL_SITE,
+  DESKTOP_WAIT_MS,
   BOOTSTRAP,
   ID,
 }
