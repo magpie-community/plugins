@@ -25,16 +25,21 @@ function callsFrom(events) {
   return calls
 }
 
+// chats counts the chat requests ask's fetch was sent; a list of replies
+// answers them in turn, its last one every request after
+let chats = 0
 async function ask(reply, stream) {
   const auth = {
     type: "oauth", access: "fixture-job-token", refresh: "fixture-refresh-token",
     expires: Date.now() + 3_600_000, accountId: "native-tools@example.test",
     uid: "native-tools", machineId: "fixture-machine",
   }
+  const replies = [reply].flat()
+  chats = 0
   globalThis.fetch = async (url) =>
     new URL(String(url)).pathname.endsWith("/model/list")
       ? Response.json({ chat: [{ key: "efficient", display_name: "Efficient", enable: true }] })
-      : new Response(reply, { headers: { "Content-Type": "text/event-stream" } })
+      : new Response(replies[Math.min(chats++, replies.length - 1)], { headers: { "Content-Type": "text/event-stream" } })
   const hooks = await QoderAuthPlugin({ client: { auth: { set: async () => {} } } })
   const loader = await hooks.auth.loader(async () => auth)
   return loader.fetch("https://api3.qoder.sh/v1/chat/completions", {
@@ -132,30 +137,130 @@ test("a delayed native name can follow a text call without stealing its argument
   ])
 })
 
-test("the non-streaming adapter rejects an unnamed native call with 502", async () => {
-  const response = await ask(chunk({ tool_calls: [{ index: 0, id: "call_missing" }] }) + finish, false)
+const unnamedOnly = chunk({ tool_calls: [{ index: 0, id: "call_missing" }] }) + finish
+
+test("the non-streaming adapter rejects an unnamed native call with 502 after asking once more", async () => {
+  const response = await ask(unnamedOnly, false)
   expect(response.status).toBe(502)
   const body = await response.json()
   expect(body.error.message).toMatch(/tool call.*name/)
   expect(body.choices).toBeUndefined()
+  // nothing of either reply was given: the plugin asked twice, then the
+  // gateway has a 502 before any byte to retry or fail over (plugins#579)
+  expect(chats).toBe(2)
 })
 
-test("the streaming adapter rejects an unnamed call before emitting any answer", async () => {
-  const response = await ask(chunk({ tool_calls: [{ index: 0, id: "call_missing" }] }) + finish, true)
+test("the streaming adapter rejects an unnamed call before emitting any answer, after asking once more", async () => {
+  const response = await ask(unnamedOnly, true)
   expect(response.status).toBe(502)
+  expect(chats).toBe(2)
 })
 
-test("an unnamed call after reasoning ends the stream with an error and no tool or finish", async () => {
+test("an unnamed call with nothing said before it is asked once more, and the second answer is given", async () => {
+  for (const stream of [true, false]) {
+    const response = await ask([unnamedOnly, chunk({ content: "Hello" }, "stop") + line("[DONE]")], stream)
+    expect(response.status).toBe(200)
+    expect(chats).toBe(2)
+    if (stream) {
+      const frames = await framesFrom(response)
+      expect(frames.map((f) => f.choices?.[0]?.delta?.content ?? "").join("")).toBe("Hello")
+      expect(frames.at(-1).choices[0].finish_reason).toBe("stop")
+      expect(frames.filter((f) => f.error)).toEqual([])
+    } else {
+      const choice = (await response.json()).choices[0]
+      expect(choice.message.content).toBe("Hello")
+      expect(choice.finish_reason).toBe("stop")
+    }
+  }
+})
+
+test("an unnamed call after reasoning is dropped and the stream finishes stop, the reasoning kept", async () => {
+  const warn = console.warn
+  const warned = []
+  console.warn = (...xs) => warned.push(xs.join(" "))
+  try {
+    const response = await ask(
+      chunk({ reasoning_content: "Thinking" })
+      + chunk({ tool_calls: [{ index: 0, id: "call_missing", function: { arguments: '{"command":"rm' } }] })
+      + chunk({ tool_calls: [{ index: 0, function: { arguments: ' -rf x"}' } }] }) + finish,
+      true,
+    )
+    expect(response.status).toBe(200)
+    expect(chats).toBe(1)
+    const text = await response.text()
+    expect(text).not.toContain("-rf")
+    expect(text).not.toContain('"command')
+    const frames = text.split("\n").filter((s) => s.startsWith("data: ") && s !== "data: [DONE]").map((s) => JSON.parse(s.slice(6)))
+    expect(frames.map((f) => f.choices?.[0]?.delta?.reasoning_content ?? "").join("")).toBe("Thinking")
+    expect(frames.flatMap((f) => f.choices?.[0]?.delta?.tool_calls ?? [])).toEqual([])
+    expect(frames.filter((f) => f.error)).toEqual([])
+    expect(frames.at(-1).choices[0].finish_reason).toBe("stop")
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true)
+    expect(warned.join("\n")).toMatch(/dropped 1 native tool call the model never named/)
+  } finally {
+    console.warn = warn
+  }
+})
+
+// a named call is under way (tool-input-start, then its arguments), and a
+// second one never gets its name: its arguments go nowhere
+const namedThenUnnamed =
+  chunk({ tool_calls: [{ index: 0, id: "call_read", function: { name: "Read", arguments: '{"path":' } }] })
+  + chunk({ tool_calls: [{ index: 0, function: { arguments: '"a.go"}' } }] })
+  + chunk({ tool_calls: [{ index: 1, id: "call_nameless", function: { arguments: '{"secret":' } }] })
+  + chunk({ tool_calls: [{ index: 1, function: { arguments: '"LEAKED"}' } }] })
+  + finish
+
+test("an unnamed call after a named call's start and arguments is dropped; the named one finishes tool_calls", async () => {
+  const response = await ask(namedThenUnnamed, true)
+  expect(response.status).toBe(200)
+  const text = await response.text()
+  expect(text).not.toContain("LEAKED")
+  expect(text).not.toContain("secret")
+  const frames = text.split("\n").filter((s) => s.startsWith("data: ") && s !== "data: [DONE]").map((s) => JSON.parse(s.slice(6)))
+  const calls = []
+  for (const tc of frames.flatMap((f) => f.choices?.[0]?.delta?.tool_calls ?? [])) {
+    if (tc.function?.name) calls[tc.index] = { id: tc.id, name: tc.function.name, args: tc.function.arguments }
+    else calls[tc.index].args += tc.function.arguments
+  }
+  expect(calls).toEqual([{ id: "call_read", name: "Read", args: '{"path":"a.go"}' }])
+  expect(frames.map((f) => f.choices?.[0]?.delta?.content ?? "").join("")).toBe("")
+  expect(frames.filter((f) => f.error)).toEqual([])
+  expect(frames.at(-1).choices[0].finish_reason).toBe("tool_calls")
+  expect(chats).toBe(1)
+})
+
+test("the non-streaming adapter drops an unnamed call beside a named one", async () => {
+  // the unnamed one first, upstream index 0, and the named one after it
   const response = await ask(
-    chunk({ reasoning_content: "Thinking" })
-    + chunk({ tool_calls: [{ index: 0, id: "call_missing" }] }) + finish,
-    true,
+    chunk({ tool_calls: [{ index: 0, id: "call_nameless", function: { arguments: '{"secret":"LEAKED"}' } }] })
+    + chunk({ tool_calls: [{ index: 1, id: "call_bash", function: { name: "Bash", arguments: '{"command":"pwd"}' } }] })
+    + finish,
+    false,
   )
   expect(response.status).toBe(200)
-  const frames = await framesFrom(response)
-  expect(frames.flatMap((f) => f.choices?.[0]?.delta?.tool_calls ?? [])).toEqual([])
-  expect(frames.filter((f) => f.choices?.[0]?.finish_reason)).toEqual([])
-  expect(frames.at(-1)?.error.message).toMatch(/tool call.*name/)
+  const text = await response.text()
+  expect(text).not.toContain("LEAKED")
+  const choice = JSON.parse(text).choices[0]
+  expect(choice.finish_reason).toBe("tool_calls")
+  expect(choice.message.content).toBe("")
+  expect(choice.message.tool_calls).toEqual([
+    { id: "call_bash", type: "function", function: { name: "Bash", arguments: '{"command":"pwd"}' } },
+  ])
+  const streamed = await ask(namedThenUnnamed, false)
+  const named = (await streamed.json()).choices[0]
+  expect(named.finish_reason).toBe("tool_calls")
+  expect(named.message.tool_calls.map((c) => c.function.name)).toEqual(["Read"])
+})
+
+test("an unnamed call after text is dropped; the text ends stop", async () => {
+  const events = await collect(
+    chunk({ content: "Let me look." })
+    + chunk({ tool_calls: [{ index: 0, id: "call_missing", function: { arguments: '{"x":1}' } }] }) + finish,
+  )
+  expect(events.filter((e) => e.error || e.tool || e.args)).toEqual([])
+  expect(events.map((e) => e.text ?? "").join("")).toBe("Let me look.")
+  expect(events.at(-1)?.stop).toBe("stop")
 })
 
 test("the non-streaming adapter assembles interleaved calls by output index", async () => {

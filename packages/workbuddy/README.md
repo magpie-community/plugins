@@ -286,7 +286,11 @@ that names no level goes at the model's own default from the config
 (`reasoning.defaultEffort`, "high" for DeepSeek-V4.1-Flash), as WorkBuddy's
 client sends it: WorkBuddy doesn't think when a chat names none, so
 OpenCode's default variant got answers without thinking. An effort the
-client names, `none` too, goes as it came.
+client names, `none` too, goes as it came. A chat whose `max_tokens` is
+1024 or less gets no default (since 0.2.15, #643): a title or a
+classification asked at 64 tokens spent all 64 on reasoning and answered
+nothing. Anthropic's API takes no thinking under a 1024-token budget, so
+no client means to think in one that small.
 
 One value differs from the config, measured with real requests:
 DeepSeek-V4.1-Flash (and its paid `-sg` id) lists `none`, though the
@@ -329,6 +333,12 @@ provider settings in magpie, off by default (#430). When it is on:
 
 The price list is read again at most once a minute for requests.
 
+The switch gives its label and description in magpie's other languages
+(`labels`, `descriptions`: Chinese, Traditional Chinese, Japanese, German),
+and says `filtersModels`, so while it is on magpie says under the models
+that the list is filtered (#590). Both are magpie's own fields; an older
+magpie shows the English words and no note.
+
 ## Credits in magpie
 
 magpie's usage card shows the account's credits from the resource summary.
@@ -338,13 +348,28 @@ client reads. The daily Free Plan slice isn't counted: it ends at the same
 midnight on every account. magpie's smart routing spends the account whose
 credits run out first.
 
+The plan's own credits and the rest are two windows. "Credits" is the
+plan's base credits: what the subscription grants each cycle (Pro monthly
+or yearly, youth, advanced, flagship, the Pro trials, the free plan's
+monthly base, or the subscription the summary names), with the plan's
+cycle, so its pace line is the month's. "Extra credits" is every other
+kind WorkBuddy's own usage panel lists: the plan's bonus, top-ups (bought
+credit packs) and platform rewards (gifted and activity credits,
+赠送积分). The summary's CreditGroups say which is which (plan_base
+against plan_bonus, addon and benefit); a summary without them is split
+by package code as WorkBuddy's client does. Only one of the two stops the
+account, since WorkBuddy serves it while any credits are left: the extra
+window is set aside until the plan's credits are spent. A summary with
+only one kind keeps the one "Credits" window (akic404 on Discord; since
+0.2.16 the plan's bonus is extra too, Jiabubu on Discord).
+
 An enterprise (team) account's resource summary lists no packages. Its
 credits are read from the enterprise meter
 (`/billing/meter/get-enterprise-user-usage`), the one WorkBuddy's own usage
 page reads: the cycle's credits used of its limit, and when the cycle
 resets (magpie #1904).
 
-## The free model's daily window (WorkBuddy AI)
+## The free model's daily window (both builds)
 
 The credits above are not the only limit. `deepseek-v4.1-flash` is served at
 `x0.00` and costs the plan nothing, yet WorkBuddy AI refuses it long before
@@ -382,6 +407,14 @@ What is measured, and what is easy to read wrongly:
   429 whose named reset is still ahead makes the window full — `used: 100`,
   `resetsAt` the reset the vendor named — whatever the rows add up to. The
   sum carries the window only until the first refusal.
+- **The sum is shown, not routed on.** Until the vendor refuses, the card is
+  set aside (`aside: true`): magpie draws it beside the account and never
+  counts it as the account's allowance, so an estimate near its cap does not
+  stop the model. The refusal's card does (`refused: true`), and magpie's
+  gateway rests this model alone on this account until the reset the
+  refusal names. Before 0.2.14 the sum stopped the model too, and a paid
+  China account read 99% of a cap it had never been refused at, with 2,457
+  credits left (plugins#641).
 - **The card names both ids**, `deepseek-v4.1-flash` and
   `deepseek-v4.1-flash-sg`: magpie matches a window's models by exact id
   (only an `@size` suffix folds into the bare id), so one alone would leave
@@ -414,8 +447,14 @@ What is measured, and what is easy to read wrongly:
   rather than +08:00 guessed.
 
 A window that has lapsed reports nothing rather than 0%: nothing is
-exhausted, and the next request opens a fresh one. The China build is not
-covered; its limit has not been measured.
+exhausted, and the next request opens a fresh one. The China build
+(`copilot.tencent.com`) carries the same window: two Free-plan accounts
+refused on 2026-11-02 at 200,389,043 and 200,485,923 tokens, so its cap is
+measured at about 2e8 — and its refusals name the reset in Chinese
+(`将在 … UTC+8 重置`), which reads as an edge the same way. Its card reads
+against 2e8. In 0.2.12 and 0.2.13 it read against a soft cap of 1.9e8, so
+that routing rested the model before the vendor refused it; with the sum set
+aside that headroom only stopped the model early, so it is gone.
 
 ## When free models work but a credit model does not
 

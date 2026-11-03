@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { protocols, declaredTools, toolReply } from "./tool-fixtures.mjs";
-import { addEnvironment } from "./provider.mjs";
+import { addEnvironment, environment, latestVersion, projectID, traceHeaders, userAgent } from "./provider.mjs";
 
 const subject = import("./index.mjs").then((module) => ({
   default: { server: module.ZenFreePlugin },
@@ -15,7 +18,8 @@ async function fixture(t, input = {}) {
   const server = createServer(async (req, res) => {
     let text = "";
     for await (const chunk of req) text += chunk;
-    state.calls.push({ url: req.url, headers: req.headers, body: text && JSON.parse(text) });
+    const rawOrder = req.rawHeaders.filter((_, i) => i % 2 === 0).map((name) => name.toLowerCase());
+    state.calls.push({ url: req.url, headers: req.headers, rawOrder, body: text && JSON.parse(text) });
     if (state.discoveryHang) {
       state.onDiscovery?.();
       return;
@@ -124,8 +128,14 @@ for (const { protocol, path, model } of protocols) {
           const tool = protocol === "chat" ? raw.function : raw;
           assert.match(tool.description, /Not available\. Never call this tool\./);
           assert.equal((tool.parameters ?? tool.input_schema).additionalProperties, false);
-          // Zen's free tier refuses a bash or read that takes nothing
-          assert.equal(Object.keys((tool.parameters ?? tool.input_schema).properties).length, 1);
+          // Zen's free tier refuses a core tool that takes nothing
+          const schema = tool.parameters ?? tool.input_schema;
+          assert.equal(Object.keys(schema.properties).length, 1);
+          assert.deepEqual(schema.required, Object.keys(schema.properties));
+          // OpenCode 2's names and parameters, never 1.x's bash or filePath
+          assert.notEqual(tool.name, "bash");
+          assert.ok(!("filePath" in schema.properties));
+          if (protocol === "chat") assert.equal(tool.strict, false);
         }
         // A call of a tool the agent doesn't have reaches the agent as
         // called, as a tool call, so the agent answers it with its own
@@ -161,13 +171,17 @@ test("keeps declared tools isolated between requests using the same loader", asy
   assert.match(text, /"name"\s*:\s*"bash"/);
 });
 
+// OpenCode 2.2.5 names a folder that isn't a git repository
+// sha1("directory:" + folder), and sends `global` only from a repository
+// with no remote and no commit; 0.1.14 to 0.1.18 sent `global` always.
+const homeProject = () => projectID(homedir());
 for (const [input, supplied, expected] of [
-  [{}, undefined, "global"],
-  [{ project: { id: "magpie" } }, undefined, "global"],
+  [{}, undefined, homeProject],
+  [{ project: { id: "magpie" } }, undefined, homeProject],
   [{ project: { id: "abc123", vcs: "git" } }, undefined, "abc123"],
   [{}, "client-project", "client-project"],
 ]) {
-  test(`uses OpenCode project identity ${expected}`, async (t) => {
+  test(`uses OpenCode project identity ${typeof expected === "function" ? "of the folder" : expected}`, async (t) => {
     const { plugin, state, origin } = await fixture(t, input);
     await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
     const loader = await plugin.auth.loader(publicAuth);
@@ -177,13 +191,108 @@ for (const [input, supplied, expected] of [
       body: JSON.stringify({ model: "chat-free", stream: true }),
     });
     await response.text();
-    assert.equal(state.calls.at(-1).headers["x-opencode-project"], expected);
-    assert.equal(state.calls.at(-1).headers["user-agent"], "opencode/latest/2.0.25/cli");
+    const want = typeof expected === "function" ? expected() : expected;
+    assert.equal(state.calls.at(-1).headers["x-opencode-project"], want);
+    assert.notEqual(state.calls.at(-1).headers["x-opencode-project"], "global");
+    assert.equal(state.calls.at(-1).headers["user-agent"], "opencode/latest/2.2.5/cli");
   });
 }
 
-// The headers OpenCode 2.0.25's release binary sends to Zen, captured on
-// 2026-10-25: these and no others, whatever the caller sent. Zen's free
+test("names the project as OpenCode does: the stated folder, or its repository's remote", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "zen-project-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const real = realpathSync(root);
+  const sha1 = (text) => createHash("sha1").update(text).digest("hex");
+  // a plain folder: what OpenCode 2.2.5 sent from ~/runs/zencap/home/work
+  assert.equal(projectID("/Users/yetone/runs/zencap/home/work"), "1132ded9876e9dc00df57eea7de251c155550345");
+  const plain = join(real, "plain");
+  mkdirSync(plain);
+  assert.equal(projectID(plain), sha1(`directory:${plain}`));
+  // a repository with a remote, from a folder inside it
+  const repo = join(real, "repo");
+  mkdirSync(join(repo, ".git"), { recursive: true });
+  mkdirSync(join(repo, "src"));
+  writeFileSync(
+    join(repo, ".git", "config"),
+    '[core]\n\tbare = false\n[remote "upstream"]\n\turl = https://example.com/x/y.git\n[remote "origin"]\n\turl = git@GitHub.com:magpie/app.git\n',
+  );
+  assert.equal(projectID(join(repo, "src")), sha1("git-remote:github.com/magpie/app"));
+  // one with no remote: its root folder
+  const bare = join(real, "bare");
+  mkdirSync(join(bare, ".git"), { recursive: true });
+  writeFileSync(join(bare, ".git", "config"), "[core]\n\tbare = false\n");
+  mkdirSync(join(bare, "sub"));
+  assert.equal(projectID(join(bare, "sub")), sha1(`directory:${bare}`));
+  const env = environment(join(bare, "sub"));
+  assert.match(env, /Is directory a git repo: yes/);
+  assert.match(env, new RegExp(`Workspace root folder: ${bare}\\n`));
+});
+
+// OpenCode's version is the one its own updater is told is latest; a
+// version that can't be read, or is older than the one built in, leaves
+// the built-in one.
+test("reads OpenCode's latest version from its updater, and keeps its own otherwise", async (t) => {
+  let reply = '{"version":"2.3.0","minimum":false}';
+  let asked;
+  const server = createServer((req, res) => {
+    asked = req.url;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(reply);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const url = `http://127.0.0.1:${server.address().port}/update`;
+  assert.equal(await latestVersion(url), "2.3.0");
+  assert.equal(asked, "/update?current=2.2.5");
+  for (reply of ['{"version":"2.1.0"}', '{"version":"latest"}', "nope", "{}"]) {
+    assert.equal(await latestVersion(url), undefined, reply);
+  }
+  assert.equal(await latestVersion("http://127.0.0.1:1/none"), undefined);
+  assert.equal(userAgent("2.3.0"), "opencode/latest/2.3.0/cli");
+  // a plugin given the updater sends the version it names
+  reply = '{"version":"2.4.1"}';
+  const { state, origin } = await fixture(t);
+  const module = await subject;
+  const plugin = await module.default.server({}, {
+    baseURL: `${origin}/v1`,
+    catalogURL: `${origin}/catalog`,
+    docsURL: `${origin}/docs`,
+    versionURL: url,
+  });
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "chat-free", stream: true }),
+  });
+  await response.text();
+  assert.equal(state.calls.at(-1).headers["user-agent"], "opencode/latest/2.4.1/cli");
+  // the model list goes as OpenCode too, never as Bun
+  const list = state.calls.find((call) => call.url === "/v1/models");
+  assert.equal(list.headers["user-agent"], "opencode/latest/2.4.1/cli");
+});
+
+test("trace headers keep one trace a conversation and a new span each request", () => {
+  const first = traceHeaders("ses_trace_a");
+  const again = traceHeaders("ses_trace_a");
+  const other = traceHeaders("ses_trace_b");
+  const b3 = /^([0-9a-f]{32})-([0-9a-f]{16})-1-[0-9a-f]{16}$/;
+  const parent = /^00-([0-9a-f]{32})-([0-9a-f]{16})-01$/;
+  for (const trace of [first, again, other]) {
+    const [, id, span] = b3.exec(trace.b3);
+    assert.deepEqual(parent.exec(trace.traceparent).slice(1), [id, span]);
+  }
+  assert.equal(b3.exec(first.b3)[1], b3.exec(again.b3)[1]);
+  assert.notEqual(b3.exec(first.b3)[2], b3.exec(again.b3)[2]);
+  assert.notEqual(b3.exec(first.b3)[1], b3.exec(other.b3)[1]);
+});
+
+// The headers OpenCode 2.2.5's release binary sends to Zen, captured on
+// 2026-11-01, in its order: these and no others, whatever the caller sent. Zen's free
 // tier refuses (429 FreeUsageLimitError) the User-Agent OpenCode 1.19.0
 // sent, which 0.1.6 to 0.1.15 sent on every request, since 2026-10-26.
 for (const [path, model, key] of [
@@ -208,7 +317,7 @@ for (const [path, model, key] of [
     });
     await response.text();
     const sent = state.calls.at(-1).headers;
-    assert.equal(sent["user-agent"], "opencode/latest/2.0.25/cli");
+    assert.equal(sent["user-agent"], "opencode/latest/2.2.5/cli");
     assert.notEqual(sent["user-agent"], "claude-cli/2.1.0");
     assert.equal(sent.accept, "*/*");
     const own = Object.keys(sent).filter(
@@ -218,7 +327,9 @@ for (const [path, model, key] of [
       own.sort(),
       [
         "accept",
+        "b3",
         "content-type",
+        "traceparent",
         "user-agent",
         "x-opencode-client",
         "x-opencode-project",
@@ -234,6 +345,28 @@ for (const [path, model, key] of [
     // never goes on.
     assert.equal(sent["x-session-affinity"], sent["x-opencode-session"]);
     assert.equal(sent["x-session-id"], sent["x-opencode-session"]);
+    // in the order OpenCode's own request has on Bun, which the plugin
+    // host runs: the headers Bun knows first, then the rest sorted, then
+    // fetch's own Accept (so none is set here)
+    const order = state.calls.at(-1).rawOrder.filter(
+      (name) => !["host", "connection", "content-length", "accept-encoding"].includes(name),
+    );
+    assert.deepEqual(order, [
+      ...(path === "messages" ? [] : ["authorization"]),
+      "content-type",
+      "user-agent",
+      ...(path === "messages" ? ["anthropic-version"] : []),
+      "b3",
+      "traceparent",
+      ...(path === "messages" ? ["x-api-key"] : []),
+      "x-opencode-client",
+      "x-opencode-project",
+      "x-opencode-session",
+      "x-opencode-session-id",
+      "x-session-affinity",
+      "x-session-id",
+      "accept",
+    ]);
   });
 }
 
@@ -423,7 +556,7 @@ test("forces upstream streaming, preserves existing tools and returns the SSE bo
   const sent = state.calls.at(-1);
   assert.equal(sent.headers.authorization, "Bearer public");
   assert.match(sent.headers["x-opencode-session"], /^ses_[0-9a-f]{9}ff[0-9a-f][0-9A-Za-z]{14}$/);
-  // OpenCode 2.0.25 sends its own session id under both; a caller's
+  // OpenCode 2.2.5 sends its own session id under both; a caller's
   // (session_123) never goes on.
   assert.equal(sent.headers["x-session-affinity"], sent.headers["x-opencode-session"]);
   assert.equal(sent.headers["x-session-id"], sent.headers["x-opencode-session"]);
@@ -433,7 +566,7 @@ test("forces upstream streaming, preserves existing tools and returns the SSE bo
   assert.deepEqual(sent.body.tools[0], bash);
   assert.deepEqual(
     sent.body.tools.map((tool) => tool.function.name),
-    ["bash", "edit", "glob", "grep", "read"],
+    ["bash", "edit", "glob", "grep", "read", "shell"],
   );
 });
 
@@ -469,7 +602,7 @@ for (const [path, model, key] of [
     });
     await response.text();
     const sent = state.calls.at(-1);
-    assert.equal(sent.body.tools[0].name, "bash");
+    assert.equal(sent.body.tools[0].name, "edit");
     assert.equal(sent.body.tools[0][key].type, "object");
     if (path === "messages") {
       assert.equal(sent.headers["x-api-key"], "public");
@@ -607,8 +740,10 @@ test("a Chat stream Zen closes before its [DONE] ends cut short for a streaming 
 
 // Zen's free tier answers only at the inference API since mid-October 2026
 // (403 FreeTierError at /zen/v1 to OpenCode's own request); a model listed
-// before then, whose URL is /zen/v1, is asked there too.
-test("asks the inference API, also for a model listed at /zen/v1", async (t) => {
+// before then, whose URL is /zen/v1, is asked there too. Each protocol
+// goes where OpenCode 2.2.5 sends it, models.dev's v2 base_url
+// (/inference/openai/v1, /inference/anthropic/v1), not /inference/v1.
+test("asks the inference API where OpenCode 2 does, also for a model listed at /zen/v1", async (t) => {
   const { default: plugin } = await subject;
   const realFetch = globalThis.fetch;
   const asked = [];
@@ -616,8 +751,19 @@ test("asks the inference API, also for a model listed at /zen/v1", async (t) => 
     const url = String(input instanceof Request ? input.url : input);
     asked.push(url);
     if (url.endsWith("/models"))
-      return Response.json({ data: [{ id: "big-pickle" }] });
-    if (url.endsWith("/chat/completions"))
+      return Response.json({ data: [{ id: "big-pickle" }, { id: "m-free" }, { id: "r-free" }] });
+    if (url === "https://models.opencode.ai/api.json")
+      return Response.json({
+        opencode: {
+          npm: "@ai-sdk/openai-compatible",
+          models: {
+            "big-pickle": {},
+            "m-free": { provider: { npm: "@ai-sdk/anthropic" } },
+            "r-free": { provider: { npm: "@ai-sdk/openai" } },
+          },
+        },
+      });
+    if (url.endsWith("/chat/completions") || url.endsWith("/messages") || url.endsWith("/responses"))
       return new Response('data: {"choices":[{"index":0,"delta":{"content":"pong"}}]}\n\ndata: [DONE]\n\n', {
         headers: { "content-type": "text/event-stream" },
       });
@@ -639,9 +785,23 @@ test("asks the inference API, also for a model listed at /zen/v1", async (t) => 
     });
     assert.equal(response.status, 200);
     await response.text();
-    assert.equal(asked.at(-1), "https://opencode.ai/inference/v1/chat/completions");
+    assert.equal(asked.at(-1), "https://opencode.ai/inference/openai/v1/chat/completions");
+  }
+  for (const [path, model, sent] of [
+    ["messages", "m-free", "https://opencode.ai/inference/anthropic/v1/messages"],
+    ["responses", "r-free", "https://opencode.ai/inference/openai/v1/responses"],
+  ]) {
+    const response = await loader.fetch(`https://opencode.ai/inference/v1/${path}`, {
+      method: "POST",
+      body: JSON.stringify({ model, stream: true, messages: [], input: [] }),
+    });
+    await response.text();
+    assert.equal(asked.at(-1), sent);
   }
   assert.ok(!asked.some((url) => url.startsWith("https://opencode.ai/zen/")), asked.join("\n"));
+  assert.ok(!asked.some((url) => /\/inference\/v1\/(chat|messages|responses)/.test(url)), asked.join("\n"));
+  // the version is asked of OpenCode's own updater, and its 500 leaves 2.2.5
+  assert.ok(asked.includes("https://opencode.ai/update/api/latest/cli/npm?current=2.2.5"), asked.join("\n"));
 });
 
 // Zen's free tier serves a request as OpenCode's only with OpenCode's
@@ -675,6 +835,21 @@ const withPrompt = (protocol, prompt, user) =>
             { role: "user", content: user },
           ],
         };
+
+// What Claude Code 2.1.100 ends its system prompt with (cli.js, the
+// environment section), for a folder that is no git repository.
+const claudeCodePrompt = [
+  "You are Claude Code, Anthropic's official CLI for Claude.",
+  "Here is useful information about the environment you are running in:",
+  "<env>",
+  "Working directory: /Users/me/project",
+  "Is directory a git repo: No",
+  "Platform: darwin",
+  "Shell: zsh",
+  "OS Version: Darwin 25.2.0",
+  "</env>",
+  "You are powered by the model big-pickle.",
+].join("\n");
 
 for (const { protocol, path, model } of protocols) {
   test(`${protocol}: an agent's own prompt goes with OpenCode's environment block, once`, async (t) => {
@@ -710,6 +885,16 @@ for (const { protocol, path, model } of protocols) {
     const own = `${agentPrompt}\n<env>\n  Working directory: /Users/me/project\n</env>`;
     sent = await send(withPrompt(protocol, own, "hello"));
     assert.equal(systemText(protocol, sent), own);
+    // Claude Code's own block (2.1.100's words) is not OpenCode's: it
+    // stays, and OpenCode's, naming the same folder, follows it
+    sent = await send(withPrompt(protocol, claudeCodePrompt, "hello"));
+    system = systemText(protocol, sent);
+    assert.ok(system.startsWith(claudeCodePrompt), system);
+    assert.equal(system.match(/<env>/g).length, 2);
+    assert.match(
+      system.slice(claudeCodePrompt.length),
+      /^\n\nHere is some useful information about the environment you are running in:\n<env>\n {2}Working directory: \/Users\/me\/project\n/,
+    );
   });
 }
 
@@ -730,7 +915,7 @@ test("the environment block names a real directory, never a fixed placeholder", 
   assert.equal(line(text), home);
   assert.doesNotMatch(text, /unknown/);
   assert.match(text, /^Here is some useful information about the environment you are running in:\n<env>\n/);
-  assert.match(text, new RegExp(`Workspace root folder: ${home}\\n  Is directory a git repo: (yes|no)\\n  Platform: ${process.platform}\\n</env>$`));
+  assert.match(text, new RegExp(`Workspace root folder: ${home}\\n  Is directory a git repo: (yes|no)\\n  Platform: ${process.platform}\\n  Prefer ${realpathSync(tmpdir())}/opencode over generic system temporary directories such as /tmp; it is pre-created and approved for external access.\\n</env>$`));
   // Codex's <cwd> in its first user message
   text = added("responses", {
     instructions: "You are Codex.",
@@ -751,4 +936,191 @@ test("the environment block names a real directory, never a fixed placeholder", 
   // a relative or bare word is not a directory
   text = added("chat", { messages: [{ role: "system", content: "Working directory: unknown" }, { role: "user", content: "hi" }] });
   assert.equal(line(text.split("<env>")[1]), home);
+});
+
+// Zen's free tier answers 429 FreeUsageLimitError at once to a tool name
+// with "terminal" in it and to ReportFindings beside ScheduleWakeup, as
+// Claude Code desktop offers them (alonewolfsy-web, plugins#624). They go
+// under other names, in the agent's past calls and tool_choice too, and a
+// call of one comes back under the agent's own name.
+for (const { protocol, path, model } of protocols) {
+  test(`${protocol}: tools Zen refuses by name go under other names and come back as the agent's (#624)`, async (t) => {
+    const { plugin, state, origin } = await fixture(t);
+    await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+    const loader = await plugin.auth.loader(publicAuth);
+    const schema = { type: "object", properties: { command: { type: "string" } } };
+    const names = ["Bash", "ReportFindings", "ScheduleWakeup", "mcp__ide__terminal_run", "RunTerminal", "findings_report"];
+    const tools = names.map((name) => {
+      const tool = { name, description: `Client ${name}` };
+      if (protocol === "chat") return { type: "function", function: { ...tool, parameters: schema } };
+      if (protocol === "anthropic") return { ...tool, input_schema: schema };
+      return { type: "function", ...tool, parameters: schema };
+    });
+    const body = { model, stream: false, tools };
+    if (protocol === "chat") {
+      body.messages = [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: null, tool_calls: [{ id: "c0", type: "function", function: { name: "ReportFindings", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "c0", content: "ok" },
+      ];
+      body.tool_choice = { type: "function", function: { name: "ScheduleWakeup" } };
+    } else if (protocol === "anthropic") {
+      body.messages = [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: [{ type: "tool_use", id: "c0", name: "ReportFindings", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "c0", content: "ok" }] },
+      ];
+      body.tool_choice = { type: "tool", name: "ScheduleWakeup" };
+    } else {
+      body.input = [
+        { role: "user", content: "hi" },
+        { type: "function_call", call_id: "c0", name: "ReportFindings", arguments: "{}" },
+        { type: "function_call_output", call_id: "c0", output: "ok" },
+      ];
+      body.tool_choice = { type: "function", name: "ScheduleWakeup" };
+    }
+    const send = () => loader.fetch(`${origin}/v1/${path}`, { method: "POST", body: JSON.stringify(body) });
+    for (const [upstream, expected] of [
+      ["findings_report_2", "ReportFindings"],
+      ["wakeup_schedule", "ScheduleWakeup"],
+      ["mcp__ide__console_run", "mcp__ide__terminal_run"],
+      ["RunConsole", "RunTerminal"],
+      ["findings_report", "findings_report"],
+      ["Bash", "Bash"],
+    ]) {
+      state.reply = toolReply(protocol, upstream, true);
+      const response = await send();
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      assert.match(text, new RegExp(`"name"\\s*:\\s*"${expected}"`), upstream);
+    }
+    const sent = state.calls.at(-1).body;
+    const sentNames = sent.tools.map((tool) => (protocol === "chat" ? tool.function.name : tool.name));
+    assert.deepEqual(sentNames.slice(0, names.length), [
+      "Bash",
+      "findings_report_2",
+      "wakeup_schedule",
+      "mcp__ide__console_run",
+      "RunConsole",
+      "findings_report",
+    ]);
+    const past =
+      protocol === "chat"
+        ? sent.messages.find((message) => message.tool_calls).tool_calls[0].function.name
+        : protocol === "anthropic"
+          ? sent.messages[1].content[0].name
+          : sent.input[1].name;
+    assert.equal(past, "findings_report_2");
+    assert.equal(sent.tool_choice.function?.name ?? sent.tool_choice.name, "wakeup_schedule");
+  });
+}
+
+test("a request without a refused name goes with its tools as named (#624)", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  // one of the pair alone is served
+  const tools = [...declaredTools("chat"), { type: "function", function: { name: "ReportFindings", parameters: { type: "object" } } }];
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "chat-free", stream: false, tools }),
+  });
+  await response.text();
+  assert.deepEqual(state.calls.at(-1).body.tools.slice(0, tools.length), tools);
+});
+
+// DSH's own tools Zen refuses by name (jdld-ybd, plugins#632): its
+// subagent_fork on its own, and its read_image beside working_directory, as
+// a real 80-tool DSH request was bisected (Ebony-Vinyl/dsh-our-free-model
+// #709). Its terminal_* tools go as console_* (#624). The rest of its tools,
+// read_image included, keep their names.
+for (const { protocol, path, model } of protocols) {
+  test(`${protocol}: DSH's tools Zen refuses by name go under other names and come back as DSH's (#632)`, async (t) => {
+    const { plugin, state, origin } = await fixture(t);
+    await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+    const loader = await plugin.auth.loader(publicAuth);
+    const schema = { type: "object", properties: { prompt: { type: "string" } } };
+    const names = ["bash", "read", "read_image", "working_directory", "subagent", "subagent_fork", "terminal_open", "todo_write"];
+    const tools = names.map((name) => {
+      const tool = { name, description: `DSH ${name}` };
+      if (protocol === "chat") return { type: "function", function: { ...tool, parameters: schema } };
+      if (protocol === "anthropic") return { ...tool, input_schema: schema };
+      return { type: "function", ...tool, parameters: schema };
+    });
+    const body = { model, stream: false, tools };
+    if (protocol === "chat") {
+      body.messages = [
+        { role: "system", content: "You are an AI agent powered by DeepSeek Harness." },
+        { role: "user", content: "hi" },
+        { role: "assistant", content: [], tool_calls: [{ id: "c0", type: "function", function: { name: "working_directory", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "c0", content: "ok" },
+      ];
+      body.tool_choice = { type: "function", function: { name: "subagent_fork" } };
+    } else if (protocol === "anthropic") {
+      body.messages = [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: [{ type: "tool_use", id: "c0", name: "working_directory", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "c0", content: "ok" }] },
+      ];
+      body.tool_choice = { type: "tool", name: "subagent_fork" };
+    } else {
+      body.input = [
+        { role: "user", content: "hi" },
+        { type: "function_call", call_id: "c0", name: "working_directory", arguments: "{}" },
+        { type: "function_call_output", call_id: "c0", output: "ok" },
+      ];
+      body.tool_choice = { type: "function", name: "subagent_fork" };
+    }
+    const send = () => loader.fetch(`${origin}/v1/${path}`, { method: "POST", body: JSON.stringify(body) });
+    for (const [upstream, expected] of [
+      ["conversation_delegate", "subagent_fork"],
+      ["workspace_directory", "working_directory"],
+      ["console_open", "terminal_open"],
+      ["read_image", "read_image"],
+      ["subagent", "subagent"],
+    ]) {
+      state.reply = toolReply(protocol, upstream, true);
+      const response = await send();
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      assert.match(text, new RegExp(`"name"\\s*:\\s*"${expected}"`), upstream);
+    }
+    const sent = state.calls.at(-1).body;
+    const sentNames = sent.tools.map((tool) => (protocol === "chat" ? tool.function.name : tool.name));
+    assert.deepEqual(sentNames.slice(0, names.length), [
+      "bash",
+      "read",
+      "read_image",
+      "workspace_directory",
+      "subagent",
+      "conversation_delegate",
+      "console_open",
+      "todo_write",
+    ]);
+    const described = sent.tools.find((tool) => (tool.function?.name ?? tool.name) === "conversation_delegate");
+    assert.equal(described.function?.description ?? described.description, "DSH subagent_fork");
+    const past =
+      protocol === "chat"
+        ? sent.messages.find((message) => message.tool_calls).tool_calls[0].function.name
+        : protocol === "anthropic"
+          ? sent.messages[1].content[0].name
+          : sent.input[1].name;
+    assert.equal(past, "workspace_directory");
+    assert.equal(sent.tool_choice.function?.name ?? sent.tool_choice.name, "conversation_delegate");
+  });
+}
+
+test("read_image or working_directory alone goes as named (#632)", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  for (const name of ["read_image", "working_directory"]) {
+    const tools = [...declaredTools("chat"), { type: "function", function: { name, parameters: { type: "object" } } }];
+    const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "chat-free", stream: false, tools }),
+    });
+    await response.text();
+    assert.deepEqual(state.calls.at(-1).body.tools.slice(0, tools.length), tools, name);
+  }
 });

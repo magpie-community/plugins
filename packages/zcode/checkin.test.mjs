@@ -86,10 +86,36 @@ function claimWith(preview, claim, touch = TOUCH_NONE) {
 }
 const claims = (calls) => calls.filter((c) => c.url.pathname === CLAIM)
 
+// only the answer of nothing to claim is asked again: until wakes
+// magpie's loop half an hour out, so a plan dropped into the feed later
+// in the day is still claimed. claimed, done and captcha settle for the
+// day (a claimed plan leaves the feed; a captcha plan re-asked makes
+// ZCode demand its captcha again; a done plan re-asked posts a claim
+// answered 1003), and a failed needs none — magpie asks a failed again
+// of its own.
+test("an inactive says until half an hour out; claimed, done, captcha and failed say none", async () => {
+  const soon = (r) => {
+    const t = Date.parse(r.until)
+    expect(t).toBeGreaterThan(Date.now() + 25 * 60_000)
+    expect(t).toBeLessThan(Date.now() + 35 * 60_000)
+  }
+  const none = (r) => expect(r.until).toBeUndefined()
+  claimWith(PREVIEW_NONE, () => json(CLAIMED_NOW))
+  soon(await checkin())
+  claimWith(PREVIEW_ONE, () => json(CLAIMED_NOW))
+  none(await checkin())
+  claimWith(PREVIEW_ONE, () => json(CLAIMED_BEFORE))
+  none(await checkin())
+  claimWith(PREVIEW_ONE, () => json(CAPTCHA, 400))
+  none(await checkin())
+  claimWith("", () => json(CLAIMED_NOW))
+  none(await checkin())
+})
+
 test("nothing to claim: inactive, and no claim is asked", async () => {
   const calls = claimWith(PREVIEW_NONE, () => json(CLAIMED_NOW))
   const r = await checkin()
-  expect(r).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim" })
+  expect(r).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
   expect(claims(calls)).toEqual([])
   // the preview went out as the app's billing calls do
   const p = calls.find((c) => c.url.pathname === PREVIEW)
@@ -154,7 +180,7 @@ test("a claim that doesn't read is failed (unknown), never claimed", async () =>
 test("a preview with nothing in it is nothing to claim, not a failed check-in", async () => {
   for (const body of [PREVIEW_NO_DATA, '{"code":0,"msg":"","data":null}', '{"code":0,"msg":"","data":{"server_time":1793318263}}', '{"code":0,"msg":"","data":{"plans":null}}']) {
     const calls = serve(({ url }) => (url.pathname === PREVIEW ? json(body) : json(CLAIMED_NOW)))
-    expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim" })
+    expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
     expect(claims(calls)).toEqual([])
   }
 })
@@ -248,7 +274,7 @@ test("a feed with no claim button, or nothing in it, is nothing to claim", async
   const closeOnly = { code: 0, msg: "", data: { deliveries: [{ campaign_id: "1", banner: { buttons: [{ action: { type: "close", args: {} } }] } }] } }
   for (const feed of [TOUCH_NONE, '{"code":0,"msg":""}', closeOnly]) {
     const calls = claimWith(PREVIEW_NO_DATA, () => json(CLAIMED_NOW), feed)
-    expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim" })
+    expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
     expect(claims(calls)).toEqual([])
   }
 })
@@ -308,7 +334,7 @@ test("the real delivery without its claim button is nothing to claim", async () 
   // offer to claim
   expect(JSON.stringify(feed)).toContain('"zcode_plan":{"plan_id":"zcode-v3-start-plan-1030-wk"')
   const calls = claimWith(PREVIEW_NO_DATA, () => json(CLAIMED_WEEKEND), feed)
-  expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim" })
+  expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
   expect(claims(calls)).toEqual([])
 })
 
@@ -321,6 +347,6 @@ test("after the claim the feed has no delivery: nothing to claim, not a failure"
   const after = JSON.parse(TOUCH_REAL)
   after.data.deliveries = []
   const calls = claimWith(PREVIEW_NO_DATA, () => json(CLAIMED_WEEKEND), after)
-  expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim" })
+  expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim", until: expect.any(String) })
   expect(claims(calls)).toEqual([])
 })

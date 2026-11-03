@@ -101,9 +101,12 @@ Tool results can continue a retained Run in the same plugin process. The owner
 uses the same session/cache key and first user message as `conversation_id`, so
 Task subagents sharing their parent's session can run independently. Retention
 waits at most 120 seconds for a result batch and 15 minutes for a Run's total
-lifetime. A continuation arriving in the last minute of that lifetime rebuilds
-from supplied history before submitting results to the old Run. The absolute
-deadline still applies to an active segment; it is never extended by activity.
+lifetime. A continuation arriving with less than 10 minutes of that lifetime
+left rebuilds from supplied history on a fresh Run before submitting results
+to the old one, since one step can be a long answer. The absolute deadline
+still applies to an active segment; it is never extended by activity. A Run
+cut by it mid-answer ends with `native Run lifetime expired: the Run timed
+out; retry your request`, words agents ask again on.
 The pool holds at most 8 owners per account and 32 per process, with
 bounded history, blobs, arguments, and pending writes. When pending writes
 reach their bound (a long history asks for its blobs at once, and a slow link

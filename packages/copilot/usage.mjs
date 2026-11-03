@@ -153,7 +153,10 @@ export async function readUsage(getAuth) {
     if (!data || typeof data !== "object" || Array.isArray(data)) {
       throw new Error("Invalid quota response");
     }
-    return parseUsage(data);
+    // GitHub took the OAuth token, the sign-in that renews the inference
+    // token: an account magpie marked for a dropped inference token (an
+    // idle slot, plugins#618) is signed in, whatever the quota says.
+    return { ...parseUsage(data), signIn: "renewed" };
   } catch {
     // Never include request headers, OAuth tokens or response bodies in errors.
     return {

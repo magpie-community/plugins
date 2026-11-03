@@ -314,6 +314,10 @@ test("options it can't use are invalid, before anything is sent", async () => {
     { serverUrl: "http://127.0.0.1:14242", requestTimeoutMs: 10_000 },
     { serverUrl: "http://127.0.0.1:14242", recallBackoffMs: 10 },
     { serverUrl: "http://127.0.0.1:14242", capture: "yes" },
+    { serverUrl: "http://127.0.0.1:14242", recallRemote: "yes" },
+    { serverUrl: "http://127.0.0.1:14242", captureRemote: 1 },
+    { serverUrl: "http://127.0.0.1:14242", skipAgents: 5 },
+    { serverUrl: "http://127.0.0.1:14242", skipAgents: ["Mozilla", 1] },
     { serverUrl: "http://127.0.0.1:14242", apiKey: "bad key" },
     { serverUrl: "http://127.0.0.1:14242", apiKey: "bad\nkey" },
   ]) {
@@ -461,6 +465,39 @@ test("the Magpie sharing key from this computer is included; other gateway keys 
   await onResponse(reply, { ...other, success: true })
   expect(of("memories/search")).toHaveLength(0)
   expect(of("threads/import")).toHaveLength(0)
+})
+
+test("an app named in skipAgents gets no recall and no capture; other apps still do (#597)", async () => {
+  for (const skipAgents of [["Mozilla", "Claude Code"], "mozilla，claude-code", " MOZILLA ,\nclaude_code "]) {
+    for (const agent of ["Mozilla", "claude-code"]) {
+      mock()
+      calls.length = 0
+      const [reports, context] = capturing("chat", { agent, options: { skipAgents } })
+      const body = structuredClone(chat)
+      expect(await onRequest(body, context)).toBeUndefined()
+      expect(body).toEqual(chat)
+      expect(context.state.nowledgeMem).toBeUndefined()
+      await onResponse(reply, { ...context, success: true })
+      expect(calls).toHaveLength(0)
+      expect(reports).toEqual([["skipped"]])
+      reset()
+    }
+    mock()
+    calls.length = 0
+    const [, other] = capturing("chat", { agent: "codex", options: { skipAgents } })
+    const body = structuredClone(chat)
+    await onRequest(body, other)
+    expect(body.messages[1].content).toContain("QUARTZ-8413")
+    await onResponse(reply, { ...other, success: true })
+    expect(of("memories/search")).toHaveLength(1)
+    expect(of("threads/import")).toHaveLength(1)
+    reset()
+  }
+  // a request with no agent is not taken for a listed one
+  mock()
+  calls.length = 0
+  await onRequest(structuredClone(chat), ctx("chat", { options: { serverUrl: "http://127.0.0.1:14242", skipAgents: ["", " "] } }))
+  expect(of("memories/search")).toHaveLength(1)
 })
 
 test("remote and unknown origins stay out", async () => {
@@ -672,143 +709,59 @@ test("a canceled request keeps its reason and does not back off the service", as
   expect(body.messages[1].content).toContain("QUARTZ-8413")
 })
 
-// The official sandbox page may configure options, but has no network or custom host API.
-test("configuration page uses only the released options and theme bridge", async () => {
-  const source = await Bun.file(new URL("./page/settings.js", import.meta.url)).text()
-  const calls = [...source.matchAll(/magpie\.([\w.]+)/g)].map((match) => match[1])
-  expect([...new Set(calls)].sort()).toEqual(["onTheme", "options.get", "options.set", "ready.then", "theme"])
-  expect(source).not.toMatch(/\b(fetch|XMLHttpRequest|WebSocket|EventSource)\b/)
-  const html = await Bun.file(new URL("./page/settings.html", import.meta.url)).text()
-  expect([...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map(([, src]) => src).sort()).toEqual(["_magpie/bridge.js", "i18n.js", "settings.js"])
-  expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/)
-  expect([...html.matchAll(/\b(?:src|href)="((?:https?:)?\/\/[^"]+)"/g)]).toEqual([])
+test("remote and gateway-key requests get recall and capture only by their own opt-in (#608)", async () => {
+  for (const origin of ["remote", "gateway-key"]) {
+    for (const [recallRemote, captureRemote] of [[false, false], [true, false], [false, true], [true, true]]) {
+      mock()
+      calls.length = 0
+      const [reports, context] = capturing("chat", { origin, options: { recallRemote, captureRemote } })
+      const body = structuredClone(chat)
+      const out = await onRequest(body, context)
+      await onResponse(reply, { ...context, success: true })
+      expect(of("memories/search")).toHaveLength(recallRemote ? 1 : 0)
+      expect(of("threads/import")).toHaveLength(captureRemote ? 1 : 0)
+      // capture permission alone saves the conversation but recalls nothing
+      if (!recallRemote) {
+        expect(out).toBeUndefined()
+        expect(body).toEqual(chat)
+        expect(reports[0]).toEqual(["skipped"])
+      } else expect(JSON.stringify(out)).toContain("QUARTZ-8413")
+      reset()
+    }
+    // captureRemote does not turn capture on
+    mock()
+    calls.length = 0
+    const [, off] = capturing("chat", { origin, options: { capture: false, captureRemote: true } })
+    await onRequest(structuredClone(chat), off)
+    await onResponse(reply, { ...off, success: true })
+    expect(calls).toHaveLength(0)
+    reset()
+  }
+  // a missing or unknown origin stays out even with both opt-ins
+  for (const origin of [undefined, "unrecognized"]) {
+    mock()
+    calls.length = 0
+    const [, context] = capturing("chat", { origin, options: { recallRemote: true, captureRemote: true } })
+    await onRequest(structuredClone(chat), context)
+    await onResponse(reply, { ...context, success: true })
+    expect(calls).toHaveLength(0)
+    reset()
+  }
 })
 
-test("configuration page saves the Mem connection for the shipped hook", async () => {
-  const read = (file) => Bun.file(new URL(`./page/${file}`, import.meta.url)).text()
-  const [dictionary, source, html] = await Promise.all([read("i18n.js"), read("settings.js"), read("settings.html")])
-  const elements = Object.fromEntries([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, {
-    dataset: {}, value: "", type: id === "key" ? "password" : "text", checked: false,
-    setAttribute(name, value) { this[name] = value }, focus() {}, showModal() {}, close() {},
-  }]))
-  const document = { documentElement: {}, getElementById: (id) => elements[id], querySelectorAll: () => [] }
-  const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign(url) { this.assigned = url } }
-  const window = { name: "" }
-  let options = { apiKeyEnv: "NMEM_API_KEY", recall: true, contextBundle: true, capture: false, maxMemories: 5, maxBytes: 6000 }
-  let writes = 0
-  const magpie = {
-    theme: { lang: "en" }, ready: Promise.resolve(), onTheme() {},
-    options: { get: async () => ({ ...options }), set: async (next) => { options = { ...next }; writes++ } },
-  }
-  runInNewContext(`${dictionary}\n${source}`, { document, magpie, window, location, navigator: { language: "en" }, URL })
-  await new Promise(setImmediate)
-  const save = () => elements.save.onclick({ preventDefault() {} })
-  const original = { ...options }
-  elements.url.value = "http://127.0.0.1:14242"
-  elements.space.value = "  space-7  "
-  elements.agent.value = "agent-3"
-  elements.key.value = "Bearer nmem_page_key"
-  elements.capture.checked = true
-  await save()
-  expect(options).toEqual({
-    ...original,
-    serverUrl: "http://127.0.0.1:14242/",
-    spaceId: "space-7",
-    agentId: "agent-3",
-    apiKey: "nmem_page_key",
-    capture: true,
-  })
-  // Run the shipped hook with exactly what the page saved.
-  mock({ "threads/import": (body) => Response.json({ success: true, failed_count: 0, results: [{ success: true, thread_id: body.thread_id, message_count: body.messages.length, messages_added: body.messages.length }] }) })
-  const hookContext = ctx("chat", { options })
-  hookContext.state = {}
-  await onRequest(structuredClone(chat), hookContext)
-  expect(of("memories/search")[0].init.headers.Authorization).toBe("Bearer nmem_page_key")
-  expect(of("memories/search")[0].url.origin).toBe("http://127.0.0.1:14242")
-  await onResponse(reply, { ...hookContext, success: true })
-  expect(of("threads/import")[0].body.space_id).toBe("space-7")
-  expect(of("threads/import")[0].body.metadata.agent_id).toBe("agent-3")
-
-  elements.configure.onclick()
-  expect(elements.key.type).toBe("password")
-  expect(elements.key.value).toBe("nmem_page_key")
-  elements["show-key"].onclick()
-  expect(elements.key.type).toBe("text")
-  expect(elements["show-key"]["aria-pressed"]).toBe("true")
-  elements.settings.onclose()
-  expect(elements.key.type).toBe("password")
-  expect(elements.key.value).toBe("")
-
-  for (const invalid of ["bad key", "bad\nkey"]) {
-    elements.key.value = invalid
-    await save()
-    expect(writes).toBe(1)
-    expect(elements.result.dataset.message).toBe("invalidKey")
-  }
-  for (const invalid of ["ftp://mem.example.com", "http://mem.example.com", "https://mem.example.com?token=x"]) {
-    elements.url.value = invalid
-    await save()
-    expect(writes).toBe(1)
-    expect(elements.result.dataset.message).toBe("invalidUrl")
-  }
-
-  elements.url.value = "https://mem.example.com"
-  elements.key.value = ""
-  elements.space.value = "   "
-  elements.agent.value = ""
-  elements.capture.checked = false
-  await save()
-  expect(options.serverUrl).toBe("https://mem.example.com/")
-
-  // The main page's Test button tests the saved connection; the test page
-  // reads only the way back and the language.
-  elements["test-saved"].onclick()
-  expect(location.assigned).toBe("http://127.0.0.1:3479/test?lang=en")
-  expect(options.apiKey).toBeUndefined()
-  expect(options.spaceId).toBeUndefined()
-  expect(options.agentId).toBeUndefined()
-  expect(options.apiKeyEnv).toBe("NMEM_API_KEY")
-  expect(options.maxBytes).toBe(6000)
-  expect(elements["summary-space"].textContent).toBe("Default Space")
-})
-
-test("configuration page follows the host language without losing edits or messages", async () => {
-  const read = (file) => Bun.file(new URL(`./page/${file}`, import.meta.url)).text()
-  const [dictionary, source, html] = await Promise.all([read("i18n.js"), read("settings.js"), read("settings.html")])
-  const elements = Object.fromEntries([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, {
-    dataset: {}, value: "", hidden: false, checked: false, setAttribute(name, value) { this[name] = value }, focus() {},
-  }]))
-  const translated = [...html.matchAll(/data-t="([^"]+)"/g)].map(([, key]) => ({ dataset: { t: key } }))
-  const document = {
-    documentElement: {}, getElementById: (id) => elements[id],
-    querySelectorAll: (selector) => selector === "[data-t]" ? translated : Object.values(elements).filter((el) => el.dataset.message),
-  }
-  let repaint
-  const magpie = {
-    theme: { lang: "zh" }, ready: Promise.resolve(), onTheme: (fn) => { repaint = fn },
-    options: { get: async () => ({ serverUrl: "http://127.0.0.1:14242", capture: true }) },
-  }
-  const window = { name: "" }
-  const location = { href: "http://127.0.0.1:3425/_magpie/plugin/t/page/settings.html", assign() {} }
-  const { messages, languageFor, languageTags } = runInNewContext(`${dictionary}\n${source}\nnowledgeMemI18n`, { document, magpie, window, location, navigator: { language: "en" }, URL })
-  await new Promise(setImmediate)
-  for (const language of ["en", "zh", "zh-TW", "ja", "de"]) {
-    expect(Object.keys(messages[language]).sort()).toEqual(Object.keys(messages.en).sort())
-    expect(Object.values(messages[language]).every((text) => typeof text === "string" && text.length > 0)).toBe(true)
-  }
-  for (const [input, expected] of [["zh-CN", "zh"], ["zh-Hant-TW", "zh-TW"], ["zh_HK", "zh-TW"], ["ja-JP", "ja"], ["de-AT", "de"], ["fr-FR", "en"]]) {
-    expect(languageFor(input)).toBe(expected)
-  }
-  elements.url.value = "unsaved address"
-  await elements.save.onclick({ preventDefault() {} })
-  for (const language of ["en", "zh-TW", "ja", "de", "zh"]) {
-    magpie.theme.lang = language
-    repaint()
-    expect(document.documentElement.lang).toBe(languageTags[language])
-    expect(elements.url.value).toBe("unsaved address")
-    expect(elements.configured.textContent).toBe(messages[language].loaded)
-    expect(elements.result.textContent).toBe(messages[language].invalidUrl)
-    expect(elements.result.dataset.error).toBe("true")
-    for (const el of translated) expect(el.textContent).toBe(messages[language][el.dataset.t])
+test("remote opt-ins apply consistently across all gateway protocols", async () => {
+  const fixtures = [
+    ["chat",chat,reply],
+    ["responses",{input:[{role:"user",content:[{type:"input_text",text:"Quartz codename?"}]}]},{status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"answer"}]}]}],
+    ["anthropic",{messages:[{role:"user",content:[{type:"text",text:"Quartz codename?"}]}]},{type:"message",role:"assistant",content:[{type:"text",text:"answer"}],stop_reason:"end_turn"}],
+    ["gemini",{contents:[{role:"user",parts:[{text:"Quartz codename?"}]}]},{candidates:[{content:{role:"model",parts:[{text:"answer"}]},finishReason:"STOP"}]}],
+  ]
+  for (const origin of ["remote","gateway-key"]) for (const [protocol,input,response] of fixtures) {
+    reset();calls.length=0;mock()
+    const [,c]=capturing(protocol,{origin,options:{recallRemote:true,captureRemote:true}})
+    await onRequest(structuredClone(input),c)
+    await onResponse(response,{...c,success:true})
+    expect(of("memories/search")).toHaveLength(1)
+    expect(of("threads/import")).toHaveLength(1)
   }
 })

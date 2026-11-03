@@ -210,3 +210,76 @@ test("native: a step still short of its count fails batchWait, naming the calls 
   await until(() => run.error)
   expect(run.error.message).toMatch(/^Cursor did not complete its declared native tool batch: 1 of 4 calls came, 0 answered here, 2 completed by Cursor/)
 })
+
+// plugins#550's fifth trace (Windsland52, 2026-10-31 19:44, stateless,
+// cursor-grok-4.6-xhigh): 19 blob requests, thinking and token counts, the
+// thinking's end, text, then two MCP calls (partial, started, exec each)
+// 43 ms apart, no tool count, and only heartbeats until quiet ended it
+// after 240 s. The kinds and order are the trace's; the bytes are made up
+// where it has only sizes.
+const TRACE5 = [
+  "H", ...Array(19).fill("get"),
+  ...Array(40).fill(0).flatMap((_, i) => (i % 3 === 0 ? ["T"] : ["T", "8"])), "D",
+  ...Array(26).fill(0).flatMap((_, i) => (i % 3 === 0 ? ["x", "8"] : ["x"])),
+  "8", "partial:c1", "started:c1", "exec:c1", "8", "partial:c2", "started:c2", "exec:c2",
+  ...Array(24).fill("H"),
+]
+const wire5 = (extra = []) => [...TRACE5, ...extra].map((t, i) => {
+  const [what, id] = t.split(":")
+  if (what === "partial") return callUpdate(7, id, id === "c9" ? SEARCH : MCP)
+  if (what === "started") return callUpdate(2, id, MCP)
+  return body(t, i, {})
+})
+// a stream that goes on with a heartbeat every few ms after its frames, as
+// Cursor's did every 10 s, until it is closed
+function beating(list, every = 10) {
+  let i = 0, closed = false
+  return {
+    [Symbol.asyncIterator]() { return this },
+    next: () => closed ? Promise.resolve({ done: true }) : i < list.length
+      ? Promise.resolve({ value: { data: list[i++] }, done: false })
+      : new Promise((r) => setTimeout(() => r(closed ? { done: true } : { value: { data: bin(1, bin(13, Buffer.alloc(0))) }, done: false }), every)),
+    return: () => ((closed = true), Promise.resolve({ done: true })),
+  }
+}
+async function run5(stream, countWait, ms = 2000) {
+  const events = [], notes = []
+  const done = (async () => {
+    for await (const e of decode(stream, { send() {}, blobs: new Map(), tools: readFile, estimate: 1, note: (n) => notes.push(n), countWait })) {
+      events.push(e)
+      if (e.stop || e.error) return
+    }
+  })()
+  const timer = new Promise((r) => setTimeout(() => r("open"), ms))
+  return { how: await Promise.race([done.then(() => "ended"), timer]), events, notes }
+}
+
+test("stateless: the fifth trace's two calls with no count go to the caller once only heartbeats follow (#550)", async () => {
+  const { how, events, notes } = await run5(beating(wire5()), 200)
+  expect(how).toBe("ended")
+  expect(events.filter((e) => e.tool).map((e) => e.tool.name)).toEqual(["read_file", "read_file"])
+  expect(events.at(-1).stop).toBe("tool_calls")
+  expect(notes).toEqual(["no count"])
+})
+
+test("stateless: the count wait is from Cursor's last frame that isn't a heartbeat (#550)", async () => {
+  const started = Date.now()
+  const { how } = await run5(beating(wire5(), 20), 300)
+  expect(how).toBe("ended")
+  // heartbeats every 20 ms never moved the 300 ms deadline
+  expect(Date.now() - started).toBeLessThan(1500)
+})
+
+test("stateless: a call Cursor is still running holds the step past the count wait (#550)", async () => {
+  // c9 written and neither started nor completed: Cursor's own, running
+  const { how } = await run5(beating(wire5(["partial:c9"])), 100, 800)
+  expect(how).toBe("open")
+})
+
+test("stateless: a count that comes inside the wait ends the step on the count, as before (#550)", async () => {
+  const list = wire5().slice(0, -24)
+  const { how, events, notes } = await run5(open([...list, bin(1, bin(27, uint(1, 2)))].map((data) => ({ data }))), 60_000)
+  expect(how).toBe("ended")
+  expect(events.filter((e) => e.tool)).toHaveLength(2)
+  expect(notes).toEqual([])
+})

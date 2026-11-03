@@ -3,6 +3,7 @@
 // truncation or same-size rewrite starts a fresh replay. Calendar-day usage
 // is refreshed even when the log has not changed.
 import { closeSync, existsSync, openSync, fstatSync, readFileSync, readSync, readdirSync, statSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { StringDecoder } from "node:string_decoder"
@@ -18,6 +19,12 @@ const ZSTD_MAX = 8 * 1024 * 1024
 const ZSTD_EVERY = 4000
 const META_MAX = 256 * 1024 // state.json / summary.json remain small
 const USAGE_MAX = 32 * 1024 * 1024 // usage.json grows with every recorded turn
+// A file system stamps a write with a coarse clock (Linux: one kernel tick,
+// some file systems a whole second or two), so a same-size rewrite inside one
+// tick leaves size, mtime, ctime and inode as they were. A sidecar stamped
+// this recently is told apart by a digest of its bytes as well; one older
+// than this cannot be rewritten without its stamp moving.
+const RACY_MS = 2500
 // Claude Code keeps one file per running process, <config>/sessions/<pid>.json.
 // A mid-turn session with no live process has stopped, even when the file
 // ends before a turn-ending event: `claude -p` killed from another agent.
@@ -302,14 +309,35 @@ function readMeta(src, path, field = "meta") {
   } catch { return null }
 }
 
-function sidecars(src, path) {
+// Each sidecar's revision, "size:mtime:ctime:ino", with "#digest" added
+// while its stamp is too recent to tell a same-size rewrite apart.
+function sidecars(src, path, stat = statSync) {
   return ["meta", "usage"].map((field) => {
     if (typeof src[field] !== "function") return ""
     try {
-      const st = statSync(src[field](path))
-      return `${st.size}:${st.mtimeMs}:${st.ctimeMs}`
+      const file = src[field](path), st = stat(file)
+      const sig = `${st.size}:${st.mtimeMs}:${st.ctimeMs}:${st.ino}`
+      if (!st.isFile() || st.size > (field === "usage" ? USAGE_MAX : META_MAX)) return sig
+      if (Date.now() - Math.max(st.mtimeMs, st.ctimeMs) >= RACY_MS) return sig
+      return sig + "#" + createHash("sha1").update(readFileSync(file)).digest("hex")
     } catch { return "missing" }
   }).join("|")
+}
+
+// One sidecar revision is another when their stamps match and, where both
+// carry a digest, the digests do. A stamp that has aged past RACY_MS drops
+// its digest, which does not make it a new revision.
+function sameSidecar(a, b) {
+  if (a === b) return true
+  if (a == null || b == null) return false
+  const [sa, da] = a.split("#"), [sb, db] = b.split("#")
+  return sa === sb && (!da || !db || da === db)
+}
+function sameSidecars(a, b) {
+  if (a === b) return true
+  if (a == null || b == null) return false
+  const x = a.split("|"), y = b.split("|")
+  return x.length === y.length && x.every((v, i) => sameSidecar(v, y[i]))
 }
 
 // Codex names a thread in session_index.jsonl ({id, thread_name}), the
@@ -343,6 +371,7 @@ export function createScanner(opts = {}) {
   const o = { days: 2, max: 40, zstdMax: ZSTD_MAX, zstdEvery: ZSTD_EVERY, ...opts }
   const files = new Map() // path -> file identity, JSONL cursor/reader, published session
   const readBytes = typeof o.readSync === "function" ? o.readSync : readSync
+  const statSidecar = typeof o.statSync === "function" ? o.statSync : statSync
   const procs = createProcesses()
   let srcs = o.sources || sources()
   let titleCache = null
@@ -366,8 +395,8 @@ export function createScanner(opts = {}) {
     let titles = null
     for (const f of keep) {
       let c = files.get(f.path)
-      const metadata = sidecars(f.src, f.path)
-      const changed = !c || c.size !== f.size || c.mtime !== f.mtime || c.ctime !== f.ctime || c.dev !== f.dev || c.ino !== f.ino || c.birthtime !== f.birthtime || c.metadata !== metadata || (c.cursor && c.cursor.offset < f.size)
+      const metadata = sidecars(f.src, f.path, statSidecar)
+      const changed = !c || c.size !== f.size || c.mtime !== f.mtime || c.ctime !== f.ctime || c.dev !== f.dev || c.ino !== f.ino || c.birthtime !== f.birthtime || !sameSidecars(c.metadata, metadata) || (c.cursor && c.cursor.offset < f.size)
       if (changed) {
         const zstd = f.path.endsWith(".zstd")
         // Leave size/mtime at the last decoded revision while throttled, so
@@ -432,8 +461,8 @@ export function createScanner(opts = {}) {
     const changes = { now }
     // Do not retain a whole usage.json snapshot or re-aggregate it on each
     // append. The reader keeps its daily totals; re-read only a new revision.
-    if (!reusable || before?.[0] !== sig[0]) changes.meta = readMeta(f.src, f.path)
-    if (!reusable || before?.[1] !== sig[1]) changes.usage = readMeta(f.src, f.path, "usage")
+    if (!reusable || !sameSidecar(before?.[0], sig[0])) changes.meta = readMeta(f.src, f.path)
+    if (!reusable || !sameSidecar(before?.[1], sig[1])) changes.usage = readMeta(f.src, f.path, "usage")
     try { c.reader.update(readAppended(f, c.cursor, readBytes), changes) }
     catch (error) {
       if (!(error instanceof ExtendedTail) || !reusable) throw error

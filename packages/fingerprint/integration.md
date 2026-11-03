@@ -39,14 +39,26 @@ upstream revision is documented in `THIRD_PARTY_NOTICES.md`.
 The service reads `GET /v1/models` for the text model catalog and
 `GET /v1/magpie/quotas?kept=1` for cached subscription account labels. The
 `kept=1` form does not ask vendors for a fresh quota reading. Account rows are
-projected to provider, user id, and display name only; upstream credentials,
-balances, and raw quota records are never sent to the browser.
+projected to provider, user id, and display name (the account's alias, else
+its user) only; upstream credentials, balances, and raw quota records are never
+sent to the browser.
 
 Gateway authentication uses `Authorization: Bearer <key>` when an API key is
 configured. Loopback Magpie normally needs no key. A remote gateway must be
 shared and requires its enabled gateway key. `X-Magpie-Account` can pin a
 gateway request to one account id or signed-in user, but is only meaningful to
-Magpie and is never forwarded upstream.
+Magpie and is never forwarded upstream. A header value is ASCII, so a user that
+isn't (`北冥`) is sent percent-encoded (`encodeURIComponent`), which Magpie
+v0.1.2658 and later read back; an ASCII user is sent as it is.
+
+## Job files
+
+Each batch is saved as `jobs/<id>.json` under the data directory. A pinned
+target keeps `account` (Magpie's id for the account: its user, an email or a
+login, which routing matches and rests it by) and, when the catalog listed it,
+`accountName`, in `config.targets[]` and `results[].target`. When every target
+is pinned to the same account, `config.account` and `config.accountName` name
+it too. Jobs saved before 0.2.2 have none of these fields and load as they were.
 
 ## Local development
 

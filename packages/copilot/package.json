@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-copilot-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "GitHub Copilot on GitHub.com and GitHub Enterprise, with account quota and credit balances for magpie",
   "type": "module",
   "main": "./index.mjs",

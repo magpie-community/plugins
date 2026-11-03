@@ -1,0 +1,32 @@
+{
+  "name": "@magpie-community/opencode-agnes-code-auth",
+  "version": "0.1.0",
+  "description": "Agnes Code desktop sign-in as an OpenCode/magpie provider: OpenAI-compatible chat gateway, live model catalog, daily check-in and points balance",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "agnes",
+    "agnes-code"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  },
+  "magpie": {
+    "icon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAALDSURBVFhHvZffS5NRGMffP6D6Q7rq3fp9o4F43n4JXQhqXQRdKFpExTISisKKCBJndJGY/YAuJr1nk9jKzCVubsOtSdOoRZFY+1E5F5W4re2Jc9rGds7rrHZ8H/gwON/nvM/3nOfAeCSpJHY2WNfLCu6Ukeo1IHXRoGAQAlITMsIeA1JNpEZpzWIY6627DAqOc5sFIytqzIhwLVdcVnCaTV4zEE4VTWxV7Bv0ODmLjHB0Y41lnUR6zoq6gVSTRB8cK+jHJLmBpIagD0hNSNxilWzfb4Pu3iCcvODlNC2EG7g7FIZC/I0J4QZsT+aKBi72vOB0FuEG0EEHYMcHGLSEYds+G6ezCDdA2NEwDC1HnbB5j5XTWIQbaD/rhsVvKdqCji43p7MINUCu//uPNGQyWWqgse0Zl8MizIBxNwbnZIQWJr/ZXI62gs1jEWbg+q0QLb6QWIbLfdMQjS9xOVoIMdB2xlW89nPX/HD/4VvwBT9zeVpUbeDQMSf8XMrQ4u6pGG1FIPQVhh6953K1qMrA4RPjkMy/eHL1dc122ndiiLSEzdeiooGm9jFurYCp2wfLqV+0eDabg+PnPfQ/YMIXpWsj4x/hjiUM5tuz3N5SKhoYHpmDKzemy9bqWxzw+Pk8LVKIS+Yg1cwDM2XrrqkY1DXZue+WUtGA/+UXyOUAvIE4/ZMZc0cglT91IUpPSPr/5l2SrvcOzHDf02JVAysFMdJ11c/tuXnvFdVbO12cpkVFA32Ds2xdGp5AHBpbR7l8AnkLqXQWDhx5ymlaVDSwZa8VevpD9OpHJz5B/4PX0Nyx8sMkkDas1vdSJKEDyD8iK3hBohOLhqgPqpsYOM0L+mCsx6fy86AaY8W1RlZwhA4mdDRDuFbv0WyTotaUz4fEBMJRLlkw5ORc8UKQKyHjEplYyAtlN/8vf76luknPi9eej986sOvbZw1S8QAAAABJRU5ErkJggg==",
+    "maxConcurrency": 4
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/agnes-code"
+  }
+}

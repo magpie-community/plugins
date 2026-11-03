@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.1 · 2026-11-03
+
+### Fixed
+
+- README says eleven scenes, and lists the five new ones in its 3D feature line.
+
+## 0.3.0 · 2026-11-02
+
+### Added
+
+- Library, cyberlab, greenhouse, arctic and rainy night scenes with themed 3D decorations.
+
+## 0.2.4 · 2026-11-01
+
+### Fixed
+
+- A `jumpRequest.at` ahead of the clock no longer blocks every later jump. A request is acted on only from 15 s old to 5 s ahead; one stamped further ahead is set aside and remembered, so it never fires when the clock gets there. A `last-jump.json` time ahead of now — written by 0.2.3 for such a request, or after the clock stepped back — now blocks only that same request, and every other click jumps; the file is rewritten at the next request. A request already handled is still never replayed across restarts (#583).
+
+## 0.2.3 · 2026-11-01
+
+### Added
+
+- Jump directly to the live macOS terminal tab, multiplexer pane or desktop app window running a session (`lib/jump.mjs`), with single-click panel buttons, multi-host selector when a multiplexer session (`herdr` / `tmux`) is attached in multiple terminals, and double-click on workers, name tags, list rows or side-rail rows (#552).
+
+## 0.2.2 · 2026-11-01
+
+### Fixed
+
+- A Grok `usage.json` or `summary.json` rewritten at the same size within one file-system timestamp tick is read again. On Linux a write is stamped with the coarse kernel clock, so such a rewrite kept size, mtime and ctime, and the old token count stood. A sidecar stamped within the last 2.5 s now also carries a digest of its bytes, and its inode is part of its revision (#580).
+
 ## 0.2.1 · 2026-10-31
 
 ### Fixed

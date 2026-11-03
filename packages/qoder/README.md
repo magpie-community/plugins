@@ -83,6 +83,12 @@ Refreshing:
   full, the listing can have only the free models on (#484). The same
   5-minute rule holds, and an id Qoder has never served is said unknown at
   once, with no renewal.
+- The account's model list (what magpie and its agents see) is read the
+  same way (since 0.2.52): a listing with every model that costs credits
+  off and the free ones on, which is what Qoder CN answers a caller it
+  doesn't take for the account, renews the job token once and is read
+  again. A renewed token that still lists only the free models isn't
+  renewed again for the list.
 - The device token, which reads usage, has no end on record: it is rotated
   when Qoder refuses it. On a [Qoder CN](#qoder-cn) device-token account it
   is the chat token too, and is renewed as above.
@@ -132,7 +138,10 @@ itself.
   - The model's own configuration from Qoder's list goes with it.
 - It picks the reasoning effort from the model's own levels:
   - The nearest level to the one asked, the higher one on a tie.
-  - The model's default when none is asked.
+  - The model's default when none is asked, unless the request's
+    `max_tokens` is 1024 or less: that is asked as "none" (since 0.2.55,
+    plugins#643), since thinking would spend so small a budget on
+    reasoning alone.
   - The lowest level for "none", when the model can't turn thinking off.
 - It picks the context window (`context_length`) from the model's own
   windows (Qoder's Context setting: 200K, 400K, 1M): the default while the
@@ -153,6 +162,13 @@ itself.
   reasoning and usage.
 - Tool calls Qoder writes as XML or JSON in its text become tool calls.
   Tool calls it sends the OpenAI way keep Qoder's id.
+- A call sent the OpenAI way that never gets its function name is never
+  sent on, and its arguments go nowhere (since 0.2.51, #579). If nothing
+  of the answer came before it, the request is sent once more; a second
+  such reply is a 502 that magpie can retry or fail over. If the answer
+  had begun (text, reasoning or a named call), the unnamed call is dropped
+  and the answer ends as it would have without it (`tool_calls` beside a
+  named call, `stop` otherwise), with a warning in magpie's log.
 - A call written in the text that can't be read, or that the stream ends
   inside, is never sent on as the answer (since 0.2.16, #132): the turn
   ends as an error, a 502 or the stream's error frame with no finish, so
@@ -195,6 +211,18 @@ the configuration and name together. Model-list keys, API IDs,
 name remain independently selectable. The name describes the catalog
 entry used for the request, not an attestation of the backend that
 executed it.
+
+A request's `model_config` is built as Qoder's own client builds it
+(Qoder CN's CLI 1.1.81, desktop 0.4.3), not sent as the listing entry
+(since 0.2.54): `key`, `display_name`, an empty `model`, `format`,
+`is_vl`, `is_reasoning` (off when thinking is turned off), empty
+`api_key` and `url`, `source` and `max_input_tokens`. The entry's
+`minimal_version`, `strategies`, prices and `thinking_config` are not
+sent. While the whole entry was sent, Qoder CN billed DeepSeek-Flash
+(`dfmodel`, whose entry has a `minimal_version`) as Auto at Auto's rate
+(plugins#638); that the entry was the cause has not been confirmed on a
+Qoder CN account. A model whose entry has no key of its own, or whose key is
+`auto`, is refused with a 400 and nothing is sent, never served as Auto.
 
 The `provider.models` hook reads the account's own list, as Qoder's client
 asks for it (`/algo/api/v2/model/list`). It keeps the enabled models of the
@@ -301,6 +329,43 @@ paths, client id and protocol are the public ones:
 
 The hosts and reply shapes come from a real VPC account's report
 (yetone/magpie#312). This plugin has not been tried with a VPC account.
+
+### Enterprise dedicated domain (企业版专属域)
+
+An enterprise whose Qoder IDE signs in through 「企业版专属域登录」 with a
+domain of its own (any https host, such as `your-corp.rdc.aliyuncs.com`)
+signs in with **Sign in with Qoder CN Enterprise dedicated domain
+(企业版专属域)** (since 0.2.53). It asks for the domain as it is set in
+Qoder IDE's settings: a host or an https address (a path is dropped).
+
+It follows Qoder IDE 1.38.0's own rules for that setting:
+
+- It first asks `GET <domain>/algo/api/v1/version`. A 404 means a legacy
+  Lingma 1.0 (通义灵码) dedicated domain. Its sign-in goes through another
+  protocol, which this plugin doesn't have yet, so the sign-in stops and
+  says so. Any other answer means Qoder CN 2.0. A domain that doesn't answer
+  is refused.
+- A Qoder CN 2.0 domain uses the VPC protocol on hosts named the IDE's way:
+  `-openapi` or `-gateway` after the host's first label. An IP or a host
+  with no dot keeps its own origin. The sign-in uses the IDE's client id and
+  no `redirect_uri`.
+
+| | Dedicated domain `your-corp.rdc.aliyuncs.com` |
+|---|---|
+| Sign-in page | your-corp.rdc.aliyuncs.com/device/selectAccounts |
+| Accounts: poll, tokens, user info, usage | your-corp-openapi.rdc.aliyuncs.com |
+| Models and chat | your-corp-gateway.rdc.aliyuncs.com |
+
+- Models and chat use the gateway host when it answers at sign-in.
+  Otherwise they use the domain itself, which answered the probe on the
+  same `/algo` path. The IDE's language server makes this choice, and its
+  rule wasn't read, so this part is inferred.
+- The domain is kept with the account, which is named
+  `<email> (<domain>)`. An account whose kept domain isn't one is asked to
+  sign in again; it is never sent to the public hosts.
+
+The rules come from Qoder IDE's code. This plugin has not been tried with a
+dedicated account.
 
 ## The card's name
 

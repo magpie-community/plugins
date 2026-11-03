@@ -398,3 +398,16 @@ test("a free seat omits absent premium allowance but counts chat and completion 
   assert.deepEqual(result.windows.map((w) => w.used), [20, 0]);
   assert.equal(result.windows[1].aside, true);
 });
+
+// plugins#618 (jinpy666): an idle slot magpie had marked for its dropped
+// inference token is told signed in again by a quota read GitHub answers
+// with the OAuth token; a 401 there still marks it.
+test("a quota read GitHub answers clears a stale mark, a 401 still sets one", async () => {
+  const ok = await readUsage(getAuth, async () => response(premium({ entitlement: 300, remaining: 200 })));
+  assert.equal(ok.signIn, "renewed");
+  const unreadable = await readUsage(getAuth, async () => response({ copilot_plan: "business" }));
+  assert.equal(unreadable.signIn, "renewed");
+  assert.ok(unreadable.error);
+  const refused = await readUsage(getAuth, async () => response({}, 401));
+  assert.equal(refused.signIn, "expired");
+});

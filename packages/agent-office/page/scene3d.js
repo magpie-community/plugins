@@ -227,9 +227,44 @@
       fog: "#05070b", ambient: "#cfd6e8",
       props: ["tombstones", "deadtrees", "candles", "bookshelf", "arcade"],
     },
+    library: {
+      id: "library", label: "Library", note: "twilight reading hall",
+      floor: "#554438", floorStyle: "plank", wall: "#746354", trim: "#b5a080", accent: "#4f8a5b",
+      desk: "#947655", chair: "#594a40", metal: "#b5a080", wood: "#493d35", sofa: "#80434b",
+      plant: "#4f8a5b", skyDay: "#88758d", skyNight: "#2a3157", windowDay: "#d9b58b", windowNight: "#9db4e8",
+      fog: "#29303c", ambient: "#e9dcc3", props: ["bookshelf", "ornaments"],
+    },
+    cyberlab: {
+      id: "cyberlab", label: "Cyberlab", note: "neon research cells",
+      floor: "#293544", floorStyle: "metal", wall: "#40536a", trim: "#839aac", accent: "#39ced6",
+      desk: "#617b90", chair: "#344759", metal: "#839aac", wood: "#40536a", sofa: "#536584",
+      plant: "#39ced6", skyDay: "#40536a", skyNight: "#1d2330", windowDay: "#8de5e8", windowNight: "#5784ac",
+      fog: "#1d2330", ambient: "#c9e3ed", props: ["coffee", "ornaments"],
+    },
+    greenhouse: {
+      id: "greenhouse", label: "Greenhouse", note: "sunlit botanical conservatory",
+      floor: "#617466", floorStyle: "stone", wall: "#91a898", trim: "#d4dfc4", accent: "#73a66a",
+      desk: "#a5b18b", chair: "#526d5a", metal: "#9bafaa", wood: "#63734d", sofa: "#899a65",
+      plant: "#4f8a5b", skyDay: "#b9d8df", skyNight: "#344757", windowDay: "#e4ebcb", windowNight: "#9db4e8",
+      fog: "#344757", ambient: "#e4ebcb", props: ["coffee", "ornaments"],
+    },
+    arctic: {
+      id: "arctic", label: "Arctic", note: "polar field station",
+      floor: "#778e9f", floorStyle: "metal", wall: "#a2b9c7", trim: "#d8e6eb", accent: "#e2b04a",
+      desk: "#b2c4cb", chair: "#526a80", metal: "#8198ab", wood: "#637c8b", sofa: "#738eaa",
+      plant: "#8aaab0", skyDay: "#d8e6eb", skyNight: "#526a80", windowDay: "#e7eff0", windowNight: "#9db4e8",
+      fog: "#526a80", ambient: "#d8e6eb", props: ["coffee", "ornaments"],
+    },
+    rainynight: {
+      id: "rainynight", label: "Rainy Night", note: "rain-soaked midnight studio",
+      floor: "#536071", floorStyle: "plank", wall: "#526173", trim: "#8294a5", accent: "#e3a85c",
+      desk: "#b08a63", chair: "#6a7180", metal: "#687b8c", wood: "#765943", sofa: "#aa765a",
+      plant: "#688a78", skyDay: "#101b2c", skyNight: "#101b2c", windowDay: "#7492a9", windowNight: "#7492a9",
+      fog: "#101b2c", ambient: "#d7d8d2", props: ["coffee", "ornaments"],
+    },
   }
 
-  const SCENE_IDS = ["office", "station", "cafe", "castle", "pirate", "graveyard"]
+  const SCENE_IDS = ["office", "station", "cafe", "castle", "pirate", "graveyard", "library", "cyberlab", "greenhouse", "arctic", "rainynight"]
   const SCENES = {}
   for (const id of SCENE_IDS) SCENES[id] = THEMES[id]
   const themeFor = (id) => (THEMES[id] ? THEMES[id] : THEMES.office)
@@ -1316,6 +1351,59 @@
   }
 
   // ---- scene-specific props ------------------------------------------
+
+  // Part coordinates are local to each ornament; placement reserves their
+  // actual body-height bounds against furniture, routes and other decorations.
+  const part = (color, x, y, z, w, h, d, glow = false, shape = "box") => ({ color, x, y, z, w, h, d, glow, shape })
+  const ornament = (name, x, z, w, d, parts) => ({ name, x, z, w, d, parts })
+  const ORNAMENTS = {
+    library: [
+      ornament("book-wall", 9, 11, 1.5, .4, [part("wood", .75, 1, .2, 1.5, 2, .4), ...Array.from({ length: 24 }, (_, i) => part(i % 2 ? "sofa" : "trim", .13 + i % 6 * .25, .3 + Math.floor(i / 6) * .45, .42, .18, .3, .04))]),
+      ornament("sliding-ladder", 11, 11, .6, .4, [part("wood", .05, 1, .2, .08, 2, .12), part("wood", .55, 1, .2, .08, 2, .12), ...Array.from({ length: 6 }, (_, i) => part("trim", .3, .15 + i * .32, .2, .55, .06, .16))]),
+      ornament("globe", 12, 11, .7, .7, [part("wood", .35, .08, .35, .7, .16, .7), part("metal", .35, .45, .35, .08, .75, .08), part("accent", .35, 1.05, .35, .65, .65, .65, false, "sphere")]),
+      ornament("fireplace", 14, 11, 1.2, .6, [part("wood", .6, .1, .3, 1.2, .2, .6), part("wall", .12, .65, .3, .24, 1.3, .6), part("wall", 1.08, .65, .3, .24, 1.3, .6), part("trim", .6, 1.3, .3, 1.2, .16, .6), part("#efaf61", .6, .4, .32, .55, .4, .35, true)]),
+    ],
+    cyberlab: [
+      ornament("server-rack", 9, 11, .9, .55, [part("metal", .45, .9, .25, .9, 1.8, .5), ...Array.from({ length: 5 }, (_, i) => part("wood", .45, .2 + i * .3, .51, .75, .2, .04)), part("accent", .08, .9, .54, .04, 1.6, .03, true)]),
+      ornament("hologram-table", 11, 11, .7, .7, [part("metal", .35, .4, .35, .6, .8, .6), part("accent", .35, .84, .35, .7, .08, .7), part("#39ced6", .35, 1.2, .35, .55, .55, .55, true, "sphere")]),
+      ornament("cable-bank", 12, 11, .6, .7, [part("wood", .3, .12, .35, .6, .24, .7), ...Array.from({ length: 3 }, (_, i) => part("metal", .1 + i * .2, .27, .35, .08, .08, .7))]),
+      ornament("neon-pylon", 14, 11, .6, .6, [part("metal", .3, .08, .3, .6, .16, .6), part("#d778bd", .3, 1, .3, .12, 1.8, .12, true)]),
+    ],
+    greenhouse: [
+      ornament("flower-island", 9, 11, 1.2, .6, [part("wood", .6, .16, .3, 1.2, .32, .6), ...Array.from({ length: 3 }, (_, i) => part("plant", .22 + i * .38, .52, .3, .38, .38, .38, false, "sphere"))]),
+      ornament("pond", 11, 11, .8, .8, [part("metal", .4, .13, .4, .8, .26, .8), part("#72b8c7", .4, .27, .4, .68, .02, .68, true)]),
+      ornament("flower-rack", 12, 11, 1, .5, [part("wood", .06, .7, .25, .12, 1.4, .5), part("wood", .94, .7, .25, .12, 1.4, .5), part("trim", .5, .35, .25, 1, .08, .5), part("trim", .5, 1, .25, 1, .08, .5), part("plant", .5, 1.3, .25, .8, .5, .4)]),
+      ornament("watering-can", 14, 11, .65, .5, [part("accent", .25, .3, .25, .5, .6, .5), part("metal", .53, .4, .25, .3, .12, .12), part("metal", .25, .7, .25, .12, .25, .12)]),
+    ],
+    arctic: [
+      ornament("heater", 9, 11, 1, .55, [part("metal", .5, .5, .25, 1, 1, .5), ...Array.from({ length: 5 }, (_, i) => part("#e2b04a", .15 + i * .18, .5, .51, .07, .65, .02, true))]),
+      ornament("instrument-case", 11, 11, .7, .6, [part("wood", .35, .35, .3, .7, .7, .6), part("trim", .35, .72, .3, .7, .08, .6), part("metal", .35, .8, .3, .4, .08, .1)]),
+      ornament("radio", 12, 11, .8, .5, [part("metal", .4, .4, .25, .8, .8, .5), part("accent", .25, .5, .51, .3, .25, .04, true), part("trim", .68, 1.15, .25, .04, .7, .04)]),
+      ornament("supply-crates", 14, 11, .7, .6, [part("wood", .35, .3, .3, .7, .6, .6), part("trim", .35, .63, .3, .7, .06, .6), part("metal", .35, .76, .3, .4, .2, .4)]),
+    ],
+    rainynight: [
+      ornament("coffee-bar", 9, 11, 1, .6, [part("wood", .5, .48, .3, 1, .96, .6), part("trim", .5, 1, .3, 1, .08, .6), part("metal", .5, 1.25, .3, .4, .45, .4), part("#ffc66f", .15, 1.08, .3, .12, .12, .12, true)]),
+      ornament("umbrella-stand", 11, 11, .5, .5, [part("metal", .25, .3, .25, .5, .6, .5), part("accent", .16, .9, .25, .08, 1.2, .08), part("wood", .34, .8, .25, .08, 1, .08)]),
+      ornament("floor-lamp", 12, 11, .5, .5, [part("metal", .25, .04, .25, .5, .08, .5), part("metal", .25, .85, .25, .06, 1.7, .06), part("accent", .25, 1.7, .25, .5, .22, .5), part("#ffcf8a", .25, 1.57, .25, .35, .06, .35, true)]),
+      ornament("side-table", 14, 11, .7, .5, [part("wood", .35, .36, .25, .7, .08, .5), part("metal", .08, .18, .08, .08, .36, .08), part("metal", .62, .18, .42, .08, .36, .08)]),
+      ornament("coffee-shelf", 13, 10, .6, .5, [part("wood", .3, .38, .25, .6, .76, .5), part("trim", .3, .8, .25, .6, .08, .5), part("accent", .3, .95, .25, .3, .22, .3)]),
+    ],
+  }
+
+  AgentOfficeScene3D.prototype._propBuilders.ornaments = function (env, theme) {
+    for (const item of ORNAMENTS[theme.id]) {
+      const g = new THREE.Group()
+      g.name = item.name
+      g.position.set(item.x, 0, item.z)
+      env.add(g)
+      for (const p of item.parts) {
+        const color = theme[p.color] || p.color
+        const options = p.glow ? { emissive: color, ei: .65 } : {}
+        if (p.shape === "sphere") this._sphere(g, color, p.x, p.y, p.z, p.w / 2, options)
+        else this._box(g, color, p.x, p.y, p.z, p.w, p.h, p.d, options)
+      }
+    }
+  }
 
   AgentOfficeScene3D.prototype._propBuilders.console = function (env, theme) {
     const g = new THREE.Group()

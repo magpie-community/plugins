@@ -8,7 +8,20 @@ import { join } from "node:path"
 export const NATIVE_LIMITS = {
   resultWait: 120_000,
   lifetime: 15 * 60_000,
+  // How much of the lifetime a retained Run must have left to take a tool
+  // batch's results and go on; with less, the step starts on a fresh Run
+  // from the supplied history. One step can be a long answer: a Pi turn on
+  // grok-4.7 went on with 494 s left and was still answering at the
+  // deadline (plugins#616, yetone/magpie#4419). At most two thirds of the
+  // lifetime, so a short one set in a test still has room to continue.
+  continueReserve: 10 * 60_000,
   batchWait: 30_000,
+  // How long a stateless step whose calls came waits for Cursor's count of
+  // them (update 27) with nothing but heartbeats before it hands the calls
+  // that came to the caller (plugins#550). A count comes within ms of the
+  // step's last call; a Run that sent calls and then only heartbeats has
+  // stopped, and the caller's next request goes on from the calls' results.
+  countWait: 60_000,
   drain: 6000,
   replayWait: 120_000,
   blobBytes: 64 << 20,
@@ -511,6 +524,14 @@ export class StepCalls {
   get completed() {
     return this.byCursor.size
   }
+  // writing is how many calls the step wrote (7) that are neither started
+  // on the client, sent as an exec, nor completed by Cursor: a call of
+  // Cursor's own still running, or one still to be sent
+  get writing() {
+    let n = 0
+    for (const id of this.partial) if (!this.started.has(id) && !this.execs.has(id) && !this.byCursor.has(id)) n++
+    return n
+  }
   // nextStep starts the next step's count
   nextStep() {
     this.partial.clear()
@@ -714,6 +735,13 @@ class Segment {
   }
 }
 
+// What a Run cut at its absolute deadline says. It most often lands
+// mid-answer, the 200 long sent, so the agent reads only these words; the
+// conversation is not lost (asked again, the history goes on a fresh Run),
+// and they say so in words agents retry on: "timed out" (Pi, magpie's
+// passingSaid) and "retry your request" (plugins#616, yetone/magpie#4419).
+export const LIFETIME_EXPIRED = "native Run lifetime expired: the Run timed out; retry your request"
+
 export class NativeSessionPool {
   constructor(limits = NATIVE_LIMITS) {
     this.limits = limits
@@ -755,7 +783,7 @@ export class NativeSessionPool {
         // A retained Run's absolute timer spans all tool roundtrips. Rebuild
         // near its deadline before writing this batch: otherwise a new Chat
         // segment can lose its transport after already exposing output.
-        const reserve = Math.min(60_000, owner.limits.lifetime / 10)
+        const reserve = Math.min(owner.limits.continueReserve, owner.limits.lifetime * 2 / 3)
         if (owner.expiresAt - Date.now() <= reserve) {
           owner.fail({ status: 410, message: "native Run retired before lifetime deadline" }, "expired")
           return fallback("owner near lifetime deadline")
@@ -853,7 +881,7 @@ class NativeSession {
   expireIn(ms) {
     clearTimeout(this.lifetimeTimer)
     this.expiresAt = Date.now() + ms
-    this.lifetimeTimer = later(() => this.fail({ status: 410, message: "native Run lifetime expired" }, "expired"), ms)
+    this.lifetimeTimer = later(() => this.fail({ status: 410, message: LIFETIME_EXPIRED }, "expired"), ms)
   }
   retain(n) {
     if (this.retainedBytes + n > this.limits.outputBytes) invalid("native output/history retention limit reached", 503)

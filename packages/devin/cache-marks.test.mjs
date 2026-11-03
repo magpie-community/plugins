@@ -74,6 +74,110 @@ test("a grown history keeps every prompt the last mark covered as it was sent (y
   expect([round2[3].text, round2[3].cache]).toEqual([history(50, 5), EPHEMERAL])
 })
 
+test("a system notice after a tool result keeps its position and cache mark", () => {
+  const ps = prompts(buildMessages({
+    system: [{ type: "text", text: "Stable instructions", cache_control: mark }],
+    messages: [
+      { role: "user", content: "Read calc.py." },
+      { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "read_file", input: { path: "calc.py" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "return 42" }] },
+      { role: "system", content: [{ type: "text", text: "Run the focused tests next.", cache_control: mark }] },
+    ],
+  }, "claude-opus-5-5", "k"))
+  expect(ps.map((p) => [p.role, p.text, p.callID, p.calls, p.cache])).toEqual([
+    [1, "Stable instructions", "", [], EPHEMERAL],
+    [1, "Read calc.py.", "", [], null],
+    [2, "", "", ["read_file"], null],
+    [4, "return 42", "c1", [], null],
+    [1, "Run the focused tests next.", "", [], EPHEMERAL],
+  ])
+})
+
+test("a growing conversation moves its system notice's cache mark without changing the old prefix", () => {
+  const first = [
+    { role: "user", content: "Inspect calc.py." },
+    { role: "system", content: [{ type: "text", text: "Keep changes focused." }, { type: "text", text: "Check the result." }] },
+  ]
+  const round1 = prompts(buildMessages({ messages: [first[0], { ...first[1], content: [first[1].content[0], { ...first[1].content[1], cache_control: mark }] }] }, "claude-opus-5-5", "k"))
+  expect(round1.map((p) => [p.role, p.text, p.cache])).toEqual([
+    [1, "Inspect calc.py.", null],
+    [1, "Keep changes focused.", null],
+    [1, "Check the result.", EPHEMERAL],
+  ])
+  const round2 = prompts(buildMessages({ messages: [
+    ...first,
+    { role: "assistant", content: [{ type: "text", text: "The result is correct." }] },
+    { role: "user", content: "Continue." },
+    { role: "system", content: [{ type: "text", text: "Run tests now.", cache_control: mark }] },
+  ] }, "claude-opus-5-5", "k"))
+  expect(round2.map((p) => [p.role, p.text, p.cache])).toEqual([
+    [1, "Inspect calc.py.", null],
+    [1, "Keep changes focused.", null],
+    [1, "Check the result.", null],
+    [2, "The result is correct.", null],
+    [1, "Continue.", null],
+    [1, "Run tests now.", EPHEMERAL],
+  ])
+  expect(round2.slice(0, round1.length).map(({ cache, ...p }) => p)).toEqual(round1.map(({ cache, ...p }) => p))
+})
+
+test("system notices before tool results follow the real results without interrupting calls", () => {
+  const ps = prompts(buildMessages({ messages: [
+    { role: "user", content: "Read calc.py." },
+    { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "read_file", input: {} }, { type: "tool_use", id: "c2", name: "read_file", input: {} }] },
+    { role: "system", content: "The user asked to stop after this read." },
+    { role: "system", content: [{ type: "text", text: "Report both results.", cache_control: mark }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "return 42" }, { type: "tool_result", tool_use_id: "c2", content: "return 43" }] },
+  ] }, "claude-opus-5-5", "k"))
+  expect(ps.map((p) => [p.role, p.text, p.callID, p.calls, p.cache])).toEqual([
+    [1, "Read calc.py.", "", [], null],
+    [2, "", "", ["read_file", "read_file"], null],
+    [4, "return 42", "c1", [], null],
+    [4, "return 43", "c2", [], null],
+    [1, "The user asked to stop after this read.", "", [], null],
+    [1, "Report both results.", "", [], EPHEMERAL],
+  ])
+})
+
+test("empty system notices add no prompts or fallback turn", () => {
+  const ps = prompts(buildMessages({ messages: [
+    { role: "user", content: "Continue." },
+    { role: "system", content: "" },
+    { role: "system", content: [], output_config: { effort: "low" } },
+  ] }, "claude-opus-5-5", "k"))
+  expect(ps.map((p) => [p.role, p.text, p.cache])).toEqual([[1, "Continue.", null]])
+})
+
+for (const [name, content] of [["empty string", ""], ["empty array", []], ["empty text block", [{ type: "text", text: "" }]]]) {
+  test(`a system notice with ${name} does not split an assistant's tool-call turn`, () => {
+    const ps = prompts(buildMessages({ messages: [
+      { role: "user", content: "Read both files." },
+      { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "read_file", input: {} }] },
+      { role: "system", content },
+      { role: "assistant", content: [{ type: "tool_use", id: "c2", name: "read_file", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "first" }, { type: "tool_result", tool_use_id: "c2", content: "second" }] },
+    ] }, "claude-opus-5-5", "k"))
+    expect(ps.map((p) => [p.role, p.text, p.callID, p.calls])).toEqual([
+      [1, "Read both files.", "", []],
+      [2, "", "", ["read_file", "read_file"]],
+      [4, "first", "c1", []],
+      [4, "second", "c2", []],
+    ])
+  })
+}
+
+test("a notice after an interrupted tool call follows its missing-result placeholder", () => {
+  const ps = prompts(buildMessages({ messages: [
+    { role: "user", content: "Read calc.py." },
+    { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "read_file", input: {} }] },
+    { role: "system", content: [{ type: "text", text: "The read was interrupted.", cache_control: mark }] },
+  ] }, "claude-opus-5-5", "k"))
+  expect(ps.slice(-2).map((p) => [p.role, p.text, p.callID, p.cache])).toEqual([
+    [4, "Tool use was interrupted and did not produce a result.", "c1", null],
+    [1, "The read was interrupted.", "", EPHEMERAL],
+  ])
+})
+
 test("tool calls and results keep their own prompts and marks", () => {
   const body = buildMessages(
     {

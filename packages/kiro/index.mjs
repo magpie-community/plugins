@@ -419,7 +419,14 @@ function goG(x) {
 // magpie can say what is left of it when the user shows what is left
 // (#408): display alone is the vendor's text, which magpie can't turn
 // round.
-function usageOf(l) {
+//
+// Bonus credits (each allowance's bonuses: a first upgrade's trial credits,
+// a promotion's) are a window each while ACTIVE and not expired, after the
+// month's: their count, and when they lapse (runsOutAt), as they don't
+// reset. They are shown only (aside). Kiro spends the plan's credits
+// first, then these, so a month used up while a bonus has credits left
+// is set aside too, and the account isn't taken for spent.
+function usageOf(l, now = Date.now()) {
   const at = (secs) => (secs > 0 ? new Date(Math.trunc(secs) * 1000).toISOString() : undefined)
   const count = (used, limit) => used.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") + " / " + goG(limit)
   const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : 0)
@@ -431,11 +438,22 @@ function usageOf(l) {
       windows.push({ name: "Free trial", used: (100 * used) / limit, resetsAt: at(num(t.freeTrialExpiry)), display: count(used, limit),
         amount: used, limit, unit: "credits" })
     }
+    const bonuses = []
+    for (const b of Array.isArray(u?.bonuses) ? u.bonuses : []) {
+      const used = num(b?.currentUsage), limit = num(b?.usageLimit), expires = num(b?.expiresAt)
+      if (String(b?.status ?? "").toUpperCase() !== "ACTIVE" || limit <= 0 || (expires > 0 && expires * 1000 <= now)) continue
+      const left = Math.max(0, limit - used)
+      bonuses.push({ name: b?.displayName || "Bonus credits", used: (100 * used) / limit, display: count(used, limit),
+        amount: used, limit, unit: "credits", ...(expires > 0 && left > 0 ? { runsOutAt: at(expires), runsOut: left } : {}), aside: true })
+    }
     const used = num(u?.currentUsageWithPrecision), limit = num(u?.usageLimitWithPrecision)
-    if (limit <= 0) continue
-    const reset = num(u?.nextDateReset) || num(l?.nextDateReset)
-    windows.push({ name: u?.displayNamePlural || u?.displayName || "Credits", used: (100 * used) / limit, resetsAt: at(reset),
-      display: count(used, limit), amount: used, limit, unit: "credits", span: 30 * 24 * 3600 })
+    if (limit > 0) {
+      const reset = num(u?.nextDateReset) || num(l?.nextDateReset)
+      const carried = used >= limit && bonuses.some((b) => b.amount < b.limit)
+      windows.push({ name: u?.displayNamePlural || u?.displayName || "Credits", used: (100 * used) / limit, resetsAt: at(reset),
+        display: count(used, limit), amount: used, limit, unit: "credits", span: 30 * 24 * 3600, ...(carried ? { aside: true } : {}) })
+    }
+    windows.push(...bonuses)
   }
   const email = l?.userInfo?.email
   return { plan: planName(l?.subscriptionInfo?.subscriptionTitle), ...(typeof email === "string" && email ? { user: email } : {}), windows }
@@ -1155,6 +1173,16 @@ function sendKiro(a, body, signal) {
   })
 }
 
+// tooLongSaid is whether Kiro's words say the conversation is past the
+// model's window: its ValidationException "Input is too long." with reason
+// CONTENT_LENGTH_EXCEEDS_THRESHOLD, as an HTTP answer or as an exception
+// in the event stream, or a reply it stopped with MODEL_CONTEXT_WINDOW_EXCEEDED.
+const tooLongSaid = (msg) => /CONTENT_LENGTH_EXCEEDS_THRESHOLD|MODEL_CONTEXT_WINDOW_EXCEEDED|input is too long/i.test(msg)
+// TOO_LONG heads a too-long failure in the words magpie's gateway takes
+// for one (tooLong): another member with a larger window is asked, no
+// account rests, and with none left the agent is told to compact.
+const TOO_LONG = "input is too long for the model's context: "
+
 // failure is the status and message for an error Kiro answered with:
 // {"message": "...", "reason": "..."}.
 function failure(status, body) {
@@ -1164,8 +1192,7 @@ function failure(status, body) {
     if (e?.message) msg = e.message + (e.reason ? ` (${e.reason})` : "")
   } catch {}
   msg ||= STATUS_TEXT[status] ?? ""
-  if (msg.includes("CONTENT_LENGTH_EXCEEDS_THRESHOLD") || msg.toLowerCase().includes("input is too long"))
-    return { status: 400, message: "input is too long for the model's context: " + msg }
+  if (tooLongSaid(msg)) return { status: 400, message: TOO_LONG + msg }
   if (msg.includes("INSUFFICIENT_MODEL_CAPACITY")) return { status: 503, message: msg }
   if (msg.includes("MONTHLY_REQUEST_COUNT") || msg.includes("USAGE_LIMIT")) return { status: 429, message: "usage limit reached: " + msg }
   return { status, message: msg }
@@ -1413,8 +1440,15 @@ async function* events(body, model, budget) {
   // Kiro says how full the context is rather than how many tokens
   if (!usage.input && pct > 0 && window > 0) usage.input = Math.floor((pct / 100) * window)
   if (!usage.output) usage.output = Math.floor((said + 3) / 4)
+  const full = /^model_context_window_exceeded$/i.test(stop)
+  if (full && !said && !tools) {
+    // stopped for the window before a word: the conversation doesn't fit
+    yield { kind: "error", text: "the reply stopped as the model's context window was full (MODEL_CONTEXT_WINDOW_EXCEEDED)" }
+    return
+  }
   let reason = "end_turn"
   if (tools > 0) reason = "tool_use"
+  else if (full) reason = "model_context_window_exceeded" // cut short, as Anthropic's API says it
   else if (/^max_tokens$/i.test(stop)) reason = "max_tokens"
   else if (/^content_filtered$/i.test(stop)) reason = "refusal"
   yield { kind: "stop", reason, usage }
@@ -1454,7 +1488,14 @@ const QUOTA_WORDS = /quota|insufficient|balance|credit|billing|exceeded|rate.?li
 // magpie's built-in relay gives it: a status, not a stream, so another
 // account can take over — a 429 when it reads as a quota or rate limit,
 // else a 502.
-const failedBefore = (text) => errorResponse(QUOTA_WORDS.test(text) ? 429 : 502, text)
+//
+// A conversation past the model's window is a 400 that says so, whichever
+// way Kiro said it, before the quota words ("exceeded"): as a 502, magpie
+// rested the account, asked it again, and told a lone agent of a vendor
+// error, so it never compacted (ergou0954_54426 on Discord: Kiro in a
+// group routed by intent, "超出上下文", the turn failed).
+const failedBefore = (text) =>
+  tooLongSaid(text) ? errorResponse(400, TOO_LONG + text) : errorResponse(QUOTA_WORDS.test(text) ? 429 : 502, text)
 
 // reply answers the Messages request from Kiro's events: a stream of
 // Messages' events, or one message. names gives back the caller's name of
@@ -1887,8 +1928,10 @@ async function* searching(creds, auth, req, model, budget, signal, hosted, first
           else said.push({ type: "text", text: e.text })
         }
         if (e.kind === "error") {
-          // in a turn after a search, a status, not a finished answer (reply)
-          yield turn > 1 ? { ...e, status: 502 } : e
+          // in a turn after a search, a status, not a finished answer
+          // (reply): one past the window says so, as failedBefore does
+          if (turn > 1 && tooLongSaid(e.text)) yield { ...e, status: 400, text: TOO_LONG + e.text }
+          else yield turn > 1 ? { ...e, status: 502 } : e
           return
         }
         yield e

@@ -1,0 +1,819 @@
+// Runs the hooks the way magpie's gateway calls them — onRequest as a
+// request comes in, onResponse with the finished reply — against channels
+// faked with fetch: no network, no account.
+import { afterEach, beforeEach, expect, test } from "bun:test"
+import { createHmac } from "node:crypto"
+import { readFileSync, readdirSync } from "node:fs"
+import { onRequest, onResponse, reset, settled, options, duration, message } from "./notify.hooks.mjs"
+import { opensTurn, ending, hasTools, firstWords, compacting, continued, notificationOnly, background, subagent } from "./turn.mjs"
+import { send, usable } from "./channels.mjs"
+
+const realFetch = globalThis.fetch
+let calls = []
+let answer = () => Response.json({ ok: true })
+let clock = 1_000_000
+let timers = [] // failure pushes held back: { at, fn }
+const fakeTimers = {
+  later: (fn, ms) => { const t = { at: clock + ms, fn }; timers.push(t); return t },
+  cancel: (t) => { timers = timers.filter((x) => x !== t) },
+}
+// move the clock on, firing the held pushes that come due
+async function wait(ms) {
+  clock += ms
+  for (const t of timers.filter((x) => x.at <= clock)) { timers = timers.filter((x) => x !== t); t.fn() }
+  await settled()
+}
+
+beforeEach(() => {
+  calls = []
+  answer = () => Response.json({ ok: true })
+  clock = 1_000_000
+  timers = []
+  reset(() => clock, fakeTimers)
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init, body: init.body })
+    return answer(String(url), init)
+  }
+})
+afterEach(() => { globalThis.fetch = realFetch })
+
+const ntfy = { type: "ntfy", topic: "t-123" }
+const ctx = (protocol, extra = {}) => ({
+  protocol, agent: "claude", session: "sess-1", cwd: "/home/ted/code/magpie-plugins", origin: "local",
+  model: "claude-opus", state: {}, ...extra,
+  options: { channels: [ntfy], ...(extra.options ?? {}) },
+})
+const minutes = (n) => { clock += n * 60_000 }
+
+// one request/reply pair, each with a context of its own as the gateway gives
+async function exchange(protocol, body, reply, extra = {}) {
+  const c = ctx(protocol, extra)
+  onRequest(body, c)
+  onResponse(reply, c)
+  await settled()
+  return c
+}
+
+// ---- Anthropic Messages (Claude Code) ----
+const tools = [{ name: "Bash", input_schema: { type: "object" } }]
+const aUser = { model: "m", tools, messages: [{ role: "user", content: "fix the test" }] }
+const aToolUse = { type: "message", role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }] }
+const aResult = { model: "m", tools, messages: [...aUser.messages, { role: "assistant", content: aToolUse.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] }] }
+const aFinal = { type: "message", role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "All tests pass now." }] }
+
+test("a long Claude Code turn is pushed once, when the model stops asking for tools", async () => {
+  await exchange("anthropic", aUser, aToolUse)
+  minutes(4)
+  await exchange("anthropic", aResult, aToolUse)
+  expect(calls).toHaveLength(0)
+  minutes(2)
+  await exchange("anthropic", aResult, aFinal)
+  expect(calls).toHaveLength(1)
+  expect(calls[0].url).toBe("https://ntfy.sh")
+  const sent = JSON.parse(calls[0].body)
+  expect(sent.topic).toBe("t-123")
+  expect(sent.title).toBe("✅ Claude Code done · magpie-plugins")
+  expect(sent.message).toContain("took 6 min")
+  expect(sent.message).toContain("Model: claude-opus")
+  expect(sent.message).not.toContain("All tests pass") // text is opt-in
+})
+
+test("a short turn sends nothing", async () => {
+  await exchange("anthropic", aUser, aToolUse)
+  minutes(1)
+  await exchange("anthropic", aResult, aFinal)
+  expect(calls).toHaveLength(0)
+})
+
+test("a new user message restarts the turn's clock", async () => {
+  await exchange("anthropic", aUser, aToolUse)
+  minutes(10)
+  await exchange("anthropic", aUser, aToolUse) // the user interrupted and asked again
+  minutes(1)
+  await exchange("anthropic", aResult, aFinal)
+  expect(calls).toHaveLength(0)
+})
+
+test("side calls without tools neither open nor close a turn", async () => {
+  await exchange("anthropic", aUser, aToolUse)
+  minutes(5)
+  const title = { model: "haiku", messages: [{ role: "user", content: "title this" }] }
+  const c = await exchange("anthropic", title, aFinal)
+  expect(c.state.notify).toBeUndefined()
+  await exchange("anthropic", aResult, aFinal)
+  expect(calls).toHaveLength(1)
+})
+
+test("a failed request ends the turn with a failure push after the hold, unless errors is off", async () => {
+  await exchange("anthropic", aUser, aToolUse)
+  minutes(5)
+  await exchange("anthropic", aResult, null, { success: false })
+  expect(calls).toHaveLength(0) // held back
+  await wait(59_000)
+  expect(calls).toHaveLength(0)
+  await wait(1_000)
+  expect(calls).toHaveLength(1)
+  const sent = JSON.parse(calls[0].body)
+  expect(sent.title).toStartWith("❌ Claude Code failed")
+  expect(sent.message).toContain("took 5 min") // timed to the failure, not the hold
+  calls = []
+  await exchange("anthropic", aUser, aToolUse, { options: { errors: false } })
+  minutes(5)
+  await exchange("anthropic", aResult, null, { success: false, options: { errors: false } })
+  expect(calls).toHaveLength(0)
+})
+
+test("a failure the agent retries sends no ❌, and the turn's clock keeps running", async () => {
+  await exchange("anthropic", aUser, aToolUse)
+  minutes(4)
+  await exchange("anthropic", aResult, null, { success: false }) // 529
+  await wait(10_000)
+  await exchange("anthropic", aResult, aFinal) // the agent's retry
+  await wait(120_000)
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).title).toStartWith("✅")
+})
+
+test("Esc (a failure) then a new message continues the same turn", async () => {
+  await exchange("anthropic", aUser, aToolUse)
+  minutes(5)
+  await exchange("anthropic", aResult, null, { success: false })
+  await wait(20_000)
+  await exchange("anthropic", aUser, aToolUse)
+  await wait(120_000)
+  expect(calls).toHaveLength(0)
+})
+
+// ---- Claude Code subagents share their parent's session ----
+const subUser = { model: "m", tools, messages: [{ role: "user", content: "Search the repo for TODOs and list them" }] }
+const subToolUse = { ...aToolUse, content: [{ type: "tool_use", id: "s1", name: "Grep", input: {} }] }
+const subResult = { model: "m", tools, messages: [...subUser.messages, { role: "assistant", content: subToolUse.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "s1", content: "x" }] }] }
+const subFinal = { ...aFinal, content: [{ type: "text", text: "Found 3 TODOs." }] }
+const taskUse = { ...aToolUse, content: [{ type: "tool_use", id: "t1", name: "Task", input: {} }] }
+
+test("a subagent's end sends no push and leaves the main turn's clock alone", async () => {
+  await exchange("anthropic", aUser, taskUse) // the main agent starts a subagent
+  minutes(2)
+  await exchange("anthropic", subUser, subToolUse) // the subagent, same session
+  minutes(4)
+  await exchange("anthropic", subResult, subFinal) // it ends after 4 min: no push
+  expect(calls).toHaveLength(0)
+  minutes(1)
+  await exchange("anthropic", aResult, aFinal) // the main turn ends, 7 min in
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 7 min")
+})
+
+test("parallel subagents are all nested; a later conversation in the session is not", async () => {
+  await exchange("anthropic", aUser, taskUse)
+  await exchange("anthropic", subUser, subToolUse)
+  await exchange("anthropic", { ...subUser, messages: [{ role: "user", content: "Read the docs folder" }] }, subFinal)
+  minutes(5)
+  await exchange("anthropic", subResult, subFinal)
+  expect(calls).toHaveLength(0)
+  await exchange("anthropic", aResult, aFinal)
+  expect(calls).toHaveLength(1)
+  // the main turn is over; a new conversation (/clear) in the same session pushes as usual
+  calls = []
+  minutes(1)
+  await exchange("anthropic", subUser, subToolUse)
+  minutes(4)
+  await exchange("anthropic", subResult, subFinal)
+  expect(calls).toHaveLength(1)
+})
+
+test("a subagent whose first request beats the parent reply's onResponse is still nested", async () => {
+  // Claude Code runs Task tool_use blocks while the reply still streams, and
+  // magpie calls onResponse only after the last byte: the subagent's request
+  // reaches onRequest first
+  const main = ctx("anthropic")
+  onRequest(aUser, main)
+  minutes(1)
+  await exchange("anthropic", subUser, subToolUse) // while the parent is mid-request
+  onResponse(taskUse, main) // the parent's two-Task reply finishes
+  await exchange("anthropic", { ...subUser, messages: [{ role: "user", content: "Read the docs folder" }] }, subToolUse)
+  minutes(4)
+  await exchange("anthropic", subResult, subFinal)
+  expect(calls).toHaveLength(0)
+  await exchange("anthropic", aResult, aFinal)
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 5 min")
+})
+
+test("a conversation left waiting stops making new ones nested", async () => {
+  // no session: agent and folder are the base, and nesting is never inferred
+  const noSession = { session: undefined, agent: "crush" }
+  await exchange("chat", { tools: [{}], messages: [{ role: "user", content: "a" }] }, { choices: [{ finish_reason: "tool_calls", message: { tool_calls: [{}] } }] }, noSession)
+  minutes(5) // quit during the tool run; a new conversation in the same folder
+  const b = { tools: [{}], messages: [{ role: "user", content: "b" }] }
+  await exchange("chat", b, { choices: [{ finish_reason: "tool_calls", message: { tool_calls: [{}] } }] }, noSession)
+  minutes(5)
+  await exchange("chat", { ...b, messages: [...b.messages, { role: "tool", content: "x" }] }, { choices: [{ finish_reason: "stop", message: { content: "ok" } }] }, noSession)
+  expect(calls).toHaveLength(1)
+  // a real session: a parent unseen for 15 minutes no longer counts
+  calls = []
+  await exchange("anthropic", aUser, taskUse, { session: "s9" })
+  minutes(16)
+  await exchange("anthropic", subUser, subToolUse, { session: "s9" })
+  minutes(4)
+  await exchange("anthropic", subResult, subFinal, { session: "s9" })
+  expect(calls).toHaveLength(1)
+})
+
+// ---- compaction and background agents, from captured Claude Code bodies ----
+// fixtures/claude-2.1.316 holds request bodies recorded from the real
+// `claude` 2.1.316 (`claude -p` with a sandbox HOME / CLAUDE_CONFIG_DIR and
+// ANTHROPIC_BASE_URL at a recording endpoint), with each long
+// <system-reminder>, the system prompt and the tool schemas cut short; the
+// order and shape of the content blocks are as sent. `reply` is what the
+// endpoint answered.
+const fx = (name) => JSON.parse(readFileSync(new URL(`./fixtures/claude-2.1.316/${name}.json`, import.meta.url), "utf8"))
+const send1 = async (name, extra = {}) => { const f = fx(name); return exchange("anthropic", f.body, f.reply, { session: f.session, ...extra }) }
+
+test("captured auto-compaction during a tool loop neither ends nor restarts the turn", async () => {
+  expect(compacting(fx("autocompact-1-start").body, "anthropic")).toBe(false)
+  expect(compacting(fx("autocompact-2-compact").body, "anthropic")).toBe(true) // the prompt follows "CRITICAL: …", after the tool_result
+  expect(continued(fx("autocompact-3-continued").body, "anthropic")).toBe(true) // after the <system-reminder> blocks
+  await send1("autocompact-1-start")
+  minutes(16)
+  await send1("autocompact-2-compact") // plain text and end_turn
+  expect(calls).toHaveLength(0)
+  await send1("autocompact-3-continued") // new first words
+  minutes(4)
+  await send1("autocompact-4-tool")
+  await send1("autocompact-5-done")
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 20 min")
+})
+
+test("captured /compact after a turn, then a new message: one push per turn, each timed from its own message", async () => {
+  await send1("compact-1-start")
+  minutes(5)
+  await send1("compact-2-done")
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 5 min")
+  minutes(1)
+  expect(compacting(fx("compact-3-compact").body, "anthropic")).toBe(true)
+  await send1("compact-3-compact")
+  expect(calls).toHaveLength(1)
+  const f = fx("compact-4-continued") // the summary as a string, then "/compact" caveats and the user's text
+  expect(continued(f.body, "anthropic")).toBe(true)
+  const c = ctx("anthropic", { session: f.session })
+  onRequest(f.body, c)
+  minutes(4)
+  onResponse(f.reply, c)
+  await settled()
+  expect(calls).toHaveLength(2)
+  expect(JSON.parse(calls[1].body).message).toContain("took 4 min")
+})
+
+test("every compaction wording in the binary is found anywhere in the last user message", () => {
+  const f = fx("autocompact-2-compact").body
+  const part = f.messages.at(-1).content.findIndex((p) => p.type === "text" && p.text.startsWith("CRITICAL"))
+  for (const w of [
+    "Your task is to create a detailed summary of the conversation so far, paying close attention",
+    "Your task is to create a detailed summary of the RECENT portion of the conversation — the messages that follow",
+    "Your task is to create a detailed summary of this conversation.",
+    "Summarize the transcript inside <summary></summary> tags. Include relevant information",
+  ]) {
+    const content = f.messages.at(-1).content.map((p, i) => i === part ? { ...p, text: `CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\n${w}` } : p)
+    expect(compacting({ ...f, messages: [...f.messages.slice(0, -1), { role: "user", content }] }, "anthropic")).toBe(true)
+  }
+  expect(compacting(fx("compact-2-done").body, "anthropic")).toBe(false)
+})
+
+test("a subagent that compacts and continues stays nested, and never takes over the main turn", async () => {
+  const main = fx("agent-1-main"), sub = fx("agent-2-subagent")
+  const session = main.session
+  const subTool = { ...aToolUse }
+  await send1("agent-1-main") // main asks for the Agent tool and waits
+  await exchange("anthropic", sub.body, subTool, { session })
+  minutes(10)
+  const compact = fx("autocompact-2-compact").body.messages.at(-1).content.find((p) => p.type === "text" && p.text.startsWith("CRITICAL"))
+  const subCompact = { ...sub.body, messages: [...sub.body.messages, { role: "assistant", content: subTool.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }, compact] }] }
+  await exchange("anthropic", subCompact, fx("autocompact-2-compact").reply, { session })
+  const cont = fx("autocompact-3-continued").body
+  await exchange("anthropic", cont, aToolUse, { session })
+  minutes(1)
+  await exchange("anthropic", { ...cont, messages: [...cont.messages, { role: "assistant", content: aToolUse.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] }] }, aFinal, { session })
+  expect(calls).toHaveLength(0) // the subagent's end
+  // with no compaction seen, a continued conversation in a busy session is a new, nested one
+  await exchange("anthropic", { ...cont, messages: [{ role: "user", content: [...cont.messages[0].content, { type: "text", text: "other" }] }] }, aFinal, { session })
+  expect(calls).toHaveLength(0)
+  minutes(2)
+  const launched = { ...main.body, messages: [...main.body.messages, { role: "assistant", content: main.reply.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_agent", content: "done" }] }] }
+  await exchange("anthropic", launched, aFinal, { session })
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 13 min")
+})
+
+test("captured background Agent: the turn ends when the agent has reported back, not when the main conversation pauses", async () => {
+  expect(notificationOnly(fx("agent-4-notified").body, "anthropic")).toBe(true)
+  expect(opensTurn(fx("agent-4-notified").body, "anthropic")).toBe(false)
+  expect(background(fx("agent-3-launched").body, "anthropic")).toEqual({ launched: ["toolu_agent"], stopped: [], interim: [], agents: { toolu_agent: "ae13a2280b760859f" } })
+  expect(background(fx("agent-4-notified").body, "anthropic")).toEqual({ launched: [], stopped: ["toolu_agent"], interim: [], agents: {} })
+  await send1("agent-1-main")
+  minutes(1)
+  await send1("agent-3-launched") // "Agent launched, waiting." and end_turn
+  expect(calls).toHaveLength(0)
+  const sub = fx("agent-2-subagent"), c = ctx("anthropic", { session: sub.session })
+  onRequest(sub.body, c) // the agent's first request comes after its parent paused
+  minutes(6)
+  onResponse(sub.reply, c)
+  await settled()
+  expect(calls).toHaveLength(0) // the agent's end
+  await send1("agent-4-notified")
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 7 min")
+})
+
+test("captured notification that carries another reminder (the agent ran Bash) still ends the turn once, timed from the user's message", async () => {
+  const n = fx("agent-bash-5-notified").body
+  expect(n.messages.at(-1).content).toHaveLength(2) // <tools-used-before-summary>, then the notification
+  expect(notificationOnly(n, "anthropic")).toBe(true)
+  expect(opensTurn(n, "anthropic")).toBe(false)
+  // a reminder alone, or a reminder beside words the user typed, is not a notification
+  const typed = { ...n, messages: [...n.messages.slice(0, -1), { role: "user", content: [n.messages.at(-1).content[0], { type: "text", text: "and also fix the docs" }] }] }
+  expect(notificationOnly(typed, "anthropic")).toBe(false)
+  await send1("agent-bash-1-main")
+  minutes(1)
+  await send1("agent-bash-3-launched") // the main conversation stops for now
+  const sub = fx("agent-bash-2-subagent"), c = ctx("anthropic", { session: sub.session })
+  onRequest(sub.body, c)
+  minutes(5)
+  onResponse(sub.reply, c)
+  minutes(5)
+  await send1("agent-bash-4-subagent-done")
+  expect(calls).toHaveLength(0)
+  await send1("agent-bash-5-notified")
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 11 min")
+})
+
+test("a retried request carries the same launch twice; the agent is still counted once", async () => {
+  await send1("agent-1-main")
+  minutes(1)
+  const l = fx("agent-3-launched")
+  await exchange("anthropic", l.body, null, { session: l.session, success: false }) // 529: Claude Code sends the same body again
+  await send1("agent-3-launched")
+  minutes(10)
+  await wait(0)
+  expect(calls).toHaveLength(0)
+  await send1("agent-4-notified")
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 11 min")
+})
+
+// a recorded run, request by request in the order Claude Code sent them, with
+// `gap` minutes before each; returns how many pushes there were after each
+const recorded = (prefix) => readdirSync(new URL("./fixtures/claude-2.1.316/", import.meta.url)).filter((f) => f.startsWith(prefix + "-")).sort().map((f) => f.slice(0, -5))
+async function replay(names, gap) {
+  const after = []
+  for (const name of names) { minutes(gap); await send1(name); after.push(calls.length) }
+  return after
+}
+
+test("captured: an agent's notification that arrives while the main conversation is still working rides in a tool_result, and still counts", async () => {
+  const names = recorded("agent-busy") // main: Agent (background), then three Bash calls; the notification comes with the first Bash result
+  expect(background(fx("agent-busy-05").body, "anthropic")).toEqual({ launched: [], stopped: ["toolu_ag1"], interim: [], agents: {} })
+  expect(await replay(names, 2)).toEqual([0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 12 min")
+})
+
+test("captured: two background agents in one reply; the turn ends when both have reported, even if the first notifies twice", async () => {
+  const names = recorded("agent-two") // 06 is the first agent's notification, 08 the second's
+  expect(background(fx("agent-two-04").body, "anthropic").launched).toEqual(["toolu_a", "toolu_b"])
+  const twice = [...names.slice(0, 6), "agent-two-06", ...names.slice(6)]
+  expect(await replay(twice, 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 16 min")
+})
+
+test("captured: a Workflow runs in the background like an Agent and holds the turn", async () => {
+  expect(background(fx("workflow-03").body, "anthropic").launched).toEqual(["toolu_wf"])
+  expect(await replay(recorded("workflow"), 3)).toEqual([0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 12 min")
+})
+
+test("captured: a foreground Agent is an ordinary subagent; a background Bash command doesn't hold the turn", async () => {
+  expect(await replay(recorded("agent-foreground"), 3)).toEqual([0, 0, 0, 1])
+  reset(() => clock, fakeTimers); calls = []
+  // the main conversation stops while the command runs: that is the end of
+  // the turn (a dev server never stops); the notification after it is no
+  // new turn of the user's, and too short to push on its own
+  expect(background(fx("bash-background-02").body, "anthropic").launched).toEqual([])
+  expect(await replay(recorded("bash-background"), 3)).toEqual([0, 1, 1])
+})
+
+test("captured (interactive): you type while a background agent runs; the push still waits for the agent, timed from your new message", async () => {
+  expect(opensTurn(fx("agent-queued-06").body, "anthropic")).toBe(true) // "hello there", typed while the agent works
+  expect(await replay(recorded("agent-queued"), 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 4 min")
+})
+
+test("an Agent result that only quotes the launch text (a file read, say) launches nothing", () => {
+  const l = fx("agent-3-launched").body
+  const read = { ...l, messages: [...l.messages.slice(0, -2), { role: "assistant", content: [{ type: "tool_use", id: "toolu_read", name: "Read", input: {} }] }, { role: "user", content: [{ ...l.messages.at(-1).content[0], tool_use_id: "toolu_read" }] }] }
+  expect(background(read, "anthropic").launched).toEqual([])
+})
+
+test("captured: an agent that stops with background work of its own notifies twice; the first note is interim and the turn waits for the second, which names only the agent", async () => {
+  // 02/04/06 are the agent: it starts a background Bash command and stops; 05
+  // says it may be interim; the command ends, the agent goes on by itself (06)
+  // and notifies again (07) with its <task-id> and no <tool-use-id>
+  expect(background(fx("agent-interim-03").body, "anthropic")).toEqual({ launched: ["toolu_ag_int"], stopped: [], interim: [], agents: { toolu_ag_int: "a15d8133fab6acdfa" } })
+  expect(fx("agent-interim-05").body.messages.at(-1).content.at(-1).text).toContain("<status>completed</status>")
+  expect(background(fx("agent-interim-05").body, "anthropic")).toMatchObject({ stopped: [], interim: ["toolu_ag_int"] })
+  expect(fx("agent-interim-07").body.messages.at(-1).content.at(-1).text).not.toContain("<tool-use-id>")
+  expect(background(fx("agent-interim-07").body, "anthropic").stopped).toEqual(["a15d8133fab6acdfa"])
+  expect(await replay(recorded("agent-interim"), 2)).toEqual([0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 12 min")
+})
+
+test("captured: SendMessage to an agent that has finished resumes it and holds the turn until it notifies again, under the SendMessage call's id", async () => {
+  // 04 is the agent's first notification, 05 the SendMessage call, 06 the
+  // agent going on with the message, 07 the "resumedAgentId" result after which
+  // the main conversation stops and says it's waiting, 08 the notification
+  expect(background(fx("sendmessage-07").body, "anthropic")).toEqual({ launched: ["toolu_send"], stopped: [], interim: [], agents: { toolu_send: "a30dced5371a10fb5" } })
+  expect(background(fx("sendmessage-08").body, "anthropic").stopped).toEqual(["toolu_send"])
+  expect(await replay(recorded("sendmessage"), 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 14 min")
+})
+
+test("captured: a message sent while the agent works (queued) launches nothing; one that arrives too late makes its notification interim, and the turn waits for the next", async () => {
+  // 05: "Message queued for delivery", no resumedAgentId; 07: the agent's
+  // notification says it is being resumed with the message; 08 is the next
+  expect(background(fx("late-message-05").body, "anthropic")).toEqual({ launched: [], stopped: [], interim: [], agents: {} })
+  expect(background(fx("late-message-07").body, "anthropic")).toMatchObject({ stopped: [], interim: ["toolu_ag_race"] })
+  expect(background(fx("late-message-08").body, "anthropic").stopped).toEqual(["a3e9a0241c2ccf282"])
+  expect(await replay(recorded("late-message"), 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 14 min")
+})
+
+test("a final notification whose <result> quotes the interim sentence still ends the agent", () => {
+  const f = JSON.parse(JSON.stringify(fx("agent-interim-07")))
+  const b = f.body.messages.at(-1).content.at(-1)
+  b.text = b.text.replace("<result>Background command finished: bgdone.</result>",
+    '<result>grep found: "This agent stopped with background work of its own still running" in cli.js</result>')
+  expect(background(f.body, "anthropic").stopped).toEqual(["a15d8133fab6acdfa"])
+})
+
+test("a final notification whose <result> quotes the late-message sentence still ends the agent, and the turn pushes", async () => {
+  const f = JSON.parse(JSON.stringify(fx("late-message-08")))
+  const b = f.body.messages.at(-1).content.find((p) => p.text?.includes("<task-notification>"))
+  b.text = b.text.replace("<result>Hello (follow-up done).</result>", "<result>The agent is being resumed with them and will notify again</result>")
+  expect(background(f.body, "anthropic")).toMatchObject({ stopped: ["a3e9a0241c2ccf282"], interim: [] })
+  const names = recorded("late-message")
+  expect(await replay(names.slice(0, -1), 2)).toEqual([0, 0, 0, 0, 0, 0, 0])
+  minutes(2)
+  await exchange("anthropic", f.body, f.reply, { session: f.session })
+  expect(calls).toHaveLength(1)
+})
+
+test("an interim agent that never resumes doesn't silence later turns", async () => {
+  for (const n of ["agent-interim-01","agent-interim-02","agent-interim-03","agent-interim-04","agent-interim-05"]) { minutes(2); await send1(n) }
+  const f = fx("agent-interim-05")
+  const next = { ...f.body, messages: [...f.body.messages, { role: "assistant", content: [{ type: "text", text: "ok" }] }, { role: "user", content: "now fix the other bug" }] }
+  await exchange("anthropic", next, aToolUse, { session: f.session })
+  minutes(10)
+  const next2 = { ...next, messages: [...next.messages, { role: "assistant", content: aToolUse.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] }] }
+  await exchange("anthropic", next2, aFinal, { session: f.session })
+  expect(calls).toHaveLength(1)
+})
+
+test("an interim agent is still held until your next message, and its late final notification after that is harmless", async () => {
+  // the turn that launched it doesn't push while it is out (as before)
+  expect(await replay(recorded("agent-interim").slice(0, 5), 2)).toEqual([0, 0, 0, 0, 0])
+  minutes(60)
+  expect(calls).toHaveLength(0)
+  // your next message drops it, and that turn pushes
+  const f = fx("agent-interim-05")
+  const next = { ...f.body, messages: [...f.body.messages, { role: "assistant", content: [{ type: "text", text: "ok" }] }, { role: "user", content: "now fix the other bug" }] }
+  await exchange("anthropic", next, aToolUse, { session: f.session })
+  minutes(5)
+  const next2 = { ...next, messages: [...next.messages, { role: "assistant", content: aToolUse.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] }] }
+  await exchange("anthropic", next2, aFinal, { session: f.session })
+  expect(calls).toHaveLength(1)
+  // the agent's final notification arrives later: one short notification-only
+  // turn, no second push
+  minutes(1)
+  const late = fx("agent-interim-07")
+  const fin = { ...next2, messages: [...next2.messages, { role: "assistant", content: aFinal.content }, late.body.messages.at(-1)] }
+  await exchange("anthropic", fin, late.reply, { session: f.session })
+  expect(calls).toHaveLength(1)
+})
+
+test("an older run's notification riding in with the SendMessage resume doesn't end the resumed run (built by hand)", async () => {
+  // sendmessage-04's notification (the first run: toolu_ag_send, same
+  // <task-id>) arrives in the same message as 07's resumedAgentId result
+  const names = recorded("sendmessage")
+  const old = fx("sendmessage-04").body.messages.at(-1).content.find((p) => p.text?.includes("<task-notification>"))
+  const f = JSON.parse(JSON.stringify(fx("sendmessage-07")))
+  f.body.messages.at(-1).content.push(old)
+  expect(background(f.body, "anthropic")).toMatchObject({ launched: ["toolu_send"], stopped: ["toolu_ag_send"] })
+  expect(await replay(names.filter((n) => n !== "sendmessage-04" && n !== "sendmessage-07" && n !== "sendmessage-08"), 2)).toEqual([0, 0, 0, 0, 0])
+  minutes(2); await exchange("anthropic", f.body, f.reply, { session: f.session })
+  expect(calls).toHaveLength(0) // "Message sent, waiting for its reply.": still held
+  minutes(2); await send1("sendmessage-08")
+  expect(calls).toHaveLength(1)
+})
+
+test("SendMessage that resumes an agent whose last note was interim replaces its old call: the resumed run's notification ends the turn (built by hand)", async () => {
+  const names = recorded("sendmessage")
+  const f4 = JSON.parse(JSON.stringify(fx("sendmessage-04")))
+  const b = f4.body.messages.at(-1).content.find((p) => p.text?.includes("<task-notification>"))
+  b.text = b.text.replace(/<note>[\s\S]*?<\/note>/, "<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>")
+  expect(background(f4.body, "anthropic")).toMatchObject({ stopped: [], interim: ["toolu_ag_send"] })
+  const after = []
+  for (const n of names) {
+    minutes(2)
+    const f = n === "sendmessage-04" ? f4 : fx(n)
+    await exchange("anthropic", f.body, f.reply, { session: f.session })
+    after.push(calls.length)
+  }
+  expect(after).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+})
+
+test("a SendMessage that failed, or that waited and brought the agent's report back in its result, launches nothing", () => {
+  const f = fx("sendmessage-07").body, r = f.messages.at(-1).content[0]
+  const withResult = (content, extra = {}) => ({ ...f, messages: [...f.messages.slice(0, -1), { role: "user", content: [{ ...r, content, ...extra }] }] })
+  expect(background(withResult([{ type: "text", text: '{"success":false,"message":"Agent not found"}' }]), "anthropic").launched).toEqual([])
+  expect(background(withResult([{ type: "text", text: '{"success":true,"message":"done: the report"}' }]), "anthropic").launched).toEqual([])
+  expect(background(withResult(r.content, { is_error: true }), "anthropic").launched).toEqual([])
+  // the same text from another tool (a file read) is no resume either
+  const read = { ...f, messages: [...f.messages.slice(0, -2), { role: "assistant", content: [{ type: "tool_use", id: "toolu_send", name: "Read", input: {} }] }, f.messages.at(-1)] }
+  expect(background(read, "anthropic").launched).toEqual([])
+})
+
+// the same, for runs recorded from the real codex 0.166.0 (codex exec, and
+// the TUI for subagent-nowait) against a local recording endpoint
+const cxDir = new URL("./fixtures/codex-0.166.0/", import.meta.url)
+const cx = (name) => JSON.parse(readFileSync(new URL(`${name}.json`, cxDir), "utf8"))
+async function cxReplay(prefix, gap) {
+  const after = []
+  for (const f of readdirSync(cxDir).filter((f) => f.startsWith(prefix + "-")).sort()) {
+    const r = cx(f.slice(0, -5))
+    minutes(gap)
+    await exchange("responses", r.body, r.reply, { agent: "codex", session: r.session })
+    after.push(calls.length)
+  }
+  return after
+}
+
+test("captured Codex auto-compaction, local (custom provider) and remote (OpenAI): one push, timed from the user's message", async () => {
+  expect(compacting(cx("compact-local-03").body, "responses")).toBe(true)
+  expect(opensTurn(cx("compact-local-04").body, "responses")).toBe(false) // the summary, as a user message
+  expect(await cxReplay("compact-local", 3)).toEqual([0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 18 min")
+  reset(() => clock, fakeTimers); calls = []
+  expect(compacting(cx("compact-remote-03").body, "responses")).toBe(true) // ends with compaction_trigger, tools and all
+  expect(await cxReplay("compact-remote", 3)).toEqual([0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 18 min")
+})
+
+test("captured Codex subagents: told apart by thread id, nested by client_metadata, and their notification is not the user's words", async () => {
+  // every Codex conversation's first user message is the same <environment_context>
+  expect(firstWords(cx("subagent-wait-03").body, "responses")).not.toBe(firstWords(cx("subagent-wait-01").body, "responses"))
+  expect(firstWords(cx("subagent-wait-03").body, "responses")).toBe(`codex thread ${cx("subagent-wait-03").body.client_metadata.thread_id}`)
+  expect(subagent(cx("subagent-wait-03").body, "responses")).toBe(true)
+  expect(subagent(cx("subagent-wait-01").body, "responses")).toBe(false)
+  const review = { ...cx("subagent-wait-03").body, client_metadata: { ...cx("subagent-wait-03").body.client_metadata, "x-openai-subagent": "review" } }
+  expect(subagent(review, "responses")).toBe(false) // /review is yours to wait for
+  expect(opensTurn(cx("subagent-wait-05").body, "responses")).toBe(false) // <subagent_notification>
+  expect(await cxReplay("subagent-wait", 3)).toEqual([0, 0, 0, 0, 1]) // spawn, wait_agent, the subagent's two requests, the end
+  expect(JSON.parse(calls[0].body).message).toContain("took 12 min")
+  reset(() => clock, fakeTimers); calls = []
+  // the parent stopped before its subagent's first request: still nested
+  expect(await cxReplay("subagent-nowait", 5)).toEqual([0, 1, 1, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 5 min")
+})
+
+test("without client_metadata, a Codex conversation is still told apart by its first user message that isn't Codex's own block", () => {
+  const strip = (b) => { const { client_metadata, ...rest } = b; return rest }
+  expect(firstWords(strip(cx("subagent-wait-01").body), "responses")).toBe("CX_SPAWN please")
+  expect(firstWords(strip(cx("subagent-wait-03").body), "responses")).toBe("SUBTASK_CX: run sleep 3 then echo hi")
+})
+
+test("Codex remote compaction neither ends nor restarts the turn", async () => {
+  const rTools = [{ type: "function", name: "shell" }]
+  const user = { type: "message", role: "user", content: [{ type: "input_text", text: "refactor the parser" }] }
+  const call = { status: "completed", output: [{ type: "function_call", name: "shell" }] }
+  const done = { status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }] }
+  const x = { agent: "codex" }
+  await exchange("responses", { tools: rTools, input: [user] }, call, x)
+  minutes(10)
+  await exchange("responses", { tools: rTools, input: [user, { type: "function_call_output", output: "x" }, { type: "compaction_trigger" }] }, { status: "completed", output: [{ type: "compaction", encrypted_content: "…" }] }, x)
+  expect(calls).toHaveLength(0)
+  const after = [{ type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>…</environment_context>" }] }, { type: "compaction", encrypted_content: "…" }]
+  await exchange("responses", { tools: rTools, input: after }, call, x)
+  minutes(5)
+  await exchange("responses", { tools: rTools, input: [...after, { type: "function_call_output", output: "y" }] }, done, x)
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).message).toContain("took 15 min")
+})
+
+test("Codex local compaction sends no tools, and its summary carries the turn on", async () => {
+  expect(hasTools({ input: [{ role: "user", content: "You are performing a CONTEXT CHECKPOINT COMPACTION." }] }, "responses")).toBe(false)
+  expect(continued({ input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Another language model started to solve this problem and produced a summary…" }] }] }, "responses")).toBe(true)
+  expect(compacting({ input: [{ type: "message", role: "user", content: "fix it" }] }, "responses")).toBe(false)
+  expect(continued(aUser, "anthropic")).toBe(false)
+})
+
+test("a conversation is told apart by its first words' text, not cache markers", () => {
+  const a = { messages: [{ role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }] }] }
+  const b = { messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }, { role: "assistant", content: "x" }, { role: "user", content: [{ type: "tool_result", content: "r" }] }] }
+  expect(firstWords(a, "anthropic")).toBe(firstWords(b, "anthropic"))
+  expect(firstWords({ input: [{ type: "function_call_output" }] }, "responses")).toBe("")
+  expect(firstWords({ input: [{ type: "message", role: "developer", content: "d" }, { role: "user", content: [{ type: "input_text", text: "go" }] }] }, "responses")).toBe("go")
+  expect(firstWords({ contents: [{ role: "user", parts: [{ text: "g" }] }] }, "gemini")).toBe("g")
+})
+
+test("a Responses request with no user message stays in the conversation it continues", async () => {
+  const rTools = [{ type: "function", name: "shell" }]
+  const open = { tools: rTools, input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "go" }] }] }
+  const cont = { tools: rTools, previous_response_id: "r1", input: [{ type: "function_call_output", call_id: "c", output: "x" }] }
+  const call = { status: "completed", output: [{ type: "function_call", name: "shell" }] }
+  const done = { status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }] }
+  await exchange("responses", open, call, { agent: "codex" })
+  minutes(4)
+  await exchange("responses", cont, done, { agent: "codex" })
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body).title).toBe("✅ Codex done · magpie-plugins")
+})
+
+test("includeText adds the reply, cut to maxTextLength; lang zh", async () => {
+  const o = { includeText: true, maxTextLength: 10, lang: "zh" }
+  await exchange("anthropic", aUser, aToolUse, { options: o })
+  minutes(3)
+  await exchange("anthropic", aResult, aFinal, { options: o })
+  const sent = JSON.parse(calls[0].body)
+  expect(sent.title).toBe("✅ Claude Code 完成 · magpie-plugins")
+  expect(sent.message).toContain("用时 3 分钟")
+  expect(sent.message).toContain("All tests …")
+})
+
+test("cooldown: two turns closing within it send one push", async () => {
+  await exchange("anthropic", aUser, aFinal, { options: { minMinutes: 0, cooldownSeconds: 60 } })
+  await exchange("anthropic", aUser, aFinal, { options: { minMinutes: 0, cooldownSeconds: 60 } })
+  expect(calls).toHaveLength(1)
+})
+
+test("only local requests count unless allOrigins; agents off the list are left alone", async () => {
+  await exchange("anthropic", aUser, aFinal, { origin: "gateway-key", options: { minMinutes: 0 } })
+  await exchange("anthropic", aUser, aFinal, { session: "s1b", origin: "remote", options: { minMinutes: 0 } })
+  await exchange("anthropic", aUser, aFinal, { session: "s2", options: { minMinutes: 0, agents: ["codex"] } })
+  expect(calls).toHaveLength(0)
+  await exchange("anthropic", aUser, aFinal, { session: "s3", origin: "gateway-key", options: { minMinutes: 0, allOrigins: true } })
+  await exchange("anthropic", aUser, aFinal, { session: "s4", origin: "remote", options: { minMinutes: 0, allOrigins: true } })
+  expect(calls).toHaveLength(2)
+})
+
+test("no channel, no work", async () => {
+  const c = ctx("anthropic", { options: { channels: [] } })
+  onRequest(aUser, c)
+  expect(c.state.notify).toBeUndefined()
+})
+
+test("a channel that answers an error code is not ok", async () => {
+  answer = () => Response.json({ errcode: 310000, errmsg: "sign not match" })
+  expect((await send({ type: "dingtalk", webhook: "https://oapi.dingtalk.com/robot/send?access_token=x" }, m)).ok).toBe(false)
+})
+
+test("a thrown fetch never reaches the request", async () => {
+  answer = () => { throw new Error("offline") }
+  expect(await exchange("anthropic", aUser, aFinal, { options: { minMinutes: 0 } })).toBeDefined()
+  expect(calls).toHaveLength(1)
+  expect((await send(ntfy, m)).ok).toBe(false)
+})
+
+test("the suggested options send nowhere until a topic is filled in", async () => {
+  const pkg = await Bun.file(new URL("./package.json", import.meta.url)).json()
+  expect(options(pkg.magpie.options).channels).toEqual([])
+})
+
+test("durations and agent names read well", () => {
+  const w = { s: "s", min: "min", h: "h" }
+  expect(duration(45_000, w)).toBe("45 s")
+  expect(duration(12 * 60_000, w)).toBe("12 min")
+  expect(duration(125 * 60_000, w)).toBe("2 h 5 min")
+  expect(duration(120 * 60_000, w)).toBe("2 h")
+  expect(message({ agent: "other", cwd: "" }, 60_000, true, "", options({})).title).toBe("✅ Other done")
+})
+
+// ---- the other APIs ----
+test("Responses (Codex): function calls keep the turn open, a message closes it", () => {
+  const body = { tools: [{ type: "function", name: "shell" }], input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "go" }] }] }
+  expect(opensTurn(body, "responses")).toBe(true)
+  expect(opensTurn({ ...body, input: [...body.input, { type: "function_call_output", call_id: "c", output: "x" }] }, "responses")).toBe(false)
+  expect(opensTurn({ input: "hi" }, "responses")).toBe(true)
+  expect(ending({ status: "completed", output: [{ type: "function_call", name: "shell" }] }, "responses").done).toBe(false)
+  expect(ending({ status: "completed", output: [{ type: "local_shell_call" }] }, "responses").done).toBe(false)
+  expect(ending({ status: "incomplete", output: [] }, "responses").done).toBe(false)
+  expect(ending({ status: "completed", output: [{ type: "reasoning" }, { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] }] }, "responses")).toEqual({ done: true, text: "done" })
+})
+
+test("Chat completions", () => {
+  expect(opensTurn({ messages: [{ role: "user", content: "x" }] }, "chat")).toBe(true)
+  expect(opensTurn({ messages: [{ role: "tool", content: "x" }] }, "chat")).toBe(false)
+  expect(ending({ choices: [{ finish_reason: "tool_calls", message: { tool_calls: [{}] } }] }, "chat").done).toBe(false)
+  expect(ending({ choices: [{ finish_reason: "length", message: { content: "x" } }] }, "chat").done).toBe(false)
+  expect(ending({ choices: [{ finish_reason: "stop", message: { content: "ok" } }] }, "chat")).toEqual({ done: true, text: "ok" })
+  expect(ending({ error: { message: "x" } }, "chat").done).toBe(false)
+})
+
+test("Gemini", () => {
+  expect(hasTools({ tools: [{ functionDeclarations: [{ name: "a" }] }] }, "gemini")).toBe(true)
+  expect(hasTools({ tools: [{}] }, "gemini")).toBe(false)
+  expect(opensTurn({ contents: [{ role: "user", parts: [{ text: "x" }] }] }, "gemini")).toBe(true)
+  expect(opensTurn({ contents: [{ role: "user", parts: [{ functionResponse: { name: "a" } }] }] }, "gemini")).toBe(false)
+  expect(ending({ candidates: [{ finishReason: "STOP", content: { parts: [{ functionCall: { name: "a" } }] } }] }, "gemini").done).toBe(false)
+  expect(ending({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "hm", thought: true }, { text: "ok" }] } }] }, "gemini")).toEqual({ done: true, text: "ok" })
+})
+
+test("Anthropic: max_tokens and server tools keep the turn open", () => {
+  expect(ending({ stop_reason: "max_tokens", content: [{ type: "text", text: "x" }] }, "anthropic").done).toBe(false)
+  expect(ending({ stop_reason: "end_turn", content: [{ type: "server_tool_use" }] }, "anthropic").done).toBe(false)
+  expect(opensTurn({ messages: [{ role: "user", content: [{ type: "text", text: "x" }] }] }, "anthropic")).toBe(true)
+})
+
+// ---- channels ----
+const m = { title: "T", body: "B", ok: true, event: { kind: "done" } }
+
+test("each channel posts where and what its service documents", async () => {
+  await send({ type: "ntfy", topic: "x", server: "https://ntfy.example.com/", token: "tk" }, m)
+  expect(calls.at(-1).url).toBe("https://ntfy.example.com")
+  expect(calls.at(-1).init.headers.authorization).toBe("Bearer tk")
+
+  await send({ type: "bark", key: "K" }, m)
+  expect(calls.at(-1).url).toBe("https://api.day.app/push")
+  expect(JSON.parse(calls.at(-1).body)).toMatchObject({ device_key: "K", title: "T", body: "B", group: "magpie" })
+
+  await send({ type: "gotify", server: "https://gotify.example.com/", token: "tk123" }, m)
+  expect(calls.at(-1).url).toBe("https://gotify.example.com/message")
+  expect(calls.at(-1).init.headers["X-Gotify-Key"]).toBe("tk123")
+  expect(JSON.parse(calls.at(-1).body)).toEqual({ title: "T", message: "B" })
+
+  await send({
+    type: "gotify", server: "https://gotify.example.com/", token: "tk123",
+    priority: 8, extras: { "client::display": { contentType: "text/markdown" } },
+  }, m)
+  expect(JSON.parse(calls.at(-1).body)).toEqual({
+    title: "T", message: "B", priority: 8, extras: { "client::display": { contentType: "text/markdown" } },
+  })
+
+  // 0 is a real priority (an application made quiet), not "unset"
+  await send({ type: "gotify", server: "https://gotify.example.com/", token: "tk123", priority: 0 }, m)
+  expect(JSON.parse(calls.at(-1).body)).toEqual({ title: "T", message: "B", priority: 0 })
+
+  await send({ type: "serverchan", key: "SCT123abc" }, m)
+  expect(calls.at(-1).url).toBe("https://sctapi.ftqq.com/SCT123abc.send")
+  expect(calls.at(-1).body).toBe("title=T&desp=B")
+  await send({ type: "serverchan", key: "sctp42tXYZ" }, m)
+  expect(calls.at(-1).url).toBe("https://42.push.ft07.com/send/sctp42tXYZ.send")
+
+  await send({ type: "wecom", webhook: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k" }, m)
+  expect(JSON.parse(calls.at(-1).body)).toEqual({ msgtype: "text", text: { content: "T\nB" } })
+
+  await send({ type: "telegram", token: "123:abc", chatId: 42 }, m)
+  expect(calls.at(-1).url).toBe("https://api.telegram.org/bot123:abc/sendMessage")
+  expect(JSON.parse(calls.at(-1).body)).toMatchObject({ chat_id: 42, text: "T\nB" })
+
+  await send({ type: "webhook", url: "https://hooks.example.com/x", headers: { "x-k": "v" } }, m)
+  expect(calls.at(-1).init.headers["x-k"]).toBe("v")
+  expect(JSON.parse(calls.at(-1).body)).toEqual({ title: "T", body: "B", event: { kind: "done" } })
+})
+
+test("Feishu and DingTalk sign with the robot's secret", async () => {
+  await send({ type: "feishu", webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/x", secret: "s3" }, m)
+  const f = JSON.parse(calls.at(-1).body)
+  expect(f.msg_type).toBe("text")
+  expect(f.sign).toBe(createHmac("sha256", `${f.timestamp}\ns3`).update("").digest("base64"))
+
+  await send({ type: "dingtalk", webhook: "https://oapi.dingtalk.com/robot/send?access_token=x", secret: "SEC" }, m)
+  const u = new URL(calls.at(-1).url)
+  const ts = u.searchParams.get("timestamp")
+  expect(u.searchParams.get("sign")).toBe(createHmac("sha256", "SEC").update(`${ts}\nSEC`).digest("base64"))
+})
+
+test("a channel missing what it needs is dropped from the options", () => {
+  expect(usable({ type: "ntfy" })).toBe(false)
+  expect(usable({ type: "telegram", token: "x" })).toBe(false)
+  expect(usable({ type: "gotify", server: "https://example.com" })).toBe(false)
+  expect(usable({ type: "gotify", token: "x" })).toBe(false)
+  expect(usable({ type: "gotify", server: "https://example.com", token: "x" })).toBe(true)
+  expect(usable({ type: "nope", url: "x" })).toBe(false)
+  expect(usable({ type: "bark", key: "k", off: true })).toBe(false)
+  expect(options({ channels: [{ type: "ntfy" }, ntfy] }).channels).toEqual([ntfy])
+  expect(options({ channels: ntfy, agents: "claude, codex" }).agents).toEqual(["claude", "codex"])
+})
+
+test("Bark's success answer (code 200) is a success", async () => {
+  answer = () => Response.json({ code: 200, message: "success" })
+  expect((await send({ type: "bark", key: "K" }, m)).ok).toBe(true)
+})
+
+test("Gotify's errorDescription is read on failure", async () => {
+  answer = () => Response.json({ error: "Unauthorized", errorCode: 401, errorDescription: "bad token" }, { status: 401 })
+  const r = await send({ type: "gotify", server: "https://gotify.example.com", token: "bad" }, m)
+  expect(r.ok).toBe(false)
+  expect(r.error).toBe("bad token")
+})

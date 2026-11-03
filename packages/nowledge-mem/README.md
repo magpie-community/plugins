@@ -2,14 +2,15 @@
 
 [Nowledge Mem](https://mem.nowledge.co) is a local-first memory layer for
 people and AI tools. Magpie is the gateway in front of every harness, so this
-plugin puts Mem *in the gateway*: every request Magpie routes gets the Memory
-that fits it, and completed conversations can flow back into Mem. No harness
-needs its own Nowledge Mem plugin, skill or MCP configuration for that.
+plugin puts Mem *in the gateway*: eligible local requests can receive the
+Memory that fits them, and completed conversations can flow back into Mem
+when capture is enabled. No harness needs its own Nowledge Mem plugin, skill
+or MCP configuration for that.
 
-Agent-callable Memory tools are a separate surface and stay where Magpie
-already provides them: the plugin installs Mem's own MCP server and a short
-skill into Magpie's [Library](https://usemagpie.ai/docs/mcp-hub), given to no
-agent; choose the agents there. This keeps one tool surface, Mem's own.
+Agent-callable Memory tools are a separate surface. The plugin adds no
+Library entry or skill; add Mem's own MCP server in Magpie's
+[Library](https://usemagpie.ai/docs/mcp-hub) and choose the agents that may
+use it. See [Tools: Mem's own MCP server](#tools-mems-own-mcp-server) below.
 
 ```mermaid
 sequenceDiagram
@@ -69,14 +70,12 @@ environment Magpie starts with, as Mem's own clients do:
 
 A key saved in the page is kept in Magpie's local plugin configuration, not the
 system keychain, and takes precedence over the environment. Enter it directly;
-the form also accepts an existing `Bearer …` value. The page's **Configure
-connection** form also sets the Space, Agent and the recall, Context Bundle,
-capture switches; Magpie's plugin **Options** editor remains available for
-advanced settings. Saving conversations remains a separate opt-in.
+the form also accepts an existing `Bearer …` value. The page's **Settings** form also sets the Space, Agent, recall, Context Bundle,
+capture and advanced options; Magpie's plugin **Options** editor remains available. Saving conversations remains a separate opt-in.
 
 `serverUrl` must be HTTPS, or HTTP only for `localhost`, `127.0.0.1` and
 `[::1]`. Credentials, a query or a fragment in the URL are refused. Set
-`allowInsecureHttp` only for a trusted LAN server.
+`allowInsecureHttp` only for a trusted network, such as a Tailscale tailnet; prefer HTTPS elsewhere.
 
 ## One gateway, several harnesses
 
@@ -106,6 +105,12 @@ derived value for all of them.
 - `recall`: default **true**. Whether a turn gets Mem context. Recall only
   happens when a Mem endpoint is reachable; failures leave the request as it
   came.
+- `skipAgents`: default empty. Apps this plugin leaves alone: their requests
+  get no recall, Context Bundle or capture, and nothing about them reaches Mem.
+  A list of names (`["Mozilla", "Claude Code"]`) or one comma-separated
+  string. A name is the app's agent as Magpie's Usage page shows it; case,
+  spaces and punctuation don't matter, so `Claude Code` and `claude-code` are
+  one app. A translator or other one-shot tool behind Magpie goes here (#597).
 - `contextBundle`: default **true**. On a session's first turn, ask Mem for its
   Context Bundle (owner profile, rules and Working Memory) and add its rendered
   markdown. When the bundle is empty, missing or failing, the hook falls back
@@ -115,10 +120,11 @@ derived value for all of them.
   512–32768. On the first turn the session context takes up to 45% of it, and
   the rest stays available for Memory.
 - `requestTimeoutMs`: deadline for each search, bundle or Working Memory
-  request, default 900, range 50–5000. It fits inside Magpie's default 1000 ms
-  hook deadline. The host's hook deadline can end it
-  earlier. Thread imports keep a separate ten-second deadline because a
-  completed reply's notification is not bound to the live request.
+  request, default 1500, range 50–5000. Magpie's default 1000 ms hook
+  deadline can end the request earlier. The package's example options set
+  this to 900 when used explicitly. Thread imports keep a separate ten-second
+  deadline because a completed reply's notification is not bound to the live
+  request.
 - `gatewayTimeoutMs` (Magpie's own option, not this package's): the whole hook
   chain's deadline, default 1000 ms, range 100–10000. A local Mem fits the
   default; over the network, set it to 5000–10000 so the first turn's Context
@@ -143,6 +149,15 @@ derived value for all of them.
   Chat boundaries. Configure both options in Plugins → Options.
 - `allowInsecureHttp`: default **false**. Permits plain HTTP to a server that
   is not a loopback address. Prefer HTTPS.
+- `recallRemote`: default **false**. Recall and the Context Bundle go only to
+  direct local requests and `magpie-key` from this computer. Set it to give
+  recall also to `remote` requests (another machine) and `gateway-key`
+  requests (other gateway keys), which then receive what Mem recalls. It does
+  not turn on saving. A missing or unknown origin never gets recall.
+- `captureRemote`: default **false**. With `capture` on, also save
+  conversations from `remote` and `gateway-key` requests. It does not grant
+  recall: without `recallRemote` those requests are saved but get nothing from
+  Mem. The Settings page has separate switches for these options.
 - `port`: the loopback port of the page's connection test, default 3479. Change
   it only when another program holds that port; the page reads the same value.
 
@@ -256,12 +271,14 @@ own: the offline tests replace `globalThis.fetch` to keep Cursor's token local
 
 ## Page
 
-The page uses only Magpie's released `magpie.options` and theme bridge. It
+The page uses Magpie's released `magpie.options` and theme bridge. Before
+saving it re-reads and merges edited fields, but another write between the read
+and write can still be lost. The released bridge can also round integers outside
+JavaScript's exact range, including in unlisted options. Use one editor at a time. It
 declares no reads and saving stores configuration without probing the
-connection or writing Memory. It shows the Server, API key, Space, Agent, the
-recall, Context Bundle and capture switches. Its **What is sent** section says
+connection or writing Memory. It shows connection, local and remote recall, apps excluded with `skipAgents`, local and remote capture, filtering and advanced options. Its **What is sent** section says
 the scope: direct local requests and `magpie-key` from this computer; other
-gateway keys and remote requests are never included. It follows Magpie's language (English, Simplified and
+gateway keys and remote requests require separate `recallRemote` or `captureRemote` opt-ins. It follows Magpie's language (English, Simplified and
 Traditional Chinese, Japanese, German) and theme, and preserves options it does
 not show.
 

@@ -38,7 +38,14 @@ over Anthropic's Messages API. Provider id: `zcode`.
     for unusual activity (code 3012); …", which magpie reads as the account
     restricted: it rests, and the group's other providers are used. Only
     ZCode support lifts such a block. A block page from ZCode's edge
-    firewall says this network's address was blocked instead.
+    firewall says this network's address was blocked instead. Since 0.1.43
+    (plugins#649) such a page also holds zcode.z.ai off for three minutes,
+    for every account of the plugin, since they share the address: the
+    Start Plan and a picked `-Trial` entry are answered at once with the
+    same 405 and words, so magpie still uses the group's other providers,
+    and free first keeps a dual account on its coding plan. The first
+    request after the three minutes asks again. A GLM Coding Plan key, on
+    api.z.ai, is never held.
   - The Start Plan's token can't be refreshed. When it runs out, sign in
     again.
   - Every request, on any plan, names its conversation in `x-session-id`,
@@ -136,14 +143,15 @@ never read or buffered on the way.
 
 **Free first.** Picking `-Trial` by hand keeps the choice the user's,
 but an agent that always asks the plain model never sees the gift.
-`freeFirst` turns the preference around: the plain model spends the
-account's own live gift first, and falls back to the coding plan when
-the gift cannot serve it — a bucket that is spent, a model the gift
-does not serve, no ZCode session, or the minute's rest a refusal just
-earned. Turn it on for the whole plugin in magpie's Plugins › Options
+`freeFirst`, on by default since 0.1.42, turns the preference around:
+the plain model spends the account's own live gift first, and falls
+back to the coding plan when the gift cannot serve it — a bucket that
+is spent, a model the gift does not serve, no ZCode session, or the
+minute's rest a refusal just earned. Turn it off for the whole plugin
+in magpie's Plugins › Options
 
 ```json
-{ "freeFirst": true }
+{ "freeFirst": false }
 ```
 
 or on the provider alone, under `provider.zcode.options` in the config
@@ -195,6 +203,19 @@ Lite fewer — and is higher off-peak
 number written into the plugin would hold a Max account to a Lite one's
 with no way to raise it. A user who knows their plan's cap sets it on the
 account or the provider in magpie, and magpie's queue follows that.
+
+## Two accounts at once
+
+Three ZCode accounts used at once from one address can get the address
+refused with a 405, where two are served (01huadalang on Discord). So the
+plugin declares `maxAccounts` two, on the auth hook and as
+`magpie.maxAccounts` in its `package.json`: magpie sends requests to the
+first two accounts of the user's list only, and holds the others in
+reserve. One that runs out or fails rests, and the first in reserve takes
+its place until it is back. A user changes the number on the provider in
+magpie (Advanced → Accounts at once, or `magpie provider at-once zcode
+<n>`), 0 for every account at once. A magpie older than the one that
+reads it uses every account, as before.
 
 ## The usage card
 
@@ -255,8 +276,19 @@ plans once a day (`auth.checkin`; `magpie accounts checkin` asks now). It
 reads both lists above (the banners' feed and the preview, each plan
 once) and posts each plan to
 `POST /api/v1/zcode-plan/billing/claim` (`{"plan_id": …}`) with the
-account's ZCode session, as the app does. The answer is judged by the
-body's code, not the HTTP status:
+account's ZCode session, as the app does. An answer of nothing to claim
+carries an `until` half an hour out, so magpie's loop asks again then,
+and again, all day while neither list names a plan — two GETs, nothing
+posted: ZCode drops plans into the feed on its own schedule (a weekend
+banner starting at 19:00 Beijing, say), and one that arrives
+after the day's ask used to sit unclaimed past its short life. The
+other answers stand for the day: a claimed plan leaves the feed, so
+asking again half an hour later would find nothing and flip the card
+from "Checked in today" to "No check-in event now"; a captcha plan
+re-asked makes ZCode demand its captcha again; a done plan re-asked
+posts a claim ZCode already answered. So a second plan the same day,
+after one was claimed, is seen the next day. The answer is judged by
+the body's code, not the HTTP status:
 
 - nothing listed: *inactive* (ZCode answers an account with nothing to
   claim `{"code":0,"msg":""}`, with no list at all). A list that doesn't

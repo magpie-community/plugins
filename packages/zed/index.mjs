@@ -376,7 +376,15 @@ function variant(provider, effort) {
   return { reasoningEffort: effort }
 }
 
-const effortsOf = (m) => (m.supported_effort_levels ?? []).map((e) => e?.value).filter(Boolean)
+// effortsOf is the efforts a model lists, lowercase whatever case /models
+// writes them in. Zed's /models came to list a Gemini model's levels
+// uppercase (LOW, MEDIUM, HIGH), so the variants were keyed LOW and carried
+// thinkingLevel "LOW": hosts that map efforts by key (magpie's pi profile)
+// matched none of them, and @ai-sdk/google, whose thinkingLevel is
+// minimal/low/medium/high, refuses an uppercase one (Yezike-yyy, #215). A
+// variant keeps the AI SDK's spelling; the gemini wire in providerRequest
+// uppercases the level for Zed.
+const effortsOf = (m) => [...new Set((m.supported_effort_levels ?? []).map((e) => e?.value).filter((v) => typeof v === "string" && v).map((v) => v.toLowerCase()))]
 
 // entry is a model as OpenCode's config declares it.
 function entry(m) {
@@ -614,12 +622,49 @@ function withoutSystemTurns(messages) {
   return out
 }
 
+// Zed's cloud parses a Google request with its own serde enums (zed
+// crates/google_ai), which take fewer spellings than Google's API does:
+// ThinkingLevel is UPPERCASE only (MINIMAL, LOW, MEDIUM, HIGH) and
+// FunctionCallingMode lowercase only (auto, any, none).
+//   - The tool-calling mode, as the AI SDK and magpie's Code Assist envelope
+//     write it (AUTO, ANY, NONE), was answered 400 "failed to parse Google AI
+//     request: unknown variant `AUTO`, expected one of `auto`, `any`, `none`",
+//     so every turn that declared a tool failed (atticuskk, magpie#4657).
+//     VALIDATED, which Zed has no variant for, is asked as auto.
+//   - The thinking level, as the AI SDK and magpie's own translation write it
+//     (high), was answered "unknown variant `high`, expected one of
+//     `MINIMAL`, `LOW`, `MEDIUM`, `HIGH`" (#215). An empty one is left out.
+// geminiEnums spells both as Zed takes them (ump45nose, #587).
+const ZED_MODE = { AUTO: "auto", ANY: "any", NONE: "none", VALIDATED: "auto", MODE_UNSPECIFIED: "auto" }
+
+function geminiEnums(req) {
+  const tc = req.generationConfig?.thinkingConfig
+  if (tc && typeof tc.thinkingLevel === "string") {
+    if (tc.thinkingLevel) tc.thinkingLevel = tc.thinkingLevel.toUpperCase()
+    else delete tc.thinkingLevel
+  }
+  const fc = req.toolConfig?.functionCallingConfig
+  if (fc && typeof fc.mode === "string") fc.mode = ZED_MODE[fc.mode.toUpperCase()] ?? fc.mode.toLowerCase()
+}
+
 // providerRequest is the request as Zed takes it for its provider's API,
 // and whether the caller asked for a stream (Zed always streams).
 function providerRequest(wire, req, model) {
   switch (wire) {
     case "anthropic": {
       const stream = !!req.stream
+      // Zed's cloud parses context_management into its own enum (zed
+      // crates/anthropic), which has only compact_20260112, and edits is
+      // required: any other edit (Claude Code's clear_thinking_20251015,
+      // clear_tool_uses_20250919) is answered 400 "unknown variant …,
+      // expected `compact_20260112`" (nllay, #636). Only compaction goes on,
+      // and without one the field is left out.
+      if ("context_management" in req) {
+        const cm = req.context_management
+        const edits = Array.isArray(cm?.edits) ? cm.edits.filter((e) => e?.type === "compact_20260112") : []
+        if (edits.length) req.context_management = { ...cm, edits }
+        else delete req.context_management
+      }
       // Zed's Anthropic request has no stream field: the cloud always streams
       delete req.stream
       // Zed's cloud refuses a tool result without is_error ("missing field
@@ -658,6 +703,7 @@ function providerRequest(wire, req, model) {
       delete req.session_id
       delete req.sessionId
       req.model = "models/" + model
+      geminiEnums(req)
       return { req }
     }
   }
@@ -1256,4 +1302,4 @@ export async function ZedAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { said, eventError, stateOf, parseModels, entry, providerRequest, wireOf, refusal, failedStatus, decrypt, padded, signedInWith, complete, vendors, tokens, lists, orgOf, planOf, picked, who, planName, usage }
+export const _internal = { said, eventError, stateOf, parseModels, entry, model, providerRequest, wireOf, refusal, failedStatus, decrypt, padded, signedInWith, complete, vendors, tokens, lists, orgOf, planOf, picked, who, planName, usage }

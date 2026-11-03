@@ -152,7 +152,10 @@ request:
 - Anthropic's hosted web search is answered with Kiro's own web search
   (see [Web search](#web-search)).
 - Kiro's failures keep their meaning:
-  - input too long → 400
+  - input too long → 400 "input is too long for the model's context", whether
+    Kiro says it as an HTTP answer, as an exception in the stream, or by
+    stopping with `MODEL_CONTEXT_WINDOW_EXCEEDED` before a word (after some
+    of the reply, it ends with stop reason `model_context_window_exceeded`)
   - no capacity → 503
   - usage limit → 429
   - throttling → "rate limited"
@@ -237,9 +240,17 @@ the `provider.models` hook replaces it with the account's own list from
 context window, output limit and whether it takes images. Claude models
 and Auto have the thinking variants.
 
+## Usage in magpie
+
+`auth.usage` reads `Get-Usage-Limits`: the month's credits, the Free trial
+while it is active, and each bonus (`bonuses`: a first upgrade's trial
+credits, a promotion's) while it is `ACTIVE` and not expired, as a window of
+its own with its count and when it lapses. Bonus windows are shown only.
+Kiro spends the plan's credits first, so a month used up while a bonus has
+credits left is shown only too, and the account isn't taken for spent.
+
 ## Not included
 
-- Usage and quota (credits, the monthly window).
 - Switching between several accounts. OpenCode keeps one sign-in per
   provider.
 - Signing in with a company's own identity provider in the browser (use

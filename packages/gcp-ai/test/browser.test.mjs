@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
-import { assertConsoleSession, chromeExecutable, closeKeptBrowsers as endKeptBrowsers, extractProjectId, extractAccount, openBrowser, routeAll, withPage } from "../lib/browser.mjs"
+import { assertConsoleSession, chromeExecutable, closeKeptBrowsers as endKeptBrowsers, extractProjectId, extractAccount, extractConsoleIdentity, openBrowser, routeAll, withPage } from "../lib/browser.mjs"
 
 // A kept browser is meant to outlive one read; a test that opens several must
 // not leave them running behind it.
@@ -121,6 +121,67 @@ test("the signed-in account is only read from the Console's own keyed field", { 
   }
 })
 
+test("Console subject matching accepts renamed emails but rejects other accounts and ambiguous page data", { timeout: 40000, ...needsBrowser }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "vertex-console-subject-"))
+  const previousCache = process.env.XDG_CACHE_HOME
+  process.env.XDG_CACHE_HOME = directory
+  const browser = await openBrowser({ launchArgs, profile: join(directory, "profile"), headless: true })
+  t.after(async () => {
+    await browser.close()
+    if (previousCache === undefined) delete process.env.XDG_CACHE_HOME
+    else process.env.XDG_CACHE_HOME = previousCache
+    await rm(directory, { recursive: true, force: true })
+  })
+  const subject = "111000000000000000001"
+  const other = "111000000000000000002"
+  const record = (email, id) => ({ oPEP7c: email, W3Yyqf: id, S06Grb: id, qDCSke: id })
+  const json = (value) => `<script type="application/json">${JSON.stringify(value, null, 2)}</script>`
+  let identity = json(record("new@example.com", subject))
+  const table = '<table><thead><tr><th>Credit name</th><th>Status</th><th>Remaining value</th><th>Original value</th><th>Credit ID</th></tr></thead><tbody><tr><td>Benefit</td><td>Available</td><td>$12.00</td><td>$20.00</td><td>one</td></tr></tbody></table>'
+  await routeAll(browser.page, pageFor(() => identity + table))
+  const options = {
+    browser, profile: join(directory, "profile"), account: "old@example.com",
+    billingAccount: "AAAAAA-BBBBBB-CCCCCC",
+  }
+  // This is the old bug, including its cached failure. Adding the verified
+  // subject must bypass that failure without erasing any production cache.
+  await assert.rejects(fetchCredits(options), /signed in as new@example.com, not old@example.com/)
+  const verified = { ...options, googleSubject: subject }
+  const credits = await fetchCredits(verified)
+  assert.equal(credits.remaining, 12)
+  assert.equal(credits.googleSubject, subject)
+  assert.equal(credits["consoleAccount"], "new@example.com")
+  assert.deepEqual(await extractConsoleIdentity(browser.page), { account: "new@example.com", subject })
+  assert.equal((await fetchCredits(verified)).cached, true)
+  await assert.rejects(fetchCredits({ ...verified, googleSubject: other }), /subject mismatch/)
+
+  // Same email is insufficient when the page positively names another subject.
+  identity = json(record("old@example.com", other))
+  await assert.rejects(fetchCredits({ ...verified, force: true }), /subject mismatch/)
+  for (const ambiguous of [
+    json({ ...record("old@example.com", subject), S06Grb: other }),
+    json({ ...record("old@example.com", subject), qDCSke: undefined }),
+    json(record("old@example.com", subject)) + json(record("old@example.com", other)),
+  ]) {
+    identity = ambiguous
+    await assert.rejects(fetchCredits({ ...verified, force: true }), /conflicting account identity/)
+  }
+  // Account chooser arrays and nested objects never prove the active identity.
+  for (const unrelated of [
+    [record("new@example.com", subject)],
+    { accounts: [record("new@example.com", subject)] },
+  ]) {
+    identity = json(unrelated)
+    await assert.rejects(fetchCredits({ ...verified, force: true }), /signed in as new@example.com, not old@example.com/)
+  }
+  identity = json({ oPEP7c: "new@example.com" })
+  await assert.rejects(fetchCredits({ ...verified, force: true }), /signed in as/)
+  identity = json({ oPEP7c: "old@example.com" })
+  const fallback = await fetchCredits({ ...verified, force: true })
+  assert.equal(fallback.remaining, 12)
+  assert.equal(fallback.googleSubject, undefined, "email fallback must not invent subject verification")
+})
+
 // Two accounts are two tabs of one Chrome, not two Chromes: the second read
 // must land in the browser the first one left open.
 test("a second read on one profile is a tab of the browser the first left open", { timeout: 60000, ...needsBrowser }, async () => {
@@ -200,6 +261,80 @@ test("Chrome credits scrape handles pagination, keeps cache isolated, and force 
     assert.equal(different.cached, false)
     const otherAccount = await fetchCredits({ ...options, account: "second@example.com" })
     assert.equal(otherAccount.cached, false)
+  } finally {
+    if (browser) await browser.close()
+    if (previousCache === undefined) delete process.env.XDG_CACHE_HOME
+    else process.env.XDG_CACHE_HOME = previousCache
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("renamed Console emails use a resolved identity or explicit alias and keep cache isolation", { timeout: 30000, ...needsBrowser }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "vertex-browser-alias-"))
+  const previousCache = process.env.XDG_CACHE_HOME
+  let browser
+  try {
+    process.env.XDG_CACHE_HOME = directory
+    browser = await openBrowser({ profile: join(directory, "profile"), launchArgs })
+    let shown = "new@example.com"
+    let requests = 0
+    const selected = []
+    await routeAll(browser.page, async (request) => {
+      const url = new URL(request.url())
+      assert.equal(url.origin, "https://console.cloud.google.com")
+      if (!url.pathname.startsWith("/billing/")) return request.abort()
+      selected.push(url.searchParams.get("authuser"))
+      requests++
+      if (url.pathname === "/billing/linkedaccount") {
+        return request.fulfill({ body: '<a href="/billing/AAAAAA-BBBBBB-CCCCCC">Billing</a>' })
+      }
+      return request.fulfill({ body: `<!doctype html><script>var a={"oPEP7c":${JSON.stringify(shown)}}</script>
+        <table><thead><tr><th>Credit name</th><th>Status</th><th>Remaining value</th><th>Original value</th><th>Credit ID</th></tr></thead>
+        <tbody><tr><td>Benefit</td><td>Available</td><td>$12.00</td><td>$20.00</td><td>one</td></tr></tbody></table>` })
+    })
+    const options = {
+      browser, profile: join(directory, "profile"), project: "example-project",
+      authMode: "adc", account: "old@example.com", cloudsdkConfig: join(directory, "original-adc"),
+    }
+    await assert.rejects(fetchCredits(options), /signed in as new@example.com, not old@example.com/)
+    const afterFailure = requests
+    await assert.rejects(fetchCredits(options), /signed in as/)
+    assert.equal(requests, afterFailure)
+    const resolved = { ...options, consoleAccount: "new@example.com" }
+    selected.length = 0
+    assert.equal((await fetchCredits(resolved)).remaining, 12)
+    assert.deepEqual(selected, ["new@example.com", "new@example.com"])
+    const mapped = { ...options, consoleAccountAliases: { "old@example.com": "new@example.com" } }
+    selected.length = 0
+    const result = await fetchCredits({ ...mapped, force: true })
+    assert.equal(result.remaining, 12)
+    assert.equal(result.cached, false)
+    assert.deepEqual(selected, ["new@example.com", "new@example.com"])
+    assert.equal((await fetchCredits(mapped)).cached, true)
+    assert.equal(options.account, "old@example.com")
+    assert.equal(options.cloudsdkConfig, join(directory, "original-adc"))
+    assert.equal((await fetchCredits({ ...mapped, cloudsdkConfig: join(directory, "other-adc") })).cached, false)
+    assert.equal((await fetchCredits({
+      ...mapped, account: "another-saved@example.com",
+      consoleAccountAliases: { "another-saved@example.com": "new@example.com" },
+    })).cached, false)
+
+    // An alias does not authorize a fallback to an unrelated browser account.
+    shown = "other@example.com"
+    await assert.rejects(fetchCredits({ ...mapped, force: true }), /signed in as other@example.com, not new@example.com/)
+    await assert.rejects(fetchCredits({ ...resolved, force: true }), /signed in as other@example.com, not new@example.com/)
+    shown = null
+    await assert.rejects(fetchCredits({ ...mapped, force: true }), /did not show which account/)
+    // Another credential account cannot inherit the first account's mapping.
+    shown = "new@example.com"
+    await assert.rejects(fetchCredits({ ...mapped, account: "second@example.com" }), /not second@example.com/)
+    // Changing the alias must not reuse either success or failure for the old one.
+    shown = "renamed-again@example.com"
+    const changed = await fetchCredits({ ...mapped, consoleAccountAliases: { "old@example.com": shown } })
+    assert.equal(changed.cached, false)
+    assert.equal(changed.remaining, 12)
+    // Removing the alias restores the original check, even with a cached success.
+    await assert.rejects(fetchCredits({ ...options, force: true }), /not old@example.com/)
   } finally {
     if (browser) await browser.close()
     if (previousCache === undefined) delete process.env.XDG_CACHE_HOME

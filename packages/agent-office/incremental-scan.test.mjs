@@ -185,6 +185,39 @@ test("midnight and metadata-only changes do not read JSONL again",()=>{
  expect(bytes()).toBe(0)
 })
 
+test("a same-size usage.json or summary.json rewrite inside one timestamp tick is read again",()=>{
+ // A coarse-clock file system (Linux stamps a write with the kernel tick):
+ // a rewrite in the same tick keeps size, mtime and ctime. Freeze them, so
+ // the case does not depend on this machine's clock.
+ const root=tmp(),path=join(root,"updates.jsonl"),usage=join(root,"usage.json"),meta=join(root,"summary.json")
+ writeFileSync(path,line({timestamp:time/1000,params:{update:{sessionUpdate:"user_message_chunk",content:{text:"work"}}}}))
+ const use=tokens=>JSON.stringify({turns:[{endedAt:stamp,inputTokens:tokens,outputTokens:10}]})
+ writeFileSync(usage,use(100));writeFileSync(meta,JSON.stringify({title:"title one"}))
+ const frozen=new Map()
+ const statSync2=file=>{
+  const st=statSync(file)
+  if(!frozen.has(file))frozen.set(file,{mtimeMs:st.mtimeMs,ctimeMs:st.ctimeMs})
+  return Object.assign(Object.create(Object.getPrototypeOf(st)),st,frozen.get(file))
+ }
+ const scanner=createScanner({sources:[source(root,"grok",{usage:()=>usage,meta:()=>meta})],statSync:statSync2})
+ expect(scanner.scan(time)[0]).toMatchObject({title:"title one",tokensToday:110})
+ writeFileSync(usage,use(200));writeFileSync(meta,JSON.stringify({title:"title two"}))
+ expect(statSync(usage).size).toBe(Buffer.byteLength(use(100)))
+ expect(scanner.scan(time)[0]).toMatchObject({title:"title two",tokensToday:210})
+ // a temp-and-rename writer: same size and stamps, a new inode
+ const next=join(root,"usage.tmp");writeFileSync(next,use(300));renameSync(next,usage)
+ expect(scanner.scan(time)[0]).toMatchObject({title:"title two",tokensToday:310})
+ // the same bytes written again are not a new revision
+ const original=JSON.parse
+ let usageParses=0
+ JSON.parse=function(text,...args){if(String(text).includes('"endedAt"'))usageParses++;return original.call(this,text,...args)}
+ try {
+  writeFileSync(usage,use(300))
+  expect(scanner.scan(time)[0]).toMatchObject({tokensToday:310})
+  expect(usageParses).toBe(0)
+ }finally{JSON.parse=original}
+})
+
 test("changing sources releases cursors and accumulated sessions",()=>{
  const root=tmp(),other=tmp(),path=join(root,"one.jsonl")
  writeFileSync(path,line(user("first")))

@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
+      "summary": { "en": "Agnes AI international with Chrome browser sign-in: live OpenAI-compatible text models, Token Plan and Agent Plan usage, and the USD wallet balance.", "zh": "通过 Chrome 浏览器登录 Agnes AI 国际版：动态发现 OpenAI 兼容文本模型，显示 Token Plan、Agent Plan 用量与美元余额，无需手动复制会话 token。" } },
     { "package": "@magpie-community/gateway-powercontext", "name": "PowerContext", "kind": "middleware", "community": true,
       "icon": "https://raw.githubusercontent.com/oceanbase/powercontext/master/src/powercontext/server/dashboard/static/brand/favicon-color.svg",
       "summary": { "en": "Recall from your PowerContext service and optionally save complete conversations. Configure the service URL first; capture is off by default.", "zh": "从自己的 PowerContext 服务召回记忆，并按需存回完整对话。先配置服务地址；对话存回默认关闭。" } },
@@ -11,6 +13,9 @@
     { "package": "@magpie-community/gateway-respire-memory", "name": "respire-memory", "kind": "middleware", "community": true,
       "icon": "https://raw.githubusercontent.com/risense-ai/respire-magpie/v0.3.0/page/icon.svg",
       "summary": { "en": "Help AI agents evolve through experience: per-turn recall and complete engine-policy reads, automatic process diaries and grounded archival with write readback. Configure an existing local Runtime and generation model first. Archival defaults on; raw capture off. Background storage happens after reply completion.", "zh": "让 AI Agent 通过经验积累持续自进化：每轮召回并读完整政策，自动保存过程日记与整理长期记忆，写后回读。先配置已有本地 Runtime 和生成模型；归档默认开启，原始采集关闭。宿主限制下存储在回复完成后执行。" } },
+    { "package": "@openviking/magpie-plugin", "name": "OpenViking", "kind": "middleware", "community": true,
+      "icon": "https://raw.githubusercontent.com/volcengine/OpenViking/main/docs/images/ov-logo-icon.png",
+      "summary": { "en": "Recall OpenViking context before model requests and optionally capture completed conversations. Reuses your existing OpenViking configuration; capture is off by default. Maintained by the OpenViking project.", "zh": "在模型请求前召回 OpenViking 上下文，并按需采集完整对话。复用现有 OpenViking 配置；采集默认关闭。由 OpenViking 项目维护。" } },
     { "package": "@magpie-community/opencode-copilot-auth", "name": "GitHub Copilot", "icon": "githubcopilot", "providers": ["github-copilot"], "community": true,
       "summary": { "en": "GitHub Copilot on GitHub.com or GitHub Enterprise, with premium request or credit usage, remaining allowance and quota reset dates.", "zh": "GitHub Copilot：支持 GitHub.com 与 GitHub Enterprise，显示高级请求或积分用量、剩余额度和重置时间。" } },
     { "package": "@magpie-community/opencode-joycode-auth", "name": "JoyCode", "providers": ["joycode"], "community": true,
@@ -21,7 +26,7 @@
     { "package": "@magpie-community/opencode-zcode-auth", "name": "ZCode", "icon": "zcode", "providers": ["zcode"], "community": true, "replaces": "zcode",
       "summary": { "en": "Z.ai and BigModel GLM Coding Plan, team seats and ZCode's free Start Plan, with a daily claim of its gift plans.", "zh": "Z.ai 与智谱 GLM Coding Plan，支持团队席位和 ZCode 免费 Start Plan，可每日领取 ZCode 活动包。" } },
     { "package": "@magpie-community/opencode-qoder-auth", "name": "Qoder", "icon": "qoder", "providers": ["qoder", "qoder-cn", "qwenwork", "qwenwork-enterprise"], "community": true, "replaces": "qoder",
-      "summary": { "en": "Your Qoder subscription (qoder.com or Qoder CN), and QwenWork (千问办公): the public cloud or the enterprise flagship with its own domain. Unofficial for QwenWork.", "zh": "用 Qoder 自己的设备登录使用 Qoder 订阅（国际版或 Qoder CN）；也接入千问办公：公有云与企业旗舰版（输入企业自己的域名）。千问办公部分非官方。" } },
+      "summary": { "en": "Your Qoder subscription: international (qoder.com) or Qoder CN, the China site (qoder.cn, Alibaba Cloud or phone sign-in), each its own provider. Also QwenWork (千问办公): the public cloud or the enterprise flagship with its own domain. Unofficial for QwenWork.", "zh": "用 Qoder 自己的设备登录使用 Qoder 订阅：国际版（qoder.com）与 Qoder 中国版（Qoder CN，qoder.cn，阿里云账号 / 手机号登录）各是一个订阅；也接入千问办公：公有云与企业旗舰版（输入企业自己的域名）。千问办公部分非官方。" } },
     { "package": "@magpie-community/opencode-devin-auth", "name": "Devin", "icon": "devin", "providers": ["devin"], "community": true, "replaces": "devin",
       "summary": { "en": "Devin's models with your Devin account — a browser sign-in or the devin CLI's.", "zh": "用 Devin 账号使用 Devin 的模型：浏览器登录，或沿用 devin CLI 的登录。" } },
     { "package": "@magpie-community/opencode-zed-auth", "name": "Zed", "icon": "zed", "providers": ["zed"], "community": true, "replaces": "zed",
@@ -58,6 +63,8 @@
       "summary": { "en": "Nous Portal models, with Nous Portal's device sign-in.", "zh": "通过 Nous Portal 自己的设备码登录使用 Nous Portal 模型。" } },
     { "package": "@magpie-community/opencode-raccoon-auth", "name": "商汤小浣熊", "icon": "sensenova-color", "providers": ["raccoon"], "community": true,
       "summary": { "en": "SenseTime Raccoon (xiaohuanxiong.com) models, account credits and daily check-in, with browser sign-in or Raccoon desktop's live sign-in.", "zh": "商汤小浣熊（xiaohuanxiong.com）模型、积分余额与每日签到，支持浏览器登录或直接复用小浣熊桌面端登录态。" } },
+    { "package": "@magpie-community/opencode-sensenova-auth", "name": "SenseNova", "icon": "sensenova-color", "providers": ["sensenova-token-plan"], "community": true,
+      "summary": { "en": "SenseNova (SenseTime 日日新) Token Plan: one console sign-in reads the credit pools, their 5-hour and 7-day windows and the expiring grants, and — with an API key pasted at sign-in — serves the plan's own models for chat.", "zh": "商汤日日新 Token Plan：一次控制台登录即可读取积分池、5 小时 / 7 天窗口与将过期的返赠余额；登录时粘贴 API Key，同一个账号就能直接调用计划内模型对话。" } },
     { "package": "@magpie-community/opencode-autoclaw-auth", "name": "AutoClaw", "providers": ["autoclaw", "autoclaw-cn"], "community": true,
       "summary": { "en": "AutoClaw (Zhipu OpenClaw) cloud accounts: oversea web sign-in (Google/z.ai) or CN phone SMS, credit balance and daily check-in.", "zh": "AutoClaw（智谱澳龙/OpenClaw）云端账号：国际版网页登录（Google/z.ai）或国内手机验证码，积分余额与每日签到。" } },
     { "package": "@magpie-community/opencode-codearts-auth", "name": "CodeArts / OfficeAce", "providers": ["codearts", "officeace"], "community": true,
@@ -94,6 +101,9 @@
       "summary": { "en": "Tuanjie Cowork (codely) on magpie's Agents page: pick one of magpie's models and Cowork chats with it, on the subscriptions magpie already holds.", "zh": "把团结 Cowork（codely）加到 magpie 的 Agent 页：给它选一个 magpie 的模型，它聊天就走那个模型，用的是 magpie 里已登录的那些订阅的额度。" } },
     { "package": "@magpie-community/agent-opencodereview", "name": "Open Code Review", "kind": "agent", "community": true,
       "summary": { "en": "Open Code Review (Alibaba's ocr CLI) on magpie's Agents page: pick one of magpie's models and ocr review / ocr scan use it, read from the config on the next run.", "zh": "把 Open Code Review（阿里巴巴的 ocr CLI）加到 magpie 的 Agent 页：给它选 magpie 的模型，下一次 ocr review / ocr scan 即从配置中读到并生效。" } },
+    { "package": "@magpie-community/agent-junie", "name": "Junie CLI", "kind": "agent", "community": true,
+      "icon": "https://junie.jetbrains.com/favicons/favicon.svg",
+      "summary": { "en": "An explicit seed copies Magpie's full model catalog into Junie CLI and uses Magpie's selected model as the launch default, without LiteLLM. Native ECO is unavailable for custom profiles in Junie 3893.6.", "zh": "手动 seed 向 Junie CLI 同步全部模型，并将 Magpie 所选模型设为启动默认模型，无需 LiteLLM。Junie 3893.6 的自定义 profile 不支持原生 ECO。" } },
     { "package": "@magpie-community/middleware-reserve", "name": "Reserve", "kind": "middleware", "community": true,
       "summary": { "en": "Two routings that keep something in reserve: fill accounts up to a ceiling of their allowance, or use subscriptions before API keys.", "zh": "两种留余量的路由：账号用到额度上限就换下一个，或订阅账号优先于 API key。" } },
     { "package": "@magpie-community/tools-search1api", "name": "Search1API", "icon": "https://s1.dev/icon.png", "kind": "tools", "community": true,
@@ -110,10 +120,12 @@
     { "package": "@magpie-community/page-chat", "name": "Chat", "kind": "page", "community": true,
       "summary": { "en": "A chat page in magpie's window by Magic_zero: talk to magpie's own models with your MCP servers, instructions and skills, images and LaTeX. Runs a local service on 127.0.0.1 that only its own page can use.", "zh": "Magic_zero 做的 magpie 窗口内「对话」页面：用 magpie 自己的模型聊天，带上你的 MCP 服务器、指令和技能，支持图片与 LaTeX。本地服务只在 127.0.0.1，只给自己的页面用。" } },
     { "package": "@magpie-community/page-agent-office", "name": "Agent Office", "kind": "page", "community": true,
-      "summary": { "en": "Reads the session files of Claude Code, Codex, Copilot CLI, Kimi Code, DeepSeek Harness, Gemini CLI, Qwen Code, Pi, omp, Qoder, WorkBuddy, CodeBuddy and Grok Build on this computer (prompts, replies and tool commands; text can be turned off). Shows them in a real WebGL 3D office with six scenes, an isometric/2D office, or a grouped workbench with Today usage, recent conversations and approvals.", "zh": "读取本机 Claude Code、Codex、Copilot CLI、Kimi Code、DeepSeek Harness、Gemini CLI、Qwen Code、Pi、omp、Qoder、WorkBuddy、CodeBuddy、Grok Build 的会话文件（含提问、回复与工具命令，可关闭文本），用真 3D 办公室（六种场景）、等距/2D 办公室或分组工作台展示，带今日用量、最近对话与批准状态。" } },
+      "summary": { "en": "Reads the session files of Claude Code, Codex, Copilot CLI, Kimi Code, DeepSeek Harness, Gemini CLI, Qwen Code, Pi, omp, Qoder, WorkBuddy, CodeBuddy and Grok Build on this computer (prompts, replies and tool commands; text can be turned off). Shows them in a real WebGL 3D office with eleven scenes, an isometric/2D office, or a grouped workbench with Today usage, recent conversations and approvals.", "zh": "读取本机 Claude Code、Codex、Copilot CLI、Kimi Code、DeepSeek Harness、Gemini CLI、Qwen Code、Pi、omp、Qoder、WorkBuddy、CodeBuddy、Grok Build 的会话文件（含提问、回复与工具命令，可关闭文本），用真 3D 办公室（十一种场景）、等距/2D 办公室或分组工作台展示，带今日用量、最近对话与批准状态。" } },
     { "package": "@magpie-community/page-usage-tree", "name": "Account usage", "kind": "page", "community": true,
       "summary": { "en": "Usage as provider -> account -> model, each level expandable, with calls, tokens and cost. Reads your local usage ledger only.", "zh": "按供应商 -> 账号 -> 模型展示用量，每层都可以展开，包含调用、Token 和费用；只读取本机用量记录。" } },
     {"package": "@magpie-community/agent-kimi-desktop", "name": "Kimi", "kind": "agent", "community": true, "summary": {"en": "Kimi desktop Work on Magpie's Agents page: select a model from Magpie, then disconnect to restore the original service. Not Kimi Code CLI.", "zh": "把普通 Kimi 桌面版 Work 接入 Magpie Agent 页，使用已配置的模型；断开恢复原连接。不是 Kimi Code CLI。"}},
+    { "package": "@magpie-community/gateway-notify", "name": "Notify", "kind": "middleware", "community": true,
+      "summary": { "en": "A push when an agent's turn is done or fails, after it ran long enough to be worth one: ntfy, Bark, Gotify, Server酱, Feishu, DingTalk, WeCom, Telegram or your own webhook. Agent, project, model and time only by default; the reply's text is opt-in.", "zh": "agent 一轮任务跑完或失败时推送提醒（只提醒跑够设定时长的任务）：支持 ntfy、Bark、Gotify、Server酱、飞书、钉钉、企业微信、Telegram 和自定义 webhook。默认只发 agent、项目、模型和用时，回复正文需手动开启。" } },
     { "package": "@magpie-community/hooks-mail-watch", "name": "Mail Watch", "kind": "middleware", "community": true,
       "summary": { "en": "Email alerts when a provider call fails or a quota window runs out: your own SMTP account, your own words in the mail, and your own list of what to watch, with cooldowns and an hourly cap so a bad hour stays bounded — plus an optional periodic usage digest.", "zh": "供应商调用失败或额度窗口用尽时发邮件提醒：用你自己的 SMTP 账号、自己的邮件文案、自己勾选的监控事项；同类事件冷却合并，另有每小时上限，糟糕的一小时不会失控；另可开启定期用量摘要。" } },
     { "package": "@magpie-community/opencode-cloudflare-workers-ai-auth", "name": "Cloudflare Workers AI", "providers": ["cloudflare-workers-ai"], "community": true,
@@ -157,8 +169,8 @@
       ],
       "community": true,
       "summary": {
-        "en": "Third-party Magpie adapter for dsh-providers-hub (by JetLi): five providers, each a separate channel you can sign in to, meter and switch off on its own — AStudio (iFlytek), Accio (Alibaba), LobsterAI (Youdao), MagiCrew (letsmagic.cn / magicrew.ai). Channels that already exist in the registry are not shipped. Runs without DSH.",
-        "zh": "dsh-providers-hub（作者 JetLi）的第三方适配：五条供应商（每渠道一条，可各自登录/看额度/单独关闭）——AStudio（讯飞）、Accio（阿里）、LobsterAI（有道）、超级麦吉/MagiCrew（letsmagic.cn / magicrew.ai）。与社区 registry 已有插件重叠的渠道不随包提供。不依赖 DSH 运行。"
+        "en": "Third-party Magpie adapter for dsh-providers-hub (by JetLi): five providers, each a separate channel you can sign in to, meter and switch off on its own — AStudio (iFlytek), Accio (Alibaba), LobsterAI (Youdao), MagiCrew (letsmagic.cn / magicrew.ai). Channels that already exist in the registry are not shipped. Runs without DSH. Its AStudio signs in on a local page (SMS, password or WeChat QR, no desktop app needed) and calls chat/completions; the standalone AStudio plugin (astudio) reuses the desktop sign-in and calls Responses. On one account both share the same daily points pool.",
+        "zh": "dsh-providers-hub（作者 JetLi）的第三方适配：五条供应商（每渠道一条，可各自登录/看额度/单独关闭）——AStudio（讯飞）、Accio（阿里）、LobsterAI（有道）、超级麦吉/MagiCrew（letsmagic.cn / magicrew.ai）。与社区 registry 已有插件重叠的渠道不随包提供。不依赖 DSH 运行。其中 AStudio 在本地登录页用短信、密码或微信扫码登录（不需要桌面端），走 chat/completions；独立的 AStudio 插件（astudio）复用桌面端登录态，走 Responses。同一账号两边共用一个每日积分池。"
       }
     },
     {
@@ -170,6 +182,20 @@
         "en": "Use your terminal Agent CLIs right inside magpie, by chat. Runs a local service on 127.0.0.1 that starts when the page opens and stops with magpie; only its own page gets the token. First install ~46 MB; Claude Code isn't bundled, so install the `claude` CLI yourself.",
         "zh": "把终端里的 Agent CLI 搬进 magpie 窗口，直接对话使用。会在本机 127.0.0.1 跑一个后台服务，打开页面才启动，随 magpie 退出；令牌只交给自己的页面。首次安装约 46 MB；不自带 Claude Code，要用请自己装 `claude` CLI。"
       }
-    }
+    },
+    {
+      "package": "magpie-window-warmup",
+      "name": "Window Warmup",
+      "kind": "page",
+      "icon": "https://raw.githubusercontent.com/YangHonghang/magpie-window-warmup/main/page/icon.svg",
+      "summary": {
+        "en": "Window warmup (formerly Scheduled Messages): warm up a subscription's 5-hour or weekly quota / usage window ahead of time with a keep-alive (keep alive) message. It sends one fixed short message (\"hi\", max_tokens 16) to a provider, account and model you pick, on a schedule: right after its rate limit window resets, daily at set times or every few hours. Each send uses that provider's quota. Runs a local service on 127.0.0.1 that only calls magpie's own gateway; only its own page gets the token.",
+        "zh": "窗口预热（原「定时消息」）：提前开启订阅的 5 小时或每周额度窗口，给额度保活。给指定的供应商、账号和模型发一条固定短消息（\"hi\"，max_tokens 16），可在窗口重置后、每天定时或每隔几小时发送。每次发送都会消耗该供应商的额度（配额）。在本机 127.0.0.1 跑一个本地服务，只调用 magpie 自己的网关；令牌只交给自己的页面。"
+      }
+    },
+    { "package": "@magpie-community/opencode-astudio-auth", "name": "AStudio", "providers": ["astudio"], "community": true,
+      "summary": { "en": "Unofficial AStudio (iFLYTEK Astron Studio desktop): reuse the desktop sign-in to serve its Responses model gateway, with the live model catalog, daily login-points check-in and points balance. Desktop discovery runs on Windows (registry lookup), with a paste-token fallback. Differs from Providers Hub's hub-astudio, which signs in on a local page (SMS, password or WeChat QR) and calls chat/completions; on one account both share the same daily points pool.", "zh": "非官方 AStudio（科大讯飞 Astron Studio 桌面端）：复用桌面端登录态接入其模型网关，含实时模型目录、每日登录积分签到与积分余额。桌面端发现仅 Windows（注册表定位），另有粘贴凭据方式。与 Providers Hub 的 hub-astudio 不同：那边在本地登录页用短信、密码或微信扫码登录，走 chat/completions；同一账号两边共用一个每日积分池。" } },
+    { "package": "@magpie-community/opencode-agnes-code-auth", "name": "Agnes Code", "providers": ["agnes-code"], "community": true,
+      "summary": { "en": "Unofficial Agnes Code desktop: reuse the desktop sign-in for its OpenAI-compatible gateway, with the live model catalog, daily credit check-in and points balance. Desktop decryption is Windows-only; a paste-token method covers the rest.", "zh": "非官方 Agnes Code 桌面端：复用桌面端登录态接入其 OpenAI 兼容网关，含实时模型目录、每日积分签到与余额显示。桌面端解密仅限 Windows，其余平台用粘贴 accessToken。" } }
   ]
 }

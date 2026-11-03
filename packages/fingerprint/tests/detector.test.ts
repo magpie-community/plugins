@@ -44,6 +44,56 @@ describe('detector jobs', () => {
     );
   });
 
+  // StockRabbit's job files (plugins#615) say which seat a run measured
+  test('records the pinned account and its name in the config and each result', () => {
+    const wb: Model = { ...model, id: 'workbuddy/deepseek-v4.1-flash', provider: 'workbuddy' };
+    const accounts = [
+      { provider: 'workbuddy', id: '北冥', name: '北冥' },
+      { provider: 'workbuddy', id: 'csmlovenn@gmail.com', name: 'Main seat' },
+      { provider: 'other', id: 'elsewhere', name: '北冥' },
+    ];
+    const one = { ...config, targets: [{ model: wb.id, account: '北冥' }] };
+    const job = createJob(one, [wb], 'b', accounts);
+    expect(job.config.account).toBe('北冥');
+    expect(job.config.accountName).toBe('北冥');
+    expect(job.results[0].target).toEqual({ model: wb.id, account: '北冥', accountName: '北冥' });
+    // named by its alias, the job keeps the id Magpie pins by
+    const byName = createJob(
+      { ...config, targets: [{ model: wb.id, account: 'Main seat' }] },
+      [wb],
+      'b',
+      accounts,
+    );
+    expect(byName.results[0].target).toEqual({
+      model: wb.id,
+      account: 'csmlovenn@gmail.com',
+      accountName: 'Main seat',
+    });
+    expect(byName.config.account).toBe('csmlovenn@gmail.com');
+    // config.account pins every target that names none
+    const shared = createJob(
+      { ...config, account: 'CSMLOVENN@gmail.com', targets: [{ model: wb.id }] },
+      [wb],
+      'b',
+      accounts,
+    );
+    expect(shared.results[0].target.account).toBe('csmlovenn@gmail.com');
+    // one the catalog doesn't list is kept as named, with no name made up
+    const unknown = createJob(
+      { ...config, targets: [{ model: wb.id, account: '南海' }] },
+      [wb],
+      'b',
+      accounts,
+    );
+    expect(unknown.results[0].target).toEqual({ model: wb.id, account: '南海' });
+    expect(unknown.config.account).toBe('南海');
+    expect(unknown.config.accountName).toBeUndefined();
+    // targets on different accounts (or none) leave config.account out
+    const mixed = createJob(config, [model], 'b', []);
+    expect(mixed.config.account).toBeUndefined();
+    expect(mixed.results[1].target.account).toBe('a');
+  });
+
   test('uses per-sample endpoint and scores injected samples', async () => {
     const job = createJob({ ...config, targets: [{ model: 'm1' }] }, [model], 'build');
     const indexes: number[] = [];

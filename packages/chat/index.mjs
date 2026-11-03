@@ -21,7 +21,14 @@ function start(options) {
       options: Number.isFinite(port) && port > 0 ? { port } : {},
     })
       .then((info) => {
-        console.log(`[page-chat] listening on http://127.0.0.1:${info.port}`);
+        // 端口还在上一个宿主手里时不挡宿主启动：服务在后台等它松手
+        if (info.listening) console.log(`[page-chat] listening on http://127.0.0.1:${info.port}`);
+        else {
+          info.ready.then(
+            (p) => p && console.log(`[page-chat] listening on http://127.0.0.1:${p}`),
+            (err) => console.error("[page-chat] could not start:", err?.message || err),
+          );
+        }
         return info;
       })
       .catch((err) => {

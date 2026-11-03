@@ -315,6 +315,104 @@ function vpcSite(site, instance) {
   return { ...site, web: `https://${name}.${d}`, openapi: `https://${name}-openapi.${d}`, api: `https://${name}-gateway.${d}`, vpc: name }
 }
 
+// ---- enterprise dedicated domain (Qoder CN 企业版专属域) ----------------------
+//
+// Qoder IDE (1.38.0) signs in to an enterprise's dedicated domain from its
+// config.general.dedicatedUrl (Settings, 「企业版专属域登录」), any https host
+// such as <corp>.rdc.aliyuncs.com, not only <instance>.vpc.qoder.com.cn. It
+// first asks GET <domain>/algo/api/v1/version: a 404 is a legacy Lingma 1.0
+// (通义灵码) dedicated domain, signed in to through another protocol; any
+// other status is Qoder CN 2.0, signed in to with the same device flow as
+// qoder.cn: /device/selectAccounts on the domain's origin, and the poll and
+// user info on an openapi host named by putting "-openapi" after the host's
+// first label (foo.rdc.aliyuncs.com → foo-openapi.rdc.aliyuncs.com; its
+// gateway host is the same with "-gateway"). An IP, a bracketed IPv6 host or
+// a host with no dot keeps its origin. The workbench's client id there is
+// the IDE's production one.
+const DEDICATED_CLIENT = "f5a7f67c-11a8-491e-8b8e-a07f2d0df4b7"
+const DEDICATED_VERSION = "/algo/api/v1/version"
+
+// dedicatedOrigin is the https origin of what the user entered as their
+// dedicated domain: a host or an https:// address, a path dropped as the
+// IDE drops it for sign-in. undefined: not one (http://, credentials, no host).
+function dedicatedOrigin(input) {
+  let e = String(input ?? "").trim()
+  if (!e) return undefined
+  if (!/^[a-z][a-z\d+.-]*:\/\//i.test(e)) e = `https://${e}`
+  let u
+  try {
+    u = new URL(e)
+  } catch {
+    return undefined
+  }
+  if (u.protocol !== "https:" || u.username || u.password || !u.hostname) return undefined
+  return u.origin
+}
+
+// dedicatedHost is origin's host with suffix after its first label, as the
+// IDE's helper names a dedicated domain's openapi and gateway hosts; origin
+// itself for an IP, an IPv6 host or a host with no dot.
+function dedicatedHost(origin, suffix) {
+  const u = new URL(origin)
+  const h = u.hostname
+  if (!h || (h.startsWith("[") && h.endsWith("]")) || h.includes(":") || /^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return origin
+  const i = h.indexOf(".")
+  if (i <= 0 || i === h.length - 1) return origin
+  const host = `${h.slice(0, i)}${suffix}.${h.slice(i + 1)}`
+  return `${u.protocol}//${u.port ? `${host}:${u.port}` : host}`
+}
+
+// dedicatedSite is site served from a dedicated domain (its host, as kept on
+// the account), with api its chat host when the sign-in found the gateway
+// host unreachable and chose the domain's own origin; undefined: not one.
+function dedicatedSite(site, domain, api) {
+  const origin = dedicatedOrigin(domain)
+  if (!origin) return undefined
+  const host = new URL(origin).host
+  return {
+    ...site,
+    web: origin,
+    openapi: dedicatedHost(origin, "-openapi"),
+    api: api ? dedicatedOrigin(api) ?? dedicatedHost(origin, "-gateway") : dedicatedHost(origin, "-gateway"),
+    clientId: DEDICATED_CLIENT,
+    redirect: "",
+    vpc: host,
+    dedicated: host,
+  }
+}
+
+// dedicatedProbe is the status GET <origin>/algo/api/v1/version answers, as
+// the IDE's probe asks it; undefined when nothing answered.
+async function dedicatedProbe(origin) {
+  try {
+    const r = await fetch(origin + DEDICATED_VERSION, { headers: { "User-Agent": "Qoder" }, signal: AbortSignal.timeout(10_000) })
+    await r.body?.cancel().catch(() => {})
+    return r.status
+  } catch {
+    return undefined
+  }
+}
+
+// dedicatedSignIn reads the domain as the IDE does and starts its device
+// sign-in. A legacy Lingma domain is refused with what it is: its sign-in
+// (cosy's login/generateUrl, a qoder-cn-ide:// callback) isn't served here.
+// The chat host is the gateway host when it answers at all, else the
+// domain's own origin, which answered the probe on the same /algo path; the
+// IDE leaves this to its language server, whose rule wasn't read (inferred).
+async function dedicatedSignIn(site, input) {
+  const origin = dedicatedOrigin(input)
+  if (!origin) throw new Error(`Not a dedicated domain: ${String(input ?? "").slice(0, 100)}`)
+  const status = await dedicatedProbe(origin)
+  if (status === undefined) throw new Error(`${site.name}: ${origin} didn't answer (${DEDICATED_VERSION}); check the address and your network`)
+  if (status === 404)
+    throw new Error(
+      `${site.name}: ${origin} is a Lingma 1.0 (通义灵码) dedicated domain, which this plugin can't sign in to yet; ${new URL(origin).host} answers 404 at ${DEDICATED_VERSION}, as Qoder IDE tells one apart`,
+    )
+  const gateway = dedicatedHost(origin, "-gateway")
+  const api = gateway !== origin && (await dedicatedProbe(gateway)) === undefined ? origin : undefined
+  return deviceSignIn(dedicatedSite(site, origin, api))
+}
+
 // siteOf is the site an account is served from: its VPC instance's when it
 // was signed in to one, else site. An instance on record that names none
 // is not read as "no VPC", which would send the enterprise's tokens to the
@@ -326,6 +424,11 @@ function siteOf(site, a) {
   if (a?.enterpriseHost) {
     const base = `https://${a.enterpriseHost}`
     return { ...site, web: base, openapi: base, api: base, vpc: a.enterpriseHost }
+  }
+  if (a?.dedicated) {
+    const s = dedicatedSite(site, a.dedicated, a.dedicatedApi)
+    if (!s) throw new SignInGone(`${site.name}: the account's dedicated domain "${a.dedicated}" isn't one; sign in again`)
+    return s
   }
   if (a?.vpc === undefined || a?.vpc === null || a?.vpc === "") return site
   const s = vpcSite(site, a.vpc)
@@ -418,6 +521,7 @@ async function deviceSignIn(site) {
         deviceRefresh: dt.refresh_token ?? "",
         ...(site.vpc ? { vpc: site.vpc } : {}),
         ...(site.enterpriseDomain ? { vpc: site.enterpriseDomain, enterpriseHost: site.enterpriseDomain } : {}),
+        ...(site.dedicated ? { dedicated: site.dedicated, ...(site.api !== dedicatedHost(site.web, "-gateway") ? { dedicatedApi: site.api } : {}) } : {}),
       }
     },
   }
@@ -681,6 +785,23 @@ function sceneModels(listing) {
 // and "default" route inside Qoder and aren't one model. A site with its
 // own scene reads that scene's list; one that lists all models keeps the
 // disabled ones too (QwenWork's qwork scene carries its whole catalog).
+// freeView is whether a listing is the one Qoder gives a caller it doesn't
+// take for the account: every model that costs credits off, the free ones
+// on. Qoder CN's gateway answers a caller it doesn't know with that list
+// (2026-11-01: Qwen3.8-Flash on, Auto, Fast, Qwen3.8-Max, DeepSeek, GLM,
+// Kimi and MiniMax off, in every scene), and an enterprise qoder.com
+// account's stale job token was answered the same (plugins#484). A listing
+// with no model that costs credits, or with one of them on, isn't it.
+function freeView(entries) {
+  let off = false
+  for (const m of entries) {
+    if (!m || ["", "auto", "default"].includes(String(m.key ?? "").trim()) || freeOf(m)) continue
+    if (m.enable) return false
+    off = true
+  }
+  return off
+}
+
 function modelInfos(listing, site) {
   if (site?.modelScene) {
     return (Array.isArray(listing?.[site.modelScene]) ? listing[site.modelScene] : [])
@@ -777,12 +898,24 @@ function fitEffort(want, levels) {
   return best
 }
 
+// SMALL_BUDGET is the largest max_tokens a request can name and still be
+// one no client meant to think in: Anthropic's API takes thinking only with
+// a budget of at least 1024 tokens and a max_tokens above it, and a client's
+// own short asks (a session title, a classification) name such budgets.
+// Thinking by default spends them on reasoning: on WorkBuddy, a title asked
+// at 64 tokens ended "length" with 64 reasoning tokens and no text
+// (plugins#643, itspig).
+const SMALL_BUDGET = 1024
+
 // effortFor is whether to think and at which of the model's efforts ("" for
 // none): asked for none, a model that always thinks thinks at its lowest;
-// asked for nothing, or a level Qoder doesn't name, at its own default.
-function effortFor(asked, m) {
+// asked for nothing, or a level Qoder doesn't name, at its own default —
+// unless the request's own budget (max_tokens, 0 when it named none) is
+// SMALL_BUDGET or less, which is asked as none.
+function effortFor(asked, m, budget = 0) {
   let want = String(asked ?? "").toLowerCase()
   if (!EFFORT_RANK.includes(want)) want = ""
+  if (want === "" && budget > 0 && budget <= SMALL_BUDGET) want = "none"
   if (!m.thinks || (want === "none" && !m.alwaysThinks)) return [false, ""]
   if (!m.efforts.length) return [true, ""]
   if (want === "") return [true, m.defaultEffort]
@@ -1103,6 +1236,38 @@ function typedUnions(schema) {
   return root
 }
 
+// modelConfig is the model_config a request carries for model m, built as
+// Qoder's own client builds it (Qoder CN's CLI 1.1.81 and desktop 0.4.3,
+// the qoder-agent-sdk worker's model resolution): the listing entry's key,
+// name, format, image and reasoning flags, source and input size, with an
+// empty model, api_key and url, and is_reasoning off when thinking is.
+// Never the listing entry as it came: that also holds minimal_version,
+// strategies, prices and thinking_config, which no client sends. While it
+// was sent whole, Qoder CN billed DeepSeek-Flash (dfmodel, whose entry
+// carries a minimal_version) as Auto at Auto's rate, and Kimi-K3.1-Pro
+// (none) as itself (magpie-community/plugins#638, square-235); the entry
+// is the likely cause, not confirmed on a Qoder CN account.
+// A model with no key of its own is refused: Qoder's worker sends a
+// request with none as "auto", which is never what was asked for.
+function modelConfig(m, thinking) {
+  const raw = m.config ?? {}
+  const key = String(raw.key ?? m.key ?? "").trim()
+  if (!key || ["auto", "default"].includes(key) || key !== m.key) throw new Error(`no Qoder model key for "${m.key ?? ""}"`)
+  const max = Number.isInteger(raw.max_input_tokens) && raw.max_input_tokens > 0 ? raw.max_input_tokens : 200_000
+  return {
+    key,
+    display_name: raw.display_name || key,
+    ...(raw.outer_provider ? { outer_provider: raw.outer_provider } : { model: "" }),
+    format: raw.format ?? "openai",
+    is_vl: !!raw.is_vl,
+    is_reasoning: !!raw.is_reasoning && thinking,
+    api_key: "",
+    url: "",
+    source: raw.source || "system",
+    max_input_tokens: max,
+  }
+}
+
 // qoderBody is the plaintext agent_chat_generation takes for a chat
 // completion request, for model m, in the session the agent named (named,
 // "" when none) and the task it is a call of (taskOf's, a new one when
@@ -1115,7 +1280,8 @@ function qoderBody(chat, m, named = "", task, site) {
   let sysText = system ? baseSystem + "\n\n" + system : baseSystem
   if (chat.tool_choice === "required" && tools.length) sysText += "\nYou must call an available function in this response."
   const sys = { type: "text", text: sysText }
-  const [thinking, effort] = effortFor(chat.reasoning_effort, m)
+  const budget = chat.max_completion_tokens || chat.max_tokens || 0
+  const [thinking, effort] = effortFor(chat.reasoning_effort, m, typeof budget === "number" ? budget : 0)
   const params = { enable_thinking: thinking, max_tokens: chat.max_completion_tokens || chat.max_tokens || 32000 }
   if (effort) params.reasoning_effort = effort
   const window = windowFor(chat, m, params.max_tokens)
@@ -1133,7 +1299,7 @@ function qoderBody(chat, m, named = "", task, site) {
     agent_id: "agent_common",
     task_id: "common",
     session_type: site?.sessionType ?? "app",
-    model_config: m.config,
+    model_config: modelConfig(m, thinking),
     system: [sys],
     messages: [{ role: "system", content: [sys] }, ...cacheMarked(qoderMessages(chat.messages ?? []))],
   }
@@ -1711,6 +1877,9 @@ async function* events(body, tools = []) {
     f.call ? { tool: { index: ++index, id: "call_" + hexID(), name: f.call.name, args: f.call.args } } : f.error ? { error: { status: 502, message: f.error } } : { text: f.text }
   let usage
   let fr = ""
+  // said: something of the answer has been given (text, reasoning or a
+  // call), which a client may already show
+  let said = false
   for await (const line of sseLines(body)) {
     if (!line.startsWith("data:")) continue
     const payload = line.slice(5).trim()
@@ -1733,13 +1902,17 @@ async function* events(body, tools = []) {
       continue
     }
     const delta = chunk?.choices?.[0]?.delta ?? {}
-    if (delta.reasoning_content) yield { reasoning: delta.reasoning_content }
+    if (delta.reasoning_content) {
+      said = true
+      yield { reasoning: delta.reasoning_content }
+    }
     if (typeof delta.content === "string")
       for (const f of a.feed(delta.content)) {
         if (!f.call && !f.error && !f.text) continue
         const e = piece(f)
         yield e
         if (e.error) return
+        said = true
       }
     // tool calls served the OpenAI way keep Qoder's id: a result answers it
     for (const tc of delta.tool_calls ?? []) {
@@ -1763,7 +1936,7 @@ async function* events(body, tools = []) {
           yield e
           if (e.error) return
         }
-        a.sawTool = true
+        a.sawTool = said = true
         call.index = ++index
         yield { tool: { index: call.index, id: call.id || "call_" + hexID(), name, args: call.args } }
       } else if (args) yield { args: { index: call.index, text: args } }
@@ -1786,13 +1959,30 @@ async function* events(body, tools = []) {
     const e = piece(f)
     yield e
     if (e.error) return
+    said = true
   }
-  if ([...native.values()].some((call) => call.index === undefined)) {
-    yield { error: { status: 502, message: "the model's native tool call has no name; it is not sent on as a tool" } }
+  // A native call the model began and never named is never given: a
+  // client keeps an unnamed tool in its history and other providers
+  // refuse it. Its arguments, held while it waited for the name, go
+  // nowhere, not into the text either. With nothing said before it, the
+  // reply is no answer: a 502 (nameless) that ask sends once more, then
+  // the gateway's to retry or fail over. After an answer began, the call
+  // is dropped and the answer ends as it would have without it, so the
+  // text, reasoning and named calls already given are kept: qoder-cn's
+  // qfmodel did this now and then, and the whole turn failed with an
+  // error the client didn't retry (plugins#579).
+  const nameless = [...native.values()].filter((call) => call.index === undefined).length
+  if (nameless && !said) {
+    yield { error: { status: 502, message: NAMELESS, nameless: true } }
     return
   }
+  if (nameless) console.warn(`qoder: dropped ${nameless} native tool call${nameless > 1 ? "s" : ""} the model never named (plugins#579)`)
   yield { stop: a.sawTool ? "tool_calls" : fr === "length" ? "length" : "stop", usage }
 }
+
+// NAMELESS is the error of a reply whose only answer was a native tool
+// call the model never named.
+const NAMELESS = "the model's native tool call has no name; it is not sent on as a tool"
 
 // answer turns Qoder's reply into the chat completion OpenAI's API gives.
 // A failure before the answer keeps its status; one after it ends the
@@ -2629,6 +2819,8 @@ const makePlugin = (site) => async ({ client }) => {
   // the ids Qoder serves: the site's shipped list and every key a listing
   // has named, on or off
   const served = new Set(site.models.map((m) => m.id))
+  // the job tokens a renewal gave that Qoder still listed the free view for
+  const stillFree = new Set()
   const knows = (id) => served.has(id)
   const models = async (cred, again = false) => {
     const key = listingKey(cred)
@@ -2641,6 +2833,7 @@ const makePlugin = (site) => async ({ client }) => {
         if (k) served.add(k)
       }
       l = modelInfos(listing, s)
+      if (!s.modelScene) l.freeView = freeView(sceneModels(listing))
       listings.set(key, l)
     }
     return l
@@ -2880,6 +3073,7 @@ const makePlugin = (site) => async ({ client }) => {
     asked.cred = cred
     let m
     let relogged = false
+    let renamed = false
     const listed = (ms) => ms.find((x) => x.key === chat.model)
     try {
       m = listed(await models(cred)) ?? listed(await models(cred, true))
@@ -2909,7 +3103,12 @@ const makePlugin = (site) => async ({ client }) => {
     const api = siteOf(site, cred).api
     const CHAT_URL = api + CHAT_PATH
     const task = taskOf(sessionOf(chat, named), chat)
-    const body = qoderBody(chat, m, named, task, siteOf(site, cred))
+    let body
+    try {
+      body = qoderBody(chat, m, named, task, siteOf(site, cred))
+    } catch (e) {
+      return errorResponse({ status: 400, message: e?.message ?? String(e) })
+    }
     // Qoder's queue is waited out (queueWait) and the request sent again
     // under the request_set_id the queue knows, with a new request_id and
     // chat_record_id, as Qoder's client sends it (its o4i before each
@@ -2953,6 +3152,14 @@ const makePlugin = (site) => async ({ client }) => {
           cred = asked.cred = next
           continue
         }
+      }
+      // a reply whose only answer was a native tool call the model never
+      // named (plugins#579): nothing of it was given, so it is asked once
+      // more, under a new request_id; a second one is the gateway's 502 to
+      // retry or fail over
+      if (f?.nameless && !renamed) {
+        renamed = true
+        continue
       }
       // an answered call moves its task on, as Qoder's client moves it
       if (!f) task.answered = true
@@ -3114,6 +3321,22 @@ const makePlugin = (site) => async ({ client }) => {
                   return deviceSignIn(s)
                 },
               },
+              // an enterprise dedicated domain (企业版专属域), as Qoder IDE's
+              // settings take one: any https host, e.g. <corp>.rdc.aliyuncs.com
+              {
+                type: "oauth",
+                label: `Sign in with ${site.name} Enterprise dedicated domain (企业版专属域)`,
+                prompts: [
+                  {
+                    type: "text",
+                    key: "dedicated",
+                    message: "Your enterprise's dedicated domain, as set in Qoder IDE (企业版专属域地址)",
+                    placeholder: "your-corp.rdc.aliyuncs.com or https://your-corp.rdc.aliyuncs.com",
+                    validate: (v) => (dedicatedOrigin(v) ? undefined : "Not a dedicated domain: enter its host or https:// address"),
+                  },
+                ],
+                authorize: (inputs) => dedicatedSignIn(site, inputs?.dedicated),
+              },
             ]
           : []),
       ],
@@ -3150,7 +3373,29 @@ const makePlugin = (site) => async ({ client }) => {
         }
         if (renewals.has(cred)) unsaid.add(listingKey(cred))
         try {
-          const ms = await models(cred, true)
+          let ms = await models(cred, true)
+          // The free view (freeView) on a job token is what Qoder lists for
+          // a token it no longer takes in full: the token is renewed once,
+          // as a chat for a model the list has off renews it (plugins#484),
+          // and the list read again. Without it the account's list is the
+          // free model alone, and magpie's agents see only that one (Qoder
+          // CN, star21321321124_93024 on Discord, 2026-11-01). A token the
+          // free view came back on after a renewal is not renewed again for
+          // it: that account lists only the free models.
+          if (ms.freeView && !stillFree.has(cred.access)) {
+            let next
+            try {
+              next = await relogin(async () => auth, cred.access)
+            } catch (e) {
+              if (e?.expired) throw Object.assign(new Error(e.message), { signIn: "expired" })
+            }
+            if (next && next.access !== cred.access) {
+              if (renewals.has(next)) unsaid.add(listingKey(next))
+              cred = next
+              ms = await models(cred, true)
+              if (ms.freeView) stillFree.add(cred.access)
+            }
+          }
           if (!ms.length) return provider.models
           const s = siteOf(site, cred)
           return Object.fromEntries(
@@ -3227,4 +3472,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
