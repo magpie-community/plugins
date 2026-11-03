@@ -3909,6 +3909,14 @@ function makePlugin(site) {
                 const { runsOutAt, runsOut, ...counts } = more
                 const w = { ...creditWindow("Extra credits", counts), aside: true, ...(runsOutAt ? { runsOutAt, runsOut } : {}) }
                 out.windows.splice(out.windows.indexOf(credits) + 1, 0, w)
+                // and, as with the split's, the soonest of them to lapse is
+                // the account's too, on the window that stops it: routing
+                // reads none set aside, so an account whose extra credits
+                // expire first went unknown to it (Kayphoon on Discord)
+                const at = runsOutAt ? Date.parse(runsOutAt) : 0
+                const was = credits.runsOutAt ? Date.parse(credits.runsOutAt) : 0
+                if (at > 0 && (!was || at < was)) Object.assign(credits, { runsOutAt, runsOut })
+                else if (at > 0 && at === was) credits.runsOut = (credits.runsOut ?? 0) + runsOut
               }
             } catch {}
           }

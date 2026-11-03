@@ -567,6 +567,10 @@ test("extra credits only the detail lists have are a window of their own, set as
   expect(u.windows.slice(0, 2).map((w) => [w.name, w.display, !!w.aside])).toEqual([["Credits", "0 / 500", false], ["Extra credits", "20 / 1300", true]])
   // the soonest to lapse is the activity's, on the window that says them
   expect(u.windows[1]).toMatchObject({ amount: 20, limit: 1300, runsOut: 280, runsOutAt: new Date(on(gift).DeductionEndTime).toISOString() })
+  // and the window that stops the account says it too, as routing reads
+  // none set aside: an account whose extra credits lapse first is spent
+  // first (Kayphoon on Discord)
+  expect(u.windows[0]).toMatchObject({ runsOut: 280, runsOutAt: u.windows[1].runsOutAt })
   // the plan's window keeps its cycle
   expect(u.windows[0].resetsAt).toBe("2036-10-31T15:59:59.000Z")
 
