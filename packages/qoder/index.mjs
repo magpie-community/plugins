@@ -223,7 +223,9 @@ const b64url = (buf) => buf.toString("base64url")
 async function openapi(site, path, { method = "GET", token, body, query } = {}) {
   const url = new URL(site.openapi + path)
   for (const [k, v] of Object.entries(query ?? {})) url.searchParams.set(k, v)
-  const headers = { Accept: "application/json" }
+  // a site whose own client names itself on these calls (QwenWork) sends
+  // the same names
+  const headers = { Accept: "application/json", ...(site.clientHeaders?.() ?? {}) }
   if (body) headers["Content-Type"] = "application/json"
   if (token) headers.Authorization = `Bearer ${token}`
   const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20_000) })
@@ -615,7 +617,8 @@ function siteOf(site, a) {
   // enterpriseHost, not the site's vpcDomain (Qoder CN's VPC suffix rule)
   if (a?.enterpriseHost) {
     const base = `https://${a.enterpriseHost}`
-    return { ...site, web: base, openapi: base, api: base, vpc: a.enterpriseHost }
+    // and with no redirect_uri, as its sign-in had none
+    return { ...site, web: base, openapi: base, api: base, vpc: a.enterpriseHost, redirect: "" }
   }
   if (a?.dedicated && a.lingma) {
     const s = lingmaSite(site, a.dedicated)
@@ -676,10 +679,12 @@ async function deviceSignIn(site) {
       let name = ""
       let uid = dt.user_id
       let user = null
+      let identity = {}
       try {
         const ui = await openapi(site, site.userInfoPath ?? "/api/v1/userinfo", { token: dt.token })
         if (ui.status >= 200 && ui.status < 300) {
           user = site.normalizeUser ? site.normalizeUser(ui.json) : ui.json
+          if (site.deviceRefreshTarget) identity = accountIdentity(ui.json)
           ;[email, name] = [user?.email ?? "", user?.name ?? ""]
           if (site.deviceOnly) uid = String(user?.id ?? user?.user_id ?? user?.uid ?? uid ?? "") || undefined
           // a VPC poll may give the token alone: the user is then the one
@@ -716,6 +721,7 @@ async function deviceSignIn(site) {
         machineId,
         deviceToken: dt.token,
         deviceRefresh: dt.refresh_token ?? "",
+        ...identity,
         ...(site.vpc ? { vpc: site.vpc } : {}),
         ...(site.enterpriseDomain ? { vpc: site.enterpriseDomain, enterpriseHost: site.enterpriseDomain } : {}),
         ...(site.dedicated ? { dedicated: site.dedicated, ...(site.api !== dedicatedHost(site.web, "-gateway") ? { dedicatedApi: site.api } : {}) } : {}),
@@ -1019,7 +1025,14 @@ async function fetchListing(site, cred) {
     // flagship answers 503 "Model catalog is unavailable") falls back to
     // the list its site ships
     if (res.status === 503 && site.fallbackModels) return site.fallbackModels
-    throw new Error(`${site.name} models: HTTP ${res.status}: ${text.trim().slice(0, 512)}`)
+    // QwenWork's "User identity could not be verified" (tnt1223 on
+    // Discord): before 0.2.57 a biz account's token was refreshed as
+    // personal, and no gateway call named the client. A sign-in records
+    // the account's identity, which the refresh then asks for.
+    const again = res.status === 403 && site.deviceRefreshTarget && /identity could not be verified/i.test(text)
+      ? ` — ${site.name} didn't recognise this sign-in's identity; sign in to the account again`
+      : ""
+    throw new Error(`${site.name} models: HTTP ${res.status}: ${text.trim().slice(0, 512)}${again}`)
   }
   return JSON.parse(text)
 }
@@ -2553,16 +2566,30 @@ async function campaignCall(url, method, body, deviceToken, machine, signal) {
   })
 }
 
+// deviceRefreshBody is what the device token's refresh is asked with. A
+// site with a refresh target (QwenWork) asks as its client does
+// (refreshDeviceToken): a biz account for its own team, any other for
+// "c", and with the client id and redirect_uri when the site signs in with
+// that pair. Asked for "c", a biz account's token was rotated to its
+// personal identity.
+function deviceRefreshBody(site, refresh, a = {}) {
+  if (!site.deviceRefreshTarget) return { refresh_token: refresh }
+  const body = a?.identity === "biz" && a?.teamId
+    ? { refresh_token: refresh, target: "biz", team_id: a.teamId }
+    : { refresh_token: refresh, target: site.deviceRefreshTarget }
+  return site.clientId && site.redirect ? { ...body, client_id: site.clientId, redirect_uri: site.redirect } : body
+}
+
 // refreshDevice trades the device refresh token for a new pair; it rotates
 // too, so the caller saves it.
-async function refreshDevice(site, refresh, chat = false) {
+async function refreshDevice(site, refresh, chat = false, a = {}) {
   if (!String(refresh ?? "").trim()) {
     if (chat) throw new SignInGone(`${site.name}: the sign-in lapsed; sign in again`)
     throw new Error("qoder device token refresh: missing refresh token; sign in again")
   }
   let r
   try {
-    r = await openapi(site, "/api/v1/deviceToken/refresh", { method: "POST", body: { refresh_token: refresh, ...(site.deviceRefreshTarget ? { target: site.deviceRefreshTarget } : {}) } })
+    r = await openapi(site, "/api/v1/deviceToken/refresh", { method: "POST", body: deviceRefreshBody(site, refresh, a) })
   } catch (e) {
     throw new Error(`qoder device token refresh: request failed: ${e?.message ?? e}`)
   }
@@ -2780,6 +2807,47 @@ const parseAccountContext = (ctx, wallets) => {
   return out
 }
 
+// QWENWORK_APP is the QwenWork desktop release these calls name, as
+// QwenWorkCN.app 1.2.1's package.json has it (version, and
+// qoderworkUpgradeVersion for the release and its build).
+const QWENWORK_APP = { version: "1.2.1", release: "1.2.1-26092107" }
+
+// qwenworkClientHeaders are the names QwenWork's own client puts on every
+// gateway call it makes outside a chat (openApiJsonRequest: buildUserAgent,
+// a fresh X-Request-Id and getQwenWorkClientHeaders): the sign-in poll, the
+// account-context, the device token's refresh. Without them every such
+// call went out as no client at all.
+const qwenworkClientHeaders = () => ({
+  "User-Agent": `qoderwork/${QWENWORK_APP.version}`,
+  "X-Request-Id": randomUUID(),
+  "X-QwenWork-Version": QWENWORK_APP.version,
+  "X-QwenWork-Release-Version": QWENWORK_APP.release,
+  "X-QwenWork-Build": QWENWORK_APP.release.split("-")[1],
+  "X-QwenWork-Platform": process.platform,
+  "X-QwenWork-Arch": process.arch,
+  "X-QwenWork-Channel": "stable",
+})
+
+// accountIdentity is the identity QwenWork's client reads off the
+// account-context (fetchUserInfo over normalizeAccountContext: the
+// envelope's data with data.user spread over it; getIdentityFromUser): a
+// biz account names its team, which the device token's refresh is asked
+// for; anything else is the personal "c" identity, and gives nothing.
+function accountIdentity(v) {
+  const e = v?.data ?? v
+  if (!e || typeof e !== "object") return {}
+  const u = e.user && typeof e.user === "object" && !Array.isArray(e.user) ? { ...e, ...e.user } : e
+  const str = (o, keys) => {
+    for (const k of keys) if (typeof o?.[k] === "string" && o[k].length > 0) return o[k]
+    return null
+  }
+  const org = u.organization && typeof u.organization === "object" ? u.organization : null
+  const isBiz = typeof u.is_biz === "boolean" ? u.is_biz : u.isBiz === true
+  const orgId = str(u, ["orgId", "organization_id", "organizationId"]) ?? str(org, ["org_id", "orgId", "id"])
+  const teamId = str(u, ["team_id", "teamId"]) ?? str(org, ["team_id", "teamId"])
+  return isBiz && orgId && teamId ? { identity: "biz", teamId } : {}
+}
+
 const QWENWORK_COMMON = {
   clientId: "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb", // the desktop client's
   rsaKey: QWENWORK_RSA_KEY,
@@ -2789,6 +2857,7 @@ const QWENWORK_COMMON = {
   redirect: "qwenwork-cn://",
   deviceOnly: true, // the device token is itself the chat token
   deviceRefreshTarget: "c",
+  clientHeaders: qwenworkClientHeaders,
   modelScene: "qwork", listAllModels: true,
   clientType: "6", businessProduct: "qoder_work", sessionType: "qoder_work",
   userInfoPath: "/api/v1/adapter/user/account-context?include=user,plan,quota,page,data_sharing",
@@ -2942,7 +3011,7 @@ const makePlugin = (site) => async ({ client }) => {
     if (a.deviceChat) {
       // the device token is the chat token: renewed as a device token,
       // both pairs being the one pair
-      const dt = await refreshDevice(s, a.refresh, true)
+      const dt = await refreshDevice(s, a.refresh, true, a)
       return spend(a.refresh, { access: dt.token, refresh: dt.refresh, expires: dt.expires, deviceToken: dt.token, deviceRefresh: dt.refresh })
     }
     let jt
@@ -3053,7 +3122,7 @@ const makePlugin = (site) => async ({ client }) => {
     locked(async () => {
       const a = latest(await getAuth())
       if (a?.deviceToken !== attempted) return a?.deviceToken
-      const dt = await refreshDevice(siteOf(site, a), a.deviceRefresh, !!a.deviceChat)
+      const dt = await refreshDevice(siteOf(site, a), a.deviceRefresh, !!a.deviceChat, a)
       const next = { ...a, deviceToken: dt.token, deviceRefresh: dt.refresh }
       // the pair it spent was the chat pair too
       if (a.deviceChat) Object.assign(next, spend(a.refresh, { access: dt.token, refresh: dt.refresh, expires: dt.expires, deviceToken: dt.token, deviceRefresh: dt.refresh }))
@@ -3101,7 +3170,7 @@ const makePlugin = (site) => async ({ client }) => {
         const read = async (token, path = site.usagePath) => {
           const s = siteOf(site, cred)
           const res = await fetch(`${s.openapi}${path}`, {
-            headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+            headers: { Accept: "application/json", ...(s.clientHeaders?.() ?? {}), Authorization: `Bearer ${token}` },
             signal: AbortSignal.timeout(20_000),
           })
           if (res.status !== 200) throw new UsageStatus(res.status)
@@ -3753,4 +3822,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }

@@ -412,3 +412,120 @@ test("the enterprise flagship and a biz account never read the wallets (#385)", 
     restore()
   }
 })
+
+// tnt1223 on Discord: QwenWork's model list answered 403 "User identity
+// could not be verified". What QwenWorkCN.app 1.2.1 does that the plugin
+// didn't: it names itself on every gateway call (openApiJsonRequest), and
+// refreshes a biz account's device token for its own team (refreshDeviceToken).
+test("every QwenWork gateway call names the client, as QwenWork's own does (tnt1223)", async () => {
+  const { pub } = await load()
+  const flow = await pub.auth.methods[0].authorize()
+  const restore = mock()
+  answer = async (url) => {
+    if (url.includes("/api/v1/deviceToken/poll")) return new Response(JSON.stringify({ token: "dt", refresh_token: "dtr", user_id: "u1" }), { status: 200 })
+    if (url.includes("/api/v1/adapter/user/account-context")) return new Response(JSON.stringify({ data: { user: { id: "u1", email: "a@b.cn" }, plan: { name: "Free" }, quota: { total: 100, remaining: 60 } } }), { status: 200 })
+    if (url.includes("/api/v1/deviceToken/refresh")) return new Response(JSON.stringify({ token: "dt2", refresh_token: "dtr2", expires_in: 3600 }), { status: 200 })
+    return new Response("{}", { status: 404 })
+  }
+  try {
+    const acct = await flow.callback()
+    await pub.auth.usage(async () => ({ ...acct, type: "oauth", expires: Date.now() - 1_000 }))
+    const calls = seen.filter((r) => r.url.startsWith("https://gateway.qwenwork.cn/api/v1/"))
+    expect(calls.some((r) => r.url.includes("/deviceToken/poll"))).toBe(true)
+    expect(calls.some((r) => r.url.includes("/deviceToken/refresh"))).toBe(true)
+    expect(calls.some((r) => r.url.includes("/account-context"))).toBe(true)
+    for (const r of calls) {
+      expect(r.headers["User-Agent"]).toBe("qoderwork/1.2.1")
+      expect(r.headers["X-QwenWork-Version"]).toBe("1.2.1")
+      expect(r.headers["X-QwenWork-Release-Version"]).toBe("1.2.1-26092107")
+      expect(r.headers["X-QwenWork-Build"]).toBe("26092107")
+      expect(r.headers["X-QwenWork-Platform"]).toBe(process.platform)
+      expect(r.headers["X-QwenWork-Arch"]).toBe(process.arch)
+      expect(r.headers["X-QwenWork-Channel"]).toBe("stable")
+      expect(r.headers["X-Request-Id"]).toMatch(/^[0-9a-f-]{36}$/)
+    }
+    // each call its own request id
+    expect(new Set(calls.map((r) => r.headers["X-Request-Id"])).size).toBe(calls.length)
+  } finally {
+    restore()
+  }
+})
+
+test("Qoder's own gateway calls don't take QwenWork's names", async () => {
+  const mod = await import("./index.mjs")
+  const restore = mock()
+  answer = async () => new Response("{}", { status: 200 })
+  try {
+    await mod.protocol.openapi(mod._internal.SITES.qoder, "/api/v1/userinfo", { token: "t" })
+    expect(Object.keys(seen[0].headers).some((k) => k.startsWith("X-QwenWork"))).toBe(false)
+    expect(seen[0].headers["User-Agent"]).toBeUndefined()
+  } finally {
+    restore()
+  }
+})
+
+test("a biz account is signed in as biz, and its device token refreshed for its own team (tnt1223)", async () => {
+  const { pub } = await load()
+  const flow = await pub.auth.methods[0].authorize()
+  const restore = mock()
+  const bodies = []
+  const saved = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), headers: { ...(init?.headers ?? {}) } })
+    if (String(url).includes("/api/v1/deviceToken/refresh")) {
+      bodies.push(JSON.parse(String(init.body)))
+      return new Response(JSON.stringify({ token: "dt2", refresh_token: "dtr2", expires_in: 3600 }), { status: 200 })
+    }
+    if (String(url).includes("/api/v1/deviceToken/poll")) return new Response(JSON.stringify({ token: "dt", refresh_token: "dtr", user_id: "u1" }), { status: 200 })
+    // the shape fetchUserInfo reads: is_biz on the user, org and team on the organization
+    if (String(url).includes("/api/v1/adapter/user/account-context")) return new Response(JSON.stringify({ code: "200", data: { user: { id: "u1", email: "a@corp.cn", is_biz: true }, organization: { org_id: "o9", team_id: "t7" }, plan: { name: "Team" }, quota: { total: 100, remaining: 60 } } }), { status: 200 })
+    return new Response("{}", { status: 404 })
+  }
+  try {
+    const acct = await flow.callback()
+    expect(acct.identity).toBe("biz")
+    expect(acct.teamId).toBe("t7")
+    await pub.auth.usage(async () => ({ ...acct, type: "oauth", expires: Date.now() - 1_000 }))
+    expect(bodies.length).toBe(1)
+    expect(bodies[0]).toEqual({ refresh_token: "dtr", target: "biz", team_id: "t7", client_id: "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb", redirect_uri: "qwenwork-cn://" })
+  } finally {
+    globalThis.fetch = saved
+    restore()
+  }
+})
+
+test("the identity is read as QwenWork's client reads it: biz only with both org and team", async () => {
+  const mod = await import("./index.mjs")
+  const { accountIdentity } = mod._internal
+  expect(accountIdentity({ data: { user: { id: "u", is_biz: true, team_id: "t" }, orgId: "o" } })).toEqual({ identity: "biz", teamId: "t" })
+  expect(accountIdentity({ data: { id: "u", isBiz: true, organization: { id: "o", teamId: "t" } } })).toEqual({ identity: "biz", teamId: "t" })
+  expect(accountIdentity({ data: { user: { id: "u", is_biz: true }, organization: { org_id: "o" } } })).toEqual({})
+  expect(accountIdentity({ data: { user: { id: "u", is_biz: false }, organization: { org_id: "o", team_id: "t" } } })).toEqual({})
+  expect(accountIdentity({ data: { user: { id: "u" } } })).toEqual({})
+  expect(accountIdentity(null)).toEqual({})
+})
+
+test("an enterprise account's refresh carries no redirect_uri, as its sign-in had none", async () => {
+  const mod = await import("./index.mjs")
+  const s = mod.protocol.siteOf(mod._internal.SITES["qwenwork-enterprise"], entCred())
+  expect(mod._internal.deviceRefreshBody(s, "r", entCred())).toEqual({ refresh_token: "r", target: "c" })
+  // and Qoder's sites ask with the token alone
+  expect(mod._internal.deviceRefreshBody(mod._internal.SITES["qoder-cn"], "r", {})).toEqual({ refresh_token: "r" })
+})
+
+test("the identity 403 on the model list says to sign in again (tnt1223)", async () => {
+  const mod = await import("./index.mjs")
+  const restore = mock()
+  // the reporter's bytes
+  answer = async () => new Response(`{"code":"403","message":"User identity could not be verified"}`, { status: 403 })
+  try {
+    const err = await mod._internal.fetchListing(mod._internal.SITES.qwenwork, entCred()).catch((e) => e)
+    expect(err.message).toBe(`QwenWork models: HTTP 403: {"code":"403","message":"User identity could not be verified"} — QwenWork didn't recognise this sign-in's identity; sign in to the account again`)
+    // another 403 is told as it was
+    answer = async () => new Response(`{"code":"403","message":"forbidden"}`, { status: 403 })
+    const other = await mod._internal.fetchListing(mod._internal.SITES.qwenwork, entCred()).catch((e) => e)
+    expect(other.message).toBe(`QwenWork models: HTTP 403: {"code":"403","message":"forbidden"}`)
+  } finally {
+    restore()
+  }
+})
