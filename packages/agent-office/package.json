@@ -12,6 +12,7 @@
     "page/scene.js",
     "page/app.js",
     "page/icon.svg",
+    "page/layouts.js",
     "page/scene3d.js",
     "page/three.min.js",
     "page/icons",
