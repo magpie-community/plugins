@@ -1,11 +1,11 @@
 {
   "name": "@magpie-community/opencode-nous-auth",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Nous Portal OAuth with device sign-in and automatic token renewal in OpenCode and magpie",
   "type": "module",
-  "main": "./index.mjs",
-  "exports": "./index.mjs",
-  "files": ["index.mjs", "oauth.mjs", "README.md"],
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "oauth.mjs", "README.md"],
   "keywords": ["opencode", "opencode-plugin", "magpie", "nous", "oauth"],
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/nous" }
