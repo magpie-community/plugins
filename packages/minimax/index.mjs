@@ -63,6 +63,67 @@ const num = (v) => {
   return undefined
 }
 
+// ---- a request to one of a site's hosts ------------------------------------------
+
+// MiniMax's international hosts sit behind Akamai, which answers a request
+// from a mainland-China network with a 307 to the China site
+// (agent.minimax.io → agent.minimaxi.com, X-From: ak). The China site turns
+// the international token away ({"error":"invalid access token"}), so a
+// fetch that follows the redirect reads as a refused sign-in on every
+// call: the account card, the check-in, the chats (hetingyi, #666). The
+// two sites' tokens are not interchangeable either way.
+//
+// So every request to a site's hosts goes with redirect "manual": a
+// redirect on the same host is followed (up to five), one to another host
+// is an OtherSite, which says where it went and what to do, and is never
+// taken for a refused sign-in (no refresh is spent on it).
+class OtherSite extends Error {
+  constructor(site, what, from, to, status) {
+    const hint = site.region === "en"
+      ? `MiniMax does that for a network in mainland China; set a proxy outside mainland China for ${site.name}`
+      : `MiniMax sends some networks to its other site; set a proxy for ${site.name} on a network it serves from ${from.host}`
+    super(`${what}: ${from.host} sent the request on to ${to.host} (HTTP ${status}), which doesn't take ${site.name}'s sign-in. ${hint}.`)
+    this.from = from.host
+    this.to = to.host
+    this.status = status
+  }
+}
+
+const REDIRECTS = new Set([301, 302, 303, 307, 308])
+
+// siteFetch is fetch(url, init) for a request to one of site's hosts, with
+// a redirect to another host thrown as an OtherSite.
+async function siteFetch(site, url, init = {}, what = site.name) {
+  let at = new URL(url)
+  let method = init.method ?? "GET"
+  let body = init.body
+  for (let hop = 0; ; hop++) {
+    const res = await fetch(at.toString(), { ...init, method, body, redirect: "manual" })
+    const loc = REDIRECTS.has(res.status) ? res.headers.get("location") : null
+    if (!loc) return res
+    let next
+    try {
+      next = new URL(loc, at)
+    } catch {
+      return res
+    }
+    if (next.host !== at.host) {
+      await res.body?.cancel().catch(() => {})
+      throw new OtherSite(site, what, at, next, res.status)
+    }
+    // the same host: followed as fetch would, a body sent again only when
+    // it can be
+    const again = res.status === 307 || res.status === 308
+    if (hop >= 5 || (again && body !== undefined && body !== null && typeof body !== "string")) return res
+    await res.body?.cancel().catch(() => {})
+    if (!again && method !== "GET" && method !== "HEAD") {
+      method = "GET"
+      body = undefined
+    }
+    at = next
+  }
+}
+
 // ---- the models -------------------------------------------------------------
 
 // The limits the endpoint really allows, for the models whose advertised
@@ -189,7 +250,7 @@ async function liveModels(site, access) {
   const url = new URL("/mavis/api/v1/models", site.llm)
   url.searchParams.set("region", site.region)
   url.searchParams.set("buildEnv", "prod")
-  const ask = (auth) => fetch(url, {
+  const ask = (auth) => siteFetch(site, url, {
     headers: { Accept: "application/json", ...(auth ? { Authorization: "Bearer " + auth } : {}) },
     signal: AbortSignal.timeout(10000),
   })
@@ -211,13 +272,13 @@ class OAuthError extends Error {
 
 // postForm posts an OAuth form, as MiniMax Code's client does; ok is false
 // when the answer is an HTTP error or carries an "error".
-async function postForm(url, fields, timeoutMs = 30000) {
-  const res = await fetch(url, {
+async function postForm(site, url, fields, timeoutMs = 30000) {
+  const res = await siteFetch(site, url, {
     method: "POST",
     headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(fields).toString(),
     signal: AbortSignal.timeout(timeoutMs),
-  })
+  }, "sign-in")
   const text = await res.text() // preserve transport errors while reading the body
   let body
   try {
@@ -254,7 +315,7 @@ function token(body, refresh) {
 async function startDevice(site) {
   const verifier = randomBytes(32).toString("base64url")
   const challenge = createHash("sha256").update(verifier, "ascii").digest("base64url")
-  const r = await postForm(site.account + "/oauth2/device/code", {
+  const r = await postForm(site, site.account + "/oauth2/device/code", {
     client_id: CLIENT_ID,
     scope: SCOPE,
     audience: AUDIENCE,
@@ -304,7 +365,7 @@ async function pollDevice(site, d) {
     if (Date.now() >= d.deadline) break
     let r
     try {
-      r = await postForm(site.account + "/oauth2/token", {
+      r = await postForm(site, site.account + "/oauth2/token", {
         grant_type: DEVICE_GRANT,
         ...d.poll,
         client_id: CLIENT_ID,
@@ -339,7 +400,7 @@ async function pollDevice(site, d) {
 
 // refreshToken trades a refresh token for a new access token.
 async function refreshToken(site, refresh) {
-  const r = await postForm(site.account + "/oauth2/token", {
+  const r = await postForm(site, site.account + "/oauth2/token", {
     grant_type: "refresh_token",
     refresh_token: refresh,
     client_id: CLIENT_ID,
@@ -411,7 +472,7 @@ function checked(env, what) {
 
 async function accountCall(site, path, opts, what) {
   const { url, init } = signed(site, path, opts)
-  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(15000) })
+  const res = await siteFetch(site, url, { ...init, signal: AbortSignal.timeout(15000) }, what)
   if (res.status === 401 || res.status === 403) throw new AccountRefused(`${what}: the sign-in was refused (HTTP ${res.status})`, res.status)
   if (!res.ok) throw new Error(`${what}: HTTP ${res.status}`)
   let env
@@ -525,10 +586,10 @@ function planWindows(body) {
 }
 
 async function planQuota(site, access, group) {
-  const res = await fetch(site.platform + "/v1/api/openplatform/coding_plan/remains", {
+  const res = await siteFetch(site, site.platform + "/v1/api/openplatform/coding_plan/remains", {
     headers: { Accept: "application/json", Authorization: "Bearer " + access, ...(group ? { "X-Group-Id": group } : {}) },
     signal: AbortSignal.timeout(15000),
-  })
+  }, "M Plan")
   if (!res.ok) throw new Error(`M Plan: HTTP ${res.status}`)
   return planWindows(await res.json())
 }
@@ -878,16 +939,28 @@ function makePlugin(site) {
                 headers.set("X-Mavis-Timezone-Offset", String(new Date().getTimezoneOffset() * -60))
                 if (!headers.get("X-Mavis-Session-Id")) headers.set("X-Mavis-Session-Id", session)
                 if (!headers.has("anthropic-version")) headers.set("anthropic-version", "2023-06-01")
-                return fetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method ?? "POST", headers, body })
+                return siteFetch(site, req ? req.url : input instanceof URL ? input.href : input, { ...init, method: init?.method ?? req?.method ?? "POST", headers, body }, "chat")
               }
               let { a, renewed: did } = await fresh(getAuth)
-              let res = await send(a)
-              if (res.status === 401) {
-                // the token was turned away before its end: a newer one
-                // if there is one, else refreshed, and sent once more
-                ;({ a } = await fresh(getAuth, a.access))
-                did = true
+              let res
+              try {
                 res = await send(a)
+                if (res.status === 401) {
+                  // the token was turned away before its end: a newer one
+                  // if there is one, else refreshed, and sent once more
+                  ;({ a } = await fresh(getAuth, a.access))
+                  did = true
+                  res = await send(a)
+                }
+              } catch (e) {
+                // sent on to the other site: not the account's fault, so
+                // neither a refused sign-in nor a refresh
+                if (!(e instanceof OtherSite)) throw e
+                return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: e.message } }), {
+                  status: 502,
+                  statusText: "Bad Gateway",
+                  headers: { "content-type": "application/json", "X-Magpie-Sign-In": did ? "renewed" : "kept" },
+                })
               }
               return answer(res, did)
             },

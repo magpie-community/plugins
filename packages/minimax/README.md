@@ -78,6 +78,18 @@ A refusal that says the credits or quota ran out goes on as a 429. The 402,
 403 or 429 statuses count, when the body says so. That way magpie can move
 the conversation to another account.
 
+## The international site from mainland China
+
+`minimax-code-global` needs a network outside mainland China. From a
+mainland-China network, MiniMax's edge answers `agent.minimax.io` with a
+307 to `agent.minimaxi.com`, the China site, which doesn't take the
+international site's sign-in (the two sites' tokens don't work on each
+other's hosts). The plugin doesn't follow a redirect to another host: the
+usage card, the check-in, the chats (a 502) and the sign-in say where the
+request was sent and to set a proxy outside mainland China for the
+provider. No refresh token is spent on it, and the sign-in is kept. The
+China site (`minimax-code`) is unaffected.
+
 ## Models
 
 When you are signed in, the models come from MiniMax Code's live model
