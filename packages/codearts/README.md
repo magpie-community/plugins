@@ -72,7 +72,9 @@ once today's benefit has been claimed (`POST /api/v1/benefit/claim`, once a Beij
 client does; a `benefit not found` on a day not yet claimed claims it too). Each model's credit
 rate (the client's 「消耗系数」) is reported as magpie's `rate`,
 with its reasoning flag and limits, from the account's main agent (`build`) model list. Before
-signing in, a short built-in catalog stands in.
+signing in, a short built-in catalog stands in. Since 0.3.2 each model keeps the name CodeArts
+gives it: a dated model such as `deepseek-v4.1-flash-1017` is its own model (its own off-peak
+rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash` (#677).
 
 ## Requests
 
@@ -235,6 +237,8 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   `503` 并保留登录，只有被 STS 明确拒绝才标记需要重新登录。账号标识取自 refresh_token，重复登录不会多出账号。
 - **模型**：账号实时的内置模型列表；领取当日免费权益成功后，再加上免费模型（每个北京自然日领一次，与
   客户端一致；当天还没领取时遇到 `benefit not found` 也会先领取再重发）。每个模型的「消耗系数」作为 magpie 的倍率上报，来自账号主智能体（`build`）的模型列表。
+  0.3.2 起模型名照码道给的显示：带日期的 `deepseek-v4.1-flash-1017` 是另一个模型（错峰倍率不同），显示为
+  `DeepSeek-V4.1-Flash-1017`，不再和 `DeepSeek-V4.1-Flash` 叫同一个名字（#677）。
 - **请求**：SDK-HMAC-SHA256 签名，只签给码道自己的两个主机（`snap-access.cn-north-4.myhuaweicloud.com`、
   `opengw.developer.huaweicloud.com`），发往其他地址（如改过的 `api`）的请求在凭据发出前就被拒绝，签名请求和令牌请求都不跟随重定向；像客户端一样发送 `x-ot-session-id` 会话头（每账号一个会话），账号内
   在途请求不超过 3 个，`TM.00001041` 退避重试，网关排队时按客户端的方式等待（0.2.3 起，magpie 在这个请求之后还有别的账号、供应商或路由组成员时（`x-magpie-fallback: 1`），排队的请求立即退出队列并以 `503` 加队列的 `Retry-After` 回答，magpie 随即改问下一个）；总是以流式请求上游（码道
