@@ -485,11 +485,27 @@ describe("models the vendor added (the desktop client asks the gateway for its l
     const cfg = {}
     await plugin.config(cfg)
     const got = await plugin.provider.models({ models: cfg.provider.catpaw.models }, { auth: saved })
-    expect(got["longcat-2.5"]).toEqual({ name: "LongCat-2.5" })
+    expect(got["longcat-2.5"]).toEqual({ name: "LongCat-2.5 (限时免费)", rate: 0, free: true })
     expect(Object.keys(got)).toContain("longcat-2.0")
     expect(got["longcat-2.0"].name).toBe("LongCat-2.0 (限时免费)")
     // the user's own custom model (negative id) is not the gateway's to serve
     expect(Object.keys(got)).not.toContain("my-own-model")
+  })
+
+  test("a table model takes the list's multiplier; the user's own value stays", async () => {
+    const got = await plugin.provider.models({ models: { "kimi-k3": { name: "Kimi-K3" } } }, { auth: saved })
+    expect(got["kimi-k3"]).toEqual({ name: "Kimi-K3", rate: 1.5 })
+    const own = await plugin.provider.models({ models: { "kimi-k3": { name: "Kimi-K3", rate: 9 } } }, { auth: saved })
+    expect(own["kimi-k3"].rate).toBe(9)
+  })
+
+  test("the multiplier is read as the client reads it, and a missing one is not 0", () => {
+    const row = (extendedInfo) => ({ modelTypeId: 5, modelTypeName: "X-1", extendedInfo })
+    expect(_internal.liveModels([row({ rateMultiplier: "2x" })])["x-1"].rate).toBe(2)
+    expect(_internal.liveModels([row(JSON.stringify({ rateMultiplier: 0.5 }))])["x-1"].rate).toBe(0.5)
+    expect("rate" in _internal.liveModels([row({})])["x-1"]).toBe(false)
+    expect("rate" in _internal.liveModels([row({ rateMultiplier: "abc" })])["x-1"]).toBe(false)
+    expect(_internal.liveModels([row({ shortName: "X One", marketingCopy: "新,限时免费" })])["x-1"]).toEqual({ name: "X One (新、限时免费)", type: 5, image: false, free: true })
   })
 
   test("a chat on the new model sends the listed modelType", async () => {

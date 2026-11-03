@@ -5,8 +5,8 @@ const json = (status, body) => new Response(JSON.stringify(body), { status, head
 
 const defaultModelTypes = () => [
   { modelTypeId: 77, modelTypeName: "LongCat-2.0", provider: "CATPAW", supportImage: true },
-  { modelTypeId: 83, modelTypeName: "Kimi-K3", provider: "CATPAW", supportImage: true },
-  { modelTypeId: 120, modelTypeName: "LongCat-2.5", provider: "CATPAW", supportImage: true },
+  { modelTypeId: 83, modelTypeName: "Kimi-K3", provider: "CATPAW", supportImage: true, extendedInfo: { rateMultiplier: "1.5" } },
+  { modelTypeId: 120, modelTypeName: "LongCat-2.5", provider: "CATPAW", supportImage: true, extendedInfo: { rateMultiplier: "0", marketingCopy: "限时免费" } },
   { modelTypeId: -3, modelTypeName: "my-own-model", provider: "USER_CUSTOM", supportImage: false },
 ]
 

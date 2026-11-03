@@ -70,9 +70,39 @@ function liveModels(rows) {
     const name = typeof r.modelTypeName === "string" ? r.modelTypeName.trim() : ""
     const id = byType.get(type) ?? name.toLowerCase().replace(/\s+/g, "-")
     if (!id || id in out) continue
-    out[id] = { name: MODELS[id]?.name ?? name, type, image: r.supportImage === true }
+    const x = extendedOf(r)
+    const label = (typeof r.description === "string" && r.description.trim()) || (typeof x.shortName === "string" && x.shortName.trim()) || name
+    // the badges the client draws beside a model's name (extendedInfo.
+    // marketingCopy, comma-separated: "限时免费"), written the way the table
+    // writes LongCat-2.0's
+    const copy = typeof x.marketingCopy === "string" ? x.marketingCopy.split(/[,，]/).map((c) => c.trim()).filter(Boolean) : []
+    const rate = rateOf(x.rateMultiplier)
+    const free = copy.some((c) => c.includes("免费")) || rate === 0
+    out[id] = {
+      name: MODELS[id]?.name ?? (copy.length ? `${label} (${copy.join("、")})` : label),
+      type,
+      image: r.supportImage === true,
+      ...(rate !== undefined ? { rate } : {}),
+      ...(free ? { free: true } : {}),
+    }
   }
   return out
+}
+
+// extendedInfo as the client reads it: an object (a JSON string is parsed)
+function extendedOf(r) {
+  let x = r?.extendedInfo
+  if (typeof x === "string") {
+    try { x = JSON.parse(x) } catch { x = null }
+  }
+  return x && typeof x === "object" ? x : {}
+}
+
+// the multiplier the client prints as "<n>x" (extendedInfo.rateMultiplier);
+// undefined when the vendor gives none, so nothing is shown rather than 0
+function rateOf(v) {
+  const n = typeof v === "number" ? v : typeof v === "string" && /^\s*\d+(?:\.\d+)?\s*[x×]?\s*$/i.test(v) ? Number.parseFloat(v) : NaN
+  return Number.isFinite(n) && n >= 0 ? n : undefined
 }
 
 async function fetchLiveModels(token, signal) {
@@ -115,6 +145,9 @@ async function specOf(token, id, signal) {
 // window; an invented number would lie to the agent sizing its prompts)
 const configModel = (id, m) => ({
   name: m.name,
+  // magpie's own: the credit multiplier and the free mark, as the client shows them
+  ...(m.rate !== undefined ? { rate: m.rate } : {}),
+  ...(m.free ? { free: true } : {}),
 })
 
 // ── small helpers ──────────────────────────────────────────────────────────
@@ -706,8 +739,16 @@ export async function CatPawAuthPlugin({ client } = {}) {
         }
         const live = await liveListFor(token)
         if (!live) return provider?.models ?? {}
-        const extra = Object.fromEntries(Object.entries(live).filter(([id]) => !(id in (provider?.models ?? {}))).map(([id, m]) => [id, configModel(id, m)]))
-        return { ...(provider?.models ?? {}), ...extra }
+        const have = provider?.models ?? {}
+        const extra = Object.fromEntries(Object.entries(live).filter(([id]) => !(id in have)).map(([id, m]) => [id, configModel(id, m)]))
+        // a table model gets the list's multiplier and free mark unless the
+        // user's own config already set one
+        const known = Object.fromEntries(Object.entries(have).map(([id, m]) => {
+          const l = live[id]
+          if (!l) return [id, m]
+          return [id, { ...m, ...(l.rate !== undefined && m.rate === undefined ? { rate: l.rate } : {}), ...(l.free && m.free === undefined ? { free: true } : {}) }]
+        }))
+        return { ...known, ...extra }
       },
     },
     async config(config) {
