@@ -46,6 +46,70 @@ const MODELS = {
 const DEFAULT_MODEL_TYPE = 77
 const modelTypeOf = (id) => MODELS[id]?.type ?? DEFAULT_MODEL_TYPE
 
+// The desktop client does not keep a model table of its own: it asks the
+// gateway for one (POST /api/agent/maas/model-types with {tenant: "CatDesk",
+// scene: "CATX_APP", env: "EXTERNAL"}, read from the 2026.1016 client's
+// main process, 5 minutes cached) and sends a model's modelTypeId as the
+// round and turn body's modelType. MODELS above is only what that list held
+// when the plugin was written; a model the vendor adds later (LongCat 2.5,
+// 2026-11-03) is in the list and not in the table. The list is read with the
+// account's own token, and a failed read leaves the table.
+const LIVE_TTL = 5 * 60_000
+const liveLists = new Map() // token -> { at, models }
+
+// a listed model's id: the table's id when the table has its type, else the
+// vendor's modelTypeName as a lower-cased slug ("LongCat-2.5" -> "longcat-2.5")
+function liveModels(rows) {
+  const out = {}
+  const byType = new Map(Object.entries(MODELS).map(([id, m]) => [m.type, id]))
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const type = r?.modelTypeId
+    // a negative id is the user's own custom model (it needs its own key and
+    // base URL); the gateway does not serve it
+    if (!Number.isInteger(type) || type < 0 || r.provider === "USER_CUSTOM") continue
+    const name = typeof r.modelTypeName === "string" ? r.modelTypeName.trim() : ""
+    const id = byType.get(type) ?? name.toLowerCase().replace(/\s+/g, "-")
+    if (!id || id in out) continue
+    out[id] = { name: MODELS[id]?.name ?? name, type, image: r.supportImage === true }
+  }
+  return out
+}
+
+async function fetchLiveModels(token, signal) {
+  const res = await fetch(ORIGIN + "/api/agent/maas/model-types", {
+    method: "POST",
+    headers: gatewayHeaders(token),
+    body: JSON.stringify({ tenant: "CatDesk", scene: "CATX_APP", env: "EXTERNAL" }),
+    signal: signal ?? AbortSignal.timeout(15_000),
+  })
+  if (res.status === 401) throw Object.assign(new Error("妙手登录态已过期，请在妙手桌面端重新登录"), { signIn: "expired" })
+  const body = await res.json().catch(() => null)
+  if (!res.ok || (body && typeof body.code === "number" && body.code !== 0 && body.code !== 200)) throw new Error(`妙手模型列表返回 HTTP ${res.status}`)
+  const rows = Array.isArray(body) ? body : body?.data
+  if (!Array.isArray(rows)) throw new Error("妙手模型列表无法解析")
+  return liveModels(rows)
+}
+
+// the account's list, 5 minutes cached; null when it cannot be read (the
+// table is then all there is)
+async function liveListFor(token, signal) {
+  const hit = liveLists.get(token)
+  if (hit && Date.now() - hit.at < LIVE_TTL) return hit.models
+  try {
+    const models = await fetchLiveModels(token, signal)
+    liveLists.set(token, { at: Date.now(), models })
+    return models
+  } catch {
+    return hit?.models ?? null
+  }
+}
+
+// a model by id: the table first (no request), then the account's list
+async function specOf(token, id, signal) {
+  if (MODELS[id]) return MODELS[id]
+  return (await liveListFor(token, signal))?.[id] ?? null
+}
+
 // no modalities (the conversation prompt is text-only — see the 400s above)
 // and no `limit` (the client publishes no per-model context or output
 // window; an invented number would lie to the agent sizing its prompts)
@@ -182,8 +246,7 @@ function buildPrompt(messages) {
 
 // runConversation: round → event(running) → turn(SSE), yielding OpenAI-shaped
 // deltas from the cumulative frames (the proxy's catpawComplete, as a stream)
-async function* runConversation(token, chat, signal) {
-  const modelType = modelTypeOf(chat.model)
+async function* runConversation(token, chat, signal, modelType = modelTypeOf(chat.model)) {
   const convId = crypto.randomUUID()
   const msgId = crypto.randomUUID()
   const turnId = crypto.randomUUID()
@@ -334,8 +397,6 @@ export async function CatPawAuthPlugin({ client } = {}) {
             }
             if (!Array.isArray(chat.messages) || chat.messages.length === 0)
               return errorResponse(400, "messages is required")
-            if (!(chat.model in MODELS) && String(chat.model).trim() !== "")
-              return errorResponse(400, `unknown model "${chat.model}" (known: ${Object.keys(MODELS).join(", ")})`)
             // the flattened one-text prompt the conversation protocol carries
             // has no room for tool schemas, tool results or image parts: a
             // request carrying any of them would get an answer that never
@@ -373,6 +434,17 @@ export async function CatPawAuthPlugin({ client } = {}) {
             }
             if (!token) return errorResponse(401, "妙手登录态缺失：请登录妙手桌面端或手动粘贴 token")
 
+            // the model: the table's, or one the vendor added since (its own
+            // list, read with this account's token)
+            let spec = null
+            if (String(chat.model ?? "").trim() !== "") {
+              spec = await specOf(token, chat.model, init.signal)
+              if (!spec) {
+                const known = Object.keys({ ...MODELS, ...(liveLists.get(token)?.models ?? {}) })
+                return errorResponse(400, `unknown model "${chat.model}" (known: ${known.join(", ")})`)
+              }
+            }
+
             // the answer as an OpenAI Response, streaming or not
             const model = chat.model || "longcat-2.0"
             const id = `chatcmpl-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`
@@ -392,7 +464,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                 async start(controller) {
                   controller.enqueue(chunk(null, null)) // the role frame
                   try {
-                    for await (const ev of runConversation(token, chat, init.signal)) {
+                    for await (const ev of runConversation(token, chat, init.signal, spec?.type)) {
                       if (ev.delta) controller.enqueue(chunk(ev.delta, null))
                       if (ev.reasoningDelta) controller.enqueue(chunk(null, null, ev.reasoningDelta))
                       if (ev.done) {
@@ -415,7 +487,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
             let text = ""
             let reasoning = ""
             try {
-              for await (const ev of runConversation(token, chat, init.signal)) {
+              for await (const ev of runConversation(token, chat, init.signal, spec?.type)) {
                 if (ev.done) {
                   text = ev.text
                   reasoning = ev.reasoning
@@ -619,6 +691,25 @@ export async function CatPawAuthPlugin({ client } = {}) {
         },
       ],
     },
+    // the account's own list: the table plus what the vendor serves now
+    provider: {
+      id: ID,
+      async models(provider, { auth } = {}) {
+        let token
+        if (auth?.type === "oauth" && auth.access && auth.source !== "desktop") token = auth.access
+        else {
+          try {
+            token = readAuth().token
+          } catch {
+            return provider?.models ?? {}
+          }
+        }
+        const live = await liveListFor(token)
+        if (!live) return provider?.models ?? {}
+        const extra = Object.fromEntries(Object.entries(live).filter(([id]) => !(id in (provider?.models ?? {}))).map(([id, m]) => [id, configModel(id, m)]))
+        return { ...(provider?.models ?? {}), ...extra }
+      },
+    },
     async config(config) {
       config.provider ??= {}
       const was = config.provider[ID] ?? {}
@@ -634,4 +725,4 @@ export async function CatPawAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { ID, BODY_IDENTITY, NAME, MODELS, modelTypeOf, buildPrompt, gatewayHeaders, gatewayHeadersForTest: gatewayHeaders, readAuth, authPath, configModel }
+export const _internal = { ID, BODY_IDENTITY, NAME, MODELS, modelTypeOf, buildPrompt, gatewayHeaders, gatewayHeadersForTest: gatewayHeaders, readAuth, authPath, configModel, liveModels, liveListFor, forgetLive: () => liveLists.clear() }

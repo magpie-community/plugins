@@ -3,6 +3,13 @@
 
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 
+const defaultModelTypes = () => [
+  { modelTypeId: 77, modelTypeName: "LongCat-2.0", provider: "CATPAW", supportImage: true },
+  { modelTypeId: 83, modelTypeName: "Kimi-K3", provider: "CATPAW", supportImage: true },
+  { modelTypeId: 120, modelTypeName: "LongCat-2.5", provider: "CATPAW", supportImage: true },
+  { modelTypeId: -3, modelTypeName: "my-own-model", provider: "USER_CUSTOM", supportImage: false },
+]
+
 export function fakeCatPaw() {
   const state = {
     token: "cat-token-1",
@@ -17,6 +24,13 @@ export function fakeCatPaw() {
     disabledSources: new Set(["CatPawCLI"]),
     turnBodies: [],
     balanceCalls: 0,
+    // POST /api/agent/maas/model-types, the list the desktop client asks for
+    // (items as its renderer reads them: modelTypeId, modelTypeName, provider,
+    // supportImage). The ids here are the table's own, plus one the table has
+    // never heard of (type 120 is a fixture, not the vendor's number).
+    modelTypes: defaultModelTypes(),
+    modelTypeCalls: [],
+    modelTypesFail: false,
     // the web sign-in: sids awaiting their token, like the real vendor
     webSids: new Map(), // sid -> token to hand out
     webTokens: new Set(), // tokens poll-token has handed out (current-user accepts these)
@@ -31,6 +45,9 @@ export function fakeCatPaw() {
       state.disabledSources = new Set(["CatPawCLI"])
       state.turnBodies = []
       state.balanceCalls = 0
+      state.modelTypes = defaultModelTypes()
+      state.modelTypeCalls = []
+      state.modelTypesFail = false
       state.webSids = new Map()
       state.webTokens = new Set()
       state.pollCalls = 0
@@ -87,6 +104,12 @@ export function fakeCatPaw() {
       if (req.headers.get("m-appkey") !== "com.sankuai.mcopilot.cli") return json(400, { code: 400, msg: "m-appkey missing" })
 
       const body = await req.json().catch(() => ({}))
+
+      if (url.pathname === "/api/agent/maas/model-types") {
+        state.modelTypeCalls.push(body)
+        if (state.modelTypesFail) return json(500, { code: 500, msg: "boom" })
+        return json(200, { code: 0, message: "success", data: state.modelTypes, errorCode: null })
+      }
 
       if (url.pathname === "/api/agent/conversation/round") {
         state.rounds++

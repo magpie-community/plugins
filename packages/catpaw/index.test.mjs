@@ -466,6 +466,68 @@ describe("source (plugins#605)", () => {
   })
 })
 
+describe("models the vendor added (the desktop client asks the gateway for its list)", () => {
+  const chatWith = async (model) => {
+    const loader = await plugin.auth.loader(getAuth)
+    return loader.fetch("https://ai.catpaw.meituan.com/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model, stream: false, messages: [{ role: "user", content: "hi" }] }),
+    })
+  }
+  beforeEach(() => _internal.forgetLive())
+
+  test("the list is asked the way the client asks it", async () => {
+    await plugin.provider.models({ models: {} }, { auth: saved })
+    expect(fake.state.modelTypeCalls).toEqual([{ tenant: "CatDesk", scene: "CATX_APP", env: "EXTERNAL" }])
+  })
+
+  test("a listed model the table lacks is offered, under its table id when it has one", async () => {
+    const cfg = {}
+    await plugin.config(cfg)
+    const got = await plugin.provider.models({ models: cfg.provider.catpaw.models }, { auth: saved })
+    expect(got["longcat-2.5"]).toEqual({ name: "LongCat-2.5" })
+    expect(Object.keys(got)).toContain("longcat-2.0")
+    expect(got["longcat-2.0"].name).toBe("LongCat-2.0 (限时免费)")
+    // the user's own custom model (negative id) is not the gateway's to serve
+    expect(Object.keys(got)).not.toContain("my-own-model")
+  })
+
+  test("a chat on the new model sends the listed modelType", async () => {
+    const res = await chatWith("longcat-2.5")
+    expect(res.status).toBe(200)
+    expect(fake.state.conversations.at(-1).modelType).toBe(120)
+  })
+
+  test("a table model costs no list request", async () => {
+    const res = await chatWith("kimi-k3")
+    expect(res.status).toBe(200)
+    expect(fake.state.modelTypeCalls).toEqual([])
+    expect(fake.state.conversations.at(-1).modelType).toBe(83)
+  })
+
+  test("the list is read once in five minutes", async () => {
+    await chatWith("longcat-2.5")
+    await chatWith("longcat-2.5")
+    expect(fake.state.modelTypeCalls.length).toBe(1)
+  })
+
+  test("a model neither the table nor the list has is still refused, naming what is known", async () => {
+    const res = await chatWith("not-a-model")
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.message).toContain("longcat-2.5")
+  })
+
+  test("when the list cannot be read the table stands", async () => {
+    fake.state.modelTypesFail = true
+    const cfg = {}
+    await plugin.config(cfg)
+    const got = await plugin.provider.models({ models: cfg.provider.catpaw.models }, { auth: saved })
+    expect(Object.keys(got).sort()).toEqual(Object.keys(cfg.provider.catpaw.models).sort())
+    expect((await chatWith("longcat-2.5")).status).toBe(400)
+    expect((await chatWith("glm-5.3")).status).toBe(200)
+  })
+})
+
 describe("helpers", () => {
   test("model type mapping", () => {
     expect(_internal.modelTypeOf("longcat-2.0")).toBe(77)

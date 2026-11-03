@@ -19,7 +19,7 @@ magpie plugin login catpaw     # 选「网页登录」/「妙手桌面端登录�
   - `手动粘贴 token`。
 - **无续期接口**：token 过期后 401，网页登录重新发起一次即可；桌面端登录态则在妙手里重新登录（下一请求自动读新 token）。
 - **聊天**：`round → event → turn` 三步会话机；上游 SSE 帧为累积式，插件做差分转 OpenAI delta（`content` + `reasoning_content`），流式与非流式都支持。
-- **模型**：妙手桌面端的 9 个模型（longcat-2.0 / glm-5.3 系列 / deepseek-v4 系列 / minimax-m3 / kimi-k3 / auto），静态表（无远程目录接口）。不声明各模型的上下文/输出窗口（客户端未公布，不编造数字），也不声明图片输入（见下）。
+- **模型**：妙手桌面端的 9 个模型（longcat-2.0 / glm-5.3 系列 / deepseek-v4 系列 / minimax-m3 / kimi-k3 / auto），静态表打底，再按妙手桌面端的做法向网关取账号的模型清单（`POST /api/agent/maas/model-types`，缓存 5 分钟），官方新增的模型（如 LongCat 2.5）无需发版即出现；取不到清单时用静态表。不声明各模型的上下文/输出窗口（客户端未公布，不编造数字），也不声明图片输入（见下）。
 - **工具与图片**：会话协议只收一段扁平文本 prompt，工具定义、工具结果与图片都无法送达——带这些的请求以 **400 明确拒绝**（而不是悄悄丢掉后答错）。
 - **余额（usage）**：`GET https://catx.nocode.cn/api/gateway/credit/balance`，鉴权头是 **`X-Auth-Token: <accessToken>`**。
   - ⚠️ 这个接口与聊天网关**不是同一个鉴权头**：它只认 `X-Auth-Token`，把聊天用的 `Cookie: X-Passport-Token` 发到这里会稳定 401（body `code 4010`）。magpie 把 usage 的 401 当作「登录态失效」，所以鉴权头必须分开核对。
