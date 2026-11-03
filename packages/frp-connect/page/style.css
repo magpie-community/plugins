@@ -1,11 +1,10 @@
 body {
   margin: 0;
-  padding: 20px;
+  padding: 20px 24px;
   max-width: 760px;
   display: flex;
   flex-direction: column;
   gap: 20px;
-  font-family: inherit;
   color: var(--magpie-fg, inherit);
 }
 
@@ -14,49 +13,10 @@ header h1 {
   font-size: 20px;
 }
 
-.mode {
-  display: flex;
-  gap: 16px;
-}
-
-.mode label {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-}
-
-.frpc-source {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  margin-top: 10px;
-}
-
-.frpc-source label {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-}
-
-#frpcPathRow {
-  margin-top: 8px;
-}
-
-#frpcPathRow label {
-  gap: 5px;
-  font-size: 12px;
-}
-
-#frpcDownloadInfo {
-  margin-top: 8px;
-}
-
 .sub {
   margin: 0;
   font-size: 13px;
-  opacity: 0.65;
+  color: var(--magpie-muted, GrayText);
 }
 
 section h2 {
@@ -64,13 +24,44 @@ section h2 {
   font-size: 14px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  opacity: 0.7;
+  color: var(--magpie-muted, GrayText);
+}
+
+/* a choice of two or five: a row of buttons, pressed or not, never the
+   platform's own select */
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: 8px;
+  border: 1px solid var(--magpie-line, ButtonBorder);
+  border-radius: 8px;
+  background: var(--magpie-card, Canvas);
+}
+
+.segmented button {
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: transparent;
+  font-size: 12px;
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--magpie-accent-soft, Highlight);
+  color: var(--magpie-accent, HighlightText);
+}
+
+.segmented + .sub {
+  margin-bottom: 10px;
 }
 
 .grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px 12px;
+  margin-bottom: 14px;
 }
 
 label {
@@ -78,21 +69,15 @@ label {
   flex-direction: column;
   gap: 5px;
   font-size: 12px;
+  color: var(--magpie-muted, GrayText);
 }
 
-input[type="text"],
-input[type="number"],
-select,
-textarea {
+label input,
+label select,
+label textarea {
   width: 100%;
   box-sizing: border-box;
-}
-
-textarea {
-  min-height: 320px;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.5;
+  color: var(--magpie-fg, inherit);
 }
 
 .check {
@@ -102,10 +87,40 @@ textarea {
   font-size: 13px;
 }
 
+.check input {
+  width: auto;
+}
+
+.reveal {
+  display: flex;
+  gap: 6px;
+}
+
+.reveal input {
+  flex: 1;
+  min-width: 0;
+}
+
+.reveal button {
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+#frpcPathRow {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.ghost {
+  background: transparent;
 }
 
 .proxy {
@@ -114,7 +129,7 @@ textarea {
   gap: 8px;
   padding: 12px;
   margin-bottom: 10px;
-  border: 1px solid color-mix(in srgb, var(--magpie-fg, #888) 20%, transparent);
+  border: 1px solid var(--magpie-line, ButtonBorder);
   border-radius: 8px;
 }
 
@@ -124,11 +139,11 @@ textarea {
   gap: 8px;
 }
 
-.proxy .line:first-child {
+.proxy .line.first {
   grid-template-columns: 1fr 120px;
 }
 
-.proxy .line.http {
+.proxy .line.domains {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
@@ -138,19 +153,27 @@ textarea {
 
 pre {
   margin: 0;
-  padding: 12px;
+  max-height: 320px;
   overflow: auto;
-  font-size: 12px;
-  line-height: 1.5;
+  padding: 12px;
+  border: 1px solid var(--magpie-line, ButtonBorder);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--magpie-fg, #888) 8%, transparent);
+  background: var(--magpie-card, Canvas);
   white-space: pre;
 }
 
 #log {
-  max-height: 320px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+textarea {
+  min-height: 320px;
+  padding: 8px;
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 footer {
@@ -159,23 +182,16 @@ footer {
   gap: 12px;
 }
 
-footer .primary {
-  font-weight: 600;
-}
-
 #status {
   font-size: 12px;
-  opacity: 0.8;
+  color: var(--magpie-muted, GrayText);
 }
 
 @media (max-width: 560px) {
   .grid,
   .proxy .line,
-  .proxy .line.http {
-    grid-template-columns: 1fr;
-  }
-
-  .proxy .line:first-child {
+  .proxy .line.first,
+  .proxy .line.domains {
     grid-template-columns: 1fr;
   }
 }

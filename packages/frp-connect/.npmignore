@@ -1,7 +1,0 @@
-node_modules/
-page/_log.js
-.gitignore
-*.log
-frpc.pid
-frpc.json
-frpc.toml

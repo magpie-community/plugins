@@ -1,24 +1,12 @@
 # frp-connect
 
-一个 magpie 插件，把 FRP 连接做成「配置页面 + 服务」。你在插件的配置页面里填好 FRP 服务器和代理，插件自己生成 `frpc.toml`、运行并管理 `frpc`，不需要再维护一份外部 frpc 配置文件，也不需要单独安装 `frpc`。
+把 frp（frpc）做成一个 magpie 插件：一个配置页面，加一个连着 magpie 生命周期的 frpc 进程。你在页面里填好服务器和代理，插件生成 `frpc.toml`、下载并启动固定版本的 frpc，点一下就能开、能停。
 
 ## 组成
 
-- 配置页面（`magpie.page`）：在 magpie 侧边栏「FRP 连接」里填服务器和代理，实时预览生成的 `frpc.toml`，点保存写入插件选项。
-- 「操作」按钮：页面里可直接点 校验配置 / 启动 / 停止 / 重启 / 刷新日志。
-- 「运行日志」区域：页面底部每 3 秒刷新一次 frpc 日志与运行状态（由服务端写入 `page/_log.js` 供页面读取）。
-- 服务（工具钩子）：读取插件选项，生成配置、校验并运行 `frpc`，支持自动连接。
-
-工具（每个接入 magpie 的智能体都能用）：
-
-- `frp-connect_start` —— 启动；若配置有变化会先重启
-- `frp-connect_stop` —— 停止
-- `frp-connect_restart` —— 重启，应用最新配置
-- `frp-connect_status` —— 运行状态 / PID
-- `frp-connect_logs` —— 查看 frpc 日志路径与最新日志
-- `frp-connect_install` —— 确认 frpc 可用并报告路径与版本
-- `frp-connect_generate` —— 输出当前生成的 `frpc.toml`
-- `frp-connect_verify` —— `frpc verify -c` 校验
+- **配置页面**（`magpie.page`）：在 magpie 侧边栏「FRP 连接」里填服务器、鉴权、代理，右边就是实际会跑的 `frpc.toml`。「校验配置 / 启动 / 停止 / 重启」都在页面上。
+- **插件自己跑的服务**（`index.mjs`）：在 `127.0.0.1:33417` 上给页面提供文件和控制接口，并负责 frpc 的启动、看护和停止。
+- **只读的工具**：给智能体的 `state`、`logs`、`generate`、`verify`。
 
 ## 安装
 
@@ -26,91 +14,77 @@
 magpie plugin add ./frp-connect
 ```
 
-文件夹就地加载，无需构建、无需安装依赖（`@opencode-ai/plugin` 由 magpie 插件宿主提供）。
+就地加载，不用构建、不用装依赖：`index.mjs` 不从 `@opencode-ai/plugin` 或任何包导入。
 
 ## frpc 从哪来
 
-页面里可以选 frpc 来源（`frpcMode`）：
-
-- `download`（默认，自动下载）：优先用内置的 Windows frpc；没有就按当前平台（Windows/macOS/Linux、amd64/arm64）自动下载并缓存到 magpie 配置目录。页面会显示下载进度和安装位置。
-- `local`（使用本地 frpc）：用你指定的 `frpcPath`（留空则用 PATH 里的 `frpc`），不自动下载。
+- `frpcBinary: "download"`（默认）：插件只跑 frp **0.71.1**，下载地址是 frp 自己的 GitHub release。下载后按本包里的 SHA256（`lib/frpc.mjs` 的 `SUMS`）校验，不一致就解压都不做、直接报错，也不会去跑它。别的版本不会被使用：升级只能通过升级本插件。
+  按当前平台取：Windows / macOS 的 amd64、arm64；Linux 还有 arm（32 位，含 armv7）、loong64、riscv64、mips64le。frp 没发布包的平台（ppc64le、s390x 等）只能走 `local`。
+- `frpcBinary: "local"`：用你自己的 frpc，填 `frpcPath`（留空则用 PATH 里的 `frpc`）。这时校验和由你负责。
 
 ## 配置
 
-插件支持两种配置方式，可在页面顶部切换，也可用 `configMode` 选项指定：
+页面顶部两种写法，随时互换，互换后跑的是同一份配置：
 
-- `form`（可视化）：填服务器和代理，插件自动生成 `frpc.toml`。
-- `toml`（原始配置）：直接粘贴完整的 `frpc.toml` 内容（`frpcToml` 字段）。
+- **可视化**：填服务器和代理，自动生成 `frpc.toml`。生成的配置里总有 `loginFailExit = false`，服务器暂时连不上会一直重试。
+- **frpc.toml**：直接粘一份完整的 `frpc.toml`，原样使用。
 
-页面里在「可视化配置」和「frpc.toml」之间切换时会**自动互相转换**：切到 toml 时把表单生成成文本，切回 form 时把文本解析回表单字段。
+页面预览的 `frpc.toml` 就是写盘并被 frpc 读取的那一份（有测试咬住页面和 `lib/toml.mjs` 的两份生成代码）。
 
-在 magpie 里打开插件页面「FRP 连接」填写，或在命令行用 JSON 设置：
+字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `serverAddr` / `serverPort` | FRP 服务器地址和端口（默认 7000） |
+| `authMethod` / `authToken` | 需要鉴权时填；token 为空则不写 `[auth]` |
+| `transport` | `tcp`（默认）、`kcp`、`quic`、`websocket`、`wss` |
+| `proxies` | 代理列表；`tcp`/`udp` 填 `remotePort`，`http`/`https` 填 `customDomains`（逗号分隔）或 `subdomain` |
+| `configMode` | `form` 或 `toml` |
+| `frpcToml` | `configMode` 为 `toml` 时使用的全文 |
+| `frpcBinary` / `frpcPath` | frpc 的来源 |
+| `autoStart` | 开 magpie 时自动启动（页面上的勾选，默认关） |
+
+命令行等价：
 
 ```bash
-magpie plugin options frp-connect '{
-  "frpcPath": "frpc",
-  "autoConnect": false,
-  "configMode": "form",
-  "frpcToml": "",
+magpie plugin options @magpie-community/frp-connect '{
   "serverAddr": "1.2.3.4",
   "serverPort": 7000,
   "authMethod": "token",
   "authToken": "your-token",
-  "transport": "tcp",
-  "proxies": [
-    { "name": "magpie", "type": "tcp", "localIP": "127.0.0.1", "localPort": 3425, "remotePort": 6000 }
-  ]
+  "proxies": [{ "name": "ssh", "type": "tcp", "localIP": "127.0.0.1", "localPort": 22, "remotePort": 6000 }]
 }'
 ```
 
-字段说明：
+改选项会让 magpie 重载插件，新的配置随之生效。
 
-- `serverAddr` / `serverPort`：FRP 服务器地址和端口。
-- `authMethod` / `authToken`：需要鉴权时填；`authToken` 为空则不生成 `[auth]`。
-- `transport`：`tcp`（默认）、`kcp`、`quic`、`websocket`、`wss`。
-- `proxies`：代理列表。`tcp`/`udp` 填 `remotePort`；`http`/`https` 填 `customDomains`（逗号分隔）或 `subdomain`。
-- `frpcMode`：`download`（默认，自动下载）或 `local`（使用本地 frpc）。
-- `frpcPath`：`frpcMode` 为 `local` 时使用；填完整路径如 `C:/frp/frpc.exe`，留空用 PATH 里的 `frpc`。
-- `configMode`：`form`（默认，可视化）或 `toml`（直接使用 `frpcToml`）。
-- `frpcToml`：`configMode` 为 `toml` 时使用的完整 frpc.toml 文本。
-- `frpcVersion`：自动下载时使用的版本，默认 `0.71.1`；设为 `latest` 会先查 GitHub 拿最新版本号（查不到就回退到 `0.71.1`）。
-- `frpcDownloadBase`：自动下载的基地址，默认 GitHub。网络受限时可改为镜像，例如 `https://ghproxy.com/https://github.com/fatedier/frp/releases/download`。
-- `autoConnect`：`true` 时，插件加载即连接。
+## 谁能开隧道
 
-选项变更会触发 magpie 重载插件宿主，因此保存后配置即生效（`autoConnect` 开时会自动用新配置重连）。
+只有页面能。开始和停止是页面按钮，发到插件自己的控制接口，并带着宿主给页面的密钥（写在插件目录的 `service.key`，只有 magpie 宿主读得到）。所以：
 
-## 使用
+- 智能体只有只读工具，**给不了**“开个口子”的指令；
+- 网页里的提示注入、别的进程、别的浏览器标签页，都调不动它。
 
-1. 打开插件页面，填服务器和代理，点「保存」。
-2. 让智能体调用 `frp-connect_verify` 校验，再 `frp-connect_start` 连接。
-3. 查看状态：`frp-connect_status`。
+密钥 `service.key`、`frpc.toml`、日志都在 magpie 自己的目录里（`~/.config/magpie/frp-connect`、macOS 的 `~/Library/Application Support/magpie/frp-connect`、Windows 的 `%LOCALAPPDATA%\magpie\frp-connect`），**不在**你当前打开的项目目录里，也不在插件的安装目录里。
 
-可视化（form）模式会自动加上 `loginFailExit = false`，让 frpc 连不上服务器时持续重试而不是退出。用 raw（toml）模式时建议也加上这一行，否则 frp v0.71 默认会在首次登录失败后直接退出。
+## 生命周期
 
-要让 magpie 网关（默认 `127.0.0.1:3425`）被外网访问，添加一个代理把 `localIP`/`localPort` 指向它：
+- frpc 是宿主进程的子进程，不 `detached`：magpie 退出或者插件被关掉，它跟着结束。
+- 停止只杀自己记下的那个 frpc：先看进程还在不在，再看它的命令行里是不是自己的 `frpc.toml`，PID 被重启后的别的进程复用了也不会误杀。
+- 日志写在状态目录里，只在 frpc 运行时增长；安装目录始终是只读的。
 
-- 名称：`magpie`
-- 类型：`tcp`
-- 本地端口：`3425`
-- 远端端口：例如 `6000`
+## frpc 的日志
 
-然后在其它的电脑上：
+页面下方的日志从控制接口读，3 秒刷新一次；`logs` 工具也能读到末尾。
 
-```bash
-magpie provider add remote-magpie sk-magpie-key-… url=http://<服务器地址>:6000 id=office
-```
+## 关于把 magpie 网关暴露到公网
 
-详见 magpie 文档「远程 magpie」。
+**不要**用 `type = "tcp"` 把 `127.0.0.1:3425` 映射出去。frpc 自己在本机发起连接，不带转发头，magpie 会把这种请求当成本机用户，于是**不需要网关密钥**：谁能连上你 frps 映射出来的那个端口，谁就能花你的订阅额度。frps 若是第三方在跑，风险由它掌握。
 
-## 文件与日志
-
-生成的 `frpc.toml`、PID 和日志保存在 magpie 配置目录的 `frp-connect/` 下（由 `input.directory` 提供）。启动失败时工具返回里会附带日志尾部。
-
-页面里的日志区域会读取服务端定时写入的 `page/_log.js`（运行时生成，可忽略或加入 `.gitignore`）。
-
-页面按钮通过写入一个 `requestAction` 选项来触发服务端动作：保存选项会触发插件宿主重载，服务端在重载时读取该选项并执行（用 nonce 去重，避免重复执行）。结果会写回 `page/_log.js` 的 `lastAction`，由页面日志区显示。
+要让网关给外面用，用 frp 的 `http` / `https` 代理（它们带 `X-Forwarded-For`，magpie 会当成远端请求，于是要求「在局域网上共享」加上网关密钥），并在 magpie 里打开「在局域网上共享」、设一个 `sk-magpie-key-…`。只转发你自己的服务（git、文件服务之类）时用 `tcp` / `udp` 没有问题。
 
 ## 限制
 
-- `frpc` 以独立子进程运行；`stop` 按记录的 PID 结束它。
-- 配置页面运行在 magpie 的沙盒里，无法直接读取运行状态；状态通过智能体调用 `frp-connect_status` 获取。
+- 只跑 frp 0.71.1，不支持自选版本（这是校验和能固定下来的前提）。
+- 页面上的「校验配置」跑 `frpc verify -c`；工具 `verify` 只检查选项、报出会用的 SHA256，不跑 frpc、不下载任何东西。
+- 认证 token 保存在 magpie 的 `plugins.json` 里（页面输入框是密码框，不会回显到日志）。

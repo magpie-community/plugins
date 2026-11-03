@@ -1,14 +1,19 @@
 {
-  "name": "@magpie-community/tools-frp-connect",
-  "version": "0.2.0",
-  "description": "Run and supervise frpc to expose local services (like magpie's gateway) through a FRP server, with on-demand frpc download for every platform.",
+  "name": "@magpie-community/frp-connect",
+  "version": "0.3.0",
+  "description": "A frpc tunnel to your own frp server: a page to set it up, and frpc started and stopped there, with a pinned and checksummed frpc.",
   "type": "module",
-  "main": "./index.ts",
+  "main": "./index.mjs",
   "files": [
-    "index.ts",
+    "index.mjs",
+    "lib",
+    "page",
     "README.md",
-    "page"
+    "LICENSE"
   ],
+  "scripts": {
+    "test": "node --test test/"
+  },
   "keywords": [
     "opencode",
     "opencode-plugin",
@@ -30,18 +35,23 @@
     "page": {
       "title": "FRP Connect",
       "file": "page/index.html",
+      "service": {
+        "port": 33417,
+        "option": "servicePort"
+      },
       "titles": {
-        "zh": "FRP 连接"
+        "zh": "FRP 连接",
+        "zh-TW": "FRP 連線",
+        "ja": "FRP 接続"
       }
     },
     "options": {
+      "frpcBinary": "download",
       "frpcPath": "",
-      "frpcVersion": "latest",
-      "frpcDownloadBase": "https://github.com/fatedier/frp/releases/download",
-      "frpcMode": "download",
+      "autoStart": false,
+      "servicePort": 0,
       "configMode": "form",
       "frpcToml": "",
-      "autoConnect": false,
       "serverAddr": "",
       "serverPort": 7000,
       "authMethod": "token",
