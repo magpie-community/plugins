@@ -83,7 +83,7 @@ test("free first spends the gift on the plain model while it has quota", async (
   expect(m.path).toBe("/api/v1/zcode-plan/anthropic/v1/messages")
   expect(m.headers.authorization).toBe("Bearer " + jwt)
   expect(m.headers["x-api-key"]).toBeUndefined()
-  expect(JSON.parse(m.body).model).toBe("glm-5.3-flash")
+  expect(JSON.parse(m.body).model).toBe("GLM-5.3-Flash")
 })
 
 test("free first falls back to the coding plan once the gift is spent", async () => {
@@ -109,7 +109,7 @@ test("free first follows the provider's options, and a blocked model waits on th
   const first = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
   expect(first.status).toBe(200)
   expect(sent.at(-1).origin).toBe("https://zcode.z.ai")
-  expect(JSON.parse(sent.at(-1).body).model).toBe("glm-5.3-flash")
+  expect(JSON.parse(sent.at(-1).body).model).toBe("GLM-5.3-Flash")
   // a refusal the gift gave a moment ago (the blocked map) sends the plain
   // model to the plan until the minute is out
   _internal.blocked.set(KEY + "\0" + jwt + "\0glm-5.3-flash", Date.now() + 60_000)
@@ -149,7 +149,7 @@ test("free first is on when nothing sets it", async () => {
   const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
   expect(res.status).toBe(200)
   expect(sent.at(-1).origin).toBe("https://zcode.z.ai")
-  expect(JSON.parse(sent.at(-1).body).model).toBe("glm-5.3-flash")
+  expect(JSON.parse(sent.at(-1).body).model).toBe("GLM-5.3-Flash")
 })
 
 test("freeFirst false on the provider keeps the plan, over a plugin that says nothing", async () => {
@@ -209,7 +209,7 @@ test("a gift that answers spent is answered from the plan in the same request", 
   expect(res.status).toBe(200)
   const giftTries = sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))
   expect(giftTries).toHaveLength(1)
-  expect(JSON.parse(giftTries[0].body).model).toBe("glm-5.3-flash")
+  expect(JSON.parse(giftTries[0].body).model).toBe("GLM-5.3-Flash")
   const planTries = sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))
   expect(planTries).toHaveLength(1)
   expect(JSON.parse(planTries[0].body).model).toBe("GLM-5.3-Flash")
@@ -606,7 +606,7 @@ test("a trial entry goes to the Start Plan, dressed", async () => {
   expect(m.headers.authorization).toBe("Bearer " + jwt)
   expect(m.headers["x-api-key"]).toBeUndefined()
   expect(JSON.parse(m.body).system.length).toBeGreaterThan(1) // dressed
-  expect(JSON.parse(m.body).model).toBe("glm-5.3-flash") // the entry's own model
+  expect(JSON.parse(m.body).model).toBe("GLM-5.3-Flash") // the entry's own model
 })
 
 test("a model the gift does not serve goes to the coding plan as sent", async () => {

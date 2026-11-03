@@ -152,6 +152,11 @@ const uniqueModels = (names) => {
   return [...byName.values()]
 }
 const giftNames = (g) => g?.allModels ?? g?.models ?? []
+// wireModel is a gift model as ZCode sends it: the buckets name it lowercased
+// ("glm-5.3-flash"), the app's request carries its registry id
+// ("GLM-5.3-Flash"; normalizeOfficialGlmModelId's spelling). Names ZCode
+// does not know go as the bucket wrote them.
+const wireModel = (m) => MODELS.find((x) => x.id.toLowerCase() === String(m).toLowerCase())?.id ?? m
 const giftModel = (g, id) => giftNames(g).find((m) => giftID(m).toLowerCase() === id.toLowerCase())
 const bucketModels = (x) => (Array.isArray(x.capabilities) ? x.capabilities : [])
   .map((c) => String(c ?? "").trim()).filter((c) => c.startsWith("model:") || !c.includes(":"))
@@ -273,6 +278,7 @@ const blocked = new Map()
 // giftServes: the gift's buckets name their models lowercased ("glm-5.3-
 // flash"); what is asked for arrives as the plan lists it ("GLM-5.3-Flash").
 const giftServes = (gift, m) => (gift.models ?? []).some((x) => x.toLowerCase() === m.toLowerCase())
+const giftRested = (s, m) => Date.now() < (blocked.get(s.key + "\0" + s.jwt + "\0" + m.toLowerCase()) ?? 0)
 const giftUsable = (s, gift, m) => !jwtExpired(s.jwt) && giftServes(gift, m) &&
   Date.now() >= (blocked.get(s.key + "\0" + s.jwt + "\0" + m.toLowerCase()) ?? 0)
 
@@ -2405,10 +2411,10 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 const raw = giftModel(gift, m)
                 const available = raw && giftUsable(s, gift, raw)
                 if (!available) {
-                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: raw ? `ZCode's limited quota for ${raw} is exhausted or temporarily unavailable` : `ZCode has no active limited quota for ${m}` }
+                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: raw ? `ZCode's limited quota for ${raw} is exhausted or temporarily unavailable${giftRested(s, raw) ? " (ZCode answered 429 to the last request for it, so it is not asked again for a minute)" : ""}` : `ZCode has no active limited quota for ${m}` }
                   return kept(new Response(JSON.stringify({ type: "error", error }), { status: raw ? 429 : 400, headers: { "content-type": "application/json" } }))
                 }
-                orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: raw })
+                orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: wireModel(raw) })
                 m = raw
                 forcedGift = true
               } else if (!alone && !edgeHeld() && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m)) {
@@ -2421,7 +2427,7 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 // it was. A refusal past this check is replayed on the plan
                 // in the same request (replayOnPlan below).
                 const raw = giftNames(known).find((x) => x.toLowerCase() === m.toLowerCase())
-                orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: raw })
+                orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: wireModel(raw) })
                 m = raw
                 freeGift = true
               }

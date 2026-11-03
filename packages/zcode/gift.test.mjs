@@ -34,7 +34,7 @@ beforeEach(() => {
     if (url.pathname === "/api/v1/zcode-plan/billing/balance") return ok(balance)
     if (url.pathname.endsWith("/messages")) {
       const text = init.body ?? (input instanceof Request ? await input.text() : undefined)
-      sent.push({ origin: url.origin, path: url.pathname, body: JSON.parse(text) })
+      sent.push({ origin: url.origin, path: url.pathname, body: JSON.parse(text), headers: new Headers(init.headers ?? (input instanceof Request ? input.headers : {})) })
       return url.origin === "https://zcode.z.ai" ? giftReply.clone() : ok({ type: "message", content: [] })
     }
     throw new Error("unmocked request blocked: " + url.pathname)
@@ -382,4 +382,21 @@ test("a coding plan account's ZCODE GLOBAL BUILD gift is named by its model firs
   expect(u.windows.map((w) => w.name)).toEqual(["5 hours", "Weekly", "GLM-5.3-Trial · ZCODE GLOBAL BUILD", "GLM-5.3-Flash-Trial · ZCODE GLOBAL BUILD"])
   expect(u.windows[2]).toMatchObject({ used: 15, amount: 450_000, limit: 3_000_000, models: ["GLM-5.3-Trial"] })
   expect(u.windows[3]).toMatchObject({ used: 0, limit: 5_000_000, models: ["GLM-5.3-Flash-Trial"] })
+})
+
+test("a flash gift goes out under ZCode's registry spelling, as the app sends it", async () => {
+  balance.balances[0].capabilities = ["model:glm-5.3-flash"]
+  expect((await send("GLM-5.3-Flash-Trial")).status).toBe(200)
+  expect(sent).toHaveLength(1)
+  expect(sent[0].origin).toBe("https://zcode.z.ai")
+  expect(sent[0].body.model).toBe("GLM-5.3-Flash")
+})
+
+test("a refused-then-rested gift says why it is refused locally", async () => {
+  giftReply = new Response(JSON.stringify({ error: { code: "1302", message: "rate limit" } }), { status: 429, headers: { "content-type": "application/json" } })
+  expect((await send()).status).toBe(429)
+  const again = await send()
+  expect(again.status).toBe(429)
+  expect(sent).toHaveLength(1)
+  expect((await again.json()).error.message).toContain("not asked again for a minute")
 })

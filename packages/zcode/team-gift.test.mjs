@@ -96,7 +96,7 @@ test("ordinary models spend the team; trials spend the personal gift without tea
   expect(messages[1].headers.get("authorization")).toBe("Bearer " + jwt)
   expect(messages[1].headers.get("x-api-key")).toBeNull()
   expect(messages[1].headers.get("Bigmodel-Organization")).toBeNull()
-  expect(JSON.parse(messages[1].body).model).toBe("glm-5.3")
+  expect(JSON.parse(messages[1].body).model).toBe("GLM-5.3")
 })
 
 test("free first is on by default for a team seat: the plain model spends the personal gift", async () => {
