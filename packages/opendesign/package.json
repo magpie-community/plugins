@@ -1,11 +1,13 @@
 {
   "name": "@magpie-community/opencode-opendesign-auth",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Open Design Cloud (Design Plan) in OpenCode and magpie: the account's device sign-in, its models, and the plan's 5-hour and 7-day allowance",
   "type": "module",
-  "main": "./index.mjs",
+  "main": "./opencode.mjs",
   "files": [
     "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
     "models.mjs",
     "refresh-models.mjs",
     "README.md"
@@ -25,5 +27,5 @@
   "magpie": {
     "icon": "https://open-design.ai/favicon.svg"
   },
-  "exports": "./index.mjs"
+  "exports": { ".": "./opencode2.mjs" }
 }

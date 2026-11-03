@@ -76,7 +76,7 @@ for(const engine of (process.env.OFFICE_BROWSERS||'chromium,webkit').split(','))
   }
   if(width===1440) {
    await frame.locator('#settingsBtn').click()
-   for(const scene of ['office','station','cafe','castle','pirate','graveyard']) {
+   for(const scene of ['office','station','cafe','castle','pirate','graveyard','library','cyberlab','greenhouse','arctic','rainynight']) {
     await frame.locator('#optScene').selectOption(scene)
     for(const quality of ['low','medium','high']) {
      await frame.locator('#optQuality').selectOption(quality)

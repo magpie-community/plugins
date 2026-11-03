@@ -747,6 +747,23 @@ test("each channel posts where and what its service documents", async () => {
   expect(calls.at(-1).url).toBe("https://api.day.app/push")
   expect(JSON.parse(calls.at(-1).body)).toMatchObject({ device_key: "K", title: "T", body: "B", group: "magpie" })
 
+  await send({ type: "gotify", server: "https://gotify.example.com/", token: "tk123" }, m)
+  expect(calls.at(-1).url).toBe("https://gotify.example.com/message")
+  expect(calls.at(-1).init.headers["X-Gotify-Key"]).toBe("tk123")
+  expect(JSON.parse(calls.at(-1).body)).toEqual({ title: "T", message: "B" })
+
+  await send({
+    type: "gotify", server: "https://gotify.example.com/", token: "tk123",
+    priority: 8, extras: { "client::display": { contentType: "text/markdown" } },
+  }, m)
+  expect(JSON.parse(calls.at(-1).body)).toEqual({
+    title: "T", message: "B", priority: 8, extras: { "client::display": { contentType: "text/markdown" } },
+  })
+
+  // 0 is a real priority (an application made quiet), not "unset"
+  await send({ type: "gotify", server: "https://gotify.example.com/", token: "tk123", priority: 0 }, m)
+  expect(JSON.parse(calls.at(-1).body)).toEqual({ title: "T", message: "B", priority: 0 })
+
   await send({ type: "serverchan", key: "SCT123abc" }, m)
   expect(calls.at(-1).url).toBe("https://sctapi.ftqq.com/SCT123abc.send")
   expect(calls.at(-1).body).toBe("title=T&desp=B")
@@ -780,6 +797,9 @@ test("Feishu and DingTalk sign with the robot's secret", async () => {
 test("a channel missing what it needs is dropped from the options", () => {
   expect(usable({ type: "ntfy" })).toBe(false)
   expect(usable({ type: "telegram", token: "x" })).toBe(false)
+  expect(usable({ type: "gotify", server: "https://example.com" })).toBe(false)
+  expect(usable({ type: "gotify", token: "x" })).toBe(false)
+  expect(usable({ type: "gotify", server: "https://example.com", token: "x" })).toBe(true)
   expect(usable({ type: "nope", url: "x" })).toBe(false)
   expect(usable({ type: "bark", key: "k", off: true })).toBe(false)
   expect(options({ channels: [{ type: "ntfy" }, ntfy] }).channels).toEqual([ntfy])
@@ -789,4 +809,11 @@ test("a channel missing what it needs is dropped from the options", () => {
 test("Bark's success answer (code 200) is a success", async () => {
   answer = () => Response.json({ code: 200, message: "success" })
   expect((await send({ type: "bark", key: "K" }, m)).ok).toBe(true)
+})
+
+test("Gotify's errorDescription is read on failure", async () => {
+  answer = () => Response.json({ error: "Unauthorized", errorCode: 401, errorDescription: "bad token" }, { status: 401 })
+  const r = await send({ type: "gotify", server: "https://gotify.example.com", token: "bad" }, m)
+  expect(r.ok).toBe(false)
+  expect(r.error).toBe("bad token")
 })

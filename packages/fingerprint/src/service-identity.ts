@@ -13,7 +13,7 @@ import {
 import { join, resolve } from 'node:path';
 import { options, type Options } from './config';
 
-export const VERSION = '0.2.1';
+export const VERSION = '0.2.2';
 
 // The health endpoint is public, so the configuration digest must not be a
 // plain hash of a low-entropy gateway key. Keep the salt beside the install's

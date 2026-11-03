@@ -1630,8 +1630,29 @@ function encodeMsg(m) {
   // own: where the client put cache_control (#566)
   if (m.cache) b.bytes(8, new PB().varint(1, 1))
   for (const p of m.images ?? []) b.bytes(10, new PB().str(1, p.data).str(2, p.type))
+  // the signed thinking the reply had, sent back as Devin wrote it:
+  // thinking (11), signature (12) and signature_type (18) (plugins#665)
+  if (m.thinking?.signature) {
+    if (m.thinking.text) b.str(11, m.thinking.text)
+    b.str(12, m.thinking.signature)
+    if (m.thinking.type) b.str(18, m.thinking.type)
+  }
   return b.done()
 }
+
+// sigTypes is each thinking signature's type (delta_signature_type) as
+// Devin said it, by the signature, for the next request's thinking: a
+// Messages thinking block has no field for it. The most recent are kept;
+// one not kept is Anthropic's, which is what Devin says for Claude's.
+const sigTypes = new Map()
+const SIG_TYPES_KEPT = 512
+function rememberSigType(signature, type) {
+  if (!signature || !type) return
+  sigTypes.delete(signature)
+  sigTypes.set(signature, type)
+  if (sigTypes.size > SIG_TYPES_KEPT) sigTypes.delete(sigTypes.keys().next().value)
+}
+const sigTypeOf = (signature) => sigTypes.get(signature) ?? "anthropic"
 
 // ---- the reply -----------------------------------------------------------------------
 
@@ -1699,6 +1720,13 @@ async function* events(it) {
       } else if (x.num === 9 && x.wire === 2 && x.data.length) {
         said += x.data.length
         yield { reasoning: dec.decode(x.data) }
+      } else if (x.num === 10 && x.wire === 2 && x.data.length) {
+        // delta_signature: the thinking's signature, Claude's opaque state
+        // to continue it from (plugins#665); no words of the reply
+        yield { signature: dec.decode(x.data) }
+      } else if (x.num === 21 && x.wire === 2 && x.data.length) {
+        // delta_signature_type: whose signature it is ("anthropic")
+        yield { signatureType: dec.decode(x.data) }
       } else if (x.num === 6 && x.wire === 2) {
         let id = ""
         let name = ""
@@ -1773,6 +1801,9 @@ async function roundtrip({ key, server, families, keep }, chat, signal, wire = C
   const uid = variantFor(families, chat.model, wire.effort(chat))
   const msg = wire.build(chat, uid, key)
   const body = frame(msg)
+  // when Devin was asked, which its cache's 5 minutes run from: the pings
+  // are timed from it, not from the reply's end (plugins#626)
+  const sentAt = now()
   let res
   try {
     res = await fetch(server + CHAT_RPC, {
@@ -1808,7 +1839,7 @@ async function roundtrip({ key, server, families, keep }, chat, signal, wire = C
     return head.value.error
   }
   const it = prepend(head.value, source)
-  return { it: keep ? keptAfter(it, keep, { key, server, msg }) : it }
+  return { it: keep ? keptAfter(it, keep, { key, server, msg, sentAt }) : it, uid }
 }
 
 // complete answers a chat completion through GetChatMessage.
@@ -1847,7 +1878,11 @@ async function complete({ key, server, families, keep }, chat, signal) {
         began = true
         ctl.enqueue(chunk({ role: "assistant", content: "" }))
       }
-      const r = await it.next()
+      // a pull that sends nothing isn't pulled again: what a chat
+      // completion has no field for (a thinking signature) is passed over
+      let r
+      do r = await it.next()
+      while (!r.done && (r.value.signature || r.value.signatureType))
       if (r.done) {
         ctl.enqueue(enc.encode("data: [DONE]\n\n"))
         return ctl.close()
@@ -1909,43 +1944,62 @@ function anthropicEffort(req) {
 // forward as the history grows, and the prompts it passed must stay as
 // they were sent for the cache to be read (yetone/magpie#3835).
 function buildMessages(req, uid, key) {
+  const claude = isClaude(uid)
   // Messages alternate roles; a client that sends two of one role in a row
   // means one turn
   const turns = []
   for (const m of req.messages ?? []) {
-    if (m?.role !== "user" && m?.role !== "assistant") continue
+    if (m?.role !== "user" && m?.role !== "assistant" && m?.role !== "system") continue
     const blocks = typeof m.content === "string" ? (m.content ? [{ type: "text", text: m.content }] : []) : Array.isArray(m.content) ? m.content : []
+    // Empty effort notices must not split a streamed assistant turn.
+    if (m.role === "system" && !blocks.some((b) => b?.type === "text" && typeof b.text === "string" && b.text)) continue
     const last = turns[turns.length - 1]
     if (last?.role === m.role) last.blocks.push(...blocks)
     else turns.push({ role: m.role, blocks: [...blocks] })
   }
 
   const msgs = []
+  const notices = [] // held until the pending tool calls are answered
   let pending = [] // calls the last reply made, not yet answered
   const answer = () => {
     for (const c of pending) msgs.push({ role: TOOL, callID: c.id, text: NO_RESULT })
     pending = []
+    msgs.push(...notices)
+    notices.length = 0
   }
   for (const t of turns) {
     if (t.role === "assistant") {
       const own = []
       const calls = []
       let mark = false // a tool_use the client marked: the prompt with the calls ends there
+      // a signed thinking block, for the prompt that follows it: Claude's
+      // thinking goes back with its signature, which Anthropic wants on a
+      // tool loop's next turn (plugins#665). Unsigned thinking, and any to
+      // a model that isn't Claude, goes no further, as before.
+      let thought = null
+      const take = (p) => {
+        if (thought) [p.thinking, thought] = [thought, null]
+        return p
+      }
       for (const b of t.blocks) {
         if (b?.type === "text" && typeof b.text === "string") {
-          if (b.text) own.push({ role: ASSISTANT, text: b.text, calls: [], cache: marked(b) })
+          if (b.text) own.push(take({ role: ASSISTANT, text: b.text, calls: [], cache: marked(b) }))
           else if (marked(b) && own.length) own[own.length - 1].cache = true
         } else if (b?.type === "tool_use" && b.name) {
           calls.push({ id: inID(b.id), name: b.name, args: JSON.stringify(b.input ?? {}) })
           mark ||= marked(b)
+        } else if (b?.type === "thinking" && claude && typeof b.signature === "string" && b.signature) {
+          // two in a row: the first has a prompt of its own
+          if (thought) own.push(take({ role: ASSISTANT, text: "", calls: [] }))
+          thought = { text: typeof b.thinking === "string" ? b.thinking : "", signature: b.signature, type: sigTypeOf(b.signature) }
         }
-        // thinking goes no further: Devin keeps none of a reply's
       }
       if (calls.length) {
-        if (!own.length) own.push({ role: ASSISTANT, text: "", calls: [] })
+        if (!own.length || (thought && own[own.length - 1].thinking)) own.push({ role: ASSISTANT, text: "", calls: [] })
+        take(own[own.length - 1])
         own[own.length - 1].calls = calls
         own[own.length - 1].cache ||= mark
-      }
+      } else if (thought && own.length && !own[own.length - 1].thinking) take(own[own.length - 1])
       if (!own.length) continue // a turn that only thought
       answer()
       msgs.push(...own)
@@ -1967,6 +2021,7 @@ function buildMessages(req, uid, key) {
         const said = text || "(no output)"
         msgs.push({ role: TOOL, callID: pending[i].id, text: b.is_error ? "Error: " + said : said, images, cache: marked(b) || marked(inner[inner.length - 1]) })
         pending.splice(i, 1)
+        if (!pending.length) answer()
         continue
       }
       if (b?.type === "text" && typeof b.text === "string") {
@@ -1974,10 +2029,13 @@ function buildMessages(req, uid, key) {
           if (marked(b) && words) words.cache = true
           continue
         }
-        answer()
+        // Devin requires tool results before the next user prompt. A
+        // system notice can arrive first, so hold it until they follow.
+        if (t.role !== "system") answer()
         words = { role: USER, text: b.text, images: held, cache: marked(b) }
         held = []
-        msgs.push(words)
+        if (t.role === "system" && pending.length) notices.push(words)
+        else msgs.push(words)
         continue
       }
       const im = anthropicImage(b)
@@ -2045,6 +2103,9 @@ async function completeMessages({ key, server, families, keep }, req, signal) {
   if (!rt.it) return anthropicError(rt)
   const it = rt.it
   const id = "msg_" + randomBytes(12).toString("hex")
+  // a signature is sent on for Claude's thinking only: another model's
+  // thinking stays unsigned, as before, so no path sends it on as Claude's
+  const claude = isClaude(rt.uid)
 
   if (!req.stream) {
     const content = []
@@ -2058,10 +2119,17 @@ async function completeMessages({ key, server, families, keep }, req, signal) {
       return n
     }
     const args = []
+    let sigType = ""
     for await (const e of it) {
       if (e.error) return anthropicError(e.error)
       if (e.text) block("text").text += e.text
       if (e.reasoning) block("thinking").thinking += e.reasoning
+      // the signature goes on the thinking it signs, the last one
+      if (e.signature && claude) {
+        const t = content.findLast((b) => b.type === "thinking")
+        if (t) t.signature += e.signature
+      }
+      if (e.signatureType) sigType = e.signatureType
       if (e.tool) {
         args[e.tool.index] = ""
         content.push({ type: "tool_use", id: e.tool.id, name: e.tool.name, input: {}, index: e.tool.index })
@@ -2078,6 +2146,7 @@ async function completeMessages({ key, server, families, keep }, req, signal) {
       }
       delete b.index
     }
+    for (const b of content) if (b.type === "thinking") rememberSigType(b.signature, sigType)
     return Response.json({ id, type: "message", role: "assistant", model: req.model, content, stop_reason: stop, stop_sequence: null, usage }, { headers: { "X-Magpie-Sign-In": "kept" } })
   }
 
@@ -2085,6 +2154,8 @@ async function completeMessages({ key, server, families, keep }, req, signal) {
   let began = false
   let index = -1
   let open = "" // the kind of the block being sent: text, thinking or tool_use
+  let sig = "" // the signature of the thinking block last sent
+  let sigType = ""
   const stream = new ReadableStream({
     async pull(ctl) {
       if (!began) {
@@ -2092,6 +2163,7 @@ async function completeMessages({ key, server, families, keep }, req, signal) {
         ctl.enqueue(sse("message_start", { message: { id, type: "message", role: "assistant", model: req.model, content: [], stop_reason: null, stop_sequence: null, usage: anthropicUsage() } }))
       }
       const close = () => {
+        if (open === "thinking") rememberSigType(sig, sigType)
         if (open) ctl.enqueue(sse("content_block_stop", { index }))
         open = ""
       }
@@ -2101,15 +2173,37 @@ async function completeMessages({ key, server, families, keep }, req, signal) {
         open = kind
         ctl.enqueue(sse("content_block_start", { index, content_block }))
       }
-      const r = await it.next()
-      if (r.done) return ctl.close()
+      // a pull that sends nothing isn't pulled again: the events that send
+      // nothing are read past here
+      let r
+      for (;;) {
+        r = await it.next()
+        if (r.done) return ctl.close()
+        const q = r.value
+        if (q.signatureType) {
+          sigType = q.signatureType
+          rememberSigType(sig, sigType)
+          continue
+        }
+        // a signature goes on Claude's thinking block, before its stop, as
+        // Anthropic streams it; one that comes once the block has closed
+        // has no block to go on
+        if (q.signature && !(open === "thinking" && claude)) continue
+        break
+      }
       const e = r.value
       if (e.text) {
         if (open !== "text") start("text", { type: "text", text: "" })
         ctl.enqueue(sse("content_block_delta", { index, delta: { type: "text_delta", text: e.text } }))
       } else if (e.reasoning) {
-        if (open !== "thinking") start("thinking", { type: "thinking", thinking: "", signature: "" })
+        if (open !== "thinking") {
+          start("thinking", { type: "thinking", thinking: "", signature: "" })
+          sig = ""
+        }
         ctl.enqueue(sse("content_block_delta", { index, delta: { type: "thinking_delta", thinking: e.reasoning } }))
+      } else if (e.signature) {
+        sig += e.signature
+        ctl.enqueue(sse("content_block_delta", { index, delta: { type: "signature_delta", signature: e.signature } }))
       } else if (e.tool) start("tool_use", { type: "tool_use", id: e.tool.id, name: e.tool.name, input: {} })
       else if (e.args) {
         if (open === "tool_use") ctl.enqueue(sse("content_block_delta", { index, delta: { type: "input_json_delta", partial_json: e.args.text } }))
@@ -2151,10 +2245,12 @@ const KEEPALIVE_MAX = 6
 const KEEPALIVE_KEPT = 32 // conversations kept warm at once; past it the oldest stops
 const KEEPALIVE_STOP = new Set([401, 402, 429])
 
-// timers are what the pings wait on; tests hand in their own. A timer is
-// unref'd: it never keeps a process or a test running.
-const realTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (t) => clearTimeout(t) }
+// timers are what the pings wait on, and the clock they are timed by;
+// tests hand in their own. A timer is unref'd: it never keeps a process or
+// a test running.
+const realTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (t) => clearTimeout(t), now: () => Date.now() }
 let timers = realTimers
+const now = () => (timers.now ?? Date.now)()
 
 const keeps = new Map() // conversation → {n, misses, timer, ctl}
 
@@ -2170,8 +2266,11 @@ function keepaliveSettings(options = {}) {
   }
 }
 
-// the headers an agent names its session in, as magpie's gateway reads them
-const SESSION_HEADERS = ["x-claude-code-session-id", "x-session-id", "session_id", "session-id", "x-opencode-session", "x-session-affinity", "x-conversation-id"]
+// the headers an agent names its session in, as magpie's gateway reads them;
+// first magpie's own, which tells a plugin's fetch the session the agent
+// named to magpie (the agent's own headers never reach the plugin through
+// magpie: plugins#620)
+const SESSION_HEADERS = ["x-magpie-session", "x-claude-code-session-id", "x-session-id", "session_id", "session-id", "x-opencode-session", "x-session-affinity", "x-conversation-id"]
 
 // textsOf is a message's or system's words, without the cache marks a
 // client moves forward as the history grows
@@ -2179,10 +2278,19 @@ const textsOf = (c) => (typeof c === "string" ? [c] : Array.isArray(c) ? c.map((
 
 // keepaliveKey is the conversation a request is of: the session the agent
 // names, the Claude Code subagent it is of (x-claude-code-agent-id, never
-// sent for the lead's own turns), and a hash of the prefix every turn
-// shares: the instructions, the tools' names and the first user message.
-// A subagent's prefix is its own, so its requests never stop its lead's
-// pings, nor the lead's its.
+// sent for the lead's own turns), and a hash of what every turn of it
+// shares: the instructions and the tools' names. A subagent's, or Claude
+// Code's permission check's, instructions and tools are their own, so their
+// requests never stop the lead's pings, nor the lead's theirs.
+//
+// The first user message is not part of it: Claude Code Auto's permission
+// check sends the whole history in its first message, which grows on every
+// check, and each check's key was then new, so a check left its older
+// pings running beside its new ones (plugins#620, zelong77). Only a
+// request that names no session is told apart by its first message too,
+// as two conversations could share the rest; there, a first message that
+// grew from one seen before (blocks added, or the last one's text added
+// to) is still that conversation (firstOf).
 function keepaliveKey(req, messages, headers) {
   let h
   try {
@@ -2191,17 +2299,52 @@ function keepaliveKey(req, messages, headers) {
     h = new Headers()
   }
   const session = SESSION_HEADERS.map((k) => h.get(k)?.trim()).find(Boolean) ?? ""
-  const agent = h.get("x-claude-code-agent-id")?.trim() ?? ""
-  let prefix
+  // the Claude Code subagent, as Claude Code names it, or as magpie tells
+  // the plugin it (x-magpie-subagent)
+  const agent = (h.get("x-claude-code-agent-id")?.trim() || h.get("x-magpie-subagent")?.trim()) ?? ""
+  let prefix, first
   if (messages) {
     const system = textsOf(req.system).map((t) => t.replace(BILLING_LINE, ""))
-    prefix = [system, (req.tools ?? []).map((t) => t?.name ?? ""), textsOf(req.messages?.[0]?.content)]
+    prefix = [system, (req.tools ?? []).map((t) => t?.name ?? "")]
+    first = textsOf(req.messages?.[0]?.content)
   } else {
     const ms = req.messages ?? []
     const system = ms.filter((m) => m?.role === "system" || m?.role === "developer").map((m) => textsOf(m.content))
-    prefix = [system, (req.tools ?? []).map((t) => t?.function?.name ?? ""), textsOf(ms.find((m) => m?.role === "user")?.content)]
+    prefix = [system, (req.tools ?? []).map((t) => t?.function?.name ?? "")]
+    first = textsOf(ms.find((m) => m?.role === "user")?.content)
   }
-  return [session, agent, createHash("sha256").update(JSON.stringify(prefix)).digest("hex").slice(0, 32)].join("\n")
+  const group = [session, agent, sha(JSON.stringify(prefix))].join("\n")
+  if (session) return group
+  return firstOf(group, first)
+}
+
+const sha = (s) => createHash("sha256").update(s).digest("hex").slice(0, 32)
+
+// firsts are the first messages of the conversations seen without a
+// session, by key: each block's hash but the last's, and the last's length
+// and hash, so a grown message is told without holding its text
+const firsts = new Map() // key → {group, n, blocks: [hash], last: {len, hash}}
+const FIRSTS_KEPT = 256
+
+// firstOf is the key of the conversation, in group, whose first message
+// first is, or grew from (the longest such one), else a new key.
+function firstOf(group, first) {
+  const hashes = first.map(sha)
+  let best, most
+  for (const [id, f] of firsts) {
+    if (f.group !== group || f.n > first.length || (f.n === 0) !== (first.length === 0)) continue
+    if (f.n > 0) {
+      const t = first[f.n - 1]
+      if (f.blocks.some((x, j) => x !== hashes[j]) || t.length < f.last.len || sha(t.slice(0, f.last.len)) !== f.last.hash) continue
+    }
+    if (!best || f.n > most.n || (f.n === most.n && f.last.len > most.last.len)) (best = id), (most = f)
+  }
+  const id = best ?? [group, sha(JSON.stringify(first))].join("\n")
+  const t = first.at(-1) ?? ""
+  firsts.delete(id)
+  firsts.set(id, { group, n: first.length, blocks: hashes.slice(0, -1), last: { len: t.length, hash: sha(t) } })
+  while (firsts.size > FIRSTS_KEPT) firsts.delete(firsts.keys().next().value)
+  return id
 }
 
 // stopKeepalive stops a conversation's pings, one in flight too.
@@ -2276,8 +2419,17 @@ function reportPing(keep, r, ms) {
 }
 
 // scheduleKeepalive starts a conversation's pings for the request msg
-// just answered, in place of any it had.
-function scheduleKeepalive(keep, key, server, msg) {
+// just answered, sent at sentAt, in place of any it had.
+//
+// Each ping is timed from when the request before it was sent, the real
+// one's or the ping's own, not from when it was answered: Devin renews its
+// cache when it takes a request, and a reply of 30 to 47 s (Fable over half
+// a million tokens), or a ping of 10 to 20 s, put the next ping past the
+// cache's 5 minutes when it waited its whole interval from the end. Pings
+// 315.9 s or more after the request they followed was sent missed, and
+// each wrote the whole context again (plugins#626, zelong77). One that
+// came back after its interval had passed is followed at once.
+function scheduleKeepalive(keep, key, server, msg, sentAt = now()) {
   const { id, interval, max } = keep
   const ping = keepalivePing(msg)
   if (!ping) return
@@ -2287,8 +2439,8 @@ function scheduleKeepalive(keep, key, server, msg) {
   const k = { n: 0, misses: 0, timer: null, ctl: null }
   keeps.set(id, k)
   hookExit()
-  const next = () => {
-    k.timer = timers.set(run, interval)
+  const next = (from) => {
+    k.timer = timers.set(run, Math.max(0, interval - Math.max(0, now() - from)))
     k.timer?.unref?.()
   }
   const run = async () => {
@@ -2296,28 +2448,28 @@ function scheduleKeepalive(keep, key, server, msg) {
     if (keeps.get(id) !== k) return
     k.n++
     const ctl = (k.ctl = new AbortController())
-    const at = Date.now()
+    const at = now()
     const r = await pingOnce(server, key, body, ctl.signal)
     k.ctl = null
-    reportPing(keep, { ...r, aborted: ctl.signal.aborted }, Date.now() - at)
+    reportPing(keep, { ...r, aborted: ctl.signal.aborted }, now() - at)
     if (keeps.get(id) !== k) return // a real request came, or the switch went off
     if (KEEPALIVE_STOP.has(r.status)) return stopKeepalive(id)
     const t = r.tokens
     const hit = r.status === 200 && t.cacheRead > 0 && t.cacheRead * 2 >= t.input + t.cacheRead + t.cacheWrite
     k.misses = hit ? 0 : k.misses + 1
     if (k.misses >= 2 || k.n >= max) return stopKeepalive(id)
-    next()
+    next(at)
   }
-  next()
+  next(sentAt)
 }
 
 // keptAfter passes a reply's events on, and once it has finished (any stop:
 // a tool call waiting too) schedules the conversation's pings, when the
 // reply read or wrote the cache: a request with nothing cached has nothing
 // to keep.
-async function* keptAfter(it, keep, { key, server, msg }) {
+async function* keptAfter(it, keep, { key, server, msg, sentAt }) {
   for await (const e of it) {
-    if (e.stop && (e.tokens?.cacheRead || e.tokens?.cacheWrite)) scheduleKeepalive(keep, key, server, msg)
+    if (e.stop && (e.tokens?.cacheRead || e.tokens?.cacheWrite)) scheduleKeepalive(keep, key, server, msg, sentAt)
     yield e
   }
 }
@@ -3047,4 +3199,4 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
 }
 
 // for tests
-export const _internal = { keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { sigTypeOf, forgetSigTypes: () => sigTypes.clear(), keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }

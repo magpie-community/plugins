@@ -1,0 +1,34 @@
+{
+  "name": "@magpie-community/opencode-agnes-auth",
+  "version": "0.1.1",
+  "description": "Agnes AI international in OpenCode and magpie: Chrome browser sign-in, live text models, OpenAI-compatible chat, plan usage and USD balance",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "agnes",
+    "agnes-ai"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/agnes"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "icon": "https://www.agnes-ai.com/images/biglogo.png"
+  }
+}

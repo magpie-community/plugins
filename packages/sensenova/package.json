@@ -1,0 +1,37 @@
+{
+  "name": "@magpie-community/opencode-sensenova-auth",
+  "version": "0.1.1",
+  "description": "SenseNova (SenseTime 日日新) Token Plan in OpenCode and magpie: one sign-in gives the console account's credit pools, windows and grants, and (with an optional API key) the plan's models for chat",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "sensenova",
+    "sensetime",
+    "日日新",
+    "token-plan",
+    "credits",
+    "quota",
+    "glm"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/sensenova"
+  },
+  "magpie": {
+    "options": {
+      "signin": false
+    }
+  }
+}

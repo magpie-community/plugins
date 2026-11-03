@@ -255,7 +255,7 @@ test("qoder: lapsed job refresh re-exchanges the stored PAT on the real path", a
   expect(usage).toBe("openapi.qoder.sh/sash/api/v2/me/usage")
   expect(out).toEqual({
     plan: "pro",
-    windows: [{ name: "Credits", used: 10, display: "10 / 100 credits" }],
+    windows: [{ name: "Credits", used: 10, display: "10 / 100 credits", amount: 10, limit: 100, unit: "credits" }],
     signIn: "renewed",
   })
   // the saved credential is the renewed one, still carrying the PAT
@@ -295,7 +295,7 @@ test("qoder: PAT account usage reads the usage endpoint with the job token", asy
   expect(auth).toBe("Bearer jt-live")
   expect(out).toEqual({
     plan: "pro",
-    windows: [{ name: "Credits", used: 25, display: "50 / 200 credits" }],
+    windows: [{ name: "Credits", used: 25, display: "50 / 200 credits", amount: 50, limit: 200, unit: "credits" }],
     signIn: "kept",
   })
 })

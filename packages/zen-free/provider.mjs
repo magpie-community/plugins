@@ -260,7 +260,101 @@ function normalizeTools(body, protocol) {
           : { type: "function", ...definition, parameters },
     );
   }
-  return { declared };
+  return { declared, renamed: renameRefused(body, protocol) };
+}
+
+// Tool names Zen's free tier refuses to serve under, whatever else the
+// request says: it answers 429 FreeUsageLimitError at once, the same reply
+// as a spent allowance, and the same request with those tools under other
+// names is served. Renaming the description or parameters instead doesn't
+// help; the name is what is read. Found so far, each by bisecting a real
+// agent's request against Zen, one name at a time:
+//
+//   - a name with "terminal" in it, in any case (an MCP server's terminal
+//     tools, DSH's terminal_open), and ReportFindings offered beside
+//     ScheduleWakeup, as Claude Code desktop does (either alone was
+//     served): alonewolfsy-web, 2026-11-01, plugins#624;
+//   - DSH's subagent_fork on its own, and its read_image offered beside
+//     working_directory (either alone was served): a real 80-tool DSH
+//     request bisected on 2026-10-30 (Ebony-Vinyl/dsh-our-free-model#709),
+//     served whole with only those two names changed, as jdld-ybd saw DSH
+//     refused while other agents were served from the same address
+//     (plugins#632).
+//
+// Such a tool goes to Zen under another name (the ones those bisections
+// were served under), in the agent's past calls and tool_choice too, and a
+// call of one comes back under the agent's own name (toolPolicy.renamed,
+// read by tool-response.mjs's nameGuard). A rule renames its tools only
+// when every name it lists is offered. A new finding is one more entry.
+const REFUSED_TOGETHER = [
+  {
+    names: ["ReportFindings", "ScheduleWakeup"],
+    as: { ReportFindings: "findings_report", ScheduleWakeup: "wakeup_schedule" },
+  },
+  { names: ["subagent_fork"], as: { subagent_fork: "conversation_delegate" } },
+  { names: ["read_image", "working_directory"], as: { working_directory: "workspace_directory" } },
+];
+const REFUSED_WORD = /terminal/i;
+
+function servedName(name, taken) {
+  for (const rule of REFUSED_TOGETHER)
+    if (Object.hasOwn(rule.as, name) && rule.names.every((other) => taken.has(other))) return rule.as[name];
+  if (!REFUSED_WORD.test(name)) return undefined;
+  return name.replace(new RegExp(REFUSED_WORD.source, "gi"), (word) =>
+    word === word.toUpperCase() ? "CONSOLE" : word[0] === "T" ? "Console" : "console",
+  );
+}
+
+// renameRefused gives each refused tool its served name and answers the
+// served names, each to the agent's own.
+function renameRefused(body, protocol) {
+  const get = (tool) => (protocol === "chat" ? tool?.function?.name : tool?.name);
+  const functions = protocol === "chat" && Array.isArray(body.functions) ? body.functions : [];
+  const taken = new Set(
+    [...body.tools.map(get), ...functions.map((fn) => fn?.name)].filter((name) => typeof name === "string"),
+  );
+  const served = new Map(); // agent's name -> served name
+  const renamed = new Map(); // served name -> agent's name
+  for (const name of taken) {
+    const wanted = servedName(name, taken);
+    if (!wanted) continue;
+    let alias = wanted;
+    for (let i = 2; taken.has(alias) || renamed.has(alias); i++) alias = `${wanted}_${i}`;
+    served.set(name, alias);
+    renamed.set(alias, name);
+  }
+  if (!served.size) return renamed;
+  const rename = (name) => (typeof name === "string" && served.has(name) ? served.get(name) : name);
+  for (const tool of body.tools) {
+    if (!served.has(get(tool))) continue;
+    if (protocol === "chat") tool.function.name = served.get(tool.function.name);
+    else tool.name = served.get(tool.name);
+  }
+  for (const fn of functions) if (served.has(fn?.name)) fn.name = served.get(fn.name);
+  // the agent's past calls of them
+  const messages = protocol === "responses" ? body.input : body.messages;
+  if (Array.isArray(messages)) {
+    for (const item of messages) {
+      if (protocol === "responses") {
+        if (item?.type === "function_call") item.name = rename(item.name);
+      } else if (protocol === "anthropic") {
+        if (Array.isArray(item?.content))
+          for (const part of item.content) if (part?.type === "tool_use") part.name = rename(part.name);
+      } else {
+        if (Array.isArray(item?.tool_calls))
+          for (const call of item.tool_calls) if (call?.function) call.function.name = rename(call.function.name);
+        if (item?.function_call) item.function_call.name = rename(item.function_call.name);
+      }
+    }
+  }
+  const choice = body.tool_choice;
+  if (choice && typeof choice === "object") {
+    if (choice.function && typeof choice.function === "object") choice.function.name = rename(choice.function.name);
+    else if ("name" in choice) choice.name = rename(choice.name);
+  }
+  if (body.function_call && typeof body.function_call === "object")
+    body.function_call.name = rename(body.function_call.name);
+  return renamed;
 }
 
 // Zen's free tier serves a request as OpenCode's own only when one of its
@@ -283,7 +377,18 @@ function normalizeTools(body, protocol) {
 // Zen on 2026-11-01, its temp folder line included), with the directory
 // the agent's own prompt names, as OpenCode names its own, or the user's
 // home folder when the prompt names none.
-const HAS_ENVIRONMENT = /<env>[\s\S]*Working directory:[\s\S]*<\/env>/;
+//
+// Only OpenCode's own block counts as already there: `<env>` and then
+// `  Working directory: `, two spaces in, as every OpenCode (1.x and 2.x)
+// writes it. Another agent's block is its own text, not OpenCode's: Claude
+// Code up to 2.1.100 or so ends its prompt with "Here is useful information
+// about the environment you are running in:\n<env>\nWorking directory: ...",
+// and with that taken for OpenCode's, its requests went to Zen without
+// OpenCode's block while Pi's, which has none, got it. Zen then served Pi
+// and answered Claude Code 429 FreeUsageLimitError from the same address
+// (MrHayesLin on X, 2026-11-01). The agent's block stays; OpenCode's
+// follows it.
+const HAS_ENVIRONMENT = /<env>\r?\n {2}Working directory: [^\n]*\n[\s\S]*?<\/env>/;
 // How agents name their working directory: Codex's `<cwd>`, Claude Code's
 // and others' `Working directory:`, Kimi's "The current working directory
 // is `...`". Only an absolute path counts.

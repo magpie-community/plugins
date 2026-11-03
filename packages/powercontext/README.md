@@ -178,11 +178,34 @@ needs its own generation model and credentials; the plugin does not reuse the
 client's model authorization. Configure generation through the independent
 Server's documented setup.
 
+### Capture feeds Memory and Topic Memory, not Experience
+
+Every captured conversation is written as one or more content Sources
+(`POST v1/sources/content`, metadata `origin: "magpie"`,
+`event: "conversation_completed"`). PowerContext's scheduled Memory and Topic
+Memory processing reads these Sources. Its scheduled **Experience** incubation
+does not: it considers only Sources whose metadata has `"kind": "task-outcome"`
+and ignores ordinary conversation Sources, so with capture on, Experience still
+gets nothing from Magpie's conversations.
+
+Task-outcome Sources come from the agent, not from this plugin. The agent
+records one with PowerContext's `record_task_outcome` MCP tool
+(`POST /v1/work/outcomes/record`) at a real completion or interruption
+boundary, with the objective, a status (`succeeded`, `partial`, `blocked`,
+`failed`, `cancelled` or `unknown`), its observations and checks. A completed
+chat turn is not a task outcome, and the plugin does not derive one: an
+assistant reply's claim of success would be recorded as fact. To feed
+Experience, add PowerContext's MCP server to the agent (see
+[Memory tools](#memory-tools)) and have it record outcomes. Experience
+incubation creates candidates for review in PowerContext's Review Inbox; it
+never approves them.
+
 ## Memory tools
 
 This plugin neither declares nor executes memory tools. If an Agent needs
-explicit search or remember tools, configure PowerContext's existing MCP server
-through the client's Library MCP integration. The client owns tool execution and
+explicit search or remember tools, or `record_task_outcome` for Experience,
+configure PowerContext's existing MCP server through the client's Library MCP
+integration. The client owns tool execution and
 subsequent model calls. Automatic recall/capture requires no MCP or skill.
 
 ## Validation

@@ -42,6 +42,7 @@ The hook changes nothing in a request, and sending never holds one up: it return
   "channels": [                    // one or more; each sends the same push
     { "type": "ntfy", "topic": "…", "server": "https://ntfy.sh", "token": "…", "priority": 3 },
     { "type": "bark", "key": "…", "server": "https://api.day.app", "group": "magpie", "sound": "…" },
+    { "type": "gotify", "server": "https://push.example.com", "token": "…", "extras": { "client::display": { "contentType": "text/markdown" } } },
     { "type": "serverchan", "key": "SCT… or sctp…" },
     { "type": "feishu", "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/…", "secret": "…" },
     { "type": "dingtalk", "webhook": "https://oapi.dingtalk.com/robot/send?access_token=…", "secret": "SEC…" },
@@ -61,7 +62,7 @@ The hook changes nothing in a request, and sending never holds one up: it return
 }
 ```
 
-Optional fields are shown with their defaults. A channel missing what it needs (a topic, a key, a webhook) is skipped; `"off": true` turns one off without deleting it. Feishu's and DingTalk's `secret` is the robot's signing secret (签名校验 / 加签), used when the robot asks for it. `webhook` posts `{title, body, event}` where `event` is `{kind, agent, model, project, seconds}`.
+Optional fields are shown with their defaults where they have one. A channel missing what it needs (a topic, a key, a webhook) is skipped; `"off": true` turns one off without deleting it. Feishu's and DingTalk's `secret` is the robot's signing secret (签名校验 / 加签), used when the robot asks for it. Gotify's `priority` falls back to the application's default when omitted; its `extras` accepts an object of `namespace::action` keys (e.g. `{"client::display": {"contentType": "text/markdown"}}`). `webhook` posts `{title, body, event}` where `event` is `{kind, agent, model, project, seconds}`.
 
 ## Privacy
 

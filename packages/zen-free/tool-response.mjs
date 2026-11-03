@@ -61,8 +61,10 @@ function nameGuard(policy) {
   const bare = (name) => name.toLowerCase().replace(separators, "");
   const byCase = foldsTo(declared, lower);
   const byShape = foldsTo(declared, bare);
+  const renamed = policy.renamed ?? new Map();
   return (name) => {
     if (typeof name !== "string" || !name) return null;
+    if (renamed.has(name)) return renamed.get(name);
     if (declared.has(name)) return name;
     const match =
       byCase.get(lower(name)) ?? (byCase.has(lower(name)) ? null : byShape.get(bare(name)));

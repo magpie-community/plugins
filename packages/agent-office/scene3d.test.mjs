@@ -38,8 +38,8 @@ describe("bundle and registry", () => {
     expect(src).toContain("Copyright © 2010-2024 three.js authors")
   })
 
-  test("six scenes are registered with palettes and props", () => {
-    expect(S.SCENE_IDS).toEqual(["office", "station", "cafe", "castle", "pirate", "graveyard"])
+  test("registered scenes have palettes and props", () => {
+    expect(S.SCENE_IDS).toEqual(["office", "station", "cafe", "castle", "pirate", "graveyard", "library", "cyberlab", "greenhouse", "arctic", "rainynight"])
     expect(Object.keys(S.SCENES).sort()).toEqual(S.SCENE_IDS.slice().sort())
     for (const id of S.SCENE_IDS) {
       const theme = S.SCENES[id]
@@ -546,7 +546,7 @@ describe("THREE renderer path", () => {
     f.scene.dispose()
   })
 
-  test("six THREE environments keep decorations off seats and walking routes", () => {
+  test("all THREE environments keep decorations off seats and walking routes", () => {
     const f = requireThree(threeFixture())
     for (const id of S.SCENE_IDS) {
       const previous = f.scene.env
@@ -557,6 +557,12 @@ describe("THREE renderer path", () => {
         const group = f.scene.env.getObjectByName("props:" + prop)
         expect(group.children.length).toBeGreaterThan(0)
         expect(group.children.every((object) => object.visible), `${id} retains ${prop}`).toBe(true)
+      }
+      if (["library", "cyberlab", "greenhouse", "arctic", "rainynight"].includes(id)) {
+        const ornaments = f.scene.env.getObjectByName("props:ornaments").children
+        expect(ornaments.length).toBeGreaterThanOrEqual(4)
+        expect(new Set(ornaments.map((object) => object.name)).size).toBe(ornaments.length)
+        expect(ornaments.every((object) => object.visible && object.userData.decoration)).toBe(true)
       }
       f.scene.env.updateMatrixWorld(true)
       let checked = 0

@@ -145,10 +145,73 @@ describe("chat", () => {
     expect(res.status).toBe(401)
   })
 
-  test("only chat completions are served", async () => {
+  test("only chat completions and image generations are served", async () => {
     const loader = await plugin.auth.loader(getAuth)
-    const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/embeddings`, { method: "POST", body: "{}" })
-    expect(res.status).toBe(404)
+    for (const path of ["/api/v1/embeddings", "/api/v1/images/edits"]) {
+      const res = await loader.fetch(`${fake.gatewayUrl}${path}`, { method: "POST", body: "{}" })
+      expect(res.status).toBe(404)
+    }
+    expect(fake.state.imageCalls).toHaveLength(0)
+  })
+})
+
+describe("images (#609)", () => {
+  // the request magpie's gateway writes for a draw (internal/gateway/draw.go
+  // drawImages), as the reporter sent it by hand
+  const drawBody = JSON.stringify({ model: "doubao-seedream-5-lite", prompt: "a red apple", n: 1, size: "1024x1024" })
+
+  test("a draw goes to /images/generations with the session, asking for JSON", async () => {
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/images/generations`, { method: "POST", body: drawBody })
+    expect(res.status).toBe(200)
+    // the reply is the upstream's own JSON, passed through
+    expect(await res.text()).toBe('{"created":1793554989,"data":[{"url":"https://aigc-output-image-...png"}],"points_consumed":110}')
+    expect(fake.state.imageCalls).toHaveLength(1)
+    const call = fake.state.imageCalls[0]
+    expect(call.token).toBe(fake.state.session)
+    expect(call.bearer).toBe(fake.state.session)
+    expect(call.accept).toBe("application/json")
+    expect(call.body).toEqual(JSON.parse(drawBody))
+    expect(fake.state.chatCalls).toHaveLength(0)
+  })
+
+  test("a Request object's body is sent as well", async () => {
+    const loader = await plugin.auth.loader(getAuth)
+    const req = new Request(`${fake.gatewayUrl}/api/v1/images/generations`, { method: "POST", body: drawBody })
+    const res = await loader.fetch(req)
+    expect(res.status).toBe(200)
+    expect(fake.state.imageCalls[0].body.model).toBe("doubao-seedream-5-lite")
+  })
+
+  test("a refused session says 401, as chat does", async () => {
+    for (const status of [401, 403]) {
+      fake.state.imageStatus = status
+      const loader = await plugin.auth.loader(getAuth)
+      const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/images/generations`, { method: "POST", body: drawBody })
+      expect(res.status).toBe(401)
+      expect((await res.json()).error.message).toContain("登录态已失效")
+    }
+  })
+
+  test("another upstream error keeps its status and says what came back", async () => {
+    fake.state.imageStatus = 400
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/images/generations`, { method: "POST", body: drawBody })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.message).toContain("refused 400")
+  })
+
+  test("a chat still streams after a draw", async () => {
+    const loader = await plugin.auth.loader(getAuth)
+    await loader.fetch(`${fake.gatewayUrl}/api/v1/images/generations`, { method: "POST", body: drawBody })
+    const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "spark-x", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    })
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain("data: [DONE]")
+    expect(fake.state.chatCalls).toHaveLength(1)
+    expect(fake.state.imageCalls).toHaveLength(1)
   })
 })
 

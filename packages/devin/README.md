@@ -67,6 +67,10 @@ The plugin's `fetch` handles this:
     `prompt_cache_options {type: EPHEMERAL}` (field 8), as the devin CLI
     marks its own. Blocks joined into one message lose the mark: a grown
     history then read only ~558 tokens from the cache.
+  - Mid-conversation `role: "system"` notices stay in the history as user
+    prompts, with their block boundaries and cache marks. A notice that
+    arrives before pending tool results follows those results, as Devin
+    requires; it does not replace them or join the stable system prefix.
   - Claude Code's `x-anthropic-billing-header` line isn't sent: its
     `cch` changes every turn.
   - The reply comes back as Anthropic's message or events, with the
@@ -97,11 +101,23 @@ more user prompt, `continue`, and `max_tokens` 1. Each one reads the cache
 and renews it. Unlike the CLI's, it also runs while the user is reading
 the reply, not only while a tool or subagent works.
 
+Each ping goes 285 seconds after the request before it was *sent* (the
+real one, or the ping before), not after its reply ended: Devin renews the
+cache when it takes a request, so a 30–47 s reply or a slow ping would
+otherwise put the next ping past the 5 minutes (#626). A reply or ping
+that took longer than the interval is followed by a ping at once.
+
 - The conversation's next real request stops its pings; its own reply
-  starts them again. A conversation is the session the agent names, the
-  Claude Code subagent (`x-claude-code-agent-id`) and a hash of the
-  instructions, the tools' names and the first user message, so a
-  subagent's requests never stop its lead's pings.
+  starts them again. A conversation is the session the agent names (in
+  magpie, `x-magpie-session`, as the agent's own headers don't reach the
+  plugin), the Claude Code subagent (`x-claude-code-agent-id`, in magpie
+  `x-magpie-subagent`) and a hash of the
+  instructions and the tools' names, so a subagent's or a permission
+  check's requests never stop its lead's pings. The first user message is
+  left out, as Claude Code Auto's permission check grows it with the
+  history on every check (#620). A request that names no session is also
+  told apart by its first message, where one that grew from a message
+  seen before is still that conversation.
 - They stop on a 401, 402 or 429, after two pings in a row that read less
   than half their prompt from the cache, at the most pings (6), when the
   switch goes off, and with the plugin host's process. The timers never

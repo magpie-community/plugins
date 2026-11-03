@@ -836,6 +836,21 @@ const withPrompt = (protocol, prompt, user) =>
           ],
         };
 
+// What Claude Code 2.1.100 ends its system prompt with (cli.js, the
+// environment section), for a folder that is no git repository.
+const claudeCodePrompt = [
+  "You are Claude Code, Anthropic's official CLI for Claude.",
+  "Here is useful information about the environment you are running in:",
+  "<env>",
+  "Working directory: /Users/me/project",
+  "Is directory a git repo: No",
+  "Platform: darwin",
+  "Shell: zsh",
+  "OS Version: Darwin 25.2.0",
+  "</env>",
+  "You are powered by the model big-pickle.",
+].join("\n");
+
 for (const { protocol, path, model } of protocols) {
   test(`${protocol}: an agent's own prompt goes with OpenCode's environment block, once`, async (t) => {
     const { plugin, state, origin } = await fixture(t);
@@ -870,6 +885,16 @@ for (const { protocol, path, model } of protocols) {
     const own = `${agentPrompt}\n<env>\n  Working directory: /Users/me/project\n</env>`;
     sent = await send(withPrompt(protocol, own, "hello"));
     assert.equal(systemText(protocol, sent), own);
+    // Claude Code's own block (2.1.100's words) is not OpenCode's: it
+    // stays, and OpenCode's, naming the same folder, follows it
+    sent = await send(withPrompt(protocol, claudeCodePrompt, "hello"));
+    system = systemText(protocol, sent);
+    assert.ok(system.startsWith(claudeCodePrompt), system);
+    assert.equal(system.match(/<env>/g).length, 2);
+    assert.match(
+      system.slice(claudeCodePrompt.length),
+      /^\n\nHere is some useful information about the environment you are running in:\n<env>\n {2}Working directory: \/Users\/me\/project\n/,
+    );
   });
 }
 
@@ -911,4 +936,191 @@ test("the environment block names a real directory, never a fixed placeholder", 
   // a relative or bare word is not a directory
   text = added("chat", { messages: [{ role: "system", content: "Working directory: unknown" }, { role: "user", content: "hi" }] });
   assert.equal(line(text.split("<env>")[1]), home);
+});
+
+// Zen's free tier answers 429 FreeUsageLimitError at once to a tool name
+// with "terminal" in it and to ReportFindings beside ScheduleWakeup, as
+// Claude Code desktop offers them (alonewolfsy-web, plugins#624). They go
+// under other names, in the agent's past calls and tool_choice too, and a
+// call of one comes back under the agent's own name.
+for (const { protocol, path, model } of protocols) {
+  test(`${protocol}: tools Zen refuses by name go under other names and come back as the agent's (#624)`, async (t) => {
+    const { plugin, state, origin } = await fixture(t);
+    await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+    const loader = await plugin.auth.loader(publicAuth);
+    const schema = { type: "object", properties: { command: { type: "string" } } };
+    const names = ["Bash", "ReportFindings", "ScheduleWakeup", "mcp__ide__terminal_run", "RunTerminal", "findings_report"];
+    const tools = names.map((name) => {
+      const tool = { name, description: `Client ${name}` };
+      if (protocol === "chat") return { type: "function", function: { ...tool, parameters: schema } };
+      if (protocol === "anthropic") return { ...tool, input_schema: schema };
+      return { type: "function", ...tool, parameters: schema };
+    });
+    const body = { model, stream: false, tools };
+    if (protocol === "chat") {
+      body.messages = [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: null, tool_calls: [{ id: "c0", type: "function", function: { name: "ReportFindings", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "c0", content: "ok" },
+      ];
+      body.tool_choice = { type: "function", function: { name: "ScheduleWakeup" } };
+    } else if (protocol === "anthropic") {
+      body.messages = [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: [{ type: "tool_use", id: "c0", name: "ReportFindings", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "c0", content: "ok" }] },
+      ];
+      body.tool_choice = { type: "tool", name: "ScheduleWakeup" };
+    } else {
+      body.input = [
+        { role: "user", content: "hi" },
+        { type: "function_call", call_id: "c0", name: "ReportFindings", arguments: "{}" },
+        { type: "function_call_output", call_id: "c0", output: "ok" },
+      ];
+      body.tool_choice = { type: "function", name: "ScheduleWakeup" };
+    }
+    const send = () => loader.fetch(`${origin}/v1/${path}`, { method: "POST", body: JSON.stringify(body) });
+    for (const [upstream, expected] of [
+      ["findings_report_2", "ReportFindings"],
+      ["wakeup_schedule", "ScheduleWakeup"],
+      ["mcp__ide__console_run", "mcp__ide__terminal_run"],
+      ["RunConsole", "RunTerminal"],
+      ["findings_report", "findings_report"],
+      ["Bash", "Bash"],
+    ]) {
+      state.reply = toolReply(protocol, upstream, true);
+      const response = await send();
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      assert.match(text, new RegExp(`"name"\\s*:\\s*"${expected}"`), upstream);
+    }
+    const sent = state.calls.at(-1).body;
+    const sentNames = sent.tools.map((tool) => (protocol === "chat" ? tool.function.name : tool.name));
+    assert.deepEqual(sentNames.slice(0, names.length), [
+      "Bash",
+      "findings_report_2",
+      "wakeup_schedule",
+      "mcp__ide__console_run",
+      "RunConsole",
+      "findings_report",
+    ]);
+    const past =
+      protocol === "chat"
+        ? sent.messages.find((message) => message.tool_calls).tool_calls[0].function.name
+        : protocol === "anthropic"
+          ? sent.messages[1].content[0].name
+          : sent.input[1].name;
+    assert.equal(past, "findings_report_2");
+    assert.equal(sent.tool_choice.function?.name ?? sent.tool_choice.name, "wakeup_schedule");
+  });
+}
+
+test("a request without a refused name goes with its tools as named (#624)", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  // one of the pair alone is served
+  const tools = [...declaredTools("chat"), { type: "function", function: { name: "ReportFindings", parameters: { type: "object" } } }];
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "chat-free", stream: false, tools }),
+  });
+  await response.text();
+  assert.deepEqual(state.calls.at(-1).body.tools.slice(0, tools.length), tools);
+});
+
+// DSH's own tools Zen refuses by name (jdld-ybd, plugins#632): its
+// subagent_fork on its own, and its read_image beside working_directory, as
+// a real 80-tool DSH request was bisected (Ebony-Vinyl/dsh-our-free-model
+// #709). Its terminal_* tools go as console_* (#624). The rest of its tools,
+// read_image included, keep their names.
+for (const { protocol, path, model } of protocols) {
+  test(`${protocol}: DSH's tools Zen refuses by name go under other names and come back as DSH's (#632)`, async (t) => {
+    const { plugin, state, origin } = await fixture(t);
+    await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+    const loader = await plugin.auth.loader(publicAuth);
+    const schema = { type: "object", properties: { prompt: { type: "string" } } };
+    const names = ["bash", "read", "read_image", "working_directory", "subagent", "subagent_fork", "terminal_open", "todo_write"];
+    const tools = names.map((name) => {
+      const tool = { name, description: `DSH ${name}` };
+      if (protocol === "chat") return { type: "function", function: { ...tool, parameters: schema } };
+      if (protocol === "anthropic") return { ...tool, input_schema: schema };
+      return { type: "function", ...tool, parameters: schema };
+    });
+    const body = { model, stream: false, tools };
+    if (protocol === "chat") {
+      body.messages = [
+        { role: "system", content: "You are an AI agent powered by DeepSeek Harness." },
+        { role: "user", content: "hi" },
+        { role: "assistant", content: [], tool_calls: [{ id: "c0", type: "function", function: { name: "working_directory", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "c0", content: "ok" },
+      ];
+      body.tool_choice = { type: "function", function: { name: "subagent_fork" } };
+    } else if (protocol === "anthropic") {
+      body.messages = [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: [{ type: "tool_use", id: "c0", name: "working_directory", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "c0", content: "ok" }] },
+      ];
+      body.tool_choice = { type: "tool", name: "subagent_fork" };
+    } else {
+      body.input = [
+        { role: "user", content: "hi" },
+        { type: "function_call", call_id: "c0", name: "working_directory", arguments: "{}" },
+        { type: "function_call_output", call_id: "c0", output: "ok" },
+      ];
+      body.tool_choice = { type: "function", name: "subagent_fork" };
+    }
+    const send = () => loader.fetch(`${origin}/v1/${path}`, { method: "POST", body: JSON.stringify(body) });
+    for (const [upstream, expected] of [
+      ["conversation_delegate", "subagent_fork"],
+      ["workspace_directory", "working_directory"],
+      ["console_open", "terminal_open"],
+      ["read_image", "read_image"],
+      ["subagent", "subagent"],
+    ]) {
+      state.reply = toolReply(protocol, upstream, true);
+      const response = await send();
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      assert.match(text, new RegExp(`"name"\\s*:\\s*"${expected}"`), upstream);
+    }
+    const sent = state.calls.at(-1).body;
+    const sentNames = sent.tools.map((tool) => (protocol === "chat" ? tool.function.name : tool.name));
+    assert.deepEqual(sentNames.slice(0, names.length), [
+      "bash",
+      "read",
+      "read_image",
+      "workspace_directory",
+      "subagent",
+      "conversation_delegate",
+      "console_open",
+      "todo_write",
+    ]);
+    const described = sent.tools.find((tool) => (tool.function?.name ?? tool.name) === "conversation_delegate");
+    assert.equal(described.function?.description ?? described.description, "DSH subagent_fork");
+    const past =
+      protocol === "chat"
+        ? sent.messages.find((message) => message.tool_calls).tool_calls[0].function.name
+        : protocol === "anthropic"
+          ? sent.messages[1].content[0].name
+          : sent.input[1].name;
+    assert.equal(past, "workspace_directory");
+    assert.equal(sent.tool_choice.function?.name ?? sent.tool_choice.name, "conversation_delegate");
+  });
+}
+
+test("read_image or working_directory alone goes as named (#632)", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  for (const name of ["read_image", "working_directory"]) {
+    const tools = [...declaredTools("chat"), { type: "function", function: { name, parameters: { type: "object" } } }];
+    const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "chat-free", stream: false, tools }),
+    });
+    await response.text();
+    assert.deepEqual(state.calls.at(-1).body.tools.slice(0, tools.length), tools, name);
+  }
 });

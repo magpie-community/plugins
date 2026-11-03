@@ -39,7 +39,9 @@ beforeEach(() => {
   }
 })
 afterEach(() => { globalThis.fetch = real })
-const hooks = () => ZCodeAuthPlugin({ client: {} })
+// the team plan and the -Trial picks, with freeFirst (on by default) off;
+// "free first is on by default for a team seat" builds its own
+const hooks = (options = { freeFirst: false }) => ZCodeAuthPlugin({ client: {} }, options)
 
 test("a team seat lists personal gift trials even without a resolved team key", async () => {
   const h = await hooks()
@@ -95,4 +97,14 @@ test("ordinary models spend the team; trials spend the personal gift without tea
   expect(messages[1].headers.get("x-api-key")).toBeNull()
   expect(messages[1].headers.get("Bigmodel-Organization")).toBeNull()
   expect(JSON.parse(messages[1].body).model).toBe("glm-5.3")
+})
+
+test("free first is on by default for a team seat: the plain model spends the personal gift", async () => {
+  const h = await hooks({})
+  const loader = await h.auth.loader(async () => auth(), { id: "zcode" })
+  expect((await loader.fetch(state.base + "/v1/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "GLM-5.3", max_tokens: 1, messages: [{ role: "user", content: "hi" }] }) })).status).toBe(200)
+  const messages = sent.filter((x) => x.url.pathname.endsWith("/messages"))
+  expect(messages).toHaveLength(1)
+  expect(messages[0].url.origin).toBe("https://zcode.z.ai")
+  expect(messages[0].headers.get("x-api-key")).toBeNull()
 })

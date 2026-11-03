@@ -141,8 +141,10 @@ is in that page's HTML — so only do that behind something that restricts who c
 bind accepts the page from this machine's own interface addresses, so reaching it by LAN address
 works; every other origin is refused.
 
-The token is renewed before it expires through `OAuthRefreshToken`, so a normal session never asks
-you to scan again.
+The token is renewed before it expires through `OAuthRefreshToken`. magpie renews it when the
+account is used (a request, a usage read) in the last 90 minutes of the token's two hours: OrcaTerm
+drops the sign-in together with an expired token, after which renewal is `SESSION_EXPIRED` for good
+and only a new scan helps (#675). An account nothing touches for the whole two hours still expires.
 
 ### Paste the cookie pair (fallback)
 
@@ -289,6 +291,7 @@ bun test
 | `audit.test.mjs` | invalid callback bodies; envelope whitespace and examples; EOF error frames; JSON error codes; reader cleanup; read failures and cancellation |
 | `identity.test.mjs` | stable identity across QR re-sign-ins with rotated tokens or changed nicknames; distinct users staying separate; token user ID fallback; refusing missing identity; renewal and account-scoped backfill preserving credentials and metadata |
 | `leak.test.mjs` | #564: the reported envelope, hand-written envelopes that aren't JSON, an envelope sent as thinking or kept in the history, a new upstream conversation on every request, and nothing added to another provider's request |
+| `renew.test.mjs` | #675: under magpie's renewal rule, an account used once an hour is renewed before its 2h token expires, and a fresh token is not renewed again |
 | `review.test.mjs` | the cases the reviews turned up: a reply containing `{"action": …}` is not truncated (including one character at a time, and one that ends mid-envelope); the JSON 429 is a 429; pacers are per account; only nine models are listed; a chat makes exactly one request and it is not `/conversation`; and `/cb` refuses a foreign `Origin`, a rebinding page, and a `state` it did not issue |
 
 `chunks.test.mjs`'s cancel case fails if `releaseUpstream()` is removed, so the leak stays fixed.
@@ -303,7 +306,9 @@ GLM、Kimi。provider id：`orcaterm`。
 > 这可能不符合腾讯云的服务条款，接口也可能随时变更。使用风险（包括账号受限）由使用者自行承担。
 
 - **登录**：首选**微信扫码**（`magpie plugin login orcaterm` 第一项），拿到的是 OrcaTerm 自己的
-  OAuth accessToken —— 两小时有效、自动续期、只能用于 OrcaTerm。备选是粘贴 `uin` + `skey`：
+  OAuth accessToken —— 两小时有效、只能用于 OrcaTerm。到期前 90 分钟内账号被用到（请求、读用量）时
+  magpie 会自动续期；令牌一旦过期，OrcaTerm 会连同登录会话一起作废，续期只会返回 `SESSION_EXPIRED`，
+  只能重新扫码（#675）。两小时内完全没被用到的账号仍会过期。备选是粘贴 `uin` + `skey`：
   这两个是**腾讯云控制台的完整会话 cookie**，不是 OrcaTerm 专用令牌 —— 拿到它们就能在腾讯云范围内
   以你的身份操作，包括你的服务器和账单。**不要用持有生产资源的账号**，想试就用一个名下没有东西的独立账号。
 - **条款**：OrcaTerm 用户协议 2.3 保留所有未明示授权的权利，2.1 把服务限定为 OrcaTerm 本身；

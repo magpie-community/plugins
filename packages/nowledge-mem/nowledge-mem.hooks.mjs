@@ -14,7 +14,8 @@
 //    "contextBundle": true, "maxMemories": 5, "maxBytes": 6000,
 //    "requestTimeoutMs": 900, "recallBackoffMs": 30000, "capture": false,
 //    "captureTools": true, "captureFilter": "off", "captureCindy": false,
-//    "allowInsecureHttp": false, "skipAgents": []}
+//    "allowInsecureHttp": false, "recallRemote": false, "captureRemote": false,
+//    "skipAgents": []}
 //
 // A turn keeps the block it was given for the rest of the conversation, so what
 // the agent sends stays the same from one request to the next and the
@@ -67,9 +68,14 @@ async function run(body, ctx) {
     const o = resolveOptions(ctx.options);
     // An app the user listed in skipAgents (a translator, say) gets neither
     // recall nor capture: its requests go as they came, and Mem hears nothing.
-    const own = (ctx.origin === "local" || ctx.origin === "magpie-key") && !o.skipAgents.has(agentKey(ctx.agent));
-    const recall = o.recall && own;
-    const capture = o.capture && own;
+    const listed = o.skipAgents.has(agentKey(ctx.agent));
+    const own = ctx.origin === "local" || ctx.origin === "magpie-key";
+    // Another machine, or a gateway key other than this computer's own, gets
+    // in only by the user's opt-in, one for each: permission to capture does
+    // not grant recall of what Mem holds. A missing or unknown origin never does.
+    const other = ctx.origin === "remote" || ctx.origin === "gateway-key";
+    const recall = o.recall && !listed && (own || (other && o.recallRemote));
+    const capture = o.capture && !listed && (own || (other && o.captureRemote));
     if (!recall && !capture) {
         ctx.report?.("skipped");
         return;

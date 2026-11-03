@@ -1082,6 +1082,69 @@ function modelsOf(picker, ids, listed = []) {
   return out
 }
 
+// slugFor is the id of a variant the full catalog (AvailableModels with
+// scope 3) gives no legacySlug: the one of the model's legacySlugs that says
+// the variant's effort (any, when it has none), thinking and fast; an id
+// with no effort in it (gpt-5.3-codex) stands for the default's effort. With
+// none, or more than one, "": a guess could send an id Cursor refuses.
+function slugFor(m, v) {
+  if (v.legacySlug) return v.legacySlug
+  const have = valuesOf(v)
+  const level = (p) => String(p[EFFORT_PARAMS.find((k) => p[k])] ?? "").replace("extra-high", "xhigh")
+  const effort = level(have)
+  const slugs = (Array.isArray(m.legacySlugs) ? m.legacySlugs : []).filter((id) => typeof id === "string" && id).map((id) => ({ id, ...familyOf(id) }))
+  const says = (s, at) =>
+    (at === null || s.effort === at) &&
+    (have.thinking === undefined || s.family.endsWith("-thinking") === (have.thinking === "true")) &&
+    (have.fast === undefined || s.fast === (have.fast === "true"))
+  let hits = slugs.filter((s) => says(s, effort || null))
+  const def = m.variants.find((x) => x?.isDefaultNonMaxConfig)
+  if (!hits.length && effort && level(valuesOf(def)) === effort) hits = slugs.filter((s) => says(s, ""))
+  return hits.length === 1 ? hits[0].id : ""
+}
+
+// withSlugs is a catalog model with each variant's own id filled in, and
+// only the parameters the model defines: the full catalog is the admin
+// settings one, and carries what the picker's variants don't (cyber=false
+// on Opus 4.7 to 5.5, which cursor-agent never sends). A variant slugFor
+// can't name keeps no id of its own, but never goes without one: served()
+// leaves a variant with no legacySlug in, and one the account can't run
+// would be listed. So it gets a mark no usable id has, and modelsOf lists
+// it as it does a variant the account hasn't got. The variants are never
+// null.
+const NO_ID = "\u0000no-id"
+function withSlugs(m) {
+  const defined = new Set((Array.isArray(m.parameterDefinitions) ? m.parameterDefinitions : []).map((d) => d?.id))
+  const vs = (Array.isArray(m.variants) ? m.variants : [])
+    .filter((v) => v && typeof v === "object" && Array.isArray(v.parameterValues ?? []))
+    .map((v) => ({ ...v, parameterValues: (v.parameterValues ?? []).filter((p) => defined.has(p?.id)) }))
+  const full = { ...m, variants: vs }
+  return { ...full, variants: vs.map((v) => (v.legacySlug ? v : { ...v, legacySlug: slugFor(full, v) || NO_ID })) }
+}
+
+// fromCatalog is the live models of Cursor's full catalog (AvailableModels
+// with scope 3, which also lists the models Cursor hides from some accounts:
+// Claude, from a Pro one) that the picker lacks, as picker models, with only
+// the variants the account can run (withSlugs). modelsOf lists them as it
+// does the picker's: once for each context size, thinking a parameter, the
+// efforts the account is served. Only Anthropic's are taken: the models the
+// picker lists, and every other id of the usable list, stay as they are.
+// Not offered: one the picker has or lists under another name, a hidden one
+// (isHidden: no longer offered), Auto, one the picker leaves out (chat-only,
+// Tab-only, no agent), and one with no variant the account has an id for.
+function fromCatalog(picker, catalog, ids) {
+  const have = new Set(picker.map((m) => m?.name))
+  const out = []
+  for (const m of Array.isArray(catalog) ? catalog : []) {
+    if (!m?.name || have.has(m.name) || m.isHidden || m.name === "default") continue
+    if (m.vendor?.id !== "MODEL_VENDOR_ID_ANTHROPIC") continue
+    if (m.isChatOnly || m.onlySupportsCmdK || m.supportsAgent === false || PICKER_SKIP.has(m.name)) continue
+    const full = withSlugs(m)
+    if (full.variants.some((v) => ids.has(v.legacySlug))) out.push(full)
+  }
+  return out
+}
+
 // fastAt is whether Cursor has a fast variant the account is served at
 // the context size (any, for a model without sizes): what magpie offers
 // fast for, which 0.1.x said with a -fast model of its own.
@@ -1215,15 +1278,23 @@ function listing(tok, h) {
   let p = listings.get(h)
   if (p) return p
   p = (async () => {
-    const [j, listed] = await Promise.all([
+    const [j, listed, catalog] = await Promise.all([
       unary(API, "aiserver.v1.AiService/AvailableModels", tok, { useModelParameters: true, doNotUseMarkdown: true }, 30_000),
       unary(API, "agent.v1.AgentService/GetUsableModels", tok, {}, 8_000).then(
         (u) => (Array.isArray(u?.models) ? u.models : []),
         () => [],
       ),
+      // the full catalog, scope 3: the live models the picker lacks (Claude,
+      // on an account Cursor blocks it for); without it the list is the
+      // picker's and the usable list's, as before
+      unary(API, "aiserver.v1.AiService/AvailableModels", tok, { useModelParameters: true, doNotUseMarkdown: true, scope: 3 }, 8_000).then(
+        (c) => (Array.isArray(c?.models) ? c.models : []),
+        () => [],
+      ),
     ])
     const ids = new Set(listed.flatMap((m) => [m?.modelId, m?.displayModelId]).filter(Boolean))
-    const raw = modelsOf(Array.isArray(j?.models) ? j.models : [], ids.size ? ids : null, listed)
+    const picker = Array.isArray(j?.models) ? j.models : []
+    const raw = modelsOf(ids.size ? [...picker, ...fromCatalog(picker, catalog, ids)] : picker, ids.size ? ids : null, listed)
     if (!raw.length) throw new Error("Cursor listed no models")
     lists.set(h, { at: Date.now(), raw })
     listFailed.delete(h)
@@ -1330,7 +1401,16 @@ function named(raw, id) {
       return { entry: near, seed: undefined, effort: "", fast: false }
     }
     const old = named(raw, sized[1])
-    if (old) return { ...old, max: !old.entry.size && want > old.entry.context }
+    if (old) {
+      // the name's model at the nearest size it has (claude-opus-4-8-thinking@1m,
+      // an id an earlier list had, is Opus 4.8 at 1m with thinking)
+      const sizes = raw.filter((e) => e.size && e.model === old.entry.model)
+      if (old.entry.size && sizes.length) {
+        const near = sizes.reduce((a, b) => (Math.abs(tokensOf(b.size) - want) < Math.abs(tokensOf(a.size) - want) ? b : a))
+        return { ...old, entry: near }
+      }
+      return { ...old, max: !old.entry.size && want > old.entry.context }
+    }
   }
   return null
 }
@@ -2853,7 +2933,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
 
 // decode follows the server's messages into the answer's pieces until the
 // turn ends, or the model has made its tool calls.
-async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note }) {
+async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note, countWait = NATIVE_LIMITS.countWait }) {
   let calls = 0
   // answered: the step's calls answered here (a refusal, the MCP tool
   // list), which Cursor's count of the step's calls takes in too (#142)
@@ -2937,8 +3017,48 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
     return finish(owedUsage ? await owedUsage(calls === 0).catch(() => null) : null)
   }
   const closeExec = (id) => send(pb().bytes(5, pb().bytes(1, pb().varint(1, id))).done())
+  // A step whose calls came and whose count never does: Cursor sent the
+  // calls and then only heartbeats (plugins#550, the fifth trace: two
+  // calls, no count, 240 s of heartbeats until quiet). Once countWait has
+  // passed since Cursor's last frame that wasn't a heartbeat, with no call
+  // still being written, the calls that came are the step's. Heartbeats
+  // never move the deadline: they are all such a Run sends.
+  const it = (stream[Symbol.asyncIterator] ?? stream[Symbol.iterator]).call(stream)
+  let heardAt = Date.now()
+  const read = async () => {
+    const next = Promise.resolve(it.next())
+    if (!calls || listed || step.writing) return next
+    next.catch(() => {}) // a read left behind by the cut fails unheard
+    let timer
+    const cut = new Promise((r) => {
+      timer = setTimeout(() => r({ cut: true }), Math.max(0, heardAt + countWait - Date.now()))
+      timer.unref?.()
+    })
+    try {
+      return await Promise.race([next, cut])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  const beat = (data) => {
+    try {
+      const ms = fields(data)
+      return ms.length > 0 && ms.every((m) => m.num === 1 && fields(m.data).every((u) => u.num === 13))
+    } catch {
+      return false
+    }
+  }
   try {
-    for await (const f of stream) {
+    for (;;) {
+      const r = await read()
+      if (r.cut) {
+        note?.("no count")
+        yield await settled()
+        return
+      }
+      if (r.done) break
+      const f = r.value
+      if (f.end || !beat(f.data)) heardAt = Date.now()
       if (f.end) {
         const e = failure(200, f.data)
         if (e.status < 200 || e.status > 299) yield { error: e }
@@ -3072,6 +3192,9 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
       return
     }
     yield { error: { status: 502, message: "the reply broke off: " + (e?.message ?? e) } }
+  } finally {
+    // not waited for: after a cut, the read left behind ends with the Run
+    Promise.resolve(it.return?.()).catch(() => {})
   }
 }
 
@@ -3492,4 +3615,4 @@ export async function CursorAuthPlugin(input) {
 }
 
 // for tests
-export const _internal = { credits, kvReply, listFor, lists, keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, resetTeam: () => { teamRead.at = 0; teamRead.info = null }, expireTeam: () => (teamRead.at = 0),H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
+export const _internal = { slugFor, fromCatalog, credits, kvReply, listFor, lists, keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, resetTeam: () => { teamRead.at = 0; teamRead.info = null }, expireTeam: () => (teamRead.at = 0),H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }

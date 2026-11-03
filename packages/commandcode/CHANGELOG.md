@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.22
+
+- Reflection's Beam (`reflection/beam:free`) is sent each earlier assistant
+  message's reasoning in `reasoning_content`: its own when the history kept
+  it, the thinking sent back as `reasoning`, else a period. Beam answered a
+  one-turn chat and turned the second turn away with 400 "Missing required
+  parameter: 'messages[N].reasoning_content'", a reply another model made
+  included (EDwinpzy on magpie's Discord). Another model the Provider API
+  turns away the same way is asked once more with it filled, and is sent it
+  from then on. Other models' requests go as they came.
+
 ## 0.1.20
 
 - The Credits window of a Go, GOAT or Pro account says credits, not

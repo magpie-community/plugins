@@ -11,7 +11,7 @@ A live activity dashboard for your coding agents inside [magpie](https://usemagp
 
 ![Agent Office in magpie's window](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/in-magpie.png)
 
-![The real 3D office, six scenes, orbit camera](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/office-3d.png)
+![The real 3D office, eleven scenes, orbit camera](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/office-3d.png)
 
 ## 快速开始 · Quick start
 
@@ -36,7 +36,7 @@ bun bin/agent-office.mjs --json   # 一次性快照，适合让 Agent 在聊天�
 
 ### 主要功能
 
-- **真 3D（WebGL）**：等距相机、拖拽旋转、滚轮缩放、实时光照与阴影；办公室、空间站、咖啡店、城堡、海盗湾、幽灵谷六种程序化场景。
+- **真 3D（WebGL）**：等距相机、拖拽旋转、滚轮缩放、实时光照与阴影；办公室、空间站、咖啡店、城堡、海盗湾、幽灵谷、图书馆、赛博实验室、温室、极地、雨夜十一种程序化场景。
 - **ISO / 2D**：不依赖 WebGL 的等距画布与俯视图；相机拖拽、滚轮缩放、昼夜窗光、办公室猫和五个活动点。
 
 ![The isometric canvas office, with venues and the cat](https://raw.githubusercontent.com/QingJ01/magpie-agent-office/main/docs/office-iso.png)
@@ -126,7 +126,7 @@ bun bin/agent-office.mjs --json   # 一次性快照，适合让 Agent 在聊天�
 |---|---|
 | `mode` | `office` 或 `list` |
 | `dim` | `3d`（WebGL）、`iso`（等距画布）或 `2d`（俯视） |
-| `scene` | `office`、`station`、`cafe`、`castle`、`pirate`、`graveyard` |
+| `scene` | `office`、`station`、`cafe`、`castle`、`pirate`、`graveyard`、`library`、`cyberlab`、`greenhouse`、`arctic`、`rainynight` |
 | `quality` | `low`、`medium`、`high`（3D 阴影与 DPR） |
 | `showDone` | 保留已完成的 Agent |
 | `hideAfter` | 完成后多久离开：`1h`、`6h`、`24h`、`never` |
@@ -163,7 +163,7 @@ bun bin/agent-office.mjs [--port 4545] [--hours 48] [--private] [--json] [--no-o
 - `office.hooks.mjs` — 插件 host：每 1.5 秒扫描、看网关请求、写 `page/live.js`。
 - `page/model.js` — 状态、分组、过滤、Today、九语言、续接命令、隐私裁剪。
 - `page/scene.js` — Canvas 等距 / 2D 办公室、五个活动点、猫、相机、昼夜。
-- `page/scene3d.js`, `page/three.min.js` — WebGL 真 3D、六场景、光照阴影；three.js r169，MIT。
+- `page/scene3d.js`, `page/three.min.js` — WebGL 真 3D、十一种场景、光照阴影；three.js r169，MIT。
 - `page/app.js`, `page/index.html`, `page/style.css`, `page/icons.js`, `page/icons/` — 页面、面板、侧栏、提醒和图标。
 - `bin/agent-office.mjs`, `SKILL.md` — 没有 magpie 时的独立页面、`--json` 和 skill 包装。
 

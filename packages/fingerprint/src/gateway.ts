@@ -1,5 +1,14 @@
 import type { Account, Model, Provenance } from './types';
 import { boundedText } from './http';
+/**
+ * X-Magpie-Account's value for an account. A header value is ASCII on the
+ * wire and fetch refuses to send any other, so a name that isn't (北冥,
+ * plugins#615) goes percent-encoded, which Magpie reads back decoded. An
+ * ASCII name goes as it is, as every Magpie before that reads it.
+ */
+export function accountHeader(account: string) {
+  return /^[\x20-\x7e]*$/.test(account) ? account : encodeURIComponent(account);
+}
 export class Gateway {
   constructor(
     readonly url: string,
@@ -77,9 +86,10 @@ export class Gateway {
             (!item.kind || item.kind === 'subscription')
           ) {
             if (!accounts.some((a) => a.provider === item.provider && a.id === item.user))
+              // name is the provider's (WorkBuddy); alias is the account's own
               accounts.push({
                 id: item.user,
-                name: String(item.name || item.user),
+                name: String(item.alias || item.user),
                 provider: item.provider,
               });
           }

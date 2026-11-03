@@ -672,7 +672,8 @@ function parseEventBlock(block) {
   return data;
 }
 
-function streamChat(payload, onEvent, signal) {
+async function streamChat(payload, onEvent, signal) {
+  payload.messages = await requestMessages(payload.messages, function (reason) { toast("附件未发送。" + reason, true); });
   return fetch("api/chat", {
     method: "POST",
     headers: authHeaders({ "content-type": "application/json" }),
@@ -970,16 +971,37 @@ function readAsDataURL(file) {
 }
 
 function guessType(file) {
-  if (file.type) return file.type;
+  if (file.type && file.type !== "application/octet-stream") return file.type;
   var ext = String(file.name || "").split(".").pop().toLowerCase();
-  var map = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", json: "application/json" };
+  var map = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", pdf: "application/pdf", epub: "application/epub+zip", txt: "text/plain", md: "text/markdown", markdown: "text/markdown", json: "application/json" };
   return map[ext] || "application/octet-stream";
 }
 
+function normalizeImage(file) {
+  var dataType = /^data:(image\/[^;,]+)/i.exec(file.data || "");
+  var type = dataType ? dataType[1].toLowerCase() : guessType(file);
+  if (!/^image\//.test(type) || !file.data) return file;
+  return Object.assign({}, file, {
+    type: type, kind: "image",
+    data: String(file.data).replace(/^data:[^;,]*/, "data:" + type)
+  });
+}
+
 // 一批 File → 加入待发送列表
+var attachmentContext = 0, pendingAttachments = 0;
+function clearPendingAttachments() {
+  attachmentContext++;
+  pendingAttachments = 0;
+  state.attachments = [];
+  renderAttachments();
+}
+
 function addFiles(files) {
   var list = Array.from(files || []).slice(0, 8);
   if (!list.length) return Promise.resolve();
+  var context = attachmentContext;
+  pendingAttachments += list.length;
+  updateSend();
   var jobs = list.map(function (file) {
     var type = guessType(file);
     var isImage = /^image\//.test(type);
@@ -987,19 +1009,28 @@ function addFiles(files) {
       toast((isImage ? "图片" : "文件") + "太大：" + (file.name || ""), true);
       return null;
     }
-    return readAsDataURL(file).then(function (data) {
+    return readAsDataURL(file).then(async function (data) {
+      var book = MagpieEpub.isEpub(file) ? await MagpieEpub.read(data) : null;
+      if (book) {
+        return { name: file.name, type: type, kind: "file", size: file.size, data: data, bookChars: book.characters, imagePages: book.imagePages };
+      }
       return api("api/upload", {
         method: "POST",
         body: { name: file.name || "file", type: type, data: data, clientType: type }
-      }).catch(function () {
-        // 上传接口挂了也还能本地显示：直接按 data URL 用
-        return { name: file.name || "file", type: type, kind: isImage ? "image" : "file", size: data.length, data: data };
       });
+    }).catch(function (err) {
+      if (context === attachmentContext) toast((file.name || "文件") + "：" + err.message, true);
+      return null;
     });
   }).filter(Boolean);
   return Promise.all(jobs).then(function (out) {
-    out.forEach(function (f) { if (f && f.data) state.attachments.push(f); });
+    if (context !== attachmentContext) return;
+    out.forEach(function (f) { if (f && f.data) state.attachments.push(normalizeImage(f)); });
     renderAttachments();
+  }).finally(function () {
+    if (context !== attachmentContext) return;
+    pendingAttachments -= list.length;
+    updateSend();
   });
 }
 
@@ -1013,6 +1044,7 @@ function renderAttachments() {
     if (f.kind === "image") chip.appendChild(el("img", { src: f.data, alt: f.name || "" }));
     else chip.appendChild(el("span", { class: "ic", text: (String(f.name || "F").split(".").pop() || "F").slice(0, 3).toUpperCase() }));
     chip.appendChild(el("span", { class: "nm", text: f.name || "文件" }));
+    if (f.bookChars) chip.appendChild(el("span", { text: "随消息发送 " + f.bookChars.toLocaleString() + " 字" + (f.imagePages ? "（" + f.imagePages + " 个章节仅含图片）" : "") }));
     var rm = el("button", { class: "rm", type: "button", title: "移除", "aria-label": "移除" });
     rm.appendChild(el("span", { text: "\u00d7" }));
     rm.addEventListener("click", function () {
@@ -1438,7 +1470,10 @@ function startRename(id, rowEl, oldTitle) {
     // 正在看的就是这一条：本地标题也要跟着改，否则下一次 persistConversation
     // 会把旧的 state.title 整份 POST 回去，刚改的名字又被盖掉。
     if (id === state.convId) state.title = val;
-    api("api/conversations/" + encodeURIComponent(id), { method: "PATCH", body: { title: val } })
+    if (conversationRequest && conversationRequest.id === id) conversationRequest = null;
+    writeConversation(id, function () {
+      return api("api/conversations/" + encodeURIComponent(id), { method: "PATCH", body: { title: val } });
+    })
       .then(function () { return loadConversations(); })
       .catch(function (err) { toast("重命名失败：" + err.message, true); });
   }
@@ -1455,21 +1490,27 @@ function startRename(id, rowEl, oldTitle) {
 function askDelete(id, title) {
   var name = String(title || "这条对话");
   {
-    api("api/conversations/" + encodeURIComponent(id), { method: "DELETE" }).then(function () {
-      // 置顶列表里也把它去掉，免得留下悬空的 id
-      var pinned = (state.settings.pinned || []).filter(function (x) { return x !== id; });
-      state.settings.pinned = pinned;
-      api("api/settings", { method: "POST", body: { pinned: pinned } }).catch(function () {});
-      if (state.convId === id) {
-        state.convId = null;
-        state.title = "新对话";
-        state.messages = [];
-        renderMessages();
-        renderSessions();
-      } else {
-        loadConversations();
-      }
-      toast("已删除「" + name.slice(0, 20) + "」");
+    return writeConversation(id, function (queue) {
+      return api("api/conversations/" + encodeURIComponent(id), { method: "DELETE" }).then(function () {
+        queue.deleted = true;
+        // 置顶列表里也把它去掉，免得留下悬空的 id
+        var pinned = (state.settings.pinned || []).filter(function (x) { return x !== id; });
+        state.settings.pinned = pinned;
+        api("api/settings", { method: "POST", body: { pinned: pinned } }).catch(function () {});
+        if (conversationRequest && conversationRequest.id === id) conversationRequest = null;
+        if (state.convId === id) {
+          conversationRequest = null;
+          clearPendingAttachments();
+          state.convId = null;
+          state.title = "新对话";
+          state.messages = [];
+          renderMessages();
+          renderSessions();
+        } else {
+          loadConversations();
+        }
+        toast("已删除「" + name.slice(0, 20) + "」");
+      });
     }).catch(function (err) {
       toast("删除失败：" + err.message, true);
     });
@@ -1483,11 +1524,18 @@ function setSidebar(open) {
   api("api/settings", { method: "POST", body: { sidebar: open } }).catch(function () {});
 }
 
+var conversationRequest = null;
 function openConversation(id) {
   if (state.busy) { toast("正在生成，先停止再切换对话", true); return; }
+  var request = { id: id };
+  conversationRequest = request;
   dropBlankDraft(); // 切换到别的对话时，空着的"新对话"不该留在列表里
-  api("api/conversations/" + encodeURIComponent(id)).then(function (conv) {
-    if (!conv) return;
+  var writing = conversationWrites.get(id);
+  return (writing ? writing.done : Promise.resolve()).then(function () {
+    if (request === conversationRequest) return api("api/conversations/" + encodeURIComponent(id));
+  }).then(function (conv) {
+    if (!conv || request !== conversationRequest) return;
+    if (state.convId !== conv.id) clearPendingAttachments();
     state.convId = conv.id;
     state.title = conv.title || "新对话";
     state.messages = (conv.messages || []).map(normalizeMessage);
@@ -1495,7 +1543,9 @@ function openConversation(id) {
     renderSessions();
     scrollBottom(true);
   }).catch(function (err) {
-    toast("打开对话失败：" + err.message, true);
+    if (request === conversationRequest) toast("打开对话失败：" + err.message, true);
+  }).finally(function () {
+    if (request === conversationRequest) conversationRequest = null;
   });
 }
 
@@ -1504,6 +1554,9 @@ function normalizeMessage(m) {
     role: m.role === "assistant" ? "assistant" : "user",
     content: String(m.content || ""),
     reasoning: String(m.reasoning || ""),
+    rounds: Array.isArray(m.rounds) ? m.rounds.map(function (round) {
+      return { content: String(round.content || ""), toolIds: (round.toolIds || []).slice() };
+    }) : undefined,
     toolCalls: Array.isArray(m.toolCalls) ? m.toolCalls.map(function (c) {
       return {
         id: c.id || "", name: c.name || "",
@@ -1523,16 +1576,40 @@ function normalizeMessage(m) {
   };
 }
 
+// 同一会话依次写入；删除成功后，丢弃已排队的旧快照。
+var conversationWrites = new Map();
+function writeConversation(id, write) {
+  var queue = conversationWrites.get(id);
+  if (!queue) {
+    queue = { done: Promise.resolve(), deleted: false };
+    conversationWrites.set(id, queue);
+  }
+  var done = queue.done.catch(function () {}).then(function () {
+    if (!queue.deleted) return write(queue);
+  });
+  queue.done = done;
+  function clear() {
+    if (queue.done === done) conversationWrites.delete(id);
+  }
+  done.then(clear, clear);
+  return done;
+}
+
 function persistConversation() {
   if (!state.messages.length) return Promise.resolve();
+  var messages = state.messages;
+  if (!state.convId) state.convId = uid("c");
   var payload = {
-    id: state.convId || undefined,
+    id: state.convId,
     title: state.title || undefined,
     messages: state.messages.map(function (m) {
       return {
         role: m.role,
         content: m.content || "",
         reasoning: m.reasoning || "",
+        rounds: m.rounds ? m.rounds.map(function (round) {
+          return { content: round.content, toolIds: round.toolIds.slice() };
+        }) : undefined,
         toolCalls: (m.toolCalls || []).map(function (c) {
           return { id: c.id, name: c.name, args: c.args, result: c.result, isError: Boolean(c.isError) };
         }),
@@ -1545,12 +1622,16 @@ function persistConversation() {
       };
     })
   };
-  return api("api/conversations", { method: "POST", body: payload }).then(function (saved) {
-    if (!saved) return;
-    state.convId = saved.id;
-    state.title = saved.title || state.title;
-    state.draft = null; // 已经是真对话了，草稿退场
-    return loadConversations();
+  return writeConversation(payload.id, function () {
+    return api("api/conversations", { method: "POST", body: payload }).then(function (saved) {
+      if (!saved) return;
+      if (state.messages === messages) {
+        state.convId = saved.id;
+        if (state.title === payload.title) state.title = saved.title || state.title;
+        state.draft = null; // 已经是真对话了，草稿退场
+      }
+      return loadConversations();
+    });
   }).catch(function (err) {
     toast("对话保存失败：" + err.message, true);
   });
@@ -1789,7 +1870,7 @@ function mediaBlock(files, opts) {
     } else {
       wrap.appendChild(el("span", { class: "msg-file", title: f.name || "" },
         el("span", { class: "nm", text: f.name || "文件" }),
-        el("span", { class: "hint", text: f.size ? fmtBytes(f.size) : "" })
+        el("span", { class: "hint", text: MagpieEpub.isEpub(f) ? "提问时读取正文" : (f.size ? fmtBytes(f.size) : "") })
       ));
     }
   });
@@ -2121,20 +2202,67 @@ function updateSend() {
   var btn = $("#send");
   var input = $("#input");
   $("#app").classList.toggle("busy", state.busy);
-  btn.disabled = state.busy ? false : (!input.value.trim() && !(state.attachments || []).length);
+  btn.disabled = !state.busy && (pendingAttachments > 0 || (!input.value.trim() && !(state.attachments || []).length));
   btn.setAttribute("aria-label", state.busy ? "停止生成" : "发送");
   input.title = state.busy ? "生成中…（Esc 停止）" : "Enter 发送 · Shift+Enter 换行";
 }
 
+async function requestMessages(history, warn) {
+  var seen = new Set(), messages = [];
+  for (var m of history) {
+    var files = (m.files || []).filter(Boolean).map(normalizeImage);
+    if (m.role === "assistant") {
+      // 连接失败的卡片没有调用参数，只在界面显示，不当作工具调用重放。
+      var calls = (m.toolCalls || []).filter(function (c) { return c && c.name && c.args !== "" && (c.result || c.isError); });
+      if (m.content || calls.length) messages.push({ role: m.role, content: m.content, rounds: m.rounds, toolCalls: calls, files: files });
+      continue;
+    }
+    var parts = [], otherFiles = [];
+    for (var f of files) {
+      var isEpub = MagpieEpub.isEpub(f);
+      var isText = !isEpub && f.kind !== "image" && (/\.(md|markdown|txt)$/i.test(f.name || "") || /^text\//i.test(f.type || ""));
+      if (!isText && !isEpub) {
+        if (f.data) otherFiles.push(f);
+        continue;
+      }
+      var bytes = typeof f.data === "string" ? f.data.slice(f.data.indexOf(",") + 1) : "";
+      if (seen.has(bytes)) {
+        parts.push("（" + f.name + " 的正文已附在前文。）");
+        continue;
+      }
+      try {
+        var book = isText
+          ? { text: new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(atob(bytes), function (c) { return c.charCodeAt(0); })) }
+          : await MagpieEpub.read(f.data);
+        var label = isText ? "文档" : "电子书";
+        parts.push("【" + label + "：" + f.name + "】\n" + book.text + "\n【" + label + "结束】");
+        if (book.imagePages) parts.push("（" + book.imagePages + " 个章节仅含图片，未提取文字。）");
+        seen.add(bytes);
+      } catch (err) {
+        var reason = f.name + "：" + err.message;
+        parts.push("（未附上" + (isText ? "这份文档" : "这本电子书") + "的正文。" + reason + "）");
+        warn(reason);
+      }
+    }
+    if (String(m.content || "").trim()) parts.push(m.content);
+    if (parts.length || otherFiles.some(function (f) { return f.kind === "image"; })) {
+      messages.push({ role: m.role, content: parts.join("\n\n"), userText: String(m.content ?? ""), files: otherFiles });
+    }
+  }
+  return messages;
+}
+
 function send() {
   if (state.busy) { stop(); return; }
+  if (pendingAttachments) { toast("附件还在读取，请稍候。"); return; }
   var input = $("#input");
   var text = input.value.trim();
   if (!text && !(state.attachments || []).length) return;
   if (!state.settings.model) { toast("先选一个模型", true); return; }
+  conversationRequest = null;
 
   var files = (state.attachments || []).map(function (f) {
-    return { name: f.name, type: f.type, kind: f.kind, size: f.size, data: f.data };
+    return { name: f.name, type: f.type, kind: f.kind, size: f.size, data: f.data, bookChars: f.bookChars, imagePages: f.imagePages };
   });
   var userMsg = { role: "user", content: text, reasoning: "", toolCalls: [], files: files };
   state.attachments = [];
@@ -2150,7 +2278,7 @@ function send() {
   state.messages.push(userMsg, asstMsg);
 
   if (!state.convId && state.title === "新对话") {
-    state.title = text.replace(/\s+/g, " ").slice(0, 30);
+    state.title = (text || files[0].name || "新对话").replace(/\s+/g, " ").slice(0, 30);
   }
   // 草稿发了第一条消息：先把列表里那条的标题换成刚输入的内容（不用等服务器），
   // 等保存成功再把它换成真正的对话条目（见 persistConversation）。
@@ -2177,28 +2305,8 @@ function send() {
   updateSend();
   scrollBottom(true);
 
-  var history = state.messages.filter(function (m) {
-    if (m === asstMsg) return false;
-    if (m.role === "user") return Boolean(String(m.content || "").trim());
-    return Boolean(m.content) || (m.toolCalls && m.toolCalls.length > 0);
-  }).map(function (m) {
-    // 上一轮的工具调用也带上，模型才知道它已经查过什么；服务端会把
-    // assistant.tool_calls 和对应的 tool 结果一起重放，缺结果的调用它自己丢掉。
-    var calls = m.role === "assistant" && Array.isArray(m.toolCalls)
-      ? m.toolCalls.filter(function (c) { return c && c.name && (c.result || c.isError); })
-      : [];
-    return {
-      role: m.role,
-      content: m.content,
-      toolCalls: calls,
-      files: (m.files || []).filter(function (f) { return f && f.data; }).map(function (f) {
-        return { name: f.name, type: f.type, kind: f.kind, size: f.size, data: f.data };
-      })
-    };
-  });
-
   var payload = {
-    messages: history,
+    messages: state.messages.slice(0, -1),
     model: state.settings.model,
     effort: state.settings.effort || "",
     system: state.settings.systemEnabled === false ? "" : (state.settings.system || ""),
@@ -2233,6 +2341,10 @@ function send() {
 function handleEvent(evt, refs) {
   var msg = refs.msg;
   switch (evt.type) {
+    case "round":
+      if (!msg.rounds) msg.rounds = [];
+      msg.rounds.push({ content: "", toolIds: [] });
+      break;
     case "start":
       msg.model = evt.model || state.settings.model;
       msg.tools = Array.isArray(evt.tools) ? evt.tools : [];
@@ -2254,6 +2366,7 @@ function handleEvent(evt, refs) {
       }
       break;
     case "delta":
+      if (msg.rounds && msg.rounds.length) msg.rounds[msg.rounds.length - 1].content += evt.text || "";
       // 先攒着，交给打字机队列按帧放，文字才是连续流出来的
       if (!msg.streamStartedAt) msg.streamStartedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
       msg.pending = (msg.pending || "") + (evt.text || "");
@@ -2307,6 +2420,7 @@ function handleTool(evt, refs) {
   if (evt.phase === "call") {
     var call = { id: evt.id || uid("call"), name: evt.name || "工具", args: evt.args || {}, result: "", isError: false };
     msg.toolCalls.push(call);
+    if (msg.rounds && msg.rounds.length) msg.rounds[msg.rounds.length - 1].toolIds.push(call.id);
     var card = makeTalk(call);
     refs.cards[call.id] = card;
     refs.talks.appendChild(card.root);
@@ -2459,8 +2573,10 @@ function isBlankDraft() {
 
 function newChat() {
   if (state.busy) { toast("正在生成，先停止再新建对话", true); return; }
+  conversationRequest = null;
   // 已经在一个空白的新对话里了：再点"新对话"就保持原样，别叠出第二个
   if (isBlankDraft()) { $("#input").focus(); return; }
+  clearPendingAttachments();
   state.draft = { id: DRAFT_ID, title: "新对话", updated: Date.now() };
   state.convId = null;
   state.title = "新对话";

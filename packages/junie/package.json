@@ -1,0 +1,17 @@
+{
+  "name": "@magpie-community/agent-junie",
+  "version": "0.1.0",
+  "description": "Junie CLI with Magpie's full model catalog, launch defaults and ECO preferences",
+  "type": "module",
+  "files": ["junie.agent.js", "seed.mjs", "README.md", "LICENSE"],
+  "keywords": ["magpie", "magpie-agent", "junie", "jetbrains", "llm-gateway"],
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/junie"
+  },
+  "scripts": { "test": "bun test", "seed": "node seed.mjs" },
+  "magpie": { "agent": "./junie.agent.js", "icon": "https://junie.jetbrains.com/favicons/favicon.svg" }
+}

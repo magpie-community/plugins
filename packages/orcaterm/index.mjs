@@ -1791,6 +1791,9 @@ async function capiRequest(auth, action, data = {}) {
   }
 }
 
+// How long before a WeChat token expires magpie renews it (auth.refreshLead).
+const REFRESH_LEAD = 90 * 60 * 1000
+
 // ---- the plugin itself ------------------------------------------------------
 // The named OrcaTermAuthPlugin export is the plugin entry; _internal below is an
 // object for tests, so magpie does not call it as a second plugin.
@@ -1908,6 +1911,19 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
       // "maxConcurrency is 1" describes. OrcaTerm's budget is per account and
       // shared with its own desktop client, so one in flight.
       maxConcurrency: 1,
+
+      /**
+       * How long before `expires` magpie renews the WeChat token (#675).
+       * OrcaTerm drops the OAuth session together with an expired access
+       * token: `OAuthRefreshToken` then answers SESSION_EXPIRED for good, and
+       * only a new scan helps. magpie renews when something uses the account
+       * (a request, a usage read) once the token is within this lead of
+       * expiring; the default five minutes left a 2h token renewed only by a
+       * request in its last five minutes, so an account idle past that was
+       * signed out. 90 minutes (orinsid's patch, 40+ hours with no expiry)
+       * makes anything in the last hour and a half renew it.
+       */
+      refreshLead: REFRESH_LEAD,
 
       methods: [
         {
