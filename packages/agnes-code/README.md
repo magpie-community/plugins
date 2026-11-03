@@ -6,7 +6,7 @@
 
 Agnes 在 registry 里有两个入口，都保留（[#614](https://github.com/magpie-community/plugins/issues/614)）：
 
-| | 本包（`agnes-code`） | [agnes](packages/agnes)（`agnes`） |
+| | 本包（`agnes-code`） | [agnes](../agnes)（`agnes`） |
 | --- | --- | --- |
 | 登录 | 读 Agnes **Code 桌面端**已保存的会话（Windows，DPAPI + safeStorage），或粘贴 `accessToken` | 在 Chrome 里登录 Agnes AI 国际版网页（agnes-ai.com），不需要桌面端 |
 | 服务 | Agnes Code 编码产品：`api-agnes-code.agnes-ai.com/v1`（chat completions，编码模型目录） | Agnes AI 国际版的文本模型、Token/Agent Plan 用量与美元余额 |
