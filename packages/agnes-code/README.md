@@ -2,11 +2,30 @@
 
 把 **Agnes Code 桌面端** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：复用桌面端登录态（会话文件解密），直连云端 OpenAI 兼容网关，agent 以 `agnes-code/<model>` 使用它的模型；支持「每日登录送积分」自动观测与积分余额显示。
 
+## 与 `agnes`（Agnes AI 国际版）的区别
+
+Agnes 在 registry 里有两个入口，都保留（[#614](https://github.com/magpie-community/plugins/issues/614)）：
+
+| | 本包（`agnes-code`） | [agnes](packages/agnes)（`agnes`） |
+| --- | --- | --- |
+| 登录 | 读 Agnes **Code 桌面端**已保存的会话（Windows，DPAPI + safeStorage），或粘贴 `accessToken` | 在 Chrome 里登录 Agnes AI 国际版网页（agnes-ai.com），不需要桌面端 |
+| 服务 | Agnes Code 编码产品：`api-agnes-code.agnes-ai.com/v1`（chat completions，编码模型目录） | Agnes AI 国际版的文本模型、Token/Agent Plan 用量与美元余额 |
+| 每日额度 | 本产品的每日积分（`api/v2/subscription/credits-balance`） | 该产品自己的套餐与余额读数 |
+| 平台 | 桌面端解密仅 Windows，其余平台走粘贴 | 有 Chrome 即可 |
+
+两者是 Agnes 同一个账号体系下的**两个不同产品**：各自读各自产品的余额读数，装的模型与端点也不同，装两个不会重复也不会互相替代。
+
+English: two entries serve Agnes. This one reuses the Agnes Code desktop's
+saved session (Windows) or a pasted `accessToken` and calls the Agnes Code
+gateway; the `agnes` entry signs in to Agnes AI international in Chrome and
+meters that product's plans and USD balance. Same account system, different
+products: neither entry replaces the other.
+
 ## 登录什么
 
 两种方式（登录时二选一）：
 
-1. **读取 Agnes Code 桌面端登录态（推荐，仅 Windows）**——本机装有 Agnes Code 桌面版并登录过即可。插件按 Chrome 同款方案解出会话（`Local State` 的 DPAPI 包裹 AES 主密钥 → 解 `code-auth-session.v1` 的 AES-256-GCM），只在本机、当前 Windows 用户下可解，凭据不外传：
+1. **读取 Agnes Code 桌面端登录态（推荐，仅 Windows）**——本机装有 Agnes Code 桌面版并登录过即可，不用填任何东西。没装/没登录时这一步会给出 [Agnes Code 官网页](https://agnes-ai.com/agnescode) 链接并自动等待：装好登录后自动完成，不用回来点按钮。本机已有数据但读不出来（登录已过期、DPAPI 解不开、会话里没有 accessToken）会直接说明原因，打开桌面端登录或修好后同样自动完成。插件按 Chrome 同款方案解出会话（`Local State` 的 DPAPI 包裹 AES 主密钥 → 解 `code-auth-session.v1` 的 AES-256-GCM），只在本机、当前 Windows 用户下可解，凭据不外传：
    - 会话目录：`%APPDATA%\AgnesCode\`。macOS/Linux 下桌面端解密不可用，会明确提示改用粘贴方式。
    - 会话 JWT 过期会提示打开 Agnes Code 重新登录后重试（桌面端负责续期）。
 2. **粘贴 accessToken**——从桌面端会话里复制 JWT（`eyJ…`）；可选填用户名便于区分账号。
