@@ -61,6 +61,36 @@ test("check still requires loaders for providers, including providers with tools
 
 const fine = `export const Plugin = async () => ({ tool: ${tool} })`
 
+test("check accepts quota-only providers with a loader and no model transport", () => {
+  const result = check(`export const Plugin = async () => ({
+    auth: {...${auth}, usage: async () => ({windows: []}), loader: async () => ({})},
+    config: async (cfg) => { cfg.provider.fixture = {name: "Fixture", models: {}} }
+  })`)
+  expect(result.code).toBe(0)
+  expect(result.output).toContain("✓ fixture")
+})
+
+test("quota hooks do not exempt incomplete model providers or missing loaders", () => {
+  for (const config of [
+    `{models: {}, api: "https://example.invalid/v1"}`,
+    `{models: {}, npm: "@ai-sdk/openai"}`,
+    `{models: {example: {}}}`,
+  ]) {
+    const result = check(`export const Plugin = async () => ({
+      auth: {...${auth}, usage: async () => ({windows: []}), loader: async () => ({})},
+      config: async (cfg) => { cfg.provider.fixture = ${config} }
+    })`)
+    expect(result.code).toBe(1)
+    expect(result.output).toContain("no npm or models")
+  }
+  const result = check(`export const Plugin = async () => ({
+    auth: {...${auth}, usage: async () => ({windows: []})},
+    config: async (cfg) => { cfg.provider.fixture = {models: {}} }
+  })`)
+  expect(result.code).toBe(1)
+  expect(result.output).toContain("auth.loader")
+})
+
 test("check passes this repository's own registry.json", () => {
   expect(registryProblems(readFileSync(new URL("../registry.json", import.meta.url), "utf8"))).toEqual([])
 })

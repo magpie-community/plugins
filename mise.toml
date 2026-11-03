@@ -1,0 +1,9 @@
+[tools]
+bun = "1.4.4"
+node = "24.22.1"
+
+[tasks.check]
+run = "bun scripts/check.mjs"
+
+[tasks.test-dimagent]
+run = "bun test packages/dimagent-usage/test"

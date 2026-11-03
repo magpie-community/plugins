@@ -29,6 +29,8 @@
       "summary": { "en": "Your Qoder subscription: international (qoder.com) or Qoder CN, the China site (qoder.cn, Alibaba Cloud or phone sign-in), each its own provider. Also QwenWork (千问办公): the public cloud or the enterprise flagship with its own domain. Unofficial for QwenWork.", "zh": "用 Qoder 自己的设备登录使用 Qoder 订阅：国际版（qoder.com）与 Qoder 中国版（Qoder CN，qoder.cn，阿里云账号 / 手机号登录）各是一个订阅；也接入千问办公：公有云与企业旗舰版（输入企业自己的域名）。千问办公部分非官方。" } },
     { "package": "@magpie-community/opencode-devin-auth", "name": "Devin", "icon": "devin", "providers": ["devin"], "community": true, "replaces": "devin",
       "summary": { "en": "Devin's models with your Devin account — a browser sign-in or the devin CLI's.", "zh": "用 Devin 账号使用 Devin 的模型：浏览器登录，或沿用 devin CLI 的登录。" } },
+    { "package": "@magpie-community/opencode-dimagent-usage-auth", "name": "DimAgent", "icon": "https://dimagent.cn/favicon.png", "providers": ["dimagent-usage"], "community": true,
+      "summary": { "en": "Read your DimAgent plan credits, add-on packs and search allowance using the local dim usage --json command. Quota display only: no model forwarding or credential import.", "zh": "通过本机 dim usage --json 读取 DimAgent 套餐积分、加购包和搜索额度。仅显示额度，不转发模型请求、不导入登录凭据。" } },
     { "package": "@magpie-community/opencode-zed-auth", "name": "Zed", "icon": "zed", "providers": ["zed"], "community": true, "replaces": "zed",
       "summary": { "en": "Claude, GPT, Gemini and Grok hosted by Zed, on your Zed plan.", "zh": "用 Zed 订阅使用 Zed 托管的 Claude、GPT、Gemini 和 Grok。" } },
     { "package": "@magpie-community/opencode-factory-auth", "name": "Factory", "icon": "factory", "providers": ["factory"], "community": true, "replaces": "factory",

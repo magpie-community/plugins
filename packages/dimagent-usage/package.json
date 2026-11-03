@@ -1,0 +1,18 @@
+{
+  "name": "@magpie-community/opencode-dimagent-usage-auth",
+  "version": "0.1.0",
+  "description": "Read DimAgent CLI allowances in magpie without providing models or importing credentials.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "src", "README.md"],
+  "magpie": { "name": "DimAgent", "icon": "https://dimagent.cn/favicon.png" },
+  "keywords": ["opencode", "opencode-plugin", "magpie", "dimagent", "usage"],
+  "scripts": { "test": "bun test", "check": "bun run scripts/read.mjs" },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/dimagent-usage"
+  }
+}

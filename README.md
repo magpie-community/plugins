@@ -5,9 +5,9 @@ subscriptions, and [gateway middleware](#gateway-middleware),
 [gateway hooks](#gateway-hooks), [routing strategies](#routing-strategies), [tools for every
 agent](#tools-for-every-agent), [pages](#pages) and [agents](#agents) for
 magpie, maintained by the community. To make one, see
-[Write your own](#write-your-own). Each package signs in to one
-subscription and makes its requests. The packages work in OpenCode and in
-[magpie](https://usemagpie.ai), which runs OpenCode's provider plugins.
+[Write your own](#write-your-own). Provider packages sign in to subscriptions
+and make their requests in OpenCode and in [magpie](https://usemagpie.ai),
+which runs OpenCode's provider plugins. Quota-only integrations are marked below.
 
 | Package | Signs in to | Provider id |
 |---|---|---|
@@ -21,6 +21,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [copilot](packages/copilot) | GitHub Copilot on GitHub.com or GitHub Enterprise, with premium request or credit quotas | `github-copilot` |
 | [cursor](packages/cursor) | Cursor subscriptions (Pro, Pro+, Ultra, Teams), on the API cursor-agent talks to | `cursor` |
 | [devin](packages/devin) | Devin subscription (the devin CLI's account) | `devin` |
+| [DimAgent](packages/dimagent-usage) | DimAgent allowances through the local CLI's existing login; quota display only, no models or credential import | `dimagent-usage` |
 | [factory](packages/factory) | Factory (Droid) subscription | `factory` |
 | [gcp-ai](packages/gcp-ai) | Google Cloud Vertex AI with your own gcloud / ADC login (needs `gcloud` and Chrome), plus the project's promotional credits | `gcp-ai` |
 | [grok](packages/grok) | Grok (SuperGrok / X Premium+), through the Grok Build CLI's sign-in | `grok` |
@@ -282,6 +283,10 @@ Each package is a folder under `packages/<name>/`:
     field names the AI SDK package the models speak:
     `@ai-sdk/openai-compatible` (chat completions), `@ai-sdk/openai`
     (Responses) or `@ai-sdk/anthropic` (Messages).
+  - A quota-only plugin for magpie supplies `auth.usage` and declares
+    `{ name, models: {} }`, with no `npm` or `api`. Its loader rejects
+    model requests locally. State that it provides no models in its
+    README and registry summaries; see [DimAgent](packages/dimagent-usage).
   - A list the account decides goes in the `provider: { id, models(provider, { auth }) }`
     hook.
   - A daily check-in (签到) the vendor rewards goes in the `auth` hook as

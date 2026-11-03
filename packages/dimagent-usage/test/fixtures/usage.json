@@ -1,0 +1,37 @@
+{
+  "account_id": 1,
+  "subscription": {
+    "product": { "name": "Max套餐" },
+    "current_term": {
+      "credit_bucket_id": 1,
+      "start_at": "2026-10-13T02:33:55.398Z",
+      "end_at": "2026-11-13T02:33:55.398Z"
+    }
+  },
+  "credits": {
+    "subscription_bucket": {
+      "id": 1,
+      "bucket_kind": "subscription",
+      "total_units": 100000,
+      "used_units": 2640,
+      "remaining_units": 97360,
+      "expires_at": "2026-11-13T02:33:55.398Z",
+      "hard_deadline_at": "2026-11-13T02:33:55.398Z",
+      "status": "active",
+      "window_states": []
+    },
+    "addon_buckets": [],
+    "total_units": 100000,
+    "used_units": 2640,
+    "remaining_units": 97360
+  },
+  "feature_meters": [{
+    "feature_key": "web_search",
+    "total_remaining": 4940,
+    "unit": "call",
+    "unlimited": false,
+    "total_allowance": 5500,
+    "total_used": 560,
+    "period_end": "2026-11-13T02:33:55.398Z"
+  }]
+}
