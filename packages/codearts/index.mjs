@@ -192,6 +192,20 @@ const MAX_OUTPUT_TOKENS = 65_536
 // caller shows the thinking as the answer; asked for explicitly it goes to
 // `reasoning_content` and `content` is the reply only.
 const ENABLE_THINKING = { type: "enabled" }
+// The way to stop the thinking altogether (measured 2026-11-03: three runs in
+// a row, no reasoning at all). `reasoning_effort: none` alone does not: the
+// model thinks anyway (89, 91 and 135 characters of reasoning in three runs).
+const DISABLE_THINKING = { type: "disabled" }
+// The gateway takes the caller's level in `reasoning_effort` (measured
+// 2026-11-03: none, low, medium, high, xhigh and max are accepted, every
+// other value is a 400) — and the level is real: the thinking grows with it.
+const GATEWAY_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
+// The gateway's own word for "no thinking" is `none`; a host that says `off`
+// (or `disabled`) means the same thing.
+const NO_THINKING = new Set(["none", "off", "disabled"])
+// `minimal` is a host's name the gateway does not know; it is the smallest
+// thinking it does know.
+const EFFORT_ALIASES = { minimal: "low" }
 
 // Benefits (free-quota) models require `maas_type: benefit` as a *signed*
 // header, or the backend answers InferHub.002002009.404 "model is not
@@ -968,7 +982,32 @@ function prepareChatBody(parsed, { thinking = true } = {}) {
   const body = { ...parsed, model: upstreamModelId(parsed.model) }
   const names = shortenToolNames(body)
   // `injected`: ours to take back should a model refuse the parameter.
-  const injected = thinking && body.thinking === undefined
+  //
+  // The caller's level is the gateway's own (measured 2026-11-03): `none`,
+  // `low`, `medium`, `high`, `xhigh` and `max` are accepted, every other value
+  // is a 400, so a host's word for "no thinking" is translated and an unknown
+  // word is dropped rather than left to turn the whole request away.
+  //
+  // A level that the caller named is passed on as it is and the plugin asks for
+  // no thinking of its own: `thinking: enabled` would overrule the level.
+  //
+  // "No thinking" is the one thing the level alone does not do (measured:
+  // `reasoning_effort: none` still thought, 89 to 135 characters of it), so it
+  // is the switch that is used: `thinking: disabled` is the gateway's own way
+  // of not thinking at all.
+  const spoken = typeof body.reasoning_effort === "string" ? body.reasoning_effort.trim().toLowerCase() : ""
+  const level = spoken === "" ? "" : (EFFORT_ALIASES[spoken] ?? spoken)
+  if (spoken !== "") {
+    if (NO_THINKING.has(spoken)) {
+      delete body.reasoning_effort
+      if (body.thinking === undefined) body.thinking = DISABLE_THINKING
+    } else if (GATEWAY_EFFORTS.includes(level)) {
+      body.reasoning_effort = level
+    } else {
+      delete body.reasoning_effort
+    }
+  }
+  const injected = thinking && spoken === "" && body.thinking === undefined
   if (injected) body.thinking = ENABLE_THINKING
   for (const k of ["max_tokens", "max_completion_tokens"]) {
     if (typeof body[k] === "number" && body[k] > MAX_OUTPUT_TOKENS) body[k] = MAX_OUTPUT_TOKENS
@@ -2515,6 +2554,25 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
     modalities: { input: ["text"], output: ["text"] },
   })
 
+  /**
+   * The reasoning levels a host is told about.
+   *
+   * ⚠️ Without them the host does not treat the model as one that reasons
+   * (measured 2026-11-03): the thinking arrives in `reasoning_content`, the host
+   * has no row for it, and the reasoning text is rendered as the answer — the
+   * caller sees its own thinking where the reply should be.
+   *
+   * The values are the gateway's own words (measured: `none`, `low`, `medium`,
+   * `high`, `xhigh` and `max` are accepted, every other value is a 400), so a
+   * host that picks one sends exactly what the gateway takes. `off` is a host's
+   * word for the same thing as `none` and is translated on the way out.
+   */
+  const REASONING_EFFORTS = ["off", "low", "medium", "high", "xhigh", "max"]
+  const reasoningOptions = () => ({
+    reasoning_efforts: [...REASONING_EFFORTS],
+    default_reasoning_effort: "medium",
+  })
+
   const modelOf = (provider, live, state) => {
     const base = provider.models?.[live.id] ?? {}
     const capabilities = {
@@ -2529,6 +2587,10 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
     // as free while billed as paid) and `rate` (the credits a request costs,
     // as a multiple: the IDE's 「消耗系数」).
     const free = live.benefit === true && !state?.noBenefit.has(live.id)
+    // A model that reasons is told so: without the levels the host has no row
+    // for the thinking and renders it as the answer (see REASONING_EFFORTS).
+    // A caller's own levels stand.
+    const levels = live.reasoning && !base.options?.reasoning_efforts ? reasoningOptions() : undefined
     return {
       ...base,
       id: live.id,
@@ -2536,6 +2598,7 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
       limit: { context: live.context ?? base.limit?.context ?? 0, output: live.output ?? MAX_OUTPUT_TOKENS },
       capabilities,
       free,
+      ...(levels ? { options: { ...(base.options ?? {}), ...levels } } : {}),
       ...(!free && live.rate > 0 ? { rate: live.rate } : {}),
     }
   }

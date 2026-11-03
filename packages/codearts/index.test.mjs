@@ -254,6 +254,36 @@ test("prepareChatBody reshapes a chat into what the gateway accepts and meters",
   assert.equal(x.prepareChatBody(null), null)
 })
 
+// The caller's level is the gateway's own (measured 2026-11-03: none, low,
+// medium, high, xhigh and max are accepted, every other value is a 400), and a
+// level that was named is passed on as it is: `thinking: enabled` would
+// overrule it. "No thinking" is the switch, not the level: `reasoning_effort:
+// none` alone still thought (89 to 135 characters of it).
+test("the caller's reasoning level is the gateway's own", () => {
+  for (const level of ["low", "medium", "high", "xhigh", "max"]) {
+    const out = x.prepareChatBody({ model: "GLM-5.2", messages: [], reasoning_effort: level })
+    assert.equal(out.body.reasoning_effort, level)
+    assert.equal(out.body.thinking, undefined, level + " is the level; nothing else is asked")
+  }
+
+  // A host's word for no thinking is the gateway's way of not thinking.
+  for (const word of ["off", "disabled", "none"]) {
+    const out = x.prepareChatBody({ model: "GLM-5.2", messages: [], reasoning_effort: word })
+    assert.deepEqual(out.body.thinking, { type: "disabled" }, word + " means no thinking")
+    assert.equal("reasoning_effort" in out.body, false, "the level would only be a hint")
+  }
+
+  // A word the gateway does not know would turn the whole request away, so it
+  // is dropped; `minimal` is the smallest thinking it does know.
+  assert.equal(x.prepareChatBody({ model: "GLM-5.2", messages: [], reasoning_effort: "minimal" }).body.reasoning_effort, "low")
+  assert.equal("reasoning_effort" in x.prepareChatBody({ model: "GLM-5.2", messages: [], reasoning_effort: "loud" }).body, false)
+
+  // A caller that said nothing still gets the thinking, as before.
+  assert.deepEqual(x.prepareChatBody({ model: "GLM-5.2", messages: [] }).body.thinking, { type: "enabled" })
+  // A caller that said so itself is not overruled.
+  assert.deepEqual(x.prepareChatBody({ model: "GLM-5.2", messages: [], thinking: { type: "disabled" } }).body.thinking, { type: "disabled" })
+})
+
 // The free model's TPM limit, word for word as the gateway sent it in a 200.
 const tpmEvent = 'data:{"text":"[DONE]","error_code":"InferHub.ModelArts.81111.429","error_msg":"The model TPM limit has been significantly exceeded. Please reduce the request rate and retry later."}'
 
@@ -1975,6 +2005,34 @@ test("provider.models: free models once claimed, rates and parameters from the C
   await plugin.provider.models(provider, { auth: makeAuth(cred) })
   assert.equal(seen.filter((s) => s.url === x.BENEFIT_CLAIM_URL).length, 1)
   assert.equal(seen.filter((s) => s.url === x.AGENT_LIST_URL).length, 1)
+})
+
+// A model that reasons is told so, with the levels the host offers: without
+// them the host has no row for the thinking and renders the reasoning text as
+// the answer (measured 2026-11-03 on a DSH host: the caller's own thinking
+// showed up where the reply should have been).
+test("provider.models: a model that reasons is given the levels a host offers", async () => {
+  const cred = await makeCred()
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: modelsFetcher([], { agents: agentList, detail: agentDetail }) })
+  const models = await plugin.provider.models({ models: {} }, { auth: makeAuth(cred) })
+
+  const thinking = models["GLM-5.2"]
+  assert.equal(thinking.capabilities.reasoning, true)
+  assert.deepEqual(thinking.options.reasoning_efforts, ["off", "low", "medium", "high", "xhigh", "max"])
+  assert.equal(thinking.options.default_reasoning_effort, "medium")
+
+  // A model that does not think offers no level: the host then asks for no
+  // thinking at all.
+  assert.equal(models["glm-5.3"].capabilities.reasoning, undefined)
+  assert.equal(models["glm-5.3"].options, undefined)
+})
+
+test("provider.models: a caller's own levels stand", async () => {
+  const cred = await makeCred()
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: modelsFetcher([], { agents: agentList, detail: agentDetail }) })
+  const provider = { models: { "GLM-5.2": { options: { reasoning_efforts: ["low", "high"] } } } }
+  const models = await plugin.provider.models(provider, { auth: makeAuth(cred) })
+  assert.deepEqual(models["GLM-5.2"].options.reasoning_efforts, ["low", "high"])
 })
 
 test("the model list comes from the main agent: original_id build, then CodeAgent, then the IDE's id", async () => {
