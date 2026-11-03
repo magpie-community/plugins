@@ -447,14 +447,30 @@ What is measured, and what is easy to read wrongly:
   rather than +08:00 guessed.
 
 A window that has lapsed reports nothing rather than 0%: nothing is
-exhausted, and the next request opens a fresh one. The China build
-(`copilot.tencent.com`) carries the same window: two Free-plan accounts
+exhausted, and the next request opens a fresh one.
+
+### The China build's windows (measured, shown as estimates)
+
+The China build (`copilot.tencent.com`) carries the same kind of window,
+measured one model at a time. `deepseek-v4.1-flash`: two Free-plan accounts
 refused on 2026-11-02 at 200,389,043 and 200,485,923 tokens, so its cap is
-measured at about 2e8 — and its refusals name the reset in Chinese
-(`将在 … UTC+8 重置`), which reads as an edge the same way. Its card reads
-against 2e8. In 0.2.12 and 0.2.13 it read against a soft cap of 1.9e8, so
-that routing rested the model before the vendor refused it; with the sum set
-aside that headroom only stopped the model early, so it is gone.
+about **2e8** — and its refusals name the reset in Chinese
+(`将在 … UTC+8 重置`), which reads as an edge the same way.
+
+Unlike the AI build's, the China model is **charged in credits** (`x0.11`)
+— the token window and the credits meter are two limits on one model — so
+the card is not a "free model" card. It is named after its model and says
+its cap is an estimate: **`deepseek-v4.1-flash tokens (est.)`**, with
+`~200M` in its text (`151.5M / ~200M`). The estimate is this machine's ledger
+against a cap measured on two accounts; the vendor reports neither, and the
+first refusal of a window pins the card full at the reset the vendor names.
+
+The measured windows live in one table (`CN_ESTIMATED_WINDOWS`), one entry
+per model. Only measured models have a card — a guessed cap would read wrong
+every day. Add an entry when another model's window is measured; remove one
+when the vendor stops applying it. Because the card is set aside (shown, not
+routed on), a stale cap costs a wrong percentage, never a wrongly rested
+model: the refusal is what stops a model, on both builds.
 
 ## When free models work but a credit model does not
 

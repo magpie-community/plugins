@@ -736,9 +736,9 @@ test("a WorkBuddy AI card carries the free model's window from the ledger", asyn
     serve({ "/billing/meter/get-user-resource-summary": () =>
       ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: "500", CycleUsedCapacity: "0" }] }) })
     const cn = await usageOf(WorkBuddyAuthPlugin, { ...auth, domain: "" })
-    expect(cn.windows.map((w) => w.name)).toEqual(["Credits", "Free model tokens"])
-    // the China card counts the workbuddy rows alone, against 2e8
-    expect(cn.windows[1]).toMatchObject({ amount: 90_000_000, limit: 2e8, unit: "tokens", aside: true })
+    // the China card is the model's own, and says its cap is an estimate
+    expect(cn.windows.map((w) => w.name)).toEqual(["Credits", "deepseek-v4.1-flash tokens (est.)"])
+    expect(cn.windows[1]).toMatchObject({ amount: 90_000_000, limit: 2e8, unit: "", aside: true })
   } finally {
     rmSync(ledger, { force: true })
   }

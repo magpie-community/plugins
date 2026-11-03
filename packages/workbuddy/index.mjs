@@ -2212,7 +2212,7 @@ const compact = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/
 
 // The window WorkBuddy rate limits deepseek-v4.1-flash by, which its credit
 // meter does not show: WorkBuddy AI measured at about 1e8 over ten days, the
-// China build at about 2e8 on 2026-11-02 (see FREE_WINDOW_CN).
+// China build at about 2e8 on 2026-11-02 (see CN_ESTIMATED_WINDOWS).
 //
 // A free account's usage() reports only the credits window, so a plan with
 // 160 credits untouched reads 0% while chats to deepseek-v4.1-flash are
@@ -2293,18 +2293,46 @@ const compact = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/
 // ~/.config/magpie otherwise. No endpoint reports the window; a ledger that
 // cannot be read yields no window rather than a made-up one.
 
-// A window: the build's ledger rows it counts (provider), the cap it reports
-// against, and how deep its display rounds. Two builds, two windows, two
-// caps: the same phone number can be signed in to both, and their ledgers
+// A window: the build's ledger rows it counts (provider and model), the cap
+// it reports against, and how its card reads. Two builds, two sets of
+// windows: the same phone number can be signed in to both, and their ledgers
 // stay apart — one build's spending must not fill the other's window.
 //
-// The China cap is the measured one, 2e8 (two accounts refused at 200.39M
-// and 200.49M). It was a soft 1.9e8 in 0.2.12 and 0.2.13, so that routing
-// rested the model before the vendor refused it; since the sum is set aside
-// (freeWindowOf's card), the cap only scales what the card says, and the
-// headroom bought nothing but a model stopped 10M tokens early (plugins#641).
-const FREE_WINDOW_CN = { provider: "workbuddy", cap: 2e8, short: "200M" }
-const FREE_WINDOW_AI = { provider: "workbuddy-ai", cap: 1e8, short: "100M" }
+// The China caps are measured on this machine from the vendor's own
+// refusals, never the vendor's word, and each is an estimate: 2e8 for
+// deepseek-v4.1-flash (two accounts refused at 200.39M and 200.49M on
+// 2026-11-02), with the card saying so (`~` and "(est.)"). The card is
+// shown only — set aside, plugins#641 — so a cap that goes stale costs a
+// wrong percentage, never a wrongly rested model; the first refusal of a
+// window pins the card full at the reset the vendor names.
+//
+// One entry per model, and only models that have been measured: a guessed
+// cap would read wrong every day. Add an entry when another model's window
+// is measured; remove one when the vendor stops applying it.
+const CN_ESTIMATED_WINDOWS = [
+  {
+    provider: "workbuddy",
+    model: "deepseek-v4.1-flash",
+    aliases: ["deepseek-v4.1-flash-sg"],
+    cap: 2e8,
+    name: "deepseek-v4.1-flash tokens (est.)",
+    short: "~200M",
+    // no unit: the name already says tokens, and magpie's narrow account
+    // cards cut a unit short ("tok…") beside the nine-digit numbers
+    unit: "",
+  },
+]
+// WorkBuddy AI's window keeps the name it shipped with: there the model is
+// served at x0.00, so "Free model tokens" is what it is.
+const FREE_WINDOW_AI = {
+  provider: "workbuddy-ai",
+  model: "deepseek-v4.1-flash",
+  aliases: ["deepseek-v4.1-flash-sg"],
+  cap: 1e8,
+  name: "Free model tokens",
+  short: "100M",
+  unit: "tokens",
+}
 const FREE_WINDOW_SPAN = 24 * 3600 * 1000
 // The lead: how far back of an edge the read goes on. A chain read from a row
 // that opens a window needs the window the span makes of the rows above it,
@@ -2317,10 +2345,9 @@ const FREE_WINDOW_LEAD = 86400 * 1000
 // earlier row began at most 24h before it, and so ended 24h after it at the
 // latest. This is one of the two edges the ledger itself spells out.
 const FREE_WINDOW_GAP = FREE_WINDOW_SPAN
-// the model the window is counted for; -sg shares it
-const FREE_WINDOW_MODEL = "deepseek-v4.1-flash"
-// both ids, so magpie's exact match finds the -sg one too
-const FREE_WINDOW_MODELS = ["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg"]
+// the model a window is counted for is its spec's `model`; `aliases` are the
+// ids that share the window (-sg is the same model under its paid id), and
+// both are named in the card's models so magpie's exact match finds them
 
 // windowOffset is the UTC offset a refusal spells out, in minutes, from
 // "UTC+8", "UTC+08:00", "UTC-5" or "GMT+8". null when it spells out none,
@@ -2367,7 +2394,7 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
       r?.provider === win.provider &&
       r.providerAccount === account &&
       typeof r.model === "string" &&
-      r.model.startsWith(FREE_WINDOW_MODEL) &&
+      r.model.startsWith(win.model) &&
       r.t,
   )
   if (!mine.length) return null
@@ -2440,15 +2467,17 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
   if (now >= end) return null // lapsed: nothing is exhausted, a new window opens on the next request
 
   const card = (amount, resetsAt, refused) => ({
-    name: "Free model tokens",
+    name: win.name,
     used: Math.min(100, (100 * amount) / win.cap),
     amount,
     limit: win.cap,
-    unit: "tokens",
+    unit: win.unit,
     display: `${tokensShort(amount)} / ${win.short}`,
     resetsAt: new Date(resetsAt).toISOString(),
     span: FREE_WINDOW_SPAN / 1000,
-    models: FREE_WINDOW_MODELS.slice(),
+    // the window's own model and the ids that share it, so magpie's exact
+    // match finds every id it limits
+    models: [win.model, ...win.aliases],
     // the ledger's sum is an estimate, shown and set aside; the vendor's
     // refusal is the one that stops the model (see the window above)
     ...(refused ? { refused: true } : { aside: true }),
@@ -2550,10 +2579,11 @@ function freeWindowRows(account, now = Date.now(), cwd = process.cwd(), env = pr
   // way this ledger is written; one rewritten in place (a rotation or a
   // compaction) moves mtime even when its size lands the same.
   const file = path + "|" + st.mtimeMs + ":" + st.size
-  // the key carries the account and the build: one account's rows are its
-  // own, and the two builds' chains over one ledger must not answer for
-  // each other (the same phone number can be signed in to both)
-  const key = file + "|" + win.provider + "|" + account
+  // the key carries the account, the build and the model: one account's
+  // rows are its own, the two builds' chains over one ledger must not
+  // answer for each other (the same phone number can be signed in to both),
+  // and two windows of one build count different models
+  const key = file + "|" + win.provider + "|" + win.model + "|" + account
   if (ledgerParsed?.key === key) return ledgerParsed.rows
   let got
   try {
@@ -2617,15 +2647,15 @@ function rowAccount(line) {
 }
 
 // ofAccount is whether a row belongs to the chain read for account: this
-// account's own row of the build's free model, either id. A refusal of
-// another account's, of the other build, or of a paid model says nothing
-// about where this chain opens.
+// account's own row of the window's model, either id. A refusal of another
+// account's, of the other build, or of another model says nothing about
+// where this chain opens.
 function ofAccount(row, account, win = FREE_WINDOW_AI) {
   return (
     row?.provider === win.provider &&
     row.providerAccount === account &&
     typeof row.model === "string" &&
-    row.model.startsWith(FREE_WINDOW_MODEL)
+    row.model.startsWith(win.model)
   )
 }
 
@@ -3883,17 +3913,21 @@ function makePlugin(site) {
             } catch {}
           }
           await spareFree(site, a, out.windows)
-          // the free model's own window, which the credit meter above does
-          // not show: what actually refuses a chat long before 160 credits
-          // are spent. Both builds: WorkBuddy AI at 1e8 (ten days of
-          // refusals), the China build's at about 2e8 (2026-11-02). Set
-          // aside until the vendor refuses (see the window definitions above)
+          // each measured model's own window, which the credit meter above
+          // does not show: what actually refuses a chat long before the
+          // credits are spent. WorkBuddy AI has one (deepseek, 1e8, ten days
+          // of refusals); the China build's are measured one model at a time
+          // (deepseek at about 2e8, 2026-11-02), each its own card. Shown
+          // only, set aside: the vendor's refusal is what stops a model
+          // (see the window definitions above)
           {
             const account = a.accountId || a.user || a.uid || ""
-            const win = site.ai ? FREE_WINDOW_AI : FREE_WINDOW_CN
-            const rows = freeWindowRows(account, Date.now(), process.cwd(), process.env, homedir(), win)
-            const w = rows && freeWindowOf(rows, account, Date.now(), win)
-            if (w) out.windows.push(w)
+            const wins = site.ai ? [FREE_WINDOW_AI] : CN_ESTIMATED_WINDOWS
+            for (const win of wins) {
+              const rows = freeWindowRows(account, Date.now(), process.cwd(), process.env, homedir(), win)
+              const w = rows && freeWindowOf(rows, account, Date.now(), win)
+              if (w) out.windows.push(w)
+            }
           }
           return { ...out, signIn: said }
         } catch (e) {
@@ -4037,4 +4071,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_CN, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
