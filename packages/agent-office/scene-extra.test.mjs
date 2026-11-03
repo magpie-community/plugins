@@ -4,6 +4,7 @@
 // floor cell reachable from the airlock, never inside a blocker.
 import { test, expect } from 'bun:test'
 import { readFileSync } from 'node:fs'
+import registry from './page/layouts.js'
 
 const scope = {}
 new Function('globalThis', readFileSync(new URL('./page/scene.js', import.meta.url), 'utf8'))(scope)
@@ -264,7 +265,7 @@ test('local time is a pure dawn/day/dusk/night palette', () => {
 
 // ---- drawing -----------------------------------------------------------
 test('every theme draws in both canvas views with finite coordinates and colours', () => {
-  const themes = {}
+  const themes = { AGENT_OFFICE_LAYOUTS: registry }
   new Function('globalThis', readFileSync(new URL('./page/scene3d.js', import.meta.url), 'utf8'))(themes)
   for (const dim of ['2d', '3d']) for (const id of themes.AgentOfficeScene3D.SCENE_IDS) {
     const canvas = fakeCanvas()

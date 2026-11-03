@@ -4,13 +4,14 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
+import registry from "./page/layouts.js"
 
 const dir = import.meta.dir
 const page = join(dir, "page")
 const read = (file) => readFileSync(join(page, file), "utf8")
 
-// Load the classic script the way the page does, with no THREE at all.
-const scope = {}
+// Load the classic scripts the way the page does, with no THREE at all.
+const scope = { AGENT_OFFICE_LAYOUTS: registry }
 new Function("globalThis", read("scene3d.js"))(scope)
 const S = scope.AgentOfficeScene3D
 
@@ -303,6 +304,7 @@ function threeFixture({ hidden = false, failRender = false, failInit = false } =
     forceContextLoss() { this.lost = true }
   }
   world.THREE = { ...T, WebGLRenderer: Renderer }
+  world.AGENT_OFFICE_LAYOUTS = registry
   new Function("globalThis", "document", read("scene3d.js"))(world, document)
   const scene = new world.AgentOfficeScene3D(canvas)
   const frame = (now = 1000) => {

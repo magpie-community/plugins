@@ -273,8 +273,8 @@
   // deterministic room layout, seats and activity props
   // ---------------------------------------------------------------------
 
-  const REGISTRY = global.AGENT_OFFICE_LAYOUTS || (typeof process !== "undefined" && process.getBuiltinModule
-    ? process.getBuiltinModule("module").createRequire(process.cwd() + "/page/scene3d.js")("./layouts.js") : null)
+  // layouts.js is a classic script loaded before this file (index.html); tests put it on the scope.
+  const REGISTRY = globalThis.AGENT_OFFICE_LAYOUTS
   if (!REGISTRY) throw new Error("Load layouts.js before scene3d.js")
   for (const id of SCENE_IDS) THEMES[id].layout = REGISTRY.themes[id].layout
   // Office data comes from layouts.js; the other scenes use the same runtime shape.
@@ -799,7 +799,7 @@
           const n = Math.max(1, Math.ceil(Math.hypot(c[0] - a[0], c[1] - a[1]) / 0.1))
           for (let j = 0; j <= n; j++) {
             const x = a[0] + (c[0] - a[0]) * j / n, z = a[1] + (c[1] - a[1]) * j / n
-            if (x > b[0] - 0.3 && x < b[2] + 0.3 && z > b[1] - 0.3 && z < b[3] + 0.3) return false
+            if (x > b[0] - 0.32 && x < b[2] + 0.32 && z > b[1] - 0.32 && z < b[3] + 0.32) return false
           }
         }
       }
