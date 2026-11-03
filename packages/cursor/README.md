@@ -208,17 +208,36 @@ minutes), the way pi-cursor-sdk lists Cursor's catalog:
   has. A model the usable list has nothing of is the picker's alone
   (GLM-5.3) and is kept whole; so is every model when Cursor can't give
   the usable list.
-- A family the usable list has and the picker doesn't (an account whose
-  picker lacks Claude Opus 5.5 while `cursor-agent models` lists
-  `claude-opus-5-5-low` to `-max`) is listed once under its family id
-  (`claude-opus-5-5`), its efforts as variants, and goes as the usable id
-  those parameters pick, never as the family id Cursor doesn't know. A
-  picker model whose chosen variant isn't one the account can use goes as
-  its family's nearest usable id the same way. Such a family is named
-  without the tier Cursor's names carry ("Claude Opus 5 1M Medium
-  Thinking" is listed as Claude Opus 5 Thinking): the tier is the
-  reasoning level the agent asks for (low to max, as the account has
-  them), fast the request's `service_tier`.
+- The full catalog (`AvailableModels` with `scope: 3`, asked alongside the
+  other two; it also lists the models Cursor hides from an account, Claude
+  from a Pro one) supplies the Anthropic models the picker lacks: each live
+  one (not `isHidden`, not Auto, not chat-only or Tab-only) with a variant
+  the usable list has an id for is listed as the picker's models are, once
+  for each context size (`claude-opus-5-5@300k`, `claude-opus-5-5@1m`; name
+  "Claude Opus 5.5 @ 300k"), thinking a parameter, the efforts the account
+  is served, and the larger size in Max Mode with that `context`. A catalog
+  variant without its own id gets the one of the model's ids that says its
+  effort, thinking and fast; with none or several it is not offered. Only
+  the parameters the model defines are sent (the catalog's variants also
+  carry `cyber=false`, which the picker's don't and cursor-agent never
+  sends). With no effort asked, a model goes at Cursor's default variant
+  (Opus 5 and 4.8: high), as the picker's models do, not at medium as the
+  fallback entries did. The picker's models and every model that is not
+  Anthropic's don't change.
+  An id saved from an earlier list (`claude-opus-5-5`,
+  `claude-opus-4-8-thinking@1m`) runs as the model at the nearest size it
+  has, as a usable id.
+- When Cursor can't give the catalog, a family the usable list has and the
+  picker doesn't (`claude-opus-5-5-low` to `-max`) is listed once under its
+  family id (`claude-opus-5-5`), its efforts as variants, and goes as the
+  usable id those parameters pick, never as the family id Cursor doesn't
+  know; it has no window in the usable list, so 200K is assumed. A picker
+  model whose chosen variant isn't one the account can use goes as its
+  family's nearest usable id the same way. Such a family is named without
+  the tier Cursor's names carry ("Claude Opus 5 1M Medium Thinking" is
+  listed as Claude Opus 5 Thinking): the tier is the reasoning level the
+  agent asks for (low to max, as the account has them), fast the request's
+  `service_tier`.
 - An id for a model with thinking that the account lists only without it
   (`claude-haiku-5-5-thinking` when the list has Claude Haiku 5.5 alone),
   or the other way round, runs as the model the account has. So does a
