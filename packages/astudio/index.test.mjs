@@ -256,10 +256,10 @@ test("desktop login method is oauth, so magpie shows no key input box", () => {
 
 test("desktop login method reads real files through authorize", async () => {
   const plugin = createPlugin({
-    env: { ASTUDIO_HOME: "D:\astudio" },
+    env: { ASTUDIO_HOME: "D:\\astudio" },
     registryQuery: () => null,
     readFileImpl: fakeFs({
-      "D:\astudio/userdata/astron-session.json": JSON.stringify({ uid: "u9", modelBearerToken: "tok-9" }),
+      "D:\\astudio/userdata/astron-session.json": JSON.stringify({ uid: "u9", modelBearerToken: "tok-9" }),
     }),
   })
   const out = await plugin.auth.methods[0].authorize({})
@@ -270,7 +270,7 @@ test("desktop login method reads real files through authorize", async () => {
     type: "success",
     key: "tok-9",
     accountId: "u9",
-    metadata: { uid: "u9", source: "D:\astudio/userdata/astron-session.json", method: "desktop", session: undefined },
+    metadata: { uid: "u9", source: "D:\\astudio/userdata/astron-session.json", method: "desktop", session: undefined },
   })
 })
 
@@ -305,11 +305,11 @@ test("desktop login method completes on its own once the desktop signs in", asyn
   const session = JSON.stringify({ uid: "u7", modelBearerToken: "tok-7" })
   let reads = 0
   const plugin = createPlugin({
-    env: { ASTUDIO_HOME: "D:\astudio" },
+    env: { ASTUDIO_HOME: "D:\\astudio" },
     registryQuery: () => null,
     sleepImpl: async () => {},
     readFileImpl: (path) => {
-      if (path !== "D:\astudio/userdata/astron-session.json") throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+      if (path !== "D:\\astudio/userdata/astron-session.json") throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
       reads += 1
       if (reads < 3) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
       return session
@@ -342,10 +342,10 @@ test("waitForDesktopCredential stops at the deadline", async () => {
 
 test("desktop login method refuses banned accounts instead of offering the site", async () => {
   const plugin = createPlugin({
-    env: { ASTUDIO_HOME: "D:\astudio" },
+    env: { ASTUDIO_HOME: "D:\\astudio" },
     registryQuery: () => null,
     readFileImpl: fakeFs({
-      "D:\astudio/userdata/astron-session.json": JSON.stringify({ banned: true, modelBearerToken: "tok" }),
+      "D:\\astudio/userdata/astron-session.json": JSON.stringify({ banned: true, modelBearerToken: "tok" }),
     }),
   })
   // 宿主 host.js 不看 oauth authorize 结果里的 type，只看它抛出的 message 或 callback；
@@ -355,9 +355,9 @@ test("desktop login method refuses banned accounts instead of offering the site"
 
 test("desktop login method explains an unreadable session instead of pointing at install", async () => {
   const plugin = createPlugin({
-    env: { ASTUDIO_HOME: "D:\astudio" },
+    env: { ASTUDIO_HOME: "D:\\astudio" },
     registryQuery: () => null,
-    readFileImpl: fakeFs({ "D:\astudio/userdata/astron-session.json": "{ 不是 JSON" }),
+    readFileImpl: fakeFs({ "D:\\astudio/userdata/astron-session.json": "{ 不是 JSON" }),
   })
   const out = await plugin.auth.methods[0].authorize({}, {})
   assert.equal(out.url, OFFICIAL_SITE)
@@ -381,9 +381,9 @@ test("desktop login method reports the last reason when it times out", async () 
   let clock = 0
   const slept = []
   const plugin = createPlugin({
-    env: { ASTUDIO_HOME: "D:\astudio" },
+    env: { ASTUDIO_HOME: "D:\\astudio" },
     registryQuery: () => null,
-    readFileImpl: fakeFs({ "D:\astudio/userdata/astron-session.json": "{}" }),
+    readFileImpl: fakeFs({ "D:\\astudio/userdata/astron-session.json": "{}" }),
     sleepImpl: async (ms) => {
       slept.push(ms)
       if (slept.length > 400) throw new Error("轮询没有封顶")

@@ -154,7 +154,7 @@ async function dpapiUnprotect(blob, spawnImpl = spawn, { timeoutMs = DPAPI_TIMEO
     // PowerShell 卡住时不能无限等：到点杀掉子进程，让这次 read() 带原因返回。
     const timer = setTimeout(() => {
       // 先落定再 kill：kill 会同步触发 close，顺序反了就会把「失败 exit」当成结果。
-      finish(reject, new Error(`DPAPI 解密超时（PowerShell 超过 ${Math.round(timeoutMs / 1000)}s 没有响应`))
+      finish(reject, new Error(`DPAPI 解密超时（PowerShell 超过 ${Math.round(timeoutMs / 1000)}s 没有响应）`))
       try {
         child.kill()
       } catch {}
