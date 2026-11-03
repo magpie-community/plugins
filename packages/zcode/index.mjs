@@ -644,8 +644,8 @@ async function giftOf(s) {
 const CLAIM_HINT = "Gift plans to claim in the ZCode app"
 
 // claimHint is the card's line for gift plans ZCode is holding for the
-// account but has not put on it: the app's banners (marketing/touch) and
-// GET /billing/preview list them (toClaim). The
+// account but has not put on it: the app's banners (marketing/touch)
+// list them (toClaim). The
 // card only names them: they are claimed in the ZCode app, or by the
 // daily claim (claimDaily) when the user turned it on; on 10-06 a claim
 // without the app's Aliyun captcha attestation was refused (3007). A window, set aside (it is no
@@ -678,9 +678,12 @@ const CLAIMED_ALREADY = 1003
 const CAPTCHA = 3007
 const CAPTCHA_WORDS = /captcha/i
 
-// zcodeHeaders are what the ZCode app sends on its billing calls beside
-// the session (#503's capture): its version and platform.
-const zcodeHeaders = () => ({ "X-ZCode-App-Version": APP_VERSION, "X-Platform": platform() })
+// The marketing feed and the claim are gated on the client's version:
+// under an older version's header the feed answers empty (11-03: the
+// day's banner showed for 3.17.2 and for no older one), so they go as
+// the current client (3.17.2) sends them.
+const MARKETING_VERSION = "3.17.2"
+const marketingHeaders = () => ({ "X-ZCode-App-Version": MARKETING_VERSION, "X-Platform": platform(), "X-Client-Language": clientLanguage() })
 
 // claimOne asks /billing/claim for one plan and says what its body says:
 // "claimed" (code 0), "done" (code 1003, claimed before), "captcha" (the
@@ -693,7 +696,7 @@ async function claimOne(s, planID) {
   try {
     res = await fetch(`${ZCODE}/api/v1/zcode-plan/billing/claim`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json", "User-Agent": UA, Authorization: "Bearer " + s.jwt, "X-Device-Mid": s.device || anyDevice, ...zcodeHeaders() },
+      headers: { "Content-Type": "application/json", Accept: "application/json", "User-Agent": UA, Authorization: "Bearer " + s.jwt, "X-Device-Mid": s.device || anyDevice, ...marketingHeaders() },
       body: JSON.stringify({ plan_id: planID }),
     })
     text = await res.text()
@@ -713,30 +716,17 @@ async function claimOne(s, planID) {
   return { outcome: "failed", why: `${msg || "error"} (HTTP ${res.status}, code ${code})` }
 }
 
-// previewPlans is /billing/preview's plan list. An account with nothing to
-// claim is answered {"code":0,"msg":"","logid":…}: no data at all, not
-// "plans": [] (the owner's account read 10-30 for hykql's report on
-// Discord; the list is left out when it is empty). call has already judged the code, so a reply
-// without data, or data without plans, is a list of none. Only data that
-// isn't an object, or plans that are there and aren't a list, don't read
-// (null, unknown).
-function previewPlans(d) {
-  if (d == null) return []
-  if (typeof d !== "object" || Array.isArray(d)) return null
-  if (d.plans == null) return []
-  return Array.isArray(d.plans) ? d.plans : null
-}
-
 // TOUCH is ZCode's marketing feed: the ZCode app's claim banners come
-// from it, not from /billing/preview. A banner plan ("ZCODE WEEKEND
-// BUILD", 10-30) is in neither /billing/preview nor /billing/current
+// from it. A banner plan ("ZCODE WEEKEND BUILD", 10-30) is served only
 // while the app shows its banner, and the app claims it through the same
 // /billing/claim (#503's capture of 10-30, kongbai01203: GET
 // /api/v1/marketing/touch?seq=<n, counting up from 0> with the session,
 // X-Device-Mid, X-Client-Language and X-ZCode-App-Version, answered
 // data.deliveries[].banner.buttons[].action = {"type":"claim_zcode_plan",
 // "args":{"plan_id":…}} and the plan's name in
-// banner.background.args.zcode_plan.name).
+// banner.background.args.zcode_plan.name). The v3.17 client reads this
+// feed alone: the old preview polling is gone, and the rewards center's
+// gifts are the rewards website's, claimed in the client.
 const TOUCH = "/api/v1/marketing/touch"
 const CLAIM_ACTION = "claim_zcode_plan"
 let touchSeq = 0
@@ -775,30 +765,27 @@ function touchPlans(d) {
 }
 
 // toClaim is every gift plan the account can claim: what the app's
-// marketing feed offers (its banners) and what /billing/preview lists,
-// once each by plan_id. unread names a list that didn't read: its
-// plans are unknown, never none.
+// marketing feed offers (its banners). The v3.17 client replaced the old
+// preview polling with the feed alone (docs/marketing-touch-client.md in
+// zai-org/ZCode), so the preview is read no more; a rewards center's gift
+// lives on the rewards website, outside this API, and is claimed in the
+// client. unread names a feed that didn't read: its plans are unknown,
+// never none.
 async function toClaim(s) {
   const plans = [], unread = []
   const add = (p) => {
     if (!plans.some((q) => q.plan_id === p.plan_id)) plans.push(p)
   }
-  const ask = async (what, url, headers, read) => {
-    let d
-    try {
-      d = await call("GET", url, { auth: "Bearer " + s.jwt, device: s.device, headers })
-    } catch (e) {
-      return unread.push(`${what}: ${e?.message ?? String(e)}`)
-    }
-    const got = read(d)
-    if (!got) return unread.push(`${what}: the plan list doesn't read`)
-    got.forEach(add)
+  let d
+  try {
+    d = await call("GET", `${ZCODE}${TOUCH}?seq=${touchSeq++}`, { auth: "Bearer " + s.jwt, device: s.device, headers: marketingHeaders() })
+  } catch (e) {
+    unread.push(`gift plans to claim: ${e?.message ?? String(e)}`)
+    return { plans, unread }
   }
-  await ask("gift plans to claim", `${ZCODE}${TOUCH}?seq=${touchSeq++}`, { "X-ZCode-App-Version": APP_VERSION, "X-Client-Language": clientLanguage() }, touchPlans)
-  await ask("gift plans to claim", `${ZCODE}/api/v1/zcode-plan/billing/preview?app_version=${APP_VERSION}&platform=${platform()}`, zcodeHeaders(), (d) => {
-    const l = previewPlans(d)
-    return l && l.filter((p) => typeof p?.plan_id === "string" && p.plan_id.trim()).map((p) => ({ plan_id: p.plan_id.trim(), name: first(typeof p.name === "string" ? p.name : "", p.plan_id.trim()) }))
-  })
+  const got = touchPlans(d)
+  if (!got) unread.push("gift plans to claim: the plan list doesn't read")
+  else got.forEach(add)
   return { plans, unread }
 }
 

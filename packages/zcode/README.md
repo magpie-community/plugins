@@ -273,12 +273,14 @@ the next read shows it as an ordinary gift bucket.
 With ZCode turned on in magpie's Settings → Daily check-in (it is off
 until you turn it on), magpie has the plugin claim each account's gift
 plans once a day (`auth.checkin`; `magpie accounts checkin` asks now). It
-reads both lists above (the banners' feed and the preview, each plan
-once) and posts each plan to
+reads the banner feed above — the v3.17 client replaced the old preview
+polling with the feed alone, and the feed is gated on the client's
+version, so the plugin asks as the current client (3.17.2) sends — and
+posts each plan the feed offers to
 `POST /api/v1/zcode-plan/billing/claim` (`{"plan_id": …}`) with the
 account's ZCode session, as the app does. An answer of nothing to claim
 carries an `until` half an hour out, so magpie's loop asks again then,
-and again, all day while neither list names a plan — two GETs, nothing
+and again, all day while the feed names no plan — one GET, nothing
 posted: ZCode drops plans into the feed on its own schedule (a weekend
 banner starting at 19:00 Beijing, say), and one that arrives
 after the day's ask used to sit unclaimed past its short life. The
@@ -291,19 +293,24 @@ after one was claimed, is seen the next day. The answer is judged by
 the body's code, not the HTTP status:
 
 - nothing listed: *inactive* (ZCode answers an account with nothing to
-  claim `{"code":0,"msg":""}`, with no list at all). A list that doesn't
-  read is *failed*, never nothing to claim. A plan just claimed may show
-  in neither `billing/preview` nor `billing/current` until its
-  `effective_at`, so neither list is read as "claimed or not";
+  claim `{"code":0,"msg":""}`, with no list at all). A feed that doesn't
+  read is *failed*, never nothing to claim;
 - code 0: *claimed* (the next request uses the plan);
 - code 1003 "target already exists" (HTTP 200): *done*, claimed before;
 - code 3007 "captcha verify failed": *captcha*, the plan is claimed in
-  the ZCode app (on 10-06 ZCode wanted the app's Aliyun captcha for a
-  claim; whether it still does for a fresh plan is not known yet);
+  the ZCode app — the claim is gated on the Aliyun captcha the app's
+  renderer answers, and a claim from outside the app is refused it
+  (11-03: seven accounts' ZCODE GLOBAL BUILD all answered 3007). Once
+  claimed there, the gift lands on the account and freeFirst spends it
+  like any other;
 - anything else, an HTTP error without a code, or a reply that isn't
   JSON: *failed*, which magpie asks again later that day. It is never
   taken as claimed, and a failed claim leaves the account's sign-in
   alone.
+
+The rewards center in the client (奖励中心, the embedded
+`zcode.z.ai/{cn|en}/rewards` page) is the referral program's website,
+separate from these gift plans; its rewards are claimed on that page.
 
 An account added with a GLM Coding Plan key has no ZCode session to claim
 with (*ineligible*).
