@@ -44,3 +44,42 @@ test("the lead is one magpie takes as said, not its cap", async () => {
   expect(Number.isFinite(a.refreshLead)).toBe(true)
   expect(leadOf(a)).toBe(a.refreshLead)
 })
+
+// #675 (orinsid, 2026-11-04): the first background renewal, 30 minutes into
+// a two-hour token, was answered SESSION_EXPIRED and the account was marked
+// "sign-in expired" at once. The token itself was good for 90 more minutes
+// and drives /assistant/chat on its own, so a refused renewal is only
+// terminal once the token it would replace has expired too.
+const jwt = (expSec) =>
+  ["eyJhbGciOiJIUzI1NiJ9", Buffer.from(JSON.stringify({ userId: "u1", exp: expSec })).toString("base64url"), "sig-sig-sig"].join(".")
+
+async function renewWith(expMs) {
+  const a = await auth()
+  const real = globalThis.fetch
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ data: { Response: { Error: { Code: "SESSION_EXPIRED", Message: "SESSION_EXPIRED" } } } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  try {
+    const token = jwt(Math.floor(expMs / 1000))
+    return await a.refresh({ type: "oauth", access: token, refresh: token, expires: expMs }).then(
+      () => null,
+      (e) => e,
+    )
+  } finally {
+    globalThis.fetch = real
+  }
+}
+
+test("SESSION_EXPIRED on a renewal of a token that still has life does not sign the account out", async () => {
+  const e = await renewWith(Date.now() + 90 * 60e3)
+  expect(e).toBeInstanceOf(Error)
+  expect(e.signIn).toBeUndefined()
+  expect(String(e.message)).toMatch(/SESSION_EXPIRED/)
+})
+
+test("SESSION_EXPIRED on a renewal of a token that has expired signs the account out", async () => {
+  const e = await renewWith(Date.now() - 60e3)
+  expect(e?.signIn).toBe("expired")
+})

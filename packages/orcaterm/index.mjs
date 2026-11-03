@@ -2052,6 +2052,16 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
           }
         } catch (err) {
           if (/expired|invalid|失效|过期/i.test(String(err?.message ?? ""))) {
+            // A refused renewal is not a signed-out account while the token
+            // it would replace still works: the access token drives the chat
+            // by itself until its own exp (#675: SESSION_EXPIRED came 30
+            // minutes into a two-hour token). Fail without `signIn`, so
+            // magpie keeps the sign-in and tries again; a request or a 401
+            // after the real expiry still marks it.
+            const exp = Math.max(readTokenClaims(bearer).exp * 1000, Number(auth?.expires) || 0)
+            if (exp > Date.now() + 60e3) {
+              throw new Error(`OrcaTerm renewal refused, the token still has life: ${err?.message ?? err}`)
+            }
             throw Object.assign(new Error(`OrcaTerm sign-in expired, scan again: ${err?.message ?? err}`), {
               signIn: "expired",
             })
