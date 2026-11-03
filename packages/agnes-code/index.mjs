@@ -132,8 +132,8 @@ function decryptSessionWithKey(keyBuf, rawBuf) {
 }
 
 // dpapiUnprotect 用当前 Windows 用户的 DPAPI 解出主密钥（经 PowerShell）。
-async function dpapiUnprotect(blob, spawnImpl = spawn, { timeoutMs = DPAPI_TIMEOUT_MS } = {}) {
-  if (process.platform !== "win32") {
+async function dpapiUnprotect(blob, spawnImpl = spawn, { timeoutMs = DPAPI_TIMEOUT_MS, platform = process.platform } = {}) {
+  if (platform !== "win32") {
     throw new Error("桌面端会话解密目前仅支持 Windows；请改用「粘贴 accessToken」方式")
   }
   const b64 = blob.toString("base64")

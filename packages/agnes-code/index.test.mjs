@@ -399,8 +399,19 @@ test("dpapiUnprotect kills a stuck PowerShell instead of waiting forever", async
   const plugin = createPlugin({ platform: "win32" })
   // 万一超时保护被删掉，这里也不能挂死：guard 先报红
   const guard = new Promise((_, reject) => setTimeout(() => reject(new Error("dpapiUnprotect 挂住了：子进程没被杀掉")), 300))
-  await assert.rejects(Promise.race([dpapiUnprotect(Buffer.from("blob"), fakeSpawn, { timeoutMs: 0 }), guard]), /DPAPI 解密超时/)
+  // platform 显式传 win32：这条测的是超时，不该跟着跑测试的机器变
+  await assert.rejects(Promise.race([dpapiUnprotect(Buffer.from("blob"), fakeSpawn, { timeoutMs: 0, platform: "win32" }), guard]), /DPAPI 解密超时/)
   assert.equal(plugin.auth.provider, ID) // 顺手确认插件实例仍然可建
+})
+
+test("dpapiUnprotect refuses a machine that is not Windows, before spawning anything", async () => {
+  let spawned = 0
+  const spawnImpl = () => {
+    spawned += 1
+    throw new Error("不该起子进程")
+  }
+  await assert.rejects(dpapiUnprotect(Buffer.from("blob"), spawnImpl, { platform: "darwin" }), /仅支持 Windows/)
+  assert.equal(spawned, 0)
 })
 
 test("config hook declares the chat-completions provider without clobbering user config", async () => {
