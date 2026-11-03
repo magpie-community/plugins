@@ -1,0 +1,59 @@
+{
+  "name": "@magpie-community/page-key-cabinet",
+  "version": "0.1.0",
+  "description": "Manage multiple Magpie gateway keys, one per project: issue, reveal, rotate and delete, edit Magpie limits, and see usage per key. Runs a local service on 127.0.0.1 that only its own page can use.",
+  "type": "module",
+  "main": "./index.mjs",
+  "scripts": {
+    "start": "node ./serve.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "serve.mjs",
+    "lib",
+    "page",
+    "ui",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "magpie-plugin",
+    "keys",
+    "gateway",
+    "usage"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/key-cabinet"
+  },
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "engines": {
+    "magpie": ">=0.1.1340",
+    "node": ">=18"
+  },
+  "magpie": {
+    "page": {
+      "title": "Key Cabinet",
+      "titles": {
+        "zh": "钥匙柜",
+        "zh-TW": "鑰匙櫃",
+        "ja": "キーキャビネット"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 3491,
+        "option": "port"
+      }
+    },
+    "options": {
+      "port": 3491
+    }
+  }
+}

@@ -1,0 +1,2210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>钥匙柜</title>
+<style>
+:root {
+  --bg: var(--magpie-bg, #fff);
+  --card: var(--magpie-card, #f6f6f7);
+  --fg: var(--magpie-fg, #1d1d1f);
+  --muted: var(--magpie-muted, #6e6e73);
+  --line: var(--magpie-line, #e5e5ea);
+  --accent: var(--magpie-accent, #4f46e5);
+  --accent-soft: var(--magpie-accent-soft, rgba(79, 70, 229, .14));
+  --red: var(--magpie-red, #d70015);
+  --font: var(--magpie-font, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Noto Sans SC", sans-serif);
+  --mono: var(--magpie-code, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+}
+/* Magpie 传 theme 时让原生控件（下拉弹层、复选框、滚动条）也跟着换肤，
+   而不是只看系统偏好。 */
+html[data-theme="dark"] { color-scheme: dark; }
+html[data-theme="light"] { color-scheme: light; }
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  font: 13px/1.45 var(--font);
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  padding: 20px 24px 40px;
+  padding-left: max(24px, env(safe-area-inset-left, 0px));
+  padding-right: max(24px, env(safe-area-inset-right, 0px));
+}
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+#app { position: relative; max-width: 980px; margin: 0 auto; }
+
+header.top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.titles h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.titles .sub {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--card);
+  border: 1px solid var(--line);
+}
+.seg button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.seg button[aria-selected="true"] {
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0,0,0,.08);
+}
+.btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.btn:hover { background: var(--card); }
+.btn.primary {
+  background: var(--fg);
+  border-color: var(--fg);
+  /* 深色主题里 --fg 是浅色；用 --bg 而不是写死 #fff，否则白字白底。 */
+  color: var(--bg);
+}
+.btn.primary:hover { opacity: .92; background: var(--fg); }
+.btn.ghost { background: transparent; }
+.btn.sm { padding: 5px 10px; font-size: 12px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.confirm-dialog {
+  width: min(400px, calc(100% - 32px));
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .2);
+}
+.confirm-dialog::backdrop { background: rgba(0, 0, 0, .35); }
+.confirm-dialog h3 { margin: 0 0 8px; font-size: 16px; }
+.confirm-dialog p { margin: 0 0 18px; line-height: 1.5; }
+.confirm-dialog .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+#copyDialog textarea {
+  display: block;
+  width: 100%;
+  min-height: 8.5rem;
+  margin: 0 0 16px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card, Canvas);
+  color: inherit;
+  font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace;
+  resize: vertical;
+  white-space: pre;
+  overflow: auto;
+}
+
+.sample-note {
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 450;
+  line-height: 1.45;
+}
+.sample-note:not([hidden]) { display: flex; }
+.sample-note[hidden] { display: none !important; }
+.sample-note[data-kind="error"] {
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  color: var(--red);
+  border-color: transparent;
+}
+.sample-note[data-kind="accent"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+  font-weight: 500;
+}
+.sample-note .note-text { min-width: 0; flex: 1; }
+.sample-note .note-x {
+  appearance: none; border: 0; background: transparent;
+  color: inherit; opacity: .55; cursor: pointer; padding: 0 2px;
+  font: inherit; line-height: 1;
+}
+.sample-note .note-x:hover { opacity: 1; }
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 22px;
+}
+.tile {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+.tile .n { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.tile .v {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile .v.error { color: var(--red); }
+.tile .hint { margin-top: 4px; font-size: 12px; color: var(--muted); }
+
+.section-h {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 8px;
+}
+.section-h h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.section-h .meta { color: var(--muted); font-size: 12px; }
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(140px, 1.1fr) minmax(168px, 1.35fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.li:last-child { border-bottom: 0; }
+.li:hover, .li:focus-visible { background: var(--card); outline: none; }
+.li[aria-expanded="true"] { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
+.li .name-wrap { min-width: 0; }
+.li .title {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.li .keyname {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.li .secret-wrap {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.li .secret {
+  min-width: 0;
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--card);
+  border: 1px solid var(--line);
+}
+.li .secret.shown { color: var(--fg); }
+.bar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+.bar > i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.li .metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.li .metric {
+  min-width: 0;
+  text-align: right;
+}
+.li .metric .n {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.2;
+}
+.li .metric .v {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.li .metric .v.up { color: var(--accent); }
+.li .metric .v.down { color: var(--red); }
+.li .metric .v.flat { color: var(--muted); }
+.li .metrics.empty .metric .v { color: var(--muted); }
+.li .row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-self: end;
+}
+.li .icon-btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--muted);
+  height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.li .icon-btn:hover { color: var(--fg); border-color: color-mix(in srgb, var(--fg) 24%, transparent); }
+.li .icon-btn.danger:hover { color: var(--red); border-color: color-mix(in srgb, var(--red) 35%, transparent); }
+.li .icon-btn:disabled { opacity: .55; cursor: wait; }
+.li .status {
+  justify-self: end;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.li .status.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+}
+.li .status.off {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+  border-color: transparent;
+}
+.li .status:disabled { opacity: .6; cursor: wait; }
+.empty {
+  padding: 36px 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  list-style: none;
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(29,29,31,.28);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s ease;
+  z-index: 20;
+}
+.backdrop.show { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: min(420px, 92vw);
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+  box-shadow: -12px 0 32px rgba(29,29,31,.08);
+  transform: translateX(104%);
+  transition: transform .2s ease;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+}
+.drawer.show { transform: translateX(0); }
+.drawer .dh {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.drawer .dh h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.drawer .dh .k {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+.drawer .body { padding: 16px 18px 24px; overflow: auto; flex: 1; }
+.field { margin-bottom: 14px; }
+.field label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.field .val,
+.field input,
+.field textarea,
+.codebox {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 13px;
+}
+.field .val.mono,
+.field input.mono,
+.codebox { font-family: var(--mono); font-size: 12px; }
+.field input, .field textarea, select {
+  background: var(--bg);
+  outline: none;
+}
+.field input:focus, .field textarea:focus, select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.split .mini {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--card);
+}
+.split .mini .n { font-size: 12px; color: var(--muted); }
+.split .mini .v {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.inline-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%) translateY(12px);
+  background: var(--fg);
+  color: var(--bg);
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  transition: .18s ease;
+  z-index: 50;
+  white-space: nowrap;
+}
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+.modal-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(29,29,31,.34);
+}
+.modal-wrap.show { display: flex; }
+.modal {
+  width: min(440px, 100%);
+  background: var(--bg);
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  box-shadow: 0 24px 60px rgba(29,29,31,.18);
+  overflow: hidden;
+}
+.modal .mh {
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.modal .mh h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.modal .mh p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.modal .mb { padding: 16px 18px; }
+.modal .mf {
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  background: var(--card);
+}
+.warn {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  color: var(--red);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.hint-box {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+.limit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.limit-row label {
+  min-width: 56px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.limit-row select,
+.limit-row input[type="number"] {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 8px;
+  background: var(--bg);
+  font: inherit;
+  color: var(--fg);
+}
+.limit-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+/* 中文「每 / 天 / 小时」很窄；英文 "Every / days / hours" 需要更宽的单位选择框，
+   否则 "hours" 会被截成 "hou"。 */
+#limitCustomRow label { min-width: auto; }
+#limitCustomUnit { flex: 0 0 72px; }
+/* .field input 默认 100% 宽，会把复选框撑成一行、标签挤到下一行。 */
+.limit-check input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.progress {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+.progress .ph {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.progress .ph strong { font-size: 13px; font-weight: 600; }
+.progress .ph .eta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.progress ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.progress li {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 8px;
+  align-items: start;
+  font-size: 12px;
+  color: var(--muted);
+}
+.progress li[data-state="done"] { color: var(--fg); }
+.progress li[data-state="active"] { color: var(--accent); font-weight: 500; }
+.progress li[data-state="error"] { color: var(--red); }
+.progress .dot {
+  width: 14px; height: 14px; border-radius: 999px;
+  border: 1.5px solid var(--line);
+  margin-top: 1px;
+  display: grid; place-items: center;
+  font-size: 9px; line-height: 1;
+}
+.progress li[data-state="done"] .dot {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+.progress li[data-state="active"] .dot {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  animation: pulse 1s ease infinite;
+}
+.progress li[data-state="error"] .dot {
+  background: var(--red);
+  border-color: var(--red);
+  color: var(--bg);
+}
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft); }
+  50% { box-shadow: 0 0 0 4px var(--accent-soft); }
+}
+.done-banner {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+.connect-tabs {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+.connect-tabs button {
+  appearance: none; border: 0; background: transparent;
+  color: var(--muted); padding: 4px 10px; border-radius: 6px;
+  font-size: 12px; font-weight: 500;
+}
+.connect-tabs button[aria-selected="true"] {
+  background: var(--bg); color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0,0,0,.08);
+}
+@media (max-width: 720px) {
+  body { padding: 16px; }
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .li {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "name status"
+      "secret secret"
+      "metrics metrics"
+      "actions actions";
+  }
+  .li .name-wrap { grid-area: name; }
+  .li .secret-wrap { grid-area: secret; }
+  .li .metrics { grid-area: metrics; }
+  .li .metric { text-align: left; }
+  .li .row-actions { grid-area: actions; justify-self: start; }
+  .li .status { grid-area: status; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="titles">
+      <h1>钥匙柜</h1>
+      <div class="sub">管理 Magpie 网关密钥，按钥匙查看用量，快速生成应用接入配置。</div>
+    </div>
+    <div class="actions">
+      <div class="seg" role="tablist" aria-label="统计周期">
+        <button type="button" data-period="today" aria-selected="true">今日</button>
+        <button type="button" data-period="7d" aria-selected="false">7 天</button>
+        <button type="button" data-period="30d" aria-selected="false">30 天</button>
+      </div>
+      <button type="button" class="btn primary" id="btnNew">新钥匙</button>
+    </div>
+  </header>
+
+  <div id="statusNoteHost"></div>
+  <div class="tiles" id="tiles"></div>
+
+  <div class="section-h">
+    <h2>钥匙</h2>
+    <div class="meta" id="listMeta">0 把钥匙</div>
+  </div>
+  <ol class="list" id="projectList" aria-label="钥匙列表"></ol>
+
+  <div class="backdrop" id="backdrop" hidden></div>
+
+  <aside class="drawer" id="drawer" aria-hidden="true" hidden>
+    <div class="dh">
+      <div>
+        <h3 id="dTitle" data-i18n-skip>—</h3>
+        <div class="k" id="dKeyName">—</div>
+      </div>
+      <button type="button" class="btn ghost sm" id="btnCloseDrawer" aria-label="关闭详情">关闭</button>
+    </div>
+    <div class="body" id="drawerBody"></div>
+  </aside>
+
+  <div class="modal-wrap" id="modal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="mh">
+        <h3 id="modalTitle">新钥匙</h3>
+        <p>一键签发网关 Key，可直接接到任意 Agent，无需跑命令。</p>
+      </div>
+      <div class="mb" id="modalBodyCreate">
+        <div class="field">
+          <label for="fName">钥匙名</label>
+          <input id="fName" type="text" placeholder="例如：客服助手" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="fSlug">标识（Key 名 <span style="font-family:var(--mono)">project:&lt;标识&gt;</span>）</label>
+          <input id="fSlug" class="mono" type="text" placeholder="support-bot" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label>网关地址（Magpie 提供）</label>
+          <div class="codebox" id="gatewayPreview" style="margin:0;">http://127.0.0.1:3425/v1</div>
+          <div class="inline-actions">
+            <button type="button" class="btn sm" id="btnCopyGwNew">复制网关地址</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="fModel">模型（Magpie 同款）</label>
+          <select id="fModel" style="width:100%;height:36px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:var(--bg);"></select>
+          <div style="margin-top:6px;font-size:12px;color:var(--muted);line-height:1.45;">默认 <strong>Auto</strong>；也可指定已有路由组或单模型。</div>
+        </div>
+        <div class="hint-box">创建后 Magpie 会签发一把网关 Key；明文保存在本机，之后仍可通过「查看」复制。</div>
+        <div class="progress" id="createProgress" hidden>
+          <div class="ph">
+            <strong id="progressTitle">正在签发…</strong>
+            <span class="eta" id="progressEta"></span>
+          </div>
+          <ol id="progressSteps">
+            <li data-step="mint" data-state="pending"><span class="dot"></span><span>向 Magpie 签发网关 Key</span></li>
+            <li data-step="models" data-state="pending"><span class="dot"></span><span>写入模型限制（如有）</span></li>
+            <li data-step="save" data-state="pending"><span class="dot"></span><span>放入本地钥匙柜</span></li>
+            <li data-step="done" data-state="pending"><span class="dot"></span><span>完成，展示 Secret</span></li>
+          </ol>
+        </div>
+      </div>
+      <div class="mb" id="modalBodySecret" hidden>
+        <div class="done-banner" id="createdBanner">✓ 钥匙已放入，请立即复制网关 Key</div>
+        <div class="field">
+          <label>钥匙</label>
+          <div class="val" id="createdProjectName" data-i18n-skip>—</div>
+        </div>
+        <div class="field">
+          <label>网关 Key</label>
+          <div class="codebox" id="createdSecret" style="margin:0;word-break:break-all;"></div>
+          <div class="inline-actions">
+            <button type="button" class="btn sm primary" id="btnCopySecret">复制 Key</button>
+            <button type="button" class="btn sm" id="btnCopyOpenaiEnv">OpenAI 环境变量</button>
+            <button type="button" class="btn sm" id="btnCopyAnthropicEnv">Anthropic 环境变量</button>
+            <button type="button" class="btn sm" id="btnCopyGeminiEnv">Gemini 环境变量</button>
+          </div>
+        </div>
+        <div class="warn">关闭后默认只显示掩码。可在钥匙详情里「查看」或「重置」。把 Base URL + Key 填进任意 Agent 即可接入。</div>
+      </div>
+      <div class="mf">
+        <button type="button" class="btn" id="btnCancelNew">取消</button>
+        <button type="button" class="btn primary" id="btnConfirmNew">签发钥匙</button>
+        <button type="button" class="btn primary" id="btnDoneSecret" hidden>完成</button>
+      </div>
+    </div>
+  </div>
+
+  <dialog class="confirm-dialog" id="confirmDialog" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+    <h3 id="confirmTitle">请确认</h3>
+    <p id="confirmMessage"></p>
+    <div class="confirm-actions">
+      <button class="btn" type="button" id="confirmCancel">取消</button>
+      <button class="btn primary" type="button" id="confirmAccept">确认</button>
+    </div>
+  </dialog>
+
+  <dialog class="confirm-dialog" id="copyDialog" aria-labelledby="copyTitle" aria-describedby="copyHint">
+    <h3 id="copyTitle">手动复制</h3>
+    <p id="copyHint">浏览器拒绝了剪贴板权限（Magpie 页面运行在沙盒 iframe 里）。下面的文本已经选中，按 ⌘C / Ctrl+C 复制。</p>
+    <textarea id="copyTextArea" readonly spellcheck="false" aria-label="待复制文本"></textarea>
+    <div class="confirm-actions">
+      <button class="btn" type="button" id="copyRetry">再试一次</button>
+      <button class="btn primary" type="button" id="copyDialogClose">完成</button>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status"></div>
+</div>
+<script src="i18n.js"></script>
+<script>
+(function () {
+  const API = '';
+  const I18N = window.KC_I18N;
+  const t = (s) => I18N.t(s);
+
+  let period = 'today';
+  let openId = null;
+  let projects = [];
+  let usage = { period: 'today', totals: { calls: 0, errors: 0, tokens: 0, cost: 0, in: 0, out: 0 }, projects: {} };
+  let modelOptions = [{ id: '', label: 'Auto', note: '由 Magpie / 客户端决定' }];
+  let gateway = 'http://127.0.0.1:3425/v1';
+  let limits = {}; // keyId -> Magpie 的限额描述
+  let magpieStates = {}; // keyId -> { off } 以 Magpie 为准；本地 status 可能落后于 GUI
+  let secretCache = Object.create(null); // id -> secret (session only)
+  let keyExists = Object.create(null); // id -> true/false/null (Magpie 中是否还在)
+  let keyRotated = Object.create(null); // keyId -> true 表示本地明文已被 Magpie 轮换
+  let connectFlavor = 'openai'; // 抽屉里选中的协议页签
+  let busy = false;
+
+  const elTiles = document.getElementById('tiles');
+  const elList = document.getElementById('projectList');
+  const elListMeta = document.getElementById('listMeta');
+  const elDrawer = document.getElementById('drawer');
+  const elBackdrop = document.getElementById('backdrop');
+  const elDrawerBody = document.getElementById('drawerBody');
+  const elDTitle = document.getElementById('dTitle');
+  const elDKeyName = document.getElementById('dKeyName');
+  const elModal = document.getElementById('modal');
+  const elToast = document.getElementById('toast');
+  const copyDialog = document.getElementById('copyDialog');
+  const copyArea = document.getElementById('copyTextArea');
+  const fName = document.getElementById('fName');
+  const fSlug = document.getElementById('fSlug');
+  const fModel = document.getElementById('fModel');
+  const gatewayPreview = document.getElementById('gatewayPreview');
+  const modalBodyCreate = document.getElementById('modalBodyCreate');
+  const modalBodySecret = document.getElementById('modalBodySecret');
+  const btnConfirmNew = document.getElementById('btnConfirmNew');
+  const btnDoneSecret = document.getElementById('btnDoneSecret');
+  const btnCancelNew = document.getElementById('btnCancelNew');
+  const statusNoteHost = document.getElementById('statusNoteHost');
+  let statusNote = null;
+  let statusNoteText = null;
+  let statusNoteDismiss = null;
+  let noteDismissed = '';
+  
+  applyThemeFromQuery();
+  I18N.observe();
+
+  async function api(path, opts) {
+    const headers = { 'content-type': 'application/json', ...(opts && opts.headers) };
+    const tok = window.__MAGPIE_PROJECTS_TOKEN__;
+    const hdr = window.__MAGPIE_PROJECTS_TOKEN_HEADER__ || 'x-magpie-projects-token';
+    if (tok) headers[hdr] = tok;
+    const res = await fetch(API + path, {
+      ...opts,
+      headers,
+    });
+    let data = null;
+    const text = await res.text();
+    try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
+    if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
+    return data;
+  }
+
+  function applyThemeFromQuery() {
+    try {
+      const q = new URLSearchParams(location.search);
+      const theme = q.get('theme');
+      if (theme === 'dark') document.documentElement.dataset.theme = 'dark';
+      if (theme === 'light') document.documentElement.dataset.theme = 'light';
+      const raw = q.get('tokens');
+      if (!raw) return;
+      const json = JSON.parse(decodeURIComponent(escape(atob(raw))));
+      const root = document.documentElement;
+      for (const [k, v] of Object.entries(json || {})) {
+        if (typeof v === 'string' && v) root.style.setProperty(k.startsWith('--') ? k : '--' + k, v);
+      }
+    } catch { /* ignore */ }
+  }
+
+  function fillModelSelect(sel, current) {
+    const cur = current == null ? '' : current;
+    const options = modelOptions.slice();
+    if (cur && !options.some(m => m.id === cur)) {
+      // 模型在 Magpie 里被删掉/改名时，别静默显示成 Auto。
+      options.unshift({ id: cur, label: cur, kind: 'model', note: '当前模型已不在 Magpie 列表' });
+    }
+    sel.innerHTML = options.map(m => {
+      const note = m.note ? ' · ' + m.note : (m.kind === 'group' ? ' · 路由组' : m.kind === 'model' ? ' · 单模型' : '');
+      const label = m.id ? (m.label || m.id) : (m.label || 'Auto');
+      const shown = m.id && m.label && m.label !== m.id ? (m.id + ' · ' + m.label) : label;
+      return `<option value="${escapeAttr(m.id)}"${m.id === cur ? ' selected' : ''}>${escapeHtml(shown)}${escapeHtml(note)}</option>`;
+    }).join('');
+  }
+
+  function limitLabel(p) {
+    const fromMagpie = p && p.keyId ? limits[p.keyId] : '';
+    if (fromMagpie) return fromMagpie;
+    return (p && p.limit) || '—';
+  }
+
+  // 状态以 Magpie 为准（用户在 Magpie GUI 里也能改）。读不到时退回本地记录。
+  function effectiveStatus(p) {
+    const synced = p && p.keyId ? magpieStates[p.keyId] : null;
+    if (synced && typeof synced.off === 'boolean') return synced.off ? 'off' : 'on';
+    return (p && p.status) || 'on';
+  }
+  // 本地记录与 Magpie 不一致时提醒：说明本机改动过，或 GUI 改过。
+  function statusDrift(p) {
+    if (!p || !p.keyId) return false;
+    const synced = magpieStates[p.keyId];
+    if (!synced || typeof synced.off !== 'boolean') return false;
+    return (synced.off ? 'off' : 'on') !== ((p && p.status) || 'on');
+  }
+  function isRotated(p) {
+    return !!(p && p.keyId && keyRotated[p.keyId] === true);
+  }
+  function mergeRotated(next) {
+    if (!next || typeof next !== 'object') return;
+    // 只合并服务端能确认的条目；CLI 临时不可用时不要把已知的「已过期」清掉。
+    keyRotated = Object.assign(Object.create(null), keyRotated, next);
+  }
+
+  // 保存后先用表单值更新显示；下一次 /api/meta 会用 Magpie 的真实用量覆盖。
+  function describeLimit(spec) {
+    const custom = String(spec.window || '').match(/^(\d{1,4})([dh])$/);
+    const win = spec.window === 'week' ? '每周' : spec.window === 'month' ? '每月'
+      : spec.window === 'day' ? '每天'
+      : custom ? '每 ' + Number(custom[1]) + (custom[2] === 'd' ? ' 天' : ' 小时')
+      : '每 ' + spec.window;
+    const parts = [];
+    if (spec.tokens != null && spec.tokens !== '') parts.push(fmt(Number(spec.tokens)) + ' tokens');
+    if (spec.cost != null && spec.cost !== '') parts.push('$' + (Number(spec.cost) || 0).toFixed(2));
+    if (spec.cacheReads) parts.push('含缓存读取');
+    return parts.join(' · ') + '（' + win + '）';
+  }
+  function applyLimitDisplay(p, text) {
+    if (p.keyId) limits[p.keyId] = text;
+    const val = elDrawerBody.querySelector('#valLimit');
+    if (val) val.textContent = text;
+  }
+
+  function modelLabel(id) {
+    if (!id) return 'Auto';
+    const m = modelOptions.find(x => x.id === id);
+    return m ? (m.label || m.id) : id;
+  }
+
+  function fmt(n) { return new Intl.NumberFormat(I18N.isZh ? 'zh-CN' : 'en-US').format(Number(n) || 0); }
+  function fmtTokens(n) {
+    n = Number(n) || 0;
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 1 : 2).replace(/\.0$/, '') + 'M';
+    if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace(/\.0$/, '') + 'K';
+    return String(n);
+  }
+  function fmtCost(n) { return '$' + (Number(n) || 0).toFixed(2); }
+  function fmtPct(rate) {
+    if (rate == null || !Number.isFinite(Number(rate))) return '—';
+    return Math.round(Number(rate) * 100) + '%';
+  }
+  function fmtTrend(trend) {
+    if (trend == null || !Number.isFinite(Number(trend))) {
+      return { text: '—', cls: 'flat', title: '暂无对比' };
+    }
+    const t = Number(trend);
+    const pct = Math.round(Math.abs(t) * 100);
+    if (Math.abs(t) < 0.005) return { text: '→ 0%', cls: 'flat', title: '较上期持平' };
+    if (t > 0) return { text: '↑ ' + pct + '%', cls: 'up', title: '较上期上升 ' + pct + '%' };
+    return { text: '↓ ' + pct + '%', cls: 'down', title: '较上期下降 ' + pct + '%' };
+  }
+  function emptyUsage() {
+    return {
+      tokens: 0, calls: 0, errors: 0, in: 0, out: 0, cost: 0,
+      sessions: 0, cacheRead: 0, cacheWrite: 0, cacheHitRate: null, trend: null,
+    };
+  }
+  function slugify(s) {
+    return String(s || '').trim().toLowerCase()
+      .replace(/[\s_]+/g, '-').replace(/[^a-z0-9\-]/g, '')
+      .replace(/-+/g, '-').replace(/^-|-$/g, '');
+  }
+  function maskKey(secret) {
+    if (!secret || secret.length < 16) return 'sk-magpie-key-…';
+    return secret.slice(0, 14) + '…' + secret.slice(-4);
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function escapeAttr(s) { return escapeHtml(s).replace(/`/g, '&#96;'); }
+
+  document.getElementById('confirmCancel').addEventListener('click', () => document.getElementById('confirmDialog').close('cancel'));
+  document.getElementById('confirmAccept').addEventListener('click', () => document.getElementById('confirmDialog').close('confirm'));
+
+  let confirmationPending = false;
+  function confirmAction(message) {
+    const dialog = document.getElementById('confirmDialog');
+    if (confirmationPending) return Promise.resolve(false);
+    confirmationPending = true;
+    document.getElementById('confirmMessage').textContent = t(message);
+    dialog.returnValue = '';
+    return new Promise(resolve => {
+      dialog.addEventListener('close', () => {
+        confirmationPending = false;
+        resolve(dialog.returnValue === 'confirm');
+      }, { once: true });
+      dialog.showModal();
+    });
+  }
+
+  function toast(msg) {
+    elToast.textContent = t(msg);
+    elToast.classList.add('show');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => elToast.classList.remove('show'), 2200);
+  }
+
+  // 沙盒 iframe（opaque origin）里 navigator.clipboard 常被拒绝；
+  // 先试现代 API，再退回 execCommand，最后弹出已选中的文本框让用户 ⌘C。
+  function legacyCopy(value) {
+    const active = document.activeElement;
+    const area = document.createElement('textarea');
+    area.value = value;
+    area.setAttribute('readonly', '');
+    area.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;';
+    document.body.appendChild(area);
+    let ok = false;
+    try {
+      area.focus();
+      area.select();
+      area.setSelectionRange(0, area.value.length);
+      ok = document.execCommand('copy');
+    } catch {
+      ok = false;
+    } finally {
+      area.remove();
+      if (active && typeof active.focus === 'function') {
+        try { active.focus(); } catch { /* ignore */ }
+      }
+    }
+    return ok;
+  }
+
+  function selectManualText(value) {
+    copyArea.value = value;
+    if (!copyDialog.open) copyDialog.showModal();
+    copyArea.focus();
+    copyArea.select();
+    copyArea.setSelectionRange(0, value.length);
+  }
+
+  async function copyText(text) {
+    const value = String(text == null ? '' : text);
+    if (!value) {
+      toast('没有可复制的内容');
+      return false;
+    }
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(value);
+        toast('已复制');
+        return true;
+      }
+    } catch {
+      /* 继续走降级路径 */
+    }
+    if (legacyCopy(value)) {
+      toast('已复制');
+      return true;
+    }
+    selectManualText(value);
+    return false;
+  }
+
+  document.getElementById('copyDialogClose').addEventListener('click', () => copyDialog.close());
+  document.getElementById('copyRetry').addEventListener('click', async () => {
+    const value = copyArea.value;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(value);
+        copyDialog.close();
+        toast('已复制');
+        return;
+      }
+    } catch {
+      /* 继续走降级路径 */
+    }
+    if (legacyCopy(value)) {
+      copyDialog.close();
+      toast('已复制');
+      return;
+    }
+    selectManualText(value);
+    toast('仍然无法写入剪贴板，请按 ⌘C / Ctrl+C');
+  });
+
+  function clearNoteDom() {
+    if (statusNoteHost) statusNoteHost.replaceChildren();
+    statusNote = null;
+    statusNoteText = null;
+    statusNoteDismiss = null;
+  }
+  function ensureNoteDom() {
+    if (statusNote && statusNoteText) return;
+    if (!statusNoteHost) return;
+    statusNoteHost.replaceChildren();
+    statusNote = document.createElement('div');
+    statusNote.className = 'sample-note';
+    statusNote.id = 'statusNote';
+    statusNoteText = document.createElement('div');
+    statusNoteText.className = 'note-text';
+    statusNoteText.id = 'statusNoteText';
+    statusNoteDismiss = document.createElement('button');
+    statusNoteDismiss.type = 'button';
+    statusNoteDismiss.className = 'note-x';
+    statusNoteDismiss.id = 'statusNoteDismiss';
+    statusNoteDismiss.setAttribute('aria-label', '关闭提示');
+    statusNoteDismiss.textContent = '×';
+    statusNoteDismiss.addEventListener('click', () => {
+      noteDismissed = statusNoteText?.textContent || '';
+      setNote('');
+    });
+    statusNote.append(statusNoteText, statusNoteDismiss);
+    statusNoteHost.append(statusNote);
+  }
+  function setNote(msg, isError) {
+    if (!msg) {
+      clearNoteDom();
+      return;
+    }
+    const shown = t(msg);
+    if (!isError && noteDismissed === shown) {
+      clearNoteDom();
+      return;
+    }
+    ensureNoteDom();
+    if (!statusNote || !statusNoteText) return;
+    statusNoteText.textContent = shown;
+    statusNote.dataset.kind = isError ? 'error' : (msg.includes('加载') ? 'accent' : '');
+    if (statusNoteDismiss) statusNoteDismiss.hidden = !!isError;
+  }
+
+  function renderTiles() {
+    const t = usage.totals || {};
+    const label = period === '7d' ? '7 天' : period === '30d' ? '30 天' : '今日';
+    elTiles.innerHTML = [
+      ['调用', fmt(t.calls), ''],
+      ['错误', fmt(t.errors), 'error'],
+      ['Tokens', fmtTokens(t.tokens), ''],
+      ['费用', fmtCost(t.cost), '']
+    ].map(([n, v, cls]) => `
+      <div class="tile">
+        <div class="n">${n}</div>
+        <div class="v ${cls}">${v}</div>
+        <div class="hint">${label}</div>
+      </div>
+    `).join('');
+  }
+
+  function listSecretText(p) {
+    const revealed = !!p._listRevealed && !!secretCache[p.id];
+    if (revealed) return secretCache[p.id];
+    return maskKey(secretCache[p.id] || 'sk-magpie-key-xxxxxxxx');
+  }
+
+  function renderList() {
+    const map = usage.projects || {};
+    elListMeta.textContent = projects.length + ' 把钥匙';
+    if (!projects.length) {
+      elList.innerHTML = '<li class="empty">柜子还是空的。点右上角「新钥匙」签发一把网关 Key。</li>';
+      return;
+    }
+    const noKeyUsage = Number(usage.attributedCalls || 0) === 0 && Number((usage.totals || {}).calls || 0) > 0;
+    elList.innerHTML = projects.map(p => {
+      const u = Object.assign(emptyUsage(), map[p.slug] || {});
+      const empty = noKeyUsage || ((u.calls || 0) === 0 && (u.tokens || 0) === 0);
+      const trend = empty ? { text: '—', cls: 'flat', title: '暂无这把钥匙的用量' } : fmtTrend(u.trend);
+      const on = effectiveStatus(p) !== 'off';
+      const statusLabel = on ? '启用' : '停用';
+      const statusCls = on ? 'on' : 'off';
+      const revealed = !!p._listRevealed && !!secretCache[p.id];
+      const tokensText = empty ? '—' : fmtTokens(u.tokens);
+      const callsText = empty ? '—' : fmt(u.calls);
+      const hitText = empty ? '—' : fmtPct(u.cacheHitRate);
+      const emptyTitle = noKeyUsage
+        ? '总用量还没挂到钥匙。用这把 Key 请求网关后才会记到这里。'
+        : '这把钥匙本期还没有调用';
+      return `
+        <li class="li" role="button" tabindex="0" data-id="${escapeAttr(p.id)}" aria-expanded="${openId === p.id ? 'true' : 'false'}">
+          <div class="name-wrap">
+            <div class="title" data-i18n-skip>${escapeHtml(p.name)}</div>
+            <div class="keyname" data-i18n-skip>project:${escapeHtml(p.slug)} · ${escapeHtml(modelLabel(p.model))}</div>
+            ${isRotated(p) ? '<div class="keyname" style="color:var(--red);" title="Magpie 侧已轮换过这把 Key，本地保存的明文已过期；点开详情可重置">本地明文已过期</div>' : ''}
+          </div>
+          <div class="secret-wrap">
+            <div class="secret${revealed ? ' shown' : ''}" title="${revealed ? '网关 Key' : '默认掩码，点查看显示'}">${escapeHtml(listSecretText(p))}</div>
+          </div>
+          <div class="metrics${empty ? ' empty' : ''}" aria-label="用量四件套" title="${escapeAttr(emptyTitle)}">
+            <div class="metric" title="Tokens">
+              <div class="n">Tokens</div>
+              <div class="v">${tokensText}</div>
+            </div>
+            <div class="metric" title="调用次数">
+              <div class="n">调用</div>
+              <div class="v">${callsText}</div>
+            </div>
+            <div class="metric" title="缓存命中率 = cache_read / (cache_read + cache_write)">
+              <div class="n">缓存命中</div>
+              <div class="v">${hitText}</div>
+            </div>
+            <div class="metric" title="${escapeAttr(trend.title)}">
+              <div class="n">趋势</div>
+              <div class="v ${trend.cls}">${trend.text}</div>
+            </div>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="icon-btn" data-act="reveal" aria-label="${revealed ? '隐藏 Key' : '查看 Key'}">${revealed ? '隐藏' : '查看'}</button>
+            <button type="button" class="icon-btn" data-act="copy" aria-label="复制 Key">复制</button>
+            <button type="button" class="icon-btn" data-act="reset" aria-label="重置 Key">重置</button>
+            <button type="button" class="icon-btn danger" data-act="delete" aria-label="删除钥匙">删除</button>
+          </div>
+          <button type="button" class="status ${statusCls}" data-act="toggle" aria-pressed="${on ? 'true' : 'false'}" title="${on ? '点击停用这把钥匙（只影响其它机器/非本机调用）' : '点击启用这把钥匙（只影响其它机器/非本机调用）'}">${statusLabel}</button>
+        </li>
+      `;
+    }).join('');
+  }
+
+  async function ensureSecret(id) {
+    if (secretCache[id]) return secretCache[id];
+    const data = await api('/api/projects/' + encodeURIComponent(id) + '/reveal', { method: 'POST', body: '{}' });
+    secretCache[id] = data.secret;
+    if (data.exists === false) keyExists[id] = false;
+    else if (data.exists === true) keyExists[id] = true;
+    const p = projects.find(x => x.id === id);
+    if (p && p.keyId && data.rotated != null) keyRotated[p.keyId] = data.rotated === true;
+    return data.secret;
+  }
+
+  async function toggleProjectStatus(p, btn) {
+    const next = effectiveStatus(p) === 'off' ? 'on' : 'off';
+    if (btn) btn.disabled = true;
+    try {
+      const data = await api('/api/projects/' + encodeURIComponent(p.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ status: next }),
+      });
+      Object.assign(p, data.project);
+      if (p.keyId) magpieStates[p.keyId] = { off: next === 'off' };
+      renderAll();
+      // Magpie 对本机回环请求一律放行；停用/启用只对其它机器上的调用生效。
+      toast(next === 'on' ? '已启用（本机调用不受影响）' : '已停用（本机调用不受影响）');
+    } catch (e) {
+      toast(e.message || '切换失败');
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function revealOnList(p) {
+    if (p._listRevealed) {
+      p._listRevealed = false;
+      renderList();
+      return;
+    }
+    try {
+      await ensureSecret(p.id);
+      p._listRevealed = true;
+      renderList();
+    } catch (e) {
+      toast(e.message || '无法查看');
+    }
+  }
+
+  async function copyOnList(p) {
+    try {
+      await copyText(await ensureSecret(p.id));
+      p._listRevealed = true;
+      renderList();
+      if (keyExists[p.id] === false) toast('已复制，但 Magpie 中已找不到这把 Key');
+      else if (isRotated(p)) toast('已复制，但 Magpie 侧已轮换过这把 Key；本地明文可能已失效，请重置');
+    } catch (e) {
+      toast(e.message || '复制失败');
+    }
+  }
+
+  async function resetOnList(p) {
+    if (!await confirmAction('重置后旧 Key 将被替换；Magpie 仍信任本机请求，本机访问不会因此被阻止。确定重置？')) return;
+    try {
+      const data = await api('/api/projects/' + encodeURIComponent(p.id) + '/reset', { method: 'POST', body: '{}' });
+      Object.assign(p, data.project);
+      secretCache[p.id] = data.project.secret;
+      keyExists[p.id] = true;
+      if (p.keyId) keyRotated[p.keyId] = false;
+      p._listRevealed = true;
+      p._revealed = true;
+      renderAll();
+      toast('已重置 Key');
+    } catch (e) {
+      toast(e.message || '重置失败');
+    }
+  }
+
+  async function deleteOnList(p) {
+    if (!await confirmAction('删除钥匙「' + p.name + '」及其网关 Key？本机回环请求不受影响（Magpie 仍信任本机）。')) return;
+    try {
+      await api('/api/projects/' + encodeURIComponent(p.id), { method: 'DELETE' });
+      delete secretCache[p.id];
+      delete keyExists[p.id];
+      projects = projects.filter(x => x.id !== p.id);
+      if (openId === p.id) closeDrawer();
+      renderAll();
+      toast('已删除');
+    } catch (e) {
+      toast(e.message || '删除失败');
+    }
+  }
+
+  function rootBase(p) {
+    return String(p?.baseUrl || gateway || 'http://127.0.0.1:3425')
+      .replace(/\/v1\/?$/, '')
+      .replace(/\/?$/, '');
+  }
+  function openaiBase(p) {
+    const root = rootBase(p);
+    return root + '/v1';
+  }
+  function anthropicBase(p) {
+    // Magpie Anthropic 兼容口挂在根域名，客户端会自己拼 /v1/messages
+    return rootBase(p);
+  }
+  function geminiBase(p) {
+    // Gemini CLI / google-genai 指向根，自己拼 /v1beta/...
+    return rootBase(p);
+  }
+  function configTemplate(p, reveal, flavor) {
+    const key = reveal ? (secretCache[p.id] || '<KEY>') : '<KEY>';
+    const model = p.model || '';
+    const kind = flavor || 'openai';
+    let lines;
+    if (kind === 'anthropic') {
+      lines = [
+        `# Magpie 钥匙柜 · project:${p.slug} · Anthropic / Claude Code`,
+        `# Claude Code 优先读 ANTHROPIC_AUTH_TOKEN；SDK 用 ANTHROPIC_API_KEY`,
+        `ANTHROPIC_BASE_URL=${anthropicBase(p)}`,
+        `ANTHROPIC_API_KEY=${key}`,
+        `ANTHROPIC_AUTH_TOKEN=${key}`
+      ];
+      lines.push(model ? `ANTHROPIC_MODEL=${model}` : `# ANTHROPIC_MODEL 省略 = Auto（由 Magpie / 客户端决定）`);
+    } else if (kind === 'responses') {
+      lines = [
+        `# Magpie 钥匙柜 · project:${p.slug} · OpenAI Responses（Codex 等）`,
+        `# 与 Chat Completions 同 Base URL / Key，走 POST /v1/responses`,
+        `OPENAI_BASE_URL=${openaiBase(p)}`,
+        `OPENAI_API_KEY=${key}`
+      ];
+      lines.push(model ? `OPENAI_MODEL=${model}` : `# OPENAI_MODEL 省略 = Auto`);
+    } else if (kind === 'gemini') {
+      lines = [
+        `# Magpie 钥匙柜 · project:${p.slug} · Gemini / google-genai`,
+        `GOOGLE_GEMINI_BASE_URL=${geminiBase(p)}`,
+        `GEMINI_API_KEY=${key}`,
+        `# 也可用 Authorization: Bearer 调同一网关`
+      ];
+      lines.push(model ? `GEMINI_MODEL=${model}` : `# GEMINI_MODEL 省略 = Auto`);
+    } else {
+      // openai (default) + any OpenAI-compatible agent (Pi / OpenCode / Continue / …)
+      lines = [
+        `# Magpie 钥匙柜 · project:${p.slug} · OpenAI 兼容（Pi / OpenCode / Continue / 任意 Agent）`,
+        `# 网关 / 模型列表 / 路由组均来自本机 Magpie；本插件只管理多 Key`,
+        `OPENAI_BASE_URL=${openaiBase(p)}`,
+        `OPENAI_API_KEY=${key}`
+      ];
+      lines.push(model ? `OPENAI_MODEL=${model}` : `# OPENAI_MODEL 省略 = Auto（由 Magpie / 客户端决定）`);
+    }
+    return I18N.block(lines.join('\n'));
+  }
+
+  async function openLimitEditor(p) {
+    const editor = elDrawerBody.querySelector('#limitEditor');
+    const note = elDrawerBody.querySelector('#limitNote');
+    const win = elDrawerBody.querySelector('#limitWindow');
+    const tok = elDrawerBody.querySelector('#limitTokens');
+    const cost = elDrawerBody.querySelector('#limitCost');
+    const cache = elDrawerBody.querySelector('#limitCacheReads');
+    const customRow = elDrawerBody.querySelector('#limitCustomRow');
+    const customN = elDrawerBody.querySelector('#limitCustomN');
+    const customUnit = elDrawerBody.querySelector('#limitCustomUnit');
+    if (!editor) return;
+    win.value = 'day';
+    tok.value = '';
+    cost.value = '';
+    cache.checked = false;
+    if (customN) customN.value = '';
+    if (customUnit) customUnit.value = 'd';
+    if (customRow) customRow.hidden = true;
+    win.onchange = () => {
+      const custom = win.value === 'custom';
+      if (customRow) customRow.hidden = !custom;
+      if (custom && note && !note.textContent) {
+        note.textContent = '自定义窗口按滚动计时，保存后从当前时刻重新开始累计。';
+        note.hidden = false;
+      }
+    };
+    note.hidden = true;
+    note.textContent = '';
+    editor.hidden = false;
+    let data;
+    try {
+      data = await api('/api/projects/' + encodeURIComponent(p.id) + '/limits');
+    } catch (e) {
+      note.textContent = '读取 Magpie 限额失败：' + (e.message || e) + '；仍可保存新限额。';
+      note.hidden = false;
+      return;
+    }
+    if (!data || data.limits == null) {
+      note.textContent = '无法读取 Magpie 的限额（' + ((data && data.error) || '文件不可用') + '）；仍可保存新限额。';
+      note.hidden = false;
+      return;
+    }
+    const list = data.limits || [];
+    const first = list[0];
+    let customPrefilled = false;
+    if (first) {
+      if (['day', 'week', 'month'].includes(first.period)) {
+        win.value = first.period;
+      } else if (first.period === 'days' || first.period === 'hours') {
+        const n = first.period === 'days' ? first.days : first.hours;
+        if (n != null) {
+          win.value = 'custom';
+          if (customN) customN.value = String(n);
+          if (customUnit) customUnit.value = first.period === 'days' ? 'd' : 'h';
+          if (customRow) customRow.hidden = false;
+          customPrefilled = true;
+        }
+      } else {
+        const m = String(first.period || '').match(/^(\d{1,4})([dh])$/);
+        if (m) {
+          win.value = 'custom';
+          if (customN) customN.value = m[1];
+          if (customUnit) customUnit.value = m[2];
+          if (customRow) customRow.hidden = false;
+          customPrefilled = true;
+        }
+      }
+      if (first.tokens != null) tok.value = String(first.tokens);
+      if (first.cost != null) cost.value = String(first.cost);
+      cache.checked = !!first.cacheReads;
+    }
+    const notes = [];
+    if (list.length > 1) {
+      notes.push('Magpie 里有 ' + list.length + ' 条限额；保存会先清空，再写入下面这一条。');
+    }
+    if (first && !customPrefilled && !['day', 'week', 'month'].includes(first.period)) {
+      notes.push('现有窗口是 ' + first.period + '；改用下面的窗口保存会替换它。');
+    }
+    if (first && customPrefilled) {
+      notes.push('自定义窗口按滚动计时，保存后从当前时刻重新开始累计。');
+    }
+    if (!list.length) notes.push('当前没有限额。');
+    if (notes.length) {
+      note.textContent = notes.join(' ');
+      note.hidden = false;
+    }
+  }
+
+  function sameLimitWindow(got, win) {
+    if (!got) return false;
+    if (got.period === win) return true;
+    const m = String(win).match(/^(\d{1,4})([dh])$/);
+    if (!m) return false;
+    const n = Number(m[1]);
+    if (m[2] === 'd') {
+      if (got.period === 'days') return Number(got.days) === n;
+      return n === 1 && got.period === 'day';
+    }
+    if (n === 24 && got.period === 'day') return true;
+    return got.period === 'hours' && Number(got.hours) === n;
+  }
+
+  async function saveLimit(p) {
+    let win = elDrawerBody.querySelector('#limitWindow').value;
+    const tokens = elDrawerBody.querySelector('#limitTokens').value.trim();
+    const cost = elDrawerBody.querySelector('#limitCost').value.trim();
+    const cacheReads = elDrawerBody.querySelector('#limitCacheReads').checked;
+    if (win === 'custom') {
+      const n = Number(elDrawerBody.querySelector('#limitCustomN').value);
+      const unit = elDrawerBody.querySelector('#limitCustomUnit').value;
+      if (!Number.isInteger(n) || n < 1 || n > 9999) {
+        toast('自定义窗口请填 1–9999 之间的整数');
+        return;
+      }
+      win = n + (unit === 'h' ? 'h' : 'd');
+    }
+    if (!tokens && !cost) {
+      toast('至少填一个上限，或点「清除限额」');
+      return;
+    }
+    try {
+      await api('/api/projects/' + encodeURIComponent(p.id), {
+        method: 'PATCH',
+        body: JSON.stringify({
+          limit: { window: win, tokens: tokens || null, cost: cost || null, cacheReads },
+        }),
+      });
+      // CLI 写完后回读一次：旧版插件进程会静默忽略 limit 补丁，这里能立刻暴露出来。
+      let check;
+      try {
+        check = await api('/api/projects/' + encodeURIComponent(p.id) + '/limits');
+      } catch (e) {
+        toast('已提交，但无法确认限额：' + (e.message || e) + '；请重开钥匙柜页面后重试');
+        return;
+      }
+      const gotList = check && Array.isArray(check.limits) ? check.limits : null;
+      const got = gotList && gotList.length === 1 ? gotList[0] : null;
+      const wantTok = tokens ? Number(tokens) : null;
+      const wantCost = cost ? Number(cost) : null;
+      const ok = got
+        && sameLimitWindow(got, win)
+        && (got.tokens ?? null) === wantTok
+        && (got.cost ?? null) === wantCost
+        && Boolean(got.cacheReads) === Boolean(cacheReads);
+      if (!ok) {
+        toast('保存后校验不一致，请在 Magpie 中确认这把 Key 的限额');
+        return;
+      }
+      applyLimitDisplay(p, describeLimit({ window: win, tokens: tokens || null, cost: cost || null, cacheReads }));
+      const editor = elDrawerBody.querySelector('#limitEditor');
+      if (editor) editor.hidden = true;
+      renderList();
+      toast('限额已更新（Magpie）');
+    } catch (e) {
+      toast(e.message || '保存限额失败');
+    }
+  }
+
+  async function clearLimit(p) {
+    if (!await confirmAction('清除这把钥匙在 Magpie 里的所有限额？')) return;
+    try {
+      await api('/api/projects/' + encodeURIComponent(p.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ limit: null }),
+      });
+      let check;
+      try {
+        check = await api('/api/projects/' + encodeURIComponent(p.id) + '/limits');
+      } catch (e) {
+        toast('已提交，但无法确认限额：' + (e.message || e) + '；请重开钥匙柜页面后重试');
+        return;
+      }
+      if (!check || !Array.isArray(check.limits) || check.limits.length) {
+        toast('清除后校验不一致，请在 Magpie 中确认');
+        return;
+      }
+      applyLimitDisplay(p, '无限额');
+      const editor = elDrawerBody.querySelector('#limitEditor');
+      if (editor) editor.hidden = true;
+      renderList();
+      toast('已清除限额');
+    } catch (e) {
+      toast(e.message || '清除限额失败');
+    }
+  }
+
+  function renderDrawer(p) {
+    const u = Object.assign(emptyUsage(), (usage.projects && usage.projects[p.slug]) || {});
+    const revealed = !!p._revealed && !!secretCache[p.id];
+    const secretShown = revealed ? secretCache[p.id] : maskKey(secretCache[p.id] || 'sk-magpie-key-xxxxxxxx');
+    const status = effectiveStatus(p);
+    const drift = statusDrift(p);
+    elDTitle.textContent = p.name;
+    elDKeyName.textContent = 'project:' + p.slug;
+    elDrawerBody.innerHTML = `
+      <div class="field">
+        <label>网关 Key</label>
+        <div class="val mono" id="valSecret">${escapeHtml(secretShown)}</div>
+        <div class="inline-actions">
+          <button type="button" class="btn sm" id="btnRevealKey">${revealed ? '隐藏' : '查看'}</button>
+          <button type="button" class="btn sm" id="btnCopyKey">复制 Key</button>
+          <button type="button" class="btn sm" id="btnResetKey">重置</button>
+          <button type="button" class="btn sm" id="btnDeleteProject" style="color:var(--red);">删除</button>
+        </div>
+        ${keyExists[p.id] === false ? '<div class="hint-box" style="margin-top:8px;color:var(--red);">Magpie 中已找不到这把 Key。这里显示的是本地缓存的旧明文；重置可换一把可用的，删除可清掉这条记录。</div>' : ''}
+        ${keyExists[p.id] !== false && isRotated(p) ? '<div class="hint-box" style="margin-top:8px;color:var(--red);">Magpie 侧已轮换过这把 Key，本地保存的明文已过期；点「重置」可拿到新的可用明文。</div>' : ''}
+      </div>
+      <div class="row-2">
+        <div class="field">
+          <label>状态</label>
+          <div class="inline-actions" style="margin-top:0;">
+            <button type="button" class="btn sm" id="btnToggleStatus">${status === 'off' ? '已停用 · 点此启用' : '已启用 · 点此停用'}</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>限额（Magpie）</label>
+          <div class="val" id="valLimit">${escapeHtml(limitLabel(p))}</div>
+          <div class="inline-actions" style="margin-top:8px;">
+            <button type="button" class="btn sm" id="btnEditLimit">编辑限额</button>
+          </div>
+          <div id="limitEditor" hidden style="margin-top:10px;">
+            <div class="limit-row">
+              <label for="limitWindow">窗口</label>
+              <select id="limitWindow">
+                <option value="day">每天</option>
+                <option value="week">每周</option>
+                <option value="month">每月</option>
+                <option value="custom">自定义…</option>
+              </select>
+            </div>
+            <div class="limit-row" id="limitCustomRow" hidden>
+              <label for="limitCustomN">每</label>
+              <input id="limitCustomN" type="number" min="1" max="9999" step="1" inputmode="numeric" placeholder="数量">
+              <select id="limitCustomUnit">
+                <option value="d">天</option>
+                <option value="h">小时</option>
+              </select>
+            </div>
+            <div class="limit-row">
+              <label for="limitTokens">Tokens</label>
+              <input id="limitTokens" type="number" min="1" step="1" inputmode="numeric" placeholder="不限">
+            </div>
+            <div class="limit-row">
+              <label for="limitCost">费用 $</label>
+              <input id="limitCost" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="不限">
+            </div>
+            <label class="limit-check"><input id="limitCacheReads" type="checkbox"> 缓存读取也计入 Tokens</label>
+            <div class="hint-box" id="limitNote" hidden></div>
+            <div class="inline-actions" style="margin-top:8px;">
+              <button type="button" class="btn sm primary" id="btnSaveLimit">保存</button>
+              <button type="button" class="btn sm" id="btnClearLimit">清除限额</button>
+              <button type="button" class="btn sm" id="btnCloseLimit">收起</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      ${drift ? `<div class="hint-box" style="margin-bottom:12px;">Magpie 中这把 Key 当前是「${status === 'off' ? '已停用' : '已启用'}」，与本地记录不一致；页面按 Magpie 显示，点上面的状态按钮会把「${status === 'off' ? '已启用' : '已停用'}」写回 Magpie。</div>` : ''}
+      <div class="hint-box" style="margin-bottom:12px;">Magpie 信任本机回环请求：停用/删除只对其它机器上的调用生效，本机用同一把 Key 仍可继续请求。</div>
+      <div class="field">
+        <label>keyId</label>
+        <div class="val mono">${escapeHtml(p.keyId || '—')}</div>
+      </div>
+      <div class="field">
+        <label>网关地址（Magpie 提供）</label>
+        <div class="val mono">${escapeHtml(p.baseUrl || gateway)}</div>
+        <div class="inline-actions">
+          <button type="button" class="btn sm" id="btnCopyGw">复制网关地址</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="dModel">模型（Magpie 同款）</label>
+        <select id="dModel" style="width:100%;height:36px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:var(--bg);font:inherit;color:var(--fg);"></select>
+      </div>
+      <div class="field">
+        <label>接入 Agent（同一 Key · Magpie 全协议）</label>
+        <div class="connect-tabs" role="tablist" aria-label="接入协议">
+          <button type="button" data-flavor="openai" aria-selected="${connectFlavor === 'openai'}">OpenAI / Pi</button>
+          <button type="button" data-flavor="responses" aria-selected="${connectFlavor === 'responses'}">Responses</button>
+          <button type="button" data-flavor="anthropic" aria-selected="${connectFlavor === 'anthropic'}">Anthropic</button>
+          <button type="button" data-flavor="gemini" aria-selected="${connectFlavor === 'gemini'}">Gemini</button>
+        </div>
+        <pre class="codebox" id="cfgBox" data-i18n-skip style="margin:0;white-space:pre-wrap;">${escapeHtml(configTemplate(p, false, connectFlavor))}</pre>
+        <div class="inline-actions">
+          <button type="button" class="btn sm" id="btnCopyCfg">复制配置模板</button>
+        </div>
+        <div class="hint-box" style="margin-top:8px;">一把 Key 可走 Magpie 全部协议：OpenAI Chat / Responses、Anthropic Messages、Gemini。任意 Agent 只要能改 Base URL + API Key 就能接。</div>
+      </div>
+      <div class="field">
+        <label>${period === '7d' ? '7 天' : period === '30d' ? '30 天' : '今日'}用量拆分</label>
+        <div class="split">
+          <div class="mini"><div class="n">Tokens</div><div class="v">${fmtTokens(u.tokens)}</div></div>
+          <div class="mini"><div class="n">调用</div><div class="v">${fmt(u.calls)}</div></div>
+          <div class="mini"><div class="n">缓存命中</div><div class="v">${fmtPct(u.cacheHitRate)}</div></div>
+          <div class="mini"><div class="n">趋势</div><div class="v" style="color:${fmtTrend(u.trend).cls === 'up' ? 'var(--accent)' : fmtTrend(u.trend).cls === 'down' ? 'var(--red)' : 'inherit'}">${fmtTrend(u.trend).text}</div></div>
+          <div class="mini"><div class="n">会话</div><div class="v">${fmt(u.sessions)}</div></div>
+          <div class="mini"><div class="n">错误</div><div class="v" style="color:${u.errors ? 'var(--red)' : 'inherit'}">${fmt(u.errors)}</div></div>
+          <div class="mini"><div class="n">输入 tokens</div><div class="v">${fmtTokens(u.in)}</div></div>
+          <div class="mini"><div class="n">输出 tokens</div><div class="v">${fmtTokens(u.out)}</div></div>
+        </div>
+      </div>
+      <div class="hint-box">本插件只管多 Key：页内创建/查看/重置/删除。模型选 Auto 或指定；路由组策略仍在 Magpie 路由页。用量按 Magpie ledger 的 caller key 汇总。</div>
+    `;
+    const dModel = elDrawerBody.querySelector('#dModel');
+    fillModelSelect(dModel, p.model || '');
+    dModel.addEventListener('change', async () => {
+      try {
+        const next = dModel.value;
+        const data = await api('/api/projects/' + encodeURIComponent(p.id), {
+          method: 'PATCH',
+          body: JSON.stringify({ model: next }),
+        });
+        Object.assign(p, data.project);
+        const box = elDrawerBody.querySelector('#cfgBox');
+        const flav = elDrawerBody.querySelector('.connect-tabs button[aria-selected="true"]');
+        if (box) box.textContent = configTemplate(p, false, flav ? flav.dataset.flavor : 'openai');
+        renderList();
+        toast(p.model ? '已指定 ' + modelLabel(p.model) : '已设为 Auto');
+      } catch (e) {
+        toast(e.message || '更新失败');
+        fillModelSelect(dModel, p.model || '');
+      }
+    });
+    elDrawerBody.querySelector('#btnToggleStatus').addEventListener('click', async (ev) => {
+      await toggleProjectStatus(p, ev.currentTarget);
+    });
+    elDrawerBody.querySelector('#btnEditLimit').addEventListener('click', () => openLimitEditor(p));
+    elDrawerBody.querySelector('#btnSaveLimit').addEventListener('click', () => saveLimit(p));
+    elDrawerBody.querySelector('#btnClearLimit').addEventListener('click', () => clearLimit(p));
+    elDrawerBody.querySelector('#btnCloseLimit').addEventListener('click', () => {
+      const editor = elDrawerBody.querySelector('#limitEditor');
+      if (editor) editor.hidden = true;
+    });
+    elDrawerBody.querySelector('#btnRevealKey').addEventListener('click', async () => {
+      if (p._revealed) {
+        p._revealed = false;
+        renderDrawer(p);
+        return;
+      }
+      try {
+        await ensureSecret(p.id);
+        p._revealed = true;
+        renderDrawer(p);
+      } catch (e) {
+        toast(e.message || '无法查看');
+      }
+    });
+    elDrawerBody.querySelector('#btnCopyKey').addEventListener('click', async () => {
+      try {
+        await ensureSecret(p.id);
+        await copyText(secretCache[p.id]);
+        p._revealed = true;
+        renderDrawer(p);
+        if (keyExists[p.id] === false) toast('已复制，但 Magpie 中已找不到这把 Key');
+        else if (isRotated(p)) toast('已复制，但 Magpie 侧已轮换过这把 Key；本地明文可能已失效，请重置');
+      } catch (e) {
+        toast(e.message || '复制失败');
+      }
+    });
+    elDrawerBody.querySelector('#btnResetKey').addEventListener('click', async () => {
+      if (!await confirmAction('重置后旧 Key 将被替换；Magpie 仍信任本机请求，本机访问不会因此被阻止。确定重置？')) return;
+      try {
+        const data = await api('/api/projects/' + encodeURIComponent(p.id) + '/reset', { method: 'POST', body: '{}' });
+        Object.assign(p, data.project);
+        secretCache[p.id] = data.project.secret;
+        keyExists[p.id] = true;
+        if (p.keyId) keyRotated[p.keyId] = false;
+        p._revealed = true;
+        renderDrawer(p);
+        toast('已重置 Key');
+      } catch (e) {
+        toast(e.message || '重置失败');
+      }
+    });
+    elDrawerBody.querySelector('#btnDeleteProject').addEventListener('click', async () => {
+      if (!await confirmAction('删除钥匙「' + p.name + '」及其网关 Key？本机回环请求不受影响（Magpie 仍信任本机）。')) return;
+      try {
+        await api('/api/projects/' + encodeURIComponent(p.id), { method: 'DELETE' });
+        delete secretCache[p.id];
+        delete keyExists[p.id];
+        projects = projects.filter(x => x.id !== p.id);
+        closeDrawer();
+        renderAll();
+        toast('已删除');
+      } catch (e) {
+        toast(e.message || '删除失败');
+      }
+    });
+    elDrawerBody.querySelector('#btnCopyGw').addEventListener('click', () => {
+      copyText(openaiBase(p));
+    });
+    const cfgBox = elDrawerBody.querySelector('#cfgBox');
+    elDrawerBody.querySelectorAll('.connect-tabs button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        connectFlavor = btn.dataset.flavor || 'openai';
+        elDrawerBody.querySelectorAll('.connect-tabs button').forEach(b => {
+          b.setAttribute('aria-selected', b === btn ? 'true' : 'false');
+        });
+        if (cfgBox) cfgBox.textContent = configTemplate(p, false, connectFlavor);
+      });
+    });
+    elDrawerBody.querySelector('#btnCopyCfg').addEventListener('click', async () => {
+      try {
+        if (!secretCache[p.id]) {
+          const data = await api('/api/projects/' + encodeURIComponent(p.id) + '/reveal', { method: 'POST', body: '{}' });
+          secretCache[p.id] = data.secret;
+        }
+        copyText(configTemplate(p, true, connectFlavor));
+      } catch (e) {
+        toast(e.message || '无法复制含 Key 的配置');
+      }
+    });
+  }
+
+  function openDrawer(id) {
+    const p = projects.find(x => x.id === id);
+    if (!p) return;
+    openId = id;
+    connectFlavor = 'openai';
+    renderDrawer(p);
+    elDrawer.hidden = false;
+    elBackdrop.hidden = false;
+    requestAnimationFrame(() => {
+      elDrawer.classList.add('show');
+      elBackdrop.classList.add('show');
+      elDrawer.setAttribute('aria-hidden', 'false');
+    });
+    renderList();
+  }
+
+  function closeDrawer() {
+    openId = null;
+    elDrawer.classList.remove('show');
+    elBackdrop.classList.remove('show');
+    elDrawer.setAttribute('aria-hidden', 'true');
+    setTimeout(() => {
+      if (!openId) {
+        elDrawer.hidden = true;
+        elBackdrop.hidden = true;
+      }
+    }, 200);
+    renderList();
+  }
+
+  let pendingSecret = null;
+  let pendingCreatedId = null;
+
+  const createProgress = document.getElementById('createProgress');
+  const progressTitle = document.getElementById('progressTitle');
+  const progressEta = document.getElementById('progressEta');
+  let progressTimer = null;
+  let progressStartedAt = 0;
+
+  function resetProgress() {
+    if (!createProgress) return;
+    createProgress.hidden = true;
+    if (progressTitle) progressTitle.textContent = '正在签发…';
+    if (progressEta) progressEta.textContent = '';
+    createProgress.querySelectorAll('[data-step]').forEach(li => {
+      li.dataset.state = 'pending';
+      const dot = li.querySelector('.dot');
+      if (dot) dot.textContent = '';
+    });
+    if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+  }
+
+  function setProgressStep(step, state) {
+    if (!createProgress) return;
+    createProgress.hidden = false;
+    const li = createProgress.querySelector('[data-step="' + step + '"]');
+    if (!li) return;
+    li.dataset.state = state;
+    const dot = li.querySelector('.dot');
+    if (dot) {
+      if (state === 'done') dot.textContent = '✓';
+      else if (state === 'error') dot.textContent = '!';
+      else dot.textContent = '';
+    }
+  }
+
+  function startProgressClock() {
+    progressStartedAt = Date.now();
+    if (progressTimer) clearInterval(progressTimer);
+    progressTimer = setInterval(() => {
+      if (!progressEta) return;
+      const s = Math.round((Date.now() - progressStartedAt) / 1000);
+      progressEta.textContent = s + 's · Magpie CLI 可能需数秒';
+    }, 250);
+  }
+
+  function stopProgressClock(finalMsg) {
+    if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+    if (progressEta) {
+      const s = Math.round((Date.now() - progressStartedAt) / 1000);
+      progressEta.textContent = finalMsg || ('用时 ' + s + 's');
+    }
+  }
+
+  function showCreatePane() {
+    modalBodyCreate.hidden = false;
+    modalBodySecret.hidden = true;
+    btnConfirmNew.hidden = false;
+    btnDoneSecret.hidden = true;
+    btnCancelNew.hidden = false;
+    btnConfirmNew.disabled = false;
+    btnConfirmNew.textContent = '签发钥匙';
+    document.getElementById('modalTitle').textContent = '新钥匙';
+    resetProgress();
+  }
+
+  function showSecretPane(p) {
+    pendingSecret = p.secret;
+    pendingCreatedId = p.id;
+    modalBodyCreate.hidden = true;
+    modalBodySecret.hidden = false;
+    btnConfirmNew.hidden = true;
+    btnDoneSecret.hidden = false;
+    btnCancelNew.hidden = true;
+    document.getElementById('modalTitle').textContent = '保存网关 Key';
+    document.getElementById('createdProjectName').textContent = p.name + ' · project:' + p.slug;
+    document.getElementById('createdSecret').textContent = p.secret;
+    const banner = document.getElementById('createdBanner');
+    if (banner) banner.textContent = '✓ 「' + p.name + '」已放入，请立即复制网关 Key';
+  }
+
+  function openModal() {
+    fName.value = '';
+    fSlug.value = '';
+    delete fSlug.dataset.touched;
+    pendingSecret = null;
+    pendingCreatedId = null;
+    if (gatewayPreview) gatewayPreview.textContent = gateway;
+    fillModelSelect(fModel, '');
+    showCreatePane();
+    elModal.classList.add('show');
+    elModal.setAttribute('aria-hidden', 'false');
+    setTimeout(() => fName.focus(), 30);
+  }
+
+  function closeModal() {
+    elModal.classList.remove('show');
+    elModal.setAttribute('aria-hidden', 'true');
+    pendingSecret = null;
+    showCreatePane();
+  }
+
+  function renderAll() {
+    renderTiles();
+    renderList();
+    if (openId) {
+      const p = projects.find(x => x.id === openId);
+      if (p) renderDrawer(p);
+      else closeDrawer();
+    }
+  }
+
+  let usagePoll = null;
+
+  function scheduleUsagePoll() {
+    if (usagePoll) clearTimeout(usagePoll);
+    usagePoll = setTimeout(async () => {
+      try {
+        const u = await api('/api/usage?period=' + encodeURIComponent(period) + '&softMs=0');
+        usage = u;
+        if (u.pending) {
+          setNote('用量汇总加载中…');
+          scheduleUsagePoll();
+        } else if (u.error) setNote('用量读取失败：' + u.error, true);
+        else setNote('');
+        renderAll();
+      } catch (e) {
+        setNote(e.message || '用量加载失败', true);
+      }
+    }, 1800);
+  }
+
+  async function refresh() {
+    setNote('加载中…');
+    try {
+      // 先出钥匙列表（只依赖本地 store），meta 可能被网关探测拖到数秒。
+      const list = await api('/api/projects');
+      projects = list.projects || [];
+      renderAll();
+
+      const meta = await api('/api/meta');
+      gateway = (meta.gateway || 'http://127.0.0.1:3425').replace(/\/?$/, '') + '/v1';
+      modelOptions = Array.isArray(meta.models) && meta.models.length ? meta.models : modelOptions;
+      limits = meta.limits && typeof meta.limits === 'object' ? meta.limits : {};
+      magpieStates = meta.states && typeof meta.states === 'object' ? meta.states : {};
+      mergeRotated(meta.rotated);
+      if (meta.modelsError) setNote('模型列表读取失败：' + meta.modelsError + '（仍可签发钥匙）', true);
+      else setNote('');
+      renderAll();
+
+      const u = await api('/api/usage?period=' + encodeURIComponent(period));
+      usage = u;
+      if (u.pending) {
+        setNote('用量汇总加载中…');
+        scheduleUsagePoll();
+      } else if (u.error) setNote('用量读取失败：' + u.error, true);
+      else if (meta.modelsError) setNote('模型列表读取失败：' + meta.modelsError + '（仍可签发钥匙）', true);
+      else setNote('');
+      renderAll();
+    } catch (e) {
+      setNote(e.message || '服务不可用', true);
+    }
+  }
+
+  // 回到页面时悄悄同步一次 Magpie 侧状态（GUI 里改了启停/限额、或别处签发了钥匙）。
+  // 没变化就不重绘，避免打断正在看的抽屉。
+  let focusRefreshTimer = null;
+  let focusRefreshBusy = false;
+  function metaSnapshot() {
+    return JSON.stringify({ projects, gateway, modelOptions, limits, magpieStates, keyRotated });
+  }
+  async function refreshMetaQuietly() {
+    if (focusRefreshBusy || document.hidden || elModal.classList.contains('show')) return;
+    focusRefreshBusy = true;
+    const before = metaSnapshot();
+    try {
+      const list = await api('/api/projects');
+      const meta = await api('/api/meta');
+      const uiFlags = new Map(projects.map((p) => [p.id, { _revealed: p._revealed, _listRevealed: p._listRevealed }]));
+      projects = (list.projects || []).map((p) => Object.assign(p, uiFlags.get(p.id) || {}));
+      gateway = (meta.gateway || 'http://127.0.0.1:3425').replace(/\/?$/, '') + '/v1';
+      modelOptions = Array.isArray(meta.models) && meta.models.length ? meta.models : modelOptions;
+      limits = meta.limits && typeof meta.limits === 'object' ? meta.limits : {};
+      magpieStates = meta.states && typeof meta.states === 'object' ? meta.states : {};
+      mergeRotated(meta.rotated);
+      if (metaSnapshot() === before) return;
+      // 限额编辑器里可能有没保存的输入，别用新的 innerHTML 把它冲掉。
+      const editing = elDrawerBody.querySelector('#limitEditor:not([hidden])');
+      if (editing && openId) {
+        renderList();
+        return;
+      }
+      renderAll();
+    } catch {
+      /* 后台同步失败不打扰用户 */
+    } finally {
+      focusRefreshBusy = false;
+    }
+  }
+  function scheduleMetaRefresh() {
+    if (focusRefreshTimer) clearTimeout(focusRefreshTimer);
+    focusRefreshTimer = setTimeout(() => {
+      focusRefreshTimer = null;
+      refreshMetaQuietly();
+    }, 400);
+  }
+  window.addEventListener('focus', scheduleMetaRefresh);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) scheduleMetaRefresh();
+  });
+
+  document.querySelectorAll('.seg button').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      period = btn.dataset.period;
+      document.querySelectorAll('.seg button').forEach(b => {
+        b.setAttribute('aria-selected', b === btn ? 'true' : 'false');
+      });
+      try {
+        setNote('用量汇总加载中…');
+        usage = await api('/api/usage?period=' + encodeURIComponent(period));
+        if (usage.pending) scheduleUsagePoll();
+        else if (usage.error) setNote('用量读取失败：' + usage.error, true);
+        else setNote('');
+        renderAll();
+      } catch (e) {
+        toast(e.message || '用量加载失败');
+      }
+    });
+  });
+
+  elList.addEventListener('click', async (e) => {
+    const actBtn = e.target.closest('[data-act]');
+    const li = e.target.closest('.li');
+    if (!li || !li.dataset.id) return;
+    const p = projects.find(x => x.id === li.dataset.id);
+    if (!p) return;
+    if (actBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const act = actBtn.dataset.act;
+      if (act === 'toggle') return toggleProjectStatus(p, actBtn);
+      if (act === 'reveal') return revealOnList(p);
+      if (act === 'copy') return copyOnList(p);
+      if (act === 'reset') return resetOnList(p);
+      if (act === 'delete') return deleteOnList(p);
+      return;
+    }
+    openDrawer(p.id);
+  });
+  elList.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (e.target.closest('[data-act]')) return;
+    const li = e.target.closest('.li');
+    if (!li || !li.dataset.id) return;
+    e.preventDefault();
+    openDrawer(li.dataset.id);
+  });
+
+  document.getElementById('btnCloseDrawer').addEventListener('click', closeDrawer);
+  elBackdrop.addEventListener('click', closeDrawer);
+
+  document.getElementById('btnNew').addEventListener('click', openModal);
+  btnCancelNew.addEventListener('click', closeModal);
+  elModal.addEventListener('click', (e) => { if (e.target === elModal) closeModal(); });
+
+  fName.addEventListener('input', () => {
+    if (!fSlug.dataset.touched) fSlug.value = slugify(fName.value);
+  });
+  fSlug.addEventListener('input', () => {
+    fSlug.dataset.touched = '1';
+    fSlug.value = slugify(fSlug.value);
+  });
+
+  document.getElementById('btnCopyGwNew').addEventListener('click', () => copyText(gateway));
+
+  btnConfirmNew.addEventListener('click', async () => {
+    if (busy) return;
+    const name = fName.value.trim();
+    const slug = fSlug.value.trim();
+    if (!name) { toast('先填写钥匙名'); fName.focus(); return; }
+    if (!slug) { toast('先填写标识'); fSlug.focus(); return; }
+    busy = true;
+    btnConfirmNew.disabled = true;
+    btnConfirmNew.textContent = '签发中…';
+    btnCancelNew.disabled = true;
+    resetProgress();
+    startProgressClock();
+    setProgressStep('mint', 'active');
+    if (progressTitle) progressTitle.textContent = '正在向 Magpie 签发 Key…';
+    // Optimistic pacing so the UI never looks frozen while Magpie CLI runs.
+    const pace = setTimeout(() => {
+      setProgressStep('mint', 'done');
+      setProgressStep('models', fModel.value ? 'active' : 'done');
+      if (progressTitle) progressTitle.textContent = fModel.value ? '写入模型限制…' : '放入本地钥匙柜…';
+      if (!fModel.value) setProgressStep('save', 'active');
+      else setTimeout(() => {
+        setProgressStep('models', 'done');
+        setProgressStep('save', 'active');
+        if (progressTitle) progressTitle.textContent = '放入本地钥匙柜…';
+      }, 600);
+    }, 900);
+    try {
+      const data = await api('/api/projects', {
+        method: 'POST',
+        body: JSON.stringify({ name, slug, model: fModel.value }),
+      });
+      clearTimeout(pace);
+      setProgressStep('mint', 'done');
+      setProgressStep('models', 'done');
+      setProgressStep('save', 'done');
+      setProgressStep('done', 'done');
+      if (progressTitle) progressTitle.textContent = '签发完成';
+      stopProgressClock();
+      const p = data.project;
+      secretCache[p.id] = p.secret;
+      keyExists[p.id] = true;
+      p._revealed = true;
+      projects.unshift(p);
+      if (!usage.projects) usage.projects = {};
+      usage.projects[p.slug] = emptyUsage();
+      renderAll();
+      // Brief beat so the user sees the completed checklist, then secret pane.
+      await new Promise(r => setTimeout(r, 280));
+      showSecretPane(p);
+      toast('钥匙已放入 · 请复制 Key');
+    } catch (e) {
+      clearTimeout(pace);
+      const active = createProgress && createProgress.querySelector('[data-state="active"]');
+      if (active) active.dataset.state = 'error';
+      if (progressTitle) progressTitle.textContent = '签发失败';
+      stopProgressClock('失败');
+      toast(e.message || '签发失败');
+      btnConfirmNew.disabled = false;
+      btnConfirmNew.textContent = '重试签发';
+    } finally {
+      busy = false;
+      btnCancelNew.disabled = false;
+      if (!modalBodySecret || modalBodySecret.hidden) {
+        /* stay on create pane with progress visible after error */
+      } else {
+        btnConfirmNew.textContent = '签发钥匙';
+      }
+    }
+  });
+
+  document.getElementById('btnCopySecret').addEventListener('click', () => {
+    if (pendingSecret) copyText(pendingSecret);
+  });
+  function pendingProjectStub() {
+    return projects.find(x => x.id === pendingCreatedId) || {
+      id: pendingCreatedId,
+      slug: fSlug.value,
+      model: fModel.value,
+      baseUrl: gateway,
+    };
+  }
+  document.getElementById('btnCopyOpenaiEnv').addEventListener('click', () => {
+    if (!pendingSecret || !pendingCreatedId) return;
+    secretCache[pendingCreatedId] = pendingSecret;
+    copyText(configTemplate(pendingProjectStub(), true, 'openai'));
+  });
+  document.getElementById('btnCopyAnthropicEnv').addEventListener('click', () => {
+    if (!pendingSecret || !pendingCreatedId) return;
+    secretCache[pendingCreatedId] = pendingSecret;
+    copyText(configTemplate(pendingProjectStub(), true, 'anthropic'));
+  });
+  document.getElementById('btnCopyGeminiEnv').addEventListener('click', () => {
+    if (!pendingSecret || !pendingCreatedId) return;
+    secretCache[pendingCreatedId] = pendingSecret;
+    copyText(configTemplate(pendingProjectStub(), true, 'gemini'));
+  });
+
+  btnDoneSecret.addEventListener('click', () => {
+    const id = pendingCreatedId;
+    closeModal();
+    if (id) openDrawer(id);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (elModal.classList.contains('show')) closeModal();
+      else if (openId) closeDrawer();
+    }
+  });
+
+  refresh();
+})();
+</script>
+</body>
+</html>

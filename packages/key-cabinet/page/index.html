@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>钥匙柜</title>
+<style>
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: grid; place-items: center;
+    font: 13px/1.5 var(--magpie-font, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Noto Sans SC", sans-serif);
+    background: var(--magpie-bg, Canvas); color: var(--magpie-fg, CanvasText);
+  }
+  .box { text-align: center; color: var(--magpie-muted, GrayText); max-width: 28rem; padding: 24px; }
+  .box b { display: block; color: var(--magpie-fg, CanvasText); font-size: 14px; margin-bottom: 4px; }
+  button {
+    margin-top: 12px; padding: 4px 14px; font: inherit; cursor: pointer;
+    border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+    border-radius: 8px; background: Canvas; color: inherit;
+  }
+</style>
+</head>
+<body>
+  <div class="box">
+    <b>钥匙柜</b>
+    <span id="said">正在连接到本地服务…</span>
+  </div>
+  <script src="_magpie/bridge.js"></script>
+  <script src="boot.js"></script>
+</body>
+</html>
