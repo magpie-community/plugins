@@ -1,6 +1,6 @@
 # Aelios plugin for Magpie
 
-[Aelios](https://github.com/wusaki0723/Aelios) is a layered long-term memory
+[Aelios](https://github.com/Aelios-project/Aelios) is a layered long-term memory
 you deploy yourself on Cloudflare: it recalls what fits each turn, keeps what
 was said, and tidies it overnight. This plugin brings it to **every agent
 behind Magpie**: before each turn, the memory Aelios recalls for it is added
@@ -41,11 +41,11 @@ provider. It needs **Magpie 0.1.1273 or newer** and Bun; from **Magpie
 ## Before you start
 
 1. **Deploy Aelios yourself.** Follow the
-   [Aelios README](https://github.com/wusaki0723/Aelios#readme). The plugin
+   [Aelios README](https://github.com/Aelios-project/Aelios#readme). The plugin
    needs an Aelios that has the hook endpoints, `POST /v1/hook/recall` and
    `POST /v1/hook/record`, including the recall endpoint's explicit `record`
-   permission added in [commit a57269c](https://github.com/sakisakisa-design/Aelios/commit/a57269c)
-   ([Aelios PR #102](https://github.com/wusaki0723/Aelios/pull/102)).
+   permission added in [commit a57269c](https://github.com/Aelios-project/Aelios/commit/a57269c)
+   ([Aelios PR #102](https://github.com/Aelios-project/Aelios/pull/102)).
    Deploy that commit or a later version containing it; omitting `record`
    saves no user message or remember-now memory. An older Aelios without these endpoints
    answers 404; the plugin then leaves requests alone and shows *unavailable*.
