@@ -1,0 +1,148 @@
+/* 窗口预热界面：逐值照已确认原型 v10 的样式实现（颜色变量、深色变量、控件尺寸、间距、字号）。
+   深浅色经 body.dark 切换（启动页带 ?theme=），magpie 设计令牌由脚本写入 :root，同名变量即被覆盖。 */
+:root {
+  --bg:#f4f4f6; --card:#fff; --card-2:#f9f9fb; --pill:#f1f1f4; --pill-hover:#e9e9ee;
+  --line:#e3e3e8; --line-2:#ececf0; --fg:#1c1c21; --fg-2:#4b4b53; --muted:#85858d; --faint:#b9b9c2; --ctl-fg:#63636b;
+  --accent:#4f46e5; --accent-soft:#eeedfd; --sel:#ecebfb;
+  --green:#189a58; --green-soft:#e4f6ec; --red:#d64545; --red-soft:#fbe9e9; --amber:#b45309; --amber-soft:#fbf0df;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --code:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+body.dark {
+  --bg:#1a1a1e; --card:#232327; --card-2:#1f1f23; --pill:#2d2d33; --pill-hover:#36363d;
+  --line:#333339; --line-2:#2c2c32; --fg:#ededf1; --fg-2:#b9b9c1; --muted:#8b8b94; --faint:#56565f; --ctl-fg:#a1a1aa;
+  --accent:#a5b4fc; --accent-soft:#2b2c47; --sel:#33345a;
+  --green:#4ade80; --green-soft:#1d3327; --red:#f87171; --red-soft:#3a2224; --amber:#fbbf24; --amber-soft:#3a2f1c;
+}
+* { box-sizing:border-box; }
+html,body { margin:0; height:100%; }
+body { font:13px/1.45 var(--font); color:var(--fg); background:var(--bg); }
+button,input,select,textarea { font:inherit; color:inherit; }
+button { background:none; border:0; cursor:default; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+
+/* 页面主体是唯一滚动容器：宿主给多高就占多高，插件内部只滚这一处 */
+.app { height:100%; overflow:auto; padding:14px 18px 24px; }
+.wrap { max-width:860px; margin:0 auto; }
+.bar { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+.bar .sum { color:var(--muted); font-size:12px; }
+.bar .sum b { font-weight:500; color:var(--fg-2); font-variant-numeric:tabular-nums; }
+.bar .sp { flex:1; }
+.qm { width:20px; height:20px; border-radius:50%; color:var(--faint); font-size:11px; font-weight:600; position:relative; box-shadow:inset 0 0 0 1px var(--line); }
+.qm:hover { color:var(--fg-2); }
+.qm .tip { display:none; position:absolute; right:0; top:26px; width:320px; z-index:5; text-align:left; font-weight:400; font-size:12px; color:var(--fg-2); background:var(--card); border-radius:10px; padding:10px 12px; line-height:1.6; box-shadow:0 16px 44px rgba(20,22,30,.16),0 0 0 .5px rgba(20,22,30,.1); }
+.qm:hover .tip, .qm:focus .tip { display:block; }
+/* 按钮：照 Magpie 的 .text.action / .text.primary / .text.danger */
+.btn { height:27px; padding:0 10px; border-radius:6px; font-size:12px; border:1px solid var(--line); background:var(--card); color:var(--fg-2); box-shadow:0 1px 1px rgba(0,0,0,.04); }
+.btn:hover { border-color:var(--muted); background:var(--card-2); color:var(--fg); }
+.btn.primary { border-color:transparent; background:var(--accent); color:#fff; font-weight:500; }
+body.dark .btn.primary { color:#14142a; }
+.btn.primary:hover { filter:brightness(1.08); background:var(--accent); }
+.btn.danger { border:0; box-shadow:none; background:none; color:var(--ctl-fg); padding:0 7px; }
+.btn.danger:hover { color:var(--red); background:var(--red-soft); }
+.btn[disabled] { opacity:.5; }
+
+/* 全局提示条（断连 / 致命 / 单实例锁 / 保存失败 / 目录错误）：原型之外的必要补充，配色取自同一套变量 */
+.notice { margin-top:8px; border-radius:8px; padding:7px 12px; font-size:12px; }
+.notice.warn { background:var(--amber-soft); color:var(--amber); }
+.notice.bad { background:var(--red-soft); color:var(--red); }
+
+.list { background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+.row { display:flex; align-items:center; gap:12px; min-height:48px; padding:7px 12px 7px 14px; }
+.row + .row, .editor + .row, .row + .editor { border-top:1px solid var(--line-2); }
+.row:hover { background:var(--card-2); }
+.who { flex:1; min-width:0; }
+.who .name { font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.who .sub { font-size:11.5px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
+.row.dim .name { color:var(--muted); }
+.when { text-align:right; flex:none; font-size:11.5px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.when .t { color:var(--fg-2); font-size:12px; }
+.when .s.bad { color:var(--red); }
+.when .s.unk { color:var(--amber); }
+/* 开关：Magpie 的 lib-switch，开是前景色（黑），不是绿 */
+.sw { width:28px; height:16px; border-radius:10px; background:var(--line); position:relative; flex:none; transition:background .2s; }
+.sw::after { content:""; position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.25); transition:transform .22s; }
+.sw.on { background:var(--fg); }
+.sw.on::after { transform:translateX(12px); background:var(--card); }
+body.dark .sw.on::after { background:var(--bg); }
+.chev { color:var(--faint); width:12px; flex:none; transition:transform .15s; font-size:14px; }
+.row.open .chev { transform:rotate(90deg); color:var(--muted); }
+
+/* 展开编辑区：Magpie 的 .editor —— 标签右对齐、白底细边输入框 */
+.editor { background:var(--card-2); padding:16px 18px 14px; display:grid; grid-template-columns:fit-content(132px) minmax(0,1fr); gap:10px 14px; align-items:start; }
+.editor > label { font-size:12px; color:var(--fg-2); text-align:right; padding-top:5px; }
+.editor > .v { min-width:0; }
+.editor > .full { grid-column:1 / -1; }
+.note { font-size:12px; color:var(--red); }
+.note span { color:var(--fg-2); }
+.stale { font-size:12px; color:var(--amber); }
+/* 下拉：逐值照 Magpie 主窗口的 .field：
+   高 25、左 8 右 5 内边距、间距 5、整体 12.5px；key 11.5px 浅灰；值 12.5px 字重 500 超长省略；箭头 11px。
+   不用原生 select：原生控件自带边距和基线，key 与值对不齐 */
+.field { display:inline-flex; align-items:center; gap:5px; height:25px; padding:0 5px 0 8px; border-radius:6px; background:var(--pill); font-size:12.5px; line-height:18px; max-width:100%; min-width:0; transition:background .12s, box-shadow .12s; }
+.field:hover { background:var(--pill-hover); }
+.field.open { background:var(--pill-hover); box-shadow:inset 0 0 0 1px var(--accent); }
+/* 禁用的下拉（如该账号没有任何模型列表）只展示当前值：去 hover 反馈但保留 title 提示 */
+.field[disabled] { opacity:.5; }
+.field[disabled]:hover { background:var(--pill); box-shadow:none; }
+/* 字号不同（11.5 / 12.5）、中英文回退字体不同，按中线居中会让文字底边错开；人眼看的是基线，所以这里按基线对齐 */
+.field .kv { display:flex; align-items:baseline; gap:5px; min-width:0; flex:1 1 auto; overflow:hidden; }
+.field .k { color:var(--faint); font-size:11.5px; flex:none; }
+.field .v { min-width:0; flex:0 1 auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:500; font-variant-numeric:tabular-nums; }
+.field .aux { flex:none; color:var(--faint); font-size:11.5px; font-variant-numeric:tabular-nums; }
+.field .chev { flex:none; color:var(--faint); display:inline-flex; margin-left:auto; padding-left:1px; }
+.field:hover .chev, .field.open .chev { color:var(--muted); }
+.field input[type=time], .field input[type=datetime-local] { border:0; background:none; outline:none; padding:0; font:inherit; font-weight:500; line-height:18px; height:20px; color:var(--fg); }
+/* 同 Magpie 主窗口：下拉排成固定列、撑满各自的列，箭头上下对齐；值再长也只在自己的列里省略 */
+.fields { display:grid; gap:5px; }
+.fields.c3 { grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); }
+.fields.c2 { grid-template-columns:minmax(0,1fr) minmax(0,1fr); max-width:420px; }
+.fields.c1 { grid-template-columns:minmax(0,1fr); }
+.fields > .field { justify-self:stretch; }
+.pop { position:fixed; z-index:30; min-width:180px; max-width:min(440px, calc(100vw - 24px)); max-height:300px; overflow:auto; padding:5px; border-radius:11px; background:var(--card); box-shadow:0 16px 44px rgba(20,22,30,.16),0 2px 8px rgba(20,22,30,.06),0 0 0 .5px rgba(20,22,30,.1); }
+.pop .it { display:flex; align-items:center; gap:8px; width:100%; min-height:28px; padding:4px 8px; border-radius:7px; font-size:12.5px; text-align:left; color:var(--fg); }
+.pop .it:hover, .pop .it:focus { background:var(--pill); outline:none; }
+.pop .it .tx { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pop .it .tick { width:12px; flex:none; color:var(--fg); font-size:11px; }
+.pop .it .aux { flex:none; color:var(--muted); font-size:11.5px; font-variant-numeric:tabular-nums; }
+input.text, textarea.text { width:100%; height:27px; padding:0 9px; border-radius:7px; border:1px solid var(--line); background:var(--card); font-size:12.5px; outline:none; }
+textarea.text { height:auto; min-height:27px; padding:4px 9px; resize:vertical; }
+input.text:focus, textarea.text:focus { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+input.text::placeholder { color:var(--faint); }
+.hint { margin-top:4px; font-size:11px; color:var(--fg-2); }
+.hint.mute { color:var(--muted); }
+.hint.warn { color:var(--amber); }
+.seg { display:inline-flex; padding:2px; border-radius:8px; background:var(--pill); }
+.seg button { height:22px; padding:0 11px; border-radius:6px; font-size:12px; color:var(--ctl-fg); }
+.seg button.on { background:var(--card); color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.14),0 0 0 .5px rgba(0,0,0,.08); }
+.next { margin-top:6px; font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.next b { font-weight:500; color:var(--fg-2); }
+.actions { display:flex; gap:8px; align-items:center; padding-top:12px; border-top:1px solid var(--line-2); }
+.actions .sp { flex:1; }
+.dirty-tip { font-size:11.5px; color:var(--muted); }
+
+.runs-h { display:flex; align-items:baseline; gap:8px; margin-top:4px; }
+.runs-h b { font-weight:500; font-size:12px; color:var(--fg-2); }
+.runs-h span { font-size:11px; color:var(--muted); }
+.runs-h .sp { flex:1; }
+.link { font-size:12px; color:var(--ctl-fg); padding:3px 7px; border-radius:6px; }
+.link:hover { color:var(--fg); background:var(--pill); }
+.link:disabled { color:var(--faint); background:none; }
+.runs { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; margin-top:6px; }
+.run { display:grid; grid-template-columns:84px 40px minmax(0,1fr); gap:10px; padding:6px 11px; font-size:12px; align-items:baseline; }
+.run + .run { border-top:1px solid var(--line-2); }
+.run .t { color:var(--muted); font-variant-numeric:tabular-nums; }
+.run .r { color:var(--muted); }
+.run .r.bad { color:var(--red); }
+.run .r.unk { color:var(--amber); }
+.run .why { color:var(--fg-2); overflow-wrap:anywhere; }
+.more { display:block; width:100%; padding:6px; font-size:11px; color:var(--muted); border-top:1px solid var(--line-2); }
+.more:hover { color:var(--fg); }
+.empty { padding:36px 20px; text-align:center; color:var(--muted); }
+.empty b { display:block; color:var(--fg); font-weight:500; margin-bottom:4px; }
+@media (prefers-reduced-motion:reduce) { * { transition:none !important; } }
+@media (max-width:640px) {
+  .editor { grid-template-columns:1fr; }
+  .editor > label { text-align:left; padding-top:0; }
+  .qm .tip { width:min(320px, 86vw); }
+}

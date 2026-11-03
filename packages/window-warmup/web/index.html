@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>窗口预热</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <div class="wrap">
+      <div class="bar">
+        <span class="sum" id="sum"></span>
+        <span class="sp"></span>
+        <button class="qm" id="info" aria-label="说明">?<span class="tip">消息按供应商自己的额度规则计费，可能用到赠送额度或 API 余额；发送成功不代表窗口一定已开始计时。<br>Magpie 关闭期间不会执行，重新打开后每个任务最多补发一次。<br>失败不会暂停任务，下一次照常执行。</span></button>
+        <button class="btn" id="new">新建任务</button>
+      </div>
+      <div id="bars"></div>
+      <div class="list" id="list"></div>
+    </div>
+  </main>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
