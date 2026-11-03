@@ -460,8 +460,8 @@ about **2e8** — and its refusals name the reset in Chinese
 Unlike the AI build's, the China model is **charged in credits** (`x0.11`)
 — the token window and the credits meter are two limits on one model — so
 the card is not a "free model" card. It is named after its model and says
-its cap is an estimate: **`deepseek-v4.1-flash tokens (est.)`**, with `~200M`
-and `tokens (est.)` in the numbers. The estimate is this machine's ledger
+its cap is an estimate: **`deepseek-v4.1-flash tokens (est.)`**, with
+`~200M` in its text (`151.5M / ~200M`). The estimate is this machine's ledger
 against a cap measured on two accounts; the vendor reports neither, and the
 first refusal of a window pins the card full at the reset the vendor names.
 
