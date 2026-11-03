@@ -11,6 +11,10 @@
 // claimed with the same token, on the minimax-cloud endpoints.
 
 import { createHash, randomBytes, randomUUID } from "node:crypto"
+import { readFile } from "node:fs/promises"
+import { join } from "node:path"
+import { createConnectorTools } from "./connector-tools.mjs"
+import { createWebTools } from "./web-tools.mjs"
 
 const CLIENT_ID = "mcode-public"
 const SCOPE = "agent.default"
@@ -828,49 +832,54 @@ function renew(site, a, save) {
   return r
 }
 
-function makePlugin(site) {
-  return async ({ client }) => {
-    const save = async (a) => {
-      if (typeof client?.auth?.set !== "function") return false
-      try {
-        await client.auth.set({ path: { id: site.id }, body: a })
-        return true
-      } catch {
-        return false
-      }
+function accountSession(site, client, accountID = site.id) {
+  const save = async (a) => {
+    if (typeof client?.auth?.set !== "function") return false
+    try {
+      await client.auth.set({ path: { id: accountID }, body: a })
+      return true
+    } catch {
+      return false
     }
+  }
 
-    // fresh is the account with an access token that isn't about to end,
-    // refreshed (and saved) when it is, or when MiniMax turned away the
-    // access token rejected and no newer one is had. renewed says the
-    // token isn't the one getAuth read: this call or another refreshed it.
-    const fresh = async (getAuth, rejected, again = false) => {
-      const stored = await getAuth()
-      if (stored?.type !== "oauth" || !stored.access) throw new Error(`${site.name} isn't signed in`)
-      const a = latest(site, stored)
-      const newer = a.access !== stored.access
-      if (rejected !== undefined && a.access !== rejected) return { a, renewed: true }
-      const force = rejected !== undefined
-      if (!force && !(a.expires && Date.now() >= a.expires - EARLY_MS)) return { a, renewed: newer }
-      if (!a.refresh) {
-        if (Date.now() < a.expires) return { a, renewed: newer }
+  // fresh is the account with an access token that isn't about to end,
+  // refreshed (and saved) when it is, or when MiniMax turned away the
+  // access token rejected and no newer one is had. renewed says the
+  // token isn't the one getAuth read: this call or another refreshed it.
+  const fresh = async (getAuth, rejected, again = false) => {
+    const stored = await getAuth()
+    if (stored?.type !== "oauth" || !stored.access) throw new Error(`${site.name} isn't signed in`)
+    const a = latest(site, stored)
+    const newer = a.access !== stored.access
+    if (rejected !== undefined && a.access !== rejected) return { a, renewed: true }
+    const force = rejected !== undefined
+    if (!force && !(a.expires && Date.now() >= a.expires - EARLY_MS)) return { a, renewed: newer }
+    if (!a.refresh) {
+      if (Date.now() < a.expires) return { a, renewed: newer }
+      throw new SignInExpired(site)
+    }
+    try {
+      return { a: { ...a, ...(await renew(site, a, save)) }, renewed: true }
+    } catch (e) {
+      if (signedOut(e)) {
+        // spent by someone else (magpie's renewal, another process of
+        // magpie's), who saved the new one: that one is used
+        const now = again ? undefined : await getAuth().catch(() => undefined)
+        if (now?.type === "oauth" && now.refresh && now.refresh !== a.refresh && now.refresh !== stored.refresh) return fresh(getAuth, rejected, true)
         throw new SignInExpired(site)
       }
-      try {
-        return { a: { ...a, ...(await renew(site, a, save)) }, renewed: true }
-      } catch (e) {
-        if (signedOut(e)) {
-          // spent by someone else (magpie's renewal, another process of
-          // magpie's), who saved the new one: that one is used
-          const now = again ? undefined : await getAuth().catch(() => undefined)
-          if (now?.type === "oauth" && now.refresh && now.refresh !== a.refresh && now.refresh !== stored.refresh) return fresh(getAuth, rejected, true)
-          throw new SignInExpired(site)
-        }
-        // passing: the token in hand may still do
-        if (!force && Date.now() < a.expires) return { a, renewed: newer }
-        throw Object.assign(new Error(`${site.name} token refresh: ${e?.message ?? e}`), { signIn: "kept" })
-      }
+      // passing: the token in hand may still do
+      if (!force && Date.now() < a.expires) return { a, renewed: newer }
+      throw Object.assign(new Error(`${site.name} token refresh: ${e?.message ?? e}`), { signIn: "kept" })
     }
+  }
+  return fresh
+}
+
+function makePlugin(site) {
+  return async ({ client }) => {
+    const fresh = accountSession(site, client)
 
     // one conversation id for requests that come with none of their own
     const session = randomUUID()
@@ -1086,8 +1095,110 @@ function makePlugin(site) {
   }
 }
 
+// Tools run outside a chat account's scope. Read the explicitly selected
+// Magpie account afresh for each call; its primary account is the default.
+function createToolRequest({ client, directory }) {
+  const sessions = new Map()
+  return async (siteID, path, body, { signal, timeoutMs = 30000, account } = {}) => {
+    const site = SITES[siteID]
+    if (!site) throw new Error("unknown MiniMax Code site")
+    const id = account ?? site.id
+    if (typeof id !== "string" || !(id === site.id || id.startsWith(site.id + "#") && id.length > site.id.length + 1))
+      throw new Error("account must belong to the selected MiniMax Code site")
+    if (!directory) throw new Error("MiniMax tools require Magpie's config directory")
+    const abort = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
+    abort.throwIfAborted()
+    // Stop this tool promptly while a shared token rotation finishes and saves.
+    const wait = async (pending) => {
+      let onAbort
+      const cancelled = new Promise((_, reject) => {
+        onAbort = () => reject(abort.reason)
+        abort.addEventListener("abort", onAbort, { once: true })
+      })
+      try {
+        abort.throwIfAborted()
+        return await Promise.race([pending, cancelled])
+      } finally { abort.removeEventListener("abort", onAbort) }
+    }
+    const getAuth = async () => {
+      let store
+      try {
+        store = obj(JSON.parse(await readFile(join(directory, "plugin-auth.json"), "utf8")))
+      } catch (e) {
+        if (e.code === "ENOENT") throw new Error("Sign in to " + site.name + " in Magpie before using its tools")
+        throw new Error("MiniMax tools: Magpie's plugin-auth.json could not be read")
+      }
+      if (!store) throw new Error("MiniMax tools: invalid Magpie account store")
+      return Object.hasOwn(store, id) ? store[id] : undefined
+    }
+    if (!sessions.has(id)) sessions.set(id, accountSession(site, client, id))
+    const fresh = sessions.get(id)
+    let { a } = await wait(fresh(getAuth))
+    const secrets = new Set([a.access, a.refresh].filter(Boolean))
+    const redact = (message) => {
+      let out = String(message)
+      for (const secret of secrets) out = out.replaceAll(secret, "<redacted>")
+      return out
+    }
+    const send = (auth) => {
+      abort.throwIfAborted()
+      const req = {
+        url: new URL(path, site.llm).href,
+        init: { method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "MiniMaxAgent", Authorization: "Bearer " + auth.access }, body: JSON.stringify(body) },
+      }
+      return fetch(req.url, { ...req.init, signal: abort })
+    }
+    try {
+      let res = await send(a)
+      // A 401 means the request was refused before execution. Transport
+      // failures and business errors are surfaced, never replayed.
+      if (res.status === 401) {
+        await res.body?.cancel()
+        ;({ a } = await wait(fresh(getAuth, a.access)))
+        secrets.add(a.access)
+        if (a.refresh) secrets.add(a.refresh)
+        res = await send(a)
+      }
+      if (!res.ok) throw new Error(site.name + " tool API: HTTP " + res.status)
+      let env
+      try { env = obj(JSON.parse(await res.text())) } catch (e) {
+        abort.throwIfAborted()
+        throw new Error("MiniMax tool API: invalid JSON response")
+      }
+      if (!env) throw new Error("MiniMax tool API: expected a JSON object")
+      // The gateway may succeed while the tool payload reports a billing
+      // or execution error. Both status layers must pass independently.
+      if (env.code !== undefined) {
+        const { code: rawCode, message, ...payload } = env
+        const code = num(rawCode)
+        if (code === undefined) throw new Error("MiniMax tool API: invalid response code")
+        if (code !== 0) throw new Error("MiniMax tool API: " + (str(env, "message") ?? "status " + code))
+        if (env.base_resp === undefined) env = { ...payload, base_resp: { status_code: code, status_msg: message } }
+      }
+      if (env.base_resp !== undefined) {
+        const br = obj(env.base_resp)
+        const code = br && num(br.status_code)
+        if (code === undefined) throw new Error("MiniMax tool API: invalid base_resp")
+        if (code !== 0) throw new Error("MiniMax tool API: " + (str(br, "status_msg") ?? "status " + code))
+      }
+      checked(env, "MiniMax tool API")
+      abort.throwIfAborted()
+      return env
+    } catch (e) {
+      abort.throwIfAborted()
+      e.message = redact(e.message)
+      throw e
+    }
+  }
+}
+
+export const MiniMaxCodeToolsPlugin = async (input) => {
+  const request = createToolRequest(input)
+  return { tool: { ...createConnectorTools(request).tool, ...createWebTools(request) } }
+}
+
 export const MiniMaxCodeAuthPlugin = makePlugin(SITES["minimax-code"])
 export const MiniMaxCodeGlobalAuthPlugin = makePlugin(SITES["minimax-code-global"])
 
 // for tests
-export const _internal = { SITES, MODELS, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, creditsWindow, ledgerBatches, variants, renewing, renewed, startDevice, pollDevice, checkinOf }
+export const _internal = { SITES, MODELS, createToolRequest, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, creditsWindow, ledgerBatches, variants, renewing, renewed, startDevice, pollDevice, checkinOf }

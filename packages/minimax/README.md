@@ -62,6 +62,67 @@ Refreshing:
   with `invalid_grant` (HTTP 400). Any other failure keeps the sign-in, and
   the current token is used while it lasts.
 
+## Generation and media tools in Magpie
+
+The same plugin also exports `MiniMaxCodeToolsPlugin`. Magpie serves its tools
+through the Library's MiniMax MCP server and `/mcp/magpie/tools`. Connect
+that server to your agent to use the tools with any of its chat models.
+
+| Tools | What they do |
+|---|---|
+| `web_search`, `web_fetch` | Native web/news/video/place/shopping search and direct webpage retrieval |
+| `generate_image` | Text-to-image and image editing from reference URLs |
+| `submit_video_generation`, `query_video_generation` | Submit H3, H3 Max or Hailuo video tasks, then check their progress |
+| `synthesize_speech`, `batch_text_to_audio`, `get_voice_list` | Speech synthesis and voice selection |
+| `batch_text_to_music` | Music and song generation |
+| `describe_images`, `videos_understand`, `audios_understand`, `listen_audio` | Image, video and audio understanding, and transcription |
+| `search_images`, `reverse_image_search` | Find image references |
+| `enhance_image`, `remove_image_background` | Upscale images and remove backgrounds |
+| `get_asset_url` | Get a fresh download URL for a generated asset's `node_id` |
+| `list_tools`, `tool_schema`, `call_tool` | Discover and call the account's current Matrix tools and read their live schemas |
+
+On the combined MCP server these are named `minimax_generate_image`,
+`minimax_submit_video_generation`, and so on. In the Library's routed server,
+the separator is `minimax__generate_image`.
+
+Account-backed tools accept `site`: `minimax-code` (China, the default) or
+`minimax-code-global`. These tools read the chosen site's primary account from Magpie's
+`plugin-auth.json` on each call. To use a second account, set `account` to
+its full stored key, such as `minimax-code#xxxxxx`. The selected account's
+tokens are renewed by the same refresh logic as chat. A missing account
+asks you to sign in; account selection stays explicit across calls.
+
+The gateway status (`base_resp.status_code`) and the tool payload status
+(`code`) are checked independently. A successful gateway response can
+still carry a plan-limit error from the tool, even when the account has
+credits available; that error is returned to the caller.
+
+Inputs use HTTPS media URLs. Upload local reference files to a reachable
+URL before passing them. Generated results include `node_id` and
+`file_name`; pass the node id to `get_asset_url` and download the returned
+URL. A URL can expire while its asset is still available: ask for a fresh
+URL with the same node id.
+
+Video generation is asynchronous: keep the returned task id and model,
+then pass both to `query_video_generation`. Generation uses the selected
+account's plan or credits according to MiniMax's billing. Choose the model
+and parameters before submitting. Transport failures are reported so the
+caller can check the outcome before deciding whether to submit again.
+
+The tool definitions ship with the package; each execution also resolves
+the tool against the selected account's live catalog. Availability and
+provider failures come from that catalog. Use `tool_schema` and
+`call_tool` when a newly added Matrix capability needs its current
+parameters. Connector calls honor the host's cancellation signal. Magpie
+currently limits an MCP tool call to 55 seconds, so a long synchronous
+image or audio request may outlast that limit; video uses separate
+submission and query calls.
+
+Magpie loads `magpie.mjs` through `exports["./server"]` to expose these
+tools with its account store. OpenCode 1.x loads `opencode.mjs`, and
+OpenCode 2.x loads the shared adapter. Both OpenCode entry points expose
+the two chat providers.
+
 ## Requests
 
 Chats are Anthropic messages (`@ai-sdk/anthropic`) sent to
