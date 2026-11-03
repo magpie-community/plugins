@@ -36,6 +36,7 @@ const real = globalThis.fetch
 beforeEach(async () => {
   _internal.routes.clear()
   _internal.blocked.clear()
+  _internal.sidelined.clear()
   _internal.edge.until = 0
   sent.length = 0
   for (const k of Object.keys(answers)) delete answers[k]
@@ -336,8 +337,71 @@ test("a Start Plan block page is answered from the plan too", async () => {
   const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
   expect(res.status).toBe(200)
   expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
-  // the block rests the model a minute, as a spent answer does
-  expect(_internal.blocked.get(KEY + "\0" + jwt + "\0glm-5.3-flash")).toBeGreaterThan(Date.now())
+  // the block keeps free first off the gift a minute, but it is no quota
+  // answer, so a -Trial entry is not held by it (sidelined, not blocked)
+  expect(_internal.sidelined.get(KEY + "\0" + jwt + "\0glm-5.3-flash")).toBeGreaterThan(Date.now())
+  expect(_internal.blocked.get(KEY + "\0" + jwt + "\0glm-5.3-flash")).toBeUndefined()
+  const again = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(again.status).toBe(200)
+  expect(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+  expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(2)
+})
+
+// Can4ry_ on X: free first's GLM-5.3-Flash was turned away (405/3012) and
+// rested, and the GLM-5.3-Flash-Trial test then answered a local "quota
+// exhausted" 429 without asking ZCode, while ZCode's own app was served
+test("a free-first refusal leaves the -Trial entry asking ZCode", async () => {
+  planAndBalance()
+  let gift = 0
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = () => {
+    gift++
+    return gift === 1
+      ? new Response(JSON.stringify({ error: { message: "request has been blocked due to unusual activity", code: 3012 } }), { status: 405, headers: { "content-type": "application/json" } })
+      : new Response(JSON.stringify({ type: "message", content: [] }), { headers: { "content-type": "application/json" } })
+  }
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const ask = (model) => opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body(model) })
+  expect((await ask("GLM-5.3-Flash")).status).toBe(200)
+  const res = await ask("GLM-5.3-Flash-Trial")
+  expect(res.status).toBe(200)
+  expect(gift).toBe(2)
+  expect(JSON.parse(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages")).at(-1).body).model).toBe("GLM-5.3-Flash")
+})
+
+// magpie's gateway knows the plugin's spent words only at the end of the
+// message (zcode_trial.go's zcodeSpentWords), so a rested entry's local 429
+// keeps them last, or the whole account would rest
+test("a rested -Trial entry's local 429 ends with the words magpie reads", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ code: "1113", msg: "余额不足" }), { headers: { "content-type": "application/json" } })
+  expect((await sendTo(MSG, body("GLM-5.3-Flash-Trial"))).status).toBe(429)
+  const before = sent.length
+  const res = await sendTo(MSG, body("GLM-5.3-Flash-Trial"))
+  expect(res.status).toBe(429)
+  expect(sent.slice(before).some((c) => c.path.endsWith("/messages"))).toBe(false)
+  const said = JSON.parse(await res.text()).error.message
+  const m = said.match(/(?:^|: )ZCode's limited quota for (\S+) is exhausted or temporarily unavailable$/)
+  expect(m?.[1].toLowerCase()).toBe("glm-5.3-flash")
+  expect(said).toContain("not asked again for a minute")
+})
+
+test("magpie's free-first switch is declared on, and off keeps the plain model on the plan", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const plugin = async (value) => (await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } }, magpie: { options: (p) => (p === "zcode" ? { free_first: value } : {}) } }, {})).auth
+  const on = await plugin(true)
+  expect(on.options.find((o) => o.key === "free_first")).toMatchObject({ default: true, labels: { zh: "优先用免费额度" } })
+  const ask = async (h) => (await h.loader(async () => coding, { id: "zcode" })).fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect((await ask(on)).status).toBe(200)
+  expect(sent.at(-1).origin).toBe("https://zcode.z.ai")
+  expect((await ask(await plugin(false))).status).toBe(200)
+  expect(sent.at(-1).origin).toBe("https://api.z.ai")
+  // the switch on never undoes a freeFirst: false the user wrote
+  const opts = await on.loader(async () => coding, { id: "zcode", options: { freeFirst: false } })
+  await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(sent.at(-1).origin).toBe("https://api.z.ai")
 })
 
 test("a gift's block page holds free first on the plan and a trial entry here (plugins#649)", async () => {

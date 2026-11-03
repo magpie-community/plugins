@@ -147,8 +147,12 @@ but an agent that always asks the plain model never sees the gift.
 the plain model spends the account's own live gift first, and falls
 back to the coding plan when the gift cannot serve it — a bucket that
 is spent, a model the gift does not serve, no ZCode session, or the
-minute's rest a refusal just earned. Turn it off for the whole plugin
-in magpie's Plugins › Options
+minute's rest a refusal just earned. In magpie, the switch is in the
+provider's editor: Providers › ZCode, **Free quota first** under Plugin
+options, just above Advanced (since 0.1.49). It is on by default; off
+keeps the plain models on the plan. The JSON below still works, and a
+`freeFirst: false` there keeps it off whatever the switch says. Turn it
+off for the whole plugin in magpie's Plugins › Options
 
 ```json
 { "freeFirst": false }
@@ -172,7 +176,12 @@ from the plan in the same request — any gift failure is, its own
 waited-out busy cap included, and the replay waits out the plan's busy
 cap as any plan request does — and a spent answer or a block page rests
 the model a minute and drops the route's balance read, so the requests
-behind it go straight to the plan. A gift that cannot be asked at all —
+behind it go straight to the plan. Only a spent answer holds the
+model's `-Trial` entry too; a refusal for another reason (a 405/3012)
+keeps free first off the gift for the minute but leaves the `-Trial`
+entry asking ZCode, which answers it as it came. Before 0.1.49 the two
+rests were one, and a refused free-first request made the next `-Trial`
+request answer a local "quota exhausted" 429 without asking. A gift that cannot be asked at all —
 the network, the host — is answered from the plan the same way, the
 route read dropped for the next request, while a caller's own abort
 stays an abort. The agent sees the plan's answer

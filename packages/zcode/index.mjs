@@ -23,6 +23,8 @@ import { isAbsolute, join } from "node:path"
 import PROMPT from "./prompt.mjs"
 
 const PROVIDER = "zcode"
+// FREE_FIRST is magpie's switch for free first in the provider's editor
+const FREE_FIRST = "free_first"
 const ZCODE = "https://zcode.z.ai"
 const ZAI_API = "https://api.z.ai"
 const BIGMODEL_API = "https://bigmodel.cn" // BigModel's business API, where ZCode asks it
@@ -274,6 +276,17 @@ async function plansOf(s) {
 // blocked remembers the models a gift said it has none left for: a key+jwt+
 // model for a minute, so one turn that is refused does not ask again.
 const blocked = new Map()
+// sidelined remembers, the same way, the models whose gift turned free
+// first away for another reason (a 405/3012, a block page): free first
+// leaves them on the plan for the minute, but a -Trial entry, the user's
+// own pick of the gift, still asks ZCode and gets its real answer. Once
+// one rest served both, and a refusal under free first answered the
+// Trial entry locally as a quota "exhausted" it never was (Can4ry_ on X).
+const sidelined = new Map()
+const rest = (map, k) => {
+  for (const [x, until] of map) if (Date.now() >= until) map.delete(x)
+  map.set(k, Date.now() + 60_000)
+}
 
 // giftServes: the gift's buckets name their models lowercased ("glm-5.3-
 // flash"); what is asked for arrives as the plan lists it ("GLM-5.3-Flash").
@@ -281,6 +294,7 @@ const giftServes = (gift, m) => (gift.models ?? []).some((x) => x.toLowerCase() 
 const giftRested = (s, m) => Date.now() < (blocked.get(s.key + "\0" + s.jwt + "\0" + m.toLowerCase()) ?? 0)
 const giftUsable = (s, gift, m) => !jwtExpired(s.jwt) && giftServes(gift, m) &&
   Date.now() >= (blocked.get(s.key + "\0" + s.jwt + "\0" + m.toLowerCase()) ?? 0)
+const giftSidelined = (s, m) => Date.now() < (sidelined.get(s.key + "\0" + s.jwt + "\0" + m.toLowerCase()) ?? 0)
 
 // spentUp is the gift saying it has nothing left to spend: its own no-
 // resource-package code 1113, its "exceed quota limit" 1005 — a spent gift
@@ -2278,7 +2292,7 @@ function sessionOf(id, device) {
 
 // ---- the plugin ------------------------------------------------------------------
 
-export async function ZCodeAuthPlugin({ client }, options = {}) {
+export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
   const log = (message) => {
     try {
       client?.app?.log?.({ body: { service: "zcode-auth", level: "error", message } })
@@ -2289,9 +2303,14 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
   // provider carries no freeFirst of its own. It is on unless one of them
   // says false: a gift ZCode hands out (each weekend, sgfvdsg86265 on X)
   // lapses unused behind an agent that asks the plain model, and every
-  // failure of the gift is answered from the plan.
+  // failure of the gift is answered from the plan. magpie's switch in the
+  // provider's editor (FREE_FIRST, auth.options below) turns it off too;
+  // it is on by default, so a JSON freeFirst: false a user wrote before
+  // the switch existed keeps it off. A key magpie doesn't report (an older
+  // magpie, OpenCode) leaves it as the JSON says.
   const freeFirst = (providerOptions) =>
-    providerOptions?.freeFirst !== undefined ? providerOptions.freeFirst !== false : options?.freeFirst !== false
+    magpie?.options?.(PROVIDER)?.[FREE_FIRST] !== false &&
+    (providerOptions?.freeFirst !== undefined ? providerOptions.freeFirst !== false : options?.freeFirst !== false)
   const oauth = (site) => ({
     type: "oauth",
     label: `ZCode: ${SITES[site].name}${site === "bigmodel" ? " (智谱)" : ""} GLM Coding Plan`,
@@ -2374,6 +2393,23 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
       // how many accounts take requests at once, the others in reserve
       // (DEFAULT_ACCOUNTS); a magpie that doesn't read it uses them all
       maxAccounts: DEFAULT_ACCOUNTS,
+      // magpie's own switches (OpenCode never reads auth.options), read at
+      // each request through input.magpie
+      options: [
+        {
+          key: FREE_FIRST,
+          label: "Free quota first",
+          description: "When on, the plain GLM models spend ZCode's free Start Plan quota (the -Trial entries' quota) before the GLM Coding Plan, and go to the plan when it is spent or refused. Off: only the -Trial entries use it. freeFirst: false in the options JSON turns it off too.",
+          labels: { zh: "优先用免费额度", "zh-TW": "優先用免費額度", ja: "無料枠を優先", de: "Gratis-Kontingent zuerst" },
+          descriptions: {
+            zh: "开启后，普通的 GLM 模型先用 ZCode 的免费 Start Plan 额度（即 -Trial 条目的额度），用完或被拒时再用 GLM Coding Plan。关闭后只有 -Trial 条目会用它。选项 JSON 里的 freeFirst: false 也会关闭它。",
+            "zh-TW": "開啟後，一般的 GLM 模型先用 ZCode 的免費 Start Plan 額度（即 -Trial 項目的額度），用完或被拒時再用 GLM Coding Plan。關閉後只有 -Trial 項目會用它。選項 JSON 裡的 freeFirst: false 也會關閉它。",
+            ja: "オンにすると、通常の GLM モデルは GLM Coding Plan より先に ZCode の無料 Start Plan 枠（-Trial 項目の枠）を使い、使い切るか拒否されるとプランに戻ります。オフでは -Trial 項目だけが使います。オプション JSON の freeFirst: false でもオフになります。",
+            de: "Ist dies an, nutzen die normalen GLM-Modelle zuerst ZCodes freies Start-Plan-Kontingent (das der -Trial-Einträge) und erst danach den GLM Coding Plan. Aus: nur die -Trial-Einträge nutzen es. freeFirst: false im Optionen-JSON schaltet es auch aus.",
+          },
+          default: true,
+        },
+      ],
       async loader(getAuth, provider) {
         const s0 = stateOf(await getAuth())
         if (!s0) return {}
@@ -2421,13 +2457,13 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 const raw = giftModel(gift, m)
                 const available = raw && giftUsable(s, gift, raw)
                 if (!available) {
-                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: raw ? `ZCode's limited quota for ${raw} is exhausted or temporarily unavailable${giftRested(s, raw) ? " (ZCode answered 429 to the last request for it, so it is not asked again for a minute)" : ""}` : `ZCode has no active limited quota for ${m}` }
+                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: raw ? `${giftRested(s, raw) ? `ZCode said the last request for ${raw} was over its quota, so it is not asked again for a minute: ` : ""}ZCode's limited quota for ${raw} is exhausted or temporarily unavailable` : `ZCode has no active limited quota for ${m}` }
                   return kept(new Response(JSON.stringify({ type: "error", error }), { status: raw ? 429 : 400, headers: { "content-type": "application/json" } }))
                 }
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: wireModel(raw) })
                 m = raw
                 forcedGift = true
-              } else if (!alone && !edgeHeld() && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m)) {
+              } else if (!alone && !edgeHeld() && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m) && !giftSidelined(s, m)) {
                 // free first: the plain model spends the account's own live
                 // gift before it spends the coding plan, under the name the
                 // gift lists. The gift is the route's cache alone (a failed
@@ -2455,13 +2491,14 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
             const askedUrl = url
             const place = workPlace(h)
             const sid = sessionOf(h.get("x-session-id"), s.device)
-            // restModel is the gift saying this model has nothing left: the
-            // model rests a minute (blocked) and the route is dropped, so
-            // the requests behind it re-read the balance and go straight to
-            // the plan.
-            const restModel = () => {
-              for (const [k, until] of blocked) if (Date.now() >= until) blocked.delete(k)
-              blocked.set(s.key + "\0" + s.jwt + "\0" + asked.toLowerCase(), Date.now() + 60_000)
+            // restModel is free first's gift turning this model away: the
+            // model rests a minute and the route is dropped, so the requests
+            // behind it re-read the balance and go straight to the plan. A
+            // quota answer rests it in blocked, which a -Trial entry obeys
+            // too; any other refusal (spent false) in sidelined, which only
+            // free first reads.
+            const restModel = (spent) => {
+              rest(spent ? blocked : sidelined, s.key + "\0" + s.jwt + "\0" + asked.toLowerCase())
               routes.delete(s.key + "\0" + s.jwt)
             }
             // replayOnPlan is free first's answer to a gift that refused
@@ -2552,7 +2589,7 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 // a block page holds every request off zcode.z.ai a while
                 if (EDGE_PAGE.test(text)) edge.until = Date.now() + EDGE_HOLD
                 if (freeGift) {
-                  restModel()
+                  restModel(false)
                   return done(kept(await replayOnPlan()))
                 }
                 if (s.key && !forcedGift) routes.delete(s.key + "\0" + s.jwt)
@@ -2580,10 +2617,7 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 const text = await res.text()
                 const spent = spentUp(text, res.status)
                 if (!spent && res.status < 400) return done(kept(res, text))
-                if (spent) {
-                  for (const [k, until] of blocked) if (Date.now() >= until) blocked.delete(k)
-                  blocked.set(s.key + "\0" + s.jwt + "\0" + modelOf(orig).toLowerCase(), Date.now() + 60_000)
-                }
+                if (spent) rest(blocked, s.key + "\0" + s.jwt + "\0" + modelOf(orig).toLowerCase())
                 return spent && res.status < 400 ? kept(new Response(text, { status: 429, headers: res.headers })) : done(kept(res, text))
               }
             }
@@ -2603,7 +2637,7 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
                 const cap = busy(res.status, text)
                 const spent = !cap && spentUp(text, res.status)
                 if (spent) {
-                  restModel()
+                  restModel(true)
                   return done(kept(await replayOnPlan()))
                 }
                 if (res.status >= 400) {
@@ -2736,4 +2770,4 @@ export async function ZCodeAuthPlugin({ client }, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { edge, EDGE_HOLD, config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { edge, EDGE_HOLD, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
