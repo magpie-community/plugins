@@ -1,6 +1,12 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import { discover } from "../src/discovery.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const AI_ROOT = "https://api.ai.eu10.hana.ondemand.com"
 const GROUP = "default"
@@ -92,14 +98,14 @@ function wrap(value) {
   return value && value.body !== undefined ? value : ok(value)
 }
 
-function installFetch(t, handler) {
+function installFetch(handler) {
   const original = globalThis.fetch
   const calls = []
   globalThis.fetch = async (href, init) => {
     calls.push({ href, init })
     return handler(href, init, calls.length - 1)
   }
-  t.after(() => { globalThis.fetch = original })
+  cleanups.push(() => { globalThis.fetch = original })
   return calls
 }
 
@@ -107,9 +113,9 @@ function base(overrides = {}) {
   return { aiRoot: AI_ROOT, resourceGroup: GROUP, bearer: async () => "tok", ...overrides }
 }
 
-test("a complete row resolves to a concrete frozen registry entry with authorized config and catalog lookups", async (t) => {
+test("a complete row resolves to a concrete frozen registry entry with authorized config and catalog lookups", async () => {
   const cid = "c" + "0".repeat(15)
-  const calls = installFetch(t, router({
+  const calls = installFetch(router({
     deployments: { resources: [row("d02212989ca345a2", "gpt-6-astra", "2026-09-03", cid)] },
     configs: { [cid]: config("gpt-6-astra", "2026-09-03", cid) },
     catalog: catalogFor(["gpt-6-astra", "2026-09-03"]),
@@ -138,12 +144,12 @@ test("a complete row resolves to a concrete frozen registry entry with authorize
   }
 })
 
-test("after eligibility the lexicographically smallest id wins and an invalid lower id never does", async (t) => {
+test("after eligibility the lexicographically smallest id wins and an invalid lower id never does", async () => {
   const lower = "d0000000000000aa"
   const higher = "d0000000000000bb"
   const lowConfig = "c" + "1".repeat(15)
   const highConfig = "c" + "2".repeat(15)
-  installFetch(t, router({
+  installFetch(router({
     deployments: { resources: [
       row(higher, "gpt-6-astra", "2026-09-03", highConfig),
       row(lower, "gpt-6-astra", "2026-09-03", lowConfig),
@@ -161,7 +167,7 @@ test("after eligibility the lexicographically smallest id wins and an invalid lo
   assert.equal(registry["gpt-6-astra"].deploymentID, higher)
 })
 
-test("eligible GPT versions share the lowest-id selection without mixing version metadata", async (t) => {
+test("eligible GPT versions share the lowest-id selection without mixing version metadata", async () => {
   const model = "gpt-6.2-mini"
   const catalog = catalogFor([model, "2027-01-01"])
   catalog.resources[0].versions.push({ name: "2027-02-01", contextLength: 200000 })
@@ -169,7 +175,7 @@ test("eligible GPT versions share the lowest-id selection without mixing version
     row("deployment-b", model, "2027-01-01", "config-b"),
     row("deployment-a", model, "2027-02-01", "config-a"),
   ] }
-  installFetch(t, router({
+  installFetch(router({
     deployments,
     configs: {
       "config-a": config(model, "2027-02-01", "config-a"),
@@ -186,10 +192,10 @@ test("eligible GPT versions share the lowest-id selection without mixing version
   assert.deepEqual(await discover(base()), registry)
 })
 
-test("a later configuration failure rejects the whole result with no partial registry", async (t) => {
+test("a later configuration failure rejects the whole result with no partial registry", async () => {
   const first = "c" + "3".repeat(15)
   const second = "c" + "4".repeat(15)
-  installFetch(t, router({
+  installFetch(router({
     deployments: { resources: [
       row("d0000000000000aa", "gpt-6-astra", "2026-09-03", first),
       row("d0bdd146b3138906", "gpt-6.1-sol", "2026-09-29", second),
@@ -207,18 +213,18 @@ test("a later configuration failure rejects the whole result with no partial reg
   })
 })
 
-test("a structurally malformed catalog or configuration envelope rejects rather than returning empty", async (t) => {
+test("a structurally malformed catalog or configuration envelope rejects rather than returning empty", async () => {
   const cid = "c" + "5".repeat(15)
   const deployments = { resources: [row("d02212989ca345a2", "gpt-6-astra", "2026-09-03", cid)] }
 
-  installFetch(t, router({
+  installFetch(router({
     deployments,
     configs: { [cid]: config("gpt-6-astra", "2026-09-03", cid) },
     catalog: { count: 1, resources: {} },
   }))
   await assert.rejects(discover(base()), { code: "response" })
 
-  installFetch(t, router({
+  installFetch(router({
     deployments,
     configs: { [cid]: "not-an-object-envelope" },
     catalog: catalogFor(["gpt-6-astra", "2026-09-03"]),
@@ -226,7 +232,7 @@ test("a structurally malformed catalog or configuration envelope rejects rather 
   await assert.rejects(discover(base()), { code: "response" })
 })
 
-test("two resource groups with the same model stay isolated in tokens and selected ids", async (t) => {
+test("two resource groups with the same model stay isolated in tokens and selected ids", async () => {
   const cidA = "c" + "6".repeat(15)
   const cidB = "c" + "7".repeat(15)
   const idA = "d0000000000000a1"
@@ -243,7 +249,7 @@ test("two resource groups with the same model stay isolated in tokens and select
       catalog: catalogFor(["gpt-6-astra", "2026-09-03"]),
     }),
   }
-  const calls = installFetch(t, (href, init) => {
+  const calls = installFetch((href, init) => {
     const group = init.headers["AI-Resource-Group"]
     return routes[group](href, init)
   })
@@ -258,12 +264,12 @@ test("two resource groups with the same model stay isolated in tokens and select
   assert.deepEqual([...tokensFor("B")], ["Bearer tokB"])
 })
 
-test("two eligible duplicates in shuffled order resolve to the smaller deployment id", async (t) => {
+test("two eligible duplicates in shuffled order resolve to the smaller deployment id", async () => {
   const lower = "d0000000000000aa"
   const higher = "d0000000000000bb"
   const lowConfig = "c" + "a".repeat(15)
   const highConfig = "c" + "b".repeat(15)
-  installFetch(t, router({
+  installFetch(router({
     deployments: { resources: [
       row(higher, "gpt-6-astra", "2026-09-03", highConfig),
       row(lower, "gpt-6-astra", "2026-09-03", lowConfig),
@@ -281,15 +287,15 @@ test("two eligible duplicates in shuffled order resolve to the smaller deploymen
   assert.equal(registry["gpt-6-astra"].deploymentID, lower)
 })
 
-test("a bare {} configuration, malformed bindings, and a bad catalog count each reject instead of yielding an empty registry", async (t) => {
+test("a bare {} configuration, malformed bindings, and a bad catalog count each reject instead of yielding an empty registry", async () => {
   const cid = "c" + "d".repeat(15)
   const deployments = { resources: [row("d02212989ca345a2", "gpt-6-astra", "2026-09-03", cid)] }
   const goodCatalog = catalogFor(["gpt-6-astra", "2026-09-03"])
 
-  installFetch(t, router({ deployments, configs: { [cid]: {} }, catalog: goodCatalog }))
+  installFetch(router({ deployments, configs: { [cid]: {} }, catalog: goodCatalog }))
   await assert.rejects(discover(base()), { code: "response" })
 
-  installFetch(t, router({
+  installFetch(router({
     deployments,
     configs: { [cid]: {
       scenarioId: "foundation-models",
@@ -300,7 +306,7 @@ test("a bare {} configuration, malformed bindings, and a bad catalog count each 
   }))
   await assert.rejects(discover(base()), { code: "response" })
 
-  installFetch(t, router({
+  installFetch(router({
     deployments,
     configs: { [cid]: config("gpt-6-astra", "2026-09-03", cid) },
     catalog: { count: -1, resources: [] },
@@ -308,23 +314,23 @@ test("a bare {} configuration, malformed bindings, and a bad catalog count each 
   await assert.rejects(discover(base()), { code: "response" })
 })
 
-test("empty and stopped deployments yield an empty registry without any configuration or catalog lookup", async (t) => {
+test("empty and stopped deployments yield an empty registry without any configuration or catalog lookup", async () => {
   const stopped = { id: "d0000000000000cc", status: "STOPPED", deploymentUrl: urlFor("d0000000000000cc"), configurationId: "c" + "e".repeat(15) }
 
-  const emptyCalls = installFetch(t, router({ deployments: { resources: [] }, configs: {}, catalog: catalogFor() }))
+  const emptyCalls = installFetch(router({ deployments: { resources: [] }, configs: {}, catalog: catalogFor() }))
   assert.deepEqual(Object.keys(await discover(base())), [])
   assert.ok(emptyCalls.every(c => new URL(c.href).pathname === DEPLOYMENTS))
 
-  const stoppedCalls = installFetch(t, router({ deployments: { resources: [stopped] }, configs: {}, catalog: catalogFor() }))
+  const stoppedCalls = installFetch(router({ deployments: { resources: [stopped] }, configs: {}, catalog: catalogFor() }))
   assert.deepEqual(Object.keys(await discover(base())), [])
   assert.ok(stoppedCalls.every(c => new URL(c.href).pathname === DEPLOYMENTS))
 })
 
-test("caller cancellation during a configuration lookup rejects and a fresh call recovers", async (t) => {
+test("caller cancellation during a configuration lookup rejects and a fresh call recovers", async () => {
   const cid = "c" + "9".repeat(15)
   let reading
   const started = new Promise(r => { reading = r })
-  installFetch(t, (href) => {
+  installFetch((href) => {
     const url = new URL(href)
     if (url.pathname === DEPLOYMENTS) {
       return url.searchParams.get("$skip") === "0"
@@ -340,7 +346,7 @@ test("caller cancellation during a configuration lookup rejects and a fresh call
   controller.abort()
   await assert.rejects(pending, { code: "cancelled" })
 
-  installFetch(t, router({
+  installFetch(router({
     deployments: { resources: [row("d02212989ca345a2", "gpt-6-astra", "2026-09-03", cid)] },
     configs: { [cid]: config("gpt-6-astra", "2026-09-03", cid) },
     catalog: catalogFor(["gpt-6-astra", "2026-09-03"]),
@@ -348,14 +354,14 @@ test("caller cancellation during a configuration lookup rejects and a fresh call
   assert.deepEqual(Object.keys(await discover(base())), ["gpt-6-astra"])
 })
 
-test("a malformed deployment status rejects the whole discovery and never yields a partial registry", async (t) => {
+test("a malformed deployment status rejects the whole discovery and never yields a partial registry", async () => {
   const MISSING = Symbol("missing")
   const good = "c" + "f".repeat(15)
   for (const value of [MISSING, null, 7, ""]) {
     const bad = row("d0000000000000bb", "gpt-6.1-sol", "2026-09-29", "c" + "0".repeat(15))
     if (value === MISSING) delete bad.status
     else bad.status = value
-    installFetch(t, router({
+    installFetch(router({
       deployments: { resources: [
         row("d0000000000000aa", "gpt-6-astra", "2026-09-03", good),
         bad,
@@ -367,37 +373,37 @@ test("a malformed deployment status rejects the whole discovery and never yields
   }
 })
 
-test("a valid non-RUNNING status string is excluded without a lookup and never throws", async (t) => {
+test("a valid non-RUNNING status string is excluded without a lookup and never throws", async () => {
   for (const status of ["STOPPED", "PENDING", "UNKNOWN"]) {
     const only = row("d0000000000000cc", "gpt-6-astra", "2026-09-03", "c" + "e".repeat(15))
     only.status = status
-    const calls = installFetch(t, router({ deployments: { resources: [only] }, configs: {}, catalog: catalogFor() }))
+    const calls = installFetch(router({ deployments: { resources: [only] }, configs: {}, catalog: catalogFor() }))
     assert.deepEqual(Object.keys(await discover(base())), [])
     assert.ok(calls.every(c => new URL(c.href).pathname === DEPLOYMENTS))
   }
 })
 
-test("missing catalog streaming keeps the verified capability true while an explicit false hides the deployment", async (t) => {
+test("missing catalog streaming keeps the verified capability true while an explicit false hides the deployment", async () => {
   const cid = "c" + "3".repeat(15)
   const deployments = { resources: [row("d02212989ca345a2", "gpt-6-astra", "2026-09-03", cid)] }
   const configs = { [cid]: config("gpt-6-astra", "2026-09-03", cid) }
 
-  installFetch(t, router({ deployments, configs, catalog: catalogStreaming("gpt-6-astra", "2026-09-03", undefined) }))
+  installFetch(router({ deployments, configs, catalog: catalogStreaming("gpt-6-astra", "2026-09-03", undefined) }))
   const entry = (await discover(base()))["gpt-6-astra"]
   assert.equal(entry.capabilities.streaming, true)
   assert.ok(!("streamingSupported" in (entry.metadata ?? {})))
 
-  installFetch(t, router({ deployments, configs, catalog: catalogStreaming("gpt-6-astra", "2026-09-03", false) }))
+  installFetch(router({ deployments, configs, catalog: catalogStreaming("gpt-6-astra", "2026-09-03", false) }))
   assert.deepEqual(Object.keys(await discover(base())), [])
 })
 
-test("the deadline wins while a configuration lookup hangs and cancels its reader", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+test("the deadline wins while a configuration lookup hangs and cancels its reader", async () => {
+  jest.useFakeTimers()
   const cid = "c" + "8".repeat(15)
   let cancelled = false
   let reading
   const started = new Promise(r => { reading = r })
-  installFetch(t, (href) => {
+  installFetch((href) => {
     const url = new URL(href)
     if (url.pathname === DEPLOYMENTS) {
       return url.searchParams.get("$skip") === "0"
@@ -410,7 +416,7 @@ test("the deadline wins while a configuration lookup hangs and cancels its reade
 
   const pending = discover(base())
   await started
-  t.mock.timers.tick(TIMEOUT_MS)
+  jest.advanceTimersByTime(TIMEOUT_MS)
   await assert.rejects(pending, { code: "timeout" })
   assert.equal(cancelled, true)
 })

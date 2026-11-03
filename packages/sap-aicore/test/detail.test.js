@@ -1,6 +1,12 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import { discover } from "../src/discovery.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const AI_ROOT = "https://api.ai.eu10.hana.ondemand.com"
 const GROUP = "default"
@@ -74,14 +80,14 @@ function router(routes) {
   }
 }
 
-function installFetch(t, handler) {
+function installFetch(handler) {
   const original = globalThis.fetch
   const calls = []
   globalThis.fetch = async (href, init) => {
     calls.push({ href, init })
     return handler(href, init, calls.length - 1)
   }
-  t.after(() => { globalThis.fetch = original })
+  cleanups.push(() => { globalThis.fetch = original })
   return calls
 }
 
@@ -91,10 +97,10 @@ function base(overrides = {}) {
 
 const detailPaths = calls => calls.filter(c => new URL(c.href).pathname.startsWith(DETAIL)).map(c => new URL(c.href).pathname)
 
-test("a running row missing url and backend is repaired from matching detail into an eligible entry", async (t) => {
+test("a running row missing url and backend is repaired from matching detail into an eligible entry", async () => {
   const id = "d02212989ca345a2"
   const cid = "c" + "0".repeat(15)
-  const calls = installFetch(t, router({
+  const calls = installFetch(router({
     deployments: { resources: [{ id, status: "RUNNING", configurationId: cid }] },
     details: { [id]: { id, status: "RUNNING", deploymentUrl: urlFor(id), ...backend("gpt-6-astra", "2026-09-03") } },
     configs: { [cid]: config("gpt-6-astra", "2026-09-03", cid) },
@@ -112,10 +118,10 @@ test("a running row missing url and backend is repaired from matching detail int
   assert.deepEqual(detailPaths(calls), [DETAIL + id])
 })
 
-test("a running row missing only configurationId is repaired from detail", async (t) => {
+test("a running row missing only configurationId is repaired from detail", async () => {
   const id = "d0bdd146b3138906"
   const cid = "c" + "1".repeat(15)
-  installFetch(t, router({
+  installFetch(router({
     deployments: { resources: [{ id, status: "RUNNING", deploymentUrl: urlFor(id), ...backend("gpt-6.1-sol", "2026-09-29") }] },
     details: { [id]: { id, status: "RUNNING", configurationId: cid } },
     configs: { [cid]: config("gpt-6.1-sol", "2026-09-29", cid) },
@@ -129,13 +135,13 @@ test("a running row missing only configurationId is repaired from detail", async
   assert.equal(registry["gpt-6.1-sol"].configurationID, cid)
 })
 
-test("a lower id whose detail configurationId conflicts is hidden and never displaces the valid higher id", async (t) => {
+test("a lower id whose detail configurationId conflicts is hidden and never displaces the valid higher id", async () => {
   const lower = "d0000000000000aa"
   const higher = "d0000000000000bb"
   const lowCid = "c" + "2".repeat(15)
   const detailCid = "c" + "3".repeat(15)
   const highCid = "c" + "4".repeat(15)
-  const calls = installFetch(t, router({
+  const calls = installFetch(router({
     deployments: { resources: [
       { id: lower, status: "RUNNING", configurationId: lowCid, ...backend("gpt-6-astra", "2026-09-03") },
       { id: higher, status: "RUNNING", deploymentUrl: urlFor(higher), configurationId: highCid, ...backend("gpt-6-astra", "2026-09-03") },
@@ -155,25 +161,25 @@ test("a lower id whose detail configurationId conflicts is hidden and never disp
   assert.ok(calls.every(c => new URL(c.href).pathname !== CONFIG + lowCid))
 })
 
-test("a mismatched id, a malformed envelope, or an http failure on detail rejects the whole discovery", async (t) => {
+test("a mismatched id, a malformed envelope, or an http failure on detail rejects the whole discovery", async () => {
   const id = "d02212989ca345a2"
   const cid = "c" + "5".repeat(15)
   const incomplete = { resources: [{ id, status: "RUNNING", configurationId: cid, ...backend("gpt-6-astra", "2026-09-03") }] }
 
-  installFetch(t, router({ deployments: incomplete, details: { [id]: { id: "d0000000000000zz", status: "RUNNING", deploymentUrl: urlFor(id) } } }))
+  installFetch(router({ deployments: incomplete, details: { [id]: { id: "d0000000000000zz", status: "RUNNING", deploymentUrl: urlFor(id) } } }))
   await assert.rejects(discover(base()), { code: "response" })
 
-  installFetch(t, router({ deployments: incomplete, details: { [id]: { id, status: 7, deploymentUrl: urlFor(id) } } }))
+  installFetch(router({ deployments: incomplete, details: { [id]: { id, status: 7, deploymentUrl: urlFor(id) } } }))
   await assert.rejects(discover(base()), { code: "response" })
 
-  installFetch(t, router({ deployments: incomplete, details: { [id]: { ok: false, status: 500, redirected: false, url: "", body: body("{}") } } }))
+  installFetch(router({ deployments: incomplete, details: { [id]: { ok: false, status: 500, redirected: false, url: "", body: body("{}") } } }))
   await assert.rejects(discover(base()), { code: "response" })
 })
 
-test("a present but unsafe deployment url hides the row and issues zero detail request", async (t) => {
+test("a present but unsafe deployment url hides the row and issues zero detail request", async () => {
   const id = "d02212989ca345a2"
   const cid = "c" + "6".repeat(15)
-  const calls = installFetch(t, router({
+  const calls = installFetch(router({
     deployments: { resources: [{ id, status: "RUNNING", deploymentUrl: "https://evil.example.com/v2/inference/deployments/" + id, configurationId: cid, ...backend("gpt-6-astra", "2026-09-03") }] },
     details: { [id]: { id, status: "RUNNING", deploymentUrl: urlFor(id) } },
     configs: {},
@@ -184,10 +190,10 @@ test("a present but unsafe deployment url hides the row and issues zero detail r
   assert.deepEqual(detailPaths(calls), [])
 })
 
-test("a row whose backend stays absent after detail remains hidden without throwing", async (t) => {
+test("a row whose backend stays absent after detail remains hidden without throwing", async () => {
   const id = "d02212989ca345a2"
   const cid = "c" + "7".repeat(15)
-  const calls = installFetch(t, router({
+  const calls = installFetch(router({
     deployments: { resources: [{ id, status: "RUNNING", deploymentUrl: urlFor(id), configurationId: cid }] },
     details: { [id]: { id, status: "RUNNING" } },
     configs: {},
@@ -198,10 +204,10 @@ test("a row whose backend stays absent after detail remains hidden without throw
   assert.deepEqual(detailPaths(calls), [DETAIL + id])
 })
 
-test("a running row with a malformed list backend container is hidden and never repaired from detail", async (t) => {
+test("a running row with a malformed list backend container is hidden and never repaired from detail", async () => {
   const id = "d02212989ca345a2"
   const cid = "c" + "9".repeat(15)
-  const calls = installFetch(t, router({
+  const calls = installFetch(router({
     deployments: { resources: [{
       id, status: "RUNNING", deploymentUrl: urlFor(id), configurationId: cid,
       details: { resources: { backendDetails: { model: { name: 7, version: "2026-09-03" } } } },
@@ -215,7 +221,7 @@ test("a running row with a malformed list backend container is hidden and never 
   assert.deepEqual(detailPaths(calls), [])
 })
 
-test("a partial list model missing version is filled from detail, while a conflicting version hides the row", async (t) => {
+test("a partial list model missing version is filled from detail, while a conflicting version hides the row", async () => {
   const id = "d0bdd146b3138906"
   const cid = "c" + "a".repeat(15)
   const partialList = {
@@ -223,7 +229,7 @@ test("a partial list model missing version is filled from detail, while a confli
     details: { resources: { backendDetails: { model: { name: "gpt-6.1-sol" } } } },
   }
 
-  installFetch(t, router({
+  installFetch(router({
     deployments: { resources: [{ ...partialList }] },
     details: { [id]: { id, status: "RUNNING", configurationId: cid, ...backend("gpt-6.1-sol", "2026-09-29") } },
     configs: { [cid]: config("gpt-6.1-sol", "2026-09-29", cid) },
@@ -233,7 +239,7 @@ test("a partial list model missing version is filled from detail, while a confli
   assert.deepEqual(Object.keys(registry), ["gpt-6.1-sol"])
   assert.equal(registry["gpt-6.1-sol"].activeVersion, "2026-09-29")
 
-  installFetch(t, router({
+  installFetch(router({
     deployments: { resources: [{ ...partialList, configurationId: undefined, details: { resources: { backendDetails: { model: { name: "gpt-6.1-sol", version: "2026-01-01" } } } } }] },
     details: { [id]: { id, status: "RUNNING", configurationId: cid, ...backend("gpt-6.1-sol", "2026-09-29") } },
     configs: { [cid]: config("gpt-6.1-sol", "2026-09-29", cid) },
@@ -242,18 +248,18 @@ test("a partial list model missing version is filled from detail, while a confli
   assert.deepEqual(Object.keys(await discover(base())), [])
 })
 
-test("a malformed detail backend rejects the whole refresh while a well-typed empty detail only hides the row", async (t) => {
+test("a malformed detail backend rejects the whole refresh while a well-typed empty detail only hides the row", async () => {
   const id = "d02212989ca345a2"
   const cid = "c" + "b".repeat(15)
   const incomplete = { resources: [{ id, status: "RUNNING", deploymentUrl: urlFor(id), configurationId: cid }] }
 
-  installFetch(t, router({
+  installFetch(router({
     deployments: incomplete,
     details: { [id]: { id, status: "RUNNING", details: { resources: { backendDetails: { model: { name: "gpt-6-astra", version: 9 } } } } } },
   }))
   await assert.rejects(discover(base()), { code: "response" })
 
-  const calls = installFetch(t, router({
+  const calls = installFetch(router({
     deployments: incomplete,
     details: { [id]: { id, status: "RUNNING", details: { resources: {} } } },
     configs: {},
@@ -263,12 +269,12 @@ test("a malformed detail backend rejects the whole refresh while a well-typed em
   assert.deepEqual(detailPaths(calls), [DETAIL + id])
 })
 
-test("an earlier eligible row does not survive a malformed detail on a later row", async (t) => {
+test("an earlier eligible row does not survive a malformed detail on a later row", async () => {
   const good = "d0000000000000aa"
   const later = "d0000000000000bb"
   const goodCid = "c" + "c".repeat(15)
   const laterCid = "c" + "d".repeat(15)
-  installFetch(t, router({
+  installFetch(router({
     deployments: { resources: [
       { id: good, status: "RUNNING", deploymentUrl: urlFor(good), configurationId: goodCid, ...backend("gpt-6-astra", "2026-09-03") },
       { id: later, status: "RUNNING", deploymentUrl: urlFor(later), configurationId: laterCid },
@@ -281,14 +287,14 @@ test("an earlier eligible row does not survive a malformed detail on a later row
   await assert.rejects(discover(base()), { code: "response" })
 })
 
-test("the deadline still bounds a hanging detail lookup and cancels its reader", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] })
+test("the deadline still bounds a hanging detail lookup and cancels its reader", async () => {
+  jest.useFakeTimers()
   const id = "d02212989ca345a2"
   const cid = "c" + "8".repeat(15)
   let cancelled = false
   let reading
   const started = new Promise(r => { reading = r })
-  installFetch(t, (href) => {
+  installFetch((href) => {
     const url = new URL(href)
     if (url.pathname === LIST) {
       return url.searchParams.get("$skip") === "0"
@@ -301,7 +307,7 @@ test("the deadline still bounds a hanging detail lookup and cancels its reader",
 
   const pending = discover(base())
   await started
-  t.mock.timers.tick(TIMEOUT_MS)
+  jest.advanceTimersByTime(TIMEOUT_MS)
   await assert.rejects(pending, { code: "timeout" })
   assert.equal(cancelled, true)
 })

@@ -1,6 +1,12 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import { projectModels } from "../src/discovery.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 function entry(modelName, extra = {}) {
   return Object.freeze({

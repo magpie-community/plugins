@@ -1,5 +1,4 @@
 [test]
-preload = ["./packages/sap-aicore/test-runtime.mjs"]
 # packages/agent-console has its own vitest suite with npm dependencies (npm ci
 # in that folder, then npm test); the root `bun test` doesn't install them
 pathIgnorePatterns = ["packages/agent-console/test/**", "packages/agent-console/web/**"]

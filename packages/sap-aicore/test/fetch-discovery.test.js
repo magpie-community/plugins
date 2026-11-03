@@ -1,9 +1,15 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { SAPAICorePlugin } from "../src/index.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const CREDS = {
   authUrl: "https://synthetic.authentication.eu10.hana.ondemand.com",
@@ -147,9 +153,9 @@ async function sign(plugin, mock, credentialFile) {
 
 const cid = n => "c" + String(n).repeat(15).slice(0, 15)
 
-test("routing rejects mismatched native bodies before protocol validation and recognizes undeployed Claude baselines", async t => {
+test("routing rejects mismatched native bodies before protocol validation and recognizes undeployed Claude baselines", async () => {
   const dir = tmpDir()
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   const plugin = await SAPAICorePlugin()
   const good = router(astraRoutes(cid(3)))
   let inferenceCalls = 0

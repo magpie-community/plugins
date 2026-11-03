@@ -1,9 +1,15 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { SAPAICorePlugin } from "../src/index.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const ROOT = "https://api.ai.eu10.hana.ondemand.com"
 const urlFor = id => ROOT + "/v2/inference/deployments/" + id
@@ -44,9 +50,9 @@ function backend(creds, group) {
   return { json, deployments, configs, catalog }
 }
 
-function install(t, counters) {
+function install(counters) {
   const original = globalThis.fetch
-  t.after(() => { globalThis.fetch = original })
+  cleanups.push(() => { globalThis.fetch = original })
   const inference = []
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
@@ -91,11 +97,11 @@ async function account(plugin, credentialFile) {
   return { auth, loader }
 }
 
-test("two accounts expose the same canonical Claude ID yet dispatch never crosses identity, group or protocol", async t => {
+test("two accounts expose the same canonical Claude ID yet dispatch never crosses identity, group or protocol", async () => {
   const counters = { oauth: {} }
-  const inference = install(t, counters)
+  const inference = install(counters)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "magpie-accounts-"))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   const fileA = writeCreds(dir, "a.json", "group-a")
   const fileB = writeCreds(dir, "b.json", "group-b")
 
@@ -126,11 +132,11 @@ test("two accounts expose the same canonical Claude ID yet dispatch never crosse
   assert.equal(b1.auth, "Bearer token-client-b")
 })
 
-test("GPT and Claude share one account-scoped token without extra OAuth exchanges or crossing accounts", async t => {
+test("GPT and Claude share one account-scoped token without extra OAuth exchanges or crossing accounts", async () => {
   const counters = { oauth: {} }
-  const inference = install(t, counters)
+  const inference = install(counters)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "magpie-accounts-tok-"))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   const plugin = await SAPAICorePlugin()
   const a = await account(plugin, writeCreds(dir, "a.json", "group-a"))
 
@@ -142,11 +148,11 @@ test("GPT and Claude share one account-scoped token without extra OAuth exchange
   assert.deepEqual(inference.map(c => c.group), ["group-a", "group-a"])
 })
 
-test("after a restart a fresh plugin rebuilds discovery and dispatch from the credential file alone", async t => {
+test("after a restart a fresh plugin rebuilds discovery and dispatch from the credential file alone", async () => {
   const counters = { oauth: {} }
-  const inference = install(t, counters)
+  const inference = install(counters)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "magpie-accounts-restart-"))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   const file = writeCreds(dir, "b.json", "group-b")
 
   // First process: sign in and dispatch.

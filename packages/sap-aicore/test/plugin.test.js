@@ -1,10 +1,16 @@
-import { describe, it, before, after, beforeEach, afterEach } from "node:test"
+import { describe, it, beforeAll, afterAll, beforeEach, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { createHash } from "node:crypto"
 import { SAPAICorePlugin } from "../src/index.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 function pathKey(normalizedPath) {
   const digest = createHash("sha256").update("sap-aicore:path:" + normalizedPath).digest("hex")
@@ -109,8 +115,8 @@ describe("configuration", () => {
 describe("authorize input validation", () => {
   let dir
 
-  before(() => { dir = makeTmpDir() })
-  after(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+  beforeAll(() => { dir = makeTmpDir() })
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
   it("rejects missing credentialFile", async () => {
     const plugin = await SAPAICorePlugin()
@@ -174,8 +180,8 @@ describe("authorize input validation", () => {
 describe("credential file validation", () => {
   let dir
 
-  before(() => { dir = makeTmpDir() })
-  after(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+  beforeAll(() => { dir = makeTmpDir() })
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
   it("rejects nonexistent file", async () => {
     const plugin = await SAPAICorePlugin()
@@ -255,8 +261,8 @@ describe("credential file validation", () => {
 describe("URL validation", () => {
   let dir
 
-  before(() => { dir = makeTmpDir() })
-  after(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+  beforeAll(() => { dir = makeTmpDir() })
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
   async function tryUrl(authUrl, baseUrl) {
     const plugin = await SAPAICorePlugin()
@@ -333,8 +339,8 @@ describe("URL validation", () => {
 describe("OAuth request contract", () => {
   let dir
 
-  before(() => { dir = makeTmpDir() })
-  after(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+  beforeAll(() => { dir = makeTmpDir() })
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
   it("POSTs to normalized OAuth token URL", async () => {
     const plugin = await SAPAICorePlugin()
@@ -466,8 +472,8 @@ describe("OAuth request contract", () => {
 describe("authorize success result", () => {
   let dir
 
-  before(() => { dir = makeTmpDir() })
-  after(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+  beforeAll(() => { dir = makeTmpDir() })
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
   it("returns type success with key and metadata on valid exchange", async () => {
     const plugin = await SAPAICorePlugin()
@@ -512,8 +518,8 @@ describe("authorize success result", () => {
 describe("provider.models", () => {
   let dir
 
-  before(() => { dir = makeTmpDir() })
-  after(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+  beforeAll(() => { dir = makeTmpDir() })
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
   it("returns empty object without auth (no file read or network)", async () => {
     const plugin = await SAPAICorePlugin()
@@ -548,8 +554,8 @@ describe("provider.models", () => {
 describe("same-path reauthorization", () => {
   let dir
 
-  before(() => { dir = makeTmpDir() })
-  after(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+  beforeAll(() => { dir = makeTmpDir() })
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
   it("sequential authorizations to same path return same key", async () => {
     const plugin = await SAPAICorePlugin()
@@ -685,8 +691,8 @@ describe("token renewal thresholds", () => {
 describe("credential file caching", () => {
   let dir
 
-  before(() => { dir = makeTmpDir() })
-  after(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+  beforeAll(() => { dir = makeTmpDir() })
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
   it("does not re-read credential file after initialization", async () => {
     const plugin = await SAPAICorePlugin()
@@ -727,8 +733,8 @@ describe("credential file caching", () => {
 describe("regression: malformed and edge responses", () => {
   let dir
 
-  before(() => { dir = makeTmpDir() })
-  after(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+  beforeAll(() => { dir = makeTmpDir() })
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
   it("rejects token_type that is a number", async () => {
     const plugin = await SAPAICorePlugin()
@@ -821,8 +827,8 @@ describe("regression: malformed and edge responses", () => {
 describe("security boundaries", () => {
   let dir
 
-  before(() => { dir = makeTmpDir() })
-  after(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+  beforeAll(() => { dir = makeTmpDir() })
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
   it("authorize result never contains credentials or token text", async () => {
     const plugin = await SAPAICorePlugin()

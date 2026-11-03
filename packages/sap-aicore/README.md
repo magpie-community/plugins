@@ -10,6 +10,10 @@ Claude discovery is contract-based, not a fixed name list: any running `foundati
 
 All support text replies, streaming, and agent-executed function tools; Claude also supports native signed thinking. GPT routes through OpenAI Responses, Claude through native Anthropic Messages on SAP's Bedrock invoke endpoints — both under the same `sap-aicore` provider and account.
 
+A GPT-5.x or lower-major deployment you already run stays in SAP AI Core but is not discovered or selectable through this plugin; the plugin never upgrades, migrates, or deletes it. Newer eligible GPT (major version 6 or higher) and compatible Claude deployments appear automatically, with no plugin release.
+
+This adapter accepts text and agent-executed tool calls only. It does not accept image blocks or pasted screenshots, even though the underlying Bedrock Claude models can: image input is rejected with an explicit unsupported-content error (`attachment` is intentionally off), never silently dropped.
+
 
 ## Before you start
 
@@ -125,10 +129,24 @@ SAP rate limits are tenant-wide and reset per minute. A 429 response can mean th
 
 See [troubleshooting](docs/troubleshooting.md) for account selection, errors, and gateway constraints.
 
+## Live run record
+
+Authorized, credential-redacted live verification on 2026-11-03 (plugin `0.2.3`, Node `v26.13.0`), dispatched through the plugin's own `auth.loader().fetch` to real SAP AI Core in an existing resource group with isolated temporary stores. This exercises the plugin-to-SAP dispatch path, not the installed Magpie gateway process; the gateway journey is recorded separately in the [source project](https://github.com/caikn/magpie-plugin-aicore/issues/14). No tokens, client secrets, resource-group names, or deployment URLs are shown; eight synthetic generations were used.
+
+| Scenario | `gpt-6-astra` (Responses) | `claude-opus-4-8` (Messages) |
+|---|---|---|
+| Plain text | HTTP 200, `completed`, usage 14→8 | HTTP 200, `end_turn`, usage 29→17 |
+| Streamed | HTTP 200, incremental `output_text` deltas, `response.completed` | HTTP 200, incremental deltas, `stop_reason: end_turn`, `message_stop` |
+| Forced tool call | `function_call verify_value {"value":7}` | `tool_use verify_value {"value":7}` |
+| Tool-result continuation | HTTP 200, `completed`, "The result is 14." | HTTP 200, `end_turn`, "…returned **14** (7 doubled)." |
+
+Each request carried the account's SAP Bearer and resource-group header injected by the loader; the caller's gateway key was never forwarded. This single dated run is not a quota, latency, or billing guarantee, and does not cover token expiry/renewal, 429/quota exhaustion, reauthorization races, or reasoning-signature replay.
+
+
 ## Limitations and security
 
-- Only running deployments are exposed. GPT requires major version 6 or higher, not a fixed model/version list; Claude is accepted by the documented SAP Bedrock Messages contract (`foundation-models` / `aws-bedrock`).
-- Text and agent-executed function tools only (Claude also: native signed thinking and `cache_control`); no images, audio, video, hosted tools, or other multimodal input.
+- Only running deployments are exposed. GPT requires major version 6 or higher, not a fixed model/version list; Claude is accepted by the documented SAP Bedrock Messages contract (`foundation-models` / `aws-bedrock`). Existing GPT-5.x and lower-major deployments remain in SAP but are never listed, upgraded, or deleted.
+- Text and agent-executed function tools only (Claude also: native signed thinking and `cache_control`); no images or pasted screenshots, audio, video, hosted tools, or other multimodal input. Image input is rejected with an explicit error rather than silently omitted.
 - No deployment management, server-side conversation storage, or automatic model substitution.
 - Capability status differs by evidence: the GPT pair and the two Claude baselines are directly verified; other eligible models' live inference, optional reasoning controls, and context/output limits are **not** verified until exercised against a real deployment. Being listed never asserts completed live acceptance.
 - Keep credentials outside the repository. Never use a SAP client secret or access token as the agent's gateway key.

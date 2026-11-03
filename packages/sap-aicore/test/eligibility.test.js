@@ -1,6 +1,12 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import { resolveDeployment } from "../src/discovery.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const AI_ROOT = "https://api.ai.eu10.hana.ondemand.com"
 const ASTRA_ID = "d02212989ca345a2"

@@ -1,10 +1,22 @@
-import { it } from "node:test"
+import { it, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import { mkdtemp, writeFile, rm } from "node:fs/promises"
+import { existsSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { SAPAICorePlugin } from "../src/index.js"
+
+// Resolve mkfifo from absolute candidates at load, independent of process.env.PATH:
+// under the monorepo's shared bun-test process a sibling package may narrow PATH,
+// and no preload freezes it anymore.
+const MKFIFO = ["/usr/bin/mkfifo", "/bin/mkfifo", "/usr/local/bin/mkfifo"].find(existsSync)
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const creds = {
   authUrl: "https://synthetic.authentication.eu10.hana.ondemand.com",
@@ -169,9 +181,9 @@ it("token deadline bounds fetch that ignores abort", () => sandbox(async ({ file
   assert.equal(upstream.aborted, true)
 }))
 
-it("FIFO credentials reject without waiting for a writer", { skip: process.platform === "win32" }, () => sandbox(async ({ dir }) => {
+it.skipIf(process.platform === "win32" || !MKFIFO)("FIFO credentials reject without waiting for a writer", () => sandbox(async ({ dir }) => {
   const file = path.join(dir, "fifo")
-  execFileSync("mkfifo", [file])
+  execFileSync(MKFIFO, [file])
   const plugin = await SAPAICorePlugin()
   const result = await plugin.auth.methods[0].authorize({ credentialFile: file })
   assert.equal(result.type, "failed")

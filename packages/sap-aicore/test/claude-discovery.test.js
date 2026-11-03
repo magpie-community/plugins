@@ -1,7 +1,13 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import { resolveDeployment, projectModels, discover } from "../src/discovery.js"
 import { claudeFamily, resolveCanonicalClaude } from "../src/identity.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const AI_ROOT = "https://api.ai.eu10.hana.ondemand.com"
 const GROUP = "default"
@@ -270,11 +276,11 @@ test("projectModels publishes Claude under @ai-sdk/anthropic and keeps image/att
 
 // --- discover(): both families, collisions, duplicates ---------------------
 
-function installFetch(t, handler) {
+function installFetch(handler) {
   const original = globalThis.fetch
   const calls = []
   globalThis.fetch = async (href, init) => { calls.push({ href: String(href), init }); return handler(String(href), init) }
-  t.after(() => { globalThis.fetch = original })
+  cleanups.push(() => { globalThis.fetch = original })
   return calls
 }
 
@@ -302,8 +308,8 @@ function mixedRouter({ deployments, configs, catalog }) {
 
 const base = { aiRoot: AI_ROOT, resourceGroup: GROUP, bearer: async () => "tok" }
 
-test("discovery lists GPT and Claude together, each under its own protocol identity", async t => {
-  installFetch(t, mixedRouter({
+test("discovery lists GPT and Claude together, each under its own protocol identity", async () => {
+  installFetch(mixedRouter({
     deployments: [
       { id: "d02212989ca345a2", status: "RUNNING", deploymentUrl: urlFor("d02212989ca345a2"), configurationId: "cfg-gpt", details: { resources: { backendDetails: { model: { name: "gpt-6-astra", version: "2026-09-03" } } } } },
       bedrockDeployment(OPUS_ID, OPUS_SAP, "1", "cfg-opus"),
@@ -329,8 +335,8 @@ test("discovery lists GPT and Claude together, each under its own protocol ident
   assert.equal(models["gpt-6-astra"].api.npm, "@ai-sdk/openai")
 })
 
-test("distinct Claude identities colliding only via SAP-format fallback fail discovery with a conflict", async t => {
-  installFetch(t, mixedRouter({
+test("distinct Claude identities colliding only via SAP-format fallback fail discovery with a conflict", async () => {
+  installFetch(mixedRouter({
     deployments: [
       bedrockDeployment(OPUS_ID, OPUS_SAP, "1", "cfg-a"),
       bedrockDeployment(SONNET_ID, "anthropic--claude-opus-4.8", "1", "cfg-b"),
@@ -347,9 +353,9 @@ test("distinct Claude identities colliding only via SAP-format fallback fail dis
   await assert.rejects(discover(base), e => e.code === "discovery-conflict" || e.code === "conflict")
 })
 
-test("distinct SAP identities with authoritative, equivalent display metadata dedup to the lowest ID", async t => {
+test("distinct SAP identities with authoritative, equivalent display metadata dedup to the lowest ID", async () => {
   const lowId = "d0000000000000b2"
-  installFetch(t, mixedRouter({
+  installFetch(mixedRouter({
     deployments: [
       bedrockDeployment(OPUS_ID, OPUS_SAP, "1", "cfg-a"),
       bedrockDeployment(lowId, "anthropic--claude-opus-4.8", "1", "cfg-b"),
@@ -369,13 +375,13 @@ test("distinct SAP identities with authoritative, equivalent display metadata de
   assert.equal(registry["claude-opus-4-8"].modelName, "anthropic--claude-opus-4.8")
 })
 
-test("authoritative equivalent names still conflict when version or capability metadata differs", async t => {
+test("authoritative equivalent names still conflict when version or capability metadata differs", async () => {
   for (const difference of ["version", "streaming"]) {
     const other = "opaque-opus-key"
     const version = difference === "version" ? "2" : "1"
     const otherCatalog = bedrockCatalog(other, version, { displayName: "Claude Opus 4.8" }).resources[0]
     if (difference === "streaming") otherCatalog.versions[0].streamingSupported = false
-    installFetch(t, mixedRouter({
+    installFetch(mixedRouter({
       deployments: [bedrockDeployment(OPUS_ID, OPUS_SAP, "1", "cfg-a"), bedrockDeployment(SONNET_ID, other, version, "cfg-b")],
       configs: { "cfg-a": bedrockConfig(OPUS_SAP, "1", "cfg-a"), "cfg-b": bedrockConfig(other, version, "cfg-b") },
       catalog: { count: 2, resources: [bedrockCatalog(OPUS_SAP, "1", { displayName: "Claude 4.8 Opus" }).resources[0], otherCatalog] },
@@ -384,9 +390,9 @@ test("authoritative equivalent names still conflict when version or capability m
   }
 })
 
-test("duplicate deployments of the same Claude model/version select deterministically by lowest ID", async t => {
+test("duplicate deployments of the same Claude model/version select deterministically by lowest ID", async () => {
   const lowId = "d0000000000000a1"
-  installFetch(t, mixedRouter({
+  installFetch(mixedRouter({
     deployments: [
       bedrockDeployment(OPUS_ID, OPUS_SAP, "1", "cfg-opus"),
       bedrockDeployment(lowId, OPUS_SAP, "1", "cfg-opus"),

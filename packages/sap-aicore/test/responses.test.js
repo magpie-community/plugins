@@ -1,9 +1,15 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { SAPAICorePlugin } from "../src/index.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const ROOT = "https://api.ai.eu10.hana.ondemand.com"
 const CREDS = {
@@ -27,13 +33,13 @@ const COMPLETED = {
   error: null, incomplete_details: null,
 }
 
-async function fixture(t, inference = () => new Response(JSON.stringify(COMPLETED))) {
+async function fixture(inference = () => new Response(JSON.stringify(COMPLETED))) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "magpie-responses-"))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   const credentialFile = path.join(dir, "credentials.json")
   fs.writeFileSync(credentialFile, JSON.stringify(CREDS), { mode: 0o600 })
   const original = globalThis.fetch
-  t.after(() => { globalThis.fetch = original })
+  cleanups.push(() => { globalThis.fetch = original })
   const sent = []
   const state = { token: TOKEN, oauth: null, discovery: null, deployment: DEPLOYMENT, activeVersion: VERSION }
   globalThis.fetch = async (input, init) => {
@@ -165,8 +171,8 @@ function streamToolUpstream(input, init) {
   ])
 }
 
-test("whole native Responses preserves output identity, usage, status and verified parameters", async t => {
-  const { loader, request, sent } = await fixture(t)
+test("whole native Responses preserves output identity, usage, status and verified parameters", async () => {
+  const { loader, request, sent } = await fixture()
   const input = [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
   const body = { model: MODEL, input, instructions: "Be concise", max_output_tokens: 1024, reasoning: { effort: "low" }, include: ["reasoning.encrypted_content"] }
   const response = await request(body, { headers: { authorization: "Bearer sdk-secret", "api-key": "sdk-key", "x-magpie-work-dir": "/private", "x-magpie-sign-in": "expired", "ai-resource-group": "wrong-group" } })
@@ -186,8 +192,8 @@ test("whole native Responses preserves output identity, usage, status and verifi
   assert.ok([...headers.keys()].every(key => !key.startsWith("x-magpie-")))
 })
 
-test("stateless continuation keeps native call identity and encrypted reasoning without replay", async t => {
-  const { request, sent } = await fixture(t, wholeToolUpstream)
+test("stateless continuation keeps native call identity and encrypted reasoning without replay", async () => {
+  const { request, sent } = await fixture(wholeToolUpstream)
   // Turn 1: the upstream forces the function call; the plugin relays it and
   // never runs the tool. Omitted include defaults to encrypted-reasoning continuity.
   const r1 = await request({ model: MODEL, input: [USER], tools: [STRICT_TOOL], tool_choice: FORCE })
@@ -214,8 +220,8 @@ test("stateless continuation keeps native call identity and encrypted reasoning 
   assert.equal(sent.length, 2, "one dispatch per turn; no generation is replayed")
 })
 
-test("a streamed forced function call and result round trip to an agent-derived final reply", async t => {
-  const { request, sent } = await fixture(t, streamToolUpstream)
+test("a streamed forced function call and result round trip to an agent-derived final reply", async () => {
+  const { request, sent } = await fixture(streamToolUpstream)
   const r1 = await request({ model: MODEL, input: [USER], tools: [STRICT_TOOL], tool_choice: FORCE, stream: true })
   assert.equal(r1.headers.get("content-type"), "text/event-stream")
   const events1 = parseEvents(await r1.text())
@@ -234,8 +240,8 @@ test("a streamed forced function call and result round trip to an agent-derived 
   assert.equal(sent.length, 2)
 })
 
-test("Pi-style high reasoning and cache affinity support streamed stateless tool turns", async t => {
-  const { request } = await fixture(t, streamToolUpstream)
+test("Pi-style high reasoning and cache affinity support streamed stateless tool turns", async () => {
+  const { request } = await fixture(streamToolUpstream)
   const fields = { reasoning: { effort: "high", summary: "auto" }, prompt_cache_key: "pi-session-1", stream: true }
   const firstResponse = await request({ model: MODEL, input: [USER], tools: [STRICT_TOOL], tool_choice: FORCE, ...fields })
   assert.equal(firstResponse.status, 200)
@@ -249,8 +255,8 @@ test("Pi-style high reasoning and cache affinity support streamed stateless tool
   assert.equal(final.output.at(-1).content[0].text, "AICORE_RESULT_14")
 })
 
-test("continuation rejections surface once without stripping history or leaking secrets", async t => {
-  const { request, sent } = await fixture(t, wholeToolUpstream)
+test("continuation rejections surface once without stripping history or leaking secrets", async () => {
+  const { request, sent } = await fixture(wholeToolUpstream)
   // Wrong call_id: the native upstream rejects; the plugin surfaces it once and
   // never strips the history nor replays the request.
   const wrong = continueTurn(CALL)
@@ -272,14 +278,14 @@ test("continuation rejections surface once without stripping history or leaking 
   for (const secret of [TOKEN, CREDS.clientSecret]) assert.ok(!JSON.stringify(body2).includes(secret), secret)
 })
 
-test("omitted include defaults to encrypted reasoning while an explicit empty include keeps it absent", async t => {
+test("omitted include defaults to encrypted reasoning while an explicit empty include keeps it absent", async () => {
   const includeAware = (input, init) => {
     const body = JSON.parse(init.body)
     const wants = Array.isArray(body.include) && body.include.includes("reasoning.encrypted_content")
     const reasoning = wants ? { id: "rs_x", type: "reasoning", summary: [], encrypted_content: "sealed-x" } : { id: "rs_x", type: "reasoning", summary: [] }
     return jsonResponse({ ...COMPLETED, output: [reasoning, COMPLETED.output[1]] })
   }
-  const { request, sent } = await fixture(t, includeAware)
+  const { request, sent } = await fixture(includeAware)
   // Omitted include + function tools -> default requests encrypted reasoning.
   const out1 = (await (await request({ model: MODEL, input: "hi", tools: [STRICT_TOOL] })).json()).output.find(i => i.type === "reasoning")
   assert.equal(out1.encrypted_content, "sealed-x")
@@ -291,8 +297,8 @@ test("omitted include defaults to encrypted reasoning while an explicit empty in
   assert.equal(sent.length, 2)
 })
 
-test("malformed and unsupported function tools are rejected before dispatch", async t => {
-  const { request, sent } = await fixture(t)
+test("malformed and unsupported function tools are rejected before dispatch", async () => {
+  const { request, sent } = await fixture()
   const cases = [
     { tools: "not-an-array" },
     { tools: [{ type: "function" }] },
@@ -310,8 +316,8 @@ test("malformed and unsupported function tools are rejected before dispatch", as
   assert.equal(sent.length, 0)
 })
 
-test("unsupported stateful, multimodal and unverified parameters never reach SAP", async t => {
-  const { request, sent } = await fixture(t)
+test("unsupported stateful, multimodal and unverified parameters never reach SAP", async () => {
+  const { request, sent } = await fixture()
   const cases = [
     { store: true }, { store: null }, { background: true }, { previous_response_id: null }, { conversation: "conv_1" },
     { messages: [] }, { max_tokens: 10 }, { reasoning_effort: "low" }, { stream: "true" }, { stream: null },
@@ -333,10 +339,10 @@ test("unsupported stateful, multimodal and unverified parameters never reach SAP
   assert.equal(sent.length, 0)
 })
 
-test("upstream 429 and temporary failures preserve native code, seconds and redacted details without replay", async t => {
+test("upstream 429 and temporary failures preserve native code, seconds and redacted details without replay", async () => {
   let status = 429
   let reason = "quota_exceeded"
-  const { request, sent } = await fixture(t, () => new Response(JSON.stringify({ error: { code: reason, type: "upstream_error", param: "input", message: "Failure " + TOKEN + " " + CREDS.clientId + " " + CREDS.clientSecret + " sdk-secret" } }), { status, headers: { "retry-after": "17", "x-magpie-sign-in": "expired", "x-api-key": TOKEN, location: "https://example.invalid/" } }))
+  const { request, sent } = await fixture(() => new Response(JSON.stringify({ error: { code: reason, type: "upstream_error", param: "input", message: "Failure " + TOKEN + " " + CREDS.clientId + " " + CREDS.clientSecret + " sdk-secret" } }), { status, headers: { "retry-after": "17", "x-magpie-sign-in": "expired", "x-api-key": TOKEN, location: "https://example.invalid/" } }))
   for (const [code, category] of [[429, "quota_exceeded"], [429, "backend_capacity"], [503, "temporarily_unavailable"]]) {
     status = code
     reason = category
@@ -355,9 +361,9 @@ test("upstream 429 and temporary failures preserve native code, seconds and reda
   assert.equal(sent.length, 3)
 })
 
-test("verified Bearer rejection keeps sign-in and preserves failure; a later operation reacquires without replay", async t => {
+test("verified Bearer rejection keeps sign-in and preserves failure; a later operation reacquires without replay", async () => {
   let refused = true
-  const { request, sent, state } = await fixture(t, () => refused
+  const { request, sent, state } = await fixture(() => refused
     ? new Response(JSON.stringify({ error: { code: "invalid_token", message: "Rejected " + TOKEN } }), { status: 401, headers: { "www-authenticate": 'Bearer error="invalid_token"', "x-magpie-sign-in": "expired" } })
     : new Response(JSON.stringify(COMPLETED)))
   const first = await request()
@@ -375,9 +381,9 @@ test("verified Bearer rejection keeps sign-in and preserves failure; a later ope
   assert.equal(sent.length, 2, "a second independent operation is not a replay")
 })
 
-test("malformed successful replies cannot masquerade as completed native Responses", async t => {
+test("malformed successful replies cannot masquerade as completed native Responses", async () => {
   let payload = null
-  const { request } = await fixture(t, () => new Response(JSON.stringify(payload)))
+  const { request } = await fixture(() => new Response(JSON.stringify(payload)))
   for (const invalid of [null, [], { object: "chat.completion", choices: [] }, { id: "resp_a", object: "response", status: "in_progress", output: [] }, { id: "resp_a", object: "response", status: "completed", output: {} }]) {
     payload = invalid
     const response = await request()
@@ -386,12 +392,12 @@ test("malformed successful replies cannot masquerade as completed native Respons
   }
 })
 
-test("cancellation aborts a pending inference and cancels a partially read whole reply", async t => {
+test("cancellation aborts a pending inference and cancels a partially read whole reply", async () => {
   let started
   let resolveFetch
   let upstreamSignal
   const gate = new Promise(resolve => { started = resolve })
-  const { request, sent } = await fixture(t, (_, init) => {
+  const { request, sent } = await fixture((_, init) => {
     upstreamSignal = init.signal
     started()
     return new Promise(resolve => { resolveFetch = resolve })
@@ -411,11 +417,11 @@ test("cancellation aborts a pending inference and cancels a partially read whole
   assert.equal(sent.length, 1)
 })
 
-test("the request deadline bounds an inference fetch that ignores its AbortSignal", async t => {
+test("the request deadline bounds an inference fetch that ignores its AbortSignal", async () => {
   let upstreamSignal
-  const { request } = await fixture(t, (_, init) => { upstreamSignal = init.signal; return new Promise(() => {}) })
+  const { request } = await fixture((_, init) => { upstreamSignal = init.signal; return new Promise(() => {}) })
   const original = globalThis.setTimeout
-  t.after(() => { globalThis.setTimeout = original })
+  cleanups.push(() => { globalThis.setTimeout = original })
   globalThis.setTimeout = (callback, ms, ...args) => original(callback, ms === 120000 ? 20 : ms, ...args)
   const response = await request()
   assert.equal(response.status, 504)
@@ -423,8 +429,8 @@ test("the request deadline bounds an inference fetch that ignores its AbortSigna
   assert.equal(upstreamSignal.aborted, true)
 })
 
-test("malformed native history and mismatched function choices are rejected without dispatch", async t => {
-  const { request, sent } = await fixture(t)
+test("malformed native history and mismatched function choices are rejected without dispatch", async () => {
+  const { request, sent } = await fixture()
   const histories = [
     [{ role: "user" }], [{ role: "tool", content: "wrong protocol" }],
     [{ type: "message", content: "missing role" }], [{ role: "user", content: [{ type: "input_text" }] }],
@@ -439,15 +445,15 @@ test("malformed native history and mismatched function choices are rejected with
   assert.equal(sent.length, 0)
 })
 
-test("first request after system sleep renews a wall-expired token before discovery", async t => {
+test("first request after system sleep renews a wall-expired token before discovery", async () => {
   const monotonic = performance.now
   const wall = Date.now
-  t.after(() => { performance.now = monotonic; Date.now = wall })
+  cleanups.push(() => { performance.now = monotonic; Date.now = wall })
   let elapsed = 0
   let epoch = 1793600000000
   performance.now = () => elapsed
   Date.now = () => epoch
-  const { request, state, sent } = await fixture(t)
+  const { request, state, sent } = await fixture()
   state.oauth = () => {
     state.token = "wake-token"
     return new Response(JSON.stringify({ access_token: state.token, expires_in: 3600 }))
@@ -467,14 +473,14 @@ test("first request after system sleep renews a wall-expired token before discov
   assert.equal(new Headers(sent[0].init.headers).get("authorization"), "Bearer wake-token")
 })
 
-test("first request after system sleep rejects a deployment that is no longer running", async t => {
+test("first request after system sleep rejects a deployment that is no longer running", async () => {
   const monotonic = performance.now
   const wall = Date.now
-  t.after(() => { performance.now = monotonic; Date.now = wall })
+  cleanups.push(() => { performance.now = monotonic; Date.now = wall })
   performance.now = () => 0
   let epoch = 1793600000000
   Date.now = () => epoch
-  const { request, state, sent } = await fixture(t)
+  const { request, state, sent } = await fixture()
   state.discovery = () => jsonResponse({ resources: [] })
   epoch += 16 * 60 * 60 * 1000
   const response = await request()
@@ -483,12 +489,12 @@ test("first request after system sleep rejects a deployment that is no longer ru
   assert.equal(sent.length, 0)
 })
 
-test("dispatch discovery 401 keeps sign-in; only verified OAuth credential refusal expires it", async t => {
+test("dispatch discovery 401 keeps sign-in; only verified OAuth credential refusal expires it", async () => {
   const clock = performance.now
-  t.after(() => { performance.now = clock })
+  cleanups.push(() => { performance.now = clock })
   let now = 0
   performance.now = () => now
-  const { request, state, sent } = await fixture(t)
+  const { request, state, sent } = await fixture()
   now = 300001
   state.discovery = () => new Response(JSON.stringify({ error: { message: "unauthorized " + TOKEN } }), { status: 401 })
   const discovery = await request()
@@ -504,12 +510,12 @@ test("dispatch discovery 401 keeps sign-in; only verified OAuth credential refus
   assert.equal(sent.length, 0)
 })
 
-test("OAuth quota and temporary failures preserve their status and Retry-After without lapsing sign-in", async t => {
+test("OAuth quota and temporary failures preserve their status and Retry-After without lapsing sign-in", async () => {
   const clock = performance.now
-  t.after(() => { performance.now = clock })
+  cleanups.push(() => { performance.now = clock })
   let now = 0
   performance.now = () => now
-  const { request, state, sent } = await fixture(t)
+  const { request, state, sent } = await fixture()
   now = 3600001
   for (const status of [429, 503, 401]) {
     state.oauth = () => new Response("non-JSON intermediary failure " + CREDS.clientSecret, { status, headers: { "retry-after": "19" } })
@@ -522,8 +528,8 @@ test("OAuth quota and temporary failures preserve their status and Retry-After w
   assert.equal(sent.length, 0)
 })
 
-test("Request bodies work without init overrides and unsafe routes disclose no credentials", async t => {
-  const { loader, sent } = await fixture(t)
+test("Request bodies work without init overrides and unsafe routes disclose no credentials", async () => {
+  const { loader, sent } = await fixture()
   const body = { model: MODEL, input: "hello" }
   const response = await loader.fetch(new Request(ROOT + "/responses", { method: "POST", body: JSON.stringify(body) }), { body: undefined })
   assert.equal(response.status, 200)
@@ -539,12 +545,12 @@ test("Request bodies work without init overrides and unsafe routes disclose no c
   assert.equal(disclosed, false)
 })
 
-test("unknown and unavailable models stay distinct and an unsafe discovered deployment never receives credentials", async t => {
+test("unknown and unavailable models stay distinct and an unsafe discovered deployment never receives credentials", async () => {
   const clock = performance.now
-  t.after(() => { performance.now = clock })
+  cleanups.push(() => { performance.now = clock })
   let now = 0
   performance.now = () => now
-  const { request, sent, state } = await fixture(t)
+  const { request, sent, state } = await fixture()
   for (const model of ["gpt-unknown", "gpt-5.9-mini"]) {
     const unknown = await request({ model, input: "hello" })
     assert.equal((await unknown.json()).error.code, "unknown-model")
@@ -561,9 +567,9 @@ test("unknown and unavailable models stay distinct and an unsafe discovered depl
   assert.equal(sent.length, 0)
 })
 
-test("unsafe redirects are not followed and malformed failed bodies preserve useful HTTP status", async t => {
+test("unsafe redirects are not followed and malformed failed bodies preserve useful HTTP status", async () => {
   let mode = "redirect"
-  const { request, sent } = await fixture(t, () => {
+  const { request, sent } = await fixture(() => {
     if (mode === "redirect") return new Response(null, { status: 307, headers: { location: "https://example.invalid/" } })
     if (mode === "wrong-url") {
       const response = new Response(JSON.stringify(COMPLETED))
@@ -585,11 +591,11 @@ test("unsafe redirects are not followed and malformed failed bodies preserve use
   assert.equal(sent.length, 3)
 })
 
-test("whole-body cancellation closes the upstream reader before it can finish delivering", async t => {
+test("whole-body cancellation closes the upstream reader before it can finish delivering", async () => {
   let entered
   let cancelled = false
   const reading = new Promise(resolve => { entered = resolve })
-  const { request } = await fixture(t, () => new Response(new ReadableStream({
+  const { request } = await fixture(() => new Response(new ReadableStream({
     start(controller) { controller.enqueue(new TextEncoder().encode('{"id":"resp_a"')); entered() },
     cancel() { cancelled = true },
   })))
@@ -603,10 +609,10 @@ test("whole-body cancellation closes the upstream reader before it can finish de
   assert.equal(cancelled, true)
 })
 
-test("native incomplete and failed statuses retain details and JSON-safe credential redaction", async t => {
+test("native incomplete and failed statuses retain details and JSON-safe credential redaction", async () => {
   let status = "incomplete"
   const escapedSecret = 'credential-"quoted"-\\backslash'
-  const { request } = await fixture(t, () => new Response(JSON.stringify({ ...COMPLETED, status, incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null, error: status === "failed" ? { code: "backend_failure", message: TOKEN + " " + escapedSecret } : null })))
+  const { request } = await fixture(() => new Response(JSON.stringify({ ...COMPLETED, status, incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null, error: status === "failed" ? { code: "backend_failure", message: TOKEN + " " + escapedSecret } : null })))
   const incomplete = await request()
   const first = await incomplete.json()
   assert.equal(first.status, "incomplete")
@@ -623,8 +629,8 @@ test("native incomplete and failed statuses retain details and JSON-safe credent
   assert.deepEqual(last.usage, COMPLETED.usage)
 })
 
-test("malformed and oversized request bodies fail before generation and cancel unread input", async t => {
-  const { loader, sent } = await fixture(t)
+test("malformed and oversized request bodies fail before generation and cancel unread input", async () => {
+  const { loader, sent } = await fixture()
   for (const body of ["{", "null", "[]", new Uint8Array([0xff])]) {
     const response = await loader.fetch(ROOT + "/responses", { method: "POST", body })
     assert.equal(response.status, 400)
@@ -645,8 +651,8 @@ test("malformed and oversized request bodies fail before generation and cancel u
   assert.equal(sent.length, 0)
 })
 
-test("an unverified 401 does not discard valid Bearer credentials or expire sign-in", async t => {
-  const { request, sent, state } = await fixture(t, () => new Response(JSON.stringify({ error: { code: "upstream_unauthorized", message: "not an OAuth refusal" } }), { status: 401, headers: { "www-authenticate": 'Bearer error="invalid_token_unverified"' } }))
+test("an unverified 401 does not discard valid Bearer credentials or expire sign-in", async () => {
+  const { request, sent, state } = await fixture(() => new Response(JSON.stringify({ error: { code: "upstream_unauthorized", message: "not an OAuth refusal" } }), { status: 401, headers: { "www-authenticate": 'Bearer error="invalid_token_unverified"' } }))
   const first = await request()
   assert.equal(first.headers.get("x-magpie-sign-in"), "kept")
   let renewals = 0
@@ -656,8 +662,8 @@ test("an unverified 401 does not discard valid Bearer credentials or expire sign
   assert.equal(new Headers(sent[1].init.headers).get("authorization"), "Bearer " + TOKEN)
 })
 
-test("rejected encrypted reasoning remains actionable and is never stripped or replayed by the plugin", async t => {
-  const { request, sent } = await fixture(t, () => new Response(JSON.stringify({ error: { code: "invalid_encrypted_content", message: "Encrypted reasoning could not be decrypted", param: "input" } }), { status: 400 }))
+test("rejected encrypted reasoning remains actionable and is never stripped or replayed by the plugin", async () => {
+  const { request, sent } = await fixture(() => new Response(JSON.stringify({ error: { code: "invalid_encrypted_content", message: "Encrypted reasoning could not be decrypted", param: "input" } }), { status: 400 }))
   const input = [...COMPLETED.output, { role: "user", content: "continue" }]
   const response = await request({ model: MODEL, input })
   assert.equal(response.status, 400)
@@ -666,10 +672,10 @@ test("rejected encrypted reasoning remains actionable and is never stripped or r
   assert.equal(sent.length, 1)
 })
 
-test("a rejected Bearer is discarded before a stalled error body is cancelled", async t => {
+test("a rejected Bearer is discarded before a stalled error body is cancelled", async () => {
   let started
   const reading = new Promise(resolve => { started = resolve })
-  const { request, state } = await fixture(t, () => new Response(new ReadableStream({ start() { started() } }), { status: 401, headers: { "www-authenticate": 'Bearer error="invalid_token"' } }))
+  const { request, state } = await fixture(() => new Response(new ReadableStream({ start() { started() } }), { status: 401, headers: { "www-authenticate": 'Bearer error="invalid_token"' } }))
   const controller = new AbortController()
   const pending = request(undefined, { signal: controller.signal })
   await reading
@@ -686,8 +692,8 @@ test("a rejected Bearer is discarded before a stalled error body is cancelled", 
   assert.equal(acquired, 1)
 })
 
-test("sign-in state headers cannot change expired_token errors during credential redaction", async t => {
-  const { request } = await fixture(t, () => new Response(JSON.stringify({
+test("sign-in state headers cannot change expired_token errors during credential redaction", async () => {
+  const { request } = await fixture(() => new Response(JSON.stringify({
     error: { code: "expired_token", type: "authentication_error", param: "authorization", message: "expired " + TOKEN + " sdk-secret", details: { description: CREDS.clientSecret, output: TOKEN, id: "sdk-secret", reason: { status: "token " + TOKEN + " rejected", param: "sdk-secret" } } },
   }), { status: 401, headers: { "www-authenticate": 'Bearer error="expired_token"' } }))
   const response = await request(undefined, { headers: { "x-magpie-sign-in": "expired", authorization: "Bearer sdk-secret" } })
@@ -698,13 +704,13 @@ test("sign-in state headers cannot change expired_token errors during credential
   })
 })
 
-test("credential redaction preserves failed response status, error categories and continuation items", async t => {
+test("credential redaction preserves failed response status, error categories and continuation items", async () => {
   const upstream = {
     ...COMPLETED, id: "resp_failed", status: "failed",
     error: { code: "failed_token", type: "failed_authentication", param: "input_failed", message: "failed credentials " + TOKEN, details: { code: "backend_detail", message: "Rejected " + CREDS.clientSecret } },
     output: [{ id: "rs_failed", type: "reasoning", summary: [], encrypted_content: "failed-encrypted-history" }, { id: "fc_failed", type: "function_call", call_id: "call_failed", name: "failed_function", arguments: '{"state":"failed"}', status: "completed" }],
   }
-  const { request } = await fixture(t, () => new Response(JSON.stringify(upstream)))
+  const { request } = await fixture(() => new Response(JSON.stringify(upstream)))
   const response = await request(undefined, { headers: { "api-key": "failed", "x-magpie-sign-in": "expired" } })
   const body = await response.json()
   assert.equal(response.status, 200)
@@ -715,8 +721,8 @@ test("credential redaction preserves failed response status, error categories an
   assert.deepEqual(body.error, { code: "failed_token", type: "failed_authentication", param: "input_failed", message: "[redacted] credentials [redacted]", details: { code: "backend_detail", message: "Rejected [redacted]" } })
 })
 
-test("a non-streaming request still relays a whole native Response and preserves the native stream flag", async t => {
-  const { request, sent } = await fixture(t)
+test("a non-streaming request still relays a whole native Response and preserves the native stream flag", async () => {
+  const { request, sent } = await fixture()
   for (const incoming of [undefined, false]) {
     const body = { model: MODEL, input: "hello", ...(incoming === undefined ? {} : { stream: incoming }) }
     const response = await request(body)
@@ -730,10 +736,10 @@ test("a non-streaming request still relays a whole native Response and preserves
   assert.equal(sent.length, 2, "one dispatch per independent operation")
 })
 
-test("a streaming request relays native events in order and gates the first byte on the consumer", async t => {
+test("a streaming request relays native events in order and gates the first byte on the consumer", async () => {
   let pulls = 0
   const frames = [frame(CREATED), frame(delta("Hel", 1)), frame(delta("lo", 2)), frame(DONE)]
-  const { request, sent } = await fixture(t, () => streamResponse(frames, { onPull: () => { pulls++ } }))
+  const { request, sent } = await fixture(() => streamResponse(frames, { onPull: () => { pulls++ } }))
   const response = await request({ model: MODEL, input: "hi", stream: true })
   assert.equal(response.status, 200)
   assert.equal(response.headers.get("content-type"), "text/event-stream")
@@ -748,28 +754,28 @@ test("a streaming request relays native events in order and gates the first byte
   assert.ok(pulls > 0)
 })
 
-test("split multibyte UTF-8 and frame boundaries reassemble without corruption", async t => {
+test("split multibyte UTF-8 and frame boundaries reassemble without corruption", async () => {
   const text = frame(CREATED) + frame(delta("café→", 1)) + frame(delta("—😀", 2)) + frame(DONE)
   const bytes = new TextEncoder().encode(text)
   const chunks = []
   for (let i = 0; i < bytes.length; i += 7) chunks.push(bytes.slice(i, i + 7))
-  const { request } = await fixture(t, () => streamResponse(chunks))
+  const { request } = await fixture(() => streamResponse(chunks))
   const events = parseEvents(await (await request({ model: MODEL, input: "hi", stream: true })).text())
   assert.deepEqual(events.filter(e => e.type === "response.output_text.delta").map(e => e.delta), ["café→", "—😀"])
   assert.equal(events.at(-1).type, "response.completed")
 })
 
-test("arbitrary CR, LF and CRLF line endings frame native events correctly", async t => {
+test("arbitrary CR, LF and CRLF line endings frame native events correctly", async () => {
   const text =
     "data: " + JSON.stringify(CREATED) + "\r\n\r\n" +
     "data: " + JSON.stringify(delta("x", 1)) + "\n\n" +
     "data: " + JSON.stringify(DONE) + "\r\r"
-  const { request } = await fixture(t, () => streamResponse([text]))
+  const { request } = await fixture(() => streamResponse([text]))
   const events = parseEvents(await (await request({ model: MODEL, input: "hi", stream: true })).text())
   assert.deepEqual(events.map(e => e.type), ["response.created", "response.output_text.delta", "response.completed"])
 })
 
-test("function-call argument deltas and numeric fidelity pass through verbatim without accumulation", async t => {
+test("function-call argument deltas and numeric fidelity pass through verbatim without accumulation", async () => {
   const argDeltas = ['{"ci', 'ty":', '"NYC"}']
   const frames = [
     frame(CREATED),
@@ -777,7 +783,7 @@ test("function-call argument deltas and numeric fidelity pass through verbatim w
     'data: {"type":"response.in_progress","response":{"id":"resp_a","temperature":1.0,"top_p":0.0},"sequence_number":5}\n\n',
     frame(DONE),
   ]
-  const { request } = await fixture(t, () => streamResponse([frames.join("")]))
+  const { request } = await fixture(() => streamResponse([frames.join("")]))
   const raw = await (await request({ model: MODEL, input: "hi", stream: true, tools: [{ type: "function", name: "lookup" }], tool_choice: "auto" })).text()
   const events = parseEvents(raw)
   assert.deepEqual(events.filter(e => e.type === "response.function_call_arguments.delta").map(e => e.delta), argDeltas)
@@ -785,11 +791,11 @@ test("function-call argument deltas and numeric fidelity pass through verbatim w
   assert.equal(events.at(-1).type, "response.completed")
 })
 
-test("failed streaming terminals relay natively with descriptive-error credential redaction", async t => {
+test("failed streaming terminals relay natively with descriptive-error credential redaction", async () => {
   const failed = { ...COMPLETED, id: "resp_fail", status: "failed", error: { code: "backend_failure", type: "server_error", param: "input", message: "boom " + TOKEN + " " + CREDS.clientSecret } }
   const frames = frame({ type: "response.created", response: { id: "resp_fail", object: "response", status: "in_progress" }, sequence_number: 0 }) +
     frame({ type: "response.failed", response: failed, sequence_number: 1 })
-  const { request } = await fixture(t, () => streamResponse([frames]))
+  const { request } = await fixture(() => streamResponse([frames]))
   const raw = await (await request({ model: MODEL, input: "hi", stream: true }, { headers: { "api-key": "sdk-secret" } })).text()
   const events = parseEvents(raw)
   assert.equal(events.at(-1).type, "response.failed")
@@ -802,43 +808,43 @@ test("failed streaming terminals relay natively with descriptive-error credentia
   for (const secret of [TOKEN, CREDS.clientSecret]) assert.ok(!raw.includes(secret), secret)
 })
 
-test("incomplete streaming terminals retain their native details", async t => {
+test("incomplete streaming terminals retain their native details", async () => {
   const incomplete = { ...COMPLETED, status: "incomplete", incomplete_details: { reason: "max_output_tokens" } }
   const frames = frame(CREATED) + frame({ type: "response.incomplete", response: incomplete, sequence_number: 1 })
-  const { request } = await fixture(t, () => streamResponse([frames]))
+  const { request } = await fixture(() => streamResponse([frames]))
   const events = parseEvents(await (await request({ model: MODEL, input: "hi", stream: true })).text())
   assert.equal(events.at(-1).type, "response.incomplete")
   assert.deepEqual(events.at(-1).response.incomplete_details, { reason: "max_output_tokens" })
 })
 
-test("a streaming upstream that ends without a terminal yields a safe error, never a fabricated completion", async t => {
+test("a streaming upstream that ends without a terminal yields a safe error, never a fabricated completion", async () => {
   const frames = frame(CREATED) + frame(delta("partial", 1))
-  const { request } = await fixture(t, () => streamResponse([frames]))
+  const { request } = await fixture(() => streamResponse([frames]))
   const events = parseEvents(await (await request({ model: MODEL, input: "hi", stream: true })).text())
   assert.equal(events.at(-1).type, "error")
   assert.equal(events.at(-1).error.code, "inference-response")
   assert.ok(!events.some(e => e.type === "response.completed"))
 })
 
-test("an oversized never-terminated streaming frame is bounded into a safe error", async t => {
+test("an oversized never-terminated streaming frame is bounded into a safe error", async () => {
   const giant = "x".repeat(16 * 1024 * 1024 + 8)
   const frames = frame(CREATED) + `data: {"type":"response.output_text.delta","delta":"${giant}"`
-  const { request } = await fixture(t, () => streamResponse([frames]))
+  const { request } = await fixture(() => streamResponse([frames]))
   const events = parseEvents(await (await request({ model: MODEL, input: "hi", stream: true })).text())
   assert.equal(events.at(-1).type, "error")
   assert.equal(events.at(-1).error.code, "inference-response")
 })
 
-test("a successful streaming request that is not an event stream fails safely", async t => {
-  const { request, sent } = await fixture(t, () => new Response(JSON.stringify(COMPLETED), { headers: { "content-type": "application/json" } }))
+test("a successful streaming request that is not an event stream fails safely", async () => {
+  const { request, sent } = await fixture(() => new Response(JSON.stringify(COMPLETED), { headers: { "content-type": "application/json" } }))
   const response = await request({ model: MODEL, input: "hi", stream: true })
   assert.equal(response.status, 502)
   assert.equal((await response.json()).error.code, "inference-response")
   assert.equal(sent.length, 1)
 })
 
-test("a streaming request rejected upstream preserves HTTP status and never replays", async t => {
-  const { request, sent } = await fixture(t, () => new Response(JSON.stringify({ error: { code: "quota_exceeded", message: "slow down " + TOKEN } }), { status: 429, headers: { "retry-after": "12" } }))
+test("a streaming request rejected upstream preserves HTTP status and never replays", async () => {
+  const { request, sent } = await fixture(() => new Response(JSON.stringify({ error: { code: "quota_exceeded", message: "slow down " + TOKEN } }), { status: 429, headers: { "retry-after": "12" } }))
   const response = await request({ model: MODEL, input: "hi", stream: true })
   assert.equal(response.status, 429)
   assert.equal(response.headers.get("retry-after"), "12")
@@ -848,10 +854,10 @@ test("a streaming request rejected upstream preserves HTTP status and never repl
   assert.equal(sent.length, 1)
 })
 
-test("the relay applies backpressure, pulling upstream only as the consumer reads", async t => {
+test("the relay applies backpressure, pulling upstream only as the consumer reads", async () => {
   let pulls = 0
   const frames = [frame(CREATED), frame(delta("a", 1)), frame(delta("b", 2)), frame(DONE)]
-  const { request } = await fixture(t, () => streamResponse(frames, { onPull: () => { pulls++ } }))
+  const { request } = await fixture(() => streamResponse(frames, { onPull: () => { pulls++ } }))
   const response = await request({ model: MODEL, input: "hi", stream: true })
   const reader = response.body.getReader()
   assert.equal(pulls, 0)
@@ -864,13 +870,13 @@ test("the relay applies backpressure, pulling upstream only as the consumer read
   assert.ok(pulls > afterFirst)
 })
 
-test("cancelling a streaming consumer cancels the underlying upstream reader", async t => {
+test("cancelling a streaming consumer cancels the underlying upstream reader", async () => {
   let cancelled = false
   const upstream = new ReadableStream({
     start(controller) { controller.enqueue(new TextEncoder().encode(frame(CREATED))) },
     cancel() { cancelled = true },
   })
-  const { request } = await fixture(t, () => new Response(upstream, { headers: { "content-type": "text/event-stream" } }))
+  const { request } = await fixture(() => new Response(upstream, { headers: { "content-type": "text/event-stream" } }))
   const controller = new AbortController()
   const response = await request({ model: MODEL, input: "hi", stream: true }, { signal: controller.signal })
   const reader = response.body.getReader()
@@ -880,15 +886,15 @@ test("cancelling a streaming consumer cancels the underlying upstream reader", a
   assert.equal(cancelled, true)
 })
 
-test("the request deadline terminates a streaming body that stalls mid-flight, cancels upstream and yields no output", async t => {
+test("the request deadline terminates a streaming body that stalls mid-flight, cancels upstream and yields no output", async () => {
   let cancelled = false
   const upstream = new ReadableStream({
     start(controller) { controller.enqueue(new TextEncoder().encode(frame(CREATED))) },
     cancel() { cancelled = true },
   })
-  const { request } = await fixture(t, () => new Response(upstream, { headers: { "content-type": "text/event-stream" } }))
+  const { request } = await fixture(() => new Response(upstream, { headers: { "content-type": "text/event-stream" } }))
   const original = globalThis.setTimeout
-  t.after(() => { globalThis.setTimeout = original })
+  cleanups.push(() => { globalThis.setTimeout = original })
   globalThis.setTimeout = (callback, ms, ...args) => original(callback, ms === 120000 ? 20 : ms, ...args)
   const response = await request({ model: MODEL, input: "hi", stream: true })
   assert.equal(response.status, 200)
@@ -904,9 +910,9 @@ test("the request deadline terminates a streaming body that stalls mid-flight, c
   assert.equal(cancelled, true, "the stalled upstream reader is cancelled")
 })
 
-test("a streaming operation recovers after cancellation without replaying the generation", async t => {
+test("a streaming operation recovers after cancellation without replaying the generation", async () => {
   let calls = 0
-  const { request, sent } = await fixture(t, () => {
+  const { request, sent } = await fixture(() => {
     calls++
     if (calls === 1) return new Response(new ReadableStream({ start() {} }), { headers: { "content-type": "text/event-stream" } })
     return streamResponse([frame(CREATED) + frame(DONE)])
@@ -923,7 +929,7 @@ test("a streaming operation recovers after cancellation without replaying the ge
   assert.equal(sent.length, 2, "each streaming operation dispatches exactly once")
 })
 
-test("a successful streaming terminal relays output text, item id and call_id verbatim even when they overlap credentials", async t => {
+test("a successful streaming terminal relays output text, item id and call_id verbatim even when they overlap credentials", async () => {
   const overlap = {
     id: TOKEN, object: "response", model: MODEL, status: "completed",
     output: [
@@ -935,7 +941,7 @@ test("a successful streaming terminal relays output text, item id and call_id ve
   const frames = frame(CREATED) +
     frame(delta(TOKEN, 1)) +
     frame({ type: "response.completed", response: overlap, sequence_number: 9 })
-  const { request } = await fixture(t, () => streamResponse([frames]))
+  const { request } = await fixture(() => streamResponse([frames]))
   const raw = await (await request({ model: MODEL, input: "hi", stream: true }, { headers: { "api-key": CREDS.clientSecret } })).text()
   const events = parseEvents(raw)
   assert.equal(events.at(-1).type, "response.completed")
@@ -944,7 +950,7 @@ test("a successful streaming terminal relays output text, item id and call_id ve
   for (const secret of [TOKEN, CREDS.clientSecret, CREDS.clientId]) assert.ok(raw.includes(secret), "successful output keeps " + secret)
 })
 
-test("a failed streaming terminal keeps top-level error protocol fields but redacts nested descriptive details including a secret-bearing code", async t => {
+test("a failed streaming terminal keeps top-level error protocol fields but redacts nested descriptive details including a secret-bearing code", async () => {
   const failed = {
     ...COMPLETED, id: "resp_fail", status: "failed",
     error: {
@@ -959,7 +965,7 @@ test("a failed streaming terminal keeps top-level error protocol fields but reda
   }
   const frames = frame({ type: "response.created", response: { id: "resp_fail", object: "response", status: "in_progress" }, sequence_number: 0 }) +
     frame({ type: "response.failed", response: failed, sequence_number: 1 })
-  const { request } = await fixture(t, () => streamResponse([frames]))
+  const { request } = await fixture(() => streamResponse([frames]))
   const raw = await (await request({ model: MODEL, input: "hi", stream: true }, { headers: { "api-key": "sdk-secret" } })).text()
   const events = parseEvents(raw)
   const terminal = events.at(-1)
@@ -977,13 +983,13 @@ test("a failed streaming terminal keeps top-level error protocol fields but reda
   for (const secret of [TOKEN, CREDS.clientSecret, CREDS.clientId]) assert.ok(!raw.includes(secret), secret)
 })
 
-test("nested streaming error events retain protocol fields and redact descriptive details", async t => {
+test("nested streaming error events retain protocol fields and redact descriptive details", async () => {
   for (const type of ["error", "response.error"]) {
     const event = {
       type, code: "stream_failure", message: "outer " + TOKEN,
       error: { code: "backend_failure", type: "server_error", param: "input", message: "inner " + TOKEN, details: { code: "detail_" + CREDS.clientSecret } },
     }
-    const { request } = await fixture(t, () => streamResponse([frame(event)]))
+    const { request } = await fixture(() => streamResponse([frame(event)]))
     const raw = await (await request({ model: MODEL, input: "hi", stream: true })).text()
     const [redacted] = parseEvents(raw)
     assert.equal(redacted.type, type)
@@ -994,7 +1000,7 @@ test("nested streaming error events retain protocol fields and redact descriptiv
   }
 })
 
-test("data-only, event+data, multiline data and comment frames reassemble across mixed CR/LF/CRLF endings and arbitrary byte splits", async t => {
+test("data-only, event+data, multiline data and comment frames reassemble across mixed CR/LF/CRLF endings and arbitrary byte splits", async () => {
   const parts = [
     ": keep-alive\n\n",
     "event: response.created\r\ndata: " + JSON.stringify(CREATED) + "\r\n\r\n",
@@ -1007,14 +1013,14 @@ test("data-only, event+data, multiline data and comment frames reassemble across
   const bytes = new TextEncoder().encode(parts.join(""))
   const chunks = []
   for (let i = 0; i < bytes.length; i++) chunks.push(bytes.slice(i, i + 1))
-  const { request } = await fixture(t, () => streamResponse(chunks))
+  const { request } = await fixture(() => streamResponse(chunks))
   const events = parseEvents(await (await request({ model: MODEL, input: "hi", stream: true })).text())
   assert.deepEqual(events.map(e => e.type), ["response.created", "response.output_text.delta", "response.output_text.delta", "response.completed"])
   assert.deepEqual(events.filter(e => e.type === "response.output_text.delta").map(e => e.delta), ["multi", "tail"])
   assert.deepEqual(events.at(-1).response, COMPLETED)
 })
 
-test("a terminal event with a malformed, mislabelled or status-mismatched native response is a safe error, never a completion", async t => {
+test("a terminal event with a malformed, mislabelled or status-mismatched native response is a safe error, never a completion", async () => {
   const terminals = [
     frame({ type: "response.completed", response: { ...COMPLETED, status: "in_progress" }, sequence_number: 9 }),
     frame({ type: "response.completed", response: { id: "resp_a", object: "response", status: "completed", output: {} }, sequence_number: 9 }),
@@ -1022,7 +1028,7 @@ test("a terminal event with a malformed, mislabelled or status-mismatched native
     "event: response.failed\ndata: " + JSON.stringify(DONE) + "\n\n",
   ]
   for (const terminal of terminals) {
-    const { request } = await fixture(t, () => streamResponse([frame(CREATED) + terminal]))
+    const { request } = await fixture(() => streamResponse([frame(CREATED) + terminal]))
     const events = parseEvents(await (await request({ model: MODEL, input: "hi", stream: true })).text())
     assert.equal(events.at(-1).type, "error", terminal)
     assert.equal(events.at(-1).error.code, "inference-response")
@@ -1030,7 +1036,7 @@ test("a terminal event with a malformed, mislabelled or status-mismatched native
   }
 })
 
-test("malformed JSON, invalid UTF-8 and an unframed trailing terminal each yield a safe error without a completion", async t => {
+test("malformed JSON, invalid UTF-8 and an unframed trailing terminal each yield a safe error without a completion", async () => {
   const enc = new TextEncoder()
   const cases = [
     [frame(CREATED) + "data: {not json}\n\n"],
@@ -1038,7 +1044,7 @@ test("malformed JSON, invalid UTF-8 and an unframed trailing terminal each yield
     [frame(CREATED) + "data: " + JSON.stringify(DONE)],
   ]
   for (const chunks of cases) {
-    const { request } = await fixture(t, () => streamResponse(chunks))
+    const { request } = await fixture(() => streamResponse(chunks))
     const events = parseEvents(await (await request({ model: MODEL, input: "hi", stream: true })).text())
     assert.equal(events.at(-1).type, "error")
     assert.equal(events.at(-1).error.code, "inference-response")
@@ -1046,24 +1052,24 @@ test("malformed JSON, invalid UTF-8 and an unframed trailing terminal each yield
   }
 })
 
-test("a fully framed oversized frame is bounded by bytes, including a multibyte frame crossing the 16 MiB limit", async t => {
+test("a fully framed oversized frame is bounded by bytes, including a multibyte frame crossing the 16 MiB limit", async () => {
   const cases = [
     frame(CREATED) + 'data: {"type":"response.output_text.delta","delta":"' + "x".repeat(16 * 1024 * 1024 + 8) + '"}\n\n',
     frame(CREATED) + 'data: {"type":"response.output_text.delta","delta":"' + "\u20ac".repeat(6 * 1024 * 1024) + '"}\n\n',
   ]
   for (const frames of cases) {
-    const { request } = await fixture(t, () => streamResponse([frames]))
+    const { request } = await fixture(() => streamResponse([frames]))
     const events = parseEvents(await (await request({ model: MODEL, input: "hi", stream: true })).text())
     assert.equal(events.at(-1).type, "error")
     assert.equal(events.at(-1).error.code, "inference-response")
   }
 })
 
-test("coalesced events are reconstructed one frame per read without reading upstream ahead or pre-parsing past the terminal", async t => {
+test("coalesced events are reconstructed one frame per read without reading upstream ahead or pre-parsing past the terminal", async () => {
   let pulls = 0
   const coalesced = frame(CREATED) + frame(delta("a", 1)) + frame(delta("b", 2)) + frame(DONE) +
     "data: {garbage after the terminal that must never be parsed}\n\n"
-  const { request } = await fixture(t, () => streamResponse([coalesced], { onPull: () => { pulls++ } }))
+  const { request } = await fixture(() => streamResponse([coalesced], { onPull: () => { pulls++ } }))
   const reader = (await request({ model: MODEL, input: "hi", stream: true })).body.getReader()
   const decoder = new TextDecoder()
   const got = []
@@ -1074,10 +1080,10 @@ test("coalesced events are reconstructed one frame per read without reading upst
   assert.equal(pulls, 1, "a single coalesced chunk is pulled once and replayed frame by frame")
 })
 
-test("an unread streaming body cancels its upstream eagerly on cancellation and a later operation recovers", async t => {
+test("an unread streaming body cancels its upstream eagerly on cancellation and a later operation recovers", async () => {
   let cancelled = false
   let calls = 0
-  const { request, sent } = await fixture(t, () => {
+  const { request, sent } = await fixture(() => {
     calls++
     if (calls === 1) {
       const upstream = new ReadableStream({

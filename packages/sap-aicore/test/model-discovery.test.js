@@ -1,10 +1,16 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { createHash } from "node:crypto"
 import { SAPAICorePlugin } from "../src/index.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const CREDS = {
   authUrl: "https://synthetic.authentication.eu10.hana.ondemand.com",

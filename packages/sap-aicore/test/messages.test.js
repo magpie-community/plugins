@@ -1,4 +1,4 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
@@ -6,6 +6,12 @@ import path from "node:path"
 import { SAPAICorePlugin } from "../src/index.js"
 import { validateRequest, dispatch } from "../src/messages.js"
 import { readJSONRequest } from "../src/transport.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const ROOT = "https://api.ai.eu10.hana.ondemand.com"
 const CREDS = {
@@ -108,14 +114,14 @@ test("native thinking controls validate structurally: enabled budget, adaptive/d
 
 // --- whole-reply dispatch through the plugin loader ------------------------
 
-async function fixture(t, inference = () => new Response(JSON.stringify(MESSAGE)), options = {}) {
+async function fixture(inference = () => new Response(JSON.stringify(MESSAGE)), options = {}) {
   const opusStreaming = Object.hasOwn(options, "opusStreaming") ? options.opusStreaming : true
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "magpie-messages-"))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   const credentialFile = path.join(dir, "credentials.json")
   fs.writeFileSync(credentialFile, JSON.stringify(CREDS), { mode: 0o600 })
   const original = globalThis.fetch
-  t.after(() => { globalThis.fetch = original })
+  cleanups.push(() => { globalThis.fetch = original })
   const sent = []
   const json = body => new Response(JSON.stringify(body))
   globalThis.fetch = async (input, init) => {
@@ -146,8 +152,8 @@ async function fixture(t, inference = () => new Response(JSON.stringify(MESSAGE)
   return { loader, post, sent, plugin, auth, models }
 }
 
-test("a whole Claude reply reaches /invoke and returns native Anthropic JSON", async t => {
-  const { post, sent } = await fixture(t)
+test("a whole Claude reply reaches /invoke and returns native Anthropic JSON", async () => {
+  const { post, sent } = await fixture()
   const response = await post("/messages", { model: OPUS, messages: [{ role: "user", content: "hi" }], max_tokens: 256, stop_sequences: ["STOP"] })
   assert.equal(response.status, 200)
   assert.deepEqual(await response.json(), MESSAGE)
@@ -165,8 +171,8 @@ test("a whole Claude reply reaches /invoke and returns native Anthropic JSON", a
   assert.deepEqual(call.body.messages, [{ role: "user", content: "hi" }])
 })
 
-test("pi's non-native tool hints are stripped from the Bedrock invoke body", async t => {
-  const { post, sent } = await fixture(t)
+test("pi's non-native tool hints are stripped from the Bedrock invoke body", async () => {
+  const { post, sent } = await fixture()
   const tools = [
     { name: "read_file", description: "d", eager_input_streaming: true, strict: true, input_schema: { type: "object", properties: {} } },
     { name: "__pi_deferred_placeholder__", input_schema: { type: "object", properties: {}, required: [] }, defer_loading: true },
@@ -179,8 +185,8 @@ test("pi's non-native tool hints are stripped from the Bedrock invoke body", asy
   ])
 })
 
-test("pi's adaptive thinking and output_config reach the Bedrock invoke body verbatim", async t => {
-  const { post, sent } = await fixture(t)
+test("pi's adaptive thinking and output_config reach the Bedrock invoke body verbatim", async () => {
+  const { post, sent } = await fixture()
   const thinking = { type: "adaptive", display: "summarized", block_binding: { prefix_mismatch_behavior: "drop_block" } }
   const output_config = { effort: "high" }
   const response = await post("/messages", { model: OPUS, messages: [{ role: "user", content: "hi" }], max_tokens: 64, thinking, output_config })
@@ -189,16 +195,16 @@ test("pi's adaptive thinking and output_config reach the Bedrock invoke body ver
   assert.deepEqual(sent.at(-1).body.output_config, output_config)
 })
 
-test("no sampling default is injected for Claude when the client omits it", async t => {
-  const { post, sent } = await fixture(t)
+test("no sampling default is injected for Claude when the client omits it", async () => {
+  const { post, sent } = await fixture()
   await post("/messages", { model: OPUS, messages: [{ role: "user", content: "hi" }], max_tokens: 64 })
   const call = sent.at(-1)
   assert.equal("temperature" in call.body, false)
   assert.equal("top_p" in call.body, false)
 })
 
-test("a model addressed through the wrong protocol route fails before inference", async t => {
-  const { post, sent } = await fixture(t)
+test("a model addressed through the wrong protocol route fails before inference", async () => {
+  const { post, sent } = await fixture()
   const mark = sent.length
   // Claude model on the Responses route.
   const a = await post("/responses", { model: OPUS, input: "hi" })
@@ -209,8 +215,8 @@ test("a model addressed through the wrong protocol route fails before inference"
   assert.equal(sent.length, mark, "no upstream inference call was made")
 })
 
-test("a native Anthropic error reply preserves status and redacts credential echoes", async t => {
-  const { post } = await fixture(t, () => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "bad " + CREDS.clientSecret } }), { status: 400 }))
+test("a native Anthropic error reply preserves status and redacts credential echoes", async () => {
+  const { post } = await fixture(() => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "bad " + CREDS.clientSecret } }), { status: 400 }))
   const response = await post("/messages", { model: OPUS, messages: [{ role: "user", content: "hi" }], max_tokens: 16 })
   assert.equal(response.status, 400)
   const text = await response.text()
@@ -218,8 +224,8 @@ test("a native Anthropic error reply preserves status and redacts credential ech
   assert.ok(text.includes("[redacted]"))
 })
 
-test("an unknown model on the Messages route is a 404", async t => {
-  const { post } = await fixture(t)
+test("an unknown model on the Messages route is a 404", async () => {
+  const { post } = await fixture()
   const response = await post("/messages", { model: "claude-ghost-9-9", messages: [{ role: "user", content: "hi" }], max_tokens: 16 })
   assert.equal(response.status, 404)
 })
@@ -237,16 +243,16 @@ const entryFor = (url, policy, streaming = true) => ({
 const bodyFor = over => ({ model: OPUS, messages: [{ role: "user", content: "hi" }], max_tokens: 64, ...over })
 const invoke = (entry, body) => dispatch({ entry, body, credentials: CREDENTIALS, token: { value: TOKEN } })
 
-function stubFetch(t, impl) {
+function stubFetch(impl) {
   const original = globalThis.fetch
-  t.after(() => { globalThis.fetch = original })
+  cleanups.push(() => { globalThis.fetch = original })
   let calls = 0
   globalThis.fetch = async (input, init) => { calls++; return impl(input, init) }
   return { calls: () => calls }
 }
 
-test("the Opus baseline policy rejects temperature, top_p, enabled thinking and the output ceiling before inference", async t => {
-  const spy = stubFetch(t, () => new Response(JSON.stringify(MESSAGE)))
+test("the Opus baseline policy rejects temperature, top_p, enabled thinking and the output ceiling before inference", async () => {
+  const spy = stubFetch(() => new Response(JSON.stringify(MESSAGE)))
   const entry = entryFor(OPUS_URL, OPUS_POLICY)
   await assert.rejects(invoke(entry, bodyFor({ temperature: 0.2 })), { code: "invalid-request" })
   await assert.rejects(invoke(entry, bodyFor({ top_p: 0.5 })), { code: "invalid-request" })
@@ -255,17 +261,17 @@ test("the Opus baseline policy rejects temperature, top_p, enabled thinking and 
   assert.equal(spy.calls(), 0, "no rejected request escaped the gate to inference")
 })
 
-test("the Opus baseline accepts adaptive and disabled thinking and max_tokens at the ceiling", async t => {
-  stubFetch(t, () => new Response(JSON.stringify(MESSAGE)))
+test("the Opus baseline accepts adaptive and disabled thinking and max_tokens at the ceiling", async () => {
+  stubFetch(() => new Response(JSON.stringify(MESSAGE)))
   const entry = entryFor(OPUS_URL, OPUS_POLICY)
   assert.equal((await invoke(entry, bodyFor({ thinking: { type: "adaptive" } }))).status, 200)
   assert.equal((await invoke(entry, bodyFor({ thinking: { type: "disabled" } }))).status, 200)
   assert.equal((await invoke(entry, bodyFor({ max_tokens: 128000 }))).status, 200)
 })
 
-test("the Sonnet baseline allows individual sampling and a fixed budget but rejects combined sampling and forced-tool thinking", async t => {
+test("the Sonnet baseline allows individual sampling and a fixed budget but rejects combined sampling and forced-tool thinking", async () => {
   const sonnetReply = { ...MESSAGE, model: SONNET }
-  const spy = stubFetch(t, () => new Response(JSON.stringify(sonnetReply)))
+  const spy = stubFetch(() => new Response(JSON.stringify(sonnetReply)))
   const entry = entryFor(SONNET_URL, SONNET_POLICY)
   assert.equal((await invoke(entry, bodyFor({ model: SONNET, temperature: 0.2 }))).status, 200)
   assert.equal((await invoke(entry, bodyFor({ model: SONNET, top_p: 0.5 }))).status, 200)
@@ -277,28 +283,28 @@ test("the Sonnet baseline allows individual sampling and a fixed budget but reje
   assert.equal(spy.calls(), reached, "rejected combinations never reached inference")
 })
 
-test("a newer Claude deployment carries no policy, so structurally valid controls pass through and upstream validation is preserved", async t => {
+test("a newer Claude deployment carries no policy, so structurally valid controls pass through and upstream validation is preserved", async () => {
   // No requestPolicy (not a verified baseline): the gate invents no restriction and
   // forwards combined sampling, enabled thinking and a large budget to upstream,
   // whose own validation verdict is preserved verbatim.
   const upstream = { type: "error", error: { type: "invalid_request_error", message: "unsupported by this version" } }
-  const spy = stubFetch(t, () => new Response(JSON.stringify(upstream), { status: 400 }))
+  const spy = stubFetch(() => new Response(JSON.stringify(upstream), { status: 400 }))
   const entry = entryFor(ROOT + "/v2/inference/deployments/deployment-next", null)
   const response = await invoke(entry, bodyFor({ model: "claude-opus-5-0", temperature: 0.2, top_p: 0.5, max_tokens: 400000, thinking: { type: "enabled", budget_tokens: 4096 } }))
   assert.equal(response.status, 400)
   assert.equal(spy.calls(), 1, "the request reached upstream unblocked")
 })
 
-test("a streamed request to a model without streaming capability is rejected before inference", async t => {
-  const spy = stubFetch(t, () => new Response(JSON.stringify(MESSAGE)))
+test("a streamed request to a model without streaming capability is rejected before inference", async () => {
+  const spy = stubFetch(() => new Response(JSON.stringify(MESSAGE)))
   const entry = entryFor(OPUS_URL, OPUS_POLICY, false)
   await assert.rejects(invoke(entry, bodyFor({ stream: true })), { code: "invalid-request" })
   assert.equal(spy.calls(), 0, "the capability gate fires before any inference call")
 })
 
-test("malformed whole message identity, role, stop reason, or usage is rejected as an upstream response failure", async t => {
+test("malformed whole message identity, role, stop reason, or usage is rejected as an upstream response failure", async () => {
   let reply = MESSAGE
-  const { post } = await fixture(t, () => new Response(JSON.stringify(reply)))
+  const { post } = await fixture(() => new Response(JSON.stringify(reply)))
   for (const invalid of [{ id: "" }, { role: "user" }, { stop_reason: "" }, { usage: undefined }, { usage: { input_tokens: -1, output_tokens: 2 } }]) {
     reply = { ...MESSAGE, ...invalid }
     const response = await post("/messages", { model: OPUS, messages: [{ role: "user", content: "hi" }], max_tokens: 16 })
@@ -307,8 +313,8 @@ test("malformed whole message identity, role, stop reason, or usage is rejected 
   }
 })
 
-test("a whole error redacts top-level sibling credential echoes and preserves the native error category", async t => {
-  const { post } = await fixture(t, () => new Response(JSON.stringify({
+test("a whole error redacts top-level sibling credential echoes and preserves the native error category", async () => {
+  const { post } = await fixture(() => new Response(JSON.stringify({
     type: "error", message: "oops " + CREDS.clientSecret, details: { echo: CREDS.clientSecret },
     error: { type: "overloaded_error", message: "native failure", details: { echo: CREDS.clientSecret } },
   }), { status: 529 }))
@@ -319,9 +325,9 @@ test("a whole error redacts top-level sibling credential echoes and preserves th
   assert.equal(JSON.parse(text).error.type, "overloaded_error", "native error category is preserved")
 })
 
-test("Claude versions with absent or false catalog streaming support remain listed and whole-only", async t => {
+test("Claude versions with absent or false catalog streaming support remain listed and whole-only", async () => {
   for (const opusStreaming of [undefined, false]) {
-    const { post, sent, models } = await fixture(t, undefined, { opusStreaming })
+    const { post, sent, models } = await fixture(undefined, { opusStreaming })
     const listed = await models()
     assert.equal(listed[OPUS].limit.output, 128000)
     const whole = await post("/messages", { model: OPUS, messages: [{ role: "user", content: "hi" }], max_tokens: 16 })

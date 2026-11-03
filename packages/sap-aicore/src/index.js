@@ -340,8 +340,8 @@ export async function SAPAICorePlugin(input) {
   applyTimeouts(input)
 
   if (typeof input?.client?.app?.log === "function") {
-    void pluginRevision().then(revision => input.client.app.log({
-      body: { service: PROVIDER_ID, level: "info", message: `revision ${revision}` },
+    void pluginRevision().then(version => input.client.app.log({
+      body: { service: PROVIDER_ID, level: "info", message: `version ${version}` },
     })).catch(() => {})
   }
 

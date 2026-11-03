@@ -1,9 +1,15 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { SAPAICorePlugin } from "../src/index.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const ROOT = "https://api.ai.eu10.hana.ondemand.com"
 const CREDS = {
@@ -49,13 +55,13 @@ function streamResponse(chunks, { onPull } = {}) {
   return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })
 }
 
-async function fixture(t, inference, pluginOptions) {
+async function fixture(inference, pluginOptions) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "magpie-stream-"))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   const credentialFile = path.join(dir, "credentials.json")
   fs.writeFileSync(credentialFile, JSON.stringify(CREDS), { mode: 0o600 })
   const original = globalThis.fetch
-  t.after(() => { globalThis.fetch = original })
+  cleanups.push(() => { globalThis.fetch = original })
   const json = body => new Response(JSON.stringify(body))
   const calls = []
   globalThis.fetch = async (input, init) => {
@@ -103,8 +109,8 @@ function consumer(response) {
   return { reader, events, next, async finish() { while (await next()) {} return events } }
 }
 
-test("a streamed request routes to /invoke-with-response-stream and relays text then tool-arg deltas before the terminal", async t => {
-  const { post, calls } = await fixture(t, () => streamResponse(STREAM.map(frame)))
+test("a streamed request routes to /invoke-with-response-stream and relays text then tool-arg deltas before the terminal", async () => {
+  const { post, calls } = await fixture(() => streamResponse(STREAM.map(frame)))
   const response = await post()
   assert.equal(response.status, 200)
   assert.equal(response.headers.get("content-type"), "text/event-stream")
@@ -120,10 +126,10 @@ test("a streamed request routes to /invoke-with-response-stream and relays text 
   assert.equal(events.at(-1).type, "message_stop")
 })
 
-test("each relayed frame carries the native SSE event name, including the error frame", async t => {
+test("each relayed frame carries the native SSE event name, including the error frame", async () => {
   // SAP relays data-only frames; clients such as pi dispatch on the `event:` name
   // and skip nameless frames, so they must be synthesized from the event type.
-  const { post } = await fixture(t, () => streamResponse([
+  const { post } = await fixture(() => streamResponse([
     frame(STREAM[0]), frame(STREAM[9]), frame(STREAM[10]), // message_start, message_delta, message_stop
   ]))
   const raw = await new Response((await post()).body).text()
@@ -137,14 +143,14 @@ test("each relayed frame carries the native SSE event name, including the error 
   assert.ok(frames.some(b => b.includes("event: message_stop")))
 
   // A local truncation failure frame is also a named error event.
-  const { post: post2 } = await fixture(t, () => streamResponse([frame(STREAM[0])]))
+  const { post: post2 } = await fixture(() => streamResponse([frame(STREAM[0])]))
   const raw2 = await new Response((await post2()).body).text()
   assert.ok(raw2.includes("event: error"), "truncation yields a named error frame")
 })
 
-test("the relay pulls one frame per read and does not reach the terminal until consumed", async t => {
+test("the relay pulls one frame per read and does not reach the terminal until consumed", async () => {
   let pulls = 0
-  const { post } = await fixture(t, () => streamResponse(STREAM.map(frame), { onPull: () => { pulls++ } }))
+  const { post } = await fixture(() => streamResponse(STREAM.map(frame), { onPull: () => { pulls++ } }))
   const c = consumer(await post())
   // Read only the first text delta.
   let first
@@ -155,20 +161,20 @@ test("the relay pulls one frame per read and does not reach the terminal until c
   assert.equal(rest.at(-1).type, "message_stop")
 })
 
-test("fragmented bytes across frame and multibyte boundaries reassemble without corruption", async t => {
+test("fragmented bytes across frame and multibyte boundaries reassemble without corruption", async () => {
   const bytes = Buffer.from(STREAM.map(frame).join(""), "utf8")
   const chunks = []
   for (let i = 0; i < bytes.length; i += 3) chunks.push(bytes.subarray(i, i + 3))
-  const { post } = await fixture(t, () => streamResponse(chunks))
+  const { post } = await fixture(() => streamResponse(chunks))
   const events = await consumer(await post()).finish()
   const text = events.filter(e => e.type === "content_block_delta" && e.delta.type === "text_delta").map(e => e.delta.text).join("")
   assert.equal(text, "Grüß dich🙂")
   assert.equal(events.at(-1).type, "message_stop")
 })
 
-test("a native stream error frame surfaces and redacts credential echoes", async t => {
+test("a native stream error frame surfaces and redacts credential echoes", async () => {
   const chunks = [frame(STREAM[0]), frame({ type: "error", message: "fail " + CREDS.clientSecret, details: { echo: CREDS.clientSecret }, error: { type: "overloaded_error", message: "native failure" } })]
-  const { post } = await fixture(t, () => streamResponse(chunks))
+  const { post } = await fixture(() => streamResponse(chunks))
   const raw = await new Response((await post()).body).text()
   // The redacted error frame must be a single well-formed event: the data line
   // immediately follows the name, with no blank line splitting them.
@@ -180,28 +186,28 @@ test("a native stream error frame surfaces and redacts credential echoes", async
   assert.equal(error.error.message, "native failure")
 })
 
-test("a stream truncated before message_stop ends in a safe error, never a fabricated completion", async t => {
+test("a stream truncated before message_stop ends in a safe error, never a fabricated completion", async () => {
   const chunks = [frame(STREAM[0]), frame(STREAM[2])] // message_start + a text delta, then EOF
-  const { post } = await fixture(t, () => streamResponse(chunks))
+  const { post } = await fixture(() => streamResponse(chunks))
   const events = await consumer(await post()).finish()
   assert.equal(events.some(e => e.type === "message_stop"), false)
   assert.equal(events.at(-1).type, "error")
 })
 
-test("an unknown stream event type is rejected as a safe error", async t => {
+test("an unknown stream event type is rejected as a safe error", async () => {
   const chunks = [frame(STREAM[0]), frame({ type: "totally_unknown_event" })]
-  const { post } = await fixture(t, () => streamResponse(chunks))
+  const { post } = await fixture(() => streamResponse(chunks))
   const events = await consumer(await post()).finish()
   assert.equal(events.at(-1).type, "error")
 })
 
-test("cancelling a streamed consumer aborts the owned upstream and an independent request recovers", async t => {
+test("cancelling a streamed consumer aborts the owned upstream and an independent request recovers", async () => {
   let cancelled = false
   const gated = () => new Response(new ReadableStream({
     start(c) { c.enqueue(new TextEncoder().encode(frame(STREAM[0]) + frame(STREAM[2]))) },
     cancel() { cancelled = true },
   }, { highWaterMark: 0 }), { status: 200, headers: { "content-type": "text/event-stream" } })
-  const { post } = await fixture(t, (url) => url.pathname.endsWith("/invoke-with-response-stream") ? gated() : new Response(JSON.stringify({ id: "m", type: "message", role: "assistant", model: OPUS, content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } })))
+  const { post } = await fixture((url) => url.pathname.endsWith("/invoke-with-response-stream") ? gated() : new Response(JSON.stringify({ id: "m", type: "message", role: "assistant", model: OPUS, content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } })))
   const abort = new AbortController()
   const response = await post({}, { signal: abort.signal })
   const c = consumer(response)
@@ -216,7 +222,7 @@ test("cancelling a streamed consumer aborts the owned upstream and an independen
   assert.equal((await recovered.json()).content[0].text, "ok")
 })
 
-test("malformed terminal states (bare, missing stop reason, out-of-order, bad or duplicate opener) end in a safe error", async t => {
+test("malformed terminal states (bare, missing stop reason, out-of-order, bad or duplicate opener) end in a safe error", async () => {
   const cases = {
     "bare terminal": [frame({ type: "message_stop" })],
     "terminal without a resolved stop reason": [frame(STREAM[0]), frame({ type: "message_stop" })],
@@ -230,21 +236,21 @@ test("malformed terminal states (bare, missing stop reason, out-of-order, bad or
     "duplicate stop reason": [frame(STREAM[0]), frame(STREAM[9]), frame(STREAM[9]), frame(STREAM[10])],
   }
   for (const [label, chunks] of Object.entries(cases)) {
-    const { post } = await fixture(t, () => streamResponse(chunks))
+    const { post } = await fixture(() => streamResponse(chunks))
     const events = await consumer(await post()).finish()
     assert.equal(events.some(e => e.type === "message_stop"), false, label)
     assert.equal(events.at(-1).type, "error", label)
   }
 })
 
-test("a valid message_start, resolved message_delta and message_stop sequence is relayed as a completion", async t => {
-  const { post } = await fixture(t, () => streamResponse([frame(STREAM[0]), frame(STREAM[9]), frame(STREAM[10])]))
+test("a valid message_start, resolved message_delta and message_stop sequence is relayed as a completion", async () => {
+  const { post } = await fixture(() => streamResponse([frame(STREAM[0]), frame(STREAM[9]), frame(STREAM[10])]))
   const events = await consumer(await post()).finish()
   assert.equal(events.at(-1).type, "message_stop")
   assert.equal(events.find(e => e.type === "message_delta").delta.stop_reason, "tool_use")
 })
 
-test("arriving stream chunks reset the idle timeout so active Claude turns exceed a single idle window", async t => {
+test("arriving stream chunks reset the idle timeout so active Claude turns exceed a single idle window", async () => {
   const chunks = [frame(STREAM[0]), frame(STREAM[1]), frame(STREAM[2]), frame(STREAM[3]), frame(STREAM[4]), frame(STREAM[9]), frame(STREAM[10])]
   let i = 0
   const enc = new TextEncoder()
@@ -256,18 +262,18 @@ test("arriving stream chunks reset the idle timeout so active Claude turns excee
     },
   }, { highWaterMark: 0 }), { status: 200, headers: { "content-type": "text/event-stream" } })
   // Total duration (~140ms) exceeds the 55ms idle window, but each chunk arrives within 20ms.
-  const { post } = await fixture(t, paced, { idleTimeoutMs: 55, totalTimeoutMs: 500 })
+  const { post } = await fixture(paced, { idleTimeoutMs: 55, totalTimeoutMs: 500 })
   const events = await consumer(await post()).finish()
   assert.equal(events.at(-1).type, "message_stop")
 })
 
-test("a stalled Claude stream rejects with inference-idle-timeout while an active stream exceeding totalTimeoutMs rejects with inference-timeout", async t => {
+test("a stalled Claude stream rejects with inference-idle-timeout while an active stream exceeding totalTimeoutMs rejects with inference-timeout", async () => {
   let stalledCancelled = false
   const stalled = () => new Response(new ReadableStream({
     start(controller) { controller.enqueue(new TextEncoder().encode(frame(STREAM[0]))) },
     cancel() { stalledCancelled = true },
   }, { highWaterMark: 0 }), { status: 200, headers: { "content-type": "text/event-stream" } })
-  const { post: postStalled } = await fixture(t, stalled, { idleTimeoutMs: 25, totalTimeoutMs: 500 })
+  const { post: postStalled } = await fixture(stalled, { idleTimeoutMs: 25, totalTimeoutMs: 500 })
   const c1 = consumer(await postStalled())
   assert.equal((await c1.next()).type, "message_start")
   let idleErr
@@ -292,7 +298,7 @@ test("a stalled Claude stream rejects with inference-idle-timeout while an activ
     },
     cancel() { activeCancelled = true },
   }, { highWaterMark: 0 }), { status: 200, headers: { "content-type": "text/event-stream" } })
-  const { plugin, post: postEndless } = await fixture(t, endless)
+  const { plugin, post: postEndless } = await fixture(endless)
   await plugin.config({ provider: { "sap-aicore": { options: { idleTimeoutMs: 50, totalTimeoutMs: 70 } } } })
   const c2 = consumer(await postEndless())
   let totalErr

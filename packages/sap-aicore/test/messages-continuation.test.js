@@ -1,9 +1,15 @@
-import { test } from "node:test"
+import { test, afterEach, jest } from "bun:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { SAPAICorePlugin } from "../src/index.js"
+
+const cleanups = []
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn()
+  jest.useRealTimers()
+})
 
 const ROOT = "https://api.ai.eu10.hana.ondemand.com"
 const CREDS = {
@@ -46,13 +52,13 @@ function streamOf(model, content) {
   }), { status: 200, headers: { "content-type": "text/event-stream" } })
 }
 
-async function fixture(t, respond) {
+async function fixture(respond) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "magpie-cont-"))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   const credentialFile = path.join(dir, "credentials.json")
   fs.writeFileSync(credentialFile, JSON.stringify(CREDS), { mode: 0o600 })
   const original = globalThis.fetch
-  t.after(() => { globalThis.fetch = original })
+  cleanups.push(() => { globalThis.fetch = original })
   const bodies = []
   const json = body => new Response(JSON.stringify(body))
   globalThis.fetch = async (input, init) => {
@@ -153,8 +159,8 @@ function continuation(first, extra = {}) {
 
 const TOOL_TURN1 = { messages: [{ role: "user", content: "weather in Zürich?" }], tools: [{ name: "lookup", input_schema: { type: "object" } }] }
 
-test("a whole agent tool loop replays signed (empty-text) thinking and pairs tool_result by id", async t => {
-  const { post, bodies } = await fixture(t, toolLoopUpstream())
+test("a whole agent tool loop replays signed (empty-text) thinking and pairs tool_result by id", async () => {
+  const { post, bodies } = await fixture(toolLoopUpstream())
   const first = await (await post("claude-opus-4-8", TOOL_TURN1)).json()
   assert.equal(first.stop_reason, "tool_use")
   assert.equal(first.content.find(b => b.type === "tool_use").id, TOOL_ID)
@@ -171,8 +177,8 @@ test("a whole agent tool loop replays signed (empty-text) thinking and pairs too
   assert.equal("model" in sent, false)
 })
 
-test("a streamed continuation turn completes the tool loop", async t => {
-  const { post } = await fixture(t, toolLoopUpstream({ streamTurn2: true }))
+test("a streamed continuation turn completes the tool loop", async () => {
+  const { post } = await fixture(toolLoopUpstream({ streamTurn2: true }))
   const first = await (await post("claude-opus-4-8", TOOL_TURN1)).json()
   const events = await readStream(await post("claude-opus-4-8", continuation(first, { stream: true })))
   const text = events.filter(e => e.type === "content_block_delta").map(e => e.delta.text).join("")
@@ -180,8 +186,8 @@ test("a streamed continuation turn completes the tool loop", async t => {
   assert.equal(events.at(-1).type, "message_stop")
 })
 
-test("a tampered thinking signature is surfaced as an upstream error, never repaired", async t => {
-  const { post } = await fixture(t, toolLoopUpstream())
+test("a tampered thinking signature is surfaced as an upstream error, never repaired", async () => {
+  const { post } = await fixture(toolLoopUpstream())
   const first = await (await post("claude-opus-4-8", TOOL_TURN1)).json()
   const tampered = structuredClone(first)
   tampered.content.find(b => b.type === "thinking").signature = "FORGED"
@@ -191,8 +197,8 @@ test("a tampered thinking signature is surfaced as an upstream error, never repa
   assert.equal(text.includes(CREDS.clientSecret), false, "credential echo in the native error is redacted")
 })
 
-test("a mismatched tool_result id is surfaced as an upstream error, never repaired", async t => {
-  const { post } = await fixture(t, toolLoopUpstream())
+test("a mismatched tool_result id is surfaced as an upstream error, never repaired", async () => {
+  const { post } = await fixture(toolLoopUpstream())
   const first = await (await post("claude-opus-4-8", TOOL_TURN1)).json()
   const bad = {
     messages: [
@@ -205,9 +211,9 @@ test("a mismatched tool_result id is surfaced as an upstream error, never repair
   assert.equal((await post("claude-opus-4-8", bad)).status, 400)
 })
 
-test("redacted_thinking and cache_control are forwarded verbatim for upstream validation", async t => {
+test("redacted_thinking and cache_control are forwarded verbatim for upstream validation", async () => {
   const seen = {}
-  const { post } = await fixture(t, (body) => {
+  const { post } = await fixture((body) => {
     const assistant = body.messages.find(m => m.role === "assistant")
     seen.redacted = assistant?.content.some(b => b.type === "redacted_thinking" && b.data === "opaque-blob")
     seen.cache = body.system?.[0]?.cache_control?.type === "ephemeral"
@@ -226,8 +232,8 @@ test("redacted_thinking and cache_control are forwarded verbatim for upstream va
 })
 
 
-test("the generic newer model runs the same whole tool loop by contract", async t => {
-  const { post } = await fixture(t, toolLoopUpstream())
+test("the generic newer model runs the same whole tool loop by contract", async () => {
+  const { post } = await fixture(toolLoopUpstream())
   const first = await (await post("claude-opus-4-9", TOOL_TURN1)).json()
   assert.equal(first.stop_reason, "tool_use")
   const final = await post("claude-opus-4-9", continuation(first))

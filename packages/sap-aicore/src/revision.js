@@ -1,10 +1,6 @@
-import { execFile } from "node:child_process"
-import { readFile, stat } from "node:fs/promises"
-import { fileURLToPath } from "node:url"
-import { promisify } from "node:util"
+import { readFile } from "node:fs/promises"
 
 const ROOT = new URL("..", import.meta.url)
-const exec = promisify(execFile)
 
 async function readVersion() {
   try {
@@ -15,31 +11,10 @@ async function readVersion() {
   }
 }
 
-async function gitDescribe() {
-  try {
-    const metadata = await stat(new URL(".git", ROOT))
-    if (!metadata.isDirectory() && !metadata.isFile()) return null
-    // Git must identify this checkout, not an environment-selected repository.
-    const env = {
-      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
-      GIT_CEILING_DIRECTORIES: fileURLToPath(new URL("..", ROOT)),
-    }
-    const { stdout } = await exec("git", ["describe", "--tags", "--always", "--dirty"], {
-      cwd: fileURLToPath(ROOT), env, encoding: "utf8", timeout: 2000,
-    })
-    return stdout.trim() || null
-  } catch {
-    return null
-  }
-}
-
 let cached
 
-/** Package version plus this checkout's Git revision, computed once. */
+/** Package version only, computed once without Git or child processes. */
 export function pluginRevision() {
-  cached ??= Promise.all([readVersion(), gitDescribe()]).then(([version, describe]) => {
-    version ??= "unknown"
-    return describe ? `${version} (${describe})` : version
-  })
+  cached ??= readVersion().then(version => version ?? "unknown")
   return cached
 }
