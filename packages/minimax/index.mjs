@@ -474,7 +474,7 @@ async function accountCall(site, path, opts, what) {
   const { url, init } = signed(site, path, opts)
   const res = await siteFetch(site, url, { ...init, signal: AbortSignal.timeout(15000) }, what)
   if (res.status === 401 || res.status === 403) throw new AccountRefused(`${what}: the sign-in was refused (HTTP ${res.status})`, res.status)
-  if (!res.ok) throw new Error(`${what}: HTTP ${res.status}`)
+  if (!res.ok) throw Object.assign(new Error(`${what}: HTTP ${res.status}`), { status: res.status })
   let env
   try {
     env = obj(JSON.parse(await res.text()))
@@ -531,8 +531,16 @@ async function membership(site, access, userID) {
       }
     }
   } catch (e) {
-    if (e instanceof AccountRefused) throw e
-    return membershipOf(await accountCall(site, "/matrix/api/v1/commerce/get_membership_info", { access, userID, body: {} }, "membership"))
+    if (e instanceof AccountRefused || e instanceof OtherSite) throw e
+    try {
+      return membershipOf(await accountCall(site, "/matrix/api/v1/commerce/get_membership_info", { access, userID, body: {} }, "membership"))
+    } catch (e2) {
+      // neither is on this site: the international one answers both with
+      // 404 "404 page not found" (#666), so its plan is unknown, not Free,
+      // and the card goes on with the credits ledger
+      if (e.status === 404 && e2.status === 404 && !(e2 instanceof AccountRefused)) return { unknown: true }
+      throw e2
+    }
   }
   if (!ws) return {}
   try {
@@ -672,9 +680,9 @@ function creditsWindow(batches, now = Date.now()) {
 // usageOf is the card: the plan (the M Plan's tier, else Free), the credits
 // left, and the M Plan's windows when there are any.
 function usageOf(m, windows = []) {
-  const plan = m.hasTokenPlan ? (m.tier ? "M Plan " + m.tier : "M Plan") : "Free"
+  const plan = m.hasTokenPlan ? (m.tier ? "M Plan " + m.tier : "M Plan") : m.unknown ? undefined : "Free"
   return {
-    plan,
+    ...(plan ? { plan } : {}),
     ...(m.hasTokenPlan && m.expiresAt ? { until: new Date(m.expiresAt < 1e12 ? m.expiresAt * 1000 : m.expiresAt).toISOString() } : {}),
     ...(m.balance !== undefined ? { balance: credits(m.balance) } : {}),
     windows,

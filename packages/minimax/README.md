@@ -123,7 +123,9 @@ The usage card shows:
   when the soonest of them runs out, from the credit details MiniMax's own
   client lists (`/minimax-cloud/api/v1/credit/details`); beside an M Plan
   it is aside, since the plan's windows come first;
-- the plan: Free, or the M Plan's tier and when it ends;
+- the plan: Free, or the M Plan's tier and when it ends; none when the
+  site has no membership API (the international site answers both of its
+  calls with 404), and the card goes on with the credits;
 - for an M Plan, its windows (5 hours, 7 days, and any model's own) from
   `coding_plan/remains`.
 
