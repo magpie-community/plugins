@@ -796,7 +796,15 @@ export class NativeSessionPool {
     }
     // Pending ancestors, new input, and terminal old handles are ordinary
     // imported history, even while a parent Run is still awaiting its results.
-    if (chat.messages.some((m) => m?.tool_calls?.some((c) => HANDLE.test(c?.id ?? "")))) return fallback("historical native calls")
+    // A fresh user turn whose old native calls all have results imports them
+    // into a NEW owner; those results are never submitted to their old exec.
+    const historical = chat.messages.flatMap((m) => (m?.tool_calls ?? []).filter((c) => HANDLE.test(c?.id ?? "")))
+    if (historical.length) {
+      const answered = new Set(chat.messages.filter((m) => m?.role === "tool").map((m) => m.tool_call_id))
+      const last = chat.messages.at(-1)
+      const freshTurn = last?.role === "user" && !toolAttachment(last)
+      if (!freshTurn || historical.some((c) => !answered.has(c.id))) return fallback("historical native calls")
+    }
     if (selector && this.selectors.has(account + ":" + selector)) return fallback("owner busy")
     return { account, selector, controls, selected: !!selector, chat }
   }

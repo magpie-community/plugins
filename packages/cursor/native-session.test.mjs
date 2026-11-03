@@ -141,6 +141,21 @@ test("native admission: competing initial requests cannot overwrite a session re
   expect(pool.selectors.get(run.account + ":" + run.selector)).toBe(run)
 })
 
+test("native admission: a fresh user turn whose old native calls all have results gets an owner; any pending call falls back", () => {
+  const pool = new NativeSessionPool()
+  pools.push(pool)
+  const id = "call_cursor_abcdef_0_0"
+  const call = { role: "assistant", content: "", tool_calls: [{ id, type: "function", function: { name: "audit_echo", arguments: "{}" } }] }
+  const result = { role: "tool", tool_call_id: id, content: "done" }
+  const answered = [{ role: "user", content: "first" }, call, result, { role: "assistant", content: "finished" }, { role: "user", content: "next" }]
+  expect(pool.prepare("synthetic-token", { messages: answered }, "synthetic-session", registered).fallback).toBeUndefined()
+  // the old call has no result: it is pending, so the request is imported history
+  const pending = answered.filter((m) => m !== result)
+  expect(pool.prepare("synthetic-token", { messages: pending }, "synthetic-session", registered).fallback).toBe("historical native calls")
+  // a tool result with no owner here is not a fresh user turn
+  expect(pool.prepare("synthetic-token", { messages: answered.slice(0, 3) }, "synthetic-session", registered).fallback).toBe("owner unavailable")
+})
+
 test("native admission: completed replay entries are bounded; active entries are preserved", () => {
   const { pool, run } = owner({}, { perAccount: 2, perProcess: 2 })
   run.terminalSeen(nativeFields(message(uint(1, 0), uint(2, 0))))
