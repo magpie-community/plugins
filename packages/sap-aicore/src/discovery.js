@@ -391,7 +391,7 @@ function resolveResponses(deployment, identity, model, url) {
     displayLabel: identity.modelName,
     apiNpm: "@ai-sdk/openai",
     routePolicy: Object.freeze({ path: "/responses", query: false }),
-    capabilities: Object.freeze({ text: true, functionTool: true, streaming: true }),
+    capabilities: Object.freeze({ text: true, functionTool: true, streaming: true, image: metadata.inputTypes?.includes("image") === true }),
   })
 }
 // Verified request-policy baselines. Emitted only for the two live-verified
@@ -434,7 +434,7 @@ function resolveAnthropic(deployment, identity, model, url) {
     displayLabel: resolved.displayLabel,
     apiNpm: "@ai-sdk/anthropic",
     routePolicy: Object.freeze({ invoke: "/invoke", stream: "/invoke-with-response-stream", query: false }),
-    capabilities: Object.freeze({ text: true, functionTool: true, streaming: metadata.streamingSupported === true }),
+    capabilities: Object.freeze({ text: true, functionTool: true, streaming: metadata.streamingSupported === true, image: metadata.inputTypes?.includes("image") === true }),
     ...(requestPolicy ? { requestPolicy } : {}),
   })
   IDENTITY_AUTHORITATIVE.set(entry, typeof model.displayName === "string" && model.displayName.trim() !== "")
@@ -685,8 +685,8 @@ export function projectModels(registry) {
       api: { id: entry.canonicalID, npm: entry.apiNpm },
       capabilities: {
         toolcall: entry.capabilities.functionTool === true,
-        attachment: false,
-        input: { text: true, image: false, audio: false, video: false, pdf: false },
+        attachment: entry.capabilities.image === true,
+        input: { text: true, image: entry.capabilities.image === true, audio: false, video: false, pdf: false },
         output: { text: true, image: false, audio: false, video: false, pdf: false },
       },
     }

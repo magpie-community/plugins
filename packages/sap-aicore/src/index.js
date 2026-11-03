@@ -623,7 +623,7 @@ export async function SAPAICorePlugin(input) {
             // The client route must match the selected model's native protocol:
             // a model is never dispatched through another protocol's transport.
             if (entry.protocol !== target.protocol) throw Object.assign(failure("destination"), { status: 400 })
-            const body = transport.validateRequest(request)
+            const body = transport.validateRequest(request, entry)
             const token = await tokenFor(gen, controller.signal, check)
             await check()
             if (controller.signal.aborted) throw controller.signal.reason

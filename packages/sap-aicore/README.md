@@ -12,7 +12,7 @@ All support text replies, streaming, and agent-executed function tools; Claude a
 
 A GPT-5.x or lower-major deployment you already run stays in SAP AI Core but is not discovered or selectable through this plugin; the plugin never upgrades, migrates, or deletes it. Newer eligible GPT (major version 6 or higher) and compatible Claude deployments appear automatically, with no plugin release.
 
-This adapter accepts text and agent-executed tool calls only. It does not accept image blocks or pasted screenshots, even though the underlying Bedrock Claude models can: image input is rejected with an explicit unsupported-content error (`attachment` is intentionally off), never silently dropped.
+This adapter accepts text, agent-executed tool calls, and image input. Image input is gated per model on the API: a deployment's catalog version must advertise `image` in its `inputTypes`. When it does, GPT accepts `input_image` parts (Responses) and Claude accepts base64 `image` blocks (Messages); a text-only version rejects images with an explicit unsupported-content error rather than silently dropping them. All current GPT-6 and Claude deployments tested advertise image.
 
 
 ## Before you start
@@ -146,7 +146,7 @@ Each request carried the account's SAP Bearer and resource-group header injected
 ## Limitations and security
 
 - Only running deployments are exposed. GPT requires major version 6 or higher, not a fixed model/version list; Claude is accepted by the documented SAP Bedrock Messages contract (`foundation-models` / `aws-bedrock`). Existing GPT-5.x and lower-major deployments remain in SAP but are never listed, upgraded, or deleted.
-- Text and agent-executed function tools only (Claude also: native signed thinking and `cache_control`); no images or pasted screenshots, audio, video, hosted tools, or other multimodal input. Image input is rejected with an explicit error rather than silently omitted.
+- Text, agent-executed function tools, and image input (Claude also: native signed thinking and `cache_control`). Image input is enabled per model from the catalog `inputTypes` and rejected with an explicit error on text-only versions; audio, video, hosted tools, and other multimodal input remain unsupported.
 - No deployment management, server-side conversation storage, or automatic model substitution.
 - Capability status differs by evidence: the GPT pair and the two Claude baselines are directly verified; other eligible models' live inference, optional reasoning controls, and context/output limits are **not** verified until exercised against a real deployment. Being listed never asserts completed live acceptance.
 - Keep credentials outside the repository. Never use a SAP client secret or access token as the agent's gateway key.

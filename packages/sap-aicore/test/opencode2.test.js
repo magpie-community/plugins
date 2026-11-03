@@ -134,7 +134,7 @@ test("OpenCode 2 credential-file sign-in discovers both families and routes thei
   await host.modelsRefreshed
   const provider = host.providers()[0]
   assert.deepEqual(provider.models.map(model => model.id).sort(), [OPUS, GPT])
-  assert.deepEqual(provider.models.find(model => model.id === OPUS).capabilities.input, ["text"])
+  assert.deepEqual(provider.models.find(model => model.id === OPUS).capabilities.input, ["text", "image"])
   assert.equal(provider.models.find(model => model.id === OPUS).package, "aisdk:@ai-sdk/anthropic@ai-v6")
   const options = { baseURL: provider.info.settings.baseURL }
   await host.sdkHooks.find(hook => hook.name === "sdk" && hook.filter.providerID === "sap-aicore").callback({ options })

@@ -66,6 +66,31 @@ test("out-of-scope parameters, multimodal content, and unrecognized fields are r
   }
 })
 
+const IMAGE_CAPABLE = { capabilities: { image: true } }
+const parseWith = async (body, entry) => validateRequest(await readJSONRequest(ROOT + "/messages", { body: JSON.stringify(body) }), entry)
+const imageBlock = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } }
+const withImage = block => base({ messages: [{ role: "user", content: [block, { type: "text", text: "describe" }] }] })
+
+test("a base64 image block is accepted only for an image-capable model", async () => {
+  // No capability (default) and an explicitly image-off model both reject.
+  await assert.rejects(parseWith(withImage(imageBlock)), { code: "invalid-request" })
+  await assert.rejects(parseWith(withImage(imageBlock), { capabilities: { image: false } }), { code: "invalid-request" })
+  // An image-capable model accepts it and forwards the block verbatim.
+  const out = await parseWith(withImage(imageBlock), IMAGE_CAPABLE)
+  assert.deepEqual(out.messages[0].content[0], imageBlock)
+})
+
+test("an image-capable model still rejects non-base64 sources and malformed image blocks", async () => {
+  const bad = [
+    { type: "image", source: { type: "url", url: "https://example.invalid/i.png" } },
+    { type: "image", source: { type: "base64", media_type: "image/png" } },
+    { type: "image", source: { type: "base64", data: "iVBORw0KGgo=" } },
+    { type: "image" },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" }, detail: "high" },
+  ]
+  for (const block of bad) await assert.rejects(parseWith(withImage(block), IMAGE_CAPABLE), { code: "invalid-request" }, JSON.stringify(block))
+})
+
 test("tools, tool_choice and a forced tool name are validated against declared tools", async () => {
   const tools = [{ name: "lookup", input_schema: { type: "object" } }]
   assert.ok(await parse(base({ tools, tool_choice: { type: "tool", name: "lookup" } })))

@@ -20,18 +20,38 @@ const ALLOWED = new Set([
 const MESSAGE_PART = new Set(["input_text", "output_text"])
 
 /**
- * Validate message content: a string or an array of text-only parts. Multimodal
- * parts (image/file/audio) are not verified and are rejected.
+ * Validate message content: a string or an array of parts. Text parts are
+ * always accepted; `input_image` parts are accepted only when the selected
+ * model advertises image input. Other multimodal parts are rejected.
  * @param {unknown} content
+ * @param {boolean} allowImage
  */
-function validateMessageContent(content) {
+function validateMessageContent(content, allowImage) {
   if (typeof content === "string") return
   if (!Array.isArray(content)) throw invalid("Message content must be a string or an array of text parts.")
   for (const part of content) {
-    if (!isObject(part) || typeof part.type !== "string" || !MESSAGE_PART.has(part.type) || typeof part.text !== "string") {
-      throw invalid("Only text message content is supported.")
+    if (!isObject(part) || typeof part.type !== "string") throw invalid("Only text message content is supported.")
+    if (part.type === "input_image") {
+      if (!allowImage) throw invalid("Image content is not supported for this model.")
+      validateInputImage(part)
+      continue
     }
+    if (!MESSAGE_PART.has(part.type) || typeof part.text !== "string") throw invalid("Only text message content is supported.")
   }
+}
+
+const IMAGE_DETAIL = new Set(["auto", "low", "high"])
+const INPUT_IMAGE_KEYS = new Set(["type", "image_url", "detail"])
+
+/**
+ * Validate an `input_image` part: a data or https `image_url` string with an
+ * optional `detail`. Stateful file references and unknown fields are rejected.
+ * @param {Record<string, unknown>} part
+ */
+function validateInputImage(part) {
+  for (const key of Object.keys(part)) if (!INPUT_IMAGE_KEYS.has(key)) throw invalid("Unsupported field in an input_image part.")
+  if (typeof part.image_url !== "string" || !/^(?:data:|https:\/\/)/i.test(part.image_url)) throw invalid("An input_image requires an \"image_url\" data or https URL string.")
+  if ("detail" in part && (typeof part.detail !== "string" || !IMAGE_DETAIL.has(part.detail))) throw invalid("An input_image \"detail\" must be \"auto\", \"low\" or \"high\".")
 }
 
 /**
@@ -39,13 +59,14 @@ function validateMessageContent(content) {
  * function_call_output / reasoning history only. Stateful references and
  * unverified item types are rejected.
  * @param {unknown} item
+ * @param {boolean} allowImage
  */
-function validateInputItem(item) {
+function validateInputItem(item, allowImage) {
   if (!isObject(item)) throw invalid("Each input item must be an object.")
   const type = item.type
   if (type === undefined || type === "message") {
     if (!["user", "assistant", "system", "developer"].includes(String(item.role))) throw invalid("A message requires a supported role.")
-    validateMessageContent(item.content)
+    validateMessageContent(item.content, allowImage)
     return
   }
   if (type === "function_call") {
@@ -82,9 +103,11 @@ function validateTool(tool) {
 
 /**
  * @param {unknown} body
+ * @param {*} [entry] selected deployment entry; its capabilities gate image input.
  * @returns {{ model: string, store: false, stream?: boolean } & Record<string, unknown>}
  */
-export function validateRequest(body) {
+export function validateRequest(body, entry) {
+  const allowImage = entry?.capabilities?.image === true
   if (!isObject(body)) throw invalid("The request body must be a JSON object.")
   const b = /** @type {Record<string, unknown>} */ (body)
 
@@ -112,7 +135,7 @@ export function validateRequest(body) {
   if (typeof input !== "string") {
     if (!Array.isArray(input)) throw invalid("The \"input\" parameter must be a string or an array of input items.")
     for (const item of input) {
-      validateInputItem(item)
+      validateInputItem(item, allowImage)
       if (item.type === "reasoning") reasoningHistory = true
     }
   }

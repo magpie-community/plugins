@@ -162,7 +162,7 @@ test("a running Bedrock Claude deployment resolves to a frozen anthropic entry w
   assert.equal(entry.activeVersion, "1")
   assert.equal(entry.executableID, "aws-bedrock")
   assert.deepEqual(entry.routePolicy, { invoke: "/invoke", stream: "/invoke-with-response-stream", query: false })
-  assert.deepEqual(entry.capabilities, { text: true, functionTool: true, streaming: true })
+  assert.deepEqual(entry.capabilities, { text: true, functionTool: true, streaming: true, image: true })
   assert.equal(entry.metadata.contextLength, 1000000)
   assert.ok(Object.isFrozen(entry) && Object.isFrozen(entry.routePolicy))
   assert.deepEqual(entry.requestPolicy,
@@ -263,13 +263,13 @@ test("malformed or conflicting provider metadata cannot qualify through a Claude
 
 // --- projection ------------------------------------------------------------
 
-test("projectModels publishes Claude under @ai-sdk/anthropic and keeps image/attachment disabled", () => {
+test("projectModels publishes Claude under @ai-sdk/anthropic and enables image/attachment from the catalog", () => {
   const entry = resolveDeployment(opus())
   const model = projectModels({ [entry.canonicalID]: entry })["claude-opus-4-8"]
   assert.deepEqual(model.api, { id: "claude-opus-4-8", npm: "@ai-sdk/anthropic" })
   assert.equal(model.name, "Claude Opus 4.8")
-  assert.equal(model.capabilities.attachment, false)
-  assert.equal(model.capabilities.input.image, false)
+  assert.equal(model.capabilities.attachment, true)
+  assert.equal(model.capabilities.input.image, true)
   assert.equal(model.limit.context, 1000000)
   assert.equal(model.limit.output, 128000)
 })

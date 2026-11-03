@@ -4,6 +4,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { SAPAICorePlugin } from "../src/index.js"
+import { validateRequest as validateResponsesRequest } from "../src/responses.js"
 
 const cleanups = []
 afterEach(async () => {
@@ -337,6 +338,26 @@ test("unsupported stateful, multimodal and unverified parameters never reach SAP
     assert.equal(response.headers.get("x-magpie-sign-in"), "kept")
   }
   assert.equal(sent.length, 0)
+})
+
+test("an input_image part is accepted only for an image-capable model", () => {
+  const imagePart = { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" }
+  const body = { model: MODEL, input: [{ role: "user", content: [{ type: "input_text", text: "what is this?" }, imagePart] }] }
+  // No capability / image-off: rejected.
+  assert.throws(() => validateResponsesRequest(body), { code: "invalid-request" })
+  assert.throws(() => validateResponsesRequest(body, { capabilities: { image: false } }), { code: "invalid-request" })
+  // Image-capable: accepted, image part forwarded verbatim.
+  const out = validateResponsesRequest(body, { capabilities: { image: true } })
+  assert.deepEqual(out.input[0].content[1], imagePart)
+  // Even when capable, malformed URLs and unknown fields are rejected.
+  for (const content of [
+    [{ type: "input_image" }],
+    [{ type: "input_image", image_url: "ftp://example.invalid/i.png" }],
+    [{ type: "input_image", image_url: "data:image/png;base64,x", foo: 1 }],
+    [{ type: "input_image", image_url: "data:image/png;base64,x", detail: "ultra" }],
+  ]) {
+    assert.throws(() => validateResponsesRequest({ model: MODEL, input: [{ role: "user", content }] }, { capabilities: { image: true } }), { code: "invalid-request" }, JSON.stringify(content))
+  }
 })
 
 test("upstream 429 and temporary failures preserve native code, seconds and redacted details without replay", async () => {

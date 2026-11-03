@@ -107,7 +107,7 @@ test("eligible gpt-6-astra yields a frozen entry with identity, URL, route, and 
   assert.equal(entry.scenarioID, "foundation-models")
   assert.equal(entry.executableID, "azure-openai")
   assert.deepEqual(entry.routePolicy, { path: "/responses", query: false })
-  assert.deepEqual(entry.capabilities, { text: true, functionTool: true, streaming: true })
+  assert.deepEqual(entry.capabilities, { text: true, functionTool: true, streaming: true, image: false })
   assert.equal(entry.configurationID, "c" + "0".repeat(15))
   assert.equal(entry.metadata.contextLength, 1050000)
   assert.ok(Object.isFrozen(entry) && Object.isFrozen(entry.routePolicy) && Object.isFrozen(entry.metadata))
@@ -243,9 +243,9 @@ test("a deprecated, retired, or invalid-metadata version hides, future retiremen
   assert.equal(resolveDeployment(astra({ catalog: catalogFor("gpt-6-astra", "2026-09-03", { retirementDate: today }) })), null)
 })
 
-test("an image-advertising catalog never adds image capability", () => {
+test("an image-advertising catalog adds image capability", () => {
   const entry = resolveDeployment(astra({ catalog: catalogFor("gpt-6-astra", "2026-09-03", { inputTypes: ["text", "image"] }) }))
-  assert.deepEqual(entry.capabilities, { text: true, functionTool: true, streaming: true })
+  assert.deepEqual(entry.capabilities, { text: true, functionTool: true, streaming: true, image: true })
 })
 
 test("an unsafe deployment URL is rejected", () => {

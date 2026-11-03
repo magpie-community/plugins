@@ -246,7 +246,7 @@ test("a mixed GPT and Claude account lists both under their protocol identities 
     assert.equal(catalog["gpt-6-astra"].api.npm, "@ai-sdk/openai")
     assert.deepEqual(catalog["claude-opus-4-8"].api, { id: "claude-opus-4-8", npm: "@ai-sdk/anthropic" })
     assert.equal(catalog["claude-opus-4-8"].name, "Claude Opus 4.8")
-    assert.equal(catalog["claude-opus-4-8"].capabilities.input.image, false)
+    assert.equal(catalog["claude-opus-4-8"].capabilities.input.image, true)
     assert.equal(catalog["claude-opus-4-8"].limit.context, 1000000)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })

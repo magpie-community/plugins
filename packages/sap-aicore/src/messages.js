@@ -78,10 +78,14 @@ const TOOL_RESULT_KEYS = new Set(["type", "tool_use_id", "content", "is_error", 
 const THINKING_KEYS = new Set(["type", "thinking", "signature"])
 const REDACTED_KEYS = new Set(["type", "data"])
 
-// Supported content blocks: text, agent tool_use/tool_result, and genuine
-// signed/opaque thinking history. Image, document and other multimodal blocks
-// are out of scope and rejected rather than silently dropped.
-function validateContentBlock(block) {
+const IMAGE_KEYS = new Set(["type", "source", "cache_control"])
+const IMAGE_SOURCE_KEYS = new Set(["type", "media_type", "data"])
+
+// Supported content blocks: text, agent tool_use/tool_result, genuine
+// signed/opaque thinking history, and — when the selected model advertises image
+// input — base64 image blocks. Non-base64 sources, documents and other
+// multimodal blocks are out of scope and rejected rather than silently dropped.
+function validateContentBlock(block, allowImage) {
   if (!isObject(block) || typeof block.type !== "string") throw invalid("Each content block must have a string \"type\".")
   switch (block.type) {
     case "text":
@@ -116,12 +120,23 @@ function validateContentBlock(block) {
       allowedKeys(block, REDACTED_KEYS, "a redacted_thinking block")
       if (typeof block.data !== "string" || !block.data) throw invalid("A redacted_thinking block requires a string \"data\".")
       return
+    case "image": {
+      if (!allowImage) throw invalid("Image blocks are not supported for this model.")
+      allowedKeys(block, IMAGE_KEYS, "an image block")
+      const source = block.source
+      if (!isObject(source) || source.type !== "base64") throw invalid("An image block requires a \"source\" with type \"base64\".")
+      allowedKeys(source, IMAGE_SOURCE_KEYS, "an image source")
+      if (typeof source.media_type !== "string" || !source.media_type) throw invalid("An image source requires a string \"media_type\".")
+      if (typeof source.data !== "string" || !source.data) throw invalid("An image source requires string \"data\".")
+      validateCacheControl(block.cache_control)
+      return
+    }
     default:
       throw invalid("Unsupported content block type.")
   }
 }
 
-function validateMessages(messages) {
+function validateMessages(messages, allowImage) {
   if (!Array.isArray(messages) || messages.length === 0) throw invalid("The \"messages\" parameter must be a non-empty array.")
   for (const message of messages) {
     if (!isObject(message) || typeof message.role !== "string" || !ROLES.has(message.role)) throw invalid("Each message requires role \"user\" or \"assistant\".")
@@ -129,7 +144,7 @@ function validateMessages(messages) {
     const content = message.content
     if (typeof content === "string") continue
     if (!Array.isArray(content)) throw invalid("Message \"content\" must be a string or an array of content blocks.")
-    for (const block of content) validateContentBlock(block)
+    for (const block of content) validateContentBlock(block, allowImage)
   }
 }
 
@@ -222,7 +237,8 @@ function validateOutputConfig(oc) {
  * dispatch. Returns the validated body verbatim.
  * @param {unknown} body
  */
-export function validateRequest(body) {
+export function validateRequest(body, entry) {
+  const allowImage = entry?.capabilities?.image === true
   if (!isObject(body)) throw invalid("The request body must be a JSON object.")
   const b = /** @type {Record<string, unknown>} */ (body)
   for (const key of Object.keys(b)) {
@@ -233,7 +249,7 @@ export function validateRequest(body) {
   const model = b.model
   if (typeof model !== "string" || model.length < 1 || /[\x00-\x1f\x7f]/.test(model)) throw invalid("The \"model\" parameter must be a non-empty string.")
 
-  validateMessages(b.messages)
+  validateMessages(b.messages, allowImage)
   if ("system" in b) validateSystem(b.system)
 
   if (!("max_tokens" in b)) throw invalid("The \"max_tokens\" parameter is required.")
