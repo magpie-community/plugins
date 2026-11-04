@@ -271,6 +271,25 @@ var I18N = {
     "页面缺少访问口令，请从 Magpie 的插件页重新打开。": "The page is missing its access token; please reopen it from Magpie's plugin page.",
     "窗口预热": "Window Warmup",
     "新建任务": "New task",
+    "反馈问题": "Report a problem",
+    "（把「复制问题内容」复制的内容粘贴到这里，替换这一行）": "(Paste what “Copy the report” copied here, replacing this line)",
+    "问题描述": "What happened",
+    "（发生了什么，期望是什么）": "(What happened, and what you expected)",
+    "复现步骤": "Steps to reproduce",
+    "环境": "Environment",
+    "诊断日志（已脱敏）": "Diagnostics (anonymized)",
+    "（诊断日志过长，已截断）": "(diagnostics too long, truncated)",
+    "问题内容会附上脱敏后的诊断日志（账号、key、任务名都已替换），提交前可以在 GitHub 上先预览。": "The report includes an anonymized diagnostics log (accounts, keys and task names are replaced); you can preview it on GitHub before submitting.",
+    "① 复制 issue 链接": "① Copy the issue link",
+    "在 GitHub 新建 issue": "New issue on GitHub",
+    "到浏览器地址栏粘贴打开": "paste it into your browser's address bar",
+    "② 复制问题内容": "② Copy the report",
+    "正在收集诊断…": "Collecting diagnostics…",
+    "粘贴到 issue 正文": "paste it into the issue body",
+    "诊断收集失败：": "Collecting diagnostics failed: ",
+    "链接已复制。": "Link copied.",
+    "问题内容已复制。": "Report copied.",
+    "复制失败：浏览器不允许这个页面写剪贴板。": "Copy failed: the browser doesn't let this page write to the clipboard.",
     "说明": "Help",
     "消息按供应商自己的额度规则计费，可能用到赠送额度或 API 余额；发送成功不代表窗口一定已开始计时。": "Each message is billed under the provider's own quota rules and may draw on bonus quota or API balance; a successful send does not guarantee the window has started counting.",
     "Magpie 关闭期间不会执行，重新打开后每个任务最多补发一次。": "Nothing runs while Magpie is closed; after it reopens, each task catches up at most once.",
@@ -383,6 +402,25 @@ var I18N = {
     "页面缺少访问口令，请从 Magpie 的插件页重新打开。": "頁面缺少存取權杖，請從 Magpie 的外掛頁重新開啟。",
     "窗口预热": "窗口預熱",
     "新建任务": "新增任務",
+    "反馈问题": "回報問題",
+    "（把「复制问题内容」复制的内容粘贴到这里，替换这一行）": "（把「複製問題內容」複製的內容貼到這裡，取代這一行）",
+    "问题描述": "問題描述",
+    "（发生了什么，期望是什么）": "（發生了什麼，期望是什麼）",
+    "复现步骤": "重現步驟",
+    "环境": "環境",
+    "诊断日志（已脱敏）": "診斷日誌（已去識別化）",
+    "（诊断日志过长，已截断）": "（診斷日誌過長，已截斷）",
+    "问题内容会附上脱敏后的诊断日志（账号、key、任务名都已替换），提交前可以在 GitHub 上先预览。": "問題內容會附上去識別化的診斷日誌（帳號、key、任務名都已替換），送出前可以在 GitHub 上先預覽。",
+    "① 复制 issue 链接": "① 複製 issue 連結",
+    "在 GitHub 新建 issue": "在 GitHub 新增 issue",
+    "到浏览器地址栏粘贴打开": "到瀏覽器網址列貼上開啟",
+    "② 复制问题内容": "② 複製問題內容",
+    "正在收集诊断…": "正在收集診斷…",
+    "粘贴到 issue 正文": "貼到 issue 內文",
+    "诊断收集失败：": "診斷收集失敗：",
+    "链接已复制。": "連結已複製。",
+    "问题内容已复制。": "問題內容已複製。",
+    "复制失败：浏览器不允许这个页面写剪贴板。": "複製失敗：瀏覽器不允許這個頁面寫入剪貼簿。",
     "说明": "說明",
     "消息按供应商自己的额度规则计费，可能用到赠送额度或 API 余额；发送成功不代表窗口一定已开始计时。": "訊息按供應商自己的額度規則計費，可能用到贈送額度或 API 餘額；傳送成功不代表窗口一定已開始計時。",
     "Magpie 关闭期间不会执行，重新打开后每个任务最多补发一次。": "Magpie 關閉期間不會執行，重新開啟後每個任務最多補發一次。",
@@ -495,6 +533,25 @@ var I18N = {
     "页面缺少访问口令，请从 Magpie 的插件页重新打开。": "ページにアクセストークンがありません。Magpie のプラグインページから開き直してください。",
     "窗口预热": "ウィンドウ予熱",
     "新建任务": "新規タスク",
+    "反馈问题": "問題を報告",
+    "（把「复制问题内容」复制的内容粘贴到这里，替换这一行）": "（「報告内容をコピー」でコピーした内容をここに貼り付け、この行と置き換えてください）",
+    "问题描述": "問題の内容",
+    "（发生了什么，期望是什么）": "（何が起きたか、どうなるはずだったか）",
+    "复现步骤": "再現手順",
+    "环境": "環境",
+    "诊断日志（已脱敏）": "診断ログ（匿名化済み）",
+    "（诊断日志过长，已截断）": "（診断ログが長すぎるため切り詰めました）",
+    "问题内容会附上脱敏后的诊断日志（账号、key、任务名都已替换），提交前可以在 GitHub 上先预览。": "報告には匿名化した診断ログが付きます（アカウント・key・タスク名は置き換え済み）。送信前に GitHub でプレビューできます。",
+    "① 复制 issue 链接": "① issue のリンクをコピー",
+    "在 GitHub 新建 issue": "GitHub で issue を作成",
+    "到浏览器地址栏粘贴打开": "ブラウザのアドレスバーに貼り付けて開く",
+    "② 复制问题内容": "② 報告内容をコピー",
+    "正在收集诊断…": "診断を収集中…",
+    "粘贴到 issue 正文": "issue の本文に貼り付け",
+    "诊断收集失败：": "診断の収集に失敗しました：",
+    "链接已复制。": "リンクをコピーしました。",
+    "问题内容已复制。": "報告内容をコピーしました。",
+    "复制失败：浏览器不允许这个页面写剪贴板。": "コピーに失敗しました：このページはクリップボードへの書き込みを許可されていません。",
     "说明": "ヘルプ",
     "消息按供应商自己的额度规则计费，可能用到赠送额度或 API 余额；发送成功不代表窗口一定已开始计时。": "メッセージはプロバイダー独自のクォータ規則で課金され、ボーナス額度や API 残高を使うことがあります。送信が成功してもウィンドウの計時が始まったとは限りません。",
     "Magpie 关闭期间不会执行，重新打开后每个任务最多补发一次。": "Magpie が閉じている間は実行されません。再オープン後、各タスクは最大 1 回キャッチアップ送信されます。",
@@ -536,6 +593,50 @@ var CATALOG_POLL_MS = 60000;
 var RUNS_PREVIEW = 5;
 var RUNS_MAX = 50;
 var DELETE_CONFIRM_MS = 3000;
+var ISSUE_NEW_URL = "https://github.com/magpie-community/plugins/issues/new";
+var ISSUE_BODY_MAX = 60000;
+function issueURL() {
+  const q = new URLSearchParams({
+    title: "window-warmup: ",
+    body: t("（把「复制问题内容」复制的内容粘贴到这里，替换这一行）")
+  });
+  return `${ISSUE_NEW_URL}?${q}`;
+}
+function issueBody(diag) {
+  const info = diag?.plugin ?? {};
+  const head = [
+    `### ${t("问题描述")}`,
+    "",
+    t("（发生了什么，期望是什么）"),
+    "",
+    `### ${t("复现步骤")}`,
+    "",
+    "1. ",
+    "",
+    `### ${t("环境")}`,
+    "",
+    `- window-warmup ${info.version ?? "?"}，Bun ${info.bun ?? "?"}，${info.platform ?? "?"}`,
+    "",
+    `<details><summary>${t("诊断日志（已脱敏）")}</summary>`,
+    "",
+    "```json"
+  ].join(`
+`);
+  const tail = `
+\`\`\`
+
+</details>
+`;
+  let json = JSON.stringify(diag, null, 1);
+  if (head.length + json.length + tail.length > ISSUE_BODY_MAX)
+    json = JSON.stringify(diag);
+  const room = ISSUE_BODY_MAX - head.length - tail.length;
+  if (json.length > room)
+    json = `${json.slice(0, room - 40)}
+…${t("（诊断日志过长，已截断）")}`;
+  return `${head}
+${json}${tail}`;
+}
 var MODEL_SOURCE_HINT = "模型列表来自 Magpie 上次获取的结果。账号和模型对不上时，到 Magpie「供应商」里打开这个供应商，点「获取模型」，再回来刷新本页。";
 var NO_MODELS_HINT = "还没有这个供应商的模型列表。请到 Magpie「供应商」里打开它，点「获取模型」。";
 var TRIGGERS = [
@@ -1701,6 +1802,7 @@ function render() {
   renderBars();
   renderSum();
   renderList();
+  renderFeedback();
   const newBtn = document.getElementById("new");
   if (newBtn)
     newBtn.disabled = isReadonly();
@@ -1760,6 +1862,86 @@ async function refreshCatalog() {
   }
   render();
 }
+var feedback = null;
+function copyText(text) {
+  const ta = el("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.append(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  ta.remove();
+  return ok;
+}
+async function openFeedback() {
+  if (feedback) {
+    feedback = null;
+    renderFeedback();
+    return;
+  }
+  feedback = { body: null, error: "", copied: "" };
+  renderFeedback();
+  try {
+    const diag = await apiJSON("api/diagnostics");
+    if (feedback)
+      feedback.body = issueBody(diag);
+  } catch (e) {
+    if (feedback)
+      feedback.error = errText(e);
+  }
+  renderFeedback();
+}
+function renderFeedback() {
+  const box = document.getElementById("feedback-panel");
+  if (!box)
+    return;
+  const fb = feedback;
+  if (!fb) {
+    box.replaceChildren();
+    return;
+  }
+  const panel = el("div", "fb");
+  panel.append(el("div", "hint", t("问题内容会附上脱敏后的诊断日志（账号、key、任务名都已替换），提交前可以在 GitHub 上先预览。")));
+  const url = issueURL();
+  const step1 = el("div", "fb-row");
+  const copyLink = el("button", "btn", t("① 复制 issue 链接"));
+  copyLink.addEventListener("click", () => {
+    fb.copied = copyText(url) ? "link" : "fail";
+    renderFeedback();
+  });
+  const a = el("a", "fb-link", t("在 GitHub 新建 issue"));
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  step1.append(copyLink, a, el("span", "hint mute", t("到浏览器地址栏粘贴打开")));
+  const step2 = el("div", "fb-row");
+  const copyBody = el("button", "btn", t("② 复制问题内容"));
+  copyBody.disabled = fb.body === null;
+  copyBody.addEventListener("click", () => {
+    if (fb.body === null)
+      return;
+    fb.copied = copyText(fb.body) ? "body" : "fail";
+    renderFeedback();
+  });
+  step2.append(copyBody, el("span", "hint mute", fb.body === null && !fb.error ? t("正在收集诊断…") : t("粘贴到 issue 正文")));
+  panel.append(step1, step2);
+  if (fb.error)
+    panel.append(el("div", "hint warn", `${t("诊断收集失败：")}${fb.error}`));
+  if (fb.copied === "link")
+    panel.append(el("div", "hint", t("链接已复制。")));
+  if (fb.copied === "body")
+    panel.append(el("div", "hint", t("问题内容已复制。")));
+  if (fb.copied === "fail")
+    panel.append(el("div", "hint warn", t("复制失败：浏览器不允许这个页面写剪贴板。")));
+  box.replaceChildren(panel);
+}
 function applyLook(dark, vars) {
   if (dark === true)
     document.body.classList.add("dark");
@@ -1793,6 +1975,9 @@ function applyStaticTexts() {
   const newBtn = document.getElementById("new");
   if (newBtn)
     newBtn.textContent = t("新建任务");
+  const fbBtn = document.getElementById("feedback");
+  if (fbBtn)
+    fbBtn.textContent = t("反馈问题");
   const info = document.getElementById("info");
   if (info) {
     info.setAttribute("aria-label", t("说明"));
@@ -1836,6 +2021,7 @@ function init() {
     if (!isReadonly() && !isNew)
       openNew();
   });
+  document.getElementById("feedback")?.addEventListener("click", () => void openFeedback());
   document.addEventListener("mousedown", (e) => {
     if (popEl && e.target instanceof Node && !popEl.contains(e.target) && !popEl.btn.contains(e.target))
       closePop();
@@ -1876,6 +2062,8 @@ export {
   deleteArmed,
   effortLabel,
   forceWindowAccount,
+  issueBody,
+  issueURL,
   modelDisplay,
   modelHint,
   modelOptions,

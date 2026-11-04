@@ -327,6 +327,48 @@ export class Scheduler {
     };
   }
 
+  /** 诊断用的内部视角（只读）：额度快照时刻与新鲜度、进行中的发送、定时器为固定任务排的到期点 */
+  debugView(): {
+    quotaAt: string | null;
+    quotaStale: boolean;
+    quotaTried: boolean;
+    keyDirLoaded: boolean;
+    inflight: string[];
+    armedFor: Record<string, string>;
+  } {
+    return {
+      quotaAt: this.quota?.at.toISOString() ?? null,
+      quotaStale: this.quotaStale,
+      quotaTried: this.quotaTried,
+      keyDirLoaded: this.keyDirMap !== null,
+      inflight: [...this.inflight.keys()],
+      armedFor: Object.fromEntries([...this.armedFor].map(([id, at]) => [id, at.toISOString()])),
+    };
+  }
+
+  /** 额度快照（调度器判窗口时用的那一份）；还没取到为 null */
+  quotaEntries(): QuotaEntry[] | null {
+    return this.quota?.entries ?? null;
+  }
+
+  /**
+   * 诊断用：按发送前同一套规则（resolveSend + pickEffort）现算这个任务此刻会用哪个模型、
+   * 账号头与档位。不发请求、不写状态；取 /v1/models 失败也作为结果返回，不让导出整体失败
+   */
+  async previewSend(
+    task: Task,
+  ): Promise<{ model: string; pin: string | null; effort: string | null } | { error: string }> {
+    try {
+      const resolved = await this.resolveSend(task, await this.modelsFn(this.base));
+      if ("error" in resolved) return resolved;
+      const pick = pickEffort(resolved.model);
+      if ("error" in pick) return pick;
+      return { model: resolved.id, pin: resolved.pin, effort: pick.send };
+    } catch (e) {
+      return { error: errText(e) };
+    }
+  }
+
   /** 单任务的下次执行点与 24 小时时间轴点；时区/规则抛错时由调用方兜成「无计划」 */
   private snapshotTask(
     task: Task,

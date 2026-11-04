@@ -2,6 +2,9 @@
 // statusOf / trigText / 下拉选项构造 / 执行记录文案等由 web/app.ts 导出，界面渲染直接复用。
 import { expect, test } from "bun:test";
 import {
+  issueBody,
+  issueURL,
+  setLang,
   accountHasWindows,
   accountModelView,
   accountOptions,
@@ -494,4 +497,33 @@ test("accountHasWindows：没账号、不在目录、没有窗口都算没有—
   // 旧任务里存着、目录里已经没有的账号
   expect(accountHasWindows("p", "gone", [provider])).toBe(false);
   expect(accountHasWindows("nope", "with-win", [provider])).toBe(false);
+});
+
+test("反馈问题：链接预填标题前缀与粘贴提示；正文含模板、环境与折叠的诊断 JSON", () => {
+  setLang("zh");
+  const u = new URL(issueURL());
+  expect(u.origin + u.pathname).toBe("https://github.com/magpie-community/plugins/issues/new");
+  expect(u.searchParams.get("title")).toBe("window-warmup: ");
+  expect(u.searchParams.get("body")).toContain("复制问题内容");
+  expect(issueURL().length).toBeLessThan(1000);
+
+  const diag = { schema: "window-warmup-diagnostics/1", plugin: { version: "0.1.2", bun: "1.4.4", platform: "linux-x64" } };
+  const body = issueBody(diag);
+  expect(body).toContain("### 问题描述");
+  expect(body).toContain("window-warmup 0.1.2，Bun 1.4.4，linux-x64");
+  const json = /```json\n([\s\S]*)\n```/.exec(body)![1];
+  expect(JSON.parse(json)).toEqual(diag);
+});
+
+test("反馈问题：诊断过大时改用紧凑 JSON，仍超 GitHub 上限就截断并注明", () => {
+  setLang("zh");
+  const mid = { plugin: {}, rows: Array.from({ length: 3000 }, (_, i) => ({ i, a: "x" })) };
+  expect(JSON.stringify(mid, null, 1).length).toBeGreaterThan(60_000);
+  const compact = issueBody(mid);
+  expect(compact.length).toBeLessThanOrEqual(60_000);
+  expect(JSON.parse(/```json\n([\s\S]*)\n```/.exec(compact)![1])).toEqual(mid);
+  const huge = issueBody({ plugin: {}, blob: "y".repeat(100_000) });
+  expect(huge.length).toBeLessThanOrEqual(60_000);
+  expect(huge).toContain("诊断日志过长，已截断");
+  expect(huge.endsWith("</details>\n")).toBe(true);
 });

@@ -50,6 +50,41 @@ const RUNS_MAX = 50;
 /** 删除的两步确认窗口 */
 export const DELETE_CONFIRM_MS = 3000;
 
+/** 反馈问题：社区仓库的新建 issue 入口（同 package.json 的 bugs） */
+const ISSUE_NEW_URL = "https://github.com/magpie-community/plugins/issues/new";
+/** GitHub issue 正文的字数上限是 65536，留出模板的余量 */
+const ISSUE_BODY_MAX = 60_000;
+
+/**
+ * 反馈问题的 issue 链接：标题预填包名前缀，正文只放一句粘贴提示。
+ * 诊断日志不进链接——十几 KB 的 JSON 编码后远超 GitHub 预填链接能带的长度（约 8 KB）
+ */
+export function issueURL(): string {
+  const q = new URLSearchParams({
+    title: "window-warmup: ",
+    body: t("（把「复制问题内容」复制的内容粘贴到这里，替换这一行）"),
+  });
+  return `${ISSUE_NEW_URL}?${q}`;
+}
+
+/** 反馈问题的正文：问题模板 + 折叠的诊断日志；超出 GitHub 上限时改用紧凑 JSON，仍超就截断并注明 */
+export function issueBody(diag: unknown): string {
+  const info = (diag as { plugin?: { version?: string; bun?: string; platform?: string } } | null)?.plugin ?? {};
+  const head = [
+    `### ${t("问题描述")}`, "", t("（发生了什么，期望是什么）"), "",
+    `### ${t("复现步骤")}`, "", "1. ", "",
+    `### ${t("环境")}`, "",
+    `- window-warmup ${info.version ?? "?"}，Bun ${info.bun ?? "?"}，${info.platform ?? "?"}`, "",
+    `<details><summary>${t("诊断日志（已脱敏）")}</summary>`, "", "```json",
+  ].join("\n");
+  const tail = "\n```\n\n</details>\n";
+  let json = JSON.stringify(diag, null, 1);
+  if (head.length + json.length + tail.length > ISSUE_BODY_MAX) json = JSON.stringify(diag);
+  const room = ISSUE_BODY_MAX - head.length - tail.length;
+  if (json.length > room) json = `${json.slice(0, room - 40)}\n…${t("（诊断日志过长，已截断）")}`;
+  return `${head}\n${json}${tail}`;
+}
+
 /** 提示 A（常驻灰字）：模型列表的来源与账号对不上时的解法；值是 i18n 键，取用时要过 t() */
 const MODEL_SOURCE_HINT =
   "模型列表来自 Magpie 上次获取的结果。账号和模型对不上时，到 Magpie「供应商」里打开这个供应商，点「获取模型」，再回来刷新本页。";
@@ -1411,6 +1446,7 @@ function render(): void {
   renderBars();
   renderSum();
   renderList();
+  renderFeedback();
   const newBtn = document.getElementById("new") as HTMLButtonElement | null;
   if (newBtn) newBtn.disabled = isReadonly();
 }
@@ -1480,6 +1516,90 @@ async function refreshCatalog(): Promise<void> {
   render();
 }
 
+// ---------- 反馈问题 ----------
+// magpie 的插件框架是 sandbox="allow-scripts" + allow=""：下载、window.open / target=_blank、
+// navigator.clipboard 全被拦，只有 document.execCommand("copy") 可用（Chromium 实测）。
+// 所以面板分两步：复制 issue 链接到浏览器打开，再复制正文（含脱敏诊断）粘贴进去。
+
+/** 面板状态：null = 收起；body 为 null 时诊断还在取 */
+let feedback: { body: string | null; error: string; copied: "" | "link" | "body" | "fail" } | null = null;
+
+/** 沙箱里唯一可用的复制方式：临时 textarea + execCommand，须在点击事件里同步调用 */
+function copyText(text: string): boolean {
+  const ta = el("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.append(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  ta.remove();
+  return ok;
+}
+
+async function openFeedback(): Promise<void> {
+  if (feedback) {
+    feedback = null;
+    renderFeedback();
+    return;
+  }
+  feedback = { body: null, error: "", copied: "" };
+  renderFeedback();
+  try {
+    const diag = await apiJSON<unknown>("api/diagnostics");
+    if (feedback) feedback.body = issueBody(diag);
+  } catch (e) {
+    if (feedback) feedback.error = errText(e);
+  }
+  renderFeedback();
+}
+
+function renderFeedback(): void {
+  const box = document.getElementById("feedback-panel");
+  if (!box) return;
+  const fb = feedback;
+  if (!fb) {
+    box.replaceChildren();
+    return;
+  }
+  const panel = el("div", "fb");
+  panel.append(el("div", "hint", t("问题内容会附上脱敏后的诊断日志（账号、key、任务名都已替换），提交前可以在 GitHub 上先预览。")));
+  const url = issueURL();
+  const step1 = el("div", "fb-row");
+  const copyLink = el("button", "btn", t("① 复制 issue 链接"));
+  copyLink.addEventListener("click", () => {
+    fb.copied = copyText(url) ? "link" : "fail";
+    renderFeedback();
+  });
+  // 直接打开本服务页面（不在 magpie 框架里）时这个链接能点开；框架里会被沙箱拦下，只能复制
+  const a = el("a", "fb-link", t("在 GitHub 新建 issue"));
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  step1.append(copyLink, a, el("span", "hint mute", t("到浏览器地址栏粘贴打开")));
+  const step2 = el("div", "fb-row");
+  const copyBody = el("button", "btn", t("② 复制问题内容"));
+  copyBody.disabled = fb.body === null;
+  copyBody.addEventListener("click", () => {
+    if (fb.body === null) return;
+    fb.copied = copyText(fb.body) ? "body" : "fail";
+    renderFeedback();
+  });
+  step2.append(copyBody, el("span", "hint mute", fb.body === null && !fb.error ? t("正在收集诊断…") : t("粘贴到 issue 正文")));
+  panel.append(step1, step2);
+  if (fb.error) panel.append(el("div", "hint warn", `${t("诊断收集失败：")}${fb.error}`));
+  if (fb.copied === "link") panel.append(el("div", "hint", t("链接已复制。")));
+  if (fb.copied === "body") panel.append(el("div", "hint", t("问题内容已复制。")));
+  if (fb.copied === "fail") panel.append(el("div", "hint warn", t("复制失败：浏览器不允许这个页面写剪贴板。")));
+  box.replaceChildren(panel);
+}
+
 // ---------- 启动 ----------
 
 /** 把 magpie 的深浅主题与设计令牌落到文档上；boot 数据块与主题消息两个来源共用 */
@@ -1517,6 +1637,8 @@ function applyStaticTexts(): void {
   document.documentElement.lang = currentLang();
   const newBtn = document.getElementById("new");
   if (newBtn) newBtn.textContent = t("新建任务");
+  const fbBtn = document.getElementById("feedback");
+  if (fbBtn) fbBtn.textContent = t("反馈问题");
   const info = document.getElementById("info");
   if (info) {
     info.setAttribute("aria-label", t("说明"));
@@ -1567,6 +1689,7 @@ function init(): void {
   document.getElementById("new")?.addEventListener("click", () => {
     if (!isReadonly() && !isNew) openNew();
   });
+  document.getElementById("feedback")?.addEventListener("click", () => void openFeedback());
   document.addEventListener("mousedown", (e) => {
     if (popEl && e.target instanceof Node && !popEl.contains(e.target) && !popEl.btn.contains(e.target)) closePop();
   });
