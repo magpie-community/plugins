@@ -284,6 +284,11 @@ function normalizeTools(body, protocol) {
 //     AmendWorkflow beside FillWorkflowHole (either alone was served): a
 //     real 55-tool ZCode request bisected on 2026-11-04, served whole with
 //     only those four names changed (plugins#693).
+//   - a name with "run_code" in it, in any case, the underscore needed
+//     (DSH's ptc tool, the only one its main request offers; run_code_v2,
+//     host_run_code and RUN_CODE were refused too, while exec_program,
+//     runCode, run-code and code_run were served): alonewolfsy-web,
+//     2026-11-04, plugins#704.
 //
 // Such a tool goes to Zen under another name (the ones those bisections
 // were served under), in the agent's past calls and tool_choice too, and a
@@ -306,15 +311,27 @@ const REFUSED_TOGETHER = [
     as: { AmendWorkflow: "workflow_amend", FillWorkflowHole: "workflow_answer" },
   },
 ];
-const REFUSED_WORD = /terminal/i;
+// A word refused wherever it stands in a name, in any case, goes as
+// another word, in the found word's case: all capitals, each part
+// capitalised, or lower case.
+const REFUSED_WORDS = [
+  { word: /terminal/gi, as: "console" },
+  { word: /run_code/gi, as: "exec_program" },
+];
+
+function inCaseOf(found, word) {
+  if (found === found.toUpperCase()) return word.toUpperCase();
+  if (found[0] === found[0].toUpperCase())
+    return word.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("_");
+  return word;
+}
 
 function servedName(name, taken) {
   for (const rule of REFUSED_TOGETHER)
     if (Object.hasOwn(rule.as, name) && rule.names.every((other) => taken.has(other))) return rule.as[name];
-  if (!REFUSED_WORD.test(name)) return undefined;
-  return name.replace(new RegExp(REFUSED_WORD.source, "gi"), (word) =>
-    word === word.toUpperCase() ? "CONSOLE" : word[0] === "T" ? "Console" : "console",
-  );
+  let served = name;
+  for (const { word, as } of REFUSED_WORDS) served = served.replace(word, (found) => inCaseOf(found, as));
+  return served === name ? undefined : served;
 }
 
 // renameRefused gives each refused tool its served name and answers the

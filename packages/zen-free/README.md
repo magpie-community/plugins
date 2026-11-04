@@ -99,7 +99,10 @@ offered beside `ScheduleWakeup`, as Claude Code desktop offers them
 agent's past calls and `tool_choice` too, and a call of one reaches the
 agent under its own name. DSH's `subagent_fork`, and its `read_image`
 offered beside `working_directory`, are refused the same way (#632); they
-go as `conversation_delegate` and `workspace_directory`.
+go as `conversation_delegate` and `workspace_directory`. So is a name with
+`run_code` in it, in any case (DSH's code tool, #704); it goes as
+`exec_program`, or `exec_program_2` when the agent has an `exec_program`
+of its own.
 
 Zen's free tier also tells OpenCode's own requests by the environment
 block every OpenCode prompt ends with (`<env>`, a `Working directory:`

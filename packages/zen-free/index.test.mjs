@@ -1215,3 +1215,114 @@ test("read_image or working_directory alone goes as named (#632)", async (t) => 
     assert.deepEqual(state.calls.at(-1).body.tools.slice(0, tools.length), tools, name);
   }
 });
+
+// DSH's ptc tool is named run_code and is the only tool its main request
+// offers, and Zen's free tier answers 429 FreeUsageLimitError to any tool
+// name with "run_code" in it, in any case (alonewolfsy-web, plugins#704).
+// It goes as exec_program, in the agent's past calls and tool_choice too,
+// streamed or not, and a call of it comes back as run_code. An agent's own
+// exec_program keeps its name, and DSH's goes as exec_program_2.
+for (const { protocol, path, model } of protocols) {
+  for (const stream of [true, false]) {
+    test(`${protocol}: run_code goes as exec_program and comes back as run_code, client stream=${stream} (#704)`, async (t) => {
+      const { plugin, state, origin } = await fixture(t);
+      await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+      const loader = await plugin.auth.loader(publicAuth);
+      const schema = { type: "object", properties: { code: { type: "string" } } };
+      const define = (name) => {
+        const tool = { name, description: `DSH ${name}` };
+        if (protocol === "chat") return { type: "function", function: { ...tool, parameters: schema } };
+        if (protocol === "anthropic") return { ...tool, input_schema: schema };
+        return { type: "function", ...tool, parameters: schema };
+      };
+      const nameOf = (tool) => (protocol === "chat" ? tool.function.name : tool.name);
+      const past = (sent) =>
+        protocol === "chat"
+          ? sent.messages.find((message) => message.tool_calls).tool_calls[0].function.name
+          : protocol === "anthropic"
+            ? sent.messages[1].content[0].name
+            : sent.input[1].name;
+      const request = (names) => {
+        const body = { model, stream, tools: names.map(define) };
+        if (protocol === "chat") {
+          body.messages = [
+            { role: "user", content: "hi" },
+            { role: "assistant", content: null, tool_calls: [{ id: "c0", type: "function", function: { name: "run_code", arguments: "{}" } }] },
+            { role: "tool", tool_call_id: "c0", content: "ok" },
+          ];
+          body.tool_choice = { type: "function", function: { name: "run_code" } };
+        } else if (protocol === "anthropic") {
+          body.messages = [
+            { role: "user", content: "hi" },
+            { role: "assistant", content: [{ type: "tool_use", id: "c0", name: "run_code", input: {} }] },
+            { role: "user", content: [{ type: "tool_result", tool_use_id: "c0", content: "ok" }] },
+          ];
+          body.tool_choice = { type: "tool", name: "run_code" };
+        } else {
+          body.input = [
+            { role: "user", content: "hi" },
+            { type: "function_call", call_id: "c0", name: "run_code", arguments: "{}" },
+            { type: "function_call_output", call_id: "c0", output: "ok" },
+          ];
+          body.tool_choice = { type: "function", name: "run_code" };
+        }
+        return (upstream) => {
+          state.reply = toolReply(protocol, upstream, true);
+          return loader.fetch(`${origin}/v1/${path}`, { method: "POST", body: JSON.stringify(body) });
+        };
+      };
+      const reply = async (response) => {
+        assert.equal(response.status, 200);
+        return response.text();
+      };
+
+      // DSH's request: run_code alone
+      let send = request(["run_code"]);
+      let text = await reply(await send("exec_program"));
+      assert.match(text, /"name"\s*:\s*"run_code"/);
+      assert.doesNotMatch(text, /exec_program/);
+      let sent = state.calls.at(-1).body;
+      assert.equal(nameOf(sent.tools[0]), "exec_program");
+      assert.equal(sent.tools[0].function?.description ?? sent.tools[0].description, "DSH run_code");
+      assert.equal(past(sent), "exec_program");
+      assert.equal(sent.tool_choice.function?.name ?? sent.tool_choice.name, "exec_program");
+      // only names are read; the description goes as written
+      assert.ok(!sent.tools.some((tool) => /run_code/i.test(nameOf(tool))));
+
+      // every case of the word, wherever it stands; runCode and code_run
+      // were served and keep their names
+      const names = ["RUN_CODE", "Run_Code", "host_run_code", "run_code_v2", "runCode", "code_run"];
+      send = request(names);
+      await reply(await send("Bash"));
+      sent = state.calls.at(-1).body;
+      assert.deepEqual(sent.tools.slice(0, names.length).map(nameOf), [
+        "EXEC_PROGRAM",
+        "Exec_Program",
+        "host_exec_program",
+        "exec_program_v2",
+        "runCode",
+        "code_run",
+      ]);
+      for (const [upstream, expected] of [
+        ["EXEC_PROGRAM", "RUN_CODE"],
+        ["host_exec_program", "host_run_code"],
+        ["runCode", "runCode"],
+      ]) {
+        text = await reply(await send(upstream));
+        assert.match(text, new RegExp(`"name"\\s*:\\s*"${expected}"`), upstream);
+      }
+
+      // an agent's own exec_program keeps its name and its calls
+      send = request(["exec_program", "run_code"]);
+      text = await reply(await send("exec_program_2"));
+      assert.match(text, /"name"\s*:\s*"run_code"/);
+      sent = state.calls.at(-1).body;
+      assert.deepEqual(sent.tools.slice(0, 2).map(nameOf), ["exec_program", "exec_program_2"]);
+      assert.equal(past(sent), "exec_program_2");
+      assert.equal(sent.tool_choice.function?.name ?? sent.tool_choice.name, "exec_program_2");
+      text = await reply(await send("exec_program"));
+      assert.match(text, /"name"\s*:\s*"exec_program"/);
+      assert.doesNotMatch(text, /"name"\s*:\s*"run_code"/);
+    });
+  }
+}
