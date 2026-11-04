@@ -7,12 +7,15 @@ import { Icon } from "./Icons";
 import { ws } from "../main";
 import { getToken } from "../api/token";
 import { normalizeHunks } from "../timeline/diffHunks";
+import { activeStep, stepCategory, stepTarget, summarize } from "../timeline/fold";
 import { fmtDur, fmtTokens, fmtCost } from "../util/format";
 import { useUi } from "../stores/ui";
 import { localizeDaemonMessage, t, tf } from "../i18n/index.js";
 import { toast } from "./Toast";
 import { splitLocalLinks } from "../util/localLinks";
-import { onChatLinkClick } from "../preview/open";
+import { onChatLinkClick, openExternal } from "../preview/open";
+
+export const GIT_FOR_WINDOWS_URL = "https://git-scm.com/download/win";
 
 const token = () => getToken();
 
@@ -100,9 +103,22 @@ export function ReasoningItem({ it }: { it: Extract<DisplayItem, { kind: "reason
   return (
     <div className="rs-item">
       <button className="rs-head" onClick={() => setOpen(!open)}>
-        <span className={`caret${open ? " open" : ""}`}>›</span> {tf("timeline.thinking", { s: secs })}
+        <span className={`caret${open ? " open" : ""}`}>›</span> {it.streaming ? t("timeline.nowThinking") : tf("timeline.thinking", { s: secs })}
       </button>
       {open && <div className="rs-body">{it.text}</div>}
+    </div>
+  );
+}
+
+/** 1.3: Windows without Git Bash (Claude Code / Pi / dsh need it): link to Git for Windows and to the manual setting */
+function BashMissingNotice({ it }: { it: Extract<DisplayItem, { kind: "notice" }> }) {
+  return (
+    <div className={`nt ${it.level} nt-bash`}>
+      <div>{t("timeline.bashMissing")}</div>
+      <div className="nt-actions">
+        <button type="button" className="btn" onClick={() => void openExternal(GIT_FOR_WINDOWS_URL)}>{t("timeline.bashDownload")}</button>
+        <button type="button" className="btn" onClick={() => window.dispatchEvent(new Event("open-settings"))}>{t("timeline.bashSetting")}</button>
+      </div>
     </div>
   );
 }
@@ -115,52 +131,67 @@ function toolKind(k: string): string {
 }
 
 export function ToolGroupItem({ it }: { it: Extract<DisplayItem, { kind: "toolgroup" }> }) {
-  // Failed steps or steps with a diff are worth seeing directly → auto-expand (never reopened after the user collapses them)
-  const hasFail = it.steps.some((s) => s.status === "failed");
-  const hasDiff = it.steps.some((s) => {
-    const d = s.detail as { hunks?: unknown[]; diff?: { hunks?: unknown[] } } | undefined;
-    const h = d?.hunks ?? d?.diff?.hunks;
-    return Array.isArray(h) && h.length > 0;
-  });
-  const [open, setOpen] = useState(hasFail || hasDiff);
-  const userToggled = useRef(false);
-  useEffect(() => {
-    if (!userToggled.current && (hasFail || hasDiff)) setOpen(true);
-  }, [hasFail, hasDiff]);
-  // Not memoized on it.steps: the reducer appends steps to the same array while a turn streams,
-  // so a memo keyed on the array kept the first count ("1 step · Read 1" next to five steps).
-  const summary = (() => {
-    const counts = new Map<string, number>();
-    for (const s of it.steps) counts.set(s.kind, (counts.get(s.kind) ?? 0) + 1);
-    const parts = [...counts.entries()].map(([k, n]) => `${toolKind(k)} ${n}`);
-    return tf(it.steps.length === 1 ? "timeline.toolSummaryOne" : "timeline.toolSummary", { n: it.steps.length, parts: parts.join(" · ") });
-  })();
-  const runningStep = it.steps.find((s) => s.status === "running");
+  // 1.3: one folded summary line for a run of tool calls (and short thinking between them), like Claude Code desktop.
+  // Collapsed by default, also with diffs or failures: the summary counts failures, expanding shows each one's error.
+  const [open, setOpen] = useState(false);
+  // Not memoized on it.steps: the reducer appends steps to the same array while a turn streams
+  const sum = summarize(it.steps);
+  const parts = sum.counts.map(([c, n]) => tf(`timeline.cat.${c}`, { n }));
+  if (!parts.length && sum.thinkSecs) parts.push(tf("timeline.thinking", { s: sum.thinkSecs }));
+  const active = activeStep(it.steps);
   return (
-    <div className="tg">
-      <button className="tg-head" onClick={() => { userToggled.current = true; setOpen(!open); }}>
+    <div className={`tg${open ? " open" : ""}`}>
+      <button className="tg-head" aria-expanded={open} onClick={() => setOpen(!open)}>
         <span className={`caret${open ? " open" : ""}`}>›</span>
-        <span>{summary}</span>
-        {runningStep && <span className="tg-live">{tf("timeline.toolRunning", { kind: toolKind(runningStep.kind), title: runningStep.title })}</span>}
+        <span className="tg-sum">{parts.join(" · ")}</span>
+        {sum.failed > 0 && <span className="tg-fail">{tf("timeline.failedCount", { n: sum.failed })}</span>}
       </button>
+      {!open && active && <RunningRow s={active} />}
       {open && (
         <div className="tg-list">
-          {it.steps.map((s) => <ToolStepRow key={s.itemId} s={s} />)}
+          {it.steps.map((s) => (s.kind === "think" ? <ThinkStepRow key={s.itemId} s={s} /> : <ToolStepRow key={s.itemId} s={s} />))}
         </div>
       )}
     </div>
   );
 }
 
+/** One line, never wrapping: "正在运行：npm test…" (the ellipsis is the CSS one when it doesn't fit) */
+function RunningRow({ s }: { s: ToolStep }) {
+  const cat = stepCategory(s.kind);
+  const text = cat === "think" ? t("timeline.nowThinking") : tf(`timeline.now.${cat}`, { x: stepTarget(s) });
+  return (
+    <div className="tg-run" title={text}>
+      <span className="tg-run-dot" aria-hidden />
+      <span className="tg-run-text">{text}</span>
+    </div>
+  );
+}
+
+function ThinkStepRow({ s }: { s: ToolStep }) {
+  const [open, setOpen] = useState(false);
+  const text = s.think?.text ?? "";
+  const secs = Math.max(1, Math.round(text.length / 40));
+  return (
+    <div className="ts ts-think">
+      <button className="ts-head" onClick={() => text.trim() && setOpen(!open)}>
+        <span className="ts-ic think">{s.think?.streaming ? "…" : "·"}</span>
+        <span className="ts-title">{s.think?.streaming ? t("timeline.nowThinking") : tf("timeline.thinking", { s: secs })}</span>
+      </button>
+      {open && <div className="rs-body">{text}</div>}
+    </div>
+  );
+}
+
 function ToolStepRow({ s }: { s: ToolStep }) {
-  // Failed steps and steps with a diff expand their details by default (the diff is what the user wants to see)
+  // Failed steps (their error is the point) and steps with a diff open their details once the group is expanded
   const detail = s.detail as { hunks?: unknown[] } | undefined;
   const [open, setOpen] = useState(s.status === "failed" || (Array.isArray(detail?.hunks) && detail.hunks.length > 0));
   const icon = s.status === "running" ? "…" : s.status === "ok" ? "✓" : "✗";
   const cls = s.status === "running" ? "run" : s.status === "ok" ? "ok" : "fail";
-  const hasDetail = s.output || s.detail;
+  const hasDetail = !!(s.output || s.detail || s.input != null || s.status === "failed");
   return (
-    <div className="ts">
+    <div className={`ts${s.status === "failed" ? " failed" : ""}`}>
       <button className="ts-head" onClick={() => hasDetail && setOpen(!open)}>
         <span className={`ts-ic ${cls}`}>{icon}</span>
         <span className="ts-title">{s.title || toolKind(s.kind)}</span>
@@ -179,6 +210,14 @@ function ToolDetail({ s }: { s: ToolStep }) {
   const rawHunks = detail?.hunks ?? detail?.diff?.hunks;
   if (rawHunks) {
     return <DiffView hunks={normalizeHunks(rawHunks)} path={detail?.diff?.path ?? detail?.path} />;
+  }
+  if (s.status === "failed" && !s.output?.trim()) {
+    return (
+      <div className="ts-out">
+        <div className="ts-noerr">{t("timeline.noErrorOutput")}</div>
+        {s.input != null && <pre>{JSON.stringify(s.input, null, 2).slice(0, 4000)}</pre>}
+      </div>
+    );
   }
   if (s.output != null) {
     const lines = s.output.split("\n");
@@ -397,7 +436,9 @@ export function TimelineRow({ it, threadId, onEditResend, onRetryLast, replyText
     case "todo": return <TodoItem it={it} />;
     case "permission": return <PermissionItem it={it} threadId={threadId} />;
     case "question": return <QuestionItem it={it} threadId={threadId} />;
-    case "notice": return <div className={`nt ${it.level}`}>{localizeDaemonMessage(it.message)}</div>;
+    case "notice":
+      if (it.code === "bash_missing") return <BashMissingNotice it={it} />;
+      return <div className={`nt ${it.level}`}>{localizeDaemonMessage(it.message)}</div>;
     case "turnend": return <TurnEndItem it={it} onRetry={onRetryLast} replyText={replyText} />;
     case "gone": return null;
     default: return null;

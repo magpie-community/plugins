@@ -71,7 +71,17 @@
 .tg-head:hover { color: var(--fg); }
 .tg-head .caret { transition: transform var(--dur-1); }
 .tg-head .caret.open { transform: rotate(90deg); }
-.tg-live { margin-left: auto; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tg-sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tg-fail { flex: none; color: var(--danger); }
+.tg-fail::before { content: "·"; margin-right: 6px; color: var(--meta); }
+/* One line while a step runs: "正在运行：npm test…", cut with an ellipsis rather than wrapping */
+.tg-run { display: flex; align-items: center; gap: 8px; height: 22px; padding-left: 2px; color: var(--muted); font-size: var(--chat-fs-s); min-width: 0; }
+.tg-run-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--accent-2); animation: breathe 1.2s infinite; }
+.tg-run-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ts-ic.think { color: var(--meta); }
+.ts-think .ts-title { color: var(--muted); }
+.ts-think .rs-body { margin-left: 30px; }
+.ts-noerr { color: var(--meta); font-size: var(--chat-fs-s); margin-bottom: 4px; }
 .tg-list { margin: 2px 0 0 5px; border-left: 1px solid var(--line); padding-left: 6px; }
 .ts-head {
   display: flex; align-items: center; gap: 8px; width: 100%; height: 26px; padding: 0 6px;
@@ -129,6 +139,8 @@
 .nt { margin: 8px 0; text-align: center; font-size: var(--chat-fs-s); color: var(--muted); }
 .nt.warn { color: var(--warn); }
 .nt.error { color: var(--danger); }
+.nt-bash { text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-m); line-height: 1.6; }
+.nt-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 
 /* Turn end: small right-aligned text */
 /* Turn end: "3s · copy · retry" left-aligned under the reply */

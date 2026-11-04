@@ -17,6 +17,7 @@ import { Coalescer } from "../timeline/coalescer.js";
 import { ApiError } from "../ws/methods.js";
 import { log } from "../log.js";
 import { tr } from "../util/i18n.js";
+import { agentShellReady, bashMissingFor } from "../util/agentShell.js";
 import { resolveMentions, withMentions, type Mention, type MentionRef } from "../util/mentions.js";
 import {
   codexSlashCommandsFromEntries,
@@ -54,6 +55,8 @@ type Runtime = {
   /** Text streamed as deltas only (ACP Agents): saved per segment as assistant_message / reasoning (B1) */
   pendingText: Map<string, { type: "assistant" | "reasoning"; itemId: string; text: string }>;
   deltasOnly: boolean;
+  /** 1.3: the "Git Bash not found" hint was already shown in this conversation during this daemon run */
+  bashHinted?: boolean;
 };
 
 type DeltaType = "assistant_delta" | "reasoning_delta" | "tool_output_delta";
@@ -310,6 +313,12 @@ export class AgentManager {
       attachments: this.attachmentLabels(attachmentRefs),
       ...(mentions.length ? { mentions } : {}),
     });
+    // Windows without Git Bash: say so before the agent's first command fails on the WSL launcher
+    await agentShellReady();
+    if (!rt.bashHinted && bashMissingFor(meta.provider)) {
+      rt.bashHinted = true;
+      await this.appendRaw(threadId, { type: "notice", level: "warn", code: "bash_missing", message: tr("notice.bashMissing") });
+    }
     await this.setStatus(threadId, "running");
     try {
       const images = await this.resolveAttachments(attachmentRefs);
@@ -765,6 +774,8 @@ export class AgentManager {
     const settings = await this.settings.get();
     const launch = launchFromSettings(settings, meta.provider);
     rt.deltasOnly = !!provider.capabilities.deltasOnly;
+    // The agent's environment gets the Git Bash found at start / after a settings change (Windows)
+    await agentShellReady();
     rt.session = await provider.createSession({
       threadId,
       cwd: proj.path,

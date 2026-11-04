@@ -29,6 +29,8 @@ export type Settings = {
   providerEnabled?: Record<string, boolean>;
   /** Advanced: override how a Provider is launched (executable + args array, no shell) */
   providerCommand?: Record<string, { executable?: string; args?: string[] }>;
+  /** 1.3 (Windows): bash.exe the agents use; empty = detect Git Bash */
+  bashPath?: string;
   [k: string]: unknown;
 };
 
@@ -87,6 +89,7 @@ export const settingsPatchSchema = z
       z.object({ executable: z.string().max(4096).optional(), args: z.array(z.string().max(4096)).max(64).optional() }).strict(),
     ),
     v1Migrated: z.boolean(),
+    bashPath: z.string().max(1024),
   })
   .partial()
   .strict();

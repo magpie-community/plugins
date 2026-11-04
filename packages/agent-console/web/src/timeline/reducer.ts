@@ -9,6 +9,8 @@ export type ToolStep = {
   status: "running" | "ok" | "failed";
   input?: unknown; detail?: unknown; output?: string;
   exitCode?: number; durationMs?: number;
+  /** 1.3: a short "thinking" folded into the tool summary (display only, see fold.ts) */
+  think?: { text: string; streaming: boolean };
 };
 
 export type DisplayItem =
@@ -20,7 +22,7 @@ export type DisplayItem =
   | { kind: "todo"; key: string; items: { text: string; status: string }[] }
   | { kind: "permission"; key: string; requestId: string; title: string; kindStr: string; detail?: unknown; options: { id: string; label: string; kind: string }[]; status: "pending" | "resolved" | "cancelled"; choice?: string }
   | { kind: "question"; key: string; requestId: string; questions: unknown[]; answers?: Record<string, string>; status: "pending" | "answered" | "cancelled" }
-  | { kind: "notice"; key: string; level: string; message: string }
+  | { kind: "notice"; key: string; level: string; message: string; code?: string }
   | { kind: "gone"; key: string } // placeholder: duplicate delta items cleared by sweepSiblings; skipped when rendering
   | { kind: "turnend"; key: string; status: string; durationMs?: number; error?: string; filesChanged?: number; usage?: TurnUsage };
 
@@ -243,7 +245,7 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
     }
     case "notice":
       breakGroup(st);
-      st.items.push({ kind: "notice", key: `n:${ev.seq}`, level: ev.level, message: ev.message });
+      st.items.push({ kind: "notice", key: `n:${ev.seq}`, level: ev.level, message: ev.message, ...(ev.code ? { code: ev.code } : {}) });
       return;
     case "turn_ended":
       breakGroup(st);
