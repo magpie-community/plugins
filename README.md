@@ -119,13 +119,17 @@ A tools package can also give magpie a web search API. It is listed in Settings 
 
 | Package | Search APIs |
 |---|---|
-| [magpie-websearch](https://github.com/guotree/magpie-websearch) | AnySearch, Keenable, Linkup, Metaso, Parallel, Querit, TinyFish (more providers planned); published as `@guotree/magpie-websearch` and maintained in the magpie-websearch repository |
+| [magpie-websearch](https://github.com/guotree/magpie-websearch) | AnySearch, Keenable, Linkup, Metaso, Parallel, Querit and TinyFish; published as `@guotree/magpie-websearch` and maintained in its own repository |
+
+Install magpie-websearch:
 
 ```sh
-magpie plugin add @magpie-community/tools-<name>
+magpie plugin add @guotree/magpie-websearch
 ```
 
-This is the template:
+### Writing a web search plugin
+
+The following template shows how to implement the `search` hook:
 
 ```js
 // index.mjs of @magpie-community/tools-<name>
