@@ -454,18 +454,17 @@ function modelOf(m, provider) {
 //
 // The grants — a balance that expires, not a window that gets spent — go to
 // `balance`, which the GUI draws as its own chip under the windows. That chip
-// is styled for a short figure ("¥12.34", "1,234 积分"), so the balance is the
-// number alone, in the console's own word for it (积分, as joycode's balance
-// does), and formatted like magpie's own countFormat: thousands separators,
-// at most two decimals. The full raw grant amount stays in the card's
-// tooltip, which carries the same string.
+// is styled for a short figure ("¥12.34", "1,234 积分"), so the balance stays
+// a short line: the figure in magpie's own countFormat (thousands separators,
+// at most two decimals), the console's own word for it (积分, as joycode's
+// balance does), and the expiry right beside it — the expiry belongs to the
+// credits, not to the plan, so it must not sit in the head's plan-term slot.
+// The date is UTC, as the console's epoch seconds read, month and day within
+// the current year and with the year once it differs.
 //
-// When the grants expire is not said in the chip: it goes to `until` (with
-// `renew: "off"`), which magpie renders in the card's head as its own
-// localized "expires" date — planTerm's "Expires {date}" — instead of a date
-// bolted onto a figure. Several granted pools add up (a pool's grant is its
-// own; the chip is the account's), and the earliest expiry is the one told,
-// that being when the first of them is lost.
+// Several granted pools add up (a pool's grant is its own; the chip is the
+// account's), and the earliest expiry is the one told, that being when the
+// first of them is lost.
 function usageOf(pools) {
   const count = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 })
   const round = (n) => Math.round(n * 100) / 100
@@ -511,11 +510,16 @@ function usageOf(pools) {
     }
   }
   if (!(grants > 0)) return { windows }
-  return {
-    windows,
-    balance: `${count.format(grants)} 积分`,
-    ...(expiryAt > 0 ? { until: new Date(expiryAt * 1000).toISOString(), renew: "off" } : {}),
-  }
+  // the expiry day, UTC as the console's epoch reads: "11-04" this year,
+  // "2027-03-01" once the year differs
+  const day = expiryAt > 0
+    ? (() => {
+      const d = new Date(expiryAt * 1000), now = new Date()
+      const md = `${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`
+      return d.getUTCFullYear() === now.getUTCFullYear() ? md : `${d.getUTCFullYear()}-${md}`
+    })()
+    : ""
+  return { windows, balance: `${count.format(grants)} 积分${day ? " · " + day + " 到期" : ""}` }
 }
 
 async function poolUsage(access) {
@@ -675,8 +679,6 @@ function makePlugin() {
           const card = (u, signIn) => ({
             plan: u.plan,
             ...(u.balance ? { balance: u.balance } : {}),
-            // the grants' expiry, as the head's own localized "expires" date
-            ...(u.until ? { until: u.until, renew: u.renew } : {}),
             windows: u.windows,
             user: auth.accountId ?? auth.email ?? "sensenova",
             signIn,
