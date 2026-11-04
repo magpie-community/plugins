@@ -125,15 +125,26 @@ describe("AgentManager auto-approve", () => {
     const proj = await projects.create(dir);
     threadId = (await threads.create({ projectId: proj.id, provider: "mock" })).id;
   });
-  afterEach(() => { manager.shutdown(); rmSync(dir, { recursive: true, force: true }); });
+  afterEach(async () => { await manager.shutdown(); await sleep(50); rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
 
-  it("mode on: the request is answered allow-once by the daemon, no card is written", async () => {
+  it("mode on: the request is answered allow-once by the daemon, and the approval is persisted (auto) in the timeline", async () => {
     await manager.setMode(threadId, "bypassPermissions");
     await manager.send(threadId, { text: "/perm" });
     await idle();
     const evs = await events();
-    expect(evs.some((e) => e.type === "permission_request")).toBe(false);
-    expect(evs.some((e) => e.type === "tool_call" && (e as { status?: string }).status === "ok")).toBe(true);
+    // #727 review: no silent approvals. The request (what was approved) and its answer are both in the timeline, marked auto
+    const iReq = evs.findIndex((e) => e.type === "permission_request");
+    const iRes = evs.findIndex((e) => e.type === "permission_resolved");
+    const iOk = evs.findIndex((e) => e.type === "tool_call" && (e as { status?: string }).status === "ok");
+    expect(iReq).toBeGreaterThanOrEqual(0);
+    const req = evs[iReq] as { auto?: boolean; title?: string; requestId?: string; detail?: { command?: string } };
+    expect(req.auto).toBe(true);
+    expect(req.title).toBeTruthy();
+    const res = evs[iRes] as { auto?: boolean; optionId?: string; requestId?: string };
+    expect(res).toMatchObject({ auto: true, optionId: "accept", requestId: req.requestId });
+    // written before the Agent was told to go on
+    expect(iRes).toBeGreaterThan(iReq);
+    expect(iOk).toBeGreaterThan(iRes);
     expect(manager.runtimeInfo(threadId)?.pending ?? []).toHaveLength(0);
   }, 20000);
 

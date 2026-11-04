@@ -456,7 +456,11 @@ export class AgentManager {
         const meta = await this.threads.get(threadId);
         const auto = meta ? autoApproveOption(meta.mode, meta.provider, ev) : null;
         if (auto) {
+          // #727 review: every auto-approval leaves a trace. The request (title, command / path / diff, options) and its
+          // answer are persisted like a card the user answered, both marked auto, before the Agent is told to go on.
           log("info", `thread ${threadId} 自动同意 ${ev.title.slice(0, 80)} → ${auto.id}`);
+          await this.appendRaw(threadId, { ...ev, auto: true });
+          await this.appendRaw(threadId, { type: "permission_resolved", requestId: ev.requestId, optionId: auto.id, auto: true });
           rt.session?.respond(ev.requestId, { optionId: auto.id });
           return;
         }

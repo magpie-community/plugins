@@ -17,7 +17,7 @@ export type TimelineEvent =
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "tool_call"; itemId: string; kind: ToolKind; title: string; status: "running" | "ok" | "failed"; input?: unknown; detail?: unknown; output?: string; exitCode?: number; durationMs?: number }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "plan"; itemId: string; markdown: string; entries?: { step: string; status: string }[] }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "todo"; items: { text: string; status: string }[] }
-  | { seq: number; ts: number; threadId: string; turnId?: string; type: "permission_request"; requestId: string; title: string; kind: string; detail?: unknown; options: { id: string; label: string; kind: string }[] }
+  | { seq: number; ts: number; threadId: string; turnId?: string; type: "permission_request"; requestId: string; title: string; kind: string; detail?: unknown; options: { id: string; label: string; kind: string }[]; auto?: boolean }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "permission_resolved"; requestId: string; optionId?: string; cancelled?: boolean; auto?: boolean }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "question"; requestId: string; questions: unknown[] }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "question_answered"; requestId: string; answers: Record<string, string> }
@@ -37,7 +37,7 @@ export type ProviderEvent =
   | { type: "tool_call"; itemId: string; kind: string; title: string; status: "running" | "ok" | "failed"; input?: unknown; detail?: unknown; output?: string; exitCode?: number; durationMs?: number }
   | { type: "plan"; itemId: string; markdown: string; entries?: { step: string; status: string }[] }
   | { type: "todo"; items: { text: string; status: string }[] }
-  | { type: "permission_request"; requestId: string; title: string; kind: string; detail?: unknown; options: { id: string; label: string; kind: string }[] }
+  | { type: "permission_request"; requestId: string; title: string; kind: string; detail?: unknown; options: { id: string; label: string; kind: string }[]; auto?: boolean }
   | { type: "permission_resolved"; requestId: string; optionId?: string; cancelled?: boolean; auto?: boolean }
   | { type: "question"; requestId: string; questions: unknown[] }
   | { type: "question_answered"; requestId: string; answers: Record<string, string> }

@@ -17,6 +17,7 @@ import { splitLocalLinks } from "../util/localLinks";
 import { onChatLinkClick, openExternal } from "../preview/open";
 import { splitQuotes } from "../composer/quotes";
 import { localClientIds, useTimeline } from "../stores/timeline";
+import { AutoApprovedItem } from "./AutoApproved";
 
 export const GIT_FOR_WINDOWS_URL = "https://git-scm.com/download/win";
 
@@ -568,6 +569,7 @@ export function TimelineRow({ it, threadId, onEditResend, onRetryLast, replyText
     case "plan": return <PlanItem it={it} />;
     case "todo": return <TodoItem it={it} />;
     case "permission": return <PermissionItem it={it} threadId={threadId} />;
+    case "autoperm": return <AutoApprovedItem it={it} />;
     case "question": return <QuestionItem it={it} threadId={threadId} />;
     case "notice":
       if (it.code === "bash_missing") return <BashMissingNotice it={it} />;
