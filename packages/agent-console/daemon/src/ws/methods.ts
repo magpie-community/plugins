@@ -26,6 +26,8 @@ import { clampMode } from "../providers/modes.js";
 import { setAppLocale, tr, intlLocale } from "../util/i18n.js";
 import { MAX_MENTIONS } from "../util/mentions.js";
 import { openExternal } from "../util/openExternal.js";
+import { agentShellStatus, refreshAgentShell } from "../util/agentShell.js";
+import { checkBashPath, GIT_FOR_WINDOWS_URL } from "../util/gitBash.js";
 import { PreviewError, type PreviewProxy } from "../preview/proxy.js";
 import { checkPreviewUrl, MAX_PREVIEW_URL } from "../preview/url.js";
 import { previewHost } from "../preview/host.js";
@@ -95,6 +97,16 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     port: svc.cfg.port,
   })));
 
+  // 1.3: Git Bash for the agents (Windows). status: what the agents get now; check: validate a path typed in Settings
+  gw.method("shell.status", wrap(zEmpty, async () => {
+    const st = agentShellStatus();
+    return { ...st, platform: process.platform, downloadUrl: GIT_FOR_WINDOWS_URL };
+  }));
+  gw.method("shell.check", wrap(z.object({ path: z.string().max(1024) }), (p) => {
+    if (process.platform !== "win32") return { ok: false, reason: "notWindows" };
+    return checkBashPath(p.path);
+  }));
+
   gw.method("app.shutdown", wrap(zEmpty, () => {
     setTimeout(() => process.exit(0), 100);
     return { ok: true };
@@ -141,6 +153,10 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     if (!checked.ok) throw new ApiError("bad_params", `Invalid setting: ${checked.error}`);
     const before = await svc.settings.get();
     const next = await svc.settings.set(checked.patch as Partial<Settings>);
+    // 1.3: Settings → Bash path (Windows) re-runs Git Bash detection for the next agent start
+    if ("bashPath" in checked.patch && (before.bashPath ?? "") !== (next.bashPath ?? "")) {
+      await refreshAgentShell(typeof next.bashPath === "string" ? next.bashPath : "");
+    }
     // A changed launch command only invalidates that Agent's detection / model cache (B2: toggling never wipes the rest)
     for (const id of Object.keys(checked.patch.providerCommand ?? {})) {
       if (JSON.stringify(before.providerCommand?.[id] ?? null) !== JSON.stringify(next.providerCommand?.[id] ?? null)) {

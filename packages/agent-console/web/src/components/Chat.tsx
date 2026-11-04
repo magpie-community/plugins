@@ -1,11 +1,12 @@
 // Conversation area (§8.6): virtual list, stick-to-bottom, empty state, queue list, Composer.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isImeComposing } from "../composer/ime";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useUi } from "../stores/ui";
 import { useData, pickDefaultProvider } from "../stores/data";
 import { useTimeline } from "../stores/timeline";
 import { TimelineRow } from "./Timeline";
+import { foldTimeline } from "../timeline/fold";
 import { Composer } from "./Composer";
 import { Icon } from "./Icons";
 import { ws } from "../main";
@@ -19,7 +20,9 @@ export function Chat() {
   const { projects, threads } = useData();
   const tl = useTimeline();
   const prefs = useLiveSettings();
-  const items = prefs.showThinking ? tl.items : tl.items.filter((it) => it.kind !== "reasoning");
+  // 1.3: runs of tool calls (and short thinking between them) fold into one summary row
+  // (tl.items is a fresh array after every timeline change, so the memo follows the stream)
+  const items = useMemo(() => foldTimeline(tl.items, { showThinking: prefs.showThinking }), [tl.items, prefs.showThinking]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [stick, setStick] = useState(true);
   const [hasNew, setHasNew] = useState(false);
@@ -43,7 +46,7 @@ export function Chat() {
     switch (it.kind) {
       case "user": return 60;
       case "assistant": case "reasoning": return 120;
-      case "toolgroup": return 30 + it.steps.length * 26;
+      case "toolgroup": return 34; // collapsed by default
       case "plan": return 200;
       case "permission": case "question": return 120;
       case "todo": return 30;

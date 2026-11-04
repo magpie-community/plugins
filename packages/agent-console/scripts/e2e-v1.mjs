@@ -160,14 +160,23 @@ async function waitEnd(seq = 0) {
 async function scenario2() {
   await send("看下这个项目");
   await waitEnd();
-  const checks = await page.evaluate(() => ({
+  // 1.3: tool runs are folded into one collapsed summary; open it to see the diff
+  const folded = await page.evaluate(() => {
+    const g = [...document.querySelectorAll(".tg")].pop();
+    const ok = !!g && !g.querySelector(".diff") && /改动 1 · 运行 1 · 读取 2 · 搜索 1/.test(g.textContent || "");
+    g?.querySelector(".tg-head")?.click();
+    return ok;
+  });
+  await sleep(200);
+  const checks = await page.evaluate((folded) => ({
+    folded,
     md: !!document.querySelector(".md"),
     tg: !!document.querySelector(".tg"),
     diff: !!document.querySelector(".diff"),
     todo: !!document.querySelector(".rs-item"),
     te: !!document.querySelector(".te"),
-  }));
-  record("场景2 默认剧本（正文/工具组/diff/待办/结束行）", checks.md && checks.tg && checks.diff && checks.todo && checks.te, JSON.stringify(checks));
+  }), folded);
+  record("场景2 默认剧本（正文/工具组/diff/待办/结束行）", checks.folded && checks.md && checks.tg && checks.diff && checks.todo && checks.te, JSON.stringify(checks));
 }
 
 async function scenario3() {

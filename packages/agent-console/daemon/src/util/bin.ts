@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { tr } from "./i18n.js";
+import { withAgentShell } from "./agentShell.js";
 
 const IS_WIN = process.platform === "win32";
 const cache = new Map<string, { out: ResolveResult; at: number }>();
@@ -96,6 +97,8 @@ export function spawnBin(
   const child = spawn(a.cmd, a.args, {
     windowsHide: true,
     ...rest,
+    // Windows: Git Bash for the agent (CLAUDE_CODE_GIT_BASH_PATH, OPENCODE_GIT_BASH_PATH, PATH); unchanged elsewhere
+    env: withAgentShell(rest.env ?? process.env),
     ...(a.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     ...(group && !IS_WIN ? { detached: true } : {}),
   });

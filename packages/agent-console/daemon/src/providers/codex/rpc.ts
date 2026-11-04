@@ -3,6 +3,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { log } from "../../log.js";
 import { killTree, trackTree, type Argv } from "../../util/bin.js";
+import { withAgentShell } from "../../util/agentShell.js";
 
 export class CodexRpcError extends Error {
   code?: number;
@@ -37,7 +38,7 @@ export class CodexRpc {
   ) {
     this.proc = spawn(argv.cmd, argv.args, {
       cwd: opts.cwd,
-      env: opts.env ?? process.env,
+      env: withAgentShell(opts.env ?? process.env),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       ...(argv.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),

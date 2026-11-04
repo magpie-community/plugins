@@ -385,6 +385,8 @@ function pickScript(text: string): (ctx: Ctx) => Promise<void> {
   if (t.startsWith("/long")) return scriptLong;
   if (t.startsWith("/exit")) return scriptExit;
   if (t.startsWith("/serve")) return scriptServe;
+  if (t.startsWith("/tools")) return scriptTools;
+  if (t.startsWith("/bashhint")) return scriptBashHint;
   return scriptDefault;
 }
 
@@ -401,6 +403,49 @@ function chunkText(s: string, n: number): string[] {
   const out: string[] = [];
   for (let i = 0; i < s.length; i += n) out.push(s.slice(i, i + n));
   return out;
+}
+
+// "/tools" (1.3): thinking between many tool calls, one failure and a slow last command, for the folded tool summary
+async function scriptTools(ctx: Ctx): Promise<void> {
+  const { emit } = ctx;
+  const sleepA = (ms: number) => sleepAbortable(ms, ctx);
+  const tool = async (id: string, kind: string, title: string, input: Record<string, unknown>, end: Record<string, unknown>, ms = 150) => {
+    emit({ type: "tool_call", itemId: id, kind, title, status: "running", input } as Parameters<Ctx["emit"]>[0]);
+    if (await sleepA(ms)) return true;
+    emit({ type: "tool_call", itemId: id, kind, title, status: "ok", durationMs: ms, ...end } as Parameters<Ctx["emit"]>[0]);
+    return false;
+  };
+  emit({ type: "reasoning", itemId: "tr1", text: "先看一下测试和配置。" });
+  if (await tool("x1", "read", "读取 package.json", { file_path: "package.json" }, { output: "{…}" })) return;
+  if (await tool("x2", "search", '搜索 "describe("', { pattern: "describe(" }, { output: "12 处匹配" })) return;
+  emit({ type: "reasoning", itemId: "tr2", text: "" });
+  if (await tool("x3", "read", "读取 test/app.test.ts", { file_path: "test/app.test.ts" }, { output: "…" })) return;
+  emit({ type: "tool_call", itemId: "x4", kind: "bash", title: "运行 npm run lint", status: "running", input: { command: "npm run lint" } });
+  if (await sleepA(200)) return;
+  emit({
+    type: "tool_call", itemId: "x4", kind: "bash", title: "运行 npm run lint", status: "failed", exitCode: 1, durationMs: 200,
+    output: "src/app.ts:12:7  error  'unused' is assigned a value but never used  no-unused-vars\n\n✖ 1 problem (1 error, 0 warnings)",
+  });
+  const oldStr = "const unused = 1;\nexport const app = 2;";
+  const newStr = "export const app = 2;";
+  if (await tool("x5", "edit", "编辑 src/app.ts", { file_path: "src/app.ts", old_string: oldStr, new_string: newStr },
+    { detail: editDetail({ path: "src/app.ts", old: oldStr, new: newStr }) })) return;
+  emit({ type: "reasoning", itemId: "tr3", text: "lint 修好了，再跑一遍完整测试。" });
+  const cmd = "npm test -- --reporter=verbose --coverage --run test/app.test.ts test/server.test.ts test/client.test.ts";
+  emit({ type: "tool_call", itemId: "x6", kind: "bash", title: `运行 ${cmd}`, status: "running", input: { command: cmd } });
+  // Slow on purpose: the one-line "正在运行：…" row stays up for screenshots (QA: AGENT_CONSOLE_MOCK_TOOLS_MS)
+  const slow = Number(process.env.AGENT_CONSOLE_MOCK_TOOLS_MS) || 2500;
+  if (await sleepA(slow)) return;
+  emit({ type: "tool_call", itemId: "x6", kind: "bash", title: `运行 ${cmd}`, status: "ok", output: "✓ 3 个测试文件通过", exitCode: 0, durationMs: slow });
+  const reply = ctx.replyPrefix() + "lint 报错已修复，测试全部通过。";
+  emit({ type: "assistant_message", itemId: "tm1", text: reply });
+}
+
+// "/bashhint" (1.3): the Windows "no Git Bash" hint, for screenshots and e2e on any OS
+async function scriptBashHint(ctx: Ctx): Promise<void> {
+  ctx.emit({ type: "notice", level: "warn", code: "bash_missing", message: tr("notice.bashMissing") });
+  await sleepAbortable(100, ctx);
+  ctx.emit({ type: "assistant_message", itemId: "bh1", text: ctx.replyPrefix() + "（模拟）" });
 }
 
 // "/serve": a reply with local dev-server addresses (1.2 preview links) and one external link
