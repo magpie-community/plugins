@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildDiagnostics } from "../src/diagnostics";
+import { baseView, buildDiagnostics } from "../src/diagnostics";
+import { Scheduler } from "../src/scheduler";
 import { startService, type ServiceHandle } from "../src/server";
 import type { Run, Task } from "../src/types";
 import { fakeGateway, type FakeGateway } from "./fake-gateway";
@@ -213,13 +214,45 @@ test("体积上限：每任务只留最近 20 条执行记录；单个列表超 
   }
 });
 
-test("网关不是本机回环时只标注「非本机地址」；网关连不上不让导出失败，原因记在 gateway 里", async () => {
-  // 127.0.0.2 仍是回环（连接立即被拒），但不在本机地址白名单里，用来覆盖远程地址的显示
+test("网关地址：本机回环原样导出，其余只标注「非本机地址」（纯函数，不建连接）", () => {
+  expect(baseView("http://127.0.0.1:3425")).toBe("http://127.0.0.1:3425");
+  expect(baseView("http://localhost:3425/")).toBe("http://localhost:3425");
+  expect(baseView("http://[::1]:3425")).toBe("http://[::1]:3425");
+  expect(baseView("http://127.0.0.2:3425")).toBe("<非本机地址>");
+  expect(baseView("https://magpie.example.com")).toBe("<非本机地址>");
+  expect(baseView("not a url")).toBe("<无法解析>");
+});
+
+test("网关连不上不让导出失败，原因记在 gateway 里", async () => {
+  // 刚释放的 127.0.0.1 端口：各系统都立即拒绝连接，不会等读超时（127.0.0.2 在 macOS 上不在 lo0，会挂到超时）
+  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
+  const port = probe.port;
+  probe.stop(true);
   const d = (await buildDiagnostics({
-    base: "http://127.0.0.2:1", dir: join(root, "data"), tasks: [], runs: [], marks: {},
+    base: `http://127.0.0.1:${port}`, dir: join(root, "data"), tasks: [], runs: [], marks: {},
     scheduler: null, fatal: null, lockedBy: null,
   })) as { gateway: { base: string; models: string; catalog: string } };
-  expect(d.gateway.base).toBe("<非本机地址>");
+  expect(d.gateway.base).toBe(`http://127.0.0.1:${port}`);
   expect(d.gateway.models).not.toMatch(/^ok/);
   expect(d.gateway.catalog).not.toBe("ok");
+});
+
+test("落盘失败的原因（Bun 报错带 state.json 完整路径）同样脱敏，家目录用户名不出现", async () => {
+  const t = task();
+  const store = {
+    data: { version: 1 as const, tasks: [t], runs: [] as Run[], marks: {} },
+    save: async () => {
+      throw new Error("EACCES: permission denied, open '/home/alice/.config/magpie/window-warmup/state.json.tmp'");
+    },
+  };
+  const scheduler = new Scheduler({ store, base: gw.base });
+  await scheduler.runNow(t.id);
+  await scheduler.flush();
+  expect(scheduler.snapshot().saveError).toContain("/home/alice/");
+  const d = (await buildDiagnostics({
+    base: gw.base, dir: join(root, "data"), tasks: store.data.tasks, runs: store.data.runs, marks: {},
+    scheduler, fatal: null, lockedBy: null,
+  })) as { service: { saveError: string | null } };
+  expect(d.service.saveError).toContain("/home/<user>/.config");
+  expect(JSON.stringify(d)).not.toContain("alice");
 });

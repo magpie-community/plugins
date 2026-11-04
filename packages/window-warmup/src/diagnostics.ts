@@ -112,7 +112,7 @@ function scrubber(aliases: Aliases): (s: string) => string {
 }
 
 /** 网关地址只在是本机回环时原样导出（端口有用），否则只说明是远程 */
-function baseView(base: string): string {
+export function baseView(base: string): string {
   try {
     const u = new URL(base);
     return ["127.0.0.1", "localhost", "[::1]"].includes(u.hostname) ? `${u.protocol}//${u.host}` : "<非本机地址>";
@@ -276,7 +276,7 @@ export async function buildDiagnostics(input: DiagnosticsInput): Promise<Record<
     service: {
       fatal: input.fatal === null ? null : scrub(input.fatal),
       lockedBy: input.lockedBy,
-      saveError: scheduler?.snapshot().saveError ?? null,
+      saveError: scrub(scheduler?.snapshot().saveError ?? "") || null,
       scheduler: scheduler?.debugView() ?? null,
     },
     tasks,

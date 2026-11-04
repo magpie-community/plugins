@@ -1144,7 +1144,7 @@ async function buildDiagnostics(input) {
     service: {
       fatal: input.fatal === null ? null : scrub(input.fatal),
       lockedBy: input.lockedBy,
-      saveError: scheduler?.snapshot().saveError ?? null,
+      saveError: scrub(scheduler?.snapshot().saveError ?? "") || null,
       scheduler: scheduler?.debugView() ?? null
     },
     tasks,
