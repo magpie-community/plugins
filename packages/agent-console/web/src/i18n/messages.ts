@@ -159,7 +159,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       thinking: "思考 {s}s", todo: "待办 {done}/{total}", steer: "插话",
       permAllowSession: "本对话都允许", permDenied: "已拒绝", permAllowed: "已允许", permAutoAllowed: "已自动同意（全部自动同意）", permCancelled: "已取消",
       submitted: "已提交：{ans}", turnError: "出错：{err}", unknownError: "未知错误",
-      interrupted: "已打断", filesChanged: "改动 {n} 个文件 ›", editResend: "编辑后重发",
+      interrupted: "已打断", filesChanged: "改动 {n} 个文件 ›", editMsg: "编辑（填回输入框，不会马上发送）", resend: "重新发送这条消息", retryHint: "重试：重新发送上一条消息", msgActions: "消息操作", editBusy: "输入框里还有没发送的内容：先发送或清空，再点编辑",
       tool: {
         read: "读取", edit: "修改", write: "写入", bash: "运行", search: "搜索", glob: "搜索",
         web: "联网", task: "子任务", mcp: "工具", todo: "待办", other: "工具", processing: "处理",
@@ -187,6 +187,10 @@ export const messages: Record<LocaleId, MessageTree> = {
     links: {
       openPreviewTitle: "在预览中打开（Ctrl/⌘+点击用浏览器打开）",
       externalFailed: "打不开系统浏览器，已复制链接",
+    },
+    quote: {
+      add: "添加到对话", addHint: "把选中的文字作为引用放进输入框（不会马上发送）",
+      chipTitle: "引用的文字（发送时以引用的形式放在你的消息前面）", remove: "移除引用", full: "最多 {n} 条引用", lines: "{n} 行",
     },
     mention: {
       drop: "松开以插入到聊天", add: "插入到聊天", copyRel: "复制相对路径", remove: "移除",
@@ -348,7 +352,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       thinking: "Thinking {s}s", todo: "Todos {done}/{total}", steer: "Steer",
       permAllowSession: "Allowed for this chat", permDenied: "Denied", permAllowed: "Allowed", permAutoAllowed: "Auto-approved (Auto-approve all)", permCancelled: "Cancelled",
       submitted: "Submitted: {ans}", turnError: "Error: {err}", unknownError: "Unknown error",
-      interrupted: "Interrupted", filesChanged: "{n} file(s) changed ›", editResend: "Edit and resend",
+      interrupted: "Interrupted", filesChanged: "{n} file(s) changed ›", editMsg: "Edit (puts it back in the input; nothing is sent yet)", resend: "Send this message again", retryHint: "Retry: send the last message again", msgActions: "Message actions", editBusy: "The input still has unsent text: send or clear it first, then click Edit",
       tool: {
         read: "Read", edit: "Edit", write: "Write", bash: "Run", search: "Search", glob: "Search",
         web: "Web", task: "Subtask", mcp: "Tool", todo: "Todo", other: "Tool", processing: "Working",
@@ -376,6 +380,10 @@ export const messages: Record<LocaleId, MessageTree> = {
     links: {
       openPreviewTitle: "Open in Preview (Ctrl/⌘+click opens the browser)",
       externalFailed: "Couldn't open the browser; the link was copied",
+    },
+    quote: {
+      add: "Add to chat", addHint: "Quote the selected text in the input (nothing is sent yet)",
+      chipTitle: "Quoted text (sent in front of your message as a quote)", remove: "Remove quote", full: "{n} quotes at most", lines: "{n} lines",
     },
     mention: {
       drop: "Drop to add to the chat", add: "Add to chat", copyRel: "Copy relative path", remove: "Remove",
