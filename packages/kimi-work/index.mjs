@@ -29,7 +29,8 @@ const UA = 'kimi-code-cli/' + KIMI_CODE_VERSION;
 // 0.1.8 K3.1 Pro was never listed (tests/fixtures/work-config.*.json).
 const DESKTOP_VERSION = '3.2.20';
 // Work's "High" output speed is no model of its own: the menu lists it among
-// a model's speedOptions, and the desktop asks for it with this header.
+// a model's speedOptions, and the desktop asks for it with this header (Kimi
+// 3.2.24, out/renderer/assets/common-DLYgMFK1.js, modelSpeedHeaderValue).
 const SPEED_HEADER = 'X-Kimi-Model-Speed';
 // How a model says it has that speed: magpie offers its Fast switch on a model
 // served at priority, and sends such a request with that service_tier.
@@ -473,6 +474,7 @@ function workConfigRows(payload) {
   // After the loop: a model Kimi itself calls <id>-fast keeps its own row.
   for(const id of fast) {
     const row=out[id],fastId=id+FAST_SUFFIX;
+    // fastOf is for fastIds alone: magpie's host reads only the fields it knows.
     if(!out[fastId])out[fastId]={...row,id:fastId,name:row.name+' Fast',api:{...row.api,id:fastId},fastOf:id};
     Object.assign(row,FAST_ROW);
   }
@@ -577,7 +579,8 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
   async function menu(s,auth) {
     let why='no web sign-in';
     // The membership sign-in magpie renews, where the account has one; the
-    // desktop's own can be long expired.
+    // desktop's own can be long expired. The fallback below, with no sign-in,
+    // never says available, so it never offers fast.
     const token=hasPair(auth)?auth.access:s.webToken;
     if(token) {
       try {
