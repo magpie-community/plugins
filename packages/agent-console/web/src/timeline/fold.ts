@@ -3,6 +3,9 @@
 // - short or empty thinking next to tool calls folds into that summary as a step instead of its own "思考 Xs" row;
 // - a lone, finished, empty thinking row is dropped (nothing to open).
 // Long thinking, text, plans, permissions, notices and turn ends still break a run. Pure: the reducer's items are not changed.
+// 1.3 timeline polish: a run shows its steps as flat one-line rows; only a run of more than TOOL_COLLAPSE_AT tool calls folds
+// into the summary. Within one user turn only the newest checklist (todo) is kept, where it was last updated, and Claude's
+// TodoWrite step is dropped from the rows (the checklist shows it).
 import type { DisplayItem, ToolStep } from "./reducer.js";
 
 /** Thinking up to this many characters (≈5 s at the "思考 Xs" rate) counts as short */
@@ -23,8 +26,28 @@ function thinkStep(r: Reasoning): ToolStep {
   };
 }
 
+/** A run of more tool calls than this folds into one summary row (expandable); shorter runs show every row */
+export const TOOL_COLLAPSE_AT = 6;
+
+type Todo = Extract<DisplayItem, { kind: "todo" }>;
+
+/** Checklists replaced by a newer one in the same user turn */
+function supersededTodos(items: DisplayItem[]): Set<DisplayItem> {
+  const out = new Set<DisplayItem>();
+  let last: DisplayItem | null = null;
+  for (const it of items) {
+    if (it.kind === "user") last = null;
+    else if (it.kind === "todo") {
+      if (last) out.add(last);
+      last = it;
+    }
+  }
+  return out;
+}
+
 export function foldTimeline(items: DisplayItem[], opts: { showThinking?: boolean } = {}): DisplayItem[] {
   const showThinking = opts.showThinking !== false;
+  const stale = supersededTodos(items);
   const out: DisplayItem[] = [];
   let group: Group | null = null;
   let held: Reasoning[] = [];
@@ -33,12 +56,14 @@ export function foldTimeline(items: DisplayItem[], opts: { showThinking?: boolea
     held = [];
   };
   for (const it of items) {
-    if (it.kind === "gone") continue;
+    if (it.kind === "gone" || stale.has(it)) continue;
     if (it.kind === "toolgroup") {
+      const steps = it.steps.filter((s) => s.kind !== "todo");
+      if (!steps.length) continue;
       if (group) {
-        group.steps.push(...it.steps);
+        group.steps.push(...steps);
       } else {
-        group = { kind: "toolgroup", key: it.key, steps: [...(showThinking ? held.map(thinkStep) : []), ...it.steps] };
+        group = { kind: "toolgroup", key: it.key, steps: [...(showThinking ? held.map(thinkStep) : []), ...steps] };
         held = [];
         out.push(group);
       }
@@ -117,4 +142,44 @@ export function activeStep(steps: ToolStep[]): ToolStep | null {
   }
   const last = steps[steps.length - 1];
   return last && last.kind === "think" && last.think?.streaming ? last : null;
+}
+
+/** Tool calls in a run (short thinking folded into it doesn't count) */
+export function toolStepCount(steps: ToolStep[]): number {
+  let n = 0;
+  for (const s of steps) if (s.kind !== "think") n++;
+  return n;
+}
+
+/** Lines added / removed by an edit step: the daemon's counts, else counted from its hunks; null when it has no diff */
+export function stepDiffStat(s: ToolStep): { added: number; removed: number } | null {
+  const d = (s.detail ?? null) as { added?: unknown; removed?: unknown; hunks?: unknown; diff?: { hunks?: unknown } } | null;
+  if (!d || typeof d !== "object") return null;
+  if (typeof d.added === "number" && typeof d.removed === "number") return { added: d.added, removed: d.removed };
+  const hunks = Array.isArray(d.hunks) ? d.hunks : Array.isArray(d.diff?.hunks) ? d.diff!.hunks as unknown[] : null;
+  if (!hunks) return null;
+  let added = 0, removed = 0;
+  for (const h of hunks) {
+    for (const l of ((h as { lines?: unknown }).lines ?? []) as { t?: unknown }[]) {
+      if (l?.t === "+") added++;
+      else if (l?.t === "-") removed++;
+    }
+  }
+  return { added, removed };
+}
+
+/** A checklist's progress */
+export function todoProgress(items: { status: string }[]): { done: number; total: number } {
+  return { done: items.filter((i) => i.status === "done" || i.status === "completed").length, total: items.length };
+}
+
+/** The unfinished checklist of the latest user turn (for the "N/M tasks" pill above the composer), or null */
+export function currentChecklist(items: DisplayItem[]): Todo | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i]!;
+    // A finished list needs no reminder: the pill shows while something is still open
+    if (it.kind === "todo") return it.items.some((x) => x.status !== "done") ? it : null;
+    if (it.kind === "user") return null;
+  }
+  return null;
 }

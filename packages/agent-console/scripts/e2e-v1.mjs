@@ -1,5 +1,6 @@
 // e2e (§11.2): playwright-core + Edge, isolated data directory _tmp/e2e-xdg, port 3497, AGENT_CONSOLE_MOCK=1.
-// Scenarios 1–12, 16–24 (20, 22–24: 1.3 overlap at 600 px, message actions, quotes, instant send); each prints ✓/✗, and any ✗ exits with code 1.
+// Scenarios 1–12, 16–26 (20, 22–26: 1.3 overlap at 600 px, message actions, quotes, instant send, tool rows / summary,
+// checklist + pill + reply footer + code block); each prints ✓/✗, and any ✗ exits with code 1.
 // The mock Agent starts slowly (E2E_MOCK_START_MS, default 1200 ms) like a real one on Windows, so every scenario runs
 // with the user's message arriving before the Agent is up.
 import { spawn, execFileSync } from "node:child_process";
@@ -162,23 +163,34 @@ async function waitEnd(seq = 0) {
 async function scenario2() {
   await send("看下这个项目");
   await waitEnd();
-  // 1.3: tool runs are folded into one collapsed summary; open it to see the diff
-  const folded = await page.evaluate(() => {
+  // 1.3 timeline polish: a short run (≤6 tool calls) stays flat, one compact row per step; the edit row shows +N -M
+  // and opens its diff on click; the step list is a checklist with N/M
+  const rows = await page.evaluate(() => {
     const g = [...document.querySelectorAll(".tg")].pop();
-    const ok = !!g && !g.querySelector(".diff") && /改动 1 · 运行 1 · 读取 2 · 搜索 1/.test(g.textContent || "");
-    g?.querySelector(".tg-head")?.click();
-    return ok;
+    const ts = g ? [...g.querySelectorAll(".ts:not(.ts-think)")] : [];
+    const edit = ts.find((x) => x.dataset.kind === "edit");
+    const r = {
+      flat: !!g?.classList.contains("flat") && !g.querySelector(".tg-head"),
+      steps: ts.length,
+      oneLine: ts.every((x) => x.querySelector(".ts-head").getBoundingClientRect().height <= 30),
+      diffStat: edit?.querySelector(".ts-diff")?.textContent?.replace(/\s+/g, " ").trim() ?? "",
+      closed: !g?.querySelector(".diff"),
+      ok: ts.filter((x) => x.querySelector(".ts-st.ok")).length,
+    };
+    edit?.querySelector(".ts-head")?.click();
+    return r;
   });
   await sleep(200);
-  const checks = await page.evaluate((folded) => ({
-    folded,
+  const checks = await page.evaluate((rows) => ({
+    ...rows,
     md: !!document.querySelector(".md"),
-    tg: !!document.querySelector(".tg"),
-    diff: !!document.querySelector(".diff"),
-    todo: !!document.querySelector(".rs-item"),
+    diff: !!document.querySelector(".tg .ts .diff"),
+    checklist: document.querySelector(".ck .ck-n")?.textContent ?? "",
     te: !!document.querySelector(".te"),
-  }), folded);
-  record("场景2 默认剧本（正文/工具组/diff/待办/结束行）", checks.folded && checks.md && checks.tg && checks.diff && checks.todo && checks.te, JSON.stringify(checks));
+  }), rows);
+  const ok = checks.flat && checks.steps === 5 && checks.oneLine && /\+2\s*[-−]1/.test(checks.diffStat) && checks.closed && checks.ok === 5
+    && checks.md && checks.diff && checks.checklist === "3/4" && checks.te;
+  record("场景2 默认剧本（正文/工具行/+N -M/diff/清单/结束行）", ok, JSON.stringify(checks));
 }
 
 async function scenario3() {
@@ -451,7 +463,7 @@ async function scenario20() {
   await newThread();
   await page.setViewportSize({ width: 600, height: 860 });
   // E2E_NEG_OVERLAP=1: put back 1.2's squeeze to prove this check catches it (must fail)
-  const neg = process.env.E2E_NEG_OVERLAP ? await page.addStyleTag({ content: ".tg-head{height:24px!important;min-height:0!important;overflow:visible!important;white-space:normal!important}.tg-sum{white-space:normal!important;overflow:visible!important;max-width:42px}" }) : null;
+  const neg = process.env.E2E_NEG_OVERLAP ? await page.addStyleTag({ content: ".tg-head{height:24px!important;min-height:0!important;overflow:visible!important;white-space:normal!important}.tg-sum{white-space:normal!important;overflow:visible!important;max-width:42px}.ts-head{height:24px!important;min-height:0!important;overflow:visible!important;white-space:normal!important}.ts-title{white-space:normal!important;overflow:visible!important;max-width:42px}" }) : null;
   await send("/winrun 帮我启动一下");
   const seen = new Set();
   let approved = false;
@@ -566,6 +578,76 @@ async function scenario24() {
   const ok = t.bubble != null && t.bubble < 300 && t.working != null && t.working < 300 && same && count === 1 && scrolled && failed && retried === 1;
   record("场景24 点发送气泡立即出现（Agent 慢启动）、回显不重复不跳、失败可重试", ok,
     `bubble=${t.bubble}ms working=${t.working}ms sameNode=${same} count=${count} bottom=${scrolled} failed=${failed} retried=${retried}`);
+}
+
+async function scenario25() {
+  // 1.3 timeline polish: a long run (/tools, 8 tool calls) folds into one summary row with counts and a failure count;
+  // it expands to the same one-line rows, and the failed step shows its output
+  await newThread();
+  await send("/tools 跑一下 lint 和测试");
+  await page.waitForSelector(".tg:not(.flat) .tg-head", { timeout: 15000 });
+  const running = await page.waitForSelector(".tg-run", { timeout: 15000 }).then(() => true).catch(() => false);
+  await waitIdle();
+  const head = await page.evaluate(() => {
+    const g = [...document.querySelectorAll(".tg:not(.flat)")].pop();
+    const r = { sum: g?.querySelector(".tg-sum")?.textContent ?? "", fail: g?.querySelector(".tg-fail")?.textContent ?? "",
+      closed: !g?.querySelector(".tg-list"), h: g?.querySelector(".tg-head")?.getBoundingClientRect().height ?? 99 };
+    g?.querySelector(".tg-head")?.click();
+    return r;
+  });
+  await sleep(200);
+  const open = await page.evaluate(() => {
+    const g = [...document.querySelectorAll(".tg.open")].pop();
+    const ts = g ? [...g.querySelectorAll(".ts:not(.ts-think)")] : [];
+    const failed = ts.find((x) => x.querySelector(".ts-st.fail"));
+    return { steps: ts.length, failedOpen: !!failed?.querySelector(".ts-out"), failedOut: /no-unused-vars/.test(failed?.textContent ?? ""),
+      edit: ts.find((x) => x.dataset.kind === "edit")?.querySelector(".ts-diff")?.textContent?.replace(/\s+/g, " ").trim() ?? "" };
+  });
+  const ok = running && /读取 3/.test(head.sum) && /搜索 2/.test(head.sum) && /运行 2/.test(head.sum) && /改动 1/.test(head.sum) && /1/.test(head.fail)
+    && head.closed && head.h <= 30 && open.steps === 8 && open.failedOpen && open.failedOut && /[-−]1/.test(open.edit);
+  record("场景25 长运行折叠成摘要（计数/失败数），展开为单行步骤", ok, JSON.stringify({ running, ...head, ...open }));
+}
+
+async function scenario26() {
+  // 1.3 timeline polish: /tasks — an ACP plan (entries) as an N/M checklist, the "N/M 个任务" pill above the composer
+  // (click scrolls the list into view), the reply footer (copy · model · time · duration) and the code block
+  // (language, line numbers, wrap toggle, copy of the raw code)
+  await newThread();
+  await send("/tasks 修一下 checkout 偶发失败的测试");
+  const pill = await waitFor(() => page.evaluate(() => {
+    const t = document.querySelector(".tasks-pill")?.textContent ?? "";
+    return /\d\/3/.test(t) ? t : null;
+  }), 15000, "任务胶囊").catch(() => null);
+  await waitIdle();
+  await sleep(300);
+  const done = await page.evaluate(() => {
+    const ck = [...document.querySelectorAll(".ck")].pop();
+    return { n: ck?.querySelector(".ck-n")?.textContent ?? "", rows: ck?.querySelectorAll(".ck-i.done").length ?? 0, lists: document.querySelectorAll(".ck").length,
+      pillGone: !document.querySelector(".tasks-pill") };
+  });
+  const te = await page.evaluate(() => {
+    const t = [...document.querySelectorAll(".te")].pop();
+    const metas = t ? [...t.querySelectorAll(".te-m")].map((m) => m.textContent.trim()) : [];
+    return { copy: !!t?.querySelector(".te-copy"), model: metas.some((m) => /演示/.test(m)), time: metas.some((m) => /^\d{1,2}\/\d{1,2} \d{2}:\d{2}$|^\d{2}:\d{2}$/.test(m)),
+      dur: metas.some((m) => /^\d+(\.\d+)?\s*(ms|s|分|m)/.test(m)) };
+  });
+  await page.evaluate(() => { window.__copied = null; navigator.clipboard.writeText = (s) => { window.__copied = s; return Promise.resolve(); }; });
+  const cb = await page.evaluate(() => {
+    const b = [...document.querySelectorAll(".md .cb")].pop();
+    if (!b) return null;
+    const r = { lang: b.querySelector(".cb-lang")?.textContent ?? "", lines: b.querySelectorAll(".cb-l").length, numbered: b.querySelector("pre, code")?.closest(".numbered") != null || b.querySelector(".numbered") != null };
+    b.querySelector(".cb-wrap").click();
+    r.wrap = b.classList.contains("wrap") || b.querySelector(".cb-wrap").getAttribute("aria-pressed") === "true";
+    b.querySelector(".cb-copy").click();
+    return r;
+  });
+  await sleep(200);
+  const copied = await page.evaluate(() => window.__copied);
+  const okCopy = typeof copied === "string" && copied.startsWith("async function submit() {") && copied.trim().endsWith("}") && !/^\s*\d/.test(copied.split("\n")[1] ?? "");
+  const ok = !!pill && done.n === "3/3" && done.rows === 3 && done.lists === 1 && done.pillGone && te.copy && te.model && te.time && te.dur
+    && cb && cb.lang === "ts" && cb.lines === 5 && cb.numbered && cb.wrap && okCopy;
+  record("场景26 任务清单 N/M + 胶囊、回复页脚（复制·模型·时间·用时）、代码块（语言/行号/换行/复制）", ok,
+    JSON.stringify({ pill, ...done, ...te, cb, copied: copied?.slice(0, 30) }));
 }
 
 async function scenario19() {
@@ -689,8 +771,8 @@ async function main() {
     await newProjectFlow();
     // E2E_ONLY_13=1 runs just the 1.3 scenarios (20–23) and the console-error check
     const all = [scenario2, scenario3, scenario4, scenario5, scenario6, scenario7, scenario8, scenario9, scenario10, scenario11,
-      scenario12, scenario13, scenario14, scenario15, scenario16, scenario17, scenario18, scenario20, scenario22, scenario23, scenario24, scenario19];
-    const only13 = new Set([scenario20, scenario22, scenario23, scenario24, scenario19]);
+      scenario12, scenario13, scenario14, scenario15, scenario16, scenario17, scenario18, scenario20, scenario22, scenario23, scenario24, scenario25, scenario26, scenario19];
+    const only13 = new Set([scenario20, scenario22, scenario23, scenario24, scenario25, scenario26, scenario19]);
     for (const f of all) if (!process.env.E2E_ONLY_13 || only13.has(f)) await f();
   } catch (e) {
     record("中途异常", false, String(e?.message ?? e).slice(0, 600) + " ||daemon:" + daemonErr.slice(-4).join("|").slice(0, 400));

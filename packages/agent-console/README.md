@@ -41,7 +41,7 @@ UI principle: **obvious at a glance, nothing extra**. Three columns — sidebar 
 - **Persistent sessions**: each thread binds to a long-lived Agent process; after a daemon restart, running threads are marked closed and can be resumed (`--resume` / `thread/resume`)
 - **Multiple Agents**: Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh; missing CLIs show an install hint
 - **Model / permission / thinking**: per-thread; four permission modes and five thinking levels (what each Agent actually supports)
-- **Structured timeline**: user message → thinking (expandable) → tool calls (read / edit / command, with line-level diffs) → todos → usage and duration; answer permission requests (tools / plan / questions) on the card. Since 1.3 a run of tool calls, and the short thinking between them, folds into one collapsed summary like Claude Code desktop (改动 2 · 运行 3 · 读取 4 · 搜索 1 · 1 失败); while a step runs a single line shows it (正在运行：npm test…), and expanding shows every step, with each failure's error output open
+- **Structured timeline**: user message → thinking (expandable) → tool calls (read / edit / command, with line-level diffs) → todos → usage and duration; answer permission requests (tools / plan / questions) on the card. Since 1.3 every tool call is one compact row: a type icon, the command or path (monospace, relative to the project, never wrapping), `+N -M` for an edit and the status on the right; click a row for its output or diff, and a failed step opens by itself. A run of more than 6 tool calls (with the short thinking between them) folds into one summary row (改动 2 · 运行 3 · 读取 4 · 搜索 1 · 1 失败) that expands to the same rows; while it runs, one line shows the current step (正在运行：npm test…). The Agent's step list (Claude Code TodoWrite, Codex plan updates, an ACP agent's plan) is a checklist with N/M, and while it has open items an "N/M 个任务" pill above the composer jumps to it. Each reply ends with 复制 · model · time · duration (plus tokens / cost when the Agent reports them). Code blocks have a language label, line numbers, a wrap toggle and a copy button (the copy is the raw code). The look is grayscale and was inspired by [Better Paseo](https://github.com/RoundRedDot/better-paseo) (MIT); no code was copied
 - **Instant send (1.3)**: your message shows in the timeline the moment you click 发送 and the composer switches to working at once. The daemon saves and pushes the message before it starts the Agent (spawn + ACP `initialize` / `session/new`, seconds on Windows) instead of after; the page draws it right away and swaps in the daemon's copy by a client message id, so it neither doubles nor jumps. A send that fails stays in place marked 发送失败 with 重试 / 移除. A message sent while a turn runs still goes to the queue list
 - **Steer and queue**: steer while running, queue the next message, interrupt
 - **Changes panel**: git status refresh every 3s, unified per-file diffs; discarded untracked files go to trash instead of a hard delete
@@ -206,6 +206,7 @@ npm run shot:v1    # screenshot set (light/dark × scenes → _tmp/shots-v1/)
 # Mock (no real tokens)
 AGENT_CONSOLE_MOCK=1 npm run dev
 # scripts: default /perm /plan /ask /slow /error /long (5000-event stress) /exit /serve (local links, 1.2)
+#          /tools (8 tool calls → folded summary) /winrun (long Windows commands + an approval) /tasks (checklist + code block) /bashhint (1.3)
 ```
 
 | Env | Purpose |
@@ -223,4 +224,4 @@ Daemon CLI: `node daemon/dist/main.js [--port N|0] [--data DIR] [--token T] [--p
 
 MIT (see LICENSE). Third-party licenses are in THIRD-PARTY-NOTICES.md: the 5 installed packages and the 11 bundled into `app/app.js` (mostly MIT; DOMPurify MPL-2.0/Apache-2.0, highlight.js BSD-3-Clause, lucide-react ISC). Build/test: esbuild, vitest, TypeScript, playwright-core.
 
-Architecture takes cues from Paseo (persistent daemon + provider abstraction) and T3 Code (timeline shape and three-column layout) — ideas only, no copied code.
+Architecture takes cues from Paseo (persistent daemon + provider abstraction) and T3 Code (timeline shape and three-column layout), and the 1.3 timeline look from Better Paseo (MIT) — ideas only, no copied code.

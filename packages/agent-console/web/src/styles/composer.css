@@ -46,7 +46,8 @@
   margin: 4px 0 0 -6px; min-width: 0;
 }
 
-/* Pill controls: 26px, 7px radius, 12px text; the agent·model chip is filled, the others are icon + label */
+/* Pill controls: 26px, 7px radius, 12px text. 1.3: every composer chip (agent·model, effort, permission, Fast) shares one
+   style: a filled 24px chip with an icon, a label and a ⌄ */
 .pill-wrap { position: relative; flex: 0 1 auto; min-width: 0; max-width: 100%; }
 .pill {
   position: relative; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
@@ -67,6 +68,20 @@
 .ipill:focus-visible { outline: 2px solid color-mix(in oklab, var(--accent) 45%, var(--bg)); outline-offset: -1px; }
 .ipill[aria-expanded="true"] { background: var(--surface-hover); }
 .ipill.danger { color: var(--danger); }
+.cp-bar .pill { height: 24px; border-radius: 6px; background: var(--chip-bg); border-color: var(--chip-line); padding: 0 6px 0 7px; gap: 5px; }
+.cp-bar .pill:hover, .cp-bar .pill[aria-expanded="true"] { background: var(--surface-hover); }
+.cp-bar .pill.chip { padding: 0 6px 0 3px; }
+.cp-bar .pill.chip .chip-logo { width: 16px; height: 16px; }
+.cp-bar .ipill.danger { border-color: color-mix(in oklab, var(--danger) 35%, var(--chip-line)); }
+.cp-bar { gap: 4px; }
+/* 1.3: "2/3 tasks" above the composer while the latest turn has a step list */
+.cp-tasks { max-width: var(--col); margin: 0 auto 6px; display: flex; }
+.tasks-pill {
+  display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: var(--r-full);
+  border: 1px solid var(--chip-line); background: var(--bg); color: var(--muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums;
+}
+.tasks-pill:hover { color: var(--fg); background: var(--surface-hover); }
+.tasks-pill svg { flex: none; color: var(--meta); }
 .mode-menu { max-width: 300px; }
 .cp-div { width: 1px; height: 14px; background: var(--line); margin: 0 4px; flex: none; }
 .cp-bar > .ibtn { flex: none; }

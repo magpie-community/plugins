@@ -7,7 +7,8 @@ import { Icon } from "./Icons";
 import { ws } from "../main";
 import { getToken } from "../api/token";
 import { normalizeHunks } from "../timeline/diffHunks";
-import { activeStep, stepCategory, stepTarget, summarize } from "../timeline/fold";
+import { activeStep, stepCategory, stepDiffStat, stepTarget, summarize, todoProgress, toolStepCount, TOOL_COLLAPSE_AT } from "../timeline/fold";
+import { useData } from "../stores/data";
 import { fmtDur, fmtTokens, fmtCost } from "../util/format";
 import { useUi } from "../stores/ui";
 import { localizeDaemonMessage, t, tf } from "../i18n/index.js";
@@ -176,11 +177,47 @@ function toolKind(k: string): string {
   return v.startsWith("timeline.tool.") ? t("timeline.tool.other") : v;
 }
 
+/** 1.3 rows: a small line icon per tool type (grayscale) */
+const KIND_ICON: Record<string, string> = {
+  edit: "pencil", write: "pencil", bash: "prompt", read: "fileText", search: "search", glob: "search",
+  web: "globe", task: "layers", mcp: "wrench", todo: "listChecks",
+};
+/** Rows whose target is a command, a path or a pattern: drawn in the code font */
+const MONO_KINDS = new Set(["edit", "write", "bash", "read", "search", "glob"]);
+
+/** The current project's folder, to show tool paths relative to it */
+function useProjectRoot(): string | null {
+  const pid = useUi((s) => s.currentProjectId);
+  const projects = useData((s) => s.projects);
+  return projects.find((p) => p.id === pid)?.path ?? null;
+}
+
+/** "D:\\proj\\src\\a.ts" under "D:\\proj" → "src\\a.ts" (case-insensitive, either slash); anything else unchanged */
+export function relToRoot(target: string, root: string | null): string {
+  if (!root) return target;
+  const norm = (x: string) => x.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const r = norm(root);
+  const tl = target.replace(/\\/g, "/").toLowerCase();
+  if (r && tl.startsWith(r + "/")) return target.slice(r.length + 1);
+  // a command that cds into the project first keeps its text; only whole paths are shortened
+  return target;
+}
+
 export function ToolGroupItem({ it }: { it: Extract<DisplayItem, { kind: "toolgroup" }> }) {
-  // 1.3: one folded summary line for a run of tool calls (and short thinking between them), like Claude Code desktop.
-  // Collapsed by default, also with diffs or failures: the summary counts failures, expanding shows each one's error.
+  // 1.3 timeline polish (Better Paseo style): every step is one compact row (icon · command or path · +N -M · status).
+  // Only a long run (more than TOOL_COLLAPSE_AT tool calls) folds into one summary row with counts, which expands.
   const [open, setOpen] = useState(false);
   // Not memoized on it.steps: the reducer appends steps to the same array while a turn streams
+  const long = toolStepCount(it.steps) > TOOL_COLLAPSE_AT;
+  if (!long) {
+    return (
+      <div className="tg flat">
+        <div className="tg-list">
+          {it.steps.map((s) => (s.kind === "think" ? <ThinkStepRow key={s.itemId} s={s} /> : <ToolStepRow key={s.itemId} s={s} />))}
+        </div>
+      </div>
+    );
+  }
   const sum = summarize(it.steps);
   const parts = sum.counts.map(([c, n]) => tf(`timeline.cat.${c}`, { n }));
   if (!parts.length && sum.thinkSecs) parts.push(tf("timeline.thinking", { s: sum.thinkSecs }));
@@ -188,9 +225,10 @@ export function ToolGroupItem({ it }: { it: Extract<DisplayItem, { kind: "toolgr
   return (
     <div className={`tg${open ? " open" : ""}`}>
       <button className="tg-head" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <span className={`caret${open ? " open" : ""}`}>›</span>
+        <span className="tg-ic" aria-hidden><Icon name="layers" size={13} /></span>
         <span className="tg-sum">{parts.join(" · ")}</span>
         {sum.failed > 0 && <span className="tg-fail">{tf("timeline.failedCount", { n: sum.failed })}</span>}
+        <span className={`caret${open ? " open" : ""}`} aria-hidden>›</span>
       </button>
       {!open && active && <RunningRow s={active} />}
       {open && (
@@ -208,41 +246,61 @@ function RunningRow({ s }: { s: ToolStep }) {
   const text = cat === "think" ? t("timeline.nowThinking") : tf(`timeline.now.${cat}`, { x: stepTarget(s) });
   return (
     <div className="tg-run" title={text}>
-      <span className="tg-run-dot" aria-hidden />
+      <span className="spin" aria-hidden />
       <span className="tg-run-text">{text}</span>
     </div>
   );
 }
 
+/** Short thinking between tool calls: a quiet "思考 Xs" row that opens to its text */
 function ThinkStepRow({ s }: { s: ToolStep }) {
   const [open, setOpen] = useState(false);
   const text = s.think?.text ?? "";
   const secs = Math.max(1, Math.round(text.length / 40));
+  const live = !!s.think?.streaming;
   return (
     <div className="ts ts-think">
-      <button className="ts-head" onClick={() => text.trim() && setOpen(!open)}>
-        <span className="ts-ic think">{s.think?.streaming ? "…" : "·"}</span>
-        <span className="ts-title">{s.think?.streaming ? t("timeline.nowThinking") : tf("timeline.thinking", { s: secs })}</span>
+      <button className="ts-head" aria-expanded={open} onClick={() => text.trim() && setOpen(!open)}>
+        <span className="ts-ic" aria-hidden><Icon name="spark" size={13} /></span>
+        <span className="ts-title">{live ? t("timeline.nowThinking") : tf("timeline.thinking", { s: secs })}</span>
+        {live && <span className="ts-st" aria-hidden><span className="spin" /></span>}
       </button>
       {open && <div className="rs-body">{text}</div>}
     </div>
   );
 }
 
+function StatusMark({ status }: { status: ToolStep["status"] }) {
+  if (status === "running") return <span className="ts-st run" aria-label="running"><span className="spin" /></span>;
+  if (status === "failed") return <span className="ts-st fail" aria-label="failed"><Icon name="x" size={12} /></span>;
+  return <span className="ts-st ok" aria-label="ok"><Icon name="check" size={12} /></span>;
+}
+
 function ToolStepRow({ s }: { s: ToolStep }) {
-  // Failed steps (their error is the point) and steps with a diff open their details once the group is expanded
-  const detail = s.detail as { hunks?: unknown[] } | undefined;
-  const [open, setOpen] = useState(s.status === "failed" || (Array.isArray(detail?.hunks) && detail.hunks.length > 0));
-  const icon = s.status === "running" ? "…" : s.status === "ok" ? "✓" : "✗";
-  const cls = s.status === "running" ? "run" : s.status === "ok" ? "ok" : "fail";
-  const hasDetail = !!(s.output || s.detail || s.input != null || s.status === "failed");
+  // A failed step opens its error output (the error is the point); everything else opens on click
+  const [open, setOpen] = useState(s.status === "failed");
+  const failed = s.status === "failed";
+  const wasFailed = useRef(failed);
+  useEffect(() => {
+    if (failed && !wasFailed.current) setOpen(true);
+    wasFailed.current = failed;
+  }, [failed]);
+  const root = useProjectRoot();
+  const hasDetail = !!(s.output || s.detail || s.input != null || failed);
+  const target = relToRoot(stepTarget(s), root) || toolKind(s.kind);
+  const diff = s.kind === "edit" || s.kind === "write" ? stepDiffStat(s) : null;
+  const mono = MONO_KINDS.has(s.kind) && target !== s.title;
+  const tip = `${toolKind(s.kind)} · ${s.title || target}${s.durationMs != null ? ` · ${fmtDur(s.durationMs)}` : ""}`;
   return (
-    <div className={`ts${s.status === "failed" ? " failed" : ""}`}>
-      <button className="ts-head" onClick={() => hasDetail && setOpen(!open)}>
-        <span className={`ts-ic ${cls}`}>{icon}</span>
-        <span className="ts-title">{s.title || toolKind(s.kind)}</span>
-        {s.durationMs != null && <span className="ts-meta">{fmtDur(s.durationMs)}</span>}
+    <div className={`ts${failed ? " failed" : ""}${open ? " open" : ""}`} data-kind={s.kind}>
+      <button className="ts-head" title={tip} aria-expanded={hasDetail ? open : undefined} onClick={() => hasDetail && setOpen(!open)}>
+        <span className="ts-ic" aria-hidden><Icon name={KIND_ICON[s.kind] ?? "wrench"} size={13} /></span>
+        <span className={`ts-title${mono ? " mono" : ""}`}>{target}</span>
+        {diff && (diff.added > 0 || diff.removed > 0) && (
+          <span className="ts-diff"><span className="add">+{diff.added}</span><span className="del">-{diff.removed}</span></span>
+        )}
         {s.exitCode != null && s.exitCode !== 0 && <span className="ts-meta err">exit {s.exitCode}</span>}
+        <StatusMark status={s.status} />
       </button>
       {open && <ToolDetail s={s} />}
     </div>
@@ -317,24 +375,26 @@ export function PlanItem({ it }: { it: Extract<DisplayItem, { kind: "plan" }> })
   );
 }
 
-// ---------- todo ----------
+// ---------- checklist (todo / plan entries) ----------
 export function TodoItem({ it }: { it: Extract<DisplayItem, { kind: "todo" }> }) {
-  const [open, setOpen] = useState(false);
-  const done = it.items.filter((i) => i.status === "done" || i.status === "completed").length;
+  // 1.3: the Agent's step list inline, like Better Paseo: "2/3" and one check row per step (the newest list of a turn only)
+  const { done, total } = todoProgress(it.items);
   return (
-    <div className="rs-item">
-      <button className="rs-head" onClick={() => setOpen(!open)}>
-        <span className={`caret${open ? " open" : ""}`}>›</span> {tf("timeline.todo", { done, total: it.items.length })}
-      </button>
-      {open && (
-        <ul className="todo-list">
-          {it.items.map((i, n) => (
-            <li key={n} className={`todo ${i.status}`}>
-              {i.status === "done" || i.status === "completed" ? "☑" : i.status === "in_progress" ? "◐" : "☐"} {i.text}
+    <div className="ck" data-todo-key={it.key}>
+      <div className="ck-head"><Icon name="listChecks" size={13} /><span className="ck-n">{done}/{total}</span><span className="ck-l">{t("timeline.tasks")}</span></div>
+      <ul className="ck-list">
+        {it.items.map((i, n) => {
+          const st = i.status === "done" || i.status === "completed" ? "done" : i.status === "in_progress" ? "doing" : "todo";
+          return (
+            <li key={n} className={`ck-i ${st}`}>
+              <span className="ck-box" aria-hidden>
+                {st === "done" ? <Icon name="check" size={12} /> : st === "doing" ? <span className="spin" /> : <Icon name="circle" size={12} />}
+              </span>
+              <span className="ck-t">{i.text}</span>
             </li>
-          ))}
-        </ul>
-      )}
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -424,6 +484,7 @@ export function TurnEndItem({ it, onRetry, replyText }: { it: Extract<DisplayIte
   const ui = useUi();
   const [showErr, setShowErr] = useState(false);
   const [copied, copy] = useCopied();
+  const model = useModelName(it.model, it.model !== undefined);
   if (it.status === "failed") {
     return (
       <div className="card err-card">
@@ -438,26 +499,29 @@ export function TurnEndItem({ it, onRetry, replyText }: { it: Extract<DisplayIte
       </div>
     );
   }
-  const parts: string[] = [];
-  if (it.durationMs != null) parts.push(fmtDur(it.durationMs));
+  const usage: string[] = [];
   if (it.usage) {
     const tk = it.usage.inputTokens + it.usage.outputTokens;
-    if (tk) parts.push(`${fmtTokens(tk)} tokens`);
-    if (it.usage.costUsd) parts.push(fmtCost(it.usage.costUsd));
+    if (tk) usage.push(`${fmtTokens(tk)} tokens`);
+    if (it.usage.costUsd) usage.push(fmtCost(it.usage.costUsd));
   }
-  if (it.status === "interrupted") parts.push(t("timeline.interrupted"));
   return (
     <div className="te">
-      {parts.length > 0 && <span className="te-meta">{parts.join(" · ")}</span>}
+      {/* 1.3 reply footer: Copy · model · time · duration (· tokens · cost), only what the turn reported */}
       {replyText && (
-        <button type="button" className={`te-act${copied ? " done" : ""}`} title={copied ? t("common.copied") : t("common.copy")}
+        <button type="button" className={`te-act te-copy${copied ? " done" : ""}`} title={copied ? t("common.copied") : t("common.copy")}
           aria-label={copied ? t("common.copied") : t("common.copy")} onClick={() => copy(replyText)}>
-          <Icon name={copied ? "check" : "copy"} size={13} /><span>{t("common.copy")}</span>
+          <Icon name={copied ? "check" : "copy"} size={13} /><span>{copied ? t("common.copied") : t("common.copy")}</span>
         </button>
       )}
+      {model && <span className="te-m" title={model}><Icon name="cpu" size={12} /><span>{model}</span></span>}
+      {it.ts != null && <span className="te-m" title={new Date(it.ts).toLocaleString()}><Icon name="clock" size={12} /><span>{fmtClock(it.ts)}</span></span>}
+      {it.durationMs != null && <span className="te-m"><Icon name="hourglass" size={12} /><span>{fmtDur(it.durationMs)}</span></span>}
+      {usage.length > 0 && <span className="te-m te-u">{usage.join(" · ")}</span>}
+      {it.status === "interrupted" && <span className="te-m">{t("timeline.interrupted")}</span>}
       {onRetry && (
         <button type="button" className="te-act" title={t("timeline.retryHint")} aria-label={t("timeline.retryHint")} onClick={onRetry}>
-          <Icon name="refresh" size={13} /><span>{t("common.retry")}</span>
+          <Icon name="refresh" size={13} />
         </button>
       )}
       {it.filesChanged != null && it.filesChanged > 0 && (
@@ -467,6 +531,26 @@ export function TurnEndItem({ it, onRetry, replyText }: { it: Extract<DisplayIte
       )}
     </div>
   );
+}
+
+/** 19:13 today, "11/3 19:13" on another day (the user's locale) */
+function fmtClock(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return d.toDateString() === new Date().toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+
+/** The model a turn ran on, by its display name; a turn on the Agent's default shows the default's name when known */
+function useModelName(id: string | null | undefined, known: boolean): string | null {
+  const threadId = useUi((s) => s.currentThreadId);
+  const threads = useData((s) => s.threads);
+  const providers = useData((s) => s.providers);
+  if (!known) return null;
+  const th = threads.find((x) => x.id === threadId);
+  const models = providers.find((p) => p.id === th?.provider)?.models ?? [];
+  if (id) return models.find((m) => m.id === id)?.name ?? id;
+  return models.find((m) => m.isDefault)?.name ?? null;
 }
 
 // ---------- dispatch ----------

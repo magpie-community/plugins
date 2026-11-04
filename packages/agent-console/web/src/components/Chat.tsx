@@ -6,7 +6,7 @@ import { useUi } from "../stores/ui";
 import { useData, pickDefaultProvider } from "../stores/data";
 import { useTimeline } from "../stores/timeline";
 import { TimelineRow } from "./Timeline";
-import { foldTimeline } from "../timeline/fold";
+import { foldTimeline, TOOL_COLLAPSE_AT } from "../timeline/fold";
 import { Composer } from "./Composer";
 import { QuoteSelect } from "./QuoteSelect";
 import { Icon } from "./Icons";
@@ -47,10 +47,11 @@ export function Chat() {
     switch (it.kind) {
       case "user": return 60;
       case "assistant": case "reasoning": return 120;
-      case "toolgroup": return 34; // collapsed by default
+      // 1.3: short runs are flat rows (26px each), long ones one summary row
+      case "toolgroup": return it.steps.length > TOOL_COLLAPSE_AT ? 34 : 8 + 26 * it.steps.length;
       case "plan": return 200;
       case "permission": case "question": return 120;
-      case "todo": return 30;
+      case "todo": return 34 + 24 * it.items.length;
       case "turnend": case "notice": return 30;
       default: return 60;
     }
@@ -64,6 +65,24 @@ export function Chat() {
     overscan: 8,
     measureElement: (el) => el.getBoundingClientRect().height,
   });
+
+  // 1.3: the composer's "N/M tasks" pill brings its checklist into view
+  useEffect(() => {
+    const on = (e: Event) => {
+      const key = (e as CustomEvent).detail?.key as string | undefined;
+      const idx = key ? items.findIndex((x) => x.key === key) : -1;
+      if (idx < 0) return;
+      virt.scrollToIndex(idx, { align: "center" });
+      requestAnimationFrame(() => {
+        const el = scrollRef.current?.querySelector(`[data-todo-key="${CSS.escape(key!)}"]`);
+        el?.classList.remove("flash");
+        void (el as HTMLElement | null)?.offsetWidth;
+        el?.classList.add("flash");
+      });
+    };
+    window.addEventListener("ac-show-item", on);
+    return () => window.removeEventListener("ac-show-item", on);
+  }, [items, virt]);
 
   const count = items.length;
   useEffect(() => {

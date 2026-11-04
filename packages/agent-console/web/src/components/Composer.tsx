@@ -17,6 +17,7 @@ import { toast } from "./Toast";
 import { useLiveSettings } from "./Settings";
 import { composerModeOptions, effortLabel } from "../i18n/modes.js";
 import { Logo } from "./Logo";
+import { currentChecklist, todoProgress } from "../timeline/fold";
 import { SelectMenu } from "./SelectMenu";
 import { errMsg, t as tr, tf } from "../i18n/index.js";
 import {
@@ -434,6 +435,7 @@ export function Composer() {
   })();
 
   if (!ui.currentThreadId) return null;
+  const checklist = currentChecklist(tl.items);
 
   return (
     <div className={`composer${waiting ? " waiting" : ""}`} onDrop={onDrop}
@@ -444,6 +446,16 @@ export function Composer() {
         if (ours !== dropHint) setDropHint(ours);
       }}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropHint(false); }}>
+      {/* 1.3: the latest turn's step list as a small "N/M tasks" pill; click shows the list in the timeline */}
+      {checklist && (
+        <div className="cp-tasks">
+          <button type="button" className="tasks-pill" title={tr("timeline.tasksPillTitle")}
+            onClick={() => window.dispatchEvent(new CustomEvent("ac-show-item", { detail: { key: checklist.key } }))}>
+            <Icon name="listChecks" size={12} />
+            <span>{tf("timeline.tasksPill", todoProgress(checklist.items))}</span>
+          </button>
+        </div>
+      )}
       {/* queue list */}
       {tl.queue.length > 0 && (
         <div className="q-list">
@@ -559,10 +571,10 @@ export function Composer() {
           {/* Agent·model pill */}
           <div className="pill-wrap" ref={pickerRef}>
             <button className="pill chip" onClick={() => openPicker(!agentPop)} title={tr("composer.agentModel")}>
-              <Logo size={18} className="chip-logo" />
+              <Logo size={16} className="chip-logo" />
               <span className="p-a">{provider?.name ?? thread?.provider ?? tr("composer.agent")}</span>
               <span className="p-t">{modelLabel}</span>
-              <svg className="chip-caret" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4l2.5 2.5L7.5 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              <ChipCaret />
             </button>
             {agentPop && (
               <div className="pop agent-pop agent-picker">
@@ -713,6 +725,7 @@ export function Composer() {
                 if (!cur) return tr("composer.defaultEffort");
                 return effortLabel(cur, thinkingOpts.find((o) => o.id === cur)?.label);
               })()}</span>
+              <ChipCaret />
             </SelectMenu>
           )}
           {/* permission mode: list only the modes this Agent really has; hidden when there is only one (e.g. Pi has no modes) */}
@@ -733,6 +746,7 @@ export function Composer() {
               >
                 <Icon name="shield" size={14} />
                 <span className="ip-l">{shown.label}</span>
+                <ChipCaret />
               </SelectMenu>
             );
           })()}
@@ -748,7 +762,9 @@ export function Composer() {
               onChange={(v) => setCursorOpts({ cursorFast: v === "fast" })}
               options={[{ value: "off", label: "Fast: Off" }, { value: "fast", label: "Fast: On" }]}
             >
+              <Icon name="zap" size={13} />
               <span className="ip-l">{thread.cursorFast ? "Fast: On" : "Fast: Off"}</span>
+              <ChipCaret />
             </SelectMenu>
           )}
           <span className="cp-div" aria-hidden="true" />
@@ -786,5 +802,14 @@ export function Composer() {
         <div className="cp-hint">{tf("composer.steerUnsupported", { agent: provider?.name ?? thread?.provider ?? "" })}</div>
       )}
     </div>
+  );
+}
+
+/** The small ⌄ every composer chip ends with (1.3: one chip style for agent·model, effort, permission, Fast) */
+function ChipCaret() {
+  return (
+    <svg className="chip-caret" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+      <path d="M2.5 4l2.5 2.5L7.5 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
