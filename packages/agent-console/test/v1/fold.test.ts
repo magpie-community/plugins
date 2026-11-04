@@ -30,7 +30,8 @@ describe("foldTimeline", () => {
     expect(items.filter((i) => i.kind === "toolgroup")).toHaveLength(5);
     const f = foldTimeline(items);
     expect(kinds(f)).toEqual(["user", "toolgroup", "reasoning", "toolgroup", "assistant", "toolgroup"]);
-    expect(group(f).steps.map((s) => s.kind)).toEqual(["think", "read", "think", "bash", "think", "edit"]);
+    // the empty finished thinking (r1) is dropped, the short ones become steps
+    expect(group(f).steps.map((s) => s.kind)).toEqual(["think", "read", "bash", "think", "edit"]);
     expect(summarize(group(f).steps).counts).toEqual([["edit", 1], ["run", 1], ["read", 1]]);
   });
 

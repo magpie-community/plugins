@@ -44,6 +44,8 @@ describe("checkBashPath (Settings → Bash path)", () => {
   it("refuses empty, relative, non-bash, WSL and missing paths", () => {
     expect(checkBashPath("", { ...d, env: WIN_ENV })).toEqual({ ok: false, reason: "empty" });
     expect(checkBashPath("bash.exe", { ...d, env: WIN_ENV })).toEqual({ ok: false, reason: "relative" });
+    // UNC paths are refused: the check is synchronous and a dead share could stall the daemon
+    expect(checkBashPath("\\\\srv\\share\\Git\\bin\\bash.exe", { ...d, env: WIN_ENV })).toEqual({ ok: false, reason: "relative" });
     expect(checkBashPath("E:\\Git\\bin\\git.exe", { ...d, env: WIN_ENV })).toEqual({ ok: false, reason: "notBash" });
     expect(checkBashPath(WSL, { ...d, env: WIN_ENV })).toEqual({ ok: false, reason: "wsl" });
     expect(checkBashPath("F:\\Git\\bin\\bash.exe", { ...d, env: WIN_ENV })).toEqual({ ok: false, reason: "missing" });
@@ -67,8 +69,8 @@ describe("candidates", () => {
   });
   it("other drives", () => {
     expect(driveBashCandidates(["e", "F:", "1"])).toEqual([
-      "E:\\Git\\bin\\bash.exe", "E:\\Program Files\\Git\\bin\\bash.exe", "E:\\Program Files (x86)\\Git\\bin\\bash.exe",
-      "F:\\Git\\bin\\bash.exe", "F:\\Program Files\\Git\\bin\\bash.exe", "F:\\Program Files (x86)\\Git\\bin\\bash.exe",
+      "E:\\Git\\bin\\bash.exe", "E:\\Program Files\\Git\\bin\\bash.exe",
+      "F:\\Git\\bin\\bash.exe", "F:\\Program Files\\Git\\bin\\bash.exe",
     ]);
   });
 });
@@ -185,5 +187,20 @@ describe("agentShell state", () => {
     const env = { ...WIN_ENV, Path: "" };
     await refreshAgentShell(WSL, { platform: "win32", deps: { ...disk([WSL]), env, drives: [] } });
     expect(agentShellStatus().manualError).toBe("wsl");
+  });
+});
+
+describe("probeInChild (other drives, out of process)", () => {
+  it("returns the first existing candidate in list order, null when none", async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { probeInChild } = await import("../../daemon/src/util/gitBash.js");
+    const dir = mkdtempSync(join(tmpdir(), "ac-probe-"));
+    const a = join(dir, "a"), b = join(dir, "b");
+    writeFileSync(a, ""); writeFileSync(b, "");
+    expect(await probeInChild([join(dir, "nope"), b, a], 5000)).toBe(b);
+    expect(await probeInChild([join(dir, "nope"), dir], 5000)).toBeNull(); // a directory is not a file
+    expect(await probeInChild([], 5000)).toBeNull();
   });
 });
