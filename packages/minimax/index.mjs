@@ -631,17 +631,23 @@ function planWindows(body) {
   return out
 }
 
+// magpie gives the whole usage call 20 seconds, and the console's endpoints
+// aren't documented, so a stalled one gets little of that. The fallback's 10
+// keeps planQuota within the 15 that 0.2.1 could take.
+const CONSOLE_MS = 5000
+const FALLBACK_MS = 10000
+
 // planQuota asks the console's own reply first, then coding_plan/remains.
 async function planQuota(site, access, group) {
   const headers = { Accept: "application/json", Authorization: "Bearer " + access, ...(group ? { "X-Group-Id": group } : {}) }
   try {
-    const res = await siteFetch(site, site.platform + "/backend/account/token_plan/remains_percent", { headers, signal: AbortSignal.timeout(15000) }, "M Plan")
+    const res = await siteFetch(site, site.platform + "/backend/account/token_plan/remains_percent", { headers, signal: AbortSignal.timeout(CONSOLE_MS) }, "M Plan")
     if (res.ok) {
       const body = await res.json()
       if (Array.isArray(body?.model_remains) && body.model_remains.length && !body.base_resp?.status_code) return planWindows(body)
     }
   } catch {}
-  const res = await siteFetch(site, site.platform + "/v1/api/openplatform/coding_plan/remains", { headers, signal: AbortSignal.timeout(15000) }, "M Plan")
+  const res = await siteFetch(site, site.platform + "/v1/api/openplatform/coding_plan/remains", { headers, signal: AbortSignal.timeout(FALLBACK_MS) }, "M Plan")
   if (!res.ok) throw new Error(`M Plan: HTTP ${res.status}`)
   return planWindows(await res.json())
 }
@@ -653,7 +659,7 @@ async function planTitle(site, access, group) {
   try {
     const res = await siteFetch(site, site.platform + "/v1/api/openplatform/charge/combo/cycle_audio_resource_package?biz_line=2&cycle_type=1&resource_package_type=7", {
       headers: { Accept: "application/json", Authorization: "Bearer " + access, ...(group ? { "X-Group-Id": group } : {}) },
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(CONSOLE_MS),
     }, "M Plan")
     if (!res.ok) return undefined
     const t = (await res.json())?.current_subscribe?.current_subscribe_title
@@ -1060,12 +1066,14 @@ function makePlugin(site) {
             let error
             let title
             if (m.hasTokenPlan && m.opGroupId) {
-              try {
-                windows = await planQuota(site, a.access, m.opGroupId)
-              } catch (e) {
-                error = e?.message ?? String(e)
-              }
-              title = await planTitle(site, a.access, m.opGroupId)
+              // asked together: a stalled title costs its 5 seconds at most, not 5 more after the windows
+              ;[windows, title] = await Promise.all([
+                planQuota(site, a.access, m.opGroupId).catch((e) => {
+                  error = e?.message ?? String(e)
+                  return []
+                }),
+                planTitle(site, a.access, m.opGroupId),
+              ])
             }
             // the credits as a share of what the live batches granted
             // (#393); beside an M Plan they are its fallback, aside. A

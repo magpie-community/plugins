@@ -125,6 +125,22 @@ test("a plan reads the console's windows and title, and goes on without them", a
   expect(off.windows.find((w) => w.name === "7 days").used).toBe(25)
 })
 
+// A stall is what the fallback is for, and magpie allows usage 20 seconds. Asked
+// one after another these two would take 10 here.
+test("the console's endpoints not answering leave the coding_plan/remains windows in time", async () => {
+  f = fakeMiniMax()
+  account(f, { plan: true })
+  f.route("GET /backend/account/token_plan/remains_percent", () => new Promise(() => {}))
+  f.route("GET /v1/api/openplatform/charge/combo/cycle_audio_resource_package", () => new Promise(() => {}))
+  const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
+  const start = Date.now()
+  const u = await hooks.auth.usage(async () => auth)
+  expect(Date.now() - start).toBeLessThan(8000)
+  expect(u.error).toBeUndefined()
+  expect(u.plan).toBe("Token Plan Plus")
+  expect(u.windows.map((w) => [w.name, w.used])).toEqual([["5 hours", 40], ["7 days", 25]])
+}, 15000)
+
 test("a free account shows its credits", async () => {
   f = fakeMiniMax()
   account(f)
