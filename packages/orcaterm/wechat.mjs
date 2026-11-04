@@ -7,8 +7,8 @@
  *   →  the local page below embeds WeChat's qrconnect widget
  *   the scan returns to {redirect_uri} (/oauth/wechat/bridge?code&state), and that
  *   page postMessages the result to its parent — which is our page
- *   POST {OAUTH}/oauth/wechat/exchange  → {userId, accessToken, expiresIn, …}
- *   POST {CAPI}?action=OAuthRefreshToken → renews it
+ *   POST {OAUTH}/oauth/wechat/exchange  → {userId, accessToken, refreshToken, expiresIn, …}
+ *   POST {CAPI}?action=OAuthRefreshToken → renews it from the refresh token
  *
  * Why `self_redirect: true` matters: after a scan, qrconnect navigates the *top*
  * window by default, which replaces the host page and loses the postMessage.
@@ -97,7 +97,12 @@ export async function exchangeCode({ code, state, base = OAUTH_BASE }) {
   const { res, body, text } = await jsonFetch(`${base}/oauth/wechat/exchange`, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ code, state }),
+    // OrcaTerm's desktop client sends client "desktop" (#675), and only then
+    // does the reply carry a refreshToken: a long-lived credential that
+    // OAuthRefreshToken renews from after the two-hour access token and its
+    // web session are gone. The web console sends no client and gets a
+    // session cookie instead, which magpie has no use for.
+    body: JSON.stringify({ code, state, client: "desktop" }),
   })
   const known = ["STATE_EXPIRED", "STATE_MISMATCH", "INVALID_REQUEST", "PROVIDER_DISABLED"]
   const c = String(body?.code ?? "")
@@ -118,19 +123,44 @@ export async function exchangeCode({ code, state, base = OAUTH_BASE }) {
     nickname: d.providerUsername ?? "",
     avatar: d.avatar ?? "",
     accessToken: d.accessToken,
+    refreshToken: refreshTokenFor(d.refreshToken, d.accessToken),
     expiresIn,
     expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : null,
   }
 }
 
-/** Renew: trade the current token for a fresh one (same two-hour life). */
-export async function refreshAccessToken(token, { base = OAUTH_BASE } = {}) {
+// The desktop client's shape of a refresh token: "<jti>.<n>.<43 chars>", its
+// jti that of the access token issued with it. The client keeps one only
+// when both hold (persistLoginRefreshToken), and so does this.
+const REFRESH_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.\d{1,6}\.[A-Za-z0-9_-]{43}$/
+
+/** True for something shaped like OrcaTerm's refresh token. */
+export function looksLikeRefreshToken(s) {
+  return REFRESH_TOKEN.test(String(s ?? "").trim())
+}
+
+/** The refresh token when it belongs to accessToken, else "". */
+export function refreshTokenFor(refreshToken, accessToken) {
+  const r = String(refreshToken ?? "").trim()
+  if (!looksLikeRefreshToken(r)) return ""
+  return readTokenClaims(accessToken).jti === r.split(".")[0] ? r : ""
+}
+
+/**
+ * Renew: trade the refresh token, or without one the current access token,
+ * for a fresh access token (same two-hour life). OrcaTerm's own client sends
+ * one or the other, the refresh token when it has it (OAuthRefreshToken in
+ * its bundle). A reply may carry the next refresh token; without one the
+ * same one stays.
+ */
+export async function refreshAccessToken(token, { base = OAUTH_BASE, refreshToken = "" } = {}) {
+  const data = refreshToken ? { refreshToken } : { accessToken: token }
   const { body, text } = await jsonFetch(
     `${base}/cgi/api?action=OAuthRefreshToken`,
     {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json" },
-      body: JSON.stringify({ action: "OAuthRefreshToken", data: { accessToken: token } }),
+      body: JSON.stringify({ action: "OAuthRefreshToken", data }),
     },
     15000,
   )
@@ -140,7 +170,15 @@ export async function refreshAccessToken(token, { base = OAUTH_BASE } = {}) {
     throw new WechatLoginError("INTERNAL_ERROR", `renewal failed: ${(r?.Error?.Message || text).slice(0, 120)}`)
   }
   const expiresIn = Number(r?.expiresIn ?? r?.ExpiresIn) || 0
-  return { accessToken: next, expiresIn, expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : null }
+  const nextRefresh = looksLikeRefreshToken(r?.refreshToken ?? r?.RefreshToken)
+    ? String(r?.refreshToken ?? r?.RefreshToken).trim()
+    : refreshToken
+  return {
+    accessToken: next,
+    refreshToken: nextRefresh,
+    expiresIn,
+    expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : null,
+  }
 }
 
 /** Read userId/nickname/expiry out of the JWT (no signature check). */
@@ -151,9 +189,10 @@ export function readTokenClaims(token) {
       userId: p?.userId != null ? String(p.userId) : "",
       nickname: p?.providerUsername ?? "",
       exp: Number(p?.exp) || 0,
+      jti: p?.jti != null ? String(p.jti) : "",
     }
   } catch {
-    return { userId: "", nickname: "", exp: 0 }
+    return { userId: "", nickname: "", exp: 0, jti: "" }
   }
 }
 

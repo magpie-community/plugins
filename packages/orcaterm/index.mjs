@@ -25,6 +25,7 @@ import {
   createLocalCapture,
   exchangeCode,
   looksLikeAccessToken,
+  looksLikeRefreshToken,
   readTokenClaims,
   refreshAccessToken,
   startWechatLogin,
@@ -1991,11 +1992,13 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
                   const r = await exchangeCode({ code, state })
                   // magpie writes the credential only when a `refresh` is present
                   // (host `save()`); with just a `key` it is stored as type "api"
-                  // and never renewed.
+                  // and never renewed. The refresh token is what renews it
+                  // past the access token's two hours (#675); a reply without
+                  // one falls back to renewing from the access token.
                   return {
                     type: "success",
                     access: r.accessToken,
-                    refresh: r.accessToken,
+                    refresh: r.refreshToken || r.accessToken,
                     expires: r.expiresAt ?? Date.now() + 7200 * 1000,
                     // magpie deduplicates re-sign-ins by accountId, not userId.
                     accountId: r.userId,
@@ -2030,22 +2033,27 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
 
       /**
        * Renewal. A WeChat access token lives two hours; `OAuthRefreshToken` trades
-       * it for a fresh one of the same length, so a normal session never sees an
-       * expiry.
+       * the refresh token kept at sign-in (or, for a sign-in from before 0.1.6,
+       * the access token itself) for a fresh one of the same length.
        *
        * A console cookie has nothing to renew — it lasts until the user signs out
        * of the console.
        */
       async refresh(auth) {
         const bearer = bearerOf(auth)
-        if (!bearer) return null
+        // #675: a sign-in from 0.1.6 on keeps OrcaTerm's refresh token in
+        // `refresh`, which renews after the access token's session is gone,
+        // as the desktop client does. One from before holds the access
+        // token there and renews from it until the next scan.
+        const refreshToken = looksLikeRefreshToken(auth?.refresh) ? String(auth.refresh).trim() : ""
+        if (!bearer && !refreshToken) return null
         try {
-          const r = await refreshAccessToken(bearer)
+          const r = await refreshAccessToken(bearer, { refreshToken })
           const userId = readTokenClaims(bearer).userId || auth?.userId || auth?.metadata?.userId
           return {
             key: r.accessToken,
             access: r.accessToken,
-            refresh: r.accessToken,
+            refresh: r.refreshToken || r.accessToken,
             expires: r.expiresAt ?? undefined,
             ...(userId ? { accountId: auth?.accountId || String(userId), uid: auth?.uid || String(userId), userId: String(userId) } : {}),
             metadata: { ...(auth?.metadata ?? {}), via: "wechat-qr", expires: r.expiresAt ?? undefined },
