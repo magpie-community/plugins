@@ -4,7 +4,7 @@
 // Everything runs against the local fake.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
-import { SenseNovaAuthPlugin, _internal } from "./index.mjs"
+import { SenseNovaAuthPlugin, _internal, optionEnabled } from "./index.mjs"
 import { fakeSenseNova, json } from "./fake.mjs"
 
 let f
@@ -177,7 +177,7 @@ test("the renewal lead is where the host reads it", async () => {
 
 test("the sign-in asks for the account, its password and an optional key", async () => {
   const p = await plugin()
-  const m = p.auth.methods[0]
+  const m = p.auth.methods[1] // the password method; [0] is the browser one
   expect(m.prompts.map((x) => x.key)).toEqual(["username", "password", "apiKey"])
   // the key is optional: an empty one passes, a non-sk- one doesn't
   expect(m.prompts[2].validate("")).toBeUndefined()
@@ -216,4 +216,16 @@ test("a plan and a catalogue that share no model list none", async () => {
   // both were really consulted this time
   expect(f.seen.some((r) => r.path.includes("pool-usage"))).toBe(true)
   expect(f.seen.some((r) => r.path === "/models")).toBe(true)
+})
+
+test("create_key defaults on outside magpie, where the host has no option", () => {
+  // OpenCode has no magpie.option: optionOn() used to answer false for an
+  // unset option, which silently turned key creation off there while the
+  // comment and the option's default:true said on
+  expect(optionEnabled(undefined, {}, "create_key", true)).toBe(true)
+  expect(optionEnabled(undefined, { create_key: false }, "create_key", true)).toBe(false)
+  expect(optionEnabled({ option: () => false }, { create_key: true }, "create_key", true)).toBe(false)
+  expect(optionEnabled({ option: () => true }, {}, "create_key", true)).toBe(true)
+  // pruning stays opt-in in both hosts
+  expect(optionEnabled(undefined, {}, "prune_old_keys", false)).toBe(false)
 })

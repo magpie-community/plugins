@@ -69,12 +69,24 @@ test("the real catalogue's own fields are what the models declare", async () => 
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
   const models = await p.provider.models({ id: "sensenova-token-plan", models: {} }, { auth })
   const byId = Object.fromEntries(MODELS.data.map((m) => [m.id, m]))
+  // deepseek output limits are the measured max_tokens bounds, not the
+  // catalogue's conservative max_output_length (2026-10-29, a real account:
+  // [1, 393216] / [1, 384000]); the catalogue's own numbers would cut an
+  // agent's output to a sixth
+  const MEASURED = { "deepseek-flash": 393216, "deepseek-v4-flash": 384000 };
   for (const id of Object.keys(models)) {
-    expect(models[id].limit).toEqual({ context: byId[id].context_length, output: byId[id].max_output_length })
+    expect(models[id].limit).toEqual({
+      context: byId[id].context_length,
+      output: MEASURED[id] ?? byId[id].max_output_length,
+    })
     const takesImage = byId[id].input_modalities.includes("image")
     expect(models[id].capabilities.input.image).toBe(takesImage)
     expect(models[id].modalities.input).toEqual(takesImage ? ["text", "image"] : ["text"])
   }
+  // the model that only draws is left out of a chat provider's listing (the
+  // browser host would list it for magpie's Drawers; this plugin instance has
+  // no magpie input, so the chat convention holds)
+  expect(models["sensenova-u1.5-lite"]).toBeUndefined()
 })
 
 test("the bootstrap list is a subset of what the plan and catalogue agree on", async () => {
