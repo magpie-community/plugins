@@ -531,6 +531,78 @@ describe("chat", () => {
     expect(body.choices[0].message.content).toContain("tool_calls")
   })
 
+  test("a call JSON split across cumulative frames still becomes a call", async () => {
+    // frame 1 cuts mid-token — the head-hold in the streaming tool path
+    // exists for exactly this shape
+    const whole = JSON.stringify({ tool_calls: [{ name: "Bash", arguments: { command: "ls" } }] })
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: whole.slice(0, 19) }] } },
+        { message: { content: [{ type: "text", text: whole }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "list files" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+        stream: true,
+      }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('"finish_reason":"tool_calls"')
+    expect(text).toContain('"name":"Bash"')
+    expect(text.endsWith("data: [DONE]\n\n")).toBe(true)
+  })
+
+  test("the keep-alive interval is torn down when the agent cancels mid-turn", async () => {
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: "你" }] } },
+        { message: { content: [{ type: "text", text: "你好" }] }, finished: true },
+      ],
+    ]
+    fake.state.turnDelayMs = 400
+    let created = 0
+    let cleared = 0
+    const origSet = globalThis.setInterval
+    const origClear = globalThis.clearInterval
+    globalThis.setInterval = (fn, ms) => {
+      created++
+      return origSet(fn, ms)
+    }
+    globalThis.clearInterval = (t) => {
+      cleared++
+      return origClear(t)
+    }
+    try {
+      const loader = await plugin.auth.loader(getAuth)
+      const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+        method: "POST",
+        body: JSON.stringify({
+          model: "longcat-2.0",
+          messages: [{ role: "user", content: "hi" }],
+          tools: [{ type: "function", function: { name: "Bash" } }],
+          stream: true,
+        }),
+      })
+      const reader = res.body.getReader()
+      await reader.read() // the role frame, then cancel mid-turn
+      await reader.cancel()
+      // the next delta arrives after the fake's delay; the push that hits a
+      // cancelled stream is where the interval must be cleared
+      await new Promise((r) => setTimeout(r, 800))
+      expect(created).toBeGreaterThanOrEqual(1)
+      expect(cleared).toBeGreaterThanOrEqual(created)
+    } finally {
+      globalThis.setInterval = origSet
+      globalThis.clearInterval = origClear
+    }
+  })
+
   test("tool results ride as text, images are refused", async () => {
     const loader = await plugin.auth.loader(getAuth)
     const toolRes = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {

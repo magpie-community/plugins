@@ -22,6 +22,9 @@ export function fakeCatPaw() {
     // cumulative frames (the tools tests use it to script a reply, then a
     // forced-retry reply); empty → the default 你好 frames
     turnFramesQueue: [],
+    // per-turn delay before the SSE starts (the keep-alive teardown test
+    // uses it to keep the stream open while the agent cancels)
+    turnDelayMs: 0,
     // sources the gateway has turned off: it answers them HTTP 200 with
     // {code: 400, msg: "source 不存在或未启用: <source>"}, the body behind
     // plugins#605. CatPawCLI was turned off by 2026-11-01.
@@ -47,6 +50,7 @@ export function fakeCatPaw() {
       state.turns = 0
       state.turnError = null
       state.turnFramesQueue = []
+      state.turnDelayMs = 0
       state.disabledSources = new Set(["CatPawCLI"])
       state.turnBodies = []
       state.balanceCalls = 0
@@ -138,6 +142,7 @@ export function fakeCatPaw() {
         if (body.conversationId !== conv?.id) return json(400, { code: 400, msg: "turn for unknown conversation" })
         if (state.turnError === "sse-error")
           return new Response(`data: ${JSON.stringify({ error: { code: 500, message: "vendor broke" } })}\n\n`, { headers: { "content-type": "text/event-stream" } })
+        if (state.turnDelayMs) await new Promise((r) => setTimeout(r, state.turnDelayMs))
         // cumulative frames: each carries the whole text so far (as the real gateway does)
         const frames = state.turnFramesQueue.length
           ? state.turnFramesQueue.shift()
