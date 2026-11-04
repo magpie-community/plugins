@@ -156,11 +156,12 @@ test("the signature's type Devin said goes back with it", async () => {
   expect([a.thinking, a.signature, a.type]).toEqual(["Let me think.", SIG, "anthropic-bedrock"])
 })
 
-test("unsigned thinking, and thinking to another model, goes no further", () => {
+test("unsigned thinking to Claude goes no further, and another model's goes without a signature", () => {
   const unsigned = prompts(buildMessages(history([{ type: "thinking", thinking: "t", signature: "" }, use]), "claude-opus-5-5", "k")).find((p) => p.role === 2)
   expect([unsigned.thinking, unsigned.signature, unsigned.type]).toEqual([null, null, null])
+  // another model's thinking goes back as its text alone (plugins#703)
   const other = prompts(buildMessages(history([{ type: "thinking", thinking: "t", signature: SIG }, use]), "deepseek-v4-flash-high", "k")).find((p) => p.role === 2)
-  expect([other.thinking, other.signature, other.type]).toEqual([null, null, null])
+  expect([other.thinking, other.signature, other.type]).toEqual(["t", null, null])
   // a turn that only thought still sends nothing of its own
   const ps = prompts(buildMessages({ messages: [{ role: "user", content: "hi" }, { role: "assistant", content: [{ type: "thinking", thinking: "t", signature: SIG }] }] }, "claude-opus-5-5", "k"))
   expect(ps.some((p) => p.role === 2)).toBe(false)

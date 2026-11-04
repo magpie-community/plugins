@@ -1200,12 +1200,20 @@ function joinSplitCalls(msgs) {
     const prev = out.at(-1)
     if (m?.role === "assistant" && prev?.role === "assistant" && prev.tool_calls?.length) {
       const content = [textOf(prev.content), textOf(m.content)].filter(Boolean).join("\n\n")
-      out[out.length - 1] = { ...prev, content, tool_calls: [...prev.tool_calls, ...(m.tool_calls ?? [])] }
+      const reasoning = [reasoningOf(prev), reasoningOf(m)].filter(Boolean).join("\n\n")
+      out[out.length - 1] = { ...prev, content, tool_calls: [...prev.tool_calls, ...(m.tool_calls ?? [])], ...(reasoning ? { reasoning_content: reasoning } : {}) }
       continue
     }
     out.push(m)
   }
   return out
+}
+
+// reasoningOf is an assistant message's reasoning as a chat completion
+// carries it: reasoning_content, or reasoning as some clients name it.
+function reasoningOf(m) {
+  for (const v of [m?.reasoning_content, m?.reasoning]) if (typeof v === "string" && v) return v
+  return ""
 }
 
 // effortOf is the effort a request names, as magpie reads it.
@@ -1461,6 +1469,7 @@ function noted(text) {
 // build is the GetChatMessage request for a chat completion, to the model
 // uid.
 function build(chat, uid, key) {
+  const claude = isClaude(uid)
   const msgs = []
   let pending = [] // calls the last reply made, not yet answered
   const answer = () => {
@@ -1497,7 +1506,13 @@ function build(chat, uid, key) {
       const text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter((p) => p?.type === "text" && p.text).map((p) => p.text).join("\n\n") : ""
       if (!text && !calls.length) continue // a turn that only thought, or failed
       answer()
-      msgs.push({ role: ASSISTANT, text, calls })
+      // the reply's reasoning goes back as its thinking (11), unsigned, to
+      // a model that isn't Claude: swe-2 stops thinking on a tool loop's
+      // later turns when the turns before carry none (plugins#703). A chat
+      // completion has no field for a signature, and Claude's thinking
+      // goes back only signed (plugins#665), so Claude gets none, as before.
+      const reasoning = claude ? "" : reasoningOf(m)
+      msgs.push({ role: ASSISTANT, text, calls, ...(reasoning ? { thinking: { text: reasoning } } : {}) })
       // a copy: answering a call takes it off pending, never off the
       // reply that made it, which goes to Devin with every call it made
       pending = [...calls]
@@ -1630,10 +1645,13 @@ function encodeMsg(m) {
   // own: where the client put cache_control (#566)
   if (m.cache) b.bytes(8, new PB().varint(1, 1))
   for (const p of m.images ?? []) b.bytes(10, new PB().str(1, p.data).str(2, p.type))
-  // the signed thinking the reply had, sent back as Devin wrote it:
-  // thinking (11), signature (12) and signature_type (18) (plugins#665)
+  // the thinking the reply had, sent back as Devin wrote it: thinking
+  // (11), and Claude's signature (12) and signature_type (18) when it was
+  // signed (plugins#665). Another model's thinking has no signature and
+  // goes back as its text alone (plugins#703); which thinking reaches
+  // here is the builders' to say.
+  if (m.thinking?.text) b.str(11, m.thinking.text)
   if (m.thinking?.signature) {
-    if (m.thinking.text) b.str(11, m.thinking.text)
     b.str(12, m.thinking.signature)
     if (m.thinking.type) b.str(18, m.thinking.type)
   }
@@ -1972,10 +1990,11 @@ function buildMessages(req, uid, key) {
       const own = []
       const calls = []
       let mark = false // a tool_use the client marked: the prompt with the calls ends there
-      // a signed thinking block, for the prompt that follows it: Claude's
-      // thinking goes back with its signature, which Anthropic wants on a
-      // tool loop's next turn (plugins#665). Unsigned thinking, and any to
-      // a model that isn't Claude, goes no further, as before.
+      // a thinking block, for the prompt that follows it: Claude's thinking
+      // goes back with its signature, which Anthropic wants on a tool
+      // loop's next turn (plugins#665), and unsigned thinking to Claude
+      // goes no further, as before. Another model's thinking goes back as
+      // its text alone, never with a signature (plugins#703).
       let thought = null
       const take = (p) => {
         if (thought) [p.thinking, thought] = [thought, null]
@@ -1992,6 +2011,9 @@ function buildMessages(req, uid, key) {
           // two in a row: the first has a prompt of its own
           if (thought) own.push(take({ role: ASSISTANT, text: "", calls: [] }))
           thought = { text: typeof b.thinking === "string" ? b.thinking : "", signature: b.signature, type: sigTypeOf(b.signature) }
+        } else if (b?.type === "thinking" && !claude && typeof b.thinking === "string" && b.thinking) {
+          if (thought) own.push(take({ role: ASSISTANT, text: "", calls: [] }))
+          thought = { text: b.thinking }
         }
       }
       if (calls.length) {
@@ -2524,14 +2546,18 @@ function v2Chat(options, modelID) {
     }
     if (m.role === "assistant") {
       let text = ""
+      let reasoning = ""
       const calls = []
       for (const p of m.content ?? []) {
         if (p.type === "text") text += (text ? "\n\n" : "") + p.text
+        // the reply's reasoning, which build sends back to a model that
+        // isn't Claude (plugins#703)
+        else if (p.type === "reasoning" && typeof p.text === "string" && p.text) reasoning += (reasoning ? "\n\n" : "") + p.text
         else if (p.type === "tool-call")
           calls.push({ id: p.toolCallId, type: "function", function: { name: p.toolName, arguments: JSON.stringify(p.input ?? {}) } })
       }
       if (!text && !calls.length) continue
-      messages.push({ role: "assistant", content: text, ...(calls.length ? { tool_calls: calls } : {}) })
+      messages.push({ role: "assistant", content: text, ...(reasoning ? { reasoning_content: reasoning } : {}), ...(calls.length ? { tool_calls: calls } : {}) })
       continue
     }
     if (m.role === "tool") {
