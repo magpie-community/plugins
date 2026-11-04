@@ -31,6 +31,9 @@ const DESKTOP_VERSION = '3.2.20';
 // Work's "High" output speed is no model of its own: the menu lists it among
 // a model's speedOptions, and the desktop asks for it with this header.
 const SPEED_HEADER = 'X-Kimi-Model-Speed';
+// How a model says it has that speed: magpie offers its Fast switch on a model
+// served at priority, and sends such a request with that service_tier.
+const FAST_ROW = {fast:true,serviceTiers:['priority']};
 function webHeaders(platform=process.platform) {
   return {'User-Agent':UA,'x-msh-platform':platform==='darwin'?'mac':platform==='win32'?'windows':'web',
     'x-msh-version':DESKTOP_VERSION,'R-Timezone':Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC'};
@@ -440,7 +443,7 @@ function workConfigRows(payload) {
       limit:{context:Math.min(max,262144),output},
       capabilities:{reasoning:thinking,toolcall:true,attachment:image,
         input:{text:true,image,video:false,audio:false,pdf:false},output:{text:true}},
-      variants,...(fast?{fast:true}:{})};
+      variants,...(fast?FAST_ROW:{})};
   }
   return out;
 }
@@ -699,7 +702,7 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
       const out={...a};
       // An id both list keeps /models' row (the gateway's own context and
       // image flags) under the desktop's name for it.
-      for(const [id,row] of Object.entries(b))out[id]=out[id]?{...row,name:out[id].name,...(out[id].fast?{fast:true}:{})}:row;
+      for(const [id,row] of Object.entries(b))out[id]=out[id]?{...row,name:out[id].name,...(out[id].fast?FAST_ROW:{})}:row;
       return out;
     }},
   };

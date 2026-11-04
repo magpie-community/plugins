@@ -275,12 +275,14 @@ const speedMenu={models:[
 test('a model is fast when its menu entry offers the fast speed, and keeps that beside /models',async()=>{
   const rows=I.workConfigRows(speedMenu);
   expect(rows['k3d1-agent'].fast).toBe(true);
+  expect(rows['k3d1-agent'].serviceTiers).toEqual(['priority']);
   expect(rows['k3-agent'].fast).toBeUndefined();
   expect(rows['k2d8-preview'].fast).toBeUndefined();
   const p=I.createPlugin({readSession:()=>session,fetchImpl:async url=>String(url).includes('DescribeKimiWorkConfig')?json(speedMenu)
     :json({data:[{id:'k3d1-agent',display_name:'K3.1',context_length:262144}]})});
   const models=await p.provider.models({},{auth:account});
   expect(models['k3d1-agent'].fast).toBe(true);
+  expect(models['k3d1-agent'].serviceTiers).toEqual(['priority']);
 });
 
 test('service_tier priority or fast is asked by header and left out of the body; any other request is unchanged',async()=>{
