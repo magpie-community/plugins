@@ -8,15 +8,27 @@
 }
 .cp-card:focus-within { border-color: var(--cp-focus); box-shadow: 0 0 0 3px var(--cp-ring), 0 1px 2px rgb(0 0 0 / .04); }
 .cp-card.waiting { border-color: color-mix(in oklab, var(--warn) 45%, var(--bg)); }
-/* 1.3: first time 全部自动同意 is turned on: one grayscale line above the card */
-.cp-autowarn {
-  max-width: var(--col); margin: 0 auto 6px; display: flex; align-items: center; gap: 6px;
-  color: var(--muted); font-size: var(--fs-s); padding: 0 2px; min-width: 0;
+/* 1.3 全部自动同意 (#727 review 1): a persistent banner above the card for as long as the conversation is in it, plus a
+   warning-tinted card border and chip. The one exception to the grayscale accent: the semantic warning colour, darker in
+   light mode so small text stays readable (≥4.5:1 on the page background), lighter in dark mode. */
+:root { --auto-fg: #b45309; --auto-bg: color-mix(in oklab, #f59e0b 10%, var(--bg)); --auto-line: color-mix(in oklab, #d97706 40%, var(--bg)); }
+:root[data-theme="dark"] { --auto-fg: #fbbf24; --auto-bg: color-mix(in oklab, #f59e0b 13%, var(--bg)); --auto-line: color-mix(in oklab, #f59e0b 42%, var(--bg)); }
+.cp-auto-on {
+  max-width: var(--col); margin: 0 auto 6px; display: flex; align-items: flex-start; gap: 8px; min-width: 0;
+  padding: 6px 8px 6px 10px; border-radius: var(--r-m); border: 1px solid var(--auto-line); background: var(--auto-bg);
+  color: var(--text); font-size: var(--fs-s); line-height: 1.45;
 }
-.cp-autowarn svg { flex: none; color: var(--fg); }
-.cp-autowarn-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cp-autowarn-ok { flex: none; margin-left: auto; color: var(--fg); font-size: var(--fs-s); padding: 0 4px; border-radius: var(--r-s); }
-.cp-autowarn-ok:hover { background: var(--surface-hover); }
+.cp-auto-ic { flex: none; display: inline-flex; color: var(--auto-fg); margin-top: 1px; }
+.cp-auto-t { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; column-gap: 6px; }
+.cp-auto-t b { color: var(--auto-fg); font-weight: 600; white-space: nowrap; }
+.cp-auto-d { min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.cp-auto-back {
+  flex: none; align-self: center; margin-left: auto; padding: 1px 6px; border-radius: var(--r-s); white-space: nowrap;
+  color: var(--fg); font-size: var(--fs-s); border: 1px solid var(--auto-line); background: var(--bg);
+}
+.cp-auto-back:hover { background: var(--surface-hover); }
+.cp-card.auto-on { border-color: var(--auto-line); }
+.cp-card.auto-on:focus-within { border-color: var(--auto-fg); }
 .cp-hint { max-width: var(--col); margin: 6px auto 0; font-size: var(--fs-xs); color: var(--meta); text-align: center; }
 .att-note { padding: 6px 10px 0; color: var(--muted); font-size: var(--fs-s); }
 .cp-ta-wrap { position: relative; }
@@ -86,9 +98,11 @@
 }
 .tasks-pill:hover { color: var(--fg); background: var(--surface-hover); }
 .tasks-pill svg { flex: none; color: var(--meta); }
-/* 1.3 全部自动同意: Cursor's shield idea without the green, a filled grayscale chip with a shield-check */
-.ipill.auto { color: var(--fg); background: color-mix(in oklab, var(--fg) 8%, transparent); font-weight: 500; }
-.ipill.auto:hover, .ipill.auto[aria-expanded="true"] { background: color-mix(in oklab, var(--fg) 13%, transparent); }
+/* 1.3 全部自动同意: Cursor's shield idea, a filled chip with a shield-check, in the warning colour (#727 review 1) */
+.ipill.auto, .cp-bar .ipill.auto { color: var(--auto-fg); background: var(--auto-bg); border-color: var(--auto-line); font-weight: 600; }
+.ipill.auto:hover, .ipill.auto[aria-expanded="true"], .cp-bar .ipill.auto:hover, .cp-bar .ipill.auto[aria-expanded="true"] { background: color-mix(in oklab, var(--auto-fg) 16%, var(--bg)); }
+.ipill.auto svg { color: var(--auto-fg); }
+.mi.warn .sm-label { color: var(--auto-fg); }
 .ipill.static { cursor: default; }
 .mode-menu { max-width: 300px; }
 .cp-div { width: 1px; height: 14px; background: var(--line); margin: 0 4px; flex: none; }

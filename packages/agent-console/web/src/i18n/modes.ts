@@ -1,8 +1,15 @@
 import type { Mode } from "../types/models.js";
 import { t } from "./index.js";
 
-/** auto: 全部自动同意 (bypassPermissions), drawn with the grayscale shield-check */
+/** auto: 全部自动同意 (bypassPermissions), drawn with the shield-check in the warning colour (#727 review 1) */
 export type PermissionModeOption = { id: Mode; label: string; desc: string; danger?: boolean; auto?: boolean };
+
+const AUTO_DESC_IDS = new Set(["claude", "codex", "copilot", "devin", "cursor", "opencode", "pi"]);
+
+/** What 全部自动同意 really does for this Agent: sandbox off / skips all permission checks / the console answers allow-once */
+export function autoModeDesc(providerId: string | undefined): string {
+  return t(`composer.autoDesc.${providerId && AUTO_DESC_IDS.has(providerId) ? providerId : "generic"}`);
+}
 
 export const FULL_AUTO: Mode = "bypassPermissions";
 
@@ -32,15 +39,12 @@ export function composerModeOptions(
 ): PermissionModeOption[] {
   const base = providerId === "cursor" ? cursorExecutionModes() : permissionModes();
   // As in Paseo: when an Agent has its own mode names, use them (Copilot shows Agent rather than Always Ask).
-  // 1.3: 全部自动同意 keeps one name for every Agent; the Agent's own name for it goes into the description.
+  // 1.3: 全部自动同意 keeps one name for every Agent; the description says what it does for that Agent.
   return base
     .filter((m) => allowed.includes(m.id))
     .map((m) => {
-      if (m.id === FULL_AUTO) {
-        if (providerId === "pi") return { ...m, desc: t("composer.mode.piBypass.desc") };
-        const own = labels?.[m.id];
-        return own ? { ...m, desc: `${m.desc} · ${agentModeLabel(own)}` } : m;
-      }
+      // #727 review 1: the hint says plainly what the Agent's own switch does (Codex: sandbox off; Claude: skips all checks)
+      if (m.id === FULL_AUTO) return { ...m, desc: autoModeDesc(providerId) };
       return labels?.[m.id] ? { ...m, label: agentModeLabel(labels[m.id]!) } : m;
     });
 }

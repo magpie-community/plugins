@@ -15,10 +15,11 @@ import type { Mode, ModelInfo } from "../types/models";
 import type { SlashCommand } from "../composer/slashMenu";
 import { toast } from "./Toast";
 import { useLiveSettings } from "./Settings";
-import { composerModeOptions, effortLabel, FULL_AUTO } from "../i18n/modes.js";
+import { composerModeOptions, effortLabel } from "../i18n/modes.js";
 import { Logo } from "./Logo";
 import { currentChecklist, todoProgress } from "../timeline/fold";
 import { SelectMenu } from "./SelectMenu";
+import { AutoApproveBanner } from "./AutoApproveBanner";
 import { errMsg, t as tr, tf } from "../i18n/index.js";
 import {
   applySlashPick,
@@ -396,20 +397,13 @@ export function Composer() {
     }
   };
 
-  // 1.3: the first time 全部自动同意 is turned on (any conversation), one line says what it means
-  const [autoWarn, setAutoWarn] = useState(false);
-  useEffect(() => setAutoWarn(false), [thread?.id]);
   const setMode = (m: Mode) => {
     if (!thread) return;
     void ws.call("thread.setMode", { id: thread.id, mode: m }).catch((e) => toast(errMsg(e), true));
-    if (m === FULL_AUTO && mode !== FULL_AUTO) {
-      void ws.call("settings.get").then((s) => {
-        if ((s as { autoApproveWarned?: boolean }).autoApproveWarned) return;
-        setAutoWarn(true);
-        void ws.call("settings.set", { patch: { autoApproveWarned: true } }).catch(() => {});
-      }).catch(() => {});
-    } else if (m !== FULL_AUTO) setAutoWarn(false);
   };
+  // 1.3 (#727 review 1): while the mode this Agent really uses is 全部自动同意, a persistent banner + warning-coloured chip
+  const autoOn = !!(modes.find((m) => m.id === mode) ?? modes[0])?.auto;
+  const canAsk = modes.some((m) => m.id === "default");
   const setEffort = (effort: string | null) => {
     if (thread) void ws.call("thread.setEffort", { id: thread.id, effort });
   };
@@ -480,14 +474,8 @@ export function Composer() {
           ))}
         </div>
       )}
-      {autoWarn && mode === FULL_AUTO && (
-        <div className="cp-autowarn" role="status">
-          <Icon name="shieldCheck" size={13} />
-          <span className="cp-autowarn-t">{tr("composer.autoWarn")}</span>
-          <button type="button" className="cp-autowarn-ok" onClick={() => setAutoWarn(false)}>{tr("composer.autoWarnOk")}</button>
-        </div>
-      )}
-      <div className={`cp-card${waiting ? " waiting" : ""}${dropHint ? " drop-on" : ""}`}>
+      {autoOn && <AutoApproveBanner providerId={thread?.provider} onBack={canAsk ? () => setMode("default") : undefined} />}
+      <div className={`cp-card${waiting ? " waiting" : ""}${autoOn ? " auto-on" : ""}${dropHint ? " drop-on" : ""}`}>
         {dropHint && <div className="cp-drop-hint">{tr("mention.drop")}</div>}
         {imagesByPath && attachments.some((a) => a.mime.startsWith("image/")) && (
           <div className="att-note">{tf("composer.imagesByPath", { agent: provider?.name ?? "" })}</div>
@@ -763,7 +751,7 @@ export function Composer() {
                 menuClassName="mode-menu"
                 value={shown.id}
                 onChange={(v) => setMode(v as Mode)}
-                options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc, danger: m.danger, icon: m.auto ? "shieldCheck" : undefined }))}
+                options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc, danger: m.danger, warn: m.auto, icon: m.auto ? "shieldCheck" : undefined }))}
               >
                 <Icon name={shown.auto ? "shieldCheck" : "shield"} size={14} />
                 <span className="ip-l">{shown.label}</span>

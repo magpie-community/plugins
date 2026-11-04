@@ -13,6 +13,8 @@ export type SelectOption<T extends string = string> = {
   hint?: string;
   disabled?: boolean;
   danger?: boolean;
+  /** Warning colour (1.3: 全部自动同意, #727 review 1) */
+  warn?: boolean;
   /** Small icon before the label (1.3: the 全部自动同意 shield) */
   icon?: string;
 };
@@ -189,7 +191,7 @@ export function SelectMenu<T extends string>({
               role="option"
               aria-selected={o.value === value}
               aria-disabled={o.disabled || undefined}
-              className={`mi sm-opt${i === active ? " on" : ""}${o.disabled ? " off" : ""}${o.danger ? " danger" : ""}${o.hint ? " has-hint" : ""}`}
+              className={`mi sm-opt${i === active ? " on" : ""}${o.disabled ? " off" : ""}${o.danger ? " danger" : ""}${o.warn ? " warn" : ""}${o.hint ? " has-hint" : ""}`}
               onPointerMove={() => { if (!o.disabled && active !== i) setActive(i); }}
               onClick={() => pick(i)}
             >
