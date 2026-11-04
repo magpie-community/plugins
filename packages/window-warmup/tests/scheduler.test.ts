@@ -504,6 +504,50 @@ test("模型从目录消失 → failed「模型 X 已不在 Magpie 的模型列�
   expect(run.reason).toBe("模型 m1 已不在 Magpie 的模型列表里");
 });
 
+test("固定模型被路由组藏出 /v1/models 但仍在 chosen → 照发，档位按「不适用」", async () => {
+  const h = await harness({
+    keyDir: new Map([["openai", { keys: [], accountModels: {}, models: ["m1"] }]]),
+  });
+  h.models.length = 0; // /v1/models 里没有 m1（被 unlists 藏掉）
+  await h.scheduler.upsert(dailyTask()); // model: "m1"，provider openai
+  await firedDaily(h);
+
+  expect(h.sendCalls).toHaveLength(1);
+  expect(h.sendCalls[0].task.model).toBe("m1");
+  expect(h.sendCalls[0].effort).toBeNull(); // 拿不到档位元数据 → 不带 reasoning_effort
+  const run = h.store.data.runs[0];
+  expect(run.outcome).toBe("ok");
+  expect(run.model).toBe("m1");
+});
+
+test("自动模型：/v1/models 全空但 chosen 有清单 → 从 chosen 现选照发", async () => {
+  const h = await harness({
+    keyDir: new Map([["openai", { keys: [], accountModels: {}, models: ["m1", "m1-flash"] }]]),
+  });
+  h.models.length = 0;
+  await h.scheduler.upsert(dailyTask({ model: "" }));
+  await firedDaily(h);
+
+  expect(h.sendCalls).toHaveLength(1);
+  expect(h.sendCalls[0].task.model).toBe("openai/m1-flash"); // flash 规格词优先
+  expect(h.sendCalls[0].effort).toBeNull();
+  expect(h.store.data.runs[0].model).toBe("openai/m1-flash");
+});
+
+test("模型真不在 chosen 里（重新获取后已剔除）→ 仍报「已不在模型列表」", async () => {
+  const h = await harness({
+    keyDir: new Map([["openai", { keys: [], accountModels: {}, models: ["other"] }]]),
+  });
+  h.models.length = 0;
+  const id = (await h.scheduler.upsert(dailyTask())).id;
+  await firedDaily(h);
+
+  expect(h.sendCalls).toHaveLength(0);
+  const run = h.store.data.runs.find((r) => r.taskId === id)!;
+  expect(run.outcome).toBe("failed");
+  expect(run.reason).toBe("模型 m1 已不在 Magpie 的模型列表里");
+});
+
 test("model 为空 → 每次发送前现选供应商模型，发送与 run.model 都用当次选中的", async () => {
   const h = await harness({
     models: [
@@ -842,6 +886,7 @@ test("自动模型按账号列表选：key 账号按缓存 Keys 与 accountModel
         {
           keys: [{ fingerprint: fp1, name: "GLM" }, { fingerprint: fp2, name: "免费flash" }],
           accountModels: { [fp1]: ["m-one"] },
+          models: [],
         },
       ],
     ]),
@@ -860,7 +905,7 @@ test("只有一把 key 时指纹账号不发账号头；旧任务里存的 key �
   const fp1 = fingerprint("sk-test-AAAA11");
   const h = await harness({
     models: [{ id: "p1/m-one", owned_by: "p1", reasoning: false }],
-    keyDir: new Map([["p1", { keys: [{ fingerprint: fp1, name: "GLM" }], accountModels: {} }]]),
+    keyDir: new Map([["p1", { keys: [{ fingerprint: fp1, name: "GLM" }], accountModels: {}, models: [] }]]),
     modelCache: () => [{ id: "m-one", keys: [] }],
   });
   await h.scheduler.upsert(dailyTask({ provider: "p1", model: "", account: fp1 }));
@@ -869,7 +914,7 @@ test("只有一把 key 时指纹账号不发账号头；旧任务里存的 key �
 
   const h2 = await harness({
     models: [{ id: "p1/m-one", owned_by: "p1", reasoning: false }],
-    keyDir: new Map([["p1", { keys: [{ fingerprint: fp1, name: "免费flash" }], accountModels: {} }]]),
+    keyDir: new Map([["p1", { keys: [{ fingerprint: fp1, name: "免费flash" }], accountModels: {}, models: [] }]]),
     modelCache: () => [{ id: "m-one", keys: [] }],
   });
   await h2.scheduler.upsert(dailyTask({ provider: "p1", model: "", account: "免费flash" }));
@@ -884,7 +929,7 @@ test("空账号自动选模型：不带头，用「自动选账号」的模型�
       { id: "p1/m-one-flash", owned_by: "p1", reasoning: false },
     ],
     keyDir: new Map([
-      ["p1", { keys: [{ fingerprint: fingerprint("sk-test-AAAA11"), name: "GLM" }], accountModels: {} }],
+      ["p1", { keys: [{ fingerprint: fingerprint("sk-test-AAAA11"), name: "GLM" }], accountModels: {}, models: [] }],
     ]),
     modelCache: () => [{ id: "m-one", keys: [fingerprint("sk-test-AAAA11")] }, { id: "m-one-flash", keys: [] }],
   });
@@ -904,7 +949,7 @@ test("窗口任务用统一账号列表找窗口：key 账号按指纹反查 key
   ];
   const h = await harness({
     quotas: () => ({ entries }),
-    keyDir: new Map([["p1", { keys: [{ fingerprint: fp1, name: "GLM" }], accountModels: {} }]]),
+    keyDir: new Map([["p1", { keys: [{ fingerprint: fp1, name: "GLM" }], accountModels: {}, models: [] }]]),
     modelCache: () => [{ id: "m-one", keys: [] }],
     models: [{ id: "p1/m-one", owned_by: "p1", reasoning: false }],
   });
@@ -927,7 +972,7 @@ test("key 目录比额度快照后到 → 首轮不误报「额度里没有账�
     },
   ];
   const keyDir = new Map([
-    ["p1", { keys: [{ fingerprint: fp1, name: "GLM" }], accountModels: {} }],
+    ["p1", { keys: [{ fingerprint: fp1, name: "GLM" }], accountModels: {}, models: [] }],
   ]);
   const h = await harness({
     quotas: () => ({ entries }),

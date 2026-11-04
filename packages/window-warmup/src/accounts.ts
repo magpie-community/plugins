@@ -121,6 +121,9 @@ export interface ModelsInput {
   keyDir: Map<string, KeyDirectoryEntry> | null;
   /** 该供应商的模型缓存；null = 缓存文件不存在或读不出 */
   cache: CachedModel[] | null;
+  /** providers.json 里该供应商启用的模型 id（不带前缀，chosen）。模型被路由组
+   * unlists 藏出 /v1/models 时它仍然在，是订阅型供应商模型清单的主要来源 */
+  chosen: string[];
 }
 
 /** 候选统一成 {full, bare}：bare 是不带供应商前缀的形态（accountModels 里的模型 id 形态） */
@@ -131,21 +134,31 @@ interface Candidate {
   keys: string[] | null;
 }
 
-function candidatesOf(provider: string, models: string[], cache: CachedModel[] | null): Candidate[] {
+function candidatesOf(provider: string, models: string[], cache: CachedModel[] | null, chosen: string[]): Candidate[] {
   if (cache) {
     return cache.map((c) => ({ full: `${provider}/${c.id}`, bare: c.id, keys: c.keys }));
   }
-  // 退化：没有模型缓存（插件型订阅供应商不写这个文件）——直接用 /v1/models 的 id
+  // 退化：没有模型缓存（插件型订阅供应商不写这个文件）——/v1/models 的 id，
+  // 再并上 chosen（用户明确启用的清单，可能被路由组藏出 /v1/models），按 full 去重
   const prefix = `${provider}/`;
-  return models.map((m) => ({
-    full: m,
-    bare: m.startsWith(prefix) ? m.slice(prefix.length) : m,
-    keys: null,
-  }));
+  const seen = new Set<string>();
+  const out: Candidate[] = [];
+  for (const m of models) {
+    if (seen.has(m)) continue;
+    seen.add(m);
+    out.push({ full: m, bare: m.startsWith(prefix) ? m.slice(prefix.length) : m, keys: null });
+  }
+  for (const bare of chosen) {
+    const full = `${provider}/${bare}`;
+    if (seen.has(full)) continue;
+    seen.add(full);
+    out.push({ full, bare, keys: null });
+  }
+  return out;
 }
 
 export interface AccountModels {
-  /** null = 该供应商既无缓存、/v1/models 里也没有它的模型（提示 B；自动模型失败） */
+  /** null = 该供应商既无缓存、/v1/models 与 chosen 启用清单里也没有它的模型（提示 B；自动模型失败） */
   list: string[] | null;
   /** false = 没有模型缓存，列出的是全部模型（未按账号区分） */
   perAccount: boolean;
@@ -154,7 +167,8 @@ export interface AccountModels {
 /**
  * 账号的可选模型（三层规则的共用实现，accountsOf 与调度器都走这里）：
  * 第 1 层按 Keys 过滤（仅缓存模式、仅 key 账号）；第 2 层 accountModels[账号键]；
- * 第 3 层只留 /v1/models 里存在的。缓存缺失且有 /v1/models 模型时退化为全部模型。
+ * 第 3 层只留仍在 /v1/models 或 chosen 启用清单里的（后者接住被路由组 unlists 藏掉的模型）。
+ * 缓存缺失时用 /v1/models ∪ chosen 退化（不按账号区分）。
  */
 export function modelsForAccount(
   provider: string,
@@ -162,8 +176,10 @@ export function modelsForAccount(
   input: ModelsInput,
 ): AccountModels {
   const hasCache = input.cache !== null;
-  if (!hasCache && input.models.length === 0) return { list: null, perAccount: false };
-  let cands = candidatesOf(provider, input.models, input.cache);
+  if (!hasCache && input.models.length === 0 && input.chosen.length === 0) {
+    return { list: null, perAccount: false };
+  }
+  let cands = candidatesOf(provider, input.models, input.cache, input.chosen);
   if (hasCache && isFingerprint(account)) {
     // 第 1 层：Keys 为空 = 所有 key 可见，否则只留包含这把指纹的
     cands = cands.filter((c) => !c.keys || c.keys.length === 0 || c.keys.includes(account));
@@ -175,7 +191,10 @@ export function modelsForAccount(
     const set = new Set(allowed);
     cands = cands.filter((c) => set.has(c.bare));
   }
-  const present = new Set(input.models);
+  const present = new Set([
+    ...input.models,
+    ...input.chosen.map((bare) => `${provider}/${bare}`),
+  ]);
   const list = cands
     .map((c) => c.full)
     .filter((id) => present.has(id))
@@ -244,11 +263,14 @@ function pickModels(
   };
 }
 
-/** 「自动选账号」的可选模型：不做第 1、2 层（不按账号区分），只做第 3 层归属校验 */
+/** 「自动选账号」的可选模型：不做第 1、2 层（不按账号区分），只做第 3 层存在性校验 */
 function autoAccountModelsOf(provider: string, input: AccountsInput): string[] | null {
-  if (input.cache === null && input.models.length === 0) return null;
-  const present = new Set(input.models);
-  return candidatesOf(provider, input.models, input.cache)
+  if (input.cache === null && input.models.length === 0 && input.chosen.length === 0) return null;
+  const present = new Set([
+    ...input.models,
+    ...input.chosen.map((bare) => `${provider}/${bare}`),
+  ]);
+  return candidatesOf(provider, input.models, input.cache, input.chosen)
     .map((c) => c.full)
     .filter((id) => present.has(id))
     .sort();

@@ -126,7 +126,7 @@ describe("magpieDirs", () => {
 });
 
 describe("readKeyDirectory", () => {
-  test("列启用的 key（指纹去重），off 的不列，accountModels 原样带出", async () => {
+  test("列启用的 key（指纹去重），off 的不列，accountModels 与 models 原样带出", async () => {
     const dir = await fixtureDir();
     await writeFile(
       join(dir, "providers.json"),
@@ -142,6 +142,7 @@ describe("readKeyDirectory", () => {
               { name: "重复", key: K_GLM },
             ],
             accountModels: { [fp(K_GLM)]: ["group/glm-5.3"], yang: ["group/glm-5.3"] },
+            models: ["group/glm-5.3", "group/glm-5.3-flash"],
           },
           { id: "no-keys", key: "", keyName: "", keys: [] },
         ],
@@ -156,7 +157,9 @@ describe("readKeyDirectory", () => {
       { fingerprint: fp(K_OTHER), name: "除GLM外其他" },
     ]);
     expect(entry.accountModels).toEqual({ [fp(K_GLM)]: ["group/glm-5.3"], yang: ["group/glm-5.3"] });
-    expect(map.get("no-keys")).toEqual({ keys: [], accountModels: {} });
+    // chosen 启用清单（models 字段）：模型被路由组藏出 /v1/models 时的兜底来源
+    expect(entry.models).toEqual(["group/glm-5.3", "group/glm-5.3-flash"]);
+    expect(map.get("no-keys")).toEqual({ keys: [], accountModels: {}, models: [] });
 
     // 红线：key 原文不出现在任何返回值里
     const serialized = JSON.stringify([...map.entries()]);
