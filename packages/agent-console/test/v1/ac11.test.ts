@@ -186,9 +186,9 @@ describe("self-heal back URL (host restart)", () => {
     try {
       const ok = await request(port, `/open?k=${key}&theme=dark&back=${encodeURIComponent(good)}`);
       expect(ok.status).toBe(302);
-      expect(ok.headers.location).toBe(`http://127.0.0.1:${daemonPort}/?theme=dark#t=${token}&b=${encodeURIComponent(good)}`);
+      expect(ok.headers.location).toBe(`http://127.0.0.1:${port}/app?theme=dark#t=${token}&p=${daemonPort}&b=${encodeURIComponent(good)}`);
       const bad = await request(port, `/open?k=${key}&back=${encodeURIComponent("https://evil.example/")}`);
-      expect(bad.headers.location).toBe(`http://127.0.0.1:${daemonPort}/?#t=${token}`);
+      expect(bad.headers.location).toBe(`http://127.0.0.1:${port}/app?#t=${token}&p=${daemonPort}`);
       // without the key there's still nothing
       expect((await request(port, `/open?back=${encodeURIComponent(good)}`)).status).toBe(403);
     } finally {
