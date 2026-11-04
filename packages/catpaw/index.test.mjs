@@ -202,25 +202,342 @@ describe("chat", () => {
     expect(text).toContain("vendor broke")
   })
 
-  test("a request carrying tools is refused with a clear 400", async () => {
+  test("a tool request is answered with parsed tool_calls (non-stream)", async () => {
+    const callText = JSON.stringify({ tool_calls: [{ name: "Bash", arguments: { command: "ls" } }] })
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: callText }] } },
+        { message: { content: [{ type: "text", text: callText }] }, finished: true },
+      ],
+    ]
     const loader = await plugin.auth.loader(getAuth)
     const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
       method: "POST",
-      body: JSON.stringify({ model: "longcat-2.0", messages: [{ role: "user", content: "hi" }], tools: [{ type: "function", function: { name: "f" } }] }),
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "list the files" }],
+        tools: [{ type: "function", function: { name: "Bash", description: "run a shell command", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } }],
+      }),
     })
-    expect(res.status).toBe(400)
+    expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.error.message).toContain("cannot run tools")
+    expect(body.choices[0].finish_reason).toBe("tool_calls")
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+    expect(JSON.parse(body.choices[0].message.tool_calls[0].function.arguments)).toEqual({ command: "ls" })
+    // the instruction rode in the flattened prompt
+    expect(fake.state.conversations.at(-1).prompt).toContain("Bash")
+    expect(fake.state.rounds).toBe(1)
   })
 
-  test("a request carrying tool results is refused, images are refused", async () => {
+  test("tool results ride as text instead of a 400", async () => {
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [
+          { role: "user", content: "list the files" },
+          { role: "assistant", tool_calls: [{ id: "c1", function: { name: "Bash", arguments: "{\"command\":\"ls\"}" } }] },
+          { role: "tool", tool_call_id: "c1", content: "a.txt" },
+        ],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+      }),
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.choices[0].message.content).toBeTruthy()
+    expect(fake.state.conversations.at(-1).prompt).toContain("Tool result")
+  })
+
+  test("tool_choice=required retries once when the reply has no call", async () => {
+    const callText = JSON.stringify({ tool_calls: [{ name: "Bash", arguments: { command: "ls" } }] })
+    fake.state.turnFramesQueue = [
+      [{ message: { content: [{ type: "text", text: "我直接说明一下" }] }, finished: true }],
+      [{ message: { content: [{ type: "text", text: callText }] }, finished: true }],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "run ls" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+        tool_choice: "required",
+      }),
+    })
+    const body = await res.json()
+    expect(fake.state.rounds).toBe(2)
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+  })
+
+  test("tool_choice none keeps the plain passthrough", async () => {
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+        tool_choice: "none",
+      }),
+    })
+    expect(res.status).toBe(200)
+    expect(fake.state.rounds).toBe(1)
+    expect(fake.state.conversations.at(-1).prompt).not.toContain("Available tools")
+  })
+
+  test("a streaming tool request synthesizes tool_calls deltas", async () => {
+    const callText = JSON.stringify({ tool_calls: [{ name: "Bash", arguments: { command: "ls" } }] })
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: callText }] } },
+        { message: { content: [{ type: "text", text: callText }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "list the files" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+        stream: true,
+      }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('"tool_calls"')
+    expect(text).toContain('"finish_reason":"tool_calls"')
+    expect(text.endsWith("data: [DONE]\n\n")).toBe(true)
+  })
+
+  test("a streaming tool request with a prose reply streams content, not tool_calls", async () => {
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+        stream: true,
+      }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    // deltas流式逐字输出，逐字断言而不是拼好的整句
+    expect(text).toContain("收到")
+    expect(text).toContain('"finish_reason":"stop"')
+    expect(text).not.toContain('"tool_calls"')
+  })
+
+  test("streaming + tool_choice=required + prose twice: the retry runs, then text goes out as text", async () => {
+    fake.state.turnFramesQueue = [
+      [{ message: { content: [{ type: "text", text: "我直接说明" }] }, finished: true }],
+      [{ message: { content: [{ type: "text", text: "我还是直接说明吧" }] }, finished: true }],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "run ls" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+        stream: true,
+        tool_choice: "required",
+      }),
+    })
+    const text = await res.text()
+    expect(fake.state.rounds).toBe(2)
+    expect(text).toContain("我还是直接说明吧")
+    expect(text).toContain('"finish_reason":"stop"')
+    expect(text).not.toContain('"tool_calls"')
+    // the failed first reply rides along so the retry can refer to it
+    const second = fake.state.conversations.at(-1).prompt
+    expect(second).toContain("我直接说明")
+    expect(second).toContain("did not include a valid tool call")
+  })
+
+  test("a truncated JSON head in streaming still flushes as content", async () => {
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: '{"tool_calls":[{"name":"Bash"' }] } },
+        { message: { content: [{ type: "text", text: '{"tool_calls":[{"name":"Bash"' }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "list files" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+        stream: true,
+      }),
+    })
+    const text = await res.text()
+    expect(res.status).toBe(200)
+    expect(text).toContain('"finish_reason":"stop"')
+    expect(text).not.toContain('"finish_reason":"tool_calls"')
+  })
+
+  test("multiple calls in one reply all come out", async () => {
+    const callText = JSON.stringify({ tool_calls: [{ name: "Bash", arguments: { command: "ls" } }, { name: "Bash", arguments: { command: "pwd" } }] })
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: callText }] } },
+        { message: { content: [{ type: "text", text: callText }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "ls and pwd" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+      }),
+    })
+    const body = await res.json()
+    expect(body.choices[0].message.tool_calls.length).toBe(2)
+    expect(JSON.parse(body.choices[0].message.tool_calls[1].function.arguments)).toEqual({ command: "pwd" })
+  })
+
+  test("an unknown tool name is dropped, not answered as text", async () => {
+    const callText = JSON.stringify({ tool_calls: [{ name: "TotallyUnknown", arguments: {} }] })
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: callText }] } },
+        { message: { content: [{ type: "text", text: callText }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+      }),
+    })
+    const body = await res.json()
+    expect(body.choices[0].finish_reason).toBe("stop")
+    expect(body.choices[0].message.content).toContain("TotallyUnknown")
+  })
+
+  test("a drifted name case is matched back to the declaration", async () => {
+    const callText = JSON.stringify({ tool_calls: [{ name: "bash", arguments: { command: "ls" } }] })
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: callText }] } },
+        { message: { content: [{ type: "text", text: callText }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "ls" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+      }),
+    })
+    const body = await res.json()
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+  })
+
+  test("a named tool_choice whose reply calls another tool gets the retry", async () => {
+    const wrongText = JSON.stringify({ tool_calls: [{ name: "Unknown", arguments: {} }] })
+    const rightText = JSON.stringify({ tool_calls: [{ name: "Bash", arguments: { command: "ls" } }] })
+    fake.state.turnFramesQueue = [
+      [{ message: { content: [{ type: "text", text: wrongText }] } }, { message: { content: [{ type: "text", text: wrongText }] }, finished: true }],
+      [{ message: { content: [{ type: "text", text: rightText }] } }, { message: { content: [{ type: "text", text: rightText }] }, finished: true }],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "run ls" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+        tool_choice: { type: "function", function: { name: "Bash" } },
+      }),
+    })
+    const body = await res.json()
+    expect(fake.state.rounds).toBe(2)
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+  })
+
+  test("a bare object without arguments is an answer, not a call", async () => {
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: '{"name":"Bash"}' }] } },
+        { message: { content: [{ type: "text", text: '{"name":"Bash"}' }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+      }),
+    })
+    const body = await res.json()
+    expect(body.choices[0].finish_reason).toBe("stop")
+    expect(body.choices[0].message.content).toContain('"name":"Bash"')
+  })
+
+  test("a quoted example inside prose is not a call", async () => {
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: '可以用 Bash，例如 {"name":"Bash","arguments":{"command":"rm -rf x"}} 之类' }] } },
+        { message: { content: [{ type: "text", text: '可以用 Bash，例如 {"name":"Bash","arguments":{"command":"rm -rf x"}} 之类' }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "Bash" } }],
+      }),
+    })
+    const body = await res.json()
+    expect(body.choices[0].finish_reason).toBe("stop")
+    expect(body.choices[0].message.content).toContain("例如")
+  })
+
+  test("a call missing a required arg is dropped", async () => {
+    const callText = JSON.stringify({ tool_calls: [{ name: "Bash", arguments: {} }] })
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: callText }] } },
+        { message: { content: [{ type: "text", text: callText }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } }],
+      }),
+    })
+    const body = await res.json()
+    expect(body.choices[0].finish_reason).toBe("stop")
+    expect(body.choices[0].message.content).toContain("tool_calls")
+  })
+
+  test("tool results ride as text, images are refused", async () => {
     const loader = await plugin.auth.loader(getAuth)
     const toolRes = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
       method: "POST",
       body: JSON.stringify({ model: "longcat-2.0", messages: [{ role: "user", content: "hi" }, { role: "tool", content: "result" }] }),
     })
-    expect(toolRes.status).toBe(400)
-    expect((await toolRes.json()).error.message).toContain("cannot continue a tool call")
+    expect(toolRes.status).toBe(200)
     const imgRes = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
       method: "POST",
       body: JSON.stringify({ model: "longcat-2.0", messages: [{ role: "user", content: [{ type: "image", image_url: { url: "data:image/png;base64,AAAA" } }] }] }),

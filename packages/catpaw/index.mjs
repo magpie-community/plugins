@@ -277,6 +277,205 @@ function buildPrompt(messages) {
   return parts.join("\n\n")
 }
 
+// ── tools over the flattened prompt ──────────────────────────────────────
+//
+// The conversation protocol carries one text prompt and returns text, so
+// tool definitions travel as instructions and the model's reply is parsed
+// back into OpenAI tool_calls. The model can ignore the instruction — every
+// path answers with what actually came back, and a forced tool_choice gets
+// one explicit retry before giving up (no silent success).
+
+function normalizeToolChoice(toolChoice) {
+  if (toolChoice === undefined || toolChoice === null) return { mode: "auto" }
+  if (typeof toolChoice === "string") {
+    if (toolChoice === "none") return { mode: "none" }
+    if (toolChoice === "required" || toolChoice === "any") return { mode: "required" }
+    if (toolChoice === "auto") return { mode: "auto" }
+    return { mode: "named", name: toolChoice }
+  }
+  if (typeof toolChoice === "object") {
+    const type = toolChoice.type || "auto"
+    if (type === "none") return { mode: "none" }
+    if (type === "required" || type === "any") return { mode: "required" }
+    if (type === "tool" || type === "function") {
+      const name = toolChoice.name || toolChoice.function?.name || ""
+      return name ? { mode: "named", name } : { mode: "required" }
+    }
+    return { mode: "auto" }
+  }
+  return { mode: "auto" }
+}
+
+const isToolChoiceRequired = (toolChoice) => ["required", "named"].includes(normalizeToolChoice(toolChoice).mode)
+
+function toolNameOf(tool) {
+  return tool?.function?.name || tool?.name || ""
+}
+
+function toolParamsOf(tool) {
+  return tool?.function?.parameters || tool?.input_schema || tool?.parameters || {}
+}
+
+function summarizeTool(tool) {
+  const schema = toolParamsOf(tool)
+  const props = schema?.properties && typeof schema.properties === "object" ? schema.properties : {}
+  const required = new Set(Array.isArray(schema?.required) ? schema.required : [])
+  const names = Object.keys(props).slice(0, 12)
+  const params = names.length
+    ? `args: ${names.map((n) => `${n}: ${props[n]?.type ?? "?"}${required.has(n) ? "*" : ""}`).join(", ")}`
+    : "args: object"
+  const desc = String(tool?.function?.description || tool?.description || "").replace(/\s+/g, " ").trim()
+  return `- ${toolNameOf(tool) || "tool"}: ${desc ? desc.slice(0, 120) : "No description"} (${params})`
+}
+
+function buildToolInstruction(tools, toolChoice) {
+  const choice = normalizeToolChoice(toolChoice)
+  const lines = [
+    "You can call tools, but this API only accepts a strict JSON tool-call response.",
+    "When a tool is needed, respond with JSON only and no prose.",
+    "For any file, code, shell, workspace, search, read, edit, write, or project task, you MUST call tools instead of describing the change.",
+    "Never claim that you changed, read, searched, or executed anything unless you returned a tool call for it.",
+    "Use exactly this shape:",
+    '{"tool_calls":[{"name":"ToolName","arguments":{"arg":"value"}}]}',
+    "Required argument names are marked with *.",
+  ]
+  if (choice.mode === "required") lines.push("tool_choice=required: you MUST return a JSON tool_calls payload now. Plain text answers are forbidden.")
+  else if (choice.mode === "named") lines.push(`tool_choice forces tool "${choice.name}": return JSON tool_calls that call ONLY this tool. Plain text answers are forbidden.`)
+  else lines.push("Only answer normally for pure explanation or conversation tasks that do not need workspace access.")
+  lines.push("Available tools:", ...tools.map(summarizeTool))
+  return lines.join("\n")
+}
+
+function forcedToolRetryMessage(toolChoice) {
+  const choice = normalizeToolChoice(toolChoice)
+  if (choice.mode === "named")
+    return [
+      "Your previous reply did not include a valid tool call.",
+      `Return ONLY JSON tool_calls that invoke "${choice.name}". No markdown, no explanation.`,
+      `{"tool_calls":[{"name":"${choice.name}","arguments":{...}}]}`,
+    ].join("\n")
+  return [
+    "Your previous reply did not include a valid tool call.",
+    "Return ONLY a JSON tool_calls payload now. No markdown, no explanation.",
+    '{"tool_calls":[{"name":"ToolName","arguments":{"arg":"value"}}]}',
+  ].join("\n")
+}
+
+function textOfContent(content) {
+  if (typeof content === "string") return content
+  return Array.isArray(content)
+    ? content
+        .map((c) => (typeof c === "string" ? c : c?.type === "text" ? c.text || "" : ""))
+        .join("")
+    : ""
+}
+
+// tool results become user text and assistant tool calls become their text
+// record — the roles buildPrompt would otherwise skip entirely (a silent
+// drop)
+function flattenMessagesForPrompt(messages) {
+  const out = []
+  for (const msg of messages) {
+    if (msg.role === "tool") {
+      out.push({ role: "user", content: `Tool result${msg.tool_call_id ? ` for ${msg.tool_call_id}` : ""}:\n${textOfContent(msg.content)}` })
+      continue
+    }
+    const calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : []
+    if (calls.length) {
+      const content = textOfContent(msg.content)
+      const callText = calls
+        .map((call) => {
+          const name = call?.function?.name || call?.name || "tool"
+          const args = call?.function?.arguments ?? call?.arguments ?? "{}"
+          return `Tool call requested: ${name} ${typeof args === "string" ? args : JSON.stringify(args)}`
+        })
+        .join("\n")
+      out.push({ role: msg.role || "assistant", content: content ? `${content}\n${callText}` : callText })
+      continue
+    }
+    out.push({ role: msg.role || "user", content: textOfContent(msg.content) })
+  }
+  return out
+}
+
+function messagesWithToolInstruction(messages, tools, toolChoice) {
+  const instruction = buildToolInstruction(tools, toolChoice)
+  return [{ role: "system", content: instruction }, ...flattenMessagesForPrompt(messages), { role: "system", content: instruction }]
+}
+
+const parseJsonLoose = (text) => {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+// the reply text → OpenAI tool_calls. The whole reply must be the call
+// JSON — a bare object or a single fenced block; an example quoted inside
+// prose is not a call. Unknown names are dropped; a drifted name case is
+// matched back to the declaration; a call missing a required arg is dropped
+// too (half a call fails at the agent anyway, and a forced tool_choice gets
+// its retry)
+function toolCallsFromText(text, tools, toolChoice) {
+  if (normalizeToolChoice(toolChoice).mode === "none") return []
+  if (!Array.isArray(tools) || tools.length === 0) return []
+  const raw = String(text ?? "").trim()
+  if (!raw) return []
+  const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  const candidate = fenced ? fenced[1].trim() : raw
+  const parsed = parseJsonLoose(candidate)
+  if (!parsed || typeof parsed !== "object") return []
+  let items = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed.tool_calls)
+      ? parsed.tool_calls
+      : Array.isArray(parsed.tool_uses)
+        ? parsed.tool_uses
+        : []
+  // a bare object is one call only when it actually carries arguments —
+  // {"name":"Read"} alone reads like an answer, not a call
+  if (!items.length) {
+    const bare = parsed.function?.name
+      ? { name: parsed.function.name, arguments: parsed.function.arguments }
+      : parsed
+    if ((bare.name || bare.tool) && bare.arguments !== undefined) items = [bare]
+  }
+  const known = new Map(tools.map((t) => [toolNameOf(t).toLowerCase(), toolNameOf(t)]).filter(([k]) => k))
+  const choice = normalizeToolChoice(toolChoice)
+  const out = []
+  for (const call of items) {
+    const rawName = call?.name || call?.tool || call?.function?.name || ""
+    const name = known.get(String(rawName).toLowerCase())
+    if (!name) continue
+    if (choice.mode === "named" && name !== choice.name) continue
+    let args = call?.arguments ?? call?.input ?? call?.parameters ?? call?.function?.arguments ?? {}
+    if (typeof args === "string") {
+      const p = parseJsonLoose(args)
+      args = p && typeof p === "object" ? p : { value: args }
+    }
+    if (!args || typeof args !== "object") args = {}
+    const schema = toolParamsOf(tools.find((t) => toolNameOf(t) === name))
+    const required = Array.isArray(schema?.required) ? schema.required : []
+    if (required.some((k) => args[k] === undefined)) continue
+    out.push({
+      id: `call_${Date.now().toString(36)}_${out.length}`,
+      type: "function",
+      function: { name, arguments: JSON.stringify(args) },
+    })
+  }
+  return out
+}
+
+// the gateway sometimes answers with an HTML page (a WAF or a rate limit);
+// surface that as what it is instead of a bare JSON parse error
+function friendlyUpstreamMessage(e) {
+  const m = String(e?.message ?? e)
+  return /JSON Parse error|Unrecognized token|Unexpected token '<'/i.test(m) || /^\s*</.test(m)
+    ? m + "（妙手网关返回了非 JSON 页面 —— 多为限流或临时故障；超大 prompt 也可能触发，稍等重试）"
+    : m
+}
+
 // runConversation: round → event(running) → turn(SSE), yielding OpenAI-shaped
 // deltas from the cumulative frames (the proxy's catpawComplete, as a stream)
 async function* runConversation(token, chat, signal, modelType = modelTypeOf(chat.model)) {
@@ -430,15 +629,14 @@ export async function CatPawAuthPlugin({ client } = {}) {
             }
             if (!Array.isArray(chat.messages) || chat.messages.length === 0)
               return errorResponse(400, "messages is required")
-            // the flattened one-text prompt the conversation protocol carries
-            // has no room for tool schemas, tool results or image parts: a
-            // request carrying any of them would get an answer that never
-            // calls a tool and never sees the image, with nothing saying why
-            // — refuse it instead (tool continuation is a later phase)
-            if (Array.isArray(chat.tools) && chat.tools.length > 0)
-              return errorResponse(400, "this provider cannot run tools: the conversation protocol takes one flattened text prompt, so tool definitions would be silently dropped (refused rather than answered wrongly)")
-            if (chat.messages.some((m) => m.role === "tool" || (Array.isArray(m.content) && m.content.some((c) => c?.type === "tool_call" || c?.type === "tool_use" || c?.type === "tool_result"))))
-              return errorResponse(400, "this provider cannot continue a tool call: the conversation protocol takes one flattened text prompt, so tool results would be silently dropped (refused rather than answered wrongly)")
+            // tools ride as instructions over the flattened text prompt and
+            // the reply is parsed back into OpenAI tool_calls (see
+            // messagesWithToolInstruction / toolCallsFromText); a forced
+            // tool_choice gets one explicit retry. Images still cannot ride
+            // along a text-only prompt: refuse them instead of dropping them.
+            const toolChoiceMode = normalizeToolChoice(chat.tool_choice).mode
+            const wantsTools = toolChoiceMode !== "none" && Array.isArray(chat.tools) && chat.tools.length > 0
+            const hasToolParts = chat.messages.some((m) => m.role === "tool" || (Array.isArray(m.content) && m.content.some((c) => c?.type === "tool_call" || c?.type === "tool_use" || c?.type === "tool_result")))
             // image_url is what @ai-sdk/openai-compatible actually sends
             // ({"type":"image_url","image_url":{…}}); input_image is the
             // responses-API shape some clients carry over
@@ -482,6 +680,197 @@ export async function CatPawAuthPlugin({ client } = {}) {
             const model = chat.model || "longcat-2.0"
             const id = `chatcmpl-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`
             const created = Math.floor(Date.now() / 1000)
+
+            // tools: inject the instruction, run the conversation, parse the
+            // reply back into tool_calls. Streaming holds the reply back only
+            // while it still reads as the strict JSON a tool call must be —
+            // the moment it reads as prose it flushes and streams live, so
+            // agents see bytes during long turns. Tool results without a
+            // tools array still ride along (as text); they are just
+            // flattened, with nothing to parse.
+            if (wantsTools || hasToolParts) {
+              const baseMessages = wantsTools
+                ? messagesWithToolInstruction(chat.messages ?? [], chat.tools, chat.tool_choice)
+                : flattenMessagesForPrompt(chat.messages ?? [])
+              const runTurn = async (messages) => {
+                let text = ""
+                let reasoning = ""
+                for await (const ev of runConversation(token, { ...chat, messages }, init.signal, spec?.type)) {
+                  if (ev.delta) text += ev.delta
+                  if (ev.reasoningDelta) reasoning += ev.reasoningDelta
+                  if (ev.done) {
+                    text = ev.text
+                    reasoning = ev.reasoning
+                  }
+                }
+                return { text, reasoning }
+              }
+              if (!chat.stream) {
+                // buffered: collect the whole turn, parse, retry once if a
+                // forced tool_choice went unanswered
+                let text = ""
+                let reasoning = ""
+                let calls = []
+                try {
+                  const out = await runTurn(baseMessages)
+                  text = out.text
+                  reasoning = out.reasoning
+                  if (wantsTools) {
+                    calls = toolCallsFromText(text, chat.tools, chat.tool_choice)
+                    if (!calls.length && isToolChoiceRequired(chat.tool_choice)) {
+                      // one explicit retry: the failed reply rides along as
+                      // an assistant turn, since the retry line alone refers
+                      // to something the model cannot see
+                      const retried = await runTurn([
+                        ...baseMessages,
+                        { role: "assistant", content: text },
+                        { role: "user", content: forcedToolRetryMessage(chat.tool_choice) },
+                      ])
+                      text = retried.text
+                      reasoning = retried.reasoning
+                      calls = toolCallsFromText(text, chat.tools, chat.tool_choice)
+                    }
+                  }
+                } catch (e) {
+                  const message = friendlyUpstreamMessage(e)
+                  return errorResponse(message.includes("401") ? 401 : 502, message)
+                }
+                const message = {
+                  role: "assistant",
+                  content: calls.length ? null : text,
+                  ...(calls.length ? { tool_calls: calls } : {}),
+                  ...(reasoning ? { reasoning_content: reasoning } : {}),
+                }
+                return new Response(
+                  JSON.stringify({
+                    id,
+                    object: "chat.completion",
+                    created,
+                    model,
+                    choices: [{ index: 0, message, finish_reason: calls.length ? "tool_calls" : "stop" }],
+                  }),
+                  { status: 200, headers: { "content-type": "application/json" } },
+                )
+              }
+
+              // streaming: for a forced tool_choice the whole reply is held
+              // (keep-alives feed the idle timeout) so the promised retry is
+              // always possible; otherwise only the JSON-shaped head is held
+              // and prose flushes and streams live. The hold matters because
+              // a tool call split into content deltas can't be un-sent.
+              const forced = wantsTools && isToolChoiceRequired(chat.tool_choice)
+              const encoder = new TextEncoder()
+              const sse = (delta, finish, reasoningDelta) => {
+                const choices = [{ index: 0, delta: {}, finish_reason: finish ?? null }]
+                if (delta) choices[0].delta.content = delta
+                if (reasoningDelta) choices[0].delta.reasoning_content = reasoningDelta
+                return encoder.encode(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices })}\n\n`)
+              }
+              const toolChunk = (part, finish) =>
+                encoder.encode(
+                  `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [{ index: 0, delta: { tool_calls: [part] }, finish_reason: finish ?? null }] })}\n\n`,
+                )
+              const doneFrame = encoder.encode("data: [DONE]\n\n")
+              const stream = new ReadableStream({
+                async start(controller) {
+                  let closed = false
+                  let ka = null
+                  const halt = () => {
+                    if (ka) {
+                      clearInterval(ka)
+                      ka = null
+                    }
+                  }
+                  const push = (bytes) => {
+                    if (closed) return
+                    try {
+                      controller.enqueue(bytes)
+                    } catch {
+                      closed = true
+                      halt()
+                    }
+                  }
+                  const stop = () => {
+                    halt()
+                    if (!closed) {
+                      try {
+                        controller.close()
+                      } catch {}
+                      closed = true
+                    }
+                  }
+                  // the gateway can think a long while before the first
+                  // frame; SSE comments keep the agent's idle timeout fed
+                  ka = setInterval(() => push(encoder.encode(": ka\n\n")), 3_000)
+                  init.signal?.addEventListener("abort", () => stop())
+                  push(sse(null, null)) // the role frame
+                  let pending = "" // held back: still could be the tool JSON
+                  let committed = false // decided prose — streaming live from here
+                  let fullText = ""
+                  let calls = []
+                  try {
+                    for await (const ev of runConversation(token, { ...chat, messages: baseMessages }, init.signal, spec?.type)) {
+                      if (closed) return
+                      if (ev.reasoningDelta) push(sse(null, null, ev.reasoningDelta))
+                      if (ev.delta) {
+                        fullText += ev.delta
+                        if (committed || !wantsTools) push(sse(ev.delta))
+                        else if (forced) {
+                          // held whole: the promised retry must stay possible
+                          pending += ev.delta
+                        } else {
+                          pending += ev.delta
+                          const head = pending.trimStart()
+                          if (head !== "" && !head.startsWith("{") && !head.startsWith("```")) {
+                            // reads as prose: flush everything and go live
+                            committed = true
+                            push(sse(pending))
+                            pending = ""
+                          }
+                        }
+                      }
+                      if (ev.done) fullText = ev.text
+                    }
+                    if (wantsTools && !committed) {
+                      calls = toolCallsFromText(fullText, chat.tools, chat.tool_choice)
+                      if (!calls.length && forced) {
+                        // nothing streamed yet, so a retry is invisible to
+                        // the agent; the failed reply rides along as an
+                        // assistant turn, since the retry line alone refers
+                        // to something the model cannot see
+                        const retried = await runTurn([
+                          ...baseMessages,
+                          { role: "assistant", content: fullText },
+                          { role: "user", content: forcedToolRetryMessage(chat.tool_choice) },
+                        ])
+                        fullText = retried.text
+                        calls = toolCallsFromText(fullText, chat.tools, chat.tool_choice)
+                      }
+                    }
+                    if (calls.length) {
+                      calls.forEach((call, index) => {
+                        push(toolChunk({ index, id: call.id, type: "function", function: { name: call.function.name, arguments: "" } }))
+                        push(toolChunk({ index, function: { arguments: call.function.arguments } }))
+                      })
+                      push(sse(null, "tool_calls"))
+                    } else {
+                      // prose that was held (it started JSON-shaped but never
+                      // parsed) still goes out — answering beats silence
+                      if (!committed && fullText) push(sse(fullText))
+                      push(sse(null, "stop"))
+                    }
+                  } catch (e) {
+                    push(encoder.encode(`data: ${JSON.stringify({ error: { message: friendlyUpstreamMessage(e) } })}\n\n`))
+                    push(doneFrame)
+                    stop()
+                    return
+                  }
+                  push(doneFrame)
+                  stop()
+                },
+              })
+              return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })
+            }
 
             if (chat.stream) {
               const encoder = new TextEncoder()
