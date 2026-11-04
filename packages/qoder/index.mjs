@@ -1600,7 +1600,16 @@ function failure(status, text) {
     const said = msg && msg !== STATUS_CODES[status] ? ` (Qoder said ${status}: ${msg.slice(0, 300)})` : ""
     return { status: 401, message: "the sign-in lapsed — sign in again" + said, lapsed: true }
   }
-  if (status === 429 || msg.toLowerCase().includes("quota")) return { status: 429, message: "usage limit reached: " + msg }
+  // Qoder's words go with the status and code they came in, and the reply
+  // itself when it says more than the message: a 429 that names no quota
+  // ("All models failed", QwenWork) is not shown as an account's limit
+  // with nothing to tell it apart (dsh, QwenWork flash)
+  if (status === 429 || msg.toLowerCase().includes("quota")) {
+    const raw = String(text ?? "").trim()
+    const seen = `Qoder replied HTTP ${status}${code ? `, code ${code}` : ""}`
+    const body = raw && raw !== msg ? `: ${raw.slice(0, 400)}` : ""
+    return { status: 429, message: `usage limit reached: ${msg} (${seen}${body})` }
+  }
   return { status, message: msg }
 }
 
