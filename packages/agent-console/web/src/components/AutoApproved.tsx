@@ -8,32 +8,36 @@ import { t, tf } from "../i18n/index.js";
 import { ws } from "../main";
 
 export function AutoApprovedItem({ it }: { it: Extract<DisplayItem, { kind: "autoperm" }> }) {
+  // Same flat one-line rows as the 1.3 tool steps: icon slot · text · right-edge meta; the shield keeps the amber of the
+  // 全部自动同意 chip so the row reads "approved for you", not "you approved"
   const [open, setOpen] = useState(false);
   const peek = it.items.map(approvalTarget).filter(Boolean).join(" · ");
   return (
     <div className={`apv${open ? " open" : ""}`} data-testid="auto-approved">
       <button className="apv-head" aria-expanded={open} onClick={() => setOpen(!open)}
         title={t("timeline.autoApproved.title")}>
-        <span className={`caret${open ? " open" : ""}`}>›</span>
-        <span className="apv-ic"><Icon name="shieldCheck" size={13} /></span>
+        <span className="apv-ic" aria-hidden><Icon name="shieldCheck" size={13} /></span>
         <span className="apv-n">{tf("timeline.autoApproved.count", { n: it.items.length })}</span>
         {!open && peek && <span className="apv-peek">{peek}</span>}
+        <span className={`caret${open ? " open" : ""}`} aria-hidden>›</span>
       </button>
       {open && (
         <div className="apv-list">
           {it.items.map((p) => {
             const d = (p.detail ?? {}) as { command?: unknown; path?: unknown };
             const choice = approvalChoice(p);
+            const cmd = typeof d.command === "string" && d.command.trim() ? d.command.trim() : "";
+            const path = !cmd && typeof d.path === "string" && d.path.trim() ? d.path.trim() : "";
+            const answer = p.status === "pending"
+              ? t("timeline.autoApproved.pending")
+              : tf("timeline.autoApproved.answer", { opt: choice ?? t("timeline.permAllowed") });
             return (
-              <div key={p.requestId} className="apv-row">
-                <div className="apv-title">{p.title}</div>
-                {typeof d.command === "string" && d.command.trim() && <pre className="apv-cmd">{d.command}</pre>}
-                {typeof d.path === "string" && d.path.trim() && <div className="apv-path">{d.path}</div>}
-                <div className="apv-meta">
-                  {p.status === "pending"
-                    ? t("timeline.autoApproved.pending")
-                    : tf("timeline.autoApproved.answer", { opt: choice ?? t("timeline.permAllowed") })}
-                </div>
+              <div key={p.requestId} className="apv-row" title={[p.title, cmd || path, answer].filter(Boolean).join("\n")}>
+                <span className="ts-ic" aria-hidden><Icon name={p.status === "pending" ? "hourglass" : "check"} size={13} /></span>
+                {cmd ? <span className="apv-cmd">{cmd}</span>
+                  : path ? <span className="apv-path">{path}</span>
+                  : <span className="apv-title">{p.title}</span>}
+                <span className="apv-meta">{answer}</span>
               </div>
             );
           })}

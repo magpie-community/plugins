@@ -41,7 +41,7 @@ UI principle: **obvious at a glance, nothing extra**. Three columns — sidebar 
 - **Persistent sessions**: each thread binds to a long-lived Agent process; after a daemon restart, running threads are marked closed and can be resumed (`--resume` / `thread/resume`)
 - **Multiple Agents**: Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh; missing CLIs show an install hint
 - **Model / permission / thinking**: per-thread; four permission modes and five thinking levels (what each Agent actually supports)
-- **全部自动同意 / Auto-approve all (1.3)**: a permission mode for every Agent; the default stays 每次询问 / Always Ask. While a conversation is in it, a one-line strip above the composer (全部自动同意已开启, the Agent's hint, a 改回每次询问 link) and a warning-coloured mode chip stay on screen, at any width and in light and dark. What it does per Agent, as the menu hint says:
+- **全部自动同意 / Auto-approve all (1.3)**: a permission mode for every Agent; the default stays 每次询问 / Always Ask. While a conversation is in it, a one-line strip above the composer (全部自动同意已开启 on the left, whose tooltip says what it does for this Agent, and a 改回每次询问 link on the right) and a warning-coloured mode chip stay on screen, at any width and in light and dark. What it does per Agent, as the menu hint says:
 
   | Agent | What 全部自动同意 turns on |
   | --- | --- |

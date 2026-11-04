@@ -521,8 +521,13 @@ async function scenario27() {
     const r = b.getBoundingClientRect(); const cs = getComputedStyle(b.querySelector("b"));
     const chip = document.querySelector(".mode-chip.auto");
     const [cr, cg, cb] = (cs.color.match(/[\d.]+/g) ?? []).map(Number);
-    const d = b.querySelector(".cp-auto-d");
-    return { h: Math.round(r.height), clipped: !!d && d.scrollWidth > d.clientWidth, full: (b.getAttribute("title") ?? "").length > 0, text: b.textContent, inView: r.width > 0 && r.top >= 0 && r.bottom <= innerHeight && r.right <= innerWidth + 0.5,
+    // No visible hint between the label and the link (Nolan): the per-Agent text is the label's tooltip + description
+    const lab = b.querySelector(".cp-auto-t");
+    const tip = lab?.getAttribute("title") ?? "";
+    const descEl = lab && document.getElementById(lab.getAttribute("aria-describedby") ?? "");
+    const visible = [...b.querySelectorAll(".cp-auto-t, .cp-auto-back")].map((e) => e.innerText).join("|");
+    return { h: Math.round(r.height), hintGone: !b.querySelector(".cp-auto-d"), tip, described: !!descEl && descEl.textContent === tip, visible,
+      onlyTwo: [...b.children].filter((e) => !e.classList.contains("sr-only")).length === 2, text: b.textContent, inView: r.width > 0 && r.top >= 0 && r.bottom <= innerHeight && r.right <= innerWidth + 0.5,
       warm: cr - cb > 60 && cr > cg, chip: !!chip, theme: document.documentElement.dataset.theme };
   });
   const before = await banner();
@@ -570,8 +575,9 @@ async function scenario27() {
   await page.setViewportSize({ width: 1440, height: 900 });
   const okBanner = !before && !!light?.inView && light.warm && light.chip && /全部自动同意已开启/.test(light.text) && !offOther
     && !!dark?.inView && dark.warm && dark.theme === "dark"
-    // one slim line (Nolan): never wraps, the hint is cut with an ellipsis and the full text is the tooltip
-    && light.h <= 26 && dark.h <= 26 && !!wide && wide.h <= 26 && light.full;
+    // one slim line (Nolan): never wraps; only 全部自动同意已开启 + 改回每次询问 are visible, the per-Agent text is the tooltip
+    && light.h <= 26 && dark.h <= 26 && !!wide && wide.h <= 26 && light.hintGone && dark.hintGone && light.onlyTwo
+    && light.visible === "全部自动同意已开启|改回每次询问" && light.described && /计划确认/.test(light.tip);
   const okTrace = req?.auto === true && res?.auto === true && res.requestId === req.requestId && /已自动同意 1 项/.test(collapsed ?? "")
     && /npm test/.test(collapsed ?? "") && /npm test/.test(cmd ?? "") && /全部自动同意/.test(meta ?? "");
   record("场景27a 全部自动同意：600px 常驻提示（浅/深色）+ 菜单写明", okBanner && /允许一次|跳过|沙箱/.test(menuHint ?? "") && modeAfter === "default",
@@ -591,7 +597,7 @@ async function scenario27() {
   await page.click('[data-testid="auto-upgrade-notice"] .btn:has-text("开启")');
   await waitFor(async () => (await wsCall("threads.get", { id: c1.id })).meta.mode === "bypassPermissions", 5000, "开启全部自动同意");
   await page.waitForSelector('[data-testid="auto-on"]', { timeout: 5000 });
-  const cursorHint = await page.textContent('[data-testid="auto-on"] .cp-auto-d');
+  const cursorHint = await page.getAttribute('[data-testid="auto-on"] .cp-auto-t', "title");
   const okUp = m1.meta.mode === "default" && m2.meta.mode === "default"
     && m1.events.filter((e) => e.code === "auto_approve_upgrade").length === 1 && m2.events.length === 0
     && /Cursor/.test(noticeText ?? "") && !bannerOnCursor && /允许一次/.test(cursorHint ?? "");

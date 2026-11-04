@@ -269,30 +269,29 @@ a.ac-local { cursor: pointer; }
   color: var(--muted); font-size: var(--chat-fs-s); max-height: 7.5em; overflow: hidden;
 }
 
-/* 1.3 全部自动同意 (#727 review): the daemon's own approvals, one quiet foldable row per run of tool calls.
-   Same quiet line as the tool summary; the shield carries the warning colour so it reads as "approved for you". */
-.apv { margin: 0 0 10px; min-width: 0; }
+/* 1.3 全部自动同意 (#727 review): the daemon's own approvals, one foldable row per run of tool calls, in the same flat
+   one-line style as the tool rows (icon slot · text · right-edge meta; clip, never wrap). Only the shield is amber. */
+.apv { margin: 0 0 8px; min-width: 0; }
 .apv-head {
-  display: flex; align-items: center; gap: 6px; width: 100%; min-height: 22px; padding: 0; overflow: hidden;
-  color: var(--meta); font-size: var(--chat-fs-s); text-align: left; white-space: nowrap;
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 26px; padding: 0 6px; overflow: hidden; border-radius: var(--r-s);
+  color: var(--muted); font-size: var(--chat-fs-s); text-align: left; white-space: nowrap;
 }
-.apv-head:hover { color: var(--fg); }
-.apv-head .caret { flex: none; transition: transform var(--dur-1); }
+.apv-head:hover, .apv.open > .apv-head { color: var(--fg); background: var(--surface-hover); }
+.apv-head .caret { flex: none; color: var(--meta); transition: transform var(--dur-1); }
 .apv-head .caret.open { transform: rotate(90deg); }
-.apv-ic { flex: none; display: inline-flex; color: var(--warn); }
+.apv-ic { width: 14px; flex: none; display: inline-flex; justify-content: center; color: var(--auto-fg, var(--warn)); }
 .apv-n { flex: none; }
-.apv-peek { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--chat-code-fs); }
-.apv-peek::before { content: "·"; margin-right: 6px; font-family: var(--font-ui); }
-.apv-list { margin: 2px 0 0 5px; border-left: 1px solid var(--line); padding: 2px 0 2px 10px; display: flex; flex-direction: column; gap: 8px; }
-.apv-row { min-width: 0; font-size: var(--chat-fs-s); }
-.apv-title { color: var(--text); overflow-wrap: anywhere; }
-.apv-cmd {
-  margin: 4px 0 0; padding: 6px 8px; border-radius: var(--r-s); background: var(--code-bg); border: 1px solid var(--code-line);
-  color: var(--code-fg); font-family: var(--font-mono); font-size: var(--chat-code-fs); white-space: pre-wrap; overflow-wrap: anywhere;
-  max-height: 160px; overflow: auto;
+.apv-peek { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--meta); font-family: var(--font-mono); font-size: var(--chat-code-fs); }
+.apv-peek::before { content: "·"; margin-right: 8px; font-family: var(--font-ui); }
+.apv-list { margin: 2px 0 0 13px; padding-left: 6px; border-left: 1px solid var(--line); }
+.apv-row {
+  display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 6px; min-width: 0; overflow: hidden; white-space: nowrap;
+  border-radius: var(--r-s); color: var(--muted); font-size: var(--chat-fs-s);
 }
-.apv-path { margin-top: 2px; color: var(--muted); font-family: var(--font-mono); font-size: var(--chat-code-fs); overflow-wrap: anywhere; }
-.apv-meta { margin-top: 3px; color: var(--meta); font-size: var(--fs-xs); }
+.apv-row:hover { background: var(--surface-hover); color: var(--fg); }
+.apv-cmd, .apv-path, .apv-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apv-cmd, .apv-path { font-family: var(--font-mono); font-size: var(--chat-code-fs); }
+.apv-meta { flex: none; margin-left: auto; color: var(--meta); font-size: var(--fs-xs); }
 /* 1.3 upgrade notice (#727 review 3): told once that 全部自动同意 now really applies to Cursor / OpenCode / dsh */
 .nt-auto {
   text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-m); line-height: 1.6; color: var(--text);
