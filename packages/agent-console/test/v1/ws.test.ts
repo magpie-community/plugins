@@ -1,6 +1,7 @@
 // WS gateway tests: hello authentication, app.info, wrong token 4401, subscription push
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -16,6 +17,8 @@ import { registerMethods } from "../../daemon/src/ws/methods.js";
 import { GitService } from "../../daemon/src/git/service.js";
 import { FileService } from "../../daemon/src/files/service.js";
 import { TerminalService } from "../../daemon/src/terminal/service.js";
+import { PreviewProxy } from "../../daemon/src/preview/proxy.js";
+import { previewHost } from "../../daemon/src/preview/host.js";
 import type { Config } from "../../daemon/src/config.js";
 
 const TOKEN = "testtoken123";
@@ -23,6 +26,7 @@ let dir = "";
 let server: Server;
 let port = 0;
 let gateway: Gateway;
+let preview: PreviewProxy;
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "ac-ws-"));
@@ -32,7 +36,8 @@ beforeAll(async () => {
   const cfg: Config = { port: 0, dataDir: dir, token: TOKEN, version: "9.9.9", idleExitMinutes: 60, buildStamp: "0" };
   gateway = new Gateway(cfg);
   const settings = new SettingsStore(dir);
-  registerMethods(gateway, { cfg, settings, gateway, projects: new ProjectsStore(dir), threads: new ThreadsStore(dir), git: new GitService(), files: new FileService(), terminals: new TerminalService(gateway) });
+  preview = new PreviewProxy({ deniedPorts: () => [] });
+  registerMethods(gateway, { cfg, settings, gateway, projects: new ProjectsStore(dir), threads: new ThreadsStore(dir), git: new GitService(), files: new FileService(), terminals: new TerminalService(gateway), preview });
   server = createHttpServer(cfg, appDir, new AttachmentStore(join(dir, "attachments")), {
     onUpgrade: (req, socket, head) => gateway.handleUpgrade(req, socket, head),
   });
@@ -42,6 +47,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  preview.closeAll();
   gateway.closeAll();
   server.close();
   rmSync(dir, { recursive: true, force: true });
@@ -123,5 +129,32 @@ describe("ws gateway", () => {
     const e = await evt;
     expect(e.ch).toBe("sidebar");
     ws.close();
+  });
+
+  // #582 review: methods.ts rewrites host via previewHost(); bare `return r;` must make this red
+  it("preview.open returns host from previewHost()", async () => {
+    const up = http.createServer((_q, s) => { s.end("dev"); });
+    await new Promise<void>((r) => up.listen(0, "127.0.0.1", () => r()));
+    const upPort = (up.address() as AddressInfo).port;
+    try {
+      const ws = await connect();
+      const hello = nextMsg(ws, (o) => o.t === "hello.ok");
+      ws.send(JSON.stringify({ t: "hello", token: TOKEN }));
+      await hello;
+      const res = nextMsg(ws, (o) => o.t === "res" && o.id === 30);
+      ws.send(JSON.stringify({ t: "req", id: 30, m: "preview.open", p: { url: `http://localhost:${upPort}/` } }));
+      const r = await res;
+      expect(r.ok).toBe(true);
+      const body = r.r as { host?: unknown; proxyOrigin?: string };
+      expect(body.host).toEqual(previewHost());
+      if (body.proxyOrigin) {
+        const rel = nextMsg(ws, (o) => o.t === "res" && o.id === 31);
+        ws.send(JSON.stringify({ t: "req", id: 31, m: "preview.release", p: { url: `http://localhost:${upPort}/` } }));
+        await rel;
+      }
+      ws.close();
+    } finally {
+      up.close();
+    }
   });
 });
