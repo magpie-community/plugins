@@ -433,8 +433,9 @@ test('Responses converts a double-wrapped JoyCode failure and suppresses later s
   assert.equal(events.some(event => event.type === 'response.completed'), false)
 })
 
-test('Responses converts an empty completion into empty_response', async t => {
-  for (const output of [[], [{ type: 'reasoning', summary: [] }]]) {
+// Separate contexts avoid stacked fetch mocks leaking under Bun's node:test adapter.
+for (const [label, output] of [['no output', []], ['empty reasoning', [{ type: 'reasoning', summary: [] }]]]) {
+  test(`Responses converts an empty completion into empty_response: ${label}`, async t => {
     const completed = { type: 'response.completed', response: { status: 'completed', output } }
     const r = await request(t, new Response(`data: ${JSON.stringify(completed)}\n\n`, {
       headers: { 'content-type': 'text/event-stream' },
@@ -448,8 +449,8 @@ test('Responses converts an empty completion into empty_response', async t => {
     assert.equal(events[0].type, 'error')
     assert.equal(events[0].code, 'empty_response')
     assert.equal(body.includes('response.completed'), false)
-  }
-})
+  })
+}
 
 test('Responses reports incomplete_response when EOF has no terminal event', async t => {
   const delta = { type: 'response.output_text.delta', delta: 'partial' }
@@ -478,7 +479,7 @@ test('Responses preserves standard CRLF events byte for byte', async t => {
   assert.equal(await r.text(), upstreamText)
 })
 
-test('Responses preserves valid text, refusal, tool, search, and image output bytes', async t => {
+{
   const cases = [
     ['text delta', [
       { type: 'response.output_text.delta', delta: 'hello' },
@@ -518,16 +519,18 @@ test('Responses preserves valid text, refusal, tool, search, and image output by
     ]],
   ]
   for (const [label, events] of cases) {
-    const upstreamText = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('')
-    const r = await request(t, new Response(upstreamText, {
-      headers: { 'content-type': 'text/event-stream' },
+    test(`Responses preserves output bytes: ${label}`, async t => {
+      const upstreamText = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('')
+      const r = await request(t, new Response(upstreamText, {
+        headers: { 'content-type': 'text/event-stream' },
     }), {
       input: 'https://api-ai.jd.com/v1/responses',
       payload: { model: 'GPT-6 Astra', input: 'OK', stream: true },
     })
     assert.equal(await r.text(), upstreamText, label)
+    })
   }
-})
+}
 
 test('Responses does not append another error after an upstream error event', async t => {
   const upstreamText = 'data: {"type":"error","code":"upstream_failure","message":"failed"}\n\n'
