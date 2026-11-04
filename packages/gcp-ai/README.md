@@ -6,6 +6,10 @@
 
 You sign in once with your own Google account. No service accounts, no JSON keys, no extra packages: the plugin uses the Chrome you already have.
 
+## Token caching and request latency
+
+With an `authorized_user` ADC, the access token is cached per account until 60 seconds before it expires and refreshed directly against Google's OAuth token endpoint; concurrent callers share one in-flight refresh. In gcloud mode every token still comes from gcloud, unchanged. The endpoint check runs in the background, so it never sits in front of the first model call — only a rejected credential (401) is surfaced on later requests.
+
 ## Requirements
 
 - Google Chrome or Chromium (set `VERTEX_CHROME_PATH` if it is somewhere unusual)
@@ -32,7 +36,7 @@ that is why; macOS has likewise not been tried with a real account.
 ## Install and sign in
 
 ```bash
-magpie plugin add @magpie-community/gcp-ai
+magpie plugin add @magpie-community/opencode-gcp-ai-auth
 ```
 
 Then click sign in on the **GCP AI** row, or run:
@@ -139,3 +143,7 @@ A machine-wide `CLOUDSDK_CONFIG` is never read. It would point every account at 
 ## Privacy
 
 The plugin asks Google for your model list with your credentials, sends inference requests to the Vertex endpoint, and opens Cloud Console in a Chrome it started to read your credits. No third-party server, no credential upload, no debugging port.
+
+## Source and history
+
+The plugin's development history is at [github.com/Yaka88/google_vertex_plugin](https://github.com/Yaka88/google_vertex_plugin); releases are served from this repository.
