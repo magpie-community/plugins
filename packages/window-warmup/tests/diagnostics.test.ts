@@ -5,7 +5,9 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildDiagnostics } from "../src/diagnostics";
 import { startService, type ServiceHandle } from "../src/server";
+import type { Run, Task } from "../src/types";
 import { fakeGateway, type FakeGateway } from "./fake-gateway";
 
 const KEY_RAW = "sk-test-SECRET-9f8e7d6c5b";
@@ -153,4 +155,71 @@ test("导出还原排错现场，且不含账号、key、任务名等隐私原�
   expect(d.runs[0].reason).toContain(agTask.account);
   expect(d.runs[0].reason).toContain("Bearer <redacted>");
   expect(d.runs[0].reason).toContain("/home/<user>");
+});
+
+const task = (over: Partial<Task> = {}): Task => ({
+  id: "t1", name: TASK_NAME, enabled: true, provider: "antigravity", account: EMAIL, model: "", message: "hi",
+  trigger: { kind: "daily", time: "06:00", timeZone: "Asia/Shanghai" },
+  createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z", ...over,
+});
+const run = (i: number, reason: string): Run => ({
+  id: `r${i}`, taskId: "t1", source: "manual", due: null, startedAt: new Date(Date.UTC(2026, 10, 1, 0, i)).toISOString(),
+  endedAt: null, outcome: "failed", reason, effort: null, model: null, ms: 0, resetKey: null,
+});
+
+test("自由文本脱敏：邮箱、key 形态串、URL 口令参数、长口令、Windows 家目录都被抹掉；超长截断并注明原长", async () => {
+  const reasons = [
+    "mail other.person@corp.example.org failed",
+    "key sk-live-0123456789abcdef rejected",
+    "GET https://x.test/v1?api_key=SEKRIT123&model=m1 401",
+    "cookie eyJhbGciOiJIUzI1NiJ9eyJzdWIiOiIxMjM0NTY3ODkwIn0abcdef",
+    "open C:\\Users\\bob\\AppData failed",
+    `long ${"z ".repeat(400)}`,
+  ];
+  const d = (await buildDiagnostics({
+    base: gw.base, dir: join(root, "data"), tasks: [task()], runs: reasons.map((r, i) => run(i, r)),
+    marks: {}, scheduler: null, fatal: null, lockedBy: null,
+  })) as { runs: { reason: string }[]; tasks: { sendPreview: unknown }[] };
+  const text = JSON.stringify(d);
+  for (const secret of ["other.person", "sk-live-0123", "SEKRIT123", "eyJhbGciOiJIUzI1NiJ9", "bob", EMAIL, TASK_NAME]) {
+    expect(text).not.toContain(secret);
+  }
+  const got = d.runs.map((r) => r.reason);
+  expect(got[0]).toContain("<email>");
+  expect(got[1]).toContain("<key>");
+  expect(got[2]).toContain("api_key=<redacted>&model=m1");
+  expect(got[3]).toContain("<token>");
+  expect(got[4]).toContain("C:\\Users\\<user>");
+  expect(got[5]).toContain("（截断，原长");
+  expect(got[5].length).toBeLessThan(450);
+  // 没有调度器（fatal/只读实例）时预演如实说明，不让导出失败
+  expect(d.tasks[0].sendPreview).toEqual({ error: "调度器未运行" });
+});
+
+test("体积上限：每任务只留最近 20 条执行记录；单个列表超 200 条截断并记入 truncated", async () => {
+  const many = fakeGateway({
+    models: Array.from({ length: 250 }, (_, i) => ({ id: `bulk/m${i}`, owned_by: "bulk", reasoning: false })),
+  });
+  try {
+    const d = (await buildDiagnostics({
+      base: many.base, dir: join(root, "data"), tasks: [task()], runs: Array.from({ length: 30 }, (_, i) => run(i, `r${i}`)),
+      marks: {}, scheduler: null, fatal: null, lockedBy: null,
+    })) as { runs: { id: string }[]; providers: { id: string; v1Models: unknown[] }[]; truncated: string[] };
+    expect(d.runs.map((r) => r.id)).toEqual(Array.from({ length: 20 }, (_, i) => `r${i + 10}`));
+    expect(d.providers.find((p) => p.id === "bulk")!.v1Models).toHaveLength(200);
+    expect(d.truncated.some((t) => t.startsWith("providers.bulk.v1Models：共 250 条"))).toBe(true);
+  } finally {
+    many.stop();
+  }
+});
+
+test("网关不是本机回环时只标注「非本机地址」；网关连不上不让导出失败，原因记在 gateway 里", async () => {
+  // 127.0.0.2 仍是回环（连接立即被拒），但不在本机地址白名单里，用来覆盖远程地址的显示
+  const d = (await buildDiagnostics({
+    base: "http://127.0.0.2:1", dir: join(root, "data"), tasks: [], runs: [], marks: {},
+    scheduler: null, fatal: null, lockedBy: null,
+  })) as { gateway: { base: string; models: string; catalog: string } };
+  expect(d.gateway.base).toBe("<非本机地址>");
+  expect(d.gateway.models).not.toMatch(/^ok/);
+  expect(d.gateway.catalog).not.toBe("ok");
 });

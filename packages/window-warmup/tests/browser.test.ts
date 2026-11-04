@@ -22,6 +22,15 @@ interface Page {
   getByPlaceholder(t: string): Locator;
   getByText(t: string): Locator;
 }
+/** 插件页在 magpie 里跑在 iframe 中：框架内的定位器 */
+interface FrameLocator {
+  getByRole(role: string, o?: { name?: string; exact?: boolean }): Locator;
+  getByText(t: string): Locator;
+  locator(selector: string): Locator;
+}
+interface Page {
+  frameLocator(selector: string): FrameLocator;
+}
 interface Browser {
   newPage(): Promise<Page>;
   close(): Promise<void>;
@@ -111,6 +120,43 @@ for (const [name, engine] of ENGINES) {
         expect(errors).toEqual([]);
       } finally {
         await browser.close();
+      }
+    },
+    90_000,
+  );
+}
+
+for (const [name, engine] of ENGINES) {
+  testBrowser(
+    `${name}：magpie 同款沙箱框架里「反馈问题」能收集诊断并复制两段内容`,
+    async () => {
+      // 与 magpie 宿主一致：sandbox="allow-scripts" + allow=""，下载/弹窗/Clipboard API 全被拦
+      const host = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: () =>
+          new Response(
+            `<!doctype html><iframe id="f" sandbox="allow-scripts" allow="" src="http://127.0.0.1:${svc.port}/?lang=zh"></iframe>`,
+            { headers: { "content-type": "text/html" } },
+          ),
+      });
+      const browser = await engine.launch();
+      try {
+        const page = await browser.newPage();
+        const errors: string[] = [];
+        page.on("pageerror", (e) => errors.push(String(e)));
+        await page.goto(`http://127.0.0.1:${host.port}/`);
+        const f = page.frameLocator("#f");
+        await f.getByRole("button", { name: "反馈问题" }).click();
+        await f.getByRole("button", { name: "① 复制 issue 链接" }).click();
+        await f.getByText("链接已复制。").waitFor({ timeout: 15_000 });
+        await f.locator("button:has-text('② 复制问题内容'):not([disabled])").waitFor({ timeout: 15_000 });
+        await f.getByRole("button", { name: "② 复制问题内容" }).click();
+        await f.getByText("问题内容已复制。").waitFor({ timeout: 15_000 });
+        expect(errors).toEqual([]);
+      } finally {
+        await browser.close();
+        host.stop(true);
       }
     },
     90_000,

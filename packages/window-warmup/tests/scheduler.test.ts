@@ -1134,3 +1134,26 @@ test("window：发送 60 秒后单卡刷新拿到新 resetsAt 精确排程；到
   await h.flush();
   expect(h.sendCalls).toHaveLength(2);
 });
+
+test("previewSend：按发送前同一套规则现算模型/账号头/档位，不发请求、不写执行记录", async () => {
+  const h = await harness();
+  const task = await h.scheduler.upsert(dailyTask());
+  const before = h.store.data.runs.length;
+  expect(await h.scheduler.previewSend(task)).toEqual({ model: "m1", pin: null, effort: null });
+  h.models.length = 0;
+  expect(await h.scheduler.previewSend(task)).toEqual({ error: "模型 m1 已不在 Magpie 的模型列表里" });
+  expect(h.sendCalls).toHaveLength(0);
+  expect(h.store.data.runs.length).toBe(before);
+});
+
+test("debugView：暴露定时器为固定任务排的到期点与进行中的发送，只读", async () => {
+  const h = await harness();
+  const id = (await h.scheduler.upsert(dailyTask())).id;
+  expect(h.scheduler.debugView()).toMatchObject({ quotaAt: null, inflight: [], armedFor: {} });
+  h.scheduler.start();
+  const view = h.scheduler.debugView();
+  expect(view.inflight).toEqual([]);
+  expect(Object.keys(view.armedFor)).toEqual([id]);
+  expect(new Date(view.armedFor[id]).toISOString()).toBe(new Date("2026-10-31T06:00:00+08:00").toISOString());
+  expect(h.scheduler.quotaEntries()).toBeNull();
+});
