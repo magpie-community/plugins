@@ -146,6 +146,7 @@ var init_i18n = __esm({
         "notice.daemonRestart": "\u540E\u53F0\u5DF2\u91CD\u542F\uFF0C\u672C\u8F6E\u5DF2\u4E2D\u65AD",
         "notice.sessionStartFailed": "\u4F1A\u8BDD\u542F\u52A8\u5931\u8D25\uFF1A{detail}",
         "notice.sendFailed": "\u53D1\u9001\u5931\u8D25\uFF1A{detail}",
+        "notice.bashMissing": "\u6CA1\u6709\u627E\u5230 Git Bash\u3002\u8FD9\u4E2A Agent \u5728 Windows \u4E0A\u8981\u7528 Git Bash \u8FD0\u884C\u547D\u4EE4\uFF08C:\\Windows\\System32\\bash.exe \u662F WSL \u542F\u52A8\u5668\uFF0C\u4E0D\u80FD\u7528\uFF09\u3002\u8BF7\u5B89\u88C5 Git for Windows\uFF1Ahttps://git-scm.com/download/win \uFF0C\u6216\u5728\u300C\u8BBE\u7F6E \u2192 Bash \u8DEF\u5F84\u300D\u91CC\u624B\u52A8\u6307\u5B9A bash.exe\u3002",
         "notice.effortNextTurn": "\u601D\u8003\u5F3A\u5EA6\u5DF2\u4FDD\u5B58\uFF0C\u5C06\u5728\u4E0B\u4E00\u8F6E\u751F\u6548",
         "notice.effortResetOnModel": "\u5F53\u524D\u6A21\u578B\u4E0D\u652F\u6301\u8BE5\u601D\u8003\u5F3A\u5EA6\uFF0C\u5DF2\u6062\u590D\u4E3A Default",
         "turn.agentExit": "Agent \u8FDB\u7A0B\u610F\u5916\u9000\u51FA",
@@ -256,6 +257,7 @@ var init_i18n = __esm({
         "notice.daemonRestart": "Daemon restarted \u2014 this turn was interrupted",
         "notice.sessionStartFailed": "Session start failed: {detail}",
         "notice.sendFailed": "Send failed: {detail}",
+        "notice.bashMissing": "Git Bash was not found. On Windows this agent runs its commands with Git Bash (C:\\Windows\\System32\\bash.exe is the WSL launcher and won't work). Install Git for Windows: https://git-scm.com/download/win , or set bash.exe under Settings \u2192 Bash path.",
         "notice.effortNextTurn": "Reasoning effort saved \u2014 takes effect on the next turn",
         "notice.effortResetOnModel": "This model does not support that effort level; reset to Default",
         "turn.agentExit": "Agent process exited unexpectedly",
@@ -808,6 +810,8 @@ function pickScript(text) {
   if (t.startsWith("/long")) return scriptLong;
   if (t.startsWith("/exit")) return scriptExit;
   if (t.startsWith("/serve")) return scriptServe;
+  if (t.startsWith("/tools")) return scriptTools;
+  if (t.startsWith("/bashhint")) return scriptBashHint;
   return scriptDefault;
 }
 async function sleepAbortable(ms, ctx) {
@@ -822,6 +826,55 @@ function chunkText(s, n) {
   const out = [];
   for (let i = 0; i < s.length; i += n) out.push(s.slice(i, i + n));
   return out;
+}
+async function scriptTools(ctx) {
+  const { emit } = ctx;
+  const sleepA = (ms) => sleepAbortable(ms, ctx);
+  const tool = async (id2, kind, title, input, end, ms = 150) => {
+    emit({ type: "tool_call", itemId: id2, kind, title, status: "running", input });
+    if (await sleepA(ms)) return true;
+    emit({ type: "tool_call", itemId: id2, kind, title, status: "ok", durationMs: ms, ...end });
+    return false;
+  };
+  emit({ type: "reasoning", itemId: "tr1", text: "\u5148\u770B\u4E00\u4E0B\u6D4B\u8BD5\u548C\u914D\u7F6E\u3002" });
+  if (await tool("x1", "read", "\u8BFB\u53D6 package.json", { file_path: "package.json" }, { output: "{\u2026}" })) return;
+  if (await tool("x2", "search", '\u641C\u7D22 "describe("', { pattern: "describe(" }, { output: "12 \u5904\u5339\u914D" })) return;
+  emit({ type: "reasoning", itemId: "tr2", text: "" });
+  if (await tool("x3", "read", "\u8BFB\u53D6 test/app.test.ts", { file_path: "test/app.test.ts" }, { output: "\u2026" })) return;
+  emit({ type: "tool_call", itemId: "x4", kind: "bash", title: "\u8FD0\u884C npm run lint", status: "running", input: { command: "npm run lint" } });
+  if (await sleepA(200)) return;
+  emit({
+    type: "tool_call",
+    itemId: "x4",
+    kind: "bash",
+    title: "\u8FD0\u884C npm run lint",
+    status: "failed",
+    exitCode: 1,
+    durationMs: 200,
+    output: "src/app.ts:12:7  error  'unused' is assigned a value but never used  no-unused-vars\n\n\u2716 1 problem (1 error, 0 warnings)"
+  });
+  const oldStr = "const unused = 1;\nexport const app = 2;";
+  const newStr = "export const app = 2;";
+  if (await tool(
+    "x5",
+    "edit",
+    "\u7F16\u8F91 src/app.ts",
+    { file_path: "src/app.ts", old_string: oldStr, new_string: newStr },
+    { detail: editDetail({ path: "src/app.ts", old: oldStr, new: newStr }) }
+  )) return;
+  emit({ type: "reasoning", itemId: "tr3", text: "lint \u4FEE\u597D\u4E86\uFF0C\u518D\u8DD1\u4E00\u904D\u5B8C\u6574\u6D4B\u8BD5\u3002" });
+  const cmd = "npm test -- --reporter=verbose --coverage --run test/app.test.ts test/server.test.ts test/client.test.ts";
+  emit({ type: "tool_call", itemId: "x6", kind: "bash", title: `\u8FD0\u884C ${cmd}`, status: "running", input: { command: cmd } });
+  const slow = Number(process.env.AGENT_CONSOLE_MOCK_TOOLS_MS) || 2500;
+  if (await sleepA(slow)) return;
+  emit({ type: "tool_call", itemId: "x6", kind: "bash", title: `\u8FD0\u884C ${cmd}`, status: "ok", output: "\u2713 3 \u4E2A\u6D4B\u8BD5\u6587\u4EF6\u901A\u8FC7", exitCode: 0, durationMs: slow });
+  const reply = ctx.replyPrefix() + "lint \u62A5\u9519\u5DF2\u4FEE\u590D\uFF0C\u6D4B\u8BD5\u5168\u90E8\u901A\u8FC7\u3002";
+  emit({ type: "assistant_message", itemId: "tm1", text: reply });
+}
+async function scriptBashHint(ctx) {
+  ctx.emit({ type: "notice", level: "warn", code: "bash_missing", message: tr("notice.bashMissing") });
+  await sleepAbortable(100, ctx);
+  ctx.emit({ type: "assistant_message", itemId: "bh1", text: ctx.replyPrefix() + "\uFF08\u6A21\u62DF\uFF09" });
 }
 async function scriptServe(ctx) {
   const emit = (e) => ctx.emit(e);
@@ -1141,11 +1194,251 @@ var init_pathscan = __esm({
   }
 });
 
+// daemon/src/util/gitBash.ts
+import path2 from "node:path";
+import { statSync as statSync3 } from "node:fs";
+import { spawn } from "node:child_process";
+function envGet2(env, name) {
+  if (env[name] !== void 0) return env[name];
+  const lower = name.toLowerCase();
+  for (const k of Object.keys(env)) if (k.toLowerCase() === lower) return env[k];
+  return void 0;
+}
+function syncIsFile(p) {
+  try {
+    return statSync3(p).isFile();
+  } catch {
+    return false;
+  }
+}
+function withTimeout(p, ms) {
+  return new Promise((resolve4) => {
+    const t = setTimeout(() => resolve4(false), ms);
+    t.unref?.();
+    p.then((v) => {
+      clearTimeout(t);
+      resolve4(v);
+    }, () => {
+      clearTimeout(t);
+      resolve4(false);
+    });
+  });
+}
+function isWslBash(p, env = {}) {
+  const n = norm(p);
+  if (/\\windowsapps\\/.test(n + "\\")) return true;
+  if (/^[a-z]:\\windows\\(system32|syswow64|sysnative)\\/.test(n)) return true;
+  const root = envGet2(env, "SystemRoot") || envGet2(env, "windir");
+  if (root) {
+    const r = norm(root);
+    for (const sub of ["system32", "syswow64", "sysnative"]) if (n.startsWith(`${r}\\${sub}\\`)) return true;
+  }
+  return false;
+}
+function cleanPath(raw) {
+  return raw.trim().replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1").trim();
+}
+function checkBashPath(raw, deps = {}) {
+  const p = cleanPath(String(raw ?? ""));
+  if (!p) return { ok: false, reason: "empty" };
+  if (!/^[A-Za-z]:[\\/]/.test(p)) return { ok: false, reason: "relative" };
+  const base = W.basename(p).toLowerCase();
+  if (base !== "bash.exe" && base !== "sh.exe") return { ok: false, reason: "notBash" };
+  const env = deps.env ?? process.env;
+  if (isWslBash(p, env)) return { ok: false, reason: "wsl" };
+  const full = W.normalize(p);
+  if (!(deps.isFile ?? syncIsFile)(full)) return { ok: false, reason: "missing" };
+  return { ok: true, path: full };
+}
+function bashForGitDir(dir) {
+  const d = W.normalize(dir).replace(/[\\/]+$/, "");
+  const base = W.basename(d).toLowerCase();
+  const parent = W.dirname(d);
+  const out = [];
+  if (base === "bin" || base === "cmd") {
+    const pb = W.basename(parent).toLowerCase();
+    if (["mingw64", "mingw32", "clangarm64", "ucrt64", "usr"].includes(pb)) out.push(W.join(W.dirname(parent), "bin", "bash.exe"));
+    out.push(W.join(parent, "bin", "bash.exe"));
+  }
+  out.push(W.join(d, "bash.exe"));
+  return [...new Set(out)];
+}
+function knownBashCandidates(env, home) {
+  const out = [];
+  for (const v of ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]) {
+    const d = envGet2(env, v);
+    if (d) out.push(W.join(d, "Git", "bin", "bash.exe"));
+  }
+  out.push("C:\\Program Files\\Git\\bin\\bash.exe", "C:\\Program Files (x86)\\Git\\bin\\bash.exe");
+  const local = envGet2(env, "LOCALAPPDATA");
+  if (local) out.push(W.join(local, "Programs", "Git", "bin", "bash.exe"));
+  const scoop = envGet2(env, "SCOOP") || (home ? W.join(home, "scoop") : "");
+  if (scoop) out.push(W.join(scoop, "apps", "git", "current", "bin", "bash.exe"));
+  const seen = /* @__PURE__ */ new Set();
+  return out.filter((p) => seen.has(norm(p)) ? false : (seen.add(norm(p)), true));
+}
+function driveBashCandidates(drives) {
+  const out = [];
+  for (const raw of drives) {
+    const L = raw.replace(/[:\\/]/g, "").toUpperCase();
+    if (!/^[A-Z]$/.test(L)) continue;
+    out.push(`${L}:\\Git\\bin\\bash.exe`, `${L}:\\Program Files\\Git\\bin\\bash.exe`);
+  }
+  return out;
+}
+async function findGitBash(manual, deps = {}) {
+  const env = deps.env ?? process.env;
+  const isFile = deps.isFile ?? syncIsFile;
+  const ok = (p) => !isWslBash(p, env) && isFile(p);
+  let manualError;
+  if (manual && cleanPath(manual)) {
+    const c = checkBashPath(manual, { ...deps, env });
+    if (c.ok) return { found: { path: c.path, source: "manual" } };
+    manualError = c;
+  }
+  for (const v of ["CLAUDE_CODE_GIT_BASH_PATH", "OPENCODE_GIT_BASH_PATH"]) {
+    const c = checkBashPath(envGet2(env, v), { ...deps, env });
+    if (c.ok) return { found: { path: c.path, source: "env" }, manualError };
+  }
+  for (const git of findOnPath("git.exe", { platform: "win32", env, extra: false, exists: isFile })) {
+    for (const b of bashForGitDir(W.dirname(git))) if (ok(b)) return { found: { path: b, source: "git" }, manualError };
+  }
+  for (const b of knownBashCandidates(env, deps.home)) if (ok(b)) return { found: { path: b, source: "known" }, manualError };
+  const drives = driveBashCandidates(deps.drives ?? ALL_DRIVES);
+  const ms = deps.probeTimeoutMs ?? 1500;
+  const list = drives.filter((p) => !isWslBash(p, env));
+  const hit = deps.isFileAsync ? await Promise.all(list.map((p) => withTimeout(deps.isFileAsync(p), ms))).then((h) => list[h.indexOf(true)] ?? null) : await probeInChild(list, ms);
+  if (hit) return { found: { path: hit, source: "drive" }, manualError };
+  for (const b of findOnPath("bash.exe", { platform: "win32", env, extra: false, exists: isFile })) {
+    if (!isWslBash(b, env)) return { found: { path: b, source: "path" }, manualError };
+  }
+  return { found: null, manualError };
+}
+function probeInChild(paths, ms) {
+  if (!paths.length) return Promise.resolve(null);
+  const script = "const fs=require('fs');const p=JSON.parse(process.argv[1]);p.forEach((x,i)=>fs.stat(x,(e,s)=>{if(!e&&s.isFile())process.stdout.write(i+'\\n')}));";
+  return new Promise((resolve4) => {
+    const hits = /* @__PURE__ */ new Set();
+    let out = "";
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        child.kill();
+      } catch {
+      }
+      const first = [...hits].sort((a, b) => a - b)[0];
+      resolve4(first === void 0 ? null : paths[first] ?? null);
+    };
+    const child = spawn(process.execPath, ["-e", script, JSON.stringify(paths)], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    const timer = setTimeout(finish, ms);
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (d) => {
+      out += d;
+      for (const line of out.split("\n").slice(0, -1)) if (/^\d+$/.test(line)) hits.add(Number(line));
+      out = out.slice(out.lastIndexOf("\n") + 1);
+      if (hits.has(0)) finish();
+    });
+    child.on("error", finish);
+    child.on("close", finish);
+  });
+}
+function bashPathDir(bash, isFile = syncIsFile) {
+  const dir = W.dirname(W.normalize(bash));
+  if (/\\usr\\bin$/i.test(dir)) {
+    const top = W.join(W.dirname(W.dirname(dir)), "bin");
+    if (isFile(W.join(top, "bash.exe"))) return top;
+  }
+  return dir;
+}
+function bashEnv(found, env, isFile = syncIsFile) {
+  if (!found) return {};
+  const out = {
+    CLAUDE_CODE_GIT_BASH_PATH: found.path,
+    OPENCODE_GIT_BASH_PATH: found.path
+  };
+  const dir = bashPathDir(found.path, isFile);
+  const first = findOnPath("bash.exe", { platform: "win32", env, extra: false, exists: isFile })[0];
+  if (!first || norm(first) !== norm(W.join(dir, "bash.exe"))) {
+    const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+    const rest = String(env[key] ?? "").split(";").filter((d) => d && norm(d.replace(/^"(.*)"$/, "$1")) !== norm(dir));
+    out[key] = [dir, ...rest].join(";");
+  }
+  return out;
+}
+var W, GIT_FOR_WINDOWS_URL, norm, ALL_DRIVES;
+var init_gitBash = __esm({
+  "daemon/src/util/gitBash.ts"() {
+    init_pathscan();
+    W = path2.win32;
+    GIT_FOR_WINDOWS_URL = "https://git-scm.com/download/win";
+    norm = (p) => W.normalize(p).replace(/[\\/]+$/, "").toLowerCase();
+    ALL_DRIVES = "CDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+  }
+});
+
+// daemon/src/util/agentShell.ts
+import { homedir as homedir3 } from "node:os";
+function refreshAgentShell(manual, o = {}) {
+  const platform = o.platform ?? process.platform;
+  const my = ++generation;
+  const m = typeof manual === "string" ? manual : "";
+  if (platform !== "win32") {
+    status = { needed: false, found: null, manual: m };
+    ready = Promise.resolve();
+    return ready;
+  }
+  const env = o.deps?.env ?? process.env;
+  ready = findGitBash(m, { home: homedir3(), ...o.deps, env }).then(({ found, manualError }) => {
+    if (my !== generation) return;
+    status = { needed: true, found, manual: m, ...manualError && !manualError.ok ? { manualError: manualError.reason } : {} };
+    isFileDep = o.deps?.isFile;
+    if (found) log("info", `Git Bash: ${found.path} (${found.source})`);
+    else log("warn", "Git Bash not found; agents that need bash (Claude Code, Pi, dsh) will show a hint");
+  }).catch((e) => {
+    log("warn", "Git Bash detection failed", { err: String(e) });
+  });
+  return ready;
+}
+function agentShellReady(ms = 3e3) {
+  return Promise.race([ready, new Promise((r) => setTimeout(r, ms).unref?.())]);
+}
+function agentShellStatus() {
+  return status;
+}
+function bashMissingFor(providerId) {
+  return status.needed && !status.found && BASH_AGENTS.has(providerId);
+}
+function withAgentShell(env) {
+  if (!status.needed || !status.found) return env;
+  const overrides = bashEnv(status.found, env, isFileDep);
+  const out = { ...env };
+  for (const [k, v] of Object.entries(overrides)) {
+    const same = Object.keys(out).find((x) => x.toUpperCase() === k.toUpperCase() && x !== k);
+    if (same && k.toUpperCase() === "PATH") delete out[same];
+    out[k] = v;
+  }
+  return out;
+}
+var status, isFileDep, ready, generation, BASH_AGENTS;
+var init_agentShell = __esm({
+  "daemon/src/util/agentShell.ts"() {
+    init_gitBash();
+    init_log();
+    status = { needed: process.platform === "win32", found: null, manual: "" };
+    ready = Promise.resolve();
+    generation = 0;
+    BASH_AGENTS = /* @__PURE__ */ new Set(["claude", "pi", "dsh"]);
+  }
+});
+
 // daemon/src/util/bin.ts
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn as spawn2 } from "node:child_process";
 import { readFile as readFile3 } from "node:fs/promises";
 import { existsSync as existsSync4 } from "node:fs";
-import path2 from "node:path";
+import path3 from "node:path";
 function which(name) {
   return findOnPath(name);
 }
@@ -1191,9 +1484,11 @@ function trackTree(child) {
 function spawnBin(r, args, opts = {}) {
   const a = argvFor(r, args);
   const { group, ...rest } = opts;
-  const child = spawn(a.cmd, a.args, {
+  const child = spawn2(a.cmd, a.args, {
     windowsHide: true,
     ...rest,
+    // Windows: Git Bash for the agent (CLAUDE_CODE_GIT_BASH_PATH, OPENCODE_GIT_BASH_PATH, PATH); unchanged elsewhere
+    env: withAgentShell(rest.env ?? process.env),
     ...a.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {},
     ...group && !IS_WIN ? { detached: true } : {}
   });
@@ -1202,7 +1497,7 @@ function spawnBin(r, args, opts = {}) {
 }
 function shimTarget(cmdText, cmdDir, deps = {}) {
   const exists = deps.exists ?? existsSync4;
-  const P = deps.win ?? IS_WIN ? path2.win32 : path2;
+  const P = deps.win ?? IS_WIN ? path3.win32 : path3;
   const cands = [];
   const re = /"([^"]+?\.(?:js|mjs|cjs|exe|cmd|bat))"/gi;
   let m;
@@ -1253,7 +1548,7 @@ function resolveBinUncached(name) {
 async function resolveBinWith(name, deps = {}) {
   const platform = deps.platform ?? process.platform;
   const win = platform === "win32";
-  const P = win ? path2.win32 : path2.posix;
+  const P = win ? path3.win32 : path3.posix;
   const exists = deps.exists ?? existsSync4;
   const hits = (deps.find ?? which)(name);
   if (!hits.length) return { ok: false, reason: tr("bin.notOnPath", { name }) };
@@ -1294,7 +1589,7 @@ function killTree(child, { graceMs = 3e3 } = {}) {
   const pid = child.pid;
   if (IS_WIN) {
     return new Promise((resolvePromise) => {
-      const tk = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
+      const tk = spawn2("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
       tk.on("error", () => {
         try {
           child.kill();
@@ -1349,6 +1644,7 @@ var init_bin = __esm({
   "daemon/src/util/bin.ts"() {
     init_pathscan();
     init_i18n();
+    init_agentShell();
     IS_WIN = process.platform === "win32";
     cache = /* @__PURE__ */ new Map();
     CACHE_MS = 60 * 1e3;
@@ -1365,9 +1661,9 @@ function relPath(p, cwd) {
   if (!p) return "";
   const s = String(p);
   if (!cwd) return s;
-  const norm = (x) => x.replace(/\\/g, "/").replace(/\/+$/, "");
-  const a = norm(s);
-  const b = norm(cwd);
+  const norm2 = (x) => x.replace(/\\/g, "/").replace(/\/+$/, "");
+  const a = norm2(s);
+  const b = norm2(cwd);
   if (a.toLowerCase().startsWith(b.toLowerCase() + "/")) return a.slice(b.length + 1);
   if (a.toLowerCase() === b.toLowerCase()) return ".";
   return s;
@@ -1780,6 +2076,162 @@ var init_launch = __esm({
   }
 });
 
+// daemon/src/util/decode.ts
+import { spawnSync } from "node:child_process";
+function codePageLabel(cp3) {
+  const label = CP[cp3];
+  if (!label) return null;
+  try {
+    new TextDecoder(label);
+    return label;
+  } catch {
+    return null;
+  }
+}
+function labelForLocale(locale2) {
+  const l = locale2.toLowerCase();
+  if (/^zh[-_](tw|hk|mo|hant)/.test(l)) return codePageLabel(950);
+  if (l.startsWith("zh")) return codePageLabel(936);
+  if (l.startsWith("ja")) return codePageLabel(932);
+  if (l.startsWith("ko")) return codePageLabel(949);
+  return null;
+}
+function parseCodePage(out) {
+  const m = /ACP\s+REG_SZ\s+(\d{3,5})/i.exec(out) ?? /:\s*(\d{3,5})\s*$/m.exec(out.trim());
+  return m ? Number(m[1]) : null;
+}
+function systemLegacyEncoding(platform = process.platform) {
+  if (systemLabel !== void 0) return systemLabel;
+  if (platform !== "win32") return null;
+  let cp3 = null;
+  try {
+    const r = spawnSync("reg", ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage", "/v", "ACP"], { encoding: "latin1", timeout: 2e3, windowsHide: true });
+    cp3 = parseCodePage(String(r.stdout ?? ""));
+  } catch {
+  }
+  if (cp3 === 65001) return systemLabel = null;
+  systemLabel = cp3 && codePageLabel(cp3) || labelForLocale(Intl.DateTimeFormat().resolvedOptions().locale);
+  return systemLabel;
+}
+function utf8Tail(b) {
+  for (let k = 1; k <= Math.min(3, b.length); k++) {
+    const c = b[b.length - k];
+    if ((c & 192) === 128) continue;
+    const need = c >= 240 ? 4 : c >= 224 ? 3 : c >= 192 ? 2 : 1;
+    return need > k ? k : 0;
+  }
+  return 0;
+}
+function legacyTail(b, label) {
+  const dbcs = label === "gbk" || label === "gb18030" || label === "big5" || label === "euc-kr" || label === "shift_jis";
+  if (!dbcs) return 0;
+  const gb = label === "gbk" || label === "gb18030";
+  let i = 0;
+  while (i < b.length) {
+    const c = b[i];
+    let n = 1;
+    if (label === "shift_jis") n = c >= 129 && c <= 159 || c >= 224 && c <= 252 ? 2 : 1;
+    else if (c >= 129 && c <= 254) n = gb && i + 1 < b.length && b[i + 1] >= 48 && b[i + 1] <= 57 ? 4 : 2;
+    if (i + n > b.length) return b.length - i;
+    i += n;
+  }
+  return 0;
+}
+function hasLongUtf8(b) {
+  for (const c of b) if (c >= 224) return true;
+  return false;
+}
+function isAscii(b) {
+  for (const c of b) if (c >= 128) return false;
+  return true;
+}
+function decodeOutput(buf, legacy) {
+  const d = new OutputDecoder(legacy === void 0 ? systemLegacyEncoding() : legacy);
+  return d.write(buf) + d.end();
+}
+var CP, systemLabel, OutputDecoder;
+var init_decode = __esm({
+  "daemon/src/util/decode.ts"() {
+    CP = {
+      936: "gbk",
+      54936: "gb18030",
+      950: "big5",
+      932: "shift_jis",
+      949: "euc-kr",
+      866: "ibm866",
+      874: "windows-874",
+      1250: "windows-1250",
+      1251: "windows-1251",
+      1252: "windows-1252",
+      1253: "windows-1253",
+      1254: "windows-1254",
+      1255: "windows-1255",
+      1256: "windows-1256",
+      1257: "windows-1257",
+      1258: "windows-1258"
+      // 437/850 (OEM, Western) have no WHATWG decoder; output there is almost always ASCII or already UTF-8
+    };
+    OutputDecoder = class {
+      pending = new Uint8Array(0);
+      legacyLast = false;
+      utf8 = new TextDecoder("utf-8", { fatal: true });
+      lenient = new TextDecoder("utf-8");
+      legacy;
+      /** legacy: encoding label for non-UTF-8 chunks; default = the system code page on Windows, none elsewhere */
+      constructor(legacy = systemLegacyEncoding()) {
+        let d = null;
+        if (legacy) try {
+          d = new TextDecoder(legacy);
+        } catch {
+        }
+        this.legacy = d;
+      }
+      write(chunk) {
+        if (typeof chunk === "string") return chunk;
+        let b = chunk;
+        if (this.pending.length) {
+          const m = new Uint8Array(this.pending.length + chunk.length);
+          m.set(this.pending);
+          m.set(chunk, this.pending.length);
+          b = m;
+          this.pending = new Uint8Array(0);
+        }
+        if (!b.length) return "";
+        const ut = utf8Tail(b);
+        const head = b.subarray(0, b.length - ut);
+        let text = null;
+        try {
+          text = this.utf8.decode(head);
+        } catch {
+        }
+        if (text !== null) {
+          const ascii = isAscii(head);
+          if (!(this.legacy && this.legacyLast && !ascii && !hasLongUtf8(head))) {
+            if (!ascii) this.legacyLast = false;
+            this.pending = b.slice(b.length - ut);
+            return text;
+          }
+        }
+        if (!this.legacy) {
+          this.pending = b.slice(b.length - ut);
+          return this.lenient.decode(head);
+        }
+        this.legacyLast = true;
+        const lt = legacyTail(b, this.legacy.encoding);
+        this.pending = b.slice(b.length - lt);
+        return this.legacy.decode(b.subarray(0, b.length - lt));
+      }
+      /** Flush whatever is held back (a truncated character at the very end becomes U+FFFD) */
+      end() {
+        const b = this.pending;
+        this.pending = new Uint8Array(0);
+        if (!b.length) return "";
+        return (this.legacyLast && this.legacy ? this.legacy : this.lenient).decode(b);
+      }
+    };
+  }
+});
+
 // daemon/src/providers/claude/cli.ts
 function claudeArgs(o) {
   const args = [
@@ -1813,6 +2265,7 @@ var init_cli = __esm({
     init_launch();
     init_bin();
     init_queue();
+    init_decode();
     SAFE_ARG = /^[A-Za-z0-9][A-Za-z0-9._:\[\]\/@+-]{0,199}$/;
     ClaudeCli = class {
       constructor(o, canUseTool) {
@@ -1827,8 +2280,9 @@ var init_cli = __esm({
         });
         this.child.stdout?.setEncoding("utf8");
         this.child.stdout?.on("data", (d) => this.onData(d));
+        const errDec = new OutputDecoder();
         this.child.stderr?.on("data", (d) => {
-          this.stderrTail = (this.stderrTail + d.toString()).slice(-4096);
+          this.stderrTail = (this.stderrTail + errDec.write(d)).slice(-4096);
         });
         this.child.stdin?.on("error", () => {
         });
@@ -2331,7 +2785,7 @@ var init_models = __esm({
 import { readdir, readFile as readFile5, stat as stat4 } from "node:fs/promises";
 import { existsSync as existsSync7 } from "node:fs";
 import { join as join6 } from "node:path";
-import { homedir as homedir3 } from "node:os";
+import { homedir as homedir4 } from "node:os";
 function parseLine(line) {
   let r;
   try {
@@ -2351,8 +2805,8 @@ function parseLine(line) {
   }
   return { cwd, userText };
 }
-async function* linesOf(path3) {
-  const text = await readFile5(path3, "utf8").catch(() => "");
+async function* linesOf(path4) {
+  const text = await readFile5(path4, "utf8").catch(() => "");
   for (const line of text.split("\n")) {
     if (line.trim()) yield line;
   }
@@ -2364,11 +2818,11 @@ async function listClaudeHistory(cwd) {
     const dirPath = join6(CLAUDE_ROOT, d);
     const files = (await readdir(dirPath).catch(() => [])).filter((f) => f.endsWith(".jsonl"));
     for (const f of files) {
-      const path3 = join6(dirPath, f);
+      const path4 = join6(dirPath, f);
       let match = false;
       let title = "";
       let count = 0;
-      for await (const line of linesOf(path3)) {
+      for await (const line of linesOf(path4)) {
         const p = parseLine(line);
         if (!p) continue;
         if (!match) {
@@ -2380,7 +2834,7 @@ async function listClaudeHistory(cwd) {
         if (p.userText) count++;
       }
       if (!match) continue;
-      const s = await stat4(path3).catch(() => null);
+      const s = await stat4(path4).catch(() => null);
       out.push({
         sessionId: f.replace(/\.jsonl$/, ""),
         title: title || tr("history.untitled"),
@@ -2395,11 +2849,11 @@ async function listClaudeHistory(cwd) {
 async function readClaudeHistory(sessionId, cwd) {
   const dirs = await readdir(CLAUDE_ROOT).catch(() => []);
   for (const d of dirs) {
-    const path3 = join6(CLAUDE_ROOT, d, `${sessionId}.jsonl`);
-    if (!existsSync7(path3)) continue;
+    const path4 = join6(CLAUDE_ROOT, d, `${sessionId}.jsonl`);
+    if (!existsSync7(path4)) continue;
     const msgs = [];
     let matched = false;
-    for await (const line of linesOf(path3)) {
+    for await (const line of linesOf(path4)) {
       const p = parseLine(line);
       if (!matched) {
         if (p?.cwd && samePath(p.cwd, cwd)) matched = true;
@@ -2422,7 +2876,7 @@ var init_import = __esm({
   "daemon/src/history/import.ts"() {
     init_paths();
     init_i18n();
-    CLAUDE_ROOT = join6(homedir3(), ".claude", "projects");
+    CLAUDE_ROOT = join6(homedir4(), ".claude", "projects");
     rec2 = (v) => v && typeof v === "object" ? v : {};
     str2 = (v) => typeof v === "string" ? v : void 0;
   }
@@ -2440,8 +2894,9 @@ function runVersion(r, args, timeoutMs = 5e3) {
       }
       reject(new Error("timeout"));
     }, timeoutMs);
-    p.stdout?.on("data", (c) => out += c.toString());
-    p.stderr?.on("data", (c) => out += c.toString());
+    const od = new OutputDecoder(), ed = new OutputDecoder();
+    p.stdout?.on("data", (c) => out += od.write(c));
+    p.stderr?.on("data", (c) => out += ed.write(c));
     p.on("error", reject);
     p.on("close", (code) => {
       clearTimeout(t);
@@ -2519,6 +2974,7 @@ var init_provider = __esm({
     init_map();
     init_i18n();
     init_launch();
+    init_decode();
     INSTALL_HINT = "npm i -g @anthropic-ai/claude-code";
     claudeCapabilities = {
       resume: true,
@@ -2538,7 +2994,7 @@ var init_provider = __esm({
 // daemon/src/history/codex.ts
 import { readdir as readdir2, readFile as readFile6, stat as stat5 } from "node:fs/promises";
 import { join as join7 } from "node:path";
-import { homedir as homedir4 } from "node:os";
+import { homedir as homedir5 } from "node:os";
 function textOf(content, kind) {
   if (!Array.isArray(content)) return "";
   return content.filter((p) => p.type === kind || p.type === "input_text" || p.type === "output_text").map((p) => str3(p.text) ?? "").join("\n").trim();
@@ -2555,11 +3011,11 @@ async function* walk(dir, depth = 0) {
 }
 async function listCodexHistory(cwd) {
   const out = [];
-  for await (const path3 of walk(CODEX_ROOT)) {
-    const m = /rollout-.*-([0-9a-f-]{36})\.jsonl$/i.exec(path3);
+  for await (const path4 of walk(CODEX_ROOT)) {
+    const m = /rollout-.*-([0-9a-f-]{36})\.jsonl$/i.exec(path4);
     const sessionId = m?.[1];
     if (!sessionId) continue;
-    const text = await readFile6(path3, "utf8").catch(() => "");
+    const text = await readFile6(path4, "utf8").catch(() => "");
     let match = false;
     let title = "";
     let count = 0;
@@ -2590,7 +3046,7 @@ async function listCodexHistory(cwd) {
       }
     }
     if (!match) continue;
-    const s = await stat5(path3).catch(() => null);
+    const s = await stat5(path4).catch(() => null);
     out.push({ sessionId, title: title || tr("history.untitled"), updatedAt: s ? Math.round(s.mtimeMs) : 0, messageCount: count });
   }
   out.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -2679,7 +3135,7 @@ var init_codex = __esm({
   "daemon/src/history/codex.ts"() {
     init_paths();
     init_i18n();
-    CODEX_ROOT = join7(homedir4(), ".codex", "sessions");
+    CODEX_ROOT = join7(homedir5(), ".codex", "sessions");
     rec3 = (v) => v && typeof v === "object" ? v : {};
     str3 = (v) => typeof v === "string" ? v : void 0;
     WRAPPERS = /^\s*<(environment_context|user_instructions|skills_instructions|permissions instructions)>/i;
@@ -2687,12 +3143,14 @@ var init_codex = __esm({
 });
 
 // daemon/src/providers/codex/rpc.ts
-import { spawn as spawn2 } from "node:child_process";
+import { spawn as spawn3 } from "node:child_process";
 var CodexRpcError, CodexProcessExitedError, CodexRpc;
 var init_rpc = __esm({
   "daemon/src/providers/codex/rpc.ts"() {
     init_log();
     init_bin();
+    init_decode();
+    init_agentShell();
     CodexRpcError = class extends Error {
       code;
       constructor(message, code) {
@@ -2715,9 +3173,9 @@ var init_rpc = __esm({
       onNotification;
       onExit;
       constructor(argv, opts = {}) {
-        this.proc = spawn2(argv.cmd, argv.args, {
+        this.proc = spawn3(argv.cmd, argv.args, {
           cwd: opts.cwd,
-          env: opts.env ?? process.env,
+          env: withAgentShell(opts.env ?? process.env),
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
           ...argv.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {},
@@ -2727,9 +3185,9 @@ var init_rpc = __esm({
         trackTree(this.proc);
         this.proc.stdout.setEncoding("utf8");
         this.proc.stdout.on("data", (chunk) => this.onData(chunk));
-        this.proc.stderr.setEncoding("utf8");
+        const errDec = new OutputDecoder();
         this.proc.stderr.on("data", (chunk) => {
-          this.stderrTail = (this.stderrTail + chunk).slice(-4096);
+          this.stderrTail = (this.stderrTail + errDec.write(chunk)).slice(-4096);
         });
         this.proc.on("error", () => this.failAll());
         this.proc.on("close", (code) => {
@@ -3051,10 +3509,10 @@ function mapNotification(method, params, st) {
       const steps = Array.isArray(params.plan) ? params.plan : [];
       const items = steps.map((s) => {
         const step = rec4(s);
-        const status = str4(step.status) ?? "pending";
+        const status2 = str4(step.status) ?? "pending";
         return {
           text: str4(step.step) ?? "",
-          status: status === "completed" ? "done" : status === "inProgress" || status === "in_progress" ? "in_progress" : "pending"
+          status: status2 === "completed" ? "done" : status2 === "inProgress" || status2 === "in_progress" ? "in_progress" : "pending"
         };
       });
       if (items.length) out.push({ type: "todo", items });
@@ -3082,12 +3540,12 @@ function mapNotification(method, params, st) {
     }
     case "turn/completed": {
       const turn = rec4(params.turn);
-      const status = str4(turn.status) ?? "completed";
+      const status2 = str4(turn.status) ?? "completed";
       const error = rec4(turn.error);
       out.push({
         type: "turn_ended",
         turnId: str4(turn.id) ?? turnId ?? st.currentTurnId ?? "",
-        status: status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed",
+        status: status2 === "completed" ? "completed" : status2 === "interrupted" ? "interrupted" : "failed",
         durationMs: typeof turn.durationMs === "number" ? turn.durationMs : void 0,
         error: str4(error.message),
         filesChanged: st.filesChanged || void 0
@@ -3117,7 +3575,7 @@ var init_map2 = __esm({
 
 // daemon/src/providers/codex/commands.ts
 import { readdir as readdir3, readFile as readFile7, stat as stat6 } from "node:fs/promises";
-import { homedir as homedir5 } from "node:os";
+import { homedir as homedir6 } from "node:os";
 import { basename as basename3, join as join8 } from "node:path";
 function parseFrontMatter(raw) {
   if (!raw.startsWith("---\n")) return { meta: {}, body: raw };
@@ -3148,11 +3606,11 @@ async function readPromptFiles(dir) {
   }
   for (const f of names) {
     if (!f.endsWith(".md")) continue;
-    const path3 = join8(dir, f);
+    const path4 = join8(dir, f);
     try {
-      const st = await stat6(path3);
+      const st = await stat6(path4);
       if (!st.isFile()) continue;
-      const raw = await readFile7(path3, "utf8");
+      const raw = await readFile7(path4, "utf8");
       const { meta, body } = parseFrontMatter(raw);
       const name = basename3(f, ".md");
       out.push({
@@ -3196,7 +3654,7 @@ async function readSkillDirs(root) {
   return out;
 }
 async function loadCodexSlashEntries(cwd, opts) {
-  const home = homedir5();
+  const home = homedir6();
   const parts = await Promise.all([
     opts?.skipHome ? Promise.resolve([]) : readPromptFiles(join8(home, ".codex", "prompts")),
     readPromptFiles(join8(cwd, ".codex", "prompts")),
@@ -3536,7 +3994,7 @@ var init_types = __esm({
 });
 
 // daemon/src/providers/codex/provider.ts
-import { homedir as homedir6 } from "node:os";
+import { homedir as homedir7 } from "node:os";
 import { join as join9 } from "node:path";
 import { readFile as readFile8 } from "node:fs/promises";
 function runVersion2(r, args, timeoutMs = 5e3) {
@@ -3550,8 +4008,9 @@ function runVersion2(r, args, timeoutMs = 5e3) {
       }
       reject(new Error("timeout"));
     }, timeoutMs);
-    p.stdout?.on("data", (c) => out += c.toString());
-    p.stderr?.on("data", (c) => out += c.toString());
+    const od = new OutputDecoder(), ed = new OutputDecoder();
+    p.stdout?.on("data", (c) => out += od.write(c));
+    p.stderr?.on("data", (c) => out += ed.write(c));
     p.on("error", reject);
     p.on("close", (code) => {
       clearTimeout(t);
@@ -3637,7 +4096,7 @@ function parseCodexConfig(text) {
   return { modelProvider: provider, model: typeof model === "string" ? model : null, providerModels: [...models2] };
 }
 async function readCodexConfig() {
-  const home = process.env.CODEX_HOME?.trim() || join9(homedir6(), ".codex");
+  const home = process.env.CODEX_HOME?.trim() || join9(homedir7(), ".codex");
   const file = home.toLowerCase().endsWith(".toml") ? home : join9(home, "config.toml");
   try {
     return parseCodexConfig(await readFile8(file, "utf8"));
@@ -3722,6 +4181,7 @@ var init_provider2 = __esm({
     init_i18n();
     init_launch();
     init_types();
+    init_decode();
     INSTALL_HINT2 = "npm i -g @openai/codex";
     codexCapabilities = {
       resume: true,
@@ -3747,8 +4207,8 @@ var init_provider2 = __esm({
 function catalogById(id2) {
   return PROVIDER_CATALOG.find((p) => p.id === id2);
 }
-function providerCreatable(status) {
-  return status !== "planned";
+function providerCreatable(status2) {
+  return status2 !== "planned";
 }
 var PROVIDER_CATALOG;
 var init_catalog = __esm({
@@ -4104,6 +4564,7 @@ var init_session3 = __esm({
     init_prompt();
     init_i18n();
     init_log();
+    init_decode();
     AcpSession = class {
       constructor(o) {
         this.o = o;
@@ -4149,8 +4610,9 @@ var init_session3 = __esm({
         if (!bin.ok) throw new Error(bin.reason);
         try {
           this.child = spawnResolved(bin, launchArgv(this.o.acpArgs, this.o.launch), { cwd: this.o.cwd });
+          const errDec = new OutputDecoder();
           this.child.stderr?.on("data", (d) => {
-            const t = d.toString().trim();
+            const t = errDec.write(d).trim();
             if (t) log("info", `[${this.o.binName} acp] ${t.slice(0, 500)}`);
           });
           this.child.on("error", (e) => this.failInit(e));
@@ -4547,8 +5009,9 @@ function runVersion3(r, args, timeoutMs = 8e3) {
       }
       reject(new Error("timeout"));
     }, timeoutMs);
-    p.stdout?.on("data", (c) => out += c.toString());
-    p.stderr?.on("data", (c) => out += c.toString());
+    const od = new OutputDecoder(), ed = new OutputDecoder();
+    p.stdout?.on("data", (c) => out += od.write(c));
+    p.stderr?.on("data", (c) => out += ed.write(c));
     p.on("error", reject);
     p.on("close", (code) => {
       clearTimeout(t);
@@ -4628,6 +5091,7 @@ var init_provider3 = __esm({
     init_types();
     init_session3();
     init_promptCaps();
+    init_decode();
     acpCapabilities = {
       resume: true,
       interrupt: true,
@@ -4752,8 +5216,9 @@ function probeAcpRaw(r, acpArgs, timeoutMs = 3e4, extMethod) {
     child.on("close", () => finish(new Error("ACP \u8FDB\u7A0B\u63D0\u524D\u9000\u51FA")));
     child.stderr?.on("data", () => {
     });
+    child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (d) => {
-      buf += d.toString();
+      buf += d;
       let n;
       while ((n = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, n).trim();
@@ -5033,13 +5498,13 @@ var init_pickFolderWin = __esm({
 
 // daemon/src/util/pickFolder.ts
 import { execFile as execFile2 } from "node:child_process";
-import { existsSync as existsSync8, statSync as statSync3 } from "node:fs";
+import { existsSync as existsSync8, statSync as statSync4 } from "node:fs";
 function appleScriptString(s) {
   return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
 }
 function isDir(p) {
   try {
-    return !!p && existsSync8(p) && statSync3(p).isDirectory();
+    return !!p && existsSync8(p) && statSync4(p).isDirectory();
   } catch {
     return false;
   }
@@ -5088,20 +5553,20 @@ var init_pickFolder = __esm({
 
 // daemon/src/providers/magpieGateway.ts
 import { readFile as readFile11 } from "node:fs/promises";
-import { homedir as homedir7 } from "node:os";
+import { homedir as homedir8 } from "node:os";
 import { join as join11 } from "node:path";
-async function readJson(path3) {
+async function readJson(path4) {
   try {
-    return JSON.parse(await readFile11(path3, "utf8"));
+    return JSON.parse(await readFile11(path4, "utf8"));
   } catch {
     return null;
   }
 }
 async function readApplied() {
-  return await readJson(join11(homedir7(), ".config", "magpie", "applied.json")) ?? {};
+  return await readJson(join11(homedir8(), ".config", "magpie", "applied.json")) ?? {};
 }
 async function readClaudeEnv() {
-  const s = await readJson(join11(homedir7(), ".claude", "settings.json"));
+  const s = await readJson(join11(homedir8(), ".claude", "settings.json"));
   return s?.env ?? {};
 }
 async function gatewayBase() {
@@ -5202,7 +5667,7 @@ var init_magpieGateway = __esm({
 });
 
 // daemon/src/providers/infoCache.ts
-function withTimeout(p, ms, fb) {
+function withTimeout2(p, ms, fb) {
   return Promise.race([p, new Promise((r) => setTimeout(() => r(fb), ms))]);
 }
 function fresh(e, ttl) {
@@ -5218,7 +5683,7 @@ async function cachedDetect(p, launch) {
   let job = inflightDetect.get(key);
   if (!job) {
     const timedOut = { available: false, reason: tr("provider.timeout") };
-    job = withTimeout(
+    job = withTimeout2(
       p.detect(launch).catch((e) => ({ available: false, reason: String(e?.message ?? e) })),
       STEP_TIMEOUT_MS,
       timedOut
@@ -5236,7 +5701,7 @@ async function cachedModels(p, launch) {
   if (fresh(hit, MODELS_MS)) return hit.value;
   let job = inflightModels.get(key);
   if (!job) {
-    job = withTimeout(p.listModels(launch).catch(() => []), MODELS_TIMEOUT_MS, null).then(async (v) => {
+    job = withTimeout2(p.listModels(launch).catch(() => []), MODELS_TIMEOUT_MS, null).then(async (v) => {
       if (v === null) return models.get(key)?.value ?? [];
       const list = await withMagpie(p.id, dropPlaceholder(v)).catch(() => dropPlaceholder(v));
       models.set(key, { at: Date.now(), value: list });
@@ -5294,8 +5759,8 @@ import { realpath, stat as stat8 } from "node:fs/promises";
 import { isAbsolute as isAbsolute2, resolve as resolve3, sep as sep2, win32 as win322, posix as posix2 } from "node:path";
 function insideRoot(root, child, platform = process.platform) {
   const p = platform === "win32" ? win322 : posix2;
-  const norm = (s) => platform === "win32" ? p.resolve(s).toLowerCase() : p.resolve(s);
-  const r = p.relative(norm(root), norm(child));
+  const norm2 = (s) => platform === "win32" ? p.resolve(s).toLowerCase() : p.resolve(s);
+  const r = p.relative(norm2(root), norm2(child));
   return r === "" || !r.startsWith("..") && !p.isAbsolute(r);
 }
 async function resolveMentions(projectPath, refs) {
@@ -5894,8 +6359,8 @@ var init_proxy = __esm({
           return;
         }
         l.lastUsed = this.now();
-        const path3 = (req.url ?? "/").split("?")[0];
-        if (path3 === PREVIEW_PING_PATH) {
+        const path4 = (req.url ?? "/").split("?")[0];
+        if (path4 === PREVIEW_PING_PATH) {
           const body = g.role === "canary" ? l.canaryNonce : l.nonce;
           res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "null", "referrer-policy": "no-referrer" });
           res.end(req.method === "HEAD" ? void 0 : body);
@@ -5910,7 +6375,7 @@ var init_proxy = __esm({
           this.refuse(res, req, 403, "magpie");
           return;
         }
-        if (path3 === PREVIEW_SCRIPT_PATH) {
+        if (path4 === PREVIEW_SCRIPT_PATH) {
           res.writeHead(200, {
             "content-type": "text/javascript; charset=utf-8",
             "cache-control": "no-store",
@@ -6030,12 +6495,12 @@ var init_proxy = __esm({
           return;
         }
         const h = rewriteResponseHeaders(ur.headers, l.target, l.proxyOrigin);
-        const status = ur.statusCode ?? 502;
+        const status2 = ur.statusCode ?? 502;
         const ctype = String(ur.headers["content-type"] ?? "").toLowerCase();
         const encoded = !!ur.headers["content-encoding"] && ur.headers["content-encoding"] !== "identity";
-        const html = ctype.includes("text/html") && !encoded && req.method !== "HEAD" && status !== 204 && status !== 304;
+        const html = ctype.includes("text/html") && !encoded && req.method !== "HEAD" && status2 !== 204 && status2 !== 304;
         if (!html) {
-          res.writeHead(status, h);
+          res.writeHead(status2, h);
           ur.pipe(res);
           return;
         }
@@ -6048,7 +6513,7 @@ var init_proxy = __esm({
           chunks.push(c);
           if (size > this.maxHtml) {
             passthrough = true;
-            res.writeHead(status, h);
+            res.writeHead(status2, h);
             for (const x of chunks) res.write(x);
             ur.removeAllListeners("data");
             ur.removeAllListeners("end");
@@ -6059,7 +6524,7 @@ var init_proxy = __esm({
           if (passthrough) return;
           const out = Buffer.from(injectScriptTag(Buffer.concat(chunks).toString("latin1")), "latin1");
           h["content-length"] = String(out.length);
-          res.writeHead(status, h);
+          res.writeHead(status2, h);
           res.end(out);
         });
         ur.on("error", () => res.destroy());
@@ -6096,7 +6561,7 @@ connection: close\r
             return;
           }
           const up = l.target.secure ? tlsConnect({ host: addr, port: l.target.port, rejectUnauthorized: false, servername: this.servername(l) }) : netConnect({ host: addr, port: l.target.port });
-          const ready = l.target.secure ? "secureConnect" : "connect";
+          const ready2 = l.target.secure ? "secureConnect" : "connect";
           l.tunnels++;
           let counted = true;
           const done = () => {
@@ -6108,7 +6573,7 @@ connection: close\r
             up.destroy();
             socket.destroy();
           };
-          up.once(ready, () => {
+          up.once(ready2, () => {
             const lines = [`${req.method ?? "GET"} ${req.url ?? "/"} HTTP/1.1`];
             const hs = rewriteRequestHeaders(req.headers, l.target, l.proxyOrigin, true);
             for (const [k, v] of Object.entries(hs)) {
@@ -6147,9 +6612,9 @@ var init_host = __esm({
 
 // daemon/src/ws/methods.ts
 import { z } from "zod";
-import { existsSync as existsSync9, statSync as statSync4 } from "node:fs";
+import { existsSync as existsSync9, statSync as statSync5 } from "node:fs";
 import { mkdir as mkdir3, writeFile as writeFile4 } from "node:fs/promises";
-import { homedir as homedir8 } from "node:os";
+import { homedir as homedir9 } from "node:os";
 import { dirname as dirname3, join as join12, win32 as win32Path } from "node:path";
 import { execFile as execFile4 } from "node:child_process";
 function wrap(schema, fn) {
@@ -6173,6 +6638,14 @@ function registerMethods(gw, svc) {
     pid: process.pid,
     port: svc.cfg.port
   })));
+  gw.method("shell.status", wrap(zEmpty, async () => {
+    const st = agentShellStatus();
+    return { ...st, platform: process.platform, downloadUrl: GIT_FOR_WINDOWS_URL };
+  }));
+  gw.method("shell.check", wrap(z.object({ path: z.string().max(1024) }), (p) => {
+    if (process.platform !== "win32") return { ok: false, reason: "notWindows" };
+    return checkBashPath(p.path);
+  }));
   gw.method("app.shutdown", wrap(zEmpty, () => {
     setTimeout(() => process.exit(0), 100);
     return { ok: true };
@@ -6210,6 +6683,9 @@ function registerMethods(gw, svc) {
     if (!checked.ok) throw new ApiError("bad_params", `Invalid setting: ${checked.error}`);
     const before = await svc.settings.get();
     const next = await svc.settings.set(checked.patch);
+    if ("bashPath" in checked.patch && (before.bashPath ?? "") !== (next.bashPath ?? "")) {
+      await refreshAgentShell(typeof next.bashPath === "string" ? next.bashPath : "");
+    }
     for (const id2 of Object.keys(checked.patch.providerCommand ?? {})) {
       if (JSON.stringify(before.providerCommand?.[id2] ?? null) !== JSON.stringify(next.providerCommand?.[id2] ?? null)) {
         clearProviderCache(id2);
@@ -6319,7 +6795,7 @@ function registerMethods(gw, svc) {
     let isDir2 = false;
     try {
       exists = existsSync9(p.path);
-      isDir2 = exists && statSync4(p.path).isDirectory();
+      isDir2 = exists && statSync5(p.path).isDirectory();
     } catch {
     }
     return { exists, isDir: isDir2 };
@@ -6501,8 +6977,8 @@ function registerMethods(gw, svc) {
   gw.method("terminal.create", wrap(
     z.object({ projectId: z.string(), cols: z.number().int().min(20).max(500).default(80), rows: z.number().int().min(5).max(200).default(24) }),
     async (p) => {
-      const path3 = await projectPath(p.projectId);
-      const r = await svc.terminals.create(p.projectId, path3, p.cols, p.rows);
+      const path4 = await projectPath(p.projectId);
+      const r = await svc.terminals.create(p.projectId, path4, p.cols, p.rows);
       if ("error" in r) throw new ApiError("bad_params", r.error);
       return r;
     }
@@ -6650,7 +7126,7 @@ ${e.text}
     const markdown = L.join("\n");
     const safe = meta.title.replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 60) || "thread";
     const filename = `${safe}.md`;
-    let dir = join12(homedir8(), "Downloads");
+    let dir = join12(homedir9(), "Downloads");
     try {
       await mkdir3(dir, { recursive: true });
     } catch {
@@ -6699,6 +7175,8 @@ var init_methods = __esm({
     init_i18n();
     init_mentions();
     init_openExternal();
+    init_agentShell();
+    init_gitBash();
     init_proxy();
     init_url();
     init_host();
@@ -6814,7 +7292,8 @@ var init_settings = __esm({
         z2.string().max(64),
         z2.object({ executable: z2.string().max(4096).optional(), args: z2.array(z2.string().max(4096)).max(64).optional() }).strict()
       ),
-      v1Migrated: z2.boolean()
+      v1Migrated: z2.boolean(),
+      bashPath: z2.string().max(1024)
     }).partial().strict();
     SettingsStore = class {
       file;
@@ -7177,8 +7656,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 function resolveDaemonMainJs() {
   const self = fileURLToPath(import.meta.url);
-  const norm = self.replace(/\\/g, "/");
-  if (norm.endsWith("/daemon/dist/main.js") || norm.endsWith("/dist/main.js")) return self;
+  const norm2 = self.replace(/\\/g, "/");
+  if (norm2.endsWith("/daemon/dist/main.js") || norm2.endsWith("/dist/main.js")) return self;
   const here = dirname(self);
   const candidates = [
     join(here, "..", "..", "dist", "main.js"),
@@ -7516,13 +7995,14 @@ var AttachmentStore = class {
 
 // daemon/src/main.ts
 init_settings();
+init_agentShell();
 
 // daemon/src/store/projects.ts
 init_atomic();
 init_paths();
 init_methods();
 import { readFile as readFile13 } from "node:fs/promises";
-import { existsSync as existsSync10, statSync as statSync5 } from "node:fs";
+import { existsSync as existsSync10, statSync as statSync6 } from "node:fs";
 import { join as join14 } from "node:path";
 import { randomBytes as randomBytes4 } from "node:crypto";
 function newId() {
@@ -7555,19 +8035,19 @@ var ProjectsStore = class {
     this.writing = this.writing.then(() => writeJsonAtomic(this.file, snap));
     await this.writing;
   }
-  async create(path3, name) {
-    if (!path3 || typeof path3 !== "string") throw new ApiError("bad_params", "\u8DEF\u5F84\u4E0D\u80FD\u4E3A\u7A7A");
-    if (!existsSync10(path3) || !statSync5(path3).isDirectory()) {
+  async create(path4, name) {
+    if (!path4 || typeof path4 !== "string") throw new ApiError("bad_params", "\u8DEF\u5F84\u4E0D\u80FD\u4E3A\u7A7A");
+    if (!existsSync10(path4) || !statSync6(path4).isDirectory()) {
       throw new ApiError("bad_path", "\u76EE\u5F55\u4E0D\u5B58\u5728\u6216\u4E0D\u662F\u6587\u4EF6\u5939");
     }
-    const np = normPath(path3);
+    const np = normPath(path4);
     const list = await this.list();
     const dup = list.find((p) => normPath(p.path) === np);
     if (dup) return dup;
     const proj = {
       id: newId(),
-      name: name?.trim() || path3.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path3,
-      path: path3,
+      name: name?.trim() || path4.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path4,
+      path: path4,
       createdAt: Date.now()
     };
     list.push(proj);
@@ -8007,6 +8487,7 @@ var Coalescer = class {
 init_methods();
 init_log();
 init_i18n();
+init_agentShell();
 init_mentions();
 init_commands();
 var SLASH_CACHE_TTL_MS = 10 * 60 * 1e3;
@@ -8241,6 +8722,11 @@ var AgentManager = class {
       attachments: this.attachmentLabels(attachmentRefs),
       ...mentions.length ? { mentions } : {}
     });
+    await agentShellReady();
+    if (!rt.bashHinted && bashMissingFor(meta.provider)) {
+      rt.bashHinted = true;
+      await this.appendRaw(threadId, { type: "notice", level: "warn", code: "bash_missing", message: tr("notice.bashMissing") });
+    }
     await this.setStatus(threadId, "running");
     try {
       const images = await this.resolveAttachments(attachmentRefs);
@@ -8647,6 +9133,7 @@ var AgentManager = class {
     const settings = await this.settings.get();
     const launch = launchFromSettings(settings, meta.provider);
     rt.deltasOnly = !!provider.capabilities.deltasOnly;
+    await agentShellReady();
     rt.session = await provider.createSession({
       threadId,
       cwd: proj.path,
@@ -8690,12 +9177,12 @@ var AgentManager = class {
     if (!det.available) throw new ApiError("bad_params", det.reason ?? tr("provider.unavailable", { name: p.name }));
     return p;
   }
-  async setStatus(threadId, status) {
+  async setStatus(threadId, status2) {
     const rt = this.rt(threadId);
-    rt.status = status;
-    const meta = await this.threads.patch(threadId, { status });
+    rt.status = status2;
+    const meta = await this.threads.patch(threadId, { status: status2 });
     this.gw.publish("sidebar", { type: "thread.upsert", thread: meta });
-    this.gw.publish(`thread:${threadId}`, { type: "status", status });
+    this.gw.publish(`thread:${threadId}`, { type: "status", status: status2 });
   }
   // Append an event: seq is assigned in the store's serialized section, persisted, then pushed to thread:<id>
   async appendRaw(threadId, ev) {
@@ -8740,6 +9227,7 @@ var AgentManager = class {
 
 // daemon/src/git/service.ts
 init_i18n();
+init_decode();
 import { execFile as execFile5 } from "node:child_process";
 import { existsSync as existsSync11 } from "node:fs";
 import { cp, mkdir as mkdir7, readFile as readFile16, rename as rename4, rm, stat as stat10 } from "node:fs/promises";
@@ -8748,10 +9236,11 @@ var TIMEOUT2 = 15e3;
 var DIFF_LIMIT = 1024 * 1024;
 function runGit(cwd, args) {
   return new Promise((res) => {
-    execFile5("git", ["-c", "core.quotepath=false", ...args], { cwd, timeout: TIMEOUT2, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (e, stdout, stderr) => {
+    execFile5("git", ["-c", "core.quotepath=false", ...args], { cwd, timeout: TIMEOUT2, maxBuffer: 8 * 1024 * 1024, windowsHide: true, encoding: "buffer" }, (e, stdout, stderr) => {
       const code = e && typeof e.code === "number" ? e.code : e ? 1 : 0;
       const missing = e?.code === "ENOENT";
-      res({ code, out: String(stdout ?? ""), err: missing ? tr("git.missing") : String(stderr || (e?.message ?? "")) });
+      const errText = stderr?.length ? decodeOutput(stderr) : "";
+      res({ code, out: stdout ? stdout.toString("utf8") : "", err: missing ? tr("git.missing") : errText || (e?.message ?? "") });
     });
   });
 }
@@ -8788,7 +9277,7 @@ var GitService = class {
       if (!rec5 || rec5.length < 4) continue;
       const index = rec5[0];
       const worktree = rec5[1];
-      let path3 = rec5.slice(3);
+      let path4 = rec5.slice(3);
       let kind = "modified";
       if (index === "?" && worktree === "?") kind = "untracked";
       else if (index === "R" || worktree === "R") {
@@ -8796,7 +9285,7 @@ var GitService = class {
         i++;
       } else if (index === "A" || worktree === "A") kind = "added";
       else if (index === "D" || worktree === "D") kind = "deleted";
-      files.push({ path: path3, index, worktree, kind });
+      files.push({ path: path4, index, worktree, kind });
     }
     return { isRepo: true, branch: br.out.trim() || void 0, files };
   }
@@ -8998,19 +9487,19 @@ var FileService = class {
 init_pathscan();
 init_log();
 init_i18n();
-import { spawn as spawn3, execFileSync as execFileSync2 } from "node:child_process";
-import { accessSync as accessSync2, chmodSync, constants as fsc, existsSync as existsSync12, statSync as statSync6 } from "node:fs";
+init_decode();
+import { spawn as spawn4, execFileSync as execFileSync2 } from "node:child_process";
+import { accessSync as accessSync2, chmodSync, constants as fsc, existsSync as existsSync12, statSync as statSync7 } from "node:fs";
 import { createRequire as moduleRequire } from "node:module";
 import { release } from "node:os";
 import { dirname as dirname6, join as join18 } from "node:path";
-import { StringDecoder } from "node:string_decoder";
 var MAX_TERMS_PER_PROJECT = 8;
 var BUF_MAX = 2 * 1024 * 1024;
 var SNAP_LINES = 5e3;
 function isExecFile(file) {
   try {
     accessSync2(file, fsc.X_OK);
-    return statSync6(file).isFile();
+    return statSync7(file).isFile();
   } catch {
     return false;
   }
@@ -9127,7 +9616,7 @@ var TerminalService = class {
     if (!term.pty) {
       term.simple = true;
       const args = simpleShellArgs(shell);
-      const proc = spawn3(shell, args, {
+      const proc = spawn4(shell, args, {
         cwd,
         stdio: "pipe",
         windowsHide: true,
@@ -9135,8 +9624,8 @@ var TerminalService = class {
         detached: process.platform !== "win32"
       });
       term.proc = proc;
-      const outDec = new StringDecoder("utf8");
-      const errDec = new StringDecoder("utf8");
+      const outDec = new OutputDecoder();
+      const errDec = new OutputDecoder();
       proc.stdout.on("data", (d) => this.onData(term, outDec.write(d)));
       proc.stderr.on("data", (d) => this.onData(term, errDec.write(d)));
       proc.on("exit", () => this.onExit(term));
@@ -9195,7 +9684,7 @@ var TerminalService = class {
     const args = ["/pid", String(pid), "/T", "/F"];
     try {
       if (sync) execFileSync2("taskkill", args, { windowsHide: true, stdio: "ignore", timeout: 5e3 });
-      else spawn3("taskkill", args, { windowsHide: true, stdio: "ignore" }).on("error", () => {
+      else spawn4("taskkill", args, { windowsHide: true, stdio: "ignore" }).on("error", () => {
       });
     } catch {
     }
@@ -9284,12 +9773,12 @@ function augmentPath(env, nodeDir, platform = process.platform, home) {
   const sep5 = win ? ";" : platform === process.platform ? delimiter : ":";
   const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
   const cur = (env[key] ?? "").split(sep5).filter(Boolean);
-  const norm = (d) => win ? d.replace(/[\\/]+$/, "").toLowerCase() : d.replace(/\/+$/, "");
-  const seen = new Set(cur.map(norm));
+  const norm2 = (d) => win ? d.replace(/[\\/]+$/, "").toLowerCase() : d.replace(/\/+$/, "");
+  const seen = new Set(cur.map(norm2));
   const out = [...cur];
   for (const d of [nodeDir, ...extraBinDirs({ platform, env, home })]) {
-    if (!d || seen.has(norm(d))) continue;
-    seen.add(norm(d));
+    if (!d || seen.has(norm2(d))) continue;
+    seen.add(norm2(d));
     out.push(d);
   }
   return out.join(sep5);
@@ -9300,7 +9789,7 @@ init_proxy();
 
 // daemon/src/preview/ports.ts
 import { readFileSync as readFileSync2 } from "node:fs";
-import { homedir as homedir9 } from "node:os";
+import { homedir as homedir10 } from "node:os";
 import { basename as basename5, dirname as dirname7, isAbsolute as isAbsolute3, join as join19 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 var MAGPIE_DEFAULT_PORTS = [3425, 3430];
@@ -9312,8 +9801,8 @@ function portOf(addr) {
   return Number.isInteger(n) && n > 0 && n <= 65535 ? n : null;
 }
 function magpieDirFromInstall(p) {
-  const norm = p.replace(/\\/g, "/");
-  const i = norm.lastIndexOf("/plugins/node_modules/");
+  const norm2 = p.replace(/\\/g, "/");
+  const i = norm2.lastIndexOf("/plugins/node_modules/");
   if (i <= 0) return null;
   return p.slice(0, i);
 }
@@ -9336,7 +9825,7 @@ function magpieConfigDirs(env = process.env, where = {}) {
   const x = env.XDG_CONFIG_HOME;
   if (x && isAbsolute3(x)) add(join19(x, "magpie"));
   const platform = where.platform ?? process.platform;
-  const home = where.home ?? (env === process.env ? homedir9() : platform === "win32" ? env.USERPROFILE : env.HOME);
+  const home = where.home ?? (env === process.env ? homedir10() : platform === "win32" ? env.USERPROFILE : env.HOME);
   if (home) add(join19(home, ".config", "magpie"));
   return out;
 }
@@ -9459,6 +9948,7 @@ async function main() {
   const bound = server.address();
   if (bound && typeof bound === "object") cfg.port = bound.port;
   process.stdout.write(JSON.stringify({ agentConsoleReady: true, port: cfg.port, pid: process.pid }) + "\n");
+  void settings.get().then((s) => refreshAgentShell(typeof s.bashPath === "string" ? s.bashPath : ""));
   void (async () => {
     const { warmProviderCache: warmProviderCache2 } = await Promise.resolve().then(() => (init_warm(), warm_exports));
     await warmProviderCache2(await settings.get());
