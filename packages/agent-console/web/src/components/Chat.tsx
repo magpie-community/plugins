@@ -73,6 +73,18 @@ export function Chat() {
     else setHasNew(true);
   }, [count, stick]);
 
+  // 1.3: a send always lands at the bottom, at once (and again after the new row is measured)
+  useEffect(() => {
+    if (!tl.sentAt) return;
+    setStick(true);
+    setHasNew(false);
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    const raf = requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    return () => cancelAnimationFrame(raf);
+  }, [tl.sentAt]);
+
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
@@ -94,7 +106,10 @@ export function Chat() {
     const rels = root && mentions?.length
       ? mentions.map((m) => ({ rel: relFromAbs(root, m.path), isDir: m.isDir })).filter((m): m is { rel: string; isDir: boolean } => !!m.rel)
       : [];
-    void ws.call("thread.send", { id: activeThreadId, text, ...(rels.length ? { mentions: rels } : {}) });
+    const busy = tl.status === "running" || tl.status === "initializing";
+    // 1.3: optimistic like the composer (shows now, failure keeps a 重试 bubble); behind a running turn it queues
+    void tl.send(activeThreadId, { text, ...(rels.length ? { mentions: rels } : {}) }, mentions?.length ? { mentions } : {}, { optimistic: !busy })
+      .catch((e) => toast(tr("composer.failSend") + errMsg(e), true));
   };
   const retryLast = () => {
     if (tl.lastUserText) resend(tl.lastUserText);
@@ -211,7 +226,8 @@ function EmptyComposer({ projectId }: { projectId: string }) {
         mode: s.defaultMode ?? "default",
       })) as { id: string };
       ui.select(projectId, created.id);
-      await ws.call("thread.send", { id: created.id, text: text.trim() });
+      // 1.3: the new conversation opens with the bubble already in it (a failure stays there with 重试)
+      await useTimeline.getState().send(created.id, { text: text.trim() });
     } catch (e) {
       toast(tr("chat.failSend") + errMsg(e), true);
       setBusy(false);

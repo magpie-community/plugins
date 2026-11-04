@@ -3,6 +3,7 @@
 // consecutive tool_calls go into one ToolGroupItem (interrupted by text/plan/permission etc. -> new group);
 // a permission shows "cancelled" when runtimeStatus is not running and it is unresolved.
 import type { TimelineEvent } from "./types.js";
+import { userKey } from "./outbox.js";
 
 export type ToolStep = {
   itemId: string; kind: string; title: string;
@@ -14,7 +15,11 @@ export type ToolStep = {
 };
 
 export type DisplayItem =
-  | { kind: "user"; key: string; text: string; attachments?: { id: string; name: string; mime: string }[]; mentions?: { path: string; isDir: boolean }[]; steered?: boolean; ts: number }
+  | { kind: "user"; key: string; text: string; attachments?: { id: string; name: string; mime: string }[]; mentions?: { path: string; isDir: boolean }[]; steered?: boolean; ts: number;
+      /** 1.3: the page's id for the send (optimistic bubble ↔ echoed user_message) */
+      clientId?: string;
+      /** 1.3: only on optimistic bubbles: still on its way, or the send failed */
+      sendState?: "sending" | "failed"; sendError?: string }
   | { kind: "assistant"; key: string; itemId: string; text: string; streaming: boolean }
   | { kind: "reasoning"; key: string; itemId: string; text: string; streaming: boolean }
   | { kind: "toolgroup"; key: string; steps: ToolStep[] }
@@ -166,7 +171,7 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
     case "user_message":
       breakGroup(st);
       st.lastUserIdx.set(ev.turnId ?? "", st.items.length);
-      st.items.push({ kind: "user", key: `u:${ev.seq}`, text: ev.text, attachments: ev.attachments, ...(ev.mentions?.length ? { mentions: ev.mentions } : {}), steered: ev.steered, ts: ev.ts });
+      st.items.push({ kind: "user", key: userKey(ev.seq, ev.clientId), text: ev.text, attachments: ev.attachments, ...(ev.mentions?.length ? { mentions: ev.mentions } : {}), steered: ev.steered, ts: ev.ts, ...(ev.clientId ? { clientId: ev.clientId } : {}) });
       return;
     case "assistant_delta":
       applyDelta(st, ev.itemId, "assistant", ev.text);

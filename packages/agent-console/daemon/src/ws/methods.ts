@@ -48,7 +48,7 @@ export type Services = {
   // AgentManager provides runtime info once wired in at P1-4; may be empty (no session started)
   runtime?: (threadId: string) => { status: string; queue: unknown[]; pending: unknown[] } | null;
   manager?: {
-    send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[]; mentions?: { rel: string; isDir?: boolean }[] }, behavior?: "queue" | "steer"): Promise<"started" | "steered" | "queued" | void>;
+    send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[]; mentions?: { rel: string; isDir?: boolean }[]; clientId?: string }, behavior?: "queue" | "steer"): Promise<"started" | "steered" | "queued" | void>;
     interrupt(threadId: string): Promise<void>;
     respond(threadId: string, requestId: string, answer: { optionId?: string; answers?: Record<string, string>; cancelled?: boolean }): Promise<void>;
     setModel(threadId: string, model: string | null): Promise<void>;
@@ -521,10 +521,12 @@ export function registerMethods(gw: Gateway, svc: Services): void {
       // 1.2: paths dragged from the Files panel, relative to the project (the daemon resolves and checks them)
       mentions: z.array(z.object({ rel: z.string().min(1).max(4096), isDir: z.boolean().optional() })).max(MAX_MENTIONS).optional(),
       behavior: z.enum(["queue", "steer"]).optional(),
+      // 1.3: the page's id for its optimistic bubble, echoed on the user_message event (dedupe, no jump)
+      clientId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
     }),
     async (p) => {
       // delivered tells the composer what happened: a steer an Agent can't take is queued (B7)
-      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments, mentions: p.mentions }, p.behavior ?? "queue");
+      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments, mentions: p.mentions, clientId: p.clientId }, p.behavior ?? "queue");
       return { ok: true, delivered: delivered ?? "started" };
     }
   ));

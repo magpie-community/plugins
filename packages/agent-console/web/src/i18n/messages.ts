@@ -159,7 +159,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       thinking: "思考 {s}s", todo: "待办 {done}/{total}", steer: "插话",
       permAllowSession: "本对话都允许", permDenied: "已拒绝", permAllowed: "已允许", permAutoAllowed: "已自动同意（全部自动同意）", permCancelled: "已取消",
       submitted: "已提交：{ans}", turnError: "出错：{err}", unknownError: "未知错误",
-      interrupted: "已打断", filesChanged: "改动 {n} 个文件 ›", editMsg: "编辑（填回输入框，不会马上发送）", resend: "重新发送这条消息", retryHint: "重试：重新发送上一条消息", msgActions: "消息操作", editBusy: "输入框里还有没发送的内容：先发送或清空，再点编辑",
+      interrupted: "已打断", filesChanged: "改动 {n} 个文件 ›", editMsg: "编辑（填回输入框，不会马上发送）", sendFailed: "发送失败", sendRetry: "重新发送", sendDismiss: "移除这条没发出的消息", resend: "重新发送这条消息", retryHint: "重试：重新发送上一条消息", msgActions: "消息操作", editBusy: "输入框里还有没发送的内容：先发送或清空，再点编辑",
       tool: {
         read: "读取", edit: "修改", write: "写入", bash: "运行", search: "搜索", glob: "搜索",
         web: "联网", task: "子任务", mcp: "工具", todo: "待办", other: "工具", processing: "处理",
@@ -352,7 +352,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       thinking: "Thinking {s}s", todo: "Todos {done}/{total}", steer: "Steer",
       permAllowSession: "Allowed for this chat", permDenied: "Denied", permAllowed: "Allowed", permAutoAllowed: "Auto-approved (Auto-approve all)", permCancelled: "Cancelled",
       submitted: "Submitted: {ans}", turnError: "Error: {err}", unknownError: "Unknown error",
-      interrupted: "Interrupted", filesChanged: "{n} file(s) changed ›", editMsg: "Edit (puts it back in the input; nothing is sent yet)", resend: "Send this message again", retryHint: "Retry: send the last message again", msgActions: "Message actions", editBusy: "The input still has unsent text: send or clear it first, then click Edit",
+      interrupted: "Interrupted", filesChanged: "{n} file(s) changed ›", editMsg: "Edit (puts it back in the input; nothing is sent yet)", sendFailed: "Not sent", sendRetry: "Send again", sendDismiss: "Remove this unsent message", resend: "Send this message again", retryHint: "Retry: send the last message again", msgActions: "Message actions", editBusy: "The input still has unsent text: send or clear it first, then click Edit",
       tool: {
         read: "Read", edit: "Edit", write: "Write", bash: "Run", search: "Search", glob: "Search",
         web: "Web", task: "Subtask", mcp: "Tool", todo: "Todo", other: "Tool", processing: "Working",

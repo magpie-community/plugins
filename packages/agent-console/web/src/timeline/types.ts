@@ -9,7 +9,7 @@ export type AttachmentRef = { id: string; name: string; mime: string };
 export type PermissionOption = { id: string; label: string; kind: "allow_once" | "allow_always" | "reject_once" };
 
 export type TimelineEvent =
-  | { seq: number; ts: number; threadId: string; turnId?: string; type: "user_message"; text: string; attachments?: AttachmentRef[]; steered?: boolean; mentions?: { path: string; isDir: boolean }[] }
+  | { seq: number; ts: number; threadId: string; turnId?: string; type: "user_message"; text: string; attachments?: AttachmentRef[]; steered?: boolean; mentions?: { path: string; isDir: boolean }[]; clientId?: string }
   | { seq: number; ts: number; threadId: string; turnId: string; type: "turn_started"; model: string | null; mode: string; effort: string | null }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "assistant_delta" | "reasoning_delta" | "tool_output_delta"; itemId: string; text: string }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "assistant_message" | "reasoning"; itemId: string; text: string }

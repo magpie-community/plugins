@@ -42,6 +42,7 @@ UI principle: **obvious at a glance, nothing extra**. Three columns — sidebar 
 - **Multiple Agents**: Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh; missing CLIs show an install hint
 - **Model / permission / thinking**: per-thread; four permission modes and five thinking levels (what each Agent actually supports)
 - **Structured timeline**: user message → thinking (expandable) → tool calls (read / edit / command, with line-level diffs) → todos → usage and duration; answer permission requests (tools / plan / questions) on the card. Since 1.3 a run of tool calls, and the short thinking between them, folds into one collapsed summary like Claude Code desktop (改动 2 · 运行 3 · 读取 4 · 搜索 1 · 1 失败); while a step runs a single line shows it (正在运行：npm test…), and expanding shows every step, with each failure's error output open
+- **Instant send (1.3)**: your message shows in the timeline the moment you click 发送 and the composer switches to working at once. The daemon saves and pushes the message before it starts the Agent (spawn + ACP `initialize` / `session/new`, seconds on Windows) instead of after; the page draws it right away and swaps in the daemon's copy by a client message id, so it neither doubles nor jumps. A send that fails stays in place marked 发送失败 with 重试 / 移除. A message sent while a turn runs still goes to the queue list
 - **Steer and queue**: steer while running, queue the next message, interrupt
 - **Changes panel**: git status refresh every 3s, unified per-file diffs; discarded untracked files go to trash instead of a hard delete
 - **Files panel**: lazy directory tree (respects `.gitignore`), syntax-highlighted preview
@@ -211,6 +212,7 @@ AGENT_CONSOLE_MOCK=1 npm run dev
 |---|---|
 | `AGENT_CONSOLE_PORT` | gate port in the plugin / daemon port in standalone mode (3488; plugin `options.port` wins) |
 | `AGENT_CONSOLE_MOCK=1` | register the mock provider |
+| `AGENT_CONSOLE_MOCK_START_MS` / `AGENT_CONSOLE_MOCK_DETECT_MS` | mock only: delay the Agent start / detection (a slow start like real Agents on Windows; e2e uses `E2E_MOCK_START_MS`, default 1200) |
 | `AGENT_CONSOLE_TOKEN` | fixed page token (tests/screenshots only; do not set in production) |
 | `AGENT_CONSOLE_IDLE_EXIT_MIN` | idle auto-exit minutes (default 60) |
 | `XDG_CONFIG_HOME` | data root (`_tmp/xdg-dev` in development) |

@@ -562,6 +562,9 @@ export function createMockProvider(): Provider {
     name: "Mock（演示）",
     capabilities: mockCapabilities,
     async detect(): Promise<DetectResult> {
+      // AGENT_CONSOLE_MOCK_DETECT_MS: a slow "--version" probe (a cold CLI on Windows takes seconds)
+      const d = Number(process.env.AGENT_CONSOLE_MOCK_DETECT_MS) || 0;
+      if (d > 0) await sleep(d);
       return { available: true, bin: "mock", version: "demo" };
     },
     async listModels(): Promise<ModelInfo[]> {
@@ -572,6 +575,9 @@ export function createMockProvider(): Provider {
     },
     async createSession(o) {
       mockProviderMetrics.createSessionCalls++;
+      // AGENT_CONSOLE_MOCK_START_MS: a slow agent start (spawn + ACP initialize/session/new on Windows takes seconds)
+      const d = Number(process.env.AGENT_CONSOLE_MOCK_START_MS) || 0;
+      if (d > 0) await sleep(d);
       return new MockSession(o);
     },
   };
