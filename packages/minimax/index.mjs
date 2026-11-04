@@ -1,6 +1,6 @@
 // OpenCode provider plugins for MiniMax Code (mcode) accounts: the credits
 // a MiniMax Code account gets (the daily check-in's among them) and its
-// M Plan, on MiniMax Code's own models.
+// Token Plan, on MiniMax Code's own models.
 //   - minimax-code:        the China site (account.minimax.cn, agent.minimax.cn)
 //   - minimax-code-global: the international site (account.minimax.io, agent.minimax.io)
 // An account signs in here, with MiniMax Code's device sign-in (OAuth 2
@@ -41,7 +41,7 @@ const SITES = {
     account: "https://account.minimax.cn", // OAuth
     llm: "https://agent.minimax.cn", // chats and the model list
     agent: "https://agent.minimaxi.com", // the account and its membership
-    platform: "https://www.minimaxi.com", // the M Plan's windows
+    platform: "https://www.minimaxi.com", // the Token Plan's windows
   },
   "minimax-code-global": {
     id: "minimax-code-global",
@@ -557,10 +557,18 @@ async function membership(site, access, userID) {
   }
 }
 
-// planWindows reads the M Plan's windows from coding_plan/remains, as
+// planWindows reads the Token Plan's windows from coding_plan/remains, as
 // magpie's own MiniMax plan reader (readMiniMaxPlan) does: each model
 // group's interval and week, "general" the plan's own, the rest aside.
-function planWindows(body) {
+//
+// An older plan's week may carry weekly_boost_permille, 1500 for 150% of the
+// plan's weekly allowance. The remaining percent is a share of that boosted
+// week, and the count says it in points of the plain week ("126 / 150 %"),
+// as MiniMax's console does. boosted is what the console's own reply says is
+// used of each model's week (boostedWeeks); without it the count comes from
+// the share, as MiniMax's CLI multiplies it, which is a whole share and so
+// up to 1.5 points off.
+function planWindows(body, boosted) {
   const br = obj(body?.base_resp)
   if (br && typeof br.status_code === "number" && br.status_code !== 0) throw new Error(str(br, "status_msg") ?? `MiniMax said ${br.status_code}`)
   if (!br && !Array.isArray(body?.model_remains)) throw new Error("no plan in the reply")
@@ -573,7 +581,7 @@ function planWindows(body) {
     const general = name.toLowerCase() === "general"
     for (const x of [
       { left: num(k.current_interval_remaining_percent), status: num(k.current_interval_status) ?? 0, start: num(k.start_time) ?? 0, end: num(k.end_time) ?? 0, week: false },
-      { left: num(k.current_weekly_remaining_percent), status: num(k.current_weekly_status) ?? 0, start: num(k.weekly_start_time) ?? 0, end: num(k.weekly_end_time) ?? 0, week: true },
+      { left: num(k.current_weekly_remaining_percent), status: num(k.current_weekly_status) ?? 0, start: num(k.weekly_start_time) ?? 0, end: num(k.weekly_end_time) ?? 0, week: true, boost: num(k.weekly_boost_permille) ?? 0 },
     ]) {
       if (x.status === 3 || (x.left === undefined && x.status !== 2)) continue
       const w = { used: x.status === 2 ? 100 : Math.max(0, Math.min(100, 100 - x.left)) }
@@ -582,6 +590,13 @@ function planWindows(body) {
       else if (x.week) span = 7 * 86400_000
       if (span) w.span = span / 1000
       if (x.end > 0) w.resetsAt = new Date(ms(x.end)).toISOString()
+      if (x.boost > 1000) {
+        w.limit = x.boost / 10
+        const told = x.status === 2 ? undefined : boosted?.[name]
+        if (told >= 0 && told <= w.limit) w.used = (told / w.limit) * 100
+        w.amount = told >= 0 && told <= w.limit ? told : (w.used * w.limit) / 100
+        w.unit = "%"
+      }
       w.name = x.week ? "7 days"
         : span > 86400_000 && span % 86400_000 === 0 ? `${span / 86400_000} days`
         : span >= 3600_000 && span % 3600_000 === 0 ? `${span / 3600_000} hours`
@@ -601,9 +616,33 @@ async function planQuota(site, access, group) {
   const res = await siteFetch(site, site.platform + "/v1/api/openplatform/coding_plan/remains", {
     headers: { Accept: "application/json", Authorization: "Bearer " + access, ...(group ? { "X-Group-Id": group } : {}) },
     signal: AbortSignal.timeout(15000),
-  }, "M Plan")
-  if (!res.ok) throw new Error(`M Plan: HTTP ${res.status}`)
-  return planWindows(await res.json())
+  }, "Token Plan")
+  if (!res.ok) throw new Error(`Token Plan: HTTP ${res.status}`)
+  const body = await res.json()
+  return planWindows(body, await boostedWeeks(site, access, group, body))
+}
+
+// boostedWeeks is what MiniMax's console reads for a boosted week, by model:
+// token_plan/remains_percent tells it as "24%" used of "150%". It is asked
+// only for a plan with a boost, and a reply it can't read leaves the count
+// to the share (planWindows).
+async function boostedWeeks(site, access, group, body) {
+  if (!(Array.isArray(body?.model_remains) && body.model_remains.some((k) => num(k?.weekly_boost_permille) > 1000))) return undefined
+  try {
+    const res = await siteFetch(site, site.platform + "/backend/account/token_plan/remains_percent", {
+      headers: { Accept: "application/json", Authorization: "Bearer " + access, ...(group ? { "X-Group-Id": group } : {}) },
+      signal: AbortSignal.timeout(15000),
+    }, "Token Plan")
+    if (!res.ok) return undefined
+    const out = {}
+    for (const k of (await res.json())?.model_remains ?? []) {
+      const used = Number.parseFloat(k?.current_weekly_used_percent)
+      if (Number.isFinite(used)) out[String(k.model_name ?? "").trim()] = used
+    }
+    return out
+  } catch {
+    return undefined
+  }
 }
 
 // credits says a balance as a count of credits: "1234.50" is "1234.5 credits".
@@ -681,10 +720,10 @@ function creditsWindow(batches, now = Date.now()) {
   }
 }
 
-// usageOf is the card: the plan (the M Plan's tier, else Free), the credits
-// left, and the M Plan's windows when there are any.
+// usageOf is the card: the plan (the Token Plan's tier, else Free), the credits
+// left, and the Token Plan's windows when there are any.
 function usageOf(m, windows = []) {
-  const plan = m.hasTokenPlan ? (m.tier ? "M Plan " + m.tier : "M Plan") : m.unknown ? undefined : "Free"
+  const plan = m.hasTokenPlan ? (m.tier ? "Token Plan " + m.tier : "Token Plan") : m.unknown ? undefined : "Free"
   return {
     ...(plan ? { plan } : {}),
     ...(m.hasTokenPlan && m.expiresAt ? { until: new Date(m.expiresAt < 1e12 ? m.expiresAt * 1000 : m.expiresAt).toISOString() } : {}),
@@ -983,7 +1022,7 @@ function makePlugin(site) {
             },
           }
         },
-        // the account's credits and M Plan
+        // the account's credits and Token Plan
         async usage(getAuth) {
           const auth = await getAuth()
           if (auth?.type !== "oauth" || !auth.access) return { error: "not signed in" }
@@ -1006,7 +1045,7 @@ function makePlugin(site) {
               }
             }
             // the credits as a share of what the live batches granted
-            // (#393); beside an M Plan they are its fallback, aside. A
+            // (#393); beside a Token Plan they are its fallback, aside. A
             // ledger that can't be read leaves the balance alone.
             try {
               const b = await ledgerBatches(site, a.access, who.realUserID)
