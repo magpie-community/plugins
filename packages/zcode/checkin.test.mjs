@@ -72,6 +72,10 @@ const CLAIMED_BEFORE = '{"code":1003,"msg":"target already exists","data":{"serv
 const CLAIMED_NOW = '{"code":0,"msg":""}'
 // the 10-06 answer to a claim without the app's captcha (#30)
 const CAPTCHA = '{"code":3007,"msg":"captcha verify failed"}'
+// 11-04: the answer to a claim for a plan the account is not offered yet.
+// The same six accounts answered it under an older APP_VERSION's header
+// and four of them claimed with code 0 under 3.17.2's.
+const NOT_ELIGIBLE = '{"code":1004,"msg":"your account is not eligible for this plan yet"}'
 
 const PREVIEW = "/api/v1/zcode-plan/billing/preview"
 const CLAIM = "/api/v1/zcode-plan/billing/claim"
@@ -112,6 +116,9 @@ test("an inactive says until half an hour out; claimed, done, captcha and failed
   none(await checkin())
   claimWith(() => json(CAPTCHA, 400), touchOf(WEEKEND))
   none(await checkin())
+  // a plan not offered now can be offered later in the day: read again
+  claimWith(() => json(NOT_ELIGIBLE), touchOf(WEEKEND))
+  soon(await checkin())
   // a failed check-in settles for none: magpie asks a failed again itself
   claimWith(() => json(CLAIMED_NOW), () => { throw new Error("feed unreachable") })
   none(await checkin())
@@ -180,6 +187,23 @@ test("a claim ZCode wants the app's captcha for is captcha: claimed in the ZCode
   const r = await checkin()
   expect(r.outcome).toBe("captcha")
   expect(r.message).toContain("ZCode Trust Build: claim it in the ZCode app (captcha verify failed)")
+})
+
+test("a claim ZCode is not offering yet (code 1004) is ineligible, read again later", async () => {
+  claimWith(() => json(NOT_ELIGIBLE), touchOf([TRUST, "ZCode Trust Build"]))
+  const r = await checkin()
+  expect(r.outcome).toBe("ineligible")
+  expect(r.message).toBe("ZCode Trust Build: your account is not eligible for this plan yet")
+  const t = Date.parse(r.until)
+  expect(t).toBeGreaterThan(Date.now() + 25 * 60_000)
+  expect(t).toBeLessThan(Date.now() + 35 * 60_000)
+})
+
+test("a 1004 beside a claimed plan is claimed, naming the one not offered", async () => {
+  claimWith((id) => (id === GLOBAL ? json(NOT_ELIGIBLE) : json(CLAIMED_NOW)), touchOf([TRUST, "ZCode Trust Build"], [GLOBAL, "ZCODE GLOBAL BUILD"]))
+  const r = await checkin()
+  expect(r.outcome).toBe("claimed")
+  expect(r.message).toContain("ZCODE GLOBAL BUILD: your account is not eligible for this plan yet")
 })
 
 test("a claim that doesn't read is failed (unknown), never claimed", async () => {
