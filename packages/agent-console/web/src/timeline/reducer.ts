@@ -20,7 +20,7 @@ export type DisplayItem =
   | { kind: "toolgroup"; key: string; steps: ToolStep[] }
   | { kind: "plan"; key: string; itemId: string; markdown: string }
   | { kind: "todo"; key: string; items: { text: string; status: string }[] }
-  | { kind: "permission"; key: string; requestId: string; title: string; kindStr: string; detail?: unknown; options: { id: string; label: string; kind: string }[]; status: "pending" | "resolved" | "cancelled"; choice?: string }
+  | { kind: "permission"; key: string; requestId: string; title: string; kindStr: string; detail?: unknown; options: { id: string; label: string; kind: string }[]; status: "pending" | "resolved" | "cancelled"; choice?: string; auto?: boolean }
   | { kind: "question"; key: string; requestId: string; questions: unknown[]; answers?: Record<string, string>; status: "pending" | "answered" | "cancelled" }
   | { kind: "notice"; key: string; level: string; message: string; code?: string }
   | { kind: "gone"; key: string } // placeholder: duplicate delta items cleared by sweepSiblings; skipped when rendering
@@ -216,6 +216,7 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
       if (it?.kind === "permission") {
         it.status = ev.cancelled ? "cancelled" : "resolved";
         it.choice = ev.optionId;
+        if (ev.auto) it.auto = true;
       }
       return;
     }

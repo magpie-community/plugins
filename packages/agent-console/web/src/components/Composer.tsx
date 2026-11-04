@@ -14,7 +14,7 @@ import type { Mode, ModelInfo } from "../types/models";
 import type { SlashCommand } from "../composer/slashMenu";
 import { toast } from "./Toast";
 import { useLiveSettings } from "./Settings";
-import { composerModeOptions, effortLabel } from "../i18n/modes.js";
+import { composerModeOptions, effortLabel, FULL_AUTO } from "../i18n/modes.js";
 import { Logo } from "./Logo";
 import { SelectMenu } from "./SelectMenu";
 import { errMsg, t as tr, tf } from "../i18n/index.js";
@@ -330,8 +330,19 @@ export function Composer() {
     }
   };
 
+  // 1.3: the first time 全部自动同意 is turned on (any conversation), one line says what it means
+  const [autoWarn, setAutoWarn] = useState(false);
+  useEffect(() => setAutoWarn(false), [thread?.id]);
   const setMode = (m: Mode) => {
-    if (thread) void ws.call("thread.setMode", { id: thread.id, mode: m });
+    if (!thread) return;
+    void ws.call("thread.setMode", { id: thread.id, mode: m }).catch((e) => toast(errMsg(e), true));
+    if (m === FULL_AUTO && mode !== FULL_AUTO) {
+      void ws.call("settings.get").then((s) => {
+        if ((s as { autoApproveWarned?: boolean }).autoApproveWarned) return;
+        setAutoWarn(true);
+        void ws.call("settings.set", { patch: { autoApproveWarned: true } }).catch(() => {});
+      }).catch(() => {});
+    } else if (m !== FULL_AUTO) setAutoWarn(false);
   };
   const setEffort = (effort: string | null) => {
     if (thread) void ws.call("thread.setEffort", { id: thread.id, effort });
@@ -392,10 +403,14 @@ export function Composer() {
           ))}
         </div>
       )}
-      {mode === "bypassPermissions" && (
-        <div className="cp-danger">{tr("composer.bypassWarn")}</div>
+      {autoWarn && mode === FULL_AUTO && (
+        <div className="cp-autowarn" role="status">
+          <Icon name="shieldCheck" size={13} />
+          <span className="cp-autowarn-t">{tr("composer.autoWarn")}</span>
+          <button type="button" className="cp-autowarn-ok" onClick={() => setAutoWarn(false)}>{tr("composer.autoWarnOk")}</button>
+        </div>
       )}
-      <div className={`cp-card${waiting ? " waiting" : ""}${mode === "bypassPermissions" ? " danger" : ""}${dropHint ? " drop-on" : ""}`}>
+      <div className={`cp-card${waiting ? " waiting" : ""}${dropHint ? " drop-on" : ""}`}>
         {dropHint && <div className="cp-drop-hint">{tr("mention.drop")}</div>}
         {imagesByPath && attachments.some((a) => a.mime.startsWith("image/")) && (
           <div className="att-note">{tf("composer.imagesByPath", { agent: provider?.name ?? "" })}</div>
@@ -637,13 +652,19 @@ export function Composer() {
               })()}</span>
             </SelectMenu>
           )}
-          {/* permission mode: list only the modes this Agent really has; hidden when there is only one (e.g. Pi has no modes) */}
+          {/* permission mode: list only the modes this Agent really has; one mode only (Pi: always auto) = a plain label */}
+          {modes.length === 1 && (
+            <span className={`pill ipill mode-chip static${modes[0]!.auto ? " auto" : ""}`} title={modes[0]!.desc} data-mode={modes[0]!.id}>
+              <Icon name={modes[0]!.auto ? "shieldCheck" : "shield"} size={14} />
+              <span className="ip-l">{modes[0]!.label}</span>
+            </span>
+          )}
           {modes.length > 1 && (() => {
             // The mode stored on the conversation doesn't exist for this Agent → show the one it will actually use
             const shown = modes.find((m) => m.id === mode) ?? modes[0]!;
             return (
               <SelectMenu
-                className={`pill ipill${shown.danger ? " danger" : ""}`}
+                className={`pill ipill mode-chip${shown.danger ? " danger" : ""}${shown.auto ? " auto" : ""}`}
                 title={shown.desc}
                 ariaLabel={tr("composer.modeTitle")}
                 prefer="up"
@@ -651,9 +672,9 @@ export function Composer() {
                 menuClassName="mode-menu"
                 value={shown.id}
                 onChange={(v) => setMode(v as Mode)}
-                options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc, danger: m.danger }))}
+                options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc, danger: m.danger, icon: m.auto ? "shieldCheck" : undefined }))}
               >
-                <Icon name="shield" size={14} />
+                <Icon name={shown.auto ? "shieldCheck" : "shield"} size={14} />
                 <span className="ip-l">{shown.label}</span>
               </SelectMenu>
             );

@@ -51,8 +51,8 @@
 /* Thinking (collapsed gray text) / todo */
 .rs-item { margin: 4px 0 6px; }
 .rs-head {
-  display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0;
-  color: var(--meta); font-size: var(--chat-fs-s);
+  display: inline-flex; align-items: center; gap: 4px; min-height: 22px; max-width: 100%; padding: 0;
+  color: var(--meta); font-size: var(--chat-fs-s); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .rs-head:hover { color: var(--fg); }
 .rs-head .caret { display: inline-block; transition: transform var(--dur-1); }
@@ -62,30 +62,34 @@
 .todo { color: var(--muted); }
 .todo.in_progress { color: var(--fg); }
 
-/* Tool group */
-.tg { margin: 4px 0 10px; }
+/* Tool group. Every line here is one line that can only clip, never wrap: 1.2 gave the summary a fixed 24px height
+   while a long "running" label squeezed it to a few characters, so the wrapped text spilled over the rows around it
+   (Nolan's Windows screenshot). min-height + nowrap + overflow hidden keep each line inside its own box at any width
+   and font size; the virtual list then measures the real height. */
+.tg { margin: 4px 0 10px; min-width: 0; }
 .tg-head {
-  display: flex; align-items: center; gap: 6px; width: 100%; height: 24px; padding: 0;
-  color: var(--meta); font-size: var(--chat-fs-s); text-align: left;
+  display: flex; align-items: center; gap: 6px; width: 100%; min-height: 24px; padding: 0; overflow: hidden;
+  color: var(--meta); font-size: var(--chat-fs-s); text-align: left; white-space: nowrap;
 }
+.tg-head .caret { flex: none; }
 .tg-head:hover { color: var(--fg); }
 .tg-head .caret { transition: transform var(--dur-1); }
 .tg-head .caret.open { transform: rotate(90deg); }
-.tg-sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tg-sum { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tg-fail { flex: none; color: var(--danger); }
 .tg-fail::before { content: "·"; margin-right: 6px; color: var(--meta); }
 /* One line while a step runs: "正在运行：npm test…", cut with an ellipsis rather than wrapping */
-.tg-run { display: flex; align-items: center; gap: 8px; height: 22px; padding-left: 2px; color: var(--muted); font-size: var(--chat-fs-s); min-width: 0; }
+.tg-run { display: flex; align-items: center; gap: 8px; min-height: 22px; padding-left: 2px; color: var(--muted); font-size: var(--chat-fs-s); min-width: 0; overflow: hidden; white-space: nowrap; }
 .tg-run-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--accent-2); animation: breathe 1.2s infinite; }
-.tg-run-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tg-run-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ts-ic.think { color: var(--meta); }
 .ts-think .ts-title { color: var(--muted); }
 .ts-think .rs-body { margin-left: 30px; }
 .ts-noerr { color: var(--meta); font-size: var(--chat-fs-s); margin-bottom: 4px; }
 .tg-list { margin: 2px 0 0 5px; border-left: 1px solid var(--line); padding-left: 6px; }
 .ts-head {
-  display: flex; align-items: center; gap: 8px; width: 100%; height: 26px; padding: 0 6px;
-  border-radius: var(--r-s); font-size: calc(var(--chat-fs) - 0.5px); text-align: left; color: var(--text);
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 26px; padding: 0 6px; overflow: hidden;
+  border-radius: var(--r-s); font-size: calc(var(--chat-fs) - 0.5px); text-align: left; color: var(--text); white-space: nowrap;
 }
 .ts-head:hover { background: var(--surface-hover); }
 .ts-ic { width: 14px; flex: none; text-align: center; }
