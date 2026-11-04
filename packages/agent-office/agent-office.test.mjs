@@ -288,6 +288,20 @@ test("words, in English and Chinese", () => {
   expect(M.duration(130e3, "en")).toBe("2m 10s")
 })
 
+test("the Settings chevron and select dropdowns draw SVG chevrons, not the ⌄ character", () => {
+  const html = read("index.html")
+  const css = read("style.css")
+  expect(html).not.toContain("⌄")
+  expect(html).toMatch(/id="settingsBtn"[^>]*><span data-t="settings">Settings<\/span><svg class="chev" viewBox="0 0 10 6"/)
+  expect(css).toMatch(/\.btn\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*gap:\s*7px;/)
+  expect(css).toContain(".today-tokens:empty { display: none; }")
+  expect(css).toContain('.btn:hover .chev, #settingsBtn[aria-expanded="true"] .chev { opacity: .9; }')
+  expect(css).toContain('#settingsBtn[aria-expanded="true"] .chev { transform: rotate(180deg); }')
+  expect(css).toMatch(/\.lang-select\s*\{[^}]*appearance:\s*none;/)
+  expect(css).toMatch(/\.lang-select\s*\{[^}]*viewBox='0 0 10 6'/)
+  expect(css).toMatch(/prefers-reduced-motion:\s*reduce[\s\S]*\.chev/)
+})
+
 // ---- the host part --------------------------------------------------------
 
 test("the host part writes what it reads, and changes no request", async () => {
