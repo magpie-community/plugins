@@ -1,6 +1,13 @@
 // Small line icons (stroke=currentColor, 1.6px); no third-party icon pack, keeps the bundle small.
 const PATHS: Record<string, string> = {
   plus: "M12 5v14M5 12h14",
+  file: "M6 3h8l4 4v14H6zM14 3v4h4",
+  arrowLeft: "M19 12H5m6-6-6 6 6 6",
+  arrowRight: "M5 12h14m-6-6 6 6-6 6",
+  external: "M14 4h6v6M20 4l-9 9M18 14v6H4V6h6",
+  globe: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm-9 9h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z",
+  panelLeft: "M4 5h16v14H4zM9.5 5v14",
+  widen: "M4 12h16M8 8l-4 4 4 4M16 8l4 4-4 4",
   search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14Zm10 17-4.5-4.5",
   caret: "M9 6l6 6-6 6",
   dots: "M5 12h.01M12 12h.01M19 12h.01",

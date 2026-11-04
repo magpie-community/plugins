@@ -4,10 +4,12 @@ import { create } from "zustand";
 import type { WsClient } from "../api/ws.js";
 import { clampLayoutWidths, maxPanelWidth, maxSidebarWidth } from "../layout/bounds.js";
 
-export type PanelTab = "changes" | "files" | "terminal";
+export type PanelTab = "changes" | "files" | "terminal" | "preview";
+export const PANEL_TABS: PanelTab[] = ["changes", "files", "terminal", "preview"];
 
 export type UiSettings = {
   sidebarWidth?: number;
+  sidebarHidden?: boolean;
   panel?: { open?: boolean; tab?: PanelTab; width?: number };
   collapsedProjects?: string[];
   lastProjectId?: string | null;
@@ -35,6 +37,8 @@ type UiStore = {
   closePanel(): void;
   setPanelTab(tab: PanelTab): void;
   toggleSidebarHidden(): void;
+  /** The sidebar toggle button / Ctrl+B: the drawer on narrow windows, else collapse the column (persisted) */
+  toggleSidebar(): void;
   setSbOpen(open: boolean): void;
   toggleCollapsed(projectId: string): void;
   select(projectId: string | null, threadId: string | null): void;
@@ -71,13 +75,14 @@ export const useUi = create<UiStore>((set, get) => ({
       sidebarWidth: s.sidebarWidth ?? 248,
       panelWidth: s.panel?.width ?? 440,
       panelOpen: s.panel?.open ?? false,
-      sbHidden: false,
+      sbHidden: s.sidebarHidden === true,
     };
     const sized = clampLayoutWidths(draft);
     set({
       sidebarWidth: sized.sidebarWidth,
+      sbHidden: draft.sbHidden,
       panelOpen: draft.panelOpen,
-      panelTab: s.panel?.tab ?? "changes",
+      panelTab: PANEL_TABS.includes(s.panel?.tab as PanelTab) ? (s.panel!.tab as PanelTab) : "changes",
       panelWidth: sized.panelWidth,
       collapsed,
       currentProjectId: s.lastProjectId ?? null,
@@ -113,7 +118,15 @@ export const useUi = create<UiStore>((set, get) => ({
     set({ panelTab: tab });
     persist(get, { panel: { open: get().panelOpen, tab, width: get().panelWidth } });
   },
-  toggleSidebarHidden: () => set((s) => ({ sbHidden: !s.sbHidden })),
+  toggleSidebarHidden: () => {
+    const next = !get().sbHidden;
+    set({ sbHidden: next });
+    persist(get, { sidebarHidden: next });
+  },
+  toggleSidebar: () => {
+    if (typeof window !== "undefined" && window.matchMedia?.("(max-width: 759px)").matches) get().setSbOpen(!get().sbOpen);
+    else get().toggleSidebarHidden();
+  },
   setSbOpen: (open) => set({ sbOpen: open }),
   toggleCollapsed: (projectId) => {
     const collapsed = { ...get().collapsed };

@@ -16,6 +16,8 @@ export type ThreadMeta = {
   seq: number;
   cursorFast?: boolean;
   cursorAutoReview?: boolean;
+  /** 1.2: last Preview tab URL (target, not proxy) */
+  previewUrl?: string | null;
 };
 
 export type Capabilities = {

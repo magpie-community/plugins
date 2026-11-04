@@ -24,6 +24,15 @@ export function initLocale(search: string): LocaleId {
   return locale;
 }
 
+/** Switch the UI language at runtime (Magpie's language changed); returns whether it changed */
+export function setLocale(raw: string | null | undefined): boolean {
+  const next = normalizeLang(raw);
+  if (next === locale) return false;
+  locale = next;
+  if (typeof document !== "undefined") document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
+  return true;
+}
+
 export function getLocale(): LocaleId {
   return locale;
 }

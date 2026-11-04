@@ -396,7 +396,7 @@ export class AcpSession implements ProviderSession {
       return;
     }
     // An image-only message is still a prompt: images go as image blocks when the Agent takes them, else by file path
-    const built = await buildAcpPrompt(text, attachments, this.promptCaps);
+    const built = await buildAcpPrompt(text, attachments, this.promptCaps, input.mentions ?? []);
     const agent = this.o.providerName ?? this.o.binName;
     if (built.imagesByPath.length && !this.promptCaps.image) {
       const switched = this.o.imagesFollowStartModel && this.initCaps.image && this.o.model !== this.startModel;

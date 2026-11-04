@@ -266,6 +266,7 @@ function installExitHook() {
 }
 
 function createHost(port) {
+  const gatePort = port;
   const p = paths();
   const log = makeLogger(p);
   // Gate key: written to session.js; even if leaked it only buys one navigation to the daemon
@@ -331,6 +332,9 @@ function createHost(port) {
           p.dataRoot,
           "--parent-pid",
           String(process.pid),
+          // the preview proxy refuses the gate's port
+          "--gate-port",
+          String(gatePort),
         ],
         {
           // The token goes through an environment variable, not the command line (command lines are visible to other users on the machine)

@@ -1,6 +1,6 @@
 // claude stream-json messages (and ~/.claude/projects jsonl lines) → ProviderEvent (§7.2.3). Ported from normalize in lib/agents/claude.mjs.
 import type { ProviderEvent } from "../../timeline/types.js";
-import { callInfo, todoItems } from "../../agents/kinds.js";
+import { targetExists, callInfo, todoItems } from "../../agents/kinds.js";
 import { editDetail } from "../../agents/diff.js";
 import { tr } from "../../util/i18n.js";
 
@@ -179,7 +179,7 @@ function mapToolUse(blk: Rec, cwd: string): ProviderEvent[] {
   const input = rec(blk.input);
   const name = str(blk.name) ?? "tool";
   const id = str(blk.id) ?? "";
-  const info = callInfo(name, { ...input, _exists: true }, cwd);
+  const info = callInfo(name, { ...input, _exists: name === "Write" ? targetExists(input, cwd) : true }, cwd);
   let detail: unknown = info.detail;
   if (info.kind === "edit" && (input.old_string !== undefined || Array.isArray(input.edits))) {
     detail = editDetail({ path: (info.detail as Rec).path as string, old: input.old_string, new: input.new_string, edits: input.edits });

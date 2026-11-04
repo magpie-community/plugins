@@ -14,6 +14,8 @@ export type Config = {
   idleExitMinutes: number;
   buildStamp: string;
   parentPid?: number;
+  /** The plugin gate's port (index.mjs passes --gate-port); the preview refuses it */
+  gatePort?: number;
 };
 
 function pkgVersion(): string {
@@ -35,6 +37,7 @@ export function parseConfig(argv: string[]): Config {
   let data: string | null = null;
   let token: string | null = null;
   let parentPid: number | undefined;
+  let gatePort: number | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--port" && argv[i + 1]) port = Number(argv[++i]);
@@ -45,6 +48,8 @@ export function parseConfig(argv: string[]): Config {
     else if (a.startsWith("--token=")) token = a.slice(8);
     else if (a === "--parent-pid" && argv[i + 1]) parentPid = Number(argv[++i]);
     else if (a.startsWith("--parent-pid=")) parentPid = Number(a.slice(13));
+    else if (a === "--gate-port" && argv[i + 1]) gatePort = Number(argv[++i]);
+    else if (a.startsWith("--gate-port=")) gatePort = Number(a.slice(12));
   }
   if (port == null || !Number.isInteger(port) || port < 0 || port > 65535) {
     const envPort = Number(process.env.AGENT_CONSOLE_PORT || "");
@@ -61,5 +66,6 @@ export function parseConfig(argv: string[]): Config {
     idleExitMinutes: Number.isFinite(idleEnv) && idleEnv > 0 ? idleEnv : 60,
     buildStamp: daemonBuildStamp(),
     parentPid: Number.isInteger(parentPid) ? parentPid : undefined,
+    gatePort: Number.isInteger(gatePort) && gatePort! > 0 && gatePort! <= 65535 ? gatePort : undefined,
   };
 }

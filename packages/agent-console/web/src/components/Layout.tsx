@@ -104,9 +104,7 @@ export function Layout({
       const k = e.key.toLowerCase();
       if (k === "b") {
         e.preventDefault();
-        const s = useUi.getState();
-        if (window.matchMedia("(max-width: 759px)").matches) s.setSbOpen(!s.sbOpen);
-        else s.toggleSidebarHidden();
+        useUi.getState().toggleSidebar();
       } else if (k === "j") {
         e.preventDefault();
         const s = useUi.getState();

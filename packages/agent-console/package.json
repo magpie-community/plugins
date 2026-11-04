@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-agent-console",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "在 magpie 窗口里加一个「Agent 控制台」页面：用常驻本地服务驱动本机的 Agent CLI（Claude Code、Codex、Cursor 等），带结构化时间线。A Magpie page that drives local Agent CLIs (Claude Code, Codex, Cursor, and others) with a persistent local daemon and a structured timeline.",
   "author": "qingnian108 (https://github.com/qingnian108)",
   "homepage": "https://github.com/qingnian108/magpie-agent-console",
@@ -64,7 +64,8 @@
     "e2e:v1": "node scripts/e2e-v1.mjs",
     "shot:v1": "node scripts/shot-v1.mjs",
     "verify:build": "node scripts/verify-build.mjs",
-    "test:real": "vitest run --config vitest.real.config.ts"
+    "test:real": "vitest run --config vitest.real.config.ts",
+    "test:preview-attack": "node scripts/preview-attack.mjs"
   },
   "engines": {
     "node": ">=20",

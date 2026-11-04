@@ -11,10 +11,16 @@ export type Settings = {
   runningSend: "queue" | "steer";
   showThinking: boolean;
   theme: "auto" | "light" | "dark";
+  /** 1.2: width of the conversation column */
+  contentWidth: ContentWidth;
+  /** 1.2: chat text size in px (timeline, composer; code 1px smaller) */
+  chatFontSize: number;
   idleCloseMinutes: number;
   collapsedProjects: string[];
   panel: { open: boolean; tab: string; width: number };
   sidebarWidth: number;
+  /** 1.2: the sidebar column is collapsed (wide windows) */
+  sidebarHidden?: boolean;
   lastProjectId: string | null;
   lastThreadId: string | null;
   recentDirs?: string[];
@@ -26,6 +32,12 @@ export type Settings = {
   [k: string]: unknown;
 };
 
+export const CONTENT_WIDTHS = ["narrow", "default", "wide", "full"] as const;
+export type ContentWidth = (typeof CONTENT_WIDTHS)[number];
+export const CHAT_FONT_MIN = 12;
+export const CHAT_FONT_MAX = 18;
+export const CHAT_FONT_DEFAULT = 13;
+
 export const DEFAULT_SETTINGS: Settings = {
   defaultProvider: "claude",
   defaultMode: "default",
@@ -33,6 +45,8 @@ export const DEFAULT_SETTINGS: Settings = {
   runningSend: "queue",
   showThinking: true,
   theme: "auto",
+  contentWidth: "default",
+  chatFontSize: CHAT_FONT_DEFAULT,
   idleCloseMinutes: 30,
   collapsedProjects: [],
   panel: { open: false, tab: "changes", width: 440 },
@@ -57,10 +71,13 @@ export const settingsPatchSchema = z
     showThinking: z.boolean(),
     // auto = follow the host: Magpie's light/dark inside Magpie, the OS outside it
     theme: z.enum(["auto", "light", "dark"]),
+    contentWidth: z.enum(CONTENT_WIDTHS),
+    chatFontSize: z.number().int().min(CHAT_FONT_MIN).max(CHAT_FONT_MAX),
     idleCloseMinutes: z.number().int().min(IDLE_CLOSE_MIN).max(IDLE_CLOSE_MAX),
     collapsedProjects: z.array(id).max(1000),
     panel: z.object({ open: z.boolean(), tab: z.string().max(40), width: z.number().min(0).max(5000) }).partial(),
     sidebarWidth: z.number().min(0).max(5000),
+    sidebarHidden: z.boolean(),
     lastProjectId: id.nullable(),
     lastThreadId: id.nullable(),
     recentDirs: z.array(z.string().max(4096)).max(50),

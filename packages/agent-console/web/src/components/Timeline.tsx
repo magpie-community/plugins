@@ -11,6 +11,8 @@ import { fmtDur, fmtTokens, fmtCost } from "../util/format";
 import { useUi } from "../stores/ui";
 import { localizeDaemonMessage, t, tf } from "../i18n/index.js";
 import { toast } from "./Toast";
+import { splitLocalLinks } from "../util/localLinks";
+import { onChatLinkClick } from "../preview/open";
 
 const token = () => getToken();
 
@@ -18,18 +20,59 @@ export function attachmentUrl(id: string): string {
   return `/attachments/${id}?t=${token()}`;
 }
 
+/** Plain text with local addresses as Preview links (tool output; React nodes, no innerHTML) */
+export function LinkifiedText({ text }: { text: string }) {
+  const parts = useMemo(() => splitLocalLinks(text), [text]);
+  if (parts.length === 1 && typeof parts[0] === "string") return <>{text}</>;
+  return (
+    <>
+      {parts.map((p, i) =>
+        typeof p === "string" ? p : (
+          <a key={i} href={p.url} data-ac-local={p.url} className="ac-local" title={t("links.openPreviewTitle")}>{p.text}</a>
+        ),
+      )}
+    </>
+  );
+}
+
+const baseName = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
+
+/** A path chip (composer, user bubble): icon + name (folders end with /), full path on hover */
+const isImageMime = (m: string | undefined): boolean => !m || m.startsWith("image/");
+
+export function MentionChip({ path, isDir, onRemove }: { path: string; isDir: boolean; onRemove?: () => void }) {
+  return (
+    <span className="mention" title={path}>
+      <Icon name={isDir ? "files" : "file"} size={12} />
+      <span className="mention-name">{baseName(path)}{isDir ? "/" : ""}</span>
+      {onRemove && <button type="button" className="att-x" aria-label={t("mention.remove")} onClick={onRemove}>×</button>}
+    </span>
+  );
+}
+
 // ---------- user message ----------
-export function UserItem({ it, onRetry }: { it: Extract<DisplayItem, { kind: "user" }>; onRetry?: (text: string) => void }) {
+export function UserItem({ it, onRetry }: { it: Extract<DisplayItem, { kind: "user" }>; onRetry?: (text: string, mentions?: { path: string; isDir: boolean }[]) => void }) {
   return (
     <div className="um-row">
       <div className="um">
-        {it.attachments?.map((a) => (
+        {it.attachments?.filter((a) => isImageMime(a.mime)).map((a) => (
           <img key={a.id} className="um-img" src={`/attachments/${a.id}?t=${token()}`} alt={a.name} />
         ))}
+        {/* text / PDF / other files: a name chip (they used to render as a broken <img>) */}
+        {it.attachments?.some((a) => !isImageMime(a.mime)) && (
+          <span className="um-mentions">
+            {it.attachments.filter((a) => !isImageMime(a.mime)).map((a) => (
+              <span key={a.id} className="mention" title={a.name}><Icon name="file" size={12} /><span className="mention-name">{a.name}</span></span>
+            ))}
+          </span>
+        )}
+        {it.mentions && it.mentions.length > 0 && (
+          <span className="um-mentions">{it.mentions.map((m) => <MentionChip key={m.path} path={m.path} isDir={m.isDir} />)}</span>
+        )}
         <span className="um-text">{it.text}</span>
         <div className="um-act">
           <button className="ibtn" title={t("common.copy")} onClick={() => void copyText(it.text)}><Icon name="copy" size={13} /></button>
-          {onRetry && <button className="ibtn" title={t("timeline.editResend")} onClick={() => onRetry(it.text)}><Icon name="send" size={13} /></button>}
+          {onRetry && <button className="ibtn" title={t("timeline.editResend")} onClick={() => onRetry(it.text, it.mentions)}><Icon name="send" size={13} /></button>}
         </div>
       </div>
       {it.steered && <div className="um-tag">{t("timeline.steer")}</div>}
@@ -84,12 +127,14 @@ export function ToolGroupItem({ it }: { it: Extract<DisplayItem, { kind: "toolgr
   useEffect(() => {
     if (!userToggled.current && (hasFail || hasDiff)) setOpen(true);
   }, [hasFail, hasDiff]);
-  const summary = useMemo(() => {
+  // Not memoized on it.steps: the reducer appends steps to the same array while a turn streams,
+  // so a memo keyed on the array kept the first count ("1 step · Read 1" next to five steps).
+  const summary = (() => {
     const counts = new Map<string, number>();
     for (const s of it.steps) counts.set(s.kind, (counts.get(s.kind) ?? 0) + 1);
     const parts = [...counts.entries()].map(([k, n]) => `${toolKind(k)} ${n}`);
-    return tf("timeline.toolSummary", { n: it.steps.length, parts: parts.join(" · ") });
-  }, [it.steps]);
+    return tf(it.steps.length === 1 ? "timeline.toolSummaryOne" : "timeline.toolSummary", { n: it.steps.length, parts: parts.join(" · ") });
+  })();
   const runningStep = it.steps.find((s) => s.status === "running");
   return (
     <div className="tg">
@@ -142,7 +187,7 @@ function ToolDetail({ s }: { s: ToolStep }) {
     return (
       <div className="ts-out">
         {tail && <button className="ts-more" onClick={() => setFull(true)}>{tf("timeline.showAllLines", { n: lines.length })}</button>}
-        <pre>{text}</pre>
+        <pre onClick={onChatLinkClick}><LinkifiedText text={text} /></pre>
       </div>
     );
   }
@@ -340,7 +385,7 @@ export function TurnEndItem({ it, onRetry, replyText }: { it: Extract<DisplayIte
 // ---------- dispatch ----------
 export function TimelineRow({ it, threadId, onEditResend, onRetryLast, replyText }: {
   it: DisplayItem; threadId: string; replyText?: string;
-  onEditResend?: (text: string) => void;
+  onEditResend?: (text: string, mentions?: { path: string; isDir: boolean }[]) => void;
   onRetryLast?: () => void;
 }) {
   switch (it.kind) {

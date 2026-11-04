@@ -13,11 +13,26 @@ export function applyMagpieTokensFromSearch(search: string): void {
   } catch {
     return;
   }
-  const root = document.documentElement;
+  applyMagpieTokens(obj);
+}
+
+/** Magpie token map → CSS variables name → value (accent dropped; odd names / values skipped). Pure, for tests. */
+export function magpieTokenVars(obj: Record<string, unknown> | null | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!obj || typeof obj !== "object") return out;
   for (const [k, v] of Object.entries(obj)) {
-    const s = String(v ?? "").trim();
-    if (!s || isAccentToken(k)) continue;
-    const varName = k.startsWith("--") ? k : k.startsWith("magpie-") ? `--${k}` : `--magpie-${k}`;
-    root.style.setProperty(varName, s);
+    if (typeof v !== "string" && typeof v !== "number") continue;
+    const s = String(v).trim();
+    if (!s || s.length > 300 || /[;{}<>]/.test(s) || isAccentToken(k)) continue;
+    const name = k.replace(/^--/, "").replace(/^magpie-/i, "");
+    if (!/^[a-zA-Z0-9-]{1,48}$/.test(name)) continue;
+    out[`--magpie-${name}`] = s;
   }
+  return out;
+}
+
+/** Write Magpie's tokens as --magpie-* variables (at load from ?tokens=, and live from the bridge's theme events) */
+export function applyMagpieTokens(obj: Record<string, unknown> | null | undefined): void {
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(magpieTokenVars(obj))) root.style.setProperty(k, v);
 }

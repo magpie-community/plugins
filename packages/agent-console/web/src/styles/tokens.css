@@ -38,6 +38,12 @@
   --fs-hero: 18px;
   --lh: 1.6;
   --col: 720px;
+  /* Chat text size (Settings → Chat font size, 12–18, default 13): timeline, composer, tool output, diffs.
+     Code is 1px smaller, secondary rows (tool steps, thinking, notices) 1px smaller but never under 12px. */
+  --chat-fs: 13px;
+  --chat-fs-s: max(12px, calc(var(--chat-fs) - 1px));
+  --chat-code-fs: max(11.5px, calc(var(--chat-fs) - 1px));
+  --chat-lh: 1.7;
   --row: 26px;
   --shadow-pop: 0 8px 24px -6px rgb(0 0 0 / .16), 0 0 0 1px var(--line);
   --term-bg: #ffffff;

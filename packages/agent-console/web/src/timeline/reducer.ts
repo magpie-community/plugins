@@ -12,7 +12,7 @@ export type ToolStep = {
 };
 
 export type DisplayItem =
-  | { kind: "user"; key: string; text: string; attachments?: { id: string; name: string; mime: string }[]; steered?: boolean; ts: number }
+  | { kind: "user"; key: string; text: string; attachments?: { id: string; name: string; mime: string }[]; mentions?: { path: string; isDir: boolean }[]; steered?: boolean; ts: number }
   | { kind: "assistant"; key: string; itemId: string; text: string; streaming: boolean }
   | { kind: "reasoning"; key: string; itemId: string; text: string; streaming: boolean }
   | { kind: "toolgroup"; key: string; steps: ToolStep[] }
@@ -164,7 +164,7 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
     case "user_message":
       breakGroup(st);
       st.lastUserIdx.set(ev.turnId ?? "", st.items.length);
-      st.items.push({ kind: "user", key: `u:${ev.seq}`, text: ev.text, attachments: ev.attachments, steered: ev.steered, ts: ev.ts });
+      st.items.push({ kind: "user", key: `u:${ev.seq}`, text: ev.text, attachments: ev.attachments, ...(ev.mentions?.length ? { mentions: ev.mentions } : {}), steered: ev.steered, ts: ev.ts });
       return;
     case "assistant_delta":
       applyDelta(st, ev.itemId, "assistant", ev.text);
