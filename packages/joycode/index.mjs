@@ -627,13 +627,13 @@ function normalizeResponsesSse(source) {
 
     const type = payload?.type || eventName
     if (type === 'response.completed') {
-      const output = payload.response?.output ?? payload.output
+      const output = payload?.response?.output ?? payload?.output
       if (!sawOutput && !hasValidOutput(output)) {
         emitError(controller, {
           type: 'error',
           code: 'empty_response',
           message: 'JoyCode 返回空响应',
-          ...(payload.sequence_number === undefined ? {} : { sequence_number: payload.sequence_number }),
+          ...(payload?.sequence_number === undefined ? {} : { sequence_number: payload.sequence_number }),
         }, lines.find(entry => entry.ending)?.ending || '\n')
         terminalSeen = true
         stopAfterError = true

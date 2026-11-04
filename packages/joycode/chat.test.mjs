@@ -404,6 +404,22 @@ test('Responses double-wrapped SSE is normalized across chunk boundaries', async
   ].join(''))
 })
 
+test('Responses malformed completed payload emits one empty_response without throwing', async t => {
+  const r = await request(t, new Response('event: response.completed\ndata: oops\n\n', {
+    headers: { 'content-type': 'text/event-stream' },
+  }), {
+    input: 'https://api-ai.jd.com/v1/responses',
+    payload: { model: 'GPT-6 Astra', input: 'OK', stream: true },
+  })
+  assert.equal(r.status, 200)
+  let body
+  await assert.doesNotReject(async () => { body = await r.text() })
+  const events = responseEvents(body)
+  assert.equal(events.length, 1)
+  assert.equal(events[0].type, 'error')
+  assert.equal(events[0].code, 'empty_response')
+})
+
 test('Responses converts a double-wrapped JoyCode failure and suppresses later success', async t => {
   const failure = {
     code: 'QUOTA_EXHAUSTED',
