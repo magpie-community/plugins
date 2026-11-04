@@ -175,7 +175,7 @@ test('the desktop menu\'s models are listed: a tier model /models leaves out sho
   const calls=[];const p=I.createPlugin({readSession:()=>session,fetchImpl:async(url,init)=>{
     calls.push({url,init});return url===I.CONFIG?json(workConfig):json(modelPayload);}});
   const models=await p.provider.models({models:{}},{auth:account});
-  expect(Object.keys(models)).toEqual(['k3-agent','k3d1-pro','k2d8-preview']);
+  expect(Object.keys(models)).toEqual(['k3-agent','k3d1-pro','k3d1-pro-fast','k2d8-preview']);
   expect(models['k3d1-pro']).toMatchObject({id:'k3d1-pro',name:'Kimi K3.1 Pro',api:{id:'k3d1-pro',url:I.BASE},limit:{context:262144}});
   expect(models['k3d1-pro'].capabilities).toMatchObject({reasoning:true,attachment:true});
   // supportEfforts' "off" is the desktop's REASONING_EFFORT_NONE.
@@ -190,14 +190,14 @@ test('the desktop menu\'s models are listed: a tier model /models leaves out sho
 });
 
 test('the menu is read in the proto\'s own field names too',()=>{
-  expect(Object.keys(I.workConfigRows(snake(workConfig)))).toEqual(['k3-agent','k3d1-pro','k2d8-preview']);
+  expect(Object.keys(I.workConfigRows(snake(workConfig)))).toEqual(['k3-agent','k3d1-pro','k3d1-pro-fast','k2d8-preview']);
   expect(I.workConfigRows(snake(workConfig))['k3d1-pro'].name).toBe('Kimi K3.1 Pro');
 });
 
 test('either list failing leaves the other; both failing throws so the last good list stays',async()=>{
   const run=f=>I.createPlugin({readSession:()=>session,fetchImpl:f}).provider.models({models:{}},{auth:account});
   expect(Object.keys(await run(async url=>url===I.CONFIG?new Response('{}',{status:500}):json(modelPayload)))).toEqual(['k3-agent']);
-  expect(Object.keys(await run(async url=>url===I.CONFIG?json(workConfig):new Response('{}',{status:502})))).toEqual(['k3-agent','k3d1-pro','k2d8-preview']);
+  expect(Object.keys(await run(async url=>url===I.CONFIG?json(workConfig):new Response('{}',{status:502})))).toEqual(['k3-agent','k3d1-pro','k3d1-pro-fast','k2d8-preview']);
   await expect(run(async()=>new Response('{}',{status:502}))).rejects.toThrow();
   await expect(run(async url=>url===I.CONFIG?json({models:[]}):new Response('{}',{status:502}))).rejects.toThrow();
 });
@@ -217,7 +217,7 @@ test('the menu is asked as the desktop asks it, so K3.1 Pro (k3d1-agent) is list
       const h=init.headers['x-msh-platform'];seen.push(init.headers);
       return json(h==='mac'||h==='windows'?deskMenu:webMenu);}});
     const models=await p.provider.models({models:{}},{auth:account});
-    expect(Object.keys(models)).toEqual(['k3d1-agent','k2d8-preview','k3-agent']);
+    expect(Object.keys(models)).toEqual(['k3d1-agent','k3d1-agent-fast','k2d8-preview','k3-agent']);
     expect(models['k3d1-agent']).toMatchObject({id:'k3d1-agent',name:'K3.1 Pro',api:{id:'k3d1-agent',url:I.BASE},
       limit:{context:262144,output:32768},capabilities:{reasoning:true,attachment:true}});
     expect(Object.keys(models['k3d1-agent'].variants)).toEqual(['low','high','max']);
@@ -251,7 +251,7 @@ test('a menu the web sign-in can\'t get is asked again without it, so K3.1 Pro i
         seen.push(init.headers);
         return init.headers.Authorization?reply():json(deskMenu);}});
       const models=await p.provider.models({models:{}},{auth:account});
-      expect(Object.keys(models)).toEqual(['k3d1-agent','k2d8-preview','k3-agent']);
+      expect(Object.keys(models)).toEqual(['k3d1-agent','k3d1-agent-fast','k2d8-preview','k3-agent']);
       expect(models['k3d1-agent'].name).toBe('K3.1 Pro');
       expect(seen.map(h=>h.Authorization)).toEqual(['Bearer '+session.webToken,undefined]);
       expect(seen[1]).toMatchObject({'x-msh-platform':'mac','x-msh-version':'3.2.20'});
@@ -277,6 +277,9 @@ test('a model is fast when its menu entry offers the fast speed, and keeps that 
   expect(rows['k3d1-agent'].fast).toBe(true);
   expect(rows['k3d1-agent'].serviceTiers).toEqual(['priority']);
   expect(rows['k3-agent'].fast).toBeUndefined();
+  expect(Object.keys(rows)).toEqual(['k3d1-agent','k3d1-agent-fast','k3-agent','k2d8-preview']);
+  expect(rows['k3d1-agent-fast']).toMatchObject({id:'k3d1-agent-fast',api:{id:'k3d1-agent-fast'}});
+  expect(rows['k3d1-agent-fast'].fast).toBeUndefined();
   expect(rows['k2d8-preview'].fast).toBeUndefined();
   const p=I.createPlugin({readSession:()=>session,fetchImpl:async url=>String(url).includes('DescribeKimiWorkConfig')?json(speedMenu)
     :json({data:[{id:'k3d1-agent',display_name:'K3.1',context_length:262144}]})});
@@ -292,6 +295,7 @@ test('service_tier priority or fast is asked by header and left out of the body;
   const send=async body=>{await loader.fetch(I.BASE+'/chat/completions',{method:'POST',body});const c=calls.at(-1);return {body:c.body,speed:c.headers.get('X-Kimi-Model-Speed')};};
   for(const tier of ['priority','fast'])
     expect(await send(JSON.stringify({model:'k3d1-agent',service_tier:tier}))).toEqual({body:'{"model":"k3d1-agent"}',speed:'fast'});
+  expect(await send('{"model":"k3d1-agent-fast"}')).toEqual({body:'{"model":"k3d1-agent"}',speed:'fast'});
   for(const body of ['{"model":"k3d1-agent","service_tier":"default"}','{"model":"k3d1-agent"}','{"note":"service_tier"}'])
     expect(await send(body)).toEqual({body,speed:null});
 });

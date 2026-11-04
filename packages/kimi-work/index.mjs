@@ -34,6 +34,9 @@ const SPEED_HEADER = 'X-Kimi-Model-Speed';
 // How a model says it has that speed: magpie offers its Fast switch on a model
 // served at priority, and sends such a request with that service_tier.
 const FAST_ROW = {fast:true,serviceTiers:['priority']};
+// The same speed as a model to tick and pick by itself: k3d1-agent-fast, which
+// Kimi hears as k3d1-agent with the header.
+const FAST_SUFFIX = '-fast';
 function webHeaders(platform=process.platform) {
   return {'User-Agent':UA,'x-msh-platform':platform==='darwin'?'mac':platform==='win32'?'windows':'web',
     'x-msh-version':DESKTOP_VERSION,'R-Timezone':Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC'};
@@ -255,14 +258,19 @@ function moonshotTools(body) {
   return changed?JSON.stringify(doc):body;
 }
 
-// A service_tier of priority or fast (magpie's Fast, an agent's own) is asked
-// of Kimi by header, and taken out of the body. Any other request goes as is.
+// A service_tier of priority or fast (magpie's Fast, an agent's own), or a
+// model named for that speed, is asked of Kimi by header, and the body says
+// neither. Any other request goes as is.
 function fastSpeed(body) {
-  if(typeof body!=='string'||!body.includes('"service_tier"'))return {body,fast:false};
+  if(typeof body!=='string'||!(body.includes('"service_tier"')||body.includes(FAST_SUFFIX+'"')))return {body,fast:false};
   let doc;
   try{doc=JSON.parse(body);}catch{return {body,fast:false};}
-  if(!isObj(doc)||(doc.service_tier!=='priority'&&doc.service_tier!=='fast'))return {body,fast:false};
-  delete doc.service_tier;
+  if(!isObj(doc))return {body,fast:false};
+  const tier=doc.service_tier==='priority'||doc.service_tier==='fast';
+  const named=typeof doc.model==='string'&&doc.model.endsWith(FAST_SUFFIX);
+  if(!tier&&!named)return {body,fast:false};
+  if(tier)delete doc.service_tier;
+  if(named)doc.model=doc.model.slice(0,-FAST_SUFFIX.length);
   return {body:JSON.stringify(doc),fast:true};
 }
 
@@ -444,6 +452,10 @@ function workConfigRows(payload) {
       capabilities:{reasoning:thinking,toolcall:true,attachment:image,
         input:{text:true,image,video:false,audio:false,pdf:false},output:{text:true}},
       variants,...(fast?FAST_ROW:{})};
+    if(fast&&!out[id+FAST_SUFFIX]) {
+      const fastId=id+FAST_SUFFIX,{fast:_,serviceTiers:__,...row}=out[id];
+      out[fastId]={...row,id:fastId,name:row.name+' Fast',api:{...row.api,id:fastId}};
+    }
   }
   return out;
 }
