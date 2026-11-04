@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-window-warmup",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "窗口预热 Window Warmup：定时消息插件，定时给指定供应商/账号/模型发一条短消息，在额度窗口重置后、每天定时或每隔几小时自动预热保活，提前开启5小时/每周订阅额度（配额）窗口，适用 Codex、Claude、GLM 智谱、ZCode 等。Scheduled keep-alive message to warm up quota / usage / rate limit windows after reset (cron-like).",
   "author": "YangHonghang (https://github.com/YangHonghang)",
   "type": "module",

@@ -42,10 +42,10 @@ bun test tests/scheduler.test.ts -t "关键字"   # 按用例名过滤
 核心模块分工：
 
 - **`src/rules.ts`**：纯时间计算（每天定时含时区 / 夏令时、固定间隔、窗口到期 = `resetsAt` + 30s、补发回看 48 小时）、任务校验与探活消息常量。**页面直接打包本模块**（编辑区预览与调度器用同一个 `upcoming`），所以它只能依赖 `types.ts`，不得引入 `node:*` 或网关模块（`tests/rules.test.ts` 有守卫）。`types.ts` 同理，另放各层共用的 `errText`。
-- **`src/scheduler.ts`**：所有改状态入口（tick / upsert / remove / runNow）走同一操作队列串行；发送本体在队列外但登记在 inflight，保证同任务不重叠、删除后异步完成不会把记录写回。单定时器，最长睡 10 分钟后重算。窗口任务发送前后让 magpie 单卡重读额度（`readAt` 早于上次发送的空闲读数不信）。判断逻辑集中在几个私有函数：`pendingFixedDue`（定时/间隔该不该补发）、`currentWindowDue` + `windowReady`（窗口到期且本轮未尝试，纯计算）；`lastReset` 只在 `recordResets` 里写（额度刷新后与 `rearm` 时），不要再把写盘塞回查询路径。
+- **`src/scheduler.ts`**：所有改状态入口（tick / upsert / remove / runNow）走同一操作队列串行；发送本体在队列外但登记在 inflight，保证同任务不重叠、删除后异步完成不会把记录写回。单定时器，最长睡 10 分钟后重算。窗口任务发送前后让 magpie 单卡重读额度（`readAt` 早于上次发送的空闲读数不信）。判断逻辑集中在几个私有函数：`pendingFixedDue`（定时/间隔该不该补发）、`currentWindowDue` + `windowReady`（窗口到期且本轮未尝试，纯计算）；`lastReset` 只在 `recordResets` 里写（额度刷新后与 `rearm` 时），不要再把写盘塞回查询路径。`resolveSend` 的存在性判定是 `/v1/models` ∪ chosen：模型被路由组藏出 `/v1/models` 时靠 chosen 照发，拿不到档位元数据就按「不适用」不带 `reasoning_effort`。
 - **`src/gateway.ts`**：与本地 magpie 网关（`MAGPIE_ADDR`，默认 `127.0.0.1:3425`）通信：`/v1/models`、`/v1/magpie/quotas`（含单卡 refresh）、`/v1/chat/completions`；思考档位 `pickEffort` 每次发送前现算。
 - **`src/accounts.ts`**：**统一账号规则的唯一实现**——`/api/catalog` 与调度器共用（账号合并、key 卡挂回、按账号收窄模型、`pickAutoModel`）。禁止在别处另写一套，否则页面显示与实际发送会不一致。
-- **`src/magpie-files.ts`**：只读 magpie 的 `providers.json` 与模型缓存。`readDefaultKeyDirectory` / `readDefaultModelCache` 是目录与调度器共用的默认读取入口；`xdgConfigHome` 是插件数据目录、旧包迁移与 Magpie 配置目录共用的 XDG 解析（只认绝对路径）。**红线**：key 原文只允许在 `readKeyDirectory` 内「读 → 算指纹（sha256 前 5 字节 hex）」后即丢，不得进入返回值、日志、错误信息或缓存；JSON 解析失败一律换成固定文案 `BROKEN_PROVIDERS_MESSAGE`。
+- **`src/magpie-files.ts`**：只读 magpie 的 `providers.json` 与模型缓存。`readDefaultKeyDirectory` / `readDefaultModelCache` 是目录与调度器共用的默认读取入口；`xdgConfigHome` 是插件数据目录、旧包迁移与 Magpie 配置目录共用的 XDG 解析（只认绝对路径）。**红线**：key 原文只允许在 `readKeyDirectory` 内「读 → 算指纹（sha256 前 5 字节 hex）」后即丢，不得进入返回值、日志、错误信息或缓存；JSON 解析失败一律换成固定文案 `BROKEN_PROVIDERS_MESSAGE`。除 key 指纹与 `accountModels` 外还取每供应商的 `models`（chosen 启用清单）：模型被路由组 `unlists` 藏出 `/v1/models` 时它是唯一的存在性来源。
 - **`src/store.ts`**：`state.json` 临时文件 + rename 落盘，损坏时拒绝启动且绝不改动原文件；`service.lock` 原子排他创建 + pid 活性判断（活性不明不抢占，pid 存活但端口无本插件应答视为陈旧锁接管）；一次性从旧包 `scheduled-messages` 迁移 `state.json`。
 
 ## 供应商 → 账号 → 模型级联（无官方接口的绕行路径）
@@ -63,9 +63,9 @@ Magpie 不提供「供应商 / 账号 / 每账号可用模型」的列表接口�
 - **模型三层过滤**（`modelsForAccount`）：
   1. 缓存 `Keys` 可见性（仅缓存存在且账号是指纹时）；
   2. `accountModels[指纹或小写账号名]`，比对不带供应商前缀的 id；
-  3. 必须仍在 `/v1/models` 里。
+  3. 仍在 `/v1/models` 里，或仍在 chosen 启用清单（`providers.json` 的 `models`）里——后者接住被路由组 `unlists` 藏出 `/v1/models` 的模型。
 
-  无缓存时退化为 `/v1/models` 全量（`perAccount: false`），两者皆无时返回 `list: null`。
+  无缓存时候选退化为 `/v1/models` ∪ chosen（按完整 id 去重，`perAccount: false`），两者皆无时返回 `list: null`。
 - **发送头**（`pinFor`）：订阅账号原样发；key 指纹在启用 key 不少于 2 把（目录读不出时按 2 把处理）时发 `<P>#<指纹>`，只有 1 把时不带头，因为此时候选 ID 就是供应商 id；其余值（旧任务存的 key 名）原样发。非 ASCII 头值按 UTF-8 字节写入（`send`）。
 - **文件位置**（`magpieDirs`）：从安装路径 `<配置目录>/plugins/node_modules/@magpie-community/page-window-warmup/dist` 上溯得到配置目录；旧独立包名 `node_modules/magpie-window-warmup/dist` 也识别（升级用户的旧路径）。再据此区分安装版和便携版的缓存目录。`tests/magpie-files.test.ts` 覆盖了新作用域路径、旧路径、Windows 与便携版。
 

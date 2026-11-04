@@ -65,22 +65,34 @@ function windowsForAccount(provider, account, quotas, keyDir) {
   const card = quotas.find((q) => q.provider === provider && q.viaKey && (q.account.toLowerCase() === low || q.account.startsWith(`${name}${MASKED_SEP}`)));
   return card ? keepWindows(card.windows) : [];
 }
-function candidatesOf(provider, models, cache) {
+function candidatesOf(provider, models, cache, chosen) {
   if (cache) {
     return cache.map((c) => ({ full: `${provider}/${c.id}`, bare: c.id, keys: c.keys }));
   }
   const prefix = `${provider}/`;
-  return models.map((m) => ({
-    full: m,
-    bare: m.startsWith(prefix) ? m.slice(prefix.length) : m,
-    keys: null
-  }));
+  const seen = new Set;
+  const out = [];
+  for (const m of models) {
+    if (seen.has(m))
+      continue;
+    seen.add(m);
+    out.push({ full: m, bare: m.startsWith(prefix) ? m.slice(prefix.length) : m, keys: null });
+  }
+  for (const bare of chosen) {
+    const full = `${provider}/${bare}`;
+    if (seen.has(full))
+      continue;
+    seen.add(full);
+    out.push({ full, bare, keys: null });
+  }
+  return out;
 }
 function modelsForAccount(provider, account, input) {
   const hasCache = input.cache !== null;
-  if (!hasCache && input.models.length === 0)
+  if (!hasCache && input.models.length === 0 && input.chosen.length === 0) {
     return { list: null, perAccount: false };
-  let cands = candidatesOf(provider, input.models, input.cache);
+  }
+  let cands = candidatesOf(provider, input.models, input.cache, input.chosen);
   if (hasCache && isFingerprint(account)) {
     cands = cands.filter((c) => !c.keys || c.keys.length === 0 || c.keys.includes(account));
   }
@@ -90,7 +102,10 @@ function modelsForAccount(provider, account, input) {
     const set = new Set(allowed);
     cands = cands.filter((c) => set.has(c.bare));
   }
-  const present = new Set(input.models);
+  const present = new Set([
+    ...input.models,
+    ...input.chosen.map((bare) => `${provider}/${bare}`)
+  ]);
   const list = cands.map((c) => c.full).filter((id) => present.has(id)).sort();
   return { list, perAccount: hasCache };
 }
@@ -137,10 +152,13 @@ function pickModels(provider, account, input) {
   };
 }
 function autoAccountModelsOf(provider, input) {
-  if (input.cache === null && input.models.length === 0)
+  if (input.cache === null && input.models.length === 0 && input.chosen.length === 0)
     return null;
-  const present = new Set(input.models);
-  return candidatesOf(provider, input.models, input.cache).map((c) => c.full).filter((id) => present.has(id)).sort();
+  const present = new Set([
+    ...input.models,
+    ...input.chosen.map((bare) => `${provider}/${bare}`)
+  ]);
+  return candidatesOf(provider, input.models, input.cache, input.chosen).map((c) => c.full).filter((id) => present.has(id)).sort();
 }
 function pinFor(provider, account, keyDir, quotas = []) {
   if (!account)
@@ -239,7 +257,7 @@ function entryOf(raw) {
         accountModels[k] = list;
     }
   }
-  return { keys, accountModels };
+  return { keys, accountModels, models: asStringArray(pr.models) ?? [] };
 }
 var readCache = new Map;
 function cached(key, load, worth) {
@@ -284,6 +302,7 @@ function readKeyDirectory(configDir) {
                 prev.keys.push(k);
             }
             Object.assign(prev.accountModels, entry.accountModels);
+            prev.models = entry.models;
           } else {
             map.set(id, entry);
           }
@@ -863,11 +882,13 @@ async function fetchCatalog(base) {
   for (const p of list) {
     const raws = rawModels.get(p.id) ?? [];
     p.models = raws.map((m) => ({ id: m.id, effort: pickEffort(m) })).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const chosen = keyDir?.get(p.id)?.models ?? [];
     const built = accountsOf(p.id, {
       models: raws.map((m) => m.id),
       quotas: quotas.entries,
       keyDir,
-      cache: await readDefaultModelCache(p.id)
+      cache: await readDefaultModelCache(p.id),
+      chosen
     });
     p.accounts = built.accounts;
     p.autoAccountModels = built.autoAccountModels;
@@ -1415,24 +1436,33 @@ class Scheduler {
       this.modelCacheFn(task.provider).catch(() => null)
     ]);
     const pin = pinFor(task.provider, task.account, keyDir, this.quota?.entries ?? []);
+    const chosen = keyDir?.get(task.provider)?.models ?? [];
     if (task.model) {
       const model = models.find((m) => m.id === task.model);
-      return model ? { id: task.model, model, pin } : { error: `\u6A21\u578B ${task.model} \u5DF2\u4E0D\u5728 Magpie \u7684\u6A21\u578B\u5217\u8868\u91CC` };
+      if (model)
+        return { id: task.model, model, pin };
+      if (chosen.some((bare) => bare === task.model || `${task.provider}/${bare}` === task.model)) {
+        return { id: task.model, model: { id: task.model }, pin };
+      }
+      return { error: `\u6A21\u578B ${task.model} \u5DF2\u4E0D\u5728 Magpie \u7684\u6A21\u578B\u5217\u8868\u91CC` };
     }
     const ids = models.filter((m) => modelProvider(m) === task.provider).map((m) => m.id);
-    const list = modelsForAccount(task.provider, task.account, { models: ids, keyDir, cache }).list;
+    const list = modelsForAccount(task.provider, task.account, {
+      models: ids,
+      keyDir,
+      cache,
+      chosen
+    }).list;
     if (list === null) {
       return { error: `\u4F9B\u5E94\u5546 ${task.provider} \u8FD8\u6CA1\u6709\u6A21\u578B\u5217\u8868\uFF0C\u65E0\u6CD5\u81EA\u52A8\u9009\u6A21\u578B` };
     }
     if (list.length === 0)
       return { error: `\u8D26\u53F7 ${task.account || "\u81EA\u52A8"} \u6CA1\u6709\u53EF\u7528\u6A21\u578B` };
-    const chosen = pickAutoModel(list.map((id) => ({ id })));
-    if (!chosen)
+    const chosenModel = pickAutoModel(list.map((id) => ({ id })));
+    if (!chosenModel)
       return { error: `\u8D26\u53F7 ${task.account || "\u81EA\u52A8"} \u6CA1\u6709\u53EF\u7528\u6A21\u578B` };
-    const model = models.find((m) => m.id === chosen.id);
-    if (!model)
-      return { error: `\u6A21\u578B ${chosen.id} \u5DF2\u4E0D\u5728 Magpie \u7684\u6A21\u578B\u5217\u8868\u91CC` };
-    return { id: chosen.id, model, pin };
+    const model = models.find((m) => m.id === chosenModel.id) ?? { id: chosenModel.id };
+    return { id: chosenModel.id, model, pin };
   }
   async sendAndFinalize(task, run, entry, savedRunning) {
     try {
