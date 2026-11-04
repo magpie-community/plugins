@@ -9,7 +9,7 @@
 // Pure functions with injected fs/env so the Windows logic is tested on Linux.
 import path from "node:path";
 import { statSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { findOnPath } from "../../../lib/pathscan.mjs";
 
 const W = path.win32;
@@ -22,7 +22,7 @@ export type BashDeps = {
   home?: string;
   /** sync existence check for local, well-known paths */
   isFile?: (p: string) => boolean;
-  /** async check for other drives (a dead network drive must not hang the daemon) */
+  /** async check for other drives (tests); by default they are probed in a separate process, see probeInChild */
   isFileAsync?: (p: string) => Promise<boolean>;
   /** drive letters to try for X:\Git; default C–Z */
   drives?: string[];
@@ -44,10 +44,6 @@ function syncIsFile(p: string): boolean {
   } catch {
     return false;
   }
-}
-
-function asyncIsFile(p: string): Promise<boolean> {
-  return stat(p).then((s) => s.isFile(), () => false);
 }
 
 function withTimeout(p: Promise<boolean>, ms: number): Promise<boolean> {
@@ -84,7 +80,8 @@ export type BashCheck = { ok: true; path: string } | { ok: false; reason: "empty
 export function checkBashPath(raw: string | undefined | null, deps: BashDeps = {}): BashCheck {
   const p = cleanPath(String(raw ?? ""));
   if (!p) return { ok: false, reason: "empty" };
-  if (!/^(?:[A-Za-z]:[\\/]|\\\\)/.test(p)) return { ok: false, reason: "relative" };
+  // A drive-letter path only: a UNC path (\\server\share) is checked synchronously and could stall on a dead share
+  if (!/^[A-Za-z]:[\\/]/.test(p)) return { ok: false, reason: "relative" };
   const base = W.basename(p).toLowerCase();
   if (base !== "bash.exe" && base !== "sh.exe") return { ok: false, reason: "notBash" };
   const env = deps.env ?? process.env;
@@ -131,7 +128,7 @@ export function driveBashCandidates(drives: string[]): string[] {
   for (const raw of drives) {
     const L = raw.replace(/[:\\/]/g, "").toUpperCase();
     if (!/^[A-Z]$/.test(L)) continue;
-    out.push(`${L}:\\Git\\bin\\bash.exe`, `${L}:\\Program Files\\Git\\bin\\bash.exe`, `${L}:\\Program Files (x86)\\Git\\bin\\bash.exe`);
+    out.push(`${L}:\\Git\\bin\\bash.exe`, `${L}:\\Program Files\\Git\\bin\\bash.exe`);
   }
   return out;
 }
@@ -162,15 +159,53 @@ export async function findGitBash(manual: string | undefined, deps: BashDeps = {
   }
   for (const b of knownBashCandidates(env, deps.home)) if (ok(b)) return { found: { path: b, source: "known" }, manualError };
   const drives = driveBashCandidates(deps.drives ?? ALL_DRIVES);
-  const probe = deps.isFileAsync ?? asyncIsFile;
   const ms = deps.probeTimeoutMs ?? 1500;
-  const hits = await Promise.all(drives.map((p) => (isWslBash(p, env) ? Promise.resolve(false) : withTimeout(probe(p), ms))));
-  const i = hits.indexOf(true);
-  if (i >= 0) return { found: { path: drives[i], source: "drive" }, manualError };
+  const list = drives.filter((p) => !isWslBash(p, env));
+  const hit = deps.isFileAsync
+    ? await Promise.all(list.map((p) => withTimeout(deps.isFileAsync!(p), ms))).then((h) => list[h.indexOf(true)] ?? null)
+    : await probeInChild(list, ms);
+  if (hit) return { found: { path: hit, source: "drive" }, manualError };
   for (const b of findOnPath("bash.exe", { platform: "win32", env, extra: false, exists: isFile })) {
     if (!isWslBash(b, env)) return { found: { path: b, source: "path" }, manualError };
   }
   return { found: null, manualError };
+}
+
+/**
+ * Stat the drive candidates in a short-lived child Node process, killed after `ms`. A stat on a disconnected network drive can
+ * block for tens of seconds, and in-process it would hold the daemon's libuv threadpool (every other fs call) that long.
+ * Resolves to the first candidate (in list order) that is a file, or null.
+ */
+export function probeInChild(paths: string[], ms: number): Promise<string | null> {
+  if (!paths.length) return Promise.resolve(null);
+  const script =
+    "const fs=require('fs');const p=JSON.parse(process.argv[1]);" +
+    "p.forEach((x,i)=>fs.stat(x,(e,s)=>{if(!e&&s.isFile())process.stdout.write(i+'\\n')}));";
+  return new Promise((resolve) => {
+    const hits = new Set<number>();
+    let out = "";
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { child.kill(); } catch {}
+      const first = [...hits].sort((a, b) => a - b)[0];
+      resolve(first === undefined ? null : paths[first] ?? null);
+    };
+    const child = spawn(process.execPath, ["-e", script, JSON.stringify(paths)], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    const timer = setTimeout(finish, ms);
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (d: string) => {
+      out += d;
+      for (const line of out.split("\n").slice(0, -1)) if (/^\d+$/.test(line)) hits.add(Number(line));
+      out = out.slice(out.lastIndexOf("\n") + 1);
+      // the first candidate is a hit: nothing earlier can win, stop waiting
+      if (hits.has(0)) finish();
+    });
+    child.on("error", finish);
+    child.on("close", finish);
+  });
 }
 
 /** The directory to put first on PATH so a PATH lookup of `bash` returns this one (…\Git\usr\bin → …\Git\bin when it exists). */

@@ -47,6 +47,7 @@ export function foldTimeline(items: DisplayItem[], opts: { showThinking?: boolea
     if (it.kind === "reasoning") {
       if (!showThinking) continue;
       if (isShortThinking(it)) {
+        if (!it.streaming && !it.text.trim()) continue; // finished and empty: nothing to show, and it doesn't split a run
         if (group) group.steps.push(thinkStep(it));
         else held.push(it);
         continue;
