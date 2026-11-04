@@ -469,6 +469,10 @@ export function gcloudDefaultDirectory() {
 export const isGcloudDefault = (directory) => expandPath(directory) === expandPath(gcloudDefaultDirectory())
 
 const ADC_DIRS = "adc-"
+// 0.1.1 staged unnamed sign-ins in mkdtemp(join(root, "adc-pending-")), which
+// appends six alphanumeric characters with no "-". Every validated email has
+// "@" and therefore produces a "-" after the local-part in adcSlug(account).
+const LEGACY_PENDING_ADC = /^adc-pending-[0-9A-Za-z]{6}$/
 
 // Inventory of managed ADC directories, used to choose the first/add-account
 // consent page. These directory labels are NOT Google account identities.
@@ -486,7 +490,7 @@ export async function knownAccounts(options = {}) {
     throw error
   })
   for (const name of names) {
-    if (!name.startsWith(ADC_DIRS)) continue
+    if (!name.startsWith(ADC_DIRS) || LEGACY_PENDING_ADC.test(name)) continue
     // Staging directories use a separate hidden prefix, so a legitimate
     // account whose email starts with "pending-" remains discoverable.
     const present = await lstat(join(root, name, "application_default_credentials.json")).then(() => true, (error) => {
@@ -743,8 +747,8 @@ export async function startLogin(options = {}, openWindow = openSignInWindow) {
         // can change. Email alone cannot establish continuity across a rename.
         googleIdentity = await tokenProvider({ authMode: "adc", cloudsdkConfig: directory })()
           .then(identityOf).catch(() => undefined)
-        adcEmail = googleIdentity?.account.toLowerCase()
-        if (!adcEmail || !googleIdentity.subject) {
+        adcEmail = googleIdentity?.account?.toLowerCase()
+        if (!adcEmail || !googleIdentity?.subject) {
           throw stopped("The Google account email and subject could not be confirmed after consent; no new account was recorded")
         }
         // Serialize subject comparison AND registration across processes. Two
