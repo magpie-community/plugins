@@ -9,7 +9,7 @@ settings.
 magpie plugin add @magpie-community/agent-willdeep-cli
 ```
 
-Install WillDeep CLI 0.142.0-rc1 or later and make sure magpie's process
+Install WillDeep CLI 0.143.0-rc7 or later and make sure magpie's process
 can find the `willdeep` command on its `PATH`. Open the CLI or its TUI
 once so it creates its private support directory. Then enable the plugin
 and pick one of magpie's models in WillDeep CLI's row. magpie writes:

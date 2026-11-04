@@ -8,7 +8,7 @@ magpie model while the app keeps its own Provider library.
 magpie plugin add @magpie-community/agent-willdeep
 ```
 
-Install WillDeep Desktop 1.427.0-rc1 or later and launch it once: the app
+Install WillDeep Desktop 1.428.0-rc2 or later and launch it once: the app
 creates its private `~/.willdeep/integrations/magpie/desktop/` directory.
 Then enable the plugin and pick one of magpie's models in WillDeep's row.
 magpie writes:
