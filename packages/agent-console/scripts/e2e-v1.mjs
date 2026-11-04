@@ -1,6 +1,6 @@
 // e2e (§11.2): playwright-core + Edge, isolated data directory _tmp/e2e-xdg, port 3497, AGENT_CONSOLE_MOCK=1.
-// Scenarios 1–12, 16–26 (20, 22–26: 1.3 overlap at 600 px, message actions, quotes, instant send, tool rows / summary,
-// checklist + pill + reply footer + code block); each prints ✓/✗, and any ✗ exits with code 1.
+// Scenarios 1–12, 16–27 (20–27: 1.3 overlap at 600 px, 全部自动同意, message actions, quotes, instant send, tool rows / summary,
+// checklist + pill + reply footer + code block, the 全部自动同意 indicator / trace / upgrade notice); each prints ✓/✗, and any ✗ exits with code 1.
 // The mock Agent starts slowly (E2E_MOCK_START_MS, default 1200 ms) like a real one on Windows, so every scenario runs
 // with the user's message arriving before the Agent is up.
 import { spawn, execFileSync } from "node:child_process";
@@ -14,7 +14,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TMP = join(root, "_tmp");
 const XDG = join(TMP, "e2e-xdg");
 const PROJ = join(TMP, "e2e-proj");
-const PORT = 3497;
+const PORT = Number(process.env.E2E_PORT || 3497);
 // Edge / Chrome / Chromium (Windows, macOS, Linux); MSEDGE_PATH or CHROME_PATH may be set
 const EDGE = findBrowser();
 
@@ -80,6 +80,10 @@ async function setup() {
     g(["add", "-A"]); g(["commit", "-m", "init", "-q"]);
   } catch (e) { log("[e2e] git init 失败（场景13 会失败）:", String(e).slice(0, 120)); }
 
+  // Scenario 27: this data dir is an upgraded 1.2 user whose default was 全部放行 (as migrate/autoApprove13.ts leaves it;
+  // the default itself is 每次询问 here so the mock scenarios keep asking)
+  mkdirSync(join(XDG, "magpie/agent-console"), { recursive: true });
+  writeFileSync(join(XDG, "magpie/agent-console/settings.json"), JSON.stringify({ v1Migrated: true, autoApproveUpgrade: { done: true, legacyDefault: true, noticed: false } }));
   daemon = spawn("node", [join(root, "daemon/dist/main.js"), "--port", String(PORT), "--data", XDG], {
     env: { ...process.env, AGENT_CONSOLE_MOCK: "1", AGENT_CONSOLE_MOCK_START_MS: process.env.E2E_MOCK_START_MS ?? "1200" },
     stdio: ["ignore", "pipe", "pipe"],
@@ -487,21 +491,105 @@ async function scenario20() {
 }
 
 async function scenario21() {
-  // 全部自动同意: a waiting card is approved by the switch, the next request never shows a card
+  // 全部自动同意: a waiting card is approved by the switch, the next request never shows a card; both approvals are in
+  // the timeline (#727 review 2) as the quiet 已自动同意 row, not as cards
   await newThread();
   await send("/perm");
   await page.waitForSelector(".card.perm:not(.done)", { timeout: 15000 });
   await page.click(".mode-chip");
   await page.click('.mode-menu .sm-opt:has-text("全部自动同意")');
-  await page.waitForSelector(".card.perm.done", { timeout: 8000 });
-  const label = await page.textContent(".card.perm.done .perm-done");
+  await page.waitForSelector('[data-testid="auto-approved"]', { timeout: 8000 });
   const chipAuto = await page.$(".mode-chip.auto");
   await waitIdle();
   await send("/perm");
   await sleep(500);
   await waitIdle();
   const cards = (await page.$$(".card.perm")).length;
-  record("场景21 全部自动同意：待批卡片自动同意，之后不再弹", /自动同意/.test(label ?? "") && !!chipAuto && cards === 1, `label=${label} cards=${cards}`);
+  const rows = await page.$$eval('[data-testid="auto-approved"] .apv-n', (els) => els.map((e) => e.textContent));
+  record("场景21 全部自动同意：待批卡片自动同意，之后不再弹", !!chipAuto && cards === 0 && rows.length === 2 && rows.every((r) => /已自动同意 1 项/.test(r ?? "")), `cards=${cards} rows=${JSON.stringify(rows)}`);
+}
+
+async function scenario27() {
+  // #727 review 1–3: the persistent 全部自动同意 indicator at 600 px (light + dark), the auto-approved trace (persisted,
+  // folded, expandable, still there after a reload), and the one-time upgrade notice for a 1.2 全部放行 default
+  await newThread();
+  const tid = await curThread();
+  await page.setViewportSize({ width: 600, height: 860 });
+  const banner = () => page.evaluate(() => {
+    const b = document.querySelector('[data-testid="auto-on"]');
+    if (!b) return null;
+    const r = b.getBoundingClientRect(); const cs = getComputedStyle(b.querySelector("b"));
+    const chip = document.querySelector(".mode-chip.auto");
+    const [cr, cg, cb] = (cs.color.match(/[\d.]+/g) ?? []).map(Number);
+    return { text: b.textContent, inView: r.width > 0 && r.top >= 0 && r.bottom <= innerHeight && r.right <= innerWidth + 0.5,
+      warm: cr - cb > 60 && cr > cg, chip: !!chip, theme: document.documentElement.dataset.theme };
+  });
+  const before = await banner();
+  await page.click(".mode-chip");
+  const menuHint = await page.textContent('.mode-menu .sm-opt:has-text("全部自动同意") .sm-hint');
+  await page.click('.mode-menu .sm-opt:has-text("全部自动同意")');
+  await page.waitForSelector('[data-testid="auto-on"]', { timeout: 5000 });
+  const light = await banner();
+  // persists: a turn, another conversation and back, a reload
+  await send("/perm");
+  await waitIdle();
+  const other = await wsCall("threads.create", { projectId: (await wsCall("threads.get", { id: tid })).meta.projectId, provider: "mock", mode: "default" });
+  await page.evaluate(([t]) => { const u = window.__stores.useUi.getState(); u.select(u.currentProjectId, t); }, [other.id]);
+  await sleep(500);
+  const offOther = await banner();
+  await page.evaluate(([t]) => { const u = window.__stores.useUi.getState(); u.select(u.currentProjectId, t); }, [tid]);
+  await page.waitForSelector('[data-testid="auto-on"]', { timeout: 5000 });
+  await page.reload();
+  await page.waitForFunction(() => window.__ws && window.__ws.getState() === "open", null, { timeout: 10000 });
+  await page.waitForFunction((t) => window.__stores?.useUi?.getState?.().currentThreadId === t, tid, { timeout: 10000 });
+  await page.waitForSelector('[data-testid="auto-on"]', { timeout: 8000 });
+  await wsCall("settings.set", { patch: { theme: "dark" } });
+  await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
+  await sleep(300);
+  const dark = await banner();
+  await wsCall("settings.set", { patch: { theme: "auto" } });
+  await page.evaluate(() => { document.documentElement.dataset.theme = "light"; });
+  // trace: persisted with auto, shown folded, opens to the command
+  const evs = (await wsCall("threads.get", { id: tid })).events;
+  const req = evs.find((e) => e.type === "permission_request");
+  const res = evs.find((e) => e.type === "permission_resolved");
+  await page.waitForSelector('[data-testid="auto-approved"]', { timeout: 8000 });
+  const collapsed = await page.textContent('[data-testid="auto-approved"] .apv-head');
+  await page.click('[data-testid="auto-approved"] .apv-head');
+  const cmd = await page.textContent('[data-testid="auto-approved"] .apv-cmd').catch(() => null);
+  const meta = await page.textContent('[data-testid="auto-approved"] .apv-meta').catch(() => null);
+  // back to 每次询问 from the banner
+  await page.click(".cp-auto-back");
+  await page.waitForFunction(() => !document.querySelector('[data-testid="auto-on"]'), null, { timeout: 5000 });
+  const modeAfter = (await wsCall("threads.get", { id: tid })).meta.mode;
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const okBanner = !before && !!light?.inView && light.warm && light.chip && /全部自动同意已开启/.test(light.text) && !offOther
+    && !!dark?.inView && dark.warm && dark.theme === "dark";
+  const okTrace = req?.auto === true && res?.auto === true && res.requestId === req.requestId && /已自动同意 1 项/.test(collapsed ?? "")
+    && /npm test/.test(collapsed ?? "") && /npm test/.test(cmd ?? "") && /全部自动同意/.test(meta ?? "");
+  record("场景27a 全部自动同意：600px 常驻提示（浅/深色）+ 菜单写明", okBanner && /允许一次|跳过|沙箱/.test(menuHint ?? "") && modeAfter === "default",
+    JSON.stringify({ before: !!before, light, dark, offOther: !!offOther, menuHint, modeAfter }).slice(0, 500));
+  record("场景27b 自动同意留痕：持久化 auto + 折叠行可展开", okTrace, JSON.stringify({ collapsed, cmd, meta, req: req?.auto, res: res?.auto }).slice(0, 400));
+
+  // upgrade: a 1.2 全部放行 default does not become real auto-approval for Cursor; told once
+  const projectId = (await wsCall("threads.get", { id: tid })).meta.projectId;
+  const c1 = await wsCall("threads.create", { projectId, provider: "cursor", mode: "bypassPermissions" });
+  const c2 = await wsCall("threads.create", { projectId, provider: "cursor", mode: "bypassPermissions" });
+  const m1 = await wsCall("threads.get", { id: c1.id });
+  const m2 = await wsCall("threads.get", { id: c2.id });
+  await page.evaluate(([p, t]) => window.__stores.useUi.getState().select(p, t), [projectId, c1.id]);
+  await page.waitForSelector('[data-testid="auto-upgrade-notice"]', { timeout: 8000 });
+  const noticeText = await page.textContent('[data-testid="auto-upgrade-notice"]');
+  const bannerOnCursor = await page.$('[data-testid="auto-on"]');
+  await page.click('[data-testid="auto-upgrade-notice"] .btn:has-text("开启")');
+  await waitFor(async () => (await wsCall("threads.get", { id: c1.id })).meta.mode === "bypassPermissions", 5000, "开启全部自动同意");
+  await page.waitForSelector('[data-testid="auto-on"]', { timeout: 5000 });
+  const cursorHint = await page.textContent('[data-testid="auto-on"] .cp-auto-d');
+  const okUp = m1.meta.mode === "default" && m2.meta.mode === "default"
+    && m1.events.filter((e) => e.code === "auto_approve_upgrade").length === 1 && m2.events.length === 0
+    && /Cursor/.test(noticeText ?? "") && !bannerOnCursor && /允许一次/.test(cursorHint ?? "");
+  record("场景27c 升级：1.2 全部放行默认值对 Cursor 不静默升级，只提示一次", okUp,
+    JSON.stringify({ m1: m1.meta.mode, m2: m2.meta.mode, n1: m1.events.map((e) => e.code), n2: m2.events.length, cursorHint }).slice(0, 400));
 }
 
 async function scenario22() {
@@ -787,10 +875,10 @@ async function main() {
   await setup();
   try {
     await newProjectFlow();
-    // E2E_ONLY_13=1 runs just the 1.3 scenarios (20–23) and the console-error check
+    // E2E_ONLY_13=1 runs just the 1.3 scenarios (20–27) and the console-error check
     const all = [scenario2, scenario3, scenario4, scenario5, scenario6, scenario7, scenario8, scenario9, scenario10, scenario11,
-      scenario12, scenario13, scenario14, scenario15, scenario16, scenario17, scenario18, scenario20, scenario22, scenario23, scenario24, scenario25, scenario26, scenario19];
-    const only13 = new Set([scenario20, scenario22, scenario23, scenario24, scenario25, scenario26, scenario19]);
+      scenario12, scenario13, scenario14, scenario15, scenario16, scenario17, scenario18, scenario20, scenario21, scenario22, scenario23, scenario24, scenario25, scenario26, scenario27, scenario19];
+    const only13 = new Set([scenario20, scenario21, scenario22, scenario23, scenario24, scenario25, scenario26, scenario27, scenario19]);
     for (const f of all) if (!process.env.E2E_ONLY_13 || only13.has(f)) await f();
   } catch (e) {
     record("中途异常", false, String(e?.message ?? e).slice(0, 600) + " ||daemon:" + daemonErr.slice(-4).join("|").slice(0, 400));
