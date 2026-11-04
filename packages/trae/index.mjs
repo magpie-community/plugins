@@ -2781,6 +2781,56 @@ const maxModel = (...ms) => {
 // deepseek-v4.1-flash in Max mode
 const MAX = "-max"
 
+  // traeRateOf is a model's consumption multiplier, from the account's list:
+  // display_contact_config is a JSON string naming the rate now and the full
+  // price, and an activity's off-peak windows, which are computed here rather
+  // than trusted from the snapshot the list was read at (a list fetched in
+  // the morning would otherwise say the day price all evening).
+  const traeRateOf = (m, now = Date.now()) => {
+    const raw = m?.display_contact_config
+    if (!raw) return {}
+    let cfg
+    try { cfg = typeof raw === "string" ? JSON.parse(raw) : raw } catch { return {} }
+    if (!cfg || typeof cfg !== "object") return {}
+    const num = (x) => (x === null || x === "" || x === undefined ? undefined : Number.isFinite(Number(x)) ? Number(x) : undefined)
+    const activity = cfg.activity_discount
+    const offPeak = activity?.data?.off_peak
+    const windows = Array.isArray(offPeak?.time_windows) ? offPeak.time_windows : []
+    const zone = typeof offPeak?.time_zone === "string" && offPeak.time_zone ? offPeak.time_zone : "Asia/Shanghai"
+    let rate = num(cfg.consumption_rate?.data?.rate)
+    const was = num(activity?.data?.current?.before_consumption_rate)
+      ?? num(offPeak?.before_consumption_rate)
+      ?? num(cfg.discount?.data?.original_consumption_rate)
+    if (activity?.enable && windows.length) {
+      rate = inWindows(windows, zone, now)
+        ? num(offPeak?.after_consumption_rate) ?? rate
+        : num(offPeak?.before_consumption_rate) ?? rate
+    }
+    return {
+      ...(rate !== undefined ? { rate } : {}),
+      ...(rate !== undefined && was !== undefined && was > rate ? { rateWas: was } : {}),
+    }
+  }
+
+  // inWindows says whether now falls in one of the windows, as the list
+  // spells them: weekdays 1–7 (Monday first), minutes from midnight, and
+  // the window's own time zone.
+  const inWindows = (windows, timeZone, now) => {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone, weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(now))
+    const get = (t) => parts.find((p) => p.type === t)?.value
+    const weekday = { Sun: 7, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[get("weekday")]
+    const hour = Number(get("hour"))
+    const minute = Number(get("minute"))
+    if (!Number.isFinite(weekday) || !Number.isFinite(hour) || !Number.isFinite(minute)) return false
+    const mins = hour * 60 + minute
+    return windows.some((w) => Array.isArray(w?.weekdays) && w.weekdays.includes(weekday)
+      && Number.isFinite(w.start_minute) && Number.isFinite(w.end_minute)
+      && mins >= w.start_minute && mins < w.end_minute)
+  }
+
+
 // ---- reasoning levels --------------------------------------------------------------
 //
 // A list entry carries a reasoning_effort_config: the levels its model takes
@@ -3402,6 +3452,7 @@ const makePlugin = (site) => async ({ client }) => {
       // for every model it hands over — so only a non-empty one is kept, or a
       // model in the fallback table would lose the levels its entry names.
       variants: Object.keys(was.variants ?? {}).length ? was.variants : variantsOf(levelsOf(m)),
+      ...traeRateOf(m),
     }
   }
 
@@ -3598,4 +3649,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf }
+export const _internal = { ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, traeRateOf }

@@ -107,3 +107,48 @@ test("Trae Global's models carry capabilities as well", async () => {
   const ms = await hooks.provider.models({ models: { ..._internal.SITES["trae-global"].models } }, { auth: signedIn() })
   expect(ms["gemini-3.1-pro-paygo"].capabilities.reasoning).toBe(true)
 })
+
+// ---- rate: the account's consumption multiplier ---------------------------
+
+test("a model's rate comes from display_contact_config; off-peak windows are computed locally", () => {
+  const rateOf = _internal.traeRateOf
+  const contact = (data) => ({ display_contact_config: JSON.stringify(data) })
+  const activity = {
+    enable: true,
+    data: {
+      current: { before_consumption_rate: 0.12, consumption_rate: 0.06 },
+      off_peak: {
+        before_consumption_rate: 0.12, after_consumption_rate: 0.06,
+        time_windows: [{ weekdays: [1, 2, 3, 4, 5], start_minute: 0, end_minute: 540 }],
+        time_zone: "Asia/Shanghai",
+      },
+    },
+  }
+  const list = contact({ activity_discount: activity, consumption_rate: { enable: true, data: { rate: 0.06 } } })
+  // 2026-11-04 is a Tuesday: 08:00 Beijing is inside the window, 10:00 is not
+  expect(rateOf(list, Date.parse("2026-11-04T00:00:00Z"))).toEqual({ rate: 0.06, rateWas: 0.12 })
+  expect(rateOf(list, Date.parse("2026-11-04T02:00:00Z"))).toEqual({ rate: 0.12 })
+  // a member discount: consumption_rate.rate is already the discounted price
+  const member = contact({
+    consumption_rate: { enable: true, data: { rate: 0.58 } },
+    discount: { enable: true, data: { original_consumption_rate: 0.78, consumption_rate: 0.58 } },
+  })
+  expect(rateOf(member)).toEqual({ rate: 0.58, rateWas: 0.78 })
+  // nothing named: no rate at all
+  expect(rateOf({})).toEqual({})
+})
+
+test("provider.models carries the rate of a listed model", async () => {
+  const ms = await live([{
+    config_name: "deepseek-v4.1-flash", usage: "chat_completion",
+    display_config: { display_name: "DeepSeek-V4.1-Flash" },
+    context_window_tokens: { dev: 1_000_000 },
+    model_detail_list: [{ model_name: "deepseek-v4.1-flash__dev", max_tokens: 64000 }],
+    display_contact_config: JSON.stringify({
+      consumption_rate: { enable: true, data: { rate: 0.06 } },
+      activity_discount: { enable: true, data: { current: { before_consumption_rate: 0.12, consumption_rate: 0.06 } } },
+    }),
+  }])
+  expect(ms["deepseek-v4.1-flash"].rate).toBe(0.06)
+  expect(ms["deepseek-v4.1-flash"].rateWas).toBe(0.12)
+})
