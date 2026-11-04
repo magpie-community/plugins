@@ -25,6 +25,15 @@ import {
   loadCodexSlashEntries,
 } from "../providers/codex/commands.js";
 
+/** A message's own words for its conversation title: leading "> " quote blocks dropped (kept when that is all there is) */
+export function titleText(text: string): string {
+  const blocks = text.trim().split(/\n{2,}/);
+  let i = 0;
+  while (i < blocks.length && blocks[i]!.split("\n").every((l) => l === ">" || l.startsWith("> "))) i++;
+  const rest = blocks.slice(i).join(" ").trim();
+  return (rest || text.trim().replace(/^>\s?/gm, "")).replace(/\s+/g, " ").trim();
+}
+
 const SLASH_CACHE_TTL_MS = 10 * 60 * 1000;
 /** Idle Agent processes kept warm at most (one per conversation); older idle ones are closed (resumed on the next message) */
 export const MAX_WARM_IDLE = 3;
@@ -302,8 +311,8 @@ export class AgentManager {
       }
     }
 
-    // Auto title
-    const trimmed = text.trim();
+    // Auto title (1.3: without the leading "> " quote blocks that "添加到对话" puts in front of the message)
+    const trimmed = titleText(text);
     if (meta.titleAuto && trimmed) {
       await this.threads.patch(threadId, { title: trimmed.slice(0, 40), titleAuto: true });
       this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });

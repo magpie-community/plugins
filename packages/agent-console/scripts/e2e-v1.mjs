@@ -1,5 +1,5 @@
 // e2e (§11.2): playwright-core + Edge, isolated data directory _tmp/e2e-xdg, port 3497, AGENT_CONSOLE_MOCK=1.
-// Scenarios 1–12, 16–19; each prints ✓/✗, and any ✗ exits with code 1.
+// Scenarios 1–12, 16–23 (20–23: 1.3 overlap at 600 px, 全部自动同意, message actions, quotes); each prints ✓/✗, and any ✗ exits with code 1.
 import { spawn, execFileSync } from "node:child_process";
 import { findBrowser } from "./browser-path.mjs";
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -400,6 +400,146 @@ async function scenario18() {
   await page.setViewportSize({ width: 1440, height: 900 });
 }
 
+// ---- 1.3 (Nolan's Windows report) ----
+async function newThread() {
+  // Over the API (scenario 18 may leave the sidebar as a drawer); close the right panel earlier scenarios opened
+  // (below ~900 px it is a sheet over the chat)
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => window.__stores.useUi.getState().closePanel?.());
+  // A dialog left open (e.g. scenario 16's palette when nothing matched): close it by pressing on its scrim
+  for (let i = 0; i < 3 && await page.$(".dlg-scrim"); i++) { await page.mouse.click(4, 4); await sleep(200); }
+  const projects = await wsCall("projects.list", {});
+  const proj = projects.find((p) => p.path === PROJ) ?? projects[0];
+  const th = await wsCall("threads.create", { projectId: proj.id, provider: "mock", mode: "default" });
+  await page.waitForFunction((id) => window.__stores.useData.getState().threads.some((t) => t.id === id), th.id, { timeout: 8000 });
+  await page.evaluate(([p, t]) => window.__stores.useUi.getState().select(p, t), [proj.id, th.id]);
+  await page.waitForFunction((id) => window.__stores.useUi.getState().currentThreadId === id, th.id, { timeout: 5000 });
+  _tid = th.id;
+  await page.waitForSelector(sel.ta, { timeout: 5000 });
+  await sleep(300);
+}
+async function waitIdle(ms = 45000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const st = await wsCall("threads.get", { id: await curThread() }).then((g) => g.runtimeStatus).catch(() => "?");
+    if (st !== "running" && st !== "initializing") return;
+    await sleep(250);
+  }
+  throw new Error("等待空闲超时");
+}
+/** Timeline rows never overlap: each row paints inside its virtual slot, one-line rows stay one line */
+async function overlapProblems() {
+  return page.evaluate(() => {
+    const bad = [];
+    const inked = (el) => { const rg = document.createRange(); rg.selectNodeContents(el); const rs = [...rg.getClientRects()].filter((x) => x.height > 0);
+      return rs.length ? { top: Math.min(...rs.map((x) => x.top)), bottom: Math.max(...rs.map((x) => x.bottom)) } : null; };
+    const rows = [...document.querySelectorAll(".tl-wrap [data-index]")].map((el) => ({ el, i: +el.dataset.index, r: el.getBoundingClientRect() })).sort((a, b) => a.i - b.i);
+    for (const row of rows) { const k = inked(row.el); if (k && (k.bottom > row.r.bottom + 1 || k.top < row.r.top - 1)) bad.push(`row ${row.i} paints outside its slot`); }
+    for (let k = 0; k + 1 < rows.length; k++) if (rows[k + 1].i === rows[k].i + 1 && rows[k].r.bottom > rows[k + 1].r.top + 0.5) bad.push(`row ${rows[k].i} overlaps ${rows[k + 1].i}`);
+    for (const el of document.querySelectorAll(".tl-wrap .tg-head, .tl-wrap .tg-run, .tl-wrap .rs-head, .tl-wrap .ts-head")) {
+      const r = el.getBoundingClientRect(); const k = inked(el);
+      if (r.height > 30 || (k && (k.bottom > r.bottom + 1 || k.top < r.top - 1))) bad.push(`${el.className} wraps/spills`);
+    }
+    return bad;
+  });
+}
+
+async function scenario20() {
+  // Folded tool groups + running row + long PowerShell commands + a pending approval, at Nolan's ~600 px window
+  await newThread();
+  await page.setViewportSize({ width: 600, height: 860 });
+  // E2E_NEG_OVERLAP=1: put back 1.2's squeeze to prove this check catches it (must fail)
+  const neg = process.env.E2E_NEG_OVERLAP ? await page.addStyleTag({ content: ".tg-head{height:24px!important;min-height:0!important;overflow:visible!important;white-space:normal!important}.tg-sum{white-space:normal!important;overflow:visible!important;max-width:42px}" }) : null;
+  await send("/winrun 帮我启动一下");
+  const seen = new Set();
+  let approved = false;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 30000) {
+    for (const b of await overlapProblems()) seen.add(b);
+    if (!approved && await page.$(".card.perm:not(.done)")) {
+      await sleep(400);
+      for (const b of await overlapProblems()) seen.add(b);
+      await page.click(".card.perm:not(.done) .btn.primary");
+      approved = true;
+    }
+    const st = await wsCall("threads.get", { id: await curThread() }).then((g) => g.runtimeStatus).catch(() => "?");
+    if (approved && st !== "running" && st !== "initializing") break;
+    await sleep(40);
+  }
+  for (const b of await overlapProblems()) seen.add(b);
+  await neg?.evaluate((el) => el.remove());
+  await page.setViewportSize({ width: 1440, height: 900 });
+  record("场景20 600px 运行中折叠行/运行行不重叠", approved && seen.size === 0, [...seen].slice(0, 3).join(" | "));
+}
+
+async function scenario21() {
+  // 全部自动同意: a waiting card is approved by the switch, the next request never shows a card
+  await newThread();
+  await send("/perm");
+  await page.waitForSelector(".card.perm:not(.done)", { timeout: 15000 });
+  await page.click(".mode-chip");
+  await page.click('.mode-menu .sm-opt:has-text("全部自动同意")');
+  await page.waitForSelector(".card.perm.done", { timeout: 8000 });
+  const label = await page.textContent(".card.perm.done .perm-done");
+  const chipAuto = await page.$(".mode-chip.auto");
+  await waitIdle();
+  await send("/perm");
+  await sleep(500);
+  await waitIdle();
+  const cards = (await page.$$(".card.perm")).length;
+  record("场景21 全部自动同意：待批卡片自动同意，之后不再弹", /自动同意/.test(label ?? "") && !!chipAuto && cards === 1, `label=${label} cards=${cards}`);
+}
+
+async function scenario22() {
+  // User-message actions: under the bubble, reachable without a hover gap, copy feedback, edit fills the input
+  await newThread();
+  await send("帮我启动一下");
+  await page.waitForSelector(".um", { timeout: 8000 });
+  await waitIdle();
+  const bb = await (await page.$(".um")).boundingBox();
+  await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+  await sleep(200);
+  const ab = await (await page.$(".um-act")).boundingBox();
+  let hidden = 0;
+  for (let i = 0; i <= 10; i++) {
+    await page.mouse.move(bb.x + bb.width / 2 + (ab.x + 8 - bb.x - bb.width / 2) * i / 10, bb.y + bb.height / 2 + (ab.y + 12 - bb.y - bb.height / 2) * i / 10);
+    const vis = await page.$eval(".um-act", (a) => Number(getComputedStyle(a).opacity) > 0.5);
+    if (!vis) hidden++;
+  }
+  const below = ab.y >= bb.y + bb.height - 1 && ab.x + ab.width <= bb.x + bb.width + 1;
+  await page.click('.um-act button[aria-label="编辑（填回输入框，不会马上发送）"]');
+  await sleep(200);
+  const filled = await page.$eval(sel.ta, (t) => t.value);
+  await page.fill(sel.ta, "");
+  record("场景22 用户消息操作：气泡下方、无悬停缺口、编辑回填", below && hidden === 0 && filled === "帮我启动一下", `below=${below} hidden=${hidden} filled=${filled}`);
+}
+
+async function scenario23() {
+  // Select text in a reply → 添加到对话 → quote chip → sent in front of the message as "> "
+  await newThread();
+  await send("看下这个项目");
+  await page.waitForSelector(".tl-wrap .md p", { timeout: 15000 });
+  await waitIdle();
+  // A real mouse drag across the first reply paragraph
+  await page.evaluate(() => document.querySelector(".tl-wrap .md p")?.scrollIntoView({ block: "center" }));
+  await sleep(300);
+  const pb = await (await page.$(".tl-wrap .md p")).boundingBox();
+  await page.mouse.move(pb.x + 2, pb.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(pb.x + Math.min(pb.width - 4, 200), pb.y + 8, { steps: 8 });
+  await page.mouse.up();
+  const r = await page.evaluate(() => window.getSelection()?.toString());
+  await page.waitForSelector(".qs-pop", { timeout: 3000 });
+  await page.click(".qs-pop");
+  await page.waitForSelector(".qchip", { timeout: 3000 });
+  await send("这句什么意思？");
+  await waitIdle();
+  const g = await wsCall("threads.get", { id: await curThread() });
+  const last = g.events.filter((e) => e.type === "user_message").pop();
+  const ok = !!r && typeof last?.text === "string" && last.text.startsWith("> ") && last.text.endsWith("这句什么意思？") && !!(await page.$(".um-quote"));
+  record("场景23 选中添加到对话 → 引用随消息发送", ok, JSON.stringify(last?.text ?? "").slice(0, 120));
+}
+
 async function scenario19() {
   // Filter benign console errors (e.g. favicon 404)
   const bad = pageErrors.filter((e) => !/favicon|404|net::/i.test(e) && !e.startsWith("dbg:"));
@@ -519,24 +659,11 @@ async function main() {
   await setup();
   try {
     await newProjectFlow();
-    await scenario2();
-    await scenario3();
-    await scenario4();
-    await scenario5();
-    await scenario6();
-    await scenario7();
-    await scenario8();
-    await scenario9();
-    await scenario10();
-    await scenario11();
-    await scenario12();
-    await scenario13();
-    await scenario14();
-    await scenario15();
-    await scenario16();
-    await scenario17();
-    await scenario18();
-    await scenario19();
+    // E2E_ONLY_13=1 runs just the 1.3 scenarios (20–23) and the console-error check
+    const all = [scenario2, scenario3, scenario4, scenario5, scenario6, scenario7, scenario8, scenario9, scenario10, scenario11,
+      scenario12, scenario13, scenario14, scenario15, scenario16, scenario17, scenario18, scenario20, scenario21, scenario22, scenario23, scenario19];
+    const only13 = new Set([scenario20, scenario21, scenario22, scenario23, scenario19]);
+    for (const f of all) if (!process.env.E2E_ONLY_13 || only13.has(f)) await f();
   } catch (e) {
     record("中途异常", false, String(e?.message ?? e).slice(0, 600) + " ||daemon:" + daemonErr.slice(-4).join("|").slice(0, 400));
   }

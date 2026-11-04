@@ -8,6 +8,7 @@ import { useTimeline } from "../stores/timeline";
 import { TimelineRow } from "./Timeline";
 import { foldTimeline } from "../timeline/fold";
 import { Composer } from "./Composer";
+import { QuoteSelect } from "./QuoteSelect";
 import { Icon } from "./Icons";
 import { ws } from "../main";
 import { toast } from "./Toast";
@@ -140,7 +141,7 @@ export function Chat() {
   return (
     <>
       <div className="scroll" ref={scrollRef} onScroll={onScroll}>
-        <div className="tl-wrap">
+        <div className="tl-wrap" data-quote-root="chat">
           <div style={{ height: virt.getTotalSize(), position: "relative" }}>
             {virt.getVirtualItems().map((v) => {
               const it = items[v.index];
@@ -172,6 +173,7 @@ export function Chat() {
         </button>
       )}
       <Composer />
+      <QuoteSelect />
     </>
   );
 }

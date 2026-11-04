@@ -1,16 +1,21 @@
 /* Conversation items (§8.6): user bubble, body, thinking, tool group, cards, turn end, Markdown */
 
 /* User message: bubble on the right */
-.um-row { display: flex; flex-direction: column; align-items: flex-end; margin: 4px 0 16px; }
+.um-row { display: flex; flex-direction: column; align-items: flex-end; margin: 4px 0 8px; }
 .um {
   position: relative; max-width: 78%;
   background: var(--accent-soft); border-radius: 14px 14px 4px 14px; color: var(--fg);
   padding: 6px 12px; font-size: var(--chat-fs); line-height: 1.6;
   white-space: pre-wrap; word-break: normal; overflow-wrap: break-word;
 }
-.um:hover .um-act { display: flex; }
-.um-act { position: absolute; left: -62px; top: 4px; display: none; gap: 2px; }
-.um-act .ibtn { width: 24px; height: 24px; }
+/* Actions under the bubble, right-aligned. The whole row is the hover target (no gap to cross); hidden with opacity
+   so the buttons stay in the tab order, and shown while one has focus or on touch screens. */
+.um-act { display: flex; gap: 2px; margin-top: 2px; height: 24px; opacity: 0; transition: opacity var(--dur-1); }
+.um-row:hover .um-act, .um-act:focus-within { opacity: 1; }
+@media (hover: none) { .um-act { opacity: 1; } }
+.um-act .ibtn { width: 24px; height: 24px; color: var(--meta); }
+.um-act .ibtn:hover, .um-act .ibtn:focus-visible { color: var(--fg); }
+.um-act .ibtn.done, .te-act.done { color: var(--fg); }
 .um-img { display: block; max-width: 200px; max-height: 140px; border-radius: var(--r-s); margin-bottom: 6px; cursor: zoom-in; }
 .um-tag { font-size: var(--chat-fs-s); color: var(--muted); margin-top: 2px; }
 
@@ -193,3 +198,17 @@ a.ac-local { cursor: pointer; }
 .mention-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .um-mentions { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 4px; white-space: normal; }
 .um .mention { background: color-mix(in oklab, var(--fg) 5%, var(--accent-soft)); }
+
+/* 1.3 "添加到对话" button over a text selection (portaled, fixed). Grayscale, like the rest of the chrome. */
+.qs-pop {
+  position: fixed; z-index: 60; display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-size: var(--fs-s);
+  box-shadow: 0 4px 14px rgb(0 0 0 / .12), 0 1px 2px rgb(0 0 0 / .08); white-space: nowrap; cursor: pointer;
+  user-select: none; -webkit-user-select: none;
+}
+.qs-pop:hover { background: var(--surface-hover); }
+.qs-pop svg { flex: none; color: var(--muted); }
+.um-quote {
+  display: block; margin: 2px 0 6px; padding-left: 8px; border-left: 2px solid color-mix(in oklab, var(--fg) 30%, transparent);
+  color: var(--muted); font-size: var(--chat-fs-s); max-height: 7.5em; overflow: hidden;
+}

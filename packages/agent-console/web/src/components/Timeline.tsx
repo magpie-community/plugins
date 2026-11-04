@@ -14,6 +14,7 @@ import { localizeDaemonMessage, t, tf } from "../i18n/index.js";
 import { toast } from "./Toast";
 import { splitLocalLinks } from "../util/localLinks";
 import { onChatLinkClick, openExternal } from "../preview/open";
+import { splitQuotes } from "../composer/quotes";
 
 export const GIT_FOR_WINDOWS_URL = "https://git-scm.com/download/win";
 
@@ -54,7 +55,24 @@ export function MentionChip({ path, isDir, onRemove }: { path: string; isDir: bo
 }
 
 // ---------- user message ----------
+/** A copy button's "copied" check for 1.5 s */
+function useCopied(): [boolean, (text: string) => void] {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const id = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(id);
+  }, [copied]);
+  return [copied, (text: string) => void copyText(text).then(() => setCopied(true))];
+}
+
 export function UserItem({ it, onRetry }: { it: Extract<DisplayItem, { kind: "user" }>; onRetry?: (text: string, mentions?: { path: string; isDir: boolean }[]) => void }) {
+  // 1.3: the actions sit right under the bubble, inside the row that is the hover target (1.2 floated them 12px to the
+  // bubble's left, outside it, so they vanished on the way there), and stay reachable from the keyboard
+  const [copied, copy] = useCopied();
+  // 1.3: quotes added with "添加到对话" were sent as leading "> " blocks: show them as quotes
+  const parsed = useMemo(() => splitQuotes(it.text), [it.text]);
+  const edit = () => window.dispatchEvent(new CustomEvent("ac-composer-fill", { detail: { text: it.text, mentions: it.mentions ?? [] } }));
   return (
     <div className="um-row">
       <div className="um">
@@ -72,13 +90,24 @@ export function UserItem({ it, onRetry }: { it: Extract<DisplayItem, { kind: "us
         {it.mentions && it.mentions.length > 0 && (
           <span className="um-mentions">{it.mentions.map((m) => <MentionChip key={m.path} path={m.path} isDir={m.isDir} />)}</span>
         )}
-        <span className="um-text">{it.text}</span>
-        <div className="um-act">
-          <button className="ibtn" title={t("common.copy")} onClick={() => void copyText(it.text)}><Icon name="copy" size={13} /></button>
-          {onRetry && <button className="ibtn" title={t("timeline.editResend")} onClick={() => onRetry(it.text, it.mentions)}><Icon name="send" size={13} /></button>}
-        </div>
+        {parsed.quotes.map((q, i) => <span key={i} className="um-quote">{q}</span>)}
+        <span className="um-text">{parsed.rest}</span>
       </div>
       {it.steered && <div className="um-tag">{t("timeline.steer")}</div>}
+      <div className="um-act" role="toolbar" aria-label={t("timeline.msgActions")}>
+        <button type="button" className={`ibtn${copied ? " done" : ""}`} title={copied ? t("common.copied") : t("common.copy")}
+          aria-label={copied ? t("common.copied") : t("common.copy")} onClick={() => copy(it.text)}>
+          <Icon name={copied ? "check" : "copy"} size={13} />
+        </button>
+        <button type="button" className="ibtn" title={t("timeline.editMsg")} aria-label={t("timeline.editMsg")} onClick={edit}>
+          <Icon name="pencil" size={13} />
+        </button>
+        {onRetry && (
+          <button type="button" className="ibtn" title={t("timeline.resend")} aria-label={t("timeline.resend")} onClick={() => onRetry(it.text, it.mentions)}>
+            <Icon name="refresh" size={13} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -378,6 +407,7 @@ export function QuestionItem({ it, threadId }: { it: Extract<DisplayItem, { kind
 export function TurnEndItem({ it, onRetry, replyText }: { it: Extract<DisplayItem, { kind: "turnend" }>; onRetry?: () => void; replyText?: string }) {
   const ui = useUi();
   const [showErr, setShowErr] = useState(false);
+  const [copied, copy] = useCopied();
   if (it.status === "failed") {
     return (
       <div className="card err-card">
@@ -404,12 +434,13 @@ export function TurnEndItem({ it, onRetry, replyText }: { it: Extract<DisplayIte
     <div className="te">
       {parts.length > 0 && <span className="te-meta">{parts.join(" · ")}</span>}
       {replyText && (
-        <button className="te-act" title={t("common.copy")} onClick={() => void copyText(replyText).then(() => toast(t("common.copied")))}>
-          <Icon name="copy" size={13} /><span>{t("common.copy")}</span>
+        <button type="button" className={`te-act${copied ? " done" : ""}`} title={copied ? t("common.copied") : t("common.copy")}
+          aria-label={copied ? t("common.copied") : t("common.copy")} onClick={() => copy(replyText)}>
+          <Icon name={copied ? "check" : "copy"} size={13} /><span>{t("common.copy")}</span>
         </button>
       )}
       {onRetry && (
-        <button className="te-act" title={t("common.retry")} onClick={onRetry}>
+        <button type="button" className="te-act" title={t("timeline.retryHint")} aria-label={t("timeline.retryHint")} onClick={onRetry}>
           <Icon name="refresh" size={13} /><span>{t("common.retry")}</span>
         </button>
       )}
