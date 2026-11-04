@@ -8526,8 +8526,7 @@ function pickAllowOnce(options) {
     const s = `${o.id} ${o.label ?? ""}`;
     return !o.kind?.startsWith("reject") && !REJECT.test(s) && ALLOW.test(s) && !/always|session|总是|始终/i.test(s);
   });
-  if (plain) return plain;
-  return options.find((o) => o.kind === "allow_always") ?? null;
+  return plain ?? null;
 }
 function autoApproveOption(mode2, providerId, req) {
   if (mode2 !== FULL_AUTO) return null;
