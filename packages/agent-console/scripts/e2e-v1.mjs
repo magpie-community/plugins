@@ -521,7 +521,8 @@ async function scenario27() {
     const r = b.getBoundingClientRect(); const cs = getComputedStyle(b.querySelector("b"));
     const chip = document.querySelector(".mode-chip.auto");
     const [cr, cg, cb] = (cs.color.match(/[\d.]+/g) ?? []).map(Number);
-    return { text: b.textContent, inView: r.width > 0 && r.top >= 0 && r.bottom <= innerHeight && r.right <= innerWidth + 0.5,
+    const d = b.querySelector(".cp-auto-d");
+    return { h: Math.round(r.height), clipped: !!d && d.scrollWidth > d.clientWidth, full: (b.getAttribute("title") ?? "").length > 0, text: b.textContent, inView: r.width > 0 && r.top >= 0 && r.bottom <= innerHeight && r.right <= innerWidth + 0.5,
       warm: cr - cb > 60 && cr > cg, chip: !!chip, theme: document.documentElement.dataset.theme };
   });
   const before = await banner();
@@ -558,17 +559,23 @@ async function scenario27() {
   await page.click('[data-testid="auto-approved"] .apv-head');
   const cmd = await page.textContent('[data-testid="auto-approved"] .apv-cmd').catch(() => null);
   const meta = await page.textContent('[data-testid="auto-approved"] .apv-meta').catch(() => null);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await sleep(200);
+  const wide = await banner();
+  await page.setViewportSize({ width: 600, height: 860 });
   // back to 每次询问 from the banner
   await page.click(".cp-auto-back");
   await page.waitForFunction(() => !document.querySelector('[data-testid="auto-on"]'), null, { timeout: 5000 });
   const modeAfter = (await wsCall("threads.get", { id: tid })).meta.mode;
   await page.setViewportSize({ width: 1440, height: 900 });
   const okBanner = !before && !!light?.inView && light.warm && light.chip && /全部自动同意已开启/.test(light.text) && !offOther
-    && !!dark?.inView && dark.warm && dark.theme === "dark";
+    && !!dark?.inView && dark.warm && dark.theme === "dark"
+    // one slim line (Nolan): never wraps, the hint is cut with an ellipsis and the full text is the tooltip
+    && light.h <= 26 && dark.h <= 26 && !!wide && wide.h <= 26 && light.full;
   const okTrace = req?.auto === true && res?.auto === true && res.requestId === req.requestId && /已自动同意 1 项/.test(collapsed ?? "")
     && /npm test/.test(collapsed ?? "") && /npm test/.test(cmd ?? "") && /全部自动同意/.test(meta ?? "");
   record("场景27a 全部自动同意：600px 常驻提示（浅/深色）+ 菜单写明", okBanner && /允许一次|跳过|沙箱/.test(menuHint ?? "") && modeAfter === "default",
-    JSON.stringify({ before: !!before, light, dark, offOther: !!offOther, menuHint, modeAfter }).slice(0, 500));
+    JSON.stringify({ before: !!before, light, dark, wideH: wide?.h, offOther: !!offOther, menuHint, modeAfter }).slice(0, 500));
   record("场景27b 自动同意留痕：持久化 auto + 折叠行可展开", okTrace, JSON.stringify({ collapsed, cmd, meta, req: req?.auto, res: res?.auto }).slice(0, 400));
 
   // upgrade: a 1.2 全部放行 default does not become real auto-approval for Cursor; told once
