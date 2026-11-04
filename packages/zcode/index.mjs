@@ -768,6 +768,12 @@ async function claimOne(s, planID) {
 // gifts are the rewards website's, claimed in the client.
 const TOUCH = "/api/v1/marketing/touch"
 const CLAIM_ACTION = "claim_zcode_plan"
+// touchSeq is the feed's seq: ZCode's own count of its feed requests
+// since the process started, from 0, one GET per refresh. It is not a
+// page: "仅供服务端日志定位，不改变投放判断" (docs/marketing-touch-client.md,
+// marketingTouchService.ts's bootRequestSeq, zai-org/ZCode@a9fe401), so a
+// check-in asks once, never seq 0..8 in a row (plugins#676), and a banner
+// seen at one seq and not another is a delivery arriving later.
 let touchSeq = 0
 // clientLanguage is the language ZCode names to marketing/touch: zh-CN or
 // en-US, its two UI languages, never another (marketingTouchService's
