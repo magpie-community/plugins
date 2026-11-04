@@ -7,6 +7,7 @@ import type { AttachmentStore } from "../store/attachments.js";
 import type { Provider, ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../providers/types.js";
 import { launchFromSettings } from "../providers/launch.js";
 import { clampMode } from "../providers/modes.js";
+import { guardLegacyMode, upgradeNotice } from "../migrate/autoApprove13.js";
 import { autoApproveOption, FULL_AUTO } from "../providers/autoApprove.js";
 import { resolveAttachmentRefs } from "../util/attachmentRefs.js";
 import { getProvider } from "../providers/registry.js";
@@ -687,14 +688,17 @@ export class AgentManager {
       rt.commands = [];
     }
     rt.status = "idle";
+    // 1.3 (#727 review 3): same guard as threads.create for a pre-1.3 default of 全部放行
+    const guard = await guardLegacyMode(this.settings, providerId, clampMode(p.capabilities.modes, meta.mode));
     await this.threads.patch(threadId, {
       provider: providerId,
       model: null,
-      mode: clampMode(p.capabilities.modes, meta.mode),
+      mode: guard.mode,
       effort: null,
       providerSessionId: null,
       status: "idle",
     });
+    if (guard.notice) await this.appendRaw(threadId, upgradeNotice());
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
 

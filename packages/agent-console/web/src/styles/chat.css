@@ -293,3 +293,8 @@ a.ac-local { cursor: pointer; }
 }
 .apv-path { margin-top: 2px; color: var(--muted); font-family: var(--font-mono); font-size: var(--chat-code-fs); overflow-wrap: anywhere; }
 .apv-meta { margin-top: 3px; color: var(--meta); font-size: var(--fs-xs); }
+/* 1.3 upgrade notice (#727 review 3): told once that 全部自动同意 now really applies to Cursor / OpenCode / dsh */
+.nt-auto {
+  text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-m); line-height: 1.6; color: var(--text);
+}
+.nt-auto-h { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }

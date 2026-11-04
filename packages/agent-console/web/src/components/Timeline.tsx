@@ -17,7 +17,7 @@ import { splitLocalLinks } from "../util/localLinks";
 import { onChatLinkClick, openExternal } from "../preview/open";
 import { splitQuotes } from "../composer/quotes";
 import { localClientIds, useTimeline } from "../stores/timeline";
-import { AutoApprovedItem } from "./AutoApproved";
+import { AUTO_UPGRADE_CODES, AutoApprovedItem, AutoUpgradeNotice } from "./AutoApproved";
 
 export const GIT_FOR_WINDOWS_URL = "https://git-scm.com/download/win";
 
@@ -573,6 +573,7 @@ export function TimelineRow({ it, threadId, onEditResend, onRetryLast, replyText
     case "question": return <QuestionItem it={it} threadId={threadId} />;
     case "notice":
       if (it.code === "bash_missing") return <BashMissingNotice it={it} />;
+      if (it.code && AUTO_UPGRADE_CODES.has(it.code)) return <AutoUpgradeNotice it={it} threadId={threadId} />;
       return <div className={`nt ${it.level}`}>{localizeDaemonMessage(it.message)}</div>;
     case "turnend": return <TurnEndItem it={it} onRetry={onRetryLast} replyText={replyText} />;
     case "gone": return null;

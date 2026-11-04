@@ -5,6 +5,7 @@ import type { DisplayItem } from "../timeline/reducer";
 import { approvalChoice, approvalTarget } from "../timeline/autoApproved";
 import { Icon } from "./Icons";
 import { t, tf } from "../i18n/index.js";
+import { ws } from "../main";
 
 export function AutoApprovedItem({ it }: { it: Extract<DisplayItem, { kind: "autoperm" }> }) {
   const [open, setOpen] = useState(false);
@@ -38,6 +39,31 @@ export function AutoApprovedItem({ it }: { it: Extract<DisplayItem, { kind: "aut
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 1.3 upgrade (#727 review 3): a 1.2 全部放行 that did nothing for this Agent was not turned into real auto-approval */
+export const AUTO_UPGRADE_CODES = new Set(["auto_approve_upgrade", "auto_approve_migrated"]);
+
+export function AutoUpgradeNotice({ it, threadId }: { it: Extract<DisplayItem, { kind: "notice" }>; threadId: string }) {
+  const [busy, setBusy] = useState(false);
+  const migrated = it.code === "auto_approve_migrated";
+  const turnOn = () => {
+    setBusy(true);
+    void ws.call("thread.setMode", { id: threadId, mode: "bypassPermissions" }).catch(() => {}).finally(() => setBusy(false));
+  };
+  return (
+    <div className="nt nt-auto" data-testid="auto-upgrade-notice" role="note">
+      <div className="nt-auto-h">
+        <span className="apv-ic"><Icon name="shieldCheck" size={14} /></span>
+        <b>{t("timeline.autoUpgrade.title")}</b>
+      </div>
+      <div>{t(migrated ? "timeline.autoUpgrade.migrated" : "timeline.autoUpgrade.body")}</div>
+      <div className="nt-actions">
+        <button type="button" className="btn" disabled={busy} onClick={turnOn}>{t("timeline.autoUpgrade.turnOn")}</button>
+        <button type="button" className="btn" onClick={() => window.dispatchEvent(new Event("open-settings"))}>{t("timeline.autoUpgrade.settings")}</button>
+      </div>
     </div>
   );
 }
