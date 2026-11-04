@@ -370,7 +370,21 @@ function topicShifted(list) {
   return shared / Math.min(a.size, b.size) < SHIFT_OVERLAP
 }
 
+// The task is read the way the exemption reads it (leadingUserEnd): the
+// leading user items before the first answer, and of those the last one.
+// Codex puts AGENTS.md and an environment_context ahead of the task, all as
+// user items; judging the topic against the first of them judged it
+// against AGENTS.md, so a follow-up to the same task looked like a new
+// topic (yetone's probe on PR #640).
 function firstTask(list) {
+  const end = leadingUserEnd(list, list.length)
+  for (let i = end - 1; i >= 0; i--) {
+    const it = list[i]
+    if (it && it.role === "user") {
+      const t = textOf(it)
+      if (t) return t
+    }
+  }
   for (const it of list) {
     if (it && it.role === "user") {
       const t = textOf(it)

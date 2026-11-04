@@ -7,7 +7,7 @@
 **magpie 网关中间件：最近窗口看得清，之前的旧历史只带轮廓。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-2f63a2.svg?style=for-the-badge)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.2.1-2f63a2.svg?style=for-the-badge)](https://github.com/webkubor/fovea/releases)
+[![Release](https://img.shields.io/badge/release-v0.2.2-2f63a2.svg?style=for-the-badge)](https://github.com/webkubor/fovea/releases)
 [![Tests](https://img.shields.io/badge/tests-31%2F31-brightgreen?style=for-the-badge)](#证据三层各管什么)
 [![Platform](https://img.shields.io/badge/magpie-middleware-8a6bbf?style=for-the-badge)](https://usemagpie.ai)
 [![Runtime](https://img.shields.io/badge/runtime-moejs%20%C2%B7%20zero%20deps-4a5568?style=for-the-badge)](fovea.middleware.js)
@@ -40,8 +40,10 @@
 
 ```sh
 magpie plugin add @magpie-community/middleware-fovea
-magpie plugin options fovea '{"saccade":"auto","state_marker":"<!-- fovea:state -->"}'
+magpie plugin options fovea '{"state_marker":"<!-- fovea:state -->"}'
 ```
+
+默认 `saccade: "off"`，适合带 prompt cache 的长工具循环（coding agent 的常态）。话题经常切换、又不在乎缓存的对话，可以设成 `"auto"`：换话题时旧上下文整段不带，代价是每次判定为换题都会打断一次缓存前缀。
 
 装完在 magpie 窗口 **Plugins › Fovea evidence** 打开证据页：粘贴你自己的请求 JSON，浏览器里现算前后差异（不联网、不保存正文）。想先看代码再装：
 

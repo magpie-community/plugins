@@ -2,6 +2,17 @@
 
 本文件记录 fovea 的对外变化。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循语义化版本。
 
+## [0.2.2] — 2026-11-04
+
+### Fixed
+
+- `saccade: "auto"` 的话题判定改用与任务豁免同一口径的「任务」：首条回答之前的前导 user 消息中的最后一条。Codex 形状下首条 user 是 AGENTS.md，旧规则拿它比对，于是同一任务的跟进被判成换话题、任务与工具输出整段折叠；反过来，真换题但碰巧与 AGENTS.md 同词时又不折叠。两向各有用例。
+
+### Changed
+
+- `live-benchmark.mjs` 不再随包发布（它会改写运行中 magpie 的插件选项），只留在仓库里。
+- README 快速上手不再预设 `saccade: "auto"`，改为说明默认 `off` 适合带缓存的长工具循环，`auto` 的取舍写在旁边。
+
 ## [0.2.1] — 2026-11-03
 
 ### Fixed

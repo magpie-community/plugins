@@ -225,3 +225,38 @@ test("Codex shape: AGENTS.md, environment_context and the task all stay whole; t
   expect(r.input[3].content).toBe(task)
   expect(r.input[5].output).toContain("[fovea:")
 })
+
+// yetone's probe on PR #640: on Codex the first user item is AGENTS.md, so
+// saccade: auto judged the topic against it, not against the task.
+function codexBody(question) {
+  const agents = "# AGENTS.md instructions\nUse pnpm for packages, prefer small commits, document every public function in the module header. " + "A".repeat(300)
+  const env = "<environment_context>\n<cwd>/repo</cwd>\n" + "E".repeat(300)
+  const task = "Fix the flaky scheduler test in internal/sched: the retry timing assertion fails under load. " + "T".repeat(300)
+  const input = [
+    { type: "message", role: "developer", content: "policy" },
+    { type: "message", role: "user", content: agents },
+    { type: "message", role: "user", content: env },
+    { type: "message", role: "user", content: task },
+  ]
+  for (let i = 0; i < 6; i++) {
+    input.push({ type: "function_call", call_id: "c" + i, name: "read", arguments: "{}" })
+    input.push({ type: "function_call_output", call_id: "c" + i, output: "L".repeat(400) })
+  }
+  input.push({ type: "message", role: "user", content: question })
+  return { agents, env, task, request: { input } }
+}
+
+test("Codex shape, saccade auto: a follow-up to the task (third user item) is not a new topic", async () => {
+  const { agents, task, request } = codexBody("scheduler retry timing assertion still fails in internal/sched, fix it")
+  const r = (await run(mod, { options: { ...options, keep_recent: 1, cut_step: 1, saccade: "auto" }, request })).request
+  expect(r.input[1].content).toBe(agents)
+  expect(r.input[3].content).toBe(task)
+  expect(JSON.stringify(r)).not.toContain("prior topic not carried")
+  expect(r.input[5].output).toContain("[fovea:")
+})
+
+test("Codex shape, saccade auto: a new topic that shares words with AGENTS.md still collapses", async () => {
+  const { request } = codexBody("document every public function using pnpm commits header module")
+  const r = (await run(mod, { options: { ...options, keep_recent: 1, cut_step: 1, saccade: "auto" }, request })).request
+  expect(r.input[5].output).toContain("prior topic not carried")
+})
