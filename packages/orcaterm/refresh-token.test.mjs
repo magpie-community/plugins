@@ -15,7 +15,11 @@ afterEach(() => { globalThis.fetch = realFetch })
 const json = data => Response.json({ code: 0, data })
 const JTI = "0d4c2f7e-9b1a-4c3d-8e5f-6a7b8c9d0e1f"
 const tail = "A".repeat(43)
-const access = (jti, exp = Math.floor(Date.now() / 1000) + 7200) =>
+// One expiry for the whole file: a default read from the clock on each call
+// made two tokens for the same jti differ across a second boundary (CI
+// run 41774409142).
+const LATER = Math.floor(Date.now() / 1000) + 7200
+const access = (jti, exp = LATER) =>
   `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({ userId: "u1", jti, exp })).toString("base64url")}.test`
 const refreshOf = (jti, n = 1) => `${jti}.${n}.${tail}`
 
