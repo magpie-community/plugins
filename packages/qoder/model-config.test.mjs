@@ -87,3 +87,38 @@ test("a model the listing doesn't have is answered 400, with nothing sent", asyn
   expect(res.status).toBe(400)
   expect(sent).toHaveLength(0)
 })
+
+// The business record names the model (plugins#692, chansee97; #638 again
+// after 0.2.54): qodercli 1.1.82 sends business.model_key beside the
+// product, version, type, id, name, begin_at and stage, and Qoder books the
+// call from it. Without it Qoder and Qoder CN billed every model as Auto.
+for (const [site, create, file] of [["qoder", QoderAuthPlugin, "listing.json"], ["qoder-cn", QoderCNAuthPlugin, "cn-listing-free-view.json"]]) {
+  for (const key of ["dfmodel", "kmodel_latest"]) {
+    test(`${site}: business.model_key is ${key}, the model the request names`, async () => {
+      const { res, sent } = await chatOn(create, paid(read(file)), key)
+      expect(res.status).toBe(200)
+      const b = sent.at(-1).business
+      expect(b.model_key).toBe(key)
+      expect(b.model_key).toBe(sent.at(-1).model_config.key)
+      expect(Object.keys(b)).toEqual(expect.arrayContaining(["product", "version", "type", "id", "name", "begin_at", "stage"]))
+    })
+  }
+}
+
+test("one task's calls on two models each name their own model", () => {
+  const listing = read("cn-listing-free-view.json")
+  const chat = { messages: [{ role: "user", content: "hi" }] }
+  const task = _internal.taskOf("s", chat)
+  const a = _internal.qoderBody({ ...chat, model: "dfmodel" }, _internal.modelInfo(listing.chat.find((e) => e.key === "dfmodel")), "s", task)
+  const b = _internal.qoderBody({ ...chat, model: "kmodel_latest" }, _internal.modelInfo(listing.chat.find((e) => e.key === "kmodel_latest")), "s", task)
+  expect(a.business.id).toBe(b.business.id)
+  expect([a.business.model_key, b.business.model_key]).toEqual(["dfmodel", "kmodel_latest"])
+})
+
+test("QwenWork's record stays as its own client builds it, with no model_key", () => {
+  const listing = read("cn-listing-free-view.json")
+  const df = _internal.modelInfo(listing.chat.find((e) => e.key === "dfmodel"))
+  const chat = { model: "dfmodel", messages: [{ role: "user", content: "hi" }] }
+  expect(_internal.qoderBody(chat, df, "", undefined, _internal.SITES.qwenwork).business).not.toHaveProperty("model_key")
+  expect(_internal.qoderBody(chat, df, "", undefined, _internal.SITES.qoder).business.model_key).toBe("dfmodel")
+})

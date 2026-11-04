@@ -1478,6 +1478,15 @@ function modelConfig(m, thinking) {
   }
 }
 
+// The business record also names the model: Qoder's CLI (qodercli 1.1.82,
+// qoder-worker-runtime v3 → snn + model_key) puts the chosen model's key
+// there when a prompt starts, and the server attributes the call's billing
+// from it. Without it Qoder and Qoder CN booked the call as Auto whatever
+// model_config named (plugins#692, chansee97; the same shape as #638, where
+// the model_config fix of 0.2.54 did not change the billing). Qoder.app
+// 0.4.3 and QwenWork 1.0.46 build their record without it, so a site that
+// ships such a client says businessModelKey: false.
+//
 // qoderBody is the plaintext agent_chat_generation takes for a chat
 // completion request, for model m, in the session the agent named (named,
 // "" when none) and the task it is a call of (taskOf's, a new one when
@@ -1505,7 +1514,7 @@ function qoderBody(chat, m, named = "", task, site) {
     chat_record_id: request,
     session_id: session,
     parameters: params,
-    business: { product: site?.businessProduct ?? "app", version: site?.cosyVersion ?? COSY_VERSION, type: "agent", id: task.id, name: task.name ?? "", begin_at: task.begin, stage: task.answered ? "processing" : "start" },
+    business: { product: site?.businessProduct ?? "app", version: site?.cosyVersion ?? COSY_VERSION, type: "agent", id: task.id, name: task.name ?? "", begin_at: task.begin, stage: task.answered ? "processing" : "start", ...(site?.businessModelKey === false ? {} : { model_key: m.key }) },
     agent_id: "agent_common",
     task_id: "common",
     session_type: site?.sessionType ?? "app",
@@ -2872,7 +2881,7 @@ const QWENWORK_COMMON = {
   deviceRefreshTarget: "c",
   clientHeaders: qwenworkClientHeaders,
   modelScene: "qwork", listAllModels: true,
-  clientType: "6", businessProduct: "qoder_work", sessionType: "qoder_work",
+  clientType: "6", businessProduct: "qoder_work", sessionType: "qoder_work", businessModelKey: false,
   userInfoPath: "/api/v1/adapter/user/account-context?include=user,plan,quota,page,data_sharing",
   normalizeUser: v => (v?.data ?? v)?.user ?? (v?.data ?? v),
   pat: false,      // no /api/v1/jobToken/exchange on gateway.qwenwork.cn
