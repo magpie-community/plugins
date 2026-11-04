@@ -26,6 +26,9 @@ export interface KeyDirectoryEntry {
   keys: { fingerprint: string; name: string }[];
   /** <小写账号名或 key 指纹> → 模型 id 列表（不带供应商前缀） */
   accountModels: Record<string, string[]>;
+  /** 该供应商当前启用的模型 id（不带前缀，providers.json 的 models 即 chosen）；
+   * 模型被路由组 unlists 藏出 /v1/models 时，这是唯一还知道它在的来源 */
+  models: string[];
 }
 
 /** 模型缓存里的一个模型：id 不带供应商前缀，keys 是能看到它的 key 指纹（空 = 所有 key） */
@@ -135,7 +138,7 @@ function entryOf(raw: unknown): KeyDirectoryEntry | null {
       if (list) accountModels[k] = list;
     }
   }
-  return { keys, accountModels };
+  return { keys, accountModels, models: asStringArray(pr.models) ?? [] };
 }
 
 // 读取缓存：只存解析成功且非空的结果（键是文件路径），损坏/缺失每次现读，便于夹具与排错
@@ -182,12 +185,13 @@ export function readKeyDirectory(configDir: string): Promise<Map<string, KeyDire
           if (entry) {
             const id = (item as { id: string }).id;
             const prev = map.get(id);
-            // 同 id 出现两次时合并 key（按指纹去重），accountModels 后者胜
+            // 同 id 出现两次时合并 key（按指纹去重），accountModels 与 models 后者胜
             if (prev) {
               for (const k of entry.keys) {
                 if (!prev.keys.some((x) => x.fingerprint === k.fingerprint)) prev.keys.push(k);
               }
               Object.assign(prev.accountModels, entry.accountModels);
+              prev.models = entry.models;
             } else {
               map.set(id, entry);
             }

@@ -706,6 +706,7 @@ describe("accountsOf", () => {
             { fingerprint: FP.other, name: "除GLM外其他" },
           ],
           accountModels: { [FP.glm]: ["group/glm-5.3"], yang: ["group/glm-5.3"] },
+          models: [],
         },
       ],
     ]);
@@ -746,7 +747,7 @@ describe("accountsOf", () => {
 
   test("本机实况夹具：三个 key 账号各自的可选模型、窗口与自动模型", () => {
     const { accounts, autoAccountModels } = accountsOf(P, {
-      models: models(), quotas: quotas(), keyDir: keyDir(), cache: cache(),
+      models: models(), quotas: quotas(), keyDir: keyDir(), cache: cache(), chosen: [],
     });
     expect(accounts.map((a) => a.id).sort()).toEqual([FP.free, FP.glm, FP.other, "Yang"].sort());
 
@@ -786,13 +787,14 @@ describe("accountsOf", () => {
       ],
       keyDir: keyDir(),
       cache: cache(),
+      chosen: [],
     });
     expect(accounts.map((a) => a.id).sort()).toEqual([FP.free, FP.glm, FP.other, "ghost-acct"].sort());
   });
 
   test("缓存缺失退化：/v1/models 有模型 → 全部模型不按账号区分（第 1 层跳过），perAccount false", () => {
     const { accounts, autoAccountModels } = accountsOf(P, {
-      models: models(), quotas: quotas(), keyDir: keyDir(), cache: null,
+      models: models(), quotas: quotas(), keyDir: keyDir(), cache: null, chosen: [],
     });
     for (const id of [FP.free, FP.glm, FP.other, "Yang"]) {
       const a = accountOf(accounts, id);
@@ -808,9 +810,9 @@ describe("accountsOf", () => {
     expect(autoAccountModels).toEqual([M_FLASH, M_GLM, M_QWEN].sort());
   });
 
-  test("缓存与 /v1/models 模型都没有 → models null（提示 B、自动模型失败）", () => {
+  test("缓存、/v1/models 与 chosen 都没有 → models null（提示 B、自动模型失败）", () => {
     const { accounts, autoAccountModels } = accountsOf(P, {
-      models: [], quotas: quotas(), keyDir: keyDir(), cache: null,
+      models: [], quotas: quotas(), keyDir: keyDir(), cache: null, chosen: [],
     });
     for (const a of accounts) {
       expect(a.models).toBeNull();
@@ -818,6 +820,23 @@ describe("accountsOf", () => {
       expect(a.autoModel).toBeNull();
     }
     expect(autoAccountModels).toBeNull();
+  });
+
+  test("模型全被路由组藏出 /v1/models → chosen 启用清单兜底，与 v1 并集去重", () => {
+    const { accounts, autoAccountModels } = accountsOf(P, {
+      models: [M_QWEN], // glm-5.3 / glm-5.3-flash 被 unlists 藏了
+      quotas: quotas(),
+      keyDir: keyDir(),
+      cache: null,
+      chosen: ["group/glm-5.3", "group/glm-5.3-flash"],
+    });
+    const expected = [M_FLASH, M_GLM, M_QWEN].sort();
+    expect(autoAccountModels).toEqual(expected);
+    // 第 2 层（accountModels）照常收窄：GLM 与 Yang 仍被限定为 glm-5.3
+    expect(accountOf(accounts, FP.glm).models).toEqual([M_GLM]);
+    expect(accountOf(accounts, "Yang").models).toEqual([M_GLM]);
+    expect(accountOf(accounts, FP.free).models).toEqual(expected);
+    for (const a of accounts) expect(a.perAccount).toBe(false);
   });
 
   test("窗口匹配：未命名 key 接受无窗口；同名两把 key 都挂「名字 · 打码」卡", () => {
@@ -839,9 +858,11 @@ describe("accountsOf", () => {
             { fingerprint: fpC, name: "GLM" },
           ],
           accountModels: {},
+          models: [],
         }],
       ]),
       cache: cache(),
+      chosen: [],
     });
     // 没起名：卡名是打码后的样子，插件算不出来 → 无窗口
     expect(accountOf(accounts, fpA).windows).toEqual([]);
@@ -860,6 +881,7 @@ describe("pinFor", () => {
       [P, {
         keys: names.map((name, i) => ({ fingerprint: fp(`sk-test-${i}-key`), name })),
         accountModels: {},
+        models: [],
       }],
     ]);
 

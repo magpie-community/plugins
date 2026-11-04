@@ -340,11 +340,13 @@ export async function fetchCatalog(base: string): Promise<Catalog> {
     p.models = raws
       .map((m) => ({ id: m.id, effort: pickEffort(m) }))
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const chosen = keyDir?.get(p.id)?.models ?? [];
     const built = accountsOf(p.id, {
       models: raws.map((m) => m.id),
       quotas: quotas.entries,
       keyDir,
       cache: await readDefaultModelCache(p.id),
+      chosen,
     });
     p.accounts = built.accounts;
     p.autoAccountModels = built.autoAccountModels;

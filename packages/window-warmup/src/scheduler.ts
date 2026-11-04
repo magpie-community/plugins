@@ -684,8 +684,10 @@ export class Scheduler {
 
   /**
    * 发送前解析当次的账号头与模型（每次发送现取 /v1/models、key 目录与该供应商的模型缓存，
-   * 配置变了下一次发送自动跟随）。固定模型只校验仍在 /v1/models，不校验账号权限（交给服务器）；
+   * 配置变了下一次发送自动跟随）。固定模型只校验仍在 /v1/models 或 chosen 启用清单里
+   * （模型被路由组 unlists 藏出 /v1/models 时 chosen 是唯一来源），不校验账号权限（交给服务器）；
    * 自动模型按统一账号规则取该账号（或「自动选账号」）的可选模型列表现选。
+   * 模型不在 /v1/models 里时拿不到思考档位元数据，按「不适用」处理（不带 reasoning_effort）。
    */
   private async resolveSend(
     task: Task,
@@ -696,24 +698,31 @@ export class Scheduler {
       this.modelCacheFn(task.provider).catch(() => null),
     ]);
     const pin = pinFor(task.provider, task.account, keyDir, this.quota?.entries ?? []);
+    const chosen = keyDir?.get(task.provider)?.models ?? [];
     if (task.model) {
       const model = models.find((m) => m.id === task.model);
-      return model
-        ? { id: task.model, model, pin }
-        : { error: `模型 ${task.model} 已不在 Magpie 的模型列表里` };
+      if (model) return { id: task.model, model, pin };
+      // 不在 /v1/models（被路由组藏掉）但仍在 chosen 启用清单里：照发，档位按「不适用」。
+      // 裸 id 形态与 v1 的 find 对齐（历史任务的 model 可能不带供应商前缀）
+      if (chosen.some((bare) => bare === task.model || `${task.provider}/${bare}` === task.model)) {
+        return { id: task.model, model: { id: task.model }, pin };
+      }
+      return { error: `模型 ${task.model} 已不在 Magpie 的模型列表里` };
     }
     const ids = models.filter((m) => modelProvider(m) === task.provider).map((m) => m.id);
-    const list = modelsForAccount(task.provider, task.account, { models: ids, keyDir, cache }).list;
+    const list = modelsForAccount(task.provider, task.account, {
+      models: ids, keyDir, cache, chosen,
+    }).list;
     if (list === null) {
       return { error: `供应商 ${task.provider} 还没有模型列表，无法自动选模型` };
     }
     if (list.length === 0) return { error: `账号 ${task.account || "自动"} 没有可用模型` };
-    const chosen = pickAutoModel(list.map((id) => ({ id })));
-    if (!chosen) return { error: `账号 ${task.account || "自动"} 没有可用模型` };
-    const model = models.find((m) => m.id === chosen.id);
-    // list 由第 3 层过滤过，一定还在 /v1/models 里；兜底防夹具不一致
-    if (!model) return { error: `模型 ${chosen.id} 已不在 Magpie 的模型列表里` };
-    return { id: chosen.id, model, pin };
+    const chosenModel = pickAutoModel(list.map((id) => ({ id })));
+    if (!chosenModel) return { error: `账号 ${task.account || "自动"} 没有可用模型` };
+    // list 过了第 3 层，仍在 /v1/models 或 chosen 里；不在 /v1/models（chosen 兜底）时
+    // 没有档位元数据，用 id 骨架，pickEffort 自然判「不适用」
+    const model = models.find((m) => m.id === chosenModel.id) ?? { id: chosenModel.id };
+    return { id: chosenModel.id, model, pin };
   }
 
   private async sendAndFinalize(

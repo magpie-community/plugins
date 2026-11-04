@@ -65,22 +65,34 @@ function windowsForAccount(provider, account, quotas, keyDir) {
   const card = quotas.find((q) => q.provider === provider && q.viaKey && (q.account.toLowerCase() === low || q.account.startsWith(`${name}${MASKED_SEP}`)));
   return card ? keepWindows(card.windows) : [];
 }
-function candidatesOf(provider, models, cache) {
+function candidatesOf(provider, models, cache, chosen) {
   if (cache) {
     return cache.map((c) => ({ full: `${provider}/${c.id}`, bare: c.id, keys: c.keys }));
   }
   const prefix = `${provider}/`;
-  return models.map((m) => ({
-    full: m,
-    bare: m.startsWith(prefix) ? m.slice(prefix.length) : m,
-    keys: null
-  }));
+  const seen = new Set;
+  const out = [];
+  for (const m of models) {
+    if (seen.has(m))
+      continue;
+    seen.add(m);
+    out.push({ full: m, bare: m.startsWith(prefix) ? m.slice(prefix.length) : m, keys: null });
+  }
+  for (const bare of chosen) {
+    const full = `${provider}/${bare}`;
+    if (seen.has(full))
+      continue;
+    seen.add(full);
+    out.push({ full, bare, keys: null });
+  }
+  return out;
 }
 function modelsForAccount(provider, account, input) {
   const hasCache = input.cache !== null;
-  if (!hasCache && input.models.length === 0)
+  if (!hasCache && input.models.length === 0 && input.chosen.length === 0) {
     return { list: null, perAccount: false };
-  let cands = candidatesOf(provider, input.models, input.cache);
+  }
+  let cands = candidatesOf(provider, input.models, input.cache, input.chosen);
   if (hasCache && isFingerprint(account)) {
     cands = cands.filter((c) => !c.keys || c.keys.length === 0 || c.keys.includes(account));
   }
@@ -90,7 +102,10 @@ function modelsForAccount(provider, account, input) {
     const set = new Set(allowed);
     cands = cands.filter((c) => set.has(c.bare));
   }
-  const present = new Set(input.models);
+  const present = new Set([
+    ...input.models,
+    ...input.chosen.map((bare) => `${provider}/${bare}`)
+  ]);
   const list = cands.map((c) => c.full).filter((id) => present.has(id)).sort();
   return { list, perAccount: hasCache };
 }
@@ -137,10 +152,13 @@ function pickModels(provider, account, input) {
   };
 }
 function autoAccountModelsOf(provider, input) {
-  if (input.cache === null && input.models.length === 0)
+  if (input.cache === null && input.models.length === 0 && input.chosen.length === 0)
     return null;
-  const present = new Set(input.models);
-  return candidatesOf(provider, input.models, input.cache).map((c) => c.full).filter((id) => present.has(id)).sort();
+  const present = new Set([
+    ...input.models,
+    ...input.chosen.map((bare) => `${provider}/${bare}`)
+  ]);
+  return candidatesOf(provider, input.models, input.cache, input.chosen).map((c) => c.full).filter((id) => present.has(id)).sort();
 }
 function pinFor(provider, account, keyDir, quotas = []) {
   if (!account)
@@ -239,7 +257,7 @@ function entryOf(raw) {
         accountModels[k] = list;
     }
   }
-  return { keys, accountModels };
+  return { keys, accountModels, models: asStringArray(pr.models) ?? [] };
 }
 var readCache = new Map;
 function cached(key, load, worth) {
@@ -284,6 +302,7 @@ function readKeyDirectory(configDir) {
                 prev.keys.push(k);
             }
             Object.assign(prev.accountModels, entry.accountModels);
+            prev.models = entry.models;
           } else {
             map.set(id, entry);
           }
@@ -718,9 +737,9 @@ function errorReason(text) {
   } catch {}
   return text.trim().slice(0, REASON_MAX) || "\u4E0A\u6E38\u672A\u8FD4\u56DE\u9519\u8BEF\u8BF4\u660E";
 }
-async function requestJSON(base, path, signal, timeoutMs = READ_TIMEOUT_MS, method = "GET") {
+async function requestJSON(base, path2, signal, timeoutMs = READ_TIMEOUT_MS, method = "GET") {
   const timeout = AbortSignal.timeout(timeoutMs);
-  const res = await fetch(base + path, {
+  const res = await fetch(base + path2, {
     method,
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout
   });
@@ -730,7 +749,7 @@ async function requestJSON(base, path, signal, timeoutMs = READ_TIMEOUT_MS, meth
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`Magpie \u8FD4\u56DE\u7684\u4E0D\u662F JSON\uFF08${path}\uFF09`);
+    throw new Error(`Magpie \u8FD4\u56DE\u7684\u4E0D\u662F JSON\uFF08${path2}\uFF09`);
   }
 }
 function dataArray(data) {
@@ -863,11 +882,13 @@ async function fetchCatalog(base) {
   for (const p of list) {
     const raws = rawModels.get(p.id) ?? [];
     p.models = raws.map((m) => ({ id: m.id, effort: pickEffort(m) })).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const chosen = keyDir?.get(p.id)?.models ?? [];
     const built = accountsOf(p.id, {
       models: raws.map((m) => m.id),
       quotas: quotas.entries,
       keyDir,
-      cache: await readDefaultModelCache(p.id)
+      cache: await readDefaultModelCache(p.id),
+      chosen
     });
     p.accounts = built.accounts;
     p.autoAccountModels = built.autoAccountModels;
@@ -1415,24 +1436,33 @@ class Scheduler {
       this.modelCacheFn(task.provider).catch(() => null)
     ]);
     const pin = pinFor(task.provider, task.account, keyDir, this.quota?.entries ?? []);
+    const chosen = keyDir?.get(task.provider)?.models ?? [];
     if (task.model) {
-      const model = models.find((m) => m.id === task.model);
-      return model ? { id: task.model, model, pin } : { error: `\u6A21\u578B ${task.model} \u5DF2\u4E0D\u5728 Magpie \u7684\u6A21\u578B\u5217\u8868\u91CC` };
+      const model2 = models.find((m) => m.id === task.model);
+      if (model2)
+        return { id: task.model, model: model2, pin };
+      if (chosen.some((bare) => bare === task.model || `${task.provider}/${bare}` === task.model)) {
+        return { id: task.model, model: { id: task.model }, pin };
+      }
+      return { error: `\u6A21\u578B ${task.model} \u5DF2\u4E0D\u5728 Magpie \u7684\u6A21\u578B\u5217\u8868\u91CC` };
     }
     const ids = models.filter((m) => modelProvider(m) === task.provider).map((m) => m.id);
-    const list = modelsForAccount(task.provider, task.account, { models: ids, keyDir, cache }).list;
+    const list = modelsForAccount(task.provider, task.account, {
+      models: ids,
+      keyDir,
+      cache,
+      chosen
+    }).list;
     if (list === null) {
       return { error: `\u4F9B\u5E94\u5546 ${task.provider} \u8FD8\u6CA1\u6709\u6A21\u578B\u5217\u8868\uFF0C\u65E0\u6CD5\u81EA\u52A8\u9009\u6A21\u578B` };
     }
     if (list.length === 0)
       return { error: `\u8D26\u53F7 ${task.account || "\u81EA\u52A8"} \u6CA1\u6709\u53EF\u7528\u6A21\u578B` };
-    const chosen = pickAutoModel(list.map((id) => ({ id })));
-    if (!chosen)
+    const chosenModel = pickAutoModel(list.map((id) => ({ id })));
+    if (!chosenModel)
       return { error: `\u8D26\u53F7 ${task.account || "\u81EA\u52A8"} \u6CA1\u6709\u53EF\u7528\u6A21\u578B` };
-    const model = models.find((m) => m.id === chosen.id);
-    if (!model)
-      return { error: `\u6A21\u578B ${chosen.id} \u5DF2\u4E0D\u5728 Magpie \u7684\u6A21\u578B\u5217\u8868\u91CC` };
-    return { id: chosen.id, model, pin };
+    const model = models.find((m) => m.id === chosenModel.id) ?? { id: chosenModel.id };
+    return { id: chosenModel.id, model, pin };
   }
   async sendAndFinalize(task, run, entry, savedRunning) {
     try {
@@ -1708,9 +1738,9 @@ class StoreImpl {
   data;
   path;
   writing = Promise.resolve();
-  constructor(data, path) {
+  constructor(data, path2) {
     this.data = data;
-    this.path = path;
+    this.path = path2;
   }
   save() {
     const next = this.writing.then(async () => {
@@ -1725,13 +1755,13 @@ class StoreImpl {
 }
 async function openStore(dir) {
   await mkdir(dir, { recursive: true, mode: 448 });
-  const path = join2(dir, STATE_FILE);
+  const path2 = join2(dir, STATE_FILE);
   let raw;
   try {
-    raw = await readFile2(path, "utf8");
+    raw = await readFile2(path2, "utf8");
   } catch (e) {
     if (e.code === "ENOENT") {
-      return new StoreImpl({ version: 1, tasks: [], runs: [], marks: {} }, path);
+      return new StoreImpl({ version: 1, tasks: [], runs: [], marks: {} }, path2);
     }
     throw new StoreError(`\u72B6\u6001\u6587\u4EF6\u8BFB\u4E0D\u51FA\u6765\uFF1A${errText(e)}`);
   }
@@ -1750,7 +1780,7 @@ async function openStore(dir) {
       r.model = null;
   }
   truncateState(data);
-  return new StoreImpl(data, path);
+  return new StoreImpl(data, path2);
 }
 async function migrateLegacyState(dir, env = process.env) {
   const statePath = join2(dir, STATE_FILE);
@@ -1791,19 +1821,19 @@ function pidAlive(pid) {
     return e.code === "EPERM";
   }
 }
-async function releaseLock(path) {
+async function releaseLock(path2) {
   let raw;
   try {
-    raw = await readFile2(path, "utf8");
+    raw = await readFile2(path2, "utf8");
   } catch {
     return;
   }
   if (parsePid(raw) === process.pid)
-    await unlink(path).catch(() => {});
+    await unlink(path2).catch(() => {});
 }
 async function acquireLock(dir, opts = {}) {
   await mkdir(dir, { recursive: true, mode: 448 });
-  const path = join2(dir, LOCK_FILE);
+  const path2 = join2(dir, LOCK_FILE);
   const leftovers = await readdir(dir).catch(() => []);
   for (const name of leftovers) {
     if (/^service\.lock\.\d+\.[0-9a-f-]+\.tmp$/.test(name)) {
@@ -1814,9 +1844,9 @@ async function acquireLock(dir, opts = {}) {
     const tmp = join2(dir, `${LOCK_FILE}.${process.pid}.${randomUUID2()}.tmp`);
     await writeFile(tmp, String(process.pid), { mode: 384 });
     try {
-      await link(tmp, path);
+      await link(tmp, path2);
       await unlink(tmp).catch(() => {});
-      return { ok: true, release: () => releaseLock(path) };
+      return { ok: true, release: () => releaseLock(path2) };
     } catch (e) {
       await unlink(tmp).catch(() => {});
       if (e.code !== "EEXIST") {
@@ -1825,7 +1855,7 @@ async function acquireLock(dir, opts = {}) {
     }
     let raw;
     try {
-      raw = await readFile2(path, "utf8");
+      raw = await readFile2(path2, "utf8");
     } catch (e) {
       if (e.code === "ENOENT")
         continue;
@@ -1840,7 +1870,7 @@ async function acquireLock(dir, opts = {}) {
         return { ok: false, pid };
     }
     try {
-      await unlink(path);
+      await unlink(path2);
     } catch {}
   }
   throw new Error("\u5355\u5B9E\u4F8B\u9501\u88AB\u5360\u7528\u4E14\u65E0\u6CD5\u63A5\u7BA1");
@@ -2020,10 +2050,10 @@ async function startService(opts) {
   }
   async function api(req, url, origin) {
     const cors = corsHeaders(origin);
-    const path = url.pathname;
-    if (req.method === "GET" && path === "/api/state")
+    const path3 = url.pathname;
+    if (req.method === "GET" && path3 === "/api/state")
       return json(guardedState(), 200, cors);
-    if (req.method === "GET" && path === "/api/catalog") {
+    if (req.method === "GET" && path3 === "/api/catalog") {
       try {
         return json(await fetchCatalog(opts.base), 200, cors);
       } catch (e) {
@@ -2033,9 +2063,9 @@ async function startService(opts) {
     const blocked = readonlyBlock(cors);
     if (blocked)
       return blocked;
-    const runMatch = /^\/api\/tasks\/([^/]+)\/run$/.exec(path);
-    const idMatch = /^\/api\/tasks\/([^/]+)$/.exec(path);
-    if (path === "/api/tasks" && req.method === "POST")
+    const runMatch = /^\/api\/tasks\/([^/]+)\/run$/.exec(path3);
+    const idMatch = /^\/api\/tasks\/([^/]+)$/.exec(path3);
+    if (path3 === "/api/tasks" && req.method === "POST")
       return saveTask(req, cors, undefined);
     if (idMatch && req.method === "PUT")
       return saveTask(req, cors, decodeURIComponent(idMatch[1]));
@@ -2054,7 +2084,7 @@ async function startService(opts) {
         return opError(e, cors);
       }
     }
-    return json({ error: `\u6CA1\u6709\u8FD9\u4E2A\u63A5\u53E3\uFF1A${path}` }, 404, cors);
+    return json({ error: `\u6CA1\u6709\u8FD9\u4E2A\u63A5\u53E3\uFF1A${path3}` }, 404, cors);
   }
   async function serveIndex(req, url) {
     const nonce = randomBytes(16).toString("base64");
@@ -2181,6 +2211,6 @@ var plugin_default = {
   }
 };
 export {
-  DEFAULT_PORT,
-  plugin_default as default
+  plugin_default as default,
+  DEFAULT_PORT
 };
