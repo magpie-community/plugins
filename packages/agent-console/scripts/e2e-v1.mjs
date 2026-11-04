@@ -1,5 +1,5 @@
 // e2e (§11.2): playwright-core + Edge, isolated data directory _tmp/e2e-xdg, port 3497, AGENT_CONSOLE_MOCK=1.
-// Scenarios 1–12, 16–24 (20–24: 1.3 overlap at 600 px, 全部自动同意, message actions, quotes, instant send); each prints ✓/✗, and any ✗ exits with code 1.
+// Scenarios 1–12, 16–24 (20, 22–24: 1.3 overlap at 600 px, message actions, quotes, instant send); each prints ✓/✗, and any ✗ exits with code 1.
 // The mock Agent starts slowly (E2E_MOCK_START_MS, default 1200 ms) like a real one on Windows, so every scenario runs
 // with the user's message arriving before the Agent is up.
 import { spawn, execFileSync } from "node:child_process";
@@ -474,24 +474,6 @@ async function scenario20() {
   record("场景20 600px 运行中折叠行/运行行不重叠", approved && seen.size === 0, [...seen].slice(0, 3).join(" | "));
 }
 
-async function scenario21() {
-  // 全部自动同意: a waiting card is approved by the switch, the next request never shows a card
-  await newThread();
-  await send("/perm");
-  await page.waitForSelector(".card.perm:not(.done)", { timeout: 15000 });
-  await page.click(".mode-chip");
-  await page.click('.mode-menu .sm-opt:has-text("全部自动同意")');
-  await page.waitForSelector(".card.perm.done", { timeout: 8000 });
-  const label = await page.textContent(".card.perm.done .perm-done");
-  const chipAuto = await page.$(".mode-chip.auto");
-  await waitIdle();
-  await send("/perm");
-  await sleep(500);
-  await waitIdle();
-  const cards = (await page.$$(".card.perm")).length;
-  record("场景21 全部自动同意：待批卡片自动同意，之后不再弹", /自动同意/.test(label ?? "") && !!chipAuto && cards === 1, `label=${label} cards=${cards}`);
-}
-
 async function scenario22() {
   // User-message actions: under the bubble, reachable without a hover gap, copy feedback, edit fills the input
   await newThread();
@@ -707,8 +689,8 @@ async function main() {
     await newProjectFlow();
     // E2E_ONLY_13=1 runs just the 1.3 scenarios (20–23) and the console-error check
     const all = [scenario2, scenario3, scenario4, scenario5, scenario6, scenario7, scenario8, scenario9, scenario10, scenario11,
-      scenario12, scenario13, scenario14, scenario15, scenario16, scenario17, scenario18, scenario20, scenario21, scenario22, scenario23, scenario24, scenario19];
-    const only13 = new Set([scenario20, scenario21, scenario22, scenario23, scenario24, scenario19]);
+      scenario12, scenario13, scenario14, scenario15, scenario16, scenario17, scenario18, scenario20, scenario22, scenario23, scenario24, scenario19];
+    const only13 = new Set([scenario20, scenario22, scenario23, scenario24, scenario19]);
     for (const f of all) if (!process.env.E2E_ONLY_13 || only13.has(f)) await f();
   } catch (e) {
     record("中途异常", false, String(e?.message ?? e).slice(0, 600) + " ||daemon:" + daemonErr.slice(-4).join("|").slice(0, 400));

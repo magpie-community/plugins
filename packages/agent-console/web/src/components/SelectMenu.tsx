@@ -3,7 +3,6 @@
 // Enter/Space pick, Esc/Tab close (Esc returns focus to the trigger). Click outside closes. The menu is portaled to <body> with
 // fixed positioning, opens below the trigger or flips above it when there's no room (the composer sits at the bottom), and is
 // kept inside the window; no browser popup is involved, so it behaves the same inside Magpie's sandboxed iframe.
-import { Icon } from "./Icons";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
@@ -13,8 +12,6 @@ export type SelectOption<T extends string = string> = {
   hint?: string;
   disabled?: boolean;
   danger?: boolean;
-  /** Small icon before the label (1.3: the 全部自动同意 shield) */
-  icon?: string;
 };
 
 const GAP = 4;
@@ -194,7 +191,7 @@ export function SelectMenu<T extends string>({
               onClick={() => pick(i)}
             >
               <span className="sm-text">
-                <span className="sm-label">{o.icon && <Icon name={o.icon} size={13} />}{o.label}</span>
+                <span className="sm-label">{o.label}</span>
                 {o.hint && <span className="sm-hint">{o.hint}</span>}
               </span>
               <span className="sm-check" aria-hidden="true">{o.value === value ? (

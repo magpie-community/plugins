@@ -225,10 +225,10 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
       {row(t("settings.defaultMode"), (
         <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.defaultMode")}
           value={s.defaultMode ?? "default"} onChange={(v) => void set({ defaultMode: v })}
-          options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc, icon: m.auto ? "shieldCheck" : undefined }))}>
+          options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc }))}>
           <span className="sm-val">{(() => { const m = modes.find((x) => x.id === (s.defaultMode ?? "default")); return m ? `${m.label} — ${m.desc}` : ""; })()}</span>
         </SelectMenu>
-      ), s.defaultMode === "bypassPermissions" ? `${t("settings.defaultModeHint")} ${t("composer.autoWarn")}` : t("settings.defaultModeHint"))}
+      ), t("settings.defaultModeHint"))}
       {row(t("settings.theme"), (
         <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.theme")}
           value={normalizeThemeSetting(s.theme)} onChange={(v) => void set({ theme: v })}

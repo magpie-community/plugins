@@ -163,12 +163,21 @@ export function wrapperHtml(nonce, timing = WRAP_TIMING) {
   );
 }
 
+/**
+ * Who may frame /app: the gate itself, a loopback page (Magpie's plugin page and `magpie web` on this computer) and
+ * Magpie's desktop window, which is wails://localhost on macOS / Linux and http://wails.localhost on Windows (WebView2).
+ * Any other site gets a blank frame. Keep in sync with the README's security section.
+ */
+export const WRAPPER_FRAME_ANCESTORS =
+  "frame-ancestors 'self' http://127.0.0.1:* http://localhost:* http://[::1]:* http://wails.localhost:* wails:";
+
 export function wrapperCsp(nonce) {
   return [
     "default-src 'none'",
     `script-src 'nonce-${nonce}'`,
     `style-src 'nonce-${nonce}'`,
     "frame-src http://127.0.0.1:*",
+    WRAPPER_FRAME_ANCESTORS,
     "base-uri 'none'",
     "form-action 'none'",
   ].join("; ");

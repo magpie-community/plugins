@@ -142,6 +142,8 @@ test("the gate: Host checked, any Origin refused, the token only in the # fragme
     const app = await get(port, "/app?theme=dark")
     expect(app.status).toBe(200)
     expect(app.headers["content-security-policy"]).toBeTruthy()
+    // only loopback pages and Magpie's own window may frame the wrapper
+    expect(app.headers["content-security-policy"]).toContain("frame-ancestors 'self' http://127.0.0.1:* http://localhost:* http://[::1]:* http://wails.localhost:* wails:")
     expect(app.body).not.toContain(token)
     expect(app.body).not.toContain(key)
     expect((await get(port, "/app", { host: `evil.example:${port}` })).status).toBe(421)

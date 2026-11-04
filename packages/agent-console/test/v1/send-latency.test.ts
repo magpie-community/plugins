@@ -42,12 +42,14 @@ beforeEach(async () => {
   threadId = (await threads.create({ projectId, provider: "mock" })).id;
 });
 
-afterEach(() => {
+afterEach(async () => {
   delete process.env.AGENT_CONSOLE_MOCK_START_MS;
   delete process.env.AGENT_CONSOLE_MOCK_DETECT_MS;
   vi.restoreAllMocks();
-  manager.shutdown();
-  rmSync(dir, { recursive: true, force: true });
+  await manager.shutdown();
+  // a status / title patch may still be renaming meta.json.tmp-*: wait for it before the directory goes (Windows ENOENT)
+  await threads.idle();
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -67,8 +69,8 @@ describe("send latency (1.3)", () => {
     await waitFor(() => !!userPush("c-test-1"), 3000);
     const echo = userPush("c-test-1")!;
     expect(echo.at - t0).toBeLessThan(300);
-    // the working state comes with it, the Agent is still starting
-    expect(statusPush("initializing")).toBeTruthy();
+    // the working state follows right after (pushed once the title patch is on disk), the Agent is still starting
+    await waitFor(() => !!statusPush("initializing"), 1000);
     expect(statusPush("running")).toBeFalsy();
     await sending;
     expect(statusPush("running")!.at - t0).toBeGreaterThanOrEqual(1400);

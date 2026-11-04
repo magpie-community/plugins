@@ -65,6 +65,9 @@ describe("gate /app", () => {
       expect(csp).toMatch(/script-src 'nonce-[A-Za-z0-9+/=]+'/);
       expect(csp).toContain("default-src 'none'");
       expect(csp).toContain("frame-src http://127.0.0.1:*");
+      // only loopback pages and Magpie's own window (wails://localhost, http://wails.localhost) may frame /app
+      expect(csp).toContain("frame-ancestors 'self' http://127.0.0.1:* http://localhost:* http://[::1]:* http://wails.localhost:* wails:");
+      expect(csp).not.toMatch(/frame-ancestors[^;]*\s(\*|https:|http:)(\s|;|$)/); // never "any site"
       expect(csp).not.toBe(String(b.headers["content-security-policy"]));
       expect(a.headers["cache-control"]).toBe("no-store");
       expect(a.body).not.toContain(TOKEN);
