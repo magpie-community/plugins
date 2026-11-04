@@ -1,0 +1,32 @@
+{
+  "name": "@magpie-community/opencode-u1s1-auth",
+  "version": "0.1.0",
+  "description": "u1s1 models (official/community): device-code sign-in, DPoP-authenticated OpenAI-compatible chat, live model catalog",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "u1s1",
+    "provider"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/u1s1"
+  },
+  "magpie": {
+    "maxConcurrency": 4,
+    "icon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAAXNSR0IArs4c6QAAA19JREFUaEPtWltIFFEY/s6ZGe+XvKWhrZkgIqYgaIkhkosEFYi9hAShlC9phJBIkSU+iGSRBj1oaUFJBNWjEFtElJcSQgN7KQwlb0Wp6K7r7s6Jmc1x19R12didjTlPM5w553zf9//nn3/mPwQOjQHke1FGvC1Q0FERNxhjBY79vrtm75lIqznRMh73anSGAGwVC3EENa3PrgTYaQD5vgO75coDNhF3E1+O3PmLwExJVgcTUQ4gVKXgZVgMMBLgYYJhpEq6J5LbTBZnVXIEbWoH7yDsEkDOxRuGu8lsUUaCyPPPABxQs/LrsRGgn1itZWTqUHYeoWzQn8CvYmUi2U+m9Vl9Kt60W+tKSJ9EQAlJ/mgFjYCvraZZQLOAhwpoLuS2gDyPgMJiBB0pBSiVh4vTk1hsaXR7KjkX8tZ7IFB/GKE1dRuCtI1/xXxNpboJhJyqQlDZif+EAGNgC/MgkTtkQl6xABEEkOhYEI6z++3PH2DLy4qiNCoGJDjYnrNbLRBnZ5zUDjp2HMxohPm1AbBYEH6lBUJOrvcIcMkpCLvQABoVLS+62NoEy4chBWTY+XoIufYPOdu3CSzUVW/p094nkJKK8MvNoDGxdgJNF7EyNLBGoP4qAvILt62oRuCPdNsOo5xmAectobmQ5kJ+H4WaG7Ay8EZx7IiWdvDpmSoOo4lJCG9sBY3bKYNcfvoIxvsdCoHoJ88BnlcvAQgCIm92gkvS2dMFkxFzJ0vBrFaEnq1FYMlRhcxGuU1Y7SXQ+F3KM9xuHUhomH0usxm2sS9Kn3V0BKbHD+Q1XLVtvwekiSKu3Qaflr7hnFKeQ0JCNrVA5K0ucLo9rvDI/SuDb7HU1gK2tOjyebcICDl5CG9oBojTT21YP32EOPdry1RCFQQkOYTMbIRU1YBL3gswBvOLXph67iEgrwBcapqsmJSpmnq6ndQLLq8AjbbnUa6abewzzIZeMPNatrvZGLcs4GphX/RrBHyhuuOamgU0C3iogOZCHgro8XD/LzH5c5GPZzTPb8usAPqpVGaVCt0z+swKgLb7ZaF7dRdN67OkrxPVHzUAsASgRzlq4BgGpvT7KgjIGRXXjQcA0plgGO5axe2U2CvHbaigA2XXCXDQ4zj3LyZgeMeDVou2lYn1x21+A/rWAl26fAilAAAAAElFTkSuQmCC"
+  }
+}
