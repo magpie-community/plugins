@@ -175,7 +175,7 @@ test('the desktop menu\'s models are listed: a tier model /models leaves out sho
   const calls=[];const p=I.createPlugin({readSession:()=>session,fetchImpl:async(url,init)=>{
     calls.push({url,init});return url===I.CONFIG?json(workConfig):json(modelPayload);}});
   const models=await p.provider.models({models:{}},{auth:account});
-  expect(Object.keys(models)).toEqual(['k3-agent','k3d1-pro','k2d8-preview']);
+  expect(Object.keys(models)).toEqual(['k3-agent','k3d1-pro','k2d8-preview','k3d1-pro-fast']);
   expect(models['k3d1-pro']).toMatchObject({id:'k3d1-pro',name:'Kimi K3.1 Pro',api:{id:'k3d1-pro',url:I.BASE},limit:{context:262144}});
   expect(models['k3d1-pro'].capabilities).toMatchObject({reasoning:true,attachment:true});
   // supportEfforts' "off" is the desktop's REASONING_EFFORT_NONE.
@@ -190,14 +190,14 @@ test('the desktop menu\'s models are listed: a tier model /models leaves out sho
 });
 
 test('the menu is read in the proto\'s own field names too',()=>{
-  expect(Object.keys(I.workConfigRows(snake(workConfig)))).toEqual(['k3-agent','k3d1-pro','k2d8-preview']);
+  expect(Object.keys(I.workConfigRows(snake(workConfig)))).toEqual(['k3-agent','k3d1-pro','k2d8-preview','k3d1-pro-fast']);
   expect(I.workConfigRows(snake(workConfig))['k3d1-pro'].name).toBe('Kimi K3.1 Pro');
 });
 
 test('either list failing leaves the other; both failing throws so the last good list stays',async()=>{
   const run=f=>I.createPlugin({readSession:()=>session,fetchImpl:f}).provider.models({models:{}},{auth:account});
   expect(Object.keys(await run(async url=>url===I.CONFIG?new Response('{}',{status:500}):json(modelPayload)))).toEqual(['k3-agent']);
-  expect(Object.keys(await run(async url=>url===I.CONFIG?json(workConfig):new Response('{}',{status:502})))).toEqual(['k3-agent','k3d1-pro','k2d8-preview']);
+  expect(Object.keys(await run(async url=>url===I.CONFIG?json(workConfig):new Response('{}',{status:502})))).toEqual(['k3-agent','k3d1-pro','k2d8-preview','k3d1-pro-fast']);
   await expect(run(async()=>new Response('{}',{status:502}))).rejects.toThrow();
   await expect(run(async url=>url===I.CONFIG?json({models:[]}):new Response('{}',{status:502}))).rejects.toThrow();
 });
@@ -264,4 +264,76 @@ test('a menu the web sign-in can\'t get is asked again without it, so K3.1 Pro i
       if(url!==I.CONFIG)return json(modelPayload);seen.push(init.headers);return json(deskMenu);}}).provider.models({models:{}},{auth:account});
     expect(seen.length).toBe(1);expect(logged).toEqual([]);
   } finally {console.warn=warn;}
+});
+
+const speedMenu={models:[
+  {requestParams:{modelId:'k3d1-agent'},speedOptions:[{speedValue:'standard',available:true},{speedValue:'fast',available:true,minMembershipLevel:'LEVEL_INTERMEDIATE'}]},
+  {requestParams:{modelId:'k3-agent'}},
+  {requestParams:{modelId:'k2d8-preview'},speedOptions:[{speedValue:'standard',available:true},{speedValue:'fast',available:false}]},
+  {requestParams:{modelId:'k9-agent'},speedOptions:[{speedValue:'fast',minMembershipLevel:'LEVEL_INTERMEDIATE'}]},
+  {requestParams:{modelId:'k8-agent'},speedOptions:[{speedValue:'fast',available:true}]},
+  {requestParams:{modelId:'k8-agent-fast'}},
+  {requestParams:{modelId:'k7-agent-fast'},speedOptions:[{speedValue:'fast',available:true}]},
+]};
+
+test('only a fast speed the menu says is available is offered, as a tier and a row of its own',async()=>{
+  const rows=I.workConfigRows(speedMenu);
+  expect(rows['k3d1-agent'].serviceTiers).toEqual(['priority']);
+  expect(rows['k3d1-agent'].fast).toBeUndefined();
+  expect(rows['k3d1-agent-fast']).toMatchObject({id:'k3d1-agent-fast',name:'k3d1-agent Fast',api:{id:'k3d1-agent-fast'},fastOf:'k3d1-agent'});
+  expect(rows['k3d1-agent-fast'].serviceTiers).toBeUndefined();
+  // None said, as the menu without a sign-in; said no; no fast at all.
+  for(const id of ['k9-agent','k2d8-preview','k3-agent']) {
+    expect(rows[id].serviceTiers).toBeUndefined();
+    expect(rows[id+'-fast']).toBeUndefined();
+  }
+  // A model Kimi itself calls <id>-fast keeps its row.
+  expect(rows['k8-agent-fast'].fastOf).toBeUndefined();
+  expect(Object.fromEntries(I.fastIds(rows))).toEqual({'k3d1-agent':'k3d1-agent','k3d1-agent-fast':'k3d1-agent','k8-agent':'k8-agent',
+    'k7-agent-fast':'k7-agent-fast','k7-agent-fast-fast':'k7-agent-fast'});
+  const p=I.createPlugin({readSession:()=>session,fetchImpl:async url=>String(url).includes('DescribeKimiWorkConfig')?json(speedMenu)
+    :json({data:[{id:'k3d1-agent',display_name:'K3.1',context_length:262144}]})});
+  const models=await p.provider.models({},{auth:account});
+  expect(models['k3d1-agent'].serviceTiers).toEqual(['priority']);
+});
+
+test('the menu is asked with the sign-in magpie renews, not the desktop\'s own',async()=>{
+  const seen=[];
+  const p=I.createPlugin({readSession:()=>({...session,webToken:'expired-desktop-token'}),fetchImpl:async(url,init)=>{
+    if(String(url).includes('DescribeKimiWorkConfig')){seen.push(init.headers.Authorization);return json(speedMenu);}
+    return json(modelPayload);}});
+  await p.provider.models({},{auth:account});
+  expect(seen).toEqual(['Bearer '+account.access]);
+});
+
+test('the header goes only with a model the account has fast on; any other request is unchanged',async()=>{
+  const calls=[];let menus=0;
+  const p=I.createPlugin({readSession:()=>session,fetchImpl:async(url,init)=>{
+    if(String(url).includes('DescribeKimiWorkConfig')){menus++;return json(speedMenu);}
+    calls.push(init);return json({});}});
+  const loader=await p.auth.loader(async()=>account);
+  const send=async body=>{await loader.fetch(I.BASE+'/chat/completions',{method:'POST',body});const c=calls.at(-1);return {body:c.body,speed:c.headers.get('X-Kimi-Model-Speed')};};
+  // No model list read yet, as after a restart: the menu is read for it, once.
+  for(const tier of ['priority','fast'])
+    expect(await send(JSON.stringify({model:'k3d1-agent',service_tier:tier}))).toEqual({body:'{"model":"k3d1-agent"}',speed:'fast'});
+  expect(await send('{"model":"k3d1-agent-fast"}')).toEqual({body:'{"model":"k3d1-agent"}',speed:'fast'});
+  expect(menus).toBe(1);
+  // A model of Kimi's own that ends in -fast keeps its name.
+  expect(await send('{"model":"k7-agent-fast","service_tier":"priority"}')).toEqual({body:'{"model":"k7-agent-fast"}',speed:'fast'});
+  for(const body of ['{"model":"k3d1-agent","service_tier":"default"}','{"model":"k3d1-agent"}','{"note":"service_tier"}',
+    '{"model":"k3-agent","service_tier":"priority"}','{"model":"k9-agent","service_tier":"priority"}','{"model":"k2d8-preview-fast"}',
+    '{"model":"k8-agent-fast"}','{"model":"k7-agent-fast"}','{"model":"someone-elses-fast"}'])
+    expect(await send(body)).toEqual({body,speed:null});
+});
+
+test('a menu that can\'t be read leaves fast off and the request as it is',async()=>{
+  const calls=[];
+  const p=I.createPlugin({readSession:()=>session,fetchImpl:async(url,init)=>{
+    if(String(url).includes('DescribeKimiWorkConfig'))return new Response('{}',{status:500});
+    calls.push(init);return json({});}});
+  const loader=await p.auth.loader(async()=>account);
+  const body='{"model":"k3d1-agent","service_tier":"priority"}';
+  await loader.fetch(I.BASE+'/chat/completions',{method:'POST',body});
+  expect(calls[0].body).toBe(body);
+  expect(calls[0].headers.get('X-Kimi-Model-Speed')).toBeNull();
 });

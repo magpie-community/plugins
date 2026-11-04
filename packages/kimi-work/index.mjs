@@ -28,6 +28,16 @@ const UA = 'kimi-code-cli/' + KIMI_CODE_VERSION;
 // the desktop asks with its own (k3d1-agent, K3.1 Pro, first), so through
 // 0.1.8 K3.1 Pro was never listed (tests/fixtures/work-config.*.json).
 const DESKTOP_VERSION = '3.2.20';
+// Work's "High" output speed is no model of its own: the menu lists it among
+// a model's speedOptions, and the desktop asks for it with this header (Kimi
+// 3.2.24, out/renderer/assets/common-DLYgMFK1.js, modelSpeedHeaderValue).
+const SPEED_HEADER = 'X-Kimi-Model-Speed';
+// How a model says it has that speed: magpie offers its Fast switch on a model
+// served at priority, and sends such a request with that service_tier.
+const FAST_ROW = {serviceTiers:['priority']};
+// The same speed as a model to tick and pick by itself: k3d1-agent-fast, which
+// Kimi hears as k3d1-agent with the header.
+const FAST_SUFFIX = '-fast';
 function webHeaders(platform=process.platform) {
   return {'User-Agent':UA,'x-msh-platform':platform==='darwin'?'mac':platform==='win32'?'windows':'web',
     'x-msh-version':DESKTOP_VERSION,'R-Timezone':Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC'};
@@ -249,6 +259,38 @@ function moonshotTools(body) {
   return changed?JSON.stringify(doc):body;
 }
 
+// The ids an account can ask for fast, each with the id Kimi knows it by: the
+// models it has that speed on, and the rows the plugin listed for them.
+function fastIds(rows) {
+  const out=new Map();
+  for(const [id,row] of Object.entries(rows)) {
+    if(row.serviceTiers?.includes('priority'))out.set(id,id);
+    if(row.fastOf)out.set(id,row.fastOf);
+  }
+  return out;
+}
+
+const asksFast=body=>typeof body==='string'&&(body.includes('"service_tier"')||body.includes(FAST_SUFFIX+'"'));
+
+// A model the account has fast on, asked with a service_tier of priority or
+// fast (magpie's Fast, an agent's own), or by the row the plugin listed for it,
+// is asked of Kimi by header, and the body says neither. Any other request goes
+// as is: Kimi takes the header on a model without that speed, and doesn't go
+// faster for it.
+function fastSpeed(body,offered) {
+  if(!asksFast(body))return {body,fast:false};
+  let doc;
+  try{doc=JSON.parse(body);}catch{return {body,fast:false};}
+  const id=isObj(doc)?offered.get(doc.model):undefined;
+  if(!id)return {body,fast:false};
+  const named=id!==doc.model;
+  const tier=doc.service_tier==='priority'||doc.service_tier==='fast';
+  if(!named&&!tier)return {body,fast:false};
+  if(tier)delete doc.service_tier;
+  doc.model=id;
+  return {body:JSON.stringify(doc),fast:true};
+}
+
 // Schema conversion reads the body before fetch; cancellation must cover that
 // read too, including a producer that never sends another chunk.
 async function bodyText(body,signal) {
@@ -392,7 +434,7 @@ function workConfigRows(payload) {
   const list=[...(Array.isArray(pick(payload,'models','models'))?pick(payload,'models','models'):[]),
     ...(Array.isArray(pick(payload,'moreModels','more_models'))?pick(payload,'moreModels','more_models'):[])];
   if(list.length>100)throw Error('Kimi Work 模型目录暂不可用。');
-  const out={};
+  const out={},fast=[];
   for(const m of list) {
     const rp=pick(m,'requestParams','request_params'),display=pick(m,'display','display');
     const dc=pick(m,'daimonModelConfig','daimon_model_config');
@@ -415,6 +457,10 @@ function workConfigRows(payload) {
     const has=c=>Array.isArray(caps)&&caps.includes(c);
     const image=has('image_in'),thinking=has('thinking')||Object.keys(variants).length>0;
     const max=Number(pick(dc,'maxContextSize','max_context_size'))||262144;
+    const speeds=pick(m,'speedOptions','speed_options');
+    // Only the signed-in menu says available: asked without a sign-in it leaves
+    // that out, for accounts with the plan and without it alike.
+    if(Array.isArray(speeds)&&speeds.some(x=>pick(x,'speedValue','speed_value')==='fast'&&x.available===true))fast.push(id);
     const output=Number(pick(rp,'maxTokens','max_tokens'))||32768;
     out[id]={id,name:String(pick(display,'displayName','display_name')||'').trim()||id,
       api:{id,url:BASE,npm:'@ai-sdk/openai-compatible'},
@@ -424,6 +470,13 @@ function workConfigRows(payload) {
       capabilities:{reasoning:thinking,toolcall:true,attachment:image,
         input:{text:true,image,video:false,audio:false,pdf:false},output:{text:true}},
       variants};
+  }
+  // After the loop: a model Kimi itself calls <id>-fast keeps its own row.
+  for(const id of fast) {
+    const row=out[id],fastId=id+FAST_SUFFIX;
+    // fastOf is for fastIds alone: magpie's host reads only the fields it knows.
+    if(!out[fastId])out[fastId]={...row,id:fastId,name:row.name+' Fast',api:{...row.api,id:fastId},fastOf:id};
+    Object.assign(row,FAST_ROW);
   }
   return out;
 }
@@ -523,11 +576,15 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
   // Through 0.1.9 a failed ask was dropped without a word, so the list was
   // /models' alone (k3-agent, k2d8-preview) and K3.1 Pro was missing with
   // nothing in the log. Each failure is logged now, without the token.
-  async function menu(s) {
+  async function menu(s,auth) {
     let why='no web sign-in';
-    if(s.webToken) {
+    // The membership sign-in magpie renews, where the account has one; the
+    // desktop's own can be long expired. The fallback below, with no sign-in,
+    // never says available, so it never offers fast.
+    const token=hasPair(auth)?auth.access:s.webToken;
+    if(token) {
       try {
-        const rows=workConfigRows(await jsonRequest(CONFIG,s.webToken,{}));
+        const rows=workConfigRows(await jsonRequest(CONFIG,token,{}));
         if(Object.keys(rows).length)return rows;
         why='a reply with no models';
       } catch(error) {why=error?.status?'HTTP '+error.status:(error?.name==='TimeoutError'?'timed out':error?.cause?.code||error?.message||String(error));}
@@ -538,6 +595,15 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
       console.warn('kimi-work: DescribeKimiWorkConfig without a sign-in failed ('+(error?.status?'HTTP '+error.status:error?.message||String(error))+'); listing /models alone');
       throw error;
     }
+  }
+  // What each account's menu offers fast on. Read again with the models, and
+  // here for a fast request that comes before them, as after a restart.
+  const offered=new Map();
+  async function fastOffered(s,auth) {
+    if(offered.has(s.uid))return offered.get(s.uid);
+    const ids=fastIds(await menu(s,auth).catch(()=>({})));
+    offered.set(s.uid,ids);
+    return ids;
   }
   return {
     config:async cfg=>{
@@ -594,7 +660,7 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
             ||url.username||url.password||url.search||url.hash||(request?.method||init.method||'POST')!=='POST') {
             throw Error('Kimi Work 仅接受官方 Work 网关的模型请求。');
           }
-          const s=current(await getAuth());
+          const auth=await getAuth(),s=current(auth);
           const headers=new Headers(request?request.headers:init.headers);
           for(const key of ['authorization','x-api-key','cookie','host','content-length','origin'])headers.delete(key);
           // magpie's own x-magpie-* hints are for the plugin, not for Kimi.
@@ -611,6 +677,9 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
           if(raw!=null&&typeof raw!=='string')body=await bodyText(raw,signal);
           signal?.throwIfAborted();
           if(body!=null)body=moonshotTools(body);
+          const speed=fastSpeed(body,asksFast(body)?await fastOffered(s,auth):new Map());
+          body=speed.body;
+          if(speed.fast)headers.set(SPEED_HEADER,'fast');
           const options={...init,body,signal};
           if(body==null)delete options.body;
           let response;
@@ -672,18 +741,19 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
       // Both lists, the desktop's menu first. Either one failing leaves the
       // other; both failing throws, so the last good list is kept.
       const [cfgList,gw]=await Promise.allSettled([
-        menu(s),
+        menu(s,auth),
         jsonRequest(BASE+'/models',s.workToken,undefined,undefined,s.deviceId).then(modelRows)]);
       const a=cfgList.status==='fulfilled'?cfgList.value:{},b=gw.status==='fulfilled'?gw.value:{};
+      if(cfgList.status==='fulfilled')offered.set(s.uid,fastIds(a));
       if(gw.status==='rejected'&&!Object.keys(a).length)throw gw.reason;
       const out={...a};
       // An id both list keeps /models' row (the gateway's own context and
       // image flags) under the desktop's name for it.
-      for(const [id,row] of Object.entries(b))out[id]=out[id]?{...row,name:out[id].name}:row;
+      for(const [id,row] of Object.entries(b))out[id]=out[id]?{...row,name:out[id].name,...(out[id].serviceTiers?FAST_ROW:{})}:row;
       return out;
     }},
   };
 }
 
 export default async function KimiWorkProvider(){return createPlugin();}
-export const _internal={createPlugin,spentQuota,moonshotTools,moonshotSchema,readDesktop,readKeys,desktopFile,shareDir,userDataDir,modelRows,workConfigRows,BASE,MEMBER,CONFIG,UA,workHeaders,webHeaders,refreshHeaders,readDeviceId,REFRESH,REFRESH_LEAD,expiry};
+export const _internal={createPlugin,fastSpeed,fastIds,spentQuota,moonshotTools,moonshotSchema,readDesktop,readKeys,desktopFile,shareDir,userDataDir,modelRows,workConfigRows,BASE,MEMBER,CONFIG,UA,workHeaders,webHeaders,refreshHeaders,readDeviceId,REFRESH,REFRESH_LEAD,expiry};
