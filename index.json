@@ -11518,10 +11518,54 @@
               }
             }
           }
+        },
+        "0.1.2": {
+          "file": "tgz/magpie-community-opencode-sensenova-auth-0.1.2.tgz",
+          "integrity": "sha512-J+mHnVORC47RYv/uogU7IT2eJUTI6P4LFf71iN3bnFzDFfaCO2mmhoBNsXp3ZUSfgcCi3mm42gou6ffENvwmsA==",
+          "time": "2026-11-04T02:09:40.296Z",
+          "manifest": {
+            "name": "@magpie-community/opencode-sensenova-auth",
+            "version": "0.1.2",
+            "description": "SenseNova (SenseTime 日日新) Token Plan in OpenCode and magpie: one sign-in gives the console account's credit pools, windows and grants, and (with an optional API key) the plan's models for chat",
+            "type": "module",
+            "main": "./opencode.mjs",
+            "exports": {
+              ".": "./opencode2.mjs"
+            },
+            "files": [
+              "index.mjs",
+              "opencode.mjs",
+              "opencode2.mjs",
+              "README.md"
+            ],
+            "keywords": [
+              "opencode",
+              "opencode-plugin",
+              "magpie",
+              "sensenova",
+              "sensetime",
+              "日日新",
+              "token-plan",
+              "credits",
+              "quota",
+              "glm"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/sensenova"
+            },
+            "magpie": {
+              "options": {
+                "signin": false
+              }
+            }
+          }
         }
       },
-      "latest": "0.1.1",
-      "readme": "# SenseNova (SenseTime 日日新) Token Plan\n\nSenseNova（商汤日日新）**Token Plan** 的积分额度与模型，接进 OpenCode 和\n[magpie](https://usemagpie.ai)：一次登录同时拿到**额度**（积分池、5 小时 /\n7 天窗口、返赠余额与到期）和**模型**（控制台计划内的模型，OpenAI 兼容推理）。\n\n## 一次登录，额度与模型都在\n\n控制台账号（`platform.sensenova.cn`，账号密码）登录时，可同时填入一个\nAPI Key（`sk-…`，可选）。控制台 JWT 读额度，API Key 转发对话——一个账号，\n两套凭证，和 workbuddy 式的接入体验一致。\n\n| 凭证 | 来源 | 给什么 |\n|---|---|---|\n| **控制台 JWT** | OIDC 授权码流（PKCE + IAM） | **额度**：积分池、5h / 7d 窗口、返赠余额与到期 |\n| **API Key**（`sk-…`） | 控制台「API Keys」页 | **模型**：计划内的模型清单，OpenAI 兼容推理 |\n\nAPI Key 是可选的：不填，账号仍显示额度，只是不服务模型。填了，同一个账号\n既显示额度、又服务对话。\n\n## 额度\n\n读 `GET /lite/console/v1/tokenplan/pool-usage`，把每个积分池的\n`window_5h` / `window_7d` 显示成额度窗口，把 `grant_balance` 显示成会过期\n的返赠余额。每个池的窗口标注它覆盖的模型（`models` 字段），让 magpie 按模型\n分组渲染——通用积分池与 Flash-Lite 积分池各自独立显示，不挤进同一个 tooltip。\n\n## 模型\n\nAPI Key 读 `GET /v1/models`（免费、只读、不计费），目录里的 `context_length`\n与 `max_output_length` 就是模型声明的窗口与输出上限。请求走\n`https://token.sensenova.cn/v1`（OpenAI 兼容）。\n\n模型列表按**计划覆盖**过滤：只列出控制台积分池 `model_ids` 内、且可对话\n（非画图）的模型。计划外的模型（如 `deepseek-v4.1-flash`）不列出，避免选到\n后 403。会推理的模型给出三档 reasoning effort（`none` / `low` / `high`），\nmagpie 出思考强度选择器；「会不会推理」取自目录自己的 `supported_features`。\n\n## 数据来源与可核查性\n\n商汤没有公开列出这些内容的文档页（`platform.sensenova.cn/docs` 由 JS 渲染，\n`sensenova.cn/token-plan` 只点名了两个模型）。所以本插件的口径来自**一个免费\nToken Plan 账号的实测**，并且把抓到的字面响应放进了仓库：\n\n- `testdata/models.json` —— 一次真实 `GET /v1/models` 回复（7 个模型）\n- `testdata/pool-usage.json` —— 一次真实 `pool-usage` 回复（两个积分池）\n\n两份都只替换了账号自己的 pool id，其余按原样保留（包括额度数字是**字符串**\n这件事）。`testdata.test.mjs` 拿这两份的**值**跑解析与过滤——它证明的是解析器\n吃得下这些值；字节来自哪，是对我自己账号抓包的陈述，测试本身无法自证来源。\n\n一个实测结论值得注意：目录里 7 个模型**全都**标着 `businesses:\n[\"tokenplan\",\"metered\"]`，但计划的积分池只覆盖其中 6 个，而第 7 个\n（`deepseek-v4.1-flash`）调用会被平台拒为 403。**目录自己区分不出来**，所以\n必须用该账号的池去过滤——这也是每次列模型都重新读一次池、不缓存全局的原因。\n\n还有一条边界要说清：测试用的 fake（`fake.mjs`）是按公开的 magpie host 契约和\n抓到的响应形状写的，但它是我的模型，不是商汤的服务本身。真实登录链路在这一头\n仍未跑过，这是本包目前唯一没有实测覆盖的部分。\n\nreasoning effort 档位给的是**一套刻意收窄的通用值**（`none` / `low` / `high`），\n对所有模型一视同仁。要说清楚的是：这**不是**「已核实这三个档位每个模型都支持」——\n平台没有公开列出档位，某模型真实接受哪些只有从账号内部逐个请求才知道。这里刻意不\n去声称那种查不动的事，是因为猜错的代价不对称：少给一档只是少一个选项，多给一档则会\n在任务中途冒出一个莫名其妙的 400。猜错时平台直接报错，不会静默出错。\n\n真正可核验的是「这个模型会不会推理」：目录回复里的 `supported_features` 直接写了，\n`testdata/models.json` 就是证据。所以唯一的开关取自它，而不是取自一张手写的表。\n\n## 安装\n\n```sh\nmagpie plugin add @magpie-community/opencode-sensenova-auth\nmagpie plugin login sensenova-token-plan\n```\n\n登录时填控制台账号、密码，以及（可选）API Key。\n\n## 登录的实现\n\n控制台登录走它自己的 OIDC 授权码流（PKCE + IAM）：密码用平台 JWKS 公钥\n封成 JWE（RSA-OAEP + A256GCM），明文不上网、不落盘。控制台 JWT 只有约\n180 分钟，拿到 `refresh_token` 后自动续期（Hydra 会轮换 refresh token，\n每次续期后的新值都会被保存），不需要再输密码。API Key 不参与轮换，续期时\n保留在账号上。\n\n## provider id\n\n`sensenova-token-plan`。**不是** `sensenova`：那个 id 留给用户自己的 custom\nprovider（sk- key，`token.sensenova.cn`），本插件不与之冲突。\n\n## 边界\n\n- 面板显示的是**商汤控制台自己的口径**，与网页控制台一致。\n- 免费公测的 key 有 TPM/RPM 限额与 5h / 7d 窗口额度，限流时商汤回 429 或\n  `token plan entitlement exhausted`。\n- 平台若变更接口或加密参数，插件可能失效。\n\n## 许可证\n\nMIT\n"
+      "latest": "0.1.2",
+      "readme": "# SenseNova (SenseTime 日日新) Token Plan\n\nSenseNova（商汤日日新）**Token Plan** 的积分额度与模型，接进 OpenCode 和\n[magpie](https://usemagpie.ai)：一次登录同时拿到**额度**（积分池、5 小时 /\n7 天窗口、返赠余额与到期）和**模型**（控制台计划内的模型，OpenAI 兼容推理）。\n\n## 一次登录，额度与模型都在\n\n控制台账号（`platform.sensenova.cn`，账号密码）登录时，可同时填入一个\nAPI Key（`sk-…`，可选）。控制台 JWT 读额度，API Key 转发对话——一个账号，\n两套凭证，和 workbuddy 式的接入体验一致。\n\n| 凭证 | 来源 | 给什么 |\n|---|---|---|\n| **控制台 JWT** | OIDC 授权码流（PKCE + IAM） | **额度**：积分池、5h / 7d 窗口、返赠余额与到期 |\n| **API Key**（`sk-…`） | 控制台「API Keys」页 | **模型**：计划内的模型清单，OpenAI 兼容推理 |\n\nAPI Key 是可选的：不填，账号仍显示额度，只是不服务模型。填了，同一个账号\n既显示额度、又服务对话。\n\n## 额度\n\n读 `GET /lite/console/v1/tokenplan/pool-usage`，把每个积分池的\n`window_5h` / `window_7d` 显示成额度窗口，把 `grant_balance` 显示成卡片的\n**余额**——只放数字（magpie 自己的千分位格式）加「积分」，因为这一栏是按短\n数字排版的；到期时间（`nearest_grant_expiry`）不混进度数串，走 `until`\n（`renew: \"off\"`），由 magpie 在卡片头部渲染成本地化的「x月x日到期」。多个\n积分池的赠款相加，到期取最早的一个。每个池的窗口标注它覆盖的模型（`models`\n字段），让 magpie 按模型分组渲染——通用积分池与 Flash-Lite 积分池各自独立\n显示，不挤进同一个 tooltip。\n\n## 模型\n\nAPI Key 读 `GET /v1/models`（免费、只读、不计费），目录里的 `context_length`\n与 `max_output_length` 就是模型声明的窗口与输出上限。请求走\n`https://token.sensenova.cn/v1`（OpenAI 兼容）。\n\n模型列表按**计划覆盖**过滤：只列出控制台积分池 `model_ids` 内、且可对话\n（非画图）的模型。计划外的模型（如 `deepseek-v4.1-flash`）不列出，避免选到\n后 403。会推理的模型给出三档 reasoning effort（`none` / `low` / `high`），\nmagpie 出思考强度选择器；「会不会推理」取自目录自己的 `supported_features`。\n\n## 数据来源与可核查性\n\n商汤没有公开列出这些内容的文档页（`platform.sensenova.cn/docs` 由 JS 渲染，\n`sensenova.cn/token-plan` 只点名了两个模型）。所以本插件的口径来自**一个免费\nToken Plan 账号的实测**，并且把抓到的字面响应放进了仓库：\n\n- `testdata/models.json` —— 一次真实 `GET /v1/models` 回复（7 个模型）\n- `testdata/pool-usage.json` —— 一次真实 `pool-usage` 回复（两个积分池）\n\n两份都只替换了账号自己的 pool id，其余按原样保留（包括额度数字是**字符串**\n这件事）。`testdata.test.mjs` 拿这两份的**值**跑解析与过滤——它证明的是解析器\n吃得下这些值；字节来自哪，是对我自己账号抓包的陈述，测试本身无法自证来源。\n\n一个实测结论值得注意：目录里 7 个模型**全都**标着 `businesses:\n[\"tokenplan\",\"metered\"]`，但计划的积分池只覆盖其中 6 个，而第 7 个\n（`deepseek-v4.1-flash`）调用会被平台拒为 403。**目录自己区分不出来**，所以\n必须用该账号的池去过滤——这也是每次列模型都重新读一次池、不缓存全局的原因。\n\n还有一条边界要说清：测试用的 fake（`fake.mjs`）是按公开的 magpie host 契约和\n抓到的响应形状写的，但它是我的模型，不是商汤的服务本身。真实登录链路在这一头\n仍未跑过，这是本包目前唯一没有实测覆盖的部分。\n\nreasoning effort 档位给的是**一套刻意收窄的通用值**（`none` / `low` / `high`），\n对所有模型一视同仁。要说清楚的是：这**不是**「已核实这三个档位每个模型都支持」——\n平台没有公开列出档位，某模型真实接受哪些只有从账号内部逐个请求才知道。这里刻意不\n去声称那种查不动的事，是因为猜错的代价不对称：少给一档只是少一个选项，多给一档则会\n在任务中途冒出一个莫名其妙的 400。猜错时平台直接报错，不会静默出错。\n\n真正可核验的是「这个模型会不会推理」：目录回复里的 `supported_features` 直接写了，\n`testdata/models.json` 就是证据。所以唯一的开关取自它，而不是取自一张手写的表。\n\n## 安装\n\n```sh\nmagpie plugin add @magpie-community/opencode-sensenova-auth\nmagpie plugin login sensenova-token-plan\n```\n\n登录时填控制台账号、密码，以及（可选）API Key。\n\n## 登录的实现\n\n控制台登录走它自己的 OIDC 授权码流（PKCE + IAM）：密码用平台 JWKS 公钥\n封成 JWE（RSA-OAEP + A256GCM），明文不上网、不落盘。控制台 JWT 只有约\n180 分钟，拿到 `refresh_token` 后自动续期（Hydra 会轮换 refresh token，\n每次续期后的新值都会被保存），不需要再输密码。API Key 不参与轮换，续期时\n保留在账号上。\n\n## provider id\n\n`sensenova-token-plan`。**不是** `sensenova`：那个 id 留给用户自己的 custom\nprovider（sk- key，`token.sensenova.cn`），本插件不与之冲突。\n\n## 边界\n\n- 面板显示的是**商汤控制台自己的口径**，与网页控制台一致。\n- 免费公测的 key 有 TPM/RPM 限额与 5h / 7d 窗口额度，限流时商汤回 429 或\n  `token plan entitlement exhausted`。\n- 平台若变更接口或加密参数，插件可能失效。\n\n## 许可证\n\nMIT\n"
     },
     "@magpie-community/opencode-tabbit-auth": {
       "versions": {
