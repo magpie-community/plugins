@@ -37,7 +37,7 @@
     "directory": "packages/sap-aicore"
   },
   "bugs": {
-    "url": "https://github.com/caikn/magpie-plugin-aicore/issues"
+    "url": "https://github.com/magpie-community/plugins/issues"
   },
   "scripts": {
     "test": "bun test"
