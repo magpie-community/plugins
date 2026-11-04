@@ -31,6 +31,10 @@ const ID = "astudio"
 const MODEL_GATEWAY_BASE = "https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1"
 const MODEL_MANAGER_URL = "https://astronstudio-api-volces-prod.xf-yun.com/api/v1/model-manager/models"
 const STUDIO_API_BASE = "https://agent.xfyun.cn/xingchen-studio/"
+// agent.xfyun.cn 的账号面接口要求桌面端身份：只带 Cookie 会被拒（code 11001001）。
+// clientType 是必需头且校验合法枚举（21/22 通过、99/缺失被拒）；studioVersion 桌面端也带，实测值不参与校验。
+const CLIENT_TYPE = process.platform === "darwin" ? "22" : "21"
+const STUDIO_VERSION = "3.5.5"
 
 // 读取桌面端登录态失败时展示的跳转页：AStudio 官网（含桌面端下载）。
 const OFFICIAL_SITE = "https://agent.xfyun.cn/"
@@ -258,6 +262,8 @@ async function studioJson(path, { session, fetchImpl, method = "GET", body, oper
       method,
       headers: {
         accept: "application/json",
+        clientType: CLIENT_TYPE,
+        studioVersion: STUDIO_VERSION,
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
         cookie: buildCookieHeader(session),
       },
@@ -527,8 +533,8 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
         }
       },
       // 「每日登录积分」：服务端在当天账号会话首次活跃时发放，客户端没有领取
-      // 接口（弹窗只做通知）。这里以一组账号面请求代表当天的会话活跃，并用
-      // 发放前后的余额差观测结果：涨了是 claimed，没涨是 done。
+      // 接口（DAILY_REWARD_DIALOG 弹窗只做通知）。这里以一组账号面请求代表
+      // 当天的会话活跃，再用余额差与待通知弹窗观测结果，不谎称已领取。
       async checkin(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return {}
@@ -569,9 +575,22 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
         }
         const delta = after.totalBalance - before.totalBalance
         if (delta > 0) return { outcome: "claimed", credit: delta, message: `每日登录积分 +${delta}` }
-        // 余额没涨 ≠ 已发放：无领取接口，发放可能挂靠桌面端登录，本次未观测到。
-        // 不能报 done（宿主渲染成「今日已签到」，是没发生的断言）；inactive 是
-        // 静默结算态，message 仍会把实情带给用户。
+        // 服务端把已发放但还没通知的每日奖励挂成待通知弹窗；见到它才算「今日已签到」。
+        let popups
+        try {
+          popups = await studioJson("client-popups/pending", { session, fetchImpl, operation: "每日奖励弹窗" })
+        } catch (error) {
+          if (error?.signIn === "expired") throw error
+          return { outcome: "failed", message: error?.message ?? "每日奖励弹窗读取失败" }
+        }
+        const daily = Array.isArray(popups) && popups.find((item) => item?.componentType === "DAILY_REWARD_DIALOG")
+        if (daily) {
+          const rawPoints = Number(daily.payload?.points)
+          const credit = Number.isFinite(rawPoints) && rawPoints >= 0 ? rawPoints : 0
+          return { outcome: "done", ...(credit > 0 ? { credit } : {}), message: "每日登录积分已发放（服务端待通知弹窗）" }
+        }
+        // 余额没涨、也没有待通知弹窗：发放可能挂靠桌面端登录，本次未观测到。
+        // done 会渲染成「今日已签到」，是没发生的断言，故记 inactive。
         return { outcome: "inactive", message: "未观测到新发放：余额无变化（发放可能挂靠桌面端登录）" }
       },
     },
@@ -634,6 +653,7 @@ export const _internal = {
   MODEL_GATEWAY_BASE,
   MODEL_MANAGER_URL,
   STUDIO_API_BASE,
+  STUDIO_VERSION,
   OFFICIAL_SITE,
   DESKTOP_WAIT_MS,
   BOOTSTRAP,
