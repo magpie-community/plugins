@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
-import { cacheRoot } from "./browser.mjs"
+import { cacheRoot, validateProject } from "./browser.mjs"
 import { resolveIdentity, tokenProvider } from "./credentials.mjs"
 
 // The list is Google's publisher catalog for the project, read once. It is
@@ -10,6 +10,24 @@ import { resolveIdentity, tokenProvider } from "./credentials.mjs"
 // it answers, because that is a round trip per model in front of the row's read
 // and a question the person answers better with Test models.
 const API = "https://aiplatform.googleapis.com/v1beta1"
+const GEMINI_NPM = "@ai-sdk/google"
+const MAAS_NPM = "@ai-sdk/openai-compatible"
+const MAAS_KEY = ["deepseek", "v4.1", "flash", "maas"].join("-")
+const MAAS_ID = `deepseek-ai/${MAAS_KEY}`
+
+// DeepSeek is published through Vertex's OpenAI-compatible managed-model
+// endpoint rather than through the Gemini publisher protocol. Its Magpie key is
+// deliberately shorter than the wire id; the host uses the key in the UI while
+// api.id carries the name Google expects in the request body.
+export const MAAS = Object.freeze({
+  key: MAAS_KEY,
+  id: MAAS_ID,
+  name: "DeepSeek V4.1 Flash",
+  context: 1048576,
+  output: 1048576,
+  input: ["text", "image"],
+  cost: { input: 0.3, output: 1.2, cache_read: 0.03 },
+})
 
 // A location is a region name, or the global endpoint.
 const LOCATION = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -25,7 +43,7 @@ const NOT_CHAT = /tts|embedding|transcribe|live|translate|image|nano-banana|omni
 // costs nothing (countTokens, not a generation), and the ones that say they are
 // not there are left out. Whether a model *answers well* is still the person's
 // to find out with Test models; this only drops the ones Google says are gone.
-export const isChatCandidate = (id) => id.startsWith("gemini-") && !NOT_CHAT.test(id)
+export const isChatCandidate = (id) => id === MAAS.key || (id.startsWith("gemini-") && !NOT_CHAT.test(id))
 
 async function call(token, project, path, init) {
   const response = await fetch(`${API}${path}`, {
@@ -69,6 +87,17 @@ function locationOf(settings) {
   return location
 }
 
+function vertexHost(location) {
+  return location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`
+}
+
+// This is the base @ai-sdk/openai-compatible appends /chat/completions to.
+export function maasEndpoint(project, location) {
+  validateProject(project)
+  if (!LOCATION.test(location)) throw new Error("Invalid GOOGLE_VERTEX_LOCATION")
+  return `https://${vertexHost(location)}/v1/projects/${project}/locations/${location}/endpoints/openapi`
+}
+
 // gone asks one model whether it is really there. countTokens is the cheapest
 // question a model answers: it reads the request and returns a number, without
 // generating anything or billing a token. Only NOT_FOUND drops a model — that
@@ -109,17 +138,35 @@ async function inParallel(items, width, work) {
 // half the row is retired.
 async function discover(settings) {
   const location = locationOf(settings)
-  const identity = await resolveIdentity(settings)
-  const token = await tokenProvider(identity)()
-  const named = (await publisherModels(token, identity.project)).filter(isChatCandidate)
-  if (!named.length) throw new Error(`Vertex lists no chat model in ${location} for ${identity.project}`)
+  let identity
+  try {
+    identity = await resolveIdentity(settings)
+  } catch (error) {
+    // The MaaS model's address needs the project, not a successful Gemini
+    // catalog read. A row that already names its project can still expose
+    // DeepSeek while gcloud or the Google catalog is temporarily unavailable.
+    if (!settings.project) throw error
+    validateProject(settings.project)
+    return { project: settings.project, location, ids: [MAAS.key] }
+  }
+  let named = []
+  let token
+  try {
+    token = await tokenProvider(identity)()
+    named = (await publisherModels(token, identity.project)).filter((id) => id.startsWith("gemini-") && !NOT_CHAT.test(id))
+  } catch {
+    // DeepSeek does not depend on the Gemini publisher catalog. Returning it
+    // alone is more useful than blanking the provider after an ADC or catalog
+    // failure, and a failed model call will still name the real problem.
+  }
+  if (!named.length) return { project: identity.project, location, ids: [MAAS.key] }
   const absent = await inParallel(named, 6, (id) => gone(token, identity.project, location, id))
   const ids = named.filter((_, i) => !absent[i])
   // Every model saying 404 is not a model list, it is a broken read: a wrong
   // project or location answers NOT_FOUND for everything. Keep Google's names
   // rather than report an empty provider.
-  if (!ids.length) return { project: identity.project, location, ids: named }
-  return { project: identity.project, location, ids }
+  if (!ids.length) return { project: identity.project, location, ids: [MAAS.key, ...named] }
+  return { project: identity.project, location, ids: [...ids, MAAS.key] }
 }
 
 // One refresh at a time per list: the host may ask twice before the first
@@ -151,7 +198,9 @@ export async function availableModels(settings = {}) {
     // A list read before a retired model was known to be gone still names it:
     // the cached ids are filtered on the way out, so an old cache cannot put a
     // model back on the row after it stopped answering.
-    const ids = (Array.isArray(cached?.ids) ? cached.ids : []).filter(isChatCandidate)
+    // MaaS is a plugin-managed static model, so an older cache written before
+    // it was added must not hide it after an upgrade.
+    const ids = [...new Set([...(Array.isArray(cached?.ids) ? cached.ids : []).filter(isChatCandidate), MAAS.key])]
     if (ids.length) last = { ...cached, ids }
   } catch { last = undefined }
   const refresh = () => {
@@ -216,13 +265,13 @@ const SEED = [
 
 // seedModels is the config hook's models: the shape a row is configured with,
 // not the shape the provider hook returns.
-export function seedModels() {
-  return Object.fromEntries(SEED.map(([id, name, context, output, efforts]) => [id, {
+export function seedModels(settings = {}) {
+  const models = Object.fromEntries(SEED.map(([id, name, context, output, efforts]) => [id, {
     id, name,
     // The same address the provider hook gives: Gemini's own protocol names the
     // model in the path without a publisher prefix, so a row that has not been
     // signed in yet sends the id as it stands rather than a prefixed guess.
-    api: { id, npm: "@ai-sdk/google" },
+    api: { id, npm: GEMINI_NPM },
     limit: { context, output },
     attachment: true,
     modalities: { input: ["text", "image", "video", "audio", "pdf"], output: ["text"] },
@@ -230,6 +279,23 @@ export function seedModels() {
     reasoning: efforts.length > 0,
     ...(efforts.length ? { variants: Object.fromEntries(efforts.map((effort) => [effort, { reasoning_effort: effort }])) } : {}),
   }]))
+  const location = locationOf(settings)
+  const url = settings.project ? maasEndpoint(settings.project, location) : undefined
+  models[MAAS.key] = {
+    id: MAAS.id,
+    name: MAAS.name,
+    // The config hook is the path before a provider list is read. provider
+    // carries the per-model package and address into Magpie's config
+    // conversion; api is the shape the provider hook uses afterwards.
+    provider: { npm: MAAS_NPM, ...(url ? { api: url } : {}) },
+    api: { id: MAAS.id, npm: MAAS_NPM, ...(url ? { url } : {}) },
+    limit: { context: MAAS.context, output: MAAS.output },
+    attachment: true,
+    modalities: { input: [...MAAS.input], output: ["text"] },
+    tool_call: true,
+    reasoning: true,
+  }
+  return models
 }
 
 // providerModels is what the host's provider hook returns for a row: the ids
@@ -237,8 +303,8 @@ export function seedModels() {
 // Nothing cached and Google unreachable makes this throw: the host keeps the
 // row's last list rather than read the failure as "no models".
 export async function providerModels(settings, id) {
-  const { ids } = await availableModels(settings)
-  return toProviderModels(ids, await catalog(), id)
+  const found = await availableModels(settings)
+  return toProviderModels(found.ids, await catalog(), id, found)
 }
 
 // Newest first. Google lists the catalog oldest first, and the catalog's
@@ -246,16 +312,30 @@ export async function providerModels(settings, id) {
 // is placed after them, in the reverse of the order Google listed it.
 function newestFirst(ids, catalogModels) {
   return ids
-    .map((model, index) => ({ model, index, date: catalogModels[model]?.release_date ?? "" }))
+    .map((model, index) => ({ model, index, date: (catalogModels[model] ?? (model === MAAS.key ? catalogModels[MAAS.id] : undefined))?.release_date ?? "" }))
     .sort((a, b) => (a.date === b.date ? b.index - a.index : a.date < b.date ? 1 : -1))
     .map(({ model }) => model)
 }
 
 // toProviderModels is the discovered ids as the host's provider hook wants
 // them, with the catalog's numbers where it knows the model.
-export function toProviderModels(ids, catalogModels, id) {
+export function toProviderModels(ids, catalogModels, id, settings = {}) {
+  const location = locationOf(settings)
+  const maasURL = settings.project ? maasEndpoint(settings.project, location) : undefined
   return Object.fromEntries(newestFirst(ids, catalogModels).map((model) => {
-    const known = catalogModels[model] ?? {}
+    const managed = model === MAAS.key
+    const known = managed
+      ? {
+          ...catalogModels[MAAS.id],
+          name: MAAS.name,
+          limit: { context: MAAS.context, output: MAAS.output },
+          modalities: { input: MAAS.input, output: ["text"] },
+          cost: MAAS.cost,
+          attachment: true,
+          tool_call: true,
+          reasoning: true,
+        }
+      : catalogModels[model] ?? {}
     const input = known.modalities?.input ?? ["text", "image", "audio", "video", "pdf"]
     const modalities = Object.fromEntries(["text", "image", "audio", "video", "pdf"].map((kind) => [kind, input.includes(kind)]))
     const efforts = known.reasoning_options?.find((option) => option.type === "effort")?.values
@@ -267,11 +347,13 @@ export function toProviderModels(ids, catalogModels, id) {
       // the conversation instead of being dropped by an OpenAI-shaped shim. No
       // URL here: the account's loader gives the one base for its project and
       // location, which a per-model address would override with global's.
-      api: { id: model, npm: "@ai-sdk/google" },
-      status: "active", headers: {}, options: {},
+      api: managed
+        ? { id: MAAS.id, npm: MAAS_NPM, ...(maasURL ? { url: maasURL } : {}) }
+        : { id: model, npm: GEMINI_NPM },
+      status: known.status ?? "active", headers: {}, options: {},
       variants: efforts ? Object.fromEntries(efforts.map((effort) => [effort, { reasoning_effort: effort }])) : {},
       cost: { input: known.cost?.input ?? 0, output: known.cost?.output ?? 0, cache: { read: known.cost?.cache_read ?? 0, write: 0 } },
-      limit: known.limit ?? { context: 1048576, output: 65536 },
+      limit: known.limit ?? (managed ? { context: MAAS.context, output: MAAS.output } : { context: 1048576, output: 65536 }),
       capabilities: {
         temperature: known.temperature !== false, reasoning: known.reasoning !== false,
         attachment: known.attachment !== false, toolcall: known.tool_call !== false,

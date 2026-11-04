@@ -1,16 +1,25 @@
-# GCP AI — Google Cloud credits and Vertex models (Magpie / OpenCode plugin)
+# GCP AI — Gemini, DeepSeek MaaS and Google Cloud credits (Magpie / OpenCode plugin)
 
-- **Models**: the Vertex chat models your project can call, newest first.
-- **Inference**: requests speak Gemini's own protocol (`@ai-sdk/google`) to the project's Vertex endpoint, signed with your local gcloud / ADC credentials and billed to your own project.
+- **Models**: the Gemini models your project can call, plus DeepSeek V4.1 Flash through Vertex AI's managed model service (MaaS).
+- **Inference**: Gemini uses its native protocol (`@ai-sdk/google`). DeepSeek MaaS uses the OpenAI-compatible chat-completions protocol (`@ai-sdk/openai-compatible`). Both go directly to the project's Vertex endpoint and are signed with the same local gcloud / ADC credentials.
 - **Credits**: the quota panel can show your Google Cloud promotional credit balance and its expiry date.
 
 You sign in once with your own Google account. No service accounts, no JSON keys, no extra packages: the plugin uses the Chrome you already have.
+
+DeepSeek does not use a local proxy or bridge. Magpie calls
+`https://aiplatform.googleapis.com/v1/projects/<project>/locations/<location>/endpoints/openapi/chat/completions`
+with the wire id formed by `deepseek-ai/` plus
+`deepseek` + `-v4.1-flash` + `-maas`. The plugin only allows that exact
+chat-completions route in addition to the Gemini routes it already serves, and
+injects the account's ADC token and `x-goog-user-project` header before sending
+either request.
 
 ## Requirements
 
 - Google Chrome or Chromium (set `VERTEX_CHROME_PATH` if it is somewhere unusual)
 - Google Cloud CLI (`gcloud`), already working — on Windows the `gcloud.cmd` the installer puts on `PATH` is used
 - A Google Cloud project with Vertex AI enabled
+- A project and location that support the selected MaaS model; DeepSeek V4.1 Flash is currently documented for the `global` location
 - To read credits: permission to view the project's billing account (usually `billing.viewer`)
 
 Linux has been tried with real accounts. Support for macOS and Windows is

@@ -2,6 +2,7 @@ import "./network.mjs"
 import assert from "node:assert/strict"
 import test from "node:test"
 import plugin from "../index.mjs"
+import { internalOf, modelOf } from "../opencode2.mjs"
 import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
@@ -12,7 +13,7 @@ import { promisify } from "node:util"
 import { accountOf, adcDirectoryFor, adcDirectoryOwnedBy, adcDirectoryToCreate, adcFile, adcSlug, beginAdcLogin, command, effectiveAuthMode, gcloudProgram, hasAdc, resolveAccount, resolveIdentity, resolveProject, runGcloud, startLogin, tokenProvider, windowsCommand } from "../lib/credentials.mjs"
 import { fakeGcloud } from "./gcloud.mjs"
 import { billingCurrenciesOf, consoleAccountFor, parseCreditTables, usageOf } from "../lib/credits.mjs"
-import { availableModels, toProviderModels } from "../lib/models.mjs"
+import { availableModels, MAAS, maasEndpoint, toProviderModels } from "../lib/models.mjs"
 import { assertConsoleSession } from "../lib/browser.mjs"
 import { main } from "../lib/fetch_credits.mjs"
 
@@ -892,7 +893,7 @@ test("plugin is its own gcp-ai row, not Magpie's built-in Vertex provider", { ti
   assert.match(hooks.auth.icon, /^data:image\/png;base64,/)
   // No switches: there is nothing for a user to turn on before the row works.
   assert.equal(hooks.auth.options, undefined)
-  const config = {}
+  const config = { provider: { "gcp-ai": { options: { project: "seed-project", location: "global" } } } }
   await hooks.config(config)
   assert.equal(config.provider["gcp-ai"].name, "GCP AI")
   assert.equal(config.provider["gcp-ai"].npm, "@ai-sdk/google")
@@ -903,16 +904,28 @@ test("plugin is its own gcp-ai row, not Magpie's built-in Vertex provider", { ti
   assert.equal(seeded["gemini-4-argon"].name, "Gemini 4 Argon")
   assert.deepEqual(seeded["gemini-4-argon"].variants, { low: { reasoning_effort: "low" }, medium: { reasoning_effort: "medium" }, high: { reasoning_effort: "high" } })
   assert.equal(seeded["gemini-2.5-pro"].reasoning, false)
+  assert.equal(seeded[MAAS.key].name, "DeepSeek V4.1 Flash")
+  assert.equal(seeded[MAAS.key].id, MAAS.id)
+  assert.equal(seeded[MAAS.key].provider.npm, "@ai-sdk/openai-compatible")
+  assert.equal(seeded[MAAS.key].api.id, MAAS.id)
+  assert.equal(seeded[MAAS.key].api.npm, "@ai-sdk/openai-compatible")
+  assert.equal(seeded[MAAS.key].provider.api, maasEndpoint("seed-project", "global"))
+  const converted = internalOf("gcp-ai", config.provider["gcp-ai"], MAAS.key, seeded[MAAS.key])
+  assert.equal(converted.api.npm, "@ai-sdk/openai-compatible")
+  assert.equal(converted.api.url, maasEndpoint("seed-project", "global"))
+  const hostModel = modelOf("gcp-ai", { baseURL: "", npm: "@ai-sdk/google" }, MAAS.key, converted)
+  assert.equal(hostModel.package, "aisdk:@ai-sdk/openai-compatible@2.0.41")
+  assert.equal(hostModel.settings.baseURL, maasEndpoint("seed-project", "global"))
   // Retired models are in no list: the catalog still names them and calling one
   // answers 404, so a seed carrying them would offer models that cannot load.
   for (const gone of ["gemini-1.5-pro-002", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25"]) assert.equal(seeded[gone], undefined)
-  // Twelve chat models, and no speech, image, transcription or embedding model.
-  assert.equal(Object.keys(seeded).length, 12)
+  // Twelve Gemini chat models and one managed DeepSeek model, and no speech,
+  // image, transcription or embedding model.
+  assert.equal(Object.keys(seeded).length, 13)
   assert.equal(Object.keys(seeded).filter((id) => /tts|embedding|transcribe|image|live|translate|nano-banana|omni/.test(id)).length, 0)
   // The provider hook is handed the whole provider info, not its models. A
-  // failure must give back provider.models: handing back the object made
-  // magpie read its keys as model ids and offer "id", "name" and "source" as
-  // models on the row.
+  // Gemini catalog failure must still leave the managed DeepSeek model
+  // available with a usable project-scoped address.
   const previousCache = process.env.XDG_CACHE_HOME
   const directory = await mkdtemp(join(tmpdir(), "vertex-fallback-"))
   process.env.XDG_CACHE_HOME = join(directory, "cache")
@@ -924,7 +937,8 @@ test("plugin is its own gcp-ai row, not Magpie's built-in Vertex provider", { ti
     await fixture.setAdc()
     const info = { id: "gcp-ai", name: "GCP AI", source: "config", models: { "gemini-2.5-flash": { id: "gemini-2.5-flash" } } }
     const fallback = await hooks.provider.models(info, { auth: { authMode: "adc", project: "invalid" } })
-    assert.deepEqual(fallback, info.models)
+    assert.deepEqual(Object.keys(fallback), [MAAS.key])
+    assert.equal(fallback[MAAS.key].api.url, maasEndpoint("invalid", "global"))
     assert.equal(fallback.id, undefined)
     assert.equal(fallback.source, undefined)
     assert.equal(requests, 1)
@@ -965,10 +979,10 @@ test("models are Google's catalog per project and location, newest first, dresse
     const file = join(directory, "magpie", "gcp-ai", key("global"))
     await mkdir(dirname(file), { recursive: true })
     await writeFile(file, JSON.stringify({ project: "example-project", ids: ["gemini-4-argon", "gemini-3.8-flash"], fetchedAt: new Date().toISOString() }))
-    assert.deepEqual((await availableModels({ location: "global" })).ids, ["gemini-4-argon", "gemini-3.8-flash"])
+    assert.deepEqual((await availableModels({ location: "global" })).ids, ["gemini-4-argon", "gemini-3.8-flash", MAAS.key])
     // A region's list is not the global one: it is asked for separately.
     await writeFile(join(directory, "magpie", "gcp-ai", key("us-central1")), JSON.stringify({ project: "example-project", ids: ["gemini-regional"], fetchedAt: new Date().toISOString() }))
-    assert.deepEqual((await availableModels({ location: "us-central1" })).ids, ["gemini-regional"])
+    assert.deepEqual((await availableModels({ location: "us-central1" })).ids, ["gemini-regional", MAAS.key])
     await assert.rejects(availableModels({ location: "not a region" }), /GOOGLE_VERTEX_LOCATION/)
     // Speech, transcription, translation, embeddings, live and image models
     // are not chat models, however Google lists them.
@@ -985,6 +999,12 @@ test("models are Google's catalog per project and location, newest first, dresse
     // A model the catalog doesn't know is still listed, from Google's id alone.
     assert.equal(models["gemini-3.8-flash"].name, "gemini-3.8-flash")
     assert.equal(models["gemini-3.8-flash"].api.id, "gemini-3.8-flash")
+    const managed = toProviderModels([MAAS.key], {}, "gcp-ai", { project: "managed-project", location: "europe-west4" })[MAAS.key]
+    assert.equal(managed.api.id, MAAS.id)
+    assert.equal(managed.api.npm, "@ai-sdk/openai-compatible")
+    assert.equal(managed.api.url, "https://europe-west4-aiplatform.googleapis.com/v1/projects/managed-project/locations/europe-west4/endpoints/openapi")
+    assert.equal(managed.limit.context, 1048576)
+    assert.equal(managed.capabilities.input.image, true)
   } finally {
     if (previousCache === undefined) delete process.env.XDG_CACHE_HOME
     else process.env.XDG_CACHE_HOME = previousCache
@@ -1023,7 +1043,7 @@ test("a retired model Google still lists is left out, and only a 404 counts as g
     // dropped connection and a timeout are not answers about the model, so
     // those stay: losing a working model to a bad minute is worse than listing
     // one that may refuse.
-    assert.deepEqual(listed.ids, ["gemini-4-argon", "gemini-3.5-flash", "gemini-2.5-pro"])
+    assert.deepEqual(listed.ids, ["gemini-4-argon", "gemini-3.5-flash", "gemini-2.5-pro", MAAS.key])
     assert.deepEqual(asked.sort(), [...catalog].sort())
     // Nothing was generated: the probe reads the request, it does not bill one.
     assert.equal(asked.length, catalog.length)
@@ -1056,13 +1076,70 @@ test("every model answering 404 is a broken read, not an empty provider", { time
       return { ok: false, status: 404, json: async () => ({}) }
     }
     const listed = await availableModels({ project: "example-project", location: "global", authMode: "adc", force: true })
-    assert.deepEqual(listed.ids, ["gemini-4-argon", "gemini-2.5-pro"])
+    assert.deepEqual(listed.ids, [MAAS.key, "gemini-4-argon", "gemini-2.5-pro"])
   } finally {
     globalThis.fetch = original
     if (previousCache === undefined) delete process.env.XDG_CACHE_HOME
     else process.env.XDG_CACHE_HOME = previousCache
     await fixture.close()
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("the loader signs Gemini and DeepSeek MaaS without exposing the credential to other routes", { timeout: 30000 }, async () => {
+  const fixture = await fakeGcloud()
+  const original = globalThis.fetch
+  const forwarded = []
+  const project = "managed-project"
+  globalThis.fetch = async (input) => {
+    const request = new Request(input)
+    forwarded.push(request)
+    if (request.url === `https://aiplatform.googleapis.com/v1/projects/${project}/locations/global`) {
+      return Response.json({ locationId: "global" })
+    }
+    return Response.json({ ok: true })
+  }
+  try {
+    await fixture.setAdc()
+    const hooks = await plugin()
+    const loaded = await hooks.auth.loader(
+      async () => ({ authMode: "adc", project }),
+      { options: { cloudsdkConfig: fixture.sdk, location: "global" } },
+    )
+    assert.equal(loaded.baseURL, "")
+    assert.equal(loaded.apiKey, "vertex-managed")
+
+    const maas = `${maasEndpoint(project, "global")}/chat/completions`
+    const gemini = `https://aiplatform.googleapis.com/v1beta1/projects/${project}/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse`
+    for (const url of [maas, gemini]) {
+      await loaded.fetch(url, {
+        method: "POST",
+        headers: { authorization: "Bearer caller", "x-goog-api-key": "caller", "x-api-key": "caller", "content-type": "application/json" },
+        body: "{}",
+      })
+    }
+    const calls = forwarded.filter((request) =>
+      request.url !== `https://aiplatform.googleapis.com/v1/projects/${project}/locations/global`
+      && !request.url.endsWith("/gemini-2.5-flash:countTokens"))
+    assert.deepEqual(calls.map((request) => request.url), [maas, gemini])
+    for (const request of calls) {
+      assert.equal(request.headers.get("authorization"), "Bearer fixture-token")
+      assert.equal(request.headers.get("x-goog-user-project"), project)
+      assert.equal(request.headers.get("x-goog-api-key"), null)
+      assert.equal(request.headers.get("x-api-key"), null)
+    }
+
+    const refused = [
+      `${maas}?redirect=https://example.com`,
+      `https://example.com/v1/projects/${project}/locations/global/endpoints/openapi/chat/completions`,
+      `https://aiplatform.googleapis.com/v1/projects/other-project/locations/global/endpoints/openapi/chat/completions`,
+      `https://aiplatform.googleapis.com/v1/projects/${project}/locations/global/endpoints/openapi/models`,
+      `https://aiplatform.googleapis.com/v1beta1/projects/${project}/locations/global/publishers/google/models/gemini-2.5-flash:predict`,
+    ]
+    for (const url of refused) await assert.rejects(loaded.fetch(url), /Refusing to send a Vertex credential/, url)
+  } finally {
+    globalThis.fetch = original
+    await fixture.close()
   }
 })
 
@@ -1128,7 +1205,7 @@ test("account settings beat the row, and row settings beat environment defaults"
     const hooks = await plugin()
     for (const [record, expected] of [[auth, { ...auth, account: auth.accountId }], [{ ...auth, accountId: undefined }, auth], [{}, options]]) {
       const loaded = await hooks.auth.loader(async () => record, { options })
-      assert.ok(loaded.baseURL.includes(`/projects/${expected.project}/locations/${expected.location}/`))
+      assert.equal(loaded.baseURL, "")
       const calls = await fixture.calls()
       assert.ok(calls.some((args) => expected.authMode === "adc" ? args.includes("application-default") : args.includes(`--account=${expected.account}`)))
       // The cache identifies project, billing account, profile, account and ADC

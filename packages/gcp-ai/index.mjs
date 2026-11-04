@@ -3,7 +3,7 @@ import { defaultProfile, validateProject } from "./lib/browser.mjs"
 import { resolveIdentity, startLogin, tokenProvider, identityOf } from "./lib/credentials.mjs"
 import { consoleAccountFor, fetchCredits, usageOf } from "./lib/credits.mjs"
 import { testEndpoint } from "./lib/endpoint.mjs"
-import { providerModels, seedModels } from "./lib/models.mjs"
+import { maasEndpoint, providerModels, seedModels } from "./lib/models.mjs"
 
 // This plugin is its own provider: Magpie's built-in Vertex row keeps its own
 // project, location and ADC path, and nothing here touches it. What the plugin
@@ -76,7 +76,7 @@ function endpoint(project, location) {
 
 // The routes Gemini's own API serves under a publisher, and nothing else: a
 // model call, its count, and the catalog. The token goes no further than these.
-const GEMINI_ROUTE = /^\/models(?:\/[^/]+(?::(?:generateContent|streamGenerateContent|countTokens))?)?$/
+const GEMINI_ROUTE = /^\/models(?:\/[^/:]+(?::(?:generateContent|streamGenerateContent|countTokens))?)?$/
 
 function geminiRoute(pathname, base) {
   return GEMINI_ROUTE.test(pathname.slice(base.length))
@@ -116,7 +116,7 @@ export const GoogleVertexAuthPlugin = async (input = {}, pluginOptions = {}) => 
       // with a tool result is accepted as it is, and the reply streams with
       // Vertex's own usage and caching numbers.
       provider.npm ??= "@ai-sdk/google"
-      provider.models = { ...seedModels(), ...(provider.models ?? {}) }
+      provider.models = { ...seedModels(settings(provider)), ...(provider.models ?? {}) }
       configured = provider
     },
     provider: {
@@ -184,12 +184,16 @@ export const GoogleVertexAuthPlugin = async (input = {}, pluginOptions = {}) => 
         },
       }],
       // The gcloud user's token signs requests to this project's publisher
-      // endpoint only, and only on the Gemini routes it serves.
+      // and managed-model endpoints only. Gemini keeps its native protocol;
+      // DeepSeek MaaS uses the same credential through its OpenAI-compatible
+      // chat-completions route. The model-level api.url chooses that base, so
+      // the loader itself deliberately returns an empty base URL.
       async loader(getAuth, provider = configured) {
         const auth = await getAuth()
         const options = settings(provider, auth)
         const identity = await resolveIdentity(options)
-        const baseURL = endpoint(identity.project, options.location)
+        const geminiURL = endpoint(identity.project, options.location)
+        const maasURL = maasEndpoint(identity.project, options.location)
         const getToken = tokenProvider(identity)
         // The host has no test button of its own, so the first request after a
         // sign-in is where an unusable endpoint is named. Reading the location
@@ -197,14 +201,18 @@ export const GoogleVertexAuthPlugin = async (input = {}, pluginOptions = {}) => 
         // disabled API into a clear error instead of a failed model call. No
         // model is asked anything: that is the person's test to make.
         await endorse(identity, options.location, auth?.accountId ?? auth?.project ?? identity.project)
-        const allowed = new URL(baseURL)
+        const gemini = new URL(geminiURL)
+        const maas = new URL(maasURL)
         return {
-          baseURL, apiKey: "vertex-managed",
+          baseURL: "", apiKey: "vertex-managed",
           async fetch(input, init) {
             const request = new Request(input, init)
             const url = new URL(request.url)
-            if (url.origin !== allowed.origin || !url.pathname.startsWith(allowed.pathname + "/")) throw new Error("Refusing to send a Vertex credential outside the configured Google model endpoint")
-            if (!geminiRoute(url.pathname, allowed.pathname)) throw new Error("Refusing to send a Vertex credential to a route the Gemini endpoint does not serve")
+            const geminiCall = url.origin === gemini.origin
+              && url.pathname.startsWith(gemini.pathname + "/")
+              && geminiRoute(url.pathname, gemini.pathname)
+            const maasCall = url.origin === maas.origin && !url.search && url.pathname === `${maas.pathname}/chat/completions`
+            if (!geminiCall && !maasCall) throw new Error("Refusing to send a Vertex credential outside the configured Gemini and DeepSeek model endpoints")
             const headers = new Headers(request.headers)
             headers.delete("x-goog-api-key")
             headers.delete("x-api-key")
