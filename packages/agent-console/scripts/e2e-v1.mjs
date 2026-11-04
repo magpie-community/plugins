@@ -486,6 +486,24 @@ async function scenario20() {
   record("场景20 600px 运行中折叠行/运行行不重叠", approved && seen.size === 0, [...seen].slice(0, 3).join(" | "));
 }
 
+async function scenario21() {
+  // 全部自动同意: a waiting card is approved by the switch, the next request never shows a card
+  await newThread();
+  await send("/perm");
+  await page.waitForSelector(".card.perm:not(.done)", { timeout: 15000 });
+  await page.click(".mode-chip");
+  await page.click('.mode-menu .sm-opt:has-text("全部自动同意")');
+  await page.waitForSelector(".card.perm.done", { timeout: 8000 });
+  const label = await page.textContent(".card.perm.done .perm-done");
+  const chipAuto = await page.$(".mode-chip.auto");
+  await waitIdle();
+  await send("/perm");
+  await sleep(500);
+  await waitIdle();
+  const cards = (await page.$$(".card.perm")).length;
+  record("场景21 全部自动同意：待批卡片自动同意，之后不再弹", /自动同意/.test(label ?? "") && !!chipAuto && cards === 1, `label=${label} cards=${cards}`);
+}
+
 async function scenario22() {
   // User-message actions: under the bubble, reachable without a hover gap, copy feedback, edit fills the input
   await newThread();

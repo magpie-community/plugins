@@ -268,7 +268,7 @@ export class AcpSession implements ProviderSession {
       return hit?.id ?? want;
     }
     if (this.o.flavor === "cursor") {
-      const map: Partial<Record<Mode, string>> = { default: "agent", plan: "plan", ask: "ask" };
+      const map: Partial<Record<Mode, string>> = { default: "agent", bypassPermissions: "agent", plan: "plan", ask: "ask" };
       const want = map[mode] ?? "agent";
       const avail = this.active?.modes?.availableModes ?? [];
       const hit = avail.find((m) => m.id === want || m.name.toLowerCase() === want);

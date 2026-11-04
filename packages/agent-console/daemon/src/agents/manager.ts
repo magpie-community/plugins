@@ -7,6 +7,7 @@ import type { AttachmentStore } from "../store/attachments.js";
 import type { Provider, ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../providers/types.js";
 import { launchFromSettings } from "../providers/launch.js";
 import { clampMode } from "../providers/modes.js";
+import { autoApproveOption, FULL_AUTO } from "../providers/autoApprove.js";
 import { resolveAttachmentRefs } from "../util/attachmentRefs.js";
 import { getProvider } from "../providers/registry.js";
 import { catalogById, providerCreatable } from "../providers/catalog.js";
@@ -450,10 +451,21 @@ export class AgentManager {
         resolve: () => {},
         event: ev,
       };
-      // allowAlways hit → approve directly
+      if (ev.type === "permission_request") {
+        // 1.3 全部自动同意: the daemon answers "allow once" itself; no card (the tool call still shows in the timeline)
+        const meta = await this.threads.get(threadId);
+        const auto = meta ? autoApproveOption(meta.mode, meta.provider, ev) : null;
+        if (auto) {
+          log("info", `thread ${threadId} 自动同意 ${ev.title.slice(0, 80)} → ${auto.id}`);
+          rt.session?.respond(ev.requestId, { optionId: auto.id });
+          return;
+        }
+      }
+      // allowAlways hit → approve directly (with this request's own allow option, not a guessed id)
       const toolName = (ev as { detail?: { toolName?: string } }).detail?.toolName;
       if (toolName && rt.allowAlways.has(toolName)) {
-        rt.session?.respond(ev.requestId, { optionId: "accept" });
+        const allow = options.find((o) => o.kind === "allow_once") ?? options.find((o) => o.kind === "allow_always");
+        rt.session?.respond(ev.requestId, { optionId: allow?.id ?? "accept" });
         return;
       }
       rt.pending.set(ev.requestId, pending);
@@ -544,6 +556,23 @@ export class AgentManager {
     rt.session?.respond(requestId, answer);
   }
 
+  /** Answer every waiting tool approval with its allow-once option (full-auto just turned on). Returns how many. */
+  private async autoApprovePending(threadId: string, providerId: string, mode: Mode): Promise<number> {
+    const rt = this.rt(threadId);
+    let n = 0;
+    for (const p of [...rt.pending.values()]) {
+      if (p.kind !== "permission") continue;
+      const ev = p.event as { kind?: string };
+      const opt = autoApproveOption(mode, providerId, { kind: ev.kind, options: p.options });
+      if (!opt) continue;
+      rt.pending.delete(p.requestId);
+      await this.appendRaw(threadId, { type: "permission_resolved", requestId: p.requestId, optionId: opt.id, auto: true });
+      rt.session?.respond(p.requestId, { optionId: opt.id });
+      n++;
+    }
+    return n;
+  }
+
   // ---- interrupt ----
   async interrupt(threadId: string): Promise<void> {
     const rt = this.rt(threadId);
@@ -592,8 +621,10 @@ export class AgentManager {
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
   async setMode(threadId: string, mode: Mode): Promise<void> {
-    await this.threads.patch(threadId, { mode });
+    const meta = await this.threads.patch(threadId, { mode });
     const rt = this.rt(threadId);
+    // 1.3: turning 全部自动同意 on also approves the cards already waiting (the user was stuck exactly there)
+    if (mode === FULL_AUTO) await this.autoApprovePending(threadId, meta.provider, mode);
     if (rt.session) await rt.session.setMode(mode);
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }

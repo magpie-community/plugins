@@ -8,11 +8,15 @@
 }
 .cp-card:focus-within { border-color: var(--cp-focus); box-shadow: 0 0 0 3px var(--cp-ring), 0 1px 2px rgb(0 0 0 / .04); }
 .cp-card.waiting { border-color: color-mix(in oklab, var(--warn) 45%, var(--bg)); }
-.cp-card.danger { border-color: color-mix(in oklab, var(--danger) 40%, var(--bg)); }
-.cp-danger {
+/* 1.3: first time 全部自动同意 is turned on: one grayscale line above the card */
+.cp-autowarn {
   max-width: var(--col); margin: 0 auto 6px; display: flex; align-items: center; gap: 6px;
-  color: var(--danger); font-size: var(--fs-s); padding: 0 2px;
+  color: var(--muted); font-size: var(--fs-s); padding: 0 2px; min-width: 0;
 }
+.cp-autowarn svg { flex: none; color: var(--fg); }
+.cp-autowarn-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-autowarn-ok { flex: none; margin-left: auto; color: var(--fg); font-size: var(--fs-s); padding: 0 4px; border-radius: var(--r-s); }
+.cp-autowarn-ok:hover { background: var(--surface-hover); }
 .cp-hint { max-width: var(--col); margin: 6px auto 0; font-size: var(--fs-xs); color: var(--meta); text-align: center; }
 .att-note { padding: 6px 10px 0; color: var(--muted); font-size: var(--fs-s); }
 .cp-ta-wrap { position: relative; }
@@ -82,6 +86,10 @@
 }
 .tasks-pill:hover { color: var(--fg); background: var(--surface-hover); }
 .tasks-pill svg { flex: none; color: var(--meta); }
+/* 1.3 全部自动同意: Cursor's shield idea without the green, a filled grayscale chip with a shield-check */
+.ipill.auto { color: var(--fg); background: color-mix(in oklab, var(--fg) 8%, transparent); font-weight: 500; }
+.ipill.auto:hover, .ipill.auto[aria-expanded="true"] { background: color-mix(in oklab, var(--fg) 13%, transparent); }
+.ipill.static { cursor: default; }
 .mode-menu { max-width: 300px; }
 .cp-div { width: 1px; height: 14px; background: var(--line); margin: 0 4px; flex: none; }
 .cp-bar > .ibtn { flex: none; }

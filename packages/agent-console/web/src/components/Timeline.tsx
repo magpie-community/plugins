@@ -409,7 +409,8 @@ export function PermissionItem({ it, threadId }: { it: Extract<DisplayItem, { ki
   const detail = it.detail as { command?: string; path?: string; plan?: string; hunks?: DiffHunk[]; diff?: { path?: string; hunks?: DiffHunk[] } } | undefined;
   const hunks = detail?.hunks ?? detail?.diff?.hunks;
   const label = it.status === "resolved"
-    ? it.choice === "allow_always" || it.choice === "acceptForSession" ? t("timeline.permAllowSession")
+    ? it.auto ? t("timeline.permAutoAllowed")
+    : it.choice === "allow_always" || it.choice === "acceptForSession" ? t("timeline.permAllowSession")
       : it.choice === "deny" || it.choice === "reject" || it.choice === "decline" ? t("timeline.permDenied")
         : it.choice === "implement" ? t("timeline.permAllowed") : t("timeline.permAllowed")
     : t("timeline.permCancelled");

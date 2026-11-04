@@ -31,6 +31,8 @@ export type Settings = {
   providerCommand?: Record<string, { executable?: string; args?: string[] }>;
   /** 1.3 (Windows): bash.exe the agents use; empty = detect Git Bash */
   bashPath?: string;
+  /** 1.3: the one-line 全部自动同意 warning was shown once */
+  autoApproveWarned?: boolean;
   [k: string]: unknown;
 };
 
@@ -90,6 +92,7 @@ export const settingsPatchSchema = z
     ),
     v1Migrated: z.boolean(),
     bashPath: z.string().max(1024),
+    autoApproveWarned: z.boolean(),
   })
   .partial()
   .strict();
