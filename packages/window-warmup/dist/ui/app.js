@@ -724,8 +724,8 @@ function modelHint(model, provider, accountId) {
   const autoSub = "名字带 flash / lite / mini 的小模型优先，每次发送前重新选；思考能关就关，不能关用最低档。";
   const fixedSub = "思考档位按这个模型的配置自动决定：能关就关，不能关用最低档。";
   if (model) {
-    const m2 = provider?.models.find((x) => x.id === model);
-    return { main: m2 ? effortLabel(m2.effort) : t("思考：目录里暂时没有这个模型"), sub: t(fixedSub) };
+    const m = provider?.models.find((x) => x.id === model);
+    return { main: m ? effortLabel(m.effort) : t("思考：目录里暂时没有这个模型"), sub: t(fixedSub) };
   }
   const autoId = accountModelView(provider, accountId).autoModel;
   if (!autoId) {
@@ -738,13 +738,13 @@ function modelHint(model, provider, accountId) {
 function sumView(tasks, next) {
   let enabled = 0;
   let best = null;
-  for (const t2 of tasks) {
-    if (!t2.enabled)
+  for (const t of tasks) {
+    if (!t.enabled)
       continue;
     enabled++;
-    const at = next[t2.id];
+    const at = next[t.id];
     if (at && (!best || at < best.at))
-      best = { at, name: t2.name };
+      best = { at, name: t.name };
   }
   return { enabled, next: best };
 }
@@ -823,8 +823,8 @@ function localInputToISO(v) {
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
-function cloneTask(t2) {
-  return JSON.parse(JSON.stringify(t2));
+function cloneTask(t) {
+  return JSON.parse(JSON.stringify(t));
 }
 function contentOf(d) {
   return {
@@ -877,7 +877,7 @@ function isReadonly() {
 function currentSavedTask() {
   if (!openId || isNew)
     return null;
-  return state?.tasks.find((t2) => t2.id === openId) ?? null;
+  return state?.tasks.find((t) => t.id === openId) ?? null;
 }
 function latestRunOf(taskId) {
   let latest = null;
@@ -1586,7 +1586,7 @@ function renderList() {
   const tasks = state?.tasks ?? [];
   const confirming = deleteArmed(confirmDeleteAt, Date.now());
   const sig = JSON.stringify([
-    tasks.map((t2) => [t2.id, t2.updatedAt, t2.enabled, state?.next[t2.id] ?? null, statusOf(t2, state?.runs ?? [])]),
+    tasks.map((t) => [t.id, t.updatedAt, t.enabled, state?.next[t.id] ?? null, statusOf(t, state?.runs ?? [])]),
     openId,
     isNew,
     draftDisplaySig(),
@@ -1618,9 +1618,9 @@ function renderList() {
     }
     if (isNew && draft)
       nodes.push(rowEl(draft, null, true));
-    for (const t2 of tasks) {
-      const open = openId === t2.id;
-      nodes.push(rowEl(open && draft ? draft : t2, t2, open));
+    for (const t of tasks) {
+      const open = openId === t.id;
+      nodes.push(rowEl(open && draft ? draft : t, t, open));
     }
     if (openId && draft)
       nodes.push(buildEditor());
@@ -1735,7 +1735,7 @@ async function refreshState() {
 function syncOpen() {
   if (!openId || isNew || !draft)
     return;
-  const saved = state?.tasks.find((t2) => t2.id === openId) ?? null;
+  const saved = state?.tasks.find((t) => t.id === openId) ?? null;
   const act = syncDraftOnPoll(saved, openUpdatedAt, dirty);
   if (act === "gone") {
     closeEditor();
@@ -1867,33 +1867,33 @@ if (typeof document !== "undefined") {
     document.addEventListener("DOMContentLoaded", init);
 }
 export {
-  windowOptions,
-  validateDraft,
-  trigText,
-  t,
-  syncDraftOnPoll,
-  sumView,
-  statusOf,
-  shouldCloseOnScroll,
-  shortModel,
-  setLang,
-  runTimeLabel,
-  runReason,
-  runOutcome,
-  rowSub,
-  normalizeLang,
-  nextPointsAfter,
-  nextLabel,
-  modelOptions,
-  modelHint,
-  modelDisplay,
-  forceWindowAccount,
-  effortLabel,
-  deleteArmed,
-  contentOf,
-  accountOptions,
-  accountModelView,
-  accountHasWindows,
+  DELETE_CONFIRM_MS,
   I18N,
-  DELETE_CONFIRM_MS
+  accountHasWindows,
+  accountModelView,
+  accountOptions,
+  contentOf,
+  deleteArmed,
+  effortLabel,
+  forceWindowAccount,
+  modelDisplay,
+  modelHint,
+  modelOptions,
+  nextLabel,
+  nextPointsAfter,
+  normalizeLang,
+  rowSub,
+  runOutcome,
+  runReason,
+  runTimeLabel,
+  setLang,
+  shortModel,
+  shouldCloseOnScroll,
+  statusOf,
+  sumView,
+  syncDraftOnPoll,
+  t,
+  trigText,
+  validateDraft,
+  windowOptions
 };

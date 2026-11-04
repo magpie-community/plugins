@@ -737,9 +737,9 @@ function errorReason(text) {
   } catch {}
   return text.trim().slice(0, REASON_MAX) || "\u4E0A\u6E38\u672A\u8FD4\u56DE\u9519\u8BEF\u8BF4\u660E";
 }
-async function requestJSON(base, path2, signal, timeoutMs = READ_TIMEOUT_MS, method = "GET") {
+async function requestJSON(base, path, signal, timeoutMs = READ_TIMEOUT_MS, method = "GET") {
   const timeout = AbortSignal.timeout(timeoutMs);
-  const res = await fetch(base + path2, {
+  const res = await fetch(base + path, {
     method,
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout
   });
@@ -749,7 +749,7 @@ async function requestJSON(base, path2, signal, timeoutMs = READ_TIMEOUT_MS, met
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`Magpie \u8FD4\u56DE\u7684\u4E0D\u662F JSON\uFF08${path2}\uFF09`);
+    throw new Error(`Magpie \u8FD4\u56DE\u7684\u4E0D\u662F JSON\uFF08${path}\uFF09`);
   }
 }
 function dataArray(data) {
@@ -1438,9 +1438,9 @@ class Scheduler {
     const pin = pinFor(task.provider, task.account, keyDir, this.quota?.entries ?? []);
     const chosen = keyDir?.get(task.provider)?.models ?? [];
     if (task.model) {
-      const model2 = models.find((m) => m.id === task.model);
-      if (model2)
-        return { id: task.model, model: model2, pin };
+      const model = models.find((m) => m.id === task.model);
+      if (model)
+        return { id: task.model, model, pin };
       if (chosen.some((bare) => bare === task.model || `${task.provider}/${bare}` === task.model)) {
         return { id: task.model, model: { id: task.model }, pin };
       }
@@ -1738,9 +1738,9 @@ class StoreImpl {
   data;
   path;
   writing = Promise.resolve();
-  constructor(data, path2) {
+  constructor(data, path) {
     this.data = data;
-    this.path = path2;
+    this.path = path;
   }
   save() {
     const next = this.writing.then(async () => {
@@ -1755,13 +1755,13 @@ class StoreImpl {
 }
 async function openStore(dir) {
   await mkdir(dir, { recursive: true, mode: 448 });
-  const path2 = join2(dir, STATE_FILE);
+  const path = join2(dir, STATE_FILE);
   let raw;
   try {
-    raw = await readFile2(path2, "utf8");
+    raw = await readFile2(path, "utf8");
   } catch (e) {
     if (e.code === "ENOENT") {
-      return new StoreImpl({ version: 1, tasks: [], runs: [], marks: {} }, path2);
+      return new StoreImpl({ version: 1, tasks: [], runs: [], marks: {} }, path);
     }
     throw new StoreError(`\u72B6\u6001\u6587\u4EF6\u8BFB\u4E0D\u51FA\u6765\uFF1A${errText(e)}`);
   }
@@ -1780,7 +1780,7 @@ async function openStore(dir) {
       r.model = null;
   }
   truncateState(data);
-  return new StoreImpl(data, path2);
+  return new StoreImpl(data, path);
 }
 async function migrateLegacyState(dir, env = process.env) {
   const statePath = join2(dir, STATE_FILE);
@@ -1821,19 +1821,19 @@ function pidAlive(pid) {
     return e.code === "EPERM";
   }
 }
-async function releaseLock(path2) {
+async function releaseLock(path) {
   let raw;
   try {
-    raw = await readFile2(path2, "utf8");
+    raw = await readFile2(path, "utf8");
   } catch {
     return;
   }
   if (parsePid(raw) === process.pid)
-    await unlink(path2).catch(() => {});
+    await unlink(path).catch(() => {});
 }
 async function acquireLock(dir, opts = {}) {
   await mkdir(dir, { recursive: true, mode: 448 });
-  const path2 = join2(dir, LOCK_FILE);
+  const path = join2(dir, LOCK_FILE);
   const leftovers = await readdir(dir).catch(() => []);
   for (const name of leftovers) {
     if (/^service\.lock\.\d+\.[0-9a-f-]+\.tmp$/.test(name)) {
@@ -1844,9 +1844,9 @@ async function acquireLock(dir, opts = {}) {
     const tmp = join2(dir, `${LOCK_FILE}.${process.pid}.${randomUUID2()}.tmp`);
     await writeFile(tmp, String(process.pid), { mode: 384 });
     try {
-      await link(tmp, path2);
+      await link(tmp, path);
       await unlink(tmp).catch(() => {});
-      return { ok: true, release: () => releaseLock(path2) };
+      return { ok: true, release: () => releaseLock(path) };
     } catch (e) {
       await unlink(tmp).catch(() => {});
       if (e.code !== "EEXIST") {
@@ -1855,7 +1855,7 @@ async function acquireLock(dir, opts = {}) {
     }
     let raw;
     try {
-      raw = await readFile2(path2, "utf8");
+      raw = await readFile2(path, "utf8");
     } catch (e) {
       if (e.code === "ENOENT")
         continue;
@@ -1870,7 +1870,7 @@ async function acquireLock(dir, opts = {}) {
         return { ok: false, pid };
     }
     try {
-      await unlink(path2);
+      await unlink(path);
     } catch {}
   }
   throw new Error("\u5355\u5B9E\u4F8B\u9501\u88AB\u5360\u7528\u4E14\u65E0\u6CD5\u63A5\u7BA1");
@@ -2050,10 +2050,10 @@ async function startService(opts) {
   }
   async function api(req, url, origin) {
     const cors = corsHeaders(origin);
-    const path3 = url.pathname;
-    if (req.method === "GET" && path3 === "/api/state")
+    const path = url.pathname;
+    if (req.method === "GET" && path === "/api/state")
       return json(guardedState(), 200, cors);
-    if (req.method === "GET" && path3 === "/api/catalog") {
+    if (req.method === "GET" && path === "/api/catalog") {
       try {
         return json(await fetchCatalog(opts.base), 200, cors);
       } catch (e) {
@@ -2063,9 +2063,9 @@ async function startService(opts) {
     const blocked = readonlyBlock(cors);
     if (blocked)
       return blocked;
-    const runMatch = /^\/api\/tasks\/([^/]+)\/run$/.exec(path3);
-    const idMatch = /^\/api\/tasks\/([^/]+)$/.exec(path3);
-    if (path3 === "/api/tasks" && req.method === "POST")
+    const runMatch = /^\/api\/tasks\/([^/]+)\/run$/.exec(path);
+    const idMatch = /^\/api\/tasks\/([^/]+)$/.exec(path);
+    if (path === "/api/tasks" && req.method === "POST")
       return saveTask(req, cors, undefined);
     if (idMatch && req.method === "PUT")
       return saveTask(req, cors, decodeURIComponent(idMatch[1]));
@@ -2084,7 +2084,7 @@ async function startService(opts) {
         return opError(e, cors);
       }
     }
-    return json({ error: `\u6CA1\u6709\u8FD9\u4E2A\u63A5\u53E3\uFF1A${path3}` }, 404, cors);
+    return json({ error: `\u6CA1\u6709\u8FD9\u4E2A\u63A5\u53E3\uFF1A${path}` }, 404, cors);
   }
   async function serveIndex(req, url) {
     const nonce = randomBytes(16).toString("base64");
@@ -2211,6 +2211,6 @@ var plugin_default = {
   }
 };
 export {
-  plugin_default as default,
-  DEFAULT_PORT
+  DEFAULT_PORT,
+  plugin_default as default
 };
