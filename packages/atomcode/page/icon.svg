@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="AtomCode">
+  <defs>
+    <linearGradient id="g" x1="8" y1="5" x2="56" y2="59" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f6c478"/>
+      <stop offset="1" stop-color="#b75b20"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="#25271f"/>
+  <path d="M18 43 29.6 16h5.2L46 43h-7l-2.2-6H27.1l-2.2 6H18Zm11.2-12h5.4l-2.7-7.3-2.7 7.3Z" fill="url(#g)"/>
+  <circle cx="47" cy="16" r="4" fill="#f4a950"/>
+</svg>
