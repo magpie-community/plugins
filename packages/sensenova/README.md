@@ -21,9 +21,13 @@ API Key 是可选的：不填，账号仍显示额度，只是不服务模型。
 ## 额度
 
 读 `GET /lite/console/v1/tokenplan/pool-usage`，把每个积分池的
-`window_5h` / `window_7d` 显示成额度窗口，把 `grant_balance` 显示成会过期
-的返赠余额。每个池的窗口标注它覆盖的模型（`models` 字段），让 magpie 按模型
-分组渲染——通用积分池与 Flash-Lite 积分池各自独立显示，不挤进同一个 tooltip。
+`window_5h` / `window_7d` 显示成额度窗口，把 `grant_balance` 显示成卡片的
+**余额**——只放数字（magpie 自己的千分位格式）加「积分」，因为这一栏是按短
+数字排版的；到期时间（`nearest_grant_expiry`）不混进度数串，走 `until`
+（`renew: "off"`），由 magpie 在卡片头部渲染成本地化的「x月x日到期」。多个
+积分池的赠款相加，到期取最早的一个。每个池的窗口标注它覆盖的模型（`models`
+字段），让 magpie 按模型分组渲染——通用积分池与 Flash-Lite 积分池各自独立
+显示，不挤进同一个 tooltip。
 
 ## 模型
 

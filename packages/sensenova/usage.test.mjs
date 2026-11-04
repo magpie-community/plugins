@@ -69,10 +69,41 @@ test("a grant is a balance that expires, told as the account's balance", async (
   f = fakeSenseNova()
   f.route("GET /lite/console/v1/tokenplan/pool-usage", () => json({ plan: { name: "Free Plan" }, pools: [pool()] }))
   const u = await usage()
-  // the GUI draws a usage balance as its own chip; a grant is never a window
-  expect(u.balance).toContain("12733.76")
-  expect(u.balance).toContain("granted")
+  // the GUI draws a usage balance as its own chip, styled for a short figure:
+  // the number in magpie's own countFormat (separators, ≤ 2 decimals), in the
+  // console's own word — the expiry is not in the chip but on `until` (with
+  // renew "off"), which the GUI renders in the head as "Expires {date}"
+  expect(u.balance).toBe("12,733.76 积分")
+  expect(u.until).toBe(new Date(1732000000 * 1000).toISOString())
+  expect(u.renew).toBe("off")
   expect(u.windows.some((w) => w.name.includes("grants"))).toBe(false)
+})
+
+test("several granted pools add up, and the earliest expiry is the one told", async () => {
+  f = fakeSenseNova()
+  f.route("GET /lite/console/v1/tokenplan/pool-usage", () =>
+    json({
+      plan: { name: "Free Plan" },
+      pools: [
+        pool({ grant_balance: "100", nearest_grant_expiry: "1732000000" }),
+        pool({ name: "Flash-Lite积分池", pool_type: "dedicated", grant_balance: "50.5", nearest_grant_expiry: "1731000000" }),
+      ],
+    }),
+  )
+  const u = await usage()
+  expect(u.balance).toBe("150.5 积分")
+  expect(u.until).toBe(new Date(1731000000 * 1000).toISOString())
+})
+
+test("a grant with no expiry is a balance alone", async () => {
+  f = fakeSenseNova()
+  f.route("GET /lite/console/v1/tokenplan/pool-usage", () =>
+    json({ plan: { name: "Free Plan" }, pools: [pool({ nearest_grant_expiry: "0" })] }),
+  )
+  const u = await usage()
+  expect(u.balance).toBe("12,733.76 积分")
+  expect(u.until).toBeUndefined()
+  expect(u.renew).toBeUndefined()
 })
 
 test("a pool with no window of its own is left out", async () => {

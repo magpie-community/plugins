@@ -450,12 +450,28 @@ function modelOf(m, provider) {
 // rest in the row's tooltip, so each window says which models its pool covers
 // — the host keeps that field (`ids(w?.models)`) and the GUI groups windows by
 // it, which gives every pool its own meters instead of one pool's meters with
-// the rest hidden. The grants — a balance that expires, not a window that gets
-// spent — go to `balance`, which the GUI draws as its own chip beside them.
+// the rest hidden.
+//
+// The grants — a balance that expires, not a window that gets spent — go to
+// `balance`, which the GUI draws as its own chip under the windows. That chip
+// is styled for a short figure ("¥12.34", "1,234 积分"), so the balance is the
+// number alone, in the console's own word for it (积分, as joycode's balance
+// does), and formatted like magpie's own countFormat: thousands separators,
+// at most two decimals. The full raw grant amount stays in the card's
+// tooltip, which carries the same string.
+//
+// When the grants expire is not said in the chip: it goes to `until` (with
+// `renew: "off"`), which magpie renders in the card's head as its own
+// localized "expires" date — planTerm's "Expires {date}" — instead of a date
+// bolted onto a figure. Several granted pools add up (a pool's grant is its
+// own; the chip is the account's), and the earliest expiry is the one told,
+// that being when the first of them is lost.
 function usageOf(pools) {
+  const count = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 })
   const round = (n) => Math.round(n * 100) / 100
   const windows = []
-  let grants = ""
+  let grants = 0
+  let expiryAt = 0
   const ordered = [...(Array.isArray(pools) ? pools : [])].sort(
     (a, b) => (a?.pool_type === "default" ? -1 : 1) - (b?.pool_type === "default" ? -1 : 1),
   )
@@ -489,11 +505,17 @@ function usageOf(pools) {
     }
     const grant = num(pool?.grant_balance)
     if (grant !== undefined && grant > 0) {
+      grants += grant
       const expiry = num(pool?.nearest_grant_expiry)
-      grants = `${round(grant)} credits granted${expiry && expiry > 0 ? " · expires " + new Date(expiry * 1000).toISOString().slice(0, 10) : ""}`
+      if (expiry && expiry > 0 && (!expiryAt || expiry < expiryAt)) expiryAt = expiry
     }
   }
-  return { windows, ...(grants ? { balance: grants } : {}) }
+  if (!(grants > 0)) return { windows }
+  return {
+    windows,
+    balance: `${count.format(grants)} 积分`,
+    ...(expiryAt > 0 ? { until: new Date(expiryAt * 1000).toISOString(), renew: "off" } : {}),
+  }
 }
 
 async function poolUsage(access) {
@@ -653,6 +675,8 @@ function makePlugin() {
           const card = (u, signIn) => ({
             plan: u.plan,
             ...(u.balance ? { balance: u.balance } : {}),
+            // the grants' expiry, as the head's own localized "expires" date
+            ...(u.until ? { until: u.until, renew: u.renew } : {}),
             windows: u.windows,
             user: auth.accountId ?? auth.email ?? "sensenova",
             signIn,
