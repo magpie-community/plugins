@@ -20,7 +20,7 @@ magpie plugin login catpaw     # 选「网页登录」/「妙手桌面端登录�
 - **无续期接口**：token 过期后 401，网页登录重新发起一次即可；桌面端登录态则在妙手里重新登录（下一请求自动读新 token）。
 - **聊天**：`round → event → turn` 三步会话机；上游 SSE 帧为累积式，插件做差分转 OpenAI delta（`content` + `reasoning_content`），流式与非流式都支持。
 - **模型**：妙手桌面端的 9 个模型（longcat-2.0 / glm-5.3 系列 / deepseek-v4 系列 / minimax-m3 / kimi-k3 / auto），静态表打底，再按妙手桌面端的做法向网关取账号的模型清单（`POST /api/agent/maas/model-types`，缓存 5 分钟），官方新增的模型（如 LongCat 2.5）无需发版即出现；取不到清单时用静态表。不声明各模型的上下文/输出窗口（客户端未公布，不编造数字），也不声明图片输入（见下）。
-- **工具与图片**：会话协议只收一段扁平文本 prompt，工具定义、工具结果与图片都无法送达——带这些的请求以 **400 明确拒绝**（而不是悄悄丢掉后答错）。
+- **工具与图片**：会话协议只收一段扁平文本 prompt，图片无法送达——带图片的请求以 **400 明确拒绝**。工具以 **JSON 协议适配**支持：工具定义注入系统指令，模型按 `{"tool_calls":[…]}` 严格 JSON 回复，插件解析回 OpenAI `tool_calls`。只有整条回复就是调用 JSON（裸对象或单个 fence 块）才算调用——散文里引用的示例不会误判；工具名大小写漂移会匹配回声明名；未声明的工具名、缺必需参数的调用会被丢弃。流式：普通回复**边出边流**，仅 JSON 开头短暂扣留；`tool_choice=required`/指定工具时整条回复扣住（SSE 心跳保活），保证未拿到调用时能带上下文重试一次；`tool_choice=none` 保持原样透传。
 - **余额（usage）**：`GET https://catx.nocode.cn/api/gateway/credit/balance`，鉴权头是 **`X-Auth-Token: <accessToken>`**。
   - ⚠️ 这个接口与聊天网关**不是同一个鉴权头**：它只认 `X-Auth-Token`，把聊天用的 `Cookie: X-Passport-Token` 发到这里会稳定 401（body `code 4010`）。magpie 把 usage 的 401 当作「登录态失效」，所以鉴权头必须分开核对。
   - 读成功后**不带 `signIn` 字段**：magpie 以此把「已退出登录」的标记撤掉。
