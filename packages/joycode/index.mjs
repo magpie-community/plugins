@@ -534,14 +534,132 @@ function normalizeResponsesSse(source) {
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
   let pending = ''
+  let frameLines = []
+  let sawOutput = false
+  let terminalSeen = false
+  let stopAfterError = false
+  let atEventBoundary = true
+  let lineEnding = '\n'
+  let lastLineEnding = '\n'
+
+  const nonEmpty = value => typeof value === 'string' && value.length > 0
+  const nonZeroCode = code => {
+    if (typeof code === 'number') return code !== 0
+    if (typeof code === 'string') {
+      if (!code.trim()) return false
+      const numeric = Number(code)
+      return !Number.isFinite(numeric) || numeric !== 0
+    }
+    return code !== undefined && code !== null && code !== false
+  }
+
+  const hasVisibleContent = content => Array.isArray(content) && content.some(part =>
+    part?.type === 'output_text' ? nonEmpty(part.text)
+      : part?.type === 'refusal' && nonEmpty(part.refusal))
+
+  const hasValidOutputItem = item => {
+    if (!item || typeof item !== 'object' || typeof item.type !== 'string') return false
+    if (item.type === 'reasoning') {
+      return (Array.isArray(item.summary) && item.summary.some(part =>
+        part?.type === 'summary_text' && nonEmpty(part.text))) || nonEmpty(item.encrypted_content)
+    }
+    if (item.type === 'message') {
+      return nonEmpty(item.content) || hasVisibleContent(item.content)
+    }
+    if (item.type.endsWith('_call')) {
+      return Object.entries(item).some(([key, value]) => key !== 'type' && value !== undefined && value !== null)
+    }
+    return false
+  }
+
+  const hasValidOutput = output => Array.isArray(output) && output.some(hasValidOutputItem)
+
+  const observeOutput = event => {
+    if (!event || typeof event !== 'object') return
+    const type = event.type
+    if (type === 'response.output_text.delta' || type === 'response.output_text.done') {
+      if (nonEmpty(event.delta) || nonEmpty(event.text)) sawOutput = true
+    } else if (type === 'response.refusal.delta' || type === 'response.refusal.done') {
+      if (nonEmpty(event.delta) || nonEmpty(event.refusal)) sawOutput = true
+    } else if (type === 'response.function_call_arguments.delta' || type === 'response.function_call_arguments.done') {
+      sawOutput = true
+    } else if (type === 'response.reasoning_summary_text.delta' && nonEmpty(event.delta)) {
+      sawOutput = true
+    } else if (type === 'response.output_item.added' || type === 'response.output_item.done') {
+      if (hasValidOutputItem(event.item)) sawOutput = true
+    } else if (type === 'response.content_part.added' || type === 'response.content_part.done') {
+      if (hasVisibleContent([event.part])) sawOutput = true
+    } else if (typeof type === 'string' && /^response\.[a-z_]+_call\./.test(type)) {
+      sawOutput = true
+    }
+  }
+
+  const emitError = (controller, event, ending = '\n', needsSeparator = false, previousEnding = ending) => {
+    const prefix = needsSeparator ? (previousEnding ? previousEnding : `${ending}${ending}`) : ''
+    controller.enqueue(encoder.encode(`${prefix}data: ${JSON.stringify(event)}${ending}${ending}`))
+  }
+
+  const processFrame = (controller, delimited = true) => {
+    if (!frameLines.length) return
+    const lines = frameLines
+    frameLines = []
+    atEventBoundary = delimited
+    if (stopAfterError) return
+
+    let eventName = ''
+    const data = []
+    for (const entry of lines) {
+      if (entry.body.startsWith('event:')) eventName = entry.body.slice(6).trim()
+      if (entry.body.startsWith('data:')) data.push(entry.body.slice(5).replace(/^ /, ''))
+    }
+
+    let payload
+    if (data.length) {
+      try { payload = JSON.parse(data.join('\n')) } catch {}
+    }
+
+    if (payload && typeof payload === 'object' && payload.status === 'FAILED_RESPONSE' && nonZeroCode(payload.code)) {
+      emitError(controller, { ...payload, type: 'error' }, lines.find(entry => entry.ending)?.ending || '\n')
+      terminalSeen = true
+      stopAfterError = true
+      return
+    }
+
+    const type = payload?.type || eventName
+    if (type === 'response.completed') {
+      const output = payload?.response?.output ?? payload?.output
+      if (!sawOutput && !hasValidOutput(output)) {
+        emitError(controller, {
+          type: 'error',
+          code: 'empty_response',
+          message: 'JoyCode 返回空响应',
+          ...(payload?.sequence_number === undefined ? {} : { sequence_number: payload.sequence_number }),
+        }, lines.find(entry => entry.ending)?.ending || '\n')
+        terminalSeen = true
+        stopAfterError = true
+        return
+      }
+    }
+
+    observeOutput(payload)
+    if (type === 'response.completed' || type === 'response.incomplete' || type === 'response.failed' || type === 'error') {
+      terminalSeen = true
+    }
+    controller.enqueue(encoder.encode(lines.map(entry => entry.text).join('')))
+  }
 
   const processLine = (line, controller) => {
+    if (stopAfterError) return
     const ending = line.endsWith('\r\n') ? '\r\n' : line.endsWith('\n') ? '\n' : line.endsWith('\r') ? '\r' : ''
     const body = ending ? line.slice(0, -ending.length) : line
-    const normalized = body.startsWith('data: data: ')
-      ? `data: ${body.slice('data: data: '.length)}${ending}`
-      : line
-    controller.enqueue(encoder.encode(normalized))
+    const normalizedBody = body.startsWith('data: data: ')
+      ? `data: ${body.slice('data: data: '.length)}`
+      : body
+    frameLines.push({ text: `${normalizedBody}${ending}`, body: normalizedBody, ending })
+    if (ending) lineEnding = ending
+    lastLineEnding = ending
+    if (!body) processFrame(controller)
+    else atEventBoundary = false
   }
 
   return source.pipeThrough(new TransformStream({
@@ -556,6 +674,14 @@ function normalizeResponsesSse(source) {
     flush(controller) {
       pending += decoder.decode()
       if (pending) processLine(pending, controller)
+      if (frameLines.length) processFrame(controller, false)
+      if (!terminalSeen) {
+        emitError(controller, {
+          type: 'error',
+          code: 'incomplete_response',
+          message: 'JoyCode 响应流未正常终止',
+        }, lineEnding, !atEventBoundary, lastLineEnding || `${lineEnding}${lineEnding}`)
+      }
     },
   }))
 }

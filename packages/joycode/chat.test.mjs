@@ -27,6 +27,15 @@ async function request(t, response, {
 function chunks(parts) {
   return new ReadableStream({ start(c) { for (const p of parts) c.enqueue(new TextEncoder().encode(p)); c.close() } })
 }
+function responseEvents(text) {
+  return text.split(/\r?\n\r?\n/).flatMap(frame => {
+    const data = frame.split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).replace(/^ /, ''))
+    if (!data.length) return []
+    try { return [JSON.parse(data.join('\n'))] } catch { return [] }
+  })
+}
 test('HTTP 200 raw gateway denial becomes actionable error, not empty SSE', async t => {
   const denial = () => new Response(chunks([' {"error":', '{"code":"AI_GRAY_ACCESS_DENIED","message":"访问受限，请联系管理员开通"}}']), { headers: { 'content-type': 'text/event-stream' } })
   const r = await request(t, denial)
@@ -122,7 +131,10 @@ for (const [name, input, payload, functionId, npmShape] of [
 ]) {
   test(`${name} requests are signed on their own gateway and keep their shape`, async t => {
     let seen
-    const r = await request(t, new Response('data: [DONE]\n\n', {
+    const stream = name === 'Responses'
+      ? 'data: {"type":"response.incomplete","response":{"status":"incomplete","output":[{"type":"reasoning","summary":[]}]}}\n\n'
+      : 'data: [DONE]\n\n'
+    const r = await request(t, new Response(stream, {
       headers: { 'content-type': 'text/event-stream' },
     }), {
       input,
@@ -141,7 +153,7 @@ for (const [name, input, payload, functionId, npmShape] of [
     assert.equal(seen.init.headers.get('x-api-key'), null)
     assert.equal(seen.init.headers.get('ptkey'), 'fake-key')
     assert.equal(r.status, 200)
-    assert.equal(await r.text(), 'data: [DONE]\n\n')
+    assert.equal(await r.text(), stream)
   })
 }
 
@@ -390,6 +402,164 @@ test('Responses double-wrapped SSE is normalized across chunk boundaries', async
     'data: {"type":"response.output_text.delta","delta":"OK"}\n\n',
     'data: {"type":"response.completed","sequence_number":2}\n\n',
   ].join(''))
+})
+
+test('Responses malformed completed payload emits one empty_response without throwing', async t => {
+  const r = await request(t, new Response('event: response.completed\ndata: oops\n\n', {
+    headers: { 'content-type': 'text/event-stream' },
+  }), {
+    input: 'https://api-ai.jd.com/v1/responses',
+    payload: { model: 'GPT-6 Astra', input: 'OK', stream: true },
+  })
+  assert.equal(r.status, 200)
+  let body
+  await assert.doesNotReject(async () => { body = await r.text() })
+  const events = responseEvents(body)
+  assert.equal(events.length, 1)
+  assert.equal(events[0].type, 'error')
+  assert.equal(events[0].code, 'empty_response')
+})
+
+test('Responses converts a double-wrapped JoyCode failure and suppresses later success', async t => {
+  const failure = {
+    code: 'QUOTA_EXHAUSTED',
+    message: 'credits exhausted',
+    cause: { detail: 'billing limit' },
+    status: 'FAILED_RESPONSE',
+  }
+  const upstreamText = [
+    `data: data: ${JSON.stringify(failure)}\n\n`,
+    `data: data: ${JSON.stringify({ type: 'response.completed', response: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'unexpected' }] }] } })}\n\n`,
+  ].join('')
+  const split = upstreamText.indexOf('credits') + 3
+  const r = await request(t, new Response(chunks([
+    upstreamText.slice(0, split),
+    upstreamText.slice(split),
+  ]), { headers: { 'content-type': 'text/event-stream' } }), {
+    input: 'https://api-ai.jd.com/v1/responses',
+    payload: { model: 'GPT-6 Astra', input: 'OK', stream: true },
+  })
+  const body = await r.text()
+  const events = responseEvents(body)
+  assert.equal(r.status, 200)
+  assert.equal(events.length, 1)
+  assert.equal(events[0].type, 'error')
+  assert.equal(events[0].code, failure.code)
+  assert.equal(events[0].cause.detail, failure.cause.detail)
+  assert.equal(events.some(event => event.type === 'response.completed'), false)
+})
+
+// Separate contexts avoid stacked fetch mocks leaking under Bun's node:test adapter.
+for (const [label, output] of [['no output', []], ['empty reasoning', [{ type: 'reasoning', summary: [] }]]]) {
+  test(`Responses converts an empty completion into empty_response: ${label}`, async t => {
+    const completed = { type: 'response.completed', response: { status: 'completed', output } }
+    const r = await request(t, new Response(`data: ${JSON.stringify(completed)}\n\n`, {
+      headers: { 'content-type': 'text/event-stream' },
+    }), {
+      input: 'https://api-ai.jd.com/v1/responses',
+      payload: { model: 'GPT-6 Astra', input: 'OK', stream: true },
+    })
+    const body = await r.text()
+    const events = responseEvents(body)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].type, 'error')
+    assert.equal(events[0].code, 'empty_response')
+    assert.equal(body.includes('response.completed'), false)
+  })
+}
+
+test('Responses reports incomplete_response when EOF has no terminal event', async t => {
+  const delta = { type: 'response.output_text.delta', delta: 'partial' }
+  const upstreamText = `data: ${JSON.stringify(delta)}\n\n`
+  const r = await request(t, new Response(upstreamText, {
+    headers: { 'content-type': 'text/event-stream' },
+  }), {
+    input: 'https://api-ai.jd.com/v1/responses',
+    payload: { model: 'GPT-6 Astra', input: 'OK', stream: true },
+  })
+  const body = await r.text()
+  const events = responseEvents(body)
+  assert.equal(body.startsWith(upstreamText), true)
+  assert.equal(events.at(-1).type, 'error')
+  assert.equal(events.at(-1).code, 'incomplete_response')
+})
+
+test('Responses preserves standard CRLF events byte for byte', async t => {
+  const upstreamText = 'event: response.incomplete\r\ndata: {"type":"response.incomplete","response":{"status":"incomplete","output":[]}}\r\n\r\n'
+  const r = await request(t, new Response(chunks([upstreamText.slice(0, 19), upstreamText.slice(19)]), {
+    headers: { 'content-type': 'text/event-stream' },
+  }), {
+    input: 'https://api-ai.jd.com/v1/responses',
+    payload: { model: 'GPT-6 Astra', input: 'OK', stream: true },
+  })
+  assert.equal(await r.text(), upstreamText)
+})
+
+{
+  const cases = [
+    ['text delta', [
+      { type: 'response.output_text.delta', delta: 'hello' },
+      { type: 'response.completed', response: { output: [] } },
+    ]],
+    ['text and tool deltas', [
+      { type: 'response.output_text.delta', delta: 'hello' },
+      { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '{}' },
+      { type: 'response.completed', response: { output: [] } },
+    ]],
+    ['function call', [
+      { type: 'response.completed', response: { output: [{ type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '{}' }] } },
+    ]],
+    ['completed output text', [
+      { type: 'response.completed', response: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'from output' }] }] } },
+    ]],
+    ['refusal', [
+      { type: 'response.completed', response: { output: [{ type: 'message', content: [{ type: 'refusal', refusal: 'cannot help' }] }] } },
+    ]],
+    ['search call', [
+      { type: 'response.completed', response: { output: [{ type: 'web_search_call', id: 'search_1', status: 'completed', action: { query: 'weather' } }] } },
+    ]],
+    ['image call', [
+      { type: 'response.completed', response: { output: [{ type: 'image_generation_call', id: 'image_1', status: 'completed', result: 'encoded-image' }] } },
+    ]],
+    ['reasoning incomplete', [
+      { type: 'response.incomplete', response: { status: 'incomplete', output: [{ type: 'reasoning', summary: [] }] } },
+    ]],
+    ['failed terminal', [
+      { type: 'response.failed', response: { status: 'failed', output: [] } },
+    ]],
+    ['reasoning completed item', [
+      { type: 'response.completed', response: { output: [{ type: 'reasoning', summary: [{ type: 'summary_text', text: 'internal' }] }] } },
+    ]],
+    ['encrypted reasoning', [
+      { type: 'response.completed', response: { output: [{ type: 'reasoning', encrypted_content: 'encrypted-reasoning' }] } },
+    ]],
+  ]
+  for (const [label, events] of cases) {
+    test(`Responses preserves output bytes: ${label}`, async t => {
+      const upstreamText = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('')
+      const r = await request(t, new Response(upstreamText, {
+        headers: { 'content-type': 'text/event-stream' },
+    }), {
+      input: 'https://api-ai.jd.com/v1/responses',
+      payload: { model: 'GPT-6 Astra', input: 'OK', stream: true },
+    })
+    assert.equal(await r.text(), upstreamText, label)
+    })
+  }
+}
+
+test('Responses does not append another error after an upstream error event', async t => {
+  const upstreamText = 'data: {"type":"error","code":"upstream_failure","message":"failed"}\n\n'
+  const r = await request(t, new Response(upstreamText, {
+    headers: { 'content-type': 'text/event-stream' },
+  }), {
+    input: 'https://api-ai.jd.com/v1/responses',
+    payload: { model: 'GPT-6 Astra', input: 'OK', stream: true },
+  })
+  const body = await r.text()
+  const errors = responseEvents(body).filter(event => event.type === 'error')
+  assert.equal(errors.length, 1)
+  assert.equal(body, upstreamText)
 })
 
 test('Responses drops unstored reasoning ids but keeps inline reasoning and other ids', async t => {
