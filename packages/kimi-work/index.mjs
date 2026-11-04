@@ -28,6 +28,9 @@ const UA = 'kimi-code-cli/' + KIMI_CODE_VERSION;
 // the desktop asks with its own (k3d1-agent, K3.1 Pro, first), so through
 // 0.1.8 K3.1 Pro was never listed (tests/fixtures/work-config.*.json).
 const DESKTOP_VERSION = '3.2.20';
+// Work's "High" output speed is no model of its own: the menu lists it among
+// a model's speedOptions, and the desktop asks for it with this header.
+const SPEED_HEADER = 'X-Kimi-Model-Speed';
 function webHeaders(platform=process.platform) {
   return {'User-Agent':UA,'x-msh-platform':platform==='darwin'?'mac':platform==='win32'?'windows':'web',
     'x-msh-version':DESKTOP_VERSION,'R-Timezone':Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC'};
@@ -249,6 +252,17 @@ function moonshotTools(body) {
   return changed?JSON.stringify(doc):body;
 }
 
+// A service_tier of priority or fast (magpie's Fast, an agent's own) is asked
+// of Kimi by header, and taken out of the body. Any other request goes as is.
+function fastSpeed(body) {
+  if(typeof body!=='string'||!body.includes('"service_tier"'))return {body,fast:false};
+  let doc;
+  try{doc=JSON.parse(body);}catch{return {body,fast:false};}
+  if(!isObj(doc)||(doc.service_tier!=='priority'&&doc.service_tier!=='fast'))return {body,fast:false};
+  delete doc.service_tier;
+  return {body:JSON.stringify(doc),fast:true};
+}
+
 // Schema conversion reads the body before fetch; cancellation must cover that
 // read too, including a producer that never sends another chunk.
 async function bodyText(body,signal) {
@@ -415,6 +429,9 @@ function workConfigRows(payload) {
     const has=c=>Array.isArray(caps)&&caps.includes(c);
     const image=has('image_in'),thinking=has('thinking')||Object.keys(variants).length>0;
     const max=Number(pick(dc,'maxContextSize','max_context_size'))||262144;
+    const speeds=pick(m,'speedOptions','speed_options');
+    // The menu asked without a sign-in leaves available out; only a no holds.
+    const fast=Array.isArray(speeds)&&speeds.some(x=>pick(x,'speedValue','speed_value')==='fast'&&x.available!==false);
     const output=Number(pick(rp,'maxTokens','max_tokens'))||32768;
     out[id]={id,name:String(pick(display,'displayName','display_name')||'').trim()||id,
       api:{id,url:BASE,npm:'@ai-sdk/openai-compatible'},
@@ -423,7 +440,7 @@ function workConfigRows(payload) {
       limit:{context:Math.min(max,262144),output},
       capabilities:{reasoning:thinking,toolcall:true,attachment:image,
         input:{text:true,image,video:false,audio:false,pdf:false},output:{text:true}},
-      variants};
+      variants,...(fast?{fast:true}:{})};
   }
   return out;
 }
@@ -611,6 +628,9 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
           if(raw!=null&&typeof raw!=='string')body=await bodyText(raw,signal);
           signal?.throwIfAborted();
           if(body!=null)body=moonshotTools(body);
+          const speed=fastSpeed(body);
+          body=speed.body;
+          if(speed.fast)headers.set(SPEED_HEADER,'fast');
           const options={...init,body,signal};
           if(body==null)delete options.body;
           let response;
@@ -679,11 +699,11 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
       const out={...a};
       // An id both list keeps /models' row (the gateway's own context and
       // image flags) under the desktop's name for it.
-      for(const [id,row] of Object.entries(b))out[id]=out[id]?{...row,name:out[id].name}:row;
+      for(const [id,row] of Object.entries(b))out[id]=out[id]?{...row,name:out[id].name,...(out[id].fast?{fast:true}:{})}:row;
       return out;
     }},
   };
 }
 
 export default async function KimiWorkProvider(){return createPlugin();}
-export const _internal={createPlugin,spentQuota,moonshotTools,moonshotSchema,readDesktop,readKeys,desktopFile,shareDir,userDataDir,modelRows,workConfigRows,BASE,MEMBER,CONFIG,UA,workHeaders,webHeaders,refreshHeaders,readDeviceId,REFRESH,REFRESH_LEAD,expiry};
+export const _internal={createPlugin,fastSpeed,spentQuota,moonshotTools,moonshotSchema,readDesktop,readKeys,desktopFile,shareDir,userDataDir,modelRows,workConfigRows,BASE,MEMBER,CONFIG,UA,workHeaders,webHeaders,refreshHeaders,readDeviceId,REFRESH,REFRESH_LEAD,expiry};

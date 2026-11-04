@@ -265,3 +265,31 @@ test('a menu the web sign-in can\'t get is asked again without it, so K3.1 Pro i
     expect(seen.length).toBe(1);expect(logged).toEqual([]);
   } finally {console.warn=warn;}
 });
+
+const speedMenu={models:[
+  {requestParams:{modelId:'k3d1-agent'},speedOptions:[{speedValue:'standard',available:true},{speedValue:'fast',minMembershipLevel:'LEVEL_INTERMEDIATE'}]},
+  {requestParams:{modelId:'k3-agent'}},
+  {requestParams:{modelId:'k2d8-preview'},speedOptions:[{speedValue:'standard'},{speedValue:'fast',available:false}]},
+]};
+
+test('a model is fast when its menu entry offers the fast speed, and keeps that beside /models',async()=>{
+  const rows=I.workConfigRows(speedMenu);
+  expect(rows['k3d1-agent'].fast).toBe(true);
+  expect(rows['k3-agent'].fast).toBeUndefined();
+  expect(rows['k2d8-preview'].fast).toBeUndefined();
+  const p=I.createPlugin({readSession:()=>session,fetchImpl:async url=>String(url).includes('DescribeKimiWorkConfig')?json(speedMenu)
+    :json({data:[{id:'k3d1-agent',display_name:'K3.1',context_length:262144}]})});
+  const models=await p.provider.models({},{auth:account});
+  expect(models['k3d1-agent'].fast).toBe(true);
+});
+
+test('service_tier priority or fast is asked by header and left out of the body; any other request is unchanged',async()=>{
+  const calls=[];
+  const p=I.createPlugin({readSession:()=>session,fetchImpl:async(url,init)=>{calls.push(init);return json({});}});
+  const loader=await p.auth.loader(async()=>account);
+  const send=async body=>{await loader.fetch(I.BASE+'/chat/completions',{method:'POST',body});const c=calls.at(-1);return {body:c.body,speed:c.headers.get('X-Kimi-Model-Speed')};};
+  for(const tier of ['priority','fast'])
+    expect(await send(JSON.stringify({model:'k3d1-agent',service_tier:tier}))).toEqual({body:'{"model":"k3d1-agent"}',speed:'fast'});
+  for(const body of ['{"model":"k3d1-agent","service_tier":"default"}','{"model":"k3d1-agent"}','{"note":"service_tier"}'])
+    expect(await send(body)).toEqual({body,speed:null});
+});
