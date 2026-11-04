@@ -2787,28 +2787,52 @@ const MAX = "-max"
   // than trusted from the snapshot the list was read at (a list fetched in
   // the morning would otherwise say the day price all evening).
   const traeRateOf = (m, now = Date.now()) => {
-    const raw = m?.display_contact_config
-    if (!raw) return {}
-    let cfg
-    try { cfg = typeof raw === "string" ? JSON.parse(raw) : raw } catch { return {} }
-    if (!cfg || typeof cfg !== "object") return {}
-    const num = (x) => (x === null || x === "" || x === undefined ? undefined : Number.isFinite(Number(x)) ? Number(x) : undefined)
-    const activity = cfg.activity_discount
-    const offPeak = activity?.data?.off_peak
-    const windows = Array.isArray(offPeak?.time_windows) ? offPeak.time_windows : []
-    const zone = typeof offPeak?.time_zone === "string" && offPeak.time_zone ? offPeak.time_zone : "Asia/Shanghai"
-    let rate = num(cfg.consumption_rate?.data?.rate)
-    const was = num(activity?.data?.current?.before_consumption_rate)
-      ?? num(offPeak?.before_consumption_rate)
-      ?? num(cfg.discount?.data?.original_consumption_rate)
-    if (activity?.enable && windows.length) {
-      rate = inWindows(windows, zone, now)
-        ? num(offPeak?.after_consumption_rate) ?? rate
-        : num(offPeak?.before_consumption_rate) ?? rate
+    // A field written badly (an unknown time_zone throws in Intl) must cost
+    // this model its rate alone: this runs inside modelOf, whose caller falls
+    // back to the static list on a throw, losing every model of the list.
+    const read = (raw) => {
+      if (!raw) return {}
+      let cfg
+      try { cfg = typeof raw === "string" ? JSON.parse(raw) : raw } catch { return {} }
+      if (!cfg || typeof cfg !== "object") return {}
+      const num = (x) => (x === null || x === "" || x === undefined ? undefined : Number.isFinite(Number(x)) ? Number(x) : undefined)
+      const activity = cfg.activity_discount
+      const offPeak = activity?.data?.off_peak
+      const windows = Array.isArray(offPeak?.time_windows) ? offPeak.time_windows : []
+      // enable: false says the rate is not in force; the list may keep a
+      // stale data.rate there, so it is not shown.
+      let rate = cfg.consumption_rate?.enable === false ? undefined : num(cfg.consumption_rate?.data?.rate)
+      // A member discount runs alongside consumption_rate, which keeps the
+      // price before it (0.78 while discount.data.consumption_rate is 0.58):
+      // the discounted price is the one to show.
+      const discount = cfg.discount
+      if (discount?.enable) {
+        const after = num(discount?.data?.consumption_rate)
+        if (after !== undefined) rate = after
+      }
+      const was = num(activity?.data?.current?.before_consumption_rate)
+        ?? num(offPeak?.before_consumption_rate)
+        ?? num(discount?.data?.original_consumption_rate)
+      if (activity?.enable && windows.length) {
+        const zone = typeof offPeak?.time_zone === "string" && offPeak.time_zone ? offPeak.time_zone : "Asia/Shanghai"
+        rate = inWindows(windows, zone, now)
+          ? num(offPeak?.after_consumption_rate) ?? rate
+          : num(offPeak?.before_consumption_rate) ?? rate
+      }
+      return {
+        ...(rate !== undefined ? { rate } : {}),
+        ...(rate !== undefined && was !== undefined && was > rate ? { rateWas: was } : {}),
+      }
     }
-    return {
-      ...(rate !== undefined ? { rate } : {}),
-      ...(rate !== undefined && was !== undefined && was > rate ? { rateWas: was } : {}),
+    try {
+      return read(m?.display_contact_config)
+    } catch {
+      // a bad window costs the rate only; give back what the plain field says
+      try {
+        const cfg = typeof m?.display_contact_config === "string" ? JSON.parse(m.display_contact_config) : m?.display_contact_config
+        const plain = cfg?.consumption_rate?.enable === false ? undefined : Number(cfg?.consumption_rate?.data?.rate)
+        return Number.isFinite(plain) ? { rate: plain } : {}
+      } catch { return {} }
     }
   }
 
