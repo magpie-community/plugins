@@ -1110,6 +1110,97 @@ for (const { protocol, path, model } of protocols) {
   });
 }
 
+// Z.ai's ZCode 3.17.2 declares its dynamic-workflow tools, and Zen refuses
+// the whole request when two of them travel together: CreateWorkflow beside
+// GetWorkflowRun, and AmendWorkflow beside FillWorkflowHole. Either name
+// alone is served (a real 55-tool ZCode request bisected on 2026-11-04,
+// plugins#693). Its other workflow tools, ListWorkflowRuns included, keep
+// their names.
+for (const { protocol, path, model } of protocols) {
+  test(`${protocol}: ZCode's workflow pairs go under other names and come back as ZCode's (#693)`, async (t) => {
+    const { plugin, state, origin } = await fixture(t);
+    await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+    const loader = await plugin.auth.loader(publicAuth);
+    const schema = { type: "object", properties: { run_id: { type: "string" } } };
+    const names = ["CreateWorkflow", "GetWorkflowRun", "AmendWorkflow", "FillWorkflowHole", "ListWorkflowRuns"];
+    const tools = names.map((name) => {
+      const tool = { name, description: `ZCode ${name}` };
+      if (protocol === "chat") return { type: "function", function: { ...tool, parameters: schema } };
+      if (protocol === "anthropic") return { ...tool, input_schema: schema };
+      return { type: "function", ...tool, parameters: schema };
+    });
+    const body = { model, stream: false, tools };
+    if (protocol === "chat") {
+      body.messages = [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: [], tool_calls: [{ id: "c0", type: "function", function: { name: "GetWorkflowRun", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "c0", content: "ok" },
+      ];
+      body.tool_choice = { type: "function", function: { name: "CreateWorkflow" } };
+    } else if (protocol === "anthropic") {
+      body.messages = [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: [{ type: "tool_use", id: "c0", name: "GetWorkflowRun", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "c0", content: "ok" }] },
+      ];
+      body.tool_choice = { type: "tool", name: "CreateWorkflow" };
+    } else {
+      body.input = [
+        { role: "user", content: "hi" },
+        { type: "function_call", call_id: "c0", name: "GetWorkflowRun", arguments: "{}" },
+        { type: "function_call_output", call_id: "c0", output: "ok" },
+      ];
+      body.tool_choice = { type: "function", name: "CreateWorkflow" };
+    }
+    const send = () => loader.fetch(`${origin}/v1/${path}`, { method: "POST", body: JSON.stringify(body) });
+    for (const [upstream, expected] of [
+      ["workflow_inspect", "GetWorkflowRun"],
+      ["workflow_amend", "AmendWorkflow"],
+      ["ListWorkflowRuns", "ListWorkflowRuns"],
+    ]) {
+      state.reply = toolReply(protocol, upstream, true);
+      const response = await send();
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      assert.match(text, new RegExp(`"name"\\s*:\\s*"${expected}"`), upstream);
+    }
+    const sent = state.calls.at(-1).body;
+    const sentNames = sent.tools.map((tool) => (protocol === "chat" ? tool.function.name : tool.name));
+    assert.deepEqual(sentNames.slice(0, names.length), [
+      "workflow_create",
+      "workflow_inspect",
+      "workflow_amend",
+      "workflow_answer",
+      "ListWorkflowRuns",
+    ]);
+    const described = sent.tools.find((tool) => (tool.function?.name ?? tool.name) === "workflow_amend");
+    assert.equal(described.function?.description ?? described.description, "ZCode AmendWorkflow");
+    const past =
+      protocol === "chat"
+        ? sent.messages.find((message) => message.tool_calls).tool_calls[0].function.name
+        : protocol === "anthropic"
+          ? sent.messages[1].content[0].name
+          : sent.input[1].name;
+    assert.equal(past, "workflow_inspect");
+    assert.equal(sent.tool_choice.function?.name ?? sent.tool_choice.name, "workflow_create");
+  });
+}
+
+test("a ZCode workflow tool alone goes as named (#693)", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  for (const name of ["CreateWorkflow", "GetWorkflowRun", "AmendWorkflow", "FillWorkflowHole"]) {
+    const tools = [...declaredTools("chat"), { type: "function", function: { name, parameters: { type: "object" } } }];
+    const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "chat-free", stream: false, tools }),
+    });
+    await response.text();
+    assert.deepEqual(state.calls.at(-1).body.tools.slice(0, tools.length), tools, name);
+  }
+});
+
 test("read_image or working_directory alone goes as named (#632)", async (t) => {
   const { plugin, state, origin } = await fixture(t);
   await plugin.provider.models({ models: {} }, { auth: await publicAuth() });

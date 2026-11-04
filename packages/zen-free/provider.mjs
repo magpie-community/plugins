@@ -279,7 +279,11 @@ function normalizeTools(body, protocol) {
 //     request bisected on 2026-10-30 (Ebony-Vinyl/dsh-our-free-model#709),
 //     served whole with only those two names changed, as jdld-ybd saw DSH
 //     refused while other agents were served from the same address
-//     (plugins#632).
+//     (plugins#632);
+//   - ZCode 3.17.2's CreateWorkflow offered beside GetWorkflowRun, and its
+//     AmendWorkflow beside FillWorkflowHole (either alone was served): a
+//     real 55-tool ZCode request bisected on 2026-11-04, served whole with
+//     only those four names changed (plugins#693).
 //
 // Such a tool goes to Zen under another name (the ones those bisections
 // were served under), in the agent's past calls and tool_choice too, and a
@@ -293,6 +297,14 @@ const REFUSED_TOGETHER = [
   },
   { names: ["subagent_fork"], as: { subagent_fork: "conversation_delegate" } },
   { names: ["read_image", "working_directory"], as: { working_directory: "workspace_directory" } },
+  {
+    names: ["CreateWorkflow", "GetWorkflowRun"],
+    as: { CreateWorkflow: "workflow_create", GetWorkflowRun: "workflow_inspect" },
+  },
+  {
+    names: ["AmendWorkflow", "FillWorkflowHole"],
+    as: { AmendWorkflow: "workflow_amend", FillWorkflowHole: "workflow_answer" },
+  },
 ];
 const REFUSED_WORD = /terminal/i;
 
