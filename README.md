@@ -234,6 +234,7 @@ it off puts the config back.
 | Package | Agent |
 |---|---|
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
+| [reasonix-desktop](packages/reasonix-desktop) | [Reasonix 1.x](https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2) Desktop and CLI: reversible global TOML/dotenv bridge; restart Reasonix after choosing a model. Separate from the built-in Studio 2.x adapter |
 | [bub](packages/bub) | [Bub](https://bub.build): `~/.bub/config.yml`, as the `magpie:` provider (needs Bub 0.5.1 or later) |
 | [kilo](packages/kilo) | [Kilo Code](https://kilo.ai): `~/.config/kilo/kilo.jsonc`, through an OpenAI-compatible provider |
 | [junie](packages/junie) | [Junie CLI](https://junie.jetbrains.com/): an explicit `/v1/models` seed for its full picker and Magpie's selected model as the launch default; no LiteLLM |
