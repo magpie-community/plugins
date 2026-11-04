@@ -113,6 +113,35 @@ A tools package is a folder under `packages/<name>/` with:
 - **`index.mjs`**: exports one async plugin function that returns a `tool` hook, `{tool: {<name>: {description, args, execute(args)}}}` ([the reference](https://usemagpie.ai/docs/plugins#tools)). `args` is JSON Schema, and magpie passes the arguments on as they came, so `execute` checks them itself. A string it returns is sent as text, anything else as its JSON. Every function the module exports is taken as a plugin, so helpers go in another file.
 - a test of each tool's `execute`. `bun scripts/check.mjs` loads the plugin and checks each tool's name, description and `args`.
 
+## Web search APIs
+
+A tools package can also give magpie a web search API. It is listed in Settings › Models › Web search under its own name, after Tavily, Brave and the rest, and is added, keyed, switched off and ordered like them. magpie keeps the keys (several are tried in turn; a refused one rests), masks the query, and logs the call. magpie's own `search` hook; OpenCode ignores it. There is no package for one yet: this is the template.
+
+```js
+// index.mjs of @magpie-community/tools-<name>
+export const MySearch = async () => ({
+  search: {
+    myvendor: {                    // [a-z0-9-], at most 32; listed as `<name>:myvendor`
+      name: "My vendor",
+      keysURL: "https://example.com/keys",   // optional "Get a key" link
+      keyOptional: false,                    // true: it answers with no key
+      url: false,                            // true: the user gives its address, as for SearXNG
+      async execute({ query, count, key, url }, ctx) {
+        const r = await fetch(`https://example.com/search?q=${encodeURIComponent(query)}&n=${count}`, {
+          headers: { authorization: `Bearer ${key}` },
+          signal: ctx.abort,
+        })
+        // a throw with a numeric `status` is the vendor refusing the key (401, 402, 403, 429 rest it)
+        if (!r.ok) throw Object.assign(new Error(await r.text()), { status: r.status })
+        return (await r.json()).results.map((x) => ({ title: x.title, url: x.url, text: x.snippet }))
+      },
+    },
+  },
+})
+```
+
+`execute` returns `[{title, url, text?, age?}]` or `{results: [...]}`; pages with no url are dropped, and magpie strips tags and cuts the text. Any other throw is a failure and the next search API is asked. It has a quarter of a search's limit, and `ctx.abort` fires then. magpie reads the list a plugin gives from the last time the plugin loaded, so a plugin just added is listed once it has loaded. [The reference](https://usemagpie.ai/docs/plugins) does not have this yet.
+
 ## Pages
 
 These add a page to magpie's window, in the app and in `magpie web`, under Plugins in the sidebar.
