@@ -6,10 +6,27 @@ import path from "node:path"
 import { createHash } from "node:crypto"
 import { SAPAICorePlugin } from "../src/index.js"
 
+let originalFetch
+let unstubbedFetchCalls = 0
+beforeAll(() => {
+  originalFetch = globalThis.fetch
+  globalThis.fetch = () => {
+    unstubbedFetchCalls++
+    throw new Error("Unstubbed fetch: use withFetch to mock HTTP.")
+  }
+})
+afterAll(() => { globalThis.fetch = originalFetch })
+beforeEach(() => { unstubbedFetchCalls = 0 })
+
 const cleanups = []
 afterEach(async () => {
-  for (const fn of cleanups.splice(0).reverse()) await fn()
-  jest.useRealTimers()
+  try {
+    for (const fn of cleanups.splice(0).reverse()) await fn()
+  } finally {
+    jest.useRealTimers()
+    // The plugin catches fetch errors; assert outside that exception boundary.
+    assert.equal(unstubbedFetchCalls, 0, "Unstubbed fetch: use withFetch to mock HTTP.")
+  }
 })
 
 function pathKey(normalizedPath) {
@@ -301,8 +318,8 @@ describe("URL validation", () => {
     assert.equal(r.type, "failed")
   })
 
-  it("rejects authUrl with duplicated /oauth/token suffix", async () => {
-    const r = await tryUrl("https://mytenant.authentication.eu10.hana.ondemand.com/oauth/token", VALID_CREDS.baseUrl)
+  it("rejects authUrl with incomplete /oauth path", async () => {
+    const r = await tryUrl("https://mytenant.authentication.eu10.hana.ondemand.com/oauth", VALID_CREDS.baseUrl)
     assert.equal(r.type, "failed")
   })
 
@@ -311,8 +328,8 @@ describe("URL validation", () => {
     assert.equal(r.type, "failed")
   })
 
-  it("rejects baseUrl with /v2 suffix", async () => {
-    const r = await tryUrl(VALID_CREDS.authUrl, "https://api.ai.prod.eu10.hana.ondemand.com/v2")
+  it("rejects baseUrl with unsupported /v1 suffix", async () => {
+    const r = await tryUrl(VALID_CREDS.authUrl, "https://api.ai.prod.eu10.hana.ondemand.com/v1")
     assert.equal(r.type, "failed")
   })
 
@@ -324,6 +341,18 @@ describe("URL validation", () => {
   it("rejects baseUrl on unknown domain", async () => {
     const r = await tryUrl(VALID_CREDS.authUrl, "https://attacker.evil.com")
     assert.equal(r.type, "failed")
+  })
+
+  it("accepts /oauth/token and /v2 suffixes without duplicating the token path", async () => {
+    const mock = captureFetch(TOKEN_RESPONSE)
+    const r = await withFetch(mock, () => tryUrl(
+      VALID_CREDS.authUrl + "/oauth/token",
+      VALID_CREDS.baseUrl + "/v2",
+    ))
+    assert.equal(r.type, "success")
+    assert.equal(mock.calls.length, 1)
+    assert.equal(mock.calls[0].method, "POST")
+    assert.equal(mock.calls[0].url, VALID_CREDS.authUrl + "/oauth/token")
   })
 
   it("accepts authUrl with trailing slash", async () => {
@@ -349,7 +378,7 @@ describe("OAuth request contract", () => {
     const r = await withFetch(mock, () => plugin.auth.methods[0].authorize({ credentialFile: p }))
     assert.equal(r.type, "success")
     assert.equal(mock.calls.length, 1)
-    assert.ok(mock.calls[0].url.endsWith("/oauth/token"))
+    assert.equal(mock.calls[0].url, VALID_CREDS.authUrl + "/oauth/token")
     assert.equal(mock.calls[0].method, "POST")
   })
 
