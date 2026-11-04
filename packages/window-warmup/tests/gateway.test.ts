@@ -851,6 +851,28 @@ describe("accountsOf", () => {
     for (const a of accounts) expect(a.perAccount).toBe(false);
   });
 
+  test("缓存 id 是分档变体、对外 id 是合并名（antigravity 实况）→ 并上 v1 与 chosen，不再整列表为空", () => {
+    const A = "antigravity";
+    const { accounts, autoAccountModels } = accountsOf(A, {
+      models: ["antigravity/gemini-3.8-flash"],
+      quotas: [{ provider: A, account: "me@example.com", label: "me@example.com", viaKey: false, windows: [] }],
+      keyDir: new Map([[A, { keys: [], accountModels: {}, models: ["gemini-3.8-flash"] }]]),
+      // 缓存里没有 gemini-3.8-flash 本身，只有分档变体；变体不在 v1 也不在 chosen，第 3 层剔除
+      cache: [
+        { id: "gemini-3.8-flash-high", keys: [] },
+        { id: "gemini-3.8-flash-low", keys: [] },
+        { id: "gemini-3.8-flash-tiered", keys: [] },
+      ],
+      chosen: ["gemini-3.8-flash"],
+    });
+    expect(autoAccountModels).toEqual(["antigravity/gemini-3.8-flash"]);
+    expect(accountOf(accounts, "me@example.com")).toMatchObject({
+      models: ["antigravity/gemini-3.8-flash"],
+      perAccount: true,
+      autoModel: "antigravity/gemini-3.8-flash",
+    });
+  });
+
   test("窗口匹配：未命名 key 接受无窗口；同名两把 key 都挂「名字 · 打码」卡", () => {
     const fpA = fp("sk-test-AAAA11");
     const fpB = fp("sk-test-BBBB22");

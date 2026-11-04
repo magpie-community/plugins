@@ -66,12 +66,9 @@ function windowsForAccount(provider, account, quotas, keyDir) {
   return card ? keepWindows(card.windows) : [];
 }
 function candidatesOf(provider, models, cache, chosen) {
-  if (cache) {
-    return cache.map((c) => ({ full: `${provider}/${c.id}`, bare: c.id, keys: c.keys }));
-  }
   const prefix = `${provider}/`;
-  const seen = new Set;
-  const out = [];
+  const out = (cache ?? []).map((c) => ({ full: `${prefix}${c.id}`, bare: c.id, keys: c.keys }));
+  const seen = new Set(out.map((c) => c.full));
   for (const m of models) {
     if (seen.has(m))
       continue;

@@ -534,6 +534,23 @@ test("自动模型：/v1/models 全空但 chosen 有清单 → 从 chosen 现选
   expect(h.store.data.runs[0].model).toBe("openai/m1-flash");
 });
 
+test("自动模型：缓存只有分档变体、v1 是合并名 → 选 v1 的合并名照发，不报「没有可用模型」", async () => {
+  const h = await harness({
+    models: [{ id: "openai/m1-flash", owned_by: "openai", reasoning: false }],
+    keyDir: new Map([["openai", { keys: [], accountModels: {}, models: ["m1-flash"] }]]),
+    modelCache: () => [
+      { id: "m1-flash-high", keys: [] },
+      { id: "m1-flash-low", keys: [] },
+    ],
+  });
+  await h.scheduler.upsert(dailyTask({ model: "" }));
+  await firedDaily(h);
+
+  expect(h.sendCalls).toHaveLength(1);
+  expect(h.sendCalls[0].task.model).toBe("openai/m1-flash");
+  expect(h.store.data.runs[0].outcome).toBe("ok");
+});
+
 test("模型真不在 chosen 里（重新获取后已剔除）→ 仍报「已不在模型列表」", async () => {
   const h = await harness({
     keyDir: new Map([["openai", { keys: [], accountModels: {}, models: ["other"] }]]),

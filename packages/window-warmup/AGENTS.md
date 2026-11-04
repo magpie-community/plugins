@@ -65,7 +65,7 @@ Magpie 不提供「供应商 / 账号 / 每账号可用模型」的列表接口�
   2. `accountModels[指纹或小写账号名]`，比对不带供应商前缀的 id；
   3. 仍在 `/v1/models` 里，或仍在 chosen 启用清单（`providers.json` 的 `models`）里——后者接住被路由组 `unlists` 藏出 `/v1/models` 的模型。
 
-  无缓存时候选退化为 `/v1/models` ∪ chosen（按完整 id 去重，`perAccount: false`），两者皆无时返回 `list: null`。
+  候选 = 缓存 ∪ `/v1/models` ∪ chosen（按完整 id 去重）。缓存 id 不一定是对外 id（antigravity 缓存存分档变体 `gemini-3.8-flash-high`，对外只有 `gemini-3.8-flash`），只用缓存会整列表为空；缓存外的候选没有 `Keys`，第 1 层视为所有 key 可见。无缓存时 `perAccount: false`，三者皆无时返回 `list: null`。
 - **发送头**（`pinFor`）：订阅账号原样发；key 指纹在启用 key 不少于 2 把（目录读不出时按 2 把处理）时发 `<P>#<指纹>`，只有 1 把时不带头，因为此时候选 ID 就是供应商 id；其余值（旧任务存的 key 名）原样发。非 ASCII 头值按 UTF-8 字节写入（`send`）。
 - **文件位置**（`magpieDirs`）：从安装路径 `<配置目录>/plugins/node_modules/@magpie-community/page-window-warmup/dist` 上溯得到配置目录；旧独立包名 `node_modules/magpie-window-warmup/dist` 也识别（升级用户的旧路径）。再据此区分安装版和便携版的缓存目录。`tests/magpie-files.test.ts` 覆盖了新作用域路径、旧路径、Windows 与便携版。
 
