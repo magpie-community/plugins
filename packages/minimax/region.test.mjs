@@ -45,7 +45,9 @@ test("the account card says the request went to the China site, not that the sig
   const u = await hooks.auth.usage(async () => auth)
   expect(u.error).toMatch(china)
   expect(u.error).toMatch(/proxy outside mainland China/)
-  expect(u.error).not.toMatch(/refused|401/)
+  // The fake listens on a random port, so 401 counts only as a word: a port
+  // like 40199 in the message is not a 401 (CI red at aaacefde).
+  expect(u.error).not.toMatch(/refused|\b401\b/)
   expect(u.signIn).toBe("kept")
   expect(f.seen.some((r) => r.path === "/oauth2/token")).toBe(false)
 })
