@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { Buffer } from "node:buffer";
 import * as http from "node:http";
@@ -143,8 +143,36 @@ function unflag(messages) {
 const REFUSED_HINT =
   "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Claude Agent SDK, Codex, opencode, Cursor, Cline, Qwen Code, ZCode, pi, DeepSeek Harness, Hermes Agent); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
 
-async function explained(res) {
+// 一个 406 就是被拦的整份请求要说话。magpie 只留 token 计数，上游的拒绝理由
+// 又是空的，所以被拒的那一刻把**改写后实际发出的**完整 body 落盘（AUTOCLAW_406_DUMP_DIR
+// 可改址；默认 magpie 配置目录下 autoclaw-406/），一次 406 一份、按时间命名，
+// 只留最近 10 份——排查"FLAGGED 没盖住的那句"不再依赖外抓工具的截断副本。
+// 一切 best-effort：盘写不进去绝不影响 406 本身返回。
+const D406_KEEP = 10;
+function dump406(sentBody, providerId) {
+  try {
+    const dir = process.env.AUTOCLAW_406_DUMP_DIR
+      ?? `${process.env.XDG_CONFIG_HOME ?? `${process.env.HOME ?? ""}/.config`}/magpie/autoclaw-406`;
+    mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    // 同毫秒的两次 406 不是同一份请求：文件名带随机尾，写不冲突、轮转按名排序
+    writeFileSync(`${dir}/${stamp}-${randomUUID().slice(0, 8)}-${providerId}.json`, typeof sentBody === "string" ? sentBody : JSON.stringify(sentBody));
+    const old = readdirSync(dir)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => {
+        try { return { f, at: statSync(`${dir}/${f}`).mtimeMs }; } catch { return { f, at: 0 }; }
+      })
+      .sort((a, b) => a.at - b.at)
+      .map((e) => e.f);
+    for (const f of old.slice(0, Math.max(0, old.length - D406_KEEP))) {
+      try { unlinkSync(`${dir}/${f}`); } catch {}
+    }
+  } catch {}
+}
+
+async function explained(res, sentBody, providerId) {
   if (res.status < 400) return res;
+  if (res.status === 406 && sentBody) dump406(sentBody, providerId);
   const headers = new Headers(res.headers);
   headers.delete("content-length");
   headers.delete("content-encoding");
@@ -1060,7 +1088,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                 fetch(`${host}${CHAT_PATH}`, { ...init, headers, body: nextBody, signal: init?.signal });
 
               const res1 = await tryFetch(hosts[0]);
-              if (res1.status !== 401 && res1.status !== 403) return explained(res1);
+              if (res1.status !== 401 && res1.status !== 403) return explained(res1, nextBody, providerId);
               // a spent quota or a ban is the account's on every host: not asked again
               const spent1 = await refusedNotSignIn(res1);
               if (spent1) return spent1;
@@ -1075,20 +1103,21 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                   headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
                 });
               }
-              return explained(res2);
+              return explained(res2, nextBody, providerId);
             }
 
             // The CN managed gateway is the AutoClaw 2.1.0 account-points
             // channel. It requires the system prefix and rejects max_tokens.
             const { payload, model } = rewriteManagedBody(init?.body);
             const headers = managedHeaders(accessToken, model);
+            const sentBody = JSON.stringify(payload);
             const res = await fetch(MANAGED_HOST + CN_CHAT_PATH, {
               ...init,
               method: "POST",
               headers,
-              body: JSON.stringify(payload),
+              body: sentBody,
             });
-            if (res.status !== 401 && res.status !== 403) return explained(res);
+            if (res.status !== 401 && res.status !== 403) return explained(res, sentBody, providerId);
             const spent = await refusedNotSignIn(res);
             if (spent) return spent;
             try { res.body?.cancel?.(); } catch {}
