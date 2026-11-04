@@ -41,7 +41,7 @@
 .pj-badge {
   width: 18px; height: 18px; flex: none; border-radius: 5px;
   display: inline-flex; align-items: center; justify-content: center;
-  background: var(--badge-bg); color: var(--badge-fg); font-size: 11px; font-weight: 600; line-height: 1;
+  background: var(--badge-bg); color: var(--badge-fg); font-size: var(--fs-xs); font-weight: 600; line-height: 1;
   text-transform: uppercase;
 }
 .pj-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -70,7 +70,7 @@
 .t-pin { width: 12px; flex: none; display: inline-flex; color: var(--muted); }
 .t-pin svg { width: 10px; height: 10px; }
 .t-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.t-time { flex: none; font-size: 11.5px; color: var(--meta); font-weight: 400; }
+.t-time { flex: none; font-size: var(--fs-xs); color: var(--meta); font-weight: 400; }
 .t-item:hover .t-time { display: none; }
 .t-more {
   flex: none; width: 22px; height: 22px; display: none; align-items: center; justify-content: center;
@@ -214,7 +214,7 @@ body.col-drag iframe, body.col-drag .xterm { pointer-events: none; }
 }
 .ft-row:hover { background: var(--surface-hover); }
 .ft-row.on { background: var(--surface-hover); }
-.ft-row .caret { font-size: 11px; color: var(--muted); display: inline-block; transition: transform var(--dur-1) var(--ease); }
+.ft-row .caret { font-size: var(--fs-xs); color: var(--muted); display: inline-block; transition: transform var(--dur-1) var(--ease); }
 .ft-row .caret.open { transform: rotate(90deg); }
 .ft-dot { width: 13px; flex: none; }
 .ft-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

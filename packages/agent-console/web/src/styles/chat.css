@@ -152,7 +152,7 @@
 }
 .te-act span { display: none; }
 .te-act:hover { background: var(--surface-hover); color: var(--fg); }
-.te-files { color: var(--accent); font-size: var(--fs-s); margin-left: 6px; }
+.te-files { color: var(--accent); font-size: inherit; margin-left: 6px; } /* chat-sized in a turn-end row, chrome-sized in dialogs */
 .te-files:hover { text-decoration: underline; }
 
 /* Empty state */
