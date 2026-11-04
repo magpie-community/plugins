@@ -41,8 +41,8 @@ describe("pickAllowOnce", () => {
     expect(pickAllowOnce([{ id: "deny" }, { id: "always_allow" }, { id: "approve" }])?.id).toBe("approve");
     expect(pickAllowOnce([{ id: "reject" }, { id: "cancel" }])).toBeNull();
   });
-  it("allow_always only when nothing narrower exists", () => {
-    expect(pickAllowOnce([{ id: "a", kind: "allow_always" }, { id: "r", kind: "reject_once" }])?.id).toBe("a");
+  it("never allow_always: with nothing narrower the card stays for the user", () => {
+    expect(pickAllowOnce([{ id: "a", kind: "allow_always" }, { id: "r", kind: "reject_once" }])).toBeNull();
   });
 });
 

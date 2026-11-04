@@ -32,8 +32,9 @@ const REJECT = /reject|deny|decline|cancel|never|拒绝/i;
 const ALLOW = /allow|accept|approve|yes|允许|同意/i;
 
 /**
- * The option that allows just this request. Order: kind allow_once → an allow-looking id/label that is not "always"
- * → kind allow_always only when the request offers nothing narrower. null when there is nothing to allow.
+ * The option that allows just this request: kind allow_once, else an allow-looking id/label that is not "always" /
+ * "session". Never allow_always (that writes a lasting rule into the Agent's own config): when a request offers
+ * nothing narrower, null, and the card is left for the user.
  */
 export function pickAllowOnce(options: ApprovalOption[]): ApprovalOption | null {
   const once = options.find((o) => o.kind === "allow_once");
@@ -42,8 +43,7 @@ export function pickAllowOnce(options: ApprovalOption[]): ApprovalOption | null 
     const s = `${o.id} ${o.label ?? ""}`;
     return !o.kind?.startsWith("reject") && !REJECT.test(s) && ALLOW.test(s) && !/always|session|总是|始终/i.test(s);
   });
-  if (plain) return plain;
-  return options.find((o) => o.kind === "allow_always") ?? null;
+  return plain ?? null;
 }
 
 /** The daemon answers this request itself: the mode is full-auto, the Agent lets us, it is a tool approval and something allows it */
