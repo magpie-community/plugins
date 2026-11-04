@@ -557,36 +557,70 @@ async function membership(site, access, userID) {
   }
 }
 
-// planWindows reads the M Plan's windows from coding_plan/remains, as
-// magpie's own MiniMax plan reader (readMiniMaxPlan) does: each model
-// group's interval and week, "general" the plan's own, the rest aside.
+// planWindows reads the plan's windows, each model group's interval and week,
+// "general" the plan's own, the rest aside. It reads the console's reply
+// (planQuota), which says what MiniMax granted this account: "24%" used of
+// "150%". Whatever a plan was given, an older plan's boost or a tier's own
+// allowance, is that total, and a total other than 100 shows as a count in
+// points ("126 / 150 %"). An item bucket counts its items.
+//
+// coding_plan/remains, the fallback, has only a whole remaining share, with
+// weekly_boost_permille beside it; its count is that share multiplied, as
+// MiniMax's CLI does, up to 1.5 points off.
+//
+// A model's window at status 3 is unlimited, and said so on "general"; both
+// at status 3 with zero totals is a bucket the plan doesn't have.
 function planWindows(body) {
   const br = obj(body?.base_resp)
   if (br && typeof br.status_code === "number" && br.status_code !== 0) throw new Error(str(br, "status_msg") ?? `MiniMax said ${br.status_code}`)
   if (!br && !Array.isArray(body?.model_remains)) throw new Error("no plan in the reply")
   const ms = (n) => (n < 1e12 ? n * 1000 : n)
   const zero = (v) => num(v) === 0
+  const pct = (v) => {
+    const n = Number.parseFloat(v)
+    return Number.isFinite(n) ? n : undefined
+  }
   const out = []
   for (const k of Array.isArray(body.model_remains) ? body.model_remains : []) {
     const name = String(k?.model_name ?? "").trim()
     if (!name || (num(k.current_interval_status) === 3 && num(k.current_weekly_status) === 3 && zero(k.current_interval_total_count) && zero(k.current_weekly_total_count))) continue
     const general = name.toLowerCase() === "general"
     for (const x of [
-      { left: num(k.current_interval_remaining_percent), status: num(k.current_interval_status) ?? 0, start: num(k.start_time) ?? 0, end: num(k.end_time) ?? 0, week: false },
-      { left: num(k.current_weekly_remaining_percent), status: num(k.current_weekly_status) ?? 0, start: num(k.weekly_start_time) ?? 0, end: num(k.weekly_end_time) ?? 0, week: true },
+      { left: num(k.current_interval_remaining_percent), status: num(k.current_interval_status) ?? 0, start: num(k.start_time) ?? 0, end: num(k.end_time) ?? 0, week: false,
+        told: pct(k.current_interval_used_percent), total: pct(k.current_interval_total_percent), items: num(k.current_interval_used_count), of: num(k.current_interval_total_count) },
+      { left: num(k.current_weekly_remaining_percent), status: num(k.current_weekly_status) ?? 0, start: num(k.weekly_start_time) ?? 0, end: num(k.weekly_end_time) ?? 0, week: true,
+        told: pct(k.current_weekly_used_percent), total: pct(k.current_weekly_total_percent) ?? (num(k.weekly_boost_permille) > 1000 ? num(k.weekly_boost_permille) / 10 : undefined), items: num(k.current_weekly_used_count), of: num(k.current_weekly_total_count) },
     ]) {
-      if (x.status === 3 || (x.left === undefined && x.status !== 2)) continue
-      const w = { used: x.status === 2 ? 100 : Math.max(0, Math.min(100, 100 - x.left)) }
+      if (x.status !== 3 && x.status !== 2 && x.left === undefined && x.told === undefined) continue
       let span = 0
       if (x.start > 0 && x.end > x.start) span = ms(x.end) - ms(x.start)
       else if (x.week) span = 7 * 86400_000
-      if (span) w.span = span / 1000
-      if (x.end > 0) w.resetsAt = new Date(ms(x.end)).toISOString()
-      w.name = x.week ? "7 days"
+      const own = x.week ? "7 days"
         : span > 86400_000 && span % 86400_000 === 0 ? `${span / 86400_000} days`
         : span >= 3600_000 && span % 3600_000 === 0 ? `${span / 3600_000} hours`
         : span > 0 ? `${Math.floor(span / 60_000)} minutes`
         : "Allowance"
+      if (x.status === 3) {
+        if (general) out.push({ name: own, display: "Unlimited", aside: true })
+        continue
+      }
+      const total = x.total > 0 ? x.total : 100
+      const used = x.status === 2 ? 100
+        : x.told !== undefined ? Math.max(0, Math.min(100, (x.told / total) * 100))
+        : Math.max(0, Math.min(100, 100 - x.left))
+      const w = { used }
+      if (span) w.span = span / 1000
+      if (x.end > 0) w.resetsAt = new Date(ms(x.end)).toISOString()
+      if (x.items >= 0 && x.of > 0 && x.items <= x.of) {
+        w.amount = x.status === 2 ? x.of : x.items
+        w.limit = x.of
+        if (name.toLowerCase() === "video") w.unit = "videos"
+      } else if (total !== 100) {
+        w.limit = total
+        w.amount = x.status === 2 ? total : x.told ?? (used * total) / 100
+        w.unit = "%"
+      }
+      w.name = own
       if (!general) {
         w.name = name[0].toUpperCase() + name.slice(1) + " · " + w.name
         w.aside = true
@@ -597,13 +631,42 @@ function planWindows(body) {
   return out
 }
 
+// magpie gives the whole usage call 20 seconds, and the console's endpoints
+// aren't documented, so a stalled one gets little of that. The fallback's 10
+// keeps planQuota within the 15 that 0.2.1 could take.
+const CONSOLE_MS = 5000
+const FALLBACK_MS = 10000
+
+// planQuota asks the console's own reply first, then coding_plan/remains.
 async function planQuota(site, access, group) {
-  const res = await siteFetch(site, site.platform + "/v1/api/openplatform/coding_plan/remains", {
-    headers: { Accept: "application/json", Authorization: "Bearer " + access, ...(group ? { "X-Group-Id": group } : {}) },
-    signal: AbortSignal.timeout(15000),
-  }, "M Plan")
+  const headers = { Accept: "application/json", Authorization: "Bearer " + access, ...(group ? { "X-Group-Id": group } : {}) }
+  try {
+    const res = await siteFetch(site, site.platform + "/backend/account/token_plan/remains_percent", { headers, signal: AbortSignal.timeout(CONSOLE_MS) }, "M Plan")
+    if (res.ok) {
+      const body = await res.json()
+      if (Array.isArray(body?.model_remains) && body.model_remains.length && !body.base_resp?.status_code) return planWindows(body)
+    }
+  } catch {}
+  const res = await siteFetch(site, site.platform + "/v1/api/openplatform/coding_plan/remains", { headers, signal: AbortSignal.timeout(FALLBACK_MS) }, "M Plan")
   if (!res.ok) throw new Error(`M Plan: HTTP ${res.status}`)
   return planWindows(await res.json())
+}
+
+// planTitle is the subscription's name as the console says it,
+// "TokenPlanMax-年度会员"; undefined when it can't be read, and usageOf names
+// the tier instead.
+async function planTitle(site, access, group) {
+  try {
+    const res = await siteFetch(site, site.platform + "/v1/api/openplatform/charge/combo/cycle_audio_resource_package?biz_line=2&cycle_type=1&resource_package_type=7", {
+      headers: { Accept: "application/json", Authorization: "Bearer " + access, ...(group ? { "X-Group-Id": group } : {}) },
+      signal: AbortSignal.timeout(CONSOLE_MS),
+    }, "M Plan")
+    if (!res.ok) return undefined
+    const t = (await res.json())?.current_subscribe?.current_subscribe_title
+    return typeof t === "string" && t.trim() ? t.trim() : undefined
+  } catch {
+    return undefined
+  }
 }
 
 // credits says a balance as a count of credits: "1234.50" is "1234.5 credits".
@@ -681,10 +744,13 @@ function creditsWindow(batches, now = Date.now()) {
   }
 }
 
-// usageOf is the card: the plan (the M Plan's tier, else Free), the credits
-// left, and the M Plan's windows when there are any.
+// usageOf is the card: the plan (the console's title, else its tier, else
+// Free), the credits left, and the plan's windows when there are any. Plus,
+// Max and Ultra are Token Plan's tiers, which M Plan's Go, Explore and Build
+// replaced for new subscribers.
 function usageOf(m, windows = []) {
-  const plan = m.hasTokenPlan ? (m.tier ? "M Plan " + m.tier : "M Plan") : m.unknown ? undefined : "Free"
+  const line = /^(plus|max|ultra)$/i.test(m.tier ?? "") ? "Token Plan " : "M Plan "
+  const plan = m.hasTokenPlan ? (m.title ?? (m.tier ? line + m.tier : "M Plan")) : m.unknown ? undefined : "Free"
   return {
     ...(plan ? { plan } : {}),
     ...(m.hasTokenPlan && m.expiresAt ? { until: new Date(m.expiresAt < 1e12 ? m.expiresAt * 1000 : m.expiresAt).toISOString() } : {}),
@@ -998,12 +1064,16 @@ function makePlugin(site) {
             const m = await membership(site, a.access, who.realUserID)
             let windows = []
             let error
+            let title
             if (m.hasTokenPlan && m.opGroupId) {
-              try {
-                windows = await planQuota(site, a.access, m.opGroupId)
-              } catch (e) {
-                error = e?.message ?? String(e)
-              }
+              // asked together: a stalled title costs its 5 seconds at most, not 5 more after the windows
+              ;[windows, title] = await Promise.all([
+                planQuota(site, a.access, m.opGroupId).catch((e) => {
+                  error = e?.message ?? String(e)
+                  return []
+                }),
+                planTitle(site, a.access, m.opGroupId),
+              ])
             }
             // the credits as a share of what the live batches granted
             // (#393); beside an M Plan they are its fallback, aside. A
@@ -1014,7 +1084,7 @@ function makePlugin(site) {
               if (cw) windows = [...windows, m.hasTokenPlan ? { ...cw, aside: true } : cw]
             } catch {}
             return {
-              ...usageOf(m, windows),
+              ...usageOf(title ? { ...m, title } : m, windows),
               ...(error ? { error } : {}),
               user: who.email || who.name || who.realUserID,
               signIn: did ? "renewed" : "kept",

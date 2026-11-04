@@ -33,13 +33,58 @@ test("plan windows are read as magpie's MiniMax plan reader reads them", () => {
   expect(_internal.planWindows({ model_remains: [], base_resp: { status_code: 0 } })).toEqual([])
 })
 
+// A user's report: the console said 总额度 150% · 已用 24% and the card only 83%.
+// Shaped as that account's reply, with the times left out.
+const consoleReply = { model_remains: [
+  { model_name: "general", current_interval_status: 1, current_interval_total_count: -1, current_interval_used_count: -1, current_interval_used_percent: "1%", current_interval_total_percent: "100%",
+    current_weekly_status: 1, current_weekly_total_count: -1, current_weekly_used_count: -1, current_weekly_used_percent: "24%", current_weekly_total_percent: "150%" },
+  { model_name: "video", current_interval_status: 1, current_interval_total_count: 3, current_interval_used_count: 0, current_interval_used_percent: "0%", current_interval_total_percent: "100%",
+    current_weekly_status: 1, current_weekly_total_count: 21, current_weekly_used_count: 1, current_weekly_used_percent: "5%", current_weekly_total_percent: "100%" },
+], base_resp: { status_code: 0 } }
+
+test("the console's reply says what was granted, whatever it is", () => {
+  const ws = _internal.planWindows(consoleReply)
+  expect(ws.map((w) => [w.name, w.used, w.amount, w.limit, w.unit])).toEqual([
+    ["Allowance", 1, undefined, undefined, undefined],
+    ["7 days", 16, 24, 150, "%"],
+    ["Video · Allowance", 0, 0, 3, "videos"],
+    ["Video · 7 days", 5, 1, 21, "videos"],
+  ])
+  const general = (fields) => _internal.planWindows({ model_remains: [{ model_name: "general", ...fields }], base_resp: { status_code: 0 } })
+  // no list of offers: a total nobody has seen yet reads the same way
+  expect(general({ current_interval_status: 1, current_interval_used_percent: "50%", current_interval_total_percent: "200%", current_weekly_status: 1, current_weekly_used_percent: "30%", current_weekly_total_percent: "300%" }).map((w) => [w.used, w.amount, w.limit]))
+    .toEqual([[25, 50, 200], [10, 30, 300]])
+  // a plain 100% total is a share alone; used up is 100 whatever the figures say
+  expect(general({ current_weekly_status: 1, current_weekly_used_percent: "24%", current_weekly_total_percent: "100%" })[0].limit).toBeUndefined()
+  expect(general({ current_weekly_status: 2, current_weekly_used_percent: "149%", current_weekly_total_percent: "150%" })[0]).toMatchObject({ used: 100, amount: 150, limit: 150 })
+  // a week without a limit says so on the plan's own bucket
+  expect(general({ current_interval_status: 1, current_interval_used_percent: "1%", current_interval_total_percent: "100%", current_weekly_status: 3, current_weekly_total_count: -1 }).at(-1))
+    .toEqual({ name: "7 days", display: "Unlimited", aside: true })
+})
+
+test("coding_plan/remains alone multiplies its share by the boost", () => {
+  const week = (boost) => _internal.planWindows({ model_remains: [{ model_name: "general", current_weekly_status: 1, current_weekly_remaining_percent: 83, ...boost }], base_resp: { status_code: 0 } })[0]
+  expect(week({ weekly_boost_permille: 1500 })).toMatchObject({ used: 17, amount: 25.5, limit: 150, unit: "%" })
+  for (const plain of [{}, { weekly_boost_permille: 1000 }, { weekly_boost_permille: 0 }]) {
+    expect(week(plain).used).toBe(17)
+    expect(week(plain).limit).toBeUndefined()
+  }
+})
+
+test("the plan is named as the console names it, else by its tier's line", () => {
+  expect(_internal.usageOf({ hasTokenPlan: true, title: "TokenPlanMax-年度会员", tier: "Max" }).plan).toBe("TokenPlanMax-年度会员")
+  expect(_internal.usageOf({ hasTokenPlan: true, tier: "Max" }).plan).toBe("Token Plan Max")
+  expect(_internal.usageOf({ hasTokenPlan: true, tier: "Explore" }).plan).toBe("M Plan Explore")
+  expect(_internal.usageOf({ hasTokenPlan: true }).plan).toBe("M Plan")
+})
+
 test("a membership is read from the answer or its data", () => {
   expect(_internal.membershipOf({ data: { has_token_plan: true, op_group_id: "g1", token_plan_tier: "Plus", token_plan_expires_at: 1800000000000, op_credit_summary: { total_remaining_amount: "1234.50" } } }))
     .toEqual({ hasTokenPlan: true, opGroupId: "g1", tier: "Plus", expiresAt: 1800000000000, balance: "1234.50" })
   expect(_internal.membershipOf({ opcredit_balance: 300 })).toEqual({ balance: "300" })
   expect(_internal.usageOf({ balance: "1234.50" })).toEqual({ plan: "Free", balance: "1234.5 credits", windows: [] })
   expect(_internal.usageOf({ hasTokenPlan: true, tier: "Plus", expiresAt: 1800000000000, balance: "0" }))
-    .toEqual({ plan: "M Plan Plus", until: new Date(1800000000000).toISOString(), balance: "0 credits", windows: [] })
+    .toEqual({ plan: "Token Plan Plus", until: new Date(1800000000000).toISOString(), balance: "0 credits", windows: [] })
 })
 
 const auth = { type: "oauth", access: "tok", refresh: "r", expires: Date.now() + 3600_000, accountId: "a@example.com" }
@@ -58,6 +103,43 @@ function account(f, { plan = false } = {}) {
       weekly_start_time: 1790500000000, weekly_end_time: 1790500000000 + 168 * h, current_weekly_remaining_percent: 75, current_weekly_status: 1 },
   ], base_resp: { status_code: 0 } }))
 }
+
+test("a plan reads the console's windows and title, and goes on without them", async () => {
+  f = fakeMiniMax()
+  account(f, { plan: true })
+  f.route("GET /backend/account/token_plan/remains_percent", () => json(consoleReply))
+  f.route("GET /v1/api/openplatform/charge/combo/cycle_audio_resource_package", () => json({ current_subscribe: { current_subscribe_title: "TokenPlanMax-年度会员" }, base_resp: { status_code: 0 } }))
+  const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => auth)
+  expect(u.plan).toBe("TokenPlanMax-年度会员")
+  expect(u.windows.find((w) => w.name === "7 days")).toMatchObject({ used: 16, amount: 24, limit: 150 })
+  const asked = f.seen.find((r) => r.path === "/backend/account/token_plan/remains_percent")
+  expect(asked.headers.get("authorization")).toBe("Bearer tok")
+  expect(asked.headers.get("x-group-id")).toBe("grp-7")
+  expect(f.seen.some((r) => r.path.includes("coding_plan"))).toBe(false)
+
+  f.route("GET /backend/account/token_plan/remains_percent", () => new Response("nope", { status: 500 }))
+  f.route("GET /v1/api/openplatform/charge/combo/cycle_audio_resource_package", () => json({ base_resp: { status_code: 1033 } }))
+  const off = await hooks.auth.usage(async () => auth)
+  expect(off.plan).toBe("Token Plan Plus")
+  expect(off.windows.find((w) => w.name === "7 days").used).toBe(25)
+})
+
+// A stall is what the fallback is for, and magpie allows usage 20 seconds. Asked
+// one after another these two would take 10 here.
+test("the console's endpoints not answering leave the coding_plan/remains windows in time", async () => {
+  f = fakeMiniMax()
+  account(f, { plan: true })
+  f.route("GET /backend/account/token_plan/remains_percent", () => new Promise(() => {}))
+  f.route("GET /v1/api/openplatform/charge/combo/cycle_audio_resource_package", () => new Promise(() => {}))
+  const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
+  const start = Date.now()
+  const u = await hooks.auth.usage(async () => auth)
+  expect(Date.now() - start).toBeLessThan(8000)
+  expect(u.error).toBeUndefined()
+  expect(u.plan).toBe("Token Plan Plus")
+  expect(u.windows.map((w) => [w.name, w.used])).toEqual([["5 hours", 40], ["7 days", 25]])
+}, 15000)
 
 test("a free account shows its credits", async () => {
   f = fakeMiniMax()
@@ -80,7 +162,7 @@ test("an M Plan shows its tier, its end and its windows", async () => {
   account(f, { plan: true })
   const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
   const u = await hooks.auth.usage(async () => auth)
-  expect(u.plan).toBe("M Plan Plus")
+  expect(u.plan).toBe("Token Plan Plus")
   expect(u.until).toBe(new Date(1800000000000).toISOString())
   expect(u.balance).toBe("88.5 credits")
   expect(u.windows.map((w) => [w.name, w.used])).toEqual([["5 hours", 40], ["7 days", 25]])
@@ -159,7 +241,7 @@ test("beside an M Plan the credits are aside; a ledger it can't read leaves the 
   expect(u.error).toBeUndefined()
   f.route("GET /minimax-cloud/api/v1/credit/details", () => new Response("no", { status: 500 }))
   u = await hooks.auth.usage(async () => auth)
-  expect(u).toMatchObject({ plan: "M Plan Plus", balance: "88.5 credits" })
+  expect(u).toMatchObject({ plan: "Token Plan Plus", balance: "88.5 credits" })
   expect(u.error).toBeUndefined()
 })
 
