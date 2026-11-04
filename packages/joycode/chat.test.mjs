@@ -28,7 +28,8 @@ function chunks(parts) {
   return new ReadableStream({ start(c) { for (const p of parts) c.enqueue(new TextEncoder().encode(p)); c.close() } })
 }
 test('HTTP 200 raw gateway denial becomes actionable error, not empty SSE', async t => {
-  const r = await request(t, new Response(chunks([' {"error":', '{"code":"AI_GRAY_ACCESS_DENIED","message":"访问受限，请联系管理员开通"}}']), { headers: { 'content-type': 'text/event-stream' } }))
+  const denial = () => new Response(chunks([' {"error":', '{"code":"AI_GRAY_ACCESS_DENIED","message":"访问受限，请联系管理员开通"}}']), { headers: { 'content-type': 'text/event-stream' } })
+  const r = await request(t, denial)
   assert.equal(r.status, 403)
   assert.equal(r.headers.get('x-magpie-sign-in'), 'kept')
   assert.equal((await r.json()).error.code, 'AI_GRAY_ACCESS_DENIED')
@@ -495,7 +496,98 @@ test('flatten applies only to Chat Completions, never Responses', async t => {
 })
 
 test('HTTP 403 permission denial is not marked as expired credentials', async t => {
-  const r = await request(t, Response.json({ error: { code: 'AI_GRAY_ACCESS_DENIED', message: 'denied' } }, { status: 403 }))
+  const r = await request(t, () => Response.json({ error: { code: 'AI_GRAY_ACCESS_DENIED', message: 'denied' } }, { status: 403 }))
   assert.equal(r.status, 403)
   assert.equal(r.headers.get('x-magpie-sign-in'), 'kept')
+})
+
+test('AI_GRAY_ACCESS_DENIED refreshes identity once and retries with the new account', async t => {
+  let infoCalls = 0
+  let chats = 0
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (new URL(url).searchParams.get('functionId') === 'joycode_userInfo') {
+      infoCalls++
+      return Response.json({
+        code: 0,
+        data: infoCalls === 1
+          ? { userId: 'test-user', tenant: '', orgFullName: '' }
+          : { userId: 'test-user', tenant: 'refreshed-tenant', orgFullName: 'refreshed-org' },
+      })
+    }
+    chats++
+    const sent = JSON.parse(init.body)
+    if (chats === 1) {
+      assert.equal(sent.orgFullName, '')
+      assert.equal(sent.tenant, '')
+      return Response.json({ code: 'AI_GRAY_ACCESS_DENIED', msg: '访问受限，请联系管理员开通' })
+    }
+    assert.equal(sent.orgFullName, 'refreshed-org')
+    assert.equal(sent.tenant, 'refreshed-tenant')
+    assert.equal(init.headers.get('tenant'), 'refreshed-tenant')
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+  })
+  const hooks = await plugin.server({})
+  const loader = await hooks.auth.loader(async () => ({ type: 'api', key: 'fake-key' }))
+  const r = await loader.fetch('https://api-ai.jd.com/v1/chat/completions', {
+    method: 'POST',
+    body: JSON.stringify({ model: 'JoyAI-Code-1.6', messages: [{ role: 'user', content: 'OK' }], stream: true }),
+  })
+  assert.equal(r.status, 200)
+  assert.equal(await r.text(), 'data: [DONE]\n\n')
+  assert.equal(infoCalls, 2)
+  assert.equal(chats, 2)
+})
+
+test('a second AI_GRAY_ACCESS_DENIED stays 403 and does not fetch identity again', async t => {
+  let infoCalls = 0
+  let chats = 0
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    if (new URL(url).searchParams.get('functionId') === 'joycode_userInfo') {
+      infoCalls++
+      return Response.json({ code: 0, data: { userId: 'test-user', tenant: 't', orgFullName: 'o' } })
+    }
+    chats++
+    return Response.json({ code: 'AI_GRAY_ACCESS_DENIED', msg: '访问受限，请联系管理员开通' })
+  })
+  const hooks = await plugin.server({})
+  const loader = await hooks.auth.loader(async () => ({ type: 'api', key: 'fake-key' }))
+  const r = await loader.fetch('https://api-ai.jd.com/v1/chat/completions', {
+    method: 'POST',
+    body: JSON.stringify({ model: 'JoyAI-Code-1.6', messages: [{ role: 'user', content: 'OK' }] }),
+  })
+  assert.equal(r.status, 403)
+  assert.equal(r.headers.get('x-magpie-sign-in'), 'kept')
+  assert.equal((await r.json()).error.message, '访问受限，请联系管理员开通')
+  assert.equal(infoCalls, 2)
+  assert.equal(chats, 2)
+})
+
+test('plain HTTP 403 is not retried', async t => {
+  let infoCalls = 0
+  let chats = 0
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    if (new URL(url).searchParams.get('functionId') === 'joycode_userInfo') {
+      infoCalls++
+      return Response.json({ code: 0, data: { userId: 'test-user', tenant: 't', orgFullName: 'o' } })
+    }
+    chats++
+    return new Response('nope', { status: 403 })
+  })
+  const hooks = await plugin.server({})
+  const loader = await hooks.auth.loader(async () => ({ type: 'api', key: 'fake-key' }))
+  const r = await loader.fetch('https://api-ai.jd.com/v1/chat/completions', {
+    method: 'POST',
+    body: JSON.stringify({ model: 'JoyAI-Code-1.6', messages: [{ role: 'user', content: 'OK' }] }),
+  })
+  assert.equal(r.status, 403)
+  assert.equal(r.headers.get('x-magpie-sign-in'), 'kept')
+  assert.equal(infoCalls, 1)
+  assert.equal(chats, 1)
+})
+
+test('non-streaming chat JSON larger than 1MB is returned intact', async t => {
+  const content = 'x'.repeat(1_200_000)
+  const r = await request(t, Response.json({ choices: [{ message: { content } }] }))
+  assert.equal(r.status, 200)
+  assert.equal((await r.json()).choices[0].message.content, content)
 })

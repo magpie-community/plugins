@@ -80,21 +80,21 @@ const MODELS = {
     limit: { context: 200000, output: 64000 },
     reasoning: true,
     tool_call: true,
-    modalities: { input: ['text', 'image'] },
+    modalities: { input: ['text'] },
   },
   'MiniMax-M3-agent': {
     name: 'MiniMax M3',
     limit: { context: 200000, output: 64000 },
     reasoning: true,
     tool_call: true,
-    modalities: { input: ['text', 'image'] },
+    modalities: { input: ['text'] },
   },
   'Doubao-Seed-2.0-pro-agent': {
     name: 'Doubao Seed 2.0 Pro',
     limit: { context: 200000, output: 64000 },
     reasoning: true,
     tool_call: true,
-    modalities: { input: ['text', 'image'] },
+    modalities: { input: ['text'] },
   },
 }
 
@@ -377,11 +377,49 @@ async function browserLogin() {
 
 // ---------------------------------------------------------------- chat responses
 
+const JSON_BODY_LIMIT = 8 * 1024 * 1024
+const GRAY_ACCESS_DENIED = 'AI_GRAY_ACCESS_DENIED'
+
 function chatError(status, code, message) {
   return Response.json({ error: { type: 'upstream_error', code, message } }, {
     status,
     headers: { 'x-magpie-sign-in': status === 401 ? 'expired' : 'kept' },
   })
+}
+
+/**
+ * Business code from a JSON body, read off a clone so the original response
+ * can still be normalized. Non-JSON (SSE) returns nothing. cancel() is not
+ * awaited: the clone's tee waits until the original body is read.
+ */
+async function gatewayFailure(response) {
+  if (!response?.body) return {}
+  let clone
+  try { clone = response.clone() } catch { return {} }
+  const reader = clone.body.getReader()
+  const decoder = new TextDecoder()
+  let prefix = ''
+  let bytes = 0
+  try {
+    while (bytes <= 65536) {
+      const next = await reader.read()
+      if (next.done) break
+      bytes += next.value.byteLength
+      prefix += decoder.decode(next.value, { stream: true })
+      if (prefix.trim() && !prefix.trimStart().startsWith('{')) break
+    }
+    prefix += decoder.decode()
+  } catch {
+    return {}
+  } finally {
+    reader.cancel().catch(() => {})
+  }
+  if (!prefix.trimStart().startsWith('{')) return {}
+  let json
+  try { json = JSON.parse(prefix) } catch { return {} }
+  const code = json?.error?.code ?? json?.code
+  const message = json?.error?.message ?? json?.message ?? json?.msg
+  return { code, message: typeof message === 'string' ? message : undefined }
 }
 
 function isSuccessfulJson(json, protocol) {
@@ -526,10 +564,18 @@ async function normalizeResponse(response, protocol = 'chat') {
     return chatError(502, 'empty_response', 'JoyCode 返回空响应')
   }
   if (prefix.trimStart().startsWith('{')) {
-    while (bytes <= 1024 * 1024) {
+    if (bytes > JSON_BODY_LIMIT) {
+      await reader.cancel()
+      return chatError(502, 'response_too_large', 'JoyCode 响应超过 8MB')
+    }
+    while (true) {
       const next = await reader.read()
       if (next.done) break
       bytes += next.value.byteLength
+      if (bytes > JSON_BODY_LIMIT) {
+        await reader.cancel()
+        return chatError(502, 'response_too_large', 'JoyCode 响应超过 8MB')
+      }
       prefix += decoder.decode(next.value, { stream: true })
     }
     await reader.cancel()
@@ -538,7 +584,7 @@ async function normalizeResponse(response, protocol = 'chat') {
     try { json = JSON.parse(prefix) } catch {}
     if (json?.error || (json?.code !== undefined && Number(json.code) !== 0)) {
       const code = json.error?.code ?? json.code
-      const status = code === 'AI_GRAY_ACCESS_DENIED' ? 403 : Number(code) === 401 ? 401 : 502
+      const status = code === GRAY_ACCESS_DENIED ? 403 : Number(code) === 401 ? 401 : 502
       const message = json.error?.message ?? json.message ?? json.msg
       return chatError(status, code, typeof message === 'string' ? message.slice(0, 500) : 'JoyCode 请求被拒绝')
     }
@@ -602,6 +648,26 @@ async function fetchAccountData(auth, functionId, body = {}) {
   return json.data ?? json
 }
 
+/**
+ * JoyCode sends a calendar phrase such as "有效期至 2026年11月11日", not an
+ * instant. 23:59:59 that China calendar day is the last moment the IDE still
+ * calls valid, and it is what magpie prints on the account-card tooltip.
+ * This is plan expiry, not a quota-window reset, so callers must not copy it
+ * onto resetsAt — that tooltip line would say the credits reset.
+ */
+function expiryUntil(text) {
+  if (typeof text !== 'string' || !text) return undefined
+  const match = text.match(/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/)
+    ?? text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/)
+  if (!match) return undefined
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  if (!Number.isInteger(year) || year < 2000 || month < 1 || month > 12 || day < 1) return undefined
+  if (day > new Date(Date.UTC(year, month, 0)).getUTCDate()) return undefined
+  return new Date(Date.UTC(year, month - 1, day, 15, 59, 59)).toISOString()
+}
+
 function quotaFromData(data) {
   const items = data?.usageItems
   if (!Array.isArray(items) || !items.length) throw new Error('JoyCode 暂未返回额度数据')
@@ -611,21 +677,35 @@ function quotaFromData(data) {
   }
   const format = value => new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 }).format(value)
   const plans = [...new Set(items.map(item => item.badge).filter(value => typeof value === 'string' && value))]
+  const dated = items.flatMap(item => {
+    const until = expiryUntil(item.expireText)
+    return until ? [{ until, plan: typeof item.badge === 'string' && item.badge }] : []
+  })
+  const expiries = dated.filter(item => item.plan).map(item => item.until)
+  const until = (expiries.length ? expiries : dated.map(item => item.until)).sort()[0]
   return {
     ...(plans.length ? { plan: plans.join(' / ') } : {}),
+    ...(until ? { until } : {}),
     // Different buckets may overlap; do not manufacture a summed balance.
     ...(items.length === 1 ? { balance: `${format(items[0].remain)} ${items[0].unit || '积分'}` } : {}),
-    windows: items.map(item => ({
-      name: item.title,
-      used: item.usedPercent,
-      amount: item.used,
-      limit: item.total,
-      unit: item.unit || '积分',
-      display: `${format(item.used)} / ${format(item.total)} · 剩余 ${format(item.remain)}${item.expireText ? ` · ${item.expireText}` : ''}`,
-      // Bucket applicability is unspecified, and free models can remain usable.
-      // Show the balance without blocking the entire account at 100%.
-      aside: true,
-    })),
+    windows: items.map(item => {
+      const expires = expiryUntil(item.expireText)
+      return {
+        name: item.title,
+        used: item.usedPercent,
+        amount: item.used,
+        limit: item.total,
+        unit: item.unit || '积分',
+        display: `${format(item.used)} / ${format(item.total)} · 剩余 ${format(item.remain)}${item.expireText ? ` · ${item.expireText}` : ''}`,
+        // The card composes its own "used / limit" line and ignores display.
+        // runsOutAt is the hover line "N 积分 将于 … 过期". resetsAt would
+        // be mislabeled "重置于".
+        ...(expires ? { runsOutAt: expires, runsOut: item.remain } : {}),
+        // Bucket applicability is unspecified, and free models can remain usable.
+        // Show the balance without blocking the entire account at 100%.
+        aside: true,
+      }
+    }),
   }
 }
 
@@ -654,7 +734,8 @@ async function accountModels(provider, { auth } = {}) {
   for (const result of [catalogue, pricing]) {
     if (result.status === 'rejected' && result.reason?.signIn === 'expired') throw result.reason
   }
-  if (catalogue.status !== 'fulfilled' || !Array.isArray(catalogue.value)) return provider.models
+  // An empty catalogue is a glitch, not "this account has no models".
+  if (catalogue.status !== 'fulfilled' || !Array.isArray(catalogue.value) || catalogue.value.length === 0) return provider.models
   const scene = pricing.status === 'fulfilled' ? billingScene(pricing.value) : undefined
   const tenant = auth.metadata?.tenant?.trim()
   const excluded = (scene?.excludeTenants ?? []).some(value => typeof value === 'string' && value.trim() === tenant)
@@ -772,7 +853,8 @@ export const JoyCodeAuthPlugin = async (_input, options) => {
             }
 
             // Preserve chat structure; the IDE also adds authenticated metadata.
-            const account = await identity()
+            // The host payload is parsed once. A gray denial refreshes identity
+            // and resends that same payload; effort rewrites must not run twice.
             const request = input instanceof Request ? input : undefined
             let source = init?.body
             if (source === undefined && request) source = await request.clone().text()
@@ -787,36 +869,46 @@ export const JoyCodeAuthPlugin = async (_input, options) => {
               payload.reasoning = { ...payload.reasoning, effort: 'low' }
             }
             const forwarded = protocol === 'responses' ? withoutUnstoredReasoningIds(payload) : payload
-            const body = JSON.stringify({
-              ...(flatten && protocol === 'chat' ? flattenBody(payload) : forwarded),
-              ...account,
-              language: 'UNKNOWN',
-            })
+            const functionId = FUNCTION_IDS[protocol]
 
-            // 2) URL: fresh signature per request, on the model's wire protocol.
-            const url = buildGatewayUrl(FUNCTION_IDS[protocol])
-
-            // 3) Headers: keep what magpie synthesized (content-type, …),
-            //    add the gateway credentials, drop the OpenAI-style bearer
-            //    JoyCode does not understand.
-            const headers = new Headers(init?.headers ?? request?.headers)
-            for (const [k, v] of Object.entries(buildGatewayHeaders(ptKey, account.tenant, loginType))) {
-              headers.set(k, v)
+            const send = async () => {
+              const account = await identity()
+              const body = JSON.stringify({
+                ...(flatten && protocol === 'chat' ? flattenBody(payload) : forwarded),
+                ...account,
+                language: 'UNKNOWN',
+              })
+              const url = buildGatewayUrl(functionId)
+              // Rebuild headers per attempt so an empty tenant cannot stick.
+              const headers = new Headers(init?.headers ?? request?.headers)
+              headers.delete('tenant')
+              for (const [k, v] of Object.entries(buildGatewayHeaders(ptKey, account.tenant, loginType))) {
+                headers.set(k, v)
+              }
+              headers.delete('authorization')
+              headers.delete('x-api-key')
+              headers.delete('content-length')
+              headers.delete('host')
+              const resp = await fetch(url, {
+                ...init,
+                method: init?.method ?? request?.method,
+                headers,
+                body,
+                signal: init?.signal ?? request?.signal,
+              })
+              return { resp, account }
             }
-            headers.delete('authorization')
-            headers.delete('x-api-key')
-            headers.delete('content-length')
-            headers.delete('host')
 
-            // 4) Forward (...init carries the abort signal).
-            const resp = await fetch(url, {
-              ...init,
-              method: init?.method ?? request?.method,
-              headers,
-              body,
-              signal: init?.signal ?? request?.signal,
-            })
-
+            let { resp } = await send()
+            const failure = await gatewayFailure(resp)
+            // Missing account fields are cached with the first userInfo. One
+            // refresh can recover; a second denial is the gateway's answer.
+            // Other 403s (a bad signature, a clock) are not retried.
+            if (failure.code === GRAY_ACCESS_DENIED) {
+              await resp.body?.cancel?.().catch(() => {})
+              identityPromise = undefined
+              ;({ resp } = await send())
+            }
             return normalizeResponse(resp, protocol)
           },
         }

@@ -32,6 +32,48 @@ test('maps actual IDE quota schema including zero usage and expiry text', async 
   assert.match(result.windows[0].display, /剩余 10,000/)
   assert.match(result.windows[0].display, /2026年11月11日/)
   assert.equal(result.windows[0].resetsAt, undefined)
+  // 23:59:59 on 2026-11-11 in China, shown as "将于 … 过期", not a reset.
+  assert.equal(result.until, '2026-11-11T15:59:59.000Z')
+  assert.equal(result.windows[0].runsOutAt, '2026-11-11T15:59:59.000Z')
+  assert.equal(result.windows[0].runsOut, 10000)
+})
+
+test('plan expiry accepts the IDE date phrases and ignores text that is not a date', async (t) => {
+  for (const [expireText, until] of [
+    ['有效期至2026年11月11日', '2026-11-11T15:59:59.000Z'],
+    ['2026-11-11', '2026-11-11T15:59:59.000Z'],
+    ['2026/11/11', '2026-11-11T15:59:59.000Z'],
+    ['2024年2月29日', '2024-02-29T15:59:59.000Z'],
+    ['长期有效', undefined],
+    ['有效期至 2026年2月31日', undefined],
+    ['有效期至 1999年11月11日', undefined],
+  ]) {
+    const result = await query(t, () => Response.json({ code: 0, data: { usageItems: [{ ...item, expireText }] } }))
+    assert.equal(result.until, until, expireText)
+    assert.equal(result.windows[0].runsOutAt, until, expireText)
+    assert.equal(result.windows[0].runsOut, until ? 10000 : undefined, expireText)
+    assert.equal(result.windows[0].resetsAt, undefined)
+    assert.match(result.windows[0].display, new RegExp(expireText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  }
+})
+
+test('plan expiry follows the package row, and otherwise the earliest pool', async (t) => {
+  const packaged = await query(t, () => Response.json({ code: 0, data: { usageItems: [
+    { ...item, expireText: '有效期至 2026年12月1日' },
+    { title: '加油包', used: 0, total: 100, remain: 100, usedPercent: 0, expireText: '2026-11-01' },
+  ] } }))
+  assert.equal(packaged.until, '2026-12-01T15:59:59.000Z')
+  assert.equal(packaged.windows[0].runsOutAt, '2026-12-01T15:59:59.000Z')
+  assert.equal(packaged.windows[0].runsOut, 10000)
+  assert.equal(packaged.windows[1].runsOutAt, '2026-11-01T15:59:59.000Z')
+  assert.equal(packaged.windows[1].runsOut, 100)
+  assert.ok(packaged.windows.every(window => window.resetsAt === undefined))
+
+  const pools = await query(t, () => Response.json({ code: 0, data: { usageItems: [
+    { title: '套餐积分', used: 0, total: 100, remain: 100, usedPercent: 0, expireText: '2026-12-01' },
+    { title: '加油包', used: 0, total: 100, remain: 100, usedPercent: 0, expireText: '2026-11-01' },
+  ] } }))
+  assert.equal(pools.until, '2026-11-01T15:59:59.000Z')
 })
 
 test('multiple pools preserve balances without one exhausted pool blocking the account', async (t) => {
@@ -40,6 +82,7 @@ test('multiple pools preserve balances without one exhausted pool blocking the a
     { title: '加油包', used: 250, total: 1000, remain: 750, usedPercent: 25 },
   ] } }))
   assert.equal(result.balance, undefined)
+  assert.equal(result.until, '2026-11-11T15:59:59.000Z')
   assert.deepEqual(result.windows.map(w => w.used), [100, 25])
   assert.ok(result.windows.every(w => w.aside === true))
 })
