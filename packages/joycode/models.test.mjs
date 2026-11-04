@@ -68,3 +68,19 @@ test('catalogue fetch failure returns original fallback model list', async t => 
   const { models, provider } = await load(t, { failList: true })
   assert.equal(models, provider.models)
 })
+test('empty catalogue keeps the fallback model list', async t => {
+  const { models, provider } = await load(t, { list: [] })
+  assert.equal(models, provider.models)
+})
+test('a catalogue of only hidden models does not fall back', async t => {
+  const { models } = await load(t, { list: [{ chatApiModel: 'JoyAI-Code-1.6', hidden: true }] })
+  assert.deepEqual(models, {})
+})
+test('static fallback models do not advertise image input', async t => {
+  const hooks = await plugin.server({})
+  const cfg = {}
+  await hooks.config(cfg)
+  for (const id of ['Kimi-K2.6-agent', 'MiniMax-M3-agent', 'Doubao-Seed-2.0-pro-agent']) {
+    assert.deepEqual(cfg.provider.joycode.models[id].modalities.input, ['text'])
+  }
+})
