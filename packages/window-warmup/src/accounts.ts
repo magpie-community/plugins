@@ -135,14 +135,13 @@ interface Candidate {
 }
 
 function candidatesOf(provider: string, models: string[], cache: CachedModel[] | null, chosen: string[]): Candidate[] {
-  if (cache) {
-    return cache.map((c) => ({ full: `${provider}/${c.id}`, bare: c.id, keys: c.keys }));
-  }
-  // 退化：没有模型缓存（插件型订阅供应商不写这个文件）——/v1/models 的 id，
-  // 再并上 chosen（用户明确启用的清单，可能被路由组藏出 /v1/models），按 full 去重
+  // 缓存 id 不一定是对外 id：antigravity 缓存存分档变体（gemini-3.8-flash-high/-low/-tiered），
+  // /v1/models 与 chosen 里只有合并后的 gemini-3.8-flash。所以缓存之外，再并上
+  // /v1/models 的 id 与 chosen（用户明确启用的清单，可能被路由组藏出 /v1/models），按 full 去重；
+  // 缓存外的候选没有按 key 的可见性（keys: null）。没有缓存（插件型订阅供应商不写这个文件）时只有后两者
   const prefix = `${provider}/`;
-  const seen = new Set<string>();
-  const out: Candidate[] = [];
+  const out: Candidate[] = (cache ?? []).map((c) => ({ full: `${prefix}${c.id}`, bare: c.id, keys: c.keys }));
+  const seen = new Set(out.map((c) => c.full));
   for (const m of models) {
     if (seen.has(m)) continue;
     seen.add(m);

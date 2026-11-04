@@ -534,6 +534,23 @@ test("自动模型：/v1/models 全空但 chosen 有清单 → 从 chosen 现选
   expect(h.store.data.runs[0].model).toBe("openai/m1-flash");
 });
 
+test("自动模型：缓存只有分档变体、v1 是合并名 → 选 v1 的合并名照发，不报「没有可用模型」", async () => {
+  const h = await harness({
+    models: [{ id: "openai/m1-flash", owned_by: "openai", reasoning: false }],
+    keyDir: new Map([["openai", { keys: [], accountModels: {}, models: ["m1-flash"] }]]),
+    modelCache: () => [
+      { id: "m1-flash-high", keys: [] },
+      { id: "m1-flash-low", keys: [] },
+    ],
+  });
+  await h.scheduler.upsert(dailyTask({ model: "" }));
+  await firedDaily(h);
+
+  expect(h.sendCalls).toHaveLength(1);
+  expect(h.sendCalls[0].task.model).toBe("openai/m1-flash");
+  expect(h.store.data.runs[0].outcome).toBe("ok");
+});
+
 test("模型真不在 chosen 里（重新获取后已剔除）→ 仍报「已不在模型列表」", async () => {
   const h = await harness({
     keyDir: new Map([["openai", { keys: [], accountModels: {}, models: ["other"] }]]),
@@ -1116,4 +1133,27 @@ test("window：发送 60 秒后单卡刷新拿到新 resetsAt 精确排程；到
   h.fireDue();
   await h.flush();
   expect(h.sendCalls).toHaveLength(2);
+});
+
+test("previewSend：按发送前同一套规则现算模型/账号头/档位，不发请求、不写执行记录", async () => {
+  const h = await harness();
+  const task = await h.scheduler.upsert(dailyTask());
+  const before = h.store.data.runs.length;
+  expect(await h.scheduler.previewSend(task)).toEqual({ model: "m1", pin: null, effort: null });
+  h.models.length = 0;
+  expect(await h.scheduler.previewSend(task)).toEqual({ error: "模型 m1 已不在 Magpie 的模型列表里" });
+  expect(h.sendCalls).toHaveLength(0);
+  expect(h.store.data.runs.length).toBe(before);
+});
+
+test("debugView：暴露定时器为固定任务排的到期点与进行中的发送，只读", async () => {
+  const h = await harness();
+  const id = (await h.scheduler.upsert(dailyTask())).id;
+  expect(h.scheduler.debugView()).toMatchObject({ quotaAt: null, inflight: [], armedFor: {} });
+  h.scheduler.start();
+  const view = h.scheduler.debugView();
+  expect(view.inflight).toEqual([]);
+  expect(Object.keys(view.armedFor)).toEqual([id]);
+  expect(new Date(view.armedFor[id]).toISOString()).toBe(new Date("2026-10-31T06:00:00+08:00").toISOString());
+  expect(h.scheduler.quotaEntries()).toBeNull();
 });

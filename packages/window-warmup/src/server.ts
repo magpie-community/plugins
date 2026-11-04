@@ -7,6 +7,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path, { basename, extname, join, resolve } from "node:path";
+import { buildDiagnostics } from "./diagnostics";
 import { fetchCatalog } from "./gateway";
 import { validateTask } from "./rules";
 import { Scheduler, CONFLICT_MESSAGE, NOT_FOUND_MESSAGE, type TaskInput } from "./scheduler";
@@ -264,6 +265,20 @@ export async function startService(opts: ServiceOptions): Promise<ServiceHandle>
       } catch (e) {
         return json({ error: errText(e) }, 502, cors);
       }
+    }
+    // 诊断导出不改状态：故障/只读时最需要它，放在只读拦截之前
+    if (req.method === "GET" && path === "/api/diagnostics") {
+      const data = await buildDiagnostics({
+        base: opts.base,
+        dir: opts.dir,
+        tasks: store?.data.tasks ?? [],
+        runs: store?.data.runs ?? [],
+        marks: store?.data.marks ?? {},
+        scheduler,
+        fatal,
+        lockedBy,
+      });
+      return json(data, 200, cors);
     }
     const blocked = readonlyBlock(cors);
     if (blocked) return blocked;

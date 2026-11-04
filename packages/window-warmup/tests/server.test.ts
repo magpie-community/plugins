@@ -319,6 +319,21 @@ test("状态文件损坏 → /api/state 返回 fatal，不启动调度，原文�
   expect(await readFile(join(dir, "state.json"), "utf8")).toBe(broken);
 });
 
+test("状态文件损坏或锁被占时 /api/diagnostics 仍可导出（排错最需要的时候），且同样要口令", async () => {
+  const broken = await harness({ state: '{"version":1,"tasks":' });
+  expect((await fetch(`http://127.0.0.1:${broken.svc.port}/api/diagnostics`)).status).toBe(401);
+  const res = await broken.api("/api/diagnostics");
+  expect(res.status).toBe(200);
+  const d = (await res.json()) as { service: { fatal: string | null; scheduler: unknown }; tasks: unknown[] };
+  expect(d.service.fatal).toBeTruthy();
+  expect(d.service.scheduler).toBeNull();
+  expect(d.tasks).toEqual([]);
+
+  const locked = await harness({ lockPid: process.pid, confirmLockAlive: async () => true });
+  const l = (await (await locked.api("/api/diagnostics")).json()) as { service: { lockedBy: number | null } };
+  expect(l.service.lockedBy).toBe(process.pid);
+});
+
 test("不认识的版本号同样 fatal", async () => {
   const { api } = await harness({ state: '{"version":2,"tasks":[],"runs":[],"marks":{}}' });
   const state = (await (await api("/api/state")).json()) as { fatal?: string };
