@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-sensenova-auth",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "SenseNova (SenseTime 日日新) Token Plan in OpenCode and magpie: one sign-in gives the console account's credit pools, windows and grants, and (with an optional API key) the plan's models for chat",
   "type": "module",
   "main": "./opencode.mjs",
