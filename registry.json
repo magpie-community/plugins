@@ -136,6 +136,8 @@
       "summary": { "en": "Cloudflare Workers AI with your API token (Workers AI:Edit): 28+ models discovered live from models.dev, the 8 paid-only models flagged, and a Neurons/day allowance row in magpie quota.", "zh": "用你的 Cloudflare API Token（Workers AI:Edit 权限）登录 Workers AI：28+ 模型经 models.dev 实时发现，付费专属模型自动标注，magpie quota 显示每日 Neurons 免费额度。" } },
     { "package": "@magpie-community/opencode-river-auth", "name": "River", "providers": ["river"], "community": true,
       "summary": { "en": "River (river.ai) pay-as-you-go inference with your API key: per-account models from /v1/models, documented reasoning efforts and live prices from River's public pricing endpoint.", "zh": "用你的 API key 接入 River (river.ai) 按量计费推理：按账号从 /v1/models 列出模型，带官方推理档位与实时价格。" } },
+    { "package": "@magpie-community/opencode-sap-aicore-auth", "name": "SAP AI Core", "providers": ["sap-aicore"], "community": true,
+      "summary": { "en": "Existing SAP AI Core deployments with client-secret credential-file sign-in, per-resource-group GPT Responses and Claude Messages discovery, streaming and agent tools. No deployment provisioning or quota reporting; Magpie only.", "zh": "用本机 client-secret 凭据文件连接已有 SAP AI Core 部署：按资源组发现 GPT Responses 与 Claude Messages 模型，支持流式回复和 agent 工具。不创建部署，不报告额度；仅验证 Magpie。" } },
     { "package": "magpie-plugin-pink", "name": "PinK", "kind": "agent",
       "icon": "https://raw.githubusercontent.com/YuchenWell/magpie-plugin-pink/main/assets/pink.png",
       "summary": { "en": "Connect PinK to Magpie's models from the Agents page and track gateway usage and cost. Disconnecting restores the managed configuration.", "zh": "在 Agent 页面连接 PinK，使用 Magpie 中配置的模型并查看调用用量与费用；断开时恢复插件管理的配置。" } },
