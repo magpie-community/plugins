@@ -11,7 +11,7 @@ AStudio 在 registry 里有两个入口，都保留（[#614](https://github.com/
 | 登录 | 读取本机 AStudio 桌面端的登录态，或粘贴 `modelBearerToken`；不需要再输手机号或密码 | 本机打开一个登录页：手机验证码、账号密码或微信扫码（含极验验证），不依赖桌面端 |
 | 适合 | 装了 AStudio 桌面端的用户（数据目录按 `ASTUDIO_HOME`、Windows 注册表、`~/.acode` 查找；其他情况粘贴凭据） | 任何平台，没装桌面端也行 |
 | 模型端点 | `…/model-gateway/v1/responses`（OpenAI Responses，与桌面端一致） | `…/model-gateway/v1/chat/completions` |
-| 每日积分 | 做一次会话活跃，按前后余额差记录，不调用领取接口 | 调用 `client-popups` 领取每日奖励和新人礼包弹窗 |
+| 每日积分 | 做一次会话活跃，按前后余额差与 `client-popups/pending` 待通知弹窗记录，不调用领取接口 | 调用 `client-popups` 领取每日奖励和新人礼包弹窗 |
 
 两者用同一个 AStudio 账号时，读的是同一个 `points/balance`，模型调用也扣同一份积分：**每日登录积分是一个池子，装两个不会多一份。** 同一账号两边都登录只会重复显示同一笔余额。
 
@@ -52,7 +52,7 @@ same daily points balance.
 
 ## 每日签到（每日登录积分）
 
-AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放（体验版 100 分/天，标准版 200，高级/畅享 400；活动期 31 天有效），客户端弹窗只做通知、没有领取接口。插件为此提供 magpie 的 `auth.checkin`：每天替账号做一次会话活跃（只读请求）并观测前后余额差——涨了记为已领取；没涨**不谎称已签**，如实报「未观测到新发放」（发放可能挂靠桌面端登录）。签到需要账号带网页会话（桌面端登录态方式默认有）。
+AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放（体验版 100 分/天，标准版 200，高级/畅享 400；活动期 31 天有效），客户端弹窗只做通知、没有领取接口。插件为此提供 magpie 的 `auth.checkin`：每天替账号做一次会话活跃（只读请求，带桌面端 `clientType` / `studioVersion` 身份头；缺 `clientType` 会被服务端以 `11001001` 拒绝），再观测前后余额差与 `client-popups/pending` 的 `DAILY_REWARD_DIALOG` 待通知弹窗——涨了记为已领取，见到弹窗记为今日已发放，两者都没有则如实报「未观测到新发放」，**不谎称已签**。发放由服务端按账号会话判定，插件不能代替桌面端登录，也不保证某天一定有积分到账。签到需要账号带网页会话（桌面端登录态方式默认有）。
 
 ## 用量
 
@@ -62,7 +62,7 @@ AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃
 
 - 模型调用：`POST https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1/responses`（OpenAI Responses，`Authorization: Bearer`）——与 AStudio 桌面端写进 acode 内核的 `base_url` / `wire_api` 完全一致。
 - 模型目录：`GET https://astronstudio-api-volces-prod.xf-yun.com/api/v1/model-manager/models`。
-- 账号面：`https://agent.xfyun.cn/xingchen-studio/`（`points/balance`、`membership/me`、`membership/plan-config`，Cookie 会话鉴权）。
+- 账号面：`https://agent.xfyun.cn/xingchen-studio/`（`points/balance`、`membership/me`、`membership/plan-config`、`points/summary`、`client-popups/pending`，Cookie 会话鉴权 + `clientType` / `studioVersion` 身份头）。
 
 ## 风险提示
 
