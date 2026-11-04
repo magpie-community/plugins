@@ -115,7 +115,17 @@ A tools package is a folder under `packages/<name>/` with:
 
 ## Web search APIs
 
-A tools package can also give magpie a web search API. It is listed in Settings › Models › Web search under its own name, after Tavily, Brave and the rest, and is added, keyed, switched off and ordered like them. magpie keeps the keys (several are tried in turn; a refused one rests), masks the query, and logs the call. magpie's own `search` hook; OpenCode ignores it. There is no package for one yet: this is the template.
+A tools package can also give magpie a web search API. It is listed in Settings › Models › Web search under its own name, after Tavily, Brave and the rest, and is added, keyed, switched off and ordered like them. magpie keeps the keys (several are tried in turn; a refused one rests), masks the query, and logs the call. magpie's own `search` hook; OpenCode ignores it.
+
+| Package | Search APIs |
+|---|---|
+| [magpie-websearch](https://github.com/guotree/magpie-websearch) | AnySearch, Keenable, Linkup, Metaso, Parallel, Querit, TinyFish (more providers planned); published as `@guotree/magpie-websearch` and maintained in the magpie-websearch repository |
+
+```sh
+magpie plugin add @magpie-community/tools-<name>
+```
+
+This is the template:
 
 ```js
 // index.mjs of @magpie-community/tools-<name>
