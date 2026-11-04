@@ -812,6 +812,7 @@ function pickScript(text) {
   if (t.startsWith("/serve")) return scriptServe;
   if (t.startsWith("/tools")) return scriptTools;
   if (t.startsWith("/bashhint")) return scriptBashHint;
+  if (t.startsWith("/winrun")) return scriptWinRun;
   return scriptDefault;
 }
 async function sleepAbortable(ms, ctx) {
@@ -870,6 +871,65 @@ async function scriptTools(ctx) {
   emit({ type: "tool_call", itemId: "x6", kind: "bash", title: `\u8FD0\u884C ${cmd}`, status: "ok", output: "\u2713 3 \u4E2A\u6D4B\u8BD5\u6587\u4EF6\u901A\u8FC7", exitCode: 0, durationMs: slow });
   const reply = ctx.replyPrefix() + "lint \u62A5\u9519\u5DF2\u4FEE\u590D\uFF0C\u6D4B\u8BD5\u5168\u90E8\u901A\u8FC7\u3002";
   emit({ type: "assistant_message", itemId: "tm1", text: reply });
+}
+async function scriptWinRun(ctx) {
+  const { emit } = ctx;
+  const sleepA = (ms) => sleepAbortable(ms, ctx);
+  const step = Number(process.env.AGENT_CONSOLE_MOCK_STEP_MS) || 250;
+  const think = async (id2, text) => {
+    for (const ch of chunkText(text, 6)) {
+      emit({ type: "reasoning_delta", itemId: id2, text: ch });
+      if (await sleepA(40)) return true;
+    }
+    emit({ type: "reasoning", itemId: id2, text });
+    return false;
+  };
+  const tool = async (id2, kind, title, input, ms = step) => {
+    emit({ type: "tool_call", itemId: id2, kind, title, status: "running", input });
+    if (await sleepA(ms)) return true;
+    emit({ type: "tool_call", itemId: id2, kind, title, status: "ok", durationMs: ms, output: "ok" });
+    return false;
+  };
+  const dir = "D:\\workwork\\\u6296\u97F3\u5FEB\u624B\u81EA\u52A8\u4E0A\u4F20";
+  const start = `Set-Location "${dir}"; if (Test-Path ".venv\\Scripts\\pythonw.exe") { Start-Process -FilePath ".venv\\Scripts\\pythonw.exe" -ArgumentList "-m","app.main" -WorkingDirectory "${dir}"; Write-Host "\u5DF2\u542F\u52A8\uFF08\u6E90\u7801\u6A21\u5F0F\uFF09" } else { Write-Host "venv \u4E0D\u5B58\u5728\uFF0C\u5C1D\u8BD5 exe"; Start-Process -FilePath "\u98CE\u666F\u89C6\u9891\u5DE5\u5177.exe" -WorkingDirectory "${dir}"; Write-Host "\u5DF2\u542F\u52A8\uFF08exe\uFF09" }`;
+  const ps = `Get-Process pythonw -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*\u6296\u97F3\u5FEB\u624B\u81EA\u52A8\u4E0A\u4F20*" } | Select-Object Id, Path, StartTime | Format-Table -AutoSize`;
+  if (await think("w1", "\u5148\u68C0\u67E5\u662F\u5426\u5DF2\u6709\u5B9E\u4F8B\u5728\u8DD1\u3002")) return;
+  emit({ type: "assistant_message", itemId: "wm1", text: "\u5148\u68C0\u67E5\u662F\u5426\u5DF2\u6709\u5B9E\u4F8B\u5728\u8DD1\uFF0C\u518D\u542F\u52A8\u5E94\u7528\u3002" });
+  if (await tool("s1", "search", "\u641C\u7D22 pythonw", { pattern: "pythonw" })) return;
+  if (await tool("s2", "search", "\u641C\u7D22 app.main", { pattern: "app.main" })) return;
+  if (await think("w2", "\u770B\u4E0B\u542F\u52A8\u811A\u672C\u3002")) return;
+  if (await tool("s3", "search", "\u641C\u7D22 \u542F\u52A8.bat", { pattern: "\u542F\u52A8.bat" })) return;
+  if (await tool("r1", "read", "\u8BFB\u53D6 \u542F\u52A8.bat", { file_path: `${dir}\\\u542F\u52A8.bat` })) return;
+  if (await think("w3", "")) return;
+  if (await tool("b0", "bash", `\u8FD0\u884C ${ps}`, { command: ps }, step * 2)) return;
+  if (await think("w4", "\u6CA1\u6709\u5B9E\u4F8B\u5728\u8DD1\uFF0C\u76F4\u63A5\u542F\u52A8\u3002")) return;
+  emit({ type: "tool_call", itemId: "b1", kind: "bash", title: `\u8FD0\u884C ${start}`, status: "running", input: { command: start } });
+  if (await sleepA(step)) return;
+  const requestId = "perm-" + rid();
+  emit({
+    type: "permission_request",
+    requestId,
+    title: start,
+    kind: "tool",
+    detail: { command: start, cwd: dir },
+    options: [
+      { id: "allow-once", label: "Allow once", kind: "allow_once" },
+      { id: "allow-always", label: "Allow always", kind: "allow_always" },
+      { id: "reject-once", label: "Reject", kind: "reject_once" }
+    ]
+  });
+  const ans = await ctx.waitFor(requestId);
+  if (ans.cancelled || ans.optionId === "reject-once") {
+    emit({ type: "tool_call", itemId: "b1", kind: "bash", title: `\u8FD0\u884C ${start}`, status: "failed", output: "Rejected", exitCode: 1 });
+    return;
+  }
+  emit({ type: "tool_call", itemId: "b1", kind: "bash", title: `\u8FD0\u884C ${start}`, status: "ok", output: "\u5DF2\u542F\u52A8\uFF08\u6E90\u7801\u6A21\u5F0F\uFF09", exitCode: 0, durationMs: step });
+  if (await think("w5", "\u6539\u4E09\u4E2A\u914D\u7F6E\u3002")) return;
+  for (const n of [1, 2, 3]) if (await tool(`e${n}`, "edit", `\u7F16\u8F91 config/${n}.json`, { file_path: `${dir}\\config\\${n}.json` })) return;
+  if (await think("w6", "\u786E\u8BA4\u8FDB\u7A0B\u8D77\u6765\u4E86\u3002")) return;
+  if (await tool("r2", "read", "\u8BFB\u53D6 logs/selftest.txt", { file_path: `${dir}\\logs\\selftest.txt` })) return;
+  if (await tool("b2", "bash", `\u8FD0\u884C ${ps}`, { command: ps }, Number(process.env.AGENT_CONSOLE_MOCK_TOOLS_MS) || step * 6)) return;
+  emit({ type: "assistant_message", itemId: "wm2", text: ctx.replyPrefix() + "\u5DF2\u542F\u52A8\uFF0C\u8FDB\u7A0B\u5728\u8DD1\u3002" });
 }
 async function scriptBashHint(ctx) {
   ctx.emit({ type: "notice", level: "warn", code: "bash_missing", message: tr("notice.bashMissing") });
@@ -4759,7 +4819,7 @@ var init_session3 = __esm({
           return hit?.id ?? want;
         }
         if (this.o.flavor === "cursor") {
-          const map = { default: "agent", plan: "plan", ask: "ask" };
+          const map = { default: "agent", bypassPermissions: "agent", plan: "plan", ask: "ask" };
           const want = map[mode2] ?? "agent";
           const avail = this.active?.modes?.availableModes ?? [];
           const hit = avail.find((m) => m.id === want || m.name.toLowerCase() === want);
@@ -5026,7 +5086,7 @@ async function resolveProviderBin(cfg2) {
 }
 function createAcpProvider(cfg2) {
   const base = cfg2.capabilities ?? acpCapabilities;
-  const ORDER = ["plan", "default", "acceptEdits", "bypassPermissions"];
+  const ORDER = ["plan", "default", "acceptEdits", "bypassPermissions", "ask"];
   const caps = cfg2.modeMap ? { ...base, modes: ORDER.filter((m) => cfg2.modeMap[m] !== void 0), modeLabels: cfg2.modeLabels } : base;
   return {
     id: cfg2.id,
@@ -5107,7 +5167,9 @@ var init_provider3 = __esm({
     cursorAcpCapabilities = {
       ...acpCapabilities,
       questions: true,
-      modes: ["default", "plan", "ask"]
+      // 1.3: bypassPermissions = 全部自动同意: Cursor's agent mode, every approval answered "allow once" by the daemon
+      // (Cursor's own --force only exists at spawn, and Auto-review is not applied over ACP)
+      modes: ["default", "bypassPermissions", "plan", "ask"]
     };
   }
 });
@@ -5375,8 +5437,9 @@ function acpConfigForEntry(entry, appVersion) {
         ...base,
         acpArgs: ["acp"],
         fetchModels: acpProbeModels(["acp"], entry.id),
-        modeMap: { plan: "plan", default: "build" },
-        modeLabels: { plan: "Plan", default: "Build" }
+        // 1.3: 全部自动同意 = build + the daemon answers each approval "allow once" (OPENCODE_PERMISSION only applies at spawn)
+        modeMap: { plan: "plan", default: "build", bypassPermissions: "build" },
+        modeLabels: { plan: "Plan", default: "Build", bypassPermissions: "Build" }
       };
     case "copilot":
       return {
@@ -5387,7 +5450,7 @@ function acpConfigForEntry(entry, appVersion) {
         modeLabels: { plan: "Plan", default: "Agent", bypassPermissions: "Allow All" }
       };
     case "pi":
-      return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { default: "" } };
+      return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { bypassPermissions: "" } };
     case "dsh":
       return {
         ...base,
@@ -7293,7 +7356,8 @@ var init_settings = __esm({
         z2.object({ executable: z2.string().max(4096).optional(), args: z2.array(z2.string().max(4096)).max(64).optional() }).strict()
       ),
       v1Migrated: z2.boolean(),
-      bashPath: z2.string().max(1024)
+      bashPath: z2.string().max(1024),
+      autoApproveWarned: z2.boolean()
     }).partial().strict();
     SettingsStore = class {
       file;
@@ -8438,6 +8502,41 @@ init_registry();
 // daemon/src/agents/manager.ts
 init_launch();
 init_modes();
+
+// daemon/src/providers/autoApprove.ts
+var FULL_AUTO = "bypassPermissions";
+var FULL_AUTO_NATIVE = {
+  claude: { native: "--permission-mode bypassPermissions (+ --allow-dangerously-skip-permissions)", live: "nextTurn", daemonAnswers: true },
+  codex: { native: "approvalPolicy never + sandbox danger-full-access (turn/start)", live: "nextTurn", daemonAnswers: true },
+  cursor: { native: "none over ACP (--force is spawn-only); ACP mode agent", live: "live", daemonAnswers: true },
+  copilot: { native: "ACP config allow_all = on (agent mode)", live: "live", daemonAnswers: true },
+  opencode: { native: "none over ACP (OPENCODE_PERMISSION is spawn-only); ACP mode build", live: "live", daemonAnswers: true },
+  devin: { native: "ACP mode bypass", live: "live", daemonAnswers: true },
+  dsh: { native: "none known; ACP default mode", live: "live", daemonAnswers: true },
+  // pi never asks before its own tools; requestPermission only carries Pi extensions' own dialogs, which stay with the user
+  pi: { native: "always (Pi has no tool approvals)", live: "live", daemonAnswers: false },
+  mock: { native: "mock", live: "live", daemonAnswers: true }
+};
+var REJECT = /reject|deny|decline|cancel|never|拒绝/i;
+var ALLOW = /allow|accept|approve|yes|允许|同意/i;
+function pickAllowOnce(options) {
+  const once = options.find((o) => o.kind === "allow_once");
+  if (once) return once;
+  const plain = options.find((o) => {
+    const s = `${o.id} ${o.label ?? ""}`;
+    return !o.kind?.startsWith("reject") && !REJECT.test(s) && ALLOW.test(s) && !/always|session|总是|始终/i.test(s);
+  });
+  if (plain) return plain;
+  return options.find((o) => o.kind === "allow_always") ?? null;
+}
+function autoApproveOption(mode2, providerId, req) {
+  if (mode2 !== FULL_AUTO) return null;
+  if (FULL_AUTO_NATIVE[providerId]?.daemonAnswers === false) return null;
+  if (req.kind === "plan" || req.kind === "switch_mode") return null;
+  return pickAllowOnce(req.options);
+}
+
+// daemon/src/agents/manager.ts
 init_attachmentRefs();
 init_registry();
 init_catalog();
@@ -8490,6 +8589,13 @@ init_i18n();
 init_agentShell();
 init_mentions();
 init_commands();
+function titleText(text) {
+  const blocks = text.trim().split(/\n{2,}/);
+  let i = 0;
+  while (i < blocks.length && blocks[i].split("\n").every((l) => l === ">" || l.startsWith("> "))) i++;
+  const rest = blocks.slice(i).join(" ").trim();
+  return (rest || text.trim().replace(/^>\s?/gm, "")).replace(/\s+/g, " ").trim();
+}
 var SLASH_CACHE_TTL_MS = 10 * 60 * 1e3;
 var MAX_WARM_IDLE = 3;
 var DELTA_TYPES = ["assistant_delta", "reasoning_delta", "tool_output_delta"];
@@ -8711,7 +8817,7 @@ var AgentManager = class {
         throw e;
       }
     }
-    const trimmed = text.trim();
+    const trimmed = titleText(text);
     if (meta.titleAuto && trimmed) {
       await this.threads.patch(threadId, { title: trimmed.slice(0, 40), titleAuto: true });
       this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
@@ -8828,9 +8934,19 @@ var AgentManager = class {
         },
         event: ev
       };
+      if (ev.type === "permission_request") {
+        const meta = await this.threads.get(threadId);
+        const auto = meta ? autoApproveOption(meta.mode, meta.provider, ev) : null;
+        if (auto) {
+          log("info", `thread ${threadId} \u81EA\u52A8\u540C\u610F ${ev.title.slice(0, 80)} \u2192 ${auto.id}`);
+          rt.session?.respond(ev.requestId, { optionId: auto.id });
+          return;
+        }
+      }
       const toolName = ev.detail?.toolName;
       if (toolName && rt.allowAlways.has(toolName)) {
-        rt.session?.respond(ev.requestId, { optionId: "accept" });
+        const allow = options.find((o) => o.kind === "allow_once") ?? options.find((o) => o.kind === "allow_always");
+        rt.session?.respond(ev.requestId, { optionId: allow?.id ?? "accept" });
         return;
       }
       rt.pending.set(ev.requestId, pending);
@@ -8912,6 +9028,22 @@ var AgentManager = class {
     }
     rt.session?.respond(requestId, answer);
   }
+  /** Answer every waiting tool approval with its allow-once option (full-auto just turned on). Returns how many. */
+  async autoApprovePending(threadId, providerId, mode2) {
+    const rt = this.rt(threadId);
+    let n = 0;
+    for (const p of [...rt.pending.values()]) {
+      if (p.kind !== "permission") continue;
+      const ev = p.event;
+      const opt = autoApproveOption(mode2, providerId, { kind: ev.kind, options: p.options });
+      if (!opt) continue;
+      rt.pending.delete(p.requestId);
+      await this.appendRaw(threadId, { type: "permission_resolved", requestId: p.requestId, optionId: opt.id, auto: true });
+      rt.session?.respond(p.requestId, { optionId: opt.id });
+      n++;
+    }
+    return n;
+  }
   // ---- interrupt ----
   async interrupt(threadId) {
     const rt = this.rt(threadId);
@@ -8956,8 +9088,9 @@ var AgentManager = class {
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
   async setMode(threadId, mode2) {
-    await this.threads.patch(threadId, { mode: mode2 });
+    const meta = await this.threads.patch(threadId, { mode: mode2 });
     const rt = this.rt(threadId);
+    if (mode2 === FULL_AUTO) await this.autoApprovePending(threadId, meta.provider, mode2);
     if (rt.session) await rt.session.setMode(mode2);
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
