@@ -88,8 +88,9 @@ export function probeAcpRaw(
     child.on("error", (e) => finish(e));
     child.on("close", () => finish(new Error("ACP 进程提前退出")));
     child.stderr?.on("data", () => {});
-    child.stdout?.on("data", (d: Buffer) => {
-      buf += d.toString();
+    child.stdout?.setEncoding("utf8"); // protocol stdout is UTF-8; setEncoding keeps a character split across chunks intact
+    child.stdout?.on("data", (d: string) => {
+      buf += d;
       let n: number;
       while ((n = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, n).trim();

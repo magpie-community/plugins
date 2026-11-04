@@ -13,6 +13,7 @@ import { launchArgv } from "../launch.js";
 import type { ChildProcess } from "node:child_process";
 import { killTree, spawnBin, type ResolveResult } from "../../util/bin.js";
 import { AsyncQueue } from "../../util/queue.js";
+import { OutputDecoder } from "../../util/decode.js";
 
 export type ClaudeBin = ResolveResult & { ok: true };
 export type Json = Record<string, unknown>;
@@ -91,8 +92,9 @@ export class ClaudeCli {
     });
     this.child.stdout?.setEncoding("utf8");
     this.child.stdout?.on("data", (d: string) => this.onData(d));
+    const errDec = new OutputDecoder(); // 1.3: stderr may be in the Windows code page (GBK)
     this.child.stderr?.on("data", (d: Buffer) => {
-      this.stderrTail = (this.stderrTail + d.toString()).slice(-4096);
+      this.stderrTail = (this.stderrTail + errDec.write(d)).slice(-4096);
     });
     this.child.stdin?.on("error", () => {}); // EPIPE after the CLI exits: reported through exited
     this.exited = new Promise((resolve) => {
