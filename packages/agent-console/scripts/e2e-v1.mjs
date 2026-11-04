@@ -1,5 +1,7 @@
 // e2e (§11.2): playwright-core + Edge, isolated data directory _tmp/e2e-xdg, port 3497, AGENT_CONSOLE_MOCK=1.
-// Scenarios 1–12, 16–23 (20–23: 1.3 overlap at 600 px, 全部自动同意, message actions, quotes); each prints ✓/✗, and any ✗ exits with code 1.
+// Scenarios 1–12, 16–24 (20–24: 1.3 overlap at 600 px, 全部自动同意, message actions, quotes, instant send); each prints ✓/✗, and any ✗ exits with code 1.
+// The mock Agent starts slowly (E2E_MOCK_START_MS, default 1200 ms) like a real one on Windows, so every scenario runs
+// with the user's message arriving before the Agent is up.
 import { spawn, execFileSync } from "node:child_process";
 import { findBrowser } from "./browser-path.mjs";
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -78,7 +80,7 @@ async function setup() {
   } catch (e) { log("[e2e] git init 失败（场景13 会失败）:", String(e).slice(0, 120)); }
 
   daemon = spawn("node", [join(root, "daemon/dist/main.js"), "--port", String(PORT), "--data", XDG], {
-    env: { ...process.env, AGENT_CONSOLE_MOCK: "1" },
+    env: { ...process.env, AGENT_CONSOLE_MOCK: "1", AGENT_CONSOLE_MOCK_START_MS: process.env.E2E_MOCK_START_MS ?? "1200" },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -540,6 +542,50 @@ async function scenario23() {
   record("场景23 选中添加到对话 → 引用随消息发送", ok, JSON.stringify(last?.text ?? "").slice(0, 120));
 }
 
+async function scenario24() {
+  // 1.3 (Nolan): the bubble shows the moment 发送 is clicked, while the (slow) mock Agent is still starting; the
+  // daemon's echo takes over the same DOM node (no duplicate, no jump); a failed send stays with 重试
+  await newThread();
+  await page.setViewportSize({ width: 600, height: 860 });
+  await sleep(200);
+  const text = "马上显示这条消息";
+  await page.fill(sel.ta, text);
+  const t = await page.evaluate((text) => new Promise((resolve) => {
+    const t0 = performance.now();
+    const r = { bubble: null, working: null };
+    const tick = () => {
+      const now = Math.round(performance.now() - t0);
+      const row = [...document.querySelectorAll(".tl-wrap .um-row")].find((e) => e.textContent?.includes(text));
+      if (r.bubble == null && row) { r.bubble = now; row.__mark = 1; r.cid = row.dataset.clientId; }
+      if (r.working == null && document.querySelector(".cp-stop")) r.working = now;
+      if ((r.bubble == null || r.working == null) && now < 5000) requestAnimationFrame(tick); else resolve(r);
+    };
+    requestAnimationFrame(tick);
+    document.querySelector(".cp-send").click();
+  }), text);
+  // the echo (the daemon's user_message) replaces it in place
+  await waitFor(() => page.evaluate((text) => (window.__tl.getState().items ?? []).some((i) => i.kind === "user" && i.text === text && !i.sendState), text), 8000, "回显");
+  const same = await page.evaluate((cid) => !!document.querySelector(`.um-row[data-client-id="${cid}"]`)?.__mark, t.cid);
+  await waitIdle();
+  const count = await page.evaluate((text) => (window.__tl.getState().items ?? []).filter((i) => i.kind === "user" && i.text === text).length, text);
+  const scrolled = await page.evaluate(() => { const el = document.querySelector(".scroll"); return el ? el.scrollHeight - el.scrollTop - el.clientHeight < 80 : false; });
+  // Failure: thread.send rejects → the bubble stays, marked failed; 重试 sends it once
+  await page.evaluate(() => { const ws = window.__ws; window.__origCall = ws.call.bind(ws);
+    ws.call = (m, p, tm) => m === "thread.send" ? new Promise((_, rej) => setTimeout(() => rej(new Error("连接已断开")), 200)) : window.__origCall(m, p, tm); });
+  await page.fill(sel.ta, "这条会发送失败");
+  await page.click(sel.send);
+  const failed = await page.waitForSelector(".um-row.failed .um-fail", { timeout: 5000 }).then(() => true).catch(() => false);
+  await page.evaluate(() => { window.__ws.call = window.__origCall; });
+  await page.click('.um-row.failed .um-fail-b[title="重新发送"]').catch(() => {});
+  await waitFor(() => page.evaluate(() => !document.querySelector(".um-row.failed") && (window.__tl.getState().items ?? []).some((i) => i.kind === "user" && i.text === "这条会发送失败" && !i.sendState)), 8000, "重试后回显");
+  await waitIdle();
+  const retried = await page.evaluate(() => (window.__tl.getState().items ?? []).filter((i) => i.kind === "user" && i.text === "这条会发送失败").length);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const ok = t.bubble != null && t.bubble < 300 && t.working != null && t.working < 300 && same && count === 1 && scrolled && failed && retried === 1;
+  record("场景24 点发送气泡立即出现（Agent 慢启动）、回显不重复不跳、失败可重试", ok,
+    `bubble=${t.bubble}ms working=${t.working}ms sameNode=${same} count=${count} bottom=${scrolled} failed=${failed} retried=${retried}`);
+}
+
 async function scenario19() {
   // Filter benign console errors (e.g. favicon 404)
   const bad = pageErrors.filter((e) => !/favicon|404|net::/i.test(e) && !e.startsWith("dbg:"));
@@ -661,8 +707,8 @@ async function main() {
     await newProjectFlow();
     // E2E_ONLY_13=1 runs just the 1.3 scenarios (20–23) and the console-error check
     const all = [scenario2, scenario3, scenario4, scenario5, scenario6, scenario7, scenario8, scenario9, scenario10, scenario11,
-      scenario12, scenario13, scenario14, scenario15, scenario16, scenario17, scenario18, scenario20, scenario21, scenario22, scenario23, scenario19];
-    const only13 = new Set([scenario20, scenario21, scenario22, scenario23, scenario19]);
+      scenario12, scenario13, scenario14, scenario15, scenario16, scenario17, scenario18, scenario20, scenario21, scenario22, scenario23, scenario24, scenario19];
+    const only13 = new Set([scenario20, scenario21, scenario22, scenario23, scenario24, scenario19]);
     for (const f of all) if (!process.env.E2E_ONLY_13 || only13.has(f)) await f();
   } catch (e) {
     record("中途异常", false, String(e?.message ?? e).slice(0, 600) + " ||daemon:" + daemonErr.slice(-4).join("|").slice(0, 400));

@@ -67,7 +67,10 @@ export function Composer() {
   const mode = thread?.mode ?? "default";
   const modes = composerModeOptions(thread?.provider, provider?.capabilities.modes ?? [], provider?.capabilities.modeLabels);
   const modeMeta = modes.find((m) => m.id === mode);
-  const started = tl.items.some((it) => it.kind === "user");
+  // The Agent is locked once the conversation has run. 1.3: the user's message is saved before the Agent starts, so a
+  // first message whose Agent never started (no session id, no reply) leaves the picker open (the daemon agrees)
+  const started = tl.items.some((it) => it.kind === "user") && (running || !!thread?.providerSessionId
+    || tl.items.some((it) => it.kind === "assistant" || it.kind === "reasoning" || it.kind === "toolgroup" || it.kind === "permission"));
 
   const slashMenu = useMemo(() => slashMenuState(text, slashSuppress.current), [text]);
   const slashFiltered = useMemo(
@@ -189,27 +192,42 @@ export function Composer() {
     if (!id || (!typed && attachments.length === 0 && mentions.length === 0 && quotes.length === 0)) return;
     // 1.3: quotes go in front of the message as "> " blocks
     const msg = quotesToText(quotes, typed);
+    const steer = running && behavior === "steer" && steerOk;
+    // 1.3: a message that starts a turn (or steers one) shows in the timeline at once; one queued behind a running
+    // turn goes to the queue list instead (it joins the timeline when its turn starts)
+    const optimistic = !running || steer;
+    const sent = { attachments, mentions, quotes };
     if (running && behavior === "queue") setLastSent((s) => [...s, msg]);
     setText("");
+    setAttachments([]);
+    setMentions([]);
+    setQuotes([]);
+    const root = projects.find((p) => p.id === thread?.projectId)?.path;
     try {
-      const r = (await ws.call("thread.send", {
-        id, text: msg,
-        attachments: attachments.map((a) => ({ path: a.path, mime: a.mime, name: a.name })),
-        ...(mentions.length ? { mentions: mentionsForSend(mentions) } : {}),
-        behavior: running && behavior === "steer" && steerOk ? "steer" : "queue",
-      })) as { delivered?: "started" | "steered" | "queued" } | undefined;
-      setAttachments([]);
-      setMentions([]);
-      setQuotes([]);
+      const r = await useTimeline.getState().send(id, {
+        text: msg,
+        attachments: sent.attachments.map((a) => ({ path: a.path, mime: a.mime, name: a.name })),
+        ...(sent.mentions.length ? { mentions: mentionsForSend(sent.mentions) } : {}),
+        behavior: steer ? "steer" : "queue",
+      }, {
+        attachments: sent.attachments.map((a) => ({ id: a.path, name: a.name.trim() || a.path, mime: a.mime })),
+        ...(root && sent.mentions.length ? { mentions: sent.mentions.map((m) => ({ path: joinProjectPath(root, m.rel), isDir: m.isDir })) } : {}),
+      }, { optimistic });
       // Say what really happened to a message sent mid-turn (B7: agents without steer queue it)
       if (r?.delivered === "queued" && running) toast(tr("composer.queuedToast"));
       else if (r?.delivered === "steered") toast(tr("composer.steeredToast"));
       if (!running) setLastSent((s) => [...s.slice(-9), msg]);
     } catch (e) {
-      setText(typed); // the quotes are still in their chips
+      // An optimistic bubble stays in the timeline marked failed, with 重试; a queued one goes back into the input
+      if (!optimistic) {
+        setText(typed); // the quotes are still in their chips
+        setAttachments(sent.attachments);
+        setMentions(sent.mentions);
+        setQuotes(sent.quotes);
+      }
       toast(tr("composer.failSend") + errMsg(e), true);
     }
-  }, [text, attachments, mentions, quotes, ui.currentThreadId, running, steerOk]);
+  }, [text, attachments, mentions, quotes, ui.currentThreadId, running, steerOk, projects, thread?.projectId]);
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (isImeComposing(e.nativeEvent)) return;

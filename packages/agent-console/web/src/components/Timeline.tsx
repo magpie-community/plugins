@@ -15,6 +15,7 @@ import { toast } from "./Toast";
 import { splitLocalLinks } from "../util/localLinks";
 import { onChatLinkClick, openExternal } from "../preview/open";
 import { splitQuotes } from "../composer/quotes";
+import { localClientIds, useTimeline } from "../stores/timeline";
 
 export const GIT_FOR_WINDOWS_URL = "https://git-scm.com/download/win";
 
@@ -73,8 +74,11 @@ export function UserItem({ it, onRetry }: { it: Extract<DisplayItem, { kind: "us
   // 1.3: quotes added with "添加到对话" were sent as leading "> " blocks: show them as quotes
   const parsed = useMemo(() => splitQuotes(it.text), [it.text]);
   const edit = () => window.dispatchEvent(new CustomEvent("ac-composer-fill", { detail: { text: it.text, mentions: it.mentions ?? [] } }));
+  // 1.3: a bubble sent from this page fades in once; the echo keeps the same key and class, so nothing replays or jumps
+  const fresh = !!it.clientId && localClientIds.has(it.clientId);
+  const failed = it.sendState === "failed";
   return (
-    <div className="um-row">
+    <div className={`um-row${fresh ? " fresh" : ""}${it.sendState ? ` ${it.sendState}` : ""}`} data-client-id={it.clientId}>
       <div className="um">
         {it.attachments?.filter((a) => isImageMime(a.mime)).map((a) => (
           <img key={a.id} className="um-img" src={`/attachments/${a.id}?t=${token()}`} alt={a.name} />
@@ -94,6 +98,19 @@ export function UserItem({ it, onRetry }: { it: Extract<DisplayItem, { kind: "us
         <span className="um-text">{parsed.rest}</span>
       </div>
       {it.steered && <div className="um-tag">{t("timeline.steer")}</div>}
+      {failed && it.clientId && (
+        <div className="um-fail" role="alert">
+          <span className="um-fail-t" title={it.sendError ? localizeDaemonMessage(it.sendError) : undefined}>
+            <Icon name="x" size={12} />{t("timeline.sendFailed")}
+          </span>
+          <button type="button" className="um-fail-b" title={t("timeline.sendRetry")} onClick={() => useTimeline.getState().retry(it.clientId!)}>
+            <Icon name="refresh" size={12} /><span>{t("common.retry")}</span>
+          </button>
+          <button type="button" className="um-fail-b" title={t("timeline.sendDismiss")} aria-label={t("timeline.sendDismiss")} onClick={() => useTimeline.getState().dismiss(it.clientId!)}>
+            <span>{t("common.remove")}</span>
+          </button>
+        </div>
+      )}
       <div className="um-act" role="toolbar" aria-label={t("timeline.msgActions")}>
         <button type="button" className={`ibtn${copied ? " done" : ""}`} title={copied ? t("common.copied") : t("common.copy")}
           aria-label={copied ? t("common.copied") : t("common.copy")} onClick={() => copy(it.text)}>
@@ -102,7 +119,7 @@ export function UserItem({ it, onRetry }: { it: Extract<DisplayItem, { kind: "us
         <button type="button" className="ibtn" title={t("timeline.editMsg")} aria-label={t("timeline.editMsg")} onClick={edit}>
           <Icon name="pencil" size={13} />
         </button>
-        {onRetry && (
+        {onRetry && !it.sendState && (
           <button type="button" className="ibtn" title={t("timeline.resend")} aria-label={t("timeline.resend")} onClick={() => onRetry(it.text, it.mentions)}>
             <Icon name="refresh" size={13} />
           </button>
