@@ -123,7 +123,10 @@ describe("plugin entry (index.mjs)", () => {
       expect(open.status).toBe(302);
       const location = new URL(String(open.headers.location));
       expect(location.hostname).toBe("127.0.0.1");
-      const daemonPort = Number(location.port);
+      // 1.3: the gate's own wrapper page; the daemon's port is in the fragment next to the token
+      expect(Number(location.port)).toBe(port);
+      expect(location.pathname).toBe("/app");
+      const daemonPort = Number(new URLSearchParams(location.hash.slice(1)).get("p"));
       expect(daemonPort).toBeGreaterThan(0);
       expect(daemonPort).not.toBe(port);
       // From the first open on the host refreshes session.js (beat), so a page that lost its connection can tell it from a dead host's
@@ -137,7 +140,7 @@ describe("plugin entry (index.mjs)", () => {
       expect(token).not.toBe(key);
       expect(location.search).not.toContain(token);
       expect(location.search).not.toContain(key);
-      expect(location.hash).toBe(`#t=${token}`);
+      expect(location.hash).toBe(`#t=${token}&p=${daemonPort}`);
       expect(readFileSync(sessionPath, "utf8")).not.toContain(token);
 
       // The daemon token can't be used as the gate key (nor the key as the daemon token, see the ping below)
@@ -161,7 +164,7 @@ describe("plugin entry (index.mjs)", () => {
       // Opening a second time reuses the same daemon
       const again = await request(port, `/open?k=${key}&theme=dark`);
       expect(again.status).toBe(302);
-      expect(Number(new URL(String(again.headers.location)).port)).toBe(daemonPort);
+      expect(new URLSearchParams(new URL(String(again.headers.location)).hash.slice(1)).get("p")).toBe(String(daemonPort));
 
       // Origin: null reading a static page → 403
       const opaque = await request(daemonPort, "/", { origin: "null" });

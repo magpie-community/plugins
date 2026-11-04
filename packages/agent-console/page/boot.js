@@ -37,6 +37,9 @@
   const here = new URL(location.href);
   const lostAt = Number(here.searchParams.get("ac_lost")) || 0;
   here.searchParams.delete("ac_lost");
+  // ac_try: the gate wrapper's count of automatic reconnects (1.3), handed on to it through the gate
+  const tries = here.searchParams.get("ac_try") || "";
+  here.searchParams.delete("ac_try");
   here.hash = "";
   function validSession(s) {
     return (
@@ -103,6 +106,7 @@
   const q = new URLSearchParams();
   q.set("k", session.key);
   if (theme) q.set("theme", theme);
+  if (/^\d{10,15}\.[0-9]$/.test(tries)) q.set("ac_try", tries);
   if (lang) q.set("lang", lang);
   const slim = {};
   for (const [k, v] of Object.entries(tokens || {})) {

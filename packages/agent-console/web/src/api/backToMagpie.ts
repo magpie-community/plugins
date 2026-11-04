@@ -60,3 +60,28 @@ export function watchReconnect(
   });
   return () => { off(); if (timer) clearTimeout(timer); };
 }
+
+// ---- 1.3: inside the gate's wrapper page (lib/wrapper.mjs) ----
+// The gate frames this page with #…&w=1. Then the wrapper owns recovery: this page tells it it is alive (while connected)
+// and when the connection has been lost, and never navigates itself (that would load the Magpie page inside the child frame).
+
+export function isWrapped(hash: string = location.hash): boolean {
+  const fragment = hash.startsWith("#") ? hash.slice(1) : hash;
+  return new URLSearchParams(fragment).get("w") === "1" && typeof window !== "undefined" && window.parent !== window;
+}
+
+/** Heartbeat to the wrapper every 2 s while the WebSocket is open; "lost" once it has been down for a while */
+export function startWrapperHeartbeat(ws: { getState(): string }, everyMs = 2000): () => void {
+  const beat = () => {
+    if (ws.getState() === "open") {
+      try { window.parent.postMessage({ ac_console: "alive" }, "*"); } catch {}
+    }
+  };
+  beat();
+  const t = setInterval(beat, everyMs);
+  return () => clearInterval(t);
+}
+
+export function reportLostToWrapper(): void {
+  try { window.parent.postMessage({ ac_console: "lost", at: lostAt || Date.now() }, "*"); } catch {}
+}
