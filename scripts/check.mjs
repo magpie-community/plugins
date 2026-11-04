@@ -9,14 +9,16 @@
 import { readdirSync, readFileSync, existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
-import { registryProblems } from "./registry.mjs"
+import { agentKindProblems, registryProblems } from "./registry.mjs"
 
 const root = resolve(import.meta.dir, "..", "packages")
 const only = process.argv[2]
 let failed = 0
 {
   const file = resolve(import.meta.dir, "..", "registry.json")
-  const problems = existsSync(file) ? registryProblems(readFileSync(file, "utf8")) : ["registry.json is missing"]
+  const source = existsSync(file) ? readFileSync(file, "utf8") : null
+  const pkgs = readdirSync(root).map((n) => join(root, n, "package.json")).filter(existsSync).map((f) => JSON.parse(readFileSync(f, "utf8")))
+  const problems = source === null ? ["registry.json is missing"] : [...registryProblems(source), ...agentKindProblems(source, pkgs)]
   if (problems.length) failed++
   console.log(problems.length ? `✗ registry.json\n  ${problems.join("\n  ")}` : "✓ registry.json")
 }

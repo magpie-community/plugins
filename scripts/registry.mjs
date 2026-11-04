@@ -57,3 +57,20 @@ export function registryProblems(source) {
   })
   return problems
 }
+
+// The packages here whose package.json declares an agent (magpie.agent)
+// and whose entry isn't "kind": "agent": magpie lists a package that adds
+// an agent as an agent, a Bun module (main) beside it or not (#737), so its
+// entry says so too. pkgs is each package.json, parsed.
+export function agentKindProblems(source, pkgs) {
+  let r
+  try {
+    r = JSON.parse(source)
+  } catch {
+    return []
+  }
+  const kindOf = new Map((Array.isArray(r?.plugins) ? r.plugins : []).map((e) => [e?.package, e?.kind]))
+  return pkgs
+    .filter((p) => typeof p?.magpie?.agent === "string" && p.magpie.agent.trim() && kindOf.has(p.name) && kindOf.get(p.name) !== "agent")
+    .map((p) => `${p.name} declares magpie.agent, but its entry's kind is ${JSON.stringify(kindOf.get(p.name) ?? null)}, not "agent"`)
+}

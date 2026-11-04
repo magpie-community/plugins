@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { registryProblems } from "./registry.mjs"
+import { agentKindProblems, registryProblems } from "./registry.mjs"
 
 // Exercise the checker in a tiny independent repository, without loading any
 // real plugin, credential file or network client.
@@ -132,6 +132,21 @@ test("quota hooks do not exempt incomplete model providers or missing loaders", 
 
 test("check passes this repository's own registry.json", () => {
   expect(registryProblems(readFileSync(new URL("../registry.json", import.meta.url), "utf8"))).toEqual([])
+})
+
+// a package that adds an agent is listed as one, with a Bun module
+// (main) beside it or not (#737): kimi-desktop and reasonix-desktop have one
+test("an agent package's entry is kind agent, main or not (#737)", () => {
+  const reg = (kind) => JSON.stringify({ version: 1, plugins: [{ package: "@magpie-community/agent-deva", name: "Deva", kind, summary: { en: "D", zh: "D" } }] })
+  const pkg = { name: "@magpie-community/agent-deva", main: "./index.mjs", magpie: { agent: "./deva.agent.js" } }
+  expect(agentKindProblems(reg("agent"), [pkg])).toEqual([])
+  expect(agentKindProblems(reg(undefined), [pkg])[0]).toContain('declares magpie.agent, but its entry\'s kind is null')
+  expect(agentKindProblems(reg("tools"), [pkg])).toHaveLength(1)
+  expect(agentKindProblems(reg(undefined), [{ ...pkg, magpie: {} }])).toEqual([])
+  const own = new URL("../packages/", import.meta.url)
+  const pkgs = ["kimi-desktop", "reasonix-desktop", "aider"].map((n) => JSON.parse(readFileSync(new URL(n + "/package.json", own), "utf8")))
+  expect(pkgs.filter((p) => p.main).length).toBe(2)
+  expect(agentKindProblems(readFileSync(new URL("../registry.json", import.meta.url), "utf8"), pkgs)).toEqual([])
 })
 
 test("check fails a registry.json that is not JSON (#612)", () => {

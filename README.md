@@ -264,9 +264,17 @@ magpie plugin add @magpie-community/agent-<name>
 
 An agent package is a folder under `packages/<name>/` with:
 
-- **`package.json`**: name `@magpie-community/agent-<name>`, `"magpie": {"agent": "./<name>.agent.js"}`, no `main`.
+- **`package.json`**: name `@magpie-community/agent-<name>`, `"magpie": {"agent": "./<name>.agent.js"}`, and no `main` unless the agent needs a runtime (below).
 - **`<name>.agent.js`**: exports `agent` (where the agent keeps its model) and, if it needs more than the model, `connect` (the other keys to write) ([the reference](https://usemagpie.ai/docs/plugins#agents)). It runs in magpie on moejs, so it is one file and imports nothing.
 - a test of what `connect` returns.
+
+An agent that needs more than moejs gives it (a timer, a file watched, a
+value carried into the app's own config while it runs) keeps its
+`<name>.agent.js` as above and adds a Bun module as the package's `main`,
+run in the plugin host as a provider plugin's is (kimi-desktop and
+reasonix-desktop do). It is still an agent: magpie lists a package that
+declares `magpie.agent` under Agents, on GitHub too, `main` or not, and its
+Installed row wears Provider only when that module serves a provider.
 
 ## Skills
 
@@ -392,7 +400,8 @@ MIT
 `registry.json` is the list magpie's Plugins tab shows: the packages
 here. An entry that signs in to nothing has a `"kind"` and no `providers`:
 `"middleware"` for gateway middleware and routing strategies, `"tools"`,
-`"page"` or `"agent"`. magpie
+`"page"` or `"agent"`. A package that declares `magpie.agent` is
+`"agent"`, with a `main` or without. magpie
 fetches it every few hours and keeps a copy built into the app for when
 it can't. To list a plugin, add an entry with its npm `package`, a
 `name`, `providers` (the provider ids it signs in to), an `icon` (one
