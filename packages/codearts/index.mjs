@@ -3393,7 +3393,7 @@ async function fetchOfficeAceCatalog(cred, fetcher = fetch) {
 }
 
 /** One OfficeAce model entry, as magpie wants it. */
-function officeAceModelEntry({ id, name, baseUrl = OA_MAAS_MARKET_BASE, context = 1_000_000, output = 128_000 }) {
+function officeAceModelEntry({ id, name, baseUrl = OA_MAAS_MARKET_BASE, context = 1_000_000, output = 128_000, rate }) {
   return {
     id,
     name,
@@ -3414,6 +3414,9 @@ function officeAceModelEntry({ id, name, baseUrl = OA_MAAS_MARKET_BASE, context 
     },
     release_date: "",
     variants: {},
+    // magpie's own: the credits a request costs, as a multiple (0: none).
+    // The billable list's cost_coefficient; a static entry has no rate yet.
+    ...(Number.isFinite(rate) ? { rate } : {}),
   }
 }
 
@@ -3435,12 +3438,14 @@ function officeAceLiveModels(rows, baseUrl, rates) {
     if (OA_UNAVAILABLE_IDS.has(id)) continue
     if (rates && rates.size > 0 && !rates.has(id)) continue
     const known = OA_FALLBACK_MODELS[id]
+    const rate = rates?.get(id)
     out[id] = officeAceModelEntry({
       id,
       name: typeof row?.name === "string" && row.name.length > 0 ? row.name : id,
       baseUrl,
       context: known?.context ?? 1_000_000,
       output: known?.output ?? 128_000,
+      ...(Number.isFinite(rate) ? { rate } : {}),
     })
   }
   return out

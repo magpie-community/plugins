@@ -2950,6 +2950,10 @@ test("models are the billable list: the multiplier is trimmed, and an id that al
   assert.equal(models["kimi-k3"].name, "Kimi-K3")
   assert.equal(models["glm-5.3"].name, "GLM-5.3 · x0.18")
   assert.equal(models["deepseek-v4.1-flash-0930"].name, "DeepSeek-V4.1-Flash · x1.5")
+  // magpie's own rate: the billable list's cost_coefficient, not only the name
+  assert.equal(models["glm-5.3"].rate, 0.18)
+  assert.equal(models["kimi-k3"].rate, 1)
+  assert.equal(models["deepseek-v4.1-flash-0930"].rate, 1.5)
   assert.equal(models["glm-5.3"].api.url, "https://api.modelarts-maas.com/v2")
   assert.equal(models["glm-5.3"].limit.context, 1_000_000)
   // the registry's un-callable placeholders are gone even though the rates list has one
