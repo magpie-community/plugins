@@ -38,7 +38,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [raccoon](packages/raccoon) | SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com): account credits and daily check-in, with browser sign-in or Raccoon desktop's sign-in | `raccoon` |
 | [river](packages/river) | River (river.ai) pay-as-you-go inference, with your API key: per-account models, documented reasoning efforts and live prices | `river` |
 | [sap-aicore](packages/sap-aicore) | SAP AI Core deployments for account-scoped GPT Responses and Claude Messages models | `sap-aicore` |
-| [sensenova](packages/sensenova) | SenseNova (商汤日日新) Token Plan: one console sign-in gives the credit pools, windows and grants, and (with an optional API key) the plan's models for chat | `sensenova-token-plan` |
+| [sensenova](packages/sensenova) | SenseNova (商汤日日新) Token Plan: browser or password sign-in gives the credit pools, windows and grants, and the plan's models — the browser sign-in reuses or creates a Token Plan API key for you | `sensenova-token-plan` |
 | [trae](packages/trae) | Trae CN (trae.cn) and Trae international (trae.ai), free tier included, with Trae's browser sign-in (experimental) | `trae-cn`, `trae-global` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (China build, CodeBuddy plan) | `workbuddy` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (international build) | `workbuddy-ai` |

@@ -5,6 +5,7 @@
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
 import { SenseNovaAuthPlugin, _internal } from "./index.mjs"
+import { _setCryptoForTests, unseal } from "./lib/dpapi.mjs"
 import { fakeSenseNova, json, jwksOf } from "./fake.mjs"
 
 let f
@@ -13,7 +14,7 @@ afterEach(() => f?.close())
 // one sign-in, start to finish, against whatever the fake answers
 const signIn = async () => {
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
-  return p.auth.methods[0].authorize({ username: "u", password: "secret", apiKey: "" }).callback()
+  return p.auth.methods[1].authorize({ username: "u", password: "secret", apiKey: "" }).callback()
 }
 
 // the JWKS the fake serves (a real RSA key the seal can encrypt to)
@@ -70,15 +71,15 @@ test("a password is sealed into a JWE and the tokens come back", async () => {
     return json({ access_token: "jwt-123", refresh_token: "r-123", expires_in: 10800 })
   })
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
-  const m = p.auth.methods[0]
+  const m = p.auth.methods[1]
   const r = m.authorize({ username: "yiheng13", password: "secret", apiKey: "sk-abc" })
   const out = await r.callback()
   expect(out.type).toBe("success")
-  expect(out.access).toBe("jwt-123")
-  expect(out.refresh).toBe("r-123")
+  expect(await unseal(out.access)).toBe("jwt-123")
+  expect(await unseal(out.refresh)).toBe("r-123")
   expect(out.accountId).toBe("yiheng13")
   // the API key rides along on the account
-  expect(out.apiKey).toBe("sk-abc")
+  expect(await unseal(out.apiKey)).toBe("sk-abc")
 })
 
 test("a password the platform refuses is a failed sign-in, its reason kept", async () => {
@@ -89,7 +90,7 @@ test("a password the platform refuses is a failed sign-in, its reason kept", asy
     json({ message: "InvalidArgument", details: [{ "@type": "x", reason: "invalidAccountOrPassword" }] }, 400),
   )
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
-  const m = p.auth.methods[0]
+  const m = p.auth.methods[1]
   const r = m.authorize({ username: "yiheng13", password: "wrong", apiKey: "" })
   const out = await r.callback()
   expect(out.type).toBe("failed")
@@ -106,8 +107,8 @@ test("a refresh token is renewed, and the new one replaces the old", async () =>
   })
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
   const renewed = await p.auth.refresh({ type: "oauth", access: "old", refresh: "old-r", expires: Date.now() + 1000 })
-  expect(renewed.access).toBe("jwt-2")
-  expect(renewed.refresh).toBe("new-r")
+  expect(await unseal(renewed.access)).toBe("jwt-2")
+  expect(await unseal(renewed.refresh)).toBe("new-r")
 })
 
 test("a refresh token the platform has revoked says the sign-in is gone", async () => {
@@ -118,7 +119,7 @@ test("a refresh token the platform has revoked says the sign-in is gone", async 
   // (host.js: e?.signIn === "expired"); without it the dead token is retried
   // every RENEW_RETRY (30 s) and the account never asks to be signed in again
   const err = await p
-    .auth.refresh({ type: "oauth", access: "old", refresh: "dead", expires: Date.now() + 1000 })
+    .auth.refresh({ type: "oauth", access: "old", refresh: "dead", expires: Date.now() + 1000, tokenHost: "password" })
     .then(() => null, (e) => e)
   expect(err).toBeInstanceOf(Error)
   expect(err.dead).toBe(true)
@@ -137,7 +138,7 @@ test("a refresh that fails for any reason other than a dead token keeps the sign
   for (const [status, error] of [[500, "server_error"], [400, "invalid_request"]]) {
     f.route("POST " + TOKEN_PATH, () => json({ error }, status))
     const err = await p
-      .auth.refresh({ type: "oauth", access: "old", refresh: "r", expires: Date.now() + 1000 })
+      .auth.refresh({ type: "oauth", access: "old", refresh: "r", expires: Date.now() + 1000, tokenHost: "password" })
       .then(() => null, (e) => e)
     expect(err).toBeInstanceOf(Error)
     expect(err.dead).toBe(false)
@@ -154,7 +155,7 @@ test("a walk that leaves the SenseNova hosts is refused, not followed", async ()
     new Response(null, { status: 302, headers: { location: "https://not-sensenova.example/continue" } }),
   )
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
-  const out = await p.auth.methods[0].authorize({ username: "u", password: "p", apiKey: "" }).callback()
+  const out = await p.auth.methods[1].authorize({ username: "u", password: "p", apiKey: "" }).callback()
   expect(out.type).toBe("failed")
   expect(out.error).toContain("SenseNova hosts")
 })
@@ -171,7 +172,7 @@ test("a page body pointing off-site is not taken as the next hop", async () => {
     }),
   )
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
-  const out = await p.auth.methods[0].authorize({ username: "u", password: "p", apiKey: "" }).callback()
+  const out = await p.auth.methods[1].authorize({ username: "u", password: "p", apiKey: "" }).callback()
   expect(out.type).toBe("failed")
   expect(out.error).toContain("login challenge")
 })
@@ -186,7 +187,7 @@ test("a hop carrying what the walk seeks, on another domain, is not the answer",
     new Response(null, { status: 302, headers: { location: "https://evil.example/?login_challenge=stolen&state=x" } }),
   )
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
-  const out = await p.auth.methods[0].authorize({ username: "u", password: "p", apiKey: "" }).callback()
+  const out = await p.auth.methods[1].authorize({ username: "u", password: "p", apiKey: "" }).callback()
   expect(out.type).toBe("failed")
   expect(out.error).toContain("SenseNova hosts")
 })
@@ -200,7 +201,7 @@ test("a downgraded http:// hop to a SenseNova domain is refused", async () => {
     new Response(null, { status: 302, headers: { location: "http://platform.sensenova.cn/continue" } }),
   )
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
-  const out = await p.auth.methods[0].authorize({ username: "u", password: "p", apiKey: "" }).callback()
+  const out = await p.auth.methods[1].authorize({ username: "u", password: "p", apiKey: "" }).callback()
   expect(out.type).toBe("failed")
   expect(out.error).toContain("SenseNova hosts")
 })
@@ -241,4 +242,61 @@ test("a code exchange answered with a 307 does not replay the code and verifier"
   f.route("POST /elsewhere", () => json({ access_token: "a", refresh_token: "r" }))
   expect((await signIn()).type).toBe("failed")
   expect(f.seen.some((r) => r.path === "/elsewhere")).toBe(false)
+})
+
+test("an account saved by 0.1.3 (plaintext, no tokenHost) still refreshes and serves its key", async () => {
+  // 0.1.3 wrote access/refresh/apiKey as plaintext and never wrote a tokenHost.
+  // The upgrade must read that record as-is: no re-login, no reinstall. A record
+  // with no tokenHost refreshes at the password endpoint, which is the one
+  // 0.1.3 itself used.
+  f = fakeSenseNova()
+  f.route("POST " + TOKEN_PATH, (r) => {
+    expect(r.form?.grant_type).toBe("refresh_token")
+    expect(r.form?.refresh_token).toBe("plain-r")
+    return json({ access_token: "jwt-new", refresh_token: "plain-r2", expires_in: 10800 })
+  })
+  const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const legacy = {
+    type: "oauth",
+    access: "plain-jwt",
+    refresh: "plain-r",
+    expires: Date.now() + 1000,
+    accountId: "alice",
+    apiKey: "sk-legacy",
+  }
+  const renewed = await p.auth.refresh(legacy)
+  expect(await unseal(renewed.access)).toBe("jwt-new")
+  expect(await unseal(renewed.refresh)).toBe("plain-r2")
+  const loader = await p.auth.loader(async () => legacy)
+  expect(loader.apiKey).toBe("sk-legacy")
+  expect(loader.baseURL).toBe(f.origin)
+})
+
+test("a Windows session whose DPAPI refuses still refreshes, storing plaintext as 0.1.3 did", async () => {
+  // CryptProtectData can fail for a roaming profile or a session without the
+  // user's credentials. Throwing there makes every refresh fail forever with
+  // no sign-in prompt, so the value falls back to plaintext (0.1.3's storage)
+  // and the reason is logged.
+  f = fakeSenseNova()
+  f.route("POST " + TOKEN_PATH, () => json({ access_token: "jwt-2", refresh_token: "new-r", expires_in: 10800 }))
+  const logs = []
+  _setCryptoForTests({
+    protect() {
+      throw new Error("Access is denied")
+    },
+    unprotect() {
+      throw new Error("Access is denied")
+    },
+  })
+  try {
+    const p = await SenseNovaAuthPlugin({
+      client: { auth: { set: async () => {} }, app: { log: async ({ body }) => logs.push(body) } },
+    })
+    const renewed = await p.auth.refresh({ type: "oauth", access: "old", refresh: "old-r", expires: Date.now() + 1000 })
+    expect(renewed.access).toBe("jwt-2")
+    expect(renewed.refresh).toBe("new-r")
+    expect(logs.some((l) => String(l?.message ?? "").includes("DPAPI"))).toBe(true)
+  } finally {
+    _setCryptoForTests(null)
+  }
 })
