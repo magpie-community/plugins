@@ -107,3 +107,70 @@ test("Trae Global's models carry capabilities as well", async () => {
   const ms = await hooks.provider.models({ models: { ..._internal.SITES["trae-global"].models } }, { auth: signedIn() })
   expect(ms["gemini-3.1-pro-paygo"].capabilities.reasoning).toBe(true)
 })
+
+// ---- rate: the account's consumption multiplier ---------------------------
+
+// Real display_contact_config strings, as Trae CN's batch_get_detail_param
+// returned them on 2026-11-04 (the only field a model's list entry carries
+// about its price; no account data beyond the identity list it always has).
+const ACTIVITY_CONTACT = String.raw`{"access":{"data":{"identity_list":[0,5,1,2,3,100]}},"activity_discount":{"enable":true,"subKey":"off_peak_member_discount_18_9","data":{"current":{"discount_type":"none","before_consumption_rate":0.12,"consumption_rate":0.12,"discount":100},"member":{"before_consumption_rate":0.12,"after_consumption_rate":0.09,"discount":75},"off_peak":{"before_consumption_rate":0.12,"after_consumption_rate":0.06,"discount":50,"time_windows":[{"weekdays":[1,2,3,4,5],"start_minute":0,"end_minute":540},{"weekdays":[1,2,3,4,5],"start_minute":720,"end_minute":840},{"weekdays":[1,2,3,4,5],"start_minute":1080,"end_minute":1440},{"weekdays":[6,7],"start_minute":0,"end_minute":1440}],"time_zone":"Asia/Shanghai"}}},"consumption_rate":{"enable":true,"data":{"rate":0.12}},"multimodal":{"enable":true},"reasoning":{"enable":true}}`
+const DISCOUNT_CONTACT = String.raw`{"access":{"data":{"identity_list":[0,5,1,2,3,100]}},"consumption_rate":{"enable":true,"data":{"rate":0.78}},"discount":{"enable":true,"subKey":"member_discount","data":{"original_consumption_rate":0.78,"consumption_rate":0.58,"member_discount":75,"is_discount_matched":false}},"reasoning":{"enable":true}}`
+
+test("a model's rate comes from its real display_contact_config", () => {
+  const rateOf = _internal.traeRateOf
+  const contact = (raw) => ({ display_contact_config: raw })
+  // Tuesday 08:00 Beijing is inside the off-peak window, 10:00 is not
+  expect(rateOf(contact(ACTIVITY_CONTACT), Date.parse("2026-11-04T00:00:00Z"))).toEqual({ rate: 0.06, rateWas: 0.12 })
+  expect(rateOf(contact(ACTIVITY_CONTACT), Date.parse("2026-11-04T02:00:00Z"))).toEqual({ rate: 0.12 })
+  // the member discount: consumption_rate.rate is already the discounted price
+  expect(rateOf(contact(DISCOUNT_CONTACT))).toEqual({ rate: 0.58, rateWas: 0.78 })
+  // no contact config, broken JSON, or a non-object: no rate at all
+  expect(rateOf({})).toEqual({})
+  expect(rateOf(contact("{"))).toEqual({})
+  expect(rateOf(contact("null"))).toEqual({})
+})
+
+test("consumption_rate.enable: false is not a rate, even with a stale one in data", () => {
+  const rateOf = _internal.traeRateOf
+  const raw = JSON.stringify({ consumption_rate: { enable: false, data: { rate: 2 } } })
+  expect(rateOf({ display_contact_config: raw })).toEqual({})
+})
+
+test("a broken time zone costs that model its rate only, not the list", async () => {
+  const broken = JSON.stringify({
+    activity_discount: { enable: true, data: { off_peak: {
+      before_consumption_rate: 0.12, after_consumption_rate: 0.06,
+      time_windows: [{ weekdays: [1, 2, 3, 4, 5], start_minute: 0, end_minute: 540 }],
+      time_zone: "Bogus/Zone",
+    } } },
+    consumption_rate: { enable: true, data: { rate: 0.12 } },
+  })
+  const ms = await live([
+    { config_name: "broken-model", usage: "chat_completion",
+      display_config: { display_name: "Broken" },
+      model_detail_list: [{ model_name: "broken-model__dev", max_tokens: 64000 }],
+      display_contact_config: broken },
+    { config_name: "good-model", usage: "chat_completion",
+      display_config: { display_name: "Good" },
+      model_detail_list: [{ model_name: "good-model__dev", max_tokens: 64000 }],
+      display_contact_config: DISCOUNT_CONTACT },
+  ])
+  // both models are still there: the bad field did not fall the list back
+  expect(Object.keys(ms).sort()).toEqual(["broken-model", "good-model"])
+  // the broken one falls back to the plain rate it can read
+  expect(ms["broken-model"].rate).toBe(0.12)
+  // and the good one keeps its own
+  expect(ms["good-model"].rate).toBe(0.58)
+  expect(ms["good-model"].rateWas).toBe(0.78)
+})
+
+test("provider.models carries the rate of a listed model", async () => {
+  const ms = await live([{
+    config_name: "deepseek-v4.1-flash", usage: "chat_completion",
+    display_config: { display_name: "DeepSeek-V4.1-Flash" },
+    context_window_tokens: { dev: 1_000_000 },
+    model_detail_list: [{ model_name: "deepseek-v4.1-flash__dev", max_tokens: 64000 }],
+    display_contact_config: ACTIVITY_CONTACT,
+  }])
+  expect(ms["deepseek-v4.1-flash"].rate).toBeDefined()
+})
