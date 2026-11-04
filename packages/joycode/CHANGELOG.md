@@ -1,5 +1,10 @@
 # 更新记录
 
+## 0.2.7
+
+- Responses SSE 不再把空完成当成功：空 `response.completed` 转成 `empty_response`，缺少终止事件的 EOF 转成 `incomplete_response`，流内 JoyCode `FAILED_RESPONSE` 错误保留原始字段并转成标准错误事件。按事件增量处理，不缓存整段回复。
+- 实际 magpie 0.1.2392 隔离验证：原版原协议透传接受空完成；修复后明确失败，随后上游恢复时可重试成功。真实短工具结果续答在本机 magpie 通道 2.96 秒返回 `OK`。历史静默结束没有保留原始 SSE，不能证明全部历史触发原因。
+
 ## 0.2.6
 
 - 将真实验证通过的 GPT-6.1 Sol 和 GLM-5.3 加入长上下文白名单，最高采用 900k；仍要求账号目录声明更大的 Desktop 窗口，输出上限不变。
