@@ -57,6 +57,22 @@ test('raises context only for exact input-verified models and preserves output l
       extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 1500000 } },
     },
     {
+      chatApiModel: 'GPT-6.1 Sol', maxTotalTokens: 200000, respMaxTokens: 16000,
+      extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 1000000 } },
+    },
+    {
+      chatApiModel: 'GLM-5.3', maxTotalTokens: 200000, respMaxTokens: 22000,
+      extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 1000000 } },
+    },
+    {
+      chatApiModel: 'GLM-5.3-jcloud', maxTotalTokens: 200000, respMaxTokens: 23000,
+      extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 2000000 } },
+    },
+    {
+      chatApiModel: 'GLM-5.3-agent', maxTotalTokens: 200000, respMaxTokens: 24000,
+      extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 2000000 } },
+    },
+    {
       chatApiModel: 'DeepSeek-V4.1-Flash', maxTotalTokens: 200000, respMaxTokens: 18000,
       extJson: JSON.stringify({
         adapterType: 'openai-response',
@@ -68,16 +84,30 @@ test('raises context only for exact input-verified models and preserves output l
       extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 2000000 } },
     },
     {
+      chatApiModel: 'GPT-6.1 Sol-preview', maxTotalTokens: 200000, respMaxTokens: 21000,
+      extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 2000000 } },
+    },
+    {
       chatApiModel: 'Claude-Opus-5-hq', maxTotalTokens: 200000, respMaxTokens: 20000,
       extJson: { adapterType: 'anthropic', contextWindowByPlatform: { 'JoyCode Desktop': 2000000 } },
     },
   ] })
   assert.equal(models['GPT-6 Astra'].limit.context, 900000)
+  assert.equal(models['GPT-6.1 Sol'].limit.context, 900000)
+  assert.equal(models['GLM-5.3'].limit.context, 900000)
+  assert.equal(models['GLM-5.3-jcloud'].limit.context, 200000)
+  assert.equal(models['GLM-5.3-agent'].limit.context, 200000)
   assert.equal(models['DeepSeek-V4.1-Flash'].limit.context, 1000000)
   assert.equal(models['GPT-6 Astra-preview'].limit.context, 200000)
+  assert.equal(models['GPT-6.1 Sol-preview'].limit.context, 200000)
   assert.equal(models['Claude-Opus-5-hq'].limit.context, 200000)
   assert.equal(models['GPT-6 Astra'].limit.output, 17000)
+  assert.equal(models['GPT-6.1 Sol'].limit.output, 16000)
+  assert.equal(models['GLM-5.3'].limit.output, 22000)
+  assert.equal(models['GLM-5.3-jcloud'].limit.output, 23000)
+  assert.equal(models['GLM-5.3-agent'].limit.output, 24000)
   assert.equal(models['DeepSeek-V4.1-Flash'].limit.output, 18000)
+  assert.equal(models['GPT-6.1 Sol-preview'].limit.output, 21000)
   assert.equal(models['DeepSeek-V4.1-Flash'].api.npm, '@ai-sdk/openai')
 })
 test('floors smaller directory limits and preserves larger base contexts', async t => {
@@ -100,7 +130,8 @@ test('requires a valid numeric JoyCode Desktop directory context', async t => {
   const cases = [
     { name: 'missing extJson', id: 'GPT-6 Astra' },
     { name: 'malformed extJson JSON', id: 'DeepSeek-V4.1-Flash', extJson: '{' },
-    { name: 'missing platform entry', id: 'GPT-6 Astra', extJson: {} },
+    { name: 'missing platform entry', id: 'GPT-6.1 Sol', extJson: {} },
+    { name: 'GLM-5.3 missing platform entry', id: 'GLM-5.3', extJson: {} },
     { name: 'numeric string', id: 'DeepSeek-V4.1-Flash', extJson: { contextWindowByPlatform: { 'JoyCode Desktop': '1000000' } } },
     { name: 'nonpositive context', id: 'GPT-6 Astra', extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 0 } } },
   ]

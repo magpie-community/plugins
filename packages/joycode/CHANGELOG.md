@@ -1,5 +1,10 @@
 # 更新记录
 
+## 0.2.6
+
+- 将真实验证通过的 GPT-6.1 Sol 和 GLM-5.3 加入长上下文白名单，最高采用 900k；仍要求账号目录声明更大的 Desktop 窗口，输出上限不变。
+- 2026-11-04 经 magpie Responses 实测：900,064 输入 Token、25 输出 Token，15.95 秒正常完成并返回三个正确标记；约 1,000k 输入填充加指令被拒绝为 `context_length_exceeded`。GLM-5.3 经 Chat Completions 实测 900,074 输入 Token、64 输出 Token，98.31 秒正常结束并返回全部标记；1,000k 档返回 `Prompt exceeds max length`。GLM 的 jcloud / agent 别名保持不变，原 Codex 会话压缩未重跑。
+
 ## 0.2.5
 
 - 对账号目录声明长窗口且真实请求成功的 GPT-6 Astra 和 DeepSeek-V4.1-Flash，分别采用最高 900k / 1,000k 的保守上下文声明；按 100k 向下取整，输出上限不变。未知模型和静态回退不变。

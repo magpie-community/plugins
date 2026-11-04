@@ -47,6 +47,8 @@ magpie plugin login joycode
 
 | 模型 ID | 保守的 context 声明 | 真实网关验证 |
 |---|---:|---|
+| `GLM-5.3` | 900,000 | 输入 900,074 Token，输出 64 Token，正常完成；约 1,000k 填充加指令返回 `Prompt exceeds max length` |
+| `GPT-6.1 Sol` | 900,000 | 输入 900,064 Token，输出 25 Token，正常完成；约 1,000k 填充加指令返回 `context_length_exceeded` |
 | `GPT-6 Astra` | 900,000 | 最大成功输入 921,497 Token；约 922,008 Token 填充加指令返回 `context_length_exceeded` |
 | `DeepSeek-V4.1-Flash` | 1,000,000 | 输入 1,000,073 Token，输出 150 Token，正常结束；更大请求明确报总窗口 1,048,576 Token |
 
@@ -92,3 +94,5 @@ bun test                # 浏览器登录、额度映射、模型倍率回归测
 相关文档：[magpie 插件开发](https://usemagpie.ai/docs/zh/plugins)。版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 这是非官方适配插件，与京东或 magpie 官方无隶属关系。JoyCode 图标及商标归其权利人所有；代码的 MIT 许可不授予这些品牌资产的权利。
+
+2026-11-04 补测：`GPT-6.1 Sol` 和 `GLM-5.3` 的 900k 档均找回全部标记，分别耗时 15.95 秒和 98.31 秒；两者的 1,000k 档均被上游拒绝，因此取已验证的 900k 档，不声称精确边界。`GLM-5.3-jcloud`、`GLM-5.3-agent` 未测试，不继承 `GLM-5.3` 的窗口。

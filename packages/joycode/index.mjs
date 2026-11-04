@@ -52,6 +52,8 @@ const LOW_EFFORT_FALLBACKS = new Map([
 // Input lengths verified against JoyCode; conservative context claims, not exact model limits.
 const VERIFIED_CONTEXT_LIMITS = new Map([
   ['GPT-6 Astra', 900000],
+  ['GPT-6.1 Sol', 900000],
+  ['GLM-5.3', 900000],
   ['DeepSeek-V4.1-Flash', 1000000],
 ])
 
