@@ -81,10 +81,15 @@ const FLAGGED = [
   [/operating inside pi, a coding agent harness/gi, "operating inside the pi coding agent harness"],
   // ZCode's opening line is "This conversation is powered by GLM-<version>";
   // the CN gateway refuses that wording with any GLM version, in any case,
-  // anywhere (#466: WorkBuddy renders it for a custom GLM model). A bare
-  // "GLM", "ChatGLM-5.3" or "the GLM-5.3 model" passes. The version stops
-  // before a sentence's closing period.
+  // anywhere (#466: WorkBuddy renders it for a custom GLM model). On 11-03
+  // the same refusal caught the Fable harness's "You are powered by the
+  // model glm-5.3-flash[1m]." (42 x 406; probed: that line alone 406s, the
+  // rewritten form 200s). The version stops before a sentence's closing
+  // period, and a context-tier bracket ("[1m]") after it goes with it. Only
+  // forms with the GLM name are touched: a bare model name ("the model
+  // 4.6-turbo") is not one the gateway has been seen to refuse.
   [/This conversation is powered by GLM-([\w-]+(?:\.[\w-]+)*)/gi, "This conversation is powered by the GLM-$1 model"],
+  [/(powered by )the model GLM-([\w-]+(?:\.[\w-]+)*)(\s*\[[\w-]+\])?/gi, "$1the GLM-$2 model"],
   // WorkBuddy's CLI template still opens "You are CodeBuddy Code." (#466);
   // "You are CodeBuddy" alone passes.
   [/You are CodeBuddy Code/gi, "You are the CodeBuddy Code CLI"],

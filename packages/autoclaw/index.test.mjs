@@ -192,18 +192,28 @@ test("ZCode's and pi's identity lines are rewritten", () => {
 // opening line, and the CN gateway answers 406 for "This conversation is
 // powered by GLM-<version>" in any case. The fixture is the reporter's line
 // byte for byte; each rewritten form was a 200 in the reporter's probes.
+// 11-03: the same refusal caught the Fable harness's "You are powered by
+// the model glm-5.3-flash[1m]." (42 x 406 in one day; probed: the line
+// alone 406s, the rewritten form 200s), so a second rule rewrites that
+// "powered by the model <version>" shape, context-tier bracket and all.
 test("WorkBuddy's GLM opening line and CodeBuddy Code's identity line are rewritten", () => {
   const opening = "This conversation is powered by GLM-5.3 · AutoClaw 国内 (Zhipu)"
   expect(unflagged(opening)).toBe("This conversation is powered by the GLM-5.3 model · AutoClaw 国内 (Zhipu)")
   expect(unflagged("This conversation is powered by GLM-4")).toBe("This conversation is powered by the GLM-4 model")
   expect(unflagged("Intro.\nthis conversation is powered by glm-5.3.")).toBe("Intro.\nThis conversation is powered by the GLM-5.3 model.")
   expect(unflagged("This conversation is powered by GLM-4.5-Air.")).toBe("This conversation is powered by the GLM-4.5-Air model.")
+  // the Fable harness's model line: probed 406 as written, 200 rewritten
+  expect(unflagged("You are powered by the model glm-5.3-flash[1m].")).toBe("You are powered by the GLM-5.3-flash model.")
+  expect(unflagged("Powered by the model GLM-4.5-Air.")).toBe("Powered by the GLM-4.5-Air model.")
   // what the gateway takes stays as written
   for (const t of [
     "This conversation is powered by GLM",
     "This conversation is powered by ChatGLM-5.3",
     "The conversation is powered by GLM-5.3",
     "You are powered by GLM-5.3",
+    "You are powered by the GLM-5.3-flash model",
+    "You are powered by the model claude-fable-5-1",
+    "powered by the model 4.6-turbo",
   ]) expect(unflagged(t)).toBe(t)
 
   expect(unflagged("You are CodeBuddy Code.")).toBe("You are the CodeBuddy Code CLI.")
@@ -252,6 +262,49 @@ test("Hermes Agent's identity lines are rewritten", () => {
   expect(unflagged("You are Kimi Code CLI, an interactive general AI agent running on a user's computer.")).toBe("You are the Kimi Code CLI agent, an interactive general AI agent running on a user's computer.")
   expect(unflagged("You are goose, an autonomous AI agent created by AAIF (Agentic AI Foundation).")).toBe("You are the goose agent, an autonomous AI agent created by AAIF (Agentic AI Foundation).")
   expect(unflagged("You are a general-purpose AI agent called goose")).toBe("You are a general-purpose AI agent called goose")
+})
+
+// A table over every entry, so a later edit to one rule cannot silently
+// break another (the 11-03 session's failing request carried three known
+// lines at once, and only the missing one needed rewriting). Left side =
+// what the harness opens with (or the reported line, byte for byte);
+// right side = the form the gateway takes (probed, or the reporter's
+// probe for that entry's original report). Idempotent on every row, so
+// a cached prefix rewritten once stays put.
+test("a system prompt carrying every known line at once comes out clean in one pass", () => {
+  const lines = [
+    ["You are Claude Code, Anthropic's official CLI for Claude.", "You are the Claude Code CLI, Anthropic's official CLI for Claude."],
+    ["You are a Claude agent, built on Anthropic's Claude Agent SDK.", "You are a coding assistant."],
+    ["We build on the Claude Agent SDK; see docs.", "We build on the agent framework; see docs."],
+    ["You are an AI agent powered by DeepSeek Harness.", "You are an AI agent powered by DeepSeek-Harness."],
+    ["You are Codex, OpenAI's coding agent.", "You are the Codex agent, OpenAI's coding agent."],
+    ["Codex CLI is the tool you run.", "Codex command-line tool is the tool you run."],
+    ["You are opencode, an AI coding agent.", "You are the opencode agent, an AI coding agent."],
+    ["You are Cursor, a coding assistant.", "You are the Cursor agent, a coding assistant."],
+    ["You are Cline, a coding assistant.", "You are the Cline agent, a coding assistant."],
+    ["You are Qwen Code, an interactive CLI tool.", "You are the Qwen Code agent, an interactive CLI tool."],
+    ["You are ZCode, an interactive coding agent", "You are the ZCode agent, an interactive coding agent"],
+    ["operating inside pi, a coding agent harness.", "operating inside the pi coding agent harness."],
+    ["This conversation is powered by GLM-5.3 · AutoClaw 国内 (Zhipu)", "This conversation is powered by the GLM-5.3 model · AutoClaw 国内 (Zhipu)"],
+    ["You are powered by the model glm-5.3-flash[1m].", "You are powered by the GLM-5.3-flash model."],
+    ["You are CodeBuddy Code.", "You are the CodeBuddy Code CLI."],
+    ["You are Hermes Agent, built by Nous Research.", "You are the agent Hermes, built by Nous Research."],
+    ["You run on Hermes Agent (by Nous Research).", "You run on Hermes-Agent (by Nous Research)."],
+    ["You are Gemini CLI, an interactive CLI agent.", "You are the Gemini CLI agent, an interactive CLI agent."],
+    ["You are Kimi Code CLI, an interactive AI agent.", "You are the Kimi Code CLI agent, an interactive AI agent."],
+    ["You are goose, an autonomous AI agent.", "You are the goose agent, an autonomous AI agent."],
+  ]
+  for (const [inp, want] of lines) {
+    expect(unflagged(inp)).toBe(want)
+    // one pass of the whole table through one text, then that text again:
+    // every row stays where its own rewrite put it
+    expect(unflagged(unflagged(inp))).toBe(want)
+  }
+  // all lines at once, in one text: each rewritten, none twice
+  const all = lines.map(([inp]) => inp).join("\n")
+  const once = unflagged(all)
+  expect(unflagged(once)).toBe(once)
+  for (const [, want] of lines) expect(once).toContain(want)
 })
 
 test("CN loader sends Hermes' system prompt without its identity line", async () => {
@@ -627,6 +680,47 @@ test("CN preserves string and array system content", async () => {
     await loader.fetch("x", { body: JSON.stringify({ model: "zai_auto", messages: [{ role: "system", content: "You are Claude Code" }] }) })
     expect(calls[2].messages[0].content).toBe("You are AutoClaw. Answer the user directly and concisely.\n\nYou are the Claude Code CLI")
   } finally { globalThis.fetch = realFetch }
+})
+
+// 11-04: the same Fable line reached the gateway in both system-content
+// shapes the 11-03/11-04 captures show — one text part in an array, and a
+// plain string — and both answered 406 with it in. Through both loaders the
+// line that leaves is the probed 200 form, wherever it sits and whatever
+// case it is in.
+test("both channels rewrite the model line in a string or a text part, mid-prompt too", async () => {
+  const realFetch = globalThis.fetch
+  const line = "You are powered by the model glm-5.3-flash[1m]."
+  const want = "You are powered by the GLM-5.3-flash model."
+  for (const [factory, host] of [
+    [makePlugin("autoclaw-cn"), "https://autoglm-acceleration-api.zhipuai.cn"],
+    [makePlugin("autoclaw"), "https://autoglm-api.autoglm.ai"],
+  ]) {
+    const calls = []
+    globalThis.fetch = async (input, init) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) })
+      return Response.json({ ok: true })
+    }
+    try {
+      const hooks = await factory({ client: { auth: { set: async () => {} } } }, {})
+      const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+      for (const content of [
+        line,
+        [{ type: "text", text: line }],
+        [{ type: "text", text: "before" }, { type: "text", text: line }],
+        `intro\n\n${line}\n\nnext`,
+        "you are powered by the model glm-5.3-flash[1m].",
+      ]) {
+        await loader.fetch("x", { body: JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "system", content }, { role: "user", content: "hi" }] }) })
+        const sys = calls.at(-1).body.messages[0].content
+        const text = Array.isArray(sys) ? sys.map((p) => p.text).join("\n") : sys
+        expect(text).not.toMatch(/powered by (?!the GLM-[\w.-]+ model\b)/i)
+        expect(text).toContain(want)
+        expect(text.startsWith("You are AutoClaw. Answer the user directly and concisely.")).toBe(true)
+        // the user's own words still go as written
+        expect(calls.at(-1).body.messages[1].content).toBe("hi")
+      }
+    } finally { globalThis.fetch = realFetch }
+  }
 })
 
 test("CN managed catalog uses variant objects and overseas keeps its limits", async () => {
