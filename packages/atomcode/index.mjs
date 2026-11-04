@@ -877,10 +877,11 @@ export async function AtomCodePlugin(input = {}, options = {}) {
       /**
        * The account, resolved into request routing.
        *
-       * The returned `fetch` is the only place bodies get touched — they are
-       * read (to sign) but never modified; responses stream back untouched.
-       * A request aimed anywhere but the gateway is refused outright, before
-       * any credential is attached to it.
+       * The returned `fetch` is the only place bodies get touched. A streaming
+       * Chat Completions body may gain `stream_options.include_usage`, then the
+       * exact bytes sent are signed; responses stream back untouched. A request
+       * aimed anywhere but the gateway is refused outright, before any
+       * credential is attached to it.
        */
       async loader(getAuth) {
         return {

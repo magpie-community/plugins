@@ -45,6 +45,8 @@ Keep a Changelog and the project uses semantic versioning.
   `x-magpie-sign-in: kept`.
 - Quota rows are separated by explicit unit and window span, so a token window
   is not misreported as a call-count window.
+- The diagnostics workspace now uses flat backgrounds and solid status colors
+  to match Magpie's settings pages.
 
 ### Fixed
 
@@ -63,6 +65,9 @@ Keep a Changelog and the project uses semantic versioning.
   token-gated API preflights and requests. Each page response uses a fresh CSP
   script nonce. Host and token checks remain loopback-only, and CORS never uses
   a wildcard origin.
+- CLI-backed renewals preserve each existing TOML scalar's type, including the
+  official CLI's string-valued `user.id`, and keep unmanaged fields such as
+  `token_type`. A renewal can no longer make the official CLI reject auth.toml.
 
 ### Security
 

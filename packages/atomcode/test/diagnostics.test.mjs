@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -58,6 +58,17 @@ test("diagnostics port, Host and Origin rules are loopback-only", () => {
   assert.equal(originAllowed("null", 3478, { required: true }), true);
   assert.equal(originAllowed("http://127.0.0.1:3478", 3478, { required: true }), true);
   assert.equal(originAllowed("https://127.0.0.1:3478", 3478, { required: true }), false);
+});
+
+test("diagnostics page uses flat backgrounds without decorative gradients", async () => {
+  const css = await readFile(new URL("../page/app.css", import.meta.url), "utf8");
+  const html = await readFile(
+    new URL("../page/diagnostics.html", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(css, /(?:radial|linear)-gradient/i);
+  assert.doesNotMatch(css, /\.ambient\b/);
+  assert.doesNotMatch(html, /class="ambient"/);
 });
 
 test("offline self-check exercises signing without network access", () => {

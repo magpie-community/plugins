@@ -31,6 +31,29 @@ const VALID_STATUS = {
 
 const MANIFEST = '[workspace.package]\nversion = "5.2.3"\nedition = "2021"\n';
 
+function cliAuthFile({
+  access = "cli-access",
+  refresh = "cli-refresh",
+  createdAt = 1800000000,
+  expiresIn = 3600,
+  id = "42",
+  email,
+} = {}) {
+  return [
+    `access_token = ${JSON.stringify(access)}`,
+    ...(refresh ? [`refresh_token = ${JSON.stringify(refresh)}`] : []),
+    'token_type = "Bearer"',
+    `expires_in = ${expiresIn}`,
+    `created_at = ${createdAt}`,
+    "",
+    "[user]",
+    `id = ${JSON.stringify(String(id))}`,
+    'username = "alice"',
+    ...(email ? [`email = ${JSON.stringify(email)}`] : []),
+    "",
+  ].join("\n");
+}
+
 /** broker 回的登录地址，带 force_login（插件应把它摘掉）。 */
 const LOGIN_URL = "https://atomgit.com/login?force_login=true";
 
@@ -780,7 +803,12 @@ test("CLI sign-in：续期后原子回写 auth.toml", async () => {
   await mkdir(join(home, ".atomcode"), { mode: 0o700 });
   await writeFile(
     file,
-    'access_token = "cli-old"\nrefresh_token = "cli-refresh"\ncreated_at = 1700000000\nexpires_in = 3600\n[user]\nid = 42\nemail = "cli@example.com"\n',
+    cliAuthFile({
+      access: "cli-old",
+      createdAt: 1700000000,
+      id: "42",
+      email: "cli@example.com",
+    }),
     { mode: 0o600 },
   );
   const stub = stubFetch({
@@ -816,6 +844,9 @@ test("CLI sign-in：续期后原子回写 auth.toml", async () => {
     const text = await readFile(file, "utf8");
     assert.match(text, /access_token = "cli-new"/);
     assert.match(text, /refresh_token = "cli-rotated"/);
+    assert.match(text, /token_type = "Bearer"/);
+    assert.match(text, /id = "42"/);
+    assert.doesNotMatch(text, /id = 42/);
     const call = stub.calls.find((entry) => entry.url.includes("chat/completions"));
     assert.equal(call.headers.get("authorization"), "Bearer cli-new");
   } finally {
@@ -831,7 +862,11 @@ test("CLI sign-in：auth.toml 账号切换时拒绝混用 uid", async () => {
   await mkdir(join(home, ".atomcode"), { mode: 0o700 });
   await writeFile(
     file,
-    'access_token = "other-access"\nrefresh_token = "other-refresh"\ncreated_at = 1800000000\nexpires_in = 3600\n[user]\nid = 99\n',
+    cliAuthFile({
+      access: "other-access",
+      refresh: "other-refresh",
+      id: "99",
+    }),
     { mode: 0o600 },
   );
   const stub = stubFetch({ statusBody: VALID_STATUS });
@@ -886,7 +921,11 @@ test("CLI sign-in：第二个登录方式读取 auth.toml，并标记来源", as
   await mkdir(join(home, ".atomcode"), { mode: 0o700 });
   await writeFile(
     join(home, ".atomcode", "auth.toml"),
-    'access_token = "cli-access"\nrefresh_token = "cli-refresh"\ncreated_at = 1800000000\nexpires_in = 3600\n[user]\nid = 42\nemail = "cli@example.com"\n',
+    cliAuthFile({
+      access: "cli-access",
+      id: "42",
+      email: "cli@example.com",
+    }),
     { mode: 0o600 },
   );
   const oldHome = process.env.HOME;
@@ -1250,7 +1289,11 @@ test("CLI sign-in：自定义绝对路径会进入结果并用于读取", async 
   await mkdir(join(home, "custom"), { mode: 0o700 });
   await writeFile(
     file,
-    'access_token = "custom-access"\nrefresh_token = "custom-refresh"\ncreated_at = 1800000000\nexpires_in = 3600\n[user]\nid = 77\n',
+    cliAuthFile({
+      access: "custom-access",
+      refresh: "custom-refresh",
+      id: "77",
+    }),
     { mode: 0o600 },
   );
   try {

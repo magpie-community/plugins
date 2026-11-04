@@ -86,6 +86,10 @@ magpie plugin login atomcode 2   # reuse the official AtomCode CLI login
 - The local CLI file is shared state. If its account changes, sign in again so
   magpie never signs requests with one account's `uid` and another account's
   access token.
+- The official CLI serializes renewals with `auth-refresh.lock`. This plugin
+  does not take that Rust `fs2` lock. If both renew at the same instant and the
+  broker rotates the refresh token, the client that loses the race must sign in
+  again.
 - Check-in: the toggle in magpie's plugin settings ("has the ATOMCODE plugin sign in every signed-in account, daily"). Even when off, an expired plan is re-claimed automatically while reading quota/catalog (30-min cooldown).
 - Plan quotas: Lite 1000/day; Pro trial 100/day released at 10:00. When the daily pool is out, the check-in fails with the upstream message — try again tomorrow.
 

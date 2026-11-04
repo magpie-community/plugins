@@ -132,8 +132,39 @@ function tomlString(value) {
   return JSON.stringify(String(value));
 }
 
-function tomlValue(key, value) {
-  if (key === "id" || key === "created_at" || key === "expires_in") {
+function scalarKind(raw) {
+  const text = String(raw ?? "").trim();
+  if (text.startsWith('"') || text.startsWith("'")) return "string";
+  if (text === "true" || text === "false") return "boolean";
+  const numeric = text.replaceAll("_", "");
+  if (/^[+-]?\d+$/.test(numeric)) return "integer";
+  if (/^[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?$/.test(numeric)) {
+    return "float";
+  }
+  return "string";
+}
+
+function tomlValue(key, value, existing) {
+  if (existing !== undefined) {
+    const kind = scalarKind(existing);
+    if (kind === "integer") {
+      const number = Number(value);
+      return Number.isInteger(number) ? String(number) : tomlString(value);
+    }
+    if (kind === "float") {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return tomlString(value);
+      const text = String(number);
+      return /[.eE]/.test(text) ? text : `${text}.0`;
+    }
+    if (kind === "boolean") {
+      return value === true || String(value).toLowerCase() === "true"
+        ? "true"
+        : "false";
+    }
+    return tomlString(value);
+  }
+  if (key === "created_at" || key === "expires_in") {
     const number = Number(value);
     if (Number.isInteger(number)) return String(number);
   }
@@ -188,7 +219,9 @@ export function renderAuthFile(text, next) {
     if (pair && wanted[section] && remaining[section]?.has(pair[2])) {
       const value = wanted[section][pair[2]];
       if (value !== undefined) {
-        output.push(`${pair[1]}${pair[2]}${pair[3]}${tomlValue(pair[2], value)}`);
+        output.push(
+          `${pair[1]}${pair[2]}${pair[3]}${tomlValue(pair[2], value, pair[4])}`,
+        );
       } else {
         output.push(line);
       }

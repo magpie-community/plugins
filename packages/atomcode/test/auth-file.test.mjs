@@ -15,12 +15,13 @@ import {
 const SAMPLE = `# AtomCode credentials
 access_token = "access-old"
 refresh_token = "refresh-old"
+token_type = "Bearer"
 created_at = 1700000000
 expires_in = 3600
 future_field = "keep-me"
 
 [user]
-id = 42
+id = "123456"
 username = "alice"
 name = "Alice"
 email = "alice@example.com"
@@ -31,7 +32,7 @@ test("parseAuthFile maps the CLI file without exposing raw text", () => {
   const auth = parseAuthFile(SAMPLE);
   assert.equal(auth.access, "access-old");
   assert.equal(auth.refresh, "refresh-old");
-  assert.equal(auth.uid, "42");
+  assert.equal(auth.uid, "123456");
   assert.equal(auth.accountId, "alice@example.com");
   assert.equal(auth.name, "Alice");
   assert.equal(auth.expires, 1700003600_000);
@@ -69,19 +70,22 @@ test("renderAuthFile updates only credential fields and preserves unknown conten
     refresh: "refresh-new",
     expiresIn: 7200,
     createdAt: 1800000000,
-    user: { id: 42, name: "Alice 2" },
+    user: { id: "123456", name: "Alice 2" },
   });
   assert.match(rendered, /# AtomCode credentials/);
   assert.match(rendered, /future_field = "keep-me"/);
+  assert.match(rendered, /token_type = "Bearer"/);
   assert.match(rendered, /access_token = "access-new"/);
   assert.match(rendered, /refresh_token = "refresh-new"/);
   assert.match(rendered, /created_at = 1800000000/);
   assert.match(rendered, /expires_in = 7200/);
+  assert.match(rendered, /id = "123456"/);
+  assert.doesNotMatch(rendered, /id = 123456/);
   assert.match(rendered, /name = "Alice 2"/);
   assert.match(rendered, /email = "alice@example.com"/);
 });
 
-test("auth.toml parser tolerates CLI scalar quoting and adds a missing user section", () => {
+test("auth.toml parser preserves scalar types and appends id as a string", () => {
   const text = `access_token = "access\\q"
 refresh_token = 'refresh-single'
 created_at = "1700000000"
@@ -102,8 +106,47 @@ id = "42"
     user: { id: 42, name: "Alice" },
   });
   assert.match(rendered, /\[user\]/);
-  assert.match(rendered, /id = 42/);
+  assert.match(rendered, /id = "42"/);
   assert.match(rendered, /name = "Alice"/);
+
+  const quoted = renderAuthFile(text, {
+    access: "next",
+    refresh: "next-refresh",
+    createdAt: 1800000000,
+    expiresIn: 7200,
+    user: { id: "42" },
+  });
+  assert.match(quoted, /created_at = "1800000000"/);
+  assert.match(quoted, /expires_in = "7200"/);
+  assert.match(quoted, /id = "42"/);
+});
+
+test("auth.toml renderer preserves a legacy integer id when rewriting it", () => {
+  const rendered = renderAuthFile(
+    'access_token = "old"\ncreated_at = 1700000000\nexpires_in = 3600\n[user]\nid = 42\n',
+    {
+      access: "new",
+      createdAt: 1800000000,
+      expiresIn: 7200,
+      user: { id: "99" },
+    },
+  );
+  assert.match(rendered, /\[user\]\nid = 99/);
+  assert.doesNotMatch(rendered, /\[user\]\nid = "99"/);
+});
+
+test("auth.toml renderer preserves float and boolean value types", () => {
+  const rendered = renderAuthFile(
+    'access_token = "old"\ncreated_at = 1.0\nexpires_in = true\n[user]\nid = "42"\n',
+    {
+      access: "new",
+      createdAt: 1800000000,
+      expiresIn: false,
+      user: { id: "42" },
+    },
+  );
+  assert.match(rendered, /created_at = 1800000000\.0/);
+  assert.match(rendered, /expires_in = false/);
 });
 
 test("readAuthFile and writeAuthFile use private permissions and atomic replacement", async () => {
@@ -118,10 +161,13 @@ test("readAuthFile and writeAuthFile use private permissions and atomic replacem
     access: "access-new",
     refresh: "refresh-new",
     expiresIn: 60,
-    user: { id: 42, username: "alice" },
+    user: { id: "123456", username: "alice" },
   });
   const text = await readFile(file, "utf8");
   assert.match(text, /access_token = "access-new"/);
+  assert.match(text, /token_type = "Bearer"/);
+  assert.match(text, /id = "123456"/);
+  assert.doesNotMatch(text, /id = 123456/);
   assert.match(text, /future_field = "keep-me"/);
   if (process.platform !== "win32") {
     assert.equal((await stat(file)).mode & 0o777, 0o600);
