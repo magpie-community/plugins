@@ -665,6 +665,17 @@ function providerRequest(wire, req, model) {
         if (edits.length) req.context_management = { ...cm, edits }
         else delete req.context_management
       }
+      // Zed's cloud parses thinking.display into its own enum too, which has
+      // only omitted and summarized: Claude Code's "updates" was answered 400
+      // "unknown variant `updates`, expected `omitted` or `summarized`"
+      // (gogoing1024, #708). "highlights" goes as summarized, the thinking
+      // still shown; "updates" or any other is left out, as Claude Code
+      // itself sends it again after Anthropic's API refuses one.
+      const th = req.thinking
+      if (th && typeof th === "object" && "display" in th && th.display !== "omitted" && th.display !== "summarized") {
+        if (th.display === "highlights") th.display = "summarized"
+        else delete th.display
+      }
       // Zed's Anthropic request has no stream field: the cloud always streams
       delete req.stream
       // Zed's cloud refuses a tool result without is_error ("missing field
