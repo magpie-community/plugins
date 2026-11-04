@@ -33,6 +33,7 @@
     quality: ["low", "medium", "high"].includes(opts.quality) ? opts.quality : "medium",
     demo: opts.demo === true,
     showDone: opts.showDone !== false,
+    remote: opts.remote === true,
     hideAfter: M.HIDE[opts.hideAfter] !== undefined ? opts.hideAfter : M.DEFAULTS.hideAfter,
     text: opts.text !== false,
     approvalAfterSec: Number(opts.approvalAfterSec) > 0 ? Number(opts.approvalAfterSec) : M.DEFAULTS.approvalAfterSec,
@@ -628,7 +629,8 @@
   }
 
   function emptyText() {
-    return state.loaded && state.snap ? t().empty : t().noFile
+    if (!state.loaded || !state.snap) return t().noFile
+    return !view.remote && state.snap.dropped > 0 ? t().empty + " " + t().emptyRemote : t().empty
   }
 
   // ---- the side rail ----------------------------------------------------
@@ -886,7 +888,7 @@
     const base = { ...opts }
     delete base.jumpRequest
     return {
-      ...base, mode: view.mode, dim: view.dim, demo: view.demo, showDone: view.showDone, hideAfter: view.hideAfter,
+      ...base, mode: view.mode, dim: view.dim, demo: view.demo, showDone: view.showDone, remote: view.remote, hideAfter: view.hideAfter,
       text: textOn(), agents: view.agents.slice(), showSub: view.showSub, showIdle: view.showIdle,
       side: view.side, sideV: 2, lang: manualLang, scene: view.scene, quality: view.quality,
       cleared: { ...view.cleared }, preferredJumpHost: view.preferredJumpHost || "",
@@ -970,12 +972,14 @@
   })
   $("optDemo").checked = view.demo
   $("optDone").checked = view.showDone
+  $("optRemote").checked = view.remote
   $("optText").checked = opts.text !== false
   $("optSub").checked = view.showSub
   $("optIdle").checked = view.showIdle
   select("optHide", "hide", view.hideAfter)
   $("optDemo").addEventListener("change", (e) => { view.demo = e.target.checked; state.demoSnap = null; refresh(); save() })
   $("optDone").addEventListener("change", (e) => { view.showDone = e.target.checked; refresh(); save() })
+  $("optRemote").addEventListener("change", (e) => { view.remote = e.target.checked; refresh(); save() })
   $("optText").addEventListener("change", (e) => { view.text = e.target.checked; refresh(); save() })
   $("optSub").addEventListener("change", (e) => { view.showSub = e.target.checked; agentFilterSig = ""; refresh(); save() })
   $("optIdle").addEventListener("change", (e) => { view.showIdle = e.target.checked; agentFilterSig = ""; refresh(); save() })
