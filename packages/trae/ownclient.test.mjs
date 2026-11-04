@@ -273,12 +273,24 @@ test("B's 9074 says it went on magpie's own device, since both profiles here are
   const out = await refused("uid-b")
   expect(out).toEqual({
     outcome: "ineligible",
-    message: "当前参与用户太多，请稍后再试 (9074) — Trae CN did not take this check-in for this account's device (sent on magpie's own device for this account: 2 Trae CN client profiles are on this machine, none signed in as this account)",
+    message: "当前参与用户太多，请稍后再试 (9074) — Trae CN did not take this check-in for this account's device (sent on magpie's own device for this account: 2 Trae CN client profiles are on this machine, none signed in as this account; claimed again in the request Trae CN's client-less check-in tools send)",
   })
   // it names neither uid nor either device
   expect(out.message).not.toContain("uid-a")
   expect(out.message).not.toContain(DC)
-  expect(f.seen.at(-1).headers.get("x-device-id")).toBe(_internal.ugDevice(signedIn({ uid: "uid-b" })))
+  // the first claim on magpie's own device; B has no client here, so the
+  // 9074 is claimed once more on the id made from its uid (plugins#709)
+  const claims = f.seen.filter((r) => r.path.endsWith("/claim"))
+  expect(claims.map((r) => r.headers.get("x-device-id"))).toEqual([_internal.ugDevice(signedIn({ uid: "uid-b" })), expect.stringMatching(/^\d{15}$/)])
+  expect(claims[1].headers.get("x-device-id")).not.toBe(DC)
+})
+
+test("a 9074 on the account's own client's device is not claimed again (plugins#709)", async () => {
+  reporterProfiles()
+  const out = await refused("uid-a")
+  expect(out.outcome).toBe("ineligible")
+  expect(out.message).not.toContain("claimed again")
+  expect(f.seen.filter((r) => r.path.endsWith("/claim")).map((r) => r.headers.get("x-device-id"))).toEqual([DC])
 })
 
 test("A's refusal says it went on the client's device; one account in two profiles is no conflict (#436)", async () => {
@@ -301,5 +313,5 @@ test("a client device another account's profile also has is named as shared (#43
 test("one profile, signed in as someone else, is counted in the singular (#436)", async () => {
   client("uid-a")
   const out = await refused("uid-b")
-  expect(out.message).toContain("(sent on magpie's own device for this account: 1 Trae CN client profile is on this machine, none signed in as this account)")
+  expect(out.message).toContain("(sent on magpie's own device for this account: 1 Trae CN client profile is on this machine, none signed in as this account; claimed again")
 })

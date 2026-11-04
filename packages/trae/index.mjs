@@ -807,6 +807,64 @@ function ugHeaders(a, site, extra = {}, own) {
   return { ...h, ...extra }
 }
 
+// clientShape is the claim request that three tools which check in Trae CN
+// accounts with no Trae CN client on the machine send, and which Trae CN
+// takes: luckymiaow/trae-mate (checkin.rs build_headers, device_map.rs;
+// MIT), iJetLi/dsh-providers-hub's port of it (traeCheckinHeaders), and
+// rockswang/wild-work. All three send body {}, `x-user-region: CN` and a
+// 15-digit device id, none sends the Electron User-Agent or 0.1.69, and
+// none retries a 9074 (wild-work's 8s retry never ran: every one of its
+// claims was taken first time, plugins#709). On plugins#722 the same
+// account this plugin's claim gets 9074 on checks in daily through
+// providers-hub. This is trae-mate's request as it is: its headers, and
+// its device, market user and session ids made from the uid alone, so an
+// account checks in on the device those tools already use for it. Which
+// field is the one Trae CN wants hasn't been measured (plugins#709's
+// bisect); the request goes whole.
+const seeded = (seed, salt, n) => {
+  const out = []
+  for (let i = 0; out.length < n; i++) {
+    const c = Buffer.alloc(4)
+    c.writeUInt32BE(i)
+    out.push(...createHash("sha256").update(`${salt}:${seed}`).update(c).digest())
+  }
+  return out.slice(0, n)
+}
+const shapeDevice = (uid) => seeded(String(uid), "devid", 15).map((b) => b % 10).join("")
+function shapeMarketUser(uid) {
+  const b = seeded(String(uid), "market", 16)
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = Buffer.from(b).toString("hex")
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+function clientShapeHeaders(a) {
+  const uid = String(a.uid)
+  return {
+    Authorization: `Cloud-IDE-JWT ${a.token}`,
+    Accept: "*/*",
+    "Accept-Encoding": "gzip, deflate",
+    "Accept-Language": "zh-CN",
+    "Content-Type": "application/json",
+    "User-Agent": "VSCode 1.107.1 (TRAE SOLO CN)",
+    "x-market-client-id": "VSCode 1.107.1",
+    "x-market-user-id": shapeMarketUser(uid),
+    "x-user-region": "CN",
+    "x-device-id": shapeDevice(uid),
+    "x-lgw-req-sdk-type": "3",
+    "package-type": "stable_cn",
+    "x-lscbd-aid": "787976",
+    "x-lscbd-platform": "windows",
+    "app-version": "0.1.45",
+    "x-tt-trace-id": `00-${randomBytes(8).toString("hex")}-01`,
+    "vscode-sessionid": Buffer.from(seeded(uid, "sess", 32)).toString("hex"),
+    "x-request-id": randomUUID(),
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "no-cors",
+    "sec-fetch-site": "none",
+  }
+}
+
 // ---- this machine's own Trae CN client ----------------------------------------------
 
 // Trae CN's desktop client keeps its state in a VS Code-style
@@ -3193,14 +3251,35 @@ const makePlugin = (site) => async ({ client }) => {
     const body = first.body
     if (body.checked_in) return { outcome: "done", ...(Number(body.credits) > 0 ? { credit: Number(body.credits) } : {}) }
     if (!body.enable) return { outcome: "inactive" }
-    const claim = await ownRequest(getAuth, a0, site.hosts.auth + site.checkin.claim.path, "POST", "{}")
-    const claimText = await claim.text()
-    let answer
-    try { answer = JSON.parse(claimText) } catch {}
-    const ce = errorOf(answer)
+    const read = async (res) => {
+      const text = await res.text()
+      let v
+      try { v = JSON.parse(text) } catch {}
+      return { claim: res, claimText: text, answer: v, ce: errorOf(v) }
+    }
+    let { claim, claimText, answer, ce } = await read(await ownRequest(getAuth, a0, site.hosts.auth + site.checkin.claim.path, "POST", "{}"))
+    // A 9074 on an account no Trae CN client here is signed in as is
+    // claimed once more, at once, as the tools that check such accounts in
+    // send it (clientShape, plugins#709, #722) — once, never on another
+    // code, and never for an account that rode its own client's device. A
+    // 9074 means Trae took nothing, so the second claim can't take the day
+    // twice; what it answers is the day's answer, read the same way.
+    let again = ""
+    if (String(ce.code) === "9074" && site.id === "trae-cn" && a0.uid && !(await clientDevice(a0.uid))) {
+      let a
+      try {
+        a = await fresh(getAuth)
+      } catch (e) {
+        if (!(e instanceof Expired)) throw e
+      }
+      if (a) {
+        ;({ claim, claimText, answer, ce } = await read(await fetch(site.hosts.auth + site.checkin.claim.path, { method: "POST", headers: clientShapeHeaders(a), body: "{}", signal: AbortSignal.timeout(20_000) })))
+        again = "; claimed again in the request Trae CN's client-less check-in tools send"
+      }
+    }
     if (claim.status === 401 || lapsedCode(ce.code, site)) return { outcome: "failed", message: ce.message || `${a0.name || a0.uid}: Trae's sign-in has expired` }
     // 9095: this device is in for today, whoever took it — the day's answer
-    if (String(ce.code) === "9095") return { outcome: "ineligible", message: `${ce.message || "this device has checked in today"} (${await deviceNote(a0.uid)})` }
+    if (String(ce.code) === "9095") return { outcome: "ineligible", message: `${ce.message || "this device has checked in today"} (${await deviceNote(a0.uid)}${again})` }
     // 9074: Trae did not take this claim for this account's device. Its own
     // words say the pool is busy, which measurements do not bear out: the
     // same account, token and headers were taken on a 16-digit id where a
@@ -3209,18 +3288,18 @@ const makePlugin = (site) => async ({ client }) => {
     // while this account's own id answered 9074. So the message says what
     // Trae said and that the device is what it refused, rather than
     // sending people to check in in Trae CN's app, which is not where the
-    // problem is. No device id is made up or rotated to get round this:
-    // the account keeps its own until a client of its own is here to sign
-    // it in. Nothing is said of signing one in: it is the one thing seen
-    // to change a 9074, but it hasn't been tried on a real account, and
-    // on a claim that already rode a client's device it is what the user
-    // did — the advice would only send them back to do it again. What it
+    // problem is. Its own device is never rotated: an account with no
+    // client here gets one more claim in the client-less tools' request,
+    // on the one id they make from its uid (above), and nothing after
+    // that. Nothing is said of signing a client in: on a claim that
+    // already rode a client's device it is what the user did — the
+    // advice would only send them back to do it again. What it
     // does say, after both 9074 and 9095, is which device the claim went
     // on and why (deviceNote): moxuanchen (plugins#436) had to run
     // clientDevice by hand to learn that the account Trae CN took (A, 100
     // credits) rode the client's device and the one it refused 9074 (B)
     // rode magpie's own, since both of that machine's profiles were A's.
-    if (String(ce.code) === "9074") return { outcome: "ineligible", message: `${ce.message} (9074) — Trae CN did not take this check-in for this account's device (${await deviceNote(a0.uid)})` }
+    if (String(ce.code) === "9074") return { outcome: "ineligible", message: `${ce.message} (9074) — Trae CN did not take this check-in for this account's device (${await deviceNote(a0.uid)}${again})` }
     if (claim.status !== 200 || (ce.code && String(ce.code) !== "0")) return { outcome: "failed", message: ce.message || statusLine(claim.status) }
     if (!answer || typeof answer !== "object" || Array.isArray(answer)) return { outcome: "failed", message: `check-in claim: unreadable reply ${claimText.trim().slice(0, 120) || "(empty)"}` }
     // a claim's own code 0 is not proof the day is in: Trae answers it for

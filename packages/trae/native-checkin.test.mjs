@@ -122,8 +122,90 @@ test("Trae's 9074 on the claim says the device is what Trae refused, and promise
   expect(out.message).toContain("sent on magpie's own device for this account")
   expect(out.message).not.toMatch(/sign (it )?in|log ?in|check in in the Trae CN app/i)
   // the check-in rides ugDevice like every other ug page: the 19-digit
-  // sign-in device becomes the account's own 16-digit shape (#194)
-  expect(f.seen.map((r) => r.headers.get("x-device-id"))).toEqual(["2866487253502651", "2866487253502651"])
+  // sign-in device becomes the account's own 16-digit shape (#194); the
+  // one claim more goes on the id made from the uid (plugins#709, #722)
+  expect(f.seen.map((r) => r.headers.get("x-device-id"))).toEqual(["2866487253502651", "2866487253502651", "422507670212903"])
+})
+
+// plugins#709 and #722: with no Trae CN client on the machine, Trae CN
+// answers the plugin's claim 9074 every day, while three tools that check
+// the same accounts in with no client are taken first time — trae-mate,
+// providers-hub (#722's reporter, daily) and wild-work (#709's log: no
+// 9074 at all, so its 8s retry never ran). A 9074 there is claimed once
+// more, at once, in trae-mate's request: body {}, x-user-region CN, its
+// headers, and the 15-digit id it makes from the uid. The bytes are #709's
+// literal 9074 and Trae CN's real success (plugins#194).
+const REFUSED = '{"code":9074,"message":"当前参与用户太多，请稍后再试"}'
+const raw = (text) => new Response(text, { headers: { "content-type": "application/json" } })
+const shaped = (r) => r.headers.get("user-agent") === "VSCode 1.107.1 (TRAE SOLO CN)"
+
+test("a 9074 with no client here is claimed once more in the client-less tools' request, and taken", async () => {
+  f = fakeTrae()
+  let claimed = false
+  f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: claimed, credits: 100 }))
+  f.route("POST " + CLAIM, (r) => {
+    if (!shaped(r)) return raw(REFUSED)
+    claimed = true
+    return raw('{"code":0,"message":"success"}')
+  })
+  expect(await checkin()).toEqual({ outcome: "claimed", credit: 100 })
+  expect(f.seen.map((r) => r.path)).toEqual([STATUS, CLAIM, CLAIM, STATUS])
+  const second = f.seen[2]
+  expect(second.json).toEqual({})
+  const h = Object.fromEntries(second.headers)
+  // trae-mate's device_map.rs ids for uid "u-1", worked out apart from the plugin
+  expect(h["x-device-id"]).toBe("422507670212903")
+  expect(h["x-market-user-id"]).toBe("f8c30378-f888-4639-bdd1-9e53e2d66f48")
+  expect(h["vscode-sessionid"]).toBe("d169d4eac9d32be67855cbec44a37e20b06b57dc68b4e252edace023e037e7e7")
+  expect(h).toMatchObject({
+    authorization: "Cloud-IDE-JWT jwt-1",
+    "x-user-region": "CN",
+    "x-market-client-id": "VSCode 1.107.1",
+    "x-lgw-req-sdk-type": "3",
+    "package-type": "stable_cn",
+    "x-lscbd-aid": "787976",
+    "x-lscbd-platform": "windows",
+    "app-version": "0.1.45",
+    "accept-language": "zh-CN",
+  })
+  expect(h["x-tt-trace-id"]).toMatch(/^00-[0-9a-f]{16}-01$/)
+  expect(h["x-request-id"]).toMatch(/^[0-9a-f-]{36}$/)
+  // none of the IDE's device headers, nor the chat's
+  for (const k of ["x-app-version", "x-device-brand", "x-device-type", "x-os-version", "x-uid", "x-ide-token"]) expect(h[k]).toBeUndefined()
+  // the read-back after it goes as before
+  expect(f.seen[3].headers.get("x-device-id")).toBe("2866487253502651")
+})
+
+test("a second 9074 is the day's answer: two claims, never a third", async () => {
+  f = fakeTrae()
+  f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))
+  f.route("POST " + CLAIM, () => raw(REFUSED))
+  const out = await checkin()
+  expect(out.outcome).toBe("ineligible")
+  expect(out.message).toContain("(9074)")
+  expect(out.message).toContain("claimed again")
+  expect(f.seen.map((r) => r.path)).toEqual([STATUS, CLAIM, CLAIM])
+  expect(f.seen.map(shaped)).toEqual([false, false, true])
+})
+
+test("only a 9074 is claimed again: another refusal is one claim", async () => {
+  for (const answer of ['{"code":9095,"message":"当前设备今日已经签到"}', '{"code":1005,"message":"x"}', '{"code":9004,"message":"x"}']) {
+    f = fakeTrae()
+    f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))
+    f.route("POST " + CLAIM, () => raw(answer))
+    await checkin()
+    expect(f.seen.map((r) => r.path)).toEqual([STATUS, CLAIM])
+    f.close()
+    f = undefined
+  }
+})
+
+test("an account with no uid is not claimed again", async () => {
+  f = fakeTrae()
+  f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))
+  f.route("POST " + CLAIM, () => raw(REFUSED))
+  expect((await checkin(TraeCNAuthPlugin, signedIn({ uid: "" }))).outcome).toBe("ineligible")
+  expect(f.seen.map((r) => r.path)).toEqual([STATUS, CLAIM])
 })
 
 // a claim's code 0 is not the answer: Trae answers it for a claim that

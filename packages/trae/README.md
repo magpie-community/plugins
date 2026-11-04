@@ -448,10 +448,27 @@ answered it 9074 even with the client's headers.
   client on this machine is the one thing seen to change a 9074, but it
   hasn't been tried on a real account, so it isn't named in the message;
   nor is it named when the claim already rode a client's device, where it
-  would only tell the user to do what they did. No device id is ever
-  changed or rotated to get round a 9095 or a 9074, and no account is
-  given another account's device or its own client's device unless a
-  client is signed in as that account.
+  would only tell the user to do what they did. The account's own device
+  is never rotated: a 9095 is the day's answer, and a 9074 gets the one
+  claim more below, on the one id made from the uid, and nothing after
+  it. No account is given another account's device or its own client's
+  device unless a client is signed in as that account.
+- **A 9074 with no client here is claimed once more (0.2.29):** an
+  account no Trae CN client on this machine is signed in as gets one more
+  claim, at once, after a 9074, in the request that tools checking Trae
+  CN accounts in with no client send: luckymiaow/trae-mate's (MIT), as
+  iJetLi/dsh-providers-hub sends it too. Body `{}`, `x-user-region: CN`,
+  User-Agent `VSCode 1.107.1 (TRAE SOLO CN)`, its market, LSCBD and
+  session headers, and a 15-digit device id made from the uid alone
+  (trae-mate's `device_map.rs`), with none of the IDE's device headers.
+  On plugins#722 the account this plugin's claim got 9074 on checks in
+  daily through providers-hub, and on plugins#709 wild-work, which also
+  sends body `{}`, `x-user-region: CN` and a 15-digit id, had every claim
+  taken first time, so its 8-second retry never ran: waiting is not what
+  changes a 9074. Which field Trae CN wants hasn't been measured, so the
+  request goes whole, and only once: a second 9074 is the day's answer,
+  no other code is claimed again, and an account whose own client's
+  device the claim rode is not. Not yet tried on a real Trae CN account.
 - **Which device, said (0.2.25):** a 9074 or 9095 message ends with
   the device the claim went on: this machine's Trae CN client's, signed in
   as the account, or magpie's own for it, with how many client profiles
