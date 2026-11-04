@@ -147,6 +147,8 @@ var init_i18n = __esm({
         "notice.sessionStartFailed": "\u4F1A\u8BDD\u542F\u52A8\u5931\u8D25\uFF1A{detail}",
         "notice.sendFailed": "\u53D1\u9001\u5931\u8D25\uFF1A{detail}",
         "notice.bashMissing": "\u6CA1\u6709\u627E\u5230 Git Bash\u3002\u8FD9\u4E2A Agent \u5728 Windows \u4E0A\u8981\u7528 Git Bash \u8FD0\u884C\u547D\u4EE4\uFF08C:\\Windows\\System32\\bash.exe \u662F WSL \u542F\u52A8\u5668\uFF0C\u4E0D\u80FD\u7528\uFF09\u3002\u8BF7\u5B89\u88C5 Git for Windows\uFF1Ahttps://git-scm.com/download/win \uFF0C\u6216\u5728\u300C\u8BBE\u7F6E \u2192 Bash \u8DEF\u5F84\u300D\u91CC\u624B\u52A8\u6307\u5B9A bash.exe\u3002",
+        "notice.autoApproveUpgrade": "1.3 \u65B0\u589E\u300C\u5168\u90E8\u81EA\u52A8\u540C\u610F\u300D\uFF1A\u73B0\u5728\u5BF9 Cursor\u3001OpenCode\u3001dsh \u4E5F\u4F1A\u771F\u6B63\u81EA\u52A8\u540C\u610F\uFF081.2 \u7684\u300C\u5168\u90E8\u653E\u884C\u300D\u5BF9\u5B83\u4EEC\u4E0D\u751F\u6548\uFF0C\u4ECD\u4F1A\u8BE2\u95EE\uFF09\u3002\u4F60\u4E4B\u524D\u628A\u9ED8\u8BA4\u6743\u9650\u6A21\u5F0F\u8BBE\u6210\u4E86\u5B83\uFF0C\u4E3A\u5B89\u5168\u8D77\u89C1\u8FD9\u4E2A\u5BF9\u8BDD\u4ECD\u4ECE\u300C\u6BCF\u6B21\u8BE2\u95EE\u300D\u5F00\u59CB\uFF1B\u9700\u8981\u65F6\u8BF7\u5728\u4E0B\u65B9\u6743\u9650\u83DC\u5355\u91CC\u624B\u52A8\u5F00\u542F\uFF0C\u6216\u5728\u8BBE\u7F6E\u91CC\u91CD\u65B0\u9009\u62E9\u9ED8\u8BA4\u6743\u9650\u6A21\u5F0F\u3002",
+        "notice.autoApproveMigrated": "\u8FD9\u4E2A\u5BF9\u8BDD\u5728 1.2 \u91CC\u8BBE\u6210\u4E86\u300C\u5168\u90E8\u653E\u884C\u300D\uFF0C\u5F53\u65F6\u8FD9\u4E2A Agent \u5B9E\u9645\u4ECD\u4F1A\u8BE2\u95EE\u30021.3 \u8D77\u300C\u5168\u90E8\u81EA\u52A8\u540C\u610F\u300D\u4F1A\u771F\u6B63\u81EA\u52A8\u540C\u610F\uFF0C\u6240\u4EE5\u5DF2\u6539\u56DE\u300C\u6BCF\u6B21\u8BE2\u95EE\u300D\uFF1B\u9700\u8981\u65F6\u8BF7\u5728\u4E0B\u65B9\u6743\u9650\u83DC\u5355\u91CC\u624B\u52A8\u5F00\u542F\u3002",
         "notice.effortNextTurn": "\u601D\u8003\u5F3A\u5EA6\u5DF2\u4FDD\u5B58\uFF0C\u5C06\u5728\u4E0B\u4E00\u8F6E\u751F\u6548",
         "notice.effortResetOnModel": "\u5F53\u524D\u6A21\u578B\u4E0D\u652F\u6301\u8BE5\u601D\u8003\u5F3A\u5EA6\uFF0C\u5DF2\u6062\u590D\u4E3A Default",
         "turn.agentExit": "Agent \u8FDB\u7A0B\u610F\u5916\u9000\u51FA",
@@ -258,6 +260,8 @@ var init_i18n = __esm({
         "notice.sessionStartFailed": "Session start failed: {detail}",
         "notice.sendFailed": "Send failed: {detail}",
         "notice.bashMissing": "Git Bash was not found. On Windows this agent runs its commands with Git Bash (C:\\Windows\\System32\\bash.exe is the WSL launcher and won't work). Install Git for Windows: https://git-scm.com/download/win , or set bash.exe under Settings \u2192 Bash path.",
+        "notice.autoApproveUpgrade": "New in 1.3: Auto-approve all now really auto-approves for Cursor, OpenCode and dsh too (1.2's bypass mode did nothing for them; they still asked). Your default permission mode was set to it, so to be safe this conversation starts in Always Ask; switch it on in the permission menu below if you want it, or pick the default permission mode again in Settings.",
+        "notice.autoApproveMigrated": "This conversation was set to bypass permissions in 1.2, where this agent still asked anyway. From 1.3 Auto-approve all really auto-approves, so it was put back to Always Ask; switch it on in the permission menu below if you want it.",
         "notice.effortNextTurn": "Reasoning effort saved \u2014 takes effect on the next turn",
         "notice.effortResetOnModel": "This model does not support that effort level; reset to Default",
         "turn.agentExit": "Agent process exited unexpectedly",
@@ -4871,7 +4875,7 @@ var init_session3 = __esm({
           return hit?.id ?? want;
         }
         if (this.o.flavor === "cursor") {
-          const map = { default: "agent", plan: "plan", ask: "ask" };
+          const map = { default: "agent", bypassPermissions: "agent", plan: "plan", ask: "ask" };
           const want = map[mode2] ?? "agent";
           const avail = this.active?.modes?.availableModes ?? [];
           const hit = avail.find((m) => m.id === want || m.name.toLowerCase() === want);
@@ -5138,7 +5142,7 @@ async function resolveProviderBin(cfg2) {
 }
 function createAcpProvider(cfg2) {
   const base = cfg2.capabilities ?? acpCapabilities;
-  const ORDER = ["plan", "default", "acceptEdits", "bypassPermissions"];
+  const ORDER = ["plan", "default", "acceptEdits", "bypassPermissions", "ask"];
   const caps = cfg2.modeMap ? { ...base, modes: ORDER.filter((m) => cfg2.modeMap[m] !== void 0), modeLabels: cfg2.modeLabels } : base;
   return {
     id: cfg2.id,
@@ -5219,7 +5223,9 @@ var init_provider3 = __esm({
     cursorAcpCapabilities = {
       ...acpCapabilities,
       questions: true,
-      modes: ["default", "plan", "ask"]
+      // 1.3: bypassPermissions = 全部自动同意: Cursor's agent mode, every approval answered "allow once" by the daemon
+      // (Cursor's own --force only exists at spawn, and Auto-review is not applied over ACP)
+      modes: ["default", "bypassPermissions", "plan", "ask"]
     };
   }
 });
@@ -5487,8 +5493,9 @@ function acpConfigForEntry(entry, appVersion) {
         ...base,
         acpArgs: ["acp"],
         fetchModels: acpProbeModels(["acp"], entry.id),
-        modeMap: { plan: "plan", default: "build" },
-        modeLabels: { plan: "Plan", default: "Build" }
+        // 1.3: 全部自动同意 = build + the daemon answers each approval "allow once" (OPENCODE_PERMISSION only applies at spawn)
+        modeMap: { plan: "plan", default: "build", bypassPermissions: "build" },
+        modeLabels: { plan: "Plan", default: "Build", bypassPermissions: "Build" }
       };
     case "copilot":
       return {
@@ -5499,7 +5506,7 @@ function acpConfigForEntry(entry, appVersion) {
         modeLabels: { plan: "Plan", default: "Agent", bypassPermissions: "Allow All" }
       };
     case "pi":
-      return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { default: "" } };
+      return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { bypassPermissions: "" } };
     case "dsh":
       return {
         ...base,
@@ -5863,6 +5870,106 @@ function clampMode(modes, mode2) {
 }
 var init_modes = __esm({
   "daemon/src/providers/modes.ts"() {
+  }
+});
+
+// daemon/src/providers/autoApprove.ts
+function pickAllowOnce(options) {
+  const once = options.find((o) => o.kind === "allow_once");
+  if (once) return once;
+  const plain = options.find((o) => {
+    const s = `${o.id} ${o.label ?? ""}`;
+    return !o.kind?.startsWith("reject") && !REJECT.test(s) && ALLOW.test(s) && !/always|session|总是|始终/i.test(s);
+  });
+  return plain ?? null;
+}
+function autoApproveOption(mode2, providerId, req) {
+  if (mode2 !== FULL_AUTO) return null;
+  if (FULL_AUTO_NATIVE[providerId]?.daemonAnswers === false) return null;
+  if (req.kind === "plan" || req.kind === "switch_mode") return null;
+  return pickAllowOnce(req.options);
+}
+var FULL_AUTO, FULL_AUTO_NATIVE, REJECT, ALLOW;
+var init_autoApprove = __esm({
+  "daemon/src/providers/autoApprove.ts"() {
+    FULL_AUTO = "bypassPermissions";
+    FULL_AUTO_NATIVE = {
+      claude: { native: "--permission-mode bypassPermissions (+ --allow-dangerously-skip-permissions)", live: "nextTurn", daemonAnswers: true },
+      codex: { native: "approvalPolicy never + sandbox danger-full-access (turn/start)", live: "nextTurn", daemonAnswers: true },
+      cursor: { native: "none over ACP (--force is spawn-only); ACP mode agent", live: "live", daemonAnswers: true },
+      copilot: { native: "ACP config allow_all = on (agent mode)", live: "live", daemonAnswers: true },
+      opencode: { native: "none over ACP (OPENCODE_PERMISSION is spawn-only); ACP mode build", live: "live", daemonAnswers: true },
+      devin: { native: "ACP mode bypass", live: "live", daemonAnswers: true },
+      dsh: { native: "none known; ACP default mode", live: "live", daemonAnswers: true },
+      // pi never asks before its own tools; requestPermission only carries Pi extensions' own dialogs, which stay with the user
+      pi: { native: "always (Pi has no tool approvals)", live: "live", daemonAnswers: false },
+      mock: { native: "mock", live: "live", daemonAnswers: true }
+    };
+    REJECT = /reject|deny|decline|cancel|never|拒绝/i;
+    ALLOW = /allow|accept|approve|yes|允许|同意/i;
+  }
+});
+
+// daemon/src/migrate/autoApprove13.ts
+var autoApprove13_exports = {};
+__export(autoApprove13_exports, {
+  LEGACY_NO_AUTO: () => LEGACY_NO_AUTO,
+  MIGRATED_NOTICE_CODE: () => MIGRATED_NOTICE_CODE,
+  UPGRADE_NOTICE_CODE: () => UPGRADE_NOTICE_CODE,
+  endLegacyDefault: () => endLegacyDefault,
+  guardLegacyMode: () => guardLegacyMode,
+  migrateAutoApprove13: () => migrateAutoApprove13,
+  upgradeNotice: () => upgradeNotice
+});
+function state(s) {
+  const v = s[KEY];
+  return v && typeof v === "object" && v.done === true ? { done: true, legacyDefault: v.legacyDefault === true, noticed: v.noticed === true } : null;
+}
+async function migrateAutoApprove13(stores) {
+  const s = await stores.settings.get();
+  if (state(s)) return { threads: [], legacyDefault: false, skipped: true };
+  const moved = [];
+  for (const t of await stores.threads.list()) {
+    if (t.mode !== FULL_AUTO || !LEGACY_NO_AUTO.has(t.provider)) continue;
+    try {
+      await stores.threads.patch(t.id, { mode: "default" });
+      await stores.threads.appendEvent(t.id, { type: "notice", level: "warn", code: MIGRATED_NOTICE_CODE, message: tr("notice.autoApproveMigrated") });
+      moved.push(t.id);
+    } catch (e) {
+      log("warn", `\u5168\u90E8\u81EA\u52A8\u540C\u610F\u8FC1\u79FB\uFF1A\u5BF9\u8BDD ${t.id} \u5931\u8D25\uFF1A${String(e)}`);
+    }
+  }
+  const legacyDefault = s.defaultMode === FULL_AUTO;
+  await stores.settings.set({ [KEY]: { done: true, legacyDefault, noticed: false } });
+  if (moved.length || legacyDefault) log("info", `\u5168\u90E8\u81EA\u52A8\u540C\u610F\u8FC1\u79FB\uFF1A${moved.length} \u4E2A\u5BF9\u8BDD\u6539\u56DE\u6BCF\u6B21\u8BE2\u95EE\uFF1B\u65E7\u7684\u9ED8\u8BA4\u5168\u90E8\u653E\u884C=${legacyDefault}`);
+  return { threads: moved, legacyDefault, skipped: false };
+}
+async function guardLegacyMode(settings, providerId, mode2) {
+  if (mode2 !== FULL_AUTO || !LEGACY_NO_AUTO.has(providerId)) return { mode: mode2, notice: false };
+  const s = await settings.get();
+  const st = state(s);
+  if (!st?.legacyDefault) return { mode: mode2, notice: false };
+  if (st.noticed) return { mode: "default", notice: false };
+  await settings.set({ [KEY]: { ...st, noticed: true } });
+  return { mode: "default", notice: true };
+}
+async function endLegacyDefault(settings) {
+  const st = state(await settings.get());
+  if (st?.legacyDefault) await settings.set({ [KEY]: { ...st, legacyDefault: false } });
+}
+function upgradeNotice() {
+  return { type: "notice", level: "info", code: UPGRADE_NOTICE_CODE, message: tr("notice.autoApproveUpgrade") };
+}
+var LEGACY_NO_AUTO, UPGRADE_NOTICE_CODE, MIGRATED_NOTICE_CODE, KEY;
+var init_autoApprove13 = __esm({
+  "daemon/src/migrate/autoApprove13.ts"() {
+    init_autoApprove();
+    init_i18n();
+    init_log();
+    LEGACY_NO_AUTO = /* @__PURE__ */ new Set(["cursor", "opencode", "dsh"]);
+    UPGRADE_NOTICE_CODE = "auto_approve_upgrade";
+    MIGRATED_NOTICE_CODE = "auto_approve_migrated";
+    KEY = "autoApproveUpgrade";
   }
 });
 
@@ -6795,6 +6902,7 @@ function registerMethods(gw, svc) {
     if (!checked.ok) throw new ApiError("bad_params", `Invalid setting: ${checked.error}`);
     const before = await svc.settings.get();
     const next = await svc.settings.set(checked.patch);
+    if ("defaultMode" in checked.patch) await endLegacyDefault(svc.settings);
     if ("bashPath" in checked.patch && (before.bashPath ?? "") !== (next.bashPath ?? "")) {
       await refreshAgentShell(typeof next.bashPath === "string" ? next.bashPath : "");
     }
@@ -6944,8 +7052,10 @@ function registerMethods(gw, svc) {
         throw new ApiError("bad_params", tr("provider.plannedNamed", { name: cat.name }));
       }
       const provider = getProvider(p.provider);
-      const mode2 = clampMode(provider?.capabilities.modes ?? [], p.mode);
+      const guard = await guardLegacyMode(svc.settings, p.provider, clampMode(provider?.capabilities.modes ?? [], p.mode));
+      const mode2 = guard.mode;
       const meta = await svc.threads.create({ ...p, mode: mode2 });
+      if (guard.notice) await svc.threads.appendEvent(meta.id, upgradeNotice());
       gw.publish("sidebar", { type: "thread.upsert", thread: meta });
       return meta;
     }
@@ -7286,6 +7396,7 @@ var init_methods = __esm({
     init_infoCache();
     init_launch();
     init_modes();
+    init_autoApprove13();
     init_i18n();
     init_mentions();
     init_openExternal();
@@ -7407,7 +7518,8 @@ var init_settings = __esm({
         z2.object({ executable: z2.string().max(4096).optional(), args: z2.array(z2.string().max(4096)).max(64).optional() }).strict()
       ),
       v1Migrated: z2.boolean(),
-      bashPath: z2.string().max(1024)
+      bashPath: z2.string().max(1024),
+      autoApproveWarned: z2.boolean()
     }).partial().strict();
     SettingsStore = class {
       file;
@@ -8561,6 +8673,8 @@ init_registry();
 // daemon/src/agents/manager.ts
 init_launch();
 init_modes();
+init_autoApprove13();
+init_autoApprove();
 init_attachmentRefs();
 init_registry();
 init_catalog();
@@ -8967,9 +9081,21 @@ var AgentManager = class {
         },
         event: ev
       };
+      if (ev.type === "permission_request") {
+        const meta = await this.threads.get(threadId);
+        const auto = meta ? autoApproveOption(meta.mode, meta.provider, ev) : null;
+        if (auto) {
+          log("info", `thread ${threadId} \u81EA\u52A8\u540C\u610F ${ev.title.slice(0, 80)} \u2192 ${auto.id}`);
+          await this.appendRaw(threadId, { ...ev, auto: true });
+          await this.appendRaw(threadId, { type: "permission_resolved", requestId: ev.requestId, optionId: auto.id, auto: true });
+          rt.session?.respond(ev.requestId, { optionId: auto.id });
+          return;
+        }
+      }
       const toolName = ev.detail?.toolName;
       if (toolName && rt.allowAlways.has(toolName)) {
-        rt.session?.respond(ev.requestId, { optionId: "accept" });
+        const allow = options.find((o) => o.kind === "allow_once") ?? options.find((o) => o.kind === "allow_always");
+        rt.session?.respond(ev.requestId, { optionId: allow?.id ?? "accept" });
         return;
       }
       rt.pending.set(ev.requestId, pending);
@@ -9051,6 +9177,22 @@ var AgentManager = class {
     }
     rt.session?.respond(requestId, answer);
   }
+  /** Answer every waiting tool approval with its allow-once option (full-auto just turned on). Returns how many. */
+  async autoApprovePending(threadId, providerId, mode2) {
+    const rt = this.rt(threadId);
+    let n = 0;
+    for (const p of [...rt.pending.values()]) {
+      if (p.kind !== "permission") continue;
+      const ev = p.event;
+      const opt = autoApproveOption(mode2, providerId, { kind: ev.kind, options: p.options });
+      if (!opt) continue;
+      rt.pending.delete(p.requestId);
+      await this.appendRaw(threadId, { type: "permission_resolved", requestId: p.requestId, optionId: opt.id, auto: true });
+      rt.session?.respond(p.requestId, { optionId: opt.id });
+      n++;
+    }
+    return n;
+  }
   // ---- interrupt ----
   async interrupt(threadId) {
     const rt = this.rt(threadId);
@@ -9095,8 +9237,9 @@ var AgentManager = class {
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
   async setMode(threadId, mode2) {
-    await this.threads.patch(threadId, { mode: mode2 });
+    const meta = await this.threads.patch(threadId, { mode: mode2 });
     const rt = this.rt(threadId);
+    if (mode2 === FULL_AUTO) await this.autoApprovePending(threadId, meta.provider, mode2);
     if (rt.session) await rt.session.setMode(mode2);
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
@@ -9149,14 +9292,16 @@ var AgentManager = class {
       rt.commands = [];
     }
     rt.status = "idle";
+    const guard = await guardLegacyMode(this.settings, providerId, clampMode(p.capabilities.modes, meta.mode));
     await this.threads.patch(threadId, {
       provider: providerId,
       model: null,
-      mode: clampMode(p.capabilities.modes, meta.mode),
+      mode: guard.mode,
       effort: null,
       providerSessionId: null,
       status: "idle"
     });
+    if (guard.notice) await this.appendRaw(threadId, upgradeNotice());
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
   async close(threadId) {
@@ -10043,6 +10188,12 @@ async function main() {
     await migrateLegacy2(cfg.dataDir, { settings, projects, threads });
   } catch (e) {
     log("error", "\u65E7\u6570\u636E\u8FC1\u79FB\u5931\u8D25", { err: String(e) });
+  }
+  try {
+    const { migrateAutoApprove13: migrateAutoApprove132 } = await Promise.resolve().then(() => (init_autoApprove13(), autoApprove13_exports));
+    await migrateAutoApprove132({ settings, threads });
+  } catch (e) {
+    log("error", "\u5168\u90E8\u81EA\u52A8\u540C\u610F\u8FC1\u79FB\u5931\u8D25", { err: String(e) });
   }
   const manager = new AgentManager(gateway, threads, projects, settings, attachments);
   await manager.recoverOnStart();
