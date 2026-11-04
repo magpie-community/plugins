@@ -1,6 +1,6 @@
 # @magpie-community/opencode-minimax-auth
 
-Signs in to MiniMax Code (mcode) accounts so their credits and Token Plan can be
+Signs in to MiniMax Code (mcode) accounts so their credits and M Plan can be
 used. That covers the free credits and the daily check-in's credits. There is
 one provider for each of MiniMax's two sites:
 
@@ -192,17 +192,17 @@ The usage card shows:
 - the credits left;
 - a Credits window: how much of the credits not yet expired is used, and
   when the soonest of them runs out, from the credit details MiniMax's own
-  client lists (`/minimax-cloud/api/v1/credit/details`); beside a Token Plan
+  client lists (`/minimax-cloud/api/v1/credit/details`); beside an M Plan
   it is aside, since the plan's windows come first;
-- the plan: Free, or the Token Plan's tier and when it ends; none when the
+- the plan: Free, or the subscription's name as the console says it (else
+  its tier) and when it ends; none when the
   site has no membership API (the international site answers both of its
   calls with 404), and the card goes on with the credits;
-- for a Token Plan, its windows (5 hours, 7 days, and any model's own) from
-  `coding_plan/remains`. An older plan's boosted week
-  (`weekly_boost_permille`) adds a count in points of the plain week, as
-  the console says it: `126 / 150 %` left for its `总额度 150% · 已用 24%`,
-  from `token_plan/remains_percent`, or from the share when that can't be
-  read.
+- for a plan, its windows (5 hours, 7 days, and any model's own) from the
+  console's `token_plan/remains_percent`, so what MiniMax granted the account
+  is what shows: `126 / 150 %` left for its `总额度 150% · 已用 24%`, and
+  Unlimited for a window it doesn't limit. `coding_plan/remains` is the
+  fallback.
 
 These are read the way MiniMax Code reads them, with its signed account API.
 

@@ -1,4 +1,4 @@
-// The usage card: the credits left, the Token Plan's tier and end, and its
+// The usage card: the credits left, the M Plan's tier and end, and its
 // windows read as magpie's own MiniMax plan reader (readMiniMaxPlan) reads
 // them. Nothing is claimed: no check-in is made.
 import "./nonet.mjs"
@@ -33,35 +33,49 @@ test("plan windows are read as magpie's MiniMax plan reader reads them", () => {
   expect(_internal.planWindows({ model_remains: [], base_resp: { status_code: 0 } })).toEqual([])
 })
 
-// An old Token Plan subscriber's 150% week: the account's own reply had
-// weekly_boost_permille 1500 and 83 left, and the card said only 83%.
-test("a boosted week says its count beside the share as told", () => {
-  const week = { current_weekly_status: 1, current_weekly_total_count: 0 }
-  const [w] = _internal.planWindows({
-    model_remains: [{ model_name: "general", current_interval_status: 3, current_interval_total_count: 0, ...week, current_weekly_remaining_percent: 83, weekly_boost_permille: 1500 }],
-    base_resp: { status_code: 0 },
-  })
-  expect(w).toMatchObject({ name: "7 days", used: 17, amount: 25.5, limit: 150, unit: "%" })
-  const [spent] = _internal.planWindows({
-    model_remains: [{ model_name: "general", current_interval_status: 3, current_interval_total_count: 0, current_weekly_status: 2, current_weekly_total_count: 0, current_weekly_remaining_percent: 0, weekly_boost_permille: 1500 }],
-    base_resp: { status_code: 0 },
-  })
-  expect(spent).toMatchObject({ used: 100, amount: 150, limit: 150 })
-  // the console's own figure, as the account's page said: 总额度 150% · 已用 24%
-  const [told] = _internal.planWindows({
-    model_remains: [{ model_name: "general", current_interval_status: 3, current_interval_total_count: 0, ...week, current_weekly_remaining_percent: 83, weekly_boost_permille: 1500 }],
-    base_resp: { status_code: 0 },
-  }, { general: 24 })
-  expect(told).toMatchObject({ used: 16, amount: 24, limit: 150, unit: "%" })
-  for (const boost of [{}, { weekly_boost_permille: 1000 }, { weekly_boost_permille: 0 }]) {
-    const [plain] = _internal.planWindows({
-      model_remains: [{ model_name: "general", current_interval_status: 3, current_interval_total_count: 0, ...week, current_weekly_remaining_percent: 83, ...boost }],
-      base_resp: { status_code: 0 },
-    })
-    expect(plain.limit).toBeUndefined()
-    expect(plain.amount).toBeUndefined()
-    expect(plain.used).toBe(17)
+// A user's report: the console said 总额度 150% · 已用 24% and the card only 83%.
+// Shaped as that account's reply, with the times left out.
+const consoleReply = { model_remains: [
+  { model_name: "general", current_interval_status: 1, current_interval_total_count: -1, current_interval_used_count: -1, current_interval_used_percent: "1%", current_interval_total_percent: "100%",
+    current_weekly_status: 1, current_weekly_total_count: -1, current_weekly_used_count: -1, current_weekly_used_percent: "24%", current_weekly_total_percent: "150%" },
+  { model_name: "video", current_interval_status: 1, current_interval_total_count: 3, current_interval_used_count: 0, current_interval_used_percent: "0%", current_interval_total_percent: "100%",
+    current_weekly_status: 1, current_weekly_total_count: 21, current_weekly_used_count: 1, current_weekly_used_percent: "5%", current_weekly_total_percent: "100%" },
+], base_resp: { status_code: 0 } }
+
+test("the console's reply says what was granted, whatever it is", () => {
+  const ws = _internal.planWindows(consoleReply)
+  expect(ws.map((w) => [w.name, w.used, w.amount, w.limit, w.unit])).toEqual([
+    ["Allowance", 1, undefined, undefined, undefined],
+    ["7 days", 16, 24, 150, "%"],
+    ["Video · Allowance", 0, 0, 3, "videos"],
+    ["Video · 7 days", 5, 1, 21, "videos"],
+  ])
+  const general = (fields) => _internal.planWindows({ model_remains: [{ model_name: "general", ...fields }], base_resp: { status_code: 0 } })
+  // no list of offers: a total nobody has seen yet reads the same way
+  expect(general({ current_interval_status: 1, current_interval_used_percent: "50%", current_interval_total_percent: "200%", current_weekly_status: 1, current_weekly_used_percent: "30%", current_weekly_total_percent: "300%" }).map((w) => [w.used, w.amount, w.limit]))
+    .toEqual([[25, 50, 200], [10, 30, 300]])
+  // a plain 100% total is a share alone; used up is 100 whatever the figures say
+  expect(general({ current_weekly_status: 1, current_weekly_used_percent: "24%", current_weekly_total_percent: "100%" })[0].limit).toBeUndefined()
+  expect(general({ current_weekly_status: 2, current_weekly_used_percent: "149%", current_weekly_total_percent: "150%" })[0]).toMatchObject({ used: 100, amount: 150, limit: 150 })
+  // a week without a limit says so on the plan's own bucket
+  expect(general({ current_interval_status: 1, current_interval_used_percent: "1%", current_interval_total_percent: "100%", current_weekly_status: 3, current_weekly_total_count: -1 }).at(-1))
+    .toEqual({ name: "7 days", display: "Unlimited", aside: true })
+})
+
+test("coding_plan/remains alone multiplies its share by the boost", () => {
+  const week = (boost) => _internal.planWindows({ model_remains: [{ model_name: "general", current_weekly_status: 1, current_weekly_remaining_percent: 83, ...boost }], base_resp: { status_code: 0 } })[0]
+  expect(week({ weekly_boost_permille: 1500 })).toMatchObject({ used: 17, amount: 25.5, limit: 150, unit: "%" })
+  for (const plain of [{}, { weekly_boost_permille: 1000 }, { weekly_boost_permille: 0 }]) {
+    expect(week(plain).used).toBe(17)
+    expect(week(plain).limit).toBeUndefined()
   }
+})
+
+test("the plan is named as the console names it, else by its tier's line", () => {
+  expect(_internal.usageOf({ hasTokenPlan: true, title: "TokenPlanMax-年度会员", tier: "Max" }).plan).toBe("TokenPlanMax-年度会员")
+  expect(_internal.usageOf({ hasTokenPlan: true, tier: "Max" }).plan).toBe("Token Plan Max")
+  expect(_internal.usageOf({ hasTokenPlan: true, tier: "Explore" }).plan).toBe("M Plan Explore")
+  expect(_internal.usageOf({ hasTokenPlan: true }).plan).toBe("M Plan")
 })
 
 test("a membership is read from the answer or its data", () => {
@@ -90,33 +104,25 @@ function account(f, { plan = false } = {}) {
   ], base_resp: { status_code: 0 } }))
 }
 
-test("a boosted week asks the console's figure, and goes on without it", async () => {
+test("a plan reads the console's windows and title, and goes on without them", async () => {
   f = fakeMiniMax()
   account(f, { plan: true })
-  const remains = (boost) => () => json({ model_remains: [
-    { model_name: "general", weekly_end_time: 1790500000000 + 168 * h, current_weekly_remaining_percent: 83, current_weekly_status: 1, ...boost },
-  ], base_resp: { status_code: 0 } })
-  f.route("GET /v1/api/openplatform/coding_plan/remains", remains({ weekly_boost_permille: 1500 }))
-  f.route("GET /backend/account/token_plan/remains_percent", () => json({ model_remains: [
-    { model_name: "general", current_weekly_used_percent: "24%", current_weekly_total_percent: "150%" },
-  ], base_resp: { status_code: 0 } }))
+  f.route("GET /backend/account/token_plan/remains_percent", () => json(consoleReply))
+  f.route("GET /v1/api/openplatform/charge/combo/cycle_audio_resource_package", () => json({ current_subscribe: { current_subscribe_title: "TokenPlanMax-年度会员" }, base_resp: { status_code: 0 } }))
   const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
-  const week = async () => (await hooks.auth.usage(async () => auth)).windows.find((w) => w.name === "7 days")
-  expect(await week()).toMatchObject({ used: 16, amount: 24, limit: 150, unit: "%" })
+  const u = await hooks.auth.usage(async () => auth)
+  expect(u.plan).toBe("TokenPlanMax-年度会员")
+  expect(u.windows.find((w) => w.name === "7 days")).toMatchObject({ used: 16, amount: 24, limit: 150 })
   const asked = f.seen.find((r) => r.path === "/backend/account/token_plan/remains_percent")
   expect(asked.headers.get("authorization")).toBe("Bearer tok")
   expect(asked.headers.get("x-group-id")).toBe("grp-7")
+  expect(f.seen.some((r) => r.path.includes("coding_plan"))).toBe(false)
 
   f.route("GET /backend/account/token_plan/remains_percent", () => new Response("nope", { status: 500 }))
-  expect(await week()).toMatchObject({ used: 17, amount: 25.5, limit: 150 })
-
-  // no boost: the console is not asked at all
-  f.seen.length = 0
-  f.route("GET /v1/api/openplatform/coding_plan/remains", remains({}))
-  const plain = await week()
-  expect(plain.used).toBe(17)
-  expect(plain.limit).toBeUndefined()
-  expect(f.seen.some((r) => r.path.includes("remains_percent"))).toBe(false)
+  f.route("GET /v1/api/openplatform/charge/combo/cycle_audio_resource_package", () => json({ base_resp: { status_code: 1033 } }))
+  const off = await hooks.auth.usage(async () => auth)
+  expect(off.plan).toBe("Token Plan Plus")
+  expect(off.windows.find((w) => w.name === "7 days").used).toBe(25)
 })
 
 test("a free account shows its credits", async () => {
@@ -135,7 +141,7 @@ test("a free account shows its credits", async () => {
   expect(f.seen.some((r) => r.path.includes("signin"))).toBe(false)
 })
 
-test("a Token Plan shows its tier, its end and its windows", async () => {
+test("an M Plan shows its tier, its end and its windows", async () => {
   f = fakeMiniMax()
   account(f, { plan: true })
   const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
@@ -204,7 +210,7 @@ test("a free account's card shows how much of its credits is used", async () => 
   expect(asks[0].headers.get("x-signature")).toMatch(/^[0-9a-f]{32}$/)
 })
 
-test("beside a Token Plan the credits are aside; a ledger it can't read leaves the balance alone", async () => {
+test("beside an M Plan the credits are aside; a ledger it can't read leaves the balance alone", async () => {
   f = fakeMiniMax()
   account(f, { plan: true })
   ledger(f, [[batch(1, "100", "25", "75", Date.now() + day)]])
