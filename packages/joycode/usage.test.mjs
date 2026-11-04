@@ -5,7 +5,11 @@ import plugin from './index.mjs'
 const auth = { type: 'api', key: 'fake-ticket', metadata: { tenant: '测试租户', loginType: 'PIN_JD_CLOUD' } }
 const item = { type: 'seatPackage', title: '套餐积分', badge: '团队版（限免）', used: 0, total: 10000, remain: 10000, usedPercent: 0, expireText: '有效期至 2026年11月11日' }
 
-async function query(t, response, account = auth) {
+// Install fetch once per test. Calling mock.method again in the same test
+// makes Bun 1.4 restore the wrong function, and packages that captured
+// global fetch at import (the nonet guards) keep calling this mock.
+function mockQuota(t, account = auth) {
+  let response = () => { throw new Error('no quota response') }
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     assert.equal(new URL(url).origin, 'https://api-ai.jd.com')
     assert.equal(new URL(url).searchParams.get('functionId'), 'get_newpoint_ide')
@@ -17,9 +21,16 @@ async function query(t, response, account = auth) {
     assert.ok(init.signal)
     return response()
   })
-  const hooks = await plugin.server({})
-  assert.equal(typeof hooks.auth.usage, 'function')
-  return hooks.auth.usage(async () => account)
+  return async next => {
+    response = next
+    const hooks = await plugin.server({})
+    assert.equal(typeof hooks.auth.usage, 'function')
+    return hooks.auth.usage(async () => account)
+  }
+}
+
+async function query(t, response, account = auth) {
+  return mockQuota(t, account)(response)
 }
 
 test('maps actual IDE quota schema including zero usage and expiry text', async (t) => {
@@ -39,6 +50,7 @@ test('maps actual IDE quota schema including zero usage and expiry text', async 
 })
 
 test('plan expiry accepts the IDE date phrases and ignores text that is not a date', async (t) => {
+  const run = mockQuota(t)
   for (const [expireText, until] of [
     ['有效期至2026年11月11日', '2026-11-11T15:59:59.000Z'],
     ['2026-11-11', '2026-11-11T15:59:59.000Z'],
@@ -48,7 +60,7 @@ test('plan expiry accepts the IDE date phrases and ignores text that is not a da
     ['有效期至 2026年2月31日', undefined],
     ['有效期至 1999年11月11日', undefined],
   ]) {
-    const result = await query(t, () => Response.json({ code: 0, data: { usageItems: [{ ...item, expireText }] } }))
+    const result = await run(() => Response.json({ code: 0, data: { usageItems: [{ ...item, expireText }] } }))
     assert.equal(result.until, until, expireText)
     assert.equal(result.windows[0].runsOutAt, until, expireText)
     assert.equal(result.windows[0].runsOut, until ? 10000 : undefined, expireText)
@@ -58,7 +70,8 @@ test('plan expiry accepts the IDE date phrases and ignores text that is not a da
 })
 
 test('plan expiry follows the package row, and otherwise the earliest pool', async (t) => {
-  const packaged = await query(t, () => Response.json({ code: 0, data: { usageItems: [
+  const run = mockQuota(t)
+  const packaged = await run(() => Response.json({ code: 0, data: { usageItems: [
     { ...item, expireText: '有效期至 2026年12月1日' },
     { title: '加油包', used: 0, total: 100, remain: 100, usedPercent: 0, expireText: '2026-11-01' },
   ] } }))
@@ -69,7 +82,7 @@ test('plan expiry follows the package row, and otherwise the earliest pool', asy
   assert.equal(packaged.windows[1].runsOut, 100)
   assert.ok(packaged.windows.every(window => window.resetsAt === undefined))
 
-  const pools = await query(t, () => Response.json({ code: 0, data: { usageItems: [
+  const pools = await run(() => Response.json({ code: 0, data: { usageItems: [
     { title: '套餐积分', used: 0, total: 100, remain: 100, usedPercent: 0, expireText: '2026-12-01' },
     { title: '加油包', used: 0, total: 100, remain: 100, usedPercent: 0, expireText: '2026-11-01' },
   ] } }))
