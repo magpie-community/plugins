@@ -805,7 +805,15 @@ export class NativeSessionPool {
       const freshTurn = last?.role === "user" && !toolAttachment(last)
       if (!freshTurn || historical.some((c) => !answered.has(c.id))) return fallback("historical native calls")
     }
-    if (selector && this.selectors.has(account + ":" + selector)) return fallback("owner busy")
+    if (selector && this.selectors.has(account + ":" + selector)) {
+      if (!historical.length) return fallback("owner busy")
+      // New input after results the caller already gave its native calls
+      // (Claude Code sends a reminder beside a tool result, which a chat
+      // request carries as a user message after the tool message). The
+      // reservation's holder, a parent awaiting results, is left as it is:
+      // this Run takes no reservation, and only its own calls resume it.
+      return { account, selector, controls, selected: false, chat }
+    }
     return { account, selector, controls, selected: !!selector, chat }
   }
   create(prepared, resolution, wire) {
@@ -823,6 +831,11 @@ export class NativeSessionPool {
       if (!(e instanceof NativeSessionError)) throw e
       return null
     }
+    // A Run of this conversation still live may be abandoned after this one
+    // starts: what it then owes is bounded before this start, so this Run's
+    // own dashboard events are never collected as its debt.
+    const at = Date.now()
+    for (const e of this.entries) if (e.account === owner.account && e.selector && e.selector === owner.selector) e.laterRunAt ??= at
     this.entries.add(owner)
     if (prepared.selected) this.selectors.set(owner.account + ":" + owner.selector, owner)
     return owner

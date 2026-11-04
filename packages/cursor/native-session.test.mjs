@@ -156,6 +156,29 @@ test("native admission: a fresh user turn whose old native calls all have result
   expect(pool.prepare("synthetic-token", { messages: answered.slice(0, 3) }, "synthetic-session", registered).fallback).toBe("owner unavailable")
 })
 
+test("native admission: answered native calls and new input past a held reservation get an owner that takes no reservation", () => {
+  const { pool, run } = owner()
+  const key = run.account + ":" + run.selector
+  const id = "call_cursor_abcdef_0_0"
+  const call = { role: "assistant", content: "", tool_calls: [{ id, type: "function", function: { name: "audit_echo", arguments: "{}" } }] }
+  const messages = [{ role: "user", content: "synthetic" }, call, { role: "tool", tool_call_id: id, content: "done" }, { role: "user", content: "a reminder beside the result" }]
+  const prepared = pool.prepare("synthetic-token", chat({ messages }), "synthetic-session", registered)
+  expect(prepared.fallback).toBeUndefined()
+  expect(prepared.selected).toBe(false)
+  // with no native call in its history, a request past the reservation is a branch, as before
+  expect(pool.prepare("synthetic-token", chat(), "synthetic-session", registered).fallback).toBe("owner busy")
+  const other = owner().run
+  const next = pool.create(prepared, run.resolution, _internal)
+  expect(next).not.toBeNull()
+  expect(pool.selectors.get(key)).toBe(run)
+  // the holder, still live, owes only what came before this Run; another conversation is untouched
+  expect(run.laterRunAt).toBeNumber()
+  expect(next.laterRunAt).toBeUndefined()
+  expect(other.laterRunAt).toBeUndefined()
+  pool.release(next)
+  expect(pool.selectors.get(key)).toBe(run)
+})
+
 test("native admission: completed replay entries are bounded; active entries are preserved", () => {
   const { pool, run } = owner({}, { perAccount: 2, perProcess: 2 })
   run.terminalSeen(nativeFields(message(uint(1, 0), uint(2, 0))))

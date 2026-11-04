@@ -2728,7 +2728,9 @@ async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, 
       // Every handoff of this owner belongs to one Run. Only an abandoned
       // started/pending Run is owed; a final snapshot (including zero) is not.
       if (started && native.segments > 0 && !native.finalUsage && convID && canRead(tok)) {
-        owe(debtKey, { since, n: 1, ready: Date.now() + STEP_WAIT.owedAt })
+        // laterRunAt: a later Run of this conversation began while this one
+        // was live (NativeSessionPool.create); its events are not this debt
+        owe(debtKey, { since, n: 1, ready: Date.now() + STEP_WAIT.owedAt, before: native.laterRunAt })
       }
     },
   }
