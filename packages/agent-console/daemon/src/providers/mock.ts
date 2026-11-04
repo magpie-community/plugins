@@ -1,5 +1,5 @@
 // MockProvider: registered only with AGENT_CONSOLE_MOCK=1. Persistent session, interruptible, with permissions and steering.
-// Scripts by message prefix: default /perm /plan /ask /slow /error /long /exit; supports steer/interrupt/resume.
+// Scripts by message prefix: default /perm /plan /ask /slow /error /long /exit /tools /winrun; supports steer/interrupt/resume.
 import { tr } from "../util/i18n.js";
 import type { Provider, ProviderSession, DetectResult, ModelInfo,
   Mode, SendInput, RespondAnswer, SlashCommand,
@@ -387,6 +387,7 @@ function pickScript(text: string): (ctx: Ctx) => Promise<void> {
   if (t.startsWith("/serve")) return scriptServe;
   if (t.startsWith("/tools")) return scriptTools;
   if (t.startsWith("/bashhint")) return scriptBashHint;
+  if (t.startsWith("/winrun")) return scriptWinRun;
   return scriptDefault;
 }
 
@@ -439,6 +440,65 @@ async function scriptTools(ctx: Ctx): Promise<void> {
   emit({ type: "tool_call", itemId: "x6", kind: "bash", title: `运行 ${cmd}`, status: "ok", output: "✓ 3 个测试文件通过", exitCode: 0, durationMs: slow });
   const reply = ctx.replyPrefix() + "lint 报错已修复，测试全部通过。";
   emit({ type: "assistant_message", itemId: "tm1", text: reply });
+}
+
+// "/winrun" (1.3): Nolan's Windows Cursor turn: short thinking between tool runs, long PowerShell commands (CJK paths),
+// an approval for one of them, then more groups while the turn is live. The e2e overlap check drives it at ~600 px.
+async function scriptWinRun(ctx: Ctx): Promise<void> {
+  const { emit } = ctx;
+  const sleepA = (ms: number) => sleepAbortable(ms, ctx);
+  const step = Number(process.env.AGENT_CONSOLE_MOCK_STEP_MS) || 250;
+  const think = async (id: string, text: string) => {
+    for (const ch of chunkText(text, 6)) {
+      emit({ type: "reasoning_delta", itemId: id, text: ch });
+      if (await sleepA(40)) return true;
+    }
+    emit({ type: "reasoning", itemId: id, text });
+    return false;
+  };
+  const tool = async (id: string, kind: string, title: string, input: Record<string, unknown>, ms = step) => {
+    emit({ type: "tool_call", itemId: id, kind, title, status: "running", input } as Parameters<Ctx["emit"]>[0]);
+    if (await sleepA(ms)) return true;
+    emit({ type: "tool_call", itemId: id, kind, title, status: "ok", durationMs: ms, output: "ok" } as Parameters<Ctx["emit"]>[0]);
+    return false;
+  };
+  const dir = "D:\\workwork\\抖音快手自动上传";
+  const start = `Set-Location "${dir}"; if (Test-Path ".venv\\Scripts\\pythonw.exe") { Start-Process -FilePath ".venv\\Scripts\\pythonw.exe" -ArgumentList "-m","app.main" -WorkingDirectory "${dir}"; Write-Host "已启动（源码模式）" } else { Write-Host "venv 不存在，尝试 exe"; Start-Process -FilePath "风景视频工具.exe" -WorkingDirectory "${dir}"; Write-Host "已启动（exe）" }`;
+  const ps = `Get-Process pythonw -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*抖音快手自动上传*" } | Select-Object Id, Path, StartTime | Format-Table -AutoSize`;
+  if (await think("w1", "先检查是否已有实例在跑。")) return;
+  emit({ type: "assistant_message", itemId: "wm1", text: "先检查是否已有实例在跑，再启动应用。" });
+  if (await tool("s1", "search", "搜索 pythonw", { pattern: "pythonw" })) return;
+  if (await tool("s2", "search", "搜索 app.main", { pattern: "app.main" })) return;
+  if (await think("w2", "看下启动脚本。")) return;
+  if (await tool("s3", "search", "搜索 启动.bat", { pattern: "启动.bat" })) return;
+  if (await tool("r1", "read", "读取 启动.bat", { file_path: `${dir}\\启动.bat` })) return;
+  if (await think("w3", "")) return;
+  if (await tool("b0", "bash", `运行 ${ps}`, { command: ps }, step * 2)) return;
+  if (await think("w4", "没有实例在跑，直接启动。")) return;
+  emit({ type: "tool_call", itemId: "b1", kind: "bash", title: `运行 ${start}`, status: "running", input: { command: start } });
+  if (await sleepA(step)) return;
+  const requestId = "perm-" + rid();
+  emit({
+    type: "permission_request", requestId, title: start, kind: "tool",
+    detail: { command: start, cwd: dir },
+    options: [
+      { id: "allow-once", label: "Allow once", kind: "allow_once" },
+      { id: "allow-always", label: "Allow always", kind: "allow_always" },
+      { id: "reject-once", label: "Reject", kind: "reject_once" },
+    ],
+  });
+  const ans = await ctx.waitFor(requestId);
+  if (ans.cancelled || ans.optionId === "reject-once") {
+    emit({ type: "tool_call", itemId: "b1", kind: "bash", title: `运行 ${start}`, status: "failed", output: "Rejected", exitCode: 1 });
+    return;
+  }
+  emit({ type: "tool_call", itemId: "b1", kind: "bash", title: `运行 ${start}`, status: "ok", output: "已启动（源码模式）", exitCode: 0, durationMs: step });
+  if (await think("w5", "改三个配置。")) return;
+  for (const n of [1, 2, 3]) if (await tool(`e${n}`, "edit", `编辑 config/${n}.json`, { file_path: `${dir}\\config\\${n}.json` })) return;
+  if (await think("w6", "确认进程起来了。")) return;
+  if (await tool("r2", "read", "读取 logs/selftest.txt", { file_path: `${dir}\\logs\\selftest.txt` })) return;
+  if (await tool("b2", "bash", `运行 ${ps}`, { command: ps }, Number(process.env.AGENT_CONSOLE_MOCK_TOOLS_MS) || step * 6)) return;
+  emit({ type: "assistant_message", itemId: "wm2", text: ctx.replyPrefix() + "已启动，进程在跑。" });
 }
 
 // "/bashhint" (1.3): the Windows "no Git Bash" hint, for screenshots and e2e on any OS
