@@ -4,13 +4,14 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
+import registry from "./page/layouts.js"
 
 const dir = import.meta.dir
 const page = join(dir, "page")
 const read = (file) => readFileSync(join(page, file), "utf8")
 
-// Load the classic script the way the page does, with no THREE at all.
-const scope = {}
+// Load the classic scripts the way the page does, with no THREE at all.
+const scope = { AGENT_OFFICE_LAYOUTS: registry }
 new Function("globalThis", read("scene3d.js"))(scope)
 const S = scope.AgentOfficeScene3D
 
@@ -303,6 +304,7 @@ function threeFixture({ hidden = false, failRender = false, failInit = false } =
     forceContextLoss() { this.lost = true }
   }
   world.THREE = { ...T, WebGLRenderer: Renderer }
+  world.AGENT_OFFICE_LAYOUTS = registry
   new Function("globalThis", "document", read("scene3d.js"))(world, document)
   const scene = new world.AgentOfficeScene3D(canvas)
   const frame = (now = 1000) => {
@@ -575,7 +577,8 @@ describe("THREE renderer path", () => {
           if (b.max.y > 0.06 && b.min.y < 1.7) bounds.union(b)
         })
         checked++
-        for (const pool of Object.values(S.SPOTS)) for (const spot of pool) {
+        // Per-scene layouts: check the routes of the scene being rendered, not office.
+        for (const pool of Object.values(f.scene.layoutRuntime.SPOTS)) for (const spot of pool) {
           for (let i = 1; i < spot.route.length; i++) {
             const a = spot.route[i - 1], b = spot.route[i]
             const n = Math.max(1, Math.ceil(Math.hypot(a[0] - b[0], a[1] - b[1]) / 0.1))

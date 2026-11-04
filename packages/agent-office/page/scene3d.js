@@ -273,32 +273,13 @@
   // deterministic room layout, seats and activity props
   // ---------------------------------------------------------------------
 
-  const ROOM = { w: 16, d: 12, wall: 3.2 }
-  const ENTRY = [0.95, 2.6]
-
-  // x,z is the desk's north-west corner; seat is where the worker sits.
-  const DESKS = [
-    { x: 3.2, z: 0.55, w: 1.7, d: 0.9, seat: [4.05, 1.95], face: "n" },
-    { x: 5.9, z: 0.55, w: 1.7, d: 0.9, seat: [6.75, 1.95], face: "n" },
-    { x: 8.6, z: 0.55, w: 1.7, d: 0.9, seat: [9.45, 1.95], face: "n" },
-    { x: 11.3, z: 0.55, w: 1.7, d: 0.9, seat: [12.15, 1.95], face: "n" },
-    { x: 10.6, z: 4.6, w: 1.6, d: 0.8, seat: [11.4, 4.0], face: "s", island: true },
-    { x: 12.4, z: 4.6, w: 1.6, d: 0.8, seat: [13.2, 4.0], face: "s", island: true },
-    { x: 10.6, z: 5.4, w: 1.6, d: 0.8, seat: [11.4, 6.75], face: "n", island: true },
-    { x: 12.4, z: 5.4, w: 1.6, d: 0.8, seat: [13.2, 6.75], face: "n", island: true },
-  ]
-
-  const SOFA = [[1.1, 4.84], [1.1, 5.72], [1.1, 6.6], [1.1, 7.48], [1.1, 8.36], [3.1, 10.95], [4.3, 10.95]]
-  const SOFA_FACE = ["e", "e", "e", "e", "e", "n", "n"]
-
-  const ZONE = { x: 4.2, z: 7.2, w: 4.4, d: 3.4 }
-  const ZONE_SPOTS = []
-  for (let j = 0; j < 3; j++) for (let i = 0; i < 4; i++) {
-    ZONE_SPOTS.push([ZONE.x + 0.6 + i * 1.05 + (j % 2) * 0.3, ZONE.z + 0.6 + j * 1.05])
-  }
-  const ERROR_SPOTS = [[12.3, 9.6], [14.3, 8.6], [12.9, 10.45], [14.3, 10.3]]
-  const WANDER = [[7.0, 4.4], [8.6, 5.7], [6.0, 5.8], [9.0, 8.0], [10.2, 9.0], [2.8, 3.2], [5.0, 3.4], [9.6, 2.9], [2.4, 6.0]]
-  const DOOR = [0.6, 2.6]
+  // layouts.js is a classic script loaded before this file (index.html); tests put it on the scope.
+  const REGISTRY = globalThis.AGENT_OFFICE_LAYOUTS
+  if (!REGISTRY) throw new Error("Load layouts.js before scene3d.js")
+  for (const id of SCENE_IDS) THEMES[id].layout = REGISTRY.themes[id].layout
+  // Office data comes from layouts.js; the other scenes use the same runtime shape.
+  const RT = REGISTRY.runtime("office")
+  const { ROOM, ENTRY, DESKS, SOFA, SOFA_FACE, ZONE, ZONE_SPOTS, ERROR_SPOTS, WANDER, DOOR } = RT
 
   const FACE = { n: [0, -1], s: [0, 1], e: [1, 0], w: [-1, 0] }
   const faceAngle = (face) => {
@@ -307,15 +288,7 @@
   }
 
   // Furniture that cannot be walked through. Doors/aisles are elsewhere.
-  const BLOCKERS = [
-    ...DESKS.map((d) => [d.x, d.z, d.w, d.d]),
-    [0.0, 4.55, 2.0, 4.25],       // west sofa
-    [2.55, 10.35, 2.5, 1.3],      // south sofa
-    [0.55, 0.35, 2.3, 0.95],      // coffee bar
-    [3.2, 3.9, 2.5, 1.5],         // ping-pong table
-    [14.85, 1.25, 0.8, 2.3],      // bookshelf
-    [14.65, 9.05, 0.95, 1.25],    // arcade cabinet
-  ]
+  const BLOCKERS = RT.BLOCKERS
 
   const WALL_PAD = 0.22
   function blockedAt(x, z, pad, blockers) {
@@ -351,190 +324,8 @@
     return hit ? { x: hit.x, z: hit.z, segment: hit.segment } : null
   }
 
-  const HUBS = {
-    wn: [2.6, 2.9], cn: [9.4, 2.9], ws: [2.6, 6.5], cs: [9.4, 6.5], se: [9.4, 8.8],
-  }
-  const HUB_EDGES = [["wn", "cn"], ["wn", "ws"], ["cn", "cs"], ["ws", "cs"], ["cs", "se"]]
-
-  function segmentClear(a, b, pad) {
-    return sampleRoute([a, b], BLOCKERS, pad == null ? 0.16 : pad) === null
-  }
-
-  function nearestHub(x, z) {
-    let best = null, bestD = Infinity
-    for (const id of Object.keys(HUBS)) {
-      const h = HUBS[id]
-      const d = Math.hypot(h[0] - x, h[1] - z)
-      if (d < bestD && segmentClear([x, z], h)) { bestD = d; best = id }
-    }
-    return best
-  }
-
-  function hubPath(a, b) {
-    if (a === b) return [a]
-    const prev = { [a]: null }
-    const q = [a]
-    while (q.length) {
-      const cur = q.shift()
-      for (const [x, y] of HUB_EDGES) {
-        for (const [m, n] of [[x, y], [y, x]]) {
-          if (cur !== m || prev[n] !== undefined) continue
-          prev[n] = m
-          if (n === b) {
-            const out = [b]
-            let k = b
-            while (prev[k] != null) { k = prev[k]; out.unshift(k) }
-            return out
-          }
-          q.push(n)
-        }
-      }
-    }
-    return [a, b]
-  }
-
-  function laneRoute(route, offset) {
-    if (!offset || !Array.isArray(route) || route.length < 3) return route
-    return route.map((p, i) => {
-      if (i === 0 || i === route.length - 1) return [p[0], p[1]]
-      const a = route[i - 1], c = route[i + 1]
-      let ax = p[0] - a[0], az = p[1] - a[1], bx = c[0] - p[0], bz = c[1] - p[1]
-      const la = Math.max(1e-6, Math.hypot(ax, az)), lb = Math.max(1e-6, Math.hypot(bx, bz))
-      ax /= la; az /= la; bx /= lb; bz /= lb
-      let nx = -(az + bz), nz = ax + bx
-      const ln = Math.max(1e-6, Math.hypot(nx, nz))
-      nx /= ln; nz /= ln
-      return [p[0] + nx * offset, p[1] + nz * offset]
-    })
-  }
-
-  function dedupeRoute(route) {
-    const out = []
-    for (const p of route) {
-      const q = out[out.length - 1]
-      if (!q || Math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-6) out.push([p[0], p[1]])
-    }
-    return out
-  }
-
-  function connectRoute(from, targetRoute) {
-    const route = Array.isArray(targetRoute) ? targetRoute : [ENTRY]
-    if (!from) return dedupeRoute(route)
-    let hub = nearestHub(from[0], from[1])
-    if (!hub) return dedupeRoute([from, ...route])
-    let targetHub = null, targetIdx = -1
-    for (let i = route.length - 1; i >= 0; i--) {
-      for (const id of Object.keys(HUBS)) {
-        if (Math.hypot(HUBS[id][0] - route[i][0], HUBS[id][1] - route[i][1]) < 1e-6) { targetHub = id; targetIdx = i; break }
-      }
-      if (targetHub) break
-    }
-    if (!targetHub) return dedupeRoute([from, ...route])
-    const ids = hubPath(hub, targetHub)
-    const mids = ids.map((id) => HUBS[id])
-    return dedupeRoute([from, ...mids, ...route.slice(targetIdx + 1)])
-  }
-
-  function exitRoute(from) {
-    const hub = nearestHub(from[0], from[1])
-    if (!hub) return dedupeRoute([from, ENTRY])
-    return dedupeRoute([from, ...hubPath(hub, "wn").map((id) => HUBS[id]), ENTRY])
-  }
-
-  function deskRoute(d) {
-    const [x, z] = d.seat
-    if (z < 3.4) return dedupeRoute([ENTRY, HUBS.wn, [x, 2.9], [x, z]])
-    if (z < 5.2) return dedupeRoute([ENTRY, HUBS.wn, HUBS.cn, [9.4, 3.4], [x, 3.4], [x, z]])
-    return dedupeRoute([ENTRY, HUBS.wn, HUBS.ws, HUBS.cs, [9.4, 7.35], [x, 7.35], [x, z]])
-  }
-
-  function routeFor(kind, x, z, face) {
-    if (kind === "desk") return dedupeRoute([ENTRY, HUBS.wn, [x, 2.9], [x, z]])
-    if (kind === "sofa") {
-      if (face === "e") return dedupeRoute([ENTRY, HUBS.wn, [2.45, 2.9], [2.45, z], [x, z]])
-      return dedupeRoute([ENTRY, HUBS.wn, [2.45, 2.9], [2.45, 10.1], [x, 10.1], [x, z]])
-    }
-    if (kind === "zone") return dedupeRoute([ENTRY, HUBS.wn, HUBS.ws, [x, 6.5], [x, z]])
-    if (kind === "error") return dedupeRoute([ENTRY, HUBS.wn, HUBS.ws, HUBS.cs, HUBS.se, [x, 8.8], [x, z]])
-    // wandering: take the first candidate aisle path that is really clear
-    const candidates = [
-      dedupeRoute([ENTRY, HUBS.wn, [x, 2.9], [x, z]]),
-      dedupeRoute([ENTRY, HUBS.wn, HUBS.ws, [x, 6.5], [x, z]]),
-      dedupeRoute([ENTRY, HUBS.wn, HUBS.ws, HUBS.cs, HUBS.se, [x, 8.8], [x, z]]),
-      dedupeRoute([ENTRY, HUBS.wn, [2.45, 6.5], [x, 6.5], [x, z]]),
-    ]
-    for (const c of candidates) if (!routeBlocked(c)) return c
-    return candidates[0]
-  }
-
-  function makeSpot(kind, id, x, z, face, y, route) {
-    return { id, kind, x, z, y: y == null ? 0 : y, face: face || "s", route: route || routeFor(kind, x, z, face) }
-  }
-
-  const SPOTS = {
-    desk: DESKS.map((d, i) => makeSpot("desk", "desk-" + i, d.seat[0], d.seat[1], d.face, 0.46, deskRoute(d))),
-    sofa: SOFA.map((s, i) => makeSpot("sofa", "sofa-" + i, s[0], s[1], SOFA_FACE[i], 0.4, routeFor("sofa", s[0], s[1], SOFA_FACE[i]))),
-    zone: ZONE_SPOTS.map((s, i) => makeSpot("zone", "zone-" + i, s[0], s[1], "s", 0, null)),
-    error: ERROR_SPOTS.map((s, i) => makeSpot("error", "error-" + i, s[0], s[1], "s", 0, null)),
-    wander: WANDER.map((s, i) => makeSpot("wander", "wander-" + i, s[0], s[1], "s", 0, null)),
-  }
-  // spot routes generated before SPOTS existed are rebuilt here (no cycles)
-  for (const kind of Object.keys(SPOTS)) {
-    for (const spot of SPOTS[kind]) {
-      spot.route = kind === "zone" ? routeFor("zone", spot.x, spot.z, spot.face)
-        : kind === "error" ? routeFor("error", spot.x, spot.z, spot.face)
-          : kind === "wander" ? routeFor("wander", spot.x, spot.z, spot.face) : spot.route
-    }
-  }
-  const SPOT_BY_ID = new Map()
-  for (const kind of Object.keys(SPOTS)) for (const spot of SPOTS[kind]) SPOT_BY_ID.set(spot.id, spot)
-
-  const POOLS = {
-    desk: SPOTS.desk, sofa: SPOTS.sofa, zone: SPOTS.zone, error: SPOTS.error, wander: SPOTS.wander,
-  }
-  const FALLBACKS = {
-    desk: ["wander", "zone"], sofa: ["wander", "zone"], zone: ["wander"], error: ["zone", "wander"], wander: ["zone"],
-  }
-
-  function spotKindForStatus(status) {
-    switch (String(status || "").toLowerCase()) {
-      case "waiting": return "zone"
-      case "error": return "error"
-      case "done": return "sofa"
-      case "thinking": case "executing": case "replying": case "working": return "desk"
-      default: return "wander"
-    }
-  }
-
-  function seatFor(key, kindOrStatus) {
-    const kind = POOLS[kindOrStatus] ? kindOrStatus : spotKindForStatus(kindOrStatus)
-    const pool = POOLS[kind] || SPOTS.wander
-    return pool[hashKey(key) % pool.length]
-  }
-
-  function assignSeats(list) {
-    const used = new Set()
-    const out = {}
-    const valid = (Array.isArray(list) ? list : []).filter((a) => a && typeof a === "object" && a.key != null)
-      .slice().sort((a, b) => String(a.key).localeCompare(String(b.key)))
-    for (const a of valid) {
-      const kind = spotKindForStatus(a.status)
-      const order = [kind, ...(FALLBACKS[kind] || [])]
-      let found = null
-      for (const k of [...new Set([...order, ...Object.keys(POOLS)])]) {
-        const pool = POOLS[k]
-        if (!pool) continue
-        const start = hashKey(a.key) % pool.length
-        for (let i = 0; i < pool.length; i++) {
-          const p = pool[(start + i) % pool.length]
-          if (!used.has(p.id)) { found = p; break }
-        }
-        if (found) break
-      }
-      if (found) { used.add(found.id); out[String(a.key)] = found.id }
-    }
-    return out
-  }
+  // Office routing and seat pools come from layouts.js, the one copy of that data.
+  const { HUBS, SPOTS, SPOT_BY_ID, POOLS, routeFor, connectRoute, exitRoute, laneRoute, assignSeats, seatFor, spotKindForStatus } = RT
 
   const LAYOUT = {
     ROOM, DESKS, SOFA, SOFA_FACE, ZONE, ZONE_SPOTS, ERROR_SPOTS, WANDER, DOOR, ENTRY,
@@ -564,6 +355,7 @@
     this.canvas = canvas && typeof canvas === "object" ? canvas : null
     this.id = THEMES[o.scene] ? o.scene : "office"
     this.theme = themeFor(this.id)
+    this.layoutRuntime = REGISTRY.runtime(this.theme.layout || "office")
     this.quality = QUALITIES[o.quality] ? o.quality : "high"
     this.dprCap = Math.min(2, Math.max(1, Number(o.dprCap) || 2))
     this.timeInfo = timeOfDay(o.now instanceof Date ? o.now : new Date())
@@ -612,6 +404,7 @@
   }
 
   AgentOfficeScene3D.prototype._init = function () {
+    const { ROOM } = this.layoutRuntime
     const T = THREE
     const canvas = this.canvas
     if (typeof canvas.getContext !== "function") throw new Error("no canvas context")
@@ -787,7 +580,7 @@
         env.add(props)
         fn.call(this, props, theme)
         // These fixtures already occupy the reserved furniture footprints.
-        if (!["coffee", "pingpong", "bookshelf", "arcade", "whiteboard", "banners"].includes(prop)) {
+        if (!["coffee", "pingpong", "bookshelf", "arcade", "whiteboard", "banners", "ornaments"].includes(prop)) {
           for (const object of props.children) this._placeDecoration(object)
         }
       }
@@ -796,10 +589,9 @@
     this._applyTime()
   }
 
-  // Decorations use the same reserved seats and aisles in every theme. Keep
-  // their body-height footprint clear instead of adding invisible obstructions
-  // to routes that workers already follow.
+  // Keep decorations clear of this layout's furniture and worker routes.
   AgentOfficeScene3D.prototype._placeDecoration = function (object) {
+    const { ROOM, BLOCKERS, SPOTS } = this.layoutRuntime
     this.env.updateMatrixWorld(true)
     const bounds = new THREE.Box3()
     object.traverse((mesh) => {
@@ -822,7 +614,7 @@
         const route = spot.route
         for (let i = 0; i < route.length - 1; i++) {
           const a = route[i], c = route[i + 1]
-          const n = Math.max(1, Math.ceil(Math.hypot(c[0] - a[0], c[1] - a[1]) / 0.15))
+          const n = Math.max(1, Math.ceil(Math.hypot(c[0] - a[0], c[1] - a[1]) / 0.1))
           for (let j = 0; j <= n; j++) {
             const x = a[0] + (c[0] - a[0]) * j / n, z = a[1] + (c[1] - a[1]) * j / n
             if (x > b[0] - 0.32 && x < b[2] + 0.32 && z > b[1] - 0.32 && z < b[3] + 0.32) return false
@@ -837,10 +629,25 @@
     for (const scale of [1, 0.85, 0.7, 0.55]) for (const [x, z] of candidates) {
       const b = [x - halfX * scale, z - halfZ * scale, x + halfX * scale, z + halfZ * scale]
       if (!clear(b)) continue
+      const priorScale = object.scale.clone()
       object.scale.multiplyScalar(scale)
       object.position.x = x + (original.x - cx) * scale
       object.position.z = z + (original.z - cz) * scale
-      this._decorations.push(b)
+      // The estimate above ignores mesh offsets; check the placed meshes too.
+      object.updateMatrixWorld(true)
+      const actual = new THREE.Box3()
+      object.traverse((mesh) => {
+        if (!mesh.isMesh) return
+        const m = new THREE.Box3().setFromObject(mesh)
+        if (m.max.y > 0.06 && m.min.y < 1.7) actual.union(m)
+      })
+      const footprint = [actual.min.x, actual.min.z, actual.max.x, actual.max.z]
+      if (!clear(footprint)) {
+        object.scale.copy(priorScale)
+        object.position.copy(original)
+        continue
+      }
+      this._decorations.push(footprint)
       object.userData.decoration = true
       return
     }
@@ -866,6 +673,7 @@
   }
 
   AgentOfficeScene3D.prototype._buildRoom = function (env, theme) {
+    const { ROOM, DOOR } = this.layoutRuntime
     const T = THREE
     const g = new T.Group()
     env.add(g)
@@ -981,6 +789,7 @@
   }
 
   AgentOfficeScene3D.prototype._buildLights = function (env, theme) {
+    const { ROOM } = this.layoutRuntime
     const T = THREE
     const hemi = new T.HemisphereLight(theme.ambient, darken(theme.floor, 0.55), 0.62)
     env.add(hemi)
@@ -1024,6 +833,7 @@
   }
 
   AgentOfficeScene3D.prototype._applyTime = function () {
+    const { ROOM } = this.layoutRuntime
     if (!this.scene) return
     const theme = this.theme
     const info = this.timeInfo || timeOfDay(new Date())
@@ -1079,6 +889,7 @@
   // ---- desks, chairs, monitors ---------------------------------------
 
   AgentOfficeScene3D.prototype._buildDesks = function (env, theme) {
+    const { DESKS } = this.layoutRuntime
     for (const d of DESKS) {
       const g = new THREE.Group()
       env.add(g)
@@ -1352,48 +1163,12 @@
 
   // ---- scene-specific props ------------------------------------------
 
-  // Part coordinates are local to each ornament; placement reserves their
-  // actual body-height bounds against furniture, routes and other decorations.
-  const part = (color, x, y, z, w, h, d, glow = false, shape = "box") => ({ color, x, y, z, w, h, d, glow, shape })
-  const ornament = (name, x, z, w, d, parts) => ({ name, x, z, w, d, parts })
-  const ORNAMENTS = {
-    library: [
-      ornament("book-wall", 9, 11, 1.5, .4, [part("wood", .75, 1, .2, 1.5, 2, .4), ...Array.from({ length: 24 }, (_, i) => part(i % 2 ? "sofa" : "trim", .13 + i % 6 * .25, .3 + Math.floor(i / 6) * .45, .42, .18, .3, .04))]),
-      ornament("sliding-ladder", 11, 11, .6, .4, [part("wood", .05, 1, .2, .08, 2, .12), part("wood", .55, 1, .2, .08, 2, .12), ...Array.from({ length: 6 }, (_, i) => part("trim", .3, .15 + i * .32, .2, .55, .06, .16))]),
-      ornament("globe", 12, 11, .7, .7, [part("wood", .35, .08, .35, .7, .16, .7), part("metal", .35, .45, .35, .08, .75, .08), part("accent", .35, 1.05, .35, .65, .65, .65, false, "sphere")]),
-      ornament("fireplace", 14, 11, 1.2, .6, [part("wood", .6, .1, .3, 1.2, .2, .6), part("wall", .12, .65, .3, .24, 1.3, .6), part("wall", 1.08, .65, .3, .24, 1.3, .6), part("trim", .6, 1.3, .3, 1.2, .16, .6), part("#efaf61", .6, .4, .32, .55, .4, .35, true)]),
-    ],
-    cyberlab: [
-      ornament("server-rack", 9, 11, .9, .55, [part("metal", .45, .9, .25, .9, 1.8, .5), ...Array.from({ length: 5 }, (_, i) => part("wood", .45, .2 + i * .3, .51, .75, .2, .04)), part("accent", .08, .9, .54, .04, 1.6, .03, true)]),
-      ornament("hologram-table", 11, 11, .7, .7, [part("metal", .35, .4, .35, .6, .8, .6), part("accent", .35, .84, .35, .7, .08, .7), part("#39ced6", .35, 1.2, .35, .55, .55, .55, true, "sphere")]),
-      ornament("cable-bank", 12, 11, .6, .7, [part("wood", .3, .12, .35, .6, .24, .7), ...Array.from({ length: 3 }, (_, i) => part("metal", .1 + i * .2, .27, .35, .08, .08, .7))]),
-      ornament("neon-pylon", 14, 11, .6, .6, [part("metal", .3, .08, .3, .6, .16, .6), part("#d778bd", .3, 1, .3, .12, 1.8, .12, true)]),
-    ],
-    greenhouse: [
-      ornament("flower-island", 9, 11, 1.2, .6, [part("wood", .6, .16, .3, 1.2, .32, .6), ...Array.from({ length: 3 }, (_, i) => part("plant", .22 + i * .38, .52, .3, .38, .38, .38, false, "sphere"))]),
-      ornament("pond", 11, 11, .8, .8, [part("metal", .4, .13, .4, .8, .26, .8), part("#72b8c7", .4, .27, .4, .68, .02, .68, true)]),
-      ornament("flower-rack", 12, 11, 1, .5, [part("wood", .06, .7, .25, .12, 1.4, .5), part("wood", .94, .7, .25, .12, 1.4, .5), part("trim", .5, .35, .25, 1, .08, .5), part("trim", .5, 1, .25, 1, .08, .5), part("plant", .5, 1.3, .25, .8, .5, .4)]),
-      ornament("watering-can", 14, 11, .65, .5, [part("accent", .25, .3, .25, .5, .6, .5), part("metal", .53, .4, .25, .3, .12, .12), part("metal", .25, .7, .25, .12, .25, .12)]),
-    ],
-    arctic: [
-      ornament("heater", 9, 11, 1, .55, [part("metal", .5, .5, .25, 1, 1, .5), ...Array.from({ length: 5 }, (_, i) => part("#e2b04a", .15 + i * .18, .5, .51, .07, .65, .02, true))]),
-      ornament("instrument-case", 11, 11, .7, .6, [part("wood", .35, .35, .3, .7, .7, .6), part("trim", .35, .72, .3, .7, .08, .6), part("metal", .35, .8, .3, .4, .08, .1)]),
-      ornament("radio", 12, 11, .8, .5, [part("metal", .4, .4, .25, .8, .8, .5), part("accent", .25, .5, .51, .3, .25, .04, true), part("trim", .68, 1.15, .25, .04, .7, .04)]),
-      ornament("supply-crates", 14, 11, .7, .6, [part("wood", .35, .3, .3, .7, .6, .6), part("trim", .35, .63, .3, .7, .06, .6), part("metal", .35, .76, .3, .4, .2, .4)]),
-    ],
-    rainynight: [
-      ornament("coffee-bar", 9, 11, 1, .6, [part("wood", .5, .48, .3, 1, .96, .6), part("trim", .5, 1, .3, 1, .08, .6), part("metal", .5, 1.25, .3, .4, .45, .4), part("#ffc66f", .15, 1.08, .3, .12, .12, .12, true)]),
-      ornament("umbrella-stand", 11, 11, .5, .5, [part("metal", .25, .3, .25, .5, .6, .5), part("accent", .16, .9, .25, .08, 1.2, .08), part("wood", .34, .8, .25, .08, 1, .08)]),
-      ornament("floor-lamp", 12, 11, .5, .5, [part("metal", .25, .04, .25, .5, .08, .5), part("metal", .25, .85, .25, .06, 1.7, .06), part("accent", .25, 1.7, .25, .5, .22, .5), part("#ffcf8a", .25, 1.57, .25, .35, .06, .35, true)]),
-      ornament("side-table", 14, 11, .7, .5, [part("wood", .35, .36, .25, .7, .08, .5), part("metal", .08, .18, .08, .08, .36, .08), part("metal", .62, .18, .42, .08, .36, .08)]),
-      ornament("coffee-shelf", 13, 10, .6, .5, [part("wood", .3, .38, .25, .6, .76, .5), part("trim", .3, .8, .25, .6, .08, .5), part("accent", .3, .95, .25, .3, .22, .3)]),
-    ],
-  }
-
   AgentOfficeScene3D.prototype._propBuilders.ornaments = function (env, theme) {
-    for (const item of ORNAMENTS[theme.id]) {
+    // Decorations are placed by layouts.js, and their blockers are already in its routes.
+    for (const item of this.layoutRuntime.DECORATIONS) {
       const g = new THREE.Group()
-      g.name = item.name
+      g.name = item.type + "@" + item.x + "," + item.z
+      g.userData.decoration = true
       g.position.set(item.x, 0, item.z)
       env.add(g)
       for (const p of item.parts) {
@@ -1434,7 +1209,7 @@
 
   AgentOfficeScene3D.prototype._propBuilders.holo = function (env, theme) {
     const g = new THREE.Group()
-    g.position.set(6.7, 0, 3.35)
+    g.position.set(13, 0, 9.3)
     env.add(g)
     this._cyl(g, darken(theme.metal, 0.4), 0, 0.25, 0, 0.7, 0.5)
     this._cyl(g, theme.accent, 0, 0.52, 0, 0.66, 0.06, { emissive: theme.accent, ei: 0.6, cast: false })
@@ -1653,6 +1428,7 @@
   }
 
   AgentOfficeScene3D.prototype._makeWorker = function (a) {
+    const { ENTRY } = this.layoutRuntime
     const T = THREE
     const group = new T.Group()
     group.name = "worker:" + a.key
@@ -1765,6 +1541,7 @@
   }
 
   AgentOfficeScene3D.prototype._freeSpot = function (kind, key, current) {
+    const { POOLS, FALLBACKS } = this.layoutRuntime
     const order = [kind, ...(FALLBACKS[kind] || [])]
     for (const k of [...new Set([...order, ...Object.keys(POOLS)])]) {
       const pool = POOLS[k]
@@ -1943,6 +1720,9 @@
   }
 
   AgentOfficeScene3D.prototype.setAgents = function (list) {
+    const { ENTRY } = this.layoutRuntime
+    const routes = this.layoutRuntime === RT ? { laneRoute, connectRoute, exitRoute } : this.layoutRuntime
+    const { laneRoute: lane, connectRoute: connect, exitRoute: exit } = routes
     const arr = this._normalizeAgents(list)
     this.agents = arr
     this._pending = arr
@@ -1966,7 +1746,7 @@
         rt.lane = ((hashKey(a.key) % 7) - 3) * 0.07
         rt.speed = 2.1 + (hashKey(a.key) % 30) / 100
         this._takeSpot(rt, spot)
-        this._startRoute(rt, spot ? laneRoute(spot.route, rt.lane) : dedupeRoute([ENTRY, [ENTRY[0] + 0.25, ENTRY[1]]]))
+        this._startRoute(rt, spot ? lane(spot.route, rt.lane) : [[ENTRY[0], ENTRY[1]], [ENTRY[0] + 0.25, ENTRY[1]]])
         if (rt.parts && rt.parts.badge) {
           rt.parts.badge.material = this._mat(STATUS_COLORS[a.status] || STATUS_COLORS.idle, { emissive: STATUS_COLORS[a.status] || STATUS_COLORS.idle, ei: 0.5 })
         }
@@ -1982,13 +1762,13 @@
           const spot = this._freeSpot(kind, a.key, rt.spot)
           if (spot) {
             this._takeSpot(rt, spot)
-            this._startRoute(rt, laneRoute(connectRoute([rt.pos.x, rt.pos.z], spot.route), rt.lane || 0))
+            this._startRoute(rt, lane(connect([rt.pos.x, rt.pos.z], spot.route), rt.lane || 0))
           }
         } else if (!rt.spot || rt.spot.kind !== kind) {
           const spot = this._freeSpot(kind, a.key, rt.spot)
           if (spot && spot !== rt.spot) {
             this._takeSpot(rt, spot)
-            const route = laneRoute(connectRoute([rt.pos.x, rt.pos.z], spot.route), rt.lane || 0)
+            const route = lane(connect([rt.pos.x, rt.pos.z], spot.route), rt.lane || 0)
             this._startRoute(rt, route)
           }
         }
@@ -2001,7 +1781,7 @@
       if (present.has(key) || rt.leaving) continue
       rt.leaving = true
       rt.data = Object.assign({}, rt.data, { status: "done", idle: false })
-      const route = exitRoute([rt.pos.x, rt.pos.z])
+      const route = exit([rt.pos.x, rt.pos.z])
       this._startRoute(rt, route)
       rt.exitAt = this._anim + 8
     }
@@ -2270,6 +2050,14 @@
     if (!THEMES[id]) return this
     this.id = id
     this.theme = themeFor(id)
+    const previousLayout = this.layoutRuntime
+    this.layoutRuntime = REGISTRY.runtime(this.theme.layout || "office")
+    if (previousLayout !== this.layoutRuntime && this.available && this.scene) {
+      for (const rt of this._map.values()) this.workerGroup.remove(rt.group)
+      this._map.clear()
+      this._taken.clear()
+      this.setAgents(this.agents)
+    }
     if (this.available && this.scene) {
       this._buildEnvironment()
       this._applyTime()
