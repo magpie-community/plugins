@@ -984,6 +984,8 @@ function createMockProvider() {
     name: "Mock\uFF08\u6F14\u793A\uFF09",
     capabilities: mockCapabilities,
     async detect() {
+      const d = Number(process.env.AGENT_CONSOLE_MOCK_DETECT_MS) || 0;
+      if (d > 0) await sleep(d);
       return { available: true, bin: "mock", version: "demo" };
     },
     async listModels() {
@@ -994,6 +996,8 @@ function createMockProvider() {
     },
     async createSession(o) {
       mockProviderMetrics.createSessionCalls++;
+      const d = Number(process.env.AGENT_CONSOLE_MOCK_START_MS) || 0;
+      if (d > 0) await sleep(d);
       return new MockSession(o);
     }
   };
@@ -7068,10 +7072,12 @@ function registerMethods(gw, svc) {
       attachments: z.array(z.object({ path: z.string(), mime: z.string(), name: z.string().optional() })).optional(),
       // 1.2: paths dragged from the Files panel, relative to the project (the daemon resolves and checks them)
       mentions: z.array(z.object({ rel: z.string().min(1).max(4096), isDir: z.boolean().optional() })).max(MAX_MENTIONS).optional(),
-      behavior: z.enum(["queue", "steer"]).optional()
+      behavior: z.enum(["queue", "steer"]).optional(),
+      // 1.3: the page's id for its optimistic bubble, echoed on the user_message event (dedupe, no jump)
+      clientId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional()
     }),
     async (p) => {
-      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments, mentions: p.mentions }, p.behavior ?? "queue");
+      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments, mentions: p.mentions, clientId: p.clientId }, p.behavior ?? "queue");
       return { ok: true, delivered: delivered ?? "started" };
     }
   ));
@@ -8745,6 +8751,8 @@ var AgentManager = class {
     for (const t of DELTA_TYPES) rt.coalescer.flushItem(deltaKey(t, itemId));
   }
   // ---- send ----
+  /** clientId: the page's id for its optimistic bubble; it rides on the user_message event so the page can swap the
+   *  bubble for the real one without a duplicate or a jump */
   async send(threadId, input, behavior = "queue") {
     const meta = await this.mustThread(threadId);
     const mentions = await this.resolveMentionRefs(threadId, meta.projectId, input.mentions);
@@ -8777,56 +8785,61 @@ var AgentManager = class {
             text: input.text,
             steered: true,
             attachments: this.attachmentLabels(attachmentRefs),
-            ...mentions.length ? { mentions } : {}
+            ...mentions.length ? { mentions } : {},
+            ...input.clientId ? { clientId: input.clientId } : {}
           });
           return "steered";
         } catch (e) {
           log("info", `thread ${threadId} \u63D2\u8BDD\u5931\u8D25\uFF0C\u6539\u4E3A\u6392\u961F\uFF1A${String(e)}`);
         }
       }
-      const q = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs, ...mentions.length ? { mentions } : {} };
+      const q = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs, ...mentions.length ? { mentions } : {}, ...input.clientId ? { clientId: input.clientId } : {} };
       rt.queue.push(q);
       this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
       return "queued";
     }
-    await this.startTurn(threadId, input.text, attachmentRefs, mentions);
+    await this.startTurn(threadId, input.text, attachmentRefs, mentions, input.clientId);
     return "started";
   }
-  async startTurn(threadId, text, attachmentRefs, mentions = []) {
+  async startTurn(threadId, text, attachmentRefs, mentions = [], clientId) {
     const rt = this.rt(threadId);
     rt.starting = true;
     try {
-      await this.startTurnInner(threadId, text, attachmentRefs, mentions);
+      await this.startTurnInner(threadId, text, attachmentRefs, mentions, clientId);
     } finally {
       rt.starting = false;
     }
   }
-  async startTurnInner(threadId, text, attachmentRefs, mentions) {
+  async startTurnInner(threadId, text, attachmentRefs, mentions, clientId) {
     const meta = await this.mustThread(threadId);
     const rt = this.rt(threadId);
-    const provider = await this.assertProviderUsable(meta.provider, { allowDisabled: !!meta.providerSessionId });
-    if (!rt.session) {
-      await this.setStatus(threadId, "initializing");
-      try {
-        await this.createSessionIfNeeded(threadId, { updateStatus: true });
-      } catch (e) {
-        await this.appendRaw(threadId, { type: "notice", level: "error", message: tr("notice.sessionStartFailed", { detail: String(e?.message ?? e) }) });
-        await this.appendRaw(threadId, { type: "turn_ended", status: "failed", error: String(e?.message ?? e) });
-        await this.setStatus(threadId, "error");
-        throw e;
-      }
-    }
+    const allowDisabled = !!meta.providerSessionId;
+    this.assertProviderAllowed(meta.provider, await this.settings.get(), { allowDisabled });
+    await this.appendRaw(threadId, {
+      type: "user_message",
+      text,
+      attachments: this.attachmentLabels(attachmentRefs),
+      ...mentions.length ? { mentions } : {},
+      ...clientId ? { clientId } : {}
+    });
     const trimmed = titleText(text);
     if (meta.titleAuto && trimmed) {
       await this.threads.patch(threadId, { title: trimmed.slice(0, 40), titleAuto: true });
       this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
     }
-    await this.appendRaw(threadId, {
-      type: "user_message",
-      text,
-      attachments: this.attachmentLabels(attachmentRefs),
-      ...mentions.length ? { mentions } : {}
-    });
+    if (!rt.session) {
+      await this.setStatus(threadId, "initializing");
+      try {
+        await this.assertProviderUsable(meta.provider, { allowDisabled });
+        await this.createSessionIfNeeded(threadId, { updateStatus: true });
+      } catch (e) {
+        await this.appendRaw(threadId, { type: "notice", level: "error", message: tr("notice.sessionStartFailed", { detail: String(e?.message ?? e) }) });
+        await this.appendRaw(threadId, { type: "turn_ended", status: "failed", error: String(e?.message ?? e) });
+        await this.threads.patch(threadId, { lastTurnStatus: "failed" });
+        await this.setStatus(threadId, "error");
+        throw e;
+      }
+    }
     await agentShellReady();
     if (!rt.bashHinted && bashMissingFor(meta.provider)) {
       rt.bashHinted = true;
@@ -8976,7 +8989,7 @@ var AgentManager = class {
       });
       if (next) {
         this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
-        await this.startTurn(threadId, next.text, next.attachments, next.mentions ?? []).catch((e) => {
+        await this.startTurn(threadId, next.text, next.attachments, next.mentions ?? [], next.clientId).catch((e) => {
           log("warn", `thread ${threadId} \u6392\u961F\u6D88\u606F\u542F\u52A8\u5931\u8D25\uFF1A${String(e)}`);
         });
       }
@@ -9128,7 +9141,8 @@ var AgentManager = class {
       throw new ApiError("busy", tr("err.busySwitch"));
     }
     const events = await this.threads.readEvents(threadId, 0, 5e3);
-    if (events.some((e) => e.type === "user_message")) {
+    const neverRan = !meta.providerSessionId && !events.some((e) => e.type === "turn_started" || e.type === "assistant_message" || e.type === "tool_call");
+    if (events.some((e) => e.type === "user_message") && !neverRan) {
       throw new ApiError("bad_params", tr("err.hasMessages"));
     }
     const p = await this.assertProviderUsable(providerId);
@@ -9294,10 +9308,10 @@ var AgentManager = class {
   providerOf(meta) {
     return getProvider(meta.provider);
   }
-  async assertProviderUsable(providerId, opts = {}) {
+  /** The checks that start nothing: a known Agent, enabled (unless allowDisabled), not a planned one */
+  assertProviderAllowed(providerId, s, opts = {}) {
     const p = getProvider(providerId);
     if (!p) throw new ApiError("bad_params", tr("provider.unknown", { id: providerId }));
-    const s = await this.settings.get();
     if (!opts.allowDisabled && !isProviderEnabled(s, providerId)) {
       throw new ApiError("bad_params", tr("provider.disabledNamed", { name: p.name }));
     }
@@ -9305,6 +9319,11 @@ var AgentManager = class {
     if (entry && !providerCreatable(entry.status)) {
       throw new ApiError("bad_params", tr("provider.plannedNamed", { name: p.name }));
     }
+    return p;
+  }
+  async assertProviderUsable(providerId, opts = {}) {
+    const s = await this.settings.get();
+    const p = this.assertProviderAllowed(providerId, s, opts);
     const det = await cachedDetect(p, launchFromSettings(s, providerId));
     if (!det.available) throw new ApiError("bad_params", det.reason ?? tr("provider.unavailable", { name: p.name }));
     return p;
