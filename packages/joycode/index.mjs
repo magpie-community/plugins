@@ -49,6 +49,12 @@ const LOW_EFFORT_FALLBACKS = new Map([
   ['GPT-5.6 Sol', ['minimal']],
 ])
 
+// Input lengths verified against JoyCode; conservative context claims, not exact model limits.
+const VERIFIED_CONTEXT_LIMITS = new Map([
+  ['GPT-6 Astra', 900000],
+  ['DeepSeek-V4.1-Flash', 1000000],
+])
+
 // HMAC signing key, extracted from the JoyCode IDE's bundled extension.js.
 //
 // This is a PUBLIC PROTOCOL CONSTANT, not a secret: it is baked into every
@@ -139,17 +145,31 @@ function buildGatewayHeaders(ptKey, tenant, loginType = LOGIN_TYPE) {
   }
 }
 
-/** JoyCode's model catalogue names the wire protocol in extJson.adapterType. */
-function adapterProtocol(model) {
+function modelExtJson(model) {
   let ext = model?.extJson
   if (typeof ext === 'string') {
     try { ext = JSON.parse(ext) } catch { ext = undefined }
   }
+  return ext
+}
+
+/** JoyCode's model catalogue names the wire protocol in extJson.adapterType. */
+function adapterProtocol(model) {
+  const ext = modelExtJson(model)
   const type = ext?.adapterType ?? model?.adapterType
   if (typeof type !== 'string') return 'chat'
   if (type === 'anthropic') return 'anthropic'
   if (type === 'openai-response' || type === 'openai-responses' || type === 'responses') return 'responses'
   return 'chat'
+}
+
+function accountContext(model, baseContext) {
+  const verifiedLimit = VERIFIED_CONTEXT_LIMITS.get(model?.chatApiModel)
+  const directoryContext = modelExtJson(model)?.contextWindowByPlatform?.['JoyCode Desktop']
+  if (verifiedLimit === undefined || !Number.isFinite(directoryContext) || directoryContext <= 0 ||
+    !Number.isFinite(baseContext) || baseContext <= 0 || directoryContext <= baseContext) return baseContext
+  const conservativeLimit = Math.floor(Math.min(directoryContext, verifiedLimit) / 100000) * 100000
+  return Math.max(baseContext, conservativeLimit)
 }
 
 function requestPath(input) {
@@ -751,6 +771,7 @@ async function accountModels(provider, { auth } = {}) {
     const image = features.includes('vision')
     const rate = multiplier(model.billingRate) ?? rates.get(id)
     const protocol = adapterProtocol(model)
+    const baseContext = Number.isFinite(model.maxTotalTokens) ? model.maxTotalTokens : base.limit?.context ?? 200000
     // Remove old rate fields so unavailable pricing never becomes fake free usage.
     const { rate: oldRate, rateWas, free, ...rest } = base
     models[id] = {
@@ -760,7 +781,7 @@ async function accountModels(provider, { auth } = {}) {
       api: { id, url: `${BASE}/v1`, npm: SDK[protocol] },
       limit: {
         ...base.limit,
-        context: Number.isFinite(model.maxTotalTokens) ? model.maxTotalTokens : base.limit?.context ?? 200000,
+        context: accountContext(model, baseContext),
         output: Number.isFinite(model.respMaxTokens) ? model.respMaxTokens : base.limit?.output ?? 64000,
       },
       capabilities: {
