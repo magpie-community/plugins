@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import test from "node:test"
-import { adcDirectoryFor, startLogin } from "../lib/credentials.mjs"
+import { adcDirectoryFor, knownAccounts, startLogin } from "../lib/credentials.mjs"
 import { fakeGcloud } from "./gcloud.mjs"
 
 async function fixture(t) {
@@ -81,12 +81,19 @@ test("same email with distinct subjects creates separate ADCs", async (t) => {
   }
 })
 
-test("missing subject on a new login cannot register an email-only account", async (t) => {
+test("missing email or subject on a new login cannot register an incomplete account", async (t) => {
   const f = await fixture(t)
-  f.identities.set("new-token", { email: "new@example.com" })
-  const result = await f.signIn("new-token", { account: "new@example.com" })
-  assert.match(result.warning, /subject could not be confirmed/)
-  assert.deepEqual(await f.directories(), [])
+  for (const [token, identity] of Object.entries({
+    "missing-sub": { email: "new@example.com" },
+    "missing-email": { sub: "stable-subject" },
+    "invalid-email": { sub: "stable-subject", email: "not-an-email" },
+    "empty-userinfo": {},
+  })) {
+    f.identities.set(token, identity)
+    const result = await f.signIn(token, { account: "new@example.com" })
+    assert.match(result.warning, /email and subject could not be confirmed/)
+    assert.deepEqual(await f.directories(), [])
+  }
 })
 
 for (const unavailable of [true, false]) {
@@ -103,15 +110,19 @@ for (const unavailable of [true, false]) {
   })
 }
 
-test("an email beginning with pending- remains discoverable for duplicate detection", async (t) => {
+test("an email beginning with pending- remains discoverable while 0.1.1 adc-pending-* temp dirs are ignored", async (t) => {
   const f = await fixture(t)
+  const legacyPending = join(f.root, "adc-pending-Ab12Cd")
+  await mkdir(legacyPending, { recursive: true })
+  await writeFile(join(legacyPending, "application_default_credentials.json"), "{}")
   const oldDirectory = await f.seed("pending-user@example.com", "old-token")
   f.identities.set("old-token", { email: "pending-user@example.com", sub: "stable-subject" })
+  assert.deepEqual([...await knownAccounts({ adcRoot: f.root })], ["pending-user-example-com"])
   f.identities.set("new-token", { email: "renamed@example.com", sub: "stable-subject" })
   const result = await f.signIn("new-token", { account: "renamed@example.com" })
   assert.match(result.warning, /already signed in \(same Google subject\)/)
   assert.equal((await readFile(join(oldDirectory, "application_default_credentials.json"))).toString(), "{}")
-  assert.deepEqual(await f.directories(), ["adc-pending-user-example-com"])
+  assert.deepEqual(await f.directories(), ["adc-pending-Ab12Cd", "adc-pending-user-example-com"])
 })
 
 test("an empty email-named directory is a storage collision, not a duplicate identity", async (t) => {
