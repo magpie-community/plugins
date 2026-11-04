@@ -50,6 +50,70 @@ test('model adapter chooses the SDK that speaks its upstream protocol', async t 
   assert.equal(models['Claude-Opus-5-hq'].api.npm, '@ai-sdk/anthropic')
   for (const model of Object.values(models)) assert.equal(model.api.url, 'https://api-ai.jd.com/v1')
 })
+test('raises context only for exact input-verified models and preserves output limits', async t => {
+  const { models } = await load(t, { list: [
+    {
+      chatApiModel: 'GPT-6 Astra', maxTotalTokens: 200000, respMaxTokens: 17000,
+      extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 1500000 } },
+    },
+    {
+      chatApiModel: 'DeepSeek-V4.1-Flash', maxTotalTokens: 200000, respMaxTokens: 18000,
+      extJson: JSON.stringify({
+        adapterType: 'openai-response',
+        contextWindowByPlatform: { 'JoyCode Desktop': 1500000 },
+      }),
+    },
+    {
+      chatApiModel: 'GPT-6 Astra-preview', maxTotalTokens: 200000, respMaxTokens: 19000,
+      extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 2000000 } },
+    },
+    {
+      chatApiModel: 'Claude-Opus-5-hq', maxTotalTokens: 200000, respMaxTokens: 20000,
+      extJson: { adapterType: 'anthropic', contextWindowByPlatform: { 'JoyCode Desktop': 2000000 } },
+    },
+  ] })
+  assert.equal(models['GPT-6 Astra'].limit.context, 900000)
+  assert.equal(models['DeepSeek-V4.1-Flash'].limit.context, 1000000)
+  assert.equal(models['GPT-6 Astra-preview'].limit.context, 200000)
+  assert.equal(models['Claude-Opus-5-hq'].limit.context, 200000)
+  assert.equal(models['GPT-6 Astra'].limit.output, 17000)
+  assert.equal(models['DeepSeek-V4.1-Flash'].limit.output, 18000)
+  assert.equal(models['DeepSeek-V4.1-Flash'].api.npm, '@ai-sdk/openai')
+})
+test('floors smaller directory limits and preserves larger base contexts', async t => {
+  const { models } = await load(t, { list: [
+    {
+      chatApiModel: 'GPT-6 Astra', maxTotalTokens: 200000, respMaxTokens: 17000,
+      extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 850000 } },
+    },
+    {
+      chatApiModel: 'DeepSeek-V4.1-Flash', maxTotalTokens: 1200000, respMaxTokens: 18000,
+      extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 1300000 } },
+    },
+  ] })
+  assert.equal(models['GPT-6 Astra'].limit.context, 800000)
+  assert.equal(models['DeepSeek-V4.1-Flash'].limit.context, 1200000)
+  assert.equal(models['GPT-6 Astra'].limit.output, 17000)
+  assert.equal(models['DeepSeek-V4.1-Flash'].limit.output, 18000)
+})
+test('requires a valid numeric JoyCode Desktop directory context', async t => {
+  const cases = [
+    { name: 'missing extJson', id: 'GPT-6 Astra' },
+    { name: 'malformed extJson JSON', id: 'DeepSeek-V4.1-Flash', extJson: '{' },
+    { name: 'missing platform entry', id: 'GPT-6 Astra', extJson: {} },
+    { name: 'numeric string', id: 'DeepSeek-V4.1-Flash', extJson: { contextWindowByPlatform: { 'JoyCode Desktop': '1000000' } } },
+    { name: 'nonpositive context', id: 'GPT-6 Astra', extJson: { contextWindowByPlatform: { 'JoyCode Desktop': 0 } } },
+  ]
+  for (const scenario of cases) {
+    await t.test(scenario.name, async t => {
+      const model = { chatApiModel: scenario.id, maxTotalTokens: 200000, respMaxTokens: 12000 }
+      if (Object.hasOwn(scenario, 'extJson')) model.extJson = scenario.extJson
+      const { models } = await load(t, { list: [model] })
+      assert.equal(models[scenario.id].limit.context, 200000)
+      assert.equal(models[scenario.id].limit.output, 12000)
+    })
+  }
+})
 test('excluded tenants do not inherit public pricing', async t => {
   const { models } = await load(t, { tenant: 'JD' })
   assert.equal(models['GLM-5.3-agent'].rate, undefined)

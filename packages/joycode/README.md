@@ -41,6 +41,19 @@ magpie plugin login joycode
 
 **视觉（image_url）为实验性**：按接口 `features` 声明能力，实际图片请求尚未验收。
 
+## 已验证的长上下文
+
+只有账号目录 `extJson.contextWindowByPlatform["JoyCode Desktop"]` 明确提供有效的更大窗口时，插件才对已验证的精确模型 ID 提高 `limit.context`。取目录窗口和验证上限的较小值，向下取整到 100,000 Token；其他模型和离线回退不变，也不覆盖原本更大的目录声明。输出上限仍使用 `respMaxTokens`。
+
+| 模型 ID | 保守的 context 声明 | 真实网关验证 |
+|---|---:|---|
+| `GPT-6 Astra` | 900,000 | 最大成功输入 921,497 Token；约 922,008 Token 填充加指令返回 `context_length_exceeded` |
+| `DeepSeek-V4.1-Flash` | 1,000,000 | 输入 1,000,073 Token，输出 150 Token，正常结束；更大请求明确报总窗口 1,048,576 Token |
+
+2026-11-04 经本机 magpie 的 `/v1/responses` / `/v1/chat/completions` 请求 JoyCode，用合成文本中三个分散的随机标记验证返回内容。两者均返回全部正确标记和正常终止事件。GPT 使用 `low`，两者输出预算为 256 Token。这是当前账号、通道和请求参数下的输入能力实测，不是所有账号的保证，也没有验证最大输出预算下的边界或复杂长上下文推理质量。`limit.context` 使用不高于成功输入长度的保守值，并非声称测得模型精确总窗口；宿主仍需为输出和额外提示预留空间。
+
+`Claude-Opus-5-hq` 接收并计量约 900k 输入，但返回 `stop_reason: refusal`、没有文本，不能视为功能验证通过，暂不提高其窗口。其他 GPT、Claude、DeepSeek 别名不能继承上述实测结论。长上下文会增加实际 Token 用量，且缓存命中也可能计入账号额度。
+
 ## 消息转发策略
 
 根据 2026-10-30 的 JoyCode 实测，仅对 Responses 协议做以下兼容：GPT-6 Astra、GPT-6.1 Sol 的显式 `none` / `minimal` 转为 `low`；GPT-6 Sol、GPT-5.6 Sol 仅将 `minimal` 转为 `low`，保留上游接受的 `none`。其他 reasoning 参数、有效或未指定的强度、未知模型和其他协议均不变。启用低档推理可能增加用量。此表基于当前账号目录，不自动覆盖未来新增模型。
