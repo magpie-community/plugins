@@ -28,6 +28,10 @@
           <button type="button" data-period="30d" data-i18n-period="30d"></button>
           <button type="button" data-period="all" data-i18n-period="all"></button>
         </div>
+        <button class="cache-toggle" id="token-cache" type="button" role="switch" aria-checked="true">
+          <span class="switch" aria-hidden="true"><i></i></span>
+          <span data-i18n="includeCache"></span>
+        </button>
         <button class="icon" id="refresh" type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1.02 6.74 2.74L21 8"/>
@@ -49,7 +53,7 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
             <input id="search" type="search" autocomplete="off">
           </label>
-          <div class="sort" id="sort" role="group" aria-label="排序">
+          <div class="sort" id="sort" role="group" aria-label="Sort">
             <span data-i18n="sort">Sort</span>
             <button type="button" class="sort-button" data-sort="tokens" data-i18n-sort="tokens"></button>
             <button type="button" class="sort-button" data-sort="cost" data-i18n-sort="cost"></button>
@@ -65,9 +69,10 @@
         <span class="col-name" data-i18n-column="identity"></span>
         <span data-i18n-column="calls"></span>
         <span class="col-tokens" data-i18n-column="tokens"></span>
-        <span class="col-share" data-i18n-column="share"></span>
-        <span data-i18n-column="cost"></span>
-        <span data-i18n-column="status"></span>
+        <span class="col-share"></span>
+        <span class="col-share-label" data-i18n-column="share"></span>
+        <span class="col-cost" data-i18n-column="cost"></span>
+        <span class="col-status" data-i18n-column="status"></span>
         <span></span>
       </div>
       <div class="accounts" id="accounts" aria-live="polite"></div>

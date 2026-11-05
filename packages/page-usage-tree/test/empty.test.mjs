@@ -1,31 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { loadUsageData } from "../lib/data.mjs";
+import { aggregateGatewayUsage } from "../lib/usage.mjs";
 import { startServer } from "../lib/server.mjs";
 
-// A fresh install has no usage.jsonl yet: magpie writes it on its first
-// call. The page asks for a tree anyway, and must get an empty one with a
-// note, not a 500.
-test("a fresh install has no ledger: an empty tree, not an error", async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "usage-tree-empty-"));
-  process.env.MAGPIE_CONFIG_DIR = home;
-  process.env.MAGPIE_CACHE_DIR = join(home, "cache");
-  // no magpie on PATH: the read goes straight to the ledger fallback
-  process.env.PATH = "";
+// A fresh install has no usage yet. The gateway answers with zero calls and
+// no accounts, and the page must show an empty tree with a note, not a 500.
+test("a fresh install has an empty tree, not an error", async (t) => {
+  const empty = aggregateGatewayUsage({ calls: 0, accounts: [] }, {}, { period: "7d" });
 
-  const data = await loadUsageData("7d", { fresh: true });
+  assert.deepEqual(empty.providers, []);
+  assert.deepEqual(empty.accounts, []);
+  assert.equal(empty.summary.calls, 0);
+  assert.equal(empty.summary.accounts, 0);
+  assert.ok(empty.warnings.some((item) => item.code === "no-usage"));
 
-  assert.deepEqual(data.providers, []);
-  assert.deepEqual(data.accounts, []);
-  assert.equal(data.summary.calls, 0);
-  assert.equal(data.summary.accounts, 0);
-  assert.ok(data.warnings.some((item) => item.code === "no-ledger"));
-
-  // and the page asks for it over HTTP: 200 with an empty tree, not a 500
-  const info = await startServer({ port: 0 });
+  const info = await startServer({
+    port: 0,
+    load: async () => empty,
+  });
   t.after(() => info.close());
   const res = await fetch(`http://127.0.0.1:${info.port}/api/tree?period=7d`, {
     headers: { "x-usage-tree-token": info.token },
@@ -33,5 +25,5 @@ test("a fresh install has no ledger: an empty tree, not an error", async (t) => 
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.deepEqual(body.accounts, []);
-  assert.ok(body.warnings.some((item) => item.code === "no-ledger"));
+  assert.ok(body.warnings.some((item) => item.code === "no-usage"));
 });

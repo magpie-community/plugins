@@ -33,7 +33,7 @@ const accounts = [
   {
     id: "codex\u001falice@example.com",
     account: "alice@example.com",
-    alias: "10月越南Plus",
+    alias: "10月学生Plus",
     provider: "codex",
     providerName: "Codex",
     calls: 100,
@@ -91,6 +91,21 @@ test("the page reads nothing of magpie and reaches no network", () => {
   assert.deepEqual([...reads], []);
 });
 
+test("plugin metadata speaks Chinese and English", () => {
+  assert.equal(pkg.magpie.name, "账号用量 / Account usage");
+  assert.equal(pkg.magpie.page.titles.zh, "账号用量");
+  assert.match(pkg.magpie.summary.zh, /供应商 -> 账号 -> 模型/);
+  assert.match(pkg.magpie.summary.en, /provider -> account -> model/);
+  assert.match(pkg.description, /在 Magpie 窗口中/);
+  assert.match(pkg.description, /A page in Magpie's window/);
+  const readme = read(join(dir), "README.md");
+  assert.match(readme, /## 中文说明/);
+  assert.ok(readme.indexOf("## 中文说明") < readme.indexOf("## English"));
+  for (const text of [pkg.description, pkg.magpie.page.titles.zh, pkg.magpie.summary.zh, readme]) {
+    assert.doesNotMatch(text, /\uFFFD/);
+  }
+});
+
 test("is a page magpie serves: its files in page/, scripts as files", () => {
   assert.equal(pkg.magpie.page.file, "page/index.html");
   assert.equal(pkg.magpie.page.icon, "page/icon.svg");
@@ -115,6 +130,16 @@ test("the launcher only navigates to the local service", () => {
   assert.match(boot, /window\.magpie\?\.service/);
 });
 
+test("the launcher forwards currency and unit options", () => {
+  const boot = read(pageDir, "boot.js");
+  assert.match(boot, /query\.set\("currency", display\.currency\)/);
+  assert.match(boot, /query\.set\("chineseUnits", display\.chineseUnits \? "1" : "0"\)/);
+  assert.match(boot, /followDisplay\(options\)/);
+  assert.equal(pkg.magpie.options.currency, "usd");
+  assert.equal(pkg.magpie.options.chineseUnits, false);
+  assert.equal(pkg.magpie.options.usdCny, 0);
+});
+
 test("the summary says accounts, calls, tokens and cost", () => {
   V.setChineseUnits(true);
   V.setLang("zh");
@@ -123,21 +148,77 @@ test("the summary says accounts, calls, tokens and cost", () => {
   assert.equal(tiles[0].value, "2");
   assert.equal(tiles[1].value, "120");
   assert.equal(tiles[1].bad, true);
-  assert.equal(tiles[2].value, "150万");
+  assert.equal(tiles[2].value, "240万");
   assert.match(tiles[3].value, /^¥/);
+});
+
+test("cache can be included or excluded from token totals", () => {
+  V.setChineseUnits(true);
+  V.setLang("zh");
+  assert.equal(V.tokenTotal({ tokens: 150, cache: 50 }, true), 200);
+  assert.equal(V.tokenTotal({ tokens: 150, cache: 50 }, false), 150);
+  assert.equal(V.tokenTotal({ tokens: 150, allTokens: 220, cache: 50 }, true), 220);
+  assert.equal(V.tiles(summary, "zh", "usd", 6.6696, true)[2].value, "240万");
+  assert.equal(V.tiles(summary, "zh", "usd", 6.6696, false)[2].value, "150万");
 });
 
 test("an account shows the name the user gave it", () => {
   const rows = V.accounts(accounts, "tokens", "zh");
-  assert.equal(rows[0].name, "10月越南Plus");
+  assert.equal(rows[0].name, "10月学生Plus");
   assert.equal(rows[1].name, "bob");
-  assert.equal(rows[0].share, "80%");
+  assert.equal(rows[0].share, "93%");
+});
+
+test("search matches account aliases and only keeps matching children", () => {
+  const provider = {
+    id: "codex",
+    provider: "codex",
+    providerName: "Codex",
+    accounts,
+  };
+  assert.equal(V.accountMatches(accounts[0], "10月学生plus"), true);
+  assert.equal(V.accountSelfMatches(accounts[0], "10月学生plus"), true);
+  assert.equal(V.modelMatches(accounts[0].models[0], "gpt-6"), true);
+  assert.deepEqual(
+    V.visibleAccounts(provider, "gpt-6").map((account) => account.account),
+    ["alice@example.com"],
+  );
+  assert.equal(V.visibleAccounts(provider, "codex").length, 2);
+});
+
+test("expand-all follows the accounts visible under the current search", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(
+    source,
+    /const accounts = providers\.flatMap\(\(provider\) => V\.visibleAccounts\(provider, state\.query\)\)/,
+  );
+  assert.match(source, /function updateExpandLabel\(\)[\s\S]*?allExpanded\(\)/);
+  assert.match(source, /function allExpanded\(\)[\s\S]*?V\.visibleAccounts\(provider, state\.query\)/);
+  assert.match(source, /const shownAccounts = V\.visibleAccounts\(provider, state\.query\)/);
+  assert.match(source, /countModels\(shownAccounts\)/);
 });
 
 test("a model's own host difference is a note, not a second row", () => {
   const rows = V.models(accounts[0], "zh", "cny", 6.6696);
   assert.equal(rows.length, 1);
   assert.deepEqual(rows[0].hosts, ["chatgpt.com 14"]);
+});
+
+test("an empty or incomplete tree sorts without throwing", () => {
+  for (const sort of V.SORTS) {
+    assert.deepEqual(V.sortProviders([], sort, true), []);
+    assert.deepEqual(V.sortProviders(null, sort, false), []);
+  }
+  const rows = V.sortProviders(
+    [
+      { id: "missing-fields" },
+      { id: "b", providerName: "B", calls: 2, cost: 1, tokens: 10 },
+      { id: "a", providerName: "A", calls: 1, cost: 2, tokens: 20 },
+    ],
+    "cost",
+    true,
+  );
+  assert.deepEqual(rows.map((row) => row.id), ["a", "b", "missing-fields"]);
 });
 
 test("numbers read short", () => {
@@ -198,22 +279,73 @@ test("sorting uses the segmented control and updates its selected state", () => 
   assert.match(source, /button\.setAttribute\("aria-selected", String\(button\.dataset\.sort === state\.sort\)\)/);
 });
 
-test("the page follows magpie's language and settings without a reload", () => {
+test("the token-cache switch is native-looking, persistent and default-on", () => {
+  const html = read(uiDir, "app.html");
   const source = read(uiDir, "app.js");
-  assert.match(source, /async function readSettings\(\)/);
-  assert.match(source, /new URL\("api\/settings", location\.href\)/);
+  assert.match(
+    html,
+    /<button class="cache-toggle" id="token-cache"[^>]*role="switch"[^>]*aria-checked="true"/,
+  );
+  assert.match(html, /data-i18n="includeCache"/);
+  assert.match(source, /store\.get\("usage-tree\.include-cache"\) !== "0"/);
+  assert.match(source, /store\.set\("usage-tree\.include-cache", state\.includeCache \? "1" : "0"\)/);
+  assert.match(source, /V\.tokenTotal\(item, state\.includeCache\)/);
+  assert.match(source, /summary\.cache[\s\S]*?provider\.cache[\s\S]*?account\.cache[\s\S]*?model\.cache/);
+  const providerSort = source.slice(
+    source.indexOf("function visibleProviders"),
+    source.indexOf("function providersOf", source.indexOf("function visibleProviders")),
+  );
+  assert.match(providerSort, /V\.sortProviders\(list, state\.sort, state\.includeCache\)/);
+  assert.doesNotMatch(providerSort, /b\.tokens - a\.tokens/);
+});
+
+test("the page follows magpie's language without a reload", () => {
+  const source = read(uiDir, "app.js");
   assert.match(source, /function applyDisplay\(display\)/);
   assert.match(source, /W = globalThis\.UsageI18n\.get\(lang\)/);
-  // Nothing is polled: the theme message carries the language, and the read
-  // beside it covers the currency and the units.
+  // Nothing is polled: the theme message carries the language.
   assert.doesNotMatch(source, /setInterval/);
   assert.match(source, /message\.event !== "theme"/);
   assert.match(source, /event\.source !== window\.parent/);
-  assert.match(source, /applyThemeEvent\(message\.data\);[\s\S]*?readSettings\(\);/);
+  assert.match(source, /applyThemeEvent\(message\.data\);/);
+  assert.match(source, /wanted\.startsWith\("zh"\) \? "zh" : "en"/);
+  assert.match(source, /getAttribute\("content"\) \|\| "en"/);
 });
 
-test("the service answers with magpie's own settings", async () => {
+test("a retry can repaint and fingerprints cover displayed metrics", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(source, /function renderError\(\) \{\s+state\.rendered = false;/);
+  for (const field of [
+    "summary.errors",
+    "summary.unpriced",
+    "summary.input",
+    "summary.output",
+    "account.lastAt",
+    "model.errors",
+  ]) {
+    assert.match(source, new RegExp(field.replace(".", "\\.")), field);
+  }
+  assert.match(source, /const delay = attempt === 1 \? 1200 : attempt === 2 \? 2500 : 5000;/);
+});
+
+test("a failed follow-up keeps the period already on screen", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(source, /state\.data\?\.period === requestedPeriod/);
+  assert.match(source, /warning\.textContent = W\.refreshFailed/);
+  assert.match(scope.UsageI18n.get("en").refreshFailed, /previous data/);
+});
+
+test("the launcher speaks English and Chinese, not Chinese only", () => {
+  const html = read(pageDir, "index.html");
+  const boot = read(pageDir, "boot.js");
+  assert.match(html, /<html lang="en">/);
+  assert.match(html, /Account usage/);
+  assert.match(boot, /lang === "zh" \? "zh-CN" : "en"/);
+  assert.match(boot, /words\[lang\]/);
+});
+
+test("the service keeps the settings endpoint guarded", () => {
   const source = readFileSync(join(dir, "lib", "server.mjs"), "utf8");
   assert.match(source, /url\.pathname === "\/api\/settings"/);
-  assert.match(source, /json\(res, 200, displaySettings\(\)\)/);
+  assert.match(source, /json\(res, 200, displaySettings\(options\)\)/);
 });

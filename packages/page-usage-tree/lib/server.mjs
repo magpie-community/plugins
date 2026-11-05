@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { displaySettings, loadUsageData, servicePidFile } from "./data.mjs";
+import { displaySettings, loadUsageData } from "./data.mjs";
 import { PERIODS } from "./usage.mjs";
 
 const UI_DIR = fileURLToPath(new URL("../ui/", import.meta.url));
@@ -22,6 +22,46 @@ export function version() {
   } catch {
     return "0";
   }
+}
+
+let cachedBuild = "";
+
+export const BUILD_FILES = Object.freeze([
+  "server.mjs",
+  "data.mjs",
+  "gateway.mjs",
+  "usage.mjs",
+  "../index.mjs",
+  "../serve.mjs",
+  "../package.json",
+  "../page/index.html",
+  "../page/boot.js",
+  "../page/icon.svg",
+  "../ui/app.html",
+  "../ui/app.js",
+  "../ui/view.js",
+  "../ui/i18n.js",
+  "../ui/style.css",
+]);
+
+// A version alone cannot tell a rebuilt local plugin from the code already
+// loaded in the host. Hash every runtime asset as well, so a same-version
+// but changed build is never mistaken for the running one.
+export function buildId() {
+  if (cachedBuild) return cachedBuild;
+  try {
+    const base = new URL("./", import.meta.url);
+    const hash = createHash("sha256");
+    for (const name of BUILD_FILES) {
+      hash.update(name);
+      hash.update("\0");
+      hash.update(readFileSync(fileURLToPath(new URL(name, base))));
+    }
+    cachedBuild = hash.digest("hex").slice(0, 16);
+  } catch {
+    cachedBuild = `version:${version()}`;
+  }
+  return cachedBuild;
 }
 
 const STATIC = new Map([
@@ -108,44 +148,22 @@ async function probeService(port) {
     const res = await fetch(`http://127.0.0.1:${port}/healthz`, {
       signal: AbortSignal.timeout(1200),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return null;
+    }
     const body = await res.json();
     if (!body || body.name !== PLUGIN_NAME) return null;
     // The token stays with the copy that owns the port; a page is always
     // served by that copy, so the second host needs nothing from it.
-    return { reused: true, version: body.version || "" };
+    return {
+      reused: true,
+      version: body.version || "",
+      build: body.build || "",
+    };
   } catch {
     return null;
   }
-}
-
-// A service of an older build still holding the port is replaced: the pid
-// that owns it is in our own cache, and the port answers as this plugin.
-async function stopOlderService(port) {
-  const info = await probeService(port);
-  if (!info || info.version === version()) return false;
-  let pid = 0;
-  let recorded = "";
-  try {
-    const [rawPid, rawVersion] = readFileSync(servicePidFile(port), "utf8").trim().split(/\s+/);
-    pid = Number(rawPid);
-    recorded = rawVersion || "";
-  } catch {
-    return false;
-  }
-  // a pid written by this build is never killed: only an older one's is
-  if (!recorded || recorded === version()) return false;
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid);
-  } catch {
-    return false;
-  }
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    if (!(await probeService(port))) return true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return false;
 }
 
 export async function startServer(options = {}) {
@@ -165,18 +183,24 @@ export async function startServer(options = {}) {
     // never stands between the reader and the numbers they had a moment
     // ago. Only a first read waits, as there is nothing to show yet.
     if (!options.fresh && hit?.data) {
-      if (now - hit.at >= (hit.ttl ?? CACHE_MS)) void refreshInBackground(wanted);
-      return { data: hit.data, cache: hit.data?.stale ? "stale" : "fresh" };
+      const stale = hit.data.stale === true || now - hit.at >= (hit.ttl ?? CACHE_MS);
+      if (stale) void refreshInBackground(wanted, { fresh: true });
+      return {
+        data: { ...hit.data, stale },
+        cache: stale ? "stale" : "fresh",
+      };
     }
     // A read is already running behind the page: what was read last is
     // still the best answer to give now.
     if (hit?.pending) {
-      if (hit.data) return { data: hit.data, cache: hit.data?.stale ? "stale" : "fresh" };
+      if (hit.data && !options.fresh) {
+        return { data: { ...hit.data, stale: true }, cache: "stale" };
+      }
       return { data: await hit.pending, cache: "shared" };
     }
 
     const loaded = await refreshInBackground(wanted, { wait: true, fresh: options.fresh });
-    return { data: loaded, cache: "miss" };
+    return { data: loaded, cache: loaded?.stale ? "stale" : "miss" };
   }
 
   function refreshInBackground(wanted, options = {}) {
@@ -193,6 +217,10 @@ export async function startServer(options = {}) {
       .catch((error) => {
         if (hit?.data) {
           hit.error = error;
+          // Keep the last good answer, but never let the page mistake it for
+          // a successful fresh read. Marking it stale also keeps the next
+          // request retrying instead of accepting the cache as current.
+          hit.data = { ...hit.data, stale: true };
           return hit.data;
         }
         throw error;
@@ -225,11 +253,19 @@ export async function startServer(options = {}) {
       }
 
       if (url.pathname === "/healthz") {
-        json(res, 200, { ok: true, name: PLUGIN_NAME, version: version() });
+        json(res, 200, {
+          ok: true,
+          name: PLUGIN_NAME,
+          version: version(),
+          build: buildId(),
+        });
         return;
       }
 
-      if (req.method === "OPTIONS" && url.pathname === "/api/tree") {
+      if (
+        req.method === "OPTIONS" &&
+        (url.pathname === "/api/tree" || url.pathname === "/api/settings")
+      ) {
         allowNullOrigin(req, res);
         res.writeHead(204, {
           "Cache-Control": "no-store",
@@ -246,9 +282,16 @@ export async function startServer(options = {}) {
         }
         const template = await readFile(join(UI_DIR, "app.html"), "utf8");
         const boot = {
-          theme: url.searchParams.get("theme") === "dark" ? "dark" : "light",
           tokens: parseTokens(url.searchParams.get("tokens")),
-          ...displaySettings(),
+          ...displaySettings({
+            theme: url.searchParams.get("theme") === "dark" ? "dark" : "light",
+            lang: url.searchParams.get("lang") || "",
+            currency: url.searchParams.get("currency") || options.currency || "",
+            chineseUnits:
+              url.searchParams.get("chineseUnits") === "1" ||
+              (options.chineseUnits === true && !url.searchParams.has("chineseUnits")),
+            usdCny: url.searchParams.get("usdCny") || options.usdCny || 0,
+          }),
         };
         const lang = String(url.searchParams.get("lang") || boot.lang).slice(0, 12);
         const html = template
@@ -261,7 +304,7 @@ export async function startServer(options = {}) {
           .replaceAll("__USAGE_TREE_CHINESE_UNITS__", String(boot.chineseUnits))
           .replaceAll(
             "__USAGE_TREE_TITLE__",
-            escHTML(lang.startsWith("en") ? "Account usage" : "账号用量"),
+            escHTML(lang.toLowerCase().startsWith("zh") ? "账号用量" : "Account usage"),
           );
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
@@ -292,11 +335,13 @@ export async function startServer(options = {}) {
         }
         const loaded = await dataFor(period, { fresh: url.searchParams.get("fresh") === "1" });
         res.setHeader("X-Usage-Tree-Cache", loaded.cache);
-        json(res, 200, { ...loaded.data, display: displaySettings() });
+        json(res, 200, loaded.data);
         return;
       }
 
       if (url.pathname === "/api/settings") {
+        // The page no longer polls settings. Keep the endpoint for callers
+        // that still use it, and answer its preflight above.
         allowNullOrigin(req, res);
         if (!allowedOrigin(req.headers.origin, boundPort)) {
           json(res, 403, { error: "invalid origin" });
@@ -306,7 +351,7 @@ export async function startServer(options = {}) {
           json(res, 401, { error: "missing or invalid token" });
           return;
         }
-        json(res, 200, displaySettings());
+        json(res, 200, displaySettings(options));
         return;
       }
 
@@ -355,7 +400,9 @@ export async function startServer(options = {}) {
   } else {
     let bound = false;
     // A host that is on its way out keeps the port for a moment: the new
-    // build waits for it, and takes the port when it is free.
+    // build waits for it, and takes the port when it is free. A live service
+    // of another build is never killed: it may be the same plugin host that
+    // serves every other plugin.
     for (let attempt = 0; attempt < 30; attempt += 1) {
       try {
         server = await bind();
@@ -363,13 +410,22 @@ export async function startServer(options = {}) {
         break;
       } catch (error) {
         if (error?.code !== "EADDRINUSE") throw error;
-        await stopOlderService(requestedPort);
+        const running = await probeService(requestedPort);
+        if (running && running.version === version() && running.build === buildId()) {
+          return {
+            port: requestedPort,
+            token: "",
+            server: null,
+            reused: true,
+            close: async () => {},
+          };
+        }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
     }
     if (!bound) {
       const running = await probeService(requestedPort);
-      if (running && running.version === version()) {
+      if (running && running.version === version() && running.build === buildId()) {
         return {
           port: requestedPort,
           token: "",
@@ -380,36 +436,34 @@ export async function startServer(options = {}) {
       }
       throw new Error(
         running
-          ? `port ${requestedPort} is held by an older build of this plugin`
+          ? `port ${requestedPort} is held by another build of this plugin (${running.version || "unknown"})`
           : `port ${requestedPort} is in use and not by this plugin`,
       );
     }
   }
 
   boundPort = server.address().port;
-  // the pid that owns the port, so a newer build can replace this one
-  const pidFile = servicePidFile(boundPort);
-  try {
-    mkdirSync(dirname(pidFile), { recursive: true });
-    writeFileSync(pidFile, `${process.pid} ${version()}`, "utf8");
-  } catch {
-    // Without the pid file an older build cannot be replaced; nothing else.
-  }
-  // Warm the period the page asks for first, so the first read does not
-  // wait for magpie to read the whole log.
-  void dataFor("today").catch(() => {});
+  // Warm only when there is a real loader behind the service. A test loader
+  // is cheap, but a pending warm read can outlive the server's close.
+  if (!options.load) void dataFor("today").catch(() => {});
   return {
     port: boundPort,
     token,
     server,
     close: () =>
       new Promise((resolve) => {
-        try {
-          unlinkSync(pidFile);
-        } catch {
-          // The file is gone already, or another build owns the port.
-        }
-        server.close(resolve);
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          // Fetch may still be retiring a reused connection when close()
+          // reports done on Windows. One turn is enough for that to settle.
+          setTimeout(resolve, 25);
+        };
+        server.close(finish);
+        // Fetch keeps idle sockets alive. Release them so a stopped plugin
+        // host does not wait for the client's connection timeout.
+        server.closeIdleConnections?.();
       }),
   };
 }

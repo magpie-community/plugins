@@ -1,67 +1,86 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { startServer, version } from "../lib/server.mjs";
-import { servicePidFile } from "../lib/data.mjs";
+import { BUILD_FILES, startServer, version } from "../lib/server.mjs";
 
-test("a newer build takes the port from an older one", async (t) => {
-  const cache = mkdtempSync(join(tmpdir(), "usage-tree-cache-"));
-  process.env.MAGPIE_CACHE_DIR = cache;
-  const port = 3496;
-  const pidFile = servicePidFile(port);
-
-  const old = spawn(
-    process.execPath,
-    [join(import.meta.dirname, "fixtures", "old-service.mjs"), String(port), pidFile],
-    { stdio: "ignore" },
-  );
-  t.after(() => old.kill());
-  // the exit is watched before the new build starts: the older one is
-  // stopped while it is taking the port.
-  let stopped = false;
-  old.once("exit", () => {
-    stopped = true;
-  });
-
-  // wait for the old build to own the port
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/healthz`, {
-        signal: AbortSignal.timeout(300),
-      });
-      if (res.ok) break;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+test("the build ID covers every runtime asset", () => {
+  for (const file of [
+    "../package.json",
+    "../page/boot.js",
+    "../page/icon.svg",
+    "../ui/app.html",
+    "../ui/app.js",
+    "../ui/view.js",
+    "../ui/i18n.js",
+    "../ui/style.css",
+  ]) {
+    assert.ok(BUILD_FILES.includes(file), `${file} is part of the build ID`);
   }
+});
 
-  const info = await startServer({ port, load: async () => ({ summary: {}, accounts: [] }) });
-  t.after(() => info.close());
+test("a second copy of this build reuses the running service", async (t) => {
+  const first = await startServer({
+    port: 0,
+    load: async () => ({ summary: {}, providers: [], accounts: [] }),
+  });
+  t.after(() => first.close());
 
-  // the old build is gone, and this one answers
-  assert.equal(stopped, true, "the older build was stopped");
+  const second = await startServer({
+    port: first.port,
+    load: async () => ({ summary: {}, providers: [], accounts: [] }),
+  });
+  assert.equal(second.reused, true);
+  assert.equal(second.port, first.port);
+  assert.equal(second.token, "");
 
-  const res = await fetch(`http://127.0.0.1:${port}/healthz`);
+  const res = await fetch(`http://127.0.0.1:${first.port}/healthz`);
   const body = await res.json();
   assert.equal(body.name, "magpie-usage-tree");
   assert.equal(body.version, version());
+  assert.match(body.build, /^[a-f0-9]{16}$/);
 });
 
-test("the service waits for a host on its way out to release the port", async (t) => {
-  const cache = mkdtempSync(join(tmpdir(), "usage-tree-race-"));
-  process.env.MAGPIE_CACHE_DIR = cache;
-  const port = 3498;
+test("another build on the port is reported, never killed", async (t) => {
+  const old = createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, name: "magpie-usage-tree", version: "0.0.1" }));
+  });
+  await new Promise((resolve) => old.listen(0, "127.0.0.1", resolve));
+  const port = old.address().port;
+  t.after(() => new Promise((resolve) => old.close(resolve)));
 
-  // a host that is shutting down keeps the port for a moment
-  const leaving = createServer(() => {});
-  await new Promise((resolve) => leaving.listen(port, "127.0.0.1", resolve));
+  await assert.rejects(
+    startServer({
+      port,
+      load: async () => ({ summary: {}, providers: [], accounts: [] }),
+    }),
+    /held by another build of this plugin/i,
+  );
+
+  const res = await fetch(`http://127.0.0.1:${port}/healthz`);
+  const body = await res.json();
+  assert.equal(res.status, 200, "the running build was left alone");
+  assert.equal(body.version, "0.0.1");
+});
+
+test("a host on its way out releases the port and the new copy takes it", async (t) => {
+  const leaving = createServer((_req, res) => {
+    res.writeHead(503, { "Content-Type": "text/plain" });
+    res.end("leaving");
+  });
+  await new Promise((resolve) => leaving.listen(0, "127.0.0.1", resolve));
+  const port = leaving.address().port;
   setTimeout(() => leaving.close(), 800);
+  t.after(() => {
+    if (leaving.listening) {
+      return new Promise((resolve) => leaving.close(resolve));
+    }
+  });
 
-  const info = await startServer({ port, load: async () => ({ summary: {}, accounts: [] }) });
+  const info = await startServer({
+    port,
+    load: async () => ({ summary: {}, providers: [], accounts: [] }),
+  });
   t.after(() => info.close());
 
   const res = await fetch(`http://127.0.0.1:${port}/healthz`);

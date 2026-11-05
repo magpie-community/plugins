@@ -1,161 +1,221 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { aggregateUsageCSV, parseCSV, whoOf } from "../lib/usage.mjs";
+import { accountKey, aggregateGatewayUsage, PERIODS } from "../lib/usage.mjs";
 import { cacheUsable } from "../lib/data.mjs";
 
-const HEADER =
-  "time,agent,requested_model,provider,host,model,served_model,swapped,effort,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,reasoning_tokens,cost_usd,duration_ms,ttft_ms,status,error,session,kind,provider_key_id,provider_key_name,provider_account,route_id,request_id,endpoint,error_message,error_type,source,rejected,session_provider,session_account,session_official_login,caller_key_id,caller_key_name,response_id,upstream,cache_write_5m_tokens,cache_write_1h_tokens,tries,handed_on,tier_asked,tier_sent,tier_served,upstream_stop,credits";
+const usage = {
+  period: "today",
+  calls: 5,
+  errors: 1,
+  input: 1000,
+  output: 100,
+  cache_read: 500,
+  cache_write: 0,
+  reasoning: 10,
+  cost: 0.5,
+  unpriced: 2,
+  accounts: [
+    {
+      id: "codex@alice",
+      provider: "codex",
+      account: "alice@example.com",
+      name: "10月学生Plus",
+      sub: "Codex",
+      calls: 3,
+      errors: 1,
+      input: 800,
+      output: 50,
+      cache_read: 500,
+      cost: 0.5,
+      unpriced: 0,
+    },
+    {
+      id: "codex@bob",
+      provider: "codex",
+      account: "bob@example.com",
+      name: "bob@example.com",
+      sub: "Codex",
+      last_at: "2026-11-04T12:00:00.000Z",
+      calls: 2,
+      errors: 0,
+      input: 200,
+      output: 50,
+      cost: 0,
+      unpriced: 2,
+    },
+  ],
+};
 
-const CSV = [
-  HEADER,
-  "2026-10-31T10:00:00Z,codex,group/a,codex,chatgpt.com as alice@example.com,gpt-a,gpt-a,false,high,100,50,0,1000,5,1.5,10,10,200,false,s1,,,,alice@example.com,1,,,,,false,,,false,,,false,resp1,,0,0,,false,,,,",
-  "2026-10-31T10:01:00Z,codex,group/b,codex,chatgpt.com as alice@example.com,gpt-b,gpt-b,false,high,200,80,10,2000,7,0.5,10,10,200,false,s2,,,,alice@example.com,2,,,,,false,,,false,,,false,resp2,,0,0,,false,,,,",
-  "2026-10-31T10:02:00Z,codex,group/a,codex,chatgpt.com as bob@example.com,gpt-a,gpt-a,false,high,50,20,0,500,0,2,10,10,200,false,s3,,,,bob@example.com,3,,,,,false,,,false,,,false,resp3,,0,0,,false,,,,",
-  "2026-10-31T10:03:00Z,codex,group/a,codex,chatgpt.com as alice@example.com,gpt-a,gpt-a,false,high,999,999,0,0,0,,10,10,500,true,s4,,,,alice@example.com,4,,,,,false,,,false,,,false,resp4,,0,0,,false,,,,",
-  "2026-10-31T10:04:00Z,codex,,session-unknown,,group/free-or-cheap,,false,high,999,999,0,0,0,,10,10,200,false,s5,,,,,,,,,false,,,false,,,false,,,false,,,0,0,,false,,,,",
-  "2026-10-31T10:05:00Z,codex,,codex,chatgpt.com,probe-model,probe-model,false,high,999,999,0,0,0,,10,10,200,false,s6,,,,,6,,,,,false,,,false,,,false,,,false,,,0,0,,false,,,,",
-  "2026-10-31T10:06:00Z,codex,,codex,chatgpt.com as alice@example.com,gpt-c,,false,high,10,5,0,100,0,0.25,10,10,200,false,s7,,,,alice@example.com,7,,,,,false,,,false,,,false,,,false,,,0,0,,false,,,,",
-  "2026-10-31T10:07:00Z,codex,,codex,chatgpt.com,gpt-a,gpt-a,false,high,10,5,0,100,0,0.25,10,10,200,false,s8,,,,alice@example.com,8,,,,,false,,,false,,,false,,,false,,,0,0,,false,,,,",
-].join("\n");
+const requests = {
+  [accountKey("codex", "alice@example.com")]: {
+    by: {
+      modelAt: [
+        {
+          id: "codex/gpt-a",
+          calls: 3,
+          errors: 1,
+          input: 800,
+          output: 50,
+          cache_read: 500,
+          cost: 0.5,
+          unpriced: 0,
+        },
+      ],
+    },
+  },
+  [accountKey("codex", "bob@example.com")]: {
+    by: {
+      modelAt: [
+        {
+          id: "codex/gpt-b",
+          calls: 2,
+          errors: 0,
+          input: 200,
+          output: 50,
+          cost: 0,
+          unpriced: 2,
+        },
+      ],
+    },
+  },
+};
 
-// A row of the CSV, written by its column names, so a test cannot
-// miscount the columns.
-function row(values) {
-  return HEADER.split(",")
-    .map((name) => (values[name] ?? ""))
-    .join(",");
-}
+test("builds provider, account and model from the gateway's own totals", () => {
+  const data = aggregateGatewayUsage(usage, requests, { period: "today" });
 
-// The author's ledger: alice's try was handed on to bob after a 429, and
-// bob answered it. magpie counts one call, and no error: the try that was
-// handed on is no request of its own.
-const HANDED_ON_CSV = [
-  HEADER,
-  row({
-    time: "2026-10-31T10:10:00Z",
-    agent: "codex",
-    requested_model: "group/a",
-    provider: "codex",
-    host: "chatgpt.com as alice@example.com",
-    model: "gpt-a",
-    served_model: "gpt-a",
-    effort: "high",
-    input_tokens: "100",
-    output_tokens: "0",
-    status: "429",
-    error: "true",
-    session: "s9",
-    provider_account: "alice@example.com",
-    route_id: "9",
-    error_message: "rate limited",
-    rejected: "false",
-    tries: "2",
-    handed_on: "true",
-  }),
-  row({
-    time: "2026-10-31T10:10:01Z",
-    agent: "codex",
-    requested_model: "group/a",
-    provider: "codex",
-    host: "chatgpt.com as bob@example.com",
-    model: "gpt-a",
-    served_model: "gpt-a",
-    effort: "high",
-    input_tokens: "100",
-    output_tokens: "50",
-    cost_usd: "0.5",
-    status: "200",
-    error: "false",
-    session: "s9",
-    provider_account: "bob@example.com",
-    route_id: "9",
-    rejected: "false",
-    tries: "2",
-    handed_on: "false",
-  }),
-].join("\n");
-
-test("a try handed on to another account is no call of its own", () => {
-  const data = aggregateUsageCSV(HANDED_ON_CSV, { period: "7d" });
-
-  assert.equal(data.summary.calls, 1);
-  assert.equal(data.summary.errors, 0);
+  assert.deepEqual([...PERIODS].sort(), ["30d", "7d", "all", "today"]);
+  assert.equal(data.summary.calls, 5);
+  assert.equal(data.summary.errors, 1);
+  assert.equal(data.summary.tokens, 1100);
+  assert.equal(data.summary.cache, 500);
+  assert.equal(data.summary.cost, 0.5);
+  assert.equal(data.summary.unpriced, 2);
   assert.equal(data.summary.accounts, 2);
+  assert.equal(data.summary.providers, 1);
+  assert.equal(data.summary.models, 2);
 
+  assert.equal(data.providers.length, 1);
+  assert.equal(data.providers[0].providerName, "Codex");
+  assert.equal(data.providers[0].accounts.length, 2);
   const alice = data.accounts.find((account) => account.account === "alice@example.com");
+  assert.equal(alice.alias, "10月学生Plus");
+  assert.equal(alice.calls, 3);
+  assert.equal(alice.models.length, 1);
+  assert.equal(alice.models[0].model, "gpt-a");
+  assert.equal(alice.models[0].errors, 1);
   const bob = data.accounts.find((account) => account.account === "bob@example.com");
-  assert.equal(alice.calls, 0);
-  assert.equal(bob.calls, 1);
-  assert.equal(bob.errors, 0);
-
-  // the tokens of both tries are counted, as magpie counts them
-  assert.equal(data.summary.input, 200);
-  assert.equal(data.summary.output, 50);
-  assert.equal(data.summary.tokens, 250);
+  assert.equal(bob.lastAt, "2026-11-04T12:00:00.000Z");
 });
 
-test("parses quoted CSV fields", () => {
-  assert.deepEqual(parseCSV('a,b,c\n1,"two, words","say ""hi"""\n'), [
-    ["a", "b", "c"],
-    ["1", "two, words", 'say "hi"'],
+test("API-key calls are a marked group, never an account", () => {
+  const keyed = {
+    ...usage,
+    accounts: [
+      ...usage.accounts,
+      {
+        id: "anthropic@API key",
+        provider: "anthropic",
+        account: "API key",
+        access: "key",
+        sub: "Anthropic",
+        calls: 1,
+        errors: 0,
+        input: 10,
+        output: 1,
+      },
+    ],
+  };
+  const data = aggregateGatewayUsage(keyed, requests, { period: "today" });
+
+  assert.equal(data.summary.accounts, 2);
+  assert.equal(data.summary.apiKeyGroups, 1);
+  const group = data.accounts.find((account) => account.kind === "api-key");
+  assert.ok(group);
+  assert.equal(group.account, "API key");
+});
+
+test("one account's model rows merge even when the gateway splits them by host", () => {
+  const split = {
+    period: "today",
+    calls: 3,
+    errors: 1,
+    input: 30,
+    output: 6,
+    cache_read: 12,
+    cache_write: 3,
+    cost: 0.3,
+    unpriced: 0,
+    accounts: [
+      {
+        provider: "codex",
+        account: "alice@example.com",
+        name: "Alice",
+        calls: 3,
+        errors: 1,
+        input: 30,
+        output: 6,
+        cache_read: 12,
+        cache_write: 3,
+        cost: 0.3,
+        unpriced: 0,
+      },
+    ],
+    models: [
+      {
+        provider: "codex",
+        model: "gpt-6",
+        host: "alice@example.com",
+        calls: 2,
+        errors: 1,
+        input: 20,
+        output: 4,
+        cache_read: 8,
+        cache_write: 2,
+        cost: 0.2,
+        last_at: "2026-11-04T10:00:00.000Z",
+      },
+      {
+        provider: "codex",
+        model: "gpt-6",
+        host: "Alice",
+        calls: 1,
+        errors: 0,
+        input: 10,
+        output: 2,
+        cache_read: 4,
+        cache_write: 1,
+        cost: 0.1,
+        last_at: "2026-11-04T12:00:00.000Z",
+      },
+    ],
+  };
+
+  const data = aggregateGatewayUsage(split, {}, { period: "today" });
+  const account = data.accounts[0];
+  assert.equal(data.summary.models, 1);
+  assert.equal(account.models.length, 1);
+  assert.equal(account.models[0].model, "gpt-6");
+  assert.equal(account.models[0].id, "codex\u001falice@example.com\u001fcodex\u001fgpt-6");
+  assert.equal(account.models[0].calls, 3);
+  assert.equal(account.models[0].errors, 1);
+  assert.equal(account.models[0].tokens, 36);
+  assert.equal(account.models[0].cache, 15);
+  assert.equal(Number(account.models[0].cost.toFixed(6)), 0.3);
+  assert.equal(account.models[0].lastAt, "2026-11-04T12:00:00.000Z");
+  assert.deepEqual(account.models[0].hostNotes, [
+    { account: "alice@example.com", calls: 2 },
+    { account: "Alice", calls: 1 },
   ]);
 });
 
-test("reads the account a call went out as", () => {
-  assert.equal(whoOf("chatgpt.com as alice@example.com"), "alice@example.com");
-  assert.equal(whoOf("chatgpt.com"), "chatgpt.com");
-});
-
-test("groups accounts before models, the way magpie groups its own tables", () => {
-  const data = aggregateUsageCSV(CSV, { period: "7d" });
-
-  assert.equal(data.summary.accounts, 2);
-  assert.equal(data.summary.apiKeyGroups, 2);
-  assert.equal(data.summary.calls, 8);
-  assert.equal(data.summary.errors, 1);
-  assert.equal(data.summary.input, 3367);
-  assert.equal(data.summary.output, 3157);
-  assert.equal(data.summary.tokens, 6524);
-  assert.equal(data.summary.cache, 3710);
-  assert.equal(data.summary.cost, 4.5);
-  assert.equal(data.summary.unpriced, 3);
-
-  const alice = data.accounts.find((account) => account.account === "alice@example.com");
-  assert.equal(alice.calls, 5);
-  assert.equal(alice.models.length, 3);
-  assert.deepEqual(
-    alice.models.map((model) => model.model).sort(),
-    ["gpt-a", "gpt-b", "gpt-c"],
-  );
-  // One model stays one row, even when an old record named only the host.
-  const gptA = alice.models.find((model) => model.model === "gpt-a");
-  assert.equal(gptA.calls, 3);
-  assert.deepEqual(gptA.hostNotes, [{ account: "chatgpt.com", calls: 1 }]);
-
-  // A call whose host names no account is its own account.
-  const apiKey = data.accounts.find((account) => account.kind === "api-key");
-  assert.ok(apiKey);
-  assert.equal(apiKey.account, "API key");
-
-  // The local session record is not a call of an account.
-  assert.equal(
-    data.accounts.some((account) => account.account.includes("未记录")),
-    false,
-  );
-});
-
-test("shows the name the user gave an account", () => {
-  const data = aggregateUsageCSV(CSV, {
-    period: "7d",
-    accountNames: { codex: { "alice@example.com": "10月越南Plus" } },
-  });
-  const alice = data.accounts.find((account) => account.account === "alice@example.com");
-  assert.equal(alice.alias, "10月越南Plus");
+test("an empty gateway answer is an empty tree with a note", () => {
+  const data = aggregateGatewayUsage({ calls: 0, accounts: [] }, {}, { period: "7d" });
+  assert.deepEqual(data.providers, []);
+  assert.deepEqual(data.accounts, []);
+  assert.deepEqual(data.warnings, [{ code: "no-usage" }]);
 });
 
 test("a read from before the three-level shape is not served as current", () => {
-  // An older build wrote accounts and models but no providers. Serving that
-  // as current made the page say there was no usage at all.
   assert.equal(cacheUsable({ summary: {}, accounts: [{ id: "a" }] }), false);
   assert.equal(cacheUsable({ summary: {}, providers: [], accounts: [] }), true);
   assert.equal(cacheUsable(null), false);

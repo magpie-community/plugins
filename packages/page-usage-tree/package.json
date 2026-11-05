@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/page-usage-tree",
   "version": "0.1.0",
-  "description": "A page in magpie's window: usage as provider -> account -> model, each level expandable, with calls, tokens and cost. Reads your local usage ledger only.",
+  "description": "在 Magpie 窗口中按供应商 -> 账号 -> 模型查看用量，逐级展开调用、错误、Token 与费用。A page in Magpie's window: usage as provider -> account -> model, each level expandable, with calls, errors, tokens and cost from Magpie's local usage API.",
   "type": "module",
   "main": "./index.mjs",
   "files": [
@@ -42,6 +42,11 @@
     "url": "https://github.com/magpie-community/plugins/issues"
   },
   "magpie": {
+    "name": "账号用量 / Account usage",
+    "summary": {
+      "en": "A provider -> account -> model usage tree with per-account calls, errors, tokens and cost. Adds the account layer that Usage Glance's usage:summary does not contain, read from Magpie's local usage API.",
+      "zh": "按供应商 -> 账号 -> 模型查看用量，逐级展开调用、错误、Token 与费用。补充用量速览没有的账号层，数据来自 Magpie 本地用量 API。"
+    },
     "page": {
       "title": "Account usage",
       "titles": {
@@ -56,7 +61,10 @@
       "icon": "page/icon.svg"
     },
     "options": {
-      "port": 3494
+      "port": 3494,
+      "currency": "usd",
+      "chineseUnits": false,
+      "usdCny": 0
     },
     "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4IiB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgZmlsbD0ibm9uZSI+CiAgPHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIHJ4PSIyOCIgZmlsbD0iIzNhM2Y0YiIvPgogIDxnIHN0cm9rZT0iI2U5ZTdmMiIgc3Ryb2tlLXdpZHRoPSI5LjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+CiAgICA8cmVjdCB4PSI0Mi40IiB5PSIxMy42IiB3aWR0aD0iNDMuMiIgaGVpZ2h0PSIyNi40IiByeD0iMTAuNCIvPgogICAgPHBhdGggZD0iTTY0IDQwdjE2Ii8+CiAgICA8cGF0aCBkPSJNMzAuNCA4Mi40VjcyLjhhMTAuNCAxMC40IDAgMCAxIDEwLjQtMTAuNGg0Ni40YTEwLjQgMTAuNCAwIDAgMSAxMC40IDEwLjR2OS42Ii8+CiAgICA8cmVjdCB4PSIxNC40IiB5PSI4Mi40IiB3aWR0aD0iMzAuNCIgaGVpZ2h0PSIyMi40IiByeD0iOS42Ii8+CiAgICA8cmVjdCB4PSI0OC44IiB5PSI4Mi40IiB3aWR0aD0iMzAuNCIgaGVpZ2h0PSIyMi40IiByeD0iOS42Ii8+CiAgICA8cmVjdCB4PSI4My4yIiB5PSI4Mi40IiB3aWR0aD0iMzAuNCIgaGVpZ2h0PSIyMi40IiByeD0iOS42Ii8+CiAgICA8cGF0aCBkPSJNMTguNCAxMTQuNGg5MS4yIi8+CiAgPC9nPgo8L3N2Zz4K"
   }

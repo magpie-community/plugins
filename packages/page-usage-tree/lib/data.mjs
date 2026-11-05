@@ -1,307 +1,171 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
-  createReadStream,
-  existsSync,
+  chmodSync,
   mkdirSync,
   readFileSync,
-  statSync,
-  writeFileSync,
   renameSync,
-  realpathSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, isAbsolute, resolve, basename } from "node:path";
-import { dirname } from "node:path";
-import { createInterface } from "node:readline";
-import { promisify } from "node:util";
-import { aggregateLedgerRows, aggregateUsageCSV, PERIODS } from "./usage.mjs";
-
-const execFileAsync = promisify(execFile);
-
-export function configDir() {
-  if (process.env.MAGPIE_CONFIG_DIR) return process.env.MAGPIE_CONFIG_DIR;
-  const portable = portableDir();
-  if (portable) return portable;
-  if (isAbsolute(process.env.XDG_CONFIG_HOME || "")) return join(process.env.XDG_CONFIG_HOME, "magpie");
-  return join(homedir(), ".config", "magpie");
-}
+import { dirname, isAbsolute, join } from "node:path";
+import { accountKey, aggregateGatewayUsage, PERIODS } from "./usage.mjs";
+import {
+  gatewayAccountRequests,
+  gatewayUsage,
+} from "./gateway.mjs";
 
 export function cacheDir() {
   if (process.env.MAGPIE_CACHE_DIR) return process.env.MAGPIE_CACHE_DIR;
-  const portable = portableDir();
-  if (portable) return join(portable, "cache");
-  if (isAbsolute(process.env.XDG_CACHE_HOME || "")) return join(process.env.XDG_CACHE_HOME, "magpie");
+  if (isAbsolute(process.env.XDG_CACHE_HOME || "")) {
+    return join(process.env.XDG_CACHE_HOME, "magpie");
+  }
   return join(homedir(), ".cache", "magpie");
 }
 
-// The service writes the pid that owns its port here, so a newer build can
-// replace an older one still holding the port.
-export function servicePidFile(port) {
-  return join(cacheDir(), "usage-tree", `service-${port}.pid`);
+// The page takes only what the gateway can tell it. Currency and number
+// units are presentation choices passed by the launcher from this page's
+// options; the gateway's costs are USD, which is magpie's default.
+export function displaySettings(overrides = {}) {
+  return {
+    currency: overrides.currency === "cny" ? "cny" : "usd",
+    chineseUnits: overrides.chineseUnits === true,
+    lang: typeof overrides.lang === "string" && overrides.lang ? overrides.lang : "en",
+    usdCny: Number.isFinite(Number(overrides.usdCny)) && Number(overrides.usdCny) > 0
+      ? Number(overrides.usdCny)
+      : 0,
+    theme: overrides.theme === "dark" || overrides.theme === "light" ? overrides.theme : "",
+  };
 }
 
-// fxRate is the CNY-per-USD rate Magpie itself uses for its CNY currency
-// preference (internal/fx). Reading Magpie's own cache keeps the numbers on
-// this page the same as the ones on Magpie's Usage page.
-export function fxRate(fallback = 0) {
-  const file = join(cacheDir(), "fxrate.json");
-  try {
-    const raw = JSON.parse(readFileSync(file, "utf8"));
-    const rate = Number(raw?.rate);
-    if (Number.isFinite(rate) && rate > 0) return rate;
-  } catch {
-    // No cache yet: use the fallback.
-  }
-  return fallback;
-}
-
-export function currencySetting() {
-  return displaySettings().currency;
-}
-
-export function displaySettings() {
-  const file = join(configDir(), "settings.json");
-  try {
-    const raw = JSON.parse(readFileSync(file, "utf8"));
-    return {
-      currency: raw?.currency === "cny" ? "cny" : "usd",
-      chineseUnits: raw?.chineseUnits === true,
-      lang: typeof raw?.lang === "string" ? raw.lang : "en",
-      usdCny: fxRate(),
-      theme: raw?.theme === "dark" || raw?.theme === "light" ? raw.theme : "",
-    };
-  } catch {
-    return { currency: "usd", chineseUnits: false, lang: "en", usdCny: fxRate(), theme: "" };
-  }
-}
-
-export function portableDir(binary = findMagpieBinary()) {
-  if (!binary) return "";
-  let exe;
-  try { exe = realpathSync(binary); } catch { return ""; }
-  let base = dirname(exe);
-  if (basename(base) === "MacOS" && basename(dirname(base)) === "Contents") {
-    base = dirname(dirname(dirname(base)));
-  }
-  if (process.platform === "linux" && process.env.APPIMAGE && process.env.APPDIR &&
-      exe.startsWith(resolve(process.env.APPDIR) + "/")) base = dirname(process.env.APPIMAGE);
-  const data = join(base, "data");
-  const isFile = (p) => { try { return statSync(p).isFile(); } catch { return false; } };
-  if (isFile(join(base, ".portable"))) return data;
-  try { if (!statSync(data).isDirectory()) return ""; } catch { return ""; }
-  const hasFiles = (dir) => ["providers.json", "logins.json", "settings.json"].some((f) => isFile(join(dir, f)));
-  const installed = join(isAbsolute(process.env.XDG_CONFIG_HOME || "") ? process.env.XDG_CONFIG_HOME : join(homedir(), ".config"), "magpie");
-  const shared = [homedir(), ...["Downloads", "Desktop", "Documents", "Applications"].map((d) => join(homedir(), d)), "/Applications"]
-    .some((d) => resolve(d).toLowerCase() === resolve(base).toLowerCase());
-  return shared && (!hasFiles(data) || hasFiles(installed)) ? "" : data;
-}
-
-// accountNames are the names the user gave their accounts, kept in
-// providers.json (magpie's internal/provider/account_names.go). The tables
-// of magpie show these beside the account.
-export function accountNames() {
-  const file = join(configDir(), "providers.json");
-  try {
-    const raw = JSON.parse(readFileSync(file, "utf8"));
-    const out = {};
-    for (const provider of raw?.providers || []) {
-      const names = provider.accountNames;
-      if (!names || typeof names !== "object") continue;
-      const forProvider = {};
-      for (const [account, name] of Object.entries(names)) {
-        if (typeof name === "string" && name.trim()) {
-          forProvider[String(account).toLowerCase()] = name.trim();
-        }
-      }
-      if (Object.keys(forProvider).length) out[provider.id] = forProvider;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function executableNames() {
-  if (process.platform !== "win32") return ["magpie"];
-  const exts = (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
-    .split(";")
-    .filter(Boolean)
-    .map((ext) => ext.toLowerCase());
-  return ["magpie", ...exts.map((ext) => `magpie${ext}`)];
-}
-
-export function findMagpieBinary() {
-  for (const key of ["MAGPIE_BIN", "MAGPIE_BINARY", "MAGPIE_EXE"]) {
-    const value = process.env[key];
-    if (value && existsSync(value)) return value;
-  }
-
-  const directories = String(process.env.PATH || "")
-    .split(delimiter)
-    .filter(Boolean);
-  for (const directory of directories) {
-    for (const name of executableNames()) {
-      const candidate = join(directory, name);
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  return "";
-}
+// Cost comes from the gateway in USD. The page only converts it for display,
+// using the options Magpie's page bridge hands to the launcher. No settings
+// or exchange-rate file is read here.
 
 function normalizePeriod(period) {
   return PERIODS.has(period) ? period : "today";
-}
-
-// A read of the whole log costs a second or three, so what it came to is
-// kept until the log changes. The log's size and mtime are the key: a new
-// call changes both, and the next read recomputes.
-function usageSourceKey() {
-  try {
-    const st = statSync(join(configDir(), "usage.jsonl"));
-    const aliases = statSync(join(configDir(), "providers.json"), { throwIfNoEntry: false });
-    return `${new Date().toDateString()}:${st.size}:${st.mtimeMs}:${aliases?.mtimeMs || 0}`;
-  } catch {
-    return "";
-  }
 }
 
 function cacheFile(period) {
   return join(cacheDir(), "usage-tree", `${period}.json`);
 }
 
-// What a cache file's numbers are shaped like. A read written by an older
-// build is not the same answer: it may lack a field this page needs, so it
-// is read as a miss rather than served as if it were current.
-const CACHE_VERSION = 3;
+// A read written by an older build can lack a field this page needs, so it
+// is a miss rather than served as current.
+const CACHE_VERSION = 6;
 
 export function cacheUsable(data) {
   return Boolean(data && Array.isArray(data.providers) && Array.isArray(data.accounts));
 }
 
-function readCached(period, { any = false } = {}) {
+function readCached(period) {
   try {
     const raw = JSON.parse(readFileSync(cacheFile(period), "utf8"));
     if (!raw?.data || raw.v !== CACHE_VERSION || !cacheUsable(raw.data)) return null;
-    if (!any && raw.key !== usageSourceKey()) return null;
-    return { data: raw.data, at: raw.at || 0, key: raw.key };
+    return { data: raw.data, at: Number(raw.at) || 0 };
   } catch {
     return null;
   }
 }
 
-function writeCached(period, data, key) {
+function writeCached(period, data) {
   let temporary = "";
   try {
     const file = cacheFile(period);
-    mkdirSync(dirname(file), { recursive: true });
-    // The stale mark is about this read, not about the numbers: it is not
-    // kept, or every later read would say it is old.
+    const directory = dirname(file);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    try {
+      chmodSync(directory, 0o700);
+    } catch {
+      // Windows ignores POSIX modes; the write itself is still useful.
+    }
     const { stale, cached, ...keep } = data;
     temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
     writeFileSync(
       temporary,
-      JSON.stringify({ v: CACHE_VERSION, key, at: Date.now(), data: keep }),
-      "utf8",
+      JSON.stringify({ v: CACHE_VERSION, at: Date.now(), data: keep }),
+      { encoding: "utf8", mode: 0o600 },
     );
     renameSync(temporary, file);
   } catch {
-    // A cache that can't be written only costs the next read its wait.
+    // A cache that cannot be written only costs the next read its wait.
   } finally {
     if (temporary) try { unlinkSync(temporary); } catch {}
   }
 }
 
-async function readCSVWithCLI(period, binary) {
-  const { stdout } = await execFileAsync(binary, ["usage", "--csv", period], {
-    encoding: "utf8",
-    maxBuffer: 128 * 1024 * 1024,
-    timeout: 90_000,
-    windowsHide: true,
-  });
-  return stdout;
+// magpie's requests API can narrow by provider as well as account. A
+// subscription id is unique in practice, but passing both keeps an API-key
+// group from borrowing another provider's models.
+async function requestsForAccounts(usage, period, options) {
+  const out = {};
+  const accounts = Array.isArray(usage?.accounts) ? usage.accounts : [];
+  await Promise.all(
+    accounts.map(async (item) => {
+      const account = String(item?.account || "");
+      if (!account) return;
+      const provider = String(item?.provider || "");
+      const key = accountKey(provider, account);
+      try {
+        out[key] = await gatewayAccountRequests(period, account, provider, options);
+      } catch {
+        // The account totals still come from the usage answer; only its
+        // model rows are missing.
+        out[key] = null;
+      }
+    }),
+  );
+  return out;
 }
 
-async function readLedgerFallback(period) {
-  const file = join(configDir(), "usage.jsonl");
-  // A fresh install has no ledger yet. That is an empty tree with a note,
-  // not an error: magpie writes the file on its first call.
-  if (!existsSync(file)) {
-    const empty = aggregateLedgerRows([], { period, accountNames: accountNames() });
-    empty.warnings.push({ code: "no-ledger" });
-    return empty;
-  }
-
-  const rows = [];
-  const input = createReadStream(file, { encoding: "utf8" });
-  const lines = createInterface({ input, crlfDelay: Infinity });
-  for await (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      rows.push(JSON.parse(line));
-    } catch {
-      // A truncated final line is normal while Magpie is appending.
-    }
-  }
-  return aggregateLedgerRows(rows, { period, accountNames: accountNames() });
-}
-
-export async function loadUsageData(period, options = {}) {
-  const wanted = normalizePeriod(period);
-  const binary = findMagpieBinary();
-
-  if (!options.fresh) {
-    const fresh = readCached(wanted);
-    if (fresh) return { ...fresh.data, cached: true, stale: false };
-
-    // The log changes with every call, so a strict key would miss nearly
-    // every time. Show what the last read came to at once and read again
-    // behind the page.
-    const stale = readCached(wanted, { any: true });
-    if (stale) {
-      void refreshBehind(wanted, binary);
-      return { ...stale.data, stale: true };
-    }
-  }
-
-  return refresh(wanted, binary, options);
+async function readGateway(period, options) {
+  const usage = await gatewayUsage(period, options);
+  // The usage answer carries the model table already. Only accounts whose
+  // models it cannot place need their own requests read; on a large ledger
+  // that is usually none of them.
+  const preview = aggregateGatewayUsage(usage, {}, { period });
+  const missing = preview.accounts.filter((account) => account.calls > 0 && !account.models.length);
+  const requestsByAccount = missing.length
+    ? await requestsForAccounts(
+      { ...usage, accounts: usage.accounts.filter((item) =>
+        missing.some((account) => account.provider === item.provider && account.account === item.account)) },
+      period,
+      options,
+    )
+    : {};
+  return aggregateGatewayUsage(usage, requestsByAccount, { period });
 }
 
 const refreshing = new Set();
 
-function refreshBehind(period, binary) {
+export async function loadUsageData(period, options = {}) {
+  const wanted = normalizePeriod(period);
+
+  if (!options.fresh) {
+    const hit = readCached(wanted);
+    if (hit) {
+      const stale = Date.now() - hit.at >= 25_000;
+      if (stale) void refreshBehind(wanted, options);
+      return { ...hit.data, cached: true, stale };
+    }
+  }
+
+  return refresh(wanted, options);
+}
+
+function refreshBehind(period, options) {
   if (refreshing.has(period)) return;
   refreshing.add(period);
-  refresh(period, binary, { fresh: true })
+  refresh(period, { ...options, fresh: true })
     .catch(() => {})
     .finally(() => refreshing.delete(period));
 }
 
-async function refresh(wanted, binary, options = {}) {
-  const sourceKey = usageSourceKey();
-  if (binary) {
-    try {
-      const csv = await readCSVWithCLI(wanted, binary);
-      const result = aggregateUsageCSV(csv, { period: wanted, accountNames: accountNames() });
-      result.source = "magpie usage --csv";
-      result.command = `${binary} usage --csv ${wanted}`;
-      writeCached(wanted, result, sourceKey);
-      return result;
-    } catch (error) {
-      const fallback = await readLedgerFallback(wanted);
-      fallback.source = "usage.jsonl fallback";
-      fallback.command = `${binary} usage --csv ${wanted}`;
-      fallback.warnings.push({ code: "fallback", detail: error.message });
-      writeCached(wanted, fallback, sourceKey);
-      return fallback;
-    }
-  }
-
-  const fallback = await readLedgerFallback(wanted);
-  fallback.source = "usage.jsonl fallback";
-  fallback.command = "magpie usage --csv";
-  fallback.warnings.push({ code: "no-cli" });
-  writeCached(wanted, fallback, sourceKey);
-  return fallback;
+async function refresh(period, options = {}) {
+  const result = await readGateway(period, options);
+  result.source = "Magpie gateway usage";
+  writeCached(period, result);
+  return result;
 }
+
+export { PERIODS };

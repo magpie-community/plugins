@@ -122,6 +122,7 @@ input, select {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .segs {
@@ -172,6 +173,55 @@ input, select {
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.cache-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border-color: var(--magpie-line);
+  color: var(--magpie-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.cache-toggle:hover {
+  color: var(--magpie-fg-2);
+}
+
+.cache-toggle .switch {
+  position: relative;
+  width: 20px;
+  height: 12px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--magpie-line);
+}
+
+.cache-toggle .switch i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--magpie-muted);
+  transition: left .15s, background .15s;
+}
+
+.cache-toggle[aria-checked="true"] {
+  color: var(--magpie-fg-2);
+}
+
+.cache-toggle[aria-checked="true"] .switch {
+  background: var(--magpie-accent);
+}
+
+.cache-toggle[aria-checked="true"] .switch i {
+  left: 10px;
+  background: var(--magpie-card);
 }
 
 /* While a read runs the button turns accent: with reduced motion the spin
@@ -444,6 +494,10 @@ input, select {
   text-align: right;
 }
 
+.cols .col-share-label {
+  text-align: right;
+}
+
 /* ---- an account, and the models it opens -------------------------------- */
 
 .accounts:empty {
@@ -597,7 +651,7 @@ input, select {
   white-space: nowrap;
 }
 
-.account-sub i {
+.level-sub i {
   width: 2px;
   height: 2px;
   flex: none;
@@ -851,7 +905,7 @@ input, select {
 
   .model-head,
   .model-row {
-    grid-template-columns: minmax(150px, 1fr) 92px 74px minmax(80px, 0.7fr) 44px 74px;
+    grid-template-columns: minmax(150px, 1fr) 92px 74px minmax(80px, 0.7fr) 74px;
   }
 
   .model-head > :last-child,
@@ -860,7 +914,7 @@ input, select {
   }
 
   .cols {
-    grid-template-columns: minmax(150px, 1fr) 60px 74px minmax(80px, 0.7fr) 44px 74px 74px 20px;
+    grid-template-columns: minmax(150px, 1fr) 60px 74px minmax(80px, 0.7fr) 74px 74px 20px;
   }
 
   .cols .col-share {
@@ -869,8 +923,27 @@ input, select {
 }
 
 @media (max-width: 620px) {
+  .cols {
+    grid-template-columns: minmax(0, 1fr) 48px 82px 18px;
+    gap: 8px;
+  }
+
+  .cols .col-share,
+  .cols .col-share-label,
+  .cols .col-cost,
+  .cols .col-status {
+    display: none !important;
+  }
+
   .head {
     align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .head-tools {
+    justify-content: space-between;
+    width: 100%;
   }
 
   .tools {
@@ -885,23 +958,33 @@ input, select {
     width: 100%;
   }
 
+  .sort {
+    flex: 1 1 100%;
+    width: 100%;
+    overflow-x: auto;
+  }
+
   .account-main {
-    grid-template-columns: minmax(0, 1fr) 60px 20px;
+    grid-template-columns: minmax(0, 1fr) 48px 82px 18px;
+    gap: 8px;
   }
 
   .provider-main {
-    grid-template-columns: minmax(0, 1fr) 60px 20px;
+    grid-template-columns: minmax(0, 1fr) 48px 82px 18px;
+    gap: 8px;
   }
 
-  .provider-main .token-cell,
+  .provider-main .share-cell,
+  .provider-main .share-label-cell,
   .provider-main .cost-cell,
-  .provider-main .share-cell {
+  .provider-main .errors-cell {
     display: none;
   }
 
-  .account-main .token-cell,
+  .account-main .share-cell,
+  .account-main .share-label-cell,
   .account-main .cost-cell,
-  .account-main .share-cell {
+  .account-main .errors-cell {
     display: none;
   }
 
@@ -910,20 +993,21 @@ input, select {
   }
 
   .model-row {
-    grid-template-columns: minmax(0, 1fr) 56px 70px;
+    grid-template-columns: minmax(0, 1fr) 58px 74px;
+    gap: 8px;
     padding: 7px 12px 8px 20px;
     border-top: 1px solid var(--magpie-line);
   }
 
-  .cols {
-    grid-template-columns: minmax(0, 1fr) 60px 20px;
+  .model-row .share-cell,
+  .model-row .share-label-cell,
+  .model-row .cost-cell,
+  .model-row > :last-child {
+    display: none;
   }
 
-  .cols span:nth-child(3),
-  .cols span:nth-child(4),
-  .cols span:nth-child(5),
-  .cols span:nth-child(6) {
-    display: none;
+  .model-row .tokens-cell {
+    display: block;
   }
 
   .model-row .model-provider,

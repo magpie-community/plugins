@@ -29,14 +29,15 @@
   const token = meta("token");
   const theme = meta("theme") || "light";
   let lang = metaLang();
-  let currency = meta("currency") || "usd";
+  let currency = meta("currency") === "cny" ? "cny" : "usd";
   let usdCny = Number(meta("usd-cny")) || 0;
   let chineseUnits = meta("chinese-units") === "true";
-  V.setChineseUnits(chineseUnits);
   V.setLang(lang);
+  V.setChineseUnits(chineseUnits && lang === "zh");
   const saved = {
     period: store.get("usage-tree.period") || "today",
     sort: store.get("usage-tree.sort") || "tokens",
+    includeCache: store.get("usage-tree.include-cache") !== "0",
     expanded: readSet("usage-tree.expanded"),
   };
   const validPeriods = new Set(["today", "7d", "30d", "all"]);
@@ -45,6 +46,7 @@
   const state = {
     period: validPeriods.has(saved.period) ? saved.period : "today",
     sort: validSorts.has(saved.sort) ? saved.sort : "tokens",
+    includeCache: saved.includeCache,
     expanded: saved.expanded,
     openProviders: readSet("usage-tree.providers"),
     query: "",
@@ -67,11 +69,11 @@
   const expandAll = $("expand-all");
 
   function metaLang() {
-    return document.querySelector('meta[name="usage-tree-lang"]')?.getAttribute("content") || "zh";
+    return document.querySelector('meta[name="usage-tree-lang"]')?.getAttribute("content") || "en";
   }
 
   function applyI18n() {
-    document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
+    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
     document.title = W.title;
     for (const node of document.querySelectorAll("[data-i18n]")) node.textContent = W[node.dataset.i18n];
     for (const node of document.querySelectorAll("[data-i18n-period]")) node.textContent = W.periods[node.dataset.i18nPeriod];
@@ -79,10 +81,12 @@
     for (const node of document.querySelectorAll("[data-i18n-column]")) node.textContent = W.columns[node.dataset.i18nColumn];
     $("search").placeholder = W.search;
     $("period").setAttribute("aria-label", W.period);
+    $("token-cache").title = W.includeCacheHint;
+    $("token-cache").setAttribute("aria-checked", String(state.includeCache));
     $("sort").setAttribute("aria-label", W.sort);
     $("refresh").setAttribute("aria-label", W.refresh);
     $("refresh").title = W.refresh;
-    $("expand-all").textContent = W.expand;
+    updateExpandLabel();
     $("source-note").textContent = W.source;
   }
 
@@ -110,13 +114,13 @@
     // Only the window that frames this page may change its language.
     if (event.source !== window.parent || event.source === window) return;
     applyThemeEvent(message.data);
-    // The theme message carries the language, not the currency or the units:
-    // one read here covers a switch of either, without polling.
-    readSettings();
+    // The theme message carries the language and the window colours. This
+    // page's own presentation options are read once from the launcher URL;
+    // nothing is polled.
   });
 
-  // What the window sends, and what the settings endpoint answers, land here:
-  // the page redraws in place, without a reload.
+  // What the window sends lands here: the page redraws in place, without a
+  // reload.
   function applyDisplay(display) {
     if (!display) return false;
     let changed = false;
@@ -125,11 +129,12 @@
     // "system" means the window follows the OS: the window's own message
     // says which language that is, and this keeps the last one.
     if (wanted && wanted !== "system") {
-      const nextLang = wanted.startsWith("en") ? "en" : "zh";
+      const nextLang = wanted.startsWith("zh") ? "zh" : "en";
       if (nextLang !== lang) {
         lang = nextLang;
         W = globalThis.UsageI18n.get(lang);
         V.setLang(lang);
+        V.setChineseUnits(chineseUnits && lang === "zh");
         changed = true;
       }
     }
@@ -151,7 +156,7 @@
       const nextUnits = display.chineseUnits === true;
       if (nextUnits !== chineseUnits) {
         chineseUnits = nextUnits;
-        V.setChineseUnits(chineseUnits);
+        V.setChineseUnits(chineseUnits && lang === "zh");
         changed = true;
       }
     }
@@ -169,26 +174,11 @@
     return changed;
   }
 
-  async function readSettings() {
-    try {
-      const res = await fetch(new URL("api/settings", location.href).href, {
-        headers: { "x-usage-tree-token": token },
-        cache: "no-store",
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) return;
-      applyDisplay(await res.json().catch(() => null));
-    } catch {
-      // Settings are read again on the next focus or theme message.
-    }
-  }
-
   applyI18n();
   applyTheme();
   buildSummarySkeleton();
   bind();
   load();
-  readSettings();
 
   function readSet(key) {
     try {
@@ -238,6 +228,13 @@
       renderAccounts();
     });
 
+    $("token-cache").addEventListener("click", () => {
+      state.includeCache = !state.includeCache;
+      store.set("usage-tree.include-cache", state.includeCache ? "1" : "0");
+      if (state.data) render();
+      else buildSummarySkeleton();
+    });
+
     $("search").addEventListener("input", (event) => {
       state.query = event.target.value.trim().toLowerCase();
       renderAccounts();
@@ -245,7 +242,7 @@
 
     expandAll.addEventListener("click", () => {
       const providers = visibleProviders();
-      const accounts = providers.flatMap((provider) => provider.accounts);
+      const accounts = providers.flatMap((provider) => V.visibleAccounts(provider, state.query));
       const allOpen =
         providers.length > 0 &&
         providers.every((provider) => state.openProviders.has(provider.id)) &&
@@ -269,7 +266,6 @@
 
     window.addEventListener("focus", () => {
       if (Date.now() - state.loadedAt > 60_000) load();
-      readSettings();
     });
   }
 
@@ -280,6 +276,7 @@
     for (const button of $("sort").querySelectorAll("[data-sort]")) {
       button.setAttribute("aria-selected", String(button.dataset.sort === state.sort));
     }
+    $("token-cache").setAttribute("aria-checked", String(state.includeCache));
     expandAll.textContent = allExpanded() ? W.collapse : W.expand;
   }
 
@@ -288,6 +285,7 @@
     const requestId = ++state.requestId;
     if (state.controller) state.controller.abort();
     clearTimeout(state.spinTimer);
+    clearTimeout(state.staleTimer);
     state.controller = new AbortController();
     state.loading = true;
     state.error = "";
@@ -319,9 +317,6 @@
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       if (requestId !== state.requestId || requestedPeriod !== state.period) return;
-      if (body.display) {
-        applyDisplay(body.display);
-      }
       const next = fingerprint(body);
       const changed = next !== state.fingerprint || !state.rendered;
       state.data = body;
@@ -330,11 +325,17 @@
       // The service answers with the numbers it had and reads again behind
       // the page; ask for them again in a moment, so the page catches up
       // without the reader asking.
-      if (body.stale && (state.stalePolls = (state.stalePolls || 0) + 1) <= 3) {
-        clearTimeout(state.staleTimer);
-        state.staleTimer = setTimeout(() => {
-          if (!document.hidden && requestedPeriod === state.period) load({ quiet: true });
-        }, 8000);
+      if (body.stale) {
+        const attempt = state.stalePolls = (state.stalePolls || 0) + 1;
+        if (attempt <= 3) {
+          clearTimeout(state.staleTimer);
+          const delay = attempt === 1 ? 1200 : attempt === 2 ? 2500 : 5000;
+          state.staleTimer = setTimeout(() => {
+            if (!document.hidden && requestedPeriod === state.period) load({ quiet: true });
+          }, delay);
+        }
+      } else {
+        state.stalePolls = 0;
       }
       if (state.previewFirst && state.data.accounts?.length && !store.get("usage-tree.expanded")) {
         state.expanded.add(state.data.accounts[0].id);
@@ -348,6 +349,12 @@
     } catch (error) {
       if (requestId !== state.requestId || error?.name === "AbortError") return;
       state.error = `${error?.name || "Error"}: ${error?.message || W.readFailed}`;
+      if (state.data?.period === requestedPeriod) {
+        warning.hidden = false;
+        warning.textContent = W.refreshFailed;
+        renderFoot();
+        return;
+      }
       renderError();
     } finally {
       if (requestId !== state.requestId) return;
@@ -389,12 +396,71 @@
   // What the page reads: if a read came back the same, nothing is redrawn.
   function fingerprint(data) {
     const summary = data?.summary || {};
-    const parts = [data?.period, summary.calls, summary.tokens, Number(summary.cost || 0).toFixed(4)];
+    const cost = (value) => Number(value || 0).toFixed(6);
+    const parts = [
+      data?.period,
+      summary.accounts,
+      summary.providers,
+      summary.models,
+      summary.calls,
+      summary.errors,
+      summary.unpriced,
+      summary.input,
+      summary.output,
+      summary.tokens,
+      summary.cache,
+      summary.allTokens,
+      cost(summary.cost),
+    ];
     for (const provider of data?.providers || []) {
-      parts.push(provider.id, provider.calls, provider.tokens);
+      parts.push(
+        provider.id,
+        provider.providerName,
+        provider.calls,
+        provider.errors,
+        provider.unpriced,
+        provider.input,
+        provider.output,
+        provider.tokens,
+        provider.cache,
+        provider.allTokens,
+        cost(provider.cost),
+      );
       for (const account of provider.accounts || []) {
-        parts.push(account.id, account.calls, account.tokens);
-        for (const model of account.models || []) parts.push(model.id, model.calls, model.tokens);
+        parts.push(
+          account.id,
+          account.account,
+          account.alias,
+          account.providerName,
+          account.calls,
+          account.errors,
+          account.unpriced,
+          account.input,
+          account.output,
+          account.tokens,
+          account.cache,
+          account.allTokens,
+          cost(account.cost),
+          account.lastAt,
+        );
+        for (const model of account.models || []) {
+          parts.push(
+            model.id,
+            model.model,
+            model.provider,
+            model.providerName,
+            model.calls,
+            model.errors,
+            model.unpriced,
+            model.input,
+            model.output,
+            model.tokens,
+            model.cache,
+            model.allTokens,
+            cost(model.cost),
+            JSON.stringify(model.hostNotes || []),
+          );
+        }
       }
     }
     return parts.join("|");
@@ -404,7 +470,7 @@
   function renderFoot() {
     const data = state.data;
     if (!data) return;
-    const source = data.source || "Magpie local usage ledger";
+    const source = data.source || "Magpie gateway usage";
     $("source-note").textContent = `${W.source} · ${source}`;
     $("updated").textContent = data.generatedAt
       ? `${W.updated} ${new Date(data.generatedAt).toLocaleTimeString(lang === "en" ? "en-US" : "zh-CN", { hour: "2-digit", minute: "2-digit" })}`
@@ -413,7 +479,7 @@
 
   function buildSummarySkeleton() {
     summary.replaceChildren(
-      ...[W.accounts, W.calls, "Token", W.cost].map((label) => {
+      ...[W.accounts, W.calls, state.includeCache ? W.tokensWithCache : W.tokensWithoutCache, W.cost].map((label) => {
         const card = el("article", "summary-card loading");
         const head = el("div", "summary-label");
         head.append(icon("dot"), document.createTextNode(label));
@@ -441,7 +507,7 @@
     // A read from before the three-level shape has no provider count; the
     // rows still know their providers, so count those.
     const summaryData = { ...data, providers: data.providers ?? providersOf(state.data).length };
-    const items = V.tiles(summaryData, lang, currency, usdCny).map((tile, index) => ({
+    const items = V.tiles(summaryData, lang, currency, usdCny, state.includeCache).map((tile, index) => ({
       ...tile,
       icon: ["accounts", "calls", "tokens", "cost"][index],
     }));
@@ -465,21 +531,18 @@
       return;
     }
     warning.hidden = false;
-      warning.textContent = warnings
-        .map((item) => {
-          if (typeof item === "string") return item;
-          if (item.code === "skipped") return W.recordsSkipped(item.count);
-          if (item.code === "rejected") return W.rejected(item.count);
-          if (item.code === "fallback") return W.fallback(item.detail);
-          if (item.code === "no-cli") return W.noCli;
-          if (item.code === "no-ledger") return W.noLedger;
-          return "";
-        })
-        .filter(Boolean)
-        .join(" ");
+    warning.textContent = warnings
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item.code === "no-usage") return W.noUsage;
+        return "";
+      })
+      .filter(Boolean)
+      .join(" ");
   }
 
   function renderError() {
+    state.rendered = false;
     summary.replaceChildren();
     accounts.replaceChildren();
     accounts.hidden = true;
@@ -494,8 +557,7 @@
 
   function visibleAccounts() {
     return visibleProviders()
-      .flatMap((provider) => provider.accounts)
-      .filter((account) => !state.query || matches(account, state.query));
+      .flatMap((provider) => V.visibleAccounts(provider, state.query));
   }
 
   function visibleProviders() {
@@ -503,18 +565,10 @@
     const query = state.query;
     if (query) {
       list.splice(0, list.length, ...list.filter(
-        (account) =>
-          account.providerName.toLowerCase().includes(query) ||
-          account.provider.toLowerCase().includes(query) ||
-          account.accounts.some((account) => matches(account, query)),
+        (provider) => V.visibleAccounts(provider, query).length > 0,
       ));
     }
-    return list.sort((a, b) => {
-      if (state.sort === "name") return a.providerName.localeCompare(b.providerName);
-      if (state.sort === "cost") return b.cost - a.cost || b.tokens - a.tokens;
-      if (state.sort === "calls") return b.calls - a.calls || b.tokens - a.tokens;
-      return b.tokens - a.tokens || b.cost - a.cost;
-    });
+    return V.sortProviders(list, state.sort, state.includeCache);
   }
 
   // What the list draws: the providers the service sent. A read written
@@ -535,6 +589,8 @@
           accounts: [],
           calls: 0,
           tokens: 0,
+          cache: 0,
+          allTokens: 0,
           cost: 0,
           errors: 0,
           unpriced: 0,
@@ -544,20 +600,14 @@
       provider.accounts.push(account);
       provider.calls += account.calls || 0;
       provider.tokens += account.tokens || 0;
+      provider.cache += account.cache || 0;
+      provider.allTokens +=
+        Number(account.allTokens) || (Number(account.tokens) || 0) + (Number(account.cache) || 0);
       provider.cost += account.cost || 0;
       provider.errors += account.errors || 0;
       provider.unpriced += account.unpriced || 0;
     }
     return [...byProvider.values()];
-  }
-
-  function matches(account, query) {
-    return (
-      account.account.toLowerCase().includes(query) ||
-      account.providerName.toLowerCase().includes(query) ||
-      account.provider.toLowerCase().includes(query) ||
-      account.models.some((model) => model.model.toLowerCase().includes(query))
-    );
   }
 
   function renderAccounts() {
@@ -586,6 +636,7 @@
   }
 
   function providerCard(provider, index) {
+    const shownAccounts = V.visibleAccounts(provider, state.query);
     const article = el("section", "provider" + (state.openProviders.has(provider.id) ? " open" : ""));
     article.dataset.id = provider.id;
     article.style.animationDelay = `${Math.min(index, 8) * 30}ms`;
@@ -601,8 +652,8 @@
     identityText.append(
       name,
       el("div", "level-sub", W.accountsAndModels(
-        provider.accounts.filter((account) => account.kind !== "api-key").length,
-        countModels(provider),
+        shownAccounts.filter((account) => account.kind !== "api-key").length,
+        countModels(shownAccounts),
       )),
     );
     identity.append(badge, identityText);
@@ -638,7 +689,7 @@
     });
 
     const accountBox = el("div", "provider-accounts");
-    const accounts = [...provider.accounts].sort(compareItems);
+    const accounts = [...shownAccounts].sort(compareItems);
     for (const account of accounts) {
       accountBox.append(accountCard(account, provider.accounts));
     }
@@ -653,8 +704,8 @@
     return sortMetric(b) - sortMetric(a) || (a.alias || a.account || a.model).localeCompare(b.alias || b.account || b.model);
   }
 
-  function countModels(provider) {
-    return provider.accounts.reduce((sum, account) => sum + account.models.length, 0);
+  function countModels(accounts) {
+    return accounts.reduce((sum, account) => sum + account.models.length, 0);
   }
 
   function accountCard(account, siblings) {
@@ -677,7 +728,7 @@
       account.alias ? account.account : "",
       account.kind === "api-key" ? W.apiKeyNote : "",
       W.modelsOnly(account.models.length),
-      lastSeen(account.lastAt),
+      account.lastAt ? lastSeen(account.lastAt) : "",
     ].filter(Boolean);
     subParts.forEach((part, index) => {
       if (index) sub.append(el("i"));
@@ -735,10 +786,8 @@
     const models = account.models.filter(
       (model) =>
         !query ||
-        account.account.toLowerCase().includes(query) ||
-        account.providerName.toLowerCase().includes(query) ||
-        account.provider.toLowerCase().includes(query) ||
-        model.model.toLowerCase().includes(query),
+        V.accountSelfMatches(account, query) ||
+        V.modelMatches(model, query),
     );
 
     models.sort((a, b) => {
@@ -788,18 +837,12 @@
   }
 
   function updateExpandLabel() {
-    const providers = visibleProviders();
-    const accounts = providers.flatMap((provider) => provider.accounts);
-    const allOpen =
-      providers.length > 0 &&
-      providers.every((provider) => state.openProviders.has(provider.id)) &&
-      accounts.every((account) => state.expanded.has(account.id));
-    expandAll.textContent = allOpen ? W.collapse : W.expand;
+    expandAll.textContent = allExpanded() ? W.collapse : W.expand;
   }
 
   function allExpanded() {
     const providers = visibleProviders();
-    const accounts = providers.flatMap((provider) => provider.accounts);
+    const accounts = providers.flatMap((provider) => V.visibleAccounts(provider, state.query));
     return providers.length > 0 &&
       providers.every((provider) => state.openProviders.has(provider.id)) &&
       accounts.every((account) => state.expanded.has(account.id));
@@ -819,7 +862,7 @@
   function shareCell(item, total, list) {
     const share = sharePercent(item, total);
     const tokens = el("div", "metric tokens-cell");
-    tokens.append(el("div", "metric-value", compact(item.tokens)));
+    tokens.append(el("div", "metric-value", compact(V.tokenTotal(item, state.includeCache))));
 
     const barCell = el("div", "share-cell");
     const bar = el("div", "bar");
@@ -841,7 +884,7 @@
   function sortMetric(item) {
     if (state.sort === "cost") return Number(item.cost) || 0;
     if (state.sort === "calls") return Number(item.calls) || 0;
-    return Number(item.tokens) || 0;
+    return V.tokenTotal(item, state.includeCache);
   }
 
   function totalForSort(list) {
