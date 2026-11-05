@@ -2,6 +2,22 @@
 
 本文件记录 fovea 的对外变化。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循语义化版本。
 
+## [0.2.3] — 2026-11-05
+
+### Added
+
+- 支持 Gemini 请求（`contents` 字段）：thought 与 thoughtSignature、functionCall 不动；functionResponse 保留 id / name / 键，其中的长字符串被裁；图片换成注记；文档与视频载荷不动。此前 Gemini 请求完全原样放行，装了也不省。
+
+### Fixed
+
+- `saccade: "auto"` 不再把 Claude Code 的 `<system-reminder>`（token 预算、工具指引）当成用户的新问题。它与任务没有共同词，旧规则判成换话题、整段历史折叠。
+- Responses 请求的首个答案是 `custom_tool_call` / `computer_call` / `local_shell_call` 时，任务豁免范围算错，整条历史一条都不裁。
+- Chat 旧版 functions API 的 `role: "function"` 消息此前完全没被处理，那正是最占钱的工具输出。
+
+### Changed
+
+- 测试从 33 增至 45 个用例，新增四种协议各自的形状与边界（`fovea.protocols.test.mjs`）；README 的测试计数与徽章同步。
+
 ## [0.2.2] — 2026-11-04
 
 ### Fixed
