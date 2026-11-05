@@ -274,6 +274,10 @@ test("Hermes Agent's identity lines are rewritten", () => {
 test("a system prompt carrying every known line at once comes out clean in one pass", () => {
   const lines = [
     ["You are Claude Code, Anthropic's official CLI for Claude.", "You are the Claude Code CLI, Anthropic's official CLI for Claude."],
+    // 11-05: subagent prompts (fork/Explore) open with "an agent for", not
+    // "You are Claude Code"; ten dumps that afternoon all carried this one line
+    ["You are an agent for Claude Code, Anthropic's official CLI for Claude. Use the tools available to complete the task.", "You are an agent for the Claude Code CLI, Anthropic's official CLI for Claude. Use the tools available to complete the task."],
+    ["Intro.\nYou are an agent for Claude Code, dispatched mid-task.", "Intro.\nYou are an agent for the Claude Code CLI, dispatched mid-task."],
     ["You are a Claude agent, built on Anthropic's Claude Agent SDK.", "You are a coding assistant."],
     ["We build on the Claude Agent SDK; see docs.", "We build on the agent framework; see docs."],
     ["You are an AI agent powered by DeepSeek Harness.", "You are an AI agent powered by DeepSeek-Harness."],
@@ -427,6 +431,35 @@ test("a 406 dumps the sent body whole; the oldest dumps rot away", async () => {
     const still = await explained(refused406(), "{}", "autoclaw")
     expect(still.status).toBe(406)
   } finally { delete process.env.AUTOCLAW_406_DUMP_DIR }
+})
+
+// 11-05: the magpie GUI process on Windows runs without HOME, so the default
+// dump dir `${HOME ?? ""}/.config/...` collapsed to "/.config/..." and landed
+// at the CWD's drive root (C:\.config\magpie\autoclaw-406) — the dumps were
+// written, ten of them, just where nobody looks. USERPROFILE is the Windows
+// home that process always has; HOME alone must stop deciding the location.
+test("the default dump dir follows USERPROFILE, not just HOME", async () => {
+  const fake = mkdtempSync(join(tmpdir(), "autoclaw-home-"))
+  const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE, oldXdg = process.env.XDG_CONFIG_HOME
+  delete process.env.XDG_CONFIG_HOME
+  process.env.HOME = ""
+  process.env.USERPROFILE = join(fake, "magpie-home")
+  try {
+    const refused406 = () => new Response("{}", { status: 406 })
+    const refused = await explained(refused406(), "{}", "autoclaw")
+    expect(refused.status).toBe(406)
+    const written = readdirSync(join(process.env.USERPROFILE, ".config/magpie/autoclaw-406"))
+    expect(written).toHaveLength(1)
+    // with HOME set again it still wins over USERPROFILE (XDG conventions)
+    process.env.HOME = join(fake, "xdg-home")
+    await explained(refused406(), "{}", "autoclaw")
+    expect(readdirSync(join(process.env.HOME, ".config/magpie/autoclaw-406"))).toHaveLength(1)
+    expect(readdirSync(join(process.env.USERPROFILE, ".config/magpie/autoclaw-406"))).toHaveLength(1)
+  } finally {
+    process.env.HOME = oldHome
+    process.env.USERPROFILE = oldProfile
+    if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldXdg
+  }
 })
 
 test("overseas loader().fetch drops X-Harness-Type and explains 406", async () => {
@@ -753,7 +786,9 @@ test("both channels rewrite the model line in a string or a text part, mid-promp
         const sys = calls.at(-1).body.messages[0].content
         const text = Array.isArray(sys) ? sys.map((p) => p.text).join("\n") : sys
         expect(text).not.toMatch(/powered by (?!the GLM-[\w.-]+ model\b)/i)
-        expect(text).toContain(want)
+        // the lowercase fixture keeps its own case through the rewrite, and
+        // the gateway refuses case-insensitively — compare the wording only
+        expect(text.toLowerCase()).toContain(want.toLowerCase())
         expect(text.startsWith("You are AutoClaw. Answer the user directly and concisely.")).toBe(true)
         // the user's own words still go as written
         expect(calls.at(-1).body.messages[1].content).toBe("hi")

@@ -71,6 +71,11 @@ const FLAGGED = [
   [/(?:Anthropic's |the )?Claude Agent SDK/gi, "the agent framework"],
   [/You are an AI agent powered by DeepSeek Harness/gi, "You are an AI agent powered by DeepSeek-Harness"],
   [/You are Claude Code/gi, "You are the Claude Code CLI"],
+  // 11-05: subagent prompts (fork/Explore) open "You are an agent for Claude
+  // Code, …" — ten 406 dumps that afternoon, all the same one line; the plain
+  // "You are Claude Code" rule above can't catch it. The "an agent for" part
+  // is generic and stays; only the harness name is masked the same way.
+  [/an agent for Claude Code/gi, "an agent for the Claude Code CLI"],
   [/You are Codex/gi, "You are the Codex agent"],
   [/Codex CLI/gi, "Codex command-line tool"],
   [/You are opencode/gi, "You are the opencode agent"],
@@ -149,10 +154,16 @@ const REFUSED_HINT =
 // 只留最近 10 份——排查"FLAGGED 没盖住的那句"不再依赖外抓工具的截断副本。
 // 一切 best-effort：盘写不进去绝不影响 406 本身返回。
 const D406_KEEP = 10;
+// 家目录的找法与 magpie 一致，但多一层 Windows 兜底：magpie 的 GUI 进程
+// 常常没有 HOME（11-05 的 dump 全写到了 CWD 盘根 C:\.config\…），USERPROFILE
+// 每个进程都有。空串不算有——`${HOME ?? ""}` 会把空 HOME 变成 "/.config"。
+function dumpHomeDir() {
+  const home = [process.env.HOME, process.env.USERPROFILE].find((h) => h) ?? "";
+  return process.env.XDG_CONFIG_HOME ?? (home ? `${home}/.config` : "");
+}
 function dump406(sentBody, providerId) {
   try {
-    const dir = process.env.AUTOCLAW_406_DUMP_DIR
-      ?? `${process.env.XDG_CONFIG_HOME ?? `${process.env.HOME ?? ""}/.config`}/magpie/autoclaw-406`;
+    const dir = process.env.AUTOCLAW_406_DUMP_DIR ?? `${dumpHomeDir()}/magpie/autoclaw-406`;
     mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     // 同毫秒的两次 406 不是同一份请求：文件名带随机尾，写不冲突、轮转按名排序
