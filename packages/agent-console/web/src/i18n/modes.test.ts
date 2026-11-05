@@ -1,7 +1,7 @@
-// 1.3: the permission chip's options per Agent: 全部自动同意 everywhere, one name, the Agent's own name in the hint.
+// 1.3: per-Agent permission options and hints; Pi keeps the default id but clearly says it never asks.
 import { describe, it, expect, beforeEach } from "vitest";
 import { setLocale } from "./index.js";
-import { composerModeOptions, permissionModes } from "./modes.js";
+import { autoApproveBannerDesc, composerModeOptions, permissionModes } from "./modes.js";
 
 describe("composerModeOptions", () => {
   beforeEach(() => { setLocale("zh"); });
@@ -33,10 +33,22 @@ describe("composerModeOptions", () => {
     expect(composerModeOptions("codex", ["bypassPermissions"])[0]!.desc).toMatch(/sandbox off/i);
     expect(composerModeOptions("claude", ["bypassPermissions"])[0]!.desc).toMatch(/skips all permission checks/i);
   });
-  it("Pi: one read-only mode with its own hint", () => {
-    const m = composerModeOptions("pi", ["bypassPermissions"]);
+  it("Pi: one default-id mode labelled as never asking in both locales", () => {
+    const m = composerModeOptions("pi", ["default"]);
     expect(m).toHaveLength(1);
-    expect(m[0]!.desc).toContain("Pi");
+    expect(m[0]).toMatchObject({ id: "default", label: "Pi 本身从不询问", auto: true });
+    expect(m[0]!.desc).toContain("Pi 本身从不询问");
+    setLocale("en");
+    expect(composerModeOptions("pi", ["default"])[0]).toMatchObject({ id: "default", label: "Pi never asks", auto: true });
+  });
+  it("the banner's per-request explanation is limited to Agents that answer individual requests", () => {
+    const phrase = "每次只同意当前这一个请求";
+    for (const p of ["cursor", "opencode", "dsh", undefined, "mock"]) {
+      expect(autoApproveBannerDesc(p), p).toContain(phrase);
+    }
+    for (const p of ["codex", "claude", "pi", "copilot", "devin"]) {
+      expect(autoApproveBannerDesc(p), p).not.toContain(phrase);
+    }
   });
   it("English", () => {
     setLocale("en");

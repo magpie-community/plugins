@@ -4,11 +4,11 @@
 // label's tooltip and its accessible description; the permission menu shows the same wording. Not dismissible.
 import { useId } from "react";
 import { Icon } from "./Icons";
-import { autoModeDesc } from "../i18n/modes.js";
+import { autoApproveBannerDesc } from "../i18n/modes.js";
 import { t } from "../i18n/index.js";
 
 export function AutoApproveBanner({ providerId, onBack }: { providerId?: string; onBack?: () => void }) {
-  const desc = `${autoModeDesc(providerId)}\n${t("composer.autoOn.keeps")}`;
+  const desc = autoApproveBannerDesc(providerId);
   const descId = useId();
   return (
     <div className="cp-auto-on" role="status" aria-live="polite" data-testid="auto-on">

@@ -403,7 +403,7 @@ export function Composer() {
   };
   // 1.3 (#727 review 1): while the mode this Agent really uses is 全部自动同意, a persistent banner + warning-coloured chip
   const autoOn = !!(modes.find((m) => m.id === mode) ?? modes[0])?.auto;
-  const canAsk = modes.some((m) => m.id === "default");
+  const canAsk = modes.some((m) => m.id === "default" && !m.auto);
   const setEffort = (effort: string | null) => {
     if (thread) void ws.call("thread.setEffort", { id: thread.id, effort });
   };

@@ -64,8 +64,9 @@ export function acpConfigForEntry(entry: ProviderCatalogEntry, appVersion: strin
       };
     case "pi":
       // pi-acp has no mode options; thinking level thought_level (low…max). Pi never asks before its tools, so its one
-      // mode is 全部自动同意 (shown read-only; nothing is sent). Pi extensions' own dialogs still reach the user.
-      return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { bypassPermissions: "" } };
+      // mode uses the neutral default id (shown read-only; nothing is sent), so switching Agents never carries
+      // bypassPermissions into an Agent the user did not choose. Pi extensions' own dialogs still reach the user.
+      return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { default: "" } };
     case "dsh":
       // Started on the conversation's route (--patch), so its initialize advertises image input for that model (see dsh.ts)
       return {

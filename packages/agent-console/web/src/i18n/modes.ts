@@ -5,10 +5,18 @@ import { t } from "./index.js";
 export type PermissionModeOption = { id: Mode; label: string; desc: string; danger?: boolean; auto?: boolean };
 
 const AUTO_DESC_IDS = new Set(["claude", "codex", "copilot", "devin", "cursor", "opencode", "pi"]);
+const PER_REQUEST_AUTO_IDS = new Set(["cursor", "opencode", "dsh"]);
 
 /** What 全部自动同意 really does for this Agent: sandbox off / skips all permission checks / the console answers allow-once */
 export function autoModeDesc(providerId: string | undefined): string {
   return t(`composer.autoDesc.${providerId && AUTO_DESC_IDS.has(providerId) ? providerId : "generic"}`);
+}
+
+export function autoApproveBannerDesc(providerId: string | undefined): string {
+  const desc = autoModeDesc(providerId);
+  return !providerId || !AUTO_DESC_IDS.has(providerId) || PER_REQUEST_AUTO_IDS.has(providerId)
+    ? `${desc}\n${t("composer.autoOn.keeps")}`
+    : desc;
 }
 
 export const FULL_AUTO: Mode = "bypassPermissions";
@@ -43,6 +51,10 @@ export function composerModeOptions(
   return base
     .filter((m) => allowed.includes(m.id))
     .map((m) => {
+      // Pi still runs without tool approvals, but its persisted id stays default so it cannot arm another Agent.
+      if (providerId === "pi" && m.id === "default") {
+        return { ...m, label: t("composer.mode.pi.label"), desc: t("composer.mode.pi.desc"), auto: true };
+      }
       // #727 review 1: the hint says plainly what the Agent's own switch does (Codex: sandbox off; Claude: skips all checks)
       if (m.id === FULL_AUTO) return { ...m, desc: autoModeDesc(providerId) };
       return labels?.[m.id] ? { ...m, label: agentModeLabel(labels[m.id]!) } : m;

@@ -9,12 +9,13 @@ import { ProjectsStore } from "../../daemon/src/store/projects.js";
 import { SettingsStore, parseSettingsPatch } from "../../daemon/src/store/settings.js";
 import { AttachmentStore } from "../../daemon/src/store/attachments.js";
 import { Gateway } from "../../daemon/src/ws/gateway.js";
-import { initProviders } from "../../daemon/src/providers/registry.js";
+import { initProviders, getProvider } from "../../daemon/src/providers/registry.js";
 import { autoApproveOption, pickAllowOnce, FULL_AUTO_NATIVE } from "../../daemon/src/providers/autoApprove.js";
 import { acpConfigForEntry } from "../../daemon/src/providers/acp/specs.js";
 import { createAcpProvider, cursorAcpCapabilities } from "../../daemon/src/providers/acp/provider.js";
 import { catalogById } from "../../daemon/src/providers/catalog.js";
 import { clampMode } from "../../daemon/src/providers/modes.js";
+import { clearProviderCache } from "../../daemon/src/providers/infoCache.js";
 import { claudeArgs } from "../../daemon/src/providers/claude/cli.js";
 import type { Config } from "../../daemon/src/config.js";
 import type { Mode } from "../../daemon/src/providers/types.js";
@@ -71,8 +72,8 @@ describe("mode mapping per Agent", () => {
     expect(entry).toBeTruthy();
     return createAcpProvider(acpConfigForEntry(entry!, "0.0.0")!);
   };
-  it("every Agent offers 全部自动同意 (bypassPermissions)", () => {
-    for (const id of ["cursor", "devin", "opencode", "copilot", "pi", "dsh"]) {
+  it("every Agent that has a full-auto choice offers 全部自动同意 (bypassPermissions)", () => {
+    for (const id of ["cursor", "devin", "opencode", "copilot", "dsh"]) {
       expect(acp(id).capabilities.modes, id).toContain("bypassPermissions");
     }
   });
@@ -85,10 +86,14 @@ describe("mode mapping per Agent", () => {
     expect(acpConfigForEntry(catalogById("copilot")!, "0")!.modeMap?.bypassPermissions).toBe("allow-all");
     expect(acpConfigForEntry(catalogById("devin")!, "0")!.modeMap?.bypassPermissions).toBe("bypass");
   });
-  it("Pi has one mode, always auto; a new Pi conversation lands on it", () => {
+  it("Pi persists its single mode as default and sends no ACP mode override", () => {
     const pi = acp("pi");
-    expect(pi.capabilities.modes).toEqual(["bypassPermissions"]);
-    expect(clampMode(pi.capabilities.modes, "default")).toBe("bypassPermissions");
+    const config = acpConfigForEntry(catalogById("pi")!, "0")!;
+    expect(pi.capabilities.modes).toEqual(["default"]);
+    expect(config.modeMap).toEqual({ default: "" });
+    expect(clampMode(pi.capabilities.modes, "default")).toBe("default");
+    // Full-auto from another Agent cannot become Pi's persisted mode either.
+    expect(clampMode(pi.capabilities.modes, "bypassPermissions")).toBe("default");
   });
   it("Claude: bypassPermissions goes to --permission-mode and is allowed at launch", () => {
     const a = claudeArgs({ model: null, permissionMode: "bypassPermissions", effort: null, resume: null });
@@ -96,16 +101,15 @@ describe("mode mapping per Agent", () => {
     expect(a).toContain("--allow-dangerously-skip-permissions");
     expect(claudeArgs({ model: null, permissionMode: "default", effort: null, resume: null })).not.toContain("--allow-dangerously-skip-permissions");
   });
-  it("the first-warning flag is a valid setting; unknown keys still refused", () => {
-    expect(parseSettingsPatch({ autoApproveWarned: true }).ok).toBe(true);
-    expect(parseSettingsPatch({ autoApproveWarned: "yes" }).ok).toBe(false);
+  it("the unused warning flag is refused; the real default-mode setting is still accepted", () => {
+    expect(parseSettingsPatch({ autoApproveWarned: true }).ok).toBe(false);
     expect(parseSettingsPatch({ defaultMode: "bypassPermissions" }).ok).toBe(true);
   });
 });
 
 // ---- the daemon path, with the mock Agent (/perm asks once for "npm test") ----
 const cfg: Config = { port: 0, dataDir: "", token: "t", version: "0.0.0", idleExitMinutes: 60, buildStamp: "0" };
-let dir: string, threads: ThreadsStore, manager: AgentManager, threadId: string;
+let dir: string, threads: ThreadsStore, manager: AgentManager, threadId: string, projectId: string;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const waitFor = async (fn: () => boolean | Promise<boolean>, ms = 10000) => {
   const t0 = Date.now();
@@ -114,6 +118,47 @@ const waitFor = async (fn: () => boolean | Promise<boolean>, ms = 10000) => {
 };
 const events = () => threads.readEvents(threadId, 0, 50000);
 const idle = () => waitFor(async () => (await threads.get(threadId))?.status === "idle", 15000);
+
+describe("AgentManager provider switching", () => {
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "ac-auto-switch-"));
+    threads = new ThreadsStore(dir);
+    const projects = new ProjectsStore(dir);
+    manager = new AgentManager(new Gateway(cfg), threads, projects, new SettingsStore(dir), new AttachmentStore(join(dir, "att")));
+    projectId = (await projects.create(dir)).id;
+  });
+  afterEach(async () => {
+    await manager.shutdown();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+
+  it("Pi's default id does not arm another Agent, including on a round trip", async () => {
+    initProviders();
+    const agents = ["pi", "codex", "claude", "cursor", "opencode", "dsh", "copilot", "devin"];
+    for (const id of agents) {
+      getProvider(id)!.detect = async () => ({ available: true, bin: "test-double" });
+      clearProviderCache(id);
+    }
+    const pi = getProvider("pi")!;
+    threadId = (await threads.create({
+      projectId,
+      provider: "pi",
+      mode: clampMode(pi.capabilities.modes, "default"),
+    })).id;
+    expect((await threads.get(threadId))?.mode).toBe("default");
+
+    for (const id of agents.slice(1)) {
+      await manager.setProvider(threadId, "pi");
+      await manager.setProvider(threadId, id);
+      expect((await threads.get(threadId))?.mode, `Pi → ${id}`).toBe("default");
+    }
+
+    await manager.setProvider(threadId, "pi");
+    expect((await threads.get(threadId))?.mode).toBe("default");
+    await manager.setProvider(threadId, "codex");
+    expect((await threads.get(threadId))?.mode).toBe("default");
+  });
+});
 
 describe("AgentManager auto-approve", () => {
   beforeEach(async () => {

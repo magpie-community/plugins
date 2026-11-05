@@ -62,7 +62,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       steerUnsupported: "{agent} 不支持插话：运行中发的消息会排队，本回合结束后再发送。",
       queuedToast: "已排队：本回合结束后发送", steeredToast: "已插话",
       inputPlaceholder: "输入消息，/ 使用命令…",
-      autoWarn: "全部自动同意会让 Agent 不经询问直接运行命令、修改文件：Codex 关闭沙箱（danger-full-access），Claude Code 跳过所有权限检查，其他 Agent 的授权请求由控制台自动「允许一次」。请谨慎使用。", autoWarnOk: "知道了",
+      autoWarn: "全部自动同意会让 Agent 不经询问直接运行命令、修改文件：Codex 关闭沙箱（danger-full-access），Claude Code 跳过所有权限检查，其他 Agent 的授权请求由控制台自动「允许一次」。请谨慎使用。",
       // 1.3 (#727 review 1): shown for as long as the conversation is in 全部自动同意, above the composer
       autoOn: {
         title: "全部自动同意已开启",
@@ -105,6 +105,7 @@ export const messages: Record<LocaleId, MessageTree> = {
         cursorAgent: { label: "Agent", desc: "完整 Agent：可读写、执行工具" },
         cursorPlan: { label: "规划", desc: "只读规划：分析并提出方案，不改文件" },
         cursorAsk: { label: "问答", desc: "问答模式：解释与讨论，只读" },
+        pi: { label: "Pi 本身从不询问", desc: "Pi 本身从不询问：命令和改文件直接执行（扩展发起的确认仍会问你）" },
       },
       // Agent-specific mode names reported by the daemon
       agentMode: {
@@ -283,7 +284,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       steerUnsupported: "{agent} can't steer: messages sent while it runs are queued and sent after this turn.",
       queuedToast: "Queued — sends after this turn", steeredToast: "Steered",
       inputPlaceholder: "Message the agent, / for commands…",
-      autoWarn: "Auto-approve all lets the agent run commands and edit files without asking: Codex turns its sandbox off (danger-full-access), Claude Code skips all permission checks, and every other agent's approval requests are answered \"allow once\" by the console. Use with care.", autoWarnOk: "Got it",
+      autoWarn: "Auto-approve all lets the agent run commands and edit files without asking: Codex turns its sandbox off (danger-full-access), Claude Code skips all permission checks, and every other agent's approval requests are answered \"allow once\" by the console. Use with care.",
       autoOn: {
         title: "Auto-approve all is on",
         back: "Back to Always Ask",
@@ -323,6 +324,7 @@ export const messages: Record<LocaleId, MessageTree> = {
         cursorAgent: { label: "Agent", desc: "Full agent: tools and edits" },
         cursorPlan: { label: "Plan", desc: "Read-only planning and analysis" },
         cursorAsk: { label: "Ask", desc: "Q&A style explanations (read-only)" },
+        pi: { label: "Pi never asks", desc: "Pi itself never asks: commands and edits run directly (dialogs from Pi extensions still ask you)" },
       },
       agentMode: {},
       effort: { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", minimal: "Minimal", none: "Off" },

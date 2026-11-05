@@ -5506,7 +5506,7 @@ function acpConfigForEntry(entry, appVersion) {
         modeLabels: { plan: "Plan", default: "Agent", bypassPermissions: "Allow All" }
       };
     case "pi":
-      return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { bypassPermissions: "" } };
+      return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { default: "" } };
     case "dsh":
       return {
         ...base,
@@ -7518,8 +7518,7 @@ var init_settings = __esm({
         z2.object({ executable: z2.string().max(4096).optional(), args: z2.array(z2.string().max(4096)).max(64).optional() }).strict()
       ),
       v1Migrated: z2.boolean(),
-      bashPath: z2.string().max(1024),
-      autoApproveWarned: z2.boolean()
+      bashPath: z2.string().max(1024)
     }).partial().strict();
     SettingsStore = class {
       file;
