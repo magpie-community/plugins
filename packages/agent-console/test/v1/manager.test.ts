@@ -201,11 +201,13 @@ describe("AgentManager", () => {
   it("idle recycling: idle timeout → closed", async () => {
     await settings.set({ idleCloseMinutes: 0.0001 }); // ~6ms
     await manager.send(threadId, { text: "你好" });
-    await waitFor(async () => (await threads.get(threadId))?.status === "idle");
+    // The turn's end already runs recycleIdle() itself; with a ~6ms timeout that one may close the thread before a
+    // poll sees "idle" (and while it is still closing, the manual call below returns at once), so accept both here
+    await waitFor(async () => ["idle", "closed"].includes((await threads.get(threadId))?.status ?? ""));
     // lastActivity is in milliseconds; wait more than 6ms, then trigger recycling by hand
     await sleep(50);
     await (manager as unknown as { recycleIdle(): Promise<void> }).recycleIdle();
-    expect((await threads.get(threadId))?.status).toBe("closed");
+    await waitFor(async () => (await threads.get(threadId))?.status === "closed", 5000);
   }, 15000);
 
   it("B17: at most MAX_WARM_IDLE idle agent processes stay warm", async () => {
