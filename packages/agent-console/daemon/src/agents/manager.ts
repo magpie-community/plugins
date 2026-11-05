@@ -17,17 +17,27 @@ import { Coalescer } from "../timeline/coalescer.js";
 import { ApiError } from "../ws/methods.js";
 import { log } from "../log.js";
 import { tr } from "../util/i18n.js";
+import { agentShellReady, bashMissingFor } from "../util/agentShell.js";
 import { resolveMentions, withMentions, type Mention, type MentionRef } from "../util/mentions.js";
 import {
   codexSlashCommandsFromEntries,
   loadCodexSlashEntries,
 } from "../providers/codex/commands.js";
 
+/** A message's own words for its conversation title: leading "> " quote blocks dropped (kept when that is all there is) */
+export function titleText(text: string): string {
+  const blocks = text.trim().split(/\n{2,}/);
+  let i = 0;
+  while (i < blocks.length && blocks[i]!.split("\n").every((l) => l === ">" || l.startsWith("> "))) i++;
+  const rest = blocks.slice(i).join(" ").trim();
+  return (rest || text.trim().replace(/^>\s?/gm, "")).replace(/\s+/g, " ").trim();
+}
+
 const SLASH_CACHE_TTL_MS = 10 * 60 * 1000;
 /** Idle Agent processes kept warm at most (one per conversation); older idle ones are closed (resumed on the next message) */
 export const MAX_WARM_IDLE = 3;
 
-type QueuedMessage = { id: string; text: string; attachments: { path: string; mime: string; name?: string }[]; mentions?: Mention[] };
+type QueuedMessage = { id: string; text: string; attachments: { path: string; mime: string; name?: string }[]; mentions?: Mention[]; clientId?: string };
 type PendingRequest = {
   kind: "permission" | "question";
   requestId: string;
@@ -54,6 +64,8 @@ type Runtime = {
   /** Text streamed as deltas only (ACP Agents): saved per segment as assistant_message / reasoning (B1) */
   pendingText: Map<string, { type: "assistant" | "reasoning"; itemId: string; text: string }>;
   deltasOnly: boolean;
+  /** 1.3: the "Git Bash not found" hint was already shown in this conversation during this daemon run */
+  bashHinted?: boolean;
 };
 
 type DeltaType = "assistant_delta" | "reasoning_delta" | "tool_output_delta";
@@ -167,11 +179,13 @@ export class AgentManager {
     return true;
   }
 
-  runtimeInfo(threadId: string): { status: string; queue: unknown[]; pending: unknown[] } | null {
+  runtimeInfo(threadId: string): { status: string; starting: boolean; queue: unknown[]; pending: unknown[] } | null {
     const rt = this.runtimes.get(threadId);
     if (!rt) return null;
     return {
       status: rt.status,
+      // true while startTurn runs (until session.send has returned): a "steer" sent then is queued instead
+      starting: rt.starting,
       queue: rt.queue,
       pending: [...rt.pending.values()].map((p) => ({
         requestId: p.requestId,
@@ -220,7 +234,9 @@ export class AgentManager {
   }
 
   // ---- send ----
-  async send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[]; mentions?: MentionRef[] }, behavior: SendBehavior = "queue"): Promise<"started" | "steered" | "queued"> {
+  /** clientId: the page's id for its optimistic bubble; it rides on the user_message event so the page can swap the
+   *  bubble for the real one without a duplicate or a jump */
+  async send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[]; mentions?: MentionRef[]; clientId?: string }, behavior: SendBehavior = "queue"): Promise<"started" | "steered" | "queued"> {
     const meta = await this.mustThread(threadId);
     const mentions = await this.resolveMentionRefs(threadId, meta.projectId, input.mentions);
     if (meta.archived) {
@@ -253,6 +269,7 @@ export class AgentManager {
             steered: true,
             attachments: this.attachmentLabels(attachmentRefs),
             ...(mentions.length ? { mentions } : {}),
+            ...(input.clientId ? { clientId: input.clientId } : {}),
           });
           return "steered";
         } catch (e) {
@@ -260,56 +277,71 @@ export class AgentManager {
           log("info", `thread ${threadId} 插话失败，改为排队：${String(e)}`);
         }
       }
-      const q: QueuedMessage = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs, ...(mentions.length ? { mentions } : {}) };
+      const q: QueuedMessage = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs, ...(mentions.length ? { mentions } : {}), ...(input.clientId ? { clientId: input.clientId } : {}) };
       rt.queue.push(q);
       this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
       return "queued";
     }
 
-    await this.startTurn(threadId, input.text, attachmentRefs, mentions);
+    await this.startTurn(threadId, input.text, attachmentRefs, mentions, input.clientId);
     return "started";
   }
 
-  private async startTurn(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[], mentions: Mention[] = []): Promise<void> {
+  private async startTurn(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[], mentions: Mention[] = [], clientId?: string): Promise<void> {
     const rt = this.rt(threadId);
     rt.starting = true;
     try {
-      await this.startTurnInner(threadId, text, attachmentRefs, mentions);
+      await this.startTurnInner(threadId, text, attachmentRefs, mentions, clientId);
     } finally {
       rt.starting = false;
     }
   }
 
-  private async startTurnInner(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[], mentions: Mention[]): Promise<void> {
+  private async startTurnInner(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[], mentions: Mention[], clientId?: string): Promise<void> {
     const meta = await this.mustThread(threadId);
     const rt = this.rt(threadId);
     // Conversations that already ran (have a providerSessionId) ignore "disabled": disabling only blocks new conversations
-    const provider = await this.assertProviderUsable(meta.provider, { allowDisabled: !!meta.providerSessionId });
+    const allowDisabled = !!meta.providerSessionId;
+    // Cheap checks only (no CLI started) before the message is accepted: a bad Agent id or a disabled one is refused outright
+    this.assertProviderAllowed(meta.provider, await this.settings.get(), { allowDisabled });
 
-    if (!rt.session) {
-      await this.setStatus(threadId, "initializing");
-      try {
-        await this.createSessionIfNeeded(threadId, { updateStatus: true });
-      } catch (e) {
-        await this.appendRaw(threadId, { type: "notice", level: "error", message: tr("notice.sessionStartFailed", { detail: String((e as Error)?.message ?? e) }) });
-        await this.appendRaw(threadId, { type: "turn_ended", status: "failed", error: String((e as Error)?.message ?? e) } as Partial<TimelineEvent> & { type: "turn_ended" });
-        await this.setStatus(threadId, "error");
-        throw e;
-      }
-    }
-
-    // Auto title
-    const trimmed = text.trim();
-    if (meta.titleAuto && trimmed) {
-      await this.threads.patch(threadId, { title: trimmed.slice(0, 40), titleAuto: true });
-      this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
-    }
+    // 1.3: the user's message is persisted and pushed FIRST. It used to wait for detection (a CLI "--version" on a cold
+    // cache) and the Agent start (spawn + ACP initialize/session/new), which on Windows takes seconds, so the bubble came late.
     await this.appendRaw(threadId, {
       type: "user_message",
       text,
       attachments: this.attachmentLabels(attachmentRefs),
       ...(mentions.length ? { mentions } : {}),
+      ...(clientId ? { clientId } : {}),
     });
+    // Auto title (1.3: without the leading "> " quote blocks that "添加到对话" puts in front of the message)
+    const trimmed = titleText(text);
+    if (meta.titleAuto && trimmed) {
+      await this.threads.patch(threadId, { title: trimmed.slice(0, 40), titleAuto: true });
+      this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
+    }
+
+    if (!rt.session) {
+      await this.setStatus(threadId, "initializing");
+      try {
+        await this.assertProviderUsable(meta.provider, { allowDisabled });
+        await this.createSessionIfNeeded(threadId, { updateStatus: true });
+      } catch (e) {
+        await this.appendRaw(threadId, { type: "notice", level: "error", message: tr("notice.sessionStartFailed", { detail: String((e as Error)?.message ?? e) }) });
+        await this.appendRaw(threadId, { type: "turn_ended", status: "failed", error: String((e as Error)?.message ?? e) } as Partial<TimelineEvent> & { type: "turn_ended" });
+        await this.threads.patch(threadId, { lastTurnStatus: "failed" });
+        await this.setStatus(threadId, "error");
+        throw e;
+      }
+    }
+    // A live session needs no detection: the Agent is running (the 60 s detect cache used to re-run "--version" on later sends)
+
+    // Windows without Git Bash: say so before the agent's first command fails on the WSL launcher
+    await agentShellReady();
+    if (!rt.bashHinted && bashMissingFor(meta.provider)) {
+      rt.bashHinted = true;
+      await this.appendRaw(threadId, { type: "notice", level: "warn", code: "bash_missing", message: tr("notice.bashMissing") });
+    }
     await this.setStatus(threadId, "running");
     try {
       const images = await this.resolveAttachments(attachmentRefs);
@@ -456,7 +488,7 @@ export class AgentManager {
       if (next) {
         this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
         // A queued message that fails to start is only logged; it must not break the event pump (startTurn already wrote notice/turn_ended)
-        await this.startTurn(threadId, next.text, next.attachments, next.mentions ?? []).catch((e) => {
+        await this.startTurn(threadId, next.text, next.attachments, next.mentions ?? [], next.clientId).catch((e) => {
           log("warn", `thread ${threadId} 排队消息启动失败：${String(e)}`);
         });
       }
@@ -605,7 +637,10 @@ export class AgentManager {
       throw new ApiError("busy", tr("err.busySwitch"));
     }
     const events = await this.threads.readEvents(threadId, 0, 5000);
-    if (events.some((e) => e.type === "user_message")) {
+    // 1.3: the user's message is now saved before the Agent starts, so a first message whose Agent never started
+    // (no session id, no turn, no reply) does not lock the conversation to that Agent
+    const neverRan = !meta.providerSessionId && !events.some((e) => e.type === "turn_started" || e.type === "assistant_message" || e.type === "tool_call");
+    if (events.some((e) => e.type === "user_message") && !neverRan) {
       throw new ApiError("bad_params", tr("err.hasMessages"));
     }
     const p = await this.assertProviderUsable(providerId);
@@ -765,6 +800,8 @@ export class AgentManager {
     const settings = await this.settings.get();
     const launch = launchFromSettings(settings, meta.provider);
     rt.deltasOnly = !!provider.capabilities.deltasOnly;
+    // The agent's environment gets the Git Bash found at start / after a settings change (Windows)
+    await agentShellReady();
     rt.session = await provider.createSession({
       threadId,
       cwd: proj.path,
@@ -797,10 +834,10 @@ export class AgentManager {
     return getProvider(meta.provider);
   }
 
-  private async assertProviderUsable(providerId: string, opts: { allowDisabled?: boolean } = {}): Promise<Provider> {
+  /** The checks that start nothing: a known Agent, enabled (unless allowDisabled), not a planned one */
+  private assertProviderAllowed(providerId: string, s: Awaited<ReturnType<SettingsStore["get"]>>, opts: { allowDisabled?: boolean } = {}): Provider {
     const p = getProvider(providerId);
     if (!p) throw new ApiError("bad_params", tr("provider.unknown", { id: providerId }));
-    const s = await this.settings.get();
     if (!opts.allowDisabled && !isProviderEnabled(s, providerId)) {
       throw new ApiError("bad_params", tr("provider.disabledNamed", { name: p.name }));
     }
@@ -808,6 +845,12 @@ export class AgentManager {
     if (entry && !providerCreatable(entry.status)) {
       throw new ApiError("bad_params", tr("provider.plannedNamed", { name: p.name }));
     }
+    return p;
+  }
+
+  private async assertProviderUsable(providerId: string, opts: { allowDisabled?: boolean } = {}): Promise<Provider> {
+    const s = await this.settings.get();
+    const p = this.assertProviderAllowed(providerId, s, opts);
     const det = await cachedDetect(p, launchFromSettings(s, providerId));
     if (!det.available) throw new ApiError("bad_params", det.reason ?? tr("provider.unavailable", { name: p.name }));
     return p;

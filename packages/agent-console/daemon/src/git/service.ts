@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { join, normalize, sep } from "node:path";
 import { tr } from "../util/i18n.js";
+import { decodeOutput } from "../util/decode.js";
 
 export type GitFileEntry = {
   path: string;
@@ -19,10 +20,12 @@ const DIFF_LIMIT = 1024 * 1024;
 function runGit(cwd: string, args: string[]): Promise<{ code: number; out: string; err: string }> {
   return new Promise((res) => {
     // core.quotepath=false: non-ASCII paths (e.g. Chinese file names) are no longer turned into "\346\226\207" octal escapes in diff headers
-    execFile("git", ["-c", "core.quotepath=false", ...args], { cwd, timeout: TIMEOUT, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (e, stdout, stderr) => {
+    // stdout (paths, diffs) is UTF-8; stderr may carry hook / credential-helper messages in the Windows code page (1.3)
+    execFile("git", ["-c", "core.quotepath=false", ...args], { cwd, timeout: TIMEOUT, maxBuffer: 8 * 1024 * 1024, windowsHide: true, encoding: "buffer" }, (e, stdout, stderr) => {
       const code = e && typeof (e as { code?: number }).code === "number" ? (e as { code: number }).code! : e ? 1 : 0;
       const missing = (e as NodeJS.ErrnoException | null)?.code === "ENOENT";
-      res({ code, out: String(stdout ?? ""), err: missing ? tr("git.missing") : String(stderr || (e?.message ?? "")) });
+      const errText = stderr?.length ? decodeOutput(stderr) : "";
+      res({ code, out: stdout ? stdout.toString("utf8") : "", err: missing ? tr("git.missing") : errText || (e?.message ?? "") });
     });
   });
 }

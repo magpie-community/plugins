@@ -9,7 +9,7 @@ export type AttachmentRef = { id: string; name: string; mime: string };
 export type PermissionOption = { id: string; label: string; kind: "allow_once" | "allow_always" | "reject_once" };
 
 export type TimelineEvent =
-  | { seq: number; ts: number; threadId: string; turnId?: string; type: "user_message"; text: string; attachments?: AttachmentRef[]; steered?: boolean; mentions?: { path: string; isDir: boolean }[] }
+  | { seq: number; ts: number; threadId: string; turnId?: string; type: "user_message"; text: string; attachments?: AttachmentRef[]; steered?: boolean; mentions?: { path: string; isDir: boolean }[]; clientId?: string }
   | { seq: number; ts: number; threadId: string; turnId: string; type: "turn_started"; model: string | null; mode: string; effort: string | null }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "assistant_delta" | "reasoning_delta" | "tool_output_delta"; itemId: string; text: string }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "assistant_message" | "reasoning"; itemId: string; text: string }
@@ -21,6 +21,6 @@ export type TimelineEvent =
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "question"; requestId: string; questions: unknown[] }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "question_answered"; requestId: string; answers: Record<string, string> }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens: number; costUsd: number; contextWindow?: number }
-  | { seq: number; ts: number; threadId: string; turnId?: string; type: "notice"; level: "info" | "warn" | "error"; message: string }
+  | { seq: number; ts: number; threadId: string; turnId?: string; type: "notice"; level: "info" | "warn" | "error"; message: string; code?: string }
   | { seq: number; ts: number; threadId: string; turnId: string; type: "turn_ended"; status: "completed" | "interrupted" | "failed"; durationMs?: number; error?: string; filesChanged?: number }
   | { seq: number; ts: number; threadId: string; turnId?: string; type: "status"; status: string };

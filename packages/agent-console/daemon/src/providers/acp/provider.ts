@@ -5,6 +5,7 @@ import { resolveLaunch } from "../launch.js";
 import { PLACEHOLDER_MODEL_NAME } from "../types.js";
 import { AcpSession } from "./session.js";
 import { knownPromptCaps } from "./promptCaps.js";
+import { OutputDecoder } from "../../util/decode.js";
 
 export type AcpProviderConfig = {
   id: string;
@@ -57,8 +58,10 @@ function runVersion(r: ResolveResult & { ok: true }, args: string[], timeoutMs =
       } catch {}
       reject(new Error("timeout"));
     }, timeoutMs);
-    p.stdout?.on("data", (c: Buffer) => (out += c.toString()));
-    p.stderr?.on("data", (c: Buffer) => (out += c.toString()));
+    // 1.3: --version / model lists may come back in the Windows code page (GBK) when something fails
+    const od = new OutputDecoder(), ed = new OutputDecoder();
+    p.stdout?.on("data", (c: Buffer) => (out += od.write(c)));
+    p.stderr?.on("data", (c: Buffer) => (out += ed.write(c)));
     p.on("error", reject);
     p.on("close", (code) => {
       clearTimeout(t);

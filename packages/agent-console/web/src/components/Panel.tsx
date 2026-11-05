@@ -210,7 +210,7 @@ function ChangesPanel() {
           );
         })}
       </div>
-      <div className="chg-diff">
+      <div className="chg-diff" data-quote-root="panel" data-quote-src={selPath ?? undefined}>
         {diff?.loading && <div className="pn-empty">{t("panel.loadingDiff")}</div>}
         {diff?.tooLarge && <div className="pn-empty">{t("panel.diffTooLarge")}</div>}
         {diff?.error && <div className="pn-empty">{diff.error}</div>}
@@ -381,7 +381,7 @@ function FilesPanel() {
       </div>
       <div className="ft-tree">{renderDir(".", 0)}</div>
       {sel && (
-        <div className="ft-view">
+        <div className="ft-view" data-quote-root="panel" data-quote-src={sel}>
           {file?.loading && <div className="pn-empty">{t("panel.reading")}</div>}
           {file?.binary && <div className="pn-empty">{t("panel.binary")}</div>}
           {file?.tooLarge && <div className="pn-empty">{t("panel.tooLarge")}</div>}

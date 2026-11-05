@@ -46,7 +46,8 @@ describe("gate (lib/gate.mjs)", () => {
       expect(calls).toBe(1);
       for (const result of results) {
         expect(result.status).toBe(302);
-        expect(result.headers.location).toBe(`http://127.0.0.1:${daemonPort}/?theme=dark#t=${token}`);
+        // 1.3: to the gate's own wrapper page, the daemon port next to the token in the fragment
+        expect(result.headers.location).toBe(`http://127.0.0.1:${port}/app?theme=dark#t=${token}&p=${daemonPort}`);
         expect(result.headers["cache-control"]).toBe("no-store");
         expect(result.headers["x-content-type-options"]).toBe("nosniff");
         expect(result.headers["referrer-policy"]).toBe("no-referrer");

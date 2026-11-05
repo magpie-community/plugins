@@ -135,9 +135,19 @@ test("the gate: Host checked, any Origin refused, the token only in the # fragme
     expect(opened).toBe(0)
     const ok = await get(port, `/open?k=${key}&theme=dark`)
     expect(ok.status).toBe(302)
-    expect(ok.headers.location).toBe(`http://127.0.0.1:45678/?theme=dark#t=${token}`)
+    // 1.3: the gate sends the frame to its own wrapper page on the stable port; the daemon port rides in the fragment too
+    expect(ok.headers.location).toBe(`http://127.0.0.1:${port}/app?theme=dark#t=${token}&p=45678`)
     expect(ok.headers["access-control-allow-origin"]).toBeUndefined()
     expect(ok.body).not.toContain(token)
+    const app = await get(port, "/app?theme=dark")
+    expect(app.status).toBe(200)
+    expect(app.headers["content-security-policy"]).toBeTruthy()
+    // only loopback pages and Magpie's own window may frame the wrapper
+    expect(app.headers["content-security-policy"]).toContain("frame-ancestors 'self' http://127.0.0.1:* http://localhost:* http://[::1]:* http://wails.localhost:* wails:")
+    expect(app.body).not.toContain(token)
+    expect(app.body).not.toContain(key)
+    expect((await get(port, "/app", { host: `evil.example:${port}` })).status).toBe(421)
+    expect((await get(port, "/app", { origin: "https://evil.example" })).status).toBe(403)
   } finally {
     await gate.close()
   }

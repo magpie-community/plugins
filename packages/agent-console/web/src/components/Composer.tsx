@@ -9,13 +9,15 @@ import { ws } from "../main";
 import { getToken } from "../api/token";
 import { Icon } from "./Icons";
 import { attachmentUrl, MentionChip } from "./Timeline";
-import { MENTION_MIME, addMention, joinProjectPath, mentionsForSend, parseMentionDrag, type MentionDraft } from "../composer/mentions";
+import { addQuote, MAX_QUOTES, quoteLabel, quotesToText, quotesFromText, type Quote } from "../composer/quotes";
+import { MENTION_MIME, addMention, joinProjectPath, mentionsForSend, parseMentionDrag, relFromAbs, type MentionDraft } from "../composer/mentions";
 import type { Mode, ModelInfo } from "../types/models";
 import type { SlashCommand } from "../composer/slashMenu";
 import { toast } from "./Toast";
 import { useLiveSettings } from "./Settings";
 import { composerModeOptions, effortLabel } from "../i18n/modes.js";
 import { Logo } from "./Logo";
+import { currentChecklist, todoProgress } from "../timeline/fold";
 import { SelectMenu } from "./SelectMenu";
 import { errMsg, t as tr, tf } from "../i18n/index.js";
 import {
@@ -40,6 +42,7 @@ export function Composer() {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [mentions, setMentions] = useState<MentionDraft[]>([]);
+  const [quotes, setQuotes] = useState<Quote[]>([]);
   const [dropHint, setDropHint] = useState(false);
   const [agentPop, setAgentPop] = useState(false);
   const [pickerProviderId, setPickerProviderId] = useState<string | null>(null);
@@ -65,7 +68,10 @@ export function Composer() {
   const mode = thread?.mode ?? "default";
   const modes = composerModeOptions(thread?.provider, provider?.capabilities.modes ?? [], provider?.capabilities.modeLabels);
   const modeMeta = modes.find((m) => m.id === mode);
-  const started = tl.items.some((it) => it.kind === "user");
+  // The Agent is locked once the conversation has run. 1.3: the user's message is saved before the Agent starts, so a
+  // first message whose Agent never started (no session id, no reply) leaves the picker open (the daemon agrees)
+  const started = tl.items.some((it) => it.kind === "user") && (running || !!thread?.providerSessionId
+    || tl.items.some((it) => it.kind === "assistant" || it.kind === "reasoning" || it.kind === "toolgroup" || it.kind === "permission"));
 
   const slashMenu = useMemo(() => slashMenuState(text, slashSuppress.current), [text]);
   const slashFiltered = useMemo(
@@ -183,28 +189,46 @@ export function Composer() {
 
   const send = useCallback(async (behavior: "queue" | "steer" = "queue") => {
     const id = ui.currentThreadId;
-    const msg = text.trim();
-    if (!id || (!msg && attachments.length === 0 && mentions.length === 0)) return;
+    const typed = text.trim();
+    if (!id || (!typed && attachments.length === 0 && mentions.length === 0 && quotes.length === 0)) return;
+    // 1.3: quotes go in front of the message as "> " blocks
+    const msg = quotesToText(quotes, typed);
+    const steer = running && behavior === "steer" && steerOk;
+    // 1.3: a message that starts a turn (or steers one) shows in the timeline at once; one queued behind a running
+    // turn goes to the queue list instead (it joins the timeline when its turn starts)
+    const optimistic = !running || steer;
+    const sent = { attachments, mentions, quotes };
     if (running && behavior === "queue") setLastSent((s) => [...s, msg]);
     setText("");
+    setAttachments([]);
+    setMentions([]);
+    setQuotes([]);
+    const root = projects.find((p) => p.id === thread?.projectId)?.path;
     try {
-      const r = (await ws.call("thread.send", {
-        id, text: msg,
-        attachments: attachments.map((a) => ({ path: a.path, mime: a.mime, name: a.name })),
-        ...(mentions.length ? { mentions: mentionsForSend(mentions) } : {}),
-        behavior: running && behavior === "steer" && steerOk ? "steer" : "queue",
-      })) as { delivered?: "started" | "steered" | "queued" } | undefined;
-      setAttachments([]);
-      setMentions([]);
+      const r = await useTimeline.getState().send(id, {
+        text: msg,
+        attachments: sent.attachments.map((a) => ({ path: a.path, mime: a.mime, name: a.name })),
+        ...(sent.mentions.length ? { mentions: mentionsForSend(sent.mentions) } : {}),
+        behavior: steer ? "steer" : "queue",
+      }, {
+        attachments: sent.attachments.map((a) => ({ id: a.path, name: a.name.trim() || a.path, mime: a.mime })),
+        ...(root && sent.mentions.length ? { mentions: sent.mentions.map((m) => ({ path: joinProjectPath(root, m.rel), isDir: m.isDir })) } : {}),
+      }, { optimistic });
       // Say what really happened to a message sent mid-turn (B7: agents without steer queue it)
       if (r?.delivered === "queued" && running) toast(tr("composer.queuedToast"));
       else if (r?.delivered === "steered") toast(tr("composer.steeredToast"));
       if (!running) setLastSent((s) => [...s.slice(-9), msg]);
     } catch (e) {
-      setText(msg);
+      // An optimistic bubble stays in the timeline marked failed, with 重试; a queued one goes back into the input
+      if (!optimistic) {
+        setText(typed); // the quotes are still in their chips
+        setAttachments(sent.attachments);
+        setMentions(sent.mentions);
+        setQuotes(sent.quotes);
+      }
       toast(tr("composer.failSend") + errMsg(e), true);
     }
-  }, [text, attachments, mentions, ui.currentThreadId, running, steerOk]);
+  }, [text, attachments, mentions, quotes, ui.currentThreadId, running, steerOk, projects, thread?.projectId]);
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (isImeComposing(e.nativeEvent)) return;
@@ -314,8 +338,50 @@ export function Composer() {
     window.addEventListener("ac-insert-mention", on);
     return () => window.removeEventListener("ac-insert-mention", on);
   });
+  // 1.3: "编辑" on a user message: its text (and its path chips) back in the input, nothing sent
+  useEffect(() => {
+    const on = (e: Event) => {
+      const d = (e as CustomEvent).detail as { text?: string; mentions?: { path: string; isDir: boolean }[] } | undefined;
+      if (!d || typeof d.text !== "string") return;
+      // Never overwrite a draft (or chips) the user has not sent yet
+      if (text.trim() || quotes.length > 0 || mentions.length > 0 || attachments.length > 0) { toast(tr("timeline.editBusy"), true); return; }
+      // Quotes the message was sent with come back as quote chips, the rest as text
+      const back = quotesFromText(d.text);
+      setQuotes(back.quotes);
+      setText(back.rest);
+      const root = project?.path;
+      if (thread && root && d.mentions?.length) {
+        let list: MentionDraft[] = [];
+        for (const m of d.mentions) {
+          const rel = relFromAbs(root, m.path);
+          if (rel) list = addMention(list, { projectId: thread.projectId, rel, isDir: m.isDir });
+        }
+        setMentions(list);
+      }
+      requestAnimationFrame(() => {
+        const ta = taRef.current;
+        if (!ta) return;
+        ta.focus();
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+      });
+    };
+    window.addEventListener("ac-composer-fill", on);
+    return () => window.removeEventListener("ac-composer-fill", on);
+  });
+  // 1.3: "添加到对话" from a text selection
+  useEffect(() => {
+    const on = (e: Event) => {
+      const d = (e as CustomEvent).detail as { text?: string; src?: string } | undefined;
+      if (!d?.text) return;
+      if (quotes.length >= MAX_QUOTES) { toast(tf("quote.full", { n: MAX_QUOTES }), true); return; }
+      setQuotes((list) => addQuote(list, d.text!, d.src));
+      taRef.current?.focus();
+    };
+    window.addEventListener("ac-add-quote", on);
+    return () => window.removeEventListener("ac-add-quote", on);
+  });
   // A new conversation starts with no chips
-  useEffect(() => { setMentions([]); }, [ui.currentThreadId]);
+  useEffect(() => { setMentions([]); setQuotes([]); }, [ui.currentThreadId]);
 
   const onDrop = async (e: React.DragEvent) => {
     e.preventDefault();
@@ -369,6 +435,7 @@ export function Composer() {
   })();
 
   if (!ui.currentThreadId) return null;
+  const checklist = currentChecklist(tl.items);
 
   return (
     <div className={`composer${waiting ? " waiting" : ""}`} onDrop={onDrop}
@@ -379,6 +446,16 @@ export function Composer() {
         if (ours !== dropHint) setDropHint(ours);
       }}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropHint(false); }}>
+      {/* 1.3: the latest turn's step list as a small "N/M tasks" pill; click shows the list in the timeline */}
+      {checklist && (
+        <div className="cp-tasks">
+          <button type="button" className="tasks-pill" title={tr("timeline.tasksPillTitle")}
+            onClick={() => window.dispatchEvent(new CustomEvent("ac-show-item", { detail: { key: checklist.key } }))}>
+            <Icon name="listChecks" size={12} />
+            <span>{tf("timeline.tasksPill", todoProgress(checklist.items))}</span>
+          </button>
+        </div>
+      )}
       {/* queue list */}
       {tl.queue.length > 0 && (
         <div className="q-list">
@@ -399,6 +476,19 @@ export function Composer() {
         {dropHint && <div className="cp-drop-hint">{tr("mention.drop")}</div>}
         {imagesByPath && attachments.some((a) => a.mime.startsWith("image/")) && (
           <div className="att-note">{tf("composer.imagesByPath", { agent: provider?.name ?? "" })}</div>
+        )}
+        {quotes.length > 0 && (
+          <div className="att-bar q-bar">
+            {quotes.map((q) => (
+              <span key={q.id} className="qchip" title={`${tr("quote.chipTitle")}\n\n${q.src ? `[${q.src}]\n` : ""}${q.text.slice(0, 600)}`}>
+                <Icon name="quote" size={12} />
+                <span className="qchip-t">{quoteLabel(q)}</span>
+                {q.text.includes("\n") && <span className="qchip-n">{tf("quote.lines", { n: q.text.split("\n").length })}</span>}
+                <button type="button" className="att-x" aria-label={tr("quote.remove")} title={tr("quote.remove")}
+                  onClick={() => setQuotes((list) => list.filter((x) => x.id !== q.id))}>×</button>
+              </span>
+            ))}
+          </div>
         )}
         {(attachments.length > 0 || mentions.length > 0) && (
           <div className="att-bar">
@@ -481,10 +571,10 @@ export function Composer() {
           {/* Agent·model pill */}
           <div className="pill-wrap" ref={pickerRef}>
             <button className="pill chip" onClick={() => openPicker(!agentPop)} title={tr("composer.agentModel")}>
-              <Logo size={18} className="chip-logo" />
+              <Logo size={16} className="chip-logo" />
               <span className="p-a">{provider?.name ?? thread?.provider ?? tr("composer.agent")}</span>
               <span className="p-t">{modelLabel}</span>
-              <svg className="chip-caret" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4l2.5 2.5L7.5 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              <ChipCaret />
             </button>
             {agentPop && (
               <div className="pop agent-pop agent-picker">
@@ -635,6 +725,7 @@ export function Composer() {
                 if (!cur) return tr("composer.defaultEffort");
                 return effortLabel(cur, thinkingOpts.find((o) => o.id === cur)?.label);
               })()}</span>
+              <ChipCaret />
             </SelectMenu>
           )}
           {/* permission mode: list only the modes this Agent really has; hidden when there is only one (e.g. Pi has no modes) */}
@@ -655,6 +746,7 @@ export function Composer() {
               >
                 <Icon name="shield" size={14} />
                 <span className="ip-l">{shown.label}</span>
+                <ChipCaret />
               </SelectMenu>
             );
           })()}
@@ -670,7 +762,9 @@ export function Composer() {
               onChange={(v) => setCursorOpts({ cursorFast: v === "fast" })}
               options={[{ value: "off", label: "Fast: Off" }, { value: "fast", label: "Fast: On" }]}
             >
+              <Icon name="zap" size={13} />
               <span className="ip-l">{thread.cursorFast ? "Fast: On" : "Fast: Off"}</span>
+              <ChipCaret />
             </SelectMenu>
           )}
           <span className="cp-div" aria-hidden="true" />
@@ -684,7 +778,7 @@ export function Composer() {
             {running ? (
               <>
                 <span className="cp-clock">{elapsed}s</span>
-                {(text.trim() || attachments.length > 0 || mentions.length > 0) && (
+                {(text.trim() || attachments.length > 0 || mentions.length > 0 || quotes.length > 0) && (
                   <button className="cp-send" title={tr(steerOk && prefs.runningSend === "steer" ? "settings.steer" : "settings.queue")}
                     disabled={waiting || attachments.some((a) => a.uploading)}
                     onClick={() => void send(prefs.runningSend === "steer" && steerOk ? "steer" : "queue")}>
@@ -696,7 +790,7 @@ export function Composer() {
                 </button>
               </>
             ) : (
-              <button className="cp-send" title={tr("common.send")} disabled={waiting || (!text.trim() && attachments.length === 0 && mentions.length === 0) || attachments.some((a) => a.uploading)}
+              <button className="cp-send" title={tr("common.send")} disabled={waiting || (!text.trim() && attachments.length === 0 && mentions.length === 0 && quotes.length === 0) || attachments.some((a) => a.uploading)}
                 onClick={() => void send("queue")}>
                 <Icon name="arrowUp" />
               </button>
@@ -708,5 +802,14 @@ export function Composer() {
         <div className="cp-hint">{tf("composer.steerUnsupported", { agent: provider?.name ?? thread?.provider ?? "" })}</div>
       )}
     </div>
+  );
+}
+
+/** The small ⌄ every composer chip ends with (1.3: one chip style for agent·model, effort, permission, Fast) */
+function ChipCaret() {
+  return (
+    <svg className="chip-caret" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+      <path d="M2.5 4l2.5 2.5L7.5 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }

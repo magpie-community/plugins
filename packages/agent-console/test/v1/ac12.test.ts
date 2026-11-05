@@ -471,14 +471,14 @@ describe("1.2 QA fixes", () => {
     expect(i18n.t("sidebar.newProject")).toBe("New project");
     expect(i18n.setLocale("en-US")).toBe(false);
     expect(i18n.setLocale("zh-TW")).toBe(true);
-    expect(i18n.tf("timeline.toolSummaryOne", { n: 1, parts: "读取 1" })).toBe("已执行 1 步 · 读取 1");
+    expect(i18n.tf("timeline.cat.read", { n: 1 })).toBe("读取 1");
   });
   it("every new 1.2 key exists in both languages", async () => {
     const { messages } = await import("../../web/src/i18n/messages.js");
     const keys = (o: Record<string, unknown>, p = ""): string[] => Object.entries(o).flatMap(([k, v]) => (typeof v === "object" && v ? keys(v as Record<string, unknown>, p + k + ".") : [p + k]));
     const zh = new Set(keys(messages.zh as unknown as Record<string, unknown>));
     const en = new Set(keys(messages.en as unknown as Record<string, unknown>));
-    for (const k of ["preview.tab", "preview.empty", "preview.limits", "preview.noLocalhost", "links.openPreviewTitle", "links.externalFailed", "mention.add", "mention.drop", "sidebar.collapse", "sidebar.expand", "settings.contentWidth", "settings.chatFont", "timeline.toolSummaryOne"]) {
+    for (const k of ["preview.tab", "preview.empty", "preview.limits", "preview.noLocalhost", "links.openPreviewTitle", "links.externalFailed", "mention.add", "mention.drop", "sidebar.collapse", "sidebar.expand", "settings.contentWidth", "settings.chatFont", "timeline.cat.read"]) {
       expect(zh.has(k), "zh " + k).toBe(true);
       expect(en.has(k), "en " + k).toBe(true);
     }

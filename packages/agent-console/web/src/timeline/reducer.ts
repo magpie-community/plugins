@@ -3,16 +3,23 @@
 // consecutive tool_calls go into one ToolGroupItem (interrupted by text/plan/permission etc. -> new group);
 // a permission shows "cancelled" when runtimeStatus is not running and it is unresolved.
 import type { TimelineEvent } from "./types.js";
+import { userKey } from "./outbox.js";
 
 export type ToolStep = {
   itemId: string; kind: string; title: string;
   status: "running" | "ok" | "failed";
   input?: unknown; detail?: unknown; output?: string;
   exitCode?: number; durationMs?: number;
+  /** 1.3: a short "thinking" folded into the tool summary (display only, see fold.ts) */
+  think?: { text: string; streaming: boolean };
 };
 
 export type DisplayItem =
-  | { kind: "user"; key: string; text: string; attachments?: { id: string; name: string; mime: string }[]; mentions?: { path: string; isDir: boolean }[]; steered?: boolean; ts: number }
+  | { kind: "user"; key: string; text: string; attachments?: { id: string; name: string; mime: string }[]; mentions?: { path: string; isDir: boolean }[]; steered?: boolean; ts: number;
+      /** 1.3: the page's id for the send (optimistic bubble ↔ echoed user_message) */
+      clientId?: string;
+      /** 1.3: only on optimistic bubbles: still on its way, or the send failed */
+      sendState?: "sending" | "failed"; sendError?: string }
   | { kind: "assistant"; key: string; itemId: string; text: string; streaming: boolean }
   | { kind: "reasoning"; key: string; itemId: string; text: string; streaming: boolean }
   | { kind: "toolgroup"; key: string; steps: ToolStep[] }
@@ -20,9 +27,11 @@ export type DisplayItem =
   | { kind: "todo"; key: string; items: { text: string; status: string }[] }
   | { kind: "permission"; key: string; requestId: string; title: string; kindStr: string; detail?: unknown; options: { id: string; label: string; kind: string }[]; status: "pending" | "resolved" | "cancelled"; choice?: string }
   | { kind: "question"; key: string; requestId: string; questions: unknown[]; answers?: Record<string, string>; status: "pending" | "answered" | "cancelled" }
-  | { kind: "notice"; key: string; level: string; message: string }
+  | { kind: "notice"; key: string; level: string; message: string; code?: string }
   | { kind: "gone"; key: string } // placeholder: duplicate delta items cleared by sweepSiblings; skipped when rendering
-  | { kind: "turnend"; key: string; status: string; durationMs?: number; error?: string; filesChanged?: number; usage?: TurnUsage };
+  | { kind: "turnend"; key: string; status: string; durationMs?: number; error?: string; filesChanged?: number; usage?: TurnUsage;
+      /** 1.3: the model the turn ran on (turn_started; null = the Agent's default) and when it ended, for the reply footer */
+      model?: string | null; ts?: number };
 
 export type TurnUsage = { inputTokens: number; outputTokens: number; cacheReadTokens: number; costUsd: number };
 
@@ -43,6 +52,8 @@ type State = {
   lastUserIdx: Map<string, number>;
   // turnId -> turn_started ts (fallback duration for agents that don't report one, e.g. ACP)
   turnStart: Map<string, number>;
+  // turnId -> the model turn_started reported (1.3 reply footer)
+  turnModel: Map<string, string | null>;
 };
 
 export function newTimelineState(): State {
@@ -56,6 +67,7 @@ export function newTimelineState(): State {
     turnUsage: new Map(),
     lastUserIdx: new Map(),
     turnStart: new Map(),
+    turnModel: new Map(),
   };
 }
 
@@ -164,7 +176,7 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
     case "user_message":
       breakGroup(st);
       st.lastUserIdx.set(ev.turnId ?? "", st.items.length);
-      st.items.push({ kind: "user", key: `u:${ev.seq}`, text: ev.text, attachments: ev.attachments, ...(ev.mentions?.length ? { mentions: ev.mentions } : {}), steered: ev.steered, ts: ev.ts });
+      st.items.push({ kind: "user", key: userKey(ev.seq, ev.clientId), text: ev.text, attachments: ev.attachments, ...(ev.mentions?.length ? { mentions: ev.mentions } : {}), steered: ev.steered, ts: ev.ts, ...(ev.clientId ? { clientId: ev.clientId } : {}) });
       return;
     case "assistant_delta":
       applyDelta(st, ev.itemId, "assistant", ev.text);
@@ -194,6 +206,12 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
       return;
     case "plan":
       breakGroup(st);
+      // 1.3: an ACP plan is the Agent's step list (entries with pending / in_progress / completed): a checklist like
+      // Claude's TodoWrite and Codex's turn/plan/updated. A plan without entries (Claude / Codex plan text) stays a card.
+      if (ev.entries?.length) {
+        st.items.push({ kind: "todo", key: `todo:${ev.seq}`, items: ev.entries.map((e) => ({ text: e.step, status: e.status === "completed" ? "done" : e.status || "pending" })) });
+        return;
+      }
       st.items.push({ kind: "plan", key: `plan:${ev.itemId}`, itemId: ev.itemId, markdown: ev.markdown });
       return;
     case "todo":
@@ -243,7 +261,7 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
     }
     case "notice":
       breakGroup(st);
-      st.items.push({ kind: "notice", key: `n:${ev.seq}`, level: ev.level, message: ev.message });
+      st.items.push({ kind: "notice", key: `n:${ev.seq}`, level: ev.level, message: ev.message, ...(ev.code ? { code: ev.code } : {}) });
       return;
     case "turn_ended":
       breakGroup(st);
@@ -252,11 +270,14 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
         durationMs: ev.durationMs ?? (st.turnStart.has(ev.turnId) ? Math.max(0, ev.ts - st.turnStart.get(ev.turnId)!) : undefined),
         error: ev.error, filesChanged: ev.filesChanged,
         usage: st.turnUsage.get(ev.turnId),
+        ...(st.turnModel.has(ev.turnId) ? { model: st.turnModel.get(ev.turnId) } : {}),
+        ts: ev.ts,
       });
       return;
     case "turn_started":
       // not shown as an item; the status pill uses status events / runtime
       st.turnStart.set(ev.turnId, ev.ts);
+      st.turnModel.set(ev.turnId, ev.model ?? null);
       return;
     case "status":
       return;

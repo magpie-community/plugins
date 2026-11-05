@@ -19,6 +19,7 @@ import { tr } from "../../util/i18n.js";
 type AcpSelectValue = { value?: string; name?: string; options?: AcpSelectValue[] };
 type AcpConfigOption = { id: string; category?: string | null; type?: string; currentValue?: unknown; options?: AcpSelectValue[] };
 import { log } from "../../log.js";
+import { OutputDecoder } from "../../util/decode.js";
 
 const rid = () => Math.random().toString(36).slice(2, 10);
 
@@ -97,8 +98,9 @@ export class AcpSession implements ProviderSession {
     if (!bin.ok) throw new Error(bin.reason);
     try {
       this.child = spawnResolved(bin, launchArgv(this.o.acpArgs, this.o.launch), { cwd: this.o.cwd });
+      const errDec = new OutputDecoder(); // 1.3: stderr may be in the Windows code page (GBK)
       this.child.stderr?.on("data", (d: Buffer) => {
-        const t = d.toString().trim();
+        const t = errDec.write(d).trim();
         if (t) log("info", `[${this.o.binName} acp] ${t.slice(0, 500)}`);
       });
       this.child.on("error", (e) => this.failInit(e));

@@ -12,6 +12,7 @@ import { PLACEHOLDER_MODEL_NAME } from "../types.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
+import { OutputDecoder } from "../../util/decode.js";
 
 const INSTALL_HINT = "npm i -g @openai/codex";
 
@@ -42,8 +43,10 @@ function runVersion(r: ResolveResult & { ok: true }, args: string[], timeoutMs =
       } catch {}
       reject(new Error("timeout"));
     }, timeoutMs);
-    p.stdout?.on("data", (c: Buffer) => (out += c.toString()));
-    p.stderr?.on("data", (c: Buffer) => (out += c.toString()));
+    // 1.3: --version / model lists may come back in the Windows code page (GBK) when something fails
+    const od = new OutputDecoder(), ed = new OutputDecoder();
+    p.stdout?.on("data", (c: Buffer) => (out += od.write(c)));
+    p.stderr?.on("data", (c: Buffer) => (out += ed.write(c)));
     p.on("error", reject);
     p.on("close", (code) => {
       clearTimeout(t);

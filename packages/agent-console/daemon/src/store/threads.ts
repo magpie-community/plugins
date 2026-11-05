@@ -56,6 +56,15 @@ export class ThreadsStore {
     this.writeQ = p.catch(() => {});
     return p;
   }
+  /** Resolves once no meta / timeline write is queued or in flight (tests remove the data dir only after this) */
+  async idle(): Promise<void> {
+    for (;;) {
+      const q = this.writeQ;
+      await q;
+      await new Promise((r) => setTimeout(r, 0)); // writes queued by the settling ones join the chain first
+      if (q === this.writeQ) return;
+    }
+  }
   constructor(dataDir: string) {
     this.dir = join(dataDir, "threads");
     this.trashDir = join(dataDir, "trash", "threads");

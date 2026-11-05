@@ -26,6 +26,8 @@ import { clampMode } from "../providers/modes.js";
 import { setAppLocale, tr, intlLocale } from "../util/i18n.js";
 import { MAX_MENTIONS } from "../util/mentions.js";
 import { openExternal } from "../util/openExternal.js";
+import { agentShellStatus, refreshAgentShell } from "../util/agentShell.js";
+import { checkBashPath, GIT_FOR_WINDOWS_URL } from "../util/gitBash.js";
 import { PreviewError, type PreviewProxy } from "../preview/proxy.js";
 import { checkPreviewUrl, MAX_PREVIEW_URL } from "../preview/url.js";
 import { previewHost } from "../preview/host.js";
@@ -46,7 +48,7 @@ export type Services = {
   // AgentManager provides runtime info once wired in at P1-4; may be empty (no session started)
   runtime?: (threadId: string) => { status: string; queue: unknown[]; pending: unknown[] } | null;
   manager?: {
-    send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[]; mentions?: { rel: string; isDir?: boolean }[] }, behavior?: "queue" | "steer"): Promise<"started" | "steered" | "queued" | void>;
+    send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[]; mentions?: { rel: string; isDir?: boolean }[]; clientId?: string }, behavior?: "queue" | "steer"): Promise<"started" | "steered" | "queued" | void>;
     interrupt(threadId: string): Promise<void>;
     respond(threadId: string, requestId: string, answer: { optionId?: string; answers?: Record<string, string>; cancelled?: boolean }): Promise<void>;
     setModel(threadId: string, model: string | null): Promise<void>;
@@ -95,6 +97,16 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     port: svc.cfg.port,
   })));
 
+  // 1.3: Git Bash for the agents (Windows). status: what the agents get now; check: validate a path typed in Settings
+  gw.method("shell.status", wrap(zEmpty, async () => {
+    const st = agentShellStatus();
+    return { ...st, platform: process.platform, downloadUrl: GIT_FOR_WINDOWS_URL };
+  }));
+  gw.method("shell.check", wrap(z.object({ path: z.string().max(1024) }), (p) => {
+    if (process.platform !== "win32") return { ok: false, reason: "notWindows" };
+    return checkBashPath(p.path);
+  }));
+
   gw.method("app.shutdown", wrap(zEmpty, () => {
     setTimeout(() => process.exit(0), 100);
     return { ok: true };
@@ -141,6 +153,10 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     if (!checked.ok) throw new ApiError("bad_params", `Invalid setting: ${checked.error}`);
     const before = await svc.settings.get();
     const next = await svc.settings.set(checked.patch as Partial<Settings>);
+    // 1.3: Settings → Bash path (Windows) re-runs Git Bash detection for the next agent start
+    if ("bashPath" in checked.patch && (before.bashPath ?? "") !== (next.bashPath ?? "")) {
+      await refreshAgentShell(typeof next.bashPath === "string" ? next.bashPath : "");
+    }
     // A changed launch command only invalidates that Agent's detection / model cache (B2: toggling never wipes the rest)
     for (const id of Object.keys(checked.patch.providerCommand ?? {})) {
       if (JSON.stringify(before.providerCommand?.[id] ?? null) !== JSON.stringify(next.providerCommand?.[id] ?? null)) {
@@ -505,10 +521,12 @@ export function registerMethods(gw: Gateway, svc: Services): void {
       // 1.2: paths dragged from the Files panel, relative to the project (the daemon resolves and checks them)
       mentions: z.array(z.object({ rel: z.string().min(1).max(4096), isDir: z.boolean().optional() })).max(MAX_MENTIONS).optional(),
       behavior: z.enum(["queue", "steer"]).optional(),
+      // 1.3: the page's id for its optimistic bubble, echoed on the user_message event (dedupe, no jump)
+      clientId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
     }),
     async (p) => {
       // delivered tells the composer what happened: a steer an Agent can't take is queued (B7)
-      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments, mentions: p.mentions }, p.behavior ?? "queue");
+      const delivered = await needManager().send(p.id, { text: p.text, attachments: p.attachments, mentions: p.mentions, clientId: p.clientId }, p.behavior ?? "queue");
       return { ok: true, delivered: delivered ?? "started" };
     }
   ));
