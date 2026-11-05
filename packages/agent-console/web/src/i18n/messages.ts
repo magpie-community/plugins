@@ -23,7 +23,7 @@ export const messages: Record<LocaleId, MessageTree> = {
     },
     topbar: {
       pickThread: "选择一个对话", sidebar: "侧栏（Ctrl+B）", clickRename: "点击改名",
-      waitAuth: "等待授权", running: "运行中 {s}s", error: "出错",
+      waitAuth: "等待授权", showRequest: "查看授权请求", running: "运行中 {s}s", error: "出错",
       closedResume: "已关闭 · 发送消息将续接", threadInfo: "对话信息",
       panelChanges: "改动（Ctrl+J）", panelFiles: "文件", panelTerminal: "终端",
     },
@@ -241,7 +241,7 @@ export const messages: Record<LocaleId, MessageTree> = {
     },
     topbar: {
       pickThread: "Select a conversation", sidebar: "Sidebar (Ctrl+B)", clickRename: "Click to rename",
-      waitAuth: "Waiting for approval", running: "Running {s}s", error: "Error",
+      waitAuth: "Waiting for approval", showRequest: "Show the request", running: "Running {s}s", error: "Error",
       closedResume: "Closed · send a message to resume", threadInfo: "Conversation info",
       panelChanges: "Changes (Ctrl+J)", panelFiles: "Files", panelTerminal: "Terminal",
     },

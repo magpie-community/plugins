@@ -1,13 +1,13 @@
 // Current conversation timeline: threads.get snapshot + thread:<id> channel increments → DisplayItem[].
 import { create } from "zustand";
 import type { TimelineEvent } from "../timeline/types";
-import { applyEvent, newTimelineState, reduceTimeline, type DisplayItem } from "../timeline/reducer";
+import { applyEvent, newTimelineState, pendingRequests, reduceTimeline, type DisplayItem } from "../timeline/reducer";
 import { ws } from "../main";
 import type { SlashCommand } from "../composer/slashMenu";
 import { Outbox, newClientId, withOutbox, type SendDisplay, type SendPayload } from "../timeline/outbox";
 
 export type QueueItem = { id: string; text: string; attachments?: { path: string; mime: string }[] };
-export type PendingReq = { requestId: string; kind: "permission" | "question" };
+export type PendingReq = { requestId: string; kind: "permission" | "question"; key?: string };
 
 type TlStore = {
   threadId: string | null;
@@ -92,17 +92,16 @@ export const useTimeline = create<TlStore>((set, get) => {
         }
         applyEvent(st, ev);
         // pending is derived from timeline items (pending permission/question → composer waiting state)
-        const pending = st.items
-          .filter((i) => (i.kind === "permission" || i.kind === "question") && i.status === "pending")
-          .map((i) => ({ requestId: (i as { requestId: string }).requestId, kind: i.kind as "permission" | "question" }));
-        set({ ...view(threadId), pending });
+        set({ ...view(threadId), pending: pendingRequests(st.items) });
         return;
       }
       if (data.type === "status" && data.status) {
         runtimeStatus = data.status;
         if (busyStatus(runtimeStatus) || runtimeStatus === "error" || runtimeStatus === "closed") outbox.busy(threadId);
         syncRuntimeFlags();
-        set(view(threadId));
+        // Going idle closes the open cards (syncRuntimeFlags): the waiting state follows them, or the top bar would
+        // keep 等待授权 with no card to click
+        set({ ...view(threadId), pending: pendingRequests(st.items) });
         return;
       }
       if (data.type === "queue" && data.queue) {
@@ -110,7 +109,8 @@ export const useTimeline = create<TlStore>((set, get) => {
         return;
       }
       if (data.type === "pending" && data.pending) {
-        set({ pending: data.pending });
+        // Only requests the timeline shows a live card for
+        set({ pending: pendingRequests(st.items).filter((p) => data.pending!.some((d) => d.requestId === p.requestId)) });
         return;
       }
       if (data.type === "commands" && data.commands) {
@@ -158,7 +158,9 @@ export const useTimeline = create<TlStore>((set, get) => {
           syncRuntimeFlags();
           set({
             ...view(threadId),
-            queue: g.queue ?? [], pending: g.pending ?? [], lastUserText: r.lastUserText,
+            // Not g.pending: the daemon's list could hold a request the timeline already closed (a 1.2 daemon kept
+            // one whose turn had ended). Waiting follows the cards that show buttons.
+            queue: g.queue ?? [], pending: pendingRequests(st.items), lastUserText: r.lastUserText,
           });
           // Subscribe only once the snapshot is ready: the server replays events after afterSeq=stSeqMax, joining the snapshot seamlessly
           if (get().threadId === threadId) subscribeChannel(threadId);

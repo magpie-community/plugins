@@ -712,6 +712,22 @@ async function scriptPerm(ctx) {
   emit({ type: "tool_call", itemId: "p1", kind: "bash", title: "\u8FD0\u884C npm test", status: "ok", output: "\u2713 12 \u4E2A\u6D4B\u8BD5\u901A\u8FC7", exitCode: 0, durationMs: 500 });
   emit({ type: "assistant_message", itemId: "pm", text: "\u6D4B\u8BD5\u901A\u8FC7\u4E86\u3002" });
 }
+async function scriptPermAbandon(ctx) {
+  const { emit } = ctx;
+  emit({
+    type: "permission_request",
+    requestId: "perm-" + rid(),
+    title: "\u8FD0\u884C git status",
+    kind: "execute",
+    detail: { command: "git status" },
+    options: [
+      { id: "allow-once", label: tr("perm.allow"), kind: "allow_once" },
+      { id: "reject-once", label: tr("perm.deny"), kind: "reject_once" }
+    ]
+  });
+  await sleepAbortable(200, ctx);
+  emit({ type: "assistant_message", itemId: "pa", text: "Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL (0x8)" });
+}
 async function scriptPlan(ctx) {
   const { emit } = ctx;
   emit({
@@ -801,6 +817,7 @@ async function scriptExit(_ctx) {
 }
 function pickScript(text) {
   const t = text.trim();
+  if (t.startsWith("/perm-abandon")) return scriptPermAbandon;
   if (t.startsWith("/perm")) return scriptPerm;
   if (t.startsWith("/plan")) return scriptPlan;
   if (t.startsWith("/ask")) return scriptAsk;
@@ -4460,7 +4477,7 @@ function registerAcpClientHandlers(app, bridge) {
       detail: tc.rawInput ?? void 0,
       options
     });
-    const answer = await bridge.waitFor(requestId);
+    const answer = await bridge.waitFor(requestId, ctx.signal);
     if (answer.cancelled) return { outcome: { outcome: "cancelled" } };
     const optionId = answer.optionId ?? options[0]?.id;
     if (!optionId) return { outcome: { outcome: "cancelled" } };
@@ -4796,7 +4813,7 @@ var init_session3 = __esm({
           const app = client({ name: "magpie-agent-console" });
           registerAcpClientHandlers(app, {
             push: (ev) => this.q.push(ev),
-            waitFor: (id2) => this.waitPerm(id2),
+            waitFor: (id2, signal) => this.waitPerm(id2, signal),
             autoAcceptPermissions: () => this.cursorAutoReview
           });
           const stream = acpStreamFromChild(this.child);
@@ -5009,10 +5026,20 @@ var init_session3 = __esm({
         await this.applySessionModel(this.o.model);
         await this.applyCursorAutoReviewConfig(false);
       }
-      waitPerm(requestId) {
+      waitPerm(requestId, signal) {
         return new Promise((resolve4) => {
           this.permPending.set(requestId, resolve4);
+          if (signal?.aborted) this.cancelPerm(requestId);
+          else signal?.addEventListener("abort", () => this.cancelPerm(requestId), { once: true });
         });
+      }
+      /** Close an open permission request as cancelled (answer the Agent's request and tell the manager) */
+      cancelPerm(requestId) {
+        const r = this.permPending.get(requestId);
+        if (!r) return;
+        this.permPending.delete(requestId);
+        r({ cancelled: true });
+        this.q.push({ type: "permission_resolved", requestId, cancelled: true });
       }
       respond(requestId, answer) {
         const r = this.permPending.get(requestId);
@@ -5071,6 +5098,7 @@ var init_session3 = __esm({
         });
       }
       endTurn(ev) {
+        for (const id2 of [...this.permPending.keys()]) this.cancelPerm(id2);
         this.q.push(ev);
         this.activeTurnId = null;
         this.running = false;
@@ -9169,6 +9197,7 @@ var AgentManager = class {
         rt.interruptTimer = null;
       }
       if (ev.turnId && ev.turnId !== "unknown") rt.endedTurnIds.add(ev.turnId);
+      await this.cancelPending(threadId, rt, { tellSession: true });
       rt.coalescer.dispose();
       rt.coalescer = this.newCoalescer(threadId);
       await this.appendRaw(threadId, ev);
@@ -9248,15 +9277,29 @@ var AgentManager = class {
     }
     return n;
   }
+  /** Cancel every open permission/question: persisted as permission_resolved{cancelled} (the page marks the card
+   *  已取消 and stops waiting). tellSession: also answer the provider's own waiter (an Agent that ended its turn without
+   *  withdrawing the request would otherwise keep a dangling promise); its echo is dropped because rt.pending is empty. */
+  async cancelPending(threadId, rt, opts) {
+    if (!rt.pending.size) return;
+    const open = [...rt.pending.values()];
+    rt.pending.clear();
+    for (const p of open) {
+      await this.appendRaw(threadId, { type: "permission_resolved", requestId: p.requestId, cancelled: true });
+      p.resolve({ cancelled: true });
+      if (opts.tellSession) {
+        try {
+          rt.session?.respond(p.requestId, { cancelled: true });
+        } catch {
+        }
+      }
+    }
+  }
   // ---- interrupt ----
   async interrupt(threadId) {
     const rt = this.rt(threadId);
     if (!rt.session || rt.status !== "running") return;
-    for (const [id2, p] of rt.pending) {
-      await this.appendRaw(threadId, { type: "permission_resolved", requestId: id2, cancelled: true });
-      p.resolve({ cancelled: true });
-    }
-    rt.pending.clear();
+    await this.cancelPending(threadId, rt, { tellSession: false });
     await rt.session.interrupt();
     const turnId = rt.currentTurnId;
     rt.interruptTimer = setTimeout(() => {

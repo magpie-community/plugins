@@ -277,6 +277,25 @@ async function scriptPerm(ctx: Ctx): Promise<void> {
   emit({ type: "assistant_message", itemId: "pm", text: "测试通过了。" });
 }
 
+// Like Cursor when its model stream dies ("http/2 stream closed … CANCEL"): it asks for permission, then ends the turn
+// itself without waiting for (or withdrawing) the answer. The manager must not keep the request pending afterwards.
+async function scriptPermAbandon(ctx: Ctx): Promise<void> {
+  const { emit } = ctx;
+  emit({
+    type: "permission_request",
+    requestId: "perm-" + rid(),
+    title: "运行 git status",
+    kind: "execute",
+    detail: { command: "git status" },
+    options: [
+      { id: "allow-once", label: tr("perm.allow"), kind: "allow_once" },
+      { id: "reject-once", label: tr("perm.deny"), kind: "reject_once" },
+    ],
+  });
+  await sleepAbortable(200, ctx);
+  emit({ type: "assistant_message", itemId: "pa", text: "Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL (0x8)" });
+}
+
 async function scriptPlan(ctx: Ctx): Promise<void> {
   const { emit } = ctx;
   emit({
@@ -372,6 +391,7 @@ async function scriptExit(_ctx: Ctx): Promise<void> {
 
 function pickScript(text: string): (ctx: Ctx) => Promise<void> {
   const t = text.trim();
+  if (t.startsWith("/perm-abandon")) return scriptPermAbandon;
   if (t.startsWith("/perm")) return scriptPerm;
   if (t.startsWith("/plan")) return scriptPlan;
   if (t.startsWith("/ask")) return scriptAsk;

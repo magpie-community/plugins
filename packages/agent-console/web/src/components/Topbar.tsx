@@ -25,7 +25,7 @@ function useNow(running: boolean): number {
   return now;
 }
 
-export function Topbar({ pendingCount }: { pendingCount: number }) {
+export function Topbar({ pendingCount, pendingKey }: { pendingCount: number; pendingKey?: string }) {
   const { projects, threads } = useData();
   const ui = useUi();
   const { version } = useConnection();
@@ -101,7 +101,11 @@ export function Topbar({ pendingCount }: { pendingCount: number }) {
       ) : (
         <span className="tb-title ghost">{project ? t("topbar.pickThread") : t("app.title")}</span>
       )}
-      {pill && <span className={`tb-pill ${pill.cls}`}>{pill.cls === "run" && <span className="tb-pill-dot" />}{pill.text}</span>}
+      {pill && (pill.cls === "wait" && pendingKey
+        // 等待授权 brings the card that waits into view (it may be far up a long conversation)
+        ? <button type="button" className={`tb-pill ${pill.cls}`} title={t("topbar.showRequest")}
+            onClick={() => window.dispatchEvent(new CustomEvent("ac-show-item", { detail: { key: pendingKey } }))}>{pill.text}</button>
+        : <span className={`tb-pill ${pill.cls}`}>{pill.cls === "run" && <span className="tb-pill-dot" />}{pill.text}</span>)}
       <div className="tb-right">
         {thread?.model && <span className="tb-model">{thread.model}</span>}
         {panelBtns.map((b) => (

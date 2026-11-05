@@ -28,6 +28,8 @@ const PATHS: Record<string, string> = {
   stopFill: "M8 8h8v8H8z",
   shield: "M12 3l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V6l8-3z",
   quote: "M5 7h5v5H7c0 2 1 3 3 4M14 7h5v5h-3c0 2 1 3 3 4",
+  // 添加到对话 (selection pop-up): speech bubble + three dots
+  chat: "M5 5h14v10H9l-4 4V5zM9 10h.01M12 10h.01M15 10h.01",
   pencil: "M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3zM14 7l3 3",
   shieldCheck: "M12 3l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V6l8-3zM8.5 12.2l2.4 2.4 4.6-4.8",
   zap: "M13 2L4 14h7l-1 8 9-12h-7l1-8z",

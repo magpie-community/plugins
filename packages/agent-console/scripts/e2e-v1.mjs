@@ -884,14 +884,52 @@ async function scenario15() {
   record("场景15 终端：echo→输出→刷新→历史仍在", true);
 }
 
+async function scenario28() {
+  // Nolan's 1.2.0 bug: Cursor asked for permission, its stream died and the turn ended with the request open; the top
+  // bar kept 等待授权 and the composer stayed locked with no card to click. /perm-abandon does the same in the mock.
+  await newThread();
+  await send("/perm-abandon");
+  await waitIdle();
+  await sleep(300);
+  const state = () => page.evaluate(() => ({
+    wait: !!document.querySelector(".tb-pill.wait"),
+    locked: !!document.querySelector(".cp-ta")?.disabled,
+    pending: window.__tl?.getState?.().pending?.length ?? -1,
+  }));
+  const live = await state();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => window.__ws && window.__ws.getState() === "open", { timeout: 10000 });
+  await page.waitForSelector(".card.perm", { timeout: 10000 });
+  await sleep(500);
+  const reloaded = await state();
+  const cancelled = await page.$eval(".card.perm", (e) => e.textContent.includes("已取消"));
+  // A request that does wait: the 等待授权 pill brings its card into view from the top of a long conversation
+  await send("/perm");
+  await page.waitForSelector(`${sel.permCard} button:has-text("允许")`, { timeout: 15000 });
+  await page.evaluate(() => { const el = document.querySelector(".tl-wrap") ?? document.querySelector("[data-index]")?.parentElement?.parentElement; if (el) el.scrollTop = 0; });
+  const pillBtn = await page.$("button.tb-pill.wait");
+  await pillBtn?.click();
+  await sleep(400);
+  const inView = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll(".card.perm")].filter((c) => c.querySelector(".perm-btns"));
+    const r = cards[0]?.getBoundingClientRect();
+    return !!r && r.bottom > 0 && r.top < window.innerHeight;
+  });
+  await page.click(`${sel.permCard} button:has-text("允许")`);
+  await waitIdle();
+  const ok = !live.wait && !live.locked && live.pending === 0 && !reloaded.wait && !reloaded.locked && reloaded.pending === 0 && cancelled && !!pillBtn && inView;
+  record("场景28 Agent 自己结束了带着授权请求的一轮：不卡等待授权；等待授权胶囊可跳到卡片", ok,
+    JSON.stringify({ live, reloaded, cancelled, pillBtn: !!pillBtn, inView }));
+}
+
 async function main() {
   await setup();
   try {
     await newProjectFlow();
     // E2E_ONLY_13=1 runs just the 1.3 scenarios (20–27) and the console-error check
     const all = [scenario2, scenario3, scenario4, scenario5, scenario6, scenario7, scenario8, scenario9, scenario10, scenario11,
-      scenario12, scenario13, scenario14, scenario15, scenario16, scenario17, scenario18, scenario20, scenario21, scenario22, scenario23, scenario24, scenario25, scenario26, scenario27, scenario19];
-    const only13 = new Set([scenario20, scenario21, scenario22, scenario23, scenario24, scenario25, scenario26, scenario27, scenario19]);
+      scenario12, scenario13, scenario14, scenario15, scenario16, scenario17, scenario18, scenario20, scenario21, scenario22, scenario23, scenario24, scenario25, scenario26, scenario27, scenario28, scenario19];
+    const only13 = new Set([scenario20, scenario21, scenario22, scenario23, scenario24, scenario25, scenario26, scenario27, scenario28, scenario19]);
     for (const f of all) if (!process.env.E2E_ONLY_13 || only13.has(f)) await f();
   } catch (e) {
     record("中途异常", false, String(e?.message ?? e).slice(0, 600) + " ||daemon:" + daemonErr.slice(-4).join("|").slice(0, 400));
