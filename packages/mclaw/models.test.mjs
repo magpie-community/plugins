@@ -1,12 +1,13 @@
 // 账号模型目录：agent/list × apikey/get v1 的合并（倍率、名字）、票过期向外抛、
 // 无凭证时静态目录原样返回。全部走本地 fake。
 import './nonet.mjs'
-import { afterEach, expect, test } from 'bun:test'
-import { MclawAuthPlugin } from './index.mjs'
+import { beforeEach, afterEach, expect, test } from 'bun:test'
+import { MclawAuthPlugin, _internal } from './index.mjs'
 import { fakeUpstream, json, TICKET_A, TICKET_B } from './fake.mjs'
 
 let f
 afterEach(() => f?.close())
+beforeEach(() => _internal.resetModelCache())
 
 const authOf = (ticket) => ({
   type: 'oauth', refresh: 'browser', access: ticket, expires: Date.now() + 86400e3,

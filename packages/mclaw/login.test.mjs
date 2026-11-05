@@ -2,8 +2,8 @@
 // 存 profile 与手机号；取消（callback 没被调）后定时器收尾关浏览器、放锁；
 // 续期只开账号自己的 profile 且校验票的归属，别人的票拒写。
 import './nonet.mjs'
-import { afterEach, expect, test } from 'bun:test'
-import { MclawAuthPlugin } from './index.mjs'
+import { beforeEach, afterEach, expect, test } from 'bun:test'
+import { MclawAuthPlugin, _internal } from './index.mjs'
 import { fakeUpstream, TICKET_A, TICKET_B, PHONE_A, PHONE_B } from './fake.mjs'
 import { fakeBrowserModule } from './fake-browser.mjs'
 
@@ -13,6 +13,7 @@ afterEach(() => {
   f?.close()
   f = undefined
 })
+beforeEach(() => _internal.resetModelCache())
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -88,14 +89,30 @@ test('0.5.0 前的老账号（metadata 无 profile）：退回老共享目录续
   expect(out.metadata.email).toBe(PHONE_B)
 })
 
-test('llm key 自动获取失败但手动填了 → 登录照常成功', async () => {
+test('llm key 自动获取失败（网络抖动）→ 登录失败并提示重试，收尾照常', async () => {
   f = fakeUpstream()
   f.route('POST /api/llm/apikey/get', () => new Response('boom', { status: 500 }))
   fb = fakeBrowserModule({ ticket: TICKET_A })
   const plugin = await MclawAuthPlugin({}, { browserModule: fb.module, signinAbortMs: 60_000 })
-  const flow = await oauthMethod(plugin).authorize({ apiKey: 'na-manual' })
+  const flow = await oauthMethod(plugin).authorize({})
+  fb.module.deliverHarvest()
+  const result = await flow.callback()
+  expect(result.type).toBe('failed')
+  expect(result.error).toContain('重新登录')
+  expect(fb.state.closed).toBe(1)
+  expect(fb.state.released).toBe(1)
+})
+
+test('authorize 不需要任何输入：无 prompts，直接开登', async () => {
+  f = fakeUpstream()
+  fb = fakeBrowserModule({ ticket: TICKET_A })
+  const plugin = await MclawAuthPlugin({}, { browserModule: fb.module, signinAbortMs: 60_000 })
+  const method = oauthMethod(plugin)
+  expect(method.prompts).toBeUndefined()
+  const flow = await method.authorize()
+  expect(flow.opened).toBe(true)
   fb.module.deliverHarvest()
   const result = await flow.callback()
   expect(result.type).toBe('success')
-  expect(result.metadata.apiKey).toBe('na-manual')
+  expect(result.metadata.email).toBe(PHONE_A)
 })

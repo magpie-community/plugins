@@ -56,7 +56,7 @@
  *   （渠道 = mobile: App 票 / pc: 网页票），到期时间可从票文本里读出。
  *   config/get（倍率）只认 mobile: 票 → 网页票的倍率走 apikey/get。
  *
- *   浏览器登录（v0.4.0）：yun.139.com 网页短信登录一次，CDP（--remote-
+ *   浏览器登录（v0.4.0）：yun.139.com 网页登录一次（方式不限），CDP（--remote-
  *   debugging-pipe，每次登录一个全新 profile）收割 authorization Cookie =
  *   pc: 票，apikey/get v1 自动取 chat key + 倍率；profile 目录存进账号
  *   metadata，续期 = headless 复开该账号自己的 profile，网页应用自己刷新
@@ -461,6 +461,12 @@ function resetSsoState() {
   ssoFailedAt.clear()
 }
 
+/** 清模型/key 进程内缓存（测试用）。 */
+function resetModelCache() {
+  llKeyRatesCache = undefined
+  openclawIdCache = undefined
+}
+
 // ---------------------------------------------------------------- chat 响应守卫
 // （移植自 kasisama/magpie-joycode 的 normalizeChatResponse，MIT）
 
@@ -652,34 +658,22 @@ export const MclawAuthPlugin = async (_input, options) => {
       methods: [
         {
           type: 'oauth',
-          label: '浏览器登录（推荐：短信登录一次，凭证全自动）',
-          prompts: [
-            {
-              type: 'password',
-              key: 'apiKey',
-              message: 'llm API key（可选，留空自动获取）。点「确定」后会弹出专用 Chrome 窗口：请在里面登录移动云（yun.139.com，短信验证码），登录成功后本流程自动继续并收走全部凭证',
-              placeholder: '留空自动获取 / na-…',
-            },
-            {
-              type: 'password',
-              key: 'vipCookie',
-              message: 'vip.yun.139.com Cookie（可选：最近逐条明细与权威重置时间）',
-              placeholder: 'mc_at=…; mc_bt=…',
-            },
-          ],
+          label: '浏览器登录（登录一次，凭证全自动）',
+          // 没有 prompts：登录全程只有「在弹出的 Chrome 里登录」一个动作。
+          // llm key 由 apikey/get v1 自动取；vip 会话由 SSO 换票链自动维持
+          // （0.5.0 前老账号手动粘过的 metadata.vipCookie 仍优先、失效自动换新）。
 
           // 流程：宿主契约要求 authorize 立即返回 { url, opened, instructions,
           // method, callback }（参照 sensenova/joycode），Chrome 由 authorize 弹出、
           // 收割等登录放进宿主随后调的 callback()。每次登录用全新 profile 的
           // Chrome（CDP 管道驱动，不占端口），绝不带旧票：换账号登录、票被吊销
-          // 后重登都不会捡到上一次的 Cookie。用户在窗口里完成移动云短信登录 →
-          // 插件收割 authorization Cookie（= pc: 票）→ apikey/get v1 自动取
-          // llm key → profile 目录与手机号存进 metadata，存为 oauth 型
-          // { refresh:'browser', access, expires, metadata }，到期前宿主调
-          // refresh 钩子 headless 续期（复开该账号自己的 profile）。
+          // 后重登都不会捡到上一次的 Cookie。用户在窗口里完成移动云登录（网页
+          // 支持验证码、密码、扫码等多种方式）→ 插件收割 authorization Cookie
+          // （= pc: 票）→ apikey/get v1 自动取 llm key → profile 目录与手机号
+          // 存进 metadata，存为 oauth 型 { refresh:'browser', access, expires,
+          // metadata }，到期前宿主调 refresh 钩子 headless 续期（复开该账号
+          // 自己的 profile）。
           async authorize(inputs = {}) {
-            const manualKey = String(inputs?.apiKey ?? '').trim()
-            const vipCookie = String(inputs?.vipCookie ?? '').trim()
             // 不 await：Chrome 立即弹出；若宿主取消（callback 没被调），定时器
             // 到点 abort——关浏览器、放 profile 锁；挂个空 catch 免得 abort 后
             // 的拒绝刷 unhandled rejection。
@@ -689,7 +683,7 @@ export const MclawAuthPlugin = async (_input, options) => {
             return {
               url: '',
               opened: true, // Chrome 已由本插件弹出，宿主不要再开 url
-              instructions: '已弹出专用 Chrome 窗口：请在里面登录移动云（yun.139.com，短信验证码），登录成功后本流程自动继续并收走全部凭证',
+              instructions: '已弹出专用 Chrome 窗口：请在里面登录移动云（yun.139.com，网页支持多种登录方式），登录成功后本流程自动继续并收走全部凭证',
               method: 'auto',
               async callback() {
                 clearTimeout(cleanup)
@@ -701,21 +695,19 @@ export const MclawAuthPlugin = async (_input, options) => {
                   const token = cookie.value
                   const expires = basicExpiryMs(token) ?? (cookie.expiresMs || undefined)
                   // 票校验 + 自动取 key（顺带拿到倍率表，缓存给 models 用）
-                  let fetchedKey
+                  let apiKey
                   try {
-                    fetchedKey = (await llmKeyAndRates(token)).apikey
+                    apiKey = (await llmKeyAndRates(token)).apikey
                   } catch (error) {
                     if (error.signIn === 'expired') {
                       return { type: 'failed', error: `登录票校验失败：${error.message}` }
                     }
-                    fetchedKey = undefined // 网络抖动不拦登录，key 还有手动兜底
+                    apiKey = undefined // 网络抖动：见下
                   }
-                  const apiKey = manualKey || fetchedKey
                   if (!apiKey) {
-                    return { type: 'failed', error: '登录成功但未能自动获取 llm key（网络异常？），请在可选项里手动填 API Key 后重试' }
+                    return { type: 'failed', error: '登录成功但 llm key 自动获取失败（网络抖动），请重新登录重试' }
                   }
                   const metadata = { apiKey, profile: profilePath }
-                  if (vipCookie) metadata.vipCookie = vipCookie
                   const email = nameFromAppAuth(token)
                   if (email) metadata.email = email
                   return { type: 'success', refresh: 'browser', access: token, expires, metadata }
@@ -853,7 +845,7 @@ export const MclawAuthPlugin = async (_input, options) => {
 export const _internal = {
   MODELS, appHeaders, visionByCode, nameFromAppAuth, endTimeMs, basicExpiryMs,
   appAuthOf, llmChannelId, cycleStartMs, normalizeChatResponse, accountModels, HOSTS,
-  resetSsoState,
+  resetSsoState, resetModelCache,
 }
 
 // OpenCode v1 形态：默认导出 { id, server }，宿主只取 server。
