@@ -5,8 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
-import { DEFAULT_SCORING_POLICY, EFFORT_CURVES } from "../src/catalog.js";
+import { burnScale, effortValue, namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
+import { CANONICAL_ROUTES, DEFAULT_SCORING_POLICY, EFFORT_CURVES } from "../src/catalog.js";
 import {
   CACHE_COLD_MS,
   CHATGPT_CODEX_COLD_MS,
@@ -1775,8 +1775,10 @@ test("8.12 All 13 effort curves and `effort_ability` / `effort_burn` equal Agent
     assert.deepEqual(EFFORT_CURVES[model].ability, curve.ability, `${model} ability`);
     assert.deepEqual(EFFORT_CURVES[model].burn, curve.burn, `${model} burn`);
   }
-  // scoring.effort_ability / scoring.effort_burn
-  assert.deepEqual(DEFAULT_SCORING_POLICY.effort_ability, { low: -0.54, medium: -0.2, high: 0, xhigh: 0.15, max: 0.3 });
+  // scoring.effort_ability / scoring.effort_burn: upstream's low..max; none/off/minimal are the plugin's own rows (0.1.3)
+  const { none, off, minimal, ...upstreamAbility } = DEFAULT_SCORING_POLICY.effort_ability;
+  assert.deepEqual(upstreamAbility, { low: -0.54, medium: -0.2, high: 0, xhigh: 0.15, max: 0.3 });
+  assert.deepEqual({ none, off, minimal }, { none: -1.1, off: -1.1, minimal: -1.0 });
   assert.deepEqual(DEFAULT_SCORING_POLICY.effort_burn, { low: 0.2, medium: 0.4, high: 0.7, xhigh: 1.0, max: 1.3 });
 });
 
@@ -2302,3 +2304,205 @@ test("9.9 PR #670 Round 2 & 3 Guard: Single-pass bounded work (`scannedChars`, `
 
 
 
+
+test("9.10 Effort fallback (plugin-side, not in AgentCompass): `:minimal` and `:ultra` parse as efforts, `ultra` reads as the model's Max and `minimal` sits below its Low", () => {
+  const profile = {
+    work_kind: "general_implementation",
+    reasoning_depth: 1,
+    code_complexity: 1,
+    context_scale: 2,
+    divergence: 1,
+    hallucination_risk: 2,
+    error_cost: 1,
+    needs_visual: false,
+    needs_gui: false,
+    local_only: true,
+    interaction_style: "engineering",
+  };
+  const rank = (candidateModels, options = {}) => rankCandidates(profile, { candidateModels, ...options });
+  const policy = DEFAULT_SCORING_POLICY;
+
+  // Parsing: each suffix is one candidate at that effort, not the model's whole effort list
+  assert.deepEqual(
+    rank(["gpt-6-astra:minimal", "gpt-6-astra:ultra"]).allCandidates.map((c) => c.id).sort(),
+    ["gpt-6-astra:minimal", "gpt-6-astra:ultra"],
+  );
+
+  // Scoring on a model's own curve: ultra is its Max; minimal is its Low less the policy's Low->minimal step
+  // (at least 0.2), and burns at most 0.75 of its Low
+  const astra = Object.fromEntries(
+    rank(["gpt-6-astra:low", "gpt-6-astra:max", "gpt-6-astra:minimal", "gpt-6-astra:ultra"]).allCandidates.map((c) => [
+      c.effort,
+      c.components.ability_value,
+    ]),
+  );
+  assert.equal(astra.ultra, astra.max);
+  const step = Math.min(policy.effort_ability.minimal - policy.effort_ability.low, -0.2);
+  assert.ok(Math.abs(astra.minimal - (astra.low + step)) < 0.001, `minimal ${astra.minimal}, low ${astra.low}`);
+  const curve = { burn: { low: 0.3, high: 0.7, max: 1.4 } };
+  assert.equal(burnScale(policy, curve, "ultra"), burnScale(policy, curve, "max"));
+  assert.ok(effortValue(policy, curve, "burn", "minimal", 0.7) <= 0.3 * 0.75);
+
+  // A model whose curve has no Low row takes the policy table's minimal step, not High's 0
+  const deepseek = Object.fromEntries(
+    rank(["deepseek-v4.1-flash-free:minimal", "deepseek-v4.1-flash-free:high"]).allCandidates.map((c) => [
+      c.effort,
+      c.components.ability_value,
+    ]),
+  );
+  assert.ok(Math.abs(deepseek.minimal - (deepseek.high + policy.effort_ability.minimal)) < 0.001);
+
+  // Continuity: on a warm cache, minimal after low is a downgrade and keeps only a quarter of the continuity bonus
+  const held = rank(["gpt-6-astra:low", "gpt-6-astra:minimal"], {
+    previousModel: "gpt-6-astra",
+    previousEffort: "low",
+    cacheWarm: true,
+  });
+  const cont = Object.fromEntries(held.allCandidates.map((c) => [c.effort, c.components.continuity]));
+  assert.equal(cont.low, 0.25);
+  assert.equal(cont.minimal, 0.0625);
+});
+
+test("9.11 Effort fallback branches the default policy can't reach: policy Max for `ultra`, the 0.2 step floor, the 0.75 burn clamp, none/off", () => {
+  const profile = {
+    work_kind: "general_implementation",
+    reasoning_depth: 1,
+    code_complexity: 1,
+    context_scale: 2,
+    divergence: 1,
+    hallucination_risk: 2,
+    error_cost: 1,
+    needs_visual: false,
+    needs_gui: false,
+    local_only: true,
+    interaction_style: "engineering",
+  };
+  const policy = DEFAULT_SCORING_POLICY;
+  const round = (value) => Math.round(value * 1e4) / 1e4;
+  const abilities = (candidateModels) =>
+    Object.fromEntries(rankCandidates(profile, { candidateModels }).allCandidates.map((c) => [c.effort, c.components.ability_value]));
+
+  // ultra on a model with no curve of its own reads as the policy's Max
+  assert.equal(EFFORT_CURVES["glm-5.3"], undefined);
+  const glm = abilities(["glm-5.3:high", "glm-5.3:max", "glm-5.3:ultra"]);
+  assert.equal(glm.ultra, glm.max);
+  assert.ok(Math.abs(glm.ultra - (glm.high + policy.effort_ability.max)) < 0.001, `ultra ${glm.ultra}, high ${glm.high}`);
+  assert.equal(effortValue(policy, undefined, "ability", "ultra", 0), policy.effort_ability.max);
+  assert.equal(effortValue(policy, undefined, "burn", "ultra", 0.7), policy.effort_burn.max);
+
+  // Step floor: a policy whose Low->minimal step is smaller than 0.2 still puts minimal 0.2 below the model's Low
+  const shallow = { ...policy, effort_ability: { ...policy.effort_ability, low: -0.54, minimal: -0.6 } };
+  assert.equal(round(effortValue(shallow, { ability: { low: -0.5, high: 0 } }, "ability", "minimal", 0)), -0.7);
+  // ...and a deeper step is used as given
+  const deep = { ...policy, effort_ability: { ...policy.effort_ability, low: -0.54, minimal: -1.0 } };
+  assert.equal(round(effortValue(deep, { ability: { low: -0.5, high: 0 } }, "ability", "minimal", 0)), -0.96);
+
+  // Burn clamp: a policy with effort_burn.minimal close to Low still burns at most 0.75 of the model's Low
+  const curve = { burn: { low: 0.4, high: 0.7 } };
+  const nearLow = { ...policy, effort_burn: { ...policy.effort_burn, low: 0.2, minimal: 0.19 } };
+  assert.equal(effortValue(nearLow, curve, "burn", "minimal", 0.7), 0.3);
+  const cheap = { ...policy, effort_burn: { ...policy.effort_burn, low: 0.2, minimal: 0.1 } };
+  assert.equal(effortValue(cheap, curve, "burn", "minimal", 0.7), 0.2);
+
+  // none/off: parsed as efforts and scored from their own policy rows (below minimal), on and off a model's curve
+  const astra = abilities(["gpt-6-astra:none", "gpt-6-astra:off", "gpt-6-astra:minimal", "gpt-6-astra:low"]);
+  assert.deepEqual(Object.keys(astra).sort(), ["low", "minimal", "none", "off"]);
+  const lowToNone = Math.min(policy.effort_ability.none - policy.effort_ability.low, -0.2);
+  assert.ok(Math.abs(astra.none - (astra.low + lowToNone)) < 0.001, `none ${astra.none}, low ${astra.low}`);
+  assert.equal(astra.off, astra.none);
+  assert.ok(astra.none < astra.minimal, `none ${astra.none} below minimal ${astra.minimal}`);
+  const glmNone = abilities(["glm-5.3:none", "glm-5.3:off", "glm-5.3:high"]);
+  assert.ok(Math.abs(glmNone.none - (glmNone.high + policy.effort_ability.none)) < 0.001);
+  assert.ok(Math.abs(glmNone.off - (glmNone.high + policy.effort_ability.off)) < 0.001);
+});
+
+test("9.12 Quota opportunity cost reads the allocator's burn scale: `:ultra` costs what `:max` costs, `:minimal`/`none`/`off` cost less than `:low`", () => {
+  const t0 = Date.parse("2026-11-05T00:00:00Z");
+  const subscription = (key) => ({
+    [key]: {
+      kind: "subscription",
+      quota: { windows: [{ name: "7d", used: 60, remaining: 40, resetsAt: new Date(t0 + 120 * 3600 * 1000).toISOString() }] },
+    },
+  });
+  // glm-5.3 has no effort curve, so its efforts come from the policy table alone.
+  for (const [model, quotas] of [
+    ["claude-opus-5-5", subscription("claude/sub")],
+    ["gpt-6-astra", subscription("codex/sub")],
+    ["glm-5.3", subscription("glm-5.3/sub")],
+  ]) {
+    const cost = (effort) =>
+      evaluateModelQuota(`${model}:${effort}`, effort, { hours: 1.5, difficulty: "hard" }, quotas, {}, t0).opportunity_cost;
+    assert.ok(cost("max") > cost("high") && cost("high") > cost("low"), `${model} max/high/low ${cost("max")}/${cost("high")}/${cost("low")}`);
+    assert.equal(cost("ultra"), cost("max"), `${model} ultra ${cost("ultra")} vs max ${cost("max")}`);
+    for (const effort of ["minimal", "none", "off"]) {
+      assert.ok(cost(effort) < cost("low"), `${model} ${effort} ${cost(effort)} vs low ${cost("low")}`);
+    }
+  }
+});
+
+test("9.13 The gateway always routes: when every candidate is below the task's floor it sends the most capable one; the allocator itself still declines", async () => {
+  const prompt = "Refactor the payment retry loop in billing/retry.go and add tests for the backoff";
+  const body = () => ({ model: "agentcompass", messages: [{ role: "user", content: prompt }] });
+  const routed = (candidateModels) => {
+    const out = mwOnRequest(body(), { protocol: "chat", agent: "claude-code", options: { candidateModels }, state: {} });
+    return out ? out.model : null;
+  };
+  // AgentCompass may leave a task unrouted; it has nothing below the floor to offer.
+  assert.equal(selectBestRoute(inferTaskProfile({ objective: prompt }), { objective: prompt, candidateModels: ["gpt-6-astra:minimal"] }).ok, false);
+  // Magpie must still send the request somewhere: forwarding `agentcompass` upstream only fails.
+  assert.equal(routed(["gpt-6-astra:minimal"]), "gpt-6-astra:minimal");
+  assert.equal(routed(["gemini-3.8-flash-high"]), "gemini-3.8-flash-high:high");
+  assert.equal(routed(["gpt-6-astra:none", "gpt-6-astra:minimal"]), "gpt-6-astra:minimal");
+  // A candidate that clears the floor still wins.
+  assert.equal(routed(["gpt-6-astra:minimal", "gpt-6-astra:high"]), "gpt-6-astra:high");
+
+  const ctx = { protocol: "chat", agent: "claude-code", options: { scorerType: "heuristic", candidateModels: ["gpt-6-astra:minimal"] }, state: {}, report() {} };
+  await hookOnRequest(body(), ctx);
+  assert.equal(ctx.state.route?.targetModel, "gpt-6-astra");
+  assert.equal(ctx.state.route?.targetEffort, "minimal");
+  assert.ok(ctx.state.route?.fallback, "the decision says it fell back");
+
+  // A model that can't see the request's image is the last resort, however capable it is.
+  const visualPrompt = "Refactor the payment retry loop in billing/retry.go to match this screenshot and add tests for the backoff";
+  const visualBody = () => ({
+    model: "agentcompass",
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: visualPrompt },
+        { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+      ],
+    }],
+  });
+  const routedVisual = (candidateModels) => {
+    const out = mwOnRequest(visualBody(), { protocol: "chat", agent: "claude-code", options: { candidateModels }, state: {} });
+    return out ? out.model : null;
+  };
+  assert.equal(routedVisual(["claude-fable-5-1:high", "gemini-3.8-flash-high:low"]), "gemini-3.8-flash-high:low");
+  assert.equal(routedVisual(["grok-4.7:high", "gemini-3.8-flash-high:minimal"]), "gemini-3.8-flash-high:minimal");
+  // Outside the floor-only tier, seeing the image still beats raw ability.
+  const visualProfile = { ...inferTaskProfile({ objective: visualPrompt }), needs_visual: true };
+  const kind = visualProfile.work_kind;
+  const seeing = selectBestRoute(visualProfile, {
+    objective: visualPrompt,
+    candidateModels: ["claude-fable-5-1:high", "gemini-3.8-flash-high:low", "grok-4.7:low"],
+    catalog: { routes: { ...CANONICAL_ROUTES, [kind]: { ...CANONICAL_ROUTES[kind], restrict_models: true, preferred: ["grok-4.7"] } } },
+    fallbackToBestExcluded: true,
+  });
+  assert.equal(seeing.modelWithEffort, "gemini-3.8-flash-high:low");
+  assert.equal(seeing.fallback.excluded.length, 2, "not in the allowed list and below the floor");
+  // Only missing the floor beats a capable candidate excluded for another reason.
+  const floorOnly = selectBestRoute(visualProfile, {
+    objective: visualPrompt,
+    candidateModels: ["gpt-6-astra:high", "gemini-3.8-flash-high:low"],
+    catalog: { routes: { ...CANONICAL_ROUTES, [kind]: { ...CANONICAL_ROUTES[kind], restrict_models: true, preferred: ["gemini-3.8-flash-high"] } } },
+    fallbackToBestExcluded: true,
+  });
+  assert.equal(floorOnly.modelWithEffort, "gemini-3.8-flash-high:low");
+  // With no model that can see it, the request still goes somewhere, to the most capable one.
+  assert.equal(routedVisual(["claude-fable-5-1:high", "grok-4.7:high"]), "claude-fable-5-1:high");
+
+  const visualCtx = { protocol: "chat", agent: "claude-code", options: { scorerType: "heuristic", candidateModels: ["claude-fable-5-1:high", "gemini-3.8-flash-high:low"] }, state: {}, report() {} };
+  await hookOnRequest(visualBody(), visualCtx);
+  assert.equal(visualCtx.state.route?.targetModel, "gemini-3.8-flash-high");
+});

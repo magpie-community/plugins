@@ -39,7 +39,7 @@ export const DEPTH_BY_DIFFICULTY = {
   frontier: 4,
 };
 
-export const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max", "ultra"];
+export const EFFORT_ORDER = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 export const HARD_BY_DEFAULT = [
   "debug_review",
@@ -1410,6 +1410,9 @@ export const DEFAULT_SCORING_POLICY = {
     frontier: 0.1,
   },
   effort_ability: {
+    none: -1.1,
+    off: -1.1,
+    minimal: -1.0,
     low: -0.54,
     medium: -0.2,
     high: 0.0,

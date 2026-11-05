@@ -46,6 +46,8 @@ magpie plugin options <plugin-spec> '{"candidateModels":["claude-opus-4-6","clau
 
 - Requests to `agentcompass` or `agentcompass/*` rewrite `body.model` to `<targetModel>:<targetEffort>` (which Magpie's gateway splits natively) and set protocol-specific effort fields (`reasoning_effort`, `reasoning.effort`, `output_config.effort`).
 - If a virtual model (`agentcompass` / `agentcompass/*`) is requested without `candidateModels` or `defaultModel`, the middleware rejects the call with HTTP 400 (`agentcompass: set candidateModels in the plugin's options`) rather than guessing models.
+- Efforts written in a candidate face the task's ability floor like any other: `:minimal`, `:none` and `:off` count as less capable than `:low`, so harder tasks exclude them.
+- The gateway never leaves a request unrouted. If no candidate passes, it retries without the temporary unhealthy, context and quota constraints. If none passes then, it falls back to an excluded candidate and marks the decision `fallback`: first one that misses only the ability floor, then one that can read the request's images, with ability breaking ties. So the fallback can override the visual, unhealthy, context and quota constraints, but it only ever picks from your candidate list.
 - If `routeAllModels: true` is set without `candidateModels`, concrete model names are kept as-is and only the reasoning effort is injected.
 
 ### 3. Account-pool seat strategy (`routings`)
@@ -191,6 +193,8 @@ magpie plugin options <plugin-spec> '{"candidateModels":["claude-opus-4-6","clau
 
 - 请求虚拟模型 `agentcompass` / `agentcompass/*` 时，中间件将 `body.model` 改写为 `<targetModel>:<targetEffort>`，并按协议注入思考档位字段（`reasoning_effort`、`reasoning.effort`、`output_config.effort`）。
 - 未配置 `candidateModels` 或 `defaultModel` 时请求虚拟模型会返回 HTTP 400（`agentcompass: set candidateModels in the plugin's options`），不猜测模型列表。
+- 候选里写明的思考档位同样要过任务的能力底线：`:minimal`、`:none`、`:off` 按低于 `:low` 的能力计算，较难的任务会把它们排除。
+- 网关不会让请求落空。没有候选通过时，先去掉临时的不健康、上下文和配额约束重试；仍无候选通过时，从被排除的候选中回退并在路由决策里标记 `fallback`：优先只差能力底线的候选，其次能读取请求中图片的候选，同级按能力高低决定。因此回退可能越过视觉、不健康、上下文和配额约束，但只会从你的候选列表中选择。
 - 开启 `routeAllModels: true` 且未配置候选列表时，具体模型名保持不变，仅自动注入思考档位。
 
 #### 3. 账号池席位排序（`routings`）

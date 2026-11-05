@@ -73,6 +73,43 @@ export function round4(val) {
   return Math.round(val * 10000) / 10000;
 }
 
+/**
+ * One effort's ability delta or burn (`allocator.py:effort_value`), plus two plugin-side fallbacks AgentCompass
+ * doesn't have: `ultra` without its own calibration reads as the model's Max, and `none`/`off`/`minimal` sit
+ * below the model's own Low rather than at the policy table's generic value. Upstream scores both at High.
+ */
+export function effortValue(policy, curves, name, effort, fallback) {
+  const own = curves?.[name] || {};
+  if (effort in own) return own[effort];
+  if (effort === "ultra" && "max" in own) return own.max;
+  const policyTable = policy?.[`effort_${name}`] || {};
+  // Below Low, scale from the model's own Low, else the policy table's: a model without a curve still has a Low.
+  const low = "low" in own ? own.low : policyTable.low;
+  if ((effort === "minimal" || effort === "none" || effort === "off") && low !== undefined) {
+    if (name === "ability") {
+      const delta = (policyTable[effort] ?? -1.0) - (policyTable.low ?? -0.54);
+      return low + Math.min(delta, -0.2);
+    }
+    if (name === "burn") {
+      const ratio = (policyTable[effort] ?? 0.12) / (policyTable.low || 0.2);
+      return round4(low * Math.min(ratio, 0.75));
+    }
+  }
+  if (effort in policyTable) return policyTable[effort];
+  if (effort === "ultra" && "max" in policyTable) return policyTable.max;
+  return fallback;
+}
+
+/**
+ * Relative burn scale of `effort` compared to `high` (`allocator.py:burn_scale`).
+ */
+export function burnScale(policy, curves, effort = "high") {
+  const mult = curves?.burn_mult || {};
+  if (effort in mult) return Number(mult[effort]);
+  const ref = effortValue(policy, curves, "burn", "high", 0.7);
+  return effortValue(policy, curves, "burn", effort, ref) / (ref || 1.0);
+}
+
 export function round3(val) {
   return Math.round(val * 1000) / 1000;
 }
@@ -905,9 +942,7 @@ export function evaluateModelQuota(
 
   const { canonical, spec: info } = resolveModelSpec(rawModel, models, aliases);
   const curves = curvesTable[canonical] || {};
-  const refBurn = curves?.burn?.high ?? policy?.effort_burn?.high ?? 0.7;
-  const effBurn = curves?.burn?.[effort] ?? policy?.effort_burn?.[effort] ?? refBurn;
-  const effortScale = refBurn > 0 ? effBurn / refBurn : 1.0;
+  const effortScale = burnScale(policy, curves, effort);   // as `allocator.py` does: one scale with the allocator
 
   const taskHours = Number(
     taskCtx.hours ??

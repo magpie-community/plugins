@@ -25,7 +25,10 @@ import {
   resolveModelSpec,
 } from "./catalog.js";
 import { inferTaskProfile, validateProfile } from "./profiler-core.js";
-import { evaluateModelQuota, normalizeQuotaSnapshot } from "./quota.js";
+// effortValue and burnScale live in quota.js so its opportunity cost reads the same burn scale as the allocator.
+import { burnScale, effortValue, evaluateModelQuota, normalizeQuotaSnapshot } from "./quota.js";
+
+export { burnScale, effortValue };
 
 export const EFFORT_SCALED_CAPABILITIES = [
   "reasoning",
@@ -74,13 +77,6 @@ export function profileKind(profile, policy = DEFAULT_SCORING_POLICY) {
   return policy?.profile?.kind_by_style?.[profile.interaction_style] || "other_or_mixed";
 }
 
-export function effortValue(policy, curves, name, effort, fallback) {
-  const own = curves?.[name] || {};
-  if (effort in own) return own[effort];
-  const policyTable = policy?.[`effort_${name}`] || {};
-  return effort in policyTable ? policyTable[effort] : fallback;
-}
-
 /**
  * The model's effective tier at one effort level (`allocator.py:effort_ability`).
  */
@@ -91,16 +87,6 @@ export function effortAbility(policy, curves, info, effort = "high") {
     return tier * Number(mult[effort]);
   }
   return tier + effortValue(policy, curves, "ability", effort, 0);
-}
-
-/**
- * Relative burn scale of `effort` compared to `high` (`allocator.py:burn_scale`).
- */
-export function burnScale(policy, curves, effort = "high") {
-  const mult = curves?.burn_mult || {};
-  if (effort in mult) return Number(mult[effort]);
-  const ref = effortValue(policy, curves, "burn", "high", 0.7);
-  return effortValue(policy, curves, "burn", effort, ref) / (ref || 1.0);
 }
 
 export function capabilityVector(info) {
@@ -402,7 +388,8 @@ export function evaluateCandidate(candidate, taskCtx, catalog = {}) {
   const curves = curvesTable[canonical] || {};
   const excluded = [];
 
-  if (taskCtx.needs_visual && !info.visual) {
+  const cannotSeeInput = Boolean(taskCtx.needs_visual && !info.visual);
+  if (cannotSeeInput) {
     excluded.push("task needs visual input");
   }
   if (taskCtx.unhealthy_models && taskCtx.unhealthy_models.has(canonical)) {
@@ -627,6 +614,8 @@ export function evaluateCandidate(candidate, taskCtx, catalog = {}) {
     fast: Boolean(quotaEval?.fast),
     excluded,
     eligible: excluded.length === 0,
+    cannotSeeInput,
+    onlyBelowFloor: excluded.length === 1 && ability < gate,
     score: excluded.length === 0 ? totalScore : null,
     quota: quotaEval
       ? {
@@ -830,14 +819,34 @@ export function rankCandidates(profileInput, options = {}) {
   };
 }
 
+function fallbackTier(candidate) {
+  if (candidate.onlyBelowFloor) return 0;
+  return candidate.cannotSeeInput ? 2 : 1;
+}
+
 /**
  * Convenience entry point: takes a raw request or task object + options and returns the winning route decision.
+ *
+ * `fallbackToBestExcluded` is for gateways. AgentCompass may leave a task unrouted when no candidate clears its
+ * floor, but a gateway that does so forwards the virtual model name upstream and the request fails. With the
+ * option, an excluded candidate is chosen instead and the decision carries `fallback`: one that only misses the
+ * floor, else one that can see the request's images, with ability breaking ties. Falling short of a floor still
+ * answers the request; a model that can't see its images can't.
  */
 export function selectBestRoute(taskOrProfile, options = {}) {
   const result = rankCandidates(taskOrProfile, options);
-  const top = result.selected;
+  let top = result.selected;
+  let fallback = null;
+  if (!top && options.fallbackToBestExcluded && result.allCandidates.length > 0) {
+    top = result.allCandidates.reduce((best, c) => {
+      const tier = fallbackTier(c) - fallbackTier(best);
+      return tier < 0 || (tier === 0 && c.components.ability_value > best.components.ability_value) ? c : best;
+    });
+    fallback = { excluded: top.excluded };
+  }
   return {
     ok: Boolean(top),
+    fallback,
     targetModel: top ? top.model : null,
     canonicalModel: top ? top.canonicalModel : null,
     targetEffort: top ? top.effort : "high",
