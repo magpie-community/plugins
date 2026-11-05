@@ -15,7 +15,6 @@ import { homedir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import { gzipSync } from "node:zlib"
 
-const APP_VERSION = "2.0.0" // the version WorkBuddy's sign-in page is opened with
 const POLL_MS = 1000
 const SIGN_IN_MS = 5 * 60 * 1000
 const EARLY_MS = 60 * 1000 // a token this close to its end is refreshed before a request
@@ -1755,7 +1754,12 @@ async function browserSignIn(site) {
   if (!state?.state || !state?.authUrl) throw new Error(`${site.name} gave no sign-in page`)
   const url = new URL(state.authUrl)
   if (url.protocol !== "https:") throw new Error(`${site.name}'s sign-in page isn't https`)
-  url.searchParams.set("version", APP_VERSION)
+  // the desktop app's own version, as WorkBuddy desktop opens it
+  // (openAuthUrl: version = CLIENT_INFO_PLUGIN_VERSION, the app's version).
+  // The China build's page hides 企业微信 (WeCom) for a version under 5.8.0
+  // (its signin-callback chunk: platform workbuddy and version >= "5.8.0"),
+  // so the 2.0.0 sent before offered no WeCom sign-in (shenyebuwu on Discord)
+  url.searchParams.set("version", site.app)
   url.searchParams.set("loginSessionId", hex())
   return {
     url: url.toString(),
