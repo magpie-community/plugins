@@ -529,7 +529,10 @@ function walkValue(value, site, depth, state, opts, protocol) {
   }
   for (var j = 0; j < keys.length; j++) {
     var key = keys[j];
-    if (SKIP_KEY[key]) continue;
+    // Declarations live at the protocol root. The same key name inside tool
+    // arguments, tool results or message content is ordinary data and must be
+    // walked; a key-name-only skip is how "parameters" became a bypass.
+    if (site === SITE_ROOT && SKIP_KEY[key]) continue;
     var child = value[key];
     if (sealed !== null && sealed[key] && typeof child === "string") continue;
     walkValue(child, childSite(protocol, site, key, child, role), depth + 1, state, opts, protocol);
@@ -773,7 +776,7 @@ export function onRequest(body, ctx) {
 
 // Structural-only walk used by onProvider: finds a binary part without scanning text,
 // so it stays cheap and independent of the text budget.
-function findFirstBinary(value, partContext, depth, state, opts) {
+function findFirstBinary(value, partContext, depth, state, opts, atRoot) {
   if (state.binary !== null || (state.limited !== undefined && state.limited !== null) || depth > opts.maxDepth) return;
   state.nodes = (state.nodes || 0) + 1;
   if (state.nodes > opts.maxNodes) {
@@ -787,7 +790,7 @@ function findFirstBinary(value, partContext, depth, state, opts) {
       return;
     }
     for (var i = 0; i < value.length; i++) {
-      findFirstBinary(value[i], partContext, depth + 1, state, opts);
+      findFirstBinary(value[i], partContext, depth + 1, state, opts, false);
       if (state.binary !== null || state.limited !== null) return;
     }
     return;
@@ -804,9 +807,9 @@ function findFirstBinary(value, partContext, depth, state, opts) {
   }
   for (var j = 0; j < keys.length; j++) {
     var key = keys[j];
-    if (SKIP_KEY[key]) continue;
+    if (atRoot && SKIP_KEY[key]) continue;
     var child = value[key];
-    findFirstBinary(child, PART_ARRAY_KEY[key] === 1 && Array.isArray(child), depth + 1, state, opts);
+    findFirstBinary(child, PART_ARRAY_KEY[key] === 1 && Array.isArray(child), depth + 1, state, opts, false);
     if (state.binary !== null || state.limited !== null) return;
   }
 }
@@ -836,7 +839,7 @@ export function onProvider(body, ctx) {
     }
     var binaryState = { binary: null, limited: null, nodes: 0 };
     try {
-      findFirstBinary(body, false, 0, binaryState, opts);
+      findFirstBinary(body, false, 0, binaryState, opts, true);
     } catch (e4) {
       binaryState.binary = { kind: "unknown" };
     }
