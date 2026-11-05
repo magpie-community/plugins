@@ -116,3 +116,35 @@ test('authorize 不需要任何输入：无 prompts，直接开登', async () =>
   expect(result.type).toBe('success')
   expect(result.metadata.email).toBe(PHONE_A)
 })
+
+test('magpie 式取消：callback 立即被调 + signal abort → 立即收尾', async () => {
+  f = fakeUpstream()
+  fb = fakeBrowserModule({ ticket: TICKET_A })
+  const plugin = await MclawAuthPlugin({}, { browserModule: fb.module, signinAbortMs: 60_000 })
+  const controller = new AbortController()
+  // magpie 的时序：authorize 一返回就调 callback(undefined, { signal })，
+  // 用户取消/登录超时时 abort signal——收尾必须立刻发生，不等 5 分钟定时器
+  const flow = await oauthMethod(plugin).authorize({}, { signal: controller.signal })
+  const done = flow.callback(undefined, { signal: controller.signal })
+  await sleep(10)
+  expect(fb.state.aborted).toBe(false)
+  controller.abort()
+  const result = await done
+  expect(result.type).toBe('failed')
+  expect(fb.state.aborted).toBe(true)
+  expect(fb.state.closed).toBeGreaterThanOrEqual(1)
+  expect(fb.state.released).toBeGreaterThanOrEqual(1)
+})
+
+test('authorize 时 signal 已是 aborted → 直接收尾不开流程', async () => {
+  f = fakeUpstream()
+  fb = fakeBrowserModule({ ticket: TICKET_A })
+  const plugin = await MclawAuthPlugin({}, { browserModule: fb.module, signinAbortMs: 60_000 })
+  const controller = new AbortController()
+  controller.abort()
+  await oauthMethod(plugin).authorize({}, { signal: controller.signal })
+  await sleep(10)
+  expect(fb.state.aborted).toBe(true)
+  expect(fb.state.closed).toBeGreaterThanOrEqual(1)
+  expect(fb.state.released).toBeGreaterThanOrEqual(1)
+})

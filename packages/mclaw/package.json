@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-mclaw-auth",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "OpenCode provider plugin: MClaw (中国移动云 MClaw, ai.yun.139.com)",
   "type": "module",
   "main": "./opencode.mjs",

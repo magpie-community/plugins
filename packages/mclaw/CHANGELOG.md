@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2 — 2026-11-05
+
+- **magpie 式取消立即收尾**：magpie 在 authorize 之后**立刻**调 `callback(undefined, { signal })`，用户取消/登录超时时 abort signal——之前 callback 不读 signal、`clearTimeout` 又把 5 分钟兜底定时器拆了，Chrome 会一直开满 10 分钟 deadline（甚至给已被宿主放弃的登录继续取 key）。现在 `authorize` 和 `callback` 都接 signal：`signal.aborted` 先查、`addEventListener('abort', …, { once: true })` 后挂，abort 一到立即收尾。
+- **启动期 abort 不再丢失**：`startBrowserHarvest` 的 abort 原来要等 `openMclawBrowser` resolve 后才生效，Chrome 还在启动时取消会被吞掉、窗口照样弹出。现在先记标记，开出来若已取消立即关闭。
+- **失败/取消/超时的登录不再留孤儿 profile**：`signin-*` 目录在失败路径（含 abort、超时、浏览器被关）里删除——成功时目录归账号所有（`metadata.profile`），绝不删。已知限制：**重新登录同一账号会生成新目录，旧目录会留在** `mclaw-browser-profiles/` 下（内含不再被引用的历史登录态，可手动删）。
+- 测试 28 → 30：magpie 式取消（callback 立即被调 + abort → aborted/closed/released）、authorize 时 signal 已 aborted。
+
 ## 0.5.1 — 2026-11-05
 
 - **恢复 SSO 换票链（修正 toSourceId 为 001005）**：0.5.0 按 review 删链的前提错了——200050409「统一通信证临时票据验证失败」是渠道号用错（001003/001221），App vip 会员中心 H5 的 app.js 实配 **001005**；全链路 Node fetch 实测通：出票 → ssoLogin `resultCode 0` → Set-Cookie 下发 6 个 `mc_*`（`.139.com` 域，24h；mc_at/mc_pat httpOnly）→ 明细接口正常，pc:/mobile: 票均可。

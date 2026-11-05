@@ -349,34 +349,47 @@ export async function harvestYunAuth(browser) {
 /** 浏览器登录全流程：有头 Chrome（新登录用全新 profile，绝不带旧票）→ 用户
  *  在窗口里完成移动云登录 → 收割 authorization Cookie。
  *  返回 { promise, abort }：promise resolve { cookie, profilePath, release,
- *  close }；abort() 在 promise 还没被消费时（宿主取消了登录）关浏览器、放锁
- *  ——promise 已 resolve 时调它同样收尾，防止窗口和 profile 锁被一直占着。 */
+ *  close }。abort() 随时可调（宿主取消）：Chrome 还没开起来时先记标记，开出来
+ *  立即收尾；已开出则关浏览器、放锁。失败/取消/超时的路径还会删掉 profile 目录
+ *  ——没人认领的登录态不该留在盘上（成功则归账号所有，绝不删）。 */
 export function startBrowserHarvest({ deadlineMs = 600_000, profilePath = freshSigninProfile() } = {}) {
   const session = { promise: undefined, abort: async () => {} }
   session.promise = (async () => {
-    const { browser, page, profilePath: used, release } = await openMclawBrowser({
-      headless: false, startUrl: 'https://yun.139.com/', profilePath,
-    })
     let aborted = false
+    let opened // { browser, release }：Chrome 开出后持有，成功时移交 callback
+    let resolved = false
     session.abort = async () => {
       if (aborted) return
       aborted = true
-      await browser.close().catch(() => {})
-      await release()
+      if (opened) {
+        await opened.browser.close().catch(() => {})
+        await opened.release()
+      }
     }
     try {
+      const { browser, page, profilePath: used, release } = await openMclawBrowser({
+        headless: false, startUrl: 'https://yun.139.com/', profilePath,
+      })
+      opened = { browser, release }
+      if (aborted) throw new Error('登录已取消')
       const deadline = Date.now() + deadlineMs
       for (;;) {
         if (aborted) throw new Error('登录已取消')
         if (browser.connection.closed) throw new Error('浏览器被关闭，登录中断')
         const cookie = await harvestYunAuth(browser).catch(() => undefined)
-        if (cookie?.value) return { cookie, profilePath: used, release, close: () => browser.close() }
+        if (cookie?.value) {
+          resolved = true // 目录归账号所有（metadata.profile），abort 不许删
+          return { cookie, profilePath: used, release, close: () => browser.close() }
+        }
         if (Date.now() >= deadline) throw timeoutError(`登录超时（${Math.round(deadlineMs / 60000)} 分钟内没有检测到移动云登录）`)
         await sleep(1500)
       }
     } catch (error) {
-      await browser.close().catch(() => {})
-      await release()
+      if (opened) {
+        await opened.browser.close().catch(() => {})
+        await opened.release()
+      }
+      if (!resolved) await rm(profilePath, { recursive: true, force: true }).catch(() => {})
       throw error
     }
   })()

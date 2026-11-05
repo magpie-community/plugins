@@ -673,20 +673,28 @@ export const MclawAuthPlugin = async (_input, options) => {
           // 存进 metadata，存为 oauth 型 { refresh:'browser', access, expires,
           // metadata }，到期前宿主调 refresh 钩子 headless 续期（复开该账号
           // 自己的 profile）。
-          async authorize(inputs = {}) {
+          async authorize(inputs = {}, { signal } = {}) {
             // 不 await：Chrome 立即弹出；若宿主取消（callback 没被调），定时器
             // 到点 abort——关浏览器、放 profile 锁；挂个空 catch 免得 abort 后
             // 的拒绝刷 unhandled rejection。
             const harvesting = browser.startBrowserHarvest()
             harvesting.promise.catch(() => {})
             const cleanup = setTimeout(() => { harvesting.abort().catch(() => {}) }, signinAbortMs)
+            // magpie 式取消：宿主在 authorize 之后立刻调 callback(undefined, { signal })，
+            // 用户关掉面板/登录超时就 abort 这个 signal。两个入口都接上它——abort
+            // 一到立即收尾（关浏览器、放锁、删孤儿 profile），不等到 10 分钟 deadline。
+            const onAbort = () => { harvesting.abort().catch(() => {}) }
+            if (signal?.aborted) onAbort()
+            else if (typeof signal?.addEventListener === 'function') signal.addEventListener('abort', onAbort, { once: true })
             return {
               url: '',
               opened: true, // Chrome 已由本插件弹出，宿主不要再开 url
               instructions: '已弹出专用 Chrome 窗口：请在里面登录移动云（yun.139.com，网页支持多种登录方式），登录成功后本流程自动继续并收走全部凭证',
               method: 'auto',
-              async callback() {
+              async callback(_code, { signal: callbackSignal } = {}) {
                 clearTimeout(cleanup)
+                if (callbackSignal?.aborted) onAbort()
+                else if (typeof callbackSignal?.addEventListener === 'function') callbackSignal.addEventListener('abort', onAbort, { once: true })
                 let release, close
                 try {
                   const { cookie, profilePath, release: r, close: c } = await harvesting.promise
