@@ -66,7 +66,7 @@
 .t-item.on::before { content: ""; position: absolute; left: -1px; top: 7px; bottom: 7px; width: 2px; border-radius: 2px; background: var(--accent-2); }
 .t-item.archived { opacity: 0.55; }
 .t-item.archived .t-title { font-style: italic; }
-.t-item .dot { width: 5px; height: 5px; }
+.t-item .dot { width: 6px; height: 6px; }
 .t-pin { width: 12px; flex: none; display: inline-flex; color: var(--muted); }
 .t-pin svg { width: 10px; height: 10px; }
 .t-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

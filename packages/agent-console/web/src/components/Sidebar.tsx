@@ -6,6 +6,7 @@ import { useUi } from "../stores/ui";
 import { ws } from "../main";
 import type { Project, ThreadMeta } from "../types/models";
 import { relTime } from "../util/format";
+import { threadDotClass } from "../util/threadDot";
 import { Menu, useMenu, type MenuItem } from "./Menu";
 import { Dialog, ConfirmDialog } from "./Dialog";
 import { Icon } from "./Icons";
@@ -14,12 +15,7 @@ import { displayThreadTitle, errMsg, t as tr, tf } from "../i18n/index.js";
 
 const THREAD_PAGE = 10;
 
-function dotClass(t: ThreadMeta, pendingIds: Set<string>): string {
-  if (pendingIds.has(t.id)) return "dot wait";
-  if (t.status === "running" || t.status === "initializing") return "dot run";
-  if (t.status === "error" || t.lastTurnStatus === "failed") return "dot err";
-  return "dot";
-}
+const dotClass = threadDotClass;
 
 export function Sidebar({ pendingByThread }: { pendingByThread: Set<string> }) {
   const { projects, threads } = useData();
