@@ -144,6 +144,10 @@ test("the API-key + console-token method reads the token out of a pasted cookie"
   expect(okResult.type).toBe("success")
   expect(okResult.uaaToken).toBe("abc.def.ghi")
   expect(JSON.stringify(okResult)).not.toContain("SESSIONSECRET")
+  // a bare token value is accepted as-is
+  const bare = await method.authorize({ apiKey: "sk-test", uaaToken: "abc.def.ghi" })
+  expect(bare.type).toBe("success")
+  expect(bare.uaaToken).toBe("abc.def.ghi")
   // a string without a uaa-token is refused, never stored verbatim
   const bad = await method.authorize({ apiKey: "sk-test", uaaToken: "sid=SESSIONSECRET" })
   expect(bad.type).toBe("failed")

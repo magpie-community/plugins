@@ -472,13 +472,20 @@ export async function closeWindowGracefully(child, { timeoutMs = 15_000, log = (
  * SSO 页是「上海人工智能实验室-用户认证体系」，控制台是「书生·端砚 Intern
  * InkStone」。窗口被用户关掉也算结束（之后直接尝试读 cookie）。
  */
-async function waitForConsoleWindow(child, { timeoutMs = 8 * 60_000, pollMs = 1000, signal, log = () => {} } = {}) {
+async function waitForConsoleWindow(child, { timeoutMs = 8 * 60_000, pollMs = 1000, signal, log = () => {}, platform = process.platform } = {}) {
   const deadline = Date.now() + timeoutMs
   const started = Date.now()
+  // 窗口标题只能靠 Windows 的 Get-Process 读；别的平台就以“用户关掉窗口”
+  // 作为完成信号（提示语里会说明），否则只能干等满整个超时。
+  const canReadTitle = platform === "win32"
   let hits = 0
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) return "closed"
     if (signal?.aborted) return "aborted"
+    if (!canReadTitle) {
+      await sleep(pollMs)
+      continue
+    }
     // 只看我们自己的窗口；并且给它至少 5 秒，控制台标题在跳转 SSO 前会闪一下。
     const title = Date.now() - started > 5000 ? windowTitleOf(child.pid) : ""
     if (title && /Intern InkStone|端砚/i.test(title) && !/用户认证|登录/i.test(title)) {

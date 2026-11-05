@@ -62,7 +62,7 @@ API Key 是可选的：不填，账号仍显示额度，只是不服务模型。
 |---|---|---|
 | **浏览器登录（推荐）** | 用**插件自己的专用浏览器 profile** 开一个窗口，你在里面登录控制台（密码 / 短信 / 扫码）。登录窗口**不带调试端口**（阿里验证码能过）；插件用窗口标题判断登录完成，**自己关窗**，再用同一个 profile 后台读 `uaa-token`。登录态留在专用 profile 里，之后的续期/重登都静默完成 | 额度 + 模型 |
 | **仅 API Key** | 只粘贴 Key；`GET /v1/models` 探活 | 只有模型 |
-| **API Key + 控制台 token** | 粘贴 Key，再粘贴 `uaa-token`（浏览器 DevTools → `document.cookie`） | 额度 + 模型 |
+| **API Key + 控制台 token** | 粘贴 Key，再粘贴 `uaa-token=…` 那一项（DevTools → Application → Cookies，复制整条 `uaa-token=…` 即可，插件只取值） | 额度 + 模型 |
 
 > 不读、不动你日常浏览器的任何数据：Edge/Chrome 136+ 禁止在默认用户目录上开调试端口，而且把真实 profile 从别的路径打开会清掉端砚登录态。插件的专用 profile 是唯一可行且安全的地方。
 

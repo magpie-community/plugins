@@ -367,7 +367,9 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
               url: "",
               opened: true,
               instructions:
-                "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it.",
+                process.platform === "win32"
+                  ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it."
+                  : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code), then close that window yourself; the plugin then reads the session from the profile and finishes.",
               method: "auto",
               async callback(_code, { signal } = {}) {
                 let token = ""
@@ -462,8 +464,13 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           ],
           async authorize(inputs) {
             const key = normalizeApiKey(inputs?.apiKey)
-            // 用户可能粘贴整串 document.cookie；提取失败就拒绝，绝不把整串存进凭据库。
-            const token = readUaaToken(inputs?.uaaToken)
+            // 用户可能粘贴整串 document.cookie，也可能只粘 token 本身：
+            // 前者取 uaa-token 的值；后者必须是单个不含 `=`/`;` 的裸值。
+            // 其余（含别的 cookie 但没有 uaa-token）一律拒绝，绝不整串存进凭据库。
+            const raw = String(inputs?.uaaToken ?? "").trim()
+            // 裸值：没有分号，且没有"名字=值"形态的等号（token 末尾的 base64 padding 例外）。
+            const bare = raw && !raw.includes(";") && !/=[^=]/.test(raw) ? raw : ""
+            const token = readUaaToken(raw) || bare
             if (!key) return { type: "failed", error: "API key is required" }
             if (!token) {
               return {
