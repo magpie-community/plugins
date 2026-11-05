@@ -2912,18 +2912,20 @@ function pinning() {
 // the client's resolveCreditGroup does (PLAN_CODES, see planCodes). A
 // summary with only one kind keeps the one "Credits" window, as before.
 //
-// Only one of the two stops the account at a time: WorkBuddy serves it
-// while any credits are left, so the one set aside is the one whose
-// running out doesn't stop it — "Extra credits", until the plan's are
-// spent and extra ones are left.
+// Neither of the two stops the account: WorkBuddy serves it while any
+// credits are left, of either kind. Both are set aside, and the account's
+// whole is a third window, "Total credits", which stops it (totalOf).
+// Before, the one that stopped it was the plan's until its credits were
+// spent and the extra one's after, so magpie's Routing page said the
+// plan's "500 / 500" alone on one account and the extra credits on
+// another, and an account at 90% of its plan's credits was kept for last
+// with its extra ones untouched (ferock on Discord, 0.2.22).
 function usageOf(sum, plan, site) {
   const out = { plan: plan || (sum?.IsPaidUser ? "Pro" : "Free plan"), windows: [] }
   const { plan: mine, extra, left, bags } = kindsOf(sum, site)
   if (mine.total > 0 && extra.total > 0) {
     const credits = creditWindow("Credits", mine), more = creditWindow("Extra credits", extra)
-    if (mine.used >= mine.total && extra.used < extra.total) credits.aside = true
-    else more.aside = true
-    out.windows.push(credits, more)
+    out.windows.push(credits, more, totalOf(credits, more))
   } else {
     const total = mine.total + extra.total, used = mine.used + extra.used
     if (total > 0) out.windows.push(creditWindow("Credits", { used, total }))
@@ -2935,6 +2937,23 @@ function usageOf(sum, plan, site) {
 
 // creditWindow is a window of credits used of a total.
 const creditWindow = (name, { used, total }) => ({ name, used: (100 * used) / total, display: `${compact(used)} / ${compact(total)}`, amount: used, limit: total, unit: "credits" })
+
+// totalOf is the account's whole credits, the plan's and the extra ones,
+// as the window that stops it, and sets the two aside (see usageOf). It
+// renews with the plan's (its cycle, resetsAt and span), and says the
+// soonest of the two to lapse (runsOutAt, runsOut), as routing reads no
+// window set aside.
+function totalOf(plan, extra) {
+  plan.aside = extra.aside = true
+  const w = creditWindow("Total credits", { used: plan.amount + extra.amount, total: plan.limit + extra.limit })
+  if (plan.resetsAt) w.resetsAt = plan.resetsAt
+  if (plan.span) w.span = plan.span
+  const at = (x) => (x.runsOutAt ? Date.parse(x.runsOutAt) : 0)
+  const [a, b] = [at(plan), at(extra)]
+  const soon = a > 0 && (!(b > 0) || a <= b) ? plan : b > 0 ? extra : null
+  if (soon) Object.assign(w, { runsOutAt: soon.runsOutAt, runsOut: soon.runsOut + (a > 0 && a === b ? extra.runsOut : 0) })
+  return w
+}
 
 // kindsOf is the summary's credits, the plan's and the extra ones (see
 // usageOf), and what is left in its packages with no total (a prepaid
@@ -3985,35 +4004,26 @@ function makePlugin(site) {
               const packages = await packagesOf(site, a)
               Object.assign(credits, cycleOf(sum, packages) ?? {})
               const ofPlan = planCodes(sum, site)
-              const stops = extra && !extra.aside ? extra : credits
-              Object.assign(stops, runsOutOf(sum, packages) ?? {})
-              const aside = extra ? (stops === credits ? extra : credits) : null
-              if (aside) Object.assign(aside, runsOutOf(sum, packages, Date.now(), (code) => ofPlan(code) === (aside === credits)) ?? {})
-              // the summary of the plan's credits alone: the extra ones
-              // only the detail lists have (listedExtra) are their window.
-              // As with the summary's split (usageOf), one of the two stops
-              // the account: the plan's, until its credits are spent with
-              // extra ones left. WorkBuddy goes on serving such an account on
-              // its extra credits (ferock on Discord, a China-site account
-              // at "500 / 500" moved off while its extra ones were left).
-              const kinds = !extra && kindsOf(sum, site)
-              const more = kinds && kinds.plan.total > 0 && kinds.extra.total === 0 ? listedExtra(sum, packages, site) : null
-              if (more) {
-                const { runsOutAt, runsOut, ...counts } = more
-                const w = { ...creditWindow("Extra credits", counts), ...(runsOutAt ? { runsOutAt, runsOut } : {}) }
-                const planSpent = credits.amount >= credits.limit && counts.used < counts.total
-                if (planSpent) credits.aside = true
-                else w.aside = true
-                out.windows.splice(out.windows.indexOf(credits) + 1, 0, w)
-                // and, as with the split's, the soonest credits to lapse are
-                // the account's too, on the window that stops it: routing
-                // reads none set aside, so an account whose extra credits
-                // expire first went unknown to it (Kayphoon on Discord)
-                const [stops, other] = planSpent ? [w, credits] : [credits, w]
-                const at = other.runsOutAt ? Date.parse(other.runsOutAt) : 0
-                const was = stops.runsOutAt ? Date.parse(stops.runsOutAt) : 0
-                if (at > 0 && (!was || at < was)) Object.assign(stops, { runsOutAt: other.runsOutAt, runsOut: other.runsOut })
-                else if (at > 0 && at === was) stops.runsOut = (stops.runsOut ?? 0) + other.runsOut
+              if (extra) {
+                // split by the summary (usageOf): each says its own
+                // packages' soonest lapse, the whole the soonest of both
+                Object.assign(credits, runsOutOf(sum, packages, Date.now(), ofPlan) ?? {})
+                Object.assign(extra, runsOutOf(sum, packages, Date.now(), (code) => !ofPlan(code)) ?? {})
+                out.windows.splice(out.windows.findIndex((w) => w.name === "Total credits"), 1, totalOf(credits, extra))
+              } else {
+                Object.assign(credits, runsOutOf(sum, packages) ?? {})
+                // the summary of the plan's credits alone: the extra ones
+                // only the detail lists have (listedExtra) are their window,
+                // and the whole stops the account, as with the summary's
+                // split (ferock on Discord: WorkBuddy goes on serving an
+                // account at "500 / 500" on its extra credits)
+                const kinds = kindsOf(sum, site)
+                const more = kinds.plan.total > 0 && kinds.extra.total === 0 ? listedExtra(sum, packages, site) : null
+                if (more) {
+                  const { runsOutAt, runsOut, ...counts } = more
+                  const w = { ...creditWindow("Extra credits", counts), ...(runsOutAt ? { runsOutAt, runsOut } : {}) }
+                  out.windows.splice(out.windows.indexOf(credits) + 1, 0, w, totalOf(credits, w))
+                }
               }
             } catch {}
           }

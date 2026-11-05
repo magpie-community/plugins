@@ -370,12 +370,15 @@ kind WorkBuddy's own usage panel lists: the plan's bonus, top-ups (bought
 credit packs) and platform rewards (gifted and activity credits,
 赠送积分). The summary's CreditGroups say which is which (plan_base
 against plan_bonus, addon and benefit); a summary without them is split
-by package code as WorkBuddy's client does. Only one of the two stops the
-account, since WorkBuddy serves it while any credits are left: the extra
-window is set aside until the plan's credits are spent, then the plan's
-is. Extra credits only the detail lists carry (a China-site free
+by package code as WorkBuddy's client does. Neither stops the account,
+since WorkBuddy serves it while any credits are left: both are set aside,
+and a third window, "Total credits", the two together, stops it. It has
+the plan's cycle and the soonest lapse of the two, so every account reads
+the same, its plan's credits spent or not (ferock on Discord; before
+0.2.24 the extra window stood in for the account only once the plan's
+were spent). Extra credits only the detail lists carry (a China-site free
 account's summary can list the plan's base alone) are their own "Extra
-credits" window by the same rule (ferock on Discord). A summary with
+credits" window, with a "Total credits" by the same rule. A summary with
 only one kind keeps the one "Credits" window (akic404 on Discord; since
 0.2.16 the plan's bonus is extra too, Jiabubu on Discord).
 
