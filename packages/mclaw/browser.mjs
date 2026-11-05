@@ -6,13 +6,14 @@
  * 不监听任何 TCP 端口，机器上其他进程碰不到这个浏览器会话，插件也只会驱动
  * 自己启动的 Chrome。整体移植自 gcp-ai 插件的管道客户端（MIT）。
  *
- * 专属 user-data 目录（profile）保存移动云网页登录态：登录一次后 Cookie 长期
- * 存在，续期时用 --headless=new 复开同一 profile，网页应用自己会刷新会话。
+ * 专属 user-data 目录（profile）保存移动云网页登录态：每个账号/每次登录一个
+ * 独立 profile（目录存进账号 metadata），登录一次后 Cookie 长期存在，续期时
+ * 用 --headless=new 复开该账号自己的 profile，网页应用自己会刷新会话。
  */
 import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
-import { homedir } from 'node:os'
+import { createHash, randomBytes } from 'node:crypto'
+import { homedir, tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -24,10 +25,21 @@ const configRoot = () => process.env.XDG_CONFIG_HOME
 const cacheRoot = () => process.env.XDG_CACHE_HOME
   || (process.platform === 'win32' && process.env.LOCALAPPDATA ? process.env.LOCALAPPDATA : join(homedir(), '.cache'))
 
-/** 登录态专属 profile 目录（可用 MCLAW_BROWSER_PROFILE 覆盖）。 */
+/** 登录态 profile 目录的根（可用 MCLAW_BROWSER_PROFILE 覆盖）。每个账号/每次
+ *  登录用根下的一个独立子目录，互不串票；老版本的共享目录 defaultProfile()
+ *  只作为老账号（metadata 里没存 profile）续期的兜底。 */
+export const profilesRoot = () => process.env.MCLAW_BROWSER_PROFILE
+  ? resolve(process.env.MCLAW_BROWSER_PROFILE.startsWith('~') ? join(homedir(), process.env.MCLAW_BROWSER_PROFILE.slice(2)) : process.env.MCLAW_BROWSER_PROFILE)
+  : join(configRoot(), 'magpie', 'mclaw-browser-profiles')
+
+/** 老版本的共享 profile 目录（0.5.0 之前所有账号共用这一个）。 */
 export const defaultProfile = () => process.env.MCLAW_BROWSER_PROFILE
   ? resolve(process.env.MCLAW_BROWSER_PROFILE.startsWith('~') ? join(homedir(), process.env.MCLAW_BROWSER_PROFILE.slice(2)) : process.env.MCLAW_BROWSER_PROFILE)
   : join(configRoot(), 'magpie', 'mclaw-browser-profile')
+
+/** 一次新登录的专属 profile 目录：随机子目录，绝不复用旧登录态——
+ *  换账号登录、票被服务端吊销后重登，都不会捡到上一次的 Cookie。 */
+export const freshSigninProfile = () => join(profilesRoot(), `signin-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`)
 
 // ---------------------------------------------------------------- profile 锁
 // 同一 profile 的多个操作（登录/续期）串行化：mkdir 原子抢锁，抢不到就排队。
@@ -289,10 +301,11 @@ export async function chromeExecutable() {
 // ---------------------------------------------------------------- 打开/收割
 
 /** 用专属 profile 开 Chrome。登录用 headless: false（用户手动操作窗口），
- *  续期用 headless: true（后台跑完就关）。返回 { browser, page, profilePath,
- *  release }：release() 在浏览器 close() 之后调用才放锁。 */
-export async function openMclawBrowser({ headless = true, startUrl = 'about:blank' } = {}) {
-  const profilePath = defaultProfile()
+ *  续期用 headless: true（后台跑完就关）。profilePath 缺省用老共享目录
+ *  （只服务于 metadata 里没存 profile 的老账号续期）。返回 { browser, page,
+ *  profilePath, release }：release() 在浏览器 close() 之后调用才放锁。 */
+export async function openMclawBrowser({ headless = true, startUrl = 'about:blank', profilePath } = {}) {
+  profilePath ||= defaultProfile()
   const release = await claimProfileLock(profilePath)
   try {
     await mkdir(profilePath, { recursive: true, mode: 0o700 })
@@ -308,7 +321,7 @@ export async function openMclawBrowser({ headless = true, startUrl = 'about:blan
       ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : process.platform === 'linux' ? ['--password-store=basic'] : []),
       '--window-size=1280,900',
       ...(headless ? ['--headless=new', '--disable-gpu'] : []),
-      '--crash-dumps-dir=/tmp',
+      '--crash-dumps-dir=' + tmpdir(),
       startUrl,
     ]
     const started = await launch(await chromeExecutable(), args)
@@ -333,33 +346,48 @@ export async function harvestYunAuth(browser) {
   }
 }
 
-/** 浏览器登录全流程：有头 Chrome → 用户在窗口里完成移动云登录 → 收割
- *  authorization Cookie。deadlineMs 内没等到就失败（关浏览器、放锁）。 */
-export async function browserHarvestAfterLogin({ deadlineMs = 600_000 } = {}) {
-  const { browser, page, profilePath, release } = await openMclawBrowser({
-    headless: false, startUrl: 'https://yun.139.com/',
-  })
-  const deadline = Date.now() + deadlineMs
-  try {
-    for (;;) {
-      if (browser.connection.closed) throw new Error('浏览器被关闭，登录中断')
-      const cookie = await harvestYunAuth(browser).catch(() => undefined)
-      if (cookie?.value) return { cookie, profilePath, release, close: () => browser.close() }
-      if (Date.now() >= deadline) throw timeoutError(`登录超时（${Math.round(deadlineMs / 60000)} 分钟内没有检测到移动云登录）`)
-      await sleep(1500)
+/** 浏览器登录全流程：有头 Chrome（新登录用全新 profile，绝不带旧票）→ 用户
+ *  在窗口里完成移动云登录 → 收割 authorization Cookie。
+ *  返回 { promise, abort }：promise resolve { cookie, profilePath, release,
+ *  close }；abort() 在 promise 还没被消费时（宿主取消了登录）关浏览器、放锁
+ *  ——promise 已 resolve 时调它同样收尾，防止窗口和 profile 锁被一直占着。 */
+export function startBrowserHarvest({ deadlineMs = 600_000, profilePath = freshSigninProfile() } = {}) {
+  const session = { promise: undefined, abort: async () => {} }
+  session.promise = (async () => {
+    const { browser, page, profilePath: used, release } = await openMclawBrowser({
+      headless: false, startUrl: 'https://yun.139.com/', profilePath,
+    })
+    let aborted = false
+    session.abort = async () => {
+      if (aborted) return
+      aborted = true
+      await browser.close().catch(() => {})
+      await release()
     }
-  } catch (error) {
-    await browser.close().catch(() => {})
-    await release()
-    throw error
-  }
+    try {
+      const deadline = Date.now() + deadlineMs
+      for (;;) {
+        if (aborted) throw new Error('登录已取消')
+        if (browser.connection.closed) throw new Error('浏览器被关闭，登录中断')
+        const cookie = await harvestYunAuth(browser).catch(() => undefined)
+        if (cookie?.value) return { cookie, profilePath: used, release, close: () => browser.close() }
+        if (Date.now() >= deadline) throw timeoutError(`登录超时（${Math.round(deadlineMs / 60000)} 分钟内没有检测到移动云登录）`)
+        await sleep(1500)
+      }
+    } catch (error) {
+      await browser.close().catch(() => {})
+      await release()
+      throw error
+    }
+  })()
+  return session
 }
 
-/** 续期：headless 复开 profile 首页，等网页应用刷新会话后收割 Cookie。
- *  页面加载后多等 settleMs，给 tokenRefresh 留时间。 */
-export async function browserRefreshHarvest({ settleMs = 12_000, timeoutMs = 60_000 } = {}) {
-  const { browser, page, profilePath, release } = await openMclawBrowser({
-    headless: true, startUrl: 'https://yun.139.com/',
+/** 续期：headless 复开账号自己的 profile（metadata.profile）首页，等网页应用
+ *  刷新会话后收割 Cookie。页面加载后多等 settleMs，给 tokenRefresh 留时间。 */
+export async function browserRefreshHarvest({ profilePath, settleMs = 12_000, timeoutMs = 60_000 } = {}) {
+  const { browser, page, profilePath: used, release } = await openMclawBrowser({
+    headless: true, startUrl: 'https://yun.139.com/', profilePath,
   })
   try {
     const deadline = Date.now() + timeoutMs
@@ -378,7 +406,7 @@ export async function browserRefreshHarvest({ settleMs = 12_000, timeoutMs = 60_
       if (browser.connection.closed) break
     }
     if (!cookie?.value) throw new Error('profile 里没有移动云登录态（请先完成浏览器登录）')
-    return { cookie, profilePath }
+    return { cookie, profilePath: used }
   } finally {
     await browser.close().catch(() => {})
     await release()

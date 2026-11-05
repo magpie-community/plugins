@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0 — 2026-11-05
+
+多账号与取消安全（market PR #746 review）：
+
+- **每个账号一个专属 browser profile**：登录不再用共享目录——每次登录开一个全新 profile（绝不带旧票），目录存进账号 `metadata.profile`；续期只开该账号自己的 profile，并校验收割到的票属于本账号（票里的手机号对不上就按 `signIn: 'expired'` 报错，绝不让 B 账号的票和 key 存进 A 名下）。0.5.0 前的老账号续期退回老共享目录，成功后把目录钉进 metadata。`MCLAW_BROWSER_PROFILE` 语义变为 profiles 根目录。
+- **取消的登录会收尾**：宿主没调 callback（用户取消/面板关闭）时，authorize 里的定时器（默认 5 分钟）到点关浏览器、放 profile 锁——之前锁被宿主 pid 占着，后续登录/续期全要等 LOCK_TIMEOUT。
+- **「重置于」只认账号自己的权威 endTime**：删掉「每月 11 日 15:20:47」的硬编码锚点（那是观察到的某账号合同周期，别家账号各不相同）；没有权威 endTime（未配 vip Cookie）就不显示重置时间，也不造 startsAt/span。
+- **删除 SSO 换票链**（querySpecTokenV2 → ssoLogin）：上游拒远程出的票（200050409），链路本来就不可用，不该每次用量轮询都把 Basic 票发出去。
+- **补测试**（bun test，无网络、无真实 Chrome）：`nonet.mjs` 全局 fetch 只放行本地；`fake.mjs` 本地 fake 两大上游；`fake-browser.mjs` 可控的浏览器替身。覆盖 normalizeChatResponse（200 裸 JSON 错误 → 401/502、SSE 透传首字节重放、空响应）、usage（池数学、无 RHR135、票过期、明细失败不连坐）、accountModels（agent/list × apikey/get 合并）、authorize/callback/refresh（成功存 profile、错误账号拒写、取消收尾）。
+
+其他修复：
+
+- `normalizeChatResponse` 的 JSON 分支不再有 1MB 截断（大回复不再误报 502）。
+- usage 里明细查询失败不再让整张卡片报错（池窗口照常）。
+- vip Cookie 输入框改为密码型；去掉恒为 false 的 `free` 字段；`--crash-dumps-dir` 用 `os.tmpdir()`（Windows 上没有 `/tmp`）。
+- 包 README 安装改为市场方式（`magpie plugin add @magpie-community/opencode-mclaw-auth`）。
+
 ## 0.4.3 — 2026-11-05
 
 - 用量窗口名去掉权益编号后缀：`MClaw tokens（RHR135）` → `MClaw tokens`（编号仍用于内部识别权益项）。

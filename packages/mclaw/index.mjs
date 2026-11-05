@@ -45,22 +45,27 @@
  *   config/get（倍率）只认 mobile: 票 → 网页票的倍率走 apikey/get。
  *
  *   浏览器登录（v0.4.0）：yun.139.com 网页短信登录一次，CDP（--remote-
- *   debugging-pipe，专属 profile）收割 authorization Cookie = pc: 票，
- *   apikey/get v1 自动取 chat key + 倍率；续期 = headless 复开 profile，
- *   网页应用自己刷新会话后重新收割。见 browser.mjs。
+ *   debugging-pipe，每次登录一个全新 profile）收割 authorization Cookie =
+ *   pc: 票，apikey/get v1 自动取 chat key + 倍率；profile 目录存进账号
+ *   metadata，续期 = headless 复开该账号自己的 profile，网页应用自己刷新
+ *   会话后重新收割（收割的票会校验是不是这个账号的）。见 browser.mjs。
  *
  * Options (magpie plugin options mclaw '{"…"}'):
  *   { "base": "https://ai.yun.139.com/api/llm/102001" }
- *   环境变量：MCLAW_CHROME_PATH（Chrome 路径）、MCLAW_BROWSER_PROFILE（登录 profile 目录）
+ *   环境变量：MCLAW_CHROME_PATH（Chrome 路径）、MCLAW_BROWSER_PROFILE（登录
+ *   profile 目录的根，每个账号是它下面的一个子目录）
  */
 import { randomUUID } from 'node:crypto'
-import { browserHarvestAfterLogin, browserRefreshHarvest } from './browser.mjs'
+import * as browserDefault from './browser.mjs'
 
 const PROVIDER = 'mclaw'
 const DEFAULT_BASE = 'https://ai.yun.139.com/api/llm/102001'
-const OPENCLAW_BASE = 'https://ai.yun.139.com'
-const BENEFIT_BASE = 'https://ypqy.mcloud.139.com'
-const VIP_BASE = 'https://vip.yun.139.com'
+// 测试通过 _internal.HOSTS 重定向到本地 fake（见 *.test.mjs）。
+const HOSTS = {
+  openclaw: 'https://ai.yun.139.com',
+  benefit: 'https://ypqy.mcloud.139.com',
+  vip: 'https://vip.yun.139.com',
+}
 const APP_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) AIModeHome MCloudApp/13.2.5 iPhone AppLanguage/zh-CN'
 
 // 每进程稳定的伪设备标识（App 侧头，服务端用来路由，内容不敏感）
@@ -184,7 +189,7 @@ async function readJson(response, label) {
 async function fetchAgentList(appAuth) {
   let response
   try {
-    response = await fetch(`${OPENCLAW_BASE}/api/adapter/assistant/agent/list`, {
+    response = await fetch(`${HOSTS.openclaw}/api/adapter/assistant/agent/list`, {
       method: 'POST',
       headers: appHeaders(appAuth),
       body: JSON.stringify({ sourceChannel: '101', sceneType: 'homePage' }),
@@ -218,7 +223,7 @@ async function fetchAgentList(appAuth) {
 async function fetchModelCatalogue(appAuth, openclawId) {
   let response
   try {
-    response = await fetch(`${OPENCLAW_BASE}/api/openclaw/config/get`, {
+    response = await fetch(`${HOSTS.openclaw}/api/openclaw/config/get`, {
       method: 'POST',
       headers: appHeaders(appAuth),
       body: JSON.stringify({ sourceChannel: '101', openclawId }),
@@ -248,7 +253,7 @@ function llmChannelId() {
 async function fetchLlmKeyAndRates(appAuth, channelId = '102001') {
   let response
   try {
-    response = await fetch(`${OPENCLAW_BASE}/api/llm/apikey/get`, {
+    response = await fetch(`${HOSTS.openclaw}/api/llm/apikey/get`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -285,7 +290,7 @@ function appAuthOf(auth) {
 async function fetchBenefit(appAuth) {
   let response
   try {
-    response = await fetch(`${BENEFIT_BASE}/isbo2/openApi/queryAvailableBenefitV2`, {
+    response = await fetch(`${HOSTS.benefit}/isbo2/openApi/queryAvailableBenefitV2`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -313,13 +318,13 @@ async function fetchBenefit(appAuth) {
 async function fetchRecords(vipCookie) {
   let response
   try {
-    response = await fetch(`${VIP_BASE}/m4c/benefit/getAiTokenConsumptionRecords`, {
+    response = await fetch(`${HOSTS.vip}/m4c/benefit/getAiTokenConsumptionRecords`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         cookie: vipCookie,
-        origin: VIP_BASE,
-        referer: `${VIP_BASE}/vip/consumptionDetail?sourceid=503016`,
+        origin: HOSTS.vip,
+        referer: `${HOSTS.vip}/vip/consumptionDetail?sourceid=503016`,
         'user-agent': APP_UA,
       },
       body: JSON.stringify({ pageNum: 1, pageSize: 3, action: ['1', '4'] }),
@@ -366,77 +371,17 @@ function basicExpiryMs(appAuth) {
   }
 }
 
-/** tokens 是「[3000万 tokens/月]」按月重置：周期锚点=每月 11 日 15:20:47（北京时间）。
- *  锚点来自 2026-11-04 观察到的 endTime（与会员合同 ydyp_mclaw_deploy 的月周期一致）。 */
-function nextResetMs(from = Date.now()) {
-  const reset = (year, month) => new Date(`${year}-${String(month).padStart(2, '0')}-11T15:20:47+08:00`).getTime()
-  const now = new Date(from)
-  // 北京时间的年月（UTC+8）
-  const bj = new Date(from + 8 * 3600e3)
-  for (let k = 0; k < 3; k++) {
-    const m = new Date(bj.getFullYear(), bj.getMonth() + k, 1)
-    const ms = reset(m.getFullYear(), m.getMonth() + 1)
-    if (ms > from) return ms
-  }
-  return undefined
-}
-
-/** 周期起点：锚点（11 日 15:20:47）从 resetsAt 回退一个日历月（北京时间），
- *  即当前周期的开始。上游不给周期起止，只能由锚点推出。锚点固定在 11 日，
- *  UTC 月份即北京月份（15:20+08 = 07:20 同日 UTC）。 */
-function periodStartMs(resetsAt) {
-  const d = new Date(resetsAt)
+/** 周期起点（近似）：从权威 endTime 回退一个日历月（北京时间的年月日时分秒
+ *  原样前移一个月，小月会滚到下月 1 日）。上游不给周期起止，这只在有了该账号
+ *  自己的权威 endTime 时才用于 startsAt/span，绝不凭空猜一个周期。 */
+function cycleStartMs(endMs) {
+  const d = new Date(endMs)
   let year = d.getUTCFullYear()
-  let month = d.getUTCMonth() + 1 // 1-based
+  let month = d.getUTCMonth() + 1 // 1-based（endTime 按 +08:00 解析，UTC 分量即北京墙钟）
   month -= 1
   if (month === 0) { month = 12; year -= 1 }
-  return new Date(`${year}-${String(month).padStart(2, '0')}-11T15:20:47+08:00`).getTime()
-}
-
-// vip 会话 Cookie 的进程内缓存与 SSO 冷却（宿主进程长驻，缓存跨请求有效）
-const cookieCache = new Map()
-const ssoFailedAt = new Map()
-const SSO_COOLDOWN = 10 * 60e3
-
-/** 自动换票链：Basic → querySpecTokenV2(001003) 出 YZsid 票 → vip ssoLogin 换会话 Cookie。
- *  2026-11-04 实测：远程出的票会被 USER_DOMAIN 拒（200050409，票据与 App 出票上下文
- *  绑定），链路保留——上游放开或拿到真机 ssoLogin 抓包修正后即自动生效。 */
-async function ssoCookie(appAuth) {
-  const last = ssoFailedAt.get(appAuth)
-  if (last && Date.now() - last < SSO_COOLDOWN) return undefined
-  try {
-    const mint = await fetch('https://user-njs.yun.139.com/user/querySpecTokenV2', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: appAuth, 'user-agent': APP_UA },
-      body: JSON.stringify({ toSourceId: '001003' }),
-      signal: AbortSignal.timeout(15_000),
-    }).then((r) => r.json())
-    const ticket = mint?.data?.token
-    if (typeof ticket !== 'string' || !ticket) throw new Error('出票失败')
-    const response = await fetch(`${VIP_BASE}/m4c/login/ssoLogin`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        origin: VIP_BASE,
-        referer: `${VIP_BASE}/vip/consumptionDetail?sourceid=503016`,
-        'user-agent': APP_UA,
-      },
-      body: JSON.stringify({ ticket, source: '503016', channelSrc: '' }),
-      signal: AbortSignal.timeout(15_000),
-    })
-    const json = await response.json().catch(() => null)
-    if (json?.resultCode !== '0') throw new Error(json?.resultDesc ?? `HTTP ${response.status}`)
-    const cookies = (response.headers.getSetCookie?.() ?? [])
-      .map((line) => line.split(';')[0])
-      .filter(Boolean)
-    if (!cookies.length) throw new Error('ssoLogin 未下发会话 Cookie')
-    const cookie = cookies.join('; ')
-    cookieCache.set(appAuth, cookie)
-    return cookie
-  } catch {
-    ssoFailedAt.set(appAuth, Date.now())
-    return undefined
-  }
+  const pad = (n) => String(n).padStart(2, '0')
+  return new Date(`${year}-${pad(month)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}+08:00`).getTime()
 }
 
 // ---------------------------------------------------------------- chat 响应守卫
@@ -474,13 +419,14 @@ async function normalizeChatResponse(response) {
     return chatError(502, 'empty_response', 'MClaw 返回空响应')
   }
   if (prefix.trimStart().startsWith('{')) {
-    while (bytes <= 1024 * 1024) {
+    // JSON（含 200 裸 JSON 错误）：读到结尾再判。错误体很小；正常的 JSON
+    // 回复可能远超 1MB，不设上限（流式回复走下面的透传分支）。
+    for (;;) {
       const next = await reader.read()
       if (next.done) break
       bytes += next.value.byteLength
       prefix += decoder.decode(next.value, { stream: true })
     }
-    await reader.cancel()
     prefix += decoder.decode()
     let json
     try { json = JSON.parse(prefix) } catch {}
@@ -592,7 +538,7 @@ async function accountModels(provider, { auth } = {}) {
       ...(id.includes('max') || id.includes('glm') || id.includes('deepseek') || id.includes('qwen37')
         ? { reasoning: true } : {}),
       modalities: { input: image ? ['text', 'image'] : ['text'] },
-      ...(Number.isFinite(rate) && rate > 0 ? { rate, free: rate === 0 } : {}),
+      ...(Number.isFinite(rate) && rate > 0 ? { rate } : {}),
     }
   }
   return Object.keys(models).length ? models : provider.models
@@ -603,6 +549,11 @@ async function accountModels(provider, { auth } = {}) {
 export const MclawAuthPlugin = async (_input, options) => {
   const base = String(options?.base ?? DEFAULT_BASE).replace(/\/+$/, '')
   activeBase = base
+  // 测试缝：fake browser 从 options.browserModule 进（宿主不会传）。
+  const browser = options?.browserModule ?? browserDefault
+  // 宿主取消登录（callback 没被调）后的收尾时限：到点关浏览器、放 profile 锁，
+  // 不然锁被宿主 pid 占着，后续登录/续期全要等 LOCK_TIMEOUT。
+  const signinAbortMs = Number(options?.signinAbortMs) > 0 ? Number(options.signinAbortMs) : 300_000
 
   return {
     // 未登录也能看到的供应商与静态模型目录。
@@ -633,36 +584,41 @@ export const MclawAuthPlugin = async (_input, options) => {
               placeholder: '留空自动获取 / na-…',
             },
             {
-              type: 'text',
+              type: 'password',
               key: 'vipCookie',
-              message: 'vip.yun.139.com Cookie（可选：最近逐条明细；不填也能看总量与重置时间）',
+              message: 'vip.yun.139.com Cookie（可选：最近逐条明细与权威重置时间）',
               placeholder: 'mc_at=…; mc_bt=…',
             },
           ],
 
           // 流程：宿主契约要求 authorize 立即返回 { url, opened, instructions,
           // method, callback }（参照 sensenova/joycode），Chrome 由 authorize 弹出、
-          // 收割等登录放进宿主随后调的 callback()。窗口是专属 profile 的 Chrome
-          // （CDP 管道驱动，不占端口）：用户在里面完成移动云短信登录 → 插件收割
-          // authorization Cookie（= pc: 票）→ apikey/get v1 自动取 llm key → 存为
-          // oauth 型 { refresh:'browser', access, expires, metadata }，到期前宿主调
-          // refresh 钩子 headless 续期。
+          // 收割等登录放进宿主随后调的 callback()。每次登录用全新 profile 的
+          // Chrome（CDP 管道驱动，不占端口），绝不带旧票：换账号登录、票被吊销
+          // 后重登都不会捡到上一次的 Cookie。用户在窗口里完成移动云短信登录 →
+          // 插件收割 authorization Cookie（= pc: 票）→ apikey/get v1 自动取
+          // llm key → profile 目录与手机号存进 metadata，存为 oauth 型
+          // { refresh:'browser', access, expires, metadata }，到期前宿主调
+          // refresh 钩子 headless 续期（复开该账号自己的 profile）。
           async authorize(inputs = {}) {
             const manualKey = String(inputs?.apiKey ?? '').trim()
             const vipCookie = String(inputs?.vipCookie ?? '').trim()
-            // 不 await：Chrome 立即弹出；若宿主中途取消（callback 没被调），
-            // 挂个空 catch 免得 10 分钟超时后刷 unhandled rejection。
-            const harvesting = browserHarvestAfterLogin()
-            harvesting.catch(() => {})
+            // 不 await：Chrome 立即弹出；若宿主取消（callback 没被调），定时器
+            // 到点 abort——关浏览器、放 profile 锁；挂个空 catch 免得 abort 后
+            // 的拒绝刷 unhandled rejection。
+            const harvesting = browser.startBrowserHarvest()
+            harvesting.promise.catch(() => {})
+            const cleanup = setTimeout(() => { harvesting.abort().catch(() => {}) }, signinAbortMs)
             return {
               url: '',
               opened: true, // Chrome 已由本插件弹出，宿主不要再开 url
               instructions: '已弹出专用 Chrome 窗口：请在里面登录移动云（yun.139.com，短信验证码），登录成功后本流程自动继续并收走全部凭证',
               method: 'auto',
               async callback() {
+                clearTimeout(cleanup)
                 let release, close
                 try {
-                  const { cookie, release: r, close: c } = await harvesting
+                  const { cookie, profilePath, release: r, close: c } = await harvesting.promise
                   release = r
                   close = c
                   const token = cookie.value
@@ -681,7 +637,7 @@ export const MclawAuthPlugin = async (_input, options) => {
                   if (!apiKey) {
                     return { type: 'failed', error: '登录成功但未能自动获取 llm key（网络异常？），请在可选项里手动填 API Key 后重试' }
                   }
-                  const metadata = { apiKey }
+                  const metadata = { apiKey, profile: profilePath }
                   if (vipCookie) metadata.vipCookie = vipCookie
                   const email = nameFromAppAuth(token)
                   if (email) metadata.email = email
@@ -739,30 +695,25 @@ export const MclawAuthPlugin = async (_input, options) => {
             const d = new Date(expiry)
             window.display += ` · 凭证至 ${d.getMonth() + 1}/${d.getDate()}${expiry < Date.now() ? '（已过期，请重新抓取）' : ''}`
           }
-          // 最近明细 + 权威重置时间需要 vip 会话；Cookie 失效先走自动换票链，
-          // 还不行就退回按月周期推算重置时间（明细省略）。
-          const vipCookie = cookieCache.get(appAuth) ?? auth.metadata?.vipCookie?.trim()
+          // 最近明细 + 权威重置时间需要 vip 会话（登录时的可选项）。明细只是
+          // 加料：任何失败（超时、Cookie 失效）都不影响池窗口本身。
+          const vipCookie = auth.metadata?.vipCookie?.trim()
           let records
           if (vipCookie) {
-            try { records = await fetchRecords(vipCookie) } catch (error) {
-              if (error.signIn === 'expired') records = undefined
-              else throw error
-            }
-          }
-          if (!records && appAuth) {
-            const fresh = await ssoCookie(appAuth)
-            if (fresh) records = await fetchRecords(fresh).catch(() => undefined)
+            records = await fetchRecords(vipCookie).catch(() => undefined)
           }
           const latest = records?.[0]
           const end = endTimeMs(latest?.endTime)
-          // 明细的 endTime 是当前周期权威终点；记录太旧（上轮周期的）时退回锚点推算。
-          const resetsAt = (end && end > Date.now() ? end : undefined) ?? nextResetMs()
+          // 「重置于」只认该账号明细里的权威 endTime（当前周期的终点）。
+          // 上游不给周期起止，也没有可外推的通用锚点——别家账号的周期起点
+          // 各不相同，没有权威 endTime 就不显示，绝不猜一个。
+          const resetsAt = end && end > Date.now() ? end : undefined
           if (resetsAt) {
-            // 周期起点 = 锚点回退一个日历月。窗口形态带上 startsAt + span（秒）：
-            // 这是额度窗口形态的完整字段。当前 magpie（0.1.2906）的插件桥会把
-            // 这两个量剥掉（startsAt 留给自家网关窗口），「按此速度，预计…」
-            // 由宿主自己的历史采样（≥3 点且 ≥1h）另算；宿主哪天不剥了即生效。
-            const start = periodStartMs(resetsAt)
+            // 窗口形态带上 startsAt + span（周期起点 = endTime 回退一个日历月，
+            // 近似）。当前 magpie（0.1.2906）的插件桥会把这两个量剥掉（startsAt
+            // 留给自家网关窗口），「按此速度，预计…」由宿主自己的历史采样
+            // （≥3 点且 ≥1h）另算；宿主哪天不剥了即生效。
+            const start = cycleStartMs(resetsAt)
             window.resetsAt = new Date(resetsAt).toISOString()
             if (start > 0 && start < resetsAt) {
               window.startsAt = new Date(start).toISOString()
@@ -770,7 +721,7 @@ export const MclawAuthPlugin = async (_input, options) => {
             }
           }
           const reset = resetsAt
-            ? ` · 重置于 ${new Date(resetsAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}${latest && end > Date.now() ? '' : '（按月周期推算）'}`
+            ? ` · 重置于 ${new Date(resetsAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
             : ''
           window.display += reset
           if (latest) {
@@ -786,16 +737,25 @@ export const MclawAuthPlugin = async (_input, options) => {
         }
       },
 
-      // 浏览器登录账号（refresh === 'browser'）的自动续期：headless 复开专属
-      // profile，网页应用自己刷新会话后重新收割 authorization Cookie；票换了
-      // 就顺手刷新 metadata.apiKey。到期前 refreshLead 触发；其他形态原样返回。
+      // 浏览器登录账号（refresh === 'browser'）的自动续期：headless 复开该账号
+      // 自己的 profile（metadata.profile；0.5.0 前的老账号退回老共享目录，收割
+      // 成功后把目录钉进 metadata），网页应用自己刷新会话后重新收割
+      // authorization Cookie；票换了就顺手刷新 metadata.apiKey。到期前
+      // refreshLead 触发；其他形态原样返回。
       refreshLead: 3 * 24 * 3600e3,
       async refresh(auth) {
         if (auth?.refresh !== 'browser' || !auth?.access) return {}
-        const { cookie } = await browserRefreshHarvest()
+        const { cookie, profilePath } = await browser.browserRefreshHarvest({ profilePath: auth?.metadata?.profile })
         const token = cookie.value
+        // 收割到的票必须是这个账号的：最后一个登录的是别的账号时绝不能
+        // 张冠李戴（B 的票 + B 的 key 存到 A 名下）。
+        const who = nameFromAppAuth(token)
+        if (auth?.metadata?.email && who && who !== auth.metadata.email) {
+          throw expired(`续期收割到的是另一账号（${who}）的票，已放弃；请重新登录`)
+        }
         const expires = basicExpiryMs(token) ?? (cookie.expiresMs || auth.expires)
         const metadata = { ...(auth.metadata ?? {}) }
+        if (!metadata.profile && profilePath) metadata.profile = profilePath
         if (token !== auth.access) {
           try {
             metadata.apiKey = (await llmKeyAndRates(token)).apikey
@@ -810,7 +770,7 @@ export const MclawAuthPlugin = async (_input, options) => {
 // 测试面（node --test / bun test）。除插件本身外不要导出别的函数。
 export const _internal = {
   MODELS, appHeaders, visionByCode, nameFromAppAuth, endTimeMs, basicExpiryMs,
-  nextResetMs, appAuthOf, llmChannelId,
+  appAuthOf, llmChannelId, cycleStartMs, normalizeChatResponse, accountModels, HOSTS,
 }
 
 // OpenCode v1 形态：默认导出 { id, server }，宿主只取 server。
