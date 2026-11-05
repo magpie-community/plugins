@@ -19,6 +19,7 @@ import { composerModeOptions, effortLabel } from "../i18n/modes.js";
 import { Logo } from "./Logo";
 import { currentChecklist, todoProgress } from "../timeline/fold";
 import { SelectMenu } from "./SelectMenu";
+import { AutoApproveBanner } from "./AutoApproveBanner";
 import { errMsg, t as tr, tf } from "../i18n/index.js";
 import {
   applySlashPick,
@@ -397,8 +398,12 @@ export function Composer() {
   };
 
   const setMode = (m: Mode) => {
-    if (thread) void ws.call("thread.setMode", { id: thread.id, mode: m });
+    if (!thread) return;
+    void ws.call("thread.setMode", { id: thread.id, mode: m }).catch((e) => toast(errMsg(e), true));
   };
+  // 1.3 (#727 review 1): while the mode this Agent really uses is 全部自动同意, a persistent banner + warning-coloured chip
+  const autoOn = !!(modes.find((m) => m.id === mode) ?? modes[0])?.auto;
+  const canAsk = modes.some((m) => m.id === "default" && !m.auto);
   const setEffort = (effort: string | null) => {
     if (thread) void ws.call("thread.setEffort", { id: thread.id, effort });
   };
@@ -469,10 +474,8 @@ export function Composer() {
           ))}
         </div>
       )}
-      {mode === "bypassPermissions" && (
-        <div className="cp-danger">{tr("composer.bypassWarn")}</div>
-      )}
-      <div className={`cp-card${waiting ? " waiting" : ""}${mode === "bypassPermissions" ? " danger" : ""}${dropHint ? " drop-on" : ""}`}>
+      {autoOn && <AutoApproveBanner providerId={thread?.provider} onBack={canAsk ? () => setMode("default") : undefined} />}
+      <div className={`cp-card${waiting ? " waiting" : ""}${autoOn ? " auto-on" : ""}${dropHint ? " drop-on" : ""}`}>
         {dropHint && <div className="cp-drop-hint">{tr("mention.drop")}</div>}
         {imagesByPath && attachments.some((a) => a.mime.startsWith("image/")) && (
           <div className="att-note">{tf("composer.imagesByPath", { agent: provider?.name ?? "" })}</div>
@@ -728,13 +731,19 @@ export function Composer() {
               <ChipCaret />
             </SelectMenu>
           )}
-          {/* permission mode: list only the modes this Agent really has; hidden when there is only one (e.g. Pi has no modes) */}
+          {/* permission mode: list only the modes this Agent really has; one mode only (Pi: always auto) = a plain label */}
+          {modes.length === 1 && (
+            <span className={`pill ipill mode-chip static${modes[0]!.auto ? " auto" : ""}`} title={modes[0]!.desc} data-mode={modes[0]!.id}>
+              <Icon name={modes[0]!.auto ? "shieldCheck" : "shield"} size={14} />
+              <span className="ip-l">{modes[0]!.label}</span>
+            </span>
+          )}
           {modes.length > 1 && (() => {
             // The mode stored on the conversation doesn't exist for this Agent → show the one it will actually use
             const shown = modes.find((m) => m.id === mode) ?? modes[0]!;
             return (
               <SelectMenu
-                className={`pill ipill${shown.danger ? " danger" : ""}`}
+                className={`pill ipill mode-chip${shown.danger ? " danger" : ""}${shown.auto ? " auto" : ""}`}
                 title={shown.desc}
                 ariaLabel={tr("composer.modeTitle")}
                 prefer="up"
@@ -742,9 +751,9 @@ export function Composer() {
                 menuClassName="mode-menu"
                 value={shown.id}
                 onChange={(v) => setMode(v as Mode)}
-                options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc, danger: m.danger }))}
+                options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc, danger: m.danger, warn: m.auto, icon: m.auto ? "shieldCheck" : undefined }))}
               >
-                <Icon name="shield" size={14} />
+                <Icon name={shown.auto ? "shieldCheck" : "shield"} size={14} />
                 <span className="ip-l">{shown.label}</span>
                 <ChipCaret />
               </SelectMenu>

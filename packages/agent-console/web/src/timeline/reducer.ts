@@ -25,9 +25,11 @@ export type DisplayItem =
   | { kind: "toolgroup"; key: string; steps: ToolStep[] }
   | { kind: "plan"; key: string; itemId: string; markdown: string }
   | { kind: "todo"; key: string; items: { text: string; status: string }[] }
-  | { kind: "permission"; key: string; requestId: string; title: string; kindStr: string; detail?: unknown; options: { id: string; label: string; kind: string }[]; status: "pending" | "resolved" | "cancelled"; choice?: string }
+  | { kind: "permission"; key: string; requestId: string; title: string; kindStr: string; detail?: unknown; options: { id: string; label: string; kind: string }[]; status: "pending" | "resolved" | "cancelled"; choice?: string; auto?: boolean }
   | { kind: "question"; key: string; requestId: string; questions: unknown[]; answers?: Record<string, string>; status: "pending" | "answered" | "cancelled" }
   | { kind: "notice"; key: string; level: string; message: string; code?: string }
+  /** 1.3 全部自动同意: the approvals the daemon gave in one run of tool calls, as one quiet foldable row (autoApproved.ts) */
+  | { kind: "autoperm"; key: string; items: Extract<DisplayItem, { kind: "permission" }>[] }
   | { kind: "gone"; key: string } // placeholder: duplicate delta items cleared by sweepSiblings; skipped when rendering
   | { kind: "turnend"; key: string; status: string; durationMs?: number; error?: string; filesChanged?: number; usage?: TurnUsage;
       /** 1.3: the model the turn ran on (turn_started; null = the Agent's default) and when it ended, for the reply footer */
@@ -224,6 +226,8 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
       st.items.push({
         kind: "permission", key: `perm:${ev.requestId}`, requestId: ev.requestId,
         title: ev.title, kindStr: ev.kind, detail: ev.detail, options: ev.options, status: "pending",
+        // 1.3 全部自动同意: the daemon answered it itself (never a card with buttons; see timeline/autoApproved.ts)
+        ...(ev.auto ? { auto: true } : {}),
       });
       return;
     case "permission_resolved": {
@@ -232,6 +236,7 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
       if (it?.kind === "permission") {
         it.status = ev.cancelled ? "cancelled" : "resolved";
         it.choice = ev.optionId;
+        if (ev.auto) it.auto = true;
       }
       return;
     }

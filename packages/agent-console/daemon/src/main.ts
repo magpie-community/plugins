@@ -68,6 +68,13 @@ async function main(): Promise<void> {
   } catch (e) {
     log("error", "旧数据迁移失败", { err: String(e) });
   }
+  // 1.3 (#727 review 3): a 1.2 "全部放行" never turns into real auto-approval silently for Cursor / OpenCode / dsh
+  try {
+    const { migrateAutoApprove13 } = await import("./migrate/autoApprove13.js");
+    await migrateAutoApprove13({ settings, threads });
+  } catch (e) {
+    log("error", "全部自动同意迁移失败", { err: String(e) });
+  }
   const manager = new AgentManager(gateway, threads, projects, settings, attachments);
   await manager.recoverOnStart();
   const terminals = new TerminalService(gateway);

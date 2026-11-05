@@ -17,6 +17,7 @@ import { splitLocalLinks } from "../util/localLinks";
 import { onChatLinkClick, openExternal } from "../preview/open";
 import { splitQuotes } from "../composer/quotes";
 import { localClientIds, useTimeline } from "../stores/timeline";
+import { AUTO_UPGRADE_CODES, AutoApprovedItem, AutoUpgradeNotice } from "./AutoApproved";
 
 export const GIT_FOR_WINDOWS_URL = "https://git-scm.com/download/win";
 
@@ -409,7 +410,8 @@ export function PermissionItem({ it, threadId }: { it: Extract<DisplayItem, { ki
   const detail = it.detail as { command?: string; path?: string; plan?: string; hunks?: DiffHunk[]; diff?: { path?: string; hunks?: DiffHunk[] } } | undefined;
   const hunks = detail?.hunks ?? detail?.diff?.hunks;
   const label = it.status === "resolved"
-    ? it.choice === "allow_always" || it.choice === "acceptForSession" ? t("timeline.permAllowSession")
+    ? it.auto ? t("timeline.permAutoAllowed")
+    : it.choice === "allow_always" || it.choice === "acceptForSession" ? t("timeline.permAllowSession")
       : it.choice === "deny" || it.choice === "reject" || it.choice === "decline" ? t("timeline.permDenied")
         : it.choice === "implement" ? t("timeline.permAllowed") : t("timeline.permAllowed")
     : t("timeline.permCancelled");
@@ -567,9 +569,11 @@ export function TimelineRow({ it, threadId, onEditResend, onRetryLast, replyText
     case "plan": return <PlanItem it={it} />;
     case "todo": return <TodoItem it={it} />;
     case "permission": return <PermissionItem it={it} threadId={threadId} />;
+    case "autoperm": return <AutoApprovedItem it={it} />;
     case "question": return <QuestionItem it={it} threadId={threadId} />;
     case "notice":
       if (it.code === "bash_missing") return <BashMissingNotice it={it} />;
+      if (it.code && AUTO_UPGRADE_CODES.has(it.code)) return <AutoUpgradeNotice it={it} threadId={threadId} />;
       return <div className={`nt ${it.level}`}>{localizeDaemonMessage(it.message)}</div>;
     case "turnend": return <TurnEndItem it={it} onRetry={onRetryLast} replyText={replyText} />;
     case "gone": return null;
