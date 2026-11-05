@@ -339,6 +339,19 @@ and says `filtersModels`, so while it is on magpie says under the models
 that the list is filtered (#590). Both are magpie's own fields; an older
 magpie shows the English words and no note.
 
+### Hide DeepSeek Harness's name
+
+Since 0.2.23 each site also has a "Hide DeepSeek Harness's name" switch, on
+by default, and on in OpenCode, which has no switches. A user reported a
+WorkBuddy account banned after use from DeepSeek Harness, with a reply saying
+its built-in prompt is recognised. With the switch on, the harness's name is
+taken out of the system prompt, the user's and assistant's text and the
+tools' descriptions: "You are an AI agent powered by DeepSeek Harness."
+becomes "You are an AI agent.", and the runtime lines naming its checkout and
+Web GUI say "agent implementation checkout" and "Web GUI". Tools' results,
+paths, commands and names such as `DSH_HOME` or `~/.dsh` go as they were.
+Whether this keeps an account from being banned is not known.
+
 ## Credits in magpie
 
 magpie's usage card shows the account's credits from the resource summary.
@@ -357,12 +370,15 @@ kind WorkBuddy's own usage panel lists: the plan's bonus, top-ups (bought
 credit packs) and platform rewards (gifted and activity credits,
 赠送积分). The summary's CreditGroups say which is which (plan_base
 against plan_bonus, addon and benefit); a summary without them is split
-by package code as WorkBuddy's client does. Only one of the two stops the
-account, since WorkBuddy serves it while any credits are left: the extra
-window is set aside until the plan's credits are spent, then the plan's
-is. Extra credits only the detail lists carry (a China-site free
+by package code as WorkBuddy's client does. Neither stops the account,
+since WorkBuddy serves it while any credits are left: both are set aside,
+and a third window, "Total credits", the two together, stops it. It has
+the plan's cycle and the soonest lapse of the two, so every account reads
+the same, its plan's credits spent or not (ferock on Discord; before
+0.2.24 the extra window stood in for the account only once the plan's
+were spent). Extra credits only the detail lists carry (a China-site free
 account's summary can list the plan's base alone) are their own "Extra
-credits" window by the same rule (ferock on Discord). A summary with
+credits" window, with a "Total credits" by the same rule. A summary with
 only one kind keeps the one "Credits" window (akic404 on Discord; since
 0.2.16 the plan's bonus is extra too, Jiabubu on Discord).
 

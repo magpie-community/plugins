@@ -14,6 +14,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [agnes](packages/agnes) | Agnes AI international (agnes-ai.com), with Chrome browser sign-in, live text models, plan usage and USD balance | `agnes` |
 | [agnes-code](packages/agnes-code) | Agnes AI's Agnes Code desktop, with the desktop's saved session (Windows) or a pasted access token: live models, daily credit check-in and points balance (unofficial) | `agnes-code` |
 | [astudio](packages/astudio) | iFlytek's AStudio (科大讯飞 Astron Studio desktop), with the desktop's saved credentials or a pasted model token: live model catalog, daily login-points check-in and points balance (unofficial) | `astudio` |
+| [atomcode](packages/atomcode) | AtomGit CodingPlan, with browser OAuth or the local AtomCode CLI's sign-in, signed requests, live models, quota windows and a read-only diagnostics page (unofficial) | `atomcode` |
 | [catpaw](packages/catpaw) | Meituan's 妙手 CatPaw (ai.catpaw.meituan.com), with a browser web sign-in or the desktop client's saved credentials | `catpaw` |
 | [cline](packages/cline) | Cline (cline.bot): usage-billed models, ClinePass's and Cline's free ones, with Cline's device sign-in or an API key | `cline` |
 | [codearts](packages/codearts) | Huawei Cloud CodeArts (码道) coding plans (Trial, personal and enterprise credits), with Huawei Cloud OAuth sign-in (unofficial) | `codearts` |
@@ -120,7 +121,7 @@ A tools package can also give magpie a web search API. It is listed in Settings 
 
 | Package | Search APIs |
 |---|---|
-| [magpie-websearch](https://github.com/guotree/magpie-websearch) | AnySearch, Keenable, Linkup, Metaso, Parallel, Querit and TinyFish; published as `@guotree/magpie-websearch` and maintained in its own repository |
+| [magpie-websearch](https://github.com/guotree/magpie-websearch) | AnySearch, Bocha, Jina, Kagi, Keenable, Linkup, Metaso, Moonshot, Moonshot CN, Ollama, Parallel, Perplexity, Querit, SerpApi, Serper, StepFun, TinyFish, Z.ai and Zhipu; published as `@guotree/magpie-websearch` and maintained in its own repository |
 
 Install magpie-websearch:
 
@@ -167,6 +168,7 @@ These add a page to magpie's window, in the app and in `magpie web`, under Plugi
 | [powercontext](packages/powercontext) | Connection settings for an independently deployed PowerContext service | None |
 | [nowledge-mem](packages/nowledge-mem) | Connection settings, recall and capture switches, a real connection test, and the scope of what is sent | None |
 | [agent-office](packages/agent-office) | What are my agents doing: a real WebGL 3D office with six scenes, an isometric/2D office, grouped workbench, Today usage and recent conversations | no `magpie.read`; its host part reads local session files of Claude Code, Codex, Copilot CLI, Kimi Code, dsh, Gemini CLI, Qwen Code, Pi, omp, Qoder, WorkBuddy, CodeBuddy and Grok Build, including prompts, replies and tool commands (`text:false` keeps statuses and tool names only) |
+| [page-usage-tree](packages/page-usage-tree) | Account usage: usage as provider -> account -> model, each level expandable, with per-account calls, errors and cost; adds the account layer Usage glance's `usage:summary` does not contain | none (its local service calls Magpie's local usage API) |
 | [fingerprint](packages/fingerprint) | Numeric response fingerprints to investigate suspected model substitution across providers, with shared challenges, candidate rankings, local evidence and JSON export | none (its local service calls magpie’s gateway; sampling uses provider quota) |
 | [chat](packages/chat) | Chat with magpie's models, your MCP servers, instructions and skills, by Magic_zero ([Magiczerowxy](https://github.com/Magiczerowxy)). Has a host part: a local service the page goes to | none (its service calls magpie's gateway) |
 | [window-warmup](packages/window-warmup) | Window warmup: send one fixed short message ("hi", max_tokens 16) to a provider, account and model you pick, right after its quota window resets, daily at set times or every few hours, so the next subscription window opens early, by [YangHonghang](https://github.com/YangHonghang). Has a host part: a local service on 127.0.0.1 the page goes to | none; its service calls magpie's gateway and reads magpie's providers.json (keys only as sha256 fingerprints, plus key names and account models) and model cache. Each send uses the chosen account's quota |

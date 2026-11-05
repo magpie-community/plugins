@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="__USAGE_TREE_LANG__">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="usage-tree-token" content="__USAGE_TREE_TOKEN__">
+  <meta name="usage-tree-theme" content="__USAGE_TREE_THEME__">
+  <meta name="usage-tree-lang" content="__USAGE_TREE_LANG__">
+  <meta name="usage-tree-tokens" content="__USAGE_TREE_TOKENS__">
+  <meta name="usage-tree-currency" content="__USAGE_TREE_CURRENCY__">
+  <meta name="usage-tree-usd-cny" content="__USAGE_TREE_USD_CNY__">
+  <meta name="usage-tree-chinese-units" content="__USAGE_TREE_CHINESE_UNITS__">
+  <title>__USAGE_TREE_TITLE__</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="view">
+    <header class="head">
+      <div class="head-text">
+        <h1 data-i18n="title">Account usage</h1>
+        <p data-i18n="subtitle">Start with each account, then expand it to see the models it used</p>
+      </div>
+      <div class="head-tools">
+        <div class="segs" id="period" role="group">
+          <button type="button" data-period="today" data-i18n-period="today"></button>
+          <button type="button" data-period="7d" data-i18n-period="7d"></button>
+          <button type="button" data-period="30d" data-i18n-period="30d"></button>
+          <button type="button" data-period="all" data-i18n-period="all"></button>
+        </div>
+        <button class="cache-toggle" id="token-cache" type="button" role="switch" aria-checked="true">
+          <span class="switch" aria-hidden="true"><i></i></span>
+          <span data-i18n="includeCache"></span>
+        </button>
+        <button class="icon" id="refresh" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1.02 6.74 2.74L21 8"/>
+            <path d="M21 3v5h-5"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="progress" id="progress" role="progressbar" aria-hidden="true" hidden></div>
+
+    <section class="stats" id="summary" aria-live="polite"></section>
+
+    <section class="panel" aria-labelledby="ledger-title">
+      <div class="panel-head">
+        <h2 id="ledger-title" data-i18n="detail">Account details</h2>
+        <div class="tools">
+          <label class="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+            <input id="search" type="search" autocomplete="off">
+          </label>
+          <div class="sort" id="sort" role="group" aria-label="Sort">
+            <span data-i18n="sort">Sort</span>
+            <button type="button" class="sort-button" data-sort="tokens" data-i18n-sort="tokens"></button>
+            <button type="button" class="sort-button" data-sort="cost" data-i18n-sort="cost"></button>
+            <button type="button" class="sort-button" data-sort="calls" data-i18n-sort="calls"></button>
+            <button type="button" class="sort-button" data-sort="name" data-i18n-sort="name"></button>
+          </div>
+          <button class="text" id="expand-all" type="button"></button>
+        </div>
+      </div>
+
+      <div class="warn" id="warning" hidden></div>
+      <div class="cols" aria-hidden="true">
+        <span class="col-name" data-i18n-column="identity"></span>
+        <span data-i18n-column="calls"></span>
+        <span class="col-tokens" data-i18n-column="tokens"></span>
+        <span class="col-share"></span>
+        <span class="col-share-label" data-i18n-column="share"></span>
+        <span class="col-cost" data-i18n-column="cost"></span>
+        <span class="col-status" data-i18n-column="status"></span>
+        <span></span>
+      </div>
+      <div class="accounts" id="accounts" aria-live="polite"></div>
+      <div class="state" id="state-card" hidden></div>
+    </section>
+
+    <footer class="foot">
+      <span id="source-note"></span>
+      <span id="updated"></span>
+    </footer>
+  </main>
+
+  <script src="i18n.js"></script>
+  <script src="view.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

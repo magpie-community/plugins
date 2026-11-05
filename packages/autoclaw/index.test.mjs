@@ -1009,7 +1009,8 @@ test("usage and check-in of a banned account say the ban and keep the sign-in", 
       let threw
       try { await hooks.auth.checkin(async () => ({ type: "oauth", access: "a1", refresh: "r1" })) } catch (e) { threw = e }
       expect(threw.message).toBe("AutoClaw: The account has been banned")
-      expect(urls.length).toBe(1)
+      expect(threw.signIn).toBe("kept")
+      expect(urls.some((u) => u.includes("autoclaw-task-complete"))).toBe(false)
     }
   } finally {
     globalThis.fetch = realFetch
@@ -1145,6 +1146,373 @@ test("usage: the spend window across two reads, and a check-in that reopens the 
   } finally {
     globalThis.fetch = realFetch
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ── login event claim（user-info → 活动奖励；每日签到仍是 task-complete）──
+
+const claimJwt = (deviceId) => jwt({ device_id: deviceId, exp: Math.floor(Date.now() / 1000) + 86400, source_id: "autoclaw" })
+const claimAuth = (deviceId, extra = {}) => ({
+  type: "oauth", access: `at-${deviceId}`, refresh: claimJwt(deviceId),
+  accountId: "测试账号", uid: `u-${deviceId}`, ...extra,
+})
+const okUserInfo = () => Response.json({ code: 0, msg: "SUCCESS", data: { uid: "u1", daily_check_included: false, daily_check_in_completed_on_request: false } })
+const pendingTask = (reward = 400) => Response.json({ code: 0, data: [{ task_id: "daily_signin", status: "pending", reward_points: reward }] })
+const completedTask = (reward = 400) => Response.json({ code: 0, data: [{ task_id: "daily_signin", status: "completed", reward_points: reward }] })
+const signedTask = (reward = 400, streak = 1) => Response.json({ code: 0, data: { success: true, reward_points: reward, continuous_days: streak } })
+
+// 桌面端指纹是这次修复的全部前提：极简头同样 code=0 却不发奖励（#3681）。
+// 这个测试直接检查线上请求，任何一处头/令牌/设备号回退都会变红。
+test("checkin: user-info carries the desktop fingerprint, the current access token and the login device id", async () => {
+  const realFetch = globalThis.fetch
+  const seen = []
+  const auth = claimAuth("qc-fingerprint")
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/user-info")) {
+      seen.push({ host: new URL(url).host, headers: new Headers(init?.headers), body: JSON.parse(String(init?.body ?? "{}")) })
+      return okUserInfo()
+    }
+    if (url.includes("/userapi/v1/refresh") || url.includes("/agent-refresh")) throw new Error("access token 可用时不该花 refresh token")
+    if (url.includes("autoclaw-task-list")) return completedTask()
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } }, {})
+    const result = await hooks.auth.checkin(async () => auth)
+    expect(result.outcome).toBe("done")
+    const ui = seen[0]
+    expect(ui).toBeDefined()
+    expect(ui.headers.get("X-Channel")).toBe("AutoClaw20")
+    expect(ui.headers.get("X-Version")).toBe("2.2.0")
+    expect(ui.headers.get("X-Tm")).toBe("win-x64")
+    expect(ui.headers.get("X-Product")).toBe("autoclaw")
+    expect(ui.headers.get("User-Agent")).toBe("AutoClaw/2.2.0 (win-x64)")
+    expect(ui.headers.get("Authorization")).toBe(`Bearer ${auth.access}`)
+    expect(ui.body.device_id).toBe("qc-fingerprint")
+    expect(seen.every((s) => !String(s.headers.get("Authorization")).includes("undefined"))).toBe(true)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("checkin: user-info runs before task-complete and the daily credit comes from task-complete", async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    calls.push(url)
+    if (url.includes("/userapi/v1/user-info")) return okUserInfo()
+    if (url.includes("/userapi/v1/refresh") || url.includes("/agent-refresh")) throw new Error("不该刷新")
+    if (url.includes("autoclaw-task-list")) return pendingTask(999) // 故意与签到奖励不同，验证 credit 来源
+    if (url.includes("autoclaw-task-complete")) return signedTask(400, 3)
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } }, {})
+    const result = await hooks.auth.checkin(async () => claimAuth("qc-order"))
+    expect(result.outcome).toBe("claimed")
+    expect(result.credit).toBe(400)
+    expect(result.streak).toBe(3)
+    expect(calls.findIndex((c) => c.includes("/userapi/v1/user-info"))).toBeLessThan(
+      calls.findIndex((c) => c.includes("autoclaw-task-complete")),
+    )
+    expect(calls.some((c) => c.includes("/userapi/v1/refresh"))).toBe(false)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("checkin: task-list already completed → done, without calling task-complete", async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    calls.push(url)
+    if (url.includes("/userapi/v1/user-info")) return okUserInfo()
+    if (url.includes("autoclaw-task-list")) return completedTask()
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } }, {})
+    const result = await hooks.auth.checkin(async () => claimAuth("qc-done"))
+    expect(result.outcome).toBe("done")
+    expect(result.credit).toBe(400)
+    expect(calls.some((c) => c.includes("autoclaw-task-complete"))).toBe(false)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("checkin: user-info rejected on host[0] is retried on host[1]", async () => {
+  const realFetch = globalThis.fetch
+  const hosts = []
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/user-info")) {
+      const host = new URL(url).host
+      hosts.push(host)
+      return host === "autoglm-api.autoglm.ai"
+        ? Response.json({ code: 410000, msg: "用户未登录" })
+        : okUserInfo()
+    }
+    if (url.includes("autoclaw-task-list")) return pendingTask()
+    if (url.includes("autoclaw-task-complete")) return signedTask()
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } }, {})
+    const result = await hooks.auth.checkin(async () => claimAuth("qc-hostfallback"))
+    expect(hosts).toEqual(["autoglm-api.autoglm.ai", "autoglm-api.zhipuai.cn"])
+    expect(result.outcome).toBe("claimed")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("checkin: a user-info network failure never blocks the daily signin and is reported", async () => {
+  const realFetch = globalThis.fetch
+  const hosts = []
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/user-info")) {
+      const host = new URL(url).host
+      hosts.push(host)
+      if (host === "autoglm-api.autoglm.ai") throw new TypeError("fetch failed")
+      return Response.json({ code: 410000, msg: "用户未登录" })
+    }
+    if (url.includes("autoclaw-task-list")) return pendingTask()
+    if (url.includes("autoclaw-task-complete")) return signedTask()
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } }, {})
+    const result = await hooks.auth.checkin(async () => claimAuth("qc-campaignfail"))
+    expect(hosts).toEqual(["autoglm-api.autoglm.ai", "autoglm-api.zhipuai.cn"])
+    expect(result.outcome).toBe("claimed")
+    expect(result.credit).toBe(400)
+    expect(result.message).toContain("登录活动奖励未触发")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+// 两个 host 都查不到任务时绝不能报 inactive：那会把当天判死（#3326）。
+test("checkin: both task-list hosts failing throws (failed), never misreports inactive", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/user-info")) return okUserInfo()
+    if (url.includes("autoclaw-task-list")) return new Response('{"message":"oops"}', { status: 500 })
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } }, {})
+    let threw
+    try { await hooks.auth.checkin(async () => claimAuth("qc-tasklistfail")) } catch (e) { threw = e }
+    expect(threw).toBeInstanceOf(Error)
+    expect(threw.message).toContain("task-list")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("checkin: an expired access token is refreshed once, then the whole round is retried", async () => {
+  const realFetch = globalThis.fetch
+  const freshAccess = claimJwt("qc-fresh-token")
+  const auth = claimAuth("qc-expired")
+  const sets = []
+  let stage = "old"
+  let refreshes = 0
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/refresh") || url.includes("/agent-refresh")) {
+      refreshes++
+      stage = "new"
+      return Response.json({ code: 0, msg: "SUCCESS", data: { access_token: freshAccess, refresh_token: "rt-qc-fresh" } })
+    }
+    if (url.includes("/userapi/v1/user-info")) return stage === "new" ? okUserInfo() : Response.json({ code: 410000, msg: "用户未登录" })
+    if (url.includes("autoclaw-task-list")) return stage === "new" ? pendingTask() : new Response("{}", { status: 401 })
+    if (url.includes("autoclaw-task-complete")) return signedTask(400, 2)
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async (o) => { sets.push(o); return { data: true } } } } }, {})
+    const result = await hooks.auth.checkin(async () => auth)
+    expect(refreshes).toBe(1)
+    expect(result.outcome).toBe("claimed")
+    expect(result.credit).toBe(400)
+    expect(sets.length).toBe(1)
+    expect(sets[0].path.id).toBe("autoclaw")
+    expect(sets[0].body.refresh).toBe("rt-qc-fresh")
+    expect(sets[0].body.access).toBe(freshAccess)
+    expect(sets[0].body.accountId).toBe(auth.accountId)
+    expect(sets[0].body.uid).toBe(auth.uid)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("checkin: a dead refresh token with an expired access token fails with signIn expired", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/refresh") || url.includes("/agent-refresh")) {
+      return Response.json({ code: 400002, msg: "invalid_grant: token has been revoked" })
+    }
+    if (url.includes("/userapi/v1/user-info")) return Response.json({ code: 410000, msg: "用户未登录" })
+    if (url.includes("autoclaw-task-list")) return new Response("{}", { status: 401 })
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } }, {})
+    let threw
+    try { await hooks.auth.checkin(async () => claimAuth("qc-deadrt")) } catch (e) { threw = e }
+    expect(threw).toBeInstanceOf(Error)
+    expect(threw.signIn).toBe("expired")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+// CAS：签到期间用户重新登录，旧轮换绝不能覆盖新记录。
+test("checkin: a re-sign-in during the refresh is not clobbered by the rotation write", async () => {
+  const realFetch = globalThis.fetch
+  const auth = claimAuth("qc-resignin")
+  const reauth = claimAuth("qc-resignin-new")
+  const sets = []
+  let stage = "old"
+  let reads = 0
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/refresh") || url.includes("/agent-refresh")) {
+      stage = "new"
+      return Response.json({ code: 0, msg: "SUCCESS", data: { access_token: claimJwt("qc-resignin-fresh"), refresh_token: "rt-qc-resignin-fresh" } })
+    }
+    if (url.includes("/userapi/v1/user-info")) return stage === "new" ? okUserInfo() : Response.json({ code: 410000, msg: "用户未登录" })
+    if (url.includes("autoclaw-task-list")) return stage === "new" ? pendingTask() : new Response("{}", { status: 401 })
+    if (url.includes("autoclaw-task-complete")) return signedTask()
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async (o) => { sets.push(o); return { data: true } } } } }, {})
+    const getAuth = async () => (++reads === 1 ? auth : reauth)
+    const result = await hooks.auth.checkin(getAuth)
+    expect(result.outcome).toBe("claimed")
+    expect(sets.length).toBe(0)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+// 写回失败时，已花费的旧 RT 换出的新令牌必须留在内存供下一次续期取用。
+test("checkin: a failed rotation write is remembered for the next renewal", async () => {
+  const realFetch = globalThis.fetch
+  const freshAccess = claimJwt("qc-persistfail-fresh")
+  const auth = claimAuth("qc-persistfail")
+  let stage = "old"
+  let refreshes = 0
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/refresh") || url.includes("/agent-refresh")) {
+      refreshes++
+      stage = "new"
+      return Response.json({ code: 0, msg: "SUCCESS", data: { access_token: freshAccess, refresh_token: "rt-qc-persistfail-fresh" } })
+    }
+    if (url.includes("/userapi/v1/user-info")) return stage === "new" ? okUserInfo() : Response.json({ code: 410000, msg: "用户未登录" })
+    if (url.includes("autoclaw-task-list")) return stage === "new" ? pendingTask() : new Response("{}", { status: 401 })
+    if (url.includes("autoclaw-task-complete")) return signedTask()
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => { throw new Error("EACCES") } } } }, {})
+    const result = await hooks.auth.checkin(async () => auth)
+    expect(result.outcome).toBe("claimed")
+    // 清掉 60 秒单飞缓存：这一步之后只有 rotatedMemo 能解释「不打网络」，
+    // 删掉 rememberRotated 的改动会立刻让下面两个断言变红。
+    _internal.clearRefreshGates()
+    const before = refreshes
+    const t = await hooks.auth.refresh(auth)
+    expect(refreshes).toBe(before)
+    expect(t.access).toBe(freshAccess)
+    expect(t.refresh).toBe("rt-qc-persistfail-fresh")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("checkin: task-complete already_completed → done, not failed", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/user-info")) return okUserInfo()
+    if (url.includes("autoclaw-task-list")) return pendingTask()
+    if (url.includes("autoclaw-task-complete")) {
+      return Response.json({ code: 0, data: { success: false, already_completed: true, reward_points: 400 } })
+    }
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } }, {})
+    const result = await hooks.auth.checkin(async () => claimAuth("qc-already"))
+    expect(result.outcome).toBe("done")
+    expect(result.credit).toBe(400)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("checkin: a ban surfacing at task-list keeps the sign-in and propagates the ban", async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    calls.push(url)
+    if (url.includes("/userapi/v1/user-info")) return okUserInfo()
+    if (url.includes("autoclaw-task-list")) return new Response(BANNED, { status: 403 })
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } }, {})
+    let threw
+    try { await hooks.auth.checkin(async () => claimAuth("qc-ban")) } catch (e) { threw = e }
+    expect(threw.message).toBe("AutoClaw: The account has been banned")
+    expect(threw.signIn).toBe("kept")
+    expect(calls.some((c) => c.includes("autoclaw-task-complete"))).toBe(false)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+// 同一个一次性 RT 的并发续期只能打一次网络（单飞）；按创建时间过期会烧第二次。
+test("checkin: two concurrent expired-token checkins share one refresh", async () => {
+  const realFetch = globalThis.fetch
+  const auth = claimAuth("qc-concurrent")
+  let stage = "old"
+  let refreshes = 0
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/refresh") || url.includes("/agent-refresh")) {
+      refreshes++
+      stage = "new"
+      return Response.json({ code: 0, msg: "SUCCESS", data: { access_token: claimJwt("qc-concurrent-fresh"), refresh_token: "rt-qc-concurrent-fresh" } })
+    }
+    if (url.includes("/userapi/v1/user-info")) return stage === "new" ? okUserInfo() : Response.json({ code: 410000, msg: "用户未登录" })
+    if (url.includes("autoclaw-task-list")) return stage === "new" ? pendingTask() : new Response("{}", { status: 401 })
+    if (url.includes("autoclaw-task-complete")) return signedTask()
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => ({ data: true }) } } }, {})
+    const [a, b] = await Promise.all([
+      hooks.auth.checkin(async () => auth),
+      hooks.auth.checkin(async () => auth),
+    ])
+    expect(refreshes).toBe(1)
+    expect(a.outcome).toBe("claimed")
+    expect(b.outcome).toBe("claimed")
+  } finally {
+    globalThis.fetch = realFetch
   }
 })
 

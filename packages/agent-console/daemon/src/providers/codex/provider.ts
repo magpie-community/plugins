@@ -10,7 +10,7 @@ import { tr } from "../../util/i18n.js";
 import { launchArgv, resolveLaunch } from "../launch.js";
 import { PLACEHOLDER_MODEL_NAME } from "../types.js";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { OutputDecoder } from "../../util/decode.js";
 
@@ -60,7 +60,9 @@ function runVersion(r: ResolveResult & { ok: true }, args: string[], timeoutMs =
 export function normalizeEfforts(raw: unknown[] | undefined): string[] {
   const out: string[] = [];
   for (const e of raw ?? []) {
-    const v = typeof e === "string" ? e : (e as { reasoningEffort?: unknown } | null)?.reasoningEffort;
+    // model_catalog_json's supported_reasoning_levels are { effort, description }[]
+    const o = e as { reasoningEffort?: unknown; effort?: unknown } | null;
+    const v = typeof e === "string" ? e : o?.reasoningEffort ?? o?.effort;
     if (typeof v === "string" && v && !out.includes(v)) out.push(v);
   }
   return out;
@@ -105,7 +107,7 @@ async function fetchModels(r: ResolveResult & { ok: true }, cwd: string, launch?
   }
 }
 
-export type CodexConfig = { modelProvider: string | null; model: string | null; providerModels: string[] };
+export type CodexConfig = { modelProvider: string | null; model: string | null; providerModels: string[]; catalogJson: string | null };
 
 function tomlValue(raw: string): string | string[] | null {
   const v = raw.trim().replace(/\s+#.*$/, "");
@@ -136,6 +138,7 @@ export function parseCodexConfig(text: string): CodexConfig {
   const profileValue = (key: string) => profileName ? values.get(`profiles.${profileName}\0${key}`) : undefined;
   const modelProvider = (profileValue("model_provider") ?? top("model_provider"));
   const model = (profileValue("model") ?? top("model"));
+  const catalog = (profileValue("model_catalog_json") ?? top("model_catalog_json"));
   const provider = typeof modelProvider === "string" ? modelProvider : null;
   const models = new Set<string>();
   if (typeof model === "string" && model) models.add(model);
@@ -144,13 +147,76 @@ export function parseCodexConfig(text: string): CodexConfig {
       for (const m of value) models.add(m);
     }
   }
-  return { modelProvider: provider, model: typeof model === "string" ? model : null, providerModels: [...models] };
+  return {
+    modelProvider: provider,
+    model: typeof model === "string" ? model : null,
+    providerModels: [...models],
+    catalogJson: typeof catalog === "string" && catalog.trim() ? catalog.trim() : null,
+  };
+}
+
+/**
+ * Where Codex reads model_catalog_json from: "~" and "~/…" are the home folder, a relative
+ * path is taken from config.toml's folder (Codex's AbsolutePathBuf). Codex doesn't expand
+ * environment variables; a leading $HOME / ${HOME} is expanded here anyway (#758).
+ */
+export function resolveCatalogPath(raw: string, configDir: string, home = homedir()): string {
+  let p = raw.trim();
+  const env = p.match(/^(?:\$HOME|\$\{HOME\})(?=$|[\\/])/);
+  if (env) p = home + p.slice(env[0].length);
+  else if (p === "~") p = home;
+  else if (/^~[\\/]/.test(p)) p = join(home, p.slice(2));
+  return isAbsolute(p) ? p : join(configDir, p);
+}
+
+/** The picker's rows from a Codex models.json ({ models: [{ slug, display_name, … }] }); hidden entries are left out as Codex's picker does */
+export function parseCodexCatalog(text: string): ModelInfo[] {
+  const doc = JSON.parse(text) as { models?: unknown };
+  if (!Array.isArray(doc?.models)) return [];
+  const out: ModelInfo[] = [];
+  const seen = new Set<string>();
+  for (const raw of doc.models) {
+    const m = raw as { slug?: unknown; display_name?: unknown; visibility?: unknown; supported_reasoning_levels?: unknown; default_reasoning_level?: unknown } | null;
+    if (!m || typeof m.slug !== "string" || !m.slug || seen.has(m.slug)) continue;
+    if (typeof m.visibility === "string" && m.visibility !== "list") continue;
+    seen.add(m.slug);
+    const efforts = normalizeEfforts(Array.isArray(m.supported_reasoning_levels) ? m.supported_reasoning_levels : undefined);
+    const thinkingOptions = efforts.map((e) => ({ id: e, label: e }));
+    const def = typeof m.default_reasoning_level === "string" && efforts.includes(m.default_reasoning_level) ? m.default_reasoning_level : null;
+    const name = typeof m.display_name === "string" && m.display_name.trim() ? m.display_name.trim() : m.slug;
+    out.push({ id: m.slug, name, efforts, thinkingOptions, defaultThinking: def ?? thinkingOptions[0]?.id ?? null });
+  }
+  return out;
+}
+
+/** A custom provider's models: model_catalog_json's list, then the provider's models = [...]; the configured model is the default */
+export async function codexProviderModels(config: CodexConfig, configDir: string, home = homedir()): Promise<ModelInfo[]> {
+  let rows: ModelInfo[] = [];
+  if (config.catalogJson) {
+    const file = resolveCatalogPath(config.catalogJson, configDir, home);
+    try {
+      rows = parseCodexCatalog(await readFile(file, "utf8"));
+    } catch (e) {
+      // a missing or broken catalog keeps the list from config.toml
+      log("warn", "codex model_catalog_json 读取失败", { file, err: String(e) });
+    }
+  }
+  const ids = new Set(rows.map((r) => r.id));
+  for (const id of config.providerModels) {
+    if (!ids.has(id)) { ids.add(id); rows.push({ id, name: id }); }
+  }
+  if (config.model && !rows.some((r) => r.id === config.model)) rows.unshift({ id: config.model, name: config.model });
+  const def = config.model ?? rows[0]?.id;
+  return rows.map((r) => ({ ...r, isDefault: r.id === def }));
+}
+
+function codexConfigFile(): string {
+  const home = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
+  return home.toLowerCase().endsWith(".toml") ? home : join(home, "config.toml");
 }
 
 async function readCodexConfig(): Promise<CodexConfig> {
-  const home = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
-  const file = home.toLowerCase().endsWith(".toml") ? home : join(home, "config.toml");
-  try { return parseCodexConfig(await readFile(file, "utf8")); } catch { return { modelProvider: null, model: null, providerModels: [] }; }
+  try { return parseCodexConfig(await readFile(codexConfigFile(), "utf8")); } catch { return { modelProvider: null, model: null, providerModels: [], catalogJson: null }; }
 }
 
 function isChatGptProvider(id: string | null): boolean {
@@ -177,7 +243,7 @@ export function createCodexProvider(version: string): Provider {
     async listModels(launch?: LaunchCommand): Promise<ModelInfo[]> {
       const config = await readCodexConfig();
       if (!isChatGptProvider(config.modelProvider)) {
-        const rows = config.providerModels.map((id, i) => ({ id, name: id, isDefault: i === 0 }));
+        const rows = await codexProviderModels(config, dirname(codexConfigFile()));
         return rows.length ? rows : [{ id: "", name: `${PLACEHOLDER_MODEL_NAME} (${config.modelProvider})`, isDefault: true }];
       }
       if (!launch && modelCache && Date.now() - modelCache.at < MODEL_CACHE_MS) return modelCache.models;

@@ -485,6 +485,7 @@ async function callEnvelope(path, { method = "GET", body, base }) {
       method,
       headers: bizHeaders(),
       ...(body !== undefined ? { body } : {}),
+      signal: AbortSignal.timeout(20_000),
     });
     text = await response.text();
   } catch (cause) {
@@ -665,7 +666,9 @@ async function taskList(accessToken, host) {
   if (res.status === 401 || res.status === 403) {
     const banned = bannedText(await res.text().catch(() => ""));
     if (banned) throw Object.assign(new Error(`AutoClaw: ${banned}`), { banned: true, signIn: "kept" });
-    throw new Error(`登录已失效（HTTP ${res.status}）`);
+    // 非封禁的登录失效：标记 expired，让 checkin 能用 refresh token 重试一次，
+    // 也让 magpie 不再把过期账号当成普通失败重试一整天。
+    throw Object.assign(new Error(`登录已失效（HTTP ${res.status}）`), { signIn: "expired" });
   }
   if (!res.ok) return null;
   const env = await res.json().catch(() => null);
@@ -703,6 +706,49 @@ function checkinOutcome(r) {
   }
   if (r.already_completed) return { outcome: "done", credit: optNumber(r.reward_points) };
   return { outcome: "failed", message: String(r.message ?? r.msg ?? "签到失败") };
+}
+
+/**
+ * POST /userapi/v1/user-info — 官方桌面客户端在建立登录态时会调用的端点。
+ *
+ * 服务端据此记录 `autoclaw_user_active` 活跃事件，并发放「登录领积分」类
+ * 活动奖励。返回体含 `daily_check_in_completed_on_request`——2026-11-06 五个账号
+ * 实测恒为 false，插件不读取该字段；每日签到仍由 task-complete 完成。
+ *
+ * ⚠️ **必须带整套官方桌面端业务头**（`AutoClaw20` 渠道 / 2.2.0 / win-x64，
+ *    X-Product / X-Version / X-Tm / X-Trace-Id 齐全）——服务端只在这套指纹下
+ *    记录 `autoclaw_user_active`。2026-11-06 真机对照：极简头
+ *    （`X-Channel: official` / UA 2.1.0）与插件 biz 头都 code=0 但**不发奖励**；
+ *    `AutoClaw20/2.2.0` 头五个账号全部到账：国际 +4000「AutoClaw Weekly Perks」
+ *    （act=autoclaw_weekly_perks_20261013）、国内 +5000「AutoClaw 用户登录奖励」
+ *    （act=autoclaw_user_active_reward_202609），流水 metadata：
+ *    source=campaign, event_type=autoclaw_user_active，见 yetone/magpie#3681 的复现脚本。
+ */
+async function callUserInfo(accessToken, deviceId, base) {
+  const ts = String(Math.floor(Date.now() / 1000));
+  const res = await fetch(`${base}/userapi/v1/user-info`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "*/*",
+      "User-Agent": "AutoClaw/2.2.0 (win-x64)",
+      "X-Version": "2.2.0",
+      "X-Tm": "win-x64",
+      "X-Product": PRODUCT,
+      "X-Auth-Appid": APP_ID,
+      "X-Auth-TimeStamp": ts,
+      "X-Auth-Sign": md5Hex(`${APP_ID}&${ts}&${APP_KEY}`),
+      "X-Trace-Id": randomHex(16),
+      "X-Lang": "zh-CN",
+      "X-Channel": "AutoClaw20",
+      "Authorization": `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ source_id: PRODUCT, device_id: deviceId }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  let parsed;
+  try { parsed = JSON.parse(await res.text()); } catch { parsed = null; }
+  return parsed;
 }
 
 /** 本地去重键（成功才记；按小时允许重试）。 */
@@ -841,6 +887,53 @@ async function refreshTokens(refreshToken, preferredHosts) {
   return tokenFields(result.data, refreshToken);
 }
 
+/**
+ * 同一 refresh_token 的续期单飞 + 轮换结果兜底。
+ *
+ * refresh token 一次一换：同一个 RT 只能换出一次新令牌。插件有两条路会续期：
+ * magpie 自己的 `auth.refresh`，以及 checkin 在当前 access token 被拒时的重试。
+ * 并发时若各打一次网络，后到的会被判 `invalid_grant`，账号可能被标成登录失效。
+ * ⇒ 在途的刷新无条件共享（不能按创建时间过期：一次 refresh 可能打满 3 个 host）；
+ *   已完成的结果 60 秒内复用；失败立即摘除允许重试。
+ * 轮换后写回失败时按「已花费的旧 RT」把新令牌记在内存：旧 RT 已被服务端作废，
+ * 不可能再换出别的结果，内存应答严格优于拿着死 RT 再打网络（避免次日静默毁号）。
+ */
+const REFRESH_SHARE_MS = 60_000;
+const ROTATED_MEMO_MAX = 50;
+const refreshGates = new Map(); // refreshToken → { at, pending, promise }
+const rotatedMemo = new Map(); // 已花费的 refreshToken → tokenFields(...)
+function rememberRotated(spent, fresh) {
+  rotatedMemo.delete(spent);
+  rotatedMemo.set(spent, fresh);
+  while (rotatedMemo.size > ROTATED_MEMO_MAX) {
+    const oldest = rotatedMemo.keys().next().value;
+    if (oldest === undefined) break;
+    rotatedMemo.delete(oldest);
+  }
+}
+function refreshShared(refreshToken, hosts) {
+  if (!refreshToken) throw new Error("AutoClaw: no refresh token to renew");
+  const memo = rotatedMemo.get(refreshToken);
+  if (memo) return Promise.resolve(memo);
+  const held = refreshGates.get(refreshToken);
+  if (held && (held.pending || Date.now() - held.at < REFRESH_SHARE_MS)) return held.promise;
+  // 顺手淘汰已过期且不在途的条目，避免长驻进程里无限堆积（含令牌）。
+  for (const [k, g] of refreshGates) {
+    if (!g.pending && Date.now() - g.at >= REFRESH_SHARE_MS) refreshGates.delete(k);
+  }
+  const gate = { at: Date.now(), pending: true, promise: null };
+  gate.promise = refreshTokens(refreshToken, hosts).then(
+    (t) => { gate.pending = false; gate.at = Date.now(); return t; },
+    (e) => {
+      // 只摘自己：并发重建的 gate 不能被旧的失败回调误删（第三次烧 RT）。
+      if (refreshGates.get(refreshToken) === gate) refreshGates.delete(refreshToken);
+      throw e;
+    },
+  );
+  refreshGates.set(refreshToken, gate);
+  return gate.promise;
+}
+
 // ---------------------------------------------------------------------------
 // 插件工厂
 // ---------------------------------------------------------------------------
@@ -904,7 +997,10 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
       methods: [loginMethod],
 
       async refresh(auth) {
-        const t = await refreshTokens(bareToken(auth.refresh), [homeHost]);
+        const t = await refreshShared(bareToken(auth.refresh), [homeHost]);
+        // 旧链路自动补签（signinOnUsage，默认关）：task-complete 只完成每日签到，
+        // 不影响活动奖励——2026-11-06 实测：task-complete 签到的次日，user-info
+        // 带桌面端指纹仍照常领到 +4000/+5000（见 yetone/magpie#3681）。
         await maybeSignin(t.access, homeHost, options, "refresh", signinAccountKey(providerId, auth));
         // 存量账号就地正名：登录响应缺昵称的旧账号（GUI 显示「已登录」），
         // 刷新时补拉 user-profile。magpie 的 refresh 返回字段会合并进账号。
@@ -1094,36 +1190,102 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
        * 契约：返回 {outcome, credit?, streak?, message?}；throw → failed（30 分钟后重试）。
        */
       async checkin(getAuth) {
-        const auth = await getAuth();
-        if (auth?.type !== "oauth" || !auth.access) throw new Error("未登录");
-        const token = bareToken(auth.access);
+        const first = await getAuth();
+        if (first?.type !== "oauth" || !first.access) throw new Error("未登录");
         const hosts = providerId === "autoclaw-cn" ? [CN_HOST, GLOBAL_HOST] : [GLOBAL_HOST, CN_HOST];
 
-        // 先查任务状态：区分「无签到活动」（inactive）与「查询失败」（throw → failed 重试）
-        let task = null;
-        let lastErr = null;
-        for (const h of hosts) {
-          try {
-            const tasks = await taskList(token, h);
-            if (tasks) {
-              task = tasks.find((x) => x?.task_id === "daily_signin") ?? null;
-              break;
-            }
-          } catch (e) {
-            lastErr = e;
-            if (e?.banned) break;
-          }
-        }
-        if (!task && lastErr) throw lastErr;
-        if (!task) return { outcome: "inactive", message: "当前没有签到活动" };
-        if (String(task.status ?? "") === "completed") {
-          return { outcome: "done", credit: optNumber(task.reward_points) };
-        }
+        // ── 活动奖励 + 每日签到 ─────────────────────────────────────────────
+        // 用**当前 access token** 调 user-info（桌面端指纹）触发活动奖励，再走
+        // task-list → task-complete 完成每日签到。2026-11-06 真机：五个账号用
+        // 当期 AT 直接调 user-info 就领到 +4000/+5000，refresh 不是领奖的前提。
+        // 不为了签到去花 refresh token（一次一换，每次消耗都多一分「轮换后写回
+        // 失败 → 次日静默毁号」的风险）；只有上游明确拒绝当前 AT（401/403）
+        // 时才 refresh 一次并重试整轮。
+        let auth = first;
+        let token = bareToken(auth.access);
 
-        // 补签：主 host 优先，无响应再试备用 host（服务端幂等）
-        const r = await dailySignin(token, hosts[0]).catch(() => null)
-          ?? await dailySignin(token, hosts[1] ?? hosts[0]).catch(() => null);
-        return checkinOutcome(r);
+        const renewOnce = async () => {
+          const spent = bareToken(auth.refresh);
+          if (!spent) throw Object.assign(new Error("AutoClaw: 没有可用的 refresh token"), { signIn: "expired" });
+          const fresh = await refreshShared(spent, [homeHost]);
+          let saved = false;
+          if (client?.auth?.set) {
+            try {
+              // CAS：签到期间用户可能重新登录/登出。只有记录仍是当时那份才写回，
+              // 否则把新令牌交给内存兜底（rememberRotated），不覆盖别人的记录。
+              const now = await getAuth();
+              const unchanged = !now || now.type !== "oauth" || bareToken(now.refresh ?? "") === spent;
+              if (unchanged) {
+                const written = await client.auth.set({
+                  path: { id: providerId },
+                  body: { ...auth, access: fresh.access, refresh: fresh.refresh, expires: fresh.expires },
+                });
+                saved = !written?.error;
+              }
+            } catch { /* 写回失败：走下面的内存兜底 */ }
+          }
+          if (!saved) rememberRotated(spent, fresh);
+          auth = { ...auth, access: fresh.access, refresh: fresh.refresh, expires: fresh.expires };
+          token = bareToken(fresh.access);
+        };
+
+        // 一轮：活动奖励（尽力而为）→ 每日签到。返回契约里的 outcome。
+        const attempt = async () => {
+          // ① 官方登录事件：user-info 带桌面端指纹。单 host 网络错误不能挡住
+          //    备用 host；全部失败也绝不阻断每日签到（活动奖励领不到要如实告知）。
+          const deviceId = accountDeviceId(undefined, token, auth.refresh);
+          let uiReached = false;
+          for (const h of hosts) {
+            try {
+              const ui = await callUserInfo(token, deviceId, h);
+              if (ui?.code === 0) { uiReached = true; break; }
+            } catch { /* 换下一个 host */ }
+          }
+
+          // ② 每日签到：双 host 都查不到任务时抛错（failed → 30 分钟后重试），
+          //    绝不把查询失败误报成「当前没有签到活动」把当天判死（#3326）。
+          let task = null;
+          let lastErr = null;
+          let answered = false;
+          for (const h of hosts) {
+            try {
+              const tasks = await taskList(token, h);
+              if (tasks) {
+                answered = true;
+                task = tasks.find((x) => x?.task_id === "daily_signin") ?? null;
+                break;
+              }
+            } catch (e) {
+              lastErr = e;
+              if (e?.banned) break;
+            }
+          }
+          if (!task && !answered) throw lastErr ?? new Error("AutoClaw task-list 双 host 无响应");
+          if (!task) return { outcome: "inactive", message: "当前没有签到活动" };
+          if (String(task.status ?? "") === "completed") {
+            return { outcome: "done", credit: optNumber(task.reward_points) };
+          }
+          // 补签（主 host 优先，无响应再试备用 host；服务端幂等）
+          const r = await dailySignin(token, hosts[0]).catch(() => null)
+            ?? await dailySignin(token, hosts[1] ?? hosts[0]).catch(() => null);
+          const result = checkinOutcome(r);
+          if (!uiReached && result.message) {
+            result.message = `${result.message}（登录活动奖励未触发）`;
+          }
+          return result;
+        };
+
+        try {
+          return await attempt();
+        } catch (e) {
+          // 封禁是账号问题、不是登录失效：不重试，让失败消息（含封禁文案）原样上卡；
+          // 账号状态标记仍由 usage / 请求链路完成。
+          if (e?.banned || e?.signIn === "kept") throw e;
+          if (e?.signIn !== "expired") throw e;
+          // 当前 AT 被拒：refresh 一次（单飞 + CAS 写回 + 轮换兜底），整轮重试一次。
+          await renewOnce();
+          return await attempt();
+        }
       },
     },
 
@@ -1602,6 +1764,7 @@ export const _internal = {
   makePluginForTest: makeAutoclawPlugin,
   platformTm, setOfficialChatHeaders, conversationSessionId, stainlessOs, stainlessArch, md5Hex, jwtClaim, tokenFields, codeValue, bizHeaders, bareToken, newDeviceId,
   dailySignin, signinStatus, maybeSignin, signinAccountKey, signinConfig, checkinOutcome, refreshTokens,
+  clearRefreshGates: () => refreshGates.clear(),
   balanceObserve, usageStatePath: () => usageStatePath ?? usageStatePathDefault(), setUsageStatePath, beijingDayOf,
   fetchUserProfile, accountDeviceId, accountDisplayName, startLocalOAuth,
   FLAGGED, unflagged, unflag, tidyBody, rewriteManagedBody, autoclawRewriteBody, explained, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT,

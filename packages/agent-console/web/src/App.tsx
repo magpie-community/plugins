@@ -60,7 +60,7 @@ export function App() {
   return (
     <Layout
       sidebar={<Sidebar pendingByThread={new Set(pending.map((p) => useTimeline.getState().threadId!).filter(Boolean))} />}
-      topbar={<Topbar pendingCount={pending.length} />}
+      topbar={<Topbar pendingCount={pending.length} pendingKey={pending[0]?.key} />}
       panel={<Panel />}
     >
       {state === "reconnecting" && <div className="connbar">{t("boot.reconnecting")}</div>}

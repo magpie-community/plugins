@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="{{LOCALE}}" data-theme="{{THEME}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="atomcode-token" content="{{TOKEN}}">
+  <title>AtomCode diagnostics</title>
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./app.css">
+</head>
+<body data-app="starting" data-state="loading">
+  <main class="workspace">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">
+          <img src="./icon.svg" alt="" width="36" height="36">
+        </span>
+        <div class="brand-copy">
+          <p class="kicker" data-i18n="eyebrow">LOCAL DIAGNOSTICS</p>
+          <h1>
+            <span class="product-name">AtomCode</span>
+            <span class="title-slash" aria-hidden="true">/</span>
+            <span data-i18n="pageTitle">Diagnostics</span>
+          </h1>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div id="status" class="status-chip" data-tone="loading" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="status-text" data-i18n="loading">Loading local snapshot…</span>
+        </div>
+        <button id="refresh" class="button secondary" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 7v5h-5"></path>
+            <path d="M4.9 17a8 8 0 0 0 13.7-2.1"></path>
+            <path d="M4 17v-5h5"></path>
+            <path d="M19.1 7A8 8 0 0 0 5.4 9.1"></path>
+          </svg>
+          <span data-i18n="refresh">Refresh snapshot</span>
+        </button>
+        <button id="self-check" class="button primary" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3 5 6v5c0 4.7 2.9 8 7 10 4.1-2 7-5.3 7-10V6l-7-3Z"></path>
+            <path d="m9 12 2 2 4-4"></path>
+          </svg>
+          <span data-i18n="selfCheck">Run offline self-check</span>
+        </button>
+      </div>
+    </header>
+
+    <section id="overview" class="overview" data-tone="loading" aria-labelledby="health-title">
+      <div class="overview-main">
+        <span class="health-mark" aria-hidden="true"><span></span></span>
+        <div class="health-copy">
+          <p class="kicker" data-i18n="localStatus">LOCAL STATUS</p>
+          <h2 id="health-title" data-i18n="healthLoading">Loading local snapshot</h2>
+          <p id="health-summary" class="health-summary" data-i18n="localOnly">
+            This view reads local state only. It does not test the AtomCode upstream.
+          </p>
+        </div>
+      </div>
+      <div class="quick-facts">
+        <div>
+          <span data-i18n="account">Account</span>
+          <strong id="summary-account" data-skeleton>—</strong>
+        </div>
+        <div>
+          <span data-i18n="models">Models</span>
+          <strong id="summary-models" data-skeleton>—</strong>
+        </div>
+        <div>
+          <span data-i18n="version">Version</span>
+          <strong id="summary-version" data-skeleton>—</strong>
+        </div>
+        <div>
+          <span data-i18n="lastRefresh">Last refresh</span>
+          <strong id="summary-snapshot" data-skeleton>—</strong>
+        </div>
+      </div>
+    </section>
+
+    <div class="content-grid">
+      <section class="panel quota-panel" aria-labelledby="quota-title">
+        <div class="panel-head">
+          <div>
+            <p class="kicker" data-i18n="quotaReadout">QUOTA WINDOWS</p>
+            <h2 id="quota-title" data-i18n="quotaTitle">Current quota snapshot</h2>
+          </div>
+          <span id="stale-badge" class="badge" hidden data-i18n="stale">Historical snapshot</span>
+        </div>
+
+        <div class="quota-meta">
+          <div>
+            <span data-i18n="plan">Plan</span>
+            <strong id="quota-plan" data-skeleton>—</strong>
+          </div>
+          <div>
+            <span data-i18n="captured">Captured</span>
+            <strong id="quota-captured" data-skeleton>—</strong>
+          </div>
+        </div>
+
+        <ul id="windows" class="windows"></ul>
+        <p id="quota-empty" class="empty" data-i18n="noQuota">
+          No successful quota snapshot has been recorded yet.
+        </p>
+      </section>
+
+      <section class="panel catalog-panel" aria-labelledby="catalog-title">
+        <div class="panel-head">
+          <div>
+            <p class="kicker" data-i18n="catalogKicker">PROVIDER STATE</p>
+            <h2 id="catalog-title" data-i18n="catalogTitle">Catalog and account</h2>
+          </div>
+        </div>
+
+        <dl class="detail-list">
+          <div>
+            <dt data-i18n="models">Models</dt>
+            <dd>
+              <span id="model-source" data-skeleton>—</span>
+              <small id="model-detail"></small>
+            </dd>
+          </div>
+          <div>
+            <dt data-i18n="account">Account</dt>
+            <dd>
+              <span id="account-state" data-skeleton>—</span>
+              <small id="login-source"></small>
+            </dd>
+          </div>
+          <div>
+            <dt data-i18n="version">Version</dt>
+            <dd>
+              <span id="version" data-skeleton>—</span>
+              <small id="version-detail"></small>
+            </dd>
+          </div>
+        </dl>
+
+        <div class="model-block">
+          <div class="label-row">
+            <p class="label" data-i18n="modelCatalog">Model catalog</p>
+            <span id="model-count" class="count"></span>
+          </div>
+          <ul id="models" class="model-list" aria-label="Models"></ul>
+          <p id="models-empty" class="empty compact" data-i18n="noModels" hidden>
+            No model catalog has been recorded yet.
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <section class="troubleshoot-grid" aria-label="Diagnostics">
+      <article class="panel result-panel" aria-labelledby="self-check-title">
+        <div class="panel-head">
+          <div>
+            <p class="kicker" data-i18n="selfCheckTitle">OFFLINE SELF-CHECK</p>
+            <h2 id="self-check-title" data-i18n="signature">Signature and configuration</h2>
+          </div>
+        </div>
+        <div id="self-check-result" class="result-block" data-tone="idle">
+          <span class="result-mark" aria-hidden="true"></span>
+          <div>
+            <strong id="self-check-state" data-i18n="notRun">Not run in this session</strong>
+            <p id="self-check-detail" data-i18n="checkHint">
+              Run the check to verify signing and the local version configuration.
+            </p>
+          </div>
+        </div>
+        <ul id="self-check-checks" class="checks" aria-label="Self-check details"></ul>
+      </article>
+
+      <article class="panel result-panel" aria-labelledby="error-title">
+        <div class="panel-head">
+          <div>
+            <p class="kicker" data-i18n="errorTitle">LAST ERROR</p>
+            <h2 id="error-title" data-i18n="redacted">Redacted record</h2>
+          </div>
+        </div>
+        <div id="last-error-card" class="result-block" data-tone="idle">
+          <span class="result-mark" aria-hidden="true"></span>
+          <div>
+            <strong id="last-error-title" data-i18n="noError">No recorded error</strong>
+            <p id="last-error-message" data-i18n="noErrorHint">
+              This only reflects the last locally recorded failure.
+            </p>
+            <time id="last-error-time"></time>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <details class="panel technical">
+      <summary>
+        <span>
+          <span class="kicker" data-i18n="technicalKicker">TECHNICAL DETAILS</span>
+          <strong data-i18n="technicalTitle">Runtime and snapshot metadata</strong>
+        </span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"></path></svg>
+      </summary>
+      <dl class="tech-grid">
+        <div>
+          <dt data-i18n="generated">Generated</dt>
+          <dd id="tech-generated">—</dd>
+        </div>
+        <div>
+          <dt data-i18n="runtime">Runtime</dt>
+          <dd id="tech-runtime">—</dd>
+        </div>
+        <div>
+          <dt data-i18n="platform">Platform</dt>
+          <dd id="tech-platform">—</dd>
+        </div>
+        <div>
+          <dt data-i18n="schema">State schema</dt>
+          <dd id="tech-schema">—</dd>
+        </div>
+        <div>
+          <dt data-i18n="diagnosticsPort">Diagnostics port</dt>
+          <dd id="tech-port">—</dd>
+        </div>
+        <div>
+          <dt data-i18n="modelSource">Model source</dt>
+          <dd id="tech-model-source">—</dd>
+        </div>
+        <div>
+          <dt data-i18n="versionSource">Version source</dt>
+          <dd id="tech-version-source">—</dd>
+        </div>
+        <div>
+          <dt data-i18n="autoClaim">Auto claim</dt>
+          <dd id="tech-auto-claim">—</dd>
+        </div>
+        <div>
+          <dt data-i18n="autoVersion">Auto version</dt>
+          <dd id="tech-auto-version">—</dd>
+        </div>
+        <div>
+          <dt data-i18n="readOnly">Read only</dt>
+          <dd id="tech-read-only">—</dd>
+        </div>
+      </dl>
+    </details>
+
+    <footer>
+      <p data-i18n="privacy">
+        Read-only. No request is sent to AtomGit from this page. Tokens, emails, prompts and raw responses are never included.
+      </p>
+      <button id="copy" class="button secondary" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="8" y="8" width="11" height="11" rx="2"></rect>
+          <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path>
+        </svg>
+        <span id="copy-label" data-i18n="copy">Copy redacted report</span>
+      </button>
+    </footer>
+  </main>
+  <script nonce="{{CSP_NONCE}}" src="./app.js"></script>
+</body>
+</html>

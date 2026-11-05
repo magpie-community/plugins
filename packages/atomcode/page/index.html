@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AtomCode 诊断</title>
+  <style>
+    :root { color-scheme: light dark; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      display: grid;
+      place-items: center;
+      font: 14px/1.55 var(--magpie-font, "Avenir Next", "Segoe UI", sans-serif);
+      background:
+        radial-gradient(circle at 20% 10%, color-mix(in srgb, AccentColor 15%, transparent), transparent 42%),
+        var(--magpie-bg, Canvas);
+      color: var(--magpie-fg, CanvasText);
+    }
+    .box {
+      width: min(520px, calc(100vw - 40px));
+      padding: 34px;
+      border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+      border-radius: 22px;
+      background: color-mix(in srgb, Canvas 88%, transparent);
+      box-shadow: 0 24px 70px rgb(0 0 0 / .16);
+    }
+    .mark { width: 44px; height: 44px; margin-bottom: 18px; }
+    h1 { margin: 0 0 8px; font-size: 23px; letter-spacing: -.02em; }
+    p { margin: 0; color: var(--magpie-muted, GrayText); }
+    button {
+      margin-top: 20px;
+      padding: 8px 16px;
+      border: 1px solid color-mix(in srgb, CanvasText 24%, transparent);
+      border-radius: 999px;
+      background: Canvas;
+      color: CanvasText;
+      font: inherit;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <main class="box">
+    <img class="mark" src="icon.svg" alt="">
+    <h1>AtomCode 诊断</h1>
+    <p id="said" role="status" aria-live="polite">正在连接本机只读诊断服务…</p>
+  </main>
+  <script src="_magpie/bridge.js"></script>
+  <script src="boot.js"></script>
+</body>
+</html>

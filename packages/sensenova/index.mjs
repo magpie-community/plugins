@@ -334,16 +334,46 @@ export async function SenseNovaAuthPlugin({ client, magpie } = {}, options = {})
         {
           key: "create_key",
           label: "Create an API key on browser sign-in",
+          labels: {
+            zh: "浏览器登录时自动创建 API Key",
+            "zh-TW": "瀏覽器登入時自動建立 API Key",
+            ja: "ブラウザーサインイン時に API Key を自動作成",
+            de: "Bei Browser-Anmeldung automatisch einen API Key erstellen",
+          },
           description:
             "After a browser sign-in, create a Token Plan API key on the account if this machine has none to reuse.",
+          descriptions: {
+            zh: "浏览器登录后，如果这台机器上没有可复用的 Key，就在账号里创建一个。",
+            "zh-TW": "瀏覽器登入後，如果這台機器上沒有可重用的 Key，就在帳號裡建立一個。",
+            ja: "ブラウザーでサインインした後、このマシンに再利用できる Key がなければ、アカウントに 1 つ作成します。",
+            de: "Wenn dieser Rechner nach der Browser-Anmeldung keinen wiederverwendbaren Key hat, wird einer auf dem Konto erstellt.",
+          },
           default: true,
         },
         {
           key: "prune_old_keys",
           label: "Prune old magpie API keys",
+          labels: {
+            zh: "清理旧的 magpie API Key",
+            "zh-TW": "清理舊的 magpie API Key",
+            ja: "古い magpie API Key を削除",
+            de: "Alte magpie API Keys löschen",
+          },
           description:
-            "Keep the newest two keys this sign-in's account created and delete older ones. Manual keys and keys named for another SenseNova account are never touched; two saved sign-ins of the same account share the prefix.",
+            "Keep the newest two keys this sign-in's account created and delete older ones. Manual keys and keys named for another SenseNova account are never touched; a key whose creation time cannot be read is never deleted; two saved sign-ins of the same account share the prefix.",
+          descriptions: {
+            zh: "只保留本账号最新的两个 Key，删除更旧的。手动创建的 Key、以及名字属于别的 SenseNova 账号的 Key 永不删除；创建时间读不出的 Key 也永不删除；同一账号的两条登录记录共用前缀。",
+            "zh-TW": "只保留本帳號最新的兩個 Key，刪除更舊的。手動建立的 Key、以及名字屬於別的 SenseNova 帳號的 Key 永不刪除；建立時間讀不出的 Key 也永不刪除；同一帳號的兩條登入記錄共用前綴。",
+            ja: "このアカウントで最新の 2 本だけを残し、それより古いものを削除します。手動で作った Key、および別の SenseNova アカウント名の Key は絶対に削除しません。作成日時を読めない Key も絶対に削除しません。同じアカウントの 2 つのサインイン記録は同じプレフィックスを共有します。",
+            de: "Behält die zwei neuesten Keys dieses Kontos und löscht ältere. Manuelle Keys und Keys eines anderen SenseNova-Kontos bleiben unberührt; ein Key ohne lesbare Erstellungszeit wird nie gelöscht; zwei gespeicherte Anmeldungen desselben Kontos teilen das Präfix.",
+          },
           confirm: "Old magpie-* keys of this account will be deleted; manual keys and other accounts' keys are kept.",
+          confirms: {
+            zh: "本账号较旧的 magpie-* Key 会被删除；手动创建的和别的账号的 Key 会保留。",
+            "zh-TW": "本帳號較舊的 magpie-* Key 會被刪除；手動建立的和別的帳號的 Key 會保留。",
+            ja: "このアカウントの古い magpie-* Key は削除されます。手動で作った Key と、別のアカウントの Key は保持されます。",
+            de: "Ältere magpie-* Keys dieses Kontos werden gelöscht; manuell erstellte Keys und Keys anderer Konten bleiben erhalten.",
+          },
         },
       ],
 

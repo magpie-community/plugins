@@ -1,0 +1,92 @@
+{
+  "name": "@magpie-community/opencode-atomcode-auth",
+  "version": "0.3.0",
+  "description": "AtomCode (AtomGit CodingPlan) for Magpie and OpenCode: browser OAuth or local CLI sign-in, signed requests, persistent diagnostics, native plan claim, live models and quota windows",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "internal.mjs",
+    "auth-file.mjs",
+    "request-body.mjs",
+    "sign.mjs",
+    "oauth.mjs",
+    "codingplan.mjs",
+    "quota.mjs",
+    "models.mjs",
+    "errors.mjs",
+    "state.mjs",
+    "diagnostics.mjs",
+    "page/index.html",
+    "page/boot.js",
+    "page/diagnostics.html",
+    "page/app.css",
+    "page/app.js",
+    "page/icon.svg",
+    "i18n.mjs",
+    "version.mjs",
+    "assets/",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "NOTICE.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "opencode-auth",
+    "opencode-provider",
+    "atomcode",
+    "atomgit",
+    "codingplan",
+    "openai-compatible"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/atomcode"
+  },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/atomcode#readme",
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "engines": {
+    "node": ">=20",
+    "magpie": ">=0.1.2629"
+  },
+  "scripts": {
+    "test": "bun test",
+    "test:coverage": "node --experimental-test-coverage --test test/*.test.mjs",
+    "test:coverage:enforce": "node --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=80 --test-coverage-functions=85 --test test/*.test.mjs",
+    "test:live": "node scripts/live-smoke.mjs",
+    "pack:check": "npm pack --dry-run --json"
+  },
+  "magpie": {
+    "icon": "https://atomgit.com/favicon.ico",
+    "maxConcurrency": 8,
+    "options": {
+      "locale": "auto",
+      "clientVersion": "5.2.3",
+      "quotaTtlMs": 60000,
+      "maxOutputTokens": 32768,
+      "diagnosticsPort": 3478
+    },
+    "page": {
+      "title": "AtomCode diagnostics",
+      "titles": { "zh": "AtomCode 诊断" },
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": { "port": 3478, "option": "diagnosticsPort" }
+    }
+  }
+}

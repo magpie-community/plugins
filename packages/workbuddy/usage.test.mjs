@@ -313,7 +313,10 @@ test("the credits that run out soonest, for routing to spend first (cdredfox on 
   })
   const auth = { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" }
   const u = await usageOf(WorkBuddyAIAuthPlugin, auth)
-  const w = u.windows.find((x) => x.name === "Credits")
+  // on the window that stops the account (the whole of a split summary's
+  // credits), as routing reads no window set aside
+  const w = u.windows.find((x) => !x.aside)
+  expect(w.name).toBe("Total credits")
   expect(w.runsOutAt).toBe("2036-10-12T16:39:27.000Z")
   expect(w.runsOut).toBe(232.4)
   // the lists are asked for as WorkBuddy's client asks: without the codes
@@ -429,9 +432,10 @@ test("a detail list that can't be read leaves the card as it was", async () => {
   const u = await usageOf(WorkBuddyAIAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
   expect(u.error).toBeUndefined()
   // the plan's base (Pro) apart from its Plan Bonus and the Bonus Pack, as usageOf says them
-  expect(u.windows.slice(0, 2)).toEqual([
-    { name: "Credits", used: 0, display: "0 / 1000", amount: 0, limit: 1000, unit: "credits" },
+  expect(u.windows.slice(0, 3)).toEqual([
+    { name: "Credits", used: 0, display: "0 / 1000", amount: 0, limit: 1000, unit: "credits", aside: true },
     { name: "Extra credits", used: 100 * 17.6 / 1250, display: "17.6 / 1250", amount: 17.6, limit: 1250, unit: "credits", aside: true },
+    { name: "Total credits", used: 100 * 17.6 / 2250, display: "17.6 / 2250", amount: 17.6, limit: 2250, unit: "credits" },
   ])
 })
 
@@ -445,24 +449,26 @@ test("the plan's credits and the gifted ones are two windows, the plan's with it
   // the China build: the activity package (007, 赠送积分) apart from the
   // month's plan base (008, 套餐基础积分)
   expect(_internal.usageOf(CN_FREE_SUMMARY, "", SITES.workbuddy).windows).toEqual([
-    { name: "Credits", used: 0, display: "0 / 500", amount: 0, limit: 500, unit: "credits" },
+    { name: "Credits", used: 0, display: "0 / 500", amount: 0, limit: 500, unit: "credits", aside: true },
     { name: "Extra credits", used: (100 * 281.9999965) / 2900, display: "282 / 2900", amount: 281.9999965, limit: 2900, unit: "credits", aside: true },
+    { name: "Total credits", used: (100 * 281.9999965) / 3400, display: "282 / 3400", amount: 281.9999965, limit: 3400, unit: "credits" },
   ])
   // WorkBuddy AI: Pro is the plan's base; its Plan Bonus (037) and the
   // Bonus Pack (006) are extra, as WorkBuddy's usage panel groups them
   expect(_internal.usageOf(AI_SUMMARY, "", SITES["workbuddy-ai"]).windows.map((w) => [w.name, w.display, !!w.aside]))
-    .toEqual([["Credits", "0 / 1000", false], ["Extra credits", "17.6 / 1250", true]])
+    .toEqual([["Credits", "0 / 1000", true], ["Extra credits", "17.6 / 1250", true], ["Total credits", "17.6 / 2250", false]])
   // a summary of the plan's base alone keeps the one window, as before
   expect(_internal.usageOf({ ...LIVE_SUMMARY, Packages: LIVE_SUMMARY.Packages.slice(0, 1) }, "", SITES["workbuddy-ai"]).windows.map((w) => w.name)).toEqual(["Credits"])
   // and one of packages the client names nothing for (or none at all) too
   expect(_internal.usageOf(PAID, "", SITES.workbuddy).windows.map((w) => [w.name, w.display])).toEqual([["Credits", "2500 / 10000"]])
   // the plan's spent with extra ones left: those keep the account going, so
-  // it is the plan's window that is set aside, not the extra one
+  // the whole is what stops it, whichever kind is spent (ferock on Discord)
   const spent = { ...CN_FREE_SUMMARY, Packages: [CN_FREE_SUMMARY.Packages[0], { ...CN_FREE_SUMMARY.Packages[1], CycleRemainCapacity: "0", CycleUsedCapacity: "500" }] }
-  expect(_internal.usageOf(spent, "", SITES.workbuddy).windows.map((w) => [w.name, !!w.aside])).toEqual([["Credits", true], ["Extra credits", false]])
-  // both spent: the plan's stops it, as the summed window did at 100%
+  expect(_internal.usageOf(spent, "", SITES.workbuddy).windows.map((w) => [w.name, w.display, !!w.aside]))
+    .toEqual([["Credits", "500 / 500", true], ["Extra credits", "282 / 2900", true], ["Total credits", "782 / 3400", false]])
+  // both spent: the whole stops it at 100%, as the summed window did
   const all = { ...spent, Packages: [{ ...spent.Packages[0], CycleUsedCapacity: "2900" }, spent.Packages[1]] }
-  expect(_internal.usageOf(all, "", SITES.workbuddy).windows.map((w) => [w.name, w.used, !!w.aside])).toEqual([["Credits", 100, false], ["Extra credits", 100, true]])
+  expect(_internal.usageOf(all, "", SITES.workbuddy).windows.map((w) => [w.name, w.used, !!w.aside])).toEqual([["Credits", 100, true], ["Extra credits", 100, true], ["Total credits", 100, false]])
   // the free plan's monthly base (008) is the plan's on the China build only;
   // WorkBuddy AI's client lists it among the packages that only lapse
   expect(_internal.planCodes(CN_FREE_SUMMARY, SITES.workbuddy)("TCACA_code_008_cfWoLwvjU4")).toBe(true)
@@ -500,14 +506,14 @@ test("extra credits are every kind but the plan's base, as WorkBuddy's own panel
   const group = (Kind, total, used) => ({ ...GROUPS_SUMMARY.CreditGroups.find((g) => g.Kind === Kind), CycleTotalCapacity: String(total), CycleUsedCapacity: String(used), CycleRemainCapacity: String(total - used) })
   const pro = { ...LIVE_SUMMARY, CreditGroups: [group("plan_base", 1000, 89.2), group("plan_bonus", 1000, 0), group("addon", 500, 120), group("benefit", 300, 30)] }
   expect(_internal.usageOf(pro, "", SITES["workbuddy-ai"]).windows.map((w) => [w.name, w.display, w.limit, !!w.aside]))
-    .toEqual([["Credits", "89.2 / 1000", 1000, false], ["Extra credits", "150 / 1800", 1800, true]])
+    .toEqual([["Credits", "89.2 / 1000", 1000, true], ["Extra credits", "150 / 1800", 1800, true], ["Total credits", "239.2 / 2800", 2800, false]])
   // a kind the client doesn't know yet is extra too, never the plan's
   const odd = { ...pro, CreditGroups: [...pro.CreditGroups, { ...group("addon", 50, 5), Kind: "something_new" }] }
   expect(_internal.usageOf(odd, "", SITES["workbuddy-ai"]).windows[1].display).toBe("155 / 1850")
   // without CreditGroups the codes split as the client's panel does: the
   // plan's bonus (037) is extra, not the plan's
   expect(_internal.usageOf(LIVE_SUMMARY, "", SITES["workbuddy-ai"]).windows.map((w) => [w.name, w.display, !!w.aside]))
-    .toEqual([["Credits", "89.2 / 1000", false], ["Extra credits", "0 / 1000", true]])
+    .toEqual([["Credits", "89.2 / 1000", true], ["Extra credits", "0 / 1000", true], ["Total credits", "89.2 / 2000", false]])
   for (const code of ["TCACA_code_028_NtpWi0jzXs", "TCACA_code_037_WxOD3MpI2o", "TCACA_code_009_0XmEQc2xOf", "TCACA_code_036_lupO5WgNdG", "TCACA_code_038_OhvqZtiPKr", "TCACA_code_007_nzdH5h4Nl0"])
     expect(_internal.planCodes({}, SITES.workbuddy)(code)).toBe(false)
   // buddyOneVip is a plan's base on both builds
@@ -527,7 +533,7 @@ test("split, the plan's window keeps its cycle and each says what lapses", async
     "/billing/meter/get-user-resource-free-packages": () => ok(on(CN_FREE)),
   })
   const u = await usageOf(WorkBuddyAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
-  const [credits, extra] = u.windows
+  const [credits, extra, total] = u.windows
   expect(credits.name).toBe("Credits")
   expect(credits.display).toBe("0 / 500")
   // the plan base's month, so the pace line is the month's
@@ -536,10 +542,13 @@ test("split, the plan's window keeps its cycle and each says what lapses", async
   expect(extra).toMatchObject({ name: "Extra credits", display: "282 / 2900", aside: true, runsOut: 18.4400035 })
   expect(extra.resetsAt).toBeUndefined()
   expect(extra.span).toBeUndefined()
-  // the window that stops the account carries the account's soonest lapse,
-  // as routing reads no window set aside (cdredfox on X)
-  expect(credits.runsOut).toBe(18.4400035)
-  expect(credits.runsOutAt).toBe(extra.runsOutAt)
+  // the plan's own credits (the day's slice) lapse at no time of their own
+  expect(credits.runsOutAt).toBeUndefined()
+  // the whole stops the account: it renews with the plan's and carries the
+  // account's soonest lapse, as routing reads no window set aside
+  // (cdredfox on X)
+  expect(total).toMatchObject({ name: "Total credits", display: "282 / 3400", resetsAt: credits.resetsAt, span: credits.span, runsOut: 18.4400035, runsOutAt: extra.runsOutAt })
+  expect(total.aside).toBeUndefined()
 })
 
 // jiabubu on Discord (magpie 0.1.2774, workbuddy 0.2.16, a China-site free
@@ -564,15 +573,17 @@ test("extra credits only the detail lists have are a window of their own, set as
     "/billing/meter/get-user-resource-free-packages": () => ok({ TotalCount: 2, Accounts: [on(gift), on(base)] }),
   })
   const u = await usageOf(WorkBuddyAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
-  expect(u.windows.slice(0, 2).map((w) => [w.name, w.display, !!w.aside])).toEqual([["Credits", "0 / 500", false], ["Extra credits", "20 / 1300", true]])
+  expect(u.windows.slice(0, 3).map((w) => [w.name, w.display, !!w.aside]))
+    .toEqual([["Credits", "0 / 500", true], ["Extra credits", "20 / 1300", true], ["Total credits", "20 / 1800", false]])
   // the soonest to lapse is the activity's, on the window that says them
   expect(u.windows[1]).toMatchObject({ amount: 20, limit: 1300, runsOut: 280, runsOutAt: new Date(on(gift).DeductionEndTime).toISOString() })
   // and the window that stops the account says it too, as routing reads
   // none set aside: an account whose extra credits lapse first is spent
   // first (Kayphoon on Discord)
-  expect(u.windows[0]).toMatchObject({ runsOut: 280, runsOutAt: u.windows[1].runsOutAt })
-  // the plan's window keeps its cycle
+  expect(u.windows[2]).toMatchObject({ runsOut: 280, runsOutAt: u.windows[1].runsOutAt })
+  // the plan's window keeps its cycle, and the whole renews with it
   expect(u.windows[0].resetsAt).toBe("2036-10-31T15:59:59.000Z")
+  expect(u.windows[2].resetsAt).toBe("2036-10-31T15:59:59.000Z")
 
   const now = Date.parse("2026-11-03T00:00:00Z")
   // past its end, a package is not counted, as the panel leaves it out
@@ -591,10 +602,13 @@ test("extra credits only the detail lists have are a window of their own, set as
 // ferock on Discord (2026-11-05, a China-site account): "额外积分不计算在内，
 // 基础积分用完 magpie 就切换账号了，其实账号还能用额外积分". The card read
 // "500 / 500" on the plan's window alone, and that window stopped the
-// account while extra credits only the detail lists carry were left. As
-// with the summary's split, the plan's window is set aside once it is spent
-// with extra credits left, and the extra window stops the account.
-test("plan credits spent with extra ones left from the detail lists: the extra window stops the account (ferock on Discord)", async () => {
+// account while extra credits only the detail lists carry were left.
+// After 0.2.22 the extra window stopped it once the plan's were spent, and
+// magpie's Routing page, which says the window that stops an account, read
+// "500 / 500" on accounts with their plan's untouched and the extra
+// credits on those with it spent. The whole of both stops it now, the same
+// on every account, and both kinds are set aside for the card.
+test("plan credits and extra ones from the detail lists: the whole stops the account, spent or not (ferock on Discord)", async () => {
   const year = Date.UTC(2036, 9, 1) - Date.UTC(2026, 9, 1)
   const on = (p) => ({ ...p, DeductionEndTime: p.DeductionEndTime + year, CycleStartTime: "2036" + p.CycleStartTime.slice(4), CycleEndTime: "2036" + p.CycleEndTime.slice(4) })
   const base = { ...CN_FREE.Accounts[1], CycleCapacitySizePrecise: "500", CycleCapacityRemainPrecise: "0", SlicePeriodUsageDetails: [{ SlicePeriodCapacitySizePrecise: "500", SlicePeriodCapacityRemainPrecise: "0" }] }
@@ -610,10 +624,11 @@ test("plan credits spent with extra ones left from the detail lists: the extra w
   const auth = { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" }
   lists([gift, base])
   let u = await usageOf(WorkBuddyAuthPlugin, auth)
-  expect(u.windows.slice(0, 2).map((w) => [w.name, w.display, w.used, !!w.aside])).toEqual([["Credits", "500 / 500", 100, true], ["Extra credits", "20 / 1300", (100 * 20) / 1300, false]])
+  expect(u.windows.slice(0, 3).map((w) => [w.name, w.display, w.used, !!w.aside]))
+    .toEqual([["Credits", "500 / 500", 100, true], ["Extra credits", "20 / 1300", (100 * 20) / 1300, true], ["Total credits", "520 / 1800", (100 * 520) / 1800, false]])
   // the window that stops the account says the soonest lapse, as routing
   // reads none set aside; the plan's keeps its cycle
-  expect(u.windows[1]).toMatchObject({ runsOut: 280, runsOutAt: new Date(on(gift).DeductionEndTime).toISOString() })
+  expect(u.windows[2]).toMatchObject({ runsOut: 280, runsOutAt: new Date(on(gift).DeductionEndTime).toISOString(), resetsAt: "2036-10-31T15:59:59.000Z" })
   expect(u.windows[0].resetsAt).toBe("2036-10-31T15:59:59.000Z")
   // both spent: the plan's stops it again, at 100%
   serve({
@@ -622,7 +637,17 @@ test("plan credits spent with extra ones left from the detail lists: the extra w
     "/billing/meter/get-user-resource-free-packages": () => ok({ TotalCount: 2, Accounts: [on({ ...gift, CycleCapacityRemainPrecise: "0" }), on(base)] }),
   })
   u = await usageOf(WorkBuddyAuthPlugin, auth)
-  expect(u.windows.slice(0, 2).map((w) => [w.name, w.used, !!w.aside])).toEqual([["Credits", 100, false], ["Extra credits", 100, true]])
+  expect(u.windows.slice(0, 3).map((w) => [w.name, w.used, !!w.aside])).toEqual([["Credits", 100, true], ["Extra credits", 100, true], ["Total credits", 100, false]])
+  // the plan's untouched: the same three, the whole stopping it, so an
+  // account says its credits the same way whichever kind is being spent
+  const fresh = { ...base, CycleCapacityRemainPrecise: "500", SlicePeriodUsageDetails: [{ SlicePeriodCapacitySizePrecise: "500", SlicePeriodCapacityRemainPrecise: "500" }] }
+  serve({
+    "/billing/meter/get-user-resource-summary": () => ok({ ...CN_FREE_SUMMARY, Packages: [{ ...plan, CycleRemainCapacity: "500", CycleUsedCapacity: "0" }] }),
+    "/billing/meter/get-user-resource-paid-packages": () => ok({ TotalCount: 1, Accounts: [on(topup)] }),
+    "/billing/meter/get-user-resource-free-packages": () => ok({ TotalCount: 2, Accounts: [on(gift), on(fresh)] }),
+  })
+  u = await usageOf(WorkBuddyAuthPlugin, auth)
+  expect(u.windows.slice(0, 3).map((w) => [w.name, w.display, !!w.aside])).toEqual([["Credits", "0 / 500", true], ["Extra credits", "20 / 1300", true], ["Total credits", "20 / 1800", false]])
 })
 
 test("a summary that already splits the credits, or lists with no extra ones, keep the card as it was", async () => {

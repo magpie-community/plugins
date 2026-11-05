@@ -712,6 +712,22 @@ async function scriptPerm(ctx) {
   emit({ type: "tool_call", itemId: "p1", kind: "bash", title: "\u8FD0\u884C npm test", status: "ok", output: "\u2713 12 \u4E2A\u6D4B\u8BD5\u901A\u8FC7", exitCode: 0, durationMs: 500 });
   emit({ type: "assistant_message", itemId: "pm", text: "\u6D4B\u8BD5\u901A\u8FC7\u4E86\u3002" });
 }
+async function scriptPermAbandon(ctx) {
+  const { emit } = ctx;
+  emit({
+    type: "permission_request",
+    requestId: "perm-" + rid(),
+    title: "\u8FD0\u884C git status",
+    kind: "execute",
+    detail: { command: "git status" },
+    options: [
+      { id: "allow-once", label: tr("perm.allow"), kind: "allow_once" },
+      { id: "reject-once", label: tr("perm.deny"), kind: "reject_once" }
+    ]
+  });
+  await sleepAbortable(200, ctx);
+  emit({ type: "assistant_message", itemId: "pa", text: "Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL (0x8)" });
+}
 async function scriptPlan(ctx) {
   const { emit } = ctx;
   emit({
@@ -801,6 +817,7 @@ async function scriptExit(_ctx) {
 }
 function pickScript(text) {
   const t = text.trim();
+  if (t.startsWith("/perm-abandon")) return scriptPermAbandon;
   if (t.startsWith("/perm")) return scriptPerm;
   if (t.startsWith("/plan")) return scriptPlan;
   if (t.startsWith("/ask")) return scriptAsk;
@@ -4111,7 +4128,7 @@ var init_types = __esm({
 
 // daemon/src/providers/codex/provider.ts
 import { homedir as homedir7 } from "node:os";
-import { join as join9 } from "node:path";
+import { dirname as dirname3, isAbsolute as isAbsolute2, join as join9 } from "node:path";
 import { readFile as readFile8 } from "node:fs/promises";
 function runVersion2(r, args, timeoutMs = 5e3) {
   return new Promise((resolvePromise, reject) => {
@@ -4138,7 +4155,8 @@ function runVersion2(r, args, timeoutMs = 5e3) {
 function normalizeEfforts(raw) {
   const out = [];
   for (const e of raw ?? []) {
-    const v = typeof e === "string" ? e : e?.reasoningEffort;
+    const o = e;
+    const v = typeof e === "string" ? e : o?.reasoningEffort ?? o?.effort;
     if (typeof v === "string" && v && !out.includes(v)) out.push(v);
   }
   return out;
@@ -4201,6 +4219,7 @@ function parseCodexConfig(text) {
   const profileValue = (key) => profileName ? values.get(`profiles.${profileName}\0${key}`) : void 0;
   const modelProvider = profileValue("model_provider") ?? top("model_provider");
   const model = profileValue("model") ?? top("model");
+  const catalog = profileValue("model_catalog_json") ?? top("model_catalog_json");
   const provider = typeof modelProvider === "string" ? modelProvider : null;
   const models2 = /* @__PURE__ */ new Set();
   if (typeof model === "string" && model) models2.add(model);
@@ -4209,15 +4228,69 @@ function parseCodexConfig(text) {
       for (const m of value) models2.add(m);
     }
   }
-  return { modelProvider: provider, model: typeof model === "string" ? model : null, providerModels: [...models2] };
+  return {
+    modelProvider: provider,
+    model: typeof model === "string" ? model : null,
+    providerModels: [...models2],
+    catalogJson: typeof catalog === "string" && catalog.trim() ? catalog.trim() : null
+  };
+}
+function resolveCatalogPath(raw, configDir, home = homedir7()) {
+  let p = raw.trim();
+  const env = p.match(/^(?:\$HOME|\$\{HOME\})(?=$|[\\/])/);
+  if (env) p = home + p.slice(env[0].length);
+  else if (p === "~") p = home;
+  else if (/^~[\\/]/.test(p)) p = join9(home, p.slice(2));
+  return isAbsolute2(p) ? p : join9(configDir, p);
+}
+function parseCodexCatalog(text) {
+  const doc = JSON.parse(text);
+  if (!Array.isArray(doc?.models)) return [];
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const raw of doc.models) {
+    const m = raw;
+    if (!m || typeof m.slug !== "string" || !m.slug || seen.has(m.slug)) continue;
+    if (typeof m.visibility === "string" && m.visibility !== "list") continue;
+    seen.add(m.slug);
+    const efforts = normalizeEfforts(Array.isArray(m.supported_reasoning_levels) ? m.supported_reasoning_levels : void 0);
+    const thinkingOptions = efforts.map((e) => ({ id: e, label: e }));
+    const def = typeof m.default_reasoning_level === "string" && efforts.includes(m.default_reasoning_level) ? m.default_reasoning_level : null;
+    const name = typeof m.display_name === "string" && m.display_name.trim() ? m.display_name.trim() : m.slug;
+    out.push({ id: m.slug, name, efforts, thinkingOptions, defaultThinking: def ?? thinkingOptions[0]?.id ?? null });
+  }
+  return out;
+}
+async function codexProviderModels(config, configDir, home = homedir7()) {
+  let rows = [];
+  if (config.catalogJson) {
+    const file = resolveCatalogPath(config.catalogJson, configDir, home);
+    try {
+      rows = parseCodexCatalog(await readFile8(file, "utf8"));
+    } catch (e) {
+      log("warn", "codex model_catalog_json \u8BFB\u53D6\u5931\u8D25", { file, err: String(e) });
+    }
+  }
+  const ids = new Set(rows.map((r) => r.id));
+  for (const id2 of config.providerModels) {
+    if (!ids.has(id2)) {
+      ids.add(id2);
+      rows.push({ id: id2, name: id2 });
+    }
+  }
+  if (config.model && !rows.some((r) => r.id === config.model)) rows.unshift({ id: config.model, name: config.model });
+  const def = config.model ?? rows[0]?.id;
+  return rows.map((r) => ({ ...r, isDefault: r.id === def }));
+}
+function codexConfigFile() {
+  const home = process.env.CODEX_HOME?.trim() || join9(homedir7(), ".codex");
+  return home.toLowerCase().endsWith(".toml") ? home : join9(home, "config.toml");
 }
 async function readCodexConfig() {
-  const home = process.env.CODEX_HOME?.trim() || join9(homedir7(), ".codex");
-  const file = home.toLowerCase().endsWith(".toml") ? home : join9(home, "config.toml");
   try {
-    return parseCodexConfig(await readFile8(file, "utf8"));
+    return parseCodexConfig(await readFile8(codexConfigFile(), "utf8"));
   } catch {
-    return { modelProvider: null, model: null, providerModels: [] };
+    return { modelProvider: null, model: null, providerModels: [], catalogJson: null };
   }
 }
 function isChatGptProvider(id2) {
@@ -4243,7 +4316,7 @@ function createCodexProvider(version) {
     async listModels(launch) {
       const config = await readCodexConfig();
       if (!isChatGptProvider(config.modelProvider)) {
-        const rows = config.providerModels.map((id2, i) => ({ id: id2, name: id2, isDefault: i === 0 }));
+        const rows = await codexProviderModels(config, dirname3(codexConfigFile()));
         return rows.length ? rows : [{ id: "", name: `${PLACEHOLDER_MODEL_NAME} (${config.modelProvider})`, isDefault: true }];
       }
       if (!launch && modelCache && Date.now() - modelCache.at < MODEL_CACHE_MS) return modelCache.models;
@@ -4404,7 +4477,7 @@ function registerAcpClientHandlers(app, bridge) {
       detail: tc.rawInput ?? void 0,
       options
     });
-    const answer = await bridge.waitFor(requestId);
+    const answer = await bridge.waitFor(requestId, ctx.signal);
     if (answer.cancelled) return { outcome: { outcome: "cancelled" } };
     const optionId = answer.optionId ?? options[0]?.id;
     if (!optionId) return { outcome: { outcome: "cancelled" } };
@@ -4740,7 +4813,7 @@ var init_session3 = __esm({
           const app = client({ name: "magpie-agent-console" });
           registerAcpClientHandlers(app, {
             push: (ev) => this.q.push(ev),
-            waitFor: (id2) => this.waitPerm(id2),
+            waitFor: (id2, signal) => this.waitPerm(id2, signal),
             autoAcceptPermissions: () => this.cursorAutoReview
           });
           const stream = acpStreamFromChild(this.child);
@@ -4953,10 +5026,20 @@ var init_session3 = __esm({
         await this.applySessionModel(this.o.model);
         await this.applyCursorAutoReviewConfig(false);
       }
-      waitPerm(requestId) {
+      waitPerm(requestId, signal) {
         return new Promise((resolve4) => {
           this.permPending.set(requestId, resolve4);
+          if (signal?.aborted) this.cancelPerm(requestId);
+          else signal?.addEventListener("abort", () => this.cancelPerm(requestId), { once: true });
         });
+      }
+      /** Close an open permission request as cancelled (answer the Agent's request and tell the manager) */
+      cancelPerm(requestId) {
+        const r = this.permPending.get(requestId);
+        if (!r) return;
+        this.permPending.delete(requestId);
+        r({ cancelled: true });
+        this.q.push({ type: "permission_resolved", requestId, cancelled: true });
       }
       respond(requestId, answer) {
         const r = this.permPending.get(requestId);
@@ -5015,6 +5098,7 @@ var init_session3 = __esm({
         });
       }
       endTurn(ev) {
+        for (const id2 of [...this.permPending.keys()]) this.cancelPerm(id2);
         this.q.push(ev);
         this.activeTurnId = null;
         this.running = false;
@@ -5975,7 +6059,7 @@ var init_autoApprove13 = __esm({
 
 // daemon/src/util/mentions.ts
 import { realpath, stat as stat8 } from "node:fs/promises";
-import { isAbsolute as isAbsolute2, resolve as resolve3, sep as sep2, win32 as win322, posix as posix2 } from "node:path";
+import { isAbsolute as isAbsolute3, resolve as resolve3, sep as sep2, win32 as win322, posix as posix2 } from "node:path";
 function insideRoot(root, child, platform = process.platform) {
   const p = platform === "win32" ? win322 : posix2;
   const norm2 = (s) => platform === "win32" ? p.resolve(s).toLowerCase() : p.resolve(s);
@@ -5995,7 +6079,7 @@ async function resolveMentions(projectPath, refs) {
   }
   for (const ref of refs.slice(0, MAX_MENTIONS)) {
     const rel = String(ref.rel ?? "").replace(/\\/g, "/");
-    if (!rel || rel.includes("\0") || isAbsolute2(rel) || /^[a-zA-Z]:/.test(rel)) {
+    if (!rel || rel.includes("\0") || isAbsolute3(rel) || /^[a-zA-Z]:/.test(rel)) {
       warnings.push(rel || "(empty)");
       continue;
     }
@@ -6834,7 +6918,7 @@ import { z } from "zod";
 import { existsSync as existsSync9, statSync as statSync5 } from "node:fs";
 import { mkdir as mkdir3, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir9 } from "node:os";
-import { dirname as dirname3, join as join12, win32 as win32Path } from "node:path";
+import { dirname as dirname4, join as join12, win32 as win32Path } from "node:path";
 import { execFile as execFile4 } from "node:child_process";
 function wrap(schema, fn) {
   return (params, ctx) => {
@@ -7380,7 +7464,7 @@ function revealInFileManager(filePath) {
     });
     return;
   }
-  execFile4("xdg-open", [dirname3(filePath)], () => {
+  execFile4("xdg-open", [dirname4(filePath)], () => {
   }).on("error", () => {
   });
 }
@@ -7418,10 +7502,10 @@ var init_methods = __esm({
 
 // daemon/src/util/atomic.ts
 import { writeFile as writeFile5, rename, mkdir as mkdir4 } from "node:fs/promises";
-import { dirname as dirname4 } from "node:path";
+import { dirname as dirname5 } from "node:path";
 async function writeJsonAtomic(file, obj) {
   try {
-    await mkdir4(dirname4(file), { recursive: true });
+    await mkdir4(dirname5(file), { recursive: true });
     const tmp = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
     await writeFile5(tmp, JSON.stringify(obj, null, 2), "utf8");
     await rename(tmp, file);
@@ -7553,7 +7637,7 @@ var init_settings = __esm({
 
 // daemon/src/util/jsonl.ts
 import { appendFile, readFile as readFile14, mkdir as mkdir5, rename as rename2, writeFile as writeFile6 } from "node:fs/promises";
-import { dirname as dirname5 } from "node:path";
+import { dirname as dirname6 } from "node:path";
 async function readJsonl(file) {
   let text = "";
   try {
@@ -7576,7 +7660,7 @@ function appendJsonl(file, obj) {
   const prev = writers.get(file) ?? Promise.resolve();
   const next = prev.then(async () => {
     try {
-      await mkdir5(dirname5(file), { recursive: true });
+      await mkdir5(dirname6(file), { recursive: true });
       await appendFile(file, JSON.stringify(obj) + "\n", "utf8");
     } catch (e) {
       if (e instanceof ApiError) throw e;
@@ -7865,7 +7949,7 @@ var init_warm = __esm({
 
 // daemon/src/main.ts
 import { mkdirSync as mkdirSync2, rmSync as rmSync2, chmodSync as chmodSync2 } from "node:fs";
-import { join as join21, dirname as dirname8 } from "node:path";
+import { join as join21, dirname as dirname9 } from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // daemon/src/config.ts
@@ -9113,6 +9197,7 @@ var AgentManager = class {
         rt.interruptTimer = null;
       }
       if (ev.turnId && ev.turnId !== "unknown") rt.endedTurnIds.add(ev.turnId);
+      await this.cancelPending(threadId, rt, { tellSession: true });
       rt.coalescer.dispose();
       rt.coalescer = this.newCoalescer(threadId);
       await this.appendRaw(threadId, ev);
@@ -9192,15 +9277,29 @@ var AgentManager = class {
     }
     return n;
   }
+  /** Cancel every open permission/question: persisted as permission_resolved{cancelled} (the page marks the card
+   *  已取消 and stops waiting). tellSession: also answer the provider's own waiter (an Agent that ended its turn without
+   *  withdrawing the request would otherwise keep a dangling promise); its echo is dropped because rt.pending is empty. */
+  async cancelPending(threadId, rt, opts) {
+    if (!rt.pending.size) return;
+    const open = [...rt.pending.values()];
+    rt.pending.clear();
+    for (const p of open) {
+      await this.appendRaw(threadId, { type: "permission_resolved", requestId: p.requestId, cancelled: true });
+      p.resolve({ cancelled: true });
+      if (opts.tellSession) {
+        try {
+          rt.session?.respond(p.requestId, { cancelled: true });
+        } catch {
+        }
+      }
+    }
+  }
   // ---- interrupt ----
   async interrupt(threadId) {
     const rt = this.rt(threadId);
     if (!rt.session || rt.status !== "running") return;
-    for (const [id2, p] of rt.pending) {
-      await this.appendRaw(threadId, { type: "permission_resolved", requestId: id2, cancelled: true });
-      p.resolve({ cancelled: true });
-    }
-    rt.pending.clear();
+    await this.cancelPending(threadId, rt, { tellSession: false });
     await rt.session.interrupt();
     const turnId = rt.currentTurnId;
     rt.interruptTimer = setTimeout(() => {
@@ -9781,7 +9880,7 @@ import { spawn as spawn4, execFileSync as execFileSync2 } from "node:child_proce
 import { accessSync as accessSync2, chmodSync, constants as fsc, existsSync as existsSync12, statSync as statSync7 } from "node:fs";
 import { createRequire as moduleRequire } from "node:module";
 import { release } from "node:os";
-import { dirname as dirname6, join as join18 } from "node:path";
+import { dirname as dirname7, join as join18 } from "node:path";
 var MAX_TERMS_PER_PROJECT = 8;
 var BUF_MAX = 2 * 1024 * 1024;
 var SNAP_LINES = 5e3;
@@ -9824,7 +9923,7 @@ function fixSpawnHelper() {
   if (process.platform !== "darwin") return;
   try {
     const req = moduleRequire(import.meta.url);
-    const root = dirname6(req.resolve("node-pty/package.json"));
+    const root = dirname7(req.resolve("node-pty/package.json"));
     for (const sub of [`prebuilds/darwin-${process.arch}`, "build/Release"]) {
       const f = join18(root, sub, "spawn-helper");
       if (existsSync12(f) && !isExecFile(f)) {
@@ -10079,7 +10178,7 @@ init_proxy();
 // daemon/src/preview/ports.ts
 import { readFileSync as readFileSync2 } from "node:fs";
 import { homedir as homedir10 } from "node:os";
-import { basename as basename5, dirname as dirname7, isAbsolute as isAbsolute3, join as join19 } from "node:path";
+import { basename as basename5, dirname as dirname8, isAbsolute as isAbsolute4, join as join19 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 var MAGPIE_DEFAULT_PORTS = [3425, 3430];
 var GATE_DEFAULT_PORT = 3488;
@@ -10098,7 +10197,7 @@ function magpieDirFromInstall(p) {
 function magpieConfigDirs(env = process.env, where = {}) {
   const out = [];
   const add = (d) => {
-    if (d && isAbsolute3(d) && !out.includes(d)) out.push(d);
+    if (d && isAbsolute4(d) && !out.includes(d)) out.push(d);
   };
   let self = where.self;
   if (self === void 0) {
@@ -10110,9 +10209,9 @@ function magpieConfigDirs(env = process.env, where = {}) {
   }
   add(magpieDirFromInstall(self));
   const cwd = where.cwd ?? (env === process.env ? process.cwd() : "");
-  if (cwd && basename5(cwd) === "plugin-work") add(dirname7(cwd));
+  if (cwd && basename5(cwd) === "plugin-work") add(dirname8(cwd));
   const x = env.XDG_CONFIG_HOME;
-  if (x && isAbsolute3(x)) add(join19(x, "magpie"));
+  if (x && isAbsolute4(x)) add(join19(x, "magpie"));
   const platform = where.platform ?? process.platform;
   const home = where.home ?? (env === process.env ? homedir10() : platform === "win32" ? env.USERPROFILE : env.HOME);
   if (home) add(join19(home, ".config", "magpie"));
@@ -10159,7 +10258,7 @@ if (nodeMajor < 20) {
   console.error(`[agent-console] \u9700\u8981 Node.js 20 \u6216\u66F4\u9AD8\u7248\u672C\uFF0C\u5F53\u524D ${process.version}\uFF08${process.execPath}\uFF09`);
   process.exit(3);
 }
-process.env.PATH = augmentPath(process.env, dirname8(process.execPath));
+process.env.PATH = augmentPath(process.env, dirname9(process.execPath));
 var cfg = parseConfig(process.argv.slice(2));
 process.on("uncaughtException", (e) => {
   if (e?.code === "EPIPE") return;
@@ -10173,7 +10272,7 @@ async function main() {
   for (const d of ["threads", "attachments", "trash", "logs"]) {
     mkdirSync2(join21(cfg.dataDir, d), { recursive: true });
   }
-  const appDir = join21(dirname8(fileURLToPath4(import.meta.url)), "..", "..", "app");
+  const appDir = join21(dirname9(fileURLToPath4(import.meta.url)), "..", "..", "app");
   const attachments = new AttachmentStore(join21(cfg.dataDir, "attachments"));
   const { bindAttachmentStore: bindAttachmentStore2 } = await Promise.resolve().then(() => (init_attachmentRefs(), attachmentRefs_exports));
   bindAttachmentStore2(attachments);
