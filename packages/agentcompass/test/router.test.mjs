@@ -1656,6 +1656,130 @@ test("8.8 tool_execution/hard uses its route floor 2.7, not the policy's hard fl
   assert.match(impl.allCandidates[0].excluded.join("; "), /ability 3\.05 below the hard floor 3\.10/);
 });
 
+test("8.9 `ability_score_origin` above the floor decides the pick (hard: origin 3.3, floor 3.1)", () => {
+  // Critical hard task (error_cost 3): abilityScore = (credited - origin - (gate - floor)) / span, gate 3.4, span 0.6.
+  const ranked = rankCandidates(
+    { ...GATE_PROFILE, work_kind: "general_implementation", reasoning_depth: 2, error_cost: 3 },
+    { candidateModels: [{ model: "claude-sonnet-5-5", efforts: ["xhigh"] }, { model: "gpt-6-astra", efforts: ["medium"] }] },
+  );
+  assert.equal(ranked.task.difficulty, "hard");
+  assert.equal(ranked.task.minimum_sufficient, false);
+  const sonnet = ranked.allCandidates.find((c) => c.canonicalModel === "claude-sonnet-5-5");
+  assert.equal(sonnet.components.ability_value, 4.3);
+  // Measured against origin 3.3; with origin = floor 3.1 the score is 0.333 higher and Sonnet xhigh overtakes Astra medium
+  assert.equal(`${ranked.selected.canonicalModel}:${ranked.selected.effort}`, "gpt-6-astra:medium");
+});
+
+test("8.10 Work-kind and GUI-fact guards from AgentCompass 54bb51e (v0.3.8)", () => {
+  // CODE_FILE_RE guard: an action phrase about a code file is not computer use
+  assert.equal(inferKindFromObjective("Click the Save button handler in settings.tsx is broken"), "general_implementation");
+  // Bare "keyboard" / "mouse" are not computer-use phrases
+  assert.equal(inferKindFromObjective("Add keyboard shortcuts to the settings dialog"), "general_implementation");
+  assert.equal(inferKindFromObjective("Add mouse wheel zoom to the chart"), "general_implementation");
+  // "translation of", not "translation"
+  assert.equal(inferKindFromObjective("Add a translation layer between the API and the DB"), "general_implementation");
+  assert.equal(inferKindFromObjective("Write a translation of the README into Japanese"), "text_in_text_out");
+  // A named code file skips text_in_text_out even with no debug word
+  assert.equal(inferKindFromObjective("Translate the error strings in i18n.ts"), "general_implementation");
+  assert.equal(inferKindFromObjective("Translate the release notes into Japanese"), "text_in_text_out");
+  // Phrases v0.3.8 does not have are not computer use on their own
+  for (const prompt of ["Take a screenshot of the report", "Capture a screenshot for the docs", "截取屏幕上的报表", "截屏操作说明"]) {
+    assert.notEqual(inferKindFromObjective(prompt), "computer_use", prompt);
+  }
+
+  // hasComputerUse: COMPUTER_USE_PHRASES with the code-file guard, not the older GUI_WORDS
+  const facts = (text) => extractRequestFacts({ messages: [{ role: "user", content: text }] }, { protocol: "chat" });
+  assert.equal(facts("Click the Save button in the desktop app and confirm the dialog closes").hasComputerUse, true);
+  assert.equal(facts("Click the Save button handler in settings.tsx is broken").hasComputerUse, false);
+  for (const text of ["Add keyboard shortcuts to the desktop app", "Open the gui and check the desktop app", "修改桌面版的键盘快捷键"]) {
+    assert.equal(facts(text).hasComputerUse, false, text);
+  }
+});
+
+test("8.11 Continuity: only a computer-use turn outgrows a model without GUI (`capability_outgrown` / `gui_capability_required`)", async () => {
+  const t0 = 1_700_000_000_000;
+  const nextTurn = async (text) => {
+    const store = new SessionContinuityStore();
+    store.set("sess-gui", { model: "grok-4.7", effort: "medium", tokens: 4000, cached: true, healthy: true, turn: 1 }, t0);
+    const ctx = {
+      protocol: "chat",
+      session_id: "sess-gui",
+      state: {},
+      options: { continuityStore: store, now: t0 + 30_000, prefer_local_heuristic: true },
+    };
+    await hookOnRequest({ model: "agentcompass/auto", session_id: "sess-gui", messages: [{ role: "user", content: text }] }, ctx);
+    return ctx.state.route;
+  };
+  const gui = await nextTurn("Click the Save button in the desktop app and confirm the dialog closes");
+  assert.equal(gui.continuation.held, false);
+  assert.equal(gui.continuation.why, "capability_outgrown");
+  assert.equal(gui.continuation.reasonDetail, "gui_capability_required");
+  assert.notEqual(gui.canonicalModel, "grok-4.7");
+  // Before 0.1.2 the broader GUI words (" gui", "desktop app", "keyboard", "桌面", "键盘") also moved the session; now they hold it
+  for (const text of [
+    "Add keyboard shortcuts to the desktop app",
+    "Open the gui and check the desktop app",
+    "修改桌面版的键盘快捷键",
+    "Click the Save button handler in settings.tsx is broken",
+  ]) {
+    const held = await nextTurn(text);
+    assert.notEqual(held.continuation.why, "capability_outgrown", text);
+    assert.equal(held.canonicalModel, "grok-4.7", text);
+  }
+});
+
+// AgentCompass v0.3.8 skills/agent-compass/references/accounts.json: `effort_curves` for the 13 models the plugin carries
+const V038_EFFORT_CURVES = {
+  "deepseek-v4.1-flash-free": { ability: { high: 0, max: 0.2 }, burn: { high: 0.7, max: 0.91 } },
+  "claude-opus-5-5": {
+    ability: { low: -0.84, medium: -0.2, high: 0, xhigh: 0.25, max: 0.35 },
+    burn: { low: 0.2, medium: 0.5, high: 0.7, xhigh: 1.22, max: 2.03 },
+  },
+  "claude-sonnet-5-5": {
+    ability: { low: -0.79, medium: -0.54, high: 0, xhigh: 0.4, max: 0.64 },
+    burn: { low: 0.22, medium: 0.33, high: 0.7, xhigh: 1.75, max: 4.28 },
+  },
+  "gpt-6-astra": {
+    ability: { low: -0.59, medium: -0.15, high: 0, xhigh: 0, max: 0.1 },
+    burn: { low: 0.31, medium: 0.59, high: 0.7, xhigh: 0.79, max: 1.35 },
+  },
+  "gpt-6.1-sol": {
+    ability: { low: -0.74, medium: -0.2, high: 0, xhigh: 0.1, max: 0.25 },
+    burn: { low: 0.19, medium: 0.43, high: 0.7, xhigh: 0.9, max: 1.51 },
+  },
+  "grok-4.7": { ability: { low: -0.2, high: 0, xhigh: 0 }, burn: { low: 0.33, high: 0.7, xhigh: 0.88 } },
+  "gemini-3.8-flash-high": { ability: { low: -0.4, medium: -0.05, high: 0 }, burn: { medium: 0.56, high: 0.7 } },
+  "gemini-4-argon-high": { ability: { low: -0.3, medium: -0.1, high: 0 }, burn: { low: 0.63, medium: 0.7, high: 0.7 } },
+  "claude-haiku-5-5": {
+    ability: { low: -0.54, medium: -0.25, high: 0, xhigh: 0.25, max: 0.3 },
+    burn: { low: 0.17, medium: 0.39, high: 0.7, xhigh: 1.09, max: 1.79 },
+  },
+  "gpt-6.1-terra": {
+    ability: { low: -0.64, medium: -0.2, high: 0, xhigh: 0.15, max: 0.45 },
+    burn: { low: 0.19, medium: 0.46, high: 0.7, xhigh: 1.08, max: 2.58 },
+  },
+  "gpt-6-luna": {
+    ability: { low: -0.54, medium: -0.15, high: 0, xhigh: 0.1, max: 0.35 },
+    burn: { low: 0.1, medium: 0.4, high: 0.7, xhigh: 1.0, max: 1.5 },
+  },
+  "claude-fable-5-1": {
+    ability: { low: -0.4, medium: -0.2, high: 0, xhigh: 0.15, max: 0.15 },
+    burn: { low: 0.41, medium: 0.52, high: 0.7, xhigh: 1.01, max: 1.21 },
+  },
+  "gemini-4-carbon": { ability: { low: -0.3, medium: -0.1, high: 0 }, burn: { low: 0.65, medium: 0.59, high: 0.7 } },
+};
+
+test("8.12 All 13 effort curves and `effort_ability` / `effort_burn` equal AgentCompass v0.3.8", () => {
+  assert.deepEqual(Object.keys(EFFORT_CURVES).sort(), Object.keys(V038_EFFORT_CURVES).sort());
+  for (const [model, curve] of Object.entries(V038_EFFORT_CURVES)) {
+    assert.deepEqual(EFFORT_CURVES[model].ability, curve.ability, `${model} ability`);
+    assert.deepEqual(EFFORT_CURVES[model].burn, curve.burn, `${model} burn`);
+  }
+  // scoring.effort_ability / scoring.effort_burn
+  assert.deepEqual(DEFAULT_SCORING_POLICY.effort_ability, { low: -0.54, medium: -0.2, high: 0, xhigh: 0.15, max: 0.3 });
+  assert.deepEqual(DEFAULT_SCORING_POLICY.effort_burn, { low: 0.2, medium: 0.4, high: 0.7, xhigh: 1.0, max: 1.3 });
+});
+
 test("9.1 PR #670 Review Guard: Default triggers ONLY claim `agentcompass` / `agentcompass/*` and never hijack `auto` or `group/intent`", async () => {
   for (const nonOwnedModel of ["auto", "intent", "group/intent", "default", "claude-sonnet-4-6"]) {
     const req = {

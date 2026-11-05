@@ -92,8 +92,6 @@ export const GUI_WORDS = [
 export const COMPUTER_USE_PHRASES = [
   "click the",
   "click save",
-  "take a screenshot",
-  "capture a screenshot",
   "use the mouse",
   "with the mouse",
   "mouse and keyboard",
@@ -101,8 +99,6 @@ export const COMPUTER_USE_PHRASES = [
   "operate the browser",
   "operate the desktop",
   "点击",
-  "截取屏幕",
-  "截屏操作",
   "用鼠标",
   "键鼠",
   "鼠标键盘",
