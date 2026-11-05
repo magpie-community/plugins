@@ -104,8 +104,11 @@ function validateContentBlock(block, allowImage) {
       if ("is_error" in block && typeof block.is_error !== "boolean") throw invalid("A tool_result \"is_error\" must be a boolean.")
       const content = block.content
       if (typeof content !== "string") {
-        if (!Array.isArray(content)) throw invalid("A tool_result \"content\" must be a string or an array of text blocks.")
-        for (const part of content) validateTextBlock(part)
+        if (!Array.isArray(content)) throw invalid("A tool_result \"content\" must be a string or an array of text/image blocks.")
+        for (const part of content) {
+          if (part?.type === "image") validateContentBlock(part, allowImage)
+          else validateTextBlock(part)
+        }
       }
       validateCacheControl(block.cache_control)
       return
