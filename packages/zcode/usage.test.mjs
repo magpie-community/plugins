@@ -260,6 +260,13 @@ test("a Coding Plan of a person's own shows its resets, each with its end, as th
     { until: "2026-10-30T15:59:59.000Z", window: "weekly" },
     { window: "fiveHour" },
   ] })
+  // five-hour resets say how many run out within two hours, so a caller can
+  // spend them before they lapse without deciding urgency from the whole list
+  const beijing = (ms) => new Date(ms).toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T")
+  const soon = beijing(Date.now() + 90 * 60_000)
+  const later = beijing(Date.now() + 3 * 3600_000)
+  list = { code: 200, data: { fiveHourResets: [{ available: true, expireTime: soon }, { available: true, expireTime: later }], weekResets: [] } }
+  expect((await usage(auth)).resets.fiveHourExpiringSoon).toBe(1)
 })
 
 test("a team seat: the team plan's windows, name, end and resets, its key found and saved", async () => {
@@ -282,7 +289,7 @@ test("a team seat: the team plan's windows, name, end and resets, its key found 
     if (p === "/api/biz/v1/organization/t1/projects/tp1/api_keys/copy/tk") return ok({ secretKey: "ts" })
     if (p === "/api/biz/customer-package-reset/list" && headers.Authorization === TOKEN && org === "t1" && proj === "tp1" && url.searchParams.get("targetType") === "TEAM")
       return ok({
-        fiveHourResets: [{ available: true, expireTime: "2026-11-30 23:59:59" }, { available: true, expireTime: 1790000000 }, { available: false, expireTime: 1 }],
+        fiveHourResets: [{ available: true, expireTime: "2026-11-30 23:59:59" }, { available: true, expireTime: Math.trunc((Date.now() + 90 * 60_000) / 1000) }, { available: false, expireTime: 1 }],
         weekResets: [{ available: true, expireTime: "2026-12-31 23:59:59" }],
       })
     if (p === "/api/monitor/usage/quota/limit") {
@@ -300,8 +307,8 @@ test("a team seat: the team plan's windows, name, end and resets, its key found 
     plan: "GLM Coding Team Pro", until: "2026-12-31T15:59:59.000Z", renew: "off",
     // a team's resets say so, and each its own end, soonest first, as the
     // built-in's zhipuTeamResets did
-    resets: { count: 3, byWindow: true, fiveHour: 2, weekly: 1, until: new Date(1790000000 * 1000).toISOString(), team: true, each: [
-      { until: new Date(1790000000 * 1000).toISOString(), window: "fiveHour" },
+    resets: { count: 3, byWindow: true, fiveHour: 2, fiveHourExpiringSoon: 1, weekly: 1, until: new Date(Math.trunc((Date.now() + 90 * 60_000) / 1000) * 1000).toISOString(), team: true, each: [
+      { until: new Date(Math.trunc((Date.now() + 90 * 60_000) / 1000) * 1000).toISOString(), window: "fiveHour" },
       { until: "2026-11-30T15:59:59.000Z", window: "fiveHour" },
       { until: "2026-12-31T15:59:59.000Z", window: "weekly" },
     ] },
