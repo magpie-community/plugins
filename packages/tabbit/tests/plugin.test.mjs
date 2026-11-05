@@ -374,6 +374,84 @@ test("a 500 from Tabbit is a 502 here", async () => {
   }
 })
 
+// ---- the per-message content cap (~20480 chars) ---------------------------
+
+// Tabbit's over-limit refusal: a 429 whose body is the welcome blurb with code
+// 492, and no retry-after. Measured 2026-11-05 (content 20504 → this).
+const OVER_LIMIT_429 = JSON.stringify({
+  message: "Welcome to Tabbit Browser (https://www.tabbit.com/), where you can use the most comprehensive and advanced models for free.",
+  code: 492,
+  action: "",
+  states: "",
+  details: "",
+})
+
+test("an over-long prompt is refused here as 400 'prompt is too long', before any call", async () => {
+  const { calls, restore } = installFetch()
+  try {
+    const res = await fetchWith(auth, chatBody("Default", [{ role: "user", content: "x".repeat(30000) }]))
+    const body = await res.json()
+    // magpie's overflow regex needs this wording to compact instead of wait.
+    assert.match(body.error.message, /prompt is too long/i)
+    assert.equal(res.status, 400)
+    // It must not have burned a room or a turn on something that cannot work.
+    assert.equal(calls.length, 0)
+  } finally {
+    restore()
+    _internal.rooms.clear()
+  }
+})
+
+test("a prompt under the limit still goes through", async () => {
+  const { calls, restore } = installFetch()
+  try {
+    const res = await fetchWith(auth, chatBody("Default", [{ role: "user", content: "x".repeat(20000) }]))
+    assert.equal(res.status, 200)
+    assert.ok(calls.some((c) => c.path.endsWith("/runs")))
+  } finally {
+    restore()
+    _internal.rooms.clear()
+  }
+})
+
+test("Tabbit's welcome-blurb 429 is reported as an overflow, not a rate limit", async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const path = new URL(typeof input === "string" ? input : input.url).pathname
+    if (path === "/api/v3/chat/rooms") return Response.json({ room_id: "r1", chat_session_id: "r1" })
+    if (path.endsWith("/runs")) return new Response(OVER_LIMIT_429, { status: 429, headers: { "content-type": "application/json" } })
+    return new Response("{}", { status: 200 })
+  }
+  try {
+    // Under our pre-check, so the upstream refusal is what decides: the reply
+    // must still read as an overflow so the agent compacts.
+    const res = await fetchWith(auth, chatBody("Default", [{ role: "user", content: "x".repeat(20000) }]))
+    const body = await res.json()
+    assert.equal(res.status, 400)
+    assert.match(body.error.message, /prompt is too long/i)
+    assert.equal(res.headers.get("retry-after"), null)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test("a genuine 429 still passes through with its retry-after", async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const path = new URL(typeof input === "string" ? input : input.url).pathname
+    if (path === "/api/v3/chat/rooms") return Response.json({ room_id: "r1", chat_session_id: "r1" })
+    if (path.endsWith("/runs")) return new Response("too many requests", { status: 429, headers: { "retry-after": "9" } })
+    return new Response("{}", { status: 200 })
+  }
+  try {
+    const res = await fetchWith(auth, chatBody("Default", [{ role: "user", content: "hi" }]))
+    assert.equal(res.status, 429)
+    assert.equal(res.headers.get("retry-after"), "9")
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 test("rooms are keyed by account as well as session", async () => {
   const { calls, restore } = installFetch()
   try {

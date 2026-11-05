@@ -34,6 +34,7 @@ import { BOOTSTRAP, NPM, CHAT_BASE, rowsOf } from "./src/models.mjs"
 import { turnDeltas } from "./src/sse.mjs"
 import { desktopSignIn } from "./src/cookie.mjs"
 import { checkinOf } from "./src/checkin.mjs"
+import { INPUT_LIMIT, contentTooLong, contentLength } from "./src/limit.mjs"
 
 const ID = "tabbit"
 const NAME = "Tabbit"
@@ -113,6 +114,16 @@ function flatten(history) {
   for (const m of before) lines.push(`${m.role === "assistant" ? "assistant" : "user"}: ${m.content}`)
   const header = lines.length ? "Below is the conversation so far. Answer the final user message, continuing it.\n\n" : ""
   return header + lines.join("\n\n") + (lines.length ? "\n\n" : "") + `user: ${lastUser?.content ?? ""}`
+}
+
+// tooLong refuses a turn whose content is past Tabbit's per-message cap, as a
+// 400 magpie reads as context overflow. Returns null when the turn is sendable.
+// Tabbit's own message is kept (it names the size and the limit) so the client
+// can say what to do about it.
+function tooLong(content, limit = INPUT_LIMIT) {
+  const chars = contentLength(content)
+  if (chars === null || chars <= limit) return null
+  return contentTooLong(chars, limit)
 }
 
 // planTurn decides what one request sends: a new room with the flattened
@@ -331,6 +342,14 @@ function createPlugin() {
     const account = creds.uid || "?"
     const roomKey = session ? `${account}\u0000${session}` : ""
     const plan = planTurn(rooms.get(roomKey), messages)
+
+    // Tabbit caps one message's content at INPUT_LIMIT characters. A turn that
+    // is already over it can never succeed, so say so up front — as a 400 that
+    // magpie reads as "prompt is too long" (it compacts and retries) rather
+    // than letting Tabbit answer 429 with a welcome blurb that looks like a
+    // rate limit, or burning the room creation on a call that cannot work.
+    const overBy = tooLong(plan.content)
+    if (overBy) throw overBy
 
     const start = async (roomId, parentMessageId) => {
       await runTurn(creds, roomId, { content: plan.content, model, parentMessageId, signal: request.signal })

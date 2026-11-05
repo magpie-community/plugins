@@ -14,6 +14,8 @@
 // `managed` ride along because the app sends them, not because the server
 // needs them to authenticate.
 
+import { looksLikeOverLimit, overLimitError, contentLength } from "./limit.mjs"
+
 export const BASE = "https://web.tabbit.com"
 
 // A browser User-Agent is what the app sends and what the proxy answers.
@@ -125,6 +127,21 @@ function safeJSON(text) {
   }
 }
 
+// charsInRunBody is the length of the `content` that was just sent in a turn
+// body, for the over-limit message. Anything unparsable is simply unknown.
+function charsInRunBody(body) {
+  const parsed = safeJSON(typeof body === "string" ? body : "")
+  return contentLength(parsed?.input_payload?.content)
+}
+
+// overLimitTabbitError is the 400 that magpie's overflow regex reads as a
+// prompt-too-long, so it compacts and continues instead of treating Tabbit's
+// welcome-blurb 429 as a rate limit and waiting.
+function overLimitTabbitError(sentChars) {
+  const sized = overLimitError(sentChars)
+  return new TabbitError(sized.message, { status: 400, code: "context_length_exceeded" })
+}
+
 async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}) {
   // A streamed turn may run for minutes; Bun's fetch applies this signal to
   // reading the body too, so a total timeout would cut a slow answer in half.
@@ -141,6 +158,10 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}
     ...(bound ? { signal: bound } : {}),
     redirect: "error",
   })
+  // The turn's own content length, for the over-limit message. Read from the
+  // body that was just sent rather than guessed.
+  const sentChars = charsInRunBody(init?.body)
+
   if (res.status === 401 || res.status === 403) {
     let body = ""
     try {
@@ -148,6 +169,10 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}
     } catch {
       /* the status is enough */
     }
+    const retryAfter = res.headers.get("retry-after")
+    // 403 with the welcome blurb is the over-limit refusal too, not a paywall
+    // (see looksLikeOverLimit); check it before treating 403 as a plan wall.
+    if (looksLikeOverLimit({ status: res.status, body, retryAfter })) throw overLimitTabbitError(sentChars)
     const parsed = safeJSON(body)
     // The refusal nests the code two ways: {"detail":{"message","details":{"code"}}}
     // on /api/v3, {"code"...} at the top on some routes.
@@ -165,7 +190,6 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}
       { status: res.status, code: Number.isFinite(code) ? code : undefined, action },
     )
     if (!paywalled) error.signIn = "expired"
-    const retryAfter = res.headers.get("retry-after")
     if (retryAfter) error.retryAfter = retryAfter
     throw error
   }
@@ -176,8 +200,12 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}
     } catch {
       /* nothing to add */
     }
-    const error = new TabbitError(`Tabbit answered HTTP ${res.status}${body ? `: ${body.slice(0, 300)}` : ""}`, { status: res.status })
     const retryAfter = res.headers.get("retry-after")
+    // Tabbit refuses an over-long turn with a 429 whose body is the welcome
+    // blurb (code 492) and no retry-after. Reported verbatim that reads as a
+    // rate limit, so magpie waits instead of compacting. Say what it is.
+    if (looksLikeOverLimit({ status: res.status, body, retryAfter })) throw overLimitTabbitError(sentChars)
+    const error = new TabbitError(`Tabbit answered HTTP ${res.status}${body ? `: ${body.slice(0, 300)}` : ""}`, { status: res.status })
     if (retryAfter) error.retryAfter = retryAfter
     throw error
   }
@@ -274,24 +302,40 @@ export async function join(creds, room, { lastEventId = null, signal } = {}) {
 
 // ---- the daily sign-in (签到) -------------------------------------------
 //
-// The activity the desktop pet signs in to. Measured on a live account:
+// Two scenes the service takes on the same endpoint; any other name comes back
+// SIGN_IN_SCENE_UNSUPPORTED. Measured on a live account:
 //
-//   GET  /api/commerce/activity/v1/sign-in/status?scene_codes=desktop_pet
-//        {"sign_in_date":"2026-11-03","results":[{"scene_code":"desktop_pet",
-//         "activity_open":true,"signed_today":true,"signed_days":1,
-//         "total_signed_days":1,"required_days":3,"can_adopt":false,
-//         "usage_reward_result":null,"pet_entitlement_result":"not_eligible",
-//         "pet_entitlement_id":null}]}
+//   daily_sign_in   the account's 每日签到 (the "每日签到" under the avatar,
+//                   below "本周剩余用量"). A claim restores a fixed % of the
+//                   weekly usage — measured +3.00% — and appears in
+//                   quota/v1/usage-records as scene_group_name
+//                   "sign_in_fixed_percent_usage_restore_activity".
+//                   unsigned status: usage_reward_result "available"
+//                   claim reply:     sign_in_result "success",
+//                                    usage_reward_result "success"
 //
-//   POST /api/commerce/activity/v1/sign-in  {"request_no":"<uuid>","scene_codes":["desktop_pet"]}
-//        {"sign_in_date":"2026-11-03","results":[{"scene_code":"desktop_pet",
-//         "activity_open":true,"sign_in_result":"already_signed", ...}]}
+//   desktop_pet     the desktop pet's consecutive-day streak (3 days → a pet
+//                   entitlement). claim reply: sign_in_result "signed".
 //
-// `desktop_pet` is the only scene the service takes: every other name comes
-// back SIGN_IN_SCENE_UNSUPPORTED. `request_no` is a client-made idempotency
-// key — any fresh uuid is accepted, and repeating one is not a second claim.
+//   GET  /api/commerce/activity/v1/sign-in/status?scene_codes=daily_sign_in&scene_codes=desktop_pet
+//        {"sign_in_date":"2026-11-05","results":[
+//          {"scene_code":"daily_sign_in","activity_open":true,"signed_today":false,
+//           "signed_days":2,"total_signed_days":2,"required_days":null,
+//           "usage_reward_result":"available","pet_entitlement_result":null,...},
+//          {"scene_code":"desktop_pet","activity_open":true,"signed_today":true,
+//           "signed_days":3,"total_signed_days":3,"required_days":3,
+//           "can_adopt":true,"usage_reward_result":null,
+//           "pet_entitlement_result":"available","pet_entitlement_id":19155}]}
+//
+//   POST /api/commerce/activity/v1/sign-in  {"request_no":"<uuid>","scene_codes":["daily_sign_in"]}
+//        {"sign_in_date":"2026-11-05","results":[{"scene_code":"daily_sign_in",
+//         "activity_open":true,"sign_in_result":"success","signed_days":3,
+//         "usage_reward_result":"success",...}]}
+//
+// `request_no` is a client-made idempotency key — any fresh uuid is accepted,
+// and repeating one is not a second claim.
 
-export const SIGN_IN_SCENES = ["desktop_pet"]
+export const SIGN_IN_SCENES = ["daily_sign_in", "desktop_pet"]
 
 export async function signInStatus(creds, { scenes = SIGN_IN_SCENES, signal } = {}) {
   const query = scenes.map((scene) => `scene_codes=${encodeURIComponent(scene)}`).join("&")
