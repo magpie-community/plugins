@@ -3903,24 +3903,30 @@ function makePlugin(site) {
               const aside = extra ? (stops === credits ? extra : credits) : null
               if (aside) Object.assign(aside, runsOutOf(sum, packages, Date.now(), (code) => ofPlan(code) === (aside === credits)) ?? {})
               // the summary of the plan's credits alone: the extra ones
-              // only the detail lists have (listedExtra) are their window,
-              // always set aside. Whether WorkBuddy spends them once the
-              // plan's are gone isn't seen, so the plan's window stops the
-              // account as it did before.
+              // only the detail lists have (listedExtra) are their window.
+              // As with the summary's split (usageOf), one of the two stops
+              // the account: the plan's, until its credits are spent with
+              // extra ones left. WorkBuddy goes on serving such an account on
+              // its extra credits (ferock on Discord, a China-site account
+              // at "500 / 500" moved off while its extra ones were left).
               const kinds = !extra && kindsOf(sum, site)
               const more = kinds && kinds.plan.total > 0 && kinds.extra.total === 0 ? listedExtra(sum, packages, site) : null
               if (more) {
                 const { runsOutAt, runsOut, ...counts } = more
-                const w = { ...creditWindow("Extra credits", counts), aside: true, ...(runsOutAt ? { runsOutAt, runsOut } : {}) }
+                const w = { ...creditWindow("Extra credits", counts), ...(runsOutAt ? { runsOutAt, runsOut } : {}) }
+                const planSpent = credits.amount >= credits.limit && counts.used < counts.total
+                if (planSpent) credits.aside = true
+                else w.aside = true
                 out.windows.splice(out.windows.indexOf(credits) + 1, 0, w)
-                // and, as with the split's, the soonest of them to lapse is
+                // and, as with the split's, the soonest credits to lapse are
                 // the account's too, on the window that stops it: routing
                 // reads none set aside, so an account whose extra credits
                 // expire first went unknown to it (Kayphoon on Discord)
-                const at = runsOutAt ? Date.parse(runsOutAt) : 0
-                const was = credits.runsOutAt ? Date.parse(credits.runsOutAt) : 0
-                if (at > 0 && (!was || at < was)) Object.assign(credits, { runsOutAt, runsOut })
-                else if (at > 0 && at === was) credits.runsOut = (credits.runsOut ?? 0) + runsOut
+                const [stops, other] = planSpent ? [w, credits] : [credits, w]
+                const at = other.runsOutAt ? Date.parse(other.runsOutAt) : 0
+                const was = stops.runsOutAt ? Date.parse(stops.runsOutAt) : 0
+                if (at > 0 && (!was || at < was)) Object.assign(stops, { runsOutAt: other.runsOutAt, runsOut: other.runsOut })
+                else if (at > 0 && at === was) stops.runsOut = (stops.runsOut ?? 0) + other.runsOut
               }
             } catch {}
           }

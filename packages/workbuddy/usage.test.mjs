@@ -588,6 +588,43 @@ test("extra credits only the detail lists have are a window of their own, set as
   expect(_internal.listedExtra(summary, [{ ...topup, CycleCapacitySizePrecise: "" }], SITES.workbuddy, now)).toBeNull()
 })
 
+// ferock on Discord (2026-11-05, a China-site account): "额外积分不计算在内，
+// 基础积分用完 magpie 就切换账号了，其实账号还能用额外积分". The card read
+// "500 / 500" on the plan's window alone, and that window stopped the
+// account while extra credits only the detail lists carry were left. As
+// with the summary's split, the plan's window is set aside once it is spent
+// with extra credits left, and the extra window stops the account.
+test("plan credits spent with extra ones left from the detail lists: the extra window stops the account (ferock on Discord)", async () => {
+  const year = Date.UTC(2036, 9, 1) - Date.UTC(2026, 9, 1)
+  const on = (p) => ({ ...p, DeductionEndTime: p.DeductionEndTime + year, CycleStartTime: "2036" + p.CycleStartTime.slice(4), CycleEndTime: "2036" + p.CycleEndTime.slice(4) })
+  const base = { ...CN_FREE.Accounts[1], CycleCapacitySizePrecise: "500", CycleCapacityRemainPrecise: "0", SlicePeriodUsageDetails: [{ SlicePeriodCapacitySizePrecise: "500", SlicePeriodCapacityRemainPrecise: "0" }] }
+  const gift = { ...CN_FREE.Accounts[0], CycleCapacitySizePrecise: "300", CycleCapacityRemainPrecise: "280" }
+  const topup = { PackageCode: "TCACA_code_009_0XmEQc2xOf", PackageName: "加量包", CapacityType: 1, CycleCapacitySizePrecise: "1000", CycleCapacityRemainPrecise: "1000",
+    CycleStartTime: "2026-10-02 10:00:00", CycleEndTime: "2027-10-02 09:59:59", DeductionEndTime: Date.parse("2027-10-02T01:59:59Z"), ExpiredTime: "", Status: 0 }
+  const plan = { ...CN_FREE_SUMMARY.Packages[1], CycleRemainCapacity: "0", CycleUsedCapacity: "500" }
+  const lists = (accounts) => serve({
+    "/billing/meter/get-user-resource-summary": () => ok({ ...CN_FREE_SUMMARY, Packages: [plan] }),
+    "/billing/meter/get-user-resource-paid-packages": () => ok({ TotalCount: 1, Accounts: [on(topup)] }),
+    "/billing/meter/get-user-resource-free-packages": () => ok({ TotalCount: accounts.length, Accounts: accounts.map(on) }),
+  })
+  const auth = { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" }
+  lists([gift, base])
+  let u = await usageOf(WorkBuddyAuthPlugin, auth)
+  expect(u.windows.slice(0, 2).map((w) => [w.name, w.display, w.used, !!w.aside])).toEqual([["Credits", "500 / 500", 100, true], ["Extra credits", "20 / 1300", (100 * 20) / 1300, false]])
+  // the window that stops the account says the soonest lapse, as routing
+  // reads none set aside; the plan's keeps its cycle
+  expect(u.windows[1]).toMatchObject({ runsOut: 280, runsOutAt: new Date(on(gift).DeductionEndTime).toISOString() })
+  expect(u.windows[0].resetsAt).toBe("2036-10-31T15:59:59.000Z")
+  // both spent: the plan's stops it again, at 100%
+  serve({
+    "/billing/meter/get-user-resource-summary": () => ok({ ...CN_FREE_SUMMARY, Packages: [plan] }),
+    "/billing/meter/get-user-resource-paid-packages": () => ok({ TotalCount: 1, Accounts: [on({ ...topup, CycleCapacityRemainPrecise: "0" })] }),
+    "/billing/meter/get-user-resource-free-packages": () => ok({ TotalCount: 2, Accounts: [on({ ...gift, CycleCapacityRemainPrecise: "0" }), on(base)] }),
+  })
+  u = await usageOf(WorkBuddyAuthPlugin, auth)
+  expect(u.windows.slice(0, 2).map((w) => [w.name, w.used, !!w.aside])).toEqual([["Credits", 100, false], ["Extra credits", 100, true]])
+})
+
 test("a summary that already splits the credits, or lists with no extra ones, keep the card as it was", async () => {
   const empty = () => ok({ TotalCount: 0, Accounts: [] })
   serve({
