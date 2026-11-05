@@ -805,7 +805,15 @@ export class NativeSessionPool {
       const freshTurn = last?.role === "user" && !toolAttachment(last)
       if (!freshTurn || historical.some((c) => !answered.has(c.id))) return fallback("historical native calls")
     }
-    if (selector && this.selectors.has(account + ":" + selector)) return fallback("owner busy")
+    if (selector && this.selectors.has(account + ":" + selector)) {
+      if (!historical.length) return fallback("owner busy")
+      // New input after results the caller already gave its native calls
+      // (Claude Code sends a reminder beside a tool result, which a chat
+      // request carries as a user message after the tool message). The
+      // reservation's holder, a parent awaiting results, is left as it is:
+      // this Run takes no reservation, and only its own calls resume it.
+      return { account, selector, controls, selected: false, chat }
+    }
     return { account, selector, controls, selected: !!selector, chat }
   }
   create(prepared, resolution, wire) {
@@ -822,6 +830,17 @@ export class NativeSessionPool {
     catch (e) {
       if (!(e instanceof NativeSessionError)) throw e
       return null
+    }
+    // A Run of this conversation still live may be abandoned after this one
+    // starts: what it then owes is bounded before this start, so this Run's
+    // own dashboard events are never collected as its debt.
+    // One that waits on the caller's results owes its step now, for this
+    // Run to collect, rather than when it is abandoned at resultWait.
+    const at = Date.now()
+    for (const e of this.entries) {
+      if (e.account !== owner.account || !e.selector || e.selector !== owner.selector) continue
+      e.laterRunAt ??= at
+      if (e.state === "awaiting-results") e.accounting?.handover()
     }
     this.entries.add(owner)
     if (prepared.selected) this.selectors.set(owner.account + ":" + owner.selector, owner)
@@ -1004,6 +1023,9 @@ class NativeSession {
     batch.next = next
     this.segment = next
     this.state = "submitting"
+    // a step owed at a later Run's start and not collected yet is this Run's
+    // to count again, in its own final
+    this.accounting?.resumed()
     clearTimeout(this.resultTimer)
     clearTimeout(this.batchTimer)
     this.batchTimer = null
@@ -1264,6 +1286,15 @@ class NativeSession {
       }
       earlier = { input: u.input - own.input, cacheRead: u.cacheRead - own.cacheRead, cacheWrite: u.cacheWrite - own.cacheWrite, output: u.output - own.output }
       Object.assign(u, own)
+    }
+    // What a later Run collected of this Run's event while this one waited on
+    // results (handover) is in the turn's totals too: it comes off them, from
+    // the earlier steps' share first, so the event counts once.
+    const counted = this.accounting?.counted?.()
+    if (counted) for (const k of ["input", "cacheRead", "cacheWrite", "output"]) {
+      const off = Math.min(earlier?.[k] ?? 0, counted[k] ?? 0)
+      if (earlier) earlier[k] -= off
+      u[k] = Math.max(0, u[k] - ((counted[k] ?? 0) - off))
     }
     const prompt = u.input + u.cacheRead + u.cacheWrite
     this.finalUsage = {
