@@ -10,6 +10,11 @@
 //     fresh session.js and opens the gate, which restarts the daemon and sends the frame here again with the new port.
 //   - at most 3 automatic tries in 2 minutes (counted in ?ac_try=<start>.<n>, carried through b → boot.js → gate → here);
 //     then a button, so a daemon that can't start doesn't loop forever.
+//   - coming back to the page (visibilitychange → visible, or window focus) checks at once instead of waiting out the timers
+//     that were pushed back while hidden: if the child never said alive within bootMs of loading, or its last real alive is
+//     older than silentMs, it gets probeMs (two heartbeats) to speak up, then recover(); a child that is still alive is
+//     never refreshed. If an end state with Reconnect is showing, coming back counts as the user clicking it (also when
+//     the 3 automatic tries are used up), so the user never returns to a dead button.
 //   - every disconnect / invalid-link end state shows a Reconnect button. A missing #b= is filled from sessionStorage
 //     (last safe Magpie back URL written when this page first saw a valid b; read/write re-run safeBack). With a stored
 //     back, recover navigates via go(false). With none, the button reloads and the copy tells the user to flip Magpie's
@@ -39,7 +44,7 @@ export function parseTry(raw) {
   return m ? { start: Number(m[1]), n: Number(m[2]) } : null;
 }
 
-export const WRAP_TIMING = { bootMs: 12000, afterLoadMs: 6000, silentMs: 15000, maxTries: 3, triesWindowMs: 120000 };
+export const WRAP_TIMING = { bootMs: 12000, afterLoadMs: 6000, silentMs: 15000, maxTries: 3, triesWindowMs: 120000, probeMs: 4000 };
 
 const SCRIPT = String.raw`(function () {
   "use strict";
@@ -67,13 +72,20 @@ const SCRIPT = String.raw`(function () {
   var said = document.getElementById("s");
   var btn = document.getElementById("r");
   var RECONNECT = ["重新连接", "Reconnect"];
+  function onReturn(fn) {
+    document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") fn(); });
+    window.addEventListener("focus", function () { if (document.visibilityState !== "hidden") fn(); });
+  }
   function msg(zhText, enText, button) {
     said.textContent = zh ? zhText : enText;
     box.hidden = false;
     if (button) { btn.textContent = zh ? button[0] : button[1]; btn.hidden = false; }
   }
+  // The Reconnect action of the end state on screen (null while none is): coming back to the page runs it once
+  var ended = null;
   function wireReconnect(targetBack) {
-    btn.onclick = function () {
+    ended = btn.onclick = function () {
+      if (btn.disabled) return;
       btn.disabled = true;
       if (targetBack) location.replace(targetBack);
       else location.reload();
@@ -86,6 +98,7 @@ const SCRIPT = String.raw`(function () {
       RECONNECT
     );
     wireReconnect(back || readStoredBack());
+    onReturn(function () { if (ended) ended(); });
     return;
   }
 
@@ -97,10 +110,15 @@ const SCRIPT = String.raw`(function () {
 
   var everAlive = false, lastAlive = 0, recovering = false;
   var loadedAt = Date.now(), lastTick = Date.now();
+  // Unlike lastAlive / loadedAt these are never pushed back while hidden or asleep: what the return check compares against
+  var heardAt = 0, bootAt = loadedAt, probeFrom = 0, probeUntil = 0;
   msg("正在连接本地服务…", "Connecting to the local service…");
   // A dead port shows the browser's error page, which also fires load: once loaded, the child gets T.afterLoadMs to say alive
   f.addEventListener("load", function () {
-    if (!everAlive) loadedAt = Math.min(loadedAt, Date.now() - (T.bootMs - T.afterLoadMs));
+    if (!everAlive) {
+      loadedAt = Math.min(loadedAt, Date.now() - (T.bootMs - T.afterLoadMs));
+      bootAt = Math.min(bootAt, Date.now() - (T.bootMs - T.afterLoadMs));
+    }
   });
 
   function recover(at) {
@@ -136,7 +154,7 @@ const SCRIPT = String.raw`(function () {
     };
     if (t.n >= T.maxTries) {
       msg("本地服务多次重连失败。", "Reconnecting to the local service failed several times.", RECONNECT);
-      btn.onclick = function () { btn.disabled = true; go(false); };
+      ended = btn.onclick = function () { if (btn.disabled) return; btn.disabled = true; go(false); };
       return;
     }
     msg("本地服务已断开，正在重新连接…", "The local service disconnected. Reconnecting…");
@@ -148,7 +166,8 @@ const SCRIPT = String.raw`(function () {
     if (!d || typeof d !== "object") return;
     if (e.source === f.contentWindow) {
       if (d.ac_console === "alive") {
-        lastAlive = Date.now();
+        lastAlive = heardAt = Date.now();
+        probeUntil = 0;
         if (!everAlive) { everAlive = true; box.hidden = true; f.classList.add("on"); }
         return;
       }
@@ -166,10 +185,25 @@ const SCRIPT = String.raw`(function () {
     }
   });
 
+  // The page is visible again: don't wait for the timers that were pushed back while hidden
+  function checkOnReturn() {
+    if (ended) { ended(); return; } // an end state is showing: same as clicking Reconnect (even with the auto tries used up)
+    if (recovering || probeUntil) return;
+    var now = Date.now();
+    var stale = everAlive ? now - heardAt > T.silentMs : now - bootAt > T.bootMs;
+    if (stale) { probeFrom = now; probeUntil = now + T.probeMs; } // a child that is still there answers with its next heartbeat
+  }
+  onReturn(checkOnReturn);
+
   setInterval(function () {
     var now = Date.now();
-    var gap = now - lastTick;
+    var prevTick = lastTick, gap = now - lastTick;
     lastTick = now;
+    if (probeUntil) {
+      // Hidden or suspended again after the probe started: drop it (a gap that ended before it, e.g. the wake itself, is fine)
+      if (document.visibilityState === "hidden" || (gap > 5000 && prevTick >= probeFrom)) probeUntil = 0;
+      else if (now >= probeUntil) { probeUntil = 0; recover(everAlive ? heardAt : 0); return; }
+    }
     // This page's own timers were held (sleep, a frozen or heavily throttled frame): give the child a fresh window
     if (gap > 5000 || document.visibilityState === "hidden") {
       if (everAlive) lastAlive = Math.max(lastAlive, now);

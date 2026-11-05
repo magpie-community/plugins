@@ -29,6 +29,8 @@ async function runWrapper(
   const els: Record<string, ReturnType<typeof el>> = { f: el("f"), m: el("m"), s: el("s"), r: el("r") };
   (els.f as unknown as { contentWindow: unknown }).contentWindow = childWin;
   let onMessage: (e: Msg) => void = () => {};
+  const winOn: Record<string, (() => void)[]> = {};
+  const docOn: Record<string, (() => void)[]> = {};
   const loc = {
     hash, search, replaced: null as string | null, reloaded: 0,
     replace(u: string) { this.replaced = u; },
@@ -43,9 +45,16 @@ async function runWrapper(
   };
   const win: Record<string, unknown> = {
     parent: parentWin,
-    addEventListener: (t: string, fn: (e: Msg) => void) => { if (t === "message") onMessage = fn; },
+    addEventListener: (t: string, fn: (e: Msg) => void) => {
+      if (t === "message") onMessage = fn;
+      else (winOn[t] ??= []).push(fn as unknown as () => void);
+    },
   };
-  const doc = { getElementById: (id: string) => els[id], documentElement: { className: "" }, visibilityState: opts.visible === false ? "hidden" : "visible" };
+  const doc = {
+    getElementById: (id: string) => els[id], documentElement: { className: "" },
+    visibilityState: opts.visible === false ? "hidden" : "visible",
+    addEventListener: (t: string, fn: () => void) => { (docOn[t] ??= []).push(fn); },
+  };
   const DateFake = { now: () => now };
   const fn = new Function("window", "document", "location", "setInterval", "Date", "URL", "URLSearchParams", "sessionStorage", script);
   fn(win, doc, loc, (f: () => void) => { intervals.push(f); return 1; }, DateFake, URL, URLSearchParams, sessionStorage);
@@ -56,6 +65,9 @@ async function runWrapper(
     fromParent: (data: unknown) => onMessage({ source: parentWin, data }),
     fromOther: (data: unknown) => onMessage({ source: {}, data }),
     jump: (ms: number) => { now += ms; },
+    hide: () => { doc.visibilityState = "hidden"; (docOn.visibilitychange ?? []).forEach((f) => f()); },
+    show: () => { doc.visibilityState = "visible"; (docOn.visibilitychange ?? []).forEach((f) => f()); },
+    focus: () => { (winOn.focus ?? []).forEach((f) => f()); },
     now: () => now,
   };
 }
@@ -247,6 +259,133 @@ describe("wrapper page", () => {
     w.els.r!.onclick!();
     expect(w.loc.replaced).toBe(BACK);
     expect(w.loc.reloaded).toBe(0);
+  });
+
+  it("coming back visible after a long hidden spell: a child that answers is left alone", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: BACK }));
+    w.fromChild({ ac_console: "alive" });
+    w.hide();
+    w.tick(600_000, 60_000); // ten minutes hidden, heartbeats throttled away
+    w.show();
+    w.tick(2000);
+    w.fromChild({ ac_console: "alive" }); // next heartbeat after unthrottling
+    w.tick(10_000, 2000);
+    w.fromChild({ ac_console: "alive" });
+    w.tick(2000);
+    expect(w.loc.replaced).toBeNull();
+    expect(w.loc.reloaded).toBe(0);
+    // focus while it's fresh does nothing either
+    w.focus();
+    w.tick(5000);
+    w.fromChild({ ac_console: "alive" });
+    w.tick(5000);
+    expect(w.loc.replaced).toBeNull();
+  });
+
+  it("coming back visible with a silent child recovers within the probe window, not after silentMs", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: BACK }));
+    w.fromChild({ ac_console: "alive" });
+    const heard = w.now();
+    w.hide();
+    w.tick(600_000, 60_000);
+    w.show();
+    w.tick(3000);
+    expect(w.loc.replaced).toBeNull(); // still giving it its heartbeat
+    w.tick(1000);
+    const u = new URL(w.loc.replaced!);
+    expect(u.searchParams.get("ac_lost")).toBe(String(heard));
+    expect(u.searchParams.get("ac_try")).toMatch(/^\d+\.1$/);
+    expect(w.loc.replaced).not.toContain(TOKEN);
+  });
+
+  it("window focus after sleep (timers suspended) also checks at once", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: BACK }));
+    w.fromChild({ ac_console: "alive" });
+    w.jump(3_600_000); // asleep: no ticks, no heartbeats
+    w.focus();
+    w.tick(1000); // the big gap bumps lastAlive; the probe still runs from the real heardAt
+    w.tick(3000);
+    expect(w.loc.replaced).not.toBeNull();
+  });
+
+  it("never alive: loaded hidden and shown after bootMs recovers within the probe window", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: BACK }), "", { visible: false });
+    w.tick(60_000);
+    expect(w.loc.replaced).toBeNull();
+    w.show();
+    w.tick(4000);
+    const u = new URL(w.loc.replaced!);
+    expect(u.searchParams.has("ac_lost")).toBe(false);
+    expect(u.searchParams.get("ac_try")).toMatch(/^\d+\.1$/);
+    // shown before bootMs: no early probe, the normal 12 s boot window applies
+    const e = await runWrapper(hash({ t: TOKEN, p: "4321", b: BACK }), "", { visible: false });
+    e.tick(3000);
+    e.show();
+    e.tick(5000);
+    expect(e.loc.replaced).toBeNull();
+    e.fromChild({ ac_console: "alive" });
+    e.tick(5000);
+    expect(e.loc.replaced).toBeNull();
+  });
+
+  it("a probe is dropped if the page hides again before it ends", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: BACK }));
+    w.fromChild({ ac_console: "alive" });
+    w.hide();
+    w.tick(120_000, 60_000);
+    w.show();
+    w.tick(2000);
+    w.hide();
+    w.tick(60_000);
+    expect(w.loc.replaced).toBeNull();
+  });
+
+  it("auto tries used up: coming back counts as clicking Reconnect (once)", async () => {
+    const start = 1_800_000_000_000 - 30_000;
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: BACK }), `?ac_try=${start}.3`);
+    w.fromChild({ ac_console: "lost", at: 1 });
+    expect(w.loc.replaced).toBeNull();
+    expect(w.els.r!.hidden).toBe(false);
+    w.hide();
+    w.show();
+    const u = new URL(w.loc.replaced!);
+    expect(u.origin + u.pathname).toBe("http://127.0.0.1:5000/_magpie/plugin/abc123/page/index.html");
+    expect(u.searchParams.has("ac_try")).toBe(false); // go(false), like the button
+    expect(w.els.r!.disabled).toBe(true);
+    w.loc.replaced = null;
+    w.focus();
+    w.els.r!.onclick!();
+    expect(w.loc.replaced).toBeNull(); // already on its way: not twice
+  });
+
+  it("no back at all: coming back to the end state reloads like the button", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }));
+    w.fromChild({ ac_console: "lost", at: 1 });
+    expect(w.loc.reloaded).toBe(0);
+    w.focus();
+    expect(w.loc.reloaded).toBe(1);
+    expect(w.loc.replaced).toBeNull();
+    w.show();
+    expect(w.loc.reloaded).toBe(1);
+  });
+
+  it("invalid link: coming back runs Reconnect through the stored back; unsafe stored back is never followed", async () => {
+    const w = await runWrapper(hash({ t: "nope", p: "1" }), "", { sessionStorage: { ac_wrap_back: BACK } });
+    w.show();
+    expect(w.loc.replaced).toBe(BACK);
+    const evil = await runWrapper(hash({ t: "nope", p: "1", b: "https://evil.example/_magpie/plugin/a/index.html" }), "",
+      { sessionStorage: { ac_wrap_back: "http://evil.example/_magpie/plugin/a/index.html" } });
+    evil.focus();
+    expect(evil.loc.replaced).toBeNull();
+    expect(evil.loc.reloaded).toBe(1);
+  });
+
+  it("hidden page: focus/visibility events while hidden do nothing", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: BACK }), "", { visible: false });
+    w.tick(60_000);
+    w.focus();
+    w.tick(10_000);
+    expect(w.loc.replaced).toBeNull();
   });
 
   it("relays only the Magpie theme protocol", async () => {
