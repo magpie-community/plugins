@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { burnScale, effortValue, namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
-import { DEFAULT_SCORING_POLICY } from "../src/catalog.js";
+import { DEFAULT_SCORING_POLICY, EFFORT_CURVES } from "../src/catalog.js";
 import {
   CACHE_COLD_MS,
   CHATGPT_CODEX_COLD_MS,
@@ -2127,4 +2127,57 @@ test("9.10 Effort fallback (plugin-side, not in AgentCompass): `:minimal` and `:
   const cont = Object.fromEntries(held.allCandidates.map((c) => [c.effort, c.components.continuity]));
   assert.equal(cont.low, 0.25);
   assert.equal(cont.minimal, 0.0625);
+});
+
+test("9.11 Effort fallback branches the default policy can't reach: policy Max for `ultra`, the 0.2 step floor, the 0.75 burn clamp, none/off", () => {
+  const profile = {
+    work_kind: "general_implementation",
+    reasoning_depth: 1,
+    code_complexity: 1,
+    context_scale: 2,
+    divergence: 1,
+    hallucination_risk: 2,
+    error_cost: 1,
+    needs_visual: false,
+    needs_gui: false,
+    local_only: true,
+    interaction_style: "engineering",
+  };
+  const policy = DEFAULT_SCORING_POLICY;
+  const round = (value) => Math.round(value * 1e4) / 1e4;
+  const abilities = (candidateModels) =>
+    Object.fromEntries(rankCandidates(profile, { candidateModels }).allCandidates.map((c) => [c.effort, c.components.ability_value]));
+
+  // ultra on a model with no curve of its own reads as the policy's Max
+  assert.equal(EFFORT_CURVES["glm-5.3"], undefined);
+  const glm = abilities(["glm-5.3:high", "glm-5.3:max", "glm-5.3:ultra"]);
+  assert.equal(glm.ultra, glm.max);
+  assert.ok(Math.abs(glm.ultra - (glm.high + policy.effort_ability.max)) < 0.001, `ultra ${glm.ultra}, high ${glm.high}`);
+  assert.equal(effortValue(policy, undefined, "ability", "ultra", 0), policy.effort_ability.max);
+  assert.equal(effortValue(policy, undefined, "burn", "ultra", 0.7), policy.effort_burn.max);
+
+  // Step floor: a policy whose Low->minimal step is smaller than 0.2 still puts minimal 0.2 below the model's Low
+  const shallow = { ...policy, effort_ability: { ...policy.effort_ability, low: -0.54, minimal: -0.6 } };
+  assert.equal(round(effortValue(shallow, { ability: { low: -0.5, high: 0 } }, "ability", "minimal", 0)), -0.7);
+  // ...and a deeper step is used as given
+  const deep = { ...policy, effort_ability: { ...policy.effort_ability, low: -0.54, minimal: -1.0 } };
+  assert.equal(round(effortValue(deep, { ability: { low: -0.5, high: 0 } }, "ability", "minimal", 0)), -0.96);
+
+  // Burn clamp: a policy with effort_burn.minimal close to Low still burns at most 0.75 of the model's Low
+  const curve = { burn: { low: 0.4, high: 0.7 } };
+  const nearLow = { ...policy, effort_burn: { ...policy.effort_burn, low: 0.2, minimal: 0.19 } };
+  assert.equal(effortValue(nearLow, curve, "burn", "minimal", 0.7), 0.3);
+  const cheap = { ...policy, effort_burn: { ...policy.effort_burn, low: 0.2, minimal: 0.1 } };
+  assert.equal(effortValue(cheap, curve, "burn", "minimal", 0.7), 0.2);
+
+  // none/off: parsed as efforts and scored from their own policy rows (below minimal), on and off a model's curve
+  const astra = abilities(["gpt-6-astra:none", "gpt-6-astra:off", "gpt-6-astra:minimal", "gpt-6-astra:low"]);
+  assert.deepEqual(Object.keys(astra).sort(), ["low", "minimal", "none", "off"]);
+  const lowToNone = Math.min(policy.effort_ability.none - policy.effort_ability.low, -0.2);
+  assert.ok(Math.abs(astra.none - (astra.low + lowToNone)) < 0.001, `none ${astra.none}, low ${astra.low}`);
+  assert.equal(astra.off, astra.none);
+  assert.ok(astra.none < astra.minimal, `none ${astra.none} below minimal ${astra.minimal}`);
+  const glmNone = abilities(["glm-5.3:none", "glm-5.3:off", "glm-5.3:high"]);
+  assert.ok(Math.abs(glmNone.none - (glmNone.high + policy.effort_ability.none)) < 0.001);
+  assert.ok(Math.abs(glmNone.off - (glmNone.high + policy.effort_ability.off)) < 0.001);
 });
