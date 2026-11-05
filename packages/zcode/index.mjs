@@ -2375,6 +2375,11 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
         // the list it was told last, as the built-in keeps the one it fetched last
         const fell = !ms.length
         if (fell) ms = start ? START_MODELS : MODELS
+        // a gift-only account serves what its balance names, as ZCode
+        // offers it (resolveStartPlanBalanceAvailability): the Start
+        // Plan's config models the balance lacks would only be refused
+        // (young02036). A balance naming none leaves the config's list.
+        if (start && giftNames(gift).length) ms = ms.filter((m) => giftNames(gift).some((x) => x.toLowerCase() === m.id.toLowerCase()))
         const url = s.base + "/v1"
         const out = Object.fromEntries(ms.map((m) => [m.id, model(m, url)]))
         const details = [...ms, ...modelsOf(cfg, planID(START_BASE)), ...modelsOf(cfg, planID(ZAI_BASE)), ...MODELS]

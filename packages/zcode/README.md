@@ -359,9 +359,13 @@ plans add `-Trial` entries, which are told as read):
 | GLM-5-Turbo | 200K | 64K | none, high |
 
 The Start Plan's config has all of these except GLM-5.3. An account
-with no GLM Coding Plan also lists every model its gift plans serve under
-the model's own name, as ZCode does (the Start Plan's GLM-5.3 bucket makes
-GLM-5.3 a model), since all of its requests go to the gift anyway.
+with no GLM Coding Plan lists the models its gift plans' balance names,
+under each model's own name, as ZCode does (the Start Plan's GLM-5.3
+bucket makes GLM-5.3 a model), since all of its requests go to the gift
+anyway. A config model the balance doesn't name is left out: an account
+whose Start Plan holds only GLM-5.3-Flash lists GLM-5.3-Flash (and its
+-Trial entry), not GLM-5.2 or GLM-5-Turbo. Only a balance that names no
+model leaves the config's list standing.
 
 A gift plan's models appear again as `<model>-Trial` entries, so a
 request can spend the gift's quota on purpose. A trial entry is listed
