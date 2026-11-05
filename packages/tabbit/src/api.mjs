@@ -274,24 +274,40 @@ export async function join(creds, room, { lastEventId = null, signal } = {}) {
 
 // ---- the daily sign-in (签到) -------------------------------------------
 //
-// The activity the desktop pet signs in to. Measured on a live account:
+// Two scenes the service takes on the same endpoint; any other name comes back
+// SIGN_IN_SCENE_UNSUPPORTED. Measured on a live account:
 //
-//   GET  /api/commerce/activity/v1/sign-in/status?scene_codes=desktop_pet
-//        {"sign_in_date":"2026-11-03","results":[{"scene_code":"desktop_pet",
-//         "activity_open":true,"signed_today":true,"signed_days":1,
-//         "total_signed_days":1,"required_days":3,"can_adopt":false,
-//         "usage_reward_result":null,"pet_entitlement_result":"not_eligible",
-//         "pet_entitlement_id":null}]}
+//   daily_sign_in   the account's 每日签到 (the "每日签到" under the avatar,
+//                   below "本周剩余用量"). A claim restores a fixed % of the
+//                   weekly usage — measured +3.00% — and appears in
+//                   quota/v1/usage-records as scene_group_name
+//                   "sign_in_fixed_percent_usage_restore_activity".
+//                   unsigned status: usage_reward_result "available"
+//                   claim reply:     sign_in_result "success",
+//                                    usage_reward_result "success"
 //
-//   POST /api/commerce/activity/v1/sign-in  {"request_no":"<uuid>","scene_codes":["desktop_pet"]}
-//        {"sign_in_date":"2026-11-03","results":[{"scene_code":"desktop_pet",
-//         "activity_open":true,"sign_in_result":"already_signed", ...}]}
+//   desktop_pet     the desktop pet's consecutive-day streak (3 days → a pet
+//                   entitlement). claim reply: sign_in_result "signed".
 //
-// `desktop_pet` is the only scene the service takes: every other name comes
-// back SIGN_IN_SCENE_UNSUPPORTED. `request_no` is a client-made idempotency
-// key — any fresh uuid is accepted, and repeating one is not a second claim.
+//   GET  /api/commerce/activity/v1/sign-in/status?scene_codes=daily_sign_in&scene_codes=desktop_pet
+//        {"sign_in_date":"2026-11-05","results":[
+//          {"scene_code":"daily_sign_in","activity_open":true,"signed_today":false,
+//           "signed_days":2,"total_signed_days":2,"required_days":null,
+//           "usage_reward_result":"available","pet_entitlement_result":null,...},
+//          {"scene_code":"desktop_pet","activity_open":true,"signed_today":true,
+//           "signed_days":3,"total_signed_days":3,"required_days":3,
+//           "can_adopt":true,"usage_reward_result":null,
+//           "pet_entitlement_result":"available","pet_entitlement_id":19155}]}
+//
+//   POST /api/commerce/activity/v1/sign-in  {"request_no":"<uuid>","scene_codes":["daily_sign_in"]}
+//        {"sign_in_date":"2026-11-05","results":[{"scene_code":"daily_sign_in",
+//         "activity_open":true,"sign_in_result":"success","signed_days":3,
+//         "usage_reward_result":"success",...}]}
+//
+// `request_no` is a client-made idempotency key — any fresh uuid is accepted,
+// and repeating one is not a second claim.
 
-export const SIGN_IN_SCENES = ["desktop_pet"]
+export const SIGN_IN_SCENES = ["daily_sign_in", "desktop_pet"]
 
 export async function signInStatus(creds, { scenes = SIGN_IN_SCENES, signal } = {}) {
   const query = scenes.map((scene) => `scene_codes=${encodeURIComponent(scene)}`).join("&")
