@@ -388,7 +388,8 @@ export function evaluateCandidate(candidate, taskCtx, catalog = {}) {
   const curves = curvesTable[canonical] || {};
   const excluded = [];
 
-  if (taskCtx.needs_visual && !info.visual) {
+  const cannotSeeInput = Boolean(taskCtx.needs_visual && !info.visual);
+  if (cannotSeeInput) {
     excluded.push("task needs visual input");
   }
   if (taskCtx.unhealthy_models && taskCtx.unhealthy_models.has(canonical)) {
@@ -613,6 +614,8 @@ export function evaluateCandidate(candidate, taskCtx, catalog = {}) {
     fast: Boolean(quotaEval?.fast),
     excluded,
     eligible: excluded.length === 0,
+    cannotSeeInput,
+    onlyBelowFloor: excluded.length === 1 && ability < gate,
     score: excluded.length === 0 ? totalScore : null,
     quota: quotaEval
       ? {
@@ -816,20 +819,29 @@ export function rankCandidates(profileInput, options = {}) {
   };
 }
 
+function fallbackTier(candidate) {
+  if (candidate.onlyBelowFloor) return 0;
+  return candidate.cannotSeeInput ? 2 : 1;
+}
+
 /**
  * Convenience entry point: takes a raw request or task object + options and returns the winning route decision.
  *
  * `fallbackToBestExcluded` is for gateways. AgentCompass may leave a task unrouted when no candidate clears its
  * floor, but a gateway that does so forwards the virtual model name upstream and the request fails. With the
- * option, the most capable excluded candidate is chosen instead and the decision carries `fallback`.
+ * option, an excluded candidate is chosen instead and the decision carries `fallback`: one that only misses the
+ * floor, else one that can see the request's images, with ability breaking ties. Falling short of a floor still
+ * answers the request; a model that can't see its images can't.
  */
 export function selectBestRoute(taskOrProfile, options = {}) {
   const result = rankCandidates(taskOrProfile, options);
   let top = result.selected;
   let fallback = null;
   if (!top && options.fallbackToBestExcluded && result.allCandidates.length > 0) {
-    top = result.allCandidates.reduce((best, c) =>
-      c.components.ability_value > best.components.ability_value ? c : best);
+    top = result.allCandidates.reduce((best, c) => {
+      const tier = fallbackTier(c) - fallbackTier(best);
+      return tier < 0 || (tier === 0 && c.components.ability_value > best.components.ability_value) ? c : best;
+    });
     fallback = { excluded: top.excluded };
   }
   return {

@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { burnScale, effortValue, namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
-import { DEFAULT_SCORING_POLICY, EFFORT_CURVES } from "../src/catalog.js";
+import { CANONICAL_ROUTES, DEFAULT_SCORING_POLICY, EFFORT_CURVES } from "../src/catalog.js";
 import {
   CACHE_COLD_MS,
   CHATGPT_CODEX_COLD_MS,
@@ -2461,4 +2461,48 @@ test("9.13 The gateway always routes: when every candidate is below the task's f
   assert.equal(ctx.state.route?.targetModel, "gpt-6-astra");
   assert.equal(ctx.state.route?.targetEffort, "minimal");
   assert.ok(ctx.state.route?.fallback, "the decision says it fell back");
+
+  // A model that can't see the request's image is the last resort, however capable it is.
+  const visualPrompt = "Refactor the payment retry loop in billing/retry.go to match this screenshot and add tests for the backoff";
+  const visualBody = () => ({
+    model: "agentcompass",
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: visualPrompt },
+        { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+      ],
+    }],
+  });
+  const routedVisual = (candidateModels) => {
+    const out = mwOnRequest(visualBody(), { protocol: "chat", agent: "claude-code", options: { candidateModels }, state: {} });
+    return out ? out.model : null;
+  };
+  assert.equal(routedVisual(["claude-fable-5-1:high", "gemini-3.8-flash-high:low"]), "gemini-3.8-flash-high:low");
+  assert.equal(routedVisual(["grok-4.7:high", "gemini-3.8-flash-high:minimal"]), "gemini-3.8-flash-high:minimal");
+  // Outside the floor-only tier, seeing the image still beats raw ability.
+  const visualProfile = { ...inferTaskProfile({ objective: visualPrompt }), needs_visual: true };
+  const kind = visualProfile.work_kind;
+  const seeing = selectBestRoute(visualProfile, {
+    objective: visualPrompt,
+    candidateModels: ["claude-fable-5-1:high", "gemini-3.8-flash-high:low", "grok-4.7:low"],
+    catalog: { routes: { ...CANONICAL_ROUTES, [kind]: { ...CANONICAL_ROUTES[kind], restrict_models: true, preferred: ["grok-4.7"] } } },
+    fallbackToBestExcluded: true,
+  });
+  assert.equal(seeing.modelWithEffort, "gemini-3.8-flash-high:low");
+  assert.equal(seeing.fallback.excluded.length, 2, "not in the allowed list and below the floor");
+  // Only missing the floor beats a capable candidate excluded for another reason.
+  const floorOnly = selectBestRoute(visualProfile, {
+    objective: visualPrompt,
+    candidateModels: ["gpt-6-astra:high", "gemini-3.8-flash-high:low"],
+    catalog: { routes: { ...CANONICAL_ROUTES, [kind]: { ...CANONICAL_ROUTES[kind], restrict_models: true, preferred: ["gemini-3.8-flash-high"] } } },
+    fallbackToBestExcluded: true,
+  });
+  assert.equal(floorOnly.modelWithEffort, "gemini-3.8-flash-high:low");
+  // With no model that can see it, the request still goes somewhere, to the most capable one.
+  assert.equal(routedVisual(["claude-fable-5-1:high", "grok-4.7:high"]), "claude-fable-5-1:high");
+
+  const visualCtx = { protocol: "chat", agent: "claude-code", options: { scorerType: "heuristic", candidateModels: ["claude-fable-5-1:high", "gemini-3.8-flash-high:low"] }, state: {}, report() {} };
+  await hookOnRequest(visualBody(), visualCtx);
+  assert.equal(visualCtx.state.route?.targetModel, "gemini-3.8-flash-high");
 });
