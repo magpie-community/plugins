@@ -78,25 +78,40 @@ export const READONLY_REVIEW_PHRASES = [
 ];
 
 export const GUI_WORDS = [
+  "click",
+  "screenshot",
+  " gui",
+  "desktop app",
+  "mouse",
+  "点击",
+  "截图",
+  "桌面",
+  "鼠标",
+];
+
+export const COMPUTER_USE_PHRASES = [
   "click the",
   "click save",
   "take a screenshot",
   "capture a screenshot",
-  " gui",
-  "desktop app",
-  "mouse",
-  "keyboard",
+  "use the mouse",
+  "with the mouse",
+  "mouse and keyboard",
+  "keyboard and mouse",
   "operate the browser",
   "operate the desktop",
   "点击",
   "截取屏幕",
   "截屏操作",
-  "桌面",
-  "鼠标",
-  "键盘",
+  "用鼠标",
+  "键鼠",
+  "鼠标键盘",
   "操作浏览器",
   "操作桌面",
 ];
+
+export const CODE_FILE_RE =
+  /[\w-]\.(?:py|pyw|ts|tsx|js|jsx|mjs|cjs|go|rs|java|kt|cs|cpp|cc|c|h|hpp|rb|php|swift|lua|sh|ps1)(?!\w)(?!\.\w)/i;
 
 const OBJECTIVE_LOCAL_RUNTIME_RE =
   /\b(?:ssh|ssh-agent|vps|localhost|127\.0\.0\.1|pytest|unittest|sqlite|daemon|worktree|adb|emulator|intranet|webhook|credentials?)\b/i;
@@ -243,7 +258,7 @@ export function extractRequestFacts(body, ctx = {}) {
   const effectivePrevUser = turnState.previousUserText || "";
   const hasVisual = Boolean(turnState.hasAnyVisual);
   const lowerObj = ` ${String(effectiveObjective || "").toLowerCase()} `;
-  const hasComputerUse = GUI_WORDS.some((w) => lowerObj.includes(w));
+  const hasComputerUse = !CODE_FILE_RE.test(lowerObj) && COMPUTER_USE_PHRASES.some((w) => lowerObj.includes(w));
   const totalChars = sysChars + (turnState.totalChars || 0);
   const hasExplicitEstimatedTokens =
     Number.isFinite(body?.estimated_input_tokens) ||
@@ -290,7 +305,8 @@ export function extractRequestFacts(body, ctx = {}) {
 export function inferKindFromObjective(objective) {
   const capped = capProfileText(objective);
   const text = ` ${capped.toLowerCase()} `;
-  if (GUI_WORDS.some((w) => text.includes(w))) {
+  const namesCode = CODE_FILE_RE.test(text);
+  if (!namesCode && COMPUTER_USE_PHRASES.some((w) => text.includes(w))) {
     return "computer_use";
   }
   if (
@@ -381,7 +397,7 @@ export function inferKindFromObjective(objective) {
       "text_in_text_out",
       [
         "translate",
-        "translation",
+        "translation of",
         "draft a document",
         "draft documentation",
         "rewrite the text",
@@ -526,7 +542,12 @@ export function inferKindFromObjective(objective) {
     ],
   ];
 
+  const debugKeywords = rules.find(([k]) => k === "debug_review")?.[1] || [];
+  const debugging = debugKeywords.some((word) => text.includes(word));
   for (const [kind, keywords] of rules) {
+    if (kind === "text_in_text_out" && (namesCode || debugging)) {
+      continue;
+    }
     if (keywords.some((w) => text.includes(w))) {
       return kind;
     }
