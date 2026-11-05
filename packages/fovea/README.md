@@ -7,7 +7,7 @@
 **magpie 网关中间件：最近窗口看得清，之前的旧历史只带轮廓。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-2f63a2.svg?style=for-the-badge)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-45%2F45-brightgreen?style=for-the-badge)](#证据三层各管什么)
+[![Tests](https://img.shields.io/badge/tests-57%2F57-brightgreen?style=for-the-badge)](#证据三层各管什么)
 [![Platform](https://img.shields.io/badge/magpie-middleware-8a6bbf?style=for-the-badge)](https://usemagpie.ai)
 [![Runtime](https://img.shields.io/badge/runtime-moejs%20%C2%B7%20zero%20deps-4a5568?style=for-the-badge)](fovea.middleware.js)
 
@@ -78,7 +78,7 @@ git clone https://github.com/magpie-community/plugins && bun test packages/fovea
 
 ## 证据三层，各管什么
 
-1. **规则正确性** —— `bun test`：45 个确定性用例（离线、零依赖）。覆盖三种形状的工具配对、protect 在两种模式下生效、代理对不劈开、document 块不动、标记幂等、连续两轮已裁前缀逐字节相同。
+1. **规则正确性** —— `bun test`：57 个确定性用例（离线、零依赖）。覆盖三种形状的工具配对、protect 在两种模式下生效、代理对不劈开、document 块不动、标记幂等、连续两轮已裁前缀逐字节相同。
 2. **同一请求确实变小** —— `bun benchmark.mjs [request.json] [options]`，或直接在证据页粘贴你的请求。合成样例：47,777 → 14,148 字符，已裁的 27 条消息逐字稳定。
 3. **真实 token / 缓存 / 费用** —— `FOVEA_GATEWAY_KEY=<临时key> bun live-benchmark.mjs`：同模型、同请求、ABBA 四连发，记录供应商返回的 input / cache_read / output token 与耗时，只看暖缓存的第二次。0.1.0 时代的一次实测：163,143 → 42,358 prompt tokens，中位延迟 7.1s → 2.5s（因历史形状与供应商缓存而异）。**账单以 `magpie usage --csv` 的 `cost_usd` 为准；字符百分比不是美元。**
 
