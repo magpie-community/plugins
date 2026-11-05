@@ -43,6 +43,12 @@ export class ClaudeSession implements ProviderSession {
   private sessionId: string | null;
   private turnId: string | null = null;
   private turnNum = 0;
+  private turnGen = 0;
+  private currentGen: number | null = null;
+  /** FIFO of turn gens still waiting for a CLI `result` (one in-flight turn at a time, ordered). */
+  private awaitingResult: number[] = [];
+  /** Gens we already ended locally on interrupt; their late `result` turn_ended must be dropped. */
+  private skipResultGens = new Set<number>();
   private st: MapState = newMapState();
   private pending = new Map<string, PendingReq>();
   private needsRestart = false;
@@ -85,7 +91,23 @@ export class ClaudeSession implements ProviderSession {
 
   private async pump(cli: ClaudeCli): Promise<void> {
     for await (const m of cli.messages) {
-      for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) this.emit(ev);
+      for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) {
+        if (ev.type === "turn_ended") {
+          // Cancelled turn's late result (status interrupted) — drop even if a newer send already ran.
+          if (
+            this.skipResultGens.size > 0 &&
+            ((ev as { status?: string }).status === "interrupted" || !this.turnId)
+          ) {
+            const g = this.skipResultGens.values().next().value as number;
+            this.skipResultGens.delete(g);
+            this.awaitingResult = this.awaitingResult.filter((x) => x !== g);
+            continue;
+          }
+          const g = this.awaitingResult.shift();
+          if (g != null && this.skipResultGens.delete(g)) continue;
+        }
+        this.emit(ev);
+      }
     }
     const exit = await cli.exited;
     // A CLI this session stopped on purpose (restart / close) is not a crash
@@ -106,7 +128,10 @@ export class ClaudeSession implements ProviderSession {
 
   private emit(ev: ProviderEvent): void {
     if (ev.type === "turn_ended" && !ev.turnId) ev.turnId = this.turnId ?? "unknown";
-    if (ev.type === "turn_ended") this.turnId = null;
+    if (ev.type === "turn_ended") {
+      this.turnId = null;
+      this.currentGen = null;
+    }
     if (ev.type === "provider_session_id" && ev.id) this.sessionId = ev.id;
     this.q.push(ev);
   }
@@ -116,6 +141,9 @@ export class ClaudeSession implements ProviderSession {
     if (this.needsRestart) await this.restart();
     const cli = this.ensureCli();
     this.turnNum++;
+    this.turnGen++;
+    this.currentGen = this.turnGen;
+    this.awaitingResult.push(this.turnGen);
     this.turnId = "u_" + Date.now().toString(36) + "_" + this.turnNum;
     this.st.sawInterrupt = false; // A new turn clears the old interrupt flag
     this.emit({
@@ -279,7 +307,22 @@ export class ClaudeSession implements ProviderSession {
     }
     this.pending.clear();
     const cli = this.cli;
-    if (!cli || !cli.alive) return;
+    const endLocal = () => {
+      // End immediately so manager/UI clear running even if the CLI is slow to emit result
+      // (same class of bug as ACP: idle UI while provider.turn still open → next send races).
+      if (this.turnId) {
+        if (this.currentGen != null) {
+          this.skipResultGens.add(this.currentGen);
+          // Drop from the FIFO so a newer turn's result is not paired with this gen
+          this.awaitingResult = this.awaitingResult.filter((g) => g !== this.currentGen);
+        }
+        this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
+      }
+    };
+    if (!cli || !cli.alive) {
+      endLocal();
+      return;
+    }
     try {
       await cli.interrupt();
     } catch (e) {
@@ -288,8 +331,10 @@ export class ClaudeSession implements ProviderSession {
       this.stopping.add(cli);
       this.needsRestart = true;
       void cli.close(500);
-      if (this.turnId) this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
+      endLocal();
+      return;
     }
+    endLocal();
   }
 
   async setModel(model: string | null): Promise<void> {

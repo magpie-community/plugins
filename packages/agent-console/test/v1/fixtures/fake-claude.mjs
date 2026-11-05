@@ -5,6 +5,7 @@
 // user tool_result and result messages. Every argv and stdin line is appended to $FAKE_CLAUDE_LOG.
 // The user text picks the scenario: TOOL (ask to run Bash), CANCEL (ask, then withdraw the ask), SLOW (stream and wait
 // for an interrupt); anything else is echoed with a description of the image blocks it got.
+// FAKE_CLAUDE_INTERRUPT_RESULT_MS  delay (ms) between interrupt ack and ending the SLOW turn (late-result races).
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -66,7 +67,7 @@ async function turn(content) {
   if (text.includes("SLOW")) {
     say("working");
     await new Promise((resolve) => (interruptTurn = resolve));
-    return done({ subtype: "error_during_execution", is_error: true, result: "" });
+    return done({ subtype: "error_interrupted", is_error: true, result: "" });
   }
   const images = blocks.filter((b) => b.type === "image").map((b) => `${b.source?.media_type}:${b.source?.data?.length}`);
   const docs = blocks.filter((b) => b.type === "document").map((b) => b.title);
@@ -85,7 +86,16 @@ rl.on("line", (line) => {
     if (r.subtype === "initialize") return ok({ commands: [{ name: "review", description: "Review the diff", argumentHint: "[path]" }, { name: "compact", description: "Compact", argumentHint: "" }], models: [{ value: "sonnet" }] });
     if (r.subtype === "set_model") { model = r.model ?? "default"; return ok(); }
     if (r.subtype === "set_permission_mode") { mode = r.mode; return ok(); }
-    if (r.subtype === "interrupt") { ok(); interruptTurn?.(); interruptTurn = null; return; }
+    if (r.subtype === "interrupt") {
+      ok();
+      const resume = interruptTurn;
+      interruptTurn = null;
+      // Optional delay before ending the turn so interrupt→resend races can be tested
+      const delay = Number(process.env.FAKE_CLAUDE_INTERRUPT_RESULT_MS || 0);
+      if (delay > 0) setTimeout(() => resume?.(), delay);
+      else resume?.();
+      return;
+    }
     return out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "unknown" } });
   }
   if (m.type === "control_response") {

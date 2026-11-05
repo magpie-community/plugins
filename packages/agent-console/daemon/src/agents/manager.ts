@@ -347,7 +347,19 @@ export class AgentManager {
     await this.setStatus(threadId, "running");
     try {
       const images = await this.resolveAttachments(attachmentRefs);
-      await rt.session!.send({ text: withMentions(text, mentions), images, mentions });
+      const payload = { text: withMentions(text, mentions), images, mentions };
+      try {
+        await rt.session!.send(payload);
+      } catch (e) {
+        // ACP used to leave provider.running true after a failed session/cancel request; the page looked idle
+        // (manager interrupt fallback) but the next send threw 当前轮次尚未结束. Interrupt once more to clear the
+        // provider turn, then retry — avoids a spurious failed turn and keeps a just-dequeued message alive.
+        const msg = String((e as Error)?.message ?? e);
+        if (!msg.includes("当前轮次尚未结束")) throw e;
+        log("info", `thread ${threadId} send blocked by in-flight turn; interrupt and retry once`);
+        try { await rt.session!.interrupt(); } catch { /* best-effort */ }
+        await rt.session!.send(payload);
+      }
     } catch (e) {
       // A failed send must not leave the conversation running
       const msg = String((e as Error)?.message ?? e);

@@ -140,6 +140,26 @@ describe("claude over stream-json", () => {
     }
   });
 
+  it("after interrupt, send() works again even when the CLI result is late", async () => {
+    const { s, events, until } = open({}, { FAKE_CLAUDE_INTERRUPT_RESULT_MS: "400" });
+    try {
+      await s.send({ text: "SLOW", images: [] });
+      await until((e) => e.type === "assistant_delta");
+      await s.interrupt();
+      expect(await until(ended)).toMatchObject({ status: "interrupted" });
+      await expect(s.send({ text: "second", images: [] })).resolves.toBeUndefined();
+      await until((e) => e.type === "turn_started" && events.filter((x) => x.type === "turn_started").length >= 2);
+      await until((e) => e.type === "turn_ended" && events.filter((x) => x.type === "turn_ended").length >= 2);
+      const ends = events.filter((e) => e.type === "turn_ended") as { status?: string }[];
+      expect(ends[0]?.status).toBe("interrupted");
+      // Late SLOW result must not produce a second interrupted / must not kill the second turn
+      expect(ends.filter((e) => e.status === "interrupted")).toHaveLength(1);
+      expect(ends[ends.length - 1]?.status).toBe("completed");
+    } finally {
+      await s.close();
+    }
+  });
+
   it("model and mode switch in place; bypassPermissions and effort relaunch with --resume", async () => {
     const { s, events, until, log } = open();
     try {

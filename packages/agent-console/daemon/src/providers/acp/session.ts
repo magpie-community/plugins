@@ -63,6 +63,8 @@ export class AcpSession implements ProviderSession {
   private turnId: string | null = null;
   private turnNum = 0;
   private running = false;
+  /** Stops from prompts we already ended locally on interrupt; discard so a late stopReason cannot end a newer turn. */
+  private pendingCancelStops = 0;
   private permPending = new Map<string, (a: RespondAnswer) => void>();
   private mapCtx: MapCtx = newMapCtx();
   private modelConfigId: string | null = null;
@@ -476,8 +478,19 @@ export class AcpSession implements ProviderSession {
         }
         if (!this.activeTurnId) continue; // Other updates outside a turn (e.g. mode change echoes) don't go to the timeline
         for (const ev of mapSessionUpdate(u, this.mapCtx)) this.q.push(ev);
+      } else if (this.pendingCancelStops > 0 && !this.activeTurnId) {
+        // Stop for a prompt we already ended on interrupt, before any newer turn started
+        this.pendingCancelStops--;
       } else if (this.activeTurnId) {
+        // A new turn is active: consume one stale cancel-stop if the agent was slow to acknowledge,
+        // otherwise this stop belongs to the active prompt.
+        if (this.pendingCancelStops > 0) {
+          this.pendingCancelStops--;
+          continue;
+        }
         this.endTurn(stopToTurnEnd(msg.stopReason, this.activeTurnId));
+      } else if (this.pendingCancelStops > 0) {
+        this.pendingCancelStops--;
       }
     }
   }
@@ -485,10 +498,25 @@ export class AcpSession implements ProviderSession {
   async interrupt(): Promise<void> {
     await this.ready();
     if (!this.ctx || !this.active) return;
+    // ACP defines session/cancel as a CancelNotification (see SDK notificationSpec). Agents such as
+    // Devin CLI only register it as a notification: sending it as a request yields JSON-RPC -32601
+    // Method not found, the error was only logged, and `running` stayed true so the next send threw
+    // "当前轮次尚未结束" after the manager's 1s interrupt fallback had already marked the page idle.
     try {
-      await this.ctx.request(methods.agent.session.cancel, { sessionId: this.active.sessionId });
+      await this.ctx.notify(methods.agent.session.cancel, { sessionId: this.active.sessionId });
     } catch (e) {
       log("info", `ACP cancel: ${String(e)}`);
+    }
+    // End the local turn immediately so manager/UI stay in sync even when the agent ignores cancel
+    // or never returns a stopReason for the in-flight session/prompt.
+    if (this.running) {
+      const turnId = this.activeTurnId ?? this.turnId;
+      if (turnId) {
+        this.pendingCancelStops++;
+        this.endTurn({ type: "turn_ended", turnId, status: "interrupted" });
+      } else {
+        this.running = false;
+      }
     }
   }
 

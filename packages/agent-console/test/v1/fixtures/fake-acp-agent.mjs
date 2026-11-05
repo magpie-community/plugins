@@ -9,6 +9,11 @@
 //                          "withdraw": asks, then sends $/cancel_request for it and ends the turn once the client answers
 //                          "answer": asks and ends the turn once the client answers (the normal path)
 //   FAKE_ACP_PERM_LOG      file each answer to session/request_permission is appended to, one JSON line
+//   FAKE_ACP_CANCEL_LOG    file each session/cancel is appended to, one JSON line { notification, hasId, sessionId }
+//   FAKE_ACP_SLOW_MS       hold each session/prompt open this many ms (or until session/cancel); cancel ends with
+//                          stopReason cancelled. Used to test interrupt while a turn is in flight.
+//   FAKE_ACP_IGNORE_CANCEL when set with FAKE_ACP_SLOW_MS: cancel is logged but does not end the prompt (Devin-like
+//                          "cancel was a no-op / never acknowledged" — the client must clear its own running flag)
 // Every prompt is answered with one agent_message_chunk ("ok: <n> blocks") and stopReason end_turn.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -17,10 +22,15 @@ const caps = process.env.FAKE_ACP_PROMPT_CAPS ? JSON.parse(process.env.FAKE_ACP_
 const session = process.env.FAKE_ACP_SESSION ? JSON.parse(process.env.FAKE_ACP_SESSION) : {};
 const logFile = process.env.FAKE_ACP_LOG;
 const sessionLog = process.env.FAKE_ACP_SESSION_LOG;
+const cancelLog = process.env.FAKE_ACP_CANCEL_LOG;
 const permMode = process.env.FAKE_ACP_PERM;
 const permLog = process.env.FAKE_ACP_PERM_LOG;
+const slowMs = process.env.FAKE_ACP_SLOW_MS ? Number(process.env.FAKE_ACP_SLOW_MS) : 0;
+const ignoreCancel = !!process.env.FAKE_ACP_IGNORE_CANCEL;
 let nextOwnId = 9000;
 const waiting = new Map(); // our request id -> callback(response)
+/** @type {Map<string, { timer: NodeJS.Timeout, finish: (reason: string) => void }>} */
+const openPrompts = new Map(); // sessionId -> in-flight slow prompt
 const out = (msg) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...msg }) + "\n");
 const answer = (id, result) => out({ id, result });
 const logSession = (method, sessionId) => {
@@ -117,10 +127,38 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         }
         return;
       }
+      if (slowMs > 0) {
+        const prior = openPrompts.get(p.sessionId);
+        if (prior) prior.finish("cancelled");
+        const finish = (reason) => {
+          const open = openPrompts.get(p.sessionId);
+          if (!open || open.finish !== finish) return;
+          clearTimeout(open.timer);
+          openPrompts.delete(p.sessionId);
+          answer(m.id, { stopReason: reason });
+        };
+        const timer = setTimeout(() => finish("end_turn"), slowMs);
+        openPrompts.set(p.sessionId, { timer, finish });
+        return;
+      }
       return answer(m.id, { stopReason: "end_turn" });
     }
-    case "session/cancel":
+    case "session/cancel": {
+      // ACP cancel is a notification (no JSON-RPC id). If a client wrongly sends it as a request, answer
+      // Method not found like Devin CLI (which only registers the notification handler).
+      if (cancelLog) {
+        appendFileSync(
+          cancelLog,
+          JSON.stringify({ notification: m.id === undefined, hasId: m.id !== undefined, sessionId: p.sessionId }) + "\n",
+        );
+      }
+      if (m.id !== undefined) {
+        return out({ id: m.id, error: { code: -32601, message: "Method not found" } });
+      }
+      const open = openPrompts.get(p.sessionId);
+      if (open && !ignoreCancel) open.finish("cancelled");
       return;
+    }
     default:
       if (m.id !== undefined) out({ id: m.id, error: { code: -32601, message: `method not found: ${m.method}` } });
   }

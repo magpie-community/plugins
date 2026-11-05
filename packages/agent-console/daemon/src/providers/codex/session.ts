@@ -44,6 +44,8 @@ export class CodexSession implements ProviderSession {
   private closed = false;
   private started: Promise<void> | null = null;
   private interruptWanted = false;
+  /** turn/started hasn't arrived yet when interrupt ran: mark that next Codex turn id as stale. */
+  private staleNextCodexTurn = false;
   private ourTurnId: string | null = null; // The current turn's turnId in the timeline (generated on send)
   private staleCodexTurns = new Set<string>();
   private codexSlash: CodexSlashEntry[] | null = null;
@@ -70,13 +72,16 @@ export class CodexSession implements ProviderSession {
   private emit(ev: ProviderEvent): void {
     if (ev.type === "turn_ended") {
       // A late completion for the previous turn (already ended by the interrupt fallback): drop it so it doesn't end the new turn
-      if (ev.turnId && this.staleCodexTurns.delete(ev.turnId)) return;
+      if (ev.turnId && this.staleCodexTurns.delete(ev.turnId)) {
+        if (this.st.currentTurnId === ev.turnId) this.st.currentTurnId = null;
+        return;
+      }
       // turn_started uses our own turnId, so the end must use the same one,
       // otherwise the manager's per-turn dedupe breaks (interrupt fallback + late completion would end the next turn)
       if (this.ourTurnId) ev.turnId = this.ourTurnId;
       this.ourTurnId = null;
       this.st.currentTurnId = null;
-      this.interruptWanted = false;
+      // Keep interruptWanted: interrupt before turn/started ends locally first, then still needs to fire when the id arrives
     }
     this.q.push(ev);
   }
@@ -94,6 +99,10 @@ export class CodexSession implements ProviderSession {
       this.rpc = rpc;
       rpc.onNotification = (m, p) => {
         for (const ev of mapNotification(m, p, this.st)) this.emit(ev);
+        if (m === "turn/started" && this.staleNextCodexTurn && this.st.currentTurnId) {
+          this.staleCodexTurns.add(this.st.currentTurnId);
+          this.staleNextCodexTurn = false;
+        }
         if (this.interruptWanted && this.st.currentTurnId) void this.interrupt();
       };
       rpc.onServerRequest = (m, p) => this.onServerRequest(m, p);
@@ -160,8 +169,9 @@ export class CodexSession implements ProviderSession {
     const { items, warnings } = await buildCodexInput(wireText, input.images ?? []);
     this.interruptWanted = false;
     const turnId = "u_" + Date.now().toString(36) + "_" + rid();
-    // A new turn started before the previous one completed (interrupt fallback) → remember its Codex turnId
+    // A new turn started before the previous one completed (interrupt fallback / local end) → remember its Codex turnId
     if (this.ourTurnId && this.st.currentTurnId) this.staleCodexTurns.add(this.st.currentTurnId);
+    else if (this.ourTurnId && !this.st.currentTurnId) this.staleNextCodexTurn = true;
     this.ourTurnId = turnId;
     this.st.currentTurnId = null; // Filled in by this turn's turn/started, so we never interrupt/steer with the previous turn's id
     this.emit({
@@ -210,25 +220,37 @@ export class CodexSession implements ProviderSession {
   async interrupt(): Promise<void> {
     for (const [, p] of this.pending) p.resolve({ cancelled: true });
     this.pending.clear();
-    if (!this.rpc) return;
-    if (!this.st.currentTurnId) {
-      // turn/started hasn't arrived yet: remember it and send the interrupt as soon as the turnId is known
-      this.interruptWanted = true;
+    const localTurn = this.ourTurnId;
+    const codexTurn = this.st.currentTurnId;
+    if (!this.rpc) {
+      if (localTurn) this.emit({ type: "turn_ended", turnId: localTurn, status: "interrupted" });
       return;
     }
-    this.interruptWanted = false;
-    try {
-      await this.rpc.request(
-        "turn/interrupt",
-        { threadId: this.threadId(), turnId: this.st.currentTurnId },
-        5000,
-      );
-    } catch (e) {
-      // "Already idle"-type errors count as success
-      const msg = String((e as Error)?.message ?? e);
-      if (!/idle|not running|no.*turn/i.test(msg)) {
-        log("warn", "codex interrupt 失败", { err: msg });
+    if (!codexTurn) {
+      // turn/started hasn't arrived yet: remember it and send the interrupt as soon as the turnId is known
+      this.interruptWanted = true;
+      this.staleNextCodexTurn = true;
+    } else {
+      this.interruptWanted = false;
+      this.staleCodexTurns.add(codexTurn);
+      try {
+        await this.rpc.request(
+          "turn/interrupt",
+          { threadId: this.threadId(), turnId: codexTurn },
+          5000,
+        );
+      } catch (e) {
+        // "Already idle"-type errors count as success
+        const msg = String((e as Error)?.message ?? e);
+        if (!/idle|not running|no.*turn/i.test(msg)) {
+          log("warn", "codex interrupt 失败", { err: msg });
+        }
       }
+    }
+    // End the local turn immediately (Devin/ACP-class): manager 1s fallback alone left UI idle while
+    // ourTurnId stayed set, so a quick next send raced a late turn/completed onto the new turn.
+    if (localTurn && this.ourTurnId === localTurn) {
+      this.emit({ type: "turn_ended", turnId: localTurn, status: "interrupted" });
     }
   }
 
