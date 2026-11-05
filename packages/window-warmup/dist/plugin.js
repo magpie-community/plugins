@@ -960,10 +960,10 @@ async function send(base, task, pin, effort, signal, timeoutMs = SEND_TIMEOUT_MS
 
 // src/server.ts
 import { randomBytes, timingSafeEqual } from "crypto";
-import { readFile as readFile3 } from "fs/promises";
+import { mkdir as mkdir2, readFile as readFile3, writeFile as writeFile2 } from "fs/promises";
 import path2, { basename, extname, join as join3, resolve as resolve2 } from "path";
 // package.json
-var version = "0.1.3";
+var version = "0.1.4";
 
 // src/diagnostics.ts
 var DIAGNOSTICS_SCHEMA = "window-warmup-diagnostics/1";
@@ -2092,9 +2092,24 @@ async function acquireLock(dir, opts = {}) {
 
 // src/server.ts
 var TOKEN_HEADER = "x-window-warmup-token";
+var TOKEN_FILE = "token";
 var MARKER_HEADER = "x-window-warmup";
 var PROBE_TIMEOUT_MS = 2000;
 var BODY_LIMIT = 64 * 1024;
+async function loadOrCreateToken(dir) {
+  const file = join3(dir, TOKEN_FILE);
+  try {
+    const text = (await readFile3(file, "utf8")).trim();
+    if (/^[0-9a-f]{64}$/.test(text))
+      return text;
+  } catch {}
+  const generated = randomBytes(32).toString("hex");
+  try {
+    await mkdir2(dir, { recursive: true });
+    await writeFile2(file, generated, { encoding: "utf8", mode: 384 });
+  } catch {}
+  return generated;
+}
 async function alreadyServing(port) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/`, {
@@ -2169,7 +2184,7 @@ async function startService(opts) {
     else
       lockedBy = lock.pid;
   }
-  const token = randomBytes(32).toString("hex");
+  const token = await loadOrCreateToken(opts.dir);
   let stopped = false;
   let server;
   try {
@@ -2381,7 +2396,7 @@ async function startService(opts) {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     if (url.pathname.startsWith("/api/")) {
       if (!tokenOK(req.headers.get(TOKEN_HEADER))) {
-        return json({ error: "\u53E3\u4EE4\u4E0D\u5BF9\uFF1A\u8BF7\u91CD\u65B0\u6253\u5F00\u7A97\u53E3\u9884\u70ED\u9875" }, 401, corsHeaders(origin));
+        return json({ error: "\u53E3\u4EE4\u4E0D\u5BF9\uFF1A\u8BF7\u91CD\u65B0\u6253\u5F00\u7A97\u53E3\u9884\u70ED\u9875", reload: true }, 401, corsHeaders(origin));
       }
       return api(req, url, origin);
     }

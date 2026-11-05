@@ -518,6 +518,18 @@ let confirmDeleteAt = 0;
 let runsExpanded = false;
 let catalogTimer: ReturnType<typeof setInterval> | undefined;
 
+/** 服务重启导致口令失效时重新载入一次页面拿新口令（只试一次，防死循环） */
+let reloadedForToken = false;
+
+export function shouldReloadOnAuthError(status: number, data: unknown, isDirty: boolean): boolean {
+  if (reloadedForToken) return false;
+  if (status !== 401 && status !== 403) return false;
+  const isTokenErr =
+    (typeof data === "object" && data !== null && (data as { reload?: boolean }).reload === true) ||
+    (typeof data === "object" && data !== null && String((data as { error?: string }).error).includes("口令"));
+  return !!(isTokenErr && !isDirty);
+}
+
 // 页面所有请求都走相对路径：magpie web 把服务转发在自己的前缀路径下时，
 // 根绝对路径会解析到宿主根上而 404；本地直达时相对与根绝对等价。
 async function apiJSON<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -531,6 +543,14 @@ async function apiJSON<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   const body: unknown = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (shouldReloadOnAuthError(res.status, body, dirty)) {
+      reloadedForToken = true;
+      try {
+        location.reload();
+      } catch {
+        /* 无法刷新则继续抛出错误显示在横幅中 */
+      }
+    }
     const msg = (body as { error?: unknown }).error;
     throw new Error(typeof msg === "string" && msg ? msg : `HTTP ${res.status}`);
   }
@@ -1352,13 +1372,13 @@ function renderList(): void {
       nodes.push(e);
       return nodes;
     }
-    // 编辑区紧跟在展开的那一行下面（原地展开），不是列表末尾
-    if (isNew && draft) nodes.push(rowEl(draft, null, true), buildEditor());
     for (const t of tasks) {
       const open = openId === t.id;
       nodes.push(rowEl(open && draft ? draft : t, t, open));
       if (open && draft) nodes.push(buildEditor());
     }
+    // 新建任务时展开的卡片放到底部，与保存后任务追加到底部的位置一致
+    if (isNew && draft) nodes.push(rowEl(draft, null, true), buildEditor());
     return nodes;
   });
   restoreFocus(list, focus);

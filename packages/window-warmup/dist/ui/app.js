@@ -956,6 +956,15 @@ var formError = null;
 var confirmDeleteAt = 0;
 var runsExpanded = false;
 var catalogTimer;
+var reloadedForToken = false;
+function shouldReloadOnAuthError(status, data, isDirty) {
+  if (reloadedForToken)
+    return false;
+  if (status !== 401 && status !== 403)
+    return false;
+  const isTokenErr = typeof data === "object" && data !== null && data.reload === true || typeof data === "object" && data !== null && String(data.error).includes("口令");
+  return !!(isTokenErr && !isDirty);
+}
 async function apiJSON(path, init = {}) {
   const res = await fetch(path, {
     ...init,
@@ -967,6 +976,12 @@ async function apiJSON(path, init = {}) {
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (shouldReloadOnAuthError(res.status, body, dirty)) {
+      reloadedForToken = true;
+      try {
+        location.reload();
+      } catch {}
+    }
     const msg = body.error;
     throw new Error(typeof msg === "string" && msg ? msg : `HTTP ${res.status}`);
   }
@@ -1717,14 +1732,14 @@ function renderList() {
       nodes.push(e);
       return nodes;
     }
-    if (isNew && draft)
-      nodes.push(rowEl(draft, null, true), buildEditor());
     for (const t of tasks) {
       const open = openId === t.id;
       nodes.push(rowEl(open && draft ? draft : t, t, open));
       if (open && draft)
         nodes.push(buildEditor());
     }
+    if (isNew && draft)
+      nodes.push(rowEl(draft, null, true), buildEditor());
     return nodes;
   });
   restoreFocus(list, focus);
@@ -2077,6 +2092,7 @@ export {
   setLang,
   shortModel,
   shouldCloseOnScroll,
+  shouldReloadOnAuthError,
   statusOf,
   sumView,
   syncDraftOnPoll,

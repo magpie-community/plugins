@@ -5,7 +5,7 @@
 // - store 损坏 → fatal：服务照起让页面显示原因，但绝不启动调度、拒绝一切写操作。
 // - 单实例锁被别人持有 → lockedBy：页面只读展示，同样不启动调度。
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path, { basename, extname, join, resolve } from "node:path";
 import { buildDiagnostics } from "./diagnostics";
 import { fetchCatalog } from "./gateway";
@@ -16,12 +16,37 @@ import { errText } from "./types";
 
 /** 页面请求 /api/* 用的口令头 */
 export const TOKEN_HEADER = "x-window-warmup-token";
+/** 存储在数据目录下的口令文件名，进程重启时复用 */
+export const TOKEN_FILE = "token";
 /** 本插件服务的自标记响应头：所有响应都带，识别「这是窗口预热的服务」 */
 export const MARKER_HEADER = "x-window-warmup";
 /** 启动前探测已有实例的超时：挂着不响应的服务按「不是本插件」处理 */
 const PROBE_TIMEOUT_MS = 2_000;
 /** JSON 请求体上限：任务字段都很小，超限必然不是页面发的 */
 const BODY_LIMIT = 64 * 1024;
+
+/**
+ * 读出已有口令；没有或内容损坏则生成新口令落盘。
+ * 进程重启（如安装/升级其他插件导致插件宿主重启）时口令保持不变，
+ * 正在打开的页面无需重新载入、轮询不报错。
+ */
+export async function loadOrCreateToken(dir: string): Promise<string> {
+  const file = join(dir, TOKEN_FILE);
+  try {
+    const text = (await readFile(file, "utf8")).trim();
+    if (/^[0-9a-f]{64}$/.test(text)) return text;
+  } catch {
+    /* 没这个文件或读失败就新生成 */
+  }
+  const generated = randomBytes(32).toString("hex");
+  try {
+    await mkdir(dir, { recursive: true });
+    await writeFile(file, generated, { encoding: "utf8", mode: 0o600 });
+  } catch {
+    /* 无法写入（比如无写权限目录）退化为内存口令 */
+  }
+  return generated;
+}
 
 /**
  * 探测端口上有没有本插件的服务在应答（所有响应都带 MARKER_HEADER）。
@@ -135,7 +160,7 @@ export async function startService(opts: ServiceOptions): Promise<ServiceHandle>
     else lockedBy = lock.pid; // pid 0 = 持有者身份无法判断
   }
 
-  const token = randomBytes(32).toString("hex");
+  const token = await loadOrCreateToken(opts.dir);
   let stopped = false;
 
   let server: ReturnType<typeof Bun.serve>;
@@ -389,7 +414,7 @@ export async function startService(opts: ServiceOptions): Promise<ServiceHandle>
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(origin) });
     if (url.pathname.startsWith("/api/")) {
       if (!tokenOK(req.headers.get(TOKEN_HEADER))) {
-        return json({ error: "口令不对：请重新打开窗口预热页" }, 401, corsHeaders(origin));
+        return json({ error: "口令不对：请重新打开窗口预热页", reload: true }, 401, corsHeaders(origin));
       }
       return api(req, url, origin);
     }

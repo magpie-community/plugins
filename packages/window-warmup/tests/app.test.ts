@@ -25,6 +25,7 @@ import {
   shortModel,
   statusOf,
   shouldCloseOnScroll,
+  shouldReloadOnAuthError,
   sumView,
   syncDraftOnPoll,
   trigText,
@@ -527,3 +528,20 @@ test("反馈问题：诊断过大时改用紧凑 JSON，仍超 GitHub 上限就�
   expect(huge).toContain("诊断日志过长，已截断");
   expect(huge.endsWith("</details>\n")).toBe(true);
 });
+
+test("shouldReloadOnAuthError：口令失效时若无未保存草稿触发自动刷新，有草稿或非鉴权错不刷", () => {
+  // 401 + reload: true，无未保存草稿 → 刷新
+  expect(shouldReloadOnAuthError(401, { error: "口令不对：请重新打开窗口预热页", reload: true }, false)).toBe(true);
+  // 401 文本含「口令」即使缺 reload: true 也识别
+  expect(shouldReloadOnAuthError(401, { error: "口令不对" }, false)).toBe(true);
+  // 用户正在编辑未保存的草稿（isDirty = true）→ 绝不冲掉草稿
+  expect(shouldReloadOnAuthError(401, { error: "口令不对", reload: true }, true)).toBe(false);
+  // 非鉴权错误（400/500/200）→ 不刷
+  expect(shouldReloadOnAuthError(400, { error: "参数错误" }, false)).toBe(false);
+  expect(shouldReloadOnAuthError(500, { error: "服务器错误" }, false)).toBe(false);
+  // 异常数据兜底
+  expect(shouldReloadOnAuthError(401, null, false)).toBe(false);
+  expect(shouldReloadOnAuthError(401, undefined, false)).toBe(false);
+  expect(shouldReloadOnAuthError(401, "string-error", false)).toBe(false);
+});
+
