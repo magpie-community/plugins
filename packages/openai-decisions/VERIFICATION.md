@@ -12,6 +12,23 @@ submission against `41e90a18d3affc7487460d032b0cdc5e09b20ebb`.
 - Community `bun test packages/openai-decisions`: 18 pass, 0 fail.
 - OpenCode compatibility bridge matches the community's canonical file byte for byte.
 
+## Documentation and source installation
+
+- Root README provider table, package README, bilingual registry summary
+  and changelog describe the same provider and authentication methods.
+- Package Markdown links and the JSON request example were checked against
+  the checked-in files and adapter.
+- Community `scripts/try.sh openai-decisions` installed and listed the
+  provider under `.sandbox/openai-decisions`, with one decision model
+  and no sign-in. No OpenAI request or real account was used.
+- This follow-up changes documentation and registry descriptions only;
+  the runtime, package version and dependencies are unchanged.
+
+The full community repository test suite was not run locally. It remains
+a separate upstream CI requirement; focused package tests and sandbox
+installation do not establish a full-suite pass. Live OpenCode decision
+workflows and Windows/Linux execution were not tested.
+
 ## Real local gateway
 
 The same synthetic text/JSON case exercised choice, noul and score:

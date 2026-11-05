@@ -5,8 +5,8 @@ Magpie's existing **System One** endpoint. The model is
 `openai-decisions/gpt-6-luna`; use it as a routing group's classifier or a
 member of a decision-model group alongside other System One providers.
 
-This package is proposed for `magpie-community/plugins`.
-Install from a local checkout while community review and publication are pending.
+**Provider id:** `openai-decisions`. **Decision model:** `gpt-6-luna`.
+Verified with Magpie 0.1.3039; the minimum compatible release has not been established.
 
 ## Why this plugin
 
@@ -24,23 +24,51 @@ describes the gap this fills.
 
 ## Install and sign in
 
+Install the released community package through Magpie:
+
 ```sh
-magpie plugin add /absolute/path/to/magpie-openai-decisions
+magpie plugin add @magpie-community/openai-decisions
 magpie plugin login openai-decisions
 ```
 
+For a source checkout, including a package that is not published yet, run
+from the root of `magpie-community/plugins` instead:
+
+```sh
+magpie plugin add ./packages/openai-decisions
+magpie plugin login openai-decisions
+```
+
+In Magpie's Plugins page, install **OpenAI Decisions**, then sign in.
+The community's distribution branch can supply a released package before
+its first npm publication; a separate `npm install` is unnecessary.
+
+### Authentication and storage
+
 Two sign-in methods:
 
-1. **OpenAI API key**: Magpie's regular API-key sign-in and account store.
+1. **OpenAI API key**: enter a key that can access the native Decisions API.
+   Magpie stores the sign-in in `plugin-auth.json` in its configuration
+   directory, with Unix permissions 0600.
 2. **Use the OpenAI key already saved in Magpie**: explicitly reuse the
-   primary key of the enabled official provider whose ID is `openai`.
-   The sign-in record stores a provider reference; each request reads the
-   current saved key. This optional method follows `XDG_CONFIG_HOME` and
-   Magpie's usual config directory.
+   primary key of the enabled official provider whose ID and preset are
+   `openai`. Its configured Chat/Responses endpoints must be
+   `https://api.openai.com/v1`. The plugin sign-in stores the reference
+   `magpie-provider:openai`; each request reads the current primary key
+   from Magpie's `providers.json`. It leaves that file unchanged.
 
-Direct key sign-in works without a separate OpenAI provider. The package
-follows the community's OpenCode 1.x/Magpie and OpenCode 2.x loader layout;
-ordinary chat clients still need an explicit decision call to use it.
+The saved-key reader uses `XDG_CONFIG_HOME/magpie` when configured;
+otherwise it uses `~/.config/magpie`, or `APPDATA/magpie` on Windows
+with `~/AppData/Roaming/magpie` as its fallback. It selects the primary
+key, not the provider's additional key pool. This optional keyless method
+is a Magpie extension.
+
+Direct key sign-in works without a separate OpenAI provider. Requests are
+billed to the OpenAI account owning the selected key; reusing a key shares
+that account's API allowance. OpenCode's regular API-key sign-in uses
+its own `auth.json`. The package provides the community's OpenCode 1.x
+and 2.x entry points, whose loader shapes are tested; live OpenCode decision
+workflows and Windows/Linux execution have not been verified.
 
 ## One endpoint
 
@@ -66,15 +94,31 @@ Send a System One request to `http://127.0.0.1:3425/v1/systemone`:
 }
 ```
 
-With an existing TypeSafe provider, create a decision group:
+### Decision groups and automatic effort
+
+With an existing TypeSafe provider, create a decision group. Choose a new
+group name: `magpie group add` replaces a group of the same name.
 
 ```sh
 magpie group add Decisions models=typesafe/jev-latest,openai-decisions/gpt-6-luna routing=order
 ```
 
 Then use `"model":"group/decisions"`. Magpie's group order and failover
-decide which provider answers. A chat routing group can choose either the
-decision provider or the decision group as its classifier.
+decide which provider answers.
+
+For an existing chat routing group whose ID is `coding`, enable automatic
+effort with this decision provider:
+
+```sh
+magpie group set coding classifier=openai-decisions/gpt-6-luna effort=auto
+```
+
+Use your own chat group's ID in place of `coding`. Set
+`classifier=group/decisions` to use the decision group instead. Chat
+models remain in the chat group's `models`; decision models belong in
+`classifier` or in a group containing only decision models. Magpie keeps
+these models out of ordinary chat catalogs. Automatic effort rates the
+turn's difficulty for chat models that support reasoning.
 
 ## Protocol and limits
 
@@ -104,11 +148,20 @@ IDs are preserved. Invalid or incomplete successful answers become 502.
 Cancellation propagates upstream. Calls use the fixed OpenAI Decisions
 endpoint, a fresh header set and no redirects.
 
-## Develop and contribute
+## Troubleshooting
 
-```sh
-npm test
-```
+| Result | Check |
+| --- | --- |
+| 400 from the adapter | Use `gpt-6-luna`, text/JSON state and the documented choice, score or noul fields and limits. |
+| Upstream 401/403 | Check the selected OpenAI key and its Decisions access. |
+| Upstream 429 | Read the quota unit and actual token usage, honor `Retry-After` when present, and space checks by that budget. A quota refusal does not establish that a model is unsupported. |
+| 503: credentials unavailable | Sign in again; for saved-key mode, check that the official `openai` provider is enabled and has a usable primary key. |
+| 502 from the adapter | The upstream could not be reached or returned an incomplete/invalid decision answer; inspect Magpie's request record and any retained request ID. |
+
+The adapter does not retry requests. Magpie owns routing and failover;
+try one short question first when checking a constrained allowance.
+
+## Develop and contribute
 
 Tests cover conversion, structured questions, answer matching, invalid
 distributions, errors, cancellation and credential selection. Live Magpie
@@ -122,11 +175,29 @@ bun scripts/check.mjs openai-decisions
 bun test packages/openai-decisions
 ```
 
+For the Node test runner, run `npm test` from `packages/openai-decisions`.
+To check installation without using your real Magpie sign-ins, use the
+community harness from the repository root:
+
+```sh
+MAGPIE=/absolute/path/to/magpie scripts/try.sh openai-decisions
+```
+
+The harness keeps its own configuration under `.sandbox/openai-decisions`.
+The command above lists the provider without signing in or calling OpenAI.
+Keep automated tests offline and use synthetic credentials.
+
+The plugin is registered in [index.mjs](index.mjs);
+[adapter.mjs](adapter.mjs) owns request/answer conversion and the fixed
+upstream fetch; [credentials.mjs](credentials.mjs) owns saved-key lookup.
 Keep `opencode2.mjs` byte-identical to the community's canonical
 `scripts/opencode2.mjs`. See [NOTICE.md](NOTICE.md) for attribution. MIT license.
 
 Review checks for protocol changes:
 
+- Keep the root README's provider table, this README, the registry's English/Chinese
+  summaries and the changelog aligned with the user-visible behavior.
+- State each command's working directory and separate real-use evidence from fixtures.
 - Keep object/array evidence as `input_json`; serialize primitive evidence as text.
 - Preserve predicate definitions, ordered score criteria and vendor probabilities.
 - Distinguish transport success from complete, valid decision answers.
@@ -142,9 +213,29 @@ References: [OpenAI Decisions](https://developers.openai.com/api/docs/guides/dec
 
 ## 中文
 
+安装社区发行包后登录：
+
+```sh
+magpie plugin add @magpie-community/openai-decisions
+magpie plugin login openai-decisions
+```
+
+未发布时，在社区仓库根目录运行
+`magpie plugin add ./packages/openai-decisions`，再执行同一登录命令。
+提供方 ID 是 `openai-decisions`，决策模型为
+`openai-decisions/gpt-6-luna`；已验证 Magpie 0.1.3039。
+
 统一入口复用 Magpie `/v1/systemone`：兼容 System One 的供应商直接接入，
 本插件负责转换 OpenAI Decisions。支持选择、评分、是非概率，保留结构化问题、
 概率、置信度、用量、错误及取消行为，可用于决策模型组和意图路由。
 
 登录可使用独立 API key，也可明确选择复用 Magpie 已保存的官方 OpenAI
-提供方。社区代码使用公开协议与通用示例；组织内部端点和凭据由本地维护。
+提供方的主 key。前者保存在 Magpie 的 `plugin-auth.json`；后者只保存引用，
+每次请求从 `providers.json` 读取当前主 key，共用该 key 所属 OpenAI 账号的 API
+额度。已有聊天组可设置 `classifier=openai-decisions/gpt-6-luna effort=auto`，
+也可把分类器设为决策模型组 `group/decisions`。
+
+遇到 429 时按错误中的额度单位、实际 token 用量和 `Retry-After` 拉开调用间隔，
+不要据此判断模型不受支持。真实 OpenCode 决策流程及 Windows/Linux 尚未验证；
+完整验证范围见 [VERIFICATION.md](VERIFICATION.md)。社区代码使用公开协议与通用
+示例；组织内部端点和凭据由本地维护。
