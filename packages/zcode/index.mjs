@@ -96,8 +96,11 @@ async function call(method, url, { auth, body, headers, device, signal } = {}) {
   } catch {}
   const code = env?.code == null ? "" : String(env.code)
   if (!res.ok) {
-    if (env?.msg) throw new ZError(code && code !== "0" ? `${env.msg} (${res.status}, code ${code})` : `${env.msg} (${res.status})`, res.status)
-    throw new ZError(STATUS_TEXT[res.status] ?? `${res.status} ${res.statusText}`.trim(), res.status)
+    const said = env?.msg ? (code && code !== "0" ? `${env.msg} (${res.status}, code ${code})` : `${env.msg} (${res.status})`) : (STATUS_TEXT[res.status] ?? `${res.status} ${res.statusText}`.trim())
+    const err = new ZError(said, res.status)
+    err.code = Number(code) || 0 // 3002 and the like: so a caller can tell a rate limit from a failure
+    err.retryAfterMs = retryAfterMs(res) // 0 unless the reply carried a Retry-After
+    throw err
   }
   if (!env || typeof env !== "object") throw new ZError("not JSON", res.status)
   if (code && code !== "0" && code !== "200") throw new ZError(env.msg || `error ${code}`, res.status)
@@ -715,6 +718,37 @@ const CAPTCHA = 3007
 // 1004 under 3.16.3's header, and four of them claimed with code 0 under
 // 3.17.2's, one night, with nothing else changed).
 const NOT_ELIGIBLE = 1004
+// RATE_LIMITED is Z.ai's "请求过于频繁" body code, its answer (with HTTP
+// 429) to a client that asked too often. #503 (MiniFullC, 11-04) read 180
+// "gift plans to claim: Too Many Requests" over four days at magpie's
+// 30-minute retry, so asking again the same half hour keeps the limit on.
+// A rate-limited read is a failed with an `until`: magpie asks again no
+// sooner than it. A Retry-After ZCode sent is honored; without one the
+// account's own wait doubles from RECHECK_MS up to RATE_LIMIT_MAX_MS, and
+// is forgotten as soon as a read comes through.
+const RATE_LIMITED = 3002
+const RATE_LIMIT_MAX_MS = 6 * 60 * 60_000
+const rateWait = new Map() // "key\0jwt" -> ms this account last backed off by
+// retryAfterMs is a Retry-After header, in seconds or as an HTTP date, in
+// ms; 0 when there is none or it doesn't read.
+function retryAfterMs(res) {
+  const v = first(res?.headers?.get?.("retry-after"))
+  if (!v) return 0
+  const secs = Number(v)
+  if (Number.isFinite(secs) && secs > 0) return secs * 1000
+  const at = Date.parse(v)
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : 0
+}
+// noteRateLimit remembers how long this account backs off, doubling it
+// each time ZCode turns an ask away, and answers when magpie may ask
+// again. A Retry-After ZCode sent is taken as it is, in the same range.
+function noteRateLimit(key, saidMs) {
+  const last = rateWait.get(key) ?? 0
+  const want = saidMs > 0 ? saidMs : (last > 0 ? last * 2 : RECHECK_MS)
+  const ms = Math.min(RATE_LIMIT_MAX_MS, Math.max(RECHECK_MS, want))
+  rateWait.set(key, ms)
+  return new Date(Date.now() + ms).toISOString()
+}
 const CAPTCHA_WORDS = /captcha/i
 
 // The marketing feed and the claim are gated on the client's version:
@@ -747,6 +781,8 @@ async function claimOne(s, planID) {
   } catch {}
   const code = env && typeof env === "object" && env.code != null && String(env.code).trim() !== "" ? Number(env.code) : NaN
   const msg = typeof env?.msg === "string" ? env.msg : ""
+  // a rate limit is no claim: it is said as one, and carries how long to wait
+  if (res.status === 429 || code === RATE_LIMITED) return { outcome: "failed", why: `${msg || STATUS_TEXT[429]} (HTTP ${res.status}${Number.isFinite(code) ? `, code ${code}` : ""})`, rate: retryAfterMs(res) }
   if (code === CAPTCHA || CAPTCHA_WORDS.test(msg)) return { outcome: "captcha", why: msg || `code ${code}` }
   if (code === CLAIMED_ALREADY) return { outcome: "done" }
   if (code === NOT_ELIGIBLE) return { outcome: "ineligible", why: msg || `code ${code}` }
@@ -829,12 +865,14 @@ async function toClaim(s) {
     d = await call("GET", `${ZCODE}${TOUCH}?seq=${touchSeq++}`, { auth: "Bearer " + s.jwt, device: s.device, headers: marketingHeaders() })
   } catch (e) {
     unread.push(`gift plans to claim: ${e?.message ?? String(e)}`)
-    return { plans, unread }
+    // rate is the ms ZCode asked to wait (0 when it sent no Retry-After),
+    // null when this was not a rate limit at all
+    return { plans, unread, rate: e?.status === 429 || e?.code === RATE_LIMITED ? (e.retryAfterMs || 0) : null }
   }
   const got = touchPlans(d)
   if (!got) unread.push("gift plans to claim: the plan list doesn't read")
   else got.forEach(add)
-  return { plans, unread }
+  return { plans, unread, rate: null }
 }
 
 // RECHECK is how long an "nothing to claim" stands before magpie's loop
@@ -863,7 +901,10 @@ const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
 // captcha for one (it is claimed in the ZCode app), ineligible when
 // ZCode is not offering one at that moment (code 1004, read again later
 // in the day), failed when a list
-// or a claim can't be read. A failed one is asked again later in the
+// or a claim can't be read. A rate-limited read (HTTP 429, or code 3002)
+// is a failed carrying an `until`: magpie asks again no sooner than it,
+// out to RATE_LIMIT_MAX_MS (see RATE_LIMITED), instead of the same half
+// hour that keeps the limit on. A failed one is asked again later in the
 // day, when a plan claimed now answers 1003. An inactive stands only
 // until RECHECK_MS from now, so a plan dropped into the feed later in
 // the day is still claimed; the other settled answers stand for the day
@@ -872,7 +913,11 @@ const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
 async function claimDaily(s) {
   if (!s?.jwt) return { outcome: "ineligible", message: "ZCode's gift plans are claimed with a ZCode sign-in; this account has none" }
   if (jwtExpired(s.jwt)) return { outcome: "failed", message: EXPIRED }
-  const { plans, unread } = await toClaim(s)
+  const retryKey = s.key + "\0" + s.jwt
+  const { plans, unread, rate = null } = await toClaim(s)
+  // a rate-limited read: asked again when the limit says, not in half an hour
+  if (rate !== null) return { outcome: "failed", message: unread.join("; ") || "ZCode rate limited this account", until: noteRateLimit(retryKey, rate) }
+  rateWait.delete(retryKey) // a read that came through clears the account's wait
   if (!plans.length && unread.length) return { outcome: "failed", message: unread.join("; ") }
   if (!plans.length) return { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
   const got = []
@@ -888,6 +933,9 @@ async function claimDaily(s) {
   ].filter(Boolean).join("; ")
   // a plan claimed now is used by the next request, not ten minutes on
   if (claimed.length) routes.delete(s.key + "\0" + s.jwt)
+  // a claim ZCode rate limited: the plan may still be there, later
+  const limitedClaim = got.find((g) => g.rate !== undefined)
+  if (limitedClaim) return { outcome: "failed", message: said, until: noteRateLimit(retryKey, limitedClaim.rate) }
   // a list that didn't read may hold a plan not claimed: asked again
   if (unread.length || got.some((g) => g.outcome === "failed")) return { outcome: "failed", message: said }
   if (got.some((g) => g.outcome === "captcha")) return { outcome: "captcha", message: said }

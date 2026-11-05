@@ -37,6 +37,8 @@ function serve(route) {
   return calls
 }
 const json = (v, status = 200) => new Response(typeof v === "string" ? v : JSON.stringify(v), { status })
+// jsonWith is json with headers: a Retry-After comes as one
+const jsonWith = (v, status, headers) => new Response(typeof v === "string" ? v : JSON.stringify(v), { status, headers })
 const jwt = (exp) => ["{}", JSON.stringify({ exp })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".sig"
 const now = Math.trunc(Date.now() / 1000)
 const DEVICE = "11111111-2222-4333-8444-555555555555"
@@ -76,6 +78,10 @@ const CAPTCHA = '{"code":3007,"msg":"captcha verify failed"}'
 // The same six accounts answered it under an older APP_VERSION's header
 // and four of them claimed with code 0 under 3.17.2's.
 const NOT_ELIGIBLE = '{"code":1004,"msg":"your account is not eligible for this plan yet"}'
+// 11-04 (#503, MiniFullC): what ZCode says to a client that asked too
+// often, with HTTP 429 — read 180 times over four days at magpie's
+// 30-minute retry
+const RATE_LIMITED = '{"code":3002,"msg":"请求过于频繁"}'
 
 const PREVIEW = "/api/v1/zcode-plan/billing/preview"
 const CLAIM = "/api/v1/zcode-plan/billing/claim"
@@ -204,6 +210,48 @@ test("a 1004 beside a claimed plan is claimed, naming the one not offered", asyn
   const r = await checkin()
   expect(r.outcome).toBe("claimed")
   expect(r.message).toContain("ZCODE GLOBAL BUILD: your account is not eligible for this plan yet")
+})
+
+test("a rate-limited feed is failed with an until half an hour out", async () => {
+  claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  const r = await checkin()
+  expect(r.outcome).toBe("failed")
+  expect(r.message).toContain("Too Many Requests")
+  const t = Date.parse(r.until)
+  expect(t).toBeGreaterThan(Date.now() + 25 * 60_000)
+  expect(t).toBeLessThan(Date.now() + 35 * 60_000)
+})
+
+test("a Retry-After ZCode sent is honored", async () => {
+  claimWith(() => json(CLAIMED_NOW), () => jsonWith("", 429, { "retry-after": "7200" }))
+  const r = await checkin()
+  expect(r.outcome).toBe("failed")
+  const t = Date.parse(r.until)
+  expect(t).toBeGreaterThan(Date.now() + 110 * 60_000)
+  expect(t).toBeLessThan(Date.now() + 130 * 60_000)
+})
+
+test("a claim ZCode rate limited (3002) is failed with an until too", async () => {
+  claimWith(() => json(RATE_LIMITED, 400), touchOf([TRUST, "ZCode Trust Build"]))
+  const r = await checkin()
+  expect(r.outcome).toBe("failed")
+  expect(r.message).toContain("ZCode Trust Build: 请求过于频繁")
+  expect(Date.parse(r.until)).toBeGreaterThan(Date.now() + 25 * 60_000)
+})
+
+// last among the rate-limit ones: it leaves the account's wait at its
+// first step again, so nothing after it sees a doubled one
+test("the wait doubles while ZCode keeps turning the ask away, and a read that comes through clears it", async () => {
+  claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  const first = Date.parse((await checkin()).until)
+  claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  const second = Date.parse((await checkin()).until)
+  expect(second - first).toBeGreaterThan(20 * 60_000) // ~30 min -> ~60 min
+  // a read that comes through (nothing to claim) forgets the wait
+  claimWith(() => json(CLAIMED_NOW), TOUCH_NONE)
+  expect((await checkin()).outcome).toBe("inactive")
+  claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  expect(Date.parse((await checkin()).until)).toBeLessThan(Date.now() + 35 * 60_000)
 })
 
 test("a claim that doesn't read is failed (unknown), never claimed", async () => {
