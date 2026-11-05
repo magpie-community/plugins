@@ -267,6 +267,7 @@ export const CANONICAL_ROUTES = {
       "gpt-6-astra",
       "grok-4.7",
     ],
+    ability_floor: { hard: 2.7 },
     restrict_models: false,
   },
   text_in_text_out: {
@@ -1260,45 +1261,57 @@ export const MODEL_ALIASES = {
 };
 
 export const EFFORT_CURVES = {
+  "deepseek-v4.1-flash-free": {
+    ability: { high: 0, max: 0.2 },
+    burn: { high: 0.7, max: 0.91 },
+  },
   "claude-opus-5-5": {
-    ability: { low: -1.2, medium: -0.3, high: 0.0, xhigh: 0.2, max: 0.4 },
-    burn: { low: 0.21, medium: 0.52, high: 0.7, xhigh: 1.33, max: 2.3 },
+    ability: { low: -0.84, medium: -0.2, high: 0, xhigh: 0.25, max: 0.35 },
+    burn: { low: 0.2, medium: 0.5, high: 0.7, xhigh: 1.22, max: 2.03 },
   },
   "claude-sonnet-5-5": {
-    ability: { low: -1.1, medium: -0.6, high: 0.0, xhigh: 0.5, max: 0.9 },
-    burn: { low: 0.28, medium: 0.38, high: 0.7, xhigh: 1.6, max: 4.34 },
-  },
-  "claude-haiku-5-5": {
-    ability: { low: -0.15, medium: 0.0, high: 0.1 },
-    burn: { low: 0.35, medium: 0.5, high: 0.7 },
+    ability: { low: -0.79, medium: -0.54, high: 0, xhigh: 0.4, max: 0.64 },
+    burn: { low: 0.22, medium: 0.33, high: 0.7, xhigh: 1.75, max: 4.28 },
   },
   "gpt-6-astra": {
-    ability: { low: -0.5, medium: -0.1, high: 0.0, xhigh: 0.1, max: 0.2 },
-    burn: { low: 0.33, medium: 0.62, high: 0.7, xhigh: 0.93, max: 1.32 },
+    ability: { low: -0.59, medium: -0.15, high: 0, xhigh: 0, max: 0.1 },
+    burn: { low: 0.31, medium: 0.59, high: 0.7, xhigh: 0.79, max: 1.35 },
   },
   "gpt-6.1-sol": {
-    ability: { low: -0.8, medium: -0.2, high: 0.0, xhigh: 0.1, max: 0.2 },
-    burn: { low: 0.28, medium: 0.46, high: 0.7, xhigh: 0.85, max: 1.58 },
-  },
-  "gpt-6-luna": {
-    ability: { low: -0.15, medium: 0.0, high: 0.1 },
-    burn: { low: 0.35, medium: 0.5, high: 0.7 },
+    ability: { low: -0.74, medium: -0.2, high: 0, xhigh: 0.1, max: 0.25 },
+    burn: { low: 0.19, medium: 0.43, high: 0.7, xhigh: 0.9, max: 1.51 },
   },
   "grok-4.7": {
-    ability: { low: -0.4, high: 0.0, xhigh: 0.0 },
-    burn: { low: 0.32, high: 0.7, xhigh: 0.96 },
+    ability: { low: -0.2, high: 0, xhigh: 0 },
+    burn: { low: 0.33, high: 0.7, xhigh: 0.88 },
   },
   "gemini-3.8-flash-high": {
-    ability: { medium: -0.1, high: 0.0 },
-    burn: { medium: 0.53, high: 0.7 },
+    ability: { low: -0.4, medium: -0.05, high: 0 },
+    burn: { medium: 0.56, high: 0.7 },
   },
   "gemini-4-argon-high": {
-    ability: { low: -0.3, medium: -0.1, high: 0.0 },
+    ability: { low: -0.3, medium: -0.1, high: 0 },
     burn: { low: 0.63, medium: 0.7, high: 0.7 },
   },
+  "claude-haiku-5-5": {
+    ability: { low: -0.54, medium: -0.25, high: 0, xhigh: 0.25, max: 0.3 },
+    burn: { low: 0.17, medium: 0.39, high: 0.7, xhigh: 1.09, max: 1.79 },
+  },
+  "gpt-6.1-terra": {
+    ability: { low: -0.64, medium: -0.2, high: 0, xhigh: 0.15, max: 0.45 },
+    burn: { low: 0.19, medium: 0.46, high: 0.7, xhigh: 1.08, max: 2.58 },
+  },
+  "gpt-6-luna": {
+    ability: { low: -0.54, medium: -0.15, high: 0, xhigh: 0.1, max: 0.35 },
+    burn: { low: 0.1, medium: 0.4, high: 0.7, xhigh: 1.0, max: 1.5 },
+  },
   "claude-fable-5-1": {
-    ability: { low: -0.7, medium: -0.3, high: 0.0, xhigh: 0.2, max: 0.4 },
-    burn: { low: 0.2, medium: 0.4, high: 0.7, xhigh: 1.0, max: 1.3 },
+    ability: { low: -0.4, medium: -0.2, high: 0, xhigh: 0.15, max: 0.15 },
+    burn: { low: 0.41, medium: 0.52, high: 0.7, xhigh: 1.01, max: 1.21 },
+  },
+  "gemini-4-carbon": {
+    ability: { low: -0.3, medium: -0.1, high: 0 },
+    burn: { low: 0.65, medium: 0.59, high: 0.7 },
   },
 };
 
@@ -1379,6 +1392,12 @@ export const DEFAULT_SCORING_POLICY = {
     frontier: 3.5,
   },
   ability_floor: {
+    routine: 2.3,
+    hard: 3.1,
+    coupled: 3.6,
+    frontier: 4.2,
+  },
+  ability_score_origin: {
     routine: 3.0,
     hard: 3.3,
     coupled: 3.6,
@@ -1387,12 +1406,15 @@ export const DEFAULT_SCORING_POLICY = {
   ability_span: 0.6,
   effort_unlock_difficulties: ["coupled", "frontier"],
   critical_headroom: 0.3,
+  critical_headroom_by_difficulty: {
+    frontier: 0.1,
+  },
   effort_ability: {
-    low: -0.7,
-    medium: -0.3,
+    low: -0.54,
+    medium: -0.2,
     high: 0.0,
-    xhigh: 0.2,
-    max: 0.4,
+    xhigh: 0.15,
+    max: 0.3,
   },
   effort_burn: {
     low: 0.2,
