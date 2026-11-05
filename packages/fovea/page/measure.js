@@ -46,8 +46,9 @@
 // saccade it is the old task, and collapses with the rest. Tool calls and
 // their ids are never touched — an old tool result is shortened or
 // noted, not removed, so every tool_call still has its answer.
-// Already-shortened content carries the marker and is left alone, so a
-// history re-sent each turn is cut once, not again. A reply is never
+// Already-shortened content is short enough to pass the length guard, so
+// a history re-sent each turn is cut once, not again; a marker in the
+// content itself exempts nothing. A reply is never
 // touched: what the agent keeps from it is the agent's to keep.
 //
 // Chat (role:"tool"), Anthropic (tool_result blocks) and the Responses API
