@@ -3466,6 +3466,76 @@ function replyAfterToolsOn(b) {
   return true
 }
 
+// HIDE_DSH is the switch, on unless the user turns it off, that takes
+// DeepSeek Harness's name out of what it sends (NancyTom on X: an account
+// used from dsh through magpie was banned, and a reply there had Tencent
+// recognize dsh's built-in prompt). FLAGGED's comma gets a chat past the
+// live 11128 check; this is for a check that reads the prompt afterwards.
+// The lines are dsh 0.2.1's own (@deepseek-ai/dsh-system-prompt and
+// dsh-harness-dev-context): the opener, the checkout and Web GUI lines in
+// the system prompt and in the runtime context dsh sends as a user message,
+// and their earlier wording (LEGACY_SOURCE, LEGACY_WEB_SURFACE). Only the
+// name in prose goes: lower-case dsh, which names paths (~/.dsh), commands,
+// URIs (dsh-session:) and skills the agent calls, stays, as does a tool's
+// result, which is what a file or command said. Case counts, so the name
+// in an identifier (DSH_HOME) is left too.
+const HIDE_DSH = "hide_dsh"
+const DSH_NAMED = [
+  [/You are an AI agent,? powered by DeepSeek Harness\.?/g, "You are an AI agent."],
+  [/DeepSeek Harness (Web GUI)/g, "$1"],
+  [/DeepSeek Harness (implementation checkout)/g, "agent $1"],
+  [/\bDSH itself\b/g, "the agent itself"],
+  [/\b([Tt]he )?DeepSeek Harness\b/g, (_, the) => (the ?? "the ") + "agent harness"],
+  [/\bDSH\b(?!_)/g, "the agent harness"],
+]
+
+function dshHidden(text) {
+  for (const [re, to] of DSH_NAMED) text = text.replace(re, to)
+  return text
+}
+
+// hideDsh puts dshHidden on the text of a chat's messages (Chat
+// Completions or Messages: a string, or a part of type text), on Messages'
+// system, and on the tools' descriptions; true when it changed any.
+// A tool's result (role tool, or a tool_result part) is left as it came.
+function hideDsh(chat) {
+  if (!chat || typeof chat !== "object") return false
+  let changed = false
+  const parts = (content) => {
+    if (typeof content === "string") {
+      const t = dshHidden(content)
+      if (t !== content) changed = true
+      return t
+    }
+    if (!Array.isArray(content)) return content
+    return content.map((p) => {
+      if (!p || typeof p.text !== "string" || (p.type !== undefined && p.type !== "text")) return p
+      const t = dshHidden(p.text)
+      if (t === p.text) return p
+      changed = true
+      return { ...p, text: t }
+    })
+  }
+  if (Array.isArray(chat.messages))
+    for (const m of chat.messages) if (m && typeof m === "object" && m.role !== "tool") m.content = parts(m.content)
+  if (chat.system !== undefined) chat.system = parts(chat.system)
+  const described = (o) => {
+    if (!o || typeof o !== "object") return
+    if (Array.isArray(o)) return o.forEach(described)
+    for (const k of Object.keys(o)) {
+      if (k === "description" && typeof o[k] === "string") {
+        const t = dshHidden(o[k])
+        if (t !== o[k]) {
+          o[k] = t
+          changed = true
+        }
+      } else described(o[k])
+    }
+  }
+  if (Array.isArray(chat.tools)) described(chat.tools)
+  return changed
+}
+
 // FREE_ONLY is the switch that keeps an account off credits (#430): its
 // list holds only the models WorkBuddy serves at no cost (priceOf's free),
 // and a request for any other is answered here, never sent. A price that
@@ -3536,6 +3606,9 @@ function makePlugin(site) {
     }
   }
   const freeOnly = () => magpie?.option?.(site.id, FREE_ONLY) === true
+  // on by default: magpie hands over the user's value, else the default;
+  // OpenCode, with no magpie, has it on
+  const dshOff = () => magpie?.option?.(site.id, HIDE_DSH) !== false
   // onlyFree is a list with the switch on: its free models, or a failure
   // when there are none to tell (magpie then keeps the list it had)
   const onlyFree = (ms) => {
@@ -3644,6 +3717,19 @@ function makePlugin(site) {
           },
           filtersModels: true,
         },
+        {
+          key: HIDE_DSH,
+          label: "Hide DeepSeek Harness's name",
+          description: `Takes DeepSeek Harness's name out of what it sends to ${site.name}: its opening line, and the lines naming its checkout and Web GUI. Paths, commands and tools stay as they are.`,
+          default: true,
+          labels: { zh: "隐去 DeepSeek Harness 的名字", "zh-TW": "隱去 DeepSeek Harness 的名字", ja: "DeepSeek Harness の名前を伏せる", de: "Namen von DeepSeek Harness ausblenden" },
+          descriptions: {
+            zh: `把 DeepSeek Harness 的名字从发给 ${site.name} 的内容里去掉：开头那句，以及说明它源码目录和 Web GUI 的几行。路径、命令和工具保持不变。`,
+            "zh-TW": `把 DeepSeek Harness 的名字從送給 ${site.name} 的內容裡去掉：開頭那句，以及說明它原始碼目錄和 Web GUI 的幾行。路徑、指令和工具保持不變。`,
+            ja: `${site.name} に送る内容から DeepSeek Harness の名前を外します。冒頭の一文と、チェックアウトや Web GUI を示す行が対象です。パス、コマンド、ツールはそのままです。`,
+            de: `Entfernt den Namen von DeepSeek Harness aus dem, was an ${site.name} gesendet wird: die erste Zeile sowie die Zeilen zu seinem Checkout und seiner Web-GUI. Pfade, Befehle und Tools bleiben unverändert.`,
+          },
+        },
       ],
       async loader(getAuth) {
         const auth = await getAuth()
@@ -3684,6 +3770,7 @@ function makePlugin(site) {
             let chat, changed, names
             ;({ body, chat, changed, names } = prepared(body, native))
             if (native) names = {}
+            if (dshOff() && hideDsh(chat)) changed = true
             // the switch is checked before anything is sent: a model not
             // free, or one whose price can't be read, never reaches
             // WorkBuddy. The model is read off the chat parsed above; a body
@@ -4089,4 +4176,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }

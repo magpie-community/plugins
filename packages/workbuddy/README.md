@@ -339,6 +339,19 @@ and says `filtersModels`, so while it is on magpie says under the models
 that the list is filtered (#590). Both are magpie's own fields; an older
 magpie shows the English words and no note.
 
+### Hide DeepSeek Harness's name
+
+Since 0.2.23 each site also has a "Hide DeepSeek Harness's name" switch, on
+by default, and on in OpenCode, which has no switches. A user reported a
+WorkBuddy account banned after use from DeepSeek Harness, with a reply saying
+its built-in prompt is recognised. With the switch on, the harness's name is
+taken out of the system prompt, the user's and assistant's text and the
+tools' descriptions: "You are an AI agent powered by DeepSeek Harness."
+becomes "You are an AI agent.", and the runtime lines naming its checkout and
+Web GUI say "agent implementation checkout" and "Web GUI". Tools' results,
+paths, commands and names such as `DSH_HOME` or `~/.dsh` go as they were.
+Whether this keeps an account from being banned is not known.
+
 ## Credits in magpie
 
 magpie's usage card shows the account's credits from the resource summary.
