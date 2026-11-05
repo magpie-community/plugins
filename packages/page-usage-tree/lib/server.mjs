@@ -169,6 +169,14 @@ async function probeService(port) {
 export async function startServer(options = {}) {
   const port = Number(options.port);
   const requestedPort = Number.isInteger(port) && port >= 0 && port <= 65535 ? port : 3494;
+  const retryAttempts =
+    Number.isInteger(options.retryAttempts) && options.retryAttempts > 0
+      ? options.retryAttempts
+      : 16;
+  const retryDelayMs =
+    Number.isInteger(options.retryDelayMs) && options.retryDelayMs >= 0
+      ? options.retryDelayMs
+      : 100;
   const token = randomBytes(24).toString("base64url");
   const loader = options.load || loadUsageData;
   const cache = new Map();
@@ -403,7 +411,7 @@ export async function startServer(options = {}) {
     // build waits for it, and takes the port when it is free. A live service
     // of another build is never killed: it may be the same plugin host that
     // serves every other plugin.
-    for (let attempt = 0; attempt < 30; attempt += 1) {
+    for (let attempt = 0; attempt < retryAttempts; attempt += 1) {
       try {
         server = await bind();
         bound = true;
@@ -420,7 +428,9 @@ export async function startServer(options = {}) {
             close: async () => {},
           };
         }
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (retryDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        }
       }
     }
     if (!bound) {

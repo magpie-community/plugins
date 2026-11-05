@@ -772,13 +772,16 @@
   function modelList(account) {
     const box = el("div", "model-list");
     const head = el("div", "model-head");
+    // The row has seven columns: model, calls, tokens, bar, share, cost and
+    // the chevron-aligned end. Keep the header on the same grid.
     head.append(
       el("span", "", W.model),
       el("span", "", W.calls),
-      el("span", "", "Token"),
+      el("span", "", state.includeCache ? W.modelTokensWithCache : W.modelTokensWithoutCache),
       el("span", "", ""),
-      el("span", "", W.cost),
       el("span", "", W.columns.share),
+      el("span", "", W.cost),
+      el("span", "", ""),
     );
     box.append(head);
 
@@ -830,7 +833,7 @@
         "",
         "cost-cell" + (model.unpriced ? " unpriced" : ""),
       );
-      row.append(who, calls, ...share, cost, el("div", "metric"));
+      row.append(who, calls, ...share, cost, el("span", "chevron-spacer"));
       box.append(row);
     }
     return box;

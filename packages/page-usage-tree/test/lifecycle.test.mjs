@@ -1,7 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import http, { createServer } from "node:http";
 import { BUILD_FILES, startServer, version } from "../lib/server.mjs";
+
+function status(port, path) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(
+      {
+        host: "127.0.0.1",
+        port,
+        path,
+        agent: false,
+        headers: { Connection: "close" },
+      },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode);
+      },
+    );
+    req.on("error", reject);
+  });
+}
 
 test("the build ID covers every runtime asset", () => {
   for (const file of [
@@ -52,6 +71,7 @@ test("another build on the port is reported, never killed", async (t) => {
   await assert.rejects(
     startServer({
       port,
+      retryAttempts: 1,
       load: async () => ({ summary: {}, providers: [], accounts: [] }),
     }),
     /held by another build of this plugin/i,
@@ -64,13 +84,23 @@ test("another build on the port is reported, never killed", async (t) => {
 });
 
 test("a host on its way out releases the port and the new copy takes it", async (t) => {
+  const sockets = new Set();
   const leaving = createServer((_req, res) => {
     res.writeHead(503, { "Content-Type": "text/plain" });
     res.end("leaving");
   });
+  leaving.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
   await new Promise((resolve) => leaving.listen(0, "127.0.0.1", resolve));
   const port = leaving.address().port;
-  setTimeout(() => leaving.close(), 800);
+  setTimeout(() => {
+    // A host that is going away drops its clients; Bun otherwise keeps the
+    // listener alive until a probed connection closes.
+    for (const socket of sockets) socket.destroy();
+    leaving.close();
+  }, 800);
   t.after(() => {
     if (leaving.listening) {
       return new Promise((resolve) => leaving.close(resolve));
@@ -83,6 +113,5 @@ test("a host on its way out releases the port and the new copy takes it", async 
   });
   t.after(() => info.close());
 
-  const res = await fetch(`http://127.0.0.1:${port}/healthz`);
-  assert.equal(res.status, 200);
+  assert.equal(await status(port, "/healthz"), 200);
 });

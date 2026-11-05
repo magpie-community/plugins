@@ -899,13 +899,14 @@ input, select {
     grid-template-columns: minmax(150px, 1fr) 60px 74px minmax(80px, 0.7fr) 44px 74px 20px;
   }
 
-  .account-main .errors-cell {
+  .account-main .errors-cell,
+  .provider-main .errors-cell {
     display: none;
   }
 
   .model-head,
   .model-row {
-    grid-template-columns: minmax(150px, 1fr) 92px 74px minmax(80px, 0.7fr) 74px;
+    grid-template-columns: minmax(150px, 1fr) 92px 74px minmax(80px, 0.7fr) 46px 74px;
   }
 
   .model-head > :last-child,
@@ -1014,6 +1015,14 @@ input, select {
   .model-row .model-split,
   .model-row .metric-detail {
     display: none;
+  }
+
+  /* A 420 px tile is too narrow for one line of "In ... · Out ... ·
+     Cache ...". Wrap it instead of cutting the last value off. */
+  .summary-sub {
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
   }
 
   .foot {

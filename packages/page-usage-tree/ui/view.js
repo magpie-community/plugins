@@ -136,12 +136,17 @@
     const w = text(lang);
     const accounts = Number(summary.accounts) || 0;
     const tokenLabel = includeCache ? w.tokensWithCache : w.tokensWithoutCache;
+    const providers = Number(summary.providers ?? 0) || 0;
+    const models = Number(summary.models) || 0;
+    const accountSub = w.providerModels
+      ? w.providerModels(providers, models)
+      : `${count(providers)} ${w.providers} · ${count(models)} ${w.models}`;
     return [
       {
         key: "accounts",
         label: w.accounts,
         value: count(accounts),
-        sub: `${count(summary.providers ?? 0)} ${w.providers} · ${count(summary.models)} ${w.models}`,
+        sub: accountSub,
       },
       {
         key: "calls",

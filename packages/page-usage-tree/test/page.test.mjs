@@ -146,6 +146,7 @@ test("the summary says accounts, calls, tokens and cost", () => {
   const tiles = V.tiles(summary, "zh", "cny", 6.6696);
   assert.equal(tiles.length, 4);
   assert.equal(tiles[0].value, "2");
+  assert.match(tiles[0].sub, /0 个供应商/);
   assert.equal(tiles[1].value, "120");
   assert.equal(tiles[1].bad, true);
   assert.equal(tiles[2].value, "240万");
@@ -250,6 +251,45 @@ test("english is english, chinese is chinese", () => {
   V.setLang("zh");
   assert.equal(V.shareWord("cost"), "费用占比");
   assert.match(V.tiles(summary, "zh", "usd", 6.6696)[2].sub, /^入 /);
+});
+
+test("english counts singular accounts, providers and models", () => {
+  V.setLang("en");
+  const words = scope.UsageI18n.get("en");
+  assert.equal(words.accountsAndModels(1, 1), "1 account · 1 model");
+  assert.equal(words.accountsAndModels(0, 2), "0 accounts · 2 models");
+  assert.equal(words.modelsOnly(1), "1 model");
+  assert.equal(words.providerModels(1, 1), "1 provider · 1 model");
+  assert.equal(words.providerModels(3, 4), "3 providers · 4 models");
+  assert.match(V.tiles({ ...summary, accounts: 1, models: 1, providers: 1 }, "en", "usd", 0)[0].sub,
+    /^1 provider · 1 model$/);
+});
+
+test("the model table has one column per value and follows the cache switch", () => {
+  const source = read(uiDir, "app.js");
+  const start = source.indexOf("function modelList");
+  const head = source.slice(start, source.indexOf("const query = state.query", start));
+  assert.equal((head.match(/el\("span", "", /g) || []).length, 7);
+  assert.match(
+    head,
+    /el\("span", "", state\.includeCache \? W\.modelTokensWithCache : W\.modelTokensWithoutCache\)/,
+  );
+  assert.doesNotMatch(head, /el\("span", "", "Token"\)/);
+  assert.equal(scope.UsageI18n.get("zh").token, "Token");
+  assert.equal(scope.UsageI18n.get("en").token, "Token");
+});
+
+test("the 900 px grid keeps every visible cell in its own column", () => {
+  const css = read(uiDir, "style.css");
+  const block = css.slice(css.indexOf("@media (max-width: 900px)"), css.indexOf("@media (max-width: 620px)"));
+  assert.match(block, /\.provider-main \.errors-cell/);
+  assert.match(block, /grid-template-columns: minmax\(150px, 1fr\) 92px 74px minmax\(80px, 0\.7fr\) 46px 74px;/);
+});
+
+test("the narrow summary wraps its token split instead of cutting it", () => {
+  const css = read(uiDir, "style.css");
+  const block = css.slice(css.indexOf("@media (max-width: 620px)"));
+  assert.match(block, /\.summary-sub \{[\s\S]*?white-space: normal;/);
 });
 
 test("no function of the page calls itself", () => {
