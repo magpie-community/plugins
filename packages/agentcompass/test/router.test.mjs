@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
-import { DEFAULT_SCORING_POLICY } from "../src/catalog.js";
+import { DEFAULT_SCORING_POLICY, canonicalModel } from "../src/catalog.js";
 import {
   CACHE_COLD_MS,
   CHATGPT_CODEX_COLD_MS,
@@ -1947,6 +1947,12 @@ test("9.7 PR #670 Round 2 Guard: Mainstream real model IDs & trivial single-vari
       `Expected claude-opus-4-6:(high|xhigh|max) for permutation [${candidateModels.join(", ")}], got ${auditOut.model}`
     );
   }
+
+  // A multi-prefix id resolves by its last segment; an unknown one keeps only its first prefix stripped
+  assert.equal(canonicalModel("openrouter/openai/gpt-5-mini"), "gpt-6-luna");
+  assert.equal(canonicalModel("OpenRouter/OpenAI/GPT-5-Mini"), "gpt-6-luna");
+  assert.equal(canonicalModel("openrouter/qwen/foo"), "qwen/foo");
+  assert.equal(canonicalModel("qwen/foo"), "foo");
 });
 
 test("9.8 PR #670 Round 2 Guard: `options.fetch` alone never enables external scorer unless `allowExternalScorer === true`", async () => {
