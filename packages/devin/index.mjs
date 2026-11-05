@@ -41,16 +41,16 @@ const RETRY = 60 * 1000
 
 // ---- models ---------------------------------------------------------------------
 
-// Devin's list as `devin models list --format json` gave it (2026-10-14),
+// Devin's list as `devin models list --format json` gave it (2026-11-05),
 // less Adaptive and Fusion, which route between models inside Devin's own
 // agent and aren't served by the API: family id, label, aliases, and each
-// variant's id, label, context and output. Inkling and Claude Sonnet 4.5,
-// gone from that list, stay for the accounts still offered them. The
-// account's own list, from Devin (GetCliModelConfigs) or else the CLI,
-// replaces it.
+// variant's id, label, context and output. Models gone from that list —
+// Inkling, Claude Sonnet 4.5, SWE-1.7 Lightning and the rest at the end —
+// stay for the accounts still offered them. The account's own list, from
+// Devin (GetCliModelConfigs) or else the CLI, replaces it.
 const SNAPSHOT = [
   ["swe-2","SWE-2",["swe"],[["swe-2-high","SWE-2 High",262000,128000],["swe-2-medium","SWE-2 Medium",262000,128000],["swe-2-max","SWE-2 Max",262000,128000]]],
-  ["swe-1.7-lightning","SWE-1.7 Lightning",[],[["swe-1-7-lightning","SWE-1.7 Lightning Max",202752,96000],["swe-1-7-lightning-medium","SWE-1.7 Lightning Medium",202752,96000]]],
+  ["swe-2-flash","SWE-2 Flash",[],[["swe-2-flash-medium","SWE-2 Flash Medium",262144,131072],["swe-2-flash-high","SWE-2 Flash High",262144,131072],["swe-2-flash-max","SWE-2 Flash Max",262144,131072]]],
   ["claude-fable-5-1","Claude Fable 5.1",["fable"],[["claude-fable-5-1-medium","Claude Fable 5.1 Medium",1000000,128000],["claude-fable-5-1-low","Claude Fable 5.1 Low",1000000,128000],["claude-fable-5-1-high","Claude Fable 5.1 High",1000000,128000],["claude-fable-5-1-xhigh","Claude Fable 5.1 XHigh",1000000,128000],["claude-fable-5-1-max","Claude Fable 5.1 Max",1000000,128000]]],
   ["claude-opus-5-5","Claude Opus 5.5",[],[["claude-opus-5-5-medium","Claude Opus 5.5 Medium",1000000,128000],["claude-opus-5-5-low","Claude Opus 5.5 Low",1000000,128000],["claude-opus-5-5-high","Claude Opus 5.5 High",1000000,128000],["claude-opus-5-5-xhigh","Claude Opus 5.5 XHigh",1000000,128000],["claude-opus-5-5-max","Claude Opus 5.5 Max",1000000,128000],["claude-opus-5-5-low-fast","Claude Opus 5.5 Low Fast",1000000,128000],["claude-opus-5-5-medium-fast","Claude Opus 5.5 Medium Fast",1000000,128000],["claude-opus-5-5-high-fast","Claude Opus 5.5 High Fast",1000000,128000],["claude-opus-5-5-xhigh-fast","Claude Opus 5.5 XHigh Fast",1000000,128000],["claude-opus-5-5-max-fast","Claude Opus 5.5 Max Fast",1000000,128000]]],
   ["gpt-6-astra","GPT-6 Astra",[],[["gpt-6-astra-medium","GPT-6 Astra Medium Thinking",1000000,128000],["gpt-6-astra-low","GPT-6 Astra Low Thinking",1000000,128000],["gpt-6-astra-high","GPT-6 Astra High Thinking",1000000,128000],["gpt-6-astra-xhigh","GPT-6 Astra XHigh Thinking",1000000,128000],["gpt-6-astra-max","GPT-6 Astra Max Thinking",1000000,128000],["gpt-6-astra-low-priority","GPT-6 Astra Low Thinking Fast",1000000,128000],["gpt-6-astra-medium-priority","GPT-6 Astra Medium Thinking Fast",1000000,128000],["gpt-6-astra-high-priority","GPT-6 Astra High Thinking Fast",1000000,128000],["gpt-6-astra-xhigh-priority","GPT-6 Astra XHigh Thinking Fast",1000000,128000],["gpt-6-astra-max-priority","GPT-6 Astra Max Thinking Fast",1000000,128000]]],
@@ -75,19 +75,28 @@ const SNAPSHOT = [
   ["gpt-5.6-terra","GPT-5.6 Terra",[],[["gpt-5-6-terra-none","GPT-5.6 Terra No Thinking",1000000,128000],["gpt-5-6-terra-low","GPT-5.6 Terra Low Thinking",1000000,128000],["gpt-5-6-terra-medium","GPT-5.6 Terra Medium Thinking",1000000,128000],["gpt-5-6-terra-high","GPT-5.6 Terra High Thinking",1000000,128000],["gpt-5-6-terra-xhigh","GPT-5.6 Terra XHigh Thinking",1000000,128000],["gpt-5-6-terra-max","GPT-5.6 Terra Max Thinking",1000000,128000],["gpt-5-6-terra-none-priority","GPT-5.6 Terra No Thinking Fast",1000000,128000],["gpt-5-6-terra-low-priority","GPT-5.6 Terra Low Thinking Fast",1000000,128000],["gpt-5-6-terra-medium-priority","GPT-5.6 Terra Medium Thinking Fast",1000000,128000],["gpt-5-6-terra-high-priority","GPT-5.6 Terra High Thinking Fast",1000000,128000],["gpt-5-6-terra-xhigh-priority","GPT-5.6 Terra XHigh Thinking Fast",1000000,128000],["gpt-5-6-terra-max-priority","GPT-5.6 Terra Max Thinking Fast",1000000,128000]]],
   ["gpt-5.6-luna","GPT-5.6 Luna",[],[["gpt-5-6-luna-none","GPT-5.6 Luna No Thinking",1000000,128000],["gpt-5-6-luna-low","GPT-5.6 Luna Low Thinking",1000000,128000],["gpt-5-6-luna-medium","GPT-5.6 Luna Medium Thinking",1000000,128000],["gpt-5-6-luna-high","GPT-5.6 Luna High Thinking",1000000,128000],["gpt-5-6-luna-xhigh","GPT-5.6 Luna XHigh Thinking",1000000,128000],["gpt-5-6-luna-max","GPT-5.6 Luna Max Thinking",1000000,128000],["gpt-5-6-luna-none-priority","GPT-5.6 Luna No Thinking Fast",1000000,128000],["gpt-5-6-luna-low-priority","GPT-5.6 Luna Low Thinking Fast",1000000,128000],["gpt-5-6-luna-medium-priority","GPT-5.6 Luna Medium Thinking Fast",1000000,128000],["gpt-5-6-luna-high-priority","GPT-5.6 Luna High Thinking Fast",1000000,128000],["gpt-5-6-luna-xhigh-priority","GPT-5.6 Luna XHigh Thinking Fast",1000000,128000],["gpt-5-6-luna-max-priority","GPT-5.6 Luna Max Thinking Fast",1000000,128000]]],
   ["gpt-6-1-sol","GPT-6.1 Sol",[],[["gpt-6-1-sol-low","GPT-6.1 Sol Low Thinking",1000000,128000],["gpt-6-1-sol-medium","GPT-6.1 Sol Medium Thinking",1000000,128000],["gpt-6-1-sol-high","GPT-6.1 Sol High Thinking",1000000,128000],["gpt-6-1-sol-xhigh","GPT-6.1 Sol XHigh Thinking",1000000,128000],["gpt-6-1-sol-max","GPT-6.1 Sol Max Thinking",1000000,128000],["gpt-6-1-sol-low-priority","GPT-6.1 Sol Low Thinking Fast",1000000,128000],["gpt-6-1-sol-medium-priority","GPT-6.1 Sol Medium Thinking Fast",1000000,128000],["gpt-6-1-sol-high-priority","GPT-6.1 Sol High Thinking Fast",1000000,128000],["gpt-6-1-sol-xhigh-priority","GPT-6.1 Sol XHigh Thinking Fast",1000000,128000],["gpt-6-1-sol-max-priority","GPT-6.1 Sol Max Thinking Fast",1000000,128000]]],
-  ["grok-4.5","Grok 4.5",[],[["grok-4-5-low","Grok 4.5 Low",500000,100000],["grok-4-5-medium","Grok 4.5 Medium",500000,100000],["grok-4-5-high","Grok 4.5 High",500000,100000]]],
+  ["gpt-6-1-terra","GPT-6.1 Terra",[],[["gpt-6-1-terra-low","GPT-6.1 Terra Low Thinking",1000000,128000],["gpt-6-1-terra-medium","GPT-6.1 Terra Medium Thinking",1000000,128000],["gpt-6-1-terra-high","GPT-6.1 Terra High Thinking",1000000,128000],["gpt-6-1-terra-xhigh","GPT-6.1 Terra XHigh Thinking",1000000,128000],["gpt-6-1-terra-max","GPT-6.1 Terra Max Thinking",1000000,128000],["gpt-6-1-terra-low-priority","GPT-6.1 Terra Low Thinking Fast",1000000,128000],["gpt-6-1-terra-medium-priority","GPT-6.1 Terra Medium Thinking Fast",1000000,128000],["gpt-6-1-terra-high-priority","GPT-6.1 Terra High Thinking Fast",1000000,128000],["gpt-6-1-terra-xhigh-priority","GPT-6.1 Terra XHigh Thinking Fast",1000000,128000],["gpt-6-1-terra-max-priority","GPT-6.1 Terra Max Thinking Fast",1000000,128000]]],
   ["grok-4-6","Grok 4.6",[],[["grok-4-6-low","Grok 4.6 Low",500000,100000],["grok-4-6-medium","Grok 4.6 Medium",500000,100000],["grok-4-6-high","Grok 4.6 High",500000,100000],["grok-4-6-xhigh","Grok 4.6 XHigh",500000,100000]]],
   ["grok-4-7","Grok 4.7",[],[["grok-4-7-low","Grok 4.7 Low",500000,100000],["grok-4-7-medium","Grok 4.7 Medium",500000,100000],["grok-4-7-high","Grok 4.7 High",500000,100000],["grok-4-7-xhigh","Grok 4.7 XHigh",500000,100000]]],
-  ["inkling","Inkling",[],[["inkling-none","Inkling None",1048576,131072],["inkling-low","Inkling Low",1048576,131072],["inkling-medium","Inkling Medium",1048576,131072],["inkling-high","Inkling High",1048576,131072],["inkling-xhigh","Inkling X-High",1048576,131072],["inkling-max","Inkling Max",1048576,131072]]],
-  ["glm-5-3-flash","GLM-5.3 Flash",[],[["glm-5-3-flash-low","GLM-5.3 Flash Low",1000000,128000],["glm-5-3-flash-high","GLM-5.3 Flash High",1000000,128000],["glm-5-3-flash-max","GLM-5.3 Flash Max",1000000,128000]]],
+  ["muse-wonder-1-0","Muse Wonder",[],[["muse-wonder-1-0-minimal","Muse Wonder Minimal",1048576,131072],["muse-wonder-1-0-low","Muse Wonder Low",1048576,131072],["muse-wonder-1-0-medium","Muse Wonder Medium",1048576,131072],["muse-wonder-1-0-high","Muse Wonder High",1048576,131072],["muse-wonder-1-0-xhigh","Muse Wonder XHigh",1048576,131072],["muse-wonder-1-0-max","Muse Wonder Max",1048576,131072]]],
+  ["nemotron-3-5-super","Nemotron 3.5 Super",[],[["nemotron-3-5-super-none","Nemotron 3.5 Super None",1048576,65536],["nemotron-3-5-super-medium","Nemotron 3.5 Super Medium",1048576,65536],["nemotron-3-5-super-high","Nemotron 3.5 Super High",1048576,65536]]],
+  ["glm-5-3-flash","GLM-5.3 Flash",[],[["glm-5-3-flash-low","GLM-5.3 Flash Low",1000000,131072],["glm-5-3-flash-high","GLM-5.3 Flash High",1000000,131072],["glm-5-3-flash-max","GLM-5.3 Flash Max",1000000,131072]]],
   ["deepseek-v4-flash","DeepSeek V4 Flash",[],[["deepseek-v4-flash-high","DeepSeek V4 Flash High",1048576,384000],["deepseek-v4-flash-max","DeepSeek V4 Flash Max",1048576,384000]]],
-  ["deepseek-v4-1-flash","DeepSeek V4.1 Flash",[],[["deepseek-v4-1-flash-high","DeepSeek V4.1 Flash High",1048576,384000],["deepseek-v4-1-flash-max","DeepSeek V4.1 Flash Max",1048576,384000]]],
+  ["deepseek-v4-1-flash-1017","DeepSeek V4.1 Flash",[],[["deepseek-v4-1-flash-1017-none","DeepSeek V4.1 Flash None",1048576,384000],["deepseek-v4-1-flash-1017-low","DeepSeek V4.1 Flash Low",1048576,384000],["deepseek-v4-1-flash-1017-high","DeepSeek V4.1 Flash High",1048576,384000],["deepseek-v4-1-flash-1017-max","DeepSeek V4.1 Flash Max",1048576,384000]]],
   ["swe-1.7","SWE-1.7",[],[["swe-1-7","SWE-1.7 Max",262000,128000],["swe-1-7-medium","SWE-1.7 Medium",262000,128000]]],
   ["claude-opus-4.6","Claude Opus 4.6",[],[["claude-opus-4-6","Claude Opus 4.6",200000,128000],["claude-opus-4-6-thinking","Claude Opus 4.6 Thinking",200000,128000],["claude-opus-4-6-1m","Claude Opus 4.6 1M",1000000,128000],["claude-opus-4-6-thinking-1m","Claude Opus 4.6 Thinking 1M",1000000,128000]]],
   ["gpt-5.4","GPT-5.4",[],[["gpt-5-4-none","GPT-5.4 No Thinking",272000,128000],["gpt-5-4-low","GPT-5.4 Low Thinking",272000,128000],["gpt-5-4-medium","GPT-5.4 Medium Thinking",272000,128000],["gpt-5-4-high","GPT-5.4 High Thinking",272000,128000],["gpt-5-4-xhigh","GPT-5.4 XHigh Thinking",272000,128000],["gpt-5-4-none-priority","GPT-5.4 No Thinking Fast",272000,128000],["gpt-5-4-low-priority","GPT-5.4 Low Thinking Fast",272000,128000],["gpt-5-4-medium-priority","GPT-5.4 Medium Thinking Fast",272000,128000],["gpt-5-4-high-priority","GPT-5.4 High Thinking Fast",272000,128000],["gpt-5-4-xhigh-priority","GPT-5.4 XHigh Thinking Fast",272000,128000]]],
   ["gpt-5.5","GPT-5.5",["gpt"],[["gpt-5-5-none","GPT-5.5 No Thinking",272000,128000],["gpt-5-5-low","GPT-5.5 Low Thinking",272000,128000],["gpt-5-5-medium","GPT-5.5 Medium Thinking",272000,128000],["gpt-5-5-high","GPT-5.5 High Thinking",272000,128000],["gpt-5-5-xhigh","GPT-5.5 XHigh Thinking",272000,128000],["gpt-5-5-none-priority","GPT-5.5 No Thinking Fast",272000,128000],["gpt-5-5-low-priority","GPT-5.5 Low Thinking Fast",272000,128000],["gpt-5-5-medium-priority","GPT-5.5 Medium Thinking Fast",272000,128000],["gpt-5-5-high-priority","GPT-5.5 High Thinking Fast",272000,128000],["gpt-5-5-xhigh-priority","GPT-5.5 XHigh Thinking Fast",272000,128000]]],
   ["gpt-5.4-mini","GPT-5.4 Mini",[],[["gpt-5-4-mini-low","GPT-5.4 Mini Low Thinking",400000,128000],["gpt-5-4-mini-medium","GPT-5.4 Mini Medium Thinking",400000,128000],["gpt-5-4-mini-high","GPT-5.4 Mini High Thinking",400000,128000],["gpt-5-4-mini-xhigh","GPT-5.4 Mini XHigh Thinking",400000,128000]]],
   ["claude-sonnet-4.6","Claude Sonnet 4.6",[],[["claude-sonnet-4-6","Claude Sonnet 4.6",200000,128000],["claude-sonnet-4-6-thinking","Claude Sonnet 4.6 Thinking",200000,128000],["claude-sonnet-4-6-1m","Claude Sonnet 4.6 1M",1000000,128000],["claude-sonnet-4-6-thinking-1m","Claude Sonnet 4.6 Thinking 1M",1000000,128000]]],
+  ["kimi-k2.6","Kimi K2.6",[],[["kimi-k2-6","Kimi K2.6",262144,8192]]],
+  ["kimi-k2.7","Kimi K2.7",[],[["kimi-k2-7","Kimi K2.7",262144,16000]]],
+  ["nemotron-3-ultra","Nemotron 3 Ultra",[],[["nemotron-3-ultra-none","Nemotron 3 Ultra None",1000000,32768],["nemotron-3-ultra-medium","Nemotron 3 Ultra Medium",1000000,32768],["nemotron-3-ultra-high","Nemotron 3 Ultra High",1000000,32768]]],
+  ["swe-1.6","SWE-1.6",[],[["swe-1-6","SWE-1.6",200000,128000]]],
+  ["deepseek-v4-pro","DeepSeek V4 Pro",[],[["deepseek-v4-pro-high","DeepSeek V4 Pro High",1048576,384000],["deepseek-v4-pro-max","DeepSeek V4 Pro Max",1048576,384000]]],
+  ["swe-1.7-lightning","SWE-1.7 Lightning",[],[["swe-1-7-lightning","SWE-1.7 Lightning Max",202752,96000],["swe-1-7-lightning-medium","SWE-1.7 Lightning Medium",202752,96000]]],
+  ["inkling","Inkling",[],[["inkling-none","Inkling None",1048576,131072],["inkling-low","Inkling Low",1048576,131072],["inkling-medium","Inkling Medium",1048576,131072],["inkling-high","Inkling High",1048576,131072],["inkling-xhigh","Inkling X-High",1048576,131072],["inkling-max","Inkling Max",1048576,131072]]],
+  ["grok-4.5","Grok 4.5",[],[["grok-4-5-low","Grok 4.5 Low",500000,100000],["grok-4-5-medium","Grok 4.5 Medium",500000,100000],["grok-4-5-high","Grok 4.5 High",500000,100000]]],
   ["gpt-5.2","GPT-5.2",[],[["MODEL_GPT_5_2_LOW","GPT-5.2 Low Thinking",384000,128000],["MODEL_GPT_5_2_MEDIUM","GPT-5.2 Medium Thinking",384000,128000],["MODEL_GPT_5_2_NONE","GPT-5.2 No Thinking",384000,128000],["MODEL_GPT_5_2_HIGH","GPT-5.2 High Thinking",384000,128000],["MODEL_GPT_5_2_XHIGH","GPT-5.2 XHigh Thinking",384000,128000]]],
   ["claude-opus-4.5","Claude Opus 4.5",[],[["MODEL_CLAUDE_4_5_OPUS","Claude Opus 4.5",200000,64000],["MODEL_CLAUDE_4_5_OPUS_THINKING","Claude Opus 4.5 Thinking",200000,64000]]],
   ["Claude Haiku 4.5","Claude Haiku 4.5",[],[["MODEL_PRIVATE_11","Claude Haiku 4.5",200000,64000]]],
@@ -95,14 +104,9 @@ const SNAPSHOT = [
   ["GPT-4.1","GPT-4.1",[],[["MODEL_CHAT_GPT_4_1_2025_04_14","GPT-4.1",1047576,32768]]],
   ["gpt-5.1","GPT-5.1",[],[["MODEL_PRIVATE_12","GPT-5.1 No Thinking",272000,128000],["MODEL_PRIVATE_13","GPT-5.1 Low Thinking",272000,128000],["MODEL_PRIVATE_14","GPT-5.1 Medium Thinking",272000,128000],["MODEL_PRIVATE_15","GPT-5.1 High Thinking",272000,128000]]],
   ["gpt-5.3-codex","GPT-5.3-Codex",["codex"],[["gpt-5-3-codex-low","GPT-5.3-Codex Low",400000,128000],["gpt-5-3-codex-medium","GPT-5.3-Codex Medium",400000,128000],["gpt-5-3-codex-high","GPT-5.3-Codex High",400000,128000],["gpt-5-3-codex-xhigh","GPT-5.3-Codex X-High",400000,128000],["gpt-5-3-codex-low-priority","GPT-5.3-Codex Low Fast",400000,128000],["gpt-5-3-codex-medium-priority","GPT-5.3-Codex Medium Fast",400000,128000],["gpt-5-3-codex-high-priority","GPT-5.3-Codex High Fast",400000,128000],["gpt-5-3-codex-xhigh-priority","GPT-5.3-Codex XHigh Fast",400000,128000]]],
-  ["kimi-k2.6","Kimi K2.6",[],[["kimi-k2-6","Kimi K2.6",262144,8192]]],
-  ["kimi-k2.7","Kimi K2.7",[],[["kimi-k2-7","Kimi K2.7",262144,16000]]],
-  ["nemotron-3-ultra","Nemotron 3 Ultra",[],[["nemotron-3-ultra-none","Nemotron 3 Ultra None",1000000,32768],["nemotron-3-ultra-medium","Nemotron 3 Ultra Medium",1000000,32768],["nemotron-3-ultra-high","Nemotron 3 Ultra High",1000000,32768]]],
-  ["swe-1.6","SWE-1.6",[],[["swe-1-6","SWE-1.6",200000,128000]]],
   ["swe-1.6-fast","SWE-1.6 Fast",[],[["swe-1-6-fast","SWE-1.6 Fast",200000,128000]]],
   ["gemini-3.1-pro","Gemini 3.1 Pro",[],[["gemini-3-1-pro-low","Gemini 3.1 Pro Low Thinking",1048576,65535],["gemini-3-1-pro-high","Gemini 3.1 Pro High Thinking",1048576,65535]]],
   ["gemini-3.0-flash","Gemini 3 Flash",[],[["MODEL_GOOGLE_GEMINI_3_0_FLASH_MINIMAL","Gemini 3 Flash Minimal",1048576,65535],["MODEL_GOOGLE_GEMINI_3_0_FLASH_LOW","Gemini 3 Flash Low",1048576,65535],["MODEL_GOOGLE_GEMINI_3_0_FLASH_MEDIUM","Gemini 3 Flash Medium",1048576,65535],["MODEL_GOOGLE_GEMINI_3_0_FLASH_HIGH","Gemini 3 Flash High",1048576,65535]]],
-  ["deepseek-v4-pro","DeepSeek V4 Pro",[],[["deepseek-v4-pro-high","DeepSeek V4 Pro High",1048576,384000],["deepseek-v4-pro-max","DeepSeek V4 Pro Max",1048576,384000]]],
 ]
 
 const familiesOf = (rows) => rows.map(([uid, label, aliases, vs]) => ({ uid, label, aliases, models: vs.map(([id, name, context, output]) => ({ id, name, context, output })) }))
@@ -334,7 +338,7 @@ function familyImages(f, images) {
 // magpie's built-in asks it (devin_images.go): `devin models list` says
 // nothing of images and models.dev doesn't know Devin's own ids, so swe-2
 // was said to take none and agents dropped its images (面条 on magpie's
-// Discord). NO_IMAGES are the ids Devin said take none, as of 2026-10-05;
+// Discord). NO_IMAGES are the ids Devin said take none, as of 2026-11-05;
 // every other id in SNAPSHOT takes them, which is what a list is told
 // before Devin is asked, or when it can't be.
 const NO_IMAGES = new Set([
@@ -343,6 +347,7 @@ const NO_IMAGES = new Set([
   "inkling-none", "inkling-low", "inkling-medium", "inkling-high", "inkling-xhigh", "inkling-max",
   "deepseek-v4-flash-high", "deepseek-v4-flash-max", "deepseek-v4-pro-high", "deepseek-v4-pro-max",
   "nemotron-3-ultra-none", "nemotron-3-ultra-medium", "nemotron-3-ultra-high",
+  "swe-2-flash-medium", "swe-2-flash-high", "swe-2-flash-max",
 ])
 const SNAPSHOT_IMAGES = Object.fromEntries(SNAPSHOT.flatMap(([, , , vs]) => vs.map(([id]) => [id, !NO_IMAGES.has(id)])))
 
