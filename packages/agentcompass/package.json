@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-agentcompass",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Intent, multi-dimensional capability, Model DNA, subscription quota opportunity-cost, and session-affinity routing plugin for Magpie, powered by AgentCompass.",
   "type": "module",
   "main": "./src/index.js",

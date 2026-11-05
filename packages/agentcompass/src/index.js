@@ -486,8 +486,10 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
 
 /**
  * Default Magpie Gateway / Middleware Plugin export (`src/index.js`).
- * By default, does not register a fake `auth` or `provider` entry in `cfg.provider`
- * so Magpie treats the package purely as a gateway hook + middleware plugin.
+ * By default it registers no `auth` hook and no `cfg.provider` entry, so Magpie treats the package
+ * purely as a gateway hook + middleware plugin. With `enableDecisionProvider: true` it adds the
+ * `agentcompass` decision provider: the `config` entry (`decide`, the `decides` model) and the keyless
+ * `auth` hook whose loader serves `/systemone`; Magpie needs both.
  */
 export async function AgentCompassRouterPlugin(input, pluginOptions = {}) {
   if (pluginOptions.enableDecisionProvider !== true) {
@@ -502,6 +504,7 @@ export async function AgentCompassRouterPlugin(input, pluginOptions = {}) {
       cfg.provider[PROVIDER_ID] = {
         name: "AgentCompass",
         icon: AGENTCOMPASS_ICON_DATA_URI,
+        api: DECISION_BASE_URL,
         decide: true,
         models: {
           [DECISION_MODEL_ID]: {
@@ -515,26 +518,71 @@ export async function AgentCompassRouterPlugin(input, pluginOptions = {}) {
         },
       };
     },
-    async fetch(reqInput, init) {
-      const rawBody = init?.body
-        ? typeof init.body === "string"
-          ? init.body
-          : new TextDecoder().decode(init.body)
-        : reqInput instanceof Request
-          ? await reqInput.text()
-          : "{}";
-      let parsed = {};
-      try {
-        parsed = JSON.parse(rawBody);
-      } catch {}
-
-      const reply = await handleSystemOneRequest(parsed, pluginOptions);
-      return new Response(JSON.stringify(reply), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+    // Magpie lists, signs in and serves only providers a plugin's auth hook names (host.js `auths()`,
+    // `providers()`; Go `plugin.Provider` is "a provider a plugin signs in to"). It posts System One's
+    // questions to the provider's base `/systemone` through the fetch the auth loader returns. A
+    // `config` entry alone is never listed: no Classifier option, no `magpie plugin login agentcompass`,
+    // and `/v1/systemone` answers 404 (issue #1).
+    auth: {
+      provider: PROVIDER_ID,
+      icon: AGENTCOMPASS_ICON_DATA_URI,
+      single: true,
+      methods: [
+        {
+          type: "api",
+          // keyless: nothing to type and no account of the user's (Magpie's publicPlugin)
+          keyless: true,
+          label: "Enable AgentCompass decision provider",
+          async authorize() {
+            return { type: "success", key: DECISION_ACCOUNT_KEY };
+          },
+        },
+      ],
+      async loader() {
+        return {
+          baseURL: DECISION_BASE_URL,
+          apiKey: DECISION_ACCOUNT_KEY,
+          fetch: (reqInput, init) => systemOneFetch(reqInput, init, pluginOptions),
+        };
+      },
     },
   };
+}
+
+/** Local base the decision provider is served under; nothing is sent over the network. */
+export const DECISION_BASE_URL = "https://agentcompass.local/v1";
+const DECISION_ACCOUNT_KEY = "agentcompass-local";
+
+function requestPath(reqInput) {
+  const raw = typeof reqInput === "string" ? reqInput : reqInput?.url ?? String(reqInput ?? "");
+  try {
+    return new URL(raw).pathname;
+  } catch {
+    return raw;
+  }
+}
+
+/** The decision provider's fetch: answers `/systemone`, and nothing else. */
+export async function systemOneFetch(reqInput, init, pluginOptions = {}) {
+  const json = (status, value) =>
+    new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+  if (!requestPath(reqInput).replace(/\/+$/, "").endsWith("/systemone")) {
+    return json(404, {
+      error: { type: "not_found_error", message: `${PROVIDER_ID} answers only /systemone (System One decisions)` },
+    });
+  }
+  const rawBody = init?.body
+    ? typeof init.body === "string"
+      ? init.body
+      : new TextDecoder().decode(init.body)
+    : reqInput instanceof Request
+      ? await reqInput.text()
+      : "{}";
+  let parsed = {};
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {}
+  return json(200, await handleSystemOneRequest(parsed, pluginOptions));
 }
 
 export default {
