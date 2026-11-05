@@ -279,6 +279,13 @@ test("the model table has one column per value and follows the cache switch", ()
   assert.equal(scope.UsageI18n.get("en").token, "Token");
 });
 
+test("model calls sit under the right-aligned calls header", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(source, /\(model\.errors \? "bad " : ""\) \+ "calls-cell"/);
+  const css = read(uiDir, "style.css");
+  assert.match(css, /\.calls-cell,[\s\S]*?text-align: right;/);
+});
+
 test("the 900 px grid keeps every visible cell in its own column", () => {
   const css = read(uiDir, "style.css");
   const block = css.slice(css.indexOf("@media (max-width: 900px)"), css.indexOf("@media (max-width: 620px)"));

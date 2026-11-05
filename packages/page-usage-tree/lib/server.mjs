@@ -169,6 +169,9 @@ async function probeService(port) {
 export async function startServer(options = {}) {
   const port = Number(options.port);
   const requestedPort = Number.isInteger(port) && port >= 0 && port <= 65535 ? port : 3494;
+  // A restarting host normally frees the port within a fraction of a second.
+  // Sixteen 100 ms retries bound the worst-case start delay to 1.6 s; waiting
+  // longer would make the plugin host look hung when another build is live.
   const retryAttempts =
     Number.isInteger(options.retryAttempts) && options.retryAttempts > 0
       ? options.retryAttempts

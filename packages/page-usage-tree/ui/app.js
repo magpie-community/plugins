@@ -820,7 +820,7 @@
         model.errors
           ? `${model.errors} ${W.failed} · ${V.errorRate(model.errors, model.calls)}`
           : "",
-        model.errors ? "bad" : "",
+        (model.errors ? "bad " : "") + "calls-cell",
       );
       const share = shareCell(model, totalForSort(account.models), account.models);
       const split = el("div", "model-split",
