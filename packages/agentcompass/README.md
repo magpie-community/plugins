@@ -149,13 +149,28 @@ git clone https://github.com/akiiwa-games/magpie-agentcompass-router.git
 cd magpie-agentcompass-router
 ```
 
-将插件添加到 Magpie 并启用 `agentcompass`：
+将插件添加到 Magpie（三种来源任选其一）：
 
 ```bash
-magpie plugin add /path/to/magpie-agentcompass-router
-magpie plugin login agentcompass
+magpie plugin add @magpie-community/gateway-agentcompass                 # 插件市场（npm）
+magpie plugin add github:akiiwa-games/magpie-agentcompass-router         # GitHub
+magpie plugin add /path/to/magpie-agentcompass-router                    # 本地目录
 magpie plugin list
 ```
+
+只用模式 A（网关中间件）时，添加后即可使用，无需登录。要用模式 B（Routing Group Classifier），见下文「配置方式二：模式 B」：先设 `enableDecisionProvider: true`、重启 Magpie，再 `magpie plugin login agentcompass`。
+
+#### 各安装来源下的名称
+
+Magpie 用包名（去掉 scope 与 `middleware-` / `opencode-` / `tools-` 等前缀）给插件的账号池策略加前缀，所以策略名随安装来源变化；决策 Provider 的模型名取自插件声明的 Provider ID，与来源无关：
+
+| 安装来源 | 账号池策略（`routings`） | Classifier 模型（模式 B） |
+| :--- | :--- | :--- |
+| 插件市场 `@magpie-community/gateway-agentcompass` | `gateway-agentcompass/agentcompass`、`gateway-agentcompass/agentcompass-pure` | `agentcompass/agentcompass-systemone` |
+| GitHub `github:akiiwa-games/magpie-agentcompass-router` | `agentcompass/agentcompass`、`agentcompass/agentcompass-pure` | `agentcompass/agentcompass-systemone` |
+| 本地目录 | `<目录名>/agentcompass`、`<目录名>/agentcompass-pure` | `agentcompass/agentcompass-systemone` |
+
+以本机实际输出为准：`magpie plugin list` 的 `routings ...` 一行列出策略名；开启 `enableDecisionProvider` 并登录后，`agentcompass (AgentCompass, 1 models)  signed in` 一行表示决策 Provider 已就绪。客户端在模式 A 请求的虚拟模型 `agentcompass` / `agentcompass/*` 由中间件按请求中的模型名匹配，也与安装来源无关。
 
 或在 `~/.magpie/plugins/` 创建软链接：
 
@@ -208,7 +223,16 @@ New-Item -ItemType SymbolicLink -Path "$HOME\.magpie\plugins\agentcompass" -Targ
 
 如果你喜欢使用 Magpie UI 的 **Routing Groups（路由组）** 可视化界面：
 
-1. 在插件选项中显式开启 `"enableDecisionProvider": true`，并在 Magpie 中登录启用本插件提供的 Provider：`magpie plugin login agentcompass`（显示名称为 `AgentCompass`）；
+1. 依次执行：在插件选项中开启 `"enableDecisionProvider": true` → 重启 Magpie → 登录本插件提供的 Provider（无需 Key，显示名称为 `AgentCompass`）：
+
+   ```bash
+   magpie plugin options <插件 spec，见 magpie plugin list> '{"enableDecisionProvider": true}'
+   # 重启 Magpie（或 magpie web）
+   magpie plugin login agentcompass
+   magpie plugin list   # 应出现：agentcompass (AgentCompass, 1 models)  signed in
+   ```
+
+   未开启该选项时插件不注册任何 Provider，Classifier 列表中也不会出现它。插件版本需为 `0.1.1` 及以上：`0.1.0` 在开启选项后仍不注册 Provider（[issue #1](https://github.com/akiiwa-games/magpie-agentcompass-router/issues/1)），`/v1/systemone` 会返回 `magpie has no Jev provider` 或 `magpie knows no Jev model`；
 2. 进入你的 **Routing Group** 设置，将 **Classifier（分类器模型）** 选择为 `agentcompass/agentcompass-systemone`（CLI：`magpie group set <group> effort=auto classifier=agentcompass/agentcompass-systemone`）；
 3. 在 Magpie 全局设置中，可将 `ClassifyTimeout` 调整为 `8000`–`30000` ms（最高支持 `60000` ms）；
 4. 在 Routing Group 中按标准类别（如 `direction_reasoning`、`debug_review`、`self_contained_code`、`bounded_bulk_work`）配置你的目标模型列表——插件会自动运行 AgentCompass 算法，选出最匹配的规则分支与思考档位（`low` / `medium` / `high` / `xhigh`）。

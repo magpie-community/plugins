@@ -351,7 +351,8 @@ test("4. Native Magpie `/v1/systemone` Decision Handler (`handleSystemOneRequest
   assert.equal(cfg.provider[PROVIDER_ID].decide, true);
   assert.equal(cfg.provider[PROVIDER_ID].models[DECISION_MODEL_ID].decides, true);
 
-  const httpRes = await optInPlugin.fetch("http://127.0.0.1/v1/systemone", {
+  const { fetch: decisionFetch, baseURL } = await optInPlugin.auth.loader(async () => ({}), {});
+  const httpRes = await decisionFetch(`${baseURL}/systemone`, {
     method: "POST",
     body: JSON.stringify({
       model: DECISION_MODEL_ID,
@@ -372,6 +373,87 @@ test("4. Native Magpie `/v1/systemone` Decision Handler (`handleSystemOneRequest
   assert.equal(httpRes.status, 200);
   const json = await httpRes.json();
   assert.equal(json.answers.intent.choice, "bounded_bulk_work");
+});
+
+/**
+ * What Magpie's plugin host (0.1.2804 through 0.1.2891, `internal/plugin/host.js`) needs before a
+ * decision provider exists, emulated: the server function is called with plugins.json's options
+ * (`fn(input, p.options)`); a provider is listed, signed in and served only when a hook's
+ * `auth.provider` names it (`auths()` / `providers()`); `decide` and the model's `decides` come from
+ * the config entry (`info()`); `magpie plugin login` takes a keyless `api` method's `authorize()`;
+ * System One is posted to the loader's `baseURL` + `/systemone` through the loader's `fetch` (`load()`).
+ * A `config` entry with no auth hook passed the old test and was never listed (issue #1).
+ */
+async function magpieHostView(serverFn, options) {
+  const hooks = (await serverFn({}, options)) ?? {};
+  const config = {};
+  if (typeof hooks.config === "function") await hooks.config(config);
+  const auth = hooks.auth?.provider ? hooks.auth : null;
+  if (!auth) return { providers: [] };
+  const cfg = config.provider?.[auth.provider] ?? {};
+  const keyless = (auth.methods ?? []).filter(
+    (m) => m.type === "api" && m.keyless === true && typeof m.authorize === "function"
+  );
+  const signedIn = keyless.length ? await keyless[0].authorize() : null;
+  const loaded = signedIn?.type === "success" && auth.loader ? await auth.loader(async () => signedIn, cfg) : {};
+  return {
+    providers: [
+      {
+        id: auth.provider,
+        name: cfg.name ?? auth.provider,
+        decide: cfg.decide === true,
+        decisionModels: Object.entries(cfg.models ?? {}).filter(([, m]) => m.decides === true).map(([id]) => id),
+        keyless: keyless.length > 0,
+        signedIn: signedIn?.type === "success",
+        baseURL: typeof loaded.baseURL === "string" ? loaded.baseURL : "",
+        fetch: typeof loaded.fetch === "function" ? loaded.fetch : null,
+      },
+    ],
+  };
+}
+
+test("4d. Decision provider registers the way Magpie's host lists, signs in and serves it (issue #1)", async () => {
+  const pluginEntry = (await import("../src/index.js")).default;
+  assert.equal(pluginEntry.id, "agentcompass");
+
+  for (const options of [{}, { enableDecisionProvider: false }, { enableDecisionProvider: "true" }]) {
+    assert.deepEqual((await magpieHostView(pluginEntry.server, options)).providers, [], JSON.stringify(options));
+  }
+
+  const { providers } = await magpieHostView(pluginEntry.server, {
+    enableDecisionProvider: true,
+    injectProtocolEffort: true,
+    routeAllModels: true,
+  });
+  assert.equal(providers.length, 1, "magpie plugin list must show the agentcompass provider");
+  const [p] = providers;
+  assert.equal(p.id, PROVIDER_ID);
+  assert.equal(p.name, "AgentCompass");
+  assert.equal(p.decide, true);
+  assert.deepEqual(p.decisionModels, [DECISION_MODEL_ID], "agentcompass/agentcompass-systemone is a Classifier option");
+  assert.ok(p.keyless && p.signedIn, "magpie plugin login agentcompass signs in without a key");
+  assert.match(p.baseURL, /^https?:\/\//);
+  assert.equal(typeof p.fetch, "function");
+
+  const answered = await p.fetch(`${p.baseURL}/systemone`, {
+    method: "POST",
+    body: JSON.stringify({
+      model: DECISION_MODEL_ID,
+      state: { task: "Find the root cause of a deadlock across three services" },
+      questions: { work_kind: { type: "choice" }, reasoning_depth: { type: "score" } },
+    }),
+  });
+  assert.equal(answered.status, 200);
+  const body = await answered.json();
+  assert.equal(body.model, DECISION_MODEL_ID);
+  assert.equal(typeof body.answers.work_kind.choice, "string");
+  assert.equal(typeof body.answers.reasoning_depth.score, "number");
+
+  // Only System One is served: a chat request sent to the provider is refused, never answered as a model.
+  const chat = await p.fetch(`${p.baseURL}/chat/completions`, { method: "POST", body: "{}" });
+  assert.equal(chat.status, 404);
+  const viaRequest = await p.fetch(new Request(`${p.baseURL}/systemone`, { method: "POST", body: "{}" }));
+  assert.equal(viaRequest.status, 200);
 });
 
 test("5. Pool strategy `agentcompass` / `agentcompass-pure` orders non-resting lowest-used seat indexes first", () => {
