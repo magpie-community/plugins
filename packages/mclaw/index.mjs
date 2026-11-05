@@ -35,9 +35,21 @@
  *             benefitValue（总额）/benefitUsed（已用），即 aitokens 池。
  *
  *   明细    POST https://vip.yun.139.com/m4c/benefit/getAiTokenConsumptionRecords
- *           Cookie: <vip.yun.139.com 会话 cookie>（网页版会话，可选）
+ *           Cookie: <vip.yun.139.com 会话 cookie>（网页版会话，可自动换取）
  *           body: {"pageNum":1,"pageSize":3,"action":["1","4"]}
  *           → 每条：modelCode/modelName/benefitNum(消耗)/coefficient(倍率)/recordTime
+ *                   /endTime（当前周期权威重置点）
+ *
+ *   换票链  POST https://user-njs.yun.139.com/user/querySpecTokenV2
+ *           Authorization: Basic <票>   body: {"toSourceId":"001005"}
+ *           ⚠️ 必须 001005（App vip 会员中心 H5 的 app.js 自配值）；001003/001221
+ *             会被 USER_DOMAIN 拒 200050409。
+ *           → data.token（YZsid 临时票）
+ *           POST https://vip.yun.139.com/m4c/login/ssoLogin
+ *           body: {"ticket":"YZsid…","source":"503016","channelSrc":""}
+ *           → Set-Cookie 下发 6 个（mc_at/mc_bt/mc_pat/mc_pbt/mc_ac/mc_pac，
+ *             .139.com 域，24h；mc_at/mc_pat httpOnly），getSetCookie() 整段收全
+ *           → 拼 Cookie 串查明细。pc:/mobile: 票均可。
  *
  *   两套凭证互不通用（实测对照过）：llm key 只管 chat；Basic 票只管
  *   models/usage/key发放。Basic 票格式 "<渠道>:<手机号>:<…>|RCS|<到期ms>|<…>"
@@ -65,6 +77,7 @@ const HOSTS = {
   openclaw: 'https://ai.yun.139.com',
   benefit: 'https://ypqy.mcloud.139.com',
   vip: 'https://vip.yun.139.com',
+  userNjs: 'https://user-njs.yun.139.com',
 }
 const APP_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) AIModeHome MCloudApp/13.2.5 iPhone AppLanguage/zh-CN'
 
@@ -373,15 +386,79 @@ function basicExpiryMs(appAuth) {
 
 /** 周期起点（近似）：从权威 endTime 回退一个日历月（北京时间的年月日时分秒
  *  原样前移一个月，小月会滚到下月 1 日）。上游不给周期起止，这只在有了该账号
- *  自己的权威 endTime 时才用于 startsAt/span，绝不凭空猜一个周期。 */
+ *  自己的权威 endTime 时才用于 startsAt/span，绝不凭空猜一个周期。endMs 是
+ *  +08:00 解析出的 epoch，先 +8h 让 UTC 分量还原成北京墙钟再取。 */
 function cycleStartMs(endMs) {
-  const d = new Date(endMs)
+  const d = new Date(endMs + 8 * 3600e3)
   let year = d.getUTCFullYear()
-  let month = d.getUTCMonth() + 1 // 1-based（endTime 按 +08:00 解析，UTC 分量即北京墙钟）
+  let month = d.getUTCMonth() + 1 // 1-based（此刻的 UTC 分量即北京墙钟）
   month -= 1
   if (month === 0) { month = 12; year -= 1 }
   const pad = (n) => String(n).padStart(2, '0')
   return new Date(`${year}-${pad(month)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}+08:00`).getTime()
+}
+
+// vip 会话 Cookie 的进程内缓存与换票失败冷却（宿主进程长驻，缓存跨请求有效）
+const cookieCache = new Map()
+const ssoFailedAt = new Map()
+const SSO_COOLDOWN = 30 * 60e3
+
+/** SSO 换票链：Basic 票 → user-njs querySpecTokenV2 → 出 YZsid 临时票 →
+ *  vip ssoLogin 换 vip 会话 Cookie。toSourceId 必须是 **001005**（App vip 会员
+ * 中心 H5 的 app.js 自配值；001003/001221 会被 USER_DOMAIN 拒 200050409）。
+ *  ssoLogin 的 Set-Cookie 一次下发 6 个（mc_at/mc_bt/mc_pat/mc_pbt/mc_ac/
+ *  mc_pac，.139.com 域，24h；mc_at/mc_pat 是 httpOnly）——必须从 getSetCookie()
+ *  整段收全，curl 式 cookie jar 会漏。pc: 和 mobile: 票都认（实测）。 */
+async function ssoCookie(appAuth) {
+  const last = ssoFailedAt.get(appAuth)
+  if (last && Date.now() - last < SSO_COOLDOWN) return undefined
+  try {
+    const mint = await fetch(`${HOSTS.userNjs}/user/querySpecTokenV2`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: appAuth, 'user-agent': APP_UA },
+      body: JSON.stringify({ toSourceId: '001005' }),
+      signal: AbortSignal.timeout(15_000),
+    }).then((r) => r.json())
+    const ticket = mint?.data?.token
+    if (typeof ticket !== 'string' || !ticket) throw new Error('出票失败')
+    const response = await fetch(`${HOSTS.vip}/m4c/login/ssoLogin`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: HOSTS.vip,
+        referer: `${HOSTS.vip}/vip/consumptionDetail?sourceid=503016`,
+        'user-agent': APP_UA,
+      },
+      body: JSON.stringify({ ticket, source: '503016', channelSrc: '' }),
+      signal: AbortSignal.timeout(15_000),
+    })
+    const json = await response.json().catch(() => null)
+    if (json?.resultCode !== '0') throw new Error(json?.resultDesc ?? `HTTP ${response.status}`)
+    const raw = response.headers.getSetCookie?.() ?? []
+    const lines = []
+    for (const entry of Array.isArray(raw) ? raw : [raw]) {
+      // Bun 会把多条 Set-Cookie 折叠成一条（逗号连接），而 Expires 日期里本身
+      // 就有逗号——只在「逗号后紧跟 名字=」的边界切开，日期逗号保持原样。
+      for (const piece of String(entry).split(/,(?=\s*[-\w]+=)/)) {
+        const pair = piece.trim().split(';')[0]
+        if (pair) lines.push(pair)
+      }
+    }
+    const cookies = [...new Set(lines)]
+    if (!cookies.length) throw new Error('ssoLogin 未下发会话 Cookie')
+    const cookie = cookies.join('; ')
+    cookieCache.set(appAuth, cookie)
+    return cookie
+  } catch {
+    ssoFailedAt.set(appAuth, Date.now())
+    return undefined
+  }
+}
+
+/** 清 SSO 缓存与冷却（测试用）。 */
+function resetSsoState() {
+  cookieCache.clear()
+  ssoFailedAt.clear()
 }
 
 // ---------------------------------------------------------------- chat 响应守卫
@@ -695,12 +772,17 @@ export const MclawAuthPlugin = async (_input, options) => {
             const d = new Date(expiry)
             window.display += ` · 凭证至 ${d.getMonth() + 1}/${d.getDate()}${expiry < Date.now() ? '（已过期，请重新抓取）' : ''}`
           }
-          // 最近明细 + 权威重置时间需要 vip 会话（登录时的可选项）。明细只是
-          // 加料：任何失败（超时、Cookie 失效）都不影响池窗口本身。
-          const vipCookie = auth.metadata?.vipCookie?.trim()
-          let records
-          if (vipCookie) {
-            records = await fetchRecords(vipCookie).catch(() => undefined)
+          // 最近明细 + 权威重置时间需要 vip 会话：优先账号配置的 Cookie，其次
+          // 进程内缓存的换票成果；缺失或失效走 SSO 换票链自动补。明细只是
+          // 加料：任何失败（超时、Cookie 失效、换票不成）都不影响池窗口本身。
+          const cached = cookieCache.get(appAuth)
+          const configured = auth.metadata?.vipCookie?.trim()
+          let vipCookie = cached ?? configured
+          let records = vipCookie ? await fetchRecords(vipCookie).catch(() => undefined) : undefined
+          if (!records && cached) cookieCache.delete(appAuth) // 缓存的那张死了
+          if (!records) {
+            const fresh = await ssoCookie(appAuth)
+            if (fresh) records = await fetchRecords(fresh).catch(() => undefined)
           }
           const latest = records?.[0]
           const end = endTimeMs(latest?.endTime)
@@ -771,6 +853,7 @@ export const MclawAuthPlugin = async (_input, options) => {
 export const _internal = {
   MODELS, appHeaders, visionByCode, nameFromAppAuth, endTimeMs, basicExpiryMs,
   appAuthOf, llmChannelId, cycleStartMs, normalizeChatResponse, accountModels, HOSTS,
+  resetSsoState,
 }
 
 // OpenCode v1 形态：默认导出 { id, server }，宿主只取 server。

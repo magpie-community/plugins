@@ -27,6 +27,7 @@ export function fakeUpstream() {
   _internal.HOSTS.openclaw = origin
   _internal.HOSTS.benefit = origin
   _internal.HOSTS.vip = origin
+  _internal.HOSTS.userNjs = origin
   const f = {
     origin,
     seen,
@@ -52,6 +53,24 @@ export function fakeUpstream() {
   f.route('POST /isbo2/openApi/queryAvailableBenefitV2', () => json({
     result: { resultCode: '0', resultDesc: 'SUCCESS' },
     userAvailableBenefitList: [{ benefitNo: 'RHR135', benefitName: 'aitokens', benefitValue: '30500000', benefitUsed: '11375000' }],
+  }))
+  // SSO 换票链默认应答：出票 + ssoLogin 下发 6 个 mc_* cookie（.139.com，24h，
+  // mc_at/mc_pat 是 httpOnly——和真实抓包一致；插件从 getSetCookie() 整段收）。
+  f.route('POST /user/querySpecTokenV2', () => json({
+    success: true, code: '0000', message: '请求成功', data: { token: 'YZsid-fake-ticket', resultCode: '104000' },
+  }))
+  f.route('POST /m4c/login/ssoLogin', () => new Response(JSON.stringify({ resultCode: '0', resultDesc: 'SUCCESS' }), {
+    headers: {
+      'content-type': 'application/json',
+      'set-cookie': [
+        'mc_at=fake-at; Domain=.139.com; Path=/; HttpOnly; Expires=Wed, 06 Nov 2026 00:00:00 GMT',
+        'mc_bt=fake-bt; Domain=.139.com; Path=/; Expires=Wed, 06 Nov 2026 00:00:00 GMT',
+        'mc_pat=fake-pat; Domain=.139.com; Path=/; HttpOnly; Expires=Wed, 06 Nov 2026 00:00:00 GMT',
+        'mc_pbt=fake-pbt; Domain=.139.com; Path=/; Expires=Wed, 06 Nov 2026 00:00:00 GMT',
+        'mc_ac=fake-ac; Domain=.139.com; Path=/; Expires=Wed, 06 Nov 2026 00:00:00 GMT',
+        'mc_pac=fake-pac; Domain=.139.com; Path=/; Expires=Wed, 06 Nov 2026 00:00:00 GMT',
+      ],
+    },
   }))
   return f
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1 — 2026-11-05
+
+- **恢复 SSO 换票链（修正 toSourceId 为 001005）**：0.5.0 按 review 删链的前提错了——200050409「统一通信证临时票据验证失败」是渠道号用错（001003/001221），App vip 会员中心 H5 的 app.js 实配 **001005**；全链路 Node fetch 实测通：出票 → ssoLogin `resultCode 0` → Set-Cookie 下发 6 个 `mc_*`（`.139.com` 域，24h；mc_at/mc_pat httpOnly）→ 明细接口正常，pc:/mobile: 票均可。
+- **vip Cookie 从此全自动**：未配置或失效时自动换票补会话，「重置于」（权威 endTime）与最近逐条明细免配置；手动粘的 Cookie 仍优先，失效后自动换新。触发收敛回应 review 顾虑：成功后进程内缓存复用（约 24h 一次），失败 30 分钟冷却，不再是「每次用量轮询都发一次票」。
+- **修一个 Bun 运行时的真 bug**：Bun 的 `getSetCookie()` 会把多条 Set-Cookie 折叠成一条（逗号连接），`Expires` 日期里的逗号会把天真的切分打碎——只拿到第一个 cookie。现在按「逗号后紧跟 `名字=`」的边界展开，日期逗号保持原样；magpie 的插件正是跑在 Bun 上，这一修在真实环境同样必要。
+- 测试：fake 上游补 `querySpecTokenV2` / `ssoLogin`（6 个 Set-Cookie 含 httpOnly）；新增自动换票、失败冷却、配置优先三个用例（27 个测试）。
+
 ## 0.5.0 — 2026-11-05
 
 多账号与取消安全（market PR #746 review）：

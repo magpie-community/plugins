@@ -1,12 +1,13 @@
 // 用量窗口：aitokens 池数学、无 RHR135、票过期、明细只是加料（失败不连坐）、
-// 重置时间只认账号自己的权威 endTime。全部走本地 fake。
+// 重置时间只认账号自己的权威 endTime、SSO 换票链自动补 vip 会话。全部走本地 fake。
 import './nonet.mjs'
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { MclawAuthPlugin, _internal } from './index.mjs'
 import { fakeUpstream, json, TICKET_A } from './fake.mjs'
 
 let f
 afterEach(() => f?.close())
+beforeEach(() => _internal.resetSsoState()) // SSO 缓存/冷却是模块级的，用例间隔离
 
 const authOf = (ticket, extra) => ({
   type: 'oauth', refresh: 'browser', access: ticket, expires: Date.now() + 86400e3,
@@ -96,4 +97,62 @@ test('明细里的 endTime 是上轮周期的（已过去）→ 不显示重置�
   const out = await p.auth.usage(async () => authOf(TICKET_A, { vipCookie: 'mc_at=x; mc_bt=y' }))
   expect(out.windows[0].resetsAt).toBeUndefined()
   expect(out.windows[0].display).not.toContain('重置于')
+})
+
+// 未来 10 天的北京时间墙钟 → 明细接口的 endTime 文本
+const futureEndTime = () => {
+  const t = new Date(Date.now() + 10 * 86400e3 + 8 * 3600e3)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())} ${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:${pad(t.getUTCSeconds())}`
+}
+
+test('没配 vip Cookie：SSO 链自动换票，明细与重置时间全自动', async () => {
+  f = fakeUpstream()
+  const end = futureEndTime()
+  f.route('POST /m4c/benefit/getAiTokenConsumptionRecords', () => json({
+    resultCode: '0',
+    data: { aiTokenConsumptionRecordList: [{ recordTime: '2026-11-05 09:00:00', endTime: end, benefitNum: '1000', modelName: 'Qwen3.8-Flash' }] },
+  }))
+  const p = await plugin()
+  const out = await p.auth.usage(async () => authOf(TICKET_A)) // metadata 里没有 vipCookie
+  const paths = f.seen.map((r) => r.path)
+  expect(paths).toContain('/user/querySpecTokenV2')
+  expect(paths).toContain('/m4c/login/ssoLogin')
+  // 出票的渠道号必须是 001005（001003/001221 会被 USER_DOMAIN 拒）
+  const mint = f.seen.find((r) => r.path === '/user/querySpecTokenV2')
+  expect(mint.json.toSourceId).toBe('001005')
+  // 明细请求带上了全部 6 个 cookie，含 httpOnly 的 mc_at/mc_pat（curl jar 会漏）
+  const recordsReq = f.seen.find((r) => r.path === '/m4c/benefit/getAiTokenConsumptionRecords')
+  expect(recordsReq.headers.get('cookie')).toContain('mc_at=fake-at')
+  expect(recordsReq.headers.get('cookie')).toContain('mc_pat=fake-pat')
+  expect(recordsReq.headers.get('cookie')).toContain('mc_pac=fake-pac')
+  const w = out.windows[0]
+  expect(new Date(w.resetsAt).getTime()).toBe(_internal.endTimeMs(end))
+  expect(w.display).toContain('重置于')
+})
+
+test('SSO 换票失败有冷却：两次 usage 只出一次票', async () => {
+  f = fakeUpstream()
+  f.route('POST /m4c/login/ssoLogin', () => json({ resultCode: '500400', resultDesc: '统一通信证临时票据验证失败' }))
+  const p = await plugin()
+  const out1 = await p.auth.usage(async () => authOf(TICKET_A))
+  const out2 = await p.auth.usage(async () => authOf(TICKET_A))
+  const mints = f.seen.filter((r) => r.path === '/user/querySpecTokenV2').length
+  expect(mints).toBe(1)
+  expect(out1.windows[0].resetsAt).toBeUndefined()
+  expect(out2.windows[0].resetsAt).toBeUndefined()
+  expect(out1.error).toBeUndefined() // 换票不成也不连坐池窗口
+})
+
+test('配置的 vip Cookie 有效 → 不打换票链', async () => {
+  f = fakeUpstream()
+  const end = futureEndTime()
+  f.route('POST /m4c/benefit/getAiTokenConsumptionRecords', () => json({
+    resultCode: '0',
+    data: { aiTokenConsumptionRecordList: [{ recordTime: '2026-11-05 09:00:00', endTime: end, benefitNum: '1000', modelName: 'x' }] },
+  }))
+  const p = await plugin()
+  const out = await p.auth.usage(async () => authOf(TICKET_A, { vipCookie: 'mc_at=mine; mc_bt=mine' }))
+  expect(f.seen.map((r) => r.path)).not.toContain('/user/querySpecTokenV2')
+  expect(out.windows[0].resetsAt).toBeTruthy()
 })
