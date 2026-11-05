@@ -124,7 +124,7 @@ export function QuoteSelect() {
       onPointerDown={(e) => e.preventDefault()}
       onClick={add}
     >
-      <Icon name="quote" size={13} />
+      <Icon name="chat" size={13} />
       <span>{t("quote.add")}</span>
     </button>,
     document.body,
