@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-atomcode-auth", "name": "AtomCode", "icon": "atomcode", "providers": ["atomcode"], "community": true,
+      "summary": { "en": "AtomGit CodingPlan and AtomCode models via local relay or direct signing, with 5-hour rate limit protection.", "zh": "通过本地中继或直连使用 AtomGit 编程计划与 AtomCode 模型，带 5 小时滚动配额保护。" } },
     { "package": "@magpie-community/opencode-zen-free-auth", "name": "OpenCode Zen Free", "icon": "opencode", "providers": ["opencode-zen-free"], "community": true,
       "summary": { "en": "OpenCode Zen's free models with the public credential, automatic discovery and native streaming protocols.", "zh": "使用 public 凭证接入 OpenCode Zen 免费模型，自动发现模型并支持原生流式协议。" } },
     { "package": "@magpie-community/opencode-zcode-auth", "name": "ZCode", "icon": "zcode", "providers": ["zcode"], "community": true, "replaces": "zcode",

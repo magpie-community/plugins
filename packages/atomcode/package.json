@@ -1,0 +1,27 @@
+{
+  "name": "@magpie-community/opencode-atomcode-auth",
+  "version": "0.1.0",
+  "description": "OpenCode provider plugin for AtomGit CodingPlan & AtomCode: signs in via AtomGit/GitCode, tracks 5-hour rate limits, and routes to local AtomCode relay with automatic quota protection",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "atomcode",
+    "atomgit",
+    "codingplan",
+    "gitcode"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/atomcode"
+  }
+}
