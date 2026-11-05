@@ -54,10 +54,12 @@ h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 21px; 
 .seg.small { background: var(--card); border: 1px solid var(--line); }
 .seg.small button { padding: 3px 9px; font-size: 12px; }
 .seg.small button[aria-selected="true"] { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
-.btn { border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 7px 15px; font-size: 14px; cursor: pointer; }
+.btn { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 7px 15px; font-size: 14px; cursor: pointer; }
 .btn:hover { border-color: var(--muted); }
 .btn.on { background: #1f1f22; color: #fff; }
-.chev { font-size: 11px; opacity: .6; margin-left: 2px; }
+.chev { display: block; flex: none; opacity: .55; transition: transform .16s ease, opacity .16s ease; }
+.btn:hover .chev, #settingsBtn[aria-expanded="true"] .chev { opacity: .9; }
+#settingsBtn[aria-expanded="true"] .chev { transform: rotate(180deg); }
 .menu-wrap { position: relative; }
 .menu { position: fixed; right: auto; top: 0; z-index: 50; width: 260px; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 30px rgba(0, 0, 0, .16); }
 .menu .row { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
@@ -171,6 +173,7 @@ footer { padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 /* ---- workbench additions: grouped list, side rail, Today, transcript ---- */
 .menu.wide { width: 300px; max-height: min(72vh, 520px); overflow: auto; }
 .today-tokens { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+.today-tokens:empty { display: none; }
 .today-panel { width: min(340px, calc(100vw - 36px)); max-height: min(70vh, 480px); overflow: auto; }
 .today-big { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
 .today-big div { padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; }
@@ -197,7 +200,9 @@ footer { padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .agent-filter .af input { margin: 0; accent-color: var(--accent); }
 .agent-filter .afn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-filter .afc { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11.5px; }
-.lang-select { width: 100%; margin-top: 6px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); font: inherit; font-size: 13px; }
+.lang-select { width: 100%; margin-top: 6px; padding: 6px 28px 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' width='10' height='6'%3E%3Cpath d='M1.25 1.25L5 4.75L8.75 1.25' fill='none' stroke='%236e6e73' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 10px center / 10px 6px; color: var(--fg); font: inherit; font-size: 13px; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.lang-select:hover { border-color: var(--muted); }
+[data-theme="dark"] .lang-select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' width='10' height='6'%3E%3Cpath d='M1.25 1.25L5 4.75L8.75 1.25' fill='none' stroke='%239ca3af' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
 
 /* the list's three groups, as sticky-ish heading rows */
 tr.group td { background: var(--bg); color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 12px 14px 5px; border-bottom: 1px solid var(--line); }
@@ -277,3 +282,7 @@ tr.group:hover td { background: var(--bg); }
 .pop .msg.assistant { background: rgba(16, 185, 129, .10); }
 .pop .pf { flex-wrap: wrap; }
 .pop .pm { flex: 1 1 120px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .eyes i::after, .counts.alert .need i, .live i, .pop, .toast, .chev { animation: none !important; transition: none !important; }
+}
