@@ -74,11 +74,29 @@ export function profileKind(profile, policy = DEFAULT_SCORING_POLICY) {
   return policy?.profile?.kind_by_style?.[profile.interaction_style] || "other_or_mixed";
 }
 
+/**
+ * One effort's ability delta or burn (`allocator.py:effort_value`), plus two plugin-side fallbacks AgentCompass
+ * doesn't have: `ultra` without its own calibration reads as the model's Max, and `none`/`off`/`minimal` sit
+ * below the model's own Low rather than at the policy table's generic value. Upstream scores both at High.
+ */
 export function effortValue(policy, curves, name, effort, fallback) {
   const own = curves?.[name] || {};
   if (effort in own) return own[effort];
+  if (effort === "ultra" && "max" in own) return own.max;
   const policyTable = policy?.[`effort_${name}`] || {};
-  return effort in policyTable ? policyTable[effort] : fallback;
+  if ((effort === "minimal" || effort === "none" || effort === "off") && "low" in own) {
+    if (name === "ability") {
+      const delta = (policyTable[effort] ?? -1.0) - (policyTable.low ?? -0.54);
+      return own.low + Math.min(delta, -0.2);
+    }
+    if (name === "burn") {
+      const ratio = (policyTable[effort] ?? 0.12) / (policyTable.low || 0.2);
+      return round4(own.low * Math.min(ratio, 0.75));
+    }
+  }
+  if (effort in policyTable) return policyTable[effort];
+  if (effort === "ultra" && "max" in policyTable) return policyTable.max;
+  return fallback;
 }
 
 /**

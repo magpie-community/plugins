@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
+import { burnScale, effortValue, namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
 import { DEFAULT_SCORING_POLICY } from "../src/catalog.js";
 import {
   CACHE_COLD_MS,
@@ -2070,3 +2070,61 @@ test("9.9 PR #670 Round 2 & 3 Guard: Single-pass bounded work (`scannedChars`, `
 
 
 
+
+test("9.10 Effort fallback (plugin-side, not in AgentCompass): `:minimal` and `:ultra` parse as efforts, `ultra` reads as the model's Max and `minimal` sits below its Low", () => {
+  const profile = {
+    work_kind: "general_implementation",
+    reasoning_depth: 1,
+    code_complexity: 1,
+    context_scale: 2,
+    divergence: 1,
+    hallucination_risk: 2,
+    error_cost: 1,
+    needs_visual: false,
+    needs_gui: false,
+    local_only: true,
+    interaction_style: "engineering",
+  };
+  const rank = (candidateModels, options = {}) => rankCandidates(profile, { candidateModels, ...options });
+  const policy = DEFAULT_SCORING_POLICY;
+
+  // Parsing: each suffix is one candidate at that effort, not the model's whole effort list
+  assert.deepEqual(
+    rank(["gpt-6-astra:minimal", "gpt-6-astra:ultra"]).allCandidates.map((c) => c.id).sort(),
+    ["gpt-6-astra:minimal", "gpt-6-astra:ultra"],
+  );
+
+  // Scoring on a model's own curve: ultra is its Max; minimal is its Low less the policy's Low->minimal step
+  // (at least 0.2), and burns at most 0.75 of its Low
+  const astra = Object.fromEntries(
+    rank(["gpt-6-astra:low", "gpt-6-astra:max", "gpt-6-astra:minimal", "gpt-6-astra:ultra"]).allCandidates.map((c) => [
+      c.effort,
+      c.components.ability_value,
+    ]),
+  );
+  assert.equal(astra.ultra, astra.max);
+  const step = Math.min(policy.effort_ability.minimal - policy.effort_ability.low, -0.2);
+  assert.ok(Math.abs(astra.minimal - (astra.low + step)) < 0.001, `minimal ${astra.minimal}, low ${astra.low}`);
+  const curve = { burn: { low: 0.3, high: 0.7, max: 1.4 } };
+  assert.equal(burnScale(policy, curve, "ultra"), burnScale(policy, curve, "max"));
+  assert.ok(effortValue(policy, curve, "burn", "minimal", 0.7) <= 0.3 * 0.75);
+
+  // A model whose curve has no Low row takes the policy table's minimal step, not High's 0
+  const deepseek = Object.fromEntries(
+    rank(["deepseek-v4.1-flash-free:minimal", "deepseek-v4.1-flash-free:high"]).allCandidates.map((c) => [
+      c.effort,
+      c.components.ability_value,
+    ]),
+  );
+  assert.ok(Math.abs(deepseek.minimal - (deepseek.high + policy.effort_ability.minimal)) < 0.001);
+
+  // Continuity: on a warm cache, minimal after low is a downgrade and keeps only a quarter of the continuity bonus
+  const held = rank(["gpt-6-astra:low", "gpt-6-astra:minimal"], {
+    previousModel: "gpt-6-astra",
+    previousEffort: "low",
+    cacheWarm: true,
+  });
+  const cont = Object.fromEntries(held.allCandidates.map((c) => [c.effort, c.components.continuity]));
+  assert.equal(cont.low, 0.25);
+  assert.equal(cont.minimal, 0.0625);
+});
