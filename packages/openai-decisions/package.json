@@ -1,0 +1,15 @@
+{
+  "name": "@magpie-community/openai-decisions",
+  "version": "0.1.0",
+  "description": "Expose OpenAI Decisions through Magpie's native System One decision API.",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {".": "./opencode2.mjs"},
+  "files": ["index.mjs", "adapter.mjs", "credentials.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "LICENSE", "NOTICE.md", "CHANGELOG.md", "VERIFICATION.md"],
+  "scripts": {"test": "node --test test/*.test.mjs"},
+  "magpie": {"name": "OpenAI Decisions", "icon": "openai"},
+  "engines": {"node": ">=20"},
+  "license": "MIT",
+  "keywords": ["magpie", "magpie-plugin", "openai", "decisions", "system-one"],
+  "repository": {"type": "git", "url": "https://github.com/magpie-community/plugins.git", "directory": "packages/openai-decisions"}
+}
