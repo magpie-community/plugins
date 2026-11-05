@@ -122,9 +122,10 @@ test("Trae's 9074 on the claim says the device is what Trae refused, and promise
   expect(out.message).toContain("sent on magpie's own device for this account")
   expect(out.message).not.toMatch(/sign (it )?in|log ?in|check in in the Trae CN app/i)
   // the check-in rides ugDevice like every other ug page: the 19-digit
-  // sign-in device becomes the account's own 16-digit shape (#194); the
+  // sign-in device becomes the account's own 15-digit shape (#194,
+  // plugins#709); the
   // one claim more goes on the id made from the uid (plugins#709, #722)
-  expect(f.seen.map((r) => r.headers.get("x-device-id"))).toEqual(["2866487253502651", "2866487253502651", "422507670212903"])
+  expect(f.seen.map((r) => r.headers.get("x-device-id"))).toEqual(["166487253502651", "166487253502651", "422507670212903"])
 })
 
 // plugins#709 and #722: with no Trae CN client on the machine, Trae CN
@@ -173,7 +174,7 @@ test("a 9074 with no client here is claimed once more in the client-less tools' 
   // none of the IDE's device headers, nor the chat's
   for (const k of ["x-app-version", "x-device-brand", "x-device-type", "x-os-version", "x-uid", "x-ide-token"]) expect(h[k]).toBeUndefined()
   // the read-back after it goes as before
-  expect(f.seen[3].headers.get("x-device-id")).toBe("2866487253502651")
+  expect(f.seen[3].headers.get("x-device-id")).toBe("166487253502651")
 })
 
 test("a second 9074 is the day's answer: two claims, never a third", async () => {

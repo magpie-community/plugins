@@ -314,26 +314,38 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 // gives the IDE a 15- or 16-digit one (iCubeAuthInfo://icube-dc:<id>, see
 // clientDevice), and Trae CN answers a check-in claim on a 19-digit id
 // 9074 where the same account and token on a 16-digit one are taken
-// (magpie-community/plugins#194). Trae's global site keeps the 19 digits
-// it was signed in with: nothing says its ids are shaped otherwise.
+// (magpie-community/plugins#194). The check-in no longer goes on it: since
+// plugins#709 Trae CN refuses 16 digits there too, and ugDevice makes the
+// claim's 15-digit id. Trae's global site keeps the 19 digits it was signed
+// in with: nothing says its ids are shaped otherwise.
 const newDevice = (site) => ({ deviceId: digits(site?.id === "trae-cn" ? 16 : 19), machineId: randomBytes(16).toString("hex"), ...newDeviceKey() })
 
 // ugDevice is the device id a Trae CN account's check-in goes on when this
-// machine's client isn't signed in as it: its own when that already has a
-// client's shape (15 or 16 digits), else, for an account signed in before
-// 0.2.16 with 19 digits, a 16-digit id made from its own device id and
-// uid. That one is the same on every check-in of the account, never
-// rotated and never another account's: it is the account's own device in
-// the shape Trae CN takes (#194), not a new device to get past a refusal,
-// and a 9095 (this device is in for today) on it stays the day's answer.
-// The chat's pages and the renewal keep the device the account signed in
-// with.
+// machine's client isn't signed in as it: its own when that is already 15
+// digits, else a 15-digit id made from its own device id and uid. On
+// 2026-11-05 (plugins#709) Trae CN answered the plugin's claim on an
+// account's own 16-digit id 9074, and the same account, token, headers and
+// body, seconds later, on a 15-digit id (a random one nothing had
+// registered) were taken: on three accounts, from two machines on two
+// ISPs, with magpie's headers and with wild-work's alike, 16 digits was
+// refused every time and 15 taken every time. The client-less tools that
+// check in (trae-mate, providers-hub, wild-work) all send 15 digits too.
+// #194 had found 19 refused and 16 taken; a server-side change between
+// the two is the plain reading. The id is the same on every check-in of
+// the account, never rotated and never another account's, and its first
+// digit is never 0 (a 0 would make it 14 digits as a number): it is the
+// account's own device in the shape Trae CN takes, not a new device to get
+// past a refusal, and a 9095 (this device is in for today) on it stays the
+// day's answer. The chat's pages and the renewal keep the device the
+// account signed in with (16 digits since 0.2.16, 19 before): nothing
+// measured says they want another, and the device is bound into the
+// renewed JWT.
 function ugDevice(a) {
   const id = String(a.deviceId ?? "")
-  if (/^\d{15,16}$/.test(id)) return id
+  if (/^\d{15}$/.test(id)) return id
   if (!id && !a.uid) return id
   const n = BigInt("0x" + createHash("sha256").update(`trae-cn-device\0${id}\0${a.uid ?? ""}`).digest("hex").slice(0, 30))
-  return String(1_000_000_000_000_000n + (n % 9_000_000_000_000_000n))
+  return String(100_000_000_000_000n + (n % 900_000_000_000_000n))
 }
 
 // newDeviceKey is the device's key pair, an ECDSA P-256 one as the clients
@@ -818,9 +830,13 @@ function ugHeaders(a, site, extra = {}, own) {
 // account this plugin's claim gets 9074 on checks in daily through
 // providers-hub. This is trae-mate's request as it is: its headers, and
 // its device, market user and session ids made from the uid alone, so an
-// account checks in on the device those tools already use for it. Which
-// field is the one Trae CN wants hasn't been measured (plugins#709's
-// bisect); the request goes whole.
+// account checks in on the device those tools already use for it.
+// plugins#709's bisect then found the id's length to be what Trae CN
+// decides on (16 refused, 15 taken, the headers and body changing
+// nothing), so since 0.2.30 the first claim goes on 15 digits too
+// (ugDevice). This request stays as the one fallback after a 9074: the
+// bisect didn't send it with a 16-digit id, so that nothing else in it
+// matters is not measured.
 const seeded = (seed, salt, n) => {
   const out = []
   for (let i = 0; out.length < n; i++) {
@@ -3213,7 +3229,7 @@ const makePlugin = (site) => async ({ client }) => {
     const deviceId = ug && site.id === "trae-cn" ? await clientDevice(a.uid) : undefined
     const own = deviceId ? { deviceId, ...thisMachine() } : undefined
     // every other Trae CN account checks in on its own device, in the
-    // client's shape (ugDevice, #194)
+    // 15-digit shape Trae CN takes (ugDevice, #194, plugins#709)
     if (ug && site.id === "trae-cn" && !own) a = { ...a, deviceId: ugDevice(a) }
     const res = await fetch(url, {
       method,
@@ -3283,9 +3299,11 @@ const makePlugin = (site) => async ({ client }) => {
     // 9074: Trae did not take this claim for this account's device. Its own
     // words say the pool is busy, which measurements do not bear out: the
     // same account, token and headers were taken on a 16-digit id where a
-    // 19-digit one got 9074 (plugins#194), and on 2026-10-23 the same
+    // 19-digit one got 9074 (plugins#194), on 2026-10-23 the same
     // account and headers were taken on a device id Trae had never seen
-    // while this account's own id answered 9074. So the message says what
+    // while this account's own id answered 9074, and on 2026-11-05 a
+    // 16-digit id got 9074 where 15 digits were taken (plugins#709, so the
+    // claim goes on 15 now: ugDevice). So the message says what
     // Trae said and that the device is what it refused, rather than
     // sending people to check in in Trae CN's app, which is not where the
     // problem is. Its own device is never rotated: an account with no

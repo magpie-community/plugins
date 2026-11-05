@@ -32,9 +32,9 @@ test("a check-in page is sent as the account, its answer back as it is", async (
     // device headers and a client's User-Agent, not Bun's
     expect(r.json).toEqual({ req_source: 1 })
     expect(r.headers.get("authorization")).toBe("Cloud-IDE-JWT jwt-1")
-    // the account's own device in the client's 16-digit shape: this
-    // account signed in before 0.2.16 with 19 digits (#194)
-    expect(r.headers.get("x-device-id")).toBe("2866487253502651")
+    // the account's own device in the 15-digit shape Trae CN takes: this
+    // account signed in before 0.2.16 with 19 digits (#194, plugins#709)
+    expect(r.headers.get("x-device-id")).toBe("166487253502651")
     expect(r.headers.get("x-device-type")).toBe("Windows")
     expect(r.headers.get("x-os-version")).toBe("10.0.22631")
     expect(r.headers.get("x-app-version")).toBe("0.1.69")
@@ -93,25 +93,48 @@ test("other hosts' pages and other paths aren't sent as a page", async () => {
 })
 
 // #194: Trae CN answered a claim on the plugin's 19-digit device id 9074,
-// and the same account and token on a 16-digit one were taken. The
-// check-in goes on the account's own device in that shape; it is never
-// rotated, and no two accounts share one.
-test("an account signed in before 0.2.16 checks in on one 16-digit id made from its own device, every time", () => {
+// and the same account and token on a 16-digit one were taken. Since
+// plugins#709 (2026-11-05) it answers 16 digits 9074 too, and the same
+// account, token, headers and body on 15 digits are taken. The check-in
+// goes on the account's own device in that shape; it is never rotated, and
+// no two accounts share one.
+test("an account signed in before 0.2.16 checks in on one 15-digit id made from its own device, every time", () => {
   const a = signedIn()
   const id = _internal.ugDevice(a)
-  expect(id).toMatch(/^[1-9]\d{15}$/)
+  expect(id).toMatch(/^[1-9]\d{14}$/)
+  // worked out by a separate Python port of the derivation
+  expect(id).toBe("166487253502651")
   // the same on every check-in, and not the 19 digits cut short
   expect(_internal.ugDevice(signedIn())).toBe(id)
-  expect(id).not.toBe("1234567890123456")
+  expect(id).not.toBe("123456789012345")
   // another account's, or another device's, is not this one
   expect(_internal.ugDevice(signedIn({ uid: "u-2" }))).not.toBe(id)
   expect(_internal.ugDevice(signedIn({ deviceId: "9876543210987654321" }))).not.toBe(id)
   // an account with no uid still has its own
-  expect(_internal.ugDevice(signedIn({ uid: "" }))).toMatch(/^[1-9]\d{15}$/)
+  expect(_internal.ugDevice(signedIn({ uid: "" }))).toMatch(/^[1-9]\d{14}$/)
 })
 
-test("an id already in the client's shape is the account's own, as it is", () => {
-  expect(_internal.ugDevice(signedIn({ deviceId: "1234567890123456" }))).toBe("1234567890123456")
+// plugins#709: the reporter's bisect, three accounts, magpie's own
+// headers and body: the account's own 16-digit id 9074, a 15-digit one
+// taken, seconds apart. An account signed in since 0.2.16 has 16 digits,
+// so its check-in goes on a 15-digit id made from it: the same every
+// time, and not the 16 digits cut short.
+test("an account signed in since 0.2.16 (16 digits) checks in on a 15-digit id made from its own device", () => {
+  const id = _internal.ugDevice(signedIn({ deviceId: "1234567890123456" }))
+  expect(id).toMatch(/^[1-9]\d{14}$/)
+  expect(id).toBe("245914665436526")
+  expect(_internal.ugDevice(signedIn({ deviceId: "1234567890123456" }))).toBe(id)
+  expect(id).not.toBe("123456789012345")
+  expect(_internal.ugDevice(signedIn({ deviceId: "1234567890123456", uid: "u-2" }))).not.toBe(id)
+  expect(_internal.ugDevice(signedIn({ deviceId: "6543210987654321" }))).not.toBe(id)
+  // every fresh Trae CN sign-in's device: none is checked in on as it is
+  for (let i = 0; i < 50; i++) {
+    const d = _internal.newDevice(_internal.SITES["trae-cn"]).deviceId
+    expect(_internal.ugDevice(signedIn({ deviceId: d }))).toMatch(/^[1-9]\d{14}$/)
+  }
+})
+
+test("an id already 15 digits is the account's own, as it is", () => {
   expect(_internal.ugDevice(signedIn({ deviceId: "123456789012345" }))).toBe("123456789012345")
   expect(_internal.ugDevice(signedIn({ deviceId: "", uid: "" }))).toBe("")
 })
@@ -121,16 +144,18 @@ test("a new Trae CN sign-in's device is 16 digits; Trae Global's stays 19", () =
   expect(_internal.newDevice(_internal.SITES["trae-global"]).deviceId).toMatch(/^[1-9]\d{18}$/)
 })
 
-test("an account with a 16-digit device checks in on it; an old one's chat pages keep the 19 digits it signed in with", async () => {
+test("an account with a 16-digit device checks in on 15 digits; chat pages keep the device each signed in with", async () => {
   f = fakeTrae()
   f.route("POST /trae/api/v2/ug/checkin_credits/claim", () => json({ code: 0 }))
   f.route("POST /trae/api/v2/pay/ide_user_ent_usage", () => json({ code: 0 }))
   const o16 = await fetcher(signedIn({ deviceId: "1234567890123456" }))
   await o16.fetch(f.origin + "/trae/api/v2/ug/checkin_credits/claim", { method: "POST", body: "{}" })
+  expect(f.seen.at(-1).headers.get("x-device-id")).toBe("245914665436526")
+  await o16.fetch(f.origin + "/trae/api/v2/pay/ide_user_ent_usage", { method: "POST", body: "{}" })
   expect(f.seen.at(-1).headers.get("x-device-id")).toBe("1234567890123456")
   const o19 = await fetcher()
   await o19.fetch(f.origin + "/trae/api/v2/ug/checkin_credits/claim", { method: "POST", body: "{}" })
-  expect(f.seen.at(-1).headers.get("x-device-id")).toBe("2866487253502651")
+  expect(f.seen.at(-1).headers.get("x-device-id")).toBe("166487253502651")
   await o19.fetch(f.origin + "/trae/api/v2/pay/ide_user_ent_usage", { method: "POST", body: "{}" })
   expect(f.seen.at(-1).headers.get("x-device-id")).toBe("1234567890123456789")
 })

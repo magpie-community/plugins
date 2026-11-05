@@ -46,7 +46,8 @@ authorization page: `device_id` and `machine_id` (32 hex). Every
 request then sends that same device. The relays saw requests dropped when the
 device was new each time. A Trae CN `device_id` is 16 digits since 0.2.16, the
 shape of the ids Trae's device service gives its clients (15 or 16 digits);
-Trae Global's stays 19.
+Trae Global's stays 19. The daily check-in goes on a 15-digit id made from it
+(see Daily check-in).
 
 ### Enterprise (SaaS) accounts
 
@@ -427,14 +428,21 @@ answered it 9074 even with the client's headers.
   files — harmless if they differ, since a folder that isn't there, or a
   key that isn't named, is simply not read. A client started with its own
   `--user-data-dir` is not found: there is no list of those to read.
-- **Every other account's device (0.2.16):** its own device id, in the
-  client's shape. Trae CN answered a claim on the plugin's 19-digit id
-  9074, while the same account and token on a 16-digit id were taken
-  (magpie-community/plugins#194). An account signed in since 0.2.16 has a
-  16-digit id and checks in on it. One signed in before checks in on a
-  16-digit id made from its own device id and uid: the same id every day,
-  never rotated, and no other account's. Its chat requests and renewals
-  keep the 19-digit device it signed in with.
+- **Every other account's device (0.2.16, 15 digits since 0.2.30):** its
+  own device id, in the shape Trae CN takes. Trae CN answered a claim on the
+  plugin's 19-digit id 9074, while the same account and token on a
+  16-digit id were taken (magpie-community/plugins#194). On 2026-11-05 it
+  answered 16 digits 9074 too (plugins#709): with the plugin's own
+  headers and body, the same token and account, seconds apart, the
+  account's own 16-digit id got 9074 and a 15-digit one, even a random
+  one nothing had registered, was taken — on three accounts, from two
+  machines on two ISPs, and with wild-work's headers alike. So since
+  0.2.30 every account checks in on a 15-digit id made from its own device
+  id and uid (one already 15 digits goes as it is): the same id every day,
+  never rotated, never starting with 0, and no other account's. Its chat
+  requests and renewals keep the device it signed in with (16 digits, or
+  19 before 0.2.16): nothing measured asks for another there, and the
+  device is bound into the renewed sign-in.
 - **What comes back:** Trae's answer as it is. A 401 or code 1001 marks
   the account for a new sign-in. Code 9095 means this device has checked
   in today, and that holds for the day. Code 9074 means Trae did not take
@@ -465,8 +473,11 @@ answered it 9074 even with the client's headers.
   daily through providers-hub, and on plugins#709 wild-work, which also
   sends body `{}`, `x-user-region: CN` and a 15-digit id, had every claim
   taken first time, so its 8-second retry never ran: waiting is not what
-  changes a 9074. Which field Trae CN wants hasn't been measured, so the
-  request goes whole, and only once: a second 9074 is the day's answer,
+  changes a 9074. plugins#709's bisect then found the id's length to be
+  what decides (16 refused, 15 taken, headers and body changing nothing),
+  and since 0.2.30 the first claim goes on 15 digits (above). This request
+  is kept as the fallback, since it wasn't measured with a 16-digit id, and
+  goes only once: a second 9074 is the day's answer,
   no other code is claimed again, and an account whose own client's
   device the claim rode is not. Not yet tried on a real Trae CN account.
 - **Which device, said (0.2.25):** a 9074 or 9095 message ends with

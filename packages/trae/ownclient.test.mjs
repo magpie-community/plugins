@@ -68,7 +68,7 @@ async function checkIn(auth = signedIn()) {
 // the account's own device, in the client's shape (ugDevice, #194)
 const plugins = (h, a = signedIn()) => {
   expect(h.get("x-device-id")).toBe(_internal.ugDevice(a))
-  expect(h.get("x-device-id")).toMatch(/^\d{16}$/)
+  expect(h.get("x-device-id")).toMatch(/^[1-9]\d{14}$/)
   expect(h.get("x-device-brand")).toBeTruthy()
   expect(h.get("x-device-type")).toBe("Windows")
   expect(h.get("x-os-version")).toBe("10.0.22631")
