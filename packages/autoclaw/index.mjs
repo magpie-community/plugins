@@ -1130,6 +1130,18 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
             .filter((w) => Math.round(w.balance) !== Math.round(total))
             .slice(0, 3);
 
+          // 活动钱包拆分：wallet_type=reward 的「奖励积分」大多来自「登录领积分」
+          // 类活动（Weekly Perks、用户登录奖励，#3681），与每日签到攒的分开显示，
+          // 让用户看得出大额入账是活动给的。display=false 的内部钱包不重复念。
+          const campaign = rows
+            .filter((r) => r.display !== false && Number(r.balance) > 0 && /reward/i.test(String(r.public_wallet_type ?? r.wallet_type ?? "")))
+            .map((r) => ({ name: String(r.display_name ?? "奖励积分"), balance: Number(r.balance) }));
+          const dailyWallet = rows.find((r) => /daily/i.test(String(r.public_wallet_type ?? r.wallet_type ?? "")) && Number(r.balance) > 0);
+          const campaignPart = campaign.length
+            ? `（活动 ${campaign.map((w) => `${w.name} ${Math.round(w.balance)}`).join(" · ")}）`
+            : "";
+          const dailyPart = dailyWallet ? ` · 今日签到剩 ${Math.round(Number(dailyWallet.balance))}` : "";
+
           // 签到窗口行 = 状态展示（开关指示交给 magpie 原生 checkin 的 Settings 开关）
           const signinWindow = signinFinal
             ? [{
@@ -1172,10 +1184,10 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
 
           // 积分是纯余额，没有总量也没有已用量：只放在 balance 里。做成
           // used: 0 的窗口，卡片会给它配上「剩余 100%」（#376）。细分钱包
-          // 一并写进 balance。
+          // 一并写进 balance；活动奖励单独点名（来源可见）。
           const parts = named.map((w) => `${w.name} ${Math.round(w.balance)}`);
           return {
-            balance: `${Math.round(total)} 积分${parts.length ? `（${parts.join(" · ")}）` : ""}`,
+            balance: `${Math.round(total)} 积分${campaignPart}${dailyPart}${parts.length ? `（${parts.join(" · ")}）` : ""}`,
             windows,
           };
         } catch (e) {

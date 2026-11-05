@@ -740,6 +740,36 @@ test("usage: the credit balance and its wallets are the balance, never a window 
   }
 })
 
+// #3681: the card must show where a big balance came from - the campaign
+// wallet (奖励积分, wallet_type reward) is named as 活动, and today's
+// remaining daily points stay visible. Wallets a user can't see twice are
+// not repeated in the parts.
+test("usage: the campaign wallet is named as the source, daily points stay visible", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const u = String(input)
+    if (u.includes("wallets")) return Response.json({ code: 0, data: { total_balance: 6800, wallets: [
+      { display_name: "奖励积分", public_wallet_type: "reward", balance: 6400, display: true },
+      { display_name: "每日积分", public_wallet_type: "daily", balance: 400, display: false },
+      { display_name: "订阅积分", public_wallet_type: "subscription", balance: 0, display: true },
+    ] } })
+    if (u.includes("autoclaw-task-list")) return Response.json({ code: 0, data: [{ task_id: "daily_signin", status: "completed", reward_points: 400 }] })
+    return Response.json({ code: 0, data: {} })
+  }
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-usage-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const u = await hooks.auth.usage(async () => ({ type: "oauth", access: "a1", refresh: "r1", accountId: "A", uid: "u1" }))
+    expect(u.balance).toContain("活动 奖励积分 6400")
+    expect(u.balance).toContain("今日签到剩 400")
+    expect(u.balance.startsWith("6800 积分（活动")).toBe(true)
+  } finally {
+    globalThis.fetch = realFetch
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // #367 (menhouran): the overseas gateway refuses X-Tm "linux" only beside a
 // non-official fingerprint. The official AutoClaw 2.0.3 client sends "linux"
 // (managedPlatform() in its main.cjs: darwin mac, win32 win, else

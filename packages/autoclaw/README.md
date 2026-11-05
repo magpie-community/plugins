@@ -64,7 +64,7 @@ OpenCode 同样可加载（`opencode auth login`）。登录信息保存在 magp
 
 **② 旧链路自动补签（默认关）**：查额度（`magpie quota`、GUI 刷新）与 token 刷新时发现未签就补签（服务端幂等，本地按天去重、失败按小时重试）。旧版 magpie / OpenCode 宿主或偏好该行为的用户开启 `signinOnUsage`。
 
-`magpie quota` 的额度窗口在查询成功时显示**每日签到**状态行（今日已签 ✓ / 今日未签 +N）。
+`magpie quota` 的额度窗口在查询成功时显示**每日签到**状态行（今日已签 ✓ / 今日未签 +N）。余额行把 `wallet_type=reward` 的活动钱包单独点名为「活动」（例如 `6800 积分（活动 奖励积分 6800）`），今日签到的每日积分若还有剩余也会显示，方便看出大额入账来自活动而不是每日签到攒的。
 
 > **「登录领积分」类活动奖励**：服务端只为带整套官方桌面端业务头（`X-Channel: AutoClaw20`、`X-Version: 2.2.0`、UA `AutoClaw/2.2.0 (win-x64)`、`X-Tm: win-x64`、`X-Product` 等；所有平台都按这套 Windows 指纹上报）的 `POST /userapi/v1/user-info` 记录 `autoclaw_user_active` 活跃事件——没有这次调用，这类活动就领不到（yetone/magpie#3681）。本次实测到账：国际「AutoClaw Weekly Perks」+4000、国内「AutoClaw 用户登录奖励」+5000。
 >
