@@ -2415,3 +2415,22 @@ test("9.11 Effort fallback branches the default policy can't reach: policy Max f
   assert.ok(Math.abs(glmNone.none - (glmNone.high + policy.effort_ability.none)) < 0.001);
   assert.ok(Math.abs(glmNone.off - (glmNone.high + policy.effort_ability.off)) < 0.001);
 });
+
+test("9.12 Quota opportunity cost reads the allocator's burn scale: `:ultra` costs what `:max` costs, `:minimal`/`none`/`off` cost less than `:low`", () => {
+  const t0 = Date.parse("2026-11-05T00:00:00Z");
+  const subscription = (key) => ({
+    [key]: {
+      kind: "subscription",
+      quota: { windows: [{ name: "7d", used: 60, remaining: 40, resetsAt: new Date(t0 + 120 * 3600 * 1000).toISOString() }] },
+    },
+  });
+  for (const [model, quotas] of [["claude-opus-5-5", subscription("claude/sub")], ["gpt-6-astra", subscription("codex/sub")]]) {
+    const cost = (effort) =>
+      evaluateModelQuota(`${model}:${effort}`, effort, { hours: 1.5, difficulty: "hard" }, quotas, {}, t0).opportunity_cost;
+    assert.ok(cost("max") > cost("high") && cost("high") > cost("low"), `${model} max/high/low ${cost("max")}/${cost("high")}/${cost("low")}`);
+    assert.equal(cost("ultra"), cost("max"), `${model} ultra ${cost("ultra")} vs max ${cost("max")}`);
+    for (const effort of ["minimal", "none", "off"]) {
+      assert.ok(cost(effort) < cost("low"), `${model} ${effort} ${cost(effort)} vs low ${cost("low")}`);
+    }
+  }
+});

@@ -25,7 +25,10 @@ import {
   resolveModelSpec,
 } from "./catalog.js";
 import { inferTaskProfile, validateProfile } from "./profiler-core.js";
-import { evaluateModelQuota, normalizeQuotaSnapshot } from "./quota.js";
+// effortValue and burnScale live in quota.js so its opportunity cost reads the same burn scale as the allocator.
+import { burnScale, effortValue, evaluateModelQuota, normalizeQuotaSnapshot } from "./quota.js";
+
+export { burnScale, effortValue };
 
 export const EFFORT_SCALED_CAPABILITIES = [
   "reasoning",
@@ -75,31 +78,6 @@ export function profileKind(profile, policy = DEFAULT_SCORING_POLICY) {
 }
 
 /**
- * One effort's ability delta or burn (`allocator.py:effort_value`), plus two plugin-side fallbacks AgentCompass
- * doesn't have: `ultra` without its own calibration reads as the model's Max, and `none`/`off`/`minimal` sit
- * below the model's own Low rather than at the policy table's generic value. Upstream scores both at High.
- */
-export function effortValue(policy, curves, name, effort, fallback) {
-  const own = curves?.[name] || {};
-  if (effort in own) return own[effort];
-  if (effort === "ultra" && "max" in own) return own.max;
-  const policyTable = policy?.[`effort_${name}`] || {};
-  if ((effort === "minimal" || effort === "none" || effort === "off") && "low" in own) {
-    if (name === "ability") {
-      const delta = (policyTable[effort] ?? -1.0) - (policyTable.low ?? -0.54);
-      return own.low + Math.min(delta, -0.2);
-    }
-    if (name === "burn") {
-      const ratio = (policyTable[effort] ?? 0.12) / (policyTable.low || 0.2);
-      return round4(own.low * Math.min(ratio, 0.75));
-    }
-  }
-  if (effort in policyTable) return policyTable[effort];
-  if (effort === "ultra" && "max" in policyTable) return policyTable.max;
-  return fallback;
-}
-
-/**
  * The model's effective tier at one effort level (`allocator.py:effort_ability`).
  */
 export function effortAbility(policy, curves, info, effort = "high") {
@@ -109,16 +87,6 @@ export function effortAbility(policy, curves, info, effort = "high") {
     return tier * Number(mult[effort]);
   }
   return tier + effortValue(policy, curves, "ability", effort, 0);
-}
-
-/**
- * Relative burn scale of `effort` compared to `high` (`allocator.py:burn_scale`).
- */
-export function burnScale(policy, curves, effort = "high") {
-  const mult = curves?.burn_mult || {};
-  if (effort in mult) return Number(mult[effort]);
-  const ref = effortValue(policy, curves, "burn", "high", 0.7);
-  return effortValue(policy, curves, "burn", effort, ref) / (ref || 1.0);
 }
 
 export function capabilityVector(info) {
