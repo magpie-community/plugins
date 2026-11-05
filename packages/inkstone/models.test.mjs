@@ -171,6 +171,10 @@ test("a metadata row without prices is not marked free", () => {
   // a zero input but a priced output is not free
   const outOnly = normalizePublic({ id: "out", input_uncached_price: 0, output_price: 5 })
   expect(outOnly.free).toBe(false)
+  // an empty string, junk or a negative number is a missing price, not 0
+  expect(normalizePublic({ id: "dirty", input_uncached_price: "", output_price: "" }).free).toBeUndefined()
+  expect(normalizePublic({ id: "dirty2", input_uncached_price: -5, output_price: 0 }).free).toBeUndefined()
+  expect(normalizePublic({ id: "dirty3", input_uncached_price: "n/a", output_price: 0 }).free).toBeUndefined()
   // junk rows do not throw
   expect(normalizePublic(null)).toBeNull()
   expect(normalizePublic({})).toBeNull()

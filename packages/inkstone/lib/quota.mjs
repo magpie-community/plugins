@@ -34,6 +34,15 @@ export function compact(n) {
 /** 控制台的时间：ISO 字符串或秒/毫秒时间戳 → ISO，读不出就 undefined。 */
 export function isoOf(value) {
   if (value === null || value === undefined || value === "") return undefined
+  // 控制台的数字可能是字符串："1700000000" 这类纯数字按时间戳读，
+  // "0" 不是时间，字符串垃圾也不是。
+  if (/^\d+$/.test(String(value).trim())) {
+    const n = Number(String(value).trim())
+    if (!(n > 0)) return undefined
+    const ms = n > 1e12 ? n : n * 1000
+    const d = new Date(ms)
+    return Number.isNaN(d.getTime()) ? undefined : d.toISOString()
+  }
   if (typeof value === "number") {
     if (!(value > 0)) return undefined
     const ms = value > 1e12 ? value : value * 1000
@@ -112,7 +121,8 @@ export function packageRows(packages) {
   const rows = []
   for (const p of items) {
     const remaining = flexNum(p.remaining_credits)
-    const total = flexNum(p.total_credits)
+    // total 缺失不是 0：没有总量就只显示剩余，不伪造 "剩 1 / 0"。
+    const total = optionalNum(p.total_credits)
     const status = String(p.status ?? "").toLowerCase()
     if (remaining <= 0) continue
     if (status && !ok.has(status)) continue
@@ -125,9 +135,9 @@ export function packageRows(packages) {
     rows.push({
       name: vendorName || `墨点包${rows.length + 1}`,
       used: pct,
-      display: `剩 ${compact(remaining)} / ${compact(total)}${day ? ` · ${day} 到期` : ""}`,
+      display: `剩 ${compact(remaining)}${total > 0 ? ` / ${compact(total)}` : ""}${day ? ` · ${day} 到期` : ""}`,
       amount: round(remaining),
-      limit: round(total),
+      ...(total > 0 ? { limit: round(total) } : {}),
       unit: "墨点",
       aside: true,
     })

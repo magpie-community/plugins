@@ -88,6 +88,29 @@ test("pruning frees a slot for a new key and deletes only this machine's old key
   expect(keys.some((k) => k.id === "unknown")).toBe(true)
 })
 
+test("pruning never deletes a key whose age is unknown, including created_at 0", async () => {
+  f = fakeInkStone()
+  const prefix = keyPrefixFor("u")
+  const keys = serveKeys([
+    { id: "zero", name: `${prefix}aaaa`, status: "active", created_at: 0 },
+    { id: "empty", name: `${prefix}bbbb`, status: "active", created_at: "" },
+    { id: "keep1", name: `${prefix}cccc`, status: "active", created_at: now(1) },
+  ])
+  const deleted = []
+  for (const k of keys) {
+    f.route("DELETE /api/tokenplan/v1/keys/" + k.id, () => {
+      deleted.push(k.id)
+      const i = keys.findIndex((x) => x.id === k.id)
+      if (i >= 0) keys.splice(i, 1)
+      return ok({})
+    })
+  }
+  const n = await pruneKeys("uaa", "u", { freeSlots: 0 })
+  expect(n).toBe(0)
+  expect(deleted).toEqual([])
+  expect(keys.length).toBe(3)
+})
+
 test("a key created without a plaintext is a clear failure, not a silent empty key", async () => {
   f = fakeInkStone()
   f.route("GET /v1/models", () => json({ object: "list", data: [] }))

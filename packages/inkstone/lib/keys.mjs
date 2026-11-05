@@ -29,8 +29,11 @@ export function keyNameFor(username) {
 }
 
 const at = (value) => {
-  const n = Date.parse(String(value ?? ""))
-  return Number.isFinite(n) ? n : 0
+  const s = String(value ?? "").trim()
+  // "0"、空串、负数都不是时间：年龄未知的 Key 永远不删。
+  if (!s || !/^\d{4,}/.test(s)) return 0
+  const n = Date.parse(s)
+  return Number.isFinite(n) && n > 0 ? n : 0
 }
 
 /** 新 Key 生效前网关可能要几秒：给几次机会，别把"还没生效"当成"被拒绝"。 */

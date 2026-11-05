@@ -148,10 +148,15 @@ test("the API-key + console-token method reads the token out of a pasted cookie"
   const bare = await method.authorize({ apiKey: "sk-test", uaaToken: "abc.def.ghi" })
   expect(bare.type).toBe("success")
   expect(bare.uaaToken).toBe("abc.def.ghi")
+  // base64 padding at the end is still a bare token
+  const padded = await method.authorize({ apiKey: "sk-test", uaaToken: "abc.def.gh==" })
+  expect(padded.type).toBe("success")
   // a string without a uaa-token is refused, never stored verbatim
-  const bad = await method.authorize({ apiKey: "sk-test", uaaToken: "sid=SESSIONSECRET" })
-  expect(bad.type).toBe("failed")
-  expect(bad.error).toContain("uaa-token")
+  for (const junk of ["sid=SESSIONSECRET", "Cookie: uaa-token=abc", "abc=def", "uaa-token", "abc def", "short"]) {
+    const bad = await method.authorize({ apiKey: "sk-test", uaaToken: junk })
+    expect(bad.type).toBe("failed")
+    expect(bad.error).toContain("uaa-token")
+  }
 })
 
 test("cleanDetail masks real uaa-token, sk-, Bearer and JWT runs", async () => {

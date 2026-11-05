@@ -45,11 +45,17 @@ export function normalizePublic(row) {
   const caps = list(row.capabilities) ?? []
   const capsEn = list(row.capabilities_en) ?? []
   const has = (zh, en) => caps.includes(zh) || capsEn.includes(en)
-  // 价格字段缺失 ≠ 价格为 0：只有两个字段都在场且都为 0，才敢标免费，
-  // 否则一条缺价格的记录会被误标 free，用户以为不扣墨点。
-  const hasPrice = row.input_uncached_price != null && row.output_price != null
-  const inputPrice = num(row.input_uncached_price) ?? 0
-  const outputPrice = num(row.output_price) ?? 0
+  // 价格字段缺失或非法 ≠ 价格为 0：只有两个字段都是有限的非负数、且都为 0，
+  // 才敢标免费，否则一条缺价格的记录会被误标 free，用户以为不扣墨点。
+  const priceOf = (v) => {
+    if (v === null || v === undefined) return undefined
+    if (typeof v === "string" && !v.trim()) return undefined
+    const n = typeof v === "number" ? v : Number(String(v).trim())
+    return Number.isFinite(n) && n >= 0 ? n : undefined
+  }
+  const inputPrice = priceOf(row.input_uncached_price)
+  const outputPrice = priceOf(row.output_price)
+  const hasPrice = inputPrice !== undefined && outputPrice !== undefined
   return {
     id,
     name: text(row.display_name) ?? text(row.display_name_en) ?? id,

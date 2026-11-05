@@ -10,6 +10,7 @@ import {
   profileDir,
   readUaaToken,
   tokenFresh,
+  waitForToken,
 } from "./lib/browser.mjs"
 
 test("uaa-token is read out of document.cookie and URL-decoded", () => {
@@ -35,6 +36,23 @@ test("browser candidates reject a path that is not there", () => {
   expect(() => browserCandidates("C:\\definitely\\not\\here.exe")).toThrow()
   // an existing executable is taken as the explicit browser
   expect(browserCandidates(process.execPath)).toEqual([process.execPath])
+})
+
+test("waitForToken's single read has its own timeout, the account never waits 8 minutes", async () => {
+  let calls = 0
+  const session = {
+    token: async () => {
+      calls += 1
+      return calls === 1 ? "" : "read-token"
+    },
+  }
+  expect(await waitForToken(session, { timeoutMs: 5000, pollMs: 50 })).toBe("read-token")
+  expect(calls).toBe(2)
+
+  const gridlock = { token: async () => new Promise(() => {}) }
+  const start = Date.now()
+  await expect(waitForToken(gridlock, { timeoutMs: 50, pollMs: 25 })).rejects.toThrow(/登录超时/)
+  expect(Date.now() - start).toBeLessThan(2000)
 })
 
 test("headless renewal gets its own argv and the profile is per platform", () => {

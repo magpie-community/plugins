@@ -34,9 +34,15 @@ test("compact keeps at most two decimals and no thousands separators", () => {
 
 test("isoOf accepts ISO strings and second/millisecond stamps, and rejects nonsense", () => {
   expect(isoOf("2026-11-05T08:00:00Z")).toBe("2026-11-05T08:00:00.000Z")
-  expect(isoOf("2026-11-05 08:00:00")).toBe("2026-11-05T08:00:00.000Z")
-  // 0 is not "1970" — it is a missing timestamp
+  // a local wall-clock time: compare against the same parse, not a fixed UTC
+  // string, so the test does not depend on the runner's timezone
+  expect(isoOf("2026-11-05 08:00:00")).toBe(new Date("2026-11-05T08:00:00").toISOString())
+  // 0 is not "1970" — it is a missing timestamp, as a number or a string
   expect(isoOf(0)).toBeUndefined()
+  expect(isoOf("0")).toBeUndefined()
+  // second- and millisecond-scale stamps arrive as strings too
+  expect(isoOf("1762320000")).toBe(new Date(1762320000 * 1000).toISOString())
+  expect(isoOf("1762320000000")).toBe(new Date(1762320000000).toISOString())
   expect(isoOf(null)).toBeUndefined()
   expect(isoOf("")).toBeUndefined()
   expect(isoOf("not a date")).toBeUndefined()
@@ -82,6 +88,10 @@ test("packageRows tolerates every envelope and filters empty or dead packs", () 
   expect(packageRows(null)).toEqual([])
   // a pack with no name still gets a readable label
   expect(packageRows([{ remaining_credits: 1, total_credits: 2 }])[0].name).toBe("墨点包1")
+  // a pack with no total shows only the remainder, never "剩 1 / 0"
+  const noTotal = packageRows([{ remaining_credits: 1, status: "available" }])[0]
+  expect(noTotal.display).toBe("剩 1")
+  expect(noTotal.limit).toBeUndefined()
 })
 
 test("cardOf with nothing at all still produces a card, not a crash", () => {

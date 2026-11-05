@@ -48,6 +48,30 @@ const apiBase = () => ENDPOINTS.api
 
 const optNum = (v, fallback) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : fallback)
 
+/** 第一个非空候选（trim 后）：`??` 会放过空串，这里不会。 */
+function firstNonEmpty(...values) {
+  for (const v of values) {
+    const s = String(v ?? "").trim()
+    if (s) return s
+  }
+  return ""
+}
+
+/**
+ * 粘贴框里的"裸 token"是否看起来像 token：不含空白/分号、长度 ≥ 8、
+ * 等号只出现在末尾（base64 padding），且不是 `uaa-token` 这种 cookie 名。
+ * 整串 cookie 交给 readUaaToken；这条只收单值，防止把别的 cookie 存进来。
+ */
+function looksLikeToken(raw) {
+  const s = String(raw ?? "").trim()
+  if (s.length < 8) return false
+  if (/\s|;/.test(s)) return false
+  if (/^uaa-token$/i.test(s)) return false
+  // "a=b" 是 cookie 形态；"abc==" 是 base64 padding，允许。
+  if (/=[^=]/.test(s)) return false
+  return true
+}
+
 function maskUser(value) {
   const s = String(value ?? "").trim()
   if (!s) return ""
@@ -124,14 +148,27 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
   /** 静默续期（单飞，按账号分桶）：保留的 SSO 会话还在，就换一张新的 uaa-token。 */
   const renew = async (auth) => {
     if (!keepSignInOn()) return ""
-    // 账号键：token 变化前后、有无 key 都要落在同一桶里，否则并发续期会串号。
-    const bucket = usernameOf(auth) || uaaTokenOf(auth) || JSON.stringify(auth)
+    // 桶键用凭据指纹而不是显示名：两个账号可能同名，凭据不会。
+    const bucket = fingerprint(apiKeyOf(auth) || uaaTokenOf(auth) || JSON.stringify(auth))
     const inflight = renewing.get(bucket)
     if (inflight) return inflight
     const flight = (async () => {
       try {
         const token = await renewSilently({ browserPath, log })
         if (!token) return ""
+        // 同一个 profile 可能同时开着另一个账号的会话：续期回来的 token 不属于
+        // 本页的账号，再存回去就会串号，先核对一遍再决定。
+        const expecting = firstNonEmpty(usernameOf(auth))
+        if (expecting) {
+          const holder = await usersValidate(token).catch(() => null)
+          const holderName = firstNonEmpty(
+            holder?.data?.name, holder?.data?.username, holder?.data?.nickname, holder?.data?.phone, holder?.data?.email,
+          )
+          if (holderName && holderName !== expecting) {
+            log("warn", "inkstone: the renewed session belongs to a different account, skipping")
+            return ""
+          }
+        }
         auth.uaaToken = token
         await save(auth)
         return token
@@ -213,7 +250,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
       errors.push(`credit packs: ${cleanDetail(packagesRes.reason?.message ?? packagesRes.reason)}`)
     if (userRes.status === "rejected") errors.push(`account: ${cleanDetail(userRes.reason?.message ?? userRes.reason)}`)
 
-    const user = maskUser(userData?.phone ?? userData?.name ?? userData?.username ?? userData?.nickname ?? usernameOf(auth))
+    const user = maskUser(firstNonEmpty(userData?.phone, userData?.name, userData?.username, userData?.nickname, usernameOf(auth)))
     const value = cardOf({ balance, packages, user, errors })
     // 包读取失败但余额成功：余额本身仍是真数据，只把包明细的错误挂上。
     quotaCache.set(token, { at: Date.now(), value })
@@ -340,6 +377,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             {
               type: "password",
               key: "apiKey",
+              required: false, // empty means "create one after the browser sign-in"
               message: "Leave empty to sign in in a browser (paste an existing key to reuse it)",
               placeholder: "sk-...",
               validate: (v) => {
@@ -388,7 +426,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
                 try {
                   const user = await usersValidate(token).catch(() => null)
                   const data = user?.data ?? {}
-                  const username = String(data.name ?? data.username ?? data.nickname ?? data.phone ?? data.email ?? "").trim()
+                  const username = firstNonEmpty(data.name, data.username, data.nickname, data.phone, data.email)
                   // 如果账号段读不出，拿 token 的指纹兜底：保证两账号前缀永远不撞。
                   const accountIdent = username || `anon-${fingerprint(token).slice(0, 8)}`
                   const apiKey = await ensureKey(token, accountIdent, {
@@ -465,11 +503,10 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           async authorize(inputs) {
             const key = normalizeApiKey(inputs?.apiKey)
             // 用户可能粘贴整串 document.cookie，也可能只粘 token 本身：
-            // 前者取 uaa-token 的值；后者必须是单个不含 `=`/`;` 的裸值。
+            // 前者取 uaa-token 的值；后者必须是看起来像 token 的单个裸值。
             // 其余（含别的 cookie 但没有 uaa-token）一律拒绝，绝不整串存进凭据库。
             const raw = String(inputs?.uaaToken ?? "").trim()
-            // 裸值：没有分号，且没有"名字=值"形态的等号（token 末尾的 base64 padding 例外）。
-            const bare = raw && !raw.includes(";") && !/=[^=]/.test(raw) ? raw : ""
+            const bare = looksLikeToken(raw) ? raw : ""
             const token = readUaaToken(raw) || bare
             if (!key) return { type: "failed", error: "API key is required" }
             if (!token) {
@@ -491,8 +528,8 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
                 type: "success",
                 key,
                 uaaToken: token,
-                accountId: String(data.name ?? data.username ?? data.nickname ?? data.phone ?? data.email ?? `inkstone-${fingerprint(key)}`),
-                username: String(data.name ?? data.username ?? ""),
+                accountId: firstNonEmpty(data.name, data.username, data.nickname, data.phone, data.email, `inkstone-${fingerprint(key)}`),
+                username: firstNonEmpty(data.name, data.username),
                 source: "manual",
               }
             } catch (e) {

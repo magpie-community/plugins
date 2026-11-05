@@ -11,8 +11,8 @@
 //
 // 登录窗口带调试端口，但全程只用 CDP 的 Network 域（Network.getAllCookies
 // 读浏览器级 cookie），不碰 Runtime.evaluate，不在页面里注入任何东西。
-// 登录完成后插件自己关窗——magpie 的宿主只调用一次 callback 并带超时等它
-// 返回，"等用户关窗"会让回调永远不返回（这是前几版反复失败的根因）。
+// Windows 上插件用窗口标题判断登录完成并自己关窗；macOS / Linux 读不了窗口
+// 标题，登录完成后用户自己关窗，插件收残局。
 //
 // Bun 1.3.1 在 Windows 上"关掉 CDP WebSocket + 立刻杀进程/删目录"会偶发
 // 原生崩溃：收尾时不调用 ws.close()，profile 目录交给系统 rmdir 删。
@@ -215,10 +215,26 @@ class Cdp {
   send(method, params = {}) {
     return new Promise((resolve, reject) => {
       const id = ++this.seq
-      this.pending.set(id, { resolve, reject })
+      // CDP 不回答不能无限等：挂死的 send 会让静默续期永不返回，
+      // 上层的单飞锁也会被永久占住。
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error(`CDP ${method} timed out`))
+      }, 15_000)
+      this.pending.set(id, {
+        resolve: (v) => {
+          clearTimeout(timer)
+          resolve(v)
+        },
+        reject: (e) => {
+          clearTimeout(timer)
+          reject(e)
+        },
+      })
       try {
         this.ws.send(JSON.stringify({ id, method, params }))
       } catch (e) {
+        clearTimeout(timer)
         this.pending.delete(id)
         reject(e)
       }
@@ -227,6 +243,7 @@ class Cdp {
 
   /** 丢掉引用但不调用 ws.close()：见文件头对 Bun 段错误的说明。 */
   detach() {
+    for (const { reject } of this.pending.values()) reject(new Error("browser debug connection closed"))
     this.pending.clear()
     this.ws = null
   }
@@ -358,7 +375,8 @@ export async function openSession({ browserPath, profile, headless = false, plai
           (c) =>
             c?.name === "uaa-token" &&
             typeof c?.domain === "string" &&
-            c.domain.includes("intern-ai.org.cn"),
+            // 精确匹配：includes 会放过 evilintern-ai.org.cn 这类域。
+            (c.domain === "intern-ai.org.cn" || c.domain.endsWith(".intern-ai.org.cn")),
         )
         if (match?.value) {
           const value = String(match.value)
@@ -369,13 +387,6 @@ export async function openSession({ browserPath, profile, headless = false, plai
           }
         }
         return ""
-      },
-      async url() {
-        try {
-          return await cdp.send("Runtime.evaluate", { expression: "location.href", returnByValue: true }).then((r) => r?.result?.value ?? "")
-        } catch {
-          return ""
-        }
       },
       async close() {
         if (closed) return
@@ -415,7 +426,12 @@ export async function waitForToken(session, { timeoutMs = 8 * 60_000, pollMs = 7
   while (Date.now() < deadline) {
     if (signal?.aborted) throw Object.assign(new Error("the sign-in was cancelled"), { cancelled: true })
     try {
-      const token = await session.token()
+      // 单次读也限死在剩余时间里：CDP 挂死时靠外层超时兜底退出。
+      const left = deadline - Date.now()
+      const token = await Promise.race([
+        session.token(),
+        sleep(Math.min(left, 15_000)).then(() => ""),
+      ])
       if (token) return token
     } catch (e) {
       log(`browser read retry: ${e?.message ?? e}`)
