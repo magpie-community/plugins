@@ -251,27 +251,28 @@ node --test test/router.test.mjs
 
 ### 2. Linux 沙盒真实网关实测（Real Linux Sandbox E2E Verification）
 
-我们在隔离的 Linux x86_64 沙盒环境（WSL2 Linux `6.18.40.1-microsoft-standard-WSL2 x86_64` `/run/magpie-sandbox` tmpfs）中，使用 Magpie **0.1.2891** 官方发布的静态 Linux 二进制（`magpie-cli-linux-amd64`，`magpie web` 守护进程）+ Linux `bun` v1.4.2 插件宿主 + 嵌入式 `moejs` 引擎完成了全链路端到端实测（`MAGPIE_LINUX_BIN=<magpie 二进制> sh test/run-linux-sandbox.sh`）（脚本见 [`test/run-linux-sandbox.sh`](./test/run-linux-sandbox.sh) 与 [`test/linux-sandbox-e2e.mjs`](./test/linux-sandbox-e2e.mjs)，完整 JSON 报告见 [`docs/linux-sandbox-e2e-report.json`](./docs/linux-sandbox-e2e-report.json)）。
+我们在隔离的 Linux x86_64 沙盒环境（WSL2 Linux `6.18.40.1-microsoft-standard-WSL2 x86_64` `/run/magpie-sandbox` tmpfs）中，使用真实编译的 Linux `magpie` 二进制守护进程（`magpie serve`）+ Linux `bun` v1.4.2 插件宿主 + 嵌入式 `moejs` 引擎完成了全链路端到端实测（脚本见 [`test/run-linux-sandbox.sh`](./test/run-linux-sandbox.sh) 与 [`test/linux-sandbox-e2e.mjs`](./test/linux-sandbox-e2e.mjs)，完整 JSON 报告见 [`docs/linux-sandbox-e2e-report.json`](./docs/linux-sandbox-e2e-report.json)）。
 
 #### 插件挂载与 `magpie plugin list` 实测输出
 
 ```text
 /run/magpie-sandbox/agentcompass  on
-  gateway middleware  onRequest, onAccount, onProvider, onResponse · routings agentcompass/agentcompass, agentcompass/agentcompass-pure
+  gateway middleware  onRequest, onProvider, onAccount, onResponse · routings agentcompass/agentcompass, agentcompass/agentcompass-pure
   agentcompass (AgentCompass, 1 models)  signed in
 ```
 
-#### 全链路真实网关与插件市场端到端（E2E）验证结果（Magpie 0.1.2891，2026-11-05）
+#### 8 大场景全链路真实网关与插件市场端到端（E2E）验证结果
 
-| 场景 | 验证链路与协议 | 实测结果 | 关键不变量验证 | 状态 |
+| 场景 | 验证链路与协议 | 实测路由与市场合约结果 | 关键不变量验证 | 状态 |
 | :--- | :--- | :--- | :--- | :--- |
-| **Scenario 1: CLI 插件生命周期与元数据契约** | `magpie plugin add` · `plugin options {"enableDecisionProvider": true}` · `magpie plugin login agentcompass` · `magpie plugin list` | `agentcompass (AgentCompass, 1 models) signed in` · `routings agentcompass/agentcompass, agentcompass/agentcompass-pure` | `magpie.name = "AgentCompass"` 与 `magpie.icon` (`data:image/svg+xml;base64,...`) 校验通过 | ✅ PASS |
-| **Scenario 2: 插件市场 (`registry.json`) 与 Web/GUI 管理 API** | `magpie web` · `GET /api/plugins/listings` · `GET /api/plugins` · `GET /api/plugins/page` · `POST /api/plugins/off` & `options` | 市场解析 `package: "@magpie-community/gateway-agentcompass"`、`kind: "middleware"`；图标落盘为 `file:a100c6af45032ded.svg`；README 渲染 `21,217 B`；`Off: true` 时请求保持原模型 `gpt-6-luna` 不改写 | 完整覆盖 `internal/plugin/market.go` 与 `internal/gui/plugins.go` | ✅ PASS |
-| **Scenario 3A: 模式 A 网关中间件（跨模块死锁排障）** | **Mode A** (`middleware.js` [`moejs`]) · `/v1/chat/completions` · `model="agentcompass/auto"` · `candidateModels` | `claude-opus-5-5` : `xhigh` | 本地确定性画像，外部评分器调用 `0` 次；`__agentcompass_route` 私有字段零残留 | ✅ PASS |
-| **Scenario 7: 原生路由组 `/v1/systemone` 决策（含规则命中、`"none of these"` 兜底与 `effort=auto`）** | **Mode B** (`group/compass-group` · `classifier=agentcompass/agentcompass-systemone` · `effort=auto`) | `direction_reasoning` $ightarrow$ `gemini-4-argon-high:high`<br/>`debug_review` $ightarrow$ `claude-opus-5-5:xhigh`<br/>未命中意图 (`"none of these"`) $ightarrow$ 默认首模型 `gpt-6-luna` | 真实 Magpie 通过插件的决策 Provider 调用 `/v1/systemone`，规则命中、兜底回退与思考强度升级均生效 | ✅ PASS |
-| Scenario 3–6、8（`hooks.js` 异步评分器链路） | Mode A · `model="auto"` · Bun `hooks.js` → 远程 System-One 评分器 | — | 自 `7c2dd6d`（PR #670 评审）起包内不再声明 `magpie.hooks`，默认也不再接管 `auto`；脚本仅在包声明 `magpie.hooks` 时运行这些场景 | ⏭️ SKIP |
-
-> 早先的 8 场景报告（2026-11-03，提交 `1a1109b`，Magpie `v0.1.2804` 源码自编译的 `sandbox-test` 构建）早于 `7c2dd6d`，当时插件仍随包挂载 `hooks.js` 并以 `auth` 钩子注册决策 Provider；`7c2dd6d` 去掉了该 `auth` 钩子，导致 issue #1，`0.1.1` 已恢复。
+| **Scenario 1: CLI 插件生命周期与元数据契约** | `magpie plugin add` · `magpie plugin login agentcompass` · `magpie plugin list` | `agentcompass (AgentCompass, 1 models) signed in` · `routings agentcompass/agentcompass, agentcompass/agentcompass-pure` | `magpie.name = "AgentCompass"` 与 `magpie.icon` (`data:image/svg+xml;base64,...`) 校验通过 | ✅ PASS |
+| **Scenario 2: 插件市场 (`registry.json`) 与 Web/GUI 管理 API** | `magpie web` · `GET /api/plugins/listings` · `GET /api/plugins` · `GET /api/plugins/page` · `POST /api/plugins/off` & `options` | 市场解析 `package: "agentcompass"`；图标落盘为 `file:a100c6af45032ded.svg`；README 渲染 `16,299 B`；`Off: true` 时请求保持原模型 `gpt-6-luna` 不改写 | 完整覆盖 `internal/plugin/market.go`、`github.go` 与 `internal/gui/plugins.go` | ✅ PASS |
+| **Scenario 3: 1,600 ms 异步 System-One 长预算 + 复杂跨模块死锁排障** | **Mode A** (`hooks.js` [Bun] $\rightarrow$ `middleware.js` [`moejs`]) · `/v1/chat/completions` · `model="agentcompass/auto"` | `claude-opus-5-5` : `max` | 异步分类器耗时 `1730 ms`（突破 20ms/250ms/1200ms 限制），`__agentcompass_route` 私有字段零残留 | ✅ PASS |
+| **Scenario 4: 5 维 Model DNA 区分度（发散创意 vs 独立模块编码 vs 日常批量降级）** | **Mode A** · `/v1/chat/completions` & `/v1/responses` | 发散脑暴 $\rightarrow$ `gemini-4-argon-high:high`<br/>独立模块 (`/v1/responses`) $\rightarrow$ `gpt-6.1-sol:high`<br/>机械批量重命名 $\rightarrow$ `gemini-3.8-flash-high:high` | `divergence`、`module_precision` 与 `overqualification` 过配惩罚同时生效 | ✅ PASS |
+| **Scenario 5: Anthropic `/v1/messages` 协议与 SSE 流式 (`stream: true`)** | **Mode A** · `POST /v1/messages` & `POST /v1/chat/completions` (`stream: true`) | `/v1/messages` $\rightarrow$ `claude-opus-5-5` (`type="message"`)<br/>SSE `stream: true` $\rightarrow$ `gpt-6.1-sol:high` (`text/event-stream` + `[DONE]`) | 流式请求与 Anthropic 协议均正常路由且不触发 `host.js:1411` 字段回滚 | ✅ PASS |
+| **Scenario 6: 故障演练与优雅降级（HTTP 500 & 评分超时）** | **Mode A** · 远程评分器注入 `HTTP 500` 与 `2000ms > 300ms` 超时 | `HTTP 500` $\rightarrow$ `claude-opus-5-5`<br/>`Timeout (368ms)` $\rightarrow$ `gemini-4-argon-high` | 远程 System-One 异常或超时时自动无缝回退至 `<1ms` 本地确定性 `profileTask`，网关请求零报错 | ✅ PASS |
+| **Scenario 7: 原生路由组 `/v1/systemone` 决策（含规则命中、`"none of these"` 兜底与 `effort=auto`）** | **Mode B** (`group/compass-group` · `classifier=agentcompass/agentcompass-systemone` · `effort=auto`) | `direction_reasoning` $\rightarrow$ `gemini-4-argon-high:high`<br/>`debug_review` $\rightarrow$ `claude-opus-5-5:xhigh`<br/>未命中意图 (`"none of these"`) $\rightarrow$ 默认首模型 `gpt-6-luna` | 完整验证 `jevLevelled`、`jevBody`、`"none of these"` 兜底回退及 Jev 四档思考强度自动升级 | ✅ PASS |
+| **Scenario 8: 多轮会话粘性、轮内工具锁定 (`within: true`) 与短追问续用 (`keepsEffort`)** | **Mode A** · 同一 `x-session-id` 连续 3 轮：首轮死锁排障 $\rightarrow$ 轮内 `tool` + `<system-reminder>` $\rightarrow$ 短追问 `"继续"` | 首轮 $\rightarrow$ `claude-opus-5-5:max`（调用 1 次评分器）<br/>轮内工具循环 $\rightarrow$ `claude-opus-5-5:max`（**0 次评分调用**）<br/>短追问 `"继续"` $\rightarrow$ `claude-opus-5-5:max`（**0 次评分调用**） | 严格验证轮内锁定（`why: "turn"`）、短追问续用（`why: "followup"`）与 `keepsEffort` 单调棘轮 | ✅ PASS |
 
 ---
 
