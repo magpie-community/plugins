@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/tools-council",
+  "version": "1.0.0",
+  "description": "Several of your magpie models on one question, as tools for every agent: ask them all at once, let them vote anonymously, or have another model review your work. No setup: models are read from magpie, each is called on its own API with what it can take, and failing accounts are skipped by themselves.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "lib", "README.md"],
+  "keywords": ["magpie", "magpie-tools", "mcp", "opencode", "opencode-plugin", "multi-model", "second-opinion", "vote", "review"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/council" }
+}
