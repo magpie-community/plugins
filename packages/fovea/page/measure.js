@@ -441,14 +441,13 @@ function note(part, responses, text) {
   if (cacheControl) part.cache_control = cacheControl
 }
 
-// Head and tail with a marker in between. Content already carrying the
-// marker was cut on an earlier turn (the agent sends its history back each
-// time) and is left as it is — idempotent, and the marker tells the agent
-// what happened. Nothing to do when it already fits, or when a protect
-// pattern says this text must stay whole.
+// Head and tail with a marker in between. An already-cut string is short
+// enough to fall through the length guard above — that is what makes this
+// idempotent, and the marker tells the agent what happened. Nothing to do
+// when it already fits, or when a protect pattern says this text must stay
+// whole. A marker-shaped string in untrusted content must not exempt it.
 function cut(text, head, tail, what, cfg) {
   if (typeof text !== "string" || text.length <= head + tail + 80) return text
-  if (text.includes("[" + MARK + ":")) return text
   if (cfg.protect.length && cfg.protect.some((re) => re.test(text))) return text
   const headEnd = safeHead(text, head)
   const tailStart = safeTail(text, text.length - tail)
