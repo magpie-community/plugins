@@ -14,6 +14,9 @@
 //                          stopReason cancelled. Used to test interrupt while a turn is in flight.
 //   FAKE_ACP_IGNORE_CANCEL when set with FAKE_ACP_SLOW_MS: cancel is logged but does not end the prompt (Devin-like
 //                          "cancel was a no-op / never acknowledged" — the client must clear its own running flag)
+//   FAKE_ACP_CANCEL_AS_ERROR when set with FAKE_ACP_SLOW_MS: cancel answers the in-flight session/prompt with
+//                          JSON-RPC error -32603 (no stopReason) — leftover pendingCancelStops counters used to
+//                          swallow the next turn's stop after this.
 // Every prompt is answered with one agent_message_chunk ("ok: <n> blocks") and stopReason end_turn.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -27,9 +30,10 @@ const permMode = process.env.FAKE_ACP_PERM;
 const permLog = process.env.FAKE_ACP_PERM_LOG;
 const slowMs = process.env.FAKE_ACP_SLOW_MS ? Number(process.env.FAKE_ACP_SLOW_MS) : 0;
 const ignoreCancel = !!process.env.FAKE_ACP_IGNORE_CANCEL;
+const cancelAsError = !!process.env.FAKE_ACP_CANCEL_AS_ERROR;
 let nextOwnId = 9000;
 const waiting = new Map(); // our request id -> callback(response)
-/** @type {Map<string, { timer: NodeJS.Timeout, finish: (reason: string) => void }>} */
+/** @type {Map<string, { timer: NodeJS.Timeout, finish: (reason: string) => void, fail: (code: number, message: string) => void }>} */
 const openPrompts = new Map(); // sessionId -> in-flight slow prompt
 const out = (msg) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...msg }) + "\n");
 const answer = (id, result) => out({ id, result });
@@ -137,8 +141,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           openPrompts.delete(p.sessionId);
           answer(m.id, { stopReason: reason });
         };
+        const fail = (code, message) => {
+          const open = openPrompts.get(p.sessionId);
+          if (!open || open.fail !== fail) return;
+          clearTimeout(open.timer);
+          openPrompts.delete(p.sessionId);
+          out({ id: m.id, error: { code, message } });
+        };
         const timer = setTimeout(() => finish("end_turn"), slowMs);
-        openPrompts.set(p.sessionId, { timer, finish });
+        openPrompts.set(p.sessionId, { timer, finish, fail });
         return;
       }
       return answer(m.id, { stopReason: "end_turn" });
@@ -156,7 +167,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         return out({ id: m.id, error: { code: -32601, message: "Method not found" } });
       }
       const open = openPrompts.get(p.sessionId);
-      if (open && !ignoreCancel) open.finish("cancelled");
+      if (open && !ignoreCancel) {
+        if (cancelAsError) open.fail(-32603, "Internal error");
+        else open.finish("cancelled");
+      }
       return;
     }
     default:

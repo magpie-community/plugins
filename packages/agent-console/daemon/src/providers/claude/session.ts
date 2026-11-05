@@ -93,16 +93,8 @@ export class ClaudeSession implements ProviderSession {
     for await (const m of cli.messages) {
       for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) {
         if (ev.type === "turn_ended") {
-          // Cancelled turn's late result (status interrupted) — drop even if a newer send already ran.
-          if (
-            this.skipResultGens.size > 0 &&
-            ((ev as { status?: string }).status === "interrupted" || !this.turnId)
-          ) {
-            const g = this.skipResultGens.values().next().value as number;
-            this.skipResultGens.delete(g);
-            this.awaitingResult = this.awaitingResult.filter((x) => x !== g);
-            continue;
-          }
+          // Drop by FIFO of results still owed — not by interrupt status (send() resets sawInterrupt,
+          // and the real Claude CLI ends cancelled turns with subtype error_during_execution → failed).
           const g = this.awaitingResult.shift();
           if (g != null && this.skipResultGens.delete(g)) continue;
         }
@@ -311,11 +303,9 @@ export class ClaudeSession implements ProviderSession {
       // End immediately so manager/UI clear running even if the CLI is slow to emit result
       // (same class of bug as ACP: idle UI while provider.turn still open → next send races).
       if (this.turnId) {
-        if (this.currentGen != null) {
-          this.skipResultGens.add(this.currentGen);
-          // Drop from the FIFO so a newer turn's result is not paired with this gen
-          this.awaitingResult = this.awaitingResult.filter((g) => g !== this.currentGen);
-        }
+        // Keep currentGen in awaitingResult so the late CLI result is consumed as that gen's owed
+        // result and dropped; do not look at status/sawInterrupt (send() clears the flag).
+        if (this.currentGen != null) this.skipResultGens.add(this.currentGen);
         this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
       }
     };

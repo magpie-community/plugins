@@ -121,4 +121,38 @@ describe("Codex interrupt", () => {
       delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
     }
   }, 20000);
+
+  it("Stop before turn/started still sends turn/interrupt from turn/start response id", async () => {
+    // Race yetone called out: Stop before turn/started, then an immediate new message. send() clears
+    // interruptWanted, so without using the turn id from turn/start's response the first Codex turn is
+    // never interrupted (no turn/interrupt) and staleNextCodexTurn was a sticky guess. This test is red
+    // without the response-id fix.
+    const r = open({ FAKE_CODEX_SLOW_MS: "800" });
+    try {
+      await r.session.send({ text: "first", images: [] });
+      await until(() => r.events.some((e) => e.type === "turn_started"));
+      // Interrupt in the window before the delayed turn/started notification.
+      await r.session.interrupt();
+      await until(() => r.events.some((e) => e.type === "turn_ended" && (e as { status?: string }).status === "interrupted"));
+      // Immediate resend clears interruptWanted — must NOT prevent turn/interrupt for the first turn.
+      await expect(r.session.send({ text: "second", images: [] })).resolves.toBeUndefined();
+      await until(() => lines(r.logFile).some((l) => l.in?.method === "turn/interrupt"), 5000);
+      const hit = lines(r.logFile).find((l) => l.in?.method === "turn/interrupt");
+      expect(hit.in.params.turnId).toBe("codex-turn-1");
+      await until(() => r.events.filter((e) => e.type === "turn_started").length >= 2);
+      await until(() => r.events.filter((e) => e.type === "turn_ended").length >= 2, 10000);
+      const ends = r.events.filter((e) => e.type === "turn_ended") as { status?: string }[];
+      expect(ends[0]?.status).toBe("interrupted");
+      expect(ends.filter((e) => e.status === "interrupted")).toHaveLength(1);
+      expect(ends[ends.length - 1]?.status).toBe("completed");
+      const starts = lines(r.logFile).filter((l) => l.in?.method === "turn/start");
+      expect(starts.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await r.session.close();
+      await r.done;
+      delete process.env.FAKE_CODEX_SLOW_MS;
+      delete process.env.FAKE_CODEX_LOG;
+      delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
+    }
+  }, 20000);
 });

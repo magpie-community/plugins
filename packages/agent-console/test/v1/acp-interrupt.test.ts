@@ -20,17 +20,20 @@ afterEach(() => {
   delete process.env.FAKE_ACP_CANCEL_LOG;
   delete process.env.FAKE_ACP_SLOW_MS;
   delete process.env.FAKE_ACP_IGNORE_CANCEL;
+  delete process.env.FAKE_ACP_CANCEL_AS_ERROR;
 });
 
 type Run = { session: ProviderSession; events: ProviderEvent[]; clog: string; done: Promise<void> };
 
-async function open(opts: { slowMs?: number; ignoreCancel?: boolean } = {}): Promise<Run> {
+async function open(opts: { slowMs?: number; ignoreCancel?: boolean; cancelAsError?: boolean } = {}): Promise<Run> {
   const clog = join(dir, `c-${Math.random().toString(36).slice(2)}.jsonl`);
   process.env.FAKE_ACP_CANCEL_LOG = clog;
   if (opts.slowMs != null) process.env.FAKE_ACP_SLOW_MS = String(opts.slowMs);
   else delete process.env.FAKE_ACP_SLOW_MS;
   if (opts.ignoreCancel) process.env.FAKE_ACP_IGNORE_CANCEL = "1";
   else delete process.env.FAKE_ACP_IGNORE_CANCEL;
+  if (opts.cancelAsError) process.env.FAKE_ACP_CANCEL_AS_ERROR = "1";
+  else delete process.env.FAKE_ACP_CANCEL_AS_ERROR;
   const provider = createAcpProvider({ id: "fake-interrupt", name: "Fake ACP", binName: "fake-acp", acpArgs: [], installHint: "" });
   const session = await provider.createSession({
     threadId: "t1", cwd: dir, model: null, mode: "default", effort: null, resumeId: null, launch,
@@ -111,6 +114,28 @@ describe("ACP interrupt / session/cancel", () => {
       // Accept either: second still open, or second completed with end_turn — never a spurious double-interrupt.
       expect(ends[0]?.status).toBe("interrupted");
       expect(ends.filter((e) => e.status === "interrupted")).toHaveLength(1);
+    } finally {
+      await r.session.close();
+      await r.done;
+    }
+  }, 20000);
+
+  it("cancel answered with JSON-RPC error (-32603) must not swallow the next turn's stop", async () => {
+    // pendingCancelStops only decremented on stop; a -32603 on the cancelled prompt left the counter at 1
+    // and the next turn's stop was discarded so that turn never ended.
+    const r = await open({ slowMs: 250, cancelAsError: true });
+    try {
+      await r.session.send({ text: "first", images: [] });
+      await until(() => r.events.some((e) => e.type === "turn_started"));
+      await r.session.interrupt();
+      await until(() => r.events.some((e) => e.type === "turn_ended" && (e as { status?: string }).status === "interrupted"));
+      await expect(r.session.send({ text: "second", images: [] })).resolves.toBeUndefined();
+      await until(() => r.events.filter((e) => e.type === "turn_started").length >= 2);
+      // Second turn must be able to end normally when its own stop arrives (not swallowed by a leftover counter)
+      await until(() => r.events.filter((e) => e.type === "turn_ended").length >= 2, 10000);
+      const ends = r.events.filter((e) => e.type === "turn_ended") as { status?: string }[];
+      expect(ends[0]?.status).toBe("interrupted");
+      expect(ends[ends.length - 1]?.status).toBe("completed");
     } finally {
       await r.session.close();
       await r.done;

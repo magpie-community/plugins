@@ -67,12 +67,26 @@ async function turn(content) {
   if (text.includes("SLOW")) {
     say("working");
     await new Promise((resolve) => (interruptTurn = resolve));
-    return done({ subtype: "error_interrupted", is_error: true, result: "" });
+    return done({ subtype: "error_during_execution", is_error: true, result: "" });
   }
   const images = blocks.filter((b) => b.type === "image").map((b) => `${b.source?.media_type}:${b.source?.data?.length}`);
   const docs = blocks.filter((b) => b.type === "document").map((b) => b.title);
   say(`echo ${text.split("\n")[0]} | model=${model} mode=${mode} images=[${images.join(",")}] docs=[${docs.join(",")}]`);
   done();
+}
+
+// Real Claude CLI handles user turns in order: one result per user message, FIFO.
+// Queue user messages so a late interrupted result cannot arrive after a newer turn's result.
+const userQueue = [];
+let turning = false;
+async function pumpUsers() {
+  if (turning) return;
+  turning = true;
+  while (userQueue.length) {
+    const content = userQueue.shift();
+    try { await turn(content); } catch (e) { console.error("fake-claude turn error", e); }
+  }
+  turning = false;
 }
 
 const rl = createInterface({ input: process.stdin });
@@ -103,6 +117,9 @@ rl.on("line", (line) => {
     waiting.delete(m.response.request_id);
     return w?.(m.response.response);
   }
-  if (m.type === "user") void turn(m.message.content);
+  if (m.type === "user") {
+    userQueue.push(m.message.content);
+    void pumpUsers();
+  }
 });
 rl.on("close", () => process.exit(0));

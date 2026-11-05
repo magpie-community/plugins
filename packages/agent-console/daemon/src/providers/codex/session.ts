@@ -44,8 +44,6 @@ export class CodexSession implements ProviderSession {
   private closed = false;
   private started: Promise<void> | null = null;
   private interruptWanted = false;
-  /** turn/started hasn't arrived yet when interrupt ran: mark that next Codex turn id as stale. */
-  private staleNextCodexTurn = false;
   private ourTurnId: string | null = null; // The current turn's turnId in the timeline (generated on send)
   private staleCodexTurns = new Set<string>();
   private codexSlash: CodexSlashEntry[] | null = null;
@@ -98,11 +96,13 @@ export class CodexSession implements ProviderSession {
       );
       this.rpc = rpc;
       rpc.onNotification = (m, p) => {
-        for (const ev of mapNotification(m, p, this.st)) this.emit(ev);
-        if (m === "turn/started" && this.staleNextCodexTurn && this.st.currentTurnId) {
-          this.staleCodexTurns.add(this.st.currentTurnId);
-          this.staleNextCodexTurn = false;
+        if (m === "turn/started") {
+          const tid = typeof (p as { turn?: { id?: string } })?.turn?.id === "string" ? (p as { turn: { id: string } }).turn.id : null;
+          // Late started for a turn we already interrupted must not clobber the next turn's id
+          if (tid && this.staleCodexTurns.has(tid)) return;
         }
+        for (const ev of mapNotification(m, p, this.st)) this.emit(ev);
+        // Prefer the turn id from turn/start's response (set in send); this covers a late turn/started.
         if (this.interruptWanted && this.st.currentTurnId) void this.interrupt();
       };
       rpc.onServerRequest = (m, p) => this.onServerRequest(m, p);
@@ -171,9 +171,8 @@ export class CodexSession implements ProviderSession {
     const turnId = "u_" + Date.now().toString(36) + "_" + rid();
     // A new turn started before the previous one completed (interrupt fallback / local end) → remember its Codex turnId
     if (this.ourTurnId && this.st.currentTurnId) this.staleCodexTurns.add(this.st.currentTurnId);
-    else if (this.ourTurnId && !this.st.currentTurnId) this.staleNextCodexTurn = true;
     this.ourTurnId = turnId;
-    this.st.currentTurnId = null; // Filled in by this turn's turn/started, so we never interrupt/steer with the previous turn's id
+    this.st.currentTurnId = null; // Filled from turn/start's response (not only turn/started), so interrupt has the id early
     this.emit({
       type: "turn_started",
       turnId,
@@ -183,15 +182,22 @@ export class CodexSession implements ProviderSession {
     });
     for (const w of warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
     try {
-      await rpc.request("turn/start", {
+      const res = (await rpc.request("turn/start", {
         threadId: this.sessionThreadId ?? undefined,
         input: items,
         model: this.o.model,
         effort: this.o.effort,
         approvalPolicy: preset.approvalPolicy,
         sandboxPolicy: preset.sandboxPolicy,
-      });
+      })) as { turn?: { id?: string } };
+      const codexTurnId = typeof res?.turn?.id === "string" ? res.turn.id : null;
+      if (codexTurnId) {
+        this.st.currentTurnId = codexTurnId;
+        // Interrupt before turn/started (or while turn/start was in flight): id is known now — send turn/interrupt
+        if (this.interruptWanted) await this.interrupt();
+      }
     } catch (e) {
+      this.interruptWanted = false; // don't leave a sticky flag if start failed
       this.emit({
         type: "turn_ended",
         turnId,
@@ -227,9 +233,8 @@ export class CodexSession implements ProviderSession {
       return;
     }
     if (!codexTurn) {
-      // turn/started hasn't arrived yet: remember it and send the interrupt as soon as the turnId is known
+      // turn/start response (and turn/started) not yet known: send turn/interrupt once the id arrives
       this.interruptWanted = true;
-      this.staleNextCodexTurn = true;
     } else {
       this.interruptWanted = false;
       this.staleCodexTurns.add(codexTurn);

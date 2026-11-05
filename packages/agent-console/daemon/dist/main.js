@@ -2656,12 +2656,6 @@ var init_session = __esm({
         for await (const m of cli.messages) {
           for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) {
             if (ev.type === "turn_ended") {
-              if (this.skipResultGens.size > 0 && (ev.status === "interrupted" || !this.turnId)) {
-                const g2 = this.skipResultGens.values().next().value;
-                this.skipResultGens.delete(g2);
-                this.awaitingResult = this.awaitingResult.filter((x) => x !== g2);
-                continue;
-              }
               const g = this.awaitingResult.shift();
               if (g != null && this.skipResultGens.delete(g)) continue;
             }
@@ -2852,10 +2846,7 @@ var init_session = __esm({
         const cli = this.cli;
         const endLocal = () => {
           if (this.turnId) {
-            if (this.currentGen != null) {
-              this.skipResultGens.add(this.currentGen);
-              this.awaitingResult = this.awaitingResult.filter((g) => g !== this.currentGen);
-            }
+            if (this.currentGen != null) this.skipResultGens.add(this.currentGen);
             this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
           }
         };
@@ -3892,8 +3883,6 @@ var init_session2 = __esm({
       closed = false;
       started = null;
       interruptWanted = false;
-      /** turn/started hasn't arrived yet when interrupt ran: mark that next Codex turn id as stale. */
-      staleNextCodexTurn = false;
       ourTurnId = null;
       // The current turn's turnId in the timeline (generated on send)
       staleCodexTurns = /* @__PURE__ */ new Set();
@@ -3922,11 +3911,11 @@ var init_session2 = __esm({
           );
           this.rpc = rpc;
           rpc.onNotification = (m, p) => {
-            for (const ev of mapNotification(m, p, this.st)) this.emit(ev);
-            if (m === "turn/started" && this.staleNextCodexTurn && this.st.currentTurnId) {
-              this.staleCodexTurns.add(this.st.currentTurnId);
-              this.staleNextCodexTurn = false;
+            if (m === "turn/started") {
+              const tid = typeof p?.turn?.id === "string" ? p.turn.id : null;
+              if (tid && this.staleCodexTurns.has(tid)) return;
             }
+            for (const ev of mapNotification(m, p, this.st)) this.emit(ev);
             if (this.interruptWanted && this.st.currentTurnId) void this.interrupt();
           };
           rpc.onServerRequest = (m, p) => this.onServerRequest(m, p);
@@ -3994,7 +3983,6 @@ var init_session2 = __esm({
         this.interruptWanted = false;
         const turnId = "u_" + Date.now().toString(36) + "_" + rid3();
         if (this.ourTurnId && this.st.currentTurnId) this.staleCodexTurns.add(this.st.currentTurnId);
-        else if (this.ourTurnId && !this.st.currentTurnId) this.staleNextCodexTurn = true;
         this.ourTurnId = turnId;
         this.st.currentTurnId = null;
         this.emit({
@@ -4006,7 +3994,7 @@ var init_session2 = __esm({
         });
         for (const w of warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
         try {
-          await rpc.request("turn/start", {
+          const res = await rpc.request("turn/start", {
             threadId: this.sessionThreadId ?? void 0,
             input: items,
             model: this.o.model,
@@ -4014,7 +4002,13 @@ var init_session2 = __esm({
             approvalPolicy: preset.approvalPolicy,
             sandboxPolicy: preset.sandboxPolicy
           });
+          const codexTurnId = typeof res?.turn?.id === "string" ? res.turn.id : null;
+          if (codexTurnId) {
+            this.st.currentTurnId = codexTurnId;
+            if (this.interruptWanted) await this.interrupt();
+          }
         } catch (e) {
+          this.interruptWanted = false;
           this.emit({
             type: "turn_ended",
             turnId,
@@ -4048,7 +4042,6 @@ var init_session2 = __esm({
         }
         if (!codexTurn) {
           this.interruptWanted = true;
-          this.staleNextCodexTurn = true;
         } else {
           this.interruptWanted = false;
           this.staleCodexTurns.add(codexTurn);
@@ -4834,8 +4827,11 @@ var init_session3 = __esm({
       turnId = null;
       turnNum = 0;
       running = false;
-      /** Stops from prompts we already ended locally on interrupt; discard so a late stopReason cannot end a newer turn. */
-      pendingCancelStops = 0;
+      /** Monotonic id for each session/prompt; interrupt marks the active gen so its settle is discarded. */
+      promptGen = 0;
+      activePromptGen = null;
+      /** Prompt gens we already ended locally on interrupt (JSON-RPC error or late stop must not end a newer turn). */
+      cancelledPromptGens = /* @__PURE__ */ new Set();
       permPending = /* @__PURE__ */ new Map();
       mapCtx = newMapCtx();
       modelConfigId = null;
@@ -5148,13 +5144,35 @@ var init_session3 = __esm({
         }
         void this.runTurn(built.blocks);
       }
-      // Send this turn's prompt; reading updates is the job of the persistent pumpUpdates() (following Paseo: session/update is handled at session level)
+      // Send this turn's prompt; session/update still flows through pumpUpdates, but ending the turn is tied
+      // to this prompt() promise so a JSON-RPC error on a cancelled prompt cannot leave a leftover counter.
       async runTurn(prompt) {
-        this.activeTurnId = this.turnId;
+        const turnId = this.turnId;
+        const gen = ++this.promptGen;
+        this.activePromptGen = gen;
+        this.activeTurnId = turnId;
         this.wakePump?.();
         this.wakePump = null;
-        this.active.prompt(prompt).catch(() => {
-        });
+        try {
+          const res = await this.active.prompt(prompt);
+          if (this.cancelledPromptGens.delete(gen)) return;
+          if (this.activeTurnId === turnId && this.running) {
+            this.endTurn(stopToTurnEnd(res.stopReason, turnId));
+          }
+        } catch (e) {
+          if (this.cancelledPromptGens.delete(gen)) return;
+          if (this.activeTurnId === turnId) {
+            this.endTurn({
+              type: "turn_ended",
+              turnId,
+              status: "failed",
+              error: String(e?.message ?? e)
+            });
+          }
+        } finally {
+          this.cancelledPromptGens.delete(gen);
+          if (this.activePromptGen === gen) this.activePromptGen = null;
+        }
       }
       endTurn(ev) {
         for (const id2 of [...this.permPending.keys()]) this.cancelPerm(id2);
@@ -5176,10 +5194,6 @@ var init_session3 = __esm({
             msg = await session.nextUpdate();
           } catch (e) {
             if (this.closed) return;
-            const turnId = this.activeTurnId;
-            if (turnId) {
-              this.endTurn({ type: "turn_ended", turnId, status: "failed", error: String(e?.message ?? e) });
-            }
             await new Promise((r) => this.wakePump = r);
             continue;
           }
@@ -5191,35 +5205,27 @@ var init_session3 = __esm({
             }
             if (!this.activeTurnId) continue;
             for (const ev of mapSessionUpdate(u, this.mapCtx)) this.q.push(ev);
-          } else if (this.pendingCancelStops > 0 && !this.activeTurnId) {
-            this.pendingCancelStops--;
-          } else if (this.activeTurnId) {
-            if (this.pendingCancelStops > 0) {
-              this.pendingCancelStops--;
-              continue;
-            }
-            this.endTurn(stopToTurnEnd(msg.stopReason, this.activeTurnId));
-          } else if (this.pendingCancelStops > 0) {
-            this.pendingCancelStops--;
+          } else {
+            continue;
           }
         }
       }
       async interrupt() {
         await this.ready();
         if (!this.ctx || !this.active) return;
-        try {
-          await this.ctx.notify(methods2.agent.session.cancel, { sessionId: this.active.sessionId });
-        } catch (e) {
-          log("info", `ACP cancel: ${String(e)}`);
-        }
         if (this.running) {
+          if (this.activePromptGen != null) this.cancelledPromptGens.add(this.activePromptGen);
           const turnId = this.activeTurnId ?? this.turnId;
           if (turnId) {
-            this.pendingCancelStops++;
             this.endTurn({ type: "turn_ended", turnId, status: "interrupted" });
           } else {
             this.running = false;
           }
+        }
+        try {
+          await this.ctx.notify(methods2.agent.session.cancel, { sessionId: this.active.sessionId });
+        } catch (e) {
+          log("info", `ACP cancel: ${String(e)}`);
         }
       }
       async setModel(model) {
@@ -9143,18 +9149,7 @@ var AgentManager = class {
     try {
       const images = await this.resolveAttachments(attachmentRefs);
       const payload = { text: withMentions(text, mentions), images, mentions };
-      try {
-        await rt.session.send(payload);
-      } catch (e) {
-        const msg = String(e?.message ?? e);
-        if (!msg.includes("\u5F53\u524D\u8F6E\u6B21\u5C1A\u672A\u7ED3\u675F")) throw e;
-        log("info", `thread ${threadId} send blocked by in-flight turn; interrupt and retry once`);
-        try {
-          await rt.session.interrupt();
-        } catch {
-        }
-        await rt.session.send(payload);
-      }
+      await rt.session.send(payload);
     } catch (e) {
       const msg = String(e?.message ?? e);
       await this.appendRaw(threadId, { type: "notice", level: "error", message: tr("notice.sendFailed", { detail: msg }) });

@@ -63,8 +63,11 @@ export class AcpSession implements ProviderSession {
   private turnId: string | null = null;
   private turnNum = 0;
   private running = false;
-  /** Stops from prompts we already ended locally on interrupt; discard so a late stopReason cannot end a newer turn. */
-  private pendingCancelStops = 0;
+  /** Monotonic id for each session/prompt; interrupt marks the active gen so its settle is discarded. */
+  private promptGen = 0;
+  private activePromptGen: number | null = null;
+  /** Prompt gens we already ended locally on interrupt (JSON-RPC error or late stop must not end a newer turn). */
+  private cancelledPromptGens = new Set<number>();
   private permPending = new Map<string, (a: RespondAnswer) => void>();
   private mapCtx: MapCtx = newMapCtx();
   private modelConfigId: string | null = null;
@@ -428,14 +431,36 @@ export class AcpSession implements ProviderSession {
     void this.runTurn(built.blocks);
   }
 
-  // Send this turn's prompt; reading updates is the job of the persistent pumpUpdates() (following Paseo: session/update is handled at session level)
+  // Send this turn's prompt; session/update still flows through pumpUpdates, but ending the turn is tied
+  // to this prompt() promise so a JSON-RPC error on a cancelled prompt cannot leave a leftover counter.
   private async runTurn(prompt: Parameters<ActiveSession["prompt"]>[0]): Promise<void> {
-    this.activeTurnId = this.turnId;
+    const turnId = this.turnId!;
+    const gen = ++this.promptGen;
+    this.activePromptGen = gen;
+    this.activeTurnId = turnId;
     this.wakePump?.();
     this.wakePump = null;
-    this.active!.prompt(prompt).catch(() => {
-      /* failures surface through nextUpdate() and pumpUpdates ends the turn */
-    });
+    try {
+      const res = await this.active!.prompt(prompt);
+      // prompt() also enqueues a stop for nextUpdate(); pumpUpdates drains it without ending.
+      if (this.cancelledPromptGens.delete(gen)) return;
+      if (this.activeTurnId === turnId && this.running) {
+        this.endTurn(stopToTurnEnd(res.stopReason, turnId));
+      }
+    } catch (e) {
+      if (this.cancelledPromptGens.delete(gen)) return;
+      if (this.activeTurnId === turnId) {
+        this.endTurn({
+          type: "turn_ended",
+          turnId,
+          status: "failed",
+          error: String((e as Error)?.message ?? e),
+        });
+      }
+    } finally {
+      this.cancelledPromptGens.delete(gen);
+      if (this.activePromptGen === gen) this.activePromptGen = null;
+    }
   }
 
   private endTurn(ev: ProviderEvent): void {
@@ -462,11 +487,8 @@ export class AcpSession implements ProviderSession {
         msg = await session.nextUpdate();
       } catch (e) {
         if (this.closed) return;
-        const turnId = this.activeTurnId;
-        if (turnId) {
-          this.endTurn({ type: "turn_ended", turnId, status: "failed", error: String((e as Error)?.message ?? e) });
-        }
-        // After an error the queue keeps throwing the same error until the next prompt clears it: wait for the next turn before reading again
+        // Prompt JSON-RPC errors reject the update queue; runTurn's catch ends/discards that turn.
+        // clearErrors() runs on the next prompt(); wait until then before reading again.
         await new Promise<void>((r) => (this.wakePump = r));
         continue;
       }
@@ -478,19 +500,9 @@ export class AcpSession implements ProviderSession {
         }
         if (!this.activeTurnId) continue; // Other updates outside a turn (e.g. mode change echoes) don't go to the timeline
         for (const ev of mapSessionUpdate(u, this.mapCtx)) this.q.push(ev);
-      } else if (this.pendingCancelStops > 0 && !this.activeTurnId) {
-        // Stop for a prompt we already ended on interrupt, before any newer turn started
-        this.pendingCancelStops--;
-      } else if (this.activeTurnId) {
-        // A new turn is active: consume one stale cancel-stop if the agent was slow to acknowledge,
-        // otherwise this stop belongs to the active prompt.
-        if (this.pendingCancelStops > 0) {
-          this.pendingCancelStops--;
-          continue;
-        }
-        this.endTurn(stopToTurnEnd(msg.stopReason, this.activeTurnId));
-      } else if (this.pendingCancelStops > 0) {
-        this.pendingCancelStops--;
+      } else {
+        // kind === "stop": turn ending is owned by runTurn's prompt() promise (per-gen). Drain only.
+        continue;
       }
     }
   }
@@ -498,25 +510,23 @@ export class AcpSession implements ProviderSession {
   async interrupt(): Promise<void> {
     await this.ready();
     if (!this.ctx || !this.active) return;
-    // ACP defines session/cancel as a CancelNotification (see SDK notificationSpec). Agents such as
-    // Devin CLI only register it as a notification: sending it as a request yields JSON-RPC -32601
-    // Method not found, the error was only logged, and `running` stayed true so the next send threw
-    // "当前轮次尚未结束" after the manager's 1s interrupt fallback had already marked the page idle.
-    try {
-      await this.ctx.notify(methods.agent.session.cancel, { sessionId: this.active.sessionId });
-    } catch (e) {
-      log("info", `ACP cancel: ${String(e)}`);
-    }
-    // End the local turn immediately so manager/UI stay in sync even when the agent ignores cancel
-    // or never returns a stopReason for the in-flight session/prompt.
+    // End the local turn first so `running` clears even if notify hangs; mark this prompt gen so its
+    // later settle (stopReason or JSON-RPC error) cannot end a newer turn. No pendingCancelStops counter.
     if (this.running) {
+      if (this.activePromptGen != null) this.cancelledPromptGens.add(this.activePromptGen);
       const turnId = this.activeTurnId ?? this.turnId;
       if (turnId) {
-        this.pendingCancelStops++;
         this.endTurn({ type: "turn_ended", turnId, status: "interrupted" });
       } else {
         this.running = false;
       }
+    }
+    // ACP defines session/cancel as a CancelNotification (see SDK notificationSpec). Agents such as
+    // Devin CLI only register it as a notification: sending it as a request yields JSON-RPC -32601.
+    try {
+      await this.ctx.notify(methods.agent.session.cancel, { sessionId: this.active.sessionId });
+    } catch (e) {
+      log("info", `ACP cancel: ${String(e)}`);
     }
   }
 

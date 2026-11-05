@@ -160,6 +160,35 @@ describe("claude over stream-json", () => {
     }
   });
 
+  it("late error_during_execution after next send must not end the new turn as failed", async () => {
+    // Real Claude Code CLI ends an interrupted turn with subtype error_during_execution (not error_interrupted).
+    // send() resets sawInterrupt, so that result maps to failed; dropping by FIFO of results owed (not status)
+    // is required so the late result cannot kill the next turn.
+    const { s, events, until } = open({}, { FAKE_CLAUDE_INTERRUPT_RESULT_MS: "500" });
+    try {
+      await s.send({ text: "SLOW", images: [] });
+      await until((e) => e.type === "assistant_delta");
+      await s.interrupt();
+      expect(await until(ended)).toMatchObject({ status: "interrupted" });
+      await s.send({ text: "second", images: [] });
+      await until((e) => e.type === "turn_started" && events.filter((x) => x.type === "turn_started").length >= 2);
+      // Second turn is in flight; the late result of the interrupted gen arrives next.
+      // Without FIFO skip, it would emit turn_ended(failed) for the new turn.
+      const endsBeforeSecondDone = () =>
+        events.filter((e) => e.type === "turn_ended") as { status?: string; error?: string }[];
+      await new Promise((r) => setTimeout(r, 650)); // past FAKE_CLAUDE_INTERRUPT_RESULT_MS
+      const mid = endsBeforeSecondDone();
+      expect(mid[0]?.status).toBe("interrupted");
+      expect(mid.some((e) => e.status === "failed")).toBe(false);
+      await until((e) => e.type === "turn_ended" && events.filter((x) => x.type === "turn_ended").length >= 2);
+      const ends = endsBeforeSecondDone();
+      expect(ends.filter((e) => e.status === "interrupted")).toHaveLength(1);
+      expect(ends[ends.length - 1]?.status).toBe("completed");
+    } finally {
+      await s.close();
+    }
+  });
+
   it("model and mode switch in place; bypassPermissions and effort relaunch with --resume", async () => {
     const { s, events, until, log } = open();
     try {

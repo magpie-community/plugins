@@ -55,7 +55,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           finish("completed");
         }
       };
-      if (slowMs > 0) setTimeout(start, 30); // leave a window where interrupt can race before turn/started
+      // Delay turn/started so tests can interrupt after turn/start's response but before the event
+      // (the response already carries the turn id — clients should not wait only for turn/started).
+      if (slowMs > 0) setTimeout(start, Math.min(200, Math.max(80, Math.floor(slowMs / 4))));
       else start();
       return;
     }
