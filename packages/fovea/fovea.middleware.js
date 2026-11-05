@@ -86,7 +86,7 @@ export function onRequest(body, ctx) {
     // carries body.input. Size is measured by walking, not by
     // stringifying: a 5MB body would otherwise allocate 5MB of string on
     // every request, on the request path.
-    const list = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : null
+    const list = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : Array.isArray(body.contents) ? body.contents : null
     if (!list) return
     if (cfg.threshold > 0 && sizeOf(body) < cfg.threshold) return
 
@@ -115,6 +115,7 @@ export function onRequest(body, ctx) {
       const item = list[i]
       if (cfg.stateMarker && carriesState(item, cfg.stateMarker)) continue
       if (list === body.input) changed = (saccade ? collapseInput : slimInput)(item, cfg) || changed
+      else if (list === body.contents) changed = (saccade ? collapseGemini : slimGemini)(item, cfg) || changed
       else changed = (saccade ? collapseMessage : slimMessage)(item, cfg) || changed
     }
     return changed ? body : undefined
@@ -147,12 +148,28 @@ function windowStart(list, keepCount, keepTokens) {
 // assistant reply, a function_call or a reasoning item, whichever comes
 // first — is that preamble and stays whole; the history proper begins at
 // the answer.
+// The Responses API marks an answer with the item's type, not the role:
+// a function_call, a custom_tool_call, a computer_call, a local_shell_call
+// and their outputs are all "the model spoke". Leaving them out made the
+// preamble exemption swallow the whole history on a body whose first
+// answer was a custom_tool_call (2026-11-05).
+const ANSWER_ITEMS = new Set([
+  "function_call", "function_call_output",
+  "custom_tool_call", "custom_tool_call_output",
+  "computer_call", "computer_call_output",
+  "local_shell_call", "local_shell_call_output",
+  "web_search_call", "reasoning",
+])
+
 function leadingUserEnd(list, start) {
   for (let i = 0; i < start; i++) {
     const it = list[i]
     if (!it || typeof it !== "object") continue
-    if (it.role === "assistant" || it.role === "tool" || it.type === "function_call" ||
-        it.type === "reasoning" || it.type === "function_call_output") return i
+    // Gemini's model turns carry role "model"; its function responses ride
+    // in a user turn's parts, so the role alone cannot mark the answer.
+    if (it.role === "assistant" || it.role === "model" || it.role === "tool") return i
+    if (typeof it.type === "string" && ANSWER_ITEMS.has(it.type)) return i
+    if (Array.isArray(it.parts) && it.parts.some((p) => p && p.functionCall)) return i
   }
   return start
 }
@@ -175,6 +192,13 @@ function hasStateBlock(list, marker) {
 
 function carriesState(item, marker) {
   if (!item || typeof item !== "object" || !marker) return false
+  // Gemini's model turn is the agent's own message, like an assistant one.
+  if (item.role === "model" && Array.isArray(item.parts)) {
+    for (const p of item.parts) {
+      if (p && typeof p === "object" && typeof p.text === "string" && startsWithMarker(p.text, marker)) return true
+    }
+    return false
+  }
   if (item.role !== "assistant") return false
   if (item.type !== undefined && item.type !== "message") return false
   if (typeof item.content === "string") return startsWithMarker(item.content, marker)
@@ -195,7 +219,11 @@ function startsWithMarker(text, marker) {
 function slimMessage(m, cfg) {
   if (!m || typeof m !== "object") return false
   if (m.role === "system" || m.role === "developer") return false
-  if (m.role === "tool") return slimContent(m, "content", cfg.toolHead, cfg.toolTail, cfg)
+  // role "function" is the legacy functions API's answer half (older
+  // clients). Its content is the tool output and just as big as a
+  // role "tool" message — leaving it whole meant the oldest clients got
+  // none of the saving.
+  if (m.role === "tool" || m.role === "function") return slimContent(m, "content", cfg.toolHead, cfg.toolTail, cfg)
   if (m.role === "assistant") {
     // tool_calls are the pairing half of the tool results below; thinking
     // blocks carry signatures their next turn checks. Neither is ours.
@@ -303,7 +331,8 @@ function slimContent(holder, key, head, tail, cfg) {
 function collapseMessage(m, cfg) {
   if (!m || typeof m !== "object") return false
   if (m.role === "system" || m.role === "developer") return false
-  if (m.role === "tool") return collapseContent(m, "content", cfg)
+  // role "function": the legacy functions API's answer half — see slimMessage.
+  if (m.role === "tool" || m.role === "function") return collapseContent(m, "content", cfg)
   if (m.role === "assistant") {
     let changed = false
     if (typeof m.content === "string") changed = collapseText(m, "content", cfg)
@@ -400,16 +429,27 @@ function firstTask(list) {
     const it = list[i]
     if (it && it.role === "user") {
       const t = textOf(it)
-      if (t) return t
+      if (t) return withoutHarness(t)
     }
   }
   for (const it of list) {
     if (it && it.role === "user") {
       const t = textOf(it)
-      if (t) return t
+      if (t) return withoutHarness(t)
     }
   }
   return null
+}
+
+// Harness-injected blocks, not the user's words. Claude Code appends
+// <system-reminder> as its own user message — token budgets, tool guidance,
+// file-change notices. Reading one as "the newest question" made every
+// follow-up look like a new topic: the reminder shares no words with the
+// task, so the overlap test said "shifted" and the history collapsed.
+const HARNESS_BLOCKS = /<(system-reminder|system-reminder-sudo)>[\s\S]*?<\/\1>/gi
+
+function withoutHarness(text) {
+  return String(text).replace(HARNESS_BLOCKS, " ").replace(/\s+/g, " ").trim()
 }
 
 function lastQuestion(list) {
@@ -417,7 +457,11 @@ function lastQuestion(list) {
     const it = list[i]
     if (!it || it.role !== "user") continue
     const t = textOf(it)
-    if (t) return t
+    if (!t) continue
+    // A message that is nothing but a harness block is not a question;
+    // keep looking for the user's actual words.
+    const spoken = withoutHarness(t)
+    if (spoken) return spoken
   }
   return null
 }
@@ -426,6 +470,17 @@ function lastQuestion(list) {
 // tool_result content and image payloads are the machinery, not the
 // question.
 function textOf(it) {
+  // Gemini: the text rides in parts[], and a part may be a thought
+  // (thought: true) — the model's own reasoning, not the user's words.
+  if (Array.isArray(it.parts)) {
+    let out = ""
+    for (const p of it.parts) {
+      if (!p || typeof p !== "object" || typeof p.text !== "string") continue
+      if (p.thought) continue
+      out += " " + p.text
+    }
+    return out.trim() || null
+  }
   if (typeof it.content === "string") return it.content
   if (!Array.isArray(it.content)) return null
   let out = ""
@@ -439,6 +494,95 @@ function words(text) {
   const out = new Set()
   for (const w of String(text).toLowerCase().match(/[a-z0-9_]{3,}|[\u4e00-\u9fff]/g) || []) out.add(w)
   return out
+}
+
+// ── gemini ─────────────────────────────────────────────────────────────
+// Gemini's history is contents[]: each turn has role user|model and parts[].
+// A part may be plain text, a thought (thought: true), a functionCall, a
+// functionResponse (the tool output — the big one), inlineData (an image
+// or a file) or fileData.
+//
+// What must not be touched: thoughts and anything carrying a
+// thoughtSignature (the provider checks the signature over the payload),
+// functionCall (the call half of a functionResponse), and the sources —
+// inlineData of a document or a video is a payload, not history prose.
+//
+// A functionResponse keeps its id, its name and its keys; only the strings
+// inside the response object are thinned.
+
+function slimGemini(c, cfg) {
+  if (!c || typeof c !== "object" || !Array.isArray(c.parts)) return false
+  let changed = false
+  for (const p of c.parts) {
+    if (!p || typeof p !== "object") continue
+    if (p.thought || p.thoughtSignature) continue
+    if (p.functionCall) continue
+    if (p.functionResponse) {
+      changed = slimFunctionResponse(p, cfg) || changed
+    } else if (typeof p.text === "string") {
+      const u = cut(p.text, cfg.textHead, cfg.textTail, "text", cfg)
+      if (u !== p.text) { p.text = u; changed = true }
+    } else if (cfg.dropImages && p.inlineData && typeof p.inlineData.mimeType === "string" && p.inlineData.mimeType.startsWith("image/")) {
+      p.text = "[" + MARK + ": old image omitted]"
+      delete p.inlineData
+      changed = true
+    }
+  }
+  return changed
+}
+
+function collapseGemini(c, cfg) {
+  if (!c || typeof c !== "object" || !Array.isArray(c.parts)) return false
+  let changed = false
+  for (const p of c.parts) {
+    if (!p || typeof p !== "object") continue
+    if (p.thought || p.thoughtSignature) continue
+    if (p.functionCall) continue
+    if (p.functionResponse) {
+      changed = collapseFunctionResponse(p, cfg) || changed
+    } else if (typeof p.text === "string") {
+      changed = collapseText(p, "text", cfg) || changed
+    } else if (p.inlineData && typeof p.inlineData.mimeType === "string" && p.inlineData.mimeType.startsWith("image/")) {
+      p.text = NOTE
+      delete p.inlineData
+      changed = true
+    }
+  }
+  return changed
+}
+
+// The response object is free-form: walk it and cut its long strings,
+// leaving the keys and the shape alone.
+function slimFunctionResponse(part, cfg) {
+  const r = part.functionResponse && part.functionResponse.response
+  if (!r || typeof r !== "object") return false
+  let changed = false
+  for (const key of Object.keys(r)) {
+    const v = r[key]
+    if (typeof v === "string") {
+      const u = cut(v, cfg.toolHead, cfg.toolTail, "tool output", cfg)
+      if (u !== v) { r[key] = u; changed = true }
+    } else if (v && typeof v === "object") {
+      changed = slimFunctionResponse({ functionResponse: { response: v } }, cfg) || changed
+    }
+  }
+  return changed
+}
+
+function collapseFunctionResponse(part, cfg) {
+  const r = part.functionResponse && part.functionResponse.response
+  if (!r || typeof r !== "object") return false
+  let changed = false
+  for (const key of Object.keys(r)) {
+    const v = r[key]
+    if (typeof v === "string") {
+      const holder = { value: v }
+      if (collapseText(holder, "value", cfg)) { r[key] = holder.value; changed = true }
+    } else if (v && typeof v === "object") {
+      changed = collapseFunctionResponse({ functionResponse: { response: v } }, cfg) || changed
+    }
+  }
+  return changed
 }
 
 // ── shared ─────────────────────────────────────────────────────────────
