@@ -161,6 +161,18 @@ request was sent and to set a proxy outside mainland China for the
 provider. No refresh token is spent on it, and the sign-in is kept. The
 China site (`minimax-code`) is unaffected.
 
+## The China site's account host
+
+The China site's account API (the usage card, the check-in, the account
+and its membership) is on `agent.minimaxi.com`, and `agent.minimax.cn`
+serves the same API with the same sign-in. A call `agent.minimaxi.com`
+gives no HTTP answer to (a TLS error such as "unable to get issuer
+certificate", a refused or reset connection) is sent once to
+`agent.minimax.cn`. Any answer from `agent.minimaxi.com` — a 401, another
+status, an error in the body, a redirect — and a timeout are kept as they
+are, never sent again. When both hosts can't be reached, the error names
+both and why.
+
 ## Models
 
 When you are signed in, the models come from MiniMax Code's live model

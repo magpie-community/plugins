@@ -26,7 +26,7 @@ export function fakeMiniMax() {
   const was = {}
   for (const [id, s] of Object.entries(_internal.SITES)) {
     was[id] = { ...s }
-    Object.assign(s, { account: origin, llm: origin, agent: origin, platform: origin })
+    Object.assign(s, { account: origin, llm: origin, agent: origin, platform: origin, ...(s.agentFallback ? { agentFallback: origin } : {}) })
   }
   _internal.renewing.clear()
   _internal.renewed.clear()
