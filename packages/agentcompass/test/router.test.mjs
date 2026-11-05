@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
-import { DEFAULT_SCORING_POLICY } from "../src/catalog.js";
+import { DEFAULT_SCORING_POLICY, EFFORT_CURVES } from "../src/catalog.js";
 import {
   CACHE_COLD_MS,
   CHATGPT_CODEX_COLD_MS,
@@ -1605,7 +1605,56 @@ test("8.6 Strict AgentCompass Main-Repo Parity (`allocator.py` + `reference-acco
     const solHigh = raisedFloorRanked.ranking.find((c) => c.canonicalModel === "gpt-6.1-sol" && c.effort === "high");
     assert.ok(solHigh, "gpt-6.1-sol:high (ability 3.6) clears floor=3.6 when critical_headroom=0");
     assert.equal(solHigh.components.ability, 0, "Model right at raised floor (3.6 > origin 3.3) must not get free ability score");
+
+    // gpt-6-luna's effort curve is AgentCompass v0.3.7-v0.3.9 `effort_curves["gpt-6-luna"]`
+    assert.deepEqual(EFFORT_CURVES["gpt-6-luna"], {
+      ability: { low: -0.54, medium: -0.15, high: 0, xhigh: 0.1, max: 0.35 },
+      burn: { low: 0.1, medium: 0.4, high: 0.7, xhigh: 1.0, max: 1.5 },
+    });
   });
+
+const GATE_PROFILE = {
+  code_complexity: 2,
+  context_scale: 1,
+  divergence: 1,
+  hallucination_risk: 2,
+  needs_visual: false,
+  needs_gui: false,
+  local_only: true,
+  interaction_style: "engineering",
+};
+
+test("8.7 Critical frontier gate is 4.3 (frontier floor 4.2 + `critical_headroom_by_difficulty.frontier` 0.1): Astra Max is admitted, Astra High is not", () => {
+  const ranked = rankCandidates(
+    { ...GATE_PROFILE, work_kind: "general_implementation", reasoning_depth: 4, code_complexity: 3, error_cost: 3 },
+    { candidateModels: [{ model: "gpt-6-astra", efforts: ["high", "max"] }] },
+  );
+  assert.equal(ranked.task.difficulty, "frontier");
+  assert.equal(ranked.task.critical, true);
+  const byEffort = Object.fromEntries(ranked.allCandidates.map((c) => [c.effort, c]));
+  assert.equal(byEffort.max.eligible, true, `Astra Max (4.3) clears the 4.3 gate: ${byEffort.max.excluded.join("; ")}`);
+  assert.equal(byEffort.high.eligible, false, "Astra High (4.2) is below the 4.3 gate");
+  assert.match(byEffort.high.excluded.join("; "), /ability 4\.20 below the frontier floor 4\.30/);
+});
+
+test("8.8 tool_execution/hard uses its route floor 2.7, not the policy's hard floor 3.1", () => {
+  // gpt-6-luna:medium is 3.2 - 0.15 = 3.05: above the route's 2.7, below the policy's 3.1
+  const rank = (workKind) =>
+    rankCandidates(
+      { ...GATE_PROFILE, work_kind: workKind, reasoning_depth: 2, error_cost: 2 },
+      { candidateModels: [{ model: "gpt-6-luna", efforts: ["medium"] }] },
+    );
+  const tool = rank("tool_execution");
+  assert.equal(tool.task.kind, "tool_execution");
+  assert.equal(tool.task.difficulty, "hard");
+  const toolLuna = tool.allCandidates[0];
+  assert.equal(toolLuna.eligible, true, `luna:medium (3.05) clears the 2.7 route floor: ${toolLuna.excluded.join("; ")}`);
+
+  const impl = rank("general_implementation");
+  assert.equal(impl.task.kind, "general_implementation");
+  assert.equal(impl.task.difficulty, "hard");
+  assert.match(impl.allCandidates[0].excluded.join("; "), /ability 3\.05 below the hard floor 3\.10/);
+});
 
 test("9.1 PR #670 Review Guard: Default triggers ONLY claim `agentcompass` / `agentcompass/*` and never hijack `auto` or `group/intent`", async () => {
   for (const nonOwnedModel of ["auto", "intent", "group/intent", "default", "claude-sonnet-4-6"]) {

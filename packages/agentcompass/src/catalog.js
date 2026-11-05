@@ -39,7 +39,7 @@ export const DEPTH_BY_DIFFICULTY = {
   frontier: 4,
 };
 
-export const EFFORT_ORDER = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+export const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 export const HARD_BY_DEFAULT = [
   "debug_review",
@@ -546,7 +546,7 @@ export const DEFAULT_MODELS = {
     },
   },
   "gpt-6-luna": {
-    tier: 3.1,
+    tier: 3.2,
     cost: 1,
     visual: 0.55,
     usd_per_hour: 0.8,
@@ -1302,8 +1302,8 @@ export const EFFORT_CURVES = {
     burn: { low: 0.19, medium: 0.46, high: 0.7, xhigh: 1.08, max: 2.58 },
   },
   "gpt-6-luna": {
-    ability: { low: -0.54, medium: -0.15, high: 0, xhigh: 0.2, max: 0.35 },
-    burn: { low: 0.28, medium: 0.46, high: 0.7, xhigh: 0.85, max: 1.5 },
+    ability: { low: -0.54, medium: -0.15, high: 0, xhigh: 0.1, max: 0.35 },
+    burn: { low: 0.1, medium: 0.4, high: 0.7, xhigh: 1.0, max: 1.5 },
   },
   "claude-fable-5-1": {
     ability: { low: -0.4, medium: -0.2, high: 0, xhigh: 0.15, max: 0.15 },
@@ -1410,15 +1410,11 @@ export const DEFAULT_SCORING_POLICY = {
     frontier: 0.1,
   },
   effort_ability: {
-    none: -1.1,
-    off: -1.1,
-    minimal: -1.0,
     low: -0.54,
     medium: -0.2,
     high: 0.0,
     xhigh: 0.15,
     max: 0.3,
-    ultra: 0.4,
   },
   effort_burn: {
     low: 0.2,
@@ -1505,13 +1501,9 @@ export function canonicalModel(rawModel, aliases = MODEL_ALIASES) {
     }
   }
   if (aliases[clean]) return aliases[clean];
-  let unprefixed = clean;
-  while (unprefixed.includes("/")) {
-    unprefixed = unprefixed.slice(unprefixed.indexOf("/") + 1);
-    if (aliases[unprefixed]) return aliases[unprefixed];
-    const lowerStep = unprefixed.toLowerCase();
-    if (aliases[lowerStep]) return aliases[lowerStep];
-  }
+  const slashIdx = clean.indexOf("/");
+  const unprefixed = slashIdx >= 0 ? clean.slice(slashIdx + 1) : clean;
+  if (aliases[unprefixed]) return aliases[unprefixed];
   const lower = unprefixed.toLowerCase();
   if (aliases[lower]) return aliases[lower];
   return unprefixed;
