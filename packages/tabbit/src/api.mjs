@@ -14,6 +14,8 @@
 // `managed` ride along because the app sends them, not because the server
 // needs them to authenticate.
 
+import { looksLikeOverLimit, overLimitError, contentLength } from "./limit.mjs"
+
 export const BASE = "https://web.tabbit.com"
 
 // A browser User-Agent is what the app sends and what the proxy answers.
@@ -125,6 +127,21 @@ function safeJSON(text) {
   }
 }
 
+// charsInRunBody is the length of the `content` that was just sent in a turn
+// body, for the over-limit message. Anything unparsable is simply unknown.
+function charsInRunBody(body) {
+  const parsed = safeJSON(typeof body === "string" ? body : "")
+  return contentLength(parsed?.input_payload?.content)
+}
+
+// overLimitTabbitError is the 400 that magpie's overflow regex reads as a
+// prompt-too-long, so it compacts and continues instead of treating Tabbit's
+// welcome-blurb 429 as a rate limit and waiting.
+function overLimitTabbitError(sentChars) {
+  const sized = overLimitError(sentChars)
+  return new TabbitError(sized.message, { status: 400, code: "context_length_exceeded" })
+}
+
 async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}) {
   // A streamed turn may run for minutes; Bun's fetch applies this signal to
   // reading the body too, so a total timeout would cut a slow answer in half.
@@ -141,6 +158,10 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}
     ...(bound ? { signal: bound } : {}),
     redirect: "error",
   })
+  // The turn's own content length, for the over-limit message. Read from the
+  // body that was just sent rather than guessed.
+  const sentChars = charsInRunBody(init?.body)
+
   if (res.status === 401 || res.status === 403) {
     let body = ""
     try {
@@ -148,6 +169,10 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}
     } catch {
       /* the status is enough */
     }
+    const retryAfter = res.headers.get("retry-after")
+    // 403 with the welcome blurb is the over-limit refusal too, not a paywall
+    // (see looksLikeOverLimit); check it before treating 403 as a plan wall.
+    if (looksLikeOverLimit({ status: res.status, body, retryAfter })) throw overLimitTabbitError(sentChars)
     const parsed = safeJSON(body)
     // The refusal nests the code two ways: {"detail":{"message","details":{"code"}}}
     // on /api/v3, {"code"...} at the top on some routes.
@@ -165,7 +190,6 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}
       { status: res.status, code: Number.isFinite(code) ? code : undefined, action },
     )
     if (!paywalled) error.signIn = "expired"
-    const retryAfter = res.headers.get("retry-after")
     if (retryAfter) error.retryAfter = retryAfter
     throw error
   }
@@ -176,8 +200,12 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}
     } catch {
       /* nothing to add */
     }
-    const error = new TabbitError(`Tabbit answered HTTP ${res.status}${body ? `: ${body.slice(0, 300)}` : ""}`, { status: res.status })
     const retryAfter = res.headers.get("retry-after")
+    // Tabbit refuses an over-long turn with a 429 whose body is the welcome
+    // blurb (code 492) and no retry-after. Reported verbatim that reads as a
+    // rate limit, so magpie waits instead of compacting. Say what it is.
+    if (looksLikeOverLimit({ status: res.status, body, retryAfter })) throw overLimitTabbitError(sentChars)
+    const error = new TabbitError(`Tabbit answered HTTP ${res.status}${body ? `: ${body.slice(0, 300)}` : ""}`, { status: res.status })
     if (retryAfter) error.retryAfter = retryAfter
     throw error
   }
