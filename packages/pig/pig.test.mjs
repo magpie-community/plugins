@@ -7,12 +7,18 @@ const model = { id: "relay/vendor/model:variant", name: "Example", context: 2621
 const output = (models = [model]) => connect({ gateway, models, agent: { id: "pig", config: "/synthetic/.pig/agent/models.json" } })
 const provider = (models = [model]) => output(models)["providers.magpie"]
 
-test("registers PiG as a connect-only agent with no model or Library writes", () => {
+test("registers PiG with its startup model in settings.json and no Library writes", () => {
   expect(agent).toMatchObject({ id: "pig", name: "PiG", bin: "pig", config: "~/.pig/agent/models.json", format: "json" })
   expect(agent.icon).toBe("https://pi-in-go.dev/pig-favicon.svg")
+  // agent.model stays out: a Magpie without startup reads PiG as connect-only
   expect(agent.model).toBeUndefined()
+  expect(agent.startup).toEqual({ config: "~/.pig/agent/settings.json", format: "json", model: "defaultModel", keys: { defaultProvider: "magpie" } })
   expect(agent.library).toBeUndefined()
   expect(agent.notice).toContain("/model")
+})
+
+test("starts PiG on the provider connect writes", () => {
+  expect(Object.keys(output())).toEqual([`providers.${agent.startup.keys.defaultProvider}`])
 })
 
 test("declares the standard community Agent entry and no host plugin", () => {

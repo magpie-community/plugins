@@ -1,5 +1,9 @@
 // PiG reads providers from models.json and startup preferences from a separate
-// settings.json. This connect-only agent owns the provider catalog alone.
+// settings.json (docs/site/docs/settings.md: defaultProvider, plus defaultModel
+// "without a provider prefix"). connect owns the provider catalog in
+// models.json; startup names the model a new session starts on in
+// settings.json, so the Agents row picks it as it does for Pi. A Magpie
+// without startup support reads this as connect-only, as 0.1.0 was.
 export const agent = {
   id: "pig",
   name: "PiG",
@@ -9,7 +13,14 @@ export const agent = {
   dir: "~/.pig/agent",
   config: "~/.pig/agent/models.json",
   format: "json",
-  notice: "Choose a Magpie model with /model in PiG. Startup settings are unchanged. 在 PiG 中用 /model 选择模型；启动设置保持原样。",
+  startup: {
+    config: "~/.pig/agent/settings.json",
+    format: "json",
+    model: "defaultModel",
+    // the provider ID connect writes below
+    keys: { defaultProvider: "magpie" },
+  },
+  notice: "New PiG sessions start on this model; /model in PiG still switches. 新开的 PiG 会话从这个模型开始；PiG 里的 /model 仍可切换。",
 }
 
 const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]

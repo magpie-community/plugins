@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/agent-pig",
-  "version": "0.1.0",
-  "description": "PiG as a connect-only Magpie agent: inject endpoints and model catalog without changing startup settings",
+  "version": "0.1.1",
+  "description": "PiG as a Magpie agent: Magpie's endpoint and model catalog in models.json, and the model PiG starts on in settings.json",
   "type": "module",
   "files": ["pig.agent.js", "README.md"],
   "keywords": ["magpie", "magpie-agent", "pig", "pi-in-go", "llm-gateway"],
