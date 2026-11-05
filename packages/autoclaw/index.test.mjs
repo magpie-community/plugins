@@ -1516,6 +1516,7 @@ test("checkin: two concurrent expired-token checkins share one refresh", async (
   }
 })
 
+// Two accounts can carry the same display name (#254), so the ledger key is
 // signinAccountKey - uid, or the refresh token when an old account has none -
 // never the name. Both accounts here have NO uid on purpose: the pre-review
 // key (uid ?? accountId ?? provider) fell back to the shared display name and
@@ -1581,4 +1582,3 @@ test("usage: an unreadable total_balance is unknown, not a drained pool", async 
     rmSync(dir, { recursive: true, force: true })
   }
 })
-
