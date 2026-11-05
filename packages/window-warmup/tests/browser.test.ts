@@ -31,6 +31,7 @@ interface FrameLocator {
 interface Page {
   frameLocator(selector: string): FrameLocator;
   evaluate<T>(fn: () => T): Promise<T>;
+  waitForFunction(fn: () => boolean, arg?: unknown, o?: { timeout?: number }): Promise<unknown>;
 }
 interface Browser {
   newPage(): Promise<Page>;
@@ -166,7 +167,7 @@ for (const [name, engine] of ENGINES) {
 
 for (const [name, engine] of ENGINES) {
   testBrowser(
-    `${name}：点开非末行任务时编辑区原地展开在该行下面，不跑到列表末尾`,
+    `${name}：编辑区原地展开在所点的行（含新建任务的新行）下面；页脚链接样式不串到编辑区按钮`,
     async () => {
       // 经服务 API 先建两个任务（口令取自首页 boot 数据块）
       const base = `http://127.0.0.1:${svc.port}`;
@@ -201,6 +202,34 @@ for (const [name, engine] of ENGINES) {
           };
         });
         expect(layout).toEqual({ prevIsOpenRow: true, prevName: true, editorIsLast: false });
+        // 编辑区的「立即发送一次」走 .link 自己的 12px；页脚「反馈问题」是独立的 .foot-link（11.5px），
+        // 两者共用类名时页脚规则会覆盖编辑区按钮
+        const sizes = await page.evaluate(() => {
+          const run = [...document.querySelectorAll("#list .editor button")].find((b) => b.textContent === "立即发送一次");
+          const foot = document.getElementById("feedback");
+          return {
+            run: run ? getComputedStyle(run).fontSize : null,
+            foot: foot ? getComputedStyle(foot).fontSize : null,
+          };
+        });
+        expect(sizes).toEqual({ run: "12px", foot: "11.5px" });
+
+        // 列表里已有任务时新建：编辑区紧跟顶部的新行，不跑到列表末尾
+        await page.getByRole("button", { name: "新建任务" }).click();
+        await page.waitForFunction(() => {
+          const ed = document.querySelector("#list .editor");
+          return !!ed && ed.previousElementSibling === document.querySelector("#list")?.firstElementChild;
+        }, undefined, { timeout: 15_000 });
+        const added = await page.evaluate(() => {
+          const list = document.querySelector("#list");
+          const ed = list?.querySelector(".editor");
+          return {
+            editors: list?.querySelectorAll(".editor").length ?? 0,
+            prevIsOpenRow: !!ed?.previousElementSibling?.classList.contains("open"),
+            editorIsLast: ed === list?.lastElementChild,
+          };
+        });
+        expect(added).toEqual({ editors: 1, prevIsOpenRow: true, editorIsLast: false });
       } finally {
         await browser.close();
         for (const id of ids) {
