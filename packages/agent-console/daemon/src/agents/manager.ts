@@ -491,6 +491,11 @@ export class AgentManager {
         rt.interruptTimer = null;
       }
       if (ev.turnId && ev.turnId !== "unknown") rt.endedTurnIds.add(ev.turnId);
+      // A request the Agent left open when its turn ended (Cursor: the model stream died with "[canceled] http/2 stream
+      // closed", the request was never answered or withdrawn) can no longer be answered: cancel it before the turn end
+      // is written. Otherwise it stays in rt.pending, threads.get hands it to the page, and the top bar says 等待授权
+      // with no card to click (the card itself shows 已取消 because the thread is idle).
+      await this.cancelPending(threadId, rt, { tellSession: true });
       rt.coalescer.dispose();
       rt.coalescer = this.newCoalescer(threadId);
       await this.appendRaw(threadId, ev);
@@ -578,16 +583,28 @@ export class AgentManager {
     return n;
   }
 
+  /** Cancel every open permission/question: persisted as permission_resolved{cancelled} (the page marks the card
+   *  已取消 and stops waiting). tellSession: also answer the provider's own waiter (an Agent that ended its turn without
+   *  withdrawing the request would otherwise keep a dangling promise); its echo is dropped because rt.pending is empty. */
+  private async cancelPending(threadId: string, rt: Runtime, opts: { tellSession: boolean }): Promise<void> {
+    if (!rt.pending.size) return;
+    const open = [...rt.pending.values()];
+    rt.pending.clear();
+    for (const p of open) {
+      await this.appendRaw(threadId, { type: "permission_resolved", requestId: p.requestId, cancelled: true });
+      p.resolve({ cancelled: true });
+      if (opts.tellSession) {
+        try { rt.session?.respond(p.requestId, { cancelled: true }); } catch { /* the session may be gone */ }
+      }
+    }
+  }
+
   // ---- interrupt ----
   async interrupt(threadId: string): Promise<void> {
     const rt = this.rt(threadId);
     if (!rt.session || rt.status !== "running") return;
     // Invalidate all pending requests
-    for (const [id, p] of rt.pending) {
-      await this.appendRaw(threadId, { type: "permission_resolved", requestId: id, cancelled: true });
-      p.resolve({ cancelled: true });
-    }
-    rt.pending.clear();
+    await this.cancelPending(threadId, rt, { tellSession: false });
     await rt.session.interrupt();
     const turnId = rt.currentTurnId;
     // No turn_ended within 1 second → append interrupted

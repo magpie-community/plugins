@@ -237,6 +237,8 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
         it.status = ev.cancelled ? "cancelled" : "resolved";
         it.choice = ev.optionId;
         if (ev.auto) it.auto = true;
+      } else if (it?.kind === "question" && ev.cancelled && it.status === "pending") {
+        it.status = "cancelled"; // the daemon cancels open questions with permission_resolved{cancelled} too
       }
       return;
     }
@@ -270,6 +272,10 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
       return;
     case "turn_ended":
       breakGroup(st);
+      // A request still open when its turn ends can't be answered any more: the Agent moved on. Daemons before the fix
+      // left such a request open in the timeline (Cursor 1.2.0: "[canceled] http/2 stream closed" right after asking),
+      // and the page kept "等待授权" for a card showing 已取消. Close it here so replayed history never waits on it.
+      closeOpenRequests(st);
       st.items.push({
         kind: "turnend", key: `te:${ev.seq}`, status: ev.status,
         durationMs: ev.durationMs ?? (st.turnStart.has(ev.turnId) ? Math.max(0, ev.ts - st.turnStart.get(ev.turnId)!) : undefined),
@@ -289,6 +295,28 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
     default:
       return;
   }
+}
+
+/** Requests still waiting for the user are always ones whose turn is still running (see turn_ended) */
+function closeOpenRequests(st: State): void {
+  for (const idx of st.reqLoc.values()) {
+    const it = st.items[idx];
+    if ((it?.kind === "permission" || it?.kind === "question") && it.status === "pending") it.status = "cancelled";
+  }
+}
+
+export type PendingRequest = { requestId: string; kind: "permission" | "question"; key: string };
+
+/** The requests the page waits on (top bar 等待授权, composer locked): exactly the cards that show buttons, so the
+ *  page never waits on a request it has no card for (the daemon's own list may hold one the timeline already closed) */
+export function pendingRequests(items: DisplayItem[]): PendingRequest[] {
+  const out: PendingRequest[] = [];
+  for (const it of items) {
+    if ((it.kind === "permission" || it.kind === "question") && it.status === "pending") {
+      out.push({ requestId: it.requestId, kind: it.kind, key: it.key });
+    }
+  }
+  return out;
 }
 
 // snapshot + live events -> display items. When runtimeStatus is not running, unresolved permissions/questions are marked cancelled.

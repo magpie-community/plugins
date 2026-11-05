@@ -4,6 +4,11 @@
 //                          (default: neither; matches the ACP baseline until an Agent opts in)
 //   FAKE_ACP_LOG           file each received session/prompt is appended to, one JSON line per prompt
 //   FAKE_ACP_SESSION_LOG   file each session/new|load|resume is appended to, one JSON line { method, sessionId }
+//   FAKE_ACP_PERM          "abandon": each prompt asks session/request_permission, then ends the turn at once without
+//                          waiting (Cursor when its model stream dies: "[canceled] http/2 stream closed … CANCEL");
+//                          "withdraw": asks, then sends $/cancel_request for it and ends the turn once the client answers
+//                          "answer": asks and ends the turn once the client answers (the normal path)
+//   FAKE_ACP_PERM_LOG      file each answer to session/request_permission is appended to, one JSON line
 // Every prompt is answered with one agent_message_chunk ("ok: <n> blocks") and stopReason end_turn.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -12,6 +17,10 @@ const caps = process.env.FAKE_ACP_PROMPT_CAPS ? JSON.parse(process.env.FAKE_ACP_
 const session = process.env.FAKE_ACP_SESSION ? JSON.parse(process.env.FAKE_ACP_SESSION) : {};
 const logFile = process.env.FAKE_ACP_LOG;
 const sessionLog = process.env.FAKE_ACP_SESSION_LOG;
+const permMode = process.env.FAKE_ACP_PERM;
+const permLog = process.env.FAKE_ACP_PERM_LOG;
+let nextOwnId = 9000;
+const waiting = new Map(); // our request id -> callback(response)
 const out = (msg) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...msg }) + "\n");
 const answer = (id, result) => out({ id, result });
 const logSession = (method, sessionId) => {
@@ -31,7 +40,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   } catch {
     return;
   }
-  if (!m.method) return; // responses to our own (no) requests
+  if (!m.method) {
+    // A response to our own request (session/request_permission)
+    if (permLog && waiting.has(m.id)) appendFileSync(permLog, JSON.stringify({ result: m.result, error: m.error }) + "\n");
+    const cb = waiting.get(m.id);
+    waiting.delete(m.id);
+    cb?.(m);
+    return;
+  }
   const p = m.params ?? {};
   switch (m.method) {
     case "initialize":
@@ -73,6 +89,34 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `ok: ${p.prompt.length} blocks` } },
         },
       });
+      if (permMode) {
+        const ask = nextOwnId++;
+        const done = () => answer(m.id, { stopReason: "end_turn" });
+        waiting.set(ask, permMode === "abandon" ? () => {} : done);
+        out({
+          id: ask,
+          method: "session/request_permission",
+          params: {
+            sessionId: p.sessionId,
+            toolCall: { toolCallId: "tc-" + ask, title: "`git status`", kind: "execute", rawInput: {} },
+            options: [
+              { optionId: "allow-once", name: "Allow", kind: "allow_once" },
+              { optionId: "allow-always", name: "Always", kind: "allow_always" },
+              { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+            ],
+          },
+        });
+        if (permMode === "abandon") {
+          out({
+            method: "session/update",
+            params: { sessionId: p.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL (0x8)" } } },
+          });
+          setTimeout(done, 50);
+        } else if (permMode === "withdraw") {
+          setTimeout(() => out({ method: "$/cancel_request", params: { requestId: ask } }), 100);
+        }
+        return;
+      }
       return answer(m.id, { stopReason: "end_turn" });
     }
     case "session/cancel":

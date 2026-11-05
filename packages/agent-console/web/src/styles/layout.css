@@ -124,6 +124,7 @@ body.col-drag iframe, body.col-drag .xterm { pointer-events: none; }
 .tb-pill.run { background: var(--run-bg); color: var(--run-fg); }
 .tb-pill-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent-2) 20%, transparent); animation: breathe 1.6s infinite; }
 .tb-pill.wait { color: var(--warn); }
+button.tb-pill { border: 0; font-family: inherit; cursor: pointer; }
 .tb-pill.err { color: var(--danger); }
 .tb-right { margin-left: auto; display: flex; align-items: center; gap: 2px; }
 .tb-model { font-size: var(--fs-s); color: var(--muted); margin-right: 4px; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
