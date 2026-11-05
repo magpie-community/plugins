@@ -2,6 +2,13 @@
 
 本文件记录 fovea 的对外变化。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循语义化版本。
 
+## [0.2.4] — 2026-11-05
+
+### Fixed
+
+- `state_marker` 只在 agent 自己写状态的位置生效：assistant 消息（Chat、Anthropic，或 Responses 的 message 项）中以标记开头的文本或文本块。工具结果、用户消息、嵌套的 tool_result 块、文本中间出现同样字样都不再算状态块——此前一条读到该字样的 Chat 工具结果或用户消息会永久免裁，并让任务原文失去保护（plugins#756）。
+- 文件头注释与 README 不再说"带 `[fovea:` 标记的内容不再二次裁剪"（0.2.3 已去掉这一判断）。
+
 ## [0.2.3] — 2026-11-05
 
 ### Fixed

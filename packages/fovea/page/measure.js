@@ -21,12 +21,15 @@
 //   {"protect": []}               regexes whose matches are left whole
 //                                 (e.g. "^diff --git ", "BEGIN .*PRIVATE KEY")
 //   {"state_marker": ""}          a marker the agent's own structured
-//                                 state block carries. A message with the
-//                                 marker is never touched, in either mode,
-//                                 and its presence means the raw task
-//                                 message no longer needs protecting: the
-//                                 state carries the task, so that message
-//                                 is thinned like any other old content
+//                                 state block starts with. An assistant
+//                                 message whose text starts with it is
+//                                 never touched, in either mode, and its
+//                                 presence means the raw task message no
+//                                 longer needs protecting: the state
+//                                 carries the task, so that message is
+//                                 thinned like any other old content.
+//                                 The marker in user text, a tool result
+//                                 or anywhere else counts for nothing
 //   {"saccade": "off"}            off | auto | always. A saccade is the
 //                                 eye jumping to a new target: when the
 //                                 newest question is a different topic,
@@ -154,8 +157,15 @@ function leadingUserEnd(list, start) {
   return start
 }
 
-// A state block is one message carrying the marker. It is found in the
-// text of the message, wherever the agent put it.
+// A state block is the agent's own message: an assistant message (Chat,
+// Anthropic, or a Responses message item) whose text, or one of whose
+// text parts, starts with the marker. Where the marker sits in the
+// protocol is what makes it the agent's: user text, a tool result, a
+// function_call_output and a nested tool_result part are written by
+// someone else — a file read, a log, a pasted message — and the marker
+// there, or anywhere inside a text, exempts nothing. Otherwise any
+// content that quotes the marker would stay whole forever and lift the
+// task message's protection.
 function hasStateBlock(list, marker) {
   for (const item of list) {
     if (carriesState(item, marker)) return true
@@ -165,12 +175,19 @@ function hasStateBlock(list, marker) {
 
 function carriesState(item, marker) {
   if (!item || typeof item !== "object" || !marker) return false
-  if (typeof item.content === "string") return item.content.includes(marker)
+  if (item.role !== "assistant") return false
+  if (item.type !== undefined && item.type !== "message") return false
+  if (typeof item.content === "string") return startsWithMarker(item.content, marker)
   if (!Array.isArray(item.content)) return false
   for (const b of item.content) {
-    if (b && typeof b === "object" && typeof b.text === "string" && b.text.includes(marker)) return true
+    if (b && typeof b === "object" && (b.type === "text" || b.type === "output_text") &&
+        typeof b.text === "string" && startsWithMarker(b.text, marker)) return true
   }
   return false
+}
+
+function startsWithMarker(text, marker) {
+  return text.trimStart().startsWith(marker)
 }
 
 // ── peripheral: the default mode, head and tail with a marker ──────────
