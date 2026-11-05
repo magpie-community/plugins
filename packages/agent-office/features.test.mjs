@@ -185,7 +185,7 @@ test("conversations are redacted with the rest of the text", () => {
 test("the page carries the workbench hooks and still reaches no network", () => {
   const html = read("index.html")
   const app = read("app.js")
-  for (const id of ["toasts", "rail", "railGroups", "todayMenu", "todayTokens", "todayBtn", "sideBtn", "optAgents", "optLang", "optSub", "optIdle"]) {
+  for (const id of ["toasts", "rail", "railGroups", "todayMenu", "todayTokens", "todayBtn", "sideBtn", "optAgents", "optLang", "optRemote", "optSub", "optIdle"]) {
     expect(html).toContain(`id="${id}"`)
   }
   for (const token of ["M.groups", "M.today", "M.detectLang", "M.redact", "showToast", "document.title"]) expect(app).toContain(token)

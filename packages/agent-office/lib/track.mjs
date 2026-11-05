@@ -143,6 +143,7 @@ export function keyOf(ctx) {
 export function createTracker(opts = {}) {
   const o = { text: true, remote: false, ...opts }
   const sessions = new Map()
+  let dropped = o.remote ? 0 : Math.min(9999, Math.max(0, Math.trunc(Number(opts.dropped) || 0)))
 
   function wanted(ctx) {
     if (!ctx) return false
@@ -165,7 +166,10 @@ export function createTracker(opts = {}) {
 
   // a request on its way: the session is at work
   function request(body, ctx, now) {
-    if (!wanted(ctx)) return null
+    if (!wanted(ctx)) {
+      if (ctx && !o.remote) dropped = Math.min(9999, dropped + 1)
+      return null
+    }
     const key = keyOf(ctx)
     let s = sessions.get(key)
     const tools = hasTools(body)
@@ -225,7 +229,7 @@ export function createTracker(opts = {}) {
 
   function snapshot(now) {
     prune(now)
-    return { v: 1, written: now, text: o.text, sessions: [...sessions.values()].sort((a, b) => a.started - b.started) }
+    return { v: 1, written: now, text: o.text, dropped, sessions: [...sessions.values()].sort((a, b) => a.started - b.started) }
   }
 
   // after a restart of the host: what was written last, nothing in flight

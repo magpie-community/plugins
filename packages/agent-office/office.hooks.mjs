@@ -58,7 +58,7 @@ function track(opts) {
   const o = { text: opts?.text !== false, remote: opts?.remote === true }
   if (tracker && tracker.options.text === o.text && tracker.options.remote === o.remote) return tracker
   const was = tracker
-  tracker = createTracker(o)
+  tracker = createTracker({ text: o.text, remote: o.remote, dropped: !o.remote && was ? was.snapshot(0).dropped : 0 })
   if (was) for (const [k, s] of was.sessions) tracker.sessions.set(k, s)
   return tracker
 }
@@ -99,14 +99,15 @@ export function snapshot(now = Date.now()) {
   }
   if (jumper) jumper.decorate(sessions, now, options.preferredJumpHost || "herdr-app")
   // what only the gateway saw: an agent whose files aren't read here
-  if (tracker) {
-    for (const g of tracker.snapshot(now).sessions) {
+  const tracked = tracker ? track(options).snapshot(now) : null
+  if (tracked) {
+    for (const g of tracked.sessions) {
       if (seen.has(g.key) || fileAgents.has(g.agent)) continue
       seen.add(g.key)
       sessions.push({ ...g, source: "gateway" })
     }
   }
-  return { v: 2, written: now, text, sessions }
+  return { v: 2, written: now, text, dropped: tracked ? tracked.dropped : 0, sessions }
 }
 
 export function write(now = Date.now()) {
@@ -166,9 +167,11 @@ export async function onRequest(body, ctx) {
   // not turn back into text:true because a field was missing
   options = { ...options, ...(ctx.options || {}) }
   start()
-  const key = track(options).request(body, ctx, Date.now())
+  const t = track(options)
+  const dropped = t.snapshot(0).dropped
+  const key = t.request(body, ctx, Date.now())
   ctx.state.office = key
-  if (key) soon()
+  if (key || t.snapshot(0).dropped !== dropped) soon()
   ctx.report?.("skipped")
   return undefined
 }

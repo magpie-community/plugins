@@ -331,6 +331,33 @@ test("the gateway part still reads replies in each API", () => {
   expect(outcomeOf(replyOf({ output: [{ type: "function_call", name: "shell", arguments: "{}" }] }, "responses"))).toBe("tools")
   const t = createTracker()
   expect(t.request({ model: "m", tools: [1], messages: [{ role: "user", content: "x" }] }, { origin: "remote", agent: "a", session: "s" }, 1)).toBeNull()
+  expect(t.snapshot(1).dropped).toBe(1)
+  const remoteOn = createTracker({ remote: true })
+  expect(remoteOn.request({ model: "m", tools: [1], messages: [{ role: "user", content: "x" }] }, { origin: "gateway-key", agent: "a", session: "s" }, 1)).toBe("a|s")
+  expect(remoteOn.snapshot(1).dropped).toBe(0)
+})
+
+test("a gateway install counts dropped non-local requests until remote is enabled", async () => {
+  const out = tmp()
+  process.env.MAGPIE_AGENT_OFFICE_PAGE = out
+  const hook = await import("./office.hooks.mjs")
+  const body = { model: "m", tools: [{ name: "x" }], messages: [{ role: "user", content: "hi" }] }
+  await hook.onRequest(body, { origin: "gateway-key", protocol: "anthropic", agent: "cursor", session: "r1", cwd: "/srv", model: "m", query: "hi", options: { remote: false, text: true }, state: {}, report() {} })
+  expect(hook.snapshot().dropped).toBeGreaterThanOrEqual(1)
+  // toggling text while remote stays false preserves the dropped count
+  await hook.onRequest(body, { origin: "local", protocol: "anthropic", agent: "cursor", session: "l1", cwd: "/srv", model: "m", query: "hi", options: { remote: false, text: false }, state: {}, report() {} })
+  expect(hook.snapshot().dropped).toBeGreaterThanOrEqual(1)
+  // enabling remote resets dropped to 0 and records the remote agent
+  await hook.onRequest(body, { origin: "gateway-key", protocol: "anthropic", agent: "cursor", session: "r1", cwd: "/srv", model: "m", query: "hi", options: { remote: true, text: true }, state: {}, report() {} })
+  expect(hook.snapshot().dropped).toBe(0)
+  expect(hook.snapshot().sessions.some((s) => s.session === "r1")).toBe(true)
+  expect(read("index.html")).toContain('id="optRemote"')
+  expect(read("app.js")).toContain("remote: view.remote")
+  expect(read("app.js")).toContain("state.snap.dropped > 0")
+  for (const lang of M.LANGS) {
+    expect(M.TEXT[lang].remote).toBeTruthy()
+    expect(M.TEXT[lang].emptyRemote).toBeTruthy()
+  }
 })
 
 test("live.js is no file of the package's", () => {

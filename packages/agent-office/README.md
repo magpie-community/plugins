@@ -136,7 +136,7 @@ bun bin/agent-office.mjs --json   # 一次性快照，适合让 Agent 在聊天�
 | `side` | 显示分组侧栏 |
 | `lang` | `auto` 或九种语言代码 |
 | `cleared` | { 会话 key: 时间 }：被「清除」的会话，文件再动就回来 |
-| `remote` | 网关部分也记录其他电脑的请求 |
+| `remote` | 网关部分也记录其他电脑和网关密钥的请求（也可在页面右上角 **设置** 里直接勾选） |
 | `approvalAfterSec` | 只有网关记录时，工具运行多久算等你批准（90） |
 
 ## 独立 CLI
