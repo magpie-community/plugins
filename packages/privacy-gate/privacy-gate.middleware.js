@@ -304,23 +304,24 @@ function looksLikeBase64UrlToken(text) {
 
 function scanText(text, state, opts) {
   // Deterministic work bound (no clock): every request gets `scanChars` characters of text
-  // inspection in total. Structure has already been walked. Once the budget is spent the
-  // remaining text is skipped and a degraded line is logged — never a hook timeout, which
-  // magpie would ignore and send the request as it was.
+  // inspection in total, and one field may take at most an eighth of it (min 1k) so a
+  // single pasted log cannot starve the rest of the newest turn. The middle of a longer
+  // field, and text after the total budget, is not inspected (README says so).
   var remaining = opts.scanChars - state.chars;
   if (remaining <= 0) {
     state.degraded = true;
     return;
   }
-  // Scan the edges of long text, the whole of short text.
+  var share = Math.max(1024, Math.floor(opts.scanChars / 8));
+  if (share > remaining) share = remaining;
   var window;
-  if (text.length <= remaining) {
+  if (text.length <= share) {
     window = text;
   } else {
-    var edge = Math.floor(remaining / 2);
+    var edge = Math.floor(share / 2);
     window = text.slice(0, edge) + "\n" + text.slice(text.length - edge);
   }
-  state.chars += Math.min(window.length, remaining);
+  state.chars += Math.min(window.length, share);
 
   // A document's own magic bytes inside a text field: never text, never maskable.
   if (window.length >= 5 && window.slice(0, 5) === "%PDF-") {
@@ -360,22 +361,24 @@ function scanText(text, state, opts) {
 }
 
 // Does this object look like a content part carrying bytes?
+// Direct checks avoid enumerating STRONG_KEY/WEAK_KEY on every object in moejs.
 function binaryOf(node, partContext) {
-  if (typeof node.type === "string" && BINARY_TYPE[node.type]) {
-    return { kind: node.type, how: "type" };
-  }
-  var key;
-  for (key in STRONG_KEY) {
-    if (has(STRONG_KEY, key) && STRONG_KEY[key] && has(node, key)) {
-      return { kind: key, how: "key" };
-    }
-  }
+  var type = node.type;
+  if (typeof type === "string" && BINARY_TYPE[type]) return { kind: type, how: "type" };
+  if (has(node, "image_url")) return { kind: "image_url", how: "key" };
+  if (has(node, "input_image")) return { kind: "input_image", how: "key" };
+  if (has(node, "input_file")) return { kind: "input_file", how: "key" };
+  if (has(node, "input_audio")) return { kind: "input_audio", how: "key" };
+  if (has(node, "inlineData")) return { kind: "inlineData", how: "key" };
+  if (has(node, "inline_data")) return { kind: "inline_data", how: "key" };
+  if (has(node, "fileData")) return { kind: "fileData", how: "key" };
+  if (has(node, "file_data")) return { kind: "file_data", how: "key" };
   if (partContext) {
-    for (key in WEAK_KEY) {
-      if (has(WEAK_KEY, key) && WEAK_KEY[key] && has(node, key)) {
-        return { kind: key, how: "key" };
-      }
-    }
+    if (has(node, "image")) return { kind: "image", how: "key" };
+    if (has(node, "file")) return { kind: "file", how: "key" };
+    if (has(node, "document")) return { kind: "document", how: "key" };
+    if (has(node, "audio")) return { kind: "audio", how: "key" };
+    if (has(node, "video")) return { kind: "video", how: "key" };
   }
   return null;
 }
@@ -471,25 +474,32 @@ function walkValue(value, site, depth, state, opts, protocol) {
     state.limited = "depth";
     return;
   }
-  if (typeof value === "string") {
-    scanText(value, state, opts);
-    return;
-  }
-  if (value === null || typeof value !== "object") return;
 
+  // Every visited value counts toward maxNodes, including primitives and array
+  // elements. This is what bounds a 3M-number array or 1.5M short strings.
   state.nodes++;
   if (state.nodes > opts.maxNodes) {
     state.limited = "nodes";
     return;
   }
 
+  if (typeof value === "string") {
+    scanText(value, state, opts);
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+
   if (Array.isArray(value)) {
+    // A single array wider than the remaining budget is refused without
+    // iterating it; otherwise every element is charged by walkValue.
+    if (value.length > opts.maxNodes - state.nodes) {
+      state.limited = "nodes";
+      return;
+    }
     var itemSite = site;
     if (site === SITE_MESSAGES) itemSite = SITE_MESSAGE;
     else if (site === SITE_RESPONSES_INPUT) itemSite = SITE_RESPONSES_ITEM;
     else if (site === SITE_GEMINI_CONTENTS) itemSite = SITE_GEMINI_CONTENT;
-    // Spend the text budget on the newest turn first; older turns were inspected
-    // when they were the newest, and a long history must not starve the new one.
     var reverse = site === SITE_MESSAGES || site === SITE_RESPONSES_INPUT || site === SITE_GEMINI_CONTENTS;
     for (var i = 0; i < value.length; i++) {
       var index = reverse ? value.length - 1 - i : i;
@@ -508,8 +518,10 @@ function walkValue(value, site, depth, state, opts, protocol) {
   var sealed = sealedFields(value, site);
   var role = typeof value.role === "string" ? value.role : "";
   var keys = Object.keys(value);
-  // At the body root, inspect the protocol content array before other text fields
-  // (system/instructions) so that newest conversation content gets the budget.
+  if (keys.length > opts.maxNodes - state.nodes) {
+    state.limited = "nodes";
+    return;
+  }
   if (site === SITE_ROOT) {
     var contentKey = (protocol === "anthropic" || protocol === "chat") ? "messages" : protocol === "responses" ? "input" : protocol === "gemini" ? "contents" : "";
     var at = contentKey ? keys.indexOf(contentKey) : -1;
@@ -762,12 +774,21 @@ export function onRequest(body, ctx) {
 // Structural-only walk used by onProvider: finds a binary part without scanning text,
 // so it stays cheap and independent of the text budget.
 function findFirstBinary(value, partContext, depth, state, opts) {
-  if (state.binary !== null || depth > opts.maxDepth) return;
+  if (state.binary !== null || (state.limited !== undefined && state.limited !== null) || depth > opts.maxDepth) return;
+  state.nodes = (state.nodes || 0) + 1;
+  if (state.nodes > opts.maxNodes) {
+    state.limited = "nodes";
+    return;
+  }
   if (value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
+    if (value.length > opts.maxNodes - state.nodes) {
+      state.limited = "nodes";
+      return;
+    }
     for (var i = 0; i < value.length; i++) {
       findFirstBinary(value[i], partContext, depth + 1, state, opts);
-      if (state.binary !== null) return;
+      if (state.binary !== null || state.limited !== null) return;
     }
     return;
   }
@@ -777,12 +798,16 @@ function findFirstBinary(value, partContext, depth, state, opts) {
     return;
   }
   var keys = Object.keys(value);
+  if (keys.length > opts.maxNodes - state.nodes) {
+    state.limited = "nodes";
+    return;
+  }
   for (var j = 0; j < keys.length; j++) {
     var key = keys[j];
     if (SKIP_KEY[key]) continue;
     var child = value[key];
     findFirstBinary(child, PART_ARRAY_KEY[key] === 1 && Array.isArray(child), depth + 1, state, opts);
-    if (state.binary !== null) return;
+    if (state.binary !== null || state.limited !== null) return;
   }
 }
 
@@ -809,12 +834,13 @@ export function onProvider(body, ctx) {
     } catch (e3) {
       providerId = "";
     }
-    var binaryState = { binary: null };
+    var binaryState = { binary: null, limited: null, nodes: 0 };
     try {
       findFirstBinary(body, false, 0, binaryState, opts);
     } catch (e4) {
       binaryState.binary = { kind: "unknown" };
     }
+    if (binaryState.limited !== null) binaryState.binary = { kind: "unknown" };
     if (binaryState.binary !== null) {
       // Only an explicitly declared local PROVIDER may receive bytes. The model id is
       // agent-supplied; the provider id is what magpie will actually call.

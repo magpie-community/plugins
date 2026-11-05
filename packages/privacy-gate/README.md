@@ -28,25 +28,27 @@ The options object is `ctx.options`; defaults are shown by `magpie plugin option
 | `localModels` | `[]` | Model globs that may receive binary parts on `onRequest`. Pair with `localProviders`, or `onProvider` blanks the content. |
 | `localProviders` | `[]` | Provider-id globs that may receive binary parts; checked in `onProvider`. |
 | `blobBase64Chars` / `blobHexChars` | `400` / `400` | An encoded run at or above this is a blob (403). |
-| `scanChars` | `200000` | Text-inspection budget; the middle of very long fields is not blob-scanned. |
+| `scanChars` | `200000` | Total text-inspection budget; each field may use at most an eighth (min 1k), so one huge field cannot starve the rest of the newest turn. |
 | `allowUnknownProtocol` | `false` | Reject bodies whose `ctx.protocol` is not one of chat/responses/anthropic/gemini. |
-| `maxNodes` / `maxDepth` | `40000` / `40` | Structural walk limits; overflow blocks (fail closed). |
+| `maxNodes` / `maxDepth` | `40000` / `40` | Every visited value counts, including primitives and array elements; an array wider than the remaining budget is refused without iterating. Overflow blocks (fail closed). |
 | `logMaxLines` / `logEveryRows` | `40` / `50` | Self-cap on `console.log` / one usage line every N rows. |
 
 ## What it does not inspect
 
 - Text content is Magpie's Privacy masking. Secrets in message text and tool arguments pass through
   this layer unchanged unless Magpie's masking catches them.
-- The scan is **bounded**: newest conversation content is walked first, and above `scanChars` per
-  field only its edges are scanned. An encoded blob in the unscanned middle of an enormous text
-  field, or in older history after the budget is spent, can pass; DSH's Gate 1 scans each tool
-  result separately. Structural checks (binary parts, model allowlist, node/depth limits) still fail
-  closed.
+- The scan is **bounded**: newest conversation content is walked first; each text field may use at
+  most `max(1024, scanChars/8)` characters (only the edges of a longer field), and after the total
+  `scanChars` budget the rest is skipped. `system`/`instructions` are visited after the conversation,
+  so a blob there behind a long history can pass. Structural checks (binary parts, model allowlist,
+  value/depth limits) still fail closed; a request above `maxNodes` values is refused rather than
+  passed uninspected. In moejs, the default bound costs ~76 ms for 2,000 tool turns (~3.5 MB; 403 at
+  the value cap) and ~38 ms for a 200-turn (~350 KB) body that passes.
 - A long encoded-looking token (a hash, a minified line) can be a false positive at 400 chars.
   Raise `blobBase64Chars`/`blobHexChars` deliberately if you need that.
 - Vendor-sealed replay fields are exempt **only inside their vendor block**: Anthropic thinking
-  `signature`, Responses reasoning `encrypted_content`, Gemini part `thoughtSignature`, and vendor
-  item `id`/`call_id`. A same-named key in tool arguments or message text is still scanned.
+  `signature`, Responses reasoning `encrypted_content`, Gemini **model-role** part `thoughtSignature`,
+  and vendor item `id`/`call_id`. A same-named key in tool arguments or message text is still scanned.
 - No network, timers, Node APIs or imports; one file, moejs-compatible.
 
 ## Companion DSH bundle
