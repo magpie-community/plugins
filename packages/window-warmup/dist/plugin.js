@@ -963,7 +963,7 @@ import { randomBytes, timingSafeEqual } from "crypto";
 import { readFile as readFile3 } from "fs/promises";
 import path2, { basename, extname, join as join3, resolve as resolve2 } from "path";
 // package.json
-var version = "0.1.2";
+var version = "0.1.3";
 
 // src/diagnostics.ts
 var DIAGNOSTICS_SCHEMA = "window-warmup-diagnostics/1";
