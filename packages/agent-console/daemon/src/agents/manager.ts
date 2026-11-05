@@ -179,11 +179,13 @@ export class AgentManager {
     return true;
   }
 
-  runtimeInfo(threadId: string): { status: string; queue: unknown[]; pending: unknown[] } | null {
+  runtimeInfo(threadId: string): { status: string; starting: boolean; queue: unknown[]; pending: unknown[] } | null {
     const rt = this.runtimes.get(threadId);
     if (!rt) return null;
     return {
       status: rt.status,
+      // true while startTurn runs (until session.send has returned): a "steer" sent then is queued instead
+      starting: rt.starting,
       queue: rt.queue,
       pending: [...rt.pending.values()].map((p) => ({
         requestId: p.requestId,

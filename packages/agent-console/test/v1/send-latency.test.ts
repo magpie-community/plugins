@@ -120,7 +120,9 @@ describe("send latency (1.3)", () => {
     expect(await manager.send(threadId, { text: "排队的", clientId: "c-q" })).toBe("queued");
     expect(userPush("c-q")).toBeFalsy();
     await waitFor(() => !!userPush("c-q"), 25000);
-    await waitFor(async () => (await threads.get(threadId))?.status === "running");
+    // "running" is stored before session.send returns, and until then (rt.starting) a steer is queued by design:
+    // wait for the turn to have really started, not just for the status (under load the poll lands in that window)
+    await waitFor(async () => (await threads.get(threadId))?.status === "running" && manager.runtimeInfo(threadId)?.starting === false);
     expect(await manager.send(threadId, { text: "插话", clientId: "c-s" }, "steer")).toBe("steered");
     expect(userPush("c-s")).toBeTruthy();
     await waitFor(async () => (await threads.get(threadId))?.status === "idle", 25000);

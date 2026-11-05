@@ -8726,6 +8726,8 @@ var AgentManager = class {
     if (!rt) return null;
     return {
       status: rt.status,
+      // true while startTurn runs (until session.send has returned): a "steer" sent then is queued instead
+      starting: rt.starting,
       queue: rt.queue,
       pending: [...rt.pending.values()].map((p) => ({
         requestId: p.requestId,
