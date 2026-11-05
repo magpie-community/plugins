@@ -316,6 +316,12 @@ test("the host part writes what it reads, and changes no request", async () => {
   hook.stop()
   const c = { origin: "local", protocol: "anthropic", agent: "cursor", session: "cu1", cwd: "/x", model: "m", query: "hi", options: {}, state: {}, report() {} }
   expect(await hook.onRequest({ model: "m", tools: [{ name: "x" }], messages: [{ role: "user", content: "hi" }] }, c)).toBeUndefined()
+  // with no remote option set, a request from another computer is only counted
+  const far = { ...c, origin: "gateway-key", agent: "opencode", session: "far1", state: {} }
+  await hook.onRequest({ model: "m", tools: [{ name: "x" }], messages: [{ role: "user", content: "hi" }] }, far)
+  expect(far.state.office).toBeNull()
+  expect(hook.snapshot().sessions.some((s) => s.session === "far1")).toBe(false)
+  expect(hook.snapshot().dropped).toBeGreaterThanOrEqual(1)
   hook.write()
   const live = readFileSync(join(out, "live.js"), "utf8")
   const snap = JSON.parse(live.slice("globalThis.AgentOfficeLive = ".length).replace(/;\s*$/, ""))

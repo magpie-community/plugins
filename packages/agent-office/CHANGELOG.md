@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.2 · 2026-11-05
+
+### Added
+
+- Settings has a switch, "Include agents from other computers and gateway keys", for `remote`. It stays off by default. While it is off, an empty office that had such requests says they were ignored because the switch is off, in all nine languages. By frederick-wang, from QingJ01/magpie-agent-office#5 (#741).
+
+### Changed
+
+- The Settings button's chevron is drawn as an SVG that sits on the label's centre line and turns over while the menu is open; the Language, Scene and Quality pickers draw the same chevron. By frederick-wang (#740).
+
+### Fixed
+
+- The page's asset stamps match their files again. Since 0.3.0 four of them were stale, so a same-version cache could pair the new page with an old model.js, scene.js, scene3d.js or app.js.
+
 ## 0.3.1 · 2026-11-03
 
 ### Fixed
