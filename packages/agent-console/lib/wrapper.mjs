@@ -10,6 +10,10 @@
 //     fresh session.js and opens the gate, which restarts the daemon and sends the frame here again with the new port.
 //   - at most 3 automatic tries in 2 minutes (counted in ?ac_try=<start>.<n>, carried through b → boot.js → gate → here);
 //     then a button, so a daemon that can't start doesn't loop forever.
+//   - every disconnect / invalid-link end state shows a Reconnect button. A missing #b= is filled from sessionStorage
+//     (last safe Magpie back URL written when this page first saw a valid b; read/write re-run safeBack). With a stored
+//     back, recover navigates via go(false). With none, the button reloads and the copy tells the user to flip Magpie's
+//     top-bar page and open Agent Console again if reload is not enough.
 //
 // Security: this page holds no secret of its own. The daemon token arrives only in its # fragment (as before, never sent to a
 // server, not in Referer) and is handed to the child in the child's fragment; the gate key is never here. The child is always
@@ -44,7 +48,16 @@ const SCRIPT = String.raw`(function () {
   var frag = new URLSearchParams(location.hash.slice(1));
   var token = frag.get("t") || "";
   var port = Number(frag.get("p"));
+  var BACK_KEY = "ac_wrap_back";
+  function readStoredBack() {
+    try { return safeBack(sessionStorage.getItem(BACK_KEY)); } catch (e) { return null; }
+  }
+  function writeStoredBack(v) {
+    if (!v) return;
+    try { sessionStorage.setItem(BACK_KEY, v); } catch (e) {}
+  }
   var back = safeBack(frag.get("b"));
+  if (back) writeStoredBack(back);
   var q = new URLSearchParams(location.search);
   var lang = (q.get("lang") || "").toLowerCase();
   var zh = !lang || lang.indexOf("zh") === 0;
@@ -53,13 +66,26 @@ const SCRIPT = String.raw`(function () {
   var box = document.getElementById("m");
   var said = document.getElementById("s");
   var btn = document.getElementById("r");
+  var RECONNECT = ["重新连接", "Reconnect"];
   function msg(zhText, enText, button) {
     said.textContent = zh ? zhText : enText;
     box.hidden = false;
     if (button) { btn.textContent = zh ? button[0] : button[1]; btn.hidden = false; }
   }
+  function wireReconnect(targetBack) {
+    btn.onclick = function () {
+      btn.disabled = true;
+      if (targetBack) location.replace(targetBack);
+      else location.reload();
+    };
+  }
   if (!/^[0-9a-f]{32,128}$/i.test(token) || !(port > 0 && port < 65536 && Math.floor(port) === port)) {
-    msg("链接已失效，请在 Magpie 里重新打开插件页。", "The link is no longer valid. Please reopen the Agent Console page in Magpie.");
+    msg(
+      "链接已失效。请点重新连接；若仍不行，可在 Magpie 顶栏先切到别的页再点回「Agent 控制台」。",
+      "This link is no longer valid. Click Reconnect; if that fails, switch to another Magpie top-bar page, then open Agent Console again.",
+      RECONNECT
+    );
+    wireReconnect(back || readStoredBack());
     return;
   }
 
@@ -84,8 +110,22 @@ const SCRIPT = String.raw`(function () {
     var now = Date.now();
     var t = (function (raw) { var m = /^(\d{10,15})\.([0-9])$/.exec(raw || ""); return m ? { start: +m[1], n: +m[2] } : null; })(q.get("ac_try"));
     if (!t || now - t.start > T.triesWindowMs || t.start > now) t = { start: now, n: 0 };
+    // #b= missing (or unsafe): reuse the last safe Magpie back URL from this origin, then go(false) — not an auto try
     if (!back) {
-      msg("本地服务已断开。请在 Magpie 里重新打开插件页。", "The local service disconnected. Please reopen the Agent Console page in Magpie.");
+      back = readStoredBack();
+      if (back) {
+        msg("本地服务已断开，正在重新连接…", "The local service disconnected. Reconnecting…");
+        var uStored = new URL(back);
+        if (at > 0) uStored.searchParams.set("ac_lost", String(Math.floor(at)));
+        location.replace(uStored.toString());
+        return;
+      }
+      msg(
+        "本地服务已断开。请点重新连接；若仍不行，可在 Magpie 顶栏先切到别的页再点回「Agent 控制台」。",
+        "The local service disconnected. Click Reconnect; if that fails, switch to another Magpie top-bar page, then open Agent Console again.",
+        RECONNECT
+      );
+      wireReconnect(null);
       return;
     }
     var go = function (auto) {
@@ -95,7 +135,7 @@ const SCRIPT = String.raw`(function () {
       location.replace(u.toString());
     };
     if (t.n >= T.maxTries) {
-      msg("本地服务多次重连失败。", "Reconnecting to the local service failed several times.", ["重新连接", "Reconnect"]);
+      msg("本地服务多次重连失败。", "Reconnecting to the local service failed several times.", RECONNECT);
       btn.onclick = function () { btn.disabled = true; go(false); };
       return;
     }

@@ -11,7 +11,11 @@ const wrapperUrl = pathToFileURL(join(root, "lib", "wrapper.mjs")).href;
 type Msg = { source: unknown; data: unknown };
 
 /** Runs the wrapper's script against a tiny fake DOM with a controllable clock */
-async function runWrapper(hash: string, search = "", opts: { visible?: boolean } = {}) {
+async function runWrapper(
+  hash: string,
+  search = "",
+  opts: { visible?: boolean; sessionStorage?: Record<string, string> } = {},
+) {
   const { wrapperHtml, WRAP_TIMING } = await import(/* @vite-ignore */ wrapperUrl);
   const html: string = wrapperHtml("n0nce", WRAP_TIMING);
   const script = html.split('<script nonce="n0nce">')[1]!.split("</script>")[0]!;
@@ -25,18 +29,29 @@ async function runWrapper(hash: string, search = "", opts: { visible?: boolean }
   const els: Record<string, ReturnType<typeof el>> = { f: el("f"), m: el("m"), s: el("s"), r: el("r") };
   (els.f as unknown as { contentWindow: unknown }).contentWindow = childWin;
   let onMessage: (e: Msg) => void = () => {};
-  const loc = { hash, search, replaced: null as string | null, replace(u: string) { this.replaced = u; } };
+  const loc = {
+    hash, search, replaced: null as string | null, reloaded: 0,
+    replace(u: string) { this.replaced = u; },
+    reload() { this.reloaded++; },
+  };
+  const store = new Map<string, string>(Object.entries(opts.sessionStorage ?? {}));
+  const sessionStorage = {
+    getItem(k: string) { return store.has(k) ? store.get(k)! : null; },
+    setItem(k: string, v: string) { store.set(k, String(v)); },
+    removeItem(k: string) { store.delete(k); },
+    clear() { store.clear(); },
+  };
   const win: Record<string, unknown> = {
     parent: parentWin,
     addEventListener: (t: string, fn: (e: Msg) => void) => { if (t === "message") onMessage = fn; },
   };
   const doc = { getElementById: (id: string) => els[id], documentElement: { className: "" }, visibilityState: opts.visible === false ? "hidden" : "visible" };
   const DateFake = { now: () => now };
-  const fn = new Function("window", "document", "location", "setInterval", "Date", "URL", "URLSearchParams", script);
-  fn(win, doc, loc, (f: () => void) => { intervals.push(f); return 1; }, DateFake, URL, URLSearchParams);
+  const fn = new Function("window", "document", "location", "setInterval", "Date", "URL", "URLSearchParams", "sessionStorage", script);
+  fn(win, doc, loc, (f: () => void) => { intervals.push(f); return 1; }, DateFake, URL, URLSearchParams, sessionStorage);
   const tick = (ms: number, step = 1000) => { for (let t = 0; t < ms; t += step) { now += step; intervals.forEach((f) => f()); } };
   return {
-    els, loc, childWin, parentWin, tick, doc,
+    els, loc, childWin, parentWin, tick, doc, store,
     fromChild: (data: unknown) => onMessage({ source: childWin, data }),
     fromParent: (data: unknown) => onMessage({ source: parentWin, data }),
     fromOther: (data: unknown) => onMessage({ source: {}, data }),
@@ -101,12 +116,26 @@ describe("wrapper page", () => {
   it("refuses a bad token or port, and never follows a non-Magpie back URL", async () => {
     const w1 = await runWrapper(hash({ t: "x", p: "4321", b: BACK }));
     expect(w1.els.f!.src).toBe("");
-    const w2 = await runWrapper(hash({ t: TOKEN, p: "99999", b: BACK }));
+    expect(w1.els.r!.hidden).toBe(false);
+    expect(w1.els.r!.textContent).toBe("重新连接");
+    w1.els.r!.onclick!();
+    // valid #b= was stored before the early return, so Reconnect walks back through Magpie
+    expect(w1.loc.replaced).toBe(BACK);
+    expect(w1.loc.reloaded).toBe(0);
+
+    const w2 = await runWrapper(hash({ t: TOKEN, p: "99999", b: BACK }), "?lang=en");
     expect(w2.els.f!.src).toBe("");
+    expect(w2.els.r!.textContent).toBe("Reconnect");
+    expect(w2.els.s!.textContent).toContain("Click Reconnect");
+
     const w3 = await runWrapper(hash({ t: TOKEN, p: "4321", b: "https://evil.example/_magpie/plugin/a/index.html" }));
+    expect(w3.store.has("ac_wrap_back")).toBe(false);
     w3.fromChild({ ac_console: "lost", at: 5 });
     expect(w3.loc.replaced).toBeNull();
     expect(w3.els.m!.hidden).toBe(false);
+    expect(w3.els.r!.hidden).toBe(false);
+    w3.els.r!.onclick!();
+    expect(w3.loc.reloaded).toBe(1);
   });
 
   it("a reload onto a dead daemon (no alive within 12 s) goes back through the Magpie page", async () => {
@@ -170,6 +199,54 @@ describe("wrapper page", () => {
     const old = await runWrapper(hash({ t: TOKEN, p: "4321", b: BACK }), `?ac_try=${start - 200_000}.3`);
     old.fromChild({ ac_console: "lost", at: 1 });
     expect(new URL(old.loc.replaced!).searchParams.get("ac_try")).toBe(`${old.now()}.1`);
+  });
+
+  it("remembers a safe #b= in sessionStorage and reuses it when the hash has none", async () => {
+    const first = await runWrapper(hash({ t: TOKEN, p: "4321", b: BACK }));
+    expect(first.store.get("ac_wrap_back")).toBe(BACK);
+
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }), "", { sessionStorage: { ac_wrap_back: BACK } });
+    w.fromChild({ ac_console: "lost", at: 99 });
+    const u = new URL(w.loc.replaced!);
+    expect(u.origin + u.pathname).toBe("http://127.0.0.1:5000/_magpie/plugin/abc123/page/index.html");
+    expect(u.searchParams.get("ac_lost")).toBe("99");
+    expect(u.searchParams.has("ac_try")).toBe(false); // go(false): not an automatic try
+    expect(w.loc.replaced).not.toContain(TOKEN);
+  });
+
+  it("ignores an unsafe sessionStorage back and still offers Reconnect via reload", async () => {
+    const evil = "https://evil.example/_magpie/plugin/a/index.html";
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }), "?lang=en", { sessionStorage: { ac_wrap_back: evil } });
+    w.fromChild({ ac_console: "lost", at: 1 });
+    expect(w.loc.replaced).toBeNull();
+    expect(w.els.r!.hidden).toBe(false);
+    expect(w.els.r!.textContent).toBe("Reconnect");
+    expect(w.els.s!.textContent).toMatch(/Click Reconnect/);
+    expect(w.els.s!.textContent).toMatch(/top-bar/);
+    w.els.r!.onclick!();
+    expect(w.loc.reloaded).toBe(1);
+  });
+
+  it("with no back at all, Reconnect reloads and the copy explains the Magpie top-bar fallback", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }));
+    w.fromChild({ ac_console: "lost", at: 1 });
+    expect(w.loc.replaced).toBeNull();
+    expect(w.els.r!.hidden).toBe(false);
+    expect(w.els.r!.textContent).toBe("重新连接");
+    expect(w.els.s!.textContent).toContain("重新连接");
+    expect(w.els.s!.textContent).toContain("Agent 控制台");
+    expect(w.els.s!.textContent).toContain("顶栏");
+    w.els.r!.onclick!();
+    expect(w.loc.reloaded).toBe(1);
+  });
+
+  it("an invalid link with only a stored back still Reconnects through Magpie", async () => {
+    const w = await runWrapper(hash({ t: "nope", p: "1" }), "", { sessionStorage: { ac_wrap_back: BACK } });
+    expect(w.els.f!.src).toBe("");
+    expect(w.els.r!.hidden).toBe(false);
+    w.els.r!.onclick!();
+    expect(w.loc.replaced).toBe(BACK);
+    expect(w.loc.reloaded).toBe(0);
   });
 
   it("relays only the Magpie theme protocol", async () => {
