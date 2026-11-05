@@ -359,7 +359,10 @@ credit packs) and platform rewards (gifted and activity credits,
 against plan_bonus, addon and benefit); a summary without them is split
 by package code as WorkBuddy's client does. Only one of the two stops the
 account, since WorkBuddy serves it while any credits are left: the extra
-window is set aside until the plan's credits are spent. A summary with
+window is set aside until the plan's credits are spent, then the plan's
+is. Extra credits only the detail lists carry (a China-site free
+account's summary can list the plan's base alone) are their own "Extra
+credits" window by the same rule (ferock on Discord). A summary with
 only one kind keeps the one "Credits" window (akic404 on Discord; since
 0.2.16 the plan's bonus is extra too, Jiabubu on Discord).
 

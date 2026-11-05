@@ -23,6 +23,7 @@ import { clearBinCache } from "../util/bin.js";
 import { cachedDetect, cachedModels, clearProviderCache } from "../providers/infoCache.js";
 import { launchFromSettings } from "../providers/launch.js";
 import { clampMode } from "../providers/modes.js";
+import { endLegacyDefault, guardLegacyMode, upgradeNotice } from "../migrate/autoApprove13.js";
 import { setAppLocale, tr, intlLocale } from "../util/i18n.js";
 import { MAX_MENTIONS } from "../util/mentions.js";
 import { openExternal } from "../util/openExternal.js";
@@ -153,6 +154,8 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     if (!checked.ok) throw new ApiError("bad_params", `Invalid setting: ${checked.error}`);
     const before = await svc.settings.get();
     const next = await svc.settings.set(checked.patch as Partial<Settings>);
+    // 1.3: a default permission mode picked after the upgrade is the user's 1.3 choice (ends the 1.2 全部放行 guard)
+    if ("defaultMode" in checked.patch) await endLegacyDefault(svc.settings);
     // 1.3: Settings → Bash path (Windows) re-runs Git Bash detection for the next agent start
     if ("bashPath" in checked.patch && (before.bashPath ?? "") !== (next.bashPath ?? "")) {
       await refreshAgentShell(typeof next.bashPath === "string" ? next.bashPath : "");
@@ -329,8 +332,11 @@ export function registerMethods(gw: Gateway, svc: Services): void {
       }
       // B8: the default permission mode is mapped onto this Agent's own modes (same rule as thread.setProvider)
       const provider = getProvider(p.provider);
-      const mode = clampMode(provider?.capabilities.modes ?? [], p.mode);
+      // 1.3 (#727 review 3): a pre-1.3 default of 全部放行 stays 每次询问 for Agents it did nothing for in 1.2 (told once)
+      const guard = await guardLegacyMode(svc.settings, p.provider, clampMode(provider?.capabilities.modes ?? [], p.mode));
+      const mode = guard.mode;
       const meta = await svc.threads.create({ ...p, mode });
+      if (guard.notice) await svc.threads.appendEvent(meta.id, upgradeNotice());
       gw.publish("sidebar", { type: "thread.upsert", thread: meta });
       return meta;
     }

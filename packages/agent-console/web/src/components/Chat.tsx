@@ -7,6 +7,7 @@ import { useData, pickDefaultProvider } from "../stores/data";
 import { useTimeline } from "../stores/timeline";
 import { TimelineRow } from "./Timeline";
 import { foldTimeline, TOOL_COLLAPSE_AT } from "../timeline/fold";
+import { collectAutoApproved } from "../timeline/autoApproved";
 import { Composer } from "./Composer";
 import { QuoteSelect } from "./QuoteSelect";
 import { Icon } from "./Icons";
@@ -23,7 +24,8 @@ export function Chat() {
   const prefs = useLiveSettings();
   // 1.3: runs of tool calls (and short thinking between them) fold into one summary row
   // (tl.items is a fresh array after every timeline change, so the memo follows the stream)
-  const items = useMemo(() => foldTimeline(tl.items, { showThinking: prefs.showThinking }), [tl.items, prefs.showThinking]);
+  // 1.3 全部自动同意: the daemon's own approvals become one quiet row after their run (collectAutoApproved)
+  const items = useMemo(() => foldTimeline(collectAutoApproved(tl.items), { showThinking: prefs.showThinking }), [tl.items, prefs.showThinking]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [stick, setStick] = useState(true);
   const [hasNew, setHasNew] = useState(false);

@@ -7,8 +7,7 @@
 **magpie 网关中间件：最近窗口看得清，之前的旧历史只带轮廓。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-2f63a2.svg?style=for-the-badge)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.2.2-2f63a2.svg?style=for-the-badge)](https://github.com/webkubor/fovea/releases)
-[![Tests](https://img.shields.io/badge/tests-31%2F31-brightgreen?style=for-the-badge)](#证据三层各管什么)
+[![Tests](https://img.shields.io/badge/tests-45%2F45-brightgreen?style=for-the-badge)](#证据三层各管什么)
 [![Platform](https://img.shields.io/badge/magpie-middleware-8a6bbf?style=for-the-badge)](https://usemagpie.ai)
 [![Runtime](https://img.shields.io/badge/runtime-moejs%20%C2%B7%20zero%20deps-4a5568?style=for-the-badge)](fovea.middleware.js)
 
@@ -55,7 +54,7 @@ git clone https://github.com/magpie-community/plugins && bun test packages/fovea
 
 ## 它怎么工作
 
-`onRequest` 收到请求后：请求小于 `threshold` 原样放行；否则窗口（按条数与 token 预算取宽者）之前的旧消息逐条裁剪。Chat（`role:"tool"`）、Anthropic（`tool_result` 块）、Responses API（`function_call_output`）三种形状各自处理；无法识别的形状原样通过。已经带 `[fovea: …]` 标记的内容不再二次裁剪。失败即放行（fail open）。
+`onRequest` 收到请求后：请求小于 `threshold` 原样放行；否则窗口（按条数与 token 预算取宽者）之前的旧消息逐条裁剪。Chat（`role:"tool"`）、Anthropic（`tool_result` 块）、Responses API（`function_call_output`）三种形状各自处理；无法识别的形状原样通过。已裁内容短于长度闸门（`head + tail + 80`），不会二次裁剪；正文里出现 `[fovea:` 字样不构成豁免。失败即放行（fail open）。
 
 | 选项 | 默认 | 含义 |
 |---|---|---|
@@ -67,7 +66,7 @@ git clone https://github.com/magpie-community/plugins && bun test packages/fovea
 | `drop_old_images` | `true` | 窗口外的旧图换成 `[fovea: old image omitted]` |
 | `protect` | `[]` | 命中即整段保全的正则（两种模式都生效），如 `["^diff --git ", "BEGIN .*PRIVATE KEY"]` |
 | `saccade` | `"off"` | `off` 留头尾；`auto` 词面判定换话题后折叠旧内容；`always` 总是折叠 |
-| `state_marker` | `""` | 你的结构化状态块的标记；带标记的消息永不裁，且任务原文随之可裁 |
+| `state_marker` | `""` | 你的结构化状态块的标记；只认 assistant 消息里以它开头的文本，这样的消息永不裁，且任务原文随之可裁。用户文本、工具结果里出现同样字样不算 |
 
 裁剪长这样：
 
@@ -79,7 +78,7 @@ git clone https://github.com/magpie-community/plugins && bun test packages/fovea
 
 ## 证据三层，各管什么
 
-1. **规则正确性** —— `bun test`：31 个确定性用例（离线、零依赖）。覆盖三种形状的工具配对、protect 在两种模式下生效、代理对不劈开、document 块不动、标记幂等、连续两轮已裁前缀逐字节相同。
+1. **规则正确性** —— `bun test`：45 个确定性用例（离线、零依赖）。覆盖三种形状的工具配对、protect 在两种模式下生效、代理对不劈开、document 块不动、标记幂等、连续两轮已裁前缀逐字节相同。
 2. **同一请求确实变小** —— `bun benchmark.mjs [request.json] [options]`，或直接在证据页粘贴你的请求。合成样例：47,777 → 14,148 字符，已裁的 27 条消息逐字稳定。
 3. **真实 token / 缓存 / 费用** —— `FOVEA_GATEWAY_KEY=<临时key> bun live-benchmark.mjs`：同模型、同请求、ABBA 四连发，记录供应商返回的 input / cache_read / output token 与耗时，只看暖缓存的第二次。0.1.0 时代的一次实测：163,143 → 42,358 prompt tokens，中位延迟 7.1s → 2.5s（因历史形状与供应商缓存而异）。**账单以 `magpie usage --csv` 的 `cost_usd` 为准；字符百分比不是美元。**
 

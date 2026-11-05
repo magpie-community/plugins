@@ -1718,13 +1718,13 @@ function renderList() {
       return nodes;
     }
     if (isNew && draft)
-      nodes.push(rowEl(draft, null, true));
+      nodes.push(rowEl(draft, null, true), buildEditor());
     for (const t of tasks) {
       const open = openId === t.id;
       nodes.push(rowEl(open && draft ? draft : t, t, open));
+      if (open && draft)
+        nodes.push(buildEditor());
     }
-    if (openId && draft)
-      nodes.push(buildEditor());
     return nodes;
   });
   restoreFocus(list, focus);

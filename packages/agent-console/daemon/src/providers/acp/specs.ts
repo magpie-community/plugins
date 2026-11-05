@@ -49,8 +49,9 @@ export function acpConfigForEntry(entry: ProviderCatalogEntry, appVersion: strin
         ...base,
         acpArgs: ["acp"],
         fetchModels: acpProbeModels(["acp"], entry.id),
-        modeMap: { plan: "plan", default: "build" },
-        modeLabels: { plan: "Plan", default: "Build" },
+        // 1.3: 全部自动同意 = build + the daemon answers each approval "allow once" (OPENCODE_PERMISSION only applies at spawn)
+        modeMap: { plan: "plan", default: "build", bypassPermissions: "build" },
+        modeLabels: { plan: "Plan", default: "Build", bypassPermissions: "Build" },
       };
     case "copilot":
       // As Paseo: Agent / Plan / Allow All. Allow All = agent mode + allow_all config on (autopilot is not used)
@@ -62,7 +63,9 @@ export function acpConfigForEntry(entry: ProviderCatalogEntry, appVersion: strin
         modeLabels: { plan: "Plan", default: "Agent", bypassPermissions: "Allow All" },
       };
     case "pi":
-      // pi-acp has no mode options; thinking level thought_level (low…max)
+      // pi-acp has no mode options; thinking level thought_level (low…max). Pi never asks before its tools, so its one
+      // mode uses the neutral default id (shown read-only; nothing is sent), so switching Agents never carries
+      // bypassPermissions into an Agent the user did not choose. Pi extensions' own dialogs still reach the user.
       return { ...base, acpArgs: [], fetchModels: acpProbeModels([], entry.id), modeMap: { default: "" } };
     case "dsh":
       // Started on the conversation's route (--patch), so its initialize advertises image input for that model (see dsh.ts)
