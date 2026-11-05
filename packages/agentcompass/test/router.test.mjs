@@ -1951,6 +1951,8 @@ test("9.7 PR #670 Round 2 Guard: Mainstream real model IDs & trivial single-vari
   // A multi-prefix id resolves by its last segment; an unknown one keeps only its first prefix stripped
   assert.equal(canonicalModel("openrouter/openai/gpt-5-mini"), "gpt-6-luna");
   assert.equal(canonicalModel("OpenRouter/OpenAI/GPT-5-Mini"), "gpt-6-luna");
+  // Alias keys with capitals (`MiniMax-M3`) need the exact-case last-segment lookup
+  assert.equal(canonicalModel("openrouter/minimax/MiniMax-M3"), "minimax-m3");
   assert.equal(canonicalModel("openrouter/qwen/foo"), "qwen/foo");
   assert.equal(canonicalModel("qwen/foo"), "foo");
 });
