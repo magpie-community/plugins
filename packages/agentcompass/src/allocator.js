@@ -818,12 +818,23 @@ export function rankCandidates(profileInput, options = {}) {
 
 /**
  * Convenience entry point: takes a raw request or task object + options and returns the winning route decision.
+ *
+ * `fallbackToBestExcluded` is for gateways. AgentCompass may leave a task unrouted when no candidate clears its
+ * floor, but a gateway that does so forwards the virtual model name upstream and the request fails. With the
+ * option, the most capable excluded candidate is chosen instead and the decision carries `fallback`.
  */
 export function selectBestRoute(taskOrProfile, options = {}) {
   const result = rankCandidates(taskOrProfile, options);
-  const top = result.selected;
+  let top = result.selected;
+  let fallback = null;
+  if (!top && options.fallbackToBestExcluded && result.allCandidates.length > 0) {
+    top = result.allCandidates.reduce((best, c) =>
+      c.components.ability_value > best.components.ability_value ? c : best);
+    fallback = { excluded: top.excluded };
+  }
   return {
     ok: Boolean(top),
+    fallback,
     targetModel: top ? top.model : null,
     canonicalModel: top ? top.canonicalModel : null,
     targetEffort: top ? top.effort : "high",

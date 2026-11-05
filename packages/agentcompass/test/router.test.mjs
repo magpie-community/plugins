@@ -2439,3 +2439,26 @@ test("9.12 Quota opportunity cost reads the allocator's burn scale: `:ultra` cos
     }
   }
 });
+
+test("9.13 The gateway always routes: when every candidate is below the task's floor it sends the most capable one; the allocator itself still declines", async () => {
+  const prompt = "Refactor the payment retry loop in billing/retry.go and add tests for the backoff";
+  const body = () => ({ model: "agentcompass", messages: [{ role: "user", content: prompt }] });
+  const routed = (candidateModels) => {
+    const out = mwOnRequest(body(), { protocol: "chat", agent: "claude-code", options: { candidateModels }, state: {} });
+    return out ? out.model : null;
+  };
+  // AgentCompass may leave a task unrouted; it has nothing below the floor to offer.
+  assert.equal(selectBestRoute(inferTaskProfile({ objective: prompt }), { objective: prompt, candidateModels: ["gpt-6-astra:minimal"] }).ok, false);
+  // Magpie must still send the request somewhere: forwarding `agentcompass` upstream only fails.
+  assert.equal(routed(["gpt-6-astra:minimal"]), "gpt-6-astra:minimal");
+  assert.equal(routed(["gemini-3.8-flash-high"]), "gemini-3.8-flash-high:high");
+  assert.equal(routed(["gpt-6-astra:none", "gpt-6-astra:minimal"]), "gpt-6-astra:minimal");
+  // A candidate that clears the floor still wins.
+  assert.equal(routed(["gpt-6-astra:minimal", "gpt-6-astra:high"]), "gpt-6-astra:high");
+
+  const ctx = { protocol: "chat", agent: "claude-code", options: { scorerType: "heuristic", candidateModels: ["gpt-6-astra:minimal"] }, state: {}, report() {} };
+  await hookOnRequest(body(), ctx);
+  assert.equal(ctx.state.route?.targetModel, "gpt-6-astra");
+  assert.equal(ctx.state.route?.targetEffort, "minimal");
+  assert.ok(ctx.state.route?.fallback, "the decision says it fell back");
+});

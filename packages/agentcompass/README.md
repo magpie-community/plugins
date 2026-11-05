@@ -215,7 +215,7 @@ New-Item -ItemType SymbolicLink -Path "$HOME\.magpie\plugins\agentcompass" -Targ
 > - 插件默认 100% 使用 `< 1 ms` 零网络请求的本地确定性 10 维启发式画像器（`kind: "heuristic"`），绝不会将用户 Prompt 发送到任何外部地址。
 > - 如需启用外部 System-One 评分接口，必须同时显式配置 `"allowExternalScorer": true` 与 `"scorer": { "kind": "openai_compatible", "baseUrl": "..." }`。
 > - 若请求 `agentcompass` / `agentcompass/*` 虚拟模型，需在插件选项中配置 `candidateModels`（或 `availableModels` / `allowedModels` / `defaultModel`）；未配置时插件将调用 `ctx.reject(400, "agentcompass: set candidateModels in the plugin's options")` 提示配置，不会硬编码猜测未配置的模型。对于具体模型请求（当开启 `routeAllModels: true` 且未配置候选列表时），则保持原模型名不变，仅自动计算并注入思考档位（Effort）。
-> - 候选里写明的思考档位与其他档位一样要过任务的能力底线：`:minimal` / `:none` / `:off` 按低于 `:low` 的能力计算，较难的任务会把它们排除。若候选列表中每一项都低于该任务的底线（例如只列 `gpt-6-astra:minimal` 去做一次带测试的重构），插件不会改写模型名，请求会以原名（如 `agentcompass`）转发而失败；因此不要只列一个低档候选，请同时列出一个能过底线的候选（如 `gpt-6-astra:high`）。
+> - 候选里写明的思考档位与其他档位一样要过任务的能力底线：`:minimal` / `:none` / `:off` 按低于 `:low` 的能力计算，较难的任务会把它们排除。网关不会让请求落空：若候选列表中每一项都低于该任务的底线（例如只列 `gpt-6-astra:minimal` 去做一次带测试的重构），插件仍会选其中能力最高的一项转发，并在路由决策里标记 `fallback`。
 > - `onAccount(account, ctx)` 原生匹配 Magpie `internal/middleware/account.go` 传入的 `{ref, provider, name, kind, model}` 字段（可通过 `accountsByWorkKind` 按 `ref`、`name`、`provider` 或 `${provider}/${name}` 过滤账号）。
 
 ---

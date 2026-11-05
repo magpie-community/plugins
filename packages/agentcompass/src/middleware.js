@@ -358,12 +358,14 @@ export function onRequest(body, ctx = {}) {
           },
         });
 
-        if (!decision.ok && (unhealthyModels.length > 0 || minContextTokens > 0 || options.quotas)) {
+        if (!decision.ok) {
+          // Without the temporary unhealthy/context/quota constraints, and never unrouted: see selectBestRoute.
           decision = selectBestRoute(profile, {
             objective: facts.objective,
             candidateModels,
             catalog: options.catalog,
             now,
+            fallbackToBestExcluded: true,
           });
         }
 
