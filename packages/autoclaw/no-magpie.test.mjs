@@ -8,7 +8,7 @@ const b64url = (o) => Buffer.from(JSON.stringify(o)).toString("base64url")
 const jwt = (claims) => `${b64url({ alg: "none" })}.${b64url(claims)}.sig`
 const DEVICE = "ab".repeat(32)
 
-function record() {
+function record(device = DEVICE) {
   const realFetch = globalThis.fetch
   const sent = []
   globalThis.fetch = async (input, init) => {
@@ -17,8 +17,8 @@ function record() {
     sent.push({ url, text: `${url}\n${headers}\n${String(init?.body ?? "")}`, body: String(init?.body ?? "") })
     if (url.pathname.endsWith("/refresh")) {
       return Response.json({ code: 0, msg: "ok", data: {
-        access_token: jwt({ exp: 2_000_000_000, device_id: DEVICE }),
-        refresh_token: jwt({ device_id: DEVICE, source_id: "autoclaw" }),
+        access_token: jwt({ exp: 2_000_000_000, device_id: device }),
+        refresh_token: jwt({ device_id: device, source_id: "autoclaw" }),
       } })
     }
     if (url.pathname === "/userapi/v1/user-profile") return Response.json({ code: 0, msg: "ok", data: { user_name: "Tester" } })
@@ -28,11 +28,15 @@ function record() {
 }
 
 test("a refresh and a chat send nothing upstream that names magpie", async () => {
-  for (const Plugin of [AutoclawAuthPlugin, AutoclawCnAuthPlugin]) {
-    const { sent, restore } = record()
+  // 每次迭代用不同的 refresh token：refreshShared 按 RT 单飞，共用会让
+  // 第二个 provider 的续期请求被缓存吃掉、host 顺序根本没走到网络。
+  const plugins = [AutoclawAuthPlugin, AutoclawCnAuthPlugin]
+  for (const [i, Plugin] of plugins.entries()) {
+    const device = i === 0 ? DEVICE : "cd".repeat(32)
+    const { sent, restore } = record(device)
     try {
       const hooks = await Plugin({ client: { auth: { set: async () => {} } } })
-      const old = { type: "oauth", access: "a0", refresh: jwt({ device_id: DEVICE, source_id: "autoclaw" }), accountId: "已登录" }
+      const old = { type: "oauth", access: "a0", refresh: jwt({ device_id: device, source_id: "autoclaw" }), accountId: "已登录" }
       const t = await hooks.auth.refresh(old)
       expect(t.accountId).toBe("Tester")
       const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: t.access }))
@@ -46,10 +50,12 @@ test("a refresh and a chat send nothing upstream that names magpie", async () =>
     }
     expect(sent.some((r) => r.url.pathname === "/userapi/v1/user-profile")).toBe(true)
     expect(sent.some((r) => r.url.pathname.endsWith("/chat/completions"))).toBe(true)
+    // 两个 provider 各打一次自己的 refresh（单飞键不同，不能被缓存复用）
+    expect(sent.filter((r) => r.url.pathname.endsWith("/refresh")).length).toBe(1)
     for (const r of sent) expect(r.text.toLowerCase()).not.toContain("magpie")
     // user-profile carries the account's own device id, as AutoClaw's client does
     const profile = sent.find((r) => r.url.pathname === "/userapi/v1/user-profile")
-    expect(JSON.parse(profile.body).device_id).toBe(DEVICE)
+    expect(JSON.parse(profile.body).device_id).toBe(device)
   }
 })
 
