@@ -2424,7 +2424,12 @@ test("9.12 Quota opportunity cost reads the allocator's burn scale: `:ultra` cos
       quota: { windows: [{ name: "7d", used: 60, remaining: 40, resetsAt: new Date(t0 + 120 * 3600 * 1000).toISOString() }] },
     },
   });
-  for (const [model, quotas] of [["claude-opus-5-5", subscription("claude/sub")], ["gpt-6-astra", subscription("codex/sub")]]) {
+  // glm-5.3 has no effort curve, so its efforts come from the policy table alone.
+  for (const [model, quotas] of [
+    ["claude-opus-5-5", subscription("claude/sub")],
+    ["gpt-6-astra", subscription("codex/sub")],
+    ["glm-5.3", subscription("glm-5.3/sub")],
+  ]) {
     const cost = (effort) =>
       evaluateModelQuota(`${model}:${effort}`, effort, { hours: 1.5, difficulty: "hard" }, quotas, {}, t0).opportunity_cost;
     assert.ok(cost("max") > cost("high") && cost("high") > cost("low"), `${model} max/high/low ${cost("max")}/${cost("high")}/${cost("low")}`);

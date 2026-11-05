@@ -83,14 +83,16 @@ export function effortValue(policy, curves, name, effort, fallback) {
   if (effort in own) return own[effort];
   if (effort === "ultra" && "max" in own) return own.max;
   const policyTable = policy?.[`effort_${name}`] || {};
-  if ((effort === "minimal" || effort === "none" || effort === "off") && "low" in own) {
+  // Below Low, scale from the model's own Low, else the policy table's: a model without a curve still has a Low.
+  const low = "low" in own ? own.low : policyTable.low;
+  if ((effort === "minimal" || effort === "none" || effort === "off") && low !== undefined) {
     if (name === "ability") {
       const delta = (policyTable[effort] ?? -1.0) - (policyTable.low ?? -0.54);
-      return own.low + Math.min(delta, -0.2);
+      return low + Math.min(delta, -0.2);
     }
     if (name === "burn") {
       const ratio = (policyTable[effort] ?? 0.12) / (policyTable.low || 0.2);
-      return round4(own.low * Math.min(ratio, 0.75));
+      return round4(low * Math.min(ratio, 0.75));
     }
   }
   if (effort in policyTable) return policyTable[effort];
