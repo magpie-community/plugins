@@ -149,6 +149,41 @@ test("auth.toml renderer preserves float and boolean value types", () => {
   assert.match(rendered, /expires_in = false/);
 });
 
+test("inline comments survive parsing and credential renewal", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "atomcode-comments-"));
+  const file = join(dir, "auth.toml");
+  const input = `access_token = "old#token" # access
+refresh_token = 'old#refresh' # refresh
+created_at = 1.0 # time
+expires_in = true # duration
+[user]
+id = "123456" # c
+username = "a\\\"#b" # username
+name = 'Alice # Smith' # name
+`;
+  await writeFile(file, input, { mode: 0o600 });
+  const before = await readAuthFile(file);
+  assert.equal(before.access, "old#token");
+  assert.equal(before.refresh, "old#refresh");
+  assert.equal(before.uid, "123456");
+  assert.equal(before.accountId, 'a"#b');
+  assert.equal(before.name, "Alice # Smith");
+
+  await writeAuthFile(file, { access: "new#token", refresh: "new#refresh", createdAt: 2, expiresIn: 60 });
+  const text = await readFile(file, "utf8");
+  assert.match(text, /^access_token = "new#token" # access$/m);
+  assert.match(text, /^refresh_token = "new#refresh" # refresh$/m);
+  assert.match(text, /^created_at = 2\.0 # time$/m);
+  assert.match(text, /^expires_in = false # duration$/m);
+  assert.match(text, /^id = "123456" # c$/m);
+  assert.equal((await readAuthFile(file)).uid, "123456");
+  const integer = renderAuthFile('access_token = "old"\n[user]\nid = 42  # integer\n', {
+    access: "new", user: { id: "99" },
+  });
+  assert.match(integer, /^id = 99  # integer$/m);
+  assert.equal(parseAuthFile('access_token = "a\\\\" # comment\n[user]\nid = "42"\n').access, "a\\");
+});
+
 test("readAuthFile and writeAuthFile use private permissions and atomic replacement", async () => {
   const dir = await mkdtemp(join(tmpdir(), "atomcode-auth-"));
   const file = join(dir, "auth.toml");

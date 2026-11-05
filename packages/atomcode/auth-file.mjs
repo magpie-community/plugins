@@ -56,8 +56,31 @@ export function resolveAuthFilePath(value, env = process.env) {
   return resolved;
 }
 
+function splitComment(raw) {
+  const text = String(raw ?? "");
+  let quote = "";
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (quote === '"' && escaped) {
+      escaped = false;
+    } else if (quote === '"' && char === "\\") {
+      escaped = true;
+    } else if (quote && char === quote) {
+      quote = "";
+    } else if (!quote && (char === '"' || char === "'")) {
+      quote = char;
+    } else if (!quote && char === "#") {
+      const value = text.slice(0, i);
+      const end = value.trimEnd().length;
+      return { value: value.slice(0, end), comment: text.slice(end) };
+    }
+  }
+  return { value: text, comment: "" };
+}
+
 function scalar(raw) {
-  const value = String(raw ?? "").trim();
+  const value = splitComment(raw).value.trim();
   if (value.startsWith('"') && value.endsWith('"')) {
     try {
       return JSON.parse(value);
@@ -133,7 +156,7 @@ function tomlString(value) {
 }
 
 function scalarKind(raw) {
-  const text = String(raw ?? "").trim();
+  const text = splitComment(raw).value.trim();
   if (text.startsWith('"') || text.startsWith("'")) return "string";
   if (text === "true" || text === "false") return "boolean";
   const numeric = text.replaceAll("_", "");
@@ -219,8 +242,9 @@ export function renderAuthFile(text, next) {
     if (pair && wanted[section] && remaining[section]?.has(pair[2])) {
       const value = wanted[section][pair[2]];
       if (value !== undefined) {
+        const { comment } = splitComment(pair[4]);
         output.push(
-          `${pair[1]}${pair[2]}${pair[3]}${tomlValue(pair[2], value, pair[4])}`,
+          `${pair[1]}${pair[2]}${pair[3]}${tomlValue(pair[2], value, pair[4])}${comment}`,
         );
       } else {
         output.push(line);
