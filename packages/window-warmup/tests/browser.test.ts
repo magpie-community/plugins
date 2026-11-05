@@ -30,6 +30,7 @@ interface FrameLocator {
 }
 interface Page {
   frameLocator(selector: string): FrameLocator;
+  evaluate<T>(fn: () => T): Promise<T>;
 }
 interface Browser {
   newPage(): Promise<Page>;
@@ -157,6 +158,54 @@ for (const [name, engine] of ENGINES) {
       } finally {
         await browser.close();
         host.stop(true);
+      }
+    },
+    90_000,
+  );
+}
+
+for (const [name, engine] of ENGINES) {
+  testBrowser(
+    `${name}：点开非末行任务时编辑区原地展开在该行下面，不跑到列表末尾`,
+    async () => {
+      // 经服务 API 先建两个任务（口令取自首页 boot 数据块）
+      const base = `http://127.0.0.1:${svc.port}`;
+      const html = await (await fetch(base)).text();
+      const token = String(JSON.parse(/id="boot"[^>]*>([\s\S]*?)<\/script>/.exec(html)![1]).token);
+      const ids: string[] = [];
+      for (const taskName of ["原地展开甲", "原地展开乙"]) {
+        const res = await fetch(`${base}/api/tasks`, {
+          method: "POST",
+          headers: { "x-window-warmup-token": token, "content-type": "application/json" },
+          body: JSON.stringify({
+            name: taskName, enabled: false, provider: "acme", account: "me@x.com", model: "", message: "hi",
+            trigger: { kind: "daily", time: "06:00", timeZone: "Asia/Shanghai" },
+          }),
+        });
+        ids.push(((await res.json()) as { id: string }).id);
+      }
+      const browser = await engine.launch();
+      try {
+        const page = await browser.newPage();
+        await page.goto(`${base}/?lang=zh`);
+        await page.getByText("原地展开甲").first().click();
+        await page.getByPlaceholder("给任务起个名字").waitFor({ timeout: 15_000 });
+        // 编辑区的前一个兄弟就是展开的那一行，且那一行不是列表最后一行
+        const layout = await page.evaluate(() => {
+          const ed = document.querySelector("#list .editor");
+          const prev = ed?.previousElementSibling;
+          return {
+            prevIsOpenRow: !!prev?.classList.contains("open"),
+            prevName: prev?.textContent?.includes("原地展开甲") ?? false,
+            editorIsLast: ed === document.querySelector("#list")?.lastElementChild,
+          };
+        });
+        expect(layout).toEqual({ prevIsOpenRow: true, prevName: true, editorIsLast: false });
+      } finally {
+        await browser.close();
+        for (const id of ids) {
+          await fetch(`${base}/api/tasks/${id}`, { method: "DELETE", headers: { "x-window-warmup-token": token } });
+        }
       }
     },
     90_000,
