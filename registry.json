@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "opencode-doubao", "name": "Doubao CLI", "providers": ["doubao-cli"],
+      "summary": { "en": "Use a signed-in local Doubao CLI on Linux, with live models and session continuation. Requires the installer for the CLI patch; external tool calls are experimental.", "zh": "复用 Linux 本机豆包 CLI 登录，动态模型与会话续接。需先运行安装脚本应用 CLI 补丁；外部工具调用为实验功能。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
       "summary": { "en": "Agnes AI international with Chrome browser sign-in: live OpenAI-compatible text models, Token Plan and Agent Plan usage, and the USD wallet balance.", "zh": "通过 Chrome 浏览器登录 Agnes AI 国际版：动态发现 OpenAI 兼容文本模型，显示 Token Plan、Agent Plan 用量与美元余额，无需手动复制会话 token。" } },
     { "package": "@magpie-community/opencode-atomcode-auth", "name": "AtomCode", "icon": "https://atomgit.com/favicon.ico", "providers": ["atomcode"], "community": true,
