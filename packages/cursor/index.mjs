@@ -2014,11 +2014,13 @@ function addUsage(a, b) {
 // event timestamps before its start: its authoritative final must never be
 // collected as an earlier Run. Keep that bound when a later stateless Run
 // adds unbounded debt. Ordinary stateless debt retains its original shape.
+// A debt owed with a tag is one Run's event, kept in a group of its own: the
+// tag says whether a step collected it (and what) or the Run withdrew it.
 const DEBT_GROUP_LIMIT = 64
-function owe(key, { since = Date.now(), n = 0, ready = Date.now(), carry = null, before }) {
+function owe(key, { since = Date.now(), n = 0, ready = Date.now(), carry = null, before, tag }) {
   for (const [k, d] of owed) {
     if (d.groups) {
-      d.groups = d.groups.filter((g) => Date.now() - g.since <= STEP_WAIT.owedFor)
+      d.groups = d.groups.filter((g) => Date.now() - g.since <= STEP_WAIT.owedFor && g.tag?.state !== "withdrawn")
       d.n = d.groups.reduce((sum, g) => sum + g.n, 0)
       if (Date.now() - d.since > STEP_WAIT.owedFor) d.carry = null
       if (!d.n && !d.carry) owed.delete(k)
@@ -2027,15 +2029,16 @@ function owe(key, { since = Date.now(), n = 0, ready = Date.now(), carry = null,
   }
   if (n <= 0 && !carry) return
   const d = owed.get(key)
+  if (!d && tag) return void owed.set(key, { since, n, ready, carry: carry && { ...carry }, groups: [{ since, n, ready, before, tag }] })
   if (!d) return void owed.set(key, { since, n, ready, carry: carry && { ...carry }, ...(before !== undefined ? { before } : {}) })
-  if (n > 0 && (d.groups || d.before !== undefined || before !== undefined)) {
+  if (n > 0 && (d.groups || d.before !== undefined || before !== undefined || tag)) {
     const groups = d.groups ?? (d.n > 0 ? [{ since: d.since, n: d.n, ready: d.ready, before: d.before }] : [])
-    const same = groups.find((g) => g.before === before)
+    const same = !tag && groups.find((g) => !g.tag && g.before === before)
     if (same) {
       same.since = Math.min(same.since, since)
       same.n += n
       same.ready = Math.min(same.ready, ready)
-    } else groups.push({ since, n, ready, before })
+    } else groups.push({ since, n, ready, before, ...(tag ? { tag } : {}) })
     // As with expired dashboard debt, overflow stays unknown, never estimated
     // or merged across bounds into an authoritative native Run's event.
     groups.sort((a, b) => a.since - b.since)
@@ -2049,6 +2052,19 @@ function owe(key, { since = Date.now(), n = 0, ready = Date.now(), carry = null,
   }
   d.ready = Math.min(d.ready, ready)
   d.carry = addUsage(d.carry, carry)
+}
+
+// withdraw takes back the debt owed with tag while no step has collected it:
+// its Run was resumed after all, and its own final counts its event.
+function withdraw(key, tag) {
+  if (tag.state !== "owed") return
+  tag.state = "withdrawn"
+  const d = owed.get(key)
+  if (!d?.groups) return
+  d.groups = d.groups.filter((g) => g.tag !== tag)
+  d.n = d.groups.reduce((sum, g) => sum + g.n, 0)
+  if (!d.n && !d.carry) owed.delete(key)
+  else if (d.groups.length) d.since = Math.min(...d.groups.map((g) => g.since))
 }
 
 // usageEvents are the dashboard's events of conversation conv from since
@@ -2094,12 +2110,17 @@ async function usageEvents(tok, conv, since, want, { poll = false, first = STEP_
         // found already excludes timestamps claimed by earlier fetches. Two
         // distinct events in this response may share a millisecond; count both.
         if (at >= before()) continue
-        const group = groups?.findIndex((g, i) => counts[i] < g.n && at >= g.since - 1000 && at < (g.before ?? Infinity))
+        const group = groups?.findIndex((g, i) => counts[i] < g.n && g.tag?.state !== "withdrawn" && at >= g.since - 1000 && at < (g.before ?? Infinity))
         if (groups && group === -1) continue
         if (groups) counts[group]++
         claimed.set(key + "\0" + ev.timestamp, Date.now())
         const t = ev.tokenUsage
         const u = { input: num(t.inputTokens), output: num(t.outputTokens), cacheRead: num(t.cacheReadTokens), cacheWrite: num(t.cacheWriteTokens), reasoning: 0 }
+        const tag = groups?.[group].tag
+        if (tag) {
+          tag.state = "collected"
+          tag.usage = addUsage(tag.usage, u)
+        }
         usage = addUsage(usage ?? ZERO(), u)
         events.push({ at: num(ev.timestamp), usage: u })
         got++
@@ -2128,8 +2149,15 @@ function collect(tok, conv, { poll = false, first, signal, over = () => false, a
   const d = owed.get(key)
   if (!d) return Promise.resolve({ usage: null, carry: null, events: [], short: false })
   owed.delete(key)
+  // A handed-over Run's event still grows by the step that Run just ended
+  // (Cursor adds each step to a Run's one event as the step ends). It is
+  // looked for only from its own ready on, whatever else is owed with it
+  // sooner: until then it stays owed.
+  const now = Date.now()
+  const held = d.groups?.filter((g) => g.tag?.state === "owed" && g.ready > now) ?? []
+  for (const g of held) owe(key, { since: g.since, n: g.n, ready: g.ready, before: g.before, tag: g.tag })
   const p = (async () => {
-    const groups = (d.groups ?? [d]).filter((g) => (g.before === undefined && !d.groups) || Date.now() - g.since <= STEP_WAIT.owedFor)
+    const groups = (d.groups ?? [d]).filter((g) => !held.includes(g) && g.tag?.state !== "withdrawn" && ((g.before === undefined && !d.groups) || Date.now() - g.since <= STEP_WAIT.owedFor))
     const want = groups.reduce((sum, g) => sum + g.n, 0)
     let r = { usage: null, events: [], got: 0 }
     if (want > 0 && canRead(tok)) r = await usageEvents(tok, conv, Math.min(...groups.map((g) => g.since)), want, {
@@ -2138,9 +2166,10 @@ function collect(tok, conv, { poll = false, first, signal, over = () => false, a
     let short = false
     for (const [i, g] of groups.entries()) {
       const remaining = g.n - (d.groups ? r.counts?.[i] ?? 0 : r.got)
-      if (remaining > 0 && canRead(tok)) {
+      // a tag withdrawn while this was asked is its Run's own again
+      if (remaining > 0 && canRead(tok) && g.tag?.state !== "withdrawn") {
         short = true
-        owe(key, { since: g.since, n: remaining, ready: g.ready, before: g.before })
+        owe(key, { since: g.since, n: remaining, ready: g.ready, before: g.before, tag: g.tag })
       }
     }
     const carry = d.carry && { ...d.carry }
@@ -2200,10 +2229,21 @@ function ledger(tok, conv, since, signal, kept, { before } = {}) {
       }
       return r
     })
+  // heldUntil is when the latest handed-over event still held back
+  // (collect) becomes ready; 0 when none is
+  const heldUntil = () => {
+    const now = Date.now()
+    return Math.max(0, ...(owed.get(debtKey)?.groups ?? []).filter((g) => g.tag?.state === "owed" && g.ready > now).map((g) => g.ready))
+  }
   let collecting = null
   const debt = kept ? owed.get(debtKey) : undefined
   const timer = debt ? setTimeout(() => (collecting = gather()), Math.max(0, debt.ready - Date.now())) : null
   timer?.unref?.()
+  const sleep = (ms) => new Promise((r) => {
+    if (signal?.aborted) return r()
+    const t = setTimeout(r, ms)
+    signal?.addEventListener("abort", () => (clearTimeout(t), r()), { once: true })
+  })
   const takeMine = () => {
     const u = mine
     mine = null
@@ -2239,9 +2279,26 @@ function ledger(tok, conv, since, signal, kept, { before } = {}) {
       if (final) {
         await collecting
         await Promise.all([...(flights.get(debtKey) ?? [])])
+        // a handed-over event held back is waited for, up to its ready
+        const until = heldUntil()
+        if (until) await sleep(until - Date.now())
+        await Promise.all([...(flights.get(debtKey) ?? [])])
         if (owed.has(debtKey)) await gather({ poll: owed.get(debtKey).n > 0, first: 0, signal })
       }
       return take()
+    },
+    // handover: a later Run of the conversation began while this one waits
+    // on the caller's results. That Run collects from here on: what this one
+    // collected and has not given out goes to it, as does what an ask still
+    // going brings. A step that ends this Run after all still collects.
+    handover() {
+      clearTimeout(timer)
+      const give = () => {
+        const u = take()
+        if (u) owe(debtKey, { carry: u })
+      }
+      give()
+      collecting?.then(give, () => {})
     },
     done() {
       over = true
@@ -2700,8 +2757,32 @@ async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, 
   const book = ledger(tok, cid, since, accounting.signal, !!convID, { before: since })
   const debtKey = usageKey(tok, cid)
   let started = false, settled = false, deferred = null
+  // handed is this Run's step owed at a later Run's start while this one
+  // waited on results (handover): owed, collected (and what), or withdrawn
+  let handed = null
+  const owes = () => started && native.segments > 0 && !native.finalUsage && convID && canRead(tok)
   native.accounting = {
     started() { started = true },
+    // A later Run of the conversation began (NativeSessionPool.create) while
+    // this one waits on the caller's results. Its step's event is owed now,
+    // bounded before that start, for the later Run to collect, rather than
+    // when this one is abandoned at resultWait. Cursor stamps a Run's one
+    // event at its start and adds each step to it as the step ends.
+    handover() {
+      if (settled || handed && handed.state !== "withdrawn" || !owes()) return
+      handed = { state: "owed" }
+      owe(debtKey, { since, n: 1, ready: Date.now() + STEP_WAIT.owedAt, before: native.laterRunAt, tag: handed })
+      book.handover()
+    },
+    // resumed by its own results after all: a step not collected yet is this
+    // Run's to count again, in its final; one collected is counted (below)
+    resumed() {
+      if (handed?.state === "owed") withdraw(debtKey, handed)
+    },
+    // what a later Run collected of this Run's event: its final leaves it out
+    counted() {
+      return handed?.state === "collected" ? handed.usage : null
+    },
     async settle() {
       const more = await book.owed(true)
       if (settled) {
@@ -2725,9 +2806,11 @@ async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, 
       accounting.abort()
       if (deferred) owe(debtKey, { carry: deferred })
       deferred = null
+      // a step handed over is owed already, or was collected
+      if (handed && handed.state !== "withdrawn") return
       // Every handoff of this owner belongs to one Run. Only an abandoned
       // started/pending Run is owed; a final snapshot (including zero) is not.
-      if (started && native.segments > 0 && !native.finalUsage && convID && canRead(tok)) {
+      if (owes()) {
         // laterRunAt: a later Run of this conversation began while this one
         // was live (NativeSessionPool.create); its events are not this debt
         owe(debtKey, { since, n: 1, ready: Date.now() + STEP_WAIT.owedAt, before: native.laterRunAt })

@@ -1563,8 +1563,9 @@ test("native accounting: a parent lost after an owner past its reservation start
   await afterEvent(later)
   a.events.push(later)
   await parent.cancel("the parent is lost after its branch began")
+  // owed once, at the branch's start, and bounded before it
   expect(_internal.owed.get(key)?.n).toBe(1)
-  expect(_internal.owed.get(key).before).toBeLessThanOrEqual(a.started[1])
+  expect(Math.max(..._internal.owed.get(key).groups.map((g) => g.before))).toBeLessThanOrEqual(a.started[1])
   NATIVE_LIMITS.perProcess = 0
   const thirdChat = { ...branch, messages: [...branch.messages, choice(second).message, { role: "user", content: "E3 while the parent's event is missing" }] }
   const third = await a.ask(account, thirdChat)
@@ -1577,6 +1578,122 @@ test("native accounting: a parent lost after an owner past its reservation start
   expect(fourth.body.usage.magpie_deferred).toEqual(EARLIER_DEFERRED)
   expect(_internal.owed.has(key)).toBe(false)
   expect(a.results).toEqual([])
+  expect(a.errors).toEqual([])
+})
+
+// A session that ends while a parent still waits out resultWait: nothing
+// after the unreserved Run would collect what the parent owes at abandon.
+test("native accounting: a parent waiting behind an owner past its reservation is collected by that owner, once", async () => {
+  const a = await agent({ rebuildUsage: NATIVE_FINAL_USAGE })
+  const account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  const parent = [...nativeSessions.entries][0]
+  const earlier = eventFor(a, 0, EARLIER_USAGE)
+  const key = _internal.usageKey(account.access, earlier.conversationId)
+  await afterEvent(earlier)
+  a.events.push(earlier) // stamped before the branch begins, as all 61 were
+  const branch = withNewInput(chat, first.body, ["already-provided"], "the user hasn't heard from you")
+  const second = await a.ask(account, branch)
+  expect(second.diagnostic).toMatch(/^same-run;/)
+  expect(parent.state).toBe("awaiting-results")
+  expect(second.body.usage).toMatchObject({ prompt_tokens: 215, completion_tokens: 5, magpie_deferred: EARLIER_DEFERRED })
+  expect(_internal.owed.has(key)).toBe(false)
+  // the session ends here: the parent runs out its result wait, owing nothing more
+  parent.fail({ status: 410, message: "native tool-result deadline expired" }, "expired")
+  expect(_internal.owed.has(key)).toBe(false)
+  NATIVE_LIMITS.perProcess = 0
+  const later = await a.ask(account, { ...branch, messages: [...branch.messages, choice(second).message, { role: "user", content: "after the parent expired" }] })
+  expect(later.diagnostic).toMatch(/^stateless;/)
+  expect(later.body.usage.magpie_deferred).toBeUndefined()
+  expect(a.results).toEqual([])
+  expect(a.errors).toEqual([])
+})
+
+// Cursor adds each step to a Run's one event as the step ends, seconds
+// later at times. A parent holding an earlier debt it collected hands it
+// over with its step: the later Run asks at once for that debt, and must
+// not take the parent's event before its last step is in it.
+test("native accounting: a handed-over parent's event is collected only once its last step is in it", async () => {
+  const partial = { inputTokens: 5, outputTokens: 2, cacheReadTokens: 40, cacheWriteTokens: 0 }
+  const whole = { inputTokens: 6, outputTokens: 4, cacheReadTokens: 90, cacheWriteTokens: 1 }
+  let parentEvent = null
+  const a = await agent({ toolRuns: [1, 2], rebuildUsage: NATIVE_FINAL_USAGE, dashboard: async (fake) => {
+    const events = [...fake.events]
+    // the parent's last step shows 600 ms after the branch began
+    if (parentEvent) events.push({ ...parentEvent, tokenUsage: fake.runs.length >= 3 && Date.now() - fake.started[2] >= 600 ? whole : partial })
+    return Response.json({ usageEventsDisplay: events })
+  } })
+  const account = auth(), chat = initial()
+  // R0 hands off and is lost: it owes E0
+  const first = await a.ask(account, chat)
+  await [...nativeSessions.entries][0].cancel("R0 is lost")
+  const earlier = eventFor(a, 0, EARLIER_USAGE)
+  const key = _internal.usageKey(account.access, earlier.conversationId)
+  expect(_internal.owed.get(key)?.n).toBe(1)
+  await afterEvent(earlier)
+  a.events.push(earlier)
+  // the next turn's owner collects E0 in the background, then waits on its own call
+  const turn = { ...chat, messages: [...continueWith(chat, first.body, ["R0 result"]).messages, { role: "user", content: "next turn" }] }
+  const step = await a.ask(account, turn)
+  expect(step.diagnostic).toMatch(/^same-run;/)
+  expect(choice(step).finish_reason).toBe("tool_calls")
+  const parent = [...nativeSessions.entries].find((e) => e.state === "awaiting-results")
+  for (const deadline = Date.now() + 3000; _internal.owed.has(key) && Date.now() < deadline;) await new Promise((r) => setTimeout(r, 10))
+  expect(_internal.owed.has(key)).toBe(false)
+  parentEvent = eventFor(a, 1, partial)
+  await afterEvent(parentEvent)
+  const branch = withNewInput(turn, step.body, ["already-provided"], "the user hasn't heard from you")
+  const second = await a.ask(account, branch)
+  expect(second.diagnostic).toMatch(/^same-run;/)
+  expect(parent.state).toBe("awaiting-results")
+  // E0 and the parent's whole event: 118 + 97 in, 3 + 4 out
+  expect(second.body.usage).toMatchObject({ prompt_tokens: 215, completion_tokens: 5, magpie_deferred: { prompt_tokens: 215, completion_tokens: 7, cached_tokens: 190, cache_write_tokens: 8 } })
+  expect(_internal.owed.has(key)).toBe(false)
+  parent.fail({ status: 410, message: "native tool-result deadline expired" }, "expired")
+  expect(_internal.owed.has(key)).toBe(false)
+  expect(a.results).toEqual([])
+  expect(a.errors).toEqual([])
+})
+
+// Owed at the branch's start, the parent can still be resumed by its own
+// result: its final, the whole turn's, must not count that step again.
+const PARENT_STEP_USAGE = { inputTokens: 5, outputTokens: 2, cacheReadTokens: 4, cacheWriteTokens: 0 }
+const sumOf = (u) => {
+  const d = u.magpie_deferred ?? { prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0, cache_write_tokens: 0 }
+  return { prompt: u.prompt_tokens + d.prompt_tokens, output: u.completion_tokens + d.completion_tokens, cached: u.prompt_tokens_details.cached_tokens + d.cached_tokens }
+}
+for (const when of ["after the branch collected it", "before anything collected it"]) test(`native accounting: a parent resumed ${when} counts its step once`, async () => {
+  const a = await agent({ finalAfterFirst: true, rebuildUsage: NATIVE_FINAL_USAGE })
+  const account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  const parent = [...nativeSessions.entries][0]
+  const step = eventFor(a, 0, PARENT_STEP_USAGE)
+  const key = _internal.usageKey(account.access, step.conversationId)
+  await afterEvent(step)
+  const collected = when === "after the branch collected it"
+  if (collected) a.events.push(step)
+  const second = await a.ask(account, withNewInput(chat, first.body, ["already-provided"], "the user hasn't heard from you"))
+  expect(second.diagnostic).toMatch(/^same-run;/)
+  if (collected) {
+    expect(second.body.usage.magpie_deferred).toEqual({ prompt_tokens: 9, completion_tokens: 2, cached_tokens: 4, cache_write_tokens: 0 })
+    expect(_internal.owed.has(key)).toBe(false)
+  } else {
+    expect(second.body.usage.magpie_deferred).toBeUndefined()
+    expect(_internal.owed.get(key)?.n).toBe(1)
+  }
+  const resumed = await a.ask(account, continueWith(chat, first.body, ["parent result"]))
+  expect(resumed.diagnostic).toMatch(/^same-run;/)
+  expect(choice(resumed).message.content).toBe("parent result")
+  expect(parent.state).toBe("complete")
+  // the turn's TurnEnded: 13 uncached + 10 read in, 7 out
+  expect(sumOf(resumed.body.usage)).toEqual(collected ? { prompt: 14, output: 5, cached: 6 } : { prompt: 23, output: 7, cached: 10 })
+  expect(_internal.owed.has(key)).toBe(false)
+  if (!collected) a.events.push(step) // its event shows only now
+  NATIVE_LIMITS.perProcess = 0
+  const later = await a.ask(account, { ...chat, messages: [...continueWith(chat, first.body, ["parent result"]).messages, choice(resumed).message, { role: "user", content: "next turn" }] })
+  expect(later.diagnostic).toMatch(/^stateless;/)
+  expect(later.body.usage.magpie_deferred).toBeUndefined()
+  expect(a.results).toHaveLength(1)
   expect(a.errors).toEqual([])
 })
 

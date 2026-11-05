@@ -167,7 +167,12 @@ test("native admission: answered native calls and new input past a held reservat
   expect(prepared.selected).toBe(false)
   // with no native call in its history, a request past the reservation is a branch, as before
   expect(pool.prepare("synthetic-token", chat(), "synthetic-session", registered).fallback).toBe("owner busy")
-  const other = owner().run
+  // another conversation of the same account, live in the same pool
+  const another = pool.prepare("synthetic-token", chat({ messages: [{ role: "user", content: "another conversation" }] }), "another-session", registered)
+  expect(another.selected).toBe(true)
+  const other = pool.create(another, run.resolution, _internal)
+  expect(other.account).toBe(run.account)
+  expect(other.selector).not.toBe(run.selector)
   const next = pool.create(prepared, run.resolution, _internal)
   expect(next).not.toBeNull()
   expect(pool.selectors.get(key)).toBe(run)

@@ -159,6 +159,14 @@ stateless debt as `usage.magpie_deferred`, separately from its own prompt total.
 If a started native Run is abandoned after a pending handoff, its dashboard
 count is owed once to the same account and conversation. Successful final
 snapshots, including explicit zero, and cached replays do not enroll that debt.
+A Run still awaiting results when a later native Run of its conversation
+starts owes that count at once, for the later Run to collect, rather than at
+abandonment; what it had collected and not given out goes along. Cursor adds
+each step to a Run's one event as the step ends, so that event is looked for
+only `owedAt` (5 seconds) after the handover; a final waits for it. If its own
+results resume it after all, a count not collected yet is withdrawn, and one
+already collected comes off its final (from the earlier calls' share first),
+so the event is billed once.
 
 Dashboard attribution uses event timestamps, rather than when events arrive.
 Older debt is bounded strictly before the native Run's start, and keeps that
