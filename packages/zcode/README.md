@@ -213,6 +213,20 @@ number written into the plugin would hold a Max account to a Lite one's
 with no way to raise it. A user who knows their plan's cap sets it on the
 account or the provider in magpie, and magpie's queue follows that.
 
+A run of caps is also the edge firewall's countdown: two days of logs
+(11-05 and 11-06) show ~18 requests/min on the Start Plan bringing 3008
+caps in a run, then 3–7 minutes later a 405 block page that refuses the
+whole IP for 1–2 hours. The waits absorb most caps, so neither magpie nor
+the agent sees the address is saturated and nobody slows the arrival rate.
+Five cap-hit requests in one minute now hold Start Plan requests off
+`zcode.z.ai` for three minutes, process-wide and for every account, and
+answer them here with a 429 and `Retry-After`, so magpie still rests the
+account and asks the group's next provider. A coding plan, served by
+another host, is never held. The window clears when the hold is armed, so
+the hold's own 429s cannot keep it armed. This is distinct from the
+network's 405 block page hold (plugins#649), which is what an IP already
+refused needs.
+
 ## Two accounts at once
 
 Three ZCode accounts used at once from one address can get the address

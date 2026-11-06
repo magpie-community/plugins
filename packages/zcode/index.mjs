@@ -1931,6 +1931,50 @@ const BUSY_WAITS = [250, 500, 900, 1600, 2800, 4000]
 const BUSY_HINT =
   "ZCode serves one account a few requests at a time, and every agent and session of this computer asks through magpie; this request came behind the others, and the same request a moment later is served"
 
+// busyHold is the firewall's countdown. Two days of logs (11-05 23:06–23:15
+// and 11-06 06:23–06:27) show the same shape: sustained ~18 requests/min on
+// the Start Plan brings code-3008 caps in a run, and 3–7.5 minutes later the
+// edge firewall (errors.aliyun.com) refuses the whole IP with 405 for 1–2
+// hours. askBusy's per-request waits absorb ~90% of those caps, so neither
+// magpie nor the agent sees that the address is saturated and nobody slows
+// the arrival rate down. A run of BUSY_N caps in one minute holds the Start
+// Plan (zcode.z.ai only, process-wide, every account) off BUSY_HOLD. Replay
+// of both days: N=5, H=3min freezes 2–7 minutes before the first 405 and
+// spares 37–52 requests. A held request answers 429 with Retry-After, so
+// magpie still reads a rate limit, rests the account and fails over; it is
+// not the 405/BlockedHint of an IP already refused. The coding plan, on
+// another host, is never held.
+const BUSY_N = 5
+const BUSY_WINDOW = 60_000
+const BUSY_HOLD = 3 * 60_000
+const busyHold = { hits: [], until: 0 }
+const busyHeld = () => Date.now() < busyHold.until
+
+// busyCap records one concurrency cap of a Start Plan request. Only a run
+// arms a hold; the window is cleared on arming so the hold's own 429s (and
+// the first caps after it) cannot keep re-arming it.
+function busyCap() {
+  if (busyHeld()) return
+  const now = Date.now()
+  busyHold.hits.push(now)
+  while (busyHold.hits.length && now - busyHold.hits[0] > BUSY_WINDOW) busyHold.hits.shift()
+  if (busyHold.hits.length >= BUSY_N) {
+    busyHold.until = now + BUSY_HOLD
+    busyHold.hits.length = 0
+  }
+}
+
+function busyHeldAnswer() {
+  const wait = Math.max(1, Math.ceil((busyHold.until - Date.now()) / 1000))
+  const error = {
+    type: "rate_limit_error",
+    message: `ZCode is busy: its concurrency cap was hit ${BUSY_N} times in a minute, so this computer's Start Plan requests are held for ${wait}s to keep the provider's network firewall from blocking this IP; wait a while, or use a GLM Coding Plan model`,
+  }
+  return new Response(JSON.stringify({ type: "error", error }), {
+    status: 429, statusText: STATUS_TEXT[429], headers: { "content-type": "application/json", "retry-after": String(wait) },
+  })
+}
+
 // busy says a 429 is that in-flight cap: its own code (3008, 3009), or its
 // own words when the envelope carries no code.
 function busy(status, text) {
@@ -1977,11 +2021,14 @@ function busyAnswer(res, text) {
 // account is saturated rather than busy, and the cap goes back as
 // busyAnswer's 429. The plan path's patience, shared with free first's
 // replay, whose plan has a cap of its own.
-async function askBusy(u, o, hs) {
+async function askBusy(u, o, hs, onCap) {
   let res = await fetch(u, { ...o, headers: hs })
+  let counted = false
   for (let i = 0; res.status === 429; i++) {
     const text = await res.text()
     const cap = busy(429, text)
+    // one request's retries are one saturation signal, not one per wait
+    if (cap && !counted) { counted = true; onCap?.() }
     if (!cap || i >= BUSY_WAITS.length) {
       res = cap ? busyAnswer(res, text) : new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
       break
@@ -2655,6 +2702,10 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               delete opts.duplex
               return askBusy(u, opts, h2)
             }
+            // a run of busy caps held this computer off zcode.z.ai before the
+            // edge firewall could block the IP: a held request is answered
+            // here, with a 429 magpie still reads as a rate limit
+            if (start && busyHeld()) return kept(busyHeldAnswer())
             // a block page held this computer off zcode.z.ai (edge): the
             // Start Plan and a picked gift are answered here; free first
             // already left the gift for the plan
@@ -2698,7 +2749,10 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
             // the number declared above
             let res
             try {
-              res = await askBusy(url, opts, h)
+              // Only Start Plan caps count toward the firewall hold: the
+              // coding plan is served by another host and was never refused
+              // with the IP's 405.
+              res = await askBusy(url, opts, h, start ? busyCap : undefined)
             } catch (e) {
               // free first moved the request onto the gift, so a gift that
               // cannot be asked at all — the network, the host — is answered
@@ -2903,4 +2957,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { edge, EDGE_HOLD, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { edge, EDGE_HOLD, busyHold, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
