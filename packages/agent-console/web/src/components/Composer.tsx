@@ -1,6 +1,6 @@
 // Input area (§8.6 Composer): auto-grow, IME, queue/steer, waiting for permission, attachments,
 // Agent·model popover, thinking level, permission mode, ↑ to recall.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isImeComposing } from "../composer/ime";
 import { useUi } from "../stores/ui";
 import { useData } from "../stores/data";
@@ -36,10 +36,19 @@ type Attachment = { path: string; name: string; mime: string; uploading?: boolea
 /** Maximum rows drawn in the model list at once (hundreds of buttons make the popover noticeably sluggish) */
 const MODEL_LIST_CAP = 150;
 
-export function Composer() {
+/** memo: no props, so Chat re-rendering on every streamed token (items, virtual height) leaves the composer alone */
+export const Composer = memo(function Composer() {
   const ui = useUi();
   const { threads, providers, projects } = useData();
-  const tl = useTimeline();
+  // 1.3.7: subscribe field-by-field so assistant_delta tokens don't re-render the whole composer
+  const status = useTimeline((s) => s.status);
+  const pending = useTimeline((s) => s.pending);
+  const slashCommands = useTimeline((s) => s.slashCommands);
+  const queue = useTimeline((s) => s.queue);
+  const hasUserItem = useTimeline((s) => s.items.some((it) => it.kind === "user"));
+  const hasAgentItem = useTimeline((s) => s.items.some((it) =>
+    it.kind === "assistant" || it.kind === "reasoning" || it.kind === "toolgroup" || it.kind === "permission"));
+  const checklist = useTimeline((s) => currentChecklist(s.items));
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [mentions, setMentions] = useState<MentionDraft[]>([]);
@@ -64,8 +73,8 @@ export function Composer() {
 
   const thread = threads.find((t) => t.id === ui.currentThreadId);
   const provider = providers.find((p) => p.id === thread?.provider);
-  const running = tl.status === "running" || tl.status === "initializing";
-  const waiting = tl.pending.length > 0;
+  const running = status === "running" || status === "initializing";
+  const waiting = pending.length > 0;
   const steerOk = provider?.capabilities.steer ?? false;
   // Known not to take images (an ACP Agent whose initialize doesn't advertise them): images still go, as file paths
   const imagesByPath = !!provider && !provider.capabilities.images && provider.capabilities.imagesKnown !== false;
@@ -74,13 +83,12 @@ export function Composer() {
   const modeMeta = modes.find((m) => m.id === mode);
   // The Agent is locked once the conversation has run. 1.3: the user's message is saved before the Agent starts, so a
   // first message whose Agent never started (no session id, no reply) leaves the picker open (the daemon agrees)
-  const started = tl.items.some((it) => it.kind === "user") && (running || !!thread?.providerSessionId
-    || tl.items.some((it) => it.kind === "assistant" || it.kind === "reasoning" || it.kind === "toolgroup" || it.kind === "permission"));
+  const started = hasUserItem && (running || !!thread?.providerSessionId || hasAgentItem);
 
   const slashMenu = useMemo(() => slashMenuState(text, slashSuppress.current), [text]);
   const slashFiltered = useMemo(
-    () => filterSlashCommands(tl.slashCommands, slashMenu.query),
-    [tl.slashCommands, slashMenu.query],
+    () => filterSlashCommands(slashCommands, slashMenu.query),
+    [slashCommands, slashMenu.query],
   );
   const slashRows = useMemo(() => slashMenuRows(slashFiltered), [slashFiltered]);
   const slashPickable = useMemo(() => selectableSlashRows(slashRows), [slashRows]);
@@ -472,8 +480,6 @@ export function Composer() {
   })();
 
   if (!ui.currentThreadId) return null;
-  const checklist = currentChecklist(tl.items);
-
   return (
     <div className={`composer${waiting ? " waiting" : ""}`} onDrop={onDrop}
       onDragOver={(e) => {
@@ -494,9 +500,9 @@ export function Composer() {
         </div>
       )}
       {/* queue list */}
-      {tl.queue.length > 0 && (
+      {queue.length > 0 && (
         <div className="q-list">
-          {tl.queue.map((q) => (
+          {queue.map((q) => (
             <div key={q.id} className="q-item">
               <span className="q-text">{q.text}</span>
               <button className="ibtn" title={tr("common.remove")} onClick={() => void ws.call("thread.queueRemove", { id: thread?.id, queueId: q.id }).catch(() => {})}>
@@ -861,7 +867,7 @@ export function Composer() {
       )}
     </div>
   );
-}
+});
 
 /** The small ⌄ every composer chip ends with (1.3: one chip style for agent·model, effort, permission, Fast) */
 function ChipCaret() {

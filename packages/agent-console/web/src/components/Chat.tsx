@@ -265,7 +265,11 @@ export function Chat() {
                   key={v.key}
                   data-index={v.index}
                   ref={rowRef}
-                  style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${v.start}px)` }}
+                  style={{
+                    position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${v.start}px)`,
+                    // 1.3.7: the list's bottom gap lives inside the last row's measured height (see .tl-wrap in layout.css)
+                    ...(!tl.error && v.index === items.length - 1 ? { paddingBottom: "var(--tl-pad-b)" } : {}),
+                  }}
                 >
                   <TimelineRow it={it} threadId={activeThreadId} onEditResend={resend}
                     onRetryLast={v.index === lastTurnEnd ? retryLast : undefined}
