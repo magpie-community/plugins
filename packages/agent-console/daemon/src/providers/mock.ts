@@ -405,6 +405,25 @@ async function scriptBigReply(ctx: Ctx): Promise<void> {
   emit({ type: "assistant_message", itemId: "B1", text: acc });
 }
 
+// "/codestream" (1.3.7 flicker e2e): a reply whose fenced code blocks grow one line per delta, the way a real
+// Agent streams code (so a block is still open while the user clicks its wrap toggle), then a second block
+async function scriptCodeStream(ctx: Ctx): Promise<void> {
+  const { emit } = ctx;
+  let acc = "";
+  const put = (p: string) => { acc += p; emit({ type: "assistant_delta", itemId: "C1", text: p }); };
+  put("先看第一段代码：\n\n```ts\n");
+  for (let b = 1; b <= 2; b++) {
+    if (b === 2) put("```\n\n然后是第二段：\n\n```ts\n");
+    for (let k = 0; k < 22; k++) {
+      if (ctx.interrupted()) return;
+      put(`const block${b}_line${k} = computeSomethingRatherLong(${b}, ${k}, "a fairly long string literal so wrapping matters ${"x".repeat(60)}");\n`);
+      await sleep(120);
+    }
+  }
+  put("```\n\n完毕。");
+  emit({ type: "assistant_message", itemId: "C1", text: acc });
+}
+
 async function scriptExit(_ctx: Ctx): Promise<void> {
   await sleep(300);
   throw new MockCrash();
@@ -421,6 +440,7 @@ function pickScript(text: string): (ctx: Ctx) => Promise<void> {
   if (t.startsWith("/long")) return scriptLong;
   if (t.startsWith("/exit")) return scriptExit;
   if (t.startsWith("/bigreply")) return scriptBigReply;
+  if (t.startsWith("/codestream")) return scriptCodeStream;
   if (t.startsWith("/serve")) return scriptServe;
   if (t.startsWith("/tools")) return scriptTools;
   if (t.startsWith("/bashhint")) return scriptBashHint;

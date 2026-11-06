@@ -5,7 +5,7 @@
 //   (mousedown on it is cancelled), so Ctrl+C keeps working and the button stays while the pointer travels to it.
 // - Placed above the selection, or below it when there is no room, inside the visible part of the scroller
 //   (above the composer), never off-screen at narrow widths. Follows scrolling; Esc or an empty selection hides it.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./Icons";
 import { t } from "../i18n/index.js";
@@ -51,7 +51,8 @@ function visibleArea(root: Element): Box {
   return { left: r.left, right: r.right, top: Math.max(r.top, 0) + 4, bottom: bottom - 4 };
 }
 
-export function QuoteSelect() {
+/** memo: no props, Chat's streaming re-renders don't reach it */
+export const QuoteSelect = memo(function QuoteSelect() {
   const [pick, setPick] = useState<Pick | null>(null);
   const dragging = useRef(false);
   const popRef = useRef<HTMLButtonElement>(null);
@@ -129,4 +130,4 @@ export function QuoteSelect() {
     </button>,
     document.body,
   );
-}
+});

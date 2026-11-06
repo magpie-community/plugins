@@ -6,7 +6,7 @@ import { Topbar } from "./components/Topbar";
 import { Chat } from "./components/Chat";
 import { useTimeline } from "./stores/timeline";
 import { useData } from "./stores/data";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CommandPalette } from "./components/CommandPalette";
 import { Panel } from "./components/Panel";
 import { SettingsDialog } from "./components/Settings";
@@ -14,9 +14,20 @@ import { Toasts } from "./components/Toast";
 import { t } from "./i18n/index.js";
 import { goBackToMagpie, isWrapped, reportLostToWrapper } from "./api/backToMagpie.js";
 
+/** No thread waiting: one shared Set, so Sidebar's prop stays the same reference */
+const NO_PENDING_THREADS: Set<string> = new Set<string>();
+
 export function App() {
   const { state, version } = useConnection();
-  const pending = useTimeline((s) => s.pending);
+  // Field-level selectors: a token delta (assistant/reasoning/tool output) changes none of these, so the shell
+  // (Layout, Sidebar, Topbar, Panel) doesn't re-render while a reply streams
+  const pendingCount = useTimeline((s) => s.pending.length);
+  const pendingKey = useTimeline((s) => s.pending[0]?.key);
+  const pendingThreadId = useTimeline((s) => (s.pending.length > 0 ? s.threadId : null));
+  const pendingByThread = useMemo<Set<string>>(
+    () => (pendingThreadId ? new Set([pendingThreadId]) : NO_PENDING_THREADS),
+    [pendingThreadId],
+  );
   const providers = useData((s) => s.providers);
   const [palette, setPalette] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -59,8 +70,8 @@ export function App() {
 
   return (
     <Layout
-      sidebar={<Sidebar pendingByThread={new Set(pending.map((p) => useTimeline.getState().threadId!).filter(Boolean))} />}
-      topbar={<Topbar pendingCount={pending.length} pendingKey={pending[0]?.key} />}
+      sidebar={<Sidebar pendingByThread={pendingByThread} />}
+      topbar={<Topbar pendingCount={pendingCount} pendingKey={pendingKey} />}
       panel={<Panel />}
     >
       {state === "reconnecting" && <div className="connbar">{t("boot.reconnecting")}</div>}

@@ -834,6 +834,26 @@ async function scriptBigReply(ctx) {
   }
   emit({ type: "assistant_message", itemId: "B1", text: acc });
 }
+async function scriptCodeStream(ctx) {
+  const { emit } = ctx;
+  let acc = "";
+  const put = (p) => {
+    acc += p;
+    emit({ type: "assistant_delta", itemId: "C1", text: p });
+  };
+  put("\u5148\u770B\u7B2C\u4E00\u6BB5\u4EE3\u7801\uFF1A\n\n```ts\n");
+  for (let b = 1; b <= 2; b++) {
+    if (b === 2) put("```\n\n\u7136\u540E\u662F\u7B2C\u4E8C\u6BB5\uFF1A\n\n```ts\n");
+    for (let k = 0; k < 22; k++) {
+      if (ctx.interrupted()) return;
+      put(`const block${b}_line${k} = computeSomethingRatherLong(${b}, ${k}, "a fairly long string literal so wrapping matters ${"x".repeat(60)}");
+`);
+      await sleep(120);
+    }
+  }
+  put("```\n\n\u5B8C\u6BD5\u3002");
+  emit({ type: "assistant_message", itemId: "C1", text: acc });
+}
 async function scriptExit(_ctx) {
   await sleep(300);
   throw new MockCrash();
@@ -849,6 +869,7 @@ function pickScript(text) {
   if (t.startsWith("/long")) return scriptLong;
   if (t.startsWith("/exit")) return scriptExit;
   if (t.startsWith("/bigreply")) return scriptBigReply;
+  if (t.startsWith("/codestream")) return scriptCodeStream;
   if (t.startsWith("/serve")) return scriptServe;
   if (t.startsWith("/tools")) return scriptTools;
   if (t.startsWith("/bashhint")) return scriptBashHint;
