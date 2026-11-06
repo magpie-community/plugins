@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4 · 2026-11-06
+
+### Fixed
+
+- Settings' Language, Scene and Quality pickers are read with their value ("Scene, Office"), wheeling past the end of a picker's list no longer closes it, and a picker opened from the keyboard near the foot of Settings stays open. The page's scrollbars are magpie's thin rounded thumb. By frederick-wang (#778, #773).
+
 ## 0.3.3 · 2026-11-06
 
 ### Changed
