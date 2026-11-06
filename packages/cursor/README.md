@@ -152,8 +152,9 @@ the old native exec again.
 
 A native tool handoff reports zero usage with `magpie_native.accounting=pending`;
 the final native answer bills the turn's totals. Its own `prompt_tokens` and
-`completion_tokens` are its last model call's share (the larger of that
-call's prompt estimate and the turn's mean per call), since a client reads
+`completion_tokens` are its last model call's count (`ModelCallCompletedUpdate`,
+asked for with `emit_model_call_usage`, else the larger of that call's prompt
+estimate and the turn's mean per call), since a client reads
 them as how full its context is; the earlier calls' share is
 `usage.magpie_deferred` (#156). An identical completed retry
 replays the saved response with zero usage. A native final also collects earlier

@@ -3,6 +3,8 @@ import {
   _internal as I,
   OpenDesignAuthPlugin,
 } from "./index.mjs"
+import { MODELS } from "./models.mjs"
+import { RATES } from "./rates.mjs"
 
 // bun test runs every package's files in one process: a fetch left
 // stubbed here answers every test file after this one
@@ -167,9 +169,9 @@ test("the account's list is the vendor's own, live", () => {
     },
     release_date: "",
     variants: {},
-    rate: "x0.5",
+    rate: "x4",
   })
-  expect(models["deepseek-v4-pro"]).toMatchObject({ rate: "x2", limit: { context: 1048000, output: 232000 } })
+  expect(models["deepseek-v4-pro"]).toMatchObject({ rate: "x1", limit: { context: 1048000, output: 232000 } })
   // a model the seed doesn't know is named by its id, and a catalog entry
   // without limits still gets a workable entry
   expect(models["brand-new-9"]).toMatchObject({
@@ -210,6 +212,7 @@ test("the seed's models carry the measured levels as the config's variants", asy
     "deepseek-v4-flash-vision-exp": ["low", "high", "max"],
     "deepseek-v4-pro": ["low", "high", "max"],
     "deepseek-v4.1-flash": ["low", "high", "max"],
+    "deepseek-v4.1-flash-eco": ["low", "high", "max"],
     "glm-5.3-flash": ["low", "high", "max"],
     "glm-5.3-flashx": ["low", "high", "max"],
     "gpt-6-luna": null,
@@ -218,6 +221,67 @@ test("the seed's models carry the measured levels as the config's variants", asy
     "mimo-v2.6-pro": ["low", "high", "max"],
   })
   expect(models["claude-haiku-5.5"].variants.high).toEqual({ reasoningEffort: "high" })
+})
+
+test("the seed gives the eco schedule the model V4.1 Flash is", () => {
+  const { "deepseek-v4.1-flash": flash, "deepseek-v4.1-flash-eco": eco } = MODELS
+  expect(eco).toEqual({ ...flash, name: "DeepSeek V4.1 Flash Eco" })
+  expect(Object.keys(MODELS)).toContain("deepseek-v4.1-flash-eco")
+})
+
+// the plan's deduction multipliers, "额度扣除倍率", published at
+// https://open-design.ai/zh/model-credits/ (read 2026-11-06)
+test("the plan's multipliers are the vendor's own table, not the catalog's cost words", () => {
+  expect(RATES).toEqual({
+    "claude-haiku-5.5": 2,
+    "deepseek-v4-flash": 1,
+    "deepseek-v4-flash-vision-exp": 1,
+    "deepseek-v4-pro": 1,
+    "deepseek-v4.1-flash": 0.5,
+    "deepseek-v4.1-flash-eco": 0.27,
+    "glm-5.3-flash": 1,
+    "glm-5.3-flashx": 2,
+    "gpt-6-luna": 4,
+    "hy4-preview": 1,
+    "kimi-k2.7-code": 1,
+    "mimo-v2.6-flash": 1,
+    "mimo-v2.6-pro": 1,
+    "minimax-m3.1-flash": 1,
+  })
+  // each seed model is rated by the table; a model it doesn't name keeps the
+  // catalog's word (brand-new-9 below, and any model the vendor adds later)
+  const WORD = {
+    "claude-haiku-5.5": ["low", "x2"],
+    "gpt-6-luna": ["low", "x4"],
+    "glm-5.3-flash": ["low", "x1"],
+    "glm-5.3-flashx": ["medium", "x2"],
+    "deepseek-v4-pro": ["high", "x1"],
+    "deepseek-v4.1-flash": ["low", "x0.5"],
+    "deepseek-v4.1-flash-eco": ["low", "x0.27"],
+    "brand-new-9": ["high", "x2"],
+  }
+  const models = I.modelsOf({ data: Object.entries(WORD).map(([id, [cost]]) => ({ id, metadata: { cost } })) })
+  for (const [id, [, rate]] of Object.entries(WORD)) expect([id, models[id].rate]).toEqual([id, rate])
+})
+
+test("a kept model's rate is re-declared, so a charge an earlier version wrote can't linger", async () => {
+  const kept = {
+    provider: {
+      opendesign: {
+        models: {
+          "gpt-6-luna": { id: "gpt-6-luna", name: "GPT-6 Luna", rate: "x0.5" },
+          "brand-new-9": { id: "brand-new-9", name: "brand-new-9", rate: "x1" },
+        },
+      },
+    },
+  }
+  await (await OpenDesignAuthPlugin({})).config(kept)
+  const models = kept.provider.opendesign.models
+  expect(models["gpt-6-luna"].rate).toBe("x4")
+  // a kept name is still kept
+  expect(models["gpt-6-luna"].name).toBe("GPT-6 Luna")
+  // a model the table doesn't name keeps the rate it had
+  expect(models["brand-new-9"].rate).toBe("x1")
 })
 
 test("an empty catalog is no models", () => {
@@ -254,7 +318,7 @@ test("the plugin declares the provider and answers its methods", async () => {
     api: "https://amr-link.open-design.ai/v1",
   })
   // the seed models.mjs carries, which a signed-in account's list replaces
-  expect(Object.keys(cfg.provider.opendesign.models)).toHaveLength(11)
+  expect(Object.keys(cfg.provider.opendesign.models)).toHaveLength(12)
   expect(cfg.provider.opendesign.models["deepseek-v4.1-flash"]).toEqual({
     id: "deepseek-v4.1-flash",
     name: "DeepSeek V4.1 Flash",
@@ -267,6 +331,13 @@ test("the plugin declares the provider and answers its methods", async () => {
     rate: "x0.5",
     limit: { context: 1048000, output: 232000 },
     modalities: { input: ["text", "image"], output: ["text"] },
+  })
+  // the eco schedule is the same model: same limits, same levels, its own 0.27×
+  expect(cfg.provider.opendesign.models["deepseek-v4.1-flash-eco"]).toEqual({
+    ...cfg.provider.opendesign.models["deepseek-v4.1-flash"],
+    id: "deepseek-v4.1-flash-eco",
+    name: "DeepSeek V4.1 Flash Eco",
+    rate: "x0.27",
   })
   expect(hooks.auth.provider).toBe("opendesign")
   expect(hooks.auth.methods.map((m) => m.type)).toEqual(["oauth", "api"])

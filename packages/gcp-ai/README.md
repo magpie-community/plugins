@@ -8,7 +8,7 @@ You sign in once with your own Google account. No service accounts, no JSON keys
 
 ## Token caching and request latency
 
-With an `authorized_user` ADC, the access token is cached per account until 60 seconds before it expires and refreshed directly against Google's OAuth token endpoint; concurrent callers share one in-flight refresh. In gcloud mode every token still comes from gcloud, unchanged. The endpoint check runs in the background, so it never sits in front of the first model call — only a rejected credential (401) is surfaced on later requests.
+With an `authorized_user` ADC, the access token is cached per account until 60 seconds before it expires and refreshed directly against Google's OAuth token endpoint; concurrent callers share one in-flight refresh, including when several requests are refused at once and have to fetch again. A refused model call is retried once with that token when its body is already in memory; a stream is sent once rather than copied on the way out. In gcloud mode every token still comes from gcloud, unchanged. The endpoint check runs in the background, so it never sits in front of the first model call — only a rejected credential (401) is surfaced on later requests.
 
 ## Requirements
 

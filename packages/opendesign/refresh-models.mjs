@@ -95,9 +95,10 @@ const header = `// The models an account is offered before anyone has signed in 
 //
 // name: what the model is called; context/output: its token limits; input:
 // the non-text modalities it takes; cost and capability: the vendor's own
-// words, which the plugin turns into magpie's rate and thinking flags;
-// efforts: the reasoning levels amr-link was seen to take and think at,
-// measured, not read (#137), so a refresh keeps them.
+// words, which the plugin turns into magpie's thinking flag (the rate is
+// rates.mjs's, the plan's own deduction multiplier); efforts: the reasoning
+// levels amr-link was seen to take and think at, measured, not read (#137),
+// so a refresh keeps them.
 
 export const MODELS = {
 ${lines.join("\n")}
