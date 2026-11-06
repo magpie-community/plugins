@@ -98,7 +98,14 @@ magpie plugin add @magpie-community/opencode-inkstone-auth
 `uaa-token` 与 API Key 和别的 magpie 钱包插件一样保存在 magpie 的
 `auth.json` 里（明文）。`uaa-token` 等于网页登录态，能查看余额、创建 Key、
 领取墨点：**不要分享 `auth.json`，不要把 token 贴到公开的截图或日志里**。
-插件不把 token 写到任何其他地方；浏览器 profile 只用于登录/续期。
+
+**专用浏览器 profile**（里面是活的登录态，等同一个能操作你账号的浏览器）：
+
+- Windows：`%LOCALAPPDATA%\magpie\inkstone-browser`
+- macOS / Linux：`$XDG_CONFIG_HOME/magpie/inkstone-browser`（默认 `~/.config/magpie/inkstone-browser`）
+
+插件不把 token 写到任何其他地方；这个 profile 只用于登录/续期，删掉它只是
+退出登录态，不影响 auth.json 里的 Key。
 
 ## OpenCode 2.x
 

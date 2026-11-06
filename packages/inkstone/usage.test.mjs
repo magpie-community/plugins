@@ -47,7 +47,14 @@ test("balance, 5h/7d windows and the credit packs become the card", async () => 
   expect(names).toContain("限速")
   expect(names).not.toContain("最近到期")
 
-  expect(u.windows.find((w) => w.name === "每月免费基础包").display).toBe("剩 6.5 / 10 · 2026-11-28 到期")
+  // the expiry day is the viewer's calendar day: derive the expected string
+  // from the same local parse instead of a fixed UTC date (a fixed date fails
+  // in far-east zones, where 2026-11-28T12:00Z is already the 29th)
+  const endDay = (() => {
+    const d = new Date("2026-11-28T12:00:00Z")
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+  })()
+  expect(u.windows.find((w) => w.name === "每月免费基础包").display).toBe(`剩 6.5 / 10 · ${endDay} 到期`)
   // amount is the used share (10 - 6.5), not the remainder
   expect(u.windows.find((w) => w.name === "每月免费基础包").used).toBe(35)
   expect(u.windows.find((w) => w.name === "每月免费基础包").amount).toBe(3.5)
@@ -118,12 +125,13 @@ test("auth.checkin says the account can't take part when the phone is missing", 
   expect(r.outcome).toBe("ineligible")
 })
 
-test("a console 401 for auth.checkin marks the sign-in expired", async () => {
+test("a console 401 for auth.checkin is a plain failure: the host's checkin path reads no signIn", async () => {
   f = fakeInkStone()
   // keep_sign_in off: the 401 path must not launch a browser in the test
   const p = await plugin({ keep_sign_in: false })
   f.route("POST /api/tokenplan/v1/users/free-grant", () => new Response("", { status: 401 }))
-  await expect(p.auth.checkin(async () => auth)).rejects.toMatchObject({ signIn: "expired" })
+  const r = await p.auth.checkin(async () => auth)
+  expect(r).toEqual({ outcome: "failed", message: expect.stringContaining("401") })
 })
 
 test("no console token: the card says how to get one, and models stay usable", async () => {

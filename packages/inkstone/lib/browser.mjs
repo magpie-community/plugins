@@ -9,8 +9,10 @@
 //      正常），登录一次后 cookie 留在里面，之后的续期/重登都在这个
 //      profile 里静默完成。
 //
-// 登录窗口带调试端口，但全程只用 CDP 的 Network 域（Network.getAllCookies
-// 读浏览器级 cookie），不碰 Runtime.evaluate，不在页面里注入任何东西。
+// 登录窗口**不带**调试端口（阿里的风控看到的是普通浏览器，验证码才能过）；
+// 只有 headless 读取会话时才开 CDP，且全程只用 Network 域
+// （Network.getAllCookies 读浏览器级 cookie），不碰 Runtime.evaluate，
+// 不在页面里注入任何东西。
 // Windows 上插件用窗口标题判断登录完成并自己关窗；macOS / Linux 读不了窗口
 // 标题，登录完成后用户自己关窗，插件收残局。
 //
@@ -262,28 +264,41 @@ function killTree(child) {
   }
 }
 
-/** 杀掉仍占着这个专用 profile 的残留浏览器进程（只清插件自己的 profile）。 */
-export function killProfileProcesses(profile, log = () => {}) {
+function killProfileProcessesWindows(profile, log = () => {}) {
   try {
-    if (process.platform === "win32") {
-      const filter = String(profile).replace(/'/g, "''")
-      spawnSync(
-        "powershell",
-        [
-          "-NoProfile",
-          "-Command",
-          `Get-CimInstance Win32_Process -Filter "name like '%msedge%' or name like '%chrome%'" | ` +
-            `Where-Object { $_.CommandLine -like '*${filter}*' } | ` +
-            `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
-        ],
-        { stdio: "ignore", windowsHide: true, timeout: 30_000 },
-      )
-    } else {
-      spawnSync("pkill", ["-f", String(profile)], { stdio: "ignore" })
-    }
+    const filter = String(profile).replace(/'/g, "''")
+    // .Contains() 而不是 -like：-like 会把路径里的 [ ] 当通配符。
+    spawnSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-Command",
+        `Get-CimInstance Win32_Process -Filter "name like '%msedge%' or name like '%chrome%'" | ` +
+          `Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${filter}') } | ` +
+          `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+      ],
+      { stdio: "ignore", windowsHide: true, timeout: 30_000 },
+    )
   } catch (e) {
     log(`cleaning leftover browsers failed: ${e?.message ?? e}`)
   }
+}
+
+function killProfileProcessesUnix(profile, log = () => {}) {
+  try {
+    // 只匹配 "--user-data-dir=<本插件 profile>"：pkill -f 是对全体进程命令行
+    // 做正则，裸路径里的 . 会匹配任意字符、短路径会误杀无关进程。
+    const pattern = `--user-data-dir=${String(profile).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`
+    spawnSync("pkill", ["-f", "--", pattern], { stdio: "ignore" })
+  } catch (e) {
+    log(`cleaning leftover browsers failed: ${e?.message ?? e}`)
+  }
+}
+
+/** 杀掉仍占着这个专用 profile 的残留浏览器进程（只清插件自己的 profile）。 */
+export function killProfileProcesses(profile, log = () => {}) {
+  if (process.platform === "win32") killProfileProcessesWindows(profile, log)
+  else killProfileProcessesUnix(profile, log)
 }
 
 async function removeProfile(dir) {
@@ -332,7 +347,10 @@ async function waitForDebugPort(portFile, child, timeoutMs = 25_000) {
           .catch(() => false)
         if (live) return port
       }
-    } catch {
+    } catch (e) {
+      if (e?.name === "AbortError") {
+        // 端口在但端点不应答：浏览器正在启动或已僵死，按旧端口处理继续等。
+      }
       /* 文件还没写出来 */
     }
     if (exited) throw new Error("浏览器启动后立刻退出了（被策略拦截？）")
@@ -457,17 +475,23 @@ export function windowTitleOf(pid, platform = process.platform) {
 }
 
 /**
- * 优雅关闭：发 WM_CLOSE 让 Edge 走正常退出流程（会把 cookie 刷到磁盘），
- * 等它自己退出；超时才强制结束。直接 taskkill /F 会丢掉刚登录写下的 cookie。
+ * 优雅关闭：Windows 发 WM_CLOSE 让 Edge 走正常退出流程（会把 cookie 刷到磁盘）；
+ * Unix 先 SIGTERM（Chromium 收到后同样把 cookie flush 出去再退出）。
+ * 等它自己退出；超时才 SIGKILL——强杀会丢掉刚登录写下的 cookie。
  */
 export async function closeWindowGracefully(child, { timeoutMs = 15_000, log = () => {} } = {}) {
   if (!child) return
   try {
-    spawnSync(
-      "powershell",
-      ["-NoProfile", "-Command", `(Get-Process -Id ${Number(child.pid)} -ErrorAction SilentlyContinue).CloseMainWindow()`],
-      { stdio: "ignore", windowsHide: true, timeout: 10_000 },
-    )
+    if (process.platform === "win32") {
+      spawnSync(
+        "powershell",
+        ["-NoProfile", "-Command", `(Get-Process -Id ${Number(child.pid)} -ErrorAction SilentlyContinue).CloseMainWindow()`],
+        { stdio: "ignore", windowsHide: true, timeout: 10_000 },
+      )
+    } else {
+      // macOS/Linux 没有 powershell，也不要等它失败：直接 SIGTERM。
+      child.kill("SIGTERM")
+    }
   } catch (e) {
     log(`graceful close failed: ${e?.message ?? e}`)
   }
@@ -524,12 +548,16 @@ async function waitForConsoleWindow(child, { timeoutMs = 8 * 60_000, pollMs = 10
  *    不再影响验证码）。
  *
  * 登录态留在专用 profile 里（keepSignIn），续期和下次登录都直接用它。
+ *
+ * 测试钩子：`MAGPIE_INKSTONE_LOGIN_EXIT=1` 让"登录窗口"一步直接视为完成
+ * （编译出来的 fake 浏览器没有真窗口标题可读），其余路径与真实登录一致。
  */
 export async function signInWithBrowser({ browserPath, keepSignIn = true, timeoutMs = 8 * 60_000, signal, log = () => {} } = {}) {
   const dir = keepSignIn ? profileDir() : oneOffProfileDir()
   const exe = browserCandidates(browserPath)[0]
   if (!exe) throw new Error("No Chromium browser was found (Edge or Chrome); use the API key sign-in instead.")
   const cancelled = () => Boolean(signal?.aborted)
+  const fakeLogin = process.env.MAGPIE_INKSTONE_LOGIN_EXIT === "1"
   return await exclusive(async () => {
     log("opening the sign-in window")
     killProfileProcesses(dir, log)
@@ -540,7 +568,7 @@ export async function signInWithBrowser({ browserPath, keepSignIn = true, timeou
         env: browserEnv(),
       })
       try {
-        const how = await waitForConsoleWindow(child, { timeoutMs, signal, log })
+        const how = fakeLogin ? "console" : await waitForConsoleWindow(child, { timeoutMs, signal, log })
         log(`login window finished (${how})`)
         if (how === "aborted") throw Object.assign(new Error("the sign-in was cancelled"), { cancelled: true })
         // 登录完成：让页面稳定一下，然后**优雅关闭**（WM_CLOSE），让 Edge
@@ -580,7 +608,7 @@ export async function signInWithBrowser({ browserPath, keepSignIn = true, timeou
  * 静默续期：专用 profile 里 headless 打开控制台页，SSO 会话还在就会重新
  * 下 `uaa-token`。读不到就返回空串（交给调用方提示重新登录），不抛错。
  */
-export async function renewSilently({ browserPath, timeoutMs = 20_000, log } = {}) {
+export async function renewSilently({ browserPath, timeoutMs = 20_000, log = () => {} } = {}) {
   const dir = profileDir()
   if (!existsSync(dir)) return ""
   // 登录正在进行时不要抢 profile：下一次额度刷新再续。

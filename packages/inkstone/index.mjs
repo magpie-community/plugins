@@ -39,7 +39,7 @@ import {
 
 const PROVIDER_ID = "intern-inkstone"
 const NPM = "@ai-sdk/openai-compatible"
-const NAME = "书生·端砚 "
+const NAME = "书生·端砚"
 const EARLY_MS = 10 * 60_000
 const QUOTA_TTL_MS = 60_000
 const DEFAULT_LOGIN_TIMEOUT_MS = 8 * 60_000
@@ -100,7 +100,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
     return fallback
   }
   const createKeyOn = () => opt("create_key", true)
-  const pruneOn = () => opt("prune_keys", false)
+  const pruneOn = () => opt("prune_keys", true)
   const keepSignInOn = () => opt("keep_sign_in", true)
   const loginTimeoutMs = optNum(options.loginTimeoutMs, DEFAULT_LOGIN_TIMEOUT_MS)
   const quotaTtlMs = optNum(options.quotaTtlMs, QUOTA_TTL_MS)
@@ -323,7 +323,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           key: "prune_keys",
           label: "Prune old inkstone API keys",
           description:
-            "Keep the newest two ink-<host>-<account>-* keys and delete older ones on this machine. Manual keys, and keys whose creation time cannot be read, are never deleted.",
+            "Keep the newest two ink-<host>-<account>-* keys and delete older ones on this machine. The key in use is never deleted; manual keys, and keys whose creation time cannot be read, are never deleted either.",
           labels: {
             zh: "清理旧的端砚 API Key",
             "zh-TW": "清理舊的端硯 API Key",
@@ -331,19 +331,20 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             de: "Alte InkStone-API-Keys entfernen",
           },
           descriptions: {
-            zh: "保留本机最新的两个 ink-<host>-<account>-* 密钥，删除更早的。手动创建的、或无法读取创建时间的密钥绝不删除。",
-            "zh-TW": "保留本機最新的兩個 ink-<host>-<account>-* 金鑰，刪除較舊的。手動建立的或無法讀取建立時間的金鑰絕不刪除。",
-            ja: "このマシン上の最新2つの ink-<host>-<account>-* キーだけを残し、古いものを削除します。手動で作成したキーと作成時刻を読み取れないキーは削除しません。",
-            de: "Behält die zwei neuesten ink-<host>-<account>-* Keys und löscht ältere. Manuelle Keys und Keys ohne lesbare Erstellungszeit werden nie gelöscht.",
+            zh: "保留本机最新的两个 ink-<host>-<account>-* 密钥，删除更早的。正在使用的密钥绝不删除；手动创建的、或无法读取创建时间的密钥也绝不删除。",
+            "zh-TW": "保留本機最新的兩個 ink-<host>-<account>-* 金鑰，刪除較舊的。正在使用的金鑰絕不刪除；手動建立的、或無法讀取建立時間的金鑰也絕不刪除。",
+            ja: "このマシン上の最新2つの ink-<host>-<account>-* キーだけを残し、古いものを削除します。使用中のキーは削除されません。手動で作成したキーと作成時刻を読み取れないキーも削除しません。",
+            de: "Behält die zwei neuesten ink-<host>-<account>-* Keys und löscht ältere. Der verwendete Key wird nie gelöscht; manuelle Keys und Keys ohne lesbare Erstellungszeit werden ebenfalls nie gelöscht.",
           },
           confirm:
-            "Old ink-<host>-<account>-* keys on this machine will be deleted; manual keys are kept.",
+            "Old ink-<host>-<account>-* keys on this machine will be deleted; manual keys and the key in use are kept.",
           confirms: {
-            zh: "将删除本机旧的 ink-<host>-<account>-* 密钥；手动创建的密钥会保留。",
-            "zh-TW": "將刪除本機舊的 ink-<host>-<account>-* 金鑰；手動建立的金鑰會保留。",
-            ja: "このマシン上の古い ink-<host>-<account>-* キーを削除します。手動で作成したキーは残します。",
-            de: "Alte ink-<host>-<account>-* Keys werden gelöscht; manuell erstellte Keys bleiben erhalten.",
+            zh: "将删除本机旧的 ink-<host>-<account>-* 密钥；手动创建的密钥和正在使用的密钥会保留。",
+            "zh-TW": "將刪除本機舊的 ink-<host>-<account>-* 金鑰；手動建立的金鑰和正在使用的金鑰會保留。",
+            ja: "このマシン上の古い ink-<host>-<account>-* キーを削除します。手動で作成したキーと使用中のキーは残します。",
+            de: "Alte ink-<host>-<account>-* Keys werden gelöscht; manuell erstellte Keys und der verwendete Key bleiben erhalten.",
           },
+          default: true,
         },
         {
           key: "keep_sign_in",
@@ -370,9 +371,9 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
         {
           type: "oauth",
           label: "Browser sign-in (ink credits + creates an API key)",
-           /**
-            * 插件专用 profile 的窗口；插件实时读会话并自己关窗。
-            */
+          /**
+           * 插件专用 profile 的窗口；插件实时读会话并自己关窗。
+           */
           prompts: [
             {
               type: "password",
@@ -407,7 +408,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
               instructions:
                 process.platform === "win32"
                   ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it. After the sign-in the plugin creates an ink-* API key on your account (leave the prompt empty; paste an existing key or turn off \"Create an API key on browser sign-in\" to skip) — the plaintext is shown once, and the plugin keeps it for you."
-                  : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code), then close that window yourself; the plugin then reads the session from the profile and finishes. After the sign-in the plugin creates an ink-* API key on your account (leave the prompt empty; paste an existing key or turn off \"Create an API key on browser sign-in\" to skip) — the plaintext is shown once, and the plugin keeps it for you.",
+                  : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code), then quit that browser yourself — Cmd+Q on macOS (closing its last window is not enough), or close its last window on Linux. The plugin then reads the session from the profile and finishes. After the sign-in the plugin creates an ink-* API key on your account (leave the prompt empty; paste an existing key or turn off \"Create an API key on browser sign-in\" to skip) — the plaintext is shown once, and the plugin keeps it for you.",
               method: "auto",
               async callback(_code, { signal } = {}) {
                 let token = ""
@@ -568,11 +569,8 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           if (e?.code === -15900) {
             return { outcome: "ineligible", message: "Bind a phone number in the InkStone console to claim free credits." }
           }
-          // 401/403 让 error 带上 signIn，供 magpie 标记需要重新登录。
-          const status = e?.status
-          if (status === 401 || status === 403) {
-            throw Object.assign(new Error("console session expired; sign in again"), { signIn: "expired" })
-          }
+          // 宿主的 checkin 路径不读 signIn（只有 auth.refresh 读）：过期就在这里
+          // 如实报 failed，30 分钟后 magpie 重试，续期由 usage/refresh 链路负责。
           return { outcome: "failed", message: cleanDetail(e?.message ?? e) }
         }
       },

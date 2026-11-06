@@ -49,7 +49,12 @@ test("isoOf accepts ISO strings and second/millisecond stamps, and rejects nonse
 })
 
 test("localDay reads a local calendar day and ignores junk", () => {
-  expect(localDay("2026-11-28T00:00:00.000Z")).toBe("2026-11-28")
+  // build the expected day from the same local-time parse, so the assertion
+  // holds in every timezone (a fixed UTC string fails west of UTC)
+  const stamp = "2026-11-28T00:00:00.000Z"
+  const d = new Date(stamp)
+  const expected = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+  expect(localDay(stamp)).toBe(expected)
   expect(localDay("not a date")).toBeUndefined()
 })
 

@@ -1,13 +1,13 @@
 // TokenPlan API keys：命名、创建、数量守卫与可选清理。
 //
 // 控制台的 Key 列表只给 masked_key，明文只在创建时返回一次，所以**没有
-// "复用旧 Key"这条路**：要么用户把现有 Key 粘进来，要么插件新建一把。
+// "从列表复用明文"这条路**：要么用户把现有 Key 粘进来，要么插件新建一把。
 // Key 名上限 20 字符、单账号上限 10 把，所以名字必须短、清理必须克制：
-//   - 名字 `ink-<host4>-<acct8>-<rand2>`，正好 20 字符；
+//   - 名字 `ink-<host4>-<acct4>-<rand4>`，正好 16 字符（上限 20，留余量）；
 //   - host 段隔离别的机器（os.hostname()，不是环境变量——macOS 的 GUI 进程
-//     没有 COMPUTERNAME/HOSTNAME），acct 段 8 位隔离同机的另一个账号
-//     （作者要求：4 位的碰撞概率 1/65536 不可接受），随机段让同名再建不撞；
-//   - 清理只碰 `ink-<host4>-<acct8>-*`，手动建的 Key 永远不动。
+//     没有 COMPUTERNAME/HOSTNAME），acct 段 4 位隔离同机账号，随机段 4 位
+//     防重名（1 位只有 256 个名字，同一账号连建两把就会撞）；
+//   - 清理只碰 `ink-<host4>-<acct4>-*`，手动建的 Key 永远不动。
 
 import { randomBytes, randomUUID } from "node:crypto"
 import { hostname } from "node:os"
@@ -16,16 +16,16 @@ import { fingerprint, listKeys, createKey, deleteKey, probeApiKey, KEY_LIMIT } f
 /** 4 hex：机器不撞；macOS GUI 进程没有 COMPUTERNAME/HOSTNAME，必须用 os.hostname()。 */
 export const HOST_TAG = fingerprint(hostname()).slice(0, 4)
 
-const accountTag = (username) => fingerprint(username || "account").slice(0, 8)
-/** 随机段只有 1 字节：4+4+1+8+1+2 = 20，平台 Key 名上限。 */
-const randomTag = () => randomBytes(1).toString("hex")
+const accountTag = (username) => fingerprint(username || "account").slice(0, 4)
+/** 随机段 2 字节：4+4+1+4+1+4 = 18 ≤ 20，平台 Key 名上限留了余量。 */
+const randomTag = () => randomBytes(2).toString("hex")
 
 /** 本插件建的 Key 的名字前缀（含机器与账号段），清理按它圈范围。 */
 export function keyPrefixFor(username) {
   return `ink-${HOST_TAG}-${accountTag(username)}-`
 }
 
-/** ≤20 字符的 Key 名：4 + 4 + 1 + 8 + 1 + 2 = 20。 */
+/** ≤20 字符的 Key 名：4 + 4 + 1 + 4 + 1 + 4 = 18。 */
 export function keyNameFor(username) {
   return `${keyPrefixFor(username)}${randomTag()}`
 }
@@ -79,9 +79,10 @@ export async function keyCount(token) {
 /**
  * 删掉本机本账号的旧 `ink-…` Key。
  * freeSlots = 0：保留最新两把；freeSlots > 0：为新 Key 腾出位置，最旧先删。
- * 建不出来时间的 Key 永远不删（年龄未知）。
+ * `activeSuffix`（正在用的 Key 的明文尾段）永远不删——预清理不知道另一条
+ * 登录记录拿着哪把，但至少这把此刻正在发请求。建不出来时间的 Key 也不删。
  */
-export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, log } = {}) {
+export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, activeSuffix = "", log } = {}) {
   let deleted = 0
   try {
     const listed = await listKeys(token, { query: { page: 1, page_size: 50 } })
@@ -90,12 +91,15 @@ export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, log 
       .filter((k) => k.name.startsWith(prefix))
       .sort((a, b) => at(b.createdAt) - at(a.createdAt))
     if (!ours.length) return 0
+    const protectedIds = new Set(ours.slice(0, keep).map((k) => k.id))
+    if (activeSuffix) {
+      for (const k of ours) if (k.name.endsWith(activeSuffix)) protectedIds.add(k.id)
+    }
     const candidates = ours
-      .filter((k) => at(k.createdAt) > 0)
+      .filter((k) => at(k.createdAt) > 0 && !protectedIds.has(k.id))
       .sort((a, b) => at(a.createdAt) - at(b.createdAt))
-    const keepIds = new Set(ours.slice(0, keep).map((k) => k.id))
     for (const k of candidates) {
-      if (freeSlots > 0 ? deleted >= freeSlots : keepIds.has(k.id)) continue
+      if (freeSlots > 0 && deleted >= freeSlots) continue
       try {
         await deleteKey(token, k.id)
         deleted += 1
@@ -115,7 +119,7 @@ export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, log 
  *   - 没粘且允许创建 → 数一下，满了先清理（可选），再创建并探活。
  * 抛错时带 `code`：`key_limit`（满了且没开清理）、`refused`（Key 被平台拒）。
  */
-export async function ensureKey(token, username, { apiKey = "", create = true, prune = false, log } = {}) {
+export async function ensureKey(token, username, { apiKey = "", create = true, prune = false, activeSuffix = "", log } = {}) {
   const pasted = String(apiKey ?? "").trim()
   if (pasted) {
     await probeWithRetry(pasted, log)
@@ -126,7 +130,7 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
   let total = await keyCount(token)
   if (total >= KEY_LIMIT && prune) {
     const need = Math.max(1, total - (KEY_LIMIT - 1))
-    const freed = await pruneKeys(token, username, { freeSlots: need, log })
+    const freed = await pruneKeys(token, username, { freeSlots: need, activeSuffix, log })
     log?.("info", `inkstone: pre-prune removed ${freed}/${need} old key(s)`)
     total = await keyCount(token)
   }
@@ -140,13 +144,28 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
     )
   }
 
-  const name = keyNameFor(username)
+  let name = keyNameFor(username)
   let reply
   try {
     reply = await createKey(token, name, randomUUID())
   } catch (e) {
-    // 幂等冲突（-15109）：换一个 Idempotency-Key 再试一次，返回值与首次相同。
-    if (e?.code === -15109) reply = await createKey(token, name, randomUUID())
+    // 幂等冲突（-15109）：换一个 Idempotency-Key 和一个新名字再试（名字也
+    // 可能撞），最多三次；-15108 是另一回事：创建成功但明文拿不到了。
+    if (e?.code === -15109) {
+      let last = e
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          name = keyNameFor(username)
+          reply = await createKey(token, name, randomUUID())
+          last = null
+          break
+        } catch (e2) {
+          if (e2?.code !== -15109) throw e2
+          last = e2
+        }
+      }
+      if (last) throw last
+    }
     // -15108：创建成功但明文拿不到了，这把 Key 已无法使用，直接说明。
     else if (e?.code === -15108) {
       throw new Error(
@@ -179,6 +198,6 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
     }
     log?.("warn", `inkstone: the new key's check did not finish (${e?.message ?? e})`)
   }
-  if (prune) await pruneKeys(token, username, { log })
+  if (prune) await pruneKeys(token, username, { activeSuffix: created.slice(-4), log })
   return created
 }

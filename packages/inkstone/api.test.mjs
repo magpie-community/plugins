@@ -31,7 +31,7 @@ test("config declares the provider with a working npm, base URL and bootstrap mo
   const cfg = {}
   await p.config(cfg)
   const provider = cfg.provider["intern-inkstone"]
-  expect(provider.name).toBe("书生·端砚 ")
+  expect(provider.name).toBe("书生·端砚")
   expect(provider.npm).toBe("@ai-sdk/openai-compatible")
   expect(provider.api).toBe(f.origin + "/v1")
   expect(Object.keys(provider.models).length).toBeGreaterThan(0)

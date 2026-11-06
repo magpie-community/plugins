@@ -29,13 +29,14 @@ test("a key name fits the console's 20-character limit and carries this host and
   expect(name.length).toBeLessThanOrEqual(20)
   expect(name.startsWith(keyPrefixFor("u"))).toBe(true)
   expect(keyPrefixFor("u").startsWith("ink-")).toBe(true)
-  // the account segment is 8 hex (4 gave a 1/65536 collision the maintainer
-  // rejected), the host segment comes from os.hostname() and is 4 hex, the
-  // random tail is what is left of the 20-char budget
-  expect(keyPrefixFor("u")).toBe(`ink-${HOST_TAG}-${fingerprint("u").slice(0, 8)}-`)
+  // the host segment comes from os.hostname() (4 hex — environment variables
+  // are absent in macOS GUI processes), the account segment is 4 hex, and the
+  // random tail is 4 hex: 1 byte only gave 256 names and two keys of one
+  // account collided
+  expect(keyPrefixFor("u")).toBe(`ink-${HOST_TAG}-${fingerprint("u").slice(0, 4)}-`)
   expect(HOST_TAG).toHaveLength(4)
-  expect(fingerprint("u").slice(0, 8)).toHaveLength(8)
-  expect(name.length).toBe(keyPrefixFor("u").length + 2)
+  expect(fingerprint("u").slice(0, 4)).toHaveLength(4)
+  expect(name.length).toBe(keyPrefixFor("u").length + 4)
 })
 
 test("a pasted key is probed and used as-is, with no key created", async () => {
