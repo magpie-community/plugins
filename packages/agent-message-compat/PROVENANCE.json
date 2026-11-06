@@ -1,0 +1,33 @@
+{
+  "source": "https://github.com/YHonc/magpie-agent-message-compat",
+  "commit": "63b9354332775bce7a2bd1100f0cc88c2e15063b",
+  "version": "0.1.1",
+  "license": "MIT",
+  "files": {
+    "common.js": {
+      "sha256": "396a3356eb1aa0a08d0a2e7bb27d91fd865b5675d9dc1c0431eca114b585d23f"
+    },
+    "compat.middleware.js": {
+      "sha256": "3758d282c6c90eec3eed2f3e52d04e32a5b6edeac04be2f7a04fbf23f6372e4d"
+    },
+    "provenance.hooks.mjs": {
+      "sha256": "0466f1977cb4597bbe19242c9443c4de6551d67406f53e5f9b46c2f95d7afbff"
+    },
+    "test.mjs": {
+      "sha256": "69d11073681188c568e6707607a8929218605ac1cb0860157bbcfeaa91f32400"
+    },
+    "README.md": {
+      "sha256": "a2a2bebc6ed9d138b6cddd5cd6ac6f91ec19e1090ad00474f0742710004d0f08"
+    },
+    "LICENSE": {
+      "sha256": "1886badea1e7cbabcb27f7417c11b282cef9e72513bee9658c950de8246aa3ca"
+    },
+    "CHANGELOG.md": {
+      "sha256": "488a7127958be659de598f5df172a821d1e4a6dac0ad235b6ea38b7ee29cbfa8"
+    }
+  },
+  "changes": [
+    "Community package name and repository metadata; runtime modules and test.mjs match the source commit.",
+    "A Bun test entry, package installation note and marketplace listing are added for community integration."
+  ]
+}

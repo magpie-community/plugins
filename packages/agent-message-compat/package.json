@@ -1,0 +1,52 @@
+{
+  "name": "@magpie-community/middleware-agent-message-compat",
+  "version": "0.1.1",
+  "type": "module",
+  "description": "Codex MultiAgent V2 message compatibility for selected third-party Magpie routes, with plaintext provenance checks",
+  "license": "MIT",
+  "author": "YHonc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/agent-message-compat"
+  },
+  "homepage": "https://github.com/YHonc/magpie-agent-message-compat#readme",
+  "bugs": {
+    "url": "https://github.com/YHonc/magpie-agent-message-compat/issues"
+  },
+  "keywords": [
+    "magpie-plugin",
+    "magpie",
+    "codex",
+    "multi-agent",
+    "middleware"
+  ],
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "files": [
+    "common.js",
+    "compat.middleware.js",
+    "provenance.hooks.mjs",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "magpie": {
+    "name": "Agent Message Compat",
+    "middleware": "./compat.middleware.js",
+    "hooks": "./provenance.hooks.mjs",
+    "options": {
+      "targets": [
+        "cpa/gemini-*",
+        "cpa/claude-*",
+        "cpa/glm-*",
+        "ora2/claude-*",
+        "group/glm-*",
+        "group/deepseek-*"
+      ],
+      "gatewayTimeoutMs": 2000,
+      "waitForProvenanceMs": 800
+    }
+  }
+}
