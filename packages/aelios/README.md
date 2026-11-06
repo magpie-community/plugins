@@ -196,6 +196,12 @@ the completed reply's retained text or tool arguments still skips recording.
 The reply delivered to the client remains unchanged. Each
 record is sent once and never retried.
 
+DS Bot's background memory reviews use the Bot's model but are not chat turns.
+When the current user item matches the complete DS Bot memory-review template,
+the plugin skips both recall and recording for that request and its reply.
+Normal conversation, tool continuations and messages discussing or quoting the
+review remain eligible. This filter does not remove previously recorded reviews.
+
 ## Things to know
 
 - **Don't double up.** If an agent already uses an Aelios gateway as its

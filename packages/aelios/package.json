@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-aelios",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Aelios long-term memory for every agent behind magpie: recall before each turn, optional recording after it",
   "type": "module",
   "files": [

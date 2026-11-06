@@ -160,6 +160,17 @@ export function lastUserText(body, protocol) {
   return visible(last.content)
 }
 
+// DS Bot sends background memory reviews through the Bot's own model. They
+// have a user role, but neither this prompt nor its JSON reply is conversation.
+// Require the whole template so a person quoting it to report a bug stays human.
+export function isMemoryReview(text) {
+  const normalized = text.replace(/\r\n/g, "\n").trim()
+  return /^(?:The Bot: [^\n]+\.|The group chat: [^\n]+\.)\n\n/.test(normalized) &&
+    /\n\nIts memory now \((?:own: this Bot's|group: shared by the members of this group); team: shared by every Bot\):\n/.test(normalized) &&
+    /\n\nNew in [^\n]+, oldest first(?: \(newer messages come in the next review\))?:\n/.test(normalized) &&
+    /\n\nWrite every new or changed entry in [^\n]+\.$/.test(normalized)
+}
+
 function visible(c) {
   if (typeof c === "string") return c
   if (!Array.isArray(c)) return ""
