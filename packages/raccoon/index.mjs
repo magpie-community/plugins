@@ -629,18 +629,47 @@ async function allBills(token) {
   return bills
 }
 
+// availablePoints is the account's balance. /points/v1/balance answers 403,
+// to the vendor's own web page too (plugins #520), so a failure there reads
+// the same number from /office/v3/setting_info. Balance stays first while it may come back:
+// setting_info is the call the clients make on opening, and it can hand out
+// the day's credits. An expired sign-in is said as such, not read again.
+async function availablePoints(token) {
+  let first
+  try {
+    const points = await apiGetJson("/api/web/points/v1/balance", token)
+    const n = Number(points?.available_points)
+    if (Number.isFinite(n)) return Math.floor(n)
+    first = new Error("balance has no available_points")
+  } catch (e) {
+    if (e?.signIn === "expired") throw e
+    first = e
+  }
+  let info
+  try {
+    info = await apiGetJson("/api/web/office/v3/setting_info", token)
+  } catch (e) {
+    if (e?.signIn === "expired") throw e
+    throw first
+  }
+  const n = Number(info?.available_points)
+  if (!Number.isFinite(n)) throw first
+  return Math.floor(n)
+}
+
 async function queryUsage(token) {
-  const [points, entitlement, bills] = await Promise.all([
-    apiGetJson("/api/web/points/v1/balance", token),
+  const [avail, entitlement, bills] = await Promise.all([
+    availablePoints(token),
     apiGetJson("/api/web/auth/v1/entitlement_info", token).catch(() => null),
     allBills(token).catch(() => null),
   ])
-  const avail = Math.floor(Number(points?.available_points) || 0)
 
+  // entitlement_info answers 403 too (plugins #520): an unread plan is
+  // left unsaid, not read as Free.
   const office = entitlement?.office ?? entitlement?.code ?? {}
   const proEnable = office?.pro_enable === true || entitlement?.code?.pro_enable === true
   const planType = office?.active_plan?.type || office?.plan_type || ""
-  const plan = proEnable ? (planType && planType !== "none" ? planType : "Pro") : "Free"
+  const plan = !entitlement ? undefined : proEnable ? (planType && planType !== "none" ? planType : "Pro") : "Free"
   const expireAt = office?.pro_expired_time || office?.active_plan?.subscription_expired_at || null
 
   // Sum only what the vendor actually reports as granted in unexpired bills.
@@ -671,7 +700,7 @@ async function queryUsage(token) {
   if (grantedFromBills > 0 && grantedFromBills >= avail) {
     const used = grantedFromBills - avail
     return {
-      plan,
+      ...(plan ? { plan } : {}),
       ...(proEnable && expireAt ? { until: new Date(expireAt).toISOString() } : {}),
       windows: [
         {
@@ -688,7 +717,7 @@ async function queryUsage(token) {
   }
 
   return {
-    plan,
+    ...(plan ? { plan } : {}),
     ...(proEnable && expireAt ? { until: new Date(expireAt).toISOString() } : {}),
     balance: `${avail} credits`,
     windows: [],

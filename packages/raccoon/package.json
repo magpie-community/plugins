@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-raccoon-auth",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "OpenCode & Magpie provider plugin for SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com)",
   "type": "module",
   "main": "./opencode.mjs",
