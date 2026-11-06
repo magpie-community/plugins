@@ -1,7 +1,7 @@
 # ShyPie brand assets
 
 The ShyPie mark identifies the ShyPie project and this Magpie middleware. It is
-the complete pie holding a shield with the Magpie bird.
+the complete pie holding a shield with a generic bird.
 
 ## Assets
 
@@ -12,7 +12,8 @@ the complete pie holding a shield with the Magpie bird.
 | `assets/shypie-icon-transparent.svg` | Transparent-background artwork |
 | `assets/shypie-icon-mono.svg` | One-color line/mono mark, transparent |
 
-The README uses the primary mark with a dark-mode `picture` fallback.
+The README uses the primary mark with a dark-mode `picture` fallback. The bird
+is a generic silhouette, not a vendor or third-party mark.
 
 ## Palette
 
@@ -27,10 +28,8 @@ The README uses the primary mark with a dark-mode `picture` fallback.
 
 ## Ownership
 
-The ShyPie name and logo belong to the ShyPie project. The Magpie bird mark is
-used within the shield to identify the gateway integration and belongs to the
-Magpie project. Review the respective project terms before redistributing an
-official product icon.
+The ShyPie name and logo belong to the ShyPie project. The mark contains no
+third-party bird or vendor logo.
 
 The source-of-truth vector package is maintained in
 [`siml1169/ShyPie/assets/brand/shypie`](https://github.com/siml1169/ShyPie/tree/main/assets/brand/shypie).

@@ -14,7 +14,6 @@
 
 <p align="center">
   <img alt="version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-0D4B4E">
-  <img alt="tests 62/62" src="https://img.shields.io/badge/tests-62%2F62-0D4B4E">
   <img alt="license MIT" src="https://img.shields.io/badge/license-MIT-F2B35A">
 </p>
 
@@ -29,9 +28,6 @@ images, files, audio, encoded blobs and models outside the allowlist.
 It is **not a text masker**. Text masking stays Magpie's Privacy setting. This
 plugin makes sure a request that still contains bytes Magpie cannot mask does
 not reach a provider by accident.
-
-> **Distribution:** version `0.3.0` is merged in-tree. The community npm package
-> is not published yet. Install from a checkout until the community publish lands.
 
 ## Why this exists
 
@@ -60,12 +56,10 @@ Codex, Cursor, Claude Code and scripts.
 
 ## Install
 
-The package is merged in-tree at `packages/privacy-gate`. Until the community
-npm package is published, install the checkout:
+Install from Magpie's plugin registry:
 
 ```sh
-git clone https://github.com/magpie-community/plugins
-magpie plugin add <clone>/packages/privacy-gate
+magpie plugin add @magpie-community/middleware-privacy-gate
 
 # strictest: block every binary part on every model
 magpie plugin options privacy-gate '{}'
@@ -73,14 +67,8 @@ magpie plugin options privacy-gate '{}'
 magpie plugin        # confirm the middleware is listed and on
 ```
 
-After the community publish:
-
-```sh
-magpie plugin add @magpie-community/middleware-privacy-gate
-```
-
-Make sure Magpie's built-in **Gateway middleware** plugin is enabled
-(**Settings → Plugins → Built-in**). Without it, no middleware runs.
+Make sure Magpie's built-in **JS gateway plugins** plugin is enabled
+(**Settings → Plugins → Built-in**, id `middleware`). Without it, no middleware runs.
 
 ## Two policies
 
@@ -228,8 +216,7 @@ See:
 
 ## License
 
-MIT. The ShyPie name and logo belong to the ShyPie project; the Magpie bird mark
-belongs to the Magpie project. See [BRAND.md](BRAND.md).
+MIT. The ShyPie name and logo belong to the ShyPie project. See [BRAND.md](BRAND.md).
 
 ---
 
@@ -257,9 +244,6 @@ Magpie 侧组件。它以 Magpie 网关中间件的形式运行，负责出口�
 它**不负责文本掩码**。文本掩码仍然是 Magpie 的 Privacy 设置。这个插件确保
 Magpie 无法掩码的字节不会意外到达 provider。
 
-> **分发状态：** `0.3.0` 已合入仓库；社区 npm 包尚未发布。在社区发布前，
-> 请从代码 checkout 安装。
-
 ## 为什么需要它
 
 Magpie 的掩码只处理文本。其官方文档明确说明：*"Images and file data are sent
@@ -286,11 +270,10 @@ as they are. Text inside a screenshot is not masked."* 网关无法掩码 PDF �
 
 ## 安装
 
-包已合入 `packages/privacy-gate`。在社区 npm 包发布前，从 checkout 安装：
+从 Magpie 插件注册表安装：
 
 ```sh
-git clone https://github.com/magpie-community/plugins
-magpie plugin add <clone>/packages/privacy-gate
+magpie plugin add @magpie-community/middleware-privacy-gate
 
 # 最严格模式：所有模型的所有二进制内容都被拒绝
 magpie plugin options privacy-gate '{}'
@@ -298,13 +281,7 @@ magpie plugin options privacy-gate '{}'
 magpie plugin        # 确认中间件已列出并启用
 ```
 
-社区包发布后：
-
-```sh
-magpie plugin add @magpie-community/middleware-privacy-gate
-```
-
-确认 Magpie 内置的 **Gateway middleware** 插件已开启
+确认 Magpie 内置的 **JS 网关插件**（id `middleware`）已开启
 （**Settings → Plugins → Built-in**）。关闭时不会运行任何中间件。
 
 ## 两种策略
@@ -445,6 +422,5 @@ bun scripts/check.mjs
 
 ## 许可证
 
-MIT。ShyPie 名称和 logo 属于 ShyPie 项目；Magpie 鸟形标志属于 Magpie 项目。
-详见 [BRAND.md](BRAND.md)。
+MIT。ShyPie 名称和 logo 属于 ShyPie 项目。详见 [BRAND.md](BRAND.md)。
 

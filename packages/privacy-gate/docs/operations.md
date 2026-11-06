@@ -9,24 +9,16 @@
 
 Installation, configuration, verification and troubleshooting for the Magpie
 middleware. Version `0.3.0` is merged in-tree; the community npm package is not
-published yet, so use a checkout until the community release lands.
-
 ## Install
 
 ```sh
-git clone https://github.com/magpie-community/plugins
-magpie plugin add <clone>/packages/privacy-gate
+magpie plugin add @magpie-community/middleware-privacy-gate
 magpie plugin
 ```
 
-Confirm that Magpie's built-in **Gateway middleware** plugin is on
-(**Settings → Plugins → Built-in**). If it is off, no middleware runs.
-
-After the community package publishes:
-
-```sh
-magpie plugin add @magpie-community/middleware-privacy-gate
-```
+Confirm that Magpie's built-in **JS gateway plugins** plugin is on
+(**Settings → Plugins → Built-in**, id `middleware`). If it is off, no
+middleware runs.
 
 ## Recommended baseline
 
@@ -112,13 +104,8 @@ that outcome.
 
 ## Update and rollback
 
-To update a checkout install:
-
-```sh
-git -C <clone> pull
-magpie plugin off <clone>/packages/privacy-gate
-magpie plugin on <clone>/packages/privacy-gate
-```
+Update through Magpie's plugin manager (`magpie plugin update`) and re-check the
+saved options after a version change.
 
 To roll back to the strictest behavior, remove the options (`{}`) or set
 `binaryPolicy: fail` and clear `localModels`/`localProviders`. Removing the
