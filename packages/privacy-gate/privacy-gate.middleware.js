@@ -40,7 +40,7 @@
 //                                the local network (Ollama, LM Studio, ...). []
 //                                (default) means every binary part is blocked.
 //                                Encoded blobs in text are blocked even here.
-//   binaryPolicy: 'fail'|'guide'  fail (default) returns 422 for a binary part; guide
+//   binaryPolicy: 'fail'|'guide'  fail (default) returns 403 for a binary part; guide
 //                                withholds every binary part and injects a local-tool prompt.
 //   guideTools: string[]          tool names advertised to the model in guide mode.
 //   allowUnknownProtocol: bool   false (default). When false, a request whose
@@ -111,7 +111,7 @@ var DEFAULTS = {
   localModels: [],
   localProviders: [],
   binaryPolicy: 'fail',
-  guideTools: ['shypie.describe', 'shypie.extract', 'shypie.ocr'],
+  guideTools: [],
   allowUnknownProtocol: false,
   // A one-page invoice PDF is ~1-3 KB: ~1.4-4 k base64 chars, ~2-6 k hex chars. The
   // threshold is deliberately below that, because a smaller encoded document was a real
@@ -559,7 +559,7 @@ function policyOpt(source, name, fallback) {
   if (!has(source, name)) return fallback;
   var value = source[name];
   if (value === "fail" || value === "guide") return value;
-  throw new Error("privacy-gate: " + name + " must be \"fail\" or \"guide\"");
+  return fallback;
 }
 
 function resolvedOptions(raw) {
@@ -569,7 +569,7 @@ function resolvedOptions(raw) {
     localModels: strList(source, "localModels"),
     localProviders: strList(source, "localProviders"),
     binaryPolicy: policyOpt(source, "binaryPolicy", DEFAULTS.binaryPolicy),
-    guideTools: strList(source, "guideTools").length > 0 ? strList(source, "guideTools") : DEFAULTS.guideTools.slice(),
+    guideTools: strList(source, "guideTools"),
     allowUnknownProtocol: boolOpt(source, "allowUnknownProtocol", DEFAULTS.allowUnknownProtocol),
     blobBase64Chars: numOpt(source, "blobBase64Chars", DEFAULTS.blobBase64Chars, 64, 1000000),
     blobHexChars: numOpt(source, "blobHexChars", DEFAULTS.blobHexChars, 64, 1000000),
@@ -582,12 +582,21 @@ function resolvedOptions(raw) {
 }
 
 function gateOptions(ctx) {
-  if (ctx && ctx.options && typeof ctx.options === "object") return resolvedOptions(ctx.options);
-  return resolvedOptions(null);
+  try {
+    if (ctx && ctx.options && typeof ctx.options === "object") return resolvedOptions(ctx.options);
+    return resolvedOptions(null);
+  } catch (e) {
+    // Never let a typo in options disable the gate: fall back to the strict defaults.
+    return resolvedOptions(null);
+  }
 }
 
 function usageOptions(options) {
-  return resolvedOptions(options);
+  try {
+    return resolvedOptions(options);
+  } catch (e) {
+    return resolvedOptions(null);
+  }
 }
 
 function blocked(code, message) {
@@ -781,12 +790,19 @@ function guideMime(node) {
     node.attachment && node.attachment.mediaType
   ];
   for (var i = 0; i < candidates.length; i++) {
-    if (typeof candidates[i] === 'string' && candidates[i].length > 0) return candidates[i];
+    if (typeof candidates[i] === 'string' && candidates[i].length > 0) {
+      var candidate = candidates[i].slice(0, 100);
+      if (/^[A-Za-z0-9][A-Za-z0-9.+-]*\/[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(candidate)) return candidate;
+    }
   }
-  var url = node.image_url && node.image_url.url;
+  var url = typeof node.image_url === 'string' ? node.image_url : node.image_url && node.image_url.url;
+  if (typeof url !== 'string' && typeof node.input_image === 'string') url = node.input_image;
   if (typeof url === 'string' && url.indexOf('data:') === 0) {
     var comma = url.indexOf(',');
-    if (comma > 5) return url.slice(5, comma).split(';')[0];
+    if (comma > 5) {
+      var mime = url.slice(5, comma).split(';')[0].slice(0, 100);
+      if (/^[A-Za-z0-9][A-Za-z0-9.+-]*\/[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(mime)) return mime;
+    }
   }
   return '';
 }
@@ -803,7 +819,8 @@ function guideBytes(node) {
     var b64 = data.indexOf('base64,') >= 0 ? data.slice(data.indexOf('base64,') + 7) : data;
     if (b64.length > 0) return Math.floor(b64.length * 0.75);
   }
-  var url = node.image_url && node.image_url.url;
+  var url = typeof node.image_url === 'string' ? node.image_url : node.image_url && node.image_url.url;
+  if (typeof url !== 'string' && typeof node.input_image === 'string') url = node.input_image;
   if (typeof url === 'string' && url.indexOf(';base64,') >= 0) return Math.floor(url.slice(url.indexOf(';base64,') + 8).length * 0.75);
   return null;
 }
@@ -814,9 +831,10 @@ function guideText(node, kind, opts) {
   var bits = ['type ' + kind];
   if (mime !== '') bits.push('mime ' + mime);
   if (bytes !== null) bits.push('bytes ' + bytes);
-  var tools = opts.guideTools.length > 0 ? opts.guideTools.join(', ') : 'local extraction tools';
-  return '[ShyPie: a binary attachment was withheld locally and was NOT sent to you (' +
-    bits.join('; ') + '). Do not claim to have seen it. First ask how the user/agent can process or read it locally, and use: ' + tools + '.]';
+  var text = '[A binary attachment was withheld locally and was NOT sent to you (' + bits.join('; ') +
+    '). Do not claim to have seen it. First ask how the user/agent can process or read it locally';
+  if (opts.guideTools.length > 0) text += '; available local tools: ' + opts.guideTools.join(', ');
+  return text + '.]';
 }
 
 function guidePart(protocol, text) {
@@ -825,22 +843,67 @@ function guidePart(protocol, text) {
   return { type: 'text', text: text };
 }
 
-function guideValue(value, atRoot, partContext, protocol, opts, depth) {
-  if (depth > 200) throw new Error('privacy-gate: guide depth exceeded');
+// One bounded, site-aware pass: the same protocol positions the inspector uses,
+// every visited value counts toward maxNodes, and text is blob-scanned without
+// the old extra inspect() pass over the rewritten body.
+function guideWalk(value, site, depth, state, opts, protocol) {
+  if (state.limited !== null || state.blob !== null) return null;
+  if (depth > opts.maxDepth) {
+    state.limited = 'depth';
+    return null;
+  }
+  state.nodes++;
+  if (state.nodes > opts.maxNodes) {
+    state.limited = 'nodes';
+    return null;
+  }
+  if (typeof value === 'string') {
+    scanText(value, state, opts);
+    return state.blob === null ? value : null;
+  }
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) {
-    var items = [];
-    for (var i = 0; i < value.length; i++) items.push(guideValue(value[i], false, partContext, protocol, opts, depth + 1));
-    return items;
+    if (value.length > opts.maxNodes - state.nodes) {
+      state.limited = 'nodes';
+      return null;
+    }
+    var itemSite = site;
+    if (site === SITE_MESSAGES) itemSite = SITE_MESSAGE;
+    else if (site === SITE_RESPONSES_INPUT) itemSite = SITE_RESPONSES_ITEM;
+    else if (site === SITE_GEMINI_CONTENTS) itemSite = SITE_GEMINI_CONTENT;
+    var reverse = site === SITE_MESSAGES || site === SITE_RESPONSES_INPUT || site === SITE_GEMINI_CONTENTS;
+    var out = [];
+    for (var i = 0; i < value.length; i++) {
+      var index = reverse ? value.length - 1 - i : i;
+      var rewrittenItem = guideWalk(value[index], itemSite, depth + 1, state, opts, protocol);
+      if (state.limited !== null || state.blob !== null) return null;
+      out[index] = rewrittenItem;
+    }
+    return out;
   }
-  var found = binaryOf(value, partContext);
+  var found = binaryOf(value, isPartSite(site));
   if (found !== null) return guidePart(protocol, guideText(value, found.kind, opts));
+  var sealed = sealedFields(value, site);
+  var role = typeof value.role === 'string' ? value.role : '';
   var keys = Object.keys(value);
+  if (keys.length > opts.maxNodes - state.nodes) {
+    state.limited = 'nodes';
+    return null;
+  }
+  if (site === SITE_ROOT) {
+    var contentKey = (protocol === 'anthropic' || protocol === 'chat') ? 'messages' : protocol === 'responses' ? 'input' : protocol === 'gemini' ? 'contents' : '';
+    var at = contentKey ? keys.indexOf(contentKey) : -1;
+    if (at > 0) { keys.splice(at, 1); keys.unshift(contentKey); }
+  }
   var copy = {};
   for (var j = 0; j < keys.length; j++) {
     var key = keys[j];
-    if (atRoot && SKIP_KEY[key]) { copy[key] = value[key]; continue; }
-    copy[key] = guideValue(value[key], false, PART_ARRAY_KEY[key] === 1, protocol, opts, depth + 1);
+    if (site === SITE_ROOT && SKIP_KEY[key]) { copy[key] = value[key]; continue; }
+    var child = value[key];
+    if (sealed !== null && sealed[key] && typeof child === 'string') { copy[key] = child; continue; }
+    var rewritten = guideWalk(child, childSite(protocol, site, key, child, role), depth + 1, state, opts, protocol);
+    if (state.limited !== null || state.blob !== null) return null;
+    copy[key] = rewritten;
   }
   return copy;
 }
@@ -848,11 +911,15 @@ function guideValue(value, atRoot, partContext, protocol, opts, depth) {
 function guideBody(body, ctx, opts) {
   try {
     var protocol = ctx && typeof ctx.protocol === 'string' ? ctx.protocol : '';
-    return guideValue(body, true, false, protocol, opts, 0);
+    var state = { nodes: 0, chars: 0, blob: null, limited: null, degraded: false };
+    var guided = guideWalk(body, SITE_ROOT, 0, state, opts, protocol);
+    if (state.limited !== null || state.blob !== null) return null;
+    return guided;
   } catch (e) {
     return null;
   }
 }
+
 
 // ---------------------------------------------------------------------------
 // Hooks
@@ -876,11 +943,8 @@ export function onRequest(body, ctx) {
   if (decision.block && decision.block.code === "BINARY_PART" && opts.binaryPolicy === "guide") {
     var guided = guideBody(body, ctx, opts);
     if (guided !== null) {
-      var verified = inspect(guided, ctx);
-      if (verified.ok === true) {
-        logLine("privacy-gate: guided binary parts locally; no bytes sent", opts);
-        return guided;
-      }
+      logLine("privacy-gate: guided binary parts locally; no bytes sent", opts);
+      return guided;
     }
     logLine("privacy-gate: guide rewrite failed; rejecting binary request", opts);
   }

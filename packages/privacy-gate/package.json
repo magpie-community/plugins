@@ -29,6 +29,8 @@
       "allowModels": [],
       "localModels": [],
       "localProviders": [],
+      "binaryPolicy": "fail",
+      "guideTools": [],
       "allowUnknownProtocol": false,
       "blobBase64Chars": 400,
       "blobHexChars": 400,
