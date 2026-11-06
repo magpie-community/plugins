@@ -1,0 +1,33 @@
+{
+  "name": "@magpie-community/opencode-openscale-auth",
+  "version": "0.1.0",
+  "description": "OpenScale (api.openscale.so) with your API key in OpenCode and magpie: chat completions, streaming, tools and images",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "openscale"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/openscale"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "icon": "https://app.openscale.so/favicon.ico"
+  }
+}
