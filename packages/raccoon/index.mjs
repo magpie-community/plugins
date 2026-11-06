@@ -616,11 +616,17 @@ async function claimDesktopOnboardingGrant(token) {
   return { points: 0, settled: false }
 }
 
-// allBills is the account's whole bill history, newest first. The bills
-// endpoint ignores paging.offset and always says total 0, so it can only be
-// asked for the newest N rows; 200 covered under a day of an active account
-// and left out the large grants a balance is made of (plugins #223).
+// allBills is the account's grant (income) bills. The endpoint caps a page
+// at 100 rows and ignores paging.offset; on a busy account the newest rows
+// are all spends, so the grants a balance is made of fall out of view and
+// the Credits window disappears. "type=income" asks the vendor for grants
+// only (daily/reward/topup), which is what the window is built from. A
+// vendor that refuses the filter keeps the old paged read.
 async function allBills(token) {
+  try {
+    const income = await apiGetJson(`/api/web/points/v1/bills?type=income&paging.limit=200&paging.offset=0`, token)
+    if (Array.isArray(income?.items)) return income
+  } catch {}
   let bills = null
   for (const limit of [1000, 5000]) {
     bills = await apiGetJson(`/api/web/points/v1/bills?paging.limit=${limit}&paging.offset=0`, token)
