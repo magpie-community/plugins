@@ -811,6 +811,29 @@ async function scriptLong(ctx) {
   }
   emit({ type: "assistant_message", itemId: "L1", text: "\uFF085000 \u4E2A\u589E\u91CF\u5408\u5E76\u540E\u7684\u957F\u6587\uFF09" });
 }
+async function scriptBigReply(ctx) {
+  const { emit } = ctx;
+  const slow = ctx.input.text.includes("slow");
+  const parts = [];
+  for (let i = 1; i <= 14; i++) {
+    parts.push(`### \u7B2C ${i} \u90E8\u5206
+
+- \u8981\u70B9 ${i}.a\uFF1A\u8BF4\u660E\u4E00\u4E0B\u8FD9\u91CC\u7684\u6539\u52A8
+- \u8981\u70B9 ${i}.b\uFF1A\u4EE5\u53CA\u4E3A\u4EC0\u4E48\u8FD9\u6837\u6539
+
+`);
+    parts.push("```ts\n" + Array.from({ length: 8 }, (_, k) => `const v${i}_${k} = compute(${i}, ${k}); // line ${k}`).join("\n") + "\n```\n\n");
+  }
+  let acc = "";
+  emit({ type: "assistant_delta", itemId: "B1", text: "" });
+  for (const p of parts) {
+    if (ctx.interrupted()) return;
+    acc += p;
+    emit({ type: "assistant_delta", itemId: "B1", text: p });
+    await sleep(slow ? 220 : 5);
+  }
+  emit({ type: "assistant_message", itemId: "B1", text: acc });
+}
 async function scriptExit(_ctx) {
   await sleep(300);
   throw new MockCrash();
@@ -825,6 +848,7 @@ function pickScript(text) {
   if (t.startsWith("/error")) return scriptError;
   if (t.startsWith("/long")) return scriptLong;
   if (t.startsWith("/exit")) return scriptExit;
+  if (t.startsWith("/bigreply")) return scriptBigReply;
   if (t.startsWith("/serve")) return scriptServe;
   if (t.startsWith("/tools")) return scriptTools;
   if (t.startsWith("/bashhint")) return scriptBashHint;
@@ -5070,8 +5094,10 @@ var init_session3 = __esm({
        * Switch model → refresh level options from the new config options it returns → then apply the level (as Paseo does).
        * Cursor connects with parameterizedModelPicker: only the base model name is sent (grok-4.6); level / Fast are separate config options.
        */
+      /** false = the model id was skipped (not in the session's model options and not forced) */
       async applySessionModel(model, force = false) {
-        if (!this.ctx || !this.active) return;
+        if (!this.ctx || !this.active) return false;
+        let applied = true;
         const value = model && this.o.flavor === "cursor" ? model.replace(/\[.*\]$/u, "") : model;
         if (value) {
           const modelOption = this.currentConfig().find((o) => o.id === (this.modelConfigId ?? "model"));
@@ -5080,12 +5106,14 @@ var init_session3 = __esm({
             await this.setOption(this.modelConfigId ?? "model", value);
           } else {
             log("info", `\u5FFD\u7565 ${this.o.binName} \u7684\u65E0\u6548\u6A21\u578B\uFF1A${value}`);
+            applied = false;
           }
         }
         if (this.o.flavor === "cursor" && this.cursorFast && this.currentConfig().some((o) => o.id === "fast")) {
           await this.setOption("fast", "true");
         }
         await this.applySessionThought(this.o.effort);
+        return applied;
       }
       async applyCursorAutoReviewConfig(on) {
         if (this.o.flavor !== "cursor" || !this.ctx || !this.active) return;
@@ -5290,7 +5318,7 @@ var init_session3 = __esm({
         if (this.o.imagesFollowStartModel) {
           this.promptCaps = model === this.startModel ? this.initCaps : { ...this.initCaps, image: false };
         }
-        await this.applySessionModel(model, Boolean(opts?.force));
+        return this.applySessionModel(model, Boolean(opts?.force));
       }
       async setMode(mode2) {
         this.o.mode = mode2;
@@ -9561,11 +9589,12 @@ var AgentManager = class {
     const sessionModel = model ?? await this.resolveDefaultSessionModel(meta.provider);
     await this.threads.patch(threadId, { model, effort });
     const rt = this.rt(threadId);
+    let applied = true;
     if (rt.session) {
-      if (model !== null) await rt.session.setModel(sessionModel, { force: true });
-      else await rt.session.setModel(sessionModel);
+      if (model !== null) applied = await rt.session.setModel(sessionModel, { force: true });
+      else applied = await rt.session.setModel(sessionModel);
     }
-    rt.syncedDefaultModel = model ? void 0 : sessionModel;
+    rt.syncedDefaultModel = model ? void 0 : applied === false ? void 0 : sessionModel;
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
   /**
@@ -9595,8 +9624,8 @@ var AgentManager = class {
     const current = await this.resolveDefaultSessionModel(meta.provider);
     if (current === (rt.syncedDefaultModel ?? null)) return;
     try {
-      await rt.session.setModel(current);
-      rt.syncedDefaultModel = current;
+      const applied = await rt.session.setModel(current);
+      if (applied !== false) rt.syncedDefaultModel = current;
     } catch (e) {
       log("warn", `thread ${threadId} sync default model failed\uFF1A${String(e)}`);
     }
