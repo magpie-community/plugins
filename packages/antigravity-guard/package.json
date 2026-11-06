@@ -1,0 +1,24 @@
+{
+  "name": "@magpie-community/middleware-antigravity-guard",
+  "version": "0.1.0",
+  "description": "magpie gateway middleware: spread Antigravity work across accounts and stop sending requests to an account Google has suspended",
+  "type": "module",
+  "files": ["antigravity-guard.middleware.js", "README.md"],
+  "keywords": ["magpie", "magpie-middleware", "antigravity", "guard", "llm-gateway"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/antigravity-guard"
+  },
+  "magpie": {
+    "middleware": "./antigravity-guard.middleware.js",
+    "options": {
+      "deniedRefs": [],
+      "pauseUntil": 0,
+      "dailyCap": 300,
+      "cooldownMinutes": 1440,
+      "suspension403": 2
+    }
+  }
+}

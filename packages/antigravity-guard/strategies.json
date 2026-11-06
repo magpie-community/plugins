@@ -1,0 +1,8 @@
+[
+  {"name": "equal seats keep their listed order", "strategy": "guard", "seats": [{"key": "a"}, {"key": "b"}], "expect": ["a", "b"]},
+  {"name": "the most used account goes last", "strategy": "guard", "seats": [{"key": "a", "used": 3}, {"key": "b", "used": 0}, {"key": "c", "used": 1}], "expect": ["b", "c", "a"]},
+  {"name": "a resting account goes last", "strategy": "guard", "seats": [{"key": "a", "resting": true}, {"key": "b"}, {"key": "c"}], "expect": ["b", "c", "a"]},
+  {"name": "denied accounts go last", "strategy": "guard", "seats": [{"key": "a"}, {"key": "b"}, {"key": "c"}], "options": {"deniedRefs": ["a"]}, "expect": ["b", "c", "a"]},
+  {"name": "a paused pool still returns a full permutation", "strategy": "guard", "seats": [{"key": "a"}, {"key": "b"}], "options": {"pauseUntil": 4102444800000}, "expect": ["a", "b"]},
+  {"name": "a key seat and an account seat are both ordered", "strategy": "guard", "seats": [{"key": "k1", "account": false, "used": 5}, {"key": "acct-1", "account": true, "used": 0}], "expect": ["acct-1", "k1"]}
+]

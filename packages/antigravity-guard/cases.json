@@ -1,0 +1,7 @@
+[
+  {"name": "a suspension pause rejects the request before it reaches any provider", "request": {"model": "m", "messages": []}, "options": {"pauseUntil": 4102444800000}, "reject": {"status": 429, "message": "antigravity-guard"}},
+  {"name": "off leaves a paused request alone", "request": {"model": "m", "messages": []}, "options": {"off": true, "pauseUntil": 4102444800000}},
+  {"name": "with no pause the request body is left byte for byte", "request": {"model": "m", "system": "You are Claude Code.", "messages": [{"role": "user", "content": "hi"}]}, "options": {"deniedRefs": []}},
+  {"name": "an Antigravity provider try is never rewritten", "request": {"model": "m", "system": "x-anthropic-billing-header: cc_version=2.1.0;"}, "provider": {"id": "ag", "name": "Antigravity", "account": "antigravity", "model": "gemini-3-flash"}},
+  {"name": "deniedRefs alone does not reject the whole request", "request": {"model": "m"}, "options": {"deniedRefs": ["acct-a"]}}
+]
