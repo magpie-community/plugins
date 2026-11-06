@@ -215,6 +215,57 @@ for (const record of [false, true]) {
   })
 }
 
+const memoryReview = (group = false) => [
+  group ? 'The group chat: "Team", with the user and Writer (admin).' : 'The Bot: Writer, Assistant.',
+  '',
+  'MEMORY.md has 12 of 4000 characters (own) and 0 of 4000 (team).',
+  '',
+  group ? 'Its memory now (group: shared by the members of this group; team: shared by every Bot):' : "Its memory now (own: this Bot's; team: shared by every Bot):",
+  '[1] (own) A synthetic fact.',
+  '',
+  'New in this chat, oldest first:',
+  'User: hello',
+  'Assistant: hi',
+  '',
+  'Write every new or changed entry in English.',
+].join('\n')
+
+for (const protocol of ['anthropic', 'chat', 'responses']) {
+  for (const group of [false, true]) {
+    test(`${protocol}: DS Bot ${group ? 'group' : 'own'} memory review exports neither prompt nor reply`, async () => {
+      mock()
+      const [c, reports] = ctx(protocol, { options: { record: true } })
+      c.state.aelios = { admitted: true, payload: { identity: 'default' } }
+      const item = { role: 'user', content: [{ type: protocol === 'responses' ? 'input_text' : 'text', text: memoryReview(group) }] }
+      const req = protocol === 'responses' ? { input: [item] } : { messages: [item] }
+      const original = structuredClone(req)
+      expect(await onRequest(req, c)).toBeUndefined()
+      expect(req).toEqual(original)
+      expect(c.state.aelios).toBeUndefined()
+      onResponse({ choices: [{ message: { content: '{"changes":[]}' } }] }, { ...c, success: true })
+      await flush()
+      expect(calls).toHaveLength(0)
+      expect(reports).toEqual([['skipped']])
+    })
+  }
+}
+
+for (const text of [
+  `The Bot: Writer, Assistant.\n\nI want to change my bot's memory.`,
+  `I found Aelios storing this:\n${memoryReview()}`,
+  `\`\`\`\n${memoryReview()}\n\`\`\``,
+]) {
+  test(`a person discussing a memory review is still recalled and recorded: ${text.slice(0, 40)}`, async () => {
+    mock()
+    const [c] = ctx('chat', { options: { record: true } })
+    await onRequest({ messages: [{ role: 'user', content: text }] }, c)
+    onResponse({ choices: [{ message: { content: 'Let us fix it.' } }] }, { ...c, success: true })
+    await flush()
+    expect(of('/v1/hook/recall')).toHaveLength(1)
+    expect(of('/v1/hook/record')).toHaveLength(1)
+  })
+}
+
 test("transport-wrapped human speech reaches recall and receives memory", async () => {
   mock()
   const [c] = ctx("chat")
