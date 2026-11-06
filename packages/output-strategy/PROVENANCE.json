@@ -1,0 +1,56 @@
+{
+  "plugin": "output-strategy",
+  "created": "2026-11-03",
+  "runtimeAdaptations": [
+    "Only onRequest injection is implemented; no response or SSE rewriting.",
+    "Skill frontmatter, slash commands, host-specific mode queries and persistence commands are removed.",
+    "Styles are independent booleans using the complete upstream rules; OmniRoute's lite/full/ultra levels, DB, settings API and telemetry backend are not ported.",
+    "Injection is marked with [Output Strategy] instead of the OmniRoute marker."
+  ],
+  "sources": {
+    "terse-prose": {
+      "repository": "https://github.com/JuliusBrussee/caveman",
+      "path": "plugins/caveman/skills/caveman/SKILL.md",
+      "revision": "2e068f735253cce28256744804785f01887d9646",
+      "license": "Apache-2.0; earlier MIT contributions retain MIT notice"
+    },
+    "less-code": {
+      "repository": "https://github.com/decolua/9router",
+      "path": "open-sse/rtk/ponytailPrompt.js",
+      "revision": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d",
+      "license": "MIT"
+    },
+    "terse-cjk": {
+      "repository": "https://github.com/decolua/9router",
+      "path": "open-sse/rtk/cavemanPrompts.js",
+      "revision": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d",
+      "license": "MIT"
+    },
+    "ponytail": {
+      "repository": "https://github.com/DietrichGebert/ponytail",
+      "path": "skills/ponytail/SKILL.md",
+      "revision": "96608e078b2d5ea607c5c3b8b5a54d1c1fba6846",
+      "license": "MIT"
+    },
+    "i-have-adhd": {
+      "repository": "https://github.com/ayghri/i-have-adhd",
+      "path": "skills/i-have-adhd/SKILL.md",
+      "revision": "1ecea1993b7fce257ffbd686c070948b5e07eda6",
+      "license": "MIT"
+    },
+    "antislop-ui": {
+      "repository": "https://github.com/diegosouzapw/OmniRoute",
+      "path": "resources/app/open-sse/services/compression/outputStyles/antislop.ts",
+      "version": "OmniRoute Desktop 3.8.52",
+      "license": "MIT",
+      "note": "The cited 9router antislopPrompts.js no longer exists on current master; this is the OmniRoute adaptation, not a claim of newer upstream text."
+    },
+    "antislop-copy": {
+      "repository": "https://github.com/diegosouzapw/OmniRoute",
+      "path": "resources/app/open-sse/services/compression/outputStyles/antislop.ts",
+      "version": "OmniRoute Desktop 3.8.52",
+      "license": "MIT",
+      "note": "Same source and limitation as antislop-ui."
+    }
+  }
+}

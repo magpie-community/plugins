@@ -1,0 +1,37 @@
+[
+  {
+    "name": "all styles off leaves the request unchanged",
+    "request": {
+      "model": "m",
+      "messages": [{ "role": "user", "content": "hello" }]
+    }
+  },
+  {
+    "name": "media bypass wins over an enabled style",
+    "options": { "styles": { "ponytail": true } },
+    "request": {
+      "model": "m",
+      "messages": [
+        { "role": "user", "content": [{ "type": "image_url", "image_url": { "url": "data:image/png;base64,AA==" } }] }
+      ]
+    }
+  },
+  {
+    "name": "an existing marker is replaced not skipped",
+    "options": { "styles": { "ponytail": true } },
+    "request": {
+      "model": "m",
+      "messages": [{ "role": "system", "content": "[Output Strategy]\nexisting" }]
+    },
+    "expect_request_contains": ["[Output Strategy]", "Ponytail"]
+  },
+  {
+    "name": "an unsupported Gemini body passes through",
+    "protocol": "gemini",
+    "options": { "styles": { "ponytail": true } },
+    "request": {
+      "model": "m",
+      "contents": [{ "role": "user", "parts": [{ "text": "hello" }] }]
+    }
+  }
+]
