@@ -6,7 +6,9 @@
 //   FAKE_CODEX_IGNORE_INTERRUPT  when set, turn/interrupt is answered but turn is not ended
 //   FAKE_CODEX_START_DELAY_MS    delay only the first turn/start *response* (in-flight Stop race)
 //   FAKE_CODEX_STARTED_DELAY_MS  delay before turn/started after the response (default derived from SLOW_MS)
-import { appendFileSync } from "node:fs";
+//   FAKE_CODEX_RESPONSE_HOLD_FILE  wait until deleted before emitting a turn/start *response*
+//   FAKE_CODEX_STARTED_HOLD_FILE   wait until deleted before emitting turn/started
+import { appendFileSync, existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const logFile = process.env.FAKE_CODEX_LOG;
@@ -19,6 +21,11 @@ const startedDelayMs = process.env.FAKE_CODEX_STARTED_DELAY_MS != null
 let startCount = 0;
 const out = (msg) => process.stdout.write(JSON.stringify(msg) + "\n");
 const log = (o) => logFile && appendFileSync(logFile, JSON.stringify(o) + "\n");
+async function waitHold(envKey) {
+  const f = process.env[envKey];
+  if (!f) return;
+  while (existsSync(f)) await new Promise((r) => setTimeout(r, 15));
+}
 
 let threadId = "thread-1";
 let turnSeq = 0;
@@ -52,7 +59,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         openTurns.delete(turnId);
         out({ method: "turn/completed", params: { turn: { id: turnId, status } } });
       };
-      const start = () => {
+      const start = async () => {
+        await waitHold("FAKE_CODEX_STARTED_HOLD_FILE");
         out({ method: "turn/started", params: { turn: { id: turnId } } });
         out({ method: "item/agentMessage/delta", params: { itemId: "m1", delta: "hi" } });
         if (slowMs > 0) {
@@ -62,19 +70,20 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           finish("completed");
         }
       };
-      const respond = () => {
+      const respond = async () => {
+        await waitHold("FAKE_CODEX_RESPONSE_HOLD_FILE");
         out({ id, result: { turn: { id: turnId } } });
         // Delay turn/started so tests can interrupt after turn/start's response but before the event
         const startedWait = startedDelayMs != null
           ? startedDelayMs
           : (slowMs > 0 ? Math.min(200, Math.max(80, Math.floor(slowMs / 4))) : 0);
-        if (startedWait > 0) setTimeout(start, startedWait);
-        else start();
+        if (startedWait > 0) setTimeout(() => { void start(); }, startedWait);
+        else void start();
       };
       // First turn/start only: delay the JSON-RPC *response* so Stop can race while in flight
       const delay = n === 1 && startDelayMs > 0 ? startDelayMs : 0;
-      if (delay > 0) setTimeout(respond, delay);
-      else respond();
+      if (delay > 0) setTimeout(() => { void respond(); }, delay);
+      else void respond();
       return;
     }
     case "turn/interrupt": {

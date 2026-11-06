@@ -1,7 +1,7 @@
 // Codex interrupt: turn/interrupt is a JSON-RPC *request* (has a response). After interrupt the local turn
 // must end so a late turn/completed cannot bind onto the next send (same class of bug as ACP/Devin).
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CodexSession } from "../../daemon/src/providers/codex/session.js";
@@ -75,6 +75,8 @@ describe("Codex interrupt", () => {
       delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
       delete process.env.FAKE_CODEX_START_DELAY_MS;
       delete process.env.FAKE_CODEX_STARTED_DELAY_MS;
+      delete process.env.FAKE_CODEX_RESPONSE_HOLD_FILE;
+      delete process.env.FAKE_CODEX_STARTED_HOLD_FILE;
     }
   }, 20000);
 
@@ -100,6 +102,8 @@ describe("Codex interrupt", () => {
       delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
       delete process.env.FAKE_CODEX_START_DELAY_MS;
       delete process.env.FAKE_CODEX_STARTED_DELAY_MS;
+      delete process.env.FAKE_CODEX_RESPONSE_HOLD_FILE;
+      delete process.env.FAKE_CODEX_STARTED_HOLD_FILE;
     }
   }, 20000);
 
@@ -125,21 +129,27 @@ describe("Codex interrupt", () => {
       delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
       delete process.env.FAKE_CODEX_START_DELAY_MS;
       delete process.env.FAKE_CODEX_STARTED_DELAY_MS;
+      delete process.env.FAKE_CODEX_RESPONSE_HOLD_FILE;
+      delete process.env.FAKE_CODEX_STARTED_HOLD_FILE;
     }
   }, 20000);
 
   it("Stop after turn/start response, before turn/started, then immediate resend", async () => {
-    // Local interrupt must end promptly (red on main: main waited for turn/started / completion).
-    // turn/interrupt must still fire for codex-turn-1 after immediate send(second).
-    const r = open({ FAKE_CODEX_SLOW_MS: "1500", FAKE_CODEX_STARTED_DELAY_MS: "600" });
+    // Hold turn/started until release: interrupted + send(second) must both happen while hold exists
+    // (order, not wall clock — red on main which waited for turn/started / completion).
+    const hold = join(dir, `hold-started-${Math.random().toString(36).slice(2)}`);
+    writeFileSync(hold, "");
+    const r = open({ FAKE_CODEX_SLOW_MS: "1500", FAKE_CODEX_STARTED_DELAY_MS: "0", FAKE_CODEX_STARTED_HOLD_FILE: hold });
     try {
-      const t0 = Date.now();
       await r.session.send({ text: "first", images: [] });
       await until(() => r.events.some((e) => e.type === "turn_started"));
+      // Response is not held — wait until send() returns (currentTurnId set) then Stop before started
       await r.session.interrupt();
       await until(() => r.events.some((e) => e.type === "turn_ended" && (e as { status?: string }).status === "interrupted"));
-      expect(Date.now() - t0).toBeLessThan(250); // must not wait for turn/started (600ms) or slowMs
       await expect(r.session.send({ text: "second", images: [] })).resolves.toBeUndefined();
+      await until(() => r.events.filter((e) => e.type === "turn_started").length >= 2);
+      expect(existsSync(hold)).toBe(true); // fake has not emitted turn/started for turn 1 yet
+      unlinkSync(hold);
       await until(() => lines(r.logFile).some((l) => l.in?.method === "turn/interrupt"), 5000);
       expect(lines(r.logFile).find((l) => l.in?.method === "turn/interrupt").in.params.turnId).toBe("codex-turn-1");
       await until(() => r.events.filter((e) => e.type === "turn_ended").length >= 2, 10000);
@@ -147,6 +157,7 @@ describe("Codex interrupt", () => {
       expect(ends.map((e) => e.status)).toEqual(["interrupted", "completed"]);
       expect(ends[1]?.turnId?.startsWith("u_")).toBe(true);
     } finally {
+      try { unlinkSync(hold); } catch { /* already gone */ }
       await r.session.close();
       await r.done;
       delete process.env.FAKE_CODEX_SLOW_MS;
@@ -154,34 +165,40 @@ describe("Codex interrupt", () => {
       delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
       delete process.env.FAKE_CODEX_START_DELAY_MS;
       delete process.env.FAKE_CODEX_STARTED_DELAY_MS;
+      delete process.env.FAKE_CODEX_RESPONSE_HOLD_FILE;
+      delete process.env.FAKE_CODEX_STARTED_HOLD_FILE;
     }
   }, 20000);
 
   it("Stop while turn/start is in flight, then immediate resend interrupts codex-turn-1", async () => {
-    // yetone probe: delay only the first turn/start response; send(first) not awaited → interrupt →
-    // turn_ended → send(second) before turn 1's response. Must send turn/interrupt for codex-turn-1
-    // and end as [interrupted, completed] with no stray third turn_ended (red on 45a67b2 and on main).
-    const r = open({ FAKE_CODEX_SLOW_MS: "1500", FAKE_CODEX_START_DELAY_MS: "400" });
+    // Hold the first turn/start response: interrupt + send(second) must both happen while hold exists.
+    // ourTurnId !== turnId alone covers this (cancelledLocalTurns removed as redundant). Red on main.
+    const hold = join(dir, `hold-response-${Math.random().toString(36).slice(2)}`);
+    writeFileSync(hold, "");
+    const r = open({ FAKE_CODEX_SLOW_MS: "1500", FAKE_CODEX_RESPONSE_HOLD_FILE: hold });
     try {
-      const t0 = Date.now();
       const send1 = r.session.send({ text: "first", images: [] });
       await until(() => r.events.some((e) => e.type === "turn_started"));
       await r.session.interrupt();
       await until(() => r.events.some((e) => e.type === "turn_ended" && (e as { status?: string }).status === "interrupted"));
-      expect(Date.now() - t0).toBeLessThan(350); // local end before the delayed turn/start response
-      await expect(r.session.send({ text: "second", images: [] })).resolves.toBeUndefined();
+      // Do not await send(second) until the hold is released — its turn/start response is also gated.
+      const send2 = r.session.send({ text: "second", images: [] });
+      await until(() => r.events.filter((e) => e.type === "turn_started").length >= 2);
+      expect(existsSync(hold)).toBe(true); // turn/start response for turn 1 still held
+      unlinkSync(hold);
       await send1.catch(() => {});
+      await send2;
       await until(() => lines(r.logFile).some((l) => l.in?.method === "turn/interrupt"), 5000);
       const interrupts = lines(r.logFile).filter((l) => l.in?.method === "turn/interrupt").map((l) => l.in.params.turnId);
       expect(interrupts).toContain("codex-turn-1");
       await until(() => r.events.filter((e) => e.type === "turn_ended").length >= 2, 10000);
-      // Give late completions a moment; must not grow a third end
-      await new Promise((x) => setTimeout(x, 500));
+      await new Promise((x) => setTimeout(x, 300));
       const ends = r.events.filter((e) => e.type === "turn_ended") as { status?: string; turnId?: string }[];
       expect(ends).toHaveLength(2);
       expect(ends.map((e) => e.status)).toEqual(["interrupted", "completed"]);
       expect(ends.every((e) => e.turnId && e.turnId.startsWith("u_"))).toBe(true);
     } finally {
+      try { unlinkSync(hold); } catch { /* already gone */ }
       await r.session.close();
       await r.done;
       delete process.env.FAKE_CODEX_SLOW_MS;
@@ -189,6 +206,8 @@ describe("Codex interrupt", () => {
       delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
       delete process.env.FAKE_CODEX_START_DELAY_MS;
       delete process.env.FAKE_CODEX_STARTED_DELAY_MS;
+      delete process.env.FAKE_CODEX_RESPONSE_HOLD_FILE;
+      delete process.env.FAKE_CODEX_STARTED_HOLD_FILE;
     }
   }, 20000);
 });

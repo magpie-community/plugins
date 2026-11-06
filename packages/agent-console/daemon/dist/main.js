@@ -2439,6 +2439,12 @@ var init_cli = __esm({
       exited;
       /** The answer to initialize (commands, models, account …), null when it failed */
       initialized;
+      /** Monotonic turn gen for THIS process (dies with the CLI). */
+      turnGen = 0;
+      /** Turn gens still waiting for a `result` from THIS process (dies with the CLI). */
+      awaitingResult = [];
+      /** Gens already ended locally on interrupt; their late `result` must be dropped. */
+      skipResultGens = /* @__PURE__ */ new Set();
       child;
       buf = "";
       seq = 0;
@@ -2613,12 +2619,6 @@ var init_session = __esm({
       sessionId;
       turnId = null;
       turnNum = 0;
-      turnGen = 0;
-      currentGen = null;
-      /** FIFO of turn gens still waiting for a CLI `result` — scoped to the current ClaudeCli only. */
-      awaitingResult = [];
-      /** Gens we already ended locally on interrupt; their late `result` turn_ended must be dropped. */
-      skipResultGens = /* @__PURE__ */ new Set();
       st = newMapState();
       pending = /* @__PURE__ */ new Map();
       needsRestart = false;
@@ -2628,16 +2628,9 @@ var init_session = __esm({
       pumpDone = null;
       /** Mode the running CLI was started with (bypassPermissions has to be allowed at launch) */
       launchedMode = null;
-      /** Results are per CLI process; never let a dead/replaced CLI's owed gens poison the next one. */
-      resetResultFifo() {
-        this.awaitingResult = [];
-        this.skipResultGens.clear();
-        this.currentGen = null;
-      }
       // The CLI is only started before the first send (or a command list request)
       ensureCli() {
         if (this.cli && !this.needsRestart) return this.cli;
-        this.resetResultFifo();
         this.st = newMapState();
         const effort = this.o.effort && EFFORTS.includes(this.o.effort) ? this.o.effort : null;
         const cli = new ClaudeCli(
@@ -2664,34 +2657,26 @@ var init_session = __esm({
           if (this.cli !== cli) continue;
           for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) {
             if (ev.type === "turn_ended") {
-              const g = this.awaitingResult.shift();
-              if (g != null && this.skipResultGens.delete(g)) continue;
+              const g = cli.awaitingResult.shift();
+              if (g != null && cli.skipResultGens.delete(g)) continue;
             }
             this.emit(ev);
           }
         }
         const exit = await cli.exited;
-        if (this.closed || this.stopping.has(cli)) {
-          if (this.cli !== cli) this.resetResultFifo();
-          else if (this.needsRestart) this.resetResultFifo();
-          return;
-        }
+        if (this.closed || this.stopping.has(cli)) return;
         const detail = cli.failure ? tr("claude.startFailed", { detail: String(cli.failure.message) }) : tr("claude.exited", { code: String(exit.code ?? exit.signal ?? "?") });
         const tail = cli.stderr.trim().slice(-400);
         this.emit({ type: "notice", level: "error", message: tail ? `${detail} \u2014 stderr: ${tail}` : detail });
         if (this.turnId) this.emit({ type: "turn_ended", turnId: this.turnId, status: "failed", error: detail });
         this.turnId = null;
         if (this.cli === cli) {
-          this.resetResultFifo();
           this.needsRestart = true;
         }
       }
       emit(ev) {
         if (ev.type === "turn_ended" && !ev.turnId) ev.turnId = this.turnId ?? "unknown";
-        if (ev.type === "turn_ended") {
-          this.turnId = null;
-          this.currentGen = null;
-        }
+        if (ev.type === "turn_ended") this.turnId = null;
         if (ev.type === "provider_session_id" && ev.id) this.sessionId = ev.id;
         this.q.push(ev);
       }
@@ -2700,9 +2685,8 @@ var init_session = __esm({
         if (this.needsRestart) await this.restart();
         const cli = this.ensureCli();
         this.turnNum++;
-        this.turnGen++;
-        this.currentGen = this.turnGen;
-        this.awaitingResult.push(this.turnGen);
+        const gen = ++cli.turnGen;
+        cli.awaitingResult.push(gen);
         this.turnId = "u_" + Date.now().toString(36) + "_" + this.turnNum;
         this.st.sawInterrupt = false;
         this.emit({
@@ -2721,7 +2705,6 @@ var init_session = __esm({
         this.restarting = (async () => {
           const old = this.cli;
           this.cli = null;
-          this.resetResultFifo();
           if (old) {
             this.stopping.add(old);
             await old.close().catch(() => {
@@ -2859,7 +2842,8 @@ var init_session = __esm({
         const cli = this.cli;
         const endLocal = () => {
           if (this.turnId) {
-            if (this.currentGen != null) this.skipResultGens.add(this.currentGen);
+            const gen = cli?.awaitingResult.at(-1);
+            if (gen != null) cli.skipResultGens.add(gen);
             this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
           }
         };
@@ -2874,7 +2858,6 @@ var init_session = __esm({
           this.stopping.add(cli);
           this.needsRestart = true;
           void cli.close(500);
-          this.resetResultFifo();
           if (this.turnId) {
             this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
           }
@@ -3898,8 +3881,6 @@ var init_session2 = __esm({
       pending = /* @__PURE__ */ new Map();
       closed = false;
       started = null;
-      /** Local timeline turnIds interrupted before their turn/start response arrived. */
-      cancelledLocalTurns = /* @__PURE__ */ new Set();
       ourTurnId = null;
       // The current turn's turnId in the timeline (generated on send)
       /** Codex turn ids whose late started/completed/deltas must be ignored. */
@@ -4039,7 +4020,7 @@ var init_session2 = __esm({
           });
           const codexTurnId = typeof res?.turn?.id === "string" ? res.turn.id : null;
           if (!codexTurnId) return;
-          const wasCancelled = this.cancelledLocalTurns.delete(turnId) || this.ourTurnId !== turnId;
+          const wasCancelled = this.ourTurnId !== turnId;
           if (wasCancelled) {
             this.staleCodexTurns.add(codexTurnId);
             try {
@@ -4056,7 +4037,7 @@ var init_session2 = __esm({
           }
           this.st.currentTurnId = codexTurnId;
         } catch (e) {
-          if (this.cancelledLocalTurns.delete(turnId) || this.ourTurnId !== turnId) return;
+          if (this.ourTurnId !== turnId) return;
           this.emit({
             type: "turn_ended",
             turnId,
@@ -4088,9 +4069,7 @@ var init_session2 = __esm({
           if (localTurn) this.emit({ type: "turn_ended", turnId: localTurn, status: "interrupted" });
           return;
         }
-        if (!codexTurn) {
-          if (localTurn) this.cancelledLocalTurns.add(localTurn);
-        } else {
+        if (codexTurn) {
           this.staleCodexTurns.add(codexTurn);
           try {
             await this.rpc.request(
@@ -4874,11 +4853,6 @@ var init_session3 = __esm({
       turnId = null;
       turnNum = 0;
       running = false;
-      /** Monotonic id for each session/prompt; interrupt marks the active gen so its settle is discarded. */
-      promptGen = 0;
-      activePromptGen = null;
-      /** Prompt gens we already ended locally on interrupt (JSON-RPC error or late stop must not end a newer turn). */
-      cancelledPromptGens = /* @__PURE__ */ new Set();
       /** Current wire session/prompt settle (never rejects) — interrupt waits for it before the next prompt. */
       inFlightPrompt = null;
       /** After Stop: notify(cancel) + previous prompt settle + one macrotask, so pumpUpdates drains before next prompt(). */
@@ -5225,23 +5199,20 @@ var init_session3 = __esm({
           if (this.closed || !this.running || this.turnId !== turnId) return;
         }
         this.mapCtx = newMapCtx();
-        const gen = ++this.promptGen;
-        this.activePromptGen = gen;
         this.activeTurnId = turnId;
         this.wakePump?.();
         this.wakePump = null;
+        const req = this.active.prompt(prompt);
+        const settle = req.then(() => {
+        }, () => {
+        });
+        this.inFlightPrompt = settle;
         try {
-          const req = this.active.prompt(prompt);
-          this.inFlightPrompt = { gen, settle: req.then(() => {
-          }, () => {
-          }) };
           const res = await req;
-          if (this.cancelledPromptGens.delete(gen)) return;
-          if (this.activeTurnId === turnId && this.running) {
+          if (this.activeTurnId === turnId) {
             this.endTurn(stopToTurnEnd(res.stopReason, turnId));
           }
         } catch (e) {
-          if (this.cancelledPromptGens.delete(gen)) return;
           if (this.activeTurnId === turnId) {
             this.endTurn({
               type: "turn_ended",
@@ -5251,9 +5222,7 @@ var init_session3 = __esm({
             });
           }
         } finally {
-          this.cancelledPromptGens.delete(gen);
-          if (this.activePromptGen === gen) this.activePromptGen = null;
-          if (this.inFlightPrompt?.gen === gen) this.inFlightPrompt = null;
+          if (this.inFlightPrompt === settle) this.inFlightPrompt = null;
         }
       }
       endTurn(ev) {
@@ -5298,12 +5267,11 @@ var init_session3 = __esm({
         const notifyP = this.ctx.notify(methods2.agent.session.cancel, { sessionId: this.active.sessionId }).catch((e) => {
           log("info", `ACP cancel: ${String(e)}`);
         });
-        const prevSettle = this.inFlightPrompt?.settle ?? Promise.resolve();
+        const prevSettle = this.inFlightPrompt ?? Promise.resolve();
         this.pendingCancelSettle = Promise.all([notifyP, prevSettle]).then(
           () => new Promise((r) => setTimeout(r, 0))
         );
         if (this.running) {
-          if (this.activePromptGen != null) this.cancelledPromptGens.add(this.activePromptGen);
           const turnId = this.activeTurnId ?? this.turnId;
           if (turnId) {
             this.endTurn({ type: "turn_ended", turnId, status: "interrupted" });

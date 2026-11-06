@@ -43,12 +43,6 @@ export class ClaudeSession implements ProviderSession {
   private sessionId: string | null;
   private turnId: string | null = null;
   private turnNum = 0;
-  private turnGen = 0;
-  private currentGen: number | null = null;
-  /** FIFO of turn gens still waiting for a CLI `result` — scoped to the current ClaudeCli only. */
-  private awaitingResult: number[] = [];
-  /** Gens we already ended locally on interrupt; their late `result` turn_ended must be dropped. */
-  private skipResultGens = new Set<number>();
   private st: MapState = newMapState();
   private pending = new Map<string, PendingReq>();
   private needsRestart = false;
@@ -64,18 +58,10 @@ export class ClaudeSession implements ProviderSession {
     this.events = this.q;
   }
 
-  /** Results are per CLI process; never let a dead/replaced CLI's owed gens poison the next one. */
-  private resetResultFifo(): void {
-    this.awaitingResult = [];
-    this.skipResultGens.clear();
-    this.currentGen = null;
-  }
-
   // The CLI is only started before the first send (or a command list request)
   private ensureCli(): ClaudeCli {
     if (this.cli && !this.needsRestart) return this.cli;
-    // New ClaudeCli → fresh FIFO (a closed CLI's result will never arrive)
-    this.resetResultFifo();
+    // New ClaudeCli carries its own empty turnGen / awaitingResult / skipResultGens
     this.st = newMapState();
     const effort = this.o.effort && EFFORTS.includes(this.o.effort) ? this.o.effort : null;
     const cli = new ClaudeCli(
@@ -100,26 +86,21 @@ export class ClaudeSession implements ProviderSession {
 
   private async pump(cli: ClaudeCli): Promise<void> {
     for await (const m of cli.messages) {
-      // Replaced CLI: ignore leftover stdout so it cannot shift the new CLI's FIFO
+      // Replaced CLI: ignore leftover stdout so it cannot emit into this session or shift a newer CLI's FIFO
       if (this.cli !== cli) continue;
       for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) {
         if (ev.type === "turn_ended") {
-          // Drop by FIFO of results still owed — not by interrupt status (send() resets sawInterrupt,
+          // Drop by this CLI's FIFO of results owed — not by interrupt status (send() resets sawInterrupt,
           // and the real Claude CLI ends cancelled turns with subtype error_during_execution → failed).
-          const g = this.awaitingResult.shift();
-          if (g != null && this.skipResultGens.delete(g)) continue;
+          const g = cli.awaitingResult.shift();
+          if (g != null && cli.skipResultGens.delete(g)) continue;
         }
         this.emit(ev);
       }
     }
     const exit = await cli.exited;
     // A CLI this session stopped on purpose (restart / close) is not a crash
-    if (this.closed || this.stopping.has(cli)) {
-      // Dead on purpose after interrupt-fail / restart: clear any gens that will never get a result
-      if (this.cli !== cli) this.resetResultFifo();
-      else if (this.needsRestart) this.resetResultFifo();
-      return;
-    }
+    if (this.closed || this.stopping.has(cli)) return;
     const detail = cli.failure
       ? tr("claude.startFailed", { detail: String(cli.failure.message) })
       : tr("claude.exited", { code: String(exit.code ?? exit.signal ?? "?") });
@@ -127,20 +108,16 @@ export class ClaudeSession implements ProviderSession {
     this.emit({ type: "notice", level: "error", message: tail ? `${detail} — stderr: ${tail}` : detail });
     if (this.turnId) this.emit({ type: "turn_ended", turnId: this.turnId, status: "failed", error: detail });
     this.turnId = null;
-    // The event stream ended: an old CLI that restart() replaced must not close the event queue
+    // Keep the event queue open on crash so the next send can restart with --resume (FIFO lived on this dead CLI).
+    // Intentionally not this.q.close(): closing would end manager.pumpEvents and mark the thread closed.
     if (this.cli === cli) {
-      this.resetResultFifo(); // crash mid-turn: owed gens die with this process
-      this.needsRestart = true; // Rebuild with --resume on the next send
-      // Keep the event queue open so the next send can restart the CLI (FIFO already cleared).
+      this.needsRestart = true;
     }
   }
 
   private emit(ev: ProviderEvent): void {
     if (ev.type === "turn_ended" && !ev.turnId) ev.turnId = this.turnId ?? "unknown";
-    if (ev.type === "turn_ended") {
-      this.turnId = null;
-      this.currentGen = null;
-    }
+    if (ev.type === "turn_ended") this.turnId = null;
     if (ev.type === "provider_session_id" && ev.id) this.sessionId = ev.id;
     this.q.push(ev);
   }
@@ -150,9 +127,8 @@ export class ClaudeSession implements ProviderSession {
     if (this.needsRestart) await this.restart();
     const cli = this.ensureCli();
     this.turnNum++;
-    this.turnGen++;
-    this.currentGen = this.turnGen;
-    this.awaitingResult.push(this.turnGen);
+    const gen = ++cli.turnGen;
+    cli.awaitingResult.push(gen);
     this.turnId = "u_" + Date.now().toString(36) + "_" + this.turnNum;
     this.st.sawInterrupt = false; // A new turn clears the old interrupt flag
     this.emit({
@@ -172,7 +148,6 @@ export class ClaudeSession implements ProviderSession {
     this.restarting = (async () => {
       const old = this.cli;
       this.cli = null;
-      this.resetResultFifo();
       if (old) {
         this.stopping.add(old);
         await old.close().catch(() => {});
@@ -321,9 +296,10 @@ export class ClaudeSession implements ProviderSession {
       // End immediately so manager/UI clear running even if the CLI is slow to emit result
       // (same class of bug as ACP: idle UI while provider.turn still open → next send races).
       if (this.turnId) {
-        // Keep currentGen in awaitingResult so the late CLI result is consumed as that gen's owed
-        // result and dropped; do not look at status/sawInterrupt (send() clears the flag).
-        if (this.currentGen != null) this.skipResultGens.add(this.currentGen);
+        // Mark the latest owed gen on this CLI so its late result is dropped (FIFO order).
+        // Do not look at status/sawInterrupt (send() clears the flag).
+        const gen = cli?.awaitingResult.at(-1);
+        if (gen != null) cli!.skipResultGens.add(gen);
         this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
       }
     };
@@ -335,13 +311,11 @@ export class ClaudeSession implements ProviderSession {
       await cli.interrupt();
     } catch (e) {
       // No answer: stop this CLI; the next send starts it again with --resume.
-      // That CLI's result will never arrive — clear FIFO now so the next CLI's first result
-      // is not paired with a stale skipped gen (and dropped).
+      // FIFO lived on this CLI — abandoning it is enough; do not touch a newer CLI's gens.
       log("warn", "claude interrupt failed", { err: String(e) });
       this.stopping.add(cli);
       this.needsRestart = true;
       void cli.close(500);
-      this.resetResultFifo();
       if (this.turnId) {
         this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
       }

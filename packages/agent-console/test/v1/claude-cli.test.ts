@@ -2,14 +2,23 @@
 // (fixtures/fake-claude.mjs) that speaks the same protocol: streaming text / thinking / tools, permission approve and
 // deny, the CLI withdrawing an ask, interrupt, model / mode switches, resume, images, slash commands, and a claude
 // that is missing or dies.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ClaudeSession } from "../../daemon/src/providers/claude/session.js";
 import { createClaudeProvider } from "../../daemon/src/providers/claude/provider.js";
 import { setAppLocale } from "../../daemon/src/util/i18n.js";
 import type { ProviderEvent } from "../../daemon/src/timeline/types.js";
+import { AgentManager } from "../../daemon/src/agents/manager.js";
+import { ThreadsStore } from "../../daemon/src/store/threads.js";
+import { ProjectsStore } from "../../daemon/src/store/projects.js";
+import { SettingsStore } from "../../daemon/src/store/settings.js";
+import { AttachmentStore } from "../../daemon/src/store/attachments.js";
+import { Gateway } from "../../daemon/src/ws/gateway.js";
+import { initProviders, registerProvider, getProvider } from "../../daemon/src/providers/registry.js";
+import { clearProviderCache } from "../../daemon/src/providers/infoCache.js";
+import type { Config } from "../../daemon/src/config.js";
 
 const fixture = resolve(__dirname, "fixtures", "fake-claude.mjs");
 const bin = { ok: true as const, cmd: process.execPath, prefixArgs: [fixture], display: fixture, via: "shim-js" };
@@ -141,19 +150,24 @@ describe("claude over stream-json", () => {
   });
 
   it("after interrupt, send() works again even when the CLI result is late", async () => {
-    const delay = 400;
-    const { s, events, until, log } = open({}, { FAKE_CLAUDE_INTERRUPT_RESULT_MS: String(delay) });
+    // Hold the late interrupt result until release: interrupted + send(second) must both happen first
+    // (order, not wall clock — red on main which waits for the late result before send(second)).
+    const hold = join(dir, `hold-late-${++n}`);
+    writeFileSync(hold, "");
+    const { s, events, until, log } = open({}, { FAKE_CLAUDE_HOLD_FILE: hold });
     try {
-      const t0 = Date.now();
       await s.send({ text: "SLOW", images: [] });
       await until((e) => e.type === "assistant_delta");
       await s.interrupt();
-      const end1 = await until(ended);
-      expect(end1).toMatchObject({ status: "interrupted" });
-      // Local interrupt must win well inside the delayed CLI result window (red on main: main waits for the result)
-      expect(Date.now() - t0).toBeLessThan(delay - 50);
+      expect(await until(ended)).toMatchObject({ status: "interrupted" });
       await expect(s.send({ text: "second", images: [] })).resolves.toBeUndefined();
       await until((e) => e.type === "turn_started" && events.filter((x) => x.type === "turn_started").length >= 2);
+      const secondOnWire = () => log().some((l) => l.in?.type === "user" && JSON.stringify(l.in).includes("second"));
+      const wireDeadline = Date.now() + 2000;
+      while (Date.now() < wireDeadline && !secondOnWire()) await new Promise((r) => setTimeout(r, 15));
+      expect(secondOnWire()).toBe(true);
+      expect(existsSync(hold)).toBe(true);
+      unlinkSync(hold);
       await until((e) => e.type === "turn_ended" && events.filter((x) => x.type === "turn_ended").length >= 2);
       const ends = events.filter((e) => e.type === "turn_ended") as { status?: string }[];
       expect(ends[0]?.status).toBe("interrupted");
@@ -161,48 +175,42 @@ describe("claude over stream-json", () => {
       expect(ends[ends.length - 1]?.status).toBe("completed");
       expect(log().filter((l) => l.in?.type === "user").length).toBeGreaterThanOrEqual(2);
     } finally {
+      try { unlinkSync(hold); } catch { /* gone */ }
       await s.close();
     }
   });
 
   it("late error_during_execution after next send must not end the new turn as failed", async () => {
     // Real Claude Code CLI ends an interrupted turn with subtype error_during_execution (not error_interrupted).
-    // send() resets sawInterrupt, so that result maps to failed; dropping by FIFO of results owed (not status)
-    // is required so the late result cannot kill the next turn.
-    // Timing: local interrupted must arrive well before FAKE_CLAUDE_INTERRUPT_RESULT_MS, and the second
-    // user line must be in FAKE_CLAUDE_LOG before that delayed result is emitted — red on main (main
-    // waits for the late result before send(second) can run).
-    const delay = 500;
-    const { s, events, until, log } = open({}, { FAKE_CLAUDE_INTERRUPT_RESULT_MS: String(delay) });
+    // send() resets sawInterrupt, so that result maps to failed; dropping by this CLI's FIFO of results owed
+    // (not status) is required so the late result cannot kill the next turn.
+    // Hold the late result: second user must be on the wire before release (red on main).
+    const hold = join(dir, `hold-fifo-${++n}`);
+    writeFileSync(hold, "");
+    const { s, events, until, log } = open({}, { FAKE_CLAUDE_HOLD_FILE: hold });
     try {
-      const t0 = Date.now();
       await s.send({ text: "SLOW", images: [] });
       await until((e) => e.type === "assistant_delta");
       await s.interrupt();
       expect(await until(ended)).toMatchObject({ status: "interrupted" });
-      const interruptedAt = Date.now() - t0;
-      expect(interruptedAt).toBeLessThan(delay - 50);
       await s.send({ text: "second", images: [] });
       await until((e) => e.type === "turn_started" && events.filter((x) => x.type === "turn_started").length >= 2);
-      // Second user must reach the CLI (logged on stdin) before the delayed interrupt result is emitted —
-      // on main, send(second) cannot run until the late result arrives, so this ordering is red there.
-      const logDeadline = Date.now() + 2000;
-      while (Date.now() < logDeadline && !log().some((l) => l.in?.type === "user" && JSON.stringify(l.in).includes("second"))) {
-        await new Promise((r) => setTimeout(r, 20));
-      }
-      expect(log().some((l) => l.in?.type === "user" && JSON.stringify(l.in).includes("second"))).toBe(true);
-      expect(Date.now() - t0).toBeLessThan(delay); // still inside the delayed-result window
-      const endsBeforeSecondDone = () =>
-        events.filter((e) => e.type === "turn_ended") as { status?: string; error?: string }[];
-      await new Promise((r) => setTimeout(r, delay + 150));
-      const mid = endsBeforeSecondDone();
-      expect(mid[0]?.status).toBe("interrupted");
-      expect(mid.some((e) => e.status === "failed")).toBe(false);
+      const secondOnWire = () => log().some((l) => l.in?.type === "user" && JSON.stringify(l.in).includes("second"));
+      const wireDeadline = Date.now() + 2000;
+      while (Date.now() < wireDeadline && !secondOnWire()) await new Promise((r) => setTimeout(r, 15));
+      expect(secondOnWire()).toBe(true);
+      expect(existsSync(hold)).toBe(true);
+      const endsBeforeRelease = events.filter((e) => e.type === "turn_ended") as { status?: string }[];
+      expect(endsBeforeRelease).toHaveLength(1);
+      expect(endsBeforeRelease[0]?.status).toBe("interrupted");
+      unlinkSync(hold);
       await until((e) => e.type === "turn_ended" && events.filter((x) => x.type === "turn_ended").length >= 2);
-      const ends = endsBeforeSecondDone();
+      const ends = events.filter((e) => e.type === "turn_ended") as { status?: string }[];
       expect(ends.filter((e) => e.status === "interrupted")).toHaveLength(1);
+      expect(ends.some((e) => e.status === "failed")).toBe(false);
       expect(ends[ends.length - 1]?.status).toBe("completed");
     } finally {
+      try { unlinkSync(hold); } catch { /* gone */ }
       await s.close();
     }
   });
@@ -210,6 +218,7 @@ describe("claude over stream-json", () => {
   it("interrupt control_response error restarts CLI; next turn still completes", async () => {
     // On 45a67b2 the failed-interrupt gen stayed in awaitingResult/skipResultGens; the restarted CLI's
     // first result shifted that stale gen and was dropped, so the next turn never ended.
+    // FIFO now lives on ClaudeCli, so abandoning the failed CLI is enough (no session-level reset).
     const { s, events, until } = open({}, { FAKE_CLAUDE_INTERRUPT_FAIL: "1" });
     try {
       await s.send({ text: "SLOW", images: [] });
@@ -222,6 +231,27 @@ describe("claude over stream-json", () => {
       const ends = events.filter((e) => e.type === "turn_ended") as { status?: string }[];
       expect(ends[0]?.status).toBe("interrupted");
       expect(ends[ends.length - 1]?.status).toBe("completed");
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("replaced CLI leftover stdout is ignored (this.cli !== cli)", async () => {
+    // Interrupt fails; old CLI lingers and emits a poison result while restart replaces it.
+    // Without `if (this.cli !== cli) continue` that poison would emit a spurious turn_ended.
+    const { s, events, until } = open({}, { FAKE_CLAUDE_INTERRUPT_FAIL: "1", FAKE_CLAUDE_FAIL_LINGER_RESULT_MS: "120" });
+    try {
+      await s.send({ text: "SLOW", images: [] });
+      await until((e) => e.type === "assistant_delta");
+      await s.interrupt();
+      expect(await until(ended)).toMatchObject({ status: "interrupted" });
+      await expect(s.send({ text: "second", images: [] })).resolves.toBeUndefined();
+      await until((e) => e.type === "turn_ended" && events.filter((x) => x.type === "turn_ended").length >= 2, 10000);
+      await new Promise((r) => setTimeout(r, 250)); // past linger window
+      const ends = events.filter((e) => e.type === "turn_ended") as { status?: string; error?: string }[];
+      expect(ends.map((e) => e.status)).toEqual(["interrupted", "completed"]);
+      expect(ends.some((e) => (e.error ?? "").includes("POISON_FROM_OLD_CLI"))).toBe(false);
+      expect(events.filter((e) => e.type === "turn_ended")).toHaveLength(2);
     } finally {
       await s.close();
     }
@@ -352,4 +382,93 @@ describe("claude over stream-json", () => {
     await expect(createClaudeProvider({ resolve: async () => missing }).createSession({ threadId: "t", cwd: dir, model: null, mode: "default", effort: null, resumeId: null }))
       .rejects.toThrow(/^claude was not found .*Claude Code is not bundled with this plugin; install it first: npm i -g @anthropic-ai\/claude-code/);
   });
+});
+
+
+describe("AgentManager + Claude crash keeps thread open (resume)", () => {
+  // Point 7 / yetone review 3: crash path intentionally does NOT close the event queue, so the
+  // manager does not mark the thread closed; the next send restarts Claude with --resume.
+  const cfg: Config = { port: 0, dataDir: "", token: "t", version: "0.0.0", idleExitMinutes: 60, buildStamp: "0" };
+  let mdir: string;
+  let threads: ThreadsStore;
+  let projects: ProjectsStore;
+  let settings: SettingsStore;
+  let gw: Gateway;
+  let manager: AgentManager;
+  let threadId: string;
+  let logFile: string;
+
+  beforeEach(async () => {
+    mdir = mkdtempSync(join(tmpdir(), "claude-mgr-"));
+    logFile = join(mdir, "claude.jsonl");
+    process.env.AGENT_CONSOLE_MOCK = "1";
+    process.env.FAKE_CLAUDE_LOG = logFile;
+    delete process.env.FAKE_CLAUDE_CRASH_AFTER_DELTA;
+    delete process.env.FAKE_CLAUDE_EXIT;
+    delete process.env.FAKE_CLAUDE_INTERRUPT_FAIL;
+    delete process.env.FAKE_CLAUDE_HOLD_FILE;
+    delete process.env.FAKE_CLAUDE_FAIL_LINGER_RESULT_MS;
+    initProviders();
+    registerProvider(
+      createClaudeProvider({
+        resolve: async () => ({ ok: true as const, cmd: process.execPath, prefixArgs: [fixture], display: fixture, via: "shim-js" }),
+      }),
+    );
+    const claude = getProvider("claude")!;
+    claude.detect = async () => ({ available: true, bin: fixture, version: "fake-0" });
+    clearProviderCache("claude");
+    threads = new ThreadsStore(mdir);
+    projects = new ProjectsStore(mdir);
+    settings = new SettingsStore(mdir);
+    gw = new Gateway(cfg);
+    manager = new AgentManager(gw, threads, projects, settings, new AttachmentStore(join(mdir, "attachments")));
+    const proj = await projects.create(mdir);
+    threadId = (await threads.create({ projectId: proj.id, provider: "claude" })).id;
+  });
+
+  afterEach(() => {
+    manager.shutdown();
+    delete process.env.FAKE_CLAUDE_CRASH_AFTER_DELTA;
+    delete process.env.FAKE_CLAUDE_LOG;
+    rmSync(mdir, { recursive: true, force: true });
+  });
+
+  const waitFor = async (fn: () => boolean | Promise<boolean>, ms = 15000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      if (await fn()) return;
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    throw new Error("waitFor timed out");
+  };
+
+  it("mid-turn CLI crash: thread stays idle (not closed); next send resumes with --resume", async () => {
+    process.env.FAKE_CLAUDE_CRASH_AFTER_DELTA = "1";
+    await manager.send(threadId, { text: "SLOW" });
+    await waitFor(async () => (await threads.get(threadId))?.status === "idle");
+    const meta1 = await threads.get(threadId);
+    expect(meta1?.status).toBe("idle");
+    expect(meta1?.status).not.toBe("closed");
+    expect(meta1?.lastTurnStatus).toBe("failed");
+    expect(meta1?.providerSessionId).toBeTruthy();
+    const sid = meta1!.providerSessionId!;
+
+    delete process.env.FAKE_CLAUDE_CRASH_AFTER_DELTA;
+    await manager.send(threadId, { text: "after-crash" });
+    await waitFor(async () => (await threads.get(threadId))?.lastTurnStatus === "completed");
+    const meta2 = await threads.get(threadId);
+    expect(meta2?.status).toBe("idle");
+    expect(meta2?.status).not.toBe("closed");
+    const argvs = readFileSync(logFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.argv)
+      .map((l) => l.argv as string[]);
+    expect(argvs.length).toBeGreaterThanOrEqual(2);
+    expect(argvs[1]).toEqual(expect.arrayContaining(["--resume", sid]));
+    const ends = (await threads.readEvents(threadId, 0, 50000)).filter((e) => e.type === "turn_ended") as { status?: string }[];
+    expect(ends[0]?.status).toBe("failed");
+    expect(ends[ends.length - 1]?.status).toBe("completed");
+  }, 30000);
 });

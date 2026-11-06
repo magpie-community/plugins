@@ -43,8 +43,6 @@ export class CodexSession implements ProviderSession {
   private pending = new Map<string, PendingReq>();
   private closed = false;
   private started: Promise<void> | null = null;
-  /** Local timeline turnIds interrupted before their turn/start response arrived. */
-  private cancelledLocalTurns = new Set<string>();
   private ourTurnId: string | null = null; // The current turn's turnId in the timeline (generated on send)
   /** Codex turn ids whose late started/completed/deltas must be ignored. */
   private staleCodexTurns = new Set<string>();
@@ -212,10 +210,10 @@ export class CodexSession implements ProviderSession {
       })) as { turn?: { id?: string } };
       const codexTurnId = typeof res?.turn?.id === "string" ? res.turn.id : null;
       if (!codexTurnId) return;
-      // Pending interrupt belongs to THIS local turnId — not a flag the next send() clears.
-      // If Stop ran while turn/start was in flight (or this turn was superseded), interrupt it and
-      // do not overwrite st.currentTurnId (owned by a newer turn, or null).
-      const wasCancelled = this.cancelledLocalTurns.delete(turnId) || this.ourTurnId !== turnId;
+      // If Stop ran while turn/start was in flight, interrupt() already ended locally and cleared
+      // ourTurnId (or a newer send replaced it). Either way ourTurnId !== turnId — no separate
+      // cancelled-turns set is needed (each half of the old OR was redundant with the other).
+      const wasCancelled = this.ourTurnId !== turnId;
       if (wasCancelled) {
         this.staleCodexTurns.add(codexTurnId);
         try {
@@ -233,7 +231,7 @@ export class CodexSession implements ProviderSession {
       this.st.currentTurnId = codexTurnId;
     } catch (e) {
       // turn/start failed after a local interrupt/supersede: do not emit a second turn_ended
-      if (this.cancelledLocalTurns.delete(turnId) || this.ourTurnId !== turnId) return;
+      if (this.ourTurnId !== turnId) return;
       this.emit({
         type: "turn_ended",
         turnId,
@@ -268,11 +266,9 @@ export class CodexSession implements ProviderSession {
       if (localTurn) this.emit({ type: "turn_ended", turnId: localTurn, status: "interrupted" });
       return;
     }
-    if (!codexTurn) {
-      // turn/start still in flight (or not yet sent): remember THIS local turn so its response
-      // handler sends turn/interrupt — a later send() must not clear that obligation.
-      if (localTurn) this.cancelledLocalTurns.add(localTurn);
-    } else {
+    // No codexTurn yet (turn/start still in flight): end locally below so ourTurnId clears;
+    // the in-flight turn/start response handler then sees ourTurnId !== turnId and interrupts.
+    if (codexTurn) {
       this.staleCodexTurns.add(codexTurn);
       try {
         await this.rpc.request(

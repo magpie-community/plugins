@@ -6,15 +6,24 @@
 // The user text picks the scenario: TOOL (ask to run Bash), CANCEL (ask, then withdraw the ask), SLOW (stream and wait
 // for an interrupt); anything else is echoed with a description of the image blocks it got.
 // FAKE_CLAUDE_INTERRUPT_RESULT_MS  delay (ms) between interrupt ack and ending the SLOW turn (late-result races).
+// FAKE_CLAUDE_HOLD_FILE            when set, wait until this path is deleted before emitting the delayed interrupt result.
 // FAKE_CLAUDE_INTERRUPT_FAIL       when set, interrupt control_response is an error (busy) — CLI must restart.
+// FAKE_CLAUDE_FAIL_LINGER_RESULT_MS  with INTERRUPT_FAIL: emit a poison `result` after N ms, and delay stdin-close exit
+//                                   so a replaced CLI's pump can see leftover stdout (tests this.cli !== cli guard).
 // FAKE_CLAUDE_CRASH_AFTER_DELTA    when set with SLOW: after first text delta, exit(1) mid-turn.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
 const logFile = process.env.FAKE_CLAUDE_LOG;
 const log = (o) => logFile && appendFileSync(logFile, JSON.stringify(o) + "\n");
 log({ argv: args });
+/** Poll until FAKE_CLAUDE_HOLD_FILE is gone (or unset). Deterministic release gate for tests. */
+async function waitHold() {
+  const f = process.env.FAKE_CLAUDE_HOLD_FILE;
+  if (!f) return;
+  while (existsSync(f)) await new Promise((r) => setTimeout(r, 15));
+}
 if (process.env.FAKE_CLAUDE_EXIT) {
   process.stderr.write("fake claude: boom\n");
   process.exit(Number(process.env.FAKE_CLAUDE_EXIT));
@@ -108,15 +117,31 @@ rl.on("line", (line) => {
     if (r.subtype === "set_permission_mode") { mode = r.mode; return ok(); }
     if (r.subtype === "interrupt") {
       if (process.env.FAKE_CLAUDE_INTERRUPT_FAIL) {
-        return out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "busy" } });
+        out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "busy" } });
+        const linger = Number(process.env.FAKE_CLAUDE_FAIL_LINGER_RESULT_MS || 0);
+        if (linger > 0) {
+          setTimeout(() => {
+            // Poison result for a replaced CLI's pump (must be ignored via this.cli !== cli)
+            out({
+              type: "result", subtype: "error_during_execution", is_error: true, result: "POISON_FROM_OLD_CLI",
+              duration_ms: 1, num_turns: 1, session_id: sid, total_cost_usd: 0,
+              usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 },
+            });
+          }, linger);
+        }
+        return;
       }
       ok();
       const resume = interruptTurn;
       interruptTurn = null;
-      // Optional delay before ending the turn so interrupt→resend races can be tested
+      // Optional delay / hold-file gate before ending the turn so interrupt→resend races can be tested
       const delay = Number(process.env.FAKE_CLAUDE_INTERRUPT_RESULT_MS || 0);
-      if (delay > 0) setTimeout(() => resume?.(), delay);
-      else resume?.();
+      const release = async () => {
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+        await waitHold();
+        resume?.();
+      };
+      void release();
       return;
     }
     return out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "unknown" } });
@@ -131,4 +156,8 @@ rl.on("line", (line) => {
     void pumpUsers();
   }
 });
-rl.on("close", () => process.exit(0));
+rl.on("close", () => {
+  const linger = Number(process.env.FAKE_CLAUDE_FAIL_LINGER_RESULT_MS || 0);
+  if (linger > 0) setTimeout(() => process.exit(0), linger + 80);
+  else process.exit(0);
+});

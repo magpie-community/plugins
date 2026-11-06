@@ -63,13 +63,8 @@ export class AcpSession implements ProviderSession {
   private turnId: string | null = null;
   private turnNum = 0;
   private running = false;
-  /** Monotonic id for each session/prompt; interrupt marks the active gen so its settle is discarded. */
-  private promptGen = 0;
-  private activePromptGen: number | null = null;
-  /** Prompt gens we already ended locally on interrupt (JSON-RPC error or late stop must not end a newer turn). */
-  private cancelledPromptGens = new Set<number>();
   /** Current wire session/prompt settle (never rejects) — interrupt waits for it before the next prompt. */
-  private inFlightPrompt: { gen: number; settle: Promise<void> } | null = null;
+  private inFlightPrompt: Promise<void> | null = null;
   /** After Stop: notify(cancel) + previous prompt settle + one macrotask, so pumpUpdates drains before next prompt(). */
   private pendingCancelSettle: Promise<void> | null = null;
   private closeWaiters: Array<() => void> = [];
@@ -467,23 +462,22 @@ export class AcpSession implements ProviderSession {
       if (this.closed || !this.running || this.turnId !== turnId) return;
     }
     this.mapCtx = newMapCtx();
-    const gen = ++this.promptGen;
-    this.activePromptGen = gen;
     this.activeTurnId = turnId;
     this.wakePump?.();
     this.wakePump = null;
+    const req = this.active!.prompt(prompt);
+    // Never-reject settle so interrupt can await the wire round-trip without try/catch
+    const settle = req.then(() => {}, () => {});
+    this.inFlightPrompt = settle;
     try {
-      const req = this.active!.prompt(prompt);
-      // Never-reject settle so interrupt can await the wire round-trip without try/catch
-      this.inFlightPrompt = { gen, settle: req.then(() => {}, () => {}) };
       const res = await req;
       // prompt() also enqueues a stop for nextUpdate(); pumpUpdates drains it without ending.
-      if (this.cancelledPromptGens.delete(gen)) return;
-      if (this.activeTurnId === turnId && this.running) {
+      // interrupt() already called endTurn (clears activeTurnId), so a late settle is a no-op.
+      // activeTurnId === turnId alone is enough (running is cleared together with activeTurnId).
+      if (this.activeTurnId === turnId) {
         this.endTurn(stopToTurnEnd(res.stopReason, turnId));
       }
     } catch (e) {
-      if (this.cancelledPromptGens.delete(gen)) return;
       if (this.activeTurnId === turnId) {
         this.endTurn({
           type: "turn_ended",
@@ -493,9 +487,7 @@ export class AcpSession implements ProviderSession {
         });
       }
     } finally {
-      this.cancelledPromptGens.delete(gen);
-      if (this.activePromptGen === gen) this.activePromptGen = null;
-      if (this.inFlightPrompt?.gen === gen) this.inFlightPrompt = null;
+      if (this.inFlightPrompt === settle) this.inFlightPrompt = null;
     }
   }
 
@@ -537,7 +529,7 @@ export class AcpSession implements ProviderSession {
         if (!this.activeTurnId) continue; // Other updates outside a turn (e.g. mode change echoes) don't go to the timeline
         for (const ev of mapSessionUpdate(u, this.mapCtx)) this.q.push(ev);
       } else {
-        // kind === "stop": turn ending is owned by runTurn's prompt() promise (per-gen). Drain only.
+        // kind === "stop": turn ending is owned by runTurn's prompt() promise. Drain only.
         continue;
       }
     }
@@ -553,15 +545,15 @@ export class AcpSession implements ProviderSession {
       .catch((e) => {
         log("info", `ACP cancel: ${String(e)}`);
       });
-    const prevSettle = this.inFlightPrompt?.settle ?? Promise.resolve();
+    const prevSettle = this.inFlightPrompt ?? Promise.resolve();
     // After cancel + previous prompt settle, one macrotask lets pumpUpdates drain stop / park on wakePump
     // before the next active.prompt() calls updates.clearErrors().
     this.pendingCancelSettle = Promise.all([notifyP, prevSettle]).then(
       () => new Promise<void>((r) => setTimeout(r, 0)),
     );
     // End the local turn so `running` clears immediately (UI idle; send() must not throw 当前轮次尚未结束).
+    // Clearing activeTurnId/running is enough for runTurn's late settle to no-op (no cancelledPromptGens set).
     if (this.running) {
-      if (this.activePromptGen != null) this.cancelledPromptGens.add(this.activePromptGen);
       const turnId = this.activeTurnId ?? this.turnId;
       if (turnId) {
         this.endTurn({ type: "turn_ended", turnId, status: "interrupted" });
