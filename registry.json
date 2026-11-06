@@ -238,6 +238,6 @@
       }
     },
     { "package": "@magpie-community/opencode-openscale-auth", "name": "OpenScale", "providers": ["openscale"], "community": true,
-      "summary": { "en": "OpenScale (api.openscale.so) open models with your API key: per-account model lists from a rich /v1/models catalog — limits, prices, image input and reasoning efforts included.", "zh": "用你的 API key 接入 OpenScale (api.openscale.so) 开源模型：按账号从 /v1/models 富目录列出模型，含限额、价格、图像输入与推理档位。" } }
+      "summary": { "en": "OpenScale (api.openscale.so) open models with your API key: per-account model lists from a rich /v1/models catalog — limits, prices, image input, reasoning efforts and the prepaid balance in quota included.", "zh": "用你的 API key 接入 OpenScale (api.openscale.so) 开源模型：按账号从 /v1/models 富目录列出模型，含限额、价格、图像输入、推理档位与预充值余额显示。" } }
   ]
 }

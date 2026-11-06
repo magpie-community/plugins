@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-openscale-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenScale (api.openscale.so) with your API key in OpenCode and magpie: chat completions, streaming, tools and images",
   "type": "module",
   "main": "./opencode.mjs",

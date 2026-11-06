@@ -6,13 +6,14 @@
 // a rich catalog — context and output limits, input modalities, per-token
 // prices, tool and reasoning support, reasoning_effort levels — so this plugin
 // builds its model table straight from the live answer and only falls back to
-// the BOOTSTRAP table below until the first successful call. OpenScale meters a
-// prepaid balance per request and publishes no endpoint that reads it, so the
-// usage hook only reports the sign-in state; spend lives in the OpenScale
-// dashboard at app.openscale.so.
+// the BOOTSTRAP table below until the first successful call. For the quota
+// card, GET /api/cli/balance reads the prepaid balance — the undocumented
+// endpoint OpenScale's own CLI calls (openscale-cli), and the one balance
+// call that works with a key alone.
 
 const ID = "openscale"
-const BASE = "https://api.openscale.so/v1"
+const ORIGIN = "https://api.openscale.so"
+const BASE = `${ORIGIN}/v1`
 const MILLION = 1_000_000
 
 // Models at the time of writing, read from GET /v1/models with a real key —
@@ -185,6 +186,19 @@ async function catalog(fetchImpl, key) {
   })
 }
 
+// balance reads the prepaid balance the quota card shows. OpenScale documents
+// no endpoint that reads it; this is the one its own CLI calls
+// (openscale-cli, GET /api/cli/balance), and it works with a key alone. The
+// amounts are micro-USD integers: {"balanceUusd":…,"spent24hUusd":…,
+// "runwayHours":…,"planCovered":…}.
+async function balance(fetchImpl, key) {
+  return await fetchImpl(`${ORIGIN}/api/cli/balance`, {
+    headers: { authorization: `Bearer ${key}`, accept: "application/json" },
+    signal: AbortSignal.timeout(15000),
+    redirect: "error",
+  })
+}
+
 // rowsFromCatalog turns a catalog answer into model rows, dropping entries
 // OpenScale does not mark ready. A malformed answer throws (the host keeps
 // the previous list); an empty ready list is the account's truth — the key
@@ -222,16 +236,16 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
         if (auth?.type !== "api" || !auth.key) return {}
         return { baseURL: BASE, apiKey: auth.key }
       },
-      // OpenScale meters a prepaid balance per request and publishes no
-      // endpoint that reads it, so this only checks the sign-in and says
-      // where spend is visible. A key OpenScale refuses marks the account
-      // (signIn: "expired").
+      // The quota card gets the prepaid balance from the CLI's own endpoint
+      // (the one balance call that works with a key alone): the plan from
+      // planCovered, the balance and the last 24 hours' spend as USD. A key
+      // OpenScale refuses marks the account (signIn: "expired").
       async usage(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return {}
         let res
         try {
-          res = await catalog(fetchImpl, auth.key)
+          res = await balance(fetchImpl, auth.key)
         } catch (error) {
           return { error: `OpenScale unreachable: ${error?.cause?.code || error?.message || "network error"}`, windows: [] }
         }
@@ -239,7 +253,22 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
           return { error: `OpenScale refused this key (HTTP ${res.status}); sign in again`, signIn: "expired", windows: [] }
         }
         if (!res.ok) return { error: `OpenScale answered HTTP ${res.status}`, windows: [] }
-        return { plan: "OpenScale", windows: [] }
+        let body
+        try {
+          body = await res.json()
+        } catch {
+          return { error: "OpenScale sent no balance", windows: [] }
+        }
+        const usd = (field) => {
+          const v = body?.[field]
+          return `$${(typeof v === "number" && Number.isFinite(v) && v > 0 ? v / MILLION : 0).toFixed(2)}`
+        }
+        return {
+          plan: body?.planCovered === true ? "OpenScale Unlimited" : "Pay as you go",
+          balance: usd("balanceUusd"),
+          spend24h: usd("spent24hUusd"),
+          windows: [],
+        }
       },
     },
 
@@ -273,4 +302,4 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
 // The plugin is the only exported function; magpie calls every exported
 // function as a plugin, so tests reach the internals through this object.
 export const OpenscalePlugin = async () => createPlugin()
-export const _internal = { createPlugin, row, rowFromCatalog, rowsFromCatalog, catalog, perMillion, display, BOOTSTRAP, BASE }
+export const _internal = { createPlugin, row, rowFromCatalog, rowsFromCatalog, catalog, balance, perMillion, display, BOOTSTRAP, BASE, ORIGIN }

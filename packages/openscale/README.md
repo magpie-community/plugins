@@ -39,6 +39,8 @@ sign-in starts from.
 
 ## Usage
 
-OpenScale meters a prepaid balance per request and publishes no endpoint that reads it,
-so the usage hook only checks the sign-in and says where spend is visible: the
-[OpenScale dashboard](https://app.openscale.so).
+OpenScale meters a prepaid balance per request. The quota card reads it from
+`GET /api/cli/balance` — undocumented; it is the endpoint OpenScale's own CLI
+calls (openscale-cli), and it works with a key alone. `magpie quota` shows the
+balance, the last 24 hours' spend and the plan (pay-as-you-go or OpenScale
+Unlimited).

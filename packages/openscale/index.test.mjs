@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { OpenscalePlugin, _internal } from "./index.mjs"
 
-const { createPlugin, row, rowFromCatalog, rowsFromCatalog, perMillion, display, BOOTSTRAP, BASE } = _internal
+const { createPlugin, row, rowFromCatalog, rowsFromCatalog, perMillion, display, BOOTSTRAP, BASE, ORIGIN } = _internal
 
 // Trimmed but otherwise faithful entries from a real GET /v1/models answer
 // (2026-11): DeepSeek takes reasoning efforts none/low/high/max, GLM requires
@@ -126,13 +126,20 @@ describe("auth", () => {
 })
 
 describe("usage", () => {
-  test("reports the sign-in state on success", async () => {
+  test("reports the prepaid balance, spend and plan from the CLI balance endpoint", async () => {
     const calls = []
-    const plugin = createPlugin({ fetchImpl: fakeFetch(calls, () => jsonRes(200, { object: "list", data: CATALOG_DEEPSEEK })) })
+    const plugin = createPlugin({ fetchImpl: fakeFetch(calls, () => jsonRes(200, { balanceUusd: 12786299, spent24hUusd: 19, runwayHours: 1, planCovered: false })) })
     const u = await plugin.auth.usage(async () => auth)
-    expect(u).toEqual({ plan: "OpenScale", windows: [] })
-    expect(calls[0].input).toBe(`${BASE}/models`)
+    expect(u).toEqual({ plan: "Pay as you go", balance: "$12.79", spend24h: "$0.00", windows: [] })
+    expect(calls[0].input).toBe(`${ORIGIN}/api/cli/balance`)
     expect(calls[0].init.headers.authorization).toBe("Bearer sk-openscale-test")
+  })
+  test("an unlimited plan says so, and a zero balance reads as $0.00", async () => {
+    const plugin = createPlugin({ fetchImpl: async () => jsonRes(200, { balanceUusd: 0, planCovered: true }) })
+    const u = await plugin.auth.usage(async () => auth)
+    expect(u.plan).toBe("OpenScale Unlimited")
+    expect(u.balance).toBe("$0.00")
+    expect(u.spend24h).toBe("$0.00")
   })
   test("marks an expired key", async () => {
     const plugin = createPlugin({ fetchImpl: async () => jsonRes(401) })
@@ -141,11 +148,18 @@ describe("usage", () => {
     expect(u.error).toContain("401")
     expect(u.windows).toEqual([])
   })
-  test("reports network failures without throwing", async () => {
-    const plugin = createPlugin({ fetchImpl: async () => { throw new Error("no route") } })
-    const u = await plugin.auth.usage(async () => auth)
-    expect(u.error).toContain("OpenScale unreachable")
+  test("reports server, network and parse failures without throwing", async () => {
+    const http500 = createPlugin({ fetchImpl: async () => jsonRes(500) })
+    const u = await http500.auth.usage(async () => auth)
+    expect(u.error).toContain("500")
     expect(u.windows).toEqual([])
+    const garbage = createPlugin({ fetchImpl: async () => new Response("<html>", { status: 200, headers: { "content-type": "text/html" } }) })
+    const u2 = await garbage.auth.usage(async () => auth)
+    expect(u2.error).toContain("no balance")
+    const plugin = createPlugin({ fetchImpl: async () => { throw new Error("no route") } })
+    const u3 = await plugin.auth.usage(async () => auth)
+    expect(u3.error).toContain("OpenScale unreachable")
+    expect(u3.windows).toEqual([])
   })
 })
 
