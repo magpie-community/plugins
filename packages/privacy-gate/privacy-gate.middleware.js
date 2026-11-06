@@ -111,7 +111,6 @@ var DEFAULTS = {
   localModels: [],
   localProviders: [],
   binaryPolicy: 'fail',
-  guideTools: [],
   allowUnknownProtocol: false,
   // A one-page invoice PDF is ~1-3 KB: ~1.4-4 k base64 chars, ~2-6 k hex chars. The
   // threshold is deliberately below that, because a smaller encoded document was a real
@@ -177,6 +176,20 @@ function strList(opts, key) {
     if (typeof v[i] === "string" && v[i].length > 0 && v[i].length < 200) out.push(v[i]);
   }
   return out;
+}
+
+function allowModelsOpt(opts) {
+  var raw = opts.allowModels;
+  if (raw === undefined) return { list: [], invalid: false };
+  if (!Array.isArray(raw) || raw.length > 200) return { list: [], invalid: true };
+  var list = [];
+  for (var i = 0; i < raw.length; i++) {
+    if (typeof raw[i] !== "string" || raw[i].length === 0 || raw[i].length >= 200) {
+      return { list: [], invalid: true };
+    }
+    list.push(raw[i]);
+  }
+  return { list: list, invalid: false };
 }
 
 // Glob -> RegExp ("*" spans anything, "?" one character). Anchored, so a rule
@@ -564,8 +577,10 @@ function policyOpt(source, name, fallback) {
 
 function resolvedOptions(raw) {
   var source = raw && typeof raw === "object" ? raw : {};
+  var allow = allowModelsOpt(source);
   return {
-    allowModels: strList(source, "allowModels"),
+    allowModels: allow.list,
+    allowModelsInvalid: allow.invalid,
     localModels: strList(source, "localModels"),
     localProviders: strList(source, "localProviders"),
     binaryPolicy: policyOpt(source, "binaryPolicy", DEFAULTS.binaryPolicy),
@@ -622,6 +637,13 @@ function inspect(body, ctx) {
           "\" cannot be classified by this gate; nothing was sent."
       );
     }
+  }
+
+  if (opts.allowModelsInvalid) {
+    return blocked(
+      "OPTION",
+      "privacy-gate: allowModels is present but is not an array of non-empty strings; nothing was sent."
+    );
   }
 
   var allowModels = opts.allowModels;

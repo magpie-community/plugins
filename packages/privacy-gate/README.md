@@ -24,7 +24,7 @@ The options object is `ctx.options`; defaults are shown by `magpie plugin option
 
 | Option | Default | Meaning |
 |---|---|---|
-| `allowModels` | `[]` | Globs against the model id as the agent asked. `[]` allows every model. |
+| `allowModels` | `[]` | Globs against the model id as the agent asked. `[]` allows every model; if the option is present but is not an array of non-empty short strings, every request is refused instead of falling back to no allowlist. |
 | `localModels` | `[]` | Model globs that may receive binary parts on `onRequest`. Pair with `localProviders`, or `onProvider` blanks the content. |
 | `localProviders` | `[]` | Provider-id globs that may receive binary parts; checked in `onProvider`. |
 | `blobBase64Chars` / `blobHexChars` | `400` / `400` | An encoded run at or above this is a blob (403). |
@@ -49,7 +49,7 @@ The options object is `ctx.options`; defaults are shown by `magpie plugin option
 - A long encoded-looking token (a hash, a minified line) can be a false positive at 400 chars.
   Raise `blobBase64Chars`/`blobHexChars` deliberately if you need that.
 - `binaryPolicy: guide` never forwards binary bytes. It replaces every binary part with text containing only `type`, `mime` and `bytes`, plus a neutral prompt to select a local extraction tool. It cannot execute the tool; the agent must have the local MCP server configured.
-- In guide mode, the walk is bounded by `maxNodes` and uses the same protocol sites as the inspector, so `tool_use.input`, `tool_result.content` and other model/tool data are never rewritten as if they were content parts.
+- In guide mode, the walk is bounded by `maxNodes` and uses the same protocol sites as the inspector, so `tool_use.input`, `tool_result.content` and other model/tool data are never rewritten as if they were content parts. The same walk scans every text field for encoded blobs, including older turns and `system`/`instructions`, so the rewritten body cannot carry an unscanned blob through.
 - Vendor-sealed replay fields are exempt **only inside their vendor block**: Anthropic thinking
   `signature`, Responses reasoning `encrypted_content`, Gemini **model-role** part `thoughtSignature`,
   and vendor item `id`/`call_id`. A same-named key in tool arguments or message text is still scanned.
