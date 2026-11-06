@@ -1,5 +1,5 @@
-import {test} from 'bun:test';
+import { test } from "bun:test";
 
-test('agent message compatibility: 12 offline protocol checks', async () => {
-  await import('./test.mjs');
+test("agent message compatibility: offline protocol and ledger checks", async () => {
+  await import("./test.mjs");
 });

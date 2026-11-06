@@ -61,7 +61,6 @@ These packages aren't OpenCode plugins. magpie runs them in its gateway, on the 
 | [think-tags](packages/think-tags) | Take a leading `<think>`, `<thinking>` or `<thought>` block out of a reply's text, or put a Chat reply's `reasoning_content` into it (`thinking_to_content`) |
 | [antigravity-cloak](packages/antigravity-cloak) | Claude Code and Claude Desktop on Antigravity: break the words Antigravity turns their system prompt away for, in what Antigravity alone is sent |
 | [codex-history](packages/codex-history) | Opt-in Responses history compatibility after switching providers: remove historical ciphertext and optional item IDs while preserving readable content and tool-call pairing |
-| [agent-message-compat](packages/agent-message-compat) | Codex MultiAgent V2 message compatibility for selected routes: retain verified plaintext tasks mislabeled as sealed content, then normalize readable agent messages; unverifiable content returns 409 |
 | [history-trim](packages/history-trim) | Send a request's history smaller: fold a run of blank lines, drop a system prompt written twice and a message repeated right after itself, and cut a past tool result longer than `maxToolLength` at a word boundary |
 | [agentcompass](packages/agentcompass) | [AgentCompass](https://github.com/akiiwa-games/AgentCompass) multi-dimensional task profiling, capability floor, Model DNA (`divergence`, `global_rigor`, `module_precision`), subscription quota opportunity-cost, and session-affinity routing (`magpie.middleware` + opt-in `/v1/systemone`) |
 
@@ -193,6 +192,7 @@ Like middleware, these run on the requests agents send, but in magpie's Bun host
 
 | Package | What it does |
 |---|---|
+| [agent-message-compat](packages/agent-message-compat) | Opt-in Codex MultiAgent V2 compatibility: verify recorded plaintext in gateway hooks, normalize readable agent messages in middleware, and pass unsupported content through |
 | [powercontext](packages/powercontext) | [PowerContext](https://github.com/oceanbase/powercontext) recall and opt-in completed-conversation capture; no client MCP or skill required |
 | [nowledge-mem](packages/nowledge-mem) | [Nowledge Mem](https://mem.nowledge.co) recall, Context Bundle or Working Memory, per-harness provenance and opt-in conversation import as Mem Threads, automatic for every harness behind Magpie |
 | [aelios](packages/aelios) | [Aelios](https://github.com/Aelios-project/Aelios) recall before each turn from your own Aelios on Cloudflare, and opt-in recording of each turn so Aelios can remember it |

@@ -1,33 +1,34 @@
 {
   "source": "https://github.com/YHonc/magpie-agent-message-compat",
-  "commit": "63b9354332775bce7a2bd1100f0cc88c2e15063b",
-  "version": "0.1.1",
+  "commit": "83cd09f45a1ae04035b647f1b1af7f05eac1066e",
+  "version": "0.1.2",
   "license": "MIT",
   "files": {
     "common.js": {
-      "sha256": "396a3356eb1aa0a08d0a2e7bb27d91fd865b5675d9dc1c0431eca114b585d23f"
+      "sha256": "736e1695231726d9f4f017facb7bcea46ad41e5688707d9c84fdae274f13dbf4"
     },
     "compat.middleware.js": {
-      "sha256": "3758d282c6c90eec3eed2f3e52d04e32a5b6edeac04be2f7a04fbf23f6372e4d"
+      "sha256": "0e9a3347ee5f16f52d75d8966bebd81c2463501763cdc12bef05d023da05341c"
     },
     "provenance.hooks.mjs": {
-      "sha256": "0466f1977cb4597bbe19242c9443c4de6551d67406f53e5f9b46c2f95d7afbff"
+      "sha256": "6206a8106a6a83e4356a79118b1f2ae990929568945d266af0ae87a792501b3f"
     },
     "test.mjs": {
-      "sha256": "69d11073681188c568e6707607a8929218605ac1cb0860157bbcfeaa91f32400"
-    },
-    "README.md": {
-      "sha256": "a2a2bebc6ed9d138b6cddd5cd6ac6f91ec19e1090ad00474f0742710004d0f08"
+      "sha256": "eb86b6a701dfb1c9c93e22c11484eb9f8923dd5160a2dc8ec4d97708a5472503"
     },
     "LICENSE": {
       "sha256": "1886badea1e7cbabcb27f7417c11b282cef9e72513bee9658c950de8246aa3ca"
     },
+    "README.md": {
+      "sha256": "70484bbb2af102ace4ebb22e3e523a0fb56f47e106124929bb356731d051b440"
+    },
     "CHANGELOG.md": {
-      "sha256": "488a7127958be659de598f5df172a821d1e4a6dac0ad235b6ea38b7ee29cbfa8"
+      "sha256": "ef876db2a0ed9de209ec9f14623e8fab6d05de47a6de777a3ee6e9821893b72b"
     }
   },
   "changes": [
-    "Community package name and repository metadata; runtime modules and test.mjs match the source commit.",
-    "A Bun test entry, package installation note and marketplace listing are added for community integration."
+    "Community package name and repository metadata; runtime modules, test.mjs, LICENSE and CHANGELOG.md match source commit bytes.",
+    "README retains bilingual source documentation with community-only installation, pinned evidence links and source provenance linkage. README hash records the original source before these adaptations.",
+    "Bun test entry, shared middleware cases.json/check() tests, PROVENANCE package inclusion and Gateway hooks marketplace listing are community integration additions."
   ]
 }

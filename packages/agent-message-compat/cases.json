@@ -1,0 +1,235 @@
+[
+  {
+    "name": "default options leave agent messages unchanged",
+    "ctx": {
+      "protocol": "responses"
+    },
+    "request": {
+      "model": "example/model",
+      "input": [
+        {
+          "type": "agent_message",
+          "author": "/root/worker",
+          "recipient": "/root",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Task complete."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "unmatched route leaves agent messages unchanged",
+    "ctx": {
+      "protocol": "responses"
+    },
+    "options": {
+      "targets": [
+        "example/*"
+      ]
+    },
+    "request": {
+      "model": "other/model",
+      "input": [
+        {
+          "type": "agent_message",
+          "author": "/root/worker",
+          "recipient": "/root",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Task complete."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "other protocols pass through",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "options": {
+      "targets": [
+        "example/*"
+      ]
+    },
+    "request": {
+      "model": "example/model",
+      "input": [
+        {
+          "type": "agent_message",
+          "author": "/root/worker",
+          "recipient": "/root",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Task complete."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "readable message uses core source header",
+    "ctx": {
+      "protocol": "responses"
+    },
+    "options": {
+      "targets": [
+        "example/*"
+      ]
+    },
+    "request": {
+      "model": "example/model",
+      "input": [
+        {
+          "type": "agent_message",
+          "author": "/root/worker",
+          "recipient": "/root",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Task complete."
+            }
+          ]
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "example/model",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "From /root/worker to /root\n\n"
+            },
+            {
+              "type": "input_text",
+              "text": "Task complete."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "sealed empty and unsupported items pass through",
+    "ctx": {
+      "protocol": "responses"
+    },
+    "options": {
+      "targets": [
+        "example/*"
+      ]
+    },
+    "request": {
+      "model": "example/model",
+      "input": [
+        {
+          "type": "agent_message",
+          "encrypted_content": "unknown"
+        },
+        {
+          "type": "agent_message",
+          "content": []
+        },
+        {
+          "type": "agent_message",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "hello"
+            },
+            {
+              "type": "input_audio",
+              "audio_url": "data:audio/wav;base64,AA=="
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "text and image messages are preserved while converted",
+    "ctx": {
+      "protocol": "responses"
+    },
+    "options": {
+      "targets": [
+        "example/*"
+      ]
+    },
+    "request": {
+      "model": "example/model",
+      "input": [
+        {
+          "type": "agent_message",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "See image"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,AA=="
+            }
+          ]
+        }
+      ]
+    },
+    "expect_request": {
+      "model": "example/model",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "See image"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,AA=="
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "ordinary messages remain unchanged on a second pass",
+    "ctx": {
+      "protocol": "responses"
+    },
+    "options": {
+      "targets": [
+        "example/*"
+      ]
+    },
+    "request": {
+      "model": "example/model",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "From /root/worker to /root\n\nTask complete."
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

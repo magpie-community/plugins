@@ -1,7 +1,8 @@
-export const DEFAULT_TARGETS = [
-  'cpa/gemini-*', 'cpa/claude-*', 'cpa/glm-*',
-  'ora2/claude-*', 'group/glm-*', 'group/deepseek-*'
-];
+export const DEFAULT_TARGETS = [];
+
+export function enabled(ctx) {
+  return Array.isArray(ctx.options?.targets) && ctx.options.targets.some(p => typeof p === 'string' && p.length > 0);
+}
 
 function matches(value, pattern) {
   // Deliberately only support exact names and one trailing wildcard.

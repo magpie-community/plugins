@@ -3,199 +3,169 @@
 [![Tests](https://github.com/YHonc/magpie-agent-message-compat/actions/workflows/test.yml/badge.svg)](https://github.com/YHonc/magpie-agent-message-compat/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-为通过 [Magpie](https://github.com/yetone/magpie) 使用第三方模型的 Codex MultiAgent V2 会话，补齐子代理消息的格式兼容。当前版本 **0.1.1**，由异步 Gateway Hook 和同步 Gateway Middleware 组成。
+[English](#english) · [中文](#中文)
 
-## 遇到了什么问题
+## English
 
-Codex 的多代理消息使用 `agent_message`。跨模型供应商传递任务时，排查中遇到两个不同的问题：
+Version **0.1.2** provides opt-in Gateway hooks and middleware for Codex MultiAgent V2 routes through [Magpie](https://github.com/yetone/magpie). It converts readable `agent_message` items for upstreams that need ordinary messages. A local provenance ledger can restore strings mislabeled as `encrypted_content` when their exact hashes match previously observed plaintext tool arguments.
 
-| 问题 | 表现 | 插件的处理 |
-| --- | --- | --- |
-| 第三方接口没有处理 `agent_message` | 子代理已启动，却看不到任务；父代理收到空回复或无关内容 | 把可读的代理消息转成普通 `message`，保留正文和发送者、接收者 |
-| 原本是明文的任务被装进 `encrypted_content` | 任务正文被当成密文，直接丢弃会丢任务，直接当明文读取又无法区分真正密文 | 先记录原发送调用中明确标为明文的任务哈希；只恢复与记录完全匹配的字符串 |
+### Choose a route before enabling
 
-这两步需要配合：只做格式转换，仍可能拿不到正文；只恢复正文，上游仍可能忽略整个 `agent_message`。是否需要启用，取决于实际路由和 Magpie/Codex 版本，默认匹配表不代表所有列出的模型都已完成多代理验收。
+The default is `targets: []`: no conversion, restoration, or ledger I/O occurs until a valid target is configured. Configure routes where you have reproduced a compatibility problem. Provider prefixes below are examples, not a list of tested providers.
 
-## 解决架构
+Magpie's reply-side marker fix in [#3183 landed in v0.1.2747](https://github.com/yetone/magpie/issues/3183#issuecomment-6585099439). The separate third-party plain-message relay issue [#4108](https://github.com/yetone/magpie/issues/4108) was still open when checked on 2026-11-06. The general third-party Responses plaintext relay layer uses the inspected Magpie `0.1.2964` source as its reference. It applies to builds/routes without the #4108 conversion; no first official fixed release has been verified. Remove routes from `targets` when they already perform native conversion. An open issue does not establish that every latest build lacks the fix, or that every current route needs restoration. In inspected Codex `0.166.0-alpha.6` source, `direct_source` requires the `collaboration` namespace as well as the empty marker; `agents` calls do not take that plaintext branch.
 
-```mermaid
-flowchart TD
-    Source["父代理或子代理的发送调用<br/>agents / collaboration"]
-    Evidence["成功响应或后续请求历史<br/>function_call + encrypted_function_args: []"]
-    Hash["异步 Hook<br/>记录 message 的 SHA-256"]
-    Ledger[("本机来源台账<br/>hash + verifiedAt")]
-    Request["Codex Responses 请求<br/>包含 agent_message"]
-    Hook["异步 onRequest<br/>核对 encrypted_content 的字符串哈希"]
-    Check{"正文是否全部可读？"}
-    Middleware["同步 Middleware<br/>agent_message → message / user<br/>添加来源头，保留正文顺序"]
-    Error["HTTP 409<br/>保留未知密文，拒绝本次请求"]
-    Gateway["Magpie 路由与协议转换"]
-    Model["目标第三方模型"]
+### Install and configure
 
-    Source --> Evidence --> Hash --> Ledger
-    Request --> Hook
-    Ledger -. "核实已知明文" .-> Hook
-    Hook -->|"匹配后恢复为 input_text"| Check
-    Check -->|是| Middleware --> Gateway --> Model
-    Check -->|否| Error
-```
-
-Magpie 先运行异步请求 Hook，再运行同步 Middleware。源响应的 `onResponse` 通知是异步的，因此 Hook 默认最多等待 **800 ms**，给来源记录写入留出时间。
-
-### 第一步：核实被误标的明文
-
-`provenance.hooks.mjs` 只从满足以下条件的工具调用取证：
-
-- 协议是 Responses，来源由 Magpie 判定为 `local` 或 `magpie-key`；
-- 调用类型为 `function_call`，命名空间为 `agents` 或 `collaboration`；
-- 工具名为 `spawn_agent`、`followup_task` 或 `send_message`；
-- `encrypted_function_args` 明确为 `[]`，参数中有非空字符串 `message`。
-
-记录来自成功响应，或本地后续请求带回的调用历史。插件计算 `message` 的 SHA-256，只把哈希和核实时间写入本机台账。
-
-遇到 `agent_message.content[].encrypted_content` 时，对该字段的**原字符串**计算哈希；只有匹配已记录的明文时，才把字段恢复为 `input_text`。这一步不执行解密，也不通过 Base64 外观或文本内容猜测它是不是明文。
-
-### 第二步：转换代理消息
-
-`compat.middleware.js` 把全部内容均为 `input_text` 的代理消息转换为：
-
-```json
-{
-  "type": "message",
-  "role": "user",
-  "content": [
-    { "type": "input_text", "text": "[Agent message: /root/worker -> /root]\n" },
-    { "type": "input_text", "text": "子代理发来的正文" }
-  ]
-}
-```
-
-各段正文和消息顺序保持不变。这里的 `user` 是兼容传输角色，内容仍来自代理；头部标注保留了来源，但不能提供原生代理角色的隔离语义。使用方需要继续区分人类授权与子代理内容。
-
-仍含未知内容或未核实密文时返回 **409**；全为空白的文本消息返回 **400**。插件不会静默省略无法读取的任务。
-
-## 安装
-
-本目录为社区包 `@magpie-community/middleware-agent-message-compat`，来源版本和文件哈希见 [PROVENANCE.json](PROVENANCE.json)。社区收录并发布后，可通过 `magpie plugin add @magpie-community/middleware-agent-message-compat` 安装；审核期间可使用下面的 GitHub 安装方式。两个来源只需启用一份。
-
-需要支持 `magpie.hooks` 与 `magpie.middleware` 的 Magpie；开发时使用 Magpie **0.1.2964**。本包没有第三方运行时依赖，异步 Hook 使用 Magpie 管理的 Bun 和 Node 兼容标准库。
-
-终端中的 `magpie` 可用时：
+Use Magpie with `magpie.hooks` and `magpie.middleware` support. There are no third-party runtime dependencies; hooks use Magpie's managed Bun and Node-compatible standard libraries.
 
 ```sh
-magpie plugin add github:YHonc/magpie-agent-message-compat
+magpie plugin add community:agent-message-compat
 ```
 
-Windows PowerShell 没有配置 PATH 时：
+If Magpie is not on the Windows PATH:
 
 ```powershell
 $magpie = Join-Path $env:LOCALAPPDATA 'Programs\magpie\magpie.com'
-& $magpie plugin add 'github:YHonc/magpie-agent-message-compat'
+& $magpie plugin add 'community:agent-message-compat'
 ```
 
-安装后在 Magpie 插件页面确认插件已开启，并检查 Hook 和 Middleware 是否加载。原有本地副本应先关闭，避免两份插件重复处理。
-
-也可以克隆后从本地目录安装：
-
-```sh
-git clone https://github.com/YHonc/magpie-agent-message-compat.git
-magpie plugin add ./magpie-agent-message-compat
-```
-
-## 配置
-
-在插件页面打开 **Options**，按自己的路由名称设置，例如：
+Disable an older local copy, then open **Options** in the plugin page and choose your routes:
 
 ```json
 {
   "targets": ["my-provider/gemini-*", "my-provider/claude-*"],
   "gatewayTimeoutMs": 2000,
-  "waitForProvenanceMs": 800
+  "ledgerMaxEntries": 2048,
+  "ledgerMaxAgeDays": 30
 }
 ```
 
-`package.json` 中的 `magpie.options` 是编辑器示例，实际覆盖值以 Magpie 保存的插件选项为准。
-
-| 选项 | 含义 |
+| Option | Behavior |
 | --- | --- |
-| `targets` | 需要转换的完整模型路由。支持精确名称或末尾单个 `*`；`[]` 停止目标消息的恢复和转换，但 Hook 仍可记录本地调用证据 |
-| `gatewayTimeoutMs` | Magpie 异步 Hook 超时预算，示例为 2000 ms，由宿主执行 |
-| `waitForProvenanceMs` | 等待异步来源记录的时间，默认 800 ms，代码限制在 0–1200 ms |
-| `ledgerPath` | 可选的台账路径。默认在用户主目录下的 `.config/magpie/agent-message-compat/provenance.json` |
-| `provenanceRevision` | 可选的台账缓存版本标识。人工核实并导入历史哈希后，更改此值可重新载入台账 |
+| `targets` | Full route names or a single trailing `*`. Default `[]`; no valid targets disables ledger I/O and transformations. |
+| `gatewayTimeoutMs` | Host-enforced asynchronous hook budget; example 2000 ms. |
+| `ledgerMaxEntries` | Default 2048; constrained to 1–10000. |
+| `ledgerMaxAgeDays` | Default 30 days; constrained to 1–365. Non-finite retention values use defaults. |
+| `ledgerPath` | Optional path; default `~/.config/magpie/agent-message-compat/provenance.json`. |
+| `provenanceRevision` | Change this value to reload the cache after a verified manual import. |
 
-默认目标来自开发时的路由名称：
+Saved options override the examples in `package.json`. The plugin does not alter model catalogs, tool namespaces, or provider configuration. The former `waitForProvenanceMs` option is no longer read.
 
-```text
-cpa/gemini-*
-cpa/claude-*
-cpa/glm-*
-ora2/claude-*
-group/glm-*
-group/deepseek-*
+### Processing
+
+```mermaid
+flowchart TD
+    Source["Local Responses tool call<br/>agents / collaboration"] --> Evidence["Explicit encrypted_function_args: []<br/>nonempty message"]
+    Evidence --> Ledger[("SHA-256 + verifiedAt<br/>bounded local ledger")]
+    Request["Configured route: agent_message"] --> Hook["Async hook checks exact string hashes"]
+    Ledger -.-> Hook
+    Hook --> Check{"Entire item readable?"}
+    Check -->|Yes| Convert["Middleware: ordinary user message<br/>From X to Y header"]
+    Check -->|No| Native["Unchanged item to Magpie native handling"]
+    Convert --> Gateway["Magpie routing and protocol conversion"]
+    Native --> Gateway
 ```
 
-这些前缀应替换为自己 Magpie 中的路由名称。默认不匹配原生 GPT 路由；不会修改 Codex 工具命名空间、模型目录或 CPA 配置。
+Evidence comes from successful Responses replies or subsequent request history classified by Magpie as `local` or `magpie-key`. Eligible calls are `spawn_agent`, `followup_task`, and `send_message` in `agents` or `collaboration`, with `encrypted_function_args: []` and a nonempty string `message`. The ledger stores its SHA-256 hash and verification timestamp. Restoration compares the exact original string; it does not decode or guess from ciphertext appearance.
 
-### 关闭和移除
+A message containing only valid `input_text` and `input_image` parts, with at least one image or nonblank text part, becomes a user message with the core-style header `From /root/worker to /root\n\n`. A single known endpoint produces `From X\n\n` or `To Y\n\n`; neither endpoint produces no header. Text order is preserved. Converted messages are ordinary messages, so a second pass does not add another header. The user role is a transport representation; agent-origin content does not acquire human authorization.
 
-在插件页面使用开关，或执行：
+Unknown or sealed content, empty messages, and mixed supported/unsupported content pass unchanged to Magpie's native handling. The plugin no longer returns its own 400 or 409 for these items. Expired or evicted ledger entries become unknown and follow that path. Processing does not wait for pending provenance writes; a later request can use evidence that has since become available.
+
+### Ledger and removal
+
+The ledger retains at most 2048 records for 30 days by default, using `verifiedAt`; older formats remain readable. Hashes expose equality, and someone who can read the file can test short or guessable messages against them. Keep the file local. Invalid ledgers and unavailable storage are reported through `ctx.report`; a damaged file is preserved as `.corrupt.<UUID>` before replacement.
 
 ```sh
 magpie plugin list
-magpie plugin off magpie-agent-message-compat
-magpie plugin on magpie-agent-message-compat
-magpie plugin rm magpie-agent-message-compat
+magpie plugin off community:agent-message-compat
+magpie plugin on community:agent-message-compat
+magpie plugin rm community:agent-message-compat
 ```
 
-插件也可能以安装 spec 或本地路径登记，名称以 `plugin list` 为准。关闭插件不删除来源台账。
+Use the identifier shown by `plugin list` if installation registered a spec or path. Disabling or removing the plugin leaves its ledger on disk; remove that file separately when no longer needed.
 
-## 版本 0.1.1 的变化
+### Evidence and testing
 
-0.1.0 的台账保留 6 小时、最多 2048 项。旧对话重新发送历史消息时，这些记录可能已经过期或被淘汰，导致原本核实过的消息再次返回 409。
+The [November 6 live-work pair](https://github.com/YHonc/magpie-agent-message-compat/blob/83cd09f45a1ae04035b647f1b1af7f05eac1066e/evidence/codex-rollout-2026-11-06-live-work-redacted-pair.json) records an `agents.spawn_agent` call generated during this update's actual implementation work for `cpa/gpt-6-astra`. The parent call carries `encrypted_function_args: []`, while the child's `encrypted_content` contains the exact same original message. Original-string equality, parent/child session linkage, and Codex `0.166.0-alpha.6` were verified before redaction. This is newly generated November 6 rollout evidence from authorized work, with no additional model probe; it is not an HTTP capture or evidence of delivery failure. A [November 6 runtime attestation](https://github.com/YHonc/magpie-agent-message-compat/blob/83cd09f45a1ae04035b647f1b1af7f05eac1066e/evidence/magpie-runtime-attestation-2026-11-06.json) links the sampled gateway listener process to its Magpie `0.1.2964` startup record. That 17:11 sample is not a request-level HTTP capture of the 16:52 task.
 
-0.1.1 改为持久保存核实记录，以 `verifiedAt` 记时间，兼容读取旧版 `expires` 记录；保存时合并磁盘已有记录，并提供 `provenanceRevision` 重新载入入口。当前没有自动过期或容量淘汰，台账会随已核实任务增长。
+The [historical restart pair](https://github.com/YHonc/magpie-agent-message-compat/blob/83cd09f45a1ae04035b647f1b1af7f05eac1066e/evidence/codex-rollout-2026-11-05-restart-redacted-pair.json) links a new parent `agents.spawn_agent` call carrying `encrypted_function_args: []` to a Gemini child's `encrypted_content` containing the same original message. Original-string equality, the parent/child session relationship, and Codex `0.166.0-alpha.6` were checked before redaction. This shows that a new task after restart still acquired this representation; the task succeeded, so this pair is not a failed-delivery result. The [earlier return-message pair](https://github.com/YHonc/magpie-agent-message-compat/blob/83cd09f45a1ae04035b647f1b1af7f05eac1066e/evidence/codex-rollout-2026-11-05-redacted-pair.json) records the same representation for `agents.send_message`.
 
-## 409 如何处理
+The [startup excerpt](https://github.com/YHonc/magpie-agent-message-compat/blob/83cd09f45a1ae04035b647f1b1af7f05eac1066e/evidence/magpie-startup-2026-11-05-redacted.txt) records Magpie `0.1.2964` starting on November 5, adjacent to a `0.1.2663` startup entry. It corroborates the installed runtime timeline after the #3183 landing, but does not identify the serving process for each request. These are November 5 historical records extracted on November 6, not a November 6 reproduction or an HTTP capture. The `agents` namespace in these calls, despite the empty marker, does not satisfy the inspected Codex `collaboration` plaintext branch.
 
-409 表示请求中仍有无法核实的代理消息。常见情况是源响应尚未完成、异步通知漏记，或历史消息产生于安装插件之前。
-
-1. 源响应刚完成时，重试请求，让 Hook 有机会读取已写入的记录。
-2. 旧历史没有来源记录时，新发一条任务不会清除旧消息。可以以任务摘要开始新对话；需要保留原对话时，应先核对原发送调用，再导入匹配的哈希并更改 `provenanceRevision`。
-3. 真正的密文无法由此插件恢复。不要把未知字符串直接登记为明文。
-
-插件本身不扫描 Codex 对话日志、不导入历史记录，也不读取项目文件。若同时启用会删除 `encrypted_content` 的历史过滤插件，应让本插件先处理，并核对实际执行顺序；已删除的正文无法从哈希还原。
-
-## 测试
-
-需要 Node.js 20 或更高版本：
+Run offline module checks with Node.js 20 or later:
 
 ```sh
 npm test
 ```
 
-当前脚本执行 **12 项模块检查**，覆盖未知密文拒绝、核实后恢复、台账不存原文、远端来源不取证、纯文本转换、非目标路由不变、非空加密标记不取证、消息顺序、异步记录竞态、旧台账读取及导入后的重新载入。测试使用临时目录，不调用模型、不读取个人台账。
+The current suite has 13 offline check groups. Tests use temporary directories and do not call models or read personal ledgers. They cover conversion, pass-through, provenance, retention, storage failures, and ordering. Real-route acceptance must inspect actual dispatch, follow-up, and return messages rather than infer success from HTTP 200 or a model assertion.
 
-模块检查验证转换逻辑。真实 Codex 多代理验收还需在实际路由中确认派发、追加任务和回传，不能仅以 HTTP 200 或模型自述判断。
+The plugin makes no model or network calls. Headers and representation changes can affect token counts and cache prefixes; cache effects have not been measured. Transport failures, rate limits, and authentication need separate diagnosis. When the native route supports these messages, disable the plugin and verify that route directly.
 
-## 范围与开销
+## 中文
 
-- 插件不调用额外模型，不发送网络请求，也不修改系统提示词。转换会加入消息来源头并改变请求表示，可能影响 token 数量和缓存前缀；没有缓存命中率对照结论。
-- SHA-256 台账用于匹配曾观察到的明文，不是密文解码器，也不是独立的发送者身份认证。哈希文件应作为本机数据保存，不要上传到仓库。
-- 插件不处理 HTTP/2 `INTERNAL_ERROR`、`stream disconnected before completion`、网络超时、GitHub MCP 认证或上游限流。
-- 上游原生支持相应消息后，可关闭插件并在实际路由中重新验证。
+**0.1.2** 为通过 Magpie 使用的 Codex MultiAgent V2 路由提供可选的 Gateway Hook 和 Middleware：将可读的 `agent_message` 转成普通消息；对误放进 `encrypted_content` 的字符串，只有原文哈希与已观察到的明文工具参数完全匹配时，才恢复正文。
 
-## 源码
+### 按路由启用
 
-| 文件 | 职责 |
+默认 `targets: []`，配置有效目标前不转换消息、不恢复正文，也不读写台账。请为已复现兼容问题的路由启用。上面的 `my-provider/*` 是配置示例，不代表供应商验收结果。
+
+[#3183 的响应标记修复已随 v0.1.2747 发布](https://github.com/yetone/magpie/issues/3183#issuecomment-6585099439)；独立的明文消息中继问题 [#4108](https://github.com/yetone/magpie/issues/4108) 在 2026-11-06 核对时仍为 open。通用第三方 Responses 明文中继兼容层以检查过的 Magpie `0.1.2964` 源码为参考，适用于未包含 #4108 转换的构建或路由；目前尚未核实首个正式修复版本。已包含原生转换的路由应从 `targets` 移除。问题仍为 open 不代表所有最新构建都缺少修复，也不表示所有当前路由都需要恢复明文。已检查的 Codex `0.166.0-alpha.6` 源码中，`direct_source` 除空标记外还要求 `collaboration` 命名空间；`agents` 调用不会进入同一明文分支。
+
+### 安装与配置
+
+使用上方的社区包安装命令；Windows 未配置 PATH 时使用对应 PowerShell 命令。需要支持 `magpie.hooks` 和 `magpie.middleware` 的 Magpie，本包无第三方运行时依赖。安装后关闭旧本地副本，在插件页的 **Options** 中配置自己的目标路由。
+
+| 选项 | 含义 |
 | --- | --- |
-| `common.js` | 目标路由匹配和本地来源判断 |
-| `provenance.hooks.mjs` | 明文来源取证、持久台账和误标字段恢复 |
-| `compat.middleware.js` | 代理消息转换、400/409 拒绝处理 |
-| `test.mjs` | 可离线运行的 12 项检查 |
+| `targets` | 完整路由名或末尾单个 `*`；默认 `[]`，无有效目标时停止转换、恢复和台账 I/O。 |
+| `gatewayTimeoutMs` | Magpie 执行的异步 Hook 超时预算，示例为 2000 ms。 |
+| `ledgerMaxEntries` | 默认最多 2048 项，范围 1–10000。 |
+| `ledgerMaxAgeDays` | 默认保留 30 天，范围 1–365；非有限的保留参数回退默认值。 |
+| `ledgerPath` | 默认 `~/.config/magpie/agent-message-compat/provenance.json`，可指定其他路径。 |
+| `provenanceRevision` | 人工核实并导入历史记录后，修改此值以重新载入缓存。 |
 
-相关讨论：[Magpie #141](https://github.com/yetone/magpie/issues/141)、[#3183](https://github.com/yetone/magpie/issues/3183)、[#3374](https://github.com/yetone/magpie/issues/3374)、[#4108](https://github.com/yetone/magpie/issues/4108)，[Codex #33551](https://github.com/openai/codex/issues/33551)、[#36586](https://github.com/openai/codex/issues/36586)。这些讨论涉及不同转发分支；是否需要插件应以所用版本和实际请求为准。
+实际配置以 Magpie 保存的选项为准。插件不修改模型目录、工具命名空间或供应商配置。旧选项 `waitForProvenanceMs` 不再读取。
 
-## 许可证
+### 消息处理与台账
 
-[MIT](LICENSE)。
+Hook 从成功的 Responses 响应或后续请求历史取证，来源须由 Magpie 判定为 `local` 或 `magpie-key`。工具须属于 `agents` 或 `collaboration`，名称为 `spawn_agent`、`followup_task` 或 `send_message`，且明确携带 `encrypted_function_args: []` 和非空字符串 `message`。台账只存 SHA-256 与核实时间 `verifiedAt`，按原字符串精确匹配，不解密，也不根据字符串外观猜测。
+
+Middleware 将仅含有效 `input_text`、`input_image`，且至少含图片或非空白文本的代理消息转成普通 user 消息，使用与核心一致的 `From /root/worker to /root\n\n` 来源头，保留正文顺序。仅有一端时用 `From X\n\n` 或 `To Y\n\n`，两端都没有则不添加头部。重复处理已转换的消息不会再加头部。user 是传输角色，代理内容不因此获得人类授权。
+
+未恢复的密文、未知类型、空消息和混合内容整项原样交给 Magpie 原生处理；插件不再为这些消息返回 400 或 409。过期或被淘汰的记录按未知内容处理。Hook 不等待尚未完成的来源写入，后续请求可以使用届时已写入的证据。
+
+台账默认最多保留 2048 项、30 天，兼容旧格式。持有文件的人可以判断哈希是否相同，也可以猜测短文本并计算哈希比对，因此应保存在本机。台账损坏或存储不可用时通过 `ctx.report` 报告；替换损坏台账前会保留 `.corrupt.<UUID>` 副本。
+
+使用上方的 `plugin off/on/rm` 命令关闭、启用或移除，标识以 `plugin list` 为准。关闭和移除均保留台账文件，不再需要时可单独删除。
+
+### 证据与验证
+
+[11 月 6 日实际工作记录对](https://github.com/YHonc/magpie-agent-message-compat/blob/83cd09f45a1ae04035b647f1b1af7f05eac1066e/evidence/codex-rollout-2026-11-06-live-work-redacted-pair.json) 来自本轮更新中交给 `cpa/gpt-6-astra` 的实际实现任务：父代理新生成的 `agents.spawn_agent` 调用带有 `encrypted_function_args: []`，子代理的 `encrypted_content` 包含完全相同的原始任务。脱敏前已核对原文相等、父子会话关联及 Codex `0.166.0-alpha.6`。这是 11 月 6 日已授权工作中新产生的 rollout 证据，没有追加模型探针；它不是 HTTP 抓包，也不能说明投递失败。[11 月 6 日运行时核对记录](https://github.com/YHonc/magpie-agent-message-compat/blob/83cd09f45a1ae04035b647f1b1af7f05eac1066e/evidence/magpie-runtime-attestation-2026-11-06.json) 已将抽样时的网关监听进程与 Magpie `0.1.2964` 启动记录关联；17:11 的抽样不是 16:52 任务的逐请求 HTTP 抓包。
+
+[重启后的历史记录对](https://github.com/YHonc/magpie-agent-message-compat/blob/83cd09f45a1ae04035b647f1b1af7f05eac1066e/evidence/codex-rollout-2026-11-05-restart-redacted-pair.json) 包含父代理新发出的 `agents.spawn_agent` 调用及 Gemini 子代理收到的消息：调用带有 `encrypted_function_args: []`，相同原字符串随后出现在子代理的 `encrypted_content` 中。脱敏前已核对原文相等、父子会话关联和两侧 Codex `0.166.0-alpha.6` 版本。这说明重启后新任务仍产生该表示；该任务实际成功，不能把这组记录称为投递失败。[较早的回传记录对](https://github.com/YHonc/magpie-agent-message-compat/blob/83cd09f45a1ae04035b647f1b1af7f05eac1066e/evidence/codex-rollout-2026-11-05-redacted-pair.json) 则记录了 `agents.send_message` 的相同表示。
+
+[启动日志摘录](https://github.com/YHonc/magpie-agent-message-compat/blob/83cd09f45a1ae04035b647f1b1af7f05eac1066e/evidence/magpie-startup-2026-11-05-redacted.txt) 记录了 11 月 5 日 Magpie `0.1.2964` 的启动，相邻还有 `0.1.2663` 启动记录。它佐证 #3183 发布之后的本机运行时间线，但不能锁定每个请求对应的服务进程。这些均为 11 月 5 日历史记录，11 月 6 日只是提取日期，不是 11 月 6 日的新复现或 HTTP 抓包。记录中的 `agents` 命名空间即使带空标记，也不满足已检查 Codex 源码的 `collaboration` 明文分支。
+
+使用 Node.js 20 或更高版本运行 `npm test`。当前共 13 组离线检查，使用临时目录，不调用模型、不读取个人台账，覆盖转换、原样放行、来源记录、保留策略、存储异常与消息顺序。真实路由验收需核对实际派发、追加任务和结果回传，不能仅凭 HTTP 200 或模型自述判断成功。
+
+插件不额外调用模型或网络。来源头与消息表示变化可能影响 token 数和缓存前缀，尚无缓存效果测量；网络错误、限流和认证问题需另行诊断。原生路由支持后，可关闭插件并直接验证该路由。
+
+## Source / 源码
+
+Maintained at [YHonc/magpie-agent-message-compat](https://github.com/YHonc/magpie-agent-message-compat). [PROVENANCE.json](PROVENANCE.json) pins the source commit and original source file hashes.
+
+源仓库为 [YHonc/magpie-agent-message-compat](https://github.com/YHonc/magpie-agent-message-compat)，[PROVENANCE.json](PROVENANCE.json) 记录对应提交和源文件哈希。
+
+| File | Responsibility / 职责 |
+| --- | --- |
+| `common.js` | Route matching and source classification / 路由匹配与来源判定 |
+| `provenance.hooks.mjs` | Provenance ledger and exact-match restoration / 来源台账与精确恢复 |
+| `compat.middleware.js` | Plain-message conversion and pass-through / 明文转换与原样放行 |
+| `test.mjs` | Offline module checks / 离线模块检查 |
+
+## License / 许可证
+
+[MIT](LICENSE).

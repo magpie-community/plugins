@@ -1,6 +1,6 @@
 {
-  "name": "@magpie-community/middleware-agent-message-compat",
-  "version": "0.1.1",
+  "name": "@magpie-community/gateway-agent-message-compat",
+  "version": "0.1.2",
   "type": "module",
   "description": "Codex MultiAgent V2 message compatibility for selected third-party Magpie routes, with plaintext provenance checks",
   "license": "MIT",
@@ -30,23 +30,19 @@
     "provenance.hooks.mjs",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "evidence/",
+    "PROVENANCE.json"
   ],
   "magpie": {
     "name": "Agent Message Compat",
     "middleware": "./compat.middleware.js",
     "hooks": "./provenance.hooks.mjs",
     "options": {
-      "targets": [
-        "cpa/gemini-*",
-        "cpa/claude-*",
-        "cpa/glm-*",
-        "ora2/claude-*",
-        "group/glm-*",
-        "group/deepseek-*"
-      ],
+      "targets": [],
       "gatewayTimeoutMs": 2000,
-      "waitForProvenanceMs": 800
+      "ledgerMaxEntries": 2048,
+      "ledgerMaxAgeDays": 30
     }
   }
 }
