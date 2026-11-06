@@ -1,11 +1,14 @@
 {
   "name": "@magpie-community/middleware-privacy-gate",
   "version": "0.3.0",
-  "description": "Structural egress gate for Magpie's gateway: rejects image, file and audio parts, encoded blobs and models outside the allowlist when Magpie cannot mask them locally; does not mask text. Companion to the ShyPie DSH bundle for DeepSeek Harness.",
+  "description": "Structural egress gate for Magpie: withholds or rejects image/file/audio parts, encoded blobs and disallowed models, and guides agents toward local extraction when Magpie cannot mask text. Companion to ShyPie for DeepSeek Harness.",
   "type": "module",
   "files": [
     "privacy-gate.middleware.js",
-    "README.md"
+    "README.md",
+    "BRAND.md",
+    "assets",
+    "docs"
   ],
   "keywords": [
     "magpie",
@@ -25,6 +28,7 @@
   },
   "magpie": {
     "middleware": "./privacy-gate.middleware.js",
+    "icon": "https://raw.githubusercontent.com/magpie-community/plugins/main/packages/privacy-gate/assets/shypie-icon.svg",
     "options": {
       "allowModels": [],
       "localModels": [],
