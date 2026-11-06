@@ -28,7 +28,7 @@
   },
   "magpie": {
     "middleware": "./privacy-gate.middleware.js",
-    "icon": "https://raw.githubusercontent.com/magpie-community/plugins/main/packages/privacy-gate/assets/shypie-icon.svg",
+    "icon": "https://raw.githubusercontent.com/siml1169/ShyPie/main/assets/brand/shypie/svg/shypie-icon.svg",
     "options": {
       "allowModels": [],
       "localModels": [],
