@@ -19,6 +19,7 @@ import { tr } from "../../util/i18n.js";
 type AcpSelectValue = { value?: string; name?: string; options?: AcpSelectValue[] };
 type AcpConfigOption = { id: string; category?: string | null; type?: string; currentValue?: unknown; options?: AcpSelectValue[] };
 import { log } from "../../log.js";
+import { OutputDecoder } from "../../util/decode.js";
 
 const rid = () => Math.random().toString(36).slice(2, 10);
 
@@ -97,8 +98,9 @@ export class AcpSession implements ProviderSession {
     if (!bin.ok) throw new Error(bin.reason);
     try {
       this.child = spawnResolved(bin, launchArgv(this.o.acpArgs, this.o.launch), { cwd: this.o.cwd });
+      const errDec = new OutputDecoder(); // 1.3: stderr may be in the Windows code page (GBK)
       this.child.stderr?.on("data", (d: Buffer) => {
-        const t = d.toString().trim();
+        const t = errDec.write(d).trim();
         if (t) log("info", `[${this.o.binName} acp] ${t.slice(0, 500)}`);
       });
       this.child.on("error", (e) => this.failInit(e));
@@ -111,7 +113,7 @@ export class AcpSession implements ProviderSession {
       const app = client({ name: "magpie-agent-console" });
       registerAcpClientHandlers(app, {
         push: (ev) => this.q.push(ev),
-        waitFor: (id) => this.waitPerm(id),
+        waitFor: (id, signal) => this.waitPerm(id, signal),
         autoAcceptPermissions: () => this.cursorAutoReview,
       });
       const stream = acpStreamFromChild(this.child);
@@ -266,7 +268,7 @@ export class AcpSession implements ProviderSession {
       return hit?.id ?? want;
     }
     if (this.o.flavor === "cursor") {
-      const map: Partial<Record<Mode, string>> = { default: "agent", plan: "plan", ask: "ask" };
+      const map: Partial<Record<Mode, string>> = { default: "agent", bypassPermissions: "agent", plan: "plan", ask: "ask" };
       const want = map[mode] ?? "agent";
       const avail = this.active?.modes?.availableModes ?? [];
       const hit = avail.find((m) => m.id === want || m.name.toLowerCase() === want);
@@ -354,10 +356,22 @@ export class AcpSession implements ProviderSession {
     await this.applyCursorAutoReviewConfig(false);
   }
 
-  private waitPerm(requestId: string): Promise<RespondAnswer> {
+  private waitPerm(requestId: string, signal?: AbortSignal): Promise<RespondAnswer> {
     return new Promise((resolve) => {
       this.permPending.set(requestId, resolve);
+      // The Agent withdrew the request ($/cancel_request) or the connection closed: the card must not stay clickable
+      if (signal?.aborted) this.cancelPerm(requestId);
+      else signal?.addEventListener("abort", () => this.cancelPerm(requestId), { once: true });
     });
+  }
+
+  /** Close an open permission request as cancelled (answer the Agent's request and tell the manager) */
+  private cancelPerm(requestId: string): void {
+    const r = this.permPending.get(requestId);
+    if (!r) return;
+    this.permPending.delete(requestId);
+    r({ cancelled: true });
+    this.q.push({ type: "permission_resolved", requestId, cancelled: true });
   }
 
   respond(requestId: string, answer: RespondAnswer): void {
@@ -423,6 +437,10 @@ export class AcpSession implements ProviderSession {
   }
 
   private endTurn(ev: ProviderEvent): void {
+    // The prompt turn is over (end_turn, refusal, error, cancel): any request still open can't be answered any more.
+    // Cursor ends a turn this way when its model stream dies ("[canceled] http/2 stream closed … CANCEL") right after
+    // asking. Cancel those before the turn end so the timeline never keeps a request open past its turn.
+    for (const id of [...this.permPending.keys()]) this.cancelPerm(id);
     this.q.push(ev);
     this.activeTurnId = null;
     this.running = false;

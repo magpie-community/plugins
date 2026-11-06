@@ -7,6 +7,8 @@ import type { AttachmentStore } from "../store/attachments.js";
 import type { Provider, ProviderSession, SendInput, RespondAnswer, Mode, SlashCommand } from "../providers/types.js";
 import { launchFromSettings } from "../providers/launch.js";
 import { clampMode } from "../providers/modes.js";
+import { guardLegacyMode, upgradeNotice } from "../migrate/autoApprove13.js";
+import { autoApproveOption, FULL_AUTO } from "../providers/autoApprove.js";
 import { resolveAttachmentRefs } from "../util/attachmentRefs.js";
 import { getProvider } from "../providers/registry.js";
 import { catalogById, providerCreatable } from "../providers/catalog.js";
@@ -17,17 +19,27 @@ import { Coalescer } from "../timeline/coalescer.js";
 import { ApiError } from "../ws/methods.js";
 import { log } from "../log.js";
 import { tr } from "../util/i18n.js";
+import { agentShellReady, bashMissingFor } from "../util/agentShell.js";
 import { resolveMentions, withMentions, type Mention, type MentionRef } from "../util/mentions.js";
 import {
   codexSlashCommandsFromEntries,
   loadCodexSlashEntries,
 } from "../providers/codex/commands.js";
 
+/** A message's own words for its conversation title: leading "> " quote blocks dropped (kept when that is all there is) */
+export function titleText(text: string): string {
+  const blocks = text.trim().split(/\n{2,}/);
+  let i = 0;
+  while (i < blocks.length && blocks[i]!.split("\n").every((l) => l === ">" || l.startsWith("> "))) i++;
+  const rest = blocks.slice(i).join(" ").trim();
+  return (rest || text.trim().replace(/^>\s?/gm, "")).replace(/\s+/g, " ").trim();
+}
+
 const SLASH_CACHE_TTL_MS = 10 * 60 * 1000;
 /** Idle Agent processes kept warm at most (one per conversation); older idle ones are closed (resumed on the next message) */
 export const MAX_WARM_IDLE = 3;
 
-type QueuedMessage = { id: string; text: string; attachments: { path: string; mime: string; name?: string }[]; mentions?: Mention[] };
+type QueuedMessage = { id: string; text: string; attachments: { path: string; mime: string; name?: string }[]; mentions?: Mention[]; clientId?: string };
 type PendingRequest = {
   kind: "permission" | "question";
   requestId: string;
@@ -54,6 +66,8 @@ type Runtime = {
   /** Text streamed as deltas only (ACP Agents): saved per segment as assistant_message / reasoning (B1) */
   pendingText: Map<string, { type: "assistant" | "reasoning"; itemId: string; text: string }>;
   deltasOnly: boolean;
+  /** 1.3: the "Git Bash not found" hint was already shown in this conversation during this daemon run */
+  bashHinted?: boolean;
 };
 
 type DeltaType = "assistant_delta" | "reasoning_delta" | "tool_output_delta";
@@ -167,11 +181,13 @@ export class AgentManager {
     return true;
   }
 
-  runtimeInfo(threadId: string): { status: string; queue: unknown[]; pending: unknown[] } | null {
+  runtimeInfo(threadId: string): { status: string; starting: boolean; queue: unknown[]; pending: unknown[] } | null {
     const rt = this.runtimes.get(threadId);
     if (!rt) return null;
     return {
       status: rt.status,
+      // true while startTurn runs (until session.send has returned): a "steer" sent then is queued instead
+      starting: rt.starting,
       queue: rt.queue,
       pending: [...rt.pending.values()].map((p) => ({
         requestId: p.requestId,
@@ -220,7 +236,9 @@ export class AgentManager {
   }
 
   // ---- send ----
-  async send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[]; mentions?: MentionRef[] }, behavior: SendBehavior = "queue"): Promise<"started" | "steered" | "queued"> {
+  /** clientId: the page's id for its optimistic bubble; it rides on the user_message event so the page can swap the
+   *  bubble for the real one without a duplicate or a jump */
+  async send(threadId: string, input: { text: string; attachments?: { path: string; mime: string; name?: string }[]; mentions?: MentionRef[]; clientId?: string }, behavior: SendBehavior = "queue"): Promise<"started" | "steered" | "queued"> {
     const meta = await this.mustThread(threadId);
     const mentions = await this.resolveMentionRefs(threadId, meta.projectId, input.mentions);
     if (meta.archived) {
@@ -253,6 +271,7 @@ export class AgentManager {
             steered: true,
             attachments: this.attachmentLabels(attachmentRefs),
             ...(mentions.length ? { mentions } : {}),
+            ...(input.clientId ? { clientId: input.clientId } : {}),
           });
           return "steered";
         } catch (e) {
@@ -260,56 +279,71 @@ export class AgentManager {
           log("info", `thread ${threadId} 插话失败，改为排队：${String(e)}`);
         }
       }
-      const q: QueuedMessage = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs, ...(mentions.length ? { mentions } : {}) };
+      const q: QueuedMessage = { id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: input.text, attachments: attachmentRefs, ...(mentions.length ? { mentions } : {}), ...(input.clientId ? { clientId: input.clientId } : {}) };
       rt.queue.push(q);
       this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
       return "queued";
     }
 
-    await this.startTurn(threadId, input.text, attachmentRefs, mentions);
+    await this.startTurn(threadId, input.text, attachmentRefs, mentions, input.clientId);
     return "started";
   }
 
-  private async startTurn(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[], mentions: Mention[] = []): Promise<void> {
+  private async startTurn(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[], mentions: Mention[] = [], clientId?: string): Promise<void> {
     const rt = this.rt(threadId);
     rt.starting = true;
     try {
-      await this.startTurnInner(threadId, text, attachmentRefs, mentions);
+      await this.startTurnInner(threadId, text, attachmentRefs, mentions, clientId);
     } finally {
       rt.starting = false;
     }
   }
 
-  private async startTurnInner(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[], mentions: Mention[]): Promise<void> {
+  private async startTurnInner(threadId: string, text: string, attachmentRefs: { path: string; mime: string; name?: string }[], mentions: Mention[], clientId?: string): Promise<void> {
     const meta = await this.mustThread(threadId);
     const rt = this.rt(threadId);
     // Conversations that already ran (have a providerSessionId) ignore "disabled": disabling only blocks new conversations
-    const provider = await this.assertProviderUsable(meta.provider, { allowDisabled: !!meta.providerSessionId });
+    const allowDisabled = !!meta.providerSessionId;
+    // Cheap checks only (no CLI started) before the message is accepted: a bad Agent id or a disabled one is refused outright
+    this.assertProviderAllowed(meta.provider, await this.settings.get(), { allowDisabled });
 
-    if (!rt.session) {
-      await this.setStatus(threadId, "initializing");
-      try {
-        await this.createSessionIfNeeded(threadId, { updateStatus: true });
-      } catch (e) {
-        await this.appendRaw(threadId, { type: "notice", level: "error", message: tr("notice.sessionStartFailed", { detail: String((e as Error)?.message ?? e) }) });
-        await this.appendRaw(threadId, { type: "turn_ended", status: "failed", error: String((e as Error)?.message ?? e) } as Partial<TimelineEvent> & { type: "turn_ended" });
-        await this.setStatus(threadId, "error");
-        throw e;
-      }
-    }
-
-    // Auto title
-    const trimmed = text.trim();
-    if (meta.titleAuto && trimmed) {
-      await this.threads.patch(threadId, { title: trimmed.slice(0, 40), titleAuto: true });
-      this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
-    }
+    // 1.3: the user's message is persisted and pushed FIRST. It used to wait for detection (a CLI "--version" on a cold
+    // cache) and the Agent start (spawn + ACP initialize/session/new), which on Windows takes seconds, so the bubble came late.
     await this.appendRaw(threadId, {
       type: "user_message",
       text,
       attachments: this.attachmentLabels(attachmentRefs),
       ...(mentions.length ? { mentions } : {}),
+      ...(clientId ? { clientId } : {}),
     });
+    // Auto title (1.3: without the leading "> " quote blocks that "添加到对话" puts in front of the message)
+    const trimmed = titleText(text);
+    if (meta.titleAuto && trimmed) {
+      await this.threads.patch(threadId, { title: trimmed.slice(0, 40), titleAuto: true });
+      this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
+    }
+
+    if (!rt.session) {
+      await this.setStatus(threadId, "initializing");
+      try {
+        await this.assertProviderUsable(meta.provider, { allowDisabled });
+        await this.createSessionIfNeeded(threadId, { updateStatus: true });
+      } catch (e) {
+        await this.appendRaw(threadId, { type: "notice", level: "error", message: tr("notice.sessionStartFailed", { detail: String((e as Error)?.message ?? e) }) });
+        await this.appendRaw(threadId, { type: "turn_ended", status: "failed", error: String((e as Error)?.message ?? e) } as Partial<TimelineEvent> & { type: "turn_ended" });
+        await this.threads.patch(threadId, { lastTurnStatus: "failed" });
+        await this.setStatus(threadId, "error");
+        throw e;
+      }
+    }
+    // A live session needs no detection: the Agent is running (the 60 s detect cache used to re-run "--version" on later sends)
+
+    // Windows without Git Bash: say so before the agent's first command fails on the WSL launcher
+    await agentShellReady();
+    if (!rt.bashHinted && bashMissingFor(meta.provider)) {
+      rt.bashHinted = true;
+      await this.appendRaw(threadId, { type: "notice", level: "warn", code: "bash_missing", message: tr("notice.bashMissing") });
+    }
     await this.setStatus(threadId, "running");
     try {
       const images = await this.resolveAttachments(attachmentRefs);
@@ -418,10 +452,25 @@ export class AgentManager {
         resolve: () => {},
         event: ev,
       };
-      // allowAlways hit → approve directly
+      if (ev.type === "permission_request") {
+        // 1.3 全部自动同意: the daemon answers "allow once" itself; no card (the tool call still shows in the timeline)
+        const meta = await this.threads.get(threadId);
+        const auto = meta ? autoApproveOption(meta.mode, meta.provider, ev) : null;
+        if (auto) {
+          // #727 review: every auto-approval leaves a trace. The request (title, command / path / diff, options) and its
+          // answer are persisted like a card the user answered, both marked auto, before the Agent is told to go on.
+          log("info", `thread ${threadId} 自动同意 ${ev.title.slice(0, 80)} → ${auto.id}`);
+          await this.appendRaw(threadId, { ...ev, auto: true });
+          await this.appendRaw(threadId, { type: "permission_resolved", requestId: ev.requestId, optionId: auto.id, auto: true });
+          rt.session?.respond(ev.requestId, { optionId: auto.id });
+          return;
+        }
+      }
+      // allowAlways hit → approve directly (with this request's own allow option, not a guessed id)
       const toolName = (ev as { detail?: { toolName?: string } }).detail?.toolName;
       if (toolName && rt.allowAlways.has(toolName)) {
-        rt.session?.respond(ev.requestId, { optionId: "accept" });
+        const allow = options.find((o) => o.kind === "allow_once") ?? options.find((o) => o.kind === "allow_always");
+        rt.session?.respond(ev.requestId, { optionId: allow?.id ?? "accept" });
         return;
       }
       rt.pending.set(ev.requestId, pending);
@@ -442,6 +491,11 @@ export class AgentManager {
         rt.interruptTimer = null;
       }
       if (ev.turnId && ev.turnId !== "unknown") rt.endedTurnIds.add(ev.turnId);
+      // A request the Agent left open when its turn ended (Cursor: the model stream died with "[canceled] http/2 stream
+      // closed", the request was never answered or withdrawn) can no longer be answered: cancel it before the turn end
+      // is written. Otherwise it stays in rt.pending, threads.get hands it to the page, and the top bar says 等待授权
+      // with no card to click (the card itself shows 已取消 because the thread is idle).
+      await this.cancelPending(threadId, rt, { tellSession: true });
       rt.coalescer.dispose();
       rt.coalescer = this.newCoalescer(threadId);
       await this.appendRaw(threadId, ev);
@@ -456,7 +510,7 @@ export class AgentManager {
       if (next) {
         this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
         // A queued message that fails to start is only logged; it must not break the event pump (startTurn already wrote notice/turn_ended)
-        await this.startTurn(threadId, next.text, next.attachments, next.mentions ?? []).catch((e) => {
+        await this.startTurn(threadId, next.text, next.attachments, next.mentions ?? [], next.clientId).catch((e) => {
           log("warn", `thread ${threadId} 排队消息启动失败：${String(e)}`);
         });
       }
@@ -512,16 +566,45 @@ export class AgentManager {
     rt.session?.respond(requestId, answer);
   }
 
+  /** Answer every waiting tool approval with its allow-once option (full-auto just turned on). Returns how many. */
+  private async autoApprovePending(threadId: string, providerId: string, mode: Mode): Promise<number> {
+    const rt = this.rt(threadId);
+    let n = 0;
+    for (const p of [...rt.pending.values()]) {
+      if (p.kind !== "permission") continue;
+      const ev = p.event as { kind?: string };
+      const opt = autoApproveOption(mode, providerId, { kind: ev.kind, options: p.options });
+      if (!opt) continue;
+      rt.pending.delete(p.requestId);
+      await this.appendRaw(threadId, { type: "permission_resolved", requestId: p.requestId, optionId: opt.id, auto: true });
+      rt.session?.respond(p.requestId, { optionId: opt.id });
+      n++;
+    }
+    return n;
+  }
+
+  /** Cancel every open permission/question: persisted as permission_resolved{cancelled} (the page marks the card
+   *  已取消 and stops waiting). tellSession: also answer the provider's own waiter (an Agent that ended its turn without
+   *  withdrawing the request would otherwise keep a dangling promise); its echo is dropped because rt.pending is empty. */
+  private async cancelPending(threadId: string, rt: Runtime, opts: { tellSession: boolean }): Promise<void> {
+    if (!rt.pending.size) return;
+    const open = [...rt.pending.values()];
+    rt.pending.clear();
+    for (const p of open) {
+      await this.appendRaw(threadId, { type: "permission_resolved", requestId: p.requestId, cancelled: true });
+      p.resolve({ cancelled: true });
+      if (opts.tellSession) {
+        try { rt.session?.respond(p.requestId, { cancelled: true }); } catch { /* the session may be gone */ }
+      }
+    }
+  }
+
   // ---- interrupt ----
   async interrupt(threadId: string): Promise<void> {
     const rt = this.rt(threadId);
     if (!rt.session || rt.status !== "running") return;
     // Invalidate all pending requests
-    for (const [id, p] of rt.pending) {
-      await this.appendRaw(threadId, { type: "permission_resolved", requestId: id, cancelled: true });
-      p.resolve({ cancelled: true });
-    }
-    rt.pending.clear();
+    await this.cancelPending(threadId, rt, { tellSession: false });
     await rt.session.interrupt();
     const turnId = rt.currentTurnId;
     // No turn_ended within 1 second → append interrupted
@@ -560,8 +643,10 @@ export class AgentManager {
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
   async setMode(threadId: string, mode: Mode): Promise<void> {
-    await this.threads.patch(threadId, { mode });
+    const meta = await this.threads.patch(threadId, { mode });
     const rt = this.rt(threadId);
+    // 1.3: turning 全部自动同意 on also approves the cards already waiting (the user was stuck exactly there)
+    if (mode === FULL_AUTO) await this.autoApprovePending(threadId, meta.provider, mode);
     if (rt.session) await rt.session.setMode(mode);
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
@@ -605,7 +690,10 @@ export class AgentManager {
       throw new ApiError("busy", tr("err.busySwitch"));
     }
     const events = await this.threads.readEvents(threadId, 0, 5000);
-    if (events.some((e) => e.type === "user_message")) {
+    // 1.3: the user's message is now saved before the Agent starts, so a first message whose Agent never started
+    // (no session id, no turn, no reply) does not lock the conversation to that Agent
+    const neverRan = !meta.providerSessionId && !events.some((e) => e.type === "turn_started" || e.type === "assistant_message" || e.type === "tool_call");
+    if (events.some((e) => e.type === "user_message") && !neverRan) {
       throw new ApiError("bad_params", tr("err.hasMessages"));
     }
     const p = await this.assertProviderUsable(providerId);
@@ -617,14 +705,17 @@ export class AgentManager {
       rt.commands = [];
     }
     rt.status = "idle";
+    // 1.3 (#727 review 3): same guard as threads.create for a pre-1.3 default of 全部放行
+    const guard = await guardLegacyMode(this.settings, providerId, clampMode(p.capabilities.modes, meta.mode));
     await this.threads.patch(threadId, {
       provider: providerId,
       model: null,
-      mode: clampMode(p.capabilities.modes, meta.mode),
+      mode: guard.mode,
       effort: null,
       providerSessionId: null,
       status: "idle",
     });
+    if (guard.notice) await this.appendRaw(threadId, upgradeNotice());
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
 
@@ -765,6 +856,8 @@ export class AgentManager {
     const settings = await this.settings.get();
     const launch = launchFromSettings(settings, meta.provider);
     rt.deltasOnly = !!provider.capabilities.deltasOnly;
+    // The agent's environment gets the Git Bash found at start / after a settings change (Windows)
+    await agentShellReady();
     rt.session = await provider.createSession({
       threadId,
       cwd: proj.path,
@@ -797,10 +890,10 @@ export class AgentManager {
     return getProvider(meta.provider);
   }
 
-  private async assertProviderUsable(providerId: string, opts: { allowDisabled?: boolean } = {}): Promise<Provider> {
+  /** The checks that start nothing: a known Agent, enabled (unless allowDisabled), not a planned one */
+  private assertProviderAllowed(providerId: string, s: Awaited<ReturnType<SettingsStore["get"]>>, opts: { allowDisabled?: boolean } = {}): Provider {
     const p = getProvider(providerId);
     if (!p) throw new ApiError("bad_params", tr("provider.unknown", { id: providerId }));
-    const s = await this.settings.get();
     if (!opts.allowDisabled && !isProviderEnabled(s, providerId)) {
       throw new ApiError("bad_params", tr("provider.disabledNamed", { name: p.name }));
     }
@@ -808,6 +901,12 @@ export class AgentManager {
     if (entry && !providerCreatable(entry.status)) {
       throw new ApiError("bad_params", tr("provider.plannedNamed", { name: p.name }));
     }
+    return p;
+  }
+
+  private async assertProviderUsable(providerId: string, opts: { allowDisabled?: boolean } = {}): Promise<Provider> {
+    const s = await this.settings.get();
+    const p = this.assertProviderAllowed(providerId, s, opts);
     const det = await cachedDetect(p, launchFromSettings(s, providerId));
     if (!det.available) throw new ApiError("bad_params", det.reason ?? tr("provider.unavailable", { name: p.name }));
     return p;

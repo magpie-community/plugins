@@ -6,11 +6,11 @@ import { accessSync, chmodSync, constants as fsc, existsSync, statSync } from "n
 import { createRequire as moduleRequire } from "node:module";
 import { release } from "node:os";
 import { dirname, join } from "node:path";
-import { StringDecoder } from "node:string_decoder";
 import { findOnPath } from "../../../lib/pathscan.mjs";
 import type { Gateway } from "../ws/gateway.js";
 import { log } from "../log.js";
 import { tr } from "../util/i18n.js";
+import { OutputDecoder } from "../util/decode.js";
 
 type Pty = {
   write(data: string): void;
@@ -174,9 +174,10 @@ export class TerminalService {
         detached: process.platform !== "win32",
       });
       term.proc = proc;
-      // StringDecoder: no garbling when a multibyte character (e.g. Chinese) is split across two chunks
-      const outDec = new StringDecoder("utf8");
-      const errDec = new StringDecoder("utf8");
+      // 1.3 OutputDecoder: UTF-8, or the Windows code page (cmd.exe / PowerShell 5 print GBK on Chinese Windows);
+      // a multibyte character split across two chunks is kept whole
+      const outDec = new OutputDecoder();
+      const errDec = new OutputDecoder();
       proc.stdout.on("data", (d: Buffer) => this.onData(term, outDec.write(d)));
       proc.stderr.on("data", (d: Buffer) => this.onData(term, errDec.write(d)));
       proc.on("exit", () => this.onExit(term));

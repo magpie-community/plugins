@@ -12,7 +12,7 @@ import { Panel } from "./components/Panel";
 import { SettingsDialog } from "./components/Settings";
 import { Toasts } from "./components/Toast";
 import { t } from "./i18n/index.js";
-import { goBackToMagpie } from "./api/backToMagpie.js";
+import { goBackToMagpie, isWrapped, reportLostToWrapper } from "./api/backToMagpie.js";
 
 export function App() {
   const { state, version } = useConnection();
@@ -43,7 +43,7 @@ export function App() {
       <div className="boot-screen">
         <div className="boot-wrap">
           <span>{t("boot.serviceDown")}</span>
-          <button className="btn primary" onClick={() => { if (!goBackToMagpie()) location.reload(); }}>{t("boot.retry")}</button>
+          <button className="btn primary" onClick={() => { if (isWrapped()) reportLostToWrapper(); else if (!goBackToMagpie()) location.reload(); }}>{t("boot.retry")}</button>
         </div>
       </div>
     );
@@ -60,7 +60,7 @@ export function App() {
   return (
     <Layout
       sidebar={<Sidebar pendingByThread={new Set(pending.map((p) => useTimeline.getState().threadId!).filter(Boolean))} />}
-      topbar={<Topbar pendingCount={pending.length} />}
+      topbar={<Topbar pendingCount={pending.length} pendingKey={pending[0]?.key} />}
       panel={<Panel />}
     >
       {state === "reconnecting" && <div className="connbar">{t("boot.reconnecting")}</div>}

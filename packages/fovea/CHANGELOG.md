@@ -2,6 +2,35 @@
 
 本文件记录 fovea 的对外变化。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循语义化版本。
 
+## [0.2.5] — 2026-11-05
+
+### Added
+
+- 支持 Gemini 请求（`contents` 字段）：thought 与 thoughtSignature、functionCall 不动；functionResponse 保留 id / name / 键，其中的长字符串被裁；图片换成注记；文档与视频载荷不动。此前 Gemini 请求完全原样放行，装了也不省。
+
+### Fixed
+
+- `saccade: "auto"` 不再把 Claude Code 的 `<system-reminder>`（token 预算、工具指引）当成用户的新问题。它与任务没有共同词，旧规则判成换话题、整段历史折叠。
+- Responses 请求的首个答案是 `custom_tool_call` / `computer_call` / `local_shell_call` 时，任务豁免范围算错，整条历史一条都不裁。
+- Chat 旧版 functions API 的 `role: "function"` 消息此前完全没被处理，那正是最占钱的工具输出。
+
+### Changed
+
+- 新增 `fovea.protocols.test.mjs`：四种协议各自的形状与边界（Anthropic Messages、OpenAI Responses、Chat Completions、Gemini），12 条用例。
+
+## [0.2.4] — 2026-11-05
+
+### Fixed
+
+- `state_marker` 只在 agent 自己写状态的位置生效：assistant 消息（Chat、Anthropic，或 Responses 的 message 项）中以标记开头的文本或文本块。工具结果、用户消息、嵌套的 tool_result 块、文本中间出现同样字样都不再算状态块——此前一条读到该字样的 Chat 工具结果或用户消息会永久免裁，并让任务原文失去保护（plugins#756）。
+- 文件头注释与 README 不再说"带 `[fovea:` 标记的内容不再二次裁剪"（0.2.3 已去掉这一判断）。
+
+## [0.2.3] — 2026-11-05
+
+### Fixed
+
+- `cut()` 不再以正文里出现 `[fovea:` 为依据跳过裁剪：不可信的工具输出或用户消息可以伪造这一字面串，使整块旧内容永久免裁。幂等性改由既有的 `head + tail + 80` 长度闸门保证；已裁内容在后续请求中仍逐字节稳定。新增 cases 与单元测试覆盖伪造标记及二次裁剪。
+
 ## [0.2.2] — 2026-11-04
 
 ### Fixed

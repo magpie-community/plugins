@@ -1,12 +1,15 @@
 // Conversation area (§8.6): virtual list, stick-to-bottom, empty state, queue list, Composer.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isImeComposing } from "../composer/ime";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useUi } from "../stores/ui";
 import { useData, pickDefaultProvider } from "../stores/data";
 import { useTimeline } from "../stores/timeline";
 import { TimelineRow } from "./Timeline";
+import { foldTimeline, TOOL_COLLAPSE_AT } from "../timeline/fold";
+import { collectAutoApproved } from "../timeline/autoApproved";
 import { Composer } from "./Composer";
+import { QuoteSelect } from "./QuoteSelect";
 import { Icon } from "./Icons";
 import { ws } from "../main";
 import { toast } from "./Toast";
@@ -19,7 +22,10 @@ export function Chat() {
   const { projects, threads } = useData();
   const tl = useTimeline();
   const prefs = useLiveSettings();
-  const items = prefs.showThinking ? tl.items : tl.items.filter((it) => it.kind !== "reasoning");
+  // 1.3: runs of tool calls (and short thinking between them) fold into one summary row
+  // (tl.items is a fresh array after every timeline change, so the memo follows the stream)
+  // 1.3 全部自动同意: the daemon's own approvals become one quiet row after their run (collectAutoApproved)
+  const items = useMemo(() => foldTimeline(collectAutoApproved(tl.items), { showThinking: prefs.showThinking }), [tl.items, prefs.showThinking]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [stick, setStick] = useState(true);
   const [hasNew, setHasNew] = useState(false);
@@ -43,10 +49,11 @@ export function Chat() {
     switch (it.kind) {
       case "user": return 60;
       case "assistant": case "reasoning": return 120;
-      case "toolgroup": return 30 + it.steps.length * 26;
+      // 1.3: short runs are flat rows (26px each), long ones one summary row
+      case "toolgroup": return it.steps.length > TOOL_COLLAPSE_AT ? 34 : 8 + 26 * it.steps.length;
       case "plan": return 200;
       case "permission": case "question": return 120;
-      case "todo": return 30;
+      case "todo": return 34 + 24 * it.items.length;
       case "turnend": case "notice": return 30;
       default: return 60;
     }
@@ -61,6 +68,24 @@ export function Chat() {
     measureElement: (el) => el.getBoundingClientRect().height,
   });
 
+  // 1.3: the composer's "N/M tasks" pill brings its checklist into view
+  useEffect(() => {
+    const on = (e: Event) => {
+      const key = (e as CustomEvent).detail?.key as string | undefined;
+      const idx = key ? items.findIndex((x) => x.key === key) : -1;
+      if (idx < 0) return;
+      virt.scrollToIndex(idx, { align: "center" });
+      requestAnimationFrame(() => {
+        const el = scrollRef.current?.querySelector(`[data-todo-key="${CSS.escape(key!)}"]`);
+        el?.classList.remove("flash");
+        void (el as HTMLElement | null)?.offsetWidth;
+        el?.classList.add("flash");
+      });
+    };
+    window.addEventListener("ac-show-item", on);
+    return () => window.removeEventListener("ac-show-item", on);
+  }, [items, virt]);
+
   const count = items.length;
   useEffect(() => {
     const el = scrollRef.current;
@@ -68,6 +93,18 @@ export function Chat() {
     if (stick) el.scrollTop = el.scrollHeight;
     else setHasNew(true);
   }, [count, stick]);
+
+  // 1.3: a send always lands at the bottom, at once (and again after the new row is measured)
+  useEffect(() => {
+    if (!tl.sentAt) return;
+    setStick(true);
+    setHasNew(false);
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    const raf = requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    return () => cancelAnimationFrame(raf);
+  }, [tl.sentAt]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -90,7 +127,10 @@ export function Chat() {
     const rels = root && mentions?.length
       ? mentions.map((m) => ({ rel: relFromAbs(root, m.path), isDir: m.isDir })).filter((m): m is { rel: string; isDir: boolean } => !!m.rel)
       : [];
-    void ws.call("thread.send", { id: activeThreadId, text, ...(rels.length ? { mentions: rels } : {}) });
+    const busy = tl.status === "running" || tl.status === "initializing";
+    // 1.3: optimistic like the composer (shows now, failure keeps a 重试 bubble); behind a running turn it queues
+    void tl.send(activeThreadId, { text, ...(rels.length ? { mentions: rels } : {}) }, mentions?.length ? { mentions } : {}, { optimistic: !busy })
+      .catch((e) => toast(tr("composer.failSend") + errMsg(e), true));
   };
   const retryLast = () => {
     if (tl.lastUserText) resend(tl.lastUserText);
@@ -137,7 +177,7 @@ export function Chat() {
   return (
     <>
       <div className="scroll" ref={scrollRef} onScroll={onScroll}>
-        <div className="tl-wrap">
+        <div className="tl-wrap" data-quote-root="chat">
           <div style={{ height: virt.getTotalSize(), position: "relative" }}>
             {virt.getVirtualItems().map((v) => {
               const it = items[v.index];
@@ -169,6 +209,7 @@ export function Chat() {
         </button>
       )}
       <Composer />
+      <QuoteSelect />
     </>
   );
 }
@@ -206,7 +247,8 @@ function EmptyComposer({ projectId }: { projectId: string }) {
         mode: s.defaultMode ?? "default",
       })) as { id: string };
       ui.select(projectId, created.id);
-      await ws.call("thread.send", { id: created.id, text: text.trim() });
+      // 1.3: the new conversation opens with the bubble already in it (a failure stays there with 重试)
+      await useTimeline.getState().send(created.id, { text: text.trim() });
     } catch (e) {
       toast(tr("chat.failSend") + errMsg(e), true);
       setBusy(false);

@@ -400,3 +400,37 @@ test("a refused-then-rested gift says why it is refused locally", async () => {
   expect(sent).toHaveLength(1)
   expect((await again.json()).error.message).toContain("not asked again for a minute")
 })
+
+// young02036 (Discord, 11-05): two ZCode accounts, one with no GLM Coding
+// Plan whose Start Plan holds only GLM-5.3-Flash, one subscribed whose
+// gift is GLM-5.3-Flash-Trial. The gift-only account listed every model
+// the Start Plan's config names (GLM-5.2, GLM-5-Turbo…), so magpie sent it
+// models its balance has no bucket for, which the ZCode app never offers:
+// the app lists a Start Plan account's models from its balance alone
+// (resolveStartPlanBalanceAvailability). Now the gift-only account lists
+// what its balance names, and a request for anything else is never routed
+// to it. The config's list stands only when the balance names no model.
+test("a gift-only account lists only the models its balance names (young02036)", async () => {
+  _internal.config({
+    revision: 1,
+    config: {
+      providerConfigRules: { providerRules: [{ providerId: "account:zai-start-plan", builtinModelIds: ["GLM-5.3-Flash", "GLM-5.2", "GLM-5-Turbo"] }] },
+      modelConfigRules: { modelRules: [{ modelMatch: "GLM-5\\.3-Flash", config: { properties: { contextWindow: 1_000_000 }, optionSpecs: { maxOutputTokens: { max: 128_000 }, reasoningLevel: { values: ["low", "high", "max"] } } } }] },
+    },
+  })
+  try {
+    balance.plans = [{ plan_id: "zcode-v3-start-plan", user_plan_id: "s1", name: "ZCode Start Plan", status: "active", ends_at: now + 7 * 86400 }]
+    balance.balances = [{ plan_id: "zcode-v3-start-plan", user_plan_id: "s1", show_name: "GLM-5.3-Flash", capabilities: ["model:glm-5.3-flash"], total_units: 5_000_000, used_units: 0, remaining_units: 5_000_000 }]
+    const only = { type: "oauth", access: jwt, refresh: JSON.stringify({ ...state, key: undefined, plan: undefined }), expires: 0 }
+    const models = await (await hooks()).provider.models({ models: {} }, { auth: only })
+    expect(Object.keys(models).sort()).toEqual(["GLM-5.3-Flash", "GLM-5.3-Flash-Trial"])
+    expect(models["GLM-5.3-Flash"].limit.context).toBe(1_000_000)
+    // a balance that names no model leaves the config's list standing
+    _internal.routes.clear()
+    balance.balances = []
+    const bare = await (await hooks()).provider.models({ models: {} }, { auth: only })
+    expect(Object.keys(bare).sort()).toEqual(["GLM-5-Turbo", "GLM-5.2", "GLM-5.3-Flash"])
+  } finally {
+    _internal.config(undefined)
+  }
+})

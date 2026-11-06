@@ -1,5 +1,5 @@
 // MockProvider: registered only with AGENT_CONSOLE_MOCK=1. Persistent session, interruptible, with permissions and steering.
-// Scripts by message prefix: default /perm /plan /ask /slow /error /long /exit; supports steer/interrupt/resume.
+// Scripts by message prefix: default /perm /plan /ask /slow /error /long /exit /tools /winrun /tasks; supports steer/interrupt/resume.
 import { tr } from "../util/i18n.js";
 import type { Provider, ProviderSession, DetectResult, ModelInfo,
   Mode, SendInput, RespondAnswer, SlashCommand,
@@ -277,17 +277,31 @@ async function scriptPerm(ctx: Ctx): Promise<void> {
   emit({ type: "assistant_message", itemId: "pm", text: "测试通过了。" });
 }
 
+// Like Cursor when its model stream dies ("http/2 stream closed … CANCEL"): it asks for permission, then ends the turn
+// itself without waiting for (or withdrawing) the answer. The manager must not keep the request pending afterwards.
+async function scriptPermAbandon(ctx: Ctx): Promise<void> {
+  const { emit } = ctx;
+  emit({
+    type: "permission_request",
+    requestId: "perm-" + rid(),
+    title: "运行 git status",
+    kind: "execute",
+    detail: { command: "git status" },
+    options: [
+      { id: "allow-once", label: tr("perm.allow"), kind: "allow_once" },
+      { id: "reject-once", label: tr("perm.deny"), kind: "reject_once" },
+    ],
+  });
+  await sleepAbortable(200, ctx);
+  emit({ type: "assistant_message", itemId: "pa", text: "Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL (0x8)" });
+}
+
 async function scriptPlan(ctx: Ctx): Promise<void> {
   const { emit } = ctx;
   emit({
     type: "plan",
     itemId: "plan1",
     markdown: "## 实施计划\n\n1. 改 `src/index.ts` 入口\n2. 更新测试\n3. 跑一遍 e2e",
-    entries: [
-      { step: "改 src/index.ts 入口", status: "pending" },
-      { step: "更新测试", status: "pending" },
-      { step: "跑一遍 e2e", status: "pending" },
-    ],
   });
   const requestId = "perm-" + rid();
   emit({
@@ -377,6 +391,7 @@ async function scriptExit(_ctx: Ctx): Promise<void> {
 
 function pickScript(text: string): (ctx: Ctx) => Promise<void> {
   const t = text.trim();
+  if (t.startsWith("/perm-abandon")) return scriptPermAbandon;
   if (t.startsWith("/perm")) return scriptPerm;
   if (t.startsWith("/plan")) return scriptPlan;
   if (t.startsWith("/ask")) return scriptAsk;
@@ -385,6 +400,10 @@ function pickScript(text: string): (ctx: Ctx) => Promise<void> {
   if (t.startsWith("/long")) return scriptLong;
   if (t.startsWith("/exit")) return scriptExit;
   if (t.startsWith("/serve")) return scriptServe;
+  if (t.startsWith("/tools")) return scriptTools;
+  if (t.startsWith("/bashhint")) return scriptBashHint;
+  if (t.startsWith("/winrun")) return scriptWinRun;
+  if (t.startsWith("/tasks")) return scriptTasks;
   return scriptDefault;
 }
 
@@ -401,6 +420,157 @@ function chunkText(s: string, n: number): string[] {
   const out: string[] = [];
   for (let i = 0; i < s.length; i += n) out.push(s.slice(i, i + n));
   return out;
+}
+
+// "/tools" (1.3): thinking between eight tool calls (more than the six shown flat), one failure and a slow last command,
+// for the folded tool summary
+async function scriptTools(ctx: Ctx): Promise<void> {
+  const { emit } = ctx;
+  const sleepA = (ms: number) => sleepAbortable(ms, ctx);
+  const tool = async (id: string, kind: string, title: string, input: Record<string, unknown>, end: Record<string, unknown>, ms = 150) => {
+    emit({ type: "tool_call", itemId: id, kind, title, status: "running", input } as Parameters<Ctx["emit"]>[0]);
+    if (await sleepA(ms)) return true;
+    emit({ type: "tool_call", itemId: id, kind, title, status: "ok", durationMs: ms, ...end } as Parameters<Ctx["emit"]>[0]);
+    return false;
+  };
+  emit({ type: "reasoning", itemId: "tr1", text: "先看一下测试和配置。" });
+  if (await tool("x1", "read", "读取 package.json", { file_path: "package.json" }, { output: "{…}" })) return;
+  if (await tool("x2", "search", '搜索 "describe("', { pattern: "describe(" }, { output: "12 处匹配" })) return;
+  emit({ type: "reasoning", itemId: "tr2", text: "" });
+  if (await tool("x3", "read", "读取 test/app.test.ts", { file_path: "test/app.test.ts" }, { output: "…" })) return;
+  if (await tool("x3b", "read", "读取 test/server.test.ts", { file_path: "test/server.test.ts" }, { output: "…" })) return;
+  if (await tool("x3c", "search", '搜索 "createServer"', { pattern: "createServer" }, { output: "3 处匹配" })) return;
+  emit({ type: "tool_call", itemId: "x4", kind: "bash", title: "运行 npm run lint", status: "running", input: { command: "npm run lint" } });
+  if (await sleepA(200)) return;
+  emit({
+    type: "tool_call", itemId: "x4", kind: "bash", title: "运行 npm run lint", status: "failed", exitCode: 1, durationMs: 200,
+    output: "src/app.ts:12:7  error  'unused' is assigned a value but never used  no-unused-vars\n\n✖ 1 problem (1 error, 0 warnings)",
+  });
+  const oldStr = "const unused = 1;\nexport const app = 2;";
+  const newStr = "export const app = 2;";
+  if (await tool("x5", "edit", "编辑 src/app.ts", { file_path: "src/app.ts", old_string: oldStr, new_string: newStr },
+    { detail: editDetail({ path: "src/app.ts", old: oldStr, new: newStr }) })) return;
+  emit({ type: "reasoning", itemId: "tr3", text: "lint 修好了，再跑一遍完整测试。" });
+  const cmd = "npm test -- --reporter=verbose --coverage --run test/app.test.ts test/server.test.ts test/client.test.ts";
+  emit({ type: "tool_call", itemId: "x6", kind: "bash", title: `运行 ${cmd}`, status: "running", input: { command: cmd } });
+  // Slow on purpose: the one-line "正在运行：…" row stays up for screenshots (QA: AGENT_CONSOLE_MOCK_TOOLS_MS)
+  const slow = Number(process.env.AGENT_CONSOLE_MOCK_TOOLS_MS) || 2500;
+  if (await sleepA(slow)) return;
+  emit({ type: "tool_call", itemId: "x6", kind: "bash", title: `运行 ${cmd}`, status: "ok", output: "✓ 3 个测试文件通过", exitCode: 0, durationMs: slow });
+  const reply = ctx.replyPrefix() + "lint 报错已修复，测试全部通过。";
+  emit({ type: "assistant_message", itemId: "tm1", text: reply });
+}
+
+// "/winrun" (1.3): Nolan's Windows Cursor turn: short thinking between tool runs, long PowerShell commands (CJK paths),
+// an approval for one of them, then more groups while the turn is live. The e2e overlap check drives it at ~600 px.
+async function scriptWinRun(ctx: Ctx): Promise<void> {
+  const { emit } = ctx;
+  const sleepA = (ms: number) => sleepAbortable(ms, ctx);
+  const step = Number(process.env.AGENT_CONSOLE_MOCK_STEP_MS) || 250;
+  const think = async (id: string, text: string) => {
+    for (const ch of chunkText(text, 6)) {
+      emit({ type: "reasoning_delta", itemId: id, text: ch });
+      if (await sleepA(40)) return true;
+    }
+    emit({ type: "reasoning", itemId: id, text });
+    return false;
+  };
+  const tool = async (id: string, kind: string, title: string, input: Record<string, unknown>, ms = step) => {
+    emit({ type: "tool_call", itemId: id, kind, title, status: "running", input } as Parameters<Ctx["emit"]>[0]);
+    if (await sleepA(ms)) return true;
+    emit({ type: "tool_call", itemId: id, kind, title, status: "ok", durationMs: ms, output: "ok" } as Parameters<Ctx["emit"]>[0]);
+    return false;
+  };
+  const dir = "D:\\workwork\\抖音快手自动上传";
+  const start = `Set-Location "${dir}"; if (Test-Path ".venv\\Scripts\\pythonw.exe") { Start-Process -FilePath ".venv\\Scripts\\pythonw.exe" -ArgumentList "-m","app.main" -WorkingDirectory "${dir}"; Write-Host "已启动（源码模式）" } else { Write-Host "venv 不存在，尝试 exe"; Start-Process -FilePath "风景视频工具.exe" -WorkingDirectory "${dir}"; Write-Host "已启动（exe）" }`;
+  const ps = `Get-Process pythonw -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*抖音快手自动上传*" } | Select-Object Id, Path, StartTime | Format-Table -AutoSize`;
+  if (await think("w1", "先检查是否已有实例在跑。")) return;
+  emit({ type: "assistant_message", itemId: "wm1", text: "先检查是否已有实例在跑，再启动应用。" });
+  if (await tool("s1", "search", "搜索 pythonw", { pattern: "pythonw" })) return;
+  if (await tool("s2", "search", "搜索 app.main", { pattern: "app.main" })) return;
+  if (await think("w2", "看下启动脚本。")) return;
+  if (await tool("s3", "search", "搜索 启动.bat", { pattern: "启动.bat" })) return;
+  if (await tool("r1", "read", "读取 启动.bat", { file_path: `${dir}\\启动.bat` })) return;
+  if (await think("w3", "")) return;
+  if (await tool("b0", "bash", `运行 ${ps}`, { command: ps }, step * 2)) return;
+  if (await think("w4", "没有实例在跑，直接启动。")) return;
+  emit({ type: "tool_call", itemId: "b1", kind: "bash", title: `运行 ${start}`, status: "running", input: { command: start } });
+  if (await sleepA(step)) return;
+  const requestId = "perm-" + rid();
+  emit({
+    type: "permission_request", requestId, title: start, kind: "tool",
+    detail: { command: start, cwd: dir },
+    options: [
+      { id: "allow-once", label: "Allow once", kind: "allow_once" },
+      { id: "allow-always", label: "Allow always", kind: "allow_always" },
+      { id: "reject-once", label: "Reject", kind: "reject_once" },
+    ],
+  });
+  const ans = await ctx.waitFor(requestId);
+  if (ans.cancelled || ans.optionId === "reject-once") {
+    emit({ type: "tool_call", itemId: "b1", kind: "bash", title: `运行 ${start}`, status: "failed", output: "Rejected", exitCode: 1 });
+    return;
+  }
+  emit({ type: "tool_call", itemId: "b1", kind: "bash", title: `运行 ${start}`, status: "ok", output: "已启动（源码模式）", exitCode: 0, durationMs: step });
+  if (await think("w5", "改三个配置。")) return;
+  for (const n of [1, 2, 3]) if (await tool(`e${n}`, "edit", `编辑 config/${n}.json`, { file_path: `${dir}\\config\\${n}.json` })) return;
+  if (await think("w6", "确认进程起来了。")) return;
+  if (await tool("r2", "read", "读取 logs/selftest.txt", { file_path: `${dir}\\logs\\selftest.txt` })) return;
+  if (await tool("b2", "bash", `运行 ${ps}`, { command: ps }, Number(process.env.AGENT_CONSOLE_MOCK_TOOLS_MS) || step * 6)) return;
+  emit({ type: "assistant_message", itemId: "wm2", text: ctx.replyPrefix() + "已启动，进程在跑。" });
+}
+
+// "/tasks" (1.3 timeline polish): an ACP-style step list (plan entries) that the Agent ticks off between tool calls,
+// a code block in the reply. AGENT_CONSOLE_MOCK_TASKS_HOLD_MS keeps the turn open on the last step (screenshots).
+async function scriptTasks(ctx: Ctx): Promise<void> {
+  const { emit } = ctx;
+  const sleepA = (ms: number) => sleepAbortable(ms, ctx);
+  const steps = ["复现偶发失败", "找到竞态", "修复并加固测试"];
+  const plan = (done: number, running: boolean) => emit({
+    type: "plan", itemId: "tk-plan", markdown: steps.map((s) => `- ${s}`).join("\n"),
+    entries: steps.map((step, i) => ({ step, status: i < done ? "completed" : i === done && running ? "in_progress" : "pending" })),
+  });
+  const tool = async (id: string, kind: string, title: string, input: Record<string, unknown>, end: Record<string, unknown> = {}, ms = 120) => {
+    emit({ type: "tool_call", itemId: id, kind, title, status: "running", input } as Parameters<Ctx["emit"]>[0]);
+    if (await sleepA(ms)) return true;
+    emit({ type: "tool_call", itemId: id, kind, title, status: "ok", durationMs: ms, output: "ok", ...end } as Parameters<Ctx["emit"]>[0]);
+    return false;
+  };
+  plan(0, true);
+  if (await tool("k1", "bash", "运行 npx vitest run src/checkout --repeat 50", { command: "npx vitest run src/checkout --repeat 50" })) return;
+  if (await tool("k2", "read", "读取 src/checkout/useCheckout.ts", { file_path: "src/checkout/useCheckout.ts" })) return;
+  plan(1, true);
+  emit({ type: "reasoning", itemId: "k-th", text: "submit() 没有等 confirmOrder。" });
+  const oldStr = "  setStatus(\"pending\");\n  void confirmOrder(order.id).then(setStatus);";
+  const newStr = "  setStatus(\"pending\");\n  try {\n    setStatus(await confirmOrder(order.id));\n  } catch (error) {\n    setStatus(\"failed\");\n    throw error;\n  }";
+  if (await tool("k3", "edit", "编辑 src/checkout/useCheckout.ts", { file_path: "src/checkout/useCheckout.ts", old_string: oldStr, new_string: newStr },
+    { detail: editDetail({ path: "src/checkout/useCheckout.ts", old: oldStr, new: newStr }) })) return;
+  plan(2, true);
+  if (await tool("k4", "search", '搜索 "confirmOrder"', { pattern: "confirmOrder" })) return;
+  const hold = Number(process.env.AGENT_CONSOLE_MOCK_TASKS_HOLD_MS) || 0;
+  if (await tool("k5", "bash", "运行 npx tsc --noEmit", { command: "npx tsc --noEmit" }, {}, Math.max(120, hold))) return;
+  plan(3, false);
+  const reply = ctx.replyPrefix() + [
+    "**根因：** `submit()` 丢掉了确认请求的 Promise，订单确认前就返回了。",
+    "",
+    "```ts",
+    "async function submit() {",
+    "  setStatus(\"pending\");",
+    "  const order = await createOrder(cart);",
+    "  setStatus(await confirmOrder(order.id));",
+    "}",
+    "```",
+    "",
+    "重复跑 50 次都通过了。",
+  ].join("\n");
+  emit({ type: "assistant_message", itemId: "k-msg", text: reply });
+}
+
+// "/bashhint" (1.3): the Windows "no Git Bash" hint, for screenshots and e2e on any OS
+async function scriptBashHint(ctx: Ctx): Promise<void> {
+  ctx.emit({ type: "notice", level: "warn", code: "bash_missing", message: tr("notice.bashMissing") });
+  await sleepAbortable(100, ctx);
+  ctx.emit({ type: "assistant_message", itemId: "bh1", text: ctx.replyPrefix() + "（模拟）" });
 }
 
 // "/serve": a reply with local dev-server addresses (1.2 preview links) and one external link
@@ -457,6 +627,9 @@ export function createMockProvider(): Provider {
     name: "Mock（演示）",
     capabilities: mockCapabilities,
     async detect(): Promise<DetectResult> {
+      // AGENT_CONSOLE_MOCK_DETECT_MS: a slow "--version" probe (a cold CLI on Windows takes seconds)
+      const d = Number(process.env.AGENT_CONSOLE_MOCK_DETECT_MS) || 0;
+      if (d > 0) await sleep(d);
       return { available: true, bin: "mock", version: "demo" };
     },
     async listModels(): Promise<ModelInfo[]> {
@@ -467,6 +640,9 @@ export function createMockProvider(): Provider {
     },
     async createSession(o) {
       mockProviderMetrics.createSessionCalls++;
+      // AGENT_CONSOLE_MOCK_START_MS: a slow agent start (spawn + ACP initialize/session/new on Windows takes seconds)
+      const d = Number(process.env.AGENT_CONSOLE_MOCK_START_MS) || 0;
+      if (d > 0) await sleep(d);
       return new MockSession(o);
     },
   };

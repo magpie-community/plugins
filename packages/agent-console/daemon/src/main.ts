@@ -7,6 +7,7 @@ import { initLog, log } from "./log.js";
 import { createHttpServer } from "./http.js";
 import { AttachmentStore } from "./store/attachments.js";
 import { SettingsStore } from "./store/settings.js";
+import { refreshAgentShell } from "./util/agentShell.js";
 import { ProjectsStore } from "./store/projects.js";
 import { ThreadsStore } from "./store/threads.js";
 import { Gateway } from "./ws/gateway.js";
@@ -67,6 +68,13 @@ async function main(): Promise<void> {
   } catch (e) {
     log("error", "旧数据迁移失败", { err: String(e) });
   }
+  // 1.3 (#727 review 3): a 1.2 "全部放行" never turns into real auto-approval silently for Cursor / OpenCode / dsh
+  try {
+    const { migrateAutoApprove13 } = await import("./migrate/autoApprove13.js");
+    await migrateAutoApprove13({ settings, threads });
+  } catch (e) {
+    log("error", "全部自动同意迁移失败", { err: String(e) });
+  }
   const manager = new AgentManager(gateway, threads, projects, settings, attachments);
   await manager.recoverOnStart();
   const terminals = new TerminalService(gateway);
@@ -122,6 +130,8 @@ async function main(): Promise<void> {
   if (bound && typeof bound === "object") cfg.port = bound.port;
   // Ready line: the plugin host reads this line from stdout to learn the actual port (port and pid only, no token)
   process.stdout.write(JSON.stringify({ agentConsoleReady: true, port: cfg.port, pid: process.pid }) + "\n");
+  // Windows: find Git Bash for the agents (manual Settings → Bash path first); a no-op elsewhere
+  void settings.get().then((s) => refreshAgentShell(typeof s.bashPath === "string" ? s.bashPath : ""));
   // Background warm-up: after start, pull detection/models for enabled providers into the cache so the first page open doesn't wait
   void (async () => {
     const { warmProviderCache } = await import("./providers/warm.js");

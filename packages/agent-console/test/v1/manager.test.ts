@@ -154,6 +154,24 @@ describe("AgentManager", () => {
     expect(manager.runtimeInfo(threadId)?.pending.length).toBe(0);
   }, 15000);
 
+  it("a turn that ends with a permission still open cancels it (Cursor stream CANCEL, 等待授权 with no card)", async () => {
+    await manager.send(threadId, { text: "/perm-abandon" });
+    await waitFor(async () => (await threads.get(threadId))?.status === "idle");
+    // Nothing is left waiting: threads.get would otherwise hand the page a pending request for a card that shows 已取消
+    expect(manager.runtimeInfo(threadId)?.pending.length).toBe(0);
+    const evs = await events();
+    const req = evs.find((e) => e.type === "permission_request") as { requestId: string; seq: number } | undefined;
+    expect(req).toBeTruthy();
+    const res = evs.find((e) => e.type === "permission_resolved" && (e as { requestId?: string }).requestId === req!.requestId) as { cancelled?: boolean; seq: number } | undefined;
+    expect(res?.cancelled).toBe(true);
+    const end = evs.find((e) => e.type === "turn_ended") as { seq: number } | undefined;
+    expect(res!.seq).toBeLessThan(end!.seq); // written before the turn end, so a replay never sees it open
+    // The next turn runs normally
+    await manager.send(threadId, { text: "你好" });
+    await waitFor(async () => (await events()).filter((e) => e.type === "turn_ended").length === 2);
+    expect(manager.runtimeInfo(threadId)?.pending.length).toBe(0);
+  }, 15000);
+
   it("/exit crash → closed; the next send resumes", async () => {
     await manager.send(threadId, { text: "/exit" });
     await waitFor(async () => (await threads.get(threadId))?.status === "closed");
@@ -201,11 +219,13 @@ describe("AgentManager", () => {
   it("idle recycling: idle timeout → closed", async () => {
     await settings.set({ idleCloseMinutes: 0.0001 }); // ~6ms
     await manager.send(threadId, { text: "你好" });
-    await waitFor(async () => (await threads.get(threadId))?.status === "idle");
+    // The turn's end already runs recycleIdle() itself; with a ~6ms timeout that one may close the thread before a
+    // poll sees "idle" (and while it is still closing, the manual call below returns at once), so accept both here
+    await waitFor(async () => ["idle", "closed"].includes((await threads.get(threadId))?.status ?? ""));
     // lastActivity is in milliseconds; wait more than 6ms, then trigger recycling by hand
     await sleep(50);
     await (manager as unknown as { recycleIdle(): Promise<void> }).recycleIdle();
-    expect((await threads.get(threadId))?.status).toBe("closed");
+    await waitFor(async () => (await threads.get(threadId))?.status === "closed", 5000);
   }, 15000);
 
   it("B17: at most MAX_WARM_IDLE idle agent processes stay warm", async () => {

@@ -3,6 +3,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { log } from "../../log.js";
 import { killTree, trackTree, type Argv } from "../../util/bin.js";
+import { OutputDecoder } from "../../util/decode.js";
+import { withAgentShell } from "../../util/agentShell.js";
 
 export class CodexRpcError extends Error {
   code?: number;
@@ -37,7 +39,7 @@ export class CodexRpc {
   ) {
     this.proc = spawn(argv.cmd, argv.args, {
       cwd: opts.cwd,
-      env: opts.env ?? process.env,
+      env: withAgentShell(opts.env ?? process.env),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       ...(argv.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
@@ -47,9 +49,9 @@ export class CodexRpc {
     trackTree(this.proc);
     this.proc.stdout!.setEncoding("utf8");
     this.proc.stdout!.on("data", (chunk: string) => this.onData(chunk));
-    this.proc.stderr!.setEncoding("utf8");
-    this.proc.stderr!.on("data", (chunk: string) => {
-      this.stderrTail = (this.stderrTail + chunk).slice(-4096);
+    const errDec = new OutputDecoder(); // 1.3: stderr may be in the Windows code page (GBK)
+    this.proc.stderr!.on("data", (chunk: Buffer) => {
+      this.stderrTail = (this.stderrTail + errDec.write(chunk)).slice(-4096);
     });
     this.proc.on("error", () => this.failAll());
     this.proc.on("close", (code) => {

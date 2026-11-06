@@ -5,6 +5,7 @@ import { resolveLaunch } from "../launch.js";
 import { PLACEHOLDER_MODEL_NAME } from "../types.js";
 import { AcpSession } from "./session.js";
 import { knownPromptCaps } from "./promptCaps.js";
+import { OutputDecoder } from "../../util/decode.js";
 
 export type AcpProviderConfig = {
   id: string;
@@ -44,7 +45,9 @@ export const acpCapabilities: Capabilities = {
 export const cursorAcpCapabilities: Capabilities = {
   ...acpCapabilities,
   questions: true,
-  modes: ["default", "plan", "ask"],
+  // 1.3: bypassPermissions = 全部自动同意: Cursor's agent mode, every approval answered "allow once" by the daemon
+  // (Cursor's own --force only exists at spawn, and Auto-review is not applied over ACP)
+  modes: ["default", "bypassPermissions", "plan", "ask"],
 };
 
 function runVersion(r: ResolveResult & { ok: true }, args: string[], timeoutMs = 8000): Promise<string> {
@@ -57,8 +60,10 @@ function runVersion(r: ResolveResult & { ok: true }, args: string[], timeoutMs =
       } catch {}
       reject(new Error("timeout"));
     }, timeoutMs);
-    p.stdout?.on("data", (c: Buffer) => (out += c.toString()));
-    p.stderr?.on("data", (c: Buffer) => (out += c.toString()));
+    // 1.3: --version / model lists may come back in the Windows code page (GBK) when something fails
+    const od = new OutputDecoder(), ed = new OutputDecoder();
+    p.stdout?.on("data", (c: Buffer) => (out += od.write(c)));
+    p.stderr?.on("data", (c: Buffer) => (out += ed.write(c)));
     p.on("error", reject);
     p.on("close", (code) => {
       clearTimeout(t);
@@ -76,7 +81,7 @@ async function resolveProviderBin(cfg: AcpProviderConfig) {
 export function createAcpProvider(cfg: AcpProviderConfig): Provider {
   const base = cfg.capabilities ?? acpCapabilities;
   // With a mode table, expose only the modes the Agent really has (in our fixed order)
-  const ORDER: Mode[] = ["plan", "default", "acceptEdits", "bypassPermissions"];
+  const ORDER: Mode[] = ["plan", "default", "acceptEdits", "bypassPermissions", "ask"];
   const caps: Capabilities = cfg.modeMap
     ? { ...base, modes: ORDER.filter((m) => cfg.modeMap![m] !== undefined), modeLabels: cfg.modeLabels }
     : base;

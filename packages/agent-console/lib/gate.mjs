@@ -15,14 +15,20 @@
 //   1. The plugin host's server() creates the key and token; once the gate binds its port it writes page/session.js (port and key only).
 //   2. The plugin page (sandbox iframe) reads session.js and navigates itself to http://127.0.0.1:<port>/open?k=<key>.
 //      This is an ordinary navigation: no Origin header, and the gate returns no CORS headers, so other pages can't read the response.
-//   3. The gate checks the key, starts (or reuses) the daemon and 302s to http://127.0.0.1:<daemonPort>/?<theme params>#t=<token>.
+//   3. The gate checks the key, starts (or reuses) the daemon and 302s to its own wrapper page
+//      http://127.0.0.1:<port>/app?<theme params>#t=<token>&p=<daemonPort>, which frames http://127.0.0.1:<daemonPort>/#t=<token> (1.3).
 //      The token lives only in the # fragment: fragments aren't sent to servers and don't appear in Referer or daemon logs;
 //      after the navigation the window belongs to the daemon's origin (opaque inside the plugin iframe), and the initiating page can't read its URL.
 //
 // The gate itself: every request checks Host (blocks DNS rebinding); any request with an Origin header is refused (navigations only);
-// everything except GET /open is 404.
+// everything except GET /open and GET /app is 404.
+//
+// 1.3: /open no longer sends the frame to the daemon's random port directly but to the gate's own /app page (lib/wrapper.mjs),
+// which shows the daemon page in a child iframe. After sleep/wake or a daemon restart, a reload of the frame lands on this
+// stable port instead of a dead one, and the wrapper sends it back through the Magpie page to a fresh daemon.
 import http from "node:http";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { parseTry, wrapperCsp, wrapperHtml } from "./wrapper.mjs";
 
 // Constant-time compare against timing attacks; hash to the same length first.
 function tokenEqual(a, b) {
@@ -106,6 +112,17 @@ export function createGate({ port, key, token, ensureDaemon, host = "127.0.0.1" 
       return;
     }
     const url = new URL(req.url ?? "/", `http://${host}:${port}`);
+    if (url.pathname === "/app" && req.method === "GET") {
+      // Static: no secret in it; the token reaches it only in the # fragment
+      const nonce = randomBytes(16).toString("base64");
+      res.writeHead(200, {
+        ...SAFE_HEADERS,
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": wrapperCsp(nonce),
+      });
+      res.end(wrapperHtml(nonce));
+      return;
+    }
     if (url.pathname !== "/open" || req.method !== "GET") {
       respond(res, 404, "Not found");
       return;
@@ -135,9 +152,12 @@ export function createGate({ port, key, token, ensureDaemon, host = "127.0.0.1" 
     for (const name of ["theme", "lang", "tokens"]) {
       if (url.searchParams.has(name)) query.set(name, url.searchParams.get(name));
     }
+    // The wrapper's retry counter (see lib/wrapper.mjs), only in its exact shape
+    const tries = url.searchParams.get("ac_try");
+    if (parseTry(tries)) query.set("ac_try", tries);
     const back = safeBackUrl(url.searchParams.get("back"));
-    const fragment = `t=${encodeURIComponent(token)}` + (back ? `&b=${encodeURIComponent(back)}` : "");
-    const location = `http://127.0.0.1:${daemon.port}/?${query}#${fragment}`;
+    const fragment = `t=${encodeURIComponent(token)}&p=${daemon.port}` + (back ? `&b=${encodeURIComponent(back)}` : "");
+    const location = `http://127.0.0.1:${port}/app?${query}#${fragment}`;
     res.writeHead(302, { ...SAFE_HEADERS, location });
     res.end();
   }

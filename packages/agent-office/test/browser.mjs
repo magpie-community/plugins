@@ -60,6 +60,15 @@ for(const engine of (process.env.OFFICE_BROWSERS||'chromium,webkit').split(','))
    await frame.locator(id==='settings'?'#settingsBtn':'#todayBtn').click()
    const bounds=await frame.locator('#'+id).evaluate(e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,w:innerWidth,h:innerHeight}})
    assert(bounds.left>=0&&bounds.right<=bounds.w+1&&bounds.top>=0&&bounds.bottom<=bounds.h+1,`${engine} menu ${JSON.stringify(bounds)}`)
+   if(id==='settings') {
+    await frame.locator('#optQuality').scrollIntoViewIfNeeded()
+    await frame.locator('#optQuality').click()
+    const pb=await frame.locator('#optQualityList').evaluate(e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,w:innerWidth,h:innerHeight}})
+    assert(pb.left>=0&&pb.right<=pb.w+1&&pb.top>=0&&pb.bottom<=pb.h+1,`${engine} picker ${JSON.stringify(pb)}`)
+    await page.keyboard.press('Escape')
+    assert.equal(await frame.locator('#optQualityList').isVisible(),false)
+    assert.equal(await frame.locator('#settings').isVisible(),true)
+   }
    await page.screenshot({path:`${output}/${engine}-${width}-${id}.png`})
    await frame.locator(id==='settings'?'#settingsBtn':'#todayBtn').click()
   }
@@ -76,15 +85,23 @@ for(const engine of (process.env.OFFICE_BROWSERS||'chromium,webkit').split(','))
   }
   if(width===1440) {
    await frame.locator('#settingsBtn').click()
+   const pick=async(btn,val)=>{await frame.locator(btn).click();await frame.locator(`${btn}List [data-value="${val}"]`).click()}
+   await pick('#optLang','en')
+   await frame.locator('#optQuality').focus()
+   await page.keyboard.press('ArrowDown')
+   await page.keyboard.press('Home')
+   await page.keyboard.press('Enter')
+   assert.equal((await frame.locator('#optQuality .picker-val').textContent())?.trim(),'Low')
+   await pick('#optLang','auto')
    for(const scene of ['office','station','cafe','castle','pirate','graveyard','library','cyberlab','greenhouse','arctic','rainynight']) {
-    await frame.locator('#optScene').selectOption(scene)
+    await pick('#optScene',scene)
     for(const quality of ['low','medium','high']) {
-     await frame.locator('#optQuality').selectOption(quality)
+     await pick('#optQuality',quality)
      await page.waitForTimeout(80)
     }
    }
-   await frame.locator('#optScene').selectOption('office')
-   await frame.locator('#optQuality').selectOption('medium')
+   await pick('#optScene','office')
+   await pick('#optQuality','medium')
    await frame.locator('#settingsBtn').click()
   }
   await frame.locator('[data-mode="list"]').click()

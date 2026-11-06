@@ -10,7 +10,7 @@ import { applyMagpieTokensFromSearch } from "./layout/applyMagpieTokens.js";
 import { applyTheme, initTheme } from "./layout/theme.js";
 import { startMagpieThemeBridge } from "./layout/magpieBridge.js";
 import { applyChatLayout } from "./layout/chatLayout.js";
-import { goBackToMagpie, watchReconnect } from "./api/backToMagpie.js";
+import { goBackToMagpie, isWrapped, reportLostToWrapper, startWrapperHeartbeat, watchReconnect } from "./api/backToMagpie.js";
 import { initLocale, getLocale, setLocale } from "./i18n/index.js";
 import { WsClient } from "./api/ws";
 import { useConnection } from "./stores/connection";
@@ -43,8 +43,15 @@ void import("./stores/timeline").then((m) => {
   (window as unknown as { __tl?: unknown }).__tl = m.useTimeline;
 });
 ws.onState((s) => useConnection.getState().set({ state: s }));
-// Daemon gone for 5s (usually: Magpie restarted the plugin host) → back through the Magpie page to the new gate
-watchReconnect(ws, () => { goBackToMagpie(); });
+// Daemon gone for 5s (Magpie restarted the plugin host, or the daemon after sleep) → back through the Magpie page to the gate.
+// 1.3: inside the gate's wrapper page the wrapper does that (it survives a reload; this page on its random port doesn't).
+const wrapped = isWrapped();
+watchReconnect(ws, () => { if (wrapped) reportLostToWrapper(); else goBackToMagpie(); });
+if (wrapped) {
+  startWrapperHeartbeat(ws);
+  // the first beat as soon as the connection opens, so the wrapper shows this page without waiting for the next tick
+  ws.onState((s) => { if (s === "open") { try { window.parent.postMessage({ ac_console: "alive" }, "*"); } catch {} } });
+}
 ws.connect();
 ws.waitHello().then(async (h) => {
   useConnection.getState().set({ version: (h as { version?: string }).version ?? null });

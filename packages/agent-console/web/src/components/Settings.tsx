@@ -7,6 +7,7 @@ import { toast } from "./Toast";
 import { permissionModes } from "../i18n/modes.js";
 import { errMsg, t, tf } from "../i18n/index.js";
 import type { ProviderInfo } from "../types/models.js";
+import { BashPathSetting } from "./BashPathSetting";
 import { useData } from "../stores/data.js";
 import { IDLE_MAX, IDLE_MIN, parseArgsDraft, parseIdleDraft } from "./settingsFields.js";
 import { applyTheme, embeddedInMagpie, normalizeThemeSetting } from "../layout/theme.js";
@@ -16,7 +17,7 @@ type Settings = {
   defaultProvider?: string; defaultMode?: string;
   sendKey?: string; runningSend?: string; showThinking?: boolean;
   theme?: string; idleCloseMinutes?: number;
-  contentWidth?: string; chatFontSize?: number;
+  contentWidth?: string; chatFontSize?: number; bashPath?: string;
   providerEnabled?: Record<string, boolean>;
   providerCommand?: Record<string, { executable?: string; args?: string[] }>;
   [k: string]: unknown;
@@ -224,10 +225,10 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
       {row(t("settings.defaultMode"), (
         <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.defaultMode")}
           value={s.defaultMode ?? "default"} onChange={(v) => void set({ defaultMode: v })}
-          options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc }))}>
+          options={modes.map((m) => ({ value: m.id, label: m.label, hint: m.desc, icon: m.auto ? "shieldCheck" : undefined }))}>
           <span className="sm-val">{(() => { const m = modes.find((x) => x.id === (s.defaultMode ?? "default")); return m ? `${m.label} — ${m.desc}` : ""; })()}</span>
         </SelectMenu>
-      ), t("settings.defaultModeHint"))}
+      ), s.defaultMode === "bypassPermissions" ? `${t("settings.defaultModeHint")} ${t("composer.autoWarn")}` : t("settings.defaultModeHint"))}
       {row(t("settings.theme"), (
         <SelectMenu className="tinput sm-field" matchWidth ariaLabel={t("settings.theme")}
           value={normalizeThemeSetting(s.theme)} onChange={(v) => void set({ theme: v })}
@@ -281,6 +282,7 @@ export function SettingsDialog({ onClose, providers }: { onClose: () => void; pr
           <span className="dlg-hint">{t("settings.idleMinutes")}</span>
         </div>
       ), idleBad ? t("settings.idleInvalid") : undefined)}
+      {row(t("settings.bashPath"), <BashPathSetting value={s.bashPath ?? ""} save={(bashPath) => set({ bashPath })} />)}
       <div className="msep" />
       <div className="dlg-hint">
         {tf("settings.versionLine", { ver: info.version ?? "?", pid: info.pid ?? "?" })}<br />

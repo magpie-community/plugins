@@ -34,7 +34,9 @@
   --r-s: 6px; --r-m: 8px; --r-l: 12px; --r-full: 999px;
   --font-ui: var(--magpie-font, "Segoe UI Variable Text", "Segoe UI", -apple-system, "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif);
   --font-mono: var(--magpie-code, "Cascadia Code", "Cascadia Mono", "JetBrains Mono", ui-monospace, Consolas, monospace);
-  --fs-s: 12px; --fs-m: 13px; --fs-l: 14px;
+  /* UI chrome (sidebar, top bar, right panel, menus, dialogs) stays on this fixed scale; only the conversation follows
+     Settings → Chat font size (1.3 review). --fs-xs: badges, timestamps and tiny meta. */
+  --fs-xs: 11px; --fs-s: 12px; --fs-m: 13px; --fs-l: 14px;
   --fs-hero: 18px;
   --lh: 1.6;
   --col: 720px;
