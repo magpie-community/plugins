@@ -8,7 +8,8 @@
 # Operations
 
 Installation, configuration, verification and troubleshooting for the Magpie
-middleware. Version `0.3.0` is merged in-tree; the community npm package is not
+middleware.
+
 ## Install
 
 ```sh
