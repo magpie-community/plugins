@@ -9,11 +9,11 @@
   </g>
   <ellipse cx="335" cy="470" rx="36" ry="21" fill="#F08074"/>
   <ellipse cx="689" cy="470" rx="36" ry="21" fill="#F08074"/>
-  <path d="M 512 486 L 700 520 C 724 640 646 742 512 810 C 378 742 300 640 324 520 Z" fill="#0D4B4E" stroke="#08383B" stroke-width="18" stroke-linejoin="round"/>
+  <path d="M 512 486 L 700 520 C 724 640 646 742 512 810 C 378 742 300 640 324 520 Z" fill="#0D4B4E" stroke="#08383B" stroke-width="18" stroke-linejoin="round"/><path d="M 360 585 L 512 645 L 664 585 L 664 635 L 512 695 L 360 635 Z" fill="#F2B35A" stroke="#08383B" stroke-width="12" stroke-linejoin="round"/>
   <g fill="#FFF2D8" stroke="#0D4B4E" stroke-width="14" stroke-linejoin="round">
     <path d="M 310 610 C 275 620 265 670 292 695 C 318 718 350 704 354 675 C 357 654 345 635 330 622 Z"/>
     <path d="M 714 610 C 749 620 759 670 732 695 C 706 718 674 704 670 675 C 667 654 679 635 694 622 Z"/>
   </g>
-  <g fill="#F7E9C6"><g transform="translate(512 650) scale(12.2) translate(-12 -12)"><path fill-rule="evenodd" d="M 3 13 C 4 9 7 6 11 5.5 C 12 3.2 14.5 2 17 2.8 C 18.8 3.4 20 4.8 20.3 6.6 L 23 6.2 L 20.4 8.4 C 20.2 13 16.8 16.8 12 17.8 L 10 21 L 8.6 17.2 C 5.4 16.2 3.2 13.8 3 13 Z M 9.5 9.5 C 11 8 13.5 8 15 9.2 C 15 11.5 13.5 13.5 11.5 14 C 10 13 9 11.5 9.5 9.5 Z M 16.6 4.6 a 0.55 0.55 0 1 0 0.01 0 Z"/></g></g>
+  
  </g>
 </svg>
