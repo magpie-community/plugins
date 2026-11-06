@@ -1,12 +1,16 @@
 {
   "name": "@magpie-community/opencode-atomcode-auth",
-  "version": "0.1.0",
-  "description": "OpenCode provider plugin for AtomGit CodingPlan & AtomCode: signs in via AtomGit/GitCode, tracks 5-hour rate limits, and routes to local AtomCode relay with automatic quota protection",
+  "version": "0.2.0",
+  "description": "OpenCode provider plugin for AtomGit CodingPlan and AtomCode: native in-memory HKDF/HMAC signing engine for official AtomGit gateways, plus local relay fallback, 5-hour quota tracking, and dynamic model discovery",
   "type": "module",
   "main": "./index.mjs",
-  "exports": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./crypto": "./crypto.mjs"
+  },
   "files": [
     "index.mjs",
+    "crypto.mjs",
     "README.md"
   ],
   "keywords": [

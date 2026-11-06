@@ -1,10 +1,22 @@
 // AtomGit CodingPlan & AtomCode provider plugin for OpenCode and Magpie.
-// Phase 1: Self-use robust relay provider, bridging to local AtomCode relay (e.g. :4018 / :4017)
-// with quota tracking for the 5-hour window, dynamic model discovery, and standard Magpie contract.
+// Supports both:
+// 1. Direct in-memory cryptographic signing (AtomCode v1 protocol: HKDF + HMAC-SHA256)
+//    connecting directly to official upstream gateways (https://llm-api.atomgit.com/v1)
+//    without requiring background daemons or external relays.
+// 2. Local relay fallback (:4018 / :4017) when explicitly configured or in constrained setups.
+
+import { signRequest } from "./crypto.mjs"
 
 const PROVIDER = "atomcode"
-const DEFAULT_BASE = "http://127.0.0.1:4018/v1"
+const OFFICIAL_BASE = "https://llm-api.atomgit.com/v1"
+const DEFAULT_RELAY_BASE = "http://127.0.0.1:4018/v1"
 const DEFAULT_KEY = "openclaw-atomgit-local"
+
+const GATEWAY_HOST_MARKERS = [
+  "llm-api.atomgit.com",
+  "pre-llm-api-cce.atomgit.com",
+  "api-ai.gitcode.com",
+]
 
 const MODELS = {
   "glm5.3-flash": {
@@ -33,6 +45,12 @@ const MODELS = {
   },
 }
 
+function isCodingPlanGateway(urlStr) {
+  if (!urlStr || typeof urlStr !== "string") return false
+  const lower = urlStr.toLowerCase()
+  return GATEWAY_HOST_MARKERS.some((marker) => lower.includes(marker))
+}
+
 function resolveBaseURL(pluginOptions, providerOptions) {
   const custom =
     pluginOptions?.baseURL ||
@@ -41,7 +59,11 @@ function resolveBaseURL(pluginOptions, providerOptions) {
   if (custom && typeof custom === "string" && custom.trim()) {
     return custom.trim().replace(/\/+$/, "")
   }
-  return DEFAULT_BASE
+  // If user provided direct official signing flag, use official endpoint; otherwise default relay
+  if (pluginOptions?.direct || providerOptions?.direct) {
+    return OFFICIAL_BASE
+  }
+  return DEFAULT_RELAY_BASE
 }
 
 function resolveApiKey(auth, pluginOptions, providerOptions) {
@@ -81,6 +103,7 @@ export const AtomCodeAuthPlugin = async (input = {}) => {
 
         const baseURL = resolveBaseURL(pluginOptions, provider?.options)
         const apiKey = resolveApiKey(a, pluginOptions, provider?.options)
+        const isOfficial = isCodingPlanGateway(baseURL)
 
         return {
           baseURL,
@@ -99,17 +122,41 @@ export const AtomCodeAuthPlugin = async (input = {}) => {
             if (!headers.has("content-type")) {
               headers.set("content-type", "application/json")
             }
+            if (!headers.has("user-agent")) {
+              headers.set("user-agent", "atomcode/5.0.9")
+            }
 
             let body = init.body
             if (body === undefined && req) {
               body = await req.clone().text()
             }
-            if (body instanceof ArrayBuffer) {
-              body = new TextDecoder().decode(body)
+            let bodyText = ""
+            if (typeof body === "string") {
+              bodyText = body
+            } else if (body instanceof ArrayBuffer) {
+              bodyText = new TextDecoder().decode(body)
             } else if (ArrayBuffer.isView(body)) {
-              body = new TextDecoder().decode(
+              bodyText = new TextDecoder().decode(
                 new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
               )
+            }
+
+            // In-memory crypto signing for official upstream gateway calls
+            if (isOfficial || isCodingPlanGateway(targetUrl)) {
+              try {
+                const signedHeaders = signRequest({
+                  method: init.method ?? req?.method ?? "POST",
+                  url: targetUrl,
+                  body: bodyText,
+                  token: apiKey,
+                })
+                for (const [k, v] of Object.entries(signedHeaders)) {
+                  headers.set(k, v)
+                }
+              } catch (sigErr) {
+                // Fail-safe: do not drop request if signing threw
+                console.warn("[atomcode-plugin] Signing error:", sigErr?.message || sigErr)
+              }
             }
 
             try {
@@ -117,7 +164,7 @@ export const AtomCodeAuthPlugin = async (input = {}) => {
                 ...init,
                 method: init.method ?? req?.method ?? "POST",
                 headers,
-                body,
+                body: bodyText || body,
                 signal: init.signal ?? req?.signal,
               })
               return res
@@ -125,9 +172,9 @@ export const AtomCodeAuthPlugin = async (input = {}) => {
               return new Response(
                 JSON.stringify({
                   error: {
-                    message: `AtomCode relay unreachable at ${baseURL}: ${err?.message ?? err}`,
+                    message: `AtomCode provider unreachable at ${baseURL}: ${err?.message ?? err}`,
                     type: "relay_error",
-                    code: "relay_unreachable",
+                    code: "endpoint_unreachable",
                   },
                 }),
                 {
@@ -162,7 +209,7 @@ export const AtomCodeAuthPlugin = async (input = {}) => {
       methods: [
         {
           type: "api",
-          label: "AtomGit CodingPlan Token / Local Relay Key (e.g. openclaw-atomgit-local)",
+          label: "AtomGit CodingPlan Token / Key (with automatic HKDF signing)",
         },
       ],
     },
@@ -175,8 +222,18 @@ export const AtomCodeAuthPlugin = async (input = {}) => {
         const apiKey = resolveApiKey(null, pluginOptions, provider?.options)
         try {
           const timeout = AbortSignal.timeout(3000)
+          const headers = { authorization: `Bearer ${apiKey}` }
+          if (isCodingPlanGateway(baseURL)) {
+            const signed = signRequest({
+              method: "GET",
+              url: `${baseURL}/models`,
+              body: "",
+              token: apiKey,
+            })
+            Object.assign(headers, signed)
+          }
           const res = await fetch(`${baseURL}/models`, {
-            headers: { authorization: `Bearer ${apiKey}` },
+            headers,
             signal: timeout,
           })
           if (res.ok) {
@@ -204,4 +261,12 @@ export const AtomCodeAuthPlugin = async (input = {}) => {
 }
 
 export default AtomCodeAuthPlugin
-export const _internal = { resolveBaseURL, resolveApiKey, MODELS, DEFAULT_BASE, DEFAULT_KEY }
+export const _internal = {
+  resolveBaseURL,
+  resolveApiKey,
+  isCodingPlanGateway,
+  MODELS,
+  OFFICIAL_BASE,
+  DEFAULT_RELAY_BASE, DEFAULT_BASE: DEFAULT_RELAY_BASE,
+  DEFAULT_KEY,
+}
