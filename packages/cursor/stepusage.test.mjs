@@ -58,6 +58,16 @@ test("a count Cursor gave, or none to be had, is as before", async () => {
   let out = await run([two, call, update(14, pb().varint(1, 900).varint(2, 3).varint(3, 800).done()), end], { stepUsage })
   expect(asked).toBe(0)
   expect(out.at(-1).usage.prompt_tokens_details.cached_tokens).toBe(800)
+  // ModelCallCompletedUpdate (31) before the step seals gives the step its count without polling the dashboard
+  out = await run([update(31, pb().str(1, "mc-1").varint(2, 950).varint(3, 12).varint(4, 900).varint(5, 40).varint(6, 5).done()), listed, call], { stepUsage })
+  expect(asked).toBe(0)
+  expect(out.at(-1).usage).toEqual({
+    prompt_tokens: 950,
+    completion_tokens: 12,
+    total_tokens: 962,
+    prompt_tokens_details: { cached_tokens: 900, cache_write_tokens: 40 },
+    completion_tokens_details: { reasoning_tokens: 5 },
+  })
   // no event in time: the guess
   out = await run([listed, call], { stepUsage })
   expect(asked).toBe(1)
