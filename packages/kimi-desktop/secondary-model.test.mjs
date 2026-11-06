@@ -127,6 +127,140 @@ async function fixture({ secondaryModel = '', native, regenerate = true, script 
   };
 }
 
+test('a primary-only save calls the host setter, preserves secondary and applies the route only when idle', async () => {
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    const selected = [];
+    f.controller.setPrimaryModel = async model => {
+      selected.push(model);
+      write(f.controller.connectionFile, { ...read(f.controller.connectionFile), model, hostOwned: 'keep' });
+    };
+    write(f.controller.runnerFile, { ...f.runner, activeKernelTurns: 1 });
+    const saved = await f.controller.saveSettings({ primaryModel: secondaryID });
+    expect(selected).toEqual([secondaryID]);
+    expect(read(f.controller.connectionFile).secondaryModel).toBe(secondaryID);
+    expect(read(f.controller.connectionFile).hostOwned).toBe('keep');
+    expect(saved.primaryModel).toBe(secondaryID);
+    expect(saved.appliedPrimaryModel).toBe(primaryID);
+    f.complete();
+    await f.controller.tick();
+    expect(f.controller.status.code).toBe('waiting_kimi_idle');
+    expect(f.controller.live.model).toBe(primaryID);
+
+    write(f.controller.runnerFile, f.runner);
+    f.complete();
+    await f.controller.tick();
+    expect(f.controller.status.code).toBe('connected');
+    expect((await f.controller.readSettings()).appliedPrimaryModel).toBe(secondaryID);
+    const response = await fetch(f.controller.bridgeURL + '/chat/completions', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + f.doc.credentials.kimiCode.apiKey },
+      body: JSON.stringify({ model: 'k2d8-preview', messages: [] }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(f.upstream.at(-1).body.model).toBe(secondaryID);
+  } finally { await f.cleanup(); }
+});
+
+test('two-model saves validate before the host call and report partial persistence without rollback', async () => {
+  const f = await fixture({ secondaryModel: secondaryID });
+  const selected = [];
+  try {
+    f.controller.setPrimaryModel = async model => {
+      selected.push(model);
+      write(f.controller.connectionFile, { ...read(f.controller.connectionFile), model });
+    };
+    await expect(f.controller.saveSettings({ primaryModel: secondaryID, secondaryModel: 'hidden/model' }))
+      .rejects.toHaveProperty('code', 'model_not_enabled_for_kimi');
+    expect(selected).toEqual([]);
+    expect(read(f.controller.connectionFile)).toEqual(f.connection);
+
+    f.controller.setPrimaryModel = async () => { throw Error('private CLI stderr'); };
+    await expect(f.controller.saveSettings({ primaryModel: secondaryID, secondaryModel: '' }))
+      .rejects.toHaveProperty('code', 'primary_model_update_failed');
+    expect(read(f.controller.connectionFile)).toEqual(f.connection);
+
+    f.controller.setPrimaryModel = async model => {
+      selected.push(model);
+      write(f.controller.connectionFile, { ...read(f.controller.connectionFile), model,
+        gateway: { ...f.connection.gateway, key: 'synthetic-new-gateway' } });
+    };
+    await expect(f.controller.saveSettings({ primaryModel: secondaryID, secondaryModel: '' }))
+      .rejects.toHaveProperty('code', 'settings_partially_saved');
+    expect(selected).toEqual([secondaryID]);
+    expect(read(f.controller.connectionFile).model).toBe(secondaryID);
+    expect(read(f.controller.connectionFile).secondaryModel).toBe(secondaryID);
+  } finally { await f.cleanup(); }
+});
+
+test('disconnect restores the native baseline despite a failing pending reload from the old preference', async () => {
+  const f = await fixture({
+    secondaryModel: secondaryID, regenerate: false,
+    native: runtimeToml({ secondaryModel: 'native/first', flag: false }),
+    script: {
+      reload: () => ({ sessions: [{ kernelSessionId: 'old-preference-session', status: 'skipped-active-turn' }] }),
+      reloadSession: () => { throw Error('synthetic reload failure'); },
+    },
+  });
+  try {
+    await f.controller.tick();
+    f.complete();
+    await f.controller.tick();
+    expect(f.controller.status.code).toBe('secondary_model_reload_failed');
+    const attempted = sessionCalls(f.calls).length;
+    write(f.controller.connectionFile, { ...f.connection, enabled: false });
+    f.complete();
+    await f.controller.tick();
+    const native = Bun.TOML.parse(f.nativeText());
+    expect(native.secondary_model.model).toBe('native/first');
+    expect(native.experimental['secondary-model']).toBe(false);
+    expect(read(f.controller.configFile).model.providers['daimon-kimi-code'].baseUrl).toBe(official);
+    expect(sessionCalls(f.calls)).toHaveLength(attempted);
+    expect(f.controller.status.code).not.toBe('connected');
+    expect((await f.controller.readSettings()).appliedSecondaryModel).toBeUndefined();
+  } finally { await f.cleanup(); }
+});
+
+test('a missing optional secondary TOML does not block the primary bridge route', async () => {
+  const f = await fixture({ secondaryModel: secondaryID, regenerate: false });
+  try {
+    fs.unlinkSync(f.nativeFile);
+    await f.controller.tick();
+    expect(f.controller.status.code).toBe('secondary_model_unavailable');
+    expect(read(f.controller.configFile).model.providers['daimon-kimi-code'].baseUrl).toBe(f.controller.bridgeURL);
+    const response = await fetch(f.controller.bridgeURL + '/chat/completions', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + f.doc.credentials.kimiCode.apiKey },
+      body: JSON.stringify({ model: 'k2d8-preview', messages: [] }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(f.upstream.at(-1).body.model).toBe(primaryID);
+    expect(f.controller.state.secondary).toBeUndefined();
+  } finally { await f.cleanup(); }
+});
+
+test('an unsupported optional secondary TOML does not block the primary bridge route', async () => {
+  const f = await fixture({ secondaryModel: secondaryID, regenerate: false,
+    native: 'secondary_model = "native/first"\n' + runtimeToml() });
+  try {
+    const before = f.nativeText();
+    await f.controller.tick();
+    expect(f.controller.status.code).toBe('secondary_config_unsupported');
+    expect(f.nativeText()).toBe(before);
+    expect(f.controller.state.secondary).toBeUndefined();
+    expect(f.controller.state.secondaryModel).toBeUndefined();
+    expect(read(f.controller.configFile).model.providers['daimon-kimi-code'].baseUrl).toBe(f.controller.bridgeURL);
+    const response = await fetch(f.controller.bridgeURL + '/chat/completions', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + f.doc.credentials.kimiCode.apiKey },
+      body: JSON.stringify({ model: 'k2d8-preview', messages: [] }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(f.upstream.at(-1).body.model).toBe(primaryID);
+  } finally { await f.cleanup(); }
+});
+
 test('the chosen secondary model is written as its catalog alias and both roles keep their alias route', async () => {
   const f = await fixture({ secondaryModel: secondaryID });
   try {
@@ -557,7 +691,7 @@ test('a reload row that cannot be retried by id keeps the preference unapplied u
   } finally { await f.cleanup(); }
 });
 
-test('stop restores the baseline after the last control call, like an idle disconnect', async () => {
+test('stop restores the disk baseline without new RPCs and keeps recovery ownership', async () => {
   const f = await fixture({
     secondaryModel: secondaryID,
     native: runtimeToml({ secondaryModel: 'native/first', flag: false }),
@@ -566,6 +700,7 @@ test('stop restores the baseline after the last control call, like an idle disco
     await f.controller.tick();
     expect(f.controller.status.code).toBe('connected');
     expect(Bun.TOML.parse(f.nativeText()).secondary_model.model).toBe(alias.get(secondaryID));
+    const calls = f.calls.length;
     await f.controller.stop();
     // Still checked before the temporary directory is removed.
     const toml = Bun.TOML.parse(f.nativeText());
@@ -573,8 +708,8 @@ test('stop restores the baseline after the last control call, like an idle disco
     expect(toml.experimental['secondary-model']).toBe(false);
     expect(toml.models['k2d8-preview']).toBeDefined();
     expect(fs.readFileSync(f.controller.configFile, 'utf8')).toContain(official);
-    expect(read(f.controller.stateFile).secondary).toBeUndefined();
-    expect(read(f.controller.stateFile).secondaryModel).toBe('');
+    expect(f.calls).toHaveLength(calls);
+    expect(read(f.controller.stateFile).secondary.restored).toBe(true);
     expect(f.controller.status.code).toBe('disconnected');
   } finally { await f.cleanup(); }
 });
@@ -733,7 +868,9 @@ test('a waiting restore keeps external secondary values until the native rewrite
     secondaryModel: secondaryID,
     native: runtimeToml({ secondaryModel: 'native/first', flag: false }),
     script: {
-      reload: () => ++batches === 1
+      // The original preference and then the restored baseline each have a
+      // busy cached session; Disconnect discards the original pending batch.
+      reload: () => ++batches <= 2
         ? { sessions: [{ kernelSessionId: 'waiting-session', status: 'skipped-active-turn' }] }
         : { sessions: [] },
       reloadSession: () => ({ status: stillBusy ? 'skipped-active-turn' : 'reloaded' }),

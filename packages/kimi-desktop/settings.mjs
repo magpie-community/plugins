@@ -11,6 +11,9 @@ const SAVE_ERRORS = new Map([
   ['model_not_enabled_for_kimi', 400],
   ['connection_changed', 409],
   ['settings_unavailable', 503],
+  ['primary_model_unavailable', 503],
+  ['primary_model_update_failed', 502],
+  ['settings_partially_saved', 409],
 ]);
 
 class RequestError extends Error {
@@ -35,6 +38,7 @@ function settingsView(state) {
     models,
   };
   if (typeof state.appliedSecondaryModel === 'string') view.appliedSecondaryModel = state.appliedSecondaryModel;
+  if (typeof state.appliedPrimaryModel === 'string') view.appliedPrimaryModel = state.appliedPrimaryModel;
   return view;
 }
 
@@ -160,14 +164,17 @@ export async function startSettingsServer({ port = SETTINGS_PORT, readSettings, 
       }
       body = await readBody(req);
       if (!body || typeof body !== 'object' || Array.isArray(body)
-          || Object.keys(body).length !== 1 || typeof body.secondaryModel !== 'string') {
+          || Object.keys(body).length === 0
+          || Object.keys(body).some(key => key !== 'primaryModel' && key !== 'secondaryModel')
+          || (Object.hasOwn(body, 'primaryModel') && (typeof body.primaryModel !== 'string' || !body.primaryModel))
+          || (Object.hasOwn(body, 'secondaryModel') && typeof body.secondaryModel !== 'string')) {
         throw new RequestError('invalid_request');
       }
     } catch (error) {
       const code = error instanceof RequestError ? error.code : 'invalid_request';
       send(error instanceof RequestError ? error.status : 400, { error: code }, { cors: true }); return;
     }
-    try { send(200, settingsView(await saveSettings({ secondaryModel: body.secondaryModel })), { cors: true }); }
+    try { send(200, settingsView(await saveSettings(body)), { cors: true }); }
     catch (error) {
       const code = SAVE_ERRORS.has(error?.code) ? error.code : 'settings_save_failed';
       send(SAVE_ERRORS.get(code) || 500, { error: code }, { cors: true });

@@ -10,7 +10,29 @@ Saving **inherit primary** afterward removed the adapter-owned secondary and exp
 
 That live candidate's **76 tests passed with 682 assertions**. An offline tarball install matched all eleven runtime/UI files to that candidate's source before installation into the real host. Busy-session retry, partial reload failure, regeneration and shutdown restoration were covered by isolated synthetic tests, not additional real disconnect/reconnect cycles in this phase. Official paid search/fetch, allowance accounting, sleep/wake and other operating systems were not newly tested. The original primary-only bridge has the separate record below.
 
-The final inheritance fix came after this live check: when the original native secondary setting was already enabled for another registered alias, clearing the plugin preference must keep new subagents on the current primary model while connected, and preserve the original baseline for disconnect or shutdown. Isolated regression tests cover the actual mock-bridge route, applied status, following a changed primary without repeated reloads, and disconnect restoration. The final temporary-home suite passed **77 tests with 704 assertions**. The signed-in UI check above used the earlier adapter revision.
+The inheritance revision came after this live check: when the original native secondary setting was already enabled for another registered alias, clearing the plugin preference must keep new subagents on the current primary model while connected, and preserve the original baseline for disconnect or shutdown. Isolated regression tests cover the actual mock-bridge route, applied status, following a changed primary without repeated reloads, and disconnect restoration. That revision passed **77 tests with 704 assertions**. The signed-in UI check above used the earlier adapter revision.
+
+### Revised model page and recovery tests
+
+The revised candidate passed **113 tests with 795 assertions across 10 files** under a temporary HOME on Bun 1.4.4. The primary picker uses Magpie's official CLI, with a private child-process flag preventing another Kimi adapter from starting. Its command arguments, inherited environment and profile directory are covered with a fake executable. Primary-only saves retain the secondary preference; partial saves are reported without rolling the primary back.
+
+Isolated regressions reproduce and fix a failed targeted session reload blocking disconnect restoration, and missing or unsupported secondary TOML blocking the primary connection. The latter tests send an actual HTTP request through the mock bridge and confirm the primary route remains usable. Shutdown closes the settings service without another secondary RPC; a changed service port is rebound when options reload.
+
+The page has 22 pure VM interaction tests covering host-language forwarding, English and Chinese copy, neutral radio lists, primary and secondary saves, partial failure, applied-state confirmation, and clearing a secondary preference while disconnected. These tests do not use a browser engine. Real loopback WebSocket tests exercise both reload names through the production RPC allow-list. Removing either allow-list entry, or disabling the native byte-comparison guard in temporary source copies, makes the added guard tests fail.
+
+### Native primary-model page save, 2026-11-07
+
+The revised candidate was installed into official Magpie 0.1.3077; all 15 installed package files matched its checked tarball. In Magpie's native window, the Chinese model page selected and saved primary `codex/gpt-6-astra`, then restored `codex/gpt-6.1-sol`. At both stages the host's applied-model record, stash reference and connection model agreed, and the stash credential matched the current connection in memory. The page distinguished saving from confirmed application; refreshing confirmed the applied state. The normal Agents → Kimi card also showed the restored Sol selection. The secondary preference remained inherit-primary.
+
+Kimi remained **3.2.17 / build 3.2.17.4**, with Daimon **0.6.7**, running and idle throughout; it was not exited or restarted. No Work conversation or inference was submitted for this check, and no Chrome or Playwright was started. All four native model entries and unrelated Kimi settings matched their before-install comparisons. The credential aggregate changed during the installation/UI-save interval; its cause was not isolated, and no credential values or full configuration copies were retained. This check verifies the real page, official CLI and host synchronization; the failed-reload and unsupported-TOML cases remain isolated-test coverage.
+
+### Runtime TOML representation
+
+The patch targets the two secondary-model scalars, but writes serialize the whole parsed document with `Bun.TOML.stringify`. Comments are dropped and numeric representations can change: `1.0` is emitted as `1`, changing a TOML float to an integer. Integers above 2^53 are rejected by `Bun.TOML.parse` and report `secondary_config_unsupported`. These cases were confirmed with synthetic input on Bun 1.4.4. Daimon regenerates this runtime file; the adapter does not preserve its comments or original numeric representations.
+
+### Kimi 3.2.25 / Daimon 1.0.6 static boundary
+
+A separate read-only inspection of a staged Kimi **3.2.25.22 / Daimon 1.0.6** bundle found both reload RPC names and the runner/control layout still present. Its V2 core, however, uses a model pool for the standard `Agent` tool rather than the old built-in `primary|secondary` roles. It retains legacy `secondary_model.model` parsing but no longer uses the `secondary-model` experimental key. Daimon also converts the legacy TOML into `runtime/kimi-code/home/config.toml`, which V2 actually reads. This adapter currently patches only the legacy file, so its secondary-model integration does not support that V2 layout. The staged application was not started, and no new-version dynamic acceptance was performed.
 
 ## macOS desktop UI turn, 2026-11-06
 

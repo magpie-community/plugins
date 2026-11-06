@@ -23,7 +23,7 @@ magpie plugin add @magpie-community/agent-kimi-desktop
 
 On Magpie's Agents page select **Kimi**, pick an external model and connect, then use Kimi's **Work** page. The model is selected in Magpie, so Kimi's native model menu can still show its official label. Kimi's sign-in and the desktop's own tool authorization are kept as they are; only inference goes to the selected external service. This provider and that agent are independent packages and can be installed together.
 
-The desktop agent's [primary and secondary model settings](../kimi-desktop/README.md#primary-and-secondary-models) let you configure a separate model for new native subagents and request `primary` or `secondary` in a prompt. Main-model selection remains on **Agents → Kimi**; secondary-model selection is on the agent plugin's **Kimi Work models** page.
+The desktop agent's [primary and secondary model settings](../kimi-desktop/README.md#primary-and-secondary-models) let you configure both models on the agent plugin's **Kimi Work models** page, then request `primary` or `secondary` for new native subagents in a prompt. The primary selection stays synchronized with **Agents → Kimi**.
 
 ## Models and requests
 

@@ -126,7 +126,7 @@ export function defaultKimiDirectory(home = os.homedir(), { platform = process.p
 
 export class KimiAdapter {
   constructor({ home = os.homedir(), stateDir, kimiDir, intervalMs = 1000, stabilityMs = 2000,
-    rpcCall = rpc, fetchImpl = globalThis.fetch, log = () => {} } = {}) {
+    rpcCall = rpc, fetchImpl = globalThis.fetch, setPrimaryModel = null, log = () => {} } = {}) {
     this.stateDir = stateDir || path.join(home, '.config', 'magpie-kimi');
     this.kimiDir = kimiDir || defaultKimiDirectory(home);
     this.configFile = path.join(this.kimiDir, 'config.json');
@@ -140,7 +140,7 @@ export class KimiAdapter {
     this.modelBackupFile = path.join(this.stateDir, 'before-menu-models.json');
     this.instructionsFile = path.join(this.stateDir, 'AGENTS.md');
     this.catalog = [];
-    Object.assign(this, { intervalMs, stabilityMs, rpcCall, fetchImpl, log });
+    Object.assign(this, { intervalMs, stabilityMs, rpcCall, fetchImpl, setPrimaryModel, log });
     this.ownerID = crypto.randomUUID();
     this.status = {};
     this.running = false;
@@ -250,31 +250,55 @@ export class KimiAdapter {
       enabled: desired.enabled === true,
       primaryModel: typeof desired.model === 'string' ? desired.model : '',
       secondaryModel: typeof desired.secondaryModel === 'string' ? desired.secondaryModel : '',
+      ...(this.live && this.state?.active ? { appliedPrimaryModel: this.live.model } : {}),
       ...(this.live && this.state?.active && appliedSecondaryModel ? { appliedSecondaryModel } : {}),
       status,
       models: catalog.map(row => ({ id: row.id, name: row.menu.displayName })),
     };
   }
 
-  async saveSettings({ secondaryModel }) {
+  async saveSettings(patch) {
     const fail = code => { throw Object.assign(Error(code), { code }); };
+    const hasPrimary = Object.hasOwn(patch, 'primaryModel');
+    const hasSecondary = Object.hasOwn(patch, 'secondaryModel');
+    const { primaryModel, secondaryModel } = patch;
     let desired;
     try { desired = readJSON(this.connectionFile); } catch { fail('connect_kimi_first'); }
-    if (secondaryModel) {
+    if (hasPrimary || secondaryModel) {
       if (!desired.enabled || !desired.model || !desired.gateway?.key) fail('connect_kimi_first');
+      if ((hasPrimary && !validModelID(primaryModel)) || (secondaryModel && !validModelID(secondaryModel))) {
+        fail('model_not_enabled_for_kimi');
+      }
       let catalog;
       try { catalog = await this.gatewayCatalog(gatewayURL(desired.gateway.url), desired.gateway.key); }
       catch { fail('settings_unavailable'); }
-      if (!catalog.some(row => row.id === secondaryModel)) fail('model_not_enabled_for_kimi');
+      if ((hasPrimary && !catalog.some(row => row.id === primaryModel))
+          || (secondaryModel && !catalog.some(row => row.id === secondaryModel))) fail('model_not_enabled_for_kimi');
     }
-    // Magpie still owns the primary model and gateway fields. Merge only the
-    // secondary preference into the newest document after the catalog request.
+    const sameGateway = value => value.gateway?.url === desired.gateway?.url && value.gateway?.key === desired.gateway?.key;
     let fresh;
     try { fresh = readJSON(this.connectionFile); } catch { fail('settings_unavailable'); }
-    if (fresh.gateway?.url !== desired.gateway?.url || fresh.gateway?.key !== desired.gateway?.key
-        || (secondaryModel && !fresh.enabled)) fail('connection_changed');
-    fresh.secondaryModel = secondaryModel;
-    try { atomicJSON(this.connectionFile, fresh); } catch { fail('settings_unavailable'); }
+    if (!sameGateway(fresh) || ((hasPrimary || secondaryModel) && !fresh.enabled)) fail('connection_changed');
+    let primarySaved = false;
+    if (hasPrimary && primaryModel !== fresh.model) {
+      if (typeof this.setPrimaryModel !== 'function') fail('primary_model_unavailable');
+      try { await this.setPrimaryModel(primaryModel); }
+      catch (error) { fail(error?.code === 'primary_model_unavailable' ? error.code : 'primary_model_update_failed'); }
+      try { fresh = readJSON(this.connectionFile); } catch { fail('primary_model_update_failed'); }
+      if (!fresh.enabled || fresh.model !== primaryModel) fail('connection_changed');
+      primarySaved = true;
+      if (!sameGateway(fresh)) fail(hasSecondary ? 'settings_partially_saved' : 'connection_changed');
+    }
+    if (hasSecondary) {
+      // The host owns model/gateway. Merge the requested secondary preference
+      // only after its primary selection, into the newest connection document.
+      const secondaryFailure = code => fail(primarySaved ? 'settings_partially_saved' : code);
+      try { fresh = readJSON(this.connectionFile); } catch { secondaryFailure('settings_unavailable'); }
+      if (!sameGateway(fresh) || ((hasPrimary || secondaryModel) && !fresh.enabled)
+          || (hasPrimary && fresh.model !== primaryModel)) secondaryFailure('connection_changed');
+      fresh.secondaryModel = secondaryModel;
+      try { atomicJSON(this.connectionFile, fresh); } catch { secondaryFailure('settings_unavailable'); }
+    }
     return this.readSettings();
   }
 
@@ -469,8 +493,8 @@ export class KimiAdapter {
   // Kimi persists the secondary role in two scalars of its runtime TOML:
   //   [secondary_model] model = "<registered alias>"
   //   [experimental]    "secondary-model" = true
-  // Only those two scalars are ever written or restored. The file itself is
-  // never cached, copied or backed up, and no other field is touched.
+  // Only those two parsed settings change; Bun reserializes the whole TOML,
+  // which can normalize comments and spelling. No full-file backup is kept.
 
   readNativeSecondary() {
     return inspectSecondary(fs.readFileSync(this.nativeConfigFile, 'utf8'));
@@ -499,7 +523,14 @@ export class KimiAdapter {
 
   captureSecondaryBaseline() {
     if (this.secondaryOwnership()) return;
-    this.state.secondary = { baseline: this.readNativeSecondary(), alias: '' };
+    let baseline;
+    try { baseline = this.readNativeSecondary(); }
+    catch {
+      // Native secondary settings are optional. Connect the primary first;
+      // reconcileSecondary classifies unreadable or unsupported input later.
+      return;
+    }
+    this.state.secondary = { baseline, alias: '' };
     this.saveState();
   }
 
@@ -750,7 +781,16 @@ export class KimiAdapter {
       try { runner = readJSON(this.runnerFile); } catch { /* Kimi isn't running yet. */ }
       if (!desired.enabled || !desired.model) {
         if (this.state.active && busy(runner)) { this.report('waiting_kimi_idle'); return; }
+        const wasActive = this.state.active;
         await this.restore();
+        if (wasActive && this.secondaryOwnership()) {
+          // These ids were waiting for the old preference. A full disconnect
+          // restores the file first and starts confirmation of that baseline.
+          this.secondaryPending.clear();
+          this.secondaryReloadStale = false;
+          this.secondaryReloadPending = true;
+          this.secondaryAfter = 0;
+        }
         // Restoring the two native scalars runs after every control call above,
         // because Daimon rewrites its runtime TOML from its own state.
         const secondary = await this.reconcileSecondary(runner, '');
@@ -849,19 +889,17 @@ export class KimiAdapter {
   async stop() {
     clearInterval(this.timer);
     this.stopping = true;
+    const settingsServer = this.settingsServer;
+    this.settingsServer = null;
+    await settingsServer?.stop();
     while (this.running) await new Promise(resolve => setTimeout(resolve, 20));
     if (this.locked) {
-      try { await this.restore(); } catch { /* Never write a changed third-party configuration. */ }
-      // Same order as an idle disconnect: the control calls above may have
-      // rewritten the runtime TOML, so the two scalars are restored last.
+      try { await this.restore({ reload: false }); } catch { /* Never write a changed third-party configuration. */ }
+      // Shutdown restores disk state without starting a new session reload.
+      // Keep ownership as the synchronous exit path does for the next start.
       let code = 'disconnected';
       try {
-        let runner;
-        try { runner = readJSON(this.runnerFile); } catch { /* Kimi isn't running. */ }
-        // This is the last pass, so the retry pacing does not apply.
-        this.secondaryAfter = 0;
-        const secondary = await this.reconcileSecondary(runner, '');
-        if (secondary.waiting) code = 'waiting_kimi_idle';
+        this.restoreNativeSecondaryOnExit();
       } catch (error) {
         if (SECONDARY_CODES.has(error.message)) code = error.message;
       }

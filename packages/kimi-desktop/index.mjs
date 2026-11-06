@@ -1,9 +1,11 @@
 import { KimiAdapter } from './adapter.mjs';
 import { startSettingsServer, SETTINGS_PORT } from './settings.mjs';
+import { setPrimaryModel } from './primary-model.mjs';
 
 const instance = Symbol.for('magpie.kimi-desktop.adapter.v1');
 
 export default async function KimiDesktop(input, options = {}) {
+  if (process.env.MAGPIE_KIMI_SKIP_ADAPTER === '1') return {};
   const log = code => {
     try {
       void input?.client?.app?.log?.({ body: { service: 'kimi-desktop', level: 'warn', message: code } })?.catch?.(() => {});
@@ -17,10 +19,16 @@ export default async function KimiDesktop(input, options = {}) {
     process.once('exit', () => adapter.restoreFileOnExit());
   }
   const adapter = globalThis[instance];
+  adapter.setPrimaryModel = model => setPrimaryModel(model, { magpiePath: options?.magpiePath, directory: input?.directory });
+  const settingsPort = options?.settingsPort ?? SETTINGS_PORT;
+  if (adapter.settingsServer && adapter.settingsServer.port !== settingsPort) {
+    await adapter.settingsServer.stop();
+    adapter.settingsServer = null;
+  }
   if (!adapter.settingsServer) {
     try {
       adapter.settingsServer = await startSettingsServer({
-        port: options?.settingsPort ?? SETTINGS_PORT,
+        port: settingsPort,
         readSettings: () => adapter.readSettings(),
         saveSettings: patch => adapter.saveSettings(patch),
       });

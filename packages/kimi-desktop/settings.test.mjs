@@ -1,7 +1,11 @@
 import { expect, test } from 'bun:test';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer, request } from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { runInNewContext } from 'node:vm';
+import { KimiAdapter } from './adapter.mjs';
+import KimiDesktop from './index.mjs';
 import { startSettingsServer, TOKEN_HEADER } from './settings.mjs';
 
 const initial = () => ({
@@ -101,7 +105,7 @@ test('API requests require the page token and exact loopback Host and Origin', a
   } finally { await f.service.stop(); }
 });
 
-test('only the secondary field reaches save; blank inherits and save does not imply applied', async () => {
+test('model patches stay narrow; blank secondary inherits and saving does not imply applied', async () => {
   const f = await fixture();
   try {
     const headers = { ...f.auth, 'content-type': 'application/json; charset=utf-8' };
@@ -113,7 +117,7 @@ test('only the secondary field reaches save; blank inherits and save does not im
     const cleared = await f.raw('POST', '/api/settings', headers, { secondaryModel: '' });
     expect(cleared.status).toBe(200);
     expect(f.saved.at(-1)).toEqual({ secondaryModel: '' });
-    for (const body of [null, [], {}, { primaryModel: 'example/secondary' }, { secondaryModel: 1 },
+    for (const body of [null, [], {}, { primaryModel: '' }, { primaryModel: 1 }, { secondaryModel: 1 },
       { secondaryModel: '', enabled: true }, { secondaryModel: '', effort: 'high' }]) {
       expect((await f.raw('POST', '/api/settings', headers, body)).status).toBe(400);
     }
@@ -126,13 +130,28 @@ test('only the secondary field reaches save; blank inherits and save does not im
   } finally { await f.service.stop(); }
 });
 
+test('a primary-only settings request reaches the saver without inventing a secondary change', async () => {
+  const f = await fixture();
+  try {
+    const saved = await f.raw('POST', '/api/settings', { ...f.auth, 'content-type': 'application/json' },
+      { primaryModel: 'example/secondary' });
+    expect(saved.status).toBe(200);
+    expect(f.saved).toEqual([{ primaryModel: 'example/secondary' }]);
+    expect(saved.json().primaryModel).toBe('example/secondary');
+    expect(saved.json().status).toBe('waiting_kimi_idle');
+    const pair = { primaryModel: 'example/main', secondaryModel: '' };
+    expect((await f.raw('POST', '/api/settings', { ...f.auth, 'content-type': 'application/json' }, pair)).status).toBe(200);
+    expect(f.saved.at(-1)).toEqual(pair);
+  } finally { await f.service.stop(); }
+});
+
 test('callbacks own model validation, DTO projection and sanitized errors', async () => {
   let saveError = Object.assign(new Error('private callback details'), { code: 'model_not_enabled_for_kimi' });
   let readError = null;
   const f = await fixture({
     readSettings: () => {
       if (readError) throw readError;
-      return { ...initial(), privateConfig: 'private sentinel', appliedSecondaryModel: 'example/main',
+      return { ...initial(), privateConfig: 'private sentinel', appliedPrimaryModel: 'example/main', appliedSecondaryModel: 'example/main',
         models: [{ id: 'example/main', name: 'Main', privateField: 'private sentinel' }] };
     },
     saveSettings: () => { throw saveError; },
@@ -140,11 +159,18 @@ test('callbacks own model validation, DTO projection and sanitized errors', asyn
   try {
     const state = await f.raw('GET', '/api/settings', f.auth);
     expect(state.json().appliedSecondaryModel).toBe('example/main');
+    expect(state.json().appliedPrimaryModel).toBe('example/main');
     expect(state.text).not.toContain('private sentinel');
     const headers = { ...f.auth, 'content-type': 'application/json' };
     const rejected = await f.raw('POST', '/api/settings', headers, { secondaryModel: 'not/in/list' });
     expect(rejected.status).toBe(400);
     expect(rejected.json()).toEqual({ error: 'model_not_enabled_for_kimi' });
+    for (const [code, status] of [['primary_model_unavailable', 503], ['primary_model_update_failed', 502], ['settings_partially_saved', 409]]) {
+      saveError = Object.assign(new Error('private callback details'), { code });
+      const result = await f.raw('POST', '/api/settings', headers, { primaryModel: 'example/secondary' });
+      expect(result.status).toBe(status);
+      expect(result.json()).toEqual({ error: code });
+    }
     saveError = Object.assign(new Error('private callback details'), { code: 'private_code' });
     const failed = await f.raw('POST', '/api/settings', headers, { secondaryModel: '' });
     expect(failed.status).toBe(500);
@@ -163,6 +189,42 @@ test('the service rejects a held configured port and tokens are per instance', a
     expect((await f.raw('GET', '/api/settings', { ...f.auth, [TOKEN_HEADER]: other.token })).status).toBe(403);
     await expect(startSettingsServer({ port: 0, readSettings: initial, saveSettings: initial })).rejects.toThrow('settings_invalid_port');
   } finally { await f.service.stop(); await other.service.stop(); }
+});
+
+test('adapter shutdown closes its settings HTTP service', async () => {
+  const f = await fixture();
+  const home = await mkdtemp(path.join(os.tmpdir(), 'kimi-settings-stop-'));
+  const adapter = new KimiAdapter({ home, kimiDir: path.join(home, 'kimi'), stateDir: path.join(home, 'state') });
+  adapter.settingsServer = f.service;
+  try {
+    await adapter.stop();
+    expect(adapter.settingsServer).toBeNull();
+    await expect(f.raw('GET', '/')).rejects.toHaveProperty('code', 'ECONNREFUSED');
+  } finally { await f.service.stop(); await rm(home, { recursive: true, force: true }); }
+});
+
+test('changing settingsPort rebuilds only the UI service', async () => {
+  const reservations = [createServer(), createServer()];
+  const [first, second] = await Promise.all(reservations.map(listen));
+  await Promise.all(reservations.map(close));
+  const key = Symbol.for('magpie.kimi-desktop.adapter.v1');
+  const previous = globalThis[key];
+  const adapter = { readSettings: initial, saveSettings: initial };
+  globalThis[key] = adapter;
+  try {
+    await KimiDesktop({}, { settingsPort: first });
+    const old = adapter.settingsServer;
+    await KimiDesktop({}, { settingsPort: second });
+    expect(adapter.settingsServer).not.toBe(old);
+    expect(adapter.settingsServer.port).toBe(second);
+    await expect(fetch(`http://127.0.0.1:${first}/`)).rejects.toThrow();
+    const response = await fetch(`http://127.0.0.1:${second}/`);
+    expect(response.status).toBe(200);
+    await response.text();
+  } finally {
+    await adapter.settingsServer?.stop();
+    if (previous === undefined) delete globalThis[key]; else globalThis[key] = previous;
+  }
 });
 
 test('the launcher awaits options and uses the service proxy, with local fallback only', async () => {
@@ -188,7 +250,7 @@ test('the launcher awaits options and uses the service proxy, with local fallbac
   expect(proxied.searchParams.get('theme')).toBe('dark');
   const local = await boot({ ready: Promise.resolve({ dark: false }), options: { get: async () => ({ settingsPort: 9999 }) } }, '127.0.0.1');
   expect(new URL(local.destination).port).toBe('9999');
-  const remote = await boot({ ready: Promise.resolve({}) }, 'magpie.example');
+  const remote = await boot({ ready: Promise.resolve({ lang: 'zh' }) }, 'magpie.example');
   expect(remote.destination).toBe('');
   expect(remote.message).toContain('未获得设置服务地址');
   expect(new URL((await boot(undefined, 'localhost')).destination).port).toBe('3491');
