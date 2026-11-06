@@ -21,9 +21,10 @@ describe("ACP explicit model pick vs default validation", () => {
     });
     const calls = () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((x) => JSON.parse(x)) : [];
     try {
-      await session.setModel("bogus-unprefixed-model");
+      // 1.3.6: a skipped default reports false so the manager doesn't mark it synced
+      expect(await session.setModel("bogus-unprefixed-model")).toBe(false);
       expect(calls()).toEqual([]); // Both startup and unchecked defaults are rejected.
-      await session.setModel("magpie/old");
+      expect(await session.setModel("magpie/old")).toBe(true);
       expect(calls().map((c) => c.value)).toEqual(["magpie/old"]);
       await session.setModel("magpie/new", { force: true });
       expect(calls().map((c) => c.value)).toEqual(["magpie/old", "magpie/new"]);

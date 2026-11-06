@@ -653,12 +653,14 @@ export class AgentManager {
     const sessionModel = model ?? await this.resolveDefaultSessionModel(meta.provider);
     await this.threads.patch(threadId, { model, effort });
     const rt = this.rt(threadId);
+    let applied: boolean | void = true;
     if (rt.session) {
       // Only an explicit user pick may bypass ACP's session/new model validation.
-      if (model !== null) await rt.session.setModel(sessionModel, { force: true });
-      else await rt.session.setModel(sessionModel);
+      if (model !== null) applied = await rt.session.setModel(sessionModel, { force: true });
+      else applied = await rt.session.setModel(sessionModel);
     }
-    rt.syncedDefaultModel = model ? undefined : sessionModel;
+    // 1.3.6: a default the session skipped (ACP validation) is not "synced" — the next idle send retries it
+    rt.syncedDefaultModel = model ? undefined : applied === false ? undefined : sessionModel;
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
 
@@ -692,8 +694,10 @@ export class AgentManager {
     const current = await this.resolveDefaultSessionModel(meta.provider);
     if (current === (rt.syncedDefaultModel ?? null)) return;
     try {
-      await rt.session.setModel(current);
-      rt.syncedDefaultModel = current;
+      const applied = await rt.session.setModel(current);
+      // 1.3.6: ACP may skip a Magpie default that isn't in the session's model options (no blind
+      // set_config_option). Don't record it as synced then, or later idle sends never retry it.
+      if (applied !== false) rt.syncedDefaultModel = current;
     } catch (e) {
       log("warn", `thread ${threadId} sync default model failed：${String(e)}`);
     }

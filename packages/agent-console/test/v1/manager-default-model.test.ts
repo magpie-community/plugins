@@ -113,4 +113,44 @@ describe("AgentManager Magpie default-model sync", () => {
     expect(setModelSpy.mock.calls).toEqual([["hub/model-b"]]);
     expect((await threads.get(threadId))?.model).toBeNull();
   }, 30000);
+
+  it("1.3.6: a Magpie default the session skipped (ACP validation) is not marked synced — the next idle send retries it", async () => {
+    await manager.send(threadId, { text: "hi" });
+    await waitFor(async () => (await threads.get(threadId))?.status === "idle");
+
+    // Magpie enables hub/model-new mid-session and makes it the default; the live session skips it (not forced)
+    mocks.magpieDefaultModel.mockResolvedValue("hub/model-new");
+    setModelSpy.mockClear();
+    setModelSpy.mockResolvedValueOnce(false);
+    await manager.send(threadId, { text: "second" });
+    await waitFor(async () => (await threads.get(threadId))?.status === "idle");
+    expect(setModelSpy.mock.calls).toEqual([["hub/model-new"]]);
+
+    // Next idle send must try again (it used to early-return: syncedDefaultModel was already advanced)
+    setModelSpy.mockClear();
+    await manager.send(threadId, { text: "third" });
+    await waitFor(async () => (await threads.get(threadId))?.status === "idle");
+    expect(setModelSpy.mock.calls).toEqual([["hub/model-new"]]);
+
+    // Applied now → synced; a further send doesn't push it again
+    setModelSpy.mockClear();
+    await manager.send(threadId, { text: "fourth" });
+    await waitFor(async () => (await threads.get(threadId))?.status === "idle");
+    expect(setModelSpy).not.toHaveBeenCalled();
+  }, 30000);
+
+  it("1.3.6: switching back to「默认」when the session skips the resolved default leaves it unsynced for the next send", async () => {
+    await manager.send(threadId, { text: "hi" });
+    await waitFor(async () => (await threads.get(threadId))?.status === "idle");
+    await manager.setModel(threadId, "magpie/explicit");
+    mocks.magpieDefaultModel.mockResolvedValue("hub/model-new");
+    setModelSpy.mockClear();
+    setModelSpy.mockResolvedValueOnce(false);
+    await manager.setModel(threadId, null);
+    expect(setModelSpy.mock.calls).toEqual([["hub/model-new"]]);
+    setModelSpy.mockClear();
+    await manager.send(threadId, { text: "again" });
+    await waitFor(async () => (await threads.get(threadId))?.status === "idle");
+    expect(setModelSpy.mock.calls).toEqual([["hub/model-new"]]);
+  }, 30000);
 });

@@ -315,8 +315,10 @@ export class AcpSession implements ProviderSession {
    * Switch model → refresh level options from the new config options it returns → then apply the level (as Paseo does).
    * Cursor connects with parameterizedModelPicker: only the base model name is sent (grok-4.6); level / Fast are separate config options.
    */
-  private async applySessionModel(model: string | null, force = false): Promise<void> {
-    if (!this.ctx || !this.active) return;
+  /** false = the model id was skipped (not in the session's model options and not forced) */
+  private async applySessionModel(model: string | null, force = false): Promise<boolean> {
+    if (!this.ctx || !this.active) return false;
+    let applied = true;
     const value = model && this.o.flavor === "cursor" ? model.replace(/\[.*\]$/u, "") : model;
     if (value) {
       const modelOption = this.currentConfig().find((o) => o.id === (this.modelConfigId ?? "model"));
@@ -328,12 +330,14 @@ export class AcpSession implements ProviderSession {
         await this.setOption(this.modelConfigId ?? "model", value);
       } else {
         log("info", `忽略 ${this.o.binName} 的无效模型：${value}`);
+        applied = false;
       }
     }
     if (this.o.flavor === "cursor" && this.cursorFast && this.currentConfig().some((o) => o.id === "fast")) {
       await this.setOption("fast", "true");
     }
     await this.applySessionThought(this.o.effort);
+    return applied;
   }
 
   private async applyCursorAutoReviewConfig(on: boolean): Promise<void> {
@@ -565,14 +569,14 @@ export class AcpSession implements ProviderSession {
     await notifyP;
   }
 
-  async setModel(model: string | null, opts?: { force?: boolean }): Promise<void> {
+  async setModel(model: string | null, opts?: { force?: boolean }): Promise<boolean> {
     this.o.model = model;
     await this.ready();
     if (this.o.imagesFollowStartModel) {
       // dsh answered initialize for the model it started on; another model may not take image blocks (it refuses the prompt)
       this.promptCaps = model === this.startModel ? this.initCaps : { ...this.initCaps, image: false };
     }
-    await this.applySessionModel(model, Boolean(opts?.force));
+    return this.applySessionModel(model, Boolean(opts?.force));
   }
 
   async setMode(mode: Mode): Promise<void> {
