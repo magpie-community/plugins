@@ -118,3 +118,79 @@ test("the hook leaves other providers' requests alone", async () => {
   await hooks["chat.headers"]({ sessionID: "ses_1", model: { providerID: "trae-global" }, provider: { info: { id: "trae-global" } } }, out)
   expect(out.headers).toEqual({})
 })
+
+// baoguo on magpie's Discord: a conversation's session_id is the same after
+// the plugin's process starts again (magpie restarts its plugins on every
+// update), so Trae goes on counting it as the one conversation. Each run
+// below is a process of its own, as a restarted plugin host is.
+const { mkdtempSync, readFileSync, writeFileSync, chmodSync, rmSync, statSync } = await import("node:fs")
+const { tmpdir } = await import("node:os")
+const { join } = await import("node:path")
+
+function idIn(env) {
+  const code = `const { _internal } = await import(${JSON.stringify(new URL("./index.mjs", import.meta.url).href)}); console.log(_internal.conversationID(null, "ses_1", "u-1"))`
+  const r = Bun.spawnSync([process.execPath, "-e", code], { env: { ...process.env, ...env }, stderr: "pipe" })
+  expect(r.exitCode).toBe(0)
+  return r.stdout.toString().trim()
+}
+
+test("a conversation keeps its session_id when the plugin's process starts again", () => {
+  const dir = mkdtempSync(join(tmpdir(), "trae-salt-"))
+  try {
+    const file = join(dir, "magpie", "trae-session-salt")
+    const one = idIn({ MAGPIE_TRAE_SESSION_SALT: file })
+    expect(one).toMatch(UUID)
+    expect(idIn({ MAGPIE_TRAE_SESSION_SALT: file })).toBe(one)
+    // the salt is this machine's own, unreadable to anyone else
+    expect(readFileSync(file, "utf8").trim()).toMatch(/^[0-9a-f]{32}$/)
+    if (process.platform !== "win32") expect(statSync(file).mode & 0o077).toBe(0)
+    // another machine's (another file's) salt names it apart
+    expect(idIn({ MAGPIE_TRAE_SESSION_SALT: join(dir, "other") })).not.toBe(one)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a salt file that isn't one is left alone, and each process has its own salt, as before", () => {
+  const dir = mkdtempSync(join(tmpdir(), "trae-salt-"))
+  try {
+    const file = join(dir, "trae-session-salt")
+    writeFileSync(file, "not a salt\n")
+    const one = idIn({ MAGPIE_TRAE_SESSION_SALT: file })
+    expect(one).toMatch(UUID)
+    expect(idIn({ MAGPIE_TRAE_SESSION_SALT: file })).not.toBe(one)
+    expect(readFileSync(file, "utf8")).toBe("not a salt\n")
+    // a file that can't be made: the folder it would go in is a file
+    const blocked = idIn({ MAGPIE_TRAE_SESSION_SALT: join(file, "salt") })
+    expect(blocked).toMatch(UUID)
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      // one that can't be read
+      const shut = join(dir, "shut")
+      writeFileSync(shut, "0".repeat(32) + "\n")
+      chmodSync(shut, 0)
+      const a = idIn({ MAGPIE_TRAE_SESSION_SALT: shut })
+      expect(idIn({ MAGPIE_TRAE_SESSION_SALT: shut })).not.toBe(a)
+      chmodSync(shut, 0o600)
+      expect(readFileSync(shut, "utf8")).toBe("0".repeat(32) + "\n")
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("processes starting at once on no salt yet all take the one that was made", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trae-salt-"))
+  try {
+    const env = { ...process.env, MAGPIE_TRAE_SESSION_SALT: join(dir, "trae-session-salt") }
+    const code = `const { _internal } = await import(${JSON.stringify(new URL("./index.mjs", import.meta.url).href)}); console.log(_internal.conversationID(null, "ses_1", "u-1"))`
+    const runs = Array.from({ length: 8 }, () => Bun.spawn([process.execPath, "-e", code], { env, stdout: "pipe" }))
+    const ids = await Promise.all(runs.map(async (p) => (await new Response(p.stdout).text()).trim()))
+    expect(new Set(ids).size).toBe(1)
+    expect(ids[0]).toMatch(UUID)
+    // and no temp file is left beside it
+    const { readdirSync } = await import("node:fs")
+    expect(readdirSync(dir)).toEqual(["trae-session-salt"])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

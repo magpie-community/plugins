@@ -16,3 +16,9 @@ http2.connect = (origin, ...rest) => {
   if (!local(String(origin))) throw new Error("a test connected to " + origin)
   return connect(origin, ...rest)
 }
+// nor does a test write this machine's session salt (saltOf): the plugin's
+// salt goes in a folder of the test run's own
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+process.env.MAGPIE_TRAE_SESSION_SALT = join(mkdtempSync(join(tmpdir(), "trae-test-salt-")), "trae-session-salt")
