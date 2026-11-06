@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- Publish a documentation, test, and package update; runtime behavior is unchanged.
+- Clarify in English and Chinese that restoration addresses Codex's hard-coded default namespace when `features.multi_agent_v2.tool_namespace` uses a non-default value such as `agents`; the plugin records only `agents` and `collaboration` calls. Default Codex configurations need only the conversion step on affected routes.
+- Document the host limitation that can hide storage failure reports while recording replies in `onResponse`.
+- Add regression coverage for the provenance namespace guard and middleware item-level `encrypted_content` guard; all 15 offline check groups pass with Node.js.
+
 ## 0.1.2
 
 - Default to `targets: []`; avoid ledger I/O until a valid target is configured.

@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-agent-message-compat",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "Codex MultiAgent V2 message compatibility for selected third-party Magpie routes, with plaintext provenance checks",
   "license": "MIT",
@@ -31,7 +31,6 @@
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
-    "evidence/",
     "PROVENANCE.json"
   ],
   "magpie": {

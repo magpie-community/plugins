@@ -231,5 +231,31 @@
         }
       ]
     }
+  },
+  {
+    "name": "item-level encrypted content with readable content passes through",
+    "ctx": {
+      "protocol": "responses"
+    },
+    "options": {
+      "targets": [
+        "example/*"
+      ]
+    },
+    "request": {
+      "model": "example/model",
+      "input": [
+        {
+          "type": "agent_message",
+          "encrypted_content": "unknown-sealed-value",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Readable content must not hide sealed content"
+            }
+          ]
+        }
+      ]
+    }
   }
 ]

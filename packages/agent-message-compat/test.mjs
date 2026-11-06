@@ -57,6 +57,32 @@ try {
       {...agent('task'),content:[{type:'input_text',text:'x',encrypted_content:'seal'}]}];
     for (const item of items) {const b=body(item),copy=structuredClone(b);assert.equal(await hook(b,ctx()),undefined);assert.equal(middleware(b,ctx()),undefined);assert.deepEqual(b,copy);}
   });
+  await check('namespace guards reject unrelated send_message calls on both capture paths',async()=>{
+    for (const source of ['request','response']) {
+      const file=path.join(dir,`namespace-${source}.json`),c=ctx({ledgerPath:file});
+      const record=async item => source==='request' ? hook(body(item),c) : onResponse({output:[item]},{...c,success:true});
+      const unrelated=`unrelated-${source}`;
+      await record({...call(unrelated),namespace:'mcp',name:'send_message'});
+      await assert.rejects(readFile(file,'utf8'),{code:'ENOENT'});
+      const b=body(agent(unrelated)),copy=structuredClone(b);
+      assert.equal(await hook(b,c),undefined);assert.deepEqual(b,copy);
+      for (const namespace of ['agents','collaboration']) {
+        const message=`${namespace}-${source}`;
+        await record({...call(message),namespace,name:'send_message'});
+        assert.equal((await hook(body(agent(message)),c)).input[0].content[0].text,message);
+      }
+      const raw=await readFile(file,'utf8'),saved=JSON.parse(raw);
+      assert.deepEqual(saved.entries.map(entry=>entry.hash).sort(),['agents','collaboration'].map(namespace=>digest(`${namespace}-${source}`)).sort());
+      for (const message of [unrelated,`agents-${source}`,`collaboration-${source}`]) assert.equal(raw.includes(message),false);
+      assert.equal(await hook(body(agent(unrelated)),c),undefined);
+    }
+  });
+  await check('middleware item-level seal blocks otherwise readable parts',async()=>{
+    const readable={type:'agent_message',author:'A',recipient:'B',content:[{type:'input_text',text:'readable task'},{type:'input_image',image_url:'data:image/png;base64,fixture'}]};
+    const b=body({...readable,encrypted_content:'item-seal'}),copy=structuredClone(b);
+    assert.equal(middleware(b,ctx()),undefined);assert.deepEqual(b,copy);
+    assert.equal(middleware(body(readable),ctx()).input[0].type,'message');
+  });
   await check('core headers images ordering and idempotence',async()=>{
     for (const [author,recipient,header] of [['A','B','From A to B\n\n'],['A','','From A\n\n'],['','B','To B\n\n'],['','','']]) {
       const a={type:'agent_message',author,recipient,content:[{type:'input_text',text:'hello'},{type:'input_image',image_url:'data:image/png;base64,fixture'}]};
