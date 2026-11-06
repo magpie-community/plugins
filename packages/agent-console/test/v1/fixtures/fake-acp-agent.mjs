@@ -17,6 +17,9 @@
 //   FAKE_ACP_CANCEL_AS_ERROR when set with FAKE_ACP_SLOW_MS: cancel answers the in-flight session/prompt with
 //                          JSON-RPC error -32603 (no stopReason) — leftover pendingCancelStops counters used to
 //                          swallow the next turn's stop after this.
+//   FAKE_ACP_CANCEL_SETTLE_MS  Devin-like: after session/cancel, wait this many ms (emit STALE_FROM_TURN_1 chunk)
+//                          before settling cancelled. A new session/prompt that arrives while cancelling is
+//                          itself answered stopReason cancelled (0ms-resend race).
 // Every prompt is answered with one agent_message_chunk ("ok: <n> blocks") and stopReason end_turn.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -31,9 +34,10 @@ const permLog = process.env.FAKE_ACP_PERM_LOG;
 const slowMs = process.env.FAKE_ACP_SLOW_MS ? Number(process.env.FAKE_ACP_SLOW_MS) : 0;
 const ignoreCancel = !!process.env.FAKE_ACP_IGNORE_CANCEL;
 const cancelAsError = !!process.env.FAKE_ACP_CANCEL_AS_ERROR;
+const cancelSettleMs = process.env.FAKE_ACP_CANCEL_SETTLE_MS ? Number(process.env.FAKE_ACP_CANCEL_SETTLE_MS) : 0;
 let nextOwnId = 9000;
 const waiting = new Map(); // our request id -> callback(response)
-/** @type {Map<string, { timer: NodeJS.Timeout, finish: (reason: string) => void, fail: (code: number, message: string) => void }>} */
+/** @type {Map<string, { timer: NodeJS.Timeout | null, finish: (reason: string) => void, fail: (code: number, message: string) => void, cancelling?: boolean }>} */
 const openPrompts = new Map(); // sessionId -> in-flight slow prompt
 const out = (msg) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...msg }) + "\n");
 const answer = (id, result) => out({ id, result });
@@ -133,23 +137,27 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       }
       if (slowMs > 0) {
         const prior = openPrompts.get(p.sessionId);
+        // Devin race: a new prompt while the previous is still cancelling → cancel the new one too
+        if (prior?.cancelling) {
+          return answer(m.id, { stopReason: "cancelled" });
+        }
         if (prior) prior.finish("cancelled");
         const finish = (reason) => {
           const open = openPrompts.get(p.sessionId);
           if (!open || open.finish !== finish) return;
-          clearTimeout(open.timer);
+          if (open.timer) clearTimeout(open.timer);
           openPrompts.delete(p.sessionId);
           answer(m.id, { stopReason: reason });
         };
         const fail = (code, message) => {
           const open = openPrompts.get(p.sessionId);
           if (!open || open.fail !== fail) return;
-          clearTimeout(open.timer);
+          if (open.timer) clearTimeout(open.timer);
           openPrompts.delete(p.sessionId);
           out({ id: m.id, error: { code, message } });
         };
         const timer = setTimeout(() => finish("end_turn"), slowMs);
-        openPrompts.set(p.sessionId, { timer, finish, fail });
+        openPrompts.set(p.sessionId, { timer, finish, fail, cancelling: false });
         return;
       }
       return answer(m.id, { stopReason: "end_turn" });
@@ -169,7 +177,21 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       const open = openPrompts.get(p.sessionId);
       if (open && !ignoreCancel) {
         if (cancelAsError) open.fail(-32603, "Internal error");
-        else open.finish("cancelled");
+        else if (cancelSettleMs > 0) {
+          // Devin-like delayed cancel settle + trailing stale chunk
+          open.cancelling = true;
+          if (open.timer) clearTimeout(open.timer);
+          open.timer = setTimeout(() => {
+            out({
+              method: "session/update",
+              params: {
+                sessionId: p.sessionId,
+                update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "STALE_FROM_TURN_1" } },
+              },
+            });
+            open.finish("cancelled");
+          }, cancelSettleMs);
+        } else open.finish("cancelled");
       }
       return;
     }

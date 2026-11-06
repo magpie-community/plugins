@@ -73,6 +73,8 @@ describe("Codex interrupt", () => {
       delete process.env.FAKE_CODEX_SLOW_MS;
       delete process.env.FAKE_CODEX_LOG;
       delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
+      delete process.env.FAKE_CODEX_START_DELAY_MS;
+      delete process.env.FAKE_CODEX_STARTED_DELAY_MS;
     }
   }, 20000);
 
@@ -96,6 +98,8 @@ describe("Codex interrupt", () => {
       delete process.env.FAKE_CODEX_SLOW_MS;
       delete process.env.FAKE_CODEX_LOG;
       delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
+      delete process.env.FAKE_CODEX_START_DELAY_MS;
+      delete process.env.FAKE_CODEX_STARTED_DELAY_MS;
     }
   }, 20000);
 
@@ -119,40 +123,72 @@ describe("Codex interrupt", () => {
       delete process.env.FAKE_CODEX_SLOW_MS;
       delete process.env.FAKE_CODEX_LOG;
       delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
+      delete process.env.FAKE_CODEX_START_DELAY_MS;
+      delete process.env.FAKE_CODEX_STARTED_DELAY_MS;
     }
   }, 20000);
 
-  it("Stop before turn/started still sends turn/interrupt from turn/start response id", async () => {
-    // Race yetone called out: Stop before turn/started, then an immediate new message. send() clears
-    // interruptWanted, so without using the turn id from turn/start's response the first Codex turn is
-    // never interrupted (no turn/interrupt) and staleNextCodexTurn was a sticky guess. This test is red
-    // without the response-id fix.
-    const r = open({ FAKE_CODEX_SLOW_MS: "800" });
+  it("Stop after turn/start response, before turn/started, then immediate resend", async () => {
+    // Local interrupt must end promptly (red on main: main waited for turn/started / completion).
+    // turn/interrupt must still fire for codex-turn-1 after immediate send(second).
+    const r = open({ FAKE_CODEX_SLOW_MS: "1500", FAKE_CODEX_STARTED_DELAY_MS: "600" });
     try {
+      const t0 = Date.now();
       await r.session.send({ text: "first", images: [] });
       await until(() => r.events.some((e) => e.type === "turn_started"));
-      // Interrupt in the window before the delayed turn/started notification.
       await r.session.interrupt();
       await until(() => r.events.some((e) => e.type === "turn_ended" && (e as { status?: string }).status === "interrupted"));
-      // Immediate resend clears interruptWanted — must NOT prevent turn/interrupt for the first turn.
+      expect(Date.now() - t0).toBeLessThan(250); // must not wait for turn/started (600ms) or slowMs
       await expect(r.session.send({ text: "second", images: [] })).resolves.toBeUndefined();
       await until(() => lines(r.logFile).some((l) => l.in?.method === "turn/interrupt"), 5000);
-      const hit = lines(r.logFile).find((l) => l.in?.method === "turn/interrupt");
-      expect(hit.in.params.turnId).toBe("codex-turn-1");
-      await until(() => r.events.filter((e) => e.type === "turn_started").length >= 2);
+      expect(lines(r.logFile).find((l) => l.in?.method === "turn/interrupt").in.params.turnId).toBe("codex-turn-1");
       await until(() => r.events.filter((e) => e.type === "turn_ended").length >= 2, 10000);
-      const ends = r.events.filter((e) => e.type === "turn_ended") as { status?: string }[];
-      expect(ends[0]?.status).toBe("interrupted");
-      expect(ends.filter((e) => e.status === "interrupted")).toHaveLength(1);
-      expect(ends[ends.length - 1]?.status).toBe("completed");
-      const starts = lines(r.logFile).filter((l) => l.in?.method === "turn/start");
-      expect(starts.length).toBeGreaterThanOrEqual(2);
+      const ends = r.events.filter((e) => e.type === "turn_ended") as { status?: string; turnId?: string }[];
+      expect(ends.map((e) => e.status)).toEqual(["interrupted", "completed"]);
+      expect(ends[1]?.turnId?.startsWith("u_")).toBe(true);
     } finally {
       await r.session.close();
       await r.done;
       delete process.env.FAKE_CODEX_SLOW_MS;
       delete process.env.FAKE_CODEX_LOG;
       delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
+      delete process.env.FAKE_CODEX_START_DELAY_MS;
+      delete process.env.FAKE_CODEX_STARTED_DELAY_MS;
+    }
+  }, 20000);
+
+  it("Stop while turn/start is in flight, then immediate resend interrupts codex-turn-1", async () => {
+    // yetone probe: delay only the first turn/start response; send(first) not awaited → interrupt →
+    // turn_ended → send(second) before turn 1's response. Must send turn/interrupt for codex-turn-1
+    // and end as [interrupted, completed] with no stray third turn_ended (red on 45a67b2 and on main).
+    const r = open({ FAKE_CODEX_SLOW_MS: "1500", FAKE_CODEX_START_DELAY_MS: "400" });
+    try {
+      const t0 = Date.now();
+      const send1 = r.session.send({ text: "first", images: [] });
+      await until(() => r.events.some((e) => e.type === "turn_started"));
+      await r.session.interrupt();
+      await until(() => r.events.some((e) => e.type === "turn_ended" && (e as { status?: string }).status === "interrupted"));
+      expect(Date.now() - t0).toBeLessThan(350); // local end before the delayed turn/start response
+      await expect(r.session.send({ text: "second", images: [] })).resolves.toBeUndefined();
+      await send1.catch(() => {});
+      await until(() => lines(r.logFile).some((l) => l.in?.method === "turn/interrupt"), 5000);
+      const interrupts = lines(r.logFile).filter((l) => l.in?.method === "turn/interrupt").map((l) => l.in.params.turnId);
+      expect(interrupts).toContain("codex-turn-1");
+      await until(() => r.events.filter((e) => e.type === "turn_ended").length >= 2, 10000);
+      // Give late completions a moment; must not grow a third end
+      await new Promise((x) => setTimeout(x, 500));
+      const ends = r.events.filter((e) => e.type === "turn_ended") as { status?: string; turnId?: string }[];
+      expect(ends).toHaveLength(2);
+      expect(ends.map((e) => e.status)).toEqual(["interrupted", "completed"]);
+      expect(ends.every((e) => e.turnId && e.turnId.startsWith("u_"))).toBe(true);
+    } finally {
+      await r.session.close();
+      await r.done;
+      delete process.env.FAKE_CODEX_SLOW_MS;
+      delete process.env.FAKE_CODEX_LOG;
+      delete process.env.FAKE_CODEX_IGNORE_INTERRUPT;
+      delete process.env.FAKE_CODEX_START_DELAY_MS;
+      delete process.env.FAKE_CODEX_STARTED_DELAY_MS;
     }
   }, 20000);
 });

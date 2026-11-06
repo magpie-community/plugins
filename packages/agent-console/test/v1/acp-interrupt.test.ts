@@ -21,11 +21,12 @@ afterEach(() => {
   delete process.env.FAKE_ACP_SLOW_MS;
   delete process.env.FAKE_ACP_IGNORE_CANCEL;
   delete process.env.FAKE_ACP_CANCEL_AS_ERROR;
+  delete process.env.FAKE_ACP_CANCEL_SETTLE_MS;
 });
 
 type Run = { session: ProviderSession; events: ProviderEvent[]; clog: string; done: Promise<void> };
 
-async function open(opts: { slowMs?: number; ignoreCancel?: boolean; cancelAsError?: boolean } = {}): Promise<Run> {
+async function open(opts: { slowMs?: number; ignoreCancel?: boolean; cancelAsError?: boolean; cancelSettleMs?: number } = {}): Promise<Run> {
   const clog = join(dir, `c-${Math.random().toString(36).slice(2)}.jsonl`);
   process.env.FAKE_ACP_CANCEL_LOG = clog;
   if (opts.slowMs != null) process.env.FAKE_ACP_SLOW_MS = String(opts.slowMs);
@@ -34,6 +35,8 @@ async function open(opts: { slowMs?: number; ignoreCancel?: boolean; cancelAsErr
   else delete process.env.FAKE_ACP_IGNORE_CANCEL;
   if (opts.cancelAsError) process.env.FAKE_ACP_CANCEL_AS_ERROR = "1";
   else delete process.env.FAKE_ACP_CANCEL_AS_ERROR;
+  if (opts.cancelSettleMs != null) process.env.FAKE_ACP_CANCEL_SETTLE_MS = String(opts.cancelSettleMs);
+  else delete process.env.FAKE_ACP_CANCEL_SETTLE_MS;
   const provider = createAcpProvider({ id: "fake-interrupt", name: "Fake ACP", binName: "fake-acp", acpArgs: [], installHint: "" });
   const session = await provider.createSession({
     threadId: "t1", cwd: dir, model: null, mode: "default", effort: null, resumeId: null, launch,
@@ -136,6 +139,39 @@ describe("ACP interrupt / session/cancel", () => {
       const ends = r.events.filter((e) => e.type === "turn_ended") as { status?: string }[];
       expect(ends[0]?.status).toBe("interrupted");
       expect(ends[ends.length - 1]?.status).toBe("completed");
+    } finally {
+      await r.session.close();
+      await r.done;
+    }
+  }, 20000);
+
+  it("0ms resend after interrupt: Devin-like cancel settle must not cancel Turn 2", async () => {
+    // Real Devin cancels an overlapping session/prompt that arrives while prompt1 is still unwinding.
+    // Without pendingCancelSettle, ends are [interrupted, interrupted]; with the fix [interrupted, completed].
+    const r = await open({ slowMs: 5000, cancelSettleMs: 60 });
+    try {
+      await r.session.send({ text: "first", images: [] });
+      await until(() => r.events.some((e) => e.type === "turn_started"));
+      await r.session.interrupt();
+      await until(() => r.events.some((e) => e.type === "turn_ended" && (e as { status?: string }).status === "interrupted"));
+      // Immediate 0ms resend (AgentManager queue / instant UI send)
+      await expect(r.session.send({ text: "second", images: [] })).resolves.toBeUndefined();
+      await until(() => r.events.filter((e) => e.type === "turn_started").length >= 2);
+      await until(() => r.events.filter((e) => e.type === "turn_ended").length >= 2, 10000);
+      const ends = r.events.filter((e) => e.type === "turn_ended") as { status?: string }[];
+      expect(ends.map((e) => e.status)).toEqual(["interrupted", "completed"]);
+      const afterT2 = r.events.filter((e) => e.type === "turn_started").length >= 2;
+      const t2StartIdx = r.events.findIndex((e, i) => e.type === "turn_started" && r.events.slice(0, i + 1).filter((x) => x.type === "turn_started").length === 2);
+      const afterStart = r.events.slice(t2StartIdx + 1);
+      const stale = afterStart.filter((e) => e.type === "assistant_delta" && (e as { text?: string }).text === "STALE_FROM_TURN_1");
+      expect(stale).toHaveLength(0);
+      const t2Text = afterStart
+        .filter((e) => e.type === "assistant_delta" || e.type === "assistant_message")
+        .map((e) => (e as { text?: string }).text || "")
+        .join("");
+      expect(t2Text.length).toBeGreaterThan(0);
+      expect(t2Text).not.toContain("STALE_FROM_TURN_1");
+      void afterT2;
     } finally {
       await r.session.close();
       await r.done;

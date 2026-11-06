@@ -141,20 +141,25 @@ describe("claude over stream-json", () => {
   });
 
   it("after interrupt, send() works again even when the CLI result is late", async () => {
-    const { s, events, until } = open({}, { FAKE_CLAUDE_INTERRUPT_RESULT_MS: "400" });
+    const delay = 400;
+    const { s, events, until, log } = open({}, { FAKE_CLAUDE_INTERRUPT_RESULT_MS: String(delay) });
     try {
+      const t0 = Date.now();
       await s.send({ text: "SLOW", images: [] });
       await until((e) => e.type === "assistant_delta");
       await s.interrupt();
-      expect(await until(ended)).toMatchObject({ status: "interrupted" });
+      const end1 = await until(ended);
+      expect(end1).toMatchObject({ status: "interrupted" });
+      // Local interrupt must win well inside the delayed CLI result window (red on main: main waits for the result)
+      expect(Date.now() - t0).toBeLessThan(delay - 50);
       await expect(s.send({ text: "second", images: [] })).resolves.toBeUndefined();
       await until((e) => e.type === "turn_started" && events.filter((x) => x.type === "turn_started").length >= 2);
       await until((e) => e.type === "turn_ended" && events.filter((x) => x.type === "turn_ended").length >= 2);
       const ends = events.filter((e) => e.type === "turn_ended") as { status?: string }[];
       expect(ends[0]?.status).toBe("interrupted");
-      // Late SLOW result must not produce a second interrupted / must not kill the second turn
       expect(ends.filter((e) => e.status === "interrupted")).toHaveLength(1);
       expect(ends[ends.length - 1]?.status).toBe("completed");
+      expect(log().filter((l) => l.in?.type === "user").length).toBeGreaterThanOrEqual(2);
     } finally {
       await s.close();
     }
@@ -164,25 +169,74 @@ describe("claude over stream-json", () => {
     // Real Claude Code CLI ends an interrupted turn with subtype error_during_execution (not error_interrupted).
     // send() resets sawInterrupt, so that result maps to failed; dropping by FIFO of results owed (not status)
     // is required so the late result cannot kill the next turn.
-    const { s, events, until } = open({}, { FAKE_CLAUDE_INTERRUPT_RESULT_MS: "500" });
+    // Timing: local interrupted must arrive well before FAKE_CLAUDE_INTERRUPT_RESULT_MS, and the second
+    // user line must be in FAKE_CLAUDE_LOG before that delayed result is emitted — red on main (main
+    // waits for the late result before send(second) can run).
+    const delay = 500;
+    const { s, events, until, log } = open({}, { FAKE_CLAUDE_INTERRUPT_RESULT_MS: String(delay) });
     try {
+      const t0 = Date.now();
       await s.send({ text: "SLOW", images: [] });
       await until((e) => e.type === "assistant_delta");
       await s.interrupt();
       expect(await until(ended)).toMatchObject({ status: "interrupted" });
+      const interruptedAt = Date.now() - t0;
+      expect(interruptedAt).toBeLessThan(delay - 50);
       await s.send({ text: "second", images: [] });
       await until((e) => e.type === "turn_started" && events.filter((x) => x.type === "turn_started").length >= 2);
-      // Second turn is in flight; the late result of the interrupted gen arrives next.
-      // Without FIFO skip, it would emit turn_ended(failed) for the new turn.
+      // Second user must reach the CLI (logged on stdin) before the delayed interrupt result is emitted —
+      // on main, send(second) cannot run until the late result arrives, so this ordering is red there.
+      const logDeadline = Date.now() + 2000;
+      while (Date.now() < logDeadline && !log().some((l) => l.in?.type === "user" && JSON.stringify(l.in).includes("second"))) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(log().some((l) => l.in?.type === "user" && JSON.stringify(l.in).includes("second"))).toBe(true);
+      expect(Date.now() - t0).toBeLessThan(delay); // still inside the delayed-result window
       const endsBeforeSecondDone = () =>
         events.filter((e) => e.type === "turn_ended") as { status?: string; error?: string }[];
-      await new Promise((r) => setTimeout(r, 650)); // past FAKE_CLAUDE_INTERRUPT_RESULT_MS
+      await new Promise((r) => setTimeout(r, delay + 150));
       const mid = endsBeforeSecondDone();
       expect(mid[0]?.status).toBe("interrupted");
       expect(mid.some((e) => e.status === "failed")).toBe(false);
       await until((e) => e.type === "turn_ended" && events.filter((x) => x.type === "turn_ended").length >= 2);
       const ends = endsBeforeSecondDone();
       expect(ends.filter((e) => e.status === "interrupted")).toHaveLength(1);
+      expect(ends[ends.length - 1]?.status).toBe("completed");
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("interrupt control_response error restarts CLI; next turn still completes", async () => {
+    // On 45a67b2 the failed-interrupt gen stayed in awaitingResult/skipResultGens; the restarted CLI's
+    // first result shifted that stale gen and was dropped, so the next turn never ended.
+    const { s, events, until } = open({}, { FAKE_CLAUDE_INTERRUPT_FAIL: "1" });
+    try {
+      await s.send({ text: "SLOW", images: [] });
+      await until((e) => e.type === "assistant_delta");
+      await s.interrupt();
+      expect(await until(ended)).toMatchObject({ status: "interrupted" });
+      await expect(s.send({ text: "second", images: [] })).resolves.toBeUndefined();
+      await until((e) => e.type === "turn_started" && events.filter((x) => x.type === "turn_started").length >= 2);
+      await until((e) => e.type === "turn_ended" && events.filter((x) => x.type === "turn_ended").length >= 2, 10000);
+      const ends = events.filter((e) => e.type === "turn_ended") as { status?: string }[];
+      expect(ends[0]?.status).toBe("interrupted");
+      expect(ends[ends.length - 1]?.status).toBe("completed");
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("CLI crash mid-turn: next turn on a fresh CLI still completes", async () => {
+    // A turn whose CLI died must not leave its gen in awaitingResult for the next CLI's first result.
+    const { s, events, until } = open({}, { FAKE_CLAUDE_CRASH_AFTER_DELTA: "1" });
+    try {
+      await s.send({ text: "SLOW", images: [] });
+      expect(await until(ended)).toMatchObject({ status: "failed" });
+      await expect(s.send({ text: "after-crash", images: [] })).resolves.toBeUndefined();
+      await until((e) => e.type === "turn_ended" && events.filter((x) => x.type === "turn_ended").length >= 2, 10000);
+      const ends = events.filter((e) => e.type === "turn_ended") as { status?: string }[];
+      expect(ends[0]?.status).toBe("failed");
       expect(ends[ends.length - 1]?.status).toBe("completed");
     } finally {
       await s.close();

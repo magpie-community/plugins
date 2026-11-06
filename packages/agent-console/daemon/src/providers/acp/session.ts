@@ -68,6 +68,11 @@ export class AcpSession implements ProviderSession {
   private activePromptGen: number | null = null;
   /** Prompt gens we already ended locally on interrupt (JSON-RPC error or late stop must not end a newer turn). */
   private cancelledPromptGens = new Set<number>();
+  /** Current wire session/prompt settle (never rejects) — interrupt waits for it before the next prompt. */
+  private inFlightPrompt: { gen: number; settle: Promise<void> } | null = null;
+  /** After Stop: notify(cancel) + previous prompt settle + one macrotask, so pumpUpdates drains before next prompt(). */
+  private pendingCancelSettle: Promise<void> | null = null;
+  private closeWaiters: Array<() => void> = [];
   private permPending = new Map<string, (a: RespondAnswer) => void>();
   private mapCtx: MapCtx = newMapCtx();
   private modelConfigId: string | null = null;
@@ -397,12 +402,12 @@ export class AcpSession implements ProviderSession {
     await this.ready();
     if (this.running) throw new Error("当前轮次尚未结束");
     this.turnNum++;
-    this.turnId = "u_" + Date.now().toString(36) + "_" + this.turnNum;
-    this.mapCtx = newMapCtx();
+    const turnId = "u_" + Date.now().toString(36) + "_" + this.turnNum;
+    this.turnId = turnId;
     this.running = true;
     this.q.push({
       type: "turn_started",
-      turnId: this.turnId,
+      turnId,
       model: this.o.model,
       mode: this.o.mode,
       effort: this.o.effort,
@@ -411,11 +416,13 @@ export class AcpSession implements ProviderSession {
     const attachments = input.images ?? [];
     if (!text && !attachments.length) {
       this.running = false;
-      this.q.push({ type: "turn_ended", turnId: this.turnId, status: "completed" });
+      this.q.push({ type: "turn_ended", turnId, status: "completed" });
       return;
     }
     // An image-only message is still a prompt: images go as image blocks when the Agent takes them, else by file path
     const built = await buildAcpPrompt(text, attachments, this.promptCaps, input.mentions ?? []);
+    // Interrupt during buildAcpPrompt: that turn already ended locally — do not start a wire prompt for it
+    if (this.closed || !this.running || this.turnId !== turnId) return;
     const agent = this.o.providerName ?? this.o.binName;
     if (built.imagesByPath.length && !this.promptCaps.image) {
       const switched = this.o.imagesFollowStartModel && this.initCaps.image && this.o.model !== this.startModel;
@@ -424,24 +431,52 @@ export class AcpSession implements ProviderSession {
     for (const w of built.warnings) this.q.push({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
     if (!built.blocks.length) {
       // Every attachment failed to resolve and there was no text: nothing to send
-      this.running = false;
-      this.q.push({ type: "turn_ended", turnId: this.turnId, status: "completed" });
+      if (this.turnId === turnId && this.running) {
+        this.running = false;
+        this.q.push({ type: "turn_ended", turnId, status: "completed" });
+      }
       return;
     }
-    void this.runTurn(built.blocks);
+    void this.runTurn(turnId, built.blocks);
+  }
+
+  private waitCloseOrTimeout(ms: number): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    return new Promise((resolve) => {
+      const t = setTimeout(() => {
+        this.closeWaiters = this.closeWaiters.filter((w) => w !== done);
+        resolve();
+      }, ms);
+      const done = () => {
+        clearTimeout(t);
+        resolve();
+      };
+      this.closeWaiters.push(done);
+    });
   }
 
   // Send this turn's prompt; session/update still flows through pumpUpdates, but ending the turn is tied
   // to this prompt() promise so a JSON-RPC error on a cancelled prompt cannot leave a leftover counter.
-  private async runTurn(prompt: Parameters<ActiveSession["prompt"]>[0]): Promise<void> {
-    const turnId = this.turnId!;
+  // After Stop, wait for pendingCancelSettle before activating Turn N+1 on the wire (Devin cancels an
+  // overlapping session/prompt that arrives while the previous one is still unwinding).
+  private async runTurn(turnId: string, prompt: Parameters<ActiveSession["prompt"]>[0]): Promise<void> {
+    const pending = this.pendingCancelSettle;
+    if (pending) {
+      await Promise.race([pending, this.waitCloseOrTimeout(2000)]);
+      if (this.pendingCancelSettle === pending) this.pendingCancelSettle = null;
+      if (this.closed || !this.running || this.turnId !== turnId) return;
+    }
+    this.mapCtx = newMapCtx();
     const gen = ++this.promptGen;
     this.activePromptGen = gen;
     this.activeTurnId = turnId;
     this.wakePump?.();
     this.wakePump = null;
     try {
-      const res = await this.active!.prompt(prompt);
+      const req = this.active!.prompt(prompt);
+      // Never-reject settle so interrupt can await the wire round-trip without try/catch
+      this.inFlightPrompt = { gen, settle: req.then(() => {}, () => {}) };
+      const res = await req;
       // prompt() also enqueues a stop for nextUpdate(); pumpUpdates drains it without ending.
       if (this.cancelledPromptGens.delete(gen)) return;
       if (this.activeTurnId === turnId && this.running) {
@@ -460,6 +495,7 @@ export class AcpSession implements ProviderSession {
     } finally {
       this.cancelledPromptGens.delete(gen);
       if (this.activePromptGen === gen) this.activePromptGen = null;
+      if (this.inFlightPrompt?.gen === gen) this.inFlightPrompt = null;
     }
   }
 
@@ -510,8 +546,20 @@ export class AcpSession implements ProviderSession {
   async interrupt(): Promise<void> {
     await this.ready();
     if (!this.ctx || !this.active) return;
-    // End the local turn first so `running` clears even if notify hangs; mark this prompt gen so its
-    // later settle (stopReason or JSON-RPC error) cannot end a newer turn. No pendingCancelStops counter.
+    // Queue session/cancel on the wire FIRST so a consumer that reacts to turn_ended (0ms resend) cannot
+    // beat cancel onto the wire. ACP cancel is a CancelNotification (Devin only registers that form).
+    const notifyP = this.ctx
+      .notify(methods.agent.session.cancel, { sessionId: this.active.sessionId })
+      .catch((e) => {
+        log("info", `ACP cancel: ${String(e)}`);
+      });
+    const prevSettle = this.inFlightPrompt?.settle ?? Promise.resolve();
+    // After cancel + previous prompt settle, one macrotask lets pumpUpdates drain stop / park on wakePump
+    // before the next active.prompt() calls updates.clearErrors().
+    this.pendingCancelSettle = Promise.all([notifyP, prevSettle]).then(
+      () => new Promise<void>((r) => setTimeout(r, 0)),
+    );
+    // End the local turn so `running` clears immediately (UI idle; send() must not throw 当前轮次尚未结束).
     if (this.running) {
       if (this.activePromptGen != null) this.cancelledPromptGens.add(this.activePromptGen);
       const turnId = this.activeTurnId ?? this.turnId;
@@ -521,13 +569,7 @@ export class AcpSession implements ProviderSession {
         this.running = false;
       }
     }
-    // ACP defines session/cancel as a CancelNotification (see SDK notificationSpec). Agents such as
-    // Devin CLI only register it as a notification: sending it as a request yields JSON-RPC -32601.
-    try {
-      await this.ctx.notify(methods.agent.session.cancel, { sessionId: this.active.sessionId });
-    } catch (e) {
-      log("info", `ACP cancel: ${String(e)}`);
-    }
+    await notifyP;
   }
 
   async setModel(model: string | null): Promise<void> {
@@ -567,6 +609,7 @@ export class AcpSession implements ProviderSession {
 
   async close(): Promise<void> {
     this.closed = true;
+    for (const w of this.closeWaiters.splice(0)) w();
     this.wakePump?.();
     this.settleCommands();
     for (const r of this.permPending.values()) r({ cancelled: true });

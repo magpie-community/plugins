@@ -6,6 +6,8 @@
 // The user text picks the scenario: TOOL (ask to run Bash), CANCEL (ask, then withdraw the ask), SLOW (stream and wait
 // for an interrupt); anything else is echoed with a description of the image blocks it got.
 // FAKE_CLAUDE_INTERRUPT_RESULT_MS  delay (ms) between interrupt ack and ending the SLOW turn (late-result races).
+// FAKE_CLAUDE_INTERRUPT_FAIL       when set, interrupt control_response is an error (busy) — CLI must restart.
+// FAKE_CLAUDE_CRASH_AFTER_DELTA    when set with SLOW: after first text delta, exit(1) mid-turn.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -66,6 +68,10 @@ async function turn(content) {
   }
   if (text.includes("SLOW")) {
     say("working");
+    if (process.env.FAKE_CLAUDE_CRASH_AFTER_DELTA) {
+      process.stderr.write("fake claude: crash after delta\n");
+      process.exit(1);
+    }
     await new Promise((resolve) => (interruptTurn = resolve));
     return done({ subtype: "error_during_execution", is_error: true, result: "" });
   }
@@ -101,6 +107,9 @@ rl.on("line", (line) => {
     if (r.subtype === "set_model") { model = r.model ?? "default"; return ok(); }
     if (r.subtype === "set_permission_mode") { mode = r.mode; return ok(); }
     if (r.subtype === "interrupt") {
+      if (process.env.FAKE_CLAUDE_INTERRUPT_FAIL) {
+        return out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "busy" } });
+      }
       ok();
       const resume = interruptTurn;
       interruptTurn = null;
