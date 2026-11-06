@@ -473,6 +473,8 @@ test("studioJson unwraps the envelope and flags dead sessions", async () => {
 test("studioJson via usage: balance and membership map to quota windows", async () => {
   const session = { token: "T", ssoSessionId: "S", accountId: "A" }
   const plugin = createPlugin({
+    // 时钟钉在 2026-11-06：否则 11-22 之后这条断言会随真实时间过期。
+    nowMsImpl: () => Date.parse("2026-11-06T00:00:00+08:00"),
     fetchImpl: async (input) => {
       const url = String(input)
       if (url.includes("points/balance")) {
@@ -481,6 +483,9 @@ test("studioJson via usage: balance and membership map to quota windows", async 
       if (url.includes("membership/me")) {
         return jsonRes({ flag: true, code: 0, data: { uid: 18800000000, active: true, planCode: "TRIAL", planName: "体验版" } })
       }
+      if (url.includes("points/details")) {
+        return jsonRes({ flag: true, code: 0, data: { total: 1, items: [sparkGrantRow(35000, "2026-11-22T21:34:30")] } })
+      }
       throw new Error(`unexpected ${url}`)
     },
   })
@@ -488,14 +493,39 @@ test("studioJson via usage: balance and membership map to quota windows", async 
   assert.equal(out.plan, "体验版")
   assert.equal(out.user, "18800000000")
   assert.deepEqual(out.windows[0], { name: "通用积分", balance: 7900, aside: false, runsOutAt: "2026-11-03T06:11:12", runsOut: 7900 })
+  // 星火到期从入账流水推（balance 接口不给星火到期时间）。
+  assert.deepEqual(out.windows[1], { name: "星火积分", balance: 35000, aside: false, runsOutAt: "2026-11-22T13:34:30.000Z", runsOut: 35000 })
+})
+
+test("usage spark window omits expiry when the ledger query fails", async () => {
+  const session = { token: "T", ssoSessionId: "S", accountId: "A" }
+  const plugin = createPlugin({
+    fetchImpl: async (input) => {
+      const url = String(input)
+      if (url.includes("points/balance")) {
+        return jsonRes({ flag: true, code: 0, data: { totalBalance: 7900, activityBalance: 7900, sparkTotalBalance: 35000, sparkActivityBalance: 35000 } })
+      }
+      if (url.includes("membership/me")) {
+        return jsonRes({ flag: true, code: 0, data: { uid: 18800000000, active: true, planCode: "TRIAL", planName: "体验版" } })
+      }
+      if (url.includes("points/details")) {
+        return jsonRes({ flag: false, code: 11001001, desc: "参数无效" })
+      }
+      throw new Error(`unexpected ${url}`)
+    },
+  })
+  const out = await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session } }))
+  // 到期推算失败不塌方：星火窗口退回无 runsOut 形态。
   assert.deepEqual(out.windows[1], { name: "星火积分", balance: 35000, aside: false })
 })
 
-const checkinFetch = (balanceSequence, { popups = [], identityAssert, popupFails = false } = {}) => {
+const checkinFetch = (balanceSequence, { popups = [], popupsSequence, identityAssert, popupFails = false, onComplete, onInitApp, ledger, ledgerSequence, ledgerFails = false, sparkLedger, sparkPages } = {}) => {
   let balanceCalls = 0
+  let popupCalls = 0
+  let ledgerCalls = 0
   return async (input, init) => {
     const url = String(input)
-    if (identityAssert) identityAssert(init.headers)
+    if (identityAssert) identityAssert(init.headers, init)
     if (url.includes("membership/plan-config")) {
       return jsonRes({ flag: true, code: 0, data: { dailyLoginEnabled: true, dailyLoginValidDays: 31, plans: [{ planCode: "TRIAL", dailyLoginPoints: 100 }] } })
     }
@@ -504,9 +534,44 @@ const checkinFetch = (balanceSequence, { popups = [], identityAssert, popupFails
       const total = balanceSequence[Math.min(balanceCalls - 1, balanceSequence.length - 1)]
       return jsonRes({ flag: true, code: 0, data: { totalBalance: total, activityBalance: total } })
     }
+    if (url.includes("points/details")) {
+      if (ledgerFails) return jsonRes({ flag: false, code: 11001001, desc: "参数无效" })
+      // 当日窗口（起止同日）=「每日登录赠送」查询；跨 60 天窗口 = 星火到期查询。
+      const params = new URL(url).searchParams
+      const isDailyQuery = params.get("startTime")?.slice(0, 10) === params.get("endTime")?.slice(0, 10)
+      if (!isDailyQuery && sparkPages) {
+        const page = Number(params.get("pageNum") ?? 1)
+        const items = sparkPages[page - 1] ?? []
+        return jsonRes({ flag: true, code: 0, data: { total: 0, pageNum: page, pageSize: 50, items } })
+      }
+      // ledgerSequence 区分「签到前读」与「签到后读」：前者没有行，后者有。
+      let items
+      if (isDailyQuery) {
+        ledgerCalls += 1
+        items = ledgerSequence
+          ? ledgerSequence[Math.min(ledgerCalls - 1, ledgerSequence.length - 1)]
+          : ledger
+      } else {
+        items = sparkLedger
+      }
+      return jsonRes({ flag: true, code: 0, data: { total: items?.length ?? 0, pageNum: 1, pageSize: 50, items: items ?? [] } })
+    }
     if (url.includes("client-popups/pending")) {
       if (popupFails) return jsonRes({ flag: false, code: 11001001, desc: "客户端平台、版本或构建号无效", data: null })
-      return jsonRes({ flag: true, code: 0, data: popups })
+      popupCalls += 1
+      // popupsSequence 区分「基线读」与「签到后读」：前者看旧弹窗，后者看新发放。
+      const data = popupsSequence
+        ? popupsSequence[Math.min(popupCalls - 1, popupsSequence.length - 1)]
+        : popups
+      return jsonRes({ flag: true, code: 0, data })
+    }
+    if (url.includes("client-popups/complete")) {
+      if (onComplete) onComplete(JSON.parse(init.body))
+      return jsonRes({ flag: true, code: 0, data: {} })
+    }
+    if (url.includes("tenant-app/v2/init-app")) {
+      if (onInitApp) onInitApp()
+      return jsonRes({ flag: true, code: 0, data: {} })
     }
     if (url.includes("membership/me") || url.includes("points/summary")) {
       return jsonRes({ flag: true, code: 0, data: {} })
@@ -514,6 +579,18 @@ const checkinFetch = (balanceSequence, { popups = [], identityAssert, popupFails
     throw new Error(`unexpected ${url}`)
   }
 }
+
+const dailyGrantRow = (createTime = "2026-11-06T00:00:30", amount = 100) => ({
+  assetCode: "GENERAL_POINTS", deductions: [], direction: "CREDIT", operation: "GRANT",
+  amount, balanceAfter: 8000, sourceType: "ACTIVITY", reason: "每日登录赠送", createTime,
+  expireTime: "2026-12-07T00:00:30",
+})
+
+const sparkGrantRow = (amount, expireTime) => ({
+  assetCode: "SPARK_POINTS", deductions: [], direction: "CREDIT", operation: "GRANT",
+  amount, balanceAfter: 35000, sourceType: "ACTIVITY", reason: "1024讯飞开发者节狂欢", createTime: "2026-10-22T21:34:30",
+  expireTime,
+})
 
 const dailyRewardPopup = [{
   popupId: 1, popupCode: "DAILY_LOGIN", popupType: "BANNER", componentType: "DAILY_REWARD_DIALOG",
@@ -523,15 +600,100 @@ const dailyRewardPopup = [{
 const checkinAuth = { type: "api", key: "k", metadata: { session: { token: "T", ssoSessionId: "S", accountId: "A" } } }
 
 test("check-in observes the balance delta around the session touch", async () => {
-  const claimed = createPlugin({ fetchImpl: checkinFetch([7900, 8000]), sleepImpl: async () => {} })
+  // 流水通畅但还没入账、余额涨了：发放已到账，记 claimed（不谎称 inactive）。
+  const claimed = createPlugin({ fetchImpl: checkinFetch([7900, 8000], { ledger: [] }), sleepImpl: async () => {} })
   const out = await claimed.auth.checkin(async () => checkinAuth)
-  assert.deepEqual(out, { outcome: "claimed", credit: 100, message: "每日登录积分 +100" })
+  assert.equal(out.outcome, "claimed")
+  assert.equal(out.credit, 100)
+  assert.match(out.message, /余额上涨，流水尚未入账/)
 
-  const unobserved = createPlugin({ fetchImpl: checkinFetch([7900, 7900]), sleepImpl: async () => {} })
+  const unobserved = createPlugin({ fetchImpl: checkinFetch([7900, 7900], { ledger: [] }), sleepImpl: async () => {} })
   const out2 = await unobserved.auth.checkin(async () => checkinAuth)
-  // 余额没涨不谎称 done（宿主渲染成「今日已签到」）：inactive + 实情 message。
+  // 流水通畅但无当日 GRANT 行：没发放就是没发放，不谎称 done。
   assert.equal(out2.outcome, "inactive")
   assert.match(out2.message, /未观测到新发放/)
+})
+
+test("check-in trusts the daily grant ledger as the authoritative signal", async () => {
+  // 11-06 实测：服务端午夜批量先于签到发放，纯余额差会误报 inactive；
+  // 流水里有当日 GRANT 行就是发了，谁触发的不影响结论。
+  const plugin = createPlugin({ fetchImpl: checkinFetch([8000, 8000], { ledger: [dailyGrantRow()] }), sleepImpl: async () => {} })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.equal(out.outcome, "done")
+  assert.equal(out.credit, 100)
+  assert.match(out.message, /流水实证，先于签到发生/)
+})
+
+test("check-in claims when the grant lands after the check-in started", async () => {
+  // 签到前读流水为空（还没发），init-app 之后才有 GRANT 行 ⇒ 本次触发。
+  const plugin = createPlugin({
+    fetchImpl: checkinFetch([7900, 8000], { ledgerSequence: [[], [dailyGrantRow()]] }),
+    sleepImpl: async () => {},
+  })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.equal(out.outcome, "claimed")
+  assert.equal(out.credit, 100)
+  assert.match(out.message, /本次签到触发/)
+})
+
+test("check-in skips init-app when today's grant is already on the ledger", async () => {
+  // 流水已有当日 GRANT 行 ⇒ 只读，不再发 init-app（不给账号制造无谓写入）。
+  let initCalls = 0
+  let popupReads = 0
+  const plugin = createPlugin({
+    fetchImpl: async (input, init) => {
+      const url = String(input)
+      if (url.includes("client-popups")) popupReads += 1
+      if (url.includes("points/details")) {
+        return jsonRes({ flag: true, code: 0, data: { items: [dailyGrantRow()] } })
+      }
+      return checkinFetch([8000], { onInitApp: () => { initCalls += 1 } })(input, init)
+    },
+    sleepImpl: async () => {},
+  })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.equal(out.outcome, "done")
+  assert.equal(initCalls, 0)
+  assert.equal(popupReads, 0)
+})
+
+test("check-in message warns about spark points expiring within 7 days", async () => {
+  // 星火大额批次 5 天后到期：签到消息要带上提醒。
+  const soon = new Date(Date.now() + 5 * 86400000)
+  const p2 = (n) => String(n).padStart(2, "0")
+  const stamp = `${soon.getFullYear()}-${p2(soon.getMonth() + 1)}-${p2(soon.getDate())}T21:34:30`
+  const plugin = createPlugin({
+    fetchImpl: checkinFetch([8000, 8000], {
+      ledger: [dailyGrantRow()],
+      sparkLedger: [sparkGrantRow(35000, stamp)],
+    }),
+    sleepImpl: async () => {},
+  })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.equal(out.outcome, "done")
+  assert.match(out.message, /35000 星火积分 \d 天内到期|35000 星火积分 今天到期/)
+})
+
+test("check-in message stays quiet when spark expiry is far away", async () => {
+  const far = new Date(Date.now() + 40 * 86400000)
+  const p2 = (n) => String(n).padStart(2, "0")
+  const stamp = `${far.getFullYear()}-${p2(far.getMonth() + 1)}-${p2(far.getDate())}T21:34:30`
+  const plugin = createPlugin({
+    fetchImpl: checkinFetch([8000, 8000], {
+      ledger: [dailyGrantRow()],
+      sparkLedger: [sparkGrantRow(35000, stamp)],
+    }),
+    sleepImpl: async () => {},
+  })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.doesNotMatch(out.message, /到期/)
+})
+
+test("check-in falls back to balance and popups when the ledger query fails", async () => {
+  // 流水读失败退回旧判据：余额差为正仍能 claimed。
+  const plugin = createPlugin({ fetchImpl: checkinFetch([7900, 8000], { ledgerFails: true }), sleepImpl: async () => {} })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.deepEqual(out, { outcome: "claimed", credit: 100, message: "每日登录积分 +100" })
 })
 
 test("check-in reports ineligible without a session and inactive without the campaign", async () => {
@@ -551,20 +713,28 @@ test("check-in sends the desktop client identity on account requests", async () 
   const seen = []
   const plugin = createPlugin({
     fetchImpl: checkinFetch([7900, 7900], {
-      identityAssert: (headers) => seen.push(headers),
+      identityAssert: (headers, init) => seen.push({ headers, method: init.method ?? "GET" }),
     }),
     sleepImpl: async () => {},
   })
   await plugin.auth.checkin(async () => checkinAuth)
-  assert.equal(seen.length, 6)
-  for (const headers of seen) {
+  // 只数账号面 GET：POST（init-app）不参与这条断言。签到主路径（inactive 场景）=
+  // plan-config、签到前流水、签到前余额、touch（me+summary）、签到后余额、签到后流水。
+  const gets = seen.filter((item) => item.method !== "POST")
+  assert.equal(gets.length, 7)
+  for (const { headers } of seen) {
     assert.equal(headers.clientType, process.platform === "darwin" ? "22" : "21")
     assert.equal(headers.studioVersion, STUDIO_VERSION)
   }
 })
 
-test("check-in reports done when the server has a pending daily reward popup", async () => {
-  const plugin = createPlugin({ fetchImpl: checkinFetch([7900, 7900], { popups: dailyRewardPopup }), sleepImpl: async () => {} })
+test("check-in reports done from popups when the ledger query fails", async () => {
+  // 弹窗 done 路径只属于退路：流水读失败 + 余额无变化 + 签到前无旧弹窗 +
+  // 签到后出现 DAILY_REWARD_DIALOG ⇒ 服务端发了但流水接口没读到。
+  const plugin = createPlugin({
+    fetchImpl: checkinFetch([7900, 7900], { popupsSequence: [[], dailyRewardPopup], ledgerFails: true }),
+    sleepImpl: async () => {},
+  })
   const out = await plugin.auth.checkin(async () => checkinAuth)
   assert.deepEqual(out, { outcome: "done", credit: 100, message: "每日登录积分已发放（服务端待通知弹窗）" })
 })
@@ -572,7 +742,7 @@ test("check-in reports done when the server has a pending daily reward popup", a
 test("check-in omits credit when the daily reward popup has no usable points", async () => {
   for (const payload of [{}, { points: "0" }, { points: "n/a" }]) {
     const plugin = createPlugin({
-      fetchImpl: checkinFetch([7900, 7900], { popups: [{ ...dailyRewardPopup[0], payload }] }),
+      fetchImpl: checkinFetch([7900, 7900], { popupsSequence: [[], [{ ...dailyRewardPopup[0], payload }]], ledgerFails: true }),
       sleepImpl: async () => {},
     })
     const out = await plugin.auth.checkin(async () => checkinAuth)
@@ -584,6 +754,7 @@ test("check-in ignores other popup types", async () => {
   const plugin = createPlugin({
     fetchImpl: checkinFetch([7900, 7900], {
       popups: [{ ...dailyRewardPopup[0], componentType: "NEW_USER_DIALOG" }],
+      ledger: [],
     }),
     sleepImpl: async () => {},
   })
@@ -591,11 +762,133 @@ test("check-in ignores other popup types", async () => {
   assert.equal(out.outcome, "inactive")
 })
 
-test("check-in reports failed when the popup query is rejected", async () => {
-  const plugin = createPlugin({ fetchImpl: checkinFetch([7900, 7900], { popupFails: true }), sleepImpl: async () => {} })
+test("check-in still falls back to popups when both ledger and popup query fail", async () => {
+  // 流水+弹窗都挂：退路里的退路，基线（第一次弹窗读）失败 ⇒ failed 不硬判。
+  const plugin = createPlugin({ fetchImpl: checkinFetch([7900, 7900], { popupFails: true, ledgerFails: true }), sleepImpl: async () => {} })
   const out = await plugin.auth.checkin(async () => checkinAuth)
   assert.equal(out.outcome, "failed")
   assert.match(out.message, /11001001|平台|版本/)
+})
+
+test("check-in never claims done when the baseline popup read fails", async () => {
+  // 退路里的场景：流水读失败 + 基线读失败 = 不知道签到前有没有旧弹窗，
+  // 签到后读到弹窗也不能判 done，更不能替用户把弹窗 complete 掉。
+  let popupCalls = 0
+  const completed = []
+  const plugin = createPlugin({
+    fetchImpl: async (input, init) => {
+      const url = String(input)
+      if (url.includes("membership/plan-config")) {
+        return jsonRes({ flag: true, code: 0, data: { dailyLoginEnabled: true } })
+      }
+      if (url.includes("points/balance")) {
+        return jsonRes({ flag: true, code: 0, data: { totalBalance: 7900, activityBalance: 7900 } })
+      }
+      if (url.includes("points/details")) {
+        return jsonRes({ flag: false, code: 11001001, desc: "参数无效" })
+      }
+      if (url.includes("client-popups/pending")) {
+        popupCalls += 1
+        if (popupCalls === 1) return jsonRes({ flag: false, code: 500, desc: "基线读失败" })
+        return jsonRes({ flag: true, code: 0, data: dailyRewardPopup })
+      }
+      if (url.includes("client-popups/complete")) {
+        completed.push(JSON.parse(init.body))
+        return jsonRes({ flag: true, code: 0, data: {} })
+      }
+      return jsonRes({ flag: true, code: 0, data: {} })
+    },
+    sleepImpl: async () => {},
+  })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.equal(out.outcome, "failed")
+  assert.match(out.message, /基线读失败/)
+  assert.equal(completed.length, 0)
+})
+
+test("check-in leaves the daily popup alone on the ledger path", async () => {
+  // 流水能判定时不再碰弹窗：不读、更不替用户点「知道了」（那是桌面端的交互）。
+  let popupReads = 0
+  const completed = []
+  const mock = checkinFetch([7900, 8000], { ledgerSequence: [[], [dailyGrantRow()]] })
+  const plugin = createPlugin({
+    fetchImpl: async (input, init) => {
+      const url = String(input)
+      if (url.includes("client-popups/pending")) popupReads += 1
+      if (url.includes("client-popups/complete")) completed.push(JSON.parse(init.body))
+      return mock(input, init)
+    },
+    sleepImpl: async () => {},
+  })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.match(out.message, /本次签到触发/)
+  assert.equal(popupReads, 0)
+  assert.equal(completed.length, 0)
+})
+
+test("check-in treats a pre-existing daily popup as unprovable on the fallback path", async () => {
+  const completed = []
+  const plugin = createPlugin({
+    fetchImpl: checkinFetch([7900, 7900], {
+      popupsSequence: [dailyRewardPopup, dailyRewardPopup],
+      ledgerFails: true,
+      onComplete: (body) => completed.push(body),
+    }),
+    sleepImpl: async () => {},
+  })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.equal(out.outcome, "inactive")
+  assert.match(out.message, /签到前已有/)
+  // 旧弹窗不属于今天，但也不替用户点掉：签到不再发 client-popups/complete。
+  assert.equal(completed.length, 0)
+})
+
+test("check-in surfaces init-app failures instead of hiding them", async () => {
+  const plugin = createPlugin({
+    fetchImpl: async (input) => {
+      const url = String(input)
+      if (url.includes("tenant-app/v2/init-app")) {
+        return jsonRes({ flag: false, code: 400, desc: "bad request" }, 400)
+      }
+      if (url.includes("membership/plan-config")) {
+        return jsonRes({ flag: true, code: 0, data: { dailyLoginEnabled: true } })
+      }
+      if (url.includes("points/balance")) {
+        return jsonRes({ flag: true, code: 0, data: { totalBalance: 7900, activityBalance: 7900 } })
+      }
+      if (url.includes("client-popups/pending")) return jsonRes({ flag: true, code: 0, data: [] })
+      if (url.includes("points/details")) return jsonRes({ flag: true, code: 0, data: { total: 0, items: [] } })
+      return jsonRes({ flag: true, code: 0, data: {} })
+    },
+    sleepImpl: async () => {},
+  })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.equal(out.outcome, "inactive")
+  assert.match(out.message, /init-app/)
+  assert.match(out.message, /400/)
+})
+
+test("check-in never calls auth/bearer-token", async () => {
+  const paths = []
+  const plugin = createPlugin({
+    fetchImpl: async (input) => {
+      const url = String(input)
+      paths.push(url)
+      if (url.includes("membership/plan-config")) {
+        return jsonRes({ flag: true, code: 0, data: { dailyLoginEnabled: true } })
+      }
+      if (url.includes("points/balance")) {
+        return jsonRes({ flag: true, code: 0, data: { totalBalance: 7900, activityBalance: 7900 } })
+      }
+      if (url.includes("client-popups/pending")) return jsonRes({ flag: true, code: 0, data: [] })
+      if (url.includes("points/details")) return jsonRes({ flag: true, code: 0, data: { total: 0, items: [] } })
+      return jsonRes({ flag: true, code: 0, data: {} })
+    },
+    sleepImpl: async () => {},
+  })
+  await plugin.auth.checkin(async () => checkinAuth)
+  assert.ok(paths.some((p) => p.includes("tenant-app/v2/init-app")))
+  assert.ok(!paths.some((p) => p.includes("auth/bearer-token")))
 })
 
 test("check-in propagates dead sessions as signIn expired", async () => {
@@ -660,4 +953,129 @@ test("module export is a plugin factory", async () => {
   assert.equal(typeof plugin.config, "function")
   assert.equal(typeof plugin.auth.loader, "function")
   assert.equal(plugin.auth.methods.length, 2)
+})
+
+// ---------------------------------------------------------------- 北京时间窗口
+
+test("check-in builds the daily ledger window in Beijing time", async () => {
+  // 北京 2026-11-06 00:00:30（UTC 还是 11-05）：窗口必须是北京的当日，
+  // 否则午夜批量发放会被算到窗口外，签到误报 inactive。
+  const seen = []
+  const plugin = createPlugin({
+    nowMsImpl: () => Date.parse("2026-11-05T16:00:30Z"),
+    fetchImpl: async (input) => {
+      const url = String(input)
+      seen.push(url)
+      if (url.includes("points/details")) return jsonRes({ flag: true, code: 0, data: { items: [] } })
+      if (url.includes("membership/plan-config")) return jsonRes({ flag: true, code: 0, data: { dailyLoginEnabled: true } })
+      if (url.includes("points/balance")) return jsonRes({ flag: true, code: 0, data: { totalBalance: 8000, activityBalance: 8000 } })
+      return jsonRes({ flag: true, code: 0, data: {} })
+    },
+    sleepImpl: async () => {},
+  })
+  await plugin.auth.checkin(async () => checkinAuth)
+  const daily = seen.find((url) => url.includes("points/details"))
+  const params = new URL(daily).searchParams
+  assert.equal(params.get("startTime"), "2026-11-06 00:00:00")
+  assert.equal(params.get("endTime"), "2026-11-06 00:00:30")
+})
+
+test("spark expiry window also uses Beijing bounds", async () => {
+  const seen = []
+  const plugin = createPlugin({
+    nowMsImpl: () => Date.parse("2026-11-06T00:00:00+08:00"),
+    fetchImpl: async (input) => {
+      const url = String(input)
+      seen.push(url)
+      if (url.includes("points/balance")) {
+        return jsonRes({ flag: true, code: 0, data: { totalBalance: 0, activityBalance: 0, sparkTotalBalance: 35000 } })
+      }
+      if (url.includes("membership/me")) return jsonRes({ flag: true, code: 0, data: {} })
+      if (url.includes("points/details")) return jsonRes({ flag: true, code: 0, data: { items: [] } })
+      throw new Error(`unexpected ${url}`)
+    },
+  })
+  await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session: { token: "T", accountId: "A" } } }))
+  const spark = seen.find((url) => url.includes("points/details"))
+  const params = new URL(spark).searchParams
+  assert.equal(params.get("startTime"), "2026-09-07 00:00:00")
+  assert.equal(params.get("endTime"), "2026-11-06 00:00:00")
+})
+
+test("check-in ignores a GRANT row that is not the daily login grant", async () => {
+  // reason 过滤：别的活动赠送不能冒充每日登录积分。
+  const plugin = createPlugin({
+    fetchImpl: checkinFetch([8000, 8000], { ledger: [{ ...dailyGrantRow(), reason: "活动奖励" }] }),
+    sleepImpl: async () => {},
+  })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.equal(out.outcome, "inactive")
+})
+
+test("spark expiry sums one batch, skips expired rows, and caps at the balance", async () => {
+  const plugin = createPlugin({
+    nowMsImpl: () => Date.parse("2026-11-06T00:00:00+08:00"),
+    fetchImpl: async (input) => {
+      const url = String(input)
+      if (url.includes("points/balance")) {
+        return jsonRes({ flag: true, code: 0, data: { totalBalance: 0, activityBalance: 0, sparkTotalBalance: 20000 } })
+      }
+      if (url.includes("membership/me")) return jsonRes({ flag: true, code: 0, data: {} })
+      if (url.includes("points/details")) {
+        return jsonRes({ flag: true, code: 0, data: { items: [
+          sparkGrantRow(10000, "2026-11-22T21:34:30"),
+          sparkGrantRow(25000, "2026-11-22T21:34:30"),
+          sparkGrantRow(9999, "2026-10-01T00:00:00"), // 已过期，跳过
+        ] } })
+      }
+      throw new Error(`unexpected ${url}`)
+    },
+  })
+  const out = await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session: { token: "T", accountId: "A" } } }))
+  // 同批 10000+25000=35000，但余额只剩 20000 ⇒ 提示按余额封顶。
+  const spark = out.windows.find((w) => w.name === "星火积分")
+  assert.equal(spark.runsOut, 20000)
+  assert.equal(spark.runsOutAt, "2026-11-22T13:34:30.000Z")
+})
+
+test("spark expiry reads past the first page of ledger rows", async () => {
+  const filler = Array.from({ length: 50 }, (_, i) => ({ ...dailyGrantRow(), createTime: `2026-10-${String((i % 28) + 1).padStart(2, "0")}T00:00:00` }))
+  const plugin = createPlugin({
+    nowMsImpl: () => Date.parse("2026-11-06T00:00:00+08:00"),
+    fetchImpl: async (input) => {
+      const url = String(input)
+      if (url.includes("points/balance")) {
+        return jsonRes({ flag: true, code: 0, data: { totalBalance: 0, activityBalance: 0, sparkTotalBalance: 35000 } })
+      }
+      if (url.includes("membership/me")) return jsonRes({ flag: true, code: 0, data: {} })
+      if (url.includes("points/details")) {
+        const page = Number(new URL(url).searchParams.get("pageNum") ?? 1)
+        const items = page === 1 ? filler : [sparkGrantRow(35000, "2026-11-22T21:34:30")]
+        return jsonRes({ flag: true, code: 0, data: { items } })
+      }
+      throw new Error(`unexpected ${url}`)
+    },
+  })
+  const out = await plugin.auth.usage(async () => ({
+    type: "api",
+    key: "k",
+    metadata: { session: { token: "T", accountId: "A" } },
+  }))
+  const spark = out.windows.find((w) => w.name === "星火积分")
+  assert.equal(spark.runsOut, 35000)
+  assert.equal(spark.runsOutAt, "2026-11-22T13:34:30.000Z")
+})
+
+test("check-in counts days to expiry by Beijing calendar days", async () => {
+  // 北京 11-06 23:00，到期 11-07 00:30：不到 24 小时，但日历上是「1 天内」。
+  const plugin = createPlugin({
+    nowMsImpl: () => Date.parse("2026-11-06T23:00:00+08:00"),
+    fetchImpl: checkinFetch([8000, 8000], {
+      ledger: [dailyGrantRow()],
+      sparkLedger: [sparkGrantRow(35000, "2026-11-07T00:30:00")],
+    }),
+    sleepImpl: async () => {},
+  })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.match(out.message, /35000 星火积分 1 天内到期/)
 })
