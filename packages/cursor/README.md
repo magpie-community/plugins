@@ -135,9 +135,11 @@ Cursor's count of a step's tool calls includes calls the plugin answers itself:
 a tool the request doesn't have is refused to the model, and Cursor's own
 `get_mcp_tools` is answered with the request's tools. It also includes calls
 Cursor completes by itself, which it writes and completes in the step but never
-starts on the client or sends to it; those count toward it too. Once the count
-has come, a checkpoint whose state waits on exactly the calls the caller was
-given also ends the step (#550). The step's calls are the rest.
+starts on the client or sends to it; those count toward it too. When the count
+comes after the step's calls, a checkpoint whose state waits on exactly the
+calls the caller was given also ends the step (#550); a checkpoint between
+calls after a count sent ahead of them does not seal the batch early. The
+step's calls are the rest.
 
 These are retention limits. A missing, expired, restarted, busy, incompatible,
 or full owner uses the original history reconstruction and stateless decoder

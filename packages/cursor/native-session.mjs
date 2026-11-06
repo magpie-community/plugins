@@ -495,6 +495,7 @@ export class StepCalls {
     this.execs = new Set() // the short strings of each exec's args: its tool_call_id among them
     this.partial = new Set() // calls the model is writing in this step
     this.byCursor = new Set()
+    this.listedAfter = false // whether tool_requests_listed came after the latest call/update
   }
   // update takes an InteractionUpdate's own field (num) and its fields; it
   // says whether a call was completed by Cursor: one this step wrote (7)
@@ -502,6 +503,7 @@ export class StepCalls {
   // completion of an earlier step's call is never counted again.
   update(n, uf) {
     if (n !== 2 && n !== 3 && n !== 7) return false
+    this.listedAfter = false
     const id = str(uf, 1)
     if (!id) return false
     if (n === 2) this.started.add(id)
@@ -512,14 +514,23 @@ export class StepCalls {
     return true
   }
   // exec notes an exec's args, whatever its kind: each kind keeps its
-  // tool_call_id at a field of its own (ShellArgs 4, ReadArgs 2, McpArgs 3)
+  // tool_call_id at a field of its own (ShellArgs 4, ReadArgs 2, McpArgs 3).
+  // If #3 came before its exec, it was not completed by Cursor after all.
   exec(data) {
+    this.listedAfter = false
     try {
       for (const e of this.parse(data)) {
         if (e.wire !== 2 || e.num === 15 || e.num === 19) continue
-        for (const a of this.parse(e.data)) if (a.wire === 2 && a.data.length && a.data.length <= 512) this.execs.add(a.data.toString("utf8"))
+        for (const a of this.parse(e.data)) if (a.wire === 2 && a.data.length && a.data.length <= 512) {
+          const s = a.data.toString("utf8")
+          this.execs.add(s)
+          this.byCursor.delete(s)
+        }
       }
     } catch {}
+  }
+  listed() {
+    this.listedAfter = true
   }
   get completed() {
     return this.byCursor.size
@@ -536,6 +547,7 @@ export class StepCalls {
   nextStep() {
     this.partial.clear()
     this.byCursor.clear()
+    this.listedAfter = false
   }
 }
 // pendingCalls is how many calls a checkpoint (ConversationStateStructure)
@@ -1126,11 +1138,15 @@ class NativeSession {
     this.sealBatch()
   }
   // A checkpoint whose state waits on just the calls handed to the caller,
-  // after the step's count, is a step Cursor has finished: what more the
-  // count says will not come (plugins#550).
+  // after the step's count came at the end of the step's calls, is a step
+  // Cursor has finished: what more the count says will not come (plugins#550).
+  // When the count was sent before or between the step's calls, a mid-batch
+  // checkpoint after an early call has only the calls sent so far in
+  // pending_tool_calls and must not seal the batch early before the
+  // remaining calls arrive.
   waitedOn(data) {
     const s = this.segment
-    if (this.terminal || this.state === "awaiting-results" || s.closed || s.expected == null || !s.calls.length) return
+    if (this.terminal || this.state === "awaiting-results" || s.closed || s.expected == null || !s.calls.length || !this.stepCalls.listedAfter) return
     if (pendingCalls(data) !== s.calls.length) return
     s.waitedOn = true
     this.sealBatch()
@@ -1145,6 +1161,7 @@ class NativeSession {
       return
     }
     this.segment.expected = count
+    this.stepCalls.listed()
     if (this.state === "awaiting-results") return // an identical retransmission
     this.waitForBatch()
     this.sealBatch()
