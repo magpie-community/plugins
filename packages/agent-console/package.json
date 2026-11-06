@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-agent-console",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "description": "在 magpie 窗口里加一个「Agent 控制台」页面：用常驻本地服务驱动本机的 Agent CLI（Claude Code、Codex、Cursor 等），带结构化时间线。A Magpie page that drives local Agent CLIs (Claude Code, Codex, Cursor, and others) with a persistent local daemon and a structured timeline.",
   "author": "qingnian108 (https://github.com/qingnian108)",
   "homepage": "https://github.com/qingnian108/magpie-agent-console",

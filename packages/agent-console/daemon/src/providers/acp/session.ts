@@ -315,15 +315,16 @@ export class AcpSession implements ProviderSession {
    * Switch model → refresh level options from the new config options it returns → then apply the level (as Paseo does).
    * Cursor connects with parameterizedModelPicker: only the base model name is sent (grok-4.6); level / Fast are separate config options.
    */
-  private async applySessionModel(model: string | null): Promise<void> {
+  private async applySessionModel(model: string | null, force = false): Promise<void> {
     if (!this.ctx || !this.active) return;
     const value = model && this.o.flavor === "cursor" ? model.replace(/\[.*\]$/u, "") : model;
     if (value) {
       const modelOption = this.currentConfig().find((o) => o.id === (this.modelConfigId ?? "model"));
       const values = (modelOption?.options ?? []).flatMap((x) => x.options ? x.options : [x])
         .map((x) => x.value).filter((x): x is string => typeof x === "string");
-      // Old sessions may have saved another Agent's model ID. Skip invalid values and let ACP keep its current model.
-      if (!values.length || values.includes(value)) {
+      // Startup/default sync (!force): validate against the session/new snapshot.
+      // Explicit user pick (force): models may have been enabled since boot.
+      if (force || !values.length || values.includes(value)) {
         await this.setOption(this.modelConfigId ?? "model", value);
       } else {
         log("info", `忽略 ${this.o.binName} 的无效模型：${value}`);
@@ -564,14 +565,14 @@ export class AcpSession implements ProviderSession {
     await notifyP;
   }
 
-  async setModel(model: string | null): Promise<void> {
+  async setModel(model: string | null, opts?: { force?: boolean }): Promise<void> {
     this.o.model = model;
     await this.ready();
     if (this.o.imagesFollowStartModel) {
       // dsh answered initialize for the model it started on; another model may not take image blocks (it refuses the prompt)
       this.promptCaps = model === this.startModel ? this.initCaps : { ...this.initCaps, image: false };
     }
-    await this.applySessionModel(model);
+    await this.applySessionModel(model, Boolean(opts?.force));
   }
 
   async setMode(mode: Mode): Promise<void> {

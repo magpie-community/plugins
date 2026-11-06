@@ -1,18 +1,20 @@
 // Self-heal after the plugin host restarts (Magpie restarts its Bun plugin host from time to time; the old host's daemon exits with it
 // and the gate key / port change). This page was opened by the gate with the Magpie plugin page URL in the fragment (#t=…&b=…).
 // When the daemon can't be reached for a few seconds, the page goes back to that Magpie page: boot.js reads the fresh session.js and
-// opens the new gate, which starts a new daemon. Only a loopback Magpie plugin page URL is ever followed (no open redirect),
+// opens the new gate, which starts a new daemon. Only a Magpie plugin page URL on loopback or exact wails.localhost is ever followed (no open redirect),
 // and the token is never put anywhere but this page's own fragment.
 
-/** The same check as lib/gate.mjs safeBackUrl: http(s), loopback host, no credentials, /_magpie/plugin/<id>/[page/]index.html */
-export function safeBackUrl(raw: string | null | undefined): string | null {
+/** Same check as lib/gate.mjs safeBackUrl: http(s), loopback or exact wails.localhost, no credentials, /_magpie/plugin/<id>/[page/]index.html */
+export function safeBackUrl(raw: string | null | undefined, ua = typeof navigator !== "undefined" ? navigator.userAgent : ""): string | null {
   if (typeof raw !== "string" || !raw || raw.length > 2048) return null;
   let u: URL;
   try { u = new URL(raw); } catch { return null; }
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   if (u.username || u.password) return null;
   const host = u.hostname.toLowerCase();
-  if (host !== "127.0.0.1" && host !== "localhost" && host !== "[::1]") return null;
+  const loopback = host === "127.0.0.1" || host === "localhost" || host === "[::1]";
+  const magpieWin = /Windows/.test(ua) && host === "wails.localhost" && u.protocol === "http:" && u.port === "";
+  if (!loopback && !magpieWin) return null;
   if (!/^\/_magpie\/plugin\/[A-Za-z0-9_-]{1,128}\/(?:page\/)?index\.html$/.test(u.pathname)) return null;
   return `${u.protocol}//${u.host}${u.pathname}${u.search}`;
 }

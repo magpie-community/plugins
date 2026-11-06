@@ -148,22 +148,42 @@ describe("self-heal back URL (host restart)", () => {
     [good + "#frag", good],
     ["http://localhost:3425/_magpie/plugin/abc/page/index.html?x=1", "http://localhost:3425/_magpie/plugin/abc/page/index.html?x=1"],
     ["http://[::1]:3430/_magpie/plugin/abc/index.html", "http://[::1]:3430/_magpie/plugin/abc/index.html"],
+    // Windows Magpie desktop (exact host only)
+    ["http://wails.localhost/_magpie/plugin/abc/index.html", "http://wails.localhost/_magpie/plugin/abc/index.html"],
+    ["https://wails.localhost/_magpie/plugin/abc/page/index.html?x=1", null],
+    ["http://wails.localhost:8080/_magpie/plugin/a/index.html", null],
+    ["https://localhost:4430/_magpie/plugin/a/index.html", "https://localhost:4430/_magpie/plugin/a/index.html"],
+    ["http://wails.localhost/_magpie/plugin/abc/evil.html", null],
+    ["http://evil-wails.localhost/_magpie/plugin/abc/index.html", null],
+    ["http://wails.localhost.evil.com/_magpie/plugin/abc/index.html", null],
+    ["http://sub.wails.localhost/_magpie/plugin/abc/index.html", null],
     ["https://evil.example/_magpie/plugin/abc/index.html", null],
     ["http://127.0.0.1.evil.example/_magpie/plugin/abc/index.html", null],
     ["http://user:pw@127.0.0.1:3430/_magpie/plugin/abc/index.html", null],
+    ["http://user:pw@wails.localhost/_magpie/plugin/abc/index.html", null],
     ["javascript:alert(1)//127.0.0.1/_magpie/plugin/a/index.html", null],
     ["file:///_magpie/plugin/abc/index.html", null],
+    ["wails://localhost/_magpie/plugin/abc/index.html", null], // macOS/Linux: no http nav from gate; use Magpie error postMessage
     ["http://127.0.0.1:3430/other/index.html", null],
     ["http://127.0.0.1:3430/_magpie/plugin/../../x/index.html", null],
     ["http://127.0.0.1:3430/_magpie/plugin/abc/evil.html", null],
     ["", null],
   ];
-  it("web and gate accept only a loopback Magpie plugin page", async () => {
+  it("web and gate accept only Magpie plugin pages on loopback or exact wails.localhost", async () => {
     const { safeBackUrl } = await import(/* @vite-ignore */ gateUrl);
     for (const [input, want] of cases) {
-      expect(webSafeBackUrl(input), input).toBe(want);
-      expect(safeBackUrl(input), input).toBe(want);
+      expect(webSafeBackUrl(input, "Windows NT 10.0"), input).toBe(want);
+      expect(safeBackUrl(input, "win32"), input).toBe(want);
     }
+  });
+  it("rejects Windows virtual host on non-Windows, including the default platform / UA", async () => {
+    const { safeBackUrl } = await import(/* @vite-ignore */ gateUrl);
+    const win = "http://wails.localhost/_magpie/plugin/a/page/index.html";
+    for (const os of ["linux", "darwin"]) expect(safeBackUrl(win, os)).toBeNull();
+    for (const ua of ["Macintosh", "X11; Linux x86_64", ""]) expect(webSafeBackUrl(win, ua)).toBeNull();
+    expect(safeBackUrl(win)).toBe(process.platform === "win32" ? win : null);
+    const isWindows = /Windows/.test(typeof navigator !== "undefined" ? navigator.userAgent : "");
+    expect(webSafeBackUrl(win)).toBe(isWindows ? win : null);
   });
   it("reads b= from the fragment next to the token", () => {
     expect(backUrlFromHash(`#t=abc&b=${encodeURIComponent(good)}`)).toBe(good);
@@ -191,6 +211,13 @@ describe("self-heal back URL (host restart)", () => {
       expect(bad.headers.location).toBe(`http://127.0.0.1:${port}/app?#t=${token}&p=${daemonPort}`);
       // without the key there's still nothing
       expect((await request(port, `/open?back=${encodeURIComponent(good)}`)).status).toBe(403);
+      const wails = "http://wails.localhost/_magpie/plugin/tok123/index.html";
+      const win = await request(port, `/open?k=${key}&back=${encodeURIComponent(wails)}`);
+      expect(win.status).toBe(302);
+      expect(win.headers.location).toBe(`http://127.0.0.1:${port}/app?#t=${token}&p=${daemonPort}` +
+        (process.platform === "win32" ? `&b=${encodeURIComponent(wails)}` : ""));
+      const lookalike = await request(port, `/open?k=${key}&back=${encodeURIComponent("http://evil-wails.localhost/_magpie/plugin/tok/index.html")}`);
+      expect(lookalike.headers.location).toBe(`http://127.0.0.1:${port}/app?#t=${token}&p=${daemonPort}`);
     } finally {
       await gate.close();
     }
