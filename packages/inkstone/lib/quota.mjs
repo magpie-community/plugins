@@ -31,6 +31,13 @@ export function compact(n) {
   return s === "" ? "0" : s
 }
 
+/** 整数千分位（限速这类大数字读起来省事）：2000000 → "2,000,000"。 */
+export function group(n) {
+  const v = Math.round(Number(n))
+  if (!Number.isFinite(v) || v <= 0) return ""
+  return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+}
+
 /** 控制台的时间：ISO 字符串或秒/毫秒时间戳 → ISO，读不出就 undefined。 */
 export function isoOf(value) {
   if (value === null || value === undefined || value === "") return undefined
@@ -131,14 +138,18 @@ export function packageRows(packages) {
     // 控制台对每个包都给了一个名字：优先展示它，免得“墨点包1”只有内部人知道是什么。
     const vendorName = typeof p?.remark === "string" && p.remark.trim() ? p.remark.trim() : typeof p?.remark_en === "string" && p.remark_en.trim() ? p.remark_en.trim() : ""
     const round = (n) => Math.round(n * 100) / 100
-    const pct = total > 0 ? Math.max(0, Math.min(100, ((total - remaining) / total) * 100)) : 0
+    // 面板的约定（plugin-host 的 usage 文档）：amount 是**已用**、limit 是总量，
+    // 面板显示"剩余 = limit - amount"。amount 填剩余会被再减一次，整行数字对不上。
+    const spent = total > 0 ? Math.max(0, total - remaining) : undefined
+    const pct = spent !== undefined ? Math.max(0, Math.min(100, (spent / total) * 100)) : undefined
     rows.push({
       name: vendorName || `墨点包${rows.length + 1}`,
-      used: pct,
+      ...(pct !== undefined ? { used: pct } : {}),
       display: `剩 ${compact(remaining)}${total > 0 ? ` / ${compact(total)}` : ""}${day ? ` · ${day} 到期` : ""}`,
-      amount: round(remaining),
-      ...(total > 0 ? { limit: round(total) } : {}),
+      ...(spent !== undefined ? { amount: round(spent), limit: round(total) } : {}),
       unit: "墨点",
+      // 包到期不是重置：交给宿主的 runsOutAt/runsOut（hover 行），不占 resetsAt。
+      ...(expiry ? { runsOutAt: expiry, runsOut: round(remaining) } : {}),
       aside: true,
     })
   }
@@ -162,7 +173,7 @@ export function cardOf({ balance, packages, user, errors = [] } = {}) {
           {
             name: "限速",
             used: 0,
-            display: `${flexNum(balance.rpm_limit) || "—"} RPM · ${flexNum(balance.tpm_limit) || "—"} TPM`,
+            display: `${group(flexNum(balance.rpm_limit)) || "—"} RPM · ${group(flexNum(balance.tpm_limit)) || "—"} TPM`,
             aside: true,
           },
         ]

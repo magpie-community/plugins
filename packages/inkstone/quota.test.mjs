@@ -83,6 +83,16 @@ test("packageRows tolerates every envelope and filters empty or dead packs", () 
   ]
   const rows = packageRows({ packages: packs })
   expect(rows.map((r) => r.name)).toEqual(["每月免费基础包", "Top-up"])
+  // amount is the *used* share: 10 - 3.5, used is the percentage, limit is the total
+  expect(rows[0]).toEqual({
+    name: "每月免费基础包",
+    used: 35,
+    display: "剩 6.5 / 10",
+    amount: 3.5,
+    limit: 10,
+    unit: "墨点",
+    aside: true,
+  })
   expect(packageRows({ items: packs }).length).toBe(2)
   expect(packageRows(packs).length).toBe(2)
   expect(packageRows(null)).toEqual([])
@@ -92,6 +102,9 @@ test("packageRows tolerates every envelope and filters empty or dead packs", () 
   const noTotal = packageRows([{ remaining_credits: 1, status: "available" }])[0]
   expect(noTotal.display).toBe("剩 1")
   expect(noTotal.limit).toBeUndefined()
+  expect(noTotal.amount).toBeUndefined()
+  // a pack with no expiry loses runsOutAt and never mutates resetsAt
+  expect(packageRows([{ remaining_credits: 1, total_credits: 1 }])[0].resetsAt).toBeUndefined()
 })
 
 test("cardOf with nothing at all still produces a card, not a crash", () => {

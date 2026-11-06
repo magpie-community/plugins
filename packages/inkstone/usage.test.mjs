@@ -48,7 +48,13 @@ test("balance, 5h/7d windows and the credit packs become the card", async () => 
   expect(names).not.toContain("最近到期")
 
   expect(u.windows.find((w) => w.name === "每月免费基础包").display).toBe("剩 6.5 / 10 · 2026-11-28 到期")
-  expect(u.windows.find((w) => w.name === "限速").display).toBe("50 RPM · 2000000 TPM")
+  // amount is the used share (10 - 6.5), not the remainder
+  expect(u.windows.find((w) => w.name === "每月免费基础包").used).toBe(35)
+  expect(u.windows.find((w) => w.name === "每月免费基础包").amount).toBe(3.5)
+  expect(u.windows.find((w) => w.name === "每月免费基础包").limit).toBe(10)
+  expect(u.windows.find((w) => w.name === "每月免费基础包").runsOutAt).toBe("2026-11-28T12:00:00.000Z")
+  expect(u.windows.find((w) => w.name === "每月免费基础包").runsOut).toBe(6.5)
+  expect(u.windows.find((w) => w.name === "限速").display).toBe("50 RPM · 2,000,000 TPM")
   expect(u.windows.find((w) => w.name === "本月免费额度")).toBeUndefined()
   // the card carries no per-model rows: token spend is the usage page's job
   expect(names.some((n) => n.startsWith("模型 "))).toBe(false)
