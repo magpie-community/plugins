@@ -1,0 +1,24 @@
+{
+  "name": "@magpie-community/agent-yuri",
+  "version": "0.1.0",
+  "description": "Connect Yuri's OpenCode V2 service through opencode-magpie-plugin, preserving existing plugins and options",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "yuri.agent.js", "bridge.mjs", "vendor.mjs", "README.md", "THIRD_PARTY.md", "ASSET_NOTICE.md", "LICENSE", "LICENSE-YURI", "LICENSE-JSONC-PARSER"],
+  "scripts": { "test": "node --test yuri.test.mjs" },
+  "engines": { "node": ">=22" },
+  "keywords": ["magpie", "magpie-agent", "yuri", "opencode"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/yuri"
+  },
+  "author": "yee94 (https://github.com/yee94)",
+  "homepage": "https://github.com/yee94/magpie-agent-yuri",
+  "magpie": {
+    "name": "Yuri",
+    "agent": "./yuri.agent.js",
+    "icon": "data:image/png;base64,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"
+  }
+}
