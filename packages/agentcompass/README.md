@@ -99,7 +99,7 @@ The router avoids re-classifying every HTTP request and preserves prompt caches 
 
 - **In-turn tool loops (`within: true` → `why: "turn"`)**: When the latest message is a tool result (`role: "tool"`, `tool_result`, `function_call_output`) or an injected system reminder with no new user text, the session's `<model>:<effort>` is held unconditionally.
 - **Warm KV cache & short follow-ups (`why: "cache" | "followup"`)**: While a session's prefix cache is warm (`5m` for Anthropic/Gemini, `1h` for ChatGPT/Codex Responses and DeepSeek) or when the user sends a short continuation nudge (`"继续"`, `"go ahead"`, `"lgtm"`), the current model is kept and `keepsEffort` prevents effort from dropping mid-session.
-- **History replay across pooled VMs (`replayedState`)**: Magpie runs each request on a pooled `moejs` runtime (`sync.Pool`). When a follow-up or tool loop lands on a runtime that did not serve the earlier turn, the middleware slices the anchor turn out of the resent conversation history and replays its decision (up to 4 turns back) so every runtime produces the same route.
+- **History replay across pooled VMs (`replayedState`)**: Magpie runs each request on a pooled `moejs` runtime (`sync.Pool`). When a follow-up or tool loop lands on a runtime that did not serve the earlier turn, the middleware slices the anchor turn out of the resent conversation history and replays its decision (up to 4 turns back) so every runtime produces the same route. Magpie's own affinity can't do this: it runs after the middleware has rewritten the model and only orders accounts within it. Responses clients that send only `previous_response_id` are covered, because Magpie fills in the conversation first. A client that sends only its last message, with no history, can't be held.
 - **Re-route triggers**: Re-evaluates only on `first` (new session), `provider_unhealthy` (upstream `status >= 400` recorded by `onResponse`), `quota_exhausted`, `capability_outgrown` (new visual/GUI input or complex work on a light model), `outgrown` (input exceeds 95% of `context_window`), `worn` (`compacted + live >= 2M` tokens), or `cold` / `compacted`.
 
 ### 2. Task profiling & Model DNA allocation (`src/profiler-core.js`, `src/allocator.js`)
@@ -226,7 +226,7 @@ Magpie 会用包名前缀命名号池策略（`routings`），而客户端请求
 
 ### 决策流程简述
 
-1. **会话连续性优先（`src/continuity.js`）**：轮内工具循环（`within: true`）、KV 缓存温热期内（Anthropic/Gemini `5m`，ChatGPT/Codex Responses 与 DeepSeek `1h`）或短追问（`"继续"`、`"go ahead"`、`"lgtm"`）直接保持当前 `<model>:<effort>` 且思考档位单调不降级（`keepsEffort`）。跨 `sync.Pool` 池化 `moejs` 实例时，自动从客户端重发的对话历史回溯锚点轮次（最多 4 轮）重放决策，确保任意实例结果一致。仅在新会话、上游报错（`status >= 400`）、配额耗尽、新增视觉/GUI 或任务复杂度越界、输入超窗口 95%、累计上下文达 2M、或缓存冷化/压缩后重新路由。
+1. **会话连续性优先（`src/continuity.js`）**：轮内工具循环（`within: true`）、KV 缓存温热期内（Anthropic/Gemini `5m`，ChatGPT/Codex Responses 与 DeepSeek `1h`）或短追问（`"继续"`、`"go ahead"`、`"lgtm"`）直接保持当前 `<model>:<effort>` 且思考档位单调不降级（`keepsEffort`）。跨 `sync.Pool` 池化 `moejs` 实例时，自动从客户端重发的对话历史回溯锚点轮次（最多 4 轮）重放决策，确保任意实例结果一致。Magpie 自带的亲和做不到这一点：它在中间件改写模型之后才运行，只在已选定的模型里挑账号。只发 `previous_response_id` 的 Responses 客户端由 Magpie 先补全对话，同样适用；只发最后一条消息且不带历史的客户端无法续用。仅在新会话、上游报错（`status >= 400`）、配额耗尽、新增视觉/GUI 或任务复杂度越界、输入超窗口 95%、累计上下文达 2M、或缓存冷化/压缩后重新路由。
 2. **10 维画像与能力选型（`src/profiler-core.js`、`src/allocator.js`）**：单遍有界解析 Anthropic / OpenAI Responses / Chat / Gemini 请求体，生成 10 维任务画像，结合 7 维客观能力、Effort 投入曲线、3 维 Model DNA 与防杀鸡用牛刀惩罚对 `candidateModels` 评分。
 3. **订阅配额精算（`src/quota.js`）**：过滤低于安全水位（长窗口 `5%`、短窗口 `10%`）或限流的窗口，计算期望短缺机会成本，并在距重置 36 小时内对富余额度给予冲刺加分（`reset_bonus` / `sprint_sunk`）。
 
