@@ -369,7 +369,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
       methods: [
         {
           type: "oauth",
-          label: "Browser sign-in (console credits + API key)",
+          label: "Browser sign-in (ink credits + creates an API key)",
            /**
             * 插件专用 profile 的窗口；插件实时读会话并自己关窗。
             */
@@ -406,8 +406,8 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
               opened: true,
               instructions:
                 process.platform === "win32"
-                  ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it."
-                  : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code), then close that window yourself; the plugin then reads the session from the profile and finishes.",
+                  ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it. After the sign-in the plugin creates an ink-* API key on your account (leave the prompt empty; paste an existing key or turn off \"Create an API key on browser sign-in\" to skip) — the plaintext is shown once, and the plugin keeps it for you."
+                  : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code), then close that window yourself; the plugin then reads the session from the profile and finishes. After the sign-in the plugin creates an ink-* API key on your account (leave the prompt empty; paste an existing key or turn off \"Create an API key on browser sign-in\" to skip) — the plaintext is shown once, and the plugin keeps it for you.",
               method: "auto",
               async callback(_code, { signal } = {}) {
                 let token = ""

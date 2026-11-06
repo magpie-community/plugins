@@ -3,27 +3,29 @@
 // 控制台的 Key 列表只给 masked_key，明文只在创建时返回一次，所以**没有
 // "复用旧 Key"这条路**：要么用户把现有 Key 粘进来，要么插件新建一把。
 // Key 名上限 20 字符、单账号上限 10 把，所以名字必须短、清理必须克制：
-//   - 名字 `ink-<host6>-<acct4>-<rand4>`，正好 20 字符；
-//   - host 段隔离别的机器，acct 段隔离同机的另一个账号，随机段防撞名；
-//   - 清理只碰 `ink-<host6>-<acct4>-*`，手动建的 Key 永远不动。
+//   - 名字 `ink-<host4>-<acct8>-<rand2>`，正好 20 字符；
+//   - host 段隔离别的机器（os.hostname()，不是环境变量——macOS 的 GUI 进程
+//     没有 COMPUTERNAME/HOSTNAME），acct 段 8 位隔离同机的另一个账号
+//     （作者要求：4 位的碰撞概率 1/65536 不可接受），随机段让同名再建不撞；
+//   - 清理只碰 `ink-<host4>-<acct8>-*`，手动建的 Key 永远不动。
 
 import { randomBytes, randomUUID } from "node:crypto"
+import { hostname } from "node:os"
 import { fingerprint, listKeys, createKey, deleteKey, probeApiKey, KEY_LIMIT } from "./protocol.mjs"
 
-/** 6 hex：两台机器不撞、又给 4 位账号与 4 位随机留足 20 字符空间。 */
-export const HOST_TAG = fingerprint(
-  process.env.COMPUTERNAME || process.env.HOSTNAME || "host",
-).slice(0, 6)
+/** 4 hex：机器不撞；macOS GUI 进程没有 COMPUTERNAME/HOSTNAME，必须用 os.hostname()。 */
+export const HOST_TAG = fingerprint(hostname()).slice(0, 4)
 
-const accountTag = (username) => fingerprint(username || "account").slice(0, 4)
-const randomTag = () => randomBytes(2).toString("hex")
+const accountTag = (username) => fingerprint(username || "account").slice(0, 8)
+/** 随机段只有 1 字节：4+4+1+8+1+2 = 20，平台 Key 名上限。 */
+const randomTag = () => randomBytes(1).toString("hex")
 
 /** 本插件建的 Key 的名字前缀（含机器与账号段），清理按它圈范围。 */
 export function keyPrefixFor(username) {
   return `ink-${HOST_TAG}-${accountTag(username)}-`
 }
 
-/** ≤20 字符的 Key 名：4 + 6 + 1 + 4 + 1 + 4 = 20。 */
+/** ≤20 字符的 Key 名：4 + 4 + 1 + 8 + 1 + 2 = 20。 */
 export function keyNameFor(username) {
   return `${keyPrefixFor(username)}${randomTag()}`
 }

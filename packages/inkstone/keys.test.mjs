@@ -3,8 +3,8 @@
 // one-time plaintext rule.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
-import { KEY_LIMIT } from "./lib/protocol.mjs"
-import { ensureKey, keyNameFor, keyPrefixFor, pruneKeys } from "./lib/keys.mjs"
+import { KEY_LIMIT, fingerprint } from "./lib/protocol.mjs"
+import { HOST_TAG, ensureKey, keyNameFor, keyPrefixFor, pruneKeys } from "./lib/keys.mjs"
 import { fakeInkStone, json, ok, fail } from "./fake.mjs"
 
 let f
@@ -29,6 +29,13 @@ test("a key name fits the console's 20-character limit and carries this host and
   expect(name.length).toBeLessThanOrEqual(20)
   expect(name.startsWith(keyPrefixFor("u"))).toBe(true)
   expect(keyPrefixFor("u").startsWith("ink-")).toBe(true)
+  // the account segment is 8 hex (4 gave a 1/65536 collision the maintainer
+  // rejected), the host segment comes from os.hostname() and is 4 hex, the
+  // random tail is what is left of the 20-char budget
+  expect(keyPrefixFor("u")).toBe(`ink-${HOST_TAG}-${fingerprint("u").slice(0, 8)}-`)
+  expect(HOST_TAG).toHaveLength(4)
+  expect(fingerprint("u").slice(0, 8)).toHaveLength(8)
+  expect(name.length).toBe(keyPrefixFor("u").length + 2)
 })
 
 test("a pasted key is probed and used as-is, with no key created", async () => {
