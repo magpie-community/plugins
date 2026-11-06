@@ -118,7 +118,9 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     `prompt_cache_hit_tokens` and `cached_tokens` are read as cache reads
     too. A `token_usage` that names no cache count at all goes on with
     `magpie_cache_unknown: true`, so magpie shows the cache as unknown,
-    not as a 0% miss (0.2.26).
+    not as a 0% miss (0.2.26). So does one that counts 0 read and 0
+    written: Trae answers that while it bills the turn at its cache price
+    (0.2.31).
     `done`'s `finish_reason` `length`/`max_tokens` is OpenAI's `length`.
   - Queue events are ignored.
   - A `{"reasoning_content": …}` object written into the text is reasoning,

@@ -1562,7 +1562,13 @@ const eventName = (s) =>
 // went on with no cache field, which magpie can only read as a miss, so
 // since 10-28 every chat showed 0 (yetone/magpie#3979, #3991; plugins#434
 // says Trae stopped sending cache_read_input_tokens then). A count naming
-// the cache, a 0 included, is Trae's own word and goes as before.
+// the cache with nothing read and nothing written is unknown too: Trae
+// answers 0 and 0 while it bills the turn at its cache price (a real
+// Trae CN account on 10-29, deepseek-v4.1-flash, a 146k prompt: 5.84
+// credits cold, 0.12 warm, cache_read 0 on both; dingminhua/dsh-connect-
+// trae's docs/ISSUE69_DIAGNOSIS.md), so a 0 says nothing of the cache
+// (feng2787 on magpie's Discord: every hit 0). A nonzero read or write is
+// Trae's word, as before.
 // DeepSeek's prompt_cache_hit_tokens, a bare cached_tokens and the
 // Responses-style input_tokens_details are read too, the largest of them,
 // should Trae pass a model's own usage on.
@@ -1585,6 +1591,7 @@ function tokensOf(u) {
     const w = n(u.cache_creation_input_tokens, u.cacheCreationInputTokens)
     if (r) out.cache_read_input_tokens = r
     if (w) out.cache_creation_input_tokens = w
+    if (!r && !w) out.magpie_cache_unknown = true
   }
   const thought = n(u.reasoning_tokens, u.completion_tokens_details?.reasoning_tokens)
   if (thought) out.completion_tokens_details = { reasoning_tokens: thought }
