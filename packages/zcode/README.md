@@ -327,11 +327,13 @@ the body's code, not the HTTP status:
   and the account is then **held in the plugin**: until the wait is over, a
   check-in answers that same failed (`until` and all) and asks ZCode nothing.
   magpie asks a failed again after 30 minutes of its own whatever `until`
-  says, so the hold has to live here. A `Retry-After` ZCode sent is honored
-  up to six hours; without one the account's own wait doubles from half an
-  hour, and a read that comes through forgets it. (11-04, #503: one owner
-  read 180 of them over four days at magpie's 30-minute retry, across
-  several accounts.);
+  says, so the hold has to live here (magpie from v0.1.3165 honors a failed's
+  `until` itself; older versions lean on this hold). A `Retry-After` ZCode
+  sent is honored up to six hours; without one the account's own wait doubles
+  from half an hour, and a read that comes through forgets it. The hold
+  belongs to one account and lives in memory — a magpie restart forgets it.
+  (11-04, #503: one owner read 180 of them over four days at magpie's
+  30-minute retry, across several accounts.);
 - anything else, an HTTP error without a code, or a reply that isn't
   JSON: *failed*, which magpie asks again later that day. It is never
   taken as claimed, and a failed claim leaves the account's sign-in

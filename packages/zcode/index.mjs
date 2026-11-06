@@ -744,6 +744,13 @@ export function resetRateWait(expire = false) {
   }
   for (const [k, h] of rateWait) rateWait.set(k, { ...h, until: new Date(Date.now() - 1).toISOString() })
 }
+// holdKey names the account a wait belongs to. stateOf gives key: "" to a
+// sign-in that has a jwt and no API key — the Start-Plan-only sign-ins
+// that claim gift plans, #503's case — so the key alone would put every
+// one of them under a single hold, and one account's 429 would answer for
+// all of them. The jwt tells them apart; a renewed token starting its own
+// wait is fine.
+const holdKey = (s) => s.key || s.jwt
 // retryAfterMs is a Retry-After header, in seconds or as an HTTP date, in
 // ms; 0 when there is none or it doesn't read.
 function retryAfterMs(res) {
@@ -924,6 +931,10 @@ const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
 // (a Retry-After ZCode sent, else the account's own wait doubling from
 // RECHECK_MS, out to RATE_LIMIT_MAX_MS — see RATE_LIMITED), and every ask
 // inside the wait answers the failed it already gave, without a request.
+// The hold belongs to one account (`s.key || s.jwt`) and lives in this
+// process's memory alone: a magpie restart forgets it. magpie from
+// v0.1.3165 honors a failed's `until` itself; older versions wait for
+// this hold, which is why it stays.
 // A failed one is asked again later in the
 // day, when a plan claimed now answers 1003. An inactive stands only
 // until RECHECK_MS from now, so a plan dropped into the feed later in
@@ -936,17 +947,23 @@ async function claimDaily(s) {
   // a rate limit this account is still under: the same failed again, and
   // not one request (magpie asks a failed again after 30 minutes of its
   // own, so holding it is the plugin's job — see RATE_LIMITED)
-  const held = rateWait.get(s.key)
+  const held = rateWait.get(holdKey(s))
   if (held && Date.now() < Date.parse(held.until)) return { outcome: "failed", message: held.message, until: held.until }
   const { plans, unread, rate = null } = await toClaim(s)
   // a rate-limited read: held here until the wait is over
   if (rate !== null) {
     const message = unread.join("; ") || "ZCode rate limited this account"
-    return { outcome: "failed", message, until: noteRateLimit(s.key, rate, message) }
+    return { outcome: "failed", message, until: noteRateLimit(holdKey(s), rate, message) }
   }
-  rateWait.delete(s.key) // a read that came through forgets the wait
-  if (!plans.length && unread.length) return { outcome: "failed", message: unread.join("; ") }
-  if (!plans.length) return { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
+  // the feed answered and no claim is read: the wait is over. It is not
+  // forgotten before the claims below, so a claim ZCode keeps limiting
+  // waits longer each time (see noteRateLimit)
+  if (!plans.length) {
+    rateWait.delete(holdKey(s))
+    return unread.length
+      ? { outcome: "failed", message: unread.join("; ") }
+      : { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
+  }
   const got = []
   for (const p of plans) got.push({ name: p.name, ...(await claimOne(s, p.plan_id)) })
   const named = (o) => got.filter((g) => g.outcome === o).map((g) => g.name)
@@ -962,7 +979,8 @@ async function claimDaily(s) {
   if (claimed.length) routes.delete(s.key + "\0" + s.jwt)
   // a claim ZCode rate limited: the plan may still be there, later
   const limitedClaim = got.find((g) => g.rate !== undefined)
-  if (limitedClaim) return { outcome: "failed", message: said, until: noteRateLimit(s.key, limitedClaim.rate, said) }
+  if (limitedClaim) return { outcome: "failed", message: said, until: noteRateLimit(holdKey(s), limitedClaim.rate, said) }
+  rateWait.delete(holdKey(s)) // nothing in this check-in was rate limited: the wait is over
   // a list that didn't read may hold a plan not claimed: asked again
   if (unread.length || got.some((g) => g.outcome === "failed")) return { outcome: "failed", message: said }
   if (got.some((g) => g.outcome === "captcha")) return { outcome: "captcha", message: said }

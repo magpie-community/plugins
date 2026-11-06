@@ -263,6 +263,27 @@ test("a claim ZCode rate limited (3002) is failed and held too", async () => {
   expect(Date.parse(r.until)).toBeGreaterThan(Date.now() + 25 * 60_000)
 })
 
+// stateOf gives a sign-in that has a jwt and no API key (the
+// Start-Plan-only accounts that claim gift plans) key: "", so a hold keyed
+// by the key alone would answer for every one of them
+test("another keyless sign-in still reaches ZCode while one is held", async () => {
+  claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  expect((await checkin()).outcome).toBe("failed") // the first account is held
+  const other = claimWith(() => json(CLAIMED_NOW), touchOf([TRUST, "ZCode Trust Build"]))
+  const r = await checkin(oauth({ site: "zai", jwt: jwt(now + 86401), device: DEVICE }))
+  expect(other.length).toBeGreaterThan(0) // asked ZCode all the same
+  expect(r.outcome).toBe("claimed")
+})
+
+test("a claim ZCode keeps limiting waits longer each time", async () => {
+  claimWith(() => json(RATE_LIMITED, 400), touchOf([TRUST, "ZCode Trust Build"]))
+  const first = Date.parse((await checkin()).until)
+  resetRateWait(true) // the wait passed, so the next claim reaches ZCode
+  claimWith(() => json(RATE_LIMITED, 400), touchOf([TRUST, "ZCode Trust Build"]))
+  const second = Date.parse((await checkin()).until)
+  expect(second - first).toBeGreaterThan(20 * 60_000) // ~30 min -> ~60 min
+})
+
 test("the wait doubles while ZCode keeps turning the ask away, and a read that comes through forgets it", async () => {
   claimWith(() => json(CLAIMED_NOW), () => json("", 429))
   const first = Date.parse((await checkin()).until)
