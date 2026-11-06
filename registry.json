@@ -204,6 +204,16 @@
       }
     },
     {
+      "package": "@magpie-community/frp-connect",
+      "name": "FRP Connect",
+      "kind": "page",
+      "community": true,
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMwZjc2NmUiLz48cGF0aCBkPSJNMTAgMjJoMzAiIHN0cm9rZT0iI2YwZmRmYSIgc3Ryb2tlLXdpZHRoPSI0IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48cGF0aCBkPSJNNDAgMTRsMTIgOC0xMiA4eiIgZmlsbD0iI2YwZmRmYSIvPjxwYXRoIGQ9Ik01NCA0MkgyNCIgc3Ryb2tlPSIjNWVlYWQ0IiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxwYXRoIGQ9Ik0yNCAzNGwtMTIgOCAxMiA4eiIgZmlsbD0iIzVlZWFkNCIvPjwvc3ZnPg==",
+      "summary": {
+        "en": "A page to set up a frpc tunnel to your own frp server and start or stop it there, with a pinned and checksummed frpc. Read-only tools report the state, the log and the frpc.toml that would run.",
+        "zh": "在页面里配置你自己的 frp 服务器、启动或停止 frpc 隧道；frpc 固定版本并按 SHA256 校验下载。智能体只有只读工具，查看状态、日志和将运行的 frpc.toml。"
+      }
+    }
       "package": "@magpie-community/page-window-warmup",
       "name": "Window Warmup",
       "kind": "page",

@@ -1,0 +1,197 @@
+body {
+  margin: 0;
+  padding: 20px 24px;
+  max-width: 760px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  color: var(--magpie-fg, inherit);
+}
+
+header h1 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--magpie-muted, GrayText);
+}
+
+section h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--magpie-muted, GrayText);
+}
+
+/* a choice of two or five: a row of buttons, pressed or not, never the
+   platform's own select */
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: 8px;
+  border: 1px solid var(--magpie-line, ButtonBorder);
+  border-radius: 8px;
+  background: var(--magpie-card, Canvas);
+}
+
+.segmented button {
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: transparent;
+  font-size: 12px;
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--magpie-accent-soft, Highlight);
+  color: var(--magpie-accent, HighlightText);
+}
+
+.segmented + .sub {
+  margin-bottom: 10px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin-bottom: 14px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--magpie-muted, GrayText);
+}
+
+label input,
+label select,
+label textarea {
+  width: 100%;
+  box-sizing: border-box;
+  color: var(--magpie-fg, inherit);
+}
+
+.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.check input {
+  width: auto;
+}
+
+.reveal {
+  display: flex;
+  gap: 6px;
+}
+
+.reveal input {
+  flex: 1;
+  min-width: 0;
+}
+
+.reveal button {
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+#frpcPathRow {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ghost {
+  background: transparent;
+}
+
+.proxy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--magpie-line, ButtonBorder);
+  border-radius: 8px;
+}
+
+.proxy .line {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.proxy .line.first {
+  grid-template-columns: 1fr 120px;
+}
+
+.proxy .line.domains {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.proxy .del {
+  align-self: flex-start;
+}
+
+pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--magpie-line, ButtonBorder);
+  border-radius: 8px;
+  background: var(--magpie-card, Canvas);
+  white-space: pre;
+}
+
+#log {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+textarea {
+  min-height: 320px;
+  padding: 8px;
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#status {
+  font-size: 12px;
+  color: var(--magpie-muted, GrayText);
+}
+
+@media (max-width: 560px) {
+  .grid,
+  .proxy .line,
+  .proxy .line.first,
+  .proxy .line.domains {
+    grid-template-columns: 1fr;
+  }
+}
