@@ -122,7 +122,10 @@ textarea.tinput { height: auto; min-height: 60px; padding: 6px 10px; resize: ver
 
 /* Status dot */
 .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--muted); }
-.dot.run { background: var(--accent-2); animation: breathe 1.6s infinite; }
+.dot.ok { background: var(--ok); }
+/* Running: strong dark<->light blink so it reads at a glance in both themes. */
+.dot.run { background: var(--fg); animation: dot-blink 1s steps(1, end) infinite; box-shadow: 0 0 0 1px color-mix(in oklab, var(--fg) 45%, transparent); }
+@keyframes dot-blink { 50% { background: var(--bg); } }
 .dot.err { background: var(--danger); }
 .dot.wait { background: var(--warn); animation: breathe 1.6s infinite; }
 @keyframes breathe { 50% { opacity: .35; } }
@@ -152,6 +155,7 @@ textarea.tinput { height: auto; min-height: 60px; padding: 6px 10px; resize: ver
 .sm-opt.off:hover { background: none; }
 .sm-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
 .sm-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-label > svg { vertical-align: -2px; margin-right: 5px; }
 .sm-hint { font-size: var(--fs-s); color: var(--muted); white-space: normal; line-height: 1.4; }
 .sm-check { flex: none; width: 14px; display: inline-flex; color: var(--accent); }
 .sm-opt[aria-selected="true"] .sm-label { font-weight: 500; }

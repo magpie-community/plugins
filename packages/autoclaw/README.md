@@ -64,7 +64,11 @@ OpenCode 同样可加载（`opencode auth login`）。登录信息保存在 magp
 
 **② 旧链路自动补签（默认关）**：查额度（`magpie quota`、GUI 刷新）与 token 刷新时发现未签就补签（服务端幂等，本地按天去重、失败按小时重试）。旧版 magpie / OpenCode 宿主或偏好该行为的用户开启 `signinOnUsage`。
 
-`magpie quota` 的额度窗口里始终显示**每日签到**状态行（今日已签 ✓ / 今日未签 +N）。
+`magpie quota` 的额度窗口在查询成功时显示**每日签到**状态行（今日已签 ✓ / 今日未签 +N）。
+
+> **「登录领积分」类活动奖励**：服务端只为带整套官方桌面端业务头（`X-Channel: AutoClaw20`、`X-Version: 2.2.0`、UA `AutoClaw/2.2.0 (win-x64)`、`X-Tm: win-x64`、`X-Product` 等；所有平台都按这套 Windows 指纹上报）的 `POST /userapi/v1/user-info` 记录 `autoclaw_user_active` 活跃事件——没有这次调用，这类活动就领不到（yetone/magpie#3681）。本次实测到账：国际「AutoClaw Weekly Perks」+4000、国内「AutoClaw 用户登录奖励」+5000。
+>
+> **只有 ① 原生签到链路会调用 `user-info`**：用当前 access token 直接请求，access token 被上游拒绝时才刷新重试；`user-info` 本身不完成每日签到，每日签到仍由 `task-complete` 完成，两者相互独立。② 旧链路补签与不执行 `checkin` 钩子的宿主（OpenCode 1.x/2.x）不会领取活动奖励。
 
 旧链路的开关有**两个通道**（插件 options 优先，配置文件兜底；原生签到开关只在 GUI 的 Settings 里）：
 

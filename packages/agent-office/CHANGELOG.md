@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.4 · 2026-11-06
+
+### Fixed
+
+- Settings' Language, Scene and Quality pickers are read with their value ("Scene, Office"), wheeling past the end of a picker's list no longer closes it, and a picker opened from the keyboard near the foot of Settings stays open. The page's scrollbars are magpie's thin rounded thumb. By frederick-wang (#778, #773).
+
+## 0.3.3 · 2026-11-06
+
+### Changed
+
+- Settings' Language, Scene and Quality pickers are in-page menus instead of native `<select>`s: they open below the button, or above it when there is less room, stay inside the window, and work with the arrow keys, Home, End, Enter, Space, Tab and Escape (Escape closes the picker before Settings). The saved options are the same. By frederick-wang (#771, #744).
+
 ## 0.3.2 · 2026-11-05
 
 ### Added

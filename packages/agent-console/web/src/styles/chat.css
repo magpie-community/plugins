@@ -268,3 +268,32 @@ a.ac-local { cursor: pointer; }
   display: block; margin: 2px 0 6px; padding-left: 8px; border-left: 2px solid color-mix(in oklab, var(--fg) 30%, transparent);
   color: var(--muted); font-size: var(--chat-fs-s); max-height: 7.5em; overflow: hidden;
 }
+
+/* 1.3 全部自动同意 (#727 review): the daemon's own approvals, one foldable row per run of tool calls, in the same flat
+   one-line style as the tool rows (icon slot · text · right-edge meta; clip, never wrap). Only the shield is amber. */
+.apv { margin: 0 0 8px; min-width: 0; }
+.apv-head {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 26px; padding: 0 6px; overflow: hidden; border-radius: var(--r-s);
+  color: var(--muted); font-size: var(--chat-fs-s); text-align: left; white-space: nowrap;
+}
+.apv-head:hover, .apv.open > .apv-head { color: var(--fg); background: var(--surface-hover); }
+.apv-head .caret { flex: none; color: var(--meta); transition: transform var(--dur-1); }
+.apv-head .caret.open { transform: rotate(90deg); }
+.apv-ic { width: 14px; flex: none; display: inline-flex; justify-content: center; color: var(--auto-fg, var(--warn)); }
+.apv-n { flex: none; }
+.apv-peek { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--meta); font-family: var(--font-mono); font-size: var(--chat-code-fs); }
+.apv-peek::before { content: "·"; margin-right: 8px; font-family: var(--font-ui); }
+.apv-list { margin: 2px 0 0 13px; padding-left: 6px; border-left: 1px solid var(--line); }
+.apv-row {
+  display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 6px; min-width: 0; overflow: hidden; white-space: nowrap;
+  border-radius: var(--r-s); color: var(--muted); font-size: var(--chat-fs-s);
+}
+.apv-row:hover { background: var(--surface-hover); color: var(--fg); }
+.apv-cmd, .apv-path, .apv-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apv-cmd, .apv-path { font-family: var(--font-mono); font-size: var(--chat-code-fs); }
+.apv-meta { flex: none; margin-left: auto; color: var(--meta); font-size: var(--fs-xs); }
+/* 1.3 upgrade notice (#727 review 3): told once that 全部自动同意 now really applies to Cursor / OpenCode / dsh */
+.nt-auto {
+  text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-m); line-height: 1.6; color: var(--text);
+}
+.nt-auto-h { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }

@@ -41,6 +41,7 @@ const SITES = {
     account: "https://account.minimax.cn", // OAuth
     llm: "https://agent.minimax.cn", // chats and the model list
     agent: "https://agent.minimaxi.com", // the account and its membership
+    agentFallback: "https://agent.minimax.cn", // the same account API, when agent.minimaxi.com can't be reached
     platform: "https://www.minimaxi.com", // the M Plan's windows
   },
   "minimax-code-global": {
@@ -474,9 +475,53 @@ function checked(env, what) {
   return env
 }
 
+// unreached is a fetch that never got an HTTP answer: a TLS error (an
+// issuer certificate it couldn't get, an expired or unknown chain), a
+// refused or reset connection, a name that didn't resolve. A timeout or an
+// abort is not one, and neither is a redirect to the other site.
+function unreached(e) {
+  if (e instanceof OtherSite) return false
+  const name = e?.name ?? e?.cause?.name
+  return name !== "TimeoutError" && name !== "AbortError"
+}
+
+// whyUnreached is a fetch error as one line, its code first when it has
+// one (Bun puts it on the error, Node on its cause).
+function whyUnreached(e) {
+  const code = e?.code ?? e?.cause?.code
+  const msg = e?.cause?.message ?? e?.message ?? String(e)
+  return code && !String(msg).includes(code) ? `${code}: ${msg}` : String(msg)
+}
+
+// accountCall sends one call of the account API. The China site serves
+// that API on agent.minimaxi.com and on agent.minimax.cn, with the same
+// tokens and the same answers. A call agent.minimaxi.com can't be reached
+// for is sent once to agent.minimax.cn: its chain (WoTrus DV Server CA
+// under USERTrust) failed with "unable to get issuer certificate" on one
+// Windows machine for hours while agent.minimax.cn's verified
+// (youyo.p_10001, plugins#757). Only a call that got no HTTP answer goes
+// again: a 401, any other status, a business error in the body, a
+// redirect and a timeout are the answer, and are never sent twice.
 async function accountCall(site, path, opts, what) {
-  const { url, init } = signed(site, path, opts)
-  const res = await siteFetch(site, url, { ...init, signal: AbortSignal.timeout(15000) }, what)
+  const signal = AbortSignal.timeout(15000)
+  const origin = opts?.origin ?? site.agent
+  const send = (o) => {
+    const { url, init } = signed(site, path, { ...opts, origin: o })
+    return siteFetch(site, url, { ...init, signal }, what)
+  }
+  let res
+  try {
+    res = await send(origin)
+  } catch (e) {
+    const alt = origin === site.agent ? site.agentFallback : undefined
+    if (!alt || alt === origin || !unreached(e)) throw e
+    try {
+      res = await send(alt)
+    } catch (e2) {
+      if (!unreached(e2)) throw e2
+      throw new Error(`${what}: ${new URL(origin).host} couldn't be reached (${whyUnreached(e)}), nor ${new URL(alt).host} (${whyUnreached(e2)})`)
+    }
+  }
   if (res.status === 401 || res.status === 403) throw new AccountRefused(`${what}: the sign-in was refused (HTTP ${res.status})`, res.status)
   if (!res.ok) throw Object.assign(new Error(`${what}: HTTP ${res.status}`), { status: res.status })
   let env

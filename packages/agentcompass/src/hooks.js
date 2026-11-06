@@ -298,13 +298,14 @@ export async function onRequest(body, ctx = {}) {
     },
   });
 
-  // Graceful fallback if all candidates were filtered out by temporary unhealthy/context/quota constraints
-  if (!decision.ok && (unhealthyModels.length > 0 || minContextTokens > 0 || liveQuotas)) {
+  // Without the temporary unhealthy/context/quota constraints, and never unrouted: see selectBestRoute.
+  if (!decision.ok) {
     decision = selectBestRoute(profile, {
       objective: facts.objective,
       candidateModels,
       catalog: options.catalog,
       now,
+      fallbackToBestExcluded: true,
     });
   }
 
@@ -357,6 +358,7 @@ export async function onRequest(body, ctx = {}) {
     hasExplicitCandidates,
     selectedAccount: decision.selectedAccount || null,
     quota: decision.quota || null,
+    fallback: decision.fallback || null,
     workKind: decision.workKind,
     difficulty: decision.difficulty,
     requiredAbility: decision.requiredAbility,

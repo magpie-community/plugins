@@ -1352,12 +1352,13 @@ function renderList(): void {
       nodes.push(e);
       return nodes;
     }
-    if (isNew && draft) nodes.push(rowEl(draft, null, true));
+    // 编辑区紧跟在展开的那一行下面（原地展开），不是列表末尾
+    if (isNew && draft) nodes.push(rowEl(draft, null, true), buildEditor());
     for (const t of tasks) {
       const open = openId === t.id;
       nodes.push(rowEl(open && draft ? draft : t, t, open));
+      if (open && draft) nodes.push(buildEditor());
     }
-    if (openId && draft) nodes.push(buildEditor());
     return nodes;
   });
   restoreFocus(list, focus);

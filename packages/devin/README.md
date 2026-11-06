@@ -158,7 +158,7 @@ default. Variants at no effort (`glm-5-2-1m`) are listed as they are.
 Adaptive and Fusion aren't listed; they route between models inside
 Devin's own agent.
 
-The `config` hook declares Devin's list as of 2026-10-14 (89 models).
+The `config` hook declares Devin's list as of 2026-11-05 (94 models).
 Once signed in, the `provider.models` hook replaces it with the account's
 own: what Devin tells the CLI's model picker for the account's token
 (`GetCliModelConfigs`, the list `devin models list` prints), with or

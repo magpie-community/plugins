@@ -7,7 +7,8 @@ import { tr } from "../../util/i18n.js";
 
 export type PermBridge = {
   push(ev: ProviderEvent): void;
-  waitFor(requestId: string): Promise<RespondAnswer>;
+  /** signal: aborted when the Agent withdraws the request ($/cancel_request) or the connection closes */
+  waitFor(requestId: string, signal?: AbortSignal): Promise<RespondAnswer>;
   /** Cursor Auto-review: no permission card, allow is chosen automatically */
   autoAcceptPermissions?: () => boolean;
 };
@@ -42,7 +43,7 @@ export function registerAcpClientHandlers(app: ClientApp, bridge: PermBridge): v
       detail: tc.rawInput ?? undefined,
       options,
     });
-    const answer = await bridge.waitFor(requestId);
+    const answer = await bridge.waitFor(requestId, ctx.signal);
     if (answer.cancelled) return { outcome: { outcome: "cancelled" } };
     const optionId = answer.optionId ?? options[0]?.id;
     if (!optionId) return { outcome: { outcome: "cancelled" } };

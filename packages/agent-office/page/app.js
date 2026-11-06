@@ -75,7 +75,6 @@
 
   // ---- words -----------------------------------------------------------
   let lastLegend = ""
-  let langSelectSig = ""
   function words() {
     document.querySelectorAll("[data-t]").forEach((e) => { e.textContent = t()[e.dataset.t] })
     $("pip").textContent = floatHome ? t().pipOn : t().pip
@@ -84,12 +83,8 @@
     lastLegend = ""
     railSig = ""
     todaySig = ""
-    langSelectSig = ""
-    syncLangSelect()
+    syncPickers()
     if (typeof scene2 !== "undefined") scene2.lang = lang
-    if ($("optScene")) {
-      for (const option of $("optScene").options) option.textContent = t()["scene" + ({office:"Office",station:"Station",cafe:"Cafe",castle:"Castle",pirate:"Pirate",graveyard:"Graveyard",library:"Library",cyberlab:"Cyberlab",greenhouse:"Greenhouse",arctic:"Arctic",rainynight:"Rainynight"})[option.value]]
-    }
   }
 
   function statusLegend() {
@@ -759,17 +754,172 @@
     box.replaceChildren(...kids)
   }
 
-  function syncLangSelect() {
-    const sel = $("optLang")
-    const sig = lang + "|" + manualLang
-    if (sig === langSelectSig) return
-    langSelectSig = sig
-    const kids = []
-    const option = (value, name) => { const o = document.createElement("option"); o.value = value; o.textContent = name; return o }
-    kids.push(option("auto", t().auto))
-    for (const code of M.LANGS) kids.push(option(code, M.LANG_NAMES[code]))
-    sel.replaceChildren(...kids)
-    sel.value = manualLang
+  const SCENE_OPTIONS = [
+    ["office", "sceneOffice"], ["station", "sceneStation"], ["cafe", "sceneCafe"],
+    ["castle", "sceneCastle"], ["pirate", "scenePirate"], ["graveyard", "sceneGraveyard"],
+    ["library", "sceneLibrary"], ["cyberlab", "sceneCyberlab"], ["greenhouse", "sceneGreenhouse"],
+    ["arctic", "sceneArctic"], ["rainynight", "sceneRainynight"],
+  ]
+  const QUALITY_OPTIONS = [["low", "qLow"], ["medium", "qMedium"], ["high", "qHigh"]]
+  const pickers = []
+  let openPicker = null
+  let pickerOpeningFrame = 0
+  function clearPickerOpening() {
+    if (pickerOpeningFrame) { cancelAnimationFrame(pickerOpeningFrame); pickerOpeningFrame = 0 }
+  }
+  function checkIcon() {
+    const ns = "http://www.w3.org/2000/svg"
+    const s = document.createElementNS(ns, "svg")
+    s.setAttribute("class", "picker-check")
+    s.setAttribute("viewBox", "0 0 12 12")
+    s.setAttribute("width", "12")
+    s.setAttribute("height", "12")
+    s.setAttribute("aria-hidden", "true")
+    const p = document.createElementNS(ns, "path")
+    p.setAttribute("d", "M2.5 6.2L5 8.6L9.5 3.6")
+    p.setAttribute("fill", "none")
+    p.setAttribute("stroke", "currentColor")
+    p.setAttribute("stroke-width", "1.6")
+    p.setAttribute("stroke-linecap", "round")
+    p.setAttribute("stroke-linejoin", "round")
+    s.append(p)
+    return s
+  }
+  function closePicker(refocus) {
+    return openPicker ? openPicker.close(refocus) : false
+  }
+  function makePicker(btnId, getOptions, getValue, onPick) {
+    const btn = $(btnId)
+    const listId = btn.getAttribute("aria-controls")
+    const list = $(listId)
+    const valNode = btn.querySelector(".picker-val")
+    const wrap = btn.closest(".picker")
+    let sig = ""
+    let activeIdx = 0
+    function setActive(idx) {
+      const items = list.querySelectorAll(".picker-opt")
+      if (!items.length) return
+      activeIdx = (idx + items.length) % items.length
+      items.forEach((it, i) => it.classList.toggle("active", i === activeIdx))
+      const activeEl = items[activeIdx]
+      list.setAttribute("aria-activedescendant", activeEl.id)
+      const top = activeEl.offsetTop
+      const bottom = top + activeEl.offsetHeight
+      if (top < list.scrollTop) list.scrollTop = top
+      else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight
+    }
+    function sync() {
+      const optsList = getOptions()
+      const cur = getValue()
+      const found = optsList.find((o) => o.value === cur) || optsList[0]
+      valNode.textContent = found.label
+      const nextSig = cur + "|" + optsList.map((o) => o.value + ":" + o.label).join(",")
+      if (nextSig === sig) return
+      sig = nextSig
+      const kids = optsList.map((o, i) => {
+        const b = el("button", "picker-opt")
+        b.type = "button"
+        b.id = `${listId}-opt-${i}`
+        b.dataset.value = o.value
+        b.setAttribute("role", "option")
+        b.setAttribute("aria-selected", String(o.value === cur))
+        b.tabIndex = -1
+        b.append(el("span", "picker-opt-label", o.label), checkIcon())
+        b.addEventListener("pointermove", () => { if (activeIdx !== i) setActive(i) })
+        b.addEventListener("click", (e) => { e.stopPropagation(); choose(i) })
+        return b
+      })
+      list.replaceChildren(...kids)
+    }
+    function position() {
+      if (list.hidden) return
+      const r = btn.getBoundingClientRect()
+      const gap = 4, edge = 8
+      const minW = Math.min(Math.max(r.width, 160), innerWidth - edge * 2)
+      list.style.minWidth = minW + "px"
+      const naturalH = Math.min(list.scrollHeight + 2, 240)
+      const below = innerHeight - r.bottom - gap - edge
+      const above = r.top - gap - edge
+      const flipUp = below < naturalH && above > below
+      const maxH = Math.max(72, Math.min(240, flipUp ? above : below))
+      const h = Math.min(naturalH, maxH)
+      const w = list.offsetWidth
+      const top = flipUp ? Math.max(edge, r.top - gap - h) : Math.min(innerHeight - edge - h, Math.max(edge, r.bottom + gap))
+      const left = Math.max(edge, Math.min(r.left, innerWidth - w - edge))
+      list.style.left = left + "px"
+      list.style.top = top + "px"
+      list.style.maxHeight = maxH + "px"
+    }
+    function close(refocus) {
+      if (openPicker === api) {
+        openPicker = null
+        clearPickerOpening()
+      }
+      list.hidden = true
+      btn.setAttribute("aria-expanded", "false")
+      list.removeAttribute("aria-activedescendant")
+      if (refocus) btn.focus({ preventScroll: true })
+      return true
+    }
+    const api = { btn, list, wrap, sync, position, close }
+    function open(at) {
+      if (openPicker && openPicker !== api) openPicker.close(false)
+      sync()
+      const optsList = getOptions()
+      const selIdx = Math.max(0, optsList.findIndex((o) => o.value === getValue()))
+      const idx = at === "last" ? Math.max(0, optsList.length - 1) : selIdx
+      list.hidden = false
+      btn.setAttribute("aria-expanded", "true")
+      openPicker = api
+      clearPickerOpening()
+      pickerOpeningFrame = requestAnimationFrame(() => { pickerOpeningFrame = 0 })
+      position()
+      setActive(idx)
+      list.focus({ preventScroll: true })
+    }
+    function choose(idx) {
+      const chosen = getOptions()[idx]
+      if (!chosen) return
+      const prevVal = getValue()
+      close(true)
+      if (chosen.value !== prevVal) onPick(chosen.value)
+      syncPickers()
+    }
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation()
+      if (openPicker === api) close(false)
+      else open()
+    })
+    btn.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
+        e.preventDefault()
+        e.stopPropagation()
+        if (openPicker === api) close(false)
+        else open(e.key === "ArrowUp" ? "last" : undefined)
+      } else if (e.key === "Escape" && openPicker === api) {
+        e.preventDefault()
+        e.stopPropagation()
+        close(true)
+      }
+    })
+    list.addEventListener("keydown", (e) => {
+      const count = list.querySelectorAll(".picker-opt").length
+      if (e.key === "ArrowDown") setActive(activeIdx + 1)
+      else if (e.key === "ArrowUp") setActive(activeIdx - 1)
+      else if (e.key === "Home") setActive(0)
+      else if (e.key === "End") setActive(Math.max(0, count - 1))
+      else if (e.key === "Enter" || e.key === " ") choose(activeIdx)
+      else if (e.key === "Escape") close(true)
+      else if (e.key === "Tab") { close(false); return }
+      else return
+      e.preventDefault()
+      e.stopPropagation()
+    })
+    pickers.push(api)
+  }
+  function syncPickers() {
+    for (const p of pickers) p.sync()
+    if (openPicker) openPicker.position()
   }
 
   // ---- in-page toasts ---------------------------------------------------
@@ -942,8 +1092,9 @@
       Object.assign(node.style, {position: "fixed", right: "auto", left: Math.max(8, rect.right-width-10) + "px", top: Math.max(8, rect.top+10) + "px", width: width + "px", maxHeight: Math.max(80, Math.min(rect.height-20, innerHeight-rect.top-18)) + "px"})
     }
   }
-  addEventListener("resize", positionOverlays)
+  addEventListener("resize", () => { closePicker(false); positionOverlays() })
   function closeMenus(except) {
+    closePicker(false)
     let changed = false
     for (const [btn, m] of [[$("settingsBtn"), menu], [$("todayBtn"), todayMenu]]) {
       if (m === except || m.hidden) continue
@@ -964,7 +1115,17 @@
   $("settingsBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu($("settingsBtn"), menu) })
   $("todayBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu($("todayBtn"), todayMenu) })
   menu.addEventListener("click", (e) => e.stopPropagation())
+  // Focusing a picker button near the foot of a scrollable #settings menu
+  // queues an async scroll event on #settings for the same frame; reposition
+  // the newly opened list instead of closing it on that opening-frame scroll.
+  menu.addEventListener("scroll", () => {
+    if (pickerOpeningFrame) { if (openPicker) openPicker.position(); return }
+    closePicker(false)
+  })
   todayMenu.addEventListener("click", (e) => e.stopPropagation())
+  addEventListener("pointerdown", (e) => {
+    if (openPicker && !openPicker.wrap.contains(e.target)) closePicker(false)
+  }, true)
   document.addEventListener("click", (e) => {
     if (menu.contains(e.target) || todayMenu.contains(e.target)) return
     if (e.target === $("settingsBtn") || e.target === $("todayBtn")) return
@@ -983,13 +1144,6 @@
   $("optText").addEventListener("change", (e) => { view.text = e.target.checked; refresh(); save() })
   $("optSub").addEventListener("change", (e) => { view.showSub = e.target.checked; agentFilterSig = ""; refresh(); save() })
   $("optIdle").addEventListener("change", (e) => { view.showIdle = e.target.checked; agentFilterSig = ""; refresh(); save() })
-  $("optLang").addEventListener("change", (e) => {
-    manualLang = M.LANG_NAMES[e.target.value] ? e.target.value : "auto"
-    lang = pickLang()
-    words()
-    refresh()
-    save()
-  })
   $("optHide").addEventListener("click", (e) => {
     const h = e.target.closest("button")?.dataset.hide
     if (!h) return
@@ -1077,6 +1231,7 @@
   }).observe($("stage"))
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return
+    if (closePicker(true)) return
     if (!menu.hidden || !todayMenu.hidden) return closeMenus()
     if (state.open) return close()
     if (floatHome) closeFloat()
@@ -1092,31 +1247,42 @@
     refresh()
   })
 
-  const SCENE_OPTIONS = [
-    ["office", "sceneOffice"], ["station", "sceneStation"], ["cafe", "sceneCafe"],
-    ["castle", "sceneCastle"], ["pirate", "scenePirate"], ["graveyard", "sceneGraveyard"],
-    ["library", "sceneLibrary"], ["cyberlab", "sceneCyberlab"], ["greenhouse", "sceneGreenhouse"],
-    ["arctic", "sceneArctic"], ["rainynight", "sceneRainynight"],
-  ]
-  if ($("optScene")) {
-    $("optScene").replaceChildren(...SCENE_OPTIONS.map(([id, name]) => { const o = el("option", "", t()[name]); o.value = id; return o }))
-    $("optScene").value = view.scene
-    $("optQuality").value = view.quality
-    $("optQuality").addEventListener("change", (e) => {
-      view.quality = e.target.value
-      if (scene3) scene3.setQuality(view.quality)
+  makePicker(
+    "optLang",
+    () => [{ value: "auto", label: t().auto }, ...M.LANGS.map((code) => ({ value: code, label: M.LANG_NAMES[code] }))],
+    () => manualLang,
+    (val) => {
+      manualLang = M.LANG_NAMES[val] ? val : "auto"
+      lang = pickLang()
+      words()
+      refresh()
       save()
-    })
-    $("optScene").addEventListener("change", (e) => {
-      view.scene = e.target.value
+    }
+  )
+  makePicker(
+    "optScene",
+    () => SCENE_OPTIONS.map(([value, name]) => ({ value, label: t()[name] })),
+    () => view.scene,
+    (val) => {
+      view.scene = val
       // a scene belongs to the real 3D view; choosing one takes you there
       if (view.dim !== "3d") { view.dim = "3d"; select("dims", "dim", "3d") }
       if (scene3) scene3.setScene(view.scene)
       activateScene()
       refresh()
       save()
-    })
-  }
+    }
+  )
+  makePicker(
+    "optQuality",
+    () => QUALITY_OPTIONS.map(([value, name]) => ({ value, label: t()[name] })),
+    () => view.quality,
+    (val) => {
+      view.quality = val
+      if (scene3) scene3.setQuality(view.quality)
+      save()
+    }
+  )
   select("modes", "mode", view.mode)
   select("dims", "dim", view.dim)
   words()

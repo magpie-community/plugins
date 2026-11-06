@@ -288,18 +288,35 @@ test("words, in English and Chinese", () => {
   expect(M.duration(130e3, "en")).toBe("2m 10s")
 })
 
-test("the Settings chevron and select dropdowns draw SVG chevrons, not the ⌄ character", () => {
+test("the Settings chevron and Language, Scene and Quality pickers are SVG app menus, with no native <select>", () => {
   const html = read("index.html")
   const css = read("style.css")
+  const app = read("app.js")
   expect(html).not.toContain("⌄")
+  expect(html).not.toContain("<select")
   expect(html).toMatch(/id="settingsBtn"[^>]*><span data-t="settings">Settings<\/span><svg class="chev" viewBox="0 0 10 6"/)
+  for (const [lblId, btnId, listId] of [["lblLang", "optLang", "optLangList"], ["lblScene", "optScene", "optSceneList"], ["lblQuality", "optQuality", "optQualityList"]]) {
+    expect(html).toMatch(new RegExp(`<button[^>]*id="${btnId}"[^>]*aria-labelledby="${lblId} ${btnId}"[^>]*aria-haspopup="listbox"[^>]*aria-expanded="false"[^>]*aria-controls="${listId}"[^>]*>.*<svg class="chev" viewBox="0 0 10 6"`))
+    expect(html).toMatch(new RegExp(`<div[^>]*id="${listId}"[^>]*role="listbox"[^>]*aria-labelledby="${lblId}"`))
+  }
+  expect(css).toContain("--faint: var(--magpie-faint, #b9b9c2);")
+  expect(css).toMatch(/\[data-theme="dark"\][^{]*\{[^}]*--faint:\s*var\(--magpie-faint,\s*#56565f\);/)
+  expect(css).toMatch(/::-webkit-scrollbar\s*\{\s*width:\s*8px;\s*height:\s*8px;\s*background:\s*transparent;\s*\}/)
+  expect(css).toMatch(/::-webkit-scrollbar-thumb\s*\{\s*background:\s*var\(--faint\);\s*border:\s*2px solid transparent;\s*border-radius:\s*8px;\s*background-clip:\s*padding-box;\s*\}/)
+  expect(css).toMatch(/::-webkit-scrollbar-thumb:hover\s*\{\s*background-color:\s*var\(--muted\);\s*\}/)
+  expect(css).toMatch(/::-webkit-scrollbar-button,\s*::-webkit-scrollbar-corner\s*\{\s*display:\s*none;\s*background:\s*transparent;\s*\}/)
+  expect(css).not.toContain("scrollbar-width")
+  expect(css).toMatch(/\.picker-list\s*\{[^}]*overscroll-behavior:\s*contain;/)
   expect(css).toMatch(/\.btn\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*gap:\s*7px;/)
   expect(css).toContain(".today-tokens:empty { display: none; }")
-  expect(css).toContain('.btn:hover .chev, #settingsBtn[aria-expanded="true"] .chev { opacity: .9; }')
-  expect(css).toContain('#settingsBtn[aria-expanded="true"] .chev { transform: rotate(180deg); }')
-  expect(css).toMatch(/\.lang-select\s*\{[^}]*appearance:\s*none;/)
-  expect(css).toMatch(/\.lang-select\s*\{[^}]*viewBox='0 0 10 6'/)
+  expect(css).toContain('#settingsBtn[aria-expanded="true"] .chev, .lang-select[aria-expanded="true"] .chev { transform: rotate(180deg); }')
+  expect(css).not.toContain("appearance: none")
   expect(css).toMatch(/prefers-reduced-motion:\s*reduce[\s\S]*\.chev/)
+  expect(app).toContain('setAttribute("role", "option")')
+  expect(app).toContain('getAttribute("aria-controls")')
+  for (const btnId of ["optLang", "optScene", "optQuality"]) {
+    expect(app).toContain(`makePicker(\n    "${btnId}"`)
+  }
 })
 
 // ---- the host part --------------------------------------------------------

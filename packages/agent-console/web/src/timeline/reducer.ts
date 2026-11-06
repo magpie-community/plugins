@@ -25,9 +25,11 @@ export type DisplayItem =
   | { kind: "toolgroup"; key: string; steps: ToolStep[] }
   | { kind: "plan"; key: string; itemId: string; markdown: string }
   | { kind: "todo"; key: string; items: { text: string; status: string }[] }
-  | { kind: "permission"; key: string; requestId: string; title: string; kindStr: string; detail?: unknown; options: { id: string; label: string; kind: string }[]; status: "pending" | "resolved" | "cancelled"; choice?: string }
+  | { kind: "permission"; key: string; requestId: string; title: string; kindStr: string; detail?: unknown; options: { id: string; label: string; kind: string }[]; status: "pending" | "resolved" | "cancelled"; choice?: string; auto?: boolean }
   | { kind: "question"; key: string; requestId: string; questions: unknown[]; answers?: Record<string, string>; status: "pending" | "answered" | "cancelled" }
   | { kind: "notice"; key: string; level: string; message: string; code?: string }
+  /** 1.3 全部自动同意: the approvals the daemon gave in one run of tool calls, as one quiet foldable row (autoApproved.ts) */
+  | { kind: "autoperm"; key: string; items: Extract<DisplayItem, { kind: "permission" }>[] }
   | { kind: "gone"; key: string } // placeholder: duplicate delta items cleared by sweepSiblings; skipped when rendering
   | { kind: "turnend"; key: string; status: string; durationMs?: number; error?: string; filesChanged?: number; usage?: TurnUsage;
       /** 1.3: the model the turn ran on (turn_started; null = the Agent's default) and when it ended, for the reply footer */
@@ -224,6 +226,8 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
       st.items.push({
         kind: "permission", key: `perm:${ev.requestId}`, requestId: ev.requestId,
         title: ev.title, kindStr: ev.kind, detail: ev.detail, options: ev.options, status: "pending",
+        // 1.3 全部自动同意: the daemon answered it itself (never a card with buttons; see timeline/autoApproved.ts)
+        ...(ev.auto ? { auto: true } : {}),
       });
       return;
     case "permission_resolved": {
@@ -232,6 +236,9 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
       if (it?.kind === "permission") {
         it.status = ev.cancelled ? "cancelled" : "resolved";
         it.choice = ev.optionId;
+        if (ev.auto) it.auto = true;
+      } else if (it?.kind === "question" && ev.cancelled && it.status === "pending") {
+        it.status = "cancelled"; // the daemon cancels open questions with permission_resolved{cancelled} too
       }
       return;
     }
@@ -265,6 +272,10 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
       return;
     case "turn_ended":
       breakGroup(st);
+      // A request still open when its turn ends can't be answered any more: the Agent moved on. Daemons before the fix
+      // left such a request open in the timeline (Cursor 1.2.0: "[canceled] http/2 stream closed" right after asking),
+      // and the page kept "等待授权" for a card showing 已取消. Close it here so replayed history never waits on it.
+      closeOpenRequests(st);
       st.items.push({
         kind: "turnend", key: `te:${ev.seq}`, status: ev.status,
         durationMs: ev.durationMs ?? (st.turnStart.has(ev.turnId) ? Math.max(0, ev.ts - st.turnStart.get(ev.turnId)!) : undefined),
@@ -284,6 +295,28 @@ export function applyEvent(st: State, ev: TimelineEvent): void {
     default:
       return;
   }
+}
+
+/** Requests still waiting for the user are always ones whose turn is still running (see turn_ended) */
+function closeOpenRequests(st: State): void {
+  for (const idx of st.reqLoc.values()) {
+    const it = st.items[idx];
+    if ((it?.kind === "permission" || it?.kind === "question") && it.status === "pending") it.status = "cancelled";
+  }
+}
+
+export type PendingRequest = { requestId: string; kind: "permission" | "question"; key: string };
+
+/** The requests the page waits on (top bar 等待授权, composer locked): exactly the cards that show buttons, so the
+ *  page never waits on a request it has no card for (the daemon's own list may hold one the timeline already closed) */
+export function pendingRequests(items: DisplayItem[]): PendingRequest[] {
+  const out: PendingRequest[] = [];
+  for (const it of items) {
+    if ((it.kind === "permission" || it.kind === "question") && it.status === "pending") {
+      out.push({ requestId: it.requestId, kind: it.kind, key: it.key });
+    }
+  }
+  return out;
 }
 
 // snapshot + live events -> display items. When runtimeStatus is not running, unresolved permissions/questions are marked cancelled.

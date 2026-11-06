@@ -5,8 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
-import { DEFAULT_SCORING_POLICY, canonicalModel } from "../src/catalog.js";
+import { burnScale, effortValue, namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
+import { CANONICAL_ROUTES, DEFAULT_SCORING_POLICY, EFFORT_CURVES, canonicalModel } from "../src/catalog.js";
 import {
   CACHE_COLD_MS,
   CHATGPT_CODEX_COLD_MS,
@@ -47,7 +47,7 @@ import {
   onResponse as mwOnResponse,
   strategies,
 } from "../src/middleware.js";
-import { capProfileText, extractRequestFacts, inferTaskProfile, profileTask } from "../src/profiler-core.js";
+import { capProfileText, extractRequestFacts, inferKindFromObjective, inferTaskProfile, profileTask } from "../src/profiler-core.js";
 import { SCORER_SYSTEM_PROMPT, clearProfileCache, parseJevScorerAnswer, scoreTaskLive } from "../src/scorer-live.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -1546,7 +1546,241 @@ test("8.6 Strict AgentCompass Main-Repo Parity (`allocator.py` + `reference-acco
     );
     assert.equal(unlimitedDec.targetModel, "gpt-6.1-sol");
     assert.equal(unlimitedDec.components.free_usage, 0.18);
+
+    // Verify v0.3.7 + 54bb51e calibration parity:
+    assert.deepEqual(DEFAULT_SCORING_POLICY.ability_floor, {
+      routine: 2.3,
+      hard: 3.1,
+      coupled: 3.6,
+      frontier: 4.2,
+    });
+    assert.deepEqual(DEFAULT_SCORING_POLICY.ability_score_origin, {
+      routine: 3.0,
+      hard: 3.3,
+      coupled: 3.6,
+      frontier: 4.2,
+    });
+    assert.deepEqual(DEFAULT_SCORING_POLICY.critical_headroom_by_difficulty, {
+      frontier: 0.1,
+    });
+
+    // D (54bb51e): computer_use action phrases, CODE_FILE_RE, and translation-of narrowing
+    for (const prompt of [
+      "Fix the keyboard shortcuts in editor.py.",
+      "Fix mouse event handler in app.ts",
+      "Fix translation.py.",
+      "Debug translation pipeline",
+      "修复翻译模块的 bug",
+    ]) {
+      assert.equal(inferKindFromObjective(prompt), "debug_review", `Expected debug_review for: ${prompt}`);
+    }
+    assert.equal(inferKindFromObjective("用鼠标点击设置里的保存"), "computer_use");
+
+    // A3 (54bb51e): origin = max(floor, ability_score_origin[d]) so raising floor above origin does not hand out free ability score
+    const raisedFloorRanked = rankCandidates(
+      {
+        work_kind: "debug_review",
+        reasoning_depth: 2,
+        code_complexity: 2,
+        context_scale: 1,
+        divergence: 1,
+        hallucination_risk: 2,
+        error_cost: 3, // critical -> uses origin-based gradient
+        needs_visual: false,
+        needs_gui: false,
+        local_only: true,
+        interaction_style: "engineering",
+      },
+      {
+        candidateModels: ["claude-opus-5-5", "gpt-6.1-sol"],
+        catalog: {
+          policy: {
+            ...DEFAULT_SCORING_POLICY,
+            ability_floor: { ...DEFAULT_SCORING_POLICY.ability_floor, hard: 3.6 },
+            critical_headroom: 0.0,
+          },
+        },
+      }
+    );
+    const solHigh = raisedFloorRanked.ranking.find((c) => c.canonicalModel === "gpt-6.1-sol" && c.effort === "high");
+    assert.ok(solHigh, "gpt-6.1-sol:high (ability 3.6) clears floor=3.6 when critical_headroom=0");
+    assert.equal(solHigh.components.ability, 0, "Model right at raised floor (3.6 > origin 3.3) must not get free ability score");
+
+    // gpt-6-luna's effort curve is AgentCompass v0.3.7-v0.3.9 `effort_curves["gpt-6-luna"]`
+    assert.deepEqual(EFFORT_CURVES["gpt-6-luna"], {
+      ability: { low: -0.54, medium: -0.15, high: 0, xhigh: 0.1, max: 0.35 },
+      burn: { low: 0.1, medium: 0.4, high: 0.7, xhigh: 1.0, max: 1.5 },
+    });
   });
+
+const GATE_PROFILE = {
+  code_complexity: 2,
+  context_scale: 1,
+  divergence: 1,
+  hallucination_risk: 2,
+  needs_visual: false,
+  needs_gui: false,
+  local_only: true,
+  interaction_style: "engineering",
+};
+
+test("8.7 Critical frontier gate is 4.3 (frontier floor 4.2 + `critical_headroom_by_difficulty.frontier` 0.1): Astra Max is admitted, Astra High is not", () => {
+  const ranked = rankCandidates(
+    { ...GATE_PROFILE, work_kind: "general_implementation", reasoning_depth: 4, code_complexity: 3, error_cost: 3 },
+    { candidateModels: [{ model: "gpt-6-astra", efforts: ["high", "max"] }] },
+  );
+  assert.equal(ranked.task.difficulty, "frontier");
+  assert.equal(ranked.task.critical, true);
+  const byEffort = Object.fromEntries(ranked.allCandidates.map((c) => [c.effort, c]));
+  assert.equal(byEffort.max.eligible, true, `Astra Max (4.3) clears the 4.3 gate: ${byEffort.max.excluded.join("; ")}`);
+  assert.equal(byEffort.high.eligible, false, "Astra High (4.2) is below the 4.3 gate");
+  assert.match(byEffort.high.excluded.join("; "), /ability 4\.20 below the frontier floor 4\.30/);
+});
+
+test("8.8 tool_execution/hard uses its route floor 2.7, not the policy's hard floor 3.1", () => {
+  // gpt-6-luna:medium is 3.2 - 0.15 = 3.05: above the route's 2.7, below the policy's 3.1
+  const rank = (workKind) =>
+    rankCandidates(
+      { ...GATE_PROFILE, work_kind: workKind, reasoning_depth: 2, error_cost: 2 },
+      { candidateModels: [{ model: "gpt-6-luna", efforts: ["medium"] }] },
+    );
+  const tool = rank("tool_execution");
+  assert.equal(tool.task.kind, "tool_execution");
+  assert.equal(tool.task.difficulty, "hard");
+  const toolLuna = tool.allCandidates[0];
+  assert.equal(toolLuna.eligible, true, `luna:medium (3.05) clears the 2.7 route floor: ${toolLuna.excluded.join("; ")}`);
+
+  const impl = rank("general_implementation");
+  assert.equal(impl.task.kind, "general_implementation");
+  assert.equal(impl.task.difficulty, "hard");
+  assert.match(impl.allCandidates[0].excluded.join("; "), /ability 3\.05 below the hard floor 3\.10/);
+});
+
+test("8.9 `ability_score_origin` above the floor decides the pick (hard: origin 3.3, floor 3.1)", () => {
+  // Critical hard task (error_cost 3): abilityScore = (credited - origin - (gate - floor)) / span, gate 3.4, span 0.6.
+  const ranked = rankCandidates(
+    { ...GATE_PROFILE, work_kind: "general_implementation", reasoning_depth: 2, error_cost: 3 },
+    { candidateModels: [{ model: "claude-sonnet-5-5", efforts: ["xhigh"] }, { model: "gpt-6-astra", efforts: ["medium"] }] },
+  );
+  assert.equal(ranked.task.difficulty, "hard");
+  assert.equal(ranked.task.minimum_sufficient, false);
+  const sonnet = ranked.allCandidates.find((c) => c.canonicalModel === "claude-sonnet-5-5");
+  assert.equal(sonnet.components.ability_value, 4.3);
+  // Measured against origin 3.3; with origin = floor 3.1 the score is 0.333 higher and Sonnet xhigh overtakes Astra medium
+  assert.equal(`${ranked.selected.canonicalModel}:${ranked.selected.effort}`, "gpt-6-astra:medium");
+});
+
+test("8.10 Work-kind and GUI-fact guards from AgentCompass 54bb51e (v0.3.8)", () => {
+  // CODE_FILE_RE guard: an action phrase about a code file is not computer use
+  assert.equal(inferKindFromObjective("Click the Save button handler in settings.tsx is broken"), "general_implementation");
+  // Bare "keyboard" / "mouse" are not computer-use phrases
+  assert.equal(inferKindFromObjective("Add keyboard shortcuts to the settings dialog"), "general_implementation");
+  assert.equal(inferKindFromObjective("Add mouse wheel zoom to the chart"), "general_implementation");
+  // "translation of", not "translation"
+  assert.equal(inferKindFromObjective("Add a translation layer between the API and the DB"), "general_implementation");
+  assert.equal(inferKindFromObjective("Write a translation of the README into Japanese"), "text_in_text_out");
+  // A named code file skips text_in_text_out even with no debug word
+  assert.equal(inferKindFromObjective("Translate the error strings in i18n.ts"), "general_implementation");
+  assert.equal(inferKindFromObjective("Translate the release notes into Japanese"), "text_in_text_out");
+  // Phrases v0.3.8 does not have are not computer use on their own
+  for (const prompt of ["Take a screenshot of the report", "Capture a screenshot for the docs", "截取屏幕上的报表", "截屏操作说明"]) {
+    assert.notEqual(inferKindFromObjective(prompt), "computer_use", prompt);
+  }
+
+  // hasComputerUse: COMPUTER_USE_PHRASES with the code-file guard, not the older GUI_WORDS
+  const facts = (text) => extractRequestFacts({ messages: [{ role: "user", content: text }] }, { protocol: "chat" });
+  assert.equal(facts("Click the Save button in the desktop app and confirm the dialog closes").hasComputerUse, true);
+  assert.equal(facts("Click the Save button handler in settings.tsx is broken").hasComputerUse, false);
+  for (const text of ["Add keyboard shortcuts to the desktop app", "Open the gui and check the desktop app", "修改桌面版的键盘快捷键"]) {
+    assert.equal(facts(text).hasComputerUse, false, text);
+  }
+});
+
+test("8.11 Continuity: only a computer-use turn outgrows a model without GUI (`capability_outgrown` / `gui_capability_required`)", async () => {
+  const t0 = 1_700_000_000_000;
+  const nextTurn = async (text) => {
+    const store = new SessionContinuityStore();
+    store.set("sess-gui", { model: "grok-4.7", effort: "medium", tokens: 4000, cached: true, healthy: true, turn: 1 }, t0);
+    const ctx = {
+      protocol: "chat",
+      session_id: "sess-gui",
+      state: {},
+      options: { continuityStore: store, now: t0 + 30_000, prefer_local_heuristic: true },
+    };
+    await hookOnRequest({ model: "agentcompass/auto", session_id: "sess-gui", messages: [{ role: "user", content: text }] }, ctx);
+    return ctx.state.route;
+  };
+  const gui = await nextTurn("Click the Save button in the desktop app and confirm the dialog closes");
+  assert.equal(gui.continuation.held, false);
+  assert.equal(gui.continuation.why, "capability_outgrown");
+  assert.equal(gui.continuation.reasonDetail, "gui_capability_required");
+  assert.notEqual(gui.canonicalModel, "grok-4.7");
+  // Before 0.1.2 the broader GUI words (" gui", "desktop app", "keyboard", "桌面", "键盘") also moved the session; now they hold it
+  for (const text of [
+    "Add keyboard shortcuts to the desktop app",
+    "Open the gui and check the desktop app",
+    "修改桌面版的键盘快捷键",
+    "Click the Save button handler in settings.tsx is broken",
+  ]) {
+    const held = await nextTurn(text);
+    assert.notEqual(held.continuation.why, "capability_outgrown", text);
+    assert.equal(held.canonicalModel, "grok-4.7", text);
+  }
+});
+
+// AgentCompass v0.3.8 skills/agent-compass/references/accounts.json: `effort_curves` for the 13 models the plugin carries
+const V038_EFFORT_CURVES = {
+  "deepseek-v4.1-flash-free": { ability: { high: 0, max: 0.2 }, burn: { high: 0.7, max: 0.91 } },
+  "claude-opus-5-5": {
+    ability: { low: -0.84, medium: -0.2, high: 0, xhigh: 0.25, max: 0.35 },
+    burn: { low: 0.2, medium: 0.5, high: 0.7, xhigh: 1.22, max: 2.03 },
+  },
+  "claude-sonnet-5-5": {
+    ability: { low: -0.79, medium: -0.54, high: 0, xhigh: 0.4, max: 0.64 },
+    burn: { low: 0.22, medium: 0.33, high: 0.7, xhigh: 1.75, max: 4.28 },
+  },
+  "gpt-6-astra": {
+    ability: { low: -0.59, medium: -0.15, high: 0, xhigh: 0, max: 0.1 },
+    burn: { low: 0.31, medium: 0.59, high: 0.7, xhigh: 0.79, max: 1.35 },
+  },
+  "gpt-6.1-sol": {
+    ability: { low: -0.74, medium: -0.2, high: 0, xhigh: 0.1, max: 0.25 },
+    burn: { low: 0.19, medium: 0.43, high: 0.7, xhigh: 0.9, max: 1.51 },
+  },
+  "grok-4.7": { ability: { low: -0.2, high: 0, xhigh: 0 }, burn: { low: 0.33, high: 0.7, xhigh: 0.88 } },
+  "gemini-3.8-flash-high": { ability: { low: -0.4, medium: -0.05, high: 0 }, burn: { medium: 0.56, high: 0.7 } },
+  "gemini-4-argon-high": { ability: { low: -0.3, medium: -0.1, high: 0 }, burn: { low: 0.63, medium: 0.7, high: 0.7 } },
+  "claude-haiku-5-5": {
+    ability: { low: -0.54, medium: -0.25, high: 0, xhigh: 0.25, max: 0.3 },
+    burn: { low: 0.17, medium: 0.39, high: 0.7, xhigh: 1.09, max: 1.79 },
+  },
+  "gpt-6.1-terra": {
+    ability: { low: -0.64, medium: -0.2, high: 0, xhigh: 0.15, max: 0.45 },
+    burn: { low: 0.19, medium: 0.46, high: 0.7, xhigh: 1.08, max: 2.58 },
+  },
+  "gpt-6-luna": {
+    ability: { low: -0.54, medium: -0.15, high: 0, xhigh: 0.1, max: 0.35 },
+    burn: { low: 0.1, medium: 0.4, high: 0.7, xhigh: 1.0, max: 1.5 },
+  },
+  "claude-fable-5-1": {
+    ability: { low: -0.4, medium: -0.2, high: 0, xhigh: 0.15, max: 0.15 },
+    burn: { low: 0.41, medium: 0.52, high: 0.7, xhigh: 1.01, max: 1.21 },
+  },
+  "gemini-4-carbon": { ability: { low: -0.3, medium: -0.1, high: 0 }, burn: { low: 0.65, medium: 0.59, high: 0.7 } },
+};
+
+test("8.12 All 13 effort curves and `effort_ability` / `effort_burn` equal AgentCompass v0.3.8", () => {
+  assert.deepEqual(Object.keys(EFFORT_CURVES).sort(), Object.keys(V038_EFFORT_CURVES).sort());
+  for (const [model, curve] of Object.entries(V038_EFFORT_CURVES)) {
+    assert.deepEqual(EFFORT_CURVES[model].ability, curve.ability, `${model} ability`);
+    assert.deepEqual(EFFORT_CURVES[model].burn, curve.burn, `${model} burn`);
+  }
+  // scoring.effort_ability / scoring.effort_burn: upstream's low..max; none/off/minimal are the plugin's own rows (0.1.3)
+  const { none, off, minimal, ...upstreamAbility } = DEFAULT_SCORING_POLICY.effort_ability;
+  assert.deepEqual(upstreamAbility, { low: -0.54, medium: -0.2, high: 0, xhigh: 0.15, max: 0.3 });
+  assert.deepEqual({ none, off, minimal }, { none: -1.1, off: -1.1, minimal: -1.0 });
+  assert.deepEqual(DEFAULT_SCORING_POLICY.effort_burn, { low: 0.2, medium: 0.4, high: 0.7, xhigh: 1.0, max: 1.3 });
+});
 
 test("9.1 PR #670 Review Guard: Default triggers ONLY claim `agentcompass` / `agentcompass/*` and never hijack `auto` or `group/intent`", async () => {
   for (const nonOwnedModel of ["auto", "intent", "group/intent", "default", "claude-sonnet-4-6"]) {
@@ -2078,3 +2312,205 @@ test("9.9 PR #670 Round 2 & 3 Guard: Single-pass bounded work (`scannedChars`, `
 
 
 
+
+test("9.10 Effort fallback (plugin-side, not in AgentCompass): `:minimal` and `:ultra` parse as efforts, `ultra` reads as the model's Max and `minimal` sits below its Low", () => {
+  const profile = {
+    work_kind: "general_implementation",
+    reasoning_depth: 1,
+    code_complexity: 1,
+    context_scale: 2,
+    divergence: 1,
+    hallucination_risk: 2,
+    error_cost: 1,
+    needs_visual: false,
+    needs_gui: false,
+    local_only: true,
+    interaction_style: "engineering",
+  };
+  const rank = (candidateModels, options = {}) => rankCandidates(profile, { candidateModels, ...options });
+  const policy = DEFAULT_SCORING_POLICY;
+
+  // Parsing: each suffix is one candidate at that effort, not the model's whole effort list
+  assert.deepEqual(
+    rank(["gpt-6-astra:minimal", "gpt-6-astra:ultra"]).allCandidates.map((c) => c.id).sort(),
+    ["gpt-6-astra:minimal", "gpt-6-astra:ultra"],
+  );
+
+  // Scoring on a model's own curve: ultra is its Max; minimal is its Low less the policy's Low->minimal step
+  // (at least 0.2), and burns at most 0.75 of its Low
+  const astra = Object.fromEntries(
+    rank(["gpt-6-astra:low", "gpt-6-astra:max", "gpt-6-astra:minimal", "gpt-6-astra:ultra"]).allCandidates.map((c) => [
+      c.effort,
+      c.components.ability_value,
+    ]),
+  );
+  assert.equal(astra.ultra, astra.max);
+  const step = Math.min(policy.effort_ability.minimal - policy.effort_ability.low, -0.2);
+  assert.ok(Math.abs(astra.minimal - (astra.low + step)) < 0.001, `minimal ${astra.minimal}, low ${astra.low}`);
+  const curve = { burn: { low: 0.3, high: 0.7, max: 1.4 } };
+  assert.equal(burnScale(policy, curve, "ultra"), burnScale(policy, curve, "max"));
+  assert.ok(effortValue(policy, curve, "burn", "minimal", 0.7) <= 0.3 * 0.75);
+
+  // A model whose curve has no Low row takes the policy table's minimal step, not High's 0
+  const deepseek = Object.fromEntries(
+    rank(["deepseek-v4.1-flash-free:minimal", "deepseek-v4.1-flash-free:high"]).allCandidates.map((c) => [
+      c.effort,
+      c.components.ability_value,
+    ]),
+  );
+  assert.ok(Math.abs(deepseek.minimal - (deepseek.high + policy.effort_ability.minimal)) < 0.001);
+
+  // Continuity: on a warm cache, minimal after low is a downgrade and keeps only a quarter of the continuity bonus
+  const held = rank(["gpt-6-astra:low", "gpt-6-astra:minimal"], {
+    previousModel: "gpt-6-astra",
+    previousEffort: "low",
+    cacheWarm: true,
+  });
+  const cont = Object.fromEntries(held.allCandidates.map((c) => [c.effort, c.components.continuity]));
+  assert.equal(cont.low, 0.25);
+  assert.equal(cont.minimal, 0.0625);
+});
+
+test("9.11 Effort fallback branches the default policy can't reach: policy Max for `ultra`, the 0.2 step floor, the 0.75 burn clamp, none/off", () => {
+  const profile = {
+    work_kind: "general_implementation",
+    reasoning_depth: 1,
+    code_complexity: 1,
+    context_scale: 2,
+    divergence: 1,
+    hallucination_risk: 2,
+    error_cost: 1,
+    needs_visual: false,
+    needs_gui: false,
+    local_only: true,
+    interaction_style: "engineering",
+  };
+  const policy = DEFAULT_SCORING_POLICY;
+  const round = (value) => Math.round(value * 1e4) / 1e4;
+  const abilities = (candidateModels) =>
+    Object.fromEntries(rankCandidates(profile, { candidateModels }).allCandidates.map((c) => [c.effort, c.components.ability_value]));
+
+  // ultra on a model with no curve of its own reads as the policy's Max
+  assert.equal(EFFORT_CURVES["glm-5.3"], undefined);
+  const glm = abilities(["glm-5.3:high", "glm-5.3:max", "glm-5.3:ultra"]);
+  assert.equal(glm.ultra, glm.max);
+  assert.ok(Math.abs(glm.ultra - (glm.high + policy.effort_ability.max)) < 0.001, `ultra ${glm.ultra}, high ${glm.high}`);
+  assert.equal(effortValue(policy, undefined, "ability", "ultra", 0), policy.effort_ability.max);
+  assert.equal(effortValue(policy, undefined, "burn", "ultra", 0.7), policy.effort_burn.max);
+
+  // Step floor: a policy whose Low->minimal step is smaller than 0.2 still puts minimal 0.2 below the model's Low
+  const shallow = { ...policy, effort_ability: { ...policy.effort_ability, low: -0.54, minimal: -0.6 } };
+  assert.equal(round(effortValue(shallow, { ability: { low: -0.5, high: 0 } }, "ability", "minimal", 0)), -0.7);
+  // ...and a deeper step is used as given
+  const deep = { ...policy, effort_ability: { ...policy.effort_ability, low: -0.54, minimal: -1.0 } };
+  assert.equal(round(effortValue(deep, { ability: { low: -0.5, high: 0 } }, "ability", "minimal", 0)), -0.96);
+
+  // Burn clamp: a policy with effort_burn.minimal close to Low still burns at most 0.75 of the model's Low
+  const curve = { burn: { low: 0.4, high: 0.7 } };
+  const nearLow = { ...policy, effort_burn: { ...policy.effort_burn, low: 0.2, minimal: 0.19 } };
+  assert.equal(effortValue(nearLow, curve, "burn", "minimal", 0.7), 0.3);
+  const cheap = { ...policy, effort_burn: { ...policy.effort_burn, low: 0.2, minimal: 0.1 } };
+  assert.equal(effortValue(cheap, curve, "burn", "minimal", 0.7), 0.2);
+
+  // none/off: parsed as efforts and scored from their own policy rows (below minimal), on and off a model's curve
+  const astra = abilities(["gpt-6-astra:none", "gpt-6-astra:off", "gpt-6-astra:minimal", "gpt-6-astra:low"]);
+  assert.deepEqual(Object.keys(astra).sort(), ["low", "minimal", "none", "off"]);
+  const lowToNone = Math.min(policy.effort_ability.none - policy.effort_ability.low, -0.2);
+  assert.ok(Math.abs(astra.none - (astra.low + lowToNone)) < 0.001, `none ${astra.none}, low ${astra.low}`);
+  assert.equal(astra.off, astra.none);
+  assert.ok(astra.none < astra.minimal, `none ${astra.none} below minimal ${astra.minimal}`);
+  const glmNone = abilities(["glm-5.3:none", "glm-5.3:off", "glm-5.3:high"]);
+  assert.ok(Math.abs(glmNone.none - (glmNone.high + policy.effort_ability.none)) < 0.001);
+  assert.ok(Math.abs(glmNone.off - (glmNone.high + policy.effort_ability.off)) < 0.001);
+});
+
+test("9.12 Quota opportunity cost reads the allocator's burn scale: `:ultra` costs what `:max` costs, `:minimal`/`none`/`off` cost less than `:low`", () => {
+  const t0 = Date.parse("2026-11-05T00:00:00Z");
+  const subscription = (key) => ({
+    [key]: {
+      kind: "subscription",
+      quota: { windows: [{ name: "7d", used: 60, remaining: 40, resetsAt: new Date(t0 + 120 * 3600 * 1000).toISOString() }] },
+    },
+  });
+  // glm-5.3 has no effort curve, so its efforts come from the policy table alone.
+  for (const [model, quotas] of [
+    ["claude-opus-5-5", subscription("claude/sub")],
+    ["gpt-6-astra", subscription("codex/sub")],
+    ["glm-5.3", subscription("glm-5.3/sub")],
+  ]) {
+    const cost = (effort) =>
+      evaluateModelQuota(`${model}:${effort}`, effort, { hours: 1.5, difficulty: "hard" }, quotas, {}, t0).opportunity_cost;
+    assert.ok(cost("max") > cost("high") && cost("high") > cost("low"), `${model} max/high/low ${cost("max")}/${cost("high")}/${cost("low")}`);
+    assert.equal(cost("ultra"), cost("max"), `${model} ultra ${cost("ultra")} vs max ${cost("max")}`);
+    for (const effort of ["minimal", "none", "off"]) {
+      assert.ok(cost(effort) < cost("low"), `${model} ${effort} ${cost(effort)} vs low ${cost("low")}`);
+    }
+  }
+});
+
+test("9.13 The gateway always routes: when every candidate is below the task's floor it sends the most capable one; the allocator itself still declines", async () => {
+  const prompt = "Refactor the payment retry loop in billing/retry.go and add tests for the backoff";
+  const body = () => ({ model: "agentcompass", messages: [{ role: "user", content: prompt }] });
+  const routed = (candidateModels) => {
+    const out = mwOnRequest(body(), { protocol: "chat", agent: "claude-code", options: { candidateModels }, state: {} });
+    return out ? out.model : null;
+  };
+  // AgentCompass may leave a task unrouted; it has nothing below the floor to offer.
+  assert.equal(selectBestRoute(inferTaskProfile({ objective: prompt }), { objective: prompt, candidateModels: ["gpt-6-astra:minimal"] }).ok, false);
+  // Magpie must still send the request somewhere: forwarding `agentcompass` upstream only fails.
+  assert.equal(routed(["gpt-6-astra:minimal"]), "gpt-6-astra:minimal");
+  assert.equal(routed(["gemini-3.8-flash-high"]), "gemini-3.8-flash-high:high");
+  assert.equal(routed(["gpt-6-astra:none", "gpt-6-astra:minimal"]), "gpt-6-astra:minimal");
+  // A candidate that clears the floor still wins.
+  assert.equal(routed(["gpt-6-astra:minimal", "gpt-6-astra:high"]), "gpt-6-astra:high");
+
+  const ctx = { protocol: "chat", agent: "claude-code", options: { scorerType: "heuristic", candidateModels: ["gpt-6-astra:minimal"] }, state: {}, report() {} };
+  await hookOnRequest(body(), ctx);
+  assert.equal(ctx.state.route?.targetModel, "gpt-6-astra");
+  assert.equal(ctx.state.route?.targetEffort, "minimal");
+  assert.ok(ctx.state.route?.fallback, "the decision says it fell back");
+
+  // A model that can't see the request's image is the last resort, however capable it is.
+  const visualPrompt = "Refactor the payment retry loop in billing/retry.go to match this screenshot and add tests for the backoff";
+  const visualBody = () => ({
+    model: "agentcompass",
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: visualPrompt },
+        { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+      ],
+    }],
+  });
+  const routedVisual = (candidateModels) => {
+    const out = mwOnRequest(visualBody(), { protocol: "chat", agent: "claude-code", options: { candidateModels }, state: {} });
+    return out ? out.model : null;
+  };
+  assert.equal(routedVisual(["claude-fable-5-1:high", "gemini-3.8-flash-high:low"]), "gemini-3.8-flash-high:low");
+  assert.equal(routedVisual(["grok-4.7:high", "gemini-3.8-flash-high:minimal"]), "gemini-3.8-flash-high:minimal");
+  // Outside the floor-only tier, seeing the image still beats raw ability.
+  const visualProfile = { ...inferTaskProfile({ objective: visualPrompt }), needs_visual: true };
+  const kind = visualProfile.work_kind;
+  const seeing = selectBestRoute(visualProfile, {
+    objective: visualPrompt,
+    candidateModels: ["claude-fable-5-1:high", "gemini-3.8-flash-high:low", "grok-4.7:low"],
+    catalog: { routes: { ...CANONICAL_ROUTES, [kind]: { ...CANONICAL_ROUTES[kind], restrict_models: true, preferred: ["grok-4.7"] } } },
+    fallbackToBestExcluded: true,
+  });
+  assert.equal(seeing.modelWithEffort, "gemini-3.8-flash-high:low");
+  assert.equal(seeing.fallback.excluded.length, 2, "not in the allowed list and below the floor");
+  // Only missing the floor beats a capable candidate excluded for another reason.
+  const floorOnly = selectBestRoute(visualProfile, {
+    objective: visualPrompt,
+    candidateModels: ["gpt-6-astra:high", "gemini-3.8-flash-high:low"],
+    catalog: { routes: { ...CANONICAL_ROUTES, [kind]: { ...CANONICAL_ROUTES[kind], restrict_models: true, preferred: ["gemini-3.8-flash-high"] } } },
+    fallbackToBestExcluded: true,
+  });
+  assert.equal(floorOnly.modelWithEffort, "gemini-3.8-flash-high:low");
+  // With no model that can see it, the request still goes somewhere, to the most capable one.
+  assert.equal(routedVisual(["claude-fable-5-1:high", "grok-4.7:high"]), "claude-fable-5-1:high");
+
+  const visualCtx = { protocol: "chat", agent: "claude-code", options: { scorerType: "heuristic", candidateModels: ["claude-fable-5-1:high", "gemini-3.8-flash-high:low"] }, state: {}, report() {} };
+  await hookOnRequest(visualBody(), visualCtx);
+  assert.equal(visualCtx.state.route?.targetModel, "gemini-3.8-flash-high");
+});

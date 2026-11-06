@@ -45,7 +45,9 @@ export const acpCapabilities: Capabilities = {
 export const cursorAcpCapabilities: Capabilities = {
   ...acpCapabilities,
   questions: true,
-  modes: ["default", "plan", "ask"],
+  // 1.3: bypassPermissions = 全部自动同意: Cursor's agent mode, every approval answered "allow once" by the daemon
+  // (Cursor's own --force only exists at spawn, and Auto-review is not applied over ACP)
+  modes: ["default", "bypassPermissions", "plan", "ask"],
 };
 
 function runVersion(r: ResolveResult & { ok: true }, args: string[], timeoutMs = 8000): Promise<string> {
@@ -79,7 +81,7 @@ async function resolveProviderBin(cfg: AcpProviderConfig) {
 export function createAcpProvider(cfg: AcpProviderConfig): Provider {
   const base = cfg.capabilities ?? acpCapabilities;
   // With a mode table, expose only the modes the Agent really has (in our fixed order)
-  const ORDER: Mode[] = ["plan", "default", "acceptEdits", "bypassPermissions"];
+  const ORDER: Mode[] = ["plan", "default", "acceptEdits", "bypassPermissions", "ask"];
   const caps: Capabilities = cfg.modeMap
     ? { ...base, modes: ORDER.filter((m) => cfg.modeMap![m] !== undefined), modeLabels: cfg.modeLabels }
     : base;
