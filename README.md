@@ -123,11 +123,18 @@ A tools package can also give magpie a web search API. It is listed in Settings 
 | Package | Search APIs |
 |---|---|
 | [magpie-websearch](https://github.com/guotree/magpie-websearch) | AnySearch, Bocha, Jina, Kagi, Keenable, Linkup, Metaso, Moonshot, Moonshot CN, Ollama, Parallel, Perplexity, Querit, SerpApi, Serper, StepFun, TinyFish, Z.ai and Zhipu; published as `@guotree/magpie-websearch` and maintained in its own repository |
+| [magpie-search-mix](https://github.com/mdwsk88/magpie-search-mix) | Search Mix: asks two (or more) of Tavily, Brave, Exa, Firecrawl, You.com, DeepSeek, Doubao Search, Yuanbao Search and SearXNG at once, the ones you name in its key field, and gives their pages in turn, deduplicated; published as `magpie-search-mix` and maintained in its own repository |
 
 Install magpie-websearch:
 
 ```sh
 magpie plugin add @guotree/magpie-websearch
+```
+
+Install magpie-search-mix:
+
+```sh
+magpie plugin add magpie-search-mix
 ```
 
 ### Writing a web search plugin
