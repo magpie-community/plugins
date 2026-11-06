@@ -2872,6 +2872,61 @@
       "latest": "0.1.0",
       "readme": "# @magpie-community/middleware-param-override\n\nNew API's **参数覆盖** (a channel's `param_override`) as [magpie](https://usemagpie.ai) gateway middleware. It sets, deletes, moves and rewrites any field of the requests agents send through magpie, whichever provider serves them. The options are New API's JSON as it is, so you can paste a `param_override` from New API unchanged.\n\nInstall it from magpie's **Plugins › Discover**, or with `magpie plugin add @magpie-community/middleware-param-override`. Then set its options under **Plugins › Installed › Options**, or with `magpie plugin options param-override '<json>'`.\n\n## Options\n\nThere are two forms, as in New API:\n\n```json\n{ \"temperature\": 0.2, \"max_tokens\": 8000 }\n```\n\nEach key is set on the body as it is.\n\n```json\n{ \"operations\": [\n  { \"path\": \"max_tokens\", \"mode\": \"set\", \"value\": 32000,\n    \"conditions\": [{ \"path\": \"max_tokens\", \"mode\": \"gt\", \"value\": 32000 }] },\n  { \"path\": \"temperature\", \"mode\": \"delete\",\n    \"conditions\": [{ \"path\": \"model\", \"mode\": \"contains\", \"value\": \"reasoner\" }] },\n  { \"mode\": \"return_error\", \"value\": { \"message\": \"opus is not allowed here\", \"status_code\": 403 },\n    \"conditions\": [{ \"path\": \"model\", \"mode\": \"contains\", \"value\": \"opus\" }] }\n] }\n```\n\nThe operations run in order. Keys set beside `operations` are applied first.\n\n| Field | |\n| --- | --- |\n| `path` | A gjson path: `a.b.0`. `messages.-1` counts from the end, `tools.*.name` matches every item, and `\\.` is a dot inside a key. |\n| `mode` | `set` (`keep_origin`: only when missing), `delete`, `move` / `copy` (`from`, `to`), `prepend` / `append` (arrays joined, strings joined, objects merged; `keep_origin` keeps keys already there), `trim_prefix`, `trim_suffix`, `ensure_prefix`, `ensure_suffix`, `trim_space`, `to_lower`, `to_upper`, `replace` / `regex_replace` (`from`, `to`; Go's `${1}` works), `return_error`, `prune_objects` |\n| `value` | What to set, join or trim. For `return_error`, a message or `{message, status_code}`; the agent gets the error in its own API's shape. For `prune_objects`, a `type` or `{type, where, conditions, logic, recursive}`. |\n| `conditions` | `[{path, mode, value, invert, pass_missing_key}]`, where `mode` is `full`, `prefix`, `suffix`, `contains`, `gt`, `gte`, `lt` or `lte`. A path is looked up in the body first, then in the request: `model`, `request_path`, `protocol` (`anthropic`, `chat`, `responses`, `gemini`), `agent`, `stream`. |\n| `logic` | `OR` (New API's default) or `AND`. |\n\nSome of New API's modes have nothing to act on here and are left out: the header modes (`set_header`, `pass_headers`…), `sync_fields`, and conditions on retries, users and groups. The middleware sees only the body.\n\nUnlike New API, an operation that can't apply is skipped (a `move` from a missing path, `trim_prefix` on a number) and the request goes on. If the middleware itself fails, magpie sends the request as it came.\n\n## Recipes\n\n- Cap `max_tokens` for a provider with a lower limit: the first example above.\n- Drop a parameter a provider refuses: `{\"path\": \"tools.*.input_examples\", \"mode\": \"delete\"}`.\n- Strip a vendor prefix from model names: `{\"path\": \"model\", \"mode\": \"trim_prefix\", \"value\": \"openai/\"}`.\n- Keep an agent off a model: `return_error` with a `model` condition.\n- Remove old thinking blocks: `{\"path\": \"messages\", \"mode\": \"prune_objects\", \"value\": \"thinking\"}`.\n\n中文：New API 的「参数覆盖」，作为 magpie 网关中间件。配置是 New API 的同一份 JSON，可以原样粘贴过来。\n"
     },
+    "@magpie-community/middleware-privacy-gate": {
+      "versions": {
+        "0.1.0": {
+          "file": "tgz/magpie-community-middleware-privacy-gate-0.1.0.tgz",
+          "integrity": "sha512-faaNMCSbX5//u0UxJkCjj0liuu5fi1NdL857FkuS6DPRKseTRPoeDSRRdbI1jnMKJ7wqz/bW5Ou0/uquNB8KBA==",
+          "time": "2026-11-06T12:26:53.227Z",
+          "manifest": {
+            "name": "@magpie-community/middleware-privacy-gate",
+            "version": "0.1.0",
+            "description": "Structural egress gate for Magpie's gateway: rejects image, file and audio parts, encoded blobs and models outside the allowlist when Magpie cannot mask them locally; does not mask text. Companion to the ShyPie DSH bundle for DeepSeek Harness.",
+            "type": "module",
+            "files": [
+              "privacy-gate.middleware.js",
+              "README.md"
+            ],
+            "keywords": [
+              "magpie",
+              "magpie-middleware",
+              "gateway-middleware",
+              "privacy",
+              "pii",
+              "dlp",
+              "security",
+              "shypie"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/privacy-gate"
+            },
+            "magpie": {
+              "middleware": "./privacy-gate.middleware.js",
+              "options": {
+                "allowModels": [],
+                "localModels": [],
+                "localProviders": [],
+                "binaryPolicy": "fail",
+                "guideTools": [],
+                "allowUnknownProtocol": false,
+                "blobBase64Chars": 400,
+                "blobHexChars": 400,
+                "scanChars": 200000,
+                "maxNodes": 40000,
+                "maxDepth": 40,
+                "logMaxLines": 40,
+                "logEveryRows": 50
+              }
+            }
+          }
+        }
+      },
+      "latest": "0.1.0",
+      "readme": "# privacy-gate — structural egress gate for Magpie\n\nA Magpie **gateway middleware**. It is the Magpie half of\n[ShyPie](https://github.com/siml1169/ShyPie)'s privacy-first workflow for\n[DeepSeek Harness](https://github.com/deepseek-ai): DSH masks and extracts at ingestion, and this\ngate enforces the structural half of the egress path.\n\nIt **does not mask text**. Text masking stays Magpie's Privacy setting; this plugin only checks the\nrequest's structure. Image, file and audio parts get a **403 by default**. They pass only when **both** agree: the model\nis in `localModels` (so `onRequest` allows it) **and** the provider id is in `localProviders` (so\n`onProvider` keeps it). With `localModels` alone the request is not rejected, but `onProvider`\nblanks the content — the request is changed silently, not sent. Encoded blobs smuggled through text\nand models outside the allowlist are rejected too.\n\n## Install\n\n```sh\nmagpie plugin add @magpie-community/middleware-privacy-gate\nmagpie plugin options privacy-gate '{}'     # no options = strictest (all binary parts blocked)\nmagpie plugin                                # listed as gateway middleware\n```\n\nThe options object is `ctx.options`; defaults are shown by `magpie plugin options privacy-gate`.\n\n| Option | Default | Meaning |\n|---|---|---|\n| `allowModels` | `[]` | Globs against the model id as the agent asked. `[]` allows every model; if the option is present but is not an array of non-empty short strings, every request is refused instead of falling back to no allowlist. |\n| `localModels` | `[]` | Model globs that may receive binary parts on `onRequest`. Pair with `localProviders`, or `onProvider` blanks the content. |\n| `localProviders` | `[]` | Provider-id globs that may receive binary parts; checked in `onProvider`. |\n| `blobBase64Chars` / `blobHexChars` | `400` / `400` | An encoded run at or above this is a blob (403). |\n| `scanChars` | `200000` | Total text-inspection budget; each field may use at most an eighth (min 1k), so one huge field cannot starve the rest of the newest turn. |\n| `allowUnknownProtocol` | `false` | Reject bodies whose `ctx.protocol` is not one of chat/responses/anthropic/gemini. |\n| `binaryPolicy` | `fail` | `fail` returns 403 for a non-local binary part; `guide` withholds every binary part and injects a metadata + local-tool prompt instead. |\n| `guideTools` | `[]` | Tool names advertised to the model in guide mode. Leave empty unless the local MCP server is installed. |\n| `maxNodes` / `maxDepth` | `40000` / `40` | Every visited value counts, including primitives and array elements; an array wider than the remaining budget is refused without iterating. Overflow blocks (fail closed). |\n| `logMaxLines` / `logEveryRows` | `40` / `50` | Self-cap on `console.log` / one usage line every N rows. |\n\n## What it does not inspect\n\n- Text content is Magpie's Privacy masking. Secrets in message text and tool arguments pass through\n  this layer unchanged unless Magpie's masking catches them.\n- The scan is **bounded**: newest conversation content is walked first; each text field may use at\n  most `max(1024, scanChars/8)` characters (only the edges of a longer field), and after the total\n  `scanChars` budget the rest is skipped. `system`/`instructions` are visited after the conversation,\n  so a blob there behind a long history can pass. Structural checks (binary parts, model allowlist,\n  value/depth limits) still fail closed; a request above `maxNodes` values is refused rather than\n  passed uninspected. In moejs, the default bound costs ~76 ms for 2,000 tool turns (~3.5 MB; 403 at\n  the value cap) and ~38 ms for a 200-turn (~350 KB) body that passes.\n- A long encoded-looking token (a hash, a minified line) can be a false positive at 400 chars.\n  Raise `blobBase64Chars`/`blobHexChars` deliberately if you need that.\n- `binaryPolicy: guide` never forwards binary bytes. It replaces every binary part with text containing only `type`, `mime` and `bytes`, plus a neutral prompt to select a local extraction tool. It cannot execute the tool; the agent must have the local MCP server configured.\n- In guide mode, the walk is bounded by `maxNodes` and uses the same protocol sites as the inspector, so `tool_use.input`, `tool_result.content` and other model/tool data are never rewritten as if they were content parts. The same walk scans every text field for encoded blobs, including older turns and `system`/`instructions`, so the rewritten body cannot carry an unscanned blob through.\n- Vendor-sealed replay fields are exempt **only inside their vendor block**: Anthropic thinking\n  `signature`, Responses reasoning `encrypted_content`, Gemini **model-role** part `thoughtSignature`,\n  and vendor item `id`/`call_id`. A same-named key in tool arguments or message text is still scanned.\n- No network, timers, Node APIs or imports; one file, moejs-compatible.\n\n## Companion DSH bundle\n\nThe ingestion half lives in ShyPie:\n[`@shypie_privacy/dsh-privacy-gate`](https://github.com/siml1169/ShyPie/tree/main/plugins/dsh-privacy-gate).\nIt redacts tool results and document text before they enter the session log and provides local\n`privacy_extract` / `privacy_ocr` / `privacy_scan` / `privacy_rehydrate` tools.\n\n## Test\n\n```sh\nbun test\nbun scripts/check.mjs     # from the repository root\n```\n\n`cases.json` is run through `scripts/middleware.mjs`, the same way Magpie's gateway calls the hooks.\n\n## License\n\nMIT\n"
+    },
     "@magpie-community/middleware-reserve": {
       "versions": {
         "0.1.0": {
