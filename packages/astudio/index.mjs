@@ -29,6 +29,7 @@
 import { spawnSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { homedir as osHomedir } from "node:os"
+import * as browserDefault from "./browser.mjs"
 
 const ID = "astudio"
 
@@ -43,6 +44,10 @@ const STUDIO_VERSION = "3.5.5"
 
 // 读取桌面端登录态失败时展示的跳转页：AStudio 官网（含桌面端下载）。
 const OFFICIAL_SITE = "https://agent.xfyun.cn/"
+// 网页登录的落地页：登录后 web bundle 把 ssoSessionId/account_id/token 写进 Cookie。
+const STUDIO_WEB_URL = "https://agent.xfyun.cn/studio-credits"
+// 浏览器登录窗口的等待上限（宿主取消时也会提前 abort）。
+const WEB_SIGNIN_WAIT_MS = 10 * 60 * 1000
 // 等待「用户去装桌面端并登录」的窗口与轮询间隔。
 const DESKTOP_POLL_MS = 2000
 const DESKTOP_WAIT_MS = 5 * 60 * 1000
@@ -277,7 +282,7 @@ async function studioJson(path, { session, fetchImpl, method = "GET", body, oper
       redirect: "error",
     })
   } catch (error) {
-    throw new Error(`${operation} 网络失败：${error?.cause?.code || error?.message || "未知错误"}`)
+    throw Object.assign(new Error(`${operation} 网络失败：${error?.cause?.code || error?.message || "未知错误"}`), { transient: true })
   }
   if (res.status === 401 || res.status === 403) {
     throw Object.assign(new Error(`AStudio 会话已失效（HTTP ${res.status}），请重新登录 AStudio`), { signIn: "expired" })
@@ -293,9 +298,39 @@ async function studioJson(path, { session, fetchImpl, method = "GET", body, oper
     if (envelope.code === 80000 || /重新登录/.test(String(envelope.desc ?? ""))) {
       throw Object.assign(new Error(`AStudio 会话已失效，请重新登录 AStudio`), { signIn: "expired" })
     }
-    throw new Error(`${operation} 失败（HTTP ${res.status}${envelope.desc ? `：${envelope.desc}` : ""}）`)
+    throw Object.assign(new Error(`${operation} 失败（HTTP ${res.status}${envelope.desc ? `：${envelope.desc}` : ""}）`), {
+      transient: res.status >= 500,
+    })
   }
   return envelope.data
+}
+
+// 网页登录换发模型凭据：桌面端启动时的同款 POST（Cookie 鉴权），返回
+// modelBearerToken（JWT，实测 3 年有效期；换发后旧 token 仍可用）。
+// 请求装配与错误分类都走 studioJson，别再抄一份（抄本必然与正本漂移）。
+async function exchangeModelToken(session, fetchImpl) {
+  const data = await studioJson("auth/bearer-token", {
+    session,
+    fetchImpl,
+    method: "POST",
+    operation: "换发模型凭据",
+  })
+  const token = data?.modelBearerToken
+  if (typeof token !== "string" || !token) throw new Error("换发模型凭据失败：返回里没有 modelBearerToken")
+  return token
+}
+
+// 登录回调里的两次网络读：只有网络/5xx 这类瞬时失败重试，会话失效与确定性
+// 4xx 不重试——用户刚在浏览器里登完，一次抖动不该把整次登录作废。
+async function retryTransient(fn, sleep, attempts = 3, delayMs = 2000) {
+  for (let i = 0; ; i++) {
+    try {
+      return await fn()
+    } catch (error) {
+      if (!error?.transient || i + 1 >= attempts) throw error
+      await sleep(delayMs)
+    }
+  }
 }
 
 async function fetchCatalog(key, fetchImpl) {
@@ -312,7 +347,9 @@ function authResult(cred) {
   return {
     type: "success",
     key: cred.key,
-    accountId: cred.uid,
+    // 实测 uid === account_id；session 里缺 uid 的旧登录态退回 account_id，
+    // 否则 accountId 为空会让宿主把多个账号塌进同一格。
+    accountId: cred.uid || cred.session?.accountId,
     metadata: {
       uid: cred.uid,
       source: cred.source,
@@ -352,7 +389,7 @@ function reasonOf(error) {
     : "本机没有 AStudio 桌面端登录态"
 }
 
-function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir = osHomedir(), registryQuery, readFileImpl, sleepImpl, nowMsImpl = () => Date.now() } = {}) {
+function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir = osHomedir(), registryQuery, readFileImpl, sleepImpl, nowMsImpl = () => Date.now(), browserModule = browserDefault } = {}) {
   const sleep = sleepImpl ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
 
   async function readBalance(session) {
@@ -437,10 +474,10 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
   }
 
   // 桌面端启动时的两个 POST 里，签到只复刻 init-app（租户初始化）。另一个
-  // auth/bearer-token 会换发 modelBearerToken，而「新旧 token 并存、旧 token
-  // 不被作废」尚未实证；自动签到里换发可能把用户手上的 key 打掉，故不调用。
-  // 失败不塌方，但原因要收集起来交给上层，否则用户分不清「POST 失败」和
-  // 「今天确实没发」。
+  // auth/bearer-token 会换发 modelBearerToken；2026-11-06 实测新旧 token 并存
+  // （换发后旧 token 仍可用），但签到没有换发需求，多换一次只是白白轮换，
+  // 故仍不调用——浏览器登录自己需要 key 时才换。失败不塌方，但原因要收集
+  // 起来交给上层，否则用户分不清「POST 失败」和「今天确实没发」。
   async function desktopLogin(session) {
     const warnings = []
     try {
@@ -467,6 +504,70 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
     auth: {
       provider: ID,
       methods: [
+        {
+          // 网页登录：浏览器里登一次，插件收割 Cookie（ssoSessionId/account_id/
+          // token）后换发模型凭据。每次登录用全新 profile，不串票；登录收尾后
+          // 连 profile 一起删掉——会话已存进 metadata.session，浏览器目录只是
+          // 第二份凭据副本，留着只会随每次重登无限堆积。accountId 用 uid——
+          // 同一账号用桌面端登录时也是 uid，宿主因此把两路登录归到同一格。
+          type: "oauth",
+          label: "浏览器登录（推荐，可多账号）",
+          async authorize(_inputs, { signal } = {}) {
+            // 先确认本机有 Chrome/Edge：没有就当场报错，别先说「已弹出」再失败。
+            await browserModule.browserExecutable?.()
+            const harvesting = browserModule.startBrowserHarvest({ deadlineMs: WEB_SIGNIN_WAIT_MS, startUrl: STUDIO_WEB_URL })
+            harvesting.promise.catch(() => {})
+            const cleanup = setTimeout(() => { harvesting.abort().catch(() => {}) }, WEB_SIGNIN_WAIT_MS)
+            const onAbort = () => { harvesting.abort().catch(() => {}) }
+            if (signal?.aborted) onAbort()
+            else if (typeof signal?.addEventListener === "function") signal.addEventListener("abort", onAbort, { once: true })
+            return {
+              url: "",
+              opened: true, // 浏览器已由本插件弹出，宿主不要再开 url
+              instructions: "已弹出专用浏览器窗口：请在里面登录讯飞账号（手机验证码或扫码均可），登录成功后本流程自动继续。",
+              method: "auto",
+              async callback(_code, { signal: callbackSignal } = {}) {
+                if (callbackSignal?.aborted) onAbort()
+                else if (typeof callbackSignal?.addEventListener === "function") callbackSignal.addEventListener("abort", onAbort, { once: true })
+                let harvested
+                try {
+                  harvested = await harvesting.promise
+                  const membership = await retryTransient(
+                    () => studioJson("membership/me", { session: harvested.session, fetchImpl, operation: "会员信息" }),
+                    sleep,
+                  )
+                  const uid = String(membership?.uid ?? "").trim()
+                  if (!uid) throw new Error("AStudio 账号信息里没有 uid，无法确定账号")
+                  const key = await retryTransient(() => exchangeModelToken(harvested.session, fetchImpl), sleep)
+                  return {
+                    type: "success",
+                    key,
+                    accountId: uid,
+                    metadata: {
+                      uid,
+                      method: "web",
+                      source: STUDIO_WEB_URL,
+                      session: harvested.session,
+                    },
+                  }
+                } catch (error) {
+                  return { type: "failed", error: error?.message ?? String(error) }
+                } finally {
+                  clearTimeout(cleanup)
+                  signal?.removeEventListener?.("abort", onAbort)
+                  callbackSignal?.removeEventListener?.("abort", onAbort)
+                  if (harvested) {
+                    await harvested.close().catch(() => {})
+                    await harvested.release()
+                    // 会话已收进 metadata.session；浏览器目录是第二份凭据副本，
+                    // 成功失败都不留（否则每次重登都在盘上堆一份）。
+                    await browserModule.removeProfile(harvested.profilePath)
+                  }
+                }
+              },
+            }
+          },
+        },
         {
           // oauth 方式：magpie 不显示 key 输入框，authorize 必须立刻返回
           // { url, instructions, method, callback }，结果由 callback 交回。
@@ -577,7 +678,9 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return {}
         const session = auth.metadata?.session
-        if (!session?.token) {
+        // 账号面鉴权只需 ssoSessionId + account_id（2026-11-06 实测，token 可缺）；
+        // account_id 是三种登录方式都有的最小标识。
+        if (!session?.accountId) {
           let res
           try {
             res = await fetchCatalog(auth.key, fetchImpl)
@@ -645,7 +748,7 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return {}
         const session = auth.metadata?.session
-        if (!session?.token) {
+        if (!session?.accountId) {
           return { outcome: "ineligible", message: "该账号只有模型凭据（无网页会话），无法执行每日登录签到" }
         }
         let config
@@ -858,12 +961,15 @@ export const _internal = {
   registryDataRoots,
   buildCookieHeader,
   studioJson,
+  exchangeModelToken,
   MODEL_GATEWAY_BASE,
   MODEL_MANAGER_URL,
   STUDIO_API_BASE,
   STUDIO_VERSION,
+  STUDIO_WEB_URL,
   OFFICIAL_SITE,
   DESKTOP_WAIT_MS,
+  WEB_SIGNIN_WAIT_MS,
   BOOTSTRAP,
   ID,
 }

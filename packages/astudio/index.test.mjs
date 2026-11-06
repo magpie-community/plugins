@@ -1,6 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { AStudioPlugin, _internal } from "./index.mjs"
+import * as astroBrowser from "./browser.mjs"
 
 const {
   createPlugin,
@@ -12,14 +13,25 @@ const {
   registryDataRoots,
   buildCookieHeader,
   studioJson,
+  exchangeModelToken,
   MODEL_GATEWAY_BASE,
   MODEL_MANAGER_URL,
   STUDIO_API_BASE,
   STUDIO_VERSION,
+  STUDIO_WEB_URL,
   OFFICIAL_SITE,
   DESKTOP_WAIT_MS,
   ID,
 } = _internal
+
+const methodByLabel = (plugin, pattern) => {
+  const method = plugin.auth.methods.find((m) => pattern.test(m.label))
+  assert.ok(method, `没有找到匹配 ${pattern} 的登录方式`)
+  return method
+}
+const desktopMethod = (plugin) => methodByLabel(plugin, /桌面端/)
+const pasteMethod = (plugin) => methodByLabel(plugin, /粘贴/)
+const webMethod = (plugin) => methodByLabel(plugin, /浏览器登录/)
 
 const CATALOG_ENTRY = {
   slug: "spark-x2.6-4b",
@@ -248,7 +260,7 @@ test("usage hook checks the credential without burning quota", async () => {
 
 test("desktop login method is oauth, so magpie shows no key input box", () => {
   const plugin = createPlugin({ env: {}, registryQuery: () => null, readFileImpl: fakeFs({}) })
-  const method = plugin.auth.methods[0]
+  const method = desktopMethod(plugin)
   // type:"api" 在 magpie 里就是一个 key 输入框 —— 本方法自己读磁盘，不该要用户输入。
   assert.equal(method.type, "oauth")
   assert.match(method.label, /桌面端/)
@@ -263,7 +275,7 @@ test("desktop login method reads real files through authorize", async () => {
       "D:\\astudio/userdata/astron-session.json": JSON.stringify({ uid: "u9", modelBearerToken: "tok-9" }),
     }),
   })
-  const out = await plugin.auth.methods[0].authorize({})
+  const out = await desktopMethod(plugin).authorize({})
   assert.equal(out.url, "")
   assert.match(out.instructions, /已读取本机 AStudio 登录态（u9）/)
   assert.equal(out.method, "auto")
@@ -290,7 +302,7 @@ test("desktop login method points at the official site and waits when nothing is
     },
     nowMsImpl: () => clock,
   })
-  const out = await plugin.auth.methods[0].authorize({})
+  const out = await desktopMethod(plugin).authorize({})
   assert.equal(out.url, OFFICIAL_SITE)
   assert.equal(out.method, "auto")
   assert.match(out.instructions, /没有找到 AStudio 桌面端登录态/)
@@ -316,7 +328,7 @@ test("desktop login method completes on its own once the desktop signs in", asyn
       return session
     },
   })
-  const out = await plugin.auth.methods[0].authorize({})
+  const out = await desktopMethod(plugin).authorize({})
   assert.equal(out.url, OFFICIAL_SITE)
   assert.equal(reads, 1) // authorize 读一次
   assert.equal((await out.callback()).key, "tok-7")
@@ -351,7 +363,7 @@ test("desktop login method refuses banned accounts instead of offering the site"
   })
   // 宿主 host.js 不看 oauth authorize 结果里的 type，只看它抛出的 message 或 callback；
   // 抛错在任何宿主版本上都把原因原样交给用户。
-  await assert.rejects(() => plugin.auth.methods[0].authorize({}, {}), /封禁/)
+  await assert.rejects(() => desktopMethod(plugin).authorize({}, {}), /封禁/)
 })
 
 test("desktop login method explains an unreadable session instead of pointing at install", async () => {
@@ -360,7 +372,7 @@ test("desktop login method explains an unreadable session instead of pointing at
     registryQuery: () => null,
     readFileImpl: fakeFs({ "D:\\astudio/userdata/astron-session.json": "{ 不是 JSON" }),
   })
-  const out = await plugin.auth.methods[0].authorize({}, {})
+  const out = await desktopMethod(plugin).authorize({}, {})
   assert.equal(out.url, OFFICIAL_SITE)
   assert.match(out.instructions, /不是有效 JSON/)
   assert.doesNotMatch(out.instructions, /本机没有找到/)
@@ -374,7 +386,7 @@ test("desktop login method keeps a read error instead of calling the machine emp
       throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" })
     },
   })
-  const out = await plugin.auth.methods[0].authorize({}, {})
+  const out = await desktopMethod(plugin).authorize({}, {})
   assert.match(out.instructions, /读取失败.*EACCES/s) // 读不了 ≠ 没装
 })
 
@@ -392,7 +404,7 @@ test("desktop login method reports the last reason when it times out", async () 
     },
     nowMsImpl: () => clock,
   })
-  const out = await plugin.auth.methods[0].authorize({}, {})
+  const out = await desktopMethod(plugin).authorize({}, {})
   const failed = await out.callback(undefined, {})
   assert.equal(failed.type, "failed")
   assert.match(failed.error, /没有 modelBearerToken.token/)
@@ -413,7 +425,7 @@ test("desktop login method stops polling when the sign-in is cancelled", async (
     },
     nowMsImpl: () => clock,
   })
-  const out = await plugin.auth.methods[0].authorize({}, { signal: controller.signal })
+  const out = await desktopMethod(plugin).authorize({}, { signal: controller.signal })
   const failed = await out.callback(undefined, { signal: controller.signal })
   assert.equal(failed.type, "failed")
   assert.match(failed.error, /取消/)
@@ -904,7 +916,7 @@ test("check-in propagates dead sessions as signIn expired", async () => {
 
 test("paste login method stores key plus cookie session inputs", async () => {
   const plugin = createPlugin()
-  const method = plugin.auth.methods[1]
+  const method = pasteMethod(plugin)
   assert.match(method.label, /粘贴/)
   const out = await method.authorize({ modelBearerToken: "tok-p", uid: "u7", sessionToken: "tok-36", accountId: "A7", ssoSessionId: "sso-7" })
   assert.deepEqual(out, {
@@ -952,7 +964,253 @@ test("module export is a plugin factory", async () => {
   const plugin = await AStudioPlugin()
   assert.equal(typeof plugin.config, "function")
   assert.equal(typeof plugin.auth.loader, "function")
-  assert.equal(plugin.auth.methods.length, 2)
+  assert.equal(plugin.auth.methods.length, 3)
+})
+
+// ---------------------------------------------------------------- 网页登录（多账号）
+
+// 假浏览器模块：startBrowserHarvest 立刻给出一个收割结果，removeProfile 记账。
+function fakeBrowser({ session = { token: "tok-web", accountId: "A-web", ssoSessionId: "sso-web" }, profilePath = "C:/tmp/astudio-profile" } = {}) {
+  const calls = { started: 0, closed: 0, released: 0, removed: [] }
+  return {
+    calls,
+    startBrowserHarvest() {
+      calls.started++
+      return {
+        promise: Promise.resolve({
+          session,
+          profilePath,
+          release: async () => { calls.released++ },
+          close: async () => { calls.closed++ },
+        }),
+        abort: async () => {},
+      }
+    },
+    async removeProfile(path) { calls.removed.push(path) },
+  }
+}
+
+const webFetch = ({ uid = "u-web", token = "tok-model-web", exchangeStatus = 200 } = {}) => async (input) => {
+  const url = String(input)
+  if (url.includes("membership/me")) return jsonRes({ flag: true, code: 0, data: uid ? { uid } : {} })
+  if (url.includes("auth/bearer-token")) {
+    if (exchangeStatus !== 200) return jsonRes({}, exchangeStatus)
+    return jsonRes({ flag: true, code: 0, data: { modelBearerToken: token } })
+  }
+  throw new Error(`unexpected ${url}`)
+}
+
+test("web login is the recommended oauth method, listed first", () => {
+  const plugin = createPlugin()
+  const method = webMethod(plugin)
+  assert.equal(method.type, "oauth")
+  assert.match(method.label, /推荐/)
+  assert.match(method.label, /多账号/)
+  assert.equal(method.prompts, undefined)
+  assert.equal(plugin.auth.methods[0], method)
+})
+
+test("web login harvests cookies, exchanges the model token, and drops the browser profile", async () => {
+  const browser = fakeBrowser()
+  const plugin = createPlugin({ fetchImpl: webFetch(), browserModule: browser })
+  const out = await webMethod(plugin).authorize({}, {})
+  // 浏览器由插件自己弹出，宿主不要再开 url（mclaw 同款 opened:true）。
+  assert.equal(out.url, "")
+  assert.equal(out.opened, true)
+  assert.match(out.instructions, /登录/)
+  assert.equal(out.method, "auto")
+  const result = await out.callback()
+  assert.deepEqual(result, {
+    type: "success",
+    key: "tok-model-web",
+    accountId: "u-web",
+    metadata: {
+      uid: "u-web",
+      method: "web",
+      source: STUDIO_WEB_URL,
+      session: { token: "tok-web", accountId: "A-web", ssoSessionId: "sso-web" },
+    },
+  })
+  assert.equal(browser.calls.started, 1)
+  assert.equal(browser.calls.closed, 1)
+  assert.equal(browser.calls.released, 1)
+  // 会话已进 metadata.session，浏览器目录不留第二份凭据。
+  assert.deepEqual(browser.calls.removed, ["C:/tmp/astudio-profile"])
+})
+
+test("web login retries a transient membership read before failing", async () => {
+  let reads = 0
+  const flaky = async (input) => {
+    if (String(input).includes("membership/me") && reads++ === 0) throw new Error("network down")
+    return webFetch()(input)
+  }
+  const plugin = createPlugin({ fetchImpl: flaky, browserModule: fakeBrowser() })
+  const out = await webMethod(plugin).authorize({}, {})
+  const result = await out.callback()
+  assert.equal(result.type, "success")
+  assert.equal(result.accountId, "u-web")
+  assert.equal(reads, 2)
+})
+
+test("web login drops the profile when the session cannot become an account", async () => {
+  const browser = fakeBrowser()
+  const plugin = createPlugin({ fetchImpl: webFetch({ uid: "" }), browserModule: browser })
+  const out = await webMethod(plugin).authorize({}, {})
+  const result = await out.callback()
+  assert.equal(result.type, "failed")
+  assert.match(result.error, /没有 uid/)
+  assert.deepEqual(browser.calls.removed, ["C:/tmp/astudio-profile"])
+  assert.equal(browser.calls.closed, 1)
+})
+
+test("web login drops the profile when the exchange is refused", async () => {
+  const browser = fakeBrowser()
+  const plugin = createPlugin({ fetchImpl: webFetch({ exchangeStatus: 401 }), browserModule: browser })
+  const out = await webMethod(plugin).authorize({}, {})
+  const result = await out.callback()
+  assert.equal(result.type, "failed")
+  assert.match(result.error, /会话已失效/)
+  assert.deepEqual(browser.calls.removed, ["C:/tmp/astudio-profile"])
+})
+
+test("two web logins with different accounts return different accountIds", async () => {
+  const signIn = async (uid) => {
+    const plugin = createPlugin({ fetchImpl: webFetch({ uid }), browserModule: fakeBrowser() })
+    const out = await webMethod(plugin).authorize({}, {})
+    return (await out.callback()).accountId
+  }
+  // 宿主按 accountId 给账号池分格：uid 不同 = 两个账号，uid 相同 = 同一账号。
+  assert.equal(await signIn("u-a"), "u-a")
+  assert.equal(await signIn("u-b"), "u-b")
+})
+
+test("exchangeModelToken reads modelBearerToken and reports the envelope error", async () => {
+  const session = { token: "T", accountId: "A" }
+  assert.equal(await exchangeModelToken(session, webFetch({ token: "tok-x" })), "tok-x")
+  await assert.rejects(() => exchangeModelToken(session, async () => jsonRes({ flag: false, code: 7, desc: "拒绝" })), /拒绝/)
+  await assert.rejects(() => exchangeModelToken(session, async () => ({ ok: true, status: 200, json: async () => { throw new Error("x") } })), /不是 JSON/)
+})
+
+test("desktop sign-in falls back to account_id when the session has no uid", async () => {
+  const plugin = createPlugin({
+    env: { ASTUDIO_HOME: "D:\astudio" },
+    readFileImpl: fakeFs({
+      "D:\astudio/userdata/astron-session.json": JSON.stringify({
+        accountId: "A-only", token: "tok-36", ssoSessionId: "sso-36", modelBearerToken: "tok-65",
+      }),
+    }),
+  })
+  const out = await desktopMethod(plugin).authorize({}, {})
+  const result = await out.callback()
+  assert.equal(result.accountId, "A-only")
+})
+
+test("the same account signed in both ways lands on one accountId", async () => {
+  const plugin = createPlugin({
+    env: { ASTUDIO_HOME: "D:\astudio" },
+    readFileImpl: fakeFs({
+      "D:\astudio/userdata/astron-session.json": JSON.stringify({
+        uid: "u-same", accountId: "u-same", token: "tok-36", ssoSessionId: "sso-36", modelBearerToken: "tok-65",
+      }),
+    }),
+    fetchImpl: webFetch({ uid: "u-same" }),
+    browserModule: fakeBrowser(),
+  })
+  const desktop = await (await desktopMethod(plugin).authorize({}, {})).callback()
+  const web = await (await webMethod(plugin).authorize({}, {})).callback()
+  assert.equal(desktop.accountId, "u-same")
+  assert.equal(web.accountId, desktop.accountId)
+})
+
+// ---------------------------------------------------------------- browser.mjs
+
+const fakeChrome = (cookies = []) => ({
+  connection: { send: async () => ({ cookies }), closed: false },
+  close: async () => {},
+})
+
+test("harvestAstronSession prefers the most specific domain and needs ssoSessionId plus account_id", async () => {
+  const cookies = [
+    { name: "token", value: "t-other", domain: ".example.com" },
+    { name: "token", value: "t-generic", domain: ".xfyun.cn" },
+    { name: "token", value: "t-passport", domain: "passport.xfyun.cn" },
+    { name: "token", value: "t-host", domain: "agent.xfyun.cn" },
+    { name: "account_id", value: "A1", domain: ".xfyun.cn" },
+    { name: "ssoSessionId", value: "S1", domain: ".xfyun.cn" },
+  ]
+  assert.deepEqual((await astroBrowser.harvestAstronSession(fakeChrome(cookies))).session, {
+    token: "t-host", accountId: "A1", ssoSessionId: "S1",
+  })
+  // 网页登录可能没有 token Cookie：账号面与换发只需 ssoSessionId + account_id。
+  const noToken = cookies.filter((c) => c.name !== "token")
+  assert.deepEqual((await astroBrowser.harvestAstronSession(fakeChrome(noToken))).session, {
+    accountId: "A1", ssoSessionId: "S1",
+  })
+  assert.equal(await astroBrowser.harvestAstronSession(fakeChrome([{ name: "token", value: "t", domain: ".xfyun.cn" }])), undefined)
+  assert.equal(await astroBrowser.harvestAstronSession(fakeChrome([
+    { name: "account_id", value: "A1", domain: ".xfyun.cn" },
+  ])), undefined)
+})
+
+test("startBrowserHarvest rejects and closes the window on abort", async () => {
+  let closed = 0
+  const open = async ({ profilePath }) => ({
+    browser: { ...fakeChrome(), close: async () => { closed++ } },
+    profilePath,
+    release: async () => {},
+  })
+  const harvest = astroBrowser.startBrowserHarvest({ startUrl: "https://example.com", open })
+  // 先挂 rejection 断言再 abort：abort 会立刻让 promise 拒绝。
+  const rejected = assert.rejects(() => harvest.promise, /登录已取消/)
+  await harvest.abort()
+  await rejected
+  assert.equal(closed, 1)
+})
+
+test("startBrowserHarvest times out when no sign-in appears", async () => {
+  const open = async ({ profilePath }) => ({ browser: fakeChrome(), profilePath, release: async () => {} })
+  const harvest = astroBrowser.startBrowserHarvest({ startUrl: "https://example.com", deadlineMs: 0, open })
+  await assert.rejects(() => harvest.promise, /登录超时/)
+})
+
+test("web login does not retry a deterministic 4xx", async () => {
+  let calls = 0
+  const plugin = createPlugin({
+    fetchImpl: async (input) => {
+      if (String(input).includes("membership/me")) {
+        calls++
+        return jsonRes({ flag: false, code: 7, desc: "参数无效" }, 400)
+      }
+      return webFetch()(input)
+    },
+    browserModule: fakeBrowser(),
+  })
+  const out = await webMethod(plugin).authorize({}, {})
+  const result = await out.callback()
+  assert.equal(result.type, "failed")
+  assert.match(result.error, /参数无效/)
+  assert.equal(calls, 1)
+})
+
+test("usage reads the account API from a token-less web session", async () => {
+  const seen = []
+  const plugin = createPlugin({
+    fetchImpl: async (input) => {
+      seen.push(String(input))
+      if (String(input).includes("points/balance")) {
+        return jsonRes({ flag: true, code: 0, data: { totalBalance: 42 } })
+      }
+      if (String(input).includes("membership/me")) return jsonRes({ flag: true, code: 0, data: { uid: "u" } })
+      return jsonRes({ flag: true, code: 0, data: {} })
+    },
+  })
+  const out = await plugin.auth.usage(async () => ({
+    type: "api",
+    key: "k",
+    metadata: { session: { accountId: "A", ssoSessionId: "S" } },
+  }))
+  assert.ok(seen.some((u) => u.includes("points/balance")))
+  assert.equal(out.windows[0].balance, 42)
 })
 
 // ---------------------------------------------------------------- 北京时间窗口
@@ -1078,4 +1336,62 @@ test("check-in counts days to expiry by Beijing calendar days", async () => {
   })
   const out = await plugin.auth.checkin(async () => checkinAuth)
   assert.match(out.message, /35000 星火积分 1 天内到期/)
+})
+
+test("web login does not retry a session the server turns away", async () => {
+  // code 80000 = 登录异常：studioJson 映射成 signIn expired，retryTransient 不重试。
+  let calls = 0
+  const plugin = createPlugin({
+    fetchImpl: async (input) => {
+      if (String(input).includes("membership/me")) {
+        calls++
+        return jsonRes({ flag: false, code: 80000, desc: "登录异常，请重新登录" })
+      }
+      return webFetch()(input)
+    },
+    browserModule: fakeBrowser(),
+  })
+  const out = await webMethod(plugin).authorize({}, {})
+  const result = await out.callback()
+  assert.equal(result.type, "failed")
+  assert.match(result.error, /会话已失效/)
+  assert.equal(calls, 1)
+})
+
+test("web login's account requests refuse redirects and carry a timeout", async () => {
+  let exchangeInit
+  const plugin = createPlugin({
+    fetchImpl: async (input, init) => {
+      if (String(input).includes("auth/bearer-token")) {
+        exchangeInit = init
+        return jsonRes({ flag: true, code: 0, data: { modelBearerToken: "tok" } })
+      }
+      return webFetch()(input)
+    },
+    browserModule: fakeBrowser(),
+  })
+  const out = await webMethod(plugin).authorize({}, {})
+  const result = await out.callback()
+  assert.equal(result.type, "success")
+  assert.equal(exchangeInit.redirect, "error")
+  assert.ok(exchangeInit.signal, "请求要带超时 signal")
+})
+
+test("web login maps a code 80000 from the exchange to sign-in expired", async () => {
+  let exchangeCalls = 0
+  const plugin = createPlugin({
+    fetchImpl: async (input) => {
+      if (String(input).includes("auth/bearer-token")) {
+        exchangeCalls++
+        return jsonRes({ flag: false, code: 80000, desc: "登录异常，请重新登录" })
+      }
+      return webFetch()(input)
+    },
+    browserModule: fakeBrowser(),
+  })
+  const out = await webMethod(plugin).authorize({}, {})
+  const result = await out.callback()
+  assert.equal(result.type, "failed")
+  assert.match(result.error, /会话已失效/)
+  assert.equal(exchangeCalls, 1)
 })
