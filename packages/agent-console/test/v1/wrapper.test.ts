@@ -291,29 +291,63 @@ describe("wrapper page", () => {
     expect(w.loc.reloaded).toBe(1);
   });
 
-  it("Windows wails.localhost #b= is kept and recover navigates back through it", async () => {
+  // 1.3.5 / 1.3.6 followed http://wails.localhost/… on Windows: WebView2 can't load it from this frame (on 127.0.0.1, an
+  // out-of-process iframe Wails' request filter doesn't see), which left its gray error page. Now it is never a target.
+  it("Windows wails.localhost #b= is not taken: on loss it asks Magpie for Try again and never navigates", async () => {
     const WAILS = "http://wails.localhost/_magpie/plugin/abc123/index.html";
-    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: WAILS }), "", { ua: "Windows NT 10.0" });
-    expect(w.store.get("ac_wrap_back")).toBe(WAILS);
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: WAILS }), "", { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Edg/146.0" });
+    expect(w.store.has("ac_wrap_back")).toBe(false);
     w.fromChild({ ac_console: "lost", at: 42 });
-    const u = new URL(w.loc.replaced!);
-    expect(u.origin + u.pathname).toBe("http://wails.localhost/_magpie/plugin/abc123/index.html");
-    expect(u.searchParams.get("ac_lost")).toBe("42");
-    expect(u.searchParams.get("ac_try")).toMatch(/^\d+\.1$/);
+    expect(w.loc.replaced).toBeNull();
+    expect(w.parentWin.posted).toEqual([{ magpie: 1, method: "error", params: { message: "本地服务已断开" } }]);
+    // the 12 s boot timeout / 15 s silence path is the same
+    const w2 = await runWrapper(hash({ t: TOKEN, p: "4321", b: WAILS }), "?lang=en", { ua: "Windows NT 10.0" });
+    w2.tick(20_000);
+    expect(w2.loc.replaced).toBeNull();
+    expect(w2.parentWin.posted).toEqual([{ magpie: 1, method: "error", params: { message: "Local service disconnected" } }]);
   });
 
-  it("Windows wails.localhost: after max auto tries, Reconnect still replaces to #b=", async () => {
+  it("Windows wails.localhost: Reconnect, also after max auto tries, asks Magpie and never replaces to it", async () => {
     const WAILS = "http://wails.localhost/_magpie/plugin/tok/page/index.html";
     const start = 1_800_000_000_000 - 30_000;
     const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: WAILS }), `?ac_try=${start}.3`, { ua: "Windows NT 10.0" });
     w.fromChild({ ac_console: "lost", at: 1 });
     expect(w.loc.replaced).toBeNull();
+    w.parentWin.posted.length = 0;
     w.els.r!.onclick!();
-    expect(w.loc.replaced!.startsWith("http://wails.localhost/_magpie/plugin/tok/page/index.html")).toBe(true);
-    expect(new URL(w.loc.replaced!).searchParams.has("ac_try")).toBe(false);
+    expect(w.loc.replaced).toBeNull();
+    expect(w.parentWin.posted).toEqual([{ magpie: 1, method: "error", params: { message: "本地服务已断开" } }]);
+  });
+
+  it("a stale http://wails.localhost back in sessionStorage (left by 1.3.5 / 1.3.6) is dropped and never followed", async () => {
+    const STALE = "http://wails.localhost/_magpie/plugin/oldtok/page/index.html";
+    for (const ua of ["Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Macintosh", "X11; Linux x86_64"]) {
+      const w = await runWrapper(hash({ t: TOKEN, p: "4321" }), "", { ua, sessionStorage: { ac_wrap_back: STALE } });
+      w.fromChild({ ac_console: "lost", at: 7 });
+      expect(w.loc.replaced, ua).toBeNull();
+      expect(w.store.has("ac_wrap_back"), ua).toBe(false);
+      expect(w.parentWin.posted, ua).toEqual([{ magpie: 1, method: "error", params: { message: "本地服务已断开" } }]);
+      w.parentWin.posted.length = 0;
+      w.els.r!.onclick!();
+      expect(w.loc.replaced, ua).toBeNull();
+      expect(w.parentWin.posted, ua).toEqual([{ magpie: 1, method: "error", params: { message: "本地服务已断开" } }]);
+    }
+    // invalid link + stale stored back: same, Magpie's card right away
+    const bad = await runWrapper(hash({ t: "nope", p: "1" }), "", { ua: "Windows NT 10.0", sessionStorage: { ac_wrap_back: STALE } });
+    expect(bad.loc.replaced).toBeNull();
+    expect(bad.store.has("ac_wrap_back")).toBe(false);
+    expect(bad.parentWin.posted).toEqual([{ magpie: 1, method: "error", params: { message: "链接已失效" } }]);
+    // a stale wails back never shadows a fresh loopback #b= (magpie web)
+    const web = await runWrapper(hash({ t: TOKEN, p: "4321", b: BACK }), "", { ua: "Windows NT 10.0", sessionStorage: { ac_wrap_back: STALE } });
+    expect(web.store.get("ac_wrap_back")).toBe(BACK);
+    web.fromChild({ ac_console: "lost", at: 7 });
+    expect(new URL(web.loc.replaced!).origin).toBe("http://127.0.0.1:5000");
   });
 
   it.each([
+    ["http://wails.localhost/_magpie/plugin/a/index.html", "Windows NT 10.0"],
+    ["http://wails.localhost/_magpie/plugin/a/page/index.html", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"],
+    ["wails://localhost/_magpie/plugin/a/page/index.html", "Macintosh"],
     ["https://wails.localhost/_magpie/plugin/a/page/index.html", "Windows NT 10.0"],
     ["http://wails.localhost:8080/_magpie/plugin/a/index.html", "Windows NT 10.0"],
     ["http://wails.localhost/_magpie/plugin/a/index.html", "Macintosh"],

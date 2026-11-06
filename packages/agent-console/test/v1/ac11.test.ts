@@ -13,7 +13,7 @@ import { parseCodexConfig } from "../../daemon/src/providers/codex/provider.js";
 import { mapNotification, newCodexMapState } from "../../daemon/src/providers/codex/map.js";
 import { costIsReal } from "../../daemon/src/providers/claude/map.js";
 import { setAppLocale as setLocale, tr } from "../../daemon/src/util/i18n.js";
-import { safeBackUrl as webSafeBackUrl, backUrlFromHash, backTarget, watchReconnect } from "../../web/src/api/backToMagpie.js";
+import { safeBackUrl as webSafeBackUrl, backUrlFromHash, backTarget, watchReconnect, askMagpieRetry } from "../../web/src/api/backToMagpie.js";
 import { resolveTheme, normalizeThemeSetting } from "../../web/src/layout/theme.js";
 import { parseArgsDraft, parseIdleDraft } from "../../web/src/components/settingsFields.js";
 
@@ -148,8 +148,9 @@ describe("self-heal back URL (host restart)", () => {
     [good + "#frag", good],
     ["http://localhost:3425/_magpie/plugin/abc/page/index.html?x=1", "http://localhost:3425/_magpie/plugin/abc/page/index.html?x=1"],
     ["http://[::1]:3430/_magpie/plugin/abc/index.html", "http://[::1]:3430/_magpie/plugin/abc/index.html"],
-    // Windows Magpie desktop (exact host only)
-    ["http://wails.localhost/_magpie/plugin/abc/index.html", "http://wails.localhost/_magpie/plugin/abc/index.html"],
+    // Magpie's desktop window is never a back target (Windows WebView2 can't navigate a 127.0.0.1 frame there: gray error page)
+    ["http://wails.localhost/_magpie/plugin/abc/index.html", null],
+    ["http://wails.localhost/_magpie/plugin/abc/page/index.html", null],
     ["https://wails.localhost/_magpie/plugin/abc/page/index.html?x=1", null],
     ["http://wails.localhost:8080/_magpie/plugin/a/index.html", null],
     ["https://localhost:4430/_magpie/plugin/a/index.html", "https://localhost:4430/_magpie/plugin/a/index.html"],
@@ -169,21 +170,44 @@ describe("self-heal back URL (host restart)", () => {
     ["http://127.0.0.1:3430/_magpie/plugin/abc/evil.html", null],
     ["", null],
   ];
-  it("web and gate accept only Magpie plugin pages on loopback or exact wails.localhost", async () => {
+  it("web and gate accept only Magpie plugin pages on loopback", async () => {
     const { safeBackUrl } = await import(/* @vite-ignore */ gateUrl);
     for (const [input, want] of cases) {
-      expect(webSafeBackUrl(input, "Windows NT 10.0"), input).toBe(want);
-      expect(safeBackUrl(input, "win32"), input).toBe(want);
+      expect(webSafeBackUrl(input), input).toBe(want);
+      expect(safeBackUrl(input), input).toBe(want);
     }
   });
-  it("rejects Windows virtual host on non-Windows, including the default platform / UA", async () => {
+  it("rejects the Windows desktop host wails.localhost on every platform (1.3.5 / 1.3.6 took it on Windows)", async () => {
     const { safeBackUrl } = await import(/* @vite-ignore */ gateUrl);
     const win = "http://wails.localhost/_magpie/plugin/a/page/index.html";
-    for (const os of ["linux", "darwin"]) expect(safeBackUrl(win, os)).toBeNull();
-    for (const ua of ["Macintosh", "X11; Linux x86_64", ""]) expect(webSafeBackUrl(win, ua)).toBeNull();
-    expect(safeBackUrl(win)).toBe(process.platform === "win32" ? win : null);
-    const isWindows = /Windows/.test(typeof navigator !== "undefined" ? navigator.userAgent : "");
-    expect(webSafeBackUrl(win)).toBe(isWindows ? win : null);
+    // an extra platform / UA argument (the 1.3.5 signature) changes nothing
+    for (const os of ["win32", "linux", "darwin"]) expect((safeBackUrl as (r: string, p: string) => unknown)(win, os)).toBeNull();
+    for (const ua of ["Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Macintosh", "X11; Linux x86_64", ""]) {
+      expect((webSafeBackUrl as (r: string, u: string) => unknown)(win, ua)).toBeNull();
+    }
+    expect(safeBackUrl(win)).toBeNull();
+    expect(webSafeBackUrl(win)).toBeNull();
+    expect(backUrlFromHash(`#t=abc&b=${encodeURIComponent(win)}`)).toBeNull();
+    expect(backTarget(`#t=x&b=${encodeURIComponent(win)}`, 1234)).toBeNull();
+  });
+  it("unwrapped daemon page without a back URL asks a framing Magpie for Try again, and does nothing top-level", () => {
+    const g = globalThis as unknown as { window?: unknown };
+    const had = "window" in g, prev = g.window;
+    try {
+      const posted: unknown[] = [];
+      const parent = { postMessage: (d: unknown) => posted.push(d) };
+      g.window = { parent };
+      expect(askMagpieRetry("本地服务已断开")).toBe(true);
+      expect(posted).toEqual([{ magpie: 1, method: "error", params: { message: "本地服务已断开" } }]);
+      const top: Record<string, unknown> = {};
+      top.parent = top;
+      g.window = top;
+      expect(askMagpieRetry("x")).toBe(false);
+      delete g.window;
+      expect(askMagpieRetry("x")).toBe(false);
+    } finally {
+      if (had) g.window = prev; else delete g.window;
+    }
   });
   it("reads b= from the fragment next to the token", () => {
     expect(backUrlFromHash(`#t=abc&b=${encodeURIComponent(good)}`)).toBe(good);
@@ -214,8 +238,8 @@ describe("self-heal back URL (host restart)", () => {
       const wails = "http://wails.localhost/_magpie/plugin/tok123/index.html";
       const win = await request(port, `/open?k=${key}&back=${encodeURIComponent(wails)}`);
       expect(win.status).toBe(302);
-      expect(win.headers.location).toBe(`http://127.0.0.1:${port}/app?#t=${token}&p=${daemonPort}` +
-        (process.platform === "win32" ? `&b=${encodeURIComponent(wails)}` : ""));
+      // never forwarded, on any OS: the wrapper asks Magpie for its Try again card instead
+      expect(win.headers.location).toBe(`http://127.0.0.1:${port}/app?#t=${token}&p=${daemonPort}`);
       const lookalike = await request(port, `/open?k=${key}&back=${encodeURIComponent("http://evil-wails.localhost/_magpie/plugin/tok/index.html")}`);
       expect(lookalike.headers.location).toBe(`http://127.0.0.1:${port}/app?#t=${token}&p=${daemonPort}`);
     } finally {
