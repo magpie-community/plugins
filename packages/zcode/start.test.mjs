@@ -177,6 +177,41 @@ test("a Start Plan request's system is ZCode's three blocks, the agent's text at
   expect(JSON.parse(r.body).system).toEqual(zcodeSystem("zai-api/GLM-5.3"))
 })
 
+// plugins#348 (XinOrigin, 11-04): zcode.z.ai lets a Start Plan request
+// through only when its system is an array of two or three text blocks,
+// ZCode's first byte for byte and its second as ZCode's begins; a string,
+// no system, the first alone, the first with a block of the caller's, or a
+// fourth block answers 405/3012. Claude Code's billing-header block and
+// Codex's string instructions, the two shapes a magpie agent sends, each
+// go out as the passing row: ZCode's three, the agent's text after
+// ZCode's own sections in the third. On 11-06 both, and Claude Code's
+// thinking, context_management and output_config, got past the check
+// live (1005 for an account with no gift) where ZCode's first block alone
+// got 3012.
+test("an agent's system goes out as the shape zcode.z.ai lets through (plugins#348)", async () => {
+  const claude = [
+    { type: "text", text: "x-anthropic-billing-header: cc_version=2.1.310; cc_entrypoint=cli;" },
+    { type: "text", text: "You are an interactive agent that helps users with software engineering tasks.", cache_control: eph },
+    { type: "text", text: "# CLAUDE.md\nproject rules", cache_control: eph },
+  ]
+  const codex = "You are Codex, a coding agent. You and the user share the same workspace."
+  const extra = { thinking: { type: "adaptive" }, context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] }, output_config: { effort: "high" } }
+  for (const system of [claude, codex, undefined, [{ type: "text", text: PROMPT.cliPrefix }]]) {
+    got.length = 0
+    const r = await send(start("zai"), JSON.stringify({ model: "GLM-5.3-Flash", max_tokens: 8, system, ...extra, messages: [{ role: "user", content: "hi" }] }))
+    const b = JSON.parse(r.body)
+    expect(Array.isArray(b.system)).toBe(true)
+    expect(b.system.length).toBe(3)
+    expect(b.system.every((x) => x.type === "text")).toBe(true)
+    expect(b.system[0].text).toBe(PROMPT.cliPrefix)
+    expect(b.system[1].text).toBe(PROMPT.stableSections.join("\n\n"))
+    expect(b.system[2].text.startsWith("\n\n" + PROMPT.dynamicBehavior)).toBe(true)
+    const own = system === undefined ? [] : typeof system === "string" ? [system] : system.map((x) => x.text)
+    expect(b.system[2].text.endsWith(PROMPT.contextManagement + (own.length ? "\n\n" + own.join("\n\n") : ""))).toBe(true)
+    for (const k of Object.keys(extra)) expect(b[k]).toEqual(extra[k])
+  }
+})
+
 test("the prompt texts are the plugin's, byte for byte", () => {
   expect(sha(PROMPT.cliPrefix)).toBe("7779642ea44a4696")
   expect(PROMPT.cliPrefix).toBe("You are ZCode, an interactive agent")
