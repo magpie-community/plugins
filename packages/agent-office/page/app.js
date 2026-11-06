@@ -763,6 +763,10 @@
   const QUALITY_OPTIONS = [["low", "qLow"], ["medium", "qMedium"], ["high", "qHigh"]]
   const pickers = []
   let openPicker = null
+  let pickerOpeningFrame = 0
+  function clearPickerOpening() {
+    if (pickerOpeningFrame) { cancelAnimationFrame(pickerOpeningFrame); pickerOpeningFrame = 0 }
+  }
   function checkIcon() {
     const ns = "http://www.w3.org/2000/svg"
     const s = document.createElementNS(ns, "svg")
@@ -847,7 +851,10 @@
       list.style.maxHeight = maxH + "px"
     }
     function close(refocus) {
-      if (openPicker === api) openPicker = null
+      if (openPicker === api) {
+        openPicker = null
+        clearPickerOpening()
+      }
       list.hidden = true
       btn.setAttribute("aria-expanded", "false")
       list.removeAttribute("aria-activedescendant")
@@ -864,6 +871,8 @@
       list.hidden = false
       btn.setAttribute("aria-expanded", "true")
       openPicker = api
+      clearPickerOpening()
+      pickerOpeningFrame = requestAnimationFrame(() => { pickerOpeningFrame = 0 })
       position()
       setActive(idx)
       list.focus({ preventScroll: true })
@@ -1106,7 +1115,13 @@
   $("settingsBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu($("settingsBtn"), menu) })
   $("todayBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu($("todayBtn"), todayMenu) })
   menu.addEventListener("click", (e) => e.stopPropagation())
-  menu.addEventListener("scroll", () => closePicker(false))
+  // Focusing a picker button near the foot of a scrollable #settings menu
+  // queues an async scroll event on #settings for the same frame; reposition
+  // the newly opened list instead of closing it on that opening-frame scroll.
+  menu.addEventListener("scroll", () => {
+    if (pickerOpeningFrame) { if (openPicker) openPicker.position(); return }
+    closePicker(false)
+  })
   todayMenu.addEventListener("click", (e) => e.stopPropagation())
   addEventListener("pointerdown", (e) => {
     if (openPicker && !openPicker.wrap.contains(e.target)) closePicker(false)
