@@ -40,6 +40,9 @@
 //                                the local network (Ollama, LM Studio, ...). []
 //                                (default) means every binary part is blocked.
 //                                Encoded blobs in text are blocked even here.
+//   binaryPolicy: 'fail'|'guide'  fail (default) returns 422 for a binary part; guide
+//                                withholds every binary part and injects a local-tool prompt.
+//   guideTools: string[]          tool names advertised to the model in guide mode.
 //   allowUnknownProtocol: bool   false (default). When false, a request whose
 //                                ctx.protocol is not chat/responses/anthropic/
 //                                gemini is rejected (the gate cannot classify it).
@@ -107,6 +110,8 @@ var DEFAULTS = {
   allowModels: [],
   localModels: [],
   localProviders: [],
+  binaryPolicy: 'fail',
+  guideTools: ['shypie.describe', 'shypie.extract', 'shypie.ocr'],
   allowUnknownProtocol: false,
   // A one-page invoice PDF is ~1-3 KB: ~1.4-4 k base64 chars, ~2-6 k hex chars. The
   // threshold is deliberately below that, because a smaller encoded document was a real
@@ -550,12 +555,21 @@ function modelOf(body, ctx) {
 // the documented default: "a middleware runs with no options until you save
 // some"). Resolving the defaults once here keeps the fail-closed behaviour of an
 // unconfigured gate: no localModels means every binary part is rejected.
+function policyOpt(source, name, fallback) {
+  if (!has(source, name)) return fallback;
+  var value = source[name];
+  if (value === "fail" || value === "guide") return value;
+  throw new Error("privacy-gate: " + name + " must be \"fail\" or \"guide\"");
+}
+
 function resolvedOptions(raw) {
   var source = raw && typeof raw === "object" ? raw : {};
   return {
     allowModels: strList(source, "allowModels"),
     localModels: strList(source, "localModels"),
     localProviders: strList(source, "localProviders"),
+    binaryPolicy: policyOpt(source, "binaryPolicy", DEFAULTS.binaryPolicy),
+    guideTools: strList(source, "guideTools").length > 0 ? strList(source, "guideTools") : DEFAULTS.guideTools.slice(),
     allowUnknownProtocol: boolOpt(source, "allowUnknownProtocol", DEFAULTS.allowUnknownProtocol),
     blobBase64Chars: numOpt(source, "blobBase64Chars", DEFAULTS.blobBase64Chars, 64, 1000000),
     blobHexChars: numOpt(source, "blobHexChars", DEFAULTS.blobHexChars, 64, 1000000),
@@ -752,6 +766,94 @@ function rejectOrBlank(body, ctx, block, opts) {
   return sanitize(body, ctx);
 }
 
+
+// ---------------------------------------------------------------------------
+// Guide policy: withhold bytes, keep enough metadata for the model to choose a tool
+// ---------------------------------------------------------------------------
+
+function guideMime(node) {
+  var candidates = [
+    node.media_type, node.mediaType, node.mime_type, node.mimeType,
+    node.source && (node.source.media_type || node.source.mediaType),
+    node.inlineData && (node.inlineData.mimeType || node.inlineData.mime_type),
+    node.inline_data && (node.inline_data.mimeType || node.inline_data.mime_type),
+    node.file && (node.file.mime_type || node.file.mimeType),
+    node.attachment && node.attachment.mediaType
+  ];
+  for (var i = 0; i < candidates.length; i++) {
+    if (typeof candidates[i] === 'string' && candidates[i].length > 0) return candidates[i];
+  }
+  var url = node.image_url && node.image_url.url;
+  if (typeof url === 'string' && url.indexOf('data:') === 0) {
+    var comma = url.indexOf(',');
+    if (comma > 5) return url.slice(5, comma).split(';')[0];
+  }
+  return '';
+}
+
+function guideBytes(node) {
+  var candidates = [node.bytes, node.size, node.file_size, node.fileSize, node.sizeBytes];
+  for (var i = 0; i < candidates.length; i++) {
+    if (typeof candidates[i] === 'number' && isFinite(candidates[i]) && candidates[i] >= 0) return Math.floor(candidates[i]);
+  }
+  var data = node.data || node.source && node.source.data;
+  if (typeof data !== 'string' && node.inlineData) data = node.inlineData.data;
+  if (typeof data !== 'string' && node.inline_data) data = node.inline_data.data;
+  if (typeof data === 'string') {
+    var b64 = data.indexOf('base64,') >= 0 ? data.slice(data.indexOf('base64,') + 7) : data;
+    if (b64.length > 0) return Math.floor(b64.length * 0.75);
+  }
+  var url = node.image_url && node.image_url.url;
+  if (typeof url === 'string' && url.indexOf(';base64,') >= 0) return Math.floor(url.slice(url.indexOf(';base64,') + 8).length * 0.75);
+  return null;
+}
+
+function guideText(node, kind, opts) {
+  var mime = guideMime(node);
+  var bytes = guideBytes(node);
+  var bits = ['type ' + kind];
+  if (mime !== '') bits.push('mime ' + mime);
+  if (bytes !== null) bits.push('bytes ' + bytes);
+  var tools = opts.guideTools.length > 0 ? opts.guideTools.join(', ') : 'local extraction tools';
+  return '[ShyPie: a binary attachment was withheld locally and was NOT sent to you (' +
+    bits.join('; ') + '). Do not claim to have seen it. First ask how the user/agent can process or read it locally, and use: ' + tools + '.]';
+}
+
+function guidePart(protocol, text) {
+  if (protocol === 'gemini') return { text: text };
+  if (protocol === 'responses') return { type: 'input_text', text: text };
+  return { type: 'text', text: text };
+}
+
+function guideValue(value, atRoot, partContext, protocol, opts, depth) {
+  if (depth > 200) throw new Error('privacy-gate: guide depth exceeded');
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    var items = [];
+    for (var i = 0; i < value.length; i++) items.push(guideValue(value[i], false, partContext, protocol, opts, depth + 1));
+    return items;
+  }
+  var found = binaryOf(value, partContext);
+  if (found !== null) return guidePart(protocol, guideText(value, found.kind, opts));
+  var keys = Object.keys(value);
+  var copy = {};
+  for (var j = 0; j < keys.length; j++) {
+    var key = keys[j];
+    if (atRoot && SKIP_KEY[key]) { copy[key] = value[key]; continue; }
+    copy[key] = guideValue(value[key], false, PART_ARRAY_KEY[key] === 1, protocol, opts, depth + 1);
+  }
+  return copy;
+}
+
+function guideBody(body, ctx, opts) {
+  try {
+    var protocol = ctx && typeof ctx.protocol === 'string' ? ctx.protocol : '';
+    return guideValue(body, true, false, protocol, opts, 0);
+  } catch (e) {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
@@ -771,6 +873,17 @@ export function onRequest(body, ctx) {
     );
   }
   if (decision.ok === true) return body;
+  if (decision.block && decision.block.code === "BINARY_PART" && opts.binaryPolicy === "guide") {
+    var guided = guideBody(body, ctx, opts);
+    if (guided !== null) {
+      var verified = inspect(guided, ctx);
+      if (verified.ok === true) {
+        logLine("privacy-gate: guided binary parts locally; no bytes sent", opts);
+        return guided;
+      }
+    }
+    logLine("privacy-gate: guide rewrite failed; rejecting binary request", opts);
+  }
   return rejectOrBlank(body, ctx, decision.block, opts);
 }
 

@@ -30,6 +30,8 @@ The options object is `ctx.options`; defaults are shown by `magpie plugin option
 | `blobBase64Chars` / `blobHexChars` | `400` / `400` | An encoded run at or above this is a blob (403). |
 | `scanChars` | `200000` | Total text-inspection budget; each field may use at most an eighth (min 1k), so one huge field cannot starve the rest of the newest turn. |
 | `allowUnknownProtocol` | `false` | Reject bodies whose `ctx.protocol` is not one of chat/responses/anthropic/gemini. |
+| `binaryPolicy` | `fail` | `fail` returns 422 for a non-local binary part; `guide` withholds every binary part and injects a metadata + local-tool prompt instead. |
+| `guideTools` | `shypie.describe`, `shypie.extract`, `shypie.ocr` | Tool names advertised to the model in guide mode. |
 | `maxNodes` / `maxDepth` | `40000` / `40` | Every visited value counts, including primitives and array elements; an array wider than the remaining budget is refused without iterating. Overflow blocks (fail closed). |
 | `logMaxLines` / `logEveryRows` | `40` / `50` | Self-cap on `console.log` / one usage line every N rows. |
 
@@ -46,6 +48,7 @@ The options object is `ctx.options`; defaults are shown by `magpie plugin option
   the value cap) and ~38 ms for a 200-turn (~350 KB) body that passes.
 - A long encoded-looking token (a hash, a minified line) can be a false positive at 400 chars.
   Raise `blobBase64Chars`/`blobHexChars` deliberately if you need that.
+- `binaryPolicy: guide` never forwards binary bytes. It replaces every binary part with text containing only `type`, `mime` and `bytes`, plus a prompt to select a local extraction tool. It cannot execute the tool; the agent must have the local MCP server configured.
 - Vendor-sealed replay fields are exempt **only inside their vendor block**: Anthropic thinking
   `signature`, Responses reasoning `encrypted_content`, Gemini **model-role** part `thoughtSignature`,
   and vendor item `id`/`call_id`. A same-named key in tool arguments or message text is still scanned.
