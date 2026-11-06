@@ -43,8 +43,8 @@ export class CodexSession implements ProviderSession {
   private pending = new Map<string, PendingReq>();
   private closed = false;
   private started: Promise<void> | null = null;
-  private interruptWanted = false;
   private ourTurnId: string | null = null; // The current turn's turnId in the timeline (generated on send)
+  /** Codex turn ids whose late started/completed/deltas must be ignored. */
   private staleCodexTurns = new Set<string>();
   private codexSlash: CodexSlashEntry[] | null = null;
 
@@ -69,14 +69,31 @@ export class CodexSession implements ProviderSession {
 
   private emit(ev: ProviderEvent): void {
     if (ev.type === "turn_ended") {
-      // A late completion for the previous turn (already ended by the interrupt fallback): drop it so it doesn't end the new turn
-      if (ev.turnId && this.staleCodexTurns.delete(ev.turnId)) return;
-      // turn_started uses our own turnId, so the end must use the same one,
-      // otherwise the manager's per-turn dedupe breaks (interrupt fallback + late completion would end the next turn)
-      if (this.ourTurnId) ev.turnId = this.ourTurnId;
-      this.ourTurnId = null;
-      this.st.currentTurnId = null;
-      this.interruptWanted = false;
+      // Late completion for a turn we already interrupted (or superseded): drop it
+      if (ev.turnId && this.staleCodexTurns.delete(ev.turnId)) {
+        if (this.st.currentTurnId === ev.turnId) this.st.currentTurnId = null;
+        return;
+      }
+      // Remap Codex turn id → our timeline turnId only when it is the active turn.
+      // If ourTurnId was already cleared (interrupted) or belongs to another turn, do not emit a
+      // stray turn_ended under the raw codex-turn-* id (yetone's probe: turn_ended codex-turn-2).
+      if (this.ourTurnId) {
+        if (!ev.turnId || ev.turnId === this.st.currentTurnId || ev.turnId === this.ourTurnId) {
+          ev.turnId = this.ourTurnId;
+        } else {
+          // Completion for some other Codex turn while we have an active local turn — ignore
+          return;
+        }
+        this.ourTurnId = null;
+        this.st.currentTurnId = null;
+      } else {
+        // No active local turn — drop provider completions (already ended locally or spurious)
+        if (ev.turnId) {
+          this.staleCodexTurns.delete(ev.turnId);
+          if (this.st.currentTurnId === ev.turnId) this.st.currentTurnId = null;
+        }
+        return;
+      }
     }
     this.q.push(ev);
   }
@@ -93,8 +110,19 @@ export class CodexSession implements ProviderSession {
       );
       this.rpc = rpc;
       rpc.onNotification = (m, p) => {
+        const turnFromParams = (): string | null => {
+          const turn = (p as { turn?: { id?: string } })?.turn;
+          if (typeof turn?.id === "string") return turn.id;
+          if (typeof (p as { turnId?: string }).turnId === "string") return (p as { turnId: string }).turnId;
+          return null;
+        };
+        const tid = turnFromParams();
+        // Any notification for a stale Codex turn (started / completed / deltas if tagged) is ignored
+        if (tid && this.staleCodexTurns.has(tid)) {
+          if (m === "turn/completed") this.staleCodexTurns.delete(tid);
+          return;
+        }
         for (const ev of mapNotification(m, p, this.st)) this.emit(ev);
-        if (this.interruptWanted && this.st.currentTurnId) void this.interrupt();
       };
       rpc.onServerRequest = (m, p) => this.onServerRequest(m, p);
       rpc.onExit = () => {
@@ -158,12 +186,11 @@ export class CodexSession implements ProviderSession {
     this.codexSlash = entries;
     const wireText = expandCodexSlash(input.text, entries);
     const { items, warnings } = await buildCodexInput(wireText, input.images ?? []);
-    this.interruptWanted = false;
     const turnId = "u_" + Date.now().toString(36) + "_" + rid();
-    // A new turn started before the previous one completed (interrupt fallback) → remember its Codex turnId
+    // A new turn started before the previous one completed → mark previous Codex id stale
     if (this.ourTurnId && this.st.currentTurnId) this.staleCodexTurns.add(this.st.currentTurnId);
     this.ourTurnId = turnId;
-    this.st.currentTurnId = null; // Filled in by this turn's turn/started, so we never interrupt/steer with the previous turn's id
+    this.st.currentTurnId = null; // Filled from THIS turn's turn/start response only
     this.emit({
       type: "turn_started",
       turnId,
@@ -173,15 +200,38 @@ export class CodexSession implements ProviderSession {
     });
     for (const w of warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
     try {
-      await rpc.request("turn/start", {
+      const res = (await rpc.request("turn/start", {
         threadId: this.sessionThreadId ?? undefined,
         input: items,
         model: this.o.model,
         effort: this.o.effort,
         approvalPolicy: preset.approvalPolicy,
         sandboxPolicy: preset.sandboxPolicy,
-      });
+      })) as { turn?: { id?: string } };
+      const codexTurnId = typeof res?.turn?.id === "string" ? res.turn.id : null;
+      if (!codexTurnId) return;
+      // If Stop ran while turn/start was in flight, interrupt() already ended locally and cleared
+      // ourTurnId (or a newer send replaced it). Either way ourTurnId !== turnId — no separate
+      // cancelled-turns set is needed (each half of the old OR was redundant with the other).
+      const wasCancelled = this.ourTurnId !== turnId;
+      if (wasCancelled) {
+        this.staleCodexTurns.add(codexTurnId);
+        try {
+          await rpc.request(
+            "turn/interrupt",
+            { threadId: this.threadId(), turnId: codexTurnId },
+            5000,
+          );
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? e);
+          if (!/idle|not running|no.*turn/i.test(msg)) log("warn", "codex interrupt 失败", { err: msg });
+        }
+        return;
+      }
+      this.st.currentTurnId = codexTurnId;
     } catch (e) {
+      // turn/start failed after a local interrupt/supersede: do not emit a second turn_ended
+      if (this.ourTurnId !== turnId) return;
       this.emit({
         type: "turn_ended",
         turnId,
@@ -210,25 +260,34 @@ export class CodexSession implements ProviderSession {
   async interrupt(): Promise<void> {
     for (const [, p] of this.pending) p.resolve({ cancelled: true });
     this.pending.clear();
-    if (!this.rpc) return;
-    if (!this.st.currentTurnId) {
-      // turn/started hasn't arrived yet: remember it and send the interrupt as soon as the turnId is known
-      this.interruptWanted = true;
+    const localTurn = this.ourTurnId;
+    const codexTurn = this.st.currentTurnId;
+    if (!this.rpc) {
+      if (localTurn) this.emit({ type: "turn_ended", turnId: localTurn, status: "interrupted" });
       return;
     }
-    this.interruptWanted = false;
-    try {
-      await this.rpc.request(
-        "turn/interrupt",
-        { threadId: this.threadId(), turnId: this.st.currentTurnId },
-        5000,
-      );
-    } catch (e) {
-      // "Already idle"-type errors count as success
-      const msg = String((e as Error)?.message ?? e);
-      if (!/idle|not running|no.*turn/i.test(msg)) {
-        log("warn", "codex interrupt 失败", { err: msg });
+    // No codexTurn yet (turn/start still in flight): end locally below so ourTurnId clears;
+    // the in-flight turn/start response handler then sees ourTurnId !== turnId and interrupts.
+    if (codexTurn) {
+      this.staleCodexTurns.add(codexTurn);
+      try {
+        await this.rpc.request(
+          "turn/interrupt",
+          { threadId: this.threadId(), turnId: codexTurn },
+          5000,
+        );
+      } catch (e) {
+        // "Already idle"-type errors count as success
+        const msg = String((e as Error)?.message ?? e);
+        if (!/idle|not running|no.*turn/i.test(msg)) {
+          log("warn", "codex interrupt 失败", { err: msg });
+        }
       }
+    }
+    // End the local turn immediately (Devin/ACP-class): manager 1s fallback alone left UI idle while
+    // ourTurnId stayed set, so a quick next send raced a late turn/completed onto the new turn.
+    if (localTurn && this.ourTurnId === localTurn) {
+      this.emit({ type: "turn_ended", turnId: localTurn, status: "interrupted" });
     }
   }
 

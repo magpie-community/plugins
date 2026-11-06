@@ -347,7 +347,10 @@ export class AgentManager {
     await this.setStatus(threadId, "running");
     try {
       const images = await this.resolveAttachments(attachmentRefs);
-      await rt.session!.send({ text: withMentions(text, mentions), images, mentions });
+      const payload = { text: withMentions(text, mentions), images, mentions };
+      // No string-matching retry for 当前轮次尚未结束: ACP/Claude/Codex now clear the in-flight turn on
+      // interrupt (and ACP ties discard to each prompt() promise), so the guard should not fire after Stop.
+      await rt.session!.send(payload);
     } catch (e) {
       // A failed send must not leave the conversation running
       const msg = String((e as Error)?.message ?? e);

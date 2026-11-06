@@ -61,6 +61,7 @@ export class ClaudeSession implements ProviderSession {
   // The CLI is only started before the first send (or a command list request)
   private ensureCli(): ClaudeCli {
     if (this.cli && !this.needsRestart) return this.cli;
+    // New ClaudeCli carries its own empty turnGen / awaitingResult / skipResultGens
     this.st = newMapState();
     const effort = this.o.effort && EFFORTS.includes(this.o.effort) ? this.o.effort : null;
     const cli = new ClaudeCli(
@@ -85,7 +86,17 @@ export class ClaudeSession implements ProviderSession {
 
   private async pump(cli: ClaudeCli): Promise<void> {
     for await (const m of cli.messages) {
-      for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) this.emit(ev);
+      // Replaced CLI: ignore leftover stdout so it cannot emit into this session or shift a newer CLI's FIFO
+      if (this.cli !== cli) continue;
+      for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) {
+        if (ev.type === "turn_ended") {
+          // Drop by this CLI's FIFO of results owed — not by interrupt status (send() resets sawInterrupt,
+          // and the real Claude CLI ends cancelled turns with subtype error_during_execution → failed).
+          const g = cli.awaitingResult.shift();
+          if (g != null && cli.skipResultGens.delete(g)) continue;
+        }
+        this.emit(ev);
+      }
     }
     const exit = await cli.exited;
     // A CLI this session stopped on purpose (restart / close) is not a crash
@@ -97,10 +108,10 @@ export class ClaudeSession implements ProviderSession {
     this.emit({ type: "notice", level: "error", message: tail ? `${detail} — stderr: ${tail}` : detail });
     if (this.turnId) this.emit({ type: "turn_ended", turnId: this.turnId, status: "failed", error: detail });
     this.turnId = null;
-    // The event stream ended: an old CLI that restart() replaced must not close the event queue
+    // Keep the event queue open on crash so the next send can restart with --resume (FIFO lived on this dead CLI).
+    // Intentionally not this.q.close(): closing would end manager.pumpEvents and mark the thread closed.
     if (this.cli === cli) {
-      this.needsRestart = true; // Rebuild with --resume on the next send
-      this.q.close();
+      this.needsRestart = true;
     }
   }
 
@@ -116,6 +127,8 @@ export class ClaudeSession implements ProviderSession {
     if (this.needsRestart) await this.restart();
     const cli = this.ensureCli();
     this.turnNum++;
+    const gen = ++cli.turnGen;
+    cli.awaitingResult.push(gen);
     this.turnId = "u_" + Date.now().toString(36) + "_" + this.turnNum;
     this.st.sawInterrupt = false; // A new turn clears the old interrupt flag
     this.emit({
@@ -279,17 +292,36 @@ export class ClaudeSession implements ProviderSession {
     }
     this.pending.clear();
     const cli = this.cli;
-    if (!cli || !cli.alive) return;
+    const endLocal = () => {
+      // End immediately so manager/UI clear running even if the CLI is slow to emit result
+      // (same class of bug as ACP: idle UI while provider.turn still open → next send races).
+      if (this.turnId) {
+        // Mark the latest owed gen on this CLI so its late result is dropped (FIFO order).
+        // Do not look at status/sawInterrupt (send() clears the flag).
+        const gen = cli?.awaitingResult.at(-1);
+        if (gen != null) cli!.skipResultGens.add(gen);
+        this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
+      }
+    };
+    if (!cli || !cli.alive) {
+      endLocal();
+      return;
+    }
     try {
       await cli.interrupt();
     } catch (e) {
-      // No answer: stop this CLI; the next send starts it again with --resume
+      // No answer: stop this CLI; the next send starts it again with --resume.
+      // FIFO lived on this CLI — abandoning it is enough; do not touch a newer CLI's gens.
       log("warn", "claude interrupt failed", { err: String(e) });
       this.stopping.add(cli);
       this.needsRestart = true;
       void cli.close(500);
-      if (this.turnId) this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
+      if (this.turnId) {
+        this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
+      }
+      return;
     }
+    endLocal();
   }
 
   async setModel(model: string | null): Promise<void> {

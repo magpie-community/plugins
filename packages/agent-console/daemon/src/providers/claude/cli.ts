@@ -73,6 +73,12 @@ export class ClaudeCli {
   readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   /** The answer to initialize (commands, models, account …), null when it failed */
   readonly initialized: Promise<Json | null>;
+  /** Monotonic turn gen for THIS process (dies with the CLI). */
+  turnGen = 0;
+  /** Turn gens still waiting for a `result` from THIS process (dies with the CLI). */
+  awaitingResult: number[] = [];
+  /** Gens already ended locally on interrupt; their late `result` must be dropped. */
+  skipResultGens = new Set<number>();
   private child: ChildProcess;
   private buf = "";
   private seq = 0;

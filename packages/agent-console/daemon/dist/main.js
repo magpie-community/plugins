@@ -2439,6 +2439,12 @@ var init_cli = __esm({
       exited;
       /** The answer to initialize (commands, models, account …), null when it failed */
       initialized;
+      /** Monotonic turn gen for THIS process (dies with the CLI). */
+      turnGen = 0;
+      /** Turn gens still waiting for a `result` from THIS process (dies with the CLI). */
+      awaitingResult = [];
+      /** Gens already ended locally on interrupt; their late `result` must be dropped. */
+      skipResultGens = /* @__PURE__ */ new Set();
       child;
       buf = "";
       seq = 0;
@@ -2648,7 +2654,14 @@ var init_session = __esm({
       }
       async pump(cli) {
         for await (const m of cli.messages) {
-          for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) this.emit(ev);
+          if (this.cli !== cli) continue;
+          for (const ev of mapSdkMessage(m, this.st, this.o.cwd)) {
+            if (ev.type === "turn_ended") {
+              const g = cli.awaitingResult.shift();
+              if (g != null && cli.skipResultGens.delete(g)) continue;
+            }
+            this.emit(ev);
+          }
         }
         const exit = await cli.exited;
         if (this.closed || this.stopping.has(cli)) return;
@@ -2659,7 +2672,6 @@ var init_session = __esm({
         this.turnId = null;
         if (this.cli === cli) {
           this.needsRestart = true;
-          this.q.close();
         }
       }
       emit(ev) {
@@ -2673,6 +2685,8 @@ var init_session = __esm({
         if (this.needsRestart) await this.restart();
         const cli = this.ensureCli();
         this.turnNum++;
+        const gen = ++cli.turnGen;
+        cli.awaitingResult.push(gen);
         this.turnId = "u_" + Date.now().toString(36) + "_" + this.turnNum;
         this.st.sawInterrupt = false;
         this.emit({
@@ -2826,7 +2840,17 @@ var init_session = __esm({
         }
         this.pending.clear();
         const cli = this.cli;
-        if (!cli || !cli.alive) return;
+        const endLocal = () => {
+          if (this.turnId) {
+            const gen = cli?.awaitingResult.at(-1);
+            if (gen != null) cli.skipResultGens.add(gen);
+            this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
+          }
+        };
+        if (!cli || !cli.alive) {
+          endLocal();
+          return;
+        }
         try {
           await cli.interrupt();
         } catch (e) {
@@ -2834,8 +2858,12 @@ var init_session = __esm({
           this.stopping.add(cli);
           this.needsRestart = true;
           void cli.close(500);
-          if (this.turnId) this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
+          if (this.turnId) {
+            this.emit({ type: "turn_ended", turnId: this.turnId, status: "interrupted" });
+          }
+          return;
         }
+        endLocal();
       }
       async setModel(model) {
         this.o.model = model;
@@ -3853,18 +3881,32 @@ var init_session2 = __esm({
       pending = /* @__PURE__ */ new Map();
       closed = false;
       started = null;
-      interruptWanted = false;
       ourTurnId = null;
       // The current turn's turnId in the timeline (generated on send)
+      /** Codex turn ids whose late started/completed/deltas must be ignored. */
       staleCodexTurns = /* @__PURE__ */ new Set();
       codexSlash = null;
       emit(ev) {
         if (ev.type === "turn_ended") {
-          if (ev.turnId && this.staleCodexTurns.delete(ev.turnId)) return;
-          if (this.ourTurnId) ev.turnId = this.ourTurnId;
-          this.ourTurnId = null;
-          this.st.currentTurnId = null;
-          this.interruptWanted = false;
+          if (ev.turnId && this.staleCodexTurns.delete(ev.turnId)) {
+            if (this.st.currentTurnId === ev.turnId) this.st.currentTurnId = null;
+            return;
+          }
+          if (this.ourTurnId) {
+            if (!ev.turnId || ev.turnId === this.st.currentTurnId || ev.turnId === this.ourTurnId) {
+              ev.turnId = this.ourTurnId;
+            } else {
+              return;
+            }
+            this.ourTurnId = null;
+            this.st.currentTurnId = null;
+          } else {
+            if (ev.turnId) {
+              this.staleCodexTurns.delete(ev.turnId);
+              if (this.st.currentTurnId === ev.turnId) this.st.currentTurnId = null;
+            }
+            return;
+          }
         }
         this.q.push(ev);
       }
@@ -3880,8 +3922,18 @@ var init_session2 = __esm({
           );
           this.rpc = rpc;
           rpc.onNotification = (m, p) => {
+            const turnFromParams = () => {
+              const turn = p?.turn;
+              if (typeof turn?.id === "string") return turn.id;
+              if (typeof p.turnId === "string") return p.turnId;
+              return null;
+            };
+            const tid = turnFromParams();
+            if (tid && this.staleCodexTurns.has(tid)) {
+              if (m === "turn/completed") this.staleCodexTurns.delete(tid);
+              return;
+            }
             for (const ev of mapNotification(m, p, this.st)) this.emit(ev);
-            if (this.interruptWanted && this.st.currentTurnId) void this.interrupt();
           };
           rpc.onServerRequest = (m, p) => this.onServerRequest(m, p);
           rpc.onExit = () => {
@@ -3945,7 +3997,6 @@ var init_session2 = __esm({
         this.codexSlash = entries;
         const wireText = expandCodexSlash(input.text, entries);
         const { items, warnings } = await buildCodexInput(wireText, input.images ?? []);
-        this.interruptWanted = false;
         const turnId = "u_" + Date.now().toString(36) + "_" + rid3();
         if (this.ourTurnId && this.st.currentTurnId) this.staleCodexTurns.add(this.st.currentTurnId);
         this.ourTurnId = turnId;
@@ -3959,7 +4010,7 @@ var init_session2 = __esm({
         });
         for (const w of warnings) this.emit({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
         try {
-          await rpc.request("turn/start", {
+          const res = await rpc.request("turn/start", {
             threadId: this.sessionThreadId ?? void 0,
             input: items,
             model: this.o.model,
@@ -3967,7 +4018,26 @@ var init_session2 = __esm({
             approvalPolicy: preset.approvalPolicy,
             sandboxPolicy: preset.sandboxPolicy
           });
+          const codexTurnId = typeof res?.turn?.id === "string" ? res.turn.id : null;
+          if (!codexTurnId) return;
+          const wasCancelled = this.ourTurnId !== turnId;
+          if (wasCancelled) {
+            this.staleCodexTurns.add(codexTurnId);
+            try {
+              await rpc.request(
+                "turn/interrupt",
+                { threadId: this.threadId(), turnId: codexTurnId },
+                5e3
+              );
+            } catch (e) {
+              const msg = String(e?.message ?? e);
+              if (!/idle|not running|no.*turn/i.test(msg)) log("warn", "codex interrupt \u5931\u8D25", { err: msg });
+            }
+            return;
+          }
+          this.st.currentTurnId = codexTurnId;
         } catch (e) {
+          if (this.ourTurnId !== turnId) return;
           this.emit({
             type: "turn_ended",
             turnId,
@@ -3993,23 +4063,29 @@ var init_session2 = __esm({
       async interrupt() {
         for (const [, p] of this.pending) p.resolve({ cancelled: true });
         this.pending.clear();
-        if (!this.rpc) return;
-        if (!this.st.currentTurnId) {
-          this.interruptWanted = true;
+        const localTurn = this.ourTurnId;
+        const codexTurn = this.st.currentTurnId;
+        if (!this.rpc) {
+          if (localTurn) this.emit({ type: "turn_ended", turnId: localTurn, status: "interrupted" });
           return;
         }
-        this.interruptWanted = false;
-        try {
-          await this.rpc.request(
-            "turn/interrupt",
-            { threadId: this.threadId(), turnId: this.st.currentTurnId },
-            5e3
-          );
-        } catch (e) {
-          const msg = String(e?.message ?? e);
-          if (!/idle|not running|no.*turn/i.test(msg)) {
-            log("warn", "codex interrupt \u5931\u8D25", { err: msg });
+        if (codexTurn) {
+          this.staleCodexTurns.add(codexTurn);
+          try {
+            await this.rpc.request(
+              "turn/interrupt",
+              { threadId: this.threadId(), turnId: codexTurn },
+              5e3
+            );
+          } catch (e) {
+            const msg = String(e?.message ?? e);
+            if (!/idle|not running|no.*turn/i.test(msg)) {
+              log("warn", "codex interrupt \u5931\u8D25", { err: msg });
+            }
           }
+        }
+        if (localTurn && this.ourTurnId === localTurn) {
+          this.emit({ type: "turn_ended", turnId: localTurn, status: "interrupted" });
         }
       }
       threadId() {
@@ -4777,6 +4853,11 @@ var init_session3 = __esm({
       turnId = null;
       turnNum = 0;
       running = false;
+      /** Current wire session/prompt settle (never rejects) — interrupt waits for it before the next prompt. */
+      inFlightPrompt = null;
+      /** After Stop: notify(cancel) + previous prompt settle + one macrotask, so pumpUpdates drains before next prompt(). */
+      pendingCancelSettle = null;
+      closeWaiters = [];
       permPending = /* @__PURE__ */ new Map();
       mapCtx = newMapCtx();
       modelConfigId = null;
@@ -5058,12 +5139,12 @@ var init_session3 = __esm({
         await this.ready();
         if (this.running) throw new Error("\u5F53\u524D\u8F6E\u6B21\u5C1A\u672A\u7ED3\u675F");
         this.turnNum++;
-        this.turnId = "u_" + Date.now().toString(36) + "_" + this.turnNum;
-        this.mapCtx = newMapCtx();
+        const turnId = "u_" + Date.now().toString(36) + "_" + this.turnNum;
+        this.turnId = turnId;
         this.running = true;
         this.q.push({
           type: "turn_started",
-          turnId: this.turnId,
+          turnId,
           model: this.o.model,
           mode: this.o.mode,
           effort: this.o.effort
@@ -5072,10 +5153,11 @@ var init_session3 = __esm({
         const attachments = input.images ?? [];
         if (!text && !attachments.length) {
           this.running = false;
-          this.q.push({ type: "turn_ended", turnId: this.turnId, status: "completed" });
+          this.q.push({ type: "turn_ended", turnId, status: "completed" });
           return;
         }
         const built = await buildAcpPrompt(text, attachments, this.promptCaps, input.mentions ?? []);
+        if (this.closed || !this.running || this.turnId !== turnId) return;
         const agent = this.o.providerName ?? this.o.binName;
         if (built.imagesByPath.length && !this.promptCaps.image) {
           const switched = this.o.imagesFollowStartModel && this.initCaps.image && this.o.model !== this.startModel;
@@ -5083,19 +5165,65 @@ var init_session3 = __esm({
         }
         for (const w of built.warnings) this.q.push({ type: "notice", level: "warn", message: tr("notice.attachmentIssue", { detail: w }) });
         if (!built.blocks.length) {
-          this.running = false;
-          this.q.push({ type: "turn_ended", turnId: this.turnId, status: "completed" });
+          if (this.turnId === turnId && this.running) {
+            this.running = false;
+            this.q.push({ type: "turn_ended", turnId, status: "completed" });
+          }
           return;
         }
-        void this.runTurn(built.blocks);
+        void this.runTurn(turnId, built.blocks);
       }
-      // Send this turn's prompt; reading updates is the job of the persistent pumpUpdates() (following Paseo: session/update is handled at session level)
-      async runTurn(prompt) {
-        this.activeTurnId = this.turnId;
+      waitCloseOrTimeout(ms) {
+        if (this.closed) return Promise.resolve();
+        return new Promise((resolve4) => {
+          const t = setTimeout(() => {
+            this.closeWaiters = this.closeWaiters.filter((w) => w !== done);
+            resolve4();
+          }, ms);
+          const done = () => {
+            clearTimeout(t);
+            resolve4();
+          };
+          this.closeWaiters.push(done);
+        });
+      }
+      // Send this turn's prompt; session/update still flows through pumpUpdates, but ending the turn is tied
+      // to this prompt() promise so a JSON-RPC error on a cancelled prompt cannot leave a leftover counter.
+      // After Stop, wait for pendingCancelSettle before activating Turn N+1 on the wire (Devin cancels an
+      // overlapping session/prompt that arrives while the previous one is still unwinding).
+      async runTurn(turnId, prompt) {
+        const pending = this.pendingCancelSettle;
+        if (pending) {
+          await Promise.race([pending, this.waitCloseOrTimeout(2e3)]);
+          if (this.pendingCancelSettle === pending) this.pendingCancelSettle = null;
+          if (this.closed || !this.running || this.turnId !== turnId) return;
+        }
+        this.mapCtx = newMapCtx();
+        this.activeTurnId = turnId;
         this.wakePump?.();
         this.wakePump = null;
-        this.active.prompt(prompt).catch(() => {
+        const req = this.active.prompt(prompt);
+        const settle = req.then(() => {
+        }, () => {
         });
+        this.inFlightPrompt = settle;
+        try {
+          const res = await req;
+          if (this.activeTurnId === turnId) {
+            this.endTurn(stopToTurnEnd(res.stopReason, turnId));
+          }
+        } catch (e) {
+          if (this.activeTurnId === turnId) {
+            this.endTurn({
+              type: "turn_ended",
+              turnId,
+              status: "failed",
+              error: String(e?.message ?? e)
+            });
+          }
+        } finally {
+          if (this.inFlightPrompt === settle) this.inFlightPrompt = null;
+        }
       }
       endTurn(ev) {
         for (const id2 of [...this.permPending.keys()]) this.cancelPerm(id2);
@@ -5117,10 +5245,6 @@ var init_session3 = __esm({
             msg = await session.nextUpdate();
           } catch (e) {
             if (this.closed) return;
-            const turnId = this.activeTurnId;
-            if (turnId) {
-              this.endTurn({ type: "turn_ended", turnId, status: "failed", error: String(e?.message ?? e) });
-            }
             await new Promise((r) => this.wakePump = r);
             continue;
           }
@@ -5132,19 +5256,30 @@ var init_session3 = __esm({
             }
             if (!this.activeTurnId) continue;
             for (const ev of mapSessionUpdate(u, this.mapCtx)) this.q.push(ev);
-          } else if (this.activeTurnId) {
-            this.endTurn(stopToTurnEnd(msg.stopReason, this.activeTurnId));
+          } else {
+            continue;
           }
         }
       }
       async interrupt() {
         await this.ready();
         if (!this.ctx || !this.active) return;
-        try {
-          await this.ctx.request(methods2.agent.session.cancel, { sessionId: this.active.sessionId });
-        } catch (e) {
+        const notifyP = this.ctx.notify(methods2.agent.session.cancel, { sessionId: this.active.sessionId }).catch((e) => {
           log("info", `ACP cancel: ${String(e)}`);
+        });
+        const prevSettle = this.inFlightPrompt ?? Promise.resolve();
+        this.pendingCancelSettle = Promise.all([notifyP, prevSettle]).then(
+          () => new Promise((r) => setTimeout(r, 0))
+        );
+        if (this.running) {
+          const turnId = this.activeTurnId ?? this.turnId;
+          if (turnId) {
+            this.endTurn({ type: "turn_ended", turnId, status: "interrupted" });
+          } else {
+            this.running = false;
+          }
         }
+        await notifyP;
       }
       async setModel(model) {
         this.o.model = model;
@@ -5177,6 +5312,7 @@ var init_session3 = __esm({
       }
       async close() {
         this.closed = true;
+        for (const w of this.closeWaiters.splice(0)) w();
         this.wakePump?.();
         this.settleCommands();
         for (const r of this.permPending.values()) r({ cancelled: true });
@@ -9066,7 +9202,8 @@ var AgentManager = class {
     await this.setStatus(threadId, "running");
     try {
       const images = await this.resolveAttachments(attachmentRefs);
-      await rt.session.send({ text: withMentions(text, mentions), images, mentions });
+      const payload = { text: withMentions(text, mentions), images, mentions };
+      await rt.session.send(payload);
     } catch (e) {
       const msg = String(e?.message ?? e);
       await this.appendRaw(threadId, { type: "notice", level: "error", message: tr("notice.sendFailed", { detail: msg }) });
