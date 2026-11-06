@@ -238,6 +238,6 @@
       }
     },
     { "package": "magpie-deepaicode", "name": "DeepAI Code", "icon": "https://raw.githubusercontent.com/aqiu817/magpie-deepaicode/main/icon.svg", "providers": ["deepaicode"],
-      "summary": { "en": "Unofficial DeepAI Code access for magpie: browser sign-in, the desktop app's saved credentials or an API key, direct upstream requests with a per-account machine fingerprint, live models, daily Theos quota and check-in.", "zh": "非官方接入 DeepAI Code：浏览器登录、桌面端凭据或 API Key，直连上游并给每个账号独立机器指纹，动态模型目录、每日 Theos 额度与签到。" } }
+      "summary": { "en": "Unofficial DeepAI Code access for magpie: browser sign-in, the desktop app's saved credentials or an API key, direct upstream requests with the device's real machine fingerprint, live models, daily Theos quota and check-in.", "zh": "非官方接入 DeepAI Code：浏览器登录、桌面端凭据或 API Key，直连上游并使用真实设备指纹，动态模型目录、每日 Theos 额度与签到。" } }
   ]
 }
