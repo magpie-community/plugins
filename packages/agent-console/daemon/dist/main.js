@@ -4206,6 +4206,9 @@ var init_types = __esm({
 import { homedir as homedir7 } from "node:os";
 import { dirname as dirname3, isAbsolute as isAbsolute2, join as join9 } from "node:path";
 import { readFile as readFile8 } from "node:fs/promises";
+function clearCodexModelCache() {
+  modelCache = null;
+}
 function runVersion2(r, args, timeoutMs = 5e3) {
   return new Promise((resolvePromise, reject) => {
     let out = "";
@@ -5067,13 +5070,13 @@ var init_session3 = __esm({
        * Switch model → refresh level options from the new config options it returns → then apply the level (as Paseo does).
        * Cursor connects with parameterizedModelPicker: only the base model name is sent (grok-4.6); level / Fast are separate config options.
        */
-      async applySessionModel(model) {
+      async applySessionModel(model, force = false) {
         if (!this.ctx || !this.active) return;
         const value = model && this.o.flavor === "cursor" ? model.replace(/\[.*\]$/u, "") : model;
         if (value) {
           const modelOption = this.currentConfig().find((o) => o.id === (this.modelConfigId ?? "model"));
           const values = (modelOption?.options ?? []).flatMap((x) => x.options ? x.options : [x]).map((x) => x.value).filter((x) => typeof x === "string");
-          if (!values.length || values.includes(value)) {
+          if (force || !values.length || values.includes(value)) {
             await this.setOption(this.modelConfigId ?? "model", value);
           } else {
             log("info", `\u5FFD\u7565 ${this.o.binName} \u7684\u65E0\u6548\u6A21\u578B\uFF1A${value}`);
@@ -5287,7 +5290,7 @@ var init_session3 = __esm({
         if (this.o.imagesFollowStartModel) {
           this.promptCaps = model === this.startModel ? this.initCaps : { ...this.initCaps, image: false };
         }
-        await this.applySessionModel(model);
+        await this.applySessionModel(model, true);
       }
       async setMode(mode2) {
         this.o.mode = mode2;
@@ -5749,6 +5752,270 @@ var init_specs = __esm({
   }
 });
 
+// daemon/src/providers/magpieGateway.ts
+import { readFile as readFile11, stat as stat8 } from "node:fs/promises";
+import { homedir as homedir8 } from "node:os";
+import { join as join11 } from "node:path";
+function magpieTokenFor(agentId) {
+  return `${MAGPIE_GATEWAY_TOKEN}-${agentId}`;
+}
+async function readJson(path4) {
+  try {
+    return JSON.parse(await readFile11(path4, "utf8"));
+  } catch {
+    return null;
+  }
+}
+async function readApplied() {
+  return await readJson(join11(homedir8(), ".config", "magpie", "applied.json")) ?? {};
+}
+async function readClaudeEnv() {
+  const s = await readJson(join11(homedir8(), ".claude", "settings.json"));
+  return s?.env ?? {};
+}
+async function gatewayBase() {
+  const env = await readClaudeEnv();
+  const raw = env.ANTHROPIC_BASE_URL?.trim();
+  return (raw && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(raw) ? raw : "http://127.0.0.1:3425").replace(/\/+$/, "");
+}
+async function fetchGatewayModelIds(agentId) {
+  const base = await gatewayBase();
+  const token = magpieTokenFor(agentId);
+  try {
+    const res = await fetch(`${base}/v1/models`, {
+      signal: AbortSignal.timeout(5e3),
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "x-api-key": token,
+        // Belt-and-suspenders: AgentOf also maps known User-Agents when the token is plain "magpie".
+        "User-Agent": `agent-console/${agentId}`
+      }
+    });
+    if (!res.ok) return [];
+    const j = await res.json();
+    return (j.data ?? []).map((m) => m.id).filter((id2) => typeof id2 === "string" && !!id2);
+  } catch (e) {
+    log("warn", "\u8BFB\u53D6 magpie \u7F51\u5173\u6A21\u578B\u5217\u8868\u5931\u8D25", { agent: agentId, err: String(e) });
+    return [];
+  }
+}
+function parseCapabilities(raw) {
+  const out = /* @__PURE__ */ new Map();
+  for (const part of (raw ?? "").split(";")) {
+    const i = part.indexOf("=");
+    if (i <= 0) continue;
+    const flags = new Set(part.slice(i + 1).split(",").map((s) => s.trim()));
+    if (!flags.has("effort")) continue;
+    const levels = ["low", "medium", "high"];
+    if (flags.has("xhigh_effort")) levels.push("xhigh");
+    if (flags.has("max_effort")) levels.push("max");
+    out.set(part.slice(0, i).trim(), levels);
+  }
+  return out;
+}
+function isPlaceholder(m) {
+  return !m.id || /^(default|auto)$/i.test(m.id);
+}
+async function magpieDefaultModel(providerId) {
+  if (providerId === "dsh") return null;
+  const tool = MAGPIE_TOOLS[providerId];
+  if (!tool) return null;
+  const applied = (await readApplied())[tool.key]?.fields?.model?.trim();
+  return applied || null;
+}
+async function magpieConfigFingerprint() {
+  const home = homedir8();
+  const paths = [
+    join11(home, ".config", "magpie", "applied.json"),
+    join11(home, ".config", "magpie", "settings.json"),
+    join11(home, ".claude", "settings.json"),
+    join11(home, ".codex", "config.toml"),
+    join11(home, ".codex", "magpie-models.json"),
+    join11(home, ".codex", "models.json"),
+    join11(home, ".config", "opencode", "opencode.json"),
+    join11(home, ".pi", "agent", "settings.json"),
+    join11(home, ".pi", "agent", "models.json")
+  ];
+  const parts = [];
+  for (const p of paths) {
+    try {
+      const st = await stat8(p);
+      parts.push(`${p}=${st.mtimeMs}`);
+    } catch {
+      parts.push(`${p}=-`);
+    }
+  }
+  return parts.join("|");
+}
+function filterToGatewayShown(list, gatewayIds, prefix, opts) {
+  if (!gatewayIds.length) return list;
+  const shown = new Set(gatewayIds);
+  const shownPrefixed = new Set(gatewayIds.map((id2) => prefix + id2));
+  const codexBare = opts?.providerId === "codex";
+  return list.filter((m) => {
+    if (shown.has(m.id) || shownPrefixed.has(m.id)) return true;
+    if (prefix && m.id.startsWith(prefix) && shown.has(m.id.slice(prefix.length))) return true;
+    if (codexBare && !m.id.includes("/") && shown.has(`codex/${m.id}`)) return true;
+    return false;
+  });
+}
+async function withMagpie(providerId, own) {
+  const tool = MAGPIE_TOOLS[providerId];
+  if (!tool) return own;
+  const applied = (await readApplied())[tool.key]?.fields;
+  if (!applied?.model) return own;
+  const caps = parseCapabilities((await readClaudeEnv()).CLAUDE_CODE_MODEL_CAPABILITIES);
+  const real = own.filter((m) => !isPlaceholder(m));
+  if (providerId === "dsh") {
+    const appliedId = applied.model.replace(/^magpie\//, "");
+    const selected = real.find(
+      (m) => m.id === applied.model || m.id === appliedId || appliedId.includes("/") && m.id.includes(appliedId)
+    );
+    const fallback = selected ?? real.find((m) => m.isDefault) ?? real[0];
+    return real.map((m) => ({ ...m, isDefault: m.id === fallback?.id }));
+  }
+  const knowsMagpie = tool.prefix ? real.some((m) => m.id.startsWith(tool.prefix)) : real.length > 0;
+  const gatewayIds = await fetchGatewayModelIds(tool.key);
+  let list;
+  if (knowsMagpie) {
+    const mine = real.filter((m) => !tool.prefix || m.id.startsWith(tool.prefix));
+    const others = tool.prefix ? real.filter((m) => !m.id.startsWith(tool.prefix)) : [];
+    const filteredMine = gatewayIds.length ? filterToGatewayShown(mine, gatewayIds, tool.prefix, { providerId }) : mine;
+    list = [...filteredMine.length ? filteredMine : mine, ...others];
+  } else {
+    list = gatewayIds.map((gid) => ({ id: tool.prefix + gid, name: gid }));
+  }
+  const defId = applied.model;
+  if (!list.some((m) => m.id === defId)) list.unshift({ id: defId, name: defId.slice(tool.prefix.length) || defId });
+  list = list.map((m) => ({ ...m, isDefault: m.id === defId }));
+  list.sort((a, b) => Number(!!b.isDefault) - Number(!!a.isDefault));
+  return list.map((m) => {
+    const name = tool.prefix && m.name.startsWith(tool.prefix) ? m.name.slice(tool.prefix.length) : m.name;
+    if (m.thinkingOptions?.length && providerId !== "claude") return { ...m, name };
+    const levels = caps.get(m.id.slice(tool.prefix.length) || m.id);
+    if (!levels) return { ...m, name, thinkingOptions: providerId === "claude" ? [] : m.thinkingOptions };
+    const def = applied.effort && levels.includes(applied.effort) ? applied.effort : levels.includes("high") ? "high" : levels[0];
+    return {
+      ...m,
+      name,
+      thinkingOptions: levels.map((id2) => ({ id: id2, label: EFFORT_LABEL2[id2] ?? id2 })),
+      defaultThinking: m.isDefault ? def : m.defaultThinking ?? def
+    };
+  });
+}
+var MAGPIE_TOOLS, MAGPIE_GATEWAY_TOKEN, EFFORT_LABEL2;
+var init_magpieGateway = __esm({
+  "daemon/src/providers/magpieGateway.ts"() {
+    init_log();
+    MAGPIE_TOOLS = {
+      claude: { key: "claude", prefix: "" },
+      codex: { key: "codex", prefix: "" },
+      opencode: { key: "opencode", prefix: "magpie/" },
+      pi: { key: "pi", prefix: "magpie/" },
+      dsh: { key: "dsh", prefix: "magpie/" }
+    };
+    MAGPIE_GATEWAY_TOKEN = "magpie";
+    EFFORT_LABEL2 = {
+      low: "Low",
+      medium: "Medium",
+      high: "High",
+      xhigh: "Extra High",
+      max: "Max"
+    };
+  }
+});
+
+// daemon/src/providers/infoCache.ts
+function registerProviderCacheClear(hook) {
+  extraClearHooks.add(hook);
+}
+function withTimeout2(p, ms, fb) {
+  return Promise.race([p, new Promise((r) => setTimeout(() => r(fb), ms))]);
+}
+function fresh(e, ttl, fp) {
+  if (!e || Date.now() - e.at >= ttl) return false;
+  if (fp !== void 0 && e.fp !== void 0 && e.fp !== fp) return false;
+  return true;
+}
+function cacheKey(p, launch) {
+  return launch ? `${p.id}\0${launchKey(launch)}` : p.id;
+}
+async function cachedDetect(p, launch) {
+  const key = cacheKey(p, launch);
+  const hit = detects.get(key);
+  if (fresh(hit, DETECT_MS)) return hit.value;
+  let job = inflightDetect.get(key);
+  if (!job) {
+    const timedOut = { available: false, reason: tr("provider.timeout") };
+    job = withTimeout2(
+      p.detect(launch).catch((e) => ({ available: false, reason: String(e?.message ?? e) })),
+      STEP_TIMEOUT_MS,
+      timedOut
+    ).then((v) => {
+      if (v !== timedOut) detects.set(key, { at: Date.now(), value: v });
+      return v;
+    }).finally(() => inflightDetect.delete(key));
+    inflightDetect.set(key, job);
+  }
+  return job;
+}
+async function cachedModels(p, launch) {
+  const key = cacheKey(p, launch);
+  const fp = await magpieConfigFingerprint().catch(() => "");
+  const hit = models.get(key);
+  if (fresh(hit, MODELS_MS, fp)) return hit.value;
+  let job = inflightModels.get(key);
+  if (!job) {
+    job = withTimeout2(p.listModels(launch).catch(() => []), MODELS_TIMEOUT_MS, null).then(async (v) => {
+      if (v === null) return models.get(key)?.value ?? [];
+      const list = await withMagpie(p.id, dropPlaceholder(v)).catch(() => dropPlaceholder(v));
+      const nextFp = await magpieConfigFingerprint().catch(() => fp);
+      models.set(key, { at: Date.now(), value: list, fp: nextFp });
+      return list;
+    }).finally(() => inflightModels.delete(key));
+    inflightModels.set(key, job);
+  }
+  return job;
+}
+function dropPlaceholder(list) {
+  if (list.length === 1 && list[0].id === "default" && (list[0].name === "\u9ED8\u8BA4" || list[0].name === PLACEHOLDER_MODEL_NAME)) return [];
+  return list;
+}
+function clearProviderCache(id2) {
+  if (id2) {
+    for (const m of [detects, models]) {
+      for (const k of [...m.keys()]) if (k === id2 || k.startsWith(id2 + "\0")) m.delete(k);
+    }
+  } else {
+    detects.clear();
+    models.clear();
+  }
+  for (const hook of extraClearHooks) {
+    try {
+      hook(id2);
+    } catch {
+    }
+  }
+}
+var DETECT_MS, MODELS_MS, STEP_TIMEOUT_MS, MODELS_TIMEOUT_MS, detects, models, inflightDetect, inflightModels, extraClearHooks;
+var init_infoCache = __esm({
+  "daemon/src/providers/infoCache.ts"() {
+    init_types();
+    init_magpieGateway();
+    init_launch();
+    init_i18n();
+    DETECT_MS = 60 * 1e3;
+    MODELS_MS = 10 * 60 * 1e3;
+    STEP_TIMEOUT_MS = 15e3;
+    MODELS_TIMEOUT_MS = 35e3;
+    detects = /* @__PURE__ */ new Map();
+    models = /* @__PURE__ */ new Map();
+    inflightDetect = /* @__PURE__ */ new Map();
+    inflightModels = /* @__PURE__ */ new Map();
+    extraClearHooks = /* @__PURE__ */ new Set();
+  }
+});
+
 // daemon/src/providers/registry.ts
 function registerProvider(p) {
   providers.set(p.id, p);
@@ -5760,6 +6027,12 @@ function listProviders() {
   return [...providers.values()];
 }
 function initProviders(version = "") {
+  if (!codexCacheHooked) {
+    registerProviderCacheClear((id2) => {
+      if (!id2 || id2 === "codex") clearCodexModelCache();
+    });
+    codexCacheHooked = true;
+  }
   providers.clear();
   for (const entry of PROVIDER_CATALOG) {
     if (entry.id === "claude") registerProvider(createClaudeProvider());
@@ -5773,7 +6046,7 @@ function initProviders(version = "") {
     registerProvider(createMockProvider());
   }
 }
-var providers;
+var codexCacheHooked, providers;
 var init_registry = __esm({
   "daemon/src/providers/registry.ts"() {
     init_mock();
@@ -5782,6 +6055,8 @@ var init_registry = __esm({
     init_catalog();
     init_provider3();
     init_specs();
+    init_infoCache();
+    codexCacheHooked = false;
     providers = /* @__PURE__ */ new Map();
   }
 });
@@ -5887,198 +6162,6 @@ var init_pickFolder = __esm({
     init_pathscan();
     init_pickFolderWin();
     TIMEOUT = 10 * 60 * 1e3;
-  }
-});
-
-// daemon/src/providers/magpieGateway.ts
-import { readFile as readFile11 } from "node:fs/promises";
-import { homedir as homedir8 } from "node:os";
-import { join as join11 } from "node:path";
-async function readJson(path4) {
-  try {
-    return JSON.parse(await readFile11(path4, "utf8"));
-  } catch {
-    return null;
-  }
-}
-async function readApplied() {
-  return await readJson(join11(homedir8(), ".config", "magpie", "applied.json")) ?? {};
-}
-async function readClaudeEnv() {
-  const s = await readJson(join11(homedir8(), ".claude", "settings.json"));
-  return s?.env ?? {};
-}
-async function gatewayBase() {
-  const env = await readClaudeEnv();
-  const raw = env.ANTHROPIC_BASE_URL?.trim();
-  return (raw && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(raw) ? raw : "http://127.0.0.1:3425").replace(/\/+$/, "");
-}
-async function fetchGatewayModelIds() {
-  const base = await gatewayBase();
-  try {
-    const res = await fetch(`${base}/v1/models`, { signal: AbortSignal.timeout(5e3) });
-    if (!res.ok) return [];
-    const j = await res.json();
-    return (j.data ?? []).map((m) => m.id).filter((id2) => typeof id2 === "string" && !!id2);
-  } catch (e) {
-    log("warn", "\u8BFB\u53D6 magpie \u7F51\u5173\u6A21\u578B\u5217\u8868\u5931\u8D25", { err: String(e) });
-    return [];
-  }
-}
-function parseCapabilities(raw) {
-  const out = /* @__PURE__ */ new Map();
-  for (const part of (raw ?? "").split(";")) {
-    const i = part.indexOf("=");
-    if (i <= 0) continue;
-    const flags = new Set(part.slice(i + 1).split(",").map((s) => s.trim()));
-    if (!flags.has("effort")) continue;
-    const levels = ["low", "medium", "high"];
-    if (flags.has("xhigh_effort")) levels.push("xhigh");
-    if (flags.has("max_effort")) levels.push("max");
-    out.set(part.slice(0, i).trim(), levels);
-  }
-  return out;
-}
-function isPlaceholder(m) {
-  return !m.id || /^(default|auto)$/i.test(m.id);
-}
-async function withMagpie(providerId, own) {
-  const tool = MAGPIE_TOOLS[providerId];
-  if (!tool) return own;
-  const applied = (await readApplied())[tool.key]?.fields;
-  if (!applied?.model) return own;
-  const caps = parseCapabilities((await readClaudeEnv()).CLAUDE_CODE_MODEL_CAPABILITIES);
-  const real = own.filter((m) => !isPlaceholder(m));
-  if (providerId === "dsh") {
-    const appliedId = applied.model.replace(/^magpie\//, "");
-    const selected = real.find(
-      (m) => m.id === applied.model || m.id === appliedId || appliedId.includes("/") && m.id.includes(appliedId)
-    );
-    const fallback = selected ?? real.find((m) => m.isDefault) ?? real[0];
-    return real.map((m) => ({ ...m, isDefault: m.id === fallback?.id }));
-  }
-  const knowsMagpie = tool.prefix ? real.some((m) => m.id.startsWith(tool.prefix)) : real.length > 0;
-  let list;
-  if (knowsMagpie) {
-    const mine = real.filter((m) => !tool.prefix || m.id.startsWith(tool.prefix));
-    const others = tool.prefix ? real.filter((m) => !m.id.startsWith(tool.prefix)) : [];
-    list = [...mine, ...others];
-  } else {
-    list = (await fetchGatewayModelIds()).map((gid) => ({ id: tool.prefix + gid, name: gid }));
-  }
-  const defId = applied.model;
-  if (!list.some((m) => m.id === defId)) list.unshift({ id: defId, name: defId.slice(tool.prefix.length) || defId });
-  list = list.map((m) => ({ ...m, isDefault: m.id === defId }));
-  list.sort((a, b) => Number(!!b.isDefault) - Number(!!a.isDefault));
-  return list.map((m) => {
-    const name = tool.prefix && m.name.startsWith(tool.prefix) ? m.name.slice(tool.prefix.length) : m.name;
-    if (m.thinkingOptions?.length && providerId !== "claude") return { ...m, name };
-    const levels = caps.get(m.id.slice(tool.prefix.length) || m.id);
-    if (!levels) return { ...m, name, thinkingOptions: providerId === "claude" ? [] : m.thinkingOptions };
-    const def = applied.effort && levels.includes(applied.effort) ? applied.effort : levels.includes("high") ? "high" : levels[0];
-    return {
-      ...m,
-      name,
-      thinkingOptions: levels.map((id2) => ({ id: id2, label: EFFORT_LABEL2[id2] ?? id2 })),
-      defaultThinking: m.isDefault ? def : m.defaultThinking ?? def
-    };
-  });
-}
-var MAGPIE_TOOLS, EFFORT_LABEL2;
-var init_magpieGateway = __esm({
-  "daemon/src/providers/magpieGateway.ts"() {
-    init_log();
-    MAGPIE_TOOLS = {
-      claude: { key: "claude", prefix: "" },
-      codex: { key: "codex", prefix: "" },
-      opencode: { key: "opencode", prefix: "magpie/" },
-      pi: { key: "pi", prefix: "magpie/" },
-      dsh: { key: "dsh", prefix: "magpie/" }
-    };
-    EFFORT_LABEL2 = {
-      low: "Low",
-      medium: "Medium",
-      high: "High",
-      xhigh: "Extra High",
-      max: "Max"
-    };
-  }
-});
-
-// daemon/src/providers/infoCache.ts
-function withTimeout2(p, ms, fb) {
-  return Promise.race([p, new Promise((r) => setTimeout(() => r(fb), ms))]);
-}
-function fresh(e, ttl) {
-  return !!e && Date.now() - e.at < ttl;
-}
-function cacheKey(p, launch) {
-  return launch ? `${p.id}\0${launchKey(launch)}` : p.id;
-}
-async function cachedDetect(p, launch) {
-  const key = cacheKey(p, launch);
-  const hit = detects.get(key);
-  if (fresh(hit, DETECT_MS)) return hit.value;
-  let job = inflightDetect.get(key);
-  if (!job) {
-    const timedOut = { available: false, reason: tr("provider.timeout") };
-    job = withTimeout2(
-      p.detect(launch).catch((e) => ({ available: false, reason: String(e?.message ?? e) })),
-      STEP_TIMEOUT_MS,
-      timedOut
-    ).then((v) => {
-      if (v !== timedOut) detects.set(key, { at: Date.now(), value: v });
-      return v;
-    }).finally(() => inflightDetect.delete(key));
-    inflightDetect.set(key, job);
-  }
-  return job;
-}
-async function cachedModels(p, launch) {
-  const key = cacheKey(p, launch);
-  const hit = models.get(key);
-  if (fresh(hit, MODELS_MS)) return hit.value;
-  let job = inflightModels.get(key);
-  if (!job) {
-    job = withTimeout2(p.listModels(launch).catch(() => []), MODELS_TIMEOUT_MS, null).then(async (v) => {
-      if (v === null) return models.get(key)?.value ?? [];
-      const list = await withMagpie(p.id, dropPlaceholder(v)).catch(() => dropPlaceholder(v));
-      models.set(key, { at: Date.now(), value: list });
-      return list;
-    }).finally(() => inflightModels.delete(key));
-    inflightModels.set(key, job);
-  }
-  return job;
-}
-function dropPlaceholder(list) {
-  if (list.length === 1 && list[0].id === "default" && (list[0].name === "\u9ED8\u8BA4" || list[0].name === PLACEHOLDER_MODEL_NAME)) return [];
-  return list;
-}
-function clearProviderCache(id2) {
-  if (id2) {
-    for (const m of [detects, models]) {
-      for (const k of [...m.keys()]) if (k === id2 || k.startsWith(id2 + "\0")) m.delete(k);
-    }
-  } else {
-    detects.clear();
-    models.clear();
-  }
-}
-var DETECT_MS, MODELS_MS, STEP_TIMEOUT_MS, MODELS_TIMEOUT_MS, detects, models, inflightDetect, inflightModels;
-var init_infoCache = __esm({
-  "daemon/src/providers/infoCache.ts"() {
-    init_types();
-    init_magpieGateway();
-    init_launch();
-    init_i18n();
-    DETECT_MS = 60 * 1e3;
-    MODELS_MS = 10 * 60 * 1e3;
-    STEP_TIMEOUT_MS = 15e3;
-    MODELS_TIMEOUT_MS = 35e3;
-    detects = /* @__PURE__ */ new Map();
-    models = /* @__PURE__ */ new Map();
-    inflightDetect = /* @__PURE__ */ new Map();
-    inflightModels = /* @__PURE__ */ new Map();
   }
 });
 
@@ -6194,7 +6277,7 @@ var init_autoApprove13 = __esm({
 });
 
 // daemon/src/util/mentions.ts
-import { realpath, stat as stat8 } from "node:fs/promises";
+import { realpath, stat as stat9 } from "node:fs/promises";
 import { isAbsolute as isAbsolute3, resolve as resolve3, sep as sep2, win32 as win322, posix as posix2 } from "node:path";
 function insideRoot(root, child, platform = process.platform) {
   const p = platform === "win32" ? win322 : posix2;
@@ -6228,7 +6311,7 @@ async function resolveMentions(projectPath, refs) {
     let isDir2;
     try {
       real = await realpath(abs);
-      isDir2 = (await stat8(real)).isDirectory();
+      isDir2 = (await stat9(real)).isDirectory();
     } catch {
       warnings.push(rel);
       continue;
@@ -7150,11 +7233,16 @@ function registerMethods(gw, svc) {
     return { ok: true };
   }));
   gw.method("providers.list", wrap(
-    z.object({ refresh: z.boolean().optional() }).passthrough().optional(),
+    z.object({ refresh: z.boolean().optional(), provider: z.string().optional() }).passthrough().optional(),
     async (p) => {
       if (p?.refresh) {
-        clearBinCache();
-        clearProviderCache();
+        if (p.provider) {
+          clearBinCache(p.provider);
+          clearProviderCache(p.provider);
+        } else {
+          clearBinCache();
+          clearProviderCache();
+        }
       }
       const settings = await svc.settings.get();
       const rows = await Promise.all(
@@ -8899,6 +8987,7 @@ init_registry();
 init_catalog();
 init_enabled();
 init_infoCache();
+init_magpieGateway();
 
 // daemon/src/timeline/coalescer.ts
 var Coalescer = class {
@@ -9194,6 +9283,7 @@ var AgentManager = class {
         throw e;
       }
     }
+    await this.syncDefaultModelIfNeeded(threadId, meta, rt);
     await agentShellReady();
     if (!rt.bashHinted && bashMissingFor(meta.provider)) {
       rt.bashHinted = true;
@@ -9466,10 +9556,45 @@ var AgentManager = class {
         });
       }
     }
+    const sessionModel = model ?? await this.resolveDefaultSessionModel(meta.provider);
     await this.threads.patch(threadId, { model, effort });
     const rt = this.rt(threadId);
-    if (rt.session) await rt.session.setModel(model);
+    if (rt.session) await rt.session.setModel(sessionModel);
+    rt.syncedDefaultModel = model ? void 0 : sessionModel;
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
+  }
+  /**
+   * Default model id to push into a live session while the thread is on「默认」.
+   * dsh must use its own ACP model ids from cachedModels (never raw applied.json "magpie/…" strings).
+   */
+  async resolveDefaultSessionModel(providerId) {
+    if (providerId === "dsh") {
+      const provider = getProvider(providerId);
+      if (!provider) return null;
+      const settings = await this.settings.get();
+      const launch = launchFromSettings(settings, providerId);
+      const available = await cachedModels(provider, launch).catch(() => []);
+      const magpie = available.filter((m) => /magpie/i.test(m.id));
+      return (magpie.find((m) => m.isDefault) ?? magpie[0] ?? available.find((m) => m.isDefault))?.id ?? null;
+    }
+    return magpieDefaultModel(providerId);
+  }
+  /**
+   * Thread on「默认」+ idle live session: if Magpie's applied default changed since we last synced,
+   * push the new id into the session (never interrupts a running turn — caller only invokes while idle/before send).
+   */
+  async syncDefaultModelIfNeeded(threadId, meta, rt) {
+    if (meta.model) return;
+    if (!rt.session) return;
+    if (rt.status === "running" || rt.status === "initializing") return;
+    const current = await this.resolveDefaultSessionModel(meta.provider);
+    if (current === (rt.syncedDefaultModel ?? null)) return;
+    try {
+      await rt.session.setModel(current);
+      rt.syncedDefaultModel = current;
+    } catch (e) {
+      log("warn", `thread ${threadId} sync default model failed\uFF1A${String(e)}`);
+    }
   }
   async setMode(threadId, mode2) {
     const meta = await this.threads.patch(threadId, { mode: mode2 });
@@ -9645,10 +9770,9 @@ var AgentManager = class {
         this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
       }
     } else if (meta.provider === "dsh" && !model) {
-      const available = await cachedModels(provider).catch(() => []);
-      const magpie = available.filter((m) => /magpie/i.test(m.id));
-      model = (magpie.find((m) => m.isDefault) ?? magpie[0] ?? available.find((m) => m.isDefault))?.id ?? null;
+      model = await this.resolveDefaultSessionModel("dsh");
     }
+    const sessionModel = model ?? await this.resolveDefaultSessionModel(meta.provider);
     if (opts.updateStatus) await this.setStatus(threadId, "initializing");
     const settings = await this.settings.get();
     const launch = launchFromSettings(settings, meta.provider);
@@ -9657,7 +9781,7 @@ var AgentManager = class {
     rt.session = await provider.createSession({
       threadId,
       cwd: proj.path,
-      model,
+      model: sessionModel,
       mode: clampMode(provider.capabilities.modes, meta.mode),
       effort: meta.effort,
       resumeId: meta.providerSessionId,
@@ -9665,6 +9789,7 @@ var AgentManager = class {
       cursorAutoReview: meta.cursorAutoReview,
       launch
     });
+    rt.syncedDefaultModel = model ? void 0 : sessionModel;
     void this.pumpEvents(threadId, rt.session);
     return rt.session;
   }
@@ -9755,7 +9880,7 @@ init_i18n();
 init_decode();
 import { execFile as execFile5 } from "node:child_process";
 import { existsSync as existsSync11 } from "node:fs";
-import { cp, mkdir as mkdir7, readFile as readFile16, rename as rename4, rm, stat as stat10 } from "node:fs/promises";
+import { cp, mkdir as mkdir7, readFile as readFile16, rename as rename4, rm, stat as stat11 } from "node:fs/promises";
 import { join as join16, normalize as normalize2, sep as sep3 } from "node:path";
 var TIMEOUT2 = 15e3;
 var DIFF_LIMIT = 1024 * 1024;
@@ -9822,7 +9947,7 @@ var GitService = class {
     if (ls.code !== 0) {
       const full = join16(projectPath, rel);
       if (!existsSync11(full)) return { error: tr("fs.fileMissing") };
-      const s = await stat10(full);
+      const s = await stat11(full);
       if (!s.isFile()) return { error: tr("fs.notFile") };
       if (s.size > DIFF_LIMIT) return { tooLarge: true };
       const text = await readFile16(full, "utf8").catch(() => null);
@@ -9870,7 +9995,7 @@ ${lines}` };
 
 // daemon/src/files/service.ts
 init_i18n();
-import { readdir as readdir5, readFile as readFile17, stat as stat11 } from "node:fs/promises";
+import { readdir as readdir5, readFile as readFile17, stat as stat12 } from "node:fs/promises";
 import { join as join17, normalize as normalize3, sep as sep4, extname as extname3 } from "node:path";
 import ignore from "ignore";
 function decodeText(buf) {
@@ -9945,7 +10070,7 @@ var FileService = class {
   igCache = /* @__PURE__ */ new Map();
   async igFor(projectPath) {
     const gi = join17(projectPath, ".gitignore");
-    const st = await stat11(gi).catch(() => null);
+    const st = await stat12(gi).catch(() => null);
     const mtime = st?.isFile() ? st.mtimeMs : -1;
     const hit = this.igCache.get(projectPath);
     if (hit && hit.mtime === mtime) return hit.ig;
@@ -9964,7 +10089,7 @@ var FileService = class {
     const rel = insidePath2(projectPath, dir);
     if (rel === null) return { error: tr("fs.pathDenied") };
     const abs = join17(projectPath, rel);
-    const s = await stat11(abs).catch(() => null);
+    const s = await stat12(abs).catch(() => null);
     if (!s?.isDirectory()) return { error: tr("fs.dirMissing") };
     const ig = await this.igFor(projectPath);
     const dirents = await readdir5(abs, { withFileTypes: true }).catch(() => null);
@@ -9977,7 +10102,7 @@ var FileService = class {
       const childRel = rel === "." ? name : `${rel}/${name}`;
       let isDir2 = d.isDirectory();
       if (d.isSymbolicLink()) {
-        const st = await stat11(join17(projectPath, childRel)).catch(() => null);
+        const st = await stat12(join17(projectPath, childRel)).catch(() => null);
         if (!st) continue;
         isDir2 = st.isDirectory();
       } else if (!d.isFile() && !isDir2) {
@@ -9995,7 +10120,7 @@ var FileService = class {
     const rel = insidePath2(projectPath, p);
     if (rel === null) return { error: tr("fs.pathDenied") };
     const abs = join17(projectPath, rel);
-    const s = await stat11(abs).catch(() => null);
+    const s = await stat12(abs).catch(() => null);
     if (!s) return { error: tr("fs.fileMissing") };
     if (!s.isFile()) return { error: tr("fs.notFile") };
     if (s.size > MAX_READ) return { tooLarge: true };

@@ -33,6 +33,11 @@ export const codexCapabilities: Capabilities = {
 let modelCache: { at: number; models: ModelInfo[] } | null = null;
 const MODEL_CACHE_MS = 10 * 60 * 1000;
 
+/** Cleared by clearProviderCache so a Magpie refresh doesn't keep Codex's own 10-minute list. */
+export function clearCodexModelCache(): void {
+  modelCache = null;
+}
+
 function runVersion(r: ResolveResult & { ok: true }, args: string[], timeoutMs = 5000): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     let out = "";

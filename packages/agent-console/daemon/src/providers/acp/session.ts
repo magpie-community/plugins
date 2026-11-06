@@ -315,15 +315,16 @@ export class AcpSession implements ProviderSession {
    * Switch model → refresh level options from the new config options it returns → then apply the level (as Paseo does).
    * Cursor connects with parameterizedModelPicker: only the base model name is sent (grok-4.6); level / Fast are separate config options.
    */
-  private async applySessionModel(model: string | null): Promise<void> {
+  private async applySessionModel(model: string | null, force = false): Promise<void> {
     if (!this.ctx || !this.active) return;
     const value = model && this.o.flavor === "cursor" ? model.replace(/\[.*\]$/u, "") : model;
     if (value) {
       const modelOption = this.currentConfig().find((o) => o.id === (this.modelConfigId ?? "model"));
       const values = (modelOption?.options ?? []).flatMap((x) => x.options ? x.options : [x])
         .map((x) => x.value).filter((x): x is string => typeof x === "string");
-      // Old sessions may have saved another Agent's model ID. Skip invalid values and let ACP keep its current model.
-      if (!values.length || values.includes(value)) {
+      // Startup (!force): skip stale cross-Agent saved ids against the session/new snapshot.
+      // User pick / Magpie refresh (force): always send set_config_option — Agents may have gained models since boot.
+      if (force || !values.length || values.includes(value)) {
         await this.setOption(this.modelConfigId ?? "model", value);
       } else {
         log("info", `忽略 ${this.o.binName} 的无效模型：${value}`);
@@ -571,7 +572,7 @@ export class AcpSession implements ProviderSession {
       // dsh answered initialize for the model it started on; another model may not take image blocks (it refuses the prompt)
       this.promptCaps = model === this.startModel ? this.initCaps : { ...this.initCaps, image: false };
     }
-    await this.applySessionModel(model);
+    await this.applySessionModel(model, true);
   }
 
   async setMode(mode: Mode): Promise<void> {

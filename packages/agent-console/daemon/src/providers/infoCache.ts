@@ -2,7 +2,7 @@
 // detect / listModels often have to start a CLI (seconds); without a cache every page open and model pick would wait.
 import type { Provider, DetectResult, ModelInfo, LaunchCommand } from "./types.js";
 import { PLACEHOLDER_MODEL_NAME } from "./types.js";
-import { withMagpie } from "./magpieGateway.js";
+import { magpieConfigFingerprint, withMagpie } from "./magpieGateway.js";
 import { launchKey } from "./launch.js";
 import { tr } from "../util/i18n.js";
 
@@ -13,19 +13,29 @@ const STEP_TIMEOUT_MS = 15000;
 // Fetching models may start an ACP session (Cursor launches slowly through PowerShell), so it gets a longer timeout
 const MODELS_TIMEOUT_MS = 35000;
 
-type Entry<T> = { at: number; value: T } | undefined;
+type Entry<T> = { at: number; value: T; fp?: string } | undefined;
 const detects = new Map<string, Entry<DetectResult>>();
 const models = new Map<string, Entry<ModelInfo[]>>();
 // Concurrent requests for the same Provider share one in-flight detection
 const inflightDetect = new Map<string, Promise<DetectResult>>();
 const inflightModels = new Map<string, Promise<ModelInfo[]>>();
 
+/** Extra provider-local caches (e.g. Codex's own 10-minute modelCache) cleared together with ours. */
+const extraClearHooks = new Set<(id?: string) => void>();
+
+export function registerProviderCacheClear(hook: (id?: string) => void): void {
+  extraClearHooks.add(hook);
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number, fb: T): Promise<T> {
   return Promise.race([p, new Promise<T>((r) => setTimeout(() => r(fb), ms))]);
 }
 
-function fresh<T>(e: Entry<T>, ttl: number): e is { at: number; value: T } {
-  return !!e && Date.now() - e.at < ttl;
+function fresh<T>(e: Entry<T>, ttl: number, fp?: string): e is { at: number; value: T; fp?: string } {
+  if (!e || Date.now() - e.at >= ttl) return false;
+  // Magpie / agent config changed on disk since we cached → treat as stale even inside the TTL
+  if (fp !== undefined && e.fp !== undefined && e.fp !== fp) return false;
+  return true;
 }
 
 function cacheKey(p: Provider, launch?: LaunchCommand): string {
@@ -55,8 +65,9 @@ export async function cachedDetect(p: Provider, launch?: LaunchCommand): Promise
 
 export async function cachedModels(p: Provider, launch?: LaunchCommand): Promise<ModelInfo[]> {
   const key = cacheKey(p, launch);
+  const fp = await magpieConfigFingerprint().catch(() => "");
   const hit = models.get(key);
-  if (fresh(hit, MODELS_MS)) return hit.value;
+  if (fresh(hit, MODELS_MS, fp)) return hit.value;
   let job = inflightModels.get(key);
   if (!job) {
     job = withTimeout<ModelInfo[] | null>(p.listModels(launch).catch(() => []), MODELS_TIMEOUT_MS, null)
@@ -65,7 +76,8 @@ export async function cachedModels(p: Provider, launch?: LaunchCommand): Promise
         if (v === null) return models.get(key)?.value ?? [];
         // Agents behind the magpie gateway: fill in gateway models, the default model and thinking levels
         const list = await withMagpie(p.id, dropPlaceholder(v)).catch(() => dropPlaceholder(v));
-        models.set(key, { at: Date.now(), value: list });
+        const nextFp = await magpieConfigFingerprint().catch(() => fp);
+        models.set(key, { at: Date.now(), value: list, fp: nextFp });
         return list;
       })
       .finally(() => inflightModels.delete(key));
@@ -94,5 +106,8 @@ export function clearProviderCache(id?: string): void {
   } else {
     detects.clear();
     models.clear();
+  }
+  for (const hook of extraClearHooks) {
+    try { hook(id); } catch { /* ignore */ }
   }
 }

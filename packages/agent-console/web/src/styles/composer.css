@@ -142,6 +142,17 @@
   font-size: var(--fs-s); color: var(--fg);
 }
 .agent-picker .ap-search-in::placeholder { color: var(--muted); }
+.agent-picker .ap-refresh {
+  flex: none; width: 24px; height: 24px; margin: -2px -4px -2px 0; padding: 0;
+  border: 0; border-radius: var(--r-s); background: transparent; color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.agent-picker .ap-refresh:hover:not(:disabled) { color: var(--fg); background: var(--surface-hover); }
+.agent-picker .ap-refresh:disabled { opacity: .45; cursor: default; }
+.agent-picker .ap-refresh.spinning svg { animation: ac-spin .8s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .agent-picker .ap-refresh.spinning svg { animation-duration: 2.4s; }
+}
 .agent-picker .ap-scroll {
   overflow-y: auto; padding: 4px; flex: 1; min-height: 0;
 }

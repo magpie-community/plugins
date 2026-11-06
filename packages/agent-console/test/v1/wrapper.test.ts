@@ -14,7 +14,7 @@ type Msg = { source: unknown; data: unknown };
 async function runWrapper(
   hash: string,
   search = "",
-  opts: { visible?: boolean; sessionStorage?: Record<string, string> } = {},
+  opts: { visible?: boolean; sessionStorage?: Record<string, string>; framed?: boolean } = {},
 ) {
   const { wrapperHtml, WRAP_TIMING } = await import(/* @vite-ignore */ wrapperUrl);
   const html: string = wrapperHtml("n0nce", WRAP_TIMING);
@@ -50,21 +50,39 @@ async function runWrapper(
       else (winOn[t] ??= []).push(fn as unknown as () => void);
     },
   };
+  // Magpie hosts the wrapper in an iframe (parent !== window). Top-level /app uses framed: false.
+  if (opts.framed === false) win.parent = win;
   const doc = {
     getElementById: (id: string) => els[id], documentElement: { className: "" },
     visibilityState: opts.visible === false ? "hidden" : "visible",
     addEventListener: (t: string, fn: () => void) => { (docOn[t] ??= []).push(fn); },
   };
   const DateFake = { now: () => now };
-  const fn = new Function("window", "document", "location", "setInterval", "Date", "URL", "URLSearchParams", "sessionStorage", script);
-  fn(win, doc, loc, (f: () => void) => { intervals.push(f); return 1; }, DateFake, URL, URLSearchParams, sessionStorage);
-  const tick = (ms: number, step = 1000) => { for (let t = 0; t < ms; t += step) { now += step; intervals.forEach((f) => f()); } };
+  type TO = { at: number; fn: () => void };
+  const timeouts: TO[] = [];
+  const setTimeoutFake = (f: () => void, ms = 0) => { timeouts.push({ at: now + ms, fn: f }); return timeouts.length; };
+  const flushTimeouts = () => {
+    let ran = true;
+    while (ran) {
+      ran = false;
+      for (let i = timeouts.length - 1; i >= 0; i--) {
+        if (timeouts[i]!.at <= now) {
+          const t = timeouts.splice(i, 1)[0]!;
+          t.fn();
+          ran = true;
+        }
+      }
+    }
+  };
+  const fn = new Function("window", "document", "location", "setInterval", "setTimeout", "Date", "URL", "URLSearchParams", "sessionStorage", script);
+  fn(win, doc, loc, (f: () => void) => { intervals.push(f); return 1; }, setTimeoutFake, DateFake, URL, URLSearchParams, sessionStorage);
+  const tick = (ms: number, step = 1000) => { for (let t = 0; t < ms; t += step) { now += step; intervals.forEach((f) => f()); flushTimeouts(); } };
   return {
-    els, loc, childWin, parentWin, tick, doc, store,
+    els, loc, childWin, parentWin, tick, doc, store, flushTimeouts,
     fromChild: (data: unknown) => onMessage({ source: childWin, data }),
     fromParent: (data: unknown) => onMessage({ source: parentWin, data }),
     fromOther: (data: unknown) => onMessage({ source: {}, data }),
-    jump: (ms: number) => { now += ms; },
+    jump: (ms: number) => { now += ms; flushTimeouts(); },
     hide: () => { doc.visibilityState = "hidden"; (docOn.visibilitychange ?? []).forEach((f) => f()); },
     show: () => { doc.visibilityState = "visible"; (docOn.visibilitychange ?? []).forEach((f) => f()); },
     focus: () => { (winOn.focus ?? []).forEach((f) => f()); },
@@ -140,7 +158,7 @@ describe("wrapper page", () => {
     expect(w2.els.r!.textContent).toBe("Reconnect");
     expect(w2.els.s!.textContent).toContain("Click Reconnect");
 
-    const w3 = await runWrapper(hash({ t: TOKEN, p: "4321", b: "https://evil.example/_magpie/plugin/a/index.html" }));
+    const w3 = await runWrapper(hash({ t: TOKEN, p: "4321", b: "https://evil.example/_magpie/plugin/a/index.html" }), "", { framed: false });
     expect(w3.store.has("ac_wrap_back")).toBe(false);
     w3.fromChild({ ac_console: "lost", at: 5 });
     expect(w3.loc.replaced).toBeNull();
@@ -228,28 +246,71 @@ describe("wrapper page", () => {
 
   it("ignores an unsafe sessionStorage back and still offers Reconnect via reload", async () => {
     const evil = "https://evil.example/_magpie/plugin/a/index.html";
-    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }), "?lang=en", { sessionStorage: { ac_wrap_back: evil } });
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }), "?lang=en", { sessionStorage: { ac_wrap_back: evil }, framed: false });
     w.fromChild({ ac_console: "lost", at: 1 });
     expect(w.loc.replaced).toBeNull();
     expect(w.els.r!.hidden).toBe(false);
     expect(w.els.r!.textContent).toBe("Reconnect");
     expect(w.els.s!.textContent).toMatch(/Click Reconnect/);
-    expect(w.els.s!.textContent).toMatch(/top-bar/);
+    expect(w.els.s!.textContent).toMatch(/Plugins page/);
+    expect(w.els.s!.textContent).not.toMatch(/top-bar/);
     w.els.r!.onclick!();
     expect(w.loc.reloaded).toBe(1);
   });
 
-  it("with no back at all, Reconnect reloads and the copy explains the Magpie top-bar fallback", async () => {
-    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }));
+  it("with no back at all (top-level), Reconnect reloads and the copy points at Magpie Plugins", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }), "", { framed: false });
     w.fromChild({ ac_console: "lost", at: 1 });
     expect(w.loc.replaced).toBeNull();
     expect(w.els.r!.hidden).toBe(false);
     expect(w.els.r!.textContent).toBe("重新连接");
     expect(w.els.s!.textContent).toContain("重新连接");
     expect(w.els.s!.textContent).toContain("Agent 控制台");
-    expect(w.els.s!.textContent).toContain("顶栏");
+    expect(w.els.s!.textContent).toContain("插件");
+    expect(w.els.s!.textContent).not.toContain("顶栏");
+    expect(w.parentWin.posted).toEqual([]);
     w.els.r!.onclick!();
     expect(w.loc.reloaded).toBe(1);
+  });
+
+  it("with no back in a Magpie iframe, auto-notifies the parent with method error and Reconnect does too", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }));
+    w.fromChild({ ac_console: "lost", at: 1 });
+    expect(w.loc.replaced).toBeNull();
+    expect(w.els.r!.hidden).toBe(false);
+    expect(w.parentWin.posted).toEqual([
+      { magpie: 1, method: "error", params: { message: "本地服务已断开" } },
+    ]);
+    w.parentWin.posted.length = 0;
+    w.els.r!.onclick!();
+    expect(w.parentWin.posted).toEqual([
+      { magpie: 1, method: "error", params: { message: "本地服务已断开" } },
+    ]);
+    expect(w.loc.reloaded).toBe(0);
+    w.tick(300);
+    expect(w.loc.reloaded).toBe(1);
+  });
+
+  it("Windows wails.localhost #b= is kept and recover navigates back through it", async () => {
+    const WAILS = "http://wails.localhost/_magpie/plugin/abc123/index.html";
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: WAILS }));
+    expect(w.store.get("ac_wrap_back")).toBe(WAILS);
+    w.fromChild({ ac_console: "lost", at: 42 });
+    const u = new URL(w.loc.replaced!);
+    expect(u.origin + u.pathname).toBe("http://wails.localhost/_magpie/plugin/abc123/index.html");
+    expect(u.searchParams.get("ac_lost")).toBe("42");
+    expect(u.searchParams.get("ac_try")).toMatch(/^\d+\.1$/);
+  });
+
+  it("Windows wails.localhost: after max auto tries, Reconnect still replaces to #b=", async () => {
+    const WAILS = "http://wails.localhost/_magpie/plugin/tok/page/index.html";
+    const start = 1_800_000_000_000 - 30_000;
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: WAILS }), `?ac_try=${start}.3`);
+    w.fromChild({ ac_console: "lost", at: 1 });
+    expect(w.loc.replaced).toBeNull();
+    w.els.r!.onclick!();
+    expect(w.loc.replaced!.startsWith("http://wails.localhost/_magpie/plugin/tok/page/index.html")).toBe(true);
+    expect(new URL(w.loc.replaced!).searchParams.has("ac_try")).toBe(false);
   });
 
   it("an invalid link with only a stored back still Reconnects through Magpie", async () => {
@@ -358,8 +419,8 @@ describe("wrapper page", () => {
     expect(w.loc.replaced).toBeNull(); // already on its way: not twice
   });
 
-  it("no back at all: coming back to the end state reloads like the button", async () => {
-    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }));
+  it("no back at all (top-level): coming back to the end state reloads like the button", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }), "", { framed: false });
     w.fromChild({ ac_console: "lost", at: 1 });
     expect(w.loc.reloaded).toBe(0);
     w.focus();
@@ -369,12 +430,25 @@ describe("wrapper page", () => {
     expect(w.loc.reloaded).toBe(1);
   });
 
+  it("no back in Magpie iframe: coming back re-asks the parent (then reload fallback)", async () => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321" }));
+    w.fromChild({ ac_console: "lost", at: 1 });
+    w.parentWin.posted.length = 0;
+    w.focus();
+    expect(w.parentWin.posted).toEqual([
+      { magpie: 1, method: "error", params: { message: "本地服务已断开" } },
+    ]);
+    expect(w.loc.reloaded).toBe(0);
+    w.tick(300);
+    expect(w.loc.reloaded).toBe(1);
+  });
+
   it("invalid link: coming back runs Reconnect through the stored back; unsafe stored back is never followed", async () => {
     const w = await runWrapper(hash({ t: "nope", p: "1" }), "", { sessionStorage: { ac_wrap_back: BACK } });
     w.show();
     expect(w.loc.replaced).toBe(BACK);
     const evil = await runWrapper(hash({ t: "nope", p: "1", b: "https://evil.example/_magpie/plugin/a/index.html" }), "",
-      { sessionStorage: { ac_wrap_back: "http://evil.example/_magpie/plugin/a/index.html" } });
+      { sessionStorage: { ac_wrap_back: "http://evil.example/_magpie/plugin/a/index.html" }, framed: false });
     evil.focus();
     expect(evil.loc.replaced).toBeNull();
     expect(evil.loc.reloaded).toBe(1);

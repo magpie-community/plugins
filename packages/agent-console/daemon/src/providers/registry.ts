@@ -2,10 +2,13 @@
 import type { Provider } from "./types.js";
 import { createMockProvider } from "./mock.js";
 import { createClaudeProvider } from "./claude/provider.js";
-import { createCodexProvider } from "./codex/provider.js";
+import { createCodexProvider, clearCodexModelCache } from "./codex/provider.js";
 import { PROVIDER_CATALOG } from "./catalog.js";
 import { createAcpProvider } from "./acp/provider.js";
 import { acpConfigForEntry } from "./acp/specs.js";
+import { registerProviderCacheClear } from "./infoCache.js";
+
+let codexCacheHooked = false;
 
 const providers = new Map<string, Provider>();
 
@@ -22,6 +25,12 @@ export function listProviders(): Provider[] {
 }
 
 export function initProviders(version: string = ""): void {
+  if (!codexCacheHooked) {
+    registerProviderCacheClear((id) => {
+      if (!id || id === "codex") clearCodexModelCache();
+    });
+    codexCacheHooked = true;
+  }
   providers.clear();
   for (const entry of PROVIDER_CATALOG) {
     if (entry.id === "claude") registerProvider(createClaudeProvider());

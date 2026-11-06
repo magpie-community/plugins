@@ -190,12 +190,18 @@ export function registerMethods(gw: Gateway, svc: Services): void {
 
   // ---- providers.list (§6): detection + model list + capabilities ----
   // detect/listModels in parallel; 8s total per provider (listModels may start a temporary process).
+  // refresh+provider: clear/reload only that Agent (model picker ↻ inside < Claude Code); refresh alone: all.
   gw.method("providers.list", wrap(
-    z.object({ refresh: z.boolean().optional() }).passthrough().optional(),
+    z.object({ refresh: z.boolean().optional(), provider: z.string().optional() }).passthrough().optional(),
     async (p) => {
       if (p?.refresh) {
-        clearBinCache();
-        clearProviderCache();
+        if (p.provider) {
+          clearBinCache(p.provider);
+          clearProviderCache(p.provider);
+        } else {
+          clearBinCache();
+          clearProviderCache();
+        }
       }
       const settings = await svc.settings.get();
       const rows = await Promise.all(

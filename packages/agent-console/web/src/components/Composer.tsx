@@ -48,6 +48,9 @@ export function Composer() {
   const [agentPop, setAgentPop] = useState(false);
   const [pickerProviderId, setPickerProviderId] = useState<string | null>(null);
   const [modelQ, setModelQ] = useState("");
+  const [modelsRefreshing, setModelsRefreshing] = useState(false);
+  const modelsRefreshSeq = useRef(0);
+  const modelsForceSeq = useRef(0);
   const pickerRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -114,11 +117,40 @@ export function Composer() {
   const providerOk = (p: (typeof visibleProviders)[0]) =>
     p.enabled !== false && p.available && p.status !== "planned";
 
+  /** Soft sync (silent) or forced ↻ refresh; Magpie config mtime invalidates the daemon cache automatically.
+   *  Soft sync never disables ↻; a forced click is never coalesced onto an in-flight soft sync. */
+  const refreshModels = (opts?: { force?: boolean; provider?: string | null }) => {
+    const force = !!opts?.force;
+    const seq = ++modelsRefreshSeq.current;
+    let forceSeq = 0;
+    if (force) {
+      forceSeq = ++modelsForceSeq.current;
+      setModelsRefreshing(true);
+    }
+    const args: { refresh?: boolean; provider?: string } = {};
+    if (force) args.refresh = true;
+    if (opts?.provider) args.provider = opts.provider;
+    return (ws.call("providers.list", Object.keys(args).length ? args : undefined) as Promise<import("../types/models").ProviderInfo[]>)
+      .then((list) => {
+        if (seq !== modelsRefreshSeq.current) return; // a newer soft/force request won
+        useData.setState({ providers: list });
+      })
+      .catch(() => {})
+      .finally(() => {
+        // Soft sync must not clear (or leave stuck) the forced spinner
+        if (force && forceSeq === modelsForceSeq.current) setModelsRefreshing(false);
+      });
+  };
+
   const openPicker = (open: boolean) => {
     setAgentPop(open);
     if (open) {
       setPickerProviderId(null);
       setModelQ("");
+      // Opening the picker: silent soft sync (does not disable ↻)
+      void refreshModels({
+        provider: started ? (thread?.provider ?? null) : null,
+      });
     }
   };
 
@@ -590,6 +622,23 @@ export function Composer() {
                     value={modelQ}
                     onChange={(e) => setModelQ(e.target.value)}
                   />
+                  <button
+                    type="button"
+                    className={`ap-refresh${modelsRefreshing ? " spinning" : ""}`}
+                    title={modelsRefreshing ? tr("composer.refreshingModels") : tr("composer.refreshModels")}
+                    aria-label={tr("composer.refreshModels")}
+                    disabled={modelsRefreshing}
+                    onMouseDown={(ev) => ev.preventDefault()}
+                    onClick={() => {
+                      // Inside an Agent's model list: refresh only that provider (avoids waiting on every CLI)
+                      void refreshModels({
+                        force: true,
+                        provider: inModelList ? (pickerProviderId ?? thread?.provider ?? null) : null,
+                      });
+                    }}
+                  >
+                    <Icon name="refresh" size={14} />
+                  </button>
                 </div>
 
                 {modelQ.trim() ? (

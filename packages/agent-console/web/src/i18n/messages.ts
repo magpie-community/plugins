@@ -86,6 +86,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       agentLockedHint: "已开始的对话不能更换 Agent；要用别的 Agent 请新建对话。",
       providersLoading: "正在检测 Agent…", moreModels: "还有 {n} 个模型，请用上方搜索",
       pickModel: "选择模型", noModelMatch: "没有匹配的模型",
+      refreshModels: "刷新模型列表", refreshingModels: "正在刷新…",
       // Options below the composer are English throughout (as in Paseo); hint text stays Chinese
       defaultModel: "默认", defaultEffort: "默认", defaultEffortNamed: "默认（{level}）",
       effortTitle: "思考强度", modeTitle: "权限模式", attachTitle: "附件（图片/文本）",
@@ -306,6 +307,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       agentLockedHint: "The agent can't change after the conversation starts. Start a new conversation to use another agent.",
       providersLoading: "Detecting agents…", moreModels: "{n} more models — use search above",
       pickModel: "Choose model", noModelMatch: "No matching models",
+      refreshModels: "Refresh models", refreshingModels: "Refreshing…",
       defaultModel: "Default", defaultEffort: "Default", defaultEffortNamed: "Default ({level})",
       effortTitle: "Reasoning effort", modeTitle: "Permission mode", attachTitle: "Attachments (images / text)",
       failSwitchAgent: "Could not switch agent: ", failSend: "Send failed: ",
