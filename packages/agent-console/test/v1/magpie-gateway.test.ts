@@ -1,4 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
+const config = vi.hoisted(() => ({ base: "" }));
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:fs/promises")>(),
+  readFile: vi.fn(async () => JSON.stringify({ env: { ANTHROPIC_BASE_URL: config.base } })),
+}));
+
 import {
   parseCapabilities,
   magpieTokenFor,
@@ -79,6 +85,19 @@ describe("magpie per-agent gateway identity", () => {
       { providerId: "codex" },
     );
     expect(shown.map((m) => m.id)).toEqual(["gpt-5.3-codex", "deepseek/deepseek-flash"]);
+  });
+
+  it("rejects a gateway base with a loopback-looking hostile hostname", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({ ok: true, json: async () => ({ data: [] }) }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    config.base = "http://localhost.evil.com";
+    try {
+      await fetchGatewayModelIds("claude");
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:3425/v1/models");
+    } finally {
+      config.base = "";
+      vi.unstubAllGlobals();
+    }
   });
 
   it("fetchGatewayModelIds sends TokenFor Authorization / x-api-key", async () => {

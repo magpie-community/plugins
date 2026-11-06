@@ -322,8 +322,8 @@ export class AcpSession implements ProviderSession {
       const modelOption = this.currentConfig().find((o) => o.id === (this.modelConfigId ?? "model"));
       const values = (modelOption?.options ?? []).flatMap((x) => x.options ? x.options : [x])
         .map((x) => x.value).filter((x): x is string => typeof x === "string");
-      // Startup (!force): skip stale cross-Agent saved ids against the session/new snapshot.
-      // User pick / Magpie refresh (force): always send set_config_option — Agents may have gained models since boot.
+      // Startup/default sync (!force): validate against the session/new snapshot.
+      // Explicit user pick (force): models may have been enabled since boot.
       if (force || !values.length || values.includes(value)) {
         await this.setOption(this.modelConfigId ?? "model", value);
       } else {
@@ -565,14 +565,14 @@ export class AcpSession implements ProviderSession {
     await notifyP;
   }
 
-  async setModel(model: string | null): Promise<void> {
+  async setModel(model: string | null, opts?: { force?: boolean }): Promise<void> {
     this.o.model = model;
     await this.ready();
     if (this.o.imagesFollowStartModel) {
       // dsh answered initialize for the model it started on; another model may not take image blocks (it refuses the prompt)
       this.promptCaps = model === this.startModel ? this.initCaps : { ...this.initCaps, image: false };
     }
-    await this.applySessionModel(model, true);
+    await this.applySessionModel(model, Boolean(opts?.force));
   }
 
   async setMode(mode: Mode): Promise<void> {

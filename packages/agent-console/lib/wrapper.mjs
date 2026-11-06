@@ -38,7 +38,8 @@ const SAFE_BACK_SRC = String.raw`function safeBack(raw) {
   if (u.username || u.password) return null;
   var h = u.hostname.toLowerCase();
   var loopback = h === "127.0.0.1" || h === "localhost" || h === "[::1]";
-  var magpieWin = h === "wails.localhost";
+  var magpieWin = /Windows/.test(typeof navigator !== "undefined" ? navigator.userAgent : "") &&
+    h === "wails.localhost" && u.protocol === "http:" && u.port === "";
   if (!loopback && !magpieWin) return null;
   if (!/^\/_magpie\/plugin\/[A-Za-z0-9_-]{1,128}\/(?:page\/)?index\.html$/.test(u.pathname)) return null;
   return u.protocol + "//" + u.host + u.pathname + u.search;

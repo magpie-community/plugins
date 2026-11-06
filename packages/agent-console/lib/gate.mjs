@@ -69,7 +69,7 @@ export function failureHtml(error) {
  * in the 302's # fragment next to the token and never reaches a server.
  * Keep in sync with web/src/api/backToMagpie.ts and lib/wrapper.mjs SAFE_BACK_SRC.
  */
-export function safeBackUrl(raw) {
+export function safeBackUrl(raw, platform = process.platform) {
   if (typeof raw !== "string" || !raw || raw.length > 2048) return null;
   let u;
   try { u = new URL(raw); } catch { return null; }
@@ -78,7 +78,7 @@ export function safeBackUrl(raw) {
   const hostname = u.hostname.toLowerCase();
   // Exact hosts only: never evil-wails.localhost / wails.localhost.evil.com / 127.0.0.1.evil…
   const loopback = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]";
-  const magpieWin = hostname === "wails.localhost"; // Windows Wails desktop; macOS/Linux use wails:// (no #b= nav)
+  const magpieWin = platform === "win32" && hostname === "wails.localhost" && u.protocol === "http:" && u.port === "";
   if (!loopback && !magpieWin) return null;
   if (!/^\/_magpie\/plugin\/[A-Za-z0-9_-]{1,128}\/(?:page\/)?index\.html$/.test(u.pathname)) return null;
   return `${u.protocol}//${u.host}${u.pathname}${u.search}`;

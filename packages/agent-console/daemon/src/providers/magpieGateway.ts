@@ -53,7 +53,7 @@ async function readClaudeEnv(): Promise<Record<string, string>> {
 async function gatewayBase(): Promise<string> {
   const env = await readClaudeEnv();
   const raw = env.ANTHROPIC_BASE_URL?.trim();
-  return (raw && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(raw) ? raw : "http://127.0.0.1:3425").replace(/\/+$/, "");
+  return (raw && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/i.test(raw) ? raw : "http://127.0.0.1:3425").replace(/\/+$/, "");
 }
 
 /**
@@ -118,18 +118,24 @@ export async function magpieDefaultModel(providerId: string): Promise<string | n
  * Fingerprint of Magpie / agent config files that change when the user toggles models or the default.
  * Used by the provider model cache: a changed mtime invalidates without waiting for the 10-minute TTL.
  */
-export async function magpieConfigFingerprint(): Promise<string> {
+export async function magpieConfigFingerprint(providerId: string): Promise<string> {
+  // Only our Magpie overlay consumes applied.json / settings.json. Native-only model lists
+  // (Cursor, Copilot, Devin) must not spawn a new probe for an unrelated Magpie edit.
+  if (!MAGPIE_TOOLS[providerId]) return "";
   const home = homedir();
+  const ownFiles: Record<string, string[]> = {
+    claude: [join(home, ".claude", "settings.json")],
+    codex: [join(home, ".codex", "config.toml"), join(home, ".codex", "magpie-models.json"), join(home, ".codex", "models.json")],
+    opencode: [join(home, ".config", "opencode", "opencode.json")],
+    pi: [join(home, ".pi", "agent", "settings.json"), join(home, ".pi", "agent", "models.json")],
+    // DSH uses YAML under DSH_HOME (default ~/.dsh), not ~/.config/dsh/config.json.
+    dsh: ["config.yaml", "settings.yaml", "cordis.patch.yml", "profiles/desktop/cordis.patch.yml", "profiles/web/cordis.patch.yml"]
+      .map((file) => join(process.env.DSH_HOME?.trim() || join(home, ".dsh"), file)),
+  };
   const paths = [
     join(home, ".config", "magpie", "applied.json"),
     join(home, ".config", "magpie", "settings.json"),
-    join(home, ".claude", "settings.json"),
-    join(home, ".codex", "config.toml"),
-    join(home, ".codex", "magpie-models.json"),
-    join(home, ".codex", "models.json"),
-    join(home, ".config", "opencode", "opencode.json"),
-    join(home, ".pi", "agent", "settings.json"),
-    join(home, ".pi", "agent", "models.json"),
+    ...ownFiles[providerId],
   ];
   const parts: string[] = [];
   for (const p of paths) {

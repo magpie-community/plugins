@@ -5284,13 +5284,13 @@ var init_session3 = __esm({
         }
         await notifyP;
       }
-      async setModel(model) {
+      async setModel(model, opts) {
         this.o.model = model;
         await this.ready();
         if (this.o.imagesFollowStartModel) {
           this.promptCaps = model === this.startModel ? this.initCaps : { ...this.initCaps, image: false };
         }
-        await this.applySessionModel(model, true);
+        await this.applySessionModel(model, Boolean(opts?.force));
       }
       async setMode(mode2) {
         this.o.mode = mode2;
@@ -5776,7 +5776,7 @@ async function readClaudeEnv() {
 async function gatewayBase() {
   const env = await readClaudeEnv();
   const raw = env.ANTHROPIC_BASE_URL?.trim();
-  return (raw && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(raw) ? raw : "http://127.0.0.1:3425").replace(/\/+$/, "");
+  return (raw && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/i.test(raw) ? raw : "http://127.0.0.1:3425").replace(/\/+$/, "");
 }
 async function fetchGatewayModelIds(agentId) {
   const base = await gatewayBase();
@@ -5823,18 +5823,21 @@ async function magpieDefaultModel(providerId) {
   const applied = (await readApplied())[tool.key]?.fields?.model?.trim();
   return applied || null;
 }
-async function magpieConfigFingerprint() {
+async function magpieConfigFingerprint(providerId) {
+  if (!MAGPIE_TOOLS[providerId]) return "";
   const home = homedir8();
+  const ownFiles = {
+    claude: [join11(home, ".claude", "settings.json")],
+    codex: [join11(home, ".codex", "config.toml"), join11(home, ".codex", "magpie-models.json"), join11(home, ".codex", "models.json")],
+    opencode: [join11(home, ".config", "opencode", "opencode.json")],
+    pi: [join11(home, ".pi", "agent", "settings.json"), join11(home, ".pi", "agent", "models.json")],
+    // DSH uses YAML under DSH_HOME (default ~/.dsh), not ~/.config/dsh/config.json.
+    dsh: ["config.yaml", "settings.yaml", "cordis.patch.yml", "profiles/desktop/cordis.patch.yml", "profiles/web/cordis.patch.yml"].map((file) => join11(process.env.DSH_HOME?.trim() || join11(home, ".dsh"), file))
+  };
   const paths = [
     join11(home, ".config", "magpie", "applied.json"),
     join11(home, ".config", "magpie", "settings.json"),
-    join11(home, ".claude", "settings.json"),
-    join11(home, ".codex", "config.toml"),
-    join11(home, ".codex", "magpie-models.json"),
-    join11(home, ".codex", "models.json"),
-    join11(home, ".config", "opencode", "opencode.json"),
-    join11(home, ".pi", "agent", "settings.json"),
-    join11(home, ".pi", "agent", "models.json")
+    ...ownFiles[providerId]
   ];
   const parts = [];
   for (const p of paths) {
@@ -5961,7 +5964,7 @@ async function cachedDetect(p, launch) {
 }
 async function cachedModels(p, launch) {
   const key = cacheKey(p, launch);
-  const fp = await magpieConfigFingerprint().catch(() => "");
+  const fp = await magpieConfigFingerprint(p.id).catch(() => "");
   const hit = models.get(key);
   if (fresh(hit, MODELS_MS, fp)) return hit.value;
   let job = inflightModels.get(key);
@@ -5969,8 +5972,7 @@ async function cachedModels(p, launch) {
     job = withTimeout2(p.listModels(launch).catch(() => []), MODELS_TIMEOUT_MS, null).then(async (v) => {
       if (v === null) return models.get(key)?.value ?? [];
       const list = await withMagpie(p.id, dropPlaceholder(v)).catch(() => dropPlaceholder(v));
-      const nextFp = await magpieConfigFingerprint().catch(() => fp);
-      models.set(key, { at: Date.now(), value: list, fp: nextFp });
+      models.set(key, { at: Date.now(), value: list, fp });
       return list;
     }).finally(() => inflightModels.delete(key));
     inflightModels.set(key, job);
@@ -9559,7 +9561,10 @@ var AgentManager = class {
     const sessionModel = model ?? await this.resolveDefaultSessionModel(meta.provider);
     await this.threads.patch(threadId, { model, effort });
     const rt = this.rt(threadId);
-    if (rt.session) await rt.session.setModel(sessionModel);
+    if (rt.session) {
+      if (model !== null) await rt.session.setModel(sessionModel, { force: true });
+      else await rt.session.setModel(sessionModel);
+    }
     rt.syncedDefaultModel = model ? void 0 : sessionModel;
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }

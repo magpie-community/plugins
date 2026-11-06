@@ -65,7 +65,7 @@ export async function cachedDetect(p: Provider, launch?: LaunchCommand): Promise
 
 export async function cachedModels(p: Provider, launch?: LaunchCommand): Promise<ModelInfo[]> {
   const key = cacheKey(p, launch);
-  const fp = await magpieConfigFingerprint().catch(() => "");
+  const fp = await magpieConfigFingerprint(p.id).catch(() => "");
   const hit = models.get(key);
   if (fresh(hit, MODELS_MS, fp)) return hit.value;
   let job = inflightModels.get(key);
@@ -76,8 +76,8 @@ export async function cachedModels(p: Provider, launch?: LaunchCommand): Promise
         if (v === null) return models.get(key)?.value ?? [];
         // Agents behind the magpie gateway: fill in gateway models, the default model and thinking levels
         const list = await withMagpie(p.id, dropPlaceholder(v)).catch(() => dropPlaceholder(v));
-        const nextFp = await magpieConfigFingerprint().catch(() => fp);
-        models.set(key, { at: Date.now(), value: list, fp: nextFp });
+        // Keep the pre-list fingerprint: a config change during listing must invalidate the next read.
+        models.set(key, { at: Date.now(), value: list, fp });
         return list;
       })
       .finally(() => inflightModels.delete(key));

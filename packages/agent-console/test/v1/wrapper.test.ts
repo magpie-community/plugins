@@ -14,7 +14,7 @@ type Msg = { source: unknown; data: unknown };
 async function runWrapper(
   hash: string,
   search = "",
-  opts: { visible?: boolean; sessionStorage?: Record<string, string>; framed?: boolean } = {},
+  opts: { visible?: boolean; sessionStorage?: Record<string, string>; framed?: boolean; ua?: string } = {},
 ) {
   const { wrapperHtml, WRAP_TIMING } = await import(/* @vite-ignore */ wrapperUrl);
   const html: string = wrapperHtml("n0nce", WRAP_TIMING);
@@ -74,8 +74,8 @@ async function runWrapper(
       }
     }
   };
-  const fn = new Function("window", "document", "location", "setInterval", "setTimeout", "Date", "URL", "URLSearchParams", "sessionStorage", script);
-  fn(win, doc, loc, (f: () => void) => { intervals.push(f); return 1; }, setTimeoutFake, DateFake, URL, URLSearchParams, sessionStorage);
+  const fn = new Function("window", "document", "location", "setInterval", "setTimeout", "Date", "URL", "URLSearchParams", "sessionStorage", "navigator", script);
+  fn(win, doc, loc, (f: () => void) => { intervals.push(f); return 1; }, setTimeoutFake, DateFake, URL, URLSearchParams, sessionStorage, { userAgent: opts.ua ?? "X11; Linux x86_64" });
   const tick = (ms: number, step = 1000) => { for (let t = 0; t < ms; t += step) { now += step; intervals.forEach((f) => f()); flushTimeouts(); } };
   return {
     els, loc, childWin, parentWin, tick, doc, store, flushTimeouts,
@@ -293,7 +293,7 @@ describe("wrapper page", () => {
 
   it("Windows wails.localhost #b= is kept and recover navigates back through it", async () => {
     const WAILS = "http://wails.localhost/_magpie/plugin/abc123/index.html";
-    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: WAILS }));
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: WAILS }), "", { ua: "Windows NT 10.0" });
     expect(w.store.get("ac_wrap_back")).toBe(WAILS);
     w.fromChild({ ac_console: "lost", at: 42 });
     const u = new URL(w.loc.replaced!);
@@ -305,12 +305,30 @@ describe("wrapper page", () => {
   it("Windows wails.localhost: after max auto tries, Reconnect still replaces to #b=", async () => {
     const WAILS = "http://wails.localhost/_magpie/plugin/tok/page/index.html";
     const start = 1_800_000_000_000 - 30_000;
-    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: WAILS }), `?ac_try=${start}.3`);
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: WAILS }), `?ac_try=${start}.3`, { ua: "Windows NT 10.0" });
     w.fromChild({ ac_console: "lost", at: 1 });
     expect(w.loc.replaced).toBeNull();
     w.els.r!.onclick!();
     expect(w.loc.replaced!.startsWith("http://wails.localhost/_magpie/plugin/tok/page/index.html")).toBe(true);
     expect(new URL(w.loc.replaced!).searchParams.has("ac_try")).toBe(false);
+  });
+
+  it.each([
+    ["https://wails.localhost/_magpie/plugin/a/page/index.html", "Windows NT 10.0"],
+    ["http://wails.localhost:8080/_magpie/plugin/a/index.html", "Windows NT 10.0"],
+    ["http://wails.localhost/_magpie/plugin/a/index.html", "Macintosh"],
+    ["http://wails.localhost/_magpie/plugin/a/index.html", "X11; Linux"],
+    ["http://evil-wails.localhost/_magpie/plugin/a/index.html", "Windows NT 10.0"],
+    ["http://wails.localhost.evil.com/_magpie/plugin/a/index.html", "Windows NT 10.0"],
+  ])("rejects unsafe Wails back %s (%s), from hash and storage", async (back, ua) => {
+    const w = await runWrapper(hash({ t: TOKEN, p: "4321", b: back }), "", {
+      ua, framed: false, sessionStorage: { ac_wrap_back: back },
+    });
+    w.fromChild({ ac_console: "lost", at: 42 });
+    expect(w.loc.replaced).toBeNull();
+    w.els.r!.onclick!();
+    expect(w.loc.replaced).toBeNull();
+    expect(w.loc.reloaded).toBe(1);
   });
 
   it("an invalid link with only a stored back still Reconnects through Magpie", async () => {

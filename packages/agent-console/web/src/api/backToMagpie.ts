@@ -5,7 +5,7 @@
 // and the token is never put anywhere but this page's own fragment.
 
 /** Same check as lib/gate.mjs safeBackUrl: http(s), loopback or exact wails.localhost, no credentials, /_magpie/plugin/<id>/[page/]index.html */
-export function safeBackUrl(raw: string | null | undefined): string | null {
+export function safeBackUrl(raw: string | null | undefined, ua = typeof navigator !== "undefined" ? navigator.userAgent : ""): string | null {
   if (typeof raw !== "string" || !raw || raw.length > 2048) return null;
   let u: URL;
   try { u = new URL(raw); } catch { return null; }
@@ -13,7 +13,7 @@ export function safeBackUrl(raw: string | null | undefined): string | null {
   if (u.username || u.password) return null;
   const host = u.hostname.toLowerCase();
   const loopback = host === "127.0.0.1" || host === "localhost" || host === "[::1]";
-  const magpieWin = host === "wails.localhost";
+  const magpieWin = /Windows/.test(ua) && host === "wails.localhost" && u.protocol === "http:" && u.port === "";
   if (!loopback && !magpieWin) return null;
   if (!/^\/_magpie\/plugin\/[A-Za-z0-9_-]{1,128}\/(?:page\/)?index\.html$/.test(u.pathname)) return null;
   return `${u.protocol}//${u.host}${u.pathname}${u.search}`;

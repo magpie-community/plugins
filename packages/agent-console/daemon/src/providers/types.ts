@@ -70,7 +70,7 @@ export interface ProviderSession {
   send(input: SendInput): Promise<void>;
   steer?(input: SendInput): Promise<void>;
   interrupt(): Promise<void>;
-  setModel(model: string | null): Promise<void>;
+  setModel(model: string | null, opts?: { force?: boolean }): Promise<void>;
   setMode(mode: Mode): Promise<void>;
   setEffort(effort: string | null): Promise<void>;
   respond(requestId: string, answer: RespondAnswer): void;

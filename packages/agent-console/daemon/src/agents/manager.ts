@@ -653,7 +653,11 @@ export class AgentManager {
     const sessionModel = model ?? await this.resolveDefaultSessionModel(meta.provider);
     await this.threads.patch(threadId, { model, effort });
     const rt = this.rt(threadId);
-    if (rt.session) await rt.session.setModel(sessionModel);
+    if (rt.session) {
+      // Only an explicit user pick may bypass ACP's session/new model validation.
+      if (model !== null) await rt.session.setModel(sessionModel, { force: true });
+      else await rt.session.setModel(sessionModel);
+    }
     rt.syncedDefaultModel = model ? undefined : sessionModel;
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }

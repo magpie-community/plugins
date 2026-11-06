@@ -96,21 +96,21 @@ describe("AgentManager Magpie default-model sync", () => {
 
     // syncDefaultModelIfNeeded must call setModel before send
     expect(setModelSpy).toHaveBeenCalled();
-    expect(setModelSpy.mock.calls[0]?.[0]).toBe("hub/model-b");
+    expect(setModelSpy.mock.calls[0]).toEqual(["hub/model-b"]);
     const setOrder = setModelSpy.mock.invocationCallOrder[0]!;
     const sendOrder = sendSpy.mock.invocationCallOrder[0]!;
     expect(setOrder).toBeLessThan(sendOrder);
 
     // Explicit pick
     setModelSpy.mockClear();
-    await manager.setModel(threadId, "hub/explicit");
-    expect(setModelSpy).toHaveBeenCalledWith("hub/explicit");
-    expect((await threads.get(threadId))?.model).toBe("hub/explicit");
+    await manager.setModel(threadId, "magpie/newly-enabled");
+    expect(setModelSpy.mock.calls).toEqual([["magpie/newly-enabled", { force: true }]]);
+    expect((await threads.get(threadId))?.model).toBe("magpie/newly-enabled");
 
     // Back to「默认」→ resolve current Magpie default (hub/model-b)
     setModelSpy.mockClear();
     await manager.setModel(threadId, null);
-    expect(setModelSpy).toHaveBeenCalledWith("hub/model-b");
+    expect(setModelSpy.mock.calls).toEqual([["hub/model-b"]]);
     expect((await threads.get(threadId))?.model).toBeNull();
   }, 30000);
 });
