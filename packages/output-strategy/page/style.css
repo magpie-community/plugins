@@ -59,7 +59,7 @@ input { -webkit-tap-highlight-color: transparent; }
 }
 
 .shell {
-  width: min(100% - 48px, 1040px);
+  width: min(100% - 48px, 780px);
   margin: 0 auto;
   padding: 42px 0 36px;
 }

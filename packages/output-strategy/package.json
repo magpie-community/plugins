@@ -1,17 +1,18 @@
 {
   "name": "@magpie-community/middleware-output-strategy",
-  "version": "0.1.0",
-  "description": "Composable output-style instructions injected before the model call, with a small selection panel and local counters",
+  "version": "0.2.0",
+  "description": "Composable output-style instructions injected before the model call, with a small selection panel",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/output-strategy"
+  },
   "files": [
     "output-strategy.middleware.js",
-    "observability.hooks.js",
     "apply.js",
     "catalog.js",
-    "stats-writer.js",
-    "page-publish.js",
-    "lock-file.js",
     "scripts/gen-page-catalog.mjs",
     "page/*.html",
     "page/*.js",
@@ -21,10 +22,9 @@
     "PROVENANCE.json",
     "LICENSES/"
   ],
-  "keywords": ["magpie", "magpie-middleware", "output-styles", "prompt", "compression"],
+  "keywords": ["magpie", "magpie-middleware", "output-styles", "prompt"],
   "magpie": {
     "middleware": "./output-strategy.middleware.js",
-    "hooks": "./observability.hooks.js",
     "page": {
       "title": "Output Strategy",
       "titles": { "zh": "输出策略" },
@@ -39,9 +39,7 @@
         "terse-cjk": false,
         "antislop-ui": false,
         "antislop-copy": false
-      },
-      "autoClarity": true,
-      "telemetry": true
+      }
     }
   },
   "scripts": {

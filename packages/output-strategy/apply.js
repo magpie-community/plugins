@@ -76,7 +76,7 @@ export function hasMediaBlocks(body) {
 function contentIncludesMarker(content) {
   if (typeof content === "string") return content.includes(OUTPUT_STYLE_MARKER)
   if (!Array.isArray(content)) return false
-  return content.some((block) => isRecord(block) && typeof block.text === "string" && block.text.includes(OUTPUT_STYLE_MARKER))
+  return content.some((block) => isRecord(block) && contentIncludesMarker(typeof block.text === "string" ? block.text : block.content))
 }
 
 function systemFieldIncludesMarker(system) {
@@ -99,67 +99,19 @@ function bodyIncludesMarker(body) {
   return false
 }
 
-// Strip any previous [Output Strategy] block from the request body so that
-// repeated injection across turns replaces rather than accumulates.
-function stripOutputStrategyFromBody(body) {
-  if (!isRecord(body)) return { changed: false, body }
-  let changed = false
-  const out = { ...body }
-  if (typeof out.system === "string" && out.system.includes(OUTPUT_STYLE_MARKER)) {
-    out.system = stripOutputStrategy(out.system)
-    changed = true
-  }
-  if (Array.isArray(out.messages)) {
-    out.messages = out.messages.map((m) => {
-      if (isRecord(m) && m.role === "system" && typeof m.content === "string" && m.content.includes(OUTPUT_STYLE_MARKER)) {
-        changed = true
-        return { ...m, content: stripOutputStrategy(m.content) }
-      }
-      return m
-    })
-  }
-  if (typeof out.instructions === "string" && out.instructions.includes(OUTPUT_STYLE_MARKER)) {
-    out.instructions = stripOutputStrategy(out.instructions)
-    changed = true
-  }
-  return { changed, body: out }
-}
-
-// Strip any previous [Output Strategy] block from a system prompt so that
-// repeated injection across turns replaces rather than accumulates.
-// The block runs from the marker to the end of the boundaries section.
-function stripOutputStrategy(text) {
-  if (typeof text !== "string") return text
-  const idx = text.indexOf(OUTPUT_STYLE_MARKER)
-  if (idx < 0) return text
-  // Find the end of the boundaries section by locating the last boundary
-  // text that belongs to the injected block.
-  const boundaryEndMarkers = [
-    "Active every response until user asks for normal mode.",
-    "Never simplify away: input validation at trust boundaries, error handling that prevents data loss, security measures, or accessibility basics.",
-    "Every shipped control works or is removed: no dead buttons, no links to nowhere, no navbar entries without destinations. No fabricated statistics, testimonials, security or compliance claims. Placeholders are labeled honestly, never disguised as final.",
-  ]
-  let end = idx
-  for (const marker of boundaryEndMarkers) {
-    const pos = text.indexOf(marker, idx)
-    if (pos >= 0 && pos + marker.length > end) end = pos + marker.length
-  }
-  const before = text.slice(0, idx).trimEnd()
-  const after = text.slice(end).trimStart()
-  return (before + "\n\n" + after).replace(/\n{3,}/g, "\n\n").trim()
+function appendInstruction(existing, instruction) {
+  return `${existing.trimEnd()}\n\n${instruction}`
 }
 
 function placeSystemInstruction(messages, system, instruction, protocol) {
   const first = messages[0]
   if (first?.role === "system" && typeof first.content === "string") {
     const nextMessages = [...messages]
-    const stripped = stripOutputStrategy(first.content)
-    nextMessages[0] = { ...first, content: `${stripped.trim()}\n\n${instruction}`.trim() }
+    nextMessages[0] = { ...first, content: appendInstruction(first.content, instruction) }
     return { messages: nextMessages }
   }
   if (typeof system === "string") {
-    const stripped = stripOutputStrategy(system)
-    return { system: stripped ? `${stripped.trim()}\n\n${instruction}` : instruction }
+    return { system: system ? appendInstruction(system, instruction) : instruction }
   }
   if (Array.isArray(system)) {
     return { system: [...system, { type: "text", text: instruction }] }
@@ -175,11 +127,7 @@ function placeSystemInstruction(messages, system, instruction, protocol) {
   if (mergeIndex >= 0) {
     const nextMessages = [...messages]
     const target = messages[mergeIndex]
-    const stripped = stripOutputStrategy(target.content)
-    nextMessages[mergeIndex] = {
-      ...target,
-      content: `${stripped.trim()}\n\n${instruction}`.trim(),
-    }
+    nextMessages[mergeIndex] = { ...target, content: appendInstruction(target.content, instruction) }
     return { messages: nextMessages }
   }
   // Anthropic only accepts user/assistant inside messages; system belongs at the top level.
@@ -187,33 +135,15 @@ function placeSystemInstruction(messages, system, instruction, protocol) {
   return { messages: [{ role: "system", content: instruction }, ...messages] }
 }
 
-// Wraps placeSystemInstruction's null into a skipped result.
 function placeOrSkip(body, messages, instruction, protocol, resolved) {
   const placed = placeSystemInstruction(messages, body.system, instruction, protocol)
   if (!placed) return { body, applied: false, skippedReason: "unsupported_system_shape" }
   return appliedResult({ ...body, ...placed }, resolved, instruction)
 }
 
-function appendInstruction(existing, instruction) {
-  const trimmed = existing.trim()
-  return trimmed ? `${trimmed}\n\n${instruction}` : instruction
-}
-
-function textContent(content) {
-  if (typeof content === "string") return content
-  if (!Array.isArray(content)) return ""
-  return content.map((part) => isRecord(part) && typeof part.text === "string" ? part.text : "").join("\n")
-}
-
-function autoClarityReason(body) {
-  const items = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : typeof body.input === "string" ? [{ role: "user", content: body.input }] : []
-  const text = items.slice(-3).filter((item) => item && item.role !== "system" && item.role !== "developer").map((item) => textContent(item && item.content).toLowerCase()).join("\n")
-  if (!text.trim()) return null
-  if (/\b(security|vulnerability|exploit|credential leak|secret leak|malware|phishing)\b/.test(text)) return "security_warning"
-  if (/\b(delete|drop table|truncate|destroy|wipe|irreversible|permanently remove)\b/.test(text)) return "irreversible_action"
-  if (/\b(clarify|explain in detail|more detail|step by step|why exactly|what do you mean)\b/.test(text)) return "clarification_requested"
-  if (/\b(first|then|after that|before|rollback|backup)\b[\s\S]{0,240}\b(delete|drop|migrate|deploy|release)\b/.test(text)) return "order_sensitive_sequence"
-  return null
+function responsesInput(body, instruction) {
+  const message = { role: "developer", content: [{ type: "input_text", text: instruction }] }
+  return Array.isArray(body.input) ? [message, ...body.input] : [message, { role: "user", content: body.input }]
 }
 
 function utf8Bytes(text) {
@@ -239,14 +169,7 @@ export function applyOutputStyles(body, selection) {
     const resolved = resolveStyles(selection)
     if (resolved.length === 0) return { body, applied: false, skippedReason: "no_styles" }
     if (!isRecord(body)) return { body, applied: false, skippedReason: "no_messages" }
-    if (hasMediaBlocks(body)) return { body, applied: false, skippedReason: "media_content" }
-    // If the request already carries an [Output Strategy] block from a
-    // previous turn (e.g. a persisted conversation), strip it before
-    // injecting the current selection so styles replace, never accumulate.
-    const cleaned = stripOutputStrategyFromBody(body)
-    if (cleaned.changed) body = cleaned.body
-    const clarity = isRecord(selection) && selection.autoClarity === false ? null : autoClarityReason(body)
-    if (clarity) return { body, applied: false, skippedReason: clarity }
+    if (bodyIncludesMarker(body)) return { body, applied: false, skippedReason: "already_applied" }
 
     const instruction = buildOutputStylesInstruction(resolved)
     const messages = Array.isArray(body.messages) ? body.messages : null
@@ -255,15 +178,15 @@ export function applyOutputStyles(body, selection) {
       (typeof body.instructions === "string" || typeof body.input === "string" || Array.isArray(body.input))
 
     if (responsesShape) {
-      if (typeof body.instructions === "string") {
-        return appliedResult({ ...body, instructions: appendInstruction(body.instructions, instruction) }, resolved, instruction)
-      }
-      if (body.instructions !== undefined) {
-        // Non-string instructions (array/object/number) are someone else's
-        // contract; overwriting them is data loss. Pass through instead.
+      // Codex owns instructions: its identity and base instructions must stay
+      // byte-identical. The selected styles live in their own input item.
+      if (body.instructions !== undefined && typeof body.instructions !== "string") {
         return { body, applied: false, skippedReason: "unsupported_instructions_shape" }
       }
-      return appliedResult({ ...body, instructions: instruction }, resolved, instruction)
+      if (typeof body.input !== "string" && !Array.isArray(body.input)) {
+        return { body, applied: false, skippedReason: "no_messages" }
+      }
+      return appliedResult({ ...body, input: responsesInput(body, instruction) }, resolved, instruction)
     }
 
     if (!messages) return { body, applied: false, skippedReason: "no_messages" }

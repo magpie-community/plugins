@@ -1,6 +1,6 @@
 // Inject selected output styles into Chat Completions, Anthropic and Responses
-// requests. Media turns, existing markers, empty selections and unknown request
-// shapes pass through. Any middleware error leaves the request unchanged.
+// requests. Existing markers, empty selections and unknown request shapes pass
+// through. No telemetry, filesystem access or asynchronous hook is involved.
 
 import { applyOutputStyles } from "./apply.js"
 

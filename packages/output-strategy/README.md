@@ -1,20 +1,20 @@
 # output-strategy
 
-输出样式插件。它在模型调用前注入所选指令。
+Composable output-style instructions injected before a model call. Seven styles are available in a small selection panel; **every style is off by default**.
 
-**移植自 OmniRoute 的 Output Styles**。上游来源、revision 和适配范围见 `PROVENANCE.json`，许可证见 `LICENSES/`。
+The style texts and the original request-injection design are adapted from OmniRoute's Output Styles, caveman, ponytail, i-have-adhd and 9router. Exact sources, revisions, licenses and adaptations are recorded in `PROVENANCE.json`; upstream license files are in `LICENSES/`.
 
-## 样式
+## Styles
 
-- **Terse prose**：删除客套、填充词和无信息量的措辞。
-- **Less code**：YAGNI，优先最小可用改动。
-- **Ponytail**：懒惰资深开发原则，完整覆盖复用、根因和最小完整 diff。
-- **I have ADHD**：行动优先、编号步骤、明确状态和单一后续动作。
-- **Terse CJK**：文言文精简，技术标识保持原样。
-- **Antislop UI**：拒绝无目的的渐变、模板布局和死控件。
-- **Antislop copy**：拒绝 AI 套话，同时保留真实内容、可访问性和状态。
+- **Terse prose** — remove filler, ceremony and hedging without losing technical content.
+- **Less code** — YAGNI and the smallest working change.
+- **Ponytail** — lazy senior-developer discipline: reuse, root causes and a complete minimal diff.
+- **I have ADHD** — action first, numbered steps and one concrete next action.
+- **Terse CJK** — ultra-terse Classical Chinese, with technical identifiers kept verbatim. Unlike OmniRoute's zh-only automatic use, this is an explicit style available for any locale.
+- **Antislop UI** — purpose-tested visuals rather than template decoration and dead controls.
+- **Antislop copy** — honest, specific copy with accessibility and complete UI states.
 
-全部默认关闭。在插件页的 **输出策略** 面板自由组合并保存。样式按 catalog 固定顺序拼接，boundary 去重；重复请求由 `[Output Strategy]` marker 保证不二次注入。
+Select any combination in the **Output Strategy** panel and save. Styles are combined in catalog order and duplicate boundaries are included only once.
 
 ## Options
 
@@ -28,23 +28,31 @@
     "terse-cjk": false,
     "antislop-ui": false,
     "antislop-copy": false
-  },
-  "autoClarity": true,
-  "telemetry": true
+  }
 }
 ```
 
-`autoClarity` 遇到安全、不可逆操作、详细解释或顺序敏感任务时跳过注入。含 image/audio/file 的请求始终跳过。无法识别的请求形状原样通过。
+No options, an empty options object, or all styles off leaves a request unchanged.
 
-## 本地统计
+## Request behavior
 
-面板显示选择生效、注入、跳过和各样式次数。统计只包含计数、原因和注入字符数，**不保存请求正文、模型回答或注入后的 prompt**。数据位于 magpie 配置目录的 `output-strategy/stats.json`。`telemetry:false` 关闭统计，不影响样式注入。
+- **Anthropic and Chat Completions:** append one static style block to the existing system prompt, or create the protocol-appropriate system field when none exists.
+- **Responses:** leave `instructions` completely untouched, including Codex's identity and base instructions. Add the style block as a separate `developer` input item.
+- **An existing `[Output Strategy]` marker:** the body is already considered injected and is left unchanged; old blocks are never stripped or replaced.
+- **Cache stability:** a selected style injects consistently across turns. The former `autoClarity` and media-history bypasses are removed because they made the cached system prefix appear and disappear.
+- **Unknown or unsupported shapes:** pass through unchanged. Middleware errors fail open.
 
-## 验证
+This package has no Bun gateway hook, telemetry, prompt logging, or writes to the plugin installation folder. The panel reads and writes only `magpie.options` and follows `magpie.theme.lang`.
 
-```bash
+## Verification
+
+```sh
 bun test
 node scripts/gen-page-catalog.mjs
 ```
 
-`page/catalog.js` 由 `catalog.js` 生成；`page/stats.js` 由本地 hook 发布，均不手改。上游来源、revision 和适配范围见 `PROVENANCE.json`，许可证见 `LICENSES/`。
+`page/catalog.js` is generated from `catalog.js`. From the community repository, `output-strategy.test.mjs` runs the same `cases.json` through `../../scripts/middleware.mjs`.
+
+## 中文摘要
+
+7 种输出样式可以自由组合，全部默认关闭。启用后在请求发送前注入固定规则；Responses 不修改 Codex 的 `instructions`，而是另加 developer 输入项。已有 `[Output Strategy]` 标记的请求原样通过。为避免提示缓存失效，已移除 autoClarity 和媒体历史绕过；不再提供统计 hook，不保存请求或响应正文，也不写插件安装目录。页面跟随 Magpie 的语言设置。

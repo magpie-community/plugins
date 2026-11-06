@@ -2,10 +2,7 @@
   "use strict"
 
   var i18n = globalThis.OutputStrategyI18n
-  var t = function (text) {
-    if (i18n && typeof i18n.t === "function") return i18n.t(text)
-    return text
-  }
+  var t = function (text) { return i18n ? i18n.t(text) : text }
   var byId = function (id) { return document.getElementById(id) }
   var form = byId("stylesForm")
   var fieldset = byId("stylesFieldset")
@@ -17,8 +14,8 @@
   var loaded = false
   var saving = false
   var dirty = false
+  var lastMessage = ["Reading settings…", false]
   var catalog = readCatalog(globalThis.OUTPUT_STRATEGY_CATALOG)
-  var stats = globalThis.__OUTPUT_STRATEGY_STATS__
 
   function readCatalog(value) {
     var entries = Array.isArray(value) ? value : value && Array.isArray(value.styles) ? value.styles : []
@@ -45,7 +42,8 @@
   }
 
   function setMessage(text, isError) {
-    message.textContent = text
+    lastMessage = [text, isError === true]
+    message.textContent = t(text)
     message.className = "form-message" + (isError ? " error" : "")
   }
 
@@ -63,7 +61,7 @@
     var unavailable = !loaded || saving || catalog.length === 0
     fieldset.disabled = unavailable
     saveButton.disabled = unavailable || !dirty
-    saveButton.textContent = saving ? "正在保存…" : "保存更改"
+    saveButton.textContent = t(saving ? "Saving…" : "Save changes")
   }
 
   function renderCatalogState() {
@@ -75,16 +73,14 @@
   function renderCatalog() {
     clear(list)
     inputs = Object.create(null)
-
+    renderCatalogState()
     if (!catalog.length) {
-      list.append(element("p", "empty-state", t("目录未载入。样式开关暂不可用，统计仍可使用。")))
-      renderCatalogState()
+      list.append(element("p", "empty-state", t("Catalog not loaded; style toggles unavailable.")))
       updateSelection()
       updateControls()
       return
     }
 
-    renderCatalogState()
     catalog.forEach(function (style) {
       var input = element("input")
       var copy = element("span", "style-copy")
@@ -95,14 +91,11 @@
       input.setAttribute("data-style-id", style.id)
       input.addEventListener("change", function () {
         dirty = true
-        setMessage("有未保存的更改。")
+        setMessage("Unsaved changes.")
         updateSelection()
         updateControls()
       })
-      copy.append(
-        element("span", "style-name", t(style.label)),
-        element("span", "style-description", t(style.description))
-      )
+      copy.append(element("span", "style-name", t(style.label)), element("span", "style-description", t(style.description)))
       row.setAttribute("for", input.id)
       row.append(copy, input)
       list.append(row)
@@ -110,58 +103,6 @@
     })
     updateSelection()
     updateControls()
-  }
-
-  function metric(value) {
-    if (value == null || value === "") return "—"
-    var number = Number(value)
-    if (!Number.isFinite(number) || number < 0) return "—"
-    return String(Math.floor(number))
-  }
-
-  function styleCounts() {
-    if (!stats || typeof stats !== "object") return null
-    var counts = stats.styles || stats.byStyle
-    return counts && typeof counts === "object" && !Array.isArray(counts) ? counts : {}
-  }
-
-  function renderStats() {
-    var available = !!stats && typeof stats === "object"
-    byId("statRequests").textContent = available ? metric(stats.requests) : "—"
-    byId("statApplied").textContent = available ? metric(stats.applied) : "—"
-    byId("statSkipped").textContent = available ? metric(stats.skipped) : "—"
-    byId("statInjectedBytes").textContent = available ? metric(stats.injectedBytes) : "—"
-    byId("statsState").textContent = available
-      ? "数据仅保存在本机。"
-      : "统计暂不可用；样式设置仍可使用。"
-
-    var counts = styleCounts()
-    var labels = {}
-    var order = catalog.map(function (style) {
-      labels[style.id] = t(style.label)
-      return style.id
-    })
-    if (counts) {
-      Object.keys(counts).forEach(function (id) {
-        if (order.indexOf(id) === -1) order.push(id)
-      })
-    }
-
-    var host = byId("styleStats")
-    clear(host)
-    if (!order.length) {
-      var empty = element("li", "empty-state", available ? "还没有样式注入记录。" : "暂无样式统计。")
-      host.append(empty)
-      return
-    }
-    order.forEach(function (id) {
-      var item = element("li")
-      item.append(
-        element("span", "", labels[id] || id),
-        element("output", "", counts ? metric(counts[id] || 0) : "—")
-      )
-      host.append(item)
-    })
   }
 
   function applyOptions(next) {
@@ -178,64 +119,51 @@
   function save(event) {
     event.preventDefault()
     if (!loaded || saving || !catalog.length) return
-
-    var styles = Object.assign({},
-      options.styles && typeof options.styles === "object" ? options.styles : {}
-    )
+    var styles = Object.assign({}, options.styles && typeof options.styles === "object" ? options.styles : {})
     catalog.forEach(function (style) { styles[style.id] = inputs[style.id].checked === true })
     var next = Object.assign({}, options, { styles: styles })
     saving = true
-    setMessage("正在保存…")
+    setMessage("Saving…")
     updateControls()
-
     Promise.resolve()
       .then(function () { return globalThis.magpie.options.set(next) })
       .then(function (saved) {
         applyOptions(saved && typeof saved === "object" ? saved : next)
-        setMessage("已保存。")
+        setMessage("Saved.")
       })
-      .catch(function () {
-        setMessage("保存失败。更改尚未写入，请重试。", true)
-      })
+      .catch(function () { setMessage("Could not save. Nothing was written; try again.", true) })
       .then(function () {
         saving = false
         updateControls()
       })
   }
 
-  // The page runs in a sandboxed frame with CSP form-action 'none'; form
-  // submission never dispatches a submit event there, so the button must
-  // call save() directly. The submit listener stays for keyboard/Enter.
+  // The sandboxed frame has CSP form-action 'none'; call save directly.
   saveButton.addEventListener("click", save)
   form.addEventListener("submit", save)
   renderCatalog()
-  renderStats()
+  if (i18n) i18n.onChange(function () {
+    renderCatalog()
+    setMessage(lastMessage[0], lastMessage[1])
+  })
 
-  if (i18n && typeof i18n.onChange === "function") {
-    i18n.onChange(function () {
-      renderCatalogState()
-      renderStats()
-    })
-  }
-
-  if (!globalThis.magpie || !globalThis.magpie.options ||
-      typeof globalThis.magpie.options.get !== "function" ||
-      typeof globalThis.magpie.options.set !== "function") {
-    setMessage("配置桥接不可用，当前只能查看。", true)
+  var host = globalThis.magpie
+  if (!host || !host.options || typeof host.options.get !== "function" || typeof host.options.set !== "function") {
+    setMessage("Configuration bridge unavailable; view only.", true)
     updateControls()
     return
   }
 
   Promise.resolve()
-    .then(function () { return globalThis.magpie.options.get() })
+    .then(function () { return host.options.get() })
     .then(function (current) {
       loaded = true
       applyOptions(current)
-      setMessage(catalog.length ? "选择样式后保存。" : "目录未载入，无法更改样式。", !catalog.length)
+      setMessage(catalog.length ? "Pick styles and save." : "Catalog not loaded; styles cannot be changed.", !catalog.length)
     })
     .catch(function () {
       loaded = false
-      setMessage("设置读取失败，请重新打开页面。", true)
+      setMessage("Could not read settings; reopen the page.", true)
       updateControls()
     })
 })()

@@ -5,7 +5,11 @@
     "Only onRequest injection is implemented; no response or SSE rewriting.",
     "Skill frontmatter, slash commands, host-specific mode queries and persistence commands are removed.",
     "Styles are independent booleans using the complete upstream rules; OmniRoute's lite/full/ultra levels, DB, settings API and telemetry backend are not ported.",
-    "Injection is marked with [Output Strategy] instead of the OmniRoute marker."
+    "The [Output Strategy] marker follows OmniRoute's idempotence: an existing marker means already applied and the body is left unchanged.",
+    "The per-request autoClarity and media bypass were removed: selected styles inject consistently so the cached system prefix does not change between turns.",
+    "Responses instructions are never modified; styles are added as a separate developer input item.",
+    "terse-cjk is available explicitly for every locale, instead of only OmniRoute's zh locale.",
+    "apply.js retains the original port's marker, catalog composition and request-shape handling, adapted to the cache-stable behavior above."
   ],
   "sources": {
     "terse-prose": {
@@ -21,10 +25,12 @@
       "license": "MIT"
     },
     "terse-cjk": {
-      "repository": "https://github.com/decolua/9router",
-      "path": "open-sse/rtk/cavemanPrompts.js",
-      "revision": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d",
-      "license": "MIT"
+      "repository": "https://github.com/diegosouzapw/OmniRoute",
+      "path": "open-sse/services/compression/outputStyles/catalog.ts",
+      "revision": "v3.8.52",
+      "level": "full",
+      "license": "MIT",
+      "note": "Chinese text from the full level; the original zh-only locale gate is removed in favor of an explicit user toggle."
     },
     "ponytail": {
       "repository": "https://github.com/DietrichGebert/ponytail",
@@ -38,19 +44,38 @@
       "revision": "1ecea1993b7fce257ffbd686c070948b5e07eda6",
       "license": "MIT"
     },
+    "SHARED_BOUNDARIES": {
+      "repository": "https://github.com/diegosouzapw/OmniRoute",
+      "path": "open-sse/services/compression/outputMode.ts",
+      "revision": "v3.8.52",
+      "license": "MIT"
+    },
+    "SAFETY_BOUNDARIES": {
+      "repository": "https://github.com/diegosouzapw/OmniRoute",
+      "path": "open-sse/services/compression/outputStyles/catalog.ts",
+      "revision": "v3.8.52",
+      "license": "MIT"
+    },
+    "apply-design": {
+      "repository": "https://github.com/diegosouzapw/OmniRoute",
+      "path": "open-sse/services/compression/outputStyles/apply.ts",
+      "revision": "v3.8.52",
+      "license": "MIT",
+      "note": "Initial marker, autoClarity and media bypass design was ported here. The latter two per-request gates have been removed to preserve prompt-cache stability."
+    },
     "antislop-ui": {
       "repository": "https://github.com/diegosouzapw/OmniRoute",
-      "path": "resources/app/open-sse/services/compression/outputStyles/antislop.ts",
-      "version": "OmniRoute Desktop 3.8.52",
+      "path": "open-sse/services/compression/outputStyles/antislop.ts",
+      "revision": "v3.8.52",
       "license": "MIT",
-      "note": "The cited 9router antislopPrompts.js no longer exists on current master; this is the OmniRoute adaptation, not a claim of newer upstream text."
+      "note": "The bundled LICENSE is OmniRoute v3.8.54's MIT file, byte-identical to v3.8.52's."
     },
     "antislop-copy": {
       "repository": "https://github.com/diegosouzapw/OmniRoute",
-      "path": "resources/app/open-sse/services/compression/outputStyles/antislop.ts",
-      "version": "OmniRoute Desktop 3.8.52",
+      "path": "open-sse/services/compression/outputStyles/antislop.ts",
+      "revision": "v3.8.52",
       "license": "MIT",
-      "note": "Same source and limitation as antislop-ui."
+      "note": "Same source and license as antislop-ui."
     }
   }
 }

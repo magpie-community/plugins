@@ -148,7 +148,7 @@ describe("Chat Completions and Anthropic injection", () => {
     const result = applyOutputStyles(body, ["terse-prose"])
     expect(result.body.messages).toHaveLength(2)
     expect(result.body.messages[0].name).toBe("rules")
-    expect(result.body.messages[0].content.startsWith("Existing rules.\n\n")).toBe(true)
+    expect(result.body.messages[0].content.startsWith("  Existing rules.\n\n")).toBe(true)
     expect(body.messages[0].content).toBe("  Existing rules.  ")
   })
 
@@ -208,32 +208,33 @@ describe("Chat Completions and Anthropic injection", () => {
 })
 
 describe("Responses injection", () => {
-  test("sets instructions for string input", () => {
-    const body = { input: "Fix the bug", model: "test" }
-    const result = applyOutputStyles(body, ["terse-prose"])
-    expect(result.applied).toBe(true)
-    expect(result.body.input).toBe("Fix the bug")
-    expect(result.body.instructions.startsWith(`${OUTPUT_STYLE_MARKER}\n`)).toBe(true)
+  const instructions = "You are Codex, a coding assistant.\nFollow the existing base instructions exactly."
+  const allOn = { styles: Object.fromEntries(ALL_STYLES.map(id => [id, true])) }
+
+  test("keeps Codex instructions byte-identical with every style on", () => {
+    for (const input of [
+      "Fix the bug",
+      [{ role: "user", content: [{ type: "input_text", text: "Fix it" }] }],
+    ]) {
+      const body = { input, instructions, model: "gpt-5" }
+      const result = applyOutputStyles(body, allOn)
+      expect(result.applied).toBe(true)
+      expect(result.body.instructions).toBe(instructions)
+      expect(Buffer.from(result.body.instructions).equals(Buffer.from(instructions))).toBe(true)
+      expect(result.body.input[0].role).toBe("developer")
+      expect(result.body.input[0].content[0].text).toContain(OUTPUT_STYLE_MARKER)
+      if (Array.isArray(input)) expect(result.body.input.at(-1)).toBe(input[0])
+      else expect(result.body.input[1]).toEqual({ role: "user", content: input })
+      expect(body.input).toEqual(input)
+    }
   })
 
-  test("sets instructions for array input", () => {
-    const body = { input: [{ role: "user", content: [{ type: "input_text", text: "Fix it" }] }] }
-    const result = applyOutputStyles(body, ["terse-prose"])
-    expect(result.applied).toBe(true)
-    expect(result.body.instructions).toContain(OUTPUT_STYLE_MARKER)
-  })
-
-  test("appends to existing instructions and preserves whitespace-trimmed content", () => {
-    const body = { input: "Fix it", instructions: "  Existing rules.  " }
-    const result = applyOutputStyles(body, ["terse-prose"])
-    expect(result.body.instructions.startsWith("Existing rules.\n\n")).toBe(true)
-    expect(result.body.instructions).toContain(OUTPUT_STYLE_MARKER)
-  })
-
-  test("prefers Responses instructions when messages is empty", () => {
+  test("uses a separate developer input item rather than creating instructions", () => {
     const result = applyOutputStyles({ messages: [], input: "Fix it" }, ["terse-prose"])
-    expect(result.body.instructions).toContain(OUTPUT_STYLE_MARKER)
+    expect(result.body.instructions).toBeUndefined()
     expect(result.body.system).toBeUndefined()
+    expect(result.body.input[0].role).toBe("developer")
+    expect(result.body.input[1]).toEqual({ role: "user", content: "Fix it" })
   })
 })
 
@@ -255,33 +256,22 @@ describe("skip behavior", () => {
     }
   })
 
-  test("chat injection replaces previous Output Strategy block", () => {
-    const first = applyOutputStyles(chat(), ["terse-prose"])
-    const second = applyOutputStyles(first.body, ["ponytail"])
-    expect(second.applied).toBe(true)
-    const sys = second.body.messages[0].content
-    expect(sys).not.toContain("Terse prose")
-    expect(sys).toContain("Ponytail")
-  })
-
-  test("Anthropic injection replaces previous Output Strategy block", () => {
-    for (const system of ["Rules", [{ type: "text", text: "Rules" }]]) {
-      const first = applyOutputStyles({ ...chat(), system }, ["terse-prose"])
-      const second = applyOutputStyles(first.body, ["ponytail"])
-      expect(second.applied).toBe(true)
-      const sys = second.body.system || second.body.messages[0].content
-      const text = typeof sys === "string" ? sys : sys.map(b => b.text).join("")
-      expect(text).not.toContain("Terse prose")
-      expect(text).toContain("Ponytail")
+  test("an existing marker leaves every request shape byte-identical", () => {
+    const bodies = [
+      { ...chat(), system: `Rules\n\n${OUTPUT_STYLE_MARKER}\nexisting` },
+      { ...chat(), system: [{ type: "text", text: `${OUTPUT_STYLE_MARKER}\nexisting` }] },
+      { input: "Fix it", instructions: `Codex rules\n\n${OUTPUT_STYLE_MARKER}\nexisting` },
+      { input: [{ role: "developer", content: `${OUTPUT_STYLE_MARKER}\nexisting` }, { role: "user", content: "Fix it" }] },
+      { ...chat(), instructions: `Old rules\n\n${OUTPUT_STYLE_MARKER}\nmore` },
+    ]
+    for (const body of bodies) {
+      const serialized = JSON.stringify(body)
+      const result = applyOutputStyles(body, ["ponytail"])
+      expect(result.applied).toBe(false)
+      expect(result.skippedReason).toBe("already_applied")
+      expect(result.body).toBe(body)
+      expect(JSON.stringify(result.body)).toBe(serialized)
     }
-  })
-
-  test("Responses injection replaces previous Output Strategy block", () => {
-    const first = applyOutputStyles({ input: "Fix it" }, ["terse-prose"])
-    const second = applyOutputStyles(first.body, ["ponytail"])
-    expect(second.applied).toBe(true)
-    expect(second.body.instructions).not.toContain("Terse prose")
-    expect(second.body.instructions).toContain("Ponytail")
   })
 
   test("does not overwrite non-string Responses instructions", () => {
@@ -302,17 +292,14 @@ describe("skip behavior", () => {
     expect(result.body.system).toBe(system)
   })
 
-  test("a marker in instructions is replaced not skipped", () => {
+  test("a marker in instructions leaves a chat-shaped body unchanged", () => {
     const body = { ...chat(), instructions: `Old rules\n\n${OUTPUT_STYLE_MARKER}\nmore` }
     const result = applyOutputStyles(body, ["terse-prose"])
-    expect(result.applied).toBe(true)
-    // messages takes priority over instructions in chat shape
-    const sys = result.body.messages[0].content
-    expect(sys).toContain(OUTPUT_STYLE_CATALOG["terse-prose"].instruction.trim().slice(0, 20))
-    expect(sys).not.toContain("Ponytail")
+    expect(result.applied).toBe(false)
+    expect(result.body).toBe(body)
   })
 
-  test("skips OpenAI chat image, audio and file parts", () => {
+  test("media remains detectable but cannot turn injection off", () => {
     for (const part of [
       { type: "image_url", image_url: { url: "data:image/png;base64,AA==" } },
       { type: "input_audio", input_audio: { data: "AA==", format: "wav" } },
@@ -320,9 +307,8 @@ describe("skip behavior", () => {
     ]) {
       const body = { messages: [{ role: "user", content: [{ type: "text", text: "Inspect" }, part] }] }
       const result = applyOutputStyles(body, ["terse-prose"])
-      expect(result.applied).toBe(false)
-      expect(result.skippedReason).toBe("media_content")
-      expect(result.body).toBe(body)
+      expect(result.applied).toBe(true)
+      expect(result.body.messages[0].role).toBe("system")
     }
   })
 
@@ -333,14 +319,14 @@ describe("skip behavior", () => {
       [{ type: "tool_result", content: [{ type: "image", source: { data: "AA==" } }] }],
     ]) {
       const body = { messages: [{ role: "user", content }] }
-      expect(applyOutputStyles(body, ["terse-prose"]).skippedReason).toBe("media_content")
+      expect(applyOutputStyles(body, ["terse-prose"]).applied).toBe(true)
     }
   })
 
   test("skips Responses input_image and input_file", () => {
     for (const part of [{ type: "input_image", image_url: "data:image/png;base64,AA==" }, { type: "input_file", file_data: "AA==" }]) {
       const body = { input: [{ role: "user", content: [part] }] }
-      expect(applyOutputStyles(body, ["terse-prose"]).skippedReason).toBe("media_content")
+      expect(applyOutputStyles(body, ["terse-prose"]).applied).toBe(true)
     }
   })
 
@@ -348,7 +334,7 @@ describe("skip behavior", () => {
     for (const key of ["inlineData", "inline_data", "fileData", "file_data"]) {
       const body = { contents: [{ parts: [{ [key]: { data: "AA==" } }] }] }
       expect(hasMediaBlocks(body)).toBe(true)
-      expect(applyOutputStyles(body, ["terse-prose"]).skippedReason).toBe("media_content")
+      expect(applyOutputStyles(body, ["terse-prose"]).skippedReason).toBe("no_messages")
     }
   })
 
@@ -363,21 +349,34 @@ describe("skip behavior", () => {
   })
 })
 
-describe("autoClarity and result metadata", () => {
-  test("skips safety and detailed-explanation requests by default", () => {
-    expect(applyOutputStyles(chat("Explain in detail why exactly this fails"), { styles: { ponytail: true } }).skippedReason).toBe("clarification_requested")
-    expect(applyOutputStyles(chat("Report a security vulnerability"), { styles: { ponytail: true } }).skippedReason).toBe("security_warning")
+describe("prompt-cache stability and result metadata", () => {
+  test("keeps the same system blocks across turns, regardless of user wording", () => {
+    const originalBlocks = [
+      { type: "text", text: "Claude Code rules", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "Environment", cache_control: { type: "ephemeral" } },
+    ]
+    const turns = ["Fix the bug", "Delete the obsolete file", "Explain the next step"]
+    for (const text of turns) {
+      const result = applyOutputStyles({ system: originalBlocks, ...chat(text) }, { styles: { ponytail: true } })
+      expect(result.applied).toBe(true)
+      expect(result.body.system.slice(0, -1)).toEqual(originalBlocks)
+      expect(result.body.system).toHaveLength(3)
+      expect(result.body.system[2].text).toBe(buildOutputStylesInstruction(["ponytail"]))
+    }
   })
 
-  test("allows explicit autoClarity opt-out and reports injected UTF-8 bytes", () => {
-    const result = applyOutputStyles(chat("Explain in detail why exactly this fails"), { styles: { ponytail: true }, autoClarity: false })
-    expect(result.applied).toBe(true)
-    expect(result.addedBytes).toBeGreaterThan(OUTPUT_STYLE_CATALOG.ponytail.instruction.length)
-  })
-  test("applies clarity checks to Responses string input", () => {
-    const result = applyOutputStyles({ input: "Explain in detail why exactly this fails" }, { styles: { ponytail: true } })
-    expect(result.applied).toBe(false)
-    expect(result.skippedReason).toBe("clarification_requested")
+  test("an image in history does not suppress a later system block", () => {
+    const first = applyOutputStyles({ ...chat("Inspect"), system: "Rules" }, ["ponytail"])
+    const withImage = applyOutputStyles({
+      messages: [
+        { role: "user", content: [{ type: "image", source: { data: "AA==" } }] },
+        { role: "assistant", content: "Done" },
+        { role: "user", content: "Next" },
+      ],
+      system: "Rules",
+    }, ["ponytail"])
+    expect(withImage.applied).toBe(true)
+    expect(withImage.body.system).toBe(first.body.system)
   })
 
   test("counts UTF-8 bytes rather than UTF-16 code units", () => {
@@ -397,20 +396,18 @@ describe("middleware interface and fail-open behavior", () => {
     expect(injectedText(result)).toContain(OUTPUT_STYLE_MARKER)
   })
 
-  test("onRequest returns undefined for no selection, media and unknown shapes", () => {
-    const media = { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "x" } }] }] }
+  test("onRequest returns undefined for no selection and unknown shapes", () => {
     expect(onRequest(chat(), { options: { styles: [] } })).toBeUndefined()
     expect(onRequest(chat(), {})).toBeUndefined()
-    expect(onRequest(media, { options: { styles: ["terse-prose"] } })).toBeUndefined()
     expect(onRequest({ model: "test" }, { options: { styles: ["terse-prose"] } })).toBeUndefined()
   })
 
-  test("onRequest replaces previous Output Strategy block", () => {
+  test("onRequest leaves a previous Output Strategy block untouched", () => {
     const marked = applyOutputStyles(chat(), ["terse-prose"]).body
     const result = onRequest(marked, { options: { styles: ["ponytail"] } })
-    expect(result).not.toBeUndefined()
-    expect(injectedText(result)).toContain("Ponytail")
-    expect(injectedText(result)).not.toContain("Terse prose")
+    expect(result).toBeUndefined()
+    expect(injectedText(marked)).toContain("# caveman")
+    expect(injectedText(marked)).not.toContain("Ponytail")
   })
 
   test("applyOutputStyles fails open on invalid bodies and thrown property access", () => {

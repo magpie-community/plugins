@@ -7,27 +7,64 @@
     }
   },
   {
-    "name": "media bypass wins over an enabled style",
-    "options": { "styles": { "ponytail": true } },
-    "request": {
-      "model": "m",
-      "messages": [
-        { "role": "user", "content": [{ "type": "image_url", "image_url": { "url": "data:image/png;base64,AA==" } }] }
-      ]
-    }
-  },
-  {
-    "name": "an existing marker is replaced not skipped",
+    "name": "an existing marker is left unchanged",
     "options": { "styles": { "ponytail": true } },
     "request": {
       "model": "m",
       "messages": [{ "role": "system", "content": "[Output Strategy]\nexisting" }]
+    }
+  },
+  {
+    "name": "Anthropic keeps existing blocks and appends exactly one static block",
+    "options": { "styles": { "terse-cjk": true } },
+    "request": {
+      "model": "m",
+      "system": [{ "type": "text", "text": "Original rules", "cache_control": { "type": "ephemeral" } }],
+      "messages": [{ "role": "user", "content": "Delete the obsolete file" }]
     },
-    "expect_request_contains": ["[Output Strategy]", "Ponytail"]
+    "expect_request": {
+      "model": "m",
+      "system": [
+        { "type": "text", "text": "Original rules", "cache_control": { "type": "ephemeral" } },
+        { "type": "text", "text": "[Output Strategy]\n以文言简体回答，惜字如金，去赘语虚词。代码、路径、命令、错误、URL、标识符照原样保留，不得改写。\n\nCode blocks, file paths, commands, errors, URLs: keep exact. Security warnings, irreversible action confirmations, multi-step ordered sequences: write normal. Resume terse style after. Active every response until user asks for normal mode." }
+      ],
+      "messages": [{ "role": "user", "content": "Delete the obsolete file" }]
+    }
+  },
+  {
+    "name": "Responses preserves instructions and inserts a developer input",
+    "ctx": { "protocol": "responses" },
+    "options": { "styles": { "terse-cjk": true } },
+    "request": {
+      "model": "gpt-5",
+      "instructions": "You are Codex. Preserve these base instructions.",
+      "input": [{ "role": "user", "content": [{ "type": "input_text", "text": "Fix it" }] }]
+    },
+    "expect_request": {
+      "model": "gpt-5",
+      "instructions": "You are Codex. Preserve these base instructions.",
+      "input": [
+        { "role": "developer", "content": [{ "type": "input_text", "text": "[Output Strategy]\n以文言简体回答，惜字如金，去赘语虚词。代码、路径、命令、错误、URL、标识符照原样保留，不得改写。\n\nCode blocks, file paths, commands, errors, URLs: keep exact. Security warnings, irreversible action confirmations, multi-step ordered sequences: write normal. Resume terse style after. Active every response until user asks for normal mode." }] },
+        { "role": "user", "content": [{ "type": "input_text", "text": "Fix it" }] }
+      ]
+    }
+  },
+  {
+    "name": "historical media does not suppress a selected style",
+    "options": { "styles": { "terse-cjk": true } },
+    "request": {
+      "model": "m",
+      "messages": [{ "role": "user", "content": [{ "type": "image", "source": { "data": "AA==" } }] }]
+    },
+    "expect_request": {
+      "model": "m",
+      "system": "[Output Strategy]\n以文言简体回答，惜字如金，去赘语虚词。代码、路径、命令、错误、URL、标识符照原样保留，不得改写。\n\nCode blocks, file paths, commands, errors, URLs: keep exact. Security warnings, irreversible action confirmations, multi-step ordered sequences: write normal. Resume terse style after. Active every response until user asks for normal mode.",
+      "messages": [{ "role": "user", "content": [{ "type": "image", "source": { "data": "AA==" } }] }]
+    }
   },
   {
     "name": "an unsupported Gemini body passes through",
-    "protocol": "gemini",
+    "ctx": { "protocol": "gemini" },
     "options": { "styles": { "ponytail": true } },
     "request": {
       "model": "m",
