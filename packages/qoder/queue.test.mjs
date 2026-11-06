@@ -18,15 +18,34 @@ import { QoderAuthPlugin, _internal } from "./index.mjs"
 const { QUEUE } = _internal
 const real = globalThis.fetch
 const saved = { ...QUEUE }
-let clock, pauses
+let clock, pauses, timers
+// tick moves the clock on by ms, calling each QUEUE.every timer as often
+// as its interval passes, at the time it passes
+const tick = (ms) => {
+  const to = clock + ms
+  for (;;) {
+    const t = timers.filter((t) => !t.stopped).sort((a, b) => a.next - b.next)[0]
+    if (!t || t.next > to) break
+    clock = t.next
+    t.next += t.ms
+    t.fn()
+  }
+  clock = to
+}
 beforeEach(() => {
   clock = 1_000_000
   pauses = []
+  timers = []
   QUEUE.now = () => clock
   QUEUE.pause = async (ms, signal) => {
     if (signal?.aborted) throw signal.reason
     pauses.push(ms)
-    clock += ms
+    tick(ms)
+  }
+  QUEUE.every = (fn, ms) => {
+    const t = { fn, ms, next: clock + ms, stopped: false }
+    timers.push(t)
+    return () => (t.stopped = true)
   }
 })
 afterEach(() => {
@@ -56,7 +75,7 @@ async function loader({ chats, statuses }) {
     const u = new URL(String(url))
     if (u.pathname.endsWith("/model/list")) return json(LISTING)
     if (u.pathname.endsWith("/queue/status")) {
-      sent.statuses.push({ url: u, headers: init.headers })
+      sent.statuses.push({ url: u, headers: init.headers, signal: init.signal })
       return statuses(sent.statuses.length)
     }
     sent.chats.push(JSON.parse(_internal.decodeBody(init.body)))
@@ -266,4 +285,130 @@ test("the state is found where Qoder's client finds it", () => {
   expect(_internal.queueState(JSON.stringify({ result: JSON.stringify({ serviceAvailable: false }) }))?.serviceAvailable).toBe(false)
   expect(_internal.queueState("not json")).toBeUndefined()
   expect(_internal.queueState(JSON.stringify({ data: { queueCount: 1 } }))).toBeUndefined()
+})
+
+// A streamed request (every agent's: Codex, Claude Code, OpenCode) waits as
+// long as Qoder's client does, an hour, where it waited 4 minutes and then
+// was the 503 Codex retried, a stop and a restart for the user
+// (real-jacket, plugins#807). It is answered 200 at once, with a comment
+// saying the queue, and a comment every QUEUE.beat while it waits: magpie
+// hears each as the reply going on, and keeps Codex alive with
+// response.in_progress, the event its 300s idle timeout counts.
+const streamed = (signal) => ({ ...ask(signal), body: JSON.stringify({ model: "dfmodel", stream: true, messages: [{ role: "user", content: "hi" }] }) })
+
+// comments are the stream's SSE comment lines, each with the clock's time
+// when it was sent
+async function read(res, until) {
+  const lines = []
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ""
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    let i
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i)
+      buf = buf.slice(i + 1)
+      if (line) lines.push({ line, at: clock })
+    }
+    if (until?.(lines)) return { lines, reader }
+  }
+  return { lines, reader }
+}
+
+test("a streamed request Qoder queues is answered 200 at once, hears a comment every beat while it waits past 4 minutes, and gets the answer in the same stream", async () => {
+  let open
+  const gate = new Promise((ok) => (open = ok))
+  // the queue lets it through after 20 minutes: 40 asks 30s apart
+  const { fetch, sent } = await loader({
+    chats: (n) => (n === 1 ? refused() : answered()),
+    statuses: async (n) => {
+      if (n === 1) await gate // the client has its 200 before the wait goes on
+      return status(n <= 40 ? { ...QUEUED, retryAfterSeconds: 30 } : { isQueued: false, serviceAvailable: true })
+    },
+  })
+  const began = clock
+  const res = await fetch(API_CHAT, streamed())
+  expect(res.status).toBe(200)
+  expect(res.headers.get("Content-Type")).toBe("text/event-stream")
+  open()
+  const { lines } = await read(res)
+  expect(lines[0].line).toBe(": Qoder queued the request for dfmodel (this plan's queue: p3, 3 ahead); try again in 30s")
+  expect(lines[0].at).toBe(began)
+  // waited 20 minutes, a comment each beat of it: the timer says one each
+  // time it fires, at the beat, which the test's clock keeps
+  const comments = lines.filter((l) => l.line.startsWith(":"))
+  const data = lines.filter((l) => l.line.startsWith("data:"))
+  expect(pauses.reduce((a, b) => a + b, 0)).toBe(20 * 60_000)
+  expect(timers.map((t) => t.ms)).toEqual([QUEUE.beat])
+  expect(QUEUE.beat).toBeLessThanOrEqual(10_000)
+  expect(comments.length).toBe(1 + (20 * 60_000) / QUEUE.beat)
+  expect(comments.slice(1).every((l) => l.line === ": queued")).toBe(true)
+  // the answer follows, whole, and the beat stops with it
+  expect(data.some((l) => l.line.includes('"content":"hello"'))).toBe(true)
+  expect(data.at(-1).line).toBe("data: [DONE]")
+  expect(timers.every((t) => t.stopped)).toBe(true)
+  expect(sent.chats.length).toBe(2)
+  expect(sent.chats[1].request_set_id).toBe(sent.chats[0].request_set_id)
+})
+
+test("a streamed request still queued after Qoder's hour ends its stream with the queue's refusal, sent once", async () => {
+  const { fetch, sent } = await loader({ chats: () => refused(), statuses: () => status(QUEUED) })
+  const res = await fetch(API_CHAT, streamed())
+  expect(res.status).toBe(200)
+  const { lines } = await read(res)
+  const data = lines.filter((l) => l.line.startsWith("data:"))
+  expect(data.length).toBe(1)
+  expect(JSON.parse(data[0].line.slice(5)).error).toEqual({
+    message: "Qoder queued the request for dfmodel (this plan's queue: p3, 3 ahead); try again in 30s",
+    code: 503,
+  })
+  expect(pauses.reduce((a, b) => a + b, 0)).toBe(60 * 60_000)
+  expect(sent.chats.length).toBe(1)
+  expect(timers.every((t) => t.stopped)).toBe(true)
+})
+
+test("a held stream's resend refused for another reason ends the stream with that refusal", async () => {
+  const { fetch } = await loader({
+    chats: (n) => (n === 1 ? refused() : json({ code: "113", message: "credits used up" }, 403)),
+    statuses: () => status({ isQueued: false, serviceAvailable: true }),
+  })
+  const res = await fetch(API_CHAT, streamed())
+  expect(res.status).toBe(200)
+  const { lines } = await read(res)
+  const err = JSON.parse(lines.find((l) => l.line.startsWith("data:")).line.slice(5)).error
+  expect(err.code).toBe(429)
+})
+
+test("a held stream the client cancels stops the wait: its beat ends, and no status is asked or request sent after", async () => {
+  let open
+  const gate = new Promise((ok) => (open = ok))
+  const { fetch, sent } = await loader({
+    chats: () => refused(),
+    statuses: async (n) => {
+      if (n === 2) await gate
+      return status(QUEUED)
+    },
+  })
+  const res = await fetch(API_CHAT, streamed())
+  const { reader } = await read(res, (lines) => lines.length >= 1)
+  while (sent.statuses.length < 2) await new Promise((ok) => setImmediate(ok))
+  expect(sent.statuses[1].signal.aborted).toBe(false)
+  await reader.cancel(new DOMException("the client went away", "AbortError"))
+  // the wait's signal is the stream's: the ask in flight is called off
+  expect(sent.statuses[1].signal.aborted).toBe(true)
+  expect(timers.every((t) => t.stopped)).toBe(true)
+  open()
+  for (let i = 0; i < 20; i++) await new Promise((ok) => setImmediate(ok))
+  expect(sent.statuses.length).toBe(2)
+  expect(sent.chats.length).toBe(1)
+})
+
+test("the same request not streamed still waits 4 minutes at most, then the 503", async () => {
+  const { fetch } = await loader({ chats: () => refused(), statuses: () => status(QUEUED) })
+  const res = await fetch(API_CHAT, ask())
+  expect(res.status).toBe(503)
+  expect(pauses.reduce((a, b) => a + b, 0)).toBe(4 * 60_000)
 })
