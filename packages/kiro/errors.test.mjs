@@ -225,3 +225,32 @@ test("an answer says the account is kept, streamed or not, renewed or not", asyn
     })
   }
 })
+
+// onemezao on Discord: Kiro's 429 USER_REQUEST_RATE_EXCEEDED ("Too many
+// requests, please wait before trying again.") went to magpie with no word
+// of when, so magpie asked the one account again after 1, 2 and 4s and on
+// through its patience, six asks of the same request where Kiro had said
+// how long to wait. Kiro's wait goes on as Retry-After, from wherever Kiro's
+// own clients read it.
+test("Kiro's wait before asking again goes on as Retry-After", async () => {
+  const limited = JSON.stringify({ message: "Too many requests, please wait before trying again.", reason: "USER_REQUEST_RATE_EXCEEDED" })
+  const cases = [
+    [{ "x-amzn-kiro-ratelimit-retry-after": "12500" }, limited, "13"],
+    [{ "x-amz-retry-after": "3000" }, limited, "3"],
+    [{}, JSON.stringify({ message: "Too many requests", reason: "USER_REQUEST_RATE_EXCEEDED", retryAfterMilliseconds: 20000 }), "20"],
+    [{ "retry-after": "7" }, limited, "7"],
+    [{ "retry-after": new Date(Date.now() + 30_000).toUTCString() }, limited, null],
+    [{}, limited, null],
+    [{ "x-amzn-kiro-ratelimit-retry-after": "soon" }, limited, null],
+  ]
+  for (const [headers, body, want] of cases) {
+    await withFetch(() => new Response(body, { status: 429, headers }), async () => {
+      const res = await generate(creds(), {}, msgReq)
+      expect(res.status).toBe(429)
+      expect((await res.json()).error.message).toBe(JSON.parse(body).message + " (USER_REQUEST_RATE_EXCEEDED)")
+      const got = res.headers.get("Retry-After")
+      if (headers["retry-after"]?.includes("GMT")) expect(Number(got)).toBeWithin(28, 32)
+      else expect(got).toBe(want)
+    })
+  }
+})

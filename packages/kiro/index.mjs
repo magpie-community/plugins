@@ -1202,12 +1202,38 @@ const ERROR_TYPES = { 400: "invalid_request_error", 401: "authentication_error",
   404: "not_found_error", 413: "request_too_large", 429: "rate_limit_error", 503: "overloaded_error", 529: "overloaded_error" }
 const errorType = (status) => ERROR_TYPES[status] ?? "api_error"
 // Each failure says X-Magpie-Sign-In: kept, as the built-in never marked
-// an account lapsed (see gone).
-const errorResponse = (status, message) =>
+// an account lapsed (see gone). One Kiro said when to ask again (waitOf)
+// says it as Retry-After, in whole seconds, for magpie to wait as long.
+const errorResponse = (status, message, wait) =>
   new Response(JSON.stringify({ type: "error", error: { type: errorType(status), message } }), {
     status,
-    headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept" },
+    headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept",
+      ...(wait > 0 ? { "Retry-After": String(Math.ceil(wait / 1000)) } : {}) },
   })
+
+// waitOf is the milliseconds Kiro's refusal says to wait before asking
+// again, or undefined: what Kiro's own clients read. The Kiro IDE (agent
+// 1.1.499) reads the x-amzn-kiro-ratelimit-retry-after header and the
+// body's retryAfterMilliseconds, both in milliseconds; kiro-cli's AWS SDK
+// reads x-amz-retry-after, in milliseconds; and Retry-After is HTTP's, in
+// seconds or as a date. Unsaid, magpie keeps to its own pauses.
+function waitOf(headers, body) {
+  const ms = (v) => {
+    const n = v == null || v === "" ? NaN : Number(v)
+    return Number.isFinite(n) && n > 0 ? n : undefined
+  }
+  let w = ms(headers.get("x-amzn-kiro-ratelimit-retry-after")) ?? ms(headers.get("x-amz-retry-after"))
+  if (w === undefined)
+    try {
+      w = ms(JSON.parse(body)?.retryAfterMilliseconds)
+    } catch {}
+  const ra = headers.get("retry-after")
+  if (w === undefined && ra) {
+    const secs = ms(ra)
+    w = secs !== undefined ? secs * 1000 : ms(Date.parse(ra) - Date.now())
+  }
+  return w
+}
 
 // kept is res saying the account is kept: a success too, which the
 // built-in never took for a sign-in come back.
@@ -1842,7 +1868,7 @@ async function generate(creds, auth, req, signal) {
   const hosted = hostedSearch(req)
   if (hosted?.error) return errorResponse(400, hosted.error)
   const first = await ask(creds, auth, req, model, budget, signal)
-  if (!first.res) return errorResponse(first.status, first.message)
+  if (!first.res) return errorResponse(first.status, first.message, first.wait)
   const it = hosted ? searching(creds, auth, req, model, budget, signal, hosted, first) : events(first.res.body, model, budget)
   return kept(await reply(it, model, req.stream === true, toolNames(req)))
 }
@@ -1879,7 +1905,8 @@ async function ask(creds, auth, req, model, budget, signal) {
   }
   if (!res.ok) {
     // Kiro's own 401 is passed on, as the built-in did, the sign-in kept
-    return failure(res.status, (await res.text()).slice(0, 1 << 20))
+    const text = (await res.text()).slice(0, 1 << 20)
+    return { ...failure(res.status, text), wait: waitOf(res.headers, text) }
   }
   return { res, a }
 }
@@ -2418,4 +2445,4 @@ export async function KiroAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { generate, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }
+export const _internal = { generate, waitOf, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }
