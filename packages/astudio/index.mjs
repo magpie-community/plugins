@@ -13,18 +13,21 @@
 //   账号面    https://agent.xfyun.cn/xingchen-studio/…（Cookie 会话鉴权）：
 //             points/balance、membership/me、membership/plan-config、points/summary
 //
-// 本插件复用这份登录态：第一种登录方式直接从磁盘读取桌面端会话（Raccoon
-// 「复用桌面端登录态」同款；magpie 的 oauth 方式，读不到时给出官网链接并轮询，
-// 等用户装好桌面端登录），第二种让用户手动粘贴 modelBearerToken。目录与
-// 思考档位按账号实时拉取（目录读取不计费）。AStudio 有「每日登录积分」
-// （服务端在当天账号会话首次活跃时发放，客户端弹窗只做通知，无领取接口）。
-// 实测只发账号面 GET 不会生成当日的 DAILY_REWARD_DIALOG 待通知弹窗（桌面端启动
-// 后才有），发放挂靠桌面端启动时的 POST：tenant-app/v2/init-app（另一个
-// auth/bearer-token 会换发模型凭据，安全性未证，签到不复刻）。auth.checkin 发
-// init-app 后读当日获得流水（points/details direction=CREDIT，网页后台同源
-// 权威数据）：有「每日登录赠送」GRANT 行即发放完成（先于签到发生的记 done，
-// 余额差为正记 claimed）；流水读失败退回旧的余额差+弹窗判据；流水通畅但无
-// GRANT 行才记 inactive（宿主把 done 渲染成「今日已签到」，没发生的不能断言）。
+// 三种登录方式：①浏览器登录（推荐，可多账号）——弹出全新 profile 的专用浏览器，
+// 用户在里面登录后收割网页会话 Cookie（ssoSessionId + account_id 必需，token 有
+// 则带上），再用桌面端启动时的同款 POST auth/bearer-token 换发模型凭据（JWT，
+// 实测 3 年有效；换发后旧 token 仍可用），accountId 用账号 uid，同一账号的桌面端
+// 与网页登录因此归到同一格；②读取桌面端登录态——直接从磁盘读桌面端会话
+// （magpie 的 oauth 方式，读不到时给出官网链接并轮询，等用户装好登录）；
+// ③粘贴 modelBearerToken。目录与思考档位按账号实时拉取（目录读取不计费）。
+//
+// AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放，客户端弹窗
+// 只做通知、没有领取接口。auth.checkin 先读当日获得流水（points/details
+// direction=CREDIT，与网页后台「获得明细」同源）：已有「每日登录赠送」GRANT 行
+// 即 done，此时一个写请求都不发；流水为空才补一次会话活跃（POST
+// tenant-app/v2/init-app，复刻桌面端启动），再读一次流水。流水读失败退回余额差 +
+// 弹窗观测。流水通畅、余额没涨、也无当日弹窗则记 inactive——宿主把 done 渲染成
+// 「今日已签到」，没发生的不能断言。
 
 import { spawnSync } from "node:child_process"
 import { readFileSync } from "node:fs"
@@ -518,6 +521,8 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
             const harvesting = browserModule.startBrowserHarvest({ deadlineMs: WEB_SIGNIN_WAIT_MS, startUrl: STUDIO_WEB_URL })
             harvesting.promise.catch(() => {})
             const cleanup = setTimeout(() => { harvesting.abort().catch(() => {}) }, WEB_SIGNIN_WAIT_MS)
+            // 别让这个兜底定时器拖住宿主的事件循环（测试里变成 5 分钟不退出）。
+            cleanup.unref?.()
             const onAbort = () => { harvesting.abort().catch(() => {}) }
             if (signal?.aborted) onAbort()
             else if (typeof signal?.addEventListener === "function") signal.addEventListener("abort", onAbort, { once: true })
@@ -742,8 +747,9 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
         }
       },
       // 「每日登录积分」：服务端在当天账号会话首次活跃时发放，客户端没有领取
-      // 接口（DAILY_REWARD_DIALOG 弹窗只做通知）。只发账号面 GET 不会触发发放，
-      // 这里先复刻桌面端启动的 init-app，再用余额差与新增的当日弹窗观测结果。
+      // 接口（DAILY_REWARD_DIALOG 弹窗只做通知）。先读当日获得流水：已有当日
+      // GRANT 行就 done、一个写请求都不发；流水为空才复刻桌面端启动的 init-app，
+      // 再读一次流水（流水读不到才退回余额差 + 弹窗观测）。
       async checkin(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return {}

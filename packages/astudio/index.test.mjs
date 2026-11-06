@@ -243,6 +243,19 @@ test("models hook maps the live catalog and keeps the old list on network failur
   await assert.rejects(malformed.provider.models({ models: {} }, { auth: { type: "api", key: "k" } }))
 })
 
+test("catalog reads refuse redirects and carry a timeout", async () => {
+  let init
+  const plugin = createPlugin({
+    fetchImpl: async (_url, options) => {
+      init = options
+      return okRes({ code: 0, data: { models: [CATALOG_ENTRY] } })
+    },
+  })
+  await plugin.provider.models({ models: {} }, { auth: { type: "api", key: "k" } })
+  assert.equal(init.redirect, "error")
+  assert.ok(init.signal, "目录请求要带 AbortSignal 超时")
+})
+
 test("usage hook checks the credential without burning quota", async () => {
   const ok = createPlugin({ fetchImpl: async () => okRes({ code: 0, data: { models: [] } }) })
   assert.deepEqual(await ok.auth.usage(async () => ({ type: "api", key: "k" })), { plan: "AStudio", windows: [] })
@@ -1040,16 +1053,71 @@ test("web login harvests cookies, exchanges the model token, and drops the brows
 
 test("web login retries a transient membership read before failing", async () => {
   let reads = 0
+  const sleeps = []
   const flaky = async (input) => {
     if (String(input).includes("membership/me") && reads++ === 0) throw new Error("network down")
     return webFetch()(input)
   }
-  const plugin = createPlugin({ fetchImpl: flaky, browserModule: fakeBrowser() })
+  const plugin = createPlugin({ fetchImpl: flaky, sleepImpl: async (ms) => { sleeps.push(ms) }, browserModule: fakeBrowser() })
   const out = await webMethod(plugin).authorize({}, {})
   const result = await out.callback()
   assert.equal(result.type, "success")
   assert.equal(result.accountId, "u-web")
   assert.equal(reads, 2)
+  // 真实等 2s 会让这条测试变成最慢的一条；注入 sleep 只验「等过」。
+  assert.deepEqual(sleeps, [2000])
+})
+
+test("web login retries a membership read that answered 5xx", async () => {
+  let reads = 0
+  const flaky = async (input) => {
+    if (String(input).includes("membership/me") && reads++ === 0) return jsonRes({}, 502)
+    return webFetch()(input)
+  }
+  const plugin = createPlugin({ fetchImpl: flaky, sleepImpl: async () => {}, browserModule: fakeBrowser() })
+  const result = await (await webMethod(plugin).authorize({}, {})).callback()
+  assert.equal(result.type, "success")
+  assert.equal(reads, 2)
+})
+
+test("web login refuses to promise a window when no browser is installed", async () => {
+  const browser = {
+    ...fakeBrowser(),
+    browserExecutable: async () => { throw new Error("找不到 Chrome/Edge；请安装其中一个") },
+  }
+  const plugin = createPlugin({ fetchImpl: webFetch(), browserModule: browser })
+  await assert.rejects(() => webMethod(plugin).authorize({}, {}), /找不到 Chrome/)
+  assert.equal(browser.calls.started, 0)
+})
+
+test("check-in reads the ledger for a web session without a token cookie", async () => {
+  const urls = []
+  const plugin = createPlugin({
+    nowMsImpl: () => Date.parse("2026-11-06T02:00:00Z"),
+    fetchImpl: async (input) => {
+      const url = String(input)
+      urls.push(url)
+      if (url.includes("membership/plan-config")) {
+        return jsonRes({ flag: true, code: 0, data: { dailyLoginEnabled: true } })
+      }
+      if (url.includes("points/details")) {
+        return jsonRes({
+          flag: true,
+          code: 0,
+          data: { items: [{ direction: "CREDIT", operation: "GRANT", reason: "每日登录赠送", amount: 100, createTime: "2026-11-06 00:00:30" }] },
+        })
+      }
+      throw new Error(`unexpected ${url}`)
+    },
+  })
+  // 网页登录收割的会话可以没有 token Cookie（只需 ssoSessionId + account_id）。
+  const out = await plugin.auth.checkin(async () => ({
+    type: "api",
+    key: "k",
+    metadata: { session: { accountId: "A-web", ssoSessionId: "S-web" } },
+  }))
+  assert.equal(out.outcome, "done")
+  assert.ok(urls.some((url) => url.includes("points/details")))
 })
 
 test("web login drops the profile when the session cannot become an account", async () => {
@@ -1152,25 +1220,58 @@ test("harvestAstronSession prefers the most specific domain and needs ssoSession
   ])), undefined)
 })
 
-test("startBrowserHarvest rejects and closes the window on abort", async () => {
+test("startBrowserHarvest rejects, closes the window, and removes the profile on abort", async () => {
   let closed = 0
+  const removed = []
   const open = async ({ profilePath }) => ({
     browser: { ...fakeChrome(), close: async () => { closed++ } },
     profilePath,
     release: async () => {},
   })
-  const harvest = astroBrowser.startBrowserHarvest({ startUrl: "https://example.com", open })
+  const harvest = astroBrowser.startBrowserHarvest({
+    startUrl: "https://example.com",
+    profilePath: "C:/tmp/astudio-abort-profile",
+    open,
+    removeProfileImpl: async (path) => { removed.push(path) },
+  })
   // 先挂 rejection 断言再 abort：abort 会立刻让 promise 拒绝。
   const rejected = assert.rejects(() => harvest.promise, /登录已取消/)
   await harvest.abort()
   await rejected
   assert.equal(closed, 1)
+  // 宿主取消后 callback 不会再被调，profile 没人认领，必须删掉（abort 与 catch
+  // 都会删，rm 幂等，所以只断言「删过这个路径」）。
+  assert.ok(removed.includes("C:/tmp/astudio-abort-profile"))
 })
 
 test("startBrowserHarvest times out when no sign-in appears", async () => {
+  const removed = []
   const open = async ({ profilePath }) => ({ browser: fakeChrome(), profilePath, release: async () => {} })
-  const harvest = astroBrowser.startBrowserHarvest({ startUrl: "https://example.com", deadlineMs: 0, open })
-  await assert.rejects(() => harvest.promise, /登录超时/)
+  const harvest = astroBrowser.startBrowserHarvest({
+    startUrl: "https://example.com",
+    deadlineMs: 0,
+    open,
+    removeProfileImpl: async (path) => { removed.push(path) },
+  })
+  await assert.rejects(() => harvest.promise, (error) => {
+    assert.match(error.message, /登录超时/)
+    // 不足 1 分钟要说秒，不能渲染成「0 分钟」。
+    assert.doesNotMatch(error.message, /0 分钟/)
+    return true
+  })
+  assert.equal(removed.length, 1)
+})
+
+test("startBrowserHarvest removes the profile when the browser cannot start", async () => {
+  const removed = []
+  const harvest = astroBrowser.startBrowserHarvest({
+    startUrl: "https://example.com",
+    profilePath: "C:/tmp/never-opened",
+    open: async () => { throw new Error("找不到浏览器") },
+    removeProfileImpl: async (path) => { removed.push(path) },
+  })
+  await assert.rejects(() => harvest.promise, /找不到浏览器/)
+  assert.deepEqual(removed, ["C:/tmp/never-opened"])
 })
 
 test("web login does not retry a deterministic 4xx", async () => {

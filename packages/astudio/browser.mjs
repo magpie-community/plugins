@@ -27,7 +27,8 @@ export const profilesRoot = () => process.env.ASTUDIO_BROWSER_PROFILE
 // 一次新登录的专属 profile：随机子目录，绝不带旧票。
 export const freshSigninProfile = () => join(profilesRoot(), `signin-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`)
 
-// 登录失败/取消时删掉没人认领的 profile；成功时目录归账号所有，不删。
+// 删掉一个登录用过的 profile：成功、失败、取消、超时都不留——会话已进账号
+// metadata.session，浏览器目录只是第二份凭据副本。
 export async function removeProfile(profilePath) {
   if (profilePath) await rm(profilePath, { recursive: true, force: true }).catch(() => {})
 }
@@ -74,6 +75,10 @@ async function claimProfileLock(profilePath) {
 // ---------------------------------------------------------------- CDP 管道客户端
 
 const timeoutError = (message) => Object.assign(new Error(message), { name: "TimeoutError" })
+// 超时提示按量级选单位：不足 1 分钟说「45 秒」，别渲染成「0 分钟」。
+const durationLabel = (ms) => (ms >= 60_000
+  ? `${Math.round(ms / 60_000)} 分钟`
+  : `${Math.max(1, Math.round(ms / 1000))} 秒`)
 
 // Chrome 每写完一个 JSON 消息跟一个 NUL。
 class Pipe {
@@ -323,9 +328,10 @@ export async function harvestAstronSession(browser) {
 
 /** 浏览器登录全流程：有头浏览器（全新 profile）→ 用户在窗口里完成讯飞登录 →
  *  收割 Cookie。返回 { promise, abort }：promise resolve { session, profilePath,
- *  release, close }。abort() 随时可调（宿主取消）；失败/取消/超时/取消都删掉
- *  profile 目录——会话已进账号 metadata，浏览器目录不留第二份凭据。 */
-export function startBrowserHarvest({ deadlineMs = 600_000, startUrl, profilePath = freshSigninProfile(), open = openBrowser } = {}) {
+ *  release, close }。abort() 随时可调（宿主取消）；成功/失败/取消/超时都删掉
+ *  profile 目录——会话已进账号 metadata，浏览器目录不留第二份凭据。
+ *  removeProfileImpl 只为测试能观测清理动作，生产不传。 */
+export function startBrowserHarvest({ deadlineMs = 600_000, startUrl, profilePath = freshSigninProfile(), open = openBrowser, removeProfileImpl = removeProfile } = {}) {
   const harvest = { promise: undefined, abort: async () => {} }
   harvest.promise = (async () => {
     let aborted = false
@@ -340,7 +346,7 @@ export function startBrowserHarvest({ deadlineMs = 600_000, startUrl, profilePat
       }
       // 宿主取消时 callback 不会再被调，profile 没人认领；成功路径下 callback
       // 自己也会删（rm 幂等），所以这里一律删。
-      await removeProfile(usedPath)
+      await removeProfileImpl(usedPath)
     }
     try {
       const { browser, profilePath: used, release } = await open({ headless: false, startUrl, profilePath })
@@ -353,7 +359,7 @@ export function startBrowserHarvest({ deadlineMs = 600_000, startUrl, profilePat
         if (browser.connection.closed) throw new Error("浏览器被关闭，登录中断")
         const found = await harvestAstronSession(browser).catch(() => undefined)
         if (found) return { ...found, profilePath: used, release, close: () => browser.close() }
-        if (Date.now() >= deadline) throw timeoutError(`登录超时（${Math.round(deadlineMs / 60000)} 分钟内没有检测到 AStudio 登录）`)
+        if (Date.now() >= deadline) throw timeoutError(`登录超时（${durationLabel(deadlineMs)}内没有检测到 AStudio 登录）`)
         await sleep(1500)
       }
     } catch (error) {
@@ -361,7 +367,7 @@ export function startBrowserHarvest({ deadlineMs = 600_000, startUrl, profilePat
         await opened.browser.close().catch(() => {})
         await opened.release()
       }
-      await removeProfile(usedPath)
+      await removeProfileImpl(usedPath)
       throw error
     }
   })()
