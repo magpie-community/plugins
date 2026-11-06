@@ -58,9 +58,9 @@ is there for a machine that can't open the approval page.
 Nothing is listed per account at request time from anywhere but the vendor:
 magpie calls the plugin's `provider.models`, which reads `amr-link`'s live
 `/v1/models` at that account's key on every listing, so what a signed-in
-account is offered is what its plan entitles it to right now. Limits, input
-modalities and the vendor's own cost words (`rate`, e.g. `x0.5` for "low")
-come from that same catalog.
+account is offered is what its plan entitles it to right now. Limits and
+input modalities come from that same catalog; the quota multiplier (`rate`)
+comes from `rates.mjs`, the plan's own table (below).
 
 Reasoning levels are not in the catalog, so `models.mjs` records the ones
 measured against `amr-link` (#137): every model took `reasoning_effort`
@@ -68,6 +68,33 @@ measured against `amr-link` (#137): every model took `reasoning_effort`
 catalog calls `standard` too. Those models reason at `low` and `high`;
 GPT-6 Luna has no levels. A model the seed doesn't know reasons when its
 vendor tier is `advanced`, with no levels until it is measured.
+
+`deepseek-v4.1-flash-eco` is the same model on the low-priority, high-quota
+schedule (the vendor's announcement: 模型效果完全无损), so `models.mjs` gives
+it DeepSeek V4.1 Flash's limits, input kinds and levels; only the quota
+multiplier differs (0.27× against 0.5×).
+
+### Quota multipliers
+
+`rate` is the plan's deduction multiplier — what one dollar of model spend
+takes out of the Design Plan allowance — not the catalog's cost word. The
+table in `rates.mjs` is the vendor's published one,
+[模型额度与使用说明](https://open-design.ai/zh/model-credits/) (read
+2026-11-06; Go, Plus, Pro and Max carry the same table):
+
+| Model | Rate |
+| --- | --- |
+| DeepSeek V4.1 Flash | 0.5× |
+| DeepSeek V4.1 Flash Eco | 0.27× |
+| DeepSeek V4 Flash, DeepSeek V4 Flash Vision Exp, DeepSeek V4 Pro, GLM-5.3 Flash, Hy4 Preview, Kimi K2.7 Code, MiMo V2.6 Flash, MiMo V2.6 Pro, MiniMax M3.1 Flash | 1× |
+| Claude Haiku 5.5, GLM-5.3 Flash-X | 2× |
+| GPT-6 Luna | 4× |
+
+The catalog's own cost words stay as the fallback for a model the table
+doesn't name yet; they disagree with the plan for most models (Claude Haiku
+5.5 and GPT-6 Luna are "low" there but 2× and 4× here). DeepSeek V4.1
+Flash's 0.25× "限时谷价" row is a time-limited promotional price, not a
+second model id, so the model keeps 0.5×.
 
 `models.mjs` is the seed the provider has *before* anyone signs in. Refresh
 it from the live catalog with:
