@@ -149,6 +149,7 @@ async function agent(options = {}) {
     const advance = () => {
       const expected = phase === 0 && options.parallel ? [firstID, 8] : [phase === 0 ? firstID : 8]
       if (!expected.every((id) => closed.has(id))) return
+      if (options.stepUsages?.[phase]) send(update(31, options.stepUsages[phase]))
       if (phase === 0 && !options.parallel && !options.finalAfterFirst) {
         marker = received.get(firstID).content[0].text
         phase = 1
@@ -170,6 +171,7 @@ async function agent(options = {}) {
       if (options.halfFinal) { send(update(1, text(1, "half said"))); return }
       send(update(4, text(1, "native final thinking")))
       send(update(1, text(1, marker)))
+      if (options.stepUsages?.[2]) send(update(31, options.stepUsages[2]))
       const usage = options.turnUsage ?? (options.zeroUsage ? message(uint(1, 0), uint(2, 0), uint(5, 0)) : message(uint(1, 23), uint(2, 7), uint(3, 10), uint(4, 0), uint(5, 4)))
       send(update(14, usage))
       state(false, true) // late state after TurnEnded must still be retained
@@ -312,6 +314,7 @@ test("native accounting: a multi-step turn's final step reports its own share, t
   const final = await a.ask(account, continueWith(next, second.body, ["two"]))
   expect(final.status).toBe(200)
   expect(a.runs).toHaveLength(1)
+  expect(number(a.runs[0], 37)).toBe(1) // emit_model_call_usage
   const u = final.body.usage, d = u.magpie_deferred
   // three model calls: none is more than half the turn
   expect(u.prompt_tokens).toBeLessThan(1105934 / 2)
@@ -322,6 +325,37 @@ test("native accounting: a multi-step turn's final step reports its own share, t
   expect(u.prompt_tokens_details.cache_write_tokens + d.cache_write_tokens).toBe(70156)
   expect(u.completion_tokens + d.completion_tokens).toBe(2100)
   expect(u.completion_tokens_details.reasoning_tokens).toBeLessThanOrEqual(u.completion_tokens)
+})
+
+test("native accounting: ModelCallCompletedUpdate (31) gives the final step its exact context and defers the rest (#156)", async () => {
+  // Three model calls: 50K -> 55K -> 61K context; TurnEndedUpdate sums all three (166K).
+  const stepUsages = [
+    message(text(1, "mc-1"), uint(2, 50000), uint(3, 600), uint(4, 25000), uint(5, 24990), uint(6, 200)),
+    message(text(1, "mc-2"), uint(2, 55000), uint(3, 800), uint(4, 50000), uint(5, 4990), uint(6, 300)),
+    message(text(1, "mc-3"), uint(2, 61000), uint(3, 700), uint(4, 55000), uint(5, 5980), uint(6, 400)),
+  ]
+  const turnUsage = message(uint(1, 166000), uint(2, 2100), uint(3, 130000), uint(4, 35960), uint(5, 900))
+  const a = await agent({ stepUsages, turnUsage }), account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  const next = continueWith(chat, first.body, ["one"])
+  const second = await a.ask(account, next)
+  const final = await a.ask(account, continueWith(next, second.body, ["two"]))
+  expect(final.status).toBe(200)
+  expect(a.runs).toHaveLength(1)
+  expect(number(a.runs[0], 37)).toBe(1)
+  expect(final.body.usage).toEqual({
+    prompt_tokens: 61000,
+    completion_tokens: 700,
+    total_tokens: 61700,
+    prompt_tokens_details: { cached_tokens: 55000, cache_write_tokens: 5980 },
+    completion_tokens_details: { reasoning_tokens: 400 },
+    magpie_deferred: {
+      prompt_tokens: 105000,
+      completion_tokens: 1400,
+      cached_tokens: 75000,
+      cache_write_tokens: 29980,
+    },
+  })
 })
 
 test("native retention: Task parent awaiting results permits a child sharing session with different first user", async () => {
