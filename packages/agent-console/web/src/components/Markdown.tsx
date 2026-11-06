@@ -1,47 +1,17 @@
-// Markdown rendering: marked + DOMPurify + highlight.js.
+// Markdown rendering (marked + DOMPurify + highlight.js live in util/renderMarkdown.ts).
 // 1.3.7: fenced code is built as the final .cb / header / numbered / highlighted HTML inside renderMarkdown,
 // so React's commit paints the stable height in one shot (the old useEffect decorate ran after paint and
 // flashed bare <pre> ↔ .cb on every streaming token). Copy / wrap use container event delegation; wrap
 // state is keyed by the block's index in its message (a streaming block keeps its index while it grows; a
 // source fingerprint changed with every token and dropped the toggle) and is baked into the HTML string.
 import { useLayoutEffect, useMemo, useRef, type MouseEvent } from "react";
-import { marked, Renderer } from "marked";
-import DOMPurify from "dompurify";
 import { linkifyLocal } from "../util/localLinks";
 import { onChatLinkClick } from "../preview/open";
 import { t } from "../i18n/index.js";
-import {
-  buildCodeBlockHtml,
-  ICON_CHECK,
-  ICON_COPY,
-  svgIconHtml,
-} from "../util/codeBlock";
+import { ICON_CHECK, ICON_COPY, svgIconHtml } from "../util/codeBlock";
+import { renderMarkdown } from "../util/renderMarkdown";
 
-marked.setOptions({ gfm: true, breaks: true });
-
-const purify = (html: string) =>
-  DOMPurify.sanitize(html, {
-    USE_PROFILES: { html: true, svg: true },
-    ADD_ATTR: ["target", "aria-pressed", "aria-label", "aria-hidden", "data-i"],
-  });
-
-export type RenderedMarkdown = { html: string; raws: string[] };
-
-/** wrapped: indexes of the code blocks (in this text) drawn soft-wrapped */
-export function renderMarkdown(text: string, wrapped?: ReadonlySet<number>): RenderedMarkdown {
-  const raws: string[] = [];
-  const renderer = new Renderer();
-  renderer.code = ({ text: code, lang }: { text: string; lang?: string }) => {
-    const index = raws.length;
-    raws.push(code);
-    return buildCodeBlockHtml(code, lang, index, {
-      wrap: t("timeline.codeWrap"),
-      copy: t("common.copy"),
-    }, wrapped?.has(index) ?? false);
-  };
-  const dirty = marked.parse(text, { async: false, renderer }) as string;
-  return { html: purify(dirty), raws };
-}
+export { renderMarkdown, type RenderedMarkdown } from "../util/renderMarkdown";
 
 export function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -49,7 +19,8 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
   // One <Markdown> is one message: while it streams its code blocks only ever get appended, so block i stays block i
   const wrapIdx = useRef(new Set<number>());
   // wrapIdx is read at render time (a toggle mutates the DOM directly; the next text change bakes it into the HTML)
-  const rendered = useMemo(() => renderMarkdown(text, wrapIdx.current), [text]);
+  // streaming: an unlabelled fence still open at the end stays "text" until it closes or the message settles
+  const rendered = useMemo(() => renderMarkdown(text, { wrapped: wrapIdx.current, streaming }), [text, streaming]);
   rawsRef.current = rendered.raws;
 
   // Restore .wrap before paint so a streaming re-render never flashes the unwrapped width

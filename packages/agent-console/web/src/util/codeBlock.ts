@@ -12,10 +12,55 @@ export function sanitizeLang(lang: string | undefined | null): string {
   return m?.[0] ?? "";
 }
 
-/** Fingerprint of a code block's source (kept for callers/tests; wrap state itself is keyed by the block's index
- *  in its message, which survives a streaming block growing — this key changes with every token) */
-export function codeBlockKey(raw: string): string {
-  return `${raw.length}:${raw.slice(0, 96)}`;
+/**
+ * Whether a fenced code token from marked ended on its own closing fence (not at the end of the input).
+ * `raw` is the token's raw source (marked has already taken off any blockquote / list indentation).
+ * Mirrors marked's fence rule: opening ` {0,3}(`{3,}|~{3,})`, closing ` {0,3}<same fence>[~`]* *` on its own line.
+ * An indented code block has no fence: it can always grow while the text streams, so it is never "closed".
+ */
+export function isClosedFence(raw: string, codeBlockStyle?: string): boolean {
+  if (codeBlockStyle === "indented") return false;
+  const lines = raw.replace(/\n+$/, "").split("\n");
+  if (lines.length < 2) return false;
+  const open = /^ {0,3}(`{3,}|~{3,})/.exec(lines[0]!);
+  if (!open) return false;
+  const fence = open[1]!;
+  const last = lines[lines.length - 1]!;
+  const m = /^ {0,3}([`~]+) *$/.exec(last);
+  if (!m) return false;
+  const run = m[1]!;
+  // same fence (char and at least its length) first; marked lets any mix of ` / ~ follow it
+  return run.startsWith(fence);
+}
+
+type AutoResult = { value: string; language: string };
+const AUTO_CACHE_MAX = 128;
+const autoCache = new Map<string, AutoResult>();
+
+/** hljs.highlightAuto with a small LRU: a streaming message re-renders every frame, and a block that is
+ *  already closed (or a settled message re-rendered) must not pay highlightAuto again. */
+export function highlightAutoCached(code: string): AutoResult {
+  const hit = autoCache.get(code);
+  if (hit) {
+    autoCache.delete(code);
+    autoCache.set(code, hit);
+    return hit;
+  }
+  let out: AutoResult;
+  try {
+    const res = hljs.highlightAuto(code);
+    out = { value: res.value, language: res.language ?? "" };
+  } catch {
+    out = { value: escapeHtml(code), language: "" };
+  }
+  autoCache.set(code, out);
+  if (autoCache.size > AUTO_CACHE_MAX) autoCache.delete(autoCache.keys().next().value!);
+  return out;
+}
+
+/** test hook */
+export function autoCacheSize(): number {
+  return autoCache.size;
 }
 
 const OPEN_RE = /^<span\s+class="([^"]*)">/i;
@@ -78,17 +123,53 @@ export function svgIconHtml(d: string): string {
   return SVG(d);
 }
 
+// The model's markdown is sanitized with DOMPurify's html profile only (no <svg>), so the code block chrome can't
+// carry its icons through sanitize. The renderer writes these per-load random placeholders instead (plain text
+// to DOMPurify), and restoreCodeBlockIcons swaps them for the static icons right after sanitize — still one pass.
+function randomHex(): string {
+  const b = new Uint8Array(12);
+  globalThis.crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+}
+const ICON_NONCE = randomHex();
+export const WRAP_ICON_TOKEN = `__AC_CB_WRAP_${ICON_NONCE}__`;
+export const COPY_ICON_TOKEN = `__AC_CB_COPY_${ICON_NONCE}__`;
+
+/** Put the trusted icons into sanitized markdown HTML (replaces only the exact placeholders) */
+export function restoreCodeBlockIcons(html: string): string {
+  return html.split(WRAP_ICON_TOKEN).join(SVG(ICON_WRAP)).split(COPY_ICON_TOKEN).join(SVG(ICON_COPY));
+}
+
 export type CodeBlockLabels = { wrap: string; copy: string };
 
-/** Build the final .cb HTML (header + optional numbered lines + highlighted body) in one pass */
-export function buildCodeBlockHtml(raw: string, lang: string | undefined, index: number, labels: CodeBlockLabels, wrapped = false): string {
-  const fence = sanitizeLang(lang);
+/**
+ * Build the final .cb HTML (header + optional numbered lines + highlighted body) in one pass.
+ * The buttons carry WRAP_ICON_TOKEN / COPY_ICON_TOKEN; restoreCodeBlockIcons turns them into icons after sanitize.
+ * autoDetect: a block with no language label gets hljs.highlightAuto and the detected language as its label
+ * (as 1.3.6 did). The renderer turns it off only for a still-open trailing fence of a streaming message, so the
+ * label and colours can't flip while tokens arrive; it is on for closed blocks and settled messages.
+ */
+export function buildCodeBlockHtml(
+  raw: string,
+  lang: string | undefined,
+  index: number,
+  labels: CodeBlockLabels,
+  wrapped = false,
+  autoDetect = true,
+): string {
+  let fence = sanitizeLang(lang);
   const bodyRaw = raw.replace(/\n$/, "");
   let hl: string;
   try {
-    hl = fence && hljs.getLanguage(fence)
-      ? hljs.highlight(bodyRaw, { language: fence }).value
-      : escapeHtml(bodyRaw);
+    if (fence && hljs.getLanguage(fence)) {
+      hl = hljs.highlight(bodyRaw, { language: fence }).value;
+    } else if (!fence && autoDetect && bodyRaw) {
+      const auto = highlightAutoCached(bodyRaw);
+      hl = auto.value;
+      fence = sanitizeLang(auto.language);
+    } else {
+      hl = escapeHtml(bodyRaw);
+    }
   } catch {
     hl = escapeHtml(bodyRaw);
   }
@@ -106,8 +187,8 @@ export function buildCodeBlockHtml(raw: string, lang: string | undefined, index:
       `<div class="cb-head">` +
         `<span class="cb-lang">${langLabel}</span>` +
         `<span class="cb-acts">` +
-          `<button type="button" class="cb-btn cb-wrap" title="${wrapTitle}" aria-label="${wrapTitle}" aria-pressed="${wrapped}">${SVG(ICON_WRAP)}</button>` +
-          `<button type="button" class="cb-btn cb-copy" title="${copyTitle}" aria-label="${copyTitle}" data-i="${index}">${SVG(ICON_COPY)}</button>` +
+          `<button type="button" class="cb-btn cb-wrap" title="${wrapTitle}" aria-label="${wrapTitle}" aria-pressed="${wrapped}">${WRAP_ICON_TOKEN}</button>` +
+          `<button type="button" class="cb-btn cb-copy" title="${copyTitle}" aria-label="${copyTitle}" data-i="${index}">${COPY_ICON_TOKEN}</button>` +
         `</span>` +
       `</div>` +
       `<pre><code class="hljs${fence ? ` language-${fence}` : ""}">${body}</code></pre>` +
