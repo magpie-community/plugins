@@ -230,3 +230,221 @@ See:
 
 MIT. The ShyPie name and logo belong to the ShyPie project; the Magpie bird mark
 belongs to the Magpie project. See [BRAND.md](BRAND.md).
+
+---
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/shypie-icon-dark.svg">
+    <img src="assets/shypie-icon.svg" width="144" alt="ShyPie">
+  </picture>
+</p>
+
+<h1 align="center">ShyPie Privacy Gate（中文）</h1>
+
+<p align="center">
+  <strong>Magpie 网关的结构性出口检查</strong><br>
+  对 Magpie 无法掩码的内容执行扣留或拒绝，并引导 agent 走本地提取。
+</p>
+
+---
+
+**ShyPie Privacy Gate** 是 [ShyPie](https://github.com/siml1169/ShyPie)
+面向 [DeepSeek Harness](https://github.com/deepseek-ai) 隐私优先工作流的
+Magpie 侧组件。它以 Magpie 网关中间件的形式运行，负责出口路径中的
+**结构性检查**：图片、文件、音频、编码数据块，以及不在允许列表中的模型。
+
+它**不负责文本掩码**。文本掩码仍然是 Magpie 的 Privacy 设置。这个插件确保
+Magpie 无法掩码的字节不会意外到达 provider。
+
+> **分发状态：** `0.3.0` 已合入仓库；社区 npm 包尚未发布。在社区发布前，
+> 请从代码 checkout 安装。
+
+## 为什么需要它
+
+Magpie 的掩码只处理文本。其官方文档明确说明：*"Images and file data are sent
+as they are. Text inside a screenshot is not masked."* 网关无法掩码 PDF 页面或
+截图，因此只有两种选择：
+
+- **失败关闭**：拒绝请求；或
+- **扣留**：移除字节，并要求模型在本地处理文件。
+
+本插件同时实现两种方式。它也会拦截通过文本字段夹带的编码文档，并覆盖网关
+后面的所有 agent：DSH、Codex、Cursor、Claude Code 和脚本。
+
+## 一览
+
+| | |
+|---|---|
+| **运行环境** | Magpie 网关中间件（moejs）；纯 JavaScript，无 import、无 I/O |
+| **钩子** | `onRequest`、`onProvider`、`onUsage` |
+| **协议** | OpenAI chat、OpenAI Responses、Anthropic Messages、Gemini |
+| **默认策略** | `binaryPolicy: fail`：面向非本地模型的二进制内容 → **403** |
+| **替代策略** | `binaryPolicy: guide`：扣留字节，注入类型/大小元数据和本地工具提示 |
+| **文本掩码** | **不在这里做**；使用 Magpie **Settings → Privacy** |
+| **测试** | 62 个测试用例，通过仓库的 `scripts/middleware.mjs` 运行 |
+
+## 安装
+
+包已合入 `packages/privacy-gate`。在社区 npm 包发布前，从 checkout 安装：
+
+```sh
+git clone https://github.com/magpie-community/plugins
+magpie plugin add <clone>/packages/privacy-gate
+
+# 最严格模式：所有模型的所有二进制内容都被拒绝
+magpie plugin options privacy-gate '{}'
+
+magpie plugin        # 确认中间件已列出并启用
+```
+
+社区包发布后：
+
+```sh
+magpie plugin add @magpie-community/middleware-privacy-gate
+```
+
+确认 Magpie 内置的 **Gateway middleware** 插件已开启
+（**Settings → Plugins → Built-in**）。关闭时不会运行任何中间件。
+
+## 两种策略
+
+### `fail`：默认
+
+当模型未被明确声明为本地时，二进制内容会被拒绝，返回 **403**，并在消息中
+说明内容类型以及如何改为本地提取。不会发送任何内容。
+
+### `guide`：扣留并引导
+
+请求会被改写为纯文本请求：
+
+```text
+[A binary attachment was withheld locally and was NOT sent to you
+(type image; mime image/png; bytes 481094). Do not claim to have seen it.
+First ask how the user/agent can process or read it locally.]
+```
+
+不会转发任何字节。如果配置了 `guideTools`，这些本地工具名会出现在提示中。
+中间件本身不能运行这些工具；agent 必须配置好对应的本地 MCP/提取器。
+
+### 本地模型
+
+只有**两个**允许列表同时匹配时，字节才会原样通过：
+
+```yaml
+localModels: ["ollama/*", "lmstudio/*"]
+localProviders: ["ollama", "lmstudio"]
+```
+
+只配置 `localModels` 时，`onRequest` 会放行，但由于 provider 不是本地，
+`onProvider` 会清空内容。两个列表要么都配置，要么都不配置。
+
+## 工作方式
+
+```mermaid
+flowchart LR
+  A["agent 请求"] --> B{"onRequest<br/>检查请求体"}
+  B -->|无二进制、无 blob| P["进入路由"]
+  B -->|二进制 + 本地模型| P
+  B -->|二进制 + fail| R["403：不发送"]
+  B -->|二进制 + guide| G["替换二进制内容<br/>为元数据 + 提示"]
+  G --> V{"有界复查<br/>无二进制、无 blob"}
+  V -->|通过| P
+  V -->|不通过| R
+  P --> C["Magpie 路由"]
+  C --> D{"onProvider<br/>已知 provider 检查"}
+  D -->|provider 本地| M["Magpie Privacy 掩码"]
+  D -->|provider 非本地| X["清空内容，仅保留文本"]
+  M --> L["provider"]
+  X --> L
+```
+
+检查是**协议位置感知**的。只有协议规定的内容 part 才会被当作二进制内容；
+工具参数和消息文本中名为 `signature`、`id`、`parameters` 或 `tools` 的字段
+属于普通数据，仍会被扫描。
+
+## 配置
+
+所有配置都在一个 JSON 对象中，即 `ctx.options`：
+
+```sh
+magpie plugin options privacy-gate '{
+  "binaryPolicy": "guide",
+  "allowModels": ["deepseek/*", "copilot/*"],
+  "localModels": ["ollama/*", "lmstudio/*"],
+  "localProviders": ["ollama", "lmstudio"],
+  "guideTools": ["shypie.describe", "shypie.extract", "shypie.ocr"]
+}'
+```
+
+| 选项 | 默认值 | 含义 |
+|---|---:|---|
+| `binaryPolicy` | `fail` | `fail` 返回 403；`guide` 扣留所有二进制内容，并注入元数据和本地工具提示。 |
+| `allowModels` | `[]` | 模型 glob。`[]` 允许所有模型。如果该选项存在但不是由非空短字符串组成的数组，**所有请求都会被拒绝**，拼写错误不会静默取消允许列表。 |
+| `localModels` | `[]` | 允许在 `onRequest` 接收二进制内容的模型 glob；需要与 `localProviders` 配合。 |
+| `localProviders` | `[]` | 在 `onProvider` 中检查的 provider-id glob；两个列表必须同时匹配。 |
+| `guideTools` | `[]` | guide 提示中包含的本地工具名。未安装本地提取器时保持为空。 |
+| `blobBase64Chars` / `blobHexChars` | `400` | 达到或超过该长度的编码串视为 blob。很长的哈希或压缩行可能误报。 |
+| `scanChars` | `200000` | 文本检查总预算；每个字段最多使用八分之一（至少 1k）。优先检查最新会话内容。 |
+| `maxNodes` / `maxDepth` | `40000` / `40` | 所有访问值的边界，包括原始值和数组元素。超限则阻断。 |
+| `allowUnknownProtocol` | `false` | 拒绝协议不是 chat/responses/anthropic/gemini 的请求。 |
+| `logMaxLines` / `logEveryRows` | `40` / `50` | 日志输出上限 / 每 N 行一条 usage 日志。 |
+
+## 检查内容
+
+| 层面 | 行为 |
+|---|---|
+| 面向非本地模型的图片/文件/音频/文档 part | 403（`fail`）或扣留（`guide`） |
+| 文本中的编码数据块（base64/base64url、hex、data URI、PDF/ZIP 头） | 403 |
+| 模型不在 `allowModels` 中 | 403 |
+| `allowModels` 格式错误 | 所有请求 403 |
+| 请求体超出检查预算 | 403 |
+| 四种支持协议之外的请求 | 403，除非 `allowUnknownProtocol: true` |
+| 供应商封装的回放字段 | 只在本协议块内豁免 |
+| 明文 PII | **放行**，由 Magpie Privacy 掩码 |
+
+## 限制
+
+- **文本掩码是 Magpie 的职责。** 消息文本或工具参数中的自由文本 PII 和密钥
+  不会在这个层被处理，除非 Magpie Privacy 掩码捕获它们。
+- **扫描是有边界的。** 优先检查最新内容；每个字段只占 `scanChars` 的一部分；
+  超过总预算的文本不会被检查。结构性检查仍然失败关闭。
+- **guide 提示不是提取。** 它会列出本地工具名，但不能执行工具。没有配置本地
+  提取器的 agent 只会得到建议。
+- **guide 模式的 MIME 元数据存在已知问题：**
+  [issue #795](https://github.com/magpie-community/plugins/issues/795)
+  检查的是截断后的前缀，而不是完整的 `media_type`。它不会转发二进制字节。
+- **Magpie 引擎超时会失败开放。** Magpie 在 250 ms 时停止钩子并原样发送请求。
+  本插件会限制自身工作耗时，但无法把引擎超时变成拒绝。参见
+  [magpie#5305](https://github.com/yetone/magpie/issues/5305)。
+- 合法的被拒请求应在本地提取后发送文本，而不是关闭网关。
+
+## 配套：DeepSeek Harness
+
+本地摄取部分位于
+[`@shypie_privacy/dsh-privacy-gate`](https://github.com/siml1169/ShyPie/tree/main/plugins/dsh-privacy-gate)。
+它在 DSH 会话日志写入之前，把附件图片和 PDF 转换为本地文本；filter 模式保留
+本地原文；并在 DSH 发出模型请求之前执行失败关闭的 `llm/stream` 出口检查。
+本 Magpie 网关插件则为同一网关后面的其他 agent 提供结构性检查。
+
+## 开发
+
+```sh
+bun test packages/privacy-gate
+bun scripts/check.mjs
+```
+
+测试通过 `scripts/middleware.mjs` 运行，调用方式与 Magpie 网关一致。中间件没有
+网络访问、定时器、import 或 Node API；测试套件也会检查这一约束。
+
+参见：
+
+- [设计与威胁模型](docs/design.md)
+- [运维与验证](docs/operations.md)
+- [品牌资产](BRAND.md)
+
+## 许可证
+
+MIT。ShyPie 名称和 logo 属于 ShyPie 项目；Magpie 鸟形标志属于 Magpie 项目。
+详见 [BRAND.md](BRAND.md)。
+
