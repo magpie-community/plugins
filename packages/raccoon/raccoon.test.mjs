@@ -355,7 +355,35 @@ test("usage reports Credits window when unexpired bills account for total grante
   })
 })
 
-test("usage reads bills past the newest 200 rows, where the large grants are (plugins #223)", async () => {
+test("usage asks for income bills so a busy account keeps its Credits window", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  // A page holds the newest 100 rows: 1200 spends push every grant out of it
+  const spends = []
+  for (let i = 0; i < 1200; i++) spends.push({ bill_id: `s${i}`, biz_type: "consume", points: -1 })
+  const grants = [
+    { bill_id: "g1", biz_type: "daily_grant", points: 300, expire_at: "2029-10-24T23:59:59+08:00" },
+    { bill_id: "g2", biz_type: "reward_grant", points: 3000 },
+    { bill_id: "g3", biz_type: "reward_grant", points: 3000 },
+  ]
+  const asked = []
+  startServer({
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: 5100 } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": (req, u) => {
+      const type = u.searchParams.get("type")
+      const limit = Number(u.searchParams.get("paging.limit"))
+      asked.push({ type, limit })
+      return Response.json({ code: 0, data: { items: type === "income" ? grants : spends.slice(0, limit) } })
+    },
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
+  expect(u.balance).toBeUndefined()
+  expect(u.windows[0]).toMatchObject({ name: "Credits", amount: 1200, limit: 6300, display: "1200 / 6300" })
+  expect(asked).toEqual([{ type: "income", limit: 200 }])
+})
+
+test("usage falls back to paged bills when the vendor refuses type=income (plugins #223)", async () => {
   const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
   // newest first, as the endpoint answers: 1200 spends, then the grants
   const items = []
@@ -368,6 +396,9 @@ test("usage reads bills past the newest 200 rows, where the large grants are (pl
     "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: 5100 } }),
     "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
     "GET /api/web/points/v1/bills": (req, u) => {
+      if (u.searchParams.get("type")) {
+        return new Response(JSON.stringify({ code: 100002, message: "params_invalid_error" }), { status: 400 })
+      }
       // offset is ignored and total is always 0, as plugins #223 found
       const limit = Number(u.searchParams.get("paging.limit"))
       asked.push(limit)
