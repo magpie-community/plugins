@@ -70,8 +70,9 @@ test("headless renewal gets its own argv and the profile is per platform", () =>
   })
   expect(visible.some((a) => a.startsWith("--remote-debugging-port"))).toBe(false)
   expect(visible).toContain("--window-size=1100,800")
+  // join() on the expected side too: the separator is the test host's, not win32's
   expect(profileDir({ LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local" }, "win32")).toBe(
-    "C:\\Users\\u\\AppData\\Local\\magpie\\inkstone-browser",
+    join("C:\\Users\\u\\AppData\\Local", "magpie", "inkstone-browser"),
   )
   expect(profileDir({ HOME: "/home/u" }, "linux").endsWith(join("magpie", "inkstone-browser"))).toBe(true)
 })

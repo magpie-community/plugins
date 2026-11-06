@@ -120,10 +120,16 @@ test("the sign-in methods cover browser, API key, and API key + console token", 
   // work runs in its callback (the host's authorize deadline is short)
   const browser = p.auth.methods[0]
   const result = browser.authorize({})
-  expect(result.method).toBe("auto")
-  expect(typeof result.callback).toBe("function")
-  expect(result.instructions).toContain("Sign in there")
-  expect(result.url).toBe("")
+  if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+    // a displayless CI runner is refused up front, not left with a window it cannot open
+    expect(result.type).toBe("failed")
+    expect(result.error).toContain("no display")
+  } else {
+    expect(result.method).toBe("auto")
+    expect(typeof result.callback).toBe("function")
+    expect(result.instructions).toContain("Sign in there")
+    expect(result.url).toBe("")
+  }
   // the browser method's key prompt is optional; a non-sk- one is refused
   expect(browser.prompts[0].validate("")).toBeUndefined()
   expect(browser.prompts[0].validate("sk-abc")).toBeUndefined()
