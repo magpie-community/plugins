@@ -236,11 +236,16 @@ function foldReasoning(body) {
   return changed
 }
 
-// deepseek models on Loomy read images only as <image_base64> markers, not
-// OpenAI image_url parts; data-URI images are turned into the marker and
-// merged into the text before them (agent2api images.rs)
+// the older deepseek models on Loomy (deepseek-v4-flash-0731) read
+// images only as <image_base64> markers, not OpenAI image_url parts; their
+// data-URI images are turned into the marker and merged into the text before
+// them (agent2api images.rs). DeepSeek-V4.1-Flash takes image_url parts and
+// reads the marker as plain text (10k prompt tokens, an empty reply), so it
+// keeps the parts as sent (plugins#811)
 function prefersTagFormat(model) {
-  return String(model ?? "").toLowerCase().includes("deepseek")
+  const m = String(model ?? "").toLowerCase()
+  if (!m.includes("deepseek")) return false
+  return !/v4[.-]1(?![0-9])/.test(m)
 }
 function toTagText(part) {
   const kind = String(part?.type ?? "").trim().toLowerCase()
