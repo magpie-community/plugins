@@ -11,10 +11,10 @@ import { test, expect, afterAll, beforeAll, beforeEach } from "bun:test"
 import { homedir, tmpdir } from "node:os"
 import { readFileSync, realpathSync } from "node:fs"
 
-let ZCodeAuthPlugin, _internal
+let ZCodeAuthPlugin, _internal, resetRateWait
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin, _internal } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, _internal, resetRateWait } = await import("./index.mjs"))
 })
 const offline = async () => { throw new Error("no network in tests") }
 const real = globalThis.fetch
@@ -22,6 +22,7 @@ afterAll(() => (globalThis.fetch = real))
 beforeEach(() => {
   globalThis.fetch = offline
   _internal.routes.clear()
+  resetRateWait() // each test starts with no hold of its own (they share an account key)
 })
 
 // serve is the fake zcode.z.ai: route answers each request, and a request
@@ -222,6 +223,29 @@ test("a rate-limited feed is failed with an until half an hour out", async () =>
   expect(t).toBeLessThan(Date.now() + 35 * 60_000)
 })
 
+// the hold itself: magpie asks a failed again after 30 minutes of its own
+// whatever `until` says, so the plugin must be the one that waits
+test("a check-in inside the wait asks ZCode nothing, and answers the failed it gave", async () => {
+  const calls = claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  const first = await checkin()
+  expect(first.outcome).toBe("failed")
+  const asked = calls.length // what the first read spent
+  const again = await checkin()
+  expect(again.outcome).toBe("failed")
+  expect(again.message).toBe(first.message) // the same failed, replayed
+  expect(again.until).toBe(first.until)
+  expect(calls.length).toBe(asked) // not one request more
+})
+
+test("a check-in after the wait reaches ZCode again", async () => {
+  const calls = claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  await checkin()
+  const asked = calls.length
+  resetRateWait(true) // stand where the wait has passed
+  await checkin()
+  expect(calls.length).toBeGreaterThan(asked)
+})
+
 test("a Retry-After ZCode sent is honored", async () => {
   claimWith(() => json(CLAIMED_NOW), () => jsonWith("", 429, { "retry-after": "7200" }))
   const r = await checkin()
@@ -231,7 +255,7 @@ test("a Retry-After ZCode sent is honored", async () => {
   expect(t).toBeLessThan(Date.now() + 130 * 60_000)
 })
 
-test("a claim ZCode rate limited (3002) is failed with an until too", async () => {
+test("a claim ZCode rate limited (3002) is failed and held too", async () => {
   claimWith(() => json(RATE_LIMITED, 400), touchOf([TRUST, "ZCode Trust Build"]))
   const r = await checkin()
   expect(r.outcome).toBe("failed")
@@ -239,15 +263,14 @@ test("a claim ZCode rate limited (3002) is failed with an until too", async () =
   expect(Date.parse(r.until)).toBeGreaterThan(Date.now() + 25 * 60_000)
 })
 
-// last among the rate-limit ones: it leaves the account's wait at its
-// first step again, so nothing after it sees a doubled one
-test("the wait doubles while ZCode keeps turning the ask away, and a read that comes through clears it", async () => {
+test("the wait doubles while ZCode keeps turning the ask away, and a read that comes through forgets it", async () => {
   claimWith(() => json(CLAIMED_NOW), () => json("", 429))
   const first = Date.parse((await checkin()).until)
-  claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  resetRateWait(true) // the wait passed, so the next ask reaches ZCode
   const second = Date.parse((await checkin()).until)
   expect(second - first).toBeGreaterThan(20 * 60_000) // ~30 min -> ~60 min
   // a read that comes through (nothing to claim) forgets the wait
+  resetRateWait(true)
   claimWith(() => json(CLAIMED_NOW), TOUCH_NONE)
   expect((await checkin()).outcome).toBe("inactive")
   claimWith(() => json(CLAIMED_NOW), () => json("", 429))

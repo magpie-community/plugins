@@ -722,13 +722,28 @@ const NOT_ELIGIBLE = 1004
 // 429) to a client that asked too often. #503 (MiniFullC, 11-04) read 180
 // "gift plans to claim: Too Many Requests" over four days at magpie's
 // 30-minute retry, so asking again the same half hour keeps the limit on.
-// A rate-limited read is a failed with an `until`: magpie asks again no
-// sooner than it. A Retry-After ZCode sent is honored; without one the
-// account's own wait doubles from RECHECK_MS up to RATE_LIMIT_MAX_MS, and
-// is forgotten as soon as a read comes through.
+// magpie asks a failed again once retryAfter() has passed, whatever the
+// answer's `until` says (the contract reads `until` as when an answer
+// stops standing, not as the earliest time to ask again), so the account
+// is held here instead: while the wait lasts, claimDaily answers the same
+// failed again, `until` and all, and asks ZCode nothing. A Retry-After
+// ZCode sent is honored up to RATE_LIMIT_MAX_MS; without one the
+// account's own wait doubles from RECHECK_MS, and a read that comes
+// through forgets it.
 const RATE_LIMITED = 3002
 const RATE_LIMIT_MAX_MS = 6 * 60 * 60_000
-const rateWait = new Map() // "key\0jwt" -> ms this account last backed off by
+const rateWait = new Map() // s.key -> { ms, until, message }: the hold this account is under
+// resetRateWait is for tests: it forgets the holds, and with `expire` it
+// back-dates them, standing where the wait has passed. The plugin itself
+// forgets a hold by reading through or by waiting it out, never by calling
+// this.
+export function resetRateWait(expire = false) {
+  if (!expire) {
+    rateWait.clear()
+    return
+  }
+  for (const [k, h] of rateWait) rateWait.set(k, { ...h, until: new Date(Date.now() - 1).toISOString() })
+}
 // retryAfterMs is a Retry-After header, in seconds or as an HTTP date, in
 // ms; 0 when there is none or it doesn't read.
 function retryAfterMs(res) {
@@ -739,15 +754,18 @@ function retryAfterMs(res) {
   const at = Date.parse(v)
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : 0
 }
-// noteRateLimit remembers how long this account backs off, doubling it
-// each time ZCode turns an ask away, and answers when magpie may ask
-// again. A Retry-After ZCode sent is taken as it is, in the same range.
-function noteRateLimit(key, saidMs) {
-  const last = rateWait.get(key) ?? 0
-  const want = saidMs > 0 ? saidMs : (last > 0 ? last * 2 : RECHECK_MS)
-  const ms = Math.min(RATE_LIMIT_MAX_MS, Math.max(RECHECK_MS, want))
-  rateWait.set(key, ms)
-  return new Date(Date.now() + ms).toISOString()
+// noteRateLimit remembers the wait this account is under, with the failed
+// that wait answers with, and says when it ends: a Retry-After ZCode sent
+// is taken as it is, up to the cap; without one the wait doubles from
+// RECHECK_MS (and never falls below it), so a client ZCode keeps turning
+// away asks less and less.
+function noteRateLimit(key, saidMs, message) {
+  const last = rateWait.get(key)?.ms ?? 0
+  const want = saidMs > 0 ? saidMs : Math.max(RECHECK_MS, last * 2)
+  const ms = Math.min(RATE_LIMIT_MAX_MS, want)
+  const until = new Date(Date.now() + ms).toISOString()
+  rateWait.set(key, { ms, until, message })
+  return until
 }
 const CAPTCHA_WORDS = /captcha/i
 
@@ -902,9 +920,11 @@ const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
 // ZCode is not offering one at that moment (code 1004, read again later
 // in the day), failed when a list
 // or a claim can't be read. A rate-limited read (HTTP 429, or code 3002)
-// is a failed carrying an `until`: magpie asks again no sooner than it,
-// out to RATE_LIMIT_MAX_MS (see RATE_LIMITED), instead of the same half
-// hour that keeps the limit on. A failed one is asked again later in the
+// is not asked again either: the account is held here until the wait ends
+// (a Retry-After ZCode sent, else the account's own wait doubling from
+// RECHECK_MS, out to RATE_LIMIT_MAX_MS — see RATE_LIMITED), and every ask
+// inside the wait answers the failed it already gave, without a request.
+// A failed one is asked again later in the
 // day, when a plan claimed now answers 1003. An inactive stands only
 // until RECHECK_MS from now, so a plan dropped into the feed later in
 // the day is still claimed; the other settled answers stand for the day
@@ -913,11 +933,18 @@ const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
 async function claimDaily(s) {
   if (!s?.jwt) return { outcome: "ineligible", message: "ZCode's gift plans are claimed with a ZCode sign-in; this account has none" }
   if (jwtExpired(s.jwt)) return { outcome: "failed", message: EXPIRED }
-  const retryKey = s.key + "\0" + s.jwt
+  // a rate limit this account is still under: the same failed again, and
+  // not one request (magpie asks a failed again after 30 minutes of its
+  // own, so holding it is the plugin's job — see RATE_LIMITED)
+  const held = rateWait.get(s.key)
+  if (held && Date.now() < Date.parse(held.until)) return { outcome: "failed", message: held.message, until: held.until }
   const { plans, unread, rate = null } = await toClaim(s)
-  // a rate-limited read: asked again when the limit says, not in half an hour
-  if (rate !== null) return { outcome: "failed", message: unread.join("; ") || "ZCode rate limited this account", until: noteRateLimit(retryKey, rate) }
-  rateWait.delete(retryKey) // a read that came through clears the account's wait
+  // a rate-limited read: held here until the wait is over
+  if (rate !== null) {
+    const message = unread.join("; ") || "ZCode rate limited this account"
+    return { outcome: "failed", message, until: noteRateLimit(s.key, rate, message) }
+  }
+  rateWait.delete(s.key) // a read that came through forgets the wait
   if (!plans.length && unread.length) return { outcome: "failed", message: unread.join("; ") }
   if (!plans.length) return { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
   const got = []
@@ -935,7 +962,7 @@ async function claimDaily(s) {
   if (claimed.length) routes.delete(s.key + "\0" + s.jwt)
   // a claim ZCode rate limited: the plan may still be there, later
   const limitedClaim = got.find((g) => g.rate !== undefined)
-  if (limitedClaim) return { outcome: "failed", message: said, until: noteRateLimit(retryKey, limitedClaim.rate) }
+  if (limitedClaim) return { outcome: "failed", message: said, until: noteRateLimit(s.key, limitedClaim.rate, said) }
   // a list that didn't read may hold a plan not claimed: asked again
   if (unread.length || got.some((g) => g.outcome === "failed")) return { outcome: "failed", message: said }
   if (got.some((g) => g.outcome === "captcha")) return { outcome: "captcha", message: said }
