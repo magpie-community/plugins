@@ -5,13 +5,16 @@
 //   {"mode": "to_content"}
 //
 // "strip": a model that writes its thinking into the reply as
-// <think>…</think> at the start of its text has that block taken out, so
-// an agent doesn't keep it in its history and send it back each turn. Only
-// a block that opens the text is taken; <think> later on, in code the model
-// writes, stays. Within the block, a </think> in Markdown code (an inline
-// span, or a fenced block) is the thinking's words, an example written out,
-// not its end (magpie-community/plugins#176, as magpie's gateway reads it
-// since #2634). Anthropic, Chat and Responses replies, streamed or whole.
+// <think>…</think>, <thinking>…</thinking> or <thought>…</thought> at the
+// start of its text has that block taken out, so an agent doesn't keep it
+// in its history and send it back each turn. Each block ends at its own
+// close tag. Only a block that opens the text is taken; a tag later on, in
+// code the model writes, stays. Within the block, a close tag in Markdown
+// code (an inline span, or a fenced block) is the thinking's words, an
+// example written out, not its end (magpie-community/plugins#176, as
+// magpie's gateway reads it since #2634). The three tags are magpie's
+// thoughtTags (yetone/magpie#5106, plugins#777). Anthropic, Chat and
+// Responses replies, streamed or whole.
 //
 // "to_content": a Chat reply's reasoning_content (or reasoning) is put in
 // its text as <think>…</think>, for a client that shows only the text.
@@ -21,6 +24,23 @@
 
 const OPEN = "<think>"
 const CLOSE = "</think>"
+
+// TAGS are the tags a leading block of thinking comes between, by its
+// opening tag. No opening tag is a prefix of another's whole tag (<think>
+// and <thinking> part at the seventh character), so at most one matches.
+const TAGS = { "<think>": "</think>", "<thinking>": "</thinking>", "<thought>": "</thought>" }
+
+// opening is the opening tag t starts with, or "" when none does
+function opening(t) {
+  for (const open in TAGS) if (t.startsWith(open)) return open
+  return ""
+}
+
+// mayOpen is whether t, shorter than a whole tag, may be the start of one
+function mayOpen(t) {
+  for (const open in TAGS) if (t.length < open.length && open.startsWith(t)) return true
+  return false
+}
 
 export function onEvent(ev, ctx) {
   const toContent = ctx.options && ctx.options.mode === "to_content"
@@ -115,24 +135,26 @@ function stripItem(it) {
   return true
 }
 
-// stripWhole takes a think block off the start of a whole text: up to its
-// first </think> outside Markdown code
+// stripWhole takes a thinking block off the start of a whole text: up to
+// the first of its own close tag outside Markdown code
 function stripWhole(t) {
   const lead = /^\s*/.exec(t)[0]
-  if (!t.startsWith(OPEN, lead.length)) return t
-  const rest = t.slice(lead.length + OPEN.length)
-  const [at] = findClose({ span: 0, fence: 0, mid: false }, rest, true)
-  return at < 0 ? t : rest.slice(at + CLOSE.length).replace(/^\s+/, "")
+  const open = opening(t.slice(lead.length))
+  if (!open) return t
+  const close = TAGS[open]
+  const rest = t.slice(lead.length + open.length)
+  const [at] = findClose({ span: 0, fence: 0, mid: false }, rest, true, close)
+  return at < 0 ? t : rest.slice(at + close.length).replace(/^\s+/, "")
 }
 
-// findClose gives where </think> is first outside Markdown code in s, read
+// findClose gives where close is first outside Markdown code in s, read
 // on from the pieces before (m: the open inline span's backticks, the open
 // fence's, and whether the line is past its leading spaces), or -1 and how
 // much of the end of s to hold back for the next piece: a close tag or a
 // run of backticks that may go on there. Unless last; then nothing is
 // held. An inline span is taken to end with its line, so a stray backtick
 // can't swallow the answer. magpie's mdCode (internal/gateway/chat.go).
-function findClose(m, s, last) {
+function findClose(m, s, last, close) {
   for (let j = 0; j < s.length; ) {
     const c = s[j]
     if (c === "`") {
@@ -155,8 +177,8 @@ function findClose(m, s, last) {
     } else if (c === " " || c === "\t") {
       j++
     } else if (c === "<" && m.span === 0 && m.fence === 0) {
-      if (s.startsWith(CLOSE, j)) return [j, 0]
-      if (!last && CLOSE.startsWith(s.slice(j))) return [-1, s.length - j]
+      if (s.startsWith(close, j)) return [j, 0]
+      if (!last && close.startsWith(s.slice(j))) return [-1, s.length - j]
       m.mid = true
       j++
     } else {
@@ -167,12 +189,13 @@ function findClose(m, s, last) {
   return [-1, 0]
 }
 
-// strip is a stream's text, a piece at a time, without a think block at
-// its start. Its state, by stream: inside the block, text held back that
-// may be the start of a tag (or, inside, a run of backticks), whether the
-// text has begun, and where the block is in Markdown code.
+// strip is a stream's text, a piece at a time, without a thinking block at
+// its start. Its state, by stream: inside the block (and the close tag it
+// waits for), text held back that may be the start of a tag (or, inside, a
+// run of backticks), whether the text has begun, and where the block is in
+// Markdown code.
 function strip(state, key) {
-  const st = state[key] || (state[key] = { inside: false, carry: "", begun: false, trim: false, code: { span: 0, fence: 0, mid: false } })
+  const st = state[key] || (state[key] = { inside: false, close: "", carry: "", begun: false, trim: false, code: { span: 0, fence: 0, mid: false } })
   return (piece) => {
     if (st.begun) return piece
     let s = st.carry + piece
@@ -180,12 +203,12 @@ function strip(state, key) {
     let out = ""
     for (;;) {
       if (st.inside) {
-        const [i, hold] = findClose(st.code, s, false)
+        const [i, hold] = findClose(st.code, s, false, st.close)
         if (i < 0) {
           st.carry = hold ? s.slice(s.length - hold) : ""
           return out
         }
-        s = s.slice(i + CLOSE.length)
+        s = s.slice(i + st.close.length)
         st.inside = false
         st.trim = true
         continue
@@ -199,13 +222,15 @@ function strip(state, key) {
       }
       const lead = /^\s*/.exec(s)[0]
       const rest = s.slice(lead.length)
-      if (rest.startsWith(OPEN)) {
-        s = rest.slice(OPEN.length)
+      const open = opening(rest)
+      if (open) {
+        s = rest.slice(open.length)
+        st.close = TAGS[open]
         st.inside = true
         continue
       }
-      if (rest.length < OPEN.length && OPEN.startsWith(rest)) {
-        // maybe the start of <think>: wait for the next piece
+      if (mayOpen(rest)) {
+        // maybe the start of an opening tag: wait for the next piece
         st.carry = s
         return out
       }

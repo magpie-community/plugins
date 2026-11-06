@@ -81,3 +81,48 @@ test("a whole reply with a close only in code keeps its text", () => {
   expect(mod.onResponse({ choices: [{ message: { content: t } }] }, ctx)).toBeUndefined()
   expect(mod.onResponse({ choices: [{ message: { content: "<think>like\n```\n</think>\n```\n</think>\n\nok" } }] }, ctx).choices[0].message.content).toBe("ok")
 })
+
+// #777: the three tags magpie's gateway reads a leading block between
+// (yetone/magpie#5106), each closed by its own end tag, magpie's
+// TestChatThoughtTags cases for <thinking>
+const tagged = [
+  ["<thinking> whole", ["<thinking>Let me think</thinking>Hi"], "Hi"],
+  ["<thinking> split tags", ["<thin", "king>Let me", " think</thin", "king>Hi"], "Hi"],
+  ["<thinking> the open tag a chunk alone", ["<thinking>", "Let me think", "</thinking>", "Hi"], "Hi"],
+  ["<thinking> a character a delta", chars("<thinking>ab</thinking>\n\ncd"), "cd"],
+  ["<thinking> never closed stays thinking", ["<thinking>half", " a thought</thi"], ""],
+  ["<thought> whole", ["<thought>Greeting.</thought>Hello"], "Hello"],
+  ["<thought> split tags", ["<tho", "ught>Let me", " think</tho", "ught>\n\nHello", " there"], "Hello there"],
+  ["<thought> a character a delta", chars("\n<thought>ab</thought>cd"), "cd"],
+  ["<think> split where <thinking> could still start", ["<think", ">a</think>b"], "b"],
+  ["a <thinking> block ends at </thinking>, not </think>", ["<thinking>a </think> b</thinking>c"], "c"],
+  ["a <think> block ends at </think>, not </thinking>", ["<think>a </thinking> b</think>c"], "c"],
+  ["a <thought> block ends at </thought>, not </think>", ["<thought>a </think> b</thought>c"], "c"],
+  ["a </thinking> in inline code doesn't end the block", ["<thinking>use `</thinking>` here</thinking>\nok"], "ok"],
+  ["a <thinking> later on stays", ["Hi <thinking>x</thinking>"], "Hi <thinking>x</thinking>"],
+  ["a tag that only looks like one stays", ["<thinkingx>a</thinkingx>b"], "<thinkingx>a</thinkingx>b"],
+  ["<thoughts> is not <thought>", chars("<thoughts>a</thoughts>b"), "<thoughts>a</thoughts>b"],
+]
+for (const [name, parts, want] of tagged) {
+  test("#777: " + name, () => {
+    expect(streamed(parts)).toBe(want)
+    expect(anthropic(parts)).toBe(want)
+  })
+}
+
+test("#777: whole replies with <thinking> and <thought>", () => {
+  const ctx = { protocol: "chat", options: {}, state: {}, status: 200 }
+  for (const [t, want] of [
+    ["<thinking>a</thinking>\nb", "b"],
+    ["<thought>a</thought>b", "b"],
+    [" <thinking>\na\n</thinking>\n\nb", "b"],
+    ["<thinking>a </think> b</thinking>c", "c"],
+  ]) {
+    expect(mod.onResponse({ choices: [{ message: { content: t } }] }, ctx).choices[0].message.content).toBe(want)
+    expect(mod.onResponse({ content: [{ type: "text", text: t }] }, ctx).content[0].text).toBe(want)
+    expect(mod.onResponse({ output: [{ type: "message", content: [{ type: "output_text", text: t }] }] }, ctx).output[0].content[0].text).toBe(want)
+  }
+  // never closed: the text stays as it was, as magpie's afterThought leaves it
+  expect(mod.onResponse({ choices: [{ message: { content: "<thinking>never closed" } }] }, ctx)).toBeUndefined()
+  expect(mod.onResponse({ choices: [{ message: { content: "<thinking>a </think> b" } }] }, ctx)).toBeUndefined()
+})
