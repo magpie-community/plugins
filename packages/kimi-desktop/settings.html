@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh" data-theme="__KIMI_SETTINGS_THEME__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="magpie-kimi-settings-token" content="__KIMI_SETTINGS_TOKEN__">
+<title>Kimi 子任务模型</title>
+<style>
+  :root { color-scheme: light dark; font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 32px 24px; background: Canvas; color: CanvasText; }
+  main { max-width: 680px; margin: 0 auto; }
+  h1 { margin: 0 0 8px; font-size: 22px; font-weight: 650; }
+  p { margin: 6px 0; }
+  .muted { color: GrayText; }
+  .field { margin-top: 28px; }
+  label, .label { display: block; margin-bottom: 8px; font-weight: 600; }
+  output { display: block; overflow-wrap: anywhere; padding: 10px 12px; border: 1px solid color-mix(in srgb, CanvasText 18%, Canvas); border-radius: 8px; }
+  select { width: 100%; padding: 10px 12px; border-radius: 8px; font: inherit; background: Canvas; color: CanvasText; border: 1px solid color-mix(in srgb, CanvasText 28%, Canvas); }
+  .actions { display: flex; gap: 10px; margin-top: 18px; }
+  button { padding: 8px 18px; border: 1px solid color-mix(in srgb, CanvasText 24%, Canvas); border-radius: 7px; font: inherit; cursor: pointer; background: Canvas; color: CanvasText; }
+  button[type="submit"] { background: #6266d6; border-color: #6266d6; color: white; }
+  button:disabled { opacity: .5; cursor: default; }
+  select:focus-visible, button:focus-visible { outline: 2px solid #8388f3; outline-offset: 3px; }
+  .status { margin-top: 24px; padding-top: 18px; border-top: 1px solid color-mix(in srgb, CanvasText 16%, Canvas); }
+  #notice { min-height: 1.6em; margin-top: 12px; }
+  .error { color: light-dark(#b42318, #ffb4a9); }
+  .guidance { margin-top: 28px; font-size: 13px; color: GrayText; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Kimi 子任务模型</h1>
+  <p class="muted">为新建的 Agent 子任务配置可选的辅助模型。</p>
+  <div class="field">
+    <span class="label">主模型</span>
+    <output id="primary">正在读取…</output>
+    <p class="muted">在 Magpie Agents → Kimi 中更改主模型。</p>
+  </div>
+  <form id="settings-form">
+    <div class="field">
+      <label for="secondary">辅助模型</label>
+      <select id="secondary" disabled><option value="">继承主模型</option></select>
+      <p id="models-hint" class="muted">模型列表来自当前 Kimi 连接可用的模型。</p>
+    </div>
+    <div class="actions">
+      <button id="save" type="submit" disabled>保存</button>
+      <button id="refresh" type="button">刷新</button>
+    </div>
+  </form>
+  <div class="status" aria-live="polite">
+    <p id="connection">正在读取设置…</p>
+    <p id="application" class="muted"></p>
+  </div>
+  <p id="notice" role="status" aria-live="polite"></p>
+  <p class="guidance">新建的 Agent 子任务可在已配置的主模型与辅助模型中选择。仅在提示词中写入其他模型名称，不会改变模型配置。</p>
+</main>
+<script nonce="__KIMI_SETTINGS_NONCE__">
+(() => {
+  const token = document.querySelector('meta[name="magpie-kimi-settings-token"]').content;
+  const primary = document.getElementById('primary');
+  const secondary = document.getElementById('secondary');
+  const save = document.getElementById('save');
+  const refresh = document.getElementById('refresh');
+  const connection = document.getElementById('connection');
+  const application = document.getElementById('application');
+  const notice = document.getElementById('notice');
+  const modelsHint = document.getElementById('models-hint');
+  let settings = null;
+  let busy = false;
+  const statusNames = {
+    connected: 'Kimi 已连接', disconnected: 'Kimi 未连接', waiting_kimi: '等待 Kimi',
+    waiting_kimi_idle: '等待 Kimi 空闲', waiting_kimi_ready: '等待 Kimi 就绪',
+    catalog_sync_failed: '模型目录同步失败', catalog_unavailable: '无法读取模型目录', kimi_config_changed: 'Kimi 配置已变化',
+    secondary_model_unavailable: '辅助模型当前不可用', secondary_model_unsupported: '当前 Kimi 版本不支持辅助模型',
+  };
+  const errors = {
+    invalid_session: '设置服务已重启，请重新打开此页面。',
+    connect_kimi_first: '请先在 Magpie Agents → Kimi 接通，然后刷新。',
+    model_not_enabled_for_kimi: '该模型当前不可用，请刷新模型列表后重新选择。',
+    connection_changed: 'Kimi 连接已变化，请刷新后重试。',
+    settings_unavailable: '设置暂时不可用，请稍后刷新。',
+    settings_read_failed: '无法读取设置，请稍后刷新。',
+    settings_save_failed: '保存失败，请刷新后重试。',
+  };
+  const modelName = id => {
+    const model = settings.models.find(item => item.id === id);
+    return model && model.name && model.name !== id ? `${model.name}（${id}）` : id;
+  };
+  const updateControls = () => {
+    secondary.disabled = busy || !settings;
+    refresh.disabled = busy;
+    save.disabled = busy || !settings || secondary.value === settings.secondaryModel;
+  };
+  const tell = (text, error = false) => {
+    notice.textContent = text;
+    notice.className = error ? 'error' : '';
+  };
+  function render(value) {
+    settings = value;
+    primary.textContent = modelName(settings.primaryModel) || '尚未选择';
+    secondary.replaceChildren();
+    const addOption = (id, name, disabled = false) => {
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = name;
+      option.disabled = disabled;
+      secondary.appendChild(option);
+    };
+    addOption('', '继承主模型');
+    const seen = new Set(['']);
+    for (const model of settings.models) {
+      if (seen.has(model.id)) continue;
+      seen.add(model.id);
+      addOption(model.id, modelName(model.id));
+    }
+    if (!seen.has(settings.secondaryModel)) {
+      addOption(settings.secondaryModel, `${settings.secondaryModel}（已保存，当前不可用）`, true);
+    }
+    secondary.value = settings.secondaryModel;
+    modelsHint.textContent = settings.models.length
+      ? '模型列表来自当前 Kimi 连接可用的模型。'
+      : '暂无可用模型。请先在 Magpie Agents → Kimi 接通，然后刷新。';
+    connection.textContent = statusNames[settings.status] || `状态：${settings.status}`;
+    const desired = settings.secondaryModel || settings.primaryModel;
+    const applied = settings.appliedSecondaryModel;
+    if (settings.status === 'connected' && typeof applied === 'string' && applied === desired) {
+      application.textContent = settings.secondaryModel ? '当前辅助模型配置已应用。' : '当前辅助模型继承主模型，配置已应用。';
+    } else if (settings.status === 'waiting_kimi_idle') {
+      application.textContent = '等待 Kimi 空闲后应用当前配置。';
+    } else {
+      application.textContent = '当前配置的应用状态尚未确认。可稍后刷新查看。';
+    }
+    updateControls();
+  }
+  async function request(method, body) {
+    let response;
+    try {
+      response = await fetch(new URL('api/settings', document.baseURI), {
+        method, credentials: 'omit', cache: 'no-store',
+        headers: { '__KIMI_SETTINGS_HEADER__': token, ...(body ? { 'content-type': 'application/json' } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+    } catch { throw Object.assign(new Error(), { code: 'unreachable' }); }
+    let value;
+    try { value = await response.json(); }
+    catch { throw Object.assign(new Error(), { code: 'unreachable' }); }
+    if (!response.ok) throw Object.assign(new Error(), { code: value.error });
+    return value;
+  }
+  async function run(method) {
+    busy = true;
+    updateControls();
+    tell(method === 'POST' ? '正在保存…' : '正在刷新…');
+    try {
+      const value = await request(method, method === 'POST' ? { secondaryModel: secondary.value } : undefined);
+      render(value);
+      tell(method === 'POST' ? '辅助模型配置已保存。' : '设置已刷新。');
+    } catch (error) {
+      tell(errors[error.code] || '无法连接设置服务，请确认 Magpie 插件已启动后重试。', true);
+    } finally { busy = false; updateControls(); }
+  }
+  secondary.addEventListener('change', updateControls);
+  document.getElementById('settings-form').addEventListener('submit', event => {
+    event.preventDefault();
+    if (!save.disabled) void run('POST');
+  });
+  refresh.addEventListener('click', () => { void run('GET'); });
+  void run('GET');
+})();
+</script>
+</body>
+</html>

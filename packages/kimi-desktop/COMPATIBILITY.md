@@ -1,5 +1,38 @@
 # Compatibility record
 
+## macOS primary and secondary native Agent turn, 2026-11-07
+
+The local 0.1.6 candidate ran on macOS 27.2 arm64 with ordinary signed-in Kimi desktop **3.2.17, build 3.2.17.4**, official Magpie **0.1.3077**, and Bun **1.4.4**. No Kimi or Magpie application resources were changed. The embedded Magpie plugin page rendered the current primary model and the gateway catalog; its save and refresh controls confirmed the secondary preference was applied. The same settings form was also exercised in a temporary browser tab.
+
+With primary `codex/gpt-6.1-sol` and secondary `codex/gpt-6-astra`, a new Work conversation in a task-owned test project requested two new native `Agent` subagents: one with `model="secondary"`, then one with `model="primary"`. Both completed, each used zero tools, and the parent reproduced their distinct requested markers. This was submitted through Kimi's native UI. Magpie's routing metadata recorded six Sol requests and two Astra requests, all HTTP 200 and each with its requested model equal to its served model. These eight requests include the runtime's auxiliary/continuation calls; they are not eight subagent creations.
+
+Saving **inherit primary** afterward removed the adapter-owned secondary and experimental tables from the runtime TOML, returning to their absent baseline. The main Sol connection remained enabled and connected, with no active turns or tools. All four native model entries and unrelated desktop settings matched their before-test comparisons. The credential aggregate differed during the live-turn phase; its cause was not isolated, so this phase does not claim credential bytes were unchanged. No credential values or full configuration copies were retained.
+
+That live candidate's **76 tests passed with 682 assertions**. An offline tarball install matched all eleven runtime/UI files to that candidate's source before installation into the real host. Busy-session retry, partial reload failure, regeneration and shutdown restoration were covered by isolated synthetic tests, not additional real disconnect/reconnect cycles in this phase. Official paid search/fetch, allowance accounting, sleep/wake and other operating systems were not newly tested. The original primary-only bridge has the separate record below.
+
+The final inheritance fix came after this live check: when the original native secondary setting was already enabled for another registered alias, clearing the plugin preference must keep new subagents on the current primary model while connected, and preserve the original baseline for disconnect or shutdown. Isolated regression tests cover the actual mock-bridge route, applied status, following a changed primary without repeated reloads, and disconnect restoration. The final temporary-home suite passed **77 tests with 704 assertions**. The signed-in UI check above used the earlier adapter revision.
+
+## macOS desktop UI turn, 2026-11-06
+
+On 2026-11-06 a real signed-in Kimi desktop **Work** conversation submitted a turn from the native UI while the adapter was connected: macOS 27.2 arm64, ordinary Kimi desktop **3.2.17, build 3.2.17.4**, official Magpie **0.1.3077**, agent package **0.1.5**, Bun **1.4.4**. The model was selected in Magpie and served by an external, non-Kimi provider: provider `codex`, requested and served model `gpt-6.1-sol`.
+
+The UI prompt named the fixture's relative path and did not include its contents. The task-owned fixture contained a single marker line.
+
+1. The agent's native `Read` tool call requested that fixture path. In the expanded conversation, the tool response's first line and the turn's final reply contained the same marker.
+2. A later UI turn in the same conversation did not call a tool. It recalled the earlier marker from the conversation history, reproduced it accurately, and issued no new tool call.
+
+Both turns used the ordinary signed-in Work conversation; no UI code, application resource or model-menu patch was installed. Magpie's request log recorded three routed requests for the tool round and one for the recall round, each HTTP 200 with `requestedModel` equal to `servedModel` (`gpt-6.1-sol`). Those are routed requests, not a count of tool calls; the tool-call evidence is the expanded conversation described above.
+
+In this run, the first turn without the project selected refused the outside-workspace fixture; selecting its project made the retry succeed.
+
+The generated runtime TOML carried the bridge address during the successful turns. The package's 36 tests passed, and SHA-256 comparisons confirmed that all six installed runtime files matched the tested repository files byte for byte.
+
+With Work idle, disconnecting through the official Magpie CLI restored `https://agent-gw.kimi.com/coding/v1` in both the desktop JSON configuration and generated runtime TOML. Bridge aliases were removed, and all four native models and the current native selection were preserved. A local in-memory comparison found credentials and unrelated settings unchanged; no credential values or full configuration backup were persisted.
+
+Reconnecting through the same CLI to `codex/gpt-6.1-sol` succeeded. The adapter was left enabled and connected with 52 catalog models, matching loopback addresses in JSON and TOML, and no active turns or tools. No additional inference was sent during the disconnect/reconnect check.
+
+Kimi's own model menu still showed its native label (**K3**) while the actual model came from Magpie's selection; custom aliases in that menu remain unverified. Kimi's search/fetch and other paid tools, their billing and allowance accounting, sleep/wake, natural credential rotation and non-`Read` tools were not exercised.
+
 ## Kimi 3.2.18 isolated compatibility check
 
 On 2026-10-24, Windows Kimi desktop 3.2.18.13 shipped Daimon 0.6.8. An independent source copy of that installed bundle was used to exercise its unchanged model schema, thinking resolver, request builder and streamed/non-streamed response parser. Test-only exports exposed those internal functions; no installed application file was changed.

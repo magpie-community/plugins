@@ -12,7 +12,8 @@ export function controlEndpoint(state) {
 // Bun supplies the authenticated WebSocket client; no browser or Kimi Code CLI.
 export async function rpc(state, method, params = {}, { timeout = 6000, Socket = globalThis.WebSocket } = {}) {
   if (!['models.current', 'conversations.setModel', 'conversations.getKimiModelList',
-    'conversations.updateKimiModelList'].includes(method)) throw Error('unsupported_control_method');
+    'conversations.updateKimiModelList', 'kimiPlugin.reloadActiveSessions',
+    'kimiPlugin.ReloadSession'].includes(method)) throw Error('unsupported_control_method');
   const endpoint = controlEndpoint(state);
   return new Promise((resolve, reject) => {
     let socket, settled = false;

@@ -7,6 +7,7 @@ import { once } from 'node:events';
 import { rpc } from './rpc.mjs';
 import { normalizeModels, mergeRuntimeModels, isMenuAlias } from './catalog.mjs';
 import { prepareLibrary, applyInstructions } from './library.mjs';
+import { inspectSecondary, patchSecondary } from './secondary-config.mjs';
 
 const PROVIDER = 'daimon-kimi-code';
 const TOOL_ORIGIN = 'https://agent-gw.kimi.com';
@@ -17,6 +18,57 @@ const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const baseURL = doc => doc?.model?.providers?.[PROVIDER]?.baseUrl;
 const activeCount = value => Array.isArray(value) ? value.length : Number(value) || 0;
 const busy = runner => activeCount(runner?.activeKernelTurns) + activeCount(runner?.activeKernelToolCalls) > 0;
+
+// The only two control calls this feature adds. Kimi's reload walks the
+// sessions it currently caches; the targeted call retries one of them.
+const RELOAD_SESSIONS = 'kimiPlugin.reloadActiveSessions';
+const RELOAD_SESSION = 'kimiPlugin.ReloadSession';
+const SECONDARY_RETRY_MS = 5000;
+const MODEL_ID = /^[^\x00-\x1f/]+\/[^\x00-\x1f]+$/;
+const SECONDARY_CODES = new Set(['secondary_config_unsupported', 'secondary_model_unavailable',
+  'secondary_model_reload_failed', 'kimi_config_changed']);
+
+const validModelID = value => typeof value === 'string' && value.length <= 1024 && MODEL_ID.test(value);
+
+// A snapshot is the helper's four JSON fields and nothing else. Anything else
+// is treated as absent instead of being trusted.
+function plainSnapshot(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { model, enabled, hasSecondaryTable, hasExperimentalTable } = value;
+  if (model !== null && typeof model !== 'string') return null;
+  if (enabled !== null && typeof enabled !== 'boolean') return null;
+  if (typeof hasSecondaryTable !== 'boolean' || typeof hasExperimentalTable !== 'boolean') return null;
+  return { model, enabled, hasSecondaryTable, hasExperimentalTable };
+}
+
+const isRestoredBaseline = (current, owned) => owned?.restored
+  && current.model === owned.baseline.model && current.enabled === owned.baseline.enabled;
+
+// The scalars this adapter does not own. A control call can make Daimon rewrite
+// the whole file from a fixed key set, so these are read before that call and
+// put back afterwards. Only the helper's four JSON fields are remembered.
+function externalFields(current, owned) {
+  if (isRestoredBaseline(current, owned)) return null;
+  const foreignModel = current.model !== null && current.model !== owned.alias;
+  const foreignFlag = current.enabled === false;
+  if (!foreignModel && !foreignFlag) return null;
+  return { model: foreignModel ? current.model : null,
+    enabled: foreignFlag ? false : null,
+    hasSecondaryTable: foreignModel, hasExperimentalTable: foreignFlag };
+}
+
+// Restore per field: a scalar this adapter wrote (or Daimon dropped) returns to
+// its original value; a scalar another writer changed stays untouched.
+function restoreTarget(current, baseline, alias) {
+  const ownsModel = current.model === null || (alias !== '' && current.model === alias);
+  const ownsFlag = current.enabled === null || current.enabled === true;
+  return {
+    model: ownsModel ? baseline.model : current.model,
+    enabled: ownsFlag ? baseline.enabled : current.enabled,
+    hasSecondaryTable: ownsModel ? baseline.hasSecondaryTable : current.hasSecondaryTable,
+    hasExperimentalTable: ownsFlag ? baseline.hasExperimentalTable : current.hasExperimentalTable,
+  };
+}
 
 function atomicJSON(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -78,6 +130,7 @@ export class KimiAdapter {
     this.stateDir = stateDir || path.join(home, '.config', 'magpie-kimi');
     this.kimiDir = kimiDir || defaultKimiDirectory(home);
     this.configFile = path.join(this.kimiDir, 'config.json');
+    this.nativeConfigFile = path.join(this.kimiDir, 'runtime', 'kimi-code', 'config.toml');
     this.runnerFile = path.join(this.kimiDir, 'agents', 'main', 'runner.state.json');
     this.connectionFile = path.join(this.stateDir, 'connection.json');
     this.stateFile = path.join(this.stateDir, 'adapter-state.json');
@@ -95,6 +148,13 @@ export class KimiAdapter {
     this.stopping = false;
     this.state = null;
     this.inflight = new Set();
+    // Memory only: ids whose cached session was mid-turn when the secondary
+    // settings were written. Never persisted, never resent after a reload.
+    this.secondaryPending = new Set();
+    this.secondaryReloadPending = false;
+    this.secondaryReloadStale = false;
+    this.secondaryExternal = null;
+    this.secondaryAfter = 0;
   }
 
   bootstrap() {
@@ -170,6 +230,52 @@ export class KimiAdapter {
     const text = await response.text();
     if (Buffer.byteLength(text) > 8 * 1024 * 1024) throw Error('catalog_unavailable');
     return normalizeModels(JSON.parse(text), {allowEmpty: true});
+  }
+
+  async readSettings() {
+    let desired;
+    try { desired = readJSON(this.connectionFile); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw Error('settings_unavailable');
+      return { enabled: false, primaryModel: '', secondaryModel: '', status: 'disconnected', models: [] };
+    }
+    let catalog = [], status = this.status.code || 'disconnected';
+    if (desired.enabled && desired.gateway?.key) {
+      try { catalog = await this.gatewayCatalog(gatewayURL(desired.gateway.url), desired.gateway.key); }
+      catch { status = 'catalog_unavailable'; }
+    }
+    const appliedSecondaryModel = this.state?.secondaryModel
+      || (!this.state?.secondary ? this.state?.model || this.live?.model : undefined);
+    return {
+      enabled: desired.enabled === true,
+      primaryModel: typeof desired.model === 'string' ? desired.model : '',
+      secondaryModel: typeof desired.secondaryModel === 'string' ? desired.secondaryModel : '',
+      ...(this.live && this.state?.active && appliedSecondaryModel ? { appliedSecondaryModel } : {}),
+      status,
+      models: catalog.map(row => ({ id: row.id, name: row.menu.displayName })),
+    };
+  }
+
+  async saveSettings({ secondaryModel }) {
+    const fail = code => { throw Object.assign(Error(code), { code }); };
+    let desired;
+    try { desired = readJSON(this.connectionFile); } catch { fail('connect_kimi_first'); }
+    if (secondaryModel) {
+      if (!desired.enabled || !desired.model || !desired.gateway?.key) fail('connect_kimi_first');
+      let catalog;
+      try { catalog = await this.gatewayCatalog(gatewayURL(desired.gateway.url), desired.gateway.key); }
+      catch { fail('settings_unavailable'); }
+      if (!catalog.some(row => row.id === secondaryModel)) fail('model_not_enabled_for_kimi');
+    }
+    // Magpie still owns the primary model and gateway fields. Merge only the
+    // secondary preference into the newest document after the catalog request.
+    let fresh;
+    try { fresh = readJSON(this.connectionFile); } catch { fail('settings_unavailable'); }
+    if (fresh.gateway?.url !== desired.gateway?.url || fresh.gateway?.key !== desired.gateway?.key
+        || (secondaryModel && !fresh.enabled)) fail('connection_changed');
+    fresh.secondaryModel = secondaryModel;
+    try { atomicJSON(this.connectionFile, fresh); } catch { fail('settings_unavailable'); }
+    return this.readSettings();
   }
 
   publishCatalog(desired) {
@@ -275,6 +381,9 @@ export class KimiAdapter {
   }
 
   async restore({ reload = true } = {}) {
+    // Read the two scalars before the control calls below can regenerate the
+    // file, so a value another writer owns survives them.
+    this.observeNativeSecondary();
     if (!this.state?.active) return;
     let doc = readJSON(this.configFile);
     let modelsRestored = false;
@@ -356,6 +465,280 @@ export class KimiAdapter {
     } catch { this.catalogError = 'catalog_sync_failed'; }
   }
 
+  // --- Secondary model -----------------------------------------------------
+  // Kimi persists the secondary role in two scalars of its runtime TOML:
+  //   [secondary_model] model = "<registered alias>"
+  //   [experimental]    "secondary-model" = true
+  // Only those two scalars are ever written or restored. The file itself is
+  // never cached, copied or backed up, and no other field is touched.
+
+  readNativeSecondary() {
+    return inspectSecondary(fs.readFileSync(this.nativeConfigFile, 'utf8'));
+  }
+
+  // Replace the runtime TOML atomically, but only while it still holds the
+  // bytes this patch was computed from. Mode 0600, same as Kimi's own writes.
+  commitNativeSecondary(bytes, text) {
+    if (!fs.readFileSync(this.nativeConfigFile).equals(bytes)) throw Error('kimi_config_changed');
+    const temp = this.nativeConfigFile + '.' + process.pid + '.' + crypto.randomBytes(6).toString('hex') + '.tmp';
+    try {
+      fs.writeFileSync(temp, text, { mode: 0o600, flag: 'wx' });
+      fs.renameSync(temp, this.nativeConfigFile);
+    } finally { try { fs.unlinkSync(temp); } catch { /* Renamed. */ } }
+  }
+
+  // Ownership is the four-field baseline plus the alias this adapter wrote. It
+  // is persisted with the adapter state and survives rebuilding the main state
+  // object; it is only dropped once the baseline is back on disk.
+  secondaryOwnership() {
+    const owned = this.state?.secondary;
+    const baseline = plainSnapshot(owned?.baseline);
+    return baseline ? { baseline, alias: typeof owned.alias === 'string' ? owned.alias : '',
+      restored: owned.restored === true } : null;
+  }
+
+  captureSecondaryBaseline() {
+    if (this.secondaryOwnership()) return;
+    this.state.secondary = { baseline: this.readNativeSecondary(), alias: '' };
+    this.saveState();
+  }
+
+  setAppliedSecondary(value) {
+    if (!this.state) return;
+    let changed = this.state.secondaryModel !== value;
+    this.state.secondaryModel = value;
+    if (value && this.state.secondary?.restored) {
+      delete this.state.secondary.restored;
+      changed = true;
+    }
+    if (changed) this.saveState();
+  }
+
+  dropSecondaryOwnership() {
+    const changed = Boolean(this.state?.secondary) || Boolean(this.state?.secondaryModel);
+    if (this.state?.secondary) delete this.state.secondary;
+    if (this.state) this.state.secondaryModel = '';
+    this.secondaryPending.clear();
+    this.secondaryReloadPending = false;
+    this.secondaryReloadStale = false;
+    this.secondaryExternal = null;
+    if (changed) this.saveState();
+  }
+
+  // Read the file before a control call that can make Daimon rewrite it: keep
+  // the scalars another writer owns, and capture the original values on the
+  // first application. Nothing is read while the feature is not in use.
+  protectNativeSecondary(wanted) {
+    this.observeNativeSecondary();
+    if (wanted && !this.secondaryOwnership()) this.captureSecondaryBaseline();
+  }
+
+  // Only the helper's four fields of the scalars this adapter does not own.
+  observeNativeSecondary() {
+    const owned = this.secondaryOwnership();
+    if (!owned) { this.secondaryExternal = null; return; }
+    let current;
+    try { current = this.readNativeSecondary(); } catch { return; }
+    // A prior control call may have removed an external value while a cached
+    // session was still busy. Keep that observation until it is back on disk.
+    this.secondaryExternal = externalFields(this.effectiveSecondary(current), owned);
+  }
+
+  // A rewrite may have dropped a scalar observed just before it; that value
+  // stands in for the missing one so it can be put back afterwards.
+  effectiveSecondary(current) {
+    const external = this.secondaryExternal;
+    if (!external) return current;
+    const model = current.model === null && external.model !== null ? external.model : current.model;
+    const enabled = current.enabled === null && external.enabled !== null ? external.enabled : current.enabled;
+    return {
+      model, enabled,
+      hasSecondaryTable: model === current.model ? current.hasSecondaryTable : external.hasSecondaryTable,
+      hasExperimentalTable: enabled === current.enabled ? current.hasExperimentalTable : external.hasExperimentalTable,
+    };
+  }
+
+  // Cached sessions only. An empty list means there is nothing left to reload;
+  // an unconfirmed session is retried by id once the runtime is idle. Every row
+  // is accounted for by id, so a mixed skipped+failed result can never become a
+  // false "applied".
+  async reloadSecondarySessions(runner) {
+    this.secondaryAfter = Date.now() + SECONDARY_RETRY_MS;
+    let result;
+    try { result = await this.rpcCall(runner, RELOAD_SESSIONS, {}, { timeout: 30000 }); }
+    catch { this.secondaryReloadStale = true; return { failed: true }; }
+    if (!Array.isArray(result?.sessions)) { this.secondaryReloadStale = true; return { failed: true }; }
+    let failed = false;
+    for (const session of result.sessions) {
+      const status = session?.status;
+      const id = typeof session?.kernelSessionId === 'string' && session.kernelSessionId
+        ? session.kernelSessionId : '';
+      if (status === 'reloaded') { if (id) this.secondaryPending.delete(id); continue; }
+      if ((status === 'skipped-active-turn' || status === 'failed') && id) {
+        this.secondaryPending.add(id);
+        if (status === 'failed') failed = true;
+        continue;
+      }
+      // A row that cannot be retried by id: only a complete pass resolves it.
+      this.secondaryReloadStale = true;
+      failed = true;
+    }
+    if (failed) return { failed: true };
+    const pending = this.secondaryPending.size > 0;
+    if (!pending) this.secondaryReloadStale = false;
+    return { pending };
+  }
+
+  // Retry only the ids a previous pass left unconfirmed. Sessions that were
+  // already reloaded are never reloaded again.
+  async retrySecondarySessions(runner) {
+    if (!this.secondaryPending.size) return { pending: false };
+    if (busy(runner)) return { pending: true };
+    if (Date.now() < (this.secondaryAfter || 0)) return { pending: true };
+    this.secondaryAfter = Date.now() + SECONDARY_RETRY_MS;
+    for (const kernelSessionId of [...this.secondaryPending]) {
+      let result;
+      try { result = await this.rpcCall(runner, RELOAD_SESSION, { kernelSessionId }, { timeout: 30000 }); }
+      catch { return { failed: true }; }
+      const status = result?.status;
+      if (status === 'skipped-active-turn') continue;
+      // Only an explicit acknowledgement counts; a timeout, an unknown shape or
+      // any other status means the preference is not applied.
+      if (status !== 'reloaded') return { failed: true };
+      this.secondaryPending.delete(kernelSessionId);
+    }
+    if (this.secondaryPending.size) return { pending: true };
+    // A complete pass the adapter could not attribute still has to be redone.
+    if (!this.secondaryReloadStale) this.secondaryReloadPending = false;
+    return { pending: false, confirmed: true };
+  }
+
+  // A connected empty preference follows inheritModel; a restore call omits
+  // it and puts the baseline back. Returns {untouched}, {applied:false} or
+  // {waiting}; unsupported input and unconfirmed reloads throw a fixed code.
+  // With no preference and no ownership the runtime TOML is never read.
+  async reconcileSecondary(runner, wanted, { inheritModel = '' } = {}) {
+    const owned = this.secondaryOwnership();
+    if (!wanted && !owned) { this.secondaryExternal = null; return { untouched: true }; }
+    const inheriting = !wanted && Boolean(inheritModel);
+    if (inheriting) wanted = inheritModel;
+
+    const retried = await this.retrySecondarySessions(runner);
+    if (retried.failed) throw Error('secondary_model_reload_failed');
+    if (retried.pending) return { waiting: true };
+
+    let row = null;
+    if (wanted) {
+      row = this.catalog.find(candidate => candidate.id === wanted) || null;
+      if (!row) throw Error('secondary_model_unavailable');
+    }
+
+    let bytes;
+    try { bytes = fs.readFileSync(this.nativeConfigFile); }
+    catch (error) {
+      if (error?.code !== 'ENOENT') throw Error('secondary_config_unsupported');
+      if (wanted) throw Error('secondary_model_unavailable');
+      this.dropSecondaryOwnership();
+      return { applied: false, absent: true };
+    }
+    const text = bytes.toString('utf8');
+    let fileState;
+    try { fileState = inspectSecondary(text); } catch { throw Error('secondary_config_unsupported'); }
+    const current = this.effectiveSecondary(fileState);
+
+    let target;
+    if (wanted) {
+      // A saved preference that differs from the alias this adapter wrote is an
+      // explicit change and takes effect. Otherwise only an adapter-owned or a
+      // dropped scalar is replaced; another writer's value stays untouched.
+      const reassert = owned === null || (!inheriting && owned.alias !== row.alias) || isRestoredBaseline(current, owned);
+      const ownsModel = current.model === null || current.model === row.alias
+        || (owned !== null && current.model === owned.alias);
+      const ownsFlag = current.enabled === null || current.enabled === true;
+      target = { model: (ownsModel || reassert) ? row.alias : current.model,
+        enabled: (ownsFlag || reassert) ? true : current.enabled,
+        hasSecondaryTable: true, hasExperimentalTable: true };
+    } else {
+      target = restoreTarget(current, owned.baseline, owned.alias);
+    }
+
+    let next;
+    try { next = patchSecondary(text, target); } catch { throw Error('secondary_config_unsupported'); }
+    const changed = next !== text;
+    const appliedNow = wanted ? target.model === row.alias && target.enabled === true : true;
+    const confirmationNeeded = appliedNow && !retried.confirmed && Boolean(wanted || this.state.secondaryModel)
+      && this.state.secondaryModel !== wanted;
+    // Matching file bytes do not prove that existing cached sessions have read
+    // a newly selected preference. They need one acknowledgement as well.
+    if ((changed || confirmationNeeded || this.secondaryReloadPending) && busy(runner)) return { waiting: true };
+    if (changed) {
+      if (wanted && !owned) {
+        // First capture uses the file as it is, never the preserved view.
+        this.state.secondary = { baseline: fileState, alias: '' };
+      }
+      if (wanted && target.model === row.alias && this.state.secondary.alias !== row.alias) {
+        // Record intent before the write; a crash in between then leaves the
+        // file exactly as it was.
+        this.state.secondary.alias = row.alias;
+        this.saveState();
+      }
+      this.commitNativeSecondary(bytes, next);
+      this.secondaryReloadPending = true;
+    } else if (wanted && !owned) {
+      // Already in place without a captured baseline: never claim it.
+      return { applied: false };
+    }
+    if (wanted && appliedNow && this.state.secondary.alias !== row.alias) {
+      this.state.secondary.alias = row.alias;
+      this.saveState();
+    }
+    if (confirmationNeeded) this.secondaryReloadPending = true;
+    this.secondaryExternal = null;
+
+    if (this.secondaryReloadPending) {
+      if (!runner || runner.lifecycleStatus !== 'running') {
+        // No live runtime caches the old value; the next start reads the file.
+        this.secondaryReloadPending = false;
+        this.secondaryPending.clear();
+        this.secondaryReloadStale = false;
+      } else {
+        if (Date.now() < (this.secondaryAfter || 0)) return { waiting: true };
+        const reload = await this.reloadSecondarySessions(runner);
+        if (reload.failed) throw Error('secondary_model_reload_failed');
+        if (reload.pending) return { waiting: true };
+        this.secondaryReloadPending = false;
+      }
+    }
+
+    if (!appliedNow) { this.setAppliedSecondary(''); return { applied: false }; }
+    if (wanted) {
+      this.setAppliedSecondary(wanted);
+      return { applied: true };
+    }
+    // The baseline is back on disk and the runtime was reloaded.
+    this.dropSecondaryOwnership();
+    return { applied: true };
+  }
+
+  // Synchronous exit path: only the two owned scalars, no RPC. Ownership stays
+  // on disk so the next start can finish anything left behind.
+  restoreNativeSecondaryOnExit() {
+    const owned = this.secondaryOwnership();
+    if (!owned) return;
+    const bytes = fs.readFileSync(this.nativeConfigFile);
+    const text = bytes.toString('utf8');
+    const current = inspectSecondary(text);
+    const next = patchSecondary(text, restoreTarget(current, owned.baseline, owned.alias));
+    if (next !== text) this.commitNativeSecondary(bytes, next);
+    // A clean exit deliberately restored our own two scalars. Distinguish that
+    // baseline from a later third-party edit when the saved preference resumes.
+    if ((current.model === null || current.model === owned.alias)
+        && (current.enabled === null || current.enabled === true)) {
+      this.state.secondary.restored = true;
+      this.saveState();
+    }
+  }
+
   async tick() {
     if (this.running || this.stopping) return;
     this.running = true;
@@ -368,14 +751,20 @@ export class KimiAdapter {
       if (!desired.enabled || !desired.model) {
         if (this.state.active && busy(runner)) { this.report('waiting_kimi_idle'); return; }
         await this.restore();
+        // Restoring the two native scalars runs after every control call above,
+        // because Daimon rewrites its runtime TOML from its own state.
+        const secondary = await this.reconcileSecondary(runner, '');
         this.pausedSignature = null;
         this.retryAfter = 0;
-        this.report('disconnected');
+        this.report(secondary.waiting ? 'waiting_kimi_idle' : 'disconnected');
         return;
       }
       const target = gatewayURL(desired.gateway?.url);
+      const wantedSecondary = typeof desired.secondaryModel === 'string' ? desired.secondaryModel : '';
       if (typeof desired.gateway?.key !== 'string' || !desired.gateway.key
-          || typeof desired.model !== 'string' || !desired.model.includes('/') || desired.model.length > 1024) {
+          || typeof desired.model !== 'string' || !desired.model.includes('/') || desired.model.length > 1024
+          || (desired.secondaryModel !== undefined && typeof desired.secondaryModel !== 'string')
+          || (wantedSecondary !== '' && !validModelID(wantedSecondary))) {
         throw Error('invalid_connection');
       }
       if (!runner || runner.lifecycleStatus !== 'running') { this.report('waiting_kimi'); return; }
@@ -387,7 +776,11 @@ export class KimiAdapter {
       if (fingerprint !== this.fingerprint) { this.fingerprint = fingerprint; this.stableSince = Date.now(); }
       const unchanged = this.state.active && this.state.generation === generation && this.state.signature === signature;
       if (unchanged && baseURL(doc) === this.bridgeURL && this.live) {
+        this.protectNativeSecondary(wantedSecondary);
         await this.syncCatalog(runner, desired, target);
+        const secondary = await this.reconcileSecondary(runner, wantedSecondary, { inheritModel: desired.model });
+        if (secondary.waiting) { this.report('waiting_kimi_idle'); return; }
+        if (secondary.applied === false) { this.report('kimi_config_changed'); return; }
         this.report('connected', { model: desired.model, models: this.catalog.length, ...(this.catalogError ? {catalog: this.catalogError} : {}) }); return;
       }
       if (this.pausedSignature === signature) { this.report('kimi_config_changed'); return; }
@@ -410,8 +803,13 @@ export class KimiAdapter {
       await this.rpcCall(runner, 'models.current');
       await this.listen();
       if (!fs.readFileSync(this.configFile).equals(bytes)) throw Error('kimi_config_changed');
+      // Protect the two scalars before the first control call below can make
+      // Daimon rewrite its runtime TOML from a fixed key set.
+      this.protectNativeSecondary(wantedSecondary);
       const previous = this.state;
-      this.state = { active: true, originalBase, bridgeURL: this.bridgeURL, generation, signature, model: desired.model };
+      this.state = { active: true, originalBase, bridgeURL: this.bridgeURL, generation, signature, model: desired.model,
+        ...(previous?.secondary ? { secondary: previous.secondary } : {}),
+        ...(typeof previous?.secondaryModel === 'string' ? { secondaryModel: previous.secondaryModel } : {}) };
       // Persist recovery ownership before writing the Kimi file.
       this.saveState();
       this.changeBase(oldBase, this.bridgeURL);
@@ -425,12 +823,17 @@ export class KimiAdapter {
       }
       this.live = { model: desired.model, gatewayURL: target, gatewayKey: desired.gateway.key, originalBase };
       await this.syncCatalog(runner, desired, target);
+      // Reapply after the catalog sync, which may regenerate the same file.
+      const secondary = await this.reconcileSecondary(runner, wantedSecondary, { inheritModel: desired.model });
       this.pausedSignature = null;
+      if (secondary.waiting) { this.report('waiting_kimi_idle'); return; }
+      if (secondary.applied === false) { this.report('kimi_config_changed'); return; }
       this.report('connected', { model: desired.model });
     } catch (error) {
       const codes = new Set(['invalid_gateway', 'invalid_connection', 'unsupported_kimi_config',
         'library_path_conflict', 'adapter_lock_invalid', 'adapter_lock_unavailable',
-        'kimi_config_changed', 'kimi_control_unavailable', 'kimi_control_timeout', 'kimi_control_closed', 'kimi_control_rejected']);
+        'kimi_config_changed', 'kimi_control_unavailable', 'kimi_control_timeout', 'kimi_control_closed', 'kimi_control_rejected',
+        'secondary_config_unsupported', 'secondary_model_unavailable', 'secondary_model_reload_failed']);
       const code = codes.has(error.message) ? error.message : 'adapter_failed';
       this.report(code);
     } finally { this.running = false; }
@@ -449,7 +852,20 @@ export class KimiAdapter {
     while (this.running) await new Promise(resolve => setTimeout(resolve, 20));
     if (this.locked) {
       try { await this.restore(); } catch { /* Never write a changed third-party configuration. */ }
-      this.report('disconnected');
+      // Same order as an idle disconnect: the control calls above may have
+      // rewritten the runtime TOML, so the two scalars are restored last.
+      let code = 'disconnected';
+      try {
+        let runner;
+        try { runner = readJSON(this.runnerFile); } catch { /* Kimi isn't running. */ }
+        // This is the last pass, so the retry pacing does not apply.
+        this.secondaryAfter = 0;
+        const secondary = await this.reconcileSecondary(runner, '');
+        if (secondary.waiting) code = 'waiting_kimi_idle';
+      } catch (error) {
+        if (SECONDARY_CODES.has(error.message)) code = error.message;
+      }
+      this.report(code);
       this.releaseLock();
     }
     for (const pending of this.inflight) pending.abort();
@@ -467,6 +883,9 @@ export class KimiAdapter {
         this.changeBase(this.state.bridgeURL, this.state.originalBase);
       }
     } catch { /* Leave a changed configuration alone. */ }
+    // Synchronous host exit: only the two owned scalars, never a control call.
+    // Ownership stays on disk so the next start can finish anything left over.
+    try { this.restoreNativeSecondaryOnExit(); } catch { /* Leave a changed configuration alone. */ }
     try { atomicJSON(this.catalogFile, {schemaVersion:1, enabled:false, models:[], updatedAt:new Date().toISOString()}); } catch { /* Exiting. */ }
     this.releaseLock();
   }

@@ -116,6 +116,67 @@ async function fixture() {
     cleanup: async () => { await controller.stop(); gateway.closeAllConnections(); await new Promise(resolve => gateway.close(resolve)); fs.rmSync(directory, { recursive: true, force: true }); } };
 }
 
+test('secondary settings expose only agent-visible models and preserve Magpie primary ownership', async () => {
+  const f = await fixture();
+  try {
+    const fetchBefore = f.controller.fetchImpl;
+    let changed = false;
+    f.controller.fetchImpl = async (url, options) => {
+      const result = await fetchBefore(url, options);
+      if (!changed && String(url).endsWith('/models')) {
+        changed = true;
+        write(f.controller.connectionFile, { ...read(f.controller.connectionFile),
+          model: 'other-provider/other-model', newestHostField: 'preserve-this' });
+      }
+      return result;
+    };
+    const settings = await f.controller.saveSettings({ secondaryModel: 'original-provider/test-model' });
+    const saved = read(f.controller.connectionFile);
+    expect(saved.model).toBe('other-provider/other-model');
+    expect(saved.gateway).toEqual(f.connection.gateway);
+    expect(saved.newestHostField).toBe('preserve-this');
+    expect(saved.secondaryModel).toBe('original-provider/test-model');
+    expect(settings.primaryModel).toBe(saved.model);
+    expect(settings.models.map(row => row.id)).toEqual(f.models.map(row => row.id));
+    expect(settings.appliedSecondaryModel).toBeUndefined();
+    expect(JSON.stringify(settings)).not.toContain(f.connection.gateway.key);
+    expect(JSON.stringify(settings)).not.toContain(f.connection.gateway.url);
+    expect(Object.keys(settings).sort()).toEqual(['enabled', 'models', 'primaryModel', 'secondaryModel', 'status']);
+  } finally { await f.cleanup(); }
+});
+
+test('secondary settings reject hidden models and refuse writes after gateway identity changes', async () => {
+  const f = await fixture();
+  try {
+    await expect(f.controller.saveSettings({ secondaryModel: 'hidden-provider/hidden-model' }))
+      .rejects.toHaveProperty('code', 'model_not_enabled_for_kimi');
+    expect(read(f.controller.connectionFile)).toEqual(f.connection);
+    const fetchBefore = f.controller.fetchImpl;
+    f.controller.fetchImpl = async (url, options) => {
+      const result = await fetchBefore(url, options);
+      if (String(url).endsWith('/models')) write(f.controller.connectionFile, {
+        ...read(f.controller.connectionFile), gateway: { ...f.connection.gateway, key: 'replacement-test-key' },
+      });
+      return result;
+    };
+    await expect(f.controller.saveSettings({ secondaryModel: f.models[1].id }))
+      .rejects.toHaveProperty('code', 'connection_changed');
+    expect(read(f.controller.connectionFile).secondaryModel).toBeUndefined();
+    expect(read(f.controller.connectionFile).gateway.key).toBe('replacement-test-key');
+  } finally { await f.cleanup(); }
+});
+
+test('a saved secondary model can be cleared while disconnected without changing the primary', async () => {
+  const f = await fixture();
+  try {
+    write(f.controller.connectionFile, { ...f.connection, enabled: false, secondaryModel: f.models[1].id });
+    const settings = await f.controller.saveSettings({ secondaryModel: '' });
+    expect(read(f.controller.connectionFile)).toEqual({ ...f.connection, enabled: false, secondaryModel: '' });
+    expect(settings.enabled).toBe(false);
+    expect(settings.models).toEqual([]);
+  } finally { await f.cleanup(); }
+});
+
 test('Work inference uses selected model and gateway auth; SSE tools survive; official fetch/search keep Kimi auth', async () => {
   const f = await fixture();
   try {
