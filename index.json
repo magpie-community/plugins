@@ -2916,10 +2916,45 @@
               }
             }
           }
+        },
+        "0.1.2": {
+          "file": "tgz/magpie-community-middleware-think-tags-0.1.2.tgz",
+          "integrity": "sha512-udcADjVY6TmOsbb9/BnyB/HYPVtINiK5P+5cSc5WB7sQQDzonXgyHFA4YwWc+f2I5odgoLnGaUnWl0dMy5zQtA==",
+          "time": "2026-11-06T02:39:42.811Z",
+          "manifest": {
+            "name": "@magpie-community/middleware-think-tags",
+            "version": "0.1.2",
+            "description": "Take a model's leading <think>, <thinking> or <thought> block out of its reply's text, or put a Chat reply's reasoning_content into it (New API's thinking_to_content), as magpie gateway middleware",
+            "type": "module",
+            "files": [
+              "think-tags.middleware.js",
+              "README.md"
+            ],
+            "keywords": [
+              "magpie",
+              "magpie-middleware",
+              "new-api",
+              "reasoning",
+              "think",
+              "llm-gateway"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/think-tags"
+            },
+            "magpie": {
+              "middleware": "./think-tags.middleware.js",
+              "options": {
+                "mode": "strip"
+              }
+            }
+          }
         }
       },
-      "latest": "0.1.1",
-      "readme": "# @magpie-community/middleware-think-tags\n\nA model's thinking, where its reply's text is, as [magpie](https://usemagpie.ai) gateway middleware. It either takes thinking out of the text, or puts it in (New API's `thinking_to_content`).\n\nInstall it from magpie's **Plugins › Discover**, or with `magpie plugin add @magpie-community/middleware-think-tags`. Set its options under **Plugins › Installed › Options**, or with `magpie plugin options think-tags '<json>'`.\n\n## Options\n\n```json\n{ \"mode\": \"strip\" }\n```\n\n**`strip`** (the default). Some models (open reasoning models served by vLLM, Ollama and many relays) write their thinking into the reply as `<think>…</think>`. This mode takes that block out, so an agent doesn't keep it in its history and send it back every turn.\n\n- Only a block at the start of the text is taken out. A `<think>` the model writes later, in code for example, stays.\n- A `</think>` inside the block in Markdown code (`` `</think>` ``, or a fenced block) is part of the thinking, an example written out, not its end.\n- A tag split across streamed chunks is still found.\n- It works on Anthropic, Chat and Responses replies, streamed or whole.\n\n**`to_content`**. A Chat reply's `reasoning_content` (or `reasoning`) is put into its text as `<think>…</think>`, for a client that shows only the text.\n\n- This mode works on Chat replies only. An Anthropic thinking block carries a signature, and turned into text it would fail the next turn.\n- It changes what the agent keeps and sends back, so it suits a chat client better than a coding agent.\n\n中文：`strip` 去掉回复开头模型写出的 `<think>…</think>`；`to_content` 把 Chat 回复的 reasoning_content 放进正文（New API 的 thinking_to_content）。\n"
+      "latest": "0.1.2",
+      "readme": "# @magpie-community/middleware-think-tags\n\nA model's thinking, where its reply's text is, as [magpie](https://usemagpie.ai) gateway middleware. It either takes thinking out of the text, or puts it in (New API's `thinking_to_content`).\n\nInstall it from magpie's **Plugins › Discover**, or with `magpie plugin add @magpie-community/middleware-think-tags`. Set its options under **Plugins › Installed › Options**, or with `magpie plugin options think-tags '<json>'`.\n\n## Options\n\n```json\n{ \"mode\": \"strip\" }\n```\n\n**`strip`** (the default). Some models (open reasoning models served by vLLM, Ollama and many relays) write their thinking into the reply as `<think>…</think>`, `<thinking>…</thinking>` or `<thought>…</thought>`. This mode takes that block out, so an agent doesn't keep it in its history and send it back every turn.\n\n- Only a block at the start of the text is taken out, and it ends at its own close tag. A tag the model writes later, in code for example, stays.\n- A close tag inside the block in Markdown code (`` `</think>` ``, or a fenced block) is part of the thinking, an example written out, not its end.\n- A tag split across streamed chunks is still found.\n- It works on Anthropic, Chat and Responses replies, streamed or whole.\n\n**`to_content`**. A Chat reply's `reasoning_content` (or `reasoning`) is put into its text as `<think>…</think>`, for a client that shows only the text.\n\n- This mode works on Chat replies only. An Anthropic thinking block carries a signature, and turned into text it would fail the next turn.\n- It changes what the agent keeps and sends back, so it suits a chat client better than a coding agent.\n\n中文：`strip` 去掉回复开头模型写出的 `<think>…</think>`、`<thinking>…</thinking>` 或 `<thought>…</thought>`；`to_content` 把 Chat 回复的 reasoning_content 放进正文（New API 的 thinking_to_content）。\n"
     },
     "@magpie-community/middleware-word-guard": {
       "versions": {
