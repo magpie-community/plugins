@@ -1648,10 +1648,13 @@ async function* events(body, model, budget) {
         if (budget) yield* think.feed(text)
         else if (text) yield { kind: "text", text }
       } else if (kind === "reasoningContentEvent") {
+        // one event may carry the reasoning and its signature together (auto,
+        // called as the IDE): the signature goes on the block it ends
         if (m.text) {
           said += m.text.length
           yield { kind: "think", text: m.text }
-        } else if (m.signature) yield { kind: "sig", text: m.signature }
+        }
+        if (m.signature) yield { kind: "sig", text: m.signature }
       } else if (kind === "toolUseEvent") {
         if (m.toolUseId && m.toolUseId !== tool) {
           yield* think.end() // the text before a call is all said
