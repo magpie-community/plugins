@@ -43,7 +43,10 @@ export function modelCatalog(tier) {
     out[id] = {
       id: m.pref,
       name: m.name,
+      // Perplexity publishes no context/output window for its web models:
+      // these are a conservative ceiling and are flagged as an estimate.
       limit: { context: 128000, output: 16000 },
+      limitEstimated: true,
       // Perplexity's web endpoint has no native function calling.
       capabilities: {
         reasoning: Boolean(m.thinking),

@@ -2,12 +2,22 @@
 // user log in, then read the Secure+HttpOnly session cookie over CDP.
 //
 // Page JavaScript can never read this cookie; the DevTools protocol can.
+//
+// Failures carry a `code` (and no localized text): the provider turns them into
+// a message in the user's language.
 
 import { rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, sep } from "node:path"
 import { createServer } from "node:net"
+import { strings, resolveLocale } from "./i18n.mjs"
 
 const COOKIE_NAME = "__Secure-next-auth.session-token"
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+function fail(code, message, extra = {}) {
+  return Object.assign(new Error(message), { code, ...extra })
+}
 
 function candidates(explicit) {
   const out = []
@@ -44,7 +54,7 @@ async function findChrome(explicit) {
       }
     } catch { /* next */ }
   }
-  throw new Error("找不到 Chrome/Chromium。请在插件选项里设置 chromePath。")
+  throw fail("chrome_missing", "Chrome/Chromium not found; set the chromePath option")
 }
 
 async function freePort() {
@@ -81,7 +91,7 @@ async function cdp(ws, method, params = {}, timeoutMs = 8000) {
 
 async function browserWs(port, signal, deadline) {
   while (Date.now() < deadline) {
-    if (signal?.aborted) throw new Error("登录已取消")
+    if (signal?.aborted) throw fail("cancelled", "sign-in cancelled")
     try {
       const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal })
       const j = await r.json()
@@ -89,14 +99,19 @@ async function browserWs(port, signal, deadline) {
     } catch { /* not up yet */ }
     await sleep(250)
   }
-  throw new Error("Chrome 调试端口没有起来")
+  throw fail("debug_port", "Chrome's debugging port never came up")
 }
 
 async function readCookie(wsUrl) {
-  const ws = new WebSocket(wsUrl)
+  let ws
+  try {
+    ws = new WebSocket(wsUrl)
+  } catch {
+    throw fail("devtools", "cannot connect to Chrome DevTools")
+  }
   await new Promise((resolve, reject) => {
     ws.addEventListener("open", resolve, { once: true })
-    ws.addEventListener("error", () => reject(new Error("连不上 Chrome DevTools")), { once: true })
+    ws.addEventListener("error", () => reject(fail("devtools", "cannot connect to Chrome DevTools")), { once: true })
   })
   try {
     const all = []
@@ -115,15 +130,58 @@ async function readCookie(wsUrl) {
   }
 }
 
-export async function browserSignIn({ chromePath, signal } = {}) {
+/**
+ * Wait for Chrome to actually go away. Killing returns before the process has
+ * released its profile — on Windows the directory stays locked until it does.
+ */
+async function stopChrome(proc, graceMs = 5000) {
+  if (!proc) return
+  try { proc.kill() } catch { /* gone */ }
+  const exited = await Promise.race([
+    proc.exited.then(() => true).catch(() => true),
+    sleep(graceMs).then(() => false),
+  ])
+  if (exited) return
+  try { proc.kill("SIGKILL") } catch { /* gone */ }
+  await Promise.race([proc.exited.catch(() => {}), sleep(2000)])
+}
+
+/** Delete the throwaway profile, retrying while a released handle lingers. */
+async function removeProfile(dir, root, attempts = 5) {
+  const inside = dir === root || dir.startsWith(root + sep) || dir.startsWith(root + "/")
+  if (!inside) return
+  let last
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await rm(dir, { recursive: true, force: true })
+      return
+    } catch (e) {
+      last = e
+      await sleep(120 * (i + 1))
+    }
+  }
+  throw fail("profile_cleanup", `could not remove ${dir}`, { detail: last?.message || String(last) })
+}
+
+/**
+ * Start the sign-in browser.
+ *
+ * @param {object} [o]
+ * @param {string} [o.chromePath] - explicit browser executable.
+ * @param {AbortSignal} [o.signal]
+ * @param {"zh"|"en"|"auto"} [o.locale] - language of the helper page.
+ */
+export async function browserSignIn({ chromePath, signal, locale } = {}) {
+  const t = strings(resolveLocale(locale))
   const bin = await findChrome(chromePath)
   const debugPort = await freePort()
   const pagePort = await freePort()
-  const tmp = (process.env.TMPDIR || "/tmp").replace(/\/+$/, "")
-  const profile = `${tmp}/magpie-pplx-login-${process.pid}-${Date.now()}`
+  const root = tmpdir()
+  const profile = join(root, `magpie-pplx-login-${process.pid}-${Date.now()}`)
 
-  let state = "正在启动浏览器…"
+  let state = t.browserPageStarting
   let done = false
+  let closed = false
   let current = null
 
   const page = Bun.serve({
@@ -131,21 +189,21 @@ export async function browserSignIn({ chromePath, signal } = {}) {
     port: pagePort,
     fetch(req) {
       if (new URL(req.url).pathname === "/state") {
-        return new Response(done ? "✓ 完成，可以关掉这个页面了" : state, {
+        return new Response(done ? t.browserPageDone : state, {
           headers: { "content-type": "text/plain; charset=utf-8" },
         })
       }
       return new Response(
-        `<!doctype html><meta charset="utf-8"><title>登录 Perplexity</title>
+        `<!doctype html><meta charset="utf-8"><title>${t.browserPageTitle}</title>
 <style>body{font:15px/1.6 -apple-system,system-ui,sans-serif;max-width:680px;margin:8vh auto;padding:0 24px}
 .box{background:#f7f7f9;border:1px solid #e5e5e9;border-radius:10px;padding:16px 20px;margin:18px 0}
 code{background:#f2f2f4;padding:2px 6px;border-radius:4px}a{color:#0a66c2}</style>
-<h1>用浏览器登录 Perplexity</h1>
-<p>已打开一个<strong>独立的 Chrome 窗口</strong>。请在那个窗口里登录（不影响你日常浏览器）。</p>
-<div class="box"><strong>状态：</strong><span id="s">${state}</span></div>
-<p>登录成功后本页会自动结束。Cookie 只通过本机 DevTools 协议读取，不会离开这台机器。</p>
-<p>备选：F12 → Application → Cookies → 复制 <code>${COOKIE_NAME}</code>，在 magpie 里选「粘贴 Session Cookie」。</p>
-<script>setInterval(()=>fetch('/state').then(r=>r.text()).then(t=>{document.getElementById('s').textContent=t}),1500)</script>`,
+<h1>${t.browserPageTitle}</h1>
+<p>${t.browserInstructions}</p>
+<div class="box"><strong>Status / 状态：</strong><span id="s">${state}</span></div>
+<p>${t.browserPageCookieNote}</p>
+<p>${t.browserPageFallback} <code>${COOKIE_NAME}</code></p>
+<script>setInterval(()=>fetch('/state').then(r=>r.text()).then(x=>{document.getElementById('s').textContent=x}),1500)</script>`,
         { headers: { "content-type": "text/html; charset=utf-8" } }
       )
     },
@@ -165,35 +223,35 @@ code{background:#f2f2f4;padding:2px 6px;border-radius:4px}a{color:#0a66c2}</styl
 
   return {
     url: `http://127.0.0.1:${pagePort}/`,
-    instructions: "请在自动打开的独立 Chrome 窗口里登录 Perplexity；登录后本页会自动完成。",
+    instructions: t.browserInstructions,
 
     async wait(waitSignal) {
       const deadline = Date.now() + 5 * 60 * 1000
       const wsUrl = await browserWs(debugPort, waitSignal || signal, deadline)
       while (Date.now() < deadline) {
-        if ((waitSignal || signal)?.aborted) throw new Error("登录已取消")
-        state = "等待登录…（在独立 Chrome 窗口里登录）"
+        if ((waitSignal || signal)?.aborted) throw fail("cancelled", "sign-in cancelled")
+        state = t.browserPageWaiting
         const cookie = await readCookie(wsUrl).catch(() => null)
         if (cookie && cookie !== current) {
           current = cookie
-          state = "✓ 完成，可以关掉这个页面了"
+          state = t.browserPageDone
           done = true
           return { cookie }
         }
         await sleep(1500)
       }
-      throw new Error("登录超时（5 分钟）。也可以改用「粘贴 Session Cookie」。")
+      throw fail("timeout", "sign-in timed out")
     },
 
     async close() {
+      if (closed) return
+      closed = true
       done = true
-      try { proc.kill() } catch { /* gone */ }
       try { page.stop(true) } catch { /* stopped */ }
-      try {
-        if (profile.startsWith(tmp + "/magpie-pplx-login-")) {
-          await rm(profile, { recursive: true, force: true })
-        }
-      } catch { /* ignore */ }
+      await stopChrome(proc)
+      // Throws `profile_cleanup` if the directory survives: it may still hold
+      // the session cookie, so the caller gets to report it.
+      await removeProfile(profile, root)
     },
   }
 }

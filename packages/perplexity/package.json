@@ -14,6 +14,7 @@
     "provider.mjs",
     "pplx.mjs",
     "models.mjs",
+    "i18n.mjs",
     "login.mjs",
     "README.md",
     "LICENSE"
@@ -32,13 +33,15 @@
     "directory": "packages/perplexity"
   },
   "magpie": {
-    "name": "Perplexity Pro",
+    "name": "Perplexity",
     "maxConcurrency": 2,
     "icon": "https://www.perplexity.ai/favicon.ico",
     "options": {
       "tier": "pro",
       "keepSystem": false,
-      "chromePath": ""
+      "chromePath": "",
+      "apiVersion": "2.18",
+      "locale": "auto"
     },
     "summary": {
       "en": "Your Perplexity Pro or Max plan as a provider: every model it serves, with its built-in web search, signed in from the browser or a session cookie.",

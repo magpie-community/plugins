@@ -26,6 +26,9 @@ over between them when one runs out of quota or its sign-in expires.
 
 ## Models
 
+23 model ids in the catalog: 1 on the free tier (`auto`), 19 on Pro, 23 on
+Max. The plugin serves exactly the ids your `tier` allows.
+
 | id | Perplexity preference | tier |
 | --- | --- | --- |
 | `auto` | Perplexity Best | free — does not spend Pro Search |
@@ -41,6 +44,10 @@ Models with reasoning variants switch to the matching `*_thinking` preference
 when a request carries `reasoning_effort` / `thinking`; the reasoning stream is
 returned as `reasoning_content`.
 
+Each model carries `limit` (128k context / 16k output) as a **ceiling, not a
+published window** — Perplexity documents none for its web models — and says so
+with `limitEstimated: true`, so a host can treat it as a hint rather than a fact.
+
 Set `tier` to `max` if your plan is Max — otherwise the flagship models are
 hidden.
 
@@ -52,24 +59,51 @@ hidden.
 | `keepSystem` | `false` | forward system/developer prompts into the query. Off by default: Perplexity searches every word of the query, and a coding agent's system prompt poisons its results |
 | `chromePath` | auto | Chrome/Chromium/Edge executable for browser sign-in |
 | `apiVersion` | `2.18` | the `version` Perplexity's web client sends; raise it if the endpoint starts refusing |
+| `locale` | `auto` | `auto` / `zh` / `en`: language of the sign-in flow, the account card and `magpie quota`, and of every error this provider returns |
 
 ## Quota
 
-`auth.usage` reads `/rest/rate-limit/all`, so the remaining Pro Search count
-shows in `magpie quota`, the Usage page and `GET /v1/magpie/quotas`, and
-`routing=smart` weighs it when picking an account. `auto` is marked `free`, so it
-never spends that quota — a good last resort inside a routing group.
+`auth.usage` reads `/rest/rate-limit/all` and reports only counters that
+endpoint actually returned — remaining Pro Searches, Deep Research, Labs and
+Agentic Research, plus whether free quick searches are available. It publishes
+no reset time, so the plugin shows no span rather than inventing a 30-day one.
+
+Those counters drive `magpie quota`, the Usage page and
+`GET /v1/magpie/quotas`, and `routing=smart` weighs them when picking an
+account. `auto` is marked `free`, so it never spends Pro Search quota — a good
+last resort inside a routing group.
+
+## Errors
+
+Upstream statuses keep their own number and Perplexity's own text: a 403 is
+reported as a 403 with the reason it gave (it is not always an expired cookie),
+a 429 with the limit it names. A failure before the first token is a non-200
+response, not a 200 carrying an error event; an error after tokens have already
+been sent is labelled `midstream_error` inside the stream, because the HTTP
+status is no longer changeable at that point.
+
+**Usage numbers are estimates**, flagged `estimated: true` with
+`source: "perplexity_chars_div_4"` in `prompt_tokens_details` /
+`completion_tokens_details`: Perplexity reports no usage, and a made-up count
+that looks measured is worse than a labelled guess. Streaming sends usage only
+when the request sets `stream_options.include_usage`.
 
 ## Limitations
 
 - **No function calling.** The web endpoint has none; the models are declared
-  with `toolcall: false`. Tools sent by an agent are dropped and the answer
-  comes back as text, so these models suit chat, research, writing, translation
-  and summarising — not tool-driven coding agents.
+  with `toolcall: false`. A request that carries `tools` / `functions` is
+  **rejected with a 400** naming the reason, rather than having its tools
+  silently dropped, so an agent fails loudly instead of quietly losing its
+  tools. These models suit chat, research, writing, translation and
+  summarising — not tool-driven coding agents.
 - **No images, files, structured output, multiple choices or sampling
   parameters.**
 - Perplexity sometimes substitutes the model it actually ran; the answer still
   arrives.
+- Citation markers (`[1]`) are stripped by shape, since the stream carries no
+  citation metadata: fenced blocks, inline code, `arr[0]` and `a[1]` are left
+  alone; a bare `foo[3]` outside backticks is indistinguishable from a citation
+  and loses its marker.
 - This uses Perplexity's internal web API, which can change without notice. The
   model table and the request body are the two places to fix when it does.
 
@@ -89,6 +123,18 @@ OpenCode:
 ```
 
 then `opencode auth login`.
+
+## Tests
+
+```sh
+bun test ./packages/perplexity
+```
+
+Covers `buildQuery`, `sseEvents` replayed from captured SSE bytes (including
+bytes split mid-line and CRLF), `answerDelta` reassembly and reasoning blocks,
+citation stripping, the streaming and non-streaming translation, every error
+path (401/403/429/500, mid-stream, empty answer, network), tool rejection,
+quota windows, the locale tables and both sign-in methods' surfaces.
 
 ## License
 

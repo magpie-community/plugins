@@ -1,5 +1,8 @@
 // Perplexity web protocol: session check, quota, the SSE ask endpoint, and the
 // OpenAI <-> Perplexity translation. Pure fetch, no native deps.
+//
+// Every failure carries a `code` and no localized text: the provider turns the
+// code into a message in the user's language (see i18n.mjs).
 
 export const PPLX_BASE = "https://www.perplexity.ai"
 export const PPLX_ASK = `${PPLX_BASE}/rest/sse/perplexity_ask`
@@ -49,18 +52,38 @@ export function rotatedCookie(res) {
   return ""
 }
 
+/**
+ * The shortest useful form of an upstream error body: its own `error.message`
+ * or `detail` when it is JSON, the raw text otherwise.
+ */
+export function upstreamDetail(text, limit = 300) {
+  const raw = String(text || "").trim()
+  if (!raw) return ""
+  try {
+    const j = JSON.parse(raw)
+    const d =
+      j?.error?.message ?? j?.error?.detail ?? j?.detail ?? j?.message ??
+      (typeof j?.error === "string" ? j.error : "")
+    if (d) return String(d).slice(0, limit)
+  } catch { /* not JSON */ }
+  return raw.slice(0, limit)
+}
+
 export async function readSession(key, signal) {
   const res = await fetch(PPLX_SESSION, {
     headers: { ...BASE_HEADERS, accept: "application/json", cookie: cookieHeader(key) },
     signal,
   })
   if (res.status === 401 || res.status === 403) {
-    return { ok: false, status: res.status, error: "Cookie 无效或已过期" }
+    return { ok: false, status: res.status, code: "cookie_invalid" }
   }
-  if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` }
+  if (!res.ok) {
+    const detail = upstreamDetail(await res.text().catch(() => ""))
+    return { ok: false, status: res.status, code: "http", detail }
+  }
   const data = await res.json().catch(() => ({}))
   const user = data?.user
-  if (!user) return { ok: false, status: res.status, error: "未登录" }
+  if (!user) return { ok: false, status: res.status, code: "not_signed_in" }
   return {
     ok: true,
     email: user.email || user.name || "",
@@ -68,21 +91,28 @@ export async function readSession(key, signal) {
   }
 }
 
+/**
+ * `/rest/rate-limit/all` gives counters, never a reset time: no `span` is
+ * invented for them downstream.
+ */
 export async function readQuota(key, signal) {
   try {
     const res = await fetch(PPLX_RATE, {
       headers: { ...BASE_HEADERS, accept: "application/json", cookie: cookieHeader(key) },
       signal,
     })
-    if (!res.ok) return { ok: false, status: res.status }
+    if (!res.ok) return { ok: false, status: res.status, code: "http" }
     const d = await res.json().catch(() => ({}))
     return {
       ok: true,
       remaining_pro: d?.remaining_pro ?? null,
       remaining_research: d?.remaining_research ?? null,
+      remaining_labs: d?.remaining_labs ?? null,
+      remaining_agentic_research: d?.remaining_agentic_research ?? null,
+      free_queries: d?.free_queries?.available === true,
     }
   } catch (e) {
-    return { ok: false, error: e?.message || String(e) }
+    return { ok: false, code: "network", detail: e?.message || String(e) }
   }
 }
 
@@ -140,7 +170,16 @@ export function buildQuery(messages, keepSystem, backendUuid) {
   return { query, follow: null }
 }
 
-export function payloadFor(query, pref, follow, apiVersion) {
+/** The machine's IANA time zone, or UTC where the runtime cannot say. */
+export function systemTimeZone(intl) {
+  try {
+    const tz = intl?.resolvedOptions?.().timeZone
+    if (tz) return tz
+  } catch { /* no ICU */ }
+  return "UTC"
+}
+
+export function payloadFor(query, pref, follow, apiVersion, timezone = systemTimeZone()) {
   return {
     query_str: query,
     params: {
@@ -158,7 +197,7 @@ export function payloadFor(query, pref, follow, apiVersion) {
       // mode and the model ignores its own search results.
       search_focus: "internet",
       search_recency_filter: null,
-      timezone: "Asia/Taipei",
+      timezone,
       visitor_id: crypto.randomUUID(),
       user_nextauth_id: crypto.randomUUID(),
       prompt_source: "user",
@@ -268,27 +307,67 @@ export function answerDelta(chunk, state) {
   if (!chunks.length) return { delta: "", thinking: thinking.join("") }
   const full = chunks.join("")
 
-  let delta = ""
-  if (mb.progress === "DONE") {
-    const finalText = full
-    delta = finalText.startsWith(state.full) ? finalText.slice(state.seen) : ""
-    state.full = finalText
-    state.seen = finalText.length
-  } else {
-    const cumulative = state.full + full
-    delta = cumulative.slice(state.seen)
-    state.full = cumulative
-    state.seen = cumulative.length
-  }
-  return { delta: clean(delta), thinking: thinking.join("") }
+  // Non-final messages carry a fragment; the final one carries the whole answer.
+  state.full = mb.progress === "DONE" ? full : (state.full || "") + full
+
+  // Cleaned on the accumulated text, not per delta: a citation marker split
+  // across two chunks only becomes removable once both halves have arrived.
+  const cleaned = clean(state.full)
+  const previous = state.cleaned || ""
+  const delta = cleaned.startsWith(previous) ? cleaned.slice(previous.length) : ""
+  state.cleaned = cleaned
+
+  return { delta, thinking: thinking.join("") }
+}
+
+// A citation marker as Perplexity emits it in the answer text: a bare index,
+// or an index run ("[1][2]", "[1, 3]", "[1–3]").
+const CITATION = /\[\d{1,3}(?:\s*[,–—-]\s*\d{1,3})*\]/g
+const IDENT = /[A-Za-z0-9_$]/
+
+/** Does `[12, 15]` look like a citation run rather than an array literal? */
+function citationShaped(inner) {
+  const parts = String(inner).split(/\s*[,–—-]\s*/)
+  return parts.every((n) => /^[1-9]\d{0,2}$/.test(n))
+}
+
+/**
+ * Strip citation markers that are not code.
+ *
+ * Perplexity emits no citation metadata, so the marker has to be recognised by
+ * shape. Only a run of plain indexes (`[1]`, `[1][2]`, `[1, 3]`, `[1–3]`) that
+ * does not start with a zero is treated as a citation. Anything inside a
+ * fenced block or an inline code span is left untouched, as is `arr[0]` — a
+ * zero index cannot be a citation — and `a[1]`, where the preceding name is a
+ * single letter and therefore a variable.
+ *
+ * The residual trade-off is documented, not hidden: a bare `foo[3]` written
+ * outside backticks is indistinguishable from a citation and is stripped.
+ */
+export function stripCitations(text) {
+  // Odd splits are code: fenced blocks (closed or still open) and `spans`.
+  const parts = String(text).split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/)
+  return parts
+    .map((part, i) => {
+      if (i % 2 === 1) return part
+      return part.replace(CITATION, (whole, offset, source) => {
+        if (!citationShaped(whole.slice(1, -1))) return whole
+        let start = offset - 1
+        while (start >= 0 && IDENT.test(source[start])) start--
+        const run = source.slice(start + 1, offset)
+        if (/^[A-Za-z_$]$/.test(run)) return whole
+        return ""
+      })
+    })
+    .join("")
 }
 
 export function clean(text) {
-  return String(text || "")
+  const src = String(text || "")
     .replace(/<grok:[^>]*>/g, "")
     .replace(/<\?xml[^>]*\?>/g, "")
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/\[(\d+)\]/g, "")
+  return stripCitations(src)
 }
 
 export function chatId() {
@@ -309,9 +388,20 @@ export function chunkObj(cid, model, content, opts = {}) {
   }
 }
 
-export function completionObj(cid, model, text, promptChars) {
-  const pin = Math.max(1, Math.floor(promptChars / 4))
-  const pout = Math.max(1, Math.floor(text.length / 4))
+/** Rough token count: corrected nowhere, so every usage block says it is one. */
+const ESTIMATE_SOURCE = "perplexity_chars_div_4"
+
+function estimate(text) {
+  return Math.max(1, Math.ceil(String(text || "").length / 4))
+}
+
+/**
+ * A non-streaming completion. Perplexity reports no usage, so the counts are
+ * flagged `estimated` instead of passed off as measured.
+ */
+export function completionObj(cid, model, text, promptText, finish = "stop") {
+  const pin = estimate(promptText)
+  const pout = estimate(text)
   return {
     id: cid,
     object: "chat.completion",
@@ -319,9 +409,36 @@ export function completionObj(cid, model, text, promptChars) {
     model,
     system_fingerprint: null,
     choices: [
-      { index: 0, message: { role: "assistant", content: text }, logprobs: null, finish_reason: "stop" },
+      { index: 0, message: { role: "assistant", content: text }, logprobs: null, finish_reason: finish },
     ],
-    usage: { prompt_tokens: pin, completion_tokens: pout, total_tokens: pin + pout },
+    usage: {
+      prompt_tokens: pin,
+      completion_tokens: pout,
+      total_tokens: pin + pout,
+      prompt_tokens_details: { estimated: true, source: ESTIMATE_SOURCE },
+      completion_tokens_details: { estimated: true, source: ESTIMATE_SOURCE },
+    },
+  }
+}
+
+/** The final streaming chunk, carrying the same estimated usage. */
+export function usageChunk(cid, model, text, promptText) {
+  const pin = estimate(promptText)
+  const pout = estimate(text)
+  return {
+    id: cid,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    system_fingerprint: null,
+    choices: [],
+    usage: {
+      prompt_tokens: pin,
+      completion_tokens: pout,
+      total_tokens: pin + pout,
+      prompt_tokens_details: { estimated: true, source: ESTIMATE_SOURCE },
+      completion_tokens_details: { estimated: true, source: ESTIMATE_SOURCE },
+    },
   }
 }
 
