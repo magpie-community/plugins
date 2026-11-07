@@ -269,6 +269,8 @@ it off puts the config back.
 | [pig](packages/pig) | [PiG](https://github.com/MichaelKinsy/PiG): Magpie's endpoint and model catalog in `~/.pig/agent/models.json`, and the model PiG starts on (`defaultProvider`/`defaultModel` in `settings.json`) picked on the Agents page |
 | [type4me](packages/type4me) | [Type4Me](https://github.com/joewongjc/type4me), macOS voice input: `~/Library/Application Support/Type4Me/magpie-agent.json`, for its LLM post-processing |
 | [opencodereview](packages/opencodereview) | [Open Code Review](https://github.com/alibaba/open-code-review) (`ocr`): `~/.opencodereview/config.json` as a custom Anthropic provider, so `ocr review` / `ocr scan` run on magpie's models |
+| [willdeep](packages/willdeep) | [WillDeep Desktop](https://willdeep.com): `~/.willdeep/integrations/magpie/desktop/connection.json`; only new sessions without an explicit Provider, and switching it off restores the original connection (needs 1.428.0-rc2 or later) |
+| [willdeep-cli](packages/willdeep-cli) | [WillDeep CLI](https://github.com/niuwoai/willdeep-rs): `~/.willdeep/integrations/magpie/cli/connection.json`; only new sessions without an explicit Profile, and `willdeep` must be on magpie's `PATH` (needs 0.143.0-rc7 or later) |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
