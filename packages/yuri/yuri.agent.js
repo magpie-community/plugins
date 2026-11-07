@@ -11,7 +11,6 @@ export const agent = {
   config: "~/.config/magpie/agents/yuri/connection.json",
   format: "json",
   ua: [],
-  notice: "Yuri shares OpenCode's service and global plugins. Choose models in Yuri; existing plugin versions/options are kept. 与 OpenCode CLI 共用服务；在 Yuri 中选模型，保留已有插件配置。",
 }
 
 export function connect({ gateway }) {

@@ -36,6 +36,14 @@ for (const name of readdirSync(root)) {
   const problems = []
   try {
     const mod = await import(pathToFileURL(join(dir, pkg.main ?? "index.mjs")).href)
+    // A native V2 provider needs no legacy auth shim. Never run setup here:
+    // provider setup can contact a gateway; its own tests exercise that API.
+    if (mod.default && typeof mod.default.id === "string" && (typeof mod.default.setup === "function" || typeof mod.default.effect === "function")) {
+      problems.push(...(await opencode2Problems(dir, pkg)))
+      if (problems.length) failed++
+      console.log(problems.length ? `✗ ${name}\n  ${problems.join("\n  ")}` : `✓ ${name}`)
+      continue
+    }
     // as magpie's host takes them: every exported function, and the
     // OpenCode v1 form, a default export of { id, server }
     const fns = Object.values(mod).filter((v) => typeof v === "function")

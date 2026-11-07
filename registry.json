@@ -110,7 +110,7 @@
       "summary": { "en": "Type4Me (macOS voice input) on magpie's Agents page: pick one of magpie's models for its LLM post-processing, used from the next dictation.", "zh": "把 Type4Me（macOS 语音输入）加到 magpie 的 Agent 页：给它的 LLM 后处理选 magpie 的模型，下一次语音输入即生效。" } },
     { "package": "@magpie-community/agent-yuri", "name": "Yuri", "kind": "agent", "community": true,
       "icon": "https://raw.githubusercontent.com/yee94/yuri/main/assets/brand/yuri/yuri-b-icon-light-32.png",
-      "summary": { "en": "Yuri on Magpie's Agents page: reversibly enable opencode-magpie-plugin in its shared OpenCode V2 configuration, preserving existing plugins, versions and options. Choose models in Yuri; also affects a CLI sharing that service.", "zh": "把 Yuri 加到 Magpie 的 Agent 页：可撤销地接入 opencode-magpie-plugin，保留已有插件、版本和选项。在 Yuri 内选择模型；也会影响共用该 OpenCode V2 服务的 CLI。" } },
+      "summary": { "en": "Yuri via the reviewed community Magpie provider, with Yuri usage attribution. Keeps existing plugins, versions and options. Choose models in Yuri; also affects a CLI sharing the OpenCode V2 service.", "zh": "通过社区审查的 Magpie Provider 接入 Yuri 并标记用量，保留已有插件、版本和选项。在 Yuri 内选择模型；也会影响共用 OpenCode V2 服务的 CLI。" } },
     { "package": "@magpie-community/agent-cowork", "name": "Tuanjie Cowork", "kind": "agent", "community": true,
       "summary": { "en": "Tuanjie Cowork (codely) on magpie's Agents page: pick one of magpie's models and Cowork chats with it, on the subscriptions magpie already holds.", "zh": "把团结 Cowork（codely）加到 magpie 的 Agent 页：给它选一个 magpie 的模型，它聊天就走那个模型，用的是 magpie 里已登录的那些订阅的额度。" } },
     { "package": "@magpie-community/agent-opencodereview", "name": "Open Code Review", "kind": "agent", "community": true,

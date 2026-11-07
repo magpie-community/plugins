@@ -260,7 +260,7 @@ it off puts the config back.
 | [kimi-desktop](packages/kimi-desktop) | Ordinary [Kimi desktop](https://www.kimi.com/) Work, through its authenticated local runtime; not Kimi Code CLI |
 | [pig](packages/pig) | [PiG](https://github.com/MichaelKinsy/PiG): Magpie's endpoint and model catalog in `~/.pig/agent/models.json`, and the model PiG starts on (`defaultProvider`/`defaultModel` in `settings.json`) picked on the Agents page |
 | [type4me](packages/type4me) | [Type4Me](https://github.com/joewongjc/type4me), macOS voice input: `~/Library/Application Support/Type4Me/magpie-agent.json`, for its LLM post-processing |
-| [yuri](packages/yuri) | [Yuri](https://github.com/yee94/yuri): reversible injection of `opencode-magpie-plugin` into its OpenCode V2 service, preserving existing plugins, versions and options; also affects a CLI sharing that service |
+| [yuri](packages/yuri) | [Yuri](https://github.com/yee94/yuri): reversible injection of the reviewed [community provider](packages/magpie-provider) into its OpenCode V2 service, preserving existing plugins, versions and options; also affects a CLI sharing that service |
 | [opencodereview](packages/opencodereview) | [Open Code Review](https://github.com/alibaba/open-code-review) (`ocr`): `~/.opencodereview/config.json` as a custom Anthropic provider, so `ocr review` / `ocr scan` run on magpie's models |
 
 ```sh

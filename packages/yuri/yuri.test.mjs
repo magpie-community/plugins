@@ -4,6 +4,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { createHash } from "node:crypto"
+import { spawnSync } from "node:child_process"
 import { parse } from "./vendor.mjs"
 import { agent, connect } from "./yuri.agent.js"
 import { pathsFor, syncBridge, startBridge } from "./bridge.mjs"
@@ -36,11 +37,14 @@ test("Agent and plugin card embed the same original Yuri PNG for offline use", (
   assert.ok(pkg.files.includes("LICENSE-JSONC-PARSER"))
   assert.ok(pkg.files.includes("vendor.mjs"))
   assert.equal(pkg.dependencies, undefined)
+  assert.deepEqual(Object.keys(pkg.magpie.summary).sort(), ["en", "zh"])
+  assert.ok(Object.values(pkg.magpie.summary).every(text => typeof text === "string" && Buffer.byteLength(text) <= 300))
 })
 
 test("connect-only Agent keeps the gateway in its own sidecar", () => {
   assert.equal(agent.id, "yuri")
   assert.equal(agent.model, undefined)
+  assert.equal(agent.notice, undefined)
   assert.equal(agent.config, "~/.config/magpie/agents/yuri/connection.json")
   assert.deepEqual(connect({ gateway }), { baseURL: gateway.v1, gatewayKey: gateway.key })
   assert.throws(() => connect({ gateway: {} }))
@@ -58,8 +62,8 @@ test("merges one plugin, leaves comments/options/providers intact, restores byte
   assert.ok(installed.includes('{"package":"other", "options":{"a":1}}'))
   assert.ok(installed.includes('"providers": {"own":{"name":"Mine"}}'))
   assert.deepEqual(get(file).plugins[1], {
-    package: "opencode-magpie-plugin@0.5.1",
-    options: { remote: { baseURL: gateway.v1, token: gateway.key } },
+    package: "@magpie-community/opencode-magpie-provider@0.1.0",
+    options: { agentID: "yuri", remote: { baseURL: gateway.v1, token: gateway.key } },
   })
   assert.equal(fs.statSync(file).mode & 0o777, 0o640)
   assert.equal(fs.statSync(p.state).mode & 0o777, 0o600)
@@ -74,6 +78,8 @@ test("merges one plugin, leaves comments/options/providers intact, restores byte
 for (const entry of [
   "opencode-magpie-plugin@0.5.1",
   "opencode-magpie-plugin",
+  "@magpie-community/opencode-magpie-provider@0.1.0",
+  { package: "@magpie-community/opencode-magpie-provider@0.2.0", options: { agentID: "mine" } },
   { package: "opencode-magpie-plugin@0.4.2", options: { groups: [{ id: "mine" }], remote: { baseURL: "https://example.test/api", token: "existing" } } },
 ]) test(`preserves an existing ${typeof entry} plugin and never takes ownership`, t => {
   const { p, file } = fixture(t)
@@ -226,4 +232,103 @@ test("bridge-owned files stay under Magpie, without creating Yuri's data directo
   syncBridge(p)
   assert.equal(fs.existsSync(p.state), false)
   assert.equal(fs.existsSync(path.join(home, ".config", "yuri")), false)
+})
+
+test("a second process cannot write while another bridge writer holds the lock", t => {
+  const { p, file } = fixture(t)
+  const original = '{"model":"keep"}'
+  put(file, original)
+  put(p.state + ".lock", String(process.pid))
+  const script = `import { syncBridge } from ${JSON.stringify(new URL("./bridge.mjs", import.meta.url).href)};
+    try { syncBridge(${JSON.stringify(p)}); process.exitCode = 2 }
+    catch (error) { if (!/Another Yuri bridge operation/.test(error.message)) throw error }`
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 10_000 })
+  assert.equal(child.status, 0, child.stderr)
+  assert.equal(fs.readFileSync(file, "utf8"), original)
+  assert.equal(fs.existsSync(p.state), false)
+  assert.equal(fs.readFileSync(p.state + ".lock", "utf8"), String(process.pid))
+  fs.unlinkSync(p.state + ".lock")
+  assert.equal(syncBridge(p), "connected")
+})
+
+test("reclaims a crashed writer's lock and releases its replacement", t => {
+  const { p } = fixture(t)
+  const exited = spawnSync(process.execPath, ["-e", ""], { timeout: 10_000 })
+  assert.equal(exited.status, 0)
+  assert.throws(() => process.kill(exited.pid, 0), { code: "ESRCH" })
+  put(p.state + ".lock", String(exited.pid))
+  assert.equal(syncBridge(p), "connected")
+  assert.equal(fs.existsSync(p.state + ".lock"), false)
+})
+
+test("rejects a user edit between read and commit before writing a recovery journal", t => {
+  const { p, file } = fixture(t)
+  put(file, '{}')
+  const changed = '{"model":"user-edited-during-update"}'
+  const read = fs.readFileSync
+  let reads = 0
+  fs.readFileSync = function (target, ...args) {
+    const text = read.call(this, target, ...args)
+    if (target === file && ++reads === 1) put(file, changed)
+    return text
+  }
+  try {
+    assert.throws(() => syncBridge(p), /Configuration changed during update/)
+  } finally { fs.readFileSync = read }
+  assert.equal(fs.readFileSync(file, "utf8"), changed)
+  assert.equal(fs.existsSync(p.state + ".pending"), false)
+  assert.equal(fs.existsSync(p.state), false)
+})
+
+test("disconnect refuses duplicated managed entries and retains the ownership record", t => {
+  const { p, file } = fixture(t)
+  syncBridge(p)
+  const state = fs.readFileSync(p.state, "utf8")
+  const entry = JSON.parse(state).entry
+  const duplicated = JSON.stringify({ plugins: [entry, entry], model: "keep" })
+  put(file, duplicated)
+  put(p.control, {})
+  assert.throws(() => syncBridge(p), /Managed plugin duplicated/)
+  assert.equal(fs.readFileSync(file, "utf8"), duplicated)
+  assert.equal(fs.readFileSync(p.state, "utf8"), state)
+  assert.equal(fs.existsSync(p.state + ".pending"), false)
+})
+
+for (const baseURL of ["file:///tmp/gateway", "ftp://example.test/v1", "https://user:pass@example.test/v1", "https://example.test/v1?token=hidden", "https://example.test/v1#fragment"]) {
+  test("rejects non-HTTP or credential-bearing gateway URLs before touching OpenCode", t => {
+    const { p, file } = fixture(t)
+    put(p.control, { baseURL, gatewayKey: gateway.key })
+    assert.throws(() => syncBridge(p), /Invalid Magpie API URL/)
+    assert.equal(fs.existsSync(file), false)
+    assert.equal(fs.existsSync(p.state), false)
+  })
+}
+
+for (const gatewayKey of ["with space", "with\ttab", "with\r\nheader", "non-ascii-密钥", "delete-\x7f"]) {
+  test("rejects whitespace, control and non-ASCII gateway keys before touching OpenCode", t => {
+    const { p, file } = fixture(t)
+    put(p.control, { baseURL: gateway.v1, gatewayKey })
+    assert.throws(() => syncBridge(p), /Incomplete Yuri connection/)
+    assert.equal(fs.existsSync(file), false)
+    assert.equal(fs.existsSync(p.state), false)
+  })
+}
+
+test("host exit restores a disconnected Agent even before the next poll", t => {
+  const { home, p, file } = fixture(t)
+  const original = '{ // keep\n "model":"mine"\n}'
+  put(file, original)
+  const script = `import fs from "node:fs";
+    import Yuri from ${JSON.stringify(new URL("./index.mjs", import.meta.url).href)};
+    await Yuri();
+    if (!fs.existsSync(${JSON.stringify(p.state)})) throw new Error("Bridge did not connect");
+    fs.writeFileSync(${JSON.stringify(p.control)}, "{}");
+    process.exit(0)`
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, ".config"), OPENCODE_CONFIG_DIR: path.dirname(file), OPENCODE_CONFIG: "" },
+    encoding: "utf8", timeout: 10_000,
+  })
+  assert.equal(child.status, 0, child.stderr)
+  assert.equal(fs.readFileSync(file, "utf8"), original)
+  assert.equal(fs.existsSync(p.state), false)
 })

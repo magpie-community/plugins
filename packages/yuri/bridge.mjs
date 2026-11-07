@@ -7,8 +7,9 @@ import { isDeepStrictEqual } from "node:util"
 import { parse, parseTree, modify, applyEdits } from "./vendor.mjs"
 import { agent } from "./yuri.agent.js"
 
-const PACKAGE = "opencode-magpie-plugin"
-const SPEC = `${PACKAGE}@0.5.1`
+const PACKAGE = "@magpie-community/opencode-magpie-provider"
+const SPEC = `${PACKAGE}@0.1.0`
+const compatiblePackages = [PACKAGE, "opencode-magpie-plugin"]
 const parseOptions = { allowTrailingComma: true, allowEmptyContent: true }
 
 export function pathsFor(home = os.homedir(), env = process.env) {
@@ -70,7 +71,7 @@ function edit(text, keys, value) {
 function hasPlugin(entry, file) {
   const spec = typeof entry === "string" ? entry : entry?.package
   if (typeof spec !== "string") return false
-  if (spec === PACKAGE || spec.startsWith(`${PACKAGE}@`) || spec.startsWith(`npm:${PACKAGE}@`)) return true
+  if (compatiblePackages.some(name => spec === name || spec.startsWith(`${name}@`) || spec.startsWith(`npm:${name}@`))) return true
   if (!spec.startsWith(".") && !path.isAbsolute(spec) && !spec.startsWith("file://")) return false
   let location = spec.startsWith("file://") ? fileURLToPath(spec) : path.resolve(path.dirname(file), spec)
   if (!fs.existsSync(location)) throw new Error("A local plugin path is missing; resolve it before connecting Yuri")
@@ -78,7 +79,7 @@ function hasPlugin(entry, file) {
   // A local package directory, or its dist/index.mjs entry, has the same id.
   for (let depth = 0; depth < 2; depth++, location = path.dirname(location)) {
     const manifest = path.join(location, "package.json")
-    if (fs.existsSync(manifest)) return JSON.parse(fs.readFileSync(manifest, "utf8")).name === PACKAGE
+    if (fs.existsSync(manifest)) return compatiblePackages.includes(JSON.parse(fs.readFileSync(manifest, "utf8")).name)
   }
   return false
 }
@@ -88,7 +89,7 @@ function desired(control) {
   if (typeof control.baseURL !== "string" || typeof control.gatewayKey !== "string" || !/^[\x21-\x7e]+$/.test(control.gatewayKey)) throw new Error("Incomplete Yuri connection; reconnect in Magpie")
   const url = new URL(control.baseURL)
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Invalid Magpie API URL")
-  return { package: SPEC, options: { remote: { baseURL: control.baseURL, token: control.gatewayKey } } }
+  return { package: SPEC, options: { agentID: "yuri", remote: { baseURL: control.baseURL, token: control.gatewayKey } } }
 }
 
 function json(file) {
@@ -177,7 +178,7 @@ export function syncBridge(p = pathsFor()) {
   })
 }
 
-export function startBridge(p = pathsFor(), { interval = 750, onError = () => console.error("Yuri bridge paused; check OpenCode configuration. Recovery files retained.") } = {}) {
+export function startBridge(p = pathsFor(), { interval = 3000, onError = () => console.error("Yuri bridge paused; check OpenCode configuration. Recovery files retained.") } = {}) {
   let failed = false
   const tick = () => {
     try { syncBridge(p); failed = false } catch {
