@@ -3,13 +3,15 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 const conflict = () => Object.assign(Error('agent_profile_conflict'), { code: 'agent_profile_conflict' });
+const profileFile = /^local-agent-(?:[a-f0-9]{12}-)?[a-f0-9]{24}\.md$/;
+const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
 // Existing files are accepted only byte-for-byte. A profile edited by the user
-// is never replaced, and old model profiles remain available for resumed work.
-export function ensureAgentProfiles({ directory, router, models }) {
+// is never replaced. Optional ownership permits pruning retired private files.
+export function ensureAgentProfiles({ directory, router, models, ownedFiles }) {
   const entries = [...new Set(models)].map(model => {
     const name = router.profileName(model);
-    if (!/^local-agent-[a-f0-9]{24}$/.test(name)) throw conflict();
+    if (!/^local-agent-[a-f0-9]{12}-[a-f0-9]{24}$/.test(name)) throw conflict();
     return { name, file: path.join(directory, name + '.md'), text: router.profileText(model) };
   });
   const exists = entry => {
@@ -21,6 +23,24 @@ export function ensureAgentProfiles({ directory, router, models }) {
   };
   // Check every existing name before publishing any new profile.
   const missing = entries.filter(entry => !exists(entry));
+  const obsolete = [];
+  const verifyOwned = name => {
+    const file = path.join(directory, name);
+    if (!fs.lstatSync(file).isFile() || digest(fs.readFileSync(file)) !== ownedFiles[name]) throw conflict();
+  };
+  if (ownedFiles !== undefined) {
+    if (!ownedFiles || typeof ownedFiles !== 'object' || Array.isArray(ownedFiles)
+        || Object.entries(ownedFiles).some(([name, hash]) => !profileFile.test(name) || !/^[a-f0-9]{64}$/.test(hash))) {
+      throw conflict();
+    }
+    const wanted = new Set(entries.map(entry => path.basename(entry.file)));
+    for (const name of fs.existsSync(directory) ? fs.readdirSync(directory) : []) {
+      // MUTATION profiles-ownership: unknown or edited files never become deletion authority.
+      if (Object.hasOwn(ownedFiles, name)) verifyOwned(name);
+      else if (!wanted.has(name)) throw conflict();
+      if (!wanted.has(name)) obsolete.push(name);
+    }
+  }
   let changed = false;
   if (missing.length) fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   for (const entry of missing) {
@@ -37,6 +57,12 @@ export function ensureAgentProfiles({ directory, router, models }) {
         if (!exists(entry)) throw conflict();
       }
     } finally { if (created) fs.unlinkSync(staged); }
+  }
+  for (const name of obsolete) {
+    // Recheck bytes immediately before deleting an obsolete owned profile.
+    verifyOwned(name);
+    fs.unlinkSync(path.join(directory, name));
+    changed = true;
   }
   return { changed, names: entries.map(entry => entry.name) };
 }

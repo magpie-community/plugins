@@ -10,6 +10,7 @@
     "adapter.mjs",
     "agent-routing.mjs",
     "agent-profiles.mjs",
+    "role-plugin-state.mjs",
     "rpc.mjs",
     "catalog.mjs",
     "library.mjs",

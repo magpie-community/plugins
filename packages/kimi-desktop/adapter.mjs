@@ -12,6 +12,7 @@ import { inspectModelPool, patchModelPool } from './model-pool-config.mjs';
 import { AgentModelRouter } from './agent-routing.mjs';
 import { ensureAgentProfiles } from './agent-profiles.mjs';
 import { kernelFamily, runnerGeneration } from './runtime-family.mjs';
+import { inspectRolePlugins, disableRolePluginsSync } from './role-plugin-state.mjs';
 
 const PROVIDER = 'daimon-kimi-code';
 const TOOL_ORIGIN = 'https://agent-gw.kimi.com';
@@ -28,7 +29,15 @@ const busy = runner => activeCount(runner?.activeKernelTurns) + activeCount(runn
 const RELOAD_SESSIONS = 'kimiPlugin.reloadActiveSessions';
 const RELOAD_SESSION = 'kimiPlugin.ReloadSession';
 const SECONDARY_RETRY_MS = 5000;
+// A stable opt-in connection rereads the public plugin state at most this
+// often; a busy runtime defers the check entirely.
+const AGENT_PLUGIN_CONFIRM_MS = 30000;
 const MODEL_ID = /^[^\x00-\x1f/]+\/[^\x00-\x1f]+$/;
+const RESERVED_ROUTE = /\[\/?agent-profile-route\b/i;
+// Primary/menu control calls are the only boundary that can regenerate the
+// native TOML from a fixed key set.
+const PRIMARY_REWRITE_METHODS = new Set(['models.current', 'conversations.setModel',
+  'conversations.updateKimiModelList']);
 const SECONDARY_CODES = new Set(['secondary_config_unsupported', 'secondary_model_unavailable',
   'secondary_model_reload_failed', 'secondary_model_unsupported_runtime', 'kimi_config_changed']);
 
@@ -43,7 +52,7 @@ const samePool = (left, right) => Boolean(left && right) && sameModels(left.mode
 
 function rolePluginFiles(directory) {
   const names = ['kimi.plugin.json', ...fs.readdirSync(path.join(directory, 'agents')).sort().map(name => {
-    if (!/^local-agent-[a-f0-9]{24}\.md$/.test(name)) throw Error('agent_profile_conflict');
+    if (!/^local-agent-(?:[a-f0-9]{12}-)?[a-f0-9]{24}\.md$/.test(name)) throw Error('agent_profile_conflict');
     return 'agents/' + name;
   })];
   return Object.fromEntries(names.map(name => {
@@ -178,6 +187,20 @@ export class KimiAdapter {
     this.instructionsFile = path.join(this.stateDir, 'AGENTS.md');
     this.catalog = [];
     Object.assign(this, { intervalMs, stabilityMs, rpcCall, fetchImpl, setPrimaryModel, log });
+    // Foreign native values are snapshotted around our own primary/menu RPC
+    // only. Stable ticks never touch a value another writer changed.
+    const controlCall = this.rpcCall;
+    this.rpcCall = async (runner, method, params, options) => {
+      if (!PRIMARY_REWRITE_METHODS.has(method)) return controlCall(runner, method, params, options);
+      this.captureForeignNative();
+      try { return await controlCall(runner, method, params, options); }
+      finally {
+        try { this.restoreForeignNative(); }
+        catch (error) {
+          if (error?.message === 'kimi_config_changed') this.nativeRewriteConflict = true;
+        }
+      }
+    };
     this.ownerID = crypto.randomUUID();
     this.status = {};
     this.running = false;
@@ -252,6 +275,7 @@ export class KimiAdapter {
   }
 
   report(code, details = {}) {
+    if (this.nativeRewriteConflict) code = 'kimi_config_changed';
     const next = { code, ...details };
     if (JSON.stringify(next) === JSON.stringify(this.status)) return;
     this.status = next;
@@ -285,7 +309,9 @@ export class KimiAdapter {
       try { catalog = await this.gatewayCatalog(gatewayURL(desired.gateway.url), desired.gateway.key); }
       catch { status = 'catalog_unavailable'; }
     }
-    const appliedSecondaryModel = this.rolesReady ? this.bridgeSecondaryModel : undefined;
+    // Confirmed role translation only. A pending install, conflict or opt-out
+    // reports unconfirmed instead of a stale bridge selection.
+    const appliedSecondaryModel = this.rolesReady ? this.bridgeSecondaryModel : '';
     return {
       enabled: desired.enabled === true,
       primaryModel: typeof desired.model === 'string' ? desired.model : '',
@@ -417,15 +443,20 @@ export class KimiAdapter {
         try { allowed = await this.gatewayCatalog(active.gatewayURL, active.gatewayKey); }
         catch { error(503, 'catalog_unavailable'); return; }
         const primary = selected?.id || active.model;
+        const enableRoles = this.rolesReady && Boolean(this.bridgeSecondaryModel);
         roles = { primaryModel: primary, secondaryModel: this.bridgeSecondaryModel || primary };
-        router = this.ensureAgentRouter();
-        const originalTools = payload.tools;
-        routing = router.prepare(payload, { ...roles, allowedModels: allowed.map(row => row.id) });
-        if (!this.rolesReady) {
-          if (originalTools !== undefined) routing.payload.tools = originalTools;
-          routing.translateResponse = false;
+        const allowedModels = allowed.map(row => row.id);
+        if (enableRoles || /^[a-f0-9]{64}$/.test(this.state?.agentRoutingSecret || '')) {
+          router = this.ensureAgentRouter();
+          routing = router.prepare(payload, { ...roles, allowedModels, enableRoles });
+          payload = routing.payload;
+        } else {
+          // A connection that never opted in keeps the 0.1.5 payload shape and
+          // does not mint a routing secret or profile namespace.
+          if (!validModelID(primary) || !allowedModels.includes(primary)) throw Error('model_not_enabled_for_kimi');
+          routing = { payload, model: primary, translateResponse: false };
+          payload = { ...payload, model: primary };
         }
-        payload = routing.payload;
         try { payload = applyInstructions(payload, this.instructionsFile); }
         catch (failure) { error(failure.message === 'invalid_messages' ? 400 : 503, failure.message); return; }
         payload = neutralPromptAliases(payload);
@@ -436,8 +467,11 @@ export class KimiAdapter {
       if (!headers['user-agent']) headers['user-agent'] = 'Desktop Kimi Work';
       const url = inference ? active.gatewayURL + '/chat/completions'
         : officialURL(active.originalBase) + req.url.slice('/v1'.length);
+      const bodyText = JSON.stringify(payload);
+      // No route metadata may survive the final instructions/alias passes.
+      if (inference && RESERVED_ROUTE.test(bodyText)) throw Error('agent_profile_unbound');
       const upstream = await this.fetchImpl(url, { method: 'POST', headers,
-        body: JSON.stringify(payload), signal: controller.signal, redirect: 'error' });
+        body: bodyText, signal: controller.signal, redirect: 'error' });
       const responseHeaders = { 'Content-Type': upstream.headers.get('content-type') || 'application/json',
         'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' };
       const retryAfter = upstream.headers.get('retry-after');
@@ -465,7 +499,8 @@ export class KimiAdapter {
       res.end();
     } catch (failure) {
       if (res.headersSent) res.destroy();
-      else if (failure?.message === 'model_not_enabled_for_kimi') error(409, failure.message);
+      else if (failure?.message === 'model_not_enabled_for_kimi'
+          || failure?.message === 'agent_profile_unbound') error(409, failure.message);
       else if (failure?.message?.startsWith('agent_routing_')) error(400, failure.message);
       else error(controller.signal.aborted ? 499 : 502, controller.signal.aborted ? 'request_cancelled' : 'upstream_connection_failed');
     } finally {
@@ -478,7 +513,7 @@ export class KimiAdapter {
     // Read the two scalars before the control calls below can regenerate the
     // file, so a value another writer owns survives them.
     if (!this.state?.active) return { restored: true };
-    this.protectNativeSecondary('', { capture: true });
+    this.protectNativeSecondary();
     let doc = readJSON(this.configFile);
     let modelsRestored = false;
     // A synchronous exit (or an earlier partial restore) can already have
@@ -566,42 +601,97 @@ export class KimiAdapter {
   // Earlier adapters persisted a native secondary setting. Restore any owned
   // fields once, then keep role selection in the existing inference bridge.
   // Desktop queue-dispatch rebuilds native TOML before every ordinary turn.
-  protectNativeSecondary(_wanted, { capture = false } = {}) {
-    this.observeNativeSecondary();
-    this.observeModelPool();
-    if (!capture || !this.state) return;
-    let changed = false;
+  // A native control call can make Daimon rewrite its runtime TOML from a
+  // fixed key set. Unowned foreign values are preserved in memory for the
+  // duration of that tick and written back only when the call erased them.
+  // This is not ownership: nothing is persisted and no session reload runs.
+  captureForeignNative() {
+    this.foreignSecondary = null;
+    this.foreignPool = null;
     if (!this.secondaryOwnership()) {
-      try {
-        const baseline = this.readNativeSecondary();
-        if (baseline.model !== null || baseline.enabled !== null) {
-          this.state.secondary = { baseline, alias: '' };
-          changed = true;
-        }
-      } catch { /* No readable legacy setting to preserve. */ }
+      try { this.foreignSecondary = this.readNativeSecondary(); } catch { /* No readable scalar. */ }
     }
     if (!this.modelPoolOwnership()) {
-      try {
-        const baseline = inspectModelPool(fs.readFileSync(this.convertedNativeConfigFile, 'utf8'));
-        if (baseline.models !== null || baseline.defaultModel !== null) {
-          this.state.secondaryPool = { baseline, written: null, selection: '' };
-          changed = true;
-        }
-      } catch { /* No readable V2 setting to preserve. */ }
+      try { this.foreignPool = inspectModelPool(fs.readFileSync(this.convertedNativeConfigFile, 'utf8')); }
+      catch { /* No readable pool. */ }
     }
-    if (changed) this.saveState();
+  }
+
+  restoreForeignNative() {
+    let conflict = false;
+    const scalar = this.foreignSecondary;
+    if (scalar && (scalar.model !== null || scalar.enabled !== null)) {
+      try {
+        const bytes = fs.readFileSync(this.nativeConfigFile);
+        const current = inspectSecondary(bytes.toString('utf8'));
+        if (current.model === null && current.enabled === null) {
+          const text = bytes.toString('utf8');
+          const next = patchSecondary(text, scalar);
+          this.commitNativeSecondary(bytes, next);
+        }
+      } catch (error) {
+        if (error?.message === 'kimi_config_changed') conflict = true;
+      }
+    }
+    const pool = this.foreignPool;
+    if (pool && (pool.models !== null || pool.defaultModel !== null)) {
+      try {
+        const bytes = fs.readFileSync(this.convertedNativeConfigFile);
+        const current = inspectModelPool(bytes.toString('utf8'));
+        if (current.models === null && current.defaultModel === null) {
+          const text = bytes.toString('utf8');
+          const next = patchModelPool(text, pool);
+          this.commitNativeSecondary(bytes, next, this.convertedNativeConfigFile);
+        }
+      } catch (error) {
+        if (error?.message === 'kimi_config_changed') conflict = true;
+      }
+    }
+    this.foreignSecondary = null;
+    this.foreignPool = null;
+    if (conflict) throw Error('kimi_config_changed');
+  }
+
+  protectNativeSecondary() {
+    // Foreign legacy scalars and pools are observations only. Only a baseline
+    // this adapter persisted earlier owns a restore obligation.
+    this.observeNativeSecondary();
+    this.observeModelPool();
   }
 
   ensureAgentRouter() {
-    if (!/^[a-f0-9]{64}$/.test(this.state?.agentRoutingSecret || '')) {
-      this.state.agentRoutingSecret = crypto.randomBytes(32).toString('hex');
+    let secret = this.state?.agentRoutingSecret;
+    if (!/^[a-f0-9]{64}$/.test(secret || '')) {
+      secret = crypto.randomBytes(32).toString('hex');
+      this.state.agentRoutingSecret = secret;
       this.saveState();
     }
-    if (this.agentRouterSecret !== this.state.agentRoutingSecret) {
-      this.agentRouter = new AgentModelRouter({ secret: this.state.agentRoutingSecret });
-      this.agentRouterSecret = this.state.agentRoutingSecret;
+    const stored = record(this.state?.agentRoutingBindings) ? this.state.agentRoutingBindings : {};
+    const sameBindings = (left, right) => {
+      const a = Object.entries(left), b = Object.entries(right);
+      return a.length === b.length && a.every(([key, value], index) =>
+        b[index] && b[index][0] === key && b[index][1] === value);
+    };
+    if (!this.agentRouter || this.agentRouterSecret !== secret
+        || !sameBindings(this.agentRouter.bindings, stored)) {
+      try { this.agentRouter = new AgentModelRouter({ secret, bindings: stored }); }
+      catch { throw Error('agent_profile_conflict'); }
+      this.agentRouterSecret = secret;
     }
     return this.agentRouter;
+  }
+
+  persistAgentBindings(router) {
+    const next = router.bindings;
+    if (JSON.stringify(next) !== JSON.stringify(this.state.agentRoutingBindings || {})) {
+      const previous = this.state.agentRoutingBindings;
+      this.state.agentRoutingBindings = next;
+      try { this.saveState(); }
+      catch (error) {
+        this.state.agentRoutingBindings = previous;
+        throw error;
+      }
+    }
   }
 
   async reconcileSecondary(runner, wanted, { inheritModel = '' } = {}) {
@@ -609,30 +699,141 @@ export class KimiAdapter {
       const restored = await this.restoreModelPools(runner);
       if (restored.waiting) return restored;
     }
-    if (!inheritModel) { this.bridgeSecondaryModel = ''; return { applied: true }; }
-    const target = wanted || inheritModel;
+    if (!wanted) {
+      // Opted out. An owned plugin retires at idle; a busy turn keeps its
+      // current schema until the disable obligation can be confirmed.
+      if (this.state?.agentPlugin) {
+        const retired = await this.retireRolePlugin(runner);
+        if (retired.waiting) return retired;
+      }
+      this.rolesReady = false;
+      this.bridgeSecondaryModel = '';
+      this.setAppliedSecondary('');
+      return { applied: true };
+    }
+    if (!inheritModel) return { applied: false };
+    const target = wanted;
     if (!this.catalog.some(row => row.id === target)) throw Error('secondary_model_unavailable');
     if (this.bridgeSecondaryModel !== target && busy(runner)) return { waiting: true };
     this.ensureAgentRouter();
     if (kernelFamily(runner, { hasConverted: fs.existsSync(this.convertedNativeConfigFile) }) !== 'v2') {
       this.rolesReady = false;
-      if (wanted) throw Error('secondary_model_unsupported_runtime');
-      this.bridgeSecondaryModel = inheritModel;
-      return { applied: true };
+      this.bridgeSecondaryModel = '';
+      this.setAppliedSecondary('');
+      throw Error('secondary_model_unsupported_runtime');
     }
     const profiles = await this.syncRolePlugin(runner, [inheritModel, target]);
     if (profiles.waiting) return profiles;
     this.rolesReady = true;
     this.bridgeSecondaryModel = target;
+    this.setAppliedSecondary(target);
     return { applied: true };
+  }
+
+  markRolePluginDisablePending() {
+    const saved = this.state?.agentPlugin;
+    if (!saved || saved.phase === 'disabled' || saved.phase === 'disabling') return false;
+    this.state.agentPlugin = { ...saved, phase: 'disabling' };
+    this.saveState();
+    return true;
+  }
+
+  rolePluginRegistered(id) {
+    const registryFile = path.join(path.dirname(this.convertedNativeConfigFile), 'plugins', 'installed.json');
+    const inspection = inspectRolePlugins({ registryFile,
+      sourceDirectory: path.join(this.stateDir, 'native-model-roles') });
+    if (inspection.conflicts.length || inspection.owned.some(row => row.id !== id)) {
+      throw Error('agent_profile_conflict');
+    }
+    return inspection.owned.some(row => row.id === id);
+  }
+
+  async unregisteredRolePluginPresent(runner, saved) {
+    let info;
+    try { info = await this.rpcCall(runner, 'kimiPlugin.getPluginInfo', { id: saved.id }); }
+    catch (error) {
+      if (error?.message === 'kimi_plugin_not_found') return false;
+      throw Error('secondary_model_reload_failed');
+    }
+    if (info?.id !== saved.id || typeof info.enabled !== 'boolean') throw Error('secondary_model_reload_failed');
+    // A missing disk record says nothing about the already-loaded manager.
+    // In that case only our unchanged source/cache bytes authorize a toggle.
+    const directory = path.join(this.stateDir, 'native-model-roles');
+    const installed = path.join(path.dirname(this.convertedNativeConfigFile), 'plugins', 'managed', saved.id);
+    try {
+      if (![directory, path.join(directory, 'agents'), installed, path.join(installed, 'agents')]
+        .every(file => fs.lstatSync(file).isDirectory())) throw Error('agent_profile_conflict');
+      if (!sameFiles(rolePluginFiles(directory), saved.files)
+          || !sameFiles(rolePluginFiles(installed), saved.files)) throw Error('agent_profile_conflict');
+    } catch { throw Error('agent_profile_conflict'); }
+    return true;
+  }
+
+  // Remove only the verified native registration after disable and reload.
+  // Source/managed files and opaque bindings remain for later reconnects.
+  // The disable RPC is always sent while the obligation is pending, even when
+  // the on-disk state already reads false: the native side still needs the
+  // explicit session reload confirmation.
+  async retireRolePlugin(runner) {
+    const saved = this.state?.agentPlugin;
+    if (!saved) return { applied: true };
+    if (saved.phase === 'disabled') return { applied: true };
+    this.markRolePluginDisablePending();
+    if (!runner || runner.lifecycleStatus !== 'running') return { waiting: true };
+    if (busy(runner)) return { waiting: true };
+    const registered = this.rolePluginRegistered(saved.id);
+    let present = registered || await this.unregisteredRolePluginPresent(runner, saved);
+    if (present) {
+      try {
+        await this.rpcCall(runner, 'kimiPlugin.setPluginEnabled', { id: saved.id, enabled: false }, { timeout: 30000 });
+      } catch (error) {
+        if (error?.message === 'kimi_plugin_not_found') present = false;
+        else throw Error('secondary_model_reload_failed');
+      }
+    }
+    this.useSecondaryReloadRuntime('role-disable');
+    this.secondaryReloadPending = true;
+    const confirmation = await this.confirmModelPoolReload(runner, false);
+    if (confirmation.waiting) return confirmation;
+    // Recheck provenance after the awaited control calls. A native uninstall
+    // or a lost removal acknowledgement can already have removed the record.
+    if (this.rolePluginRegistered(saved.id)) {
+      if (!present) throw Error('agent_profile_conflict');
+      try { await this.rpcCall(runner, 'kimiPlugin.removePlugin', { id: saved.id }, { timeout: 30000 }); }
+      catch { throw Error('secondary_model_reload_failed'); }
+    } else if (present && await this.unregisteredRolePluginPresent(runner, saved)) {
+      throw Error('agent_profile_conflict');
+    }
+    const current = this.state?.agentPlugin;
+    if (current && current.id === saved.id) {
+      if (current.phase !== 'disabled') {
+        this.state.agentPlugin = { ...current, phase: 'disabled' };
+        this.saveState();
+      }
+    }
+    return { applied: true, disabled: true };
   }
 
   async syncRolePlugin(runner, models) {
     const router = this.ensureAgentRouter();
+    const allowed = this.catalog.map(row => row.id);
+    try { router.registerModels([...new Set(models)], allowed); }
+    catch (error) {
+      if (error?.message === 'model_not_enabled_for_kimi') throw Error('secondary_model_unavailable');
+      throw Error('agent_profile_conflict');
+    }
+    // The opaque token mapping has to be durable before any profile is
+    // written or any public RPC is sent, so a restart resumes the same routes.
+    this.persistAgentBindings(router);
     const id = 'local-work-model-roles-' + sha(this.state.agentRoutingSecret).slice(0, 12);
     const directory = path.join(this.stateDir, 'native-model-roles');
     const manifestFile = path.join(directory, 'kimi.plugin.json');
     const manifest = JSON.stringify({ name: id, version: '1.0.0', description: 'Local Work model roles', agents: ['./agents'] }, null, 2) + '\n';
+    // Another role-plugin id from an earlier key (or a foreign registration)
+    // must be resolved before this adapter installs, enables or reloads: never
+    // silently leave two role plugins enabled. Owned and foreign candidates
+    // both stop here; nothing is written and no RPC is sent.
+    const registered = this.rolePluginRegistered(id);
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     if (!fs.lstatSync(directory).isDirectory()) throw Error('agent_profile_conflict');
     try { fs.writeFileSync(manifestFile, manifest, { flag: 'wx', mode: 0o600 }); }
@@ -640,14 +841,23 @@ export class KimiAdapter {
       if (error.code !== 'EEXIST') throw error;
       if (!fs.lstatSync(manifestFile).isFile() || fs.readFileSync(manifestFile, 'utf8') !== manifest) throw Error('agent_profile_conflict');
     }
-    ensureAgentProfiles({ directory: path.join(directory, 'agents'), router, models });
-    const files = rolePluginFiles(directory);
-    const selection = sha(JSON.stringify(models));
-    const installed = path.join(path.dirname(this.convertedNativeConfigFile), 'plugins', 'managed', id);
     const saved = this.state.agentPlugin;
-    for (const [name, digest] of Object.entries(saved?.files || {})) {
-      if (files[name] !== digest) throw Error('agent_profile_conflict');
-    }
+    // Verify the bytes this adapter owned before the profiles manager may
+    // prune any retired one. Missing, edited or foreign files are conflicts,
+    // while a normal prune of an owned obsolete profile is allowed.
+    const ownedFiles = {};
+    try {
+      for (const [name, digest] of Object.entries(saved?.files || {})) {
+        const file = path.join(directory, name);
+        if (!fs.lstatSync(file).isFile() || sha(fs.readFileSync(file)) !== digest) throw Error('agent_profile_conflict');
+        if (name.startsWith('agents/')) ownedFiles[name.slice('agents/'.length)] = digest;
+      }
+    } catch { throw Error('agent_profile_conflict'); }
+    ensureAgentProfiles({ directory: path.join(directory, 'agents'), router, models: router.boundModels,
+      ...(saved?.files ? { ownedFiles } : {}) });
+    const files = rolePluginFiles(directory);
+    const selection = sha(JSON.stringify([...router.boundModels].sort()));
+    const installed = path.join(path.dirname(this.convertedNativeConfigFile), 'plugins', 'managed', id);
     let current;
     try { current = rolePluginFiles(installed); }
     catch (error) {
@@ -659,24 +869,48 @@ export class KimiAdapter {
     }
     let needsReload = saved?.phase !== 'ready' || saved?.id !== id;
     let installedOrEnabled = false;
-    if (!sameFiles(current, files)) {
+    if (!registered || !sameFiles(current, files)) {
       if (busy(runner)) return { waiting: true };
       this.rolesReady = false;
       this.state.agentPlugin = { id, files, previousFiles: current, selection, phase: 'installing' };
       this.saveState();
       try {
-        await this.rpcCall(runner, current ? 'kimiPlugin.updatePlugin' : 'kimiPlugin.installPlugin', { source: directory }, { timeout: 30000 });
+        await this.rpcCall(runner, registered ? 'kimiPlugin.updatePlugin' : 'kimiPlugin.installPlugin', { source: directory }, { timeout: 30000 });
       } catch { throw Error('secondary_model_reload_failed'); }
       if (!sameFiles(rolePluginFiles(installed), files)) throw Error('secondary_model_reload_failed');
       needsReload = true;
       installedOrEnabled = true;
     }
+    // A confirmed selection only needs its periodic health read. Busy turns
+    // never read it and a stable source never adds another RPC inside 30s.
+    const healthOnly = saved?.phase === 'ready' && !installedOrEnabled;
+    if (healthOnly && busy(runner)) return { applied: true };
+    if (healthOnly && Date.now() < (this.agentPluginNextCheck || 0)) return { applied: true };
     let info;
     try { info = await this.rpcCall(runner, 'kimiPlugin.getPluginInfo', { id }); }
-    catch { throw Error('secondary_model_reload_failed'); }
-    if (info?.id !== id || typeof info.enabled !== 'boolean') throw Error('secondary_model_reload_failed');
+    catch (error) {
+      // The control transport maps every remote error to the same rejection
+      // code. A failed read cannot positively confirm disablement or removal.
+      if (healthOnly && error?.message === 'kimi_plugin_not_found') {
+        this.rolesReady = false;
+        throw Error('secondary_model_unavailable');
+      }
+      if (healthOnly) {
+        this.agentPluginNextCheck = Date.now() + AGENT_PLUGIN_CONFIRM_MS;
+        return { applied: true };
+      }
+      throw Error('secondary_model_reload_failed');
+    }
+    this.agentPluginNextCheck = Date.now() + AGENT_PLUGIN_CONFIRM_MS;
+    if (info?.id !== id || typeof info.enabled !== 'boolean') {
+      if (healthOnly) return { applied: true };
+      throw Error('secondary_model_reload_failed');
+    }
     if (!info.enabled) {
-      if (saved?.phase === 'ready' && saved.selection === selection) throw Error('secondary_model_unavailable');
+      if (saved?.phase === 'ready' && saved.selection === selection) {
+        this.rolesReady = false;
+        throw Error('secondary_model_unavailable');
+      }
       if (busy(runner)) return { waiting: true };
       this.rolesReady = false;
       this.state.agentPlugin = { id, files, selection, phase: 'installing' };
@@ -976,6 +1210,7 @@ export class KimiAdapter {
   async tick() {
     if (this.running || this.stopping) return;
     this.running = true;
+    this.nativeRewriteConflict = false;
     try {
       if (!this.bootstrap()) return;
       if (!this.ownLock()) return;
@@ -983,7 +1218,13 @@ export class KimiAdapter {
       let runner;
       try { runner = readJSON(this.runnerFile); } catch { /* Kimi isn't running yet. */ }
       if (!desired.enabled || !desired.model) {
-        if (this.state.active && busy(runner)) { this.report('waiting_kimi_idle'); return; }
+        if (this.state.active && busy(runner)) {
+          // Keep the disable/reload obligation across the busy turn; the next
+          // idle tick finishes it.
+          this.markRolePluginDisablePending();
+          this.report('waiting_kimi_idle');
+          return;
+        }
         const wasActive = this.state.active;
         const primaryRestore = await this.restore();
         if (wasActive && (this.secondaryOwnership() || this.modelPoolOwnership())) {
@@ -1018,7 +1259,7 @@ export class KimiAdapter {
       if (fingerprint !== this.fingerprint) { this.fingerprint = fingerprint; this.stableSince = Date.now(); }
       const unchanged = this.state.active && this.state.generation === generation && this.state.signature === signature;
       if (unchanged && baseURL(doc) === this.bridgeURL && this.live) {
-        this.protectNativeSecondary(wantedSecondary);
+        this.protectNativeSecondary();
         await this.syncCatalog(runner, desired, target);
         const secondary = await this.reconcileSecondary(runner, wantedSecondary, { inheritModel: desired.model });
         if (secondary.waitingSession) { this.report('secondary_model_waiting_session'); return; }
@@ -1048,10 +1289,11 @@ export class KimiAdapter {
       if (!fs.readFileSync(this.configFile).equals(bytes)) throw Error('kimi_config_changed');
       // Protect the two scalars before the first control call below can make
       // Daimon rewrite its runtime TOML from a fixed key set.
-      this.protectNativeSecondary(wantedSecondary, { capture: true });
+      this.protectNativeSecondary();
       const previous = this.state;
       this.state = { active: true, originalBase, bridgeURL: this.bridgeURL, generation, signature, model: desired.model,
         ...(previous?.agentRoutingSecret ? { agentRoutingSecret: previous.agentRoutingSecret } : {}),
+        ...(previous?.agentRoutingBindings ? { agentRoutingBindings: previous.agentRoutingBindings } : {}),
         ...(previous?.agentPlugin ? { agentPlugin: previous.agentPlugin } : {}),
         ...(previous?.secondary ? { secondary: previous.secondary } : {}),
         ...(previous?.secondaryPool ? { secondaryPool: previous.secondaryPool, secondaryPoolModel: '' } : {}),
@@ -1106,6 +1348,7 @@ export class KimiAdapter {
     this.settingsServer = null;
     await settingsServer?.stop();
     while (this.running) await new Promise(resolve => setTimeout(resolve, 20));
+    this.nativeRewriteConflict = false;
     if (this.locked) {
       let code = 'disconnected';
       try { if ((await this.restore()).waiting) code = 'restored_waiting_kimi'; }
@@ -1121,6 +1364,23 @@ export class KimiAdapter {
       try { this.restoreModelPoolOnExit(); }
       catch (error) { code = SECONDARY_CODES.has(error?.message) ? error.message
         : error?.code === 'ENOENT' ? 'secondary_model_unavailable' : 'secondary_config_unsupported'; }
+      // An owned role plugin is retired while idle; a busy turn keeps the
+      // obligation for the next start.
+      if (this.state?.agentPlugin && this.state.agentPlugin.phase !== 'disabled') {
+        let runner;
+        try { runner = readJSON(this.runnerFile); } catch { /* Kimi already exited. */ }
+        try {
+          if (runner && runner.lifecycleStatus === 'running' && !busy(runner)) {
+            const retired = await this.retireRolePlugin(runner);
+            if (retired.waiting) code = 'waiting_kimi_idle';
+          } else {
+            this.markRolePluginDisablePending();
+            code = 'waiting_kimi_idle';
+          }
+        } catch (error) {
+          code = SECONDARY_CODES.has(error?.message) ? error.message : 'secondary_model_reload_failed';
+        }
+      }
       this.report(code);
       this.releaseLock();
     }
@@ -1129,6 +1389,29 @@ export class KimiAdapter {
       this.server.closeAllConnections?.();
       await new Promise(resolve => this.server.close(resolve));
       this.server = null;
+    }
+  }
+
+  retireRolePluginOnDisk() {
+    const saved = this.state?.agentPlugin;
+    if (!saved || saved.phase === 'disabled') return;
+    const registryFile = path.join(path.dirname(this.convertedNativeConfigFile), 'plugins', 'installed.json');
+    const sourceDirectory = path.join(this.stateDir, 'native-model-roles');
+    const pending = saved.phase === 'disabling';
+    let owned = [], failed = false;
+    try {
+      const inspected = inspectRolePlugins({ registryFile, sourceDirectory });
+      if (inspected.conflicts.length) throw Error('agent_profile_conflict');
+      owned = inspected.owned.map(row => row.id);
+      disableRolePluginsSync({ registryFile, sourceDirectory,
+        ids: owned.includes(saved.id) ? [saved.id] : [] });
+    } catch { failed = true; /* Foreign or unreadable registrations stay untouched. */ }
+    // The disk write never acknowledges a loaded session, and a same-value
+    // disable (or an already-false registration) still owes the RPC/reload.
+    // A failed inspection must not clear that debt either.
+    if (failed || pending || owned.includes(saved.id)) {
+      this.state.agentPlugin = { ...saved, phase: 'disabling' };
+      this.saveState();
     }
   }
 
@@ -1143,6 +1426,9 @@ export class KimiAdapter {
     // Ownership stays on disk so the next start can finish anything left over.
     try { this.restoreNativeSecondaryOnExit(); } catch { /* Leave a changed configuration alone. */ }
     try { this.restoreModelPoolOnExit(); } catch { /* Leave a changed configuration alone. */ }
+    // The synchronous host exit cannot RPC. Mark the registration off disk and
+    // keep the RPC/reload debt; a failure here never skips the restore above.
+    try { this.retireRolePluginOnDisk(); } catch { /* Leave a changed configuration alone. */ }
     try { atomicJSON(this.catalogFile, {schemaVersion:1, enabled:false, models:[], updatedAt:new Date().toISOString()}); } catch { /* Exiting. */ }
     this.releaseLock();
   }

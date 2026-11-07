@@ -339,6 +339,8 @@ test('disconnect reloads a restored legacy baseline after the last primary contr
     expect(f.calls.slice(before).map(call => call.method)).toEqual([
       'conversations.getKimiModelList', 'conversations.setModel',
       'conversations.updateKimiModelList', 'conversations.setModel', 'kimiPlugin.reloadActiveSessions',
+      'kimiPlugin.setPluginEnabled', 'kimiPlugin.reloadActiveSessions',
+      'kimiPlugin.removePlugin',
     ]);
     expect(inspectSecondary(f.nativeText())).toEqual(inspectSecondary(baseline));
     expect(read(f.controller.stateFile).secondary).toBeUndefined();
@@ -433,7 +435,8 @@ test('a new secondary preference never writes a native scalar or experiment flag
     await f.controller.saveSettings({ secondaryModel: '' });
     f.complete(); await f.controller.tick();
     expect(f.nativeText()).toBe(before);
-    expect((await f.controller.readSettings()).appliedSecondaryModel).toBe(primaryID);
+    expect((await f.controller.readSettings()).appliedSecondaryModel).toBeUndefined();
+    expect(f.controller.rolesReady).toBe(false);
   } finally { await f.cleanup(); }
 });
 
@@ -442,6 +445,8 @@ test('normal generator rewrites are not repaired with an old secondary alias', a
     native: runtimeToml({ secondaryModel: 'native/first', flag: false }) });
   try {
     await f.controller.tick();
+    // The unowned legacy scalar is put back after the control rewrite from a
+    // transient memory snapshot, without ownership or a restore reload.
     expect(inspectSecondary(f.nativeText())).toMatchObject({ model: 'native/first', enabled: false });
     expect(read(f.controller.stateFile).secondary).toBeUndefined();
     const calls = f.calls.length;
@@ -572,6 +577,8 @@ test('stop restores legacy current/menu and scalars without starting secondary-s
     expect(f.calls.slice(before).map(call => call.method)).toEqual([
       'conversations.getKimiModelList', 'conversations.setModel',
       'conversations.updateKimiModelList', 'conversations.setModel',
+      'kimiPlugin.setPluginEnabled', 'kimiPlugin.reloadActiveSessions',
+      'kimiPlugin.removePlugin',
     ]);
     expect(inspectSecondary(f.nativeText())).toMatchObject({ model: 'native/first', enabled: false });
     expect(fs.existsSync(f.controller.modelBackupFile)).toBe(false);

@@ -16,49 +16,70 @@ const write = (file, value) => {
 // Model the public native plugin API: install/update copy the declared source
 // into the active V2 home's managed directory; enablement belongs to the host.
 export function nativeRolePluginPeer(homeDirectory) {
-  const enabled = new Map(), calls = [];
+  const enabled = new Map(), records = new Map(), calls = [];
   let fault = null;
   const methods = new Set(['kimiPlugin.installPlugin', 'kimiPlugin.updatePlugin',
-    'kimiPlugin.getPluginInfo', 'kimiPlugin.setPluginEnabled']);
+    'kimiPlugin.getPluginInfo', 'kimiPlugin.setPluginEnabled', 'kimiPlugin.removePlugin']);
   const installed = id => path.join(homeDirectory, 'plugins', 'managed', id);
+  const registryFile = path.join(homeDirectory, 'plugins', 'installed.json');
+  const registry = () => fs.existsSync(registryFile) ? read(registryFile) : { version: 1, plugins: [] };
+  const persist = (id, patch) => {
+    const document = registry();
+    const previous = document.plugins.find(row => row.id === id);
+    document.plugins = document.plugins.filter(row => row.id !== id);
+    if (patch !== null) document.plugins.push({ ...previous, ...patch, id });
+    write(registryFile, document);
+  };
   return {
     calls, installed,
     handles: method => methods.has(method),
-    setEnabled(id, value) { enabled.set(id, value); },
+    setEnabled(id, value) {
+      enabled.set(id, value);
+      if (registry().plugins.some(row => row.id === id)) persist(id, { enabled: value });
+    },
     fail(method, { after = false, once = true } = {}) { fault = { method, after, once }; },
     clearFault() { fault = null; },
     call(method, params) {
       calls.push({ method, params });
       const activeFault = fault?.method === method ? fault : null;
       if (activeFault?.once) fault = null;
-      if (activeFault && !activeFault.after) throw Error('synthetic public plugin RPC failure');
+      if (activeFault && !activeFault.after) throw Error('kimi_control_timeout');
       let result;
       if (method === 'kimiPlugin.installPlugin' || method === 'kimiPlugin.updatePlugin') {
         if (typeof params?.source !== 'string') throw Error('plugin source required');
         const manifest = read(path.join(params.source, 'kimi.plugin.json'));
         if (!manifest.name || JSON.stringify(manifest.agents) !== JSON.stringify(['./agents'])) throw Error('invalid plugin manifest');
         const destination = installed(manifest.name);
-        if (method === 'kimiPlugin.installPlugin' && fs.existsSync(destination)) throw Error('plugin already installed');
+        if (method === 'kimiPlugin.installPlugin' && enabled.has(manifest.name)) throw Error('plugin already installed');
         fs.rmSync(destination, { recursive: true, force: true });
         fs.mkdirSync(path.dirname(destination), { recursive: true });
         fs.cpSync(params.source, destination, { recursive: true });
         if (!enabled.has(manifest.name)) enabled.set(manifest.name, false);
+        records.set(manifest.name, { root: destination, source: 'local-path', originalSource: params.source });
+        persist(manifest.name, { ...records.get(manifest.name), enabled: enabled.get(manifest.name) });
         result = { id: manifest.name, enabled: enabled.get(manifest.name) };
       } else if (method === 'kimiPlugin.getPluginInfo') {
-        if (!fs.existsSync(path.join(installed(params.id), 'kimi.plugin.json'))) throw Error('plugin not found');
-        result = { id: params.id, enabled: enabled.get(params.id) === true };
+        if (!enabled.has(params.id)) throw Error('kimi_plugin_not_found');
+        result = { ...records.get(params.id), id: params.id, enabled: enabled.get(params.id) === true };
       } else if (method === 'kimiPlugin.setPluginEnabled') {
-        if (!fs.existsSync(path.join(installed(params.id), 'kimi.plugin.json'))) throw Error('plugin not found');
+        if (!enabled.has(params.id)) throw Error('kimi_plugin_not_found');
         enabled.set(params.id, params.enabled);
+        persist(params.id, { ...records.get(params.id), enabled: params.enabled });
         result = { id: params.id, enabled: params.enabled };
+      } else if (method === 'kimiPlugin.removePlugin') {
+        if (!enabled.has(params.id)) throw Error('plugin not found');
+        enabled.delete(params.id);
+        records.delete(params.id);
+        persist(params.id, null); // Native removal retains managed/cache files.
+        result = { ok: true };
       } else throw Error('unexpected plugin method');
-      if (activeFault?.after) throw Error('synthetic lost public plugin reply');
+      if (activeFault?.after) throw Error('kimi_control_closed');
       return result;
     },
   };
 }
 
-export function recoveryPeer() {
+export function recoveryPeer({ secondaryModel } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-restore-peer-'));
   const kimiDir = path.join(home, 'kimi');
   const stateDir = path.join(home, 'state');
@@ -122,6 +143,7 @@ export function recoveryPeer() {
     control: { endpoint: { url: `ws://127.0.0.1:${service.port}/control`, auth: { token: 'synthetic-control' } } } });
   controller.bootstrap();
   write(controller.connectionFile, { enabled: true, model: 'provider/main',
+    ...(secondaryModel !== undefined ? { secondaryModel } : {}),
     gateway: { url: 'http://127.0.0.1:3425/v1', key: 'synthetic-gateway' } });
   return {
     get controller() { return controller; }, get menu() { return menu; }, get runtimeBase() { return runtimeBase; }, calls, requests, plugins,

@@ -36,6 +36,7 @@ const reloadCases = [
   ['kimiPlugin.updatePlugin', { source: '/synthetic/role-plugin' }, { id: 'synthetic-role-plugin', enabled: true }],
   ['kimiPlugin.getPluginInfo', { id: 'synthetic-role-plugin' }, { id: 'synthetic-role-plugin', enabled: true }],
   ['kimiPlugin.setPluginEnabled', { id: 'synthetic-role-plugin', enabled: true }, { id: 'synthetic-role-plugin', enabled: true }],
+  ['kimiPlugin.removePlugin', { id: 'synthetic-role-plugin' }, { ok: true }],
 ];
 
 for (const [method, params, acknowledgement] of reloadCases) {
@@ -73,7 +74,7 @@ for (const [method, params, acknowledgement] of reloadCases) {
       }), { mode: 0o600 });
       const runner = JSON.parse(fs.readFileSync(runnerFile, 'utf8'));
 
-      expect(await rpcCall(runner, method, params, { timeout: 1000 })).toEqual(acknowledgement);
+      await expect(rpcCall(runner, method, params, { timeout: 1000 })).resolves.toEqual(acknowledgement);
       expect(handshakes).toEqual([{ path: '/control', authorization: 'Bearer ' + token }]);
       expect(messages).toEqual([{ jsonrpc: '2.0', id: 1, method, params }]);
 
@@ -86,5 +87,40 @@ for (const [method, params, acknowledgement] of reloadCases) {
       if (server) await server.stop(true);
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+}
+
+for (const [label, method, code, reasonCode, expected] of [
+  ['confirmed plugin missing', 'kimiPlugin.getPluginInfo', -32003, 'KIMI_PLUGIN_NOT_FOUND', 'kimi_plugin_not_found'],
+  ['generic rejection', 'kimiPlugin.getPluginInfo', -32000, 'KIMI_PLUGIN_NOT_FOUND', 'kimi_control_rejected'],
+  ['unrelated not found', 'kimiPlugin.getPluginInfo', -32003, 'OTHER_NOT_FOUND', 'kimi_control_rejected'],
+  ['unrelated method', 'models.current', -32003, 'KIMI_PLUGIN_NOT_FOUND', 'kimi_control_rejected'],
+]) {
+  test('production RPC exposes only the fixed category for ' + label, async () => {
+    const token = 'synthetic-error-envelope-token';
+    const server = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      fetch(request, listener) {
+        if (request.headers.get('authorization') !== 'Bearer ' + token) return new Response('', { status: 401 });
+        if (listener.upgrade(request)) return;
+        return new Response('', { status: 400 });
+      },
+      websocket: { message(socket, input) {
+        const request = JSON.parse(String(input));
+        socket.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: {
+          code, message: 'synthetic private remote detail',
+          data: { reasonCode, unrelated: 'synthetic private data' },
+        } }));
+      } },
+    });
+    try {
+      const runner = { control: { endpoint: {
+        url: 'ws://127.0.0.1:' + server.port + '/control', auth: { token },
+      } } };
+      const failure = await rpcCall(runner, method, { id: 'synthetic-role-plugin' }, { timeout: 1000 }).catch(error => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure.message).toBe(expected);
+      expect(Object.keys(failure)).toEqual([]);
+    } finally { await server.stop(true); }
   });
 }

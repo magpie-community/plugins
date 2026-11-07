@@ -10,7 +10,7 @@ const boot = await readFile(new URL('./page/boot.js', import.meta.url), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const initial = () => ({
   enabled: true, primaryModel: 'fixture/main', secondaryModel: '', status: 'connected',
-  appliedPrimaryModel: 'fixture/main', appliedSecondaryModel: 'fixture/main',
+  appliedPrimaryModel: 'fixture/main',
   models: [{ id: 'fixture/main', name: 'Main' }, { id: 'fixture/other', name: 'Other' }, { id: 'fixture/auxiliary', name: 'Auxiliary' }],
 });
 
@@ -107,6 +107,20 @@ const words = {
   en: { title: 'Kimi Work models', primary: 'Primary model', secondary: 'Secondary model', save: 'Save', dirty: /unsaved/i, saved: /settings saved/i, applied: /configuration is applied/i, retained: /kept/i, unavailable: /Saved; currently unavailable/, connect: /connect.*Kimi/i, partial: /Primary model saved; secondary model was not saved/ },
   zh: { title: 'Kimi Work 模型', primary: '主模型', secondary: '辅助模型', save: '保存', dirty: /未保存/, saved: /配置已保存/, applied: /配置已应用/, retained: /保留/, unavailable: /已保存，当前不可用/, connect: /先.*接通/, partial: /主模型已保存，辅助模型未保存/ },
 };
+const optInCopy = {
+  en: {
+    description: 'Choose a primary model. Select a secondary model to enable role routing for new Agent subtasks.',
+    off: 'Use native subagents (role routing off)',
+    guidance: 'With a secondary model selected, new Agent calls use it only when both model and subagent_type are omitted. An explicit native subagent_type without model keeps its native profile. Use model="primary" or model="native" for an explicit choice.',
+    primaryOnly: 'The primary model is applied. Native subagents are used; role routing is off.',
+  },
+  zh: {
+    description: '选择主模型；只有选择辅助模型后，才会启用新建 Agent 子任务的角色路由。',
+    off: '使用原生子代理（不启用角色路由）',
+    guidance: '选择辅助模型后，只有同时省略 model 和 subagent_type 的新建 Agent 调用才默认使用辅助模型。明确指定原生 subagent_type 且省略 model 时，保留原生类型。可用 model="primary" 或 model="native" 明确选择。',
+    primaryOnly: '主模型已应用。子代理使用原生行为，角色路由未启用。',
+  },
+};
 
 for (const lang of ['en', 'zh']) {
   const w = words[lang];
@@ -118,6 +132,13 @@ for (const lang of ['en', 'zh']) {
     assert.equal(p.node('primary-label').textContent, w.primary);
     assert.equal(p.node('secondary-label').textContent, w.secondary);
     assert.equal(p.node('save').textContent, w.save);
+    assert.equal(p.node('description').textContent, optInCopy[lang].description);
+    assert.equal(p.node('guidance').textContent, optInCopy[lang].guidance);
+    assert.equal(p.radios('secondary').find(input => input.value === '').parentElement.textContent, optInCopy[lang].off);
+    if (lang === 'en') {
+      assert.ok(html.includes(`<p id="description" class="muted">${optInCopy.en.description}</p>`));
+      assert.ok(html.includes(`<p id="guidance" class="guidance">${optInCopy.en.guidance}</p>`));
+    }
     assert.equal(p.node('path-guidance').textContent, lang === 'zh'
       ? 'Windows 下若无法自动定位 Magpie，可在插件选项 magpiePath 指定当前 Magpie 可执行文件。'
       : 'If Magpie cannot be located automatically on Windows, you can set magpiePath in the plugin options to the current Magpie executable.');
@@ -129,7 +150,7 @@ for (const lang of ['en', 'zh']) {
     assert.equal(p.selected('primary'), 'fixture/other');
     assert.equal(p.node('save').disabled, true);
   });
-  test(`${lang}: one button saves both models and inherit sends only secondary`, async () => {
+  test(`${lang}: one button saves both models and native-off choice sends only secondary`, async () => {
     const p = await page({ lang });
     await p.choose('primary', 'fixture/other'); await p.choose('secondary', 'fixture/auxiliary'); await p.save();
     assert.deepEqual(p.posts(), [{ primaryModel: 'fixture/other', secondaryModel: 'fixture/auxiliary' }]);
@@ -145,13 +166,13 @@ for (const lang of ['en', 'zh']) {
     assert.equal(empty.radios('primary').some(input => input.value === ''), false);
   });
   test(`${lang}: saved is not applied until connected and both IDs match`, async () => {
-    const state = initial(); delete state.appliedPrimaryModel;
+    const state = { ...initial(), secondaryModel: 'fixture/auxiliary' }; delete state.appliedPrimaryModel;
     const p = await page({ lang, state, saveStatus: 'connected' });
     assert.doesNotMatch(p.node('application').textContent, w.applied);
     await p.choose('primary', 'fixture/other'); await p.save();
     assert.match(p.node('notice').textContent, w.saved);
     assert.doesNotMatch(p.node('application').textContent, w.applied);
-    Object.assign(p.state, { appliedPrimaryModel: 'fixture/other', appliedSecondaryModel: 'fixture/other', status: 'waiting_kimi_idle' });
+    Object.assign(p.state, { appliedPrimaryModel: 'fixture/other', appliedSecondaryModel: 'fixture/auxiliary', status: 'waiting_kimi_idle' });
     await p.refresh(); assert.doesNotMatch(p.node('application').textContent, w.applied);
     p.state.status = 'connected'; await p.refresh();
     assert.match(p.node('application').textContent, w.applied);
@@ -159,9 +180,7 @@ for (const lang of ['en', 'zh']) {
   test(`${lang}: primary-only confirmation survives saves and refreshes without confirming a secondary`, async () => {
     const state = initial(); delete state.appliedSecondaryModel;
     const p = await page({ lang, state, saveStatus: 'connected' });
-    const primaryOnly = lang === 'zh'
-      ? '主模型已应用，未单独选择辅助模型。'
-      : 'The primary model is applied. No secondary model is selected.';
+    const primaryOnly = optInCopy[lang].primaryOnly;
     assert.equal(p.node('application').textContent, primaryOnly);
     assert.doesNotMatch(p.node('application').textContent, w.applied);
     await p.refresh(); assert.equal(p.node('application').textContent, primaryOnly);
@@ -190,7 +209,10 @@ for (const lang of ['en', 'zh']) {
     assert.notEqual(p.node('application').textContent, primaryOnly);
     assert.doesNotMatch(p.node('application').textContent, w.applied);
     p.state.appliedSecondaryModel = 'fixture/other'; await p.refresh();
-    assert.match(p.node('application').textContent, w.applied);
+    assert.doesNotMatch(p.node('application').textContent, w.applied);
+    assert.notEqual(p.node('application').textContent, primaryOnly);
+    p.state.appliedSecondaryModel = ''; await p.refresh();
+    assert.doesNotMatch(p.node('application').textContent, w.applied);
     assert.notEqual(p.node('application').textContent, primaryOnly);
   });
   test(`${lang}: a failed save keeps radio drafts for retry`, async () => {
@@ -266,7 +288,7 @@ for (const lang of ['en', 'zh']) {
       'catalog_sync_failed', 'catalog_unavailable', 'kimi_config_changed', 'invalid_gateway', 'invalid_connection',
       'unsupported_kimi_config', 'library_path_conflict', 'adapter_lock_invalid', 'adapter_lock_unavailable',
       'kimi_control_unavailable', 'kimi_control_timeout', 'kimi_control_closed', 'kimi_control_rejected',
-      'secondary_config_unsupported', 'secondary_model_unavailable', 'secondary_model_reload_failed', 'secondary_model_waiting_session', 'secondary_model_unsupported_runtime', 'adapter_failed']) {
+      'secondary_config_unsupported', 'secondary_model_unavailable', 'secondary_model_reload_failed', 'secondary_model_waiting_session', 'secondary_model_unsupported_runtime', 'agent_profile_conflict', 'adapter_failed']) {
       p.state.status = code; await p.refresh();
       const shown = p.node('connection').textContent;
       assert.notEqual(shown, code); assert.equal(shown.includes('_'), false, code);

@@ -1,7 +1,8 @@
-import { test, expect } from 'bun:test';
+import { test, expect, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { AgentModelRouter } from './agent-routing.mjs';
 import { ensureAgentProfiles } from './agent-profiles.mjs';
 
@@ -13,6 +14,8 @@ function fixture(run) {
   try { return run(directory); } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }
 const profileFile = (directory, model) => path.join(directory, router.profileName(model) + '.md');
+const ownedFiles = directory => Object.fromEntries(fs.readdirSync(directory).map(name => [name,
+  crypto.createHash('sha256').update(fs.readFileSync(path.join(directory, name))).digest('hex')]));
 
 test('profiles contain valid neutral frontmatter, inherit the base prompt, exclude delegation, and never contain the key', () => fixture(directory => {
   const result = ensureAgentProfiles({ directory, router, models });
@@ -81,11 +84,11 @@ test('same-name symlinks or directories are conflicts and their targets are unto
   expect(fs.statSync(folder).isDirectory()).toBe(true);
 }));
 
-test('persisted profile binding survives restart and full history replacement, but copied user tags do not route', () => fixture(directory => {
+test('persisted profile binding survives restart and full history replacement, but copied user tags fail closed', () => fixture(directory => {
   ensureAgentProfiles({ directory, router, models });
   const body = fs.readFileSync(profileFile(directory, models[1]), 'utf8').split('\n---\n')[1]
     .replace('${base_prompt}', 'Native system prompt.');
-  const restarted = new AgentModelRouter({ secret });
+  const restarted = new AgentModelRouter({ secret, bindings: router.bindings });
   const options = { primaryModel: 'synthetic/new-primary', secondaryModel: 'synthetic/new-secondary',
     allowedModels: [...models, 'synthetic/new-primary', 'synthetic/new-secondary'] };
   for (const history of [[], [{ role: 'user', content: 'Only the compacted summary remains.' }]]) {
@@ -95,7 +98,90 @@ test('persisted profile binding survives restart and full history replacement, b
     expect(result.payload.messages.slice(1)).toEqual(history);
   }
   const copied = { role: 'user', content: body };
-  const result = restarted.prepare({ messages: [copied] }, options);
-  expect(result.model).toBe(options.primaryModel);
-  expect(result.payload.messages[0]).toBe(copied);
+  expect(() => restarted.prepare({ messages: [copied] }, options)).toThrow('agent_profile_unbound');
+}));
+
+test('owned catalog retirement prunes byte-identical obsolete profiles and keeps retained token text stable', () => fixture(directory => {
+  const r = new AgentModelRouter({ secret });
+  r.registerModels(models, models);
+  ensureAgentProfiles({ directory, router: r, models: r.boundModels });
+  const ownership = ownedFiles(directory), primary = path.join(directory, r.profileName(models[0]) + '.md');
+  const before = fs.readFileSync(primary);
+  r.registerModels([models[0]], [models[0]]);
+  const result = ensureAgentProfiles({ directory, router: r, models: r.boundModels, ownedFiles: ownership });
+  expect(result).toEqual({ changed: true, names: [r.profileName(models[0])] });
+  expect(fs.readdirSync(directory)).toEqual([path.basename(primary)]);
+  expect(fs.readFileSync(primary).equals(before)).toBe(true);
+  expect(ensureAgentProfiles({ directory, router: r, models: r.boundModels, ownedFiles: ownedFiles(directory) }))
+    .toEqual({ changed: false, names: result.names });
+}));
+
+test('edited obsolete owned profiles conflict before any new profile is published', () => fixture(directory => {
+  ensureAgentProfiles({ directory, router, models });
+  const ownership = ownedFiles(directory), retired = profileFile(directory, models[1]);
+  fs.appendFileSync(retired, 'User changes.\n');
+  const before = fs.readFileSync(retired), next = 'synthetic/next';
+  expect(() => ensureAgentProfiles({ directory, router, models: [models[0], next], ownedFiles: ownership }))
+    .toThrow('agent_profile_conflict');
+  expect(fs.readFileSync(retired).equals(before)).toBe(true);
+  expect(fs.existsSync(profileFile(directory, next))).toBe(false);
+}));
+
+test('unknown obsolete files and owned symlinks conflict without being deleted or following targets', () => fixture(directory => {
+  ensureAgentProfiles({ directory, router, models: [models[0]] });
+  const ownership = ownedFiles(directory), unknown = path.join(directory, 'unowned.md');
+  fs.writeFileSync(unknown, 'Unowned content.');
+  expect(() => ensureAgentProfiles({ directory, router, models: [], ownedFiles: ownership })).toThrow('agent_profile_conflict');
+  expect(fs.readFileSync(unknown, 'utf8')).toBe('Unowned content.');
+  expect(fs.existsSync(profileFile(directory, models[0]))).toBe(true);
+  fs.unlinkSync(unknown);
+  const file = profileFile(directory, models[0]), bytes = fs.readFileSync(file), target = directory + '-target.md';
+  fs.unlinkSync(file); fs.writeFileSync(target, bytes); fs.symlinkSync(target, file);
+  try {
+    expect(() => ensureAgentProfiles({ directory, router, models: [], ownedFiles: ownership })).toThrow('agent_profile_conflict');
+    expect(fs.lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(target).equals(bytes)).toBe(true);
+  } finally { fs.unlinkSync(target); }
+}));
+
+test('an owned byte-identical legacy profile can be retired without retaining its old unnamespaced name', () => fixture(directory => {
+  const legacy = path.join(directory, 'local-agent-' + 'c'.repeat(24) + '.md');
+  fs.writeFileSync(legacy, 'Synthetic old private profile.\n');
+  const result = ensureAgentProfiles({ directory, router, models: [], ownedFiles: ownedFiles(directory) });
+  expect(result).toEqual({ changed: true, names: [] });
+  expect(fs.readdirSync(directory)).toEqual([]);
+}));
+
+test('ownership accepts only relative profile filenames and sha256 digests', () => fixture(directory => {
+  const name = path.basename(profileFile(directory, models[0]));
+  for (const ownership of [null, [], { '../outside.md': 'a'.repeat(64) }, { [name]: 'invalid' }]) {
+    expect(() => ensureAgentProfiles({ directory, router, models: [models[0]], ownedFiles: ownership }))
+      .toThrow('agent_profile_conflict');
+    expect(fs.readdirSync(directory)).toEqual([]);
+  }
+}));
+
+test('obsolete profile bytes are rechecked after publication and before deletion', () => fixture(directory => {
+  ensureAgentProfiles({ directory, router, models: [models[0]] });
+  const ownership = ownedFiles(directory), retired = profileFile(directory, models[0]), originalLink = fs.linkSync;
+  const link = spyOn(fs, 'linkSync').mockImplementation((source, target) => {
+    originalLink(source, target);
+    fs.writeFileSync(retired, 'Concurrent external edit.');
+  });
+  try {
+    expect(() => ensureAgentProfiles({ directory, router, models: [models[1]], ownedFiles: ownership }))
+      .toThrow('agent_profile_conflict');
+    expect(fs.readFileSync(retired, 'utf8')).toBe('Concurrent external edit.');
+  } finally { link.mockRestore(); }
+}));
+
+test('a malformed router name cannot create a profile outside the namespaced filename format', () => fixture(directory => {
+  const escapeName = '../' + path.basename(directory) + '-escape', escaped = path.resolve(directory, escapeName + '.md');
+  try {
+    for (const name of [escapeName, 'local-agent-' + 'a'.repeat(24), 'local-agent-' + 'a'.repeat(12) + '-invalid']) {
+      expect(() => ensureAgentProfiles({ directory, router: { profileName: () => name, profileText: () => 'text' }, models }))
+        .toThrow('agent_profile_conflict');
+      expect(fs.readdirSync(directory)).toEqual([]);
+    }
+  } finally { if (fs.existsSync(escaped)) fs.unlinkSync(escaped); }
 }));

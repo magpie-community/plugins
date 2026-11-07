@@ -38,6 +38,37 @@ test('catalog migration acknowledges a native selection before removing the old 
   } finally { await f.cleanup(); }
 });
 
+test('review guard: a native catalog containing only local aliases never selects or updates a menu', async () => {
+  const f = recoveryPeer();
+  try {
+    await f.controller.tick();
+    const alias = f.selectAlias({ legacy: false });
+    const doc = read(f.controller.configFile);
+    // Keep a native current selection so removing the empty-native guard would
+    // reach updateKimiModelList instead of throwing while choosing native[0].
+    doc.model.current = 'native';
+    fs.writeFileSync(f.controller.configFile, JSON.stringify(doc));
+    const control = f.controller.rpcCall;
+    const writes = [];
+    f.controller.rpcCall = async (runner, method, params, options) => {
+      if (method === 'conversations.getKimiModelList') return { models: [{ model: alias }] };
+      if (method === 'conversations.setModel' || method === 'conversations.updateKimiModelList') {
+        writes.push({ method, params });
+        return { ok: true };
+      }
+      return control(runner, method, params, options);
+    };
+    const before = fs.readFileSync(f.controller.configFile);
+    f.controller.catalogAfter = 0;
+    await f.controller.tick();
+    expect(writes).toEqual([]);
+    expect(f.controller.catalogError).toBe('catalog_sync_failed');
+    expect(fs.readFileSync(f.controller.configFile)).toEqual(before);
+    // Avoid exercising shutdown with the deliberately incomplete catalog.
+    f.controller.rpcCall = control;
+  } finally { await f.cleanup(); }
+});
+
 test('normal user data and non-Agent tools retain alias-shaped filenames and distinct keys', () => {
   const alias = normalizeModels({ data: [{ id: 'provider/main' }] })[0].alias;
   const old = alias.replace('local-model-', 'magpie-local-'), filename = `/tmp/${old}.json`;

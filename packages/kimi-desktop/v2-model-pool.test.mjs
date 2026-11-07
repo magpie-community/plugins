@@ -260,6 +260,9 @@ for (const restart of [false, true]) {
       f.plugins.setEnabled(saved.id, false);
       const enabledCalls = f.plugins.calls.filter(call => call.method === 'kimiPlugin.setPluginEnabled').length;
       if (restart) await f.crash();
+      // The confirmed health read is throttled to 30s; this consumer checks
+      // the explicit idle confirmation rather than the throttle window.
+      f.controller.agentPluginNextCheck = 0;
       f.complete(); await f.controller.tick();
       expect(f.controller.status.code).toBe('secondary_model_unavailable');
       expect((await f.controller.readSettings()).appliedSecondaryModel).toBeUndefined();
@@ -388,36 +391,44 @@ test('a new bridge selection leaves native pools and definitions untouched', asy
   } finally { await f.cleanup(); }
 });
 
-test('secondary changes and clearing update public role profiles without writing native secondary fields', async () => {
+test('secondary changes update public role profiles and clearing retires them without native writes', async () => {
   const f = await fixture({ regenerate: false });
   try {
     await f.controller.tick();
     const before = f.text(), calls = f.calls.length;
-    for (const [secondaryModel, expected] of [[thirdID, thirdID], ['', primaryID]]) {
-      await f.controller.saveSettings({ secondaryModel });
-      f.complete(); await f.controller.tick();
-      expect((await f.controller.readSettings()).appliedSecondaryModel).toBe(expected);
-      expect(f.text()).toBe(before);
-      expect(read(f.controller.configFile).model.current).toBe('native');
-    }
+    await f.controller.saveSettings({ secondaryModel: thirdID });
+    f.complete(); await f.controller.tick();
+    expect((await f.controller.readSettings()).appliedSecondaryModel).toBe(thirdID);
+    expect(f.text()).toBe(before);
+    expect(read(f.controller.configFile).model.current).toBe('native');
+    const id = read(f.controller.stateFile).agentPlugin.id;
+    await f.controller.saveSettings({ secondaryModel: '' });
+    f.complete(); await f.controller.tick();
+    expect((await f.controller.readSettings()).appliedSecondaryModel).toBeUndefined();
+    expect(read(f.controller.stateFile).agentPlugin.phase).toBe('disabled');
+    const registryFile = path.join(path.dirname(f.convertedFile), 'plugins', 'installed.json');
+    expect(read(registryFile).plugins.some(entry => entry.id === id)).toBe(false);
+    expect(f.text()).toBe(before);
+    expect(read(f.controller.configFile).model.current).toBe('native');
     expect(f.calls.slice(calls).some(call => call.method.startsWith('conversations.'))).toBe(false);
     expect(f.plugins.calls.filter(call => call.method === 'kimiPlugin.updatePlugin')).toHaveLength(1);
     expect(batches(f.calls)).toHaveLength(0);
-    expect(f.controller.bridgeSecondaryModel).toBe(primaryID);
+    expect(f.controller.bridgeSecondaryModel).toBe('');
   } finally { await f.cleanup(); }
 });
 
-test('initial primary regeneration preserves existing native secondary values once', async () => {
+test('an unowned legacy secondary and pool survive a control rewrite without ownership or reload', async () => {
   const f = await fixture({ nativePool: baseline, legacyBaseline: true });
   try {
     await f.controller.tick();
     expect(f.controller.status.code).toBe('connected');
+    // The generator's rewrite drops both foreign values, and the transient
+    // memory snapshot puts the narrow fields back without owning them.
     expect(f.pool()).toEqual(baseline);
     const legacy = Bun.TOML.parse(fs.readFileSync(f.legacyFile, 'utf8'));
     expect(legacy.secondary_model.model).toBe('native/old-secondary');
     expect(legacy.experimental['secondary-model']).toBe(false);
-    expect(batches(f.calls)).toHaveLength(1);
-    expect(batches(f.calls)[0].pool).toEqual(baseline);
+    expect(batches(f.calls)).toHaveLength(0);
     expect(read(f.controller.stateFile).secondaryPool).toBeUndefined();
     expect(read(f.controller.stateFile).secondary).toBeUndefined();
     expect(JSON.stringify(read(f.controller.stateFile))).not.toContain(canary);
@@ -555,7 +566,7 @@ test('a previous uncommitted old binding is still owned and restores the origina
   } finally { await f.cleanup(); }
 });
 
-test('foreign native edits survive regeneration using only a narrow pool snapshot', async () => {
+test('foreign native edits survive an owned pool restoration and are not re-owned afterwards', async () => {
   const f = await fixture();
   try {
     await f.controller.tick(); f.seedOwnedPool();
@@ -570,9 +581,16 @@ test('foreign native edits survive regeneration using only a narrow pool snapsho
     expect(f.pool()).toEqual(foreign);
     expect(read(f.controller.stateFile).secondaryPool).toBeUndefined();
     expect(JSON.stringify(read(f.controller.stateFile))).not.toContain(canary);
+    const restored = f.calls.length;
     write(f.controller.connectionFile, { ...f.connection, enabled: false });
     await f.controller.tick();
+    // Ownership ended with the confirmed restoration, so the adapter neither
+    // re-claims the snapshot nor reloads for it again; the transient memory
+    // preservation still keeps the foreign pool through this control rewrite.
+    expect(f.calls.slice(restored).some(call => call.method === 'kimiPlugin.reloadActiveSessions'
+      && call.runtime === 'v2-restore')).toBe(false);
     expect(f.pool()).toEqual(foreign);
+    expect(read(f.controller.stateFile).secondaryPool).toBeUndefined();
     expect(read(f.controller.configFile).model.current).toBe('native');
   } finally { await f.cleanup(); }
 });
@@ -608,6 +626,8 @@ test('stop restores old native current/menu and pool without starting secondary 
     expect(f.calls.slice(calls).map(call => call.method)).toEqual([
       'conversations.getKimiModelList', 'conversations.setModel',
       'conversations.updateKimiModelList', 'conversations.setModel',
+      'kimiPlugin.setPluginEnabled', 'kimiPlugin.reloadActiveSessions',
+      'kimiPlugin.removePlugin',
     ]);
     expect(fs.existsSync(f.controller.modelBackupFile)).toBe(false);
   } finally { await f.cleanup(); }

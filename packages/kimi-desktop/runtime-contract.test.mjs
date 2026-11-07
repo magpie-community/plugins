@@ -62,7 +62,7 @@ for (const family of ['kimi-code', 'future-kernel', undefined]) {
       expect(f.calls).toHaveLength(0);
       expect(f.adapter.rolesReady).toBe(false);
       expect(await f.adapter.reconcileSecondary(f.runner, '', { inheritModel: primary.id })).toEqual({ applied: true });
-      expect(f.adapter.bridgeSecondaryModel).toBe(primary.id);
+      expect(f.adapter.bridgeSecondaryModel).toBe('');
       expect((await f.adapter.readSettings()).appliedSecondaryModel).toBeUndefined();
     } finally { f.cleanup(); }
   });
@@ -102,7 +102,7 @@ test('a changed bridge selection waits for idle while the current selection rema
     expect(await f.adapter.reconcileSecondary(f.runner, secondary.id, { inheritModel: primary.id })).toEqual({ applied: true });
     f.runner.activeKernelTurns = 0;
     await f.adapter.reconcileSecondary(f.runner, '', { inheritModel: primary.id });
-    expect(f.adapter.bridgeSecondaryModel).toBe(primary.id);
+    expect(f.adapter.bridgeSecondaryModel).toBe('');
     await f.adapter.reconcileSecondary(f.runner, '');
     expect(f.adapter.bridgeSecondaryModel).toBe('');
   } finally { f.cleanup(); }

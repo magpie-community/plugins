@@ -40,7 +40,7 @@ test('with no shared instructions an old tagged turn is still taken out', () => 
 
 for (const legacy of [false, true]) {
   test(`a real bridge keeps branding out of native V2 tools and Agent history (${legacy ? 'legacy aliases' : 'neutral aliases'})`, async () => {
-    const f = recoveryPeer();
+    const f = recoveryPeer({ secondaryModel: 'provider/secondary' });
     try {
       await f.controller.tick();
       const fixture = JSON.parse(fs.readFileSync(new URL('./test-fixtures/v2-agent-schema.json', import.meta.url), 'utf8'));
@@ -76,7 +76,7 @@ for (const legacy of [false, true]) {
 }
 
 test('the real bridge preserves user filenames and non-Agent data while normalizing only old Agent model identities', async () => {
-  const f = recoveryPeer();
+  const f = recoveryPeer({ secondaryModel: 'provider/secondary' });
   try {
     await f.controller.tick();
     const row = f.controller.catalog.find(row => row.id === 'provider/secondary');

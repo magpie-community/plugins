@@ -209,8 +209,8 @@ test('Work inference uses selected model and gateway auth; SSE tools survive; of
     expect(current.credentials).toEqual(f.doc.credentials);
     expect(current.model.current).toBe('k2d8-preview');
     expect(current.unrelated).toEqual(f.doc.unrelated);
-    expect(f.calls.map(x => x.method)).toEqual(['models.current', 'conversations.setModel',
-      'kimiPlugin.installPlugin', 'kimiPlugin.getPluginInfo', 'kimiPlugin.setPluginEnabled', 'kimiPlugin.reloadActiveSessions']);
+    // No secondary preference means no role plugin is installed or reloaded.
+    expect(f.calls.map(x => x.method)).toEqual(['models.current', 'conversations.setModel']);
   } finally { await f.cleanup(); }
 });
 
@@ -317,7 +317,7 @@ for (const format of ['json', 'sse']) {
   });
 }
 
-test('profile-shaped text in user and historical Agent data neither selects a route nor gets rewritten', async () => {
+test('profile-shaped route metadata in user or historical Agent data fails closed without routing', async () => {
   const f = await fixture();
   try {
     write(f.controller.connectionFile, { ...f.connection, secondaryModel: f.models[1].id });
@@ -333,9 +333,10 @@ test('profile-shaped text in user and historical Agent data neither selects a ro
     const response = await fetch(f.controller.bridgeURL + '/chat/completions', { method: 'POST',
       headers: { Authorization: 'Bearer synthetic-kimi-key' },
       body: JSON.stringify({ model: 'k2d8-preview', messages }) });
-    expect(response.status).toBe(200); await response.text();
-    expect(f.requests.at(-1).body.model).toBe(f.models[0].id);
-    expect(f.requests.at(-1).body.messages).toEqual(messages);
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe('agent_profile_unbound');
+    // Reserved route metadata never selects a binding or reaches a supplier.
+    expect(f.requests).toHaveLength(0);
   } finally { await f.cleanup(); }
 });
 

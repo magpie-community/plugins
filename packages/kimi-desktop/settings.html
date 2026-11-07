@@ -41,7 +41,7 @@
 <body>
 <main>
   <h1 id="heading">Kimi Work models</h1>
-  <p id="description" class="muted">Choose primary and secondary models. An unset secondary follows the primary.</p>
+  <p id="description" class="muted">Choose a primary model. Select a secondary model to enable role routing for new Agent subtasks.</p>
   <form id="settings-form">
     <fieldset id="primary" disabled aria-describedby="models-hint">
       <legend id="primary-label">Primary model</legend>
@@ -62,7 +62,7 @@
     <p id="application" class="muted"></p>
   </div>
   <p id="notice" role="status" aria-live="polite"></p>
-  <p id="guidance" class="guidance">New ordinary Agent subtasks use the secondary model by default. Request the primary model to switch roles. Set both models here first.</p>
+  <p id="guidance" class="guidance">With a secondary model selected, new Agent calls use it only when both model and subagent_type are omitted. An explicit native subagent_type without model keeps its native profile. Use model="primary" or model="native" for an explicit choice.</p>
   <p id="path-guidance" class="guidance">If Magpie cannot be located automatically on Windows, you can set magpiePath in the plugin options to the current Magpie executable.</p>
 </main>
 <script nonce="__KIMI_SETTINGS_NONCE__">
@@ -73,7 +73,7 @@
   const localize = pair => pair[lang === 'zh' ? 1 : 0];
   const copy = {
     title: ['Kimi Work models', 'Kimi Work 模型'],
-    description: ['Choose primary and secondary models. An unset secondary follows the primary.', '选择主模型和辅助模型。辅助模型未单独设置时继承主模型。'],
+    description: ['Choose a primary model. Select a secondary model to enable role routing for new Agent subtasks.', '选择主模型；只有选择辅助模型后，才会启用新建 Agent 子任务的角色路由。'],
     primary: ['Primary model', '主模型'],
     secondary: ['Secondary model', '辅助模型'],
     save: ['Save', '保存'], refresh: ['Refresh', '刷新'],
@@ -82,13 +82,13 @@
     connectFirst: ['Connect Kimi in Magpie Agents → Kimi first, then refresh the model list.', '请先在 Magpie Agents → Kimi 接通，然后刷新模型列表。'],
     noModels: ['No models are available. Refresh to try again.', '暂无可用模型，请稍后刷新。'],
     choosePrimary: ['Choose a primary model.', '请选择主模型。'],
-    inherit: ['Same as primary model', '继承主模型'],
+    inherit: ['Use native subagents (role routing off)', '使用原生子代理（不启用角色路由）'],
     unavailableSaved: ['Saved; currently unavailable', '已保存，当前不可用'],
     unavailableDraft: ['Unsaved; currently unavailable', '未保存，当前不可用'],
     dirty: ['There are unsaved changes.', '有未保存的更改。'],
     dirtyApplication: ['There are unsaved changes. Save before checking whether they are applied.', '有未保存的更改。保存后再确认应用状态。'],
     applied: ['The primary and secondary model configuration is applied.', '当前主模型与辅助模型配置已应用。'],
-    primaryOnlyApplied: ['The primary model is applied. No secondary model is selected.', '主模型已应用，未单独选择辅助模型。'],
+    primaryOnlyApplied: ['The primary model is applied. Native subagents are used; role routing is off.', '主模型已应用。子代理使用原生行为，角色路由未启用。'],
     waitingApplication: ['Waiting for Kimi to become idle before applying this configuration.', '等待 Kimi 空闲后应用当前配置。'],
     unconfirmed: ['Application is not confirmed yet. Refresh to check again.', '当前配置的应用状态尚未确认。可稍后刷新查看。'],
     saving: ['Saving…', '正在保存…'], refreshing: ['Refreshing…', '正在刷新…'],
@@ -98,7 +98,7 @@
     kept: [' Your choices were kept. You can retry.', ' 当前选择已保留，可重试。'],
     unknownStatus: ['Kimi status is unavailable. Refresh to check again.', 'Kimi 状态暂不可用，请刷新检查。'],
     unknownError: ['The settings operation could not be completed. Try again later.', '无法完成设置操作，请稍后重试。'],
-    guidance: ['New ordinary Agent subtasks use the secondary model by default. Request the primary model to switch roles. Set both models here first.', '新建的普通 Agent 子任务默认使用辅助模型，可在提示词中要求改用主模型。请先在本页配置这两个模型。'],
+    guidance: ['With a secondary model selected, new Agent calls use it only when both model and subagent_type are omitted. An explicit native subagent_type without model keeps its native profile. Use model="primary" or model="native" for an explicit choice.', '选择辅助模型后，只有同时省略 model 和 subagent_type 的新建 Agent 调用才默认使用辅助模型。明确指定原生 subagent_type 且省略 model 时，保留原生类型。可用 model="primary" 或 model="native" 明确选择。'],
     pathGuidance: ['If Magpie cannot be located automatically on Windows, you can set magpiePath in the plugin options to the current Magpie executable.', 'Windows 下若无法自动定位 Magpie，可在插件选项 magpiePath 指定当前 Magpie 可执行文件。'],
   };
   const text = key => localize(copy[key]);
@@ -116,7 +116,7 @@
     secondary_model_unsupported_runtime: ['This Kimi runtime does not currently support a secondary model. The primary model remains available.', '当前 Kimi 运行时暂不支持辅助模型，主模型仍可用。'],
     secondary_model_unavailable: ['The secondary model is unavailable. Choose another model.', '辅助模型当前不可用，请选择其他模型。'],
     secondary_model_reload_failed: ['Kimi has not confirmed reloading the secondary model. Refresh to retry.', 'Kimi 尚未确认辅助模型已重新载入，请刷新重试。'],
-    agent_profile_conflict: ['A generated agent profile was changed. It was kept; check the profile before retrying.', '生成的 Agent 角色配置已被修改，现有内容已保留。请检查后重试。'],
+    agent_profile_conflict: ['A role plugin or generated profile conflicts with the current configuration. Existing files were kept; check before retrying.', '角色插件或生成的 Agent 配置与当前配置冲突，现有文件已保留。请检查后重试。'],
     secondary_model_waiting_session: ['Settings are saved. Send a message in a Work conversation, then wait for it to become idle so the secondary model configuration can be confirmed.', '设置已保存。请先在 Work 会话中发送一条消息，待会话空闲后确认副模型配置已载入。'],
     invalid_gateway: ['The Magpie gateway address is invalid. Check the Kimi connection settings.', 'Magpie 网关地址无效，请检查 Kimi 接入设置。'],
     invalid_connection: ['The Kimi connection settings are invalid. Reconnect Kimi in Magpie.', 'Kimi 接入配置无效，请在 Magpie 中重新接入。'],
@@ -221,7 +221,7 @@
     if (dirty()) application.textContent = text('dirtyApplication');
     else if (settings.status === 'connected' && settings.primaryModel
         && settings.appliedPrimaryModel === settings.primaryModel
-        && settings.appliedSecondaryModel === (settings.secondaryModel || settings.primaryModel)) application.textContent = text('applied');
+        && settings.secondaryModel && settings.appliedSecondaryModel === settings.secondaryModel) application.textContent = text('applied');
     else if (settings.status === 'connected' && settings.primaryModel
         && settings.appliedPrimaryModel === settings.primaryModel
         && settings.secondaryModel === '' && settings.appliedSecondaryModel === undefined) application.textContent = text('primaryOnlyApplied');
