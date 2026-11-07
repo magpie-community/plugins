@@ -158,6 +158,12 @@ function headersFor(creds, site, extra) {
     cookie: creds.header,
     accept: "application/json",
     "user-agent": UA,
+    // web.tabbit.ai's browser sign-in gate (429 code 492 "Welcome to Tabbit
+    // Browser") refuses a turn whose request carries no `unique-uuid`: the
+    // browser sends a fresh uuid on every API call, and the gate accepts any
+    // well-formed one. Measured against a live signed-in session on .ai;
+    // .com ignores the header.
+    "unique-uuid": crypto.randomUUID(),
     origin: site,
     referer: `${site}/newtab`,
     ...extra,
