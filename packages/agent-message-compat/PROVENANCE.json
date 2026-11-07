@@ -1,0 +1,34 @@
+{
+  "source": "https://github.com/YHonc/magpie-agent-message-compat",
+  "commit": "a4c612aca7ab05d0061ddb12c5f9c20653b818b2",
+  "version": "0.1.3",
+  "license": "MIT",
+  "files": {
+    "common.js": {
+      "sha256": "736e1695231726d9f4f017facb7bcea46ad41e5688707d9c84fdae274f13dbf4"
+    },
+    "compat.middleware.js": {
+      "sha256": "0e9a3347ee5f16f52d75d8966bebd81c2463501763cdc12bef05d023da05341c"
+    },
+    "provenance.hooks.mjs": {
+      "sha256": "6206a8106a6a83e4356a79118b1f2ae990929568945d266af0ae87a792501b3f"
+    },
+    "test.mjs": {
+      "sha256": "083cfea8787255f13fec93317587ba27df3f775f1118bee64e90a6b451ae7d37"
+    },
+    "LICENSE": {
+      "sha256": "1886badea1e7cbabcb27f7417c11b282cef9e72513bee9658c950de8246aa3ca"
+    },
+    "CHANGELOG.md": {
+      "sha256": "b19c89cfd65663fc8439630ef14b8a9da6a4e506b765279fde3b64bf3c671e1f"
+    },
+    "README.md": {
+      "sha256": "29e457cbf7fa05948b9e6d64ab864c62b79e38d32902ccefe52f800263c15e79"
+    }
+  },
+  "changes": [
+    "Community package name and repository metadata; runtime modules, test.mjs, LICENSE and CHANGELOG.md match source commit bytes.",
+    "README retains bilingual source documentation with community-only installation, pinned evidence links and source provenance linkage. README hash records the original source before these adaptations.",
+    "Bun test entry, shared middleware cases.json/check() tests, PROVENANCE package inclusion and Gateway hooks marketplace listing are community integration additions."
+  ]
+}
