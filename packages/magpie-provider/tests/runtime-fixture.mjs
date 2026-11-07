@@ -99,16 +99,16 @@ try {
   cleanup = await plugin.setup(state.ctx)
   assert.equal(state.catalog[0].info.id, "magpie-cursor")
   assert.equal(state.catalog[0].info.headers["X-Magpie-Agent"], "yuri")
-  assert.equal(state.catalog[0].info.headers["User-Agent"], "yuri/opencode-magpie-provider")
+  assert.equal(new Headers(state.catalog[0].info.headers).has("User-Agent"), false)
   assert.equal(requests[0].headers.authorization, `Bearer ${token}`)
   assert.equal(requests[0].headers["x-magpie-agent"], "yuri")
   assert.equal(state.catalog[0].models[0].settings.apiKey, token)
   const hook = state.hooks.get("http.request")
   for (const suffix of ["/chat/completions", "/responses", "/messages"]) {
-    const request = new Request(baseURL + suffix)
+    const request = new Request(baseURL + suffix, { headers: { "User-Agent": "opencode/test/real-host" } })
     await hook({ request, sessionID: "test-yuri-session" })
     assert.equal(request.headers.get("X-Magpie-Agent"), "yuri")
-    assert.equal(request.headers.get("User-Agent"), "yuri/opencode-magpie-provider")
+    assert.equal(request.headers.get("User-Agent"), "opencode/test/real-host")
     assert.equal(request.headers.get("X-Magpie-Session"), "test-yuri-session")
   }
   for (const url of ["https://other.test/proxy/v1/chat/completions", baseURL + "-other/chat", `http://127.0.0.1:${server.address().port}/not-api`]) {
@@ -127,7 +127,7 @@ try {
   assert.ok(imagePath && path.dirname(imagePath) === path.join(os.tmpdir(), "magpie-images"))
   await fs.unlink(imagePath)
   assert.ok(requests.filter(req => req.path.startsWith("/proxy/")).every(req => req.headers["x-magpie-agent"] === "yuri"))
-  assert.ok(requests.filter(req => req.path.startsWith("/proxy/")).every(req => req.headers["user-agent"] === "yuri/opencode-magpie-provider"))
+  assert.ok(requests.every(req => !String(req.headers["user-agent"]).includes("yuri")))
 
   rows = [{ ...rows[0], id: "workbuddy/gpt-5.5", owned_by: "workbuddy" }]
   ;[...intervals][0].tick()

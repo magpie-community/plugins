@@ -1,5 +1,7 @@
 # Yuri as a Magpie Agent
 
+Yuri original website: **https://useyuri.top**.
+
 Adds **Yuri** to Magpie's Agents page. Connecting installs
 [`@magpie-community/opencode-magpie-provider`](../magpie-provider)
 in Yuri's OpenCode V2 service configuration, rather than generating a second,
@@ -35,7 +37,10 @@ The same integration is also available as the standalone
 [yee94/magpie-agent-yuri](https://github.com/yee94/magpie-agent-yuri) Git package.
 Install one variant only: both declare the same `yuri` Agent id. This community
 package bundles its parser and follows the repository's dist/npm publishing
-workflow; it requires no runtime dependency installation or build scripts.
+workflow; it requires no runtime dependency installation or build scripts. The
+standalone Git package instead ships the corrected provider in its own local
+`provider/` directory, retaining its existing package names and requiring no
+separate npm publication.
 
 ## What is written
 
@@ -48,9 +53,11 @@ workflow; it requires no runtime dependency installation or build scripts.
   Magpie's dist fallback alone is not enough for OpenCode. A new entry passes
   `options.remote.baseURL` and `options.remote.token` from that connection,
   so it does not guess a port or copy any upstream subscription credentials.
-  It also sets `options.agentID: "yuri"` for model discovery, inference and image
-  request attribution. Existing original/community provider entries are retained
-  unchanged, so a user-owned original plugin may still attribute calls to OpenCode.
+  It also sets `options.agentID: "yuri"` as an advisory label on discovery,
+  inference and image requests, without replacing OpenCode's real User-Agent.
+  Local Agent attribution comes from Magpie's assigned connection key, passed
+  unchanged to the provider, not from that label. Existing original/community
+  provider entries keep their own connection/options and attribution unchanged.
 - OpenCode's directory is `OPENCODE_CONFIG_DIR`, otherwise
   `$XDG_CONFIG_HOME/opencode`, otherwise `~/.config/opencode`. The bridge checks
   both `opencode.json` and `opencode.jsonc`, plus `OPENCODE_CONFIG` when set.
@@ -115,11 +122,14 @@ Do not use Magpie's built-in OpenCode adapter to maintain another static
 `magpie` provider alongside this dynamic integration unless you intend to have
 both catalogs.
 
-The shared provider's `agentID` is not UI detection: a CLI calling through the
-same provider also reports `yuri`. The built-in OpenCode Agent remains a separate
-static catalog; its own calls report OpenCode. Connecting/disconnecting it must
-leave Yuri's `plugins` entry intact. Yuri disconnect must preserve that adapter's
-`provider.magpie` and model settings if they were edited after Yuri connected.
+The shared provider's `agentID` is not UI detection. A CLI calling through the
+same provider/key shares that connection's attribution; the label alone cannot
+identify Yuri or relabel a direct OpenCode caller. The built-in OpenCode Agent
+remains a separate static catalog/connection. Its own native CLI request was
+verified as OpenCode, while the Yuri connection was verified as Yuri (see
+`VERIFICATION.md`). Connecting/disconnecting it must leave Yuri's `plugins`
+entry intact. Yuri disconnect must preserve that adapter's `provider.magpie`
+and model settings if they were edited after Yuri connected.
 
 ## Tests
 

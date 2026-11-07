@@ -1,5 +1,7 @@
 # Magpie provider for OpenCode V2
 
+Yuri original website: **https://useyuri.top**.
+
 This is the reviewable, community-published provider used by the Yuri Agent.
 It connects **OpenCode to Magpie**, not Magpie to another subscription service.
 It adds no sign-in, billing channel or registry provider listing. Install the
@@ -28,13 +30,21 @@ their attribution; the bridge never silently upgrades or rewrites them.
 1–64 characters (`a-z`, `0-9`, `.`, `_`, `-`, starting with a letter or digit).
 The bridge passes `yuri`; the provider uses it for `X-Magpie-Agent` on model
 discovery, model HTTP requests and image calls. The option labels the shared
-provider, not the caller UI: a CLI using that same service and provider is also
-counted as Yuri. Session requests additionally send `X-Magpie-Session`.
-The provider also sets `User-Agent: <agentID>/opencode-magpie-provider`:
-Magpie only trusts `X-Magpie-Agent` from another Magpie's User-Agent, so that
-header alone cannot identify a direct OpenCode client. Agent-specific gateway
-keys remain authoritative; an existing key explicitly named for another agent
-must not be silently replaced by this package.
+provider, not the caller UI; it does not independently determine Magpie Usage
+attribution. Session requests additionally send `X-Magpie-Session`.
+The provider does **not** replace OpenCode's User-Agent or claim to be Yuri.
+Magpie's real Agent connection supplies `gateway.key` to `connect({ gateway })`;
+the bridge passes that assigned key unchanged as `options.remote.token`. On a
+local gateway, Magpie identifies that Agent from its assigned key before looking
+at the User-Agent. `X-Magpie-Agent` is a configured advisory label, not proof of
+which UI submitted a request; it alone does not relabel a direct OpenCode client.
+An existing key assigned to another agent is never rewritten to match `agentID`.
+
+Yuri's cloned source uses the normal OpenCode session/prompt API. The shared
+OpenCode service owns the outbound model request and sets its real User-Agent.
+No model-client provenance is inferred from a window title, a URL, session text,
+or a static `agentID`. If a CLI uses the same provider/key it has the same
+connection attribution; this integration cannot claim per-UI isolation.
 
 Gateway credentials go only to the configured HTTP(S) API base. Authenticated
 discovery and image calls reject redirects. The HTTP hook matches both origin

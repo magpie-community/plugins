@@ -914,8 +914,7 @@ var buildInventory = (rows, baseURL, options = {}) => {
         },
         headers: {
           Authorization: `Bearer ${apiKey}`,
-          "X-Magpie-Agent": options.agentID ?? "opencode",
-          "User-Agent": `${options.agentID ?? "opencode"}/opencode-magpie-provider`
+          "X-Magpie-Agent": options.agentID ?? "opencode"
         }
       },
       models: []
@@ -1150,8 +1149,7 @@ var fetchModels = async (baseURL, token = "magpie", agentID = "opencode") => {
     headers: {
       Authorization: `Bearer ${token}`,
       "X-Magpie-Prices": "1",
-      "X-Magpie-Agent": agentID,
-      "User-Agent": `${agentID}/opencode-magpie-provider`
+      "X-Magpie-Agent": agentID
     },
     redirect: "error",
     signal: AbortSignal.timeout(15000)
@@ -1177,8 +1175,7 @@ var listImageModels = async (connection, signal) => {
     headers: {
       Authorization: `Bearer ${connection.token}`,
       "X-Magpie-Drawers": "1",
-      "X-Magpie-Agent": connection.agentID ?? "opencode",
-      "User-Agent": `${connection.agentID ?? "opencode"}/opencode-magpie-provider`
+      "X-Magpie-Agent": connection.agentID ?? "opencode"
     },
     redirect: "error",
     signal: AbortSignal.any([AbortSignal.timeout(15000), ...signal ? [signal] : []])
@@ -1200,8 +1197,7 @@ var drawImage = async (connection, input, signal) => {
     headers: {
       Authorization: `Bearer ${connection.token}`,
       "Content-Type": "application/json",
-      "X-Magpie-Agent": connection.agentID ?? "opencode",
-      "User-Agent": `${connection.agentID ?? "opencode"}/opencode-magpie-provider`
+      "X-Magpie-Agent": connection.agentID ?? "opencode"
     },
     body: JSON.stringify({ ...input, n: 1, response_format: "b64_json" }),
     redirect: "error",
@@ -1346,7 +1342,6 @@ var setupPlugin = async (ctx) => {
       await connection.ensure();
       event.request.headers.set("X-Magpie-Session", event.sessionID);
       event.request.headers.set("X-Magpie-Agent", agentID ?? "opencode");
-      event.request.headers.set("User-Agent", `${agentID ?? "opencode"}/opencode-magpie-provider`);
     }));
     await reloadProviderCatalog(ctx);
   } catch (error) {

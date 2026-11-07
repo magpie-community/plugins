@@ -61,7 +61,6 @@ export const setupPlugin: Plugin2['setup'] = async (ctx) => {
         await connection.ensure();
         event.request.headers.set('X-Magpie-Session', event.sessionID);
         event.request.headers.set('X-Magpie-Agent', agentID ?? 'opencode');
-        event.request.headers.set('User-Agent', `${agentID ?? 'opencode'}/opencode-magpie-provider`);
       }),
     );
     await reloadProviderCatalog(ctx);

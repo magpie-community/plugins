@@ -240,7 +240,6 @@ export const fetchModels = async (baseURL: string, token = 'magpie', agentID = '
       Authorization: `Bearer ${token}`,
       'X-Magpie-Prices': '1',
       'X-Magpie-Agent': agentID,
-      'User-Agent': `${agentID}/opencode-magpie-provider`,
     },
     redirect: 'error',
     signal: AbortSignal.timeout(15_000),

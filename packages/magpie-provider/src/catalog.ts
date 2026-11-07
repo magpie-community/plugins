@@ -323,7 +323,6 @@ export const buildInventory = (
           headers: {
             Authorization: `Bearer ${apiKey}`,
             'X-Magpie-Agent': options.agentID ?? 'opencode',
-            'User-Agent': `${options.agentID ?? 'opencode'}/opencode-magpie-provider`,
           },
         },
         models: [],

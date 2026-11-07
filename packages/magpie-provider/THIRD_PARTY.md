@@ -6,10 +6,10 @@ and icon are included unchanged. `src/` contains the complete runtime source,
 including pricing data; no implementation is downloaded from the original npm
 package. The catalog regression tests are adapted from the same source.
 
-Community changes: configurable `agentID` on discovery, chat and image calls
-(both the attribution header and direct-client User-Agent);
+Community changes: configurable `agentID` as an advisory header on discovery,
+chat and image calls, without overriding the real host's User-Agent;
 community package metadata; credential-boundary and lifecycle tests. Existing
-`magpie.providers` plugin identity and default `opencode` attribution remain
+`magpie.providers` plugin identity and default `opencode` advisory label remain
 compatible. The original package and this package must not be loaded together.
 
 Build from this folder with Bun 1.3.14 (no dependencies or install scripts):
