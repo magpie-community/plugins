@@ -1,0 +1,19 @@
+{
+  "name": "@liu223344/magpie-ccx-auth",
+  "version": "0.1.0",
+  "description": "AutoBits AI Hub provider for magpie: models, wallet balance and daily check-in",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "lib/", "README.md"],
+  "license": "MIT",
+  "magpie": {
+    "maxConcurrency": 4,
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iOCIgZmlsbD0iIzM2NzVlNiIvPjxwYXRoIGQ9Ik0xMCA5aDEydjNsLTQgNXY0bDR2M0gxMHYtM2w0LTR2LTVsLTQtNVoiIGZpbGw9IiNmZmYiLz48L3N2Zz4="
+  },
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  }
+}
