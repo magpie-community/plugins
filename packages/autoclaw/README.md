@@ -39,16 +39,18 @@ OpenCode 同样可加载（`opencode auth login`）。登录信息保存在 magp
   同时作为预付钱包窗口 `{ name: "积分余额", balance, unit: "积分" }` 上报（magpie ≥ v0.1.1790，
   #3950）：路由按真实余额认识和排位账号，不发明百分比，余额 0 算用完；更早的 magpie
   不认识 `balance`，账号维持原状。
-  上游没有积分流水/用量接口（wallets.v2 只有余额），「本轮消耗」窗口**由本地余额差值算**：
+  上游没有按模型的积分流水接口（wallets.v2 只有余额）。「本轮消耗」窗口**由本地余额差值算**——
+  活动行另从 `ledgers_std` 拉取（见下文「每日签到」一节）。
   每次 `usage()` 记下本轮峰值，`峰值 − 当前 = 本轮已消耗`，**任何上涨**（相对上次
   观察到的余额，含从 0 回升——每日签到、礼包、兑换）都开新一轮，不等涨过旧峰值（签到常在花费
   之后到）。因为每天签到都会开新一轮，「本轮」≈「自今天签到以来」。这个窗口带
   `aside: true`，只展示、不参与路由：它的百分比是「自上次上涨以来花掉的比例」，不是池子剩余。
   `total_balance` 为 null/空串/非数时按未知处理（「积分响应异常」），不记账。
-  状态按账号（键复用 `signinAccountKey`，#254：uid，没 uid 按 refresh token 哈希）存在
-  `$XDG_CONFIG_HOME/magpie/autoclaw-usage.json`（或 `~/.config/magpie/`，`AUTOCLAW_USAGE_STATE_FILE`
-  可改址），临时文件 + rename 写入，30 天没动的条目清走；插件更新不会丢。
-  测试可用 `_internal.setUsageStatePath` 把状态文件指到临时目录。
+  状态按账号（键复用 `signinAccountKey`，#254：uid，没 uid 按 refresh token 哈希）存 JSON，
+  地址优先级：`AUTOCLAW_USAGE_STATE_FILE`（显式覆盖）→ `$XDG_CONFIG_HOME/magpie/` →
+  `$HOME/.config/magpie/`（Windows 上 HOME 常未设，改用 `USERPROFILE`，再兜底 `os.homedir()`，
+  绝不落在盘根 `C:\.config\magpie`）→ 文件名 `autoclaw-usage.json`。写入走临时文件 + rename，
+  30 天没动的条目清走；插件更新不会丢。测试可用 `_internal.setUsageStatePath` 指到临时目录。
 - **国际版登录是完整本地实现**：插件在 127.0.0.1 上取官方 TokenServer 端口池中的一个端口
   （18432/19654/19723/53699，OAuth client 回调白名单；被占自动顺延）起临时服务器，内嵌引导页完成
   阿里滑块验证（`AliyunCaptcha` SDK，`ali_captcha_verify_param` 回执）→ 获取授权页 →
@@ -62,13 +64,35 @@ OpenCode 同样可加载（`opencode auth login`）。登录信息保存在 magp
 
 **① magpie 原生签到（magpie ≥ v0.1.1083，推荐）**：插件实现 `auth.checkin` 钩子，走 magpie 统一调度——Settings → Usage → Plugins 里每个供应商有 **Daily check-in** 开关（默认关），打开后每天每账号自动签一次（北京时间；启动 2 分钟后首查、每 30 分钟轮询，失败 30 分钟后重试），账户 Usage 卡片显示签到结果，也可 **Check in now** 手动签。
 
-**② 旧链路自动补签（默认关）**：查额度（`magpie quota`、GUI 刷新）与 token 刷新时发现未签就补签（服务端幂等，本地按天去重、失败按小时重试）。旧版 magpie / OpenCode 宿主或偏好该行为的用户开启 `signinOnUsage`。
+**② 旧链路自动补签（默认关）**：查额度（`magpie quota`、GUI 刷新）与 token 刷新时发现未签就补签（服务端幂等，本地按北京日去重；失败无节流——下次查额度或刷新时立即重试）。旧版 magpie / OpenCode 宿主或偏好该行为的用户开启 `signinOnUsage`。
 
-`magpie quota` 的额度窗口在查询成功时显示**每日签到**状态行（今日已签 ✓ / 今日未签 +N）。
+`magpie quota` 的额度窗口在查询成功时显示**每日签到**状态行（今日已签 ✓ / 今日未签（+N））。
 
 > **「登录领积分」类活动奖励**：服务端只为带整套官方桌面端业务头（`X-Channel: AutoClaw20`、`X-Version: 2.2.0`、UA `AutoClaw/2.2.0 (win-x64)`、`X-Tm: win-x64`、`X-Product` 等；所有平台都按这套 Windows 指纹上报）的 `POST /userapi/v1/user-info` 记录 `autoclaw_user_active` 活跃事件——没有这次调用，这类活动就领不到（yetone/magpie#3681）。本次实测到账：国际「AutoClaw Weekly Perks」+4000、国内「AutoClaw 用户登录奖励」+5000。
 >
 > **只有 ① 原生签到链路会调用 `user-info`**：用当前 access token 直接请求，access token 被上游拒绝时才刷新重试；`user-info` 本身不完成每日签到，每日签到仍由 `task-complete` 完成，两者相互独立。② 旧链路补签与不执行 `checkin` 钩子的宿主（OpenCode 1.x/2.x）不会领取活动奖励。
+
+### 活动余额行（活动积分）
+
+账号有活动流水时（领过、花过或失效过活动积分），`usage()` 返回的窗口列表末尾多一行：
+
+```text
+剩 4,000（AutoClaw Weekly Perks） · 已领 14,000 · 过期 7,711（近期）
+```
+
+- **数据来源**：`GET /agent-assetmgr/api/v1/ledgers_std?biz_app_id=autoclaw&page_size=200&wallet_scope=campaign`。
+  服务端给每个活动开独立的 `wallet` 实例（`wallet_id`），credit / debit / expire 三种流水
+  都带 `wallet_scope=campaign`；服务端可能忽略过滤参数，客户端按 scope 再过滤一遍。
+- **剩 的算法**：按实例 `credit − debit − expire`（截 0）。入账掉出窗口的旧实例按 0 计
+  （其失效额仍计入「过期」）——**「剩」永远不会虚高**，但窗口外的旧入账不参与计算。
+- **已领 / 过期**是窗口内（最近 ~151 条、约 18 天，翻页参数无效）的合计，标注（近期）。
+- **缓存**：按账号键（`signinAccountKey`）10 分钟；`checkin` 的 user-info 到达服务端时
+  立即失效（活动可能刚到账）；读取失败不缓存（下次 `usage()` 立即重试）；协议变更
+  （entries 非数组）按未知处理、缓存 10 分钟不重试。任何读取失败只省略该行，
+  绝不影响余额与签到行。
+- **活动行不携带 `balance`**：窗口的 `balance` 会被 magpie（≥ v0.1.1790）当作预付路由池
+  （#3950）重复计入路由。
+- **数字三位分组**（`fmtPoints`，不依赖 locale）；余额行里的细分钱包数值暂不分组。
 
 旧链路的开关有**两个通道**（插件 options 优先，配置文件兜底；原生签到开关只在 GUI 的 Settings 里）：
 
