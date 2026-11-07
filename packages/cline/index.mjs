@@ -793,7 +793,8 @@ function usageOf(me, balance, limits) {
 // supported" (magpie#5442). A providerOptions pin is therefore attempted
 // only when pinUpstream is on; an exact 403 is reported with a hint to turn
 // it off, never retried unpinned. The top-level provider.only path
-// (glm-5.3-flash) is unaffected.
+// (glm-5.3-flash) is not rejected, but Cline currently ignores it: that
+// request still works, it just isn't actually pinned.
 const MAKERS = [
 	{ name: "glm-5.3-flash", exact: true, upstream: "z-ai", openRouter: true },
 	{ name: "deepseek", upstream: "deepseek" },
@@ -806,8 +807,9 @@ const MAKERS = [
 // GLM, openRouter true for a model Cline sends through OpenRouter. Cline's
 // routers otherwise pick among the providers serving the model, and some
 // answer worse than the maker's own API, which also keeps the prompt cache.
-// A cline-free/ model is left to Cline, as is every other maker's model:
-// null.
+// Cline currently ignores the top-level provider field, so the openRouter
+// path is sent without error but does not pin. A cline-free/ model is left
+// to Cline, as is every other maker's model: null.
 function pinned(on, model) {
 	if (!on || typeof model !== "string" || model.startsWith("cline-free/")) return null
 	const name = model.slice(model.lastIndexOf("/") + 1).toLowerCase()
@@ -1152,7 +1154,7 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 									errorResponse({
 										status: 403,
 										message:
-											'Cline refused the providerOptions pin (HTTP 403: client-supplied "providerOptions" model routing is not supported). Turn off pinUpstream (the Upstream tick) and let Cline route the model itself; glm-5.3-flash still pins through OpenRouter\'s provider.only.',
+												'Cline refused the providerOptions pin (HTTP 403: client-supplied "providerOptions" model routing is not supported). Turn off pinUpstream (the Upstream tick) and let Cline route the model itself; glm-5.3-flash still works, but Cline ignores its top-level provider field, so it is not actually pinned.',
 									}),
 									renewed(cred),
 								)

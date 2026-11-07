@@ -1163,10 +1163,11 @@ test("pinBody pins a GLM model to Z.ai's API, keeping the body's prefix", () => 
 
 // sdytman (#feedback, 10-20): Cline sends glm-5.3-flash through OpenRouter,
 // not Vercel's AI Gateway, and OpenRouter ignores providerOptions.gateway.only.
-// It reads a top-level provider.only with its own slug, "z-ai". DeepSeek's
-// v4.1 flash models go through Vercel and use providerOptions when pinned
-// (Cline currently refuses that field; see the pinUpstream tests below).
-test("pinBody pins glm-5.3-flash by OpenRouter's provider.only, keeping the body's prefix", () => {
+// It reads a top-level provider.only with its own slug, "z-ai". Cline
+// currently ignores that field too, so the request works but is not pinned.
+// DeepSeek's v4.1 flash models go through Vercel and use providerOptions when
+// pinned (Cline refuses that field; see the pinUpstream tests below).
+test("pinBody writes glm-5.3-flash's OpenRouter provider.only, which Cline currently ignores without error", () => {
 	const { pinBody, pinned } = _internal
 	const body = `{"model":"cline-pass/glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	const out = pinBody(body, JSON.parse(body), true)
@@ -1337,6 +1338,7 @@ test("a pinUpstream DeepSeek request Cline refuses says how to turn the pin off,
 	expect(body.error.type).toBe("cline_error")
 	expect(body.error.message).toContain("Turn off pinUpstream")
 	expect(body.error.message).toContain("glm-5.3-flash")
+	expect(body.error.message).toContain("not actually pinned")
 	expect(calls.length).toBe(1)
 	expect(JSON.parse(calls[0].init.body).providerOptions).toEqual(PASS_PIN(true))
 })
