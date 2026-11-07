@@ -2789,3 +2789,58 @@ test("maintainer: the fake clock never leaks into the rest of the suite", async 
   await Bun.sleep(60)
   expect(Date.now() - t0).toBeGreaterThanOrEqual(40)
 })
+
+// 维护者最终 review 点名的缺口：dailySignin 的「HTTP 非 2xx 一律返回 null」
+// 没有专属测试。最险的形状是「HTTP 500 但 body 里写着 success:true」——
+// 谁要是把 `if (!res.ok) return null` 删了（或改成先读 body），这条必须红。
+test("0.2.18: a 500 with success:true in the body is a failure, not a claimed sign-in", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(
+    String.raw`{"code":0,"data":{"success":true,"reward_points":400}}`,
+    { status: 500 },
+  )
+  try {
+    // 直测 dailySignin：非 2xx → null（body 里写什么都一样）
+    const r = await _internal.dailySignin("at-x", "https://autoglm-api.autoglm.ai")
+    expect(r).toBeNull()
+    // 经 checkinOutcome 的完整链路：null → failed，绝不落成 claimed
+    expect(_internal.checkinOutcome(r).outcome).toBe("failed")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+// 同族守卫：403 + success:true 同样必须失败（和维护者举的 500 是同一条 if 守住的）。
+test("0.2.18: a 403 with success:true in the body is a failure too", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(
+    String.raw`{"code":0,"data":{"success":true,"reward_points":400}}`,
+    { status: 403 },
+  )
+  try {
+    expect(await _internal.dailySignin("at-x", "https://autoglm-api.autoglm.ai")).toBeNull()
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+// 经 checkin 的端到端：task-list 正常返回任务，task-complete 回 500+success:true，
+// 当天必须落成 failed（30 分钟后重试），绝不能记成已签。
+test("0.2.18: a checkin whose task-complete answers 500 with success:true ends the day as failed", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = campFetch({
+    total: 4000,
+    ledger: [],
+    signin: () => pendingTask(),
+    complete: () => new Response(String.raw`{"code":0,"data":{"success":true,"reward_points":400}}`, { status: 500 }),
+  })
+  try {
+    const hooks = await campHooks()
+    const r = await hooks.auth.checkin(async () => campAuth("nonok500"))
+    expect(r.outcome).toBe("failed")
+    expect(r.credit).toBeUndefined()
+    expect(r.message).toBe("签到接口无响应")
+  } finally {
+    campCleanup(realFetch)
+  }
+})
