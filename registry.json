@@ -85,7 +85,7 @@
     { "package": "@magpie-community/middleware-system-prompt", "name": "System Prompt", "kind": "middleware", "community": true,
       "summary": { "en": "Add your own system prompt to every request, or only some agents' or models', in each API's own place.", "zh": "给每个请求（或指定 agent、模型）加上自己的系统提示词，放在各 API 自己的位置。" } },
     { "package": "@magpie-community/middleware-output-strategy", "name": "Output Strategy", "kind": "middleware", "community": true,
-      "summary": { "en": "Seven composable output styles, all off by default, with a selection panel and prompt-cache-stable injection that preserves Codex instructions.", "zh": "七种可组合的输出样式，全部默认关闭；带选择面板，注入不破坏提示缓存，也不改写 Codex instructions。" } },
+      "summary": { "en": "Unofficial output-style plugin by manjughosa: seven composable styles, off by default.", "zh": "manjughosa 开发并维护的非官方输出策略插件：七种可组合样式，默认关闭。" } },
     { "package": "@magpie-community/middleware-word-guard", "name": "Word Guard", "kind": "middleware", "community": true,
       "summary": { "en": "New API's sensitive-word filter: turn away or mask words and patterns in what you send, and in replies.", "zh": "New API 的敏感词过滤：拒绝或替换你发出的内容和回复里的词与正则。" } },
     { "package": "@magpie-community/middleware-think-tags", "name": "Think Tags", "kind": "middleware", "community": true,

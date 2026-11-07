@@ -1,9 +1,10 @@
 {
   "name": "@magpie-community/middleware-output-strategy",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Composable output-style instructions injected before the model call, with a small selection panel",
   "type": "module",
   "license": "MIT",
+  "author": "manjughosa",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/magpie-community/plugins.git",
