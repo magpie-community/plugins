@@ -609,22 +609,28 @@ function tokenFields(data, fallbackRefresh) {
 // 签到与积分
 // ---------------------------------------------------------------------------
 
-// 上游没有积分流水/用量接口（wallets.v2 只有余额，task-list 只有签到），
-// 「已用」只能用本地余额差值算：每次 usage() 观察一次余额，记下本轮峰值，
-// 峰值 − 当前 = 本轮已消耗；任何上涨（相对上次余额，含从 0 回升——池子花光
-// 后签到恰恰最常见）都开新一轮，峰值即当前、used 归零。
+// 上游没有按模型的用量接口（wallets.v2 只有余额；ledgers_std 只有按 wallet
+// 实例的积分流水，没有模型维度），「已用」只能用本地余额差值算：每次 usage()
+// 观察一次余额，记下本轮峰值，峰值 − 当前 = 本轮已消耗；任何上涨（相对上次
+// 余额，含从 0 回升——池子花光后签到恰恰最常见）都开新一轮，峰值即当前、
+// used 归零。
 // 状态放 magpie 的配置目录（~/.config/magpie 或 $XDG_CONFIG_HOME/magpie，跟
 // codearts 的台账一个思路）：插件更新不会删掉它，CI 的 HOME=$(mktemp -d) 也
 // 自然隔离；AUTOCLAW_USAGE_STATE_FILE 可改址。写入走临时文件 + rename，并发
 // 写不会留下半份文件；30 天没动的条目顺手清走（没 uid 的账号键是 refresh
 // 哈希，token 一刷新就换键，旧条目靠这个兜底）。北京日界另记当日 −消耗/+入账。
 let usageStatePath;
+function magpieCfgDir() {
+  // Windows 上 HOME 常未设（magpie 启动的进程只有 USERPROFILE），裸 `${HOME ?? ""}`
+  // 会把状态文件写到盘根 C:\.config\magpie（uid 可读、任意本地用户可改）。
+  // 顺序：显式覆盖 → XDG → HOME → USERPROFILE → os.homedir()。
+  if (process.env.XDG_CONFIG_HOME) return `${process.env.XDG_CONFIG_HOME}/magpie`;
+  const home = nonEmptyString(process.env.HOME) ?? nonEmptyString(process.env.USERPROFILE) ?? homedir();
+  return `${home}/.config/magpie`;
+}
 function usageStatePathDefault() {
   if (process.env.AUTOCLAW_USAGE_STATE_FILE) return process.env.AUTOCLAW_USAGE_STATE_FILE;
-  const cfgDir = process.env.XDG_CONFIG_HOME
-    ? `${process.env.XDG_CONFIG_HOME}/magpie`
-    : `${process.env.HOME ?? ""}/.config/magpie`;
-  return `${cfgDir}/autoclaw-usage.json`;
+  return `${magpieCfgDir()}/autoclaw-usage.json`;
 }
 let usageState;
 /** 测试注入：指向临时目录，并丢掉内存缓存，测试之间互不沿用。 */
@@ -719,7 +725,150 @@ async function fetchWallets(accessToken, hosts) {
   return null;
 }
 
-/** 每日签到（幂等）。返回解析后的结果（可能为 null）。 */
+// ---------------------------------------------------------------------------
+// 活动积分（「登录领积分」类活动按 wallet 实例对账）
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /agent-assetmgr/api/v1/ledgers_std?wallet_scope=campaign —— 活动钱包的流水。
+ *
+ * 服务端给每个活动开独立的 wallet 实例（wallet_id），credit / debit / expire
+ * 三种流水各带顶层 wallet_scope（2026-11-06 真机：消耗也按实例扣），所以
+ * 「活动还剩多少」能按实例精确算。窗口只有最近 ~151 条（page_size 上限 200、
+ * 翻页参数无效），活动都限时 ≤7 天，活着的活动的完整生命周期都在窗口内。
+ * 服务端可能忽略 wallet_scope 过滤参数 → campaignBreakdown 必须再过滤一次。
+ * 返回 entries 数组（可为空）或 null（查询失败/协议变更）——绝不抛错：
+ * 活动行只是展示，读不到就省略，余额/签到行不受影响。
+ */
+const CAMPAIGN_LEDGER_PATH = `/agent-assetmgr/api/v1/ledgers_std?biz_app_id=${PRODUCT}&page_size=200&wallet_scope=campaign`;
+/**
+ * 拉取活动流水。三个 host × 一个请求（不翻页：next_page_token 是摆设，
+ * 窗口就是最近 ~151 条）。
+ * 成功：返回 entries 数组（可为空 = 真没有活动历史）。
+ * 失败：**throw**——campaignCached 把这次读当作「未缓存」，下次 usage() 重试；
+ *   绝不把「查不到」伪装成「0 条」，也没必要让读不到的账号被卡片骗。
+ */
+async function fetchCampaignLedger(accessToken, hosts) {
+  let lastErr = null;
+  for (const host of dedupe(hosts)) {
+    try {
+      const res = await fetch(`${host}${CAMPAIGN_LEDGER_PATH}`, {
+        method: "GET",
+        headers: bizHeaders(accessToken),
+        redirect: "error",
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); continue; }
+      const env = await res.json().catch(() => null);
+      if (!env || env.code !== 0 || !env.data) { lastErr = new Error(`envelope code ${env?.code ?? "?"}`); continue; }
+      if (!Array.isArray(env.data.entries)) return null; // 协议变了：按未知处理（不当错误重试）
+      return env.data.entries; // 成功（含空数组：真的没有活动历史）
+    } catch (e) {
+      lastErr = e; // 网络/超时：换下一个 host
+    }
+  }
+  throw lastErr ?? new Error("AutoClaw campaign ledger: all hosts failed");
+}
+
+/** 活动名标签：「AutoClaw Weekly Perks +4000 credits」→「AutoClaw Weekly Perks」。 */
+function campaignLabel(entry, md) {
+  const raw = String(md?.description ?? entry?.description ?? "").trim();
+  return raw.replace(/\s*\+\s*[\d.,]+\s*(?:credits?|积分)?\s*$/i, "").trim();
+}
+
+/**
+ * 活动流水 → { claimed, expired, remaining, labels }（窗口内事实）。
+ * 按 wallet 实例分组：每实例 remaining = credit − debit − expire（截 0）。
+ * 入账掉出窗口的旧实例（窗口内只剩消耗/失效）按 0 计，其失效额仍进「过期」。
+ */
+function campaignBreakdown(entries) {
+  const instances = new Map(); // wallet_id → { credit, debit, expire, label }
+  let claimed = 0;
+  let expired = 0;
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!e || typeof e !== "object") continue;
+    const md = e.metadata && typeof e.metadata === "object" ? e.metadata : {};
+    const scope = String(e.wallet_scope ?? md.wallet_scope ?? "").trim().toLowerCase();
+    if (scope !== "campaign") continue; // 服务端可能忽略过滤参数，必须再过滤
+    const type = String(e.mutation_type ?? "").trim().toLowerCase();
+    if (type !== "credit" && type !== "debit" && type !== "expire") continue;
+    const amount = Number(e.amount);
+    if (!Number.isFinite(amount)) continue;
+    const id = String(e.wallet_id ?? "?");
+    let inst = instances.get(id);
+    if (!inst) { inst = { credit: 0, debit: 0, expire: 0, label: "" }; instances.set(id, inst); }
+    if (type === "credit") {
+      inst.credit += amount;
+      claimed += amount;
+      const label = campaignLabel(e, md);
+      if (label) inst.label = label;
+    } else if (type === "debit") {
+      inst.debit += Math.abs(amount);
+    } else {
+      inst.expire += Math.abs(amount);
+      expired += Math.abs(amount);
+    }
+  }
+  if (instances.size === 0) return null; // 没有活动历史
+  let remaining = 0;
+  const labels = [];
+  for (const inst of instances.values()) {
+    const left = inst.credit - inst.debit - inst.expire;
+    if (left > 0) { remaining += left; if (inst.label) labels.push(inst.label); }
+  }
+  return { claimed, expired, remaining, labels: [...new Set(labels)] };
+}
+
+/** 活动积分的三位分组（确定性手写，不用 toLocaleString——CI/locale 无关）。 */
+const fmtPoints = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+/**
+ * 活动流水缓存：按账号键（signinAccountKey），10 分钟 TTL（codearts
+ * CREDIT_BATCHES_TTL_MS 同款节流）。**读取失败（reject）不缓存**——
+ * 下一次 usage() 立即重试；成功（含空数组：真的没有活动历史）才缓存；
+ * 协议变更（entries 非数组）按 null 缓存（重试也一样，不值得反复打）。
+ * checkin 里 user-info 到达服务端时立即失效（活动可能刚到账）；在途读
+ * 迟于失效返回时**不写回**（刚领的奖励不能被旧读覆盖回缓存）。
+ */
+const CAMPAIGN_TTL_MS = 10 * 60 * 1000;
+const CAMPAIGN_CACHE_MAX = 100;
+const campaignCache = new Map(); // accountKey → { at, value, promise }
+function campaignCached(key, loader) {
+  const held = campaignCache.get(key);
+  if (held?.promise) return held.promise;
+  if (held && Date.now() - held.at < CAMPAIGN_TTL_MS) return Promise.resolve(held.value);
+  // 淘汰最旧的「已定」条目（跳过在途读——撕掉在途 gate 会让该次读的结果无处
+  // 写回，白打一次网络）；全在途时宁可暂时超上限。长驻进程里账号数量不定，
+  // 不设上限会无限堆积。
+  while (campaignCache.size >= CAMPAIGN_CACHE_MAX) {
+    let evicted = false;
+    for (const [k, g] of campaignCache) {
+      if (!g.promise) { campaignCache.delete(k); evicted = true; break; }
+    }
+    if (!evicted) break;
+  }
+  const gate = { at: 0, value: null, promise: null };
+  gate.promise = loader().then(
+    (v) => {
+      gate.promise = null;
+      gate.at = Date.now();
+      gate.value = v;
+      // 只在仍是持有者时写回：失效可能发生在读取途中。
+      if (campaignCache.get(key) === gate) campaignCache.set(key, gate);
+      return v;
+    },
+    () => {
+      if (campaignCache.get(key) === gate) campaignCache.delete(key);
+      return null;
+    },
+  );
+  campaignCache.set(key, gate);
+  return gate.promise;
+}
+
+/** 每日签到（幂等）。失败（含封禁/登录失效/额度用尽）一律返回 null——
+ * 补签只是尽力而为，封禁/失效由 taskList 的检查先行暴露（checkin 里任务列表
+ * 先于 task-complete 调用），这里无需再抛。 */
 async function dailySignin(accessToken, host) {
   try {
     const res = await fetch(`${host}/autoclaw-proxy/proxy/autoclaw-task-complete`, {
@@ -728,6 +877,7 @@ async function dailySignin(accessToken, host) {
       body: JSON.stringify({ task_id: "daily_signin", source_id: PRODUCT }),
       signal: AbortSignal.timeout(15_000),
     });
+    if (!res.ok) return null;
     const env = await res.json().catch(() => null);
     return env?.data ?? null; // { success, already_completed, reward_points, continuous_days }
   } catch {
@@ -743,8 +893,17 @@ async function taskList(accessToken, host) {
     signal: AbortSignal.timeout(15_000),
   });
   if (res.status === 401 || res.status === 403) {
-    const banned = bannedText(await res.text().catch(() => ""));
+    const text = await res.text().catch(() => "");
+    const banned = bannedText(text);
     if (banned) throw Object.assign(new Error(`AutoClaw: ${banned}`), { banned: true, signIn: "kept" });
+    // 额度用尽的 403（810000 /「额度已用完」）是账号的量用完了，不是登录失效：
+    // 与对话链路同一口径（QUOTA_CODES/QUOTA_WORDS），keep 登录、429 原样带文案。
+    let d;
+    try { d = JSON.parse(text); } catch { d = null; }
+    const { code, message } = said(d);
+    if (res.status === 403 && (QUOTA_CODES.has(String(code)) || (message && QUOTA_WORDS.test(message)))) {
+      throw Object.assign(new Error(`AutoClaw: ${message || "quota exhausted"}`), { quota: true, signIn: "kept" });
+    }
     // 非封禁的登录失效：标记 expired，让 checkin 能用 refresh token 重试一次，
     // 也让 magpie 不再把过期账号当成普通失败重试一整天。
     throw Object.assign(new Error(`登录已失效（HTTP ${res.status}）`), { signIn: "expired" });
@@ -805,33 +964,39 @@ function checkinOutcome(r) {
  */
 async function callUserInfo(accessToken, deviceId, base) {
   const ts = String(Math.floor(Date.now() / 1000));
-  const res = await fetch(`${base}/userapi/v1/user-info`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Accept": "*/*",
-      "User-Agent": "AutoClaw/2.2.0 (win-x64)",
-      "X-Version": "2.2.0",
-      "X-Tm": "win-x64",
-      "X-Product": PRODUCT,
-      "X-Auth-Appid": APP_ID,
-      "X-Auth-TimeStamp": ts,
-      "X-Auth-Sign": md5Hex(`${APP_ID}&${ts}&${APP_KEY}`),
-      "X-Trace-Id": randomHex(16),
-      "X-Lang": "zh-CN",
-      "X-Channel": "AutoClaw20",
-      "Authorization": `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({ source_id: PRODUCT, device_id: deviceId }),
-    signal: AbortSignal.timeout(15_000),
-  });
+  let res;
+  try {
+    res = await fetch(`${base}/userapi/v1/user-info`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "User-Agent": "AutoClaw/2.2.0 (win-x64)",
+        "X-Version": "2.2.0",
+        "X-Tm": "win-x64",
+        "X-Product": PRODUCT,
+        "X-Auth-Appid": APP_ID,
+        "X-Auth-TimeStamp": ts,
+        "X-Auth-Sign": md5Hex(`${APP_ID}&${ts}&${APP_KEY}`),
+        "X-Trace-Id": randomHex(16),
+        "X-Lang": "zh-CN",
+        "X-Channel": "AutoClaw20",
+        "Authorization": `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ source_id: PRODUCT, device_id: deviceId }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    return null; // 网络/超时：换下一个 host
+  }
   let parsed;
   try { parsed = JSON.parse(await res.text()); } catch { parsed = null; }
-  return parsed;
+  // code=0 且 HTTP 2xx 才算到达；401 带 code:0 的怪响应不算（假成功）。
+  return { ok: res.ok, code: parsed?.code, msg: parsed?.msg ?? parsed?.message };
 }
 
-/** 本地去重键（成功才记；按小时允许重试）。 */
-const signinTriedLocal = new Map(); // key → hour-stamp of last SUCCESSFUL signin
+/** 本地去重键（成功才记；按北京日允许重试）。 */
+const signinTriedLocal = new Map(); // key → 北京日戳 of last SUCCESSFUL signin
 
 /**
  * 补签去重键：每个登录一个（#254）。显示名可以重复（AutoClaw 默认昵称改不了），
@@ -856,10 +1021,7 @@ function signinConfig(options) {
   let fileCfg = {};
   try {
     // magpie 配置目录固定（文档：~/.config/magpie 或 $XDG_CONFIG_HOME/magpie）
-    const cfgDir = process.env.XDG_CONFIG_HOME
-      ? `${process.env.XDG_CONFIG_HOME}/magpie`
-      : `${process.env.HOME ?? ""}/.config/magpie`;
-    fileCfg = JSON.parse(readFileSync(`${cfgDir}/autoclaw.json`, "utf8"));
+    fileCfg = JSON.parse(readFileSync(`${magpieCfgDir()}/autoclaw.json`, "utf8"));
   } catch { /* 无文件/解析失败 → 用默认 */ }
   const merged = { ...fileCfg, ...(options ?? {}) };
   return {
@@ -875,13 +1037,15 @@ async function maybeSignin(accessToken, host, options, reason, accountKey) {
   const cfg = signinConfig(options);
   if (!cfg.signin || !cfg.signinOnUsage) return;
   if (cfg.signinHour !== null && new Date().getHours() !== cfg.signinHour) return;
-  const hourStamp = `${new Date().toISOString().slice(0, 13)}`; // YYYY-MM-DDTHH（每小时可重试一次）
+  // 日界与签到活动一致（北京，beijingDayOf）：按 UTC 切日会让北京 0–8 点的
+  // 夜间账号被「前一个 UTC 日」的成功挡掉一整天，断签。
+  const dayStamp = beijingDayOf();
   const dayKey = `${accountKey ?? "x"}`;
   const lastOk = signinTriedLocal.get(dayKey);
-  if (typeof lastOk === "string" && lastOk.slice(0, 10) === hourStamp.slice(0, 10)) return; // 今天已成功
+  if (lastOk === dayStamp) return; // 今天（北京）已成功
   const r = await dailySignin(accessToken, host);
   if (r && (r.success || r.already_completed)) {
-    signinTriedLocal.set(dayKey, hourStamp);
+    signinTriedLocal.set(dayKey, dayStamp);
   }
 }
 
@@ -946,14 +1110,23 @@ async function refreshTokens(refreshToken, preferredHosts) {
     : [GLOBAL_HOST, CN_HOST, ...preferredHosts];
 
   let result = null;
+  let lastErr = null;
   for (const base of dedupe(ordered)) {
-    result = await callEnvelope("/userapi/v1/refresh", { method: "POST", body, base });
-    if (result.code !== 0 && result.code === 400002) {
-      result = await callEnvelope("/userapi/v1/agent-refresh", { method: "POST", body, base });
+    try {
+      result = await callEnvelope("/userapi/v1/refresh", { method: "POST", body, base });
+      if (result.code !== 0 && result.code === 400002) {
+        result = await callEnvelope("/userapi/v1/agent-refresh", { method: "POST", body, base });
+      }
+    } catch (e) {
+      // 网络错误/非 envelope（20s 超时、代理断连）：换下一个 host 再试。
+      // 封禁是确定性的（每个 host 都一样），立即上抛。
+      if (e?.banned || e?.signIn === "kept") throw e;
+      lastErr = e;
+      continue;
     }
     if (result.code !== 400000) break;
   }
-  if (!result) throw new Error("AutoClaw refresh: no host attempted");
+  if (!result) throw lastErr ?? new Error("AutoClaw refresh: no host attempted");
   if (result.code !== 0 || !result.data) {
     // a banned account is refused, not signed out: the sign-in is kept
     if (result.banned) throw Object.assign(new Error(`AutoClaw: ${result.banned}`), { signIn: "kept" });
@@ -990,10 +1163,20 @@ function rememberRotated(spent, fresh) {
     rotatedMemo.delete(oldest);
   }
 }
+
 function refreshShared(refreshToken, hosts) {
-  if (!refreshToken) throw new Error("AutoClaw: no refresh token to renew");
+  if (!refreshToken) {
+    throw Object.assign(new Error("AutoClaw: no refresh token to renew"), { signIn: "expired" });
+  }
   const memo = rotatedMemo.get(refreshToken);
-  if (memo) return Promise.resolve(memo);
+  if (memo) {
+    // 兜底的新 access token 也会到期：到期就别再喂给调用方——
+    // 用兜底里轮换出的新 RT 走一次真刷新（若该 RT 已被宿主花掉，会失败重抛，
+    // 下一次刷新会照常走网络路径）。
+    if (typeof memo.expires === "number" && memo.expires > Date.now()) return Promise.resolve(memo);
+    rotatedMemo.delete(refreshToken);
+    return refreshShared(memo.refresh, hosts);
+  }
   const held = refreshGates.get(refreshToken);
   if (held && (held.pending || Date.now() - held.at < REFRESH_SHARE_MS)) return held.promise;
   // 顺手淘汰已过期且不在途的条目，避免长驻进程里无限堆积（含令牌）。
@@ -1002,7 +1185,15 @@ function refreshShared(refreshToken, hosts) {
   }
   const gate = { at: Date.now(), pending: true, promise: null };
   gate.promise = refreshTokens(refreshToken, hosts).then(
-    (t) => { gate.pending = false; gate.at = Date.now(); return t; },
+    (t) => {
+      gate.pending = false;
+      gate.at = Date.now();
+      // 成功即记：旧 RT 已被服务端作废。>60s 后（gate 已清）任何还持有旧 RT
+      // 的调用方（同一登录的第二条记录、并发的宿主续期）必须直接拿到这对
+      // 令牌，而不是拿死 RT 再打一次网络被判 invalid_grant 登出健康账号。
+      rememberRotated(refreshToken, t);
+      return t;
+    },
     (e) => {
       // 只摘自己：并发重建的 gate 不能被旧的失败回调误删（第三次烧 RT）。
       if (refreshGates.get(refreshToken) === gate) refreshGates.delete(refreshToken);
@@ -1186,8 +1377,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
             fetchWallets(token, hosts),
             signinStatus(token, hosts[0]).then((s) => s ?? signinStatus(token, hosts[1] ?? hosts[0])),
           ]);
-          // 旧链路自动补签（默认关，需 signinOnUsage=true）：查额度即触发。
-          // 放在状态查询之后：未签才补，补完重查一次状态展示。
+          // 旧链路自动补签（默认关，需 signinOnUsage=true）：查额度且未签才触发。
           if (signin && signin.status !== "completed" && (cfg.signin && cfg.signinOnUsage)) {
             await maybeSignin(token, hosts[0], options, "usage", signinAccountKey(providerId, auth));
           }
@@ -1217,14 +1407,14 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                 // used 是 0–100 的百分比；签到行只表达状态，状态在 display 里
                 used: 0,
                 display: signinFinal.status === "completed"
-                  ? `今日已签 ✓${signinFinal.reward ? ` +${signinFinal.reward}` : ""}`
-                  : `今日未签（+${signinFinal.reward || 200}）`,
+                  ? `今日已签 ✓${signinFinal.reward ? ` +${fmtPoints(signinFinal.reward)}` : ""}`
+                  : `今日未签${signinFinal.reward ? `（+${fmtPoints(signinFinal.reward)}）` : ""}`,
                 aside: true,
               }]
             : [];
 
-          // 本轮消耗窗口：上游没有用量/流水接口，用本地余额差值算
-          // （峰值 − 当前；任何上涨即新一轮）。首日只有一次观察时不出这行。
+          // 本轮消耗窗口：用本地余额差值算（峰值 − 当前；任何上涨即新一轮）。
+          // 首日只有一次观察时不出这行。
           // 键复用 signinAccountKey（#254）：显示名可以重复，没 uid 的旧账号按
           // refresh token 哈希，同名的两个账号不能共用一本账。
           const track = balanceObserve(signinAccountKey(providerId, auth), total);
@@ -1244,18 +1434,34 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               remaining: Math.max(0, 100 - pct),
               amount: Math.round(track.used),
               limit: Math.round(track.peak),
-              display: `${Math.round(track.used)} / ${Math.round(track.peak)} 积分`
-                + (track.daySpent > 0 ? ` · 今日 -${Math.round(track.daySpent)}` : "")
-                + (track.dayGained > 0 ? ` · +${Math.round(track.dayGained)}` : ""),
+              display: `${fmtPoints(track.used)} / ${fmtPoints(track.peak)} 积分`
+                + (track.daySpent > 0 ? ` · 今日 -${fmtPoints(track.daySpent)}` : "")
+                + (track.dayGained > 0 ? ` · 今日 +${fmtPoints(track.dayGained)}` : ""),
             });
           }
 
-          // 积分是纯余额，没有总量也没有已用量：只放在 balance 里。做成
-          // used: 0 的窗口，卡片会给它配上「剩余 100%」（#376）。细分钱包
-          // 一并写进 balance。
+          // 活动积分：流水按 wallet 实例对账（credit − debit − expire），
+          // 精确可算。只读、失败静默省略——绝不抛错影响余额/签到行。
+          // 缓存按账号键；checkin 里 user-info 成功时会清掉（活动可能刚到账）。
+          let campaignRow = null;
+          try {
+            const entries = await campaignCached(signinAccountKey(providerId, auth), () => fetchCampaignLedger(token, hosts));
+            const camp = campaignBreakdown(entries);
+            if (camp && (camp.claimed > 0 || camp.expired > 0)) {
+              const label = camp.labels.length === 1 ? `（${camp.labels[0].slice(0, 40)}）`
+                : camp.labels.length > 1 ? `（${camp.labels.length} 个活动）` : "";
+              const text = [`剩 ${fmtPoints(camp.remaining)}${label}`, `已领 ${fmtPoints(camp.claimed)}`, `过期 ${fmtPoints(camp.expired)}`].join(" · ");
+              campaignRow = { name: "活动积分", used: 0, aside: true, display: `${text}（近期）` };
+            }
+          } catch { /* 活动行是展示性质：读不到就省略 */ }
+
+          // 积分是纯余额，没有总量也没有已用量：只放在 balance 里。细分钱包
+          // 一并写进 balance。活动行放最后（text 行；绝不带 balance——
+          // magpie ≥ v0.1.1790 会把窗口的 balance 当资金池，重复计入路由）。
           const parts = named.map((w) => `${w.name} ${Math.round(w.balance)}`);
+          if (campaignRow) windows.push(campaignRow);
           return {
-            balance: `${Math.round(total)} 积分${parts.length ? `（${parts.join(" · ")}）` : ""}`,
+            balance: `${fmtPoints(total)} 积分${parts.length ? `（${parts.join(" · ")}）` : ""}`,
             windows,
           };
         } catch (e) {
@@ -1287,84 +1493,116 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
         const renewOnce = async () => {
           const spent = bareToken(auth.refresh);
           if (!spent) throw Object.assign(new Error("AutoClaw: 没有可用的 refresh token"), { signIn: "expired" });
+          // refreshShared 成功即记内存兜底（rememberRotated），写回成功与否都不影响：
+          // 旧 RT 已作废，还拿着它的调用方直接拿兜底令牌。
           const fresh = await refreshShared(spent, [homeHost]);
-          let saved = false;
           if (client?.auth?.set) {
             try {
-              // CAS：签到期间用户可能重新登录/登出。只有记录仍是当时那份才写回，
-              // 否则把新令牌交给内存兜底（rememberRotated），不覆盖别人的记录。
+              // CAS：签到期间用户可能重新登录/登出。只有记录仍是当时那份（存在、
+              // 同为 oauth、同一个 RT）才写回；已登出或已换成别的记录时绝不覆盖，
+              // 新令牌交给内存兜底（rememberRotated）。
               const now = await getAuth();
-              const unchanged = !now || now.type !== "oauth" || bareToken(now.refresh ?? "") === spent;
+              const unchanged = !!now && now.type === "oauth" && bareToken(now.refresh ?? "") === spent;
               if (unchanged) {
                 const written = await client.auth.set({
                   path: { id: providerId },
                   body: { ...auth, access: fresh.access, refresh: fresh.refresh, expires: fresh.expires },
-                });
-                saved = !written?.error;
+                }).catch(() => null);
+                // 写回失败（宿主拒绝/异常）无所谓：内存兜底已经记了这对令牌。
+                void written;
               }
-            } catch { /* 写回失败：走下面的内存兜底 */ }
+            } catch { /* 写回失败：走上面的内存兜底 */ }
           }
-          if (!saved) rememberRotated(spent, fresh);
           auth = { ...auth, access: fresh.access, refresh: fresh.refresh, expires: fresh.expires };
           token = bareToken(fresh.access);
         };
 
         // 一轮：活动奖励（尽力而为）→ 每日签到。返回契约里的 outcome。
+        // uiReached 由外层记录：无论签到以哪种 outcome 收尾（done/inactive/
+        // claimed/failed），只要 user-info 没成功就要让卡片知道活动没触发。
         const attempt = async () => {
           // ① 官方登录事件：user-info 带桌面端指纹。单 host 网络错误不能挡住
           //    备用 host；全部失败也绝不阻断每日签到（活动奖励领不到要如实告知）。
           const deviceId = accountDeviceId(undefined, token, auth.refresh);
-          let uiReached = false;
+          let reached = false;
           for (const h of hosts) {
             try {
               const ui = await callUserInfo(token, deviceId, h);
-              if (ui?.code === 0) { uiReached = true; break; }
+              if (ui?.ok && ui?.code === 0) { reached = true; break; }
             } catch { /* 换下一个 host */ }
           }
+          uiReached = uiReached || reached;
+          // user-info 一旦到达服务端，活动可能已到账：立即失效流水缓存。
+          // 放在 attempt 内而不是收尾处——签到随后抛错（401/网络）也不能让
+          // 刚领的奖励在缓存里 stale 10 分钟。两次 attempt 的账号键可能不同
+          // （无 uid 账号键含 RT 哈希，renewOnce 换 RT），各删各的，覆盖新旧。
+          if (uiReached) campaignCache.delete(signinAccountKey(providerId, auth));
 
           // ② 每日签到：双 host 都查不到任务时抛错（failed → 30 分钟后重试），
           //    绝不把查询失败误报成「当前没有签到活动」把当天判死（#3326）。
+          //    空数组也算「host 回答了」（真没有签到任务），但 500/非 envelope
+          //    不算——两个 host 都哑了就抛错。主 host 空列表时继续问备用 host
+          //    （备用 host 上可能有任务；主 host 空 ≠ 整个账号没有）。
           let task = null;
           let lastErr = null;
-          let answered = false;
+          let expiredErr = null;
+          let answered = 0;
           for (const h of hosts) {
             try {
               const tasks = await taskList(token, h);
-              if (tasks) {
-                answered = true;
-                task = tasks.find((x) => x?.task_id === "daily_signin") ?? null;
-                break;
-              }
+              if (!Array.isArray(tasks)) continue; // 本 host 无响应（5xx/非 envelope）
+              answered++;
+              const t = tasks.find((x) => x?.task_id === "daily_signin") ?? null;
+              if (t) { task = t; break; }
             } catch (e) {
-              lastErr = e;
+              lastErr = lastErr ?? e;
+              // 混合失败时保住 expired 标记：主 host 401、备用 host 网络抖动，
+              // 丢了标记就永远不会 refresh（账号被误标失败一整天）。
+              if (e?.signIn === "expired") expiredErr = expiredErr ?? e;
               if (e?.banned) break;
             }
           }
-          if (!task && !answered) throw lastErr ?? new Error("AutoClaw task-list 双 host 无响应");
-          if (!task) return { outcome: "inactive", message: "当前没有签到活动" };
+          if (!task && expiredErr) throw expiredErr;
+          if (!task && answered === 0) throw lastErr ?? new Error("AutoClaw task-list 双 host 无响应");
+          // 「活动奖励未触发」只追加、不覆盖：签到的真实结果（已签到 +N / 失败
+          // 原因 / 当前没有活动）必须原样上卡，登录事件的缺失只补在后面。
+          const note = (result) => {
+            if (uiReached) return result;
+            const extra = "活动奖励未触发（登录未上报）";
+            return { ...result, message: result.message ? `${result.message} · ${extra}` : extra };
+          };
+          if (!task) return note({ outcome: "inactive", message: "当前没有签到活动" });
           if (String(task.status ?? "") === "completed") {
-            return { outcome: "done", credit: optNumber(task.reward_points) };
+            return note({ outcome: "done", credit: optNumber(task.reward_points) });
           }
-          // 补签（主 host 优先，无响应再试备用 host；服务端幂等）
+          // 补签（主 host 优先，null/网络错误换备用 host；服务端幂等）。dailySignin
+          // 对一切失败一律返回 null（封禁/失效的判定在 taskList，先于此处发生），
+          // 两个 host 都拿不到结果 → checkinOutcome(null) → failed，30 分钟后重试。
           const r = await dailySignin(token, hosts[0]).catch(() => null)
             ?? await dailySignin(token, hosts[1] ?? hosts[0]).catch(() => null);
-          const result = checkinOutcome(r);
-          if (!uiReached && result.message) {
-            result.message = `${result.message}（登录活动奖励未触发）`;
-          }
-          return result;
+          return note(checkinOutcome(r));
         };
 
+        let uiReached = false;
         try {
           return await attempt();
         } catch (e) {
-          // 封禁是账号问题、不是登录失效：不重试，让失败消息（含封禁文案）原样上卡；
-          // 账号状态标记仍由 usage / 请求链路完成。
+          // 封禁/额度用尽是账号问题、不是登录失效：不刷新重试，失败文案原样上卡。
           if (e?.banned || e?.signIn === "kept") throw e;
           if (e?.signIn !== "expired") throw e;
           // 当前 AT 被拒：refresh 一次（单飞 + CAS 写回 + 轮换兜底），整轮重试一次。
           await renewOnce();
-          return await attempt();
+          try {
+            return await attempt();
+          } catch (e2) {
+            // 刚刷新成功的账号再遇到 401/403 是上游瞬时行为，绝不能把它判成
+            // 登录失效让 magpie 登出健康账号——降级成普通 failed（30 分钟后重试）。
+            if (e2?.banned || e2?.signIn === "kept") throw e2;
+            if (e2?.signIn === "expired") {
+              throw new Error(`AutoClaw: 续期后仍被拒（${e2.message}），稍后重试`);
+            }
+            throw e2;
+          }
         }
       },
     },
@@ -1844,7 +2082,11 @@ export const _internal = {
   makePluginForTest: makeAutoclawPlugin,
   platformTm, setOfficialChatHeaders, conversationSessionId, stainlessOs, stainlessArch, md5Hex, jwtClaim, tokenFields, codeValue, bizHeaders, bareToken, newDeviceId,
   dailySignin, signinStatus, maybeSignin, signinAccountKey, signinConfig, checkinOutcome, refreshTokens,
+  refreshShared, rememberRotated, magpieCfgDir,
   clearRefreshGates: () => refreshGates.clear(),
+  clearRotatedMemo: () => rotatedMemo.clear(),
+  clearCampaignLedger: () => campaignCache.clear(),
+  campaignBreakdown, fetchCampaignLedger, fmtPoints, campaignCached,
   balanceObserve, usageStatePath: () => usageStatePath ?? usageStatePathDefault(), setUsageStatePath, beijingDayOf,
   fetchUserProfile, accountDeviceId, accountDisplayName, startLocalOAuth,
   FLAGGED, unflagged, unflag, tidyBody, rewriteManagedBody, autoclawRewriteBody, explained, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT,
