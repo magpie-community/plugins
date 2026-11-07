@@ -18,6 +18,7 @@ const ALLOWED = new Set([
 // --- strict stateless parameter validation --------------------------------
 
 const MESSAGE_PART = new Set(["input_text", "output_text"])
+const FUNCTION_OUTPUT_PART = new Set(["input_text"])
 
 /**
  * Validate message content: a string or an array of parts. Text parts are
@@ -25,8 +26,9 @@ const MESSAGE_PART = new Set(["input_text", "output_text"])
  * model advertises image input. Other multimodal parts are rejected.
  * @param {unknown} content
  * @param {boolean} allowImage
+ * @param {Set<string>} [textTypes]
  */
-function validateMessageContent(content, allowImage) {
+function validateMessageContent(content, allowImage, textTypes = MESSAGE_PART) {
   if (typeof content === "string") return
   if (!Array.isArray(content)) throw invalid("Message content must be a string or an array of text parts.")
   for (const part of content) {
@@ -36,7 +38,7 @@ function validateMessageContent(content, allowImage) {
       validateInputImage(part)
       continue
     }
-    if (!MESSAGE_PART.has(part.type) || typeof part.text !== "string") throw invalid("Only text message content is supported.")
+    if (!textTypes.has(part.type) || typeof part.text !== "string") throw invalid("Only text message content is supported.")
   }
 }
 
@@ -74,7 +76,9 @@ function validateInputItem(item, allowImage) {
     return
   }
   if (type === "function_call_output") {
-    if (typeof item.call_id !== "string" || !item.call_id || typeof item.output !== "string") throw invalid("A function result requires call_id and string output.")
+    if (typeof item.call_id !== "string" || !item.call_id) throw invalid("A function result requires a non-empty string call_id.")
+    // Pi returns input_text/input_image arrays for image-producing tools.
+    validateMessageContent(item.output, allowImage, FUNCTION_OUTPUT_PART)
     return
   }
   if (type === "reasoning") {
