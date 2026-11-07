@@ -1542,7 +1542,9 @@ async function* events(body, model, budget) {
   // kiro-cli 2.32's own trace log shows its MetadataEvent with every token
   // count None, while a repeated prompt is billed about half the credits,
   // so Kiro does cache and doesn't say how much
-  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reported: false }
+  // credits: what Kiro's meteringEvents say the request cost, summed;
+  // undefined when it sent none
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reported: false, credits: undefined }
   let pct = 0
   let said = 0
   let failed = ""
@@ -1601,6 +1603,8 @@ async function* events(body, model, budget) {
         }
       } else if (kind === "contextUsageEvent") {
         if (m.contextUsagePercentage > 0) pct = m.contextUsagePercentage
+      } else if (kind === "meteringEvent") {
+        if (Number.isFinite(m.usage) && m.usage >= 0 && (!m.unit || /^credit/i.test(m.unit))) usage.credits = (usage.credits ?? 0) + m.usage
       } else if (["error", "throttlingError", "validationError", "serviceUnavailableError", "internalServerException"].includes(kind)) {
         failed = exception(kind, f.payload)
         break
@@ -1656,6 +1660,9 @@ const anthropicUsage = (u) => ({
     : { input_tokens: u.input, output_tokens: u.output, magpie_cache_unknown: true }),
   // the hosted web searches made (searching)
   ...(u.searches ? { server_tool_use: { web_search_requests: u.searches } } : {}),
+  // what Kiro said the request cost in credits (its meteringEvents), as
+  // magpie reads a plan's credits (yetone/magpie#4328)
+  ...(u.credits !== undefined ? { credit: u.credits } : {}),
 })
 
 // quotaWords are magpie's (internal/gateway/fallback.go): how a vendor says
@@ -2155,6 +2162,7 @@ async function* searching(creds, auth, req, model, budget, signal, hosted, first
     usage.cacheRead += stop.usage.cacheRead
     usage.cacheWrite += stop.usage.cacheWrite
     usage.reported ||= stop.usage.reported
+    if (stop.usage.credits !== undefined) usage.credits = (usage.credits ?? 0) + stop.usage.credits
     for (const b of said)
       if (b.type === "tool_use")
         try {
