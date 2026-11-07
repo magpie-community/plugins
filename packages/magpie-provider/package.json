@@ -1,0 +1,22 @@
+{
+  "name": "@magpie-community/opencode-magpie-provider",
+  "version": "0.1.0",
+  "description": "Reviewed OpenCode V2 provider for Magpie's model catalog, with configurable agent attribution",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "exports": { ".": "./dist/index.mjs", "./server": "./dist/index.mjs" },
+  "files": ["dist", "src", "icon.svg", "README.md", "THIRD_PARTY.md", "LICENSE"],
+  "scripts": {
+    "build": "bun build src/index.ts --target=node --format=esm --outfile=dist/index.mjs",
+    "test": "bun test tests"
+  },
+  "engines": { "node": ">=22" },
+  "license": "MIT",
+  "author": "yee94 (https://github.com/yee94)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/magpie-provider"
+  },
+  "publishConfig": { "access": "public" }
+}

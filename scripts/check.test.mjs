@@ -217,6 +217,18 @@ const provider = `export const Plugin = async () => ({
 })`
 const adapter = readFileSync(new URL("./opencode2.mjs", import.meta.url), "utf8")
 
+test("check accepts a native V2-only provider without executing its setup", () => {
+  const source = 'export default {id: "fixture", setup() { throw new Error("must not contact gateway") }}'
+  const pkg = { main: "./index.mjs", exports: "./index.mjs", files: ["index.mjs"] }
+  expect(check(source, okRegistry, pkg).code).toBe(0)
+  const missing = check(source, okRegistry, { ...pkg, files: [] })
+  expect(missing.code).toBe(1)
+  expect(missing.output).toContain("index.mjs is not in files")
+  const broken = check(source, okRegistry, { ...pkg, exports: "./broken.mjs" }, { "broken.mjs": "export default {}" })
+  expect(broken.code).toBe(1)
+  expect(broken.output).toContain("has no default {id, setup}")
+})
+
 test("check fails a model provider OpenCode 2.x can't load (plugins#657)", () => {
   for (const pkg of [{ main: "index.mjs" }, { main: "index.mjs", exports: "./index.mjs" }]) {
     const result = check(provider, okRegistry, pkg)
