@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en" data-theme="__KIMI_SETTINGS_THEME__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="magpie-kimi-settings-token" content="__KIMI_SETTINGS_TOKEN__">
+<title>Kimi Work models</title>
+<style>
+  :root { color-scheme: light dark; font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 32px 24px; background: Canvas; color: CanvasText; }
+  main { max-width: 680px; margin: 0 auto; }
+  h1 { margin: 0 0 8px; font-size: 22px; font-weight: 650; }
+  p { margin: 6px 0; }
+  .muted { color: GrayText; }
+  fieldset { min-width: 0; padding: 0; border: 0; margin: 24px 0 0; }
+  legend { padding: 0; margin-bottom: 8px; font-weight: 600; }
+  .model-list { max-height: 18rem; overflow: auto; border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas); border-radius: 8px; }
+  .model-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; cursor: pointer; }
+  .model-row + .model-row { border-top: 1px solid color-mix(in srgb, CanvasText 10%, Canvas); }
+  .model-row:hover { background: color-mix(in srgb, CanvasText 4%, Canvas); }
+  .model-row input { flex: none; margin: 5px 0 0; accent-color: currentColor; }
+  .model-row span { overflow-wrap: anywhere; }
+  .model-row small { display: block; color: GrayText; }
+  .model-row input:disabled + span, fieldset:disabled { opacity: .65; }
+  fieldset:disabled .model-row { cursor: default; }
+  .empty { padding: 8px 12px; color: GrayText; }
+  .actions { display: flex; gap: 10px; margin-top: 18px; }
+  button { padding: 8px 18px; border: 1px solid color-mix(in srgb, CanvasText 28%, Canvas); border-radius: 7px; font: inherit; cursor: pointer; background: Canvas; color: CanvasText; }
+  button:hover:not(:disabled) { background: color-mix(in srgb, CanvasText 6%, Canvas); }
+  button:disabled { opacity: .5; cursor: default; }
+  input:focus-visible, button:focus-visible { outline: 2px solid CanvasText; outline-offset: 3px; }
+  .status { margin-top: 24px; padding-top: 18px; border-top: 1px solid color-mix(in srgb, CanvasText 16%, Canvas); }
+  #notice { min-height: 1.6em; margin-top: 12px; }
+  .error { color: light-dark(#b42318, #ffb4a9); }
+  .guidance { margin-top: 28px; font-size: 13px; color: GrayText; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="heading">Kimi Work models</h1>
+  <p id="description" class="muted">Choose a primary model. Select a secondary model to enable role routing for new Agent subtasks.</p>
+  <form id="settings-form">
+    <fieldset id="primary" disabled aria-describedby="models-hint">
+      <legend id="primary-label">Primary model</legend>
+      <div id="primary-list" class="model-list"></div>
+    </fieldset>
+    <fieldset id="secondary" disabled aria-describedby="models-hint">
+      <legend id="secondary-label">Secondary model</legend>
+      <div id="secondary-list" class="model-list"></div>
+    </fieldset>
+    <p id="models-hint" class="muted">Models available to the current Kimi connection.</p>
+    <div class="actions">
+      <button id="save" type="submit" disabled>Save</button>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+  </form>
+  <div class="status" aria-live="polite">
+    <p id="connection">Reading settings…</p>
+    <p id="application" class="muted"></p>
+  </div>
+  <p id="notice" role="status" aria-live="polite"></p>
+  <p id="guidance" class="guidance">With a secondary model selected, new Agent calls use it only when both model and subagent_type are omitted. An explicit native subagent_type without model keeps its native profile. Use model="primary" or model="native" for an explicit choice.</p>
+  <p id="path-guidance" class="guidance">If Magpie cannot be located automatically on Windows, you can set magpiePath in the plugin options to the current Magpie executable.</p>
+</main>
+<script nonce="__KIMI_SETTINGS_NONCE__">
+(() => {
+  // The host's ready.lang is forwarded by page/boot.js. As in Magpie,
+  // English is the fallback; Chinese host locales use the Chinese copy.
+  const lang = /^zh(?:-|$)/i.test(new URL(document.baseURI).searchParams.get('lang') || 'en') ? 'zh' : 'en';
+  const localize = pair => pair[lang === 'zh' ? 1 : 0];
+  const copy = {
+    title: ['Kimi Work models', 'Kimi Work 模型'],
+    description: ['Choose a primary model. Select a secondary model to enable role routing for new Agent subtasks.', '选择主模型；只有选择辅助模型后，才会启用新建 Agent 子任务的角色路由。'],
+    primary: ['Primary model', '主模型'],
+    secondary: ['Secondary model', '辅助模型'],
+    save: ['Save', '保存'], refresh: ['Refresh', '刷新'],
+    loading: ['Reading settings…', '正在读取设置…'],
+    modelsHint: ['Models available to the current Kimi connection.', '模型列表来自当前 Kimi 连接可用的模型。'],
+    connectFirst: ['Connect Kimi in Magpie Agents → Kimi first, then refresh the model list.', '请先在 Magpie Agents → Kimi 接通，然后刷新模型列表。'],
+    noModels: ['No models are available. Refresh to try again.', '暂无可用模型，请稍后刷新。'],
+    choosePrimary: ['Choose a primary model.', '请选择主模型。'],
+    inherit: ['Use native subagents (role routing off)', '使用原生子代理（不启用角色路由）'],
+    unavailableSaved: ['Saved; currently unavailable', '已保存，当前不可用'],
+    unavailableDraft: ['Unsaved; currently unavailable', '未保存，当前不可用'],
+    dirty: ['There are unsaved changes.', '有未保存的更改。'],
+    dirtyApplication: ['There are unsaved changes. Save before checking whether they are applied.', '有未保存的更改。保存后再确认应用状态。'],
+    applied: ['The primary and secondary model configuration is applied.', '当前主模型与辅助模型配置已应用。'],
+    primaryOnlyApplied: ['The primary model is applied. Native subagents are used; role routing is off.', '主模型已应用。子代理使用原生行为，角色路由未启用。'],
+    waitingApplication: ['Waiting for Kimi to become idle before applying this configuration.', '等待 Kimi 空闲后应用当前配置。'],
+    unconfirmed: ['Application is not confirmed yet. Refresh to check again.', '当前配置的应用状态尚未确认。可稍后刷新查看。'],
+    saving: ['Saving…', '正在保存…'], refreshing: ['Refreshing…', '正在刷新…'],
+    saved: ['Model settings saved.', '模型配置已保存。'],
+    refreshed: ['Settings refreshed.', '设置已刷新。'],
+    refreshedDraft: ['Settings refreshed; unsaved choices were kept.', '设置已刷新，未保存的选择已保留。'],
+    kept: [' Your choices were kept. You can retry.', ' 当前选择已保留，可重试。'],
+    unknownStatus: ['Kimi status is unavailable. Refresh to check again.', 'Kimi 状态暂不可用，请刷新检查。'],
+    unknownError: ['The settings operation could not be completed. Try again later.', '无法完成设置操作，请稍后重试。'],
+    guidance: ['With a secondary model selected, new Agent calls use it only when both model and subagent_type are omitted. An explicit native subagent_type without model keeps its native profile. Use model="primary" or model="native" for an explicit choice.', '选择辅助模型后，只有同时省略 model 和 subagent_type 的新建 Agent 调用才默认使用辅助模型。明确指定原生 subagent_type 且省略 model 时，保留原生类型。可用 model="primary" 或 model="native" 明确选择。'],
+    pathGuidance: ['If Magpie cannot be located automatically on Windows, you can set magpiePath in the plugin options to the current Magpie executable.', 'Windows 下若无法自动定位 Magpie，可在插件选项 magpiePath 指定当前 Magpie 可执行文件。'],
+  };
+  const text = key => localize(copy[key]);
+  const statusNames = {
+    connected: ['Kimi is connected.', 'Kimi 已连接。'],
+    disconnected: ['Kimi is disconnected.', 'Kimi 未连接。'],
+    waiting_kimi: ['Waiting for Kimi Work to start.', '等待 Kimi Work 启动。'],
+    waiting_kimi_idle: ['Waiting for Kimi to become idle.', '等待 Kimi 空闲。'],
+    waiting_kimi_ready: ['Waiting for Kimi to become ready.', '等待 Kimi 就绪。'],
+    restored_waiting_kimi: ['Restoring previous settings; waiting for Kimi.', '正在恢复原配置，等待 Kimi 就绪。'],
+    catalog_sync_failed: ['The model list could not be synchronized.', '模型目录同步失败。'],
+    catalog_unavailable: ['The model list could not be read.', '无法读取模型目录。'],
+    kimi_config_changed: ['Kimi settings changed. Check Kimi before retrying.', 'Kimi 配置已变化，请检查后重试。'],
+    secondary_config_unsupported: ['The current Kimi secondary configuration cannot be used.', '无法使用当前 Kimi 辅助模型配置。'],
+    secondary_model_unsupported_runtime: ['This Kimi runtime does not currently support a secondary model. The primary model remains available.', '当前 Kimi 运行时暂不支持辅助模型，主模型仍可用。'],
+    secondary_model_unavailable: ['The secondary model is unavailable. Choose another model.', '辅助模型当前不可用，请选择其他模型。'],
+    secondary_model_reload_failed: ['Kimi has not confirmed reloading the secondary model. Refresh to retry.', 'Kimi 尚未确认辅助模型已重新载入，请刷新重试。'],
+    agent_profile_conflict: ['A role plugin or generated profile conflicts with the current configuration. Existing files were kept; check before retrying.', '角色插件或生成的 Agent 配置与当前配置冲突，现有文件已保留。请检查后重试。'],
+    secondary_model_waiting_session: ['Settings are saved. Send a message in a Work conversation, then wait for it to become idle so the secondary model configuration can be confirmed.', '设置已保存。请先在 Work 会话中发送一条消息，待会话空闲后确认副模型配置已载入。'],
+    invalid_gateway: ['The Magpie gateway address is invalid. Check the Kimi connection settings.', 'Magpie 网关地址无效，请检查 Kimi 接入设置。'],
+    invalid_connection: ['The Kimi connection settings are invalid. Reconnect Kimi in Magpie.', 'Kimi 接入配置无效，请在 Magpie 中重新接入。'],
+    unsupported_kimi_config: ['The current Kimi configuration cannot be used. Check it before retrying.', '无法使用当前 Kimi 配置，请检查后重试。'],
+    library_path_conflict: ['A Kimi library path conflicts with an existing path.', 'Kimi 资料库路径存在冲突。'],
+    adapter_lock_invalid: ['The Kimi connection lock record is invalid.', 'Kimi 连接锁定记录无效。'],
+    adapter_lock_unavailable: ['The Kimi connection lock record cannot be accessed. Try again later.', '无法访问 Kimi 连接锁定记录，请稍后重试。'],
+    kimi_control_unavailable: ['Kimi control is unavailable. Make sure Kimi Work is running.', '无法连接 Kimi 控制服务，请确认 Kimi Work 已启动。'],
+    kimi_control_timeout: ['Kimi did not respond in time. Refresh to retry.', 'Kimi 未及时响应，请刷新重试。'],
+    kimi_control_closed: ['The Kimi control connection closed. Refresh to retry.', '与 Kimi 的控制连接已关闭，请刷新重试。'],
+    kimi_control_rejected: ['Kimi rejected the configuration operation. Check Kimi before retrying.', 'Kimi 未接受本次配置操作，请检查 Kimi 后重试。'],
+    adapter_failed: ['The Kimi connection encountered a problem. Refresh to retry.', 'Kimi 连接出现问题，请刷新重试。'],
+  };
+  const errors = {
+    invalid_session: ['The settings service restarted. Reopen this page.', '设置服务已重启，请重新打开此页面。'],
+    connect_kimi_first: ['Connect Kimi in Magpie Agents → Kimi first, then refresh.', '请先在 Magpie Agents → Kimi 接通，然后刷新。'],
+    model_not_enabled_for_kimi: ['This model is unavailable. Refresh the model list and choose again.', '该模型当前不可用，请刷新模型列表后重新选择。'],
+    connection_changed: ['The Kimi connection changed. Refresh before retrying.', 'Kimi 连接已变化，请刷新后重试。'],
+    settings_unavailable: ['Settings are unavailable. Refresh later.', '设置暂时不可用，请稍后刷新。'],
+    settings_read_failed: ['Settings could not be read. Refresh later.', '无法读取设置，请稍后刷新。'],
+    settings_save_failed: ['Settings could not be saved. Refresh before retrying.', '保存失败，请刷新后重试。'],
+    primary_model_unavailable: ['The Magpie executable was not found. Set magpiePath in the plugin options.', '找不到当前 Magpie 可执行文件，请在插件选项 magpiePath 中配置。'],
+    primary_model_update_failed: ['The primary model change is unconfirmed. Refresh to check it.', '主模型修改尚未确认，请刷新检查。'],
+    settings_partially_saved: ['Primary model saved; secondary model was not saved. Refresh before retrying.', '主模型已保存，辅助模型未保存。请先刷新核对，再重试。'],
+    unreachable: ['The settings service could not be reached. Check that the Magpie plugin is running.', '无法连接设置服务，请确认 Magpie 插件已启动后重试。'],
+  };
+  document.documentElement.lang = lang;
+  document.title = text('title');
+  for (const [id, key] of [['heading', 'title'], ['description', 'description'], ['primary-label', 'primary'],
+    ['secondary-label', 'secondary'], ['save', 'save'], ['refresh', 'refresh'], ['connection', 'loading'],
+    ['models-hint', 'modelsHint'], ['guidance', 'guidance'], ['path-guidance', 'pathGuidance']]) document.getElementById(id).textContent = text(key);
+
+  const token = document.querySelector('meta[name="magpie-kimi-settings-token"]').content;
+  const primary = document.getElementById('primary'), secondary = document.getElementById('secondary');
+  const primaryList = document.getElementById('primary-list'), secondaryList = document.getElementById('secondary-list');
+  const save = document.getElementById('save'), refresh = document.getElementById('refresh');
+  const connection = document.getElementById('connection'), application = document.getElementById('application');
+  const notice = document.getElementById('notice'), modelsHint = document.getElementById('models-hint');
+  const selection = { primaryModel: '', secondaryModel: '' };
+  let settings = null, busy = false, inputs = [];
+  const changes = () => {
+    const patch = {};
+    if (!settings) return patch;
+    for (const key of ['primaryModel', 'secondaryModel']) if (selection[key] !== settings[key]) patch[key] = selection[key];
+    return patch;
+  };
+  const dirty = () => Object.keys(changes()).length > 0;
+  const canSave = patch => {
+    const fields = Object.keys(patch);
+    return settings?.enabled ? fields.length > 0 && !!selection.primaryModel
+      : fields.length === 1 && patch.secondaryModel === '';
+  };
+  const updateControls = () => {
+    const enabled = !!settings?.enabled, canClear = !!settings?.secondaryModel;
+    primary.disabled = busy || !enabled;
+    secondary.disabled = busy || (!enabled && !canClear);
+    for (const input of inputs) input.disabled = busy || input.dataset.unavailable === 'true'
+      || (!enabled && !(canClear && input.name === 'secondaryModel' && input.value === ''));
+    refresh.disabled = busy;
+    save.disabled = busy || !canSave(changes());
+  };
+  const tell = (message, error = false) => { notice.textContent = message; notice.className = error ? 'error' : ''; };
+  function addRow(list, field, value, name, unavailable = false, saved = false) {
+    const row = document.createElement('label');
+    row.className = 'model-row';
+    const input = document.createElement('input');
+    input.type = 'radio'; input.name = field; input.value = value;
+    input.checked = selection[field] === value;
+    input.dataset.unavailable = String(unavailable);
+    input.addEventListener('change', () => {
+      if (!input.checked || input.disabled || busy) return;
+      selection[field] = value;
+      changed();
+    });
+    inputs.push(input);
+    const label = document.createElement('span');
+    label.textContent = name;
+    if (unavailable) {
+      const note = document.createElement('small');
+      note.textContent = text(saved ? 'unavailableSaved' : 'unavailableDraft');
+      label.appendChild(note);
+    }
+    row.append(input, label); list.appendChild(row);
+  }
+  function fillModels(list, field) {
+    list.replaceChildren();
+    const value = selection[field], seen = new Set(['']);
+    if (field === 'secondaryModel') addRow(list, field, '', text('inherit'));
+    else if (!value) {
+      const hint = document.createElement('p'); hint.className = 'empty'; hint.textContent = text('choosePrimary'); list.appendChild(hint);
+    }
+    for (const model of settings.models) {
+      if (seen.has(model.id)) continue;
+      seen.add(model.id);
+      const name = model.name && model.name !== model.id ? `${model.name} (${model.id})` : model.id;
+      addRow(list, field, model.id, name);
+    }
+    if (!seen.has(value)) addRow(list, field, value, value, true, value === settings[field]);
+  }
+  function showApplication() {
+    if (!settings) return;
+    if (dirty()) application.textContent = text('dirtyApplication');
+    else if (settings.status === 'connected' && settings.primaryModel
+        && settings.appliedPrimaryModel === settings.primaryModel
+        && settings.secondaryModel && settings.appliedSecondaryModel === settings.secondaryModel) application.textContent = text('applied');
+    else if (settings.status === 'connected' && settings.primaryModel
+        && settings.appliedPrimaryModel === settings.primaryModel
+        && settings.secondaryModel === '' && settings.appliedSecondaryModel === undefined) application.textContent = text('primaryOnlyApplied');
+    else application.textContent = text(settings.status === 'waiting_kimi_idle' ? 'waitingApplication' : 'unconfirmed');
+  }
+  function render(value, draft = {}) {
+    settings = value;
+    for (const field of ['primaryModel', 'secondaryModel']) selection[field] = field in draft ? draft[field] : settings[field];
+    inputs = [];
+    fillModels(primaryList, 'primaryModel'); fillModels(secondaryList, 'secondaryModel');
+    modelsHint.textContent = text(!settings.enabled ? 'connectFirst' : settings.models.length ? 'modelsHint' : 'noModels');
+    connection.textContent = localize(Object.hasOwn(statusNames, settings.status) ? statusNames[settings.status] : copy.unknownStatus);
+    updateControls(); showApplication();
+  }
+  async function request(method, body) {
+    let response;
+    try {
+      response = await fetch(new URL('api/settings', document.baseURI), {
+        method, credentials: 'omit', cache: 'no-store',
+        headers: { '__KIMI_SETTINGS_HEADER__': token, ...(body ? { 'content-type': 'application/json' } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+    } catch { throw Object.assign(new Error(), { code: 'unreachable' }); }
+    let value;
+    try { value = await response.json(); } catch { throw Object.assign(new Error(), { code: 'unreachable' }); }
+    if (!response.ok) throw Object.assign(new Error(), { code: value.error });
+    return value;
+  }
+  async function run(method) {
+    if (busy) return;
+    const patch = changes();
+    if (method === 'POST' && !canSave(patch)) return;
+    busy = true; updateControls(); tell(text(method === 'POST' ? 'saving' : 'refreshing'));
+    try {
+      const value = await request(method, method === 'POST' ? patch : undefined);
+      render(value, method === 'GET' ? patch : {});
+      tell(text(method === 'POST' ? 'saved' : dirty() ? 'refreshedDraft' : 'refreshed'));
+    } catch (error) {
+      tell(localize(Object.hasOwn(errors, error.code) ? errors[error.code] : copy.unknownError) + (dirty() ? text('kept') : ''), true);
+    } finally { busy = false; updateControls(); showApplication(); }
+  }
+  function changed() {
+    updateControls(); showApplication();
+    tell(!selection.primaryModel && settings?.enabled ? text('choosePrimary') : dirty() ? text('dirty') : '');
+  }
+  document.getElementById('settings-form').addEventListener('submit', event => {
+    event.preventDefault(); if (!save.disabled) void run('POST');
+  });
+  refresh.addEventListener('click', () => { void run('GET'); });
+  void run('GET');
+})();
+</script>
+</body>
+</html>

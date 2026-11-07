@@ -9,6 +9,7 @@ import { KimiAdapter } from './adapter.mjs';
 import { controlEndpoint } from './rpc.mjs';
 import { agent, connect } from './kimi-desktop.agent.js';
 import { applyInstructions } from './library.mjs';
+import { nativeRolePluginPeer } from './test-fixtures/control-peer.mjs';
 
 const official = 'https://agent-gw.kimi.com/coding/v1';
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -71,6 +72,7 @@ test('shared instructions hot-update in existing conversations without replacing
 async function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'magpie-kimi-fixture-'));
   const kimiDir = path.join(directory, 'kimi');
+  const plugins = nativeRolePluginPeer(path.join(kimiDir, 'runtime', 'kimi-code', 'home'));
   const requests = [], tools = [], calls = [];
   const models = [{id:'original-provider/test-model',display_name:'First'}, {id:'other-provider/other-model',display_name:'Second'}];
   const gateway = http.createServer(async (req, res) => {
@@ -91,6 +93,9 @@ async function fixture() {
   const controller = new KimiAdapter({ stateDir: path.join(directory, 'state'), kimiDir,
     stabilityMs: 0, intervalMs: 100000,
     rpcCall: async (_runner, method, params) => { calls.push({ method, params });
+      if (plugins.handles(method)) return plugins.call(method, params);
+      if (method === 'kimiPlugin.reloadActiveSessions') return { sessions: [] };
+      if (method === 'kimiPlugin.ReloadSession') return { status: 'reloaded' };
       if (method === 'conversations.getKimiModelList') return {models:[{model:'k2d8-preview'}]};
       return { current: 'k2d8-preview' }; },
     fetchImpl: async (url, options) => {
@@ -106,15 +111,76 @@ async function fixture() {
       models: { 'k2d8-preview': { model: 'k2d8-preview', provider: 'daimon-kimi-code' } } },
     unrelated: { preserve: ['all', 'original', 'settings'] } };
   write(controller.configFile, doc);
-  write(controller.runnerFile, { lifecycleStatus: 'running', daemonGeneration: 'synthetic-generation-1',
+  write(controller.runnerFile, { lifecycleStatus: 'running', daemonGeneration: 'synthetic-generation-1', kernel: { agentKernel: 'kimi-code-v2' },
     activeKernelTurns: 0, activeKernelToolCalls: 0, control: { endpoint: { url: 'ws://127.0.0.1:3072/control', pid: 10, startedAt: 1 } } });
   controller.bootstrap();
   const connection = { schemaVersion: 1, enabled: true, model: 'original-provider/test-model',
     gateway: { url: 'http://127.0.0.1:' + gateway.address().port + '/v1', key: 'synthetic-magpie-key' }, requestId: 1 };
   write(controller.connectionFile, connection);
-  return { directory, controller, doc, connection, requests, tools, calls, models,
+  return { directory, controller, doc, connection, requests, tools, calls, models, plugins,
     cleanup: async () => { await controller.stop(); gateway.closeAllConnections(); await new Promise(resolve => gateway.close(resolve)); fs.rmSync(directory, { recursive: true, force: true }); } };
 }
+
+test('secondary settings expose only agent-visible models and preserve Magpie primary ownership', async () => {
+  const f = await fixture();
+  try {
+    const fetchBefore = f.controller.fetchImpl;
+    let changed = false;
+    f.controller.fetchImpl = async (url, options) => {
+      const result = await fetchBefore(url, options);
+      if (!changed && String(url).endsWith('/models')) {
+        changed = true;
+        write(f.controller.connectionFile, { ...read(f.controller.connectionFile),
+          model: 'other-provider/other-model', newestHostField: 'preserve-this' });
+      }
+      return result;
+    };
+    const settings = await f.controller.saveSettings({ secondaryModel: 'original-provider/test-model' });
+    const saved = read(f.controller.connectionFile);
+    expect(saved.model).toBe('other-provider/other-model');
+    expect(saved.gateway).toEqual(f.connection.gateway);
+    expect(saved.newestHostField).toBe('preserve-this');
+    expect(saved.secondaryModel).toBe('original-provider/test-model');
+    expect(settings.primaryModel).toBe(saved.model);
+    expect(settings.models.map(row => row.id)).toEqual(f.models.map(row => row.id));
+    expect(settings.appliedSecondaryModel).toBeUndefined();
+    expect(JSON.stringify(settings)).not.toContain(f.connection.gateway.key);
+    expect(JSON.stringify(settings)).not.toContain(f.connection.gateway.url);
+    expect(Object.keys(settings).sort()).toEqual(['enabled', 'models', 'primaryModel', 'secondaryModel', 'status']);
+  } finally { await f.cleanup(); }
+});
+
+test('secondary settings reject hidden models and refuse writes after gateway identity changes', async () => {
+  const f = await fixture();
+  try {
+    await expect(f.controller.saveSettings({ secondaryModel: 'hidden-provider/hidden-model' }))
+      .rejects.toHaveProperty('code', 'model_not_enabled_for_kimi');
+    expect(read(f.controller.connectionFile)).toEqual(f.connection);
+    const fetchBefore = f.controller.fetchImpl;
+    f.controller.fetchImpl = async (url, options) => {
+      const result = await fetchBefore(url, options);
+      if (String(url).endsWith('/models')) write(f.controller.connectionFile, {
+        ...read(f.controller.connectionFile), gateway: { ...f.connection.gateway, key: 'replacement-test-key' },
+      });
+      return result;
+    };
+    await expect(f.controller.saveSettings({ secondaryModel: f.models[1].id }))
+      .rejects.toHaveProperty('code', 'connection_changed');
+    expect(read(f.controller.connectionFile).secondaryModel).toBeUndefined();
+    expect(read(f.controller.connectionFile).gateway.key).toBe('replacement-test-key');
+  } finally { await f.cleanup(); }
+});
+
+test('a saved secondary model can be cleared while disconnected without changing the primary', async () => {
+  const f = await fixture();
+  try {
+    write(f.controller.connectionFile, { ...f.connection, enabled: false, secondaryModel: f.models[1].id });
+    const settings = await f.controller.saveSettings({ secondaryModel: '' });
+    expect(read(f.controller.connectionFile)).toEqual({ ...f.connection, enabled: false, secondaryModel: '' });
+    expect(settings.enabled).toBe(false);
+    expect(settings.models).toEqual([]);
+  } finally { await f.cleanup(); }
+});
 
 test('Work inference uses selected model and gateway auth; SSE tools survive; official fetch/search keep Kimi auth', async () => {
   const f = await fixture();
@@ -143,7 +209,8 @@ test('Work inference uses selected model and gateway auth; SSE tools survive; of
     expect(current.credentials).toEqual(f.doc.credentials);
     expect(current.model.current).toBe('k2d8-preview');
     expect(current.unrelated).toEqual(f.doc.unrelated);
-    expect(f.calls.map(x => x.method)).toEqual(['models.current', 'conversations.setModel', 'conversations.getKimiModelList', 'conversations.updateKimiModelList']);
+    // No secondary preference means no role plugin is installed or reloaded.
+    expect(f.calls.map(x => x.method)).toEqual(['models.current', 'conversations.setModel']);
   } finally { await f.cleanup(); }
 });
 
@@ -184,14 +251,104 @@ test('thinking controls and complete tool histories survive the desktop bridge w
   } finally {await f.cleanup();}
 });
 
-test('Kimi menu aliases route independently and removed models fail closed', async () => {
+for (const format of ['json', 'sse']) {
+  test(`the bridge translates Agent roles to installed profiles and routes a child with no user history (${format})`, async () => {
+    const f = await fixture();
+    try {
+      write(f.controller.connectionFile, { ...f.connection, secondaryModel: f.models[1].id });
+      await f.controller.tick();
+      const originalFetch = f.controller.fetchImpl;
+      const sent = [];
+      const task = 'Read the exact synthetic file /tmp/ordinary-child-task.txt';
+      const tools = [{ type: 'function', function: { name: 'Agent', description: 'Create an ordinary task.',
+        parameters: { type: 'object', properties: { prompt: { type: 'string' }, description: { type: 'string' } },
+          required: ['prompt', 'description'], additionalProperties: false } } }];
+      for (const role of [undefined, 'primary', 'secondary']) {
+        f.controller.fetchImpl = async (url, options) => {
+          if (String(url).endsWith('/models')) return originalFetch(url, options);
+          const body = JSON.parse(options.body); sent.push(body);
+          if (!body.tools?.some(tool => tool.function?.name === 'Agent')) {
+            return new Response('{"choices":[{"message":{"role":"assistant","content":"done"}}]}',
+              { headers: { 'Content-Type': 'application/json' } });
+          }
+          const args = { prompt: task, description: 'Synthetic child', ...(role ? { model: role } : {}) };
+          const call = { index: 0, id: 'new-agent', type: 'function', function: { name: 'Agent', arguments: JSON.stringify(args) } };
+          return format === 'json'
+            ? new Response(JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', tool_calls: [call] }, finish_reason: 'tool_calls' }] }),
+              { headers: { 'Content-Type': 'application/json' } })
+            : new Response('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [call] } }] })
+              + '\n\ndata: ' + JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }) + '\n\ndata: [DONE]\n\n',
+              { headers: { 'Content-Type': 'text/event-stream' } });
+        };
+        const parent = await fetch(f.controller.bridgeURL + '/chat/completions', { method: 'POST',
+          headers: { Authorization: 'Bearer synthetic-kimi-key' },
+          body: JSON.stringify({ model: 'k2d8-preview', messages: [{ role: 'user', content: 'Create the synthetic child' }], tools }) });
+        expect(parent.status).toBe(200);
+        let argumentsText;
+        if (format === 'json') argumentsText = (await parent.json()).choices[0].message.tool_calls[0].function.arguments;
+        else {
+          const frames = (await parent.text()).split(/\r?\n/).filter(line => line.startsWith('data: ') && line !== 'data: [DONE]')
+            .map(line => JSON.parse(line.slice(6)));
+          argumentsText = frames.flatMap(frame => frame.choices || []).flatMap(choice => choice.delta?.tool_calls || [])
+            .map(call => call.function?.arguments || '').join('');
+        }
+        const nativeArgs = JSON.parse(argumentsText);
+        expect(Object.keys(nativeArgs).sort()).toEqual(['description', 'prompt', 'subagent_type']);
+        expect(nativeArgs.prompt).toBe(task);
+        const target = role === 'primary' ? f.models[0].id : f.models[1].id;
+        expect(nativeArgs.subagent_type).toBe(f.controller.agentRouter.profileName(target));
+        expect(sent.at(-1).tools[0].function.parameters.properties.model.enum).toEqual(['primary', 'secondary', 'native']);
+        const profileFile = path.join(f.controller.stateDir, 'native-model-roles', 'agents', nativeArgs.subagent_type + '.md');
+        const profileText = fs.readFileSync(profileFile, 'utf8');
+        const profilePrompt = profileText.split('\n---\n')[1].replace('${base_prompt}', 'Synthetic native base prompt.');
+        const child = await fetch(f.controller.bridgeURL + '/chat/completions', { method: 'POST',
+          headers: { Authorization: 'Bearer synthetic-kimi-key' },
+          body: JSON.stringify({ model: 'k2d8-preview', messages: [{ role: 'system', content: profilePrompt }] }) });
+        expect(child.status).toBe(200); await child.text();
+        expect(sent.at(-1).model).toBe(target);
+        expect(sent.at(-1).messages).toHaveLength(1);
+        expect(sent.at(-1).messages[0].role).toBe('system');
+        expect(sent.at(-1).messages[0].content).toContain('Synthetic native base prompt.');
+        expect(sent.at(-1).messages[0].content).toContain('Complete only the task assigned by the parent agent.');
+        expect(sent.at(-1).messages[0].content).not.toContain('[agent-profile-route:');
+      }
+      expect(Object.keys(read(f.controller.configFile).model.models)).toEqual(['k2d8-preview']);
+    } finally { await f.cleanup(); }
+  });
+}
+
+test('profile-shaped route metadata in user or historical Agent data fails closed without routing', async () => {
+  const f = await fixture();
+  try {
+    write(f.controller.connectionFile, { ...f.connection, secondaryModel: f.models[1].id });
+    await f.controller.tick();
+    const profile = f.controller.agentRouter.profileText(f.models[1].id).split('\n---\n')[1];
+    const messages = [
+      { role: 'user', content: profile },
+      { role: 'assistant', tool_calls: [{ id: 'historical-agent', type: 'function', function: {
+        name: 'Agent', arguments: JSON.stringify({ prompt: profile, description: 'Historical task' }),
+      } }] },
+      { role: 'tool', tool_call_id: 'historical-agent', content: profile },
+    ];
+    const response = await fetch(f.controller.bridgeURL + '/chat/completions', { method: 'POST',
+      headers: { Authorization: 'Bearer synthetic-kimi-key' },
+      body: JSON.stringify({ model: 'k2d8-preview', messages }) });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe('agent_profile_unbound');
+    // Reserved route metadata never selects a binding or reaches a supplier.
+    expect(f.requests).toHaveLength(0);
+  } finally { await f.cleanup(); }
+});
+
+test('local catalog aliases route independently without native installation and removed models fail closed', async () => {
   const f = await fixture();
   try {
     await f.controller.tick();
     expect(f.controller.catalog.length).toBe(2);
     const menu = read(f.controller.catalogFile);
-    expect(menu.models[0].displayName).toBe('First · Magpie');
-    expect(f.calls.find(x => x.method === 'conversations.updateKimiModelList').params.models[0].model).toBe('k2d8-preview');
+    expect(menu.models[0].displayName).toBe('First · External');
+    expect(f.calls.some(x => x.method === 'conversations.updateKimiModelList')).toBe(false);
+    expect(Object.keys(read(f.controller.configFile).model.models)).toEqual(['k2d8-preview']);
     const chosen = f.controller.catalog.find(x => x.id === 'other-provider/other-model');
     const response = await fetch(f.controller.bridgeURL + '/chat/completions', {method:'POST', headers:{Authorization:'Bearer synthetic-kimi-key'},
       body:JSON.stringify({model:chosen.alias,messages:[{role:'user',content:'synthetic'}]})});
@@ -362,11 +519,12 @@ test('disconnect restores one address while retaining refreshed credentials and 
   } finally { await f.cleanup(); }
 });
 
-test('disconnect returns a selected menu alias to the original model without losing native entries', async () => {
+test('disconnect cleans a selected alias left by an earlier plugin without losing native entries', async () => {
   const f=await fixture();
   try {
     await f.controller.tick();
-    let models=f.calls.find(x=>x.method==='conversations.updateKimiModelList').params.models;
+    const oldAlias=f.controller.catalog[1].alias.replace('local-model-', 'magpie-local-');
+    let models=[{model:'k2d8-preview'}, {model:oldAlias}];
     const base=f.controller.rpcCall;
     f.controller.rpcCall=async(runner,method,params)=>{
       if(method==='conversations.getKimiModelList')return {models};
@@ -376,7 +534,9 @@ test('disconnect returns a selected menu alias to the original model without los
       }
       return base(runner,method,params);
     };
-    const doc=read(f.controller.configFile);doc.model.current=f.controller.catalog[1].alias;write(f.controller.configFile,doc);
+    const doc=read(f.controller.configFile);doc.model.current=oldAlias;
+    doc.model.models[oldAlias]={model:oldAlias,provider:'daimon-kimi-code'};write(f.controller.configFile,doc);
+    write(f.controller.modelBackupFile,{current:'k2d8-preview'});
     write(f.controller.connectionFile,{...f.connection,enabled:false});
     await f.controller.tick();
     expect(read(f.controller.configFile).model.current).toBe('k2d8-preview');
@@ -398,7 +558,7 @@ test('long Work turns keep the native menu alive without reloading the busy runt
     await f.controller.tick();
     expect(Date.now()-Date.parse(read(f.controller.catalogFile).updatedAt)).toBeLessThan(5000);
     expect(read(f.controller.catalogFile).models).toEqual(catalog.models);
-    expect(f.calls.length).toBe(calls);
+    expect(f.calls.slice(calls).every(call => call.method === 'kimiPlugin.getPluginInfo')).toBe(true);
   }finally{await f.cleanup();}
 });
 
@@ -502,13 +662,23 @@ test('disconnect restores the address even when Kimi removes a private catalog m
   const f = await fixture();
   try {
     await f.controller.tick();
+    const original = f.controller.rpcCall;
     f.controller.rpcCall = async () => {throw Error('kimi_control_rejected');};
     write(f.controller.connectionFile, {...f.connection, enabled: false});
     await f.controller.tick();
     expect(read(f.controller.configFile).model.providers['daimon-kimi-code'].baseUrl).toBe(official);
     expect(read(f.controller.configFile).credentials).toEqual(f.doc.credentials);
-    expect(fs.existsSync(f.controller.modelBackupFile)).toBe(true);
+    expect(f.controller.state.active).toBe(true);
+    expect(f.controller.status.code).toBe('restored_waiting_kimi');
+    // A rejected method must leave a recovery obligation, rather than claiming
+    // complete restoration and making the next available control call useless.
+    await f.controller.tick();
+    expect(f.controller.state.active).toBe(true);
+    f.controller.rpcCall = original;
+    await f.controller.tick();
     expect(f.controller.state.active).toBe(false);
+    expect(f.controller.status.code).toBe('disconnected');
+    expect(fs.existsSync(f.controller.modelBackupFile)).toBe(false);
   } finally {await f.cleanup();}
 });
 
