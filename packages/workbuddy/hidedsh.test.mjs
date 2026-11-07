@@ -112,13 +112,14 @@ for (const [plugin, site, url] of [
       const opts = await h.auth.loader(async () => ({ type: "api", key: KEY }), {})
       await opts.fetch(url, { method: "POST", body: JSON.stringify(chatBody()) })
       const out = JSON.parse(sent.at(-1).body)
-      const said = JSON.stringify({ messages: out.messages.filter((m) => m.role !== "tool"), tools: out.tools })
+      const said = JSON.stringify({ messages: out.messages.filter((m) => m.role !== "tool" && m.role !== "assistant"), tools: out.tools })
       expect(named(said)).toBe(false)
+      // the assistant's own words go as it said them
+      expect(out.messages.find((m) => m.role === "assistant").content).toBe("I run in DeepSeek Harness; DSH_HOME is ~/.dsh.")
       expect(out.messages[0].content).toStartWith("You are an AI agent.")
       // a tool's result is what a file said, and goes as it came
       expect(out.messages.find((m) => m.role === "tool").content).toBe("README: DeepSeek Harness (DSH) is …")
       expect(said).toContain("~/.dsh/profiles")
-      expect(said).toContain("DSH_HOME")
     })
   }
 
@@ -132,3 +133,43 @@ for (const [plugin, site, url] of [
     expect(out.messages[0].content).toContain("extend DSH itself")
   })
 }
+
+// liby233 on Discord: in dsh on WorkBuddy, a path the user asked to have
+// repeated word for word came back as "/root/the agent harness/Work/…".
+const ASKED = "Bash 绝对路径: /root/DSH/Work/OC-182.92.66.95/ 请原样复述这个路径"
+
+test("hideDsh: the user's and the assistant's own words go as written; dsh's lines in them don't", () => {
+  const chat = {
+    messages: [
+      { role: "system", content: OPENER + "\nWorking directory: /root/DSH/Work/OC-182.92.66.95/" },
+      { role: "user", content: [{ type: "text", text: CONTEXT }, { type: "text", text: ASKED }] },
+      { role: "assistant", content: "/root/DSH/Work/OC-182.92.66.95/ — DSH says hi" },
+      { role: "user", content: "I like DSH and DeepSeek Harness" },
+    ],
+  }
+  expect(_internal.hideDsh(chat)).toBe(true)
+  expect(chat.messages[0].content).toBe("You are an AI agent.\nWorking directory: /root/DSH/Work/OC-182.92.66.95/")
+  expect(named(chat.messages[1].content[0].text)).toBe(false)
+  expect(chat.messages[1].content[1].text).toBe(ASKED)
+  expect(chat.messages[2].content).toBe("/root/DSH/Work/OC-182.92.66.95/ — DSH says hi")
+  expect(chat.messages[3].content).toBe("I like DSH and DeepSeek Harness")
+  // Messages' user turns too
+  const m = { system: [{ type: "text", text: OPENER }], messages: [{ role: "user", content: [{ type: "text", text: ASKED }] }] }
+  _internal.hideDsh(m)
+  expect(m.messages[0].content[0].text).toBe(ASKED)
+})
+
+test("dshHidden: in dsh's own text, a name in a path, a file or an identifier stays", () => {
+  const h = _internal.dshHidden
+  for (const s of [
+    "/root/DSH/Work/OC-182.92.66.95/",
+    "C:\\Users\\me\\DSH\\x",
+    "see DSH.md",
+    "~/DSH",
+    "/srv/DeepSeek Harness/bin",
+    "DSH-2 DSH_HOME @DSH",
+    "file:DSH",
+  ])
+    expect(h(s)).toBe(s)
+  expect(h("Use DSH. It runs (DSH), and DSH, too")).toBe("Use the agent harness. It runs (the agent harness), and the agent harness, too")
+})

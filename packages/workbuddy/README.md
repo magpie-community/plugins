@@ -345,11 +345,14 @@ Since 0.2.23 each site also has a "Hide DeepSeek Harness's name" switch, on
 by default, and on in OpenCode, which has no switches. A user reported a
 WorkBuddy account banned after use from DeepSeek Harness, with a reply saying
 its built-in prompt is recognised. With the switch on, the harness's name is
-taken out of the system prompt, the user's and assistant's text and the
-tools' descriptions: "You are an AI agent powered by DeepSeek Harness."
-becomes "You are an AI agent.", and the runtime lines naming its checkout and
-Web GUI say "agent implementation checkout" and "Web GUI". Tools' results,
-paths, commands and names such as `DSH_HOME` or `~/.dsh` go as they were.
+taken out of the system prompt and the tools' descriptions: "You are an AI
+agent powered by DeepSeek Harness." becomes "You are an AI agent.", and the
+runtime lines naming its checkout and Web GUI say "agent implementation
+checkout" and "Web GUI", wherever they are. Since 0.2.25 the user's and the
+assistant's own words go as written (a path such as `/root/DSH/Work/` was
+sent as `/root/the agent harness/Work/` before), and so does the name in a
+path or a file name anywhere. Tools' results, commands and names such as
+`DSH_HOME` or `~/.dsh` go as they were.
 Whether this keeps an account from being banned is not known.
 
 ## Credits in magpie
