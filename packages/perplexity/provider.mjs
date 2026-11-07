@@ -37,11 +37,13 @@ function readBody(init) {
   return {}
 }
 
-/** Tools asked for but impossible to serve: Perplexity's web endpoint has none. */
+/**
+ * Tools asked for but impossible to serve: Perplexity's web endpoint has none.
+ * `tool_choice` alone is not evidence — clients send "auto" with no tools at all.
+ */
 function asksForTools(body) {
   if (Array.isArray(body?.tools) && body.tools.length) return true
   if (Array.isArray(body?.functions) && body.functions.length) return true
-  if (body?.tool_choice && body.tool_choice !== "none") return true
   return false
 }
 

@@ -167,6 +167,21 @@ test("tools are rejected instead of silently dropped", async () => {
   assert.match(out.error.message, /function calling/i)
 })
 
+test("tool_choice without any tools is not a tool request", async () => {
+  // Clients send "auto" by default; only an actual tools array means tools.
+  const { shim } = await load()
+  let called = false
+  const res = await withFetch(
+    async () => {
+      called = true
+      return new Response(SSE_OK, { status: 200 })
+    },
+    () => shim.fetch("https://ask", ask({ tool_choice: "auto" })),
+  )
+  assert.equal(called, true)
+  assert.equal(res.status, 200)
+})
+
 test("an error before the first token is a failed request, not a 200 stream", async () => {
   const { shim } = await load()
   const res = await withFetch(
