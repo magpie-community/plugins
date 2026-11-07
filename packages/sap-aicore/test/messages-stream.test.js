@@ -109,12 +109,13 @@ function consumer(response) {
   return { reader, events, next, async finish() { while (await next()) {} return events } }
 }
 
-test("a streamed request routes to /invoke-with-response-stream and relays text then tool-arg deltas before the terminal", async () => {
+test("a streamed request with session metadata routes to Bedrock and relays text then tool-arg deltas before the terminal", async () => {
   const { post, calls } = await fixture(() => streamResponse(STREAM.map(frame)))
-  const response = await post()
+  const response = await post({ metadata: { user_id: '{"session_id":"synthetic-session"}' } })
   assert.equal(response.status, 200)
   assert.equal(response.headers.get("content-type"), "text/event-stream")
   assert.equal(calls.at(-1).url, OPUS_URL + "/invoke-with-response-stream")
+  assert.equal("metadata" in JSON.parse(calls.at(-1).init.body), false)
 
   const c = consumer(response)
   const events = await c.finish()

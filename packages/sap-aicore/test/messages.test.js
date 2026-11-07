@@ -57,7 +57,6 @@ test("max_tokens is required; zero is accepted; negative and non-integer are rej
 })
 
 test("out-of-scope parameters, multimodal content, and unrecognized fields are rejected", async () => {
-  await assert.rejects(parse(base({ metadata: { user_id: "u" } })), { code: "invalid-request" })
   await assert.rejects(parse(base({ mcp_servers: [] })), { code: "invalid-request" })
   await assert.rejects(parse(base({ messages: [{ role: "user", content: [{ type: "image", source: {} }] }] })), { code: "invalid-request" })
   // Unrecognized top-level fields fail explicitly rather than reaching upstream.
@@ -217,6 +216,21 @@ test("a whole Claude reply reaches /invoke and returns native Anthropic JSON", a
   assert.equal("stream" in call.body, false, "stream selector is omitted from the body")
   assert.deepEqual(call.body.stop_sequences, ["STOP"], "explicit native fields are forwarded, not dropped")
   assert.deepEqual(call.body.messages, [{ role: "user", content: "hi" }])
+})
+
+test("session metadata is accepted without changing the Bedrock request or native reply", async () => {
+  const { post, sent } = await fixture()
+  const body = base({ max_tokens: 256, system: "be terse", stop_sequences: ["STOP"] })
+  const baseline = await post("/messages", body)
+  assert.equal(baseline.status, 200)
+  assert.deepEqual(await baseline.json(), MESSAGE)
+  const upstream = sent.at(-1).body
+
+  const response = await post("/messages", { ...body, metadata: { user_id: '{"session_id":"synthetic-session"}' } })
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), MESSAGE)
+  assert.equal("metadata" in sent.at(-1).body, false)
+  assert.deepEqual(sent.at(-1).body, upstream)
 })
 
 test("image tool-result content reaches Bedrock verbatim with call identity and cache controls intact", async () => {
