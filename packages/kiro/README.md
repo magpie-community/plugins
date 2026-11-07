@@ -253,6 +253,13 @@ With overage on (`overageConfiguration.overageStatus` `ENABLED`), the
 month's window counts against the overage cap (`overageCap`), which is the
 month's whole limit; with it off, against the plan's credits.
 
+Each request's cost is what Kiro's `meteringEvent`s say, in credits, summed
+over the request (a web search's turns included). It goes on as
+`usage.credit` in the last `message_delta`, or in the message's `usage`, for
+magpie's ledger (yetone/magpie#4328). Kiro gives no token counts, so the
+input is reckoned from how full the context is, and the cache is unknown
+(`magpie_cache_unknown`).
+
 ### Identity Center credit regions
 
 An IAM Identity Center account has a profile, and its own month of credits

@@ -154,6 +154,14 @@ test("a search the model asks for is Kiro's MCP web_search, its pages given back
 // kiro-cli's agent adds __tool_use_purpose to its tools: the model may say
 // why it searches. That is kiro-cli's, not Anthropic's: the caller's
 // server_tool_use has the query alone, and only the query is searched for.
+test("a search's turns are one request: their credits are summed", async () => {
+  const metered = (n) => ev("meteringEvent", { unit: "credit", unitPlural: "credits", usage: n })
+  const s = kiro({ turns: [[say("Let me look. "), use("tu1", "web_search", { query: "magpie release" }), metered(0.25)], [say("Magpie 2 is out."), metered(0.5)]] })
+  const m = await (await ask({ tools: [SEARCH] })).json()
+  expect(s.kiro.length).toBe(2)
+  expect(m.usage.credit).toBe(0.75)
+})
+
 test("a call's __tool_use_purpose is neither searched for nor shown, nor sent back", async () => {
   const s = kiro({ turns: [[use("tu1", "web_search", { query: "bun 2", __tool_use_purpose: "check the release" })], [say("ok")]] })
   const m = await (await ask({ tools: [SEARCH] })).json()
