@@ -1,7 +1,8 @@
 // Turning Tabbit's catalog into the models magpie shows.
 //
-// The catalog is the one `web.tabbit.com/proxy/v1/model_config/models` gives
-// the app. Its fields that decide what an agent may do:
+// The catalog is the one `/proxy/v1/model_config/models` gives the app, on
+// the account's own site (web.tabbit.com or web.tabbit.ai). Its fields that
+// decide what an agent may do:
 //
 //   display_name       the id a turn is asked with (selected_model), so it is
 //                      also this provider's model id — nothing is invented
