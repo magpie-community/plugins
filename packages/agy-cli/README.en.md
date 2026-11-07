@@ -1,4 +1,4 @@
-# yce-magpie-agy
+# agy-cli
 
 Turn the local Antigravity CLI (`agy`) into a model provider inside Magpie. Once
 it is set up, clients such as OpenCode and Claude Code can reach the Gemini,
@@ -59,33 +59,25 @@ response.
 
 ## Install
 
-Straight from GitHub:
+From the Magpie community plugins: find "Antigravity (local agy CLI)" on
+Magpie's Plugins page and install it, or run:
 
 ```sh
-magpie plugin add github:gitxm/yce-magpie-agy
+magpie plugin add @magpie-community/opencode-agy-cli-auth
 ```
 
-Once the plugin is listed in the community marketplace, you can install it with:
-
-```sh
-magpie plugin add @magpie-community/yce-magpie-agy
-```
-
-From a local clone:
-
-```sh
-git clone https://github.com/gitxm/yce-magpie-agy
-magpie plugin add ./yce-magpie-agy
-```
+The provider id is `agy-cli`, so models are named `agy-cli/<model>`. The
+default concurrency is 16; change it under Concurrency on Magpie's Providers
+page (0 means no limit).
 
 After installing, run `agy` once in a terminal to complete the Google sign-in.
 
 ## Usage
 
-1. Open Magpie's Providers page, find `yce-magpie-agy`, and click Sign in. The
+1. Open Magpie's Providers page, find `agy-cli`, and click Sign in. The
    plugin uses `agy models` to confirm the CLI works. Google credentials stay with
    agy; the plugin never reads or stores them.
-2. Refer to models as `yce-magpie-agy/<model>`. When agy lists separate model IDs
+2. Refer to models as `agy-cli/<model>`. When agy lists separate model IDs
    for different thinking levels, they are grouped here as variants of one model,
    and each request is mapped back to the matching agy ID.
 3. Pick the model in your client as usual.
@@ -112,8 +104,8 @@ After installing, run `agy` once in a terminal to complete the Google sign-in.
 ## Usage quota
 
 ```sh
-magpie quota yce-magpie-agy --json
-magpie quota refresh yce-magpie-agy --json
+magpie quota agy-cli --json
+magpie quota refresh agy-cli --json
 ```
 
 The numbers come from agy's own `/usage` report for whichever account is signed

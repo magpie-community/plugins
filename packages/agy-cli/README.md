@@ -1,4 +1,4 @@
-# yce-magpie-agy
+# agy-cli
 
 把本机的 Antigravity CLI（`agy`）接成 Magpie 里的一个模型 provider。装好以后，
 OpenCode、Claude Code 等客户端经由 Magpie 调用你订阅里的 Gemini、Claude 和
@@ -42,34 +42,21 @@ GPT-OSS 模型，请求实际由 `agy` 进程完成。
 
 ## 安装
 
-从 Magpie 社区插件市场安装（推荐）：在 Magpie 的 Plugins 页找到「YCE Magpie AGY」点安装，或在终端运行：
+从 Magpie 社区插件市场安装（推荐）：在 Magpie 的 Plugins 页找到「Antigravity (local agy CLI)」点安装，或在终端运行：
 
 ```sh
-magpie plugin add @magpie-community/yce-magpie-agy
+magpie plugin add @magpie-community/opencode-agy-cli-auth
 ```
 
-装好后 provider id 是 `yce-magpie-agy`，模型写成 `yce-magpie-agy/<模型>`。默认并发 16，可在 Magpie 的 Providers 页 Concurrency 里改（0 表示不限）。
-
-直接从 GitHub 源仓安装：
-
-```sh
-magpie plugin add github:gitxm/yce-magpie-agy
-```
-
-从本地源码安装：
-
-```sh
-git clone https://github.com/gitxm/yce-magpie-agy
-magpie plugin add ./yce-magpie-agy
-```
+装好后 provider id 是 `agy-cli`，模型写成 `agy-cli/<模型>`。默认并发 16，可在 Magpie 的 Providers 页 Concurrency 里改（0 表示不限）。
 
 安装完成后，先在终端运行一次 `agy` 完成 Google 登录。
 
 ## 使用
 
-1. 在 Magpie 的 Providers 页找到 `yce-magpie-agy` 并点击 Sign in。插件会用 `agy models`
+1. 在 Magpie 的 Providers 页找到 `agy-cli` 并点击 Sign in。插件会用 `agy models`
    确认 CLI 可用。Google 凭据始终由 agy 自己保管，插件不读取、不保存。
-2. 模型名写成 `yce-magpie-agy/<模型>`。agy 对同一模型不同思考等级给出的多个模型 ID，
+2. 模型名写成 `agy-cli/<模型>`。agy 对同一模型不同思考等级给出的多个模型 ID，
    在这里会合并成一个模型的多个变体，请求时再映射回对应的 agy ID。
 3. 在客户端里选用这个模型即可。
 
@@ -90,8 +77,8 @@ magpie plugin add ./yce-magpie-agy
 ## 额度
 
 ```sh
-magpie quota yce-magpie-agy --json
-magpie quota refresh yce-magpie-agy --json
+magpie quota agy-cli --json
+magpie quota refresh agy-cli --json
 ```
 
 额度数据来自 agy 自己的 `/usage` 报告，显示的是当前 agy 登录账号的订阅窗口，按模型组
