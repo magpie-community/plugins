@@ -1501,7 +1501,9 @@ function qoderBody(chat, m, named = "", task, site) {
   const sys = { type: "text", text: sysText }
   const budget = chat.max_completion_tokens || chat.max_tokens || 0
   const [thinking, effort] = effortFor(chat.reasoning_effort, m, typeof budget === "number" ? budget : 0)
-  const params = { enable_thinking: thinking, max_tokens: chat.max_completion_tokens || chat.max_tokens || 32000 }
+  const asked = chat.max_completion_tokens || chat.max_tokens || 32000
+  const cap = outputCap(m)
+  const params = { enable_thinking: thinking, max_tokens: cap > 0 && asked > cap ? cap : asked }
   if (effort) params.reasoning_effort = effort
   const window = windowFor(chat, m, params.max_tokens)
   if (window > 0) params.context_length = window
@@ -1528,6 +1530,42 @@ function qoderBody(chat, m, named = "", task, site) {
       function: { name: t.function.name, description: t.function.description ?? "", parameters: typedUnions(t.function.parameters) ?? { type: "object", properties: {} } },
     }))
   return body
+}
+
+// OUTPUT_CAPS are the largest max_tokens a model takes where its listing
+// entry names none: Qoder CN's QoDuck (lmodel) answers a larger one with a
+// 400 "Error in upstream response: Range of max_tokens should be [1,
+// 131072]", whatever the account (plugins#822, Gruu6y). A client asking
+// DeepSeek's 384K output was refused on every try, and each refusal rested
+// another account.
+const OUTPUT_CAPS = { lmodel: 131072 }
+// LEARNED_CAPS are the ceilings Qoder named in such a refusal, by model
+// key, for a model whose entry and OUTPUT_CAPS give none or a wrong one: the
+// refused request is asked again once at that ceiling, and later ones are
+// sent it from the start.
+const LEARNED_CAPS = new Map()
+// MAX_TOKENS_RANGE is that refusal's own words.
+const MAX_TOKENS_RANGE = /\brange of max_tokens should be \[\s*(\d+)\s*,\s*(\d+)\s*\]/i
+
+// outputCap is the largest max_tokens model m takes, 0 when none is known:
+// what a refusal named, which is Qoder's own word, else its listing
+// entry's own (max_output_tokens), else OUTPUT_CAPS. A request's max_tokens is never sent above it, and one
+// asked lower is sent as asked.
+function outputCap(m) {
+  const n = (v) => (Number.isInteger(v) && v > 0 ? v : 0)
+  const raw = m?.config ?? {}
+  return n(LEARNED_CAPS.get(m?.key)) || n(raw.max_output_tokens) || n(raw.maxOutputTokens) || n(OUTPUT_CAPS[m?.key])
+}
+
+// reclamp is whether the request body was refused for a max_tokens above
+// model m's ceiling (failure's maxTokens), lowered to it if so: the
+// ceiling is remembered for the model, and the caller asks again once.
+function reclamp(f, body, m) {
+  const cap = f?.maxTokens
+  if (!(cap > 0) || !(body?.parameters?.max_tokens > cap)) return false
+  if (m?.key) LEARNED_CAPS.set(m.key, cap)
+  body.parameters.max_tokens = cap
+  return true
 }
 
 // failure is the status and message for a Qoder failure. Qoder's own code
@@ -1598,6 +1636,11 @@ function failure(status, text) {
   }
   if (QUOTA_CODES.has(code)) return { status: 429, message: "usage limit reached: " + msg, signIn: "" }
   if (REQUEST_CODES.has(code)) return { status: 400, message: `Qoder refused the request (${code}): ${msg}`, signIn: "" }
+  // a max_tokens above the model's ceiling, said behind "Error in upstream
+  // response": the request's fault on every account, so a 400 that rests
+  // none, with the ceiling for ask to send again at (plugins#822)
+  const range = MAX_TOKENS_RANGE.exec(msg)
+  if (range) return { status: 400, message: `Qoder refused the request's max_tokens: ${msg}`, signIn: "", maxTokens: Number(range[2]) }
   if (UPSTREAM_FAILED.test(msg)) return { status: 502, message: msg, signIn: "" }
   // a refused chat is the built-in's 401, which never marked the account
   // lapsed: only a refused refresh did (errorResponse says kept). Qoder's
@@ -3458,6 +3501,7 @@ const makePlugin = (site) => async ({ client }) => {
     let m
     let relogged = false
     let renamed = false
+    let reclamped = false
     const listed = (ms) => ms.find((x) => x.key === chat.model)
     try {
       m = listed(await models(cred)) ?? listed(await models(cred, true))
@@ -3552,6 +3596,11 @@ const makePlugin = (site) => async ({ client }) => {
           renamed = true
           continue
         }
+        // a max_tokens above the model's ceiling: asked again once at it
+        if (!reclamped && reclamp(f, body, m)) {
+          reclamped = true
+          continue
+        }
         // an answered call moves its task on, as Qoder's client moves it
         if (!f) task.answered = true
         // with another account, provider or group member after this one
@@ -3592,6 +3641,7 @@ const makePlugin = (site) => async ({ client }) => {
     const task = taskOf(sessionOf(chat, named), chat)
     const tools = chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function") : []
     let relogged = false
+    let reclamped = false
     for (let i = 0; ; ) {
       const m = order[i]
       const s = siteOf(site, cred)
@@ -3629,6 +3679,10 @@ const makePlugin = (site) => async ({ client }) => {
           }
         }
         return errorResponse({ status: 401, message: `the sign-in lapsed — open Qoder CN IDE so it signs in again (${String(f.message).slice(0, 300)})` })
+      }
+      if (!reclamped && reclamp(f, body, m)) {
+        reclamped = true
+        continue
       }
       if (f && LINGMA_NOT_HERE.test(f.message) && i + 1 < order.length) {
         console.warn(`qoder-cn: ${s.dedicated} doesn't serve ${m.key}; asking ${order[i + 1].key}`)
@@ -3945,4 +3999,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
