@@ -2,14 +2,14 @@
 // answer the upstream gives lands on one of its outcomes, and the plugin
 // factory registers both providers with every hook check.mjs looks for.
 import { expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, statSync, utimesSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AutoclawAuthPlugin, AutoclawCnAuthPlugin, _internal } from "./index.mjs"
 
 const {
   checkinOutcome, signinConfig, bareToken, codeValue, tokenFields, refreshTokens, startLocalOAuth,
-  autoclawRewriteBody, unflag, unflagged, explained, FLAGGED, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT,
+  autoclawRewriteBody, unflag, unflagged, explained, FLAGGED, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT, dumpDefaultDir,
 } = _internal
 
 const b64url = (o) => Buffer.from(JSON.stringify(o)).toString("base64url")
@@ -192,18 +192,28 @@ test("ZCode's and pi's identity lines are rewritten", () => {
 // opening line, and the CN gateway answers 406 for "This conversation is
 // powered by GLM-<version>" in any case. The fixture is the reporter's line
 // byte for byte; each rewritten form was a 200 in the reporter's probes.
+// 11-03: the same refusal caught the Fable harness's "You are powered by
+// the model glm-5.3-flash[1m]." (42 x 406 in one day; probed: the line
+// alone 406s, the rewritten form 200s), so a second rule rewrites that
+// "powered by the model <version>" shape, context-tier bracket and all.
 test("WorkBuddy's GLM opening line and CodeBuddy Code's identity line are rewritten", () => {
   const opening = "This conversation is powered by GLM-5.3 · AutoClaw 国内 (Zhipu)"
   expect(unflagged(opening)).toBe("This conversation is powered by the GLM-5.3 model · AutoClaw 国内 (Zhipu)")
   expect(unflagged("This conversation is powered by GLM-4")).toBe("This conversation is powered by the GLM-4 model")
   expect(unflagged("Intro.\nthis conversation is powered by glm-5.3.")).toBe("Intro.\nThis conversation is powered by the GLM-5.3 model.")
   expect(unflagged("This conversation is powered by GLM-4.5-Air.")).toBe("This conversation is powered by the GLM-4.5-Air model.")
+  // the Fable harness's model line: probed 406 as written, 200 rewritten
+  expect(unflagged("You are powered by the model glm-5.3-flash[1m].")).toBe("You are powered by the GLM-5.3-flash model.")
+  expect(unflagged("Powered by the model GLM-4.5-Air.")).toBe("Powered by the GLM-4.5-Air model.")
   // what the gateway takes stays as written
   for (const t of [
     "This conversation is powered by GLM",
     "This conversation is powered by ChatGLM-5.3",
     "The conversation is powered by GLM-5.3",
     "You are powered by GLM-5.3",
+    "You are powered by the GLM-5.3-flash model",
+    "You are powered by the model claude-fable-5-1",
+    "powered by the model 4.6-turbo",
   ]) expect(unflagged(t)).toBe(t)
 
   expect(unflagged("You are CodeBuddy Code.")).toBe("You are the CodeBuddy Code CLI.")
@@ -252,6 +262,55 @@ test("Hermes Agent's identity lines are rewritten", () => {
   expect(unflagged("You are Kimi Code CLI, an interactive general AI agent running on a user's computer.")).toBe("You are the Kimi Code CLI agent, an interactive general AI agent running on a user's computer.")
   expect(unflagged("You are goose, an autonomous AI agent created by AAIF (Agentic AI Foundation).")).toBe("You are the goose agent, an autonomous AI agent created by AAIF (Agentic AI Foundation).")
   expect(unflagged("You are a general-purpose AI agent called goose")).toBe("You are a general-purpose AI agent called goose")
+})
+
+// A table over every entry, so a later edit to one rule cannot silently
+// break another (the 11-03 session's failing request carried three known
+// lines at once, and only the missing one needed rewriting). Left side =
+// what the harness opens with (or the reported line, byte for byte);
+// right side = the form the gateway takes (probed, or the reporter's
+// probe for that entry's original report). Idempotent on every row, so
+// a cached prefix rewritten once stays put.
+test("a system prompt carrying every known line at once comes out clean in one pass", () => {
+  const lines = [
+    ["You are Claude Code, Anthropic's official CLI for Claude.", "You are the Claude Code CLI, Anthropic's official CLI for Claude."],
+    // 11-05: subagent prompts (fork/Explore) open with "an agent for", not
+    // "You are Claude Code"; ten dumps that afternoon all carried this one line
+    ["You are an agent for Claude Code, Anthropic's official CLI for Claude. Use the tools available to complete the task.", "You are an agent for the Claude Code CLI, Anthropic's official CLI for Claude. Use the tools available to complete the task."],
+    ["Intro.\nYou are an agent for Claude Code, dispatched mid-task.", "Intro.\nYou are an agent for the Claude Code CLI, dispatched mid-task."],
+    // the rewritten form must not grow a second CLI
+    ["an agent for Claude Code CLI, ask it", "an agent for Claude Code CLI, ask it"],
+    ["You are a Claude agent, built on Anthropic's Claude Agent SDK.", "You are a coding assistant."],
+    ["We build on the Claude Agent SDK; see docs.", "We build on the agent framework; see docs."],
+    ["You are an AI agent powered by DeepSeek Harness.", "You are an AI agent powered by DeepSeek-Harness."],
+    ["You are Codex, OpenAI's coding agent.", "You are the Codex agent, OpenAI's coding agent."],
+    ["Codex CLI is the tool you run.", "Codex command-line tool is the tool you run."],
+    ["You are opencode, an AI coding agent.", "You are the opencode agent, an AI coding agent."],
+    ["You are Cursor, a coding assistant.", "You are the Cursor agent, a coding assistant."],
+    ["You are Cline, a coding assistant.", "You are the Cline agent, a coding assistant."],
+    ["You are Qwen Code, an interactive CLI tool.", "You are the Qwen Code agent, an interactive CLI tool."],
+    ["You are ZCode, an interactive coding agent", "You are the ZCode agent, an interactive coding agent"],
+    ["operating inside pi, a coding agent harness.", "operating inside the pi coding agent harness."],
+    ["This conversation is powered by GLM-5.3 · AutoClaw 国内 (Zhipu)", "This conversation is powered by the GLM-5.3 model · AutoClaw 国内 (Zhipu)"],
+    ["You are powered by the model glm-5.3-flash[1m].", "You are powered by the GLM-5.3-flash model."],
+    ["You are CodeBuddy Code.", "You are the CodeBuddy Code CLI."],
+    ["You are Hermes Agent, built by Nous Research.", "You are the agent Hermes, built by Nous Research."],
+    ["You run on Hermes Agent (by Nous Research).", "You run on Hermes-Agent (by Nous Research)."],
+    ["You are Gemini CLI, an interactive CLI agent.", "You are the Gemini CLI agent, an interactive CLI agent."],
+    ["You are Kimi Code CLI, an interactive AI agent.", "You are the Kimi Code CLI agent, an interactive AI agent."],
+    ["You are goose, an autonomous AI agent.", "You are the goose agent, an autonomous AI agent."],
+  ]
+  for (const [inp, want] of lines) {
+    expect(unflagged(inp)).toBe(want)
+    // one pass of the whole table through one text, then that text again:
+    // every row stays where its own rewrite put it
+    expect(unflagged(unflagged(inp))).toBe(want)
+  }
+  // all lines at once, in one text: each rewritten, none twice
+  const all = lines.map(([inp]) => inp).join("\n")
+  const once = unflagged(all)
+  expect(unflagged(once)).toBe(once)
+  for (const [, want] of lines) expect(once).toContain(want)
 })
 
 test("CN loader sends Hermes' system prompt without its identity line", async () => {
@@ -335,6 +394,177 @@ test("explained adds the way out to a 406 and keeps the sign-in", async () => {
   const ok = await explained(new Response('{"choices":[]}', { status: 200 }))
   expect(ok.status).toBe(200)
   expect(await ok.text()).toBe('{"choices":[]}')
+})
+
+// 11-04: the reporter's capture tool truncated the failing body at 256 KB and
+// the refused sentence sat past the cut. The plugin sees the body it actually
+// sends, so a 406 can dump the rewritten system prompt for diagnosis. The
+// body is the user's conversation, so the dump is opt-in (AUTOCLAW_406_DUMP_DIR,
+// or the plugin's dump406 option) and holds the system and developer messages
+// only — never user, assistant or tool content. The dump must never break the
+// 406 it documents.
+test("a 406 dumps the system prompt, opt-in; the oldest dumps rot away by write time", async () => {
+  const dir = join(mkdtempSync(tmpdir()), "autoclaw-406")
+  process.env.AUTOCLAW_406_DUMP_DIR = dir
+  try {
+    const refused406 = () => new Response(JSON.stringify({ error: { code: null, message: "406 Not Acceptable", type: "api_error" } }), { status: 406 })
+    const line = "You are powered by the model glm-5.3-flash[1m]."
+    // overseas path: the loader passes the body it actually sent — the rewritten one
+    const raw = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "system", content: line }, { role: "user", content: "hi" }] })
+    const sent = JSON.stringify(autoclawRewriteBody(raw))
+    const refused = await explained(refused406(), sent, "autoclaw")
+    expect(refused.status).toBe(406)
+    const files = readdirSync(dir)
+    expect(files).toHaveLength(1)
+    const dumped = JSON.parse(readFileSync(join(dir, files[0]), "utf8"))
+    expect(dumped.model).toBe("zai_glm-5.3-flash")
+    // the refusal is about the system prompt: the user's words are not in it
+    expect(dumped.messages).toHaveLength(1)
+    expect(dumped.messages[0].role).toBe("system")
+    expect(dumped.messages[0].content).toBe(`${OFFICIAL_SYSTEM_PROMPT}\n\nYou are powered by the GLM-5.3-flash model.`)
+    expect(dumped.messages[0].content).not.toMatch(/powered by the model glm/i)
+    expect(JSON.stringify(dumped)).not.toContain('"hi"')
+
+    // ten at most: an eleventh refusal drops the oldest. The pre-placed file's
+    // name sorts after every new one while its write time is older, so only
+    // rotation by write time removes it (a name sort would keep it and drop
+    // the newest dump instead). It carries the dump name's shape, since only
+    // the dump's own files rotate.
+    const old = join(dir, "autoclaw-406-9999-12-31T00-00-00-000Z-zzzzzzzz-autoclaw.json")
+    writeFileSync(old, JSON.stringify({ model: "m", messages: [{ role: "system", content: "pre-existing" }] }))
+    const past = new Date(Date.now() - 60_000)
+    utimesSync(old, past, past)
+    // the directory is the user's to point anywhere: foreign files — a
+    // settings.json, a non-dump anything — survive every refusal untouched
+    writeFileSync(join(dir, "settings.json"), "{}")
+    writeFileSync(join(dir, "keep-me.txt"), "not a dump")
+    for (let i = 0; i < 10; i++) {
+      await explained(refused406(), JSON.stringify({ model: "m", messages: [{ role: "system", content: `refusal ${i}` }] }), "autoclaw-cn")
+    }
+    const left = readdirSync(dir)
+    expect(left).toContain("settings.json")
+    expect(left).toContain("keep-me.txt")
+    expect(left).not.toContain("autoclaw-406-9999-12-31T00-00-00-000Z-zzzzzzzz-autoclaw.json")
+    const dumps = left.filter((f) => f.startsWith("autoclaw-406-"))
+    expect(dumps).toHaveLength(10)
+    const said = dumps.map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")).messages[0].content).sort()
+    expect(said).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => `refusal ${i}`))
+
+    // the dump is 0600 in a 0700 directory (real modes exist off Windows)
+    if (process.platform !== "win32") {
+      const newest = dumps.at(-1)
+      expect(statSync(join(dir, newest)).mode & 0o777).toBe(0o600)
+      expect(statSync(dir).mode & 0o777).toBe(0o700)
+    }
+
+    // a non-406 leaves no file, and a dump failure never breaks the 406
+    await explained(new Response('{"x":1}', { status: 502 }), JSON.stringify({ model: "m", messages: [{ role: "system", content: "x" }] }), "autoclaw")
+    expect(readdirSync(dir)).toHaveLength(12)
+    // a directory that cannot be created: the path runs through a regular
+    // file (kept outside the dump dir, so the count above stays clean)
+    const blocker = join(mkdtempSync(tmpdir()), "blocker")
+    writeFileSync(blocker, "a file, not a directory")
+    process.env.AUTOCLAW_406_DUMP_DIR = join(blocker, "beneath")
+    const still = await explained(refused406(), JSON.stringify({ model: "m", messages: [{ role: "system", content: "x" }] }), "autoclaw")
+    expect(still.status).toBe(406)
+    expect(readdirSync(dir)).toHaveLength(12)
+  } finally { delete process.env.AUTOCLAW_406_DUMP_DIR }
+})
+
+// "dump406": "false" in plugins.json is the option OFF, not on: only a real
+// boolean true arms the default directory.
+test("the dump406 option takes a boolean, not any truthy value", async () => {
+  const fake = mkdtempSync(join(tmpdir(), "autoclaw-dumpopt-"))
+  const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE, oldXdg = process.env.XDG_CONFIG_HOME, oldDump = process.env.AUTOCLAW_406_DUMP_DIR
+  delete process.env.AUTOCLAW_406_DUMP_DIR
+  delete process.env.XDG_CONFIG_HOME
+  process.env.HOME = fake
+  process.env.USERPROFILE = fake
+  const refused406 = () => new Response("{}", { status: 406 })
+  const body = JSON.stringify({ model: "m", messages: [{ role: "system", content: "opted" }] })
+  try {
+    for (const bad of ["false", "true", 1, "yes"]) {
+      await explained(refused406(), body, "autoclaw", { dump406: bad })
+      expect(existsSync(dumpDefaultDir())).toBe(false)
+    }
+    await explained(refused406(), body, "autoclaw", { dump406: true })
+    expect(readdirSync(dumpDefaultDir())).toHaveLength(1)
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome
+    if (oldProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = oldProfile
+    if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldXdg
+    if (oldDump === undefined) delete process.env.AUTOCLAW_406_DUMP_DIR; else process.env.AUTOCLAW_406_DUMP_DIR = oldDump
+    rmSync(join(fake, ".config"), { recursive: true, force: true })
+  }
+})
+
+// Off by default: without the env and without the option, a 406 writes
+// nothing anywhere. The dump406 option turns it on at the default directory.
+test("a 406 dumps nothing unless the dump is opted into, and the option uses the default dir", async () => {
+  const fake = mkdtempSync(join(tmpdir(), "autoclaw-dumpopt-"))
+  const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE, oldXdg = process.env.XDG_CONFIG_HOME, oldDump = process.env.AUTOCLAW_406_DUMP_DIR
+  delete process.env.AUTOCLAW_406_DUMP_DIR
+  delete process.env.XDG_CONFIG_HOME
+  process.env.HOME = fake
+  process.env.USERPROFILE = fake
+  const refused406 = () => new Response("{}", { status: 406 })
+  const body = JSON.stringify({ model: "m", messages: [{ role: "system", content: "opted" }] })
+  try {
+    expect(existsSync(dumpDefaultDir())).toBe(false)
+    const refused = await explained(refused406(), body, "autoclaw")
+    expect(refused.status).toBe(406)
+    expect(existsSync(dumpDefaultDir())).toBe(false)
+    // the option arms the default directory
+    await explained(refused406(), body, "autoclaw", { dump406: true })
+    expect(readdirSync(dumpDefaultDir())).toHaveLength(1)
+    // an empty XDG_CONFIG_HOME is no value: it falls through to HOME
+    process.env.XDG_CONFIG_HOME = ""
+    process.env.HOME = join(fake, "home2")
+    await explained(refused406(), body, "autoclaw", { dump406: true })
+    expect(readdirSync(join(process.env.HOME, ".config/magpie/autoclaw-406"))).toHaveLength(1)
+    expect(existsSync(join(fake, "magpie/autoclaw-406"))).toBe(false)
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome
+    if (oldProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = oldProfile
+    if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldXdg
+    if (oldDump === undefined) delete process.env.AUTOCLAW_406_DUMP_DIR; else process.env.AUTOCLAW_406_DUMP_DIR = oldDump
+  }
+})
+
+// the wiring, not just the helper: a 406 through either loader dumps the
+// rewritten system prompt that loader actually sent
+test("a 406 through either loader dumps the rewritten system prompt it sent", async () => {
+  const dir = join(mkdtempSync(tmpdir()), "autoclaw-406-wire")
+  process.env.AUTOCLAW_406_DUMP_DIR = dir
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: null, message: "406 Not Acceptable", type: "api_error" } }), { status: 406 })
+  try {
+    const overseas = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await overseas.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "system", content: "You are Claude Code, Anthropic's official CLI for Claude." }, { role: "user", content: "hi" }] })
+    expect((await loader.fetch("x", { method: "POST", body })).status).toBe(406)
+    let files = readdirSync(dir)
+    expect(files).toHaveLength(1)
+    let dumped = JSON.parse(readFileSync(join(dir, files[0]), "utf8"))
+    expect(dumped.messages[0].content).toContain("You are the Claude Code CLI")
+    expect(dumped.messages[0].content).not.toMatch(/You are Claude Code/)
+    expect(JSON.stringify(dumped)).not.toContain('"hi"')
+
+    // the CN managed channel dumps its own rewritten system too
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    const cn = await AutoclawCnAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const cnLoader = await cn.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const cnBody = JSON.stringify({ model: "zaicoding_glm-5.3", messages: [{ role: "system", content: "You are a Claude agent, built on Anthropic's Claude Agent SDK." }, { role: "user", content: "hi" }] })
+    expect((await cnLoader.fetch("x", { method: "POST", body: cnBody })).status).toBe(406)
+    files = readdirSync(dir)
+    expect(files).toHaveLength(1)
+    dumped = JSON.parse(readFileSync(join(dir, files[0]), "utf8"))
+    expect(dumped.messages[0].content).toBe(`${OFFICIAL_SYSTEM_PROMPT}\n\nYou are a coding assistant.`)
+  } finally {
+    globalThis.fetch = realFetch
+    delete process.env.AUTOCLAW_406_DUMP_DIR
+  }
 })
 
 test("overseas loader().fetch drops X-Harness-Type and explains 406", async () => {
@@ -627,6 +857,49 @@ test("CN preserves string and array system content", async () => {
     await loader.fetch("x", { body: JSON.stringify({ model: "zai_auto", messages: [{ role: "system", content: "You are Claude Code" }] }) })
     expect(calls[2].messages[0].content).toBe("You are AutoClaw. Answer the user directly and concisely.\n\nYou are the Claude Code CLI")
   } finally { globalThis.fetch = realFetch }
+})
+
+// 11-04: the same Fable line reached the gateway in both system-content
+// shapes the 11-03/11-04 captures show — one text part in an array, and a
+// plain string — and both answered 406 with it in. Through both loaders the
+// line that leaves is the probed 200 form, wherever it sits and whatever
+// case it is in.
+test("both channels rewrite the model line in a string or a text part, mid-prompt too", async () => {
+  const realFetch = globalThis.fetch
+  const line = "You are powered by the model glm-5.3-flash[1m]."
+  const want = "You are powered by the GLM-5.3-flash model."
+  for (const [factory, host] of [
+    [makePlugin("autoclaw-cn"), "https://autoglm-acceleration-api.zhipuai.cn"],
+    [makePlugin("autoclaw"), "https://autoglm-api.autoglm.ai"],
+  ]) {
+    const calls = []
+    globalThis.fetch = async (input, init) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) })
+      return Response.json({ ok: true })
+    }
+    try {
+      const hooks = await factory({ client: { auth: { set: async () => {} } } }, {})
+      const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+      for (const content of [
+        line,
+        [{ type: "text", text: line }],
+        [{ type: "text", text: "before" }, { type: "text", text: line }],
+        `intro\n\n${line}\n\nnext`,
+        "you are powered by the model glm-5.3-flash[1m].",
+      ]) {
+        await loader.fetch("x", { body: JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "system", content }, { role: "user", content: "hi" }] }) })
+        const sys = calls.at(-1).body.messages[0].content
+        const text = Array.isArray(sys) ? sys.map((p) => p.text).join("\n") : sys
+        expect(text).not.toMatch(/powered by (?!the GLM-[\w.-]+ model\b)/i)
+        // the lowercase fixture keeps its own case through the rewrite, and
+        // the gateway refuses case-insensitively — compare the wording only
+        expect(text.toLowerCase()).toContain(want.toLowerCase())
+        expect(text.startsWith("You are AutoClaw. Answer the user directly and concisely.")).toBe(true)
+        // the user's own words still go as written
+        expect(calls.at(-1).body.messages[1].content).toBe("hi")
+      }
+    } finally { globalThis.fetch = realFetch }
+  }
 })
 
 test("CN managed catalog uses variant objects and overseas keeps its limits", async () => {
