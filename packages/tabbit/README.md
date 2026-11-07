@@ -57,11 +57,12 @@ refuses it, `web.tabbit.ai` is asked once, and the site that accepts it serves
 that token from then on (a token both refuse is an expired sign-in, as
 before). A `web.tabbit.com` token never asks `web.tabbit.ai` anything.
 
-> **International site, chat turns:** as of 2026-11-07, `web.tabbit.ai`
-> answers a turn's `runs` call with `429`, code `492` ("Welcome to Tabbit
-> Browser…"), a gate the web app passes from inside the browser (#833).
-> Sign-in, the catalog, usage and the check-in work there; turns pass that
-> `429` through until the gate is solved.
+> **International site, chat turns:** `web.tabbit.ai` answers a turn's
+> `runs` call with `429`, code `492` ("Welcome to Tabbit Browser...") unless
+> the request carries a `unique-uuid` header — the browser sends a fresh
+> uuid on every API call, and the gate accepts any well-formed one (a
+> net-export capture of Tabbit Browser's own traffic showed the header on
+> `runs`, `join` and `usage`). The plugin sends one per call (#834).
 
 There is no refresh endpoint. When the token runs out (7 days), magpie shows
 the account as needing a sign-in again and the first method takes one more
