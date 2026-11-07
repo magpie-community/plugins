@@ -29,7 +29,7 @@ import {
 import { bootModels, createCatalog, liveRowsOf, publicRowsOf } from "./lib/models.mjs"
 import { cardOf } from "./lib/quota.mjs"
 import { ensureKey, pruneKeys } from "./lib/keys.mjs"
-import { precheckImages, rewriteBody, translateError } from "./lib/preflight.mjs"
+import { precheckImages, rewriteBodyObj, translateError } from "./lib/preflight.mjs"
 import {
   readUaaToken,
   requireBrowser,
@@ -52,7 +52,7 @@ const apiBase = () => ENDPOINTS.api
  * 剥无效参数）→ 真发 → 错误翻译（端砚的图片错误宿主读不对，见 preflight.mjs）。
  * 只认 chat/completions 和 models 两个端点；别的原样透传。
  */
-function chatFetch(key, log = () => {}) {
+function chatFetch(log = () => {}) {
   const upstream = (...args) => globalThis.fetch(...args)
   return async (input, init = {}) => {
     const url = typeof input === "string" ? input : input?.url ?? ""
@@ -66,7 +66,7 @@ function chatFetch(key, log = () => {}) {
     else if (ArrayBuffer.isView(raw)) text = new TextDecoder().decode(raw)
     else if (typeof input === "object" && typeof input?.text === "function" && init.body === undefined) text = await input.text().catch(() => "")
     if (text) {
-      // ①预检：超限不发请求，直接给宿主认得的"换下家"形状。
+      // 解析一次，预检与改写共用同一个对象（近 40MB 的 body 解析两遍是浪费）
       let body
       try {
         body = JSON.parse(text)
@@ -74,6 +74,7 @@ function chatFetch(key, log = () => {}) {
         body = null
       }
       if (body) {
+        // ①预检：超限不发请求，直接给宿主认得的"换下家"形状。
         const refusal = precheckImages(body)
         if (refusal) {
           return new Response(refusal.body, {
@@ -81,17 +82,12 @@ function chatFetch(key, log = () => {}) {
             headers: { "content-type": "application/json" },
           })
         }
+        // ②③改写：补 detail、剥无效参数（对象原地改写后重新序列化）。
+        init = { ...init, body: JSON.stringify(rewriteBodyObj(body)) }
       }
-      // ②③改写：补 detail、剥无效参数。
-      init = { ...init, body: rewriteBody(text) }
     }
     // 真发。
-    let res
-    try {
-      res = await upstream(input, init)
-    } catch (e) {
-      throw e
-    }
+    const res = await upstream(input, init)
     // ④错误翻译：端砚的图片错误码宿主读不对，换成宿主认得的形状。
     if (!res.ok && res.status !== 429) {
       let said = ""
@@ -380,7 +376,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
       instructions:
         process.platform === "win32"
           ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you."
-          : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code), then quit that browser yourself — Cmd+Q on macOS (closing its last window is not enough), or close its last window on Linux. The plugin then reads the session from the profile and finishes. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you.",
+          : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin watches the profile's cookie store and closes the window itself once the console session lands — you can leave the window open. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you.",
       method: "auto",
       async callback(_code, { signal } = {}) {
         let token = ""
@@ -664,7 +660,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
         const auth = await getAuth()
         const key = apiKeyOf(auth)
         if (!key) return {}
-        return { baseURL: apiBase(), apiKey: key, fetch: chatFetch(key, log) }
+        return { baseURL: apiBase(), apiKey: key, fetch: chatFetch(log) }
       },
 
       /**

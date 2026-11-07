@@ -162,6 +162,13 @@ test("with no Chromium browser the browser sign-in fails at authorize and names 
     // the names it gives are the other methods' own labels
     expect(p.auth.methods[2].label).toStartWith("API key only")
     expect(p.auth.methods[3].label).toStartWith("API key + console token")
+    // the reuse-a-key method goes through the same browserAuthorize path:
+    // it fails at authorize too, never with a window it cannot open
+    const reuse = p.auth.methods[1].authorize({})
+    expect(reuse.type).toBe("failed")
+    expect(reuse.opened).toBeUndefined()
+    expect(reuse.callback).toBeUndefined()
+    expect(reuse.error).toContain("Microsoft Edge, Google Chrome or Chromium")
     if (process.platform === "darwin") expect(result.error).toContain("Safari can't be used")
     else expect(result.error).not.toContain("Safari")
   } finally {
@@ -275,15 +282,24 @@ test("the fetch wiring is the request path — each piece breaks it in a way the
   expect("reasoning" in received).toBe(false)
   expect(received.messages[0].content[1].image_url.detail).toBe("auto")
 
-  // ④ /keys 的 cookie + 无分页 query（真机修复的回归防线——query 加回去会红）
+  // ④ /keys 的 cookie + 无分页 query（#839 的回归防线）。走 ensureKey 驱动
+  // 而不是直接调 protocol.listKeys：query 由 lib/keys.mjs 的调用点传入，
+  // 直调永远看不到它（作者 B05：query 加回 keys.mjs 时 101/101 依然绿）。
+  // fake 对带 page/page_size 的 /keys 回 -15100——keys.mjs 的任何调用点把
+  // query 加回来，这里立刻红。
   const seen = { query: "", cookie: "" }
   f.route("GET /api/tokenplan/v1/keys", (r) => {
     seen.query = r.url
     seen.cookie = r.headers.get("cookie") ?? ""
+    if (/[?&]page(size)?=/.test(r.url)) return json({ code: -15100, msg: "API Key fetch failed, refresh page and retry" })
     return json({ code: 0, data: { total: 0, items: [] } })
   })
-  const { listKeys } = await import("./lib/protocol.mjs")
-  await listKeys("fake-token")
+  const { ensureKey } = await import("./lib/keys.mjs")
+  // keyCount is ensureKey's first call on the create path: the list request
+  // this drives is the one whose query the fix removed
+  f.route("POST /api/tokenplan/v1/keys", () => ok({ key: "sk-wiring" }))
+  const wiringKey = await ensureKey("fake-token", "acct", { create: true, prune: false, log: () => {} })
+  expect(wiringKey).toBe("sk-wiring")
   expect(seen.cookie).toContain("uaa-token=fake-token")
   expect(seen.query).not.toContain("page=")
   expect(seen.query).not.toContain("page_size=")
@@ -295,8 +311,7 @@ test("the fetch wiring is the request path — each piece breaks it in a way the
     if (attempts.length === 1) return json({ code: -15100, msg: "API Key fetch failed, refresh page and retry" })
     return ok({ key: "sk-retried" })
   })
-  const { ensureKey } = await import("./lib/keys.mjs")
-  const key = await ensureKey("fake-token", "acct", { create: true, log: () => {} })
+  const key = await ensureKey("fake-token", "acct2", { create: true, log: () => {} })
   expect(key).toBe("sk-retried")
   expect(attempts.length).toBe(2)
   expect(attempts[0]).not.toBe(attempts[1])
@@ -308,7 +323,30 @@ test("cleanDetail masks real uaa-token, sk-, Bearer and JWT runs", async () => {
   expect(cleanDetail("cookie: uaa_token: secretValue123456; other")).toBe("cookie: ***; other")
   expect(cleanDetail("auth header: Bearer opaqueToken123456")).toBe("auth header: ***")
   expect(cleanDetail("key is sk-12345678abcdef")).toBe("key is ***")
-  expect(cleanDetail("jwt: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig")).toBe("jwt: ***")
+  expect(cleanDetail("jwt: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c")).toBe("jwt: ***")
   // diagnostic words must stay
   expect(cleanDetail("error: token expired")).toBe("error: token expired")
+})
+
+test("a soft refusal that actually created the key is not retried into a second one", async () => {
+  // -15100 有时吞掉的是已成功的 POST 的明文：重试前先列 Key，名字在就按
+  // -15108 说（明文拿不到），绝不建成两把。
+  f = fakeInkStone()
+  const created = []
+  f.route("GET /api/tokenplan/v1/keys", () => json({ code: 0, data: { total: created.length, items: created } }))
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    created.push({ id: `ak_${created.length + 1}`, name: r.json?.name, status: "active", created_at: new Date().toISOString() })
+    // 平台建成了，但软风控把回复换成 -15100（明文没给）
+    return json({ code: -15100, msg: "API Key fetch failed, refresh page and retry" })
+  })
+  const { ensureKey } = await import("./lib/keys.mjs")
+  let said = ""
+  try {
+    await ensureKey("fake-token", "acct7", { create: true, log: () => {} })
+  } catch (e) {
+    said = String(e?.message ?? e)
+  }
+  expect(said).toContain("did not return it")
+  // 只有第一把：没有重试出第二把
+  expect(created.length).toBe(1)
 })

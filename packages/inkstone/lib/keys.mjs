@@ -76,6 +76,19 @@ export async function keyCount(token) {
 }
 
 /**
+ * 名字为 `name` 的 Key 是否已在账号上（软风控 -15100 后的查证：POST 可能
+ * 实际建成而明文被吞——重试会多建一把，这里按 -15108 说）。
+ */
+async function keyCreatedUnderName(token, name) {
+  try {
+    const listed = await listKeys(token)
+    return keyItems(listed).some((k) => k.name === name)
+  } catch {
+    return false // 列表读不到时不武断：让软重试继续
+  }
+}
+
+/**
  * 删掉本机本账号的旧 `ink-…` Key。
  * freeSlots = 0：保留最新两把；freeSlots > 0：为新 Key 腾出位置，最旧先删。
  * `protectName`（本轮刚创建的那把的名字）永远不删。正在使用的 Key 一定是
@@ -177,7 +190,16 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
     // 「API Key fetch failed, refresh page and retry」：登录窗口刚关、
     // headless 刚读完 cookie 就建 Key 时的软风控（真机实测，2026-11-07——
     // 同一枚 cookie 稍后重试就成功）。稍等重试两次，换名字换幂等键。
+    // 但第一次 POST 可能实际已建成（软风控只是把明文吞了）：重试前先列
+    // 一遍 Key，刚才的名字在，就按 -15108 说——不是再建一把。
     else if (/fetch failed, refresh page/i.test(String(e?.message ?? ""))) {
+      const made = await keyCreatedUnderName(token, name)
+      if (made) {
+        throw new Error(
+          "the console created an API key but did not return it (the plaintext is shown only once). " +
+            "Create one in the console and paste it instead.",
+        )
+      }
       let last = e
       for (let attempt = 0; attempt < 2; attempt++) {
         await new Promise((r) => setTimeout(r, 2500))
@@ -187,6 +209,13 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
           last = null
           break
         } catch (e2) {
+          // 重试落进同一个软风控：同样先查是不是建成了
+          if (/fetch failed, refresh page/i.test(String(e2?.message ?? "")) && (await keyCreatedUnderName(token, name))) {
+            throw new Error(
+              "the console created an API key but did not return it (the plaintext is shown only once). " +
+                "Create one in the console and paste it instead.",
+            )
+          }
           last = e2
         }
       }

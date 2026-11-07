@@ -23,6 +23,7 @@ import { spawn, spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { profileHasCookie } from "./cookieProbe.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const LOGIN_URL = "https://discovery.intern-ai.org.cn/token-plan/home"
@@ -533,18 +534,38 @@ export async function closeWindowGracefully(child, { timeoutMs = 15_000, log = (
  */
 export async function waitForConsoleWindow(
   child,
-  { timeoutMs = 8 * 60_000, pollMs = 1000, signal, log = () => {}, platform = process.platform, titleOf = windowTitleOf, settleMs = 5000 } = {},
+  {
+    timeoutMs = 8 * 60_000,
+    pollMs = 1000,
+    signal,
+    log = () => {},
+    platform = process.platform,
+    titleOf = windowTitleOf,
+    settleMs = 5000,
+    // #840：非 Windows 的完成信号——轮询 profile 的 Cookies sqlite 找
+    // `uaa-token` 行（name 列明文）。给了 profile 才启用；测试传假实现。
+    profile = "",
+    cookieProbe = null,
+  } = {},
 ) {
   const deadline = Date.now() + timeoutMs
   const started = Date.now()
-  // 窗口标题只能靠 Windows 的 Get-Process 读；别的平台就以“用户关掉窗口”
-  // 作为完成信号（提示语里会说明），否则只能干等满整个超时。
+  // Windows 用窗口标题；别的平台加 Cookies 轮询（有 profile 与探针才启用），
+  // 都没有时退回"用户关掉窗口"。
   const canReadTitle = platform === "win32"
+  const canProbeCookies = platform !== "win32" && Boolean(profile) && typeof cookieProbe === "function"
+  if (canProbeCookies) {
+    log("info", "watching the profile's cookie store for the console session (the window can be left open)")
+  }
   let hits = 0
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) return "closed"
     if (signal?.aborted) return "aborted"
     if (!canReadTitle) {
+      if (canProbeCookies && cookieProbe(profile)) {
+        log("info", "the console session is in the profile; closing the window")
+        return "console"
+      }
       await sleep(pollMs)
       continue
     }
@@ -590,7 +611,18 @@ export async function signInWithBrowser({ browserPath, keepSignIn = true, timeou
         // wait is replaced entirely and nothing in this module reads the env.
         const how = waitForLogin
           ? await waitForLogin({ child, signal })
-          : await waitForConsoleWindow(child, { timeoutMs, signal, log })
+          : await waitForConsoleWindow(child, {
+              timeoutMs,
+              signal,
+              log,
+              // #840: off Windows the profile's cookie store is the completion
+              // signal — the window closes itself once the session lands, no
+              // Cmd+Q needed. keepSignIn's profile is the persistent one; a
+              // one-off profile is probed the same way (it is where the
+              // session lands either way).
+              profile: dir,
+              cookieProbe: (probeProfile) => profileHasCookie(probeProfile, "uaa-token"),
+            })
         log(`login window finished (${how})`)
         if (how === "aborted") throw Object.assign(new Error("the sign-in was cancelled"), { cancelled: true })
         // 登录完成：让页面稳定一下，然后**优雅关闭**（WM_CLOSE），让 Edge
@@ -604,11 +636,14 @@ export async function signInWithBrowser({ browserPath, keepSignIn = true, timeou
       // 用 profile 里刚写下的会话读 token；遇到残留进程造成的"立刻退出"重试一次。
       for (let attempt = 1; attempt <= 2; attempt++) {
         if (cancelled()) throw Object.assign(new Error("the sign-in was cancelled"), { cancelled: true })
+        log(`reading the session from the profile (attempt ${attempt}/2)`)
         let s
         try {
           s = await openSession({ browserPath: exe, profile: dir, headless: true, log })
+          log("profile session open; waiting for the uaa-token cookie")
           const token = await waitForToken(s, { timeoutMs: 20_000, signal, log })
           if (!token) throw new Error("could not read the console session after the sign-in")
+          log("session read; validating the account and creating the key")
           return token
         } catch (e) {
           if (cancelled()) throw Object.assign(new Error("the sign-in was cancelled"), { cancelled: true })

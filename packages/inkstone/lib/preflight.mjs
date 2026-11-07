@@ -125,10 +125,31 @@ function refused(detail, detailZh) {
 /**
  * 改写请求体：①每张内联图补 `detail`（缺了补 auto，用户写了尊重不动——
  * 实测非必填，low 省 token 是用户自己的选择）②剥端砚不收的参数。
- * 返回新字符串；body 不能解析时原样返回（让端砚自己拒绝）。
+ * 接收已解析的对象（chatFetch 解析一次，预检与改写共用）；原地改写并返回
+ * 同一个对象。JSON 不能解析时调用方根本不会走到这里。
  */
 const UNSUPPORTED_FIELDS = ["reasoning", "reasoning_effort", "thinking"]
 
+export function rewriteBodyObj(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body
+  for (const field of UNSUPPORTED_FIELDS) {
+    delete body[field]
+  }
+  if (body.output_config && typeof body.output_config === "object" && !Array.isArray(body.output_config) && "effort" in body.output_config) {
+    delete body.output_config.effort
+  }
+  for (const message of Array.isArray(body.messages) ? body.messages : []) {
+    if (!Array.isArray(message?.content)) continue
+    for (const part of message.content) {
+      if (part?.type === "image_url" && part?.image_url && typeof part.image_url === "object" && part.image_url.detail === undefined) {
+        part.image_url.detail = "auto"
+      }
+    }
+  }
+  return body
+}
+
+/** 字符串版：解析 → rewriteBodyObj → 序列化；解析失败原样返回（兼容直接调用）。 */
 export function rewriteBody(text) {
   let body
   try {
@@ -136,28 +157,8 @@ export function rewriteBody(text) {
   } catch {
     return text
   }
-  if (!body || typeof body !== "object" || Array.isArray(body)) return text
-  let touched = false
-  for (const field of UNSUPPORTED_FIELDS) {
-    if (field in body) {
-      delete body[field]
-      touched = true
-    }
-  }
-  if (body.output_config && typeof body.output_config === "object" && !Array.isArray(body.output_config) && "effort" in body.output_config) {
-    delete body.output_config.effort
-    touched = true
-  }
-  for (const message of Array.isArray(body.messages) ? body.messages : []) {
-    if (!Array.isArray(message?.content)) continue
-    for (const part of message.content) {
-      if (part?.type === "image_url" && part?.image_url && typeof part.image_url === "object" && part.image_url.detail === undefined) {
-        part.image_url.detail = "auto"
-        touched = true
-      }
-    }
-  }
-  return touched ? JSON.stringify(body) : text
+  const rewritten = rewriteBodyObj(body)
+  return JSON.stringify(rewritten)
 }
 
 /**

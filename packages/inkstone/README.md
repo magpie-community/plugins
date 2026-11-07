@@ -27,7 +27,7 @@ API Key 是可选的：不填，账号仍显示额度，只是不服务模型。
 
 | 方式 | 做什么 | 产出 |
 |---|---|---|
-| **浏览器登录（推荐）** | **零提示**：点一下就直接开窗。用**插件自己的专用浏览器 profile** 打开控制台，你在里面登录（密码 / 短信 / 扫码），登录完成后自动创建 `ink-*` API Key。**Windows** 上插件用窗口标题判断登录完成、**自己关窗**；**macOS / Linux** 读不了窗口标题，登录完成后请**自己关掉窗口**，插件接着自动收尾。之后的续期/重登都静默完成 | 额度 + 模型 |
+| **浏览器登录（推荐）** | **零提示**：点一下就直接开窗。用**插件自己的专用浏览器 profile** 打开控制台，你在里面登录（密码 / 短信 / 扫码），登录完成后自动创建 `ink-*` API Key。**所有平台插件都自己判断登录完成并自动关窗**（Windows 读窗口标题；macOS / Linux 轮询专用 profile 的 cookie 存储，看到控制台会话就关窗——通常不需要你手动关闭浏览器，开着也行）。之后的续期/重登都静默完成 | 额度 + 模型 |
 | **浏览器登录 + 复用已有 Key** | 同上，但开窗前会先问一句要不要粘贴现有 Key（留空则新建） | 额度 + 模型 |
 | **仅 API Key** | 只粘贴 Key；`GET /v1/models` 探活 | 只有模型 |
 | **API Key + 控制台 token** | 粘贴 Key，再粘贴 `uaa-token=…` 那一项（DevTools → Application → Cookies，复制整条 `uaa-token=…` 即可，插件只取值） | 额度 + 模型 |
@@ -57,8 +57,10 @@ API Key 是可选的：不填，账号仍显示额度，只是不服务模型。
 
 决策模型 `intern-decision-4b` 只支持 SystemOne，不是聊天接口，不列入。
 **不做思考强度档位**：平台明确不支持通过请求参数开启/关闭/调整思考强度
-（实测 `reasoning_effort`、`reasoning.effort`、`thinking.type` 都被静默忽略），
-插件会把这些字段从请求里剥掉，免得别的入口带来的参数造成干扰。
+（实测依据：2026-11 在免费三模型 `Agents-A1 / intern-s2 / Sage-A1.5` 上，
+`reasoning_effort: "high"`、`reasoning.effort: "high"`、
+`thinking.type: "enabled"` 全部返回 200 且回复内容与不带时相同——参数被
+静默忽略），插件会把这些字段从请求里剥掉，免得别的入口带来的参数造成干扰。
 
 **免费标记与倍率（magpie 专有展示字段，OpenCode 忽略）：**
 
@@ -185,8 +187,9 @@ Unofficial. One console sign-in gives both the ink credits (balance, 5-hour and
 
 Four sign-in methods produce the same `intern-inkstone` account: a **zero-prompt
 browser sign-in** (one click opens the plugin's own browser profile; the plugin
-closes the window itself on Windows, or reads the session after you quit it on
-macOS/Linux, then creates an `ink-*` API key), the same browser sign-in with an
+watches for the console session — the window title on Windows, the profile's
+cookie store elsewhere — and closes the window itself, then creates an `ink-*`
+API key), the same browser sign-in with an
 optional pasted key to reuse, API key only (models, no credit card), and API key
 + console token (pasted `uaa-token=…`, models and card). The sign-in window
 carries no debugging port, so the console's captcha sees an ordinary browser.
@@ -215,7 +218,8 @@ would misread (its "cumulative image bytes exceeded …" hits magpie's quota wor
 and would rest a healthy account), are translated to the same shape; the plan's
 own wording never reaches the response body. Inline images missing a `detail`
 get `detail: "auto"`, and the reasoning fields the plan silently ignores are
-stripped from the body.
+stripped from the body (checked live: `reasoning_effort`, `reasoning.effort`
+and `thinking.type` all answer 200 with identical output on the free models).
 
 `intern-decision-4b` is a SystemOne decision model, not a chat candidate. The
 plan takes no reasoning-effort controls (it silently ignores them), so the

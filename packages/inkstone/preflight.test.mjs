@@ -28,7 +28,7 @@ const HOST = {
 /** 宿主 shapeRefused 的等价实现：400/422 + 命中形状词 + 无排除词 → 问下家不休息。 */
 function hostShapeRefused(status, bodyText) {
   return (
-    (status === 400 || status === 226 || status === 422) &&
+    (status === 400 || status === 422) &&
     HOST.shapeWords.test(bodyText) &&
     !HOST.quotaWords.test(bodyText) &&
     !HOST.creditWords.test(bodyText) &&

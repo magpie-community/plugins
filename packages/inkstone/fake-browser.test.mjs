@@ -4,7 +4,7 @@
 // port-file → CDP cookie read → graceful close → key creation path runs here.
 import "./nonet.mjs"
 import { execSync } from "node:child_process"
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, renameSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, renameSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
@@ -29,9 +29,11 @@ beforeAll(() => {
   // The dir is per-user (`os.userInfo().username`): a fixed name in the
   // shared /tmp could be pre-created by another user on a Linux CI runner.
   // A half-written build never parks at the final name — the compile goes to
-  // a temp name that is renamed over, so `existsSync(out)` below is only
-  // true of a complete exe (the reviewer's point about a crashed compile
-  // keeping junk forever).
+  // a temp name (pid-suffixed: two concurrent runs of the same source would
+  // otherwise race on it) that is renamed over, so `existsSync(out)` below
+  // is only true of a complete exe. Older builds (a different hash, left by
+  // a previous version of testdata/fake-browser.mjs) are removed here, so
+  // a change to the source does not accumulate ~60 MB directories.
   const entry = join(import.meta.dir, "testdata/fake-browser.mjs")
   const { createHash } = require("node:crypto")
   const { userInfo } = require("node:os")
@@ -45,18 +47,25 @@ beforeAll(() => {
   const key = createHash("sha256").update(readFileSync(entry)).digest("hex").slice(0, 12)
   fakeDir = join(tmpdir(), `inkstone-fake-browser-${user}-${key}`)
   mkdirSync(fakeDir, { recursive: true })
+  // siblings: same user, another source hash — a previous build, never the
+  // concurrent one (its hash is ours)
+  for (const sibling of existsSync(tmpdir()) ? readdirSync(tmpdir()) : []) {
+    if (sibling.startsWith(`inkstone-fake-browser-${user}-`) && sibling !== `inkstone-fake-browser-${user}-${key}`) {
+      try {
+        rmSync(join(tmpdir(), sibling), { recursive: true, force: true })
+      } catch {}
+    }
+  }
   const exeName = process.platform === "win32" ? "fake-chrome.exe" : "fake-chrome"
   const out = join(fakeDir, exeName)
   if (!existsSync(out)) {
     // bun build --compile appends its own .exe on Windows, so the temp name
-    // is computed after the build: look for whatever `*.building*` came out
-    const tmpOut = join(fakeDir, `${exeName}.building`)
-    try {
-      rmSync(tmpOut, { force: true })
-    } catch {}
-    rmSync(join(fakeDir, `${exeName}.building.exe`), { force: true })
+    // is computed after the build: look for whatever `*.building-<pid>*`
+    // came out. The pid suffix keeps two concurrent runs of the same source
+    // from racing on one temp file.
+    const tmpOut = join(fakeDir, `${exeName}.building-${process.pid}`)
     execSync(`${JSON.stringify(process.execPath)} build --compile ${JSON.stringify(entry)} --outfile ${JSON.stringify(tmpOut)}`, { stdio: "pipe" })
-    const built = existsSync(tmpOut) ? tmpOut : join(fakeDir, `${exeName}.building.exe`)
+    const built = existsSync(tmpOut) ? tmpOut : join(fakeDir, `${exeName}.building-${process.pid}.exe`)
     renameSync(built, out)
   }
   fakeExe = out
