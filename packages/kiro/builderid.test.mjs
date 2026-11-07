@@ -110,7 +110,8 @@ test("Identity Center still has its profile listed", async () => {
   const auth = { type: "oauth", access: "t", refresh: "r", expires: later(), method: "idc", loginProvider: "Enterprise", region: "us-east-1",
     profileArn: "", clientId: "c", clientSecret: "s", accountId: "dev@corp.example" }
   await h.provider.models({ models: { auto: {} } }, { auth })
-  expect(seen.profiles).toBe(1)
+  // asked in each credit region (region.test.mjs)
+  expect(seen.profiles).toBe(2)
   expect(seen.listedWith).toEqual([IDC])
 })
 

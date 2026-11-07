@@ -249,6 +249,33 @@ its own with its count and when it lapses. Bonus windows are shown only.
 Kiro spends the plan's credits first, so a month used up while a bonus has
 credits left is shown only too, and the account isn't taken for spent.
 
+With overage on (`overageConfiguration.overageStatus` `ENABLED`), the
+month's window counts against the overage cap (`overageCap`), which is the
+month's whole limit; with it off, against the plan's credits.
+
+### Identity Center credit regions
+
+An IAM Identity Center account has a profile, and its own month of credits
+with its own overage cap, in each of Kiro's regions its organization enabled
+(`us-east-1`, `eu-central-1`). The plugin lists the profiles in both and
+keeps them with the account (`profiles`, by region; `profileArn` is the
+first). A region with no profile is not enabled, and is asked for again at
+most every 10 minutes, so one an admin enables is used without signing in
+again.
+
+- A request goes to the first enabled region with credits left. When Kiro
+  answers that its credits are used up (`MONTHLY_REQUEST_COUNT`,
+  `USAGE_LIMIT`), the region rests till its reset (an hour when none is
+  known) and the request is sent again in the other. A rate limit is passed
+  on as it is.
+- With every enabled region used up, the answer is a 429 naming them, and a
+  region not enabled, so magpie goes on to another account.
+- `auth.usage` reads both regions: a window for each, shown only, and their
+  sum, which magpie weighs the account by. From 80% of the sum, a region
+  not enabled is pointed out in its text.
+
+Builder ID, Google, GitHub and API key sign-ins keep one region.
+
 ## Not included
 
 - Switching between several accounts. OpenCode keeps one sign-in per
