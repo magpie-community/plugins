@@ -44,9 +44,22 @@ Models with reasoning variants switch to the matching `*_thinking` preference
 when a request carries `reasoning_effort` / `thinking`; the reasoning stream is
 returned as `reasoning_content`.
 
-Each model carries `limit` (128k context / 16k output) as a **ceiling, not a
-published window** — Perplexity documents none for its web models — and says so
-with `limitEstimated: true`, so a host can treat it as a hint rather than a fact.
+Each model carries the context/output window of the model Perplexity runs
+underneath, so a host sizes its prompts against the real model instead of one
+blanket number:
+
+| family | context | output |
+| --- | --- | --- |
+| Gemini 3.1 Pro / 3.5 Flash | 1,000,000 | 65,536 |
+| GPT-5.6 Terra / Sol, GPT-5.5 / Mini / Nano | 400,000 | 128,000 |
+| Grok 4.6 / 4.5 / 4.20 Reasoning / 4, Kimi K3 / K2.6 | 256,000 | 64,000 / 32,000 |
+| Claude Sonnet 5 / 4.6 | 200,000 | 64,000 |
+| Claude Opus 4.8 / 4.7 / 4.6, GLM-5.2 | 200,000 | 32,000 / 128,000 |
+| Nemotron 3 Ultra / Super, Sonar 2, Perplexity Best | 128,000 | 32,000 / 16,000 |
+
+Those are the upstream models' published windows; Perplexity's web endpoint
+publishes none of its own and may truncate earlier, so every model also carries
+`limitEstimated: true` — a hint, not a promise.
 
 Set `tier` to `max` if your plan is Max — otherwise the flagship models are
 hidden.
