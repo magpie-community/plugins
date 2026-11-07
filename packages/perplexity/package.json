@@ -3,10 +3,28 @@
   "version": "0.1.0",
   "description": "Perplexity Pro / Max subscription as an OpenAI-compatible provider: browser or cookie sign-in, live models, Pro Search quota, native web search",
   "type": "module",
-  "main": "./index.mjs",
-  "exports": { ".": "./index.mjs" },
-  "files": ["index.mjs", "provider.mjs", "pplx.mjs", "models.mjs", "login.mjs", "README.md", "LICENSE"],
-  "keywords": ["opencode", "opencode-plugin", "perplexity", "magpie", "search"],
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "provider.mjs",
+    "pplx.mjs",
+    "models.mjs",
+    "login.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "perplexity",
+    "magpie",
+    "search"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",

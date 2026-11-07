@@ -1,2 +1,2 @@
-// Entry point. magpie / OpenCode load the first export that is a function.
+// Kept for hosts that read `index.mjs` directly.
 export { server as PerplexityPlugin } from "./provider.mjs"
