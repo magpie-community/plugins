@@ -2536,7 +2536,7 @@ test("9.13 The gateway always routes: when every candidate is below the task's f
   assert.equal(visualCtx.state.route?.targetModel, "gemini-3.8-flash-high");
 });
 
-test("7.7 Pooled runtimes: two runtimes with their own stores agree on the turn-1 route, the tool loop and the short follow-up", () => {
+test("7.7 Pooled runtimes: two runtimes with their own stores agree on the turn-1 route, the tool loop and past the cache TTL", () => {
   // Magpie hands each request a moejs runtime from a sync.Pool, and middleware has no storage across requests
   // (internal/middleware/middleware.go). Each store below is one runtime's module state; Magpie's ctx carries no
   // headers, so the session is known only by its body.
@@ -2575,16 +2575,25 @@ test("7.7 Pooled runtimes: two runtimes with their own stores agree on the turn-
   const storeA = new SessionContinuityStore();
   const turn1 = mwOnRequest({ model: "agentcompass/auto", messages: [first] }, runtime(storeA, t0));
   assert.ok(turn1?.model, "turn 1 is routed");
+  const decide = (store, messages, at) => {
+    const ctx = runtime(store, at);
+    const out = mwOnRequest({ model: "agentcompass/auto", messages }, ctx);
+    const c = ctx.state.agentcompass?.continuation || {};
+    return { model: out.model, held: c.held, why: c.why };
+  };
 
-  // The tool loop and the follow-up each land on a runtime that never saw the session
+  // The tool loop lands on a runtime that never saw the session: time doesn't matter there, so it holds
   const loopB = mwOnRequest({ model: "agentcompass/auto", messages: toolLoop }, runtime(new SessionContinuityStore(), t0 + 1_000));
-  const followB = mwOnRequest({ model: "agentcompass/auto", messages: followup }, runtime(new SessionContinuityStore(), t0 + 2_000));
-  // ... and on the runtime that did
-  const followA = mwOnRequest({ model: "agentcompass/auto", messages: followup }, runtime(storeA, t0 + 2_000));
-
   assert.equal(loopB.model, turn1.model, "a fresh runtime holds the turn's model and effort in the tool loop");
-  assert.equal(followB.model, turn1.model, "a fresh runtime holds the model and effort on the short follow-up");
+
+  // Inside the TTL only the runtime holding the record keeps the short follow-up. The history carries no time, so a
+  // fresh runtime can't know the turn is recent: it routes the follow-up from scratch, as main does.
+  const followA = decide(storeA, followup, t0 + 2_000);
+  const followB = decide(new SessionContinuityStore(), followup, t0 + 2_000);
   assert.equal(followA.model, turn1.model, "the runtime that routed turn 1 holds it on the follow-up");
+  assert.equal(followA.why, "followup");
+  assert.equal(followB.held, false, "a fresh runtime doesn't hold a follow-up it can't date");
+  assert.equal(followB.why, "cold");
 
   // A runtime whose record is of an earlier turn doesn't take its record for the current turn's
   const storeC = new SessionContinuityStore();
@@ -2601,4 +2610,36 @@ test("7.7 Pooled runtimes: two runtimes with their own stores agree on the turn-
   const loopD = mwOnRequest({ model: "agentcompass/auto", messages: turn2Loop }, runtime(new SessionContinuityStore(), t0 + 4_000));
   assert.equal(loopC.model, turn2B.model, "a record of turn 1 doesn't decide turn 2's tool loop");
   assert.equal(loopD.model, turn2B.model, "turn 2's tool loop is held on a fresh runtime too");
+
+  // Past the cache TTL the runtime with the record sees the real age and goes cold, and a fresh runtime, which has
+  // no age, goes cold too: they agree. A turn 1 large enough that its cache is worth holding (>= 1024 tokens).
+  const dump = Array.from({ length: 300 }, (_, i) => `shard-${i} acquire ShardLock then TxLock; waiter=${i + 1} holds TxLock, wants ShardLock`).join("\n");
+  const big = { role: "user", content: `${first.content}\n\n${dump}` };
+  const bigTurn1 = mwOnRequest({ model: "agentcompass/auto", messages: [big] }, runtime(new SessionContinuityStore(), t0));
+  assert.ok(bigTurn1?.model, "the large turn 1 is routed");
+  const bigFollow = [big, { role: "assistant", content: "Found the inversion. Continue with the fix?" }, { role: "user", content: "继续" }];
+  const bigBulk = [big, { role: "assistant", content: "Fixed the lock inversion." }, bulk];
+  const bigLoop = [
+    big,
+    { role: "assistant", content: null, tool_calls: [{ id: "c3", type: "function", function: { name: "read_file", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c3", content: "package lock" },
+  ];
+  const rows = [
+    ["\"继续\" 30 min later", bigFollow, t0 + 30 * 60_000],
+    ["\"继续\" 3 h later", bigFollow, t0 + 3 * 3_600_000],
+    ["a new mechanical turn 30 min later", bigBulk, t0 + 30 * 60_000],
+  ];
+  for (const [label, messages, at] of rows) {
+    // Each row on its own store that routed turn 1, so one row's record doesn't become the next one's
+    const withRecord = new SessionContinuityStore();
+    mwOnRequest({ model: "agentcompass/auto", messages: [big] }, runtime(withRecord, t0));
+    const a = decide(withRecord, messages, at);
+    const b = decide(new SessionContinuityStore(), messages, at);
+    assert.equal(a.held, false, `${label}: the runtime with the record lets the session go cold (${a.why})`);
+    assert.deepEqual(b, a, `${label}: a fresh runtime agrees with the runtime that has the record`);
+  }
+  // The tool loop holds turn 1's route on a fresh runtime whatever the pause
+  const loopE = decide(new SessionContinuityStore(), bigLoop, t0 + 30 * 60_000);
+  assert.equal(loopE.model, bigTurn1.model, "a tool loop holds turn 1's route on a fresh runtime 30 min later");
+  assert.equal(loopE.why, "turn");
 });

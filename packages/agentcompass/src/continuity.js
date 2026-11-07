@@ -897,6 +897,7 @@ export function keepsEffort(
       currentTokens < prevReqTokens * COMPACTION_DROP_RATIO);
   const isWarm =
     !compacted &&
+    sessionState.ageKnown !== false &&
     ageMs <= ttlMs &&
     (sessionState.cached === true ||
       prevTokens >= CACHE_WORTH_TOKENS ||
@@ -951,7 +952,8 @@ export function detectTierEscalationOutgrowth(text, currentSpec) {
  *   - `"outgrown"`: current token count exceeds 95% of the model's `context_window`
  *   - `"capability_outgrown"`: new turn requires visual/GUI/frontier capability the current model lacks
  *   - `"compacted"`: conversation was `/compact`-ed (token count dropped > 50%)
- *   - `"cold"`: KV cache TTL expired (`now - updatedAt > coldAfterMs`) or cache < 1024 tokens
+ *   - `"cold"`: KV cache TTL expired (`now - updatedAt > coldAfterMs`) or cache < 1024 tokens, or the state has no
+ *     age (`ageKnown: false`, decided again from the history), so no TTL-gated hold applies
  *   - `"turn_mode"`: `affinityMode === "turn"` and request is a new user turn (`within === false`)
  *   - `"off"`: `affinityMode === "off"`
  */
@@ -1224,7 +1226,9 @@ export function evaluateProviderContinuation(facts = {}, sessionState = null, op
     ...sessionState,
     ...options,
   });
-  const withinCacheTtl = ageMs <= ttlMs;
+  // A state decided again from the history (`ageKnown: false`) has no age, so it is never within a TTL
+  const ageKnown = sessionState.ageKnown !== false;
+  const withinCacheTtl = ageKnown && ageMs <= ttlMs;
 
   // Short follow-up nudge ("继续", "ok go ahead", "lgtm") while session is still within TTL
   if (facts.isShortFollowup && withinCacheTtl) {
@@ -1266,7 +1270,7 @@ export function evaluateProviderContinuation(facts = {}, sessionState = null, op
     why: "cold",
     previousModel: currentModel,
     previousEffort: sessionState.effort,
-    ageMs,
+    ageMs: ageKnown ? ageMs : null,
     ttlMs,
     within: false,
     turn: facts.turn || 1,
@@ -1392,7 +1396,7 @@ export class SessionContinuityStore {
       sessionKey,
       {
         model: decision.model || existing?.model || "",
-        // the model as routed (`upstream/claude-opus-5-5`); `model` is kept canonical
+        // `target` keeps the model as routed (`upstream/claude-opus-5-5`); `set` stores `model` canonical
         target: decision.model || existing?.target || "",
         effort: decision.effort || existing?.effort || "medium",
         provider: decision.provider ?? existing?.provider ?? "",

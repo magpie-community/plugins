@@ -274,7 +274,10 @@ function replayedState(body, ctx, env, chain, stale, depth) {
     turn: earlier.facts.turn || 1,
     anchor: chain.prior.stamp,
     replayed: true,
-    updatedAt: env.now,
+    // The history carries no time, so the age of a replayed turn is unknown: it holds only where age doesn't
+    // matter (the tool-loop lock, `within`), and a TTL-gated hold (`followup`, `cache`) counts as cold.
+    // Given an age of 0 instead, a fresh runtime would hold a session the runtime with the record lets go cold.
+    ageKnown: false,
   };
 }
 
