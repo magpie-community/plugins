@@ -366,16 +366,48 @@ function seed() {
   return Object.fromEntries(Object.entries(MODELS).map(([id, m]) => [id, modelOf(id, m)]))
 }
 
+// withSeed() is a catalog entry's facts with the seed's filling what the
+// entry leaves out: a limit, a cost or capability word the catalog doesn't
+// give is the seed's, not modelOf's 200K/32K fallback or no word at all.
+//
+// input is the seed's and the catalog's together (#829). The seed's input is
+// what amr-link's own catalog listed when models.mjs was last refreshed
+// (refresh-models.mjs writes only what is listed), and DeepSeek V4.1 Flash
+// Eco took an image on amr-link while the live entry left image out. The two
+// mistakes don't cost the same: a kind listed that the model refuses is the
+// vendor's visible error, while a kind dropped is silent, as magpie hands the
+// image to another model for a description, at that account's cost, and
+// sends this one text. So a catalog that lists text only takes nothing away
+// from a kind the seed declares; refresh-models.mjs says when it does, and
+// removing a kind is a change to models.mjs. A model the seed doesn't know,
+// or a kind it doesn't declare, is the catalog's alone.
+function withSeed(id, f) {
+  const s = MODELS[id] ?? {}
+  const positive = (n) => Number.isFinite(n) && n > 0
+  const seedInput = Array.isArray(s.input) ? s.input.filter((x) => typeof x === "string" && x !== "text") : []
+  return {
+    ...f,
+    context: positive(f.context) ? f.context : s.context,
+    output: positive(f.output) ? f.output : s.output,
+    input: [...new Set([...seedInput, ...f.input])],
+    cost: f.cost || text(s.cost),
+    capability: f.capability || text(s.capability),
+    name: s.name ?? id,
+    efforts: s.efforts,
+  }
+}
+
 // modelsOf() shapes amr-link's live catalog as magpie's models: the list an
 // account's plan entitles it to right now, as provider.models gives them. A
-// model the seed knows keeps its name and its measured levels; the catalog
-// carries ids only.
+// model the seed knows keeps its name and its measured levels, which the
+// catalog doesn't carry, and what the seed says of it that the catalog
+// doesn't (withSeed).
 function modelsOf(catalog) {
   const out = {}
   for (const m of catalog?.data ?? []) {
     const id = text(m?.id)
     if (!id) continue
-    out[id] = servedOf(id, { ...facts(m), name: MODELS[id]?.name ?? id, efforts: MODELS[id]?.efforts })
+    out[id] = servedOf(id, withSeed(id, facts(m)))
   }
   return out
 }

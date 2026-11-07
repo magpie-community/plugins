@@ -60,7 +60,11 @@ magpie calls the plugin's `provider.models`, which reads `amr-link`'s live
 `/v1/models` at that account's key on every listing, so what a signed-in
 account is offered is what its plan entitles it to right now. Limits and
 input modalities come from that same catalog; the quota multiplier (`rate`)
-comes from `rates.mjs`, the plan's own table (below).
+comes from `rates.mjs`, the plan's own table (below). What the catalog leaves
+out of a model `models.mjs` knows is the seed's: its limits, and every input
+kind the seed declares (#829: the catalog left image out of DeepSeek V4.1
+Flash Eco, which takes images). A kind the catalog adds is added; a kind is
+removed only by changing `models.mjs`.
 
 Reasoning levels are not in the catalog, so `models.mjs` records the ones
 measured against `amr-link` (#137): every model took `reasoning_effort`
@@ -105,8 +109,9 @@ bun refresh-models.mjs                    # or OPENDESIGN_KEY=sk-amr-… bun …
 ```
 
 The script keeps the names and measured levels already there — the catalog
-carries neither — and reads nothing else: no secret is written to the file or
-printed.
+carries neither — and, as the plugin does, the input kinds, limits and words
+the catalog leaves out. It prints each kind it kept that way. It reads nothing
+else: no secret is written to the file or printed.
 
 Requests go to `https://amr-link.open-design.ai/v1`, each model on the API
 amr-link answers its thinking on (measured, plugins#141): chat completions
