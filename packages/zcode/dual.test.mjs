@@ -41,6 +41,8 @@ beforeEach(async () => {
   _internal.busyHold.until = 0
   _internal.busyHold.hits.length = 0
   _internal.busyHold.now = () => Date.now()
+  // a reply a test leaves unread keeps its Start Plan slot (startGate)
+  _internal.startGate.lanes.clear()
   sent.length = 0
   for (const k of Object.keys(answers)) delete answers[k]
   globalThis.fetch = async (input, init = {}) => {
@@ -462,7 +464,7 @@ test("a busy hold holds free first on the plan too, and a trial entry at the loc
   const res = await ask("GLM-5.3-Flash-Trial")
   expect(res.status).toBe(429)
   expect(res.headers.get("retry-after")).toMatch(/^\d+$/)
-  expect(JSON.parse(await res.text()).error.message).toContain("ZCode is busy")
+  expect(JSON.parse(await res.text()).error.message).toContain("ZCode turned away 5 requests in the last minute")
   expect([gift(), plan()]).toEqual([0, 1])
 })
 
@@ -517,7 +519,9 @@ test("an aborted gift request stays aborted", async () => {
   const tries = await giftThrowing(() => new DOMException("This operation was aborted", "AbortError"))
   const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
   await expect(opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash"), signal: ctl.signal })).rejects.toThrow()
-  expect(tries.gift).toBe(1)
+  // the Start Plan's slot (startGate) is not taken for an agent already
+  // gone: the gift is never asked, and the plan isn't either
+  expect(tries.gift).toBe(0)
   expect(tries.plan).toBe(0)
 })
 

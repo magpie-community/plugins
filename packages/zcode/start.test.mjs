@@ -51,6 +51,8 @@ afterEach(() => {
   _internal.busyHold.until = 0
   _internal.busyHold.hits.length = 0
   _internal.busyHold.now = () => Date.now()
+  // a reply a test leaves unread keeps its Start Plan slot (startGate)
+  _internal.startGate.lanes.clear()
 })
 
 const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 16)
@@ -618,7 +620,7 @@ test("a run of busy caps holds the Start Plan off before the IP is blocked, and 
     expect(Number(r.retryAfter)).toBeLessThanOrEqual(Math.ceil(_internal.BUSY_HOLD / 1000))
     const e = JSON.parse(r.text).error
     expect(e.type).toBe("rate_limit_error")
-    expect(e.message).toContain("busy")
+    expect(e.message).toContain("ZCode turned away 5 requests in the last minute")
   }
   expect(messages()).toBe(0)
   // the coding plan goes on, held or not
@@ -686,10 +688,12 @@ test("the busy hold reads its clock: a spread run holds nothing, caps during the
 })
 
 // The hold's guard is the one the serial tests cannot see: requests already
-// in flight when the hold arms get their first cap after it. Hold the clock
-// still, put 12 Start Plan requests in flight at once, answer them all 3008
-// after they have all reached the fake — with the guard gone, those 12 caps
-// arm the hold twice and the second arming pushes `until` out.
+// in flight when the hold arms get their counted cap after it. Hold the
+// clock still, put 12 Start Plan requests in flight at once — four accounts,
+// three each, as startGate lets them — and answer them all 3008 after they
+// have all reached the fake. No first cap counts; the 1s re-asks are
+// refused again and the fifth of those arms the hold. With the guard gone,
+// the seven after it count toward a second hold.
 test("caps that land after the hold armed change neither hits nor until (requests in flight)", async () => {
   const waits = _internal.BUSY_WAITS.splice(0)
   _internal.BUSY_WAITS.push(1)
@@ -698,7 +702,12 @@ test("caps that land after the hold armed change neither hits nor until (request
     let clock = 1_000_000_000_000
     _internal.busyHold.now = () => clock
     const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
-    const opts = await hooks.auth.loader(async () => start("zai"), { id: "zcode" })
+    const accounts = [1, 2, 3, 4].map((n) => {
+      const own = ["{}", JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, n })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".sig"
+      const s = { site: "zai", device: DEVICE, jwt: own, plan: "Start Plan" }
+      return { type: "oauth", access: own, refresh: JSON.stringify(s), expires: 0 }
+    })
+    const loaders = await Promise.all(accounts.map((a) => hooks.auth.loader(async () => a, { id: "zcode" })))
     // the fake parks every /messages request on one gate until the test opens it
     let open = () => {}
     const gate = new Promise((r) => (open = r))
@@ -706,21 +715,22 @@ test("caps that land after the hold armed change neither hits nor until (request
       await gate
       return Response.json({ code: "3008", msg: "user concurrency limit exceeded" }, { status: 429 })
     }
-    const all = Array.from({ length: 12 }, () =>
-      opts.fetch("https://api.z.ai/api/anthropic/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": "zcode" }, body: agentText }))
+    const all = loaders.flatMap((opts) =>
+      Array.from({ length: 3 }, () =>
+        opts.fetch("https://api.z.ai/api/anthropic/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": "zcode" }, body: agentText })))
     // every request is in flight (reached the fake) before any answer comes
     while (got.filter((r) => r.path.endsWith("/messages")).length < 12) await Bun.sleep(5)
     expect(got.filter((r) => r.path.endsWith("/messages")).length).toBe(12)
     clock += 1_000
     open()
     const rs = await Promise.all(all)
-    // all 12 armed the hold on their first caps and were held from then on:
-    // the caps after arming changed neither hits nor until, no request asked
-    // again (12 asks, not 24), and each answer is the hold's own 429 with
-    // its Retry-After, not busyAnswer's bare one
+    // every request was refused twice; the fifth second refusal armed the
+    // hold, and the ones after it changed neither hits nor until. Each
+    // answer is the hold's own 429 with its Retry-After or, for the four
+    // that armed it, busyAnswer's
     expect(rs.every((r) => r.status === 429)).toBe(true)
-    expect(got.filter((r) => r.path.endsWith("/messages")).length).toBe(12)
-    expect(rs.every((r) => r.headers.get("retry-after") === String(_internal.BUSY_HOLD / 1000))).toBe(true)
+    expect(got.filter((r) => r.path.endsWith("/messages")).length).toBe(24)
+    expect(rs.filter((r) => r.headers.get("retry-after") === String(_internal.BUSY_HOLD / 1000)).length).toBeGreaterThanOrEqual(8)
     expect(_internal.busyHold.hits.length).toBe(0)
     expect(_internal.busyHold.until).toBe(clock + _internal.BUSY_HOLD)
   } finally {

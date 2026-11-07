@@ -53,6 +53,8 @@ afterEach(() => {
   globalThis.fetch = real
   answer = null
   BUSY_WAITS.splice(0, BUSY_WAITS.length, ...WAITS)
+  // a reply a test leaves unread keeps its Start Plan slot (startGate)
+  _internal.startGate.lanes.clear()
 })
 
 const jwt = ["{}", JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".sig"
