@@ -1943,19 +1943,25 @@ const BUSY_HINT =
 // spares 37–52 requests. A held request answers 429 with Retry-After, so
 // magpie still reads a rate limit, rests the account and fails over; it is
 // not the 405/BlockedHint of an IP already refused. The coding plan, on
-// another host, is never held.
+// another host, is never held. The hold lives in this process's memory
+// alone: magpie restarting forgets it. Only model requests are held —
+// balance reads, the usage card and check-in still reach zcode.z.ai during
+// it (the check-in holds its own reads per account on a 429).
 const BUSY_N = 5
 const BUSY_WINDOW = 60_000
 const BUSY_HOLD = 3 * 60_000
-const busyHold = { hits: [], until: 0 }
-const busyHeld = () => Date.now() < busyHold.until
+const busyHold = { hits: [], until: 0, now: () => Date.now() }
+// busyHold.now is the clock, injectable for tests: a hold's window, its
+// length and its expiry all read through it.
+const busyHeld = () => busyHold.now() < busyHold.until
 
 // busyCap records one concurrency cap of a Start Plan request. Only a run
-// arms a hold; the window is cleared on arming so the hold's own 429s (and
-// the first caps after it) cannot keep re-arming it.
+// arms a hold; the window is cleared on arming, and a cap that lands while
+// the hold is on counts toward nothing — the hold's own 429s and the first
+// caps after it cannot keep re-arming it.
 function busyCap() {
   if (busyHeld()) return
-  const now = Date.now()
+  const now = busyHold.now()
   busyHold.hits.push(now)
   while (busyHold.hits.length && now - busyHold.hits[0] > BUSY_WINDOW) busyHold.hits.shift()
   if (busyHold.hits.length >= BUSY_N) {
@@ -1965,7 +1971,7 @@ function busyCap() {
 }
 
 function busyHeldAnswer() {
-  const wait = Math.max(1, Math.ceil((busyHold.until - Date.now()) / 1000))
+  const wait = Math.max(1, Math.ceil((busyHold.until - busyHold.now()) / 1000))
   const error = {
     type: "rate_limit_error",
     message: `ZCode is busy: its concurrency cap was hit ${BUSY_N} times in a minute, so this computer's Start Plan requests are held for ${wait}s to keep the provider's network firewall from blocking this IP; wait a while, or use a GLM Coding Plan model`,
@@ -2641,7 +2647,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: wireModel(raw) })
                 m = raw
                 forcedGift = true
-              } else if (!alone && !edgeHeld() && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m) && !giftSidelined(s, m)) {
+              } else if (!alone && !edgeHeld() && !busyHeld() && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m) && !giftSidelined(s, m)) {
                 // free first: the plain model spends the account's own live
                 // gift before it spends the coding plan, under the name the
                 // gift lists. The gift is the route's cache alone (a failed
@@ -2649,7 +2655,11 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 // the request on the plan with no read per request; a
                 // gift-only account is already on the gift and is left as
                 // it was. A refusal past this check is replayed on the plan
-                // in the same request (replayOnPlan below).
+                // in the same request (replayOnPlan below). A busy hold (or
+                // a block page) keeps the plain model off the gift: the
+                // coding plan is never held, and free first must not move
+                // the request onto a route the hold answers 429 without
+                // asking.
                 const raw = giftNames(known).find((x) => x.toLowerCase() === m.toLowerCase())
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: wireModel(raw) })
                 m = raw

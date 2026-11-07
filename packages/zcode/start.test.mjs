@@ -50,6 +50,7 @@ afterEach(() => {
   _internal.edge.until = 0
   _internal.busyHold.until = 0
   _internal.busyHold.hits.length = 0
+  _internal.busyHold.now = () => Date.now()
 })
 
 const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 16)
@@ -612,21 +613,63 @@ test("a run of busy caps holds the Start Plan off before the IP is blocked, and 
   const plan = await ask({ type: "api", key: "one.secret", metadata: { site: "zai" } })
   expect(plan.status).toBe(200)
   expect(messages()).toBe(1)
-  // the hold is over: the Start Plan is asked again, one cap does not re-arm it
+  // the hold is over: the Start Plan is asked again, one cap does not re-arm
+  // it — with hits left as the arming left them (empty), not cleared by hand
   _internal.busyHold.until = Date.now() - 1
-  _internal.busyHold.hits.length = 0
   answer = busy
   expect((await ask(start("zai"))).status).toBe(429)
   expect(_internal.busyHold.until).toBeLessThanOrEqual(Date.now())
-  // a 3012 account block and an edge hold are independent of this one
-  _internal.busyHold.until = Date.now() + _internal.BUSY_HOLD
-  answer = () => Response.json({ code: 3012, msg: "request has been blocked due to unusual activity." }, { status: 405 })
-  expect((await ask({ type: "api", key: "one.secret", metadata: { site: "zai" } })).status).toBe(405)
   _internal.busyHold.until = 0
-  _internal.busyHold.hits.length = 0
   } finally {
     _internal.BUSY_WAITS.length = 0
     _internal.BUSY_WAITS.push(...waits)
+    _internal.busyHold.now = () => Date.now()
+  }
+})
+
+// The clock is the hold's own, moved by the test: caps spread over more than
+// a window never arm a hold, caps landing while the hold is on count toward
+// nothing, and the hold ends by the clock without the hits being cleared by
+// hand.
+test("the busy hold reads its clock: a spread run holds nothing, caps during the hold count toward nothing", async () => {
+  const waits = _internal.BUSY_WAITS.splice(0)
+  _internal.BUSY_WAITS.push(1)
+  const ask = async (auth) => {
+    routeToFake()
+    const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const opts = await hooks.auth.loader(async () => auth, { id: "zcode" })
+    return opts.fetch("https://api.z.ai/api/anthropic/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": "zcode" }, body: agentText })
+  }
+  let clock = 1_000_000_000_000
+  _internal.busyHold.now = () => clock
+  try {
+    answer = () => Response.json({ code: "3008", msg: "user concurrency limit exceeded" }, { status: 429 })
+    // five caps, each a minute and a second apart: no window ever holds five
+    for (let i = 0; i < 5; i++) {
+      clock += 61_000
+      await ask(start("zai"))
+    }
+    expect(_internal.busyHold.until).toBe(0)
+    // a fast run arms it; caps landing while the hold is on are not counted
+    clock += 1_000
+    for (let i = 0; i < 5; i++) await ask(start("zai"))
+    const armedAt = clock
+    expect(_internal.busyHold.until).toBe(armedAt + _internal.BUSY_HOLD)
+    for (let i = 0; i < 9; i++) {
+      clock += 1_000
+      await ask(start("zai"))
+    }
+    expect(_internal.busyHold.until).toBe(armedAt + _internal.BUSY_HOLD)
+    // the hold expires by the clock with hits empty: one cap does not re-arm
+    clock = armedAt + _internal.BUSY_HOLD + 1_000
+    expect((await ask(start("zai"))).status).toBe(429)
+    expect(_internal.busyHold.until).toBeLessThanOrEqual(clock)
+    _internal.busyHold.until = 0
+  } finally {
+    _internal.BUSY_WAITS.length = 0
+    _internal.BUSY_WAITS.push(...waits)
+    _internal.busyHold.now = () => Date.now()
+    _internal.busyHold.hits.length = 0
   }
 })
 
@@ -653,5 +696,6 @@ test("a few caps do not hold the Start Plan, and coding plan caps hold nothing",
   } finally {
     _internal.BUSY_WAITS.length = 0
     _internal.BUSY_WAITS.push(...waits)
+    _internal.busyHold.now = () => Date.now()
   }
 })

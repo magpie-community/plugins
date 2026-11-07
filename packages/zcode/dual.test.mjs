@@ -38,6 +38,9 @@ beforeEach(async () => {
   _internal.blocked.clear()
   _internal.sidelined.clear()
   _internal.edge.until = 0
+  _internal.busyHold.until = 0
+  _internal.busyHold.hits.length = 0
+  _internal.busyHold.now = () => Date.now()
   sent.length = 0
   for (const k of Object.keys(answers)) delete answers[k]
   globalThis.fetch = async (input, init = {}) => {
@@ -438,6 +441,29 @@ test("a gift's block page holds free first on the plan and a trial entry here (p
   expect(res.status).toBe(405)
   expect(JSON.parse(await res.text()).error.message).toContain("the provider's network firewall blocked requests from this IP")
   expect([gift(), plan()]).toEqual([1, 2])
+})
+
+// A busy hold keeps the gift off exactly as a block page does: free first
+// must leave the dual account's plain model on its coding plan, which is
+// never held — not move it onto a route the hold answers without asking.
+test("a busy hold holds free first on the plan too, and a trial entry at the local 429", async () => {
+  planAndBalance()
+  _internal.busyHold.until = Date.now() + _internal.BUSY_HOLD
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const ask = (model) => opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body(model) })
+  const gift = () => sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages")).length
+  const plan = () => sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages")).length
+  // the plain model stays on the coding plan, answered 200, gift untouched
+  expect((await ask("GLM-5.3-Flash")).status).toBe(200)
+  expect([gift(), plan()]).toEqual([0, 1])
+  // the user's pick of the gift is answered at the hold's own 429
+  const res = await ask("GLM-5.3-Flash-Trial")
+  expect(res.status).toBe(429)
+  expect(res.headers.get("retry-after")).toMatch(/^\d+$/)
+  expect(JSON.parse(await res.text()).error.message).toContain("ZCode is busy")
+  expect([gift(), plan()]).toEqual([0, 1])
 })
 
 const giftUnreachable = (when = () => true) => {
