@@ -204,6 +204,33 @@ test("the API-key + console-token method reads the token out of a pasted cookie"
   }
 })
 
+test("the key-management calls ride the session cookie, not the bearer", async () => {
+  f = fakeInkStone()
+  const p = await plugin()
+  const seen = []
+  const serve = (method, path) =>
+    f.route(`${method} /api/tokenplan/v1${path}`, (r) => {
+      seen.push(`${method} ${path}: auth=${r.headers.get("authorization") ? "bearer" : "none"} cookie=${r.headers.get("cookie") ? "yes" : "no"}`)
+      return json({ code: 0, msg: "success", data: {} })
+    })
+  serve("GET", "/keys")
+  serve("POST", "/keys")
+  serve("DELETE", "/keys/ak_1")
+  const { listKeys, createKey, deleteKey } = await import("./lib/protocol.mjs")
+  const token = "fake-token"
+  await listKeys(token).catch(() => {})
+  await createKey(token, "ink-x", "idem-1").catch(() => {})
+  await deleteKey(token, "ak_1").catch(() => {})
+  expect(seen.length).toBe(3)
+  for (const line of seen) {
+    // the /keys family takes the session cookie; a bearer there is the
+    // -10002 "not authenticated" the real console answers (verified live,
+    // 2026-11-07: the sign-in then failed at key creation on the real thing)
+    expect(line).toContain("cookie=yes")
+    expect(line).not.toContain("auth=bearer")
+  }
+})
+
 test("cleanDetail masks real uaa-token, sk-, Bearer and JWT runs", async () => {
   const { cleanDetail } = await import("./lib/protocol.mjs")
   expect(cleanDetail("failed: uaa-token=secretValue123456")).toBe("failed: ***")
